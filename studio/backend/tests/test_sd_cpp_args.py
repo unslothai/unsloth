@@ -50,6 +50,9 @@ def test_te_flags_by_family():
     assert text_encoder_flags_for_family("qwen-image") == ("--qwen2vl",)
     assert text_encoder_flags_for_family("flux.1") == ("--clip_l", "--t5xxl")
     assert text_encoder_flags_for_family("flux.2-klein") == ("--llm",)
+    # Not --qwen2vl, even though the family name starts with the same three words: 2.1 conditions
+    # on Qwen3-VL and the qwen2vl door additionally enables Qwen2-VL's vision preprocessing.
+    assert text_encoder_flags_for_family("qwen-image-2.1") == ("--llm",)
     assert text_encoder_flags_for_family("unknown") == ()
 
 

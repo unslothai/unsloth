@@ -210,6 +210,78 @@ def test_non_peft_gguf_uses_checkpoint_as_input_not_output(
     assert tokenizer.saved_to == [str(checkpoint)]
 
 
+@pytest.mark.parametrize(
+    "full_finetuning, state_dict",
+    [
+        (True, None),
+        (True, {"lm_head.weight": "consolidated"}),
+        (False, {"lm_head.weight": "consolidated"}),
+    ],
+)
+def test_gguf_converts_trained_or_supplied_weights_not_source_checkpoint(
+    monkeypatch, tmp_path, full_finetuning, state_dict
+):
+    checkpoint = tmp_path / "checkpoint"
+    checkpoint.mkdir()
+    requested = tmp_path / "export" / "model"
+    requested.parent.mkdir()
+    model = _FakeModel()
+    model.config = type(
+        "cfg",
+        (),
+        {
+            "_name_or_path": str(checkpoint),
+            "architectures": ["LlamaForCausalLM"],
+            "model_type": "llama",
+        },
+    )()
+    model._unsloth_full_finetuning = full_finetuning
+    model.saved_to = []
+    model.save_pretrained = lambda path, **kwargs: model.saved_to.append(
+        (path, kwargs.get("state_dict"))
+    )
+    tokenizer = _FakeTokenizer()
+    seen = {}
+
+    monkeypatch.setattr(save_mod, "_is_vlm", lambda _model: False)
+    monkeypatch.setattr(save_mod, "_is_gpt_oss", lambda _model: False)
+    monkeypatch.setattr(save_mod, "fix_tokenizer_bos_token", lambda _tokenizer: (False, None))
+    monkeypatch.setattr(save_mod, "_resolve_imatrix_file", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(save_mod, "dtype_from_config", lambda _config: save_mod.torch.float16)
+    monkeypatch.setattr(save_mod, "create_ollama_modelfile", lambda *_args, **_kwargs: None)
+    preflight = []
+    monkeypatch.setattr(
+        save_mod,
+        "_preflight_gguf_disk",
+        lambda **kwargs: preflight.append((kwargs["needs_merge"], kwargs["state_dict"]))
+        or (kwargs["save_directory"], True),
+    )
+
+    def _save_to_gguf(**kwargs):
+        seen.update(kwargs)
+        output = tmp_path / "export" / "model_gguf" / "model.F16.gguf"
+        output.parent.mkdir()
+        output.write_bytes(b"GGUF")
+        return [str(output)], True, False
+
+    monkeypatch.setattr(save_mod, "save_to_gguf", _save_to_gguf)
+
+    save_mod.unsloth_save_pretrained_gguf(
+        model,
+        str(requested),
+        tokenizer = tokenizer,
+        quantization_method = "f16",
+        state_dict = state_dict,
+    )
+
+    assert seen["model_directory"] == str(requested)
+    assert model.saved_to == [(str(requested), state_dict)]
+    assert tokenizer.saved_to == [str(requested)]
+    assert os.listdir(checkpoint) == []
+    assert preflight == [(True, state_dict)]
+    assert save_mod._gguf_model_input_directory(model, str(requested), state_dict) == str(requested)
+
+
 # The above rejection points users at push_to_hub_gguf(save_method='lora'), so that path has to work; it is only ever
 # exercised here.
 

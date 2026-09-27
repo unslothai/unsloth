@@ -20,12 +20,6 @@ from dataclasses import dataclass
 from dataclasses import field as dataclass_field
 from typing import Any, Iterable
 
-from core.inference.mcp_client import (
-    MCP_MODEL_TOOL_NAME_RE,
-    mcp_model_tool_name,
-    mcp_tool_model_visible,
-)
-
 
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
 MAX_IMAGE_PIXELS = 25_000_000
@@ -157,6 +151,10 @@ def validate_image_input_mappings(
         for tool in tools
         if isinstance(tool, dict) and str(tool.get("name") or "")
     }
+    # Use the same alias and collision rules as the model's tool list.
+    from core.inference.tools import _mcp_tool_names
+
+    model_tool_names = set(_mcp_tool_names({"id": server_key}, list(by_name.values())).values())
     seen: set[str] = set()
     digest_rows: list[dict[str, Any]] = []
     for mapping in normalized:
@@ -171,9 +169,7 @@ def validate_image_input_mappings(
         tool = by_name.get(tool_name)
         if tool is None:
             raise McpImageDisclosureError(f"MCP tool '{tool_name}' was not discovered")
-        if not mcp_tool_model_visible(tool) or not MCP_MODEL_TOOL_NAME_RE.fullmatch(
-            mcp_model_tool_name(server_key, tool_name)
-        ):
+        if tool_name not in model_tool_names:
             raise McpImageDisclosureError(f"MCP tool '{tool_name}' is not available to the model")
         schema = _tool_schema(tool)
         _eligible_field(schema, field)

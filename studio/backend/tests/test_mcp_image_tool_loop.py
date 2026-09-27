@@ -4,6 +4,8 @@
 import asyncio
 import base64
 import copy
+import hashlib
+import json
 import threading
 from types import SimpleNamespace as NS
 
@@ -18,6 +20,7 @@ from core.inference.mcp_image_disclosure import (
 from routes import inference
 from state import tool_approvals
 from storage import studio_db
+from storage import mcp_servers_db
 from studio.backend.tests.test_chat_attachments import (
     PNG_BYTES,
     PNG_DATA_URL,
@@ -28,6 +31,49 @@ from studio.backend.tests.test_chat_attachments import (
 )
 
 MAPPINGS = (("inspect", "picture_blob", "base64"), ("classify", "frame_data", "data_url"))
+
+
+@pytest.mark.parametrize("raw_name", ["inspect.picture", "inspect_" + "x" * 80])
+def test_aliased_image_tool_rewrites_schema_and_still_requires_consent(monkeypatch, raw_name):
+    from core.inference import tools as tool_module
+
+    schema = {"type": "object", "properties": {"image": {"type": "string"}}}
+    catalog = [{"name": raw_name, "inputSchema": schema}]
+    mapping = {"tool": raw_name, "field": "image", "encoding": "base64"}
+    _, digest = validate_image_input_mappings([mapping], catalog, server_key = "server")
+    server = dict(
+        id = "server", is_enabled = True, allow_image_attachments = True,
+        url = "https://example.test/mcp", image_input_schema_digest = digest,
+        image_input_mappings_json = json.dumps([mapping]),
+    )
+    monkeypatch.setattr(mcp_servers_db, "get_server_for_tool", lambda _: server)
+    monkeypatch.setattr(mcp_client, "get_cached_tools", lambda _: catalog)
+    monkeypatch.setattr(tool_module, "_MCP_TOOL_ALIASES", {})
+    specs = tool_module._mcp_specs_for_server(server, catalog)
+    alias = specs[0]["function"]["name"]
+    assert alias != "mcp__server__" + raw_name
+    rewritten = image_loop.rewrite_image_tool_schemas(specs, "mcp-image-ref-private")
+    assert rewritten[0]["function"]["parameters"]["properties"]["image"]["enum"] == [
+        "mcp-image-ref-private"
+    ]
+    assert image_loop._mapping_for_name(alias)[1] == mapping
+    assert "explicit image approval" in tool_module.execute_tool(
+        alias, {"image": "mcp-image-ref-private"}
+    )
+
+
+def test_image_mapping_rejects_alias_collision_with_another_tool():
+    raw_name = "inspect.picture"
+    claimed = "inspect_picture_" + hashlib.sha256(raw_name.encode()).hexdigest()[:8]
+    catalog = [
+        {"name": name, "inputSchema": {"type": "object", "properties": {"image": {"type": "string"}}}}
+        for name in (raw_name, claimed)
+    ]
+    with pytest.raises(McpImageDisclosureError, match = "not available to the model"):
+        validate_image_input_mappings(
+            [{"tool": raw_name, "field": "image", "encoding": "base64"}],
+            catalog, server_key = "server",
+        )
 
 
 @pytest.fixture

@@ -210,6 +210,7 @@ def prepare_image_tool_request(payload, *, subject, tools, cancel_event, ui_even
 
 def _mapping_for_name(name):
     from core.inference.mcp_client import get_cached_tools
+    from core.inference.tools import _mcp_raw_tool_name
     from storage import mcp_servers_db
 
     if not name.startswith("mcp__"):
@@ -226,7 +227,8 @@ def _mapping_for_name(name):
         raise McpImageDisclosureError("The image input configuration is invalid") from None
     if not isinstance(mappings, list) or any(not isinstance(mapping, dict) for mapping in mappings):
         raise McpImageDisclosureError("The image input configuration is invalid")
-    mapping = next((m for m in mappings if m.get("tool") == parts[2]), None)
+    raw_name = _mcp_raw_tool_name(name)
+    mapping = next((m for m in mappings if m.get("tool") == raw_name), None)
     if mapping is None:
         return None
     tools = get_cached_tools(server["id"])
@@ -235,7 +237,7 @@ def _mapping_for_name(name):
     _, digest = validate_image_input_mappings(mappings, tools, server_key = parts[1])
     if digest != server.get("image_input_schema_digest"):
         raise McpImageDisclosureError("The MCP image input schema changed; configure it again")
-    tool = next(t for t in tools if t.get("name") == parts[2])
+    tool = next(t for t in tools if t.get("name") == raw_name)
     schema = tool.get("inputSchema")
     if not isinstance(schema, dict):
         schema = tool.get("input_schema")

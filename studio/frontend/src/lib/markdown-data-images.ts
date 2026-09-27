@@ -17,8 +17,11 @@ interface SanitizeSchema {
   protocols?: Record<string, string[]>;
 }
 
-/** Streamdown's default raw/sanitize/harden pipeline with `data` added to image source protocols. */
-export function withDataImageSupport(allowedTags: Record<string, string[]>): Pluggable[] {
+/** Keep data images and resolve sandbox paths before URL hardening. */
+export function withDataImageSupport(
+  allowedTags: Record<string, string[]>,
+  beforeHarden: Pluggable[] = [],
+): Pluggable[] {
   const sanitize = defaultRehypePlugins.sanitize as [Plugin<[SanitizeSchema]>, SanitizeSchema];
   const [sanitizePlugin, schema] = sanitize;
   // Positional by design: Streamdown itself builds its default pipeline as `Object.values` of this
@@ -40,6 +43,7 @@ export function withDataImageSupport(allowedTags: Record<string, string[]>): Plu
         },
       },
     ],
+    ...beforeHarden,
     harden,
   ];
 }

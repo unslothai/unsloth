@@ -940,10 +940,8 @@ class _ReasoningChannelTokenizer:
 
 
 def test_the_mlx_vlm_decoder_keeps_the_reasoning_protocol_delimiters():
-    """``decode_stream_token`` drops any special id outside the preserved set, so a VLM turn
-    combining tools with a native reasoning protocol loses the delimiters
-    ``normalize_reasoning_snapshots`` waits for and emits the reasoning as answer text. The whole
-    stream is exercised in ``test_mlx_vlm_keeps_the_reasoning_protocol_delimiters_on_a_tool_turn``."""
+    """Without these delimiters ``normalize_reasoning_snapshots`` emits the reasoning as answer
+    text. The decision is about the id, not the characters it renders as."""
     from core.inference.native_tool_tokens import (
         NativeToolTokenDecoder,
         reasoning_control_tokens,
@@ -955,12 +953,12 @@ def test_the_mlx_vlm_decoder_keeps_the_reasoning_protocol_delimiters():
     with_markers = NativeToolTokenDecoder(
         tokenizer, preserved_tokens = reasoning_control_tokens(markers)
     )
-    for token_id, token in ((1, "<|channel>"), (2, "<channel|>")):
-        assert without.decode_stream_token(token_id, token) == ""
-        assert with_markers.decode_stream_token(token_id, token) == token
+    for token_id in (1, 2):  # <|channel>, <channel|>
+        assert without.suppresses(token_id) and not without.keeps(token_id)
+        assert with_markers.keeps(token_id) and not with_markers.suppresses(token_id)
     # Neither the tool control nor the suppression of an ordinary special token moves.
-    assert with_markers.decode_stream_token(3, "<tool_call>") == "<tool_call>"
-    assert with_markers.decode_stream_token(4, "<eos>") == ""
+    assert with_markers.keeps(3) and not with_markers.suppresses(3)  # <tool_call>
+    assert with_markers.suppresses(4) and not with_markers.keeps(4)  # <eos>
 
 
 def test_a_gemma_peer_behind_a_blocked_json_object_is_held():

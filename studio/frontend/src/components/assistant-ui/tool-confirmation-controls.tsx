@@ -4,7 +4,10 @@
 "use client";
 
 import { Button } from "@/components/ui/button";
-import { resolveToolConfirmation } from "@/features/chat/api/chat-api";
+import {
+  resolveToolConfirmation,
+  ToolApprovalGoneError,
+} from "@/features/chat/api/chat-api";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import {
   COMPOSER_INPUT_SELECTOR,
@@ -86,7 +89,11 @@ export function ToolConfirmationControls({
 
   const [decided, setDecided] = useState(false);
   const [pending, setPending] = useState<"allow" | "deny" | null>(null);
-  const [failed, setFailed] = useState(false);
+  // "retry" is a post that failed on the way out and is worth pressing again; "gone" is an approval
+  // the backend is no longer holding, where pressing again can only fail the same way. They were one
+  // flag, and the shared copy told the user to retry something that could never succeed.
+  const [failure, setFailure] = useState<"retry" | "gone" | null>(null);
+  const failed = failure !== null;
 
   // Still awaiting our decision: a gated pending entry exists, the tool has
   // not produced a result, and the card is in its running state.
@@ -97,10 +104,10 @@ export function ToolConfirmationControls({
   const showControls = awaiting && !decided;
 
   const resolve = useCallback(
-    async (decision: "allow" | "deny") => {
-      if (!toolCallId || !confirmation || expired) return;
+    async (decision: "allow" | "deny", alsoAlways = false) => {
+      if (!toolCallId || !confirmation || expired || failure === "gone") return;
       setPending(decision);
-      setFailed(false);
+      setFailure(null);
       try {
         const ok = await resolveToolConfirmation(
           confirmation.sessionId,
@@ -109,20 +116,34 @@ export function ToolConfirmationControls({
           disclosure ? "mcp_image_disclosure" : "tool",
         );
         if (ok) {
+          // The session-wide grant is recorded only once the backend has actually taken the
+          // decision. Granting it up front on the click meant a press that visibly failed still
+          // silently auto-approved this tool for every later call in the session.
+          if (alsoAlways && !disclosure && autoAllowKey) allowToolAlways(autoAllowKey, toolName);
           // Only hide the controls once the backend confirms it matched the pending call --
           // otherwise the generation would stay blocked with no way to retry.
           setDecided(true);
           clearToolConfirmation(toolCallId);
         } else {
-          setFailed(true);
+          setFailure("retry");
         }
-      } catch {
-        setFailed(true);
+      } catch (err) {
+        setFailure(err instanceof ToolApprovalGoneError ? "gone" : "retry");
       } finally {
         setPending(null);
       }
     },
-    [toolCallId, confirmation, clearToolConfirmation, expired],
+    [
+      toolCallId,
+      confirmation,
+      clearToolConfirmation,
+      allowToolAlways,
+      autoAllowKey,
+      toolName,
+      disclosure,
+      expired,
+      failure,
+    ],
   );
 
   // Tools the user marked "Always allow" (this session) approve themselves.
@@ -203,7 +224,7 @@ export function ToolConfirmationControls({
       </div>}
       <Button
         size="xs"
-        disabled={pending !== null || expired}
+        disabled={pending !== null || expired || failure === "gone"}
         onClick={() => void resolve("allow")}
       >
         {disclosure ? "Share image once" : "Allow"}
@@ -211,25 +232,24 @@ export function ToolConfirmationControls({
       {!disclosure && <Button
         size="xs"
         variant="outline"
-        disabled={pending !== null}
-        onClick={() => {
-          if (autoAllowKey) allowToolAlways(autoAllowKey, toolName);
-          void resolve("allow");
-        }}
+        disabled={pending !== null || failure === "gone"}
+        onClick={() => void resolve("allow", true)}
       >
         Always allow
       </Button>}
       <Button
         size="xs"
         variant="destructive"
-        disabled={pending !== null || expired}
+        disabled={pending !== null || expired || failure === "gone"}
         onClick={() => void resolve("deny")}
       >
         Deny
       </Button>
-      {failed ? (
+      {failure !== null ? (
         <span className="text-xs text-destructive">
-          Could not send your decision. Try again.
+          {failure === "gone"
+            ? "This request is no longer waiting for an answer."
+            : "Could not send your decision. Try again."}
         </span>
       ) : null}
     </div>

@@ -343,8 +343,8 @@ def test_mappings_catalog_and_public_schema_contract():
     assert [mapping["field"] for mapping in mappings] == ["picture_blob", "frame_data"]
     assert len(digest) == 64
 
-    for hidden in ("app_only", "invalid_name"):
-        name = "inspect_picture" if hidden == "app_only" else "x" * 60
+    for hidden in ("app_only", "invalid_server_name"):
+        name = "inspect_picture"
         candidate = tool(name, "image", True, False)
         if hidden == "app_only":
             candidate["_meta"] = {"ui": {"visibility": ["app"]}}
@@ -352,7 +352,7 @@ def test_mappings_catalog_and_public_schema_contract():
             d.validate_image_input_mappings(
                 [{"tool": name, "field": "image", "encoding": "base64"}],
                 [candidate],
-                server_key = "server",
+                server_key = "server" if hidden == "app_only" else "x" * 64,
             )
 
     original = tool("inspect_picture", "picture_blob", True, False)["inputSchema"]

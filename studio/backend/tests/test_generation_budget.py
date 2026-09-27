@@ -313,6 +313,43 @@ def test_the_audio_input_path_resolves_an_unset_budget(monkeypatch):
     assert model.calls[0]["max_new_tokens"] == _WINDOW - _PROMPT_LEN
 
 
+def _audio_turns(monkeypatch, messages):
+    backend, _model = _audio_backend(monkeypatch)
+    processor = backend.models[backend.active_model_name]["processor"]
+    render = processor.apply_chat_template
+    seen = {}
+
+    def _capture(messages, *args, **kwargs):
+        seen["messages"] = messages
+        return render(messages, *args, **kwargs)
+
+    monkeypatch.setattr(processor, "apply_chat_template", _capture, raising = False)
+    list(
+        backend.generate_audio_input_response(
+            messages, "be brief", object(), 0.0, 1.0, 0, 0.0, 8, 1.0
+        )
+    )
+    return [(m["role"], m.get("name")) for m in seen["messages"]]
+
+
+def test_the_audio_input_turns_keep_participant_names(monkeypatch):
+    assert _audio_turns(monkeypatch, [{"role": "user", "name": "alice", "content": "hi"}]) == [
+        ("system", None),
+        ("user", "alice"),
+    ]
+
+
+def test_the_audio_turn_is_named_for_whoever_recorded_it(monkeypatch):
+    assert _audio_turns(
+        monkeypatch,
+        [
+            {"role": "user", "name": "alice", "content": "hi"},
+            {"role": "assistant", "content": "hello"},
+            {"role": "user", "name": "bob", "content": ""},
+        ],
+    ) == [("system", None), ("user", "bob")]
+
+
 def test_an_explicit_audio_budget_is_untouched(monkeypatch):
     backend, model = _audio_backend(monkeypatch)
 

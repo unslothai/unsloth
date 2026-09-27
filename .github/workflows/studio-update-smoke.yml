@@ -43,6 +43,30 @@ on:
       - 'unsloth_cli/_system_dir_guard.py'
       - 'pyproject.toml'
       - '.github/workflows/studio-update-smoke.yml'
+      # The second update must report the llama.cpp prebuilt as up to date and
+      # validated. That outcome is computed by backend.utils.prebuilt.llama_backend
+      # (imported by install_llama_prebuilt.py), backend.utils.auth_safe and the
+      # vendored truststore (imported by prebuilt_core.py), wheel_utils.py and
+      # uv_path_safety.py (imported by install_python_stack.py), and mlx_repair.py
+      # (its MLX health probe). setup.sh runs nvidia_probe.py. The job drives this checkout's CLI, whose
+      # __init__.py imports every command module, and its pytest runs load the root and
+      # tests/studio/install conftests.
+      - 'studio/backend/__init__.py'
+      - 'studio/backend/utils/__init__.py'
+      - 'studio/backend/utils/auth_safe.py'
+      - 'studio/backend/utils/prebuilt/__init__.py'
+      - 'studio/backend/utils/prebuilt/llama_backend.py'
+      - 'studio/backend/vendor/truststore/**'
+      - 'studio/backend/utils/wheel_utils.py'
+      - 'studio/backend/utils/uv_path_safety.py'
+      - 'studio/backend/utils/mlx_repair.py'
+      - 'studio/nvidia_probe.py'
+      - 'unsloth_cli/*.py'
+      - 'unsloth_cli/commands/*.py'
+      - 'tests/conftest.py'
+      - 'tests/__init__.py'
+      - 'tests/_shared/**'
+      - 'tests/studio/install/conftest.py'
       - '.github/scripts/retry-with-apt-lock.sh'
       # The install step in this workflow is `uses:` on that composite action,
       # so an edit to the action changes what this workflow actually runs.
@@ -87,6 +111,30 @@ on:
       - 'unsloth_cli/_system_dir_guard.py'
       - 'pyproject.toml'
       - '.github/workflows/studio-update-smoke.yml'
+      # The second update must report the llama.cpp prebuilt as up to date and
+      # validated. That outcome is computed by backend.utils.prebuilt.llama_backend
+      # (imported by install_llama_prebuilt.py), backend.utils.auth_safe and the
+      # vendored truststore (imported by prebuilt_core.py), wheel_utils.py and
+      # uv_path_safety.py (imported by install_python_stack.py), and mlx_repair.py
+      # (its MLX health probe). setup.sh runs nvidia_probe.py. The job drives this checkout's CLI, whose
+      # __init__.py imports every command module, and its pytest runs load the root and
+      # tests/studio/install conftests.
+      - 'studio/backend/__init__.py'
+      - 'studio/backend/utils/__init__.py'
+      - 'studio/backend/utils/auth_safe.py'
+      - 'studio/backend/utils/prebuilt/__init__.py'
+      - 'studio/backend/utils/prebuilt/llama_backend.py'
+      - 'studio/backend/vendor/truststore/**'
+      - 'studio/backend/utils/wheel_utils.py'
+      - 'studio/backend/utils/uv_path_safety.py'
+      - 'studio/backend/utils/mlx_repair.py'
+      - 'studio/nvidia_probe.py'
+      - 'unsloth_cli/*.py'
+      - 'unsloth_cli/commands/*.py'
+      - 'tests/conftest.py'
+      - 'tests/__init__.py'
+      - 'tests/_shared/**'
+      - 'tests/studio/install/conftest.py'
       - '.github/scripts/retry-with-apt-lock.sh'
       # The install step in this workflow is `uses:` on that composite action,
       # so an edit to the action changes what this workflow actually runs.
@@ -96,6 +144,10 @@ on:
       # that depend on it.
       - '.github/actions/frontend-dist-restore/action.yml'
       - '.github/actions/frontend-dist-save/action.yml'
+      # The Windows job restores and saves the uv download cache directly, as the
+      # pull_request list above already records.
+      - '.github/actions/uv-cache-restore/action.yml'
+      - '.github/actions/uv-cache-save/action.yml'
   workflow_dispatch:
 
 concurrency:
@@ -104,7 +156,7 @@ concurrency:
   # a RUNNING main job being killed, but GitHub cancels any PENDING run in the group
   # the moment a newer one is queued, so a merge burst still leaves only the tip.
   # See studio-backend-ci.yml, which is grouped per commit on main for that reason.
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -452,6 +504,13 @@ jobs:
         with:
           python-version: '3.12'
 
+      # install-unsloth-local restores this for the Linux and macOS jobs above; this
+      # hand-written pwsh install never had it, so every run re-downloaded every wheel.
+      # install.ps1 preserves the UV_CACHE_DIR the action exports.
+      - name: Restore the uv download cache
+        id: uv-cache
+        uses: ./.github/actions/uv-cache-restore
+
       - name: Install Unsloth (--local, --no-torch)
         shell: pwsh
         env:
@@ -472,6 +531,13 @@ jobs:
             Tee-Object -FilePath logs/install.log |
             ForEach-Object { '[{0,4:N0}s] {1}' -f $sw.Elapsed.TotalSeconds, $_ }
           if ($LASTEXITCODE -ne 0) { throw "install.ps1 exited with code $LASTEXITCODE" }
+
+      # Paired with the restore above: pruned to built wheels, saved on main only.
+      - name: Save the uv download cache
+        uses: ./.github/actions/uv-cache-save
+        with:
+          cache-hit: ${{ steps.uv-cache.outputs.cache-hit }}
+          key: ${{ steps.uv-cache.outputs.key }}
 
       - name: A second update does nothing, and proves it
         # The Windows leg is the one that can catch a path or marker written with the

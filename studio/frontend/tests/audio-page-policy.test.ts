@@ -376,15 +376,37 @@ test("gallery refresh preserves fallback selection and pagination identity", () 
   );
   assert.match(
     audioPageSource,
-    /listAudioGallery\([\s\S]*galleryCache\.nextCursor[\s\S]*galleryCache\.nextCursor =[\s\S]*page\.next_before_mtime[\s\S]*new Set\(galleryCache\.clips\.map[\s\S]*filter\(\(clip\) => !known\.has\(clip\.id\)\)/,
+    /listAudioGallery\([\s\S]*galleryCache\.nextCursor[\s\S]*galleryCache\.nextCursor = audioGalleryCursor\(page\)[\s\S]*new Set\(galleryCache\.clips\.map[\s\S]*filter\(\(clip\) => !known\.has\(clip\.id\)\)/,
   );
 });
 
-test("Audio transcription uses backend language auto-detection", () => {
+test("a refresh that overlaps a pin or move is dropped and rerun after it", () => {
   assert.match(
     audioPageSource,
-    /transcribeAudioBlob\(blob, \{[\s\S]*model: key,[\s\S]*engine,[\s\S]*language: ""/,
+    /const writeEpoch = orderWrites\.current\.epoch;[\s\S]*listAudioGallery\(\s*0,[\s\S]*orderWrites\.current\.inFlight > 0 \|\| orderWrites\.current\.epoch !== writeEpoch[\s\S]*orderWrites\.current\.deferred = true;\s*return page\.audio;/,
   );
+  assert.match(
+    audioPageSource,
+    /writes\.inFlight === 0 && writes\.deferred\) \{\s*writes\.deferred = false;\s*void refreshGallery\(/,
+  );
+  // A successful unpin with more pages unloaded resyncs the window.
+  assert.match(
+    audioPageSource,
+    /setAudioClipFlags\(id, \{ pinned \}\)\);\s*\/\/[^\n]*\n\s*if \(!pinned && galleryCache\.hasMore\) orderWrites\.current\.deferred = true;/,
+  );
+  for (const call of ["setAudioClipFlags(id, { pinned })", "moveAudioClip(id, afterId)"]) {
+    const at = audioPageSource.indexOf(call);
+    const before = audioPageSource.lastIndexOf("beginOrderWrite();", at);
+    const after = audioPageSource.indexOf("endOrderWrite();", at);
+    assert.ok(before > 0 && at - before < 400 && after > at, call);
+  }
+});
+
+test("Audio transcription uses backend language auto-detection", () => {
+  const api = readSrc("features/audio/api.ts");
+  const transcription = api.slice(api.indexOf("export async function transcribeWithProgress"), api.indexOf("export async function listTranscripts"));
+  assert.doesNotMatch(transcription, /dictationLanguage|language:/);
+  assert.match(transcription, /stream: "true"/);
 });
 
 test("older STT status requests cannot overwrite newer residency", () => {
@@ -559,12 +581,8 @@ test("the trained-model list applies the native-aware macOS policy", () => {
 });
 
 test("the transcript download revokes its URL only after the click is consumed", () => {
-  // Immediate revocation raced browsers that resolve a synthetic download navigation
-  // asynchronously, leaving the action with no file.
-  assert.match(
-    audioPageSource,
-    /anchor\.download = `\$\{\(transcribedName[\s\S]*?anchor\.click\(\);[\s\S]*?window\.setTimeout\(\(\) => URL\.revokeObjectURL\(url\), 0\);/,
-  );
+  assert.match(readSrc("features/audio/transcript-download.ts"), /await downloadFile\(\s*text,/);
+  assert.match(readSrc("lib/native-files.ts"), /anchor\.click\(\);[\s\S]*?window\.setTimeout\(\(\) => URL\.revokeObjectURL\(url\), 0\);/);
 });
 
 test("a complete first page drops cached rows the server no longer holds", () => {

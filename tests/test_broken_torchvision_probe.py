@@ -24,6 +24,7 @@ breakage was already handled.
 
 import ast
 import builtins
+import importlib
 import pathlib
 import sys
 from unittest import mock
@@ -320,3 +321,201 @@ def test_a_conda_torch_is_not_sent_to_pypis_torchvision(tmp_path):
 
     # Without the ledger nothing changes: an absent tag still means PyPI.
     assert "pip install" in advice("2.5.1")
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        # The reported message (unsloth#1793).
+        "partially initialized module 'torchvision' has no attribute 'extension' "
+        "(most likely due to a circular import)",
+        "partially initialized module 'torchvision.transforms' has no attribute "
+        "'InterpolationMode'",
+        "partially initialized module 'torchvision.io.image' has no attribute 'decode_jpeg'",
+        # 3.13+ names the file in the same message; 3.12 and older do not.
+        "partially initialized module 'torchvision' from "
+        "'/usr/lib/python3/site-packages/torchvision/__init__.py' has no attribute 'extension' "
+        "(most likely due to a circular import)",
+        "partially initialized module 'torchvision.ops' from "
+        "'/opt/venv/lib/torchvision/ops/__init__.py' has no attribute 'nms'",
+    ],
+)
+def test_partially_initialized_torchvision_is_recognised(message):
+    """A torchvision whose extension failed to load can surface as an AttributeError on a
+    half-imported module rather than a loader failure (unsloth#1793)."""
+    assert import_fixes._is_broken_torchvision_error(AttributeError(message))
+
+
+def test_the_lazy_module_wrapper_around_it_is_recognised():
+    """transformers' _LazyModule re-raises as RuntimeError with the original as cause."""
+    inner = AttributeError(
+        "partially initialized module 'torchvision' has no attribute 'extension' "
+        "(most likely due to a circular import)"
+    )
+    outer = RuntimeError(
+        "Failed to import transformers.image_utils because of the following error "
+        "(look up to see its traceback):\n" + str(inner)
+    )
+    outer.__cause__ = inner
+    assert import_fixes._is_broken_torchvision_error(outer)
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        # A typo on a HEALTHY torchvision: fully imported, so no "partially initialized".
+        "module 'torchvision' has no attribute 'extension'",
+        "module 'torchvision' has no attribute 'nms'",
+        "module 'torchvision.ops' has no attribute 'nsm'",
+        # Someone else's circular import.
+        "partially initialized module 'numpy' has no attribute 'array'",
+        "partially initialized module 'mypackage.torchvision' has no attribute 'x'",
+        "partially initialized module 'torchvisionfoo' has no attribute 'x'",
+        "partially initialized module 'not_torchvision' has no attribute 'x'",
+        "partially initialized module 'mytorchvision' has no attribute 'extension'",
+        # The `from '...'` clause must not let another module's path carry the match.
+        "partially initialized module 'numpy' from '/x/torchvision/numpy.py' has no attribute 'a'",
+        "module 'os' has no attribute 'extension'",
+    ],
+)
+def test_a_healthy_torchvision_or_another_module_is_not_claimed(message):
+    assert not import_fixes._is_broken_torchvision_error(AttributeError(message))
+
+
+def test_the_probe_names_the_partially_initialized_break():
+    """End to end through the probe, not just the predicate."""
+    error = AttributeError(
+        "partially initialized module 'torchvision' has no attribute 'extension' "
+        "(most likely due to a circular import)"
+    )
+    with pytest.raises(ImportError) as excinfo:
+        _probe_with_import_raising(error)
+    assert "UNSLOTH_SKIP_TORCHVISION_CHECK=1" in str(excinfo.value)
+    assert excinfo.value.__cause__ is error
+
+
+def test_the_probe_stays_silent_on_a_typo_against_a_healthy_torchvision():
+    """`import unsloth` must not be turned into "reinstall torchvision" by an
+    AttributeError that carries no evidence of a half-imported module."""
+    _probe_with_import_raising(AttributeError("module 'torchvision' has no attribute 'extension'"))
+
+
+@pytest.mark.parametrize("kind", ["module", "package"])
+def test_a_file_shadowing_torchvision_is_named_rather_than_blamed_on_the_binary(
+    tmp_path, monkeypatch, kind
+):
+    """A local torchvision raises the same words while the metadata still reports the
+    installed one. Driven through a real import: the fix turns on which file resolves."""
+    # A shadow exists only relative to an INSTALLED torchvision, so with none this has
+    # nothing to assert and would fail rather than skip.
+    pytest.importorskip("torchvision")
+    body = "import torchvision\ntorchvision.extension\n"
+    if kind == "module":
+        shadow = tmp_path / "torchvision.py"
+        shadow.write_text(body)
+    else:
+        # A directory is a package like the real one, so shape cannot separate them.
+        (tmp_path / "torchvision").mkdir()
+        shadow = tmp_path / "torchvision" / "__init__.py"
+        shadow.write_text(body)
+    with mock.patch.dict(sys.modules):
+        for name in [n for n in sys.modules if n.startswith("torchvision")]:
+            sys.modules.pop(name, None)
+        monkeypatch.syspath_prepend(str(tmp_path))
+        assert import_fixes._shadowing_torchvision_path() == str(shadow)
+        with pytest.raises(ImportError) as excinfo:
+            import_fixes._probe_torchvision_binary("2.11.0", "0.26.0", (0, 26))
+        text = str(excinfo.value)
+
+    assert str(shadow) in text, text
+    assert "reinstalling torchvision will not change which one wins" in text, text
+    assert "force-reinstall" not in text, text  # the binary branch's advice, wrong here
+    assert isinstance(excinfo.value.__cause__, AttributeError)
+
+
+def test_the_real_torchvision_is_not_mistaken_for_a_shadow():
+    pytest.importorskip("torchvision")
+    assert import_fixes._shadowing_torchvision_path() is None
+    assert import_fixes._is_broken_torchvision_error(
+        AttributeError("partially initialized module 'torchvision' has no attribute 'extension'")
+    )
+
+
+def test_the_marker_matches_what_this_interpreter_actually_says(tmp_path, monkeypatch):
+    """3.13.12 adds a `from '<file>'` clause 3.12.3 does not, and a marker matching nothing
+    looks exactly like a healthy box. So provoke it here rather than quoting a bug report."""
+    package = tmp_path / "tvshape"
+    package.mkdir()
+    (package / "__init__.py").write_text("import tvshape\ntvshape.extension\n")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    with mock.patch.dict(sys.modules):
+        sys.modules.pop("tvshape", None)
+        with pytest.raises(AttributeError) as excinfo:
+            importlib.import_module("tvshape")
+
+    produced = str(excinfo.value)
+    assert "partially initialized" in produced, produced
+    assert import_fixes._TORCHVISION_ATTRIBUTE_RE.search(
+        produced.replace("tvshape", "torchvision")
+    ), produced
+    assert not import_fixes._TORCHVISION_ATTRIBUTE_RE.search(produced), produced
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        # `from torchvision import X` mid-execution: an ImportError, never "has no attribute".
+        "cannot import name 'extension' from partially initialized module 'torchvision' "
+        "(most likely due to a circular import) (/usr/lib/torchvision/__init__.py)",
+        "cannot import name 'nms' from partially initialized module 'torchvision.ops' "
+        "(most likely due to a circular import)",
+        # A second `import torchvision.ops` after the first failed to initialise.
+        "cannot access submodule 'ops' of module 'torchvision' "
+        "(most likely due to a circular import)",
+    ],
+)
+def test_the_other_two_cpython_wordings_of_the_same_break_are_recognised(message):
+    """Four wordings, one fault. The two above carry no "has no attribute" clause at all,
+    so a marker anchored on that clause reports a healthy box for a torchvision that
+    cannot import."""
+    assert import_fixes._is_broken_torchvision_error(ImportError(message))
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "cannot import name 'x' from partially initialized module 'mytorchvision' "
+        "(most likely due to a circular import)",
+        "cannot access submodule 'torchvision' of module 'mypackage' "
+        "(most likely due to a circular import)",
+        "cannot access submodule 'ops' of module 'torchvisionfoo'",
+        # A fully imported torchvision refusing a name: nothing to reinstall.
+        "cannot import name 'nsm' from 'torchvision.ops' (/usr/lib/torchvision/ops.py)",
+    ],
+)
+def test_the_other_two_wordings_do_not_claim_another_module(message):
+    assert not import_fixes._is_broken_torchvision_error(ImportError(message))
+
+
+def test_the_from_import_wording_is_what_this_interpreter_actually_says():
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        package = pathlib.Path(tmp) / "tvfrom"
+        package.mkdir()
+        (package / "__init__.py").write_text("from tvfrom import extension\n")
+        sys.path.insert(0, tmp)
+        try:
+            with mock.patch.dict(sys.modules):
+                sys.modules.pop("tvfrom", None)
+                with pytest.raises(ImportError) as excinfo:
+                    importlib.import_module("tvfrom")
+        finally:
+            sys.path.remove(tmp)
+
+    produced = str(excinfo.value)
+    assert "partially initialized" in produced, produced
+    assert import_fixes._TORCHVISION_ATTRIBUTE_RE.search(
+        produced.replace("tvfrom", "torchvision")
+    ), produced
+    assert not import_fixes._TORCHVISION_ATTRIBUTE_RE.search(produced), produced

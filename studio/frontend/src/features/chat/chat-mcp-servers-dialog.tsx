@@ -216,7 +216,7 @@ function ArgumentsEditor({
           onClick={add}
           disabled={disabled}
         >
-          <HugeiconsIcon icon={PlusSignIcon} size={14} />
+          <HugeiconsIcon icon={PlusSignIcon} className="size-3.5" />
           Add argument
         </Button>
       </div>
@@ -244,7 +244,7 @@ function ArgumentsEditor({
                 disabled={disabled}
                 aria-label={`Remove argument ${index + 1}`}
               >
-                <HugeiconsIcon icon={Delete02Icon} size={14} />
+                <HugeiconsIcon icon={Delete02Icon} className="size-3.5" />
               </Button>
             </div>
           ))}
@@ -298,7 +298,7 @@ function HeadersEditor({
           onClick={add}
           disabled={disabled}
         >
-          <HugeiconsIcon icon={PlusSignIcon} size={14} />
+          <HugeiconsIcon icon={PlusSignIcon} className="size-3.5" />
           {copy.add}
         </Button>
       </div>
@@ -338,7 +338,7 @@ function HeadersEditor({
                 disabled={disabled}
                 aria-label={copy.remove}
               >
-                <HugeiconsIcon icon={Delete02Icon} size={14} />
+                <HugeiconsIcon icon={Delete02Icon} className="size-3.5" />
               </Button>
             </div>
           ))}
@@ -932,7 +932,7 @@ export function ChatMcpServersDialog({
                   disabled={importing || formPending}
                   title="Import servers from a mcpServers JSON config (Claude Desktop, Cursor, VS Code…)"
                 >
-                  {importing ? <Spinner /> : <UploadIcon size={14} />}
+                  {importing ? <Spinner /> : <UploadIcon className="size-3.5" />}
                   Import config
                 </Button>
               </div>
@@ -1157,11 +1157,11 @@ export function ChatMcpServersDialog({
                 disabled={importing || blenderBusy}
                 title="Import servers from a mcpServers JSON config (Claude Desktop, Cursor, VS Code…)"
               >
-                {importing ? <Spinner /> : <UploadIcon size={14} />}
+                {importing ? <Spinner /> : <UploadIcon className="size-3.5" />}
                 Import config
               </Button>
               <Button size="sm" onClick={startCreate} disabled={importing || blenderBusy}>
-                <HugeiconsIcon icon={PlusSignIcon} size={14} />
+                <HugeiconsIcon icon={PlusSignIcon} className="size-3.5" />
                 Add server
               </Button>
             </div>
@@ -1207,7 +1207,7 @@ export function ChatMcpServersDialog({
                         {refreshingIds.has(server.id) ? (
                           <Spinner />
                         ) : (
-                          <RefreshCwIcon size={14} />
+                          <RefreshCwIcon className="size-3.5" />
                         )}
                       </Button>
                       <Button
@@ -1218,7 +1218,7 @@ export function ChatMcpServersDialog({
                         aria-label="Edit server"
                         disabled={importing || blenderBusy || busyIds.has(server.id)}
                       >
-                        <HugeiconsIcon icon={Edit03Icon} size={14} />
+                        <HugeiconsIcon icon={Edit03Icon} className="size-3.5" />
                       </Button>
                       <Button
                         type="button"
@@ -1228,7 +1228,7 @@ export function ChatMcpServersDialog({
                         aria-label="Delete server"
                         disabled={importing || busyIds.has(server.id)}
                       >
-                        <HugeiconsIcon icon={Delete02Icon} size={14} />
+                        <HugeiconsIcon icon={Delete02Icon} className="size-3.5" />
                       </Button>
                     </div>
                   </li>

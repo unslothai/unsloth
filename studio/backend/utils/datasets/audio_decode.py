@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Decode `datasets` Audio columns with soundfile when torchcodec cannot load. `datasets` 4.x decodes audio only through torchcodec, which needs an FFmpeg full-shared install to dlopen its native libraries; Windows has none by default, so `disable_torchcodec_if_broken` clears `datasets.config.TORCHCODEC_AVAILABLE` and every audio column raises, blocking the dataset format check and all six audio trainer paths on an otherwise working host. A soundfile decoder restores the pre-4.0 output contract, `{"path", "array", "sampling_rate"}`, which is what those callers already read."""
+"""Decode `datasets` Audio columns with soundfile, then PyAV, when torchcodec cannot load. `datasets` 4.x decodes audio only through torchcodec, which needs an FFmpeg full-shared install to dlopen its native libraries; Windows has none by default, so `disable_torchcodec_if_broken` clears `datasets.config.TORCHCODEC_AVAILABLE` and every audio column raises, blocking the dataset format check and all six audio trainer paths on an otherwise working host. A soundfile decoder restores the pre-4.0 output contract, `{"path", "array", "sampling_rate"}`, which is what those callers already read."""
 
 from __future__ import annotations
 
@@ -44,16 +44,84 @@ def _token_for_url(path: str, token_per_repo_id: Optional[dict]) -> Any:
     return token_per_repo_id.get(fields["repo_id"])
 
 
+def _decode_with_av(source: Any, stream_index: Optional[int] = None) -> "tuple[Any, int]":
+    """Mono float32 at the native rate through PyAV's bundled FFmpeg: every container torchcodec would have read (m4a, aac, webm, wma, amr) without a system FFmpeg. Same shape as routes/inference.py's upload decoder, minus its upload ceilings: a dataset row is not an upload."""
+    import av
+    import numpy as np
+
+    chunks = []
+    rate = 0
+    resampler = None
+    with av.open(source, mode = "r", metadata_errors = "ignore") as container:
+        if not container.streams.audio:
+            raise ValueError("audio container has no audio stream")
+        # datasets.Audio(stream_index=...) is the container's absolute stream index, as torchcodec reads it; None is the best audio stream.
+        try:
+            if stream_index is None:
+                # av_find_best_stream, which torchcodec uses: the default-disposition track wins over the first. PyAV < 13 has no wrapper, so take the first audio track there.
+                best = getattr(container.streams, "best", None)
+                stream = best("audio") if best is not None else container.streams.audio[0]
+            else:
+                stream = container.streams[stream_index]
+        except IndexError:
+            raise ValueError(
+                f"stream {stream_index} is not in the container, which has {len(container.streams)} streams"
+            ) from None
+        if stream.type != "audio":
+            raise ValueError(f"stream {stream_index} is not an audio stream")
+        for frame in container.decode(stream):
+            if resampler is None:
+                rate = int(frame.sample_rate or 0)
+                if rate <= 0:
+                    raise ValueError("decoded audio has an invalid sample rate")
+                resampler = av.AudioResampler(format = "flt", layout = "mono", rate = rate)
+            for out in resampler.resample(frame):
+                chunks.append(out.to_ndarray().reshape(-1))
+        if resampler is not None:
+            for out in resampler.resample(None):
+                chunks.append(out.to_ndarray().reshape(-1))
+    if not chunks:
+        raise ValueError("audio container decoded to no samples")
+    return np.concatenate(chunks).astype(np.float32, copy = False), rate
+
+
+def _read_mono(source: Any, stream_index: Optional[int] = None) -> "tuple[Any, int]":
+    """soundfile first (wav, flac, mp3, ogg), PyAV for the rest. `source` is a path, a bytes buffer or an open file."""
+    import numpy as np
+    import soundfile as sf
+
+    if stream_index not in (None, 0):
+        # libsndfile only knows single-stream files, so an explicit other stream is PyAV's alone.
+        return _decode_with_av(source, stream_index)
+    try:
+        array, rate = sf.read(source, dtype = "float32", always_2d = False)
+    except Exception as sf_error:  # noqa: BLE001  libsndfile raises its own hierarchy
+        try:
+            import av  # noqa: F401
+        except ImportError:
+            raise sf_error
+        if hasattr(source, "seek"):
+            source.seek(0)
+        try:
+            return _decode_with_av(source, stream_index)
+        except Exception as av_error:  # noqa: BLE001
+            raise RuntimeError(
+                f"audio could not be decoded by soundfile ({sf_error}) or PyAV ({av_error})"
+            ) from av_error
+    if array.ndim > 1:
+        # soundfile returns (frames, channels); torchcodec returns (channels, frames).
+        array = np.mean(array, axis = -1)
+    return array, rate
+
+
 def _decode_with_soundfile(
     self,
     value: dict,
     token_per_repo_id: Optional[dict] = None,
 ) -> dict:
-    """Stand-in for `datasets.Audio.decode_example` that never needs FFmpeg."""
+    """Stand-in for `datasets.Audio.decode_example` that never needs a system FFmpeg."""
     import io
 
-    import numpy as np
-    import soundfile as sf
     from datasets.download.download_config import DownloadConfig
     from datasets.utils.file_utils import is_local_path, xopen
 
@@ -78,10 +146,7 @@ def _decode_with_soundfile(
             download_config = DownloadConfig(token = _token_for_url(path, token_per_repo_id)),
         )
 
-    array, sampling_rate = sf.read(source, dtype = "float32", always_2d = False)
-    if array.ndim > 1:
-        # soundfile returns (frames, channels); torchcodec returns (channels, frames).
-        array = np.mean(array, axis = -1)
+    array, sampling_rate = _read_mono(source, getattr(self, "stream_index", None))
     target = self.sampling_rate
     if target and sampling_rate != target:
         import librosa
@@ -104,8 +169,19 @@ def _encode_with_soundfile(self, value) -> dict:
     if isinstance(value, (bytes, bytearray)):
         return {"bytes": bytes(value), "path": None}
     if isinstance(value, dict) and value.get("array") is not None:
+        import numpy as np
+
+        array = np.asarray(value["array"])
+        if array.dtype == object:
+            array = np.asarray(
+                array.tolist(), dtype = "float32"
+            )  # a nested list back from Arrow arrives as an object array
+        if array.ndim == 2 and array.shape[0] < array.shape[1]:
+            array = (
+                array.T
+            )  # torchcodec hands out (channels, samples); libsndfile writes (frames, channels)
         buf = io.BytesIO()
-        sf.write(buf, value["array"], value["sampling_rate"], format = "WAV")
+        sf.write(buf, array, value["sampling_rate"], format = "WAV")
         return {"bytes": buf.getvalue(), "path": value.get("path")}
     if isinstance(value, dict) and ("bytes" in value or "path" in value):
         return {"bytes": value.get("bytes"), "path": value.get("path")}
@@ -127,7 +203,7 @@ def ensure_audio_decoding() -> bool:
         try:
             # config only ran find_spec, and an installed torchcodec whose native libraries cannot dlopen still passes that. The API process never imports unsloth, so disable_torchcodec_if_broken has not corrected the flag here.
             from datasets.features._torchcodec import AudioDecoder  # noqa: F401
-        except (ImportError, OSError, RuntimeError) as exc:
+        except Exception as exc:  # noqa: BLE001  a damaged wheel can raise anything at import; every shape means unusable
             logger.info("torchcodec is installed but unusable (%s)", exc)
             config.TORCHCODEC_AVAILABLE = False
     if config.TORCHCODEC_AVAILABLE:
@@ -150,5 +226,5 @@ def ensure_audio_decoding() -> bool:
         Audio.decode_example = _decode_with_soundfile
         Audio.encode_example = _encode_with_soundfile
         _installed = True
-    logger.info("torchcodec is unusable; decoding dataset audio with soundfile")
+    logger.info("torchcodec is unusable; decoding dataset audio with soundfile and PyAV")
     return True
