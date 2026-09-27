@@ -1724,27 +1724,36 @@ def _allocate_empty_quantized_exactly(cls):
     cls.update_and_fetch = update_and_fetch
 
 
-def _quantize_kv_entries(entries, bits):
-    for index, entry in enumerate(entries):
-        convert = getattr(entry, "to_quantized", None)
-        if convert is not None and not _kv_entry_windowed(entry):
-            entries[index] = convert(group_size = MLX_KV_GROUP_SIZE, bits = bits)
-            if getattr(entry, "keys", True) is None:
-                _allocate_empty_quantized_exactly(type(entries[index]))
-    return entries
-
-
-def _kv_quant_probe(language_model, entries, bits):
-    """``(converted, skipped, failure, retainable)``; runs a real second token over the converted cache,
-    since static proxies (declared head_dim, window spelling) proved wrong both ways."""
-    import mlx.core as mx
-
+def _kv_quant_targets(entries):
+    """``(indices, held)``: windowed entries keep their ring; past two entries the last
+    full-attention one stays float, as mlx-vlm's should_quantize_kv_layer does."""
     targets = [
         index
         for index, entry in enumerate(entries)
         if getattr(entry, "to_quantized", None) is not None and not _kv_entry_windowed(entry)
     ]
-    skipped = len(entries) - len(targets)
+    if len(entries) > 2 and targets:
+        targets.pop()
+        return targets, 1
+    return targets, 0
+
+
+def _quantize_kv_entries(entries, bits):
+    for index in _kv_quant_targets(entries)[0]:
+        entry = entries[index]
+        entries[index] = entry.to_quantized(group_size = MLX_KV_GROUP_SIZE, bits = bits)
+        if getattr(entry, "keys", True) is None:
+            _allocate_empty_quantized_exactly(type(entries[index]))
+    return entries
+
+
+def _kv_quant_probe(language_model, entries, bits):
+    """``(converted, skipped, failure, retainable)``: runs a token through the converted cache,
+    since static proxies (declared head_dim, window spelling) proved wrong both ways."""
+    import mlx.core as mx
+
+    targets, held = _kv_quant_targets(entries)
+    skipped = len(entries) - len(targets) - held
     if not targets:
         # Verdict already known, so skip the cost of a full model call.
         return 0, skipped, None, True
@@ -1832,6 +1841,7 @@ def _kv_quant_eligibility(
     if not entries:
         return "none", "this model builds no KV cache to quantize", True
 
+    total = len(entries)
     windowed = sum(_kv_entry_windowed(entry) for entry in entries)
     language_model = getattr(model, "language_model", model) if is_vlm else model
     converted, skipped, failure, retainable = _kv_quant_probe(language_model, entries, bits)
@@ -1845,7 +1855,14 @@ def _kv_quant_eligibility(
     if failure is not None:
         return "refused", f"this model's KV cache cannot be quantized: {failure}", True
     if not converted:
-        return "none", "this model's KV cache layout cannot be quantized", True
+        if skipped < total:
+            reason = (
+                "it has a single full-attention layer, and the last full-attention "
+                "layer stays unquantized"
+            )
+        else:
+            reason = "this model's KV cache layout cannot be quantized"
+        return "none", reason, True
     if not skipped:
         return "full", "", retainable
     if windowed == skipped:
@@ -2967,7 +2984,7 @@ class MLXInferenceBackend:
         return entries if bits is None else _quantize_kv_entries(entries, bits)
 
     def _kv_quant_generate_kwargs(self):
-        """Pre-quantized cache instead of kv_bits, which converts every entry and raises on a rotating one."""
+        """A pre-quantized cache, not kv_bits: both runtimes would convert a rotating entry."""
         if self._kv_quant_bits() is None:
             return {}
         return {
