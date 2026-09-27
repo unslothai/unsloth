@@ -176,24 +176,31 @@ def _kernels() -> Optional[types.SimpleNamespace]:
     @triton.jit
     def _rms_act(
         x_ptr, out_ptr, w_ptr, b_ptr, ib_ptr, cache_ptr,
-        C, T, HW, W, To, front, n_cache, scale,
+        C, T, H, W, Ho, Wo, ph, pw, To, front, n_cache, scale,
         sb, sc, st, sh, sw, cb, cc, ct, ch, cw,
         NORM: tl.constexpr, ACT: tl.constexpr, HAS_BIAS: tl.constexpr, HAS_IN_BIAS: tl.constexpr,
-        BLOCK_P: tl.constexpr, BLOCK_C: tl.constexpr,
+        REPLICATE: tl.constexpr, BLOCK_P: tl.constexpr, BLOCK_C: tl.constexpr,
     ):  # fmt: skip
+        # out (B, To, Ho, Wo, C) = [front frames] + act(norm(x + ib)); REPLICATE: replicate-padded in T (front), H, W
         pid_p = tl.program_id(0)
         bt = tl.program_id(1)
         t_o = bt % To
         b = bt // To
         p = pid_p * BLOCK_P + tl.arange(0, BLOCK_P)
-        pmask = p < HW
-        hh = p // W
-        ww = p - hh * W
+        pmask = p < Ho * Wo
+        ho = p // Wo
+        wo = p - ho * Wo
+        if REPLICATE:
+            hh = tl.minimum(tl.maximum(ho - ph, 0), H - 1)
+            ww = tl.minimum(tl.maximum(wo - pw, 0), W - 1)
+        else:
+            hh = ho
+            ww = wo
         c = tl.arange(0, BLOCK_C)
         cmask = c < C
         m = pmask[:, None] & cmask[None, :]
-        out_off = ((b.to(tl.int64) * To + t_o) * HW + p.to(tl.int64))[:, None] * C + c[None, :]
-        if t_o < front:
+        out_off = ((b.to(tl.int64) * To + t_o) * (Ho * Wo) + p.to(tl.int64))[:, None] * C + c[None, :]
+        if (not REPLICATE) and t_o < front:
             # causal frames: the cache's last ``n_cache`` activations, zeros before them
             tc = t_o - (front - n_cache)
             if tc >= 0:
@@ -209,7 +216,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
             else:
                 tl.store(out_ptr + out_off, tl.zeros([BLOCK_P, BLOCK_C], out_ptr.dtype.element_ty), mask = m)
         else:
-            t = t_o - front
+            t = tl.maximum(t_o - front, 0)
             off = (
                 b.to(tl.int64) * sb
                 + t.to(tl.int64) * st
@@ -433,16 +440,33 @@ def _rms_fusable(x: Any, norm: Any, cache: Any) -> bool:
 
 
 def rms_norm_act(
-    x: Any, norm: Any, act: bool = True, *, front: int = 0, cache: Any = None, in_bias: Any = None
+    x: Any,
+    norm: Any,
+    act: bool = True,
+    *,
+    front: int = 0,
+    cache: Any = None,
+    in_bias: Any = None,
+    replicate_pad: Optional[tuple] = None,
 ) -> Any:
     """``cat([cache or zeros] -> front frames, silu?(rms_norm(x + in_bias)))`` along T, as ONE channels-last_3d tensor.
 
     ``norm=None`` skips the norm (a plain causal ``cat``). ``cache`` holds already-activated frames (the stock causal
     cache); its last ``min(front, T_cache)`` frames are used and zeros fill any remaining front slots: exactly the
-    stock ``torch.cat`` + causal ``F.pad`` input of a conv."""
+    stock ``torch.cat`` + causal ``F.pad`` input of a conv.
+
+    ``replicate_pad=(ph, pw)``: HunyuanVideo-1.5's ``F.pad(mode="replicate")`` instead: ``front`` copies of the first
+    frame and ``ph`` / ``pw`` replicated rows / columns each side (``cache`` must be None)."""
     torch = _torch()
+    if replicate_pad is not None and cache is not None:
+        raise ValueError("replicate padding takes no cache")
     if not _rms_fusable(x, norm, cache):
         y = rms_norm_reference(x, norm, act, in_bias)
+        if replicate_pad is not None:
+            import torch.nn.functional as F
+            ph, pw = replicate_pad
+            y = F.pad(y, (pw, pw, ph, ph, front, 0), mode = "replicate")
+            return y.contiguous(memory_format = torch.channels_last_3d)
         if front:
             import torch.nn.functional as F
             n_cache = 0
@@ -458,20 +482,22 @@ def rms_norm_act(
     else:
         gamma, bias, has_bias, scale = x, x, False, 1.0
     b, c, t, h, w = x.shape
+    ph, pw = replicate_pad if replicate_pad is not None else (0, 0)
+    ho, wo = h + 2 * ph, w + 2 * pw
     to = t + front
-    hw = h * w
     n_cache = 0 if cache is None else min(front, cache.shape[2])
     cache_t = x if cache is None else cache[:, :, cache.shape[2] - n_cache :]
-    out = torch.empty((b, to, h, w, c), dtype = x.dtype, device = x.device)
+    out = torch.empty((b, to, ho, wo, c), dtype = x.dtype, device = x.device)
     block_c = _next_pow2(c)
     block_p = max(1, min(128, 8192 // block_c))
-    grid = ((hw + block_p - 1) // block_p, b * to)
+    grid = ((ho * wo + block_p - 1) // block_p, b * to)
     k.rms_act[grid](
         x, out, gamma, bias, in_bias if in_bias is not None else x, cache_t,
-        c, t, hw, w, to, front, n_cache, scale,
+        c, t, h, w, ho, wo, ph, pw, to, front, n_cache, scale,
         *x.stride(), *cache_t.stride(),
         NORM = norm is not None, ACT = bool(act), HAS_BIAS = has_bias, HAS_IN_BIAS = in_bias is not None,
-        BLOCK_P = block_p, BLOCK_C = block_c, num_warps = 4 if block_c * block_p <= 4096 else 8,
+        REPLICATE = replicate_pad is not None, BLOCK_P = block_p, BLOCK_C = block_c,
+        num_warps = 4 if block_c * block_p <= 4096 else 8,
     )  # fmt: skip
     return out.permute(0, 4, 1, 2, 3)
 
@@ -1016,6 +1042,115 @@ def _stock_forward_attr(obj: Any, name: str) -> Any:
     return getattr(type(obj), name).__get__(obj)
 
 
+# ----------------------------------------------------------------------------------------------------------------
+# HunyuanVideo-1.5: replicate-padded causal convs, no feature cache (a tile decodes its whole clip at once)
+
+
+def _hv_conv_ok(conv: Any) -> bool:
+    torch = _torch()
+    inner = getattr(conv, "conv", None)
+    pad = getattr(conv, "time_causal_padding", None)
+    return (
+        isinstance(inner, torch.nn.Conv3d)
+        and getattr(conv, "pad_mode", None) == "replicate"
+        and pad is not None
+        and len(pad) == 6
+        and pad[0] == pad[1]
+        and pad[2] == pad[3]
+        and pad[5] == 0
+        and inner.padding == (0, 0, 0)
+        and inner.groups == 1
+        and inner.padding_mode == "zeros"
+    )
+
+
+def hv_conv(conv: Any, x: Any, *, norm: Any = None, act: bool = False, in_bias: Any = None, with_bias: bool = True) -> Any:
+    """``conv(pad_replicate(silu?(rms?(x + in_bias))))`` with the pad, norm and act in one channels-last pass."""
+    import torch.nn.functional as F
+
+    pw, _, ph, _, front, _ = conv.time_causal_padding
+    inner = conv.conv
+    y = rms_norm_act(x, norm, act, front = front, in_bias = in_bias, replicate_pad = (ph, pw))
+    return F.conv3d(y, inner.weight, inner.bias if with_bias else None, inner.stride, 0, inner.dilation)
+
+
+def _hv_resnet_ok(block: Any) -> bool:
+    torch = _torch()
+    return (
+        _is_rms(getattr(block, "norm1", None))
+        and _is_rms(getattr(block, "norm2", None))
+        and isinstance(getattr(block, "nonlinearity", None), torch.nn.SiLU)
+        and _hv_conv_ok(getattr(block, "conv1", None))
+        and _hv_conv_ok(getattr(block, "conv2", None))
+    )
+
+
+def _fast_hv_resnet(block: Any) -> Any:
+    import torch.nn.functional as F
+
+    def fast(x: Any) -> Any:
+        h = hv_conv(block.conv1, x, norm = block.norm1, act = True, with_bias = False)
+        h = hv_conv(block.conv2, h, norm = block.norm2, act = True, in_bias = block.conv1.conv.bias, with_bias = False)
+        sc = block.conv_shortcut
+        res = x if sc is None else F.conv3d(x, sc.weight, sc.bias, sc.stride, sc.padding)
+        return add_bias_residual(h, block.conv2.conv.bias, res)
+
+    return fast
+
+
+def _fast_hv_conv(conv: Any) -> Any:
+    def fast(x: Any) -> Any:
+        return hv_conv(conv, x)
+
+    return fast
+
+
+def _fast_hv_norm_act(norm: Any) -> Any:
+    def fast(x: Any) -> Any:
+        if x.dim() != 5:
+            return _torch().nn.functional.silu(type(norm).forward(norm, x))
+        return rms_norm_act(x, norm, True)
+
+    return fast
+
+
+def install_hv15_vae(vae: Any, logger: Any = None) -> int:
+    torch = _torch()
+    if vae is None or not runtime_ok():
+        return 0
+    n = 0
+    for part_name in ("encoder", "decoder"):
+        part = getattr(vae, part_name, None)
+        if part is None:
+            continue
+        norm_out, act = getattr(part, "norm_out", None), getattr(part, "conv_act", None)
+        if _is_rms(norm_out) and isinstance(act, torch.nn.SiLU) and "forward" not in norm_out.__dict__:
+            _guard(
+                norm_out,
+                _fast_hv_norm_act(norm_out),
+                lambda x, _n = norm_out: torch.nn.functional.silu(type(_n).forward(_n, x)),
+                "norm_out",
+                logger,
+            )
+            act.forward = lambda x: x
+            act._unsloth_vae_fused = True
+            n += 1
+        for module in part.modules():
+            if "forward" in module.__dict__:
+                continue
+            name = type(module).__name__
+            if name.endswith("ResnetBlock") and _hv_resnet_ok(module):
+                _guard(module, _fast_hv_resnet(module), _stock_forward(module), "resnet", logger)
+                n += 1
+        for module in part.modules():
+            if "forward" in module.__dict__:
+                continue
+            if type(module).__name__.endswith("CausalConv3d") and _hv_conv_ok(module):
+                _guard(module, _fast_hv_conv(module), _stock_forward(module), "causal conv", logger)
+                n += 1
+    return n
+
+
 def install(vae: Any, logger: Any = None, level: str = "fused") -> int:
     """Install every fused path that applies to ``vae``'s class. Returns the number of patched modules."""
     name = type(vae).__name__
@@ -1023,4 +1158,6 @@ def install(vae: Any, logger: Any = None, level: str = "fused") -> int:
         return install_group_norm_vae(vae, logger)
     if name in _WAN_VAES:
         return install_wan_vae(vae, logger)
+    if name == "AutoencoderKLHunyuanVideo15":
+        return install_hv15_vae(vae, logger)
     return 0
