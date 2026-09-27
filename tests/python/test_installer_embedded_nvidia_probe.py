@@ -313,5 +313,10 @@ def test_a_relative_hint_is_never_loaded(monkeypatch):
 
 def test_the_real_driver_in_system32_still_answers(monkeypatch):
     order: list[str] = []
-    out = _run_windows(monkeypatch, {SYSTEM32_NVML: None, SYSTEM32_CUDA: _cuda()}, (SYSTEM32_NVML, SYSTEM32_CUDA), order)
+    out = _run_windows(
+        monkeypatch,
+        {SYSTEM32_NVML: None, SYSTEM32_CUDA: _cuda()},
+        (SYSTEM32_NVML, SYSTEM32_CUDA),
+        order,
+    )
     assert out == CUDA_OUT
