@@ -2286,7 +2286,10 @@ def test_the_event_poll_waits_for_the_count_to_settle():
 def test_the_archive_filter_holds_for_a_relative_workdir(tmp_path, workdir):
     """A relative -WorkDir made $dir shorter than Get-ChildItem's absolute FullName, so raw-logs and rollback reached the zip."""
     source = _text(PS1)
-    assert "$WorkDir = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($WorkDir)" in source
+    assert (
+        "$WorkDir = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($WorkDir)"
+        in source
+    )
     block = source[source.index('    $stage = Join-Path $WorkDir ".stage-$Label"') :]
     block = block[: block.index("        $target = Join-Path $stage $rel")]
     prelude = r"""
@@ -2308,7 +2311,10 @@ $dir = Join-Path $WorkDir $Label
     script.write_text(prelude + block + "Write-Output $rel\n}\n", encoding = "utf-8")
     result = _run_ps(script, "-WorkDir", workdir)
     assert result.returncode == 0, result.stderr
-    assert result.stdout.split() == ["studio-logs\\studio-start.log", "scenario-results.json"], result.stdout
+    assert result.stdout.split() == [
+        "studio-logs\\studio-start.log",
+        "scenario-results.json",
+    ], result.stdout
 
 
 @pytest.mark.parametrize("quantize_mode", ["start-failure", "exit-0", "exit-1", "loader-failure"])
@@ -2350,14 +2356,22 @@ function Test-Quantize { QUANTIZE }
 """.replace("QUANTIZE", quantize)
     script = tmp_path / "exercise.ps1"
     script.write_text(prelude + exercise, encoding = "utf-8")
-    ran = subprocess.run(["pwsh", "-NoProfile", "-File", str(script)], env = env, capture_output = True, text = True)
+    ran = subprocess.run(
+        ["pwsh", "-NoProfile", "-File", str(script)], env = env, capture_output = True, text = True
+    )
     assert (ran.returncode != 0) == (quantize_mode == "start-failure"), ran.stdout + ran.stderr
     for line in (tmp_path / "env").read_text(encoding = "utf-8-sig").splitlines():
         key, value = line.split("=", 1)
         env[key] = value
     script = tmp_path / "verdict.ps1"
-    script.write_text("function Start-Sleep { }\nfunction Get-WinEvent { }\n" + verdict, encoding = "utf-8")
-    ran = subprocess.run(["pwsh", "-NoProfile", "-File", str(script)], env = env, capture_output = True, text = True)
+    script.write_text(
+        "function Start-Sleep { }\nfunction Get-WinEvent { }\n" + verdict, encoding = "utf-8"
+    )
+    ran = subprocess.run(
+        ["pwsh", "-NoProfile", "-File", str(script)], env = env, capture_output = True, text = True
+    )
     refuse = quantize_mode in ("start-failure", "loader-failure")
     assert (ran.returncode != 0) == refuse, ran.stdout
-    assert ("No binary in the shipped runtime would be refused" not in ran.stdout) == refuse, ran.stdout
+    assert (
+        "No binary in the shipped runtime would be refused" not in ran.stdout
+    ) == refuse, ran.stdout
