@@ -31,7 +31,7 @@ on:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}-${{ github.ref == 'refs/heads/main' && github.sha || '' }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -148,6 +148,7 @@ jobs:
             tests/studio/test_step_scripts_get_the_secrets_they_read.py \
             tests/studio/test_composer_browser_tmpdir_is_short.py \
             tests/studio/test_composer_rtl_bidi_attribute.py \
+            tests/studio/test_en_catalog.py \
             tests/studio/test_frontend_dep_removal.py \
             tests/studio/test_frontend_dist_cache.py \
             tests/studio/test_gguf_smoke_phases_stay_independent.py \

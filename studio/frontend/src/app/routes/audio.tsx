@@ -28,6 +28,7 @@ export const Route = createRoute({
     task?: string;
     audioType?: string;
     loadId?: string;
+    item?: string;
   } => ({
     ...(typeof search.model === "string" ? { model: search.model } : {}),
     ...(typeof search.quant === "string" ? { quant: search.quant } : {}),
@@ -45,6 +46,7 @@ export const Route = createRoute({
     ...(typeof search.loadId === "string" && search.loadId.trim()
       ? { loadId: search.loadId }
       : {}),
+    ...(typeof search.item === "string" ? { item: search.item } : {}),
   }),
   beforeLoad: () => requireAuth(),
   component: () => null,

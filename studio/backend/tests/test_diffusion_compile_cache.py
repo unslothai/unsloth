@@ -91,6 +91,34 @@ def test_cache_key_sensitive_to_model_dims(field, value):
     assert cc.cache_key(efp, cc.model_fingerprint(**base)) != k0
 
 
+def test_vae_decode_flag_changes_the_key():
+    efp = cc.environment_fingerprint()
+    base = dict(
+        family = "flux.1",
+        transformer = _transformer(),
+        dtype = "bf16",
+        quant = None,
+        attention_backend = "x",
+        compile_kwargs = {"fullgraph": True, "dynamic": True, "vae_decode": False},
+    )
+    k0 = cc.cache_key(efp, cc.model_fingerprint(**base))
+    base["compile_kwargs"] = {"fullgraph": True, "dynamic": True, "vae_decode": True}
+    assert cc.cache_key(efp, cc.model_fingerprint(**base)) != k0
+
+
+def test_a_load_whose_vae_decision_did_not_move_keeps_its_bundle_key():
+    # Keys saved before the flag existed are {fullgraph, dynamic, ...}: an eager decode must still hit them after update.
+    efp = cc.environment_fingerprint()
+    base = dict(
+        family = "flux.1", transformer = _transformer(), dtype = "bf16", quant = None, attention_backend = "x"
+    )
+    before = cc.model_fingerprint(**base, compile_kwargs = {"fullgraph": True, "dynamic": True})
+    after = cc.model_fingerprint(
+        **base, compile_kwargs = {"fullgraph": True, "dynamic": True, "vae_decode": False}
+    )
+    assert cc.cache_key(efp, after) == cc.cache_key(efp, before)
+
+
 def test_repeated_blocks_change_key():
     efp = cc.environment_fingerprint()
     k1 = cc.cache_key(

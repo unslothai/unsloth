@@ -12,6 +12,7 @@ import {
 import { CompactionNotice } from "@/components/assistant-ui/compaction-notice";
 import {
   compactionBoundary,
+  shouldShowCompactionNotice,
   type ContextTruncation,
 } from "@/features/chat/utils/context-truncation";
 import { downloadImagePart } from "@/components/assistant-ui/image";
@@ -141,6 +142,10 @@ import {
   useNativeIntentStore,
 } from "@/features/native-intents";
 import { nativeAttachmentIntentToFile } from "@/features/native-intents/native-attachment-file";
+import {
+  attachLibraryChatFiles,
+  useLibraryChatHandoffStore,
+} from "@/features/library/chat-handoff-store";
 import { cancelResearchRun } from "@/features/chat/api/research-api";
 import {
   ingestResearchUpdate,
@@ -184,7 +189,7 @@ import {
   isMacPlatform,
 } from "@/features/settings";
 import { FIND_SKIP_ATTRIBUTE } from "@/features/find-in-page";
-import { useT } from "@/i18n";
+import { translate, useT } from "@/i18n";
 import {
   clampReasoningEffortToLevels,
   getExternalReasoningCapabilities,
@@ -2982,6 +2987,57 @@ const Composer: FC<{
   const nativeAttachmentTargetKey = useNativeAttachmentTargetKey();
   const nativeAttachmentTargetKeyRef = useRef(nativeAttachmentTargetKey);
   nativeAttachmentTargetKeyRef.current = nativeAttachmentTargetKey;
+
+  useEffect(() => {
+    if (!nativeAttachmentTargetKey) return;
+    const targetKey = nativeAttachmentTargetKey;
+    let disposed = false;
+    // aui.composer() is whichever chat is open now: a switch mid-batch must not take the rest.
+    const add = async (file: File) => {
+      if (disposed || nativeAttachmentTargetKeyRef.current !== targetKey) {
+        throw new Error("The chat changed before this file was attached.");
+      }
+      await aui.composer().addAttachment(file);
+    };
+    const drain = async () => {
+      const held = await attachLibraryChatFiles(targetKey, add);
+      if (held > 0) toast(translate("library.toast.chatFilesWaiting", { count: held }));
+    };
+    void drain();
+    const offers = useLibraryChatHandoffStore.subscribe((state) => {
+      if (state.pending?.targetKey === targetKey) void drain();
+    });
+    let retrying = false;
+    let again = false;
+    const retry = async () => {
+      if (retrying) {
+        again = true;
+        return;
+      }
+      retrying = true;
+      do {
+        again = false;
+        await attachLibraryChatFiles(targetKey, add, true);
+      } while (again);
+      retrying = false;
+    };
+    const loads = useChatRuntimeStore.subscribe((state, prev) => {
+      if (state.modelLoading) return;
+      if (
+        prev.modelLoading ||
+        state.params.checkpoint !== prev.params.checkpoint ||
+        state.residentCheckpoint !== prev.residentCheckpoint ||
+        state.loadedIsMultimodal !== prev.loadedIsMultimodal
+      ) {
+        void retry();
+      }
+    });
+    return () => {
+      disposed = true;
+      offers();
+      loads();
+    };
+  }, [nativeAttachmentTargetKey, aui]);
   const hasPendingImageAttachments = useNativeIntentStore((s) =>
     Boolean(
       nativeAttachmentTargetKey &&
@@ -7841,8 +7897,8 @@ const AssistantMessage: FC = () => {
   // Once a thread outgrows the window every request runs the fit, so "this turn
   // compacted" is true of every later reply and would put a notice on all of them. What
   // matters is when MORE of the conversation fell out of view: the eviction boundary
-  // rising above the last turn that reported one. Between moves the model sees the same
-  // history, so there is nothing new to say.
+  // rising above the last turn that reported one, or a checkpoint starting inside a tool
+  // loop (which evicts without moving the boundary). Sticky replays stay quiet.
   const showsNotice = useAuiState(({ thread }) => {
     let previousDropped = 0;
     for (const message of thread.messages) {
@@ -7853,9 +7909,9 @@ const AssistantMessage: FC = () => {
           | undefined
       )?.custom?.contextTruncation as ContextTruncation | undefined;
       const dropped = compactionBoundary(value);
-      if (dropped > previousDropped) {
+      if (shouldShowCompactionNotice(value, previousDropped)) {
         if (message.id === messageId) return true;
-        previousDropped = dropped;
+        previousDropped = Math.max(previousDropped, dropped);
       } else if (message.id === messageId) {
         return false;
       }
