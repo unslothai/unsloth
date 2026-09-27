@@ -157,12 +157,13 @@ def test_feedforward_compiles_without_graph_break():
     ff = _quantized_ff()
     x = torch.randn(1, 512, 256, device = "cuda", dtype = torch.bfloat16)
     with torch.no_grad():
-        eager_fused = (fused.install(ff), ff(x))[1]
+        eager = ff(x)
         torch._dynamo.reset()
-        compiled = torch.compile(ff, fullgraph = True)
-        out = compiled(x)
-    # Only the pointwise epilogue after the second GEMM is recompiled, so the result stays within bf16 rounding.
-    assert (out.float() - eager_fused.float()).abs().max().item() <= 2 ** -6 * eager_fused.float().abs().max().item()
+        stock_compiled = torch.compile(ff, fullgraph = True)(x)
+        fused.install(ff)
+        torch._dynamo.reset()
+        out = torch.compile(ff, fullgraph = True)(x)
+    _assert_within_compile_floor(out, stock_compiled, eager)
 
 
 @needs_cuda
@@ -207,3 +208,60 @@ def test_flux_single_block_bit_identical_to_stock_eager():
         assert fused.install(blk) == 1
         out = blk(hid, enc, temb)
     assert torch.equal(out[0], ref[0]) and torch.equal(out[1], ref[1])
+
+
+@needs_cuda
+@pytest.mark.parametrize("m, n, gate_col, value_col", [(4352, 10240, 0, 10240), (300, 1024, 1024, 0), (17, 64, 0, 64)])
+def test_swiglu_kernel_bit_exact_vs_eager_reference(m, n, gate_col, value_col):
+    c, xs, ws, b = _rand_inputs(m, 2 * n, bias = False)
+    q, s = fused._launch_swiglu(c, xs, ws, None, gate_col, value_col, n)
+    q_ref, s_ref = fused.reference_dq_swiglu_quant(c, xs, ws, None, gate_col, value_col, n)
+    assert torch.equal(s, s_ref) and torch.equal(q, q_ref)
+
+
+def _quantize(module):
+    from torchao.quantization import Int8DynamicActivationInt8WeightConfig, quantize_
+
+    for p in module.parameters():
+        p.data.normal_(0, 0.05)
+    quantize_(module, Int8DynamicActivationInt8WeightConfig())
+    return module
+
+
+@needs_cuda
+@pytest.mark.parametrize("kind", ["diffusers_swiglu", "zimage", "flux2", "qwenimage21"])
+def test_swiglu_mlps_bit_identical_to_stock_eager(kind):
+    torch.manual_seed(0)
+    if kind == "diffusers_swiglu":
+        from diffusers.models.attention import FeedForward
+
+        ff = FeedForward(256, inner_dim = 512, activation_fn = "swiglu", bias = False)
+    elif kind == "zimage":
+        zmod = pytest.importorskip("diffusers.models.transformers.transformer_z_image")
+        ff = zmod.FeedForward(256, 512)
+    elif kind == "flux2":
+        f2 = pytest.importorskip("diffusers.models.transformers.transformer_flux2")
+        ff = f2.Flux2FeedForward(256, inner_dim = 512)
+    else:
+        q21 = pytest.importorskip("diffusers.models.transformers.transformer_qwenimage21")
+        ff = q21.QwenImage21SwiGLUFeedForward(256, 512)
+    ff = _quantize(ff.cuda().to(torch.bfloat16).eval())
+    x = torch.randn(2, 150, 256, device = "cuda", dtype = torch.bfloat16)
+    with torch.no_grad():
+        ref = ff(x)
+        torch._dynamo.reset()
+        stock_compiled = torch.compile(ff, fullgraph = True)(x)
+        assert fused.install(ff) == 1
+        out = ff(x)
+        torch._dynamo.reset()
+        compiled = torch.compile(ff, fullgraph = True)(x)
+    assert torch.equal(out, ref)
+    _assert_within_compile_floor(compiled, stock_compiled, ref)
+
+
+def _assert_within_compile_floor(compiled, stock_compiled, eager):
+    # Inductor's own act-quant codegen is not eager-exact, so the bar is the stock compile's distance from eager.
+    floor = (stock_compiled.float() - eager.float()).abs()
+    ours = (compiled.float() - eager.float()).abs()
+    assert ours.max().item() <= 1.5 * floor.max().item() + 1e-6
+    assert ours.mean().item() <= 1.1 * floor.mean().item() + 1e-6

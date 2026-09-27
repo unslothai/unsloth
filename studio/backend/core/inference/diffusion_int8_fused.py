@@ -42,6 +42,8 @@ _MIN_TRITON = (3, 2)
 _MIN_ROWS = 17
 _OP_NAMESPACE = "unsloth_studio"
 _OP_NAME = "int8_dq_gelu_quant"
+_OP_NAME_SWIGLU = "int8_dq_swiglu_quant"
+_SWIGLU_ATTR = "_unsloth_i8_swiglu"
 
 _LOCK = threading.Lock()
 # The resolved op, read by the traced forwards (dynamo must not trace into the lru_cache'd registration).
@@ -182,7 +184,49 @@ def _kernels() -> Optional[types.SimpleNamespace]:
             qi = tl.minimum(tl.maximum(qi, -128.0), 127.0)
             tl.store(qrow + NA + offs, qi.to(tl.int8), mask = m)
 
-    return types.SimpleNamespace(dq_gelu_quant = dq_gelu_quant, triton = triton)
+    @triton.jit
+    def _silu(y):
+        # ATen: x / (1 + exp(-x)) in fp32
+        return y / (1.0 + tl.exp(-y))
+
+    @triton.jit
+    def _swiglu_val(crow, xs, ws_ptr, b_ptr, g0, v0, offs, m, HAS_BIAS: tl.constexpr, WS_FP32: tl.constexpr,
+                    EVICT: tl.constexpr):
+        g = _pre(crow + g0, xs, ws_ptr + g0, b_ptr + g0, offs, m, HAS_BIAS, WS_FP32, EVICT, True)
+        v = _pre(crow + v0, xs, ws_ptr + v0, b_ptr + v0, offs, m, HAS_BIAS, WS_FP32, EVICT, True)
+        return _rbf16(_rbf16(_silu(g)) * v)
+
+    @triton.jit
+    def dq_swiglu_quant(
+        c_ptr, xs_ptr, ws_ptr, b_ptr, q_ptr, s_ptr, N, G0, V0, stride_c, stride_q,
+        HAS_BIAS: tl.constexpr, WS_FP32: tl.constexpr, CHUNK: tl.constexpr,
+    ):
+        # c row = the fused GEMM output; the gate half starts at column G0, the value half at V0 (both N wide).
+        row = tl.program_id(0).to(tl.int64)
+        xs = tl.load(xs_ptr + row).to(tl.float32)
+        base = tl.arange(0, CHUNK)
+        crow = c_ptr + row * stride_c
+        acc = tl.zeros((CHUNK,), dtype = tl.float32)
+        for k in range(0, N, CHUNK):
+            offs = k + base
+            m = offs < N
+            h = _swiglu_val(crow, xs, ws_ptr, b_ptr, G0, V0, offs, m, HAS_BIAS, WS_FP32, "evict_last")
+            acc = tl.maximum(acc, tl.where(m, tl.abs(h), 0.0))
+        amax = tl.max(acc, axis = 0)
+        scale = _rbf16(tl.math.div_rn(amax, 127.5))
+        scale = tl.maximum(scale, 1.1920928955078125e-07)
+        inv = tl.math.div_rn(1.0, scale)
+        tl.store(s_ptr + row, scale)
+        qrow = q_ptr + row * stride_q
+        for k in range(0, N, CHUNK):
+            offs = k + base
+            m = offs < N
+            h = _swiglu_val(crow, xs, ws_ptr, b_ptr, G0, V0, offs, m, HAS_BIAS, WS_FP32, "evict_first")
+            qi = tl.extra.cuda.libdevice.nearbyint(h * inv)
+            qi = tl.minimum(tl.maximum(qi, -128.0), 127.0)
+            tl.store(qrow + offs, qi.to(tl.int8), mask = m)
+
+    return types.SimpleNamespace(dq_gelu_quant = dq_gelu_quant, dq_swiglu_quant = dq_swiglu_quant, triton = triton)
 
 
 def _launch(c: Any, xs: Any, ws: Any, bias: Any, prefix: Any) -> tuple:
@@ -216,6 +260,44 @@ def _launch(c: Any, xs: Any, ws: Any, bias: Any, prefix: Any) -> tuple:
     return q, scale
 
 
+def _launch_swiglu(c: Any, xs: Any, ws: Any, bias: Any, gate_col: int, value_col: int, n: int) -> tuple:
+    """SwiGLU on the int32 output ``c`` of one fused GEMM: gate columns [gate_col, +n), value columns [value_col, +n)."""
+    import torch
+
+    k = _kernels()
+    m_rows = c.shape[0]
+    q = torch.empty((m_rows, n), device = c.device, dtype = torch.int8)
+    scale = torch.empty((m_rows,), device = c.device, dtype = torch.float32)
+    with torch.cuda.device(c.device):
+        k.dq_swiglu_quant[(m_rows,)](
+            c, xs, ws, bias if bias is not None else ws, q, scale, n, gate_col, value_col, c.stride(0), q.stride(0),
+            HAS_BIAS = bias is not None,
+            WS_FP32 = ws.dtype == torch.float32,
+            CHUNK = 1024,
+            num_warps = 4,
+            enable_fp_fusion = False,
+        )
+    return q, scale
+
+
+def reference_dq_swiglu_quant(c: Any, xs: Any, ws: Any, bias: Any, gate_col: int, value_col: int, n: int) -> tuple:
+    """Eager mirror: two torchao epilogues (gate, value), ATen SiLU, bf16 product, torchao per-row act quant."""
+    import torch
+    import torch.nn.functional as F
+
+    def part(col):
+        y = (c[:, col:col + n] * xs.reshape(-1, 1)).to(torch.bfloat16) * ws[col:col + n]
+        if bias is not None:
+            y = y + bias[col:col + n]
+        return y.to(torch.bfloat16)
+
+    h = F.silu(part(gate_col)) * part(value_col)
+    amax = torch.maximum(-h.amin(dim = 1).clamp(max = 0), h.amax(dim = 1).clamp(min = 0))
+    scale = (amax / 127.5).clamp(min = torch.finfo(torch.float32).eps).to(torch.float32)
+    q = torch.clamp(torch.round(h * (1.0 / scale).reshape(-1, 1)), -128, 127).to(torch.int8)
+    return q, scale
+
+
 @lru_cache(maxsize = 1)
 def _op() -> Any:
     """The torch.library op (opaque to dynamo, CUDA-graph safe: no host sync, allocations only), or None."""
@@ -224,9 +306,9 @@ def _op() -> Any:
     except Exception:  # noqa: BLE001
         return None
     qualname = f"{_OP_NAMESPACE}::{_OP_NAME}"
-    existing = getattr(getattr(torch.ops, _OP_NAMESPACE, None), _OP_NAME, None)
-    if existing is not None:
-        return existing
+    ns = getattr(torch.ops, _OP_NAMESPACE, None)
+    if ns is not None and hasattr(ns, _OP_NAME) and hasattr(ns, _OP_NAME_SWIGLU):
+        return types.SimpleNamespace(gelu = getattr(ns, _OP_NAME), swiglu = getattr(ns, _OP_NAME_SWIGLU))
     custom_op = getattr(getattr(torch, "library", None), "custom_op", None)
     if custom_op is None:  # torch < 2.4
         return None
@@ -249,9 +331,24 @@ def _op() -> Any:
                 c.new_empty((c.shape[0], na + c.shape[1]), dtype = torch.int8),
                 c.new_empty((c.shape[0],), dtype = torch.float32),
             )
+        @custom_op(
+            f"{_OP_NAMESPACE}::{_OP_NAME_SWIGLU}",
+            mutates_args = (),
+            schema = "(Tensor c, Tensor xs, Tensor ws, Tensor? bias, int gate_col, int value_col, int n) -> (Tensor, Tensor)",
+        )
+        def _dq_swiglu_quant(c, xs, ws, bias, gate_col, value_col, n):
+            return _launch_swiglu(c, xs, ws, bias, gate_col, value_col, n)
+
+        @_dq_swiglu_quant.register_fake
+        def _(c, xs, ws, bias, gate_col, value_col, n):
+            return (
+                c.new_empty((c.shape[0], n), dtype = torch.int8),
+                c.new_empty((c.shape[0],), dtype = torch.float32),
+            )
     except Exception:  # noqa: BLE001 - a registration failure keeps the stock path
         return None
-    return getattr(getattr(torch.ops, _OP_NAMESPACE), _OP_NAME)
+    ns = getattr(torch.ops, _OP_NAMESPACE)
+    return types.SimpleNamespace(gelu = getattr(ns, _OP_NAME), swiglu = getattr(ns, _OP_NAME_SWIGLU))
 
 
 @lru_cache(maxsize = 8)
@@ -274,7 +371,10 @@ def _device_ok(index: int) -> bool:
         bias = (torch.randn(200, generator = g) * 0.1).to(torch.bfloat16).to(dev)
         q, s = _launch(c, xs, ws, bias, None)
         q_ref, s_ref = reference_dq_gelu_quant(c, xs, ws, bias, None)
-        return bool(torch.equal(q, q_ref) and torch.equal(s, s_ref))
+        ok = bool(torch.equal(q, q_ref) and torch.equal(s, s_ref))
+        q, s = _launch_swiglu(c, xs, ws, bias, 104, 0, 96)
+        q_ref, s_ref = reference_dq_swiglu_quant(c, xs, ws, bias, 104, 0, 96)
+        return ok and bool(torch.equal(q, q_ref) and torch.equal(s, s_ref))
     except Exception:  # noqa: BLE001 - any build / launch failure keeps the stock path
         return False
 
@@ -367,7 +467,7 @@ def _ff_forward(self: Any, hidden_states: Any, *args: Any, **kwargs: Any) -> Any
         return type(self).forward(self, hidden_states, *args, **kwargs)
     xq, xs = _act_quant(x2d, proj.weight)
     c = _int_mm(xq.reshape(-1, xq.shape[-1]), proj.weight)
-    q, s = _OP_HANDLE(c, xs.reshape(-1), proj.weight.scale.flatten(), proj.bias, None)
+    q, s = _OP_HANDLE.gelu(c, xs.reshape(-1), proj.weight.scale.flatten(), proj.bias, None)
     y = _linear_from_q(q, s, down.weight, down.bias, hidden_states.dtype)
     for extra in self.net[3:]:
         y = extra(y)
@@ -402,7 +502,7 @@ def _flux_single_forward(
     prefix = attn_output.unflatten(-1, (heads, attn_output.shape[-1] // heads))
     if prefix.stride(-1) != 1:
         prefix = prefix.contiguous()
-    q, s = _OP_HANDLE(c, xs.reshape(-1), self.proj_mlp.weight.scale.flatten(), self.proj_mlp.bias, prefix)
+    q, s = _OP_HANDLE.gelu(c, xs.reshape(-1), self.proj_mlp.weight.scale.flatten(), self.proj_mlp.bias, prefix)
     out = _linear_from_q(q, s, self.proj_out.weight, self.proj_out.bias, hidden_states.dtype)
     out = out.reshape(*hidden_states.shape[:-1], out.shape[-1])
     gate = gate.unsqueeze(1)
@@ -413,6 +513,103 @@ def _flux_single_forward(
     if hidden_states.dtype == torch.float16:
         hidden_states = hidden_states.clip(-65504, 65504)
     return hidden_states[:, :text_seq_len], hidden_states[:, text_seq_len:]
+
+
+def _swiglu_spec(module: Any) -> Optional[tuple]:
+    """(fused in-proj name, None, down name, width, gate column, value column) for the SwiGLU MLPs whose two halves
+    already come from ONE Linear, else None."""
+    name = type(module).__name__
+    try:
+        if name == "FeedForward" and type(module).__module__ == "diffusers.models.attention":
+            from diffusers.models.activations import SwiGLU
+
+            net = getattr(module, "net", None)
+            if net is None or len(net) < 3 or type(net[0]) is not SwiGLU:
+                return None
+            if any(type(extra).__name__ != "Dropout" for extra in (net[1], *net[3:])):
+                return None
+            n = net[0].proj.out_features // 2
+            # SwiGLU.forward: hidden, gate = proj(x).chunk(2) -> value first, gate second (MiniMax-H3)
+            return ("net.0.proj", None, "net.2", n, n, 0)
+        if name == "Flux2FeedForward" and type(getattr(module, "act_fn", None)).__name__ == "Flux2SwiGLU":
+            n = module.linear_in.out_features // 2
+            return ("linear_in", None, "linear_out", n, 0, n)  # gate first, value second (FLUX.2)
+    except Exception:  # noqa: BLE001
+        return None
+    return None
+
+
+def _split_spec(module: Any) -> Optional[tuple]:
+    """Two separate projections (gate, value) + down: Z-Image FeedForward (w1, w3, w2), Qwen-Image-2.1 SwiGLU."""
+    name = type(module).__name__
+    mod = type(module).__module__
+    if name == "FeedForward" and mod.endswith("transformer_z_image") and all(hasattr(module, n) for n in ("w1", "w2", "w3")):
+        return ("w1", "w3", "w2")
+    if name == "QwenImage21SwiGLUFeedForward":
+        return ("gate_layer", "proj", "out")
+    return None
+
+
+def _get(module: Any, dotted: str) -> Any:
+    for part in dotted.split("."):
+        module = module[int(part)] if part.isdigit() else getattr(module, part)
+    return module
+
+
+def _swiglu_forward(self: Any, hidden_states: Any, *args: Any, **kwargs: Any) -> Any:
+    """SwiGLU MLP with plain int8 weights: one act quant, one GEMM over [gate | value], fused SiLU-product quant."""
+    import torch
+
+    rec = self.__dict__.get(_SWIGLU_ATTR)
+    lead = hidden_states.shape[:-1]
+    x2d = hidden_states.reshape(-1, hidden_states.shape[-1])
+    ok = rec is not None and not args and not kwargs and x2d.shape[0] >= _MIN_ROWS and hidden_states.is_cuda
+    ok = ok and hidden_states.dtype == torch.bfloat16
+    if ok:
+        fused_in, parts, down_name, n, gate_col, value_col = rec
+        ok = all(_get(self, nm) is mod for nm, mod in parts)
+    if not ok:
+        return type(self).forward(self, hidden_states, *args, **kwargs)
+    down = _get(self, down_name)
+    xq, xs = _act_quant(x2d, fused_in.weight)
+    c = _int_mm(xq.reshape(-1, xq.shape[-1]), fused_in.weight)
+    q, s = _OP_HANDLE.swiglu(c, xs.reshape(-1), fused_in.weight.scale.flatten(), fused_in.bias, gate_col, value_col, n)
+    y = _linear_from_q(q, s, down.weight, down.bias, hidden_states.dtype)
+    return y.reshape(*lead, y.shape[-1])
+
+
+def _prepare_swiglu(module: Any) -> bool:
+    """Attach the (off-tree) record the SwiGLU forward reads; False keeps the stock forward."""
+    from torch import nn
+
+    spec = _swiglu_spec(module)
+    if spec is not None:
+        in_name, _unused, down_name, n, gate_col, value_col = spec
+        lin, down = _get(module, in_name), _get(module, down_name)
+        if type(lin) is not nn.Linear or type(down) is not nn.Linear:
+            return False
+        if not (_plain_int8_weight(lin.weight) and _plain_int8_weight(down.weight)):
+            return False
+        module.__dict__[_SWIGLU_ATTR] = (lin, ((in_name, lin), (down_name, down)), down_name, n, gate_col, value_col)
+        return True
+    split = _split_spec(module)
+    if split is None:
+        return False
+    gate_name, value_name, down_name = split
+    gate, value, down = _get(module, gate_name), _get(module, value_name), _get(module, down_name)
+    if any(type(m) is not nn.Linear for m in (gate, value, down)):
+        return False
+    if not all(_plain_int8_weight(m.weight) for m in (gate, value, down)):
+        return False
+    from .diffusion_zimage_fused import _fuse_linears, _share_storage
+
+    fused = _fuse_linears([gate, value])
+    if fused is None or not _share_storage(fused, [gate, value]):
+        return False
+    n = gate.weight.shape[0]
+    parts = ((gate_name, gate), (value_name, value), (down_name, down))
+    module.__dict__[_SWIGLU_ATTR] = (fused, parts, down_name, n, 0, n)
+    return True
 
 
 def _ff_eligible(module: Any) -> bool:
@@ -480,6 +677,8 @@ def install(transformer: Any, logger: Any = None) -> int:
                 continue
             if _ff_eligible(module):
                 fn = _ff_forward
+            elif _prepare_swiglu(module):
+                fn = _swiglu_forward
             elif _flux_single_eligible(module):
                 fn = _flux_single_forward
                 module._unsloth_i8_addcmul = _flux_single_class_is_arch_patched(module)
@@ -507,6 +706,7 @@ def uninstall(transformer: Any = None) -> None:
             else:
                 module.forward = prev
             module.__dict__.pop("_unsloth_i8_addcmul", None)
+            module.__dict__.pop(_SWIGLU_ATTR, None)
 
 
 def is_installed(module: Any) -> bool:
