@@ -988,3 +988,13 @@ test("a preview is never stricter than the adapter that took the file", async ()
     (error: Error) => error instanceof UndecodableTextError,
   );
 });
+
+test("a UTF-16 Markdown file previews as its text in the document viewer", async () => {
+  const utf16 = new Uint8Array([0xff, 0xfe, ...Array.from("# Notes", (c) => [c.charCodeAt(0), 0]).flat()]);
+  const file = new File([utf16], "notes.md", { type: "text/markdown" });
+  assert.equal((await readAttachmentText(file, file.name, file.type)).text, "# Notes");
+  assert.notEqual(await file.text(), "# Notes");
+  const { readFile } = await import("node:fs/promises");
+  const dialog = await readFile(new URL("../src/components/assistant-ui/attachment-document-dialog.tsx", import.meta.url), "utf8");
+  assert.match(dialog, /blob instanceof File\s*\?\s*await readAttachmentText\(blob, source\.name, source\.contentType\)/);
+});
