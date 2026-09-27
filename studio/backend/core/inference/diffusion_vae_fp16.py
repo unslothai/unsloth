@@ -19,11 +19,10 @@ _SCALE_LOG2 = 8
 
 
 def _scale_plan(decoder: Any) -> Optional[tuple]:
-    """(convs, norms) that divide the decoder's residual stream after ``up_blocks[0]``'s upsampler.
+    """(convs, norms) scaling the residual stream after ``up_blocks[0]``'s upsampler; None for other layouts.
 
-    ``convs`` are (conv, divide_weight) pairs: a conv fed by an unscaled tensor (the entry upsampler, every post-norm
-    ``conv2``) divides weight and bias; one whose input is already scaled (shortcut, later upsamplers) divides only its
-    bias. ``norms`` read the scaled stream, so their eps shrinks by scale**2. None for any other decoder layout."""
+    ``(conv, divide_weight)``: unscaled input divides weight + bias, already-scaled input (shortcut, later upsamplers)
+    only bias. ``norms`` read the scaled stream, so their eps shrinks by scale**2."""
     import torch
 
     up_blocks = list(getattr(decoder, "up_blocks", None) or ())
@@ -113,7 +112,7 @@ def enable_fp16_vae_decode(
             if m is not None
         ]
         fell_back: list = []
-        # Studio's decode compile goes in this slot: the check stays eager (no graph break) and outlives a fallback.
+        # Decode compile goes in this slot: the check stays eager (no graph break) and outlives a fallback.
         slot = types.SimpleNamespace(decode = decode)
 
         def _fp32_call(fn: Any, parts: list, x: Any, *args: Any, **kwargs: Any) -> Any:
@@ -141,7 +140,7 @@ def enable_fp16_vae_decode(
             vae.register_to_config(force_upcast = True)
             return _fp32_call(slot.decode, decode_parts, z, *args, **kwargs)
 
-        # The pipelines upcast the whole VAE for an encode too; keep that math (encoder only) now the flag is off.
+        # Pipelines upcast the VAE for encode too; keep fp32 encoder math now the flag is off.
         @functools.wraps(encode)
         def fp32_encode(x: Any, *args: Any, **kwargs: Any) -> Any:
             if fell_back or not torch.is_tensor(x) or x.dtype is not torch.float16:

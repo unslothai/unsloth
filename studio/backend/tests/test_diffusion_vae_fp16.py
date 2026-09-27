@@ -52,7 +52,7 @@ def test_rescaled_decoder_is_the_same_function_in_fp32():
         entry.weight.float(), ref.decoder.up_blocks[0].upsamplers[0].conv.weight.half().float()
     )
     vae.to(torch.float32)
-    ref.to(torch.float16).to(torch.float32)  # the same fp16-rounded weights, unscaled
+    ref.to(torch.float16).to(torch.float32)
     with torch.no_grad():
         got = vae.decode(z, return_dict = False)[0]
         want = ref.decode(z, return_dict = False)[0]
@@ -193,7 +193,6 @@ def test_decode_compile_failure_keeps_the_non_finite_check(monkeypatch):
     monkeypatch.setattr(vae.decoder, "forward", decoder_forward)
     z = torch.zeros(1, 4, 2, 2, dtype = torch.float16)
     assert torch.isfinite(vae.decode(z, return_dict = False)[0]).all()
-    # The failed compile fell back to eager inside the slot; the check is still in front of it.
     assert vae.__dict__["decode"] is wrapper and vae._unsloth_compile_decode_error
     out = vae.decode(z, return_dict = False)[0]
     assert torch.isfinite(out).all() and out.dtype is torch.float32
