@@ -714,9 +714,10 @@ test("toggling Think applies its params even in a chat that pins sampling", () =
 // installation defaults, leaving every new chat on whatever model loaded before it.
 test("a chat pinning a param does not withhold the model's default from the rest", () => {
   const setParams = slice(store, "setParams: (params, options)", "\n  setCustomPresets:");
+  // The first three arguments are the invariant; later ones may be added.
   assert.match(
     setParams,
-    /getChangedInferenceParams\(\s*nextParams,\s*state\.params,\s*!fromModelDefaults,\s*\)/,
+    /getChangedInferenceParams\(\s*nextParams,\s*state\.params,\s*!fromModelDefaults,(\s*[^)]*,)?\s*\)/,
   );
   assert.doesNotMatch(
     setParams,

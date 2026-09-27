@@ -165,8 +165,13 @@ def insert_secret_if_absent(credential_kind: str, scope_id: str, plaintext: str)
         conn.close()
 
 
-def get_secret(credential_kind: str, scope_id: str) -> Optional[str]:
-    """Return a decrypted credential, or ``None`` if absent or unreadable."""
+def get_secret_with_presence(credential_kind: str, scope_id: str) -> "tuple[Optional[str], bool]":
+    """The decrypted credential, and whether a row is STORED at all, from ONE read.
+
+    Asking `get_secret` and then `secret_row_exists` is two connections for one question, and
+    the cache-read gate in hub/utils/hf_tokens.py asks it on every read of a cached repo. The
+    two answers must still be told apart: absent authorizes, unreadable must not.
+    """
     conn = get_connection()
     try:
         row = conn.execute(
@@ -179,25 +184,51 @@ def get_secret(credential_kind: str, scope_id: str) -> Optional[str]:
         ).fetchone()
     finally:
         conn.close()
-    if row is None or row["format_version"] != _FORMAT_VERSION:
-        return None
+    if row is None:
+        return (None, False)
+    if row["format_version"] != _FORMAT_VERSION:
+        return (None, True)
     try:
         plaintext = AESGCM(get_or_create_credential_encryption_key()).decrypt(
             bytes(row["nonce"]),
             bytes(row["ciphertext"]),
             _associated_data(credential_kind, scope_id),
         )
-        return plaintext.decode("utf-8")
+        return (plaintext.decode("utf-8"), True)
     except Exception:
         logger.warning(
             "Saved credential is unreadable; re-entry is required (kind=%s)",
             credential_kind,
         )
-        return None
+        return (None, True)
+
+
+def get_secret(credential_kind: str, scope_id: str) -> Optional[str]:
+    """Return a decrypted credential, or ``None`` if absent or unreadable."""
+    return get_secret_with_presence(credential_kind, scope_id)[0]
 
 
 def has_secret(credential_kind: str, scope_id: str) -> bool:
     return get_secret(credential_kind, scope_id) is not None
+
+
+def secret_row_exists(credential_kind: str, scope_id: str) -> bool:
+    """Whether a credential is STORED, readable or not. `get_secret` and `has_secret` answer
+    None for an absent row AND an undecryptable one, which callers that AUTHORIZE on the absence
+    of a credential must tell apart."""
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            """
+            SELECT 1
+            FROM credential_secrets
+            WHERE credential_kind = ? AND scope_id = ?
+            """,
+            (credential_kind, scope_id),
+        ).fetchone()
+    finally:
+        conn.close()
+    return row is not None
 
 
 def delete_secret(
@@ -226,15 +257,46 @@ def get_hf_token() -> Optional[str]:
     return get_secret(HF_TOKEN_KIND, HF_TOKEN_SCOPE)
 
 
+def get_hf_token_with_presence() -> "tuple[Optional[str], bool]":
+    """The saved HF token and whether one is stored at all. See `get_secret_with_presence`."""
+    return get_secret_with_presence(HF_TOKEN_KIND, HF_TOKEN_SCOPE)
+
+
+def hf_token_row_exists() -> bool:
+    """Whether an HF token is saved, readable or not. See `secret_row_exists`."""
+    return secret_row_exists(HF_TOKEN_KIND, HF_TOKEN_SCOPE)
+
+
+def _note_a_credential_this_host_held() -> None:
+    """Record the identity of the token being replaced or removed, while it is still here.
+
+    The ledger of credentials this host has EVER held is what stops a tokenless caller
+    inheriting the downloads of one that has since been removed, and it used to be written only
+    where an authorization probe happened to read it. An operator who cleared the token first
+    left nothing behind. A row that exists but cannot be decrypted records the sentinel, since
+    an unreadable credential is still a credential this host held.
+    """
+    try:
+        from hub.utils.hf_tokens import note_host_credential_identity
+        note_host_credential_identity(get_hf_token(), a_credential_was_held = hf_token_row_exists())
+    except Exception:  # noqa: BLE001 -- bookkeeping must never fail a settings write
+        pass
+
+
 def save_hf_token(token: str) -> None:
+    _note_a_credential_this_host_held()
     upsert_secret(HF_TOKEN_KIND, HF_TOKEN_SCOPE, token)
+    _note_a_credential_this_host_held()
 
 
 def save_hf_token_if_absent(token: str) -> bool:
-    return insert_secret_if_absent(HF_TOKEN_KIND, HF_TOKEN_SCOPE, token)
+    inserted = insert_secret_if_absent(HF_TOKEN_KIND, HF_TOKEN_SCOPE, token)
+    _note_a_credential_this_host_held()
+    return inserted
 
 
 def delete_hf_token() -> bool:
+    _note_a_credential_this_host_held()
     return delete_secret(HF_TOKEN_KIND, HF_TOKEN_SCOPE)
 
 

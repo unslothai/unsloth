@@ -28,6 +28,9 @@ from pathlib import Path
 
 import pytest
 
+# tests/conftest.py puts tests/_shared on sys.path for everything under tests/.
+from jsx_tags import opening_tag, without_comments  # noqa: E402
+
 REPO = Path(__file__).resolve().parents[2]
 FRONTEND = REPO / "studio/frontend/src"
 Z_LAYERS = FRONTEND / "lib/z-layers.ts"
@@ -85,9 +88,12 @@ def test_both_floating_panels_stack_on_the_shared_layer(path: Path):
     Sharing the layer is what lets the one the user touched last come forward,
     which is the only way out of a monitor resized over the whole viewport."""
     container = _container(path, "setConstraintsElement")
-    assert "style={{ zIndex }}" in container, (
-        f"{path.name}: the panel container no longer takes its z-index from the "
-        f"floating panel order store: {container!r}"
+    style_applies_shared_layer = "style={{ zIndex }}" in container or re.search(
+        r"style=\{floatingMonitorConstraintStyle\(\{\s*zIndex,", container
+    )
+    assert style_applies_shared_layer, (
+        f"{path.name}: the panel container no longer applies the floating panel "
+        f"order store's z-index: {container!r}"
     )
     assert not _Z.search(container), (
         f"{path.name}: the panel container still carries a hard-coded z-index, "
@@ -99,10 +105,29 @@ def test_both_floating_panels_stack_on_the_shared_layer(path: Path):
     ), f"{path.name}: the panel no longer reads the shared floating panel layer"
 
 
+_RAIL_TESTID = 'data-testid="overlay-rail"'
+
+
 def test_the_notification_stack_uses_the_named_layer():
-    """Both copies, browser and desktop. They drifted apart once already."""
-    src = PROVIDER.read_text(encoding = "utf-8")
-    stacks = re.findall(r'"pointer-events-none fixed bottom-0 right-4 ([^"]*)"', src)
+    """Both copies, browser and desktop. They drifted apart once already.
+
+    Found by `data-testid`, not by a run of the rail's classes. The class-anchored version
+    spelled the corner into the pattern, so #11260 moving the rail flush to the edge made it
+    match nothing and report the stacks as missing rather than as moved. Where the rail sits
+    is asserted in tests/studio/test_update_release_notes.py, which is the file about its
+    layout; this one is only about the layer it draws on.
+    """
+    src = without_comments(PROVIDER.read_text(encoding = "utf-8"))
+    stacks = []
+    at = src.find(_RAIL_TESTID)
+    while at != -1:
+        # opening_tag, not rfind("<")/find(">"): an attribute before the test id can hold a
+        # comparison (`disabled={count < limit}`) and one after it an arrow function, either
+        # of which truncates a hand-rolled scan. A truncated tag drops the classes this test
+        # reads, so it would pass over the very z-index regression it exists to catch.
+        start, end = opening_tag(src, at)
+        stacks.append(src[start:end])
+        at = src.find(_RAIL_TESTID, end)
     assert len(stacks) == 2, f"expected the two bottom-right stacks, found {len(stacks)}"
     for stack in stacks:
         assert not _Z.search(stack), f"the stack still carries a hard-coded z-index: {stack!r}"

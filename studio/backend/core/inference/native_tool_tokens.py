@@ -285,16 +285,12 @@ class NativeToolTokenDecoder:
             self._tokenizer, token_ids, self._special_ids, self._tool_ids
         )
 
-    def decode_stream_token(self, token_id, fallback_text: str) -> str:
-        """Decode one streamed id, using MLX text only for ordinary ids."""
+    def suppresses(self, token_id) -> bool:
         token_id = int(token_id)
-        if token_id not in self._special_ids:
-            return fallback_text
-        if token_id not in self._tool_ids:
-            return ""
-        return _decode_without_special_spacing(
-            self._tokenizer, [token_id], skip_special_tokens = False
-        )
+        return token_id in self._special_ids and token_id not in self._tool_ids
+
+    def keeps(self, token_id) -> bool:
+        return int(token_id) in self._tool_ids
 
     def __getattr__(self, name):
         return getattr(self._tokenizer, name)

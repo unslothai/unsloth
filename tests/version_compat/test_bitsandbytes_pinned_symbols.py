@@ -287,7 +287,7 @@ def test_bnb_optimizer2state_options_are_not_passed_positionally(tag: str):
     removed = [n for n in ("percentile_clipping", "block_wise") if n not in signature]
     caller = (
         Path(__file__).resolve().parents[2] / "unsloth" / "optimizers" / "q_galore_adamw.py"
-    ).read_text()
+    ).read_text(encoding = "utf-8")
 
     call = _super_init_call(caller, "QGaLoreAdamW8bit")
     assert call is not None, "could not find QGaLoreAdamW8bit's super().__init__ call"

@@ -156,7 +156,7 @@ const DESKTOP_STATUS_PATTERN = /^Download failed with status (\d{3})\./;
 // session (per-account isolation, shared installs). No request is made, so
 // there is no status: the command returns this exact sentence (`LOGIN_REQUIRED`
 // in native_file_dialogs.rs). Keep the two in step.
-const DESKTOP_LOGIN_REQUIRED = "Log export requires a signed-in Studio session.";
+const DESKTOP_LOGIN_REQUIRED = "Log export requires a signed-in Unsloth session.";
 
 function desktopExportError(error: unknown): LogExportError {
   const message =
@@ -254,27 +254,23 @@ export async function exportAllLogs(): Promise<string | null> {
 }
 
 /**
- * Reveal the directory the log picker actually reads from. Desktop only: in a
- * browser the folder is on the server, not the user's machine, and the button
- * is not rendered.
+ * Reveal the logs directory, or the Studio home before logs exist.
+ * On an older backend without `log_root`,
+ * fall back to the selected log's directory. Desktop only: in a browser the
+ * folder is on the server, not the user's machine, and the button is not rendered.
  *
- * `realpath` comes from the picker, which resolves UNSLOTH_STUDIO_HOME and
- * STUDIO_HOME. `open_logs_dir` cannot: it hard-codes ~/.unsloth/studio, so on a
- * custom home it opens an unrelated directory or errors on a missing one. It
- * stays as the fallback for when no source is selected yet.
+ * `logRoot` comes from the backend, which resolves UNSLOTH_STUDIO_HOME and
+ * STUDIO_HOME. `open_logs_dir` cannot: it hard-codes ~/.unsloth/studio/logs, so
+ * on a custom home it opens an unrelated directory or errors on a missing one.
+ * It stays as the fallback for when neither path has loaded.
  */
 export async function openLogsFolder(
-  realpath?: string | null,
   logRoot?: string | null,
+  selectedRealpath?: string | null,
 ): Promise<void> {
   if (!isTauri) return;
   const { invoke } = await import("@tauri-apps/api/core");
-  // The selected log's own directory first, then the root the backend reported.
-  // `open_logs_dir` is last because it hard-codes ~/.unsloth/studio and is
-  // simply wrong under a custom home -- which is also the case where there may
-  // be no readable log to take a path from, so neither of the first two can be
-  // dropped in favour of the other.
-  const directory = (realpath ? parentDirectory(realpath) : null) ?? logRoot ?? null;
+  const directory = logRoot || (selectedRealpath && parentDirectory(selectedRealpath));
   if (directory) {
     await invoke("open_models_dir", { path: directory });
     return;
@@ -299,7 +295,7 @@ function parentDirectory(path: string): string | null {
 
 /**
  * Reveal the folder the archive was saved into. Not `openLogsFolder`, which
- * opens ~/.unsloth/studio where the logs came FROM: naming one path and opening
+ * opens the logs directory they came FROM: naming one path and opening
  * another is the bug this avoids. `open_models_dir` is the app's generic "open
  * this directory" command (`open_existing_dir`), misnamed rather than misused.
  */

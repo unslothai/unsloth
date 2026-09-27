@@ -3835,18 +3835,30 @@ def cmd_colab_diff(args: argparse.Namespace) -> int:
         elif drifted_strict_keys:
             strict_diff = True
             print(f"  (rule-bearing key drifted: {', '.join(drifted_strict_keys)})")
-        for k, v in new[:50]:
+        # Every package in the pip oracle is rule-bearing -- the rules resolve a notebook's
+        # installs against it -- so the caps below hide entries a reviewer may be looking for.
+        # transformers 5.15.0 -> 5.16.1 sat past the CHANGED cap in the drift that prompted
+        # --full, reading as though it had not moved at all. Name the flag in the elision so
+        # the output says how to see the rest instead of leaving it to be guessed at.
+        cap_new = len(new) if args.full else 50
+        cap_removed = len(removed) if args.full else 50
+        cap_changed = len(changed) if args.full else 80
+        for k, v in new[:cap_new]:
             print(f"  NEW      {k}=={v}")
-        if len(new) > 50:
-            print(f"  ...and {len(new) - 50} more new entries")
-        for k, v in removed[:50]:
+        if len(new) > cap_new:
+            print(f"  ...and {len(new) - cap_new} more new entries (--full to list them)")
+        for k, v in removed[:cap_removed]:
             print(f"  REMOVED  {k} (was {v})")
-        if len(removed) > 50:
-            print(f"  ...and {len(removed) - 50} more removed entries")
-        for k, old, ver in changed[:80]:
+        if len(removed) > cap_removed:
+            print(
+                f"  ...and {len(removed) - cap_removed} more removed entries (--full to list them)"
+            )
+        for k, old, ver in changed[:cap_changed]:
             print(f"  CHANGED  {k}: {old} -> {ver}")
-        if len(changed) > 80:
-            print(f"  ...and {len(changed) - 80} more changed entries")
+        if len(changed) > cap_changed:
+            print(
+                f"  ...and {len(changed) - cap_changed} more changed entries (--full to list them)"
+            )
     if strict_diff and args.strict:
         print(
             "\n::error::A rule-bearing Colab oracle drifted from its committed "
@@ -3921,6 +3933,11 @@ def main(argv: list[str] | None = None) -> int:
         "--strict",
         action = "store_true",
         help = f"exit 1 on {COLAB_STRICT_ORACLE} drift (default: advisory; exit 0)",
+    )
+    pa.add_argument(
+        "--full",
+        action = "store_true",
+        help = "print every drifted entry instead of capping each list",
     )
 
     args = p.parse_args(argv)
