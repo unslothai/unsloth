@@ -9,12 +9,16 @@ checked by AST so we never import its heavy deps (uvicorn/structlog).
 """
 
 import ast
+import errno
 import importlib.util
 import io
 import os
+import ssl
 import sys
 import tarfile
+import tempfile
 import threading as _real_threading
+import time as _real_time
 import types
 from pathlib import Path
 from typing import Optional
@@ -34,6 +38,7 @@ def _load_ct():
 
 
 ct = _load_ct()
+_real_wait_before_retry = ct._wait_before_retry
 
 
 # ── URL parsing ──────────────────────────────────────────────────────
@@ -455,6 +460,13 @@ def test_reader_captures_url_and_registration():
     assert exited == [t]
 
 
+def test_reader_keeps_the_output_tail():
+    t = ct.CloudflareTunnel(8080, "/bin/cloudflared")
+    lines = [f"ERR line {i}" for i in range(ct._OUTPUT_TAIL_LINES + 3)]
+    t._reader(_fake_proc("".join(f"{line}\n" for line in lines)))
+    assert t.output_tail() == "\n".join(lines[-ct._OUTPUT_TAIL_LINES :])
+
+
 def test_reader_url_without_registration_is_not_ready():
     # A URL but no "Registered tunnel connection" (e.g. quic control stream
     # fails) must not be advertised -- it returns Cloudflare error 1033.
@@ -872,6 +884,7 @@ def _stub_public_probe(monkeypatch, request):
     if not request.node.name.startswith("test_start_studio_tunnel"):
         return
     monkeypatch.setattr(ct, "verify_public_url", lambda url, **kw: True)
+    monkeypatch.setattr(ct, "_wait_before_retry", lambda _d: False)
 
 
 def test_start_studio_tunnel_no_binary(monkeypatch):
@@ -1163,8 +1176,8 @@ def test_start_studio_tunnel_no_retry_when_shutdown_between_attempts(monkeypatch
 
 
 def test_start_studio_tunnel_no_http2_retry_when_no_url(monkeypatch):
-    # No URL at all is an API/network failure; the http2 fallback would not help,
-    # so it must be skipped (don't burn a second timeout window).
+    # No URL at all is an API/network failure, and http2 would not fix it: the retries stay on the
+    # same protocol and http2 is never reached.
     attempts = []
 
     class _Stub:
@@ -1190,7 +1203,101 @@ def test_start_studio_tunnel_no_http2_retry_when_no_url(monkeypatch):
     monkeypatch.setattr(ct, "ensure_cloudflared", lambda: "/bin/cloudflared")
     monkeypatch.setattr(ct, "CloudflareTunnel", _Stub)
     assert ct.start_studio_tunnel(8080) is None
+    assert attempts == [None] * (1 + len(ct._NO_URL_RETRY_DELAYS))
+
+
+def _no_url_stub(
+    attempts,
+    succeed_on = None,
+    fail_after = 0.0,
+    clock = None,
+):
+    class _Stub:
+        def __init__(
+            self,
+            port,
+            binary,
+            protocol = None,
+            origin_host = "localhost",
+        ):
+            self.url = None
+            attempts.append(protocol)
+
+        def start(self):
+            if succeed_on is not None and len(attempts) >= succeed_on:
+                self.url = "https://words.trycloudflare.com"
+
+        def wait_for_ready(self, timeout):
+            if clock is not None:
+                clock[0] += min(fail_after, timeout)
+            return self.url
+
+        def stop(self):
+            pass
+
+    return _Stub
+
+
+def test_start_studio_tunnel_retries_when_no_url(monkeypatch):
+    attempts, slept = [], []
+    monkeypatch.setattr(ct, "ensure_cloudflared", lambda: "/bin/cloudflared")
+    monkeypatch.setattr(ct, "CloudflareTunnel", _no_url_stub(attempts, succeed_on = 2))
+    monkeypatch.setattr(ct, "_wait_before_retry", lambda d: slept.append(d) or False)
+    try:
+        assert ct.start_studio_tunnel(8080) == "https://words.trycloudflare.com"
+        assert attempts == [None, None]
+        assert slept == [2.0]
+        assert ct.get_studio_tunnel_status()["state"] == "online"
+    finally:
+        ct.stop_studio_tunnel()
+
+
+@pytest.mark.parametrize(
+    "fail_after, timeout, expected_attempts, expected_clock",
+    [
+        (0.0, 15.0, 3, 7.0),  # refused at once: both delays are waited out
+        (5.0, 15.0, 2, 12.0),  # 5 + 2 + 5 spent, so 12 + 5 + 15 overruns
+        (15.0, 15.0, 1, 15.0),  # swallowed request: a retry would double the startup stall
+        (0.0, 60.0, 1, 0.0),  # a caller's longer timeout is what the next attempt may cost
+    ],
+)
+def test_start_studio_tunnel_no_url_retries_stay_inside_the_budget(
+    monkeypatch, fail_after, timeout, expected_attempts, expected_clock
+):
+    attempts, clock = [], [0.0]
+    monkeypatch.setattr(ct, "ensure_cloudflared", lambda: "/bin/cloudflared")
+    monkeypatch.setattr(
+        ct, "CloudflareTunnel", _no_url_stub(attempts, fail_after = fail_after, clock = clock)
+    )
+    monkeypatch.setattr(ct.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(
+        ct, "_wait_before_retry", lambda d: clock.__setitem__(0, clock[0] + d) or False
+    )
+    assert ct.start_studio_tunnel(8080, timeout) is None
+    assert attempts == [None] * expected_attempts
+    assert clock[0] == expected_clock
+    status = ct.get_studio_tunnel_status()
+    assert status["state"] == "error"
+    assert status["error"] == "cloudflared did not produce a URL"
+
+
+def test_start_studio_tunnel_no_url_retry_delay_ends_on_stop(monkeypatch):
+    # The delay holds _start_lock, so Stop must end it early.
+    attempts = []
+
+    def wait(delay):
+        _real_threading.Timer(0.05, ct.stop_studio_tunnel).start()
+        return _real_wait_before_retry(delay)
+
+    monkeypatch.setattr(ct, "ensure_cloudflared", lambda: "/bin/cloudflared")
+    monkeypatch.setattr(ct, "CloudflareTunnel", _no_url_stub(attempts))
+    monkeypatch.setattr(ct, "_NO_URL_RETRY_DELAYS", (5.0, 5.0))
+    monkeypatch.setattr(ct, "_wait_before_retry", wait)
+    t0 = _real_time.monotonic()
+    assert ct.start_studio_tunnel(8080) is None
+    assert _real_time.monotonic() - t0 < 2.0
     assert attempts == [None]
+    assert ct.get_studio_tunnel_status()["state"] == "off"
 
 
 def test_start_studio_tunnel_both_protocols_fail_registration(monkeypatch):
@@ -1548,3 +1655,409 @@ def test_cloudflare_line_failed_does_not_claim_local_only_when_publicly_reachabl
     assert "requested but failed to start" in out
     assert "reachable from the public internet" in out
     assert "local network only" not in out
+
+
+def test_download_retries_a_transient_failure(monkeypatch, tmp_path):
+    import urllib.error
+    import urllib.request
+
+    attempts = []
+
+    class _Resp:
+        _sent = False
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self, n = -1):
+            if self._sent:
+                return b""
+            self._sent = True
+            return b"payload"
+
+    def flaky_urlopen(req, timeout = None):
+        attempts.append(req.full_url)
+        if len(attempts) < 3:
+            raise urllib.error.URLError("connection reset")
+        return _Resp()
+
+    monkeypatch.setattr(urllib.request, "urlopen", flaky_urlopen)
+    monkeypatch.setattr(ct.time, "sleep", lambda s: None)
+    dest = tmp_path / "cloudflared"
+    assert ct._download("https://github.com/cloudflare/cloudflared/x", dest) is True
+    assert len(attempts) == 3
+    assert dest.read_bytes() == b"payload"
+
+
+def test_download_gives_up_and_says_so(monkeypatch, tmp_path, caplog):
+    import logging
+    import urllib.error
+    import urllib.request
+
+    def refused(req, timeout = None):
+        raise urllib.error.HTTPError(req.full_url, 503, "unavailable", None, None)
+
+    monkeypatch.setattr(urllib.request, "urlopen", refused)
+    monkeypatch.setattr(ct.time, "sleep", lambda s: None)
+    dest = tmp_path / "cloudflared"
+    with caplog.at_level(logging.WARNING, logger = ct.__name__):
+        assert ct._download("https://github.com/cloudflare/cloudflared/x", dest) is False
+    assert not dest.exists() and not list(tmp_path.glob("cloudflared.tmp-*"))
+    assert "could not download cloudflared" in caplog.text
+
+
+def test_download_does_not_retry_a_timeout(monkeypatch, tmp_path):
+    import urllib.error
+    import urllib.request
+
+    attempts = []
+
+    def slow(req, timeout = None):
+        attempts.append(req.full_url)
+        raise urllib.error.URLError(TimeoutError("timed out"))
+
+    monkeypatch.setattr(urllib.request, "urlopen", slow)
+    monkeypatch.setattr(ct.time, "sleep", lambda s: None)
+    assert ct._download("https://github.com/cloudflare/cloudflared/x", tmp_path / "cf") is False
+    assert len(attempts) == 1
+
+
+def test_download_does_not_retry_a_permanent_4xx(monkeypatch, tmp_path):
+    """A 404 for this platform's asset is the same 404 on the next attempt. Retrying
+    it three times with pauses only delays the launch banner for nothing."""
+    import urllib.error
+    import urllib.request
+
+    calls = []
+    slept = []
+
+    def missing(req, timeout = None):
+        calls.append(timeout)
+        raise urllib.error.HTTPError(req.full_url, 404, "Not Found", None, None)
+
+    monkeypatch.setattr(urllib.request, "urlopen", missing)
+    monkeypatch.setattr(ct.time, "sleep", slept.append)
+    assert ct._download("https://github.com/cloudflare/cloudflared/x", tmp_path / "cf") is False
+    assert len(calls) == 1
+    assert slept == []
+
+
+def test_download_still_retries_a_5xx(monkeypatch, tmp_path):
+    import io
+    import urllib.error
+    import urllib.request
+
+    calls = []
+
+    def flaky(req, timeout = None):
+        calls.append(timeout)
+        if len(calls) == 1:
+            raise urllib.error.HTTPError(req.full_url, 503, "Unavailable", None, None)
+        return io.BytesIO(b"cloudflared-bytes")
+
+    monkeypatch.setattr(urllib.request, "urlopen", flaky)
+    monkeypatch.setattr(ct.time, "sleep", lambda s: None)
+    dest = tmp_path / "cf"
+    assert ct._download("https://github.com/cloudflare/cloudflared/x", dest) is True
+    assert dest.read_bytes() == b"cloudflared-bytes"
+    assert len(calls) == 2
+
+
+def test_download_retries_a_429(monkeypatch, tmp_path):
+    import io
+    import urllib.error
+    import urllib.request
+
+    calls = []
+
+    def throttled(req, timeout = None):
+        calls.append(timeout)
+        if len(calls) == 1:
+            raise urllib.error.HTTPError(req.full_url, 429, "Too Many Requests", None, None)
+        return io.BytesIO(b"cloudflared-bytes")
+
+    monkeypatch.setattr(urllib.request, "urlopen", throttled)
+    monkeypatch.setattr(ct.time, "sleep", lambda s: None)
+    dest = tmp_path / "cf"
+    assert ct._download("https://github.com/cloudflare/cloudflared/x", dest) is True
+    assert dest.read_bytes() == b"cloudflared-bytes"
+    assert len(calls) == 2
+
+
+def test_download_does_not_retry_an_unresolvable_host(monkeypatch, tmp_path):
+    import socket
+    import urllib.error
+    import urllib.request
+
+    calls = []
+    slept = []
+
+    def offline(req, timeout = None):
+        calls.append(timeout)
+        raise urllib.error.URLError(
+            socket.gaierror(socket.EAI_NONAME, "nodename nor servname provided")
+        )
+
+    monkeypatch.setattr(urllib.request, "urlopen", offline)
+    monkeypatch.setattr(ct.time, "sleep", slept.append)
+    assert ct._download("https://github.com/cloudflare/cloudflared/x", tmp_path / "cf") is False
+    assert len(calls) == 1
+    assert slept == []
+
+
+def test_download_retries_a_temporary_resolver_failure(monkeypatch, tmp_path):
+    import io
+    import socket
+    import urllib.error
+    import urllib.request
+
+    calls = []
+
+    def resolving(req, timeout = None):
+        calls.append(timeout)
+        if len(calls) == 1:
+            raise urllib.error.URLError(
+                socket.gaierror(socket.EAI_AGAIN, "Temporary failure in name resolution")
+            )
+        return io.BytesIO(b"cloudflared-bytes")
+
+    monkeypatch.setattr(urllib.request, "urlopen", resolving)
+    monkeypatch.setattr(ct.time, "sleep", lambda s: None)
+    dest = tmp_path / "cf"
+    assert ct._download("https://github.com/cloudflare/cloudflared/x", dest) is True
+    assert dest.read_bytes() == b"cloudflared-bytes"
+    assert len(calls) == 2
+
+
+def test_download_does_not_retry_a_chain_it_cannot_verify(monkeypatch, tmp_path):
+    """A stale CA bundle, a wrong clock and a TLS-intercepting proxy are configuration, not
+    a transfer that can go better."""
+    import urllib.error
+    import urllib.request
+
+    calls = []
+    slept = []
+
+    def unverifiable(req, timeout = None):
+        calls.append(timeout)
+        raise urllib.error.URLError(
+            ssl.SSLCertVerificationError(
+                1, "[SSL: CERTIFICATE_VERIFY_FAILED] self-signed certificate"
+            )
+        )
+
+    monkeypatch.setattr(urllib.request, "urlopen", unverifiable)
+    monkeypatch.setattr(ct.time, "sleep", slept.append)
+    assert ct._download("https://github.com/cloudflare/cloudflared/x", tmp_path / "cf") is False
+    assert len(calls) == 1
+    assert slept == []
+
+
+def test_download_retries_a_tls_stream_that_broke_mid_body(monkeypatch, tmp_path):
+    """A bad record after some bytes is a transfer that died partway, so the half already
+    written must not be published."""
+    import io
+    import urllib.request
+
+    calls = []
+
+    class Truncated(io.BytesIO):
+        def read(self, size = -1):
+            if not self.tell():
+                return super().read(size)
+            raise ssl.SSLError(1, "[SSL: DECRYPTION_FAILED_OR_BAD_RECORD_MAC] bad record mac")
+
+    def flaky(req, timeout = None):
+        calls.append(timeout)
+        return Truncated(b"half-a-") if len(calls) == 1 else io.BytesIO(b"cloudflared-bytes")
+
+    monkeypatch.setattr(urllib.request, "urlopen", flaky)
+    monkeypatch.setattr(ct.time, "sleep", lambda s: None)
+    dest = tmp_path / "cf"
+    assert ct._download("https://github.com/cloudflare/cloudflared/x", dest) is True
+    assert dest.read_bytes() == b"cloudflared-bytes"
+    assert len(calls) == 2
+    assert list(tmp_path.glob("cf.tmp-*")) == []
+
+
+def test_download_does_not_retry_an_unwritable_cache(monkeypatch, tmp_path):
+    import tempfile
+    import urllib.request
+
+    slept = []
+    opened = []
+    monkeypatch.setattr(ct.time, "sleep", slept.append)
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **k: opened.append(1))
+
+    # Raised rather than chmod'd: a read-only directory still accepts writes on Windows.
+    def denied(*a, **k):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(tempfile, "NamedTemporaryFile", denied)
+    assert ct._download("https://github.com/cloudflare/cloudflared/x", tmp_path / "cf") is False
+    assert slept == []
+    assert opened == []
+
+
+@pytest.mark.parametrize("fails_on", ["write", "close", "publish"])
+def test_download_does_not_retry_a_disk_that_fills_mid_transfer(monkeypatch, tmp_path, fails_on):
+    """The temporary file is buffered, so a full volume surfaces at the write, at the close
+    that flushes it, or at the rename. None of the three gains space on a retry."""
+    import io
+    import pathlib
+    import urllib.request
+
+    calls = []
+    slept = []
+
+    def responding(req, timeout = None):
+        calls.append(timeout)
+        return io.BytesIO(b"cloudflared-bytes")
+
+    class _FullDisk:
+        name = str(tmp_path / "cf.tmp-full")
+
+        def __enter__(self):
+            # Without it a bypassed failure hits FileNotFoundError in stat(), which passes
+            # the same assertions as the failure under test.
+            pathlib.Path(self.name).write_bytes(b"cloudflared-bytes")
+            return self
+
+        def __exit__(self, *a):
+            self.close()
+            return False
+
+        def _no_space(self):
+            raise OSError(errno.ENOSPC, "No space left on device")
+
+        def write(self, data):
+            if fails_on == "write":
+                self._no_space()
+
+        def close(self):
+            if fails_on == "close":
+                self._no_space()
+
+    monkeypatch.setattr(urllib.request, "urlopen", responding)
+    monkeypatch.setattr(ct.time, "sleep", slept.append)
+    monkeypatch.setattr(tempfile, "NamedTemporaryFile", lambda **k: _FullDisk())
+    if fails_on == "publish":
+
+        def full_rename(src, dst):
+            raise OSError(errno.ENOSPC, "No space left on device")
+
+        monkeypatch.setattr(ct.os, "replace", full_rename)
+    assert ct._download("https://github.com/cloudflare/cloudflared/x", tmp_path / "cf") is False
+    assert len(calls) == 1
+    assert slept == []
+
+
+def test_download_retries_an_empty_body(monkeypatch, tmp_path):
+    import io
+    import urllib.request
+
+    calls = []
+
+    def truncated(req, timeout = None):
+        calls.append(timeout)
+        return io.BytesIO(b"" if len(calls) == 1 else b"cloudflared-bytes")
+
+    monkeypatch.setattr(urllib.request, "urlopen", truncated)
+    monkeypatch.setattr(ct.time, "sleep", lambda s: None)
+    dest = tmp_path / "cf"
+    assert ct._download("https://github.com/cloudflare/cloudflared/x", dest) is True
+    assert dest.read_bytes() == b"cloudflared-bytes"
+    assert len(calls) == 2
+
+
+def test_download_does_not_retry_when_a_reset_unwinds_into_a_full_disk(monkeypatch, tmp_path):
+    """The caller sees the full disk the reset unwound into, and it is just as full next
+    time. Identity picks the error that replaced the transfer's."""
+    import pathlib
+    import tempfile
+    import urllib.request
+
+    calls = []
+    slept = []
+
+    class _Reset:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self, n = -1):
+            raise ConnectionResetError(errno.ECONNRESET, "Connection reset by peer")
+
+    class _FullOnClose:
+        name = str(tmp_path / "cf.tmp-reset")
+
+        def __enter__(self):
+            pathlib.Path(self.name).write_bytes(b"partial")
+            return self
+
+        def __exit__(self, *a):
+            raise OSError(errno.ENOSPC, "No space left on device")
+
+        def write(self, data):
+            pass
+
+    def responding(req, timeout = None):
+        calls.append(timeout)
+        return _Reset()
+
+    monkeypatch.setattr(urllib.request, "urlopen", responding)
+    monkeypatch.setattr(ct.time, "sleep", slept.append)
+    monkeypatch.setattr(tempfile, "NamedTemporaryFile", lambda **k: _FullOnClose())
+    assert ct._download("https://github.com/cloudflare/cloudflared/x", tmp_path / "cf") is False
+    assert len(calls) == 1
+    assert slept == []
+
+
+def test_download_retries_share_one_deadline(monkeypatch, tmp_path):
+    """A transfer that stalls for most of the budget and then resets gets what is left,
+    not a fresh budget. Three fresh budgets would hold the launch banner for minutes."""
+    import urllib.request
+
+    clock = [1000.0]
+    monkeypatch.setattr(ct.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(ct.time, "sleep", lambda s: clock.__setitem__(0, clock[0] + s))
+    timeouts = []
+
+    def stalls_then_resets(req, timeout = None):
+        timeouts.append(timeout)
+        clock[0] += 59.0  # the body trickled for almost the whole budget
+        raise ConnectionResetError("peer reset")
+
+    monkeypatch.setattr(urllib.request, "urlopen", stalls_then_resets)
+    assert (
+        ct._download("https://github.com/cloudflare/cloudflared/x", tmp_path / "cf", timeout = 60)
+        is False
+    )
+    # 1s left is less than the 1.5s pause, so there is no second attempt.
+    assert timeouts == [60.0]
+
+
+def test_download_later_attempts_get_only_the_remaining_time(monkeypatch, tmp_path):
+    import urllib.request
+
+    clock = [1000.0]
+    monkeypatch.setattr(ct.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(ct.time, "sleep", lambda s: clock.__setitem__(0, clock[0] + s))
+    timeouts = []
+
+    def quick_resets(req, timeout = None):
+        timeouts.append(round(timeout, 1))
+        clock[0] += 10.0
+        raise ConnectionResetError("peer reset")
+
+    monkeypatch.setattr(urllib.request, "urlopen", quick_resets)
+    assert (
+        ct._download("https://github.com/cloudflare/cloudflared/x", tmp_path / "cf", timeout = 60)
+        is False
+    )
+    assert timeouts == [60.0, 48.5, 35.5]

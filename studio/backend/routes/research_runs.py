@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+from utils.account_context import current_account, run_as
 import asyncio
 import json
 import re
@@ -221,6 +222,8 @@ def _sanitize_config(
         "maxOutputTokensPublished",
         "enableThinking",
         "reasoningEffort",
+        "supportsReasoning",
+        "supportsReasoningOff",
     }
     unknown = set(request) - allowed
     if unknown:
@@ -296,6 +299,9 @@ def _sanitize_config(
             request["maxOutputTokensFromSavedCap"], bool
         ):
             raise ValueError
+        for flag in ("supportsReasoning", "supportsReasoningOff"):
+            if flag in request and not isinstance(request[flag], bool):
+                raise ValueError
         if "maxOutputTokensPublished" in request:
             published = request["maxOutputTokensPublished"]
             if isinstance(published, bool) or not isinstance(published, int):
@@ -565,6 +571,8 @@ async def research_events(
             # off the default executor: parked followers there starved the run's own db writes.
             events = await loop.run_in_executor(
                 _EVENT_WAIT_EXECUTOR,
+                run_as,
+                current_account(),
                 db.wait_for_events,
                 run_id,
                 cursor,

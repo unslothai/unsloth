@@ -1017,7 +1017,7 @@ def neutralize_control_markup_in_messages(
     cache: dict = None,
     markup = None,
 ) -> list:
-    """Neutralize control markup in message content and tool-result names (#7066). User / system /
+    """Neutralize control markup in message content and names (#7066). User / system /
     tool turns lose every marker; assistant turns lose only turn boundaries and keep the think /
     channel / tool markup replayed history legitimately holds. Returns the same list object when
     nothing changed, so the prompt stays byte-for-byte what it was. Pass a ``sweep_cache()`` when
@@ -1082,7 +1082,7 @@ def neutralize_control_markup_in_messages(
             if new_result_id != result_id:
                 updates["tool_call_id"] = new_result_id
         name = msg.get("name")
-        if role == "tool" and isinstance(name, str) and name:
+        if isinstance(name, str) and name:
             new_name = neutralize_control_markup(name, markup)
             if new_name != name:
                 updates["name"] = new_name
@@ -1931,6 +1931,19 @@ def reconciled_tool_choice(tool_choice, openai_tools, safe_tools):
         forced,
     )
     return "auto"
+
+
+def forced_tool_catalog(tool_choice, tools):
+    forced = forced_tool_name(tool_choice)
+    if forced is None:
+        return []
+    return [
+        tool
+        for tool in tools or []
+        if isinstance(tool, dict)
+        and isinstance(tool.get("function"), dict)
+        and tool["function"].get("name") == forced
+    ]
 
 
 def _tokenizer_objects(tokenizer) -> tuple:
@@ -2826,23 +2839,34 @@ def last_user_text(messages: list) -> str:
     return ""
 
 
-def count_structured_images(content) -> int:
-    """Number of structured image parts in a message *content* (or a bare part)."""
+_STRUCTURED_IMAGE_TYPES = ("image", "image_url", "input_image")
+_STRUCTURED_VIDEO_TYPES = ("video", "video_url", "input_video")
+
+
+def _count_structured_parts(content, types) -> int:
     if isinstance(content, list):
-        return sum(count_structured_images(item) for item in content)
+        return sum(_count_structured_parts(item, types) for item in content)
     if not isinstance(content, dict):
         return 0
-    if str(content.get("type", "")).lower() in ("image", "image_url", "input_image"):
+    if str(content.get("type", "")).lower() in types:
         return 1
-    return count_structured_images(content.get("content"))
+    return _count_structured_parts(content.get("content"), types)
+
+
+def count_structured_images(content) -> int:
+    return _count_structured_parts(content, _STRUCTURED_IMAGE_TYPES)
+
+
+def count_structured_videos(content) -> int:
+    return _count_structured_parts(content, _STRUCTURED_VIDEO_TYPES)
 
 
 def structured_media_reprs(content) -> set:
-    """Every spelling a template could print a structured image part as."""
+    media_types = _STRUCTURED_IMAGE_TYPES + _STRUCTURED_VIDEO_TYPES
     if isinstance(content, list):
         values = (
             {str(content), json.dumps(content, ensure_ascii = False)}
-            if count_structured_images(content)
+            if _count_structured_parts(content, media_types)
             else set()
         )
         for item in content:
@@ -2850,7 +2874,7 @@ def structured_media_reprs(content) -> set:
         return values
     if not isinstance(content, dict):
         return set()
-    if str(content.get("type", "")).lower() in ("image", "image_url", "input_image"):
+    if str(content.get("type", "")).lower() in media_types:
         return {str(content), json.dumps(content, ensure_ascii = False)}
     return structured_media_reprs(content.get("content"))
 
@@ -2900,15 +2924,17 @@ def messages_with_attached_image(
     system_prompt: str = "",
     fallback_user_text: str = "",
     structured_content: bool = False,
+    image: int = 1,
+    video: bool = False,
 ) -> list:
-    """The conversation to render for a turn that carries an attached image.
+    """The conversation to render for a turn that carries attached media.
 
-    Prepends *system_prompt* as a leading system turn, then injects an ``{"type": "image"}`` part
-    into the LAST user turn and leaves every other turn -- assistant ``tool_calls`` and
-    ``role="tool"`` results included -- exactly as the caller sent it. Rebuilding from the newest
-    user TEXT instead dropped the folded system instruction and the tool history an OpenAI tool loop
-    replays (#10092). Nothing the caller owns is mutated: callers still read those dicts after
-    generation, and a retry re-renders the same list.
+    Prepends *system_prompt* as a leading system turn, then injects *image* ``{"type": "image"}``
+    parts, or a ``{"type": "video"}`` part, into the LAST user turn and leaves every other turn --
+    assistant ``tool_calls`` and ``role="tool"`` results included -- exactly as the caller sent it.
+    Rebuilding from the newest user TEXT instead dropped the folded system instruction and the
+    tool history an OpenAI tool loop replays (#10092). Nothing the caller owns is mutated: callers
+    still read those dicts after generation, and a retry re-renders the same list.
 
     *structured_content* wraps content in part lists, as a processor template expects; MLX may
     render through the nested text tokenizer, whose template expects a string. *fallback_user_text*
@@ -2943,13 +2969,20 @@ def messages_with_attached_image(
                 ),
             },
         )
-    # Once: a reverse scan would mark a nudge retry's correction, not the question.
-    if any(
-        isinstance(m, dict)
-        and isinstance(m.get("content"), list)
-        and count_structured_images(m["content"])
-        for m in conversation
-    ):
+    # Once per medium: a reverse scan would mark a nudge retry's correction, not the question.
+    parts = [
+        {"type": part_type}
+        for part_type, wanted, counter in (
+            ("image", image, count_structured_images),
+            ("video", video, count_structured_videos),
+        )
+        if not any(
+            isinstance(m, dict) and isinstance(m.get("content"), list) and counter(m["content"])
+            for m in conversation
+        )
+        for _ in range(int(wanted))
+    ]
+    if not parts and not fallback_user_text:
         return conversation
     for index in range(len(conversation) - 1, -1, -1):
         message = conversation[index]
@@ -2957,21 +2990,16 @@ def messages_with_attached_image(
             continue
         content = message.get("content", "")
         if isinstance(content, str):
-            parts = [{"type": "image"}, {"type": "text", "text": content or fallback_user_text}]
-        elif isinstance(content, list):
-            parts = list(content)
-            if not count_structured_images(parts):
-                parts.insert(0, {"type": "image"})
-        else:
+            content = [{"type": "text", "text": content or fallback_user_text}]
+        elif not isinstance(content, list):
             break
-        conversation[index] = {**message, "content": parts}
+        elif fallback_user_text and not last_user_text([message]):
+            content = [*content, {"type": "text", "text": fallback_user_text}]
+        conversation[index] = {**message, "content": parts + list(content)}
         return conversation
-    if fallback_user_text:
+    if parts and fallback_user_text:
         conversation.append(
-            {
-                "role": "user",
-                "content": [{"type": "image"}, {"type": "text", "text": fallback_user_text}],
-            }
+            {"role": "user", "content": parts + [{"type": "text", "text": fallback_user_text}]}
         )
     return conversation
 
@@ -3050,6 +3078,10 @@ def render_prompt_with_boundary(
     the kwarg get a manual splice, taking the partial from *messages* (which the caller already
     swept) rather than a separate copy: a raw partial could close the turn or open another role
     instead of resuming (#7066)."""
+    from core.inference.mcp_images import prepare_image_turn_boundaries
+
+    for template in _selected_chat_template_strings(processor, tools):
+        messages = prepare_image_turn_boundaries(messages, template)
     extra = {"tools": tools} if tools else {}
     partial = trailing_assistant_text(messages) if continue_final_message else None
     if not partial:
@@ -3100,6 +3132,10 @@ def apply_chat_template_for_generation(
     inside the trailing assistant turn, so the model resumes the partial instead of restarting
     it."""
     # Shared choke point for the transformers and MLX backends (#7066).
+    from core.inference.mcp_images import prepare_image_turn_boundaries
+
+    for template in _selected_chat_template_strings(tokenizer, tools):
+        messages = prepare_image_turn_boundaries(messages, template)
     messages, tools, _markup = neutralize_for_render(tokenizer, messages, tools)
     reasoning_kwargs: dict = {}
     if enable_thinking is not None:

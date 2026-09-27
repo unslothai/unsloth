@@ -257,6 +257,10 @@ class TestChatTemplatesNoTorchVenv:
             source = source.replace('from .format_detection import', 'from format_detection import')
             source = source.replace('from .model_mappings import', 'from model_mappings import')
             source = source.replace('from .iterable import', 'from iterable import')
+            # cells.py is stdlib-only, so the exec sites import the real module
+            # rather than another stub: the suite checks what actually ships.
+            sys.path.insert(0, {str(CHAT_TEMPLATES.parent)!r})
+            source = source.replace('from .cells import', 'from cells import')
 
             exec(source)
 
@@ -299,6 +303,8 @@ class TestChatTemplatesNoTorchVenv:
             source = source.replace('from .format_detection import', 'from format_detection import')
             source = source.replace('from .model_mappings import', 'from model_mappings import')
             source = source.replace('from .iterable import', 'from iterable import')
+            sys.path.insert(0, {str(CHAT_TEMPLATES.parent)!r})
+            source = source.replace('from .cells import', 'from cells import')
             exec(source, ns)
 
             assert 'DEFAULT_ALPACA_TEMPLATE' in ns, "DEFAULT_ALPACA_TEMPLATE not defined"
@@ -391,11 +397,15 @@ class TestFormatConversionNoTorchVenv:
             source = open({str(FORMAT_CONVERSION)!r}, encoding = "utf-8").read()
             source = source.replace('from .format_detection import', 'from format_detection import')
             source = source.replace('from .iterable import', 'from iterable import')
+            sys.path.insert(0, {str(FORMAT_CONVERSION.parent)!r})
+            source = source.replace('from .cells import', 'from cells import')
             ns = {{'__name__': '__test__'}}
             exec(source, ns)
 
             # Test convert_chatml_to_alpaca with a simple dataset
             class FakeDataset:
+                column_names = ['messages']
+
                 def map(self, fn, **kw):
                     result = fn({{
                         'messages': [[
@@ -448,6 +458,8 @@ class TestFormatConversionNoTorchVenv:
             source = open({str(FORMAT_CONVERSION)!r}, encoding = "utf-8").read()
             source = source.replace('from .format_detection import', 'from format_detection import')
             source = source.replace('from .iterable import', 'from iterable import')
+            sys.path.insert(0, {str(FORMAT_CONVERSION.parent)!r})
+            source = source.replace('from .cells import', 'from cells import')
             ns = {{'__name__': '__test__'}}
             exec(source, ns)
 

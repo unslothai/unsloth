@@ -285,12 +285,14 @@ _REHEARSAL_RE = re.compile(r"(?<!\[CALL_ID\])\b([\w-]+)\[ARGS\]\s*(?=\{)")
 # Gates the markerless rehearsal form only, so quoting the syntax as documentation stays text
 # instead of executing. A fence's info string cannot contain backticks, so a triple-backtick run
 # opening a line is an inline span and not a fence running to EOF; the closer tolerates a CR so a
-# CRLF block still closes. Inline runs are enumerated by length rather than backreferenced: a
-# (`+)..\1 form backtracks over every candidate length and turned 21 KB of unmatched runs into a
-# 1.8s stall.
+# CRLF block still closes. A fence closes only on a run of its own character at least as long as
+# its opener, so a ```` block can quote a ``` one. Inline runs are enumerated by length rather than
+# backreferenced: a (`+)..\1 form backtracks over every candidate length and turned 21 KB of
+# unmatched runs into a 1.8s stall.
 _CODE_SPAN_RE = re.compile(
-    r"^[ \t]*(?:>[ \t]*)*(?:```+[^`\n]*|~~~+[^\n]*)$"
-    r".*?(?:^[ \t]*(?:>[ \t]*)*(?:```+|~~~+)[ \t\r]*$|\Z)"
+    r"^[ \t]*(?:>[ \t]*)*(?:"
+    r"(?P<bt>```+)[^`\n]*$.*?(?:^[ \t]*(?:>[ \t]*)*(?P=bt)`*[ \t\r]*$|\Z)"
+    r"|(?P<tl>~~~+)[^\n]*$.*?(?:^[ \t]*(?:>[ \t]*)*(?P=tl)~*[ \t\r]*$|\Z))"
     r"|``(?:[^`]|`(?!`))*?``|`[^`\n]*`",
     re.DOTALL | re.MULTILINE,
 )
@@ -453,17 +455,18 @@ def _decode_array_items(text: str, body_start: int, body_end: int):
     return objs, ends
 
 
-def _code_spans(text: str) -> list[tuple[int, int]]:
-    """Markdown code spans, used to keep a quoted rehearsal out of the call set.
+def _code_spans(text: str, start: int = 0) -> list[tuple[int, int]]:
+    """Markdown code spans from ``start`` on, used to keep a quoted rehearsal out of the call set.
 
     A line-start fence cannot occur inside a call's JSON body (a raw newline is
-    invalid JSON there), so no tool-markup exclusion is needed; a stray inline span
-    can at worst hide a same-line rehearsal, which drops a call rather than
-    inventing one. Spans are ordered and non-overlapping, so ``_in_code`` bisects
-    them instead of rescanning from the front per candidate."""
+    invalid JSON there), so no tool-markup exclusion is needed; a raw Gemma body can
+    hold one, so a caller may ``start`` past such a body. A stray inline span can at
+    worst hide a same-line rehearsal, which drops a call rather than inventing one.
+    Spans are ordered and non-overlapping, so ``_in_code`` bisects them instead of
+    rescanning from the front per candidate."""
     if "`" not in text and "~~~" not in text:
         return []
-    return [m.span() for m in _CODE_SPAN_RE.finditer(text)]
+    return [m.span() for m in _CODE_SPAN_RE.finditer(text, start)]
 
 
 def _in_code(spans, pos: int) -> bool:

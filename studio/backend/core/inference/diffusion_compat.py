@@ -249,15 +249,9 @@ def _read_gguf_header(
 ) -> bytes:
     """A bounded prefix of a Hub-hosted GGUF, or b"" when it cannot be read.
 
-    One wall-clock bound over the WHOLE operation, request included. requests' timeout is an
-    inactivity timeout: a peer (or an intermediary) that trickles response HEADERS resets it on
-    every byte, so a deadline armed only once ``get()`` has returned leaves the caller blocked
-    before the bounded body reader is ever reached -- and this runs on the /images/load route
-    thread and on the download-plan path, both of which promised to fail open in seconds.
-
-    So the request AND the drain run on a worker this call can walk away from. On timeout the
-    response, if one exists by then, is half-closed to wake the worker; either way the caller
-    returns with whatever arrived."""
+    One wall-clock bound over the WHOLE operation: requests' own timeout is per-byte, so a
+    trickled response would block this fail-open path past any deadline armed after ``get()``.
+    Request and drain therefore run on a worker this call can abandon."""
     try:
         from huggingface_hub import hf_hub_url
         from huggingface_hub.utils import build_hf_headers, get_session

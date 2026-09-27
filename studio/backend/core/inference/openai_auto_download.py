@@ -33,6 +33,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from loggers import get_logger
+from utils.account_context import current_account_id
 
 logger = get_logger(__name__)
 
@@ -54,7 +55,7 @@ _RETRY_AFTER_S = 30
 # cannot hold the slot
 _FAILED_HOLD_S = 3 * _RETRY_AFTER_S
 _MAX_LISTED_VARIANTS = 8
-# Probe the selected weight because speech GGUFs need not publish tokenizer sidecars.
+# Probe the selected weight: speech GGUFs need not publish tokenizer sidecars.
 _REMOTE_GGUF_SPEECH_PROBE_BYTES = 32 * 1024**2
 _REMOTE_GGUF_SPEECH_PROBE_TIMEOUT_S = _CODE_PROBE_TIMEOUT_S - 2.0
 
@@ -82,6 +83,8 @@ class _Active:
     # the client would restart the same failing download.
     error: Optional[str] = None
     failed_at: float = 0.0
+    # Who asked: another account's busy answer names no repo or quant.
+    account_id: Optional[str] = None
 
 
 _lock = threading.Lock()
@@ -188,8 +191,13 @@ def _hub_token(hf_token: Optional[str]):
     return hf_token or False
 
 
-def _servable_key(repo_id: str, hf_token: Optional[str]) -> str:
-    """Cache key, per credential.
+def _endpoint() -> str:
+    from huggingface_hub import constants
+    return constants.ENDPOINT.rstrip("/")
+
+
+def _servable_key(repo_id: str, hf_token: Optional[str], endpoint: str) -> str:
+    """Cache key, per credential and Hub.
 
     The Hub 404s a private repo the caller cannot see, so a tokenless verdict says
     nothing about a caller who has one. Digested, so no token is held here.
@@ -197,18 +205,24 @@ def _servable_key(repo_id: str, hf_token: Optional[str]) -> str:
     import hashlib
 
     seen_as = hashlib.sha256(hf_token.encode()).hexdigest()[:16] if hf_token else "anon"
-    return f"{repo_id.lower()}\n{seen_as}"
+    return f"{repo_id.lower()}\n{seen_as}\n{endpoint}"
 
 
-def _mark_not_servable(repo_id: str, hf_token: Optional[str]) -> None:
+def _mark_not_servable(repo_id: str, hf_token: Optional[str], endpoint: str) -> None:
     with _cache_lock:
         if len(_not_servable) >= _NOT_SERVABLE_MAX:
             _not_servable.clear()
-        _not_servable[_servable_key(repo_id, hf_token)] = time.monotonic() + _NOT_SERVABLE_TTL_S
+        _not_servable[_servable_key(repo_id, hf_token, endpoint)] = (
+            time.monotonic() + _NOT_SERVABLE_TTL_S
+        )
 
 
-def _is_not_servable(repo_id: str, hf_token: Optional[str]) -> bool:
-    key = _servable_key(repo_id, hf_token)
+def _is_not_servable(
+    repo_id: str,
+    hf_token: Optional[str],
+    endpoint: Optional[str] = None,
+) -> bool:
+    key = _servable_key(repo_id, hf_token, endpoint or _endpoint())
     with _cache_lock:
         expires = _not_servable.get(key)
         if expires is None:
@@ -369,7 +383,7 @@ def _enough_disk(need_bytes: int) -> tuple[bool, int]:
 
 
 def _gb(num_bytes: int) -> str:
-    return f"{num_bytes / 1024**3:.1f} GB"
+    return f"{num_bytes / 1e9:.1f} GB"
 
 
 async def _job_state(repo_id: str, variant: Optional[str]) -> tuple[str, Optional[str]]:
@@ -492,12 +506,16 @@ async def _is_downloadable_model(repo_id: str, hf_token: Optional[str]) -> bool:
     apart from an ordinary foreign label. Any failure answers False: refusing
     would strand normal traffic for the length of the download.
     """
-    if _is_not_servable(repo_id, hf_token):
+    # One Hub for the whole lookup, so its answer is filed under the Hub that gave it.
+    endpoint = _endpoint()
+    if _is_not_servable(repo_id, hf_token, endpoint):
         return False
 
     def _probe():
         from huggingface_hub import HfApi
-        return HfApi(token = _hub_token(hf_token)).model_info(repo_id, timeout = _MODEL_INFO_TIMEOUT_S)
+        return HfApi(endpoint = endpoint, token = _hub_token(hf_token)).model_info(
+            repo_id, timeout = _MODEL_INFO_TIMEOUT_S
+        )
 
     try:
         info = await asyncio.to_thread(_probe)
@@ -508,7 +526,7 @@ async def _is_downloadable_model(repo_id: str, hf_token: Optional[str]) -> bool:
     # download.
     servable = bool(_gguf_variants(getattr(info, "siblings", None), repo_id))
     if not servable:
-        _mark_not_servable(repo_id, hf_token)
+        _mark_not_servable(repo_id, hf_token, endpoint)
     return servable
 
 
@@ -557,7 +575,9 @@ async def maybe_auto_download(
             busy = current
         else:
             adopted = None
-            provisional = _Active(repo_id = repo_id, started_at = time.time())
+            provisional = _Active(
+                repo_id = repo_id, started_at = time.time(), account_id = current_account_id()
+            )
             _active = provisional
 
     if busy is not None:
@@ -566,13 +586,14 @@ async def maybe_auto_download(
         # a 2nd download.
         if not await _is_downloadable_model(repo_id, hf_token):
             return None
+        if busy.account_id == current_account_id():
+            what = f"Already downloading '{_public_label(busy.repo_id, busy.variant)}'."
+        else:
+            what = "Another download is in progress."
         return AutoDownloadRefusal(
             status = 503,
             code = "model_download_busy",
-            message = (
-                f"Already downloading '{_public_label(busy.repo_id, busy.variant)}'. "
-                f"Retry '{requested_model}' once it finishes."
-            ),
+            message = f"{what} Retry '{requested_model}' once it finishes.",
             retry_after = _RETRY_AFTER_S,
         )
 
@@ -632,11 +653,13 @@ async def _admit_and_start(
     subject: Optional[str] = None,
     via_api_key: bool = False,
 ) -> Optional[AutoDownloadRefusal]:
-    from hub.utils.hf_errors import hf_error_status
+    from hub.utils.hf_errors import hf_error_status, modelscope_missing
+
+    endpoint = _endpoint()
 
     def _probe():
         from huggingface_hub import HfApi
-        return HfApi(token = _hub_token(hf_token)).model_info(
+        return HfApi(endpoint = endpoint, token = _hub_token(hf_token)).model_info(
             repo_id, files_metadata = True, timeout = _MODEL_INFO_TIMEOUT_S
         )
 
@@ -657,13 +680,14 @@ async def _admit_and_start(
         if status == 403:
             return _gated_refusal(repo_id)
         if status == 404:
-            _mark_not_servable(repo_id, hf_token)
+            _mark_not_servable(repo_id, hf_token, endpoint)
             if not looks_like_quant(wanted_variant):
                 return None
             return AutoDownloadRefusal(
                 status = 404,
                 code = "model_not_found",
-                message = (
+                message = modelscope_missing(exc)
+                or (
                     f"'{repo_id}' was not found on Hugging Face, or is not accessible. "
                     "If it is private, send a token in the X-Unsloth-HF-Token header."
                 ),
@@ -686,7 +710,7 @@ async def _admit_and_start(
     variants = _gguf_variants(getattr(info, "siblings", None), repo_id)
     if not variants:
         _release(active)
-        _mark_not_servable(repo_id, hf_token)
+        _mark_not_servable(repo_id, hf_token, endpoint)
         if not looks_like_quant(wanted_variant):
             return None
         return AutoDownloadRefusal(
@@ -777,7 +801,6 @@ async def _admit_and_start(
             default = (None, False),
         )
         if definitive and (audio_type is None or audio_type in GGUF_TTS_AUDIO_TYPES):
-            # Prefer the selected weight; use a supported sidecar only when it is inconclusive.
             sidecar_audio_type = audio_type
             main_files = sorted(getattr(plan, "main_filenames", ()) or ())
             probed_audio_type, probed_definitive = await _bounded_probe(
@@ -981,7 +1004,14 @@ async def _dispatch(
             tracked = active
         else:
             # Released underneath us: track the job we started, but never stomp a newer owner.
-            tracked = _Active(repo_id, variant, expected_bytes, monitor_id, time.time())
+            tracked = _Active(
+                repo_id,
+                variant,
+                expected_bytes,
+                monitor_id,
+                time.time(),
+                account_id = active.account_id,
+            )
             if _active is None:
                 _active = tracked
 

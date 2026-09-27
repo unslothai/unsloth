@@ -55,7 +55,8 @@ from utils.utils import safe_curated_detail, log_and_http_error
 
 logger = structlog.get_logger(__name__)
 
-router = APIRouter()
+
+router = APIRouter(dependencies = [Depends(get_current_subject)])
 
 # Only a UI session may define a local command; API keys keep http(s) MCP. Annotated, not a Depends default:
 # these routes are also called directly by the tests, where a Depends object is truthy and would read as "API key".
@@ -191,7 +192,9 @@ def list_builtins(
     if via_api_key or no_credential:
         item = blender.catalog_item()
         item.available = False
-        item.unavailable_reason = "An authenticated Studio UI session is required for Blender MCP."
+        item.unavailable_reason = (
+            "An authenticated Unsloth Studio UI session is required for Blender MCP."
+        )
         return [item]
     return [blender.catalog_item(_blender_row())]
 

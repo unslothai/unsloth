@@ -35,7 +35,14 @@ def _atomic_write_text(path: Path, data: str, encoding: str) -> None:
         mode = None
     fd, tmp_path = tempfile.mkstemp(prefix=".kwargs_fix.", dir=dirpath)
     try:
-        with os.fdopen(fd, "w", encoding=encoding) as handle:
+        # newline = "\n", not the default None. Default translates every "\n" to os.linesep,
+        # which on Windows is "\r\n", and the read side (tokenize.open, below) has already
+        # normalised CRLF to LF in memory -- so on Windows this rewrote EVERY file it touched to
+        # CRLF, against .gitattributes' own `*.py text eol=lf`. A Windows contributor running the
+        # pre-commit hook got a whole-file diff on everything they edited. "\n" rather than ""
+        # because it states the intended ending rather than "do not translate", and it holds even
+        # if the read side stops normalising.
+        with os.fdopen(fd, "w", encoding=encoding, newline="\n") as handle:
             handle.write(data)
             handle.flush()
             os.fsync(handle.fileno())

@@ -447,6 +447,7 @@ test("resident-model adoption migrates a deferred global-only snapshot", async (
     (put) => put.inferenceParams !== undefined,
   );
   assert.deepEqual(globalPut?.inferenceParams, {
+    minPMode: "custom",
     minP: 0,
     presencePenalty: 1.5,
   });
@@ -834,6 +835,7 @@ test("deferred adoption migrates the authoritative global when memory is off", a
     (put) => put.inferenceParams !== undefined,
   );
   assert.deepEqual(globalPatch?.inferenceParams, {
+    minPMode: "custom",
     minP: 0,
     presencePenalty: 1.5,
   });

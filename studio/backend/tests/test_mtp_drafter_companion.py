@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Separate-file drafter contracts: MTP (Gemma 4), DSpark and DFlash.
+"""Separate-file drafter contracts: MTP (Gemma 4), DSpark, DFlash and EAGLE3.
 
 Pins: the drafter-path predicate and its two layering mirrors, Gemma
 effective-size extraction, companion classification in variant plans
@@ -86,6 +86,11 @@ DRAFTER_CASES = [
     ("laguna-xs21-dflash-q4.gguf", False),
     ("xdspark/model.gguf", False),
     ("dspark/README.md", False),
+    ("eagle3-gpt-oss-20b-Q8_0.gguf", True),
+    ("EAGLE3-gpt-oss-20b-BF16.gguf", True),
+    ("quants/eagle3-gpt-oss-20b-Q8_0.gguf", True),
+    ("Llama-3.1-8B-Eagle3-Q4_K_M.gguf", False),
+    ("eagle3/Llama-3.1-8B-Eagle3-Q4_K_M.gguf", False),
 ]
 
 
@@ -156,6 +161,25 @@ def test_variant_plans_carry_drafter_as_companion():
     assert q4.download_size_bytes == 4_600
 
 
+GPT_OSS_FILES = [
+    "eagle3-gpt-oss-20b-BF16.gguf",
+    "eagle3-gpt-oss-20b-Q8_0.gguf",
+    "gpt-oss-20b-MXFP4.gguf",
+]
+
+
+def test_eagle3_draft_head_is_not_a_variant_or_the_default():
+    from hub.utils.gguf import pick_best_gguf
+
+    assert pick_best_gguf(GPT_OSS_FILES) == "gpt-oss-20b-MXFP4.gguf"
+
+    plans = build_gguf_variant_plans(
+        [_sib(name, 1_000, f"sha-{i}") for i, name in enumerate(GPT_OSS_FILES)]
+    )
+    assert set(plans) == {"mxfp4"}
+    assert plans["mxfp4"].target_filenames == ("gpt-oss-20b-MXFP4.gguf",)
+
+
 def test_baked_in_repo_plans_unchanged():
     plans = build_gguf_variant_plans([_sib("Qwen3.6-27B-MTP-Q4_K_M.gguf", 4_000, "q4")])
     assert plans["q4_k_m"].target_filenames == ("Qwen3.6-27B-MTP-Q4_K_M.gguf",)
@@ -174,6 +198,34 @@ def test_variant_plan_keeps_root_mtp_sidecar_until_metadata_is_available():
     assert plan.companion_hashes == frozenset({"drafter", "mmproj"})
     assert plan.required_hashes == frozenset({"drafter", "main", "mmproj"})
     assert plan.download_size_bytes == 4_600
+
+
+def test_variant_plan_keeps_every_nested_mtp_shard_or_none():
+    main = _sib("Qwen3.8-Flash-Next-Q4_K_M.gguf", 100, "main")
+    first = _sib(
+        "MTP/mtp-Qwen3.8-Flash-Next-Q8_0-00001-of-00002.gguf",
+        20,
+        "mtp-1",
+    )
+    second = _sib(
+        "MTP/mtp-Qwen3.8-Flash-Next-Q8_0-00002-of-00002.gguf",
+        20,
+        "mtp-2",
+    )
+
+    complete = build_gguf_variant_plans([main, first, second])["q4_k_m"]
+    assert complete.target_filenames == (
+        "Qwen3.8-Flash-Next-Q4_K_M.gguf",
+        "MTP/mtp-Qwen3.8-Flash-Next-Q8_0-00001-of-00002.gguf",
+        "MTP/mtp-Qwen3.8-Flash-Next-Q8_0-00002-of-00002.gguf",
+    )
+    assert complete.companion_hashes == frozenset({"mtp-1", "mtp-2"})
+    assert complete.download_size_bytes == 140
+
+    incomplete = build_gguf_variant_plans([main, first])["q4_k_m"]
+    assert incomplete.target_filenames == ("Qwen3.8-Flash-Next-Q4_K_M.gguf",)
+    assert incomplete.companion_hashes == frozenset()
+    assert incomplete.download_size_bytes == 100
 
 
 def test_old_manifest_resume_reclassifies_drafter():
@@ -2189,6 +2241,80 @@ def test_forced_dflash_without_a_sidecar_falls_back(monkeypatch):
     assert backend._spec_drafter_kind == "dflash"
 
 
+def test_a_dropped_unloadable_drafter_reports_its_own_reason(monkeypatch):
+    """ "Present but unopenable" is not "not found", and the remedies differ.
+
+    drafter_not_found tells a local load to place an mtp-*.gguf that is already on disk,
+    and offers a remote load a refetch that returns the same file -- which this branch
+    deliberately stands down. It is also in the frontend's RETRYABLE_SPEC_FALLBACKS, so
+    Apply kept sending a reload the backend then deduped.
+    """
+    backend = _spec_backend(monkeypatch)
+    flags = _spec_flags(
+        backend,
+        # The arm is _mtp_drafter_missing, which is the name-only (Gemma) MTP shape.
+        model_identifier = "unsloth/gemma-4-12b-it-GGUF",
+        speculative_type = "mtp",
+        mtp_draft_path = None,
+        mtp_drafter_unloadable = True,
+    )
+
+    assert backend._spec_fallback_reason == "drafter_unloadable"
+    assert "--model-draft" not in flags
+
+
+@pytest.mark.parametrize("mode", ["auto", "mtp"])
+def test_a_dropped_sidecar_is_explained_on_a_non_gemma_quant(monkeypatch, mode):
+    """The PR's own motivating case, which the Gemma-only fallback used to miss.
+
+    RVN-Q6_K.gguf reports no nextn_predict_layers and carries no -mtp in its name, so
+    the sidecar beside it was its ONLY MTP signal. Clearing mtp_draft_path made
+    is_mtp_model read false, _mtp_drafter_missing recognised Gemma alone, and neither
+    Auto nor forced MTP reached the fallback: MTP went off with spec_fallback_reason
+    null, so the panel had nothing to show. No --model-draft either way; emitting MTP
+    without a drafter is what aborts llama-server.
+    """
+    backend = _spec_backend(monkeypatch)
+    flags = _spec_flags(
+        backend,
+        model_identifier = "0bserverx/Qwen3.8-27B-Heretic-Abliterated-Uncensored-GGUF",
+        speculative_type = mode,
+        mtp_draft_path = None,
+        mtp_drafter_unloadable = True,
+    )
+
+    assert backend._spec_fallback_reason == "drafter_unloadable"
+    assert "--model-draft" not in flags
+    assert "draft-mtp" not in flags
+
+
+def test_a_plain_quant_with_no_sidecar_at_all_is_untouched(monkeypatch):
+    """The negative: keeping the dropped sidecar as a signal must not invent MTP for a
+    model that never had any. Nothing was dropped here, so nothing is explained."""
+    backend = _spec_backend(monkeypatch)
+    _spec_flags(
+        backend,
+        model_identifier = "0bserverx/Qwen3.8-27B-Heretic-Abliterated-Uncensored-GGUF",
+        speculative_type = "auto",
+        mtp_draft_path = None,
+    )
+
+    assert backend._spec_fallback_reason is None
+
+
+def test_a_genuinely_absent_drafter_still_reports_not_found(monkeypatch):
+    """The negative: the new reason must not swallow the case it was split out of."""
+    backend = _spec_backend(monkeypatch)
+    _spec_flags(
+        backend,
+        model_identifier = "unsloth/gemma-4-12b-it-GGUF",
+        speculative_type = "mtp",
+        mtp_draft_path = None,
+    )
+
+    assert backend._spec_fallback_reason == "drafter_not_found"
+
+
 def test_dspark_keeps_first_refusal_when_a_repo_ships_both(monkeypatch):
     """Mirrors llama.cpp's own downloader, which ranks dspark ahead of dflash.
     In practice a repo ships one kind or neither; this pins that adding DFlash
@@ -3902,3 +4028,153 @@ def test_split_completeness_is_scoped_to_the_files_own_directory():
     assert not split_listing_is_complete(names, names[1])
     whole = ["Q4/model-00001-of-00002.gguf", "Q4/model-00002-of-00002.gguf"]
     assert split_listing_is_complete(whole, whole[0])
+
+
+def _write_drafter_gguf(
+    path: Path,
+    *,
+    tensors: list[str],
+    arch: str = "qwen35",
+    shared: bool = False,
+    split_count: int = 0,
+) -> Path:
+    import numpy as np
+    from gguf import GGUFWriter
+
+    writer = GGUFWriter(str(path), arch)
+    if shared:
+        writer.add_bool(f"{arch}.nextn_shared_target_tensors", True)
+    if split_count:
+        writer.add_uint16("split.count", split_count)
+    for name in tensors:
+        writer.add_tensor(name, np.zeros((2, 2), dtype = np.float32))
+    writer.write_header_to_file()
+    writer.write_kv_data_to_file()
+    writer.write_tensors_to_file()
+    writer.close()
+    return path
+
+
+_HEAD_EXTRACT = ["output.weight", "blk.64.attn_norm.weight", "blk.64.nextn.eh_proj.weight"]
+
+
+@pytest.mark.parametrize(
+    "tensors,shared,expected",
+    [
+        # Published shapes: a bare head extract, unsloth's MTP/ head, a -shared- head. Each
+        # verdict is what llama-server b10909-mix-bea84f7 gives for that file as
+        # --model-draft: the first ends the launch on a missing token_embd.weight, the
+        # other two serve.
+        (_HEAD_EXTRACT, False, False),
+        (["token_embd.weight", "output_norm.weight", *_HEAD_EXTRACT], False, True),
+        (_HEAD_EXTRACT, True, True),
+    ],
+)
+def test_mtp_drafter_loads_standalone(tmp_path, tensors, shared, expected):
+    from core.inference.llama_cpp import _mtp_drafter_loads_standalone
+    drafter = _write_drafter_gguf(tmp_path / "mtp-model.gguf", tensors = tensors, shared = shared)
+    assert _mtp_drafter_loads_standalone(str(drafter)) is expected
+
+
+def test_a_lone_file_claiming_to_be_a_split_set_is_still_judged(tmp_path):
+    """``split.count`` alone is not an excuse: llama-server opens shards by FILENAME.
+
+    Exempting anything whose header said ``split.count > 1`` let a head-only file
+    through untested, and llama-server then ended the launch on it anyway (measured).
+    The exemption belongs to a set whose shards cannot all be inspected, not to a
+    single file that merely declares one.
+    """
+    from core.inference.llama_cpp import _mtp_drafter_loads_standalone
+
+    drafter = _write_drafter_gguf(tmp_path / "mtp-model.gguf", tensors = _HEAD_EXTRACT, split_count = 2)
+    assert _mtp_drafter_loads_standalone(str(drafter)) is False
+
+
+def test_a_complete_split_drafter_is_judged_across_every_shard(tmp_path):
+    """Shard 1 need not list every tensor, so the whole set answers, as for cls.*."""
+    from core.inference.llama_cpp import _mtp_drafter_loads_standalone
+
+    _write_drafter_gguf(
+        tmp_path / "mtp-model-00001-of-00002.gguf", tensors = _HEAD_EXTRACT, split_count = 2
+    )
+    _write_drafter_gguf(
+        tmp_path / "mtp-model-00002-of-00002.gguf",
+        tensors = ["token_embd.weight"],
+        split_count = 2,
+    )
+    # The embeddings live in shard 2; judging shard 1 alone would drop a working set.
+    assert _mtp_drafter_loads_standalone(str(tmp_path / "mtp-model-00001-of-00002.gguf")) is True
+
+    # The same set with the embeddings nowhere in it: every shard is readable and none
+    # carries them, so this one really cannot be opened as a draft.
+    headless = tmp_path / "headless"
+    headless.mkdir()
+    _write_drafter_gguf(
+        headless / "mtp-model-00001-of-00002.gguf", tensors = _HEAD_EXTRACT, split_count = 2
+    )
+    _write_drafter_gguf(
+        headless / "mtp-model-00002-of-00002.gguf",
+        tensors = ["blk.65.nextn.eh_proj.weight"],
+        split_count = 2,
+    )
+    assert _mtp_drafter_loads_standalone(str(headless / "mtp-model-00001-of-00002.gguf")) is False
+
+
+def test_an_incomplete_split_drafter_fails_open(tmp_path):
+    """A shard that is not here could hold the embeddings, so llama-server decides."""
+    from core.inference.llama_cpp import _mtp_drafter_loads_standalone
+
+    lone = _write_drafter_gguf(
+        tmp_path / "mtp-model-00001-of-00003.gguf", tensors = _HEAD_EXTRACT, split_count = 3
+    )
+    assert _mtp_drafter_loads_standalone(str(lone)) is True
+
+
+def test_the_drafter_verdict_is_cached_per_file_version(tmp_path):
+    """The estimate route asks on every settings change; it must not reparse each time."""
+    from core.inference.llama_cpp import _mtp_drafter_loads_standalone
+    from utils.models import gguf_metadata
+
+    drafter = _write_drafter_gguf(tmp_path / "mtp-model.gguf", tensors = _HEAD_EXTRACT)
+    calls: list[str] = []
+    real = gguf_metadata._parse_gguf_has_named_tensor
+
+    def counting(path, wanted_name):
+        calls.append(path)
+        return real(path, wanted_name)
+
+    gguf_metadata._parse_gguf_has_named_tensor = counting
+    try:
+        assert _mtp_drafter_loads_standalone(str(drafter)) is False
+        assert _mtp_drafter_loads_standalone(str(drafter)) is False
+        assert _mtp_drafter_loads_standalone(str(drafter)) is False
+        assert len(calls) == 1
+
+        # Rewritten in place with its embeddings: a new (mtime, size) is a new answer, so
+        # a repaired sidecar is picked up rather than served from the cache.
+        _write_drafter_gguf(
+            tmp_path / "mtp-model.gguf", tensors = ["token_embd.weight", *_HEAD_EXTRACT]
+        )
+        assert _mtp_drafter_loads_standalone(str(drafter)) is True
+    finally:
+        gguf_metadata._parse_gguf_has_named_tensor = real
+
+
+def test_mtp_drafter_loads_standalone_fails_open_on_an_unreadable_header(tmp_path):
+    """A refusal that rejects working input is worse than the crash it prevents."""
+    from core.inference.llama_cpp import _mtp_drafter_loads_standalone
+
+    junk = tmp_path / "mtp-model.gguf"
+    junk.write_bytes(b"not a gguf")
+    assert _mtp_drafter_loads_standalone(str(junk))
+    assert _mtp_drafter_loads_standalone(str(tmp_path / "missing.gguf"))
+
+
+def test_mtp_drafter_loads_standalone_needs_only_token_embd(tmp_path):
+    from core.inference.llama_cpp import _mtp_drafter_loads_standalone
+    drafter = _write_drafter_gguf(
+        tmp_path / "mtp-model.gguf",
+        tensors = ["token_embd.weight", "output.weight", "blk.48.nextn.eh_proj.weight"],
+        arch = "qwen4exp",
+    )
+    assert _mtp_drafter_loads_standalone(str(drafter))
