@@ -191,7 +191,7 @@ export function DecisionApiSection(): ReactElement | null {
           />
         </div>
         <div className="flex min-w-0 flex-col gap-0.5">
-          <h2 className="text-base font-semibold font-heading text-foreground">
+          <h2 className="settings-heading text-base font-semibold font-heading">
             {t("settings.apiKeys.decisionApi.title")}
           </h2>
           <p className="text-xs text-muted-foreground leading-relaxed">

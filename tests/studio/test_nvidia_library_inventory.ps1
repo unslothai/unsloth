@@ -63,7 +63,7 @@ $setupPs1 = Join-Path $root "studio\setup.ps1"
 
 Write-Host ""
 Write-Host "=== shared inventory helper ==="
-$blockNames = @("Get-NvidiaNvmlLibraryPath", "Get-NvidiaLibraryProbeType", "Read-NvidiaLibraryRaw", "Get-NvidiaLibraryInventory")
+$blockNames = @("Get-NvidiaNvmlLibraryPath", "Get-NvidiaLibraryProbeType", "Read-NvidiaLibraryRaw", "Get-NvidiaLibraryInventory", "Get-NvidiaSystem32Dir")
 $installParts = @(Get-HelperSources $installPs1 $blockNames)
 $setupParts = @(Get-HelperSources $setupPs1 $blockNames)
 $installBlock = $installParts[3]
@@ -79,6 +79,7 @@ for ($k = 0; $k -lt $blockNames.Count; $k++) {
 Check "the inventory compiles nothing" ((($setupParts -join "`n") -notmatch 'Add-Type') -and ($setupParts[1] -match 'New-StudioEmittedNativeType'))
 Check "the emission is gated on the native-type capability" ($setupParts[1] -match 'if \(-not \(Test-StudioCanDefineNativeTypes\)\) \{ return \$null \}')
 Invoke-Expression $setupPath
+Invoke-Expression $setupParts[4]
 $pathRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("unsloth-nvml-" + [guid]::NewGuid().ToString("N"))
 $sys32 = Join-Path (Join-Path $pathRoot "root") "System32"
 $nvsmi = Join-Path (Join-Path $pathRoot "pf") "NVIDIA Corporation\NVSMI"
@@ -86,7 +87,7 @@ New-Item -ItemType Directory -Path $sys32, $nvsmi -Force | Out-Null
 $savedRoot = $env:SystemRoot; $savedPf = $env:ProgramFiles
 try {
     $env:SystemRoot = Join-Path $pathRoot "root"; $env:ProgramFiles = Join-Path $pathRoot "pf"
-    Check "no nvml.dll on disk keeps the bare name" ((Get-NvidiaNvmlLibraryPath) -eq "nvml.dll")
+    Check "no nvml.dll on disk still names the System32 path" ((Get-NvidiaNvmlLibraryPath) -eq (Join-Path $sys32 "nvml.dll"))
     Set-Content -Path (Join-Path $nvsmi "nvml.dll") -Value ""
     Check "an NVSMI-only nvml.dll is named by its path" ((Get-NvidiaNvmlLibraryPath) -eq (Join-Path $nvsmi "nvml.dll"))
     Set-Content -Path (Join-Path $sys32 "nvml.dll") -Value ""
@@ -95,6 +96,7 @@ try {
     $env:SystemRoot = $savedRoot; $env:ProgramFiles = $savedPf
     Remove-Item -LiteralPath $pathRoot -Recurse -Force -ErrorAction SilentlyContinue
 }
+Check "nvcuda.dll is bound by its System32 path" ($setupParts[1] -match '\$cuda = if \(\$windows\) \{ Join-Path \(Get-NvidiaSystem32Dir\) "nvcuda\.dll" \}')
 Check "a failed driver-version read is not an inventory" (
     $readBlock -match 'nvmlSystemGetCudaDriverVersion_v2\(\[ref\]\$ver\) -ne 0' -and
     $readBlock -match 'cuDriverGetVersion\(\[ref\]\$ver\) -ne 0')
