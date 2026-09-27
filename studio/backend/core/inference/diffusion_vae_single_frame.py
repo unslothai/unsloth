@@ -18,9 +18,9 @@ Also what makes the decode compile well: inductor's conv layout optimisation onl
 convolutions, so the stock graph (24 conv3d) gained nothing from compile while the rewritten one is
 a plain 2D conv net. Idea credited to ComfyUI's single-frame Wan VAE path (ideas only, no code).
 
-Only a single frame, untiled, takes the fast decode/encode; every other call runs the stock method.
-The per-conv 2D form also serves a video walk's first chunk (no cache, one frame), where it is the
-same arithmetic. Not bit-identical to the 3D conv (a different cuDNN algorithm): PSNR ~60 dB on the
+Only a single frame, untiled, takes the fast decode/encode; every other call runs the stock method,
+bit-identical: the per-conv 2D form is gated to the fast calls, so a tiled or multi-frame walk (whose
+first chunk also reaches each conv with no cache and one frame) keeps its 3D convs. Not bit-identical to the 3D conv (a different cuDNN algorithm): PSNR ~60 dB on the
 Qwen-Image-2512 VAE, so it is armed only on a non-``off`` speed tier. Kill switch, read at install
 (never inside the compiled decode): ``UNSLOTH_DIFFUSION_VAE_SINGLE_FRAME=0``."""
 
@@ -36,6 +36,13 @@ _VAE_CLASSES = frozenset({"AutoencoderKLQwenImage"})
 _CONV_CLASSES = frozenset({"QwenImageCausalConv3d"})
 
 
+class _Gate:
+    """Shared by one VAE's convs: on only for the duration of a fast single-frame decode / encode."""
+
+    def __init__(self) -> None:
+        self.on = False
+
+
 def single_frame_disabled() -> bool:
     return (os.environ.get(SINGLE_FRAME_ENV) or "").strip().lower() in ("0", "off", "false", "no")
 
@@ -47,7 +54,8 @@ def _conv_forward(self: Any, x: Any, cache_x: Any = None) -> Any:
     pad = self._padding
     kt = self.kernel_size[0]
     if (
-        cache_x is None
+        self._unsloth_sf_gate.on
+        and cache_x is None
         and x.dim() == 5
         and x.shape[2] == 1
         and self.stride[0] == 1
@@ -94,8 +102,13 @@ def _fast_decode(self: Any, z: Any, return_dict: bool = True) -> Any:
         return stock(z, return_dict = return_dict)
     import torch
 
-    x = self.post_quant_conv(z)
-    out = torch.clamp(self.decoder(x), min = -1.0, max = 1.0)
+    gate = self._unsloth_sf_gate
+    gate.on = True
+    try:
+        x = self.post_quant_conv(z)
+        out = torch.clamp(self.decoder(x), min = -1.0, max = 1.0)
+    finally:
+        gate.on = False
     if not return_dict:
         return (out,)
     from diffusers.models.autoencoders.vae import DecoderOutput
@@ -107,7 +120,12 @@ def _fast_encode(self: Any, x: Any) -> Any:
     stock = self._unsloth_stock_encode
     if not _single_frame(self, x) or _tiles(self, x, True):
         return stock(x)
-    return self.quant_conv(self.encoder(x))
+    gate = self._unsloth_sf_gate
+    gate.on = True
+    try:
+        return self.quant_conv(self.encoder(x))
+    finally:
+        gate.on = False
 
 
 def install(vae: Any, logger: Any = None) -> bool:
@@ -123,8 +141,11 @@ def install(vae: Any, logger: Any = None) -> bool:
         # Probe the attributes the fast path reads, before arming anything.
         for m in convs:
             _ = (m._padding[5], m.kernel_size[0], m.stride[0], m.dilation[0], m.groups)
+        gate = _Gate()
         for m in convs:
+            m._unsloth_sf_gate = gate
             m.forward = types.MethodType(_conv_forward, m)
+        vae._unsloth_sf_gate = gate
         vae._unsloth_stock_decode = vae._decode
         vae._decode = types.MethodType(_fast_decode, vae)
         if callable(getattr(vae, "_encode", None)) and hasattr(vae, "encoder") and hasattr(vae, "quant_conv"):
