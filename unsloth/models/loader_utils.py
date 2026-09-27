@@ -1419,6 +1419,18 @@ def _offload_store_set(store, key, value):
         raise TypeError(f"Unsloth: cannot write offloaded tensor into {type(store).__name__}")
 
 
+_FP8_SCALE_RESTORED_ATTR = "_unsloth_fp8_scale_restored"
+
+
+def _mark_fp8_scale_restored(module):
+    # On the module and its weight Parameter (the Parameter survives `.data` swaps and can be shared).
+    for obj in (module, getattr(module, "weight", None)):
+        try:
+            setattr(obj, _FP8_SCALE_RESTORED_ATTR, True)
+        except Exception:
+            pass
+
+
 def _restore_dropped_fp8_scales(
     model,
     model_name,
@@ -1471,6 +1483,12 @@ def _restore_dropped_fp8_scales(
             if not isinstance(weight, torch.Tensor) or weight.ndim != 2:
                 continue
             if weight.dtype in _FP8_DTYPES and _has_fp8_scale_attr(module):
+                skipped += 1
+                continue
+            # The fp8-grid check below misses power-of-two scales, so remember what was already scaled.
+            if getattr(module, _FP8_SCALE_RESTORED_ATTR, False) or getattr(
+                weight, _FP8_SCALE_RESTORED_ATTR, False
+            ):
                 skipped += 1
                 continue
             store_key = None
@@ -1537,6 +1555,7 @@ def _restore_dropped_fp8_scales(
                         module.weight.data = _apply_fp8_block_scale(
                             value, scale.to(weight.device), bs0, bs1
                         )
+                _mark_fp8_scale_restored(module)
                 restored += 1
             except Exception:
                 failed += 1

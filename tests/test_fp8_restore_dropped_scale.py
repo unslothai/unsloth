@@ -717,3 +717,39 @@ def test_disk_offloaded_orphan_stays_on_disk():
         assert torch.equal(store[key], expected)
         x = torch.randn(3, 4, dtype = torch.bfloat16)
         assert torch.equal(model.model.gate_proj(x), torch.nn.functional.linear(x, expected))
+
+
+def test_power_of_two_scale_is_applied_once():
+    """A power-of-two scale keeps the scaled weight on the fp8 grid; a repeat pass must still skip it."""
+    if _FP8 is None:
+        return
+    import pytest
+
+    pytest.importorskip("accelerate")
+    scale = torch.full((2, 2), 0.5)
+    raw_fp8 = torch.full((4, 4), 1.0).to(_FP8)
+    expected = torch.full((4, 4), 0.5, dtype = torch.bfloat16)
+    for holds, offload in (("bf16", False), ("fp8", False), ("bf16", True), ("fp8", True)):
+        model = nn.Module()
+        model.config = _fp8_config((2, 2))
+        model.anchor = _fp8_anchor()
+        model.model = nn.Module()
+        if holds == "fp8":
+            model.model.gate_proj = _fp8_linear(4, 4, raw_fp8.clone())
+        else:
+            model.model.gate_proj = _bf16_linear(4, 4, raw_fp8.to(torch.bfloat16))
+        with tempfile.TemporaryDirectory() as d:
+            store = _offload(model, "model.gate_proj") if offload else None
+            _write_checkpoint(d, {"model.language_model.gate_proj.weight_scale_inv": scale})
+            first = _restore_dropped_fp8_scales(
+                model, d, local_files_only = True, dtype = torch.bfloat16
+            )
+            second = _restore_dropped_fp8_scales(
+                model, d, local_files_only = True, dtype = torch.bfloat16
+            )
+        assert first == (1, 0) and second == (0, 1), (holds, offload, first, second)
+        if offload:
+            got = store["model.gate_proj.weight"].to(torch.bfloat16)
+        else:
+            got = model.model.gate_proj.weight.data
+        assert torch.equal(got, expected), (holds, offload)
