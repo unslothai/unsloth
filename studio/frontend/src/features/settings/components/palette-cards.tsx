@@ -32,10 +32,10 @@ const PREVIEWS: Record<Palette, Record<ResolvedTheme, PreviewColors>> = {
     },
     dark: {
       bg: "#181818",
-      sidebar: "#262626",
+      sidebar: "#272727",
       accent: "#17b88b",
-      text: "#b5b5b5",
-      border: "#303030",
+      text: "#dfdfdf",
+      border: "#3a3a3a",
     },
   },
   classic: {
@@ -48,10 +48,10 @@ const PREVIEWS: Record<Palette, Record<ResolvedTheme, PreviewColors>> = {
     },
     dark: {
       bg: "#181818",
-      sidebar: "#262626",
+      sidebar: "#272727",
       accent: "#4dabff",
-      text: "#b5b5b5",
-      border: "#303030",
+      text: "#dfdfdf",
+      border: "#3a3a3a",
     },
   },
   minimal: {
@@ -64,10 +64,10 @@ const PREVIEWS: Record<Palette, Record<ResolvedTheme, PreviewColors>> = {
     },
     dark: {
       bg: "#181818",
-      sidebar: "#262626",
+      sidebar: "#272727",
       accent: "#ededed",
-      text: "#a8a8a8",
-      border: "#303030",
+      text: "#dfdfdf",
+      border: "#3a3a3a",
     },
   },
 };

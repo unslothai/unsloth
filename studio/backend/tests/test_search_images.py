@@ -10,7 +10,6 @@ from __future__ import annotations
 import asyncio
 import io
 import json
-import sys
 import threading
 from email.message import Message
 from pathlib import Path
@@ -149,6 +148,7 @@ def test_web_search_appends_tokens_and_envelope_when_images_are_on(monkeypatch):
             self,
             query,
             max_results = 5,
+            **kwargs,
         ):
             return [{"title": "AKC", "href": "https://akc.org/x", "body": "Breeds"}]
 
@@ -161,7 +161,7 @@ def test_web_search_appends_tokens_and_envelope_when_images_are_on(monkeypatch):
             calls["images"] = (query, max_results, kwargs)
             return RAW_IMAGES
 
-    monkeypatch.setitem(sys.modules, "ddgs", SimpleNamespace(DDGS = FakeDDGS))
+    monkeypatch.setattr("ddgs.DDGS", FakeDDGS)
 
     plain = tools._web_search("dog breeds")
     assert "[[img:" not in plain
@@ -194,6 +194,7 @@ def test_web_search_survives_an_image_engine_failure(monkeypatch):
             self,
             query,
             max_results = 5,
+            **kwargs,
         ):
             return [{"title": "AKC", "href": "https://akc.org/x", "body": "Breeds"}]
 
@@ -205,7 +206,7 @@ def test_web_search_survives_an_image_engine_failure(monkeypatch):
         ):
             raise RuntimeError("engine down")
 
-    monkeypatch.setitem(sys.modules, "ddgs", SimpleNamespace(DDGS = FakeDDGS))
+    monkeypatch.setattr("ddgs.DDGS", FakeDDGS)
     result = tools._web_search("dog breeds", include_images = True)
     assert "Title: AKC" in result
     assert search_images.SEARCH_IMAGES_SENTINEL not in result
@@ -220,10 +221,11 @@ def test_web_search_without_an_images_method_is_unchanged(monkeypatch):
             self,
             query,
             max_results = 5,
+            **kwargs,
         ):
             return [{"title": "AKC", "href": "https://akc.org/x", "body": "Breeds"}]
 
-    monkeypatch.setitem(sys.modules, "ddgs", SimpleNamespace(DDGS = FakeDDGS))
+    monkeypatch.setattr("ddgs.DDGS", FakeDDGS)
     assert tools._web_search("q", include_images = True) == tools._web_search("q")
 
 
@@ -280,7 +282,7 @@ class _SubjectDDGS:
 
 def test_image_search_returns_tokens_grouped_by_subject(monkeypatch):
     _SubjectDDGS.calls = []
-    monkeypatch.setitem(sys.modules, "ddgs", SimpleNamespace(DDGS = _SubjectDDGS))
+    monkeypatch.setattr("ddgs.DDGS", _SubjectDDGS)
 
     result = tools._image_search(
         ["German Shepherd", " german shepherd ", "Labrador", "Nothing Here", "Broken"],
@@ -307,7 +309,7 @@ def test_image_search_returns_tokens_grouped_by_subject(monkeypatch):
 
 
 def test_image_queries_alone_are_a_pure_image_lookup(monkeypatch):
-    monkeypatch.setitem(sys.modules, "ddgs", SimpleNamespace(DDGS = _SubjectDDGS))
+    monkeypatch.setattr("ddgs.DDGS", _SubjectDDGS)
     off = tools.execute_tool("web_search", {"image_queries": ["Pug"]})
     assert off == tools.IMAGE_SEARCH_DISABLED
     on = tools.execute_tool("web_search", {"image_queries": ["Pug"]}, search_images = True)
@@ -326,11 +328,12 @@ def test_web_search_with_image_queries_gives_one_picture_per_subject(monkeypatch
             self,
             query,
             max_results = 5,
+            **kwargs,
         ):
             return [{"title": "AKC", "href": "https://akc.org/x", "body": "Breeds"}]
 
     _SubjectDDGS.calls = []
-    monkeypatch.setitem(sys.modules, "ddgs", SimpleNamespace(DDGS = Both))
+    monkeypatch.setattr("ddgs.DDGS", Both)
     result = tools._web_search(
         "top dog breeds", include_images = True, image_queries = ["Pug", "Beagle"]
     )
@@ -353,6 +356,7 @@ def test_named_subjects_survive_a_text_sweep_that_finds_nothing(monkeypatch):
             self,
             query,
             max_results = 5,
+            **kwargs,
         ):
             return []
 
@@ -365,6 +369,7 @@ def test_named_subjects_survive_a_text_sweep_that_finds_nothing(monkeypatch):
             self,
             query,
             max_results = 5,
+            **kwargs,
         ):
             raise DDGSException("No results found for the given query.")
 
@@ -373,12 +378,13 @@ def test_named_subjects_survive_a_text_sweep_that_finds_nothing(monkeypatch):
             self,
             query,
             max_results = 5,
+            **kwargs,
         ):
             return [{"title": "X", "href": "https://blocked.example/x", "body": "b"}]
 
     for engine in (NoText, RaisesEmpty):
         _SubjectDDGS.calls = []
-        monkeypatch.setitem(sys.modules, "ddgs", SimpleNamespace(DDGS = engine))
+        monkeypatch.setattr("ddgs.DDGS", engine)
         result = tools._web_search("top dog breeds", include_images = True, image_queries = ["Pug"])
         assert tools.EMPTY_SEARCH_RESULTS[0] in result
         assert "Pug:\n- [[img:" in result
@@ -394,7 +400,7 @@ def test_named_subjects_survive_a_text_sweep_that_finds_nothing(monkeypatch):
 
     # Every hit filtered out by the website policy is the same empty answer.
     _SubjectDDGS.calls = []
-    monkeypatch.setitem(sys.modules, "ddgs", SimpleNamespace(DDGS = OnlyBlocked))
+    monkeypatch.setattr("ddgs.DDGS", OnlyBlocked)
     scoped = tools._web_search(
         "top dog breeds",
         include_images = True,
@@ -413,11 +419,12 @@ def test_a_genuine_search_failure_carries_no_pictures(monkeypatch):
             self,
             query,
             max_results = 5,
+            **kwargs,
         ):
             raise RuntimeError("upstream exploded")
 
     _SubjectDDGS.calls = []
-    monkeypatch.setitem(sys.modules, "ddgs", SimpleNamespace(DDGS = Boom))
+    monkeypatch.setattr("ddgs.DDGS", Boom)
     result = tools._web_search("top dog breeds", include_images = True, image_queries = ["Pug"])
     # Pictures under an error would read as a partial answer.
     assert result.startswith("Search failed:") and "[[img:" not in result
@@ -481,7 +488,7 @@ def test_clear_all_chats_invalidates_an_image_lookup_already_in_a_thread(monkeyp
             release.wait(2)
             return RAW_IMAGES
 
-    monkeypatch.setitem(sys.modules, "ddgs", SimpleNamespace(DDGS = BlockingDDGS))
+    monkeypatch.setattr("ddgs.DDGS", BlockingDDGS)
 
     async def race_clear_against_lookup():
         task = asyncio.create_task(asyncio.to_thread(tools._image_search, ["Pug"], 20))
@@ -613,7 +620,7 @@ def test_web_search_tool_with_images_adds_the_field_without_touching_the_base():
 
 def test_image_search_caps_the_subject_count(monkeypatch):
     _SubjectDDGS.calls = []
-    monkeypatch.setitem(sys.modules, "ddgs", SimpleNamespace(DDGS = _SubjectDDGS))
+    monkeypatch.setattr("ddgs.DDGS", _SubjectDDGS)
     tools._image_search([f"Breed {i}" for i in range(9)])
     assert len(_SubjectDDGS.calls) == tools.IMAGE_SEARCH_MAX_QUERIES
 
@@ -864,7 +871,7 @@ def test_route_serves_registered_thumbnails_only(client, monkeypatch):
 
 
 def test_lookup_route_returns_subject_images_only_when_enabled(client, monkeypatch):
-    monkeypatch.setitem(sys.modules, "ddgs", SimpleNamespace(DDGS = _SubjectDDGS))
+    monkeypatch.setattr("ddgs.DDGS", _SubjectDDGS)
     monkeypatch.setattr(search_images, "search_images_enabled", lambda: False)
     assert (
         client.post("/api/inference/search-images/lookup", json = {"subjects": ["Pug"]}).status_code
@@ -1016,6 +1023,7 @@ def _fake_ddgs_with_text(monkeypatch):
             self,
             query,
             max_results = 5,
+            **kwargs,
         ):
             return [{"title": "AKC", "href": "https://akc.org/x", "body": "Breeds"}]
 
@@ -1027,7 +1035,7 @@ def _fake_ddgs_with_text(monkeypatch):
         ):
             return RAW_IMAGES
 
-    monkeypatch.setitem(sys.modules, "ddgs", SimpleNamespace(DDGS = FakeDDGS))
+    monkeypatch.setattr("ddgs.DDGS", FakeDDGS)
 
 
 def test_a_failing_subject_lookup_does_not_discard_the_text_results(monkeypatch):

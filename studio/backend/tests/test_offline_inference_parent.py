@@ -129,7 +129,7 @@ class TestTransformersVersionOfflineShortCircuits:
         def boom(*a, **k):
             raise AssertionError("urlopen must not be called when offline")
 
-        with patch("urllib.request.urlopen", boom):
+        with patch("utils.utils.auth_safe_open", boom):
             assert _check_tokenizer_config_needs_v5(unique) is False
 
     def test_config_550_skips_urllib_when_offline(self, monkeypatch, clean_offline_env, tmp_path):
@@ -139,7 +139,7 @@ class TestTransformersVersionOfflineShortCircuits:
         def boom(*a, **k):
             raise AssertionError("urlopen must not be called when offline")
 
-        with patch("urllib.request.urlopen", boom):
+        with patch("utils.utils.auth_safe_open", boom):
             assert _check_config_needs_550(unique) is False
 
 

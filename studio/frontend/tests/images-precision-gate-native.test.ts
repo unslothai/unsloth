@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import ts from "typescript";
 
-import { isNativeEngineStatus } from "../src/lib/resolved-precision.ts";
+import { isDenseQuantKind, isNativeEngineStatus } from "../src/lib/resolved-precision.ts";
 import { readSrc } from "./helpers/kit.ts";
 
 /** The Images page's Precision gate, evaluated the way the component evaluates it. */
@@ -17,7 +17,7 @@ function precisionControlShown(status: {
 } | null): boolean {
   return (
     !status?.loaded
-    || (status.model_kind === "gguf" && !isNativeEngineStatus(status))
+    || (isDenseQuantKind(status.model_kind) && !isNativeEngineStatus(status))
   );
 }
 
@@ -43,10 +43,12 @@ test("the Precision control is offered for a diffusers GGUF and withheld from na
     true,
     "a diffusers GGUF load is exactly what transformer_quant is for",
   );
+  // An official pipeline pick now resolves to the hosted FP8 or INT8 checkpoint, so it takes a
+  // precision request too; it is quantised in place rather than swapped for a GGUF.
   assert.equal(
     precisionControlShown({ ...DIFFUSERS_GGUF, model_kind: "pipeline" }),
-    false,
-    "a full pipeline has no GGUF to quantise",
+    true,
+    "a pipeline pick is quantised in place, so Precision applies to it",
   );
   // The regression this guards: sd.cpp reports transformer_quant null and no `resolved`
   // map, so an offered control has no badge and snaps back on the next load.
@@ -68,9 +70,10 @@ test("the Images page gates Precision on the engine, not on model_kind alone", (
     ts.ScriptKind.TSX,
   );
   void tree;
-  const gate = source.includes(
-    'status.model_kind === "gguf" && !isNativeEngineStatus(status)',
-  );
+  // Pinned on the native-engine exclusion, not on the kind test beside it: the kind test widened
+  // from a bare GGUF check to sendsTransformerQuant when pipeline picks became quantisable, and
+  // this guard is about the ENGINE.
+  const gate = source.includes("&& !isNativeEngineStatus(status)");
   assert.ok(
     gate,
     "the Precision gate must exclude the native engine; a bare "

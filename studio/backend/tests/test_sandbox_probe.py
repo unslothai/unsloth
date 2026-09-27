@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""What the live probe is allowed to conclude, and from what.
-
-The confining backend is simulated in-process rather than skipped: the CI host
-cannot build a real sandbox, and "skipped" would leave the positive half of
-every pairing untested.
-"""
+"""What the live probe is allowed to conclude, and from what."""
 
 from __future__ import annotations
 
@@ -113,8 +108,7 @@ def _wrap(
     resolve = True,
     leak_writes = False,
 ):
-    """A builtins.open guard, not a kernel namespace. Import machinery uses
-    io.open_code, so the payload's own imports still work."""
+    """A builtins.open guard, not a kernel namespace."""
     wrapper = _CONFINE_WRAPPER.format(
         workdir = plan.workdir,
         payload = plan.argv[-1],
@@ -125,8 +119,6 @@ def _wrap(
         argv = plan.argv[:-1] + (wrapper,),
         workdir = plan.workdir,
         env = plan.env,
-        # A backend claiming to confine has to carry the abstract-socket scope or
-        # the probe refuses it, which is the point of that control.
         preexec_fn = sandbox_landlock.with_abstract_scope(plan.preexec_fn),
         backend = name,
     )
@@ -159,16 +151,14 @@ def test_a_backend_that_really_confines_is_available():
 
 
 def test_the_symlink_leg_is_judged_on_the_target_not_the_path():
-    """A spelling-only guard passes the sentinel leg and fails here, so the two legs
-    are not redundant."""
+    """A spelling-only guard passes the sentinel leg and fails here, so the two legs are not redundant."""
     available, reason = sandbox_probe.probe(_Backend("spelling-only", _spelling_only))
     assert available is False
     assert "symlink" in reason, reason
 
 
 def test_a_write_that_reaches_the_host_fails_the_probe():
-    """This backend passes every control the sandboxed process can evaluate and
-    still lands a write on the host, which only the host can see."""
+    """This backend passes every control the sandboxed process can evaluate and still lands a write on the host, which only the host can see."""
     available, reason = sandbox_probe.probe(_Backend("leaky", _leaking_writes))
     assert available is False
     assert "wrote through to the host" in reason, reason
@@ -226,8 +216,6 @@ def test_a_host_that_fails_the_positive_half_is_not_blamed_on_the_backend():
 def test_the_scratch_root_fits_an_af_unix_address():
     base = sandbox_probe._probe_base()
     try:
-        # base + "/work/tmp" + "/pymp-XXXXXXXX/listener-XXXXXXXX" must fit in
-        # sun_path (108 bytes with the NUL).
         assert len(base) + len("/work/tmp") + 32 < 108, base
     finally:
         import shutil as _shutil
@@ -279,8 +267,6 @@ def test_a_backend_that_only_prints_the_token_is_not_believed():
             backend = "liar",
         )
 
-    # The probe cannot detect a backend that rewrites its own payload, so this
-    # pins the weaker guarantee: the payload HANDED OVER carries every control.
     backend = _Backend("liar", liar)
     sandbox_probe.probe(backend)
     handed_over = backend.prepared and True
@@ -318,7 +304,6 @@ def test_the_launch_is_built_by_the_backend_not_by_the_probe():
 
     sandbox_probe.probe(_Backend("capture", capture))
     assert isinstance(plan, ToolLaunchPlan)
-    # A real launch plan, so the probe exercises the code path that runs.
     assert plan.execution_kind == "python"
     assert plan.env["HOME"] == plan.workdir
     assert plan.env["TMPDIR"].startswith(plan.workdir + os.sep)
@@ -373,6 +358,18 @@ def test_the_cache_is_keyed_on_the_backend_as_well_as_the_runtime():
     passthrough = _Backend("passthrough", _passthrough)
     assert sandbox_probe.probe(confining)[0] is True
     assert sandbox_probe.probe(passthrough)[0] is False
+
+
+def test_linux_runtime_identity_includes_the_verified_bwrap(monkeypatch):
+    from core.inference import sandbox_linux
+
+    monkeypatch.setattr(os_sandbox.sys, "platform", "linux")
+    identity = ["/usr/bin/bwrap:first"]
+    monkeypatch.setattr(sandbox_linux, "bwrap_identity", lambda: identity[0])
+    first = os_sandbox._runtime_identity()
+
+    identity[0] = "/usr/bin/bwrap:replacement"
+    assert os_sandbox._runtime_identity() != first
 
 
 def test_an_expired_verdict_is_re_probed(monkeypatch):
@@ -444,9 +441,6 @@ def test_the_payload_requires_the_abstract_socket_to_be_out_of_reach():
 
 
 def test_the_symlink_leg_survives_a_probe_base_reached_through_a_symlink(monkeypatch):
-    # Short names, under the same short root the probe itself prefers: a base over
-    # _MAX_PROBE_BASE_LEN makes the fd-passing control's AF_UNIX address too long
-    # and the HOST half fails, which says nothing about the symlink.
     root = "/tmp" if os.path.isdir("/tmp") else tempfile.gettempdir()
     holder = tempfile.mkdtemp(prefix = "us-sym-", dir = root)
     real = pathlib.Path(holder) / "r"
@@ -461,7 +455,7 @@ def test_the_symlink_leg_survives_a_probe_base_reached_through_a_symlink(monkeyp
 
     monkeypatch.setattr(sandbox_probe.tempfile, "mkdtemp", through_the_symlink)
     try:
-        assert str(alias.resolve()) != str(alias)  # the premise, not an assumption
+        assert str(alias.resolve()) != str(alias)
         available, reason = sandbox_probe.probe(_Backend("spelling-only", _spelling_only))
         assert available is False
         assert "symlink" in reason, reason
@@ -476,15 +470,90 @@ def test_the_landlock_helper_imports_where_it_will_never_be_used():
     guard = re.search(r"except \(([^)]*)\):[^\n]*\n(?:\s*#[^\n]*\n)*\s*_libc = None", source)
     assert guard, "the CDLL(None) import guard moved; this test no longer checks it"
     assert "TypeError" in guard.group(1), guard.group(1)
-    # Every entry point has to survive _libc being None, or the guard only moves
-    # the failure from import to first use.
     real = sandbox_landlock._libc
     sandbox_landlock._libc = None
     sandbox_landlock.abstract_scope_supported.cache_clear()
     try:
         assert sandbox_landlock.abstract_scope_supported() is False
-        sandbox_landlock.apply_abstract_scope()  # a no-op, not a crash
+        sandbox_landlock.apply_abstract_scope()
         sandbox_landlock.with_abstract_scope(None)()
     finally:
         sandbox_landlock._libc = real
         sandbox_landlock.abstract_scope_supported.cache_clear()
+
+
+def test_a_cached_verdict_outlives_the_old_sixty_second_window(monkeypatch, tmp_path):
+    """The TTL was 60s, so an idle chat paid the cold probe again on its next message: a call 70s after the last one cost 1.24s against 0.040s unsandboxed."""
+    from core.inference import sandbox_probe
+
+    assert sandbox_probe._CACHE_TTL_SECONDS >= 600, (
+        "the probe TTL is back under 10 minutes; an idle chat pays the cold "
+        "probe again on its next message"
+    )
+
+    calls = []
+
+    class Backend:
+        BACKEND_NAME = "ttl-probe"
+
+        @staticmethod
+        def prepare(plan):
+            calls.append(plan)
+            raise AssertionError("the probe should not have re-run inside the TTL")
+
+    sandbox_probe.reset_probe_cache()
+    clock = {"now": 1000.0}
+    monkeypatch.setattr(sandbox_probe.time, "monotonic", lambda: clock["now"])
+
+    from core.inference import os_sandbox as _os_sandbox
+
+    key = (Backend.BACKEND_NAME, _os_sandbox._runtime_identity())
+    sandbox_probe._cache[key] = (
+        clock["now"] + sandbox_probe._CACHE_TTL_SECONDS,
+        True,
+        "seeded",
+    )
+
+    clock["now"] += 70.0
+    available, reason = sandbox_probe.probe(Backend)
+    assert (available, reason) == (True, "seeded")
+    assert calls == [], "the probe re-ran 70s later, which is the cost this fixed"
+
+
+def test_an_unavailable_verdict_is_not_cached_for_the_long_window(monkeypatch, tmp_path):
+    """A user who installs bubblewrap must not wait 15 minutes for it to count."""
+    from core.inference import os_sandbox as _os_sandbox
+    from core.inference import sandbox_probe
+
+    assert (
+        sandbox_probe._CACHE_TTL_UNAVAILABLE_SECONDS <= 120
+    ), "an unavailable verdict is cached long enough to outlive the user's own remediation"
+
+    probes = []
+
+    class Backend:
+        BACKEND_NAME = "unavailable-probe"
+
+        @staticmethod
+        def prepare(plan):
+            probes.append(plan)
+            raise RuntimeError("bubblewrap is not installed")
+
+    sandbox_probe.reset_probe_cache()
+    clock = {"now": 5000.0}
+    monkeypatch.setattr(sandbox_probe.time, "monotonic", lambda: clock["now"])
+
+    available, _ = sandbox_probe.probe(Backend)
+    assert available is False
+    assert len(probes) == 1
+
+    clock["now"] += 30.0
+    sandbox_probe.probe(Backend)
+    assert len(probes) == 1, "an unavailable verdict should still be cached briefly"
+
+    clock["now"] += 100.0
+    sandbox_probe.probe(Backend)
+    assert len(probes) == 2, (
+        "the host was never re-examined, so installing bubblewrap does not "
+        "take effect until the long TTL expires"
+    )

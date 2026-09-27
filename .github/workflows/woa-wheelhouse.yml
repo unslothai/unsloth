@@ -51,7 +51,7 @@ env:
   # Windows ARM64 support in Arrow's wheel build is CI-only and still unmerged, so it is
   # overlaid onto the release tag. Both halves move together or not at all.
   ARROW_WOA_REPO: MugundanMCW/arrow
-  ARROW_WOA_REF: Pyarrow_WoA
+  ARROW_WOA_REF: 423b9b38f85a2b7634f7fc8e4975b3ed573f3697  # Pyarrow_WoA @ 2026-08-18
 
 jobs:
   build-pyarrow:
@@ -67,17 +67,17 @@ jobs:
       ARCH: ARM64
     steps:
       - name: Harden runner (audit)
-        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c  # v2.21.0
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1  # v2.21.1
         with:
           egress-policy: audit
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           repository: apache/arrow
           ref: ${{ inputs.arrow_tag }}
           path: arrow
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           repository: ${{ env.ARROW_WOA_REPO }}
           ref: ${{ env.ARROW_WOA_REF }}
@@ -86,6 +86,22 @@ jobs:
             ci/scripts
             ci/vcpkg
           sparse-checkout-cone-mode: false
+
+      - name: Confirm the overlay is the pinned commit
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $pin = "${{ env.ARROW_WOA_REF }}"
+          if ($pin -notmatch '^[0-9a-f]{40}$') {
+            Write-Output "::error::ARROW_WOA_REF must be a full commit SHA, got '$pin'. A branch or tag on a third-party fork can change under a signed build."
+            exit 1
+          }
+          $head = (git -C arrow-woa rev-parse HEAD).Trim()
+          if ($head -ne $pin) {
+            Write-Output "::error::overlay checkout is $head, expected the pinned $pin."
+            exit 1
+          }
+          Write-Host "overlay ${{ env.ARROW_WOA_REPO }} @ $head"
 
       # Every edit below asserts on the text it replaces, so an upstream rename fails this
       # step rather than silently producing an x64 wheel with an arm64 filename.
@@ -129,7 +145,7 @@ jobs:
           Set-Content $bat -Value $b -Encoding ascii
           if (-not (Test-Path "$vs\VC\Auxiliary\Build\vcvarsarm64.bat")) { throw "no vcvarsarm64.bat under $vs" }
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: ${{ matrix.python }}
           architecture: arm64
@@ -170,7 +186,7 @@ jobs:
           Select-String -Path $bat -Pattern '^set ARROW_' | ForEach-Object { $_.Line }
 
       - name: Cache vcpkg packages
-        uses: actions/cache@v4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
           path: C:\vcpkg\installed
           key: vcpkg-arm64-static-md-trimmed-${{ inputs.arrow_tag }}-${{ hashFiles('arrow/ci/vcpkg/vcpkg.json') }}
@@ -260,7 +276,7 @@ jobs:
           "@
           if ($LASTEXITCODE -ne 0) { exit 1 }
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: unsigned-pyarrow-cp${{ matrix.python }}
           path: arrow/python/repaired_wheels/*.whl
@@ -272,25 +288,25 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Harden runner (audit)
-        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c  # v2.21.0
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1  # v2.21.1
         with:
           egress-policy: audit
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           repository: asg017/sqlite-vec
           ref: ${{ inputs.sqlite_vec_tag }}
           path: sv
           fetch-depth: 0
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           path: tools
           sparse-checkout: |
             .github/scripts
           sparse-checkout-cone-mode: false
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: '3.13'
           architecture: arm64
@@ -386,7 +402,7 @@ jobs:
           "@
           if ($LASTEXITCODE -ne 0) { exit 1 }
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: unsigned-sqlite-vec
           path: wheel/*.whl
@@ -407,13 +423,13 @@ jobs:
     environment: release-signing
     steps:
       - name: Harden runner (audit)
-        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c  # v2.21.0
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1  # v2.21.1
         with:
           egress-policy: audit
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
         with:
           pattern: unsigned-*
           merge-multiple: true
@@ -564,7 +580,7 @@ jobs:
           Get-Content signed/index.txt
           Get-Content signed/SHA256SUMS
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: woa-wheelhouse-signed
           path: |
@@ -583,11 +599,11 @@ jobs:
       contents: write
     steps:
       - name: Harden runner (audit)
-        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c  # v2.21.0
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1  # v2.21.1
         with:
           egress-policy: audit
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
         with:
           name: woa-wheelhouse-signed
           path: wheelhouse

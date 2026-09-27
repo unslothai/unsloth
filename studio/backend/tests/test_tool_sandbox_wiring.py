@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The two tool launches, now routed through the OS-isolation planner.
-
-Every assertion here must hold on BOTH paths, isolated and fallback. One that
-only passes when the sandbox is unavailable is a check on the machine.
-"""
+"""The two tool launches, now routed through the OS-isolation planner."""
 
 from __future__ import annotations
 
@@ -31,6 +27,17 @@ from core.inference.os_sandbox import (
 )
 
 _SESSION = "__LOCALID_sandbox_wiring"
+
+
+class _PassthroughAccountConfinement:
+    preexec = None
+    # Stands in for a real account boundary. tools.py only takes the managed
+    # path when `confines` is true, so an owner placeholder cannot pass as one.
+    confines = True
+
+    @staticmethod
+    def wrap(argv):
+        return argv
 
 
 def test_execute_tool_keeps_every_parameter_it_had_in_the_same_order():
@@ -81,6 +88,24 @@ def test_the_executors_take_the_mode_keyword_only_and_default_it(function):
     ]
 
 
+@pytest.mark.parametrize(
+    "function,payload",
+    [
+        (tools._python_exec, "print('MANAGED_OK')"),
+        (tools._bash_exec, "echo MANAGED_OK"),
+    ],
+    ids = ["python", "terminal"],
+)
+def test_managed_account_launch_does_not_require_a_generic_sandbox_record(
+    monkeypatch, function, payload
+):
+    monkeypatch.setattr(tools, "_account_confinement", lambda: _PassthroughAccountConfinement())
+    tools._last_tool_execution_record = None
+
+    assert "MANAGED_OK" in function(payload, None, 60, _SESSION)
+    assert tools._last_tool_execution_record is None
+
+
 def test_a_caller_that_passes_nothing_new_behaves_as_auto():
     tools._last_tool_execution_record = None
     assert "2" in tools._python_exec("print(1 + 1)", None, 60, _SESSION)
@@ -94,6 +119,9 @@ def test_disable_sandbox_still_means_full_access():
     assert record.requested_mode == "full"
     assert record.effective_mode == "full"
     assert record.limitations == ("security_restrictions_disabled",)
+    assert record.execution_status == "completed"
+    assert record.completion_status == "finished"
+    assert record.cleanup_status == "complete"
 
 
 def test_full_access_is_not_turned_into_a_refusal_by_a_stale_required():
@@ -191,10 +219,7 @@ def test_an_unknown_mode_is_reported_rather_than_silently_downgraded():
     sys.platform == "win32", reason = "pre-exec and pass_fds are POSIX; Windows keeps today's path"
 )
 def test_the_process_unsloth_holds_still_lands_in_its_own_session():
-    """Asserted about the OUTER process: under bubblewrap the payload is not a
-    session leader, so asking it about its own sid only passes on a fallback."""
-    # Warm both executors before counting per-call spawns. Capability probes,
-    # xcode-select and shell discovery are one-time initialization costs.
+    """Asserted about the OUTER process: under bubblewrap the payload is not a session leader, so asking it about its own sid only passes on a fallback."""
     tools._python_exec("pass", None, 60, _SESSION)
     tools._bash_exec("true", None, 60, _SESSION)
 
@@ -211,17 +236,11 @@ def test_the_process_unsloth_holds_still_lands_in_its_own_session():
         assert "6" in tools._bash_exec("echo 6", None, 60, _SESSION)
     finally:
         subprocess.Popen = real
-    # Count pre-exec tool launches separately from known bookkeeping spawns,
-    # including macOS's per-call ps liveness check.
     launches = [preexec for _, preexec in seen if preexec is not None]
     bookkeeping = [argv for argv, preexec in seen if preexec is None]
-    # The argv is in the message because a count alone cannot say WHICH extra
-    # spawn appeared, and this only ever fails on a runner nobody can attach to.
     assert len(launches) == 2, [argv for argv, _ in seen]
     assert all(tuple(argv)[:1] == ("ps",) for argv in bookkeeping), bookkeeping
     seen = launches
-    # Asked by result, not identity: an isolated launch composes the plan's
-    # pre-exec with the backend's, so the object differs either way.
     for preexec in seen:
         read_fd, write_fd = os.pipe()
         child = os.fork()
@@ -404,16 +423,14 @@ def test_pass_fds_and_owned_files_reach_the_spawn(monkeypatch):
     assert holder.closed
 
 
-def test_auto_still_runs_when_the_planner_itself_breaks(monkeypatch):
+def test_auto_refuses_when_the_planner_itself_breaks(monkeypatch):
     def explode(plan):
         raise ImportError("no module named sandbox_linux")
 
     monkeypatch.setattr(os_sandbox, "prepare_tool_launch", explode)
-    tools._last_tool_execution_record = None
-    assert "5" in tools._python_exec("print(5)", None, 60, _SESSION)
-    record = tools._last_tool_execution_record
-    assert record.effective_mode == "software_safeguards"
-    assert "sandbox_planner_error" in record.limitations
+    out = tools._python_exec("print('SHOULD_NOT_RUN')", None, 60, _SESSION)
+    assert "SHOULD_NOT_RUN" not in out
+    assert "without host fallback" in out
 
 
 def test_full_access_keeps_its_own_label_even_when_the_planner_breaks(monkeypatch):
@@ -438,7 +455,7 @@ def test_a_backend_that_drops_the_pre_exec_has_it_put_back(monkeypatch):
             argv = plan.argv,
             workdir = plan.workdir,
             env = plan.env,
-            preexec_fn = None,  # the bug
+            preexec_fn = None,
             backend = "forgetful",
         )
 
@@ -458,10 +475,10 @@ def test_required_still_refuses_when_the_planner_itself_breaks(monkeypatch):
         "print('SHOULD_NOT_RUN')", None, 60, _SESSION, tool_execution_mode = "required"
     )
     assert "SHOULD_NOT_RUN" not in out
-    assert "OS_ISOLATION_UNAVAILABLE" in out
+    assert "without host fallback" in out
 
 
-@pytest.mark.parametrize("platform", ["win32", "cygwin", "aix"])
+@pytest.mark.parametrize("platform", ["cygwin", "aix"])
 def test_a_platform_with_no_backend_gets_exactly_the_plan_it_handed_in(monkeypatch, platform):
     monkeypatch.setattr(sys, "platform", platform)
 
@@ -489,7 +506,7 @@ def test_a_platform_with_no_backend_gets_exactly_the_plan_it_handed_in(monkeypat
 
 
 def test_a_platform_with_no_backend_still_refuses_in_required(monkeypatch):
-    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(sys, "platform", "aix")
     with pytest.raises(SandboxUnavailableError):
         os_sandbox.prepare_tool_launch(
             ToolLaunchPlan(argv = ("prog",), workdir = "/work", env = {}, requested_mode = "required")
@@ -545,10 +562,6 @@ def test_tool_code_cannot_switch_the_boundary_off_for_the_next_call(monkeypatch)
     workdir = tools._get_workdir(_SESSION)
     planted = os.path.join(workdir, "planted.sock")
     holder = socket.socket(socket.AF_UNIX)
-    # Bound RELATIVE: an AF_UNIX address is capped at ~108 bytes, and under
-    # `pytest -n 4` the studio home is a per-worker tmp_path that alone exceeds
-    # it, so the absolute spelling raised "AF_UNIX path too long" instead of
-    # planting anything. Backend CI runs -n 4.
     monkeypatch.chdir(workdir)
     holder.bind("planted.sock")
     try:
@@ -657,16 +670,18 @@ def test_a_backend_that_fails_at_launch_drops_the_cached_verdict(monkeypatch):
 
 def test_a_planner_os_error_refuses_rather_than_running_unisolated(monkeypatch):
     backend = importlib.import_module(
-        "core.inference.sandbox_linux"
-        if sys.platform == "linux"
-        else "core.inference.sandbox_macos"
+        "core.inference.sandbox_windows_mxc"
+        if sys.platform == "win32"
+        else (
+            "core.inference.sandbox_linux"
+            if sys.platform == "linux"
+            else "core.inference.sandbox_macos"
+        )
     )
 
-    def full_disk(plan):
+    def full_disk(plan, *_args):
         raise OSError(errno.ENOSPC, "No space left on device")
 
-    # Through the real prepare_tool_launch, because the wrap that types this
-    # lives in it.
     monkeypatch.setattr(
         os_sandbox,
         "capability_snapshot",
@@ -699,3 +714,170 @@ def test_the_shipped_sitecustomize_is_found_before_the_session_packages(tmp_path
     assert entries.index(tools._SANDBOX_SITE_DIR) < entries.index(
         str(workdir / os_sandbox.SESSION_PACKAGES_RELPATH)
     )
+
+
+@pytest.mark.parametrize(("os_name", "scripts"), [("nt", "Scripts"), ("posix", "bin")])
+def test_session_package_commands_stay_on_path(monkeypatch, tmp_path, os_name, scripts):
+    """pip --target writes console scripts to Scripts on Windows, so bin alone lost them there."""
+    workdir = tmp_path / "session"
+    packages = workdir / os_sandbox.SESSION_PACKAGES_RELPATH
+    packages.mkdir(parents = True)
+    monkeypatch.setattr(os_sandbox.os, "name", os_name)
+    env = os_sandbox.with_session_packages({"PATH": "/usr/bin"}, str(workdir))
+    assert env["PATH"].split(os.pathsep) == ["/usr/bin", str(packages / scripts)]
+
+
+def test_a_seatbelt_launch_failure_also_drops_the_cached_verdict(monkeypatch):
+    """A rejected Seatbelt profile is reported as `sandbox-exec:`, not `bwrap:`."""
+    reset = []
+    monkeypatch.setattr(
+        "core.inference.sandbox_probe.reset_probe_cache", lambda: reset.append(True)
+    )
+    prepared = PreparedSandboxLaunch(
+        argv = ("/usr/bin/sandbox-exec",),
+        workdir = "/work",
+        env = {},
+        preexec_fn = None,
+        backend = "macos-seatbelt",
+    )
+
+    tools._forget_sandbox_capability_if_the_backend_failed(
+        prepared, "Exit code 1:\nsandbox-exec: sandbox_apply: Operation not permitted\n"
+    )
+    assert reset == [True]
+
+    tools._forget_sandbox_capability_if_the_backend_failed(
+        prepared, "Exit code 1:\nTraceback (most recent call last):\n"
+    )
+    assert reset == [True]
+
+
+def test_an_unknown_execution_mode_is_refused_whatever_the_account(monkeypatch):
+    """A managed account's confinement is the outer launch contract and skips the planner, which was the only place the mode was checked."""
+    import pytest
+
+    with pytest.raises(os_sandbox.SandboxUnavailableError) as refusal:
+        tools._requested_execution_mode("nonsense", False)
+
+    assert "TOOL_EXECUTION_MODE_INVALID" in str(refusal.value)
+    assert tools._requested_execution_mode("auto", False) == "auto"
+    assert tools._requested_execution_mode("required", False) == "required"
+    assert tools._requested_execution_mode("auto", True) == "full"
+
+
+def test_the_unconfined_placeholder_is_not_treated_as_a_boundary():
+    """`unconfined-by-owner` records that the owner ALLOWED unconfined tools on a host that cannot confine them."""
+    from core.inference.tool_confinement import Confinement
+
+    assert Confinement(mechanism = "unconfined-by-owner").confines is False
+    assert Confinement(mechanism = "landlock", preexec = lambda: None).confines is True
+    assert Confinement(mechanism = "sandbox-exec", wrapper = ("sandbox-exec",)).confines is True
+
+
+def test_a_managed_account_without_confinement_still_refuses_required(monkeypatch):
+    """The whole point of `required`: no boundary means no execution."""
+    from core.inference.tool_confinement import Confinement
+
+    monkeypatch.setattr(
+        tools,
+        "_account_confinement",
+        lambda: Confinement(mechanism = "unconfined-by-owner"),
+    )
+    _declining_backend(
+        monkeypatch, "bubblewrap (bwrap) is not installed on this host", unsafe = False
+    )
+
+    result = tools._python_exec("print(1)", None, 60, _SESSION, tool_execution_mode = "required")
+
+    assert "1" not in result.splitlines()[:1], f"the call ran unisolated: {result!r}"
+    assert "Execution error" in result or "OS_ISOLATION_UNAVAILABLE" in result
+
+
+@pytest.mark.parametrize(
+    "run",
+    [
+        lambda **kw: tools._python_exec(
+            "import os\nprint('ran', os.path.exists('/srv/pr-approved/data.csv'))",
+            None,
+            60,
+            _SESSION,
+            **kw,
+        ),
+        lambda **kw: tools._bash_exec(
+            "ls /srv/pr-approved/data.csv; echo ran", None, 60, _SESSION, **kw
+        ),
+    ],
+    ids = ["python", "terminal"],
+)
+@pytest.mark.parametrize(
+    "approved, mode, jailed",
+    [
+        (True, "auto", False),
+        (False, "auto", True),
+        (True, "required", True),
+    ],
+)
+def test_an_approved_host_path_call_runs_as_it_does_without_the_jail(
+    monkeypatch, run, approved, mode, jailed
+):
+    planned: list = []
+
+    def prepare(plan):
+        planned.append(plan)
+        return _echoing_prepare(_Recorder())(plan)
+
+    monkeypatch.setattr(os_sandbox, "prepare_tool_launch", prepare)
+    tools._last_tool_execution_record = None
+    out = run(host_access_approved = approved, tool_execution_mode = mode)
+    assert "ran" in out
+    assert bool(planned) is jailed
+    if not jailed:
+        record = tools._last_tool_execution_record
+        assert record.effective_mode == "software_safeguards"
+        assert "user_approved_host_access" in record.limitations
+
+
+def test_an_approval_does_not_lift_the_jail_for_a_call_that_needs_no_host_path(monkeypatch):
+    planned: list = []
+
+    def prepare(plan):
+        planned.append(plan)
+        return _echoing_prepare(_Recorder())(plan)
+
+    monkeypatch.setattr(os_sandbox, "prepare_tool_launch", prepare)
+    assert "3" in tools._python_exec("print(1 + 2)", None, 60, _SESSION, host_access_approved = True)
+    assert len(planned) == 1
+
+
+@pytest.mark.parametrize("executor", ["python", "terminal"])
+def test_a_stop_during_the_sandbox_probe_reads_as_a_cancel(monkeypatch, executor):
+    # The Windows DACL probe takes seconds; a stop that lands in it is not a sandbox error.
+    import threading
+
+    cancel = threading.Event()
+
+    def probe_then_stop(**_kwargs):
+        cancel.set()
+        return os_sandbox.SandboxCapability(
+            backend = "test", available = True, reason = "ok", environment = sys.platform
+        )
+
+    monkeypatch.setattr(os_sandbox, "capability_snapshot", probe_then_stop)
+    if executor == "python":
+        out = tools._python_exec("print('never')", cancel, 60, _SESSION)
+    else:
+        out = tools._bash_exec("echo never", cancel, 60, _SESSION)
+    assert out == "Execution cancelled."
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "cat /srv/private/report.txt",
+        "cat $'/srv/private/report.txt'",
+        "cat $'/srv/private/rep\\x6frt.txt'",
+    ],
+)
+def test_an_approved_ansi_c_quoted_host_path_is_recognised(command):
+    """The approval classifier decodes $'...' and prompts; the reach check must agree, or the approved call stays jailed."""
+    assert tools._reaches_host_paths("terminal", command)

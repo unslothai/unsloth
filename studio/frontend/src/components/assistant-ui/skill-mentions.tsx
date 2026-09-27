@@ -17,7 +17,7 @@ import {
   unstable_useMentionAdapter,
   unstable_useTriggerPopoverScopeContext,
 } from "@assistant-ui/react";
-import { BookOpen01Icon } from "@hugeicons/core-free-icons";
+import { Scroll01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   type KeyboardEvent,
@@ -195,7 +195,7 @@ export function SkillMentionPopover({
                   className="flex w-full items-start gap-2.5 rounded-[11px] px-3 py-2 text-left outline-none transition-colors hover:bg-accent hover:text-accent-foreground data-highlighted:bg-accent data-highlighted:text-accent-foreground"
                 >
                   <HugeiconsIcon
-                    icon={BookOpen01Icon}
+                    icon={Scroll01Icon}
                     strokeWidth={1.75}
                     className="mt-0.5 size-4 shrink-0 text-primary"
                   />
@@ -377,7 +377,7 @@ export function useTextareaSkillMentions({
             onMouseEnter={() => setHighlighted(index)}
           >
             <HugeiconsIcon
-              icon={BookOpen01Icon}
+              icon={Scroll01Icon}
               strokeWidth={1.75}
               className="mt-0.5 size-4 shrink-0 text-primary"
             />

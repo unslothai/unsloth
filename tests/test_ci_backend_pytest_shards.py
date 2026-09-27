@@ -347,14 +347,12 @@ class TestTheSplitKeepsTheSelectionItInherited:
             return
         raise AssertionError(f"the {_SERIAL_STEP!r} step is gone")
 
-    def test_the_serial_step_still_runs_the_same_twelve_files(self):
-        """Not eleven and not thirteen. Whether any of them could go back into the parallel
-        run was audited separately and the answer was no, so the set is carried across the
-        split unchanged; a file leaving it here is a coverage change wearing a refactor's
-        clothes."""
+    def test_the_serial_step_runs_the_thirteen_isolated_files(self):
+        """The serial selection includes the timing-sensitive R1 parser regressions."""
         paths = _serial_paths()
-        assert len(paths) == 12, f"the serial step runs {len(paths)} files, not 12: {paths}"
-        assert len(set(paths)) == 12, f"the serial step names a file twice: {paths}"
+        assert len(paths) == 13, f"the serial step runs {len(paths)} files, not 13: {paths}"
+        assert len(set(paths)) == 13, f"the serial step names a file twice: {paths}"
+        assert "tests/test_pr5624_regressions.py" in paths
         missing = [path for path in paths if not (_BACKEND_TESTS.parent / path).is_file()]
         assert not missing, f"the serial step names files that do not exist: {missing}"
 

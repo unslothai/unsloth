@@ -51,14 +51,63 @@ on:
       # The watcher implements both detectors, so a PR touching only it could disable
       # detection without running the positive control that would catch that.
       - '.github/scripts/Watch-ForCompiler.ps1'
+      # Its own tests, whose Windows-only ACL control can only run on a Windows
+      # runner, so an edit to them has to reach one.
+      - 'tests/python/test_compiler_watch_temp_scan.py'
+      # Reached by the installer this workflow already triggers on, so a commit touching
+      # only one of these changes what the job runs while matching nothing else in the
+      # list. install.sh --local hands off to the checked-out studio/setup.sh
+      # (install.sh:7351), setup.sh runs nvidia_probe.py (setup.sh:266), and setup.ps1
+      # runs install_python_stack.py and install_llama_prebuilt.py (setup.ps1:8127, 8655).
+      - 'studio/nvidia_probe.py'
+      - 'studio/prebuilt_core.py'
+      - 'studio/setup.sh'
+      # setup.sh runs this at setup.sh:5130 and setup.ps1 at setup.ps1:9025, so it is the
+      # last executed edge of the installer chain that was not listed here.
+      - 'studio/backend/utils/**'
+      - 'pyproject.toml'
+      - 'studio/backend/requirements/**'
+      - 'studio/install_*.py'
+      - 'studio/node_prebuilt_pins.json'
       - '.github/workflows/windows-no-compiler-ci.yml'
+      # The desktop leg runs install.ps1 --tauri --local, which hands setup to this
+      # checkout's CLI; commands/studio.py, commands/start.py and
+      # _studio_runtime_gate.py spawn PowerShell, the path a compiler would come back
+      # through.
+      - 'unsloth_cli/*.py'
+      - 'unsloth_cli/commands/*.py'
   push:
     branches: [main]
+    paths:
+      - 'install.ps1'
+      - 'studio/setup.ps1'
+      - 'scripts/uninstall.ps1'
+      - 'install.sh'
+      - 'studio/src-tauri/src/install.rs'
+      - 'studio/src-tauri/src/process.rs'
+      - 'tests/studio/test_installer_av_shapes.py'
+      - '.github/scripts/Watch-ForCompiler.ps1'
+      - 'tests/python/test_compiler_watch_temp_scan.py'
+      - 'studio/nvidia_probe.py'
+      - 'studio/prebuilt_core.py'
+      - 'studio/setup.sh'
+      - 'studio/backend/utils/**'
+      - 'pyproject.toml'
+      - 'studio/backend/requirements/**'
+      - 'studio/install_*.py'
+      - 'studio/node_prebuilt_pins.json'
+      - '.github/workflows/windows-no-compiler-ci.yml'
+      # The desktop leg runs install.ps1 --tauri --local, which hands setup to this
+      # checkout's CLI; commands/studio.py, commands/start.py and
+      # _studio_runtime_gate.py spawn PowerShell, the path a compiler would come back
+      # through.
+      - 'unsloth_cli/*.py'
+      - 'unsloth_cli/commands/*.py'
   workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}-${{ github.ref == 'refs/heads/main' && github.sha || '' }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
