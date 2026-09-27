@@ -1696,6 +1696,54 @@ def sd_cpp_companion_only_repo_ids() -> frozenset[str]:
     return frozenset(r.strip().lower() for r in companions - loadable if r)
 
 
+def prequant_only_repo_ids() -> frozenset[str]:
+    """Repos hosting only prequant checkpoints (no model_index.json), never a base or mirror."""
+    hosted: set[str] = set()
+    bases: set[str] = set()
+    for fam in _FAMILIES:
+        hosted.update(repo for _scheme, repo in fam.prequant_repos)
+        hosted.update(repo for _base, _scheme, repo in fam.prequant_variant_repos)
+        hosted.update(repo for _scheme, _component, repo in fam.te_prequant_repos)
+        bases.add(fam.base_repo)
+        bases.update(fam.train_base_repos)
+        if fam.deploy_base_repo:
+            bases.add(fam.deploy_base_repo)
+    bases.update(rid for pair in _MIRROR_PAIRS for rid in pair)
+    lowered = {b.strip().lower() for b in bases if b}
+    return frozenset(r.strip().lower() for r in hosted if r and r.strip().lower() not in lowered)
+
+
+def prequant_repo_role(
+    fam: DiffusionFamily, repo_id: str
+) -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
+    key = (repo_id or "").strip().lower()
+    known = {
+        b.lower(): b
+        for b in (fam.base_repo, *fam.train_base_repos, fam.deploy_base_repo or "")
+        if b
+    }
+    bases: list[str] = []
+    schemes: list[str] = []
+    for entry_base, scheme, repo in fam.prequant_variant_repos:
+        if repo.strip().lower() == key:
+            bases.append(known.get(entry_base.lower(), entry_base))
+            schemes.append(scheme)
+    for scheme, repo in fam.prequant_repos:
+        if repo.strip().lower() == key:
+            bases.append(fam.base_repo)
+            schemes.append(scheme)
+    te = sorted(
+        {
+            scheme
+            for scheme, _component, repo in fam.te_prequant_repos
+            if repo.strip().lower() == key
+        }
+    )
+    if te and not bases:
+        bases.append(fam.base_repo)
+    return tuple(dict.fromkeys(bases)), tuple(sorted(set(schemes))), tuple(te)
+
+
 def sd_cpp_text_encoder_candidates(fam: DiffusionFamily) -> tuple[tuple[str, str, str], ...]:
     """EVERY text-encoder set an sd.cpp load of *fam* could pick, unioned. For the guard, not for a
     load: a load reads the GGUF header and picks one, while a guard reconstructing a checkpoint

@@ -114,6 +114,7 @@ import { studioPageForTask } from "./lib/unsloth-support";
 import {
   buildDiscoverRows,
   detectResultFormat,
+  discoveryInventorySignature,
   isUnslothFinetunable,
   matchesCapability,
   matchesFormat,
@@ -234,24 +235,6 @@ function buildFocusedHeading({
   if (trimmed) return `Results for "${trimmed}"`;
   if (channel && channel.id !== DEFAULT_DISCOVER_CHANNEL) return channel.label;
   return isDataset ? "Datasets" : "Models";
-}
-
-function discoveryInventorySignature(
-  cachedRows: readonly CachedInventoryRow[],
-  localRows: readonly LocalInventoryRow[],
-): string {
-  const parts: string[] = [];
-  for (const row of cachedRows) {
-    parts.push(
-      `c:${row.repoId.toLowerCase()}:${row.modelFormat}:${row.partial ? (row.downloading ? "d" : "p") : "c"}`,
-    );
-  }
-  for (const row of localRows) {
-    parts.push(
-      `l:${(row.repoId ?? row.id).toLowerCase()}:${row.modelFormat}:${row.partial ? (row.downloading ? "d" : "p") : "c"}`,
-    );
-  }
-  return parts.sort().join("|");
 }
 
 function readModelsTabPreference(): ModelsTab | null {

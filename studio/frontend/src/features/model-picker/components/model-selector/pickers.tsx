@@ -6654,9 +6654,12 @@ export function HubModelPicker({
           ref={scrollRef}
           onScroll={(e) => updateListFades(e.currentTarget)}
           className={cn(
-            // The list sits within the menu padding so gaps match; scroll-py and symmetric px keep the
-            // focus ring off the overflow clip edges during keyboard nav.
-            "model-list-scroll max-h-[calc(335px*var(--ui-space-scale,1))] overflow-y-auto scroll-py-1.5 px-0.5 mr-1",
+            // The list sits within the menu padding so gaps match; scroll-py and the side padding keep
+            // the focus ring off the overflow clip edges during keyboard nav. The panel is padded 16px
+            // on the left but 8px on the right (16px with external providers), so the scroller can run
+            // near the edge for its scrollbar; the right inset makes up the difference, and a row's
+            // hover pill sits 18px from both edges.
+            "model-list-scroll max-h-[calc(335px*var(--ui-space-scale,1))] overflow-y-auto scroll-py-1.5 pl-0.5 pr-1.5 mr-1 in-data-[external=true]:pr-0.5 in-data-[external=true]:mr-0",
             listScrolled && "is-scrolled",
             listMoreBelow && "is-bottom-faded",
           )}

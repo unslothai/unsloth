@@ -14,7 +14,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { InputGroup, InputGroupAddon } from "@/components/ui/input-group";
-import { Tick02Icon } from "@/lib/tick-icon";
+import { MenuTickIcon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
 import { Search01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -171,7 +171,7 @@ function CommandItem({
     >
       {children}
       <HugeiconsIcon
-        icon={Tick02Icon}
+        icon={MenuTickIcon}
         strokeWidth={2}
         className="ml-auto opacity-0 group-has-[[data-slot=command-shortcut]]/command-item:hidden group-data-[checked=true]/command-item:opacity-100"
       />
@@ -187,7 +187,7 @@ function CommandShortcut({
     <span
       data-slot="command-shortcut"
       className={cn(
-        "text-muted-foreground group-data-selected/command-item:text-foreground ml-auto text-xs tracking-widest",
+        "text-muted-foreground group-data-selected/command-item:text-foreground ml-auto -mr-[0.1em] text-xs tracking-widest",
         className,
       )}
       {...props}
