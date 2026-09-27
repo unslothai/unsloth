@@ -671,8 +671,11 @@ def test_dit_default_tier_vae_decode_compile_forced_on_by_env(monkeypatch):
         pipe, _target(), is_gguf = False, family = _family(), speed_mode = SPEED_DEFAULT
     )
     assert applied["compiled"] is True and applied["compiled_vae_decode"] is True
-    assert torch.compile_calls == [{"fullgraph": False, "dynamic": True}]
+    # Automatic dynamic: a static first shape keeps inductor's conv layout optimisation.
+    assert torch.compile_calls == [{"fullgraph": False, "dynamic": None}]
     assert ds_mod.vae_decode_compile_allowed(pipe, SPEED_DEFAULT) is True
+    # Its generalising recompile on a second shape must reach the compile-cache bundle.
+    assert ds_mod.auto_dynamic_active(pipe) is True
 
 
 def test_dit_vae_decode_compile_opts_out_by_env(monkeypatch):
@@ -739,8 +742,19 @@ def test_dit_vae_decode_compile_max_tier_autotunes(monkeypatch):
     )
     assert applied["compiled_vae_decode"] is True
     assert torch.compile_calls == [
-        {"fullgraph": False, "dynamic": True, "mode": "max-autotune-no-cudagraphs"}
+        {"fullgraph": False, "dynamic": None, "mode": "max-autotune-no-cudagraphs"}
     ]
+
+
+def test_qwen_image_vae_decode_compiles_only_with_the_single_frame_path(monkeypatch):
+    _stub_torch(monkeypatch)
+    monkeypatch.delenv(ds_mod.COMPILE_VAE_ENV, raising = False)
+    AutoencoderKLQwenImage = type("AutoencoderKLQwenImage", (), {})
+    pipe = types.SimpleNamespace(vae = AutoencoderKLQwenImage())
+    assert ds_mod._vae_decode_compile_allowed(pipe, SPEED_MAX) is False
+    pipe.vae._unsloth_single_frame = True
+    assert ds_mod._vae_decode_compile_allowed(pipe, SPEED_MAX) is True
+    assert ds_mod._vae_decode_compile_allowed(pipe, SPEED_DEFAULT) is False
 
 
 def test_unet_vae_decode_compile_ignores_the_env(monkeypatch):
@@ -2075,7 +2089,7 @@ def test_speed_max_compiles_a_quantised_stream_merging_dit_static(monkeypatch):
     pipe.transformer.named_modules = lambda: [("blocks.0", block)]
     apply_speed_optims(pipe, _target(), is_gguf = False, family = _family(), speed_mode = SPEED_MAX)
     assert pipe.compile_kwargs["dynamic"] is False
-    assert ds_mod.auto_dynamic_active(pipe) is False
+    assert ds_mod._dits_auto_dynamic(pipe) is False
     assert ds_mod.compiled_shapes_are_static(pipe, SPEED_MAX) is True
 
 
