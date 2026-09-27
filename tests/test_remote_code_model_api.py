@@ -13,10 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Remote modeling code written for transformers 4.x (moonshotai/Kimi-K3's
-modeling_kimi_linear.py) against the transformers 5 model API: the OutputRecorder import,
-a `tie_weights(self)` override and a list `_tied_weights_keys`. Runs offline on CPU with a
-synthetic model defined under a `transformers_modules` module name."""
+"""Transformers 4.x remote code (Kimi-K3) against the transformers 5 model API, offline on CPU."""
 
 import inspect
 import linecache
@@ -25,7 +22,6 @@ import types
 
 import torch
 
-# Import unsloth first so its import-time fixes are installed.
 import unsloth  # noqa: F401
 from transformers import PreTrainedModel
 

@@ -356,7 +356,6 @@ def adopt_compressed_mxfp4_modules(
             continue
         packed = getattr(module, "_parameters", {}).get("weight_packed")
         if packed is None:
-            # e.g. FP8 still needs the model-wide decompress hook.
             if getattr(module, "quantization_scheme", None) is not None:
                 others += 1
             continue

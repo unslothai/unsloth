@@ -13,12 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""A compressed-tensors MXFP4 checkpoint whose routed experts are remote-code w1 / w2 / w3
-Linears (Kimi-K3) keeps them packed: the per-expert bytes are stacked into one unsloth_zoo
-`Mxfp4StackedExperts` per MoE layer at load, never decompressed or re-quantized to NF4, and the
-remote MoE block dispatches to it in train and eval. UNSLOTH_MXFP4_KEEP_PACKED=0 restores the
-NF4 path. Offline tests cover the key scan, the swap, the stacking op, the LoRA target choice and
-the dispatch; the GPU test loads a tiny remote-code checkpoint through transformers."""
+"""Kimi-K3 style remote-code MXFP4 experts load packed into one Mxfp4StackedExperts per MoE layer."""
 
 import json
 import os
@@ -32,7 +27,6 @@ from real_accelerator import has_real_cuda  # tests/_shared, on sys.path via tes
 import torch
 from torch import nn
 
-# Import unsloth first to set UNSLOTH_IS_PRESENT env var.
 import unsloth  # noqa: F401
 from unsloth.models.compressed_tensors_bnb import (
     _StackPackedExperts,
@@ -311,18 +305,16 @@ def test_swap_replaces_every_packed_layer_on_meta():
         assert experts.gate_up_blocks.shape == (E, 2 * I, H // 32, 16)
         assert experts.down_scales.shape == (E, H, I // 32)
         assert experts.gate_up_blocks.dtype == torch.uint8 and experts.gate_up_blocks.is_meta
-        assert isinstance(layer.proj, nn.Linear)  # non-expert Linears are left to bitsandbytes
+        assert isinstance(layer.proj, nn.Linear)
 
 
 def test_swap_is_all_or_nothing():
     _, model = _tiny_model("transformers_modules.k3c_swap_b.modeling_tinymoe")
     keys = _keys(drop = "model.layers.1.mlp.experts.0.w2.weight_packed")
     assert _swap_planned_stacks(model, keys, torch.bfloat16) == []
-    # One packed layer that no module matches.
     keys = _keys(layers = 3)
     assert _swap_planned_stacks(model, keys, torch.bfloat16) == []
     assert all(isinstance(layer.mlp.experts, nn.ModuleList) for layer in model.layers)
-    # Experts with a bias are not the plain w1 / w2 / w3 layout.
     _, model = _tiny_model("transformers_modules.k3c_swap_c.modeling_tinymoe")
     for layer in model.layers:
         for expert in layer.mlp.experts:
@@ -374,7 +366,6 @@ def test_expert_lora_stays_opt_in():
     assert packed_expert_target_parameters(model, auto, rf".*experts\.{last}\.w2") == [
         "experts.down_proj"
     ]
-    # No packed experts: untouched.
     _, plain = _tiny_model("transformers_modules.k3c_lora_b.modeling_tinymoe")
     assert packed_expert_target_parameters(plain, auto, None) is auto
 
@@ -438,7 +429,7 @@ def test_packed_block_trains_and_matches_its_per_expert_view():
     x = torch.randn(2, 6, H).to(torch.bfloat16)
     block.eval()
     with torch.no_grad():
-        port = mod.SparseMoe.moe_infer(block, x.view(-1, H), *block.gate(x))  # loops experts[i]
+        port = mod.SparseMoe.moe_infer(block, x.view(-1, H), *block.gate(x))
     assert "SparseMoe" in prepare_remote_moe_for_training(model, verbose = False)
     with torch.no_grad():
         packed_eval = block(x)
@@ -558,7 +549,7 @@ def test_remote_code_checkpoint_loads_packed_bytes_verbatim(tmp_path, monkeypatc
     ids = torch.randint(0, 128, (2, 8), device = "cuda:0")
     model.eval()
     with torch.no_grad():
-        port = model(input_ids = ids).logits  # the port's own loop over experts[i]
+        port = model(input_ids = ids).logits
     prepare_remote_moe_for_training(model, verbose = False)
     with torch.no_grad():
         grouped = model(input_ids = ids).logits
@@ -639,7 +630,6 @@ def test_compressed_tensors_route_stacks_the_adopted_experts_verbatim():
     mod, _ = _tiny_model("transformers_modules.k3s_ct_stack.modeling_tinymoe")
     model = mod.TinyMoeForCausalLM(mod.TinyMoeConfig(num_hidden_layers = 2)).to(torch.bfloat16)
     _packed_expert_linears(model)
-    # Snapshots: the per-expert bytes are released as they are stacked.
     before = [
         {
             (e, p): types.SimpleNamespace(
@@ -862,7 +852,6 @@ def test_packed_expert_targets_follow_the_finetune_family_flags(flags, experts, 
     _swap_planned_stacks(model, _keys(layers = 1), torch.bfloat16)
     _materialize_packed(model)
     model.max_seq_length = 64
-    # Something left to train when a family is scoped out.
     model.vision_tower = nn.Module()
     model.vision_tower.attn = nn.Module()
     model.vision_tower.attn.q_proj = nn.Linear(H, H, bias = False)

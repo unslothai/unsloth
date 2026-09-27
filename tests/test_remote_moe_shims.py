@@ -619,7 +619,6 @@ def test_a_latent_moe_trains_through_its_own_projections():
     assert any(
         e.w2.weight.grad is not None and e.w2.weight.grad.abs().sum() > 0 for e in block.experts
     )
-    # The flags and the class method come back after the call.
     assert block.training and block.gate.training
     assert "moe_infer" not in vars(block)
     block.eval()

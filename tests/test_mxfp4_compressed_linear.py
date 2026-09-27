@@ -13,17 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""compressed-tensors ``mxfp4-pack-quantized`` Linears stay packed and train through.
-
-Offline tests pin the dequant against an independent float64 decode and against
-compressed-tensors' own decompressor, the autograd function (exact forward and input
-gradient, nothing but the packed bytes saved for backward), adopting compressed-tensors'
-compressed modules, the loader's module matching, the fast LoRA paths and PEFT merge /
-unmerge on a packed base. The GPU tests build a tiny Llama packed with compressed-tensors'
-MXFP4 compressor and load it through ``FastLanguageModel.from_pretrained``: kept packed by
-default, bitsandbytes 4-bit with ``UNSLOTH_MXFP4_KEEP_PACKED=0``, bit-identical to the bf16
-decode on disk, and saved (full and merged) into checkpoints plain transformers reloads.
-"""
+"""compressed-tensors ``mxfp4-pack-quantized`` Linears stay packed and train through."""
 
 import copy
 import json
@@ -288,7 +278,7 @@ def test_adopting_compressed_tensors_modules_keeps_them_packed_and_matches_its_d
     reference = copy.deepcopy(model)
     x = torch.randn(3, 64, dtype = torch.bfloat16)
     with torch.no_grad():
-        want = reference(x)  # compressed-tensors decompresses everything on this first forward
+        want = reference(x)
     assert "weight" in reference.a._parameters
 
     # `latent` is stored unpacked in the checkpoint: it goes back to a dense weight.
@@ -298,14 +288,13 @@ def test_adopting_compressed_tensors_modules_keeps_them_packed_and_matches_its_d
     assert type(model.latent) is nn.Linear and "weight" in model.latent._parameters
     assert "weight_packed" not in model.latent._parameters
     assert not hasattr(model.latent, "quantization_scheme")
-    # compressed-tensors' per-instance quantize-dequantize forward is gone, and so is its hook.
     assert all("forward" not in m.__dict__ for m in (model.a, model.b, model.latent))
     assert not hasattr(model, "ct_decompress_hook")
     model.latent.weight.data.copy_(reference.latent.weight.data)
     with torch.no_grad():
         got = model(x)
     assert torch.equal(got, want)
-    assert "weight_packed" in model.a._parameters  # still packed after the forward
+    assert "weight_packed" in model.a._parameters
 
 
 @pytest.mark.skipif(not HAS_CT, reason = "needs compressed-tensors")
@@ -633,7 +622,6 @@ def test_peft_merge_densifies_exactly_and_unmerge_restores_the_packed_bytes():
     assert torch.equal(unloaded[0].weight, dense_model.base_model.model[0].base_layer.weight)
 
 
-# ----------------------------------------------------------------------------- GPU loads
 
 
 def _write_tiny_mxfp4_llama(root):
@@ -874,7 +862,7 @@ def test_full_and_merged_saves_reload_in_plain_transformers(tmp_path, monkeypatc
         base_logits = model(input_ids = ids).logits
     full = str(tmp_path / "full")
     model.save_pretrained(full)
-    assert sum(isinstance(m, Mxfp4PackedLinear) for m in model.modules()) == 2 * 7  # put back
+    assert sum(isinstance(m, Mxfp4PackedLinear) for m in model.modules()) == 2 * 7
     with safe_open(os.path.join(full, "model.safetensors"), "pt") as f:
         keys = list(f.keys())
     assert not any("weight_packed" in k or "weight_scale" in k for k in keys)
@@ -913,7 +901,7 @@ def test_full_and_merged_saves_reload_in_plain_transformers(tmp_path, monkeypatc
     )
     torch.testing.assert_close(merged_logits, unloaded_reload, atol = 2e-2, rtol = 2e-2)
     torch.testing.assert_close(unloaded_reload, unloaded_logits, atol = 2e-2, rtol = 2e-2)
-    assert not torch.equal(merged_logits, _plain_logits(full, ids))  # the LoRA is in
+    assert not torch.equal(merged_logits, _plain_logits(full, ids))
 
 
 @needs_zoo_packed_save
@@ -1125,7 +1113,6 @@ def test_a_partly_merged_bitsandbytes_route_model_saves_and_reloads(tmp_path):
     assert type(attn.q_proj) is nn.Linear and type(attn.k_proj) is nn.Linear
     with torch.no_grad():
         got = reloaded(input_ids = ids).logits
-    # Unsloth's fused kernels in memory vs plain transformers on reload.
     torch.testing.assert_close(got, want, atol = 2e-2, rtol = 2e-2)
 
 
