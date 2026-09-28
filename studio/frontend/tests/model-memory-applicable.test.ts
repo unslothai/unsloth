@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-
 import assert from "node:assert/strict";
 import { register } from "node:module";
 import test from "node:test";
@@ -68,15 +67,4 @@ test("a backend that does not send the field is treated as applicable", async ()
   nextBody = { ...BASE };
   const settings = await loadModelMemorySettings({ force: true });
   assert.equal(settings.mlockApplicable, true);
-});
-
-test("a non-governed runner does not inherit the GPU-offload reason", async () => {
-  nextBody = {
-    ...BASE,
-    mlock_applicable: false,
-    mlock_skip_reason: "ungoverned",
-  };
-  const settings = await loadModelMemorySettings({ force: true });
-  assert.equal(settings.mlockApplicable, false);
-  assert.equal(settings.mlockSkipReason, "ungoverned");
 });

@@ -1,10 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import {
-  withBackgroundLoadNotice,
-  withModelUnloadNotice,
-} from "@/lib/model-lifecycle-events";
+import { withBackgroundLoadNotice } from "@/lib/model-lifecycle-events";
 import { authFetch } from "@/features/auth";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 import {
@@ -448,9 +445,7 @@ export async function cancelDiffusionGeneration(
 }
 
 export async function unloadDiffusionModel(): Promise<DiffusionStatus> {
-  return withModelUnloadNotice("image", null, async () =>
-    parseJson(await authFetch("/api/inference/images/unload", { method: "POST" })),
-  );
+  return parseJson(await authFetch("/api/inference/images/unload", { method: "POST" }));
 }
 
 /** List diffusion LoRA adapters, optionally filtered to a model family. */

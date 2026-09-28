@@ -1525,7 +1525,6 @@ def apply_model_memory_policy(
     weights_in_host_memory: bool = True,
     gpu_offload_confirmed: bool = False,
     env: Optional[Mapping[str, str]] = None,
-    # Keyword-only in practice: inserting ahead of it rebinds `direct_io`.
     settings: Optional[tuple[bool, bool]] = None,
 ) -> tuple[list[str], list[str]]:
     """Resolve the Model Memory settings into llama-server flags, returning ``(managed_flags,
@@ -1678,30 +1677,6 @@ def apply_load_mode_policy(
     # appended after and last-wins, which is what the panel's diagnostics promise. An INHERITED copy is a different
     # thing, and the route drops that one before it ever reaches here.
     return ["--load-mode", mode], tokens
-
-
-def model_memory_suppresses_load_mode(
-    requested_load_mode: Optional[str],
-    *,
-    supports_load_mode: bool,
-    weights_in_host_memory: bool,
-    settings: Optional[tuple[bool, bool]] = None,
-) -> bool:
-    """Whether Model Memory suppressed a per-model mode this build could emit."""
-    mode = _normalize_load_mode_value(requested_load_mode)
-    if not mode or (not supports_load_mode and mode not in _LEGACY_LOAD_MODE_FLAGS):
-        return False
-    if settings is None:
-        try:
-            from utils.model_memory_settings import get_model_memory_settings
-            settings = get_model_memory_settings()
-        except Exception:
-            return False
-    keep_resident, no_ram_reserve = settings
-    return bool(
-        (keep_resident and not no_ram_reserve and weights_in_host_memory)
-        or (no_ram_reserve and mode in _LOAD_MODE_MLOCK_VALUES | _LOAD_MODE_RESERVING_VALUES)
-    )
 
 
 def _normalize_load_mode_value(value: Optional[str]) -> str:
@@ -2246,7 +2221,6 @@ def memory_state_satisfies_settings(
     direct_io: Optional[bool] = None,
     dio_applicable: bool = False,
     dio_managed: bool = False,
-    settings: Optional[tuple[bool, bool]] = None,
 ) -> bool:
     """True when a launched ``(mlock, reserves_ram)`` matches the settings.
 
@@ -2274,28 +2248,20 @@ def memory_state_satisfies_settings(
     mapping reports as satisfying a no-reserve that would now emit dio, and both
     the reload hint and the duplicate-load fast path leave it running. None means
     a caller that does not track it, which never forces a reload.
-
-    ``settings`` is a ``(keep_resident, no_ram_reserve)`` the caller already read as
-    one coherent snapshot, for the same reason ``apply_model_memory_policy`` takes
-    one: a route answering several questions about one launch must not have a save
-    land between them and describe two different states in one response.
     """
     if state is None:
         return True
-    if settings is None:
-        try:
-            from utils.model_memory_settings import get_model_memory_settings
-            settings = get_model_memory_settings()
-        except Exception:
-            return True
-    keep_resident, no_ram_reserve = settings
+    try:
+        from utils.model_memory_settings import get_keep_resident, get_no_ram_reserve
+    except Exception:
+        return True
     mlock, reserves_ram = state
-    if no_ram_reserve:
+    if get_no_ram_reserve():
         # mlock_applicable only excuses a MISSING lock; a live reservation still has to go, wherever the weights are.
         if mlock or reserves_ram:
             return False
         return not (dio_applicable and direct_io is False)
-    if keep_resident:
+    if get_keep_resident():
         # The managed DirectIO has to go when no-reserve does: with residency on the
         # policy emits a page-lock or nothing, so a streaming child contradicts the
         # settings however the lock reads, and `not mlock_applicable` accepted it.

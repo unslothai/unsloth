@@ -9,107 +9,75 @@ import { useEffect, useState } from "react";
 import {
   type ModelMemorySettings,
   loadModelMemorySettings,
-  subscribeModelMemorySettings,
   updateModelMemorySettings,
 } from "../api/model-memory";
 import { SettingsRow } from "./settings-row";
 import { SettingsSection } from "./settings-section";
 
-const MODEL_MEMORY_POLL_MS = 5000;
-
-function coalesceRefreshes(refreshOnce: () => Promise<void>): () => void {
-  let refreshInFlight = false;
-  let refreshQueued = false;
-  const finishRefresh = () => {
-    refreshInFlight = false;
-    if (refreshQueued) {
-      refreshQueued = false;
-      refresh();
-    }
-  };
-  const refresh = () => {
-    if (refreshInFlight) {
-      refreshQueued = true;
-      return;
-    }
-    refreshInFlight = true;
-    refreshOnce().then(finishRefresh, finishRefresh);
-  };
-  return refresh;
+// Residency asked for, but the loaded model has no copy in system RAM to lock.
+function MlockNotApplicableNote({
+  settings,
+}: { settings: ModelMemorySettings | null }) {
+  const t = useT();
+  if (
+    !settings?.keepResident ||
+    settings.noRamReserve ||
+    settings.mlockActive ||
+    settings.mlockApplicable
+  ) {
+    return null;
+  }
+  return (
+    <p className="pb-1 text-xs text-muted-foreground">
+      {t("settings.resources.modelMemory.mlockNotApplicable")}
+    </p>
+  );
 }
 
-async function refreshModelMemoryState(
-  isCurrent: () => boolean,
+// Forced: the response describes the running model, which may have changed since the last read.
+async function refreshModelMemory(
+  isCancelled: () => boolean,
   setSettings: (settings: ModelMemorySettings) => void,
   setError: (error: string | null) => void,
   fallbackError: string,
 ): Promise<void> {
   try {
     const loaded = await loadModelMemorySettings({ force: true });
-    if (!isCurrent()) {
-      return;
+    if (!isCancelled()) {
+      setSettings(loaded);
+      setError(null);
     }
-    setSettings(loaded);
-    setError(null);
   } catch (loadError) {
-    if (!isCurrent()) {
-      return;
+    if (!isCancelled()) {
+      setError(loadError instanceof Error ? loadError.message : fallbackError);
     }
-    setError(loadError instanceof Error ? loadError.message : fallbackError);
   }
-}
-
-function isRefreshCurrent(
-  cancelled: boolean,
-  currentGeneration: number,
-  expectedGeneration: number,
-): boolean {
-  return !cancelled && currentGeneration === expectedGeneration;
 }
 
 export function ModelMemorySection() {
   const t = useT();
   const [settings, setSettings] = useState<ModelMemorySettings | null>(null);
-  const [loadError, setLoadError] = useState<string | null>(null);
-  const [saveError, setSaveError] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
-    let refreshGeneration = 0;
-    const refresh = coalesceRefreshes(async () => {
-      const generation = ++refreshGeneration;
-      await refreshModelMemoryState(
-        () => isRefreshCurrent(cancelled, refreshGeneration, generation),
+    const refresh = () =>
+      refreshModelMemory(
+        () => cancelled,
         setSettings,
-        setLoadError,
+        setError,
         t("settings.resources.modelMemory.loadError"),
       );
-    });
-
     refresh();
-    const unsubscribeSettings = subscribeModelMemorySettings((next) => {
-      if (cancelled) return;
-      refreshGeneration += 1;
-      setSettings(next);
-      setLoadError(null);
+    const unsubscribe = subscribeModelLifecycle(({ loading }) => {
+      if (!loading) {
+        refresh();
+      }
     });
-    const unsubscribeLifecycle = subscribeModelLifecycle(refresh);
-    const timer = window.setInterval(() => {
-      if (!document.hidden) refresh();
-    }, MODEL_MEMORY_POLL_MS);
-    const onWake = () => {
-      if (!document.hidden) refresh();
-    };
-    window.addEventListener("focus", onWake);
-    document.addEventListener("visibilitychange", onWake);
     return () => {
       cancelled = true;
-      window.clearInterval(timer);
-      window.removeEventListener("focus", onWake);
-      document.removeEventListener("visibilitychange", onWake);
-      unsubscribeLifecycle();
-      unsubscribeSettings();
+      unsubscribe();
     };
   }, [t]);
 
@@ -117,13 +85,13 @@ export function ModelMemorySection() {
     patch: Partial<Pick<ModelMemorySettings, "keepResident" | "noRamReserve">>,
   ) => {
     setIsSaving(true);
-    setSaveError(null);
+    setError(null);
     try {
       setSettings(await updateModelMemorySettings(patch));
-    } catch (saveFailure) {
-      setSaveError(
-        saveFailure instanceof Error
-          ? saveFailure.message
+    } catch (saveError) {
+      setError(
+        saveError instanceof Error
+          ? saveError.message
           : t("settings.resources.modelMemory.saveError"),
       );
     } finally {
@@ -131,27 +99,17 @@ export function ModelMemorySection() {
     }
   };
 
+  // Both on suppresses --mlock. Say so, rather than looking like a no-op. Keyed on the toggles, not
+  // mlockActive: that now also reads false when the running model simply had nothing in host RAM to
+  // lock, which is a different reason than the one this line gives.
   const mlockVetoed =
-    settings?.keepResident === true &&
-    settings.noRamReserve === true &&
-    settings.mlockActive === false;
+    settings?.keepResident === true && settings.noRamReserve === true;
   // A finite locked-memory cap means llama.cpp logs "failed to mlock" and
   // carries on, so residency would look enabled but do nothing.
   const memlockCap =
     settings?.mlockActive === true && settings.memlockLimitBytes !== null
       ? settings.memlockLimitBytes
       : null;
-  const mlockNotApplicable =
-    settings?.mlockSkipReason === "full_gpu_offload" &&
-    settings.keepResident === true &&
-    settings.noRamReserve === false &&
-    settings.mlockActive === false;
-  const mlockUngoverned =
-    settings?.mlockSkipReason === "ungoverned" &&
-    settings.keepResident === true &&
-    settings.noRamReserve === false &&
-    settings.mlockActive === false;
-  const error = saveError ?? loadError;
 
   return (
     <SettingsSection title={t("settings.resources.modelMemory.title")}>
@@ -192,16 +150,7 @@ export function ModelMemorySection() {
               {t("settings.resources.modelMemory.mlockVetoed")}
             </p>
           ) : null}
-          {mlockNotApplicable ? (
-            <p className="pb-1 text-xs text-muted-foreground">
-              {t("settings.resources.modelMemory.mlockNotApplicable")}
-            </p>
-          ) : null}
-          {mlockUngoverned ? (
-            <p className="pb-1 text-xs text-muted-foreground">
-              {t("settings.resources.modelMemory.mlockUngoverned")}
-            </p>
-          ) : null}
+          <MlockNotApplicableNote settings={settings} />
           {memlockCap !== null ? (
             <p className="pb-1 text-xs text-amber-600 dark:text-amber-400">
               {t("settings.resources.modelMemory.memlockCapped", {

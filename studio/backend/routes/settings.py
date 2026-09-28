@@ -98,6 +98,7 @@ from utils.model_memory_settings import (
     get_model_memory_settings,
     memlock_limit_bytes,
     set_model_memory_settings,
+    should_mlock,
 )
 from utils.vram_budget_settings import (
     VRAM_FRACTION_DEFAULT,
@@ -747,8 +748,9 @@ class ModelMemoryResponse(BaseModel):
     # Whether --mlock is passed on the next load. False when no_ram_reserve
     # vetoes it; the UI surfaces that rather than failing silently.
     mlock_active: bool
+    # False when the running llama.cpp child has no host copy to lock (full offload to a discrete GPU),
+    # so a keep-resident user is told why no lock is taken. True with nothing loaded.
     mlock_applicable: bool = True
-    mlock_skip_reason: Optional[Literal["full_gpu_offload", "ungoverned"]] = None
     reload_required: bool
     # Soft RLIMIT_MEMLOCK when finite. mlock cannot exceed it, so the UI warns that residency will not
     # fully pin a larger model. None means unlimited (macOS) or not applicable (Windows).
@@ -1065,26 +1067,6 @@ def _chat_preferences_response(enabled: bool | None = None) -> ChatPreferencesRe
 _NO_LAUNCH = object()
 
 
-def _media_model_is_resident() -> bool:
-    """Whether an image or video model is loaded."""
-    from core.inference.gpu_arbiter import DIFFUSION, VIDEO
-    from core.inference.media_keepwarm import engine_if_imported
-
-    for owner in (DIFFUSION, VIDEO):
-        try:
-            backend = engine_if_imported(owner)
-            if backend is None:
-                continue
-            loaded = getattr(backend, "is_loaded", None)
-            if loaded is None:
-                loaded = bool(backend.status().get("loaded"))
-        except Exception:  # noqa: BLE001 - a probe must never block reading settings
-            continue
-        if loaded:
-            return True
-    return False
-
-
 def _active_launch_placement():
     """``(state, policy_active, mlock_applicable, direct_io, dio_applicable, dio_managed,
     pending_settings)`` for the running child.
@@ -1101,27 +1083,9 @@ def _active_launch_placement():
         # "is a launch pending" and "what is it committed to".
         pending = getattr(backend, "_memory_pending_launch", None)
         if not backend.is_active and pending is None:
-            from core.inference.gpu_arbiter import DIFFUSION, VIDEO, current_owner
-            from core.inference.orchestrator import peek_inference_backend
-
-            orchestrator = peek_inference_backend()
-            resident_stt_model = getattr(orchestrator, "resident_stt_model", None)
-            stt_status = resident_stt_model() if callable(resident_stt_model) else None
-            stt_model_loaded = bool(
-                stt_status and (stt_status.get("model") or stt_status.get("loading"))
-            )
-            if (
-                current_owner() in (DIFFUSION, VIDEO)
-                or bool(getattr(orchestrator, "active_model_name", None))
-                or bool(getattr(orchestrator, "loading_models", None))
-                or stt_model_loaded
-                or _media_model_is_resident()
-            ):
-                return None, False, False, None, False, False, None
             return _NO_LAUNCH, False, True, None, False, False, None
-        state = getattr(backend, "_memory_state", None)
         return (
-            state,
+            getattr(backend, "_memory_state", None),
             bool(getattr(backend, "_memory_policy_active", False)),
             bool(getattr(backend, "_memory_mlock_applicable", True)),
             getattr(backend, "_memory_direct_io", None),
@@ -1145,7 +1109,7 @@ def _launch_effect_of(settings):
     return (keep_resident and not no_ram_reserve, no_ram_reserve)
 
 
-def _model_memory_reload_required(placement = None, settings = None) -> bool:
+def _model_memory_reload_required() -> bool:
     """True when the loaded process's memory placement contradicts the settings.
 
     Compares the state the child ACTUALLY launched with -- env defaults plus
@@ -1155,18 +1119,12 @@ def _model_memory_reload_required(placement = None, settings = None) -> bool:
 
     Keyed on is_active, not is_loaded: a save that lands while a load is still
     passing its health check would otherwise report no reload while the child is
-    already committed to the pre-save flags. _memory_pending_launch covers the
+    already committed to the pre-save flags. _memory_launch_pending covers the
     same window before Popen, where the placement is decided but _process is
     still None.
-
-    ``placement`` lets one read of _active_launch_placement serve a whole
-    response: re-reading per field would let a load landing between them answer
-    "which launch" differently for the reload hint than for the lock state.
     """
-    if placement is None:
-        placement = _active_launch_placement()
     state, policy_active, mlock_applicable, direct_io, dio_applicable, dio_managed, pending = (
-        placement
+        _active_launch_placement()
     )
     if state is _NO_LAUNCH:
         return False
@@ -1186,67 +1144,42 @@ def _model_memory_reload_required(placement = None, settings = None) -> bool:
     from core.inference.llama_server_args import memory_state_satisfies_settings
 
     return not memory_state_satisfies_settings(
-        state,
-        policy_active,
-        mlock_applicable,
-        settings = settings,
-        direct_io = direct_io,
-        dio_applicable = dio_applicable,
-        dio_managed = dio_managed,
+        state, policy_active, mlock_applicable, direct_io, dio_applicable, dio_managed
     )
 
 
-def _model_memory_mlock_active(want_mlock: bool, placement = None) -> bool:
-    """Whether page-locking is actually in force, not merely asked for."""
-    # No `not want_mlock` short-circuit: a hand-typed --mlock holds pages whatever the toggles say.
-    if placement is None:
-        placement = _active_launch_placement()
-    state = placement[0]
+def _model_memory_mlock_active(want_mlock: bool) -> bool:
+    """Whether page-locking is actually in force, not merely asked for. This drives the locked-memory cap
+    warning, so taking it from the toggles alone would tell a discrete-GPU user to raise a limit nothing
+    consults. With nothing running this is the intent; once a child exists it is what that child got, since
+    a full offload to a discrete GPU skips the lock and a diffusion runner has no load-mode at all. A
+    user's own --mlock counts, since the resolver reads the launched argv."""
+    if not want_mlock:
+        return False
+    state, _policy_active, _applicable, _direct_io, _dio_applicable, _dio_managed, _pending = (
+        _active_launch_placement()
+    )
     if state is _NO_LAUNCH:
-        return want_mlock
+        return True
     return bool(state and state[0])
 
 
-def _model_memory_mlock_applicable(placement = None) -> bool:
-    """Whether the running launch has anything for page-locking to act on."""
-    if placement is None:
-        placement = _active_launch_placement()
-    state, applicable = placement[0], placement[2]
-    if state is _NO_LAUNCH:
-        return True
-    if state is None:
-        return False
-    return applicable
-
-
-def _model_memory_mlock_skip_reason(placement = None):
-    if placement is None:
-        placement = _active_launch_placement()
-    state, applicable = placement[0], placement[2]
-    if state is None:
-        return "ungoverned"
-    if state is not _NO_LAUNCH and not applicable:
-        return "full_gpu_offload"
-    return None
+def _model_memory_mlock_applicable() -> bool:
+    state, _policy_active, applicable, _direct_io, _dio_applicable, _dio_managed, _pending = (
+        _active_launch_placement()
+    )
+    return state is _NO_LAUNCH or bool(applicable)
 
 
 def _model_memory_response() -> ModelMemoryResponse:
     keep_resident, no_ram_reserve = get_model_memory_settings()
-    placement = _active_launch_placement()
-    mlock_active = _model_memory_mlock_active(
-        keep_resident and not no_ram_reserve,
-        placement,
-    )
+    mlock_active = _model_memory_mlock_active(should_mlock())
     return ModelMemoryResponse(
         keep_resident = keep_resident,
         no_ram_reserve = no_ram_reserve,
         mlock_active = mlock_active,
-        mlock_applicable = _model_memory_mlock_applicable(placement),
-        mlock_skip_reason = _model_memory_mlock_skip_reason(placement),
-        reload_required = _model_memory_reload_required(
-            placement,
-            (keep_resident, no_ram_reserve),
-        ),
+        mlock_applicable = _model_memory_mlock_applicable(),
+        reload_required = _model_memory_reload_required(),
         memlock_limit_bytes = memlock_limit_bytes() if mlock_active else None,
     )
 

@@ -1,10 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import {
-  withModelLoadNotice,
-  withModelUnloadNotice,
-} from "@/lib/model-lifecycle-events";
+import { withModelLoadNotice } from "@/lib/model-lifecycle-events";
 import { authFetch } from "@/features/auth";
 import { hubTokenHeader } from "@/features/hub/lib/hub-token-header";
 import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
@@ -385,6 +382,7 @@ export async function cancelSttDownload(
   }
 }
 
+/** Release the local STT model and its RAM/VRAM allocations. */
 /** Release the dictation sidecar. `model` scopes the release to the model the caller claims:
  *  another surface can switch the same engine between the ownership check and this request,
  *  so the backend compares under the sidecar's own lock. */
@@ -393,25 +391,25 @@ export function unloadSttModel(
   model?: string,
   options?: { wait?: boolean },
 ): Promise<void> {
-  return queueSttLifecycle(() =>
-    withModelUnloadNotice("stt", model ?? null, async () => {
-      const params = new URLSearchParams();
-      if (engine) params.set("engine", engine);
-      if (model) params.set("model", model);
-      if (options?.wait === false) params.set("wait", "false");
-      const query = params.size ? `?${params}` : "";
-      const response = await authFetch(
-        `/api/inference/audio/stt/unload${query}`,
-        { method: "POST" },
-      );
-      if (!response.ok) {
-        const body = (await response.json().catch(() => null)) as {
-          detail?: string;
-        } | null;
-        throw new Error(body?.detail ?? `HTTP ${response.status}`);
-      }
-    }),
-  );
+  return queueSttLifecycle(async () => {
+    const params = new URLSearchParams();
+    if (engine) params.set("engine", engine);
+    if (model) params.set("model", model);
+    // Opt-out only: the default drains an in-flight transcription, right when the
+    // caller needs the memory back now.
+    if (options?.wait === false) params.set("wait", "false");
+    const query = params.size ? `?${params}` : "";
+    const response = await authFetch(
+      `/api/inference/audio/stt/unload${query}`,
+      { method: "POST" },
+    );
+    if (!response.ok) {
+      const body = (await response.json().catch(() => null)) as {
+        detail?: string;
+      } | null;
+      throw new Error(body?.detail ?? `HTTP ${response.status}`);
+    }
+  });
 }
 
 /** Recorded-audio dictation. Short recordings use one pass; long ones split near whisper's 30s
