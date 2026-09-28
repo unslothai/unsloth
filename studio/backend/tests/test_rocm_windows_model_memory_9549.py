@@ -46,7 +46,6 @@ STRIX_HALO = {
 
 
 def _props_torch(devices):
-
     class _Props:
         def __init__(self, spec):
             self.name = spec["name"]
