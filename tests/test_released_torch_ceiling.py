@@ -15,7 +15,9 @@ import pytest
 from packaging.requirements import Requirement
 from packaging.version import Version
 
-_PYPROJECT = tomllib.loads((Path(__file__).resolve().parents[1] / "pyproject.toml").read_text(encoding = "utf-8"))
+_PYPROJECT = tomllib.loads(
+    (Path(__file__).resolve().parents[1] / "pyproject.toml").read_text(encoding = "utf-8")
+)
 
 
 def _base_torch() -> Requirement:
