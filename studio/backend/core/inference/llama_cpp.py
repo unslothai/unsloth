@@ -2437,7 +2437,9 @@ def _fetch_swa_entry_from_hf(repo_id: str) -> Optional[object]:
         # Avoid caching the expected 404 for GGUF repos without config.json.
         if hf_file_definitely_absent(repo_id, "config.json"):
             return None
-        cfg_path = hf_hub_download(
+        cfg_path = call_hub_with_anonymous_retry(
+            hf_hub_download,
+            None,
             repo_id,
             "config.json",
             repo_type = "model",

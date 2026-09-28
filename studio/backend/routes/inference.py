@@ -11334,8 +11334,9 @@ def _remote_drafter_repo_bytes(spec: str, *, hf_token: Optional[str]) -> int:
         from utils.models.drafters import dflash_budget_bytes, split_listing_is_complete
 
         from hub.utils.gguf import drop_shadowed_appledouble_siblings
+        from hub.utils.hf_tokens import call_hub_with_anonymous_retry
 
-        info = model_info(repo, token = hf_token, files_metadata = True)
+        info = call_hub_with_anonymous_retry(model_info, hf_token, repo, files_metadata = True)
         sizes: dict[str, int] = {}
         # A sidecar's few KB stands in for the drafter the launch then fetches, and this figure
         # is what admits or refuses a load beside a training run.
