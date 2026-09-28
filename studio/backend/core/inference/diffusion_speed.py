@@ -558,14 +558,11 @@ def fp16_unet_offloaded(target: Any, pipe: Any, *, offload_active: bool) -> bool
     )
 
 
-# VAEs MEASURED slower in channels_last; they keep the contiguous layout. AutoencoderKLQwenImage21 (a 2D conv net with
-# channel RMS norms), 1024 decode on B200: 72.7 ms contiguous vs 89 ms channels_last.
+# Measured slower in channels_last (QwenImage21 1024 decode, B200: 72.7 vs 89 ms).
 _VAE_CHANNELS_LAST_DENY: frozenset[str] = frozenset({"AutoencoderKLQwenImage21"})
 
 
-# DiT pipelines whose only conv net is one of these VAEs: cudnn.benchmark MEASURED no steady gain and a re-tune on
-# every new resolution. AutoencoderKLQwenImage21, Qwen-Image-2.1 fp8 on B200: steady decode 75.8 ms off vs 77.8 ms on,
-# first decode at a new resolution 0.08-0.17 s off vs 0.74-1.86 s on (each new size, every session).
+# DiT-only VAEs where cudnn.benchmark gains nothing steady and re-tunes per resolution (0.1 s -> 0.7-1.9 s first decode).
 _CUDNN_BENCHMARK_DENY_VAES: frozenset[str] = frozenset({"AutoencoderKLQwenImage21"})
 
 
@@ -871,8 +868,7 @@ def _compile_repeated_blocks(
 
 
 def _install_inductor_backports(logger: Any) -> bool:
-    """torch 2.12 / 2.13 cannot prove ``(k*a - k*b) % (a - b) == 0`` and raise inductor ``CantSplit`` on it (fixed in
-    2.14); a probe-gated backport of that proof, a no-op on every other torch. Never fails a load."""
+    """Probe-gated backport of torch 2.14's CantSplit divisibility proof for 2.12 / 2.13. Never fails a load."""
     try:
         from . import diffusion_inductor_backports
         return diffusion_inductor_backports.install(logger)
@@ -885,11 +881,9 @@ def compile_dynamic(transformer: Any, dynamic: Optional[bool]) -> Optional[bool]
     """The ``dynamic`` a DiT is actually compiled with, so compile-cache fingerprints key on the same value.
 
     dynamic=True makes even the constant segment starts symbolic, and on Qwen-Image-2.1 the attention output cat
-    (text + target, length s87 - s89) then fuses into torchao's per-row activation-quant reduction. torch 2.12 / 2.13
-    cannot prove that split exact (CantSplit, every render failed); ``diffusion_inductor_backports`` restores the proof,
-    after which dynamic=True compiles, but measured slower than automatic dynamic (Qwen-Image-2.1 fp8 1024px on B200:
-    +6 s cold, +1.5% per step). Automatic dynamic (None) plus ``diffusion_dynamic_text`` compiles once and did not
-    recompile across 6 prompt lengths and 3 resolutions, so it stays."""
+    (text + target, length s87 - s89) then fuses into torchao's per-row activation-quant reduction (CantSplit on torch
+    2.12 / 2.13 without ``diffusion_inductor_backports``). Even with the backport it is slower than automatic dynamic
+    (None), which does not recompile across prompt lengths or resolutions."""
     if dynamic and transformer is not None and _carries_torchao_weights(transformer):
         return None
     return dynamic
