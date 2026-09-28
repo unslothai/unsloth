@@ -30,6 +30,7 @@ def windows(monkeypatch):
     monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setenv("SystemRoot", r"C:\Windows")
     monkeypatch.delenv("UNSLOTH_MXC_TERMINAL_CMD", raising = False)
+    monkeypatch.setattr(tools, "_request_profile", [None, 0.0])
     calls = []
 
     def host(
@@ -274,6 +275,8 @@ def test_cmd_isolated_does_not_treat_single_quotes_as_quoting(windows, monkeypat
         "if 1 equ 1 rmdir x",
         "if 1 == 1 rmdir x",
         'if "a"=="a" rmdir x',
+        "if cmdextversion 1 rmdir x",
+        "FOR %i IN (1) DO rmdir x",
     ],
 )
 def test_the_blocklist_reads_past_a_cmd_if_condition(windows, monkeypatch, command):
@@ -293,6 +296,31 @@ def test_a_tool_list_without_the_terminal_never_probes(windows):
     listed = [t for t in tools.ALL_TOOLS if t["function"]["name"] != "terminal"]
     assert tools.apply_terminal_profile_for_request(listed) is listed
     assert calls == []
+
+
+def test_requests_reuse_the_profile_and_refresh_it_off_the_request_path(windows, monkeypatch):
+    calls = windows(bash_cap = _cap(False, MSYS), cmd_cap = _cap(True))
+    started = []
+    monkeypatch.setattr(
+        tools.threading, "Thread", lambda target, daemon: started.append(target) or _NoThread()
+    )
+    assert "cmd" in _terminal_description(tools.apply_terminal_profile_for_request(tools.ALL_TOOLS))
+    probed = len(calls)
+    tools.apply_terminal_profile_for_request(tools.ALL_TOOLS)
+    assert len(calls) == probed and started == []
+    tools._request_profile[1] -= tools._REQUEST_PROFILE_REFRESH_SECONDS + 1
+    tools.apply_terminal_profile_for_request(tools.ALL_TOOLS)
+    tools.apply_terminal_profile_for_request(tools.ALL_TOOLS)
+    assert len(calls) == probed and started == [tools._refresh_request_profile]
+
+
+class _NoThread:
+    def start(self):
+        pass
+
+
+def _terminal_description(listed):
+    return next(t for t in listed if t["function"]["name"] == "terminal")["function"]["description"]
 
 
 def test_approval_reads_a_cmd_command_the_way_cmd_splits_it(windows, monkeypatch):

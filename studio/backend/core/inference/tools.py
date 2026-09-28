@@ -415,7 +415,7 @@ _SUBSTITUTION_SPAN_STEP = 64
 # Quote state of a backslash and the character behind it. Distinct from the surrounding quoting because bash expands
 # neither: the `$(` in `sed "s/\$(CC)/gcc/" Makefile` opens no command substitution.
 _ESCAPED_CHAR_STATE = "\\"
-_WIN_CONDITIONAL_KEYWORDS = frozenset({"exist", "defined", "errorlevel", "not"})
+_WIN_CONDITIONAL_KEYWORDS = frozenset({"exist", "defined", "errorlevel", "cmdextversion", "not"})
 # cmd's `IF [/I] [NOT] a OP b command`: the comparison stands where the command word would.
 _WIN_COMPARISON_OPS = frozenset({"==", "equ", "neq", "lss", "leq", "gtr", "geq"})
 _FIND_EXEC_FLAGS = frozenset({"-exec", "-execdir", "-ok", "-okdir"})
@@ -1736,8 +1736,9 @@ def _find_blocked_commands(command: str, posix: "bool | None" = None) -> set[str
             continue
         # A keyword only separates where a COMMAND may start. A quoted operator is DATA the command receives, not a
         # separator, so it leaves command position alone: `grep '|&' rm file` runs nothing and must not be refused.
+        # Folded: cmd's FOR ... DO is case-insensitive; in bash a capitalised keyword is only a command name.
         if (_looks_like_separator(token) and token_index not in quoted_separators) or (
-            token in _SHELL_KEYWORDS_AS_SEP and expect_command
+            token.lower() in _SHELL_KEYWORDS_AS_SEP and expect_command
         ):
             coproc_kw = expect_command and token == "coproc"
             expect_command = True
@@ -9988,16 +9989,44 @@ def _terminal_profile(disable_sandbox: bool = False) -> str:
         return host_default
 
 
+# The last profile a request advertised, so an expired probe verdict is refreshed off the request path.
+_request_profile: list = [None, 0.0]
+_request_profile_lock = threading.Lock()
+_REQUEST_PROFILE_REFRESH_SECONDS = 240.0
+
+
+def _refresh_request_profile() -> str:
+    profile = _terminal_profile(False)
+    with _request_profile_lock:
+        _request_profile[:] = [profile, time.monotonic()]
+    return profile
+
+
+def _profile_for_request() -> str:
+    with _request_profile_lock:
+        profile, computed = _request_profile
+        stale = (
+            profile is not None and time.monotonic() - computed > _REQUEST_PROFILE_REFRESH_SECONDS
+        )
+        if stale:
+            _request_profile[1] = time.monotonic()  # one refresh in flight at a time
+    if profile is None:
+        return _refresh_request_profile()
+    if stale:
+        threading.Thread(target = _refresh_request_profile, daemon = True).start()
+    return profile
+
+
 def apply_terminal_profile_for_request(tools: list[dict]) -> list[dict]:
-    """Sandboxed requests only: advertise the shell _bash_exec will pick for this request. Blocking
-    (it may run the cached MXC probe), so async callers run it in a worker thread; a list without
-    the Terminal never probes."""
+    """Sandboxed requests only: advertise the shell _bash_exec will pick for this request. Only the
+    first call can block on the MXC probe, so async callers run it in a worker thread; later calls
+    reuse the last profile and refresh it in the background. A list without the Terminal never probes."""
     if not any(
         isinstance(t, dict) and (t.get("function") or {}).get("name") == "terminal"
         for t in tools or ()
     ):
         return tools
-    return apply_terminal_profile_description(tools, _terminal_profile(False))
+    return apply_terminal_profile_description(tools, _profile_for_request())
 
 
 def _shell_argv(command: str, workdir: str, confinement) -> "tuple[list[str], str | None]":
