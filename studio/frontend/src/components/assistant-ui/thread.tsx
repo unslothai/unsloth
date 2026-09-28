@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { ChatThinkingControl } from "@/features/chat/components/chat-thinking-control";
 import {
   ComposerAttachments,
   UserMessageAttachments,
@@ -39,10 +40,6 @@ import {
   proplessSlot,
   threadMessageKind,
 } from "@/components/assistant-ui/thread-message-slot";
-import {
-  thinkEffortAriaLabel,
-  thinkToggleAriaLabel,
-} from "@/components/assistant-ui/think-aria-label";
 import { withToolConfirmation } from "@/components/assistant-ui/tool-confirmation-controls";
 import { ToolFallback } from "@/components/assistant-ui/tool-fallback";
 import { ToolGroup } from "@/components/assistant-ui/tool-group";
@@ -192,8 +189,6 @@ import {
 import { FIND_SKIP_ATTRIBUTE } from "@/features/find-in-page";
 import { translate, useT } from "@/i18n";
 import {
-  clampReasoningEffortToLevels,
-  getExternalReasoningCapabilities,
   modelCatalogVersion,
   subscribeModelCatalog,
 } from "@/features/chat/provider-capabilities";
@@ -346,7 +341,6 @@ import { useNavigate } from "@tanstack/react-router";
 import {
   ArrowDownIcon,
   ArrowUpIcon,
-  ChevronDownIcon,
   ChevronLeftIcon,
   ChevronRightIcon,
   Columns2Icon,
@@ -5818,320 +5812,7 @@ function useImeComposerInputHandlers({
 }
 
 // HugeIcons arrow-down-01 (stroke-standard): straight-line chevron.
-// svgrepo.com lightbulb (filled, with base).
-const BulbIcon: FC<{ className?: string }> = ({ className }) => (
-  <svg
-    className={className}
-    viewBox="-10.24 -10.24 1044.48 1044.48"
-    fill="currentColor"
-    stroke="currentColor"
-    strokeWidth={16.384}
-    xmlns="http://www.w3.org/2000/svg"
-    aria-hidden={true}
-  >
-    <path d="M511.984 0c-198.032 0-353.12 161.104-353.12 359.136 0 149.2 73.28 220.256 131.185 272.128 37.28 33.424 62.368 53.552 62.368 78.352v54.255c0 1.392.193 2.752.368 4.128h-.72v92.624c.016 97.712 63.2 163.376 161.072 163.376 94.464 0 158.944-65.664 158.944-163.376V768h-.928c.176-1.376.416-2.736.416-4.128v-54.255c0-37.76 28.032-60.592 70.528-97.696 57.504-50.208 123.023-112.688 123.023-252.784C865.136 161.104 710.016 0 511.983 0zm-1.215 960c-59.904 0-94.689-37.152-94.689-99.376l-.463-42.672C438.64 825.824 470 832 512 832c41.424 0 72.848-6.624 96.08-14.768v43.392c0 63.152-35.247 99.376-97.312 99.376zm189.248-396.288c-43.472 37.968-92.433 77.216-92.433 145.904v40.432c-15.183 8.48-43.183 18.56-96.127 18.56-55.569 0-81.92-9.856-95.024-17.473V709.6c0-54.608-42.688-89.297-83.68-126.017-54.32-48.672-109.873-103.84-109.873-224.464-.015-162.72 126.385-295.12 289.104-295.12 162.752 0 289.152 132.4 289.152 295.137 0 111.024-48.463 158.576-101.12 204.576z" />
-  </svg>
-);
-
-// Same bulb in every state; greyed by the pill's muted color when off.
-const ThinkIcon: FC = () => <BulbIcon className="size-[calc(15.5px*var(--ui-space-scale,1))]" />;
-
-const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
-  side = "bottom",
-}) => {
-  const modelLoaded = useChatRuntimeStore(
-    (s) => !!s.params.checkpoint && !s.modelLoading,
-  );
-  const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
-  const supportsReasoning = useChatRuntimeStore((s) => s.supportsReasoning);
-  const reasoningAlwaysOn = useChatRuntimeStore((s) => s.reasoningAlwaysOn);
-  const reasoningEnabled = useChatRuntimeStore((s) => s.reasoningEnabled);
-  const setReasoningEnabled = useChatRuntimeStore((s) => s.setReasoningEnabled);
-  const reasoningStyle = useChatRuntimeStore((s) => s.reasoningStyle);
-  const reasoningEffort = useChatRuntimeStore((s) => s.reasoningEffort);
-  const supportsReasoningOff = useChatRuntimeStore(
-    (s) => s.supportsReasoningOff,
-  );
-  const reasoningEffortLevels = useChatRuntimeStore(
-    (s) => s.reasoningEffortLevels,
-  );
-  const setReasoningEffort = useChatRuntimeStore((s) => s.setReasoningEffort);
-  const connectionsEnabled = useExternalProvidersStore(
-    (s) => s.connectionsEnabled,
-  );
-  const externalProvidersAll = useExternalProvidersStore((s) => s.providers);
-  const externalProviders = connectionsEnabled ? externalProvidersAll : [];
-  const externalSelection = parseExternalModelId(checkpoint);
-  const selectedExternalProvider =
-    externalSelection != null
-      ? externalProviders.find((p) => p.id === externalSelection.providerId)
-      : undefined;
-  const isKimiExternal = selectedExternalProvider?.providerType === "kimi";
-  const toolsEnabled = useChatRuntimeStore((s) => s.toolsEnabled);
-  const setToolsEnabled = useChatRuntimeStore((s) => s.setToolsEnabled);
-  const supportsPreserveThinking = useChatRuntimeStore(
-    (s) => s.supportsPreserveThinking,
-  );
-  const preserveThinking = useChatRuntimeStore((s) => s.preserveThinking);
-  const setPreserveThinking = useChatRuntimeStore((s) => s.setPreserveThinking);
-  useSyncExternalStore(subscribeModelCatalog, modelCatalogVersion);
-  const externalReasoningCaps =
-    externalSelection != null
-      ? getExternalReasoningCapabilities(
-          selectedExternalProvider?.providerType,
-          // The adapter resolves reasoning for the selected id; openrouter/free can route each turn elsewhere.
-          externalSelection?.modelId,
-          {
-            isReasoningProvider:
-              selectedExternalProvider?.isReasoningModel === true,
-            // Lets the resolver detect custom Gemini OAI-compat gateways.
-            baseUrl: selectedExternalProvider?.baseUrl ?? null,
-            apiType: selectedExternalProvider?.apiType,
-          },
-        )
-      : null;
-  const effectiveReasoningStyle =
-    externalReasoningCaps?.reasoningStyle ?? reasoningStyle;
-  const effectiveReasoningAlwaysOn =
-    externalReasoningCaps?.reasoningAlwaysOn ?? reasoningAlwaysOn;
-  const effectiveSupportsReasoningOff =
-    externalReasoningCaps?.supportsReasoningOff ?? supportsReasoningOff;
-  const effectiveReasoningEffortLevels =
-    externalReasoningCaps?.reasoningEffortLevels ?? reasoningEffortLevels;
-  const effectiveSupportsReasoning =
-    externalReasoningCaps?.supportsReasoning ?? supportsReasoning;
-  const reasoningLockedOn =
-    effectiveSupportsReasoning &&
-    (effectiveReasoningAlwaysOn || !effectiveSupportsReasoningOff);
-  const effectiveReasoningEnabled = reasoningLockedOn ? true : reasoningEnabled;
-  // What the adapter sends: the stored effort clamped to the current ladder, so a catalog refresh that
-  // drops the stored level is shown truthfully without overwriting the choice.
-  const displayedEffort =
-    effectiveReasoningEffortLevels.length > 0
-      ? clampReasoningEffortToLevels(reasoningEffort, effectiveReasoningEffortLevels)
-      : reasoningEffort;
-  const effectiveReasoningVisualEnabled =
-    effectiveReasoningEnabled && displayedEffort !== "none";
-  const disabled =
-    !modelLoaded || !(effectiveSupportsReasoning || supportsPreserveThinking);
-  const formatEffortLabel = (level: typeof reasoningEffort): string => {
-    if (level !== "xhigh")
-      return level.charAt(0).toUpperCase() + level.slice(1);
-    const normalized = externalSelection?.modelId?.trim().toLowerCase() ?? "";
-    if (
-      normalized.startsWith("claude-opus-4-6") ||
-      normalized.startsWith("claude-sonnet-4-6")
-    ) {
-      return "Max";
-    }
-    return "Extra High";
-  };
-  const effortLabel = formatEffortLabel(displayedEffort);
-
-  // A connection may support history preservation without a generation toggle.
-  if (!effectiveSupportsReasoning && !supportsPreserveThinking) {
-    return null;
-  }
-
-  // enable_thinking_effort (GLM-5.2: high|max + disable) reuses the effort
-  // dropdown; it just also carries an Off row via supportsReasoningOff.
-  const isEffort =
-    effectiveReasoningStyle === "reasoning_effort" ||
-    effectiveReasoningStyle === "enable_thinking_effort";
-  // Dropdown when there are effort levels or preserve-thinking; else a toggle.
-  const useDropdown = isEffort || supportsPreserveThinking;
-  const activeLook = !effectiveSupportsReasoning
-    ? preserveThinking && !disabled
-    : isEffort
-      ? reasoningLockedOn || (effectiveReasoningVisualEnabled && !disabled)
-      : reasoningLockedOn || (effectiveReasoningEnabled && !disabled);
-
-  if (useDropdown) {
-    return (
-      <NonModalDropdownMenu
-        side={side}
-        align="end"
-        avoidCollisions={true}
-        className="unsloth-plus-menu unsloth-thinking-menu min-w-0 w-[calc(176px*var(--ui-space-scale,1))]"
-        trigger={(triggerRef) => (
-          <button
-            ref={triggerRef}
-            type="button"
-            disabled={disabled}
-            className="unsloth-thinking-pill"
-            data-pill-label="Thinking settings"
-            data-active={activeLook ? "true" : "false"}
-            aria-label={thinkEffortAriaLabel({
-              modelLoaded,
-              reasoningDisabled: disabled,
-              reasoningEffort: displayedEffort,
-            })}
-          >
-            <ThinkIcon />
-            {activeLook ? (
-              <span className="unsloth-thinking-label">
-                {isEffort ? `Thinking · ${effortLabel}` : "Thinking"}
-              </span>
-            ) : null}
-            <ChevronDownIcon strokeWidth={1.5} className="unsloth-thinking-caret size-[calc(15px*var(--ui-space-scale,1))]" />
-          </button>
-        )}
-      >
-        {isEffort ? (
-          <>
-            {effectiveSupportsReasoningOff && (
-              <DropdownMenuItem
-                onSelect={() => {
-                  setReasoningEnabled(false);
-                  applyQwenThinkingParams(false);
-                  // Preserve thinking needs thinking on, so turn it off too.
-                  setPreserveThinking(false);
-                }}
-              >
-                <HugeiconsIcon
-                  icon={Tick02Icon}
-                  strokeWidth={2}
-                  className={cn(
-                    "unsloth-tick size-4",
-                    effectiveReasoningVisualEnabled && "opacity-0",
-                  )}
-                />
-                None
-              </DropdownMenuItem>
-            )}
-            {effectiveReasoningEffortLevels
-              // 'none' is a real template level for models like Inkling
-              // (effort 0 = thinking off); show it as a pick unless the
-              // dedicated off item above already covers it.
-              .filter(
-                (level) =>
-                  level !== "none" || !effectiveSupportsReasoningOff,
-              )
-              .map((level) => (
-                <DropdownMenuItem
-                  key={level}
-                  onSelect={() => {
-                    setReasoningEffort(level);
-                    setReasoningEnabled(true);
-                    applyQwenThinkingParams(true);
-                    // Kimi's $web_search builtin forbids thinking, so
-                    // enabling thinking flips the Search pill off.
-                    if (isKimiExternal && toolsEnabled) {
-                      setToolsEnabled(false, { persist: false });
-                    }
-                  }}
-                >
-                  <HugeiconsIcon
-                  icon={Tick02Icon}
-                  strokeWidth={2}
-                    className={cn(
-                      "unsloth-tick size-4",
-                      !(
-                        effectiveReasoningVisualEnabled &&
-                        displayedEffort === level
-                      ) && "opacity-0",
-                    )}
-                  />
-                  {formatEffortLabel(level)}
-                </DropdownMenuItem>
-              ))}
-          </>
-        ) : (
-          effectiveSupportsReasoning &&
-          effectiveSupportsReasoningOff &&
-          !reasoningLockedOn && (
-            <DropdownMenuItem
-              onSelect={() => {
-                const next = !reasoningEnabled;
-                setReasoningEnabled(next);
-                applyQwenThinkingParams(next);
-                // Preserve thinking cannot run without thinking.
-                if (!next) setPreserveThinking(false);
-                if (isKimiExternal && next && toolsEnabled) {
-                  setToolsEnabled(false, { persist: false });
-                }
-              }}
-            >
-              <HugeiconsIcon
-                  icon={Tick02Icon}
-                  strokeWidth={2}
-                className={cn(
-                  "unsloth-tick size-4",
-                  !effectiveReasoningEnabled && "opacity-0",
-                )}
-              />
-              Thinking
-            </DropdownMenuItem>
-          )
-        )}
-        {supportsPreserveThinking && (
-          <DropdownMenuItem
-            disabled={disabled}
-            onSelect={(e) => {
-              e.preventDefault();
-              const next = !preserveThinking;
-              setPreserveThinking(next);
-              // Only local models couple this setting to generation controls.
-              if (next && externalSelection === null) {
-                setReasoningEnabled(true);
-                applyQwenThinkingParams(true);
-              }
-            }}
-          >
-            <HugeiconsIcon
-                  icon={Tick02Icon}
-                  strokeWidth={2}
-              className={cn(
-                "unsloth-tick size-4",
-                !preserveThinking && "opacity-0",
-              )}
-            />
-            Preserve thinking
-          </DropdownMenuItem>
-        )}
-      </NonModalDropdownMenu>
-    );
-  }
-
-  return (
-    <button
-      type="button"
-      disabled={disabled || reasoningLockedOn}
-      aria-disabled={disabled || reasoningLockedOn}
-      title={
-        reasoningLockedOn
-          ? "This model requires reasoning to stay on."
-          : undefined
-      }
-      onClick={() => {
-        if (reasoningLockedOn) return;
-        const next = !reasoningEnabled;
-        setReasoningEnabled(next);
-        applyQwenThinkingParams(next);
-        // Mutually exclusive with Search on Kimi (see dropdown branch).
-        if (isKimiExternal && next && toolsEnabled) {
-          setToolsEnabled(false, { persist: false });
-        }
-      }}
-      className="unsloth-thinking-pill"
-      data-pill-label="Thinking"
-      data-active={activeLook ? "true" : "false"}
-      aria-label={thinkToggleAriaLabel({
-        reasoningLockedOn,
-        modelLoaded,
-        reasoningDisabled: disabled,
-        effectiveReasoningEnabled,
-      })}
-    >
-      <PillGlyph>
-        <ThinkIcon />
-      </PillGlyph>
-      {activeLook ? (
-        <span className="unsloth-thinking-label">Thinking</span>
-      ) : null}
-    </button>
-  );
-};
+const ReasoningToggle = ChatThinkingControl;
 
 // Tool icon plus an X overlay the CSS reveals on hover when the pill is active.
 const PillGlyph: FC<{ children: ReactNode }> = ({ children }) => (

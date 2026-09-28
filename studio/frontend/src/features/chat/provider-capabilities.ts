@@ -43,6 +43,7 @@ export type ExternalReasoningCapabilities = {
   supportsReasoningOff: boolean;
   reasoningEffortLevels: readonly ReasoningEffortLevel[];
   defaultEffort?: ReasoningEffortLevel | null;
+  reasoningKnown?: boolean;
 };
 
 /** Pick a stored effort level present in `effortLevels`, mapping legacy "xhigh" to "max"
@@ -1247,6 +1248,7 @@ function catalogCapabilities(
 }
 
 const OPENROUTER_GENERIC_TOGGLE: ExternalReasoningCapabilities = {
+  reasoningKnown: false,
   supportsReasoning: true,
   reasoningStyle: "enable_thinking",
   reasoningAlwaysOn: false,

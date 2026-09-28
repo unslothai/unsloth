@@ -450,7 +450,7 @@ test("per-model prompt and cap reuse the memory Chat already keeps", () => {
   // supportsReasoning alone let a pin be set on Kimi that no request could ever carry.
   assert.match(
     settingsDialog,
-    /const efforts = externalReasoningTakesEffort\(reasoning\)\s*\? reasoning\.reasoningEffortLevels\.filter\(\(level\) => level !== "none"\)\s*: \[\];/,
+    /const thinking = thinkingPresentation\(reasoning\);\s*const efforts = thinking.levels;/,
   );
   const capabilities = readSrc("features/chat/provider-capabilities.ts");
   assert.match(
@@ -732,7 +732,8 @@ test("reasoning is read through the resolver the composer uses", () => {
       /getExternalReasoningCapabilities\(providerType, modelId, \{\s*isReasoningProvider,\s*baseUrl,\s*apiType,\s*\}\)/,
     );
     // "none" is the off switch, not a level on offer.
-    assert.match(source, /\(level\) => level !== "none"/);
+    if (source === settingsDialog) assert.match(source, /thinkingPresentation\(reasoning\)/);
+    else assert.match(source, /\(level\) => level !== "none"/);
   }
   assert.doesNotMatch(settingsDialog, /entry\?\.reasoning \? entry\.efforts/);
   // And a self-hosted endpoint's only reasoning signal is the flag on its connection.

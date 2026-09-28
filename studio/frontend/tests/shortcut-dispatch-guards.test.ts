@@ -394,14 +394,9 @@ test("the sandbox probe leaves the shared project folder alone", async () => {
 // Loading a model that drops the level in force leaves the effort set to one
 // the model does not list, and indexOf then returns -1.
 test("an unlisted reasoning effort steps to the first supported level", async () => {
-  const at = CHAT_PAGE.indexOf("const current = levels.indexOf(state.reasoningEffort);");
-  assert.notEqual(at, -1);
-  const body = CHAT_PAGE.slice(at, at + 700);
-  assert.match(
-    body,
-    /if \(current === -1\) \{\n\s*state\.setReasoningEffort\(levels\[0\]\);/,
-    "an unlisted effort still counts a step off an index that is not in the list",
-  );
+  const { stepThinkingEffort } = await import("../src/features/chat/lib/thinking-presentation.ts");
+  assert.equal(stepThinkingEffort(["low", "high"], "max", 1, false), "low");
+  assert.match(CHAT_PAGE, /stepThinkingEffort\(view.levels, effort, delta, wrap\)/);
 });
 
 // The composer exception exists for a chord that types nothing there. Decline

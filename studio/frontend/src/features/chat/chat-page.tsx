@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { currentThinking, changeThinking } from "./lib/thinking-controls";
+import { stepThinkingEffort } from "./lib/thinking-presentation";
 import { useAppShellReadySignal } from "@/components/app-readiness";
 import {
   applyModelLoadConfigToRuntime,
@@ -3599,30 +3601,13 @@ export function ChatPage({
   /** Step the effort level, clamped at both ends unless we are cycling. */
   const shiftReasoningEffort = useCallback(
     (delta: number, wrap: boolean) => {
-      const state = useChatRuntimeStore.getState();
-      const levels = state.reasoningEffortLevels;
-      // Levels stay populated for an enable_thinking model, whose request path drops the effort. Same
-      // test as the composer's effort menu.
-      const isEffort =
-        state.reasoningStyle === "reasoning_effort" ||
-        state.reasoningStyle === "enable_thinking_effort";
-      if (!state.supportsReasoning || !isEffort || levels.length === 0) {
-        toast.info("This model has no reasoning effort setting");
+      const { view, effort } = currentThinking();
+      const next = stepThinkingEffort(view.levels, effort, delta, wrap);
+      if (next === null) {
+        toast.info(view.description);
         return;
       }
-      const current = levels.indexOf(state.reasoningEffort);
-      // Loading a model that drops the level in force leaves the effort set to one that is gone, and
-      // indexOf gives -1, so the first press picks the lowest level offered.
-      if (current === -1) {
-        state.setReasoningEffort(levels[0]);
-        return;
-      }
-      const from = current;
-      const next = wrap
-        ? (from + delta + levels.length) % levels.length
-        : Math.min(Math.max(from + delta, 0), levels.length - 1);
-      if (levels[next] === state.reasoningEffort) return;
-      state.setReasoningEffort(levels[next]);
+      changeThinking(true, next);
     },
     [],
   );

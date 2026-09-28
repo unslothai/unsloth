@@ -15,7 +15,6 @@ import { readSrc } from "./helpers/kit.ts";
 
 /** Keyed by a marker on the menu's trigger. */
 const NON_MODAL = [
-  ["components/assistant-ui/thread.tsx", "thinkEffortAriaLabel({"],
   ["components/app-sidebar.tsx", "aria-label={options.ariaLabel}"],
   ["components/app-sidebar.tsx", 'aria-label="Chat options"'],
   ["components/app-sidebar.tsx", 'aria-label="Project options"'],
@@ -23,7 +22,6 @@ const NON_MODAL = [
   ["components/app-sidebar.tsx", 't("shell.accountMenu"'],
   ["features/chat/chat-page.tsx", 'aria-label="Project options"'],
   ["features/chat/chat-page.tsx", 'aria-label="Chat options"'],
-  ["features/chat/shared-composer.tsx", "thinkEffortAriaLabel({"],
 ] as const;
 
 /** Both spellings of a menu root, so the enclosing one is found whichever it is. */
@@ -118,4 +116,8 @@ test("the menu content still animates out, which is why the guard is gated", () 
   // Without the animation the gate above is merely harmless; revisit it rather than drop it.
   const content = readSrc("components/ui/dropdown-menu.tsx");
   assert.match(content, /data-closed:animate-out/);
+});
+
+test("the shared thinking popover does not lock the chat", () => {
+  assert.match(readSrc("features/chat/components/thinking-control.tsx"), /<Popover modal=\{false\}/);
 });

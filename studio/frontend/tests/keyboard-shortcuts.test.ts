@@ -1384,10 +1384,9 @@ test("opening a chat by chord drops the selection, as clicking a row does", asyn
 test("effort chords only run for a model whose effort is read", async () => {
   const at = CHAT_PAGE.indexOf("const shiftReasoningEffort");
   const body = CHAT_PAGE.slice(at, CHAT_PAGE.indexOf("useShortcut(\"cycleReasoningEffort\"", at));
-  // enable_thinking models still list levels, but the request drops the effort.
-  assert.match(body, /state\.reasoningStyle === "reasoning_effort"/);
-  assert.match(body, /state\.reasoningStyle === "enable_thinking_effort"/);
-  assert.match(body, /!state\.supportsReasoning \|\| !isEffort/);
+  assert.match(body, /currentThinking\(\)/);
+  assert.match(body, /stepThinkingEffort\(view.levels, effort, delta, wrap\)/);
+  assert.match(body, /changeThinking\(true, next\)/);
 });
 
 test("New chat inherits the project on screen, inferred or not", async () => {

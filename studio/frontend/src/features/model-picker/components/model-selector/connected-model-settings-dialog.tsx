@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { thinkingPresentation, effortLabel } from "@/features/chat/lib/thinking-presentation";
 // One connected model's own settings. The system prompt and output cap are not a new store: Chat
 // has remembered both per model for as long as "Remember settings per model" has been on, under
 // the same checkpoint id. This just makes that memory visible and editable from the row.
@@ -35,7 +36,6 @@ import {
 } from "@/features/chat";
 // eslint-disable-next-line no-restricted-imports -- Avoid the chat barrel's React exports.
 import {
-  externalReasoningTakesEffort,
   getExternalMaxOutputTokens,
   getExternalMinOutputTokens,
   getExternalReasoningCapabilities,
@@ -106,9 +106,8 @@ export function ConnectedModelSettingsDialog({
   // Offered only where a level is actually sent: the default low/medium/high ladder is present
   // even for a model whose style carries a bare thinking on/off, so gating on supportsReasoning
   // alone let a pin be set on Kimi that no request could ever carry.
-  const efforts = externalReasoningTakesEffort(reasoning)
-    ? reasoning.reasoningEffortLevels.filter((level) => level !== "none")
-    : [];
+  const thinking = thinkingPresentation(reasoning);
+  const efforts = thinking.levels;
 
   // An OpenRouter cap comes from the live catalogue, which can land after this renders, and the
   // bounds below are read from it.
@@ -231,7 +230,7 @@ export function ConnectedModelSettingsDialog({
             />
           </div>
 
-          {efforts.length > 0 ? (
+          {thinking.kind === "adjustable" ? (
             <div className="flex items-center justify-between gap-4">
               <Label htmlFor="connected-model-effort">Reasoning effort</Label>
               <Select value={effort} onValueChange={setEffortDraft}>
@@ -242,12 +241,14 @@ export function ConnectedModelSettingsDialog({
                   <SelectItem value={FOLLOW_CHAT}>Follow chat</SelectItem>
                   {efforts.map((level) => (
                     <SelectItem key={level} value={level}>
-                      {level}
+                      {effortLabel(level)}
                     </SelectItem>
                   ))}
                 </SelectContent>
               </Select>
             </div>
+          ) : thinking.kind !== "unsupported" ? (
+            <p className="text-sm text-muted-foreground">{thinking.description}</p>
           ) : null}
         </div>
 

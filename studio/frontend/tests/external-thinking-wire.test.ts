@@ -50,8 +50,9 @@ test("every Thinking control resolves reasoning for the id the adapter sends, no
     return calls.map((match) => match[1].trim().replace("?.", "."));
   };
   assert.deepEqual(modelArguments("features/chat/api/chat-adapter.ts"), ["externalSelection.modelId"]);
+  assert.deepEqual(modelArguments("features/chat/lib/thinking-controls.ts"), ["selection.modelId"]);
   for (const file of ["features/chat/shared-composer.tsx", "components/assistant-ui/thread.tsx"]) {
-    assert.deepEqual(modelArguments(file), ["externalSelection.modelId"], file);
+    assert.match(readSrc(file), /ChatThinkingControl/);
   }
   assert.equal(getExternalReasoningCapabilities("openrouter", "openrouter/free").reasoningStyle, "enable_thinking");
 });
