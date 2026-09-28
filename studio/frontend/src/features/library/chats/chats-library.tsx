@@ -18,7 +18,6 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { Skeleton } from "@/components/ui/skeleton";
 import {
   exportConversationByFormat,
   DeleteChatFilesSwitch,
@@ -233,17 +232,6 @@ function EmptyState({
       <h2 className="font-medium font-sans text-ui-21 text-foreground">{title}</h2>
       <p className="text-ui-15 text-muted-foreground">{description}</p>
       {action && <div className="mt-3">{action}</div>}
-    </div>
-  );
-}
-
-function LoadingRows() {
-  return (
-    <div className="mt-6 flex flex-col gap-2">
-      {Array.from({ length: 8 }, (_, index) => (
-        // biome-ignore lint/suspicious/noArrayIndexKey: fixed placeholders with no identity
-        <Skeleton key={index} className="h-12 rounded-[14px]" />
-      ))}
     </div>
   );
 }
@@ -993,7 +981,7 @@ export function ChatsLibrary({
   }
 
   function renderChats() {
-    if (!loaded) return <LoadingRows />;
+    if (!loaded) return null;
     const filedProjects = renderSectionProjects();
     if (visibleChats.length === 0 && filedProjects) return filedProjects;
     if (visibleChats.length === 0) {
@@ -1167,7 +1155,7 @@ export function ChatsLibrary({
   }
 
   function renderSections() {
-    if (!loaded) return <LoadingRows />;
+    if (!loaded) return null;
     if (visibleSections.length === 0) {
       return query.trim() ? (
         <EmptyState
@@ -1213,7 +1201,7 @@ export function ChatsLibrary({
         <button
           type="button"
           onClick={() => setMovingIntoNew({ kind: "section", chats: [] })}
-          className="flex min-h-40 flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-border text-ui-14 text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground"
+          className="flex aspect-[8/7] flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-border text-ui-14 text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground"
         >
           <HugeiconsIcon icon={PlusSignIcon} strokeWidth={1.5} className="size-6" />
           {t("shell.sections.newSection")}
@@ -1226,7 +1214,7 @@ export function ChatsLibrary({
   }
 
   function renderAll() {
-    if (!loaded || !projectsLoaded) return <LoadingRows />;
+    if (!loaded || !projectsLoaded) return null;
     const nothing =
       visibleProjects.length === 0 && visibleSections.length === 0 && visibleChats.length === 0;
     if (nothing) return renderChats();
@@ -1266,7 +1254,7 @@ export function ChatsLibrary({
   }
 
   function renderProjects() {
-    if (!projectsLoaded || !loaded) return <LoadingRows />;
+    if (!projectsLoaded || !loaded) return null;
     if (visibleProjects.length === 0) {
       return query.trim() ? (
         <EmptyState
@@ -1309,7 +1297,7 @@ export function ChatsLibrary({
           <button
             type="button"
             onClick={() => setCreatingProject(true)}
-            className="flex min-h-44 flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-border text-ui-14 text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground"
+            className="flex aspect-[8/7] flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-border text-ui-14 text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground"
           >
             <HugeiconsIcon icon={FolderAddIcon} strokeWidth={1.5} className="size-6" />
             {t("library.chats.toolbar.newProject")}
