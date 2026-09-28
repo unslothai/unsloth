@@ -1175,7 +1175,15 @@ def remove(engine: str) -> dict:
         from . import wsl_host
 
         if wsl_host.active() and wsl_host.distro_ready():
-            wsl_host.guest(["rm", "-rf", f"{wsl_host.GUEST_ROOT}/engines/{engine}"])
+            # The compile caches live beside the environments, not under them.
+            wsl_host.guest(
+                [
+                    "rm",
+                    "-rf",
+                    f"{wsl_host.GUEST_ROOT}/engines/{engine}",
+                    f"{wsl_host.GUEST_ROOT}/cache/{engine}",
+                ]
+            )
         shutil.rmtree(root, ignore_errors = False) if root.exists() else None
         with _lock:
             _jobs.pop(engine, None)

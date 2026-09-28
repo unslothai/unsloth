@@ -403,7 +403,25 @@ def test_host_probes_find_nvidia_smi_off_path(monkeypatch):
     wsl_host.gpu_uuids([0])
     monkeypatch.setattr(install.subprocess, "run", fake_run)
     install._probe_rows(0)
-    assert argv == [r"C:\NVSMI\nvidia-smi.exe"] * 2
+    from core.inference import engine_adapters
+
+    monkeypatch.setattr(engine_adapters.subprocess, "run", fake_run)
+    try:
+        engine_adapters.gpu_memory_fraction([0], 1024)
+    except Exception:
+        pass
+    assert argv == [r"C:\NVSMI\nvidia-smi.exe"] * 3
+
+
+def test_removing_a_wsl_engine_also_drops_its_compile_cache(wsl):
+    guest = Path(wsl_host.GUEST_ROOT)
+    guest.mkdir(parents = True)
+    (guest / "owner.json").write_text("{}")
+    for folder in ("engines/vllm/env-abc", "cache/vllm/k", "engines/sglang", "cache/sglang/k"):
+        (guest / folder).mkdir(parents = True)
+    install.remove("vllm")
+    assert not (guest / "engines" / "vllm").exists() and not (guest / "cache" / "vllm").exists()
+    assert (guest / "engines" / "sglang").exists() and (guest / "cache" / "sglang").exists()
 
 
 def test_sglang_launcher_is_read_through_mnt(wsl, monkeypatch):
