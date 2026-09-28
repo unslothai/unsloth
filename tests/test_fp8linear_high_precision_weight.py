@@ -18,7 +18,7 @@ def test_bf16_weight_in_fp8linear_runs_plain_linear(bias):
     FP8Linear = fp8.FP8Linear
     if FP8Linear is None:
         pytest.skip("this transformers has no FP8Linear")
-    layer = FP8Linear(256, 128).cuda()
+    layer = FP8Linear(256, 128, block_size = (128, 128)).cuda()
     torch.manual_seed(0)
     layer.weight = torch.nn.Parameter(
         torch.randn(128, 256, device = "cuda", dtype = torch.bfloat16) * 0.05, requires_grad = False
