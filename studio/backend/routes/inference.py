@@ -26940,7 +26940,12 @@ async def produce_openai_chat_completions(
                 400, "Image provided but current model is text-only. Load a vision model."
             )
         try:
-            await asyncio.to_thread(_inline_request_remote_images, payload)
+            await asyncio.to_thread(
+                _inline_request_remote_images
+                if _serves_several_images(backend)
+                else _inline_selected_remote_image,
+                payload,
+            )
         except HTTPException as exc:
             raise _reject(exc.status_code, exc.detail)
         _pre_parsed = None
@@ -35375,6 +35380,34 @@ def _inline_request_remote_images(payload) -> None:
         for part in message.content:
             if isinstance(part, ImageContentPart) and not part.image_url.url.startswith("data:"):
                 part.image_url.url = fetches.inline(part.image_url.url)
+
+
+def _inline_selected_remote_image(payload) -> None:
+    # A single-image model reads only the image _extract_content_parts selects.
+    latest = latest_user = None
+    for message in payload.messages:
+        if message.role in ("system", "developer") or not isinstance(message.content, list):
+            continue
+        part = next(
+            (
+                p
+                for p in message.content
+                if isinstance(p, ImageContentPart)
+                and (
+                    p.image_url.url.partition(",")[2]
+                    if p.image_url.url.startswith("data:")
+                    else _image_url_scheme(p.image_url.url)
+                )
+            ),
+            None,
+        )
+        if part is not None:
+            latest = part
+            if message.role == "user":
+                latest_user = part
+    part = latest_user or latest
+    if part is not None and not part.image_url.url.startswith("data:"):
+        part.image_url.url = _RemoteImageFetches().inline(part.image_url.url)
 
 
 def _normalize_openai_image_parts_for_llama(openai_messages: list[dict], on_image = None) -> bool:
