@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The speed tier keeps AutoencoderKLQwenImage21 contiguous (channels_last measured slower); other VAEs unchanged."""
+"""AutoencoderKLQwenImage21 stays contiguous unless the fused VAE norms install; other VAEs unchanged."""
 
 from __future__ import annotations
 

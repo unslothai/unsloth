@@ -579,8 +579,7 @@ def fp16_unet_offloaded(target: Any, pipe: Any, *, offload_active: bool) -> bool
     )
 
 
-# Slower in channels_last on the stock path (QwenImage21 1024 decode, B200: 72.7 vs 89 ms); with the fused norms installed
-# channels_last wins (104.7 vs 121.0 ms), so the deny applies only where those norms do not install.
+# channels_last: slower on the stock path (72.7 vs 89 ms), faster once the fused norms install (104.7 vs 121.0 ms).
 _VAE_CHANNELS_LAST_DENY: frozenset[str] = frozenset({"AutoencoderKLQwenImage21"})
 
 
