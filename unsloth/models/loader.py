@@ -335,8 +335,9 @@ def _adapter_base_is_mistral_format(model_name, token, revision, local_files_onl
     if not os.path.isdir(model_name):
         try:
             from huggingface_hub import try_to_load_from_cache
-
-            if isinstance(try_to_load_from_cache(model_name, "config.json", revision = revision), str):
+            if isinstance(
+                try_to_load_from_cache(model_name, "config.json", revision = revision), str
+            ):
                 return False
         except Exception:
             pass

@@ -392,7 +392,9 @@ def test_conversions_are_scoped_to_the_load():
 
     # Class-name lookup came with USER_REGISTERED_MAPPINGS; <= 5.5 looks up model_type only.
     by_class = hasattr(cm, "USER_REGISTERED_MAPPINGS")
-    key, other = ("Mistral4ForCausalLM", "mistral4") if by_class else ("mistral4", "Mistral4ForCausalLM")
+    key, other = (
+        ("Mistral4ForCausalLM", "mistral4") if by_class else ("mistral4", "Mistral4ForCausalLM")
+    )
     before = repr(cm.get_checkpoint_conversion_mapping(key))
     untouched = repr(cm.get_checkpoint_conversion_mapping(other))
     with mf._mistral_format_conversions():
