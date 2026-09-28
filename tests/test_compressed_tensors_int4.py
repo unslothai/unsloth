@@ -352,7 +352,9 @@ def test_adapter_saves_skip_unpacking_repacked_words(monkeypatch, tmp_path):
     model.save_pretrained(tmp_path)
     assert calls == [] and (tmp_path / "adapter_model.safetensors").exists()
     # A plain state_dict() still writes the checkpoint layout.
-    assert torch.equal(model.state_dict()["base_model.model.proj.weight_packed"], packed["weight_packed"])
+    assert torch.equal(
+        model.state_dict()["base_model.model.proj.weight_packed"], packed["weight_packed"]
+    )
     assert calls == [1]
 
 
