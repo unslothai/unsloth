@@ -1086,7 +1086,7 @@ export const ar = {
         sourceDescription: "المكان الذي يبحث فيه مركز النماذج ويُنزّل منه. اختر ModelScope إذا كان Hugging Face محظورًا أو بطيئًا على شبكتك.",
         sourceFallback: "تعذّر تشغيل ModelScope، لذلك يُستخدم Hugging Face. راجع سجلات Unsloth.",
         autoSourceTitle: "تم تبديل مصدر النماذج إلى ModelScope",
-        autoSourceDescription: "غالبًا ما يكون Hugging Face بطيئًا أو محجوبًا في البر الرئيسي للصين، لذلك يقوم Unsloth الآن بتنزيل النماذج من ModelScope.",
+        autoSourceDescription: "غالبًا ما يكون Hugging Face بطيئًا أو محجوبًا في منطقتك، لذلك يقوم Unsloth الآن بتنزيل النماذج من ModelScope.",
         autoSourceAction: "فتح إعدادات مصدر النماذج",
         sectionTitle: "مركز النماذج",
         endpoint: "نقطة نهاية Hugging Face",

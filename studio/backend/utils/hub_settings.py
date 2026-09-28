@@ -6,9 +6,10 @@
 The saved values are applied as ``HF_ENDPOINT`` / ``HF_DATASETS_SERVER``, which
 everything in Unsloth -- huggingface_hub, datasets, the browser via /api/health,
 and every worker process spawned afterwards -- already follows. Until the owner
-saves, whatever the operator exported stays in effect; in mainland China, with
-nothing saved or exported, the source defaults to ModelScope. ModelScope as the
-source points ``HF_ENDPOINT`` at the loopback adapter in ``hub.modelscope``.
+saves, whatever the operator exported stays in effect; where Hugging Face is
+restricted, with nothing saved or exported, the source defaults to ModelScope.
+ModelScope as the source points ``HF_ENDPOINT`` at the loopback adapter in
+``hub.modelscope``.
 """
 
 from __future__ import annotations
@@ -104,13 +105,13 @@ def _read_stored() -> dict | None:
 
 
 def _automatic_modelscope(stored: dict) -> bool:
-    """ModelScope by default in mainland China, until a source or an endpoint is saved or exported."""
-    from utils.mainland_china import china_mirrors_enabled
+    """ModelScope by default where Hugging Face is restricted, until a source or an endpoint is saved or exported."""
+    from utils.region import mirror_fallback_enabled
     return (
         SOURCE_KEY not in stored
         and HF_ENDPOINT_KEY not in stored
         and not _operator_endpoint()
-        and china_mirrors_enabled()
+        and mirror_fallback_enabled()
     )
 
 

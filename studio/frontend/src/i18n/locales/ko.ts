@@ -1083,7 +1083,7 @@ export const ko = {
         sourceDescription: "모델 허브가 검색하고 다운로드하는 곳입니다. 네트워크에서 Hugging Face가 차단되었거나 느리면 ModelScope를 선택하세요.",
         sourceFallback: "ModelScope를 시작할 수 없어 Hugging Face를 사용하고 있습니다. Unsloth 로그를 확인하세요.",
         autoSourceTitle: "모델 소스를 ModelScope로 전환했습니다",
-        autoSourceDescription: "중국 본토에서는 Hugging Face가 느리거나 차단되는 경우가 많아 Unsloth가 이제 ModelScope에서 모델을 다운로드합니다.",
+        autoSourceDescription: "현재 지역에서는 Hugging Face가 느리거나 차단되는 경우가 많아 Unsloth가 이제 ModelScope에서 모델을 다운로드합니다.",
         autoSourceAction: "모델 소스 설정 열기",
         sectionTitle: "모델 허브",
         endpoint: "Hugging Face 엔드포인트",

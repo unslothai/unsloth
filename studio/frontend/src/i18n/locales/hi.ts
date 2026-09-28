@@ -1089,7 +1089,7 @@ export const hi = {
         sourceDescription: "मॉडल हब कहाँ खोजता और डाउनलोड करता है। अगर आपके नेटवर्क पर Hugging Face ब्लॉक या धीमा है तो ModelScope चुनें।",
         sourceFallback: "ModelScope शुरू नहीं हो सका, इसलिए Hugging Face इस्तेमाल हो रहा है। Unsloth के लॉग देखें।",
         autoSourceTitle: "मॉडल स्रोत ModelScope पर बदल दिया गया",
-        autoSourceDescription: "मुख्य भूमि चीन में Hugging Face अक्सर धीमा या ब्लॉक रहता है, इसलिए Unsloth अब ModelScope से मॉडल डाउनलोड करता है।",
+        autoSourceDescription: "आपके क्षेत्र में Hugging Face अक्सर धीमा या ब्लॉक रहता है, इसलिए Unsloth अब ModelScope से मॉडल डाउनलोड करता है।",
         autoSourceAction: "मॉडल स्रोत सेटिंग्स खोलें",
         sectionTitle: "मॉडल हब",
         endpoint: "Hugging Face एंडपॉइंट",

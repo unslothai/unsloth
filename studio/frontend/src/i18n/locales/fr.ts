@@ -1108,7 +1108,7 @@ export const fr = {
         sourceDescription: "Où le hub de modèles recherche et télécharge. Choisissez ModelScope si Hugging Face est bloqué ou lent sur votre réseau.",
         sourceFallback: "ModelScope n'a pas pu démarrer, Hugging Face est donc utilisé. Consultez les journaux d'Unsloth.",
         autoSourceTitle: "Source des modèles basculée sur ModelScope",
-        autoSourceDescription: "Hugging Face est souvent lent ou bloqué en Chine continentale ; Unsloth télécharge donc désormais les modèles depuis ModelScope.",
+        autoSourceDescription: "Hugging Face est souvent lent ou bloqué dans votre région ; Unsloth télécharge donc désormais les modèles depuis ModelScope.",
         autoSourceAction: "Ouvrir les paramètres de source des modèles",
         sectionTitle: "Hub de modèles",
         endpoint: "Point de terminaison Hugging Face",

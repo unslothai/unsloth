@@ -1075,7 +1075,7 @@ export const ja = {
         sourceDescription: "モデルハブの検索とダウンロード先です。ネットワークで Hugging Face がブロックされている、または遅い場合は ModelScope を選んでください。",
         sourceFallback: "ModelScope を起動できなかったため、Hugging Face を使用しています。Unsloth のログを確認してください。",
         autoSourceTitle: "モデルのソースを ModelScope に切り替えました",
-        autoSourceDescription: "中国本土では Hugging Face が遅い、またはつながらないことが多いため、Unsloth は ModelScope からモデルをダウンロードします。",
+        autoSourceDescription: "お住まいの地域では Hugging Face が遅い、またはつながらないことが多いため、Unsloth は ModelScope からモデルをダウンロードします。",
         autoSourceAction: "モデルの取得元の設定を開く",
         sectionTitle: "モデルハブ",
         endpoint: "Hugging Face エンドポイント",

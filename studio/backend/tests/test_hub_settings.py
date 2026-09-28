@@ -141,7 +141,7 @@ def test_the_startup_read_leaves_studio_db_as_it_found_it(tmp_path, monkeypatch)
         ("1", {"HF_ENDPOINT": MIRROR}, False),
     ],
 )
-def test_mainland_china_defaults_to_modelscope_until_the_hub_is_configured(
+def test_restricted_region_defaults_to_modelscope_until_the_hub_is_configured(
     store, monkeypatch, flag, configured, automatic
 ):
     import hub.modelscope.router as modelscope
@@ -172,22 +172,22 @@ def test_mainland_china_defaults_to_modelscope_until_the_hub_is_configured(
         ("Asia/Singapore", "nameserver 223.5.5.50\n", "linux", False),
     ],
 )
-def test_mainland_china_follows_the_installer_rules(
+def test_restricted_region_follows_the_installer_rules(
     tmp_path, monkeypatch, zone, resolvers, platform, expected
 ):
-    from utils import mainland_china
+    from utils import region
 
     conf = tmp_path / "resolv.conf"
     conf.write_text(resolvers)
-    monkeypatch.setattr(mainland_china, "_RESOLV_CONFS", (str(tmp_path / "missing"), str(conf)))
-    monkeypatch.setattr(mainland_china.sys, "platform", platform)
+    monkeypatch.setattr(region, "_RESOLV_CONFS", (str(tmp_path / "missing"), str(conf)))
+    monkeypatch.setattr(region.sys, "platform", platform)
     monkeypatch.setenv("TZ", zone)
     monkeypatch.delenv("UNSLOTH_MIRROR_FALLBACK")
-    mainland_china.in_mainland_china.cache_clear()
+    region.in_restricted_region.cache_clear()
     try:
-        assert mainland_china.china_mirrors_enabled() is expected
+        assert region.mirror_fallback_enabled() is expected
     finally:
-        mainland_china.in_mainland_china.cache_clear()
+        region.in_restricted_region.cache_clear()
 
 
 @pytest.mark.parametrize(
@@ -202,7 +202,7 @@ def test_mainland_china_follows_the_installer_rules(
 def test_windows_reads_the_registry_time_zone_and_adapter_resolvers(
     monkeypatch, zone, resolvers, expected
 ):
-    from utils import mainland_china
+    from utils import region
 
     class _Key:
         def __enter__(self):
@@ -216,15 +216,15 @@ def test_windows_reads_the_registry_time_zone_and_adapter_resolvers(
         OpenKey = lambda *_: _Key(),
         QueryValueEx = lambda _key, name: (zone, 1),
     )
-    monkeypatch.setattr(mainland_china, "_windows_resolvers", lambda: resolvers)
+    monkeypatch.setattr(region, "_windows_resolvers", lambda: resolvers)
     monkeypatch.setitem(sys.modules, "winreg", registry)
-    monkeypatch.setattr(mainland_china.sys, "platform", "win32")
+    monkeypatch.setattr(region.sys, "platform", "win32")
     monkeypatch.delenv("TZ", raising = False)
-    mainland_china.in_mainland_china.cache_clear()
+    region.in_restricted_region.cache_clear()
     try:
-        assert mainland_china.in_mainland_china() is expected
+        assert region.in_restricted_region() is expected
     finally:
-        mainland_china.in_mainland_china.cache_clear()
+        region.in_restricted_region.cache_clear()
 
 
 @pytest.mark.parametrize(
@@ -254,23 +254,24 @@ def test_only_a_missing_database_reads_as_unconfigured(monkeypatch, database, au
 def test_windows_resolvers_come_from_adapters_that_are_up():
     import ctypes
 
-    from utils import mainland_china as mc
+    from utils import region
 
     keep = []
 
     def servers(*addresses):
-        head = ctypes.POINTER(mc._Server)()
+        head = ctypes.POINTER(region._Server)()
         for address in reversed(addresses):
             family, octets = (2, address.split(".")) if "." in address else (23, ["0"] * 4)
             raw = (ctypes.c_ubyte * 16)(family, 0, 0, 0, *map(int, octets))
-            node = mc._Server(
-                next = head, address = mc._Address(ctypes.cast(raw, ctypes.POINTER(ctypes.c_ubyte)), 16)
+            node = region._Server(
+                next = head,
+                address = region._Address(ctypes.cast(raw, ctypes.POINTER(ctypes.c_ubyte)), 16),
             )
             keep.extend([raw, node])
             head = ctypes.pointer(node)
         return head
 
-    head = ctypes.POINTER(mc._Adapter)()
+    head = ctypes.POINTER(region._Adapter)()
     for status, dns in reversed(
         [
             (1, servers("::1", "192.168.1.1")),
@@ -278,10 +279,10 @@ def test_windows_resolvers_come_from_adapters_that_are_up():
             (1, servers("119.29.29.29")),
         ]
     ):
-        adapter = mc._Adapter(next = head, dns = dns, oper_status = status)
+        adapter = region._Adapter(next = head, dns = dns, oper_status = status)
         keep.append(adapter)
         head = ctypes.pointer(adapter)
-    assert mc._up_adapter_resolvers(head) == ["192.168.1.1", "119.29.29.29"]
+    assert region._up_adapter_resolvers(head) == ["192.168.1.1", "119.29.29.29"]
 
 
 @pytest.fixture

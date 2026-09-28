@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Whether this host is in mainland China, decided as install.sh / install.ps1 decide it: no network call."""
+"""Whether this host is in a region where Hugging Face is restricted, decided as install.sh /
+install.ps1 decide it: no network call. Mainland China is the one such region today."""
 
 from __future__ import annotations
 
@@ -12,7 +13,7 @@ import re
 import sys
 from pathlib import Path
 
-_ZONES = (
+_RESTRICTED_ZONES = (
     "Asia/Shanghai",
     "Asia/Chongqing",
     "Asia/Chungking",
@@ -21,9 +22,9 @@ _ZONES = (
     "Asia/Kashgar",
     "PRC",
 )
-_WINDOWS_ZONE = "China Standard Time"
-# Mainland public DNS and cloud resolvers.
-_MAINLAND_RESOLVER = re.compile(
+_RESTRICTED_WINDOWS_ZONES = ("China Standard Time",)
+# Public DNS and cloud resolvers of mainland China.
+_RESTRICTED_RESOLVER = re.compile(
     r"223\.5\.5\.5|223\.6\.6\.6|119\.29\.29\.29|114\.114\.11[45]\.11[0459]"
     r"|182\.254\.116\.116|119\.28\.28\.28|180\.76\.76\.76|1\.2\.4\.8|210\.2\.4\.8"
     r"|100\.100\.2\.13[68]|183\.60\.8[23]\.(19|98)"
@@ -147,18 +148,20 @@ def _resolvers() -> list[str]:
 
 
 @functools.lru_cache(maxsize = 1)
-def in_mainland_china() -> bool:
+def in_restricted_region() -> bool:
     zone = _time_zone()
-    if zone == _WINDOWS_ZONE or any(zone == z or zone.endswith("/" + z) for z in _ZONES):
+    if zone in _RESTRICTED_WINDOWS_ZONES or any(
+        zone == z or zone.endswith("/" + z) for z in _RESTRICTED_ZONES
+    ):
         return True
-    return any(_MAINLAND_RESOLVER.fullmatch(server) for server in _resolvers())
+    return any(_RESTRICTED_RESOLVER.fullmatch(server) for server in _resolvers())
 
 
-def china_mirrors_enabled() -> bool:
+def mirror_fallback_enabled() -> bool:
     """Region detection, overridden by UNSLOTH_MIRROR_FALLBACK: 0 turns it off and 1 on, as for the installer."""
     flag = os.environ.get("UNSLOTH_MIRROR_FALLBACK", "").strip().lower()
     if flag in ("0", "false", "no", "off"):
         return False
     if flag in ("1", "true", "yes", "on"):
         return True
-    return in_mainland_china()
+    return in_restricted_region()

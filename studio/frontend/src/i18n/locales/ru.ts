@@ -1091,7 +1091,7 @@ export const ru = {
         sourceDescription: "Где хаб моделей ищет и откуда скачивает. Выберите ModelScope, если Hugging Face заблокирован или медленно работает в вашей сети.",
         sourceFallback: "Не удалось запустить ModelScope, поэтому используется Hugging Face. Проверьте журналы Unsloth.",
         autoSourceTitle: "Источник моделей переключён на ModelScope",
-        autoSourceDescription: "В материковом Китае Hugging Face часто работает медленно или заблокирован, поэтому Unsloth теперь загружает модели из ModelScope.",
+        autoSourceDescription: "В вашем регионе Hugging Face часто работает медленно или заблокирован, поэтому Unsloth теперь загружает модели из ModelScope.",
         autoSourceAction: "Открыть настройки «Источник моделей»",
         sectionTitle: "Хаб моделей",
         endpoint: "Эндпоинт Hugging Face",
