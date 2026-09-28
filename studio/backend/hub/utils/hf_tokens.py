@@ -1120,9 +1120,20 @@ def _sent_credential(hf_token: HfTokenArg) -> Optional[str]:
         if _implicit_token_disabled():
             # huggingface_hub sends no ambient token then, so a 401 is about the repo.
             return None
-        _known, ambient = _ambient_hf_token()
-        return ambient or None
+        return _wire_hf_token()
     return None
+
+
+def _wire_hf_token() -> Optional[str]:
+    """The ambient token huggingface_hub itself puts on a ``token=None`` read. Not
+    ``_ambient_hf_token``: that also counts aliases huggingface_hub never sends, which is right
+    for cache bookkeeping and wrong for deciding whether a 401 blamed a sent token."""
+    try:
+        from huggingface_hub import get_token
+        token = get_token()
+    except Exception:
+        return None
+    return token.strip() if isinstance(token, str) and token.strip() else None
 
 
 def _implicit_token_disabled() -> bool:
@@ -1228,6 +1239,9 @@ def call_with_anonymous_retry(read, hf_token: HfTokenArg):
         try:
             result = read(False)
         except Exception as anonymous_exc:
+            if _is_cancellation(anonymous_exc):
+                # The user stopped the load mid-retry: that is the answer, not the 401.
+                raise
             logger.info(
                 "Hugging Face refused the credential (401); the anonymous retry failed too: %s",
                 type(anonymous_exc).__name__,
@@ -1241,6 +1255,13 @@ def call_with_anonymous_retry(read, hf_token: HfTokenArg):
         )
         note_saved_token_rejected(hf_token)
         return result
+
+
+def _is_cancellation(exc: BaseException) -> bool:
+    """A cancelled load or download, however the transport layer spelled it."""
+    if "Cancel" in type(exc).__name__:
+        return True
+    return isinstance(exc, RuntimeError) and str(exc).startswith("Cancelled")
 
 
 def call_hub_with_anonymous_retry(fn, hf_token: HfTokenArg, *args, **kwargs):

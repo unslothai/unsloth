@@ -75,6 +75,7 @@ def _refused_with_a_token(calls):
 @pytest.fixture(autouse = True)
 def _no_ambient_credential(monkeypatch):
     monkeypatch.setattr(hf_tokens, "_ambient_hf_token", lambda: (True, None))
+    monkeypatch.setattr(hf_tokens, "_wire_hf_token", lambda: None)
 
 
 def test_a_refused_token_is_retried_once_anonymously():
@@ -150,6 +151,7 @@ def test_no_credential_at_all_is_not_retried():
 
 def test_an_ambient_credential_is_retried(monkeypatch):
     monkeypatch.setattr(hf_tokens, "_ambient_hf_token", lambda: (True, OAUTH))
+    monkeypatch.setattr(hf_tokens, "_wire_hf_token", lambda: OAUTH)
     calls = []
 
     def read(token):
@@ -362,6 +364,7 @@ def test_an_ambient_token_the_hub_never_sees_is_not_blamed(monkeypatch):
     # HF_HUB_DISABLE_IMPLICIT_TOKEN=1: huggingface_hub keeps the ambient token off the wire,
     # so a 401 is about the repo and the saved token must not be called rejected.
     monkeypatch.setattr(hf_tokens, "_ambient_hf_token", lambda: (True, OAUTH))
+    monkeypatch.setattr(hf_tokens, "_wire_hf_token", lambda: OAUTH)
     monkeypatch.setenv("HF_HUB_DISABLE_IMPLICIT_TOKEN", "1")
     calls = []
     with collecting_hub_token_rejections() as rejections:
@@ -397,3 +400,60 @@ def test_an_anonymous_download_401_does_not_blame_a_saved_token():
     exc = RepositoryNotFoundError()
     assert not is_rejected_credential_error(exc, False)
     assert is_rejected_credential_error(exc, OAUTH)
+
+
+def test_an_alias_huggingface_hub_never_sends_is_not_blamed(monkeypatch):
+    # HF_HUB_TOKEN and friends count for cache bookkeeping, but huggingface_hub's own
+    # get_token() does not read them, so a token=None read went out anonymously.
+    monkeypatch.setattr(hf_tokens, "_ambient_hf_token", lambda: (True, OAUTH))
+    monkeypatch.setattr(hf_tokens, "_wire_hf_token", lambda: None)
+    calls = []
+    with pytest.raises(RepositoryNotFoundError):
+        call_with_anonymous_retry(_refused_with_a_token(calls), None)
+    assert calls == [None]
+
+
+def test_a_cancelled_anonymous_retry_stays_a_cancellation():
+    def read(token):
+        if token is False:
+            raise RuntimeError("Cancelled")
+        raise RepositoryNotFoundError(reason = "OAuth token verification failed")
+
+    with collecting_hub_token_rejections():
+        with pytest.raises(RuntimeError, match = "Cancelled"):
+            call_with_anonymous_retry(read, OAUTH)
+
+
+def test_the_pre_import_config_reads_retry_without_a_refused_token(monkeypatch):
+    # The worker picks its transformers tier from raw config/tokenizer reads before any
+    # huggingface_hub import; a refused token there must not hide a public repo's config.
+    import io
+    import json
+    import urllib.error
+
+    import utils.transformers_version as tv
+
+    sent = []
+
+    class _Resp(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def urlopen(req, timeout):
+        auth = req.get_header("Authorization")
+        sent.append(auth)
+        if auth:
+            raise urllib.error.HTTPError(req.full_url, 401, "Unauthorized", {}, None)
+        return _Resp(json.dumps({"model_type": "qwen3"}).encode())
+
+    monkeypatch.setattr(tv, "_hf_urlopen", urlopen)
+    assert tv._hf_json("https://huggingface.co/x/resolve/main/config.json", OAUTH) == {
+        "model_type": "qwen3"
+    }
+    assert sent == [f"Bearer {OAUTH}", None]
+    sent.clear()
+    tv._hf_json("https://huggingface.co/x/resolve/main/config.json", None)
+    assert sent == [None]
