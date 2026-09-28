@@ -640,7 +640,9 @@ export function openWebUIRecordToConversation(
         ? { attachments: attachments as MessageRecord["attachments"] }
         : {}),
       createdAt: ts,
-      ...(sourceTimestamp === null && { metadata: { createdAtEstimated: true } }),
+      ...((sourceTimestamp === null || ts !== sourceTimestamp) && {
+        metadata: { createdAtEstimated: true },
+      }),
     });
   }
 

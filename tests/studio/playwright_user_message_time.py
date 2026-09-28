@@ -93,6 +93,19 @@ async def check(url):
             await paint(page)
             assert await page.locator("time").count() == 0
 
+            # Reverse traversal first reveals the message, then enters the
+            # controls instead of skipping them for the preceding page button.
+            await page.goto(url)
+            await page.locator(".aui-user-message-root").wait_for()
+            await page.locator("#after").focus()
+            await page.keyboard.press("Shift+Tab")
+            sentinel = page.locator(".aui-user-reveal-sentinel")
+            assert await sentinel.evaluate("(e) => e === document.activeElement")
+            delete = page.get_by_role("button", name = "Delete", exact = True)
+            await delete.wait_for()
+            await page.keyboard.press("Shift+Tab")
+            assert await delete.evaluate("(e) => e === document.activeElement")
+
             print("Keyboard passed; checking layout", flush = True)
             # Long dates, translations and font scaling must fit the viewport;
             # Copy/Edit/Fork/Delete and branch targets must retain their size.

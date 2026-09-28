@@ -25,6 +25,7 @@ test("user messages use the tested footer and focus/touch reveal", () => {
   assert.match(message, /\{\.\.\.focusReveal\}/);
   assert.match(message, /<UserMessageFooter>/);
   assert.match(message, /<UserMessageActionBar>/);
+  assert.match(message, /aui-user-reveal-sentinel/);
   assert.match(message, /aui-user-message-content-wrapper flex w-full/);
   assert.match(ACTIONS, /autohide="always"/);
   assert.match(ACTIONS, /<UserMessageTime \/>/);

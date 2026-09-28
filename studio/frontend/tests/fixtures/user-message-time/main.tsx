@@ -86,6 +86,11 @@ function User() {
           </div>
         )}
       </UserMessageFooter>
+      <span
+        className="aui-user-reveal-sentinel"
+        tabIndex={0}
+        aria-label="Message actions"
+      />
     </MessagePrimitive.Root>
   );
 }

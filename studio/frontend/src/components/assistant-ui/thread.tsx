@@ -8577,6 +8577,14 @@ const UserMessage: FC = () => {
       <MessagePrimitive.If last={true}>
         <ForkChatShortcut />
       </MessagePrimitive.If>
+      {/* Reverse traversal reaches a trailing stop before the root. Focusing it
+          mounts the autohidden controls, so the next Shift+Tab enters Delete
+          instead of skipping the action bar and leaving the message. */}
+      <span
+        className="aui-user-reveal-sentinel"
+        tabIndex={0}
+        aria-label="Message actions"
+      />
     </MessagePrimitive.Root>
   );
 };
