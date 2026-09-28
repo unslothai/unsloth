@@ -725,7 +725,6 @@ def test_the_outgoing_window_mask_is_freed_before_its_replacement(monkeypatch):
     not has_real_cuda() or not attention_dispatch.HAS_XFORMERS, reason = "needs xformers on CUDA"
 )
 def test_real_xformers_without_mask_is_causal():
-    # A decoder called directly (Liger's fused CE forward, TRL's Liger GKD / DPO) passes no causal_mask.
     config = attention_dispatch.AttentionConfig(
         backend = attention_dispatch.XFORMERS, n_kv_heads = 2, n_groups = 2
     )
