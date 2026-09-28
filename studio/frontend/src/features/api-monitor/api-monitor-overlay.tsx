@@ -34,7 +34,12 @@ import {
   startWatching,
 } from "./new-traffic";
 import { useApiMonitorOverlayStore } from "./overlay-store";
-import { isFullyCovered, placeFloatingPanel } from "./panel-placement";
+import {
+  isFullyCovered,
+  PANEL_MARGIN,
+  PANEL_TOP_MARGIN,
+  placeFloatingPanel,
+} from "./panel-placement";
 import { computeStats } from "./use-api-monitor";
 
 // Live cadence while the panel is on screen.
@@ -307,7 +312,13 @@ function ApiMonitorPanel({
     <div
       ref={setConstraintsElement}
       className="pointer-events-none fixed"
-      style={{ zIndex, left: 16, right: 16, top: 64, bottom: 16 }}
+      style={{
+        zIndex,
+        left: PANEL_MARGIN,
+        right: PANEL_MARGIN,
+        top: PANEL_TOP_MARGIN,
+        bottom: PANEL_MARGIN,
+      }}
     >
       <motion.div
         {...{ [FIND_PORTAL_ATTRIBUTE]: "" }}
