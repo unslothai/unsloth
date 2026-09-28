@@ -33,11 +33,14 @@ export function createPanelWidthStore({
   min,
   max,
   fallback,
+  maxViewportFraction = MAX_VIEWPORT_FRACTION,
 }: {
   key: string;
   min: number;
   max: number;
   fallback: number;
+  /** Largest share of the window the panel may take. */
+  maxViewportFraction?: number;
 }): PanelWidthStore {
   function maxWidth(): number {
     if (typeof window === "undefined") return max;
@@ -45,7 +48,7 @@ export function createPanelWidthStore({
     // in layout px, so a scaled panel takes the same share of it.
     return Math.max(
       min,
-      Math.min(max, (window.innerWidth / layoutScale()) * MAX_VIEWPORT_FRACTION),
+      Math.min(max, (window.innerWidth / layoutScale()) * maxViewportFraction),
     );
   }
 

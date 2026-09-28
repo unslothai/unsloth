@@ -994,7 +994,8 @@ export function curatedRowLabelFor(
   const [format, ...rest] = hit.artifact.label.split(LABEL_PART_SEPARATOR);
   // The chip is the precision the artifact is STORED at, which is what tells two rows apart; what it
   // RUNS at is the loader's answer, reported by `resolved` after the load.
-  const tags = [format.trim()].filter(Boolean);
+  // "Safetensors" is left off: the row's format dot already says it.
+  const tags = [format.trim()].filter((tag) => tag && tag.toLowerCase() !== "safetensors");
   const kept: string[] = [];
   for (const part of rest) {
     if (RESOLUTION_RE.test(part.trim())) tags.push(part.trim());
@@ -1024,7 +1025,8 @@ export function catalogToModelOptions(
         name:
           curatedDisplayNameFor(artifact.repoId, catalog, host, denseQuantSchemes) ??
           group.displayName,
-        description: `${group.description} - ${artifact.label}`,
+        description: group.description,
+        descriptionSuffix: artifact.label,
         isGguf: artifact.format === "gguf",
         deviceQuant: artifact.deviceQuant,
       });

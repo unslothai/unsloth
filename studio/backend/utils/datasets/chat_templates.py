@@ -32,6 +32,10 @@ _TEMPLATE_ERROR_COLUMN = "__chat_template_error"
 # materialises the whole column in Python.
 _ERROR_SCAN_BATCH = 10_000
 
+_TEMPLATE_PROBE_ROWS = 8
+
+_CHOSEN_TEMPLATE_ATTR = "_unsloth_studio_chat_template_choice"
+
 _CUSTOM_PROMPT_TEMPLATE_ERROR = (
     "custom_prompt_template is deprecated and unsupported because Unsloth Studio cannot persist a "
     "matching template for inference. Pass None to continue without a custom prompt template."
@@ -108,6 +112,95 @@ def get_tokenizer_chat_template(tokenizer, model_name):
     return tokenizer
 
 
+def _set_chat_template(tokenizer, chat_template):
+    """Set on processor and tokenizer; does not undo ``get_chat_template`` EOS remapping (Gemma 1/2)."""
+    tokenizer.chat_template = chat_template
+    inner = getattr(tokenizer, "tokenizer", None)
+    if inner is not None and inner is not tokenizer and hasattr(inner, "chat_template"):
+        inner.chat_template = chat_template
+
+
+def _count_renderable(tokenizer, conversations):
+    rendered = 0
+    for conversation in conversations:
+        try:
+            tokenizer.apply_chat_template(
+                conversation,
+                tokenize = False,
+                add_generation_prompt = False,
+            )
+            rendered += 1
+        except Exception:
+            pass
+    return rendered
+
+
+def _sample_conversations(dataset, chat_column, limit = _TEMPLATE_PROBE_ROWS):
+    """Sample across the dataset, or from the start for streaming datasets."""
+    n_rows = len(dataset) if hasattr(dataset, "__len__") else 0
+    conversations = []
+    try:
+        if n_rows > limit:
+            step = (n_rows - 1) / (limit - 1)
+            rows = (dataset[round(i * step)] for i in range(limit))
+        else:
+            rows = dataset
+        for row in rows:
+            conversation = row.get(chat_column)
+            if conversation:
+                conversations.append(conversation)
+            if len(conversations) >= limit:
+                break
+    except Exception:
+        return []
+    return conversations
+
+
+def keep_renderable_chat_template(tokenizer, dataset, chat_column, own_template):
+    """Restore the checkpoint template if it renders more sampled rows; return a log note."""
+    override = getattr(tokenizer, "chat_template", None)
+    if not own_template or override == own_template:
+        return None
+
+    conversations = _sample_conversations(dataset, chat_column)
+    if not conversations:
+        return None
+
+    rendered_by_override = _count_renderable(tokenizer, conversations)
+    if rendered_by_override == len(conversations):
+        return None
+
+    _set_chat_template(tokenizer, own_template)
+    if _count_renderable(tokenizer, conversations) <= rendered_by_override:
+        _set_chat_template(tokenizer, override)
+        return None
+
+    return (
+        "📝 The Unsloth chat template cannot render this dataset's conversations "
+        "(tool calls or consecutive same-role turns); using the model's own chat "
+        "template instead"
+    )
+
+
+def resolve_dataset_chat_template(tokenizer, model_name, dataset, chat_column):
+    """Choose on the first split and reuse for evaluation and saving."""
+    remembered = getattr(tokenizer, _CHOSEN_TEMPLATE_ATTR, None)
+    if remembered is not None and remembered[0] == model_name:
+        _set_chat_template(tokenizer, remembered[1])
+        return tokenizer, None
+
+    own_template = getattr(tokenizer, "chat_template", None)
+    tokenizer = get_tokenizer_chat_template(tokenizer, model_name)
+    note = keep_renderable_chat_template(tokenizer, dataset, chat_column, own_template)
+    try:
+        chosen = (model_name, getattr(tokenizer, "chat_template", None))
+        setattr(tokenizer, _CHOSEN_TEMPLATE_ATTR, chosen)
+    except Exception:
+        # Wrappers that reject new attributes cannot retain the choice across splits.
+        pass
+    return tokenizer, note
+
+
 def get_dataset_info_summary(dataset_info):
     """Return a human-readable summary for UI display."""
     detected_format = dataset_info["detected_format"]
@@ -148,7 +241,7 @@ def apply_chat_template_to_dataset(
 ):
     """Apply the chat template to a dataset based on its format, returning a dict with the dataset, success status, warnings and errors.
 
-    ``dataset_info`` is the output of format_dataset() with metadata. ``custom_prompt_template`` is deprecated and non-None values are rejected, because Studio cannot persist a matching inference template. ``add_eos_token`` appends tokenizer.eos_token to each text, ``remove_bos_prefix`` strips a leading '<bos>' (Gemma and friends), ``custom_format_mapping`` maps custom columns to the standard format, and ``batch_size`` / ``num_proc`` control processing.
+    ``dataset_info`` is the output of format_dataset() with metadata. ``custom_prompt_template`` is deprecated and non-None values are rejected, because Studio cannot persist a matching inference template. ``add_eos_token`` appends the tokenizer's eos_token to each ChatML text (Alpaca text always gets one), ``remove_bos_prefix`` strips a leading '<bos>' (Gemma and friends), ``custom_format_mapping`` maps custom columns to the standard format, and ``batch_size`` / ``num_proc`` control processing.
     """
     dataset = dataset_info["dataset"]
     final_format = dataset_info["final_format"]
@@ -168,12 +261,14 @@ def apply_chat_template_to_dataset(
             "errors": errors,
         }
 
-    eos_token = ""
-    if add_eos_token:
-        if hasattr(tokenizer, 'eos_token') and tokenizer.eos_token:
-            eos_token = tokenizer.eos_token
-        else:
-            warnings.append("add_eos_token=True but tokenizer has no eos_token")
+    # A processor (Gemma 3 on the text path) keeps eos_token on its inner tokenizer.
+    eos_token = (
+        getattr(tokenizer, 'eos_token', None)
+        or getattr(getattr(tokenizer, 'tokenizer', None), 'eos_token', None)
+        or ""
+    )
+    if not eos_token and (add_eos_token or final_format == "alpaca"):
+        warnings.append("Tokenizer has no eos_token, so EOS was not appended")
 
     # CUSTOM FORMAT MAPPING (for non-standard datasets)
     if final_format == "unknown":
@@ -231,11 +326,12 @@ def apply_chat_template_to_dataset(
 
                                 if is_user_provided:
                                     # User-mapped: include even if empty.
-                                    convo.append({"role": role, "content": str(content) if content else ""})
+                                    convo.append({"role": role, "content": cell_text(content)})
                                 else:
                                     # Auto-detected: skip empty.
-                                    if content and str(content).strip():
-                                        convo.append({"role": role, "content": str(content)})
+                                    text = cell_text(content)
+                                    if text.strip():
+                                        convo.append({"role": role, "content": text})
 
                     conversations.append(convo)
 
@@ -292,7 +388,9 @@ def apply_chat_template_to_dataset(
                 text = DEFAULT_ALPACA_TEMPLATE.format(
                     fields["instruction"], fields["input"], fields["output"]
                 )
-                texts.append(text + eos_token)
+                if not text.endswith(eos_token):
+                    text += eos_token
+                texts.append(text)
 
             return {"text": texts}
 
@@ -337,7 +435,11 @@ def apply_chat_template_to_dataset(
             warnings.append("Dataset may not be fully standardized")
 
         if model_name:
-            tokenizer = get_tokenizer_chat_template(tokenizer, model_name)
+            tokenizer, kept_own_template = resolve_dataset_chat_template(
+                tokenizer, model_name, dataset, chat_column
+            )
+            if kept_own_template:
+                logger.info(kept_own_template)
 
         streamed_failures = []
 
@@ -367,7 +469,8 @@ def apply_chat_template_to_dataset(
 
                     if remove_bos_prefix:
                         text = text.removeprefix('<bos>')
-                    text += eos_token
+                    if add_eos_token:
+                        text += eos_token
 
                     texts.append(text)
                     row_errors.append("")
