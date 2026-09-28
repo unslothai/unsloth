@@ -397,6 +397,45 @@ def test_invalid_settings_are_refused_without_evicting_the_model(client, payload
     assert client.get("/api/settings/systemone").json()["loaded_model"] == "laya-multilingual"
 
 
+def test_settings_update_refuses_a_stale_consent_snapshot(client):
+    response = client.put(
+        "/api/settings/systemone",
+        json = {
+            "model": "laya-english",
+            "expected_enabled": False,
+            "expected_model": "laya-multilingual",
+        },
+    )
+    assert response.status_code == 409
+    assert response.json()["detail"] == "Decision API settings changed. Try again."
+    assert client.get("/api/settings/systemone").json()["model"] == "laya-multilingual"
+
+
+def test_settings_validation_checks_the_snapshot_without_saving(client):
+    response = client.post(
+        "/api/settings/systemone/validate",
+        json = {
+            "model": "laya-english",
+            "expected_enabled": True,
+            "expected_model": "laya-multilingual",
+        },
+    )
+    assert response.status_code == 204
+    settings = client.get("/api/settings/systemone").json()
+    assert settings["enabled"] is True
+    assert settings["model"] == "laya-multilingual"
+    updated = client.put(
+        "/api/settings/systemone",
+        json = {
+            "model": "laya-english",
+            "expected_enabled": True,
+            "expected_model": "laya-multilingual",
+        },
+    )
+    assert updated.status_code == 200
+    assert updated.json()["model"] == "laya-english"
+
+
 def test_env_model_is_locked(client, monkeypatch, tmp_path):
     monkeypatch.setenv("UNSLOTH_SYSTEMONE_MODEL", "laya-english")
     settings = client.get("/api/settings/systemone").json()
@@ -405,6 +444,21 @@ def test_env_model_is_locked(client, monkeypatch, tmp_path):
         client.put("/api/settings/systemone", json = {"model": "laya-multilingual"}).status_code
         == 400
     )
+
+
+def test_stale_check_uses_the_display_name_for_a_local_env_model(client, monkeypatch, tmp_path):
+    monkeypatch.setenv("UNSLOTH_SYSTEMONE_MODEL", str(tmp_path))
+    settings = client.get("/api/settings/systemone").json()
+    assert settings["model"] == "laya-local"
+    response = client.post(
+        "/api/settings/systemone/validate",
+        json = {
+            "enabled": True,
+            "expected_enabled": True,
+            "expected_model": "laya-local",
+        },
+    )
+    assert response.status_code == 204
 
 
 def test_settings_change_waits_for_a_running_load(client, monkeypatch):
@@ -417,6 +471,17 @@ def test_settings_change_waits_for_a_running_load(client, monkeypatch):
     monkeypatch.setattr(laya_runtime, "_load_checkpoint", slow)
     monkeypatch.setattr(laya_runtime, "LOAD_WAIT_S", 0.05)
     assert _post(client).status_code == 503
+    assert (
+        client.post(
+            "/api/settings/systemone/validate",
+            json = {
+                "model": "laya-english",
+                "expected_enabled": True,
+                "expected_model": "laya-multilingual",
+            },
+        ).status_code
+        == 409
+    )
     assert client.put("/api/settings/systemone", json = {"model": "laya-english"}).status_code == 409
     assert client.get("/api/settings/systemone").json()["model"] == "laya-multilingual"
     release.set()
@@ -497,6 +562,31 @@ def test_download_plan_lists_exact_subfolder_files(client, monkeypatch):
         "cached": False,
         "error": None,
     }
+
+
+def test_download_plan_can_preview_a_model_without_changing_the_setting(client, monkeypatch):
+    import huggingface_hub
+
+    seen = []
+
+    def list_tree(self, repo, **kwargs):
+        seen.append((repo, kwargs))
+        return []
+
+    monkeypatch.setattr(laya_runtime, "is_cached", lambda checkpoint: False)
+    monkeypatch.setattr(huggingface_hub.HfApi, "list_repo_tree", list_tree)
+    plan = client.get("/api/settings/systemone/resolve?model=laya-english")
+    assert plan.status_code == 200
+    assert plan.json()["repo"] == catalog.LAYA_REPO
+    assert plan.json()["size_bytes"] == catalog.CHECKPOINTS["laya-english"].download_bytes
+    assert client.get("/api/settings/systemone").json()["model"] == "laya-multilingual"
+    assert seen == [(catalog.LAYA_REPO, {"recursive": True})]
+
+
+def test_download_plan_refuses_an_unknown_preview_model(client):
+    response = client.get("/api/settings/systemone/resolve?model=not-a-model")
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Unknown Decision API model."
 
 
 def test_download_plan_for_a_cached_model_skips_the_hub(client, monkeypatch):
@@ -782,6 +872,17 @@ def test_decision_api_cannot_be_enabled_where_laya_is_not_installed(client, monk
     monkeypatch.setattr(studio_db, "upsert_app_settings", settings.update)
     reason = "The Decision API needs PyTorch, which this Studio install does not include."
     monkeypatch.setattr(systemone_settings, "runtime_unavailable_reason", lambda: reason)
+    preview = client.post(
+        "/api/settings/systemone/validate",
+        json = {
+            "enabled": True,
+            "expected_enabled": False,
+            "expected_model": "laya-multilingual",
+        },
+    )
+    assert preview.status_code == 400
+    assert preview.json()["detail"] == reason
+    assert settings == {}
     response = client.put("/api/settings/systemone", json = {"enabled": True})
     assert response.status_code == 400
     assert response.json()["detail"] == reason
@@ -1193,6 +1294,213 @@ def test_fp16_overflow_reruns_in_fp32(monkeypatch, gpu_agent):
     logits, _ = laya_runtime._forward(agent, _items())
     assert calls == [torch.float16, torch.float32] and agent.dtype == torch.float32
     assert logits.tolist() == [[1.0, 0.5]]
+
+
+def _tiny_laya_encoder(tmp_path):
+    pytest.importorskip("torch")
+    from transformers import ModernBertConfig
+
+    config = ModernBertConfig(
+        vocab_size = 300,
+        hidden_size = 64,
+        intermediate_size = 96,
+        num_hidden_layers = 3,
+        num_attention_heads = 4,
+        pad_token_id = 0,
+        bos_token_id = 2,
+        eos_token_id = 1,
+        cls_token_id = 1,
+        sep_token_id = 1,
+        mask_token_id = 4,
+        global_attn_every_n_layers = 3,
+        local_attention = 16,
+    )
+    encoder_dir = tmp_path / "encoder"
+    config.save_pretrained(encoder_dir)
+    return str(encoder_dir), {"encoder": "tiny", "head_layers": 1, "act_costs": {"escalate": 0.5}}
+
+
+def test_skip_init_build_matches_laya_after_loading(tmp_path):
+    torch = pytest.importorskip("torch")
+    laya = laya_runtime._laya()
+    encoder_dir, cfg = _tiny_laya_encoder(tmp_path)
+    reference = laya.common.build_model(cfg, encoder_dir = encoder_dir).eval()
+    fast = laya_runtime._build_model(cfg, encoder_dir, laya.common.build_model).eval()
+    embedding = fast.encoder.get_input_embeddings()
+    assert embedding.num_embeddings == 300 and fast.encoder.config.vocab_size == 300
+    assert embedding.padding_idx == reference.encoder.get_input_embeddings().padding_idx
+    # laya loads strictly, so every parameter and persistent buffer comes from the checkpoint.
+    fast.load_state_dict(reference.state_dict(), strict = True)
+    ours = dict(fast.named_parameters()) | dict(fast.named_buffers())
+    theirs = dict(reference.named_parameters()) | dict(reference.named_buffers())
+    assert ours.keys() == theirs.keys()
+    # Includes the rotary inv_freq buffers, which the checkpoint does not carry.
+    assert any("inv_freq" in name for name in theirs)
+    assert all(torch.equal(ours[name], theirs[name]) for name in theirs)
+    assert repr(fast) == repr(reference)
+    assert fast.encoder.config.to_dict() == reference.encoder.config.to_dict()
+    ids = torch.randint(5, 300, (2, 20))
+    args = (
+        ids,
+        torch.ones_like(ids),
+        torch.tensor([[3, 7]] * 2),
+        torch.ones(2, 2, dtype = torch.bool),
+        torch.zeros(2, dtype = torch.long),
+    )
+    with torch.inference_mode():
+        assert torch.equal(fast(*args)[0], reference(*args)[0])
+
+
+def test_skip_init_embedding_is_built_in_the_serving_dtype(tmp_path):
+    torch = pytest.importorskip("torch")
+    laya = laya_runtime._laya()
+    encoder_dir, cfg = _tiny_laya_encoder(tmp_path)
+    fast = laya_runtime._build_model(cfg, encoder_dir, laya.common.build_model, torch.float16)
+    assert fast.encoder.get_input_embeddings().weight.dtype == torch.float16
+    assert fast.encoder.embeddings.norm.weight.dtype == torch.float32
+
+
+def test_build_without_an_encoder_dir_is_laya_own(tmp_path):
+    pytest.importorskip("torch")
+    sentinel = object()
+    calls = []
+
+    def original(cfg, encoder_dir = None):
+        calls.append(encoder_dir)
+        return sentinel
+
+    assert laya_runtime._build_model({}, None, original) is sentinel
+    assert laya_runtime._build_model({}, str(tmp_path / "missing"), original) is sentinel
+    assert calls == [None, str(tmp_path / "missing")]
+
+
+def test_fallback_build_releases_the_speculative_encoder(tmp_path, monkeypatch):
+    torch = pytest.importorskip("torch")
+    import gc
+
+    from transformers import ModernBertModel
+
+    encoder_dir, cfg = _tiny_laya_encoder(tmp_path)
+    # An input embedding that is not a plain nn.Embedding sends the build back to laya's own builder.
+    monkeypatch.setattr(ModernBertModel, "get_input_embeddings", lambda self: torch.nn.Identity())
+    gc.collect()
+    before = sum(isinstance(o, ModernBertModel) for o in gc.get_objects())
+    during = []
+
+    def original(cfg, encoder_dir = None):
+        during.append(sum(isinstance(o, ModernBertModel) for o in gc.get_objects()))
+        return "laya"
+
+    assert laya_runtime._build_model(cfg, encoder_dir, original) == "laya"
+    assert during == [before]
+
+
+def test_build_hook_is_restored_even_when_loading_fails(monkeypatch):
+    pytest.importorskip("torch")  # laya imports torch
+    laya = laya_runtime._laya()
+    original = laya.agent.build_model
+    seen = []
+
+    def boom(path, **kwargs):
+        seen.append(laya.agent.build_model is not original)
+        raise FileNotFoundError(path)
+
+    monkeypatch.setattr(laya, "load", boom)
+    with pytest.raises(FileNotFoundError):
+        laya_runtime._load_laya("missing", device = "cpu")
+    assert seen == [True] and laya.agent.build_model is original
+
+
+def test_high_special_token_ids_still_skip_the_embedding_init(tmp_path):
+    torch = pytest.importorskip("torch")
+    from transformers import ModernBertConfig
+
+    laya = laya_runtime._laya()
+    encoder_dir, cfg = _tiny_laya_encoder(tmp_path)
+    # ModernBERT-large puts its special tokens at the end of the vocabulary (pad 50283 of 50368).
+    config = ModernBertConfig.from_pretrained(encoder_dir)
+    config.pad_token_id, config.bos_token_id, config.eos_token_id = 297, 295, 296
+    config.cls_token_id, config.sep_token_id = 295, 296
+    config.save_pretrained(encoder_dir)
+    built = []
+    real_skip_init = torch.nn.utils.skip_init
+
+    def skip_init(*args, **kwargs):
+        built.append(args[1])
+        return real_skip_init(*args, **kwargs)
+
+    from transformers import AutoModel
+
+    real_from_config = AutoModel.from_config
+    placeholder_vocab = []
+
+    def from_config(config, **kwargs):
+        placeholder_vocab.append(config.vocab_size)
+        return real_from_config(config, **kwargs)
+
+    torch.nn.utils.skip_init, AutoModel.from_config = skip_init, from_config
+    try:
+        fast = laya_runtime._build_model(cfg, encoder_dir, laya.common.build_model).eval()
+    finally:
+        torch.nn.utils.skip_init, AutoModel.from_config = real_skip_init, real_from_config
+    # One row, not one past the highest special id: otherwise the embedding is still randomly initialised.
+    assert placeholder_vocab == [1]
+    reference = laya.common.build_model(cfg, encoder_dir = encoder_dir).eval()
+    assert built == [300]
+    assert (
+        fast.encoder.get_input_embeddings().padding_idx
+        == 297
+        == reference.encoder.get_input_embeddings().padding_idx
+    )
+    fast.load_state_dict(reference.state_dict(), strict = True)
+    assert repr(fast) == repr(reference)
+    assert fast.encoder.config.to_dict() == reference.encoder.config.to_dict()
+    ids = torch.randint(5, 300, (2, 20))
+    args = (
+        ids,
+        torch.ones_like(ids),
+        torch.tensor([[3, 7]] * 2),
+        torch.ones(2, 2, dtype = torch.bool),
+        torch.zeros(2, dtype = torch.long),
+    )
+    with torch.inference_mode():
+        assert torch.equal(fast(*args)[0], reference(*args)[0])
+
+
+def test_encoders_that_keep_the_padding_id_match_laya(tmp_path):
+    torch = pytest.importorskip("torch")
+    from transformers import RobertaConfig
+
+    laya = laya_runtime._laya()
+    # RoBERTa keeps pad_token_id for its position ids, so a build with a stand-in padding id answers differently.
+    config = RobertaConfig(
+        vocab_size = 300,
+        hidden_size = 64,
+        intermediate_size = 96,
+        num_hidden_layers = 2,
+        num_attention_heads = 4,
+        max_position_embeddings = 40,
+        pad_token_id = 1,
+        bos_token_id = 0,
+        eos_token_id = 2,
+    )
+    encoder_dir = tmp_path / "encoder"
+    config.save_pretrained(encoder_dir)
+    cfg = {"encoder": "tiny", "head_layers": 1, "act_costs": {"escalate": 0.5}}
+    reference = laya.common.build_model(cfg, encoder_dir = str(encoder_dir)).eval()
+    fast = laya_runtime._build_model(cfg, str(encoder_dir), laya.common.build_model).eval()
+    fast.load_state_dict(reference.state_dict(), strict = True)
+    ids = torch.randint(5, 300, (2, 20))
+    ids[:, 15:] = 1
+    args = (
+        ids,
+        (ids != 1).long(),
+        torch.tensor([[3, 7]] * 2),
+        torch.ones(2, 2, dtype = torch.bool),
+        torch.zeros(2, dtype = torch.long),
+    )
+    with torch.inference_mode():
+        assert torch.equal(fast(*args)[0], reference(*args)[0])
 
 
 def _mcp_decide(arguments):

@@ -9,6 +9,7 @@ import structlog
 import tempfile
 from loggers import get_logger
 import os
+import sys
 import shutil
 import contextlib
 from pathlib import Path
@@ -368,12 +369,40 @@ def _compressed_export_supported():
 
 
 def _torchao_export_supported():
-    """True if the installed unsloth build has the portable torchao FP8/INT8 export path."""
+    """True if the installed unsloth build has the portable torchao FP8/INT8 export path and a real
+    torchao to run it; False where torchao is stubbed (its config classes return None)."""
     try:
+        if _torchao_runtime_unavailable():
+            return False
         import unsloth.save as _us
         return hasattr(_us, "_normalize_torchao_method")
     except Exception:
         return False
+
+
+def _torchao_runtime_unavailable():
+    try:
+        from core._torchao_stub import _is_windows_rocm, is_stubbed
+        if is_stubbed("torchao"):
+            return True
+        # Windows ROCm only gets real torchao through install_torchao_windows_rocm_real_or_stub().
+        return _is_windows_rocm() and "torchao" not in sys.modules
+    except Exception:
+        return False
+
+
+def _is_torchao_alias(alias):
+    """Any torchao spelling unsloth's normalizer accepts, else a torchao_ prefix, so the Windows
+    ROCm guard catches it before it is misread as compressed-tensors."""
+    if not alias:
+        return False
+    try:
+        import unsloth.save as _us
+        if _us._normalize_torchao_method(alias) is not None:
+            return True
+    except Exception:
+        pass
+    return str(alias).lower().startswith("torchao")
 
 
 def _has_nvidia_gpu():
@@ -943,6 +972,17 @@ class ExportBackend:
             "NVFP4 (compressed-tensors)": "nvfp4",
         }
         compressed_alias = compressed_method or _LABEL_TO_ALIAS.get(format_type)
+
+        # Fail fast: a stubbed torchao otherwise crashes in transformers with TorchAoConfig(quant_type=None).
+        if _is_torchao_alias(compressed_alias) and _torchao_runtime_unavailable():
+            return (
+                False,
+                "Portable torchao FP8/INT8 export needs torchao, which could not be loaded "
+                "on this Windows ROCm build. Update Unsloth to install it, or use "
+                "16-bit merged or GGUF quantization instead.",
+                None,
+            )
+
         compressed_suffix: Optional[str] = None
         # Classify the alias: torchao-portable vs compressed-tensors.
         torchao_info = None
