@@ -13,6 +13,7 @@ import {
 } from "@/lib/hf-endpoint";
 import {
   clearHfTokenRejected,
+  hfTokenRejectionMark,
   isHfTokenRejected,
   noteHfTokenRejected,
 } from "@/lib/hf-token-rejection";
@@ -110,6 +111,13 @@ function isHubRefusal(response: Response, url: string): boolean {
   return isProxiedHubUrl(url) ? response.headers.has(UPSTREAM_HEADER) : !takesSession(url);
 }
 
+/** The Hub read the token and answered: a success, or a 403/404 for the resource (a token the
+ * Hub refuses gets 401). Through the relay only the endpoint's own answer counts. */
+function tokenAccepted(response: Response, url: string): boolean {
+  if (isProxiedHubUrl(url) && !response.headers.has(UPSTREAM_HEADER) && !response.ok) return false;
+  return response.ok || response.status === 403 || response.status === 404;
+}
+
 /** Which Hub a token refusal belongs to: the endpoint or datasets server the request went to
  * (its origin for any other URL), so a refusal by one never skips the token on another. */
 export function hubRejectionScope(url?: string): string {
@@ -158,6 +166,7 @@ export async function fetchHub(
   // Already refused this session: every read with it would 401 again, so ask anonymously.
   const scope = hubRejectionScope(url);
   const skipToken = retryable && isHfTokenRejected(hfToken, scope);
+  const started = hfTokenRejectionMark();
   let response = await fetchWithSession(input, skipToken ? withoutHfToken(input, init) : init, url);
   if (skipToken && !response.ok && [401, 403, 404].includes(response.status)) {
     // What anonymous access cannot read may still be the token's to read: the refusal could
@@ -167,10 +176,10 @@ export async function fetchHub(
       // Still refused, the token's own answer (a 401) is the result, as on the first refusal:
       // an anonymous 404 for a private repo would be cached as the repo being missing.
       void response.body?.cancel().catch(() => undefined);
-      if (withToken.ok) clearHfTokenRejected(scope);
+      if (tokenAccepted(withToken, url)) clearHfTokenRejected(scope);
       response = withToken;
     }
-  } else if (retryable && !skipToken && response.ok) {
+  } else if (retryable && !skipToken && tokenAccepted(response, url)) {
     // Past the recheck window the token went out again and was accepted: that Hub no
     // longer refuses it.
     clearHfTokenRejected(scope);
@@ -180,7 +189,7 @@ export async function fetchHub(
     const anonymous = await probe(input, withoutHfToken(input, init), url);
     if (anonymous?.ok) {
       void response.body?.cancel().catch(() => undefined);
-      noteHfTokenRejected(hfToken, scope);
+      noteHfTokenRejected(hfToken, scope, started);
       response = anonymous;
     } else {
       void anonymous?.body?.cancel().catch(() => undefined);

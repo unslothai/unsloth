@@ -523,3 +523,48 @@ test("a failed anonymous probe keeps the Hub's 401 instead of throwing", async (
     globalThis.fetch = realFetch;
   }
 });
+
+test("after a refusal, a token answered with a 404 for a missing repo is accepted again", async () => {
+  noteHfTokenRejected(OAUTH, hubRejectionScope());
+  const hub = stubHub({ tokenStatus: 404, anonymousStatus: 404 });
+  try {
+    const response = await fetchHub("https://huggingface.co/api/models/me/gone", withToken(OAUTH));
+    assert.equal(response.status, 404);
+    assert.equal(isHfTokenRejected(OAUTH), false);
+  } finally {
+    hub.restore();
+  }
+});
+
+test("a slow anonymous probe does not reinstate a refusal a newer tokened success cleared", async () => {
+  const realFetch = globalThis.fetch;
+  let releaseProbe: () => void = () => undefined;
+  const probeGate = new Promise<void>((resolve) => {
+    releaseProbe = resolve;
+  });
+  let tokenReads = 0;
+  globalThis.fetch = (async (_input: string | Request, init?: RequestInit) => {
+    const authorization = new Headers(init?.headers).get("authorization");
+    if (!authorization) {
+      await probeGate;
+      return new Response("[]", { status: 200 });
+    }
+    tokenReads += 1;
+    // The verifier fails once, then accepts the token again.
+    return tokenReads === 1
+      ? new Response("{}", { status: 401, headers: { "X-Error-Message": "Invalid credentials" } })
+      : new Response("[]", { status: 200 });
+  }) as typeof fetch;
+  try {
+    const slow = fetchHub(API, withToken(OAUTH));
+    while (tokenReads < 1) await new Promise((resolve) => setTimeout(resolve, 0));
+    const fresh = await fetchHub(API, withToken(OAUTH));
+    assert.equal(fresh.status, 200);
+    releaseProbe();
+    await slow;
+    assert.equal(isHfTokenRejected(OAUTH), false);
+    assert.equal(hasRejectedHfToken(), false);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
