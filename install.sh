@@ -4359,7 +4359,7 @@ fi
 # Companions bounded to torch's window: torchaudio 2.11 dropped its torch pin, so it can drift.
 TORCHVISION_CONSTRAINT="torchvision>=0.19,<${_TORCHVISION_CEILING}"
 TORCHAUDIO_CONSTRAINT="torchaudio>=2.4,<${_TORCHAUDIO_CEILING}"
-# cu130 + Linux x86_64 + Python 3.13 only (see _cu130_torch213_route). torchaudio keeps its window: 2.11 is its last release, stable ABI, and vLLM pairs it with torch 2.13.
+# torchaudio keeps its window: 2.11 is its last release (stable ABI) and pairs with torch 2.13.
 _CU130_TORCH_CEILING="2.15.0"
 _CU130_NEW_INSTALL_TORCH="torch>=2.13.0,<2.14.0"
 
@@ -5914,7 +5914,8 @@ _cu130_torch213_route() {
     _pypi_unsloth_admits_torch "2.13.0"
 }
 
-# "yes" only when the newest unsloth on PyPI declares a torch range containing $1. `studio update` first runs the setup code of the INSTALLED release, which re-resolves unsloth under its own torch cap: a 2.13 install next to a release capped below it is downgraded to PyPI's generic torch on the first update. Any failure (offline, mirror without the JSON API, unparsable spec) answers "no", which keeps the pre-2.13 window. UNSLOTH_PYPI_JSON_URL points it at a mirror's JSON API.
+# "yes" only when the newest unsloth on PyPI admits torch $1: `studio update` runs the INSTALLED release's setup,
+# which re-resolves under its own cap and would downgrade a newer torch. Any failure answers "no".
 _pypi_unsloth_admits_torch() {
     _pua_url="${UNSLOTH_PYPI_JSON_URL:-https://pypi.org/pypi/unsloth/json}"
     _pua_out=$(_run_bounded --secs 20 "$VENV_DIR/bin/python" - "$_pua_url" "$1" 2>/dev/null <<'PY' || true
@@ -5945,7 +5946,7 @@ PY
     [ "$(printf '%s' "$_pua_out" | tail -n 1)" = "yes" ] && echo "yes" || echo "no"
 }
 
-# torchaudio for a kept torch minor: 2.11 is the last release (stable ABI, no torch pin), so newer minors pair with it.
+# torchaudio 2.11 is the last release (stable ABI), so newer torch minors pair with it.
 _torchaudio_for_torch_minor() {
     if [ "$1" -ge 12 ] 2>/dev/null; then
         echo "torchaudio==2.11.*"
@@ -6971,7 +6972,8 @@ case "$_torch_index_leaf" in
         ;;
 esac
 fi  # _torch_index_pinned guard (Radeon + Strix reroute)
-# Linux x86_64 on the cu130 index with Python 3.13 is the one route with Unsloth-built flash-attn / causal-conv1d / mamba-ssm wheels for torch 2.13 and 2.14 (release prebuilt-wheels-cu13, cp313 only), so new installs there get 2.13, the torch vLLM and SGLang pin. Preservation keeps its own wider window so an existing 2.4-2.14 install stays on its release; every other route keeps TORCH_CONSTRAINT for both.
+# Only this route has prebuilt kernel wheels for torch 2.13/2.14 (prebuilt-wheels-cu13, cp313), so new installs get 2.13;
+# preservation keeps a wider window so an existing 2.4-2.14 install stays on its release.
 _PRESERVE_TORCH_CONSTRAINT="$TORCH_CONSTRAINT"
 if [ "$SKIP_TORCH" = false ] && [ "$(_cu130_torch213_route "$TORCH_INDEX_URL")" = "yes" ]; then
     _PRESERVE_TORCH_CONSTRAINT="torch>=2.4,<${_CU130_TORCH_CEILING}"

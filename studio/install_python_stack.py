@@ -393,10 +393,7 @@ _TORCH_FLAVOR_REPAIR_PKG_SPEC: tuple[str, str, str] = (
     "torchaudio>=2.4,<2.12.0",
 )
 
-# cu130 + Linux x86_64 + CPython 3.13 is the one route with Unsloth-built flash-attn /
-# causal-conv1d / mamba-ssm wheels for torch 2.13 and 2.14 (install.sh _cu130_torch213_route).
-# A repair there keeps the resident 2.4-2.14 release and only falls back to 2.13 when none
-# is readable, so `studio update` never moves a working install to another torch.
+# The install.sh _cu130_torch213_route: a repair keeps the resident 2.4-2.14 release, falling back to 2.13 only when unreadable.
 _CU130_PRESERVE_TORCH_CEILING_MINOR = 15
 _CU130_NEW_INSTALL_TORCH_PKG_SPEC: tuple[str, str, str] = (
     "torch>=2.13.0,<2.14.0",
