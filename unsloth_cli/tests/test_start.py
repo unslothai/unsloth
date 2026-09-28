@@ -5142,15 +5142,11 @@ def test_write_opencode_config_fresh(tmp_path):
 @pytest.mark.parametrize(
     "window, max_tokens, expected",
     [
-        # A quarter of a small window, so OpenCode (usable = context - output) still compacts
-        # before the server overflows.
         (16_384, None, 4_096),
         (32_768, None, 8_192),
-        # Large windows are no longer pinned at 8,192 (#12009): long reasoning and tool-call
-        # turns get OpenCode's own 32,000 ceiling.
+        # No longer pinned at 8,192 (#12009).
         (131_072, None, 32_000),
         (143_616, None, 32_000),
-        # An explicit --max-tokens wins, bounded to half the window.
         (143_616, 65_536, 65_536),
         (143_616, 200_000, 71_808),
         (32_768, 4_000, 4_000),
@@ -5161,8 +5157,6 @@ def test_opencode_output_limit(window, max_tokens, expected):
 
 
 def test_opencode_max_tokens_sets_limit_and_raises_opencode_ceiling(fake_studio, tmp_path):
-    # OpenCode sends min(limit.output, 32000), so a bigger --max-tokens also has to lift that
-    # ceiling or the flag would do nothing.
     result = CliRunner().invoke(
         start.start_app, ["opencode", "--no-launch", "--max-tokens", "65536"]
     )
@@ -5187,10 +5181,8 @@ def test_opencode_limit_input_keeps_compaction_off_the_output_limit(tmp_path):
 @pytest.mark.parametrize(
     "window, expected_reserved, expected_compacts_at",
     [
-        # Small windows keep the whole output limit as reply room, as before.
         (16_384, 4_096, 12_288),
         (32_768, 8_192, 24_576),
-        # Large windows compact near 90% full rather than at context - 32,000.
         (131_072, 13_107, 117_965),
         (262_144, 26_214, 235_930),
     ],
@@ -5227,7 +5219,6 @@ def test_opencode_max_tokens_under_ceiling_leaves_opencode_env_alone(fake_studio
 
 
 def test_opencode_max_tokens_raises_a_smaller_inherited_ceiling(fake_studio, monkeypatch):
-    # OpenCode sends min(limit.output, ceiling), so an inherited 8,000 would cap --max-tokens 16000.
     monkeypatch.setenv("OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX", "8000")
     result = CliRunner().invoke(
         start.start_app, ["opencode", "--no-launch", "--max-tokens", "16000"]

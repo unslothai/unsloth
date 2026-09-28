@@ -4542,19 +4542,17 @@ def write_openclaw_config(
 
 
 def opencode_output_limit(window: int, max_tokens: Optional[int] = None) -> int:
-    """OpenCode's limit.output: a quarter of the window up to OpenCode's 32k ceiling. --max-tokens wins, capped at half the window."""
     if max_tokens:
         return max(1, min(int(max_tokens), window // 2))
     return max(1, min(window // 4, _OPENCODE_OUTPUT_TOKEN_MAX))
 
 
 def opencode_compaction_reserved(window: int, output: int) -> int:
-    """compaction.reserved: reply room at compaction. A tenth of the window, at least 8,192, at most the output limit."""
     return max(1, min(output, max(window // 10, 8192)))
 
 
 def _opencode_output_env(model: dict, max_tokens: Optional[int]) -> dict:
-    """Set OpenCode's output ceiling when --max-tokens needs it: above 32k, or above a smaller inherited value. Always emitted then, so a --no-launch recipe carries it."""
+    """Lift OpenCode's output ceiling when --max-tokens exceeds it; re-emit an inherited one so a --no-launch recipe keeps it."""
     window = model.get("context_length") or model.get("max_context_length")
     if not max_tokens:
         return {}
@@ -4572,7 +4570,6 @@ def _opencode_output_env(model: dict, max_tokens: Optional[int]) -> dict:
             err = True,
         )
     raw = os.environ.get(_OPENCODE_OUTPUT_TOKEN_MAX_ENV, "")
-    # OpenCode ignores values that are not positive integers.
     inherited = int(raw) if raw.isdigit() and int(raw) > 0 else None
     ceiling = inherited or _OPENCODE_OUTPUT_TOKEN_MAX
     if output <= ceiling and inherited is None:
@@ -4621,7 +4618,7 @@ def write_opencode_config(
         for field in ("model", "small_model"):
             if str(config.get(field) or "").startswith(f"{_OPENCODE_PROVIDER}/"):
                 config.pop(field, None)
-        # Drop the compaction a normal session wrote, current or legacy value.
+        # Drop a managed compaction block, current or legacy value.
         managed = {reserved, max(1, window // 10)} if window else set()
         compaction = config.get("compaction")
         if (
@@ -4645,7 +4642,7 @@ def write_opencode_config(
             if not agents:
                 config.pop("agent", None)
     if window and not as_subagent:
-        # Compact near 90% full, see opencode_compaction_reserved. The fixed 20k-token default buffer over-compacts, or never settles, on a small local context.
+        # The fixed 20k-token default buffer over-compacts, or never settles, on a small local context.
         compaction = _subdict(config, "compaction")
         compaction["auto"] = True
         compaction["reserved"] = reserved
