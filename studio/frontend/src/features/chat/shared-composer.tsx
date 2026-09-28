@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { ComposerFastControl } from "@/features/chat/components/composer-fast-control";
 import { mlxRuntimeStateFrom } from "./lib/mlx-runtime-state";
 import {
   clearedServerTuningState,
@@ -2746,6 +2747,7 @@ export function SharedComposer({
         </div>
         {/* mr-0.5 matches the send button inset from the edge in normal chat; gap-1.5 matches its control spacing. */}
         <div className="ml-auto mr-0.5 flex items-center gap-1.5">
+          <ComposerFastControl />
           {showReasoningControl ? (
             isEffort || supportsPreserveThinking ? (
               <NonModalDropdownMenu

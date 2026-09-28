@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { FastPairsSettings } from "./components/fast-pairs-settings";
+import { type FastPair, normalizeFastPairs } from "./lib/fast-variants";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
@@ -264,6 +266,8 @@ export function ChatProvidersSettings({
     null,
   );
   const [registry, setRegistry] = useState<ProviderRegistryEntry[]>([]);
+  const [fastPairs, setFastPairs] = useState<FastPair[]>([]);
+  const [autoDetectFastVariants, setAutoDetectFastVariants] = useState(true);
   const [availableModels, setAvailableModels] = useState<string[]>([]);
   const [selectedModelIds, setSelectedModelIds] = useState<string[]>([]);
   const [providersReady, setProvidersReady] = useState(false);
@@ -414,6 +418,8 @@ export function ChatProvidersSettings({
     const seedDefaults = entry.model_list_mode === "curated";
     setAvailableModels(seedDefaults ? [...entry.default_models] : []);
     setSelectedModelIds([]);
+    setFastPairs([]);
+    setAutoDetectFastVariants(true);
     setManualModelIds("");
     setModelSearchQuery("");
     setBaseUrlDraft("");
@@ -891,6 +897,8 @@ export function ChatProvidersSettings({
         baseUrl: created.base_url ?? "",
         apiType: created.api_type ?? "chat_completions",
         models: modelsToSave,
+        fastPairs: uiProviderType === "openrouter" ? fastPairs : undefined,
+        autoDetectFastVariants,
         availableModels: manualOnly
           ? []
           : pruneProviderModelIds(providerType, availableModels),
@@ -1043,6 +1051,8 @@ export function ChatProvidersSettings({
         baseUrl: updated.base_url ?? "",
         apiType: updated.api_type ?? "chat_completions",
         models: modelsToSave,
+        fastPairs: existing.providerType === "openrouter" ? fastPairs : undefined,
+        autoDetectFastVariants,
         availableModels: manualOnly
           ? []
           : pruneProviderModelIds(existing.providerType, availableModels),
@@ -1138,6 +1148,8 @@ export function ChatProvidersSettings({
     codexCatalogRequestRef.current += 1;
     setModelsLoading(false);
     setEditingProviderId(provider.id);
+    setFastPairs(normalizeFastPairs(provider.fastPairs));
+    setAutoDetectFastVariants(provider.autoDetectFastVariants !== false);
     autoOpenedAddFormRef.current = true;
     setPage("form");
     setProviderType(provider.providerType);
@@ -2008,6 +2020,7 @@ export function ChatProvidersSettings({
             </AnimatePresence>
           </section>
 
+          {providerType === "openrouter" ? <FastPairsSettings models={[...availableModels, ...selectedModelIds]} pairs={fastPairs} autoDetect={autoDetectFastVariants} onPairsChange={setFastPairs} onAutoDetectChange={setAutoDetectFastVariants} /> : null}
           <div className="mb-3 flex flex-wrap items-center justify-end gap-3">
             <div className="flex flex-wrap gap-2">
               <Button

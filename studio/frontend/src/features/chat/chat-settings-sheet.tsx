@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { currentFast, toggleFast } from "./lib/fast-controls";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -508,6 +509,7 @@ export function ChatSettingsPanel({
     !isExternalModel || Boolean(providerCapabilities?.presencePenalty);
   // Overlay as a sheet below lg so the thread keeps its width.
   const isCompact = useIsCompact();
+  const inferenceBusy = useChatRuntimeStore((s) => s.modelLoading || Object.values(s.runningByThreadId).some(Boolean));
   const activeGgufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
   const loadedIsGguf = useChatRuntimeStore((s) => s.loadedIsGguf);
   const activeNativePathToken = useChatRuntimeStore(
@@ -1392,18 +1394,19 @@ export function ChatSettingsPanel({
                     Fast mode
                   </span>
                   <InfoHint>
-                    Research preview. Up to 2.5x higher output tokens per
+                    {externalProviderType === "openrouter" ? "Requests the published Fast service tier on this model. Premium rates apply; OpenRouter may fall back to standard. See the thinking popover for current rates." : <>Research preview. Up to 2.5x higher output tokens per
                     second on Claude Opus 5 and 4.8 at 2x standard Opus
                     pricing.
                     Switching between fast and standard invalidates the
                     prompt cache and is incompatible with the Priority
-                    service tier.
+                    service tier.</>}
                   </InfoHint>
                 </div>
                 <Switch
                   className="panel-switch shrink-0"
+                  disabled={inferenceBusy || (!!currentFast().tier && !currentFast().tier?.available && !params.fastMode)}
                   checked={Boolean(params.fastMode)}
-                  onCheckedChange={set("fastMode")}
+                  onCheckedChange={() => toggleFast(() => {})}
                   aria-label="Fast mode"
                 />
               </div>

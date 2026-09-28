@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { normalizeFastPairs, type FastPair } from "./lib/fast-variants.ts";
 import type {
   ProviderApiType,
   ProviderAuthKind,
@@ -9,6 +10,9 @@ import type {
 import { modelCatalogSupportsVision } from "./model-catalog.ts";
 
 export interface ExternalProviderConfig {
+  /** Browser-local preferences, retained across backend synchronization. */
+  fastPairs?: FastPair[];
+  autoDetectFastVariants?: boolean;
   id: string;
   /** Backend provider type (e.g. openai, mistral, gemini). */
   providerType: string;
@@ -533,6 +537,8 @@ function normalizeProvider(raw: ExternalProviderConfig): ExternalProviderConfig 
       raw.backendProviderType.trim().length > 0
         ? raw.backendProviderType.trim()
         : undefined,
+    fastPairs: providerType === "openrouter" ? normalizeFastPairs(raw.fastPairs) : undefined,
+    autoDetectFastVariants: providerType === "openrouter" ? raw.autoDetectFastVariants !== false : undefined,
     maxOutputTokens: normalizeProviderMaxOutputTokens(raw.maxOutputTokens),
     enablePromptCaching: supportsProviderPromptCaching(providerType)
       ? raw.enablePromptCaching !== false

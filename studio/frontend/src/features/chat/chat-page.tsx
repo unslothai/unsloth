@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { FastModelSelectionContext } from "./lib/fast-selection-context";
+import { currentFast, toggleFast } from "./lib/fast-controls";
 import { useAppShellReadySignal } from "@/components/app-readiness";
 import {
   applyModelLoadConfigToRuntime,
@@ -199,7 +201,6 @@ import {
   providerSupportsBuiltinImageGeneration,
   providerSupportsBuiltinWebFetch,
   providerSupportsBuiltinWebSearch,
-  providerSupportsFastMode,
   reasoningFieldsAfterCatalogRefresh,
   resolveExternalReasoningEffort,
   subscribeModelCatalog,
@@ -3651,18 +3652,14 @@ export function ChatPage({
     { enabled: active },
   );
 
-  const fastModeSupported = providerSupportsFastMode(
-    activeExternalProviderType,
-    parseExternalModelId(inferenceParams.checkpoint)?.modelId ?? null,
-  );
+  const fastModeSupported = !!currentFast().variant || currentFast().native;
   useShortcut(
     "toggleFastMode",
-    () => {
+    async () => {
       if (chatCovered()) return;
-      const state = useChatRuntimeStore.getState();
-      const next = !state.params.fastMode;
-      state.setParams({ ...state.params, fastMode: next });
-      toast.success(next ? "Fast mode on" : "Fast mode off");
+      if (await toggleFast(handleCheckpointChange)) {
+        toast.success(currentFast().isFast ? "Fast mode on" : "Fast mode off");
+      }
     },
     { enabled: active && fastModeSupported },
   );
@@ -4058,6 +4055,7 @@ export function ChatPage({
   return (
     // Provides `active` to ChatRuntimeProvider (drops the message views while off-route, keeping the
     // runtime alive) and to the compare chrome.
+    <FastModelSelectionContext.Provider value={handleCheckpointChange}>
     <ChatActiveContext.Provider value={active}>
     <div className="flex min-h-0 min-w-0 flex-1 basis-0 overflow-hidden bg-background">
       {/* Portaled surfaces render to document.body, escaping the parent's hidden wrapper, so gate them
@@ -4482,5 +4480,6 @@ export function ChatPage({
       />
     </div>
     </ChatActiveContext.Provider>
+    </FastModelSelectionContext.Provider>
   );
 }

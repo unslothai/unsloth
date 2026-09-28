@@ -6467,7 +6467,7 @@ export function createOpenAIStreamAdapter(
               isPromptCacheTtl(externalProvider.promptCacheTtl)
                 ? { prompt_cache_ttl: externalProvider.promptCacheTtl }
                 : {}),
-              // Anthropic fast mode (Opus 4.6 / 4.7 only); the backend drops it on unsupported models as a backstop.
+              // Native Anthropic Fast or an advertised OpenRouter fast endpoint; paired variants use their actual model ID.
               ...(params.fastMode &&
               providerSupportsFastMode(
                 externalProvider.providerType,

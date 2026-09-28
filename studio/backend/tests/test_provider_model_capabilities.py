@@ -73,6 +73,9 @@ _RAW_R1 = {
 def test_openrouter_entry_maps_efforts_modalities_and_cap():
     mapped = openrouter_model_capabilities(_RAW_GPT)
     assert mapped == {
+        "name": None,
+        "description": None,
+        "pricing": None,
         "id": "openai/gpt-5.5",
         "input_modalities": ["file", "image", "text"],
         "reasoning": {
@@ -420,3 +423,44 @@ def test_model_catalog_route_answers_503_offline_with_nothing_cached(catalog_rou
     with pytest.raises(Exception) as excinfo:
         catalog_route()
     assert getattr(excinfo.value, "status_code", None) == 503
+
+
+def test_fast_variant_uses_exact_outbound_model_id():
+    body = _openrouter_body("xiaomi/mimo-v2.6-pro-ultraspeed", reasoning_effort = "high")
+    assert body["model"] == "xiaomi/mimo-v2.6-pro-ultraspeed"
+    assert body["reasoning"]["effort"] == "high"
+    assert "speed" not in body
+
+
+def test_openrouter_native_fast_keeps_model_and_sends_speed():
+    body = _openrouter_body("anthropic/claude-opus-5", fast_mode = True)
+    assert body["model"] == "anthropic/claude-opus-5"
+    assert body["speed"] == "fast"
+    assert "speed" not in _openrouter_body("anthropic/claude-opus-5", fast_mode = False)
+
+
+def test_fast_tier_discovery_uses_advertised_endpoint_tags_and_prices():
+    from core.inference.openrouter_fast import openrouter_fast_tier
+
+    tier = openrouter_fast_tier(
+        {
+            "endpoints": [
+                {"tag": "vendor", "status": 0, "pricing": {"prompt": "0.000001"}},
+                {
+                    "tag": "vendor/fast",
+                    "status": 0,
+                    "pricing": {"prompt": "0.00001", "completion": "0.00005"},
+                },
+            ]
+        }
+    )
+    assert tier["supported"] is True and tier["available"] is True
+    assert tier["endpoints"][0]["pricing"]["rates"]["prompt"] == "0.00001"
+    assert (
+        openrouter_fast_tier({"endpoints": [{"tag": "vendor/fast", "status": 1}]})["available"]
+        is False
+    )
+    assert (
+        openrouter_fast_tier({"endpoints": [{"tag": "vendor/priority", "status": 0}]})["supported"]
+        is False
+    )

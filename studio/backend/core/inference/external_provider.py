@@ -1728,6 +1728,8 @@ class ExternalProviderClient:
         # implement it), and dropping it silently turned a caller's structured-output request into free prose.
         if response_format is not None:
             body["response_format"] = response_format
+        if self.provider_type == "openrouter" and fast_mode:
+            body["speed"] = "fast"
 
         url = f"{self.base_url}/chat/completions"
         logger.info(

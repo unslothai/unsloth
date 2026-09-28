@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { ComposerFastControl } from "@/features/chat/components/composer-fast-control";
 import {
   ComposerAttachments,
   UserMessageAttachments,
@@ -7100,6 +7101,7 @@ const ComposerRightControls: FC<{
   };
   return (
     <div className="aui-composer-action-wrapper flex shrink-0 items-center gap-1.5">
+      <ComposerFastControl side={menuSide} />
       <ReasoningToggle side={menuSide} />
       {/* Starts dictation; the recording bar then covers the input row and owns
           the stop and send actions. */}

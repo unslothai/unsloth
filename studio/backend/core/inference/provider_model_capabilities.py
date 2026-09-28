@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 from typing import Any
+from decimal import Decimal, InvalidOperation
+import re
 
 REASONING_EFFORT_SCALE = ("none", "minimal", "low", "medium", "high", "xhigh", "max")
 
@@ -28,6 +30,31 @@ def _positive_int(value: Any) -> int | None:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
     return int(value) if value > 0 else None
+
+
+def openrouter_pricing(raw: Any) -> dict[str, Any] | None:
+    if not isinstance(raw, dict):
+        return None
+    rates = {}
+    for key, value in raw.items():
+        if isinstance(value, bool) or not isinstance(value, (str, int, float)):
+            continue
+        text = str(value)
+        if not re.fullmatch(r"(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?", text):
+            continue
+        try:
+            number = Decimal(text)
+            if number.is_finite() and number >= 0:
+                rates[key] = text
+        except InvalidOperation:
+            pass
+    overrides = raw.get("overrides")
+    return {
+        "rates": rates,
+        "overrides": [v for v in overrides if isinstance(v, dict)]
+        if isinstance(overrides, list)
+        else [],
+    }
 
 
 def openrouter_model_capabilities(raw: dict[str, Any]) -> dict[str, Any] | None:
@@ -61,10 +88,13 @@ def openrouter_model_capabilities(raw: dict[str, Any]) -> dict[str, Any] | None:
 
     return {
         "id": model_id.strip(),
+        "name": raw.get("name") if isinstance(raw.get("name"), str) else None,
+        "description": raw.get("description") if isinstance(raw.get("description"), str) else None,
         "input_modalities": _string_list(architecture.get("input_modalities")),
         "reasoning": reasoning,
         "max_output_tokens": _positive_int(top_provider.get("max_completion_tokens")),
         "supported_parameters": _string_list(raw.get("supported_parameters")),
+        "pricing": openrouter_pricing(raw.get("pricing")),
     }
 
 

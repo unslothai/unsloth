@@ -906,6 +906,46 @@ async def get_model_catalog(_current_subject: str = Depends(get_current_subject)
     return fresh
 
 
+_fast_tier_cache: dict[str, tuple[float, dict]] = {}
+
+
+@router.get("/openrouter-fast-tier")
+async def get_openrouter_fast_tier(model_id: str):
+    from urllib.parse import quote
+    from core.inference.external_provider import _client
+    from core.inference.openrouter_fast import openrouter_fast_tier
+
+    parts = model_id.split("/")
+    if (
+        len(parts) != 2
+        or any(not part or part in (".", "..") for part in parts)
+        or len(model_id) > 300
+    ):
+        raise HTTPException(status_code = 400, detail = "An exact author/model ID is required.")
+    cached = _fast_tier_cache.get(model_id)
+    if cached and time.monotonic() - cached[0] < 3600:
+        return cached[1]
+    url = (
+        "https://openrouter.ai/api/v1/models/"
+        + "/".join(quote(part, safe = "") for part in parts)
+        + "/endpoints"
+    )
+    try:
+        response = await _client().get(url, timeout = 15.0)
+        response.raise_for_status()
+        result = {
+            **openrouter_fast_tier(response.json().get("data")),
+            "fetchedAt": time.time() * 1000,
+            "source": url,
+        }
+    except Exception:
+        raise HTTPException(
+            status_code = 502, detail = "OpenRouter endpoint catalog is unavailable."
+        ) from None
+    _fast_tier_cache[model_id] = (time.monotonic(), result)
+    return result
+
+
 @router.post("/model-capabilities", response_model = list[ProviderModelCapabilityInfo])
 async def list_provider_model_capabilities(
     payload: ProviderModelsRequest,

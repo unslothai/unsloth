@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { openRouterFastTier } from "./lib/openrouter-fast-tier";
 import {
   normalizeProviderMaxOutputTokens,
   providerModelSupportsStudioTools,
@@ -427,6 +428,7 @@ export function providerSupportsFastMode(
   providerType: string | null | undefined,
   modelId: string | null | undefined,
 ): boolean {
+  if (providerType === "openrouter" && modelId) return openRouterFastTier(modelId)?.supported === true;
   if (providerType !== "anthropic") return false;
   if (!modelId) return false;
   // Family boundary ("" or "-") required so IDs like "claude-opus-4-70" do not match.

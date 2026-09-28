@@ -20,6 +20,7 @@ import {
   providerModelCatalogFetchedAt,
   setModelsDevCatalog,
   setProviderModelCatalog,
+  markProviderCatalogRefreshFailed,
 } from "./model-catalog";
 import {
   CUSTOM_BACKEND_PROVIDER_TYPE,
@@ -181,6 +182,8 @@ export function mergeLocalProviderOptions(
   const providerType = synced.providerType;
   return {
     ...synced,
+    fastPairs: providerType === "openrouter" ? existing.fastPairs : undefined,
+    autoDetectFastVariants: providerType === "openrouter" ? existing.autoDetectFastVariants !== false : undefined,
     enablePromptCaching: supportsProviderPromptCaching(providerType)
       ? (existing.enablePromptCaching ?? synced.enablePromptCaching ?? true)
       : undefined,
@@ -386,7 +389,8 @@ export async function refreshProviderModelCatalogs(
       if (isCurrent && !isCurrent()) return;
       if (models.length > 0) setProviderModelCatalog(providerType, models);
     } catch {
-      // Offline or unauthorized: the built-in tables answer until the next sync.
+      markProviderCatalogRefreshFailed(providerType);
+      // Offline or unauthorized: retain published rates with an explicit cached indicator.
     }
   }
 }

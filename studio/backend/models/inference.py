@@ -2697,11 +2697,9 @@ class ChatCompletionRequest(BaseModel):
     fast_mode: Optional[bool] = Field(
         None,
         description = (
-            "[x-unsloth] Anthropic fast-mode toggle. On Claude Opus 4.6 / "
-            "4.7 adds the `fast-mode-2026-02-01` beta header and sends "
-            "`speed: 'fast'` for higher OTPS at premium pricing. Silently "
-            "ignored on every other model + provider. See "
-            "https://platform.claude.com/docs/en/build-with-claude/fast-mode"
+            "[x-unsloth] Native Fast mode. Supported direct Anthropic models add the beta header "
+            "and speed: fast. OpenRouter sends speed: fast on the same model ID; the UI "
+            "discovers availability and rates from its Fast endpoint catalog."
         ),
     )
 

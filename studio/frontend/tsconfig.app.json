@@ -29,6 +29,7 @@
     }
   },
   "include": [
+    "smoke-fast-modes-main.tsx",
     "src",
     "smoke-ansi-main.tsx",
     "smoke-composer-icons-main.tsx",
