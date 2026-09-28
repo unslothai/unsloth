@@ -96,6 +96,7 @@ export const en = {
     useModelScope: "Use ModelScope",
     useModelScopeHint: "Search and download from ModelScope instead. You can switch back in Settings.",
     useModelScopeFailed: "Couldn't switch to ModelScope.",
+    updateToken: "Update token",
     hfToken: {
       label: "HF token",
       saved: "Saved",

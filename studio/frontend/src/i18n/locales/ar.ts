@@ -95,6 +95,7 @@ export const ar = {
     useModelScope: "استخدام ModelScope",
     useModelScopeHint: "ابحث ونزّل من ModelScope بدلًا من ذلك. يمكنك العودة من الإعدادات.",
     useModelScopeFailed: "تعذّر التبديل إلى ModelScope.",
+    updateToken: "تحديث الرمز",
     hfToken: {
       label: "توكن HF",
       saved: "محفوظ",

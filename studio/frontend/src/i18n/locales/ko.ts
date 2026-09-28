@@ -94,6 +94,7 @@ export const ko = {
     useModelScope: "ModelScope 사용",
     useModelScopeHint: "대신 ModelScope에서 검색하고 다운로드합니다. 설정에서 다시 바꿀 수 있습니다.",
     useModelScopeFailed: "ModelScope로 전환하지 못했습니다.",
+    updateToken: "토큰 업데이트",
     hfToken: {
       label: "HF 토큰",
       saved: "저장됨",

@@ -2323,6 +2323,7 @@ export const it = {
     useModelScope: "Usa ModelScope",
     useModelScopeHint: "Cerca e scarica da ModelScope. Puoi tornare indietro nelle Impostazioni.",
     useModelScopeFailed: "Impossibile passare a ModelScope.",
+    updateToken: "Aggiorna token",
     hfToken: {
       label: "Token HF",
       saved: "Salvato",

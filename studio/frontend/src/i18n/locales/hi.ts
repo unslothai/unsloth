@@ -96,6 +96,7 @@ export const hi = {
     useModelScope: "ModelScope इस्तेमाल करें",
     useModelScopeHint: "इसके बजाय ModelScope से खोजें और डाउनलोड करें। आप सेटिंग्स में वापस बदल सकते हैं।",
     useModelScopeFailed: "ModelScope पर स्विच नहीं हो सका।",
+    updateToken: "टोकन अपडेट करें",
     hfToken: {
       label: "HF टोकन",
       saved: "सहेजा गया",

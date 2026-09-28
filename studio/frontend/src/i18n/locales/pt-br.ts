@@ -96,6 +96,7 @@ export const ptBR = {
     useModelScope: "Usar ModelScope",
     useModelScopeHint: "Pesquise e baixe pelo ModelScope. Você pode voltar nas Configurações.",
     useModelScopeFailed: "Não foi possível mudar para o ModelScope.",
+    updateToken: "Atualizar token",
     hfToken: {
       label: "Token do HF",
       saved: "Salvo",

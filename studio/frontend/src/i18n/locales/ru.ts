@@ -96,6 +96,7 @@ export const ru = {
     useModelScope: "Использовать ModelScope",
     useModelScopeHint: "Искать и скачивать через ModelScope. Вернуть можно в настройках.",
     useModelScopeFailed: "Не удалось переключиться на ModelScope.",
+    updateToken: "Обновить токен",
     hfToken: {
       label: "Токен HF",
       saved: "Сохранён",

@@ -93,6 +93,7 @@ export const zhCN = {
     useModelScope: "使用 ModelScope",
     useModelScopeHint: "改为从 ModelScope 搜索和下载。可随时在设置中切换回来。",
     useModelScopeFailed: "无法切换到 ModelScope。",
+    updateToken: "更新令牌",
     hfToken: {
       label: "HF token",
       saved: "已保存",

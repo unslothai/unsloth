@@ -96,6 +96,7 @@ export const fr = {
     useModelScope: "Utiliser ModelScope",
     useModelScopeHint: "Rechercher et télécharger depuis ModelScope à la place. Vous pouvez revenir en arrière dans les Paramètres.",
     useModelScopeFailed: "Impossible de passer à ModelScope.",
+    updateToken: "Mettre à jour le jeton",
     hfToken: {
       label: "Token HF",
       saved: "Enregistré",

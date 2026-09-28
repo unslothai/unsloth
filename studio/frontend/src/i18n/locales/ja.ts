@@ -96,6 +96,7 @@ export const ja = {
     useModelScope: "ModelScope を使う",
     useModelScopeHint: "代わりに ModelScope で検索・ダウンロードします。設定からいつでも戻せます。",
     useModelScopeFailed: "ModelScope に切り替えられませんでした。",
+    updateToken: "トークンを更新",
     hfToken: {
       label: "HF トークン",
       saved: "保存済み",

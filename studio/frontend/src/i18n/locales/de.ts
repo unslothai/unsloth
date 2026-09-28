@@ -96,6 +96,7 @@ export const de = {
     useModelScope: "ModelScope verwenden",
     useModelScopeHint: "Stattdessen über ModelScope suchen und herunterladen. Sie können in den Einstellungen zurückwechseln.",
     useModelScopeFailed: "Wechsel zu ModelScope fehlgeschlagen.",
+    updateToken: "Token aktualisieren",
     hfToken: {
       label: "HF-Token",
       saved: "Gespeichert",

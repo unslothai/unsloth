@@ -116,6 +116,7 @@ function UseModelScopeButton() {
 }
 
 function UpdateTokenButton() {
+  const t = useT();
   const openSettings = useSettingsDialogStore((s) => s.openDialog);
   return (
     <Button
@@ -123,7 +124,7 @@ function UpdateTokenButton() {
       onClick={() => openSettings("general")}
       className="h-8 rounded-full"
     >
-      Update token
+      {t("picker.updateToken")}
     </Button>
   );
 }
