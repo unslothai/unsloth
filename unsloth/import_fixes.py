@@ -29,6 +29,7 @@ import textwrap
 import warnings
 import platform
 import sys
+import sysconfig
 import threading
 import functools
 import inspect
@@ -8664,6 +8665,15 @@ _PREBUILT_KERNEL_VERSIONS = {
 }
 
 
+def _glibc_at_least(major: int, minor: int) -> bool:
+    # The builds run on ubuntu-22.04, and the linux_x86_64 tag lets pip install them on older glibc.
+    try:
+        name, version = platform.libc_ver()
+        return name == "glibc" and tuple(int(x) for x in version.split(".")[:2]) >= (major, minor)
+    except Exception:
+        return False
+
+
 def stale_kernel_hint(package: str, error) -> str:
     """How to rebuild ``package`` when ``error`` says its extension was built for another torch, else ""."""
     checked = set()
@@ -8690,6 +8700,8 @@ def stale_kernel_hint(package: str, error) -> str:
         and sys.platform.startswith("linux")
         and platform.machine().lower() in ("x86_64", "amd64")
         and sys.version_info[:2] == (3, 13)
+        and not sysconfig.get_config_var("Py_GIL_DISABLED")
+        and _glibc_at_least(2, 35)
         and minor in ("2.13", "2.14")
         and cuda.startswith("13.")
         and cxx11

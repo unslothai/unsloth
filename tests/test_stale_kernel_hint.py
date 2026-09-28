@@ -43,6 +43,8 @@ def _host(
     machine = "x86_64",
     platform = "linux",
     cxx11 = True,
+    libc = ("glibc", "2.35"),
+    free_threaded = False,
 ):
     fake_torch = types.SimpleNamespace(
         __version__ = torch_version,
@@ -53,6 +55,13 @@ def _host(
     monkeypatch.setattr(fixes.sys, "platform", platform)
     monkeypatch.setattr(fixes.sys, "version_info", (*py, 0, "final", 0))
     monkeypatch.setattr(fixes.platform, "machine", lambda: machine)
+    monkeypatch.setattr(fixes.platform, "libc_ver", lambda: libc)
+    real = fixes.sysconfig.get_config_var
+    monkeypatch.setattr(
+        fixes.sysconfig,
+        "get_config_var",
+        lambda name: (1 if free_threaded else 0) if name == "Py_GIL_DISABLED" else real(name),
+    )
 
 
 @pytest.mark.parametrize(
@@ -96,6 +105,9 @@ def test_the_wheel_names_are_the_published_ones(fixes):
         {"machine": "aarch64"},
         {"platform": "win32"},
         {"cxx11": False},
+        {"libc": ("glibc", "2.31")},
+        {"libc": ("", "")},
+        {"free_threaded": True},
     ],
 )
 def test_anywhere_else_it_names_a_source_rebuild(monkeypatch, fixes, host):
