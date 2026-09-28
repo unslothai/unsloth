@@ -7782,6 +7782,53 @@ def _backfill_missing_conversion_symbols():
     return bool(added)
 
 
+def patch_peft_float8_adapter_upcast():
+    """PEFT < 0.19 builds adapters in an FP8 base weight's dtype; upcast them to float32 as PEFT >= 0.19 does."""
+    try:
+        import torch
+        import peft.tuners.tuners_utils as tu
+    except Exception:
+        return
+    original = getattr(tu, "cast_adapter_dtype", None)
+    if original is None or getattr(original, "_unsloth_float8_upcast", False):
+        return
+    try:
+        from peft.utils.constants import UPCAST_DTYPES  # noqa: F401  (PEFT >= 0.19 already upcasts float8)
+        return
+    except ImportError:
+        pass
+    float8 = tuple(
+        getattr(torch, n)
+        for n in ("float8_e4m3fn", "float8_e4m3fnuz", "float8_e5m2", "float8_e5m2fnuz")
+        if hasattr(torch, n)
+    )
+
+    @functools.wraps(original)
+    def cast_adapter_dtype(
+        model,
+        adapter_name,
+        autocast_adapter_dtype = True,
+    ):
+        original(model, adapter_name = adapter_name, autocast_adapter_dtype = autocast_adapter_dtype)
+        if not autocast_adapter_dtype:
+            return
+        for module in model.modules():
+            if not isinstance(module, tu.BaseTunerLayer):
+                continue
+            for name in module.adapter_layer_names:
+                layer = getattr(module, name, None)
+                if not isinstance(layer, torch.nn.Module) or adapter_name not in layer:
+                    continue
+                item = layer[adapter_name]
+                params = item.parameters() if isinstance(item, torch.nn.Module) else (item,)
+                for p in params:
+                    if p.dtype in float8:
+                        p.data = p.data.to(torch.float32)
+
+    cast_adapter_dtype._unsloth_float8_upcast = True
+    tu.cast_adapter_dtype = cast_adapter_dtype
+
+
 def patch_peft_weight_converter_compatibility():
     """Allow PEFT converter rebuilds on legacy converter constructors."""
     try:

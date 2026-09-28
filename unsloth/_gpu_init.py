@@ -295,6 +295,7 @@ from .import_fixes import (
     fix_peft_transformers_tensor_parallel_import_compat,
     fix_peft_transformers_weight_conversion_import,
     patch_peft_weight_converter_compatibility,
+    patch_peft_float8_adapter_upcast,
     fix_peft_stale_torchao_import_error,
     fix_peft_torchao_missing_tensor_subclass,
     patch_accelerate_recursively_apply,
@@ -381,6 +382,7 @@ fix_accelerate_dtensor_check_without_torch_distributed()
 fix_peft_transformers_tensor_parallel_import_compat()
 fix_peft_transformers_weight_conversion_import()
 patch_peft_weight_converter_compatibility()
+patch_peft_float8_adapter_upcast()
 # After peft is importable, so the already-bound is_torchao_available in peft.tuners.lora.torchao is
 # replaced too, not just import_utils'.
 fix_peft_stale_torchao_import_error()
@@ -429,6 +431,7 @@ del fix_accelerate_dtensor_check_without_torch_distributed
 del fix_peft_transformers_tensor_parallel_import_compat
 del fix_peft_transformers_weight_conversion_import
 del patch_peft_weight_converter_compatibility
+del patch_peft_float8_adapter_upcast
 del fix_peft_stale_torchao_import_error
 del fix_peft_torchao_missing_tensor_subclass
 del patch_accelerate_recursively_apply

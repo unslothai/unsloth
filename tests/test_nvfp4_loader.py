@@ -17,13 +17,25 @@ sys.path.insert(0, os.path.dirname(__file__))
 import _nvfp4_fixtures as fx  # noqa: E402
 
 
+class _Checkpoints(dict):
+    # Built on first use, so a transformers without qwen3_5 (4.57.x) still runs the qwen3 cases.
+    def __init__(self, tmp_path_factory):
+        super().__init__()
+        self.tmp_path_factory = tmp_path_factory
+
+    def __missing__(self, arch):
+        from transformers.models.auto.configuration_auto import CONFIG_MAPPING_NAMES
+
+        if arch not in CONFIG_MAPPING_NAMES:
+            pytest.skip(f"transformers has no {arch}")
+        d = self.tmp_path_factory.mktemp(arch)
+        self[arch] = (str(d), fx.build(str(d), arch))
+        return self[arch]
+
+
 @pytest.fixture(scope = "module")
 def ckpt(tmp_path_factory):
-    out = {}
-    for arch in ("qwen3", "qwen3_5"):
-        d = tmp_path_factory.mktemp(arch)
-        out[arch] = (str(d), fx.build(str(d), arch))
-    return out
+    return _Checkpoints(tmp_path_factory)
 
 
 def _load_raw(path, arch):
@@ -205,3 +217,27 @@ def test_lora_trains_on_the_packed_base_and_reloads(ckpt, arch, api, fp8_kernels
     # FastLanguageModel trains through fused LoRA kernels; a plain PEFT reload differs by ~0.04 on bf16 main too.
     if api == "FastModel":
         assert r["reload_max_abs"] <= 1e-2
+
+
+def test_float8_lora_adapters_are_upcast_on_every_peft():
+    # PEFT < 0.19 gives an FP8 base float8 LoRA weights, on get_peft_model and on PeftModel.from_pretrained;
+    # the FP8 route beside NVFP4 relies on Unsloth's upcast.
+    import unsloth  # noqa: F401
+    from peft import LoraConfig, get_peft_model
+
+    base = torch.nn.Sequential(torch.nn.Linear(32, 32, bias = False)).cuda()
+    base[0].weight.data = base[0].weight.data.to(torch.float8_e4m3fn)
+    model = get_peft_model(base, LoraConfig(r = 4, target_modules = ["0"]))
+    dtypes = {n: p.dtype for n, p in model.named_parameters()}
+    assert all(d == torch.float32 for n, d in dtypes.items() if "lora_" in n), dtypes
+    assert model.base_model.model[0].base_layer.weight.dtype == torch.float8_e4m3fn
+
+    import tempfile
+    from peft import PeftModel
+
+    with tempfile.TemporaryDirectory() as d:
+        model.save_pretrained(d)
+        fresh = torch.nn.Sequential(torch.nn.Linear(32, 32, bias = False)).cuda()
+        fresh[0].weight.data = fresh[0].weight.data.to(torch.float8_e4m3fn)
+        fresh = PeftModel.from_pretrained(fresh, d)
+    assert all(p.dtype == torch.float32 for n, p in fresh.named_parameters() if "lora_" in n)
