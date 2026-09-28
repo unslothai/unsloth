@@ -124,14 +124,16 @@ test("a quarantined llama.cpp runtime is not reported as an outdated install", (
 
 test("a failed repair and recurring damage show antivirus advice with the runtime folder", () => {
   const failure = runtimeRepairFailureMessage("download blocked");
-  assert.match(failure, /Security software may be blocking the reinstall/);
+  assert.match(failure, /Antivirus may be blocking the download/);
+  assert.match(failure, /or check your connection/);
   assert.match(failure, /Repair error: download blocked/);
   assert.match(failure, /\.unsloth[\\/]llama\.cpp/);
 
   const recurring = runtimeRepairRecurrenceMessage();
   assert.match(recurring, /missing files again soon after a repair/);
   assert.match(recurring, /antivirus/);
-  assert.match(recurring, /unsloth studio update/);
+  assert.match(recurring, /press Retry to reinstall it/);
+  assert.doesNotMatch(recurring, /unsloth studio update/);
   assert.match(recurring, /\.unsloth[\\/]llama\.cpp/);
 });
 

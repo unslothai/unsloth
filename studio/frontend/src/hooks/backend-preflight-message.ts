@@ -37,11 +37,11 @@ function llamaRuntimeFolder(): string {
 }
 
 export function runtimeRepairFailureMessage(error: string): string {
-  return `Unsloth could not repair its llama.cpp runtime. Security software may be blocking the reinstall or removing files as they are installed. Allow the runtime folder, usually ${llamaRuntimeFolder()}, in your antivirus, then retry. Repair error: ${error}`;
+  return `Unsloth could not repair its llama.cpp runtime. Antivirus may be blocking the download or removing files as they are installed. Allow the runtime folder, usually ${llamaRuntimeFolder()}, in your antivirus, or check your connection, then retry. Repair error: ${error}`;
 }
 
 export function runtimeRepairRecurrenceMessage(): string {
-  return `Unsloth's llama.cpp runtime is missing files again soon after a repair. Security software may be removing them. Allow the runtime folder, usually ${llamaRuntimeFolder()}, in your antivirus, then run \`unsloth studio update\` to reinstall it.`;
+  return `Unsloth's llama.cpp runtime is missing files again soon after a repair. Antivirus may be removing them. Allow the runtime folder, usually ${llamaRuntimeFolder()}, in your antivirus, then press Retry to reinstall it.`;
 }
 
 export function preflightStaleMessage(

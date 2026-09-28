@@ -75,6 +75,7 @@ function harness(
   let armed: (() => void) | null = null;
   let armedCount = 0;
   const environmentWaitPollsRef = { current: 0 };
+  const recurrenceReasonRef = { current: null as string | null };
   const noop = () => {};
 
   const scope: Record<string, unknown> = {
@@ -130,6 +131,7 @@ function harness(
       return Promise.resolve();
     },
     preflightStaleMessage: (_d: string, reason: string | null) => `stale:${reason}`,
+    recurrenceReasonRef,
     wasRuntimeRepairedRecently: () => runtimeRepairedRecently,
     runtimeRepairRecurrenceMessage: () => "runtime damaged again",
     externalConflictMessage: () => "conflict",
@@ -168,6 +170,7 @@ ${checkBody
       return armed !== null;
     },
     polls: () => environmentWaitPollsRef.current,
+    recurrenceReason: () => recurrenceReasonRef.current,
     async fireWait() {
       const next = armed;
       assert.ok(next, "no wait was armed");
@@ -223,6 +226,7 @@ test("a runtime damaged again soon after a repair explains instead of repairing"
 
   assert.equal(run.repairs, 0);
   assert.equal(run.errors.at(-1), "runtime damaged again");
+  assert.equal(run.recurrenceReason(), "llama_runtime_binaries_missing", "held for Retry");
 });
 
 test("the wait is bounded, so a gate nobody releases still reaches Retry", async () => {

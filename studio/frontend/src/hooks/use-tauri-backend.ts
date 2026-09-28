@@ -186,6 +186,9 @@ export function useTauriBackend() {
   // approveElevation, which restarts the repair after the system packages land.
   const forcedRepairRef = useRef(false);
   const repairReasonRef = useRef<string | null>(null);
+  // The runtime reason preflight refused to auto-repair because it came back soon after a
+  // repair. Retry on that screen runs the repair the user was told to ask for.
+  const recurrenceReasonRef = useRef<string | null>(null);
   // One preflight and one repair at a time. Retry runs the preflight, a stale verdict starts a
   // repair, and five clicks two seconds apart used to fan out into five of each: the Rust side
   // saw them as five repairs racing for one installer.
@@ -378,6 +381,7 @@ export function useTauriBackend() {
           }
           if (preflight.can_auto_repair) {
             if (wasRuntimeRepairedRecently(preflight.reason)) {
+              recurrenceReasonRef.current = preflight.reason;
               setBackendError(runtimeRepairRecurrenceMessage());
             } else {
               await startRepair({ preflightReason: preflight.reason });
@@ -594,6 +598,10 @@ export function useTauriBackend() {
     const resumeForcedRepair =
       statusRef.current === "repair-error" && forcedRepairRef.current;
     forcedRepairRef.current = false;
+    // Same for a runtime repair preflight held back: the message asked for this click.
+    const recurrenceReason =
+      statusRef.current === "error" ? recurrenceReasonRef.current : null;
+    recurrenceReasonRef.current = null;
     clearAuthFailure();
     clearServerStopIntent();
     setError(null);
@@ -611,6 +619,10 @@ export function useTauriBackend() {
     seenStepsRef.current.clear();
     if (resumeForcedRepair) {
       void startRepair({ forceInstaller: true });
+      return;
+    }
+    if (recurrenceReason) {
+      void startRepair({ preflightReason: recurrenceReason });
       return;
     }
     checkInstallAndStart();
