@@ -1094,6 +1094,35 @@ def test_runaway_output_reports_true_size_and_keeps_trailing_hint(monkeypatch):
     assert "'x.html', not '/mnt/data/x.html'" in out
 
 
+@pytest.mark.parametrize(
+    "run, code",
+    [
+        (_python_exec, "while True: print('x' * 99)"),
+        (_bash_exec, "while :; do printf '%099d\\n' 0; done"),
+    ],
+    ids = ["python", "bash"],
+)
+def test_timed_out_runaway_output_reports_true_size_and_line_count(
+    monkeypatch, tmp_path, run, code
+):
+    from core.inference import tools as _tools_mod
+
+    monkeypatch.setattr(_tools_mod, "_SPILL_MAX_BYTES", 2000)
+    monkeypatch.setattr(_tools_mod, "_DRAIN_TAIL_CHARS", 500)
+    monkeypatch.setattr(_tools_mod, "_get_workdir", lambda _sid = None: str(tmp_path))
+    streamed = []
+    out = run(
+        code,
+        timeout = 2,
+        session_id = "runaway",
+        output_callback = streamed.append,
+    )
+    full = "".join(streamed)
+    assert len(full) > 100_000
+    assert f"of {full.count(chr(10)) + 1}, {len(full)} chars total" in out
+    assert out.rstrip().endswith("Execution timed out after 2 seconds.")
+
+
 def test_result_cap_env_override(monkeypatch):
     monkeypatch.delenv("UNSLOTH_TOOL_RESULT_MAX_CHARS", raising = False)
     assert _env_int("UNSLOTH_TOOL_RESULT_MAX_CHARS", 16000) == 16000
