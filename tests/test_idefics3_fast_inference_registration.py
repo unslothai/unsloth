@@ -21,3 +21,28 @@ def test_idefics3_passes_the_fast_inference_gate():
     supported = _vllm_supported_vlm()
     assert any(arch in supported for arch in ("idefics3", "idefics3_vision"))
     assert len(supported) == len(set(supported))
+
+
+def _probe(monkeypatch, layer_config):
+    import unsloth_zoo.empty_model as empty_model
+    from unsloth.models.vision import _zoo_supports_idefics3_fast_inference
+
+    monkeypatch.setattr(empty_model, "get_model_layer_config", layer_config)
+    return _zoo_supports_idefics3_fast_inference()
+
+
+def test_zoo_with_idefics3_templates_is_accepted(monkeypatch):
+    config = {"standard_layers": {"model.text_model.layers.{kk}.self_attn.q_proj"}}
+    assert _probe(monkeypatch, lambda: config) is True
+
+
+def test_older_zoo_is_refused_instead_of_crashing_in_conversion(monkeypatch):
+    config = {"standard_layers": {"model.layers.{kk}.self_attn.q_proj"}}
+    assert _probe(monkeypatch, lambda: config) is False
+
+
+def test_broken_zoo_probe_is_refused(monkeypatch):
+    def boom():
+        raise KeyError("standard_layers")
+
+    assert _probe(monkeypatch, boom) is False
