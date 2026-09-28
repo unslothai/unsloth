@@ -158,7 +158,7 @@ export function DesktopTitlebarNavigation({
     <div
       className={cn(
         "flex mt-[var(--studio-titlebar-navigation-margin-top,0px)] translate-y-[var(--studio-titlebar-navigation-offset-y,0px)] items-center",
-        customTitlebar ? "gap-[6px]" : "gap-0.5",
+        customTitlebar ? "gap-[4px]" : "gap-0.5",
         className,
       )}
       role="toolbar"
@@ -434,7 +434,7 @@ export function WindowTitlebar({
           />
         )}
         <div
-          className="pointer-events-auto absolute right-[12px] top-0 flex h-full items-center gap-[6px]"
+          className="pointer-events-auto absolute right-[12px] top-0 flex h-full items-center gap-[4px]"
           role="toolbar"
           aria-label="Window controls"
         >
