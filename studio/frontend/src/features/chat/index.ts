@@ -285,10 +285,28 @@ export {
   attachmentTextLanguage,
   countAttachmentTextLines,
   isAudioAttachment,
+  attachmentBodyText,
   parseAttachmentText,
   readAttachmentText,
+  repackDocxAttachmentArchive,
+  repackDocxPreviewArchive,
   truncateAttachmentPreviewText,
 } from "./attachment-content";
+export { normalizeChatImage } from "./image-normalize";
+export {
+  ATTACHMENT_KIND_ICON_CLASS,
+  ATTACHMENT_KIND_ICONS,
+  attachmentFileKind,
+  attachmentKindLabel,
+  type AttachmentFileKind,
+} from "./lib/attachment-file-kind";
+export {
+  COMPOSER_ATTACHMENT_MAX_ROWS,
+  SENT_ATTACHMENT_LIST_MAX,
+  composerAttachmentsOverflow,
+  sentAttachmentLayout,
+  type SentAttachmentLayout,
+} from "./lib/attachment-layout";
 export { ApiProviderLogo } from "./api-provider-logo";
 export { useExternalProvidersStore } from "./stores/external-providers-store";
 export { DeleteChatFilesSwitch } from "./components/delete-chat-files-switch";
@@ -505,3 +523,4 @@ export {
   type ComposerFollowUpBehavior,
   type ComposerSubmitIntent,
 } from "./utils/composer-preferences";
+export { isTextAttachmentName } from "./text-attachment-accept";

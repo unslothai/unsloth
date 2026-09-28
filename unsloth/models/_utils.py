@@ -384,8 +384,9 @@ DISABLE_SDPA_MODEL_NAMES = [
     "gemma3_text",  # Gemma3TextModel (EmbeddingGemma) - substring match, keep underscore
     "gpt_oss",
 ]
-_FLASH_EXCLUDED_MODELS = ("gpt_oss", "deepseek_v4")
+_FLASH_EXCLUDED_MODELS = ("gpt_oss", "deepseek_v4", "mllama")
 # deepseek_v4's custom attention is sdpa/flash-incompatible: force eager, and it is excluded above so an explicit request cannot re-enable the crash.
+# mllama declares flash support, but its vision and cross attention modules have no is_causal, which the flash path reads.
 _EAGER_ONLY_PREFIXES = ("gemma3n", "deepseek_v4")
 _FLASH_ATTENTION_MAX_HEAD_DIM = 256
 _FLASH_ATTENTION_DISABLED_WARNED = set()
@@ -1046,6 +1047,8 @@ def _get_max_attention_head_dim(config):
 def _get_flash_attention_disable_reason(config):
     model_type = _config_get(config, "model_type", "").lower()
     if _is_flash_excluded(model_type):
+        if model_type == "mllama":
+            return "mllama vision and cross attention do not run under Flash Attention 2"
         return f"{model_type} uses custom sink attention kernels"
     max_head_dim = _get_max_attention_head_dim(config)
     if max_head_dim is not None and max_head_dim > _FLASH_ATTENTION_MAX_HEAD_DIM:
@@ -1082,6 +1085,43 @@ def _disable_flash_attention_if_needed(
 
     # Only an implementation passed by the caller is an explicit request: config values are synthesized by the loaders or come from Transformers defaults.
     explicit_request = attn_implementation
+
+    # A per-sub-config mapping keeps the entries a scalar request would keep; flash and excluded backends take the fallback.
+    if isinstance(explicit_request, dict):
+        excluded_model_type = _config_get(config, "model_type", "").lower()
+
+        def _needs_fallback(impl):
+            if _is_flash_attention_requested(impl):
+                return True
+            if impl == "sdpa":
+                return _is_sdpa_excluded(excluded_model_type)
+            if impl == "flex_attention":
+                return not supports_flex_attention
+            return False
+
+        fallback = _disable_flash_attention_if_needed(
+            config,
+            supports_sdpa = supports_sdpa,
+            supports_flex_attention = supports_flex_attention,
+            would_use_flash_attention = any(
+                _is_flash_attention_requested(v) for v in explicit_request.values()
+            ),
+            disable_reason = disable_reason,
+            honor_config_attn_implementation = False,
+        )
+
+        def _fallback_for(key):
+            if isinstance(fallback, dict):
+                return fallback.get(key, fallback.get("", "eager"))
+            return fallback
+
+        return _set_attn_impl(
+            config,
+            {
+                k: (_fallback_for(k) if _needs_fallback(v) else v)
+                for k, v in explicit_request.items()
+            },
+        )
 
     # Off for a float32 load: with no flash-specific reason the config never steered the choice, so a config-seeded "eager" must not drag an fp32 load from sdpa down to eager.
     requested_attn_implementation = attn_implementation
@@ -1151,10 +1191,52 @@ def _attn_impl_label(impl):
     return impl
 
 
+def _undeclared_nested_configs(config):
+    """Nested configs outside `sub_configs`, which transformers' attn setter never reaches (Nemotron-Omni `llm_config`)."""
+    try:
+        from transformers import PretrainedConfig
+    except Exception:
+        return []
+    if not isinstance(config, PretrainedConfig):
+        return []
+    # Read from the instance: DPT / DETR / VitMatte on 4.57 define `sub_configs` as a property.
+    declared = getattr(config, "sub_configs", None)
+    declared = set(declared) if isinstance(declared, dict) else set()
+    return [
+        value
+        for name, value in vars(config).items()
+        if name not in declared and value is not config and isinstance(value, PretrainedConfig)
+    ]
+
+
+def _sync_baked_attn_impl(config, previous, impl):
+    # Remote __init__ bakes its flash default into nested configs; follow the top value over stale or flash copies.
+    if not isinstance(impl, str):
+        return
+    for nested in _undeclared_nested_configs(config):
+        current = getattr(nested, "_attn_implementation", None)
+        if (
+            current is not None
+            and current != impl
+            and (
+                current == previous
+                or (
+                    _is_flash_attention_requested(current)
+                    and not _is_flash_attention_requested(impl)
+                )
+            )
+        ):
+            _write_attn_impl(nested, impl)
+        if isinstance(getattr(nested, "use_flash_attn", None), bool):
+            nested.use_flash_attn = _is_flash_attention_requested(impl)
+
+
 def _write_attn_impl(config, impl):
+    previous = _config_get(config, "_attn_implementation", None)
     _config_set(config, "_attn_implementation", impl)
     if isinstance(config, dict) or hasattr(config, "attn_implementation"):
         _config_set(config, "attn_implementation", impl)
+    _sync_baked_attn_impl(config, previous, impl)
 
 
 def _set_attn_impl(config, impl):

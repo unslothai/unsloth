@@ -5,8 +5,9 @@ use crate::native_backend_lease::{
 };
 use crate::native_path_policy::{
     classify_artifact_path, classify_native_attachment_path, classify_native_dataset_path,
-    classify_native_document_folder, classify_native_model_path, is_audio_only_3gp,
-    is_binary_property_list, is_binary_tracker_mod, is_binary_vobsub, is_binary_office_template, is_compiled_fortran_mod, is_text_attachment_name,
+    classify_native_document_folder, classify_native_model_path, has_transport_stream_extension,
+    is_audio_only_3gp, is_binary_office_template, is_binary_property_list, is_binary_tracker_mod,
+    is_binary_vobsub, is_compiled_fortran_mod, is_mpeg_transport_stream, is_text_attachment_name,
     reveal_target, ClassifiedPath, NativeArtifactKind,
 };
 use serde::Serialize;
@@ -638,6 +639,11 @@ fn attachment_mime_type(path: &Path) -> Option<&'static str> {
         "png" => Some("image/png"),
         "webp" => Some("image/webp"),
         "gif" => Some("image/gif"),
+        "heic" => Some("image/heic"),
+        "heif" => Some("image/heif"),
+        "avif" => Some("image/avif"),
+        "bmp" => Some("image/bmp"),
+        "tif" | "tiff" => Some("image/tiff"),
         "wav" => Some("audio/wav"),
         "mp3" | "mp2" => Some("audio/mpeg"),
         "m4a" => Some("audio/mp4"),
@@ -660,8 +666,10 @@ fn attachment_mime_type(path: &Path) -> Option<&'static str> {
         "flv" => Some("video/x-flv"),
         "3gp" => Some("video/3gpp"),
         "ogv" => Some("video/ogg"),
+        "m2ts" => Some("video/mp2t"),
         "ods" => Some("application/vnd.oasis.opendocument.spreadsheet"),
         "odt" => Some("application/vnd.oasis.opendocument.text"),
+        "rtf" => Some("application/rtf"),
         // Stamped like native_clipboard.rs.
         "json" | "jsonl" | "ndjson" | "jsonc" | "json5" | "geojson" | "har" | "avsc"
         | "tfstate" => Some("application/json"),
@@ -678,11 +686,17 @@ fn attachment_mime_type(path: &Path) -> Option<&'static str> {
         other if crate::native_path_policy::TEXT_ATTACHMENT_EXTS.contains(&other) => {
             Some("text/plain")
         }
+        other if crate::native_path_policy::TOOL_ONLY_ATTACHMENT_EXTS.contains(&other) => {
+            Some("application/octet-stream")
+        }
         _ => None,
     }
 }
 
 fn attachment_payload_mime_type(path: &Path, raw: &[u8]) -> Option<&'static str> {
+    if is_mpeg_transport_stream(path, raw) {
+        return Some("video/mp2t");
+    }
     if path
         .extension()
         .and_then(|value| value.to_str())
@@ -747,7 +761,11 @@ fn read_attachment_payload(entry: &NativePathEntry) -> Result<NativeAttachmentFi
             .is_some_and(|ext| {
                 crate::native_path_policy::TEXT_ATTACHMENT_EXTS.contains(&ext.as_str())
             });
-    let max_bytes = if is_text_attachment {
+    // A .ts or .mts path is provisionally video until its packets are read; the text cap is
+    // reapplied below once the bytes say it is TypeScript.
+    let max_bytes = if has_transport_stream_extension(path) {
+        MAX_NATIVE_VIDEO_BYTES
+    } else if is_text_attachment {
         MAX_NATIVE_TEXT_BYTES
     } else if mime_type.starts_with("image/") {
         MAX_NATIVE_IMAGE_BYTES
@@ -808,6 +826,9 @@ fn read_attachment_payload(entry: &NativePathEntry) -> Result<NativeAttachmentFi
     }
     let mime_type = attachment_payload_mime_type(path, &bytes)
         .ok_or_else(|| "Only chat attachments can be read inline.".to_string())?;
+    if mime_type.starts_with("text/") && bytes.len() as u64 > MAX_NATIVE_TEXT_BYTES {
+        return Err("Attachment is unavailable or too large.".to_string());
+    }
     // A 3GP path is provisionally video until its track handlers are available.
     // Reapply the audio cap after an audio-only recording is identified.
     if mime_type.starts_with("audio/") && bytes.len() as u64 > MAX_NATIVE_ATTACHMENT_BYTES {
@@ -928,6 +949,30 @@ mod tests {
     }
 
     #[test]
+    fn transport_stream_reads_as_video_past_the_text_cap_and_typescript_does_not() {
+        let stream = temp_path("camcorder").with_extension("MTS");
+        let mut raw = vec![0; MAX_NATIVE_TEXT_BYTES as usize + 192];
+        for offset in (4..raw.len()).step_by(192) {
+            raw[offset] = 0x47;
+        }
+        fs::write(&stream, &raw).unwrap();
+        let (_state, entry) = attachment_entry(&stream);
+        assert_eq!(
+            read_attachment_payload(&entry).unwrap().mime_type,
+            "video/mp2t"
+        );
+        let typescript = temp_path("module").with_extension("ts");
+        fs::write(&typescript, vec![b' '; MAX_NATIVE_TEXT_BYTES as usize + 1]).unwrap();
+        let (_state, entry) = attachment_entry(&typescript);
+        let Err(error) = read_attachment_payload(&entry) else {
+            panic!("expected oversized TypeScript read to fail");
+        };
+        assert!(error.contains("too large"), "unexpected error: {error}");
+        let _ = fs::remove_file(stream);
+        let _ = fs::remove_file(typescript);
+    }
+
+    #[test]
     fn audio_only_3gp_read_reapplies_the_audio_cap() {
         let path = temp_path("oversized-recording").with_extension("3gp");
         let mut raw = three_gp_with_tracks(&[*b"soun"]);
@@ -1025,10 +1070,12 @@ mod tests {
     }
 
     #[test]
-    fn open_document_read_round_trips_with_its_mime_type() {
+    fn composer_document_read_round_trips_with_its_mime_type() {
         for (ext, mime) in [
             ("ods", "application/vnd.oasis.opendocument.spreadsheet"),
             ("odt", "application/vnd.oasis.opendocument.text"),
+            ("rtf", "application/rtf"),
+            ("Parquet", "application/octet-stream"),
         ] {
             let path = temp_path("open-document").with_extension(ext);
             fs::write(&path, b"open-document").unwrap();
@@ -1078,8 +1125,15 @@ mod tests {
     }
 
     #[test]
-    fn every_text_extension_the_drop_accepts_has_a_mime_type() {
-        for ext in crate::native_path_policy::TEXT_ATTACHMENT_EXTS {
+    fn every_text_video_and_tool_only_extension_the_drop_accepts_has_a_mime_type() {
+        use crate::native_path_policy::{
+            TEXT_ATTACHMENT_EXTS, TOOL_ONLY_ATTACHMENT_EXTS, VIDEO_ATTACHMENT_EXTS,
+        };
+        for ext in TEXT_ATTACHMENT_EXTS
+            .iter()
+            .chain(VIDEO_ATTACHMENT_EXTS)
+            .chain(TOOL_ONLY_ATTACHMENT_EXTS)
+        {
             let path = PathBuf::from(format!("sample.{ext}"));
             assert!(attachment_mime_type(&path).is_some(), "{ext}");
         }

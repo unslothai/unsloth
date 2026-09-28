@@ -107,6 +107,7 @@ from .loader_utils import (
     _get_fp8_mode_and_check_settings,
     _dequantize_leftover_fp8_params,
     _restore_dropped_fp8_scales,
+    _prepare_compressed_tensors_model,
     planner_class_mismatch_reason,
     planner_model_class,
     planner_quantization_kwargs,
@@ -1874,6 +1875,12 @@ class FastBaseModel:
             or (not text_only and hasattr(auto_config, "vision_config"))
         )
         auto_processor = AutoProcessor if (needs_processor or is_whisper) else AutoTokenizer
+        # Such repos may still ship an AutoProcessor (Nemotron-3-Nano-Omni); DeepSeek-OCR has none. Only the generic classes: Gemma 3 with num_labels must keep its tokenizer.
+        try_repo_processor = (
+            is_vlm_config
+            and auto_processor is AutoTokenizer
+            and getattr(auto_model, "__name__", "") in ("AutoModel", "AutoModelForCausalLM")
+        )
 
         model_type_arch = model_types[0]
         if model_type_arch == "siglip":
@@ -2432,6 +2439,7 @@ class FastBaseModel:
                     variant = kwargs.get("variant"),
                     dtype = torch_dtype,
                 )
+                _prepare_compressed_tensors_model(model, full_finetuning = full_finetuning)
                 if load_in_16bit and not load_in_4bit and not load_in_8bit:
                     _dequantize_leftover_fp8_params(
                         model,
@@ -2626,16 +2634,33 @@ class FastBaseModel:
                     _tok = None
                     _err = _e
             else:
+                _tok = None
+                if try_repo_processor:
+                    try:
+                        _tok = AutoProcessor.from_pretrained(
+                            tokenizer_name,
+                            padding_side = "left",
+                            token = token,
+                            trust_remote_code = trust_remote_code,
+                            cache_dir = kwargs.get("cache_dir"),
+                            local_files_only = lfo,
+                            revision = _tokenizer_revision,
+                        )
+                    except Exception:
+                        _tok = None
+                    if not (hasattr(_tok, "image_processor") and hasattr(_tok, "tokenizer")):
+                        _tok = None
                 try:
-                    _tok = auto_processor.from_pretrained(
-                        tokenizer_name,
-                        padding_side = "left",
-                        token = token,
-                        trust_remote_code = trust_remote_code,
-                        cache_dir = kwargs.get("cache_dir"),
-                        local_files_only = lfo,
-                        revision = _tokenizer_revision,
-                    )
+                    if _tok is None:
+                        _tok = auto_processor.from_pretrained(
+                            tokenizer_name,
+                            padding_side = "left",
+                            token = token,
+                            trust_remote_code = trust_remote_code,
+                            cache_dir = kwargs.get("cache_dir"),
+                            local_files_only = lfo,
+                            revision = _tokenizer_revision,
+                        )
                 except Exception as _e:
                     _err = _e
                     try:
