@@ -1,4 +1,4 @@
-# OpenVINO Convert (Intel Arc / Core Ultra)
+# OpenVINO in Studio: convert and chat (Intel Arc / Core Ultra)
 
 The **Convert** page in the Studio sidebar turns a downloaded model into an OpenVINO IR with INT4 or
 INT8 weights. On an Intel GPU, the INT variant runs much faster than the original safetensors weights.
@@ -42,6 +42,50 @@ appears on other backends, or when only the conversion is present. The logic liv
 `intelIntRecommendations()` in
 `frontend/src/features/model-picker/components/model-selector/recommended-fit.ts`.
 
+## Chatting with an OpenVINO model
+
+Studio loads an OpenVINO IR directory the same way as any other model: pick it in the model picker
+(**Converted** tab), or from the CLI:
+
+```bash
+unsloth studio run --model unsloth/ornith-35b-uncensored-int4-ov --port 8000
+```
+
+A model counts as OpenVINO when its directory (a local path, `openvino:<path>`, or a repo id in the
+HF cache) contains `openvino_model.xml` or `openvino_language_model.xml`. Studio then starts a
+private sidecar (`backend/core/inference/openvino_sidecar.py`, OpenVINO GenAI on `GPU`) and proxies
+`/v1/chat/completions` to it, like the AMD NPU backend. Loading any other model stops the sidecar.
+
+The sidecar needs `openvino-genai`. Either install it in Studio's environment
+(`pip install openvino-genai`) or point Studio at a Python that has it:
+
+```bash
+UNSLOTH_OPENVINO_PYTHON=~/openvino-env/.venv/bin/python unsloth studio run --model <ir-dir-or-repo>
+```
+
+What the sidecar supports:
+
+| feature | status |
+|---|---|
+| streaming and plain JSON replies | yes |
+| reasoning (`<think>`) | returned as `reasoning_content`; `enable_thinking` switches it off |
+| tools | no. Tool definitions are dropped, so agents such as opencode get plain text replies |
+| images / audio / video | refused with 400 |
+
+### Using it from opencode
+
+```jsonc
+// ~/.config/opencode/opencode.jsonc
+"ornith-local": {
+  "npm": "@ai-sdk/openai-compatible",
+  "options": { "baseURL": "http://127.0.0.1:8000/v1", "apiKey": "<key printed by studio run>" },
+  "models": { "ornith-35b": { "name": "Ornith 35B (OpenVINO INT4)" } }
+}
+```
+
+`studio run` reuses the same key across runs (`--api-key-name`, default `cli`), so it only has to
+be pasted in once. Then run `opencode --model ornith-local/ornith-35b`.
+
 ## API
 
 | method | path | body / query | result |
@@ -55,7 +99,7 @@ conversion fails, `stage` carries that path.
 
 ## Limits
 
-- Job state is kept in memory, so a server restart forgets running and finished jobs. The files on
+- Conversion job state is kept in memory, so a server restart forgets running and finished jobs. The files on
   disk are unaffected.
 - `save_pretrained_openvino` reports no percentage, so the progress bar is indeterminate and shows
   only the stage.
