@@ -2204,6 +2204,9 @@ export const hi = {
         loading: "लोड हो रहा है…",
         loadedOn: "{device} पर लोड हुआ",
         download: "डाउनलोड करें",
+        downloadConfirmTitle: "Laya {model} डाउनलोड करें?",
+        downloadConfirmBody:
+          "Decision API को अनुरोधों का जवाब देने के लिए इस मॉडल की ज़रूरत है। लगभग {size}, आपके Hugging Face कैश में एक बार डाउनलोड होता है।",
         unload: "अनलोड करें",
         downloadBusy: "निर्णय API का एक मॉडल पहले से डाउनलोड हो रहा है।",
         downloadFailed: "डाउनलोड शुरू नहीं हो सका।",

@@ -848,12 +848,16 @@ def status() -> dict[str, Any]:
         }
 
 
-def unload() -> bool:
-    global _agent, _loaded, _device_name, _failure
+def ensure_can_unload() -> None:
     with _state_lock:
         # _loading: a load claimed but not yet started would otherwise land after this unload.
         if _loading is not None or (_loader is not None and _loader.is_alive()):
             raise Unavailable(409, "model_loading", "Wait for the load to finish before unloading")
+
+
+def unload() -> bool:
+    global _agent, _loaded, _device_name, _failure
+    ensure_can_unload()
     with _run_lock:
         was_loaded = _agent is not None
         _agent = _loaded = _device_name = None

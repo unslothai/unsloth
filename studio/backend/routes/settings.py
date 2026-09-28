@@ -652,6 +652,8 @@ class SystemOneSettingsPayload(BaseModel):
     enabled: Optional[bool] = None
     model: Optional[str] = None
     device: Optional[str] = None
+    expected_enabled: Optional[bool] = None
+    expected_model: Optional[str] = None
 
 
 class SystemOneDownloadPlan(BaseModel):
@@ -1399,6 +1401,37 @@ def _systemone_response() -> SystemOneSettingsResponse:
     )
 
 
+_SYSTEMONE_SETTINGS_LOCK = threading.Lock()
+
+
+def _systemone_values(payload: SystemOneSettingsPayload) -> dict[str, Any]:
+    try:
+        return systemone_settings.validate(
+            **payload.model_dump(include = {"enabled", "model", "device"}, exclude_none = True)
+        )
+    except ValueError as exc:
+        raise log_and_http_error(
+            exc,
+            400,
+            safe_curated_detail(exc, fallback = "Invalid Decision API setting."),
+            event = "settings.update_systemone_failed",
+            log = logger,
+        ) from exc
+
+
+def _check_systemone_expectations(payload: SystemOneSettingsPayload) -> None:
+    from core.systemone import catalog
+    changed = (
+        payload.expected_enabled is not None
+        and systemone_settings.get_enabled() != payload.expected_enabled
+    ) or (
+        payload.expected_model is not None
+        and catalog.default_checkpoint().name != payload.expected_model
+    )
+    if changed:
+        raise HTTPException(status_code = 409, detail = "Decision API settings changed. Try again.")
+
+
 @_shared_settings_router.get("/systemone", response_model = SystemOneSettingsResponse)
 def get_systemone_settings(
     current_subject: str = Depends(get_current_subject),
@@ -1411,33 +1444,44 @@ def update_systemone_settings(
     payload: SystemOneSettingsPayload, current_subject: str = Depends(get_current_subject)
 ) -> SystemOneSettingsResponse:
     from core.systemone import laya_runtime
-
-    try:
-        values = systemone_settings.validate(**payload.model_dump(exclude_none = True))
-    except ValueError as exc:
-        raise log_and_http_error(
-            exc,
-            400,
-            safe_curated_detail(exc, fallback = "Invalid Decision API setting."),
-            event = "settings.update_systemone_failed",
-            log = logger,
-        ) from exc
-    if values:
-        # The resident model was built from the old settings; drop it so the next request uses the new ones.
-        try:
-            laya_runtime.unload()
-        except laya_runtime.Unavailable as exc:
-            raise HTTPException(status_code = 409, detail = exc.message) from None
-        systemone_settings.save(values)
+    with _SYSTEMONE_SETTINGS_LOCK:
+        _check_systemone_expectations(payload)
+        values = _systemone_values(payload)
+        if values:
+            # The resident model was built from the old settings; drop it so the next request uses the new ones.
+            try:
+                laya_runtime.unload()
+            except laya_runtime.Unavailable as exc:
+                raise HTTPException(status_code = 409, detail = exc.message) from None
+            systemone_settings.save(values)
     return _systemone_response()
+
+
+@_owner_settings_router.post("/systemone/validate", status_code = 204)
+def validate_systemone_settings(
+    payload: SystemOneSettingsPayload, current_subject: str = Depends(get_current_subject)
+) -> None:
+    from core.systemone import laya_runtime
+    with _SYSTEMONE_SETTINGS_LOCK:
+        _check_systemone_expectations(payload)
+        values = _systemone_values(payload)
+        if values:
+            try:
+                laya_runtime.ensure_can_unload()
+            except laya_runtime.Unavailable as exc:
+                raise HTTPException(status_code = 409, detail = exc.message) from None
 
 
 @_owner_settings_router.get("/systemone/resolve", response_model = SystemOneDownloadPlan)
 def resolve_systemone_download(
-    current_subject: str = Depends(get_current_subject),
+    model: Optional[str] = None, current_subject: str = Depends(get_current_subject)
 ) -> SystemOneDownloadPlan:
     from core.systemone import catalog, laya_runtime
-    return SystemOneDownloadPlan(**laya_runtime.download_plan(catalog.default_checkpoint()))
+
+    checkpoint = catalog.default_checkpoint() if model is None else catalog.resolve(model)
+    if checkpoint is None:
+        raise HTTPException(status_code = 400, detail = "Unknown Decision API model.")
+    return SystemOneDownloadPlan(**laya_runtime.download_plan(checkpoint))
 
 
 @_owner_settings_router.post("/systemone/unload", response_model = SystemOneSettingsResponse)

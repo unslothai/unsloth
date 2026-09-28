@@ -396,6 +396,45 @@ def test_invalid_settings_are_refused_without_evicting_the_model(client, payload
     assert client.get("/api/settings/systemone").json()["loaded_model"] == "laya-multilingual"
 
 
+def test_settings_update_refuses_a_stale_consent_snapshot(client):
+    response = client.put(
+        "/api/settings/systemone",
+        json = {
+            "model": "laya-english",
+            "expected_enabled": False,
+            "expected_model": "laya-multilingual",
+        },
+    )
+    assert response.status_code == 409
+    assert response.json()["detail"] == "Decision API settings changed. Try again."
+    assert client.get("/api/settings/systemone").json()["model"] == "laya-multilingual"
+
+
+def test_settings_validation_checks_the_snapshot_without_saving(client):
+    response = client.post(
+        "/api/settings/systemone/validate",
+        json = {
+            "model": "laya-english",
+            "expected_enabled": True,
+            "expected_model": "laya-multilingual",
+        },
+    )
+    assert response.status_code == 204
+    settings = client.get("/api/settings/systemone").json()
+    assert settings["enabled"] is True
+    assert settings["model"] == "laya-multilingual"
+    updated = client.put(
+        "/api/settings/systemone",
+        json = {
+            "model": "laya-english",
+            "expected_enabled": True,
+            "expected_model": "laya-multilingual",
+        },
+    )
+    assert updated.status_code == 200
+    assert updated.json()["model"] == "laya-english"
+
+
 def test_env_model_is_locked(client, monkeypatch, tmp_path):
     monkeypatch.setenv("UNSLOTH_SYSTEMONE_MODEL", "laya-english")
     settings = client.get("/api/settings/systemone").json()
@@ -404,6 +443,21 @@ def test_env_model_is_locked(client, monkeypatch, tmp_path):
         client.put("/api/settings/systemone", json = {"model": "laya-multilingual"}).status_code
         == 400
     )
+
+
+def test_stale_check_uses_the_display_name_for_a_local_env_model(client, monkeypatch, tmp_path):
+    monkeypatch.setenv("UNSLOTH_SYSTEMONE_MODEL", str(tmp_path))
+    settings = client.get("/api/settings/systemone").json()
+    assert settings["model"] == "laya-local"
+    response = client.post(
+        "/api/settings/systemone/validate",
+        json = {
+            "enabled": True,
+            "expected_enabled": True,
+            "expected_model": "laya-local",
+        },
+    )
+    assert response.status_code == 204
 
 
 def test_settings_change_waits_for_a_running_load(client, monkeypatch):
@@ -416,6 +470,17 @@ def test_settings_change_waits_for_a_running_load(client, monkeypatch):
     monkeypatch.setattr(laya_runtime, "_load_checkpoint", slow)
     monkeypatch.setattr(laya_runtime, "LOAD_WAIT_S", 0.05)
     assert _post(client).status_code == 503
+    assert (
+        client.post(
+            "/api/settings/systemone/validate",
+            json = {
+                "model": "laya-english",
+                "expected_enabled": True,
+                "expected_model": "laya-multilingual",
+            },
+        ).status_code
+        == 409
+    )
     assert client.put("/api/settings/systemone", json = {"model": "laya-english"}).status_code == 409
     assert client.get("/api/settings/systemone").json()["model"] == "laya-multilingual"
     release.set()
@@ -496,6 +561,31 @@ def test_download_plan_lists_exact_subfolder_files(client, monkeypatch):
         "cached": False,
         "error": None,
     }
+
+
+def test_download_plan_can_preview_a_model_without_changing_the_setting(client, monkeypatch):
+    import huggingface_hub
+
+    seen = []
+
+    def list_tree(self, repo, **kwargs):
+        seen.append((repo, kwargs))
+        return []
+
+    monkeypatch.setattr(laya_runtime, "is_cached", lambda checkpoint: False)
+    monkeypatch.setattr(huggingface_hub.HfApi, "list_repo_tree", list_tree)
+    plan = client.get("/api/settings/systemone/resolve?model=laya-english")
+    assert plan.status_code == 200
+    assert plan.json()["repo"] == catalog.LAYA_REPO
+    assert plan.json()["size_bytes"] == catalog.CHECKPOINTS["laya-english"].download_bytes
+    assert client.get("/api/settings/systemone").json()["model"] == "laya-multilingual"
+    assert seen == [(catalog.LAYA_REPO, {"recursive": True})]
+
+
+def test_download_plan_refuses_an_unknown_preview_model(client):
+    response = client.get("/api/settings/systemone/resolve?model=not-a-model")
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Unknown Decision API model."
 
 
 def test_download_plan_for_a_cached_model_skips_the_hub(client, monkeypatch):
@@ -781,6 +871,17 @@ def test_decision_api_cannot_be_enabled_where_laya_is_not_installed(client, monk
     monkeypatch.setattr(studio_db, "upsert_app_settings", settings.update)
     reason = "The Decision API needs PyTorch, which this Studio install does not include."
     monkeypatch.setattr(systemone_settings, "runtime_unavailable_reason", lambda: reason)
+    preview = client.post(
+        "/api/settings/systemone/validate",
+        json = {
+            "enabled": True,
+            "expected_enabled": False,
+            "expected_model": "laya-multilingual",
+        },
+    )
+    assert preview.status_code == 400
+    assert preview.json()["detail"] == reason
+    assert settings == {}
     response = client.put("/api/settings/systemone", json = {"enabled": True})
     assert response.status_code == 400
     assert response.json()["detail"] == reason

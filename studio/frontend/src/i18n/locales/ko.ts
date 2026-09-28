@@ -2191,6 +2191,9 @@ export const ko = {
         loading: "로드 중…",
         loadedOn: "{device}에 로드됨",
         download: "다운로드",
+        downloadConfirmTitle: "Laya {model}을(를) 다운로드할까요?",
+        downloadConfirmBody:
+          "Decision API가 요청에 응답하려면 이 모델이 필요합니다. 약 {size}이며 Hugging Face 캐시에 한 번만 다운로드됩니다.",
         unload: "언로드",
         downloadBusy: "판단 API 모델이 이미 다운로드 중입니다.",
         downloadFailed: "다운로드를 시작하지 못했습니다.",

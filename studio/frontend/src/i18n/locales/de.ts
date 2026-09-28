@@ -2242,6 +2242,9 @@ export const de = {
         loading: "Wird geladen…",
         loadedOn: "Geladen auf {device}",
         download: "Herunterladen",
+        downloadConfirmTitle: "Laya {model} herunterladen?",
+        downloadConfirmBody:
+          "Die Entscheidungs-API braucht dieses Modell, um Anfragen zu beantworten. Etwa {size}, einmalig in deinen Hugging-Face-Cache geladen.",
         unload: "Entladen",
         downloadBusy: "Ein Modell der Entscheidungs-API wird bereits heruntergeladen.",
         downloadFailed: "Der Download konnte nicht gestartet werden.",
