@@ -127,6 +127,19 @@ def _no_real_mxc_drive_aliases(monkeypatch):
 
 
 @pytest.fixture(autouse = True)
+def _forget_mxc_isolation_settings():
+    # Held for a second across tests that each get their own Studio home; only when already imported.
+    def _forget():
+        settings = sys.modules.get("utils.mxc_isolation_settings")
+        if settings is not None:
+            settings.forget_cached_setting()
+
+    _forget()
+    yield
+    _forget()
+
+
+@pytest.fixture(autouse = True)
 def _isolate_agent_skills(_skills_home_root, monkeypatch):
     # A developer's own ~/.agents or ~/.claude skills must not leak into tool-selection tests.
     from core.inference import skills as _skills

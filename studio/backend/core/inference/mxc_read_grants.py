@@ -53,7 +53,14 @@ def _on_windows() -> bool:
 
 
 def enabled() -> bool:
-    return os.environ.get(PERSISTENT_GRANTS_ENV, "").strip() != "0"
+    """The environment variable decides whenever it is set; otherwise the Settings > Sandbox choice."""
+    if PERSISTENT_GRANTS_ENV in os.environ:
+        return os.environ[PERSISTENT_GRANTS_ENV].strip() != "0"
+    try:
+        from utils.mxc_isolation_settings import persistent_grants_setting
+        return persistent_grants_setting()
+    except Exception:  # noqa: BLE001 - outside the backend the shipped default applies
+        return True
 
 
 def record_path() -> Path:

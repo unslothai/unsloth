@@ -10013,6 +10013,12 @@ _request_profile_lock = threading.Lock()
 _REQUEST_PROFILE_REFRESH_SECONDS = 240.0
 
 
+def reset_terminal_profile_cache() -> None:
+    """Forget the advertised Terminal profile, so the next request re-checks it (isolation settings changed)."""
+    with _request_profile_lock:
+        _request_profile[:] = [None, 0.0]
+
+
 def _refresh_request_profile() -> str:
     profile = _terminal_profile(False)
     with _request_profile_lock:

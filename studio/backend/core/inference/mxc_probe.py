@@ -39,6 +39,17 @@ def invalidate_cache() -> None:
         _host_prep_cache.clear()
 
 
+def host_prep_command() -> list[str]:
+    """The elevated host preparation, as argv; Settings > Sandbox runs exactly this."""
+    return [
+        sys.executable,
+        str(Path(__file__).resolve().parents[3] / "install_mxc_prebuilt.py"),
+        "--prepare-host",
+        "--install-dir",
+        str(mxc_runtime._installed_package_root()),
+    ]
+
+
 def host_prep_remediation() -> str | None:
     """Name the elevated command when MXC reports Tier 3 host preparation missing."""
     try:
@@ -52,15 +63,7 @@ def host_prep_remediation() -> str | None:
     steps = mxc_runtime.probe_host_prep_steps(env = mxc_adapter._control_environment())
     advice = None
     if steps:
-        command = subprocess.list2cmdline(
-            [
-                sys.executable,
-                str(Path(__file__).resolve().parents[3] / "install_mxc_prebuilt.py"),
-                "--prepare-host",
-                "--install-dir",
-                str(mxc_runtime._installed_package_root()),
-            ]
-        )
+        command = subprocess.list2cmdline(host_prep_command())
         reboot = (
             " (prepare-null-device is undone by every reboot)"
             if ("prepare-null-device" in steps)
@@ -68,7 +71,8 @@ def host_prep_remediation() -> str | None:
         )
         advice = (
             f"MXC reports missing host preparation: {', '.join(steps)}{reboot}. "
-            f"Run {command} and approve the administrator prompt."
+            f"Run {command} and approve the administrator prompt, or use Settings > Sandbox > "
+            "Prepare this PC."
         )
     with _lock:
         _host_prep_cache[identity] = (time.monotonic() + NEGATIVE_TTL, advice)
