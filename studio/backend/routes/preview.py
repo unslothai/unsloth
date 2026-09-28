@@ -128,6 +128,9 @@ def _sanitize_preview_payload(
             "bypass_permissions": False,
             "confirm_tool_calls": False,
             "session_id": None,
+            # A preview link must not reach a Studio thread's archive, reset or recall; the
+            # hard-off context ends before a streamed body runs the fit.
+            "thread_id": None,
             "rag_scope": None,
             "openai_code_exec_container_id": None,
             "anthropic_code_exec_container_id": None,
