@@ -1195,6 +1195,23 @@ export async function batchListChatMessages(
   return out;
 }
 
+/** Message counts per thread, without bodies. Null on an older server without the route. */
+export async function batchCountChatMessages(
+  threadIds: string[],
+): Promise<Map<string, number> | null> {
+  const out = new Map<string, number>();
+  if (threadIds.length === 0) return out;
+  const response = await authFetch("/api/chat/messages:counts", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ threadIds }),
+  });
+  if (response.status === 404 || response.status === 405) return null;
+  const data = await parseJsonOrThrow<{ countsByThreadId: Record<string, number> }>(response);
+  for (const id of threadIds) out.set(id, data.countsByThreadId[id] ?? 0);
+  return out;
+}
+
 export async function getChatMessage(
   threadId: string,
   messageId: string,

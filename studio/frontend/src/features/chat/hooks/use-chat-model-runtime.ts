@@ -1924,10 +1924,9 @@ export function useChatModelRuntime() {
           const previousServerTuning: ServerTuningValues =
             rollbackConfig ?? useChatRuntimeStore.getState();
           // Same reason: the rollback echo would overwrite an edit staged against it.
-          const previousMlxKvBits =
-            rollbackConfig
-              ? (rollbackConfig.mlxKvBits ?? null)
-              : useChatRuntimeStore.getState().mlxKvBits;
+          const previousMlxKvQuant = rollbackConfig
+            ? (rollbackConfig.mlxKvQuant ?? null)
+            : useChatRuntimeStore.getState().mlxKvQuant;
           if (isGguf && isDiffusion === undefined) {
             // Prepare the token exactly as validateModel/loadModel do: the Hub rejects an invalid
             // Authorization header with 401 even for a public repo, so sending the raw stored token here would
@@ -2023,8 +2022,10 @@ export function useChatModelRuntime() {
           const loadKvCacheDtype =
             pendingLoadConfig?.kvCacheDtype ?? stateBeforeUnload.kvCacheDtype;
           // Per-model, not a standing preference: eligibility is decided per model.
-          let loadMlxKvBits =
-            pendingLoadConfig?.mlxKvBits ?? stateBeforeUnload.mlxKvBits;
+          let loadMlxKvQuant =
+            pendingLoadConfig
+              ? pendingLoadConfig.mlxKvQuant ?? null
+              : stateBeforeUnload.mlxKvQuant;
           // gpuMemoryMode is a standing preference; the rest are per-model knobs the reset below clears, so
           // they are re-baselined there in lock-step with the store. A GGUF native context can exceed
           // maxSeqLength, so sizing on raw maxSeqLength could pass, unload, then have /load refuse it. A
@@ -2400,9 +2401,7 @@ export function useChatModelRuntime() {
                 ctxCheckpoints: pendingLoadConfig?.ctxCheckpoints ?? null,
                 cacheRam: pendingLoadConfig?.cacheRam ?? null,
               };
-              // Both payload-only. The store keeps its values: a width is dormant preset state off MLX, and a
-              // completed load rewrites both anyway.
-              loadMlxKvBits = pendingLoadConfig?.mlxKvBits ?? null;
+              loadMlxKvQuant = pendingLoadConfig?.mlxKvQuant ?? null;
               loadChatTemplateOverride =
                 pendingLoadConfig?.chatTemplateOverride?.trim()
                   ? pendingLoadConfig.chatTemplateOverride
@@ -2495,7 +2494,7 @@ export function useChatModelRuntime() {
               approved_remote_code_fingerprint: approvedRemoteCodeFingerprint,
               chat_template_override: effectiveChatTemplateOverride,
               cache_type_kv: loadKvCacheDtype,
-              mlx_kv_bits: loadMlxKvBits ?? null,
+              mlx_kv_quant: loadMlxKvQuant ?? null,
               speculative_type: loadSpeculativeType,
               spec_draft_n_max: loadSpecDraftNMax,
               n_parallel: loadNParallel,
@@ -2876,7 +2875,7 @@ export function useChatModelRuntime() {
                   chat_template_override:
                     rollbackState.loadedChatTemplateOverride,
                   cache_type_kv: rollbackState.loadedKvCacheDtype,
-                  mlx_kv_bits: rollbackState.loadedMlxKvBitsRequested,
+                  mlx_kv_quant: rollbackState.loadedMlxKvQuantRequested,
                   speculative_type:
                     rollbackState.loadedSpeculativeType,
                   spec_draft_n_max:
@@ -2980,7 +2979,7 @@ export function useChatModelRuntime() {
                   ...mlxRuntimeStateFrom(rollbackResponse),
                   // After the spread, which seeds the control from the echo; the control keeps its intent, like
                   // nParallel above.
-                  mlxKvBits: previousMlxKvBits,
+                  mlxKvQuant: previousMlxKvQuant,
                   loadedChatTemplateOverride:
                     rollbackState.loadedChatTemplateOverride,
                   ...loadedGpuMemoryFields(rollbackResponse),

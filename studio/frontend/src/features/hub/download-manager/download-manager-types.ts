@@ -33,6 +33,7 @@ export interface ManagedDownload {
   startedAt: number;
   completedAt?: number;
   serverGeneration?: number;
+  serverAttempt?: number;
   /** Files a scoped job is fetching. Every file set of one repo rides the same scope slot, so this separates "my transfer is running" from "a different quant of this repo is running": adopting the latter reports ready for files nobody fetched. Unknown stays adoptable only for an UNSCOPED job. */
   scopedFiles?: string[];
   /** True for the entry that IS the model the user picked, false for companion repos. Only the stager can tell them apart, since a checkpoint may be a single `.safetensors` and companions carry `.safetensors` too. */
@@ -138,6 +139,12 @@ export interface DownloadManagerState {
   completedInventoryHints: InventoryHint[];
 }
 
+export interface FloorHold {
+  attempt: number;
+  remainingBytes: number;
+  until: number;
+}
+
 export interface JobRuntime {
   kind: DownloadKind;
   repoId: string;
@@ -153,6 +160,8 @@ export interface JobRuntime {
   /**
    * A generation change seen on a status-only tick, held until a progress poll consumes it: status polls twice as often. */
   pendingGenerationChange?: boolean;
+  /** Set on an attempt change: the GGUF floor stays off until the killed run's partial is purged (see floorHoldEnded). Its attempt is persisted only when the hold ends, so a reload re-detects the retry. */
+  floorHold?: FloorHold | null;
   idleSinceMs: number | null;
   lastProgressPollAt: number | null;
   pollFailureStartedAt: number | null;
