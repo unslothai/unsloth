@@ -101,3 +101,33 @@ test("reaching the bottom by hand does not re-attach while holding still", () =>
     /distanceNow <= RE_ATTACH_THRESHOLD_PX &&\s*!holdStill\(\)/,
   );
 });
+
+test("the hold outlives runEnd briefly, so the last chunk still parks", () => {
+  // runEnd fires before the final chunk commits; isRunning alone would pin it to the bottom.
+  const holdStill = body("const holdStill = (): boolean =>");
+  assert.match(
+    holdStill,
+    /performance\.now\(\) - runEndAtRef\.current < FOLLOW_SETTLE_MS/,
+  );
+  const runEnd = HOOK.indexOf('useAuiEvent("thread.runEnd"');
+  assert.notEqual(runEnd, -1);
+  assert.match(
+    HOOK.slice(runEnd, HOOK.indexOf("});", runEnd)),
+    /runEndAtRef\.current = performance\.now\(\);/,
+  );
+});
+
+test("turning auto-scroll on mid-run releases a park", () => {
+  const park = body("const parkIfHeld = (): boolean => {");
+  assert.match(park, /detach\(\);\s*parked = true;/);
+  const at = HOOK.indexOf("useChatPreferencesStore.subscribe(");
+  assert.notEqual(at, -1);
+  const listener = HOOK.slice(at, HOOK.indexOf("\n      );", at));
+  assert.match(listener, /!parked \|\|/);
+  assert.match(listener, /prev\.autoScrollWhileGenerating/);
+  assert.match(
+    listener,
+    /userDetachedRef\.current = false;\s*extendFollow\(\);/,
+  );
+  assert.match(HOOK, /unsubscribePreferences\(\);/);
+});

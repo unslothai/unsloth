@@ -150,6 +150,8 @@ export function useIntentAwareAutoScroll(): {
   const followUntilRef = useRef(0);
   // Set by a run started while on screen. Opening a chat mid-stream still follows.
   const runStartedHereRef = useRef(false);
+  // runEnd fires before the last chunk commits, so the hold outlives it briefly.
+  const runEndAtRef = useRef(Number.NEGATIVE_INFINITY);
 
   const isAtBottomRef = useRef(true);
   const listenersRef = useRef<Set<() => void>>(new Set());
@@ -275,7 +277,8 @@ export function useIntentAwareAutoScroll(): {
       const holdStill = (): boolean =>
         runStartedHereRef.current &&
         !useChatPreferencesStore.getState().autoScrollWhileGenerating &&
-        aui.thread().getState().isRunning;
+        (aui.thread().getState().isRunning ||
+          performance.now() - runEndAtRef.current < FOLLOW_SETTLE_MS);
 
       // scrollTop putting the new user message at the top, or the reply at mid-view when the
       // message is taller. Null until the reply mounts.
@@ -312,7 +315,11 @@ export function useIntentAwareAutoScroll(): {
         settleCheckDue = false;
       };
 
+      // Detached by the hold, not the user. Turning auto-scroll on mid-run releases it.
+      let parked = false;
+
       const detach = (): void => {
+        parked = false;
         userDetachedRef.current = true;
         followUntilRef.current = 0;
         // Hygiene, not correctness: `following` checks userDetached before `settling`, so a
@@ -336,6 +343,7 @@ export function useIntentAwareAutoScroll(): {
         }
         el.scrollTo({ top: ceiling, behavior: "instant" });
         detach();
+        parked = true;
         return true;
       };
 
@@ -399,6 +407,7 @@ export function useIntentAwareAutoScroll(): {
       };
 
       scrollImplRef.current = (behavior = "auto") => {
+        parked = false;
         userDetachedRef.current = false;
         followUntilRef.current = performance.now() + FOLLOW_SETTLE_MS;
         if (el.scrollHeight > el.clientHeight) {
@@ -652,7 +661,25 @@ export function useIntentAwareAutoScroll(): {
       // viewport shrinks without the element's clientHeight changing.
       window.visualViewport?.addEventListener("resize", onViewportResize);
 
+      const unsubscribePreferences = useChatPreferencesStore.subscribe(
+        (state, prev) => {
+          if (
+            !parked ||
+            !state.autoScrollWhileGenerating ||
+            prev.autoScrollWhileGenerating ||
+            !aui.thread().getState().isRunning
+          ) {
+            return;
+          }
+          parked = false;
+          userDetachedRef.current = false;
+          extendFollow();
+          requestTick();
+        },
+      );
+
       return () => {
+        unsubscribePreferences();
         if (rafId !== null) {
           cancelAnimationFrame(rafId);
           rafId = null;
@@ -689,7 +716,11 @@ export function useIntentAwareAutoScroll(): {
 
   useAuiEvent("thread.runStart", () => {
     runStartedHereRef.current = true;
+    runEndAtRef.current = Number.NEGATIVE_INFINITY;
     pinToBottom("auto");
+  });
+  useAuiEvent("thread.runEnd", () => {
+    runEndAtRef.current = performance.now();
   });
   useAuiEvent("thread.initialize", () => {
     runStartedHereRef.current = false;
