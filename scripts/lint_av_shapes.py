@@ -669,10 +669,10 @@ RULES = [
         "fetching an archive and unpacking it with a `-c` one-liner is the dropper shape; a vendor has scored "
         "install.sh as a downloader for exactly this line",
         "use the interpreter's own module entry point (python3 -m zipfile -e ARCHIVE DIR), unzip or tar",
-        applies = lambda p: not p.endswith((".py", ".rs", ".js", ".ts", ".tsx")),
+        applies = lambda p: not p.endswith((".py", ".rs", ".js", ".mjs", ".cjs", ".ts", ".tsx")),
         needles = tuple(
             _J(p)
-            for p in (("extract", "all"), ("Zip", "File"), ("tar", "file"), ("unpack_", "archive"))
+            for p in (("extract", "all"), ("zip", "file"), ("tar", "file"), ("unpack_", "archive"))
         ),
         line_patterns = [
             r"(?i)\b(?:python[0-9.]*|py|node|perl|ruby)(?:\.exe)?\s+(?:-\w+\s+)*-[ce]\s+['\"][^\n]*?"
@@ -1064,6 +1064,29 @@ def _fixtures() -> list[tuple[str, str, str, bool]]:
             True,
         ),
         ("AV016", "t.sh", 'python3 -m zipfile -e "$1" "$2"', False),
+        (
+            "AV016",
+            "t.sh",
+            "python3 -c 'import zipfile; zipfile."
+            + _J(("Zip", "File"))
+            + "(a).extract("
+            + '"uv")'
+            + "'",
+            True,
+        ),
+        (
+            "AV016",
+            "t.mjs",
+            "const cmd = "
+            + '"'
+            + "python3 -c 'import zipfile; zipfile."
+            + _J(("Zip", "File"))
+            + "(a)."
+            + _J(("extract", "all"))
+            + "(b)'"
+            + '"',
+            False,
+        ),
         (
             "AV016",
             "t.py",
