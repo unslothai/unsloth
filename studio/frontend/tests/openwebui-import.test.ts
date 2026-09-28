@@ -1049,3 +1049,13 @@ test("reasoning survives an empty summary next to populated content", () => {
   assert.ok(both);
   assert.deepEqual(parts(both, 0), [{ type: "reasoning", text: "the summary" }]);
 });
+
+test("missing send times are distinguished from real Open WebUI timestamps", () => {
+  const conversation = openWebUIRecordToConversation(recordOf([
+    { id: "u", role: "user", content: "unknown", parentId: null },
+    { id: "a", role: "assistant", content: "known", parentId: "u", timestamp: 1_700_000_000 },
+  ], "a"), "Imported");
+  assert.ok(conversation);
+  assert.equal(conversation.messages[0].metadata?.createdAtEstimated, true);
+  assert.notEqual(conversation.messages[1].metadata?.createdAtEstimated, true);
+});

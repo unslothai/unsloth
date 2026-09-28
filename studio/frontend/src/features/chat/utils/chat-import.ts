@@ -217,6 +217,8 @@ function oaiMessagesToRecords(
       role: (role === "developer" ? "system" : role) as MessageRecord["role"],
       content: content as MessageRecord["content"],
       createdAt: baseTs + idx,
+      // Ordering only: these formats do not carry a per-message send time.
+      metadata: { createdAtEstimated: true },
     });
     prevId = id;
     idx++;
@@ -260,6 +262,8 @@ function sharegptToRecords(
       role,
       content: [{ type: "text", text: value }] as MessageRecord["content"],
       createdAt: baseTs + idx,
+      // Ordering only: these formats do not carry a per-message send time.
+      metadata: { createdAtEstimated: true },
     });
     prevId = id;
     idx++;
@@ -287,6 +291,8 @@ function csvToRecords(csvText: string, threadId: string, baseTs: number): Messag
       role: validRole as MessageRecord["role"],
       content: [{ type: "text", text: content }] as MessageRecord["content"],
       createdAt: baseTs + idx,
+      // Ordering only: these formats do not carry a per-message send time.
+      metadata: { createdAtEstimated: true },
     });
     prevId = id;
     idx++;
