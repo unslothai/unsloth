@@ -2483,56 +2483,60 @@ if (\$hasIcon) {
 } elseif (\$preIconHash) {
     \$iconChanged = \$true
 }
-# Per-item refresh always (cheap, non-disruptive) so the rewritten .lnk renders
-# immediately instead of a stale/blank (generic) icon. The reliable fix (no
-# explorer restart) is a PER-ITEM SHChangeNotify(SHCNE_UPDATEITEM, SHCNF_PATHW,
-# <lnk>) -- the global SHCNE_ASSOCCHANGED alone does not recover a stale item.
-#
-# Emitted, not compiled. Add-Type -MemberDefinition writes C# to %TEMP% and runs
-# csc.exe on Windows PowerShell 5.1, and security software blocks the DLL that comes
-# out. install.ps1 carries the same reflection-emit form for the same reason; this
-# copy was missed when that one changed. Reflection emit builds the identical stub in
-# memory: no compiler process, no source on disk, no DLL.
-# Which product blocked what: tests/studio/test_installer_av_shapes.py (AV_SHAPES_RECORD)
-try {
-    \$refreshType = 'UnslothShellIconRefresh' -as [type]
-    if (-not \$refreshType) {
-        \$asmName = New-Object System.Reflection.AssemblyName 'UnslothShellIconRefreshAsm'
-        # Both spellings, matching New-StudioDynamicAssembly in install.ps1. The static
-        # AssemblyBuilder::DefineDynamicAssembly is documented for .NET Framework 4.5 through
-        # 4.8.1, so the 5.1 host this script is launched under should take the first branch; it
-        # is tried rather than assumed because the outer catch here is empty, so guessing wrong
-        # costs the icon refresh with nothing printed. AppDomain.CurrentDomain is the .NET
-        # Framework spelling and is absent on .NET Core, so it is the fallback and not the lead.
-        \$access = [System.Reflection.Emit.AssemblyBuilderAccess]::Run
-        try {
-            \$asm = [System.Reflection.Emit.AssemblyBuilder]::DefineDynamicAssembly(\$asmName, \$access)
-        } catch [System.Management.Automation.MethodException] {
-            \$asm = [AppDomain]::CurrentDomain.DefineDynamicAssembly(\$asmName, \$access)
-        } catch [System.Management.Automation.RuntimeException] {
-            # Some hosts surface a missing static as RuntimeException rather than
-            # MethodException. Both mean "no such method here", and a real emit failure throws
-            # from the AppDomain call too, so a genuine refusal still reaches the outer catch.
-            \$asm = [AppDomain]::CurrentDomain.DefineDynamicAssembly(\$asmName, \$access)
+# Per-item SHCNE_UPDATEITEM so a rewritten same-name .lnk re-reads its icon; the global broadcast
+# alone does not. Called through a Windows Python's ctypes, as install.ps1 does, so this script
+# defines no native types. Without one the shortcut still works, and the heavier refresh below
+# still runs on a first install or an icon change.
+if (\$created.Count -gt 0) {
+    \$isAdmin = \$true
+    try {
+        \$isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+    } catch {}
+    # Never launch a user-writable interpreter from an elevated shell.
+    \$pyCandidates = @()
+    if (-not \$isAdmin) {
+        \$pyCandidates += Join-Path \$env:USERPROFILE '.unsloth\studio\unsloth_studio\Scripts\python.exe'
+        foreach (\$name in @('python3', 'python')) {
+            try {
+                foreach (\$cmd in @(Get-Command \$name -All -CommandType Application -ErrorAction SilentlyContinue)) {
+                    if (\$cmd -and \$cmd.Source) { \$pyCandidates += \$cmd.Source }
+                }
+            } catch {}
         }
-        \$module = \$asm.DefineDynamicModule('UnslothShellIconRefreshMod')
-        \$typeBuilder = \$module.DefineType('UnslothShellIconRefresh',
-            'Public, Class, AutoClass, AnsiClass, BeforeFieldInit')
-        \$method = \$typeBuilder.DefinePInvokeMethod(
-            'SHChangeNotify', 'shell32.dll', 'SHChangeNotify',
-            'Public, Static, PinvokeImpl',
-            [System.Reflection.CallingConventions]::Standard,
-            [System.Void],
-            @([int], [uint32], [string], [IntPtr]),
-            [System.Runtime.InteropServices.CallingConvention]::Winapi,
-            [System.Runtime.InteropServices.CharSet]::Unicode)
-        \$method.SetImplementationFlags(
-            \$method.GetMethodImplementationFlags() -bor [System.Reflection.MethodImplAttributes]::PreserveSig)
-        \$refreshType = \$typeBuilder.CreateType()
     }
-    foreach (\$p in \$created) { try { \$refreshType::SHChangeNotify(0x00002000, 0x0005, \$p, [System.IntPtr]::Zero) } catch {} }
-    \$refreshType::SHChangeNotify(0x08000000, 0, \$null, [System.IntPtr]::Zero)
-} catch {}
+    # SHCNF_FLUSH (0x1000): the child exits at once and a queued notification would be lost.
+    \$refreshCode = "import ctypes,os;from ctypes import wintypes as w;f=ctypes.WinDLL('shell32').SHChangeNotify;f.restype=None;f.argtypes=[w.LONG,w.UINT,w.LPCWSTR,w.LPCWSTR];[f(0x2000,0x1005,p,None) for p in os.environ['UNSLOTH_SHORTCUT_PATHS'].split('|') if p];f(0x8000000,0x1000,None,None);print('ok')"
+    foreach (\$py in \$pyCandidates) {
+        # The WindowsApps alias opens the Store instead of running anything.
+        if (-not \$py -or \$py -like '*\Microsoft\WindowsApps\*') { continue }
+        if (-not (Test-Path -LiteralPath \$py -PathType Leaf)) { continue }
+        \$proc = \$null
+        try {
+            \$psi = New-Object System.Diagnostics.ProcessStartInfo
+            \$psi.FileName = \$py
+            # -I -S: no user site, no PYTHON* variables, no sitecustomize. -B: write no .pyc.
+            \$psi.Arguments = '-I -S -B -c "' + \$refreshCode + '"'
+            # '|' cannot appear in a Windows path, so it separates them safely.
+            \$psi.EnvironmentVariables['UNSLOTH_SHORTCUT_PATHS'] = (\$created -join '|')
+            \$psi.WorkingDirectory = Split-Path -Parent \$py
+            \$psi.UseShellExecute = \$false
+            \$psi.RedirectStandardOutput = \$true
+            \$psi.RedirectStandardError = \$true
+            \$psi.CreateNoWindow = \$true
+            \$proc = [System.Diagnostics.Process]::Start(\$psi)
+            \$out = \$proc.StandardOutput.ReadToEndAsync()
+            \$null = \$proc.StandardError.ReadToEndAsync()
+            if (-not \$proc.WaitForExit(10000)) {
+                try { \$proc.Kill() } catch {}
+                continue
+            }
+            if (\$proc.ExitCode -eq 0 -and \$out.Wait(2000) -and "\$(\$out.Result)".Trim() -eq 'ok') { break }
+        } catch {
+        } finally {
+            if (\$proc) { try { \$proc.Dispose() } catch {} }
+        }
+    }
+}
 # Heavier on-disk icon-cache clear + StartMenuExperienceHost tile rebuild
 # (preserve start2.bin) only on first install or a real icon change, so a no-op
 # WSL reinstall does not purge caches and kill a shell process for nothing.

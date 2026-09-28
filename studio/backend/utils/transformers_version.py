@@ -142,6 +142,23 @@ def _hf_proxy_opener(url: str):
     return None
 
 
+def _hf_json(url: str, hf_token: str | None):
+    """GET a JSON file from the Hub, once more without the token if the Hub refuses it (#11551)."""
+    import urllib.request
+
+    from hub.utils.hf_tokens import call_with_anonymous_retry
+
+    def read(token):
+        headers = {"User-Agent": "unsloth-studio"}
+        if isinstance(token, str) and token:
+            headers["Authorization"] = f"Bearer {token}"
+        with _hf_urlopen(urllib.request.Request(url, headers = headers), timeout = 10) as resp:
+            return json.loads(resp.read().decode())
+
+    # No token sends none here (not the ambient one).
+    return call_with_anonymous_retry(read, hf_token or False)
+
+
 def _hf_urlopen(req, timeout: int):
     """``urlopen`` through the same proxy huggingface_hub would use for this request,
     with redirects that cannot carry the Authorization header off-origin."""
@@ -780,13 +797,8 @@ def _remote_lora_base(model_name: str, hf_token: str | None = None) -> str | Non
     import urllib.request
 
     url = _hf_raw_url(model_name, "adapter_config.json")
-    headers = {"User-Agent": "unsloth-studio"}
-    if hf_token:
-        headers["Authorization"] = f"Bearer {hf_token}"
     try:
-        req = urllib.request.Request(url, headers = headers)
-        with _hf_urlopen(req, timeout = 10) as resp:
-            cfg = json.loads(resp.read().decode())
+        cfg = _hf_json(url, hf_token)
         base = cfg.get("base_model_name_or_path")
         if base:
             logger.info("Resolved remote LoRA adapter '%s' → base model '%s'", model_name, base)
@@ -847,13 +859,8 @@ def _check_tokenizer_config_needs_v5(model_name: str, hf_token: str | None = Non
     import urllib.request
 
     url = _hf_raw_url(model_name, "tokenizer_config.json")
-    headers = {"User-Agent": "unsloth-studio"}
-    if hf_token:
-        headers["Authorization"] = f"Bearer {hf_token}"
     try:
-        req = urllib.request.Request(url, headers = headers)
-        with _hf_urlopen(req, timeout = 10) as resp:
-            data = json.loads(resp.read().decode())
+        data = _hf_json(url, hf_token)
         tokenizer_class = data.get("tokenizer_class", "")
         result = tokenizer_class in _TRANSFORMERS_5_TOKENIZER_CLASSES
         if result:
@@ -1002,13 +1009,8 @@ def _load_config_json(model_name: str, hf_token: str | None = None) -> dict | No
     import urllib.request
 
     url = _hf_raw_url(model_name, "config.json")
-    headers = {"User-Agent": "unsloth-studio"}
-    if hf_token:
-        headers["Authorization"] = f"Bearer {hf_token}"
     try:
-        req = urllib.request.Request(url, headers = headers)
-        with _hf_urlopen(req, timeout = 10) as resp:
-            cfg = json.loads(resp.read().decode())
+        cfg = _hf_json(url, hf_token)
         _config_json_cache[cache_key] = cfg
         return cfg
     except urllib.error.HTTPError as exc:

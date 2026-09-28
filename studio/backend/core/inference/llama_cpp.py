@@ -9,6 +9,7 @@ OpenAI-compatible /v1/chat/completions endpoint.
 
 import ast
 import atexit
+import bisect
 import contextlib
 import ctypes
 import errno
@@ -77,6 +78,11 @@ from core.inference.context_window import (
 from core.inference.llama_tool_schema import llama_grammar_tools
 from core.inference.stream_errors import stream_error_from_chunk
 from hub.utils.hf_errors import modelscope_missing
+from hub.utils.hf_tokens import (
+    call_hub_with_anonymous_retry,
+    hf_token_rejected_hint,
+    is_rejected_credential_error,
+)
 from core.inference.llama_server_args import (
     _CACHE_RAM_FLAGS,
     _CTX_CHECKPOINTS_FLAGS,
@@ -278,6 +284,8 @@ def _fit_context(messages, **kwargs):
     # Whether `sticky_dropped` is the depth of a checkpoint RESET. Defaults to True, which
     # is what a caller with no thread state to consult has always assumed.
     sticky_is_checkpoint = bool(kwargs.pop("sticky_is_checkpoint", True))
+    # Naming a tool the request lacks makes the model print the call as text.
+    recall_offered = bool(kwargs.pop("recall_offered", True))
     requested_policy = kwargs.pop("context_policy", None)
     if requested_policy not in ("checkpoint", "rolling"):
         requested_policy = None
@@ -340,7 +348,7 @@ def _fit_context(messages, **kwargs):
             fitted, truncation = checkpoint.fit_checkpoint_context(
                 messages,
                 can_reset = lambda: not _is_degraded(),
-                searchable = lambda: not _is_degraded(),
+                searchable = lambda: recall_offered and not _is_degraded(),
                 **kwargs,
             )
             # `can_reset = False` has no phase two, so it refuses once the replayed
@@ -1565,6 +1573,92 @@ class _CompactionBranchState(NamedTuple):
     recorded: int
 
 
+def _reply_text(content) -> str:
+    """A stored reply's visible text, which a Max Tokens continuation re-sends verbatim."""
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return ""
+    return "".join(
+        str(part.get("text") or "")
+        for part in content
+        if isinstance(part, dict) and part.get("type") == "text"
+    )
+
+
+def _row_truncation(message: dict) -> Optional[dict]:
+    metadata = message.get("metadata")
+    metadata = metadata if isinstance(metadata, dict) else {}
+    custom = metadata.get("custom")
+    custom = custom if isinstance(custom, dict) else {}
+    truncation = metadata.get("contextTruncation") or custom.get("contextTruncation")
+    return truncation if isinstance(truncation, dict) else None
+
+
+# The auto-continue limit is 3 rounds; a manual Continue chain longer than this keeps its refusal.
+_RESUME_HOPS = 8
+_RESUME_SIBLINGS = 16
+
+
+def _max_tokens_cut(message: dict) -> bool:
+    metadata = message.get("metadata")
+    metadata = metadata if isinstance(metadata, dict) else {}
+    custom = metadata.get("custom")
+    custom = custom if isinstance(custom, dict) else {}
+    incomplete = metadata.get("incomplete") or custom.get("incomplete")
+    reason = incomplete.get("reason") if isinstance(incomplete, dict) else incomplete
+    return reason == "length"
+
+
+def _row_key(row: dict):
+    return row.get("id") or id(row)
+
+
+def _resumable_cuts(stored: list[dict]) -> dict:
+    """Max Tokens cuts per parent: ([positions], [rows]) in creation order."""
+    cuts: dict = {}
+    for position, row in enumerate(stored):
+        if row.get("role") == "assistant" and _max_tokens_cut(row):
+            at, rows = cuts.setdefault(row.get("parentId", row.get("parent_id")), ([], []))
+            at.append(position)
+            rows.append(row)
+    return cuts
+
+
+def _resumed_reply(message: dict, cuts: dict, positions: dict) -> dict:
+    """The reply an unfitted Max Tokens continuation resumed: its refusal records no epoch,
+    but the epoch in force is still the resumed reply's."""
+    for _ in range(_RESUME_HOPS):
+        truncation = _row_truncation(message)
+        if (
+            truncation is None
+            or truncation.get("fits")
+            or truncation.get("latest_turn_role") != "assistant"
+        ):
+            return message
+        position = positions.get(_row_key(message))
+        if position is None:
+            return message
+        text = _reply_text(message.get("content"))
+        at, rows = cuts.get(message.get("parentId", message.get("parent_id")), ((), ()))
+        end = bisect.bisect_left(at, position)
+        earlier = rows[max(0, end - _RESUME_SIBLINGS) : end]
+        # Newest earlier cut wins; equal text counts, since a refusal adds nothing.
+        source = next(
+            (
+                row
+                for row in reversed(earlier)
+                if (resumed := _reply_text(row.get("content")).rstrip())
+                and text.startswith(resumed)
+            ),
+            None,
+        )
+        if source is None:
+            return message
+        message = source
+    return message
+
+
 def _compaction_branch_states(
     stored: list[dict], branch_messages: Optional[list[dict]] = None
 ) -> list[_CompactionBranchState]:
@@ -1600,9 +1694,11 @@ def _compaction_branch_states(
             candidates = exact
 
     # A COMPLETED row with no truncation ends the epoch; only active/aborted are placeholders.
+    cuts = _resumable_cuts(stored)
+    positions = {_row_key(row): position for position, row in enumerate(stored)}
     states = []
     for message in candidates:
-        metadata = message.get("metadata")
+        metadata = _resumed_reply(message, cuts, positions).get("metadata")
         metadata = metadata if isinstance(metadata, dict) else {}
         custom = metadata.get("custom")
         custom = custom if isinstance(custom, dict) else {}
@@ -2432,7 +2528,9 @@ def _fetch_swa_entry_from_hf(repo_id: str) -> Optional[object]:
         # Avoid caching the expected 404 for GGUF repos without config.json.
         if hf_file_definitely_absent(repo_id, "config.json"):
             return None
-        cfg_path = hf_hub_download(
+        cfg_path = call_hub_with_anonymous_retry(
+            hf_hub_download,
+            None,
             repo_id,
             "config.json",
             repo_type = "model",
@@ -3111,8 +3209,12 @@ def _cached_variant_candidates(
     hf_variant: str,
     *,
     require_mmproj: bool = False,
+    strict: bool = False,
 ) -> Generator[tuple[str, str, list[str], Path], None, None]:
-    """Yield complete cached variant copies in snapshot preference order."""
+    """Yield complete cached variant copies in snapshot preference order.
+
+    A copy whose recorded download is unfinished or cancelled comes last, and ``strict``
+    drops it: only a copy that can run without the Hub qualifies then."""
     try:
         from hub.utils.gguf_sources import (
             cached_gguf_manifest_complete,
@@ -3151,7 +3253,8 @@ def _cached_variant_candidates(
                 continue
             yield candidate
         # Keep existing reuse semantics when no completed duplicate is available.
-        yield from pending_downloads
+        if not strict:
+            yield from pending_downloads
     except Exception as e:
         logger.debug(f"Cache lookup for variant failed: {e}")
 
@@ -3196,11 +3299,12 @@ def _cached_candidate_matches_revision_size(
     try:
         from huggingface_hub import get_paths_info
         infos = list(
-            get_paths_info(
+            call_hub_with_anonymous_retry(
+                get_paths_info,
+                hf_token,
                 repo_id,
                 paths,
                 revision = snap.name,
-                token = hf_token,
             )
         )
     except Exception as e:
@@ -3255,8 +3359,10 @@ def cached_gguf_for_load(
     require_mmproj: bool = False,
     verify_sizes: bool = False,
     hf_token: Optional[str] = None,
+    strict: bool = False,
 ) -> Optional[str]:
-    """Return a cached GGUF that can be loaded without downloading."""
+    """Return a cached GGUF that can be loaded without downloading (``strict``: and whose
+    recorded download is complete, see _cached_variant_candidates)."""
     if not hf_variant:
         return None
     hf_repo = _resolve_repo_id_casing(hf_repo)
@@ -3264,6 +3370,7 @@ def cached_gguf_for_load(
         hf_repo,
         hf_variant,
         require_mmproj = require_mmproj,
+        strict = strict,
     ):
         if verify_sizes and not _cached_candidate_matches_revision_size(
             hf_repo, candidate, hf_token
@@ -3732,7 +3839,7 @@ def _resolve_variant_gguf_files(
     try:
         from huggingface_hub import list_repo_files
 
-        files = list_repo_files(hf_repo, token = hf_token)
+        files = call_hub_with_anonymous_retry(list_repo_files, hf_token, hf_repo)
         gguf_files = _gguf_files_for_variant(files, hf_variant)
         if gguf_files:
             gguf_filename = gguf_files[0]
@@ -7107,6 +7214,8 @@ class LlamaCppBackend:
         self._last_load_warning: Optional[str] = None
         # Same, for a quant fallback: the download fills the pair, the launch publishes it.
         self._variant_fallback_warning: Optional[str] = None
+        # The route's Hub notice for the running model, so /status matches the load response.
+        self.hub_access_warning: Optional[str] = None
         self._pending_variant_fallback: Optional[tuple[str, str]] = None
         # Set per launch by _record_carveout_advice; None on nearly every load.
         self._last_carveout_advice: Optional[dict] = None
@@ -14588,6 +14697,7 @@ class LlamaCppBackend:
         reverse -- the placement everything was priced against is the one that just
         died."""
         self._last_load_warning = None
+        self.hub_access_warning = None
         # Same lifetime, same reason: the advice describes the placement the dying
         # child was priced against and must not be reported against its replacement.
         self._last_carveout_advice = None
@@ -17262,7 +17372,7 @@ class LlamaCppBackend:
             from huggingface_hub import get_paths_info, list_repo_files
             from core.inference.openai_auto_download import _DISK_RESERVE_BYTES
 
-            files = list_repo_files(hf_repo, token = hf_token)
+            files = call_hub_with_anonymous_retry(list_repo_files, hf_token, hf_repo)
             from hub.utils.gguf import drop_shadowed_appledouble_names, gguf_checkpoint_family
 
             gguf_files = [
@@ -17280,7 +17390,9 @@ class LlamaCppBackend:
                 return None
 
             # Sizes for all GGUF files
-            path_infos = list(get_paths_info(hf_repo, gguf_files, token = hf_token))
+            path_infos = list(
+                call_hub_with_anonymous_retry(get_paths_info, hf_token, hf_repo, gguf_files)
+            )
             size_map = {p.path: (p.size or 0) for p in path_infos}
 
             # Group by variant: shards share a prefix before -NNNNN-of-NNNNN
@@ -18600,7 +18712,9 @@ class LlamaCppBackend:
         try:
             from huggingface_hub import get_paths_info, try_to_load_from_cache
 
-            path_infos = list(get_paths_info(hf_repo, all_gguf_files, token = hf_token))
+            path_infos = list(
+                call_hub_with_anonymous_retry(get_paths_info, hf_token, hf_repo, all_gguf_files)
+            )
             total_bytes = sum((p.size or 0) for p in path_infos)
 
             # Subtract bytes already in the HF cache so we only preflight
@@ -18750,6 +18864,8 @@ class LlamaCppBackend:
                 raise GgufDownloadCancelled(str(e)) from e
             raise RuntimeError(
                 f"Failed to download GGUF file '{gguf_filename}' from {hf_repo}: {e}"
+                # Only when a token went out: an anonymous 401 is a private or missing repo.
+                f"{hf_token_rejected_hint(e) if is_rejected_credential_error(e, hf_token) else ''}"
             )
 
         dl_elapsed = time.monotonic() - dl_start
@@ -18845,7 +18961,9 @@ class LlamaCppBackend:
             if cancel_event.is_set():
                 return None
             try:
-                target = _pick_from(list_repo_files(hf_repo, token = hf_token))
+                target = _pick_from(
+                    call_hub_with_anonymous_retry(list_repo_files, hf_token, hf_repo)
+                )
                 listing_answered = True
                 listing_failed = False
                 break
@@ -19523,7 +19641,7 @@ class LlamaCppBackend:
         """
         try:
             from huggingface_hub import model_info
-            info = model_info(hf_repo, token = hf_token, files_metadata = True)
+            info = call_hub_with_anonymous_retry(model_info, hf_token, hf_repo, files_metadata = True)
             return {
                 name: int(getattr(sibling, "size", 0) or 0)
                 for sibling in (getattr(info, "siblings", None) or [])
@@ -20795,7 +20913,7 @@ class LlamaCppBackend:
     # credential the child obtained elsewhere, or one held in a variable whose
     # name says nothing (GITHUB_PAT, MY_THING).
     _SECRET_VALUE_RES = (
-        re.compile(r"hf_[A-Za-z0-9]{20,}"),
+        re.compile(r"hf_(?:oauth_[A-Za-z0-9._~+/=-]{20,}|[A-Za-z0-9]{20,})"),
         re.compile(r"github_pat_[A-Za-z0-9_]{20,}"),
         re.compile(r"gh[pousr]_[A-Za-z0-9]{20,}"),
         re.compile(r"sk-[A-Za-z0-9_\-]{20,}"),
@@ -34847,6 +34965,7 @@ class LlamaCppBackend:
                     sticky_is_checkpoint = _sticky_is_checkpoint,
                     keeps_boundary = _keeps_compaction_boundary(thread_id),
                     can_reset = _can_reset,
+                    recall_offered = False,
                     **_compaction_fit_kwargs(context_policy, compaction_headroom_ratio),
                 )
                 if truncation:
@@ -35193,6 +35312,7 @@ class LlamaCppBackend:
             has_text_only_provisional_card,
             is_always_safe_tool,
             is_high_risk_tool_call,
+            never_needs_approval,
         )
 
         # "full" and bypass_permissions are the same switch, whichever arrives
@@ -35795,6 +35915,7 @@ class LlamaCppBackend:
                         anchor_ids = _rolling_anchor_ids,
                         keeps_boundary = _keeps_compaction_boundary(thread_id),
                         can_reset = _iteration_can_reset,
+                        recall_offered = "search_conversation" in (_enabled_tool_names or ()),
                         reserve_tokens = _conversation_recall_reserve(thread_id),
                         sticky_dropped = _iteration_sticky,
                         sticky_is_checkpoint = _iteration_sticky_is_checkpoint,
@@ -35972,6 +36093,7 @@ class LlamaCppBackend:
                             _backend_supports_tools(self),
                             tools_withheld = _memory_tool_withheld(thread_id, tools),
                         ),
+                        recall_offered = "search_conversation" in (_enabled_tool_names or ()),
                         **_compaction_fit_kwargs(context_policy, compaction_headroom_ratio),
                     )
                     # Recorded here, not left to the forwarding below. That list is
@@ -37412,6 +37534,7 @@ class LlamaCppBackend:
                         bool(confirm_tool_calls)
                         and not bypass_permissions
                         and permission_mode != "off"
+                        and not never_needs_approval(decision.tool_name)
                     )
                     if needs_confirm and permission_mode == "auto":
                         needs_confirm = is_high_risk_tool_call(

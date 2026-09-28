@@ -475,7 +475,8 @@ def _predict(agent, state, questions: dict[str, dict[str, Any]]) -> tuple[dict[s
             heads.append(_head(agent, questions[name], max_len, head_max_len))
         except ValueError:
             raise ValueError(
-                "question %r options exceed head_max_len=%d" % (name, head_max_len)
+                f"Question {name!r} options exceed the Laya context window ({max_len} tokens). "
+                "Use fewer or shorter criteria."
             ) from None
     room = max(0, max_len - min(len(ids) for ids, _, _ in heads))
     state_ids, state_cut = _state_ids(agent.tok, state, room)
@@ -635,7 +636,7 @@ def _decide(checkpoint: Checkpoint, state, questions: dict[str, dict[str, Any]])
         try:
             result, truncated = _predict(agent, state, laya_questions)
         except ValueError as exc:
-            raise Unavailable(400, "invalid_request_error", str(exc)) from None
+            raise Unavailable(422, "invalid_request_error", str(exc)) from None
     finally:
         _run_lock.release()
     return {
