@@ -85,6 +85,7 @@ from utils.download_transport_settings import (
 from utils.hub_settings import (
     HubSettings,
     active_source,
+    claim_automatic_source,
     get_hub_settings,
     set_hub_settings,
     set_hub_source,
@@ -700,6 +701,10 @@ class HubSettingsResponse(BaseModel):
     datasets_server_follows_endpoint: bool
     source: Literal["huggingface", "modelscope"]
     active_source: Literal["huggingface", "modelscope"]
+
+
+class HubSourceNoticeResponse(BaseModel):
+    granted: bool
 
 
 class XetNoticeReservePayload(BaseModel):
@@ -1564,6 +1569,16 @@ def update_hub_source(
 ) -> HubSettingsResponse:
     require_ui_session(via_api_key)
     return _hub_settings_response(set_hub_source(payload.source))
+
+
+@_owner_settings_router.post("/hub/source-notice", response_model = HubSourceNoticeResponse)
+def claim_hub_source_notice(
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+) -> HubSourceNoticeResponse:
+    """Keep the automatic ModelScope default; granted once, to the UI that tells the owner."""
+    require_ui_session(via_api_key)
+    return HubSourceNoticeResponse(granted = claim_automatic_source())
 
 
 @_owner_settings_router.post("/xet-notice/reserve", response_model = XetNoticeResponse)
