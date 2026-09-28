@@ -219,8 +219,7 @@ _BACKEND_ROUNDTRIP_PROBE = "Hello world, this is a test."
 _BACKEND_IDS_PROBE = (
     "Hello world! def f(x): return x**2  # code\n你好 éè Αβγ 12345.678 नमस्ते दुनिया open(path):\n"
 )
-# v5 classes whose __init__ installs a hard-coded pre-tokenizer over the one in tokenizer.json. Text still
-# round-trips, but ids differ: tiny-aya's Split regex becomes Digits + ByteLevel (2x tokens on Hindi).
+# v5 __init__ overwrites tokenizer.json's pre-tokenizer: text round-trips but ids differ (tiny-aya).
 _V5_REBUILT_PRETOKENIZER_CLASSES = frozenset(("CohereTokenizer",))
 
 

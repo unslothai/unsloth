@@ -207,9 +207,7 @@ def test_saved_repaired_tokenizer_reloads_with_plain_transformers(byte_level_lla
     assert reloaded.chat_template == tok.chat_template
 
 
-# tiny-aya ships a Split regex + ByteLevel(use_regex = False) pre-tokenizer under tokenizer_class
-# CohereTokenizerFast. transformers v5 maps it to CohereTokenizer, whose __init__ installs
-# Digits + ByteLevel instead: text still round-trips, but ids no longer match tokenizer.json.
+# tiny-aya: v5 CohereTokenizer swaps its Split regex pre-tokenizer for Digits + ByteLevel.
 COHERE_SPECIALS = ["<PAD>", "<UNK>", "<BOS_TOKEN>", "<|END_OF_TURN_TOKEN|>"]
 COHERE_REGEX = (
     r"[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}]*[\p{Ll}\p{Lm}\p{Lo}\p{M}]+"
@@ -267,7 +265,6 @@ def test_cohere_split_regex_ids_match_tokenizer_json(tmp_path):
     loaded = AutoTokenizer.from_pretrained(path)
     reference = _reference_ids(path, COHERE_PROBE)
     if TRANSFORMERS_V5:
-        # Premise: v5 keeps the round trip but changes the ids.
         assert loaded.decode(_ids(loaded, COHERE_PROBE)) == COHERE_PROBE
         assert _ids(loaded, COHERE_PROBE) != reference
     for tok in (
