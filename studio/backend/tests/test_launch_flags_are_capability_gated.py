@@ -607,7 +607,9 @@ def test_the_offload_report_covers_metal_and_env_pinned_layers():
     assert "_offload_counts[0] <= 0" in src
     start = src.index("self._offload_overridden = ")
     assignment = src[start : src.index("\n                if ", start)]
-    assert "_device_selection_is_cpu(extra_args, env)" in assignment
+    # A --device the gpu_ids pin stripped never reached the child, so it pins nothing.
+    assert "self._strip_device_extra_args(extra_args)" in assignment
+    assert "if _gpu_ids_own_device_flags" in assignment
     assert "_env_fixes_gpu_layers(env)" in assignment
 
 

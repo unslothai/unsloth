@@ -31182,7 +31182,12 @@ class LlamaCppBackend:
                 # Not _GPU_OFFLOAD_OVERRIDE_FLAGS: --fit on is exactly the split to report.
                 self._offload_overridden = (
                     _extra_args_set_any_flag(extra_args, _GPU_LAYER_FLAGS)
-                    or _device_selection_is_cpu(extra_args, env)
+                    or _device_selection_is_cpu(
+                        self._strip_device_extra_args(extra_args)
+                        if _gpu_ids_own_device_flags
+                        else extra_args,
+                        env,
+                    )
                     or _env_fixes_gpu_layers(env)
                 )
                 if (
