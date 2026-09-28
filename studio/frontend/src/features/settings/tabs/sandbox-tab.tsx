@@ -84,6 +84,8 @@ export function SandboxTab() {
   const [restored, setRestored] = useState<number | null>(null);
   const [absent, setAbsent] = useState(false);
   const mounted = useRef(true);
+  // Bumped by every read and save: an older status read must not overwrite a newer answer.
+  const statusGeneration = useRef(0);
 
   useEffect(() => {
     mounted.current = true;
@@ -95,15 +97,18 @@ export function SandboxTab() {
   // Callers set `loading` themselves: this also runs from the mount effect, where a synchronous
   // setState would cascade a render.
   const refresh = useCallback(
-    (force: boolean) =>
-      loadSandboxStatus(force, t("settings.sandbox.loadError"))
+    (force: boolean) => {
+      const generation = ++statusGeneration.current;
+      const current = () =>
+        mounted.current && generation === statusGeneration.current;
+      return loadSandboxStatus(force, t("settings.sandbox.loadError"))
         .then((loaded) => {
-          if (!mounted.current) return;
+          if (!current()) return;
           setStatus(loaded);
           setError(null);
         })
         .catch((loadError) => {
-          if (!mounted.current) return;
+          if (!current()) return;
           if (isSettingsRouteAbsent(loadError)) {
             setAbsent(true);
             return;
@@ -115,8 +120,9 @@ export function SandboxTab() {
           );
         })
         .finally(() => {
-          if (mounted.current) setLoading(false);
-        }),
+          if (current()) setLoading(false);
+        });
+    },
     [t],
   );
 
@@ -157,6 +163,7 @@ export function SandboxTab() {
   }, [job, refresh, t]);
 
   const save = async (update: SandboxSettingsUpdate) => {
+    const generation = ++statusGeneration.current;
     setSaving(true);
     setActionError(null);
     setRestored(null);
@@ -166,7 +173,8 @@ export function SandboxTab() {
         t("settings.sandbox.saveError"),
       );
       if (!mounted.current) return;
-      setStatus(next);
+      if (generation === statusGeneration.current) setStatus(next);
+      setLoading(false);
       if (next.restored) setRestored(next.restored);
     } catch (saveError) {
       if (!mounted.current) return;
