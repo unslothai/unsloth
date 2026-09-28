@@ -162,6 +162,16 @@ def test_restricted_region_defaults_to_modelscope_until_the_hub_is_configured(
     assert store == {k: v for k, v in configured.items() if k != "HF_ENDPOINT"}
 
 
+def test_rejected_operator_endpoint_still_disables_the_automatic_source(store, monkeypatch):
+    monkeypatch.setenv("HF_ENDPOINT", "http://mirror.lan")
+    monkeypatch.setenv("UNSLOTH_MIRROR_FALLBACK", "1")
+    hub_settings.apply_hub_settings()
+    current = hub_settings.get_hub_settings()
+    assert (current.source, current.source_automatic) == (hub_settings.HUGGINGFACE, False)
+    assert "HF_ENDPOINT" not in os.environ
+    assert hub_settings.operator_hf_endpoint() == "https://huggingface.co"
+
+
 @pytest.mark.parametrize(
     "zone, resolvers, platform, expected",
     [

@@ -110,7 +110,7 @@ def _automatic_modelscope(stored: dict) -> bool:
     return (
         SOURCE_KEY not in stored
         and HF_ENDPOINT_KEY not in stored
-        and not _operator_endpoint()
+        and not (_capture_operator_env()["HF_ENDPOINT"] or "").strip()
         and mirror_fallback_enabled()
     )
 
