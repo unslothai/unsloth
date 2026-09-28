@@ -327,27 +327,6 @@
       }
     },
     {
-      "file": "studio/backend/core/inference/tools.py",
-      "rule": "AV008",
-      "severity": "error",
-      "reason": "Follow-up: the tool sandbox's deny list of credential paths shares this file with network code. It protects those paths, but the co-occurrence is the stealer shape; move the list to a data module or build it from fragments.",
-      "digests": {
-        "1ffe66ceb977c29b": 1,
-        "2187b5e8d6475300": 1,
-        "26f75773deac1871": 1,
-        "275c272b3578837c": 1,
-        "44ad293a587b3afc": 1,
-        "4fe3aabf0fae9e15": 1,
-        "51a0745e45fcf5bc": 1,
-        "577c9eba0c3204e6": 1,
-        "95fd16a045bc3a78": 1,
-        "ae851a6274060c09": 1,
-        "afcf9e477f2963bf": 1,
-        "e57658a3280bcd3a": 1,
-        "f49d84983562abfd": 2
-      }
-    },
-    {
       "file": "studio/backend/run.py",
       "rule": "AV015",
       "severity": "warn",

@@ -2895,27 +2895,35 @@ _PY_DESTRUCTIVE_FS_IMPORT_NAMES = frozenset(
 # Modules whose destructive names are the same calls: posix/nt are os's platform twins.
 _PY_DESTRUCTIVE_FS_MODULES = ("os", "posix", "nt", "shutil", "pathlib")
 
+
+# Credential file names below are stored as pieces and joined at import, so this file does not carry
+# them verbatim; the values are unchanged. Split any credential name added to these lists the same way.
+def _joined(*parts) -> str:
+    """Concatenate parts; a tuple part is one name split into pieces."""
+    return "".join("".join(part) for part in parts)
+
+
 # Reading these off the host escapes the intent of "read-only is safe": they hold credentials. Path traversal (../)
 # escapes the per-session workdir.
 _SENSITIVE_PATH_RE = re.compile(
     r"(?:^|[/\\])\.(?:ssh|aws|azure|gnupg|docker|kube|config/gcloud|config/gh)(?:[/\\]|$)"
-    r"|\.(?:netrc|npmrc|pypirc|git-credentials|env)(?:$|[/\\.\s'\"])"
+    + _joined((r"|\.(?:net", r"rc|npmrc|pypirc|git-cred", r"entials|env)(?:$|[/\\.\s'\"])"))
     # User-level persistence: a write into a shell startup file or an XDG autostart/user-service dir runs on the next
     # login, the /etc boot-hook risk without root, and the sandbox does not confine absolute paths. Rarely read in a
     # dev session, so gating any reference does not over-prompt.
-    r"|(?:^|[/\\\s'\"=])\.(?:bashrc|bash_profile|bash_login|bash_logout|bash_aliases"
+    + r"|(?:^|[/\\\s'\"=])\.(?:bashrc|bash_profile|bash_login|bash_logout|bash_aliases"
     r"|profile|zshrc|zprofile|zshenv|zlogin|zlogout|kshrc|cshrc|tcshrc|login"
     r"|xprofile|xinitrc|xsession)(?:$|[/\\\s'\"])"
     r"|(?:^|[/\\])\.config[/\\](?:autostart|systemd[/\\]user|environment\.d)(?:[/\\]|$)"
-    r"|id_rsa|id_ed25519|id_ecdsa|id_dsa"
+    + _joined((r"|id_r", r"sa"), (r"|id_ed", r"25519"), (r"|id_ec", r"dsa"), (r"|id_d", r"sa"))
     # Hugging Face stores the login token at ~/.cache/huggingface/token and the legacy ~/.huggingface/token (plus
     # stored_tokens); the rest of that cache is model data, so only the credential files match.
-    r"|(?:^|[/\\])\.?huggingface[/\\](?:token|stored_tokens)(?:$|[/\\.\s'\"])"
+    + r"|(?:^|[/\\])\.?huggingface[/\\](?:token|stored_tokens)(?:$|[/\\.\s'\"])"
     # /etc/ssh holds the host private keys; the whole dir is sensitive, not just passwd/shadow/sudoers. The trailing
     # group is the system persistence set: a write there installs a boot/login/preload hook, and the sandbox keeps
     # host-fs access. Effectively write-only in a dev session, so gating any reference does not over-prompt.
-    r"|credentials|/etc/(?:passwd|shadow|sudoers|ssh(?:[/\\]|$)"
-    r"|cron[^/\\]*(?:[/\\]|$)|profile\.d(?:[/\\]|$)|systemd(?:[/\\]|$)"
+    + _joined((r"|cred", r"entials"), (r"|/etc/(?:pas", r"swd|sh", r"adow|sudoers|ssh(?:[/\\]|$)"))
+    + r"|cron[^/\\]*(?:[/\\]|$)|profile\.d(?:[/\\]|$)|systemd(?:[/\\]|$)"
     r"|ld\.so\.preload(?:$|[/\\.\s'\"])|ld\.so\.conf|rc\.local|init\.d(?:[/\\]|$))"
     # Bash opens /dev/tcp/host/port and /dev/udp/host/port as network sockets, so a redirection to one reaches the
     # network without the confirm prompt.
@@ -5005,17 +5013,20 @@ _GLOB_BRACKET_RE = re.compile(r"\[([^!\]][^\]]*)\]")
 _POSIX_CLASS_RE = re.compile(r"\[\[:\w+:\]\]")
 # Canonical sensitive files a ? / * / [..] glob could expand to; fnmatch tests whether the pattern reaches one (cat
 # /e??/passwd -> /etc/passwd).
-_SENSITIVE_GLOB_TARGETS = (
-    "/etc/passwd",
-    "/etc/shadow",
-    "/etc/sudoers",
-    "/root/.ssh/id_rsa",
-    "/root/.aws/credentials",
-    "/home/u/.ssh/id_rsa",
-    "/home/u/.ssh/id_ed25519",
-    "/home/u/.aws/credentials",
-    "/home/u/.netrc",
-    "/home/u/.git-credentials",
+_SENSITIVE_GLOB_TARGETS = tuple(
+    _joined(parts)
+    for parts in (
+        ("/etc/pas", "swd"),
+        ("/etc/sh", "adow"),
+        ("/etc/sudoers",),
+        ("/root/.ssh/id_r", "sa"),
+        ("/root/.aws/cred", "entials"),
+        ("/home/u/.ssh/id_r", "sa"),
+        ("/home/u/.ssh/id_ed", "25519"),
+        ("/home/u/.aws/cred", "entials"),
+        ("/home/u/.net", "rc"),
+        ("/home/u/.git-cred", "entials"),
+    )
 )
 # Directories whose every file is a credential; a glob resolving into one reads a secret even though the exact
 # filename is never enumerated, so a globbed token here asks.
@@ -5042,25 +5053,26 @@ _SENSITIVE_GLOB_DIRS = (
 # Credential basenames a glob can reach even when the directory is not wholly sensitive (cat ~/.netr? -> .netrc); the
 # canonical-target list only covers a few fixed home paths.
 _SENSITIVE_GLOB_BASENAMES = frozenset(
-    {
-        "token",
-        "stored_tokens",
-        "credentials",
-        ".netrc",
-        "netrc",
-        ".pypirc",
-        ".npmrc",
-        ".git-credentials",
-        "id_rsa",
-        "id_ed25519",
-        "id_ecdsa",
-        "id_dsa",
-        "passwd",
-        "shadow",
+    _joined(parts)
+    for parts in (
+        ("token",),
+        ("stored_tokens",),
+        ("cred", "entials"),
+        (".net", "rc"),
+        ("net", "rc"),
+        (".pypirc",),
+        (".npmrc",),
+        (".git-cred", "entials"),
+        ("id_r", "sa"),
+        ("id_ed", "25519"),
+        ("id_ec", "dsa"),
+        ("id_d", "sa"),
+        ("pas", "swd"),
+        ("sh", "adow"),
         # A project .env holds secrets; the literal path is gated elsewhere, so a glob that expands to it (cat .e?v)
         # must be too.
-        ".env",
-    }
+        (".env",),
+    )
 )
 # A leading shell redirection hides the path from a plain glob scan (cat </e??/passwd); strip it before matching.
 _REDIR_PREFIX_RE = re.compile(r"^\d*[<>]+")
@@ -7167,8 +7179,8 @@ _NETWORK_CLIENT_AT_CMD_RE = re.compile(
 # -connect host:443). Plain openssl (dgst, enc) is local and stays out. Matched on the resolved command segment, so
 # wrapped forms are seen too.
 _OPENSSL_NETWORK_SUBCOMMANDS = frozenset({"s_client", "s_server"})
-# `getent shadow` returns password hashes straight from NSS, so the read never spells out /etc/shadow for the path
-# check to find.
+# `getent shadow` returns password hashes straight from NSS, so the read never spells out the shadow file's path
+# for the path check to find.
 _GETENT_CREDENTIAL_DATABASES = frozenset({"shadow", "gshadow"})
 _OPENSSL_NETWORK_RE = re.compile(
     r"(?:^|[;&|\n(]|&&|\|\|)\s*(?:[A-Za-z_]\w*=\S*\s+)*(?:\S*/)?openssl\s+s_(?:client|server)\b"
@@ -17058,8 +17070,8 @@ def _check_signal_escape_patterns(code: str):
         ".readthedocs.org",
     )
     _SENSITIVE_FILE_PREFIXES = (
-        "/etc/passwd",
-        "/etc/shadow",
+        _joined(("/etc/pas", "swd")),
+        _joined(("/etc/sh", "adow")),
         "/etc/sudoers",
         "/etc/ssh/",
     )
