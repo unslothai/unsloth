@@ -2729,6 +2729,31 @@ def _extract_reasoning_effort_levels(chat_template: str) -> list:
     ]
 
 
+# Log each substitution once per (levels, requested) pair.
+_REASONING_EFFORT_CLAMPS_LOGGED: set = set()
+
+
+def _clamp_reasoning_effort_to_levels(effort: Optional[str], levels) -> Optional[str]:
+    """Match the UI clamp: prefer the nearest lower level, then the weakest.
+
+    Use max for an unavailable xhigh if offered. Return None for an absent or
+    unknown effort or an empty ladder. See clampReasoningEffortToLevels in
+    studio/frontend/src/features/chat/provider-capabilities.ts.
+    """
+    if effort not in _REASONING_EFFORT_SCALE or not levels:
+        return None
+    if effort == "xhigh" and "xhigh" not in levels and "max" in levels:
+        effort = "max"
+    if effort in levels:
+        return effort
+    offered = [level for level in _REASONING_EFFORT_SCALE if level in levels and level != "none"]
+    if not offered:
+        return None
+    rank = _REASONING_EFFORT_SCALE.index(effort)
+    below = [level for level in offered if _REASONING_EFFORT_SCALE.index(level) < rank]
+    return below[-1] if below else offered[0]
+
+
 # Headers already described in the log, keyed on identity rather than name so a rebuilt
 # GGUF at the same path is described again. Bounded; a dropped entry only re-logs once.
 _GGUF_METADATA_LOGGED: "dict[tuple, bool]" = {}
@@ -8088,14 +8113,29 @@ class LlamaCppBackend:
                 # 'low' effort the way gpt-oss does (those models genuinely
                 # cannot disable).
                 thinking_off = enable_thinking is False or reasoning_effort == "none"
+                # Clamp unsupported levels to avoid template defaults or errors.
+                effort = (
+                    None
+                    if thinking_off
+                    else _clamp_reasoning_effort_to_levels(
+                        reasoning_effort, self._reasoning_effort_levels
+                    )
+                )
+                if effort is not None and effort != reasoning_effort:
+                    key = (tuple(self._reasoning_effort_levels), reasoning_effort)
+                    if key not in _REASONING_EFFORT_CLAMPS_LOGGED:
+                        _REASONING_EFFORT_CLAMPS_LOGGED.add(key)
+                        logger.info(
+                            f"reasoning_effort '{reasoning_effort}' is not offered by this "
+                            f"template {list(self._reasoning_effort_levels)}; using '{effort}'"
+                        )
                 # A named effort level implies thinking on, so emit enable_thinking
                 # even if the caller sent only reasoning_effort (else the template
                 # defaults it off and the requested level never renders).
-                effort_on = reasoning_effort in self._reasoning_effort_levels
-                if enable_thinking is not None or reasoning_effort == "none" or effort_on:
+                if enable_thinking is not None or reasoning_effort == "none" or effort is not None:
                     kwargs["enable_thinking"] = not thinking_off
-                if not thinking_off and effort_on:
-                    kwargs["reasoning_effort"] = reasoning_effort
+                if effort is not None:
+                    kwargs["reasoning_effort"] = effort
             elif self._reasoning_style == "reasoning_effort":
                 _levels = getattr(self, "_reasoning_effort_levels", None) or ()
                 if reasoning_effort in ("none", "low", "medium", "high") or (
