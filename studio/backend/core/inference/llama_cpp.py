@@ -3708,17 +3708,24 @@ def _gguf_files_for_variant(files: Iterable[str], variant: str) -> list[str]:
                 return exact
         except Exception as e:
             logger.warning("Failed to extract GGUF quant labels: %s", e)
-        # Packed quants (PQ2_0) used to be labelled by their inner Q2_0 token, so a selection
-        # saved before that still names Q2_0. Honour it only while no file carries Q2_0 itself.
-        if re.fullmatch(r"q[0-9]+_[0-9]+", variant_key):
-            try:
-                packed = sorted(
-                    f for f in main_files if _extract_quant_label(f).lower() == "p" + variant_key
-                )
-                if packed:
-                    return packed
-            except Exception as e:
-                logger.warning("Failed to extract GGUF quant labels: %s", e)
+        # Packed (PQ2_0) and grouped (Q2_0_g64) quants used to be labelled by their inner Q2_0
+        # token, so a selection saved before that still names Q2_0. Honour it only while no file
+        # carries Q2_0 itself and exactly one packed or grouped label claims it; two claimants
+        # name neither, and the loose match below must not pick one of them either.
+        try:
+            from utils.models.model_config import legacy_q2_claims
+
+            claimants: dict[str, list[str]] = {}
+            for f in main_files:
+                label = _extract_quant_label(f)
+                if legacy_q2_claims(label, variant_key):
+                    claimants.setdefault(label.lower(), []).append(f)
+            if len(claimants) == 1:
+                return sorted(next(iter(claimants.values())))
+            if len(claimants) > 1:
+                return []
+        except Exception as e:
+            logger.warning("Failed to extract GGUF quant labels: %s", e)
 
     boundary = re.compile(r"(?<![a-zA-Z0-9])" + re.escape(variant_key) + r"(?![a-zA-Z0-9])")
     return sorted(f for f in main_files if boundary.search(f.lower()))

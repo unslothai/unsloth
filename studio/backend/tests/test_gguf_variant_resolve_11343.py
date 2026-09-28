@@ -146,3 +146,33 @@ def test_a_models_pin_on_q2_0_aliases_a_lone_grouped_quant():
     assert ("q2_0", "Q2_0_g64") in _legacy_variant_aliases([grouped])
     packed = SimpleNamespace(quant = "PQ2_0", filename = _BONSAI_FILE)
     assert all(legacy != "q2_0" for legacy, _ in _legacy_variant_aliases([grouped, packed]))
+
+
+def test_a_remote_q2_0_selection_names_neither_of_two_claimants(monkeypatch):
+    # Packed and grouped both once answered to Q2_0: switching weights silently is worse.
+    files = ["Z-PQ2_0.gguf", "A-Q2_0_g64.gguf"]
+    monkeypatch.setattr("huggingface_hub.list_repo_files", lambda repo_id, token = None: files)
+    assert llama_cpp_module._gguf_files_for_variant(files, "Q2_0") == []
+    assert llama_cpp_module._gguf_files_for_variant(["A-Q2_0_g64.gguf"], "Q2_0") == [
+        "A-Q2_0_g64.gguf"
+    ]
+
+
+def test_a_grouped_quant_directory_answers_the_legacy_spelling(tmp_path):
+    from utils.models.model_config import _find_local_gguf_by_variant
+
+    (tmp_path / "Q2_0_g64").mkdir()
+    grouped = _write_gguf(tmp_path / "Q2_0_g64" / "model.gguf")
+    assert _find_local_gguf_by_variant(str(tmp_path), "Q2_0") == str(grouped)
+
+
+def test_a_bpw_suffix_is_kept_in_the_legacy_alias():
+    from types import SimpleNamespace
+
+    from core.inference.local_model_resolver import _legacy_variant_aliases
+    from utils.models.model_config import legacy_q2_spelling
+
+    assert legacy_q2_spelling("PQ2_0-2.5bpw") == "Q2_0-2.5bpw"
+    assert legacy_q2_spelling("Q2_0") is None
+    packed = SimpleNamespace(quant = "PQ2_0-2.5bpw", filename = "model-PQ2_0-2.5bpw.gguf")
+    assert ("q2_0-2.5bpw", "PQ2_0-2.5bpw") in _legacy_variant_aliases([packed])

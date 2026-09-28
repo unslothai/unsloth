@@ -322,7 +322,11 @@ def _legacy_variant_aliases(variants) -> tuple[tuple[str, str], ...]:
     repo.
     """
     try:
-        from utils.models.model_config import _extract_quant_label, _qualified_variant_name
+        from utils.models.model_config import (
+            _extract_quant_label,
+            _qualified_variant_name,
+            legacy_q2_spelling,
+        )
 
         # .lower() matches how _resolve_from_index folds the request
         current = {str(v.quant).lower() for v in variants if getattr(v, "quant", None)}
@@ -335,9 +339,9 @@ def _legacy_variant_aliases(variants) -> tuple[tuple[str, str], ...]:
             legacy = _qualified_variant_name(filename, _extract_quant_label(filename))
             keys = [str(legacy).lower()]
             # Packed (PQ2_0) and grouped (Q2_0_g64) quants were published as their inner Q2_0.
-            inner = re.fullmatch(r"p?(q[0-9]+_[0-9]+)(?:_g[0-9]+)?", str(quant).lower())
-            if inner and inner.group(1) != str(quant).lower():
-                keys.append(inner.group(1))
+            inner = legacy_q2_spelling(str(quant))
+            if inner is not None:
+                keys.append(inner.lower())
             for key in dict.fromkeys(keys):
                 if not key or key in current:
                     continue
