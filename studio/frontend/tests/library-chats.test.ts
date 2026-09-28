@@ -397,3 +397,10 @@ test("All sorts chats, projects and sections together, pinned first", () => {
   });
   assert.deepEqual(key(byName).slice(0, 3), ["chat:d", "chat:b", "chat:a"]);
 });
+
+test("an empty Library opens on Chats whatever the start tab", () => {
+  const page = readSrc("features/library/library-page.tsx");
+  assert.match(page, /if \(emptyOnLoad === null && loaded\) setEmptyOnLoad\(items\.length === 0 && folders\.length === 0\);/);
+  assert.doesNotMatch(page, /settings\.startTab === "last" &&\n\s*tabVisible\("chats"\)/);
+  assert.match(page, /!\(preferred === "favorites" && hasStarredChats\)/);
+});

@@ -61,6 +61,7 @@ import {
 } from "./actions-context";
 import { ChatsLibrary } from "./chats/chats-library";
 import { useFavoriteChatMatches } from "./chats/favorites";
+import { useChatFavoritesStore } from "./chats/favorites-store";
 import { CardSelectionContext } from "./components/card-selection";
 import { FolderGrid, ItemCard, Masonry } from "./components/library-cards";
 import { ConfirmDeleteDialog, NameDialog } from "./components/library-dialogs";
@@ -239,13 +240,17 @@ function LibraryView({ search }: { search: LibrarySearch }) {
   const [preferred] = useState(() =>
     settings.startTab === "last" ? settings.lastTab : settings.startTab,
   );
-  // An empty Library opens on Chats, unless a start tab is set or Chats is hidden.
+  // No files or folders: open on Chats, since every file tab is empty. Decided once on load so
+  // the tab does not jump when a file lands later. Starred chats keep a Favorites start.
+  const [emptyOnLoad, setEmptyOnLoad] = useState<boolean | null>(null);
+  if (emptyOnLoad === null && loaded) setEmptyOnLoad(items.length === 0 && folders.length === 0);
+  const hasStarredChats = useChatFavoritesStore(
+    (s) => s.chatIds.length + s.projectIds.length + s.sectionIds.length > 0,
+  );
   const nothingButChats =
-    loaded &&
-    items.length === 0 &&
-    folders.length === 0 &&
-    settings.startTab === "last" &&
-    tabVisible("chats");
+    emptyOnLoad === true &&
+    tabVisible("chats") &&
+    !(preferred === "favorites" && hasStarredChats);
   const tab: LibraryTab =
     search.show ??
     (nothingButChats
