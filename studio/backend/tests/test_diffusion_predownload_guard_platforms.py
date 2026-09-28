@@ -100,6 +100,12 @@ def _classify(monkeypatch, *, device, integrated, total_mib, platform):
     hardware.trusted_mem_get_info = lambda: (total_mib * MIB, total_mib * MIB)
     monkeypatch.setitem(sys.modules, "utils.hardware", hardware)
     monkeypatch.setattr(memory_mod, "_system_memory_mib", lambda: (total_mib, total_mib))
+    # An integrated device is now priced against the host as well, and both of those
+    # readings are live. Unstubbed, a runner with a real memory.max decides what these
+    # faked 64 GiB machines have.
+    monkeypatch.setattr(memory_mod, "_available_system_memory_mib", lambda: total_mib)
+    monkeypatch.setattr(memory_mod, "_cgroup_available_memory_mib", lambda: None)
+    monkeypatch.setattr(memory_mod, "_cgroup_memory_limit_mib", lambda: None)
     return snapshot_device_memory(_target(device))
 
 

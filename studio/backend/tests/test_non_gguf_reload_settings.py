@@ -218,3 +218,43 @@ class TestNonGgufStatusReportsWhatTheLoadAskedFor:
         response = self._status_for(monkeypatch, {"max_seq_length_requested": requested})
 
         assert response.requested_context_length == published
+
+
+class TestOmittedPrecisionKeepsTheResidentOne:
+    """A CLI load that leaves load_in_4bit out must not requantize a 16-bit model when
+    another setting, such as the context, forces the reload."""
+
+    def test_same_model_inherits_the_resident_precision(self):
+        request = _Request(max_seq_length = 0)
+        inference_route._inherit_resident_load_in_4bit(
+            _loaded(load_in_4bit = False), request, RESIDENT
+        )
+        assert request.load_in_4bit is False
+
+    def test_explicit_precision_wins(self):
+        request = _Request(load_in_4bit = True)
+        inference_route._inherit_resident_load_in_4bit(
+            _loaded(load_in_4bit = False), request, RESIDENT
+        )
+        assert request.load_in_4bit is True
+
+    def test_other_model_keeps_the_default(self):
+        request = _Request()
+        inference_route._inherit_resident_load_in_4bit(
+            _loaded(load_in_4bit = False), request, "unsloth/Llama-3.2-1B-Instruct"
+        )
+        assert request.load_in_4bit is True
+
+    def test_unrecorded_resident_keeps_the_default(self):
+        request = _Request()
+        inference_route._inherit_resident_load_in_4bit(_Backend({}), request, RESIDENT)
+        assert request.load_in_4bit is True
+
+    def test_pydantic_request_reuses_after_inheriting(self):
+        from models.inference import LoadRequest
+
+        backend = _loaded(load_in_4bit = False)
+        request = LoadRequest(model_path = RESIDENT)
+        inference_route._inherit_resident_load_in_4bit(backend, request, RESIDENT)
+        assert request.load_in_4bit is False
+        assert inference_route._non_gguf_runtime_settings_match(backend, request)

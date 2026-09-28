@@ -1,11 +1,8 @@
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
-#
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
-#
 #     http://www.apache.org/licenses/LICENSE-2.0
-#
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -30,7 +27,7 @@ from ..device_type import (
     ALLOW_PREQUANTIZED_MODELS,
 )
 from ..bnb_availability import native_kernels_ready
-from .fp8 import weight_dequant, fp8_linear
+from .fp8 import weight_dequant, fp8_linear, can_use_fp8_rowwise_gemv, fp8_rowwise_gemv
 import functools
 
 # torch.cuda.amp.custom_fwd is deprecated from 2.4.
@@ -41,6 +38,10 @@ from unsloth_zoo.utils import Version
 
 if DEVICE_TYPE == "xpu" and Version(torch.__version__) < Version("2.6.0"):
     raise RuntimeError("Intel xpu currently supports unsloth with torch.version >= 2.6.0")
+
+# torch.amp.custom_fwd(device_type=) is 2.4+; say so here, not as an AttributeError mid-import.
+if DEVICE_TYPE == "npu" and Version(torch.__version__) < Version("2.4.0"):
+    raise RuntimeError("NPUs currently support unsloth with torch.version >= 2.4.0")
 
 if Version(torch.__version__) < Version("2.4.0"):
     torch_amp_custom_fwd = torch.cuda.amp.custom_fwd
@@ -55,6 +56,10 @@ else:
 if DEVICE_TYPE == "xpu":
     torch_amp_custom_fwd = torch.amp.custom_fwd(device_type = "xpu")
     torch_amp_custom_bwd = torch.amp.custom_bwd(device_type = "xpu")
+elif DEVICE_TYPE == "npu":
+    # A mismatched device_type makes these inert, not loud (pytorch#165730): "cuda" drops autocast.
+    torch_amp_custom_fwd = torch.amp.custom_fwd(device_type = "npu")
+    torch_amp_custom_bwd = torch.amp.custom_bwd(device_type = "npu")
 
 
 # tl.math.tanh is now libdevice.tanh.
@@ -174,6 +179,9 @@ if DEVICE_COUNT > 1:
         torch_gpu_device = torch.cuda.device
     elif DEVICE_TYPE == "xpu":
         torch_gpu_device = torch.xpu.device
+    elif DEVICE_TYPE == "npu":
+        # Unbound without this, and rope_embedding imports it at module scope: ImportError.
+        torch_gpu_device = torch.npu.device
 else:
     from contextlib import nullcontext
     def torch_gpu_device(device):
@@ -227,7 +235,8 @@ if DEVICE_TYPE == "xpu":
         XPU_STREAMS = ()
         WEIGHT_BUFFERS = []
         ABSMAX_BUFFERS = []
-elif DEVICE_TYPE == "mlx":
+elif DEVICE_TYPE in ("mlx", "npu"):
+    # npu joins mlx: the else arm reads CUDA raw streams a NPU build has no runtime for.
     CUDA_STREAMS = ()
     XPU_STREAMS = ()
     WEIGHT_BUFFERS = []
@@ -277,9 +286,13 @@ else:
         cgemm_4bit_inference_naive_bf16 = bnb_functional.lib.cgemm_4bit_inference_naive_bf16
 
 
-torch_device_stream = (
-    torch.xpu.current_stream if DEVICE_TYPE == "xpu" else torch.cuda.current_stream
-)
+if DEVICE_TYPE == "xpu":
+    torch_device_stream = torch.xpu.current_stream
+elif DEVICE_TYPE == "npu":
+    # RoPE synchronizes on this in its first forward, which would otherwise reach CUDA.
+    torch_device_stream = torch.npu.current_stream
+else:
+    torch_device_stream = torch.cuda.current_stream
 
 torch_mm = torch.mm
 torch_mv = torch.mv
@@ -1038,7 +1051,11 @@ def fast_linear_forward(
     if W_quant is None:
         out = torch_matmul(X, W.t(), out = out)
     elif W.dtype == torch.float8_e4m3fn:
-        out = fp8_linear(X, W, W_quant, bias)
+        # The bias is added once below; the per-channel fp8_linear path would add it a second time.
+        if can_use_fp8_rowwise_gemv(X, W, W_quant):
+            out = fp8_rowwise_gemv(X, W, W_quant)
+        else:
+            out = fp8_linear(X, W, W_quant)
     elif bsz == 1 and q_len == 1:
         out = fast_gemv(X, W, W_quant, out = out)
     else:

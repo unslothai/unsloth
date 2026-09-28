@@ -1,11 +1,8 @@
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
-#
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
-#
 #     http://www.apache.org/licenses/LICENSE-2.0
-#
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -15,6 +12,7 @@
 from .llama import *
 from .llama import _get_rope_theta
 from ._utils import __version__
+from ._utils import move_to_device, per_layer_device
 from unsloth_zoo.utils import _get_dtype, Version
 from unsloth_zoo.hf_utils import dtype_from_config
 from ..utils.packing import (
@@ -192,8 +190,8 @@ def GemmaModel_fast_forward_inference(
 
     next_decoder_cache = []
     for idx, decoder_layer in enumerate(self.model.layers):
-        device_index = getattr(decoder_layer, "_per_layer_device_index", 0)
-        hidden_states, position_ids = move_to_device(device_index, hidden_states, position_ids)
+        layer_device, device_index = per_layer_device(decoder_layer)
+        hidden_states, position_ids = move_to_device(layer_device, hidden_states, position_ids)
 
         residual = hidden_states
         hidden_states = fast_rms_layernorm_inference_gemma(

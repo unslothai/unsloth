@@ -10,6 +10,7 @@ calls, tool-result feedback, bad-JSON heal, duplicate-call short-circuit,
 ``__IMAGES__`` sentinel stripping, executor errors, cancel, and the iteration cap.
 """
 
+import copy
 import json
 import threading
 from typing import cast
@@ -25,6 +26,7 @@ from core.inference.safetensors_agentic import (
     strip_tool_markup_streaming,
 )
 from core.inference.tool_call_parser import (
+    BUDGET_EXHAUSTED_NUDGE,
     NUDGE_TOOL_CALLS_STATUS,
     RAG_MAX_SEARCHES_PER_TURN,
     has_tool_signal,
@@ -244,7 +246,10 @@ class TestParser:
                 id = "mistral_bracket_with_whitespace",
             ),
             pytest.param(
-                'python[ARGS]{"code":"print(1)"}', "python", "print(1)", id = "rehearsal_basic"
+                'web_search[ARGS]{"code":"print(1)"}',
+                "web_search",
+                "print(1)",
+                id = "rehearsal_basic",
             ),
         ],
     )
@@ -277,8 +282,8 @@ class TestParser:
                 id = "mistral_bracket_object_with_array_value",
             ),
             pytest.param(
-                'I should call the python tool. Like this: python[ARGS]{"code":"x = 1"}',
-                "python",
+                'I should call the web_search tool. Like this: web_search[ARGS]{"code":"x = 1"}',
+                "web_search",
                 id = "rehearsal_with_prose",
             ),
             # Dashed MCP names must be captured whole, not truncated at the first dash.
@@ -287,21 +292,23 @@ class TestParser:
                 "mcp__srv__list-issues",
                 id = "mistral_bracket_hyphenated_mcp_name",
             ),
+            # MCP calls require an explicit native marker; keep the rehearsal payload shape.
             pytest.param(
-                'mcp__srv__list-issues[ARGS]{"q":"x"}',
+                '[TOOL_CALLS]mcp__srv__list-issues[ARGS]{"q":"x"}',
                 "mcp__srv__list-issues",
                 id = "rehearsal_hyphenated_mcp_name",
             ),
             pytest.param(
-                '<think>planning</think>python[ARGS]{"code":"print(1)"}',
-                "python",
+                '<think>planning</think>web_search[ARGS]{"code":"print(1)"}',
+                "web_search",
                 id = "rehearsal_after_closed_think_still_parsed",
             ),
             # Reasoning models open <think> in the PROMPT, so content starts inside the thought:
             # a call rehearsed before the lone </think> is skipped, one after it fires.
             pytest.param(
-                'planning web_search[ARGS]{"query":"draft"}</think>python[ARGS]{"code":"print(1)"}',
-                "python",
+                'planning web_search[ARGS]{"query":"draft"}</think>'
+                'get_weather[ARGS]{"code":"print(1)"}',
+                "get_weather",
                 id = "rehearsal_inside_prefilled_think_is_ignored",
             ),
             # A </think> literal inside a leading call's arguments is not a prefill close.
@@ -500,7 +507,7 @@ class TestParser:
     def test_streaming_strip_removes_partial_bracket_marker(self):
         # A bracket tag streamed before its opening brace must strip on the final pass, not leak.
         assert strip_tool_markup("answer [TOOL_CALLS]web_search", final = True) == "answer"
-        assert strip_tool_markup("text python[ARGS]", final = True) == "text"
+        assert strip_tool_markup("text get_weather[ARGS]", final = True) == "text"
         # Non-final must keep the in-progress tag buffered (not yet stripped).
         partial = "answer [TOOL_CALLS]web_search"
         assert strip_tool_markup(partial, final = False) == partial
@@ -549,7 +556,7 @@ class TestParser:
         assert "after" in strip_tool_markup(text)
 
     def test_strip_rehearsal_closed(self):
-        text = 'prose python[ARGS]{"code":"x"} more prose'
+        text = 'prose web_search[ARGS]{"code":"x"} more prose'
         cleaned = strip_tool_markup(text)
         assert "[ARGS]" not in cleaned
         assert "prose" in cleaned
@@ -1008,12 +1015,12 @@ class TestParserMultiFormat:
     def test_gemma4_bare_code_with_commas(self):
         # A code value with commas must not truncate at the first comma.
         text = (
-            "call:python{code:def f(n):\n    a, b = 0, 1\n"
+            "call:web_search{code:def f(n):\n    a, b = 0, 1\n"
             "    for _ in range(2, n+1):\n        a, b = b, a + b\n"
             "    return b\n\nprint(f(30))}"
         )
         result = parse_tool_calls_from_text(text)
-        assert result[0]["function"]["name"] == "python"
+        assert result[0]["function"]["name"] == "web_search"
         code = json.loads(result[0]["function"]["arguments"])["code"]
         assert "a, b = 0, 1" in code and "print(f(30))" in code
 
@@ -1151,6 +1158,108 @@ def _make_loop(
         execute_tool = exec_fn,
         **kwargs,
     ), exec_fn
+
+
+class TestMarkerlessExecToolGuardLoop:
+    """End-to-end guard for the two prompt-injection -> RCE findings: a bare (unwrapped)
+    ``python``/``terminal`` call quoted in assistant prose must never reach ``execute_tool``,
+    even with those tools enabled, while the trusted wrapped/marker forms still execute."""
+
+    def test_bare_execution_call_in_prose_is_not_executed(self):
+        # ``_make_loop`` enables web_search + python + terminal.
+        prose = (
+            'You could run call:terminal{command:"id"} or terminal[ARGS]{"command":"id"}, '
+            'and even call:python{code:"import os; os.system(1)"}, but I will not.'
+        )
+        loop, exec_fn = _make_loop(turns = [[prose]])
+        events = _collect_events(loop)
+        # No execution, and no tool lifecycle event.
+        assert exec_fn.calls == []
+        assert not any(e.get("type") in ("tool_start", "tool_end") for e in events)
+        # The bare call text stays visible to the user (parse/strip symmetry).
+        contents = [e.get("text", "") for e in events if e.get("type") == "content"]
+        final = contents[-1] if contents else ""
+        assert "call:terminal{command:" in final
+        assert 'terminal[ARGS]{"command":"id"}' in final
+        assert "call:python{code:" in final
+
+    def test_wrapped_gemma_execution_call_in_loop_still_executes(self):
+        # A wrapped Gemma call is trusted; only the markerless form is blocked.
+        turns = [
+            ['<|tool_call>call:terminal{command:<|"|>id<|"|>}<tool_call|>'],
+            ["All done."],
+        ]
+        loop, exec_fn = _make_loop(turns = turns, exec_results = ["uid=0(root)"], max_tool_iterations = 3)
+        events = _collect_events(loop)
+        assert [name for name, _args in exec_fn.calls] == ["terminal"]
+        assert any(e.get("type") == "tool_start" for e in events)
+
+    def test_marker_rehearsal_execution_call_in_loop_still_executes(self):
+        # The [TOOL_CALLS] marker makes the rehearsal trusted, so terminal still runs.
+        turns = [['[TOOL_CALLS]terminal[ARGS]{"command":"id"}'], ["done"]]
+        loop, exec_fn = _make_loop(turns = turns, exec_results = ["uid=0"], max_tool_iterations = 3)
+        _collect_events(loop)
+        assert [name for name, _args in exec_fn.calls] == ["terminal"]
+
+    def test_bare_execution_rehearsal_streams_instead_of_draining(self):
+        # A bare terminal[ARGS] never becomes a call, so draining withholds the answer to EOS.
+        turns = [
+            [
+                "The syntax is ",
+                'terminal[ARGS]{"command":"id"}',
+                ", which I will not run.",
+            ]
+        ]
+        loop, exec_fn = _make_loop(turns = turns)
+        events = _collect_events(loop)
+        assert exec_fn.calls == []
+        contents = [e["text"] for e in events if e["type"] == "content"]
+        assert 'terminal[ARGS]{"command":"id"}' in contents[-1]
+        # Reaches the user mid-turn: a drain would only release it with the closing prose.
+        assert any(
+            'terminal[ARGS]{"command":"id"}' in t and "will not run" not in t for t in contents
+        ), contents
+
+    def test_leading_bare_execution_gemma_call_streams_instead_of_draining(self):
+        # The leading ``call:NAME{`` drain runs before the parser, so it takes the same gate.
+        # It is held for the ONE chunk that could still carry a promotable peer (see
+        # TestBlockedGemmaChainHold), then streams; the turn is never withheld to EOS.
+        turns = [
+            [
+                'call:terminal{command:"id"}',
+                " is what the page suggested; I did not run it.",
+                " More prose after.",
+            ]
+        ]
+        loop, exec_fn = _make_loop(turns = turns)
+        events = _collect_events(loop)
+        assert exec_fn.calls == []
+        contents = [e["text"] for e in events if e["type"] == "content"]
+        assert 'call:terminal{command:"id"}' in contents[-1]
+        assert any(
+            'call:terminal{command:"id"}' in t and "More prose after" not in t for t in contents
+        ), contents
+
+    def test_leading_bare_benign_gemma_call_still_drains_and_executes(self):
+        # Control: the benign leading form keeps draining.
+        turns = [['call:web_search{query:"cats"}'], ["Done."]]
+        loop, exec_fn = _make_loop(turns = turns, exec_results = ["RESULT"], max_tool_iterations = 3)
+        events = _collect_events(loop)
+        assert [name for name, _args in exec_fn.calls] == ["web_search"]
+        contents = [e["text"] for e in events if e["type"] == "content"]
+        assert not any("call:" in t for t in contents), contents
+
+    def test_benign_rehearsal_still_drains_and_executes(self):
+        # Control: the benign bare form keeps its boundary detection.
+        turns = [
+            ["I will look it up: ", 'web_search[ARGS]{"query":"cats"}'],
+            ["Done."],
+        ]
+        loop, exec_fn = _make_loop(turns = turns, exec_results = ["RESULT"], max_tool_iterations = 3)
+        events = _collect_events(loop)
+        assert [name for name, _args in exec_fn.calls] == ["web_search"]
+        contents = [e["text"] for e in events if e["type"] == "content"]
+        assert not any("[ARGS]" in t for t in contents), contents
 
 
 _DS_OPEN = "<｜tool▁calls▁begin｜>"
@@ -1742,9 +1851,9 @@ def test_spent_one_shot_rehearsal_repeat_is_detected_not_blank_continuation():
         ),
         # First flush out of BUFFERING applies the same trailing-name hold as STREAMING.
         pytest.param(
-            [["I will use python", '[ARGS]{"code":"print(1)"}'], ["done"]],
-            [("python", {"code": "print(1)"})],
-            ["python"],
+            [["I will use web_search", '[ARGS]{"code":"print(1)"}'], ["done"]],
+            [("web_search", {"code": "print(1)"})],
+            ["web_search"],
             None,
             id = "initial_buffer_flush_holds_split_rehearsal_name",
         ),
@@ -1793,6 +1902,40 @@ def test_tool_markup_is_not_streamed_as_content(turns, expected_calls, hidden, v
         assert any(visible in t for t in contents)
 
 
+def test_split_bare_json_chain_is_owned_before_later_call_executes():
+    """A blocked first object can still own a chain with a later benign call. The first cumulative
+    snapshot must stay buffered: otherwise its raw JSON is visible before the second snapshot
+    makes the chain executable at end-of-turn."""
+    blocked = '{"name":"terminal","parameters":{"command":"id"}}'
+    later = '{"name":"web_search","parameters":{"query":"cats"}}'
+    loop, exec_fn = _make_loop(
+        turns = [[blocked, ";" + later], ["Found cats."]],
+        exec_results = ["RESULT"],
+        max_tool_iterations = 3,
+    )
+
+    events = _collect_events(loop)
+
+    assert exec_fn.calls == [("web_search", {"query": "cats"})], exec_fn.calls
+    contents = [event.get("text", "") for event in events if event.get("type") == "content"]
+    assert not any(blocked in text or later in text for text in contents), contents
+
+
+def test_lone_blocked_bare_json_is_released_at_eof():
+    """A blocked object is content when no executable chain peer follows it."""
+    blocked = '{"name":"terminal","parameters":{"command":"id"}}'
+    loop, exec_fn = _make_loop(
+        turns = [[blocked]],
+        max_tool_iterations = 1,
+    )
+
+    events = _collect_events(loop)
+
+    assert exec_fn.calls == []
+    contents = [event.get("text", "") for event in events if event.get("type") == "content"]
+    assert any(blocked in text for text in contents), contents
+
+
 def test_plain_word_matching_no_tool_still_streams():
     # The prefix guard must not swallow prose: a non-tool bare word streams.
     loop, _exec = _make_loop(
@@ -1833,14 +1976,15 @@ def test_plain_answer_ending_with_tool_name_word_is_preserved():
 
 
 def test_long_tool_name_split_rehearsal_is_not_capped_and_executes():
-    # Finding 10/11: an MCP name longer than the buffer cap, split before [ARGS], is still
-    # held (self-bounding prefix); no leak and the call executes.
+    # Finding 10/11: an explicitly marked MCP name longer than the buffer cap, split before
+    # [ARGS], is still held (self-bounding prefix); no leak and the call executes.
     from core.inference.safetensors_agentic import _MAX_BUFFER_CHARS
 
     name = "mcp__github__create_pull_request"
     assert len(name) >= _MAX_BUFFER_CHARS, len(name)
     exec_fn = FakeExecuteTool(["RESULT"])
-    _turns = iter([[name, name + '[ARGS]{"x":1}'], ["done"]])
+    marked_name = "[TOOL_CALLS]" + name
+    _turns = iter([[marked_name, marked_name + '[ARGS]{"x":1}'], ["done"]])
 
     def st(_messages, active_tools = None):
         yield from next(_turns)
@@ -1962,11 +2106,11 @@ def test_ordinary_json_with_name_key_is_shown_not_treated_as_tool_call():
 
 
 def test_long_gemma_tool_name_is_not_streamed_as_content():
-    # A tool name longer than the small buffer cap (OpenAI 64 chars, MCP longer)
-    # must still be held: the ``call:NAME`` prefix keeps buffering until ``{``
-    # instead of leaking ``call:longname`` as visible text.
+    # A tool name longer than the small buffer cap (OpenAI 64 chars, MCP longer) must still
+    # be held when explicitly wrapped, instead of leaking ``call:longname`` as visible text.
     long_name = "mcp__github__list_repository_issues"  # 35 chars
-    turns = iter([list('call:%s{repo:"octo/hello"}' % long_name), ["Done."]])
+    wrapped = '<|tool_call>call:%s{repo:<|"|>octo/hello<|"|>}<tool_call|>' % long_name
+    turns = iter([list(wrapped), ["Done."]])
 
     def _gen(_messages):
         try:
@@ -2468,7 +2612,7 @@ class TestLoopBasic:
             [
                 [
                     '<think>draft render_html[ARGS]{"code":"x"}</think>',
-                    'python[ARGS]{"code":"print(1)"}',
+                    'web_search[ARGS]{"code":"print(1)"}',
                 ],
                 ["Done."],
             ]
@@ -2486,15 +2630,15 @@ class TestLoopBasic:
             messages = [{"role": "user", "content": "run code"}],
             tools = [
                 {"type": "function", "function": {"name": "render_html"}},
-                {"type": "function", "function": {"name": "python"}},
+                {"type": "function", "function": {"name": "web_search"}},
             ],
             execute_tool = exec_fn,
         )
         events = _collect_events(loop)
         tool_starts = [e for e in events if e["type"] == "tool_start"]
 
-        assert [e["tool_name"] for e in tool_starts] == ["python"], tool_starts
-        assert exec_fn.calls == [("python", {"code": "print(1)"})]
+        assert [e["tool_name"] for e in tool_starts] == ["web_search"], tool_starts
+        assert exec_fn.calls == [("web_search", {"code": "print(1)"})]
 
     def test_render_html_success_blocks_second_canvas_call(self):
         exec_fn = FakeExecuteTool(["Rendered HTML canvas."])
@@ -3945,17 +4089,67 @@ class TestGuardrails:
             '<tool_call>{"name":"web_search","arguments":{"query":"q%d"}}</tool_call>' % i
             for i in range(n)
         )
-        loop, exec_fn = _make_loop(
-            turns = [[turn], ["final"]],
-            exec_results = ["r"] * n,
+        seen_messages = []
+        turns = iter([turn, "final"])
+
+        def _gen(messages):
+            seen_messages.append(copy.deepcopy(messages))
+            yield next(turns)
+
+        exec_fn = FakeExecuteTool(["r"] * n)
+        loop = run_safetensors_tool_loop(
+            single_turn = _gen,
+            messages = [{"role": "user", "content": "hi"}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            execute_tool = exec_fn,
             max_tool_iterations = 2,
         )
-        _collect_events(loop)
+        events = _collect_events(loop)
         assert len(exec_fn.calls) == _MAX_TOOL_CALLS_PER_TURN
         # The first N distinct queries executed, in document order.
         assert [a["query"] for _name, a in exec_fn.calls] == [
             "q%d" % i for i in range(_MAX_TOOL_CALLS_PER_TURN)
         ]
+        assert len([e for e in events if e.get("type") == "tool_start"]) == _MAX_TOOL_CALLS_PER_TURN
+        (notice,) = [m for m in seen_messages[1] if "more tool call(s)" in m.get("content", "")]
+        assert notice["role"] == "user"
+        assert notice["content"].startswith("4 more tool call(s)")
+        for i in range(_MAX_TOOL_CALLS_PER_TURN, n):
+            assert '"q%d"' % i in notice["content"]
+        assert '"q%d"' % (_MAX_TOOL_CALLS_PER_TURN - 1) not in notice["content"]
+
+    def test_over_cap_on_last_turn_does_not_ask_for_retry(self):
+        from core.inference.safetensors_agentic import _MAX_TOOL_CALLS_PER_TURN
+
+        n = _MAX_TOOL_CALLS_PER_TURN + 2
+        turn = "".join(
+            '<tool_call>{"name":"web_search","arguments":{"query":"q%d"}}</tool_call>' % i
+            for i in range(n)
+        )
+        seen_messages = []
+        turns = iter([turn, "final"])
+
+        def _gen(messages):
+            seen_messages.append(copy.deepcopy(messages))
+            yield next(turns)
+
+        loop = run_safetensors_tool_loop(
+            single_turn = _gen,
+            messages = [{"role": "user", "content": "hi"}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            execute_tool = FakeExecuteTool(["r"] * n),
+            max_tool_iterations = 1,
+        )
+        _collect_events(loop)
+        messages = seen_messages[1]
+        last = messages[-1]
+        assert last["role"] == "user"
+        assert last["content"].startswith("2 more tool call(s)")
+        assert BUDGET_EXHAUSTED_NUDGE in last["content"]
+        assert not any("Call them again" in m.get("content", "") for m in messages)
+        assert not any(
+            a["role"] == "user" and b["role"] == "user" for a, b in zip(messages, messages[1:])
+        )
 
     def test_coerce_string_args_python_uses_code_key(self):
         assert _coerce_arguments("print(1)", heal = True, tool_name = "python") == {"code": "print(1)"}
@@ -4594,13 +4788,13 @@ def test_oversized_bare_json_call_is_not_leaked_and_executes():
     from core.inference.safetensors_agentic import _MAX_BARE_JSON_BUFFER
 
     big = "A" * (_MAX_BARE_JSON_BUFFER + 5000)
-    full = '{"name":"python","parameters":{"code":"' + big + '"}}'
+    full = '{"name":"web_search","parameters":{"code":"' + big + '"}}'
     chunks = [full[i : i + 2000] for i in range(0, len(full), 2000)]
     loop, exec_fn = _make_loop(turns = [chunks, ["done"]], exec_results = ["OK"], max_tool_iterations = 2)
     events = _collect_events(loop)
     contents = [e["text"] for e in events if e["type"] == "content"]
     assert not any(t.lstrip().startswith('{"name') for t in contents), contents[:1]
-    assert exec_fn.calls and exec_fn.calls[0][0] == "python"
+    assert exec_fn.calls and exec_fn.calls[0][0] == "web_search"
     assert len(exec_fn.calls[0][1].get("code", "")) > _MAX_BARE_JSON_BUFFER
 
 
@@ -4847,7 +5041,7 @@ class TestFalseAlarmMarkerProse:
         # history) must not contain the second call's raw JSON.
         chained = (
             '{"name":"web_search","parameters":{"q":"first"}};'
-            '{"name":"python","parameters":{"code":"x"}}'
+            '{"name":"get_weather","parameters":{"code":"x"}}'
         )
         convs = []
         turn_iter = iter([[chained], ["Final answer."]])
@@ -4869,14 +5063,14 @@ class TestFalseAlarmMarkerProse:
             messages = [{"role": "user", "content": "hi"}],
             tools = [
                 {"type": "function", "function": {"name": "web_search"}},
-                {"type": "function", "function": {"name": "python"}},
+                {"type": "function", "function": {"name": "get_weather"}},
             ],
             execute_tool = exec_fn,
         )
         _collect_events(loop)
-        assert [c[0] for c in exec_fn.calls] == ["web_search", "python"]
+        assert [c[0] for c in exec_fn.calls] == ["web_search", "get_weather"]
         assistant = next(m for m in convs[1] if m["role"] == "assistant")
-        assert '"python"' not in (assistant.get("content") or "")
+        assert '"get_weather"' not in (assistant.get("content") or "")
 
 
 def test_both_tool_loops_say_they_are_waiting_for_approval():
@@ -4956,3 +5150,613 @@ class TestStreamingDisplayStripStillMatchesTheExportedHelper:
             assert incremental == strip_tool_markup_streaming(
                 prefix, enabled_tool_names = names
             ), f"diverged at offset {i}"
+
+
+def test_mcp_images_reach_a_vision_model_through_the_sink(monkeypatch):
+    import base64
+    import io
+    import json
+
+    from PIL import Image
+
+    from core.inference import mcp_images
+
+    buffer = io.BytesIO()
+    Image.new("RGB", (6, 6), (10, 120, 200)).save(buffer, format = "PNG")
+    envelope = json.dumps(
+        [{"data": base64.b64encode(buffer.getvalue()).decode(), "mimeType": "image/png"}]
+    )
+    result = "[1 image returned]\n" + mcp_images.SENTINEL + envelope
+
+    turns = [
+        '<tool_call>{"name": "mcp__fs__read_media_file", "arguments": {}}</tool_call>',
+        "A tabby cat.",
+    ]
+    seen: list[list] = []
+
+    def single_turn(conversation, *, active_tools = None):
+        seen.append([dict(message) for message in conversation])
+        yield turns[len(seen) - 1]
+
+    sink: list = []
+    list(
+        run_safetensors_tool_loop(
+            single_turn = single_turn,
+            messages = [{"role": "user", "content": "describe the image"}],
+            tools = [{"type": "function", "function": {"name": "mcp__fs__read_media_file"}}],
+            execute_tool = lambda name, args, **kwargs: result,
+            max_tool_iterations = 2,
+            images_sink = sink,
+        )
+    )
+
+    assert len(sink) == 1
+    assert base64.b64decode(sink[0])[:8] == b"\x89PNG\r\n\x1a\n"
+    second_turn = seen[1]
+    assert "__MCP_IMAGES__" not in json.dumps(second_turn)
+    assert second_turn[-1]["role"] == "user"
+    assert second_turn[-1]["content"][0] == {"type": "image"}
+
+
+def test_mcp_images_are_left_out_without_a_sink(monkeypatch):
+    import json
+
+    from core.inference import mcp_images
+
+    envelope = json.dumps([{"data": "QUJD", "mimeType": "image/png"}])
+    result = "[1 image returned]\n" + mcp_images.SENTINEL + envelope
+    turns = [
+        '<tool_call>{"name": "mcp__fs__read_media_file", "arguments": {}}</tool_call>',
+        "A tabby cat.",
+    ]
+    seen: list[list] = []
+
+    def single_turn(conversation, *, active_tools = None):
+        seen.append([dict(message) for message in conversation])
+        yield turns[len(seen) - 1]
+
+    list(
+        run_safetensors_tool_loop(
+            single_turn = single_turn,
+            messages = [{"role": "user", "content": "describe the image"}],
+            tools = [{"type": "function", "function": {"name": "mcp__fs__read_media_file"}}],
+            execute_tool = lambda name, args, **kwargs: result,
+            max_tool_iterations = 2,
+        )
+    )
+
+    assert seen[1][-1]["role"] == "tool"
+    assert "__MCP_IMAGES__" not in json.dumps(seen[1])
+
+
+def test_mcp_image_markers_merge_into_a_deferred_noop_turn(monkeypatch):
+    """A batch holding both an internal no-op and an image-returning call used to
+    append two role=user turns in a row, which a strict VLM template rejects."""
+    import base64
+    import io
+    import json
+
+    from PIL import Image
+
+    from core.inference import mcp_images
+
+    buffer = io.BytesIO()
+    Image.new("RGB", (6, 6), (10, 120, 200)).save(buffer, format = "PNG")
+    envelope = json.dumps(
+        [{"data": base64.b64encode(buffer.getvalue()).decode(), "mimeType": "image/png"}]
+    )
+    result = "[1 image returned]\n" + mcp_images.SENTINEL + envelope
+
+    # One image-returning call plus one call to a tool that is not enabled: the
+    # second is suppressed as an internal no-op and lands as a deferred nudge
+    # after the batch's results, which is the turn the markers must join.
+    real = '{"name": "mcp__fs__read_media_file", "arguments": {}}'
+    bogus = '{"name": "mcp__fs__delete_everything", "arguments": {}}'
+    turns = [
+        f"<tool_call>{real}</tool_call><tool_call>{bogus}</tool_call>",
+        "A tabby cat.",
+    ]
+    seen: list[list] = []
+
+    def single_turn(conversation, *, active_tools = None):
+        seen.append([dict(message) for message in conversation])
+        yield turns[len(seen) - 1]
+
+    sink: list = []
+    list(
+        run_safetensors_tool_loop(
+            single_turn = single_turn,
+            messages = [{"role": "user", "content": "describe the image"}],
+            tools = [{"type": "function", "function": {"name": "mcp__fs__read_media_file"}}],
+            execute_tool = lambda name, args, **kwargs: result,
+            max_tool_iterations = 2,
+            images_sink = sink,
+        )
+    )
+
+    second_turn = seen[1]
+    roles = [message["role"] for message in second_turn]
+    # Guard: without a suppressed call there is no nudge and the test proves nothing.
+    assert any(
+        message["role"] == "user" and "not executed" in str(message.get("content"))
+        for message in second_turn
+    ), f"no deferred no-op nudge in {second_turn}"
+    assert not any(
+        roles[i] == "user" and roles[i + 1] == "user" for i in range(len(roles) - 1)
+    ), f"consecutive user turns: {roles}"
+    markers = [
+        part
+        for message in second_turn
+        if isinstance(message.get("content"), list)
+        for part in message["content"]
+        if part.get("type") == "image"
+    ]
+    assert len(markers) == len(sink) == 1
+
+
+def test_the_loop_cap_never_evicts_the_caller_s_own_attachment():
+    """The sink is seeded with what the caller attached, and the MCP payloads land
+    around it. A cap that trims from the front deleted that picture and its marker,
+    so a model asked to compare against it was handed screenshots instead."""
+    import base64
+    import io
+    import json
+
+    from PIL import Image
+
+    from core.inference import mcp_images
+
+    def _png(colour):
+        buffer = io.BytesIO()
+        Image.new("RGB", (6, 6), colour).save(buffer, format = "PNG")
+        return base64.b64encode(buffer.getvalue()).decode()
+
+    attachment = _png((255, 0, 0))
+    envelope = json.dumps([{"data": _png((0, 0, 255)), "mimeType": "image/png"} for _ in range(4)])
+    result = "[4 images returned]\n" + mcp_images.SENTINEL + envelope
+
+    def _call(n):
+        return '<tool_call>{"name": "mcp__fs__shot", "arguments": {"n": %d}}</tool_call>' % n
+
+    # DISTINCT calls: an identical repeat is suppressed as a no-op. Eight of them,
+    # because a local placeholder turn carries one picture, and the cap has to be
+    # reached for the test to prove anything.
+    turns = [_call(n) for n in range(1, 9)] + ["done."]
+    seen: list[list] = []
+
+    def single_turn(conversation, *, active_tools = None):
+        seen.append([dict(message) for message in conversation])
+        yield turns[len(seen) - 1]
+
+    sink = [attachment]
+    list(
+        run_safetensors_tool_loop(
+            single_turn = single_turn,
+            messages = [
+                {
+                    "role": "user",
+                    "content": [{"type": "image"}, {"type": "text", "text": "compare with this"}],
+                }
+            ],
+            tools = [{"type": "function", "function": {"name": "mcp__fs__shot"}}],
+            execute_tool = lambda name, args, **kwargs: result,
+            max_tool_iterations = 9,
+            images_sink = sink,
+            caller_image_indexes = (0,),
+        )
+    )
+
+    assert attachment in sink, "the caller's attachment was trimmed away"
+    assert (
+        len(sink) == mcp_images.MAX_TOTAL_MODEL_IMAGES
+    ), "the attachment is spared, but it still counts against the cap"
+    final = seen[-1]
+    assert final[0]["content"][0] == {"type": "image"}, "its marker went with it"
+    markers = sum(
+        1
+        for message in final
+        if isinstance(message.get("content"), list)
+        for part in message["content"]
+        if part.get("type") == "image"
+    )
+    assert markers == len(sink), "one marker per pixel, or the processor miscounts"
+
+
+def test_a_resumed_chat_s_replayed_images_still_count_against_the_cap():
+    """Only the caller's own attachment is spared. Sparing the whole seeded sink
+    exempted a resumed chat's replayed pictures too, so the prompt could carry a
+    second full allowance on top of them."""
+    import base64
+    import io
+    import json
+
+    from PIL import Image
+
+    from core.inference import mcp_images
+
+    def _png(colour):
+        buffer = io.BytesIO()
+        Image.new("RGB", (6, 6), colour).save(buffer, format = "PNG")
+        return base64.b64encode(buffer.getvalue()).decode()
+
+    replayed = [_png((0, 200 - index * 10, 0)) for index in range(4)]
+    envelope = json.dumps([{"data": _png((0, 0, 255)), "mimeType": "image/png"} for _ in range(4)])
+    result = "[4 images returned]\n" + mcp_images.SENTINEL + envelope
+
+    def _call(n):
+        return '<tool_call>{"name": "mcp__fs__shot", "arguments": {"n": %d}}</tool_call>' % n
+
+    # One picture per batch on a local path, so five batches on four replayed is
+    # nine against a cap of eight.
+    turns = [_call(n) for n in range(1, 6)] + ["done."]
+    seen: list[list] = []
+
+    def single_turn(conversation, *, active_tools = None):
+        seen.append([dict(message) for message in conversation])
+        yield turns[len(seen) - 1]
+
+    sink = list(replayed)
+    list(
+        run_safetensors_tool_loop(
+            single_turn = single_turn,
+            messages = [mcp_images.placeholder_turn(4, 4)],
+            tools = [{"type": "function", "function": {"name": "mcp__fs__shot"}}],
+            execute_tool = lambda name, args, **kwargs: result,
+            max_tool_iterations = 6,
+            images_sink = sink,
+            # No attachment on this request; every seeded pixel is replay.
+            caller_image_indexes = (),
+        )
+    )
+
+    assert (
+        len(sink) == mcp_images.MAX_TOTAL_MODEL_IMAGES
+    ), f"replay was exempted from the cap: {len(sink)} images in the prompt"
+    assert replayed[0] not in sink, "the oldest replayed picture should have gone first"
+    final = seen[-1]
+    markers = sum(
+        1
+        for message in final
+        if isinstance(message.get("content"), list)
+        for part in message["content"]
+        if part.get("type") == "image"
+    )
+    assert markers == len(sink)
+
+
+def test_the_protected_attachment_index_is_rebased_between_batches():
+    """The index names a position, and trimming earlier entries moves it. Reusing the
+    original across iterations protected the wrong payload and deleted the very
+    attachment the argument exists to keep."""
+    import base64
+    import io
+    import json
+
+    from PIL import Image
+
+    from core.inference import mcp_images
+
+    def _png(colour):
+        buffer = io.BytesIO()
+        Image.new("RGB", (6, 6), colour).save(buffer, format = "PNG")
+        return base64.b64encode(buffer.getvalue()).decode()
+
+    replayed = [_png((0, 200 - index * 12, 0)) for index in range(7)]
+    attachment = _png((255, 0, 0))
+    envelope = json.dumps([{"data": _png((0, 0, 255)), "mimeType": "image/png"} for _ in range(4)])
+    result = "[4 images returned]\n" + mcp_images.SENTINEL + envelope
+
+    def _call(n):
+        return '<tool_call>{"name": "mcp__fs__shot", "arguments": {"n": %d}}</tool_call>' % n
+
+    turns = [_call(1), _call(2), _call(3), "done."]
+    seen: list[list] = []
+
+    def single_turn(conversation, *, active_tools = None):
+        seen.append([dict(message) for message in conversation])
+        yield turns[len(seen) - 1]
+
+    # Replay first, the caller's attachment last: index 7 on the way in.
+    sink = [*replayed, attachment]
+    list(
+        run_safetensors_tool_loop(
+            single_turn = single_turn,
+            messages = [
+                mcp_images.placeholder_turn(7, 7),
+                {
+                    "role": "user",
+                    "content": [{"type": "image"}, {"type": "text", "text": "compare with this"}],
+                },
+            ],
+            tools = [{"type": "function", "function": {"name": "mcp__fs__shot"}}],
+            execute_tool = lambda name, args, **kwargs: result,
+            max_tool_iterations = 4,
+            images_sink = sink,
+            caller_image_indexes = (7,),
+        )
+    )
+
+    assert attachment in sink, "the attachment was deleted by a stale protected index"
+    assert len(sink) == mcp_images.MAX_TOTAL_MODEL_IMAGES
+    final = seen[-1]
+    markers = sum(
+        1
+        for message in final
+        if isinstance(message.get("content"), list)
+        for part in message["content"]
+        if part.get("type") == "image"
+    )
+    assert markers == len(sink), "one marker per pixel"
+
+
+class TestBlockedGemmaChainHold:
+    """A promotable Gemma call behind a blocked one must not stream before it is promoted."""
+
+    def test_a_token_split_peer_is_not_leaked(self):
+        turns = [
+            ['call:terminal{command:"id"} call:web', '_search{query:"x"}'],
+            ["Done."],
+        ]
+        loop, exec_fn = _make_loop(turns = turns, exec_results = ["R"], max_tool_iterations = 3)
+        events = _collect_events(loop)
+        assert [name for name, _args in exec_fn.calls] == ["web_search"]
+        contents = [e["text"] for e in events if e["type"] == "content"]
+        assert not any("call:web" in t for t in contents), contents
+
+    def test_a_chunk_split_peer_is_not_leaked(self):
+        turns = [
+            ['call:terminal{command:"id"}', ' call:web_search{query:"x"}'],
+            ["Done."],
+        ]
+        loop, exec_fn = _make_loop(turns = turns, exec_results = ["R"], max_tool_iterations = 3)
+        events = _collect_events(loop)
+        assert [name for name, _args in exec_fn.calls] == ["web_search"]
+        contents = [e["text"] for e in events if e["type"] == "content"]
+        assert not any("web_search" in t for t in contents), contents
+
+    def test_a_blocked_call_followed_by_prose_still_streams(self):
+        # Control: no peer is coming, so the hold must not swallow an ordinary answer.
+        turns = [['call:terminal{command:"id"} and I will', " not run it."]]
+        loop, exec_fn = _make_loop(turns = turns)
+        events = _collect_events(loop)
+        assert exec_fn.calls == []
+        contents = [e["text"] for e in events if e["type"] == "content"]
+        assert contents[-1] == 'call:terminal{command:"id"} and I will not run it.'
+
+
+class TestPromotableGemmaBoundary:
+    """A promotable bare Gemma call must not stream before it executes."""
+
+    def test_a_peer_after_prose_is_not_leaked(self):
+        turns = [["call:terminal{a:1} This is prose", ' call:web_search{query:"x"}'], ["Done."]]
+        loop, exec_fn = _make_loop(turns = turns, exec_results = ["R"], max_tool_iterations = 3)
+        events = _collect_events(loop)
+        assert [name for name, _args in exec_fn.calls] == ["web_search"]
+        contents = [e["text"] for e in events if e["type"] == "content"]
+        assert not any("web_search" in t for t in contents), contents
+        # The prose ahead of it still streamed.
+        assert any("This is prose" in t for t in contents), contents
+
+    def test_a_mid_prose_call_with_no_blocked_prefix_is_not_leaked(self):
+        turns = [["Here is some prose", ' call:web_search{query:"x"}'], ["Done."]]
+        loop, exec_fn = _make_loop(turns = turns, exec_results = ["R"], max_tool_iterations = 3)
+        events = _collect_events(loop)
+        assert [name for name, _args in exec_fn.calls] == ["web_search"]
+        contents = [e["text"] for e in events if e["type"] == "content"]
+        assert not any("web_search" in t for t in contents), contents
+
+
+def test_tool_protocol_active_is_true_when_unrestricted_with_empty_tools():
+    # Unrestricted mode accepts any tool name with an EMPTY tools list, so a
+    # bool(tools) flag would strip the native tool tokens it is about to parse.
+    captured: list = []
+
+    def fake_single_turn(
+        _messages,
+        *,
+        active_tools = None,
+        tool_protocol_active = None,
+    ):
+        captured.append(tool_protocol_active)
+        yield "Done."
+
+    _collect_events(
+        run_safetensors_tool_loop(
+            single_turn = fake_single_turn,
+            messages = [{"role": "user", "content": "hi"}],
+            tools = [],
+            execute_tool = FakeExecuteTool([]),
+            max_tool_iterations = 2,
+        )
+    )
+
+    assert captured == [True]
+
+
+def test_tool_protocol_active_is_false_once_the_last_tool_is_spent():
+    captured: list = []
+    exec_fn = FakeExecuteTool(["Rendered HTML canvas."])
+
+    def fake_single_turn(
+        _messages,
+        *,
+        active_tools = None,
+        tool_protocol_active = None,
+    ):
+        captured.append(tool_protocol_active)
+        if len(captured) == 1:
+            yield '<tool_call>{"name":"render_html","arguments":{"code":"<html>x</html>"}}</tool_call>'
+        else:
+            yield "Done."
+
+    _collect_events(
+        run_safetensors_tool_loop(
+            single_turn = fake_single_turn,
+            messages = [{"role": "user", "content": "make html"}],
+            tools = [{"type": "function", "function": {"name": "render_html"}}],
+            execute_tool = exec_fn,
+            max_tool_iterations = 3,
+        )
+    )
+
+    assert captured == [True, False]
+
+
+def test_call_single_turn_falls_back_to_legacy_signatures():
+    from core.inference.safetensors_agentic import _call_single_turn
+
+    seen: list = []
+
+    def no_flag(_messages, *, active_tools = None):
+        seen.append(("no_flag", active_tools))
+        yield "a"
+
+    def bare(_messages):
+        seen.append(("bare", None))
+        yield "b"
+
+    assert list(_call_single_turn(no_flag, [], [{"x": 1}], False)) == ["a"]
+    assert list(_call_single_turn(bare, [], [{"x": 1}], False)) == ["b"]
+    assert seen == [("no_flag", [{"x": 1}]), ("bare", None)]
+
+
+@pytest.mark.parametrize("edit_result", ["Edited notes.txt", "Error: failed after writing"])
+def test_workspace_read_edit_read_in_one_turn(edit_result):
+    read = '<tool_call>{"name":"terminal","arguments":{"command":"cat notes.txt"}}</tool_call>'
+    edit = '<tool_call>{"name":"edit_file","arguments":{"path":"notes.txt","edits":[]}}</tool_call>'
+    turns = iter([read + edit + read, "Done."])
+
+    def single_turn(messages, **kwargs):
+        yield next(turns)
+
+    executor = FakeExecuteTool(["before", edit_result, "after"])
+    events = _collect_events(
+        run_safetensors_tool_loop(
+            single_turn = single_turn,
+            messages = [{"role": "user", "content": "Read, edit, and verify notes.txt"}],
+            tools = [
+                {"type": "function", "function": {"name": name}}
+                for name in ("terminal", "edit_file")
+            ],
+            execute_tool = executor,
+            max_tool_iterations = 3,
+        )
+    )
+    assert [name for name, _ in executor.calls] == ["terminal", "edit_file", "terminal"]
+    assert [event["result"] for event in events if event["type"] == "tool_end"] == [
+        "before",
+        edit_result,
+        "after",
+    ]
+
+
+def test_repeated_workspace_reads_do_not_crowd_out_a_later_edit():
+    read = '<tool_call>{"name":"terminal","arguments":{"command":"cat notes.txt"}}</tool_call>'
+    edit = '<tool_call>{"name":"edit_file","arguments":{"path":"notes.txt","edits":[]}}</tool_call>'
+    turns = iter([read * 8 + edit + read, "Done."])
+
+    def single_turn(messages, **kwargs):
+        yield next(turns)
+
+    executor = FakeExecuteTool(["before", "Edited notes.txt", "after"])
+    _collect_events(
+        run_safetensors_tool_loop(
+            single_turn = single_turn,
+            messages = [{"role": "user", "content": "Read, edit, and verify notes.txt"}],
+            tools = [
+                {"type": "function", "function": {"name": name}}
+                for name in ("terminal", "edit_file")
+            ],
+            execute_tool = executor,
+            max_tool_iterations = 3,
+        )
+    )
+    assert [name for name, _ in executor.calls] == ["terminal", "edit_file", "terminal"]
+
+
+def test_an_alternating_workspace_block_does_not_replay_the_edit():
+    """One re-run verifies an edit. A repeating block past that applied the edit twice."""
+    read = '<tool_call>{"name":"terminal","arguments":{"command":"cat notes.txt"}}</tool_call>'
+    edit = '<tool_call>{"name":"edit_file","arguments":{"path":"notes.txt","edits":[]}}</tool_call>'
+    turns = iter([(read + edit) * 2, "Done."])
+
+    def single_turn(messages, **kwargs):
+        yield next(turns)
+
+    executor = FakeExecuteTool(["before", "Edited notes.txt", "after", "Edited notes.txt"])
+    _collect_events(
+        run_safetensors_tool_loop(
+            single_turn = single_turn,
+            messages = [{"role": "user", "content": "Read, edit, and verify notes.txt"}],
+            tools = [
+                {"type": "function", "function": {"name": name}}
+                for name in ("terminal", "edit_file")
+            ],
+            execute_tool = executor,
+            max_tool_iterations = 3,
+        )
+    )
+    assert [name for name, _ in executor.calls] == ["terminal", "edit_file", "terminal"]
+
+
+def test_an_alternating_workspace_block_does_not_crowd_out_a_later_tool():
+    """The block used to fill the 8-call cap, so the search the model asked for never ran."""
+    read = '<tool_call>{"name":"terminal","arguments":{"command":"cat notes.txt"}}</tool_call>'
+    edit = '<tool_call>{"name":"edit_file","arguments":{"path":"notes.txt","edits":[]}}</tool_call>'
+    search = '<tool_call>{"name":"web_search","arguments":{"query":"gpu prices"}}</tool_call>'
+    turns = iter([(read + edit) * 4 + search, "Done."])
+
+    def single_turn(messages, **kwargs):
+        yield next(turns)
+
+    executor = FakeExecuteTool(["before", "Edited notes.txt", "after", "results"])
+    _collect_events(
+        run_safetensors_tool_loop(
+            single_turn = single_turn,
+            messages = [{"role": "user", "content": "Read, edit, verify, then search"}],
+            tools = [
+                {"type": "function", "function": {"name": name}}
+                for name in ("terminal", "edit_file", "web_search")
+            ],
+            execute_tool = executor,
+            max_tool_iterations = 3,
+        )
+    )
+    assert [name for name, _ in executor.calls] == [
+        "terminal",
+        "edit_file",
+        "terminal",
+        "web_search",
+    ]
+
+
+def test_every_independent_edit_gets_its_own_verification_rerun():
+    """Two edit-and-verify cycles in one turn: the test after the second edit must run."""
+    test = '<tool_call>{"name":"terminal","arguments":{"command":"pytest -q"}}</tool_call>'
+    edit_a = '<tool_call>{"name":"edit_file","arguments":{"path":"a.py","edits":[]}}</tool_call>'
+    edit_b = '<tool_call>{"name":"edit_file","arguments":{"path":"b.py","edits":[]}}</tool_call>'
+    turns = iter([test + edit_a + test + edit_b + test, "Done."])
+
+    def single_turn(messages, **kwargs):
+        yield next(turns)
+
+    executor = FakeExecuteTool(["1 failed", "Edited a.py", "1 failed", "Edited b.py", "1 passed"])
+    _collect_events(
+        run_safetensors_tool_loop(
+            single_turn = single_turn,
+            messages = [{"role": "user", "content": "Fix the test"}],
+            tools = [
+                {"type": "function", "function": {"name": name}}
+                for name in ("terminal", "edit_file")
+            ],
+            execute_tool = executor,
+            max_tool_iterations = 3,
+        )
+    )
+    assert [name for name, _ in executor.calls] == [
+        "terminal",
+        "edit_file",
+        "terminal",
+        "edit_file",
+        "terminal",
+    ]

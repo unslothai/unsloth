@@ -10,6 +10,7 @@ Asserts every symbol unsloth-zoo's vllm_utils + vllm_lora_* expects is present.
 
 from __future__ import annotations
 
+import functools
 import json
 import os
 import re
@@ -19,29 +20,176 @@ import urllib.request
 import pytest
 
 
-# Last patch release of each tracked vLLM minor (or first stable if none yet).
-VLLM_TAGS = [
+# Derived from PyPI: a hand-kept list stops covering new minors silently, which
+# is how 0.28 moving bitsandbytes out of tree went unnoticed.
+_VLLM_MIN_VERSION = (0, 9, 0)
+
+# Only for an unreachable PyPI, and it must reach the frontier: stopping early
+# skips the releases a new guard exists for and still reports green.
+_VLLM_TAGS_FALLBACK = [
     "v0.9.0",
+    "v0.9.1",
     "v0.9.2",
     "v0.10.0",
+    "v0.10.1",
     "v0.10.2",
     "v0.11.0",
+    "v0.11.1",
+    "v0.11.2",
     "v0.12.0",
     "v0.13.0",
     "v0.14.0",
+    "v0.14.1",
     "v0.15.0",
+    "v0.15.1",
     "v0.16.0",
+    "v0.17.0",
     "v0.17.1",
+    "v0.18.0",
     "v0.18.1",
+    "v0.19.0",
     "v0.19.1",
+    "v0.20.0",
     "v0.20.1",
-    # `main` catches drift before it ships to PyPI.
-    "main",
+    "v0.20.2",
+    "v0.21.0",
+    "v0.22.0",
+    "v0.22.1",
+    "v0.23.0",
+    "v0.24.0",
+    "v0.25.0",
+    "v0.25.1",
+    "v0.26.0",
+    "v0.27.0",
+    "v0.27.1",
+    "v0.28.0",
+    "v0.29.0",
 ]
 
 
+def _stable_release_tags() -> list[str]:
+    """Stable vLLM releases >= _VLLM_MIN_VERSION, as git tags, oldest first.
+
+    All-numeric versions only: rc/dev/post builds are not what users pip
+    install, and a fully yanked release is not one we owe compatibility to.
+    Hotfixes carry a fourth component (0.9.0.1, 0.10.1.1) and are ordinary
+    installable releases, so the component count is not fixed at three.
+    """
+    try:
+        with urllib.request.urlopen("https://pypi.org/pypi/vllm/json", timeout = 20) as r:
+            releases = json.loads(r.read().decode("utf-8"))["releases"]
+    except (urllib.error.URLError, TimeoutError, ValueError, KeyError):
+        return list(_VLLM_TAGS_FALLBACK)
+
+    versions = []
+    for version, files in releases.items():
+        if not files or all(f.get("yanked") for f in files):
+            continue
+        if re.fullmatch(r"\d+(?:\.\d+){2,}", version) is None:
+            continue
+        parts = tuple(int(g) for g in version.split("."))
+        if parts >= _VLLM_MIN_VERSION:
+            versions.append(parts)
+    if not versions:
+        return list(_VLLM_TAGS_FALLBACK)
+    return ["v" + ".".join(str(p) for p in parts) for parts in sorted(versions)]
+
+
+# `main` catches drift before it ships to PyPI.
+VLLM_TAGS = _stable_release_tags() + ["main"]
+
+
+@functools.lru_cache(maxsize = None)
+def _ref_resolves(repo: str, ref: str) -> bool:
+    """Does this ref resolve? Asked of the ref itself, not of a file in it.
+
+    Probing a path conflates "ref is gone" with "that one file was renamed",
+    and a false negative skips the whole tag, `main` included, which is the ref
+    that catches drift before release. Only an explicit success counts: a
+    rate-limited or unreachable API knows nothing, so fall back to the path
+    probe rather than treating "not a 404" as resolved.
+    """
+    status = _api_status(f"repos/{repo}/commits/{ref}")
+    if status is not None:
+        return status == 200
+    return _fetch_text(repo, ref, "README.md") is not None
+
+
+def _tag_exists(tag: str) -> bool:
+    return _ref_resolves("vllm-project/vllm", tag)
+
+
+# vLLM 0.28 (PR #43529) moved bitsandbytes out of tree to vllm-bnb-plugin. The
+# plugin re-exports the same names, so unsloth_zoo resolves whichever is
+# installed; the symbols must keep existing in one home or the other.
+VLLM_BNB_IN_TREE = "vllm/model_executor/layers/quantization/bitsandbytes.py"
+VLLM_BNB_PLUGIN_REPO = "vllm-project/vllm-bnb-plugin"
+VLLM_BNB_PLUGIN_PATH = "vllm_bnb_plugin/bitsandbytes.py"
+
+
+# Used when PyPI cannot be reached. A released tag, never `main`: see _plugin_ref.
+VLLM_BNB_PLUGIN_FALLBACK_REF = "v0.0.3"
+
+
+@functools.lru_cache(maxsize = None)
+def _plugin_ref() -> str | None:
+    """The plugin tag users get from `pip install vllm-bnb-plugin`, or None.
+
+    Never `main`: an unreleased fix there would hide a broken published
+    plugin, and an unreleased regression would fail every historical vLLM at
+    once. Neither says anything about a pair anyone can install. None means no
+    released ref resolved, which is a skip rather than a verdict.
+    """
+    version = None
+    try:
+        with urllib.request.urlopen("https://pypi.org/pypi/vllm-bnb-plugin/json", timeout = 20) as r:
+            version = json.loads(r.read().decode("utf-8"))["info"]["version"]
+    except (urllib.error.URLError, TimeoutError, ValueError, KeyError):
+        pass
+    for ref in (f"v{version}" if version else None, VLLM_BNB_PLUGIN_FALLBACK_REF):
+        if ref and _ref_resolves(VLLM_BNB_PLUGIN_REPO, ref):
+            return ref
+    return None
+
+
+# Only these two are REQUIRED. unsloth_zoo subclasses BitsAndBytesConfig and
+# replaces BitsAndBytesLinearMethod._apply_4bit_weight, so both must exist.
+# `apply_bnb_4bit` is hasattr-checked (the in-tree module has never defined it
+# directly, and unsloth_zoo carries a branch for each case), and
+# `is_layer_skipped_bnb` is assigned onto the module rather than read from it.
+VLLM_BNB_SYMBOLS = (
+    "BitsAndBytesConfig",
+    "BitsAndBytesLinearMethod",
+)
+
+
+@functools.lru_cache(maxsize = None)
+def _api_status(path: str) -> int | None:
+    """HTTP status for a GitHub API path, or None if the API cannot answer.
+
+    None covers an unreachable network and an unauthenticated rate limit, both
+    of which are the runner's problem rather than a compatibility answer.
+    """
+    req = urllib.request.Request(f"https://api.github.com/{path}", method = "HEAD")
+    token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+    if token:
+        req.add_header("Authorization", f"Bearer {token}")
+    try:
+        with urllib.request.urlopen(req, timeout = 15) as r:
+            return r.status
+    except urllib.error.HTTPError as e:
+        return e.code if e.code == 404 else None
+    except (urllib.error.URLError, TimeoutError):
+        return None
+
+
+@functools.lru_cache(maxsize = None)
 def _fetch_text(repo: str, ref: str, path: str) -> str | None:
-    """Fetch a file's text from GitHub; None on 404 (renamed/removed, informational)."""
+    """Fetch a file's text from GitHub; None on 404 (renamed/removed, informational).
+
+    Cached: uncached, every-release x every-test is thousands of requests and
+    gets rate limited.
+    """
     url = f"https://raw.githubusercontent.com/{repo}/{ref}/{path}"
     req = urllib.request.Request(url)
     token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
@@ -56,6 +204,17 @@ def _fetch_text(repo: str, ref: str, path: str) -> str | None:
         pytest.skip(f"GitHub fetch failed ({e.code}) for {url}")
     except (urllib.error.URLError, TimeoutError) as e:
         pytest.skip(f"GitHub fetch failed ({e}) for {url}")
+
+
+@pytest.fixture(autouse = True)
+def _skip_when_the_tag_is_absent(request):
+    """A PyPI release with no git tag 404s on every path; that is not a
+    compatibility failure, so skip it rather than report our code broken."""
+    if "tag" not in request.fixturenames:
+        return
+    tag = request.getfixturevalue("tag")
+    if not _tag_exists(tag):
+        pytest.skip(f"vLLM repo carries no tag {tag}")
 
 
 def _has_def(
@@ -216,4 +375,91 @@ def test_unsloth_zoo_standby_guards_present():
         "version-gate against vLLM 0.10.x / 0.14.x; that re-introduces the "
         "std::bad_alloc and cudaErrorIllegalAddress crashes the team fixed "
         "in unsloth-zoo commits 664e52ea / fa82dcc2."
+    )
+
+
+@pytest.mark.parametrize("tag", VLLM_TAGS)
+def test_vllm_bitsandbytes_symbols_have_a_home(tag: str):
+    """The bnb symbols unsloth_zoo patches must exist in tree OR in the plugin.
+
+    This is the check that was missing when vLLM 0.28 moved bitsandbytes out of
+    tree: `import unsloth_zoo.vllm_utils` raised ModuleNotFoundError at module
+    scope, taking out every fast_inference GRPO run on 0.28+ rather than only
+    the 4-bit ones, and the tag list here stopped at v0.20.1 so nothing noticed.
+    """
+    in_tree = _fetch_text("vllm-project/vllm", tag, VLLM_BNB_IN_TREE)
+    if in_tree is not None:
+        missing = [s for s in VLLM_BNB_SYMBOLS if not _has_def(in_tree, s)]
+        assert not missing, f"{tag}: in-tree bitsandbytes is missing {missing}"
+        return
+
+    # Out of tree from 0.28. The plugin versions separately, so there is no tag
+    # to map onto; the published release is what a user ends up with.
+    plugin_ref = _plugin_ref()
+    if plugin_ref is None:
+        pytest.skip(
+            f"no released {VLLM_BNB_PLUGIN_REPO} ref resolved; nothing reproducible to check"
+        )
+    plugin = _fetch_text(VLLM_BNB_PLUGIN_REPO, plugin_ref, VLLM_BNB_PLUGIN_PATH)
+    assert plugin is not None, (
+        f"{tag}: bitsandbytes is absent in tree AND {VLLM_BNB_PLUGIN_PATH} could "
+        f"not be fetched from {VLLM_BNB_PLUGIN_REPO}@{plugin_ref}; nowhere to "
+        f"resolve the bnb linear method from, so load_in_4bit + fast_inference "
+        f"has no path on this version"
+    )
+    missing = [s for s in VLLM_BNB_SYMBOLS if s not in plugin]
+    assert not missing, (
+        f"{tag}: bitsandbytes moved out of tree and {VLLM_BNB_PLUGIN_REPO}@"
+        f"{plugin_ref} no longer re-exports {missing}"
+    )
+
+
+VLLM_WEIGHTS_MAPPER_PATH = "vllm/model_executor/models/utils.py"
+VLLM_UNSTACK_HELPERS = ("get_rename_mapper", "get_unstacked_mapper")
+
+
+@pytest.mark.parametrize("tag", VLLM_TAGS)
+def test_weights_mapper_unstack_helper_is_named_as_expected(tag: str):
+    """unsloth_zoo must be able to strip the fused q/k/v + gate/up maps.
+
+    0.25.0 added `get_unstacked_mapper`, 0.29.0 renamed it `get_rename_mapper`;
+    probing only the old name fused the LoRA names and killed GRPO with
+    fast_inference in vLLM's set_lora (IndexError: tuple index out of range).
+    """
+    src = _fetch_text("vllm-project/vllm", tag, VLLM_WEIGHTS_MAPPER_PATH)
+    if src is None:
+        pytest.skip(f"{tag}: {VLLM_WEIGHTS_MAPPER_PATH} not present")
+    if "orig_to_new_stacked" not in src:
+        pytest.skip(f"{tag}: WeightsMapper has no stacked maps, nothing to strip")
+    # Indented, so not _has_def, which anchors at column 0.
+    assert any(
+        re.search(rf"^\s*def\s+{name}\b", src, re.MULTILINE) for name in VLLM_UNSTACK_HELPERS
+    ), (
+        f"{tag}: WeightsMapper folds fused weights via orig_to_new_stacked but "
+        f"exposes none of {VLLM_UNSTACK_HELPERS}; unsloth_zoo's "
+        f"_drop_stacked_weight_maps falls back to clearing the field, so add "
+        f"the new spelling there"
+    )
+
+
+VLLM_QUANT_REGISTRY_PATH = "vllm/model_executor/layers/quantization/__init__.py"
+
+
+@pytest.mark.parametrize("tag", VLLM_TAGS)
+def test_out_of_tree_quant_registry_is_still_a_dict(tag: str):
+    """unsloth_zoo rewrites the registered bnb config through this dict, since
+    a plugin registers the class object and a module swap never reaches it."""
+    src = _fetch_text("vllm-project/vllm", tag, VLLM_QUANT_REGISTRY_PATH)
+    if src is None:
+        pytest.skip(f"{tag}: {VLLM_QUANT_REGISTRY_PATH} not present")
+    # The name alone is not the contract: a read-only mapping or a registry
+    # object of its own would keep this green while item assignment breaks.
+    assert re.search(
+        r"^_CUSTOMIZED_METHOD_TO_QUANT_CONFIG\s*(?::[^=\n]+)?=\s*(?:\{|dict\()",
+        src,
+        re.MULTILINE,
+    ), (
+        f"{tag}: the out-of-tree quantization registry was renamed or is no "
+        f"longer a plain mutable dict; unsloth_zoo._set_registered_quant_config "
+        f"assigns into it by key"
     )

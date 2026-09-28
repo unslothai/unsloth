@@ -17,6 +17,7 @@ const QUEUED_SETTING_KEYS = [
   "preserveThinking",
   "toolsEnabled",
   "codeToolsEnabled",
+  "codeToolsDeclinedUnderFullAccess",
   "imageToolsEnabled",
   "artifactsEnabled",
   "mcpEnabledForChat",
@@ -44,8 +45,6 @@ const QUEUED_SETTING_KEYS = [
   "maxToolCallsPerMessage",
   "toolCallTimeout",
   "autoCompactEnabled",
-  "contextPolicy",
-  "compactionHeadroomRatio",
 ] as const;
 
 type ChatRuntimeState = ReturnType<typeof useChatRuntimeStore.getState>;
@@ -68,12 +67,17 @@ const pendingSettings: PendingSettings[] = [];
 
 export function snapshotQueuedChatRunSettings(
   state: ChatRuntimeState,
+  options?: { deferModelResolution?: boolean },
 ): QueuedChatRunSettings {
   const snapshot = {
     params: { ...state.params },
   } as QueuedChatRunSettings;
   for (const key of QUEUED_SETTING_KEYS) {
     Object.assign(snapshot, { [key]: state[key] });
+  }
+  if (options?.deferModelResolution) {
+    snapshot.params.checkpoint = "";
+    snapshot.activeGgufVariant = null;
   }
   return snapshot;
 }

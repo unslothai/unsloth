@@ -4,11 +4,52 @@
 
 from __future__ import annotations
 
+import ast
 import re
+from pathlib import Path
 
 import pytest
 
 from tests.version_compat._fetch import fetch_text, first_match, has_def
+
+
+def _super_init_call(source: str, class_name: str) -> ast.Call | None:
+    """The ``super().__init__(...)`` Call node inside ``class_name``'s __init__.
+
+    Parsed rather than grepped: a substring search over the class body also sees the
+    names quoted in the legacy_kwargs table, so it passes whether or not the real call
+    uses keywords.
+    """
+    for node in ast.walk(ast.parse(source)):
+        if not (isinstance(node, ast.ClassDef) and node.name == class_name):
+            continue
+        for sub in ast.walk(node):
+            if (
+                isinstance(sub, ast.Call)
+                and isinstance(sub.func, ast.Attribute)
+                and sub.func.attr == "__init__"
+            ):
+                return sub
+    return None
+
+
+def first_match_signature(src: str, class_name: str) -> str | None:
+    """The text of ``class_name``'s __init__ parameter list, or None."""
+    at = src.find(f"class {class_name}")
+    if at == -1:
+        return None
+    at = src.find("def __init__", at)
+    if at == -1:
+        return None
+    depth = 0
+    for i in range(src.index("(", at), len(src)):
+        if src[i] == "(":
+            depth += 1
+        elif src[i] == ")":
+            depth -= 1
+            if depth == 0:
+                return src[src.index("(", at) : i + 1]
+    return None
 
 
 # pyproject pin: bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0 Test floor + each safe minor since.
@@ -217,3 +258,54 @@ def test_bnb_version_parseable(tag: str):
     assert (
         has_literal or has_subimport or has_metadata or has_version_attr
     ), f"{tag}: bnb.__version__ not exported"
+
+
+def test_bnb_optimizer2state_options_are_not_passed_positionally(tag: str):
+    """QGaLoreAdamW8bit must not pass percentile_clipping / block_wise by position.
+
+    bitsandbytes 0.50.0 removed both from Optimizer2State.__init__ (PR #1871), so positions
+    10 and 11 became max_unorm and skip_zeros. Arity still matched, nothing raised, and the
+    optimiser silently received max_unorm=100 / skip_zeros=True. Since Q-GaLore zeroes
+    p.data before the update, param_norm was 0, the unorm clip scaled every update to 0 and
+    projected parameters stopped moving entirely.
+
+    Checked here rather than at runtime because the failure is invisible on the installed
+    version alone: it needs the signature from a version the test environment does not have.
+    """
+    src = fetch_text(
+        "bitsandbytes-foundation/bitsandbytes",
+        tag,
+        "bitsandbytes/optim/optimizer.py",
+    )
+    if src is None:
+        pytest.skip(f"{tag}: bitsandbytes/optim/optimizer.py missing")
+
+    signature = first_match_signature(src, "Optimizer2State")
+    if signature is None:
+        pytest.skip(f"{tag}: could not read Optimizer2State.__init__ signature")
+
+    removed = [n for n in ("percentile_clipping", "block_wise") if n not in signature]
+    caller = (
+        Path(__file__).resolve().parents[2] / "unsloth" / "optimizers" / "q_galore_adamw.py"
+    ).read_text(encoding = "utf-8")
+
+    call = _super_init_call(caller, "QGaLoreAdamW8bit")
+    assert call is not None, "could not find QGaLoreAdamW8bit's super().__init__ call"
+
+    # "adam" and params are positional on purpose; everything after them must be a keyword,
+    # because bitsandbytes reorders the tail of this signature between minors.
+    positional = [a for a in call.args if not isinstance(a, ast.Starred)]
+    extra = positional[2:]
+    assert not extra, (
+        f"{tag}: QGaLoreAdamW8bit passes {len(extra)} argument(s) after params positionally. "
+        f"{removed or 'Nothing'} was removed from Optimizer2State at this tag, so a positional "
+        f"call lands values in whichever parameters now occupy those slots."
+    )
+    passed = {kw.arg for kw in call.keywords if kw.arg}
+    assert "optim_bits" in passed, f"{tag}: optim_bits must be passed by name"
+    for name in ("percentile_clipping", "block_wise"):
+        if name in signature:
+            continue
+        assert (
+            name not in passed
+        ), f"{tag}: Optimizer2State no longer accepts {name}, but it is still passed."

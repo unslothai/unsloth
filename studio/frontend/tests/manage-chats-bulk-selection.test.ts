@@ -6,6 +6,7 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
+import { en } from "../src/i18n/locales/en.ts";
 
 import {
   installLocalStorageFake,
@@ -104,8 +105,9 @@ test("bulk delete passes the always-delete-files preference through", async () =
 
 test("the header checkbox says it selects the visible chats, which is what it does", async () => {
   const src = await manageChatsSource();
-  // Rows sit behind a "Show more", so the label must not promise the whole list.
+  // rows sit behind "show more", so the label must not promise the whole list.
   assert.match(src, /onCheckedChange=\{toggleAllVisible\}/);
-  assert.match(src, /aria-label="Select all visible chats"/);
+  assert.match(src, /aria-label=\{t\("settings\.data\.library\.selectAll"\)\}/);
+  assert.equal(en.settings.data.library.selectAll, "Select all visible chats");
   assert.doesNotMatch(src, /aria-label="Select all chats"/);
 });

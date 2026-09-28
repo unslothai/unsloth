@@ -1,17 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""llama.cpp prebuilt freshness check.
-
-Reads UNSLOTH_PREBUILT_INFO.json (written by install_llama_prebuilt.py)
-and compares the installed release tag against the latest on GitHub.
-Surfaced via main.py:lifespan() and /api/inference/status. Fails open
-on any missing data so we never show a misleading banner.
-
-The mechanics (marker walk-up, GitHub fetch, memo + disk cache, report
-skeleton) live in utils.prebuilt.freshness_flow; this module keeps the
-llama version policy and the per-module caches its tests patch.
-"""
+"""llama.cpp prebuilt freshness check. Reads UNSLOTH_PREBUILT_INFO.json (written by install_llama_prebuilt.py) and compares the installed release tag against the latest on GitHub, surfaced via main.py:lifespan() and /api/inference/status. Fails open on any missing data so we never show a misleading banner. The mechanics (marker walk-up, GitHub fetch, memo + disk cache, report skeleton) live in utils.prebuilt.freshness_flow; this module keeps the llama version policy and the per-module caches its tests patch."""
 
 from __future__ import annotations
 
@@ -48,8 +38,7 @@ def _cache_dir() -> Path:
 
 
 def read_install_marker(binary_path: Optional[str]) -> Optional[dict]:
-    """Walk up from binary_path to find UNSLOTH_PREBUILT_INFO.json.
-    None = no marker (source build / custom path) or invalid JSON."""
+    """Walk up from binary_path to find UNSLOTH_PREBUILT_INFO.json. None = no marker (source build / custom path) or invalid JSON."""
     return _flow.read_install_marker(
         binary_path,
         marker_name = _INSTALL_MARKER_NAME,
@@ -69,8 +58,7 @@ def _save_disk_cache(repo: str, latest_tag: Optional[str]) -> None:
 
 
 def _fetch_latest_release_tag(repo: str, timeout: float = 5.0) -> Optional[str]:
-    """Newest published release tag for `repo`, by publish time (see
-    freshness_flow for why this is not GitHub's /releases/latest pointer)."""
+    """Newest published release tag for `repo`, by publish time (see freshness_flow for why this is not GitHub's /releases/latest pointer)."""
     return _flow.fetch_latest_release_tag(repo, timeout, log_message = "freshness fetch failed")
 
 
@@ -88,16 +76,14 @@ def latest_published_release(repo: str, *, force_refresh: bool = False) -> Optio
 
 
 def _fetch_latest_release_assets(repo: str, timeout: float = 5.0) -> Optional[dict[str, int]]:
-    """Asset name -> size (bytes) for the newest published release of `repo`,
-    selected exactly like _fetch_latest_release_tag. None on any failure."""
+    """Asset name -> size (bytes) for the newest published release of `repo`, selected exactly like _fetch_latest_release_tag. None on any failure."""
     return _flow.fetch_latest_release_assets(
         repo, timeout, log_message = "freshness asset fetch failed"
     )
 
 
 def latest_release_assets(repo: str, *, force_refresh: bool = False) -> Optional[dict[str, int]]:
-    """Newest-release asset sizes for `repo`, memoized (24h TTL). None when
-    offline and never fetched. In-memory only -- a restart simply re-fetches."""
+    """Newest-release asset sizes for `repo`, memoized (24h TTL). None when offline and never fetched. In-memory only, so a restart simply re-fetches."""
     return _flow.latest_release_assets(
         repo,
         force_refresh = force_refresh,
@@ -113,16 +99,13 @@ def update_download_size_bytes(
     *,
     force_refresh: bool = False,
 ) -> Optional[int]:
-    """Download size of the latest-release asset matching this host's installed
-    bundle (same platform/arch/runtime suffix as the installed asset). None when
-    there is no marker asset, the latest assets can't be read, or no match."""
+    """Download size of the latest-release asset matching this host's installed bundle (same platform/arch/runtime suffix as the installed asset). None when there is no marker asset, the latest assets cannot be read, or nothing matches."""
     if not marker or not latest_tag or not repo:
         return None
     installed_asset = marker.get("asset")
     if not isinstance(installed_asset, str):
         return None
-    # Tag-independent platform suffix: accept the fork's "app-*" bundles and the upstream ggml-org "ubuntu-*"/"win-*"
-    # prebuilts ("windows" before "win").
+    # Tag-independent platform suffix: accept the fork's "app-*" bundles and the upstream ggml-org "ubuntu-*"/"win-*" prebuilts ("windows" before "win").
     m = re.search(r"-((?:linux|ubuntu|windows|win|macos|darwin)-.*)$", installed_asset)
     if not m:
         return None
@@ -151,9 +134,7 @@ def _parse_installed_at(value: object) -> Optional[datetime]:
 
 
 def parse_base_build(tag: object) -> Optional[int]:
-    """Numeric base build from a release tag. Handles both a plain ``bNNNN`` and
-    a mix-build tag like ``b9596-mix-<sha>`` (anchored at the start, so the mix
-    suffix doesn't defeat it). None for anything not starting with ``bNNNN``."""
+    """Numeric base build from a release tag. Handles both a plain ``bNNNN`` and a mix-build tag like ``b9596-mix-<sha>`` (anchored at the start, so the mix suffix does not defeat it). None for anything not starting with ``bNNNN``."""
     if not isinstance(tag, str):
         return None
     m = re.match(r"b(\d+)", tag.strip())
@@ -161,17 +142,7 @@ def parse_base_build(tag: object) -> Optional[int]:
 
 
 def is_behind(installed: Optional[str], latest: Optional[str]) -> bool:
-    """Whether `installed` is genuinely behind `latest`, comparing the FULL
-    release identity (so a mix build can legitimately be the latest) with a
-    base-build guard so a lagging GitHub /releases/latest can never read as an
-    update or a downgrade.
-
-    - identical tags -> not behind (clears the sticky banner post-update)
-    - higher base build on `latest` -> behind; lower -> NOT behind (downgrade guard)
-    - same base build: a different/new mix -> behind, but a bare ``bNNNN`` never
-      supersedes a mix build (extra PRs) at that base -> not behind
-    - non-bNNNN tags -> behind (plain inequality, since they already differ)
-    """
+    """Whether `installed` is genuinely behind `latest`, comparing the FULL release identity (so a mix build can legitimately be the latest) with a base-build guard so a lagging GitHub /releases/latest can never read as an update or a downgrade. Identical tags are not behind (clearing the sticky banner post-update); a higher base build on `latest` is behind and a lower one is NOT (downgrade guard); at the same base build a different or new mix is behind, but a bare ``bNNNN`` never supersedes a mix build (extra PRs); non-bNNNN tags are behind by plain inequality, since they already differ."""
     if not installed or not latest:
         return False
     installed, latest = installed.strip(), latest.strip()
@@ -182,8 +153,7 @@ def is_behind(installed: Optional[str], latest: Optional[str]) -> bool:
         return True
     if lb != ib:
         return lb > ib
-    # Same base build, different tags: offer a mix (latest carries a suffix), but never offer a bare base
-    # over a mix install at the same base.
+    # Same base build, different tags: offer a mix (latest carries a suffix), but never offer a bare base over a mix install at the same base.
     return latest != f"b{lb}"
 
 
@@ -193,15 +163,8 @@ def check_prebuilt_freshness(
     threshold_days: int = STALENESS_THRESHOLD_DAYS,
     now: Optional[datetime] = None,
 ) -> dict:
-    """Returns {has_marker, stale, behind, installed_tag, latest_tag,
-    installed_at_utc, age_days, published_repo, threshold_days}.
-    behind = installed genuinely older than latest (see is_behind).
-    stale = behind AND age >= threshold.
-    Fails open on missing data (behind/stale stay False)."""
-    # Display prefers the normalized base tag, comparison uses the FULL identity, since /releases/latest returns the
-    # full tag_name: comparing the two produced a permanent "downgrade" banner.
-    # The marker records a normalized base tag ("tag", e.g. b9596) and the full "release_tag" (b9596-mix-<sha>), with
-    # deliberately opposite fallbacks.
+    """Returns {has_marker, stale, behind, installed_tag, latest_tag, installed_at_utc, age_days, published_repo, threshold_days}. behind = installed genuinely older than latest (see is_behind), stale = behind AND age >= threshold. Fails open on missing data (behind/stale stay False)."""
+    # Display prefers the normalized base tag, comparison uses the FULL identity, since /releases/latest returns the full tag_name and comparing the two produced a permanent "downgrade" banner. The marker records a normalized base tag ("tag", e.g. b9596) and the full "release_tag" (b9596-mix-<sha>), with deliberately opposite fallbacks.
     return _flow.check_freshness(
         binary_path,
         threshold_days = threshold_days,
@@ -220,15 +183,7 @@ def format_stale_warning(info: dict) -> str:
 
 
 def reset_caches(*, drop_disk: bool = False) -> None:
-    """Drop the in-memory freshness caches. The no-arg form is test-only.
-
-    With ``drop_disk = True`` also delete the on-disk 24h release cache. Used by
-    the post-install/update path: in-memory clearing alone leaves the stale
-    same-base value on disk, so if the post-install GitHub refresh can't reach
-    the network, ``latest_published_release`` would replay that stale disk value
-    (see its last-good fallback) and the banner could linger. Dropping the disk
-    cache makes latest read as None in that offline case, so the banner fails
-    open (off) instead of pointing at the just-replaced build."""
+    """Drop the in-memory freshness caches. The no-arg form is test-only. With ``drop_disk = True`` also delete the on-disk 24h release cache, used by the post-install/update path: clearing memory alone leaves the stale same-base value on disk, so if the post-install GitHub refresh cannot reach the network ``latest_published_release`` would replay that stale disk value (see its last-good fallback) and the banner could linger. Dropping the disk cache makes latest read None in that offline case, so the banner fails open instead of pointing at the just-replaced build."""
     _flow.reset_caches(
         (_marker_cache, _release_memo, _release_failed_at, _assets_memo),
         drop_disk = drop_disk,

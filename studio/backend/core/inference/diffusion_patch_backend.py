@@ -22,7 +22,6 @@ from __future__ import annotations
 
 from typing import Any, Callable, Optional
 
-# memoised per process (None = unavailable): resolution can import unsloth, far too heavy to repeat
 # Resolved ``unsloth_zoo.temporary_patches.utils`` helpers, memoised per process (None = tried and unavailable):
 # resolution can import ``unsloth``, far too heavy to repeat per call.
 _HELPERS: Optional[dict] = None

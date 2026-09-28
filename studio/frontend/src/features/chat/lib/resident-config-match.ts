@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { PerModelConfig } from "@/features/model-picker";
+import { normalizeMlxKvQuant } from "@/features/model-picker/model-config/per-model-config";
 
 import {
   parseGpuLayersOverride,
@@ -17,7 +18,7 @@ type ResidentRuntime = Pick<
   InferenceStatusResponse,
   | "requested_context_length"
   | "cache_type_kv"
-  | "mlx_kv_bits_requested"
+  | "mlx_kv_quant_requested"
   | "speculative_type"
   | "spec_draft_n_max"
   | "requested_parallel_slots"
@@ -26,6 +27,10 @@ type ResidentRuntime = Pick<
   | "requested_load_mode"
   | "requested_spec_draft_cache_type"
   | "requested_ctx_checkpoints"
+  | "reasoning_budget"
+  | "reasoning_budget_message"
+  | "requested_reasoning_budget"
+  | "requested_reasoning_budget_message"
   | "requested_cache_ram"
   | "tensor_parallel"
   | "disable_vision"
@@ -56,13 +61,13 @@ function sameList(
   return a.length === b.length && a.every((item, index) => item === b[index]);
 }
 
-/** Placement is a set, not an order: the backend narrows and reorders it at fit time. */
-function sameGpuSet(
+/** Placement is an ordered list: position decides which card the model is given first,
+ *  so the same set in a different order is a different placement and must reload. */
+function sameGpuPlacement(
   left: readonly number[] | null | undefined,
   right: readonly number[] | null | undefined,
 ): boolean {
-  const sort = (ids: readonly number[]) => [...ids].sort((a, b) => a - b);
-  return sameList(sort(left ?? []), sort(right ?? []));
+  return sameList(left ?? [], right ?? []);
 }
 
 /** What a config field resolves to when left unset. These four are not per-model, so omitting them
@@ -108,9 +113,6 @@ export type StandingConfigDefaults = {
 type SettingCheck = {
   /** Placement, which the backend rewrites wholesale on a preserved CPU fallback. */
   placement?: true;
-  /** One of the two fields `_mlx_runtime_settings_match` compares. The non-GGUF branch of /load
-   *  checks identity and those, then answers already_loaded, so nothing else here may decide
-   *  against a safetensors or MLX resident. */
   mlxComparable?: true;
   /** Placement the diffusion branch of `_runtime_matches_intent` replaces wholesale with one
    *  `_diffusion_manual_ngl` comparison. */
@@ -132,9 +134,17 @@ type SettingCheck = {
 /** Fallback reasons the backend retries on an IDENTICAL next load, from the arms of
  *  `LlamaCppBackend._runtime_matches_intent` that return False to force a repair. The rest are
  *  excluded on purpose: "drafter_no_vram" and "mla_mtp_disabled" are Auto-mode policy, and
- *  "runtime_error" only reopens when the draft count changes, which the comparison sees. */
+ *  "runtime_error" only reopens when the draft count changes, which the comparison sees.
+ *
+ *  "drafter_unloadable" is here because the sheet's remedy is to replace the sidecar in place,
+ *  and `adoptable` in use-chat-model-runtime would otherwise skip `/load`, so the backend's
+ *  content re-check never runs. An unchanged file still dedupes through already_loaded. It
+ *  needs no `sendsGgufPath` exclusion, unlike "drafter_not_found", because the re-check lives
+ *  in `_runtime_matches_intent`'s drafter comparison rather than the refetch arm that requires
+ *  `intent.gguf_path is None`. */
 const RETRYABLE_SPEC_FALLBACKS = new Set([
   "drafter_not_found",
+  "drafter_unloadable",
   "binary_no_mtp",
   "binary_outdated",
 ]);
@@ -232,10 +242,6 @@ const requestedGpuMemoryMode = (
 const cleanTemplate = (value: string | null | undefined): string | null =>
   value?.trim() ? value : null;
 
-/** Mirrors the fields `_runtime_matches_intent` reloads for, plus the MLX pair
- *  `_mlx_runtime_settings_match` compares. Nearly every check is unconditionally pinned: a
- *  config reaches here only after `applyModelLoadConfigToRuntime` resolved each field with `??
- *  null`, so an unset field asks for the default. Only `llamaExtraArgs` is optional. */
 const SETTING_CHECKS: SettingCheck[] = [
   {
     // Resolved, not compared raw: an unset length is Auto, which the load sends as 0 for a cross-model
@@ -255,7 +261,7 @@ const SETTING_CHECKS: SettingCheck[] = [
     mlxComparable: true,
     pinned: () => true,
     agrees: (c, s) =>
-      (c.mlxKvBits ?? null) === (s.mlx_kv_bits_requested ?? null),
+      (c.mlxKvQuant ?? null) === normalizeMlxKvQuant(s.mlx_kv_quant_requested),
   },
   {
     // Always pinned: an unset mode resolves to the standing preference and the load sends it. Reading
@@ -281,8 +287,7 @@ const SETTING_CHECKS: SettingCheck[] = [
   },
   {
     chatOnly: true,
-    // Unknown default: null against the status's resolved count is a reload, the safe direction.
-    // defaultParallelSlots is the EFFECTIVE count, so a build that clamps to one slot reloads.
+    mlxComparable: true,
     pinned: () => true,
     agrees: (c, s, standing) =>
       (c.nParallel ?? standing.parallelSlots) ===
@@ -307,11 +312,10 @@ const SETTING_CHECKS: SettingCheck[] = [
   },
   {
     chatOnly: true,
-    // Always pinned: the status echoes what the load requested, so a resident server
-    // that asked for nothing reports null and a blank control agrees with it. Reading
-    // blank as "no opinion" instead would mean clearing the dtype back to the f16
-    // default never relaunched, leaving the server on the quantized draft cache the
-    // panel no longer shows.
+    // Always pinned: the status echoes what the load requested, so a resident server that asked for
+    // nothing reports null and a blank control agrees with it. Reading blank as "no opinion"
+    // instead would mean clearing the dtype back to the f16 default never relaunched, leaving the
+    // server on the quantized draft cache the panel no longer shows.
     pinned: () => true,
     agrees: (c, s) =>
       (c.specDraftCacheDtype ?? null) ===
@@ -327,6 +331,22 @@ const SETTING_CHECKS: SettingCheck[] = [
     chatOnly: true,
     pinned: () => true,
     agrees: (c, s) => (c.cacheRam ?? null) === (s.requested_cache_ram ?? null),
+  },
+  {
+    // The status echoes the EFFECTIVE budget, so a default control against a server the
+    // environment shaped reads as a reload: the safe direction, like the rest.
+    chatOnly: true,
+    pinned: () => true,
+    agrees: (c, s) =>
+      (c.reasoningBudget ?? -1) ===
+      (s.requested_reasoning_budget ?? s.reasoning_budget ?? -1),
+  },
+  {
+    chatOnly: true,
+    pinned: () => true,
+    agrees: (c, s) =>
+      (c.reasoningBudgetMessage ?? "") ===
+      (s.requested_reasoning_budget_message ?? s.reasoning_budget_message ?? ""),
   },
   {
     // Not nullable, so it always has an opinion; a status omitting it ran without.
@@ -419,22 +439,39 @@ const SETTING_CHECKS: SettingCheck[] = [
         s.is_diffusion === true && reconciled?.length
           ? [Math.min(...reconciled)]
           : reconciled;
-      if (sameGpuSet(pick, s.requested_gpu_ids)) {
+      if (sameGpuPlacement(pick, s.requested_gpu_ids)) {
         return true;
       }
       // Either pool, as matches_gpu_ids accepts either: fitting may narrow the request to the smallest
       // subset that holds the model. Guarded on a non-empty echo, since an absent one is no
       // placement rather than Automatic.
-      return Boolean(s.gpu_ids?.length) && sameGpuSet(pick, s.gpu_ids);
+      return Boolean(s.gpu_ids?.length) && sameGpuPlacement(pick, s.gpu_ids);
     },
   },
   {
     // The split is placement the config cannot carry: the applier clears splitRatio, so a remembered
     // config asks for the default distribution while a resident manual load may run a custom one.
+    //
+    // Judged on the mode the RESIDENT server ran, not the one this pick would send. Since
+    // unslothai/unsloth#10884 an auto tensor-parallel load reports a split of its own, chosen by
+    // the planner, and the store never holds one in auto -- applyInferenceStatusToStore nulls it
+    // unless the mode is manual. Comparing the two sides there compares a field the applier
+    // cleared against a server legitimately running the planner's ratio, and declines to adopt a
+    // resident model that is exactly what was asked for. A manual load's custom ratio is still a
+    // real disagreement, and a server too old to report its mode is still compared, so nothing
+    // that used to reload stops reloading.
+    //
+    // Only when the store is holding NO ratio, though. applyInferenceStatusToStore keeps
+    // prevState.splitRatio whenever a gpu-memory edit is pending, so a ratio set under Manual
+    // survives the switch to Auto, and the load path sends store.splitRatio in either mode. Since
+    // this PR the backend honours that ratio in auto too, so adopting on the mode alone would drop
+    // a placement change the user had made and the server would have applied.
     placement: true,
     ggufPlacement: true,
     pinned: () => true,
-    agrees: (_c, s, standing) => sameList(standing.splitRatio, s.tensor_split),
+    agrees: (_c, s, standing) =>
+      (s.gpu_memory_mode === "auto" && standing.splitRatio == null) ||
+      sameList(standing.splitRatio, s.tensor_split),
   },
   {
     // A managed override the backend would reject outright. Folding it into "no override" here would
@@ -547,8 +584,6 @@ export function residentRuntimeMatchesConfig(
   const diffusion = status.is_diffusion === true;
   return SETTING_CHECKS.every(
     (check) =>
-      // The non-GGUF branch of /load checks identity and the MLX pair, then answers already_loaded, so
-      // no llama.cpp invocation field may decide against one.
       (status.is_gguf === false && !check.mlxComparable) ||
       (diffusion && check.chatOnly) ||
       (diffusion && check.ggufPlacement) ||
@@ -558,3 +593,4 @@ export function residentRuntimeMatchesConfig(
       check.agrees(config, status, standing),
   );
 }
+

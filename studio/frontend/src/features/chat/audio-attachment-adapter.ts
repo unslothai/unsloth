@@ -24,15 +24,12 @@ function newAttachmentId(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
-// Audio shares the "Add photos & files" picker. Like VisionImageAdapter, unsupported models are
-// rejected at add() time with a toast.
+// A loaded model without audio rejects at add(); with none loaded, the send path checks it later.
 export class AudioAttachmentAdapter implements AttachmentAdapter {
-  // MIME is unreliable for some containers (m4a), so also match by
-  // extension. No .webm extension: it would claim video/webm files; real
-  // audio webm (MediaRecorder) always reports the audio/webm MIME. .mp4 and
-  // .m4v stay off for the same reason; only .m4a is audio-only. Not the picker
-  // list: this decides routing, and .3gp is in that list only so a dialog can
-  // offer a recording.
+  // MIME is unreliable for some containers (m4a), so also match by extension. No .webm extension:
+  // it would claim video/webm files; real audio webm (MediaRecorder) always reports the audio/webm
+  // MIME. .mp4 and .m4v stay off for the same reason; only .m4a is audio-only. Not the picker list:
+  // this decides routing, and .3gp is in that list only so a dialog can offer a recording.
   accept = AUDIO_ATTACHMENT_ACCEPT;
   private readonly attachmentIds = new Set<string>();
 
@@ -42,12 +39,7 @@ export class AudioAttachmentAdapter implements AttachmentAdapter {
     const activeModel = state.models.find((m) => m.id === checkpoint);
     const modelLoaded = !!checkpoint && !state.modelLoading;
     let unavailableReason: string | null = null;
-    if (!modelLoaded) {
-      // Mirror the image gate: flag a failed load vs "no model picked".
-      unavailableReason = state.lastModelLoadError
-        ? "The last model failed to load. Check the server logs, then load a model before adding audio files."
-        : "Load a model before adding audio files.";
-    } else if (!activeModel?.hasAudioInput) {
+    if (modelLoaded && !activeModel?.hasAudioInput) {
       // A connected provider's model has no row in `models`, so without the parse this named it by its
       // raw `external::` id (#8405).
       const label =

@@ -50,6 +50,12 @@ function describeOverride(override: ApiModelOverride): string[] {
   if (override.n_parallel) {
     parts.push(plural(override.n_parallel, "parallel slot"));
   }
+  if (override.reasoning_budget !== undefined) {
+    parts.push(`reasoning budget ${override.reasoning_budget}`);
+  }
+  if (override.reasoning_budget_message) {
+    parts.push("custom reasoning budget message");
+  }
   if (override.n_batch) {
     parts.push(`batch ${override.n_batch}`);
   }
@@ -62,9 +68,8 @@ function describeOverride(override: ApiModelOverride): string[] {
   if (override.spec_draft_cache_type) {
     parts.push(`draft KV ${override.spec_draft_cache_type}`);
   }
-  // Both compared against undefined rather than tested for truth: 0 is a value the
-  // user can pick for either (no checkpoints, no host cache) and would otherwise
-  // be listed as unset.
+  // Both compared against undefined rather than tested for truth: 0 is a value the user can pick
+  // for either (no checkpoints, no host cache) and would otherwise be listed as unset.
   if (override.ctx_checkpoints !== undefined) {
     parts.push(plural(override.ctx_checkpoints, "checkpoint"));
   }

@@ -74,7 +74,6 @@ _TRANSPORT_ERRORS = (
     httpx.WriteError,
 )
 
-# the port binds only after the model loads, so any 200 means ready
 # Readiness probe: the port binds only after the model loads, so any 200 means ready. Use trivial /v1/models, not the
 # capabilities endpoint (which can block).
 _READY_PATH = "/v1/models"
@@ -271,7 +270,7 @@ class SdCppServer:
                 # sd-server after the step-7 sweep has taken its snapshot.
                 if is_process_shutting_down():
                     self._spawn_error = RuntimeError(
-                        "Studio is shutting down; not starting sd-server"
+                        "Unsloth is shutting down; not starting sd-server"
                     )
                     spawned.set()
                     return
@@ -317,7 +316,7 @@ class SdCppServer:
                         )
                     self._process = None
                     self._spawn_error = RuntimeError(
-                        "Studio is shutting down; not starting sd-server"
+                        "Unsloth is shutting down; not starting sd-server"
                     )
                     spawned.set()
                     return
@@ -513,8 +512,6 @@ class SdCppServer:
             if self._stdout_thread is not None:
                 self._stdout_thread.join(timeout = 2)
                 self._stdout_thread = None
-
-    # ── generation ───────────────────────────────────────────────────────────
 
     def img_gen(
         self,

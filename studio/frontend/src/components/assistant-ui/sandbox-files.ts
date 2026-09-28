@@ -85,9 +85,8 @@ export function isSandboxToolResult(
     images?: unknown;
     files?: unknown;
   };
-  // images too: it is always in Unsloth's own wrapper, and a tool result that
-  // merely has text and sessionId is someone else's, whose other fields would
-  // be dropped on export.
+  // images too: it is always in Unsloth's own wrapper, and a tool result that merely has text and
+  // sessionId is someone else's, whose other fields would be dropped on export.
   return (
     typeof v.text === "string" &&
     typeof v.sessionId === "string" &&
@@ -96,6 +95,14 @@ export function isSandboxToolResult(
     // name off each entry, so anything else takes the whole chat view down.
     isSandboxFileList(v.files)
   );
+}
+
+/** Whether a python/terminal call's card shows a created-files row. */
+export function hasCreatedFiles(toolName: unknown, result: unknown): boolean {
+  if (typeof toolName !== "string" || !SANDBOX_FILE_TOOLS.has(toolName)) return false;
+  if (!isSandboxToolResult(result)) return false;
+  const { files } = result as { files?: unknown[] | null };
+  return Array.isArray(files) && files.length > 0;
 }
 
 /** Ids a path segment can carry: ASGI decodes %2F before it matches a route. */
