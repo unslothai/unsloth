@@ -77,19 +77,36 @@ $report.installed_icon_matches_app = $true
 # attempt a genuine capture if Explorer exists in this process's own session.
 if ($report.explorer_session_ids -contains $report.session_id) {
   try {
-  Add-Type -AssemblyName System.Windows.Forms
-    $process = Start-Process -FilePath $installedExecutable -PassThru
-    Start-Sleep -Seconds 8
-    $bounds = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
-    $capture = New-Object System.Drawing.Bitmap($bounds.Width, $bounds.Height)
-    $graphics = [System.Drawing.Graphics]::FromImage($capture)
-    try {
-      $graphics.CopyFromScreen($bounds.Location, [System.Drawing.Point]::Empty, $bounds.Size)
-      $capture.Save((Join-Path $Output 'desktop.png'), [System.Drawing.Imaging.ImageFormat]::Png)
-      $report.desktop_capture = 'captured real interactive desktop; inspect and sanitize before publication'
-    } finally { $graphics.Dispose(); $capture.Dispose(); Stop-Process -Id $process.Id -ErrorAction SilentlyContinue }
+    Add-Type -AssemblyName System.Windows.Forms
+    $process = Start-Process -FilePath $installedExecutable -WorkingDirectory $installDir -PassThru
+    $visible = $null
+    for ($attempt = 0; $attempt -lt 4; $attempt++) {
+      Start-Sleep -Seconds 5
+      $visible = @(Get-Process -Name 'unsloth-studio' -ErrorAction SilentlyContinue |
+        Where-Object { $_.SessionId -eq $report.session_id -and $_.Path -eq $installedExecutable -and $_.MainWindowHandle -ne [IntPtr]::Zero }) |
+        Select-Object -First 1
+      if ($visible) { break }
+    }
+    $process.Refresh()
+    $report.app_exited_before_capture = $process.HasExited
+    if ($process.HasExited) { $report.app_exit_code = $process.ExitCode }
+    if ($visible) {
+      $bounds = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+      $capture = New-Object System.Drawing.Bitmap($bounds.Width, $bounds.Height)
+      $graphics = [System.Drawing.Graphics]::FromImage($capture)
+      try {
+        $graphics.CopyFromScreen($bounds.Location, [System.Drawing.Point]::Empty, $bounds.Size)
+        $capture.Save((Join-Path $Output 'desktop.png'), [System.Drawing.Imaging.ImageFormat]::Png)
+        $report.desktop_capture = 'captured real visible installed app on interactive desktop; inspect and sanitize before publication'
+      } finally { $graphics.Dispose(); $capture.Dispose() }
+    } else {
+      $report.desktop_capture = 'interactive Explorer session exists but installed app never exposed a visible window/taskbar in 20 seconds; no taskbar screenshot available'
+    }
   } catch {
-    $report.desktop_capture = "interactive desktop capture failed: $($_.Exception.Message)"
+    $report.desktop_capture = "interactive installed-app capture failed: $($_.Exception.Message)"
+  } finally {
+    if ($visible -and $visible.Id -ne $process.Id) { Stop-Process -Id $visible.Id -ErrorAction SilentlyContinue }
+    if ($process) { Stop-Process -Id $process.Id -ErrorAction SilentlyContinue }
   }
 } else {
   $report.desktop_capture = 'unavailable: no explorer.exe in runner process session; GitHub-hosted service is not a visible interactive taskbar'
@@ -103,6 +120,6 @@ if (Test-Path -LiteralPath $uninstaller) {
 } else {
   $report.uninstall_exit = 'missing uninstaller'
 }
-# lint-allow: AV010 writes a JSON report only; installed .exe is hash-verified native PE from NSIS, never replaced with non-PE bytes.
+# lint-allow: AV010 writes only JSON; the installed .exe comes from real NSIS and is never overwritten with non-PE bytes.
 $report | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $Output 'windows-report.json') -Encoding utf8
 Get-Content -LiteralPath (Join-Path $Output 'windows-report.json')
