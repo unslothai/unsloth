@@ -1,14 +1,8 @@
-"""FastVisionModel patches a loaded Kimi K2.5 / K2.7 processor for processor(text=, images=).
+# SPDX-License-Identifier: AGPL-3.0-only
 
-KimiK25Processor.__call__ takes messages= or medias= + text= only, and raises on the
-standard processor(text=..., images=...) call that generation code and the vision
-collator make. unsloth_zoo.vision_utils.patch_medias_processor rewrites such a class so
-that call works; FastBaseModel.from_pretrained applies it to the processor it returns,
-and skips it on an older unsloth_zoo that has no such helper.
+"""FastVisionModel patches a loaded Kimi K2.5 / K2.7 medias= processor so processor(text=, images=) works.
 
-Importing unsloth needs a GPU, so the block is pulled out of from_pretrained with ast
-and run over stand-ins, as tests/test_get_chat_template_processor.py does.
-"""
+Importing unsloth needs a GPU, so the block is pulled out of from_pretrained with ast (as in test_get_chat_template_processor.py)."""
 
 import ast
 import os
@@ -36,7 +30,6 @@ def _from_pretrained():
 
 
 def _patch_block():
-    """The `if hasattr(tokenizer, "image_processor"):` block that imports patch_medias_processor."""
     found = [
         node
         for node in ast.walk(_from_pretrained())
@@ -57,8 +50,6 @@ def _run_block(tokenizer, vision_utils_module, monkeypatch):
 
 
 class _KimiLikeProcessor:
-    """Same call signature as the remote KimiK25Processor."""
-
     def __init__(self):
         self.image_processor = object()
         self.tokenizer = object()
@@ -84,7 +75,6 @@ def test_loader_applies_patch_medias_processor_to_the_processor(monkeypatch):
 
 
 def test_loader_skips_on_unsloth_zoo_without_the_helper(monkeypatch):
-    # An older unsloth_zoo: the import fails and loading goes on unpatched.
     _run_block(_KimiLikeProcessor(), types.ModuleType("unsloth_zoo.vision_utils"), monkeypatch)
 
 
@@ -97,10 +87,11 @@ def test_loader_leaves_text_tokenizers_alone(monkeypatch):
 
 
 def test_patched_kimi_processor_takes_text_and_images(monkeypatch):
-    """End to end with the real unsloth_zoo helper, when the installed zoo has it."""
     real = pytest.importorskip("unsloth_zoo.vision_utils")
     if not hasattr(real, "patch_medias_processor"):
-        pytest.skip("installed unsloth_zoo has no patch_medias_processor")
+        pytest.skip(
+            "installed unsloth_zoo predates patch_medias_processor (unslothai/unsloth-zoo#1442)"
+        )
     torch = pytest.importorskip("torch")
     from transformers.feature_extraction_utils import BatchFeature
 
