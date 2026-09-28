@@ -86,8 +86,7 @@ if not HAS_FLEX_ATTENTION:
         )
 
     def slow_attention_softcapping(Q, K, V, causal_mask, self, bsz, q_len):
-        # Inductor indexes the score tensor in int32: past 2**31 elements the last rows wrap and turn NaN
-        # (torch 2.9, gemma-2-9b, 8 rows x 4305 tokens). Split the batch to stay under it.
+        # Inductor indexes the scores in int32; past 2**31 elements the last rows come back NaN.
         rows = max(1, (2**31 - 1) // (self.config.num_attention_heads * q_len * q_len))
         if bsz <= rows:
             return _softcapping_attention(Q, K, V, causal_mask, self, bsz, q_len)
