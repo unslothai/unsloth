@@ -2817,6 +2817,8 @@ def test_dflash_stays_unreclaimable_even_though_auto_now_launches_it(tmp_path):
 
     assert is_reclaimable_drafter_path("dflash-kquant.gguf") is False
     assert is_reclaimable_drafter_path("dspark-model-Q8_0.gguf") is True
+    assert is_reclaimable_drafter_path("Ternary-Bonsai-27B-dspark-Q4_1.gguf") is True
+    assert is_reclaimable_drafter_path("DeepSeek-V4-Flash-Dspark-Abliterated-MXFP4.gguf") is False
 
     repo, snap = _cache_repo(
         tmp_path,
@@ -2828,6 +2830,22 @@ def test_dflash_stays_unreclaimable_even_though_auto_now_launches_it(tmp_path):
     assert not (snap / "model-Q4_K_M.gguf").is_symlink()
     assert (snap / "dflash-kquant.gguf").is_symlink()
     assert not (snap / "dspark-model-Q8_0.gguf").is_symlink()
+
+
+def test_deleting_the_last_bonsai_variant_reclaims_its_dspark_drafter(tmp_path):
+    """The menu hides <model>-dspark-<quant>.gguf as a companion, so once the last real
+    variant is deleted nothing could ever launch it; its blob must go too."""
+    from hub.services.models.deletion import _delete_gguf_variant_from_repos
+
+    repo, snap = _cache_repo(
+        tmp_path,
+        "prism-ml/Bonsai-27B-gguf",
+        ["Bonsai-27B-Q1_0.gguf", "Bonsai-27B-dspark-Q4_1.gguf"],
+    )
+    _delete_gguf_variant_from_repos("prism-ml/Bonsai-27B-gguf", "Q1_0", [repo], None, root = tmp_path)
+
+    assert not (snap / "Bonsai-27B-Q1_0.gguf").is_symlink()
+    assert not (snap / "Bonsai-27B-dspark-Q4_1.gguf").is_symlink()
 
 
 def test_detect_dflash_file_skips_a_sidecar_named_for_another_weight(tmp_path):

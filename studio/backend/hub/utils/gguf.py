@@ -135,8 +135,11 @@ def is_reclaimable_drafter_path(path: str) -> bool:
         return False
     parts = [segment for segment in p.split("/") if segment]
     name, parents = parts[-1], parts[:-1]
-    return any(name.startswith(f"{kind}-") for kind in _DRAFTER_DIR_KINDS) or any(
-        kind in parents for kind in _DRAFTER_DIR_KINDS
+    return (
+        any(name.startswith(f"{kind}-") for kind in _DRAFTER_DIR_KINDS)
+        or any(kind in parents for kind in _DRAFTER_DIR_KINDS)
+        # <model>-dspark-<quant>.gguf: hidden from the menu as a companion, so it goes with the last variant too.
+        or _DSPARK_BEFORE_QUANT_RE.search(name) is not None
     )
 
 
