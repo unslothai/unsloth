@@ -58,7 +58,7 @@ export function Navbar({
       className={cn(
         "absolute top-0 inset-x-0 pointer-events-none",
         usesCustomTitlebar
-          ? "z-[80] h-[var(--studio-custom-titlebar-height,34px)]"
+          ? "z-[80] h-[var(--studio-custom-titlebar-height,42px)]"
           : "z-[45] h-[calc(48px*var(--ui-space-scale,1))]",
       )}
     >
@@ -66,7 +66,7 @@ export function Navbar({
         className={cn(
           "flex h-full",
           usesCustomTitlebar
-            ? "items-center pl-3"
+            ? "items-center pl-[20px]"
             : usesNativeMacTitlebar
               ? "items-start pt-[calc(11px*var(--ui-space-scale,1))] pl-[calc(var(--studio-mac-traffic-light-inset,78px)+calc(6px*var(--ui-space-scale,1)))]"
               : "items-start pt-[calc(11px*var(--ui-space-scale,1))] pl-2",
@@ -77,7 +77,7 @@ export function Navbar({
           className={cn(
             "pointer-events-auto",
             usesCustomTitlebar
-              ? "!size-[calc(34px*var(--ui-space-scale,1))]"
+              ? "!size-[34px]"
               : "!size-[calc(34px*var(--ui-space-scale,1))]",
           )}
         />

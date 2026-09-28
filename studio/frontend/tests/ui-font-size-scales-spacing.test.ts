@@ -167,22 +167,13 @@ test("fixed slots that hold scaled content scale with it", () => {
 
 test("the titlebar reserves room for its controls, which stay in the band", () => {
   const titlebar = readSrc("components/tauri/window-titlebar.tsx");
-  // The band is a fixed 34px and clips nothing, so a grown button would hang
-  // over the page and take its clicks.
-  assert.match(titlebar, /inline-flex size-\[30px\] shrink-0/);
-  // The spacer stands in for one of those buttons while the navbar renders
-  // its own trigger, so it holds the same fixed width.
-  assert.match(titlebar, /aria-hidden="true" className="size-\[30px\] shrink-0"/);
-  assert.match(titlebar, /inline-flex h-\[26px\] w-\[26px\] shrink-0/);
-  // Collapsed, the slot is the buttons (fixed) plus their scaled left-1 and gaps,
-  // and the page header beside it starts a scaled 10px further out, so neither
-  // covers the other at any size.
-  assert.match(titlebar, COLLAPSED_NAV_SLOT);
-  const provider = readSrc("app/provider.tsx");
-  assert.match(
-    provider,
-    /"--studio-collapsed-chat-controls-inset":\s*"calc\(90px \+ 18px \* var\(--ui-space-scale, 1\)\)"/,
-  );
+  // Custom chrome has 34px targets inside a 42px band. Native macOS
+  // retains its 30px navigation targets.
+  assert.match(titlebar, /customTitlebar \? "size-\[34px\]" : "size-\[30px\]"/);
+  assert.match(titlebar, /inline-flex size-\[34px\] shrink-0/);
+  // The collapsed navigation slot must hold the three targets, gaps and inset.
+  assert.match(titlebar, /max\(134px, calc\(134px \* var\(--ui-space-scale, 1\)\)\)/);
+
 });
 
 test("the composer's one-row clamp is one row at any size", () => {
@@ -263,6 +254,8 @@ test("no hand-set length above a hairline skips the scale", () => {
     (file) => /\.tsx?$/.test(file) && !FIXED_BY_DESIGN.has(file),
   ).flatMap((file) =>
     [...readSrc(file).matchAll(LENGTH)]
+      // Navbar's custom-desktop trigger shares the fixed titlebar geometry.
+      .filter((m) => !(file === "components/navbar.tsx" && ["pl-[20px]", "size-[34px]"].includes(m[0])))
       .filter((m) => Number(m[1]) * (m[2] === "rem" ? 16 : 1) > 3)
       .map((m) => `${file}: ${m[0]}`),
   );
