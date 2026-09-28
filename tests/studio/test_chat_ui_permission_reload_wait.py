@@ -43,10 +43,14 @@ def _calls(fn: ast.FunctionDef, name: str) -> list[ast.Call]:
 
 def test_the_permission_reload_never_waits_for_networkidle():
     helper = _helper()
+    # Positional or `state = "networkidle"`: both are the same wait.
     idle = [
         call
         for call in _calls(helper, "wait_for_load_state")
-        if any(isinstance(arg, ast.Constant) and arg.value == "networkidle" for arg in call.args)
+        if any(
+            isinstance(value, ast.Constant) and value.value == "networkidle"
+            for value in [*call.args[:1], *(kw.value for kw in call.keywords if kw.arg == "state")]
+        )
     ]
     assert not idle, (
         f"{HELPER} waits for networkidle again; with the step's page.route and no-store /api reads "
