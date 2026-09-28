@@ -568,3 +568,24 @@ test("a slow anonymous probe does not reinstate a refusal a newer tokened succes
     globalThis.fetch = realFetch;
   }
 });
+
+test("an abort while the anonymous probe is in flight rejects instead of returning the 401", async () => {
+  const realFetch = globalThis.fetch;
+  const controller = new AbortController();
+  globalThis.fetch = (async (_input: string | Request, init?: RequestInit) => {
+    const authorization = new Headers(init?.headers).get("authorization");
+    if (authorization) {
+      return new Response("{}", { status: 401, headers: { "X-Error-Message": "Invalid credentials" } });
+    }
+    controller.abort();
+    throw new DOMException("The operation was aborted.", "AbortError");
+  }) as typeof fetch;
+  try {
+    await assert.rejects(
+      fetchHub(API, { ...withToken(OAUTH), signal: controller.signal }),
+      (error: Error) => error.name === "AbortError",
+    );
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});

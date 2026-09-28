@@ -151,7 +151,12 @@ async function probe(
 ): Promise<Response | null> {
   try {
     return await fetchWithSession(input, init, url);
-  } catch {
+  } catch (error) {
+    // The caller's abort or timeout is the answer, not a probe that happened to fail.
+    const signal = init.signal ?? (input instanceof Request ? input.signal : undefined);
+    if (signal?.aborted || (error instanceof Error && error.name === "AbortError")) {
+      throw error;
+    }
     return null;
   }
 }
