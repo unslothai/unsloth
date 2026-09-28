@@ -510,3 +510,13 @@ test("the library header row casts a light shadow once stuck", () => {
   assert.match(header, /data-stuck=\{stuck \|\| undefined\}/);
   assert.match(header, /setStuck\(gap > /);
 });
+
+test("a favorite project tile uses the open project folder, not the file folder", () => {
+  const items = readSrc("features/library/chats/chats-items.tsx");
+  const tile = items.slice(
+    items.indexOf("export function FavoriteProjectTile("),
+    items.indexOf("}", items.indexOf("menu={<ProjectMenu", items.indexOf("export function FavoriteProjectTile("))),
+  );
+  assert.match(tile, /icon=\{Folder02Icon\}/);
+  assert.doesNotMatch(tile, /Folder01Icon/);
+});

@@ -1885,9 +1885,10 @@ export function FavoriteProjectTile({
   return (
     <FavoriteTile
       title={project.name}
+      // Open folder, as in the Chats tab, so a project is not taken for a file folder.
       icon={
         <HugeiconsIcon
-          icon={Folder01Icon}
+          icon={Folder02Icon}
           strokeWidth={1.5}
           className={FILE_CARD_ICON_CLASS}
         />
