@@ -148,7 +148,10 @@ def _load_scenario():
 
 @pytest.fixture
 def s():
-    return _load_scenario()
+    module = _load_scenario()
+    # The fakes below stand in for a verified Studio; the check itself is tested against a real socket.
+    module.studio_identity_error = lambda *a, **k: None
+    return module
 
 
 TOOL_START = {"type": "tool_start", "tool_name": "web_search"}
@@ -379,6 +382,85 @@ def test_the_poller_abandons_a_read_at_the_frontend_timeout_and_measures_the_sta
     assert len(stalls) == 1 and stalls[0] >= 200, stalls
     poller.polls = [(0.0, 50.0, True), (0.06, 50.0, True), (0.2, 5.0, False), (0.3, 50.0, True)]
     assert [round(x) for x in poller.stalls_ms()] == [205, 50]
+
+
+def _identity_server(proof):
+    """Loopback server that echoes the liveness marker and records every POST body."""
+    import base64
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from urllib.parse import parse_qs, urlparse
+
+    posts: list[bytes] = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def _reply(self, code, obj):
+            body = json.dumps(obj).encode()
+            self.send_response(code)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_GET(self):
+            url = urlparse(self.path)
+            if url.path == "/api/liveness":
+                return self._reply(200, {"service": "Unsloth UI Backend"})
+            nonce = base64.urlsafe_b64decode(parse_qs(url.query)["nonce"][0])
+            self._reply(200, {"proof": proof(nonce, *self.server.server_address[:2])})
+
+        def do_POST(self):
+            posts.append(self.rfile.read(int(self.headers.get("Content-Length") or 0)))
+            self._reply(401, {"detail": "no"})
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target = server.serve_forever, daemon = True).start()
+    return server, posts
+
+
+@pytest.mark.parametrize("bootstrap", ["", "boot-secret"])
+def test_a_port_squatter_never_receives_a_password(tmp_path, bootstrap):
+    """/api/liveness is public: only the /api/auth/identity HMAC over auth.db's secret proves Studio."""
+    import hashlib
+    import hmac
+    import sqlite3
+
+    s = _load_scenario()
+    (tmp_path / "auth").mkdir()
+    (tmp_path / "auth" / ".bootstrap_password").write_text(bootstrap, encoding = "utf-8")
+    secret = bytes(range(32))
+    conn = sqlite3.connect(tmp_path / "auth" / "auth.db")
+    conn.execute("CREATE TABLE app_secrets (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+    conn.execute("INSERT INTO app_secrets VALUES ('studio_identity_secret', ?)", (secret.hex(),))
+    conn.commit()
+    conn.close()
+
+    def real(nonce, host, port):
+        return hmac.new(
+            secret, b"|".join([nonce, host.encode(), str(port).encode()]), hashlib.sha256
+        ).hexdigest()
+
+    for proof in (lambda *a: "0" * 64, lambda n, h, p: real(n, h, p + 1)):
+        server, posts = _identity_server(proof)
+        try:
+            with pytest.raises(SystemExit, match = "refusing to send a password"):
+                s.authenticate(
+                    f"http://127.0.0.1:{server.server_address[1]}", tmp_path, "operators-choice"
+                )
+        finally:
+            server.shutdown()
+        assert posts == []
+
+    server, posts = _identity_server(real)
+    try:
+        with pytest.raises(SystemExit, match = "login failed"):
+            s.authenticate(
+                f"http://127.0.0.1:{server.server_address[1]}", tmp_path, "operators-choice"
+            )
+    finally:
+        server.shutdown()
+    assert len(posts) == 1
 
 
 def test_an_empty_bootstrap_file_means_rotated(s, tmp_path, monkeypatch):
