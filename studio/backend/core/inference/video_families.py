@@ -244,11 +244,7 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         gguf_repo = "unsloth/LTX-2.3-GGUF",
         # pre-cast Gemma3-12B TE (fp32 ~49 GB on the hub, pre-cast ~13.2 GB): the biggest download win
         te_prequant_repos = (("fp8", "text_encoder", "unsloth/LTX-2-FP8"),),
-        # Hosted pre-quantized 2.3 DISTILLED DiT (baked from ltx-2.3-22b-distilled.safetensors, validated against the
-        # Lightricks/LTX-2.3 base id). Consumed only by the 2.3 single-file assembly (video_ltx2.
-        # load_ltx23_prequant_transformer); the pipeline-kind planner never sees a 2.3 base, so it is unaffected. fp8
-        # only: the hosted LTX-2.3-INT8.pt predates the ('audio', 'av_cross_attn', 'adaln') int8 excludes and fails the
-        # loader's exclude-token check, and a policy-correct int8 DiT measured only 4% faster than bf16 on B200.
+        # Hosted 2.3 DISTILLED DiT, used only by the 2.3 single-file assembly. fp8 only: LTX-2.3-INT8.pt predates the int8 excludes.
         prequant_variant_repos = (("lightricks/ltx-2.3", "fp8", "unsloth/LTX-2.3-FP8"),),
     ),
     # Wan2.2-TI2V-5B (diffusers >= 0.35, verified on 0.39): ~5B single-stream DiT (UMT5 encoder), no audio. Its VAE's

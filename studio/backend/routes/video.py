@@ -203,7 +203,6 @@ async def video_download_plan(
         if fam is not None and not training:
             from core.inference.video_ltx2 import ltx23_identity_without_hashing
             def _plan_precision_check(*args, **kwargs):
-                # A plan never hashes the 46 GB LTX-2.3 file; /video/load does, once.
                 with ltx23_identity_without_hashing():
                     assert_video_precision_available(*args, **kwargs)
 
@@ -237,12 +236,9 @@ async def video_download_plan(
             # And the MiniMax-H3 partition: the two denoisers live in separate 66.28 GB subfolders, so a ref2va load opens
             # transformer_ref/, which the plan would otherwise miss while staging the fl2va transformer/.
             h3_task = request.h3_task,
-            # And the memory / speed policy, as /images/download-plan passes them: the auto denoiser scheme reads both,
-            # and an explicit fp8 LTX-2.3 pick under balanced / low_vram loads the bf16 DiT (precision fallback), so
-            # without them the plan staged the ~19 GB hosted FP8 DiT that load never opens.
+            # Forward the memory / speed policy: an fp8 LTX-2.3 pick under balanced / low_vram loads bf16 and must not stage the FP8 DiT.
             memory_mode = request.memory_mode,
             speed_mode = request.speed_mode,
-            # Same reason the precision gate is skipped above: no uncached smoke probe on the trainer's GPU.
             allow_device_probe = not training,
         )
         return DiffusionDownloadPlanResponse(**plan)

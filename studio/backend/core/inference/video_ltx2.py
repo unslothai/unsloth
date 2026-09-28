@@ -419,9 +419,7 @@ def ltx2_distilled_ids(*ids: Optional[str]) -> bool:
     )
 
 
-# Multimodal-guidance kwargs of LTX2Pipeline.__call__ and the values that switch each term off. diffusers #14447
-# (2026-08-11) moved the defaults to the dev recipe (stg 1.0, modality 3.0, rescale 0.7, audio CFG 7.0, ...), so a caller
-# that passes only guidance_scale now runs CFG batch-2 + an STG pass + a modality-isolation pass per step.
+# LTX2Pipeline guidance kwargs and their off values: diffusers #14447 moved defaults to the dev recipe (STG + modality passes).
 _LTX2_GUIDANCE_OFF: dict[str, float] = {
     "stg_scale": 0.0,
     "modality_scale": 1.0,
@@ -441,33 +439,27 @@ def ltx2_distilled_guidance_kwargs(call_params: Any, guidance: Optional[float]) 
     off) gets the same call it always did."""
     kwargs = {k: v for k, v in _LTX2_GUIDANCE_OFF.items() if k in call_params}
     if "audio_guidance_scale" in call_params:
-        # Pre-#14447 semantics (audio_guidance_scale or guidance_scale): audio follows the video CFG.
+        # Pre-#14447: audio follows the video CFG.
         kwargs["audio_guidance_scale"] = float(guidance if guidance is not None else 1.0)
     return kwargs
 
 
-# The base id the hosted 2.3 checkpoints were validated against, and the only single file they were baked from: the
-# distilled-1.1 refresh retrained the DiT and the dev DiT is a different model, so neither may take them.
+# Hosted 2.3 checkpoints were baked from this file only; distilled-1.1 and dev DiTs may not take them.
 LTX23_PREQUANT_BASE = "Lightricks/LTX-2.3"
 LTX23_PREQUANT_SOURCE_FILES = frozenset({"ltx-2.3-22b-distilled.safetensors"})
-# RESIDENT size of the hosted fp8 DiT, in decimal GB, from Hub file metadata (2026-09-27): LTX-2.3-FP8.pt
-# 19,057,628,489 bytes. The DiT only: the single file's VAEs / connectors / vocoder are priced as companions.
+# Resident size of LTX-2.3-FP8.pt (19,057,628,489 bytes); companions are priced separately.
 LTX23_PREQUANT_RESIDENT_GB = 19.06
 
 
-# The hosted DiT REPLACES the file's own, so the file has to be the official one, not merely share its name: a fine-tuned
-# DiT saved as ltx-2.3-22b-distilled.safetensors (a local folder, a third-party repo) would otherwise be swapped for the
-# stock weights without a word. Identity from the Hub (Lightricks/LTX-2.3 @ 5948be4ced3a, 2026-09-27). No mirror hosts
-# the bf16 single file (unsloth/LTX-2.3-GGUF carries GGUFs), so the official repo is the only source.
+# The hosted DiT REPLACES the file's own, so the file must be the official one (a same-named fine-tune would be swapped silently).
 LTX23_PREQUANT_SOURCE_REPOS = frozenset({"lightricks/ltx-2.3"})
 _LTX23_HUB_REPO_DIRS = frozenset(
     "models--" + r.replace("/", "--") for r in LTX23_PREQUANT_SOURCE_REPOS
 )
 LTX23_PREQUANT_SOURCE_SIZE = 46_149_345_038
-# The LFS sha256, which is also the blob name the Hub cache links the snapshot entry to: free to check there.
+# LFS sha256, also the Hub cache blob name.
 LTX23_PREQUANT_SOURCE_SHA256 = "14409a4d1337a8ded02fa87fb895b17a91ab2c6588f7cc3352e624ff18a689bf"
-# Anywhere else the whole file is hashed (about 30 s for 46 GB where sha256 runs at 1.4 GB/s), once: the verdict is
-# persisted per (realpath, size, mtime_ns, inode). A sample would miss a fine-tune that rewrote only some tensors.
+# Elsewhere the whole file is hashed once (~30 s), persisted per (realpath, size, mtime_ns, inode); a sample misses partial fine-tunes.
 _LTX23_HASH_CHUNK = 16 << 20
 _LTX23_VERDICTS_FILE = "ltx23-source-verdicts.json"
 _LTX23_VERDICTS_VERSION = 1
@@ -576,7 +568,6 @@ def ltx23_source_file_verified(checkpoint_path: Path | str) -> bool:
         stat = real.stat()
         if stat.st_size != LTX23_PREQUANT_SOURCE_SIZE:
             return False
-        # The digest name is only an identity inside the official repo's Hub cache blobs; anywhere else it is just a name.
         if (
             real.name == LTX23_PREQUANT_SOURCE_SHA256
             and real.parent.name == "blobs"
@@ -598,7 +589,7 @@ def ltx23_source_file_verified(checkpoint_path: Path | str) -> bool:
                 "video.ltx23_prequant: hashing %s once to confirm it is the official file", real
             )
             verified = ltx23_source_sha256(real) == LTX23_PREQUANT_SOURCE_SHA256
-            # Changed while being read: the digest describes neither version, so it is neither stored nor trusted.
+            # Changed while being read: neither stored nor trusted.
             if _ltx23_stat_key(real.stat()) != key:
                 return False
             _ltx23_write_verdict(str(real), {**key, "verified": verified})
@@ -736,8 +727,7 @@ def disable_cudnn_benchmark() -> bool:
         return False
 
 
-# One graph per (shape, guidance variant) under static compile: 1 per shape unguided, 4 guided (CFG batch, the STG block,
-# the modality pass). Dynamo's default limit of 8 fails the third guided resolution of a load.
+# Static compile: 1 graph per shape unguided, 4 guided; dynamo's default limit of 8 fails the third guided resolution.
 LTX2_RECOMPILE_LIMIT = 64
 
 
@@ -806,8 +796,7 @@ def install_stg_compile_adapter(transformer: Any) -> int:
             except Exception as exc:  # noqa: BLE001 -- reraised unless the recompile limit was hit
                 if _guard is None or _guard.error is not None or not _recompile_limit_hit(exc):
                     raise
-                # A new shape past dynamo's recompile limit: under fullgraph dynamo raises before anything ran, and the
-                # guard does not classify it, so the render would fail. Drop this DiT to eager, as for a failed build.
+                # Past the recompile limit fullgraph raises unclassified by the guard: drop this DiT to eager.
                 _guard.fail(exc, transformer)
                 exc.__traceback__ = None
                 return _inner(*args, **kwargs)
@@ -1046,8 +1035,7 @@ def load_ltx23_pipeline(
         )
 
     if transformer_override is not None:
-        # A pre-built DiT (a hosted pre-quantized checkpoint): the file contributes only the
-        # connectors / VAEs / vocoder groups.
+        # Pre-built (hosted) DiT: the file contributes only connectors / VAEs / vocoder.
         transformer = transformer_override
         groups.pop("dit", None)
     else:

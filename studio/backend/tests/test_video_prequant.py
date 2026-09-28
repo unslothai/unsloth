@@ -1385,7 +1385,6 @@ def test_auto_is_handed_the_probe_that_lets_it_reach_a_prequant_only_scheme(monk
     assert probe("int8") is False
     half = _fam(is_moe = True, prequant_repos = (("nvfp4", "org/x"),))
     assert _video_auto(monkeypatch, scheme = "nvfp4", fam = half) is None
-    # A half-covered MoE has no hosted row for this base, so the registry refuses it before any device probe runs.
     assert _video_auto.calls == []
 
 

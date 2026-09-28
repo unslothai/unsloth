@@ -351,7 +351,7 @@ def _ltx23_prequant_serves(
         and (
             _ltx23_prequant_scheme_supported(fam, target, pinned)
             if probe
-            # Training owns the GPU: the cached verdict only, never the child smoke probe.
+            # Training owns the GPU: cached verdict only, never the smoke probe.
             else explicit_scheme_cached_ok(target, pinned, family = getattr(fam, "name", None))
         )
     )
@@ -404,7 +404,7 @@ def _ltx23_prequant_serves_on_card(
     if not _ltx23_prequant_pick(fam, model_kind, checkpoint_filename, pinned, checkpoint_repo):
         return False
     try:
-        # SCOPED, not pinned: a pooled worker thread must not keep this request's card.
+        # Scoped, not pinned: a pooled worker thread must not keep this request's card.
         with diffusion_device_scope(gpu_ordinal):
             target = (
                 resolve_diffusion_device_target()
@@ -449,7 +449,6 @@ def _assert_video_precision_for_target(
     if pinned is not None and pinned != TQ_AUTO:
         reason = None
         if _ltx23_prequant_pick(fam, model_kind, checkpoint_filename, pinned, checkpoint_repo):
-            # Served by the hosted pre-quantized torchao DiT, which needs the torchao path and a resident DiT.
             if not dense_transformer_supported(target):
                 reason = dense_transformer_unsupported_reason(target)
             elif forces_offload:
@@ -458,7 +457,7 @@ def _assert_video_precision_for_target(
                     "offload, and torchao quantised tensors cannot be moved by the offload hooks"
                 )
             elif not _ltx23_prequant_scheme_supported(fam, target, pinned):
-                # The hosted DiT's own scheme: without it the seed fails only after the eviction and the 19 GB pull.
+                # Check the hosted DiT's scheme now, else it fails only after the eviction and the 19 GB pull.
                 reason = explain_unusable_scheme(getattr(fam, "name", None), pinned)
         elif model_kind != "pipeline":
             reason = (
@@ -1348,8 +1347,7 @@ def _video_auto_denoiser_scheme(
     try:
         if getattr(fam, "modular_workflow", None):
             return None
-        # Registry before the smoke probe: a scheme with no hosted row can never seed, so it must not spawn probes. The
-        # row has to resolve for THIS base: ltx-2's hosted fp8 is the 2.3 distilled DiT, which no LTX-2 pipeline seeds.
+        # Registry first: a scheme with no hosted row for THIS base never seeds, so it must not spawn probes.
         from .video_denoiser_prequant import denoiser_prequant_sources
 
         hosted = tuple(
@@ -2050,8 +2048,7 @@ class VideoBackend:
         claimed_assets = (
             (H3_GGUF_REPO, H3_COMPONENT_REPO, H3_LEGACY_COMPONENT_REPO) if h3_native else ()
         )
-        # The hosted LTX-2.3 FP8 DiT is a third repo too, fetched by the worker: claimed with _loading for the same
-        # reason. Registry only, and asked the same question (same card, same memory policy) the worker asks.
+        # The hosted LTX-2.3 FP8 DiT is a third repo: claim it with _loading, asked as the worker asks.
         if _ltx23_prequant_serves_on_card(
             fam,
             resolve_video_model_kind(gguf_filename, model_kind),
@@ -2341,8 +2338,7 @@ class VideoBackend:
                 cancel_event = cancel_event,
                 local_files_only = local_files_only,
             )
-            # The explicit fp8 on the LTX-2.3 distilled single file seeds a hosted DiT from a third repo: fetch it here,
-            # under this load's cancel event, not inline inside the assembly (and claim it against a mid-load delete).
+            # Fetch the hosted DiT here, under this load's cancel event, and claim it against a mid-load delete.
             if _ltx23_prequant_serves_on_card(
                 fam,
                 kind,
@@ -4012,8 +4008,6 @@ class VideoBackend:
                 probe = allow_device_probe,
                 hash_source = False,
             ):
-                # The LTX-2.3 distilled single file under an explicit fp8 seeds the hosted DiT from its own repo (the
-                # file itself is still read for its connectors / VAEs / vocoder).
                 from .video_ltx2 import LTX23_PREQUANT_BASE
                 lq_repo, lq_files = self._denoiser_prequant_hub_files(
                     fam, TQ_FP8, LTX23_PREQUANT_BASE, api
@@ -4744,9 +4738,7 @@ class VideoBackend:
                 transformer_mib = estimate_safetensors_dense_mib(size_mib)
                 if transformer_mib is not None:
                     transformer_mib = int(transformer_mib * dtype_scale)
-        # An explicit fp8 on the bf16 LTX-2.3 distilled single file is served by the hosted pre-quantized DiT (the 2.3
-        # assembly below seeds it), so price the plan at that DiT: at the bf16 file size a card where fp8 fits resident
-        # plans an offload, skips the seed and refuses the pick only after the eviction.
+        # Price the plan at the hosted fp8 DiT: the bf16 file size would plan an offload and skip the seed.
         ltx23_prequant_pick = transformer_mib is not None and _ltx23_prequant_serves(
             fam,
             kind,
@@ -4758,9 +4750,7 @@ class VideoBackend:
         )
         ltx23_dense_transformer_mib = transformer_mib
         if ltx23_prequant_pick:
-            # From the hosted artifact itself, not the file scaled by the fp8 factor: the ~46 GB file also carries the
-            # VAEs / connectors / vocoder the companion term already prices, so 0.55 x file over-stated the DiT by ~6 GB
-            # and a card where the real one fits resident planned an offload and refused the pick.
+            # The hosted artifact size, not 0.55 x file: the file also carries companions (over-stated ~6 GB).
             from .video_ltx2 import LTX23_PREQUANT_RESIDENT_GB
             transformer_mib = int(LTX23_PREQUANT_RESIDENT_GB * mib_per_gb)
         runtime_mib = estimate_video_runtime_mib(
@@ -5035,9 +5025,7 @@ class VideoBackend:
             from .video_ltx2 import is_ltx23_checkpoint, load_ltx23_pipeline
 
             if fam.name == "ltx-2" and is_ltx23_checkpoint(checkpoint_path):
-                # An explicit fp8 on the bf16 distilled single file takes the hosted pre-quantized DiT (#742): the
-                # dense quant below is pipeline-kind only, so without this the pick silently ran bf16. Resident plans
-                # only (offload hooks move modules with Module.to(), which torchao tensors reject).
+                # Explicit fp8 on the distilled file takes the hosted DiT (#742); the dense quant below is pipeline-only. Resident only: offload hooks' Module.to() rejects torchao tensors.
                 ltx23_override = None
                 ltx23_scheme = normalize_transformer_quant(transformer_quant)
                 seeded = None
@@ -5061,8 +5049,7 @@ class VideoBackend:
                     denoiser_seed_scheme = ltx23_scheme
                     denoiser_seed_sources = {"transformer": ltx23_source}
                 elif ltx23_prequant_pick:
-                    # Decline BEFORE the dense assembly: it would load the 44 GB bf16 DiT only for the fail-closed check
-                    # below to refuse it.
+                    # Decline before the dense assembly loads the 44 GB bf16 DiT only to refuse it.
                     ltx23_reason = (
                         f"this GPU's '{plan.offload_policy}' memory plan offloads the DiT even at fp8 size, and "
                         "torchao quantised tensors cannot be moved by the offload hooks"
@@ -5080,7 +5067,6 @@ class VideoBackend:
                                 off_label = "Off to run the DiT at bf16",
                             )
                         )
-                    # The opt-in fallback loads the dense DiT: re-plan at its size.
                     logger.warning("video.ltx23_prequant: %s; loading the bf16 DiT", ltx23_reason)
                     transformer_mib = ltx23_dense_transformer_mib
                     plan, bf16_plan, quant_replanned = _plan_for_te_scale(
@@ -5470,8 +5456,7 @@ class VideoBackend:
                 target = types.SimpleNamespace(device = target.device, dtype = dtype),
             )
             if fam.name == "ltx-2":
-                # Token counts depend only on (width, height, frames) (the connector pads text to a fixed length), so a
-                # static compile costs one recompile per new shape and runs ~1.3x faster than dynamic kernels.
+                # Token counts depend only on (w, h, frames), so static compile: one recompile per shape, ~1.3x faster.
                 ltx_dit = getattr(view, fam.denoiser_attr, None)
                 if ltx_dit is not None:
                     try:
@@ -5494,9 +5479,7 @@ class VideoBackend:
                 from .video_ltx2 import install_stg_compile_adapter
                 install_stg_compile_adapter(getattr(view, fam.denoiser_attr, None))
             if fam.name == "ltx-2" and applied.get("cudnn_benchmark"):
-                # LTX's only convs are the video VAE, audio VAE and vocoder: cudnn.benchmark measured no steady gain
-                # there (768x512x121 decode 0.55 vs 0.55 s) but a re-tune per new shape that made the first render
-                # 26.3 s instead of 10.0 s (vocoder 10.6 s, VAE 4.6 s). Restored at unload with the other flags.
+                # cudnn.benchmark: no steady gain on LTX's VAE / vocoder convs, but a per-shape re-tune (first render 26 s vs 10 s).
                 from .video_ltx2 import disable_cudnn_benchmark
                 if disable_cudnn_benchmark():
                     applied = {**applied, "cudnn_benchmark": False}
@@ -7181,10 +7164,10 @@ class VideoBackend:
                         ltx2_distilled_ids,
                     )
 
-                    # A distilled DiT is sampled unguided; newer diffusers defaults would add STG + modality passes.
+                    # Distilled DiT is sampled unguided; newer diffusers defaults would add STG + modality passes.
                     if ltx2_distilled_ids(state.gguf_filename, state.repo_id, state.base_repo):
                         kwargs.update(ltx2_distilled_guidance_kwargs(call_params, guidance))
-                    # The static-shape DiT compiles per resolution; the render thread copies this thread's context.
+                    # The render thread copies this thread's context, so raise the recompile limit here.
                     ensure_recompile_limit()
                 if not fam.supports_cfg:
                     pass

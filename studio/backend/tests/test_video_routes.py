@@ -1344,9 +1344,7 @@ def test_video_download_plan_forwards_the_denoiser_policy(client, monkeypatch):
 def test_video_download_plan_does_not_stage_the_hosted_fp8_dit_for_an_offloaded_load(
     client, monkeypatch
 ):
-    # With precision fallback on, an explicit fp8 on the LTX-2.3 distilled single file under balanced / low_vram loads
-    # the bf16 DiT from the file itself, so the ~19 GB unsloth/LTX-2.3-FP8 artifact must not be staged. The plan only
-    # knows that if the route forwards the memory policy: the real download_plan runs here, only the Hub is stubbed.
+    # Precision fallback under balanced / low_vram loads bf16, so the FP8 artifact must not be staged (needs the route to forward the policy).
     import types
 
     import core.inference.diffusion_device as devmod
@@ -1422,7 +1420,6 @@ def test_video_download_plan_does_not_stage_the_hosted_fp8_dit_for_an_offloaded_
         assert resp.status_code == 200, resp.text
         return {e["repo_id"] for e in resp.json()["entries"]}
 
-    # The resident load does seed the hosted DiT, so the plan stages it.
     assert "unsloth/LTX-2.3-FP8" in _staged(None)
     assert "unsloth/LTX-2.3-FP8" in _staged("fast")
     for memory_mode in ("balanced", "low_vram"):
@@ -1430,8 +1427,7 @@ def test_video_download_plan_does_not_stage_the_hosted_fp8_dit_for_an_offloaded_
 
 
 def test_video_download_plan_does_not_probe_fp8_while_training(client, monkeypatch):
-    # The route skips the precision gate while a trainer holds the GPU; the hosted LTX-2.3 FP8 DiT check in the planner
-    # must not spawn the uncached smoke probe either. It reads the cached verdict: unprobed stages, a failure does not.
+    # Trainer holds the GPU: the planner reads the cached verdict, never spawns the smoke probe.
     import types
 
     import core.inference.diffusion_device as devmod

@@ -3638,9 +3638,7 @@ def test_begin_load_publishes_the_h3_companion_claim_with_the_loading_state(
 def test_begin_load_publishes_the_hosted_ltx23_fp8_claim_with_the_loading_state(
     fake_runtime, monkeypatch
 ):
-    # The explicit fp8 on the LTX-2.3 distilled single file fetches its DiT from unsloth/LTX-2.3-FP8, a repo that is
-    # neither repo_id nor base_repo. Claimed only on the worker, a cache delete arriving between begin_load publishing
-    # _loading and that claim is admitted and races the fetch, so the claim goes out with _loading, like H3's.
+    # The hosted DiT's repo is claimed with _loading (like H3's), so a delete before the worker's claim cannot race the fetch.
     import threading
     from types import SimpleNamespace
 
@@ -3651,7 +3649,6 @@ def test_begin_load_publishes_the_hosted_ltx23_fp8_claim_with_the_loading_state(
     monkeypatch.setattr(
         video_mod, "assert_video_precision_available", lambda fam, **kw: None, raising = False
     )
-    # Never started: the window under test is before the load thread is scheduled.
     monkeypatch.setattr(
         threading, "Thread", lambda *a, **k: SimpleNamespace(start = lambda: None, daemon = True)
     )
@@ -3668,7 +3665,6 @@ def test_begin_load_publishes_the_hosted_ltx23_fp8_claim_with_the_loading_state(
         return backend.loading_repo_ids()
 
     assert "unsloth/LTX-2.3-FP8" in _claimed(transformer_quant = "fp8")
-    # A load that never opens the hosted DiT must not block its deletion.
     assert "unsloth/LTX-2.3-FP8" not in _claimed()
     assert "unsloth/LTX-2.3-FP8" not in _claimed(transformer_quant = "fp8", memory_mode = "balanced")
 
@@ -11287,8 +11283,7 @@ def _guided_ltx_call(monkeypatch, pipe):
 
 
 def test_generate_distilled_turns_multimodal_guidance_off(fake_runtime, tmp_path, monkeypatch):
-    # diffusers #14447 moved LTX2Pipeline's defaults to the dev recipe (STG 1.0, modality 3.0, audio CFG 7.0); a distilled
-    # DiT is sampled unguided, so every term must be switched off explicitly or each step runs four DiT forwards.
+    # Distilled DiT: every #14447 guidance term must be off, else four DiT forwards per step.
     backend = _load_ltx23_from_dir(tmp_path)
     _guided_ltx_call(monkeypatch, backend._state.pipe)
     backend.generate(prompt = "a sloth")
@@ -11297,14 +11292,12 @@ def test_generate_distilled_turns_multimodal_guidance_off(fake_runtime, tmp_path
     assert call["stg_scale"] == 0.0 and call["audio_stg_scale"] == 0.0
     assert call["modality_scale"] == 1.0 and call["audio_modality_scale"] == 1.0
     assert call["guidance_rescale"] == 0.0 and call["audio_guidance_rescale"] == 0.0
-    # Audio CFG follows the video CFG (the pre-#14447 ``audio_guidance_scale or guidance_scale``).
     assert call["audio_guidance_scale"] == 1.0
     backend.generate(prompt = "a sloth", guidance = 2.5)
     assert backend._state.pipe.last_kwargs["audio_guidance_scale"] == 2.5
 
 
 def test_generate_dev_keeps_pipeline_guidance_defaults(fake_runtime, tmp_path, monkeypatch):
-    # The dev DiT is trained for guided sampling; its multimodal guidance is left to the pipeline.
     (tmp_path / "ltx-2.3-22b-dev-Q4_K_M.gguf").write_bytes(b"w")
     backend = VideoBackend()
     backend.load_pipeline(
@@ -11322,7 +11315,6 @@ def test_generate_dev_keeps_pipeline_guidance_defaults(fake_runtime, tmp_path, m
 def test_ltx2_distilled_guidance_kwargs_follow_the_signature():
     from core.inference.video_ltx2 import ltx2_distilled_guidance_kwargs
 
-    # An older diffusers without the multimodal kwargs gets exactly the call it always did.
     assert ltx2_distilled_guidance_kwargs({"prompt": None, "guidance_scale": None}, 1.0) == {}
     full = ltx2_distilled_guidance_kwargs(
         {"stg_scale": 0, "modality_scale": 0, "audio_guidance_scale": 0, "guidance_rescale": 0},
@@ -11365,9 +11357,7 @@ def test_stg_compile_adapter_hands_the_block_a_python_bool():
 
 
 def test_stg_compile_adapter_drops_to_eager_past_the_recompile_limit():
-    # A static-shape LTX DiT compiles a graph per (shape, guidance variant); past dynamo's recompile limit fullgraph
-    # raises FailOnRecompileLimitHit, which the compile guard does not classify, so the render failed. The adapter
-    # routes it through the guard: this DiT runs eager from then on, and any other error still propagates.
+    # Past the recompile limit fullgraph raises FailOnRecompileLimitHit; the adapter routes it to eager, other errors propagate.
     torch = pytest.importorskip("torch")
     limit_hit = getattr(
         getattr(getattr(torch, "_dynamo", None), "exc", None), "FailOnRecompileLimitHit", None
@@ -11405,8 +11395,7 @@ def test_stg_compile_adapter_drops_to_eager_past_the_recompile_limit():
 
 
 def test_ltx2_recompile_limit_reaches_the_render_thread():
-    # torch >= 2.12 keeps dynamo config writes per thread context, so the load thread's raise never reached the render
-    # thread (default 8: the third guided LTX resolution failed). The render copies the generate caller's context.
+    # torch >= 2.12 keeps dynamo config per thread context; the render copies the caller's context.
     pytest.importorskip("torch")
     try:
         import torch._dynamo.config as dynamo_cfg
@@ -11434,8 +11423,7 @@ def test_ltx2_recompile_limit_reaches_the_render_thread():
 
 
 def test_precision_gate_admits_fp8_only_for_the_ltx23_prequant_file(fake_runtime, monkeypatch):
-    # #742: an explicit fp8 on the bf16 LTX-2.3 distilled single file is served by the hosted pre-quantized DiT, so the
-    # route must not refuse it as a "full-pipeline only" dense quant. Every other single file / scheme still is.
+    # #742: explicit fp8 on the distilled file is served by the hosted DiT; other single files / schemes are still refused.
     import core.inference.video as video_mod
 
     monkeypatch.setattr(video_mod, "dense_transformer_supported", lambda target: True)
@@ -11462,7 +11450,6 @@ def test_precision_gate_admits_fp8_only_for_the_ltx23_prequant_file(fake_runtime
                 checkpoint_filename = filename,
                 checkpoint_repo = "Lightricks/LTX-2.3",
             )
-    # A forced offload cannot carry torchao tensors, prequant or not.
     with pytest.raises(RuntimeError, match = "offload"):
         video_mod.assert_video_precision_available(
             fam,
@@ -11488,7 +11475,6 @@ def test_ltx23_prequant_source_resolves_the_hosted_fp8_only():
         source
     )  # the artifact the repo actually hosts
     assert resolve_prequant_source(fam, "int8", base_repo = LTX23_PREQUANT_BASE) is None
-    # The LTX-2 base pipeline has no hosted denoiser wired.
     assert resolve_prequant_source(fam, "fp8", base_repo = "Lightricks/LTX-2") is None
 
 
@@ -11523,8 +11509,7 @@ def _ampere_or_hopper(monkeypatch, *, fp8):
 
 @pytest.mark.parametrize("fp8", [False, True], ids = ["sm80", "sm90"])
 def test_ltx23_hosted_fp8_seed_requires_fp8_on_the_card(fake_runtime, monkeypatch, fp8):
-    # Ampere runs the dense torchao path (int8) but not fp8. The hosted DiT is torchao fp8, so an explicit fp8 there
-    # used to pass the preflight, stage and price the 19 GB artifact, evict the resident model, and fail at the seed.
+    # Ampere runs torchao int8 but not fp8: the preflight must refuse before the eviction and 19 GB pull.
     from core.inference import video as video_mod
 
     target = _ampere_or_hopper(monkeypatch, fp8 = fp8)
@@ -11601,8 +11586,6 @@ def _ltx23_synthetic_official(monkeypatch, path):
 
 
 def test_ltx23_local_file_is_substituted_only_when_it_is_the_official_one(tmp_path, monkeypatch):
-    # The hosted DiT replaces the file's own, so a same-named fine-tune must not be swapped for the stock weights. Local
-    # files are verified by size and the full sha256.
     from core.inference import video_ltx2
 
     _ltx23_verdict_store(monkeypatch, tmp_path)
@@ -11612,8 +11595,7 @@ def test_ltx23_local_file_is_substituted_only_when_it_is_the_official_one(tmp_pa
     size, offsets = _ltx23_synthetic_official(monkeypatch, official / name)
     assert video_ltx2.ltx23_prequant_eligible(name, str(official))
     assert video_ltx2.ltx23_prequant_eligible(name, str(official / name))
-    # Same name, size and header, one tensor byte changed: inside a window a sampled check read, and outside all of
-    # them (a merge that touched only some layers). Neither is served.
+    # One tensor byte changed, inside and outside any sampled window: not served.
     outside = offsets[0] - 4096
     assert all(not (off <= outside < off + (1 << 20)) for off in offsets)
     for where in (offsets[1] + 7, outside, 12):
@@ -11624,7 +11606,6 @@ def test_ltx23_local_file_is_substituted_only_when_it_is_the_official_one(tmp_pa
         (tuned / name).write_bytes(bytes(blob))
         assert not video_ltx2.ltx23_prequant_eligible(name, str(tuned)), where
         assert not video_ltx2.ltx23_source_file_verified(tuned / name), where
-    # Different size, and a missing file: not served.
     short = tmp_path / "short"
     short.mkdir()
     (short / name).write_bytes(b"w")
@@ -11645,7 +11626,6 @@ def test_ltx23_local_verdict_is_hashed_once_and_invalidated_by_a_change(tmp_path
     assert video_ltx2.ltx23_source_file_verified(path)
     assert video_ltx2.ltx23_source_file_verified(path)
     assert len(hashed) == 1 and store.is_file()
-    # Rewritten in place under the same size: the stored verdict no longer applies.
     blob = bytearray(path.read_bytes())
     blob[-3] ^= 0xFF
     stat = path.stat()
@@ -11654,7 +11634,7 @@ def test_ltx23_local_verdict_is_hashed_once_and_invalidated_by_a_change(tmp_path
     assert not video_ltx2.ltx23_source_file_verified(path)
     assert not video_ltx2.ltx23_source_file_verified(path)
     assert len(hashed) == 2
-    # Planning never hashes: a stored verdict answers, an unknown file of the official size reads as eligible.
+    # Planning never hashes.
     other = tmp_path / "other" / name
     other.parent.mkdir()
     other.write_bytes(bytes(blob))
@@ -11663,7 +11643,6 @@ def test_ltx23_local_verdict_is_hashed_once_and_invalidated_by_a_change(tmp_path
         assert video_ltx2.ltx23_source_file_verified(other)
     assert len(hashed) == 2
 
-    # A read error is not official and is not remembered.
     def _unreadable(p):
         raise OSError("EIO")
 
@@ -11678,17 +11657,15 @@ def test_ltx23_hub_pick_is_substituted_only_from_the_official_repo(tmp_path, mon
     name = "ltx-2.3-22b-distilled.safetensors"
     cached: dict = {"hit": None}
     monkeypatch.setattr(video_ltx2, "_ltx23_hub_cached_file", lambda repo, filename: cached["hit"])
-    # Official repo, not yet downloaded: the id is the identity (the load re-checks the file it resolves).
     assert video_ltx2.ltx23_prequant_eligible(name, "Lightricks/LTX-2.3")
     assert video_ltx2.ltx23_prequant_eligible(f"sub/{name}", "lightricks/ltx-2.3")
-    # A third-party repo with the same file name is never substituted, cached or not.
     for repo in ("someone/LTX-2.3-finetune", "unsloth/LTX-2.3-GGUF", "Lightricks/LTX-2"):
         assert not video_ltx2.ltx23_prequant_eligible(name, repo), repo
     assert not video_ltx2.ltx23_prequant_eligible(name, None)
     assert not video_ltx2.ltx23_prequant_eligible(
         "ltx-2.3-22b-dev.safetensors", "Lightricks/LTX-2.3"
     )
-    # Cached: a content-addressed blob of the official size is the file, with no hashing; anything else in its place is not.
+    # Cached: an official-size content-addressed blob is the file, no hashing.
     _, hashed = _ltx23_verdict_store(monkeypatch, tmp_path)
     blobs = tmp_path / "models--Lightricks--LTX-2.3" / "blobs"
     blobs.mkdir(parents = True)
@@ -11705,8 +11682,7 @@ def test_ltx23_hub_pick_is_substituted_only_from_the_official_repo(tmp_path, mon
     assert video_ltx2.ltx23_source_file_verified(snap / name)
     assert hashed == []
     assert video_ltx2.ltx23_prequant_eligible(name, "Lightricks/LTX-2.3")
-    # The digest as a file name outside the official repo's blobs in a Hub cache root is not an identity: it is hashed
-    # like any local file, including a look-alike models--Lightricks--LTX-2.3/blobs tree outside every cache root.
+    # A digest-named file outside the official repo's cache blobs is hashed like any local file.
     elsewhere = tmp_path / "mine" / "models--Lightricks--LTX-2.3" / "blobs"
     elsewhere.mkdir(parents = True)
     fake = elsewhere / video_ltx2.LTX23_PREQUANT_SOURCE_SHA256
@@ -11733,8 +11709,6 @@ def test_ltx23_hub_pick_is_substituted_only_from_the_official_repo(tmp_path, mon
 def test_ltx23_unverified_same_name_pick_is_refused_not_substituted(
     fake_runtime, tmp_path, monkeypatch
 ):
-    # Official repo: served. A local same-name file with another identity, or a third-party repo: the explicit fp8 is
-    # refused before the load (the pre-substitution behaviour), never silently answered with the stock DiT.
     from core.inference import video as video_mod, video_ltx2
 
     target = _ampere_or_hopper(monkeypatch, fp8 = True)
@@ -11839,8 +11813,7 @@ def test_ltx23_single_file_fp8_seeds_the_hosted_denoiser(fake_runtime, tmp_path,
 
 
 def test_ltx23_single_file_fp8_without_a_checkpoint_is_refused(fake_runtime, tmp_path, monkeypatch):
-    # No usable hosted checkpoint: the explicit pick must not run silently at bf16, and is refused BEFORE the dense
-    # assembly loads the 44 GB bf16 DiT only for the fail-closed check to throw it away.
+    # Refused before the dense assembly loads the 44 GB bf16 DiT.
     from core.inference import video_ltx2
 
     assembled = []
@@ -11852,7 +11825,6 @@ def test_ltx23_single_file_fp8_without_a_checkpoint_is_refused(fake_runtime, tmp
 
 
 def test_ltx23_hosted_fp8_fallback_rechecks_unified_memory(fake_runtime, tmp_path, monkeypatch):
-    # The opt-in bf16 fallback re-plans at the dense DiT size, so that plan must pass the unified-memory refusal too.
     from core.inference import video as video_mod
 
     priced = _ltx23_fp8_plan_at(monkeypatch, fits_mib = 10**9)
@@ -11896,8 +11868,6 @@ def _ltx23_fp8_plan_at(monkeypatch, fits_mib):
 def test_ltx23_single_file_fp8_is_planned_at_the_hosted_dit_size(
     fake_runtime, tmp_path, monkeypatch
 ):
-    # Priced at the 44 GB bf16 file, a card where the fp8 DiT fits resident planned an offload, skipped the seed and
-    # refused the pick after the eviction. The plan is priced at the fp8 DiT, so the seed engages.
     priced = _ltx23_fp8_plan_at(monkeypatch, fits_mib = 30_000)
     seeded_dit = object()
     source = types.SimpleNamespace(
@@ -11913,10 +11883,7 @@ def test_ltx23_single_file_fp8_is_planned_at_the_hosted_dit_size(
 def test_ltx23_single_file_fp8_is_priced_at_the_hosted_artifact_not_the_scaled_file(
     fake_runtime, tmp_path, monkeypatch
 ):
-    # The 46 GB single file is the DiT PLUS its VAEs / connectors / vocoder, which the plan already prices through the
-    # companion term, and the hosted FP8 artifact replaces only the DiT: 19,057,628,489 bytes (~18,175 MiB) on the Hub.
-    # Scaling the whole file by the generic fp8 factor priced it at ~24,200 MiB, so a card with room for the real DiT
-    # but not 6 GB more planned an offload and refused the pick. Budget between the two.
+    # Priced at the hosted DiT (~18,175 MiB), not file x fp8 factor (~24,200 MiB): budget between the two.
     priced = _ltx23_fp8_plan_at(monkeypatch, fits_mib = 20_000)
     seeded_dit = object()
     source = types.SimpleNamespace(
@@ -11931,7 +11898,6 @@ def test_ltx23_single_file_fp8_is_priced_at_the_hosted_artifact_not_the_scaled_f
 def test_ltx23_single_file_fp8_just_under_the_hosted_artifact_still_offloads(
     fake_runtime, tmp_path, monkeypatch
 ):
-    # The other side of the boundary: a card without room for the hosted DiT itself is still refused, not seeded.
     _ltx23_fp8_plan_at(monkeypatch, fits_mib = 18_000)
     with pytest.raises(RuntimeError, match = "offloads the DiT even at fp8 size"):
         _load_ltx23_single_file_fp8(tmp_path, monkeypatch, (object(), None))
@@ -11946,8 +11912,7 @@ def test_ltx23_single_file_fp8_that_still_offloads_is_refused_before_the_assembl
 
 
 def test_ltx2_distilled_detection_follows_the_selected_checkpoint():
-    # Decided like the generation defaults: the selected file before its repo / folder, so a dev file under a
-    # '...distilled...' path keeps its guidance and the 40-step default agrees with it.
+    # The selected file decides before its repo / folder.
     from core.inference.video_families import default_video_generation_params
     from core.inference.video_ltx2 import ltx2_distilled_ids
 
@@ -11973,8 +11938,7 @@ def test_ltx2_distilled_detection_follows_the_selected_checkpoint():
 
 
 def test_download_plan_stages_the_hosted_fp8_dit_for_the_ltx23_distilled_single_file(monkeypatch):
-    # The explicit fp8 pick seeds unsloth/LTX-2.3-FP8, a third repo the plan never listed: the load pulled 19 GB
-    # inline, outside the download manager's progress, cancel and disk preflight.
+    # The hosted DiT's repo is staged by the plan, not pulled inline by the load.
     _plan_api(
         monkeypatch,
         {
@@ -12013,7 +11977,6 @@ def test_download_plan_stages_the_hosted_fp8_dit_for_the_ltx23_distilled_single_
         e["repo_id"]: e for e in _plan("ltx-2.3-22b-distilled.safetensors", "fp8")["entries"]
     }
     assert by_repo["unsloth/LTX-2.3-FP8"]["files"] == ["LTX-2.3-FP8.pt"]
-    # The single file is still read for its connectors / VAEs / vocoder.
     assert "ltx-2.3-22b-distilled.safetensors" in by_repo["Lightricks/LTX-2.3"]["files"]
     for filename, quant in (
         ("ltx-2.3-22b-distilled.safetensors", None),
@@ -12022,7 +11985,6 @@ def test_download_plan_stages_the_hosted_fp8_dit_for_the_ltx23_distilled_single_
     ):
         repos = {e["repo_id"] for e in _plan(filename, quant)["entries"]}
         assert "unsloth/LTX-2.3-FP8" not in repos, (filename, quant)
-    # A load that falls back to bf16 (precision fallback on) never opens the 19 GB artifact: not staged either.
     for memory_mode in ("balanced", "low_vram"):
         repos = {
             e["repo_id"]
@@ -12113,7 +12075,6 @@ def test_the_ltx23_fp8_load_prefetches_the_hosted_dit_under_its_cancel_event(tmp
         _cancel_event = cancel,
     )
     assert fetched == []
-    # Precision fallback lets these loads through on bf16, which never opens the hosted DiT: no 19 GB prefetch.
     for token, memory_mode, card_ok in (
         (9, "balanced", True),
         (10, "low_vram", True),
@@ -12137,8 +12098,7 @@ def test_the_ltx23_fp8_load_prefetches_the_hosted_dit_under_its_cancel_event(tmp
 def test_ltx23_fp8_under_a_forced_offload_prices_and_loads_the_bf16_dit(
     fake_runtime, tmp_path, monkeypatch
 ):
-    # balanced offloads the DiT regardless of size, so with precision fallback on the load runs bf16: the plan is
-    # priced at the bf16 DiT and the hosted seed is never attempted, even where a (stubbed) plan keeps it resident.
+    # balanced offloads regardless of size, so fallback runs bf16 and never seeds.
     monkeypatch.setenv("UNSLOTH_DIFFUSION_ALLOW_PRECISION_FALLBACK", "1")
     priced = _ltx23_fp8_plan_at(monkeypatch, fits_mib = 100_000)
     backend, calls = _load_ltx23_single_file_fp8(
@@ -12174,8 +12134,6 @@ def test_ltx23_selective_read_skips_the_dit(tmp_path):
 
 
 def test_ltx2_regional_compile_is_static(fake_runtime, tmp_path, monkeypatch):
-    # Dynamic shapes make the LTX block's QK-norm + RoPE + attention-layout kernels ~3x slower; its token counts only
-    # move with the output shape, so the load asks compile_dynamic for static kernels.
     from core.inference.diffusion_speed import compile_dynamic
 
     dit = types.SimpleNamespace()
@@ -12187,8 +12145,6 @@ def test_ltx2_regional_compile_is_static(fake_runtime, tmp_path, monkeypatch):
 
 
 def test_ltx2_compiled_load_installs_the_stg_adapter(fake_runtime, tmp_path, monkeypatch):
-    # The STG adapter keeps the compiled DiT from falling back to eager under the STG pass and routes a recompile-limit
-    # hit to eager; it has to be installed by the load whenever compile engaged, and only then.
     from core.inference import video as video_mod, video_ltx2
 
     dit = types.SimpleNamespace()
@@ -12205,8 +12161,6 @@ def test_ltx2_compiled_load_installs_the_stg_adapter(fake_runtime, tmp_path, mon
 
 
 def test_ltx2_load_turns_cudnn_benchmark_back_off(fake_runtime, tmp_path, monkeypatch):
-    # cudnn.benchmark only re-tunes LTX's VAE / vocoder convs per new shape (first render 26 s vs 10 s) for no steady
-    # gain, so an ltx-2 load drops it and does not report it as engaged.
     from core.inference import video as video_mod, video_ltx2
 
     monkeypatch.setattr(
