@@ -671,10 +671,11 @@ RULES = [
         "use the interpreter's own module entry point (python3 -m zipfile -e ARCHIVE DIR), unzip or tar",
         applies = lambda p: not p.endswith((".py", ".rs", ".js", ".mjs", ".cjs", ".ts", ".tsx")),
         needles = tuple(_J(p) for p in (("ext", "ract"), ("unpack_", "archive"))),
-        # Options may take an argument (-W ignore) or be combined with the command flag (-Ic).
+        # Options may take an argument (-W ignore) or be combined with the command flag (-Ic); the
+        # call has to sit inside the quoted program, not in a later command or comment.
         line_patterns = [
             r"(?i)\b(?:python[0-9.]*|py|node|perl|ruby)(?:\.exe)?"
-            r"(?:\s+--?[\w-]+(?:\s+[^\s'\"-][^\s'\"]*)?)*?\s+-[a-z]*[ce]\s*['\"][^\n]*?"
+            r"(?:\s+--?[\w-]+(?:\s+[^\s'\"-][^\s'\"]*)?)*?\s+-[a-z]*[ce]\s*(['\"])(?:(?!\1)[^\n])*?"
             + _any(r"\." + _J(("ext", "ract")) + r"(?:all)?\s*\(", _J(("unpack_", "archive")))
         ],
     ),
@@ -1103,6 +1104,14 @@ def _fixtures() -> list[tuple[str, str, str, bool]]:
             True,
         ),
         # Reading or checking an archive unpacks nothing.
+        (
+            "AV016",
+            "t.sh",
+            "python3 -c 'print(1)'  # a later archive."
+            + _J(("ext", "ract"))
+            + "() call is not this one",
+            False,
+        ),
         (
             "AV016",
             "t.sh",
