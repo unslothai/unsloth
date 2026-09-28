@@ -330,7 +330,9 @@ jobs:
             tests/version_compat/test_trl_padding_free_max_length.py \
             tests/version_compat/test_trl_loss_normalization_contract.py \
             tests/version_compat/test_trl_config_defaults_contract.py \
+            tests/version_compat/test_dense_router_aux_loss_off.py \
             tests/version_compat/test_pref_max_length_clamp.py \
+            tests/version_compat/test_orpo_cpo_long_rows.py \
             tests/version_compat/test_grpo_vllm_top_k_from_fast_inference.py \
             tests/version_compat/test_trl_experimental_trainers_patched.py \
             -v --tb=short
@@ -355,7 +357,9 @@ jobs:
             tests/version_compat/test_trl_padding_free_max_length.py \
             tests/version_compat/test_trl_loss_normalization_contract.py \
             tests/version_compat/test_trl_config_defaults_contract.py \
+            tests/version_compat/test_dense_router_aux_loss_off.py \
             tests/version_compat/test_pref_max_length_clamp.py \
+            tests/version_compat/test_orpo_cpo_long_rows.py \
             tests/version_compat/test_grpo_vllm_top_k_from_fast_inference.py \
             tests/version_compat/test_trl_experimental_trainers_patched.py \
             -v --tb=short

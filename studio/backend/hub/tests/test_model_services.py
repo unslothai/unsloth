@@ -508,6 +508,12 @@ def test_big_endian_detection_ignores_model_name_be_token():
     )
 
 
+def test_pick_best_gguf_prefers_an_unlisted_quant_only_over_full_precision():
+    assert gguf.pick_best_gguf(["model-bf16.gguf", "model-Q3_K.gguf"]) == "model-Q3_K.gguf"
+    assert gguf.pick_best_gguf(["model-F32.gguf", "model-bf16.gguf"]) == "model-bf16.gguf"
+    assert gguf.pick_best_gguf(["model-APEX.gguf", "model-Q4_0.gguf"]) == "model-APEX.gguf"
+
+
 def test_custom_inventory_filters_mtp_companions_at_registered_root(tmp_path, monkeypatch):
     root = tmp_path / "MTP"
     root.mkdir()
@@ -4264,6 +4270,23 @@ def test_model_download_job_helpers_preserve_idle_shape():
     assert key == "org/model::"
     assert status.state == "idle"
     assert status.error is None
+    assert status.attempt == 1
+
+
+def test_model_download_status_reports_the_retry_attempt(monkeypatch):
+    registry = download_registry.DownloadRegistry()
+    monkeypatch.setattr(downloads, "_registry", registry)
+    key = downloads._download_job_key("Org/Model", "Q4_K_M")
+    assert registry.claim(key, download_registry.TRANSPORT_XET)[0]
+    generation = registry.current_generation(key)
+    registry.release_active_slot(key)
+    assert registry.claim(
+        key, download_registry.TRANSPORT_XET, generation = generation, replace_active = True
+    )[0]
+
+    status = downloads._job_status(key)
+
+    assert (status.generation, status.attempt) == (generation, 2)
 
 
 def test_gguf_repo_partial_treats_completed_disk_variant_as_clean(monkeypatch, tmp_path):
@@ -6481,6 +6504,9 @@ def test_dataset_status_includes_generation(monkeypatch):
         def current_generation(self, _key):
             return 4
 
+        def current_attempt(self, _key):
+            return 2
+
     monkeypatch.setattr(dataset_downloads, "_registry", _Registry())
     monkeypatch.setattr(
         dataset_downloads,
@@ -6492,6 +6518,7 @@ def test_dataset_status_includes_generation(monkeypatch):
 
     assert result.state == "running"
     assert result.generation == 4
+    assert result.attempt == 2
 
 
 def _write_local_model(

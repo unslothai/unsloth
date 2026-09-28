@@ -120,6 +120,13 @@ _skills_home_counter = itertools.count()
 
 
 @pytest.fixture(autouse = True)
+def _no_real_mxc_drive_aliases(monkeypatch):
+    # A Windows test host would otherwise map real drive letters; test_mxc_drive_alias.py and the native
+    # MXC tests opt back in.
+    monkeypatch.setenv("UNSLOTH_MXC_DRIVE_ALIAS", "0")
+
+
+@pytest.fixture(autouse = True)
 def _isolate_agent_skills(_skills_home_root, monkeypatch):
     # A developer's own ~/.agents or ~/.claude skills must not leak into tool-selection tests.
     from core.inference import skills as _skills
