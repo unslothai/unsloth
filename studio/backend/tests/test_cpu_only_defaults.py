@@ -117,9 +117,10 @@ def _no_numa(monkeypatch):
     )
 
 
-def test_cpu_only_launches_with_fit_and_flash_attn_off(tmp_path):
+def test_cpu_only_launches_with_fit_off_and_keeps_flash_attn(tmp_path):
+    # Flash attention off measured ~2.4x slower CPU prefill, and did not avoid the abort.
     cmd = _launch(_backend([]), tmp_path)
-    assert _value(cmd, "--flash-attn") == "off"
+    assert _value(cmd, "--flash-attn") == "on"
     assert _value(cmd, "--fit") == "off"
 
 
@@ -132,13 +133,12 @@ def test_gpu_launch_is_unchanged(tmp_path):
 @pytest.mark.parametrize("extra", [["-ngl", "0"], ["--device", "none"]])
 def test_zero_offload_on_a_gpu_host_gets_cpu_defaults(tmp_path, extra):
     cmd = _launch(_backend(_GPU), tmp_path, extra_args = extra)
-    assert _value(cmd, "--flash-attn") == "off"
     assert _value(cmd, "--fit") == "off"
 
 
 def test_user_flash_attn_still_wins_on_cpu(tmp_path):
-    cmd = _launch(_backend([]), tmp_path, extra_args = ["--flash-attn", "on"])
-    assert _value(cmd, "--flash-attn") == "on"
+    cmd = _launch(_backend([]), tmp_path, extra_args = ["--flash-attn", "off"])
+    assert _value(cmd, "--flash-attn") == "off"
 
 
 def test_cpu_auto_context_capped_to_ceiling(tmp_path):

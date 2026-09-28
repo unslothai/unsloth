@@ -4861,7 +4861,6 @@ def _planned_flash_attn_state(
     tensor_parallel: bool = False,
     architecture: Optional[str] = None,
     env: Optional[Mapping[str, str]] = None,
-    managed_flash_attn: bool = True,
 ) -> bool:
     """One answer for the estimate and for the argv: the estimator floors V at f16 and pads
     it model-wide when flash attention is off, so resolving the two separately prices a
@@ -4878,11 +4877,7 @@ def _planned_flash_attn_state(
         return True
     # Prepended because ``load_model`` appends a managed ``--flash-attn on``: the env loses
     # to it and only the user's own extras beat it (#9697, #10489).
-    effective_args = [
-        "--flash-attn",
-        "on" if managed_flash_attn else "off",
-        *(str(arg) for arg in extra_args or ()),
-    ]
+    effective_args = ["--flash-attn", "on", *(str(arg) for arg in extra_args or ())]
     if _asked_for_auto_flash_attn(effective_args, env = env):
         if _effective_tensor_parallel(extra_args, tensor_parallel, env):
             # Not undecided: llama.cpp upgrades AUTO to ENABLED under SPLIT_MODE_TENSOR.
@@ -23976,8 +23971,6 @@ class LlamaCppBackend:
                         if key not in ("LLAMA_ARG_SPLIT_MODE", "LLAMA_ARG_TENSOR_SPLIT")
                     }
 
-                _managed_flash_attn = True  # False once the launch is known CPU-only
-
                 def _replanned_flash_attn(_current_tp: bool) -> bool:
                     """Re-resolve the planned attention after a tensor-mode downgrade: AUTO
                     plans it ON under tensor, so a stale plan budgets a V layer never gets."""
@@ -23990,7 +23983,6 @@ class LlamaCppBackend:
                             tensor_parallel = _current_tp,
                             architecture = self._architecture,
                             env = _env,
-                            managed_flash_attn = _managed_flash_attn,
                         ),
                         extra_args,
                         tensor_parallel = _current_tp,
@@ -24231,7 +24223,6 @@ class LlamaCppBackend:
                 from utils.hardware import is_apple_silicon as _is_apple_silicon
 
                 _cpu_only = False
-                _cpu_fa_off = False
                 _mtp_will_engage_cpu = False
                 _mtp_will_engage = False
                 _separate_draft_launches = False  # a sidecar displaces an embedded head
@@ -24404,14 +24395,6 @@ class LlamaCppBackend:
                         and not _is_apple_silicon()
                         and not self._apple_metal_memory_budget_bytes()
                     )
-                    # CPU flash attention off, unless a quantized V cache needs it (llama.cpp
-                    # enables FA itself then, and main keeps the user's cache type).
-                    _cpu_fa_off = _cpu_only and (
-                        _planned_cache_pair[1].strip().lower() in self._NON_QUANTIZED_KV_TYPES
-                    )
-                    if _cpu_fa_off:
-                        _managed_flash_attn = False
-                        planned_flash_attn = _replanned_flash_attn(tensor_parallel)
 
                     # GPUs the model will run on -- captured before manual
                     # empty `gpus` to bypass the planner. bool() drives the
@@ -27061,10 +27044,11 @@ class LlamaCppBackend:
                         "native length."
                     )
 
-                # No --fit (graph-reserve abort, llama.cpp #21932; MTP KV miscount #23472/#24117) and no CPU flash-attn (unsafe for large MLA/MTP graphs).
+                # No --fit on CPU: its graph reserve hits the same abort (llama.cpp #21932) and
+                # miscounts MTP KV (#23472/#24117). Flash attention stays on: off halves CPU prefill.
                 if _cpu_only and use_fit:
                     use_fit = False
-                    logger.info("CPU-only host: launching with --fit off and --flash-attn off.")
+                    logger.info("CPU-only host: launching with --fit off.")
 
                 if _cpu_only:
                     _avail_mib = self._available_system_memory_mib()
@@ -27145,15 +27129,7 @@ class LlamaCppBackend:
                 # wrapper that never exposed it), and whether its declaration
                 # takes a value -- older builds take -fa as a bare boolean and
                 # read a following "on" as a stray positional.
-                if _cpu_fa_off:
-                    # A bare -fa on a value-less build means on, so off is the flag's absence.
-                    if _caps.get("supports_flash_attn", True) and _caps.get(
-                        "flash_attn_takes_value", True
-                    ):
-                        cmd.extend(["--flash-attn", "off"])
-                    else:
-                        _flash_attn_known_off = True
-                elif _caps.get("supports_flash_attn", True):
+                if _caps.get("supports_flash_attn", True):
                     cmd.append("--flash-attn")
                     if _caps.get("flash_attn_takes_value", True):
                         cmd.append("on")
