@@ -86,4 +86,6 @@ def test_trailing_eos_footer_is_not_wrapped(sep):
     assert _fix_chat_template(footer) == footer
     tok = _apply_post_load_tokenizer_fixes(_tokenizer(footer), fix_tokenizer = True, config = None)
     assert tok.chat_template == footer
-    assert tok.apply_chat_template(CONVO, tokenize = False, add_generation_prompt = False).endswith("[UNK]")
+    assert tok.apply_chat_template(CONVO, tokenize = False, add_generation_prompt = False).endswith(
+        "[UNK]"
+    )
