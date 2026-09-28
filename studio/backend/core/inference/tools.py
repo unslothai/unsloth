@@ -6822,6 +6822,11 @@ _ALWAYS_SAFE_TOOLS = frozenset(
 )
 
 
+def never_needs_approval(name: str) -> bool:
+    """search_conversation only reads this chat's own compacted turns (#11671)."""
+    return name == "search_conversation"
+
+
 def is_always_safe_tool(name: str) -> bool:
     """True for tools that never need an auto-mode prompt on any arguments, so a caller (e.g. the
     streaming provisional card) can allow them before the full arguments are known. render_html
