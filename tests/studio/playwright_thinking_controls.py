@@ -26,16 +26,27 @@ def main():
         for theme in ("dark", "light"):
             for width in (960, 375):
                 page.set_viewport_size({"width": width, "height": 720})
-                for state in ("adjustable", "fixed", "toggle", "mandatory", "unknown", "unsupported"):
+                for state in (
+                    "adjustable",
+                    "fixed",
+                    "toggle",
+                    "mandatory",
+                    "unknown",
+                    "unsupported",
+                ):
                     page.goto(f"{base}?theme={theme}&state={state}")
                     if state == "unsupported":
-                        expect(page.get_by_role("button", name = "Thinking", exact = False)).to_have_count(0)
+                        expect(
+                            page.get_by_role("button", name = "Thinking", exact = False)
+                        ).to_have_count(0)
                         continue
                     trigger = page.get_by_role("button", name = "Thinking", exact = False)
                     trigger.click()
                     panel = page.get_by_role("dialog", name = "Thinking settings")
                     expect(panel).to_be_visible()
-                    expect(panel.get_by_role("slider")).to_have_count(1 if state == "adjustable" else 0)
+                    expect(panel.get_by_role("slider")).to_have_count(
+                        1 if state == "adjustable" else 0
+                    )
                     if state == "fixed":
                         expect(panel.get_by_text("This model supports High only.")).to_be_visible()
                     if state == "mandatory":
@@ -70,8 +81,12 @@ def main():
         expect(page.get_by_role("switch", name = "Preserve thinking")).to_be_checked()
         assert not errors, errors
         browser.close()
-    (out / "report.json").write_text(json.dumps({"passed": checks, "errors": errors}, indent = 2), encoding = "utf-8")
-    print(f"PASS: {len(checks)} thinking scenarios, keyboard controls, viewport bounds, focus and preservation")
+    (out / "report.json").write_text(
+        json.dumps({"passed": checks, "errors": errors}, indent = 2), encoding = "utf-8"
+    )
+    print(
+        f"PASS: {len(checks)} thinking scenarios, keyboard controls, viewport bounds, focus and preservation"
+    )
 
 
 if __name__ == "__main__":

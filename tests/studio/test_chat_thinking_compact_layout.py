@@ -12,7 +12,9 @@ INDEX_CSS = REPO / "studio/frontend/src/index.css"
 def test_thinking_control_has_compact_hooks_in_both_composers():
     for path in (THREAD_TSX, SHARED_TSX):
         assert "ChatThinkingControl" in path.read_text(encoding = "utf-8")
-    control = (REPO / "studio/frontend/src/features/chat/components/thinking-control.tsx").read_text(encoding = "utf-8")
+    control = (
+        REPO / "studio/frontend/src/features/chat/components/thinking-control.tsx"
+    ).read_text(encoding = "utf-8")
     assert 'className="unsloth-thinking-label"' in control
     assert "unsloth-thinking-caret" in control
     assert "data-pill-label={label}" in control
