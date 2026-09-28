@@ -208,9 +208,9 @@ export function DebuggingTab() {
           REQUEST_TIMEOUT_MS,
           options.signal,
         );
+        if (seq < appliedSourceFetchRef.current) return;
         setSources(result.sources);
         setLogRoot(result.logRoot);
-        if (seq < appliedSourceFetchRef.current) return;
         const dialog = useSettingsDialogStore.getState();
         const requested = dialog.logFamilyRequested;
         const byPath = result.matchedSourceId

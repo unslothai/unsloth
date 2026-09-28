@@ -60,6 +60,8 @@ interface SettingsDialogState {
   logFamilyRequested: string | null;
   /** The exact log file the failure named, when its diagnostic carried one. */
   logSourcePathRequested: string | null;
+  /** Bumped per View logs click, so a repeated identical request still reads as new. */
+  logRequestSeq: number;
   // Set when something asks for one connection's settings (the picker's Connected group gear).
   // ConnectionsTab hands it to the form, then clears it. Same lifetime as archivedRequested.
   connectionRequested: string | null;
@@ -155,14 +157,18 @@ function requestsFor(state: SettingsDialogState, tab: SettingsTab) {
 }
 
 /** One value identifying the log request currently pending, for a subscriber. */
+export const NO_PENDING_LOG_REQUEST = "|";
+
 export function pendingLogRequestKey(state: {
   logFamilyRequested: string | null;
   logSourcePathRequested: string | null;
+  logRequestSeq?: number;
 }): string {
-  return `${state.logFamilyRequested ?? ""}|${state.logSourcePathRequested ?? ""}`;
+  if (state.logFamilyRequested == null && state.logSourcePathRequested == null)
+    return NO_PENDING_LOG_REQUEST;
+  return `${state.logFamilyRequested ?? ""}|${state.logSourcePathRequested ?? ""}|${state.logRequestSeq ?? 0}`;
 }
 
-export const NO_PENDING_LOG_REQUEST = "|";
 
 export const useSettingsDialogStore = create<SettingsDialogState>((set) => ({
   open: false,
@@ -173,6 +179,7 @@ export const useSettingsDialogStore = create<SettingsDialogState>((set) => ({
   archivedRequested: null,
   logFamilyRequested: null,
   logSourcePathRequested: null,
+  logRequestSeq: 0,
   connectionRequested: null,
   openDialog: (tab, options) =>
     set((state) => {
@@ -232,6 +239,7 @@ export const useSettingsDialogStore = create<SettingsDialogState>((set) => ({
       archivedRequested: null,
       logFamilyRequested: family ?? null,
       logSourcePathRequested: sourcePath ?? null,
+      logRequestSeq: state.logRequestSeq + 1,
       connectionRequested: null,
       ...focusForOpen(state),
     })),

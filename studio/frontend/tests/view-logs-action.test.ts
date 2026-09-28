@@ -8,7 +8,10 @@ import { readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-import { useSettingsDialogStore } from "../src/features/settings/stores/settings-dialog-store.ts";
+import {
+  pendingLogRequestKey,
+  useSettingsDialogStore,
+} from "../src/features/settings/stores/settings-dialog-store.ts";
 import { en } from "../src/i18n/locales/en.ts";
 import { loadWithStubs } from "./helpers/module-stubs.ts";
 
@@ -20,6 +23,10 @@ const ACTION_URL = new URL(
 );
 
 const store = useSettingsDialogStore;
+
+function pendingLogRequestKeyOf(): string {
+  return pendingLogRequestKey(store.getState());
+}
 
 function reset() {
   store.setState({
@@ -254,6 +261,16 @@ test("an older in-flight refresh does not consume a newer request", async () => 
   store.getState().consumeLogFamilyRequest();
   assert.equal(pendingLogRequestKey(store.getState()), NO_PENDING_LOG_REQUEST);
 
+  const tabSrc = await readFile(
+    new URL("../src/features/settings/tabs/debugging-tab.tsx", import.meta.url),
+    "utf8",
+  );
+  // A stale response must bail before touching ANY state, the source list included.
+  assert.match(
+    tabSrc,
+    /if \(seq < appliedSourceFetchRef\.current\) return;\s*setSources\(result\.sources\);/,
+  );
+
   const tab = await readFile(
     new URL("../src/features/settings/tabs/debugging-tab.tsx", import.meta.url),
     "utf8",
@@ -265,7 +282,6 @@ test("an older in-flight refresh does not consume a newer request", async () => 
     "if (fromFailure && !stillTheSameRequest) return;",
     // An older response (e.g. a 404 reselect) never overrides a newer selection.
     "const seq = ++sourceFetchSeqRef.current;",
-    "if (seq < appliedSourceFetchRef.current) return;",
     "appliedSourceFetchRef.current = seq;",
   ]) {
     assert.ok(
@@ -288,6 +304,7 @@ test("only a generation failure the server logged offers its log", () => {
     "Image generation failed. The device ran out of memory.",
     "Video generation failed. The renderer stopped unexpectedly.",
     "Failed to save the generated image.",
+    "Failed to save the generated video.",
   ]) {
     const action = generationFailureLogsAction(logged);
     assert.ok(action, logged);
@@ -301,4 +318,16 @@ test("only a generation failure the server logged offers its log", () => {
     undefined,
   );
   assert.equal(generationFailureLogsAction("Video generation could not start."), undefined);
+});
+
+test("a repeated identical View logs click is still a new request", () => {
+  reset();
+  store.setState({ logRequestSeq: 0 });
+  store.getState().openLogs("llama-server", "/logs/llama-failed.log");
+  const first = pendingLogRequestKeyOf();
+  store.getState().openLogs("llama-server", "/logs/llama-failed.log");
+  const second = pendingLogRequestKeyOf();
+  assert.notEqual(first, second, "the mounted tab would not refetch for the second click");
+  store.getState().consumeLogFamilyRequest();
+  assert.equal(pendingLogRequestKeyOf(), "|");
 });

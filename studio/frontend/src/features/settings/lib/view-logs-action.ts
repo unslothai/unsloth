@@ -54,6 +54,7 @@ const LOGGED_GENERATION_FAILURES = [
   "Image generation failed.",
   "Video generation failed.",
   "Failed to save the generated image.",
+  "Failed to save the generated video.",
 ];
 
 /** "View logs" for a generation failure the server logged, else undefined. */
