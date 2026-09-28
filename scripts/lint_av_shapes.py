@@ -670,18 +670,12 @@ RULES = [
         "install.sh as a downloader for exactly this line",
         "use the interpreter's own module entry point (python3 -m zipfile -e ARCHIVE DIR), unzip or tar",
         applies = lambda p: not p.endswith((".py", ".rs", ".js", ".mjs", ".cjs", ".ts", ".tsx")),
-        needles = tuple(
-            _J(p)
-            for p in (("extract", "all"), ("zip", "file"), ("tar", "file"), ("unpack_", "archive"))
-        ),
+        needles = tuple(_J(p) for p in (("ext", "ract"), ("unpack_", "archive"))),
+        # Options may take an argument (-W ignore) or be combined with the command flag (-Ic).
         line_patterns = [
-            r"(?i)\b(?:python[0-9.]*|py|node|perl|ruby)(?:\.exe)?\s+(?:-\w+\s+)*-[ce]\s+['\"][^\n]*?"
-            + _any(
-                _J(("extract", "all")),
-                _J(("Zip", "File")) + r"\s*\(",
-                _J(("tar", "file")) + r"\.open",
-                _J(("unpack_", "archive")),
-            )
+            r"(?i)\b(?:python[0-9.]*|py|node|perl|ruby)(?:\.exe)?"
+            r"(?:\s+--?[\w-]+(?:\s+[^\s'\"-][^\s'\"]*)?)*?\s+-[a-z]*[ce]\s*['\"][^\n]*?"
+            + _any(r"\." + _J(("ext", "ract")) + r"(?:all)?\s*\(", _J(("unpack_", "archive")))
         ],
     ),
 ]
@@ -1085,6 +1079,40 @@ def _fixtures() -> list[tuple[str, str, str, bool]]:
             + _J(("extract", "all"))
             + "(b)'"
             + '"',
+            False,
+        ),
+        # Options before the command flag, with an argument or combined with it.
+        (
+            "AV016",
+            "t.sh",
+            "python3 -W ignore -c 'import zipfile; zipfile.ZipFile(a)."
+            + _J(("extract", "all"))
+            + "(b)'",
+            True,
+        ),
+        (
+            "AV016",
+            "t.sh",
+            "python3 -Ic 'import tarfile; tarfile.open(a)." + _J(("extract", "all")) + "(b)'",
+            True,
+        ),
+        (
+            "AV016",
+            "t.sh",
+            "python3 -c 'import shutil; shutil." + _J(("unpack_", "archive")) + "(a, b)'",
+            True,
+        ),
+        # Reading or checking an archive unpacks nothing.
+        (
+            "AV016",
+            "t.sh",
+            "python3 -c 'import sys, zipfile; print(zipfile.is_zipfile(sys.argv[1]))' \"$f\"",
+            False,
+        ),
+        (
+            "AV016",
+            "t.sh",
+            "python3 -c 'import zipfile; print(zipfile.ZipFile(a).namelist())'",
             False,
         ),
         (
