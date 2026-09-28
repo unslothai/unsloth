@@ -2305,6 +2305,32 @@ def _fused_lora_skip_reason(lora_dropout, bias) -> str:
     )
 
 
+def _restore_uncompiled_transformers_classes(model_patcher):
+    """FastModel's compiler rebinds a family's transformers classes (e.g. ``modeling_llama.LlamaAttention``) to its
+    compiled copies; FastLanguageModel patches the classes it imported, so point the modeling module back at those
+    before loading, else a later FastLanguageModel load builds compiled layers under the fast forwards and crashes."""
+    patcher_module = sys.modules.get(getattr(model_patcher, "__module__", ""))
+    if patcher_module is None:
+        return
+    for original in list(vars(patcher_module).values()):
+        if not isinstance(original, type) or not original.__module__.startswith(
+            "transformers.models."
+        ):
+            continue
+        modeling = sys.modules.get(original.__module__)
+        current = getattr(modeling, original.__name__, None)
+        if current is None or current is original:
+            continue
+        if not getattr(current, "__module__", "").startswith("unsloth_compiled_module"):
+            continue
+        setattr(modeling, original.__name__, original)
+        for value in vars(modeling).values():
+            if type(value) is dict:
+                for key, item in list(value.items()):
+                    if item is current:
+                        value[key] = original
+
+
 class FastLlamaModel:
     @staticmethod
     def _prepare_for_qat(model, qat_scheme):
@@ -2451,6 +2477,7 @@ class FastLlamaModel:
         if old_hf_transfer != "0":
             os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
 
+        _restore_uncompiled_transformers_classes(model_patcher)
         model_patcher.pre_patch()
         # A download counter, to see whether environments are breaking or HF is down.
         get_statistics(kwargs.get("local_files_only", False))
