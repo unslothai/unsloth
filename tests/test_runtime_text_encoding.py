@@ -48,9 +48,11 @@ ROOTS = (REPO / "unsloth", REPO / "studio", REPO / "unsloth_cli")
 # node_modules is vendored third-party code.
 SKIP_DIRS = {"build", "dist", "frontend", "node_modules", "src-tauri", ".venv", "site-packages"}
 # Vendored packages kept byte-identical to their wheel and pinned by per-file hashes
-# (studio/backend/vendor/README.md), mapped to the loader that gives their modules a UTF-8
-# `open`. Skipped only while that loader still does, so dropping it re-reds this scan;
-# studio/backend/tests/test_text_io_encoding.py runs the laya case under a non-UTF-8 locale.
+# (studio/backend/vendor/README.md), mapped to the loader that replaces each module's `open`
+# global with a UTF-8 one after exec_module returns. Only the calls that replacement reaches
+# are exempt (bare `open(...)` at function time, `open` not rebound locally), and only while
+# the loader still does it; studio/backend/tests/test_text_io_encoding.py runs the laya case
+# under a non-UTF-8 locale.
 UTF8_BY_LOADER = {
     REPO / "studio/backend/vendor/laya": (
         REPO / "studio/backend/core/systemone/laya_runtime.py",
@@ -338,12 +340,54 @@ def _walked_sources():
 
 
 def _utf8_by_loader(path):
-    """Whether `path` is vendored source whose loader still supplies a UTF-8 open."""
+    """Whether `path` is vendored source whose loader still swaps in a UTF-8 `open` global."""
     parents = set(path.resolve().parents)
     for vendored, (loader, marker) in UTF8_BY_LOADER.items():
         if vendored.resolve() in parents:
             return loader.is_file() and marker in loader.read_text(encoding = "utf-8")
     return False
+
+
+def _binds_open(fn) -> bool:
+    """Whether `fn` makes `open` a local name, which a module-global swap cannot reach."""
+    args = fn.args
+    params = args.posonlyargs + args.args + args.kwonlyargs + [args.vararg, args.kwarg]
+    if any(a is not None and a.arg == "open" for a in params):
+        return True
+    for node in ast.walk(fn):
+        if isinstance(node, ast.Name) and node.id == "open" and isinstance(node.ctx, ast.Store):
+            return True
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            if any((a.asname or a.name) == "open" for a in node.names):
+                return True
+    return False
+
+
+def _module_open_calls_at_call_time(tree) -> set:
+    """ids of bare `open(...)` calls that resolve the module's `open` global when they run.
+
+    Module-level and class-body calls run inside exec_module, before a loader can replace the
+    global, and `Path.open`, `read_text`, `io.open` never look it up, so none of those qualify.
+    """
+    covered = set()
+
+    def walk(node, in_function):
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+                if isinstance(child, ast.Lambda) or not _binds_open(child):
+                    walk(child, True)
+                continue
+            if (
+                in_function
+                and isinstance(child, ast.Call)
+                and isinstance(child.func, ast.Name)
+                and child.func.id == "open"
+            ):
+                covered.add(id(child))
+            walk(child, in_function)
+
+    walk(tree, False)
+    return covered
 
 
 def test_shipping_code_names_an_encoding():
@@ -355,8 +399,6 @@ def test_shipping_code_names_an_encoding():
     for path in sorted(sources):
         if not roots.intersection(path.resolve().parents) or _is_test_path(path):
             continue
-        if _utf8_by_loader(path):
-            continue
         try:
             tree = ast.parse(path.read_text(encoding = "utf-8"), filename = str(path))
         except SyntaxError:
@@ -364,8 +406,9 @@ def test_shipping_code_names_an_encoding():
         rel = path.relative_to(REPO).as_posix()
         visible_at = _imports_at_each_call(tree)
         foreign = _foreign_names(tree)
+        swapped = _module_open_calls_at_call_time(tree) if _utf8_by_loader(path) else set()
         for node in ast.walk(tree):
-            if isinstance(node, ast.Call):
+            if isinstance(node, ast.Call) and id(node) not in swapped:
                 name = _offender(node, visible_at.get(id(node), {}), foreign)
                 if name is not None:
                     offenders.append(f"{rel}:{node.lineno}: {name}")
@@ -418,6 +461,22 @@ def test_skips_foreign_openers_and_readers():
     assert not _offenders_in("import tarfile\nt = tarfile.open(p, 'r:gz')\n")
     # importlib.metadata Distribution.read_text takes a positional filename.
     assert not _offenders_in("s = dist.read_text('direct_url.json')\n")
+
+
+def test_loader_swap_exempts_only_the_calls_it_reaches():
+    def exempt(src):
+        return _module_open_calls_at_call_time(ast.parse(src))
+
+    # Function-time bare open resolves the swapped global.
+    assert exempt("def f(p):\n    return open(p).read()\n")
+    assert exempt("g = lambda p: open(p)\n")
+    # Import-time, Path methods, io.open and a locally rebound open never see the swap.
+    assert not exempt("f = open('x')\n")
+    assert not exempt("class C:\n    t = open('x').read()\n")
+    assert not exempt("def f(p):\n    return p.read_text() + p.open().read()\n")
+    assert not exempt("import io\ndef f(p):\n    return io.open(p)\n")
+    assert not exempt("def f(p, open=open):\n    return open(p)\n")
+    assert not exempt("def f(p):\n    from io import open\n    return open(p)\n")
 
 
 def test_test_trees_are_out_of_scope():
