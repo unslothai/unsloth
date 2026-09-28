@@ -6850,8 +6850,8 @@ def _torch_distributed_unavailable():
     """True only when this torch was built without its distributed backend.
 
     AMD's Windows ROCm wheels (repo.amd.com, torch 2.11) ship no `torch._C._distributed_c10d`, so
-    `torch.distributed` imports but defines little beyond `is_available()`, and any module importing
-    `torch.distributed.distributed_c10d` raises ModuleNotFoundError. Asked of torch, not the platform.
+    anything importing `torch.distributed.distributed_c10d` raises ModuleNotFoundError. Asked of
+    torch, not the platform.
     """
     try:
         import torch.distributed as dist
@@ -6863,54 +6863,6 @@ def _torch_distributed_unavailable():
 def _is_missing_torch_distributed(exc):
     name = getattr(exc, "name", None) or ""
     return name.startswith("torch._C._distributed") or "torch._C._distributed" in str(exc)
-
-
-def disable_torchao_without_torch_distributed():
-    """Make torchao behave as if uninstalled when this torch has no distributed backend.
-
-    torchao.float8 imports `torch.distributed._functional_collectives` at module level, which needs
-    `torch._C._distributed_c10d`. transformers imports torchao from `transformers.quantizers`, so on
-    AMD's Windows ROCm torch every model class import died with
-
-        ModuleNotFoundError: No module named 'torch._C._distributed_c10d'
-
-    before Unsloth ran anything. torchao's quantizers are unusable there anyway; seating the
-    `sys.modules` sentinel makes transformers, peft and Unsloth's own torchao fixes see it as absent.
-    Stubbing `torch._C._distributed_c10d` instead is wrong: `torch.distributed` has already skipped
-    its exports, so torch._dynamo then fails on `dist.Store` in fsdp's fake process group.
-    No-op on any torch with a distributed backend, without importing torchao.
-    """
-    if not _torch_distributed_unavailable():
-        return False
-    if sys.modules.get("torchao", False) is None:
-        return True
-    try:
-        if importlib.util.find_spec("torchao") is None:
-            return False
-        import torchao  # noqa: F401
-        return False
-    except ImportError as exc:
-        if not _is_missing_torch_distributed(exc):
-            return False
-        error = exc
-
-    for name in [n for n in list(sys.modules) if n == "torchao" or n.startswith("torchao.")]:
-        sys.modules.pop(name, None)
-    sys.modules["torchao"] = None
-    # transformers 5 lru_caches the answer; runs before transformers is imported, unless a caller imported it first.
-    is_available = getattr(sys.modules.get("transformers.utils.import_utils"), "is_torchao_available", None)
-    if hasattr(is_available, "cache_clear"):
-        is_available.cache_clear()
-    try:
-        warnings.warn(
-            "Unsloth: this torch has no distributed backend (torch._C._distributed_c10d), which "
-            "torchao needs at import, so torchao has been disabled for this process. torchao "
-            f"quantization is unavailable; everything else works. Original error: {error}",
-            stacklevel = 2,
-        )
-    except Exception:
-        pass
-    return True
 
 
 def fix_accelerate_dtensor_check_without_torch_distributed():

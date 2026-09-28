@@ -23,8 +23,6 @@ already_imported = [mod for mod in critical_modules if mod in sys.modules]
 from .import_fixes import (
     fix_message_factory_issue,
     patch_torch_missing_attribute_error,
-    disable_torchao_without_torch_distributed,
-    fix_accelerate_dtensor_check_without_torch_distributed,
     check_triton_py_ssize_t_clean,
     check_transformers_prequantized_vlm_quant_state,
     fix_torch_check_is_size,
@@ -82,9 +80,6 @@ configure_amdgpu_asic_id_table_path()
 # AttributeError at the first one of them to reach it (#8933). It imports torch, which is
 # why the ROCm table above comes first.
 patch_torch_missing_attribute_error()
-# Ahead of everything that imports transformers, whose quantizers import torchao (AMD Windows ROCm torch).
-disable_torchao_without_torch_distributed()
-fix_accelerate_dtensor_check_without_torch_distributed()
 # Must precede `import unsloth_zoo` below, which imports bnb on ROCm.
 fix_bitsandbytes_rocm_arch_detection()
 disable_broken_causal_conv1d()
@@ -115,8 +110,6 @@ del disable_broken_causal_conv1d
 del disable_broken_vllm
 del fix_message_factory_issue
 del patch_torch_missing_attribute_error
-del disable_torchao_without_torch_distributed
-del fix_accelerate_dtensor_check_without_torch_distributed
 del fix_torch_check_is_size
 del fix_torchao_torch_symbol_skew
 del propagate_torchao_fix_to_subprocesses
@@ -297,6 +290,7 @@ from .import_fixes import (
     patch_torchcodec_audio_decoder,
     disable_torchcodec_if_broken,
     disable_broken_wandb,
+    fix_accelerate_dtensor_check_without_torch_distributed,
     fix_trl_vllm_ascend,
     fix_peft_transformers_tensor_parallel_import_compat,
     fix_peft_transformers_weight_conversion_import,
@@ -379,6 +373,8 @@ patch_vllm_for_notebooks()
 patch_torchcodec_audio_decoder()
 disable_torchcodec_if_broken()
 disable_broken_wandb()
+# After unsloth_zoo, whose ROCm torchao loader must be in place before accelerate is imported.
+fix_accelerate_dtensor_check_without_torch_distributed()
 # Must run before patch_peft_weight_converter_compatibility: it stubs the transformers v5
 # submodules peft 0.19.x imports, so the next patch can wrap build_peft_weight_mapping instead of
 # being swallowed by its ImportError.
@@ -429,6 +425,7 @@ del patch_torchcodec_audio_decoder
 del disable_torchcodec_if_broken
 del disable_torchaudio_if_cuda_mismatched
 del disable_broken_wandb
+del fix_accelerate_dtensor_check_without_torch_distributed
 del fix_peft_transformers_tensor_parallel_import_compat
 del fix_peft_transformers_weight_conversion_import
 del patch_peft_weight_converter_compatibility
