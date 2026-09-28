@@ -183,8 +183,9 @@ def _variant_requirement_cache_set_many(
             key = _variant_hash_cache_key(repo_id, quant, hf_token)
             _VARIANT_REQUIREMENT_CACHE[key] = (requirement, now)
             _VARIANT_REQUIREMENT_CACHE.move_to_end(key)
-            _VARIANT_REQUIREMENT_LAST_KNOWN[key] = requirement
-            _VARIANT_REQUIREMENT_LAST_KNOWN.move_to_end(key)
+            known = key[:2]
+            _VARIANT_REQUIREMENT_LAST_KNOWN[known] = requirement
+            _VARIANT_REQUIREMENT_LAST_KNOWN.move_to_end(known)
         while len(_VARIANT_REQUIREMENT_CACHE) > _VARIANT_HASH_MAX:
             _VARIANT_REQUIREMENT_CACHE.popitem(last = False)
         while len(_VARIANT_REQUIREMENT_LAST_KNOWN) > _VARIANT_HASH_MAX:
@@ -192,15 +193,17 @@ def _variant_requirement_cache_set_many(
 
 
 # The newest requirement each live listing reported, kept past the refresh TTL above: a
-# Hub-less completeness proof must not read an expired entry as "nothing required".
-_VARIANT_REQUIREMENT_LAST_KNOWN: "OrderedDict[tuple[str, str, str], _GgufVariantRequirement]" = (
+# Hub-less completeness proof must not read an expired entry as "nothing required". Keyed by
+# repo and variant, not credential: it describes the repo's files, and a token changed or
+# cleared since the listing must not forget a companion the copy still needs.
+_VARIANT_REQUIREMENT_LAST_KNOWN: "OrderedDict[tuple[str, str], _GgufVariantRequirement]" = (
     OrderedDict()
 )
 
 
-def _variant_requirement_last_known(key: tuple[str, str, str]) -> Optional[_GgufVariantRequirement]:
+def _variant_requirement_last_known(key: tuple[str, ...]) -> Optional[_GgufVariantRequirement]:
     with _VARIANT_HASH_LOCK:
-        return _VARIANT_REQUIREMENT_LAST_KNOWN.get(key)
+        return _VARIANT_REQUIREMENT_LAST_KNOWN.get(key[:2])
 
 
 def _build_gguf_variant_requirements(siblings: list) -> dict[str, _GgufVariantRequirement]:

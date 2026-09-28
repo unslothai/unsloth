@@ -223,3 +223,20 @@ def test_a_live_listing_still_resolves_dependencies(hub_calls, monkeypatch):
     monkeypatch.setattr(gguf_variants, "_gguf_all_variant_requirements", lambda *a, **k: {})
 
     assert _answer().dependencies_resolved is True
+
+
+@pytest.mark.parametrize("request_kwargs", HUBLESS)
+def test_a_requirement_learned_under_another_token_still_counts(hub_calls, request_kwargs):
+    # The listing that named the drafter ran with the old token; the owner has since replaced
+    # or cleared it. The drafter is still missing, so the copy is still not resolved.
+    _repo, snapshot = _snapshot()
+    _write(snapshot / MAIN)
+    requirement = SimpleNamespace(
+        expected_files = (
+            download_manifest.ExpectedFile(MAIN, 256),
+            download_manifest.ExpectedFile(f"mtp-Sole-{QUANT}.gguf", 128),
+        )
+    )
+    gguf_variants._variant_requirement_cache_set_many(REPO, "hf_" + "a" * 34, {QUANT: requirement})
+    gguf_variants._VARIANT_REQUIREMENT_CACHE.clear()
+    assert _answer(**request_kwargs).dependencies_resolved is False

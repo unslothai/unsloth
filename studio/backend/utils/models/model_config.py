@@ -4525,6 +4525,9 @@ class ModelConfig:
                             identifier = identifier,
                             display_name = f"{identifier.split('/')[-1]} ({cached_variant})",
                             gguf_cache_repo = identifier,
+                            # A Hub repo run from its cache, not a user's own file: the load
+                            # reports it as remote, so recovery guidance points at the Hub.
+                            is_local = False,
                         )
             if not gguf_filename and _looks_like_gguf_repo(identifier, gguf_variant):
                 if detect_failures:

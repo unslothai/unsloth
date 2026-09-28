@@ -451,3 +451,12 @@ def test_auto_selection_finds_a_copy_in_a_remembered_cache(
     config, _ = _load(owner_session = True)
     assert Path(config.gguf_file) == remembered / GGUF
     assert config.gguf_variant == VARIANT
+
+
+def test_the_downloaded_copy_is_reported_as_a_hub_model(monkeypatch, _isolated):
+    # Not the user's own file: /load reports is_local_model from this, and the chat settings
+    # then give Hub recovery guidance rather than "put the drafter beside your file".
+    _download(_isolated, GGUF)
+    _refuse(monkeypatch)
+    config, _ = _load(gguf_variant = VARIANT, owner_session = True)
+    assert config.is_local is False
