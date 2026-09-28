@@ -233,7 +233,6 @@ def _rebind_accelerate_hook(module):
 
 
 def prepare_remote_moe_for_training(model, verbose = True):
-    """Idempotent; returns the names of the patched classes."""
     patched = []
     seen = set()
     shimmed_classes = set()

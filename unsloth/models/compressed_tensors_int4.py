@@ -300,7 +300,6 @@ def patch_peft_merge_for_int4_packed_linears() -> bool:
         result = original_unmerge(self, *args, **kwargs)
         base = self.get_base_layer()
         if _PACKED_STATE in base.__dict__ and not self.merged_adapters:
-            # The merged delta was subtracted again; the exact packed weights come back.
             _restore_packed(base)
         return result
 

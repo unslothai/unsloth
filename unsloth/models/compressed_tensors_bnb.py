@@ -227,7 +227,7 @@ def _checkpoint_keys(checkpoint_files) -> list:
         return keys
     others = [str(p) for p in (checkpoint_files or []) if not str(p).endswith(".safetensors")]
     if others:
-        # Pickled shards are cast to the model dtype before any converter sees them.
+        # Pickled shards are cast to the model dtype before converters run.
         raise RuntimeError(
             "Unsloth: re-quantizing a compressed-tensors packed checkpoint on the fly needs "
             f"safetensors shards; {os.path.basename(others[0])} is not one. Convert the "
@@ -1258,7 +1258,6 @@ def install_compressed_tensors_bnb_quantizer() -> bool:
                         operations = [op_cls(ct_config, dtype, stacked = False)],
                     )
                 )
-            # Call up the MRO so a composed subclass's hook still runs.
             parent = getattr(super(), "update_weight_conversions", None)
             if parent is None:
                 return updated + list(self.get_weight_conversions())

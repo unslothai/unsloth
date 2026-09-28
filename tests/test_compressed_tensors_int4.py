@@ -36,7 +36,6 @@ except Exception:
     HAS_CT = False
 
 HAS_CONVERTERS = _transformers_supports_weight_converters()
-# The tiny packed-Llama builder lives next to this file.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 needs_gpu = pytest.mark.skipif(not has_real_cuda(), reason = "needs a CUDA device")
 needs_ct = pytest.mark.skipif(not HAS_CT, reason = "needs compressed-tensors")
@@ -126,7 +125,6 @@ def test_kernels_decode_bit_exact_and_multiply_like_dense(
     )
     W = packed["weight_packed"]
     assert torch.equal(int4_dequantize(W, qs), ref)
-    # The fast_dequantize contract: a transposed packed view decodes to the transposed weight.
     assert torch.equal(int4_dequantize_weight(W.t(), qs), ref.t())
     import unsloth.kernels.int4_packed as ip
 
@@ -211,7 +209,6 @@ def test_packed_route_keeps_the_checkpoint_weights_exactly(variant, tmp_path, mo
         a = model_a(input_ids = ids).logits.float()
         b = model_b(input_ids = ids).logits.float()
     assert (a - b).abs().max() < 1e-2 * b.abs().max()
-    # A cast moves the compute dtype, never the stored scales.
     lin = next(m for m in model_a.modules() if isinstance(m, Int4PackedLinear))
     scale = lin.weight_scale.clone()
     lin.to(torch.float16)
@@ -254,7 +251,6 @@ def test_packed_route_lora_trains_merges_and_unmerges(tmp_path, monkeypatch):
     grads = [p.grad for n, p in model.named_parameters() if "lora_B" in n]
     assert len(grads) == 14 and all(g is not None and torch.isfinite(g).all() for g in grads)
     assert all(g.abs().sum() > 0 for g in grads)
-    # PEFT merge densifies the packed base, unmerge restores the exact packed tensors.
     layer = model.base_model.model.model.layers[0].self_attn.q_proj
     base = layer.get_base_layer()
     packed = base.weight_packed
@@ -307,7 +303,6 @@ def test_adopt_swaps_plain_linears_and_leaves_routers_to_the_decompress_converte
         16,
         8,
     )
-    # The fp32 scale is kept as stored (a bf16 cast would round it).
     assert model.proj.weight_scale.dtype == torch.float32
     assert type(model.gate) is Router
     # The leftover converter pattern renames only the router's keys, and only the suffix.

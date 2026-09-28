@@ -51,8 +51,7 @@ try:
 except Exception:
     HAS_CT = False
 
-# The re-quantization hooks the quantizer's `update_weight_conversions` (transformers 5.8+);
-# 5.0 to 5.7 have the converter loader without that hook, and the module stays inert there.
+# Needs `update_weight_conversions` (transformers 5.8+); inert on 5.0-5.7.
 from unsloth.models.compressed_tensors_bnb import _transformers_supports_weight_converters
 
 HAS_CONVERTERS = _transformers_supports_weight_converters()
@@ -97,7 +96,6 @@ class _Config(SimpleNamespace):
         return dict(self.__dict__)
 
 
-# ----------------------------------------------------------------------------- classifier
 
 
 def test_plan_accepts_w4a16_pack_quantized():
@@ -192,7 +190,6 @@ def test_plan_declines_mixed_groups_with_a_float_scheme():
     assert compressed_tensors_bnb_plan(_Config(quantization_config = quant)) is None
 
 
-# ----------------------------------------------------------------------------- dtype plan
 
 
 def test_generalize_widens_numeric_path_components_only():
@@ -237,7 +234,6 @@ def test_packed_dtype_plan_uses_families_and_exact_names_on_collision():
     assert packed_weight_dtype_plan(["model.embed_tokens.weight"]) == {}
 
 
-# ----------------------------------------------------------------------------- config stripping
 
 
 @pytest.mark.skipif(
@@ -307,7 +303,6 @@ def test_planner_gets_the_prepared_config_instead_of_rebuilding_it(monkeypatch):
     import types
     from unsloth.models import loader_utils
 
-    # A module of our own under the import name: other tests leave their fakes in sys.modules.
     planner = types.ModuleType("unsloth_zoo.device_map_planner")
     monkeypatch.setitem(sys.modules, "unsloth_zoo.device_map_planner", planner)
 
@@ -338,7 +333,6 @@ def test_planner_gets_the_prepared_config_instead_of_rebuilding_it(monkeypatch):
     assert seen["load_in_4bit"] is True
     assert device_map == loader_utils._PLANNED_DEVICE_MAPS[loader_utils.UNSLOTH_DEVICE_MAP]
 
-    # An unsloth_zoo whose planner cannot take the object declines the plan instead of handing it a config it would size wrong.
     seen.clear()
 
     def old_plan(
@@ -615,7 +609,6 @@ def test_quantizer_registration_is_idempotent_and_a_subclass():
     assert issubclass(first, Bnb4BitHfQuantizer)
 
 
-# ----------------------------------------------------------------------------- GPU: real loads
 
 
 def _write_tiny_packed_llama(
@@ -647,9 +640,7 @@ def _write_tiny_packed_llama(
     )
     model = LlamaForCausalLM(config).to(torch.bfloat16)
     sd = {k: v.detach().contiguous() for k, v in model.state_dict().items()}
-    # `actorder = "group"` was deprecated in compressed-tensors 0.18.0 and removed in 0.19.0;
-    # "weight" is the spelling its validator still accepts and exercises the same `weight_g_idx`
-    # path in the compressor.
+    # `actorder = "group"` was removed in compressed-tensors 0.19.0; "weight" hits the same g_idx path.
     quant = _w4a16(
         weights = {
             "num_bits": num_bits,
@@ -675,7 +666,6 @@ def _write_tiny_packed_llama(
         wf = w.float()
         g_idx = None
         if actorder:
-            # Activation ordering permutes input columns into groups; use a fixed permutation.
             g_idx = torch.randperm(in_f) // group_size
             g_idx = g_idx.to(torch.int32)
             grouped = wf[:, torch.argsort(g_idx)].reshape(out_f, in_f // group_size, group_size)
@@ -756,7 +746,6 @@ def test_packed_checkpoint_loads_as_linear4bit_bit_identical_to_disk_route(
 
     if variant == "mxfp4":
         monkeypatch.setenv("UNSLOTH_MXFP4_KEEP_PACKED", "0")
-    # The NF4 re-quantization route; the default keeps INT4 packed (test_compressed_tensors_int4.py).
     monkeypatch.setenv("UNSLOTH_COMPRESSED_TENSORS_INT4", "nf4")
 
     packed_dir, bf16_dir = _write_tiny_packed_llama(
@@ -777,7 +766,6 @@ def test_packed_checkpoint_loads_as_linear4bit_bit_identical_to_disk_route(
     ids = torch.randint(0, 256, (1, 16), device = "cuda:0")
     with torch.no_grad():
         assert torch.equal(model_a(input_ids = ids).logits, model_b(input_ids = ids).logits)
-    # The stripped checkpoint config never carries the plan or the old quantization config.
     assert not hasattr(model_a.config, UNSLOTH_COMPRESSED_TENSORS_ATTR)
     assert getattr(model_a.config, "quantization_config", None) is not None  # the bitsandbytes one
     assert "compressed" not in str(model_a.config.quantization_config).lower()
@@ -853,7 +841,6 @@ def test_many_to_many_expert_op_keeps_its_source_contract():
     ernie = ErnieFuseAndSplitTextVisionExperts()
     want = ernie.convert(dict(plain), source_patterns = sources, target_patterns = targets, config = None)
 
-    # The rebuilt converter: decompression first, then the converter's own op under its contract.
     rebuilt_sources = (
         [p + "_packed$" for p in sources]
         + [p + "_scale$" for p in sources]
@@ -1016,7 +1003,6 @@ def test_an_explicit_quantizer_other_than_bnb_4bit_keeps_the_checkpoint_config()
     )
     assert not quantization_config_selects_bnb_4bit(BitsAndBytesConfig(load_in_8bit = True))
     assert not quantization_config_selects_bnb_4bit({"quant_method": "gptq", "bits": 4})
-    # With the 8-bit quantizer the plan is never armed, so the packed config stays on the model.
     config = _Config(quantization_config = _w4a16())
     load_in_4bit, _, method = check_and_disable_bitsandbytes_loading(
         config,
@@ -1048,8 +1034,7 @@ def test_both_loaders_gate_packed_requantization_on_the_callers_quantizer():
 
 
 def test_only_an_explicit_bnb_4bit_config_keeps_the_callers_flags():
-    # A GPTQ / AWQ / FP8 config with the default load_in_4bit = True must still take the checker's
-    # answer, or the 4-bit branch below swaps the caller's quantizer for a BitsAndBytesConfig.
+    # Else the 4-bit branch swaps a GPTQ / AWQ / FP8 quantizer for a BitsAndBytesConfig.
     import ast, inspect
     from unsloth.models import llama, vision
     for module in (llama, vision):
@@ -1082,8 +1067,7 @@ def test_an_explicit_bnb_4bit_config_is_not_replaced_by_the_default_nf4_one():
 
 @pytest.mark.skipif(not HAS_CONVERTERS, reason = "needs the transformers 5 loader")
 def test_both_loaders_treat_an_explicit_bnb_4bit_config_as_the_4bit_request():
-    # The public loader forwards load_in_4bit = False when a quantization_config is passed, so a
-    # BitsAndBytesConfig(load_in_4bit = True) must still arm the plan at both call sites.
+    # The loader passes load_in_4bit = False with an explicit config; a bnb 4-bit config must still arm the plan.
     import ast, inspect
     from transformers import BitsAndBytesConfig
     from unsloth.models import llama, vision
@@ -1113,8 +1097,6 @@ def test_both_loaders_treat_an_explicit_bnb_4bit_config_as_the_4bit_request():
 
 
 def test_exact_module_targets_win_over_a_class_target():
-    # compressed-tensors lists some groups by exact module path; the expert converters resolve
-    # the scheme without a module object, so the path has to be compared first.
     from types import SimpleNamespace
     from unsloth.models.compressed_tensors_bnb import _layer_expert_scheme, _scheme_for_module
 
@@ -1130,7 +1112,6 @@ def test_exact_module_targets_win_over_a_class_target():
 
 
 def test_exact_and_regex_targets_win_when_the_module_is_known():
-    # A broad class group listed first must not win over an exact path or a regex.
     pytest.importorskip("compressed_tensors")
     from types import SimpleNamespace
     from unsloth.models.compressed_tensors_bnb import _scheme_for_module
@@ -1147,8 +1128,7 @@ def test_exact_and_regex_targets_win_when_the_module_is_known():
 
 
 def test_expert_scheme_is_resolved_per_layer():
-    # One converter serves every layer, so a checkpoint that quantizes layer 1's experts and
-    # layer 5's experts under different groups must get each layer's own scheme.
+    # One converter serves every layer: each layer must get its own scheme.
     from types import SimpleNamespace
     from unsloth.models.compressed_tensors_bnb import _layer_expert_scheme
 
@@ -1170,7 +1150,6 @@ def test_expert_scheme_is_resolved_per_layer():
     with pytest.raises(RuntimeError, match = "different config groups"):
         _layer_expert_scheme(mixed, "model.layers.0.mlp.experts.gate_up_proj", key, 4, None)
 
-    # Mixtral and PhiMoE source patterns begin with the separator.
     for dotted in (".experts.*.w1.weight_packed$", "^.experts.*.w1.weight_packed"):
         assert (
             _layer_expert_scheme(ct, "model.layers.1.mlp.experts.gate_up_proj", dotted, 4, None)

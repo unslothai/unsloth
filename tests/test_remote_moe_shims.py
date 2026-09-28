@@ -125,8 +125,7 @@ class DeepseekV3MoE(nn.Module):
         assert before in src, before
         src = src.replace(before, after)
     mod = types.ModuleType(name)
-    # A hub module always has a file behind it, and the shim predicate reads the forward's
-    # source; give the exec'd fixture the same through linecache.
+    # The shim predicate reads forward's source: register the exec'd fixture in linecache.
     import linecache
 
     filename = f"<{name}>"
@@ -138,9 +137,7 @@ class DeepseekV3MoE(nn.Module):
     return mod
 
 
-# sarvamai/sarvam-105b's modeling_sarvam_moe.py: the same port under another class name, an
-# `else:` that still calls the no-grad `moe_infer`, and `num_shared_experts` in place of
-# `n_shared_experts` with `shared_experts = None` when there are none.
+# sarvamai/sarvam-105b: renamed block, `else:` still calls `moe_infer`, `num_shared_experts` key.
 _SARVAM_EDITS = (
     ("class DeepseekV3MoE(nn.Module):", "class SarvamMLAMoE(nn.Module):"),
     (
