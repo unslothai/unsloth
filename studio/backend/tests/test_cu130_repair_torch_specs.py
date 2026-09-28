@@ -61,13 +61,11 @@ def test_a_resident_release_is_kept(monkeypatch, mod, resident, expected):
 
 # 2.4-2.8 are older than anything the cu130 index serves, so pinning them would fail the repair.
 @pytest.mark.parametrize("resident", [None, "2.15.0", "2.3.1", "2.6.0", "2.8.0"])
-def test_no_keepable_release_repairs_to_213(monkeypatch, mod, resident):
+def test_no_keepable_release_repairs_to_the_default_range(monkeypatch, mod, resident):
+    # 2.13 without a kept release would bypass install.sh's PyPI gate and any uv upload cutoff.
     _route(monkeypatch, mod, torch = resident)
-    assert mod._cuda_repair_torch_specs(CU130, mod._CUDA_TORCH_PKG_SPEC) == (
-        "torch>=2.13.0,<2.14.0",
-        "torchvision>=0.28.0,<0.29.0",
-        "torchaudio>=2.4,<2.12.0",
-    )
+    for default in (mod._CUDA_TORCH_PKG_SPEC, mod._TORCH_FLAVOR_REPAIR_PKG_SPEC):
+        assert mod._cuda_repair_torch_specs(CU130, default) is default
 
 
 @pytest.mark.parametrize(

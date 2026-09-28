@@ -393,14 +393,9 @@ _TORCH_FLAVOR_REPAIR_PKG_SPEC: tuple[str, str, str] = (
     "torchaudio>=2.4,<2.12.0",
 )
 
-# The install.sh _cu130_torch213_route: a repair keeps a resident 2.9-2.14 release, else installs 2.13.
+# The install.sh _cu130_torch213_route: a repair keeps a resident 2.9-2.14 release.
 _CU130_PRESERVE_TORCH_CEILING_MINOR = 15
 _CU130_FIRST_TORCH_MINOR = 9  # download.pytorch.org/whl/cu130 starts at torch 2.9.0
-_CU130_NEW_INSTALL_TORCH_PKG_SPEC: tuple[str, str, str] = (
-    "torch>=2.13.0,<2.14.0",
-    "torchvision>=0.28.0,<0.29.0",
-    "torchaudio>=2.4,<2.12.0",
-)
 
 
 def _is_cu130_torch213_route(index_url: str | None) -> bool:
@@ -426,7 +421,9 @@ def _resident_torch_release() -> str | None:
 def _cuda_repair_torch_specs(
     index_url: str | None, default: tuple[str, str, str]
 ) -> tuple[str, str, str]:
-    """Repair specs for index_url: ``default`` everywhere except the cu130 torch 2.13 route."""
+    """``default``, except that the cu130 torch 2.13 route keeps a resident release it serves.
+
+    Never installs 2.13 itself: whether a release admits it is install.sh's PyPI decision."""
     if not _is_cu130_torch213_route(index_url):
         return default
     release = _resident_torch_release()
@@ -440,7 +437,7 @@ def _cuda_repair_torch_specs(
                 f"torchvision==0.{minor + 15}.*",
                 f"torchaudio==2.{audio_minor}.*",
             )
-    return _CU130_NEW_INSTALL_TORCH_PKG_SPEC
+    return default
 
 
 def _resident_torch_trio_pins() -> list[str]:
