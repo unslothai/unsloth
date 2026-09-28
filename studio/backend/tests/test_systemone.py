@@ -928,10 +928,15 @@ class MovableModel:
         self.moved_to.append(device.type)
         return self
 
+    def float(self):
+        return self
+
 
 @pytest.fixture
 def gpu_agent(monkeypatch):
     torch = pytest.importorskip("torch")
+    # A CPU without native fp16/bf16: the fallback lands in fp32 whatever this host supports.
+    monkeypatch.setattr(laya_runtime, "_precision", lambda device, fp16_checkpoint: (None, None))
     collate = lambda groups, pad: {"attention_mask": torch.ones(1, len(groups[0][0]["ids"]))}
     monkeypatch.setitem(
         sys.modules, "laya", SimpleNamespace(common = SimpleNamespace(collate_items = collate))
@@ -1091,3 +1096,99 @@ def test_fast_path_matches_laya_predict():
             if "probabilities" in answer:
                 assert list(answer["probabilities"]) == list(want["probabilities"])
         assert truncated == (len(state) > 200 if isinstance(state, str) else False)
+
+
+def _save_checkpoint(folder, dtype):
+    torch = pytest.importorskip("torch")
+    from safetensors.torch import save_file
+
+    folder.mkdir(parents = True, exist_ok = True)
+    save_file(
+        {"big.weight": torch.zeros(64, 64, dtype = dtype), "temperature": torch.ones(3)},
+        str(folder / "model.safetensors"),
+    )
+    return folder
+
+
+def test_stored_dtype_is_read_from_the_safetensors_header(tmp_path):
+    torch = pytest.importorskip("torch")
+    assert laya_runtime._stored_fp16(_save_checkpoint(tmp_path / "half", torch.float16))
+    assert not laya_runtime._stored_fp16(_save_checkpoint(tmp_path / "full", torch.float32))
+    assert not laya_runtime._stored_fp16(tmp_path / "missing")
+
+
+def test_precision_follows_the_checkpoint_then_the_device(monkeypatch):
+    torch = pytest.importorskip("torch")
+    cuda = torch.device("cuda")
+    monkeypatch.setattr(torch.version, "hip", None)
+    assert laya_runtime._precision(cuda, True) == (torch.float16, torch.float16)
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda device = None: (7, 5))
+    assert laya_runtime._precision(cuda, False) == (torch.float16, torch.float16)
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda device = None: (9, 0))
+    assert laya_runtime._precision(cuda, False) == (torch.bfloat16, torch.bfloat16)
+    monkeypatch.setenv("UNSLOTH_SYSTEMONE_FP32", "1")
+    assert laya_runtime._precision(cuda, True) == (None, None)
+    monkeypatch.delenv("UNSLOTH_SYSTEMONE_FP32")
+    import platform
+
+    monkeypatch.setattr(platform, "machine", lambda: "arm64")
+    assert laya_runtime._precision(torch.device("cpu"), True) == (None, None)
+    assert laya_runtime._precision(torch.device("mps"), True) == (None, None)
+
+
+def _tiny_decision_model(torch):
+    nn = torch.nn
+    torch.manual_seed(0)
+
+    class Tiny(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.emb = nn.Embedding(50, 32)
+            self.norm = nn.LayerNorm(32)
+            self.layer = nn.TransformerEncoderLayer(
+                32, 4, 64, 0.0, batch_first = True, norm_first = True
+            )
+            self.out = nn.Linear(32, 1)
+
+        def forward(self, ids):
+            return self.out(self.layer(self.norm(self.emb(ids)))).float()
+
+    model = Tiny().eval()
+    # Weights exactly representable in fp16, as a checkpoint saved in fp16 loads into fp32.
+    for param in model.parameters():
+        param.data = param.data.half().float()
+    return model
+
+
+def test_fp16_weights_are_bit_identical_under_bf16_autocast():
+    torch = pytest.importorskip("torch")
+    import copy
+
+    reference = _tiny_decision_model(torch)
+    half = copy.deepcopy(reference)
+    laya_runtime._cast_matmul_weights(half, torch.float16)
+    assert (
+        half.emb.weight.dtype == half.out.weight.dtype == half.layer.self_attn.in_proj_weight.dtype
+    )
+    assert half.emb.weight.dtype == torch.float16
+    assert half.norm.weight.dtype == half.layer.norm1.weight.dtype == torch.float32
+    ids = torch.randint(0, 50, (3, 17))
+    assert half.emb(ids).dtype == torch.float32
+    with torch.inference_mode(), torch.autocast(device_type = "cpu", dtype = torch.bfloat16):
+        assert torch.equal(reference(ids), half(ids))
+
+
+def test_fp16_overflow_reruns_in_fp32(monkeypatch, gpu_agent):
+    torch = pytest.importorskip("torch")
+    agent = gpu_agent
+    calls = []
+
+    def run(agent, batch):
+        calls.append(agent.dtype)
+        value = float("inf") if agent.dtype == torch.float16 else 1.0
+        return torch.tensor([[value, 0.5]])
+
+    monkeypatch.setattr(laya_runtime, "_run_model", run)
+    logits, _ = laya_runtime._forward(agent, _items())
+    assert calls == [torch.float16, torch.float32] and agent.dtype == torch.float32
+    assert logits.tolist() == [[1.0, 0.5]]
