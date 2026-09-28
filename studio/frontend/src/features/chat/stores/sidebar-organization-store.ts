@@ -36,6 +36,8 @@ export interface SidebarCustomSection {
   name: string;
   /** How its chats are ordered. Manual by default, like Pinned: it is a list the user built. */
   sort: SidebarChatSort;
+  /** When it was made, for recency. Absent on sections saved before it was recorded. */
+  createdAt?: number;
 }
 
 /** The fixed section the "Show" toggles can hide, beside the user's own. Pinned always shows, as
@@ -341,6 +343,7 @@ export function mergePersistedOrganization(
         id: entry.id,
         name,
         sort: readSort(entry.sort, "manual"),
+        ...(typeof entry.createdAt === "number" ? { createdAt: entry.createdAt } : {}),
       });
     }
   }
@@ -424,7 +427,10 @@ export const useSidebarOrganizationStore = create<SidebarOrganizationState>()(
           );
           const at = firstCustom !== -1 ? firstCustom : order.indexOf(PINNED_SECTION_KEY) + 1;
           return {
-            customSections: [{ id, name: clean, sort: "manual" }, ...state.customSections],
+            customSections: [
+              { id, name: clean, sort: "manual", createdAt: Date.now() },
+              ...state.customSections,
+            ],
             sectionOrder: [...order.slice(0, at), id, ...order.slice(at)],
           };
         });

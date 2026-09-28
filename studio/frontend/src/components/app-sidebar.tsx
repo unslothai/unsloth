@@ -1123,11 +1123,6 @@ export function AppSidebar() {
   const { displayTitle, avatarDataUrl } = useEffectiveProfile();
 
   const { projects, hasLoaded: projectsLoaded } = useChatProjects();
-  // Most recently updated first, for "Move to".
-  const recentProjects = useMemo(
-    () => [...projects].sort((a, b) => b.updatedAt - a.updatedAt),
-    [projects],
-  );
   const activeProjectId = isChatRoute
     ? ((search.project as string | undefined) ?? null)
     : null;
@@ -1281,6 +1276,37 @@ export function AppSidebar() {
       list.sort((a, b) => b.updatedAt - a.updatedAt);
     return map;
   }, [allChatItems]);
+  // A project's last activity: its own edits or its newest chat. Its updatedAt only moves when it
+  // is edited.
+  const projectActivityAt = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const project of projects) {
+      const newest = chatsByProjectId.get(project.id)?.[0]?.updatedAt ?? 0;
+      map.set(project.id, Math.max(project.updatedAt ?? project.createdAt, newest));
+    }
+    return map;
+  }, [projects, chatsByProjectId]);
+  // "Move to" order: most recently active first.
+  const recentProjects = useMemo(
+    () =>
+      [...projects].sort(
+        (a, b) => (projectActivityAt.get(b.id) ?? 0) - (projectActivityAt.get(a.id) ?? 0),
+      ),
+    [projects, projectActivityAt],
+  );
+  // Sections by last activity: when made, or their newest chat or project. Drag order is not
+  // recency, and sections saved before createdAt rank by activity alone.
+  const recentSections = useMemo(() => {
+    const at = new Map(customSections.map((section) => [section.id, section.createdAt ?? 0]));
+    const touch = (sectionId: string | undefined, time: number) => {
+      if (sectionId && at.has(sectionId) && time > (at.get(sectionId) ?? 0)) at.set(sectionId, time);
+    };
+    for (const item of allChatItems) touch(sectionByChatId[item.id], item.updatedAt);
+    for (const [projectId, sectionId] of Object.entries(sectionByProjectId)) {
+      touch(sectionId, projectActivityAt.get(projectId) ?? 0);
+    }
+    return [...customSections].sort((a, b) => (at.get(b.id) ?? 0) - (at.get(a.id) ?? 0));
+  }, [customSections, allChatItems, sectionByChatId, sectionByProjectId, projectActivityAt]);
   // Pinned folders in pin order, then the order they were dragged into while Pinned kept
   // folders apart from its chats. Pinned is one list now; this only seeds it.
   const pinnedProjectBase = useMemo(() => {
@@ -1298,16 +1324,9 @@ export function AppSidebar() {
       (project) => project.id,
     );
   }, [projects, pinnedProjectIds, manualOrder]);
-  // The folders Projects still owns: unpinned, by activity, then manual order. Activity comes from
-  // the member chats, since a project's own updatedAt only moves when it is edited.
+  // The folders Projects still owns: unpinned, by activity (see projectActivityAt), then manual order.
   const sidebarProjectRecords = useMemo(() => {
-    const lastActivityAt = (project: ProjectRecord) => {
-      let latest = project.updatedAt ?? project.createdAt;
-      for (const chat of chatsByProjectId.get(project.id) ?? []) {
-        if (chat.updatedAt > latest) latest = chat.updatedAt;
-      }
-      return latest;
-    };
+    const lastActivityAt = (project: ProjectRecord) => projectActivityAt.get(project.id) ?? 0;
     const rest = projects
       .filter((p) => !pinnedProjectIdSet.has(p.id) && !sectionByProjectId[p.id])
       .sort((a, b) =>
@@ -1325,7 +1344,7 @@ export function AppSidebar() {
     pinnedProjectIdSet,
     sectionByProjectId,
     manualOrder,
-    chatsByProjectId,
+    projectActivityAt,
     projectSort,
   ]);
   // Memoised for its identity, not for the slice. It feeds the rendered-row set the selection guard
@@ -4178,7 +4197,7 @@ export function AppSidebar() {
       ? customSections.find((section) => section.id === config.current)
       : undefined;
     // The section the rows are in is not a place to move them to, so it is left out, not greyed.
-    const destinations = customSections
+    const destinations = recentSections
       .filter((section) => section.id !== config.current)
       .slice(0, MOVE_TO_MAX);
     return (
