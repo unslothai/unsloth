@@ -63,7 +63,6 @@ def _family(*, compile_ok = True):
 
 @pytest.fixture(autouse = True)
 def _fresh_compile_knobs():
-    """The recorded compile knobs are process state; one test's recorded value must not leak into the next."""
     compile_config._reset_for_tests()
     yield
     compile_config._reset_for_tests()

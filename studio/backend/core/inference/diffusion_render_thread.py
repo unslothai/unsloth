@@ -45,7 +45,6 @@ def _executor(name: str) -> ThreadPoolExecutor:
 
 
 def _apply_compile_config() -> None:
-    # torch 2.12+ keeps compile config per context; the knobs were set on the load thread, the compile runs here.
     try:
         from . import diffusion_compile_config  # noqa: PLC0415
         diffusion_compile_config.apply()

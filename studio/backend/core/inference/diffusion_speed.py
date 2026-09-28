@@ -177,7 +177,7 @@ def snapshot_backend_flags() -> Optional[dict]:
             state["cudnn_benchmark"] = _read_cudnn_benchmark(cudnn)
     inductor_cfg = _inductor_config()
     if inductor_cfg is not None:
-        # The process-wide value, not this thread's view: on torch 2.12+ a knob another load set is invisible here.
+        # Process-wide value: on torch 2.12+ a knob set on another thread is invisible here.
         for attr, key in _INDUCTOR_FLAGS:
             if hasattr(inductor_cfg, attr):
                 state[key] = bool(compile_config.get_knob(_INDUCTOR_MODULE, attr))
@@ -239,7 +239,6 @@ def restore_backend_flags(state: Optional[dict]) -> None:
             pass
 
     def _set_knob(obj: Any, module_name: str, attr: str, key: str) -> None:
-        # A knob recorded process-wide is restored process-wide, so the render thread picks the restore up too.
         if key in state and compile_config.is_recorded(module_name, attr):
             compile_config.set_knob(module_name, attr, state[key])
         else:
@@ -779,8 +778,7 @@ def _compile_repeated_blocks(
     try:
         import torch
 
-        # Both knobs go through compile_config: torch 2.12+ scopes config writes to the writing thread's context, and
-        # the lazy compile runs on the render thread, not this load thread.
+        # Via compile_config: the lazy compile runs on the render thread, which on torch 2.12+ cannot see these writes.
         # Heterogeneous-block DiTs (Z-Image needs ~11 graphs) exceed dynamo's default recompile_limit of 8, where a
         # resident load hard-errors under fullgraph, so raise it to 64. NOT force_parameter_static_shapes=False: no win
         # and ~6x slower.
@@ -960,7 +958,6 @@ class _CompileGuard:
 
         def guarded(*args: Any, **kwargs: Any) -> Any:
             if guard.error is None:
-                # A compile or recompile can fire on any thread that calls in; give it the load-time knobs.
                 compile_config.apply()
                 try:
                     return compiled(*args, **kwargs)
