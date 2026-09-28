@@ -457,7 +457,9 @@ def apply_speed_optims(
     family_allows_compile = bool(getattr(family, "supports_torch_compile", True))
 
     # Lossless: a channels-last VAE speeds up its convs with no numeric change.
-    applied["channels_last"] = _vae_channels_last(pipe, logger, fused = on_cuda and _fused_vae_planned(pipe))
+    applied["channels_last"] = _vae_channels_last(
+        pipe, logger, fused = on_cuda and _fused_vae_planned(pipe)
+    )
     # Near-lossless, not bit-identical, so never on "off" (returned above).
     applied["vae_fp16_decode"] = _video_vae_half_decode(pipe, target, family, logger)
     if on_cuda:
@@ -593,7 +595,12 @@ def _cudnn_benchmark_pointless(pipe: Any) -> bool:
     return type(getattr(pipe, "vae", None)).__name__ in _CUDNN_BENCHMARK_DENY_VAES
 
 
-def _vae_channels_last(pipe: Any, logger: Any, *, fused: bool = False) -> bool:
+def _vae_channels_last(
+    pipe: Any,
+    logger: Any,
+    *,
+    fused: bool = False,
+) -> bool:
     vae = getattr(pipe, "vae", None)
     if vae is None or not hasattr(vae, "to"):
         return False
