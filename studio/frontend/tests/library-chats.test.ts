@@ -9,6 +9,7 @@ import {
   NO_PROJECT,
   NO_SECTION,
   chatFiltersActive,
+  chatTime,
   dateBucket,
   filterChats,
   groupChats,
@@ -19,6 +20,7 @@ import {
   sortChats,
   sortSections,
   sortProjects,
+  summarizeChatMessages,
   validateChatsSection,
 } from "../src/features/library/chats/model.ts";
 import { readSrc } from "./helpers/kit.ts";
@@ -258,4 +260,40 @@ test("the Chats tab opens on All, and a project opens its home in Chat", () => {
   assert.match(library, /pinned: pinnedFirst && !ungrouped \? pinned : undefined,/);
   // The chat menu opens the chat's folder; the recents menu no longer does.
   assert.match(readSrc("features/library/chats/chats-items.tsx"), /<OpenChatFolderItem item=\{chat\} \/>/);
+});
+
+test("contents count the shown branch, its images and HTML blocks", () => {
+  const message = (
+    id: string,
+    parentId: string | null,
+    role: string,
+    createdAt: number,
+    content: unknown[],
+    attachments: unknown[] = [],
+  ) => ({ id, parentId, role, createdAt, content, attachments });
+  const summary = summarizeChatMessages([
+    message("u1", null, "user", 1, [{ type: "text", text: "hi" }], [{ type: "image" }]),
+    message("a1", "u1", "assistant", 2, [{ type: "text", text: "```html\n<p/>\n```\n```python\n```" }]),
+    // An older sibling of a1, from a regenerate: not on the shown branch.
+    message("a0", "u1", "assistant", 1.5, [{ type: "image", image: "x" }]),
+    message("u2", "a1", "user", 3, [{ type: "image", image: "y" }]),
+    message("s", null, "system", 0, []),
+  ]);
+  assert.deepEqual(summary, { messages: 3, images: 2, html: 1 });
+  assert.deepEqual(summarizeChatMessages([]), { messages: 0, images: 0, html: 0 });
+});
+
+test("one date column picks created, last active or last modified", () => {
+  const chat = { ...chats[0]!, createdAt: 1, updatedAt: 5, modifiedAt: 9 };
+  assert.equal(chatTime(chat, "created"), 1);
+  assert.equal(chatTime(chat, "updated"), 5);
+  assert.equal(chatTime(chat, "modified"), 9);
+  // A rename older than the last message leaves modified at the last message.
+  assert.equal(chatTime({ ...chat, modifiedAt: 2 }, "modified"), 5);
+  const older = { ...chat, id: "older", modifiedAt: 3 };
+  const sorted = sortChats([older, chat], { key: "modified", desc: true }, new Set(), false);
+  assert.deepEqual(ids(sorted), [chat.id, "older"]);
+  const items = readSrc("features/library/chats/chats-items.tsx");
+  assert.match(items, /export function DateHeader\(/);
+  assert.doesNotMatch(items, /CREATED_COLUMN/);
 });

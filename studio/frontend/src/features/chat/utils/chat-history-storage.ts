@@ -41,6 +41,7 @@ import {
 import { ThreadRecordWriteCoordinator } from "./thread-record-write-coordinator";
 // eslint-disable-next-line no-restricted-imports -- this file is in the startup cycle; the chat barrel closes it.
 import { setForkBoundary } from "../stores/fork-boundary-store";
+import { isChatEdit, useChatModifiedStore } from "../stores/chat-modified-store";
 
 // Thread ids belonging to a temporary/incognito session. A thread is tagged once at creation
 // and stays tagged for life; readers and writers consult this set, never the live toggle.
@@ -1176,7 +1177,24 @@ export async function updateStoredChatThread(
     signal: options.signal,
   });
   if (!thread) return undefined;
-  return updateChatThread(threadId, patch, options);
+  const updated = await updateChatThread(threadId, patch, options);
+  if (updated && isChatEdit(patch)) useChatModifiedStore.getState().touch([threadId]);
+  return updated;
+}
+
+/** Messages for many threads in one request; a thread the batch has nothing for falls back to
+ *  its per-thread read, which also covers legacy local history. */
+export async function listStoredChatMessagesMany(
+  threadIds: string[],
+): Promise<Map<string, MessageRecord[]>> {
+  const ids = threadIds.filter((id) => !isThreadIncognito(id) && !isChatThreadDeleted(id));
+  const out = await batchListChatMessages(ids).catch(() => new Map<string, MessageRecord[]>());
+  await Promise.all(
+    ids
+      .filter((id) => (out.get(id)?.length ?? 0) === 0)
+      .map(async (id) => out.set(id, await listStoredChatMessages(id).catch(() => []))),
+  );
+  return out;
 }
 
 /** Thread ids whose sandbox still holds files, passed through from the route. */

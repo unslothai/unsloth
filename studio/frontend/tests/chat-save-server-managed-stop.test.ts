@@ -50,6 +50,10 @@ function harness(options: { rejectIds?: Set<string>; failWith?: Error } = {}) {
       "../db": { DEXIE_DB_NAME: "test", db: {} },
       "./chat-thread-tombstones": { isChatThreadDeleted: () => false },
       "../stores/fork-boundary-store": { setForkBoundary: () => {} },
+      "../stores/chat-modified-store": {
+        isChatEdit: () => false,
+        useChatModifiedStore: { getState: () => ({ touch: () => {} }) },
+      },
       "./thread-record-write-coordinator": {
         ThreadRecordWriteCoordinator: class {
           async settleCurrent() {}

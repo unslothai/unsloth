@@ -92,6 +92,10 @@ function harness(
         ) =>
           published.push([threadId, [...(messageIds ?? [])], sourceThreadId]),
       },
+      "../stores/chat-modified-store": {
+        isChatEdit: () => false,
+        useChatModifiedStore: { getState: () => ({ touch: () => {} }) },
+      },
       "./thread-record-write-coordinator": {
         ThreadRecordWriteCoordinator: class {
           async settleCurrent() {}

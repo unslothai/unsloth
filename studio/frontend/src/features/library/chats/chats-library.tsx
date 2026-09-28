@@ -48,6 +48,7 @@ import {
   useChatPreferencesStore,
   useChatProjects,
   useChatRuntimeStore,
+  useChatModifiedStore,
   useChatSidebarItems,
   useForkInFlight,
   usePinnedChatsStore,
@@ -63,10 +64,10 @@ import {
   Archive03Icon,
   ArchiveRestoreIcon,
   Cancel01Icon,
+  DashboardSquare01Icon,
   Delete02Icon,
   Folder01Icon,
   FolderAddIcon,
-  InboxIcon,
   LayerIcon,
   MoreHorizontalIcon,
   PencilEdit02Icon,
@@ -91,6 +92,7 @@ import {
   type ChatsActions,
   ChatsActionsProvider,
   CollectionHeader,
+  type DateColumn,
   ExportSubmenu,
   HEADER_MORE_BUTTON,
   GroupHeading,
@@ -110,6 +112,8 @@ import {
   type ChatGroupBy,
   type ChatSortKey,
   type ChatsSection,
+  DATE_FIELDS,
+  type DateField,
   EMPTY_CHAT_FILTERS,
   NO_PROJECT,
   NO_SECTION,
@@ -129,6 +133,7 @@ import {
   sortProjects,
   sortSections,
 } from "./model";
+import { useChatContents, useProjectSourceCounts } from "./contents";
 import { useChatFavoritesStore } from "./favorites-store";
 import { useChatsPrefsStore } from "./prefs-store";
 
@@ -143,12 +148,14 @@ const BAR_OUTLINE =
 
 const CHAT_SORTS: SortChoice<ChatSortKey>[] = [
   { value: "updated", label: "library.chats.list.lastActive" },
+  { value: "modified", label: "library.chats.list.lastModified" },
   { value: "created", label: "library.chats.list.created" },
   { value: "name", label: "library.list.name" },
 ];
 
 const PROJECT_SORTS: SortChoice<ProjectSortKey>[] = [
   { value: "updated", label: "library.chats.list.lastActive" },
+  { value: "modified", label: "library.chats.list.lastModified" },
   { value: "created", label: "library.chats.list.created" },
   { value: "name", label: "library.list.name" },
   { value: "chats", label: "library.chats.toolbar.sortChats" },
@@ -170,7 +177,7 @@ const SECTION_LABELS: Record<ChatsSection, TranslationKey> = {
 };
 
 const SECTION_ICONS: Record<ChatsSection, IconSvgElement> = {
-  all: InboxIcon,
+  all: DashboardSquare01Icon,
   chats: MessageCircleIcon,
   projects: Folder01Icon,
   sections: LayerIcon,
@@ -182,6 +189,24 @@ const SECTION_SORTS: SortChoice<SectionSortKey>[] = [
   { value: "name", label: "library.list.name" },
   { value: "chats", label: "library.chats.toolbar.sortChats" },
 ];
+
+const NO_CHATS: SidebarItem[] = [];
+
+function isDateField(key: string): key is DateField {
+  return (DATE_FIELDS as readonly string[]).includes(key);
+}
+
+/** Adds each chat's last rename, move or archive, from any of its panes. */
+function withModified(
+  chats: SidebarItem[],
+  modifiedAt: Readonly<Record<string, number>>,
+): SidebarItem[] {
+  return chats.map((chat) => {
+    const ids = chat.threadIds?.length ? chat.threadIds : [chat.id];
+    const at = Math.max(0, ...ids.map((id) => modifiedAt[id] ?? 0));
+    return at ? { ...chat, modifiedAt: at } : chat;
+  });
+}
 
 type HeaderTabs = { items: HeaderTab[]; active: string; onChange: (key: string) => void };
 
@@ -256,7 +281,13 @@ export function ChatsLibrary({
   // Open section page; `section` is the pill. Projects have no page here: they open in Chat.
   const openSectionId = search.chatSection ?? null;
 
-  const { items, archivedItems, loaded } = useChatSidebarItems();
+  const { items: listedItems, archivedItems: listedArchived, loaded } = useChatSidebarItems();
+  const modifiedAt = useChatModifiedStore((s) => s.at);
+  const items = useMemo(() => withModified(listedItems, modifiedAt), [listedItems, modifiedAt]);
+  const archivedItems = useMemo(
+    () => withModified(listedArchived, modifiedAt),
+    [listedArchived, modifiedAt],
+  );
   const { projects, hasLoaded: projectsLoaded } = useChatProjects();
   const pinnedIds = usePinnedChatsStore((s) => s.pinnedIds);
   const togglePinned = usePinnedChatsStore((s) => s.togglePin);
@@ -398,7 +429,8 @@ export function ChatsLibrary({
     return sortChats(matched, prefs.sort, pinned, pinnedFirst, locale);
   }, [scoped, query, filters, context, prefs.sort, pinnedFirst, pinned, locale]);
   const shownChats = visibleChats.slice(0, visibleCount);
-  const groupTime = prefs.sort.key === "created" ? "created" : "updated";
+  // Date groups follow the date the list shows.
+  const groupTime = prefs.dateField;
   const groups = useMemo(
     () =>
       groupChats(shownChats, groupBy, {
@@ -739,6 +771,47 @@ export function ChatsLibrary({
     );
   }
 
+  const listed = view === "list" && !embedded;
+  const chatContents = useChatContents(listed ? shownChats : NO_CHATS);
+  const projectSources = useProjectSourceCounts(listed);
+
+  // One date column per list: its title picks the date, its arrow flips the order.
+  const dateColumn = <K extends string>(
+    sort: { key: K; desc: boolean },
+    setSort: (next: { key: DateField; desc: boolean }) => void,
+    fields: readonly DateField[],
+    field: DateField,
+  ): DateColumn => ({
+    fields,
+    sortKey: sort.key,
+    desc: sort.desc,
+    onFieldChange: (next) => {
+      prefs.set({ dateField: next });
+      setSort({ key: next, desc: isDateField(sort.key) ? sort.desc : true });
+    },
+    onToggle: () =>
+      setSort({ key: field, desc: sort.key === field ? !sort.desc : true }),
+  });
+  const chatDateColumn = dateColumn(
+    prefs.sort,
+    (sort) => prefs.set({ sort }),
+    DATE_FIELDS,
+    prefs.dateField,
+  );
+  const projectDateColumn = dateColumn(
+    prefs.projectSort,
+    (projectSort) => prefs.set({ projectSort }),
+    DATE_FIELDS,
+    prefs.dateField,
+  );
+  // Sections record only their chats' last activity.
+  const sectionDateColumn = dateColumn(
+    prefs.sectionSort,
+    (sort) => prefs.set({ sectionSort: { key: "updated", desc: sort.desc } }),
+    ["updated"],
+    "updated",
+  );
+
   const actions: ChatsActions = {
     projects,
     projectNames,
@@ -778,6 +851,9 @@ export function ChatsLibrary({
     sections,
     sectionOf,
     projectSectionOf,
+    dateField: prefs.dateField,
+    chatContents,
+    projectSources,
     viewSection: (id) => go({ chatSection: id }),
     newChatInSection: (id) => newChatInSection(id),
     renameSection: setRenamingSection,
@@ -954,6 +1030,7 @@ export function ChatsLibrary({
                     : { key, desc: key !== "name" },
               })
             }
+            date={chatDateColumn}
             showLocation={locationColumn}
             allSelected={allSelected}
             selecting={selection.size > 0}
@@ -984,7 +1061,7 @@ export function ChatsLibrary({
                     showProject={showProject}
                     showSection={showSection}
                     locationColumn={locationColumn}
-                    times={{ bucket: group.bucket?.kind, groupedBy: groupTime }}
+                    times={{ bucket: group.bucket?.kind }}
                   />
                 ))}
               </div>
@@ -998,7 +1075,7 @@ export function ChatsLibrary({
                     archived={archived}
                     showProject={showProject}
                     showSection={showSection}
-                    times={{ bucket: group.bucket?.kind, groupedBy: groupTime }}
+                    times={{ bucket: group.bucket?.kind }}
                   />
                 ))}
               </CardGrid>
@@ -1053,7 +1130,7 @@ export function ChatsLibrary({
     if (view === "list") {
       return (
         <div className="@container">
-          <SectionListHeader />
+          <SectionListHeader date={sectionDateColumn} />
           <div className={cn("mt-1 flex flex-col", LIST_ROW_GAP)}>
             {visibleSections.map((entry) => (
               <SectionRow key={entry.id} section={entry} stats={sectionStatsById.get(entry.id)} />
@@ -1149,7 +1226,7 @@ export function ChatsLibrary({
     if (view === "list") {
       return (
         <div className="@container">
-          <ProjectListHeader />
+          <ProjectListHeader date={projectDateColumn} />
           <div className={cn("mt-1 flex flex-col", LIST_ROW_GAP)}>
             {visibleProjects.map((project) => (
               <ProjectRow key={project.id} project={project} stats={stats.get(project.id)} />
@@ -1255,14 +1332,21 @@ export function ChatsLibrary({
         options={PROJECT_SORTS}
         value={prefs.projectSort.key}
         desc={prefs.projectSort.desc}
-        onChange={(key, desc) => prefs.set({ projectSort: { key, desc } })}
+        onChange={(key, desc) =>
+          prefs.set({
+            projectSort: { key, desc },
+            ...(isDateField(key) ? { dateField: key } : {}),
+          })
+        }
       />
     ) : (
       <SortMenu
         options={CHAT_SORTS}
         value={prefs.sort.key}
         desc={prefs.sort.desc}
-        onChange={(key, desc) => prefs.set({ sort: { key, desc } })}
+        onChange={(key, desc) =>
+          prefs.set({ sort: { key, desc }, ...(isDateField(key) ? { dateField: key } : {}) })
+        }
         groupBy={section === "all" ? undefined : groupBy}
         groupOptions={groupOptions}
         onGroupByChange={(next) => prefs.set({ groupBy: next })}

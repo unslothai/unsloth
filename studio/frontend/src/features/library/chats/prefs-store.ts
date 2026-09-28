@@ -4,7 +4,7 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import type { LibraryView } from "../settings-store";
-import type { ChatGroupBy, ChatSort, ProjectSort, SectionSort } from "./model";
+import type { ChatGroupBy, ChatSort, DateField, ProjectSort, SectionSort } from "./model";
 
 export const LIBRARY_CHATS_PREFS_STORAGE_KEY = "unsloth_library_chats_prefs";
 
@@ -13,6 +13,8 @@ export interface ChatsPrefs {
   sort: ChatSort;
   projectSort: ProjectSort;
   sectionSort: SectionSort;
+  /** Which date the list's date column shows. */
+  dateField: DateField;
   groupBy: ChatGroupBy;
   pinnedFirst: boolean;
 }
@@ -22,6 +24,7 @@ export const DEFAULT_CHATS_PREFS: ChatsPrefs = {
   sort: { key: "updated", desc: true },
   projectSort: { key: "updated", desc: true },
   sectionSort: { key: "updated", desc: true },
+  dateField: "updated",
   groupBy: "date",
   pinnedFirst: true,
 };

@@ -23,8 +23,11 @@ import {
   OpenProjectFolderItem,
   compareModelDisplayName,
 } from "@/features/chat";
-import { useLocale, useT } from "@/i18n";
-import { ChevronRightStandardIcon } from "@/lib/chevron-icons";
+import { type TranslationKey, useLocale, useT } from "@/i18n";
+import {
+  ChevronDownStandardIcon,
+  ChevronRightStandardIcon,
+} from "@/lib/chevron-icons";
 import { MessageCircleIcon, StarPointedIcon } from "@/lib/hugeicons-derived";
 import { cn } from "@/lib/utils";
 import {
@@ -55,6 +58,7 @@ import {
 import { type ReactNode, createContext, useContext } from "react";
 import { formatActivityTime, formatCardTime } from "../format";
 import { FILE_LIST_COLUMNS } from "../components/library-list";
+import { SortRadio } from "../components/library-toolbar";
 import { CARD_SHADOW, OVERLAY_CONTROL, RAISED_SURFACE } from "../surface";
 
 // Same card style as the file tabs.
@@ -63,12 +67,16 @@ const CARD = cn(
   CARD_SHADOW,
   "group/chat relative flex cursor-pointer flex-col gap-3 rounded-xl px-5 pb-3.5 pt-5 transition hover:bg-neutral-100 hover:shadow-none dark:hover:bg-accent/60",
 );
-import type {
-  ChatSort,
-  ChatSortKey,
-  DateBucket,
-  ProjectStats,
-  SectionStats,
+import {
+  type ChatContents,
+  type ChatSort,
+  type ChatSortKey,
+  type DateBucket,
+  type DateField,
+  type ProjectStats,
+  type SectionStats,
+  chatTime,
+  projectTime,
 } from "./model";
 
 const ICON = "size-icon";
@@ -103,6 +111,12 @@ export interface ChatsActions {
   sectionOf: ReadonlyMap<string, string>;
   /** Project id -> the section it is filed in. */
   projectSectionOf: ReadonlyMap<string, string>;
+  /** The date the lists show. */
+  dateField: DateField;
+  /** Per chat row id; absent until read. */
+  chatContents: ReadonlyMap<string, ChatContents>;
+  /** Sources per project; null when unknown. */
+  projectSources: ReadonlyMap<string, number> | null;
   selection: ReadonlySet<string>;
   toggleSelected: (id: string) => void;
   open: (chat: SidebarItem) => void;
@@ -688,8 +702,165 @@ function groupedTime(
 /** Relative times by default; inside a date group, `groupedTime`. */
 export interface RowTimes {
   bucket?: DateBucket["kind"];
-  /** Which time the date groups were built from. */
-  groupedBy?: "created" | "updated";
+}
+
+/** A date in the chosen field: created as a date, the others relative. Empty for 0. */
+function formatDate(
+  ts: number,
+  field: DateField,
+  times: RowTimes,
+  locale: ReturnType<typeof useLocale>,
+  t: ReturnType<typeof useT>,
+): string {
+  if (!ts) return "";
+  if (times.bucket) return groupedTime(ts, times.bucket, locale);
+  return field === "created"
+    ? formatCardTime(ts, locale)
+    : formatActivityTime(ts, locale, t);
+}
+
+function countLabel(
+  count: number,
+  one: TranslationKey,
+  many: TranslationKey,
+  t: ReturnType<typeof useT>,
+): string {
+  return count === 1 ? t(one) : t(many, { count });
+}
+
+function chatContentsLabel(
+  contents: ChatContents | undefined,
+  t: ReturnType<typeof useT>,
+): string {
+  if (!contents) return "";
+  const parts = [
+    countLabel(
+      contents.messages,
+      "library.chats.list.oneMessage",
+      "library.chats.list.messageCount",
+      t,
+    ),
+  ];
+  if (contents.images > 0) {
+    parts.push(
+      countLabel(
+        contents.images,
+        "library.chats.list.oneImage",
+        "library.chats.list.imageCount",
+        t,
+      ),
+    );
+  }
+  if (contents.html > 0) {
+    parts.push(
+      countLabel(
+        contents.html,
+        "library.chats.list.oneHtml",
+        "library.chats.list.htmlCount",
+        t,
+      ),
+    );
+  }
+  return parts.join(" · ");
+}
+
+function projectContentsLabel(
+  stats: ProjectStats | undefined,
+  sources: number | undefined,
+  t: ReturnType<typeof useT>,
+): string {
+  const chats = chatCount(stats?.chats ?? 0, t);
+  if (!sources) return chats;
+  return `${chats} · ${countLabel(sources, "library.chats.list.oneSource", "library.chats.list.sourceCount", t)}`;
+}
+
+const DATE_LABELS: Record<DateField, TranslationKey> = {
+  created: "library.chats.list.created",
+  updated: "library.chats.list.lastActive",
+  modified: "library.chats.list.lastModified",
+};
+
+/** One date column: its title picks the date, its arrow flips the order. */
+export function DateHeader({
+  fields,
+  field,
+  sortKey,
+  desc,
+  onFieldChange,
+  onToggle,
+}: {
+  fields: readonly DateField[];
+  field: DateField;
+  sortKey: string;
+  desc: boolean;
+  onFieldChange: (field: DateField) => void;
+  onToggle: () => void;
+}) {
+  const t = useT();
+  const active = sortKey === field;
+  const Arrow = active && !desc ? ArrowUpIcon : ArrowDownIcon;
+  const label = t(DATE_LABELS[field]);
+  return (
+    <span className={cn(DATE_COLUMN, "items-center gap-1 @xl:flex")}>
+      {fields.length > 1 ? (
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <button
+              type="button"
+              className={cn(
+                "flex items-center gap-1 rounded-sm outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring data-[state=open]:text-foreground",
+                active && "text-foreground",
+              )}
+            >
+              {label}
+              <HugeiconsIcon
+                icon={ChevronDownStandardIcon}
+                strokeWidth={2}
+                className="size-3"
+              />
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="start" className={cn(MENU, "w-44")}>
+            {fields.map((option) => (
+              <SortRadio
+                key={option}
+                label={t(DATE_LABELS[option])}
+                checked={option === field}
+                onSelect={() => onFieldChange(option)}
+              />
+            ))}
+          </DropdownMenuContent>
+        </DropdownMenu>
+      ) : (
+        <span className={cn(active && "text-foreground")}>{label}</span>
+      )}
+      <button
+        type="button"
+        onClick={onToggle}
+        aria-label={t(
+          active && desc
+            ? "library.toolbar.sortAscending"
+            : "library.toolbar.sortDescending",
+        )}
+        aria-sort={active ? (desc ? "descending" : "ascending") : undefined}
+        className={cn(
+          "flex size-5 items-center justify-center rounded-full outline-none transition-colors hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring",
+          active ? "text-foreground" : "opacity-50",
+        )}
+      >
+        <Arrow className="size-3.5" strokeWidth={2} />
+      </button>
+    </span>
+  );
+}
+
+/** Header props for a list's date column. */
+export interface DateColumn {
+  fields: readonly DateField[];
+  sortKey: string;
+  desc: boolean;
+  onFieldChange: (field: DateField) => void;
+  onToggle: () => void;
 }
 
 function SelectBox({
@@ -724,11 +895,10 @@ function SelectBox({
 // Same row insets as the file tabs, so columns line up.
 const ROW_INSET = "pl-4 pr-6";
 const CELL = "truncate text-ui-13 text-muted-foreground";
-// Columns follow the list's width, not the window's; the default sort's column hides last.
-const LAST_ACTIVE_COLUMN = "hidden w-32 shrink-0 @xl:block";
-const CREATED_COLUMN = "hidden w-32 shrink-0 @3xl:block";
-const LOCATION_COLUMN = "hidden w-56 shrink-0 @4xl:block";
-const COUNT_COLUMN = "hidden w-24 shrink-0 @2xl:block";
+// Columns follow the list's width, not the window's; the date column hides last.
+const DATE_COLUMN = "hidden w-32 shrink-0 @xl:block";
+const CONTENTS_COLUMN = "hidden w-64 shrink-0 @3xl:block";
+const LOCATION_COLUMN = "hidden w-48 shrink-0 @4xl:block";
 
 function SortHeader({
   column,
@@ -765,6 +935,7 @@ function SortHeader({
 export function ChatListHeader({
   sort,
   onSortChange,
+  date,
   showLocation,
   allSelected,
   selecting,
@@ -772,13 +943,14 @@ export function ChatListHeader({
 }: {
   sort: ChatSort;
   onSortChange: (key: ChatSortKey) => void;
+  date: DateColumn;
   showLocation: boolean;
   allSelected: boolean;
   selecting: boolean;
   onToggleAll: () => void;
 }) {
   const t = useT();
-  const { selectable } = useChatsActions();
+  const { selectable, dateField } = useChatsActions();
   return (
     // Padding outside the row, as in the file list, so the checkbox and Name align with rows.
     <div className="pb-2">
@@ -814,20 +986,10 @@ export function ChatListHeader({
             {t("library.chats.list.location")}
           </span>
         )}
-        <SortHeader
-          column="created"
-          label={t("library.chats.list.created")}
-          sort={sort}
-          onSortChange={onSortChange}
-          className={cn(CREATED_COLUMN, "@3xl:flex")}
-        />
-        <SortHeader
-          column="updated"
-          label={t("library.chats.list.lastActive")}
-          sort={sort}
-          onSortChange={onSortChange}
-          className={cn(LAST_ACTIVE_COLUMN, "@xl:flex")}
-        />
+        <span className={CONTENTS_COLUMN}>
+          {t("library.chats.list.contents")}
+        </span>
+        <DateHeader {...date} field={dateField} />
         <span className="w-8 shrink-0" />
       </div>
     </div>
@@ -915,15 +1077,17 @@ export function ChatRow({
               />
             </span>
           )}
-          <span className={cn(CREATED_COLUMN, CELL)}>
-            {times.bucket && times.groupedBy === "created"
-              ? groupedTime(chat.createdAt, times.bucket, locale)
-              : formatCardTime(chat.createdAt, locale)}
+          <span className={cn(CONTENTS_COLUMN, CELL)}>
+            {chatContentsLabel(actions.chatContents.get(chat.id), t)}
           </span>
-          <span className={cn(LAST_ACTIVE_COLUMN, CELL)}>
-            {times.bucket && times.groupedBy !== "created"
-              ? groupedTime(chat.updatedAt, times.bucket, locale)
-              : formatActivityTime(chat.updatedAt, locale, t)}
+          <span className={cn(DATE_COLUMN, CELL)}>
+            {formatDate(
+              chatTime(chat, actions.dateField),
+              actions.dateField,
+              times,
+              locale,
+              t,
+            )}
           </span>
         </>
       )}
@@ -1000,15 +1164,13 @@ export function ChatCard({
             />
           </span>
           <span className="shrink-0">
-            {times.bucket
-              ? groupedTime(
-                  times.groupedBy === "created"
-                    ? chat.createdAt
-                    : chat.updatedAt,
-                  times.bucket,
-                  locale,
-                )
-              : formatActivityTime(chat.updatedAt, locale, t)}
+            {formatDate(
+              chatTime(chat, actions.dateField),
+              actions.dateField,
+              times,
+              locale,
+              t,
+            )}
           </span>
         </span>
       </div>
@@ -1300,7 +1462,7 @@ export function ProjectRow({
                 className="size-3.5 shrink-0 text-muted-foreground"
               />
             )}
-            {layout !== "own" && (
+            {layout === "files" && (
               <CollectionCount>
                 {chatCount(stats?.chats ?? 0, t)}
               </CollectionCount>
@@ -1313,33 +1475,33 @@ export function ProjectRow({
           )}
         </div>
       </div>
-      {layout === "files" ? null : layout === "own" ? (
-        <span className={cn(COUNT_COLUMN, CELL)}>
-          {chatCount(stats?.chats ?? 0, t)}
+      {layout !== "files" && layout !== "own" && layout.showLocation && (
+        <span className={cn(LOCATION_COLUMN, CELL)}>
+          {section && (
+            <SectionChip
+              section={section}
+              onView={actions.viewSection}
+              className="shrink"
+            />
+          )}
         </span>
-      ) : (
-        layout.showLocation && (
-          <span className={cn(LOCATION_COLUMN, CELL)}>
-            {section && (
-              <SectionChip
-                section={section}
-                onView={actions.viewSection}
-                className="shrink"
-              />
-            )}
-          </span>
-        )
       )}
       {layout === "files" ? (
         <FileColumns modified={stats?.lastActive ?? project.updatedAt} />
       ) : (
         <>
-          <span className={cn(CREATED_COLUMN, CELL)}>
-            {formatCardTime(project.createdAt, locale)}
+          <span className={cn(CONTENTS_COLUMN, CELL)}>
+            {projectContentsLabel(
+              stats,
+              actions.projectSources?.get(project.id),
+              t,
+            )}
           </span>
-          <span className={cn(LAST_ACTIVE_COLUMN, CELL)}>
-            {formatActivityTime(
-              stats?.lastActive ?? project.updatedAt,
+          <span className={cn(DATE_COLUMN, CELL)}>
+            {formatDate(
+              projectTime(project, stats, actions.dateField),
+              actions.dateField,
+              {},
               locale,
               t,
             )}
@@ -1351,8 +1513,9 @@ export function ProjectRow({
   );
 }
 
-export function ProjectListHeader() {
+export function ProjectListHeader({ date }: { date: DateColumn }) {
   const t = useT();
+  const { dateField } = useChatsActions();
   return (
     <div
       className={cn(
@@ -1361,11 +1524,10 @@ export function ProjectListHeader() {
       )}
     >
       <span className="min-w-0 flex-1">{t("library.list.name")}</span>
-      <span className={COUNT_COLUMN}>{t("library.chats.sections.chats")}</span>
-      <span className={CREATED_COLUMN}>{t("library.chats.list.created")}</span>
-      <span className={LAST_ACTIVE_COLUMN}>
-        {t("library.chats.list.lastActive")}
+      <span className={CONTENTS_COLUMN}>
+        {t("library.chats.list.contents")}
       </span>
+      <DateHeader {...date} field={dateField} />
       <span className="w-8 shrink-0" />
     </div>
   );
@@ -1444,7 +1606,7 @@ function sectionCountLabel(
   const chats = chatCount(stats?.chats ?? 0, t);
   const projects = stats?.projects ?? 0;
   if (projects === 0) return chats;
-  return `${chats} · ${t(projects === 1 ? "library.chats.project.oneProject" : "library.chats.project.projectCount", { count: projects })}`;
+  return `${countLabel(projects, "library.chats.project.oneProject", "library.chats.project.projectCount", t)} · ${chats}`;
 }
 
 export function SectionCard({
@@ -1523,27 +1685,22 @@ export function SectionRow({
           >
             {section.name}
           </button>
-          {layout !== "own" && (
+          {layout === "files" && (
             <CollectionCount>{sectionCountLabel(stats, t)}</CollectionCount>
           )}
         </span>
       </div>
-      {layout === "own" ? (
-        <span className={cn(COUNT_COLUMN, CELL)}>
-          {sectionCountLabel(stats, t)}
-        </span>
-      ) : (
-        <>
-          {/* Sections have no location or creation time: empty cells keep columns aligned. */}
-          {layout !== "files" && layout.showLocation && (
-            <span className={LOCATION_COLUMN} />
-          )}
-          <span className={CREATED_COLUMN} />
-        </>
+      {/* Sections have no location: an empty cell keeps the columns aligned. */}
+      {layout !== "own" && layout !== "files" && layout.showLocation && (
+        <span className={LOCATION_COLUMN} />
       )}
-      <span className={cn(LAST_ACTIVE_COLUMN, CELL)}>
-        {(stats?.lastActive ?? 0) > 0
-          ? formatActivityTime(stats?.lastActive ?? 0, locale, t)
+      <span className={cn(CONTENTS_COLUMN, CELL)}>
+        {sectionCountLabel(stats, t)}
+      </span>
+      {/* A section records only when its chats were last active. */}
+      <span className={cn(DATE_COLUMN, CELL)}>
+        {layout === "own" || actions.dateField === "updated"
+          ? formatDate(stats?.lastActive ?? 0, "updated", {}, locale, t)
           : ""}
       </span>
       <SectionMenu section={section} variant="row" />
@@ -1551,7 +1708,7 @@ export function SectionRow({
   );
 }
 
-export function SectionListHeader() {
+export function SectionListHeader({ date }: { date: DateColumn }) {
   const t = useT();
   return (
     <div
@@ -1561,10 +1718,10 @@ export function SectionListHeader() {
       )}
     >
       <span className="min-w-0 flex-1">{t("library.list.name")}</span>
-      <span className={COUNT_COLUMN}>{t("library.chats.sections.chats")}</span>
-      <span className={LAST_ACTIVE_COLUMN}>
-        {t("library.chats.list.lastActive")}
+      <span className={CONTENTS_COLUMN}>
+        {t("library.chats.list.contents")}
       </span>
+      <DateHeader {...date} field="updated" />
       <span className="w-8 shrink-0" />
     </div>
   );

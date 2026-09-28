@@ -375,6 +375,7 @@ export {
   getStoredChatThread,
   isThreadIncognito,
   listStoredChatMessages,
+  listStoredChatMessagesMany,
   listStoredChatProjects,
   listStoredChatThreads,
   markThreadIncognito,
@@ -529,3 +530,4 @@ export {
   type ComposerSubmitIntent,
 } from "./utils/composer-preferences";
 export { isTextAttachmentName } from "./text-attachment-accept";
+export { useChatModifiedStore } from "./stores/chat-modified-store";

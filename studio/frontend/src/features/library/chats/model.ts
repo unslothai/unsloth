@@ -15,6 +15,8 @@ export interface ChatEntry {
   updatedAt: number;
   isFork?: boolean;
   projectId?: string | null;
+  /** Last rename, move or archive, when later than `updatedAt`. */
+  modifiedAt?: number;
 }
 
 export interface ProjectEntry {
@@ -25,9 +27,13 @@ export interface ProjectEntry {
   updatedAt: number;
 }
 
-export type ChatSortKey = "name" | "created" | "updated";
+/** The one date column's choices: created, last active, last modified. */
+export const DATE_FIELDS = ["created", "updated", "modified"] as const;
+export type DateField = (typeof DATE_FIELDS)[number];
+
+export type ChatSortKey = "name" | DateField;
 export type ChatSort = { key: ChatSortKey; desc: boolean };
-export type ProjectSortKey = "name" | "updated" | "created" | "chats";
+export type ProjectSortKey = "name" | DateField | "chats";
 export type ProjectSort = { key: ProjectSortKey; desc: boolean };
 /** "updated" is a section's latest chat; "chats" is how many it holds. */
 export type SectionSortKey = "name" | "updated" | "chats";
@@ -120,6 +126,23 @@ export function filterChats<T extends ChatEntry>(
   });
 }
 
+export function chatTime(chat: ChatEntry, field: DateField): number {
+  if (field === "created") return chat.createdAt;
+  if (field === "modified") return Math.max(chat.updatedAt, chat.modifiedAt ?? 0);
+  return chat.updatedAt;
+}
+
+/** "updated" is the latest chat in it; "modified" the project's own last edit. */
+export function projectTime(
+  project: ProjectEntry,
+  stats: ProjectStats | undefined,
+  field: DateField,
+): number {
+  if (field === "created") return project.createdAt;
+  if (field === "modified") return project.updatedAt;
+  return stats?.lastActive ?? project.updatedAt;
+}
+
 export function compareChats(
   sort: ChatSort,
   locale?: string,
@@ -127,8 +150,7 @@ export function compareChats(
   const collate = new Intl.Collator(locale, { numeric: true, sensitivity: "base" }).compare;
   const ascending = (a: ChatEntry, b: ChatEntry) => {
     if (sort.key === "name") return collate(a.title, b.title);
-    const key = sort.key === "created" ? "createdAt" : "updatedAt";
-    return (a[key] || 0) - (b[key] || 0);
+    return (chatTime(a, sort.key) || 0) - (chatTime(b, sort.key) || 0);
   };
   return (a, b) => {
     const primary = sort.desc ? ascending(b, a) : ascending(a, b);
@@ -192,8 +214,8 @@ export function sortProjects<T extends ProjectEntry>(
   const value = (project: T) => {
     const entry = stats.get(project.id);
     if (sort.key === "chats") return entry?.chats ?? 0;
-    if (sort.key === "created") return project.createdAt;
-    return entry?.lastActive ?? project.updatedAt;
+    if (sort.key === "name") return 0;
+    return projectTime(project, entry, sort.key);
   };
   return [...projects].sort((a, b) => {
     const byPin = Number(pinned.has(b.id)) - Number(pinned.has(a.id));
@@ -298,7 +320,7 @@ export function groupChats<T extends ChatEntry>(
   chats: readonly T[],
   by: ChatGroupBy,
   options: {
-    time?: "created" | "updated";
+    time?: DateField;
     oldestFirst?: boolean;
     now?: number;
     pinned?: ReadonlySet<string>;
@@ -311,7 +333,7 @@ export function groupChats<T extends ChatEntry>(
   const rest = pinnedItems.length ? chats.filter((chat) => !pinned?.has(chat.id)) : chats;
   const groups = new Map<string, { group: ChatGroup<T>; latest: number }>();
   for (const chat of rest) {
-    const ts = time === "created" ? chat.createdAt : chat.updatedAt;
+    const ts = chatTime(chat, time);
     let key: string;
     let group: Omit<ChatGroup<T>, "items">;
     if (by === "project") {
@@ -383,4 +405,63 @@ export function modelsByChat(
 
 export function validateChatsSection(value: unknown): ChatsSection | undefined {
   return CHATS_SECTIONS.find((section) => section === value);
+}
+
+/** What a chat holds, for the Contents column. */
+export interface ChatContents {
+  messages: number;
+  images: number;
+  /** Fenced ```html blocks. */
+  html: number;
+}
+
+type ContentPart = { type?: string; text?: string };
+
+/** Counts along the shown branch: from the newest message back through its parents. */
+export function summarizeChatMessages(
+  messages: readonly {
+    id: string;
+    parentId?: string | null;
+    role?: string;
+    content?: unknown;
+    attachments?: unknown;
+    createdAt: number;
+  }[],
+): ChatContents {
+  const byId = new Map(messages.map((message) => [message.id, message]));
+  const branched = messages.some((message) => message.parentId);
+  let path: (typeof messages)[number][] = [...messages];
+  if (branched && messages.length > 0) {
+    path = [];
+    const seen = new Set<string>();
+    let at = messages.reduce((a, b) => (b.createdAt > a.createdAt ? b : a)) as
+      | (typeof messages)[number]
+      | undefined;
+    while (at && !seen.has(at.id)) {
+      seen.add(at.id);
+      path.push(at);
+      at = at.parentId ? byId.get(at.parentId) : undefined;
+    }
+  }
+  const out: ChatContents = { messages: 0, images: 0, html: 0 };
+  for (const message of path) {
+    if (message.role !== "user" && message.role !== "assistant") continue;
+    out.messages += 1;
+    const parts = Array.isArray(message.content) ? (message.content as ContentPart[]) : [];
+    for (const part of parts) {
+      if (part?.type === "image") out.images += 1;
+      if (part?.type === "text" && typeof part.text === "string") {
+        out.html += part.text.match(/^\s*```html\b/gim)?.length ?? 0;
+      }
+    }
+    const attachments = Array.isArray(message.attachments)
+      ? (message.attachments as { type?: string; contentType?: string }[])
+      : [];
+    for (const attachment of attachments) {
+      if (attachment?.type === "image" || attachment?.contentType?.startsWith("image/")) {
+        out.images += 1;
+      }
+    }
+  }
+  return out;
 }
