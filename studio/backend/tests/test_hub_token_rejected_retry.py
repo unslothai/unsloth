@@ -540,3 +540,82 @@ def test_the_malware_status_is_read_without_a_refused_token(monkeypatch):
 
     monkeypatch.setattr(huggingface_hub, "model_info", model_info)
     assert file_security._fetch_security_status("org/public-model", OAUTH) == status
+
+
+def test_an_explicit_remote_drafter_is_sized_without_a_refused_token(monkeypatch):
+    # The flat reserve undercharges a large public drafter beside a training run.
+    import routes.inference as inference_routes
+
+    def model_info(
+        repo,
+        token = None,
+        files_metadata = False,
+    ):
+        if token is not False:
+            raise RepositoryNotFoundError(reason = "OAuth token verification failed")
+        return SimpleNamespace(
+            siblings = [SimpleNamespace(rfilename = "drafter-Q8_0.gguf", size = 30 * 1024**3)]
+        )
+
+    monkeypatch.setattr(huggingface_hub, "model_info", model_info)
+    sized = inference_routes._remote_drafter_repo_bytes("org/big-drafter-GGUF", hf_token = OAUTH)
+    assert sized == 30 * 1024**3
+
+
+def test_security_weight_indexes_are_read_without_a_refused_token(monkeypatch, tmp_path):
+    # An unread index is inconclusive, which blocks every flagged nested pickle.
+    import json
+
+    import utils.hf_probe
+    from utils.security import file_security
+
+    index = tmp_path / "model.safetensors.index.json"
+    index.write_text(json.dumps({"weight_map": {"w": "model-00001-of-00002.safetensors"}}))
+
+    def hf_hub_download(
+        repo,
+        filename,
+        revision = None,
+        token = None,
+        cache_dir = None,
+    ):
+        if token is not False:
+            raise RepositoryNotFoundError(reason = "OAuth token verification failed")
+        return str(index)
+
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", hf_hub_download)
+    monkeypatch.setattr(
+        utils.hf_probe,
+        "hf_file_definitely_absent",
+        lambda repo, filename, **k: filename != "model.safetensors.index.json",
+    )
+    paths = file_security._indexed_shard_paths("org/public-model", OAUTH)
+    assert paths == {"model-00001-of-00002.safetensors"}
+
+
+def test_the_gguf_sliding_window_config_is_read_without_a_refused_token(monkeypatch, tmp_path):
+    # Without it, context sizing falls back to the one-global-in-four guess.
+    import json
+
+    import utils.hf_probe
+    from core.inference import llama_cpp
+
+    cfg = tmp_path / "config.json"
+    cfg.write_text(json.dumps({"sliding_window_pattern": 6}))
+
+    def hf_hub_download(
+        repo,
+        filename,
+        repo_type = None,
+        token = None,
+        cache_dir = None,
+    ):
+        if token is not False:
+            raise RepositoryNotFoundError(reason = "OAuth token verification failed")
+        return str(cfg)
+
+    monkeypatch.setattr(hf_tokens, "_ambient_hf_token", lambda: (True, OAUTH))
+    monkeypatch.setattr(hf_tokens, "_wire_hf_token", lambda: OAUTH)
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", hf_hub_download)
+    monkeypatch.setattr(utils.hf_probe, "hf_file_definitely_absent", lambda *a, **k: False)
+    assert llama_cpp._fetch_swa_entry_from_hf("org/public-model") == 6

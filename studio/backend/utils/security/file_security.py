@@ -130,6 +130,8 @@ def _indexed_shard_paths(
         from huggingface_hub.utils import EntryNotFoundError
         from utils.hf_cache_settings import active_hf_hub_cache
         from utils.hf_probe import hf_file_definitely_absent
+
+        from hub.utils.hf_tokens import call_hub_with_anonymous_retry
     except Exception:
         return None
 
@@ -143,11 +145,12 @@ def _indexed_shard_paths(
             ):
                 continue
             try:
-                index_path = hf_hub_download(
+                index_path = call_hub_with_anonymous_retry(
+                    hf_hub_download,
+                    hf_token or None,
                     model_name,
                     prefix + filename,
                     revision = revision,
-                    token = hf_token or None,
                     cache_dir = active_hf_hub_cache(),
                 )
             except EntryNotFoundError:
