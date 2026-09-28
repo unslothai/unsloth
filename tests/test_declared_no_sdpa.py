@@ -66,6 +66,6 @@ def test_real_mimo_v2_flash_resolves_to_eager():
     modeling = pytest.importorskip("transformers.models.mimo_v2_flash.modeling_mimo_v2_flash")
     cls = modeling.MiMoV2FlashForCausalLM
     if cls._supports_sdpa:
-        pytest.skip("this transformers gives mimo_v2_flash an sdpa path")
+        pytest.skip(reason = "this transformers gives mimo_v2_flash an sdpa path, nothing to resolve away")
     config = SimpleNamespace(model_type = "mimo_v2_flash", attention_dropout = 0)
     assert _utils.resolve_attention_implementation(cls, config, supports_sdpa = True) == "eager"

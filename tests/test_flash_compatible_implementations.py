@@ -61,7 +61,7 @@ def test_real_mimo_v2_flash_class_is_not_given_flash_attention_2():
     if "flash_attention_2" in (
         getattr(cls, "_compatible_flash_implementations", None) or ["flash_attention_2"]
     ):
-        pytest.skip("this transformers lets mimo_v2_flash use flash_attention_2")
+        pytest.skip(reason = "this transformers lists flash_attention_2 as compatible for mimo_v2_flash")
     assert _utils._model_class_supports_flash_attention(cls) is False
 
 
