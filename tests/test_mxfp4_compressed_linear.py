@@ -21,6 +21,7 @@ import os
 import shutil
 
 import pytest
+from llama_patch_isolation import restore_llama_patches  # noqa: F401
 from real_accelerator import has_real_cuda  # tests/_shared, on sys.path via tests/conftest.py
 import torch
 from torch import nn
@@ -65,6 +66,8 @@ except Exception:
     HAS_CT = False
 
 from unsloth.models.compressed_tensors_bnb import _transformers_supports_weight_converters
+
+pytestmark = pytest.mark.usefixtures("restore_llama_patches")
 
 HAS_CONVERTERS = _transformers_supports_weight_converters()
 
