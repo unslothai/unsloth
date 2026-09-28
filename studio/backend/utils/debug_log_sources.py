@@ -193,7 +193,9 @@ def resolve_source_id(source_id: str) -> Optional[Path]:
     return None
 
 
-def source_id_for_path(raw: Optional[str]) -> Optional[str]:
+def source_id_for_path(
+    raw: Optional[str], sources: Optional[list[LogSource]] = None
+) -> Optional[str]:
     """The opaque id of the source a WRITER's own spelling of a path names, if any."""
     if not isinstance(raw, str) or not raw.strip():
         return None
@@ -206,7 +208,7 @@ def source_id_for_path(raw: Optional[str]) -> Optional[str]:
             pass
     if not wanted:
         return None
-    for source in list_sources():
+    for source in list_sources() if sources is None else sources:
         try:
             if _identity(os.path.realpath(source.realpath)) in wanted:
                 return source.id

@@ -373,3 +373,16 @@ def test_a_path_naming_nothing_listed_matches_nothing():
     _seed("llama-server", "llama-1765000104-port-8080.log")
     for absent in ("", "   ", None, "/nowhere/llama-9.log", "/etc/passwd"):
         assert debug_log_sources.source_id_for_path(absent) is None, absent
+
+
+def test_a_path_is_matched_against_the_listing_it_is_given(monkeypatch):
+    """The sources route already listed every file; matching must not walk the logs again."""
+    path = _seed("llama-server", "llama-1765000104-port-8080.log")
+    sources = debug_log_sources.list_sources()
+    expected = next(s for s in sources if s.label == path.name).id
+
+    def _no_second_walk():
+        raise AssertionError("listed the logs a second time")
+
+    monkeypatch.setattr(debug_log_sources, "list_sources", _no_second_walk)
+    assert debug_log_sources.source_id_for_path(str(path), sources) == expected

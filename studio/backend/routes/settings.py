@@ -4183,7 +4183,7 @@ def get_debug_log_sources(
     return DebugLogSourcesResponse(
         sources = [DebugLogSourceModel(**vars(source)) for source in sources],
         default_source_id = debug_log_sources.default_source_id(),
-        matched_source_id = debug_log_sources.source_id_for_path(diagnostic_path),
+        matched_source_id = debug_log_sources.source_id_for_path(diagnostic_path, sources),
         file_logging_disabled = debug_log_sources.file_logging_disabled(),
         log_root = log_root,
     )
