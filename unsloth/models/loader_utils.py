@@ -1881,6 +1881,9 @@ def _decompress_compressed_tensors_model(model):
         method = getattr(quant_config, "quant_method", None)
     if getattr(method, "value", method) != "compressed-tensors":
         return False
+    # MXFP4 kept packed on purpose (all-or-nothing plan): decompress_model would drop weight_packed.
+    if any(getattr(module, "_unsloth_mxfp4_packed_linear", False) for module in model.modules()):
+        return False
     if not any(
         str(getattr(getattr(module, "quantization_status", None), "value", "")) == "compressed"
         for module in model.modules()
