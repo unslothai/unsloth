@@ -95,7 +95,12 @@ from core.inference.tool_stream_exec import (
     search_images_kwargs,
     stream_tool_execution,
 )
-from core.inference.tools import build_rag_autoinject, execute_tool, is_high_risk_tool_call
+from core.inference.tools import (
+    build_rag_autoinject,
+    execute_tool,
+    is_high_risk_tool_call,
+    never_needs_approval,
+)
 from state.tool_approvals import (
     DECISION_EXPIRED,
     TOOL_APPROVAL_EXPIRED_MESSAGE,
@@ -1668,7 +1673,10 @@ async def stream_with_studio_tools(
             # Same id for a call the provider named; for one it did not, the card answers to the id the client minted
             card_id = decision.card_id
             needs_confirmation = (
-                confirm_tool_calls and not bypass_permissions and permission_mode != "off"
+                confirm_tool_calls
+                and not bypass_permissions
+                and permission_mode != "off"
+                and not never_needs_approval(name)
             )
             if needs_confirmation and permission_mode == "auto":
                 needs_confirmation = is_high_risk_tool_call(name, arguments)

@@ -7,7 +7,16 @@ import pytest
 from packaging.version import Version
 
 import transformers
-from tokenizers import Tokenizer, decoders, models, normalizers, pre_tokenizers, trainers
+from tokenizers import (
+    Regex,
+    Tokenizer,
+    decoders,
+    models,
+    normalizers,
+    pre_tokenizers,
+    processors,
+    trainers,
+)
 from transformers import AutoTokenizer
 
 import unsloth.tokenizer_utils as tu
@@ -196,3 +205,87 @@ def test_saved_repaired_tokenizer_reloads_with_plain_transformers(byte_level_lla
     assert _ids(reloaded) == _reference_ids(byte_level_llama_dir)
     assert reloaded(PROBE).input_ids == tok(PROBE).input_ids
     assert reloaded.chat_template == tok.chat_template
+
+
+# tiny-aya: v5 CohereTokenizer swaps its Split regex pre-tokenizer for Digits + ByteLevel.
+COHERE_SPECIALS = ["<PAD>", "<UNK>", "<BOS_TOKEN>", "<|END_OF_TURN_TOKEN|>"]
+COHERE_REGEX = (
+    r"[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}]*[\p{Ll}\p{Lm}\p{Lo}\p{M}]+"
+    r"|[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}]+[\p{Ll}\p{Lm}\p{Lo}\p{M}]*"
+    r"|\p{N}{1,3}| ?[^\s\p{L}\p{N}]+[\r\n/]*|\s*[\r\n]+|\s+(?!\S)|\s+"
+)
+COHERE_CORPUS = ["with open(path) as f: read(path) 123 456 789", "नमस्ते दुनिया (path)"] * 30
+COHERE_PROBE = "with open(path) as f: 123456 नमस्ते"
+
+
+def _cohere_like_tokenizer(split_regex = True):
+    tok = Tokenizer(models.BPE())
+    byte_level = pre_tokenizers.ByteLevel(add_prefix_space = False, use_regex = not split_regex)
+    if split_regex:
+        tok.pre_tokenizer = pre_tokenizers.Sequence(
+            [pre_tokenizers.Split(Regex(COHERE_REGEX), behavior = "isolated"), byte_level]
+        )
+    else:
+        tok.pre_tokenizer = pre_tokenizers.Sequence(
+            [pre_tokenizers.Digits(individual_digits = True), byte_level]
+        )
+    tok.decoder = decoders.ByteLevel()
+    trainer = trainers.BpeTrainer(
+        vocab_size = 500,
+        special_tokens = COHERE_SPECIALS,
+        initial_alphabet = pre_tokenizers.ByteLevel.alphabet(),
+    )
+    tok.train_from_iterator(COHERE_CORPUS, trainer = trainer)
+    bos = tok.token_to_id("<BOS_TOKEN>")
+    tok.post_processor = processors.TemplateProcessing(
+        single = "<BOS_TOKEN> $A", pair = "<BOS_TOKEN> $A $B", special_tokens = [("<BOS_TOKEN>", bos)]
+    )
+    return tok
+
+
+def _write_cohere_dir(path, tokenizer):
+    path.mkdir(parents = True, exist_ok = True)
+    tokenizer.save(str(path / "tokenizer.json"))
+    config = {
+        "tokenizer_class": "CohereTokenizerFast",
+        "bos_token": "<BOS_TOKEN>",
+        "eos_token": "<|END_OF_TURN_TOKEN|>",
+        "unk_token": "<UNK>",
+        "pad_token": "<PAD>",
+        "add_bos_token": True,
+        "add_eos_token": False,
+        "chat_template": CHAT_TEMPLATE,
+    }
+    (path / "tokenizer_config.json").write_text(json.dumps(config))
+    return str(path)
+
+
+def test_cohere_split_regex_ids_match_tokenizer_json(tmp_path):
+    path = _write_cohere_dir(tmp_path / "aya", _cohere_like_tokenizer(split_regex = True))
+    loaded = AutoTokenizer.from_pretrained(path)
+    reference = _reference_ids(path, COHERE_PROBE)
+    if TRANSFORMERS_V5:
+        assert loaded.decode(_ids(loaded, COHERE_PROBE)) == COHERE_PROBE
+        assert _ids(loaded, COHERE_PROBE) != reference
+    for tok in (
+        tu._apply_post_load_tokenizer_fixes(loaded, fix_tokenizer = False),
+        tu.load_correct_tokenizer(path),
+    ):
+        assert _ids(tok, COHERE_PROBE) == reference
+        assert tok.decode(_ids(tok, COHERE_PROBE)) == COHERE_PROBE
+        assert tok(COHERE_PROBE).input_ids[0] == tok.convert_tokens_to_ids("<BOS_TOKEN>")
+        assert (tok.bos_token, tok.eos_token, tok.pad_token) == (
+            "<BOS_TOKEN>",
+            "<|END_OF_TURN_TOKEN|>",
+            "<PAD>",
+        )
+
+
+def test_cohere_matching_tokenizer_json_is_untouched(tmp_path):
+    path = _write_cohere_dir(tmp_path / "expanse", _cohere_like_tokenizer(split_regex = False))
+    loaded = AutoTokenizer.from_pretrained(path)
+    before = loaded.backend_tokenizer.to_str()
+    fixed = tu._apply_post_load_tokenizer_fixes(loaded, fix_tokenizer = True)
+    assert fixed.backend_tokenizer.to_str() == before
+    assert not getattr(fixed, "_unsloth_tokenizer_json_repaired", False)
+    assert _ids(fixed, COHERE_PROBE) == _reference_ids(path, COHERE_PROBE)

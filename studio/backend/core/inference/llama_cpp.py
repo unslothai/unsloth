@@ -9,6 +9,7 @@ OpenAI-compatible /v1/chat/completions endpoint.
 
 import ast
 import atexit
+import bisect
 import contextlib
 import ctypes
 import errno
@@ -21,6 +22,8 @@ import os
 import re
 import struct
 from loggers import get_logger
+from utils.gpu_memory_events import invalidate_gpu_memory as _invalidate_gpu_memory
+from utils.gpu_memory_events import invalidates_gpu_memory as _invalidates_gpu_memory
 import shutil
 import signal
 import socket
@@ -75,6 +78,11 @@ from core.inference.context_window import (
 from core.inference.llama_tool_schema import llama_grammar_tools
 from core.inference.stream_errors import stream_error_from_chunk
 from hub.utils.hf_errors import modelscope_missing
+from hub.utils.hf_tokens import (
+    call_hub_with_anonymous_retry,
+    hf_token_rejected_hint,
+    is_rejected_credential_error,
+)
 from core.inference.llama_server_args import (
     _CACHE_RAM_FLAGS,
     _CTX_CHECKPOINTS_FLAGS,
@@ -201,13 +209,11 @@ def _can_reset_epoch(
         # carried-forward header tells the model to search. Same refusal, one scope down.
         return False
     try:
-        from state.tool_policy import get_tool_policy
+        from state.tool_policy import conversation_recall_allowed
 
-        # `supports_tools` is the TEMPLATE's capability, not "will this request be given
-        # the tool". `--disable-tools` refuses every tool for the life of the process, so
-        # resetting would strand the epoch behind a tool that never arrives. Rolling keeps
-        # the newest turns in view and re-injects the inline recall, needing no tool.
-        if get_tool_policy() is False:
+        # `supports_tools` is the TEMPLATE's capability; where recall is refused a reset would
+        # strand the epoch behind a tool that never arrives, and rolling needs no tool.
+        if not conversation_recall_allowed():
             return False
     except Exception:  # noqa: BLE001 -- an unreadable policy is "no", never an error
         return False
@@ -278,6 +284,8 @@ def _fit_context(messages, **kwargs):
     # Whether `sticky_dropped` is the depth of a checkpoint RESET. Defaults to True, which
     # is what a caller with no thread state to consult has always assumed.
     sticky_is_checkpoint = bool(kwargs.pop("sticky_is_checkpoint", True))
+    # Naming a tool the request lacks makes the model print the call as text.
+    recall_offered = bool(kwargs.pop("recall_offered", True))
     requested_policy = kwargs.pop("context_policy", None)
     if requested_policy not in ("checkpoint", "rolling"):
         requested_policy = None
@@ -340,7 +348,7 @@ def _fit_context(messages, **kwargs):
             fitted, truncation = checkpoint.fit_checkpoint_context(
                 messages,
                 can_reset = lambda: not _is_degraded(),
-                searchable = lambda: not _is_degraded(),
+                searchable = lambda: recall_offered and not _is_degraded(),
                 **kwargs,
             )
             # `can_reset = False` has no phase two, so it refuses once the replayed
@@ -1565,6 +1573,92 @@ class _CompactionBranchState(NamedTuple):
     recorded: int
 
 
+def _reply_text(content) -> str:
+    """A stored reply's visible text, which a Max Tokens continuation re-sends verbatim."""
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return ""
+    return "".join(
+        str(part.get("text") or "")
+        for part in content
+        if isinstance(part, dict) and part.get("type") == "text"
+    )
+
+
+def _row_truncation(message: dict) -> Optional[dict]:
+    metadata = message.get("metadata")
+    metadata = metadata if isinstance(metadata, dict) else {}
+    custom = metadata.get("custom")
+    custom = custom if isinstance(custom, dict) else {}
+    truncation = metadata.get("contextTruncation") or custom.get("contextTruncation")
+    return truncation if isinstance(truncation, dict) else None
+
+
+# The auto-continue limit is 3 rounds; a manual Continue chain longer than this keeps its refusal.
+_RESUME_HOPS = 8
+_RESUME_SIBLINGS = 16
+
+
+def _max_tokens_cut(message: dict) -> bool:
+    metadata = message.get("metadata")
+    metadata = metadata if isinstance(metadata, dict) else {}
+    custom = metadata.get("custom")
+    custom = custom if isinstance(custom, dict) else {}
+    incomplete = metadata.get("incomplete") or custom.get("incomplete")
+    reason = incomplete.get("reason") if isinstance(incomplete, dict) else incomplete
+    return reason == "length"
+
+
+def _row_key(row: dict):
+    return row.get("id") or id(row)
+
+
+def _resumable_cuts(stored: list[dict]) -> dict:
+    """Max Tokens cuts per parent: ([positions], [rows]) in creation order."""
+    cuts: dict = {}
+    for position, row in enumerate(stored):
+        if row.get("role") == "assistant" and _max_tokens_cut(row):
+            at, rows = cuts.setdefault(row.get("parentId", row.get("parent_id")), ([], []))
+            at.append(position)
+            rows.append(row)
+    return cuts
+
+
+def _resumed_reply(message: dict, cuts: dict, positions: dict) -> dict:
+    """The reply an unfitted Max Tokens continuation resumed: its refusal records no epoch,
+    but the epoch in force is still the resumed reply's."""
+    for _ in range(_RESUME_HOPS):
+        truncation = _row_truncation(message)
+        if (
+            truncation is None
+            or truncation.get("fits")
+            or truncation.get("latest_turn_role") != "assistant"
+        ):
+            return message
+        position = positions.get(_row_key(message))
+        if position is None:
+            return message
+        text = _reply_text(message.get("content"))
+        at, rows = cuts.get(message.get("parentId", message.get("parent_id")), ((), ()))
+        end = bisect.bisect_left(at, position)
+        earlier = rows[max(0, end - _RESUME_SIBLINGS) : end]
+        # Newest earlier cut wins; equal text counts, since a refusal adds nothing.
+        source = next(
+            (
+                row
+                for row in reversed(earlier)
+                if (resumed := _reply_text(row.get("content")).rstrip())
+                and text.startswith(resumed)
+            ),
+            None,
+        )
+        if source is None:
+            return message
+        message = source
+    return message
+
+
 def _compaction_branch_states(
     stored: list[dict], branch_messages: Optional[list[dict]] = None
 ) -> list[_CompactionBranchState]:
@@ -1600,9 +1694,11 @@ def _compaction_branch_states(
             candidates = exact
 
     # A COMPLETED row with no truncation ends the epoch; only active/aborted are placeholders.
+    cuts = _resumable_cuts(stored)
+    positions = {_row_key(row): position for position, row in enumerate(stored)}
     states = []
     for message in candidates:
-        metadata = message.get("metadata")
+        metadata = _resumed_reply(message, cuts, positions).get("metadata")
         metadata = metadata if isinstance(metadata, dict) else {}
         custom = metadata.get("custom")
         custom = custom if isinstance(custom, dict) else {}
@@ -2432,7 +2528,9 @@ def _fetch_swa_entry_from_hf(repo_id: str) -> Optional[object]:
         # Avoid caching the expected 404 for GGUF repos without config.json.
         if hf_file_definitely_absent(repo_id, "config.json"):
             return None
-        cfg_path = hf_hub_download(
+        cfg_path = call_hub_with_anonymous_retry(
+            hf_hub_download,
+            None,
             repo_id,
             "config.json",
             repo_type = "model",
@@ -3196,11 +3294,12 @@ def _cached_candidate_matches_revision_size(
     try:
         from huggingface_hub import get_paths_info
         infos = list(
-            get_paths_info(
+            call_hub_with_anonymous_retry(
+                get_paths_info,
+                hf_token,
                 repo_id,
                 paths,
                 revision = snap.name,
-                token = hf_token,
             )
         )
     except Exception as e:
@@ -3732,7 +3831,7 @@ def _resolve_variant_gguf_files(
     try:
         from huggingface_hub import list_repo_files
 
-        files = list_repo_files(hf_repo, token = hf_token)
+        files = call_hub_with_anonymous_retry(list_repo_files, hf_token, hf_repo)
         gguf_files = _gguf_files_for_variant(files, hf_variant)
         if gguf_files:
             gguf_filename = gguf_files[0]
@@ -3774,6 +3873,9 @@ _CTX_FIT_VRAM_FRACTION = 0.97
 # Apple unified memory is shared with the OS, so tighter than VRAM. Matches the
 # 0.85 MLX uses in mlx_inference.py (_configure_memory_limits); not kept in sync.
 _APPLE_UNIFIED_MEMORY_FRACTION = 0.85
+
+# The 5% of wired headroom held back absorbs error in the footprint estimate.
+_APPLE_WIRED_CEILING_FRACTION = 0.95
 
 # _fit_context_to_vram's floor: the shortest context the search will settle for, so a
 # value equal to it is that floor rather than a measurement. The Metal branch re-prices
@@ -11297,8 +11399,11 @@ class LlamaCppBackend:
         the GPU columns are the leading run of GPU<n> header labels and only GPU<n>
         rows are read."""
         try:
-            result = subprocess.run(
+            from utils.hardware import gpu_query
+
+            result = gpu_query.run_nvidia_smi(
                 ["nvidia-smi", "topo", "-m"],
+                cache = False,
                 capture_output = True,
                 text = True,
                 encoding = "utf-8",
@@ -11962,7 +12067,9 @@ class LlamaCppBackend:
         """Physical id -> SM (90 for sm_90) via nvidia-smi, honoring
         CUDA_VISIBLE_DEVICES; {} when unknown. Never raises."""
         try:
-            result = subprocess.run(
+            from utils.hardware import gpu_query
+
+            result = gpu_query.run_nvidia_smi(
                 ["nvidia-smi", "--query-gpu=index,compute_cap", "--format=csv,noheader"],
                 capture_output = True,
                 text = True,
@@ -12371,6 +12478,45 @@ class LlamaCppBackend:
                 embeddings / (1024**3),
             )
         return unmapped
+
+    @staticmethod
+    def _apple_metal_wired_ceiling_bytes() -> int:
+        """Wired GPU memory a Metal load may still take, system-wide; 0 if unknown or used up."""
+        from utils.hardware import is_apple_silicon
+
+        if not is_apple_silicon():
+            return 0
+        try:
+            probe = subprocess.run(
+                ["sysctl", "-n", "iogpu.wired_limit_mb"],
+                capture_output = True,
+                text = True,
+                timeout = 5,
+                encoding = "utf-8",
+                errors = "replace",
+            )
+            cap_bytes = int(probe.stdout.strip()) * 1024 * 1024
+        except Exception:
+            return 0
+        # 0 means the kernel default, Metal's recommended working set.
+        if cap_bytes <= 0:
+            try:
+                import mlx.core as mx
+                from utils.hardware.hardware import _mlx_device_info
+                if mx.metal.is_available():
+                    cap_bytes = int(
+                        _mlx_device_info(mx).get("max_recommended_working_set_size") or 0
+                    )
+            except Exception:
+                cap_bytes = 0
+        if cap_bytes <= 0:
+            return 0
+        from utils.hardware.hardware import _read_apple_gpu_stats
+
+        in_use = _read_apple_gpu_stats().get("vram_used_bytes")
+        if in_use is None:
+            return 0
+        return max(0, int((cap_bytes - in_use) * _APPLE_WIRED_CEILING_FRACTION))
 
     @staticmethod
     def _rocm_arch_gate_keep(
@@ -13287,7 +13433,10 @@ class LlamaCppBackend:
             return LlamaCppBackend._get_gpu_free_memory_vulkan(binary)
         # ── NVIDIA via nvidia-smi ────────────────────────────────────
         try:
-            result = subprocess.run(
+            from utils.hardware import gpu_query
+
+            # Placement / fit: never a cached reading. A hung CLI raises so the MIG-aware NVML branch runs.
+            result = gpu_query.run_nvidia_smi(
                 [
                     "nvidia-smi",
                     "--query-gpu=index,memory.free,memory.total",
@@ -15031,6 +15180,7 @@ class LlamaCppBackend:
         cache_type_kv: Optional[str] = None,
         *,
         nothing_fits: bool = False,
+        wired_limit: bool = False,
     ) -> Optional[str]:
         """Refusal when a hand-set context exceeds what unified memory holds (else None).
 
@@ -15064,6 +15214,9 @@ class LlamaCppBackend:
         branch falls back to when KV cannot be sized is a guess, and refusing against it
         would block contexts that load fine today.
 
+        ``wired_limit`` marks a ceiling priced under the GPU wired headroom, which Auto does not
+        size from, so the advice leaves Auto out.
+
         UNSLOTH_ALLOW_METAL_CTX_OVERCOMMIT=1 abstains, matching the host-offload opt-out,
         though the failure mode it re-enables is the whole machine rather than one app.
         """
@@ -15092,6 +15245,7 @@ class LlamaCppBackend:
             if (cache_type_kv or "f16").strip().lower() in ("f16", "fp16", "")
             else ""
         )
+        auto_advice = "" if wired_limit else "leave it on Auto, "
         if nothing_fits:
             return (
                 "No context fits in this Mac's unified memory with this model. The weights "
@@ -15109,9 +15263,24 @@ class LlamaCppBackend:
             "tokens. The GPU and the rest of the system share one pool here, so there is "
             "nothing to offload to, and the load would bring the machine down instead of "
             f"reporting an error. Lower the context to {max_available_ctx:,} or less, "
-            "leave it on Auto, or use a more quantized GGUF."
+            f"{auto_advice}or use a more quantized GGUF."
             f"{kv_hint} Set "
             f"{LlamaCppBackend.METAL_CTX_OVERCOMMIT_ENV}=1 to load it anyway."
+        )
+
+    @staticmethod
+    def _metal_context_pressure_message(
+        requested_ctx: int, need_mib: float, free_budget_mib: float
+    ) -> str:
+        # need up, free down, so the printed pair cannot round into a tie
+        need_gb = math.ceil(need_mib / 1024)
+        free_gb = math.floor(max(0.0, free_budget_mib) / 1024)
+        return (
+            f"A context of {requested_ctx:,} tokens needs about {need_gb} GB of unified "
+            f"memory, more than the {free_gb} GB Studio budgets from the memory free right "
+            "now. It fits under the GPU's wired memory limit, so it is loading anyway, but "
+            "macOS may have to compress or swap other apps to make room and generation may "
+            "slow down. Lower the context or free memory to avoid that."
         )
 
     @staticmethod
@@ -15208,7 +15377,11 @@ class LlamaCppBackend:
             if time.monotonic() >= deadline:
                 return None
             try:
-                return LlamaCppBackend._get_gpu_free_memory()
+                from utils.hardware import gpu_query
+
+                # Consecutive samples are compared: a cached one would read as settled.
+                with gpu_query.fresh_reads():
+                    return LlamaCppBackend._get_gpu_free_memory()
             except Exception:
                 return None
 
@@ -17188,7 +17361,7 @@ class LlamaCppBackend:
             from huggingface_hub import get_paths_info, list_repo_files
             from core.inference.openai_auto_download import _DISK_RESERVE_BYTES
 
-            files = list_repo_files(hf_repo, token = hf_token)
+            files = call_hub_with_anonymous_retry(list_repo_files, hf_token, hf_repo)
             from hub.utils.gguf import drop_shadowed_appledouble_names, gguf_checkpoint_family
 
             gguf_files = [
@@ -17206,7 +17379,9 @@ class LlamaCppBackend:
                 return None
 
             # Sizes for all GGUF files
-            path_infos = list(get_paths_info(hf_repo, gguf_files, token = hf_token))
+            path_infos = list(
+                call_hub_with_anonymous_retry(get_paths_info, hf_token, hf_repo, gguf_files)
+            )
             size_map = {p.path: (p.size or 0) for p in path_infos}
 
             # Group by variant: shards share a prefix before -NNNNN-of-NNNNN
@@ -18282,6 +18457,7 @@ class LlamaCppBackend:
                 **_child_popen_kwargs(),
             )
             self._process = _spawned
+            _invalidate_gpu_memory("llama-server spawned")
             # macOS has no parent-death signal, so only this record reaps a runner
             # holding the GPU. Under the lock: adopting after the sweep re-adds a
             # pid it just forgot.
@@ -18525,7 +18701,9 @@ class LlamaCppBackend:
         try:
             from huggingface_hub import get_paths_info, try_to_load_from_cache
 
-            path_infos = list(get_paths_info(hf_repo, all_gguf_files, token = hf_token))
+            path_infos = list(
+                call_hub_with_anonymous_retry(get_paths_info, hf_token, hf_repo, all_gguf_files)
+            )
             total_bytes = sum((p.size or 0) for p in path_infos)
 
             # Subtract bytes already in the HF cache so we only preflight
@@ -18675,6 +18853,8 @@ class LlamaCppBackend:
                 raise GgufDownloadCancelled(str(e)) from e
             raise RuntimeError(
                 f"Failed to download GGUF file '{gguf_filename}' from {hf_repo}: {e}"
+                # Only when a token went out: an anonymous 401 is a private or missing repo.
+                f"{hf_token_rejected_hint(e) if is_rejected_credential_error(e, hf_token) else ''}"
             )
 
         dl_elapsed = time.monotonic() - dl_start
@@ -18770,7 +18950,9 @@ class LlamaCppBackend:
             if cancel_event.is_set():
                 return None
             try:
-                target = _pick_from(list_repo_files(hf_repo, token = hf_token))
+                target = _pick_from(
+                    call_hub_with_anonymous_retry(list_repo_files, hf_token, hf_repo)
+                )
                 listing_answered = True
                 listing_failed = False
                 break
@@ -19448,7 +19630,7 @@ class LlamaCppBackend:
         """
         try:
             from huggingface_hub import model_info
-            info = model_info(hf_repo, token = hf_token, files_metadata = True)
+            info = call_hub_with_anonymous_retry(model_info, hf_token, hf_repo, files_metadata = True)
             return {
                 name: int(getattr(sibling, "size", 0) or 0)
                 for sibling in (getattr(info, "siblings", None) or [])
@@ -20720,7 +20902,7 @@ class LlamaCppBackend:
     # credential the child obtained elsewhere, or one held in a variable whose
     # name says nothing (GITHUB_PAT, MY_THING).
     _SECRET_VALUE_RES = (
-        re.compile(r"hf_[A-Za-z0-9]{20,}"),
+        re.compile(r"hf_(?:oauth_[A-Za-z0-9._~+/=-]{20,}|[A-Za-z0-9]{20,})"),
         re.compile(r"github_pat_[A-Za-z0-9_]{20,}"),
         re.compile(r"gh[pousr]_[A-Za-z0-9]{20,}"),
         re.compile(r"sk-[A-Za-z0-9_\-]{20,}"),
@@ -22645,6 +22827,7 @@ class LlamaCppBackend:
                 **_child_popen_kwargs(),
             )
             self._process = _spawned
+            _invalidate_gpu_memory("llama-server spawned")
             # Cross-session backstop for when parent-death cleanup did not run.
             # Under the lock: see _spawn_and_wait.
             self._record_server_pid(_spawned.pid)
@@ -22690,6 +22873,7 @@ class LlamaCppBackend:
                 # finished load could blank the marker of a queued one that had published.
                 self._memory_pending_launch = None
 
+    @_invalidates_gpu_memory("llama.cpp load")
     @_with_gguf_load_marker
     def load_model(
         self,
@@ -23970,6 +24154,7 @@ class LlamaCppBackend:
                 # the handler's own log line on purpose: test_tp_vision_regression
                 # string-searches this function's source for it to check ordering.)
                 _metal_ctx_refusal: Optional[str] = None
+                _metal_ctx_warning: Optional[str] = None
                 # A discounted Metal ceiling must launch the measured full-offload placement.
                 _metal_full_offload_pinned = False
                 # The fit and launch must use the same Model Memory snapshot.
@@ -25667,10 +25852,7 @@ class LlamaCppBackend:
                     elif _apple_budget_mib > 0 and effective_ctx > 0:
                         # No GPU on Metal: the branches above are skipped and the context
                         # stays at native, over-committing unified memory (#5118, #6529).
-                        # Cap with the same fit math; Auto shrinks to the cap, an explicit
-                        # request above it is refused. "--fit on" stays a backstop but not
-                        # one this can lean on: llama.cpp sizes its reduction from
-                        # ggml-metal's free-memory report, blind to Unsloth's own footprint
+                        # Not "--fit on" alone: llama.cpp sizes from ggml-metal's free-memory report, blind to Unsloth's own footprint
                         # and the wired limit. See _metal_context_overcommit_message.
                         native_ctx_for_cap = self._context_length or effective_ctx
                         # This arm's floor, which is _FIT_MIN_CTX only while the child's
@@ -25725,10 +25907,14 @@ class LlamaCppBackend:
                                 _apple_model_size_fit / (1024**3),
                             )
 
-                        def _apple_ctx_fit(target: int, min_ctx: int) -> int:
+                        def _apple_ctx_fit(
+                            target: int,
+                            min_ctx: int,
+                            budget_mib: Optional[int] = None,
+                        ) -> int:
                             return self._fit_context_to_vram(
                                 target,
-                                _apple_fit_budget_mib,
+                                _apple_fit_budget_mib if budget_mib is None else budget_mib,
                                 _apple_model_size_fit,
                                 cache_type_kv,
                                 min_ctx = min_ctx,
@@ -25746,10 +25932,10 @@ class LlamaCppBackend:
                                 ctx_checkpoints = _fit_ctx_checkpoints,
                             )
 
-                        def _apple_footprint_mib(ctx: int) -> float:
+                        def _apple_footprint_mib(ctx: int, ctx_checkpoints: int = 0) -> float:
                             return (
                                 _apple_model_size_fit
-                                + _kv_bytes(ctx)
+                                + _kv_bytes(ctx, ctx_checkpoints)
                                 + _mtp_bytes(ctx)
                                 + _cc_bytes(ctx)
                             ) / (1024 * 1024)
@@ -25824,7 +26010,7 @@ class LlamaCppBackend:
                                 effective_ctx, cache_type_kv
                             )
                         elif (
-                            (_apple_measured_ceiling is not None or _apple_nothing_fits)
+                            self._can_estimate_kv()
                             and not _caller_owns_budget
                             and not _paravirtual_cpu_forced
                         ):
@@ -25887,12 +26073,46 @@ class LlamaCppBackend:
                                     max_available_ctx = max(
                                         max_available_ctx, _apple_measured_ceiling
                                     )
-                            _metal_ctx_refusal = self._metal_context_overcommit_message(
-                                effective_ctx,
-                                _apple_measured_ceiling or 0,
-                                cache_type_kv,
-                                nothing_fits = _apple_nothing_fits,
+                            # Past free memory macOS swaps; past the wired limit the machine panics.
+                            _apple_wired_mib = int(
+                                self._apple_metal_wired_ceiling_bytes()
+                                // (1024 * 1024)
+                                * max(0.0, 1.0 - _flat_mtp_reserve)
                             )
+                            if (
+                                _apple_wired_mib <= 0
+                                or _apple_model_size_fit / (1024 * 1024) > _apple_wired_mib
+                            ):
+                                _metal_ctx_refusal = self._metal_context_overcommit_message(
+                                    effective_ctx,
+                                    _apple_measured_ceiling or 0,
+                                    cache_type_kv,
+                                    nothing_fits = _apple_nothing_fits,
+                                )
+                            else:
+                                # Priced like the fit (SWA checkpoints included) so admission matches the refusal ceiling.
+                                _requested_mib = _apple_footprint_mib(
+                                    effective_ctx, _fit_ctx_checkpoints
+                                )
+                                if _requested_mib > _apple_wired_mib:
+                                    _wired_ctx = _apple_ctx_fit(
+                                        effective_ctx, _FIT_FLOOR_MIN_CTX, _apple_wired_mib
+                                    )
+                                    _wired_fits = (
+                                        _apple_footprint_mib(_wired_ctx, _fit_ctx_checkpoints)
+                                        <= _apple_wired_mib
+                                    )
+                                    _metal_ctx_refusal = self._metal_context_overcommit_message(
+                                        effective_ctx,
+                                        _wired_ctx if _wired_fits else 0,
+                                        cache_type_kv,
+                                        nothing_fits = not _wired_fits,
+                                        wired_limit = True,
+                                    )
+                                elif _requested_mib > _apple_fit_budget_mib:
+                                    _metal_ctx_warning = self._metal_context_pressure_message(
+                                        effective_ctx, _requested_mib, _apple_fit_budget_mib
+                                    )
                         # Unmeasured floors still rely on llama.cpp's fitter.
                         _metal_full_offload_pinned = bool(
                             _apple_host_embd and _apple_measured_ceiling is not None
@@ -26433,6 +26653,7 @@ class LlamaCppBackend:
                 # Vulkan and APU checks, which describe hardware this branch has ruled out.
                 if _metal_ctx_refusal:
                     raise RuntimeError(_metal_ctx_refusal)
+                self._record_load_warning(_metal_ctx_warning)
 
                 # An unenumerated explicit Vulkan ordinal can't be pinned; fail loudly
                 # instead of fitting onto an unselected device. Clear the raw selection
@@ -29077,6 +29298,7 @@ class LlamaCppBackend:
                                 **_child_popen_kwargs(),
                             )
                             self._process = _spawned
+                            _invalidate_gpu_memory("llama-server spawned")
                             # Inside the lock: written after a sweep reaped the child,
                             # _pid_start_identity yields no start time, and the bare pid
                             # left behind is one a later launch kills blind.
@@ -31652,6 +31874,7 @@ class LlamaCppBackend:
         avoid restarting a load the user just cancelled."""
         return self._cancel_event.is_set()
 
+    @_invalidates_gpu_memory("llama.cpp unload")
     def unload_model(self) -> bool:
         """Terminate the subprocess and cancel any in-flight download."""
         self._cancel_event.set()
@@ -32005,6 +32228,7 @@ class LlamaCppBackend:
 
         return is_process_shutting_down()
 
+    @_invalidates_gpu_memory("llama.cpp stop")
     def _kill_process(self, *, teardown: bool = False):
         """Terminate the subprocess if running.
 
@@ -34730,6 +34954,7 @@ class LlamaCppBackend:
                     sticky_is_checkpoint = _sticky_is_checkpoint,
                     keeps_boundary = _keeps_compaction_boundary(thread_id),
                     can_reset = _can_reset,
+                    recall_offered = False,
                     **_compaction_fit_kwargs(context_policy, compaction_headroom_ratio),
                 )
                 if truncation:
@@ -35076,6 +35301,7 @@ class LlamaCppBackend:
             has_text_only_provisional_card,
             is_always_safe_tool,
             is_high_risk_tool_call,
+            never_needs_approval,
         )
 
         # "full" and bypass_permissions are the same switch, whichever arrives
@@ -35678,6 +35904,7 @@ class LlamaCppBackend:
                         anchor_ids = _rolling_anchor_ids,
                         keeps_boundary = _keeps_compaction_boundary(thread_id),
                         can_reset = _iteration_can_reset,
+                        recall_offered = "search_conversation" in (_enabled_tool_names or ()),
                         reserve_tokens = _conversation_recall_reserve(thread_id),
                         sticky_dropped = _iteration_sticky,
                         sticky_is_checkpoint = _iteration_sticky_is_checkpoint,
@@ -35855,6 +36082,7 @@ class LlamaCppBackend:
                             _backend_supports_tools(self),
                             tools_withheld = _memory_tool_withheld(thread_id, tools),
                         ),
+                        recall_offered = "search_conversation" in (_enabled_tool_names or ()),
                         **_compaction_fit_kwargs(context_policy, compaction_headroom_ratio),
                     )
                     # Recorded here, not left to the forwarding below. That list is
@@ -37295,6 +37523,7 @@ class LlamaCppBackend:
                         bool(confirm_tool_calls)
                         and not bypass_permissions
                         and permission_mode != "off"
+                        and not never_needs_approval(decision.tool_name)
                     )
                     if needs_confirm and permission_mode == "auto":
                         needs_confirm = is_high_risk_tool_call(

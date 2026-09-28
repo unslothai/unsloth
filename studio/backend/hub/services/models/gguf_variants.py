@@ -26,6 +26,7 @@ from hub.utils import download_registry
 from hub.utils import inventory_scan as hf_cache_scan
 from hub.utils.hf_errors import hf_error_status, modelscope_missing
 from hub.utils.hf_tokens import cached_read_refused as hub_cached_read_refused
+from hub.utils.hf_tokens import call_with_anonymous_retry
 from hub.utils.hf_cache_state import (
     incomplete_blob_hash,
     iter_destructive_repo_cache_dirs,
@@ -215,10 +216,13 @@ def _fetch_gguf_variant_requirements(
             return {}
         try:
             from huggingface_hub import HfApi
-            info = HfApi(token = hf_token).model_info(
-                repo_id,
-                files_metadata = True,
-                timeout = _GGUF_METADATA_TIMEOUT_SECONDS,
+            info = call_with_anonymous_retry(
+                lambda token: HfApi(token = token).model_info(
+                    repo_id,
+                    files_metadata = True,
+                    timeout = _GGUF_METADATA_TIMEOUT_SECONDS,
+                ),
+                hf_token,
             )
         except Exception as e:
             logger.warning(
