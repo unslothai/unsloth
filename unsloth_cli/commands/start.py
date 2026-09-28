@@ -130,6 +130,9 @@ _PI_USER_VERBATIM_SETTINGS = ("npmCommand",)
 _PI_USER_RESOURCES_MANIFEST = ".unsloth-user-resources.json"
 # OpenCode selects a model by "<providerID>/<modelID>". Use a dedicated id to avoid colliding with a user's providers; provider filters are set in the launch-time overlay.
 _OPENCODE_PROVIDER = "unsloth-studio"
+# OpenCode sends min(limit.output, this) as max_tokens unless the env var below raises it.
+_OPENCODE_OUTPUT_TOKEN_MAX = 32_000
+_OPENCODE_OUTPUT_TOKEN_MAX_ENV = "OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX"
 _PROVIDER_HEADER = f"[model_providers.{_CODEX_PROFILE}]"
 _PASSTHROUGH = {"allow_extra_args": True, "ignore_unknown_options": True}
 
@@ -321,6 +324,17 @@ _PRESENCE_PENALTY_OPTION = typer.Option(
     max = 2.0,
     rich_help_panel = _PANEL_SAMPLING,
     help = "Pin the presence penalty. Default: unset (per-model recommendation).",
+)
+_MAX_TOKENS_OPTION = typer.Option(
+    None,
+    "--max-tokens",
+    min = 1,
+    rich_help_panel = _PANEL_SAMPLING,
+    help = (
+        "Most tokens the agent may generate in one response. Default: a quarter of the "
+        "context window, up to 32,000. Capped at half the window so the conversation "
+        "keeps room."
+    ),
 )
 
 # Agent-session knobs.
@@ -2042,7 +2056,7 @@ def _resolve_model(
             else:
                 payload["gguf_variant"] = load.gguf_variant
         elif attach_public_id is not None and status_snapshot.get("is_gguf"):
-            # Re-send the running quant: a repo id carries none, so from_identifier would auto-pick (_GGUF_QUANT_PREFERENCE, UD-Q4_K_XL first) and changing only the context would evict a chosen Q8_0 to download a different quant. Skip a .gguf path, which loads as itself; the server gates on the same suffix.
+            # Re-send the running quant: a repo id carries none, so from_identifier would auto-pick (GGUF_QUANT_PREFERENCE, UD-Q4_K_XL first) and changing only the context would evict a chosen Q8_0 to download a different quant. Skip a .gguf path, which loads as itself; the server gates on the same suffix.
             resident_variant = status_snapshot.get("gguf_variant")
             if resident_variant and not str(requested).lower().endswith(".gguf"):
                 payload["gguf_variant"] = resident_variant
@@ -4527,6 +4541,42 @@ def write_openclaw_config(
         typer.echo(f"Updated {path}")
 
 
+def opencode_output_limit(window: int, max_tokens: Optional[int] = None) -> int:
+    if max_tokens:
+        return max(1, min(int(max_tokens), window // 2))
+    return max(1, min(window // 4, _OPENCODE_OUTPUT_TOKEN_MAX))
+
+
+def opencode_compaction_reserved(window: int, output: int) -> int:
+    return max(1, min(output, max(window // 10, 8192)))
+
+
+def _opencode_output_env(model: dict, max_tokens: Optional[int]) -> dict:
+    """Lift OpenCode's output ceiling when --max-tokens exceeds it; re-emit an inherited one so a --no-launch recipe keeps it."""
+    window = model.get("context_length") or model.get("max_context_length")
+    if not max_tokens:
+        return {}
+    if not window:
+        typer.echo(
+            "Warning: Studio did not report the model's context length, so --max-tokens is ignored.",
+            err = True,
+        )
+        return {}
+    output = opencode_output_limit(int(window), max_tokens)
+    if output < max_tokens:
+        typer.echo(
+            f"Warning: --max-tokens {max_tokens} leaves too little of the {int(window):,}-token "
+            f"context for the conversation; using {output:,}.",
+            err = True,
+        )
+    raw = os.environ.get(_OPENCODE_OUTPUT_TOKEN_MAX_ENV, "")
+    inherited = int(raw) if raw.isdigit() and int(raw) > 0 else None
+    ceiling = inherited or _OPENCODE_OUTPUT_TOKEN_MAX
+    if output <= ceiling and inherited is None:
+        return {}
+    return {_OPENCODE_OUTPUT_TOKEN_MAX_ENV: str(max(output, ceiling))}
+
+
 def write_opencode_config(
     base: str,
     key: str,
@@ -4534,6 +4584,7 @@ def write_opencode_config(
     path: Path,
     yolo: bool = False,
     as_subagent: bool = False,
+    max_tokens: Optional[int] = None,
 ) -> dict:
     config = _read_json_object(path)
     if config is None:
@@ -4548,10 +4599,13 @@ def write_opencode_config(
     # Keep the provider definition in this private session file. The launch path adjusts effective provider filters in the higher-priority inline overlay.
     model_entry = {"name": model["id"]}
     window = model.get("context_length") or model.get("max_context_length")
+    reserved = None
     if window:
         window = int(window)
-        # A custom-provider model with no limit defaults to context 0, which silently disables OpenCode's auto-compaction; declare the real window and a sane output cap so it compacts instead of overflowing the server.
-        model_entry["limit"] = {"context": window, "output": min(window // 4, 8192)}
+        output = opencode_output_limit(window, max_tokens)
+        reserved = opencode_compaction_reserved(window, output)
+        # Without a limit OpenCode assumes context 0 and never compacts. Without input it compacts at context - output and ignores compaction.reserved.
+        model_entry["limit"] = {"context": window, "input": window, "output": output}
     _subdict(config, "provider")[_OPENCODE_PROVIDER] = {
         "npm": "@ai-sdk/openai-compatible",
         "name": "Unsloth Studio",
@@ -4564,8 +4618,15 @@ def write_opencode_config(
         for field in ("model", "small_model"):
             if str(config.get(field) or "").startswith(f"{_OPENCODE_PROVIDER}/"):
                 config.pop(field, None)
-        managed_compaction = {"auto": True, "reserved": max(1, window // 10)} if window else None
-        if managed_compaction and config.get("compaction") == managed_compaction:
+        # Drop a managed compaction block, current or legacy value.
+        managed = {reserved, max(1, window // 10)} if window else set()
+        compaction = config.get("compaction")
+        if (
+            isinstance(compaction, dict)
+            and compaction.keys() == {"auto", "reserved"}
+            and compaction["auto"] is True
+            and compaction["reserved"] in managed
+        ):
             config.pop("compaction", None)
         _subdict(config, "agent")[_SUBAGENT_NAME] = {
             "description": _SUBAGENT_DESCRIPTION,
@@ -4581,10 +4642,10 @@ def write_opencode_config(
             if not agents:
                 config.pop("agent", None)
     if window and not as_subagent:
-        # Compact with ~10% headroom (near 90% full). The fixed 20k-token default buffer over-compacts, or never settles, on a small local context.
+        # The fixed 20k-token default buffer over-compacts, or never settles, on a small local context.
         compaction = _subdict(config, "compaction")
         compaction["auto"] = True
-        compaction["reserved"] = max(1, window // 10)
+        compaction["reserved"] = reserved
     tools = ("edit", "bash", "webfetch", *(("task",) if as_subagent else ()))
     if yolo:
         # Fallback for commands without native --auto and for the append-safe bare --no-launch command, where the subcommand is not known yet. Rides inline (OPENCODE_CONFIG_CONTENT) so it wins over a project config. TUI and `run` launches use --auto and call here with yolo=False, letting OpenCode preserve explicit deny rules.
@@ -5372,6 +5433,7 @@ def opencode(
     min_p: Optional[float] = _MIN_P_OPTION,
     repetition_penalty: Optional[float] = _REPETITION_PENALTY_OPTION,
     presence_penalty: Optional[float] = _PRESENCE_PENALTY_OPTION,
+    max_tokens: Optional[int] = _MAX_TOKENS_OPTION,
     serve: bool = _SERVE_OPTION,
     yolo: bool = _YOLO_OPTION,
     persist: bool = _PERSIST_OPTION,
@@ -5433,8 +5495,12 @@ def opencode(
                 config_path,
                 yolo = yolo and not native_auto,
                 as_subagent = True,
+                max_tokens = max_tokens,
             )
-            env = {"OPENCODE_CONFIG": str(config_path)}
+            env = {
+                "OPENCODE_CONFIG": str(config_path),
+                **_opencode_output_env(subagent_model, max_tokens),
+            }
             inline_config = _opencode_subagent_inline_config(
                 config_path,
                 session_permission,
@@ -5495,6 +5561,7 @@ def opencode(
             entry,
             config_path,
             yolo = yolo and not native_auto,
+            max_tokens = max_tokens,
         )
         # A project's own opencode.json outranks OPENCODE_CONFIG, so the session model pin would silently lose to a repo config; carry it in OPENCODE_CONFIG_CONTENT, which outranks project config, while the API key stays in the private file. Only the config fallback carries a permission: native --auto omits it (auto-approve asks, keep explicit denies) and a non-yolo session omits it too, honoring project rules. V1 filters are ordinary overlays, so scope that session to our provider; V2 turns filters into security policies where global/project rules intentionally win, so keep those policies intact and tell the user above that they must allow our provider. small_model is opencode's separate model for lightweight tasks; pin it to the session model too, or a user/project small_model on another (now filtered) provider would resolve a not-found error mid-session.
         inline_config: dict = {
@@ -5509,6 +5576,7 @@ def opencode(
         env = {
             "OPENCODE_CONFIG": str(config_path),
             "OPENCODE_CONFIG_CONTENT": json.dumps(inline_config),
+            **_opencode_output_env(entry, max_tokens),
         }
         _run(base, entry, env, command, launch = launch, install_hint = install_hint)
 

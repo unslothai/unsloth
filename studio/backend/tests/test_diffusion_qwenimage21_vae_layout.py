@@ -31,6 +31,29 @@ def test_qwen_image_21_vae_stays_contiguous():
     assert calls == []
 
 
+def test_qwen_image_21_vae_goes_channels_last_when_the_fused_norms_install():
+    vae, calls = _vae("AutoencoderKLQwenImage21")
+    assert ds_mod._vae_channels_last(types.SimpleNamespace(vae = vae), None, fused = True) is True
+    assert calls == [torch.channels_last]
+
+
+@pytest.mark.parametrize("planned", [True, False])
+def test_apply_speed_optims_layout_follows_the_fused_planner(monkeypatch, planned):
+    vae, calls = _vae("AutoencoderKLQwenImage21")
+    monkeypatch.setattr(ds_mod, "_fused_vae_planned", lambda pipe: planned)
+    monkeypatch.setattr(ds_mod, "_install_fused_vae", lambda pipe, logger: planned)
+    monkeypatch.setattr(ds_mod, "_enable_cudnn_benchmark", lambda logger: True)
+    monkeypatch.setattr(ds_mod, "_compile_repeated_blocks", lambda *a, **k: False)
+    monkeypatch.setattr(ds_mod, "compile_eligible", lambda *a, **k: False)
+    target = types.SimpleNamespace(device = "cuda", dtype = torch.bfloat16)
+    family = types.SimpleNamespace(name = "qwen-image-2.1", supports_torch_compile = True)
+    applied = ds_mod.apply_speed_optims(
+        types.SimpleNamespace(vae = vae), target, is_gguf = False, family = family, speed_mode = "default"
+    )
+    assert applied["channels_last"] is planned
+    assert calls == ([torch.channels_last] if planned else [])
+
+
 @pytest.mark.parametrize("name", ["AutoencoderKL", "AutoencoderKLQwenImage", "AutoencoderKLWan"])
 def test_other_vaes_still_go_channels_last(name):
     vae, calls = _vae(name)
@@ -67,6 +90,7 @@ def test_apply_speed_optims_leaves_cudnn_benchmark_alone_for_qwen_image_21(monke
     monkeypatch.setattr(ds_mod, "_enable_cudnn_benchmark", lambda logger: enabled.append(1) or True)
     monkeypatch.setattr(ds_mod, "_compile_repeated_blocks", lambda *a, **k: False)
     monkeypatch.setattr(ds_mod, "compile_eligible", lambda *a, **k: False)
+    monkeypatch.setattr(ds_mod, "_fused_vae_planned", lambda pipe: False)
     target = types.SimpleNamespace(device = "cuda", dtype = torch.bfloat16)
     family = types.SimpleNamespace(name = "qwen-image-2.1", supports_torch_compile = True)
     applied = ds_mod.apply_speed_optims(

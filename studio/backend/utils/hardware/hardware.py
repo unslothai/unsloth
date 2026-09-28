@@ -5059,8 +5059,10 @@ def _get_hf_safetensors_total_params(
             return None
 
         from huggingface_hub import model_info as hf_model_info
+        from hub.utils.hf_tokens import call_hub_with_anonymous_retry
 
-        info = hf_model_info(model_name, token = hf_token)
+        # A refused token must not drop this to the text-tower-only config estimate.
+        info = call_hub_with_anonymous_retry(hf_model_info, hf_token, model_name)
         safetensors = getattr(info, "safetensors", None)
         if isinstance(safetensors, dict):
             total = safetensors.get("total")
