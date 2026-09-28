@@ -31,21 +31,14 @@ test("row forks retain the visible branch across settings settlement", async () 
       exports: {} as { forkChatRow: (item: { id: string }) => Promise<unknown> },
       crypto,
       ...liveThreadHead,
-      require: (specifier: string) => {
-        if (specifier === "../api/chat-api") return {
-          forkChatThread: async (id: string, args: { messageId?: string }) => {
-            calls.push("fork");
-            assert.equal(id, "source");
-            assert.equal(args.messageId, open ? "older-reply" : undefined);
-          },
-        };
-        if (specifier === "../stores/chat-runtime-store") return {
-          settleThreadScopedSettingsForCopy: async () => {
-            calls.push("settings");
-            visible = false;
-          },
-        };
-        throw new Error(`Unexpected module: ${specifier}`);
+      forkChatThread: async (id: string, args: { messageId?: string }) => {
+        calls.push("fork");
+        assert.equal(id, "source");
+        assert.equal(args.messageId, open ? "older-reply" : undefined);
+      },
+      settleThreadScopedSettingsForCopy: async () => {
+        calls.push("settings");
+        visible = false;
       },
     };
     try {
@@ -117,41 +110,14 @@ test("double-clicking a chat title renames it in place", () => {
   );
 });
 
-// Marking one chat unread was only reachable by selecting it first and using the bulk menu, and
-// the dot could never be taken off again: the item was disabled on the rows that carried one.
-test("a chat row marks itself read or unread from its own menu", () => {
-  assert.match(
-    APP_SIDEBAR,
-    /onSelect=\{\(\) =>\n\s*alreadyUnread\n\s*\? clearThreadsUnread\(threadIds\)\n\s*: markThreadsUnread\(threadIds, rowIdByThreadId\)\n\s*\}/,
-  );
-  assert.ok(
-    !APP_SIDEBAR.includes("disabled={alreadyUnread}"),
-    "the item is still disabled on a row that carries the dot",
-  );
-  // The same strings the bulk menu uses, so the two cannot drift apart.
-  for (const key of ["markUnread", "markRead"]) {
-    assert.equal(
-      (APP_SIDEBAR.match(new RegExp(`t\\("shell\\.selection\\.${key}"\\)`, "g")) ?? [])
-        .length,
-      2,
-      `the row and bulk menus no longer say the same thing for ${key}`,
-    );
-  }
-  // Both go by the dot the row already draws.
-  assert.match(
-    APP_SIDEBAR,
-    /const alreadyUnread = threadIds\.some\(\(threadId\) =>\n\s*unreadThreadIds\.has\(threadId\),\n\s*\);/,
-  );
-  // An eye that is open once the row is read, crossed out while it is not.
-  assert.equal(
-    (
-      APP_SIDEBAR.match(
-        /icon=\{(alreadyUnread|allSelectedUnread) \? ViewIcon : ViewOffSlashIcon\}/g,
-      ) ?? []
-    ).length,
-    2,
-    "a read or unread item stopped naming the state it moves to",
-  );
+// A single chat's menu carries no read or unread item; the bulk menu keeps it.
+test("a chat row menu does not offer mark as read or unread", () => {
+  const start = APP_SIDEBAR.indexOf("function renderChatRowMenuItems(");
+  assert.notEqual(start, -1);
+  const rowMenu = APP_SIDEBAR.slice(start, APP_SIDEBAR.indexOf("\n  }\n", start));
+  assert.ok(!rowMenu.includes("markThreadsUnread"));
+  assert.ok(!rowMenu.includes("shell.selection.markUnread"));
+  assert.ok(!rowMenu.includes("shell.selection.markRead"));
 });
 
 // The bulk menu only ever added dots, so a selection of read rows had no way back.
@@ -204,12 +170,12 @@ test("the pin item says Pin, not what it is pinning", () => {
 test("a section's chevron appears on hovering anywhere in it", () => {
   assert.equal(
     (APP_SIDEBAR.match(/group\/sb-section/g) ?? []).length,
-    4,
+    5,
     "a collapsible section is not its own hover group",
   );
   assert.equal(
     (APP_SIDEBAR.match(/group-hover\/sb-section:opacity-100/g) ?? []).length,
-    4,
+    5,
     "a section chevron still waits for its header to be hovered",
   );
   // Hovering the header itself still counts, and so does reaching it by keyboard.
@@ -246,12 +212,12 @@ test("a chat row forks from its own menu", async () => {
   const ROW_MENU = await readSrcAsync(
     "features/chat/components/chat-row-menu.ts",
   );
-  // Below Mark as unread, and before the rule that sets off the rest.
+  // Below Pin, and before the rule that sets off the rest.
   assert.match(
     APP_SIDEBAR,
-    /t\("shell\.selection\.markUnread"\)\}\n\s*<\/span>\n\s*<\/DropdownMenuItem>\n\s*<DropdownMenuItem\n\s*disabled=\{!canForkChatRow\(item\)/,
+    /<span>\{isPinned \? "Unpin" : "Pin"\}<\/span>\n\s*<\/P\.Item>\n\s*<P\.Item\n\s*disabled=\{!canForkChatRow\(item\)/,
   );
-  assert.match(APP_SIDEBAR, /<span>Fork<\/span>\n\s*<\/DropdownMenuItem>\n\s*\{\/\*[^]*?\*\/\}\n\s*<DropdownMenuSeparator \/>/);
+  assert.match(APP_SIDEBAR, /<span>Fork<\/span>\n\s*<\/P\.Item>\n\s*\{\/\*[^]*?\*\/\}\n\s*<P\.Separator \/>/);
   // A comparison has two threads and no single tip to fork from.
   assert.match(ROW_MENU, /export function canForkChatRow[^]*?return item\.type === "single";/);
   // The fork carries the settings on screen, not the ones the row was last written with.

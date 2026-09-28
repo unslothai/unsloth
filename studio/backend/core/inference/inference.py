@@ -66,6 +66,7 @@ from core.inference.mlx_inference import _mlx_stop_cut, _mlx_stop_sequences
 from io import StringIO
 import structlog
 from loggers import get_logger
+from utils.gpu_memory_events import invalidates_gpu_memory as _invalidates_gpu_memory
 
 
 logger = get_logger(__name__)
@@ -200,7 +201,8 @@ class HarmonyTextStreamer:
 
         gen_ids = self._token_ids[self._prompt_len :]
         raw = self.tokenizer.decode(gen_ids, skip_special_tokens = False)
-        self._process_incremental(raw)
+        # A trailing U+FFFD may be a character whose bytes are still arriving; end() emits it.
+        self._process_incremental(raw.rstrip("\ufffd"))
 
     def end(self):
         gen_ids = self._token_ids[self._prompt_len :]
@@ -635,6 +637,7 @@ class InferenceBackend:
             repaired,
         )
 
+    @_invalidates_gpu_memory("transformers load")
     def load_model(
         self,
         config: ModelConfig,
@@ -964,6 +967,7 @@ class InferenceBackend:
 
             raise Exception(error_msg)
 
+    @_invalidates_gpu_memory("transformers unload")
     def unload_model(self, model_name: str) -> bool:
         """Remove a model from the registry and clear GPU memory."""
         if model_name in self.models:

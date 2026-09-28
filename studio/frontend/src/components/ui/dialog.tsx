@@ -76,6 +76,7 @@ function DialogContent({
   position = "fixed",
   overlayClassName,
   overlayPosition,
+  onInteractOutside,
   ...props
 }: React.ComponentProps<typeof DialogPrimitive.Content> & {
   showCloseButton?: boolean;
@@ -110,6 +111,13 @@ function DialogContent({
               : "absolute",
             className,
           )}
+          onInteractOutside={(event) => {
+            onInteractOutside?.(event);
+            // toasts render outside every dialog, so using one must not dismiss the dialog under it.
+            if ((event.target as Element | null)?.closest?.("[data-sonner-toaster]")) {
+              event.preventDefault();
+            }
+          }}
           {...props}
         >
           {children}
