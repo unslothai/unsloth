@@ -180,7 +180,7 @@ export function DesktopTitlebarNavigation({
           <HugeiconsIcon
             icon={LayoutAlignLeftIcon}
             strokeWidth={1.75}
-            className={customTitlebar ? "size-[18px]" : "size-icon !size-[calc(var(--icon-size)+1px)]"}
+            className={customTitlebar ? "size-[17px]" : "size-icon !size-[calc(var(--icon-size)+1px)]"}
           />
         </button>
       ) : (
@@ -203,7 +203,7 @@ export function DesktopTitlebarNavigation({
         <ArrowLeft
           aria-hidden="true"
           strokeWidth={1.75}
-          className={customTitlebar ? "size-[18px]" : "size-icon !size-[calc(var(--icon-size)+1px)]"}
+          className={customTitlebar ? "size-[17px]" : "size-icon !size-[calc(var(--icon-size)+1px)]"}
         />
       </button>
       <button
@@ -221,7 +221,7 @@ export function DesktopTitlebarNavigation({
         <ArrowRight
           aria-hidden="true"
           strokeWidth={1.75}
-          className={customTitlebar ? "size-[18px]" : "size-icon !size-[calc(var(--icon-size)+1px)]"}
+          className={customTitlebar ? "size-[17px]" : "size-icon !size-[calc(var(--icon-size)+1px)]"}
         />
       </button>
     </div>
@@ -446,7 +446,7 @@ export function WindowTitlebar({
               aria-hidden="true"
               absoluteStrokeWidth
               strokeWidth={1.5}
-              size={18}
+              size={17}
             />
           </WindowControlButton>
           <WindowControlButton
@@ -462,7 +462,7 @@ export function WindowTitlebar({
                 aria-hidden="true"
                 absoluteStrokeWidth
                 strokeWidth={1.5}
-                size={18}
+                size={17}
                 className="rotate-180"
               />
             ) : (
@@ -470,7 +470,7 @@ export function WindowTitlebar({
                 aria-hidden="true"
                 absoluteStrokeWidth
                 strokeWidth={1.5}
-                size={18}
+                size={17}
               />
             )}
           </WindowControlButton>
@@ -489,7 +489,7 @@ export function WindowTitlebar({
               aria-hidden="true"
               absoluteStrokeWidth
               strokeWidth={1.5}
-              size={18}
+              size={17}
             />
           </WindowControlButton>
         </div>
