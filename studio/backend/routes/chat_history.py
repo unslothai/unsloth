@@ -992,7 +992,8 @@ def _decode_attachment_base64(payload: str) -> bytes:
         raise HTTPException(status_code = 422, detail = "Attachment data is corrupt") from exc
 
 
-_ATTACHMENT_TAG_RE = re.compile(r"<attachment name=[^\n]*>\n(.*)\n</attachment>", re.DOTALL)
+# A long paste is attached as text under its own tag (attachmentContentText in pasted-text.ts).
+_ATTACHMENT_TAG_RE = re.compile(r"<(attachment|pasted_text) name=[^\n]*>\n(.*)\n</\1>", re.DOTALL)
 _ATTACHMENT_LABEL_RE = re.compile(r"\[(?:PDF|DOCX|HTML|ODS|ODT|XLSX|PPTX|RTF): [^\n]*\]\n")
 
 
@@ -1000,7 +1001,7 @@ def _attachment_body_text(text: str) -> str:
     """An attachment's text without its chat wrapper, as the file itself reads."""
     tagged = _ATTACHMENT_TAG_RE.fullmatch(text)
     if tagged:
-        return tagged.group(1)
+        return tagged.group(2)
     labelled = _ATTACHMENT_LABEL_RE.match(text)
     return text[labelled.end() :] if labelled else text
 
