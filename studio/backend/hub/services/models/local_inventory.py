@@ -254,11 +254,31 @@ def _safe_is_dir(path: Path) -> bool:
 
 def _hf_repo_dir_has_content(repo_dir: Path) -> bool:
     blobs_dir = repo_dir / "blobs"
-    if not blobs_dir.is_dir():
-        return False
     try:
-        for entry in blobs_dir.iterdir():
-            if entry.is_file() or entry.is_symlink():
+        if blobs_dir.is_dir():
+            for entry in blobs_dir.iterdir():
+                if entry.is_file() or entry.is_symlink():
+                    return True
+    except OSError:
+        pass
+    return _hf_snapshots_hold_files(repo_dir)
+
+
+def _hf_snapshots_hold_files(repo_dir: Path) -> bool:
+    """Whether a snapshot holds a real file, for caches written without symlinks.
+
+    Where symlinks are unavailable (Windows without Developer Mode, some network shares),
+    huggingface_hub moves each finished blob into ``snapshots/<rev>/`` and leaves ``blobs/``
+    empty, so checking ``blobs/`` alone hid every model downloaded that way. Stops at the first
+    file; a dangling link is not a file, and an unreadable tree counts as empty."""
+    snapshots_dir = repo_dir / "snapshots"
+    try:
+        if not snapshots_dir.is_dir():
+            return False
+        for revision in snapshots_dir.iterdir():
+            if revision.is_file():
+                return True
+            if revision.is_dir() and any(p.is_file() for p in revision.rglob("*")):
                 return True
     except OSError:
         return False
