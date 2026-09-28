@@ -1824,6 +1824,13 @@ export const ptBR = {
       pastedTextThresholdDescription:
         "Pressione {shortcut} para colar diretamente na caixa de mensagem.",
       pastedTextThresholdOff: "Desativado",
+      autoScroll: "Rolagem durante a geração",
+      autoScrollDescription:
+        "A rolagem automática mantém o texto novo à vista. Manual fica parado para ler desde o início.",
+      autoScrollAuto: "Rolagem automática",
+      autoScrollManual: "Manual",
+      autoScrollKeywords:
+        "rolagem rolar automática acompanhar fim pular streaming gerar visualização travar scroll autoscroll follow",
       showResponseModel: "Mostrar o modelo da resposta",
       showResponseModelDescription:
         "Mostra os metadados do modelo nas respostas do assistente.",

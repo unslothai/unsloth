@@ -1807,6 +1807,13 @@ export const it = {
       pastedTextThresholdDescription:
         "Premi {shortcut} per incollare direttamente nel campo del messaggio.",
       pastedTextThresholdOff: "Disattivato",
+      autoScroll: "Scorrimento durante la generazione",
+      autoScrollDescription:
+        "Lo scorrimento automatico mantiene visibile il nuovo testo. Manuale resta fermo per leggere dall'inizio.",
+      autoScrollAuto: "Scorrimento automatico",
+      autoScrollManual: "Manuale",
+      autoScrollKeywords:
+        "scorrimento scorrere automatico seguire fondo saltare streaming generazione vista bloccare scroll autoscroll follow",
       showResponseModel: "Mostra il modello della risposta",
       showResponseModelDescription:
         "Mostra i metadati del modello nelle risposte dell'assistente.",
