@@ -1064,6 +1064,27 @@ test("decodeHtmlAttachmentBytes reads the charset the way a browser does", () =>
   );
 });
 
+test("a UTF-8 html page keeps its text when its meta names a legacy charset", async () => {
+  const page =
+    '<meta http-equiv="Content-Type" content="text/html; charset=iso-8859-1"><p>Café €12 日本語</p>';
+  const file = new File([new TextEncoder().encode(page)], "saved.html", {
+    type: "text/html",
+  });
+  const { text } = await readAttachmentText(file, file.name, file.type);
+  assert.equal(text, page);
+  assert.equal(
+    decodeHtmlAttachmentBytes(new TextEncoder().encode(page).subarray(0, -6), true),
+    page.slice(0, -5),
+  );
+  const jis = legacyPage('<meta charset="iso-2022-jp"><p>', [
+    0x1b, 0x24, 0x42, 0x46, 0x7c, 0x4b, 0x5c, 0x38, 0x6c, 0x1b, 0x28, 0x42,
+  ]);
+  assert.equal(
+    decodeHtmlAttachmentBytes(jis),
+    '<meta charset="iso-2022-jp"><p>日本語</p>',
+  );
+});
+
 test("a UTF-16 Markdown file previews as its text in the document viewer", async () => {
   const utf16 = new Uint8Array([0xff, 0xfe, ...Array.from("# Notes", (c) => [c.charCodeAt(0), 0]).flat()]);
   const file = new File([utf16], "notes.md", { type: "text/markdown" });

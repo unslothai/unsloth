@@ -997,16 +997,40 @@ function declaredHtmlEncoding(bytes: Uint8Array): string | null {
   return null;
 }
 
-export function decodeHtmlAttachmentBytes(bytes: Uint8Array): string {
-  const encoding =
+export function decodeHtmlAttachmentBytes(
+  bytes: Uint8Array,
+  truncated = false,
+): string {
+  const bom =
     bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf
       ? "utf-8"
       : bytes[0] === 0xff && bytes[1] === 0xfe
         ? "utf-16le"
         : bytes[0] === 0xfe && bytes[1] === 0xff
           ? "utf-16be"
-          : (declaredHtmlEncoding(bytes) ?? "utf-8");
-  return new TextDecoder(encoding).decode(bytes);
+          : null;
+  if (bom) {
+    return new TextDecoder(bom).decode(bytes);
+  }
+  const declared = declaredHtmlEncoding(bytes);
+  // A meta often outlives a re-save as UTF-8, so non-ASCII bytes that are valid UTF-8 win.
+  // ASCII alone proves nothing: ISO-2022-JP is 7-bit.
+  const utf8 =
+    declared && declared !== "utf-8" ? strictUtf8(bytes, truncated) : null;
+  if (utf8 !== null && utf8.length !== bytes.length) {
+    return utf8;
+  }
+  return new TextDecoder(declared ?? "utf-8").decode(bytes);
+}
+
+function strictUtf8(bytes: Uint8Array, truncated: boolean): string | null {
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(bytes, {
+      stream: truncated,
+    });
+  } catch {
+    return null;
+  }
 }
 
 export function extractHtmlAttachmentText(html: string): string {
@@ -1138,7 +1162,7 @@ async function readBoundedHtml(
   const truncated = file.size > MAX_PREVIEW_TEXT_BYTES;
   const slice = truncated ? file.slice(0, MAX_PREVIEW_TEXT_BYTES) : file;
   const bytes = new Uint8Array(await slice.arrayBuffer());
-  return { text: decodeHtmlAttachmentBytes(bytes), truncated };
+  return { text: decodeHtmlAttachmentBytes(bytes, truncated), truncated };
 }
 
 // A sent attachment keeps only the text its adapter produced, so the preview unwraps the
