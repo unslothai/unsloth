@@ -1,10 +1,4 @@
-"""`exclude_no_placement_params`: a model's `_no_placement_params` stay off the device map.
-
-Qwen4Exp (Qwen3.8-Flash-Next) declares its ~102 GB hashed n-gram table unplaceable. On one
-GPU transformers could not escape it (it only does so when the next device is a GPU), so
-FastModel sent the whole model to CPU and the first CUDA forward failed. The helper must
-place every other tensor where the map put it and leave the table out, and must return the
-map untouched for any model without the attribute."""
+"""`exclude_no_placement_params`: `_no_placement_params` stay off the device map; maps of other models are untouched."""
 
 import pytest
 import torch
@@ -154,9 +148,7 @@ def test_real_qwen4_exp_on_meta(monkeypatch):
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs a CUDA device")
 def test_bnb_hooks_leave_the_cpu_table_alone():
-    """A 4bit load used to see cuda + cpu parameters, dispatch the table as an offloaded
-    'cpu' block, and copy it to the GPU on every forward (110 GB peak on Qwen3.8-Flash-Next
-    truncated to 4 layers, 159 s for one step)."""
+    """4bit hooks must not offload the CPU table (was copied to GPU every forward, 110 GB peak)."""
     from unsloth.models.vision import _attach_bnb_multidevice_hooks
 
     model = Model()
@@ -171,8 +163,7 @@ def test_bnb_hooks_leave_the_cpu_table_alone():
 
 @pytest.mark.skipif(torch.cuda.device_count() < 2, reason = "needs 2 CUDA devices")
 def test_split_ancestors_get_input_hooks():
-    """A split model: the table's ancestors lost their dispatch hooks, so ids from cuda:0 met
-    a buffer on cuda:1 inside the n-gram module (Qwen3.8-Flash-Next vision cell)."""
+    """Split model: the table's ancestors need input hooks, else ids meet buffers on another card."""
     from unsloth.models.vision import _hook_no_placement_ancestors
 
     class HashTable(Table):

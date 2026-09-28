@@ -428,15 +428,10 @@ def _align_root_hook_with_input_embeddings(model):
 
 
 def _hook_no_placement_ancestors(model):
-    """Hook the modules above a CPU-kept `_no_placement_params` table on a split model.
+    """Hook ancestors of a CPU-kept `_no_placement_params` table on a split model.
 
-    The table's owner is left off the device map, so the map splits its ancestors (a
-    Qwen4Exp decoder layer, its PLE block, the n-gram module) into their children and none
-    of them keeps a dispatch hook. Their forward inputs then arrive on whatever card the
-    previous layer ran on: the n-gram ids met `layer_multipliers` on another card
-    ("found at least two devices, cuda:0 and cuda:2"). Each such ancestor whose placed
-    tensors sit on ONE card gets an input-aligning hook to that card; the table module
-    itself stays unhooked (it gathers on CPU). No-op on one device."""
+    Leaving the table off the map strips its ancestors' dispatch hooks, so inputs arrived on
+    the wrong card. Single-card ancestors get an input-aligning hook; the table stays unhooked."""
     from .loader_utils import no_placement_tensor_names
 
     unplaced = no_placement_tensor_names(model)
@@ -515,9 +510,7 @@ def _attach_bnb_multidevice_hooks(
     if getattr(model, "hf_device_map", None) is not None:
         return  # already dispatched
 
-    # A frozen table the model declares unplaceable (Qwen4Exp's n-gram embedding) stays on
-    # CPU unhooked: its module gathers rows there. Hooking it offloads ~102 GB to the GPU
-    # on every forward.
+    # Unplaceable tables stay on CPU unhooked; hooking copies ~102 GB to the GPU every forward.
     try:
         from .loader_utils import no_placement_tensor_names
         _unplaced = no_placement_tensor_names(model)

@@ -305,16 +305,9 @@ def no_placement_tensor_names(model):
 def exclude_no_placement_params(device_map, model_class, config):
     """Keep a model's `_no_placement_params` out of the device map, so they stay on CPU.
 
-    Qwen4Exp (Qwen3.8-Flash-Next) declares its 51B-parameter hashed n-gram table
-    (`ple.ple_embedding.ngram_embedding.weight`, ~102 GB in bf16) this way: the module does
-    its lookup wherever the weight lives and moves only the gathered rows. transformers
-    escapes it from `infer_auto_device_map` only when the next device is a GPU, so on one
-    GPU the whole model was sent to CPU ("does not fit any GPU's remaining memory") and the
-    first CUDA forward failed. The table is frozen and never quantized, so keeping it on
-    CPU costs a small host gather per step and saves ~102 GB of VRAM. Every other parameter
-    goes where the map already put it (a single device for string maps on a one-GPU host).
-    `UNSLOTH_PLACE_NO_PLACEMENT_PARAMS=1` restores the transformers behaviour. Returns the
-    map unchanged for every model without `_no_placement_params`."""
+    transformers escapes them only when the next device is a GPU, so on one GPU Qwen4Exp's
+    ~102 GB n-gram table sent the whole model to CPU. The table is frozen and gathers rows on
+    CPU. `UNSLOTH_PLACE_NO_PLACEMENT_PARAMS=1` restores the transformers behaviour."""
     names = getattr(model_class, "_no_placement_params", None) if model_class is not None else None
     if not names or os.environ.get("UNSLOTH_PLACE_NO_PLACEMENT_PARAMS", "0") == "1":
         return device_map
@@ -345,8 +338,7 @@ def exclude_no_placement_params(device_map, model_class, config):
     }
     if not matched:
         return device_map
-    # The whole owning module stays together: FP8 checkpoints pair the table with a
-    # per-tensor weight_scale the lookup multiplies on the same device (FP8Embedding).
+    # Whole owning module: FP8Embedding multiplies by a sibling weight_scale on the same device.
     excluded_modules = sorted({name.rsplit(".", 1)[0] for name in matched})
     excluded = {
         name
@@ -355,7 +347,6 @@ def exclude_no_placement_params(device_map, model_class, config):
     }
 
     def owner(path):
-        # The device map entry that currently places `path` (longest matching prefix).
         best = None
         for key in out:
             if key == "" or path == key or path.startswith(key + "."):
