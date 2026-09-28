@@ -145,7 +145,7 @@ def _write_legacy_q2_offset_mismatch_gguf(
     """Two-tensor header where the second offset matches legacy Q2_0 packing, not mainline."""
     _GGML_TYPE_Q2_0 = 42
     _GGML_TYPE_F32 = 0
-    # Mainline Q2_0 [64, 64] -> 1152 bytes; legacy Prism packing -> 1088 bytes.
+    # Mainline Q2_0 [128, 32] -> 1152 bytes; legacy Prism packing (128 per block) -> 1088 bytes.
     legacy_running = second_offset
     body = b""
     kv_count = 0
@@ -154,7 +154,7 @@ def _write_legacy_q2_offset_mismatch_gguf(
         kv_count = 1
     tensor_info = b""
     for name, ggml_type, ne, offset in (
-        ("token_embd.weight", _GGML_TYPE_Q2_0, (64, 64), 0),
+        ("token_embd.weight", _GGML_TYPE_Q2_0, (128, 32), 0),
         (mismatch_tensor, _GGML_TYPE_F32, (1,), legacy_running),
     ):
         tensor_info += _enc_string(name)
@@ -1011,7 +1011,7 @@ def test_a_valid_tensor_after_q2_0_is_not_reported_as_legacy_packing(tmp_path: P
     second = ((n // blck) * _GGML_BLOCK_BYTES[ggml_type] + 31) // 32 * 32
     tensor_info = b""
     for name, t, ne, offset in (
-        ("token_embd.weight", 42, (64, 64), 0),
+        ("token_embd.weight", 42, (128, 32), 0),
         ("blk.0.attn_q.weight", ggml_type, (n,), 1152),
         ("blk.0.norm.weight", 0, (1,), 1152 + second),
     ):
@@ -1021,4 +1021,12 @@ def test_a_valid_tensor_after_q2_0_is_not_reported_as_legacy_packing(tmp_path: P
         tensor_info += struct.pack("<I", t) + struct.pack("<Q", offset)
     p = tmp_path / "mixed-Q2_0.gguf"
     p.write_bytes(struct.pack("<IIQQ", _GGUF_MAGIC, 3, 3, 0) + tensor_info)
+    assert gguf_mainline_q2_offset_mismatch(str(p)) is None
+
+
+def test_a_damaged_mainline_q2_file_is_not_called_legacy_packing(tmp_path: Path):
+    """An offset that matches neither layout is damage: no Prism guidance for it."""
+    p = _write_legacy_q2_offset_mismatch_gguf(
+        tmp_path / "Ternary-Bonsai-27B-Q2_g64.gguf", second_offset = 2048
+    )
     assert gguf_mainline_q2_offset_mismatch(str(p)) is None

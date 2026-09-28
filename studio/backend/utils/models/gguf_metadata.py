@@ -1158,6 +1158,9 @@ _GGML_TYPE_LAYOUT: Dict[int, Tuple[int, int]] = {
     _GGML_TYPE_Q2_0: (64, 18),  # Q2_0 (mainline group 64)
 }
 
+# Prism's own Q2_0: 128 elements under the same 2-byte delta (ggml-org/llama.cpp#26337).
+_PRISM_LEGACY_Q2_0_LAYOUT: Tuple[int, int] = (128, 34)
+
 _Q2_OFFSET_MISMATCH_CACHE: Dict[_CacheKey, Optional[str]] = {}
 
 
@@ -1167,13 +1170,25 @@ def _ggml_pad(size: int, alignment: int) -> int:
     return ((size + alignment - 1) // alignment) * alignment
 
 
-def _ggml_tensor_nbytes(ne: Tuple[int, int, int, int], ggml_type: int) -> Optional[int]:
-    layout = _GGML_TYPE_LAYOUT.get(ggml_type)
+def _ggml_tensor_nbytes(
+    ne: Tuple[int, int, int, int],
+    ggml_type: int,
+    *,
+    legacy_q2: bool = False,
+) -> Optional[int]:
+    layout = (
+        _PRISM_LEGACY_Q2_0_LAYOUT
+        if legacy_q2 and ggml_type == _GGML_TYPE_Q2_0
+        else _GGML_TYPE_LAYOUT.get(ggml_type)
+    )
     if layout is None:
         return None
     blck_size, type_size = layout
     if any(n <= 0 for n in ne):
         return 0
+    if ne[0] % blck_size:
+        # ggml cannot lay out a row that splits a block.
+        return None
     nb = [0, 0, 0, 0]
     nb[0] = type_size
     if blck_size == 1:
@@ -1209,7 +1224,9 @@ def prism_legacy_q2_gguf_user_message(*, tensor_name: Optional[str] = None) -> s
 
 
 def _parse_gguf_mainline_q2_offset_mismatch(path: str) -> Optional[str]:
-    """Return the first tensor name whose offset disagrees with mainline layout, when Q2_0 is present."""
+    """Return the first tensor name whose offset disagrees with mainline layout, when Q2_0 is
+    present and the offset is exactly what Prism's legacy Q2_0 packing puts there. Any other
+    mismatch is damage, not legacy packing, and gets no verdict."""
     alignment = 32
     saw_q2_0 = False
     try:
@@ -1245,6 +1262,7 @@ def _parse_gguf_mainline_q2_offset_mismatch(path: str) -> Optional[str]:
                     return None
 
             running = 0
+            running_legacy = 0
             for _ in range(tensor_count):
                 nlen_bytes = f.read(8)
                 if len(nlen_bytes) < 8:
@@ -1277,14 +1295,19 @@ def _parse_gguf_mainline_q2_offset_mismatch(path: str) -> Optional[str]:
                 if ggml_type == _GGML_TYPE_Q2_0:
                     saw_q2_0 = True
                 if offset != running:
-                    return name if saw_q2_0 else None
-                nbytes = _ggml_tensor_nbytes(
-                    (dims[0], dims[1], dims[2], dims[3]),
-                    ggml_type,
-                )
+                    return name if saw_q2_0 and offset == running_legacy else None
+                ne = (dims[0], dims[1], dims[2], dims[3])
+                nbytes = _ggml_tensor_nbytes(ne, ggml_type)
                 if nbytes is None:
                     return None
                 running += _ggml_pad(nbytes, alignment)
+                legacy_nbytes = _ggml_tensor_nbytes(ne, ggml_type, legacy_q2 = True)
+                # A row the legacy block cannot divide rules that layout out for this file.
+                running_legacy = (
+                    running_legacy + _ggml_pad(legacy_nbytes, alignment)
+                    if legacy_nbytes is not None and running_legacy >= 0
+                    else -1
+                )
     except OSError as e:
         logger.debug(f"_parse_gguf_mainline_q2_offset_mismatch: cannot open {path}: {e}")
         return None
