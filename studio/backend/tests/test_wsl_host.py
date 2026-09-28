@@ -157,6 +157,34 @@ def test_cancel_stops_a_download_and_leaves_no_partial(tmp_path, monkeypatch):
     assert list((tmp_path / "downloads").iterdir()) == []
 
 
+def test_localized_utf16_messages_decode_and_still_name_the_blocker():
+    message = "请启用虚拟机平台 Windows 功能并确保在 BIOS 中启用虚拟化。错误代码: Wsl/0x80370102"
+    assert wsl_host.decode(message.encode("utf-16-le")) == message
+    assert "BIOS" in wsl_host.blocker(wsl_host.decode(message.encode("utf-16-le")))
+    assert wsl_host.decode("请启用虚拟化".encode("utf-16-le")) == "请启用虚拟化"
+
+
+def test_concurrent_installs_prepare_the_distro_one_at_a_time(monkeypatch):
+    import threading
+
+    inside, peak = [0], [0]
+
+    def ensure_distro(progress = None, cancel = None):
+        inside[0] += 1
+        peak[0] = max(peak[0], inside[0])
+        time.sleep(0.3)
+        inside[0] -= 1
+
+    monkeypatch.setattr(wsl_host, "wsl_state", lambda: "ready")
+    monkeypatch.setattr(wsl_host, "ensure_distro", ensure_distro)
+    threads = [threading.Thread(target = wsl_host.prepare) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert peak[0] == 1
+
+
 def test_gpus_are_selected_by_uuid(monkeypatch):
     rows = "0, GPU-aaaa\n1, GPU-bbbb\n"
     monkeypatch.setattr(

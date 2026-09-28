@@ -17,6 +17,7 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path, PureWindowsPath
 
@@ -31,6 +32,7 @@ UV = {
     "sha256": "23bf5552d220e0842b65c862097b2ebaeba0064b74eda5e565e77fd25969d8c8",
     "size": 19831732,
 }
+_PREPARE_LOCK = threading.Lock()
 MIN_BUILD = 19044  # Windows 10 21H2: first build with CUDA in WSL2.
 GUEST_ROOT = "/opt/unsloth"
 _CREATE_NO_WINDOW = 0x08000000
@@ -155,9 +157,16 @@ def boot_id() -> int:
 
 def decode(raw: bytes) -> str:
     """wsl.exe writes its own messages as UTF-16LE; guest programs write UTF-8."""
-    if raw[:2] == b"\xff\xfe" or (len(raw) > 1 and raw[1:2] == b"\x00"):
+    # Localized messages can open with a non-ASCII character, so no single byte identifies
+    # UTF-16; UTF-8 text never carries NULs and CJK UTF-16 is almost never valid UTF-8.
+    if raw[:2] == b"\xff\xfe" or b"\x00" in raw:
         return raw.decode("utf-16-le", errors = "replace").lstrip("\ufeff")
-    return raw.decode("utf-8", errors = "replace")
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        if len(raw) % 2 == 0:
+            return raw.decode("utf-16-le", errors = "replace")
+        return raw.decode("utf-8", errors = "replace")
 
 
 def run(
@@ -439,6 +448,12 @@ def ensure_distro(progress = None, cancel = None) -> None:
 
 def prepare(progress = None, cancel = None) -> None:
     """Everything before the engine's own packages. Raises ``Waiting`` for a user step."""
+    # vLLM and SGLang installs share one download, one elevation prompt and one distro import.
+    with _PREPARE_LOCK:
+        _prepare(progress, cancel)
+
+
+def _prepare(progress, cancel) -> None:
     state = wsl_state()
     if state.startswith("blocked"):
         raise RuntimeError(state.partition(": ")[2])
