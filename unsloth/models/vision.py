@@ -757,6 +757,7 @@ def _compiles_decode(model):
         for mt in model_types
     )
 
+
 _HAS_MAX_CACHE_LEN = hasattr(GenerationConfig(), "max_cache_len")
 
 
@@ -1168,13 +1169,14 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
         bucket = _decode_cache_bucket(self, input_ids.shape[1], kwargs)
         if bucket is not None:
             kwargs["max_cache_len"] = bucket
+        previous_decode_compile = UNSLOTH_DECODE_COMPILE[0]
         UNSLOTH_DECODE_COMPILE[0] = True
     try:
         with torch.inference_mode(), autocaster:
             output = self._old_generate(*args, **kwargs)
     finally:
         if compile_decode:
-            UNSLOTH_DECODE_COMPILE[0] = False
+            UNSLOTH_DECODE_COMPILE[0] = previous_decode_compile
         _clear_generation_caches(self)
 
     return output
