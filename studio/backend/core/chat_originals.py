@@ -6,7 +6,8 @@
 A chat keeps a document's extracted text for the model; the file itself (a PDF, a Word document, a
 workbook or a deck) is kept here so it can be opened as it looked. Each is stored once under its
 SHA-256, which the attachment records as ``{"original": {"sha256", "sizeBytes"}}``: a fork or an
-import copies the reference, never the bytes, and a retried send stores nothing new.
+import copies the reference, never the bytes, and a retried send stores nothing new. While the python
+tool runs, any other attached file is kept too, so the tool can be handed a copy.
 
 A file no attachment references any more is removed by ``sweep``, once it is older than an hour, so
 one uploaded moments before its message is saved is never taken. A sweep that leaves such a file for
@@ -22,7 +23,7 @@ import re
 import threading
 import time
 import uuid
-from pathlib import Path
+from pathlib import Path, PurePath
 from typing import Iterable, Optional
 
 from loggers import get_logger
@@ -30,8 +31,16 @@ from utils.paths.storage_roots import account_path, ensure_account_dir
 
 logger = get_logger(__name__)
 
-EXTENSIONS = frozenset({".pdf", ".docx", ".xlsx", ".xlsm", ".pptx"})
 MAX_BYTES = 50 * 1024 * 1024
+# Only the python tool can open these, so they get the larger cap its data files need.
+TOOL_ONLY_EXTENSIONS = frozenset(
+    ".parquet .feather .arrow .orc .dta .sas7bdat .xpt .mat .npy .npz .safetensors .sqlite .sqlite3"
+    " .db .gpkg .mbtiles .duckdb .zip .jar .whl .apk .tar .gz .tgz .bz2 .tbz2 .tbz .xz .txz .lzma"
+    " .epub .mobi .fb2 .cbz .xps .oxps .docm .dotx .dotm .potx .potm .ppsm .odp .odg .vsdx .stl .3mf"
+    " .ply .glb .kmz .ttf .otf .ttc .woff .psd .ico .icns .cur .tga .dds .pcx .ppm .pgm .pbm .pnm"
+    " .qoi .jp2 .j2k .xbm .xpm .sgi .fits".split()
+)
+TOOL_ONLY_MAX_BYTES = 200 * 1024 * 1024
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _SWEEP_GRACE_SECONDS = 3600
 _SWEEP_INTERVAL_SECONDS = 600
@@ -77,8 +86,13 @@ def path_for(attachment: object) -> Optional[Path]:
     return path if path.is_file() else None
 
 
-def save(chunks: Iterable[bytes]) -> tuple[str, int]:
-    """Store streamed bytes under their hash: (sha256, size). Raises TooLarge past MAX_BYTES."""
+def max_bytes(filename: str) -> int:
+    suffix = PurePath(filename).suffix.lower()
+    return TOOL_ONLY_MAX_BYTES if suffix in TOOL_ONLY_EXTENSIONS else MAX_BYTES
+
+
+def save(chunks: Iterable[bytes], limit: int = MAX_BYTES) -> tuple[str, int]:
+    """Store streamed bytes under their hash: (sha256, size). Raises TooLarge past ``limit``."""
     directory = ensure_account_dir(originals_dir())
     tmp_path = directory / f".{uuid.uuid4().hex}.tmp"
     digest = hashlib.sha256()
@@ -87,7 +101,7 @@ def save(chunks: Iterable[bytes]) -> tuple[str, int]:
         with open(tmp_path, "wb") as handle:
             for chunk in chunks:
                 size += len(chunk)
-                if size > MAX_BYTES:
+                if size > limit:
                     raise TooLarge()
                 digest.update(chunk)
                 handle.write(chunk)
