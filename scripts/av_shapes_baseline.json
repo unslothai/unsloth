@@ -211,17 +211,6 @@
       }
     },
     {
-      "file": "scripts/scan_npm_packages.py",
-      "rule": "AV008",
-      "severity": "error",
-      "reason": "Supply-chain scanner signature list; follow-up to build these strings from fragments the way scripts/scan_packages.py now does.",
-      "digests": {
-        "6733b2460683cb4d": 1,
-        "69fa749e9a66cf63": 1,
-        "f10e13497e178085": 1
-      }
-    },
-    {
       "file": "scripts/scan_packages.py",
       "rule": "AV008",
       "severity": "warn",
