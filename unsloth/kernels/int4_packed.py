@@ -295,6 +295,28 @@ class _on_device:
             self.ctx.__exit__(*exc)
 
 
+# CompiledKernel[grid](*args) takes only the runtime args from Triton 3.7; older launchers also want the
+# constexprs and raise TypeError, so fall back to the public JIT launch there.
+_FAST_LAUNCH = None
+
+
+def _launch(kernel, launchers, key, grid, args, **constexprs):
+    global _FAST_LAUNCH
+    if _FAST_LAUNCH is not False:
+        compiled = launchers.get(key)
+        if compiled is None:
+            compiled = launchers[key] = kernel.warmup(*args, grid = grid, **constexprs)
+        try:
+            compiled[grid](*args)
+            _FAST_LAUNCH = True
+            return
+        except TypeError:
+            if _FAST_LAUNCH:
+                raise
+            _FAST_LAUNCH = False
+    kernel[grid](*args, **constexprs)
+
+
 def int4_dequantize(
     packed,
     qs,
@@ -314,13 +336,17 @@ def int4_dequantize(
     if launchers is None:
         launchers = qs._launchers = {}
     with _on_device(packed.device):
-        compiled = launchers.get(key)
-        if compiled is None:
-            compiled = _dequant_kernel.warmup(
-                *args, grid = grid, BLOCK_N = BLOCK_N, BLOCK_KP = BLOCK_KP, num_warps = 4, **meta
-            )
-            launchers[key] = compiled
-        compiled[grid](*args)
+        _launch(
+            _dequant_kernel,
+            launchers,
+            key,
+            grid,
+            args,
+            BLOCK_N = BLOCK_N,
+            BLOCK_KP = BLOCK_KP,
+            num_warps = 4,
+            **meta,
+        )
     return out
 
 
@@ -390,14 +416,10 @@ def int4_matmul(
     if launchers is None:
         launchers = qs._launchers = {}
     with _on_device(x.device):
-        compiled = launchers.get(key)
-        if compiled is None:
-            compiled = _gemv_kernel.warmup(
-                *args, grid = grid, BLOCK_N = BLOCK_N, BLOCK_KP = BLOCK_KP, SPLIT_K = split,
-                num_warps = 4, **meta,
-            )  # fmt: skip
-            launchers[key] = compiled
-        compiled[grid](*args)
+        _launch(
+            _gemv_kernel, launchers, key, grid, args, BLOCK_N = BLOCK_N, BLOCK_KP = BLOCK_KP, SPLIT_K = split,
+            num_warps = 4, **meta,
+        )  # fmt: skip
     if y.dtype != x.dtype:
         y = y.to(x.dtype)
     if out is not None and y.data_ptr() != out.data_ptr():
