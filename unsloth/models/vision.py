@@ -97,6 +97,7 @@ from ._custom_dtype import resolve_dtype, trusted_custom_dtype
 from .remote_code_shims import apply_remote_code_shims
 from .grouped_linear_lora import register_grouped_linear_lora
 from .loader_utils import (
+    _bnb_bits_requested,
     DEFAULT_DEVICE_MAP,
     OFFLOAD_EMBEDDING_AUTO,
     planner_config_overrides,
@@ -1290,6 +1291,32 @@ def _architecture_skip_modules(model_types):
     return skip
 
 
+def _with_architecture_skip_modules(quantization_config, model_types):
+    """Copy of a caller's bitsandbytes config with the architecture skip list merged in; anything else unchanged."""
+    extra = _architecture_skip_modules(model_types)
+    if quantization_config is None or not extra:
+        return quantization_config
+    if _bnb_bits_requested(quantization_config) is None:
+        return quantization_config
+    is_dict = isinstance(quantization_config, dict)
+    if is_dict:
+        current = quantization_config.get("llm_int8_skip_modules", None)
+    else:
+        current = getattr(quantization_config, "llm_int8_skip_modules", None)
+    # None = transformers' defaults, which an explicit list replaces: start from Unsloth's own list.
+    merged = list(SKIP_QUANTIZATION_MODULES) if current is None else list(current)
+    missing = [m for m in extra if m not in merged]
+    if current is not None and not missing:
+        return quantization_config
+    merged += missing
+    # A pre-quantized bnb checkpoint's own config still wins in transformers.
+    if is_dict:
+        return {**quantization_config, "llm_int8_skip_modules": merged}
+    runtime_config = copy.deepcopy(quantization_config)
+    runtime_config.llm_int8_skip_modules = merged
+    return runtime_config
+
+
 def _cast_unquantized_floats(model, dtype):
     """Cast every floating parameter and buffer that is not a quantized weight."""
     for tensor in list(model.parameters()) + list(model.buffers()):
@@ -2061,7 +2088,11 @@ class FastBaseModel:
         kwargs["attn_implementation"] = attn_impl
 
         bnb_config = None
-        user_quantization_config = kwargs.get("quantization_config", None)
+        user_quantization_config = _with_architecture_skip_modules(
+            kwargs.get("quantization_config", None), model_types
+        )
+        if user_quantization_config is not None:
+            kwargs["quantization_config"] = user_quantization_config
 
         from .loader_utils import (
             check_and_disable_bitsandbytes_loading,
