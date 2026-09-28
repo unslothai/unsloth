@@ -172,7 +172,6 @@ def validate_model(
     if precision == "fp8":
         # Eager TorchAO FP8 on Ampere: Triton cannot compile its casts, SGLang online FP8 is invalid.
         from utils.hardware.nvidia import _nvidia_smi_executable
-
         result = subprocess.run(
             [
                 _nvidia_smi_executable(),

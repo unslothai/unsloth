@@ -387,7 +387,6 @@ def _probe_rows(gpu_id):
     rows = None
     try:
         from utils.hardware.nvidia import _nvidia_smi_executable
-
         result = subprocess.run(
             [
                 _nvidia_smi_executable(),

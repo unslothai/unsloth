@@ -545,7 +545,6 @@ def registered_distros() -> set[str]:
 
 def _nvidia_smi() -> str:
     from utils.hardware.nvidia import _nvidia_smi_executable
-
     return _nvidia_smi_executable()
 
 
