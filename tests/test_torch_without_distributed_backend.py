@@ -25,11 +25,10 @@ def _missing_c10d():
 
 class _Raises(importlib.abc.MetaPathFinder):
     def __init__(self, prefix, error):
-        self.prefix, self.error, self.hits = prefix, error, 0
+        self.prefix, self.error = prefix, error
 
     def find_spec(self, name, path = None, target = None):
         if name == self.prefix or name.startswith(self.prefix + "."):
-            self.hits += 1
             raise self.error
         return None
 
