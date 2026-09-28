@@ -5821,6 +5821,70 @@ def test_a_vision_row_cut_by_its_stop_sequence_leaves_the_batch(monkeypatch, sto
     ), "a row the engine has already retired is not handed back again"
 
 
+def test_a_resident_vision_row_resumes_from_the_snapshot_store_and_reports_it(monkeypatch):
+    from core.inference import mlx_inference
+
+    engine = _batch_engine(monkeypatch)
+    monkeypatch.setattr(engine, "GenerationRequest", SimpleNamespace, raising = False)
+    monkeypatch.setattr(engine, "SamplingParams", dict, raising = False)
+    monkeypatch.setattr(engine, "BatchRowRefused", RuntimeError, raising = False)
+    monkeypatch.setattr(engine, "row_prompt_cache_unavailable_reason", lambda: None, raising = False)
+    backend = _vlm_backend(monkeypatch, markers = None)
+    store = mlx_inference.VLMPromptSnapshotStore(max_bytes = 10**9)
+    for key in ("m", "m|img"):
+        store._entries[(key, (1,))] = ([], 0)
+    backend._vlm_snapshot_store = store
+    backend._vlm_prompt_cache_store = lambda: store
+    backend._vlm_is_diffusion_model = lambda model: False
+    backend._vlm_snapshot_scope = lambda state, images: (None, "m|img" if images else "m", list)
+
+    backend._plan_vlm_request = lambda request: SimpleNamespace(
+        prompt = "p",
+        images = request.get("images"),
+        max_tokens = 4,
+        sampling = {},
+        processors = None,
+        think_prefix = "",
+        stream = _vlm_row(backend),
+    )
+    session = _open_vision_session([])
+    session.backend, session._adapter_state = backend, None
+    session._resumes_rows = mlx_inference._row_prompt_cache_gap() is None
+    added = []
+    session.stream = SimpleNamespace(add = lambda request: added.append(request) or len(added) - 1)
+
+    session.admit({}, "text")
+    assert added[0].prompt_cache_state._store is store and len(store) == 2
+    # An image row keeps only its image's snapshots through its vision pass.
+    backend._model = SimpleNamespace(config = SimpleNamespace(image_token_id = 9))
+    session.admit({"images": [object()]}, "image")
+    assert list(store._entries) == [("m|img", (1,))]
+    assert added[1].prompt_cache_state._store is store
+    # One the single path prefills as a media block resumes nothing and frees everything.
+    backend._model.config.use_bidirectional_attention = "vision"
+    session.admit({"images": [object()]}, "block")
+    assert added[2].prompt_cache_state._store is None and len(store) == 0
+
+    result = SimpleNamespace(
+        finish_reason = "length", prompt_token_count = 10, cached_token_count = 6, token_ids = [1]
+    )
+    session.stream.step = lambda: iter([SimpleNamespace(index = 0, delta = "", result = result)])
+    list(session.step())
+    stats = session.take_stats("text")
+    assert stats["usage"]["prompt_tokens"] == 10 and stats["timings"]["prompt_n"] == 4
+    assert stats["usage"]["prompt_tokens_details"]["cached_tokens"] == 6
+    session.stream.withdraw = lambda row: result
+    list(session.withdraw(["image"]))
+    assert session.take_stats("image")["usage"]["prompt_tokens_details"]["cached_tokens"] == 6
+
+    # A zoo that cannot resume rows gets no state, and image rows clear the store as before.
+    store._entries[("m|img", (1,))] = ([], 0)
+    monkeypatch.setattr(engine, "row_prompt_cache_unavailable_reason", lambda: "old zoo")
+    session._resumes_rows = mlx_inference._row_prompt_cache_gap() is None
+    session.admit({"images": [object()]}, "old")
+    assert not hasattr(added[3], "prompt_cache_state") and len(store) == 0
+
+
 def _batch_engine(monkeypatch):
     """The zoo batch engine, or a stand-in where the backend CI installs no unsloth-zoo."""
     try:
