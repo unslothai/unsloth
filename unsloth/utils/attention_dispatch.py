@@ -421,7 +421,12 @@ def run_attention(
     elif backend == XFORMERS:
         base_mask = context.causal_mask
         # Only CausalLM_fast_forward supplies the mask; a direct decoder call (Liger, TRL's get_decoder paths) would attend bidirectionally.
-        if base_mask is None and context.seq_info is None and q_len == kv_seq_len:
+        if (
+            base_mask is None
+            and xformers is not None
+            and context.seq_info is None
+            and q_len == kv_seq_len
+        ):
             base_mask = xformers.attn_bias.LowerTriangularMask()
         attn_bias = build_xformers_block_causal_mask(
             context.seq_info,

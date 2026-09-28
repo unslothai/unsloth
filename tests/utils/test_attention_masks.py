@@ -739,10 +739,11 @@ def test_real_xformers_without_mask_is_causal():
         attention_mask = None,
         causal_mask = None,
     )
+    dtype = torch.bfloat16 if attention_dispatch.SUPPORTS_BFLOAT16 else torch.float16
     g = torch.Generator(device = "cuda").manual_seed(0)
-    Q = torch.randn(2, 4, 8, 64, device = "cuda", dtype = torch.bfloat16, generator = g)
-    K = torch.randn(2, 2, 8, 64, device = "cuda", dtype = torch.bfloat16, generator = g)
-    V = torch.randn(2, 2, 8, 64, device = "cuda", dtype = torch.bfloat16, generator = g)
+    Q = torch.randn(2, 4, 8, 64, device = "cuda", dtype = dtype, generator = g)
+    K = torch.randn(2, 2, 8, 64, device = "cuda", dtype = dtype, generator = g)
+    V = torch.randn(2, 2, 8, 64, device = "cuda", dtype = dtype, generator = g)
     got = attention_dispatch.run_attention(config = config, context = context, Q = Q, K = K, V = V)
 
     keep = torch.ones(8, 8, dtype = torch.bool, device = "cuda").tril()
