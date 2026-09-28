@@ -35,6 +35,8 @@ __all__ = [
     "int4_dequantize_weight",
     "int4_matmul",
     "int4_matmul_t",
+    "int4_repack_",
+    "int4_unpack",
 ]
 
 
@@ -51,8 +53,8 @@ class Int4QuantState:
         "dtype",
         "_launch",
         "_launchers",
-        "_marlin",
-        "_tinygemm",
+        "layout",
+        "_fast",
     )
 
     def __init__(self, scale, zero_point, g_idx, shape, bits, group_size, dtype):
@@ -65,8 +67,8 @@ class Int4QuantState:
         self.dtype = dtype
         self._launch = None
         self._launchers = None
-        self._marlin = None
-        self._tinygemm = None
+        self.layout = None
+        self._fast = None
 
 
 @triton.jit
@@ -329,6 +331,8 @@ def int4_dequantize(
     out = None,
 ):
     dtype = dtype or qs.dtype or torch.bfloat16
+    if qs.layout is not None:
+        return _dequant_repacked(packed, qs, dtype, out)
     (P, S, Z, G), (N, K, KP), (sp, ss, sz), meta = _launch_args(packed, qs)
     if out is None:
         out = torch.empty((N, K), dtype = dtype, device = packed.device)
@@ -374,18 +378,27 @@ def _sm_count(index):
 GEMV_MAX_ROWS = 1
 
 
-# vLLM's Marlin, no-grad only (a repacked copy per layer once generating); rows where it beats decode + cuBLAS, by CC major.
+# Weights are repacked once at load (in place, no second copy) into vLLM Marlin's layout when vLLM is installed, else
+# tinygemm's (bf16 only; UNSLOTH_INT4_LAYOUT=tinygemm forces it). Rows where the fused kernel beats dequantize + cuBLAS,
+# by CC major (training always dequantizes, so its numerics never depend on the layout):
 MARLIN_MAX_ROWS = {8: 512, 10: 32, 11: 32, 12: 1024}
-MARLIN_DEFAULT_ROWS = 32
+TINYGEMM_MAX_ROWS = {8: 16, 10: 4, 11: 4, 12: 16}
+# tile rows, tile columns, tiles advance along N first, destination bit of each source nibble-index bit
+_LAYOUTS = {
+    "tinygemm": (8, 128, False, (3, 4, 0, 5, 6, 1, 2, 7, 8, 9)),
+    "marlin": (64, 16, True, (3, 7, 0, 8, 9, 1, 2, 4, 5, 6)),
+}
+_LAYOUT_OK = {}
+_FAST_CHECKED = {}
 
 
 @functools.lru_cache(maxsize = None)
-def _marlin_max_rows(index):
-    return MARLIN_MAX_ROWS.get(torch.cuda.get_device_capability(index)[0], MARLIN_DEFAULT_ROWS)
+def _fast_rows(layout, index):
+    table = MARLIN_MAX_ROWS if layout == "marlin" else TINYGEMM_MAX_ROWS
+    return table.get(torch.cuda.get_device_capability(index)[0], 32 if layout == "marlin" else 4)
 
 
 _MARLIN_API = None
-_MARLIN_CHECKED = {}
 
 
 def _marlin_api():
@@ -401,206 +414,306 @@ def _marlin_api():
                 if not new and not hasattr(torch.ops._C, "gptq_marlin_gemm"):
                     return _MARLIN_API
                 repack_perm = "perm" in inspect.signature(ops.gptq_marlin_repack).parameters
-                types = {
-                    4: scalar_types.uint4b8,
-                    8: scalar_types.uint8b128,
-                    "zp": scalar_types.uint4,
-                }
+                types = {False: scalar_types.uint4b8, True: scalar_types.uint4}
                 _MARLIN_API = (ops, new, repack_perm, types, {})
             except Exception:
                 pass
     return _MARLIN_API
 
 
-def _marlin_scale_perm(single):
-    if single:
-        return [2 * i + j for i in range(4) for j in (0, 1, 8, 9, 16, 17, 24, 25)]
+def _marlin_scale_perm():
     return [i + 8 * j for i in range(8) for j in range(8)]
 
 
-def _marlin_call(w, x2):
-    # The op overload directly: vLLM's Python wrapper costs ~2 us per call (decode is launch bound).
-    op, pre, post = w
-    return op(x2, *pre, x2.shape[0], *post)
+def _repack_words(layout, packed, N, K):
+    """The checkpoint's ``[N, K / 8]`` words in ``layout``, viewed as ``[N, K / 8]`` again."""
+    if layout == "marlin":
+        ops, _, repack_perm, _, _ = _marlin_api()
+        gptq = packed.t().contiguous()  # GPTQ packs along K too, transposed
+        if repack_perm:
+            words = ops.gptq_marlin_repack(
+                gptq, torch.empty(0, dtype = torch.int32, device = packed.device), K, N, 4
+            )
+        else:
+            words = ops.gptq_marlin_repack(gptq, K, N, 4)
+    else:
+        # Nibble i of word w is column 8w + i; tinygemm wants bytes (q[2j] << 4) | q[2j + 1].
+        b = packed.unsqueeze(-1) >> torch.arange(0, 32, 8, device = packed.device, dtype = torch.int32)
+        pairs = (((b & 15) << 4) | ((b >> 4) & 15)).to(torch.uint8).reshape(N, K // 2)
+        words = torch._convert_weight_to_int4pack(pairs, 8)
+    return words.reshape(N, K // 8)
 
 
-def _marlin_bind(api, mq, ms, mz, stype, N, K, device):
-    """``(op, args before size_m, args after)`` for the installed vLLM's positional signature."""
-    _, new, _, _, workspaces = api
-    ws = workspaces.get(device)
-    if ws is None:
-        empty = torch.empty(0, dtype = torch.int32, device = device)
-        ws = workspaces[device] = (
-            torch.zeros(_sm_count(device.index or 0), dtype = torch.int32, device = device),
-            empty,
-        )
-    ws, empty = ws
-    mz = empty if mz is None else mz
-    if new:
-        return (
-            torch.ops._C.marlin_gemm.default,
-            (None, mq, None, ms, None, None, mz, ws, stype.id),
-            (N, K, False, True, False),
-        )
-    return (
-        torch.ops._C.gptq_marlin_gemm.default,
-        (None, mq, None, ms, None, mz, empty, empty, ws, stype.id),
-        (N, K, True, False, True, False),
+def _layout_verified(layout, device):
+    """Probe the repack with base-16 digits of each position; it must be the tile bit permutation hard-coded above."""
+    key = (layout, device)
+    ok = _LAYOUT_OK.get(key)
+    if ok is None:
+        ok = False
+        try:
+            TN, TK, nfast, bits = _LAYOUTS[layout]
+            Np, Kp = (128, 256) if layout == "marlin" else (16, 256)
+            pos = torch.arange(Np * Kp, device = device, dtype = torch.int32).view(Np, Kp)
+            idx = torch.zeros(Np * Kp, dtype = torch.int32, device = device)
+            nib = torch.arange(0, 32, 4, device = device, dtype = torch.int32)
+            for d in range(4):
+                q = ((pos >> (4 * d)) & 15).view(Np, -1, 8)
+                probe = torch.zeros((Np, Kp // 8), dtype = torch.int32, device = device)
+                for i in range(8):
+                    probe |= q[:, :, i] << (4 * i)
+                words = _repack_words(layout, probe, Np, Kp).reshape(-1)
+                idx |= ((words.unsqueeze(-1) >> nib) & 15).reshape(-1) << (4 * d)
+            e = torch.arange(Np * Kp, device = device, dtype = torch.int32)
+            tile, local = e // 1024, e % 1024
+            NT_N, NT_K = Np // TN, Kp // TK
+            tn, tk = (tile % NT_N, tile // NT_N) if nfast else (tile // NT_K, tile % NT_K)
+            dest = torch.zeros_like(local)
+            for b, d in enumerate(bits):
+                dest |= ((local >> b) & 1) << d
+            want = (tn * TN + dest // TK) * Kp + tk * TK + dest % TK
+            ok = bool(torch.equal(idx, want))
+        except Exception:
+            ok = False
+        _LAYOUT_OK[key] = ok
+    return ok
+
+
+def _pick_layout(packed, qs):
+    if (
+        os.environ.get("UNSLOTH_INT4_REPACK", "1") == "0"
+        or not packed.is_cuda
+        or torch.version.hip is not None
+        or qs.bits != 4
+        or qs.g_idx is not None
+        or packed.dtype != torch.int32
+        or torch.cuda.get_device_capability(packed.device) < (8, 0)
+    ):
+        return None
+    N, K = qs.shape
+    group, zp, dtype = qs.group_size, qs.zero_point, qs.dtype
+    if (
+        packed.shape != (N, K // 8)
+        or group <= 0
+        or K % max(group, 128)
+        or qs.scale.dtype != dtype
+        or qs.scale.shape != (N, K // max(group, 1))
+        or (zp is not None and zp.shape != ((N + 7) // 8, K // max(group, 1)))
+    ):
+        return None
+    tinygemm = (
+        dtype == torch.bfloat16
+        and group in (32, 64, 128, 256)
+        and N % 8 == 0
+        and hasattr(torch, "_weight_int4pack_mm")
+        and os.environ.get("UNSLOTH_INT4_TINYGEMM", "1") != "0"
     )
-
-
-def _marlin_zeros(zp, N):
-    """compressed-tensors 4-bit zero points ``[N / 8, G]`` (packed along N) -> Marlin's permuted, interleaved ``[G, N / 8]``."""
-    G = zp.shape[1]
-    shifts = torch.arange(0, 32, 4, device = zp.device, dtype = torch.int32)
-    z = ((zp.t().unsqueeze(-1) >> shifts) & 15).reshape(G, N)
-    z = (
-        z.reshape(-1, 64)[:, _marlin_scale_perm(False)]
-        .reshape(-1, 8)[:, [0, 2, 4, 6, 1, 3, 5, 7]]
-        .reshape(G, N // 8, 8)
+    marlin = (
+        dtype in (torch.float16, torch.bfloat16)
+        and group in (32, 64, 128)
+        and N % 64 == 0
+        and bool(_marlin_api())
     )
-    out = torch.zeros((G, N // 8), dtype = torch.int32, device = zp.device)
-    for i in range(8):
-        out |= z[:, :, i] << (4 * i)
+    if marlin and (not tinygemm or os.environ.get("UNSLOTH_INT4_LAYOUT") != "tinygemm"):
+        return "marlin"
+    return "tinygemm" if tinygemm else None
+
+
+def int4_repack_(packed, qs):
+    """Repack ``packed`` in place into a fused-kernel layout; returns it, or None (left untouched)."""
+    layout = _pick_layout(packed, qs)
+    if layout is None or not _layout_verified(layout, packed.device):
+        return None
+    N, K = qs.shape
+    with torch.no_grad(), _on_device(packed.device):
+        words = _repack_words(layout, packed, N, K)
+        before = int4_dequantize(packed, qs, qs.dtype)
+        qs.layout = layout
+        same = torch.equal(_dequant_repacked(words, qs, qs.dtype), before)
+        del before
+        if not same:
+            qs.layout = None
+            return None
+        packed.copy_(words)
+    qs._launch = qs._launchers = qs._fast = None
+    return layout
+
+
+@triton.jit
+def _dequant_repacked_kernel(
+    P,
+    S,
+    Z,
+    Out,
+    NT_N,
+    NT_K,
+    stride_sn,
+    stride_zn,
+    stride_on,
+    MARLIN: tl.constexpr,
+    TN: tl.constexpr,
+    TK: tl.constexpr,
+    R: tl.constexpr,
+    GROUP: tl.constexpr,
+    HAS_Z: tl.constexpr,
+    RAW: tl.constexpr,
+):
+    # One program: tile row tn, R tiles along K, written as [TN, R * TK] contiguous rows.
+    pid = tl.program_id(0)
+    tn = pid // (NT_K // R)
+    tk0 = (pid % (NT_K // R)) * R
+    r = tl.arange(0, R)
+    if MARLIN:
+        tile = (tk0 + r) * NT_N + tn
+    else:
+        tile = tn * NT_K + tk0 + r
+    words = tl.load(P + tile[:, None] * 128 + tl.arange(0, 128)[None, :])
+    q = (words[:, :, None] >> (tl.arange(0, 8) * 4)[None, None, :]) & 15
+    # The tile's nibble-index bits, grouped by where they land (_LAYOUTS), permuted into row-major [TN, R * TK].
+    if MARLIN:  # E(9:7) D(6:5) C(4:3) B(2) A2(1) A1(0) -> rows C A2 E, columns A1 D B
+        q = tl.permute(tl.reshape(q, (R, 8, 4, 4, 2, 2, 2)), (3, 5, 1, 0, 6, 2, 4))
+    else:  # E(9:7) D(6:5) C(4:3) B(2) A(1:0) -> rows E, columns C A D B
+        q = tl.permute(tl.reshape(q, (R, 8, 4, 4, 2, 4)), (1, 0, 3, 5, 2, 4))
+    q = tl.reshape(q, (TN, R * TK))
+    n = tn * TN + tl.arange(0, TN)
+    offs = n[:, None] * stride_on + tk0 * TK + tl.arange(0, R * TK)[None, :]
+    if RAW:
+        tl.store(Out + offs, q.to(tl.int8))
+    else:
+        NG: tl.constexpr = (R * TK) // GROUP
+        g = (tk0 * TK) // GROUP + tl.arange(0, NG)
+        s = tl.load(S + n[:, None] * stride_sn + g[None, :]).to(tl.float32)
+        if HAS_Z:
+            zw = tl.load(Z + (n // 8)[:, None] * stride_zn + g[None, :])
+            z = _as_float((zw >> ((n % 8) * 4)[:, None]) & 15)
+        else:
+            z = tl.full((TN, NG), 8.0, tl.float32)
+        s = tl.reshape(tl.broadcast_to(s[:, :, None], (TN, NG, GROUP)), (TN, R * TK))
+        z = tl.reshape(tl.broadcast_to(z[:, :, None], (TN, NG, GROUP)), (TN, R * TK))
+        # Same fp32 math and double rounding as _dequant_kernel: bit-identical weights.
+        w = (_as_float(q) - z) * s
+        tl.store(Out + offs, w.to(S.dtype.element_ty).to(Out.dtype.element_ty))
+
+
+def _dequant_repacked(
+    words,
+    qs,
+    dtype,
+    out = None,
+    raw = False,
+):
+    N, K = qs.shape
+    TN, TK, _, _ = _LAYOUTS[qs.layout]
+    NT_N, NT_K = N // TN, K // TK
+    group = qs.group_size
+    R = max(8, group // TK)
+    while NT_K % R:
+        R //= 2
+    if out is None:
+        out = torch.empty((N, K), dtype = torch.int8 if raw else dtype, device = words.device)
+    zp = qs.zero_point
+    with _on_device(words.device):
+        _dequant_repacked_kernel[(NT_N * (NT_K // R),)](
+            words, qs.scale, qs.scale if zp is None else zp, out, NT_N, NT_K, qs.scale.stride(0),
+            0 if zp is None else zp.stride(0), out.stride(0), MARLIN = qs.layout == "marlin", TN = TN, TK = TK,
+            R = R, GROUP = group, HAS_Z = zp is not None, RAW = raw, num_warps = 4,
+        )  # fmt: skip
     return out
 
 
-def _marlin_weight(x2, packed, qs):
-    """Bound Marlin call (``_marlin_bind``) for this layer, or None when Marlin cannot run it exactly."""
-    cached = qs._marlin
-    if cached is not None and cached[0] == packed.data_ptr():
-        return cached[1]
-    qs._marlin = (packed.data_ptr(), None)
-    api = _marlin_api()
+def int4_unpack(packed, qs):
+    """The checkpoint-layout ``[N, K / 8]`` words of a repacked weight (what gets saved)."""
+    if qs.layout is None:
+        return packed
     N, K = qs.shape
-    bits, group = qs.bits, qs.group_size
-    scale = qs.scale
-    channel = group <= 0 or group == K
-    if (
-        not api
-        or bits not in api[3]
-        or (
-            qs.zero_point is not None
-            and (bits != 4 or channel or qs.zero_point.shape != (N // 8, K // group))
+    q = _dequant_repacked(packed, qs, None, raw = True).to(torch.int32).view(N, K // 8, 8)
+    out = torch.zeros((N, K // 8), dtype = torch.int32, device = packed.device)
+    for i in range(8):
+        out |= q[:, :, i] << (4 * i)
+    return out
+
+
+def _fast_args(packed, qs):
+    """Cached fused-kernel call for a repacked weight, self-checked once per (layout, device, zero points, dtype)."""
+    fast = qs._fast
+    if fast is not None and fast[0] == packed.data_ptr():
+        return fast[1]
+    N, K = qs.shape
+    group, zp, scale = qs.group_size, qs.zero_point, qs.scale
+    if qs.layout == "tinygemm":
+        s = scale.reshape(N, -1).t()
+        if zp is None:
+            zero = torch.zeros_like(s)
+        else:
+            # (q - z) * s == (q - 8) * s + (8 - z) * s, tinygemm's float zero.
+            z = (
+                zp.t().unsqueeze(-1) >> torch.arange(0, 32, 4, device = zp.device, dtype = torch.int32)
+            ) & 15
+            zero = ((8 - z.reshape(zp.shape[1], -1)[:, :N]).float() * s.float()).to(s.dtype)
+        call = (
+            torch.ops.aten._weight_int4pack_mm.default,
+            packed.view(N // 8, K // 128, 32, 4),
+            group,
+            torch.stack((s, zero), -1).contiguous(),
         )
-        or qs.g_idx is not None
-        or not (channel or group in (32, 64, 128))
-        or N % 64
-        or K % 128
-        or packed.dtype != torch.int32
-        or packed.shape != (N, K * bits // 32)
-        or scale.dtype != x2.dtype
-        or x2.dtype not in (torch.float16, torch.bfloat16)
-        or torch.cuda.get_device_capability(x2.device) < (8, 0)
-    ):
-        return None
-    ops, _, repack_perm, stypes, _ = api
-    try:
-        with _on_device(x2.device):
-            # compressed-tensors packs along K like GPTQ, transposed: [N, K / pf] -> GPTQ [K / pf, N].
-            gptq = packed.t().contiguous()
-            if repack_perm:
-                mq = ops.gptq_marlin_repack(
-                    gptq, torch.empty(0, dtype = torch.int32, device = x2.device), K, N, bits
+    else:
+        _, new, _, types, workspaces = _marlin_api()
+        perm = _marlin_scale_perm()
+        ms = scale.t().contiguous().reshape(-1, 64)[:, perm].reshape(-1, N).contiguous()
+        empty = torch.empty(0, dtype = torch.int32, device = packed.device)
+        mz = empty
+        if zp is not None:
+            G = zp.shape[1]
+            z = (
+                (
+                    zp.t().unsqueeze(-1)
+                    >> torch.arange(0, 32, 4, device = zp.device, dtype = torch.int32)
                 )
-            else:
-                mq = ops.gptq_marlin_repack(gptq, K, N, bits)
-            del gptq
-            s = scale.reshape(N, -1).t().contiguous()
-            perm = _marlin_scale_perm(channel)
-            ms = s.reshape(-1, len(perm))[:, perm].reshape(-1, N).contiguous()
-            mz = None if qs.zero_point is None else _marlin_zeros(qs.zero_point, N)
-            w = _marlin_bind(
-                api, mq, ms, mz, stypes["zp" if mz is not None else bits], N, K, x2.device
+                & 15
+            ).reshape(G, N)
+            z = (
+                z.reshape(-1, 64)[:, perm]
+                .reshape(-1, 8)[:, [0, 2, 4, 6, 1, 3, 5, 7]]
+                .reshape(G, N // 8, 8)
             )
-            # Self-check once per (device, bits, group kind, dtype) against the exact decode.
-            key = (x2.device, bits, channel, x2.dtype, mz is not None)
-            ok = _MARLIN_CHECKED.get(key)
-            if ok is None:
-                g = torch.Generator(device = x2.device).manual_seed(0)
-                probe = torch.randn(4, K, device = x2.device, dtype = x2.dtype, generator = g)
-                ref = probe.float() @ int4_dequantize(packed, qs, x2.dtype).float().t()
-                got = _marlin_call(w, probe).float()
-                ok = _MARLIN_CHECKED[key] = bool(
-                    ((got - ref).abs().max() <= 1e-2 * ref.abs().max() + 1e-3).item()
-                )
-    except Exception:
-        return None
-    if not ok:
-        return None
-    qs._marlin = (packed.data_ptr(), w)
-    return w
+            mz = torch.zeros((G, N // 8), dtype = torch.int32, device = zp.device)
+            for i in range(8):
+                mz |= z[:, :, i] << (4 * i)
+        ws = workspaces.get(packed.device)
+        if ws is None:
+            ws = workspaces[packed.device] = torch.zeros(
+                _sm_count(packed.device.index or 0), dtype = torch.int32, device = packed.device
+            )
+        mq, sid = packed.view(K // 16, 2 * N), types[zp is not None].id
+        # vLLM's Python wrapper costs ~2 us per call (decode is launch bound): call the op overload.
+        if new:
+            call = (
+                torch.ops._C.marlin_gemm.default,
+                (None, mq, None, ms, None, None, mz, ws, sid),
+                (N, K, False, True, False),
+            )
+        else:
+            call = (
+                torch.ops._C.gptq_marlin_gemm.default,
+                (None, mq, None, ms, None, mz, empty, empty, ws, sid),
+                (N, K, True, False, True, False),
+            )
+    key = (qs.layout, packed.device, zp is not None, qs.dtype)
+    if key not in _FAST_CHECKED:
+        g = torch.Generator(device = packed.device).manual_seed(0)
+        probe = torch.randn(4, K, device = packed.device, dtype = qs.dtype, generator = g)
+        ref = probe.float() @ int4_dequantize(packed, qs, qs.dtype).float().t()
+        got = _fast_call(call, probe).float()
+        _FAST_CHECKED[key] = bool(((got - ref).abs().max() <= 1e-2 * ref.abs().max() + 1e-3).item())
+    call = call if _FAST_CHECKED[key] else None
+    qs._fast = (packed.data_ptr(), call)
+    return call
 
 
-# torch's tinygemm (``_weight_int4pack_mm``, bf16, sm_80+) when Marlin is unavailable; rows where it still wins.
-TINYGEMM_MAX_ROWS = {8: 16, 10: 4, 11: 4, 12: 16}
-TINYGEMM_DEFAULT_ROWS = 4
-_TINYGEMM_CHECKED = {}
-
-
-@functools.lru_cache(maxsize = None)
-def _tinygemm_max_rows(index):
-    return TINYGEMM_MAX_ROWS.get(torch.cuda.get_device_capability(index)[0], TINYGEMM_DEFAULT_ROWS)
-
-
-def _tinygemm_weight(x2, packed, qs):
-    """``(weight, group, scales_and_zeros)`` for ``torch._weight_int4pack_mm``, or None when it cannot run this layer exactly."""
-    cached = qs._tinygemm
-    if cached is not None and cached[0] == packed.data_ptr():
-        return cached[1]
-    qs._tinygemm = (packed.data_ptr(), None)
-    N, K = qs.shape
-    group, scale, zp = qs.group_size, qs.scale, qs.zero_point
-    inner = next((t for t in (8, 4, 2) if K % (16 * t) == 0), None)
-    if (
-        os.environ.get("UNSLOTH_INT4_TINYGEMM", "1") == "0"
-        or torch.version.hip is not None
-        or not hasattr(torch, "_weight_int4pack_mm")
-        or qs.bits != 4
-        or qs.g_idx is not None
-        or group not in (32, 64, 128, 256)
-        or inner is None
-        or packed.dtype != torch.int32
-        or packed.shape != (N, K // 8)
-        or scale.dtype != torch.bfloat16
-        or x2.dtype != torch.bfloat16
-        or (zp is not None and zp.shape != ((N + 7) // 8, K // group))
-        or torch.cuda.get_device_capability(x2.device) < (8, 0)
-    ):
-        return None
-    try:
-        with _on_device(x2.device):
-            # Nibble i of word w is column 8w + i; tinygemm wants bytes (q[2j] << 4) | q[2j + 1].
-            shifts = torch.arange(0, 32, 8, device = packed.device, dtype = torch.int32)
-            b = packed.unsqueeze(-1) >> shifts
-            pairs = (((b & 15) << 4) | ((b >> 4) & 15)).to(torch.uint8).reshape(N, K // 2)
-            wq = torch._convert_weight_to_int4pack(pairs, inner)
-            del b, pairs
-            s = scale.reshape(N, -1).t()
-            if zp is None:
-                zero = torch.zeros_like(s)
-            else:
-                # (q - z) * s == (q - 8) * s + (8 - z) * s, tinygemm's float zero.
-                zs = torch.arange(0, 32, 4, device = zp.device, dtype = torch.int32)
-                z = ((zp.t().unsqueeze(-1) >> zs) & 15).reshape(zp.shape[1], -1)[:, :N]
-                zero = ((8 - z).float() * s.float()).to(torch.bfloat16)
-            w = (wq, group, torch.stack((s, zero), -1).contiguous())
-            key = (x2.device, zp is not None)
-            ok = _TINYGEMM_CHECKED.get(key)
-            if ok is None:
-                g = torch.Generator(device = x2.device).manual_seed(0)
-                probe = torch.randn(4, K, device = x2.device, dtype = x2.dtype, generator = g)
-                ref = probe.float() @ int4_dequantize(packed, qs, x2.dtype).float().t()
-                got = torch._weight_int4pack_mm(probe, *w).float()
-                ok = _TINYGEMM_CHECKED[key] = bool(
-                    ((got - ref).abs().max() <= 1e-2 * ref.abs().max() + 1e-3).item()
-                )
-    except Exception:
-        return None
-    if not ok:
-        return None
-    qs._tinygemm = (packed.data_ptr(), w)
-    return w
+def _fast_call(call, x2):
+    if len(call) == 4:
+        return call[0](x2, call[1], call[2], call[3])
+    op, pre, post = call
+    return op(x2, *pre, x2.shape[0], *post)
 
 
 def int4_matmul(
@@ -608,8 +721,9 @@ def int4_matmul(
     packed,
     qs,
     out = None,
+    fast = True,
 ):
-    """``x @ W.T`` for packed ``W``; ``x`` is ``[..., K]``."""
+    """``x @ W.T`` for packed ``W``; ``x`` is ``[..., K]``. ``fast = False`` (training) keeps the exact dequantize + matmul."""
     shape = x.shape
     x2 = x.reshape(-1, shape[-1])
     M = x2.shape[0]
@@ -618,22 +732,23 @@ def int4_matmul(
         M == 0
     ):  # Nothing to launch; the kernels reject a zero grid and the split below divides by M.
         return x.new_empty((*shape[:-1], N)) if out is None else out
-    if x2.is_cuda and not torch.is_grad_enabled():
-        index = x2.device.index or 0
-        y = None
-        if M <= _marlin_max_rows(index):
-            w = _marlin_weight(x2, packed, qs)
-            if w is not None:
-                y = _marlin_call(w, x2 if x2.is_contiguous() else x2.contiguous())
-        if y is None and M <= _tinygemm_max_rows(index):
-            w = _tinygemm_weight(x2, packed, qs)
-            if w is not None:
-                y = torch._weight_int4pack_mm(x2 if x2.is_contiguous() else x2.contiguous(), *w)
-        if y is not None:
+    if qs.layout is not None:
+        call = None
+        if (
+            fast
+            and not torch.is_grad_enabled()
+            and M <= _fast_rows(qs.layout, x2.device.index or 0)
+        ):
+            call = _fast_args(packed, qs)
+        if call is not None:
+            y = _fast_call(call, x2 if x2.is_contiguous() else x2.contiguous())
             if out is not None:
                 out.view(M, N).copy_(y)
                 y = out
             return y.view(*shape[:-1], N)
+        W = int4_dequantize(packed, qs, x.dtype)
+        y = torch.matmul(x2, W.t(), out = None if out is None else out.view(M, N))
+        return y.view(*shape[:-1], N)
     if M > GEMV_MAX_ROWS:
         W = int4_dequantize(packed, qs, x.dtype)
         y = torch.matmul(x2, W.t(), out = None if out is None else out.view(M, N))

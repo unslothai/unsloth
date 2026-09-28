@@ -155,103 +155,62 @@ def _has_marlin():
     return bool(ip._marlin_api())
 
 
-MARLIN_CASES = [
-    (4, 128, True, "group"),
-    (4, 32, True, "group"),
-    (8, 128, True, "group"),
-    (4, None, True, "channel"),
-    (4, 128, False, "group"),
-    (4, 64, False, "group"),
-]
+needs_sm80 = pytest.mark.skipif(
+    not has_real_cuda() or torch.cuda.get_device_capability() < (8, 0),
+    reason = "tensor-core layouts need sm_80+",
+)
 
 
-def _qs(ip, packed, shape, bits, gs):
+def _qs(
+    ip,
+    packed,
+    shape,
+    bits,
+    gs,
+    dtype = torch.bfloat16,
+):
     return ip.Int4QuantState(
-        packed["weight_scale"],
-        packed.get("weight_zero_point"),
-        None,
-        shape,
-        bits,
-        gs,
-        torch.bfloat16,
+        packed["weight_scale"], packed.get("weight_zero_point"), None, shape, bits, gs, dtype
     )
 
 
-@needs_gpu
-@needs_ct
-@pytest.mark.skipif(not _has_marlin(), reason = "needs vLLM's Marlin kernels")
-@pytest.mark.parametrize("bits,group,sym,strategy", MARLIN_CASES)
-def test_marlin_takes_no_grad_decode_rows_and_matches_the_exact_decode(bits, group, sym, strategy):
-    import unsloth.kernels.int4_packed as ip
-
-    torch.manual_seed(0)
-    packed, ref, gs = _packed_layer(256, 512, bits, group, sym, False, torch.bfloat16, strategy)
-    W = packed["weight_packed"]
-    qs = _qs(ip, packed, (256, 512), bits, gs)
-    for rows in (1, 3, ip._marlin_max_rows(torch.cuda.current_device())):
-        x = torch.randn(rows, 512, device = "cuda", dtype = torch.bfloat16)
-        with torch.no_grad():
-            y = ip.int4_matmul(x, W, qs)
-        assert qs._marlin[1] is not None
-        want = x.float() @ ref.float().t()
-        assert y.shape == (rows, 256) and y.dtype == torch.bfloat16
-        assert ((y.float() - want).norm() / want.norm()) < 5e-3
-    # Training forwards never build the repacked copy.
-    qs = _qs(ip, packed, (256, 512), bits, gs)
-    ip.int4_matmul(x[:1], W, qs)
-    assert qs._marlin is None
-
-
-@needs_gpu
-@needs_ct
-@pytest.mark.parametrize("why", ["broken_import", "kill_switch"])
-def test_decode_rows_fall_back_when_marlin_is_unavailable(why, monkeypatch):
-    import unsloth.kernels.int4_packed as ip
-
-    monkeypatch.setattr(ip, "_MARLIN_API", None)
-    if why == "broken_import":
-        monkeypatch.setitem(sys.modules, "vllm", None)
-    else:
-        monkeypatch.setenv("UNSLOTH_INT4_MARLIN", "0")
-    torch.manual_seed(0)
-    packed, ref, gs = _packed_layer(256, 512, 4, 128, True, False, torch.bfloat16)
-    qs = _qs(ip, packed, (256, 512), 4, gs)
-    x = torch.randn(3, 512, device = "cuda", dtype = torch.bfloat16)
-    with torch.no_grad():
-        y = ip.int4_matmul(x, packed["weight_packed"], qs)
-    assert ip._MARLIN_API is False and qs._marlin[1] is None
-    want = x.float() @ ref.float().t()
-    assert ((y.float() - want).norm() / want.norm()) < 5e-3
-
-
-TINYGEMM_CASES = [
+REPACK_CASES = [
     (128, True, 256),
-    (128, False, 256),
-    (32, False, 200),
+    (128, False, 512),
+    (32, False, 256),
+    (64, True, 1024),
     (256, False, 512),
 ]
 
 
 @needs_gpu
 @needs_ct
-@pytest.mark.skipif(
-    not has_real_cuda() or torch.cuda.get_device_capability() < (8, 0),
-    reason = "tinygemm needs sm_80+",
-)
-@pytest.mark.parametrize("group,sym,out_f", TINYGEMM_CASES)
-def test_tinygemm_takes_decode_rows_without_marlin(group, sym, out_f, monkeypatch):
+@needs_sm80
+@pytest.mark.parametrize("layout", ["tinygemm", "marlin"])
+@pytest.mark.parametrize("group,sym,out_f", REPACK_CASES)
+def test_repacked_weights_dequantize_exactly_and_save_in_checkpoint_layout(
+    layout, group, sym, out_f, monkeypatch
+):
     import unsloth.kernels.int4_packed as ip
 
-    monkeypatch.setattr(ip, "_MARLIN_API", False)
+    if layout == "marlin" and (not _has_marlin() or group == 256):
+        pytest.skip("needs vLLM's Marlin kernels (groups <= 128)")
+    monkeypatch.setenv("UNSLOTH_INT4_LAYOUT", layout)
     torch.manual_seed(0)
     packed, ref, gs = _packed_layer(out_f, 1024, 4, group, sym, False, torch.bfloat16)
     W = packed["weight_packed"]
+    checkpoint = W.clone()
     qs = _qs(ip, packed, (out_f, 1024), 4, gs)
-    for rows in (1, 2, ip._tinygemm_max_rows(torch.cuda.current_device())):
+    assert ip.int4_repack_(W, qs) == layout
+    # Replaced in place (no second copy), same shape; training dequantizes the exact same weights; saves unchanged.
+    assert W.shape == checkpoint.shape and not torch.equal(W, checkpoint)
+    assert torch.equal(ip.int4_dequantize(W, qs), ref)
+    assert torch.equal(ip.int4_unpack(W, qs), checkpoint)
+    fast = ip._fast_rows(layout, torch.cuda.current_device())
+    for rows in (1, 3, fast, fast + 1):
         x = torch.randn(rows, 1024, device = "cuda", dtype = torch.bfloat16)
         with torch.no_grad():
             y = ip.int4_matmul(x, W, qs)
-        assert qs._tinygemm[1] is not None
         want = x.float() @ ref.float().t()
         assert ((y.float() - want).norm() / want.norm()) < 5e-3
     out = torch.empty(1, 1, out_f, device = "cuda", dtype = torch.bfloat16)
@@ -259,32 +218,79 @@ def test_tinygemm_takes_decode_rows_without_marlin(group, sym, out_f, monkeypatc
         got = ip.int4_matmul(x[:1].view(1, 1, 1024), W, qs, out = out)
         want = ip.int4_matmul(x[:1], W, qs)
     assert got.data_ptr() == out.data_ptr() and torch.equal(got.view(1, -1), want)
-    qs = _qs(ip, packed, (out_f, 1024), 4, gs)
-    ip.int4_matmul(x[:1], W, qs)
-    assert qs._tinygemm is None
+    # With grad enabled every row count decodes + cuBLAS: training numerics are those of the checkpoint layout.
+    assert torch.equal(ip.int4_matmul(x, W, qs), x @ ref.t())
 
 
 @needs_gpu
 @needs_ct
-@pytest.mark.parametrize("why", ["fp32_scale", "8bit", "kill_switch", "fp16"])
-def test_tinygemm_declines_layers_it_cannot_run_exactly(why, monkeypatch):
+@pytest.mark.parametrize(
+    "why", ["8bit", "fp32_scale", "fp16_without_marlin", "channel", "kill_switch", "layout_changed"]
+)
+def test_layers_that_cannot_be_repacked_keep_the_checkpoint_layout(why, monkeypatch):
     import unsloth.kernels.int4_packed as ip
 
     monkeypatch.setattr(ip, "_MARLIN_API", False)
     if why == "kill_switch":
-        monkeypatch.setenv("UNSLOTH_INT4_TINYGEMM", "0")
+        monkeypatch.setenv("UNSLOTH_INT4_REPACK", "0")
+    if why == "layout_changed":
+        # A torch release that changes tinygemm's tile layout must fail the probe, not corrupt weights.
+        TN, TK, nfast, bits = ip._LAYOUTS["tinygemm"]
+        monkeypatch.setitem(ip._LAYOUTS, "tinygemm", (TN, TK, nfast, bits[::-1]))
+        monkeypatch.setattr(ip, "_LAYOUT_OK", {})
     bits = 8 if why == "8bit" else 4
-    scale_dtype = {"fp32_scale": torch.float32, "fp16": torch.float16}.get(why, torch.bfloat16)
-    dtype = torch.float16 if why == "fp16" else torch.bfloat16
+    scale_dtype = {"fp32_scale": torch.float32, "fp16_without_marlin": torch.float16}.get(
+        why, torch.bfloat16
+    )
+    dtype = torch.float16 if why == "fp16_without_marlin" else torch.bfloat16
+    strategy = "channel" if why == "channel" else "group"
     torch.manual_seed(0)
-    packed, ref, gs = _packed_layer(256, 512, bits, 128, True, False, scale_dtype)
-    qs = ip.Int4QuantState(packed["weight_scale"], None, None, (256, 512), bits, gs, dtype)
-    x = torch.randn(1, 512, device = "cuda", dtype = dtype)
+    packed, ref, gs = _packed_layer(256, 512, bits, 128, True, False, scale_dtype, strategy)
+    W = packed["weight_packed"]
+    checkpoint = W.clone()
+    qs = _qs(ip, packed, (256, 512), bits, gs, dtype)
+    assert ip.int4_repack_(W, qs) is None and qs.layout is None and torch.equal(W, checkpoint)
+    x = torch.randn(2, 512, device = "cuda", dtype = dtype)
     with torch.no_grad():
-        y = ip.int4_matmul(x, packed["weight_packed"], qs)
-    assert qs._tinygemm[1] is None
+        y = ip.int4_matmul(x, W, qs)
     want = x.float() @ ref.float().t()
     assert ((y.float() - want).norm() / want.norm()) < 5e-3
+
+
+@needs_gpu
+@needs_ct
+@needs_sm80
+def test_packed_linear_state_dict_round_trips_through_the_checkpoint_layout():
+    from unsloth.models.compressed_tensors_int4 import (
+        Int4PackedLinear,
+        finalize_int4_packed_linears,
+    )
+    import unsloth.kernels.int4_packed as ip
+
+    torch.manual_seed(0)
+    packed, ref, gs = _packed_layer(256, 1024, 4, 128, False, False, torch.bfloat16)
+    lin = Int4PackedLinear.__new__(Int4PackedLinear)
+    torch.nn.Module.__init__(lin)
+    lin.in_features, lin.out_features = 1024, 256
+    for name, tensor in packed.items():
+        lin.register_parameter(name, torch.nn.Parameter(tensor.clone(), requires_grad = False))
+    lin.register_parameter("bias", None)
+    lin._int4_bits, lin._int4_group_size = 4, gs
+    model = torch.nn.Sequential(lin)
+    finalize_int4_packed_linears(model, torch.bfloat16)
+    assert lin.quant_state.layout is not None
+    assert not torch.equal(lin.weight_packed, packed["weight_packed"])
+    state = model.state_dict()
+    assert torch.equal(state["0.weight_packed"], packed["weight_packed"])
+    assert torch.equal(lin.dequantize_weight(), ref)
+    # Training takes the exact dequantize + matmul whatever the layout; only inference uses the fused kernel.
+    x = torch.randn(4, 1024, device = "cuda", dtype = torch.bfloat16, requires_grad = True)
+    assert torch.equal(lin(x), x @ ref.t())
+    # Loading checkpoint-layout words resets the layer to that layout; unrelated loads leave it alone.
+    model.load_state_dict({}, strict = False)
+    assert lin.quant_state.layout is not None
+    model.load_state_dict(state)
+    assert lin.quant_state.layout is None and torch.equal(lin.dequantize_weight(), ref)
 
 
 @needs_gpu
