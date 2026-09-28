@@ -38,7 +38,7 @@ _SKIPPED_DIRS = ("node_modules", "build", "tests", "__pycache__")
 
 # Vendored packages kept byte-identical to their wheel and pinned by per-file hashes
 # (vendor/README.md), mapped to the loader that gives their modules a UTF-8 `open`. They are
-# fixed there, not in place; test_vendored_laya_reads_utf8_config_under_an_ascii_locale checks it.
+# fixed there, not in place; test_vendored_laya_reads_utf8_config_under_a_non_utf8_locale checks it.
 _UTF8_BY_LOADER = {"vendor/laya": "core/systemone/laya_runtime.py"}
 
 # Path.open()'s signature is what tells it apart from other libraries' open(),
@@ -836,12 +836,12 @@ def test_an_unparseably_nested_document_is_discarded_not_raised(tmp_path: Path) 
         writer.close()
 
 
-def test_vendored_laya_reads_utf8_config_under_an_ascii_locale(tmp_path):
+def test_vendored_laya_reads_utf8_config_under_a_non_utf8_locale(tmp_path):
     """The loader in _UTF8_BY_LOADER really makes vendored laya decode its JSON as UTF-8.
 
-    Run in a C locale with coercion and UTF-8 mode off, so a bare open() decodes as ASCII, the
-    same failure a Windows ANSI code page gives. laya's tokenizer repair must still read a
-    config holding non-ASCII special tokens.
+    Run in a C locale with coercion and UTF-8 mode off, so a bare open() does not decode as
+    UTF-8. laya's tokenizer repair must still read a config holding non-ASCII special tokens
+    and write them back unchanged.
     """
     config = tmp_path / "tokenizer" / "tokenizer_config.json"
     config.parent.mkdir()
@@ -851,9 +851,12 @@ def test_vendored_laya_reads_utf8_config_under_an_ascii_locale(tmp_path):
         ),
         encoding = "utf-8",
     )
+    # C locale with coercion and UTF-8 mode off decodes a bare open() as ASCII on Linux and
+    # macOS; on Windows it stays the ANSI code page, which mis-decodes the same bytes instead of
+    # raising, and the exact-token assertions below catch that. A UTF-8 locale has nothing to test.
     script = (
-        "import locale, sys\n"
-        "assert locale.getencoding().lower() in ('ascii', 'ansi_x3.4-1968'), locale.getencoding()\n"
+        "import codecs, locale, sys\n"
+        "if codecs.lookup(locale.getencoding()).name == 'utf-8': sys.exit(3)\n"
         f"sys.path.insert(0, {str(BACKEND_ROOT)!r})\n"
         "from core.systemone import laya_runtime\n"
         f"laya_runtime._laya().agent._fix_tokenizer_config({str(tmp_path)!r})\n"
@@ -862,6 +865,8 @@ def test_vendored_laya_reads_utf8_config_under_an_ascii_locale(tmp_path):
     run = subprocess.run(
         [sys.executable, "-c", script], env = env, capture_output = True, text = True, encoding = "utf-8"
     )
+    if run.returncode == 3:
+        pytest.skip("this platform's locale is UTF-8 even under LC_ALL=C")
     assert run.returncode == 0, run.stderr[-3000:]
     repaired = json.loads(config.read_text(encoding = "utf-8"))
     assert repaired["tokenizer_class"] == "PreTrainedTokenizerFast"
