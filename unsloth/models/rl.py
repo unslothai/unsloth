@@ -32,6 +32,8 @@ from unsloth_zoo.logging_utils import PatchRLStatistics
 from unsloth_zoo.rl_replacements import RL_REPLACEMENTS
 from ..device_type import DEVICE_TYPE
 from .rl_replacements import (
+    _unsloth_get_model_config,
+    _unsloth_text_configs,
     RL_EXTRA_ARGS,
     RL_FUNCTIONS,
     RL_PRE_ITEMS,
@@ -39,6 +41,11 @@ from .rl_replacements import (
     RL_METRICS_CHANGES,
     RL_ADDITIONAL_FUNCTIONS,
 )
+
+try:
+    from unsloth_zoo.device_map_planner import detect_logit_transforms
+except Exception:
+    detect_logit_transforms = None
 
 torch_compile_options = {
     "epilogue_fusion": True,
@@ -1723,8 +1730,6 @@ _UNSLOTH_GRPO_HIDDEN_STATES_VERIFIED_ATTR = "_unsloth_grpo_hidden_states_verifie
 
 def _grpo_pre_head_hidden_divisor(model):
     """MiniCPM3 divides hidden states by ``logits_scaling`` between ``hidden_states[-1]`` and ``lm_head``. Compiled forwards return them after that line, so only this wrapper must repeat it."""
-    from .rl_replacements import _unsloth_text_configs
-
     for config in _unsloth_text_configs(getattr(model, "config", None)):
         if getattr(config, "model_type", None) == "minicpm3":
             scaling = getattr(config, "logits_scaling", None)
@@ -1734,8 +1739,6 @@ def _grpo_pre_head_hidden_divisor(model):
 
 def _grpo_hidden_states_reproduce_logits(model, hidden_states, logits):
     """Does the head on our hidden states give the forward's own last-position logits? ``None`` when it cannot be checked."""
-    from .rl_replacements import detect_logit_transforms, _unsloth_get_model_config
-
     get_output_embeddings = getattr(model, "get_output_embeddings", None)
     head = get_output_embeddings() if callable(get_output_embeddings) else None
     weight = getattr(head, "weight", None)
@@ -1950,6 +1953,12 @@ def _unsloth_average_gradients(ddp, bucket_bytes = 64 << 20):
                 size += grads[stop].numel() * grads[stop].element_size()
                 stop += 1
             chunk = grads[start:stop]
+            if len(chunk) == 1 and chunk[0].is_contiguous():
+                # Reduce in place: a lone gradient can be far larger than the bucket (a full-vocab head).
+                dist.all_reduce(chunk[0], group = group)
+                chunk[0].div_(world_size)
+                start = stop
+                continue
             flat = torch.cat([g.reshape(-1) for g in chunk])
             dist.all_reduce(flat, group = group)
             flat.div_(world_size)

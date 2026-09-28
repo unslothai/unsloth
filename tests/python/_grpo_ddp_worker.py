@@ -62,6 +62,13 @@ def run_rank(rank, port, queue):
             results[mode] = torch.cat(
                 [p.grad.reshape(-1) for p in ddp.module.parameters()]
             ).tolist()
+        # bucket_bytes=1: every gradient is larger than a bucket, so each one is reduced in place.
+        ddp = torch.nn.parallel.DistributedDataParallel(LM())
+        ddp.module(x).logsumexp(-1).mean().backward()
+        rl._unsloth_average_gradients(ddp, bucket_bytes = 1)
+        results["oversized"] = torch.cat(
+            [p.grad.reshape(-1) for p in ddp.module.parameters()]
+        ).tolist()
         queue.put((rank, results, torch.stack(gathered).mean(0).tolist(), local_grads.tolist()))
     finally:
         dist.destroy_process_group()

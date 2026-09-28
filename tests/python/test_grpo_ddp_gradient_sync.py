@@ -40,6 +40,7 @@ def test_grpo_training_step_averages_gradients_like_ddp():
     for _rank, grads, mean, local in results:
         mean, local = torch.tensor(mean), torch.tensor(local)
         torch.testing.assert_close(torch.tensor(grads["bypass"]), mean, rtol = 1e-6, atol = 1e-7)
+        torch.testing.assert_close(torch.tensor(grads["oversized"]), mean, rtol = 1e-6, atol = 1e-7)
         torch.testing.assert_close(
             torch.tensor(grads["through_ddp"]), mean, rtol = 1e-6, atol = 1e-7
         )  # not averaged twice
