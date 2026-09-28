@@ -1814,6 +1814,13 @@ export const hi = {
       pastedTextThresholdDescription:
         "सीधे संदेश बॉक्स में पेस्ट करने के लिए {shortcut} दबाएँ।",
       pastedTextThresholdOff: "बंद",
+      autoScroll: "जनरेट करते समय स्क्रॉल",
+      autoScrollDescription:
+        "ऑटो-स्क्रॉल नया टेक्स्ट दिखाता रहता है। मैन्युअल में पेज रुका रहता है ताकि आप शुरू से पढ़ सकें।",
+      autoScrollAuto: "ऑटो-स्क्रॉल",
+      autoScrollManual: "मैन्युअल",
+      autoScrollKeywords:
+        "स्क्रॉल ऑटो-स्क्रॉल फ़ॉलो नीचे स्ट्रीमिंग जनरेट लॉक scroll autoscroll follow",
       showResponseModel: "जवाब देने वाला मॉडल दिखाएँ",
       showResponseModelDescription:
         "असिस्टेंट के जवाबों में मॉडल का मेटाडेटा दिखाएँ।",

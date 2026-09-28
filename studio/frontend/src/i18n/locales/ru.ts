@@ -1820,6 +1820,13 @@ export const ru = {
       pastedTextThresholdDescription:
         "Нажмите {shortcut}, чтобы вставить текст прямо в поле сообщения.",
       pastedTextThresholdOff: "Выкл.",
+      autoScroll: "Прокрутка при генерации",
+      autoScrollDescription:
+        "Автопрокрутка держит новый текст на виду. Вручную страница стоит на месте, чтобы читать с начала.",
+      autoScrollAuto: "Автопрокрутка",
+      autoScrollManual: "Вручную",
+      autoScrollKeywords:
+        "прокрутка автопрокрутка следовать вниз низ поток генерация зафиксировать scroll autoscroll follow",
       showResponseModel: "Показывать модель в ответах",
       showResponseModelDescription:
         "Показывать метаданные модели в ответах ассистента.",

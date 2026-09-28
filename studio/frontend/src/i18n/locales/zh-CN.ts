@@ -1769,6 +1769,13 @@ export const zhCN = {
       pastedTextThresholdDescription:
         "按 {shortcut} 直接粘贴到消息输入框。",
       pastedTextThresholdOff: "关闭",
+      autoScroll: "生成时滚动",
+      autoScrollDescription:
+        "自动滚动让新文本保持可见。手动保持不动，方便从头阅读。",
+      autoScrollAuto: "自动滚动",
+      autoScrollManual: "手动",
+      autoScrollKeywords:
+        "滚动 自动滚动 跟随 底部 跳转 流式 生成 锁定 scroll autoscroll follow",
       showResponseModel: "显示回复模型",
       showResponseModelDescription: "在助手回复中显示模型元数据。",
       inlineReadAloud: "在回复上显示朗读",
