@@ -1439,8 +1439,6 @@ export function useChatModelRuntime() {
         useChatRuntimeStore.getState().params.checkpoint;
       const pendingConfig =
         typeof selection !== "string" ? selection.config : undefined;
-      // nativePathToken is excluded: a leased file is named by a label two files can share, and only a
-      // completed load writes the lease, so adopting would keep a stale token.
       if (!forceReload && !nativePathToken) {
         const residentStatus = await getInferenceStatus().catch(() => null);
         // Warm before reconciling the remembered GPU pick below: load-on-selection can run before any
@@ -1504,8 +1502,6 @@ export function useChatModelRuntime() {
           // no saved record the caller has already run applyModelLoadConfigToRuntime(null), which resets the
           // store to DEFAULT_PER_MODEL_CONFIG, and performLoad reads the store for the rest.
           residentRuntimeMatchesConfig(status, comparedConfig, {
-            // What the applier fills an unset field with, so the comparison is against what /load would send
-            // rather than against silence.
             speculativeType: readPersistedSpeculativeType(),
             gpuMemoryMode: readPersistedGpuMemoryMode(),
             gpuLayers: GPU_LAYERS_AUTO,
@@ -2475,8 +2471,7 @@ export function useChatModelRuntime() {
               mlx_kv_quant: loadMlxKvQuant ?? null,
               speculative_type: loadSpeculativeType,
               spec_draft_n_max: loadSpecDraftNMax,
-              // GGUF-only: slots mean nothing for a transformers load.
-              n_parallel: isGguf ? loadNParallel : null,
+              n_parallel: loadNParallel,
               reasoning_budget:
                 isGguf && !targetIsDiffusion ? loadReasoningBudget : -1,
               reasoning_budget_message:
@@ -2588,11 +2583,9 @@ export function useChatModelRuntime() {
             const loadedSpec = normalizeSpeculativeType(
               loadResponse.speculative_type,
             );
-            // Slots the load actually committed: non-GGUF never sends them and diffusion ignores --parallel,
-            // so a click-time count would mint a phantom override.
             const committedSlots =
-              (loadResponse.is_gguf ?? false) &&
-              !(loadResponse.is_diffusion ?? false)
+              ((loadResponse.is_gguf ?? false) && !(loadResponse.is_diffusion ?? false)) ||
+              (loadResponse.is_mlx ?? false)
                 ? (loadNParallel ?? null)
                 : null;
             // same rule for the batch sizes: gguf-only llama-server flags

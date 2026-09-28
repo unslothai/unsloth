@@ -278,7 +278,8 @@ test("the chat menu carries the sidebar's items, without the move", () => {
   ]) {
     assert.ok(menu.includes(label), `${label} is missing from the chat menu`);
   }
-  assert.match(menu, /chatUnread \? "Mark as read" : "Mark as unread"/);
+  assert.ok(!menu.includes("Mark as unread"));
+  assert.ok(!menu.includes("Mark as read"));
   assert.match(menu, /<span>Open chat folder<\/span>/);
   // Desktop opens the folder; the browser says why it cannot.
   assert.match(menu, /isTauri \? \(/);

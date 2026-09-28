@@ -204,6 +204,8 @@ export function loadedContextFields(resp: {
   native_context_length?: number | null;
   max_context_length?: number | null;
   context_length_enforced?: boolean | null;
+  context_unbounded_when_batched?: boolean;
+  parallel_slots?: number | null;
   mlx_context_budget?: number | null;
 } | null): {
   loadedContextLength: number | null;
@@ -212,6 +214,8 @@ export function loadedContextFields(resp: {
   loadedIsGguf: boolean | null;
   loadedIsMlx: boolean | null;
   loadedContextEnforced: boolean | null;
+  loadedContextUnboundedWhenBatched: boolean;
+  loadedParallelSlots: number | null;
   loadedContextBudget: number | null;
 } {
   if (!resp) {
@@ -222,6 +226,8 @@ export function loadedContextFields(resp: {
       loadedIsGguf: null,
       loadedIsMlx: null,
       loadedContextEnforced: null,
+      loadedContextUnboundedWhenBatched: false,
+      loadedParallelSlots: null,
       loadedContextBudget: null,
     };
   }
@@ -236,6 +242,8 @@ export function loadedContextFields(resp: {
       loadedIsGguf: false,
       loadedIsMlx: resp.is_mlx ?? null,
       loadedContextEnforced: null,
+      loadedContextUnboundedWhenBatched: false,
+      loadedParallelSlots: null,
       loadedContextBudget: null,
     };
   }
@@ -250,6 +258,11 @@ export function loadedContextFields(resp: {
     // llama.cpp allocates what it reports, so GGUF is enforced by construction.
     // Everything else answers for itself, or says nothing.
     loadedContextEnforced: isGguf ? true : (resp.context_length_enforced ?? null),
+    // Read from the same response as the other two so the three never mix across loads.
+    loadedContextUnboundedWhenBatched: isGguf
+      ? false
+      : (resp.context_unbounded_when_batched ?? false),
+    loadedParallelSlots: resp.parallel_slots ?? null,
     loadedContextBudget: isGguf ? null : (resp.mlx_context_budget ?? null),
   };
 }
