@@ -8,6 +8,7 @@ llmcompressor: scales are computed here and the tensors come from compressed-ten
 
     python tests/_nvfp4_fixtures.py OUT_DIR [--arch qwen3|qwen3_5]
 """
+
 import argparse
 import copy
 import json
@@ -21,19 +22,45 @@ QWEN3 = "trl-internal-testing/tiny-Qwen3ForCausalLM"
 QWEN3_5 = "trl-internal-testing/tiny-Qwen3_5ForConditionalGeneration-NoThink"
 
 _FP8_ACT = {
-    "actorder": None, "block_structure": None, "dynamic": True, "group_size": None, "num_bits": 8,
-    "observer": None, "observer_kwargs": {}, "scale_dtype": None, "strategy": "token", "symmetric": True,
-    "type": "float", "zp_dtype": None,
+    "actorder": None,
+    "block_structure": None,
+    "dynamic": True,
+    "group_size": None,
+    "num_bits": 8,
+    "observer": None,
+    "observer_kwargs": {},
+    "scale_dtype": None,
+    "strategy": "token",
+    "symmetric": True,
+    "type": "float",
+    "zp_dtype": None,
 }
 _FP8_W = {
-    "actorder": None, "block_structure": None, "dynamic": False, "group_size": None, "num_bits": 8,
-    "observer": "memoryless_minmax", "observer_kwargs": {}, "scale_dtype": None, "strategy": "channel",
-    "symmetric": True, "type": "float", "zp_dtype": None,
+    "actorder": None,
+    "block_structure": None,
+    "dynamic": False,
+    "group_size": None,
+    "num_bits": 8,
+    "observer": "memoryless_minmax",
+    "observer_kwargs": {},
+    "scale_dtype": None,
+    "strategy": "channel",
+    "symmetric": True,
+    "type": "float",
+    "zp_dtype": None,
 }
 _FP4 = {
-    "actorder": None, "block_structure": None, "dynamic": False, "group_size": 16, "num_bits": 4,
-    "observer_kwargs": {}, "scale_dtype": "torch.float8_e4m3fn", "strategy": "tensor_group", "symmetric": True,
-    "type": "float", "zp_dtype": None,
+    "actorder": None,
+    "block_structure": None,
+    "dynamic": False,
+    "group_size": 16,
+    "num_bits": 4,
+    "observer_kwargs": {},
+    "scale_dtype": "torch.float8_e4m3fn",
+    "strategy": "tensor_group",
+    "symmetric": True,
+    "type": "float",
+    "zp_dtype": None,
 }
 
 
@@ -45,10 +72,20 @@ def _quant_config(num_layers, lm_head, attn_targets, ignore):
     fp4_act = dict(_FP4, dynamic = "local", observer = "static_minmax")
     return {
         "config_groups": {
-            "group_0": {"format": "float-quantized", "input_activations": _FP8_ACT, "output_activations": None,
-                        "targets": fp8_targets, "weights": _FP8_W},
-            "group_1": {"format": "nvfp4-pack-quantized", "input_activations": fp4_act, "output_activations": None,
-                        "targets": [r"re:.*mlp\.(gate|up|down)_proj$"], "weights": dict(_FP4, actorder = "static")},
+            "group_0": {
+                "format": "float-quantized",
+                "input_activations": _FP8_ACT,
+                "output_activations": None,
+                "targets": fp8_targets,
+                "weights": _FP8_W,
+            },
+            "group_1": {
+                "format": "nvfp4-pack-quantized",
+                "input_activations": fp4_act,
+                "output_activations": None,
+                "targets": [r"re:.*mlp\.(gate|up|down)_proj$"],
+                "weights": dict(_FP4, actorder = "static"),
+            },
         },
         "format": "mixed-precision",
         "global_compression_ratio": None,
@@ -78,7 +115,12 @@ def nvfp4_tensors(w):
     group_amax = w.reshape(out_f, in_f // 16, 16).abs().amax(-1)
     # Rounded to fp8 values but kept float: the compressor divides by the global scale, then stores fp8.
     scale = (global_scale * (group_amax / 6.0)).clamp(max = 448.0).to(torch.float8_e4m3fn).float()
-    scheme = QuantizationScheme(targets = ["Linear"], weights = QuantizationArgs(**{k: v for k, v in _FP4.items() if v is not None and k not in ("observer_kwargs",)}))
+    scheme = QuantizationScheme(
+        targets = ["Linear"],
+        weights = QuantizationArgs(
+            **{k: v for k, v in _FP4.items() if v is not None and k not in ("observer_kwargs",)}
+        ),
+    )
     out = NVFP4PackedCompressor.compress(
         {"weight": w, "weight_scale": scale, "weight_global_scale": global_scale}, scheme
     )
@@ -92,29 +134,57 @@ def fp8_channel_tensors(w, scale_dtype = torch.bfloat16):
     return q, scale.to(scale_dtype)
 
 
-def dequant_nvfp4_reference(packed, scale, global_scale, dtype = torch.bfloat16):
+def dequant_nvfp4_reference(
+    packed,
+    scale,
+    global_scale,
+    dtype = torch.bfloat16,
+):
     from compressed_tensors.compressors import NVFP4PackedCompressor
     from compressed_tensors.quantization import QuantizationArgs, QuantizationScheme
 
-    scheme = QuantizationScheme(targets = ["Linear"], weights = QuantizationArgs(**{k: v for k, v in _FP4.items() if v is not None and k not in ("observer_kwargs",)}))
+    scheme = QuantizationScheme(
+        targets = ["Linear"],
+        weights = QuantizationArgs(
+            **{k: v for k, v in _FP4.items() if v is not None and k not in ("observer_kwargs",)}
+        ),
+    )
     out = NVFP4PackedCompressor.decompress(
-        {"weight_packed": packed, "weight_scale": scale, "weight_global_scale": global_scale}, scheme
+        {"weight_packed": packed, "weight_scale": scale, "weight_global_scale": global_scale},
+        scheme,
     )
     return out["weight"].to(dtype)
 
 
-def build(out_dir, arch = "qwen3", seed = 3407):
+def build(
+    out_dir,
+    arch = "qwen3",
+    seed = 3407,
+):
     """Write a tiny mixed NVFP4/FP8 checkpoint to out_dir; returns {name: kind} for every quantized Linear."""
     from safetensors.torch import save_file
-    from transformers import AutoConfig, AutoModelForCausalLM, AutoModelForImageTextToText, AutoTokenizer
+    from transformers import (
+        AutoConfig,
+        AutoModelForCausalLM,
+        AutoModelForImageTextToText,
+        AutoTokenizer,
+    )
 
     torch.manual_seed(seed)
     if arch == "qwen3":
         repo = QWEN3
         config = AutoConfig.from_pretrained(repo)
         # hidden 8 cannot hold 16-column NVFP4 groups.
-        config.update(dict(hidden_size = 64, intermediate_size = 128, head_dim = 16, num_attention_heads = 4,
-                           num_key_value_heads = 2, num_hidden_layers = 2))
+        config.update(
+            dict(
+                hidden_size = 64,
+                intermediate_size = 128,
+                head_dim = 16,
+                num_attention_heads = 4,
+                num_key_value_heads = 2,
+                num_hidden_layers = 2,
+            )
+        )
         config.torch_dtype = torch.bfloat16
         model = AutoModelForCausalLM.from_config(config, dtype = torch.bfloat16)
         attn = [r"re:.*self_attn\.(q|k|v|o)_proj$"]
@@ -125,9 +195,16 @@ def build(out_dir, arch = "qwen3", seed = 3407):
         config = AutoConfig.from_pretrained(repo)
         config.torch_dtype = torch.bfloat16
         model = AutoModelForImageTextToText.from_config(config, dtype = torch.bfloat16)
-        attn = [r"re:.*self_attn\.(q|k|v|o)_proj$", r"re:.*linear_attn\.(in_proj_qkv|in_proj_z|out_proj)$"]
-        ignore = [n for n, m in model.named_modules()
-                  if isinstance(m, torch.nn.Linear) and (".visual." in f".{n}" or n.endswith(("in_proj_a", "in_proj_b")))]
+        attn = [
+            r"re:.*self_attn\.(q|k|v|o)_proj$",
+            r"re:.*linear_attn\.(in_proj_qkv|in_proj_z|out_proj)$",
+        ]
+        ignore = [
+            n
+            for n, m in model.named_modules()
+            if isinstance(m, torch.nn.Linear)
+            and (".visual." in f".{n}" or n.endswith(("in_proj_a", "in_proj_b")))
+        ]
         lm_head = False  # tied to the embeddings
     else:
         raise ValueError(arch)
@@ -156,11 +233,15 @@ def build(out_dir, arch = "qwen3", seed = 3407):
             state[name + ".weight_packed"] = packed
             state[name + ".weight_scale"] = scale
             state[name + ".weight_global_scale"] = gscale
-            state[name + ".input_global_scale"] = torch.tensor([448.0 * 6.0 / 4.0], dtype = torch.float32)
+            state[name + ".input_global_scale"] = torch.tensor(
+                [448.0 * 6.0 / 4.0], dtype = torch.float32
+            )
             kinds[name] = "nvfp4"
         else:
             state[name + ".weight"] = w
-    if getattr(config, "tie_word_embeddings", False) or getattr(config.get_text_config(), "tie_word_embeddings", False):
+    if getattr(config, "tie_word_embeddings", False) or getattr(
+        config.get_text_config(), "tie_word_embeddings", False
+    ):
         state = {k: v for k, v in state.items() if not k.endswith("lm_head.weight")}
 
     os.makedirs(out_dir, exist_ok = True)
@@ -200,12 +281,31 @@ def run_lora_case(path, arch, api, out_dir):
 
     nv.nvfp4_linear = recording
     Fast = getattr(unsloth, api)
-    model, _ = Fast.from_pretrained(path, max_seq_length = 64, load_in_4bit = False, dtype = torch.bfloat16)
-    model = Fast.get_peft_model(
-        model, r = 8, lora_alpha = 16, lora_dropout = 0, bias = "none", random_state = 3407,
-        target_modules = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
+    model, _ = Fast.from_pretrained(
+        path, max_seq_length = 64, load_in_4bit = False, dtype = torch.bfloat16
     )
-    base = next(m for n, m in model.named_modules() if n.endswith((name, name + ".base_layer")) and hasattr(m, "weight_packed"))
+    model = Fast.get_peft_model(
+        model,
+        r = 8,
+        lora_alpha = 16,
+        lora_dropout = 0,
+        bias = "none",
+        random_state = 3407,
+        target_modules = [
+            "q_proj",
+            "k_proj",
+            "v_proj",
+            "o_proj",
+            "gate_proj",
+            "up_proj",
+            "down_proj",
+        ],
+    )
+    base = next(
+        m
+        for n, m in model.named_modules()
+        if n.endswith((name, name + ".base_layer")) and hasattr(m, "weight_packed")
+    )
     packed = base.weight_packed.clone()
     lora_b = lambda: next(p for n, p in model.named_parameters() if "lora_B" in n).detach().clone()
     b0 = lora_b()
@@ -232,11 +332,15 @@ def run_lora_case(path, arch, api, out_dir):
 
     want = settled(model)
     model.save_pretrained(os.path.join(out_dir, "lora"))
-    fresh, _ = Fast.from_pretrained(path, max_seq_length = 64, load_in_4bit = False, dtype = torch.bfloat16)
+    fresh, _ = Fast.from_pretrained(
+        path, max_seq_length = 64, load_in_4bit = False, dtype = torch.bfloat16
+    )
     fresh = PeftModel.from_pretrained(fresh, os.path.join(out_dir, "lora"))
     fresh.eval()
     got = settled(fresh)
-    adapters = lambda m: {k.replace(".default", ""): v for k, v in m.state_dict().items() if "lora_" in k}
+    adapters = lambda m: {
+        k.replace(".default", ""): v for k, v in m.state_dict().items() if "lora_" in k
+    }
     trained, reloaded = adapters(model), adapters(fresh)
     return {
         "losses": losses,
@@ -246,7 +350,8 @@ def run_lora_case(path, arch, api, out_dir):
         "lora_changed": not torch.equal(lora_b(), b0),
         "saved": sorted(os.listdir(os.path.join(out_dir, "lora"))),
         "reload_max_abs": (got - want).abs().max().item(),
-        "adapters_equal": trained.keys() == reloaded.keys() and all(torch.equal(trained[k], reloaded[k]) for k in trained),
+        "adapters_equal": trained.keys() == reloaded.keys()
+        and all(torch.equal(trained[k], reloaded[k]) for k in trained),
         "peak_gb": torch.cuda.max_memory_allocated() / 2**30,
     }
 

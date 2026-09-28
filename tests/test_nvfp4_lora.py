@@ -19,14 +19,21 @@ def mods():
 
 def _packed(out_features, in_features, seed):
     g = torch.Generator(device = "cuda").manual_seed(seed)
-    packed = torch.randint(0, 256, (out_features, in_features // 2), generator = g, device = "cuda", dtype = torch.uint8)
+    packed = torch.randint(
+        0, 256, (out_features, in_features // 2), generator = g, device = "cuda", dtype = torch.uint8
+    )
     # Asymmetric group scales so a wrong group axis or orientation shows up.
-    scale = (torch.rand(out_features, in_features // 16, generator = g, device = "cuda") * 3 + 0.25)
+    scale = torch.rand(out_features, in_features // 16, generator = g, device = "cuda") * 3 + 0.25
     scale = scale * torch.linspace(0.5, 2.0, in_features // 16, device = "cuda")
     return packed, scale.to(torch.float8_e4m3fn), torch.tensor([37.5], device = "cuda")
 
 
-def _lora_model(mods, names_shapes, r = 8, seed = 0):
+def _lora_model(
+    mods,
+    names_shapes,
+    r = 8,
+    seed = 0,
+):
     """PEFT LoRA over nn.Linears whose base weights are swapped for packed NVFP4; returns (nvfp4 model, dense twin)."""
     from peft import LoraConfig, get_peft_model
 
@@ -112,14 +119,23 @@ def test_get_lora_parameters_returns_the_nvfp4_state(mods):
 
 def test_lora_w_matches_dense(mods):
     fast_lora, _, _ = mods
-    _run(mods, {"o_proj": (80, 96)}, lambda m, X: fast_lora.apply_lora_o(m, X), lambda m, X: m.o_proj(X))
+    _run(
+        mods,
+        {"o_proj": (80, 96)},
+        lambda m, X: fast_lora.apply_lora_o(m, X),
+        lambda m, X: m.o_proj(X),
+    )
 
 
 def test_lora_qkv_matches_dense(mods):
     fast_lora, _, _ = mods
     shapes = {"q_proj": (128, 96), "k_proj": (32, 96), "v_proj": (32, 96)}
-    _run(mods, shapes, lambda m, X: fast_lora.apply_lora_qkv(m, X, inplace = False),
-         lambda m, X: (m.q_proj(X), m.k_proj(X), m.v_proj(X)))
+    _run(
+        mods,
+        shapes,
+        lambda m, X: fast_lora.apply_lora_qkv(m, X, inplace = False),
+        lambda m, X: (m.q_proj(X), m.k_proj(X), m.v_proj(X)),
+    )
 
 
 def test_lora_mlp_matches_dense(mods):

@@ -1570,7 +1570,9 @@ def _route_compressed_tensors_nvfp4_to_unsloth(model):
     if not nvfp4:
         return 0
     if others and decompress_module is None:
-        print("Unsloth: this compressed-tensors has no per-module decompress; decompressing the NVFP4 layers too.")
+        print(
+            "Unsloth: this compressed-tensors has no per-module decompress; decompressing the NVFP4 layers too."
+        )
         return 0
     fp8_routed = _route_compressed_tensors_fp8_to_unsloth(model, skip = set(nvfp4)) if others else 0
     if others and not fp8_routed:

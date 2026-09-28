@@ -9,7 +9,9 @@ import pytest
 torch = pytest.importorskip("torch")
 pytest.importorskip("compressed_tensors")
 
-pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason = "NVFP4 routing needs CUDA weights")
+pytestmark = pytest.mark.skipif(
+    not torch.cuda.is_available(), reason = "NVFP4 routing needs CUDA weights"
+)
 
 sys.path.insert(0, os.path.dirname(__file__))
 import _nvfp4_fixtures as fx  # noqa: E402
@@ -26,7 +28,6 @@ def ckpt(tmp_path_factory):
 
 def _load_raw(path, arch):
     from transformers import AutoModelForCausalLM, AutoModelForImageTextToText
-
     cls = AutoModelForCausalLM if arch == "qwen3" else AutoModelForImageTextToText
     return cls.from_pretrained(path, device_map = "cuda", dtype = torch.bfloat16)
 
@@ -42,14 +43,20 @@ def test_fixture_decompresses_to_the_packed_weights(ckpt, arch):
 
     f = safe_open(os.path.join(path, "model.safetensors"), "pt")
     name = next(n for n, k in kinds.items() if k == "nvfp4")
-    packed, scale, gs = (f.get_tensor(f"{name}.{s}") for s in ("weight_packed", "weight_scale", "weight_global_scale"))
+    packed, scale, gs = (
+        f.get_tensor(f"{name}.{s}")
+        for s in ("weight_packed", "weight_scale", "weight_global_scale")
+    )
     from unsloth.kernels.nvfp4 import nvfp4_dequantize
 
     ref = fx.dequant_nvfp4_reference(packed, scale, gs)
     assert torch.equal(nvfp4_dequantize(packed.cuda(), scale.cuda(), gs.cuda()).cpu(), ref)
     model = _load_raw(path, arch)
     module = _module(model, name)
-    assert str(module.quantization_status.value) == "compressed" and module.weight_packed.dtype == torch.uint8
+    assert (
+        str(module.quantization_status.value) == "compressed"
+        and module.weight_packed.dtype == torch.uint8
+    )
     # The broad MLP target overlaps the last layer's FP8 override; the override wins, as in the real checkpoint.
     last = next(n for n, k in kinds.items() if k == "fp8" and ".mlp." in n)
     assert _module(model, last).quantization_scheme.weights.num_bits == 8
@@ -70,7 +77,9 @@ def test_nvfp4_layers_stay_packed_and_run_w4a16(ckpt, arch):
     keys = set(safe_open(os.path.join(path, "model.safetensors"), "pt").keys())
     # Same keys as the checkpoint (a tied lm_head may add its alias).
     assert set(model.state_dict()) - {"lm_head.weight"} == keys - {"lm_head.weight"}
-    assert not any(n.endswith(".weight") and n[: -len(".weight")] in nvfp4 for n, _ in model.named_parameters())
+    assert not any(
+        n.endswith(".weight") and n[: -len(".weight")] in nvfp4 for n, _ in model.named_parameters()
+    )
     for name, kind in kinds.items():
         module = _module(model, name)
         if kind == "fp8":
@@ -82,7 +91,9 @@ def test_nvfp4_layers_stay_packed_and_run_w4a16(ckpt, arch):
         assert module.weight_packed.dtype == torch.uint8 and module.weight.dtype == torch.uint8
         assert module.weight.quant_state.shape == (module.out_features, module.in_features)
         x = torch.randn(3, module.in_features, device = "cuda", dtype = torch.bfloat16)
-        W = nvfp4_dequantize(module.weight_packed, module.weight_scale, module.weight_global_scale, torch.bfloat16)
+        W = nvfp4_dequantize(
+            module.weight_packed, module.weight_scale, module.weight_global_scale, torch.bfloat16
+        )
         with torch.no_grad():
             # A16: exactly the dense matmul, no activation fake-quantization.
             assert torch.equal(module(x), torch.nn.functional.linear(x, W))
@@ -120,7 +131,10 @@ def test_fp8_group_routes_with_the_fp8_kernels_when_opted_in(ckpt, monkeypatch):
     for name, kind in kinds.items():
         module = _module(model, name)
         if kind == "fp8":
-            assert module.weight.dtype == torch.float8_e4m3fn and module._unsloth_compressed_tensors_fp8
+            assert (
+                module.weight.dtype == torch.float8_e4m3fn
+                and module._unsloth_compressed_tensors_fp8
+            )
         else:
             assert module._unsloth_compressed_tensors_nvfp4
 
@@ -141,18 +155,37 @@ def test_lora_trains_on_the_packed_base_and_reloads(ckpt, arch, api, tmp_path):
     path, _ = ckpt[arch]
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     # A fresh process per case: patches and the compiled module cache from one loader leak into the next.
-    env = dict(os.environ, PYTHONPATH = root + os.pathsep + os.environ.get("PYTHONPATH", ""),
-               UNSLOTH_COMPILE_LOCATION = str(tmp_path / "compiled"), UNSLOTH_IS_PRESENT = "1")
+    env = dict(
+        os.environ,
+        PYTHONPATH = root + os.pathsep + os.environ.get("PYTHONPATH", ""),
+        UNSLOTH_COMPILE_LOCATION = str(tmp_path / "compiled"),
+        UNSLOTH_IS_PRESENT = "1",
+    )
     run = subprocess.run(
-        [sys.executable, os.path.join(os.path.dirname(__file__), "_nvfp4_fixtures.py"), "--lora-case", path, arch, api, str(tmp_path)],
-        env = env, capture_output = True, text = True, timeout = 1200,
+        [
+            sys.executable,
+            os.path.join(os.path.dirname(__file__), "_nvfp4_fixtures.py"),
+            "--lora-case",
+            path,
+            arch,
+            api,
+            str(tmp_path),
+        ],
+        env = env,
+        capture_output = True,
+        text = True,
+        timeout = 1200,
     )
     lines = [l for l in run.stdout.splitlines() if l.startswith("LORA_CASE ")]
     assert run.returncode == 0 and lines, run.stderr[-3000:]
-    r = json.loads(lines[-1][len("LORA_CASE "):])
+    r = json.loads(lines[-1][len("LORA_CASE ") :])
     assert all(torch.isfinite(torch.tensor(r["losses"]))) and r["losses"][-1] < r["losses"][0]
     # The packed base is never cast into, and activations reach it in a float dtype (W4A16, not uint8).
-    assert r["input_dtypes"] and set(r["input_dtypes"]) <= {"torch.bfloat16", "torch.float16", "torch.float32"}
+    assert r["input_dtypes"] and set(r["input_dtypes"]) <= {
+        "torch.bfloat16",
+        "torch.float16",
+        "torch.float32",
+    }
     assert r["packed_unchanged"] and r["packed_dtype"] == "torch.uint8" and r["lora_changed"]
     assert "adapter_model.safetensors" in r["saved"]
     assert r["adapters_equal"]

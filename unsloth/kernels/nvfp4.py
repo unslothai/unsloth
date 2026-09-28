@@ -23,7 +23,13 @@ _E2M1 = (0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0)
 class NVFP4QuantState:
     __slots__ = ("scale", "global_scale", "shape", "dtype")
 
-    def __init__(self, scale, global_scale, shape, dtype = torch.bfloat16):
+    def __init__(
+        self,
+        scale,
+        global_scale,
+        shape,
+        dtype = torch.bfloat16,
+    ):
         self.scale = scale
         self.global_scale = global_scale
         self.shape = tuple(shape)
@@ -45,7 +51,9 @@ def _nvfp4_dequantize_torch(packed, scale, global_scale, dtype):
 def _e2m1_to_float(code):
     # Build the fp32 bits: mag >= 2 is (1 + m / 2) * 2^(e - 1), mag 1 is 0.5, mag 0 is 0; bit 3 is the sign (code 8 = -0.0).
     mag = code & 7
-    bits = tl.where(mag >= 2, (((mag >> 1) + 126) << 23) | ((mag & 1) << 22), tl.where(mag == 1, 126 << 23, 0))
+    bits = tl.where(
+        mag >= 2, (((mag >> 1) + 126) << 23) | ((mag & 1) << 22), tl.where(mag == 1, 126 << 23, 0)
+    )
     return (bits | ((code & 8) << 28)).to(tl.float32, bitcast = True)
 
 
@@ -66,14 +74,28 @@ def _nvfp4_dequant_kernel(
     c = tl.program_id(1) * BLOCK_C + tl.arange(0, BLOCK_C)
     g = tl.program_id(1) * (BLOCK_C // 8) + tl.arange(0, BLOCK_C // 8)
     row_ok = r[:, None] < rows
-    byte = tl.load(packed_ptr + r[:, None] * half_cols + c[None, :], mask = row_ok & (c[None, :] < half_cols), other = 0).to(tl.int32)
-    scale = tl.load(scale_ptr + r[:, None] * scale_cols + g[None, :], mask = row_ok & (g[None, :] < scale_cols), other = 0.0)
+    byte = tl.load(
+        packed_ptr + r[:, None] * half_cols + c[None, :],
+        mask = row_ok & (c[None, :] < half_cols),
+        other = 0,
+    ).to(tl.int32)
+    scale = tl.load(
+        scale_ptr + r[:, None] * scale_cols + g[None, :],
+        mask = row_ok & (g[None, :] < scale_cols),
+        other = 0.0,
+    )
     group_scale = tl.math.div_rn(scale.to(tl.float32), tl.load(global_scale_ptr).to(tl.float32))
     # Low nibble is the even column: join + reshape interleaves (lo, hi) into contiguous output columns.
-    values = tl.reshape(tl.join(_e2m1_to_float(byte & 15), _e2m1_to_float(byte >> 4)), (BLOCK_R, BLOCK_C // 8, 16))
+    values = tl.reshape(
+        tl.join(_e2m1_to_float(byte & 15), _e2m1_to_float(byte >> 4)), (BLOCK_R, BLOCK_C // 8, 16)
+    )
     values = tl.reshape(values * group_scale[:, :, None], (BLOCK_R, 2 * BLOCK_C))
     oc = tl.program_id(1) * (2 * BLOCK_C) + tl.arange(0, 2 * BLOCK_C)
-    tl.store(out_ptr + r[:, None] * (2 * half_cols) + oc[None, :], values.to(out_ptr.dtype.element_ty), mask = row_ok & (oc[None, :] < 2 * half_cols))
+    tl.store(
+        out_ptr + r[:, None] * (2 * half_cols) + oc[None, :],
+        values.to(out_ptr.dtype.element_ty),
+        mask = row_ok & (oc[None, :] < 2 * half_cols),
+    )
 
 
 @_opaque_under_compile(
@@ -83,22 +105,33 @@ def _nvfp4_dequant_kernel(
     ),
 )
 def _nvfp4_dequantize_triton(
-    packed: torch.Tensor,
-    scale: torch.Tensor,
-    global_scale: torch.Tensor,
-    dtype: torch.dtype,
+    packed: torch.Tensor, scale: torch.Tensor, global_scale: torch.Tensor, dtype: torch.dtype
 ) -> torch.Tensor:
     rows, half = packed.shape
     out = torch.empty((rows, half * 2), dtype = dtype, device = packed.device)
     BLOCK_R, BLOCK_C = 8, 256
     with _fp8_triton_device_context(packed):
         _nvfp4_dequant_kernel[(triton.cdiv(rows, BLOCK_R), triton.cdiv(half, BLOCK_C))](
-            packed, scale, global_scale, out, rows, half, scale.shape[1], BLOCK_R = BLOCK_R, BLOCK_C = BLOCK_C, num_warps = 4
+            packed,
+            scale,
+            global_scale,
+            out,
+            rows,
+            half,
+            scale.shape[1],
+            BLOCK_R = BLOCK_R,
+            BLOCK_C = BLOCK_C,
+            num_warps = 4,
         )
     return out
 
 
-def nvfp4_dequantize(packed, scale, global_scale, dtype = torch.bfloat16):
+def nvfp4_dequantize(
+    packed,
+    scale,
+    global_scale,
+    dtype = torch.bfloat16,
+):
     """Dense (out, in) weight of a packed (out, in / 2) NVFP4 tensor; a transposed view gives the transposed weight."""
     if _is_transposed_view(packed):
         return nvfp4_dequantize(packed.t(), scale, global_scale, dtype).t()
@@ -128,7 +161,9 @@ def _nvfp4_matmul_fwd(
 
 @_opaque_under_compile(
     "nvfp4_matmul_bwd",
-    lambda grad, packed, scale, global_scale: grad.new_empty(grad.shape[:-1] + (packed.shape[1] * 2,)),
+    lambda grad, packed, scale, global_scale: grad.new_empty(
+        grad.shape[:-1] + (packed.shape[1] * 2,)
+    ),
 )
 def _nvfp4_matmul_bwd(
     grad: torch.Tensor, packed: torch.Tensor, scale: torch.Tensor, global_scale: torch.Tensor
@@ -138,7 +173,14 @@ def _nvfp4_matmul_bwd(
 
 class NVFP4Linear_matmul(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, X, packed, scale, global_scale, bias = None):
+    def forward(
+        ctx,
+        X,
+        packed,
+        scale,
+        global_scale,
+        bias = None,
+    ):
         output = _nvfp4_matmul_fwd(X, packed, scale, global_scale)
         if bias is not None:
             output = output + bias
@@ -164,5 +206,11 @@ class NVFP4Linear_matmul(torch.autograd.Function):
         return grad_X, None, None, None, grad_bias
 
 
-def nvfp4_linear(X, packed, scale, global_scale, bias = None):
+def nvfp4_linear(
+    X,
+    packed,
+    scale,
+    global_scale,
+    bias = None,
+):
     return NVFP4Linear_matmul.apply(X, packed, scale, global_scale, bias)

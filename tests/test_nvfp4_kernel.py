@@ -19,7 +19,13 @@ def N():
     return nvfp4
 
 
-def _random_nvfp4(rows, cols, device, global_scale = 7.3, seed = 0):
+def _random_nvfp4(
+    rows,
+    cols,
+    device,
+    global_scale = 7.3,
+    seed = 0,
+):
     g = torch.Generator(device = "cpu").manual_seed(seed)
     packed = torch.randint(0, 256, (rows, cols // 2), dtype = torch.uint8, generator = g)
     scale = (torch.rand(rows, cols // 16, generator = g) * 3 + 0.01).to(torch.float8_e4m3fn)
