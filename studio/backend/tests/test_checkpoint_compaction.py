@@ -2366,7 +2366,6 @@ def test_the_tool_loop_reopens_only_where_an_epoch_actually_happened(monkeypatch
     _thread({"fits": False, "dropped_messages": 0, "checkpoint": True})
     assert inference_routes._thread_has_checkpoint("t1") is False
 
-    # A rescue did reset and archive what it dropped, so recall stays offered.
     _thread({"fits": False, "dropped_messages": 12, "checkpoint": True})
     assert inference_routes._thread_has_checkpoint("t1") is True
 
@@ -3920,11 +3919,7 @@ def _refused_continuation_metadata(boundary):
 
 @pytest.mark.parametrize("with_source", [True, False])
 def test_a_continuation_that_could_not_fit_keeps_the_epoch_it_resumed(monkeypatch, with_source):
-    """A continuation runs as a sibling of the cut reply and replays it as the final turn, so
-    once the partial fills the window its fit refuses and records no epoch. Read as the
-    thread's state, that dropped `search_conversation` from every later turn (Flappy Bird at
-    2044 tokens: the model emitted the call as plain text). The epoch in force is the one the
-    resumed reply recorded; with no resumed reply stored, the refusal still rules."""
+    """With no resumed reply stored, the refusal still rules."""
     from core.inference import checkpoint, llama_cpp
     from routes import inference as inference_routes
 
@@ -3982,8 +3977,7 @@ def test_a_retry_sibling_is_not_mistaken_for_the_reply_a_refusal_resumed(monkeyp
 
 
 def test_a_reset_on_a_request_without_the_recall_tool_does_not_name_it(monkeypatch):
-    """The first reset of a thread never carries `search_conversation`, since the archive is
-    written during it. Naming the tool there made the model emit the call as plain text."""
+    """The first reset never carries the tool: the archive is written during it."""
     from core.inference import llama_cpp
 
     messages = _thread() + [{"role": "user", "content": "continue"}]
@@ -4011,9 +4005,7 @@ def test_a_reset_on_a_request_without_the_recall_tool_does_not_name_it(monkeypat
 
 @pytest.mark.parametrize(("dropped", "admitted"), [(4, True), (0, False)])
 def test_a_rescued_reset_still_offers_recall_but_is_never_replayed(monkeypatch, dropped, admitted):
-    """A reset that missed the reply reserve still archived what it dropped, so the next turn
-    must be able to search it; only its boundary stays unreplayed. A refusal drops nothing
-    and keeps saying no epoch happened."""
+    """A rescue archived what it dropped; a refusal dropped nothing."""
     from core.inference import checkpoint, llama_cpp
     from routes import inference as inference_routes
 

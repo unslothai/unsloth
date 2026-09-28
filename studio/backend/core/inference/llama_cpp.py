@@ -278,9 +278,7 @@ def _fit_context(messages, **kwargs):
     # Whether `sticky_dropped` is the depth of a checkpoint RESET. Defaults to True, which
     # is what a caller with no thread state to consult has always assumed.
     sticky_is_checkpoint = bool(kwargs.pop("sticky_is_checkpoint", True))
-    # Whether THIS request carries `search_conversation`. The first reset of a thread never
-    # does (the archive is written during it), and a header naming a tool the model was not
-    # given makes it emit the call as plain text.
+    # Naming a tool the request lacks makes the model print the call as text.
     recall_offered = bool(kwargs.pop("recall_offered", True))
     requested_policy = kwargs.pop("context_policy", None)
     if requested_policy not in ("checkpoint", "rolling"):
@@ -1592,14 +1590,8 @@ def _row_truncation(message: dict) -> Optional[dict]:
 
 
 def _resumed_reply(stored: list[dict], message: dict) -> dict:
-    """The reply a Max Tokens continuation resumed, when the continuation itself could not fit.
-
-    A continuation runs as a SIBLING of the cut reply and replays it as the final assistant
-    turn, so once the partial fills the window its fit refuses (`fits` false, blamed on the
-    assistant turn) and records no epoch. That says nothing about the thread's compaction:
-    the epoch in force is still the one the resumed reply recorded. Read as the thread's
-    state, it dropped `search_conversation` from the next turn and forced a fresh reset.
-    """
+    """The reply an unfitted Max Tokens continuation resumed: its refusal records no epoch,
+    but the epoch in force is still the resumed reply's."""
     seen = set()
     while True:
         truncation = _row_truncation(message)
