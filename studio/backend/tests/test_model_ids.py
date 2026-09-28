@@ -107,9 +107,7 @@ def test_display_model_name_leaves_ordinary_ids_alone():
 def test_hub_repo_ending_in_gguf_stays_a_repo_id():
     # lex-au/Orpheus-3b-FT-Q8_0.gguf is a Hub repo. The same module already
     # treats it as one for the display label, and refuses to strip .gguf.
-    assert public_model_id("lex-au/Orpheus-3b-FT-Q8_0.gguf") == (
-        "lex-au/Orpheus-3b-FT-Q8_0.gguf"
-    )
+    assert public_model_id("lex-au/Orpheus-3b-FT-Q8_0.gguf") == ("lex-au/Orpheus-3b-FT-Q8_0.gguf")
     # A file inside a repo is still a file.
     assert public_model_id("lex-au/Orpheus-3b-FT/Q8_0.gguf") == "Q8_0"
 
