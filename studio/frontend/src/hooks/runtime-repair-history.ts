@@ -3,7 +3,7 @@
 
 import { isLlamaRuntimeReason } from "./backend-preflight-message.ts";
 
-const STORAGE_KEY = "unsloth-llama-runtime-repair";
+export const RUNTIME_REPAIR_KEY = "unsloth-llama-runtime-repair";
 const RECURRENCE_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 
 export function recordRuntimeRepair(
@@ -13,7 +13,7 @@ export function recordRuntimeRepair(
   if (!isLlamaRuntimeReason(reason)) return;
   try {
     localStorage.setItem(
-      STORAGE_KEY,
+      RUNTIME_REPAIR_KEY,
       JSON.stringify({ reason, repairedAt: now }),
     );
   } catch {
@@ -27,7 +27,7 @@ export function wasRuntimeRepairedRecently(
 ): boolean {
   if (!isLlamaRuntimeReason(reason)) return false;
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
+    const raw = localStorage.getItem(RUNTIME_REPAIR_KEY);
     if (!raw) return false;
     const record: unknown = JSON.parse(raw);
     if (!record || typeof record !== "object") return false;
