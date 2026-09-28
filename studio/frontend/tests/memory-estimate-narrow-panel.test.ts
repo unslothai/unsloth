@@ -48,6 +48,7 @@ const props: Props = {
     drafterKvUnsized: false,
     adaptersUnsized: false,
     totalBytes: 5.5 * GIB,
+    contextFitted: null,
     gpuBytes: 4.75 * GIB,
     kvEstimable: true,
     kvOnGpu: true,

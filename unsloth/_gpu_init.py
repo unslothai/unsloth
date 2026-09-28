@@ -290,6 +290,7 @@ from .import_fixes import (
     patch_torchcodec_audio_decoder,
     disable_torchcodec_if_broken,
     disable_broken_wandb,
+    fix_accelerate_dtensor_check_without_torch_distributed,
     fix_trl_vllm_ascend,
     fix_peft_transformers_tensor_parallel_import_compat,
     fix_peft_transformers_weight_conversion_import,
@@ -372,6 +373,8 @@ patch_vllm_for_notebooks()
 patch_torchcodec_audio_decoder()
 disable_torchcodec_if_broken()
 disable_broken_wandb()
+# After unsloth_zoo, whose ROCm torchao loader must be in place before accelerate is imported.
+fix_accelerate_dtensor_check_without_torch_distributed()
 # Must run before patch_peft_weight_converter_compatibility: it stubs the transformers v5
 # submodules peft 0.19.x imports, so the next patch can wrap build_peft_weight_mapping instead of
 # being swallowed by its ImportError.
@@ -422,6 +425,7 @@ del patch_torchcodec_audio_decoder
 del disable_torchcodec_if_broken
 del disable_torchaudio_if_cuda_mismatched
 del disable_broken_wandb
+del fix_accelerate_dtensor_check_without_torch_distributed
 del fix_peft_transformers_tensor_parallel_import_compat
 del fix_peft_transformers_weight_conversion_import
 del patch_peft_weight_converter_compatibility
