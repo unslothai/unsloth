@@ -96,7 +96,7 @@ def host(monkeypatch):
 
     monkeypatch.setattr(mxc_host_prep_job, "start", start)
     monkeypatch.setattr(mxc_host_prep_job, "current", lambda: None)
-    monkeypatch.setattr(client_ip, "_is_loopback", lambda _host: True)
+    monkeypatch.setattr(client_ip, "is_direct_local_request", lambda _request: True)
     settings._forget_sandbox_status()
     return calls, saved
 
@@ -242,13 +242,33 @@ def test_prepare_starts_one_job_from_the_local_console(host, windows):
 
 
 def test_prepare_is_refused_from_a_remote_browser(host, windows, monkeypatch):
-    monkeypatch.setattr(client_ip, "_is_loopback", lambda _host: False)
+    monkeypatch.setattr(client_ip, "is_direct_local_request", lambda _request: False)
     calls, _saved = host
     with _client(OWNER) as client:
         response = client.post("/sandbox/prepare")
     assert response.status_code == 403
     assert "computer running Studio" in response.json()["detail"]
     assert calls["start"] == 0
+
+
+def test_a_loopback_peer_relaying_a_remote_browser_is_not_local():
+    from types import SimpleNamespace
+
+    def request(
+        peer,
+        host = "127.0.0.1:8888",
+        **headers,
+    ):
+        return SimpleNamespace(
+            client = SimpleNamespace(host = peer, port = 0), headers = {"host": host, **headers}
+        )
+
+    assert client_ip.is_direct_local_request(request("127.0.0.1")) is True
+    # A reverse proxy or tunnel on this machine: the peer is loopback, the browser is not.
+    for headers in ({"x-forwarded-for": "203.0.113.7"}, {"cf-connecting-ip": "203.0.113.7"}):
+        assert client_ip.is_direct_local_request(request("127.0.0.1", **headers)) is False
+    assert client_ip.is_direct_local_request(request("127.0.0.1", "studio.example.com")) is False
+    assert client_ip.is_direct_local_request(request("192.168.1.10")) is False
 
 
 def test_prepare_without_the_runtime_is_refused(host, windows, monkeypatch):

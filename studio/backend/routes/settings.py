@@ -4579,9 +4579,10 @@ async def start_sandbox_prepare(
     import sys
 
     from core.inference import mxc_host_prep_job, mxc_runtime
-    from utils.client_ip import _is_loopback, client_ip
+    from utils.client_ip import is_direct_local_request
 
-    if not _is_loopback(client_ip(request)):
+    # Stricter than client_ip(): a loopback peer carrying proxy headers is a remote browser relayed here.
+    if not is_direct_local_request(request):
         raise HTTPException(
             status_code = 403,
             detail = (

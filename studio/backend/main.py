@@ -2807,54 +2807,13 @@ def _origin_of(url: Optional[str]) -> Optional[tuple[str, str, int]]:
     return _canonical_origin(parsed.scheme, parsed.netloc)
 
 
-def _is_loopback_ip(host: Optional[str]) -> bool:
-    """Return whether ``host`` is a loopback IP, including IPv4-mapped IPv6."""
-    if not host or "%" in host:  # a scope id (::1%eth0) is never a plain loopback
-        return False
-    try:
-        ip = ipaddress.ip_address(host)
-    except (TypeError, ValueError):
-        return False
-    mapped = getattr(ip, "ipv4_mapped", None)
-    return ip.is_loopback or (mapped is not None and mapped.is_loopback)
-
-
-# A loopback peer carrying any of these is a proxy/tunnel relaying a remote client, so the peer is the
-# proxy, not the caller: cloudflared sets cf-connecting-ip, reverse proxies set the rest.
-_PROXIED_CLIENT_HEADERS = (
-    "cf-connecting-ip",
-    "forwarded",
-    "x-forwarded-for",
-    "x-forwarded-host",
-    "x-real-ip",
+# Shared with the routes that must only answer the person at this computer (Settings > Sandbox).
+from utils.client_ip import (  # noqa: E402
+    _PROXIED_CLIENT_HEADERS,
+    _host_header_is_loopback,
+    _is_loopback_ip,
+    is_direct_local_request as _is_local_bootstrap_request,
 )
-
-
-def _host_header_is_loopback(host_header: Optional[str]) -> bool:
-    """Loopback/localhost check on the raw Host header, read directly so a malformed or absent Host
-    cannot fall back to ``request.url.hostname``'s (loopback) ASGI server address."""
-    if not host_header:
-        return False
-    host = host_header.strip()
-    if host.startswith("["):  # [IPv6] or [IPv6]:port
-        end = host.find("]")
-        if end == -1 or (host[end + 1 :] and not host[end + 1 :].startswith(":")):
-            return False  # unclosed bracket or junk after ] (e.g. [::1]evil)
-        host = host[1:end]
-    elif host.count(":") == 1:  # host:port
-        host = host.split(":", 1)[0]
-    host = host.lower().rstrip(".")
-    return host == "localhost" or _is_loopback_ip(host)
-
-
-def _is_local_bootstrap_request(request: Request) -> bool:
-    """Allow bootstrap injection only through a direct loopback authority."""
-    client = request.client
-    if client is None or not _is_loopback_ip(client.host):
-        return False
-    if any(request.headers.get(h) is not None for h in _PROXIED_CLIENT_HEADERS):
-        return False
-    return _host_header_is_loopback(request.headers.get("host"))
 
 
 def _is_same_origin_request(request: Request) -> bool:

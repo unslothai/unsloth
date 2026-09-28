@@ -104,13 +104,15 @@ def _run(job: HostPrepJob, proc: subprocess.Popen) -> None:
     job.steps = _steps(lines)
     job.finished_at = time.time()
     if code == 0:
-        job.state = "succeeded"
+        state = "succeeded"
     elif any(_DECLINED_MARKER in line for line in lines):
-        job.state = "declined"
+        state = "declined"
     else:
-        job.state = "failed"
-    logger.info("MXC host preparation finished: state=%s exit=%s", job.state, code)
+        state = "failed"
+    logger.info("MXC host preparation finished: state=%s exit=%s", state, code)
+    # Caches first: a poller that sees the end must not then read the pre-preparation verdict.
     _invalidate()
+    job.state = state
 
 
 def start() -> HostPrepJob:
