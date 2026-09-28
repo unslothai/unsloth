@@ -52,6 +52,25 @@ _BASE_CHROMIUM_ARGS = (
 )
 
 
+def usable_sync_api() -> Any | None:
+    """The installed `playwright.sync_api`, or None when only a stand-in answers to the name.
+
+    `pytest.importorskip("playwright.sync_api")` is not enough in the CPU jobs, where Playwright
+    is not installed: test_heavy_thread_measurement_integrity.py puts a stub module in
+    `sys.modules` at collection time so its harness imports, and every xdist worker collects
+    that file, so any module collected after it imports the stub and calls straight into a
+    RuntimeError. A partial install resolves the name as a namespace package instead. Neither
+    has a file behind it; the real module does.
+    """
+    try:
+        import playwright.sync_api as sync_api
+    except ImportError:
+        return None
+    if not getattr(sync_api, "__file__", None):
+        return None
+    return sync_api
+
+
 def chromium_launch_args(platform: str | None = None) -> list[str]:
     """Chromium launch args. Same on every platform; `platform` is accepted so
     callers that pass one keep working."""
@@ -473,6 +492,31 @@ BENIGN_CONSOLE_ERROR_PATTERNS: tuple[str, ...] = (
     # Also a benign page-error; here for the diagnostic dump path.
     "Failed to fetch",
 )
+
+
+# The OS can briefly run out of socket buffers on a busy runner (Windows and macOS lanes), and Chromium fails the
+# navigation outright with net::ERR_NO_BUFFER_SPACE. It recovers on its own, so a navigation is retried after 5s,
+# then 15s, as the chat, extra and model-config suites already do for their own requests. Any other error is raised
+# at once: only this one says nothing about the app.
+SOCKET_BUFFER_BACKOFF_S: tuple[float, ...] = (5.0, 15.0)
+
+
+def goto_with_socket_backoff(
+    page: Any,
+    url: str,
+    *,
+    sleep: Callable[[float], None] = time.sleep,
+    **kwargs: Any,
+) -> Any:
+    for backoff_s in (*SOCKET_BUFFER_BACKOFF_S, None):
+        try:
+            return page.goto(url, **kwargs)
+        except Exception as exc:
+            if backoff_s is None or "ERR_NO_BUFFER_SPACE" not in str(exc):
+                raise
+            print(f"[goto] {url}: ERR_NO_BUFFER_SPACE; retrying in {backoff_s:.0f}s", flush = True)
+            sleep(backoff_s)
+    raise AssertionError("unreachable")
 
 
 def wait_for_first(locator: Any, *, timeout_ms: int = 10_000) -> Any | None:

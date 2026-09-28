@@ -7490,6 +7490,10 @@ _PEFT_MOE_CONVERSION_PATTERNS = {
     "glm_moe_dsa": "qwen2_moe",
     "hunyuan_v1_moe": "qwen2_moe",
     "longcat_flash": "qwen2_moe",
+    # Not a transformers type: unsloth/models/longcat_lsa.py registers it into transformers' and
+    # peft's tables with longcat_flash's family, so once that has run in a process the live map
+    # carries it and the snapshot has to agree.
+    "longcat_flash_lsa": "qwen2_moe",
     "mellum": "qwen2_moe",
     "olmoe": "qwen2_moe",
     "qwen3_moe": "qwen2_moe",
@@ -7653,14 +7657,7 @@ def _backfill_conversion_symbols_once(builders, added):
             continue
         # Build the stub off to the side rather than installing it, so the real module keeps its
         # identity and everything else it exports.
-        saved = sys.modules.pop(name, None)
-        try:
-            donor = builders[name]()
-        finally:
-            if saved is not None:
-                sys.modules[name] = saved
-            else:
-                sys.modules.pop(name, None)
+        donor = builders[name]()
         for symbol in missing:
             qualified = f"{name}.{symbol}"
             if symbol == "_MODEL_TO_CONVERSION_PATTERN":
@@ -7707,9 +7704,12 @@ def _backfill_missing_conversion_symbols():
     Never replaces a module and never overwrites a name transformers defines,
     so this is a no-op on every release that still exports them.
     """
+    # The _build_ variants, not _install_: installing also attaches the stub to the transformers
+    # package, where `import transformers.conversion_mapping as m` would keep finding it after the
+    # real module is back in sys.modules.
     builders = {
-        "transformers.conversion_mapping": _install_transformers_conversion_mapping_stub,
-        "transformers.core_model_loading": _install_transformers_core_model_loading_stub,
+        "transformers.conversion_mapping": _build_transformers_conversion_mapping_stub,
+        "transformers.core_model_loading": _build_transformers_core_model_loading_stub,
     }
     added = []
     # One pass is not enough when the drifts coincide: conversion_mapping imports names from
@@ -9063,6 +9063,13 @@ def fix_peft_stale_torchao_import_error():
             return False
 
     is_torchao_available.__unsloth_patched__ = True
+    # peft's is an lru_cache; functools.wraps copies its name and __dict__ but not cache_clear or
+    # cache_info, which are methods of the cache object. Forward them so the patch stays a drop-in
+    # for anything that resets the probe after installing or removing torchao.
+    for name in ("cache_clear", "cache_info"):
+        method = getattr(original, name, None)
+        if method is not None:
+            setattr(is_torchao_available, name, method)
 
     patched = False
     try:
@@ -10552,6 +10559,137 @@ def disable_sentencepiece_on_windows():
             f"{DISABLE_SENTENCEPIECE_VARIABLE}=0 to import it again."
         )
     return True
+
+
+# compressed-tensors fake-quantizes W8A8 activations under no_grad; STE so LoRA gets input gradients.
+_CT_FORWARD_MODULE = "compressed_tensors.quantization.lifecycle.forward"
+_CT_BY_NAME_MODULES = (
+    "compressed_tensors.modeling.kvcache",
+    "compressed_tensors.modeling.attention",
+)
+_CT_STE_SENTINEL = "_unsloth_activation_ste"
+_CT_FINDER_SENTINEL = "__unsloth_compressed_tensors_ste_finder__"
+
+
+def _compressed_tensors_ste_forward_quantize(original):
+    import torch
+
+    class _StraightThrough(torch.autograd.Function):
+        # Not `value + (out - value).detach()`: that rounds where a static scale saturates.
+        @staticmethod
+        def forward(ctx, value, quantized):
+            ctx.value_dtype = value.dtype
+            return quantized.to(value.dtype).view_as(quantized)
+
+        @staticmethod
+        def backward(ctx, grad_output):
+            return grad_output.to(ctx.value_dtype), None
+
+    @functools.wraps(original)
+    def forward_quantize(*args, **kwargs):
+        out = original(*args, **kwargs)
+        if not torch.is_grad_enabled():
+            return out
+        value = args[1] if len(args) > 1 else kwargs.get("value")
+        base_name = args[2] if len(args) > 2 else kwargs.get("base_name")
+        if (
+            base_name != "weight"
+            and isinstance(value, torch.Tensor)
+            and isinstance(out, torch.Tensor)
+            and value.requires_grad
+            and not out.requires_grad
+            and out.shape == value.shape
+        ):
+            return _StraightThrough.apply(value, out)
+        return out
+
+    setattr(forward_quantize, _CT_STE_SENTINEL, True)
+    return forward_quantize
+
+
+def _patch_compressed_tensors_forward_module(module):
+    original = getattr(module, "forward_quantize", None)
+    if not callable(original):
+        return False
+    if getattr(original, _CT_STE_SENTINEL, False):
+        return True
+    patched = _compressed_tensors_ste_forward_quantize(original)
+    module.forward_quantize = patched
+    # Modules that imported the function by name before this ran hold the original.
+    for name in _CT_BY_NAME_MODULES:
+        other = sys.modules.get(name)
+        if other is not None and getattr(other, "forward_quantize", None) is original:
+            other.forward_quantize = patched
+    return True
+
+
+class _CompressedTensorsSTELoader(importlib.abc.Loader):
+    __slots__ = ("_loader",)
+
+    def __init__(self, loader):
+        self._loader = loader
+
+    def create_module(self, spec):
+        create_module = getattr(self._loader, "create_module", None)
+        if create_module is None:
+            return None
+        return create_module(spec)
+
+    def exec_module(self, module):
+        self._loader.exec_module(module)
+        try:
+            _patch_compressed_tensors_forward_module(module)
+        except Exception as e:
+            logger.info(f"Unsloth: compressed-tensors activation gradient patch skipped: {e}")
+
+    def __getattr__(self, name):
+        return getattr(self._loader, name)
+
+
+class _CompressedTensorsSTEFinder(importlib.abc.MetaPathFinder):
+    __slots__ = (_CT_FINDER_SENTINEL,)
+
+    def __init__(self):
+        setattr(self, _CT_FINDER_SENTINEL, True)
+
+    def find_spec(
+        self,
+        fullname,
+        path = None,
+        target = None,
+    ):
+        if fullname != _CT_FORWARD_MODULE:
+            return None
+        spec = None
+        for finder in sys.meta_path:
+            if finder is self or getattr(finder, _CT_FINDER_SENTINEL, False):
+                continue
+            finder_find_spec = getattr(finder, "find_spec", None)
+            if finder_find_spec is None:
+                continue
+            try:
+                spec = finder_find_spec(fullname, path, target)
+            except Exception:
+                spec = None
+            if spec is not None:
+                break
+        if spec is None or spec.loader is None or not hasattr(spec.loader, "exec_module"):
+            return None
+        spec.loader = _CompressedTensorsSTELoader(spec.loader)
+        return spec
+
+
+def fix_compressed_tensors_activation_quant_gradient():
+    if importlib.util.find_spec("compressed_tensors") is None:
+        return
+    module = sys.modules.get(_CT_FORWARD_MODULE)
+    if module is not None:
+        _patch_compressed_tensors_forward_module(module)
+        return
+    for finder in sys.meta_path:
+        if getattr(finder, _CT_FINDER_SENTINEL, False):
+            return
+    sys.meta_path.insert(0, _CompressedTensorsSTEFinder())
 
 
 def fix_transformers_longcat_lsa_config():

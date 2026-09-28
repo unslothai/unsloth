@@ -18,13 +18,15 @@ import re
 import shutil
 import sqlite3
 import threading
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
-from typing import Any, Callable, Iterable, Mapping, Optional
+from typing import Any, Callable, Iterable, Iterator, Mapping, Optional
 
 
+from core import chat_originals
 from utils.account_context import is_owner_context
 from utils.paths import (
     ensure_account_dir,
@@ -120,7 +122,7 @@ _schema_lock = threading.Lock()
 _schema_ready: set[Path] = set()
 _SQLITE_IN_CHUNK_SIZE = 900
 _PROJECT_WORKSPACE_SUBDIRS = ("sandbox",)
-_CHAT_ATTACHMENT_INVENTORY_VERSION = 3
+_CHAT_ATTACHMENT_INVENTORY_VERSION = 5
 
 
 def _project_slug(name: str) -> str:
@@ -619,10 +621,19 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             type TEXT,
             content_type TEXT,
             size_bytes INTEGER,
+            original_sha256 TEXT,
+            text_bytes INTEGER,
             PRIMARY KEY(message_id, attachment_id)
         ) WITHOUT ROWID
         """
     )
+    inventory_columns = {
+        row[1] for row in conn.execute("PRAGMA table_info(chat_attachment_inventory)")
+    }
+    if "original_sha256" not in inventory_columns:
+        conn.execute("ALTER TABLE chat_attachment_inventory ADD COLUMN original_sha256 TEXT")
+    if "text_bytes" not in inventory_columns:
+        conn.execute("ALTER TABLE chat_attachment_inventory ADD COLUMN text_bytes INTEGER")
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS chat_attachment_inventory_state (
@@ -3034,6 +3045,17 @@ def _research_message_ids(conn: sqlite3.Connection, thread_id: str) -> set[str]:
     }
 
 
+def _research_assistant_message_ids(conn: sqlite3.Connection, thread_id: str) -> set[str]:
+    return {
+        str(row[0])
+        for row in conn.execute(
+            "SELECT assistant_message_id FROM research_runs "
+            "WHERE thread_id = ? AND assistant_message_id IS NOT NULL",
+            (thread_id,),
+        ).fetchall()
+    }
+
+
 def _generation_message_ids(conn: sqlite3.Connection, thread_id: str) -> set[str]:
     return {
         str(message_id)
@@ -3275,9 +3297,17 @@ def _guard_server_managed_messages(
     allow_research_update: bool = False,
 ) -> None:
     generation = _generation_message_ids(conn, thread_id)
-    protected = set(generation)
-    if not allow_research_update:
-        protected.update(_research_message_ids(conn, thread_id))
+    if allow_research_update:
+        # A deep research run is handed off from a chat generation and reports into that
+        # generation's assistant message. Once the generation has settled, the research run
+        # is the message's only writer, so its authorized updates must not be held to the
+        # generation's monotonic-update rules.
+        generation -= _research_assistant_message_ids(
+            conn, thread_id
+        ) & _terminal_generation_message_ids(conn, thread_id)
+        protected = set(generation)
+    else:
+        protected = generation | _research_message_ids(conn, thread_id)
     if not protected:
         return
     for message in messages:
@@ -3291,6 +3321,33 @@ def _guard_server_managed_messages(
             and _research_message_would_change(conn, thread_id, message, pruned)
         ):
             raise ChatMessageProtectedError("server-managed generation messages cannot be edited")
+
+
+def _settle_handed_off_generation(conn: sqlite3.Connection, message: dict) -> dict:
+    # The live tab hands off before settling, so an unsettled row would be replayed by generation
+    # recovery on the next load and its settle write would replace the research report.
+    metadata = message.get("metadata")
+    if not isinstance(metadata, dict):
+        return message
+    row = conn.execute(
+        """SELECT id, status, last_event_seq FROM chat_generation_runs
+           WHERE thread_id = ? AND assistant_message_id = ?
+             AND status IN ('cancelled', 'completed', 'failed')""",
+        (message["threadId"], str(message["id"])),
+    ).fetchone()
+    if row is None or metadata.get("generationRunId") != row["id"]:
+        return message
+    # The research status now reports the outcome, not the acknowledgement's length/interrupt mark.
+    metadata = {key: value for key, value in metadata.items() if key != "incomplete"}
+    return {
+        **message,
+        "metadata": {
+            **metadata,
+            "generationStatus": row["status"],
+            "generationSeq": int(row["last_event_seq"]),
+            "generationSettled": True,
+        },
+    }
 
 
 def _detach_terminal_generation_for_edit(
@@ -3472,6 +3529,8 @@ def _chat_attachment_inventory_entries(
                 "type": _chat_attachment_metadata_text(attachment.get("type")),
                 "contentType": _chat_attachment_metadata_text(attachment.get("contentType")),
                 "sizeBytes": _chat_attachment_size_bytes(attachment),
+                "originalSha256": chat_originals.attachment_sha256(attachment),
+                "textBytes": _chat_attachment_text_bytes(attachment),
             }
         )
     return entries
@@ -3499,8 +3558,9 @@ def _replace_chat_attachment_inventory(
     conn.executemany(
         """
         INSERT INTO chat_attachment_inventory
-            (message_id, attachment_id, name, type, content_type, size_bytes)
-        VALUES (?, ?, ?, ?, ?, ?)
+            (message_id, attachment_id, name, type, content_type, size_bytes, original_sha256,
+             text_bytes)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """,
         [
             (
@@ -3510,6 +3570,8 @@ def _replace_chat_attachment_inventory(
                 entry["type"],
                 entry["contentType"],
                 entry["sizeBytes"],
+                entry["originalSha256"],
+                entry["textBytes"],
             )
             for entry in entries
         ],
@@ -3639,6 +3701,8 @@ def upsert_chat_message(
             [message],
             allow_research_update = allow_research_update,
         )
+        if allow_research_update:
+            message = _settle_handed_off_generation(conn, message)
         _raise_if_chat_message_thread_conflicts(
             conn,
             message["threadId"],
@@ -4357,10 +4421,26 @@ def _attachment_content_parts(attachment: dict) -> list[dict]:
     return [part for part in content if isinstance(part, dict)]
 
 
+def _chat_attachment_text_bytes(attachment: dict) -> Optional[int]:
+    """UTF-8 size of a kept original's extracted text, which the database stores as well. None
+    without an original, whose size already counts its text."""
+    if chat_originals.attachment_sha256(attachment) is None:
+        return None
+    return sum(
+        len(part["text"].encode("utf-8", errors = "ignore"))
+        for part in _attachment_content_parts(attachment)
+        if isinstance(part.get("text"), str)
+    )
+
+
 def _chat_attachment_size_bytes(attachment: dict) -> Optional[int]:
     """Approximate stored size of one attachment's content parts. Image, audio and file (video)
     parts hold base64 payloads (decoded bytes ~= 3/4 of the encoded length); text parts count their
-    character length. None when there is no sizable content."""
+    character length. None when there is no sizable content. A document whose original file is kept
+    counts that file instead of its extracted text."""
+    original_size = chat_originals.attachment_size(attachment)
+    if original_size is not None:
+        return original_size
     total = 0
     found = False
     for part in _attachment_content_parts(attachment):
@@ -4468,7 +4548,7 @@ def list_chat_attachments_page(
         rows = conn.execute(
             """
             SELECT i.attachment_id, i.name, i.type, i.content_type,
-                   i.size_bytes, m.id AS message_id, m.thread_id,
+                   i.size_bytes, i.original_sha256, i.text_bytes, m.id AS message_id, m.thread_id,
                    m.created_at, t.title AS thread_title, t.pair_id
             FROM chat_attachment_inventory i
             JOIN chat_messages m ON m.id = i.message_id
@@ -4483,6 +4563,7 @@ def list_chat_attachments_page(
 
     has_more = len(rows) > limit
     page_rows = rows[:limit]
+    originals = chat_originals.originals_dir()
     attachments = [
         {
             "id": row["attachment_id"],
@@ -4494,11 +4575,49 @@ def list_chat_attachments_page(
             "type": row["type"],
             "contentType": row["content_type"],
             "sizeBytes": row["size_bytes"],
+            "originalSha256": row["original_sha256"],
+            "textBytes": row["text_bytes"],
+            "hasOriginal": bool(row["original_sha256"])
+            and (originals / row["original_sha256"]).is_file(),
             "createdAt": row["created_at"],
         }
         for row in page_rows
     ]
     return attachments, offset + limit if has_more else None
+
+
+def referenced_chat_original_hashes() -> set[str]:
+    """Every stored original a chat attachment still points at."""
+    conn = get_connection()
+    try:
+        _ensure_chat_attachment_inventory_current(conn)
+        rows = conn.execute(
+            "SELECT DISTINCT original_sha256 FROM chat_attachment_inventory"
+            " WHERE original_sha256 IS NOT NULL"
+        ).fetchall()
+    finally:
+        conn.close()
+    return {row[0] for row in rows}
+
+
+@contextmanager
+def chat_original_unreferenced(sha256: str) -> Iterator[bool]:
+    """Whether no attachment references ``sha256``, with the write lock held until the block
+    ends: a message that would reference it waits, so it cannot do so while the file is removed."""
+    conn = get_connection()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        _ensure_chat_attachment_inventory_current(conn)
+        row = conn.execute(
+            "SELECT 1 FROM chat_attachment_inventory WHERE original_sha256 = ? LIMIT 1", (sha256,)
+        ).fetchone()
+        yield row is None
+        conn.commit()
+    except BaseException:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def list_chat_attachments() -> list[dict]:
