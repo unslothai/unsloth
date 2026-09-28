@@ -126,16 +126,29 @@ class LoadRequest(BaseModel):
             "(e.g. 'f16', 'bf16', 'q8_0', 'q4_0', 'q4_1', 'q5_0', 'q5_1', 'iq4_nl', 'f32')"
         ),
     )
-    mlx_kv_bits: Optional[int] = Field(
+    mlx_kv_quant: Optional[str] = Field(
         None,
         description = (
-            "MLX KV cache quantization bit width (8, 6, 5, 4, 3 or 2). MLX takes a bit "
-            "width rather than a llama.cpp dtype name, so this is separate from "
-            "cache_type_kv. Omit for an unquantized cache. Ignored by non-MLX "
-            "backends; a model whose cache layout cannot be quantized reports "
-            "the reason instead of applying it."
+            "MLX KV cache quantization: 'auto' for an unquantized cache, '8'/'6'/'5'/'4'/'3'/'2' "
+            "for an mx.quantize width, or 'tq-4'/'tq-3.5'/'tq-3'/'tq-2' for TurboQuant. MLX names a "
+            "width rather than a llama.cpp dtype, so this is separate from cache_type_kv. Ignored "
+            "by non-MLX backends; a model whose cache layout cannot be quantized reports the reason "
+            "instead of applying it."
         ),
     )
+    mlx_kv_bits: Optional[float] = Field(
+        None, description = "Superseded by mlx_kv_quant; read only when mlx_kv_quant is omitted."
+    )
+
+    @model_validator(mode = "after")
+    def derive_mlx_kv_quant(self):
+        """A bare width only ever meant mx.quantize; null is how a client spells Auto."""
+
+        if "mlx_kv_quant" not in self.model_fields_set and self.mlx_kv_bits is not None:
+            from core.inference.mlx_inference import encode_mlx_kv_quant
+            self.mlx_kv_quant = encode_mlx_kv_quant(self.mlx_kv_bits)
+        return self
+
     gpu_ids: Optional[List[int]] = Field(
         None,
         description = (
@@ -186,11 +199,14 @@ class LoadRequest(BaseModel):
         ge = PARALLEL_MIN,
         le = PARALLEL_MAX,
         description = (
-            "Parallel decode slots for llama-server (--parallel) for this "
-            f"load ({PARALLEL_MIN}..{PARALLEL_MAX}). Omit for the server-wide "
-            "default set at launch (the --parallel CLI flag). The VRAM fitter "
-            "may launch fewer slots to keep the model fully on GPU. Ignored "
-            "for non-GGUF models."
+            f"Replies this load may decode at once ({PARALLEL_MIN}..{PARALLEL_MAX}). "
+            "For GGUF these are llama-server's --parallel slots, and the VRAM "
+            "fitter may launch fewer to keep the model fully on GPU; omit for the "
+            "server-wide default set at launch. Elsewhere it is a ceiling, not a promise: "
+            "a runtime that decodes replies together commits its memory to this width and "
+            "spends it on both the replies to one turn and the concurrent chats joining a "
+            "batch already decoding, while one that does not answers every reply on its "
+            "own whatever this says. The load reply's parallel_slots is what it came to."
         ),
     )
     n_batch: Optional[int] = Field(
@@ -1221,9 +1237,34 @@ class _InferenceRuntimeFields(BaseModel):
     context_length_enforced: Optional[bool] = Field(
         None,
         description = (
-            "Whether context_length actually bounds the runtime's KV cache. True confirmed, "
-            "false confirmed unbounded, null the backend does not answer. MLX builds a cache "
-            "to check, since a model with its own make_cache ignores the requested size."
+            "Whether context_length bounds the runtime's KV cache for a reply decoded on "
+            "its own. True confirmed, false confirmed unbounded, null the backend does not "
+            "answer. MLX builds a cache to check, since a model with its own make_cache "
+            "ignores the requested size. Replies decoded together are answered for by "
+            "context_unbounded_when_batched, not by this."
+        ),
+    )
+    context_unbounded_when_batched: bool = Field(
+        False,
+        description = (
+            "Whether replies this load decodes together escape the window this reports. "
+            "mlx-vlm's batch generator takes no window control, so a vision load able to "
+            "run either batch reports true; everything else, llama.cpp included, reports "
+            "false. Which batch a given reply gets is a per-request question this cannot "
+            "settle, so it errs towards not promising a window. Both fields describe the "
+            "load as it was loaded and neither changes afterwards, so a client combines "
+            "them with parallel_slots to decide what to tell a user: a load reporting true "
+            "and more than one slot cannot promise a window. That is the load's answer, not "
+            "the reply's -- a load whose release keeps no batch open decodes a plain chat "
+            "bounded while still reporting true -- so read it as the weaker claim it is."
+        ),
+    )
+    mlx_context_budget: Optional[int] = Field(
+        None,
+        description = (
+            "Token limit enforced per request rather than by the KV cache, set where a "
+            "requested cache width took the cache and context_length could not bound it. "
+            "A request over it is refused; null where context_length bounds the cache itself."
         ),
     )
     supports_reasoning: bool = Field(
@@ -1281,16 +1322,21 @@ class _InferenceRuntimeFields(BaseModel):
         False,
         description = "Whether the active model runs on the AMD Ryzen AI NPU (FastFlowLM through Lemonade)",
     )
-    mlx_kv_bits: Optional[int] = Field(
-        None, description = "MLX KV quantization bit width actually applied, if any"
+    mlx_kv_quant: Optional[str] = Field(
+        None, description = "MLX KV cache quantization actually applied, in mlx_kv_quant's vocabulary"
     )
-    mlx_kv_bits_requested: Optional[int] = Field(
+    mlx_kv_quant_requested: Optional[str] = Field(
         None,
         description = (
-            "MLX KV quantization bit width the load asked for. Differs from "
-            "mlx_kv_bits when the model could not honor it, which is exactly "
-            "when the reason matters."
+            "MLX KV cache quantization the load asked for. Differs from mlx_kv_quant when the model "
+            "could not honor it, which is exactly when the reason matters."
         ),
+    )
+    mlx_kv_bits: Optional[float] = Field(
+        None, description = "mlx_kv_quant as a bare width, kept for clients reading the older field"
+    )
+    mlx_kv_bits_requested: Optional[float] = Field(
+        None, description = "mlx_kv_quant_requested as a bare width, kept for the same reason"
     )
     chat_template_override: Optional[str] = Field(
         None,
@@ -1422,18 +1468,23 @@ class _InferenceRuntimeFields(BaseModel):
     requested_parallel_slots: Optional[int] = Field(
         None,
         description = (
-            "Parallel decode slots the load was invoked with (per-load "
-            "n_parallel, else the server-wide --parallel default). None for "
-            "non-GGUF loads and for the diffusion runner, which ignores "
-            "--parallel."
+            "Replies the load was invoked with (per-load n_parallel, else the "
+            "default; for GGUF, the server-wide --parallel set at launch). None "
+            "for the diffusion runner, which ignores --parallel."
         ),
     )
     parallel_slots: Optional[int] = Field(
         None,
         description = (
-            "Serving slots the active llama-server actually runs (--parallel "
-            "after any fit-time slot reduction). None for non-GGUF loads and "
-            "for the diffusion runner, which ignores --parallel."
+            "Replies the loaded model is configured to decode at once. Not what any "
+            "one reply is running under: a batch already decoding keeps the width it "
+            "opened at until it drains, since resizing it would drop the replies "
+            "inside it, and a request submitted before a change carries the width it "
+            "was submitted with. For "
+            "GGUF these are llama-server's --parallel slots after any fit-time "
+            "reduction; elsewhere it is 1 when the runtime has no batched "
+            "generation, or its settings rule it out. None for the diffusion "
+            "runner, which ignores --parallel, and when the runtime did not say."
         ),
     )
     requested_n_batch: Optional[int] = Field(
@@ -2118,6 +2169,11 @@ def _normalize_permission_mode(value: Any) -> Any:
     return value
 
 
+class SandboxAttachment(BaseModel):
+    sha256: str = Field(..., pattern = r"^[0-9a-f]{64}$")
+    name: str = Field(..., max_length = 1024)
+
+
 class ChatCompletionRequest(BaseModel):
     """OpenAI-compatible chat completion request.
 
@@ -2428,6 +2484,14 @@ class ChatCompletionRequest(BaseModel):
     session_id: Optional[str] = Field(
         None,
         description = "[x-unsloth] Session/thread ID for scoping tool execution sandbox.",
+    )
+    sandbox_attachments: Optional[list[SandboxAttachment]] = Field(
+        None,
+        max_length = 64,
+        description = (
+            "[x-unsloth] Chat attachment originals (hashes from POST /api/chat/attachment-originals) "
+            "to copy into the session sandbox before the tool loop, when the python tool is enabled."
+        ),
     )
     thread_id: Optional[str] = Field(
         None,
@@ -3369,6 +3433,7 @@ class AnthropicToolResultBlock(BaseModel):
     type: Literal["tool_result"]
     tool_use_id: str
     content: Union[str, list] = ""
+    is_error: Optional[bool] = None
 
     @field_validator("content", mode = "before")
     @classmethod
@@ -3886,14 +3951,17 @@ class DiffusionLoadRequest(BaseModel):
         "friendly); xformers/aiter are memory-efficient (NVIDIA) / AMD ROCm. An "
         "unavailable kernel falls back to the default.",
     )
-    transformer_cache: Optional[Literal["off", "fbcache"]] = Field(
+    transformer_cache: Optional[Literal["off", "fbcache", "static"]] = Field(
         None,
         description = "Step caching. fbcache = First-Block-Cache: reuse the transformer tail "
         "across denoise steps when the first block's residual barely changes (~1.4x on Flux "
         "28-step at LPIPS ~0.08). Unset = auto: engages only on speed_mode=max with a 20+ step "
         "schedule, otherwise uncached. An explicit fbcache engages on every speed tier; off "
         "never caches. Composes with compile (drops fullgraph automatically); incompatible "
-        "models run uncached.",
+        "models run uncached. static = skip denoiser calls on a fixed schedule (first 20% and "
+        "last 10% of the steps always run, every other middle step is extrapolated from the "
+        "last two outputs; 12+ steps only), which keeps compile fullgraph and the CUDA graph. "
+        "Never picked automatically.",
     )
     transformer_cache_threshold: Optional[float] = Field(
         None,
@@ -3901,7 +3969,7 @@ class DiffusionLoadRequest(BaseModel):
         le = 1.0,
         description = "FBCache residual threshold (higher = skips more steps = faster, lower "
         "quality). null auto-picks 0.08 (0.12 when the transformer is quantised, which "
-        "shifts the residual distribution).",
+        "shifts the residual distribution). Ignored by static.",
     )
     gpu_ids: Optional[List[int]] = Field(
         None,
@@ -4118,6 +4186,14 @@ class DiffusionGenerateRequest(BaseModel):
         description = "Upscale (hires fix) factor for an init_image: enlarges the source "
         "by this multiple and re-denoises at low strength. Requires init_image; "
         "ignored for txt2img/inpaint/edit.",
+    )
+    allow_oversized: bool = Field(
+        False,
+        description = "Run even when the generate-time memory check estimates this size will not "
+        "fit the free GPU memory. Sizes that fit once the VAE decodes tile by tile already run "
+        "without it; this is for the rest. An oversized run can fail with an out-of-memory error, "
+        "or on Windows spill into system RAM and run very slowly. Same effect as the server's "
+        "UNSLOTH_DIFFUSION_ALLOW_OVERSIZED_GENERATE=1, per request.",
     )
     reference_images: Optional[list[str]] = Field(
         None,
@@ -4360,6 +4436,9 @@ class DiffusionGenerateProgressResponse(BaseModel):
     total_steps: int = Field(0, description = "Total denoising steps for this run")
     fraction: float = Field(0.0, description = "step / total_steps, clamped to [0,1]")
     eta_seconds: Optional[float] = Field(None, description = "Estimated seconds remaining")
+    phase: Optional[str] = Field(
+        None, description = "denoise | decode; null from engines that report no phase (sd.cpp)"
+    )
 
 
 class DiffusionLoadProgressResponse(BaseModel):
@@ -4501,12 +4580,32 @@ class DiffusionStatusResponse(BaseModel):
         description = "Transformer quant engaged on the dense fast path: int8 | fp8 | "
         "nvfp4 | mxfp8 | null (null = the GGUF transformer was loaded)",
     )
+    transformer_quant_backend: Optional[str] = Field(
+        None,
+        description = "Which NVFP4 kernel path the loaded DiT actually runs: flashinfer | "
+        "torchao | null (null for every scheme but nvfp4). The scheme alone does not say: "
+        "flashinfer is selected per device and falls back to torchao on a preflight failure, so "
+        "this is the only place a render's speed can be attributed to the backend that served it.",
+    )
+    transformer_quant_backend_reason: Optional[str] = Field(
+        None,
+        description = "Why flashinfer is not serving an NVFP4 load that runs torchao: the on-demand "
+        "install was refused (offline, opt-out, ineligible host) or failed and was rolled back. "
+        "null when the backend is flashinfer, the scheme is not nvfp4, or no reason was recorded.",
+    )
     attention_backend: Optional[str] = Field(
         None,
         description = "Attention backend engaged via the diffusers dispatcher (e.g. "
         "_native_cudnn), or null for the default SDPA",
     )
-    transformer_cache: Optional[str] = Field(None, description = "Step cache engaged: fbcache | null")
+    transformer_cache: Optional[str] = Field(
+        None, description = "Step cache engaged: fbcache | static | null"
+    )
+    transformer_cache_stats: Optional[dict] = Field(
+        None,
+        description = "Static step skip only: mode, schedule and the last generation's "
+        "calls / computed / skipped transformer calls; null for any other cache",
+    )
     workflows: list[str] = Field(
         default_factory = list,
         description = "Image workflows the loaded family supports (drives UI tab gating): "
@@ -4853,19 +4952,25 @@ class VideoLoadRequest(BaseModel):
         "attention; xformers/aiter are memory-efficient (NVIDIA) / AMD ROCm. An unavailable "
         "kernel falls back to the default.",
     )
-    transformer_cache: Optional[Literal["off", "fbcache"]] = Field(
+    transformer_cache: Optional[Literal["off", "fbcache", "static"]] = Field(
         None,
         description = "Step caching. fbcache = First-Block-Cache: reuse the transformer tail "
         "across denoise steps when the first block's residual barely changes. Unset = auto: "
         "engages only on speed_mode=max with a 20+ step schedule, otherwise uncached. An "
-        "explicit fbcache engages on every speed tier; incompatible models run uncached.",
+        "explicit fbcache engages on every speed tier; incompatible models run uncached. "
+        "static = skip denoiser calls on a fixed schedule (first 20% and last 10% of the steps "
+        "always run, every other middle step is extrapolated from the last two computed "
+        "outputs; 12+ steps only), which keeps compile fullgraph and the CUDA graph. "
+        "Single-denoiser video-only families: a two-expert MoE (Wan2.2 A14B), a joint "
+        "audio + video denoiser (LTX-2) and the MiniMax-H3 modular workflow run uncached. "
+        "Never picked automatically.",
     )
     transformer_cache_threshold: Optional[float] = Field(
         None,
         ge = 0.0,
         le = 1.0,
         description = "FBCache residual threshold (higher = skips more steps = faster, lower "
-        "quality). null auto-picks the family default.",
+        "quality). null auto-picks the family default. Ignored by static.",
     )
     transformer_quant: Optional[Literal["auto", "none", "off", "int8", "fp8", "nvfp4", "mxfp8"]] = (
         Field(
@@ -5311,12 +5416,31 @@ class VideoStatusResponse(BaseModel):
         description = "Attention backend engaged via the diffusers dispatcher (e.g. "
         "_native_cudnn), or null for the default SDPA",
     )
-    transformer_cache: Optional[str] = Field(None, description = "Step cache engaged: fbcache | null")
+    transformer_cache: Optional[str] = Field(
+        None, description = "Step cache engaged: fbcache | static | null"
+    )
+    transformer_cache_stats: Optional[dict] = Field(
+        None,
+        description = "Static step skip only: the schedule (mode, head, tail, every, "
+        "planned_skips) and the denoiser call counts (calls, computed, skipped) of the clip in "
+        "flight, else of the last one. null for any other step cache.",
+    )
     transformer_quant: Optional[str] = Field(
         None,
         description = "Dense transformer quant engaged on a pipeline load: int8 | fp8 | nvfp4 | "
         "mxfp8 | null (null = the DiT(s) run at their loaded bf16 precision). For a dual-expert "
         "MoE family both experts share the reported scheme.",
+    )
+    transformer_quant_backend: Optional[str] = Field(
+        None,
+        description = "Which NVFP4 kernel path the loaded DiT(s) run: flashinfer | torchao | null "
+        "(null for every scheme but nvfp4).",
+    )
+    transformer_quant_backend_reason: Optional[str] = Field(
+        None,
+        description = "Why flashinfer is not serving an NVFP4 load that runs torchao: the on-demand "
+        "install was refused (offline, opt-out, ineligible host) or failed and was rolled back. "
+        "null when the backend is flashinfer, the scheme is not nvfp4, or no reason was recorded.",
     )
     text_encoder_quant: Optional[str] = Field(
         None,

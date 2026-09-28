@@ -142,6 +142,10 @@ import {
   useNativeIntentStore,
 } from "@/features/native-intents";
 import { nativeAttachmentIntentToFile } from "@/features/native-intents/native-attachment-file";
+import {
+  attachLibraryChatFiles,
+  useLibraryChatHandoffStore,
+} from "@/features/library/chat-handoff-store";
 import { cancelResearchRun } from "@/features/chat/api/research-api";
 import {
   ingestResearchUpdate,
@@ -185,7 +189,7 @@ import {
   isMacPlatform,
 } from "@/features/settings";
 import { FIND_SKIP_ATTRIBUTE } from "@/features/find-in-page";
-import { useT } from "@/i18n";
+import { translate, useT } from "@/i18n";
 import {
   clampReasoningEffortToLevels,
   getExternalReasoningCapabilities,
@@ -259,6 +263,7 @@ import {
   type PlusMenuItemId,
   usePlusMenuPrefsStore,
   writeComposerDraft,
+  normalizeChatImage,
 } from "@/features/chat";
 import {
   applySentTextGuard,
@@ -2983,6 +2988,59 @@ const Composer: FC<{
   const nativeAttachmentTargetKey = useNativeAttachmentTargetKey();
   const nativeAttachmentTargetKeyRef = useRef(nativeAttachmentTargetKey);
   nativeAttachmentTargetKeyRef.current = nativeAttachmentTargetKey;
+
+  useEffect(() => {
+    if (!nativeAttachmentTargetKey) return;
+    const targetKey = nativeAttachmentTargetKey;
+    let disposed = false;
+    // aui.composer() is whichever chat is open now: a switch mid-batch must not take the rest.
+    const add = async (file: File) => {
+      if (disposed || nativeAttachmentTargetKeyRef.current !== targetKey) {
+        throw new Error("The chat changed before this file was attached.");
+      }
+      await aui.composer().addAttachment(file);
+    };
+    const drain = async () => {
+      const held = await attachLibraryChatFiles(targetKey, add);
+      if (held > 0) toast(translate("library.toast.chatFilesWaiting", { count: held }));
+    };
+    void drain();
+    const offers = useLibraryChatHandoffStore.subscribe((state) => {
+      if (state.pending?.targetKey === targetKey) void drain();
+    });
+    let retrying = false;
+    let again = false;
+    const retry = async () => {
+      if (retrying) {
+        again = true;
+        return;
+      }
+      retrying = true;
+      do {
+        again = false;
+        await attachLibraryChatFiles(targetKey, add, true);
+      } while (again);
+      retrying = false;
+    };
+    const loads = useChatRuntimeStore.subscribe((state, prev) => {
+      if (state.modelLoading) return;
+      if (
+        prev.modelLoading ||
+        state.params.checkpoint !== prev.params.checkpoint ||
+        state.residentCheckpoint !== prev.residentCheckpoint ||
+        state.loadedIsMultimodal !== prev.loadedIsMultimodal ||
+        state.codeToolsEnabled !== prev.codeToolsEnabled ||
+        state.supportsTools !== prev.supportsTools
+      ) {
+        void retry();
+      }
+    });
+    return () => {
+      disposed = true;
+      offers();
+      loads();
+    };
+  }, [nativeAttachmentTargetKey, aui]);
   const hasPendingImageAttachments = useNativeIntentStore((s) =>
     Boolean(
       nativeAttachmentTargetKey &&
@@ -3350,7 +3408,9 @@ const Composer: FC<{
             const intent = intents[index]!;
             let file: File;
             try {
-              file = await nativeAttachmentIntentToFile(intent);
+              file = await normalizeChatImage(
+                await nativeAttachmentIntentToFile(intent),
+              );
             } catch (error) {
               // Report once below rather than one toast per file: a whole batch
               // can go unreadable at once (volume ejected, tokens expired).
@@ -6387,8 +6447,9 @@ const ComposerToolsMenu: FC<{
   );
   const audioAttachmentsEnabled = useChatRuntimeStore((s) => {
     const activeCheckpoint = s.params.checkpoint;
+    // No model yet: offer audio too, since files attached now wait for the model loaded next.
     if (!activeCheckpoint || s.modelLoading) {
-      return false;
+      return true;
     }
     const activeModel = s.models.find((m) => m.id === activeCheckpoint);
     return Boolean(activeModel?.hasAudioInput);

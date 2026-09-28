@@ -11,10 +11,12 @@ from __future__ import annotations
 
 import contextlib
 import os
+import re
 import shutil
 import stat
 import uuid
 from pathlib import Path
+from typing import BinaryIO, Iterator, Union
 
 from loggers import get_logger
 
@@ -58,14 +60,41 @@ def _sandbox_dir(project_id: str) -> str:
     return sandbox_real
 
 
+UNSAFE_NAME_CHARS = r"\\/:*?\"<>|\x00-\x1f\x7f"
+_BAD_NAME_RE = re.compile(f"[{UNSAFE_NAME_CHARS}]")
+RESERVED_NAMES = frozenset(
+    {"CON", "PRN", "AUX", "NUL"}
+    | {f"{device}{index}" for device in ("COM", "LPT") for index in range(1, 10)}
+)
+
+
+def _bad_name(name: str) -> bool:
+    return (
+        not name
+        or name.startswith(".")
+        or name.endswith((".", " "))
+        or bool(_BAD_NAME_RE.search(name))
+        or name.split(".", 1)[0].rstrip(" ").upper() in RESERVED_NAMES
+    )
+
+
+@contextlib.contextmanager
+def _reading(source: Union[Path, BinaryIO]) -> Iterator[BinaryIO]:
+    """The bytes to copy: an open file as it is, from where it stands, or a path opened here."""
+    if hasattr(source, "read"):
+        yield source  # type: ignore[misc]
+        return
+    with open(source, "rb") as handle:
+        yield handle
+
+
 def _tmp_name(name: str) -> str:
     # Unique per call: two adds of one item can run at once in this process.
     return f".{name}.tmp-{uuid.uuid4().hex}"
 
 
-def _copy_with_dir_fd(source: Path, sandbox: str, folder: str) -> bool:
+def _copy_with_dir_fd(source: Union[Path, BinaryIO], sandbox: str, folder: str, name: str) -> bool:
     """Copy into ``sandbox/folder`` by descriptor; returns whether it was already there."""
-    name = source.name
     sandbox_fd = os.open(sandbox, _DIR_FLAGS)
     try:
         try:
@@ -92,7 +121,7 @@ def _copy_with_dir_fd(source: Path, sandbox: str, folder: str) -> bool:
             dir_fd = folder_fd,
         )
         try:
-            with os.fdopen(out, "wb") as dst, open(source, "rb") as src:
+            with os.fdopen(out, "wb") as dst, _reading(source) as src:
                 shutil.copyfileobj(src, dst)
             os.rename(tmp, name, src_dir_fd = folder_fd, dst_dir_fd = folder_fd)
         except BaseException:
@@ -104,22 +133,26 @@ def _copy_with_dir_fd(source: Path, sandbox: str, folder: str) -> bool:
     return False
 
 
-def _copy_by_path(source: Path, sandbox: str, folder: str) -> bool:
+def _copy_by_path(source: Union[Path, BinaryIO], sandbox: str, folder: str, name: str) -> bool:
     """Fallback without dir_fd support (Windows): resolve the folder and re-check containment."""
     target = Path(sandbox) / folder
     target.mkdir(exist_ok = True)
     real = os.path.realpath(target)
     if os.path.dirname(real) != sandbox:
         raise PermissionError(f"{target} resolves outside the project sandbox")
-    dest = Path(real) / source.name
+    dest = Path(real) / name
     try:
         if not dest.is_symlink() and dest.is_file():
             return True
     except OSError:
         pass
-    tmp = Path(real) / _tmp_name(source.name)
+    tmp = Path(real) / _tmp_name(name)
     try:
-        shutil.copyfile(source, tmp)
+        if isinstance(source, Path):
+            shutil.copyfile(source, tmp)
+        else:
+            with open(tmp, "xb") as dst:
+                shutil.copyfileobj(source, dst)
         # Without dir_fd the folder can be swapped after the check; check again before the rename.
         if os.path.realpath(tmp.parent) != real:
             raise PermissionError(f"{target} moved outside the project sandbox")
@@ -131,13 +164,26 @@ def _copy_by_path(source: Path, sandbox: str, folder: str) -> bool:
     return False
 
 
-def copy_into_project(source: Path, project_id: str, folder: str) -> dict[str, object]:
+def copy_into_project(
+    source: Union[Path, BinaryIO],
+    project_id: str,
+    folder: str,
+    name: str | None = None,
+) -> dict[str, object]:
     """Copy ``source`` into the project's ``folder`` and return ``{"path", "already"}``.
 
-    Keyed by the gallery id, so a second add is a no-op. Written via a temp file so a failed copy
-    leaves nothing behind. Refuses a ``folder`` that leads outside the sandbox. Raises
-    ProjectNotFound or OSError."""
+    ``source`` is a path, or a file already open (then ``name`` is required): a caller that checked
+    the file it opened hands over that descriptor rather than a name that can be swapped since.
+    Keyed by the file name (the gallery id unless ``name`` is given), so a second add is a no-op.
+    Written via a temp file so a failed copy leaves nothing behind. Refuses a ``folder`` that leads
+    outside the sandbox. Raises ProjectNotFound, ValueError for a bad ``name``, or OSError."""
+    if name is None:
+        if not isinstance(source, Path):
+            raise ValueError("An open file needs a name to be copied as.")
+        name = source.name
+    if _bad_name(name):
+        raise ValueError(f"Bad file name: {name!r}")
     sandbox = _sandbox_dir(project_id)
     copy = _copy_with_dir_fd if _USE_DIR_FD else _copy_by_path
-    already = copy(source, sandbox, folder)
-    return {"path": str(Path(sandbox) / folder / source.name), "already": already}
+    already = copy(source, sandbox, folder, name)
+    return {"path": str(Path(sandbox) / folder / name), "already": already}

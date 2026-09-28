@@ -505,7 +505,24 @@ def keyless_request_allowed(request: Any) -> bool:
     return _keyless_request_allowed_for_scope(request, get_keyless_api_access_scope())
 
 
-def _keyless_request_allowed_for_scope(request: Any, scope: str) -> bool:
+async def keyless_request_may_load_models(request: Any) -> bool:
+    """Whether keyless access would admit this request's transport on ``POST /api/inference/load``.
+
+    Reads settings like admission (``_settings_async``): the sync read fails closed to ``off`` during a concurrent cache refresh.
+    """
+    from starlette.concurrency import run_in_threadpool
+
+    scope, _tools, _generation = await _settings_async()
+    return await run_in_threadpool(
+        _keyless_request_allowed_for_scope, request, scope, ("POST", "/api/inference/load")
+    )
+
+
+def _keyless_request_allowed_for_scope(
+    request: Any,
+    scope: str,
+    route: Optional[tuple[str, str]] = None,
+) -> bool:
     if scope == KEYLESS_SCOPE_OFF:
         return False
     from auth.policy import installation_has_managed_accounts
@@ -513,8 +530,7 @@ def _keyless_request_allowed_for_scope(request: Any, scope: str) -> bool:
     if installation_has_managed_accounts():
         return False
     asgi_scope = getattr(request, "scope", {})
-    method = asgi_scope.get("method", "")
-    path = asgi_scope.get("path", "")
+    method, path = route or (asgi_scope.get("method", ""), asgi_scope.get("path", ""))
     root_path = asgi_scope.get("root_path", "")
     if not scope_covers(scope, method, path, root_path):
         return False

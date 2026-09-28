@@ -885,12 +885,16 @@ class FastSentenceTransformer(FastModel):
         modeling_distilbert.DistilBertModel.forward = forward
 
     @staticmethod
-    def _has_add_pooling_layer(config, auto_model_class = None):
+    def _has_add_pooling_layer(
+        config,
+        auto_model_class = None,
+        **hub_kwargs,
+    ):
         """Check if the model class accepts the `add_pooling_layer` argument."""
         try:
             if auto_model_class is None:
                 auto_model_class = AutoModel
-            model_class = resolve_model_class(auto_model_class, config)
+            model_class = resolve_model_class(auto_model_class, config, **hub_kwargs)
 
             if model_class:
                 sig = inspect.signature(model_class.__init__)
@@ -1471,6 +1475,16 @@ class FastSentenceTransformer(FastModel):
                 "Run `pip install sentence-transformers` to install it."
             )
 
+        # Remote-class probes must use this load's trust, revision and hub options.
+        _remote_class_probe_kwargs = dict(
+            trust_remote_code = trust_remote_code,
+            revision = revision,
+            token = token,
+            cache_dir = kwargs.get("cache_folder", kwargs.get("cache_dir", None)),
+            local_files_only = kwargs.get("local_files_only", None),
+            proxies = kwargs.get("proxies", None),
+        )
+
         # The other leaf loaders resolve the "unsloth" sentinel by planning; this one declines. st_device below hands device_map to SentenceTransformer(device=), which ends in self.to(device): the sentinel raises there, and that same .to() would pull a split model back onto one card. The env-var opt-in is resolved too, or UNSLOTH_AUTO_DEVICE_MAP=1 asks for a plan without naming the sentinel.
         device_map = requested_device_map(device_map)
         # Always "sequential", never the asked-for name's own declined value: the st_device blocks normalise only dicts, "auto" and "sequential", so "balanced" would reach .to("balanced"). isinstance first, since a caller's explicit dict is unhashable and `in` alone raises.
@@ -1602,6 +1616,7 @@ class FastSentenceTransformer(FastModel):
                 config,
                 model_type = model_type,
                 disable_sdpa_model_names = DISABLE_SDPA_MODEL_NAMES,
+                **_remote_class_probe_kwargs,
             )
             supports_sdpa = encoder_attn_impl == "sdpa"
             if encoder_attn_impl is not None:
@@ -1742,7 +1757,7 @@ class FastSentenceTransformer(FastModel):
 
         if "add_pooling_layer" not in kwargs:
             supported = FastSentenceTransformer._has_add_pooling_layer(
-                config, kwargs.get("auto_model", AutoModel)
+                config, kwargs.get("auto_model", AutoModel), **_remote_class_probe_kwargs
             )
             if supported:
                 kwargs["add_pooling_layer"] = False

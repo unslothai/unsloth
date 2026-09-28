@@ -48,30 +48,82 @@ def _page(text: str, page_number: int | None) -> Page:
     return Page(text = text, page_number = page_number, char_count = len(text))
 
 
+_HTML_SKIP_TAGS = frozenset(("script", "style", "template"))
+_HTML_BLOCK_TAGS = frozenset(
+    "address article aside blockquote br caption center dd details dialog dir div dl dt"
+    " fieldset figcaption figure footer form h1 h2 h3 h4 h5 h6 header hgroup hr legend li"
+    " listing main menu nav ol optgroup option p plaintext pre search section summary table"
+    " td text textarea th title tr ul xmp".split()
+)
+_HTML_PRE_TAGS = frozenset(("listing", "plaintext", "pre", "textarea", "xmp"))
+# Atomic inline boxes: their text never runs into a neighbour's, but they do not break the line.
+_HTML_BOX_TAGS = frozenset(("button", "img", "input", "select"))
+
+
 class _Stripper(HTMLParser):
-    """Collect visible text, skipping <script>/<style>."""
+    """Collect visible text, one line per block element."""
 
     def __init__(self) -> None:
         super().__init__()
         self._skip = 0
+        self._pre = 0
+        self._templates: list[bool] = []
+        self._line: list[str] = []
         self.out: list[str] = []
 
+    def _flush(self) -> None:
+        text = "".join(self._line)
+        self._line = []
+        # Whitespace inside <pre>/<textarea> is content; elsewhere it is layout.
+        text = text.strip("\n") if self._pre else " ".join(text.split())
+        if text.strip():
+            self.out.append(text)
+
     def handle_starttag(self, tag, attrs):
-        if tag in ("script", "style"):
+        if tag == "template":
+            # A declarative shadow root (shadowrootmode=open|closed) is rendered; other templates are inert.
+            inert = (dict(attrs).get("shadowrootmode") or "").lower() not in ("open", "closed")
+            self._templates.append(inert)
+            self._skip += inert
+        elif tag in _HTML_SKIP_TAGS:
             self._skip += 1
+        elif tag in _HTML_BLOCK_TAGS and not self._skip:
+            self._flush()
+            if tag in _HTML_PRE_TAGS:
+                self._pre += 1
+        elif tag in _HTML_BOX_TAGS and not self._skip and not self._pre:
+            self._line.append(" ")
+        elif tag == "tspan" and not self._skip and any(k in ("x", "y") for k, _ in attrs):
+            # An absolute x/y starts a new SVG text chunk (a separate label or line).
+            self._flush()
 
     def handle_endtag(self, tag):
-        if tag in ("script", "style") and self._skip:
-            self._skip -= 1
+        if tag == "template":
+            if self._templates and self._templates.pop() and self._skip:
+                self._skip -= 1
+        elif tag in _HTML_SKIP_TAGS:
+            if self._skip:
+                self._skip -= 1
+        elif tag in _HTML_BLOCK_TAGS and not self._skip:
+            self._flush()
+            if tag in _HTML_PRE_TAGS and self._pre:
+                self._pre -= 1
+        elif tag in _HTML_BOX_TAGS and not self._skip and not self._pre:
+            self._line.append(" ")
 
     def handle_data(self, data):
-        if not self._skip and data.strip():
-            self.out.append(data.strip())
+        if not self._skip:
+            self._line.append(data)
+
+    def close(self):
+        super().close()
+        self._flush()
 
 
 def _html(raw: str) -> list[Page]:
     parser = _Stripper()
     parser.feed(raw)
+    parser.close()
     return [_page("\n".join(parser.out), 1)]
 
 
@@ -542,6 +594,44 @@ def _docx(path: str) -> list[Page]:
     return [_page("\n".join(lines), None)]
 
 
+def _declared_charset(data: bytes) -> str | None:
+    # Lazy: tools is heavy, and only HTML that is not UTF-8 gets here.
+    from ..inference.tools import _META_CHARSET_SCAN_BYTES, _sniff_meta_charset
+    return _sniff_meta_charset(data[:_META_CHARSET_SCAN_BYTES], "text/html")
+
+
+def _decode_text(data: bytes, *, html: bool = False) -> str:
+    # Check UTF-32 before its overlapping UTF-16 prefix.
+    for bom, codec in (
+        (codecs.BOM_UTF32_LE, "utf-32"),
+        (codecs.BOM_UTF32_BE, "utf-32"),
+        (codecs.BOM_UTF16_LE, "utf-16"),
+        (codecs.BOM_UTF16_BE, "utf-16"),
+        (codecs.BOM_UTF8, "utf-8-sig"),
+    ):
+        if data.startswith(bom):
+            return data.decode(codec, errors = "replace")
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        pass
+    else:
+        # ISO-2022-JP is 7-bit, so it always passes as UTF-8; its escapes give it away.
+        if html and "\x1b$" in text and _declared_charset(data) == "iso2022_jp":
+            return data.decode("iso2022_jp", errors = "replace")
+        return text
+    declared = _declared_charset(data) if html else None
+    # WHATWG reads UTF-16 labels as UTF-8, which these bytes already failed.
+    if declared and declared != "utf-8":
+        return data.decode(declared, errors = "replace")
+    text = data.decode("utf-8", errors = "replace")
+    # Ties stay UTF-8 (truncated file); cp1252 can form a stray valid sequence ("à\xa0»").
+    non_ascii = len(text) - len(text.encode("ascii", "ignore"))
+    if non_ascii >= 2 * text.count("\ufffd"):
+        return text
+    return data.decode("cp1252", errors = "replace")
+
+
 def parse(path: str, *, want_images: bool = False):
     """Parse a file into pages by extension. Returns ``list[Page]``, or
     ``(list[Page], list[ParsedImage])`` when ``want_images=True`` (only PDFs yield
@@ -557,22 +647,12 @@ def parse(path: str, *, want_images: bool = False):
         return (pages, []) if want_images else pages
 
     if ext in (".html", ".htm", ".txt", ".md", ".markdown"):
-        # Honor Unicode BOMs; check UTF-32 before its overlapping UTF-16 prefix.
+        is_html = ext in (".html", ".htm")
         with open(path, "rb") as f:
-            prefix = f.read(4)
-        encoding = "utf-8-sig"
-        for bom, codec in (
-            (codecs.BOM_UTF32_LE, "utf-32"),
-            (codecs.BOM_UTF32_BE, "utf-32"),
-            (codecs.BOM_UTF16_LE, "utf-16"),
-            (codecs.BOM_UTF16_BE, "utf-16"),
-        ):
-            if prefix.startswith(bom):
-                encoding = codec
-                break
-        with open(path, encoding = encoding, errors = "replace") as f:
-            raw = f.read()
-        pages = _html(raw) if ext in (".html", ".htm") else [_page(raw, None)]
+            raw = _decode_text(f.read(), html = is_html)
+        # Universal newlines, as text-mode open() gave: the chunker splits on "\n\n".
+        raw = raw.replace("\r\n", "\n").replace("\r", "\n")
+        pages = _html(raw) if is_html else [_page(raw, None)]
         return (pages, []) if want_images else pages
 
     raise ValueError(f"unsupported file type: {ext}")

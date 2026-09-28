@@ -434,6 +434,74 @@ RL_FUNCTIONS["dpo_trainer"].append(dpo_trainer_compute_loss_liger)
 RL_EXTRA_ARGS["dpo_trainer"].append(dpo_trainer_data_collator_vision_keys)
 
 
+# Unsloth's training forward drops the 2D mask, so right-align Online DPO rows (GRPO's left_pack_padding) before scoring.
+_ONLINE_DPO_MODEL_CALL = re.compile(
+    r"^(?P<indent>[ \t]*)output = model\(prompt_completion_ids, "
+    r"(?P<kwargs>attention_mask=prompt_completion_mask|\*\*model_kwargs)\)[ \t]*$",
+    flags = re.MULTILINE,
+)
+_ONLINE_DPO_LOGITS_SLICE = re.compile(
+    r"^(?P<indent>[ \t]*)(?P<line>logits = output\.logits\[:, start_idx:(?:end_idx|-1)\])[ \t]*$",
+    flags = re.MULTILINE,
+)
+
+
+def online_dpo_trainer__forward(function_name, function):
+    if function_name != "_forward" or "_unsloth_left_pad" in function:
+        return function
+    call = _ONLINE_DPO_MODEL_CALL.search(function)
+    logits_slice = _ONLINE_DPO_LOGITS_SLICE.search(function)
+    if call is None or logits_slice is None:
+        _warn_once(
+            "online_dpo_trainer._forward",
+            "Unsloth: Online DPO's _forward changed upstream, so left-padded prompts are scored "
+            "without right-aligning them. Please file a bug report.",
+        )
+        return function
+    i = call.group("indent")
+    # Vision rows keep TRL's layout: image tokens are placed by position.
+    has_vision = call.group("kwargs") == "**model_kwargs"
+    pack = (
+        f"{i}_unsloth_left_pad = None\n"
+        f"{i}if {'not vision_inputs' if has_vision else 'True'}:\n"
+        f"{i}    _unsloth_left_pad = (prompt_mask == 0).sum(dim = 1)\n"
+        f"{i}    _unsloth_order = torch.argsort(prompt_completion_mask != 0, dim = 1, descending = True, stable = True)\n"
+        f"{i}    prompt_completion_ids = prompt_completion_ids.gather(1, _unsloth_order)\n"
+        f"{i}    prompt_completion_mask = prompt_completion_mask.gather(1, _unsloth_order)\n"
+        + (
+            f'{i}    model_kwargs["attention_mask"] = prompt_completion_mask\n'
+            if has_vision
+            else ""
+        )
+        + call.group(0)
+    )
+    j = logits_slice.group("indent")
+    gather = (
+        f"{j}if _unsloth_left_pad is not None:\n"
+        f"{j}    _unsloth_index = (start_idx - _unsloth_left_pad).unsqueeze(1) + torch.arange(\n"
+        f"{j}        completion_ids.size(1), device = completion_ids.device\n"
+        f"{j}    ).unsqueeze(0)\n"
+        f"{j}    _unsloth_index = _unsloth_index.clamp(0, output.logits.size(1) - 1)\n"
+        # index_select: advanced indexing is ~40% slower, take_along_dim keeps a [B, C, V] int64 index.
+        f"{j}    _unsloth_rows, _unsloth_len = output.logits.shape[:2]\n"
+        f"{j}    _unsloth_index = _unsloth_index + _unsloth_len * torch.arange(\n"
+        f"{j}        _unsloth_rows, device = _unsloth_index.device\n"
+        f"{j}    ).unsqueeze(1)\n"
+        f"{j}    logits = output.logits.reshape(_unsloth_rows * _unsloth_len, -1).index_select(\n"
+        f"{j}        0, _unsloth_index.reshape(-1)\n"
+        f"{j}    ).view(_unsloth_rows, -1, output.logits.size(-1))\n"
+        # Drop [B, L, V] before log_softmax, else the copy above raises peak memory.
+        f"{j}    output = None\n"
+        f"{j}else:\n"
+        f"{j}    {logits_slice.group('line')}"
+    )
+    function = function[: logits_slice.start()] + gather + function[logits_slice.end() :]
+    return function[: call.start()] + pack + function[call.end() :]
+
+
+RL_FUNCTIONS["online_dpo_trainer"].append(online_dpo_trainer__forward)
+
+
 _WRAPPED_PACKING_SETUP = (
     "    import inspect as _inspect\n"
     "    try:\n"
@@ -834,6 +902,42 @@ def orpo_trainer_text_tokenizer(function_name, function):
 
 RL_FUNCTIONS["orpo_trainer"].append(orpo_trainer_text_tokenizer)
 RL_FUNCTIONS["cpo_trainer"].append(orpo_trainer_text_tokenizer)
+
+
+# TRL 0.29+ ORPO/CPO tokenize_row never truncates the prompt and cuts answers to `max_length - longer_response_length`, so prompt + answer can exceed max_length. The fast forward cuts input_ids to max_seq_length while labels keep the full row, which crashes the log-prob gather. Hold each row to max_length the way TRL <= 0.25 did with max_prompt_length (keep a prompt budget, then cut the answer); rows that fit are untouched.
+_ORPO_ROW_CAP = (
+    "_unsloth_ul = max(len(chosen_tokens['input_ids']), len(rejected_tokens['input_ids']))\n"
+    "_unsloth_pl = max(len(chosen_tokens['prompt_input_ids']), len(rejected_tokens['prompt_input_ids']))\n"
+    "if self.max_length is not None and _unsloth_pl + _unsloth_ul > self.max_length:\n"
+    "    _unsloth_keep = min(_unsloth_pl, max(self.max_length - _unsloth_ul, self.max_length // 2))\n"
+    "    _unsloth_keep_start = getattr(self, 'truncation_mode', 'keep_end') == 'keep_start'\n"
+    "    for answer_tokens in [chosen_tokens, rejected_tokens, prompt_tokens]:\n"
+    "        for k in ['prompt_input_ids', 'prompt_attention_mask']:\n"
+    "            answer_tokens[k] = answer_tokens[k][:_unsloth_keep] if _unsloth_keep_start else answer_tokens[k][max(0, len(answer_tokens[k]) - _unsloth_keep):]\n"
+    "    for answer_tokens in [chosen_tokens, rejected_tokens]:\n"
+    "        for k in ['input_ids', 'attention_mask']:\n"
+    "            answer_tokens[k] = answer_tokens[k][: self.max_length - _unsloth_keep]\n"
+)
+
+
+def orpo_trainer_row_cap(function_name, function):
+    if (
+        function_name != "tokenize_row"
+        or "_unsloth_ul" in function
+        or "max_prompt_length" in function
+    ):
+        return function
+    # Before TRL's own response cut: its negative slice end can empty the shorter answer.
+    match = re.search(r"(?m)^([ \t]*)longer_response_length = max\(", function)
+    if match is None:
+        return function
+    indent = match.group(1)
+    block = "".join(indent + line + "\n" for line in _ORPO_ROW_CAP.splitlines())
+    return function[: match.start()] + block + function[match.start() :]
+
+
+RL_FUNCTIONS["orpo_trainer"].append(orpo_trainer_row_cap)
+RL_FUNCTIONS["cpo_trainer"].append(orpo_trainer_row_cap)
 
 
 # Resolve processing_class.pad_token_id through the inner tokenizer when a multimodal processor is supplied: processors lack pad_token_id, so ORPO/CPOTrainer.__init__ raises AttributeError in the collator and padding_value.

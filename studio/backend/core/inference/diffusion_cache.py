@@ -24,7 +24,9 @@ from typing import Any, Optional
 TC_OFF = "off"
 TC_AUTO = "auto"
 TC_FBCACHE = "fbcache"
-TC_MODES = (TC_FBCACHE,)
+# Fixed-schedule step skip (diffusion_step_skip.py); explicit opt-in only, auto never picks it.
+TC_STATIC = "static"
+TC_MODES = (TC_FBCACHE, TC_STATIC)
 
 # FBCache residual thresholds: higher skips more steps (faster, lower quality). Quantised transformers shift the
 # residual distribution, so they need a higher threshold.
@@ -48,6 +50,11 @@ def resolve_auto_step_cache(speed_mode: Optional[str], default_steps: int) -> Op
     if auto_step_cache_allowed(speed_mode) and int(default_steps) >= FBCACHE_MIN_STEPS:
         return TC_FBCACHE
     return None
+
+
+def cache_breaks_graph(mode: Optional[str]) -> bool:
+    """Whether an engaged mode decides inside the forward (FBCache), costing fullgraph and the CUDA graph."""
+    return bool(mode) and mode != TC_STATIC
 
 
 def normalize_transformer_cache(value: Optional[str]) -> Optional[str]:
@@ -458,6 +465,9 @@ def apply_step_cache(
     mode = normalize_transformer_cache(mode)
     if mode is None or mode == TC_AUTO:
         # AUTO is resolved by the loader before this; treat a stray auto as off.
+        return None
+    if mode == TC_STATIC:
+        _warn(logger, mode, RuntimeError("static step skip is not supported on this backend"))
         return None
     transformer = getattr(pipe, "transformer", None)
     if transformer is None:
