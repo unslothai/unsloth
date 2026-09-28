@@ -637,3 +637,21 @@ test("a chat's menu has no Open chat, and its folder sits under Export", () => {
   const projects = readSrc("features/chat/projects-page.tsx");
   assert.ok(projects.indexOf("<OpenChatFolderItem item={chat} />") > projects.indexOf("Export all chats…"));
 });
+
+test("the Library's New chat is a saved chat with an empty composer, like the sidebar's", () => {
+  const library = readSrc("features/library/chats/chats-library.tsx");
+  const newChatIn = library.slice(library.indexOf("const newChatIn = "), library.indexOf("async function run("));
+  assert.match(newChatIn, /clearNewChatDraft\(\);/);
+  assert.match(newChatIn, /runtime\.setIncognito\(false\);/);
+});
+
+test("a chat among Favorites files dates from its last edit, as the Chats view does", () => {
+  const items = readSrc("features/library/chats/chats-items.tsx");
+  assert.match(items, /<FileColumns modified=\{chatTime\(chat, "modified"\)\} \/>/);
+});
+
+test("Reset all local preferences clears the Chats library preferences", () => {
+  const general = readSrc("features/settings/tabs/general-tab.tsx");
+  const keys = general.slice(general.indexOf("const PREFS_KEYS"), general.indexOf("];", general.indexOf("const PREFS_KEYS")));
+  assert.match(keys, /LIBRARY_CHATS_PREFS_STORAGE_KEY/);
+});

@@ -1113,7 +1113,7 @@ export function ChatRow({
         </div>
       </div>
       {fileColumns ? (
-        <FileColumns modified={chat.updatedAt} />
+        <FileColumns modified={chatTime(chat, "modified")} />
       ) : (
         <>
           {locationColumn && (
