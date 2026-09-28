@@ -5226,6 +5226,26 @@ def test_opencode_max_tokens_under_ceiling_leaves_opencode_env_alone(fake_studio
     assert "OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX" not in result.output
 
 
+def test_opencode_max_tokens_raises_a_smaller_inherited_ceiling(fake_studio, monkeypatch):
+    # OpenCode sends min(limit.output, ceiling), so an inherited 8,000 would cap --max-tokens 16000.
+    monkeypatch.setenv("OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX", "8000")
+    result = CliRunner().invoke(
+        start.start_app, ["opencode", "--no-launch", "--max-tokens", "16000"]
+    )
+    assert result.exit_code == 0, result.output
+    _assert_env_set(result.output, "OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX", "16000")
+
+
+def test_opencode_max_tokens_recipe_keeps_a_larger_inherited_ceiling(fake_studio, monkeypatch):
+    # The --no-launch recipe must carry the ceiling, or a shell without the export reverts to 32,000.
+    monkeypatch.setenv("OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX", "100000")
+    result = CliRunner().invoke(
+        start.start_app, ["opencode", "--no-launch", "--max-tokens", "65536"]
+    )
+    assert result.exit_code == 0, result.output
+    _assert_env_set(result.output, "OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX", "100000")
+
+
 def test_opencode_max_tokens_past_half_the_window_is_capped(fake_studio, tmp_path):
     result = CliRunner().invoke(
         start.start_app, ["opencode", "--no-launch", "--max-tokens", "120000"]

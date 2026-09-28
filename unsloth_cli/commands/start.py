@@ -4540,7 +4540,7 @@ def opencode_compaction_reserved(window: int, output: int) -> int:
 
 
 def _opencode_output_env(model: dict, max_tokens: Optional[int]) -> dict:
-    """Lift OpenCode's 32k output ceiling when --max-tokens needs it. Keeps a larger exported value."""
+    """Set OpenCode's output ceiling when --max-tokens needs it: above 32k, or above a smaller inherited value. Always emitted then, so a --no-launch recipe carries it."""
     window = model.get("context_length") or model.get("max_context_length")
     if not max_tokens:
         return {}
@@ -4557,12 +4557,13 @@ def _opencode_output_env(model: dict, max_tokens: Optional[int]) -> dict:
             f"context for the conversation; using {output:,}.",
             err = True,
         )
-    if output <= _OPENCODE_OUTPUT_TOKEN_MAX:
+    raw = os.environ.get(_OPENCODE_OUTPUT_TOKEN_MAX_ENV, "")
+    # OpenCode ignores values that are not positive integers.
+    inherited = int(raw) if raw.isdigit() and int(raw) > 0 else None
+    ceiling = inherited or _OPENCODE_OUTPUT_TOKEN_MAX
+    if output <= ceiling and inherited is None:
         return {}
-    inherited = os.environ.get(_OPENCODE_OUTPUT_TOKEN_MAX_ENV, "")
-    if inherited.isdigit() and int(inherited) >= output:
-        return {}
-    return {_OPENCODE_OUTPUT_TOKEN_MAX_ENV: str(output)}
+    return {_OPENCODE_OUTPUT_TOKEN_MAX_ENV: str(max(output, ceiling))}
 
 
 def write_opencode_config(
