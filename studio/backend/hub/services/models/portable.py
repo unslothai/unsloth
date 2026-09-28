@@ -143,7 +143,9 @@ def export_cached_model(repo_id: str, variant: Optional[str], destination: str) 
     hub_cache = _hub_cache()
     dest = Path(destination).expanduser().resolve(strict = False)
     if dest == hub_cache or hub_cache in dest.parents:
-        raise PortableModelError("the destination is inside the models cache; pick a folder outside it")
+        raise PortableModelError(
+            "the destination is inside the models cache; pick a folder outside it"
+        )
     repo = _cached_repo(repo_id, hub_cache)
     revision = _newest_revision(repo)
     files = _snapshot_files(revision, variant)

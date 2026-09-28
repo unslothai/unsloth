@@ -379,7 +379,9 @@ async def delete_cached_model(
     )
 
 
-@router.post("/export-model", response_model = PortableModelResponse, response_model_exclude_none = True)
+@router.post(
+    "/export-model", response_model = PortableModelResponse, response_model_exclude_none = True
+)
 async def export_model(
     repo_id: str = Body(...),
     destination: str = Body(...),
@@ -400,10 +402,11 @@ async def export_model(
         raise HTTPException(status_code = 404, detail = str(exc))
 
 
-@router.post("/import-model", response_model = PortableModelResponse, response_model_exclude_none = True)
+@router.post(
+    "/import-model", response_model = PortableModelResponse, response_model_exclude_none = True
+)
 async def import_model(
-    source: str = Body(..., embed = True),
-    current_subject: str = Depends(get_current_subject),
+    source: str = Body(..., embed = True), current_subject: str = Depends(get_current_subject)
 ):
     """Copy an exported model folder into the models cache (#8798)."""
     try:
