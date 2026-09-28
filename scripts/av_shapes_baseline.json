@@ -25,10 +25,12 @@
       "severity": "error",
       "reason": "CI-only probe run on hosted runners to measure the console-mode path; never shipped or run on a user machine.",
       "digests": {
+        "2c55dddcfeb76fa0": 1,
         "2ee6606877b69cfc": 1,
         "8b6eab4b550f89b0": 1,
         "b9777fec081d96ad": 1,
-        "c6745ba48257bd2d": 1
+        "c6745ba48257bd2d": 1,
+        "fed2f59e307d0743": 1
       }
     },
     {
@@ -190,8 +192,10 @@
       "severity": "error",
       "reason": "Follow-up: the WSL shortcut helper still emits the SHChangeNotify stub. install.ps1 moved to a Python ctypes call, which the Windows side of a WSL install cannot assume; porting needs a Windows-side answer first.",
       "digests": {
+        "1897f2aa96938163": 1,
         "3317dda9215e254f": 1,
         "c8db648faf495659": 2,
+        "c8fa2e7a650eb3af": 1,
         "c96dd772e1920082": 1,
         "cb6ff73cf7b8ed0c": 1
       }
@@ -252,6 +256,15 @@
     },
     {
       "file": "scripts/uninstall.ps1",
+      "rule": "AV005",
+      "severity": "error",
+      "reason": "The documented uninstall one-liner inside the script's comment-based help block, shown to the user; not executed.",
+      "digests": {
+        "ba92af1d59139a71": 1
+      }
+    },
+    {
+      "file": "scripts/uninstall.ps1",
       "rule": "AV014",
       "severity": "warn",
       "reason": "pre-existing warning",
@@ -271,6 +284,15 @@
         "73d0e1bb05aa661b": 1,
         "79c2c02c8710fa44": 1,
         "f519cf54a936f287": 1
+      }
+    },
+    {
+      "file": "scripts/windows_sac_probe/sac-probe.ps1",
+      "rule": "AV005",
+      "severity": "error",
+      "reason": "Diagnostic probe that deliberately reproduces the documented install command to see whether Smart App Control blocks it; run by hand, never shipped in the installer.",
+      "digests": {
+        "4899e96108dbe376": 1
       }
     },
     {

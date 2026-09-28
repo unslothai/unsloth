@@ -140,3 +140,51 @@ def test_each_shipped_incident_is_caught_and_its_fix_is_not(before, after, path,
     if after is not None:
         errors = {r for r, sev in _rules(path, _at(after, path)).items() if "error" in sev}
         assert not errors, errors
+
+
+def test_a_utf16_powershell_script_is_decoded_before_it_is_scanned(tmp_path):
+    line = "$b = $m." + _J(("Define", "PInvoke", "Method")) + "('x')\r\n"
+    for encoding in ("utf-16", "utf-16-le"):
+        probe = tmp_path / f"{encoding}.ps1"
+        probe.write_bytes(line.encode(encoding))
+        assert "AV003" in _rules(probe.name, L._read(probe)), encoding
+
+
+def _run_main_against(monkeypatch, tmp_path, findings, groups):
+    baseline = tmp_path / "baseline.json"
+    baseline.write_text(json.dumps({"groups": groups}), encoding = "utf-8")
+    monkeypatch.setattr(L, "BASELINE_PATH", baseline)
+    monkeypatch.setattr(L, "collect", lambda paths: findings)
+    monkeypatch.setattr(sys, "argv", ["lint_av_shapes.py"])
+    return L.main()
+
+
+def _finding(
+    text,
+    severity = "error",
+    rule = "AV003",
+):
+    return L.Finding(rule, "x.ps1", 1, text, severity)
+
+
+def test_a_baseline_count_above_what_remains_is_stale(monkeypatch, tmp_path):
+    kept = _finding("emit")
+    group = {"file": "x.ps1", "rule": "AV003", "severity": "error", "reason": "reviewed",
+             "digests": {kept.digest: 2}}  # fmt: skip
+    assert _run_main_against(monkeypatch, tmp_path, [kept], [group]) == 1
+    group["digests"][kept.digest] = 1
+    assert _run_main_against(monkeypatch, tmp_path, [kept], [group]) == 0
+
+
+def test_an_error_recorded_as_a_warning_still_needs_a_reason(monkeypatch, tmp_path):
+    kept = _finding("emit")
+    group = {"file": "x.ps1", "rule": "AV003", "severity": "warn", "reason": "pre-existing warning",
+             "digests": {kept.digest: 1}}  # fmt: skip
+    assert _run_main_against(monkeypatch, tmp_path, [kept], [group]) == 1
+
+
+def test_a_vanished_warning_does_not_fail_the_build(monkeypatch, tmp_path):
+    gone = _finding("one marker", severity = "warn", rule = "AV008")
+    group = {"file": "x.ps1", "rule": "AV008", "severity": "warn", "reason": "pre-existing warning",
+             "digests": {gone.digest: 1}}  # fmt: skip
+    assert _run_main_against(monkeypatch, tmp_path, [], [group]) == 0
