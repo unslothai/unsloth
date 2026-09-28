@@ -17,9 +17,6 @@ def _cuda_triton() -> bool:
 needs_cuda = pytest.mark.skipif(not _cuda_triton(), reason = "needs NVIDIA CUDA + Triton")
 
 
-# ---------------------------------------------------------------------------------------------------------------- CPU
-
-
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16, torch.float32])
 @pytest.mark.parametrize("extent", [1, 7, 32])
 def test_blend_seam_bit_identical_to_stock_loops(dtype, extent):
@@ -55,7 +52,6 @@ def test_rocm_and_old_triton_keep_stock(monkeypatch):
     monkeypatch.setattr(torch.version, "hip", "6.4.0", raising = False)
     assert F.runtime_ok() is False
     monkeypatch.setattr(torch.version, "hip", None, raising = False)
-    # a stand-in module, so this also runs where triton is not installed (CPU CI)
     import sys
     import types
 
@@ -139,9 +135,6 @@ def test_speed_layer_skips_vae_compile_when_fused(monkeypatch):
     assert S._install_fused_vae(Pipe(), None) is False
 
 
-# --------------------------------------------------------------------------------------------------------------- CUDA
-
-
 def _psnr(a, b):
     mse = (a.float() - b.float()).pow(2).mean().item()
     return float("inf") if mse == 0 else 10 * torch.log10(torch.tensor(4.0 / mse)).item()
@@ -210,16 +203,13 @@ def test_wan_fused_matches_stock_across_chunks(tiled, monkeypatch):
         vae.enable_tiling(tile_sample_min_height = 64, tile_sample_min_width = 64, tile_sample_stride_height = 48,
                           tile_sample_stride_width = 48)  # fmt: skip
         monkeypatch.setenv(F.TILE_BATCH_ENV, "3")
-    z = torch.randn(
-        1, 4, 4, 14, 18, device = "cuda", dtype = torch.float16
-    )  # 4 latent frames: cached chunks
+    z = torch.randn(1, 4, 4, 14, 18, device = "cuda", dtype = torch.float16)
     x = torch.rand(1, 3, 5, 48, 64, device = "cuda", dtype = torch.float16) * 2 - 1
     _check(vae, z, min_psnr = 45, encode_x = None if tiled else x)
 
 
 @needs_cuda
 def test_wan22_residual_decoder_fused_matches_stock():
-    # Wan-2.2 5B layout: residual up blocks (DupUp3D shortcut), patch_size 2, temporal-upsample resamples
     from diffusers import AutoencoderKLWan
 
     torch.manual_seed(0)
@@ -268,7 +258,7 @@ def test_ltx2_fused_matches_stock():
     from core.inference.video_ltx2 import _VIDEO_VAE_CONFIG
 
     torch.manual_seed(0)
-    cfg = dict(_VIDEO_VAE_CONFIG)  # the LTX-2.3 layout, narrowed
+    cfg = dict(_VIDEO_VAE_CONFIG)
     cfg.update(
         latent_channels = 16, block_out_channels = (32, 64, 128, 128), decoder_block_out_channels = (32, 64, 64, 128),
         layers_per_block = (1, 1, 1, 1, 1), decoder_layers_per_block = (1, 1, 1, 1, 1),
@@ -579,9 +569,7 @@ def _variants(kernel) -> int:
 
 @needs_cuda
 def test_shape_args_do_not_multiply_jit_variants():
-    # each new (== 1, % 16, other) mix of a frame count or tile size used to JIT another variant: ~90 on a tiled
-    # Wan-2.2 decode, ~20 s of first-render compile. Sizes must reuse the compiled kernel; strides (all % 16 here,
-    # channels-last C=64) stay specialized for the vectorized channel loads.
+    # sizes must reuse the compiled kernel (else ~90 JIT variants on a tiled Wan decode); strides stay specialized
     k = F._kernels()
     for name, args in F._SHAPE_ARGS.items():
         params = {p.name: p for p in getattr(k, name.lstrip("_")).params}

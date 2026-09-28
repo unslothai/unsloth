@@ -1,21 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Triton-fused normalisation for the image and video VAEs Studio decodes eagerly.
+"""Triton-fused GroupNorm / channel RMS norm for eagerly decoded image and video VAEs.
 
-PyTorch's CUDA GroupNorm has no channels-last kernel (up to torch 2.13): every norm of a channels_last VAE copies
-NHWC -> NCHW, runs a slow bf16 row reduction and copies back, 80% of an eager AutoencoderKL decode. Channel RMS
-norms (Wan / Qwen-Image / HunyuanVideo-1.5) run as ~6 separate elementwise passes plus a ``torch.cat`` / ``clone``
-per causal conv. The kernels here read any layout and write channels-last, with fp32 statistics:
-
-* ``group_norm_act``: GroupNorm (+ pending bias) (+ SiLU), split-spatial fp32 statistics then one apply pass.
-* ``rms_norm_act``: per-pixel channel RMS norm (+ SiLU), optionally prepending causal cache frames (the conv input
-  the stock code builds with ``torch.cat`` + ``F.pad``), in one pass.
-
-``install(vae)`` patches module instances in place (never classes), each guarded: an exception the stock path
-does not also raise falls back to stock for that module for good. NVIDIA CUDA + Triton >= 3.3 only (ROCm, CPU, MPS,
-Windows without the MSVC toolchain and old Triton keep the stock path). ``UNSLOTH_VAE_FUSED=0`` disables.
-The GroupNorm statistics split (per-chunk mean/M2 merged with Chan's formula) follows video_minimax_h3_vae.py.
+CUDA GroupNorm has no channels-last kernel, so every norm copies NHWC <-> NCHW; these kernels read any layout,
+write channels-last with fp32 statistics. ``install(vae)`` patches instances (never classes), each falling back
+to stock on a new exception. NVIDIA CUDA + Triton >= 3.3 only; ``UNSLOTH_VAE_FUSED=0`` disables.
 """
 
 from __future__ import annotations
@@ -60,10 +50,8 @@ def _toolchain_ok() -> bool:
         return True
 
 
-# Shape / frame-count arguments used only as loop bounds and index math, never as a stride multiplier: Triton would
-# otherwise compile one variant per (== 1, % 16 == 0, other) combination of each, and a tiled Wan decode meets ~70 of
-# them (T, To and n_cache 1 vs >1, odd latent tile sizes, edge tiles): ~20 s of JIT on the first render. Strides and C
-# stay specialized: their divisibility is what lets the channel-contiguous loads vectorize.
+# Loop-bound-only args are not specialized (else ~70 JIT variants on a tiled Wan decode); strides and C stay
+# specialized so channel-contiguous loads vectorize.
 _SHAPE_ARGS = {
     "_rms_act": ("T", "H", "W", "Ho", "Wo", "ph", "pw", "To", "front", "n_cache"),
     "_bias_residual": ("P", "T", "HW", "W"),
@@ -196,7 +184,6 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         NORM: tl.constexpr, ACT: tl.constexpr, HAS_BIAS: tl.constexpr, HAS_IN_BIAS: tl.constexpr,
         REPLICATE: tl.constexpr, MEAN_SQ: tl.constexpr, BLOCK_P: tl.constexpr, BLOCK_C: tl.constexpr
     ):  # fmt: skip
-        # out (B, To, Ho, Wo, C) = [front frames] + act(norm(x + ib)); REPLICATE: replicate-padded in T (front), H, W
         pid_p = tl.program_id(0)
         bt = tl.program_id(1)
         t_o = bt % To
@@ -218,7 +205,6 @@ def _kernels() -> Optional[types.SimpleNamespace]:
             None, :
         ]
         if (not REPLICATE) and t_o < front:
-            # causal frames: the cache's last ``n_cache`` activations, zeros before them
             tc = t_o - (front - n_cache)
             if tc >= 0:
                 coff = (
@@ -270,7 +256,6 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         o_ptr, ob_ptr, r_ptr, rb_ptr, P, C, T, HW, W, sb, sc, st, sh, sw, inv_scale,
         HAS_OB: tl.constexpr, HAS_RB: tl.constexpr, SCALE: tl.constexpr, BLOCK_P: tl.constexpr, BLOCK_C: tl.constexpr
     ):  # fmt: skip
-        # o (channels-last, contiguous: pixel-major, C fastest) += ob + r + rb, then * inv_scale
         p = tl.program_id(0) * BLOCK_P + tl.arange(0, BLOCK_P)
         c = tl.program_id(1) * BLOCK_C + tl.arange(0, BLOCK_C)
         pm = p < P
@@ -304,7 +289,6 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         hsb, hsc, hst, hsh, hsw, xsb, xsc, xst, xsh, xsw,
         TEMPORAL: tl.constexpr, HAS_HB: tl.constexpr, BLOCK_P: tl.constexpr, BLOCK_C: tl.constexpr
     ):  # fmt: skip
-        # HunyuanVideo-1.5 upsample: depth-to-space of the conv output + the repeat_interleave'd shortcut, one pass
         pid_p = tl.program_id(0)
         bf = tl.program_id(1)
         pid_c = tl.program_id(2)
@@ -357,7 +341,6 @@ def _kernels() -> Optional[types.SimpleNamespace]:
 
     @triton.jit
     def _softmax_rows(s_ptr, p_ptr, S, P_STRIDE, scale, BLOCK: tl.constexpr):
-        # p = softmax(s * scale) per row: fp32 scores in, half-precision probabilities out (online max / sum)
         row = tl.program_id(0).to(tl.int64)
         base = s_ptr + row * P_STRIDE
         m = tl.full([BLOCK], float("-inf"), tl.float32)
@@ -386,7 +369,6 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         osb, osc, ost, osh, osw, xsb, xsc, xst, xsh, xsw,
         FT: tl.constexpr, FS: tl.constexpr, BLOCK_P: tl.constexpr, BLOCK_C: tl.constexpr
     ):  # fmt: skip
-        # o[b, c, t, h, w] += DupUp3D(x)[b, c, t + t_off, h, w]: repeat_interleave + depth-to-space, gathered in place
         pid_p = tl.program_id(0)
         bt = tl.program_id(1)
         pid_c = tl.program_id(2)
@@ -421,8 +403,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         x_ptr, out_ptr, C, T_o, H, W, xsb, xsc, xst, xsh, xsw,
         INTERLEAVE: tl.constexpr, BLOCK_P: tl.constexpr, BLOCK_C: tl.constexpr
     ):  # fmt: skip
-        # out (B*T_o, 2H, 2W, C) channels-last = nearest 2x of x, where with INTERLEAVE x is Wan's time_conv output
-        # (B, 2C, T_o/2, H, W) and frame 2t+j takes channels [jC, (j+1)C): the reshape/stack/permute done by gather
+        # INTERLEAVE: x is Wan time_conv output (B, 2C, T_o/2, H, W); frame 2t+j takes channels [jC, (j+1)C).
         pid_p = tl.program_id(0)
         bt = tl.program_id(1)
         pid_c = tl.program_id(2)
@@ -486,10 +467,6 @@ def _as5d(x: Any) -> tuple:
     return x, False
 
 
-# ----------------------------------------------------------------------------------------------------------------
-# GroupNorm
-
-
 def group_norm_reference(
     x: Any,
     norm: Any,
@@ -533,9 +510,7 @@ def group_norm_act(
     act: bool = True,
     in_bias: Any = None,
 ) -> Any:
-    """``silu?(group_norm(x + in_bias))`` for a 3/4/5-D ``x`` of any layout; channels-last output.
-
-    GroupNorm over (C/G, spatial) per sample; for 5-D input the statistics span T as well (``nn.GroupNorm``)."""
+    """``silu?(group_norm(x + in_bias))`` for 3/4/5-D ``x``; channels-last output; 5-D stats span T like nn.GroupNorm."""
     torch = _torch()
     if not _gn_fusable(x, norm):
         return group_norm_reference(x, norm, act, in_bias)
@@ -588,10 +563,6 @@ def group_norm_act(
     if ndim == 4:
         return out[:, :, 0]
     return out[:, :, 0].reshape(shape)  # (B, C, L) view over the (B, L, C) buffer
-
-
-# ----------------------------------------------------------------------------------------------------------------
-# Channel RMS norm (Wan / Qwen-Image / HunyuanVideo-1.5 ``*RMS_norm`` with channel_first=True)
 
 
 def rms_norm_reference(
@@ -662,15 +633,10 @@ def rms_norm_act(
     replicate_pad: Optional[tuple] = None,
     back: int = 0,
 ) -> Any:
-    """``cat([cache or zeros] -> front frames, silu?(rms_norm(x + in_bias)))`` along T, as ONE channels-last_3d tensor.
+    """``cat([cache or zeros] -> front frames, silu?(rms_norm(x + in_bias)))`` along T, one channels-last_3d tensor.
 
-    ``norm=None`` skips the norm (a plain causal ``cat``). ``cache`` holds already-activated frames (the stock causal
-    cache); its last ``min(front, T_cache)`` frames are used and zeros fill any remaining front slots: exactly the
-    stock ``torch.cat`` + causal ``F.pad`` input of a conv.
-
-    ``replicate_pad=(ph, pw)``: HunyuanVideo-1.5's ``F.pad(mode="replicate")`` instead: ``front`` copies of the first
-    frame and ``ph`` / ``pw`` replicated rows / columns each side (``cache`` must be None); ``back`` copies of the
-    last frame (LTX-2's non-causal decoder)."""
+    ``replicate_pad=(ph, pw)``: HunyuanVideo-1.5 replicate padding instead (``cache`` must be None); ``back`` repeats the
+    last frame (LTX-2)."""
     torch = _torch()
     if replicate_pad is not None and cache is not None:
         raise ValueError("replicate padding takes no cache")
@@ -755,11 +721,9 @@ def causal_conv(
     in_bias: Any = None,
     with_bias: bool = True,
 ) -> tuple:
-    """Wan-lineage causal conv of ``silu?(rms?(x + in_bias))`` with the causal cache; returns (out, new_cache).
+    """Wan-lineage causal conv of ``silu?(rms?(x + in_bias))``; returns (out, new_cache).
 
-    ``new_cache`` is what the stock block stores: the activated input's last ``CACHE_T`` (2) frames, prefixed by the
-    previous cache's last frame when the chunk is one frame. A compact copy when the conv input has more frames, so
-    the cache never pins the whole input (a 4-frame chunk would keep 6 frames alive per slot)."""
+    ``new_cache`` is a compact copy so the cache never pins the whole input."""
     import torch.nn.functional as F
 
     kind = _conv_kind(conv)
@@ -795,7 +759,6 @@ def causal_conv(
         and conv.stride[0] == 1
         and conv.dilation[0] == 1
     ):
-        # one frame after kt-1 zero frames: only the last temporal tap meets data
         y = rms_norm_act(x, norm, act, in_bias = in_bias)
         weight = conv.weight[:, :, -1:]
         return F.conv3d(y, weight, bias, conv.stride, spatial, conv.dilation), y
@@ -805,10 +768,7 @@ def causal_conv(
     return out, (new_cache if p.shape[2] <= 2 else new_cache.clone())
 
 
-# ----------------------------------------------------------------------------------------------------------------
-# Single-head VAE attention (head_dim 384 / 512 / 1024): no flash / cuDNN kernel takes head_dim > 256, so SDPA falls
-# to the sm80 memory-efficient kernel. Two cuBLAS GEMMs with fp32 scores (``out_dtype``) + an fp32 softmax are 2.3x
-# faster (B200, L=16384 d=512: 1.57 vs 3.60 ms; L=65536: 25 vs 48 ms) at the same error against float64.
+# Single-head VAE attention: head_dim > 256 has no flash / cuDNN kernel, so two GEMMs + fp32 softmax beat SDPA.
 
 _ATTN_SCORE_BYTES = 256 * 2**20
 
@@ -819,8 +779,7 @@ def single_head_attention(q: Any, k: Any, v: Any) -> Any:
     b, length, d = q.shape
     s_len = k.shape[1]
     scale = d**-0.5
-    # keys / values zero-padded to a multiple of 64: cuBLAS takes a slow path on odd GEMM extents (L=27556 7.2 ms vs
-    # 3.1 padded); the padded keys get probability exactly 0 (the softmax masks them), so the result is unchanged
+    # keys padded to a multiple of 64 (cuBLAS slow path on odd extents); padded keys get probability exactly 0
     s_pad = (s_len + 63) // 64 * 64
     if s_pad != s_len:
         kp = torch.zeros((b, s_pad, d), dtype = k.dtype, device = k.device)
@@ -836,7 +795,6 @@ def single_head_attention(q: Any, k: Any, v: Any) -> Any:
         scores = torch.bmm(q[:, i : i + rows], kt, out_dtype = torch.float32)
         r = scores.shape[1]
         probs = torch.empty((b, r, s_pad), dtype = v.dtype, device = v.device)
-        # one read-scale-exp-normalise-cast pass instead of mul_ + softmax + .to (28 -> 12 bytes moved per score)
         kern.softmax_rows[(b * r,)](scores, probs, s_len, s_pad, scale, BLOCK = 2048, num_warps = 8)
         del scores
         torch.bmm(probs, v, out = out[:, i : i + rows])
@@ -849,8 +807,7 @@ def _mm_attention_ok(q: Any) -> bool:
 
 
 class FusedSingleHeadProcessor:
-    """``AttnProcessor2_0`` for a VAE's single-head self-attention, with :func:`single_head_attention` in place of
-    SDPA. Anything else (heads > 1, masks, cross-attention, spatial norm, q/k norms, fp32) goes to ``fallback``."""
+    """``AttnProcessor2_0`` using :func:`single_head_attention`; anything else goes to ``fallback``."""
 
     def __init__(self, fallback: Any):
         self.fallback = fallback
@@ -876,8 +833,7 @@ class FusedSingleHeadProcessor:
         try:
             return self._fused(attn, hidden_states)
         except Exception as exc:  # noqa: BLE001
-            # an OOM falls back for this call only (SDPA's memory-efficient kernel needs less); anything else (e.g. a
-            # torch without bmm(out_dtype=)) for good. Outside the handler, so the failed call's tensors are freed first.
+            # OOM falls back for this call only; anything else for good. Outside the handler so failed tensors are freed.
             if not _is_oom(exc):
                 attn._unsloth_vae_fused_failed = True
         return self.fallback(attn, hidden_states, encoder_hidden_states, attention_mask, temb)
@@ -947,10 +903,6 @@ def _fast_wan_attention(block: Any) -> Any:
     return fast
 
 
-# ----------------------------------------------------------------------------------------------------------------
-# Conv without its bias (the bias rides into the next fused pass) and the fused bias + residual epilogue
-
-
 def conv_nobias(conv: Any, x: Any) -> Any:
     """``conv(x)`` minus the bias; the caller adds ``conv.bias`` in a later fused pass."""
     import torch.nn.functional as F
@@ -1006,10 +958,6 @@ def add_bias_residual(
     return out
 
 
-# ----------------------------------------------------------------------------------------------------------------
-# Install: instance-level patches, each guarded
-
-
 def _is_oom(exc: BaseException) -> bool:
     try:
         if isinstance(exc, _torch().cuda.OutOfMemoryError):
@@ -1029,9 +977,8 @@ def _guard(
 ) -> None:
     """``module.forward = fast`` until it raises something ``stock`` does not; then stock for good.
 
-    Causal-cache state (Wan's ``feat_cache`` / ``feat_idx`` lists) is snapshotted and restored before the stock
-    retry, so a fast path that failed half way (cache slot written, index advanced) cannot desync the decode.
-    ``oom_stock``: an OOM retries stock for that call only (attention, where stock SDPA needs less memory)."""
+    Causal-cache state is snapshotted and restored before the stock retry so a half-failed fast path cannot desync
+    the decode. ``oom_stock``: an OOM retries stock for that call only."""
 
     def forward(*args, **kwargs):
         if getattr(module, "_unsloth_vae_fused_failed", False):
@@ -1179,9 +1126,6 @@ def uninstall(vae: Any) -> None:
         module.__dict__.pop("prepare_causal_attention_mask", None)
 
 
-# ----------------------------------------------------------------------------------------------------------------
-# Wan lineage: AutoencoderKLWan (2.1 / 2.2), AutoencoderKLQwenImage, AutoencoderKLQwenImage21
-
 _WAN_VAES = frozenset({"AutoencoderKLWan", "AutoencoderKLQwenImage", "AutoencoderKLQwenImage21"})
 _CACHE_T = 2
 
@@ -1294,8 +1238,7 @@ def dup_up_add(out: Any, x: Any, dup: Any, first_chunk: bool) -> Any:
 
 
 def up_nearest2x(x: Any, interleave: bool) -> Any:
-    """(B*T', C, 2H, 2W) channels-last nearest 2x upsample of a (B, C[*2], T, H, W) tensor; ``interleave`` also does
-    Wan's time_conv (B, 2C, T) -> (B, C, 2T) frame interleave. ``nearest-exact`` == ``nearest`` at an exact 2x."""
+    """Channels-last nearest 2x upsample; ``interleave`` also does Wan's time_conv frame interleave."""
     torch = _torch()
     k = _kernels()
     b, c2, t, h, w = x.shape
@@ -1484,8 +1427,7 @@ def install_wan_vae(vae: Any, logger: Any = None) -> int:
 
 
 def _fast_upsample(mod: Any) -> Any:
-    """Wan's ``nearest-exact`` upsample round-trips through fp32 (``x.float()`` ... ``type_as``); nearest only selects
-    pixels, so running it in the input dtype is bit-identical and skips two full-size copies."""
+    """Wan's nearest upsample in the input dtype: bit-identical to its fp32 round trip, without two copies."""
 
     def fast(x: Any) -> Any:
         import torch.nn.functional as F
@@ -1501,9 +1443,6 @@ def _fast_upsample(mod: Any) -> Any:
     return fast
 
 
-# ----------------------------------------------------------------------------------------------------------------
-# Tile batching + vectorised seam blending for the Wan-lineage tiled decode
-
 TILE_BATCH_ENV = "UNSLOTH_VAE_TILE_BATCH"
 _TILE_BATCH_MAX = 4
 # measured decode peak per 256 px Wan-2.1 tile (fp16, 4 frames, 96 full-res channels) ~= 1 GiB = 24x one activation
@@ -1511,8 +1450,7 @@ _TILE_PEAK_FACTOR = 24
 
 
 def _tile_batch_cap(vae: Any, z: Any) -> int:
-    """Tiles per decoder call: env override, else what half the free VRAM holds at the measured per-tile peak,
-    at most 4 (Wan-2.1 832x480x81: 1 -> 1.27 s, 2 -> 0.91 s, 4 -> 0.80 s, 8 -> 0.77 s at +1 GiB per tile)."""
+    """Tiles per decoder call: env override, else what half the free VRAM holds, at most 4."""
     raw = os.environ.get(TILE_BATCH_ENV, "").strip()
     if raw.isdigit() and int(raw) > 0:
         return int(raw)
@@ -1531,9 +1469,7 @@ def _tile_batch_cap(vae: Any, z: Any) -> int:
 
 def _blend_weights(extent: int, device: Any) -> tuple:
     torch = _torch()
-    # the stock python scalars y / extent and 1 - y / extent (double, correctly rounded, so the same bits computed on
-    # the device), as the fp32 opmath scalars PyTorch uses. Built on the device: a host list copied over is a
-    # synchronous H2D copy that drains the stream on every seam (LTX-2.3 tiled encode 85 -> 33 ms on a busy GPU).
+    # stock python-scalar blend weights as fp32 opmath, built on device: a host list is a sync H2D copy per seam
     y = torch.arange(extent, dtype = torch.float64, device = device) / extent
     wb = y.float()
     wa = (1 - y).float()
@@ -1573,8 +1509,7 @@ def _wan_batched_tiled_decode(
     return_dict: bool = True,
     clamp: bool = True,
 ) -> Any:
-    """``tiled_decode`` of a Wan-lineage VAE with same-shaped tiles decoded as one batch (fewer, larger launches:
-    the stock loop issues ~50k kernels for an 81-frame 832x480 decode) and vectorised seam blending."""
+    """``tiled_decode`` with same-shaped tiles decoded as one batch and vectorised seam blending."""
     torch = _torch()
     from diffusers.models.autoencoders.vae import DecoderOutput
 
@@ -1623,7 +1558,6 @@ def _wan_batched_tiled_decode(
             try:
                 out = decode_tiles(chunk)
             except Exception as exc:  # noqa: BLE001
-                # batching raised the peak: an OOM with several tiles retries them one at a time
                 if len(chunk) == 1 or not _is_oom(exc):
                     raise
                 self.clear_cache()
@@ -1660,8 +1594,7 @@ def _wan_batched_tiled_decode(
 
 @lru_cache(maxsize = None)
 def _stock_tiled_decode_clamps(cls: type) -> Optional[bool]:
-    """Whether ``cls.tiled_decode`` clamps its output to [-1, 1], read off the installed diffusers source (Wan and
-    Qwen-Image-2.1 do, Qwen-Image does not). None when the source is unreadable: the stock loop is kept then."""
+    """Whether ``cls.tiled_decode`` clamps to [-1, 1], read from the diffusers source; None (keep stock) if unreadable."""
     import inspect
     import re
 
@@ -1707,10 +1640,6 @@ def install_wan_tile_batch(vae: Any, logger: Any = None) -> bool:
 
 def _stock_forward_attr(obj: Any, name: str) -> Any:
     return getattr(type(obj), name).__get__(obj)
-
-
-# ----------------------------------------------------------------------------------------------------------------
-# HunyuanVideo-1.5: replicate-padded causal convs, no feature cache (a tile decodes its whole clip at once)
 
 
 def _hv_conv_ok(conv: Any) -> bool:
@@ -1831,11 +1760,8 @@ def _hv_causal_mask(
     device: Any,
     batch_size: Any = None,
 ) -> Any:
-    """Vectorised ``prepare_causal_attention_mask`` (the stock one launches one fill kernel per token row: 80k fills
-    per 848x480x121 decode). Same values: 0 where key frame <= query frame, else -inf."""
+    """Vectorised ``prepare_causal_attention_mask``: 0 where key frame <= query frame, else -inf."""
     torch = _torch()
-    # the predicate is per FRAME pair, broadcast over the (n_hw, n_hw) blocks of a view of the output: no seq_len x
-    # seq_len temporary beside the mask itself (the stock loop's peak)
     seq_len = n_frame * n_hw
     mask = torch.zeros((seq_len, seq_len), dtype = dtype, device = device)
     later = torch.ones((n_frame, n_frame), dtype = torch.bool, device = device).triu_(1)
@@ -1906,10 +1832,6 @@ def install_hv15_vae(vae: Any, logger: Any = None) -> int:
                 _guard(module, _fast_hv_conv(module), _stock_forward(module), "causal conv", logger)
                 n += 1
     return n
-
-
-# ----------------------------------------------------------------------------------------------------------------
-# LTX-2 / LTX-2.3: PerChannelRMSNorm, first/last-frame replicate temporal pad, zero spatial pad (left to cuDNN)
 
 
 def _ltx_conv_ok(conv: Any) -> bool:
@@ -2066,8 +1988,7 @@ def install_ltx2_vae(vae: Any, logger: Any = None) -> int:
 
 
 def install_vectorised_blend(vae: Any) -> int:
-    """Replace a VAE's per-row python ``blend_v`` / ``blend_h`` / ``blend_t`` loops (extent x 4 launches each) with
-    the bit-identical one-pass :func:`blend_seam`."""
+    """Replace per-row ``blend_v`` / ``blend_h`` / ``blend_t`` loops with the bit-identical :func:`blend_seam`."""
     n = 0
     for name, dim in (("blend_v", -2), ("blend_h", -1), ("blend_t", -3)):
         if callable(getattr(vae, name, None)) and name not in vae.__dict__:
@@ -2134,8 +2055,7 @@ def install(
     if done:
         return done  # idempotent: a dual-DiT family runs the speed layer once per expert over the same VAE
     n = _install(vae, logger)
-    # measured: HV-1.5 -3%, LTX-2.3 -4%, AutoencoderKL layout-neutral (Studio already sets it); the Wan lineage keeps
-    # its own (Qwen-Image's one-frame conv3d is 15% SLOWER on channels-last weights; Wan's fp16 decode sets them)
+    # channels-last weights only where measured faster; the Wan lineage keeps its own (Qwen-Image conv3d is slower)
     if (
         n
         and type(vae).__name__ in _CL_WEIGHT_VAES

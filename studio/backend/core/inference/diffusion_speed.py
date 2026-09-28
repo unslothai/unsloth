@@ -448,7 +448,6 @@ def apply_speed_optims(
     applied["channels_last"] = _vae_channels_last(pipe, logger)
     # Near-lossless, not bit-identical, so never on "off" (returned above).
     applied["vae_fp16_decode"] = _video_vae_half_decode(pipe, target, family, logger)
-    # Near-lossless like the fp16 decode (fp32 statistics, one rounding): Triton-fused norm/SiLU/pad VAE passes.
     if on_cuda:
         applied["vae_fused"] = _install_fused_vae(pipe, logger)
 
@@ -1119,8 +1118,7 @@ def _fused_vae_planned(pipe: Any) -> bool:
 def _vae_decode_compile_allowed(pipe: Any, speed_mode: str) -> bool:
     """U-Nets always; a DiT only on ``max`` (it costs a 60-70 s slower first render) or with the env forced on.
 
-    Never when the fused eager VAE path engages: AutoencoderKL 1024 decode fused 20 ms vs compiled 25 ms (15-18 s
-    cold), B200, same PSNR against a true-fp32 decode."""
+    Never when the fused eager VAE path engages: it is faster than the compiled decode, with no cold compile."""
     if _fused_vae_planned(pipe):
         return False
     if _denoiser_unet(pipe) is not None:
