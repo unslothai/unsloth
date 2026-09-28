@@ -1,10 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
 import { useHubName } from "@/lib/hf-endpoint";
 import { toast } from "@/lib/toast";
-import { clearRemoteBackoff, type HubFailure } from "@/features/hub/lib/network";
+import {
+  clearRemoteBackoff,
+  hubAuthFailure,
+  type HubFailure,
+} from "../lib/network";
 import { useHubAvailability } from "./use-online-status";
 import {
   type HfModelResult,
@@ -161,7 +165,16 @@ export function useDiscoverSearch({
     : modelSearch.needsRestart;
   // Surfaced regardless of availability: the failure IS the thing worth showing.
   const searchError = isDiscoverTab ? rawSearchError : null;
-  const searchFailure = isDiscoverTab ? failure : null;
+  // A 401 never reaches the network layer as a failure (the Hub answered), so
+  // without this the panel called a refused token "Couldn't reach".
+  // Memoised: the toast effect below depends on it, and a fresh object per render re-ran it.
+  const searchFailure = useMemo(
+    () =>
+      isDiscoverTab
+        ? (failure ?? hubAuthFailure({ message: rawSearchError }))
+        : null,
+    [isDiscoverTab, failure, rawSearchError],
+  );
   const fetchMore = useCallback(() => {
     if (!canProbe || !hasMore) return false;
     // A page that failed took the iterator with it, so resuming would resolve
