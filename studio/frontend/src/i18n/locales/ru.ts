@@ -3161,7 +3161,6 @@ export const ru = {
         newChatInSection: "Новый чат в разделе",
       },
       project: {
-        archivedCount: "В архиве: {count}",
         oneProject: "1 проект",
         projectCount: "Проектов: {count}",
       },

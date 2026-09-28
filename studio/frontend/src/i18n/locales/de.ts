@@ -3203,7 +3203,6 @@ export const de = {
         newChatInSection: "Neuer Chat im Abschnitt",
       },
       project: {
-        archivedCount: "{count} archiviert",
         oneProject: "1 Projekt",
         projectCount: "{count} Projekte",
       },

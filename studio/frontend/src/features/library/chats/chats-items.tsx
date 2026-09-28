@@ -577,9 +577,12 @@ function ChatMenu({
   );
 }
 
-const TILE_ICON = "size-[calc(18px*var(--ui-space-scale,1))]";
+// Chat, project and section tiles share one box, with a brand tint on hover.
+const TILE =
+  "flex size-9 shrink-0 items-center justify-center rounded-[10px] bg-muted text-foreground/70 transition-colors group-hover/chat:bg-primary/10 group-hover/chat:text-primary";
+const TILE_ICON = "size-5";
 
-/** Chat kind icon (bubble, compare, fork) as drawn elsewhere in the app, without a box. */
+/** Chat kind icon (bubble, compare, fork) in the project and section tile box. */
 function ChatTile({
   chat,
   className,
@@ -588,21 +591,15 @@ function ChatTile({
   className?: string;
 }) {
   return (
-    <div
-      // Same hover tint as the project and section tiles.
-      className={cn(
-        "flex size-9 shrink-0 items-center justify-center rounded-[10px] text-muted-foreground transition-colors group-hover/chat:bg-primary/10 group-hover/chat:text-primary",
-        className,
-      )}
-    >
+    <div className={cn(TILE, className)}>
       {chat.type === "compare" ? (
-        <Columns2Icon strokeWidth={1.5} className={TILE_ICON} />
+        <Columns2Icon strokeWidth={1.75} className={TILE_ICON} />
       ) : chat.isFork ? (
-        <GitBranchIcon strokeWidth={1.5} className={TILE_ICON} />
+        <GitBranchIcon strokeWidth={1.75} className={TILE_ICON} />
       ) : (
         <HugeiconsIcon
           icon={MessageCircleIcon}
-          strokeWidth={1.5}
+          strokeWidth={1.75}
           className={TILE_ICON}
         />
       )}
@@ -618,23 +615,28 @@ function Badge({ children }: { children: ReactNode }) {
   );
 }
 
-function ChatBadges({ chat }: { chat: SidebarItem }) {
+function PinMark() {
+  const t = useT();
+  return (
+    <HugeiconsIcon
+      icon={PinIcon}
+      role="img"
+      aria-label={t("library.chats.badges.pinned")}
+      strokeWidth={1.75}
+      className="size-3.5 shrink-0 text-muted-foreground"
+    />
+  );
+}
+
+function ChatBadges({ chat, marksOnly = false }: { chat: SidebarItem; marksOnly?: boolean }) {
   const t = useT();
   const { pinned, favorites } = useChatsActions();
   return (
     <>
       {favorites.has(chat.id) && <FavoriteMark />}
-      {pinned.has(chat.id) && (
-        <HugeiconsIcon
-          icon={PinIcon}
-          role="img"
-          aria-label={t("library.chats.badges.pinned")}
-          strokeWidth={1.75}
-          className="size-3.5 shrink-0 text-muted-foreground"
-        />
-      )}
-      {chat.isFork && <Badge>{t("library.chats.badges.fork")}</Badge>}
-      {chat.type === "compare" && (
+      {pinned.has(chat.id) && <PinMark />}
+      {!marksOnly && chat.isFork && <Badge>{t("library.chats.badges.fork")}</Badge>}
+      {!marksOnly && chat.type === "compare" && (
         <Badge>{t("library.chats.badges.compare")}</Badge>
       )}
     </>
@@ -661,10 +663,13 @@ function ChatLocation({
   chat,
   showProject,
   showSection,
+  plain = false,
 }: {
   chat: SidebarItem;
   showProject: boolean;
   showSection: boolean;
+  /** Cards: the project, else the section, as bare text. */
+  plain?: boolean;
 }) {
   const t = useT();
   const { projectNames, filterProject, sectionOf, sections, viewSection } =
@@ -679,6 +684,21 @@ function ChatLocation({
     ? (projectNames.get(projectId) ??
       t("settings.data.library.unavailableProject"))
     : "";
+  if (plain) {
+    return (
+      <button
+        type="button"
+        onClick={(event) => {
+          event.stopPropagation();
+          if (projectId) filterProject(projectId);
+          else if (section) viewSection(section.id);
+        }}
+        className={cn(CHIP, "block truncate")}
+      >
+        {projectId ? projectName : section?.name}
+      </button>
+    );
+  }
   return (
     <span className="flex min-w-0 items-center gap-3">
       {projectId && (
@@ -1181,7 +1201,11 @@ export function ChatCard({
   const actions = useChatsActions();
   const selected = actions.selection.has(chat.id);
   const selecting = actions.selection.size > 0;
-  const model = modelLabel(chat, actions.models);
+  const location =
+    (showProject && chat.projectId) ||
+    (showSection && actions.sections.some((entry) => entry.id === actions.sectionOf.get(chat.id))) ? (
+      <ChatLocation chat={chat} showProject={showProject} showSection={showSection} plain />
+    ) : undefined;
   return (
     // biome-ignore lint/a11y/useKeyWithClickEvents: the title button is the keyboard target
     <div
@@ -1192,9 +1216,7 @@ export function ChatCard({
     >
       <div className="flex items-center gap-2">
         <ChatTile chat={chat} />
-        <span className="flex min-w-0 items-center gap-1.5">
-          <ChatBadges chat={chat} />
-        </span>
+        <ChatBadges chat={chat} marksOnly />
       </div>
       <ChatMenu chat={chat} archived={archived} variant="card" />
       {/* Bottom right, as on file cards, so the tile stays put on hover. */}
@@ -1206,23 +1228,43 @@ export function ChatCard({
           if (selecting) actions.toggleSelected(chat.id, event.shiftKey);
           else actions.open(chat);
         }}
-        className="block w-full rounded text-left font-medium text-ui-15 leading-snug text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        className={CARD_TITLE}
       >
         {/* Clamp an inner span: buttons ignore line-clamp. */}
         <span className="line-clamp-2">{chatTitle(chat, t)}</span>
       </button>
-      <div className="mt-auto flex min-w-0 flex-col gap-1 text-ui-12 text-muted-foreground">
-        {model && <span className="truncate">{model}</span>}
-        <span className="min-w-0">
-          <ChatLocation chat={chat} showProject={showProject} showSection={showSection} />
-        </span>
-        <span className="truncate">
-          {formatDate(chatTime(chat, actions.dateField), actions.dateField, times, locale, t)}
-        </span>
-      </div>
+      <CardFooter
+        meta={location}
+        date={formatDate(chatTime(chat, actions.dateField), actions.dateField, times, locale, t)}
+        // Clear of the select box.
+        className={selecting ? "pe-7" : undefined}
+      />
     </div>
   );
 }
+
+/** A card's one footer line: what it holds, then when. */
+function CardFooter({ meta, date, className }: { meta?: ReactNode; date: string; className?: string }) {
+  return (
+    <div
+      className={cn(
+        "mt-auto flex min-w-0 items-center gap-1.5 text-ui-12 text-muted-foreground",
+        className,
+      )}
+    >
+      {meta && (
+        <>
+          <span className="min-w-0 truncate">{meta}</span>
+          <span aria-hidden="true">·</span>
+        </>
+      )}
+      <span className="shrink-0">{date}</span>
+    </div>
+  );
+}
+
+const CARD_TITLE =
+  "block w-full rounded text-left font-medium text-ui-15 leading-snug text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring";
 
 /** Group name and count in words; a bare number beside "Today" read as part of the name. */
 export function GroupHeading({
@@ -1249,8 +1291,8 @@ export function GroupHeading({
 /** Project or section tile, as on the Projects page; brand tint on row hover. */
 function CollectionTile({ icon }: { icon: IconSvgElement }) {
   return (
-    <span className="flex size-9 shrink-0 items-center justify-center rounded-[10px] bg-muted text-foreground/70 transition-colors group-hover/chat:bg-primary/10 group-hover/chat:text-primary">
-      <HugeiconsIcon icon={icon} strokeWidth={1.75} className="size-5" />
+    <span className={TILE}>
+      <HugeiconsIcon icon={icon} strokeWidth={1.75} className={TILE_ICON} />
     </span>
   );
 }
@@ -1419,15 +1461,7 @@ export function ProjectCard({
       <div className="flex items-center gap-2">
         <CollectionTile icon={Folder02Icon} />
         {actions.favoriteProjects.has(project.id) && <FavoriteMark />}
-        {pinned && (
-          <HugeiconsIcon
-            icon={PinIcon}
-            role="img"
-            aria-label={t("library.chats.badges.pinned")}
-            strokeWidth={1.75}
-            className="size-3.5 text-muted-foreground"
-          />
-        )}
+        {pinned && <PinMark />}
       </div>
       <ProjectMenu project={project} variant="card" />
       <button
@@ -1436,20 +1470,14 @@ export function ProjectCard({
           event.stopPropagation();
           actions.viewProject(project.id);
         }}
-        className="truncate rounded text-left font-medium text-ui-15 text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        className={CARD_TITLE}
       >
-        {project.name}
+        <span className="line-clamp-2">{project.name}</span>
       </button>
-      <div className="mt-auto flex min-w-0 flex-col gap-1 text-ui-12 text-muted-foreground">
-        <span className="truncate">
-          {chatCount(stats?.chats ?? 0, t)}
-          {(stats?.archived ?? 0) > 0 &&
-            ` · ${t("library.chats.project.archivedCount", { count: stats?.archived ?? 0 })}`}
-        </span>
-        <span className="truncate">
-          {formatDate(projectTime(project, stats, actions.dateField), actions.dateField, {}, locale, t)}
-        </span>
-      </div>
+      <CardFooter
+        meta={chatCount(stats?.chats ?? 0, t)}
+        date={formatDate(projectTime(project, stats, actions.dateField), actions.dateField, {}, locale, t)}
+      />
     </div>
   );
 }
@@ -1680,16 +1708,14 @@ export function SectionCard({
           event.stopPropagation();
           actions.viewSection(section.id);
         }}
-        className="truncate rounded text-left font-medium text-ui-15 text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        className={CARD_TITLE}
       >
-        {section.name}
+        <span className="line-clamp-2">{section.name}</span>
       </button>
-      <div className="mt-auto flex min-w-0 flex-col gap-1 text-ui-12 text-muted-foreground">
-        <span className="truncate">{sectionCountLabel(stats, t)}</span>
-        <span className="truncate">
-          {formatDate(sectionTime(section, stats, actions.dateField), actions.dateField, {}, locale, t)}
-        </span>
-      </div>
+      <CardFooter
+        meta={sectionCountLabel(stats, t)}
+        date={formatDate(sectionTime(section, stats, actions.dateField), actions.dateField, {}, locale, t)}
+      />
     </div>
   );
 }

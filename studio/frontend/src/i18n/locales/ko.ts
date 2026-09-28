@@ -3128,7 +3128,6 @@ export const ko = {
         newChatInSection: "섹션에서 새 채팅",
       },
       project: {
-        archivedCount: "보관됨 {count}개",
         oneProject: "프로젝트 1개",
         projectCount: "프로젝트 {count}개",
       },

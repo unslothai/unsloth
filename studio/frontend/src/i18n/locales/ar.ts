@@ -3134,7 +3134,6 @@ export const ar = {
         newChatInSection: "محادثة جديدة في القسم",
       },
       project: {
-        archivedCount: "المؤرشفة: {count}",
         oneProject: "مشروع واحد",
         projectCount: "عدد المشاريع: {count}",
       },

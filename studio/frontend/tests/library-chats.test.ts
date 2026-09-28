@@ -435,12 +435,35 @@ test("chat, project and section cards are square, dated bottom left", () => {
   assert.doesNotMatch(items, /justify-between gap-2 text-ui-12 text-muted-foreground/);
 });
 
-test("a chat tile tints on hover like project and section tiles", () => {
+test("chat, project and section tiles share one box and hover tint", () => {
   const items = readSrc("features/library/chats/chats-items.tsx");
-  const tint = "group-hover/chat:bg-primary/10 group-hover/chat:text-primary";
-  assert.equal(items.split(tint).length - 1, 2, "chat tile and collection tile share the hover tint");
+  assert.match(items, /const TILE =\s*"[^"]*bg-muted[^"]*group-hover\/chat:bg-primary\/10 group-hover\/chat:text-primary"/);
+  assert.equal(items.split("group-hover/chat:bg-primary/10").length - 1, 1, "one tile style");
+  assert.match(items, /<div className=\{cn\(TILE, className\)\}>/);
+  assert.match(items, /<span className=\{TILE\}>/);
   // The grid checkbox no longer hides the tile to take its place.
   assert.doesNotMatch(items, /group-hover\/chat:opacity-0/);
+});
+
+test("grid cards share a title and one footer line", () => {
+  const items = readSrc("features/library/chats/chats-items.tsx");
+  const cardOf = (start: string, end: string) =>
+    items.slice(items.indexOf(start), items.indexOf(end));
+  const cards = [
+    cardOf("export function ChatCard(", "export function GroupHeading("),
+    cardOf("export function ProjectCard(", "export function ProjectRow("),
+    cardOf("export function SectionCard(", "export function SectionRow("),
+  ];
+  for (const card of cards) {
+    assert.match(card, /className=\{CARD_TITLE\}/);
+    assert.match(card, /<span className="line-clamp-2">/);
+    assert.match(card, /<CardFooter/);
+  }
+  // No model line, archived count or kind badge in the grid.
+  assert.doesNotMatch(cards[0], /modelLabel|model &&/);
+  assert.match(cards[0], /<ChatBadges chat=\{chat\} marksOnly \/>/);
+  assert.doesNotMatch(cards[1], /archived/);
+  assert.match(cards[0], /<ChatLocation[^>]*plain/);
 });
 
 test("project cards in the grid leave out the instructions", () => {

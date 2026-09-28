@@ -3214,7 +3214,6 @@ export const fr = {
         newChatInSection: "Nouvelle discussion dans la section",
       },
       project: {
-        archivedCount: "{count} archivés",
         oneProject: "1 projet",
         projectCount: "{count} projets",
       },

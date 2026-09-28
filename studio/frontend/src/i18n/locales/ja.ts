@@ -3082,7 +3082,6 @@ export const ja = {
         newChatInSection: "セクションで新しいチャット",
       },
       project: {
-        archivedCount: "アーカイブ済み {count} 件",
         oneProject: "1 件のプロジェクト",
         projectCount: "{count} 件のプロジェクト",
       },
