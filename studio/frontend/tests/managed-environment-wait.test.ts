@@ -75,7 +75,7 @@ function harness(
   let armed: (() => void) | null = null;
   let armedCount = 0;
   const environmentWaitPollsRef = { current: 0 };
-  const recurrenceReasonRef = { current: null as string | null };
+  const allowHeldRuntimeRepairRef = { current: false };
   const noop = () => {};
 
   const scope: Record<string, unknown> = {
@@ -131,7 +131,7 @@ function harness(
       return Promise.resolve();
     },
     preflightStaleMessage: (_d: string, reason: string | null) => `stale:${reason}`,
-    recurrenceReasonRef,
+    allowHeldRuntimeRepairRef,
     wasRuntimeRepairedRecently: () => runtimeRepairedRecently,
     runtimeRepairRecurrenceMessage: () => "runtime damaged again",
     externalConflictMessage: () => "conflict",
@@ -170,7 +170,10 @@ ${checkBody
       return armed !== null;
     },
     polls: () => environmentWaitPollsRef.current,
-    recurrenceReason: () => recurrenceReasonRef.current,
+    allowHeldRepair() {
+      allowHeldRuntimeRepairRef.current = true;
+    },
+    heldRepairAllowed: () => allowHeldRuntimeRepairRef.current,
     async fireWait() {
       const next = armed;
       assert.ok(next, "no wait was armed");
@@ -226,7 +229,18 @@ test("a runtime damaged again soon after a repair explains instead of repairing"
 
   assert.equal(run.repairs, 0);
   assert.equal(run.errors.at(-1), "runtime damaged again");
-  assert.equal(run.recurrenceReason(), "llama_runtime_binaries_missing", "held for Retry");
+});
+
+test("after Retry, the preflight repairs a recently repaired runtime, once", async () => {
+  const run = harness({ ...BUSY, reason: "llama_runtime_binaries_missing" }, null, true);
+  run.allowHeldRepair();
+  await run.check();
+  assert.equal(run.repairs, 1, "the click asked for the repair the message offered");
+  assert.equal(run.heldRepairAllowed(), false, "consumed by that preflight");
+
+  await run.check();
+  assert.equal(run.repairs, 1, "the next automatic preflight holds it back again");
+  assert.equal(run.errors.at(-1), "runtime damaged again");
 });
 
 test("the wait is bounded, so a gate nobody releases still reaches Retry", async () => {

@@ -16,7 +16,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { isLlamaRuntimeReason } from "../src/hooks/backend-preflight-message.ts";
 import { readSrcAsync } from "./helpers/kit.ts";
 
 const src = await readSrcAsync("hooks/use-tauri-backend.ts");
@@ -34,36 +33,26 @@ const body = lift(
 
 type Run = {
   repairs: boolean[];
-  reasons: (string | null)[];
   preflights: number;
   forcedAfter: boolean;
-  recurrenceAfter: string | null;
+  heldRepairAllowed: boolean;
 };
 
-function runRetry(
-  status: string,
-  forced: boolean,
-  recurrence: string | null = null,
-  repairReason: string | null = null,
-): Run {
+function runRetry(status: string, forced: boolean): Run {
   const repairs: boolean[] = [];
-  const reasons: (string | null)[] = [];
   const forcedRepairRef = { current: forced };
-  const recurrenceReasonRef = { current: recurrence };
+  const allowHeldRuntimeRepairRef = { current: false };
   let preflights = 0;
   const noop = () => {};
   const scope = {
     statusRef: { current: status },
     forcedRepairRef,
-    recurrenceReasonRef,
-    repairReasonRef: { current: repairReason },
-    isLlamaRuntimeReason,
-    startRepair: (options?: { forceInstaller?: boolean; preflightReason?: string | null }) => {
+    allowHeldRuntimeRepairRef,
+    startRepair: (options?: { forceInstaller?: boolean }) => {
       // The real one records the flag first; the fake mirrors that so the test can see
       // whether it survived the state reset that now runs ahead of the call.
       forcedRepairRef.current = options?.forceInstaller === true;
       repairs.push(options?.forceInstaller === true);
-      reasons.push(options?.preflightReason ?? null);
       return Promise.resolve();
     },
     checkInstallAndStart: () => {
@@ -93,10 +82,9 @@ function runRetry(
   )(...keys.map((key) => (scope as Record<string, unknown>)[key]))();
   return {
     repairs,
-    reasons,
     preflights,
     forcedAfter: forcedRepairRef.current,
-    recurrenceAfter: recurrenceReasonRef.current,
+    heldRepairAllowed: allowHeldRuntimeRepairRef.current,
   };
 }
 
@@ -130,32 +118,14 @@ test("retry from any other failure is untouched", () => {
   }
 });
 
-test("retry on the runtime recurrence screen runs the repair the message asked for", () => {
-  const run = runRetry("error", false, "llama_runtime_binaries_missing");
-  assert.deepEqual(run.repairs, [false], "an ordinary repair, not a forced installer");
-  assert.deepEqual(run.reasons, ["llama_runtime_binaries_missing"]);
-  assert.equal(run.preflights, 0, "the preflight would only show the same message again");
-  assert.equal(run.recurrenceAfter, null, "one click asks for one repair");
-});
-
-test("a held runtime reason does not leak into a retry from another screen", () => {
-  const run = runRetry("repair-error", false, "llama_runtime_binaries_missing");
-  assert.deepEqual(run.repairs, []);
-  assert.equal(run.preflights, 1);
-  assert.equal(run.recurrenceAfter, null);
-});
-
-test("retry after a failed runtime repair runs that repair again, not the preflight", () => {
-  // The preflight would find the recent record and hold the repair back a second time,
-  // so the failure message's "then retry" would need two clicks.
-  const run = runRetry("repair-error", false, null, "llama_runtime_binaries_missing");
-  assert.deepEqual(run.repairs, [false]);
-  assert.deepEqual(run.reasons, ["llama_runtime_binaries_missing"]);
-  assert.equal(run.preflights, 0);
-});
-
-test("retry after a failed repair for any other reason still runs the preflight", () => {
-  const run = runRetry("repair-error", false, null, "backend_outdated");
-  assert.deepEqual(run.repairs, []);
-  assert.equal(run.preflights, 1);
+test("retry lets its preflight repair a recently repaired runtime; a forced resume does not need to", () => {
+  // The recurrence hold is for the silent launch-time repair. A click still goes through
+  // the preflight, which is what catches a busy, external or already fixed install.
+  for (const status of ["error", "repair-error"]) {
+    const run = runRetry(status, false);
+    assert.equal(run.preflights, 1, `${status}: the retry still runs the preflight`);
+    assert.deepEqual(run.repairs, [], `${status}: no repair without the preflight`);
+    assert.equal(run.heldRepairAllowed, true, `${status}: the hold is lifted for it`);
+  }
+  assert.equal(runRetry("repair-error", true).heldRepairAllowed, false);
 });

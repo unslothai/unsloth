@@ -186,9 +186,9 @@ export function useTauriBackend() {
   // approveElevation, which restarts the repair after the system packages land.
   const forcedRepairRef = useRef(false);
   const repairReasonRef = useRef<string | null>(null);
-  // The runtime reason preflight refused to auto-repair because it came back soon after a
-  // repair. Retry on that screen runs the repair the user was told to ask for.
-  const recurrenceReasonRef = useRef<string | null>(null);
+  // Set by Retry: the next preflight may repair a runtime that was repaired recently. Only
+  // the automatic launch-time repair is held back; a click is the user asking for it.
+  const allowHeldRuntimeRepairRef = useRef(false);
   // One preflight and one repair at a time. Retry runs the preflight, a stale verdict starts a
   // repair, and five clicks two seconds apart used to fan out into five of each: the Rust side
   // saw them as five repairs racing for one installer.
@@ -321,6 +321,8 @@ export function useTauriBackend() {
     }
     if (preflightInFlightRef.current) return;
     preflightInFlightRef.current = true;
+    const allowHeldRuntimeRepair = allowHeldRuntimeRepairRef.current;
+    allowHeldRuntimeRepairRef.current = false;
     // Released below and again in the finally; by then a later call may hold the flag, and
     // clearing it unowned would let a third preflight through.
     let ownsPreflight = true;
@@ -380,8 +382,7 @@ export function useTauriBackend() {
             return;
           }
           if (preflight.can_auto_repair) {
-            if (wasRuntimeRepairedRecently(preflight.reason)) {
-              recurrenceReasonRef.current = preflight.reason;
+            if (!allowHeldRuntimeRepair && wasRuntimeRepairedRecently(preflight.reason)) {
               setBackendError(runtimeRepairRecurrenceMessage());
             } else {
               await startRepair({ preflightReason: preflight.reason });
@@ -598,16 +599,6 @@ export function useTauriBackend() {
     const resumeForcedRepair =
       statusRef.current === "repair-error" && forcedRepairRef.current;
     forcedRepairRef.current = false;
-    // Same for a runtime repair preflight held back: the message asked for this click. A
-    // runtime repair that failed keeps its reason too, since the preflight would only hold
-    // the next one back again.
-    const recurrenceReason =
-      statusRef.current === "error"
-        ? recurrenceReasonRef.current
-        : statusRef.current === "repair-error" && isLlamaRuntimeReason(repairReasonRef.current)
-          ? repairReasonRef.current
-          : null;
-    recurrenceReasonRef.current = null;
     clearAuthFailure();
     clearServerStopIntent();
     setError(null);
@@ -627,10 +618,7 @@ export function useTauriBackend() {
       void startRepair({ forceInstaller: true });
       return;
     }
-    if (recurrenceReason) {
-      void startRepair({ preflightReason: recurrenceReason });
-      return;
-    }
+    allowHeldRuntimeRepairRef.current = true;
     checkInstallAndStart();
   }, []);
 
