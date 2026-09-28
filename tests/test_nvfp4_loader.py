@@ -128,9 +128,14 @@ def test_fp8_group_routes_with_the_fp8_kernels_when_opted_in(ckpt, monkeypatch):
     monkeypatch.setattr(loader_utils, "_zoo_peft_forward_keeps_fp8_inputs", lambda: True)
     model = _load_raw(path, "qwen3")
     loader_utils._prepare_compressed_tensors_model(model)
+    lm_head = model.get_output_embeddings()
     for name, kind in kinds.items():
         module = _module(model, name)
-        if kind == "fp8":
+        if module is lm_head:
+            # The fused CE loss reads lm_head.weight directly, so it is decompressed, not routed.
+            assert module.weight.dtype == torch.bfloat16
+            assert not getattr(module, "_unsloth_compressed_tensors_fp8", False)
+        elif kind == "fp8":
             assert (
                 module.weight.dtype == torch.float8_e4m3fn
                 and module._unsloth_compressed_tensors_fp8
@@ -140,18 +145,24 @@ def test_fp8_group_routes_with_the_fp8_kernels_when_opted_in(ckpt, monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "arch, api",
+    "arch, api, fp8_kernels",
     [
-        ("qwen3", "FastLanguageModel"),
-        ("qwen3", "FastModel"),
-        ("qwen3_5", "FastModel"),
-        ("qwen3_5", "FastLanguageModel"),
+        ("qwen3", "FastLanguageModel", False),
+        ("qwen3", "FastModel", False),
+        ("qwen3_5", "FastModel", False),
+        ("qwen3_5", "FastLanguageModel", False),
+        # The qwen3 fixture has an untied FP8 lm_head, which the FP8 route once handed to the fused CE loss.
+        ("qwen3", "FastModel", True),
     ],
 )
-def test_lora_trains_on_the_packed_base_and_reloads(ckpt, arch, api, tmp_path):
+def test_lora_trains_on_the_packed_base_and_reloads(ckpt, arch, api, fp8_kernels, tmp_path):
     import json
     import subprocess
 
+    if fp8_kernels:
+        from unsloth.models import loader_utils
+        if not loader_utils._zoo_peft_forward_keeps_fp8_inputs():
+            pytest.skip("installed unsloth_zoo predates the FP8 kernel route")
     path, _ = ckpt[arch]
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     # A fresh process per case: patches and the compiled module cache from one loader leak into the next.
@@ -160,6 +171,7 @@ def test_lora_trains_on_the_packed_base_and_reloads(ckpt, arch, api, tmp_path):
         PYTHONPATH = root + os.pathsep + os.environ.get("PYTHONPATH", ""),
         UNSLOTH_COMPILE_LOCATION = str(tmp_path / "compiled"),
         UNSLOTH_IS_PRESENT = "1",
+        UNSLOTH_COMPRESSED_TENSORS_FP8_KERNELS = "1" if fp8_kernels else "0",
     )
     run = subprocess.run(
         [

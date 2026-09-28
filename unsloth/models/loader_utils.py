@@ -1419,13 +1419,19 @@ def _route_compressed_tensors_fp8_to_unsloth(model, skip = ()):
         return 0
     if not _zoo_peft_forward_keeps_fp8_inputs():
         return 0
-    routable = []
+    # The fused CE loss multiplies lm_head.weight directly, so a quantized lm_head is decompressed, never routed.
+    get_output_embeddings = getattr(model, "get_output_embeddings", None)
+    lm_head = get_output_embeddings() if callable(get_output_embeddings) else None
+    routable, decompress = [], []
     for module in model.modules():
         # Modules another route already owns (NVFP4) do not count against the all-or-nothing check.
         if module in skip:
             continue
         scheme = getattr(module, "quantization_scheme", None)
         if scheme is None or getattr(scheme, "weights", None) is None:
+            continue
+        if module is lm_head:
+            decompress.append(module)
             continue
         block = None
         weight = getattr(module, "weight", None)
@@ -1439,6 +1445,17 @@ def _route_compressed_tensors_fp8_to_unsloth(model, skip = ()):
         if block is None:
             return 0
         routable.append((module, block))
+    if not routable:
+        return 0
+    if decompress:
+        try:
+            from compressed_tensors.compressors import decompress_module
+            with torch.inference_mode(False), torch.no_grad():
+                for module in decompress:
+                    decompress_module(module)
+                    _remove_same_device_compressed_tensors_offload(module)
+        except Exception:
+            return 0
     converted = 0
     for module, block in routable:
         scale = module.weight_scale
