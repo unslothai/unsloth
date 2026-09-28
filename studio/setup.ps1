@@ -155,6 +155,7 @@ if ($script:UnslothVerbose) {
 $script:LlamaCppDegraded = $false
 $script:LlamaKeptGpuPrebuilt = $null
 $script:NvidiaSmiRejected = $false
+$script:NvidiaDriverLibraryOnly = $false
 $script:NvidiaLibraryInventoryProbed = $false
 $script:NvidiaLibraryInventory = $null
 # Set by the offline keep, read unconditionally by the sidecar and legacy-migration blocks:
@@ -1184,7 +1185,7 @@ function Get-GpuPrebuiltToKeepOverSourceBuild {
     if ("$($env:UNSLOTH_LLAMA_TAG)".Trim() -notin @("", "latest")) { return "" }
     $backend = Get-PrebuiltMarkerBackend -Marker (Join-Path $InstallDir "UNSLOTH_PREBUILT_INFO.json")
     if (-not $backend) { return "" }
-    $nvidia = $HasNvidiaSmi
+    $nvidia = $HasNvidiaSmi -or [bool]$script:NvidiaDriverLibraryOnly
     $amd = $HasROCm -or [bool]$script:ROCmGfxArch
     $present = switch ($backend) {
         "cuda"   { $nvidia }
@@ -1485,6 +1486,289 @@ function Get-CudaFamilyCappedForPreTuring {
     return $Family
 }
 
+# Interpreter for the shared inventory's Python rung, deliberately NOT part of the shared
+# region: the two files find Python in different places. setup.ps1 runs after the installer,
+# so the venv a previous run built is the interpreter, and $VenvDir is set well before the
+# first Get-NvidiaLibraryInventory call. No interpreter simply means the rung declines.
+function Get-NvidiaProbePythonExe {
+    if ("$($env:UNSLOTH_EARLY_PYTHON_PROBE)".Trim() -eq "0") { return "" }
+    if (-not $VenvDir) { return "" }
+    foreach ($leaf in @("Scripts\python.exe", "bin/python3", "bin/python")) {
+        $candidate = Join-Path $VenvDir $leaf
+        if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) { continue }
+        return $candidate
+    }
+    return ""
+}
+
+function Get-StudioSystem32Tool {
+    param([Parameter(Mandatory = $true)][string]$Name)
+    if ([string]::IsNullOrWhiteSpace($env:SystemRoot)) { return "" }
+    $candidate = Join-Path (Join-Path $env:SystemRoot "System32") $Name
+    if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) { return "" }
+    return $candidate
+}
+
+function Test-StudioSddlRightsAreWrite {
+    param([string]$Rights)
+    if ([string]::IsNullOrWhiteSpace($Rights)) { return $true }
+    $text = "$Rights".Trim().ToUpper()
+    if ($text -like "0X*") {
+        $mask = [long]0
+        foreach ($ch in $text.Substring(2).ToCharArray()) {
+            $digit = "0123456789ABCDEF".IndexOf($ch)
+            if ($digit -lt 0) { return $true }
+            $mask = ($mask * 16) + $digit
+        }
+        return (($mask -band 0x500D0156) -ne 0)
+    }
+    foreach ($alias in @("GA", "GW", "WD", "WO", "SD", "DT", "FA", "FW", "KA", "KW",
+                         "CC", "DC", "WP", "SW")) {
+        if ($text.Contains($alias)) { return $true }
+    }
+    return $false
+}
+
+function Test-StudioSddlPrincipalIsAdminOnly {
+    param([string]$Principal)
+    if ([string]::IsNullOrWhiteSpace($Principal)) { return $false }
+    $who = "$Principal".Trim().ToUpper()
+    return (@(
+        "BA", "SY", "S-1-5-32-544", "S-1-5-18",
+        "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464"
+    ) -contains $who)
+}
+
+function Test-StudioSddlWritableByNonAdmin {
+    param([string]$Sddl)
+    if ([string]::IsNullOrWhiteSpace($Sddl)) { return $true }
+    $text = "$Sddl".Trim()
+    if (-not ($text -match '^O:([A-Za-z0-9\-]+?)(?:G:|D:|S:|$)')) { return $true }
+    if (-not (Test-StudioSddlPrincipalIsAdminOnly -Principal $Matches[1])) { return $true }
+    $daclAt = $text.IndexOf("D:")
+    if ($daclAt -lt 0) { return $true }
+    $dacl = $text.Substring($daclAt)
+    $saclAt = $dacl.IndexOf("S:")
+    if ($saclAt -ge 0) { $dacl = $dacl.Substring(0, $saclAt) }
+    $seen = 0
+    foreach ($chunk in ($dacl -split '\)')) {
+        $open = $chunk.IndexOf("(")
+        if ($open -lt 0) { continue }
+        $seen++
+        $fields = $chunk.Substring($open + 1) -split ';'
+        if ($fields.Count -lt 6) { return $true }
+        $type = "$($fields[0])".Trim().ToUpper()
+        $flags = "$($fields[1])".Trim().ToUpper()
+        if (@("D", "OD", "XD") -contains $type) { continue }
+        if ($flags.Contains("IO")) { continue }
+        if (-not (Test-StudioSddlRightsAreWrite -Rights $fields[2])) { continue }
+        if (-not (Test-StudioSddlPrincipalIsAdminOnly -Principal $fields[5])) { return $true }
+    }
+    # A DACL with no ACEs in it is not evidence of anything, and neither is one this did not
+    # manage to split.
+    if ($seen -eq 0) { return $true }
+    return $false
+}
+
+function Test-StudioDirectoryIsAdminOnly {
+    param([string]$Path)
+    if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
+    $sddl = ""
+    try {
+        # Select-Object -ExpandProperty, not a property read: Constrained Language Mode refuses
+        # property access on types outside its allowed list, and the security descriptor is one.
+        $sddl = "$(Get-Acl -LiteralPath $Path -ErrorAction Stop |
+            Select-Object -ExpandProperty Sddl)"
+    } catch { return $false }
+    if ([string]::IsNullOrWhiteSpace($sddl)) { return $false }
+    return (-not (Test-StudioSddlWritableByNonAdmin -Sddl $sddl))
+}
+
+function Get-StudioLexicalParent {
+    param([string]$Path)
+    $trimmed = "$Path".TrimEnd('\', '/')
+    $cut = $trimmed.LastIndexOfAny(@([char]92, [char]47))
+    if ($cut -lt 0) { return "" }
+    return $trimmed.Substring(0, $cut)
+}
+
+function Test-StudioPathUnderAdminRoot {
+    param([string]$Path)
+    if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
+    # $env: rather than [Environment]::GetEnvironmentVariable: System.Environment is not on
+    # Constrained Language Mode's allowed type list, and this helper runs on hosts under it.
+    $roots = @()
+    foreach ($value in @($env:SystemRoot, $env:ProgramFiles, $env:ProgramW6432, ${env:ProgramFiles(x86)})) {
+        if (-not [string]::IsNullOrWhiteSpace($value)) { $roots += "$value".TrimEnd('\', '/') }
+    }
+    $matchedRoot = ""
+    foreach ($root in $roots) {
+        $escapedRoot = $root -replace '([\[\]\*\?])', '`$1'
+        if (("$Path" -like ($escapedRoot + "\*")) -or ("$Path" -like ($escapedRoot + "/*"))) {
+            $matchedRoot = $root
+            break
+        }
+    }
+    if ([string]::IsNullOrWhiteSpace($matchedRoot)) { return $false }
+    $windowsRoot = "$($env:SystemRoot)".TrimEnd('\', '/')
+    if (-not [string]::IsNullOrWhiteSpace($windowsRoot)) {
+        foreach ($leaf in @(
+            "Temp", "Tasks", "Tracing", "Registration\CRMLog", "debug\WIA",
+            "System32\Tasks", "System32\spool\drivers\color", "System32\spool\PRINTERS",
+            "System32\spool\SERVERS", "System32\com\dmp", "System32\FxsTmp",
+            "SysWOW64\Tasks", "SysWOW64\com\dmp", "SysWOW64\FxsTmp"
+        )) {
+            $writable = $windowsRoot + "\" + $leaf
+            $escapedWritable = $writable -replace '([\[\]\*\?])', '`$1'
+            if (("$Path" -like ($escapedWritable + "\*")) -or
+                ("$Path" -like ($escapedWritable + "/*"))) { return $false }
+        }
+    }
+    $current = Get-StudioLexicalParent -Path "$Path"
+    $guard = 0
+    while (-not [string]::IsNullOrWhiteSpace($current)) {
+        $guard++
+        if ($guard -gt 64) { return $false }
+        if (-not (Test-StudioDirectoryIsAdminOnly -Path $current)) { return $false }
+        if ("$current".TrimEnd('\', '/') -eq $matchedRoot) { return $true }
+        $next = Get-StudioLexicalParent -Path "$current"
+        if ("$next" -eq "$current") { return $false }
+        $current = $next
+    }
+    return $false
+}
+
+function Invoke-StudioSystem32ToolBounded {
+    param([string]$Exe, [string[]]$Arguments = @(), [int]$TimeoutMs = 3000)
+    # CLM cannot construct ProcessStartInfo. A job captures the trusted system tool's
+    # output through PowerShell's pipes, without redirect files in an unlabelled directory.
+    if ("$($ExecutionContext.SessionState.LanguageMode)" -ne "FullLanguage") {
+        $job = $null
+        try {
+            $seconds = ($TimeoutMs - ($TimeoutMs % 1000)) / 1000
+            if (($TimeoutMs % 1000) -ne 0) { $seconds++ }
+            if ($seconds -lt 1) { $seconds = 1 }
+            $job = Start-Job -ScriptBlock {
+                param($tool, $toolArgs)
+                $lines = @(& $tool @toolArgs 2>$null)
+                return @{ Output = ($lines -join "`n"); ExitCode = $LASTEXITCODE }
+            } -ArgumentList $Exe, (,$Arguments)
+            if (Wait-Job -Job $job -Timeout $seconds) {
+                return (Receive-Job -Job $job -ErrorAction SilentlyContinue | Select-Object -Last 1)
+            }
+            Stop-Job -Job $job -ErrorAction SilentlyContinue
+        } catch { return $null }
+        finally { if ($job) { Remove-Job -Job $job -Force -ErrorAction SilentlyContinue } }
+        return $null
+    }
+    $proc = $null
+    try {
+        # If policy forbids these types, decline. The caller treats an unreadable
+        # token as elevated and uses the inline probe when no private directory is safe.
+        $clock = [System.Diagnostics.Stopwatch]::StartNew()
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName = $Exe
+        if ($null -ne $psi.PSObject.Properties['ArgumentList']) {
+            foreach ($arg in $Arguments) { $null = $psi.ArgumentList.Add($arg) }
+        } else {
+            # The arguments here are paths and fixed switches; paths cannot contain quotes.
+            $psi.Arguments = (@($Arguments | ForEach-Object {
+                '"' + ($_ -replace '(\\+)$', '$1$1') + '"'
+            }) -join ' ')
+        }
+        $psi.UseShellExecute = $false
+        $psi.RedirectStandardOutput = $true
+        $psi.RedirectStandardError = $true
+        $psi.CreateNoWindow = $true
+        $proc = [System.Diagnostics.Process]::Start($psi)
+        $stdout = $proc.StandardOutput.ReadToEndAsync()
+        $null = $proc.StandardError.ReadToEndAsync()
+        if (-not $proc.WaitForExit($TimeoutMs)) {
+            try { $proc.Kill() } catch { }
+            return $null
+        }
+        $left = [Math]::Max(0, $TimeoutMs - [int]$clock.ElapsedMilliseconds)
+        if (-not $stdout.Wait($left)) { return $null }
+        return @{ Output = "$($stdout.Result)"; ExitCode = $proc.ExitCode }
+    } catch { return $null }
+    finally { if ($proc) { try { $proc.Dispose() } catch { } } }
+}
+
+function Test-StudioChildScriptDirectoryElevated {
+    $groups = ""
+    $whoami = Get-StudioSystem32Tool -Name "whoami.exe"
+    if (-not $whoami) { return $true }
+    try {
+        $result = Invoke-StudioSystem32ToolBounded -Exe $whoami -Arguments @('/groups')
+        if ($null -eq $result) { return $true }
+        $groups = "$($result.Output)"
+    } catch { return $true }
+    if ([string]::IsNullOrWhiteSpace($groups)) { return $true }
+    if ($groups -match "S-1-16-(12288|16384)") { return $true }
+    if ($groups -match "S-1-16-\d+") { return $false }
+    return $true
+}
+
+function New-StudioChildScriptDirectory {
+    $tempRoot = if ($env:TEMP) { $env:TEMP } elseif ($env:TMPDIR) { $env:TMPDIR } else { "/tmp" }
+    # Join-Path throws on a TEMP naming a missing drive: decline, like any other unusable root.
+    try { $dir = Join-Path $tempRoot ("unsloth-child-" + [guid]::NewGuid().ToString("N")) -ErrorAction Stop } catch { return "" }
+    $made = $false
+    try {
+        $createdPath = "$(New-Item -ItemType Directory -Path $dir -ErrorAction Stop |
+            Select-Object -ExpandProperty FullName)"
+        $made = (Test-Path -LiteralPath $dir -PathType Container)
+        if ((-not $made) -and $createdPath) {
+            Remove-Item -LiteralPath $createdPath -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    } catch { }
+    if ((-not $made) -and $dir -match '[\[\]]') {
+        $escaped = $dir -replace '([\[\]])', '`$1'
+        try {
+            $null = New-Item -ItemType Directory -Path $escaped -ErrorAction Stop
+            $made = (Test-Path -LiteralPath $dir -PathType Container)
+        } catch { }
+    }
+    # Created by THIS call. New-Item without -Force throws on a directory that already exists,
+    # which is the point: a pre-created one carrying an attacker's ACL is refused, not adopted.
+    if (-not $made) { return "" }
+    if ($env:OS -eq "Windows_NT") {
+        # Until it is labelled a standard user can swap this directory for a junction: a link is
+        # never adopted, and cleanup never recurses through one into its target.
+        $isLink = { try { "$((Get-Item -LiteralPath $dir -Force -ErrorAction Stop).Attributes)" -match 'ReparsePoint' } catch { $true } }
+        $labelled = $false
+        $icacls = Get-StudioSystem32Tool -Name "icacls.exe"
+        if (-not $icacls) {
+            if (-not (& $isLink)) { try { Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue } catch { } }
+            return ""
+        }
+        try {
+            $result = Invoke-StudioSystem32ToolBounded -Exe $icacls -Arguments @($dir, '/setintegritylevel', '(OI)(CI)H')
+            $labelled = ($null -ne $result -and $result.ExitCode -eq 0)
+            if (-not $labelled -and $null -ne $result) {
+                $readback = Invoke-StudioSystem32ToolBounded -Exe $icacls -Arguments @($dir)
+                $labelled = ($null -ne $readback -and "$($readback.Output)" -match "S-1-16-12288|High Mandatory Level")
+            }
+        } catch { $labelled = $false }
+        if ((-not $labelled) -and (Test-StudioChildScriptDirectoryElevated)) {
+            if (-not (& $isLink)) { try { Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue } catch { } }
+            return ""
+        }
+        if (& $isLink) { return "" }
+        if ($labelled) {
+            $planted = $true
+            try {
+                $planted = @(Get-ChildItem -LiteralPath $dir -Force -ErrorAction Stop).Count -ne 0
+            } catch { $planted = $true }
+            if ($planted) {
+                if (-not (& $isLink)) { try { Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue } catch { } }
+                return ""
+            }
+        }
+    }
+    return $dir
+}
+
 # ── BEGIN SHARED WITH install.ps1 (Get-NvidiaLibraryInventory) ──
 # Full paths only: a bare name searches PATH, where ZLUDA's nvcuda.dll and nvml.dll pass for NVIDIA.
 function Get-NvidiaNvmlLibraryPath {
@@ -1503,106 +1787,263 @@ function Get-NvidiaSystem32Dir {
     return (Join-Path $root "System32")
 }
 
-# The driver's libraries as P/Invoke methods, emitted rather than compiled: the installer must
-# not spawn csc.exe (New-StudioEmittedNativeType). $null when the type cannot be built. A
-# missing library throws at the first call, not here.
-function Get-NvidiaLibraryProbeType {
-    # V3: a session that emitted V2 would keep its bare-name bindings.
-    $name = "UnslothNvidiaProbeV3"
-    $existing = $name -as [type]
-    if ($existing) { return $existing }
-    # Dynamic Code Security can kill the process on an emitted load rather than throw: the
-    # same gate every other emitted type checks first, and no inventory when it says no.
-    if (-not (Test-StudioCanDefineNativeTypes)) { return $null }
+
+# The same inventory with nothing emitted: CPython's ctypes makes the identical NVML and CUDA
+# driver calls, and the interop leaves the scanned surface rather than moving within it.
+# available or the probe itself says nothing.
+# Get-NvidiaProbePythonExe is deliberately per-file. The installer has its early read-only
+# interpreter ladder; setup.ps1 has the venv a previous run already built.
+function Read-NvidiaLibraryRawViaPython {
+    param([int]$TimeoutMs = 10000, [switch]$SkipNvml)
+    # Set only when the child is killed at the deadline, so a caller can tell a hung driver from
+    # an empty answer. Reset first: every early return below is an answer, not a timeout.
+    $script:NvidiaPythonProbeTimedOut = $false
+    if ("$($env:UNSLOTH_NVIDIA_PYTHON_PROBE)".Trim() -eq "0") { return "" }
+    $exe = ""
+    try { $exe = "$(Get-NvidiaProbePythonExe)" } catch { return "" }
+    if (-not $exe) { return "" }
     $windows = ($env:OS -eq "Windows_NT")
-    $nvml = if ($windows) { Get-NvidiaNvmlLibraryPath } else { "libnvidia-ml.so.1" }
-    $cuda = if ($windows) { Join-Path (Get-NvidiaSystem32Dir) "nvcuda.dll" } else { "libcuda.so.1" }
-    $int = [int]; $uint = [uint32]; $refInt = [int].MakeByRefType()
-    $refUInt = [uint32].MakeByRefType(); $refPtr = [IntPtr].MakeByRefType()
+    $nvmlHint = if ($windows) { Get-NvidiaNvmlLibraryPath } else { "libnvidia-ml.so.1" }
+    $cudaHint = if ($windows) { Join-Path (Get-NvidiaSystem32Dir) "nvcuda.dll" } else { "libcuda.so.1" }
+    # Kept byte-identical with studio/nvidia_probe.py's readers by
+    # tests/studio/test_nvidia_python_probe_parity.ps1. Column 0 on purpose: this is Python.
+    $probeSource = @'
+import ctypes, os, sys
+
+
+def _names(kind, hint):
+    if os.name == "nt":
+        # The driver's full path only: a bare name also finds a CUDA stand-in such as ZLUDA
+        # beside the interpreter, and that is not an NVIDIA GPU (#11736).
+        return [hint] if hint and os.path.isabs(hint) else []
+    if kind == "nvml":
+        return ["libnvidia-ml.so.1", "libnvidia-ml.so"]
+    return ["libcuda.so.1", "libcuda.so"]
+
+
+def _load(kind, hint):
+    for name in _names(kind, hint):
+        if not name:
+            continue
+        try:
+            return ctypes.CDLL(name)
+        except Exception:
+            continue
+    return None
+
+
+def _unpack(packed):
+    return "%d;%d" % (packed // 1000, (packed % 1000) // 10)
+
+
+def read_nvml(hint):
+    lib = _load("nvml", hint)
+    if lib is None:
+        return ""
+    try:
+        if lib.nvmlInit_v2() != 0:
+            return ""
+    except Exception:
+        return ""
+    try:
+        count = ctypes.c_uint(0)
+        if lib.nvmlDeviceGetCount_v2(ctypes.byref(count)) != 0 or count.value == 0:
+            return ""
+        packed = ctypes.c_int(0)
+        if lib.nvmlSystemGetCudaDriverVersion_v2(ctypes.byref(packed)) != 0 or packed.value < 1000:
+            return ""
+        # ctypes defaults every return and every pointer argument to a C int, which truncates a
+        # 64-bit nvmlDevice_t handle. Declare both before the first call, not after.
+        handle_of = lib.nvmlDeviceGetHandleByIndex_v2
+        handle_of.restype = ctypes.c_int
+        handle_of.argtypes = [ctypes.c_uint, ctypes.POINTER(ctypes.c_void_p)]
+        cap_of = lib.nvmlDeviceGetCudaComputeCapability
+        cap_of.restype = ctypes.c_int
+        cap_of.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_int), ctypes.POINTER(ctypes.c_int)]
+        caps = []
+        for index in range(count.value):
+            device = ctypes.c_void_p()
+            # One unreadable GPU voids the source: a partial list misleads the pre-Turing cap.
+            if handle_of(index, ctypes.byref(device)) != 0:
+                return ""
+            major = ctypes.c_int(0)
+            minor = ctypes.c_int(0)
+            if cap_of(device, ctypes.byref(major), ctypes.byref(minor)) != 0:
+                return ""
+            caps.append("%d.%d" % (major.value, minor.value))
+        return "nvml;%s;%s" % (_unpack(packed.value), ",".join(caps))
+    finally:
+        try:
+            lib.nvmlShutdown()
+        except Exception:
+            pass
+
+
+def read_cuda(hint):
+    lib = _load("cuda", hint)
+    if lib is None:
+        return ""
+    # The driver API honours CUDA_VISIBLE_DEVICES; the inventory must be the physical one, so a
+    # hidden pre-Turing card still caps the family. cuInit reads the mask once.
+    saved = os.environ.pop("CUDA_VISIBLE_DEVICES", None)
+    try:
+        init = lib.cuInit(0)
+    except Exception:
+        return ""
+    finally:
+        if saved is not None:
+            os.environ["CUDA_VISIBLE_DEVICES"] = saved
+    if init != 0:
+        return ""
+    count = ctypes.c_int(0)
+    if lib.cuDeviceGetCount(ctypes.byref(count)) != 0 or count.value == 0:
+        return ""
+    packed = ctypes.c_int(0)
+    if lib.cuDriverGetVersion(ctypes.byref(packed)) != 0 or packed.value < 1000:
+        return ""
+    caps = []
+    for index in range(count.value):
+        device = ctypes.c_int(0)
+        if lib.cuDeviceGet(ctypes.byref(device), index) != 0:
+            return ""
+        major = ctypes.c_int(0)
+        minor = ctypes.c_int(0)
+        # CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR = 75, _MINOR = 76.
+        if lib.cuDeviceGetAttribute(ctypes.byref(major), 75, device) != 0:
+            return ""
+        if lib.cuDeviceGetAttribute(ctypes.byref(minor), 76, device) != 0:
+            return ""
+        caps.append("%d.%d" % (major.value, minor.value))
+    return "cuda;%s;%s" % (_unpack(packed.value), ",".join(caps))
+
+
+def main():
+    nvml_hint = os.environ.get("UNSLOTH_NVML_HINT", "")
+    cuda_hint = os.environ.get("UNSLOTH_CUDA_HINT", "")
+    answer = ""
+    # Set only for the CUDA-only retry that follows a child NVML held past its deadline.
+    if os.environ.get("UNSLOTH_NVIDIA_PROBE_SKIP_NVML", "") != "1":
+        try:
+            answer = read_nvml(nvml_hint)
+        except Exception:
+            answer = ""
+    if not answer:
+        try:
+            answer = read_cuda(cuda_hint)
+        except Exception:
+            answer = ""
+    sys.stdout.write(answer)
+
+
+main()
+'@
+    # Cmdlets only: Constrained Language Mode refuses New-Object ProcessStartInfo and
+    # [Process]::Start, and this launcher has to work there.
+    $probeDir = New-StudioChildScriptDirectory
+    $inline = (-not $probeDir)
+    if ($inline) {
+        # Elevated, a shared root lets a standard user plant or swap the redirect files: decline.
+        try { if (Test-StudioChildScriptDirectoryElevated) { return "" } } catch { return "" }
+        # The first root that takes a file: a TEMP that declined the directory may refuse this too.
+        $stem = $null
+        foreach ($root in @($env:TEMP, $env:TMP, $env:LOCALAPPDATA, $env:TMPDIR, "/tmp")) {
+            if (-not $root) { continue }
+            try {
+                $candidateStem = Join-Path $root ("unsloth-nvprobe-" + [guid]::NewGuid().ToString("N")) -ErrorAction Stop
+                $null = New-Item -ItemType File -Path "$candidateStem.out" -ErrorAction Stop; $stem = $candidateStem; break
+            } catch {}
+        }
+        if (-not $stem) { return "" }
+    } else {
+        $stem = Join-Path $probeDir "nvprobe"
+    }
+    $scriptFile = "$stem.py"
+    $outFile = "$stem.out"
+    $errFile = "$stem.err"
+    $raw = ""
     try {
-        $null = New-StudioEmittedNativeType -TypeName $name -Imports @(
-            @{ Name = "nvmlInit_v2"; Library = $nvml; Return = $int; Args = @(); Ansi = $true },
-            @{ Name = "nvmlShutdown"; Library = $nvml; Return = $int; Args = @(); Ansi = $true },
-            @{ Name = "nvmlSystemGetCudaDriverVersion_v2"; Library = $nvml; Return = $int; Args = @($refInt); Out = @(1); Ansi = $true },
-            @{ Name = "nvmlDeviceGetCount_v2"; Library = $nvml; Return = $int; Args = @($refUInt); Out = @(1); Ansi = $true },
-            @{ Name = "nvmlDeviceGetHandleByIndex_v2"; Library = $nvml; Return = $int; Args = @($uint, $refPtr); Out = @(2); Ansi = $true },
-            @{ Name = "nvmlDeviceGetCudaComputeCapability"; Library = $nvml; Return = $int; Args = @([IntPtr], $refInt, $refInt); Out = @(2, 3); Ansi = $true },
-            @{ Name = "cuInit"; Library = $cuda; Return = $int; Args = @($uint); Ansi = $true },
-            @{ Name = "cuDriverGetVersion"; Library = $cuda; Return = $int; Args = @($refInt); Out = @(1); Ansi = $true },
-            @{ Name = "cuDeviceGetCount"; Library = $cuda; Return = $int; Args = @($refInt); Out = @(1); Ansi = $true },
-            @{ Name = "cuDeviceGet"; Library = $cuda; Return = $int; Args = @($refInt, $int); Out = @(1); Ansi = $true },
-            @{ Name = "cuDeviceGetAttribute"; Library = $cuda; Return = $int; Args = @($refInt, $int, $int); Out = @(1); Ansi = $true }
-        )
-    } catch { return $null }
-    return ($name -as [type])
+        if (-not $inline) { Set-Content -LiteralPath $scriptFile -Value $probeSource -Encoding UTF8 -ErrorAction Stop }
+        # Whole seconds, rounded up, without [math]::Ceiling: CLM blocks it. PowerShell's / is
+        # floating point and [int] rounds to nearest, so 10000ms must not become 11s.
+        $seconds = ($TimeoutMs - ($TimeoutMs % 1000)) / 1000
+        if (($TimeoutMs % 1000) -ne 0) { $seconds = $seconds + 1 }
+        $seconds = [int]$seconds
+        if ($seconds -lt 1) { $seconds = 1 }
+        # Nothing with a space in it reaches the command line. Windows PowerShell 5.1 appends
+        # each native argument verbatim, so a script under "C:\Users\First Last\AppData\Local\
+        # Temp" or a hint under "C:\Program Files\NVIDIA Corporation\NVSMI" would split on its
+        # spaces and the child would run something else. The script arrives on stdin and the two
+        $savedNvml = $env:UNSLOTH_NVML_HINT
+        $savedCuda = $env:UNSLOTH_CUDA_HINT
+        $savedSkip = $env:UNSLOTH_NVIDIA_PROBE_SKIP_NVML
+        $savedSource = $env:UNSLOTH_NVIDIA_PROBE_SOURCE
+        $env:UNSLOTH_NVML_HINT = $nvmlHint
+        $env:UNSLOTH_CUDA_HINT = $cudaHint
+        # The switch reaches this child only. An inherited value must not make a first child skip NVML.
+        if ($SkipNvml) { $env:UNSLOTH_NVIDIA_PROBE_SKIP_NVML = "1" }
+        else { Remove-Item Env:UNSLOTH_NVIDIA_PROBE_SKIP_NVML -ErrorAction SilentlyContinue }
+        try {
+            if ($inline) {
+                $env:UNSLOTH_NVIDIA_PROBE_SOURCE = $probeSource
+                $proc = Start-Process -FilePath $exe -NoNewWindow -PassThru `
+                    -ArgumentList @("-I", "-S", "-B", "-c", "exec(__import__('os').environ['UNSLOTH_NVIDIA_PROBE_SOURCE'])") `
+                    -RedirectStandardOutput $outFile -RedirectStandardError $errFile -ErrorAction Stop
+            } else {
+                $proc = Start-Process -FilePath $exe -ArgumentList @("-I", "-S", "-B", "-") -NoNewWindow -PassThru `
+                    -RedirectStandardInput $scriptFile -RedirectStandardOutput $outFile -RedirectStandardError $errFile -ErrorAction Stop
+            }
+        } finally {
+            if ($null -eq $savedSource) { Remove-Item Env:UNSLOTH_NVIDIA_PROBE_SOURCE -ErrorAction SilentlyContinue }
+            else { $env:UNSLOTH_NVIDIA_PROBE_SOURCE = $savedSource }
+            if ($null -eq $savedNvml) { Remove-Item Env:UNSLOTH_NVML_HINT -ErrorAction SilentlyContinue }
+            else { $env:UNSLOTH_NVML_HINT = $savedNvml }
+            if ($null -eq $savedCuda) { Remove-Item Env:UNSLOTH_CUDA_HINT -ErrorAction SilentlyContinue }
+            else { $env:UNSLOTH_CUDA_HINT = $savedCuda }
+            if ($null -eq $savedSkip) { Remove-Item Env:UNSLOTH_NVIDIA_PROBE_SKIP_NVML -ErrorAction SilentlyContinue }
+            else { $env:UNSLOTH_NVIDIA_PROBE_SKIP_NVML = $savedSkip }
+        }
+        if (-not $proc) { return "" }
+        # -InputObject and an error variable, never $proc.Id or $proc.HasExited. Constrained
+        # Language Mode permits property reads only on its allowed type list and
+        # System.Diagnostics.Process is not on it, so reading either one throws on exactly the
+        # hosts this rung exists for. Handing the object to a cmdlet keeps the access inside
+        # compiled code, where the language mode does not reach.
+        $waitError = $null
+        Wait-Process -InputObject $proc -Timeout $seconds -ErrorAction SilentlyContinue -ErrorVariable waitError
+        if ($waitError) {
+            $script:NvidiaPythonProbeTimedOut = $true
+            try { Stop-Process -InputObject $proc -Force -ErrorAction SilentlyContinue } catch { }
+            # Let the killed child release its redirected files before the finally deletes them.
+            Wait-Process -InputObject $proc -Timeout 2 -ErrorAction SilentlyContinue
+            return ""
+        }
+        $raw = "$(Get-Content -LiteralPath $outFile -Raw -ErrorAction SilentlyContinue)"
+    } catch { return "" }
+    finally {
+        # The directory, not just the three files: it is ours, nothing else may be in it, and
+        # leaving an empty one behind per probe would litter %TEMP% on every run.
+        if ($probeDir) { Remove-Item -LiteralPath $probeDir -Recurse -Force -ErrorAction SilentlyContinue }
+        foreach ($stale in @($scriptFile, $outFile, $errFile)) {
+            Remove-Item -LiteralPath $stale -Force -ErrorAction SilentlyContinue
+        }
+    }
+    return "$raw".Trim()
 }
 
 # "source;cudaMajor;cudaMinor;cap,cap" from NVML, else the CUDA driver API; "" when neither
-# answers. Versions are major*1000 + minor*10. One runspace + deadline per reader: a shared one let slow NVML starve CUDA.
 function Read-NvidiaLibraryRaw {
     param([int]$TimeoutMs = 30000)
-    $type = Get-NvidiaLibraryProbeType
-    if (-not $type) { return "" }
-    $reader = {
-        param($T, $Which)
-        function Read-Nvml {
-            if ($T::nvmlInit_v2() -ne 0) { return "" }
-            try {
-                [uint32]$count = 0
-                if ($T::nvmlDeviceGetCount_v2([ref]$count) -ne 0 -or $count -eq 0) { return "" }
-                [int]$ver = 0
-                if ($T::nvmlSystemGetCudaDriverVersion_v2([ref]$ver) -ne 0 -or $ver -lt 1000) { return "" }
-                $caps = @()
-                for ([uint32]$i = 0; $i -lt $count; $i++) {
-                    [IntPtr]$dev = [IntPtr]::Zero; [int]$major = 0; [int]$minor = 0
-                    # One unreadable GPU voids the source: a partial list misleads the pre-Turing cap.
-                    if ($T::nvmlDeviceGetHandleByIndex_v2($i, [ref]$dev) -ne 0) { return "" }
-                    if ($T::nvmlDeviceGetCudaComputeCapability($dev, [ref]$major, [ref]$minor) -ne 0) { return "" }
-                    $caps += "$major.$minor"
-                }
-                return "nvml;$([int][math]::Floor($ver / 1000));$([int][math]::Floor(($ver % 1000) / 10));$($caps -join ',')"
-            } finally { $null = $T::nvmlShutdown() }
-        }
-        function Read-Cuda {
-            # The driver API honours CUDA_VISIBLE_DEVICES; the inventory must be the physical one,
-            # so a hidden pre-Turing card still caps the family. cuInit reads the mask once.
-            $saved = $env:CUDA_VISIBLE_DEVICES
-            Remove-Item Env:CUDA_VISIBLE_DEVICES -ErrorAction SilentlyContinue
-            try { $init = $T::cuInit([uint32]0) } finally { if ($null -ne $saved) { $env:CUDA_VISIBLE_DEVICES = $saved } }
-            if ($init -ne 0) { return "" }
-            [int]$count = 0
-            if ($T::cuDeviceGetCount([ref]$count) -ne 0 -or $count -eq 0) { return "" }
-            [int]$ver = 0
-            if ($T::cuDriverGetVersion([ref]$ver) -ne 0 -or $ver -lt 1000) { return "" }
-            $caps = @()
-            for ($i = 0; $i -lt $count; $i++) {
-                [int]$dev = 0; [int]$major = 0; [int]$minor = 0
-                if ($T::cuDeviceGet([ref]$dev, $i) -ne 0) { return "" }
-                # CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR = 75, _MINOR = 76.
-                if ($T::cuDeviceGetAttribute([ref]$major, 75, $dev) -ne 0) { return "" }
-                if ($T::cuDeviceGetAttribute([ref]$minor, 76, $dev) -ne 0) { return "" }
-                $caps += "$major.$minor"
-            }
-            return "cuda;$([int][math]::Floor($ver / 1000));$([int][math]::Floor(($ver % 1000) / 10));$($caps -join ',')"
-        }
-        $r = ""
-        try { if ($Which -eq "nvml") { $r = Read-Nvml } else { $r = Read-Cuda } } catch { $r = "" }
-        return "$r"
-    }
-    foreach ($which in @("nvml", "cuda")) {
-        $ps = $null; $handle = $null; $r = ""
-        try {
-            $ps = [powershell]::Create()
-            $null = $ps.AddScript($reader.ToString()).AddArgument($type).AddArgument($which)
-            $handle = $ps.BeginInvoke()
-            if ($handle.AsyncWaitHandle.WaitOne($TimeoutMs)) {
-                $r = "$(@($ps.EndInvoke($handle)) | Select-Object -Last 1)"
-            }
-        } catch { $r = "" }
-        finally { if ($ps -and $handle -and $handle.IsCompleted) { $ps.Dispose() } }
-        if ($r) { return $r }
-    }
-    return ""
+    # One deadline for both children, as the two in-process readers had: the first gets a whole
+    # bound, and only a hung NVML earns a CUDA-only child with what is left, less the 2 s kept back
+    # to reap the child it may have to kill. Compared by hand: CLM refuses [math].
+    $deadline = (Get-Date).AddMilliseconds($TimeoutMs * 2)
+    $raw = ""
+    try { $raw = Read-NvidiaLibraryRawViaPython -TimeoutMs $TimeoutMs } catch { return "" }
+    if (-not $script:NvidiaPythonProbeTimedOut) { return $raw }
+    $remainingMs = [int]($deadline - (Get-Date)).TotalMilliseconds
+    if ($remainingMs -lt 3000) { return "" }
+    $childMs = $remainingMs - 2000; if ($childMs -gt $TimeoutMs) { $childMs = $TimeoutMs }
+    try { return (Read-NvidiaLibraryRawViaPython -TimeoutMs $childMs -SkipNvml) } catch { return "" }
 }
 
 # NVIDIA inventory from the driver's own libraries (NVML, then the CUDA driver API), for a
@@ -1615,6 +2056,10 @@ function Get-NvidiaLibraryInventory {
     $script:NvidiaLibraryInventory = $null
     if ("$($env:UNSLOTH_NVIDIA_LIBRARY_PROBE)".Trim() -eq "0") { return $null }
     try { $raw = Read-NvidiaLibraryRaw -TimeoutMs ($TimeoutSec * 1000) } catch { return $null }
+    # The Python probe is the only library reader, so its opt-outs leave nvidia-smi as the only source.
+    if (-not "$raw" -and ("$($env:UNSLOTH_NVIDIA_PYTHON_PROBE)".Trim() -eq "0" -or "$($env:UNSLOTH_EARLY_PYTHON_PROBE)".Trim() -eq "0")) {
+        Write-StudioLine "   NVIDIA driver libraries not read (Python probe disabled): a GPU without a working nvidia-smi is not detected. Set UNSLOTH_TORCH_INDEX_FAMILY=cu128 (or your CUDA wheel) to choose one." -ForegroundColor Yellow
+    }
     $parts = "$raw".Split(";")
     if ($parts.Count -ne 4 -or -not $parts[3] -or [int]$parts[1] -lt 1) { return $null }
     $caps = @($parts[3].Split(","))
@@ -2404,261 +2849,6 @@ function Ensure-VCRedist {
 # ─────────────────────────────────────────────
 $Rule = [string]::new([char]0x2500, 52)
 
-# Native declarations are emitted, never compiled. Add-Type on Windows PowerShell 5.1 has no
-# in-process compiler: -TypeDefinition and -MemberDefinition alike write C# to %TEMP% and run
-# csc.exe, and security software blocks the result. Reflection emit builds the same stub in
-# memory: no compiler process, no source, no DLL, empty assembly Location. install.ps1 carries
-# the same helper for the same reason, and which product blocked what is recorded in
-# tests/studio/test_installer_av_shapes.py (AV_SHAPES_RECORD)
-# See install.ps1: App Control's Dynamic Code Security always blocks loading unsigned
-# System.Reflection.Emit assemblies by usually stopping or crashing the parent rather than
-# raising, so this has to be a gate and not a catch.
-$script:StudioCanDefineNativeTypes = $null
-# Why the last probe answered as it did, so a caller can tell "the child ran and
-# said no" (a policy) from "the child never answered" (failed to start, killed
-# at the deadline, or lost its output). Same boolean, different facts.
-$script:StudioEmitProbeOutcome = $null
-function Test-StudioCanDefineNativeTypes {
-    if ($null -ne $script:StudioCanDefineNativeTypes) { return $script:StudioCanDefineNativeTypes }
-    $languageMode = "FullLanguage"
-    try { $languageMode = [string]$ExecutionContext.SessionState.LanguageMode } catch {}
-    if ($languageMode -ne "FullLanguage") {
-        $script:StudioCanDefineNativeTypes = $false
-        return $false
-    }
-    # Read-and-zero is the only outcome that skips the probe. A query that threw, returned
-    # nothing, or lacked the property is UNKNOWN, and treating unknown as unrestricted lets
-    # option 19 through on a host whose CIM query failed. install.ps1 carries the full note.
-    $known = $false
-    $active = $false
-    try {
-        # -OperationTimeoutSec bounds the CIM operation on a responsive target only:
-        # it does not interrupt DCOM connection setup, and a wedged provider's own
-        # timeout wins. Good for the slow case, not a hang guard. The child probe
-        # below carries the real deadline.
-        $guard = Get-CimInstance -Namespace "root\Microsoft\Windows\DeviceGuard" `
-            -ClassName "Win32_DeviceGuard" -OperationTimeoutSec 10 -ErrorAction Stop
-        # 0 off, 1 audit, 2 enforced. A null property is not a zero.
-        if ($guard -and $null -ne $guard.UsermodeCodeIntegrityPolicyEnforcementStatus) {
-            $known = $true
-            if ([int]$guard.UsermodeCodeIntegrityPolicyEnforcementStatus -ne 0) {
-                $active = $true
-            }
-        }
-    } catch {}
-    if ($known -and -not $active) {
-        $script:StudioCanDefineNativeTypes = $true
-        return $true
-    }
-    # Which policy decides this, and Win32_DeviceGuard does not say. Option 19 Dynamic Code
-    # Security always blocks unsigned System.Reflection.Emit assemblies and is enforced even in
-    # an audit policy before Windows 11 24H2, while an audit policy without it emits fine. So a
-    # child process tries it. Same reasoning as install.ps1, which carries the full note.
-    $script:StudioCanDefineNativeTypes = Test-StudioEmitInChildProcess
-    # One retry, only when the first attempt never reached an answer (the
-    # compiled version this replaces also tried twice before caching a
-    # negative). Otherwise one transient process failure is cached for the whole
-    # run as if it were a policy, sending the installer down the lexical path
-    # where two unequal roots compare as unknown and a second lock gets taken. A
-    # child that RAN and said no is not retried, so a blocked machine pays for
-    # one probe.
-    if (-not $script:StudioCanDefineNativeTypes -and
-        $script:StudioEmitProbeOutcome -eq "indeterminate") {
-        $script:StudioCanDefineNativeTypes = Test-StudioEmitInChildProcess
-    }
-    return $script:StudioCanDefineNativeTypes
-}
-
-# The same emit, in a process that is allowed to die. A blocked dynamic load usually stops the
-# parent, so this is asked in a child; silence is refusal.
-function Test-StudioEmitInChildProcess {
-    # HostPath is for the tests, which have no policy to trigger the real path and
-    # cannot shadow the read-only $PSHOME. Production never passes it.
-    param([string]$HostPath)
-    # Until something below establishes otherwise.
-    $script:StudioEmitProbeOutcome = "indeterminate"
-    $probe = @'
-try {
-    $name = New-Object System.Reflection.AssemblyName 'UnslothStudioEmitProbe'
-    $access = [System.Reflection.Emit.AssemblyBuilderAccess]::Run
-    $assembly = $null
-    try { $assembly = [System.Reflection.Emit.AssemblyBuilder]::DefineDynamicAssembly($name, $access) }
-    catch { $assembly = [AppDomain]::CurrentDomain.DefineDynamicAssembly($name, $access) }
-    $module = $assembly.DefineDynamicModule('UnslothStudioEmitProbe')
-    $builder = $module.DefineType('UnslothStudioEmitProbe', 'Public, Class, AutoClass, AnsiClass, BeforeFieldInit')
-    $method = $builder.DefinePInvokeMethod('CloseHandle', 'kernel32.dll', 'CloseHandle',
-        'Public, Static, HideBySig, PinvokeImpl',
-        [System.Reflection.CallingConventions]::Standard, [bool], @([IntPtr]),
-        [System.Runtime.InteropServices.CallingConvention]::Winapi,
-        [System.Runtime.InteropServices.CharSet]::Ansi)
-    $method.SetImplementationFlags(
-        $method.GetMethodImplementationFlags() -bor [System.Reflection.MethodImplAttributes]::PreserveSig)
-    $null = $builder.CreateType()
-} catch {}
-# Outside the try, because CreateType can publish the type and then throw on the way
-# back, and a published type works. The parent recovers from exactly that; a check
-# inside the try answered no for a machine that had just succeeded.
-# One line, and no closing brace in column 0: this body sits inside a here-string that
-# starts at column 0 in both entrypoints, and the tests extract a function by finding the
-# first line that is exactly its closing brace. A block here ends the extraction early.
-if ('UnslothStudioEmitProbe' -as [type]) { Write-Output ('STUDIO_EMIT_OK ' + [string]$ExecutionContext.SessionState.LanguageMode); exit 0 }
-exit 1
-'@
-    # This host, not a guessed one: a 5.1 answer does not carry to pwsh or back.
-    # Both spellings of the leaf, so a non-Windows lane can execute this function
-    # end to end rather than leaving a Windows-only path untested.
-    $hostExe = $HostPath
-    if (-not $hostExe) {
-        try {
-            $leaves = if ($PSVersionTable.PSEdition -eq "Core") { @("pwsh.exe", "pwsh") }
-                      else { @("powershell.exe", "powershell") }
-            foreach ($leaf in $leaves) {
-                $candidate = Join-Path $PSHOME $leaf
-                if (Test-Path -LiteralPath $candidate) { $hostExe = $candidate; break }
-            }
-        } catch {}
-    }
-    if (-not $hostExe) { return $false }
-    # A Process object rather than the call operator, for a deadline: the call
-    # operator waits forever, and forever is reachable (a security product
-    # inspecting a fresh interpreter, a wedged runtime start, a child blocking on
-    # shutdown). A probe meant to keep the installer alive must not hang it.
-    #
-    # BOTH streams are redirected and drained asynchronously. Draining stops a
-    # chatty child filling a pipe and deadlocking against the wait. Redirecting
-    # stderr keeps the probe out of the installer's own stderr, which the desktop
-    # app reads and anything the child spawns would inherit and hold open.
-    #
-    $info = New-Object System.Diagnostics.ProcessStartInfo
-    $info.FileName = $hostExe
-    $info.Arguments = "-NoProfile -NonInteractive -Command `"$probe`""
-    $info.UseShellExecute = $false
-    $info.RedirectStandardOutput = $true
-    $info.RedirectStandardError = $true
-    $info.CreateNoWindow = $true
-    $child = $null
-    try {
-        $child = [System.Diagnostics.Process]::Start($info)
-        $reader = $child.StandardOutput.ReadToEndAsync()
-        $null = $child.StandardError.ReadToEndAsync()
-        if (-not $child.WaitForExit(20000)) {
-            try { $child.Kill() } catch {}
-            return $false
-        }
-        # Exit code AND an exact record. A marker followed by a crash is a crash:
-        # the question is whether this machine can emit and live. FullLanguage
-        # because an approved script can run in FullLanguage while a fresh inline
-        # command does not, and a child restricted differently from its parent
-        # has measured a different machine.
-        if ($child.ExitCode -ne 0) {
-            $script:StudioEmitProbeOutcome = "blocked"
-            return $false
-        }
-        $lines = ($reader.GetAwaiter().GetResult() -split "`r?`n")
-        foreach ($line in $lines) {
-            if ($line.Trim() -eq "STUDIO_EMIT_OK FullLanguage") {
-                $script:StudioEmitProbeOutcome = "ok"
-                return $true
-            }
-            # Emitted, but in a language mode this parent is not in: the child
-            # measured a different machine, which is an answer, not a miss.
-            if ($line.Trim() -like "STUDIO_EMIT_OK *") {
-                $script:StudioEmitProbeOutcome = "blocked"
-                return $false
-            }
-        }
-        # Exit 0 with no marker: the child cannot have emitted and reported
-        # nothing, so its output was lost rather than negative.
-        return $false
-    } catch {
-        return $false
-    } finally {
-        if ($child) {
-            # The read end goes first: a killed child can leave a grandchild
-            # holding the write end, and the pending async read would then keep
-            # this process alive past the deadline it just enforced.
-            try { $child.StandardOutput.Close() } catch {}
-            try { $child.StandardError.Close() } catch {}
-            try { $child.Dispose() } catch {}
-        }
-    }
-}
-
-function New-StudioDynamicAssembly {
-    <#
-    Both spellings of "define a dynamic assembly", because the two PowerShell hosts
-    that run this file are on different runtimes. The static
-    AssemblyBuilder::DefineDynamicAssembly is documented for .NET Framework 4.5
-    through 4.8.1 as well as .NET Core, so 5.1 should take the first branch; it is
-    tried rather than assumed because nothing here can test a .NET Framework host
-    and getting it wrong is invisible: the catch would cache the thunk as
-    unavailable and every install would silently lose it.
-
-    AppDomain.CurrentDomain.DefineDynamicAssembly is the .NET Framework spelling and
-    is absent on .NET Core, so it is the fallback.
-    #>
-    param([Parameter(Mandatory = $true)][System.Reflection.AssemblyName]$AssemblyName)
-    $access = [System.Reflection.Emit.AssemblyBuilderAccess]::Run
-    try {
-        return [System.Reflection.Emit.AssemblyBuilder]::DefineDynamicAssembly(
-            $AssemblyName, $access)
-    } catch [System.Management.Automation.MethodException] {
-        return [AppDomain]::CurrentDomain.DefineDynamicAssembly($AssemblyName, $access)
-    } catch [System.Management.Automation.RuntimeException] {
-        # Some hosts surface a missing static as RuntimeException, not
-        # MethodException. Both mean "no such method here", and a real emit failure
-        # throws from the AppDomain call too, so the caller still sees it.
-        return [AppDomain]::CurrentDomain.DefineDynamicAssembly($AssemblyName, $access)
-    }
-}
-
-function New-StudioEmittedNativeType {
-    param(
-        [Parameter(Mandatory = $true)][string]$TypeName,
-        [Parameter(Mandatory = $true)][object[]]$Imports
-    )
-    $assemblyName = New-Object System.Reflection.AssemblyName $TypeName
-    $assembly = New-StudioDynamicAssembly -AssemblyName $assemblyName
-    $module = $assembly.DefineDynamicModule($TypeName)
-    $builder = $module.DefineType(
-        $TypeName, "Public, Class, AutoClass, AnsiClass, BeforeFieldInit")
-
-    $winapi = [System.Runtime.InteropServices.CallingConvention]::Winapi
-    # Per import, because CharSet selects name mangling as well as marshalling:
-    # Unicode probes <Name>W before <Name>, Ansi probes <Name> before <Name>A.
-    # Matching the C# these replace keeps the metadata honest and tries the existing
-    # export first.
-    $unicode = [System.Runtime.InteropServices.CharSet]::Unicode
-    $ansi = [System.Runtime.InteropServices.CharSet]::Ansi
-    $standard = [System.Reflection.CallingConventions]::Standard
-    $attributes = "Public, Static, HideBySig, PinvokeImpl"
-    $preserveSig = [System.Reflection.MethodImplAttributes]::PreserveSig
-
-    foreach ($import in $Imports) {
-        $charSet = if ($import.ContainsKey("Ansi") -and $import.Ansi) { $ansi } else { $unicode }
-        $method = $builder.DefinePInvokeMethod(
-            $import.Name, $import.Library, $import.Name, $attributes,
-            $standard, $import.Return, $import.Args, $winapi, $charSet)
-        $method.SetImplementationFlags(
-            $method.GetMethodImplementationFlags() -bor $preserveSig)
-        # `out uint` in the C# this replaces; DefinePInvokeMethod cannot say so,
-        # since a by-ref type alone emits `ref` (In and Out unset). The value is
-        # blittable and every caller initialises it, so marshalling works either
-        # way, but the metadata is what a reader and any future marshalling
-        # change go by.
-        # ContainsKey, not a bare property read: most imports have no Out key and
-        # reading a missing one is fatal under Set-StrictMode. install.ps1 turns
-        # strict mode off for itself, studio/setup.ps1 inherits the caller's, so
-        # the guard is mirrored rather than left to one of them.
-        if ($import.ContainsKey("Out")) {
-            foreach ($position in @($import.Out)) {
-                if ($position) { $null = $method.DefineParameter($position, "Out", $null) }
-            }
-        }
-    }
-    $null = $builder.CreateType()
-    return $null -ne ($TypeName -as [type])
-}
 
 function Enable-StudioVirtualTerminal {
     if ($env:NO_COLOR) { return $false }
@@ -3495,11 +3685,18 @@ if (-not $HasNvidiaSmi) {
     }
 }
 if (-not $HasNvidiaSmi -and (Get-NvidiaLibraryInventory)) {
-    # The driver lists a GPU nvidia-smi cannot: the gates below read this as "GPU present",
-    # and the consumers stop asking nvidia-smi, absent or rejected, for the rest of the run.
-    $HasNvidiaSmi = $true
-    $script:NvidiaSmiRejected = $true
-    Write-StudioLine "   NVIDIA GPU found through the driver library; nvidia-smi is unavailable" -ForegroundColor Gray
+    # A driver too old for any CUDA wheel (below 11) is no GPU this route can serve: the Intel and
+    # AMD routes still get their turn instead of the install falling to CPU.
+    if ((Get-NvidiaLibraryInventory).CudaMajor -ge 11) {
+        # The driver lists a GPU nvidia-smi cannot: the gates below read this as "GPU present",
+        # and the consumers stop asking nvidia-smi, absent or rejected, for the rest of the run.
+        $HasNvidiaSmi = $true
+        $script:NvidiaSmiRejected = $true
+        Write-StudioLine "   NVIDIA GPU found through the driver library; nvidia-smi is unavailable" -ForegroundColor Gray
+    } else {
+        # Still a physical NVIDIA GPU: an installed llama.cpp prebuilt it runs is kept, as before.
+        $script:NvidiaDriverLibraryOnly = $true
+    }
 }
 # nvidia-smi was already resolved above and never asked which card it found, so the banner
 # said "NVIDIA GPU detected" on every NVIDIA host alike. compute_cap is the counterpart of the
@@ -9270,6 +9467,8 @@ if ($LocalLlamaCppLinked) {
                     @("windows-rocm", "windows-hip", "windows-arm64", "windows-vulkan")
                 } else { @("windows-rocm", "windows-hip", "windows-vulkan") }
                 $expectedKinds = if ($HasROCm -or $script:ROCmGfxArch) { $_rocmKinds } elseif ($_nvidiaEvidence) { $_nvidiaKinds } else { @("windows-cpu", "windows-arm64", "windows-vulkan") }
+                # A pre-CUDA 11 library still proves physical NVIDIA presence, even when AMD/Intel selects torch.
+                if ($script:NvidiaDriverLibraryOnly) { $expectedKinds += $_nvidiaKinds }
                 if ($existingKind -and ($existingKind -notin $expectedKinds)) {
                     substep "Removing mismatched llama.cpp install (found '$existingKind', need one of: $($expectedKinds -join ', '))..."
                     Remove-Item -Recurse -Force -LiteralPath $LlamaCppDir -ErrorAction SilentlyContinue
