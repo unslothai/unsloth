@@ -5340,6 +5340,10 @@ def _expand_shell_assignments(command: str, *, _include_quoted: bool = True) -> 
         if _shell_assign_value_self_references(var, val):
             # Keep concrete path pieces without feeding the binding back into itself.
             # An unset self-reference contributes nothing; an earlier binding can supply it.
+            # A studio home variable stays a reference: the child may inherit it, and
+            # `H=$H; cat "$H/auth/auth.db"` must still name the install.
+            if var.upper() in _STUDIO_HOME_ENV_VARS:
+                env.setdefault(var, "${" + var + "}")
             val = _SHELL_PARAM_VALUE_OP_RE.sub(repl_default, val)
             env.setdefault(var, "")
             val = expand(val)

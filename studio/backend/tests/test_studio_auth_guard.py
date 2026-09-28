@@ -2413,6 +2413,21 @@ def test_self_referential_assignments_preserve_concrete_paths(studio_home, value
     assert not tools._references_studio_credential_here(harmless, workdir)
 
 
+@pytest.mark.parametrize(
+    "value",
+    [
+        "$UNSLOTH_STUDIO_HOME",
+        '"$UNSLOTH_STUDIO_HOME"',
+        "${UNSLOTH_STUDIO_HOME}/",
+        "${UNSLOTH_STUDIO_HOME:-/tmp}",
+    ],
+)
+def test_self_referential_studio_home_still_names_the_install(studio_home, value):
+    workdir = str(studio_home / "sandbox" / _SESSION)
+    command = f'UNSLOTH_STUDIO_HOME={value}; cat "$UNSLOTH_STUDIO_HOME/auth/auth.db"'
+    assert tools._references_studio_credential_here(command, workdir)
+
+
 @pytest.mark.parametrize("quote", ['"', "'"])
 @pytest.mark.parametrize("value", ["$x/safe", "./safe"])
 def test_quoted_log_text_does_not_rebind_path_variables(studio_home, quote, value):
