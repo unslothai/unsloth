@@ -225,6 +225,7 @@ class TestTheEstimateMemoryEnvelope:
             "reason",
             "weights_bytes",
             "kv_bytes",
+            "kv_checkpoint_bytes",
             "compute_bytes",
             "drafter_runtime_bytes",
             "drafter_runtime_gpu_bytes",

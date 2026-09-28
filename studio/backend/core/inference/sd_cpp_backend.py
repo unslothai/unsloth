@@ -30,6 +30,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Optional
 
+from core.inference.diffusion_auto_policy import format_generation_for_log
 from core.inference.diffusion_compat import flux2_inner_dim_for_pick
 from core.inference.diffusion_device import (
     resolve_diffusion_device_target,
@@ -84,6 +85,7 @@ from core.inference.sd_cpp_engine import (
 )
 from core.inference.sd_cpp_server import SdCppServer
 from loggers import get_logger
+from utils.gpu_memory_events import invalidates_gpu_memory as _invalidates_gpu_memory
 from utils.account_context import account_thread, current_account_id
 from utils.subprocess_compat import windows_hidden_subprocess_kwargs
 
@@ -2524,6 +2526,7 @@ class SdCppDiffusionBackend:
         ).start()
         return self.status()
 
+    @_invalidates_gpu_memory("sd.cpp load")
     def _run_load(
         self,
         *,
@@ -2915,6 +2918,15 @@ class SdCppDiffusionBackend:
                     self._stop_reserved(orphan)
                 if superseded:
                     return
+                logger.info(
+                    "sd_cpp.loaded: repo=%s gguf=%s device=%s mode=%s speed=%s offload_flags=%s",
+                    state.repo_id,
+                    state.gguf_filename,
+                    state.device,
+                    state.mode,
+                    state.native_speed,
+                    without_device_backend_flags(state.offload_flags) or "none",
+                )
         except SdCppCancelled:
             return
         except Exception as exc:  # noqa: BLE001 -- surfaced via load_progress
@@ -3397,6 +3409,8 @@ class SdCppDiffusionBackend:
         controlnet: Optional[tuple[str, str, str, float, float, float]] = None,
         # load_identity() of the caller's status() read; refuse rather than run a different load (#9448)
         expected_load: Optional[LoadIdentity] = None,
+        # Interface parity only: the activation guard is diffusers-only.
+        allow_oversized: bool = False,
     ) -> dict[str, Any]:
         import tempfile
 
@@ -3586,7 +3600,7 @@ class SdCppDiffusionBackend:
                     if self._active_generate_cancel is cancel:
                         self._active_generate_cancel = None
                         self._active_generate_account = None
-                return {
+                result = {
                     "images": images,
                     "seed": int(seed),
                     "seeds": seeds,
@@ -3613,6 +3627,17 @@ class SdCppDiffusionBackend:
                     if conditioned
                     else None,
                 }
+                logger.info(
+                    "diffusion.generated: %s",
+                    format_generation_for_log(
+                        result,
+                        engine = "sd_cpp",
+                        steps = steps,
+                        strength = strength,
+                        loras = active_loras,
+                    ),
+                )
+                return result
             except SdCppCancelled as exc:
                 raise RuntimeError(DIFFUSION_CANCELLED_MSG) from exc
             finally:
@@ -3974,6 +3999,7 @@ class SdCppDiffusionBackend:
 
     # ── Unload / status ──────────────────────────────────────────────────────
 
+    @_invalidates_gpu_memory("sd.cpp unload")
     def unload(self, *, expected_account: Optional[str] = None) -> dict[str, Any]:
         with self._lock:
             if expected_account is not None:

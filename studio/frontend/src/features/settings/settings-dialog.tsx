@@ -13,8 +13,10 @@ import {
 } from "@/components/ui/dialog";
 import { type TranslationKey, useT } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
+import { useHubSource } from "@/lib/hf-endpoint";
 import { MicIcon } from "@/lib/mic-icon";
 import { cn } from "@/lib/utils";
+import { useScrollFades } from "@/hooks/use-scroll-fades";
 import { useUiSpaceScale } from "@/hooks/use-ui-space-scale";
 import { scheduleIdleTask } from "@/lib/schedule-idle-task";
 import {
@@ -28,6 +30,7 @@ import {
   Globe02Icon,
   HelpCircleIcon,
   HomeWifiIcon,
+  LibrariesIcon,
   PaintBrush02Icon,
   Search01Icon,
   Settings02Icon,
@@ -53,6 +56,7 @@ import {
 import {
   SETTINGS_SEARCH_KEYWORDS,
   createSettingsSearchIndex,
+  renderedSearchEntries,
 } from "./settings-search";
 import {
   type SettingsTab,
@@ -83,6 +87,8 @@ const TAB_LOADERS = {
     import("./tabs/connections-tab").then((m) => ({
       default: m.ConnectionsTab,
     })),
+  library: () =>
+    import("./tabs/library-tab").then((m) => ({ default: m.LibraryTab })),
   data: () => import("./tabs/data-tab").then((m) => ({ default: m.DataTab })),
   "keyboard-shortcuts": () =>
     import("./tabs/keyboard-shortcuts-tab").then((m) => ({
@@ -224,7 +230,6 @@ const TABS: TabDef[] = [
     id: "accounts",
     labelKey: "settings.tabs.accounts",
     icon: UserCircleIcon,
-    badgeKey: "common.new",
   },
   {
     id: "agents",
@@ -235,6 +240,12 @@ const TABS: TabDef[] = [
     id: "voice",
     labelKey: "settings.tabs.voice",
     iconComponent: MicIcon,
+  },
+  {
+    id: "library",
+    labelKey: "shell.navigation.library",
+    icon: LibrariesIcon,
+    badgeKey: "common.new",
   },
   {
     id: "data",
@@ -288,6 +299,8 @@ export function SettingsDialog() {
   const t = useT();
   const isOwner = useIsAccountOwner();
   const stacked = useStackedLayout();
+  const hubSource = useHubSource();
+  const { attach: attachRail, onScroll: onRailScroll, className: railFadeClass } = useScrollFades();
   const visibleTabs = useMemo(() => TABS.filter((tab) => settingsTabVisible(tab.id, isOwner)), [isOwner]);
   const open = useSettingsDialogStore((s) => s.open);
   const requestedTab = useSettingsDialogStore((s) => s.activeTab);
@@ -326,7 +339,7 @@ export function SettingsDialog() {
     }
     return visibleTabs.map((tab) => {
       const tabLabel = t(tab.labelKey);
-      const entries = SETTINGS_SEARCH_INDEX[tab.id]
+      const entries = renderedSearchEntries(SETTINGS_SEARCH_INDEX, tab.id, hubSource)
         .filter((key) => {
           if (t(key).toLowerCase().includes(q)) {
             return true;
@@ -343,7 +356,7 @@ export function SettingsDialog() {
         tabMatches: tabLabel.toLowerCase().includes(q),
       };
     }).filter((r) => r.tabMatches || r.entries.length > 0);
-  }, [query, t, visibleTabs]);
+  }, [query, t, visibleTabs, hubSource]);
 
   const [pendingScroll, setPendingScroll] = useState<{
     tab: SettingsTab;
@@ -427,6 +440,7 @@ export function SettingsDialog() {
     voice: null,
     connections: null,
     "keyboard-shortcuts": null,
+    library: null,
     data: null,
     "api-keys": null,
     "remote-lan": null,
@@ -479,6 +493,8 @@ export function SettingsDialog() {
             // breakpoint: a plain h-dvh wins tailwind-merge and would hang the surface
             // (and its overflow-hidden bottom edge) below the window. 0px on web.
             "max-sm:h-[calc(100dvh-var(--studio-window-chrome-top,0px))] max-sm:w-dvw max-sm:!max-w-none max-sm:rounded-none",
+            // Larger surface on 4K / ultrawide.
+            "4xl:w-[min(1120px,calc(100vw-2rem))] 4xl:!max-w-[min(1120px,calc(100vw-2rem))] 4xl:h-[min(940px,calc(100dvh-var(--studio-window-chrome-top,0px)-2rem))]",
           )}
         >
           <DialogTitle className="sr-only">
@@ -494,7 +510,13 @@ export function SettingsDialog() {
           >
             {/* Match the app shell: tabs on the sidebar fill, content on the
                 page fill, so both track the active palette. */}
-            <aside className="font-heading flex w-[min(calc(248px*var(--ui-space-scale,1)),50%)] shrink-0 flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground p-2 dark:border-r-0 group-data-stacked/settings:w-full group-data-stacked/settings:border-r-0 group-data-stacked/settings:border-b group-data-stacked/settings:border-sidebar-border">
+            <aside
+              className={cn(
+                "font-heading flex w-[min(calc(248px*var(--ui-space-scale,1)),50%)] shrink-0 flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground p-2 dark:border-r-0 group-data-stacked/settings:w-full group-data-stacked/settings:border-r-0 group-data-stacked/settings:border-b group-data-stacked/settings:border-sidebar-border",
+                // Narrower rail on tablets, unless the scale has stacked it.
+                !stacked && "md:max-lg:w-[min(calc(208px*var(--ui-space-scale,1)),50%)]",
+              )}
+            >
               <div className="relative mx-1 mt-3 mb-2 shrink-0 group-data-stacked/settings:hidden">
                 <HugeiconsIcon
                   icon={Search01Icon}
@@ -574,11 +596,14 @@ export function SettingsDialog() {
                 {t("settings.dialog.title")}
               </p>
               <nav
+                ref={attachRail}
+                onScroll={onRailScroll}
                 className={cn(
                   // The tab list is the sidebar's flexible row: a short window
                   // leaves it taller than the sidebar, and the dialog clips its
                   // overflow, so scroll it rather than losing the last tabs.
-                  "hover-scrollbar flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto px-1 py-1",
+                  "hover-scrollbar settings-rail-fade flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto px-1 py-1",
+                  railFadeClass,
                   "group-data-stacked/settings:flex-none group-data-stacked/settings:flex-row group-data-stacked/settings:overflow-x-auto group-data-stacked/settings:py-0",
                   results !== null && "group-data-stacked/settings:flex hidden",
                 )}

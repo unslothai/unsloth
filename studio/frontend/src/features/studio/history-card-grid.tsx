@@ -444,7 +444,7 @@ export function HistoryCardGrid({
 
   return (
     <div className="contents" aria-label={t("studio.history.title")}>
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3 4xl:grid-cols-4">
         {runs.map((run) => {
           const wasContinued =
             run.resumed_later || wasContinuedInVisibleRuns(run, runs);
@@ -664,7 +664,7 @@ export function HistoryCardGrid({
         </div>
       )}
       {loading && runs.length === 0 && (
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3 4xl:grid-cols-4">
           {["first", "second", "third"].map((skeletonId) => (
             <div
               key={`skeleton-${skeletonId}`}

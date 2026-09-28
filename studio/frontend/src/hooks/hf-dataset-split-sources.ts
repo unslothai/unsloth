@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { hasDatasetsServer } from "@/lib/hf-endpoint";
+
 export interface HfSplitEntry {
   dataset: string;
   config: string;
@@ -19,16 +21,20 @@ export type LoadHfDatasetSplitsArgs = {
 export type DatasetSplitLoadResult = {
   entries: HfSplitEntry[];
   error: string | null;
-  source: "local" | "remote" | "manual";
+  source: "local" | "remote" | "hub" | "manual";
 };
 
 export type DatasetSplitFetchers = {
   local: (args: LoadHfDatasetSplitsArgs) => Promise<HfSplitEntry[]>;
   remote: (args: LoadHfDatasetSplitsArgs) => Promise<HfSplitEntry[]>;
+  hub: (args: LoadHfDatasetSplitsArgs) => Promise<HfSplitEntry[]>;
 };
 
 export function normalizeDatasetSplitsError(message: string): string {
   const normalized = message.toLowerCase();
+  if (normalized.includes("is not on modelscope")) {
+    return message;
+  }
   if (
     normalized.includes("dataset scripts are no longer supported") ||
     normalized.includes("runs arbitrary python code")
@@ -37,6 +43,7 @@ export function normalizeDatasetSplitsError(message: string): string {
   }
   if (
     normalized.includes("unauthorized") ||
+    normalized.includes("authorization") ||
     normalized.includes("forbidden") ||
     normalized.includes("access token") ||
     normalized.includes("private") ||
@@ -75,17 +82,24 @@ export async function loadHfDatasetSplits(
   }
 
   if (args.online) {
-    try {
-      const entries = await fetchers.remote(args);
-      throwIfAborted(args.signal);
-      if (entries.length > 0) {
-        return { entries, error: null, source: "remote" };
+    let failure: unknown = null;
+    const sources = hasDatasetsServer() ? (["remote", "hub"] as const) : (["hub"] as const);
+    for (const source of sources) {
+      try {
+        const entries = await fetchers[source](args);
+        throwIfAborted(args.signal);
+        if (entries.length > 0) {
+          return { entries, error: null, source };
+        }
+      } catch (error) {
+        throwIfAborted(args.signal);
+        failure = error;
       }
-    } catch (error) {
-      throwIfAborted(args.signal);
+    }
+    if (failure !== null) {
       const message =
-        error instanceof Error
-          ? error.message
+        failure instanceof Error
+          ? failure.message
           : "Failed to fetch dataset splits";
       return {
         entries: [],

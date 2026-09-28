@@ -10,6 +10,10 @@ snac==1.2.1
 # installing with --no-deps to avoid pulling in torch>=0.11.0
 peft==0.18.1
 
+# Laya System One runtime for /v1/systemone. Pure Python over torch, transformers,
+# safetensors, huggingface_hub and numpy, all already pinned elsewhere.
+laya==0.3.5; python_version >= "3.10"
+
 # TRL and related packages
 trl==0.23.1
 # executorch>=1.0.1              # 41.5 MB - no imports in unsloth/zoo/studio

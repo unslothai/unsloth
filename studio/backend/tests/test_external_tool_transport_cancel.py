@@ -18,6 +18,8 @@ from core.inference.external_tool_transport import OAICompatTransport
 class _StallingClient:
     """One chunk, then silence: an upstream mid-answer or still in prefill."""
 
+    provider_type = "custom"
+
     def __init__(self) -> None:
         self.torn_down = False
         self.released = asyncio.Event()

@@ -705,7 +705,7 @@ export function ApiMonitorPage(): ReactElement {
         : "No model loaded";
 
   return (
-    <main className="mx-auto flex w-full max-w-6xl flex-col gap-6 px-6 pb-10 pt-12 font-heading sm:px-10">
+    <main className="mx-auto flex w-full max-w-6xl 3xl:max-w-[calc(1440px*var(--ui-space-scale,1))] 4xl:max-w-[calc(1760px*var(--ui-space-scale,1))] flex-col gap-6 px-6 pb-10 pt-12 max-sm:px-4 max-sm:pt-8 font-heading sm:px-10">
       <GuidedTour {...tour.tourProps} />
       <header className="flex flex-wrap items-start justify-between gap-4">
         <div className="flex min-w-0 flex-col gap-1">
@@ -938,7 +938,7 @@ export function ApiMonitorPage(): ReactElement {
             onChange={(event) => setQuery(event.target.value)}
             placeholder="Search model, endpoint, preview or error"
             aria-label="Search API requests"
-            className="h-9 w-full min-w-0 flex-1 rounded-full border-none bg-muted shadow-none dark:bg-background sm:w-64 sm:flex-none"
+            className="h-9 w-full min-w-0 flex-1 max-sm:basis-full rounded-full border-none bg-muted shadow-none dark:bg-background sm:w-64 sm:flex-none"
           />
           <Select
             value={statusFilter}
@@ -967,9 +967,9 @@ export function ApiMonitorPage(): ReactElement {
 
         <div
           data-tour="api-log"
-          className="grid min-h-0 grid-cols-1 lg:grid-cols-[minmax(0,380px)_minmax(0,1fr)]"
+          className="grid min-h-0 grid-cols-1 lg:grid-cols-[minmax(0,380px)_minmax(0,1fr)] 4xl:grid-cols-[minmax(0,480px)_minmax(0,1fr)]"
         >
-          <div className="max-h-[calc(560px*var(--ui-space-scale,1))] min-h-[calc(220px*var(--ui-space-scale,1))] overflow-y-auto border-b border-border/60 lg:border-b-0 lg:border-r">
+          <div className="max-h-[calc(560px*var(--ui-space-scale,1))] min-h-[calc(220px*var(--ui-space-scale,1))] max-lg:max-h-[45dvh] 3xl:max-h-[calc(100dvh-22rem*var(--ui-space-scale,1))] overflow-y-auto border-b border-border/60 lg:border-b-0 lg:border-r">
             {loading ? (
               <div className="flex flex-col gap-3 p-4">
                 {[0, 1, 2].map((i) => (
@@ -996,7 +996,7 @@ export function ApiMonitorPage(): ReactElement {
             )}
           </div>
 
-          <div className="max-h-[calc(560px*var(--ui-space-scale,1))] min-h-[calc(220px*var(--ui-space-scale,1))] overflow-y-auto">
+          <div className="max-h-[calc(560px*var(--ui-space-scale,1))] min-h-[calc(220px*var(--ui-space-scale,1))] max-lg:max-h-[45dvh] 3xl:max-h-[calc(100dvh-22rem*var(--ui-space-scale,1))] overflow-y-auto">
             {selected ? (
               <RequestDetail
                 entry={selected}

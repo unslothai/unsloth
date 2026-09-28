@@ -55,6 +55,7 @@ studio = [
     "*.ps1",
     "*.bat",
     "node_prebuilt_pins.json",
+    "lemonade_prebuilt_pins.json",
     "src-tauri/icons/icon.icns",
     "src-tauri/icons/icon.png",
     "frontend/dist/**/*",
@@ -74,6 +75,8 @@ studio = [
     # Swagger UI / ReDoc, served from this origin instead of a CDN. Without these the
     # /docs and /redoc pages render blank in an installed Unsloth.
     "backend/assets/docs_ui/*",
+    # Gate verdicts the auto ladder reads: missing from the wheel, nvfp4 silently leaves the ladder.
+    "backend/core/inference/nvfp4_gate_record.json",
     "backend/core/data_recipe/oxc-validator/*.json",
     "backend/core/data_recipe/oxc-validator/*.mjs",
     "backend/core/inference/bundled_skills/**/*.md",
@@ -1724,6 +1727,7 @@ markers = [
     "gpu: needs a real accelerator, and usually downloads a checkpoint to use it",
     "slow: minutes rather than seconds, and covered again more cheaply elsewhere",
     "reads_real_pip_config: opts out of the hermetic pip config stub, for the few tests that drive that read themselves",
+    "native_mxc: needs native Windows, the pinned Microsoft WXC executable, and a working MXC ProcessContainer backend",
 ]
 
 # Deselected by default, not deleted: CI runs them in their own leg with
@@ -1731,4 +1735,4 @@ markers = [
 # A run that names one of these files directly will report "no tests ran"
 # until you pass `-m gpu` -- that is the cost of the default being fast.
 # Live Studio tests are opt-in: `pytest -m server`.
-addopts = "-m 'not gpu and not slow and not server'"
+addopts = "-m 'not gpu and not slow and not server and not native_mxc'"

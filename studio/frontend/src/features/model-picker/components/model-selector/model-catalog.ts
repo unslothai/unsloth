@@ -81,6 +81,8 @@ export interface CatalogGroup {
    *  `ModelArtifact.totalParams`: the Hub listing's tags win, since a name like "MiniMax-H3-GGUF"
    *  says nothing about the audio track the model emits. */
   capabilities?: Partial<ModelCapabilities>;
+  /** Leads the Recommended list whatever the dropdown sort, in catalog order among pinned groups. */
+  pinToTop?: boolean;
 }
 
 
@@ -201,8 +203,9 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
     // Same reason as the 2512 row below: the int8 half of the prequant repo is reached through
     // prequant_variant_repos and has no artifact row, so alias it to keep a pasted id finding it.
     aliases: ["unsloth/Qwen-Image-2.1-FP8"],
+    pinToTop: true,
     artifacts: [
-      bf16Pipeline("Qwen/Qwen-Image-2.1", 33, {
+      bf16Mirror("Qwen/Qwen-Image-2.1", 33, {
         totalParams: 7115124736,
         prequantRepo: "unsloth/Qwen-Image-2.1-FP8",
         prequantSizeGb: { fp8: 7.12, int8: 7.26 },
@@ -991,7 +994,8 @@ export function curatedRowLabelFor(
   const [format, ...rest] = hit.artifact.label.split(LABEL_PART_SEPARATOR);
   // The chip is the precision the artifact is STORED at, which is what tells two rows apart; what it
   // RUNS at is the loader's answer, reported by `resolved` after the load.
-  const tags = [format.trim()].filter(Boolean);
+  // "Safetensors" is left off: the row's format dot already says it.
+  const tags = [format.trim()].filter((tag) => tag && tag.toLowerCase() !== "safetensors");
   const kept: string[] = [];
   for (const part of rest) {
     if (RESOLUTION_RE.test(part.trim())) tags.push(part.trim());
@@ -1021,7 +1025,8 @@ export function catalogToModelOptions(
         name:
           curatedDisplayNameFor(artifact.repoId, catalog, host, denseQuantSchemes) ??
           group.displayName,
-        description: `${group.description} - ${artifact.label}`,
+        description: group.description,
+        descriptionSuffix: artifact.label,
         isGguf: artifact.format === "gguf",
         deviceQuant: artifact.deviceQuant,
       });

@@ -15,6 +15,7 @@
   --format-checkpoint: #f472b6;
   --format-adapter: #8b5cf6;
   --format-mlx: #f59e0b;
+  --format-npu: #06b6d4;
   --status-warning: #eab308;
   --status-danger: #ef4444;
   --status-success: #11b686;
@@ -30,6 +31,7 @@
   --format-checkpoint: #f472b6;
   --format-adapter: #a78bfa;
   --format-mlx: #fbbf24;
+  --format-npu: #22d3ee;
   --status-warning: #fbbf24;
   --status-danger: #ef4444;
   --status-success: #11b686;
@@ -41,6 +43,7 @@
   --color-format-checkpoint: var(--format-checkpoint);
   --color-format-adapter: var(--format-adapter);
   --color-format-mlx: var(--format-mlx);
+  --color-format-npu: var(--format-npu);
   --color-status-warning: var(--status-warning);
   --color-status-danger: var(--status-danger);
   --color-status-success: var(--status-success);
@@ -60,6 +63,22 @@
     --hub-measure-compact: clamp(860px, 94%, 1180px);
     /* Model card readme. Fills the column, capped so prose stays readable. */
     --hub-readme-measure: 1400px;
+  }
+
+  /* Wrap long tokens in readmes on small screens instead of clipping. */
+  @media (max-width: 1023px) {
+    .hub-readme-prose :is(p, li, td, th, code) {
+      overflow-wrap: break-word;
+    }
+  }
+
+  /* Wider column on 4K / ultrawide. */
+  @media (min-width: 2560px) {
+    .hub-page {
+      --hub-measure: clamp(1100px, 90%, 2200px);
+      --hub-measure-compact: clamp(860px, 90%, 1440px);
+      --hub-readme-measure: 1600px;
+    }
   }
 
   /* Filled-control surface — Hub search, Hub filter triggers, picker

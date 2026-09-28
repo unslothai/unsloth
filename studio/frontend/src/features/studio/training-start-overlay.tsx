@@ -382,7 +382,7 @@ export function TrainingStartOverlay({
   return (
     <div className="pointer-events-none absolute inset-0 z-30 flex flex-col items-center rounded-2xl bg-background/45 backdrop-blur-[1px]">
       <div className="pointer-events-auto relative my-auto flex w-[calc(860px*var(--ui-space-scale,1))] max-w-[calc(100%-2rem)] flex-col items-center">
-        <MascotImg src="unsloth-gem.png" className="size-24 object-contain" />
+        <MascotImg src="unsloth-gem.png" className="size-24 object-contain max-sm:size-16" />
         <div className="relative w-full">
           <AlertDialog open={cancelDialogOpen} onOpenChange={setCancelDialogOpen}>
             <Button
@@ -427,7 +427,7 @@ export function TrainingStartOverlay({
             </AlertDialogContent>
           </AlertDialog>
           <Terminal
-            className="w-full min-h-[calc(390px*var(--ui-space-scale,1))] rounded-2xl border-0 px-7 py-6 text-left"
+            className="w-full min-h-[calc(390px*var(--ui-space-scale,1))] rounded-2xl border-0 px-7 py-6 text-left max-sm:min-h-[calc(260px*var(--ui-space-scale,1))] max-sm:px-4 max-sm:py-4"
             startOnView={false}
             instant={alreadyAnimated}
           >

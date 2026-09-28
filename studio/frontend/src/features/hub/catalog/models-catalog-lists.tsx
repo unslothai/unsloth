@@ -110,6 +110,7 @@ export function DiscoverList({
   onSwitchDevice,
   view,
   selectedId,
+  showFormatDots = true,
 }: {
   discoverRows: DiscoverRow[];
   onSelect: (id: string) => void;
@@ -134,6 +135,7 @@ export function DiscoverList({
   onRetry: () => void;
   onSwitchDevice?: () => void;
   view: AllModelsView;
+  showFormatDots?: boolean;
 }) {
   // "two" = two cards per row; "grid" = compact table rows; "split" = one card per row.
   const isSplit = view === "split";
@@ -171,6 +173,7 @@ export function DiscoverList({
                     deviceType={deviceType}
                     isDataset={isDataset}
                     selected={row.id === selectedId}
+                    showFormatDot={showFormatDots}
                     onSelect={onSelect}
                   />
                 ) : isCardLike ? (
@@ -178,6 +181,7 @@ export function DiscoverList({
                     row={row}
                     deviceType={deviceType}
                     isDataset={isDataset}
+                    showFormatDot={showFormatDots}
                     onSelect={onSelect}
                   />
                 ) : (
@@ -185,6 +189,7 @@ export function DiscoverList({
                     row={row}
                     deviceType={deviceType}
                     isDataset={isDataset}
+                    showFormatDot={showFormatDots}
                     onSelect={onSelect}
                   />
                 )
@@ -278,6 +283,7 @@ export function DownloadedList({
   compact = false,
   sort,
   onInventoryChange,
+  showFormatDots = true,
 }: {
   cachedRows: CachedInventoryRow[];
   localRows: LocalInventoryRow[];
@@ -297,6 +303,7 @@ export function DownloadedList({
   compact?: boolean;
   sort: InventorySort;
   onInventoryChange?: () => void;
+  showFormatDots?: boolean;
 }) {
   // Pinned repos surface first regardless of the active sort, which still orders within groups.
   const pinnedIds = usePinnedModelsStore((s) => s.pinned);
@@ -409,6 +416,7 @@ export function DownloadedList({
       dimmed={!inventoryRowMatches(item.row, inventoryTokens)}
       deviceType={deviceType}
       compact={compact}
+      showFormatDot={showFormatDots}
       onSelect={onSelect}
       onChange={onInventoryChange}
     />
