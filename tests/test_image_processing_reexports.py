@@ -8,6 +8,7 @@ differs per release, so a hardcoded list would pass while the fix did nothing.
 """
 
 import importlib
+import uuid
 
 import pytest
 
@@ -791,6 +792,7 @@ def test_one_thread_inside_the_finder_does_not_blind_another():
         finder._finding.active = False
         shutil.rmtree(package, ignore_errors = True)
         sys.modules.pop(module_name, None)
+        sys.modules.pop(module_name.rpartition(".")[0], None)
 
     assert result["spec"] is not None
     assert type(result["spec"].loader).__name__ == "_RemoteImageProcessorLoader"
@@ -861,7 +863,11 @@ def _remote_probe_package():
     init_hf_modules()
 
     root = pathlib.Path(HF_MODULES_CACHE) / "transformers_modules"
-    package = root / "unsloth_spawn_probe"
+    # One package per call. The modules cache is shared by every xdist worker, and four tests build this probe and
+    # rmtree it on the way out, so under one fixed name a worker's teardown deleted the file another worker was
+    # importing: `ModuleNotFoundError` for the probe, or `FileNotFoundError` from inside the import (both seen in CI).
+    name = f"unsloth_spawn_probe_{uuid.uuid4().hex[:12]}"
+    package = root / name
     package.mkdir(parents = True, exist_ok = True)
     (root / "__init__.py").touch(exist_ok = True)
     (package / "__init__.py").write_text("")
@@ -880,7 +886,7 @@ def _remote_probe_package():
         "                              input_data_format = 'channels_last')\n"
     )
     importlib.invalidate_caches()
-    return package, "transformers_modules.unsloth_spawn_probe.image_processing_probe"
+    return package, f"transformers_modules.{name}.image_processing_probe"
 
 
 _SPAWN_CHILD = """
@@ -945,6 +951,7 @@ def pickled_remote_processor(tmp_path):
     finally:
         shutil.rmtree(package, ignore_errors = True)
         sys.modules.pop(module_name, None)
+        sys.modules.pop(module_name.rpartition(".")[0], None)
 
 
 def test_a_spawn_started_worker_rebuilds_a_patched_class(pickled_remote_processor):

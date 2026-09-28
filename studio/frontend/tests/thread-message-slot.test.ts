@@ -16,6 +16,7 @@ import { createElement } from "react";
 
 import {
   proplessSlot,
+  rendersAsRow,
   threadMessageKind,
 } from "../src/components/assistant-ui/thread-message-slot.ts";
 
@@ -36,6 +37,16 @@ test("a system message that is not being edited renders nothing", () => {
   // so a system message has never had a body here; giving it one would put an unstyled message
   // into every thread with a system prompt.
   assert.equal(threadMessageKind("system", false), "none");
+});
+
+test("user and assistant are the only roles that paint a row", () => {
+  // storage/studio_db.py keeps the same pair, to anchor a fork's "Continued from chat" divider
+  // to a row that actually mounts. Giving another role a body means updating it there too.
+  const roles = ["user", "assistant", "system"] as const;
+  assert.deepEqual(
+    roles.filter((role) => rendersAsRow(role, false)),
+    ["user", "assistant"],
+  );
 });
 
 test("the slot hands back one shared element rather than a new one per render", () => {

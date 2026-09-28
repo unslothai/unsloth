@@ -113,6 +113,428 @@ _remove_agent_instruction_files() {
     done
 }
 
+# ── Bounded `--version` probe for binaries setup does not own (uv candidates, the system Node) ──
+_SETUP_PROBE_TARGET=""
+_SETUP_PROBE_PID=""
+_SETUP_PROBE_PREV_TRAP=""
+
+# Bash needs `--` before a negative process-group ID.
+# Omit it for positive PIDs to support dash, which rejects `--`.
+_setup_probe_signal_target() {
+    case "$2" in
+        -*) kill "-$1" -- "$2" 2>/dev/null || : ;;
+        *)  kill "-$1" "$2" 2>/dev/null || : ;;
+    esac
+}
+
+# Send TERM, then KILL after $3 seconds. $1 is the target PID/group; $2 is the PID to watch.
+_setup_probe_terminate() {
+    _supt_grace=0
+    _setup_probe_signal_target TERM "$1"
+    while [ "$_supt_grace" -lt "$3" ] && kill -0 "$2" 2>/dev/null; do
+        sleep 1
+        _supt_grace=$((_supt_grace + 1))
+    done
+    # Recheck before KILL to reduce the risk of signalling a reused PID.
+    if kill -0 "$2" 2>/dev/null; then _setup_probe_signal_target KILL "$1"; fi
+    unset _supt_grace
+}
+
+# Preserve the caller's signal handlers while the watchdog owns probe cleanup.
+_setup_probe_restore_trap() {
+    _SETUP_PROBE_TARGET=""
+    _SETUP_PROBE_PID=""
+    if [ -n "${_SETUP_PROBE_PREV_TRAP:-}" ]; then
+        eval "$_SETUP_PROBE_PREV_TRAP"
+    else
+        trap - HUP INT TERM
+    fi
+    _SETUP_PROBE_PREV_TRAP=""
+}
+
+_setup_probe_on_signal() {
+    # Stop the probe on cancellation, with a shorter grace period.
+    if [ -n "${_SETUP_PROBE_TARGET:-}" ] && [ -n "${_SETUP_PROBE_PID:-}" ]; then
+        _setup_probe_terminate "$_SETUP_PROBE_TARGET" "$_SETUP_PROBE_PID" 2
+        wait "$_SETUP_PROBE_PID" 2>/dev/null || :
+    fi
+    _setup_probe_restore_trap
+    # Re-deliver the signal to the restored handler or default action.
+    kill -s "$1" "$$" 2>/dev/null || :
+}
+
+# Probe $1 with stdin closed and a 20 s timeout, plus 5 s to terminate.
+# Save stdout to $2 (default /dev/null) to avoid re-probing for the version.
+# Use a file so lingering children cannot hold an output pipe open.
+_setup_probe_version() {
+    _supe_secs="${_SETUP_PROBE_SECONDS:-20}"
+    _supe_out="${2:-/dev/null}"
+    # Use GNU timeout when available, otherwise the watchdog below.
+    if command -v timeout >/dev/null 2>&1 && timeout -k 1 5 true >/dev/null 2>&1; then
+        timeout -k 5 "$_supe_secs" "$1" --version >"$_supe_out" 2>/dev/null </dev/null
+        _supe_rc=$?
+        # Normalize SIGKILL after the grace period to the watchdog's timeout status.
+        if [ "$_supe_rc" -eq 137 ]; then _supe_rc=124; fi
+        return $_supe_rc
+    fi
+    # Temporarily enable monitor mode to signal the probe and its children as a group.
+    _supe_monitor=off
+    case "$-" in *m*) _supe_monitor=on ;; esac
+    [ "$_supe_monitor" = on ] || set -m 2>/dev/null || :
+    "$1" --version >"$_supe_out" 2>/dev/null </dev/null &
+    _supe_pid=$!
+    [ "$_supe_monitor" = on ] || set +m 2>/dev/null || :
+    # Signal a group only if it differs from setup's own group; otherwise use the PID.
+    # Strip spaces without external tools so this works on a minimal PATH.
+    _supe_target="$_supe_pid"
+    if command -v ps >/dev/null 2>&1; then
+        _supe_pgid=$(ps -o pgid= -p "$_supe_pid" 2>/dev/null)
+        _supe_self=$(ps -o pgid= -p $$ 2>/dev/null)
+        _supe_pgid=${_supe_pgid##* }
+        _supe_self=${_supe_self##* }
+        case "$_supe_pgid$_supe_self" in
+            ''|*[!0-9]*) : ;;
+            *) [ "$_supe_pgid" = "$_supe_self" ] || _supe_target="-$_supe_pgid" ;;
+        esac
+    fi
+    _SETUP_PROBE_TARGET="$_supe_target"
+    _SETUP_PROBE_PID="$_supe_pid"
+    _SETUP_PROBE_PREV_TRAP=$(trap -p HUP INT TERM 2>/dev/null) || _SETUP_PROBE_PREV_TRAP=""
+    trap '_setup_probe_on_signal HUP' HUP
+    trap '_setup_probe_on_signal INT' INT
+    trap '_setup_probe_on_signal TERM' TERM
+    _supe_waited=0
+    while kill -0 "$_supe_pid" 2>/dev/null; do
+        if [ "$_supe_waited" -ge "$_supe_secs" ]; then
+            _setup_probe_terminate "$_supe_target" "$_supe_pid" 5
+            wait "$_supe_pid" 2>/dev/null
+            _setup_probe_restore_trap
+            unset _supe_pid _supe_waited _supe_target _supe_pgid _supe_self
+            return 124
+        fi
+        sleep 1
+        _supe_waited=$((_supe_waited + 1))
+    done
+    wait "$_supe_pid"
+    _supe_rc=$?
+    _setup_probe_restore_trap
+    unset _supe_pid _supe_waited _supe_target _supe_pgid _supe_self
+    return $_supe_rc
+}
+
+# ── BEGIN mirror fallback (kept identical in install.sh and studio/setup.sh) ──
+# Only in mainland China (or UNSLOTH_MIRROR_FALLBACK=1): swaps a default host below 1 MiB/s or unreachable for its mirror when faster; user-set sources untouched; UNSLOTH_MIRROR_FALLBACK=0 disables.
+_MIRROR_CERNET="https://tuna.mirrors.cernet.edu.cn"
+_MIRROR_PYPI="$_MIRROR_CERNET/pypi/web/simple"
+_MIRROR_NPM="https://registry.npmmirror.com"
+# GitHub-release mirrors keep only the newest Python builds, while a pinned uv asks for the builds it shipped with; npmmirror keeps every release.
+_MIRROR_PYTHON="$_MIRROR_NPM/-/binary/python-build-standalone"
+_MIRROR_MIN_BPS=1048576
+
+_mirror_probe() {
+    _mp_out=$(curl -sL -o /dev/null -r "0-$3" -w '%{http_code} %{speed_download}' --connect-timeout "$2" --max-time "$2" "$1" 2>/dev/null) || true
+    _mp_bps=${_mp_out#* }
+    _mp_bps=${_mp_bps%%.*}
+    case "$_mp_bps" in ''|*[!0-9]*) _mp_bps=0 ;; esac
+    _mp_code=${_mp_out%% *}
+    case "$_mp_code" in [0-9][0-9][0-9]) ;; *) _mp_code=000 ;; esac
+    echo "$_mp_code $_mp_bps"
+}
+
+_mirror_url() {
+    case "$1" in
+        pypi) echo "https://files.pythonhosted.org/packages/72/d6/207945fe69903b9794e2ef3e42608c91a59972567343a6719078d99c71f7/uv-0.12.1-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl" ;;
+        cernet-pypi) echo "$_MIRROR_CERNET/pypi/web/packages/72/d6/207945fe69903b9794e2ef3e42608c91a59972567343a6719078d99c71f7/uv-0.12.1-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl" ;;
+        torch) echo "https://download-r2.pytorch.org/whl/cpu/torch-2.9.1%2Bcpu-cp312-cp312-manylinux_2_28_x86_64.whl" ;;
+        cernet-torch) echo "$_MIRROR_CERNET/pytorch/whl/cpu/torch-2.9.1%2Bcpu-cp312-cp312-manylinux_2_28_x86_64.whl" ;;
+        node) echo "https://nodejs.org/dist/v24.18.0/node-v24.18.0-linux-x64.tar.gz" ;;
+        npmmirror-node) echo "$_MIRROR_NPM/-/binary/node/v24.18.0/node-v24.18.0-linux-x64.tar.gz" ;;
+        npm) echo "https://registry.npmjs.org/typescript/-/typescript-5.9.3.tgz" ;;
+        npmmirror) echo "$_MIRROR_NPM/typescript/-/typescript-5.9.3.tgz" ;;
+        astral) echo "https://releases.astral.sh/github/uv/releases/download/0.12.1/uv-x86_64-unknown-linux-gnu.tar.gz" ;;
+        pypi-index) echo "https://pypi.org/simple/uv/" ;;
+        torch-index) echo "https://download.pytorch.org/whl/cpu/torch/" ;;
+        cernet-pypi-index) echo "$_MIRROR_PYPI/uv/" ;;
+        cernet-torch-index) echo "$_MIRROR_CERNET/pytorch/whl/cpu/torch/" ;;
+    esac
+}
+
+_mirror_default() {
+    case "$1" in python|uvbin) echo astral ;; *) echo "$1" ;; esac
+}
+
+_mirror_source() {
+    case "$1" in npm|python) echo npmmirror ;; node) echo npmmirror-node ;; pypi|uvbin) echo cernet-pypi ;; *) echo "cernet-$1" ;; esac
+}
+
+_mirror_index_probe() {
+    for _mip_name in "$@"; do
+        case "$_mip_name" in
+            pypi|torch|cernet-pypi|cernet-torch)
+                _mirror_probe "$(_mirror_url "$_mip_name-index")" 4 1023 > "$_mf_dir/$_mip_name-index" &
+                _mf_pids="$_mf_pids $!" ;;
+        esac
+    done
+}
+
+_mirror_index_wait() {
+    for _miw_pid in $_mf_pids; do
+        wait "$_miw_pid" || true
+    done
+    _mf_pids=""
+}
+
+_mirror_index_ok() {
+    [ -f "$_mf_dir/$1-index" ] || return 0
+    read -r _mio_code _mio_bps < "$_mf_dir/$1-index"
+    case "$_mio_code" in 2??) return 0 ;; *) return 1 ;; esac
+}
+
+_mirror_uv_project_config() {
+    _mup_dir=$PWD
+    while [ -n "$_mup_dir" ]; do
+        if [ -f "$_mup_dir/uv.toml" ]; then echo "$_mup_dir/uv.toml"; return 0; fi
+        if grep -Eqs '^[[:space:]]*\[+tool\.uv(\.|\])' "$_mup_dir/pyproject.toml"; then echo "$_mup_dir/pyproject.toml"; return 0; fi
+        [ "$_mup_dir" = / ] && return 0
+        _mup_dir=$(dirname "$_mup_dir")
+    done
+}
+
+_mirror_configured() {
+    case "$1" in
+        uv)
+            [ -n "${UV_DEFAULT_INDEX:-}${UV_INDEX_URL:-}${UV_INDEX:-}${UV_EXTRA_INDEX_URL:-}" ] && return 0
+            _mic_key='\[\[(tool\.uv\.)?index\]\]|(pip\.)?(index|index-url|default-index|extra-index-url|no-index)[[:space:]]*=' ;;
+        python)
+            [ -n "${UV_PYTHON_INSTALL_MIRROR:-}" ] && return 0
+            _mic_key='python-install-mirror[[:space:]]*=' ;;
+        pip)
+            [ -n "${PIP_INDEX_URL:-}${PIP_EXTRA_INDEX_URL:-}${PIP_NO_INDEX:-}" ] && return 0
+            _mic_key='(index[-_]url|extra[-_]index[-_]url|no[-_]index)[[:space:]]*[=:]' ;;
+    esac
+    _mic_suffix=uv/uv.toml
+    [ "$1" != pip ] || _mic_suffix=pip/pip.conf
+    if [ "$1" = pip ]; then
+        set -- "${PIP_CONFIG_FILE:-}" "${VENV_DIR:+$VENV_DIR/pip.conf}" "${XDG_CONFIG_HOME:-$HOME/.config}/pip/pip.conf" "$HOME/.pip/pip.conf" "$HOME/Library/Application Support/pip/pip.conf" /etc/xdg/pip/pip.conf /etc/pip.conf
+    else
+        set -- "${UV_CONFIG_FILE:-}" "$(_mirror_uv_project_config)" "${XDG_CONFIG_HOME:-$HOME/.config}/uv/uv.toml" /etc/xdg/uv/uv.toml /etc/uv/uv.toml
+    fi
+    _mic_xdg=${XDG_CONFIG_DIRS:-}
+    while [ -n "$_mic_xdg" ]; do
+        set -- "$@" "${_mic_xdg%%:*}/$_mic_suffix"
+        case "$_mic_xdg" in *:*) _mic_xdg=${_mic_xdg#*:} ;; *) _mic_xdg="" ;; esac
+    done
+    for _mic_file in "$@"; do
+        if [ -f "$_mic_file" ] && grep -Eq "^[[:space:]]*($_mic_key)" "$_mic_file" 2>/dev/null; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+_mirror_probe_all() {
+    _mpa_dir="$1"
+    _mpa_secs="$2"
+    shift 2
+    _mpa_pids=""
+    for _mpa_name in "$@"; do
+        _mirror_probe "$(_mirror_url "$_mpa_name")" "$_mpa_secs" 1048575 > "$_mpa_dir/$_mpa_name" &
+        _mpa_pids="$_mpa_pids $!"
+    done
+    for _mpa_pid in $_mpa_pids; do
+        wait "$_mpa_pid" || true
+    done
+}
+
+_mirror_vars() {
+    case "$1" in
+        pypi)
+            [ "$_mf_uv" = false ] || echo "UV_DEFAULT_INDEX=$_MIRROR_PYPI"
+            [ "$_mf_pip" = false ] || echo "PIP_INDEX_URL=$_MIRROR_PYPI" ;;
+        unsynced)
+            # Only for one rerun: uv's unsafe-first-match fetches every package from every index, and fails outright when one is unreachable.
+            [ "$_mf_uv" = false ] || echo "UV_DEFAULT_INDEX=https://pypi.org/simple UV_INDEX=$_MIRROR_PYPI UV_INDEX_STRATEGY=${UV_INDEX_STRATEGY:-unsafe-first-match}"
+            [ "$_mf_pip" = false ] || echo "PIP_EXTRA_INDEX_URL=https://pypi.org/simple PIP_INDEX_URL=$_MIRROR_PYPI" ;;
+        torch) echo "UNSLOTH_PYTORCH_MIRROR=$_MIRROR_CERNET/pytorch/whl" ;;
+        node) echo "UNSLOTH_NODE_MIRROR=$_MIRROR_NPM/-/binary/node" ;;
+        npm) echo "UNSLOTH_NPM_REGISTRY=$_MIRROR_NPM" ;;
+        python) echo "UV_PYTHON_INSTALL_MIRROR=$_MIRROR_PYTHON" ;;
+        uvbin) echo "UNSLOTH_UV_WHEEL_MIRROR=$_MIRROR_CERNET/pypi/web" ;;
+    esac
+}
+
+_mirror_name() {
+    case "$1" in
+        pypi) echo "PyPI" ;;
+        unsynced) echo "The PyPI mirror" ;;
+        torch) echo "download.pytorch.org" ;;
+        node) echo "nodejs.org" ;;
+        npm) echo "registry.npmjs.org" ;;
+        python) echo "releases.astral.sh (Python builds)" ;;
+        uvbin) echo "releases.astral.sh (uv)" ;;
+    esac
+}
+
+_mirror_use() {
+    _mu_to=""
+    for _mu_pair in $(_mirror_vars "$1"); do
+        export "$_mu_pair"
+        [ -n "$_mu_to" ] || _mu_to=${_mu_pair#*=}
+    done
+    step "mirror" "$(_mirror_name "$1") is $2 ($(($3 / 1024)) KB/s, mirror $(($4 / 1024)) KB/s); using $_mu_to" "$C_WARN"
+    _mf_switched="$_mf_switched $1"
+    [ "$1 $2" != "pypi slow" ] || _mf_unsynced=true
+}
+
+_mirror_take() {
+    _MT_PAIRS=""
+    _mt_spare=""
+    for _mt_entry in ${_UNSLOTH_MIRROR_SPARE:-}; do
+        if [ "${_mt_entry%%|*}" = "$1" ]; then
+            _MT_PAIRS=$(printf '%s' "${_mt_entry#*|}" | tr '|' ' ')
+        else
+            _mt_spare="$_mt_spare $_mt_entry"
+        fi
+    done
+    [ -n "$_MT_PAIRS" ] || return 1
+    export _UNSLOTH_MIRROR_SPARE="${_mt_spare# }"
+    _mt_to=${_MT_PAIRS%% *}
+    step "mirror" "$(_mirror_name "$1") failed; retrying through ${_mt_to#*=}" "$C_WARN"
+}
+
+_mirror_switch() {
+    _mirror_take "$1" || return 1
+    for _ms_pair in $_MT_PAIRS; do export "$_ms_pair"; done
+}
+
+_mirror_failed_host() {
+    if ! grep -Eqi 'error sending request|timed out|network timeout|idle timeout|connection (reset|refused|closed|aborted)|network aborted|broken pipe|dns error|failed to lookup address|name resolution|nodename nor servname|network is unreachable|error decoding response body|end of file before message length|unexpected eof|tls handshake|sslerror|certificate verify failed|server error|service unavailable|bad gateway|gateway time-?out|too many requests|max retries exceeded|remotedisconnected|incompleteread|econnreset|etimedout|eidletimeout|eai_again|enotfound|econnrefused|socket hang up' "$1" 2>/dev/null; then
+        grep -Eqi 'only [^ ]+ (.* )?(is|are) available|no versions? of|not found in the package registry|could not find a version that satisfies|no matching distribution found' "$1" 2>/dev/null || return 1
+        echo unsynced
+        return 0
+    fi
+    if grep -Eq 'download(-r2)?\.pytorch\.org' "$1"; then echo torch
+    elif grep -q 'python-build-standalone' "$1"; then echo python
+    elif grep -q 'registry\.npmjs\.org' "$1"; then echo npm
+    elif grep -Eq 'pypi\.org|pythonhosted\.org' "$1"; then echo pypi
+    elif [ -n "${2:-}" ] && ! grep -Eq 'https?://' "$1"; then echo "$2"
+    else return 1
+    fi
+}
+
+# No network call: a mainland China time zone, or a resolver from a mainland public DNS or cloud (the addresses below).
+_mirror_in_china() {
+    _mcn_tz=${TZ:-}
+    [ -n "$_mcn_tz" ] || _mcn_tz=$(cat /etc/timezone 2>/dev/null) || true
+    [ -n "$_mcn_tz" ] || _mcn_tz=$(readlink /etc/localtime 2>/dev/null) || true
+    case "${_mcn_tz#:}" in
+        *Asia/Shanghai|*Asia/Chongqing|*Asia/Chungking|*Asia/Harbin|*Asia/Urumqi|*Asia/Kashgar|PRC|*/PRC) return 0 ;;
+    esac
+    grep -Eqs '^[[:space:]]*nameserver[[:space:]]+(223\.5\.5\.5|223\.6\.6\.6|119\.29\.29\.29|114\.114\.11[45]\.11[0459]|182\.254\.116\.116|119\.28\.28\.28|180\.76\.76\.76|1\.2\.4\.8|210\.2\.4\.8|100\.100\.2\.13[68]|183\.60\.8[23]\.(19|98))[[:space:]]*$' /etc/resolv.conf /run/systemd/resolve/resolv.conf
+}
+
+# Decided once per process; when off, a retry state inherited from a parent is dropped so nothing downstream acts on it.
+_mirror_enabled() {
+    if [ -z "${_mirror_on:-}" ]; then
+        case "${UNSLOTH_MIRROR_FALLBACK:-}" in
+            0|false|False|FALSE|no|off) _mirror_on=no ;;
+            1|true|True|TRUE|yes|on) _mirror_on=yes ;;
+            *) if _mirror_in_china; then _mirror_on=yes; else _mirror_on=no; fi ;;
+        esac
+        [ "$_mirror_on" = yes ] || unset _UNSLOTH_MIRROR_SPARE
+    fi
+    [ "$_mirror_on" = yes ]
+}
+
+_mirror_fallback() {
+    _mirror_enabled || return 0
+    [ -z "${_UNSLOTH_MIRROR_PROBED:-}" ] || return 0
+    command -v curl >/dev/null 2>&1 || return 0
+    [ "${1:-}" = spare ] || export _UNSLOTH_MIRROR_PROBED=1
+    _mf_uv=true
+    _mf_pip=true
+    _mf_switched=""
+    _mf_unsynced=false
+    _mirror_configured uv && _mf_uv=false
+    _mirror_configured pip && _mf_pip=false
+    _mf_hosts=""
+    if [ "$_mf_uv" = true ] || [ "$_mf_pip" = true ]; then
+        _mf_hosts="pypi"
+    fi
+    [ -n "${UNSLOTH_PYTORCH_MIRROR:-}${UNSLOTH_TORCH_INDEX_URL:-}" ] || _mf_hosts="$_mf_hosts torch"
+    [ -n "${UNSLOTH_NODE_MIRROR:-}" ] || _mf_hosts="$_mf_hosts node"
+    [ -n "${UNSLOTH_NPM_REGISTRY:-}${NPM_CONFIG_REGISTRY:-}${npm_config_registry:-}" ] || _mf_hosts="$_mf_hosts npm"
+    _mirror_configured python || _mf_hosts="$_mf_hosts python"
+    [ -n "${UNSLOTH_UV_WHEEL_MIRROR:-}${UV_DOWNLOAD_URL:-}${INSTALLER_DOWNLOAD_URL:-}${UV_INSTALLER_GHE_BASE_URL:-}${UV_INSTALLER_GITHUB_BASE_URL:-}" ] || _mf_hosts="$_mf_hosts uvbin"
+    [ -n "$_mf_hosts" ] || return 0
+    # UV_OFFLINE (uv's spellings) asked for no network: arm the retries, probe nothing.
+    _mf_uvo=${UV_OFFLINE:-}
+    _mf_uvo=${_mf_uvo#"${_mf_uvo%%[![:space:]]*}"}
+    _mf_uvo=${_mf_uvo%"${_mf_uvo##*[![:space:]]}"}
+    case "${1:-}/$_mf_uvo" in
+        spare/* | */1 | */[Tt] | */[Tt][Rr][Uu][Ee] | */[Yy] | */[Yy][Ee][Ss] | */[Oo][Nn]) _mirror_spare_export; return 0 ;;
+    esac
+    _mf_dir=$(mktemp -d 2>/dev/null) || return 0
+    _mf_pids=""
+    _mirror_index_probe $_mf_hosts
+    for _mf_name in $(for _mf_host in $_mf_hosts; do _mirror_default "$_mf_host"; done | sort -u); do
+        _mirror_probe "$(_mirror_url "$_mf_name")" 1.5 1048575 > "$_mf_dir/$_mf_name"
+    done
+    _mirror_index_wait
+    _mf_slow=""
+    for _mf_host in $_mf_hosts; do
+        read -r _mf_code _mf_bps < "$_mf_dir/$(_mirror_default "$_mf_host")"
+        _mirror_index_ok "$_mf_host" || _mf_code=000
+        case "$_mf_code" in
+            000|3??) _mf_slow="$_mf_slow $_mf_host" ;;
+            2??) [ "$_mf_bps" -ge "$_MIRROR_MIN_BPS" ] || _mf_slow="$_mf_slow $_mf_host" ;;
+        esac
+    done
+    if [ -n "$_mf_slow" ]; then
+        _mirror_index_probe $_mf_slow $(for _mf_host in $_mf_slow; do echo "cernet-$_mf_host"; done)
+        _mirror_probe_all "$_mf_dir" 4 $(for _mf_host in $_mf_slow; do _mirror_default "$_mf_host"; _mirror_source "$_mf_host"; done | sort -u)
+        _mirror_index_wait
+        for _mf_host in $_mf_slow; do
+            read -r _mf_code _mf_bps < "$_mf_dir/$(_mirror_default "$_mf_host")"
+            read -r _mf_mcode _mf_mbps < "$_mf_dir/$(_mirror_source "$_mf_host")"
+            _mirror_index_ok "$_mf_host" || _mf_code=000
+            _mirror_index_ok "cernet-$_mf_host" || _mf_mcode=000
+            case "$_mf_code" in
+                2??) _mf_how=slow ;;
+                *) _mf_how=blocked; _mf_bps=0 ;;
+            esac
+            case "$_mf_mcode" in
+                2??) [ "$_mf_bps" -lt "$_MIRROR_MIN_BPS" ] && [ "$_mf_mbps" -gt "$_mf_bps" ] && _mirror_use "$_mf_host" "$_mf_how" "$_mf_bps" "$_mf_mbps" ;;
+            esac
+        done
+        if [ -n "$_mf_switched" ]; then
+            substep "Set UNSLOTH_MIRROR_FALLBACK=0 to always use the default hosts."
+        fi
+    fi
+    rm -rf "$_mf_dir"
+    _mirror_spare_export
+}
+
+_mirror_spare_export() {
+    _mf_spare=""
+    for _mf_host in $_mf_hosts; do
+        case " $_mf_switched " in *" $_mf_host "*) continue ;; esac
+        _mf_entry=""
+        for _mf_pair in $(_mirror_vars "$_mf_host"); do
+            _mf_entry="$_mf_entry|$_mf_pair"
+        done
+        [ -z "$_mf_entry" ] || _mf_spare="$_mf_spare $_mf_host$_mf_entry"
+    done
+    if [ "$_mf_unsynced" = true ]; then
+        _mf_spare="$_mf_spare unsynced"
+        for _mf_pair in $(_mirror_vars unsynced); do
+            _mf_spare="$_mf_spare|$_mf_pair"
+        done
+    fi
+    export _UNSLOTH_MIRROR_SPARE="${_mf_spare# }"
+}
+# ── END mirror fallback ──
+
 # ── Corporate-mirror / proxy escape hatch for the frontend npm/bun install (#6491) ──
 # studio/frontend/.npmrc pins registry=https://registry.npmjs.org/ as a supply-chain
 # lock. A project-level pin overrides a corporate user's ~/.npmrc proxy, so the install
@@ -129,9 +551,16 @@ fi
 # around the npm/bun installs; "" elsewhere so unrelated run_quiet calls don't capture.
 _CAPTURE_LOG=""
 
+_npm_mirror_retry() {
+    [ "$(_mirror_failed_host "${_CAPTURE_LOG:-}" npm)" = npm ] && _mirror_take npm || return 1
+    run_quiet_no_exit "$1" npm install --no-fund --no-audit --loglevel=error --registry "${_MT_PAIRS#*=}" || return
+    export "$_MT_PAIRS"
+    _NPM_REGISTRY_ARGS=(--registry "$UNSLOTH_NPM_REGISTRY")
+}
+
 # Print actionable guidance when a frontend/OXC npm/bun install fails and the registry
 # lock is the likely cause (corporate firewall/proxy). No-op once the user has opted in
-# via UNSLOTH_NPM_REGISTRY. We never switch registries automatically -- we only guide.
+# via UNSLOTH_NPM_REGISTRY. This only guides; the mirror fallback does any switching.
 # $1 = path to a captured install log (may be empty/missing).
 _suggest_npm_registry() {
     [ -n "${UNSLOTH_NPM_REGISTRY:-}" ] && return 0
@@ -1098,6 +1527,12 @@ fi
 STAGE_ROOT="${UNSLOTH_STUDIO_STAGE_ROOT:-}"
 RUNTIME_ROOT="${STAGE_ROOT:-$STUDIO_HOME}"
 VENV_DIR="$RUNTIME_ROOT/unsloth_studio"
+if _mirror_enabled; then
+    _mirror_spare_pwd=$PWD
+    cd "$SCRIPT_DIR"
+    _mirror_fallback spare
+    cd "$_mirror_spare_pwd" 2>/dev/null || :
+fi
 
 # Same uv cache install.sh chose, for the same reasons.
 #
@@ -1733,13 +2168,34 @@ else
 fi
 NODE_DIR="$_NODE_PARENT/node"
 
-_SYS_NODE_VER="$(node -v 2>/dev/null || true)"
-_SYS_NPM_VER="$(npm -v 2>/dev/null || true)"
+# Bound system node/npm probes so a broken binary on PATH cannot stall setup (#11709).
+# Sets _PROBED_VER, or leaves it empty if the tool is missing, fails or times out.
+_probe_system_node_tool() {
+    _PROBED_VER=""
+    command -v "$1" >/dev/null 2>&1 || return 0
+    _pnt_out="$(mktemp)"
+    _pnt_rc=0
+    _setup_probe_version "$1" "$_pnt_out" || _pnt_rc=$?
+    if [ "$_pnt_rc" -eq 0 ]; then
+        _PROBED_VER="$(head -n 1 "$_pnt_out")"
+    elif [ "$_pnt_rc" -eq 124 ]; then
+        substep "system $1 ($(command -v "$1")) did not answer --version within ${_SETUP_PROBE_SECONDS:-20}s; not using it" "$C_WARN"
+    fi
+    rm -f "$_pnt_out"
+}
+_probe_system_node_tool node
+_SYS_NODE_VER="$_PROBED_VER"
+_SYS_NPM_VER=""
+# npm requires Node, so skip its probe if Node failed.
+if [ -n "$_SYS_NODE_VER" ]; then
+    _probe_system_node_tool npm
+    _SYS_NPM_VER="$_PROBED_VER"
+fi
 NODE_SOURCE="$(decide_node_source "$_SYS_NODE_VER" "$_SYS_NPM_VER" "${UNSLOTH_SKIP_NODE_INSTALL:-0}")"
 _FRONTEND_SKIP=false
 
 if [ "$NODE_SOURCE" = system ]; then
-    step "node" "$(node -v) | npm $(npm -v) (system)"
+    step "node" "$_SYS_NODE_VER | npm $_SYS_NPM_VER (system)"
 elif [ "$NODE_SOURCE" = bundled ]; then
     mkdir -p "$_NODE_PARENT"
     # install_node_prebuilt.py uses os.replace(); guard a custom-home dir so we
@@ -1759,13 +2215,18 @@ elif [ "$NODE_SOURCE" = bundled ]; then
     fi
     _NODE_LOG="$(mktemp)"
     set +e
-    if _is_verbose; then
-        "$_NODE_PY" "$SCRIPT_DIR/install_node_prebuilt.py" --install-dir "$NODE_DIR" 2>&1 | tee "$_NODE_LOG"
-        _NODE_STATUS=${PIPESTATUS[0]}
-    else
-        "$_NODE_PY" "$SCRIPT_DIR/install_node_prebuilt.py" --install-dir "$NODE_DIR" >"$_NODE_LOG" 2>&1
-        _NODE_STATUS=$?
-    fi
+    for _node_try in default mirror; do
+        if _is_verbose; then
+            "$_NODE_PY" "$SCRIPT_DIR/install_node_prebuilt.py" --install-dir "$NODE_DIR" 2>&1 | tee -a "$_NODE_LOG"
+            _NODE_STATUS=${PIPESTATUS[0]}
+        else
+            "$_NODE_PY" "$SCRIPT_DIR/install_node_prebuilt.py" --install-dir "$NODE_DIR" >>"$_NODE_LOG" 2>&1
+            _NODE_STATUS=$?
+        fi
+        # A failed download gets one retry through the mirror; 3 (another install holds the lock) and 4 (permission denied) are not network failures.
+        [ "$_NODE_STATUS" -ne 0 ] && [ "$_NODE_STATUS" -ne 3 ] && [ "$_NODE_STATUS" -ne 4 ] && [ "$_node_try" = default ] || break
+        _mirror_switch node || break
+    done
     set -e
     if [ "$_NODE_STATUS" -eq 3 ]; then
         step "node" "install blocked by another active Unsloth install" "$C_ERR"
@@ -1906,6 +2367,9 @@ if [ "$_bun_install_ok" = false ]; then
     # the exact exit code. Mirrors the `|| BUILD_OK=false` idiom used below.
     _npm_install_rc=0
     run_quiet_no_exit "npm install" npm install --no-fund --no-audit --loglevel=error "${_NPM_REGISTRY_ARGS[@]+"${_NPM_REGISTRY_ARGS[@]}"}" || _npm_install_rc=$?
+    if [ "$_npm_install_rc" -ne 0 ] && _npm_mirror_retry "npm install"; then
+        _npm_install_rc=0
+    fi
     if [ "$_npm_install_rc" -ne 0 ]; then
         _suggest_npm_registry "$_FRONTEND_INSTALL_LOG"
         rm -f "$_FRONTEND_INSTALL_LOG"
@@ -1945,6 +2409,9 @@ if [ -d "$_OXC_DIR" ] && [ "${NODE_SOURCE:-}" != skip ] && command -v npm &>/dev
     # below is reachable; it also captures the exact exit code.
     _oxc_install_rc=0
     run_quiet_no_exit "npm install (oxc validator runtime)" npm install --no-fund --no-audit --loglevel=error "${_NPM_REGISTRY_ARGS[@]+"${_NPM_REGISTRY_ARGS[@]}"}" || _oxc_install_rc=$?
+    if [ "$_oxc_install_rc" -ne 0 ] && _npm_mirror_retry "npm install (oxc validator runtime)"; then
+        _oxc_install_rc=0
+    fi
     _CAPTURE_LOG=""
     if [ "$_oxc_install_rc" -ne 0 ]; then
         _suggest_npm_registry "$_OXC_INSTALL_LOG"
@@ -2011,6 +2478,7 @@ else
 fi
 
 install_python_stack() {
+    [ "${STUDIO_LOCAL_INSTALL:-0}" = 1 ] && [ -x "$VENV_DIR/bin/python" ] || _mirror_fallback
     python "$SCRIPT_DIR/install_python_stack.py"
 }
 
@@ -2051,7 +2519,7 @@ _setup_http_get_timed() {
 # Same archive and destination as astral's installer, but it fetches a data file with a
 # pinned SHA-256 instead of piping remote script text into a shell. Mirrors install.sh.
 # See tests/studio/test_installer_av_shapes.py (AV_SHAPES_RECORD)
-# Bumping the version means bumping every hash:
+# Bumping the version means bumping every hash, and every _setup_uv_pinned_wheel entry:
 #   curl -sL https://github.com/astral-sh/uv/releases/download/<ver>/<asset>.sha256
 #
 # Only the four mainstream targets are pinned; the rest fall through to the existing path
@@ -2112,129 +2580,36 @@ _setup_uv_pinned_asset() {
     return 0
 }
 
+_setup_uv_pinned_wheel() {
+    case "$1" in
+        uv-x86_64-unknown-linux-gnu.tar.gz)
+            echo "packages/72/d6/207945fe69903b9794e2ef3e42608c91a59972567343a6719078d99c71f7/uv-0.12.1-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl 27211df9b277f440dea438a4e525ba40250fb721ad39b8927eefc2d91f9aea15" ;;
+        uv-aarch64-unknown-linux-gnu.tar.gz)
+            echo "packages/9a/c7/29e426865c2eb8df61253dae93b953523f48c9fca1e471c7e49ff068f19a/uv-0.12.1-py3-none-manylinux_2_28_aarch64.whl b255ac23958e45f39f9c7a4cd65890df5ef46f539a3b14de03bd296bbba9cb60" ;;
+        uv-x86_64-apple-darwin.tar.gz)
+            echo "packages/fd/07/a417475380e901f4325d13b09938baab227b0c143547124b944c5bc71783/uv-0.12.1-py3-none-macosx_10_12_x86_64.whl 41b8fc2335f682312a1ca39a7b4abfd6af800992065c663582ca3e4d51cf9258" ;;
+        uv-aarch64-apple-darwin.tar.gz)
+            echo "packages/c9/68/391ff0cc3d8020e64adc43bb4e50607f744c69e792fb7623dc7c1526704b/uv-0.12.1-py3-none-macosx_11_0_arm64.whl 2e9b0b86e180abc5968b979c6e25203b32e85969abb5083ee1e8b88a5aa98a76" ;;
+        *) return 1 ;;
+    esac
+}
+
+# Mirrors _uv_unzip in install.sh: GNU tar cannot read a wheel and minimal images lack unzip.
+_setup_uv_unzip() {
+    if command -v unzip >/dev/null 2>&1 && unzip -qo "$1" -d "$2" >/dev/null 2>&1; then return 0; fi
+    case "$(tar --version 2>/dev/null)" in
+        *bsdtar*) tar -xf "$1" -C "$2" 2>/dev/null && return 0 ;;
+    esac
+    command -v python3 >/dev/null 2>&1 &&
+        python3 -c 'import sys, zipfile; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])' "$1" "$2" 2>/dev/null
+}
+
 _setup_uv_sha256() {
     if command -v sha256sum >/dev/null 2>&1; then
         sha256sum "$1" 2>/dev/null | awk '{print $1}'
     elif command -v shasum >/dev/null 2>&1; then
         shasum -a 256 "$1" 2>/dev/null | awk '{print $1}'
     fi
-}
-
-_SETUP_UV_PROBE_TARGET=""
-_SETUP_UV_PROBE_PID=""
-_SETUP_UV_PROBE_PREV_TRAP=""
-
-# A process group is signalled as a negative pid, and the two shells that get here disagree about
-# how to write one: bash reads a bare `-123` as a signal spec and refuses it, dash refuses the
-# `--` that fixes bash. Only a shell that made a group can produce a negative target, so the sign
-# picks the spelling. Measured both ways: the wrong one fails silently under 2>/dev/null and the
-# group survives the ceiling.
-_setup_uv_signal_target() {
-    case "$2" in
-        -*) kill "-$1" -- "$2" 2>/dev/null || : ;;
-        *)  kill "-$1" "$2" 2>/dev/null || : ;;
-    esac
-}
-
-# TERM, then KILL what ignored it, exactly as `timeout -k` does on the hosts that have it.
-# $1 target (a group when one was made, else the pid), $2 pid to watch, $3 seconds of grace.
-_setup_uv_probe_terminate() {
-    _supt_grace=0
-    _setup_uv_signal_target TERM "$1"
-    while [ "$_supt_grace" -lt "$3" ] && kill -0 "$2" 2>/dev/null; do
-        sleep 1
-        _supt_grace=$((_supt_grace + 1))
-    done
-    # Only if it is still there: the loop also ends when TERM worked, and an unconditional KILL
-    # then goes to a number this shell no longer owns. Narrows the window, not closes it.
-    if kill -0 "$2" 2>/dev/null; then _setup_uv_signal_target KILL "$1"; fi
-    unset _supt_grace
-}
-
-# The watchdog's ceiling lives in the calling shell, so a cancel during the wait would leave the
-# candidate, and under monitor mode its whole group, running with nobody left to stop it. These
-# two chain rather than replace: the pinned installer's own handlers still have to run.
-_setup_uv_probe_restore_trap() {
-    _SETUP_UV_PROBE_TARGET=""
-    _SETUP_UV_PROBE_PID=""
-    if [ -n "${_SETUP_UV_PROBE_PREV_TRAP:-}" ]; then
-        eval "$_SETUP_UV_PROBE_PREV_TRAP"
-    else
-        trap - HUP INT TERM
-    fi
-    _SETUP_UV_PROBE_PREV_TRAP=""
-}
-
-_setup_uv_probe_on_signal() {
-    # The same TERM/KILL the ceiling uses, on a shorter leash: a cancel that waited the full five
-    # seconds for a binary ignoring TERM would read as a setup that ignored the cancel.
-    if [ -n "${_SETUP_UV_PROBE_TARGET:-}" ] && [ -n "${_SETUP_UV_PROBE_PID:-}" ]; then
-        _setup_uv_probe_terminate "$_SETUP_UV_PROBE_TARGET" "$_SETUP_UV_PROBE_PID" 2
-        wait "$_SETUP_UV_PROBE_PID" 2>/dev/null || :
-    fi
-    _setup_uv_probe_restore_trap
-    # Hand the signal back to whoever had it: the installer's handler, or the default action.
-    kill -s "$1" "$$" 2>/dev/null || :
-}
-
-# Bounded liveness probe: no stdin (a prompting build reads EOF), 20 s ceiling held by GNU
-# timeout or, without it (stock macOS), a background job killed when the ceiling passes.
-# $2 takes the binary's stdout, /dev/null by default: reuse needs the version line, and running
-# the binary again to read it would be a second chance to hang.
-_setup_uv_probe_exec() {
-    _supe_secs="${_SETUP_UV_PROBE_SECONDS:-20}"
-    _supe_out="${2:-/dev/null}"
-    # KILL after TERM (TERM can be ignored): `timeout -k` where supported, else the watchdog below.
-    if command -v timeout >/dev/null 2>&1 && timeout -k 1 5 true >/dev/null 2>&1; then
-        timeout -k 5 "$_supe_secs" "$1" --version >"$_supe_out" 2>/dev/null </dev/null
-        return $?
-    fi
-    # Monitor mode gives the probe a process group of its own, so the signals below reach what IT
-    # started, as `timeout`'s setpgid does. Off again at once: it changes how later jobs report.
-    _supe_monitor=off
-    case "$-" in *m*) _supe_monitor=on ;; esac
-    [ "$_supe_monitor" = on ] || set -m 2>/dev/null || :
-    "$1" --version >"$_supe_out" 2>/dev/null </dev/null &
-    _supe_pid=$!
-    [ "$_supe_monitor" = on ] || set +m 2>/dev/null || :
-    # The group only where it is provably not this shell's own (zsh shares them, and a group TERM
-    # there kills setup); otherwise the single pid, as before. Parameter expansion, not `tr`: this
-    # branch has to hold on a PATH as bare as the shell and sleep.
-    _supe_target="$_supe_pid"
-    if command -v ps >/dev/null 2>&1; then
-        _supe_pgid=$(ps -o pgid= -p "$_supe_pid" 2>/dev/null)
-        _supe_self=$(ps -o pgid= -p $$ 2>/dev/null)
-        _supe_pgid=${_supe_pgid##* }
-        _supe_self=${_supe_self##* }
-        case "$_supe_pgid$_supe_self" in
-            ''|*[!0-9]*) : ;;
-            *) [ "$_supe_pgid" = "$_supe_self" ] || _supe_target="-$_supe_pgid" ;;
-        esac
-    fi
-    _SETUP_UV_PROBE_TARGET="$_supe_target"
-    _SETUP_UV_PROBE_PID="$_supe_pid"
-    _SETUP_UV_PROBE_PREV_TRAP=$(trap -p HUP INT TERM 2>/dev/null) || _SETUP_UV_PROBE_PREV_TRAP=""
-    trap '_setup_uv_probe_on_signal HUP' HUP
-    trap '_setup_uv_probe_on_signal INT' INT
-    trap '_setup_uv_probe_on_signal TERM' TERM
-    _supe_waited=0
-    while kill -0 "$_supe_pid" 2>/dev/null; do
-        if [ "$_supe_waited" -ge "$_supe_secs" ]; then
-            # Escalate as timeout -k does: a binary ignoring TERM would hold the wait.
-            _setup_uv_probe_terminate "$_supe_target" "$_supe_pid" 5
-            wait "$_supe_pid" 2>/dev/null
-            _setup_uv_probe_restore_trap
-            unset _supe_pid _supe_waited _supe_target _supe_pgid _supe_self
-            return 124
-        fi
-        sleep 1
-        _supe_waited=$((_supe_waited + 1))
-    done
-    wait "$_supe_pid"
-    _supe_rc=$?
-    _setup_uv_probe_restore_trap
-    unset _supe_pid _supe_waited _supe_target _supe_pgid _supe_self
-    return $_supe_rc
 }
 
 # The function's own cleanup only runs when it returns, so an interrupt left the unpacked
@@ -2260,6 +2635,7 @@ _SIUP_STAGE=""
 _SIUP_STAGE2=""
 
 _setup_install_uv_pinned() {
+    _SIUP_UNFETCHED=false
     _siup_spec=$(_setup_uv_pinned_asset) || return 1
     [ -n "$_siup_spec" ] || return 1
     _siup_asset=${_siup_spec%% *}
@@ -2293,15 +2669,28 @@ _setup_install_uv_pinned() {
         _siup_bases="${UV_INSTALLER_GHE_BASE_URL%/}/astral-sh/uv/releases/download/$_SETUP_UV_PINNED_VERSION"
     elif [ -n "${UV_INSTALLER_GITHUB_BASE_URL:-}" ]; then
         _siup_bases="${UV_INSTALLER_GITHUB_BASE_URL%/}/astral-sh/uv/releases/download/$_SETUP_UV_PINNED_VERSION"
+    elif [ -n "${UNSLOTH_UV_WHEEL_MIRROR:-}" ]; then
+        _siup_bases=""
+        if _siup_wheel=$(_setup_uv_pinned_wheel "$_siup_asset"); then
+            _siup_path=${_siup_wheel% *}
+            _siup_bases="${UNSLOTH_UV_WHEEL_MIRROR%/}/${_siup_path%/*}"
+            _siup_asset=${_siup_path##*/}
+            _siup_want=${_siup_wheel##* }
+        fi
     else
         _siup_bases="https://releases.astral.sh/github/uv/releases/download/$_SETUP_UV_PINNED_VERSION
 https://github.com/astral-sh/uv/releases/download/$_SETUP_UV_PINNED_VERSION"
     fi
+    _SIUP_UNFETCHED=true
     for _siup_base in $_siup_bases; do
         _setup_http_get "$_siup_base/$_siup_asset" > "$_siup_work/$_siup_asset" 2>/dev/null || continue
         [ -s "$_siup_work/$_siup_asset" ] || continue
+        _SIUP_UNFETCHED=false
         [ "$(_setup_uv_sha256 "$_siup_work/$_siup_asset")" = "$_siup_want" ] || continue
-        tar -xzf "$_siup_work/$_siup_asset" -C "$_siup_work" 2>/dev/null || continue
+        case "$_siup_asset" in
+            *.whl) _setup_uv_unzip "$_siup_work/$_siup_asset" "$_siup_work" || continue ;;
+            *) tar -xzf "$_siup_work/$_siup_asset" -C "$_siup_work" 2>/dev/null || continue ;;
+        esac
         mkdir -p "$_siup_dest" 2>/dev/null || break
         # Stage both, then publish both, as install.sh does: the renames sit next to each
         # other so the pair is replaced as one.
@@ -2324,7 +2713,7 @@ https://github.com/astral-sh/uv/releases/download/$_SETUP_UV_PINNED_VERSION"
             chmod 0755 "$_siup_stage" 2>/dev/null || true
             # Validate before publishing: the rename destroys the incumbent, so a binary that
             # cannot run here must never replace one that could.
-            if [ "$_siup_exe" = "uv" ] && ! _setup_uv_probe_exec "$_siup_stage"; then _siup_ready=0; break; fi
+            if [ "$_siup_exe" = "uv" ] && ! _setup_probe_version "$_siup_stage"; then _siup_ready=0; break; fi
         done
         if [ "$_siup_ready" = "1" ] &&
            mv -f "$_SIUP_STAGE" "$_siup_dest/uv" 2>/dev/null &&
@@ -2632,8 +3021,8 @@ _setup_find_installed_uv() {
         # Bounded, like the pinned installer's probe. Asked twice: one miss (an antivirus scan
         # holding a fresh binary) sent setup to the pinned download, which put an OLDER uv
         # over this one and moved the manifest's uv_version on the next pass.
-        if _setup_uv_probe_exec "$_sfu_dir/uv" "${_sfu_ver_file:-/dev/null}" ||
-           { sleep 2; _setup_uv_probe_exec "$_sfu_dir/uv" "${_sfu_ver_file:-/dev/null}"; }; then
+        if _setup_probe_version "$_sfu_dir/uv" "${_sfu_ver_file:-/dev/null}" ||
+           { sleep 2; _setup_probe_version "$_sfu_dir/uv" "${_sfu_ver_file:-/dev/null}"; }; then
             # `read`, not `cat`: this branch has to hold on a bare PATH, and an empty file
             # returning non-zero is not a reason for `set -e` to end setup.
             _sfu_ver=""
@@ -2678,7 +3067,7 @@ elif {
         step "uv" "no installed uv at $_SETUP_UV_LOOKED; installing the pinned release"
     fi
     _SETUP_UV_PINNED_OK=false
-    if _setup_install_uv_pinned; then
+    if _setup_install_uv_pinned || { [ "$_SIUP_UNFETCHED" = true ] && _mirror_switch uvbin && _setup_install_uv_pinned; }; then
         _SETUP_UV_PINNED_OK=true
     elif _is_verbose; then
         _setup_http_get https://astral.sh/uv/install.sh | sh
@@ -2702,7 +3091,16 @@ fast_install() {
 
 fast_install_sidecar() (
     unset UV_OVERRIDE
-    fast_install "$@"
+    fast_install "$@" && return 0
+    _fis_rc=$?
+    # A pin the PyPI mirror has not synced yet: one rerun with pypi.org behind it, armed only after a slow pypi.org was switched.
+    for _fis_entry in ${_UNSLOTH_MIRROR_SPARE:-}; do
+        [ "${_fis_entry%%|*}" = unsynced ] || continue
+        for _fis_pair in $(printf '%s' "${_fis_entry#*|}" | tr '|' ' '); do export "$_fis_pair"; done
+        fast_install "$@"
+        return
+    done
+    return "$_fis_rc"
 )
 
 cd "$SCRIPT_DIR"
@@ -3162,6 +3560,7 @@ _sidecar_top_up_tiktoken() {
         [ -d "$_stt_info" ] && { rm -rf "$_stt_info" || true; }
     done
     unset _stt_info
+    _mirror_fallback
     if ! fast_install_sidecar --target "$_stt_dir" --no-deps --upgrade "tiktoken" >/dev/null 2>&1; then
         if _sidecar_drop_tiktoken "$_stt_dir"; then
             substep "could not install tiktoken into the $_stt_label sidecar -- Qwen tokenizers may fail"
@@ -3235,6 +3634,7 @@ _install_sidecar() {
     _is_dir="$1"
     _is_ver="$2"
     _is_label="$3"
+    _mirror_fallback
     _assert_studio_owned_or_absent "$_is_dir" "transformers $_is_label sidecar venv"
     [ -d "$_is_dir" ] && rm -rf "$_is_dir"
     mkdir -p "$_is_dir"
@@ -3349,6 +3749,8 @@ _setup_nvidia_physical=false
 _setup_gfx_all=""
 _setup_gfx=""
 _setup_hip_map_missing=0
+_setup_amd_probe=""
+_setup_rocr_uuid_declined=0
 _setup_mkt=""
 _setup_amd_records=""
 
@@ -3580,6 +3982,7 @@ if [ "$_setup_nvidia_usable" != true ]; then
     fi
     if [ -n "$_setup_gfx_all" ]; then
         _setup_amd_detected=true
+        _setup_amd_probe=rocminfo
     elif command -v amd-smi >/dev/null 2>&1 && \
          _setup_run_smi amd-smi list 2>/dev/null | awk '/^GPU[[:space:]]*[:\[][[:space:]]*[0-9]/{ found=1 } END{ exit !found }'; then
         _setup_amd_detected=true
@@ -3588,7 +3991,8 @@ if [ "$_setup_nvidia_usable" != true ]; then
         if [ -n "$_setup_amd_records" ]; then
             _setup_amd_smi_out=$(_setup_run_smi amd-smi list -e 2>/dev/null \
                 | _setup_amd_smi_hip_order "$_setup_amd_records" || true)
-            _setup_amd_space=$(printf '%s\n' "$_setup_amd_smi_out" | head -n 1)
+            # Expansion, not `| head -n 1`: head exiting early SIGPIPEs printf under pipefail.
+            _setup_amd_space=${_setup_amd_smi_out%%$'\n'*}
             _setup_amd_records=$(printf '%s\n' "$_setup_amd_smi_out" | tail -n +2)
             # No map, and the adapters are not interchangeable: the mask indexes HIP order
             # while these records are in discovery order, so any ordinal is a guess. Decline
@@ -3636,7 +4040,31 @@ if [ "$_setup_nvidia_usable" = true ]; then
     # behind on the common path where there is no driver string to print.
     if [ -n "$_setup_nv_driver" ]; then substep "Driver: $_setup_nv_driver"; fi
 elif [ "$_setup_amd_detected" = true ]; then
-    _setup_vis="${HIP_VISIBLE_DEVICES:-${ROCR_VISIBLE_DEVICES:-}}"
+    # As install.sh: ROCr picks survivors (rocminfo is already filtered, amd-smi is not), then the
+    # first SET HIP-layer mask (HIP, then CUDA; empty still shadows) indexes them.
+    if [ "$_setup_amd_probe" != rocminfo ] && [ -n "${ROCR_VISIBLE_DEVICES:-}" ] && [ "$ROCR_VISIBLE_DEVICES" != "-1" ]; then
+        _setup_rocr_keep() {
+            _setup_kept=$(printf '%s\n' "$1" | awk -v m="$ROCR_VISIBLE_DEVICES" '
+                NF { v[n++] = $0 }
+                END { k = split(m, t, ","); for (i = 1; i <= k; i++) { gsub(/[[:space:]]/, "", t[i]); if (t[i] !~ /^[0-9]+$/) continue; x = t[i] + 0; if (x >= n || (x in s)) break; s[x] = 1; print v[x] } }')
+            if [ -n "$_setup_kept" ]; then printf '%s\n' "$_setup_kept"; else printf '%s\n' "$1"; fi
+        }
+        # A UUID has no position in amd-smi's list: with unlike adapters, decline as install.sh does.
+        if [ -n "$(printf '%s' "$ROCR_VISIBLE_DEVICES" | tr -d '0-9, \t')" ] && \
+           [ "$(printf '%s\n' "${_setup_amd_records:-$_setup_gfx_all}" | awk -F'|' \
+                'NF { k = ($1 != "" ? $1 : "name:" $2); if (!(k in seen)) { seen[k]; n++ } } END { print n + 0 }')" -gt 1 ]; then
+            _setup_amd_records=""
+            _setup_gfx_all=""
+            _setup_rocr_uuid_declined=1
+        fi
+        [ -n "$_setup_amd_records" ] && _setup_amd_records=$(_setup_rocr_keep "$_setup_amd_records")
+        [ -n "$_setup_gfx_all" ] && _setup_gfx_all=$(_setup_rocr_keep "$_setup_gfx_all")
+    fi
+    if [ -n "${HIP_VISIBLE_DEVICES+x}" ]; then
+        _setup_vis="$HIP_VISIBLE_DEVICES"
+    else
+        _setup_vis="${CUDA_VISIBLE_DEVICES:-}"
+    fi
     _setup_vis_idx=0
     if [ -n "$_setup_vis" ] && [ "$_setup_vis" != "-1" ]; then
         _setup_first="${_setup_vis%%,*}"
@@ -3691,6 +4119,10 @@ elif [ "$_setup_amd_detected" = true ]; then
     if [ -z "$_setup_gfx" ] && [ "$_setup_hip_map_missing" = 1 ]; then
         substep "Unlike AMD adapters and no HIP id map (amd-smi list -e needs ROCm 6.4+):"
         substep "cannot tell which one this session selects. Set UNSLOTH_ROCM_GFX_ARCH to pick."
+    fi
+    if [ -z "$_setup_gfx" ] && [ "$_setup_rocr_uuid_declined" = 1 ]; then
+        substep "ROCR_VISIBLE_DEVICES names a GPU by UUID, which amd-smi cannot place, and the"
+        substep "adapters differ. Set UNSLOTH_ROCM_GFX_ARCH to pick."
     fi
     # ROCm version via hipconfig, then amd-smi
     _setup_rocm_ver=""

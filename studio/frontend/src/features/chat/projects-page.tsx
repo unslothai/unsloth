@@ -38,7 +38,7 @@ import { toast } from "@/lib/toast";
 import {
   chatExportOptions,
   DeleteChatFilesSwitch,
-  OpenChatFolderUnavailableItem,
+  OpenChatFolderItem,
   archiveChatItem,
   deleteChatItem,
   deleteChatProject,
@@ -46,7 +46,6 @@ import {
   getSidebarItemThreadIds,
   notifyChatHistoryUpdated,
   renameChatItem,
-  sandboxSessionIdsHolding,
   useChatNavigationStore,
   useChatPreferencesStore,
   useChatProjects,
@@ -57,8 +56,7 @@ import {
   type ProjectRecord,
 } from "@/features/chat";
 import { useSettingsDialogStore } from "@/features/settings";
-import { sandboxSessionIdFor } from "@/components/assistant-ui/sandbox-files";
-import { revealSandbox } from "@/components/assistant-ui/sandbox-reveal";
+import { useT } from "@/i18n";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { buildProjectsTourSteps } from "./tour";
 import { EditProjectDialog } from "./components/edit-project-dialog";
@@ -70,7 +68,6 @@ import {
   Edit03Icon,
   Folder02Icon,
   FolderAddIcon,
-  FolderOpenIcon,
   PinIcon,
   PinOffIcon,
   Search01Icon,
@@ -85,7 +82,6 @@ import { useNavigate } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   COMBINED_EXPORT_FORMATS_LIST,
-  exportProjectConversations,
   exportBulkConversationsMerged,
   exportBulkConversationsSeparate,
   EXPORT_FORMATS_LIST,
@@ -93,7 +89,6 @@ import {
 } from "./prompt-storage/prompt-storage-dialog";
 import {
   fileImportSource,
-  importConversationsFromSource,
   nativeImportSource,
   type ImportSource,
 } from "./utils/chat-import";
@@ -102,6 +97,15 @@ import {
 } from "./utils/chat-history-storage";
 import { CHAT_HISTORY_UPDATED_EVENT } from "./api/chat-api";
 import { groupThreads, type SidebarItem } from "./hooks/use-chat-sidebar-items";
+import { ProjectMenuItems } from "./components/project-menu-items";
+import { SectionNameDialog } from "./components/section-name-dialog";
+import { useFileProjectInSection } from "./hooks/use-file-project-in-section";
+import {
+  normalizeSectionName,
+  useSidebarOrganizationStore,
+} from "./stores/sidebar-organization-store";
+import { clearNewChatDraft } from "./utils/composer-draft";
+import { runChatImport } from "./utils/import-chats";
 
 // Reveal this many more projects each time the user scrolls near the bottom.
 const PROJECTS_PAGE_STEP = 12;
@@ -140,6 +144,7 @@ function formatUpdated(ts: number): string {
 }
 
 export function ProjectsPage() {
+  const t = useT();
   const signalReady = useAppShellReadySignal();
   const navigate = useNavigate();
   const { projects, hasLoaded } = useChatProjects();
@@ -173,6 +178,9 @@ export function ProjectsPage() {
 
   const [creating, setCreating] = useState(false);
   const [editing, setEditing] = useState<ProjectRecord | null>(null);
+  const [sectionFor, setSectionFor] = useState<ProjectRecord | null>(null);
+  const createCustomSection = useSidebarOrganizationStore((s) => s.createCustomSection);
+  const fileProjectInSection = useFileProjectInSection();
   const [deleting, setDeleting] = useState<ProjectRecord | null>(null);
   const [renamingChat, setRenamingChat] = useState<SidebarItem | null>(null);
   const [chatNameDraft, setChatNameDraft] = useState("");
@@ -181,7 +189,6 @@ export function ProjectsPage() {
   const [deleteFilesOnDelete, setDeleteFilesOnDelete] = useState(false);
 
   const globalImportRef = useRef<HTMLInputElement>(null);
-  const projectImportRefs = useRef<Map<string, HTMLInputElement>>(new Map());
   const [importFile, setImportFile] = useState<ImportSource | null>(null);
   // A second pick mid-import would interleave two streams into one history.
   const [importing, setImporting] = useState(false);
@@ -283,55 +290,16 @@ export function ProjectsPage() {
   }, [loadProjectChats]);
 
   async function handleImport(source: ImportSource, projectId: string | null) {
-    // Counts up while it runs: a large export takes minutes of writes.
     setImporting(true);
-    const toastId = toast.loading("Importing chats...");
     try {
-      const { imported, failed } = await importConversationsFromSource(
-        source,
+      await runChatImport(source, {
         projectId,
-        {
-          onProgress: ({ imported: done, bytesRead, totalBytes }) => {
-            const percent = totalBytes
-              ? Math.min(100, Math.round((bytesRead / totalBytes) * 100))
-              : 0;
-            toast.loading(`Importing chats: ${done} so far (${percent}%)...`, {
-              id: toastId,
-            });
-          },
-        },
-      );
-      if (imported === 0 && failed === 0) {
-        toast.info("No conversations found in file.", { id: toastId });
-        return;
-      }
-      if (imported === 0) {
-        // Nothing was created, so however the count is phrased this is a failure.
-        toast.error("Import failed.", {
-          id: toastId,
-          description: `${failed} conversation${failed === 1 ? "" : "s"} could not be saved.`,
-        });
-        return;
-      }
-      const dest = projectId
-        ? (projects.find((p) => p.id === projectId)?.name ?? "project")
-        : "Recents";
-      toast.success(
-        failed > 0
-          ? `Imported ${imported} conversation${imported === 1 ? "" : "s"} to ${dest}; ${failed} could not be saved.`
-          : `Imported ${imported} conversation${imported === 1 ? "" : "s"} to ${dest}.`,
-        { id: toastId },
-      );
-    } catch (error) {
-      toast.error("Import failed.", {
-        id: toastId,
-        description: error instanceof Error ? error.message : undefined,
+        name: projectId ? (projects.find((p) => p.id === projectId)?.name ?? "project") : undefined,
       });
     } finally {
       setImporting(false);
     }
   }
-
 
   async function selectGlobalImportFile() {
     if (importing) return;
@@ -344,23 +312,6 @@ export function ProjectsPage() {
       if (!selected) return;
       setImportTargetId(projects[0]?.id ?? null);
       setImportFile(nativeImportSource(selected));
-    } catch (error) {
-      toast.error("Import failed.", {
-        description: error instanceof Error ? error.message : String(error),
-      });
-    }
-  }
-
-  async function selectProjectImportFile(projectId: string) {
-    if (importing) return;
-    if (!isTauri) {
-      projectImportRefs.current.get(projectId)?.click();
-      return;
-    }
-    try {
-      const selected = await pickNativeChatImport();
-      if (!selected) return;
-      await handleImport(nativeImportSource(selected), projectId);
     } catch (error) {
       toast.error("Import failed.", {
         description: error instanceof Error ? error.message : String(error),
@@ -484,16 +435,11 @@ export function ProjectsPage() {
     navigate({ to: "/chat", search: { project: projectId } });
   }
 
-  async function handleProjectExport(project: ProjectRecord, fmt: ConvExportFormat) {
-    try {
-      const threads = await listStoredChatThreads({ projectId: project.id, includeArchived: false });
-      const ids = [...new Set(threads.map((t) => t.id))];
-      await exportProjectConversations(ids, fmt, project.name);
-    } catch (error) {
-      if (!isDownloadCancelled(error)) {
-        toast.error("Export failed.");
-      }
-    }
+  // A saved chat with an empty composer, as the sidebar's New chat.
+  function newChatInProject(projectId: string) {
+    clearNewChatDraft();
+    useChatRuntimeStore.getState().setIncognito(false);
+    openProject(projectId);
   }
 
   async function handleBulkProjectExport(
@@ -595,26 +541,6 @@ export function ProjectsPage() {
     await deleteChat(target, deleteFiles);
   }
 
-  /** The folder this chat's tool calls wrote to, or a refusal when it wrote to two. */
-  async function openChatFolder(chat: SidebarItem, fallback: string) {
-    try {
-      const ids = getSidebarItemThreadIds(chat);
-      const distinct = await sandboxSessionIdsHolding(ids);
-      if (distinct.length > 1) {
-        toast.error("This chat wrote to more than one folder.", {
-          description:
-            "It ran tools on both sides of a move, so open the folder from a tool card instead.",
-        });
-        return;
-      }
-      await revealSandbox(distinct[0] ?? fallback);
-    } catch (error) {
-      toast.error("Could not open the chat folder.", {
-        description: error instanceof Error ? error.message : String(error),
-      });
-    }
-  }
-
   async function handleChatExport(
     chat: SidebarItem,
     format: ConversationExportFormat,
@@ -646,7 +572,7 @@ export function ProjectsPage() {
   }
 
   return (
-    <main className="mx-auto w-full max-w-5xl px-6 pb-10 pt-16 font-heading sm:px-10">
+    <main className="mx-auto w-full max-w-5xl 4xl:max-w-6xl px-6 pb-10 pt-16 max-sm:px-4 max-sm:pt-10 font-heading sm:px-10">
       <GuidedTour {...tour.tourProps} />
       {/* Global import file input */}
       <input
@@ -838,21 +764,6 @@ export function ProjectsPage() {
             const chats = projectChats[project.id];
             return (
             <div key={`wrap-${project.id}`}>
-            <input
-              key={`import-${project.id}`}
-              type="file"
-              accept=".json,.jsonl,.ndjson,.csv"
-              className="hidden"
-              ref={(el) => {
-                if (el) projectImportRefs.current.set(project.id, el);
-                else projectImportRefs.current.delete(project.id);
-              }}
-              onChange={(e) => {
-                const file = e.target.files?.[0];
-                if (file) void handleImport(fileImportSource(file), project.id);
-                e.target.value = "";
-              }}
-            />
             <div
               key={project.id}
               className="group/project-row relative flex items-center gap-3 rounded-xl px-5 py-4 text-left transition-colors duration-150 hover:bg-muted/70 dark:hover:bg-[rgb(255_255_255_/_calc(0.055*var(--contrast-wash-gain,1)))]"
@@ -900,6 +811,13 @@ export function ProjectsPage() {
                     )}
                   />
                 </button>
+                {/* biome-ignore lint/a11y/useKeyWithClickEvents: the chevron is the keyboard target */}
+                {/* biome-ignore lint/a11y/noStaticElementInteractions: a wider mouse target for the chevron */}
+                <span
+                  aria-hidden="true"
+                  onClick={() => toggleProjectChats(project.id)}
+                  className="-my-4 min-w-0 flex-1 cursor-pointer self-stretch"
+                />
               </span>
               <span className="hidden w-40 shrink-0 text-sm text-muted-foreground sm:block">
                 {formatUpdated(project.updatedAt)}
@@ -940,50 +858,15 @@ export function ProjectsPage() {
                     sideOffset={0}
                     onClick={(e) => e.stopPropagation()}
                     onKeyDown={(e) => e.stopPropagation()}
-                    className="app-user-menu menu-soft-surface menu-flat-destructive ring-0 w-44 py-2 font-heading rounded-[14px] border-0"
+                    className="app-user-menu menu-soft-surface menu-flat-destructive ring-0 w-52 py-2 font-heading rounded-[14px] border-0"
                   >
-                    {/* No pin item: the row's own button does it. Edit opens the sidebar's
-                        dialog, which owns the name, instructions and source folders. */}
-                    <DropdownMenuItem onSelect={() => setEditing(project)}>
-                      <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} className="size-icon" />
-                      <span>Edit</span>
-                    </DropdownMenuItem>
-                    <DropdownMenuItem
-                      onSelect={(e) => {
-                        e.stopPropagation();
-                        void selectProjectImportFile(project.id);
-                      }}
-                    >
-                      <HugeiconsIcon icon={Upload01Icon} strokeWidth={1.75} className="size-icon" />
-                      <span>Import chats</span>
-                    </DropdownMenuItem>
-                    <DropdownMenuSub>
-                      <DropdownMenuSubTrigger>
-                        <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} className="size-icon mr-1" />
-                        <span>Export</span>
-                      </DropdownMenuSubTrigger>
-                      <DropdownMenuSubContent className="w-52">
-                        {COMBINED_EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
-                          <DropdownMenuItem
-                            key={fmt}
-                            onSelect={(e) => {
-                              e.stopPropagation();
-                              void handleProjectExport(project, fmt);
-                            }}
-                          >
-                            {label}
-                          </DropdownMenuItem>
-                        ))}
-                      </DropdownMenuSubContent>
-                    </DropdownMenuSub>
-                    <DropdownMenuSeparator />
-                    <DropdownMenuItem
-                      variant="destructive"
-                      onSelect={() => openProjectDelete(project)}
-                    >
-                      <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-icon" />
-                      <span>Delete</span>
-                    </DropdownMenuItem>
+                    <ProjectMenuItems
+                      project={project}
+                      onNewChat={() => newChatInProject(project.id)}
+                      onEdit={() => setEditing(project)}
+                      onDelete={() => openProjectDelete(project)}
+                      onNewSection={() => setSectionFor(project)}
+                    />
                   </DropdownMenuContent>
                 </DropdownMenu>
               </div>
@@ -1009,11 +892,6 @@ export function ProjectsPage() {
                       const chatThreadIds = getSidebarItemThreadIds(chat);
                       const chatUnread = chatThreadIds.some((id) =>
                         unreadThreadIds.has(id),
-                      );
-                      // Every chat here sits in a project, so the folder is the project's.
-                      const chatSandboxId = sandboxSessionIdFor(
-                        chatThreadIds[0] ?? chat.id,
-                        project.id,
                       );
                       return (
                       <div
@@ -1088,7 +966,6 @@ export function ProjectsPage() {
                                 <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} className="size-icon" />
                                 <span>Rename</span>
                               </DropdownMenuItem>
-                              {/* The dot a finished reply leaves, put back or taken off by hand. */}
                               <DropdownMenuItem
                                 onSelect={() =>
                                   chatUnread
@@ -1102,23 +979,10 @@ export function ProjectsPage() {
                                 }
                               >
                                 <HugeiconsIcon icon={chatUnread ? ViewIcon : ViewOffSlashIcon} strokeWidth={1.75} className="size-icon" />
-                                <span>{chatUnread ? "Mark as read" : "Mark as unread"}</span>
+                                <span>
+                                  {t(chatUnread ? "shell.selection.markRead" : "shell.selection.markUnread")}
+                                </span>
                               </DropdownMenuItem>
-                              {chatSandboxId ? (
-                                isTauri ? (
-                                  <DropdownMenuItem
-                                    title="Open the folder this chat's tool calls read and write"
-                                    onSelect={() =>
-                                      void openChatFolder(chat, chatSandboxId)
-                                    }
-                                  >
-                                    <HugeiconsIcon icon={FolderOpenIcon} strokeWidth={1.75} className="size-icon" />
-                                    <span>Open chat folder</span>
-                                  </DropdownMenuItem>
-                                ) : (
-                                  <OpenChatFolderUnavailableItem />
-                                )
-                              ) : null}
                               <DropdownMenuSub>
                                 <DropdownMenuSubTrigger>
                                   <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} className="size-icon mr-1" />
@@ -1149,6 +1013,7 @@ export function ProjectsPage() {
                                   </DropdownMenuItem>
                                 </DropdownMenuSubContent>
                               </DropdownMenuSub>
+                              <OpenChatFolderItem item={chat} />
                               <DropdownMenuSeparator />
                               <DropdownMenuItem onSelect={() => void archiveChat(chat)}>
                                 <HugeiconsIcon icon={Archive03Icon} strokeWidth={1.75} className="size-icon" />
@@ -1198,6 +1063,17 @@ export function ProjectsPage() {
       <NewProjectDialog open={creating} onOpenChange={setCreating} />
 
       {/* Edit project (name + instructions + source folders), the sidebar's dialog. */}
+      <SectionNameDialog
+        open={sectionFor !== null}
+        mode="create"
+        onOpenChange={(open) => !open && setSectionFor(null)}
+        onSubmit={(name) => {
+          const sectionId = createCustomSection(name);
+          if (sectionId && sectionFor) {
+            fileProjectInSection(sectionFor, sectionId, normalizeSectionName(name));
+          }
+        }}
+      />
       <EditProjectDialog
         project={editing}
         onOpenChange={(open) => {

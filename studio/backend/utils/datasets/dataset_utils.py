@@ -206,7 +206,7 @@ def _apply_user_mapping(
                         convo.append(
                             {
                                 "role": chatml_role,
-                                "content": str(content) if content else "",
+                                "content": cell_text(content),
                             }
                         )
             conversations.append(convo)
@@ -517,9 +517,9 @@ def format_dataset(
                             for target_role in ["system", "user", "assistant"]:
                                 for col_name, role in custom_mapping.items():
                                     if role == target_role and col_name in examples:
-                                        content = examples[col_name][i]
-                                        if content and str(content).strip():
-                                            convo.append({"role": role, "content": str(content)})
+                                        text = cell_text(examples[col_name][i])
+                                        if text.strip():
+                                            convo.append({"role": role, "content": text})
                             conversations.append(convo)
 
                         return {"conversations": conversations, **preserved_columns}

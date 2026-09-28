@@ -26,6 +26,8 @@ import {
 // expanded, see display-visibility.ts. foldToolActivityIntoThinking: on hides a round's tool calls
 // until its thinking block is opened, and has no effect while toolVisibility is "expanded".
 // pastedTextMinChars: paste length that becomes a .txt attachment; 0 is off.
+// showInlineReadAloud / showInlineEditResponse: on keeps that action in each response's action bar
+// instead of its More menu.
 export interface ChatPreferencesState {
   plainTextComposer: boolean;
   setPlainTextComposer: (value: boolean) => void;
@@ -43,6 +45,10 @@ export interface ChatPreferencesState {
   setShowModelDisclaimer: (value: boolean) => void;
   showResponseModel: boolean;
   setShowResponseModel: (value: boolean) => void;
+  showInlineReadAloud: boolean;
+  setShowInlineReadAloud: (value: boolean) => void;
+  showInlineEditResponse: boolean;
+  setShowInlineEditResponse: (value: boolean) => void;
   showTurnNavigation: boolean;
   setShowTurnNavigation: (value: boolean) => void;
   thinkingVisibility: DisplayVisibility;
@@ -53,6 +59,8 @@ export interface ChatPreferencesState {
   setFoldToolActivityIntoThinking: (value: boolean) => void;
   pastedTextMinChars: number;
   setPastedTextMinChars: (value: number) => void;
+  autoScrollWhileGenerating: boolean;
+  setAutoScrollWhileGenerating: (value: boolean) => void;
 }
 
 // A stale stored value would leave the dropdown blank and unfixable.
@@ -85,6 +93,12 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
         set({ showModelDisclaimer }),
       showResponseModel: false,
       setShowResponseModel: (showResponseModel) => set({ showResponseModel }),
+      showInlineReadAloud: false,
+      setShowInlineReadAloud: (showInlineReadAloud) =>
+        set({ showInlineReadAloud }),
+      showInlineEditResponse: false,
+      setShowInlineEditResponse: (showInlineEditResponse) =>
+        set({ showInlineEditResponse }),
       // off by default: turn labels, turn pins and the navigator rail stay opt in
       showTurnNavigation: false,
       setShowTurnNavigation: (showTurnNavigation) =>
@@ -101,6 +115,9 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
       pastedTextMinChars: PASTED_TEXT_DEFAULT_MIN_CHARS,
       setPastedTextMinChars: (pastedTextMinChars) =>
         set({ pastedTextMinChars }),
+      autoScrollWhileGenerating: true,
+      setAutoScrollWhileGenerating: (autoScrollWhileGenerating) =>
+        set({ autoScrollWhileGenerating }),
     }),
     {
       name: "unsloth_chat_preferences",
@@ -120,6 +137,8 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
           alwaysDeleteChatFiles: saved?.alwaysDeleteChatFiles ?? false,
           showModelDisclaimer: saved?.showModelDisclaimer ?? false,
           showResponseModel: saved?.showResponseModel ?? false,
+          showInlineReadAloud: saved?.showInlineReadAloud ?? false,
+          showInlineEditResponse: saved?.showInlineEditResponse ?? false,
           showTurnNavigation: saved?.showTurnNavigation ?? false,
           thinkingVisibility: migrateVisibility(
             saved?.thinkingVisibility,
@@ -136,6 +155,7 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
           pastedTextMinChars: normalisePastedTextMinChars(
             saved?.pastedTextMinChars,
           ),
+          autoScrollWhileGenerating: saved?.autoScrollWhileGenerating ?? true,
         };
       },
     },

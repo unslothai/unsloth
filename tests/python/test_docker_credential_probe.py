@@ -130,3 +130,40 @@ def test_no_token_means_no_delete_and_a_failure(delete_step: dict, tmp_path: Pat
     res, log = _run(delete_step, tmp_path, still_there = True, token = "")
     assert res.returncode != 0
     assert "DELETE" not in log
+
+
+def test_every_step_that_reads_the_key_is_given_the_key():
+    """Moving a secret out of the body means putting it into `env:`. Both halves.
+
+    Taking `${{ secrets.DOCKER_API_KEY }}` out of three `run:` bodies removed the key
+    from argv, which was the point, and left two of those steps reading
+    `os.environ["DOCKER_API_KEY"]` with nothing supplying it. Neither is exercised by a
+    pull request: the Hub README sync and the handle-tag cleanup run after a publish, so
+    the first sign would have been a released image whose page never updated and a set of
+    per-run tags that never got pruned, both reported as "could not exchange the key for
+    a token" -- a message that reads like an expired credential rather than a workflow
+    that forgot to pass one.
+
+    Derived by scanning, not listed, so a fourth site added later is covered too.
+    """
+    offenders = []
+    for path in sorted(WORKFLOW.parent.glob("docker-*.yml")):
+        doc = yaml.safe_load(path.read_text(encoding = "utf-8"))
+        for job_name, job in (doc.get("jobs") or {}).items():
+            job_env = set(job.get("env") or {})
+            for step in job.get("steps") or []:
+                body = step.get("run") or ""
+                # A read, not a mention. The verdict step names the key in a sentence it
+                # prints for a human, which needs no value.
+                reads = (
+                    'os.environ["DOCKER_API_KEY"]' in body
+                    or "$DOCKER_API_KEY" in body
+                    or "${DOCKER_API_KEY" in body
+                )
+                if reads and "DOCKER_API_KEY" not in (set(step.get("env") or {}) | job_env):
+                    offenders.append(f"{path.name}:{job_name}: {step.get('name')!r}")
+    assert not offenders, (
+        "these steps read DOCKER_API_KEY and no env: at step or job level provides it, "
+        "so the token exchange gets an empty secret and the step fails at publish "
+        "time:\n  " + "\n  ".join(offenders)
+    )

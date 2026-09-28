@@ -218,9 +218,43 @@ def test_the_main_build_falls_back_to_the_zip_when_there_is_no_git(monkeypatch):
     spec = [arg for arg in args if arg.startswith("diffusers @ ")]
     assert len(spec) == 1, args
     revision = _requirements(MAIN_FILE)[0].rpartition("@")[2].strip().lower()
+    digest = module._archive_sha256_in_requirements(MAIN_FILE)
+    assert digest is not None and re.fullmatch(r"[0-9a-f]{64}", digest), digest
+    # The fragment is what pip and uv verify; the commit in the URL checks no bytes.
     assert spec[0] == (
-        "diffusers @ https://github.com/huggingface/diffusers/archive/" f"{revision}.zip"
+        "diffusers @ https://github.com/huggingface/diffusers/archive/"
+        f"{revision}.zip#sha256={digest}"
     ), spec
+
+
+def test_the_zip_route_is_skipped_without_exactly_one_pinned_digest(tmp_path, monkeypatch):
+    """No single valid digest, no zip route: the host keeps the release."""
+    module = _probe_module("install_python_stack_probe2e")
+    spec = _requirements(MAIN_FILE)[0]
+    digest = module._archive_sha256_in_requirements(MAIN_FILE)
+    pin = tmp_path / "diffusers-main.txt"
+
+    pin.write_text(f"{spec}\n", encoding = "utf-8")
+    assert module._diffusers_main_archive(pin) is None
+    pin.write_text(
+        f"# archive-sha256: {digest}\n# archive-sha256: {'0' * 64}\n{spec}\n", encoding = "utf-8"
+    )
+    assert module._diffusers_main_archive(pin) is None
+    pin.write_text(f"# archive-sha256: {digest[:63]}\n{spec}\n", encoding = "utf-8")
+    assert module._diffusers_main_archive(pin) is None
+    pin.write_text(f"# archive-sha256: {digest.upper()}\n{spec}\n", encoding = "utf-8")
+    assert module._diffusers_main_archive(pin).endswith(f".zip#sha256={digest}")
+
+    monkeypatch.delenv("UNSLOTH_DIFFUSERS_MAIN", raising = False)
+    monkeypatch.setattr(module, "REQ_ROOT", tmp_path)
+    monkeypatch.setattr(module, "_has_working_git", lambda: False)
+    monkeypatch.setattr(module, "_progress", lambda *a, **k: None)
+    monkeypatch.setattr(module, "_note", lambda *a, **k: None)
+    monkeypatch.setattr(
+        module, "pip_install_try", lambda *a, **k: pytest.fail("an unverified archive install")
+    )
+    pin.write_text(f"{spec}\n", encoding = "utf-8")
+    module._diffusers_main_step()
 
 
 def test_the_main_build_keeps_the_release_when_there_is_no_git_and_no_zip(monkeypatch):
@@ -890,3 +924,42 @@ def test_a_recorded_repair_failure_still_waits_for_a_peer(monkeypatch):
     )
     assert module._repair_diffusers_main() == 1 and ran == []
     assert module.lock_polls() == 2
+
+
+@pytest.mark.parametrize("git", [True, False])
+def test_the_startup_prefetch_fills_the_cache_and_never_the_environment(monkeypatch, git):
+    """The backend stops this at its deadline, which is only safe while it installs nothing here."""
+    import types
+
+    module = _probe_module("install_python_stack_prefetch_probe")
+    monkeypatch.delenv("UNSLOTH_DIFFUSERS_MAIN", raising = False)
+    monkeypatch.setattr(module, "_diffusers_main_needs_dependency_pass", lambda: True)
+    monkeypatch.setattr(module, "_startup_repair_failed", lambda: False)
+    monkeypatch.setattr(module, "_bootstrap_uv", lambda: True)
+    monkeypatch.setattr(module, "_has_working_git", lambda: git)
+    for forbidden in ("_diffusers_main_step", "pip_install_try", "pip_install"):
+        monkeypatch.setattr(module, forbidden, lambda *a, **k: pytest.fail("installed"))
+    monkeypatch.setattr(
+        module.install_manifest, "pass_lock", lambda *a, **k: pytest.fail("took the pass lock")
+    )
+    runs = []
+
+    def fake_run(cmd, **kwargs):
+        runs.append(cmd)
+        target = pathlib.Path(cmd[cmd.index("--target") + 1])
+        assert target.is_dir()
+        return types.SimpleNamespace(returncode = 0 if len(runs) == 1 else 1, stdout = b"")
+
+    monkeypatch.setattr(module.subprocess, "run", fake_run)
+    assert module._prefetch_diffusers_main() == 0
+    cmd = runs[0]
+    assert cmd[:3] == ["uv", "pip", "install"] and "--no-deps" in cmd
+    target = pathlib.Path(cmd[cmd.index("--target") + 1])
+    assert not target.exists(), "the scratch install is thrown away"
+    if git:
+        assert "-r" in cmd
+    else:
+        assert any(arg.startswith("diffusers @ https://") for arg in cmd)
+    assert module._prefetch_diffusers_main() == 2
+    monkeypatch.setattr(module, "_bootstrap_uv", lambda: False)
+    assert module._prefetch_diffusers_main() == 1 and len(runs) == 2, "pip has no cache to fill"

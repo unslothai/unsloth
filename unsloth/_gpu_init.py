@@ -241,19 +241,35 @@ from unsloth_zoo.device_type import (
     DEVICE_COUNT,
     ALLOW_PREQUANTIZED_MODELS,
 )
-from .device_type import arch_lacks_bf16, hip_visible_archs
+from .device_type import (
+    arch_lacks_bf16,
+    arch_lacks_buffer_ops,
+    apply_gfx101x_triton_workaround,
+    hip_visible_archs,
+)
 
 from .import_fixes import (
     fix_transformers5_bare_annotation_configs,
+    fix_transformers5_legacy_config_types,
     fix_transformers5_image_processing_reexports,
     fix_transformers_composite_prefix_renaming,
     fix_transformers_fully_masked_rows,
+    fix_transformers_chunked_mask_block_sequence_ids,
+    fix_transformers_longcat_lsa_config,
     fix_transformers_rope_scaling_drops_theta,
+    fix_transformers_fp8_modulelist_experts,
+    fix_transformers_fp8_unscaled_checkpoint_linears,
+    fix_transformers_validate_rope_ignore_keys,
+    fix_transformers5_remote_code_legacy_defaults,
+    fix_transformers_config_only_remote_code,
+    fix_transformers_remote_rope_scaling_none,
+    fix_transformers_is_torch_fx_available,
     fix_xformers_performance_issue,
     fix_flash_attn_4_namespace_shadow,
     fix_vllm_aimv2_issue,
     fix_vllm_lora_tokenizer_module,
     fix_torchao_nf4tensor_move,
+    fix_compressed_tensors_activation_quant_gradient,
     fix_torchao_safe_int_mm_repr_probe,
     check_vllm_torch_sm100_compatibility,
     fix_vllm_guided_decoding_params,
@@ -275,6 +291,7 @@ from .import_fixes import (
     patch_torchcodec_audio_decoder,
     disable_torchcodec_if_broken,
     disable_broken_wandb,
+    fix_accelerate_dtensor_check_without_torch_distributed,
     fix_trl_vllm_ascend,
     fix_peft_transformers_tensor_parallel_import_compat,
     fix_peft_transformers_weight_conversion_import,
@@ -284,12 +301,14 @@ from .import_fixes import (
     patch_accelerate_recursively_apply,
 )
 
+fix_transformers5_legacy_config_types()
 # Must run first: guards PretrainedConfig before vLLM defines its config classes.
 fix_transformers5_bare_annotation_configs()
 # Probe-gated: no-ops unless this transformers really hands SDPA a query row that attends to
 # nothing. Ordered here, before anything imports a model, so a plain transformers.generate in the
 # same process is covered too (#9708).
 fix_transformers_fully_masked_rows()
+fix_transformers_chunked_mask_block_sequence_ids()
 # Probe-gated: no-ops unless this transformers merges a submodule's own prefix renaming into a
 # composite model's conversion mapping. Ordered here, before anything loads a checkpoint, so a
 # plain transformers.from_pretrained in the same process keeps its bitsandbytes quant_state too.
@@ -307,6 +326,15 @@ del check_transformers_prequantized_vlm_quant_state
 # RoPE base frequency. Ordered here, before any config is built, so the object-style delegation
 # retry in models/llama.py sees a config that kept its base (#2405).
 fix_transformers_rope_scaling_drops_theta()
+fix_transformers_fp8_modulelist_experts()
+fix_transformers_fp8_unscaled_checkpoint_linears()
+fix_transformers_validate_rope_ignore_keys()
+fix_transformers5_remote_code_legacy_defaults()
+fix_transformers_config_only_remote_code()
+fix_transformers_longcat_lsa_config()
+# Remote code written for 4.x reads plain RoPE as rope_scaling None and imports is_torch_fx_available.
+fix_transformers_remote_rope_scaling_none()
+fix_transformers_is_torch_fx_available()
 # Probe-gated and lazy: only wraps get_class_in_module, so the siglip image
 # modules are imported and patched when a checkpoint's own modeling file runs,
 # not on every `import unsloth`.
@@ -320,6 +348,7 @@ fix_vllm_lora_tokenizer_module()
 # torchao 0.18.0 moved nf4tensor; torchtune (via xcodec2) still imports the old path. Lazy alias, so
 # it costs nothing unless asked for.
 fix_torchao_nf4tensor_move()
+fix_compressed_tensors_activation_quant_gradient()
 fix_torchao_safe_int_mm_repr_probe()
 # Check vLLM + torch < 2.9.0 + SM100 compatibility BEFORE importing vLLM
 check_vllm_torch_sm100_compatibility()
@@ -346,6 +375,8 @@ patch_vllm_for_notebooks()
 patch_torchcodec_audio_decoder()
 disable_torchcodec_if_broken()
 disable_broken_wandb()
+# After unsloth_zoo, whose ROCm torchao loader must be in place before accelerate is imported.
+fix_accelerate_dtensor_check_without_torch_distributed()
 # Must run before patch_peft_weight_converter_compatibility: it stubs the transformers v5
 # submodules peft 0.19.x imports, so the next patch can wrap build_peft_weight_mapping instead of
 # being swallowed by its ImportError.
@@ -361,12 +392,20 @@ fix_peft_torchao_missing_tensor_subclass()
 patch_accelerate_recursively_apply()
 
 del fix_transformers5_bare_annotation_configs
+del fix_transformers5_legacy_config_types
 del fix_transformers_rope_scaling_drops_theta
+del fix_transformers_fp8_modulelist_experts
+del fix_transformers_fp8_unscaled_checkpoint_linears
+del fix_transformers_validate_rope_ignore_keys
+del fix_transformers_longcat_lsa_config
+del fix_transformers_remote_rope_scaling_none
+del fix_transformers_is_torch_fx_available
 del fix_xformers_performance_issue
 del fix_flash_attn_4_namespace_shadow
 del fix_vllm_aimv2_issue
 del fix_vllm_lora_tokenizer_module
 del fix_torchao_nf4tensor_move
+del fix_compressed_tensors_activation_quant_gradient
 del fix_torchao_safe_int_mm_repr_probe
 del check_vllm_torch_sm100_compatibility
 del fix_vllm_guided_decoding_params
@@ -389,6 +428,7 @@ del patch_torchcodec_audio_decoder
 del disable_torchcodec_if_broken
 del disable_torchaudio_if_cuda_mismatched
 del disable_broken_wandb
+del fix_accelerate_dtensor_check_without_torch_distributed
 del fix_peft_transformers_tensor_parallel_import_compat
 del fix_peft_transformers_weight_conversion_import
 del patch_peft_weight_converter_compatibility
@@ -441,6 +481,10 @@ elif DEVICE_TYPE == "xpu":
 elif DEVICE_TYPE == "npu":
     # No arm left the name unbound, so consumers fell back to their own False.
     SUPPORTS_BFLOAT16 = torch.npu.is_bf16_supported()
+
+# gfx101x: Triton buffer-op kernels silently write nothing; must be set before the first compile.
+if DEVICE_TYPE == "hip" and any(arch_lacks_buffer_ops(arch) for arch in hip_visible_archs()):
+    apply_gfx101x_triton_workaround()
 
 # For Gradio HF Spaces?
 # if "SPACE_AUTHOR_NAME" not in os.environ and "SPACE_REPO_NAME" not in os.environ:

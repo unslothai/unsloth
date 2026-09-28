@@ -13,8 +13,6 @@ type ModelLoadDescriptionProps = {
   progressLabel?: string | null;
   // Extra classes for the root row (e.g. a titleless caller dropping min-h-12).
   className?: string;
-  /** "floating": the Images / Video progress card. Ring spinner, brighter text on its dark card. */
-  variant?: "default" | "floating";
 };
 
 function clampProgress(value: number): number {
@@ -42,10 +40,8 @@ export function ModelLoadDescription({
   progressPercent,
   progressLabel,
   className,
-  variant = "default",
 }: ModelLoadDescriptionProps) {
   const hasProgress = typeof progressPercent === "number";
-  const floating = variant === "floating";
   // Split once at the top so the JSX below stays flat (no IIFE).
   const { primary: labelPrimary, secondary: labelSecondary } =
     splitProgressLabel(progressLabel);
@@ -53,58 +49,30 @@ export function ModelLoadDescription({
   return (
     <div className={cn("relative flex min-h-12 w-full items-stretch gap-2", className)}>
       <div className="flex h-full shrink-0 items-center self-center">
-        <Spinner
-          variant={floating ? "ring" : "arc"}
-          className={cn(
-            "size-3.5 text-muted-foreground",
-            floating && "size-4 dark:text-foreground/70",
-          )}
-        />
+        <Spinner className="size-3.5 text-muted-foreground" />
       </div>
       <div className="flex min-w-0 flex-1 flex-col justify-center">
         {title ? <p className="text-foreground leading-tight font-semibold">{title}</p> : null}
         {hasProgress ? (
           <div className="w-full pt-1">
-            <div
-              className={cn(
-                "flex items-center justify-between gap-2 text-ui-10 font-medium tracking-[0.08em] text-muted-foreground/80",
-                floating && "dark:text-foreground/85",
-              )}
-            >
+            <div className="flex items-center justify-between gap-2 text-ui-10 font-medium tracking-[0.08em] text-muted-foreground/80">
               <span className="min-w-0 truncate">{labelPrimary}</span>
               <span className="shrink-0 tabular-nums">
                 {Math.round(clampProgress(progressPercent))}%
               </span>
             </div>
             {labelSecondary ? (
-              <div
-                className={cn(
-                  "truncate pt-0.5 text-ui-10 font-medium tracking-[0.08em] text-muted-foreground/60",
-                  floating && "dark:text-foreground/65",
-                )}
-              >
+              <div className="truncate pt-0.5 text-ui-10 font-medium tracking-[0.08em] text-muted-foreground/60">
                 {labelSecondary}
               </div>
             ) : null}
             <Progress
               value={clampProgress(progressPercent)}
-              className={cn(
-                "mt-1 h-1 bg-[color-mix(in_oklab,var(--foreground)_calc(8%*var(--contrast-wash-gain,1)),transparent)]",
-                // The lighter card would swallow the 8% track.
-                floating &&
-                  "dark:bg-[color-mix(in_oklab,var(--foreground)_calc(14%*var(--contrast-wash-gain,1)),transparent)]",
-              )}
+              className="mt-1 h-1 bg-[color-mix(in_oklab,var(--foreground)_calc(8%*var(--contrast-wash-gain,1)),transparent)]"
             />
           </div>
         ) : message ? (
-          <p
-            className={cn(
-              "pt-1 text-xs leading-relaxed text-muted-foreground",
-              floating && "dark:text-foreground/85",
-            )}
-          >
-            {message}
-          </p>
+          <p className="pt-1 text-xs leading-relaxed text-muted-foreground">{message}</p>
         ) : null}
       </div>
     </div>
@@ -129,14 +97,14 @@ export function ModelLoadInlineStatus({
   const hasProgress = typeof progressPercent === "number";
 
   return (
-    <div className="flex min-w-[20rem] items-center gap-2.5 text-muted-foreground" title={title}>
+    <div className="flex min-w-[min(calc(20rem*var(--ui-space-scale,1)),100%)] max-sm:min-w-0 max-sm:flex-1 items-center gap-2.5 text-muted-foreground" title={title}>
       <div className="flex items-center gap-1.5 shrink-0">
         <Spinner className="size-3.5 shrink-0" />
         <span className="text-xs">{label}</span>
       </div>
       {hasProgress ? (
         <div className="flex min-w-0 flex-[1.35] items-center gap-2.5">
-          <div className="min-w-[7rem] flex-1">
+          <div className="min-w-[calc(7rem*var(--ui-space-scale,1))] max-sm:min-w-[calc(3rem*var(--ui-space-scale,1))] flex-1">
             <Progress value={clampProgress(progressPercent)} className="h-1 bg-[color-mix(in_oklab,var(--foreground)_calc(8%*var(--contrast-wash-gain,1)),transparent)]" />
           </div>
           <div

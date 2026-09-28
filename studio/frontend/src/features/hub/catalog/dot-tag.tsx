@@ -3,8 +3,12 @@
 
 import { cn } from "@/lib/utils";
 
+export const DOWNLOADING_DOT_CLASS =
+  "bg-sky-500 dark:bg-sky-400 motion-safe:animate-pulse";
+
 type DotTagTone =
   | "success"
+  | "downloading"
   | "warning"
   | "danger"
   | "gguf"
@@ -14,6 +18,7 @@ type DotTagTone =
 
 const TONE_CLASS: Record<DotTagTone, string> = {
   success: "bg-status-success",
+  downloading: DOWNLOADING_DOT_CLASS,
   warning: "bg-status-warning",
   danger: "bg-status-danger",
   gguf: "bg-format-gguf",
@@ -27,11 +32,14 @@ export function DotTag({
   label,
   className,
   dotClassName,
+  labelClassName,
 }: {
   tone: DotTagTone;
   label: string;
   className?: string;
   dotClassName?: string;
+  /** Wraps the label, e.g. to sr-only it and keep just the dot. */
+  labelClassName?: string;
 }) {
   return (
     <span
@@ -48,7 +56,7 @@ export function DotTag({
           dotClassName,
         )}
       />
-      {label}
+      {labelClassName ? <span className={labelClassName}>{label}</span> : label}
     </span>
   );
 }
