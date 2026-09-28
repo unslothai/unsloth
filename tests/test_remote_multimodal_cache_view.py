@@ -88,6 +88,7 @@ def test_repaired_decode_step_extends_mask_to_cache_length(positional):
     model = cls(_Config())
     repaired = apply_remote_code_shims(model)
     assert f"{cls.__name__}.prepare_inputs_labels_for_multimodal" in repaired
+    assert model._supports_static_cache is False
     cache = _cache(past_len = 7)
     _, position_ids, attention_mask, returned, _, _ = _decode_step(model, cache, positional)
     assert returned is cache

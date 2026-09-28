@@ -327,6 +327,8 @@ def _repair_multimodal_cache_indexing(cls):
 
     prepare_inputs_labels_for_multimodal._unsloth_cache_view = True
     setattr(cls, name, prepare_inputs_labels_for_multimodal)
+    # Static cache: prefill mask arrives as 4D / BlockMask, not the 2D padding mask this prep compacts by.
+    cls._supports_static_cache = False
     return True
 
 
