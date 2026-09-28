@@ -77,6 +77,8 @@ export function SandboxTab() {
   const [status, setStatus] = useState<SandboxStatus | null>(null);
   const [job, setJob] = useState<HostPrepJob | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Save and prepare failures sit with the Windows controls, e.g. the remote-browser refusal.
+  const [actionError, setActionError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [restored, setRestored] = useState<number | null>(null);
@@ -143,7 +145,7 @@ export function SandboxTab() {
         })
         .catch((pollError) => {
           if (!mounted.current) return;
-          setError(
+          setActionError(
             pollError instanceof Error
               ? pollError.message
               : t("settings.sandbox.prepareError"),
@@ -156,7 +158,7 @@ export function SandboxTab() {
 
   const save = async (update: SandboxSettingsUpdate) => {
     setSaving(true);
-    setError(null);
+    setActionError(null);
     setRestored(null);
     try {
       const next = await updateSandboxSettings(
@@ -168,7 +170,7 @@ export function SandboxTab() {
       if (next.restored) setRestored(next.restored);
     } catch (saveError) {
       if (!mounted.current) return;
-      setError(
+      setActionError(
         saveError instanceof Error
           ? saveError.message
           : t("settings.sandbox.saveError"),
@@ -179,7 +181,7 @@ export function SandboxTab() {
   };
 
   const prepare = async () => {
-    setError(null);
+    setActionError(null);
     try {
       const started = await startHostPreparation(
         t("settings.sandbox.prepareError"),
@@ -192,7 +194,7 @@ export function SandboxTab() {
       }
     } catch (prepareError) {
       if (!mounted.current) return;
-      setError(
+      setActionError(
         prepareError instanceof Error
           ? prepareError.message
           : t("settings.sandbox.prepareError"),
@@ -285,6 +287,7 @@ export function SandboxTab() {
                   >
                     <div className="flex flex-col items-end gap-1">
                       <Switch
+                        aria-label={t("settings.sandbox.optInLabel")}
                         checked={view.optInChecked}
                         disabled={view.optInDisabled}
                         onCheckedChange={(allowDaclFallback) =>
@@ -313,6 +316,7 @@ export function SandboxTab() {
                     >
                       <div className="flex flex-col items-end gap-1">
                         <Switch
+                          aria-label={t("settings.sandbox.grantsLabel")}
                           checked={view.grantsChecked}
                           disabled={view.grantsDisabled}
                           onCheckedChange={(persistentReadGrants) =>
@@ -378,6 +382,11 @@ export function SandboxTab() {
                         ) : null}
                       </div>
                     </SettingsRow>
+                  ) : null}
+                  {actionError ? (
+                    <p className="pb-2 text-xs text-destructive">
+                      {actionError}
+                    </p>
                   ) : null}
                 </>
               )}
