@@ -23,17 +23,26 @@ function body(signature: string): string {
   return HOOK.slice(start, HOOK.indexOf("\n      };", start));
 }
 
-test("auto-scroll is off for installs that never saw the setting", () => {
-  // Off by default: most readers start at the top of a response, so following the stream is
-  // the opt in. A saved payload without the key rehydrates to the same.
+test("auto-scroll follows by default, including installs that never saw the setting", () => {
   assert.equal(
     useChatPreferencesStore.getInitialState().autoScrollWhileGenerating,
-    false,
+    true,
   );
   assert.match(
     STORE,
-    /autoScrollWhileGenerating: saved\?\.autoScrollWhileGenerating \?\? false/,
+    /autoScrollWhileGenerating: saved\?\.autoScrollWhileGenerating \?\? true/,
   );
+});
+
+test("the setting is an Auto / Manual pill selector, not a switch", () => {
+  const TAB = readSrc("features/settings/tabs/chat-tab.tsx");
+  const at = TAB.indexOf('label={t("settings.chat.autoScroll")}');
+  assert.notEqual(at, -1);
+  const row = TAB.slice(at, TAB.indexOf("</SettingsRow>", at));
+  assert.match(row, /hub-tab-toggle/);
+  assert.match(row, /settings\.chat\.autoScrollAuto/);
+  assert.match(row, /settings\.chat\.autoScrollManual/);
+  assert.ok(!row.includes("<Switch"));
 });
 
 test("the setting is read per call, so flipping it mid-run applies at once", () => {

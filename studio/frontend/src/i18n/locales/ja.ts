@@ -1793,9 +1793,11 @@ export const ja = {
       pastedTextThresholdDescription:
         "{shortcut} を押すと、入力欄に直接貼り付けられます。",
       pastedTextThresholdOff: "オフ",
-      autoScroll: "生成中に自動スクロール",
+      autoScroll: "生成中のスクロール",
       autoScrollDescription:
-        "ストリーミング中の応答に合わせて下までスクロールします。オフにすると位置が保たれ、先頭から読めます。",
+        "自動スクロールは新しいテキストを表示し続けます。手動は位置を保ち、最初から読めます。",
+      autoScrollAuto: "自動スクロール",
+      autoScrollManual: "手動",
       autoScrollKeywords:
         "スクロール 自動スクロール 追従 下 ジャンプ ストリーミング 生成 固定 scroll autoscroll follow",
       showResponseModel: "応答モデルを表示",

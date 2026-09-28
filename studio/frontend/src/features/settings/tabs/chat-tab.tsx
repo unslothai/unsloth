@@ -27,6 +27,7 @@ import { formatBindingLabel, isMacPlatform } from "../lib/keyboard-shortcuts";
 import { useUserProfileStore } from "@/features/profile";
 import { type TranslationKey, useT } from "@/i18n";
 import { toast } from "@/lib/toast";
+import { cn } from "@/lib/utils";
 import {
   Bookmark02Icon,
   Download01Icon,
@@ -402,11 +403,33 @@ export function ChatTab() {
           label={t("settings.chat.autoScroll")}
           description={t("settings.chat.autoScrollDescription")}
         >
-          <Switch
+          {/* Same pill selector as Follow-up behavior. */}
+          <div
+            className="hub-tab-toggle inline-flex h-8 items-center rounded-full"
+            role="group"
             aria-label={t("settings.chat.autoScroll")}
-            checked={autoScrollWhileGenerating}
-            onCheckedChange={setAutoScrollWhileGenerating}
-          />
+          >
+            {([true, false] as const).map((follow) => (
+              <button
+                key={String(follow)}
+                type="button"
+                aria-pressed={autoScrollWhileGenerating === follow}
+                onClick={() => setAutoScrollWhileGenerating(follow)}
+                className={cn(
+                  "inline-flex h-8 cursor-pointer items-center rounded-full px-3.5 text-ui-12 font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+                  autoScrollWhileGenerating === follow
+                    ? "hub-tab-toggle-pill text-foreground"
+                    : "text-muted-foreground hover:text-foreground",
+                )}
+              >
+                {t(
+                  follow
+                    ? "settings.chat.autoScrollAuto"
+                    : "settings.chat.autoScrollManual",
+                )}
+              </button>
+            ))}
+          </div>
         </SettingsRow>
       </SettingsSection>
 

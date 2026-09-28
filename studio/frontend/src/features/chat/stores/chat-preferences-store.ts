@@ -109,8 +109,7 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
       pastedTextMinChars: PASTED_TEXT_DEFAULT_MIN_CHARS,
       setPastedTextMinChars: (pastedTextMinChars) =>
         set({ pastedTextMinChars }),
-      // Off by default so a response can be read from the top while it streams.
-      autoScrollWhileGenerating: false,
+      autoScrollWhileGenerating: true,
       setAutoScrollWhileGenerating: (autoScrollWhileGenerating) =>
         set({ autoScrollWhileGenerating }),
     }),
@@ -149,7 +148,7 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
           pastedTextMinChars: normalisePastedTextMinChars(
             saved?.pastedTextMinChars,
           ),
-          autoScrollWhileGenerating: saved?.autoScrollWhileGenerating ?? false,
+          autoScrollWhileGenerating: saved?.autoScrollWhileGenerating ?? true,
         };
       },
     },

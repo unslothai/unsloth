@@ -1843,9 +1843,11 @@ export const fr = {
       pastedTextThresholdDescription:
         "Appuyez sur {shortcut} pour coller directement dans le champ de message.",
       pastedTextThresholdOff: "Désactivé",
-      autoScroll: "Défilement automatique pendant la génération",
+      autoScroll: "Défilement pendant la génération",
       autoScrollDescription:
-        "Suit la réponse jusqu'en bas pendant sa diffusion. Désactivé, la vue reste en place pour lire depuis le début.",
+        "Le défilement auto garde le nouveau texte visible. Manuel reste en place pour lire depuis le début.",
+      autoScrollAuto: "Défilement auto",
+      autoScrollManual: "Manuel",
       autoScrollKeywords:
         "défilement défiler automatique suivre bas sauter diffusion génération vue verrouiller scroll autoscroll follow",
       showResponseModel: "Afficher le modèle de réponse",

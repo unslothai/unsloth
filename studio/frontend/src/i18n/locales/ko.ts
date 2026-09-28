@@ -1803,9 +1803,11 @@ export const ko = {
       pastedTextThresholdDescription:
         "{shortcut} 키를 누르면 입력창에 바로 붙여넣습니다.",
       pastedTextThresholdOff: "끄기",
-      autoScroll: "생성 중 자동 스크롤",
+      autoScroll: "생성 중 스크롤",
       autoScrollDescription:
-        "스트리밍되는 응답을 따라 맨 아래로 스크롤합니다. 끄면 위치가 유지되어 처음부터 읽을 수 있습니다.",
+        "자동 스크롤은 새 텍스트를 계속 보여 줍니다. 수동은 위치를 유지해 처음부터 읽을 수 있습니다.",
+      autoScrollAuto: "자동 스크롤",
+      autoScrollManual: "수동",
       autoScrollKeywords:
         "스크롤 자동 스크롤 따라가기 아래 이동 스트리밍 생성 고정 scroll autoscroll follow",
       showResponseModel: "응답 모델 표시",

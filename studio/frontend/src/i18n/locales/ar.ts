@@ -1808,9 +1808,11 @@ export const ar = {
       pastedTextThresholdDescription:
         "اضغط {shortcut} للصق مباشرة في مربع الرسالة.",
       pastedTextThresholdOff: "إيقاف",
-      autoScroll: "التمرير التلقائي أثناء الإنشاء",
+      autoScroll: "التمرير أثناء الإنشاء",
       autoScrollDescription:
-        "يتبع الرد حتى الأسفل أثناء بثه. عند الإيقاف يبقى موضعك ثابتًا لتقرأ من البداية.",
+        "التمرير التلقائي يُبقي النص الجديد ظاهرًا. اليدوي يثبت لتقرأ من البداية.",
+      autoScrollAuto: "تمرير تلقائي",
+      autoScrollManual: "يدوي",
       autoScrollKeywords:
         "تمرير تلقائي متابعة أسفل قفز بث إنشاء تثبيت scroll autoscroll follow",
       showResponseModel: "إظهار نموذج الاستجابة",
