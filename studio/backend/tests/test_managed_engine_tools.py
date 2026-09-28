@@ -514,3 +514,15 @@ def test_tool_responses_report_the_public_model_id(native, stream):
     events = result if stream else [result]
     models = {e["model"] for e in events if "model" in e}
     assert models == {"org/public"}
+
+
+def test_a_catalog_with_tool_choice_none_is_plain_chat(native):
+    backend, requests = native
+    backend.models["sf-model"]["supports_tools"] = False
+    result = run(
+        route_test._request(
+            tools = [route_test.LOOKUP_TOOL], tool_choice = "none", enable_tools = False
+        )
+    )
+    assert result["choices"][0]["message"]["content"]
+    assert requests == []  # served by the plain path, not the native tool route
