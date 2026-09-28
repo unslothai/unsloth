@@ -1110,7 +1110,7 @@ export const de = {
         sourceFallback: "ModelScope konnte nicht gestartet werden, daher wird Hugging Face verwendet. Prüfen Sie die Unsloth-Logs.",
         autoSourceTitle: "Modellquelle auf ModelScope umgestellt",
         autoSourceDescription: "Hugging Face ist in Festlandchina oft langsam oder gesperrt, daher lädt Unsloth Modelle jetzt von ModelScope.",
-        autoSourceAction: "Ändern",
+        autoSourceAction: "Einstellungen für die Modellquelle öffnen",
         sectionTitle: "Modell-Hub",
         endpoint: "Hugging-Face-Endpunkt",
         endpointDescription: "Von hier werden Modelle und Datensätze geladen. Leer lassen für huggingface.co oder einen Mirror wie https://hf-mirror.com eintragen.",

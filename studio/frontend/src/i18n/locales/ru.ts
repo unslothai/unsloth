@@ -1092,7 +1092,7 @@ export const ru = {
         sourceFallback: "Не удалось запустить ModelScope, поэтому используется Hugging Face. Проверьте журналы Unsloth.",
         autoSourceTitle: "Источник моделей переключён на ModelScope",
         autoSourceDescription: "В материковом Китае Hugging Face часто работает медленно или заблокирован, поэтому Unsloth теперь загружает модели из ModelScope.",
-        autoSourceAction: "Изменить",
+        autoSourceAction: "Открыть настройки «Источник моделей»",
         sectionTitle: "Хаб моделей",
         endpoint: "Эндпоинт Hugging Face",
         endpointDescription: "Откуда загружаются модели и датасеты. Оставьте пустым для huggingface.co или укажите зеркало, например https://hf-mirror.com.",

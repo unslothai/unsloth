@@ -1067,7 +1067,7 @@ export const zhCN = {
         sourceFallback: "无法启动 ModelScope，当前使用 Hugging Face。请查看 Unsloth 日志。",
         autoSourceTitle: "模型来源已切换为 ModelScope",
         autoSourceDescription: "Hugging Face 在中国大陆经常较慢或无法访问，因此 Unsloth 现在从 ModelScope 下载模型。",
-        autoSourceAction: "更改",
+        autoSourceAction: "打开模型来源设置",
         sectionTitle: "模型中心",
         endpoint: "Hugging Face 端点",
         endpointDescription: "模型和数据集的下载来源。留空则使用 huggingface.co，或填写镜像地址，例如 https://hf-mirror.com。",

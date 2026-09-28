@@ -1076,7 +1076,7 @@ export const ja = {
         sourceFallback: "ModelScope を起動できなかったため、Hugging Face を使用しています。Unsloth のログを確認してください。",
         autoSourceTitle: "モデルのソースを ModelScope に切り替えました",
         autoSourceDescription: "中国本土では Hugging Face が遅い、またはつながらないことが多いため、Unsloth は ModelScope からモデルをダウンロードします。",
-        autoSourceAction: "変更",
+        autoSourceAction: "モデルの取得元の設定を開く",
         sectionTitle: "モデルハブ",
         endpoint: "Hugging Face エンドポイント",
         endpointDescription: "モデルとデータセットのダウンロード元です。空欄なら huggingface.co、ミラーを使う場合は https://hf-mirror.com などを入力します。",

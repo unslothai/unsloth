@@ -1098,7 +1098,7 @@ export const ptBR = {
         sourceFallback: "Não foi possível iniciar o ModelScope, então o Hugging Face está em uso. Verifique os logs do Unsloth.",
         autoSourceTitle: "Origem dos modelos alterada para ModelScope",
         autoSourceDescription: "O Hugging Face costuma ser lento ou bloqueado na China continental, então o Unsloth agora baixa os modelos do ModelScope.",
-        autoSourceAction: "Alterar",
+        autoSourceAction: "Abrir as configurações da origem dos modelos",
         sectionTitle: "Hub de modelos",
         endpoint: "Endpoint do Hugging Face",
         endpointDescription: "De onde os modelos e conjuntos de dados são baixados. Deixe vazio para usar huggingface.co ou informe um espelho como https://hf-mirror.com.",
