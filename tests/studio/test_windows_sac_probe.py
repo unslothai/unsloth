@@ -385,7 +385,6 @@ def test_the_poller_abandons_a_read_at_the_frontend_timeout_and_measures_the_sta
 
 
 def _identity_server(proof):
-    """Loopback server that echoes the liveness marker and records every POST body."""
     import base64
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
     from urllib.parse import parse_qs, urlparse

@@ -335,7 +335,7 @@ def authenticate(base_url: str, home: Path, password: Optional[str]) -> Credenti
             "Studio that has never been opened it becomes the account password, on one "
             "that has it must be the password you sign in with."
         )
-    # Before any password leaves this process: the port may be held by something other than Studio.
+    # Before any password is sent: the port may be held by something other than Studio.
     reason = studio_identity_error(base_url, home)
     if reason:
         raise SystemExit(
