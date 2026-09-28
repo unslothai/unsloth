@@ -1259,6 +1259,7 @@ def test_skip_init_embedding_is_built_in_the_serving_dtype(tmp_path):
 
 
 def test_build_without_an_encoder_dir_is_laya_own(tmp_path):
+    pytest.importorskip("torch")
     sentinel = object()
     calls = []
 
@@ -1272,6 +1273,7 @@ def test_build_without_an_encoder_dir_is_laya_own(tmp_path):
 
 
 def test_build_hook_is_restored_even_when_loading_fails(monkeypatch):
+    pytest.importorskip("torch")  # laya imports torch
     laya = laya_runtime._laya()
     original = laya.agent.build_model
     seen = []
