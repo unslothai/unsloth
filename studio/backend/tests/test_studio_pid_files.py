@@ -468,6 +468,18 @@ def test_a_loopback_bind_is_not_free_while_another_process_holds_the_wildcard():
         assert run._is_port_free("127.0.0.1", port) is False
 
 
+def test_a_free_loopback_port_is_reported_without_a_long_wait():
+    # Every default launch probes 127.0.0.1, and Windows waits out the whole
+    # connect timeout on a free port instead of refusing it.
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+
+    start = time.monotonic()
+    assert run._is_port_free("127.0.0.1", port) is True
+    assert time.monotonic() - start < 0.75
+
+
 def test_a_hostname_records_every_address_it_resolves_to(tmp_path):
     # `localhost` binds 127.0.0.1 AND ::1. Recording only the first lets a later
     # launch on the other literal miss us and start a duplicate.

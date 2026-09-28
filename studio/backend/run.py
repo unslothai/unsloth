@@ -825,7 +825,8 @@ def _is_port_free(host: str, port: int) -> bool:
 
     # A bind can succeed next to another process's listener: a wildcard bind while it holds localhost
     # (e.g. an SSH -L tunnel), or on Windows a specific bind while it holds the wildcard. Either way the
-    # address is already served, so a successful connect means the port is taken.
+    # address is already served, so a successful connect means the port is taken. Windows only refuses a
+    # connect to a free port after ~2 s of SYN retries, so keep the wait short: a listener answers in ms.
     if is_wildcard_host(host):
         targets = [
             (socket.AF_INET, ("127.0.0.1", port)),
@@ -836,7 +837,7 @@ def _is_port_free(host: str, port: int) -> bool:
     for family, sockaddr in targets:
         try:
             with socket.socket(family, socket.SOCK_STREAM) as s:
-                s.settimeout(1)
+                s.settimeout(0.25)
                 if s.connect_ex(sockaddr) == 0:
                     return False
         except OSError:
