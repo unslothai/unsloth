@@ -288,8 +288,8 @@ def model_context(model_dir: str, cache_gb: Optional[float] = None) -> Optional[
     if not cache_gb:
         return context
     # ponytail: f16 K+V per token and a 15% margin, measured on Arc B60 (3 GB held ~140k tokens
-    # of Ornith 35B although KV_CACHE_PRECISION is u8); ask OpenVINO for the real figure if it
-    # ever exposes one.
+    # of Ornith 35B; with prefix caching the linear-attention checkpoints take the rest). Use
+    # OpenVINO's own figure once it exposes one: openvino.genai#4545.
     capacity = int(cache_gb * 2**30 / (layers * 2 * heads * head_dim * 2) * 0.85)
     return min(context, capacity) if context else capacity
 
