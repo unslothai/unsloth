@@ -2409,11 +2409,13 @@ const ThreadComposerDock: FC<{
         overlay ? "z-40" : "z-20",
       )}
     >
-      {/* Fade the top edge so scrolling text is not cut off by a hard line. */}
+      {/* Fade scrolling content within the composer column. Painting this
+          translucent gradient across empty gutters can produce a full-width
+          seam from color rounding in the browser compositor. */}
       <div
         aria-hidden={true}
         className={cn(
-          "thread-bottom-fade absolute inset-x-0 bottom-0 bg-gradient-to-t from-background from-[calc(100%_-_28px)] to-[rgb(from_var(--background)_r_g_b/0)]",
+          "thread-bottom-fade absolute bottom-0 left-1/2 w-full max-w-(--thread-max-width) -translate-x-1/2 bg-gradient-to-t from-background from-[calc(100%_-_28px)] to-[rgb(from_var(--background)_r_g_b/0)]",
           queueVisible
             ? "h-32 backdrop-blur-[1px] [mask-image:linear-gradient(to_top,black_0%,black_58%,transparent_100%)]"
             : "top-[calc(10px*var(--ui-space-scale,1))]",
