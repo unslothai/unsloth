@@ -2756,6 +2756,14 @@ class FastBaseModel:
             if hasattr(__tokenizer, "pad_token"):
                 tokenizer.pad_token = __tokenizer.pad_token
                 tokenizer.pad_token_id = __tokenizer.pad_token_id
+        # Kimi K2.5 / K2.7 processors only take medias=; let processor(text=..., images=...) work too.
+        if hasattr(tokenizer, "image_processor"):
+            try:
+                from unsloth_zoo.vision_utils import patch_medias_processor
+            except ImportError:
+                patch_medias_processor = None
+            if patch_medias_processor is not None:
+                patch_medias_processor(tokenizer)
         model, tokenizer = patch_model_and_tokenizer(
             model,
             tokenizer,
