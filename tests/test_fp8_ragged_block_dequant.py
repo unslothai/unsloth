@@ -36,7 +36,11 @@ def _op_cls(patched):
     return cls
 
 
-def _dequant(q, s, patched = True):
+def _dequant(
+    q,
+    s,
+    patched = True,
+):
     op = _op_cls(patched)(_Quantizer())
     if hasattr(op, "_dequantize_one"):
         return op._dequantize_one(q, s, output_dtype = torch.bfloat16)
