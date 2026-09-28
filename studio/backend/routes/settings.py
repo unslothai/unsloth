@@ -4320,6 +4320,289 @@ def export_debug_logs(
     )
 
 
+class SandboxToolStatus(BaseModel):
+    backend: str
+    available: bool
+    reason: str
+    protection_state: str = "unavailable"
+    limitations: list[str] = Field(default_factory = list)
+    remediation: str = ""
+
+
+class SandboxWindowsStatus(BaseModel):
+    runtime_installed: bool
+    allow_dacl_fallback: bool
+    allow_dacl_fallback_saved: bool
+    dacl_locked_by_environment: bool
+    persistent_read_grants: bool
+    persistent_read_grants_saved: bool
+    grants_locked_by_environment: bool
+    # None: MXC could not tell; [] prepared; otherwise the wxc-host-prep verbs still missing.
+    host_prep_missing: Optional[list[str]] = None
+    prepare_repeats_after_restart: bool = True
+
+
+class SandboxStatusResponse(BaseModel):
+    platform: str
+    python: SandboxToolStatus
+    terminal: SandboxToolStatus
+    terminal_shell: Optional[str] = None
+    windows: Optional[SandboxWindowsStatus] = None
+    checked_at: float
+    grants_restored: Optional[int] = None
+
+
+class SandboxSettingsPayload(BaseModel):
+    model_config = ConfigDict(extra = "forbid")
+
+    allow_dacl_fallback: Optional[StrictBool] = None
+    persistent_read_grants: Optional[StrictBool] = None
+
+
+class SandboxPrepareJob(BaseModel):
+    state: Literal["idle", "running", "succeeded", "declined", "failed"]
+    id: Optional[str] = None
+    started_at: Optional[float] = None
+    finished_at: Optional[float] = None
+    exit_code: Optional[int] = None
+    output_tail: list[str] = Field(default_factory = list)
+    steps: list[str] = Field(default_factory = list)
+
+
+_SANDBOX_STATUS_TTL_SECONDS = 30.0
+_sandbox_status_lock = threading.Lock()
+_sandbox_status_cache: Optional[tuple[float, SandboxStatusResponse]] = None
+# Bumped by every change: a status built before a save must not be cached after it.
+_sandbox_status_generation = 0
+
+
+def _forget_sandbox_status() -> None:
+    global _sandbox_status_cache, _sandbox_status_generation
+    with _sandbox_status_lock:
+        _sandbox_status_cache = None
+        _sandbox_status_generation += 1
+
+
+def _sandbox_tool_status(capability) -> SandboxToolStatus:
+    return SandboxToolStatus(
+        backend = capability.backend,
+        available = capability.available,
+        reason = capability.reason,
+        protection_state = capability.protection_state,
+        limitations = list(capability.limitations),
+        remediation = capability.remediation,
+    )
+
+
+def _sandbox_terminal_target() -> tuple[str, Optional[str]]:
+    """The executable the Terminal would be qualified with, and its profile on Windows."""
+    import shutil
+    import sys
+
+    from core.inference import tools
+
+    if sys.platform != "win32":
+        return shutil.which("bash") or "bash", None
+    profile = tools._terminal_profile(False)
+    if profile == "cmd_isolated":
+        return tools._windows_system_cmd(), profile
+    return tools._windows_bash() or tools._windows_system_cmd(), profile
+
+
+def _sandbox_windows_status() -> SandboxWindowsStatus:
+    from core.inference import mxc_adapter, mxc_policy, mxc_read_grants, mxc_runtime
+    from utils import mxc_isolation_settings as saved
+
+    try:
+        mxc_runtime.installation_identity()
+        installed = True
+    except Exception:
+        installed = False
+    missing: Optional[list[str]] = None
+    if installed:
+        steps = mxc_runtime.probe_host_prep_steps(env = mxc_adapter._control_environment())
+        missing = None if steps is None else list(steps)
+    return SandboxWindowsStatus(
+        runtime_installed = installed,
+        allow_dacl_fallback = mxc_policy.dacl_fallback_enabled(),
+        allow_dacl_fallback_saved = saved.dacl_fallback_setting(),
+        dacl_locked_by_environment = saved.locked_by_environment(mxc_policy.DACL_FALLBACK_ENV),
+        persistent_read_grants = mxc_read_grants.enabled(),
+        persistent_read_grants_saved = saved.persistent_grants_setting(),
+        grants_locked_by_environment = saved.locked_by_environment(
+            mxc_read_grants.PERSISTENT_GRANTS_ENV
+        ),
+        host_prep_missing = missing,
+    )
+
+
+def _build_sandbox_status(force: bool) -> SandboxStatusResponse:
+    """Blocking (live probes); run off the event loop. Never elevates: probes only."""
+    import sys
+
+    from core.inference import os_sandbox
+
+    python = os_sandbox.capability_snapshot(
+        force = force, execution_kind = "python", selected_executable = sys.executable
+    )
+    terminal_exe, shell = _sandbox_terminal_target()
+    terminal = os_sandbox.capability_snapshot(
+        force = force, execution_kind = "terminal", selected_executable = terminal_exe
+    )
+    return SandboxStatusResponse(
+        platform = sys.platform,
+        python = _sandbox_tool_status(python),
+        terminal = _sandbox_tool_status(terminal),
+        terminal_shell = shell,
+        windows = _sandbox_windows_status() if sys.platform == "win32" else None,
+        checked_at = time.time(),
+    )
+
+
+def _sandbox_status(refresh: bool = False) -> SandboxStatusResponse:
+    global _sandbox_status_cache
+    with _sandbox_status_lock:
+        cached, generation = _sandbox_status_cache, _sandbox_status_generation
+    if not refresh and cached is not None and time.monotonic() < cached[0]:
+        return cached[1]
+    status = _build_sandbox_status(force = refresh)
+    with _sandbox_status_lock:
+        if generation == _sandbox_status_generation:
+            _sandbox_status_cache = (time.monotonic() + _SANDBOX_STATUS_TTL_SECONDS, status)
+    return status
+
+
+def _sandbox_invalidate() -> None:
+    from core.inference import mxc_probe, tools
+
+    mxc_probe.invalidate_cache()
+    tools.reset_terminal_profile_cache()
+    _forget_sandbox_status()
+
+
+def _sandbox_apply(payload: SandboxSettingsPayload) -> Optional[int]:
+    """Blocking: save, reset every cached verdict, and take the read grants back once they are off."""
+    from core.inference import mxc_policy, mxc_read_grants
+    from utils import mxc_isolation_settings as saved
+
+    if payload.allow_dacl_fallback is not None:
+        saved.set_dacl_fallback_setting(payload.allow_dacl_fallback)
+    if payload.persistent_read_grants is not None:
+        saved.set_persistent_grants_setting(payload.persistent_read_grants)
+    saved.forget_cached_setting()
+    _sandbox_invalidate()
+    if not (mxc_policy.dacl_fallback_enabled() and mxc_read_grants.enabled()):
+        return len(mxc_read_grants.revoke_recorded())
+    return None
+
+
+def _sandbox_job_response(job) -> SandboxPrepareJob:
+    return (
+        SandboxPrepareJob(**job.as_dict()) if job is not None else SandboxPrepareJob(state = "idle")
+    )
+
+
+@_owner_settings_router.get("/sandbox", response_model = SandboxStatusResponse)
+async def get_sandbox_status(
+    refresh: bool = False, current_subject: str = Depends(get_current_subject)
+) -> SandboxStatusResponse:
+    """What Python and the Terminal get from the OS sandbox on this machine, plus the Windows opt-in."""
+    try:
+        return await asyncio.to_thread(_sandbox_status, refresh)
+    except Exception as exc:
+        raise log_and_http_error(
+            exc,
+            500,
+            "Could not read the sandbox status.",
+            event = "settings.sandbox_status_failed",
+            log = logger,
+        ) from exc
+
+
+@_owner_settings_router.put("/sandbox", response_model = SandboxStatusResponse)
+async def update_sandbox_settings(
+    payload: SandboxSettingsPayload,
+    current_subject: str = Depends(get_current_subject),
+    # Host policy: changed at the console, never by an API key the owner happens to hold.
+    _ui_session: None = Depends(_require_ui_session),
+) -> SandboxStatusResponse:
+    """Save the Windows MXC opt-in and the persistent read grant choice. Applies to the next launch."""
+    import sys
+
+    from core.inference import mxc_policy, mxc_read_grants
+    from utils import mxc_isolation_settings as saved
+
+    if sys.platform != "win32":
+        raise HTTPException(status_code = 409, detail = "These settings only apply on Windows.")
+    locks = (
+        (payload.allow_dacl_fallback, mxc_policy.DACL_FALLBACK_ENV),
+        (payload.persistent_read_grants, mxc_read_grants.PERSISTENT_GRANTS_ENV),
+    )
+    for value, env in locks:
+        if value is not None and saved.locked_by_environment(env):
+            raise HTTPException(
+                status_code = 409, detail = f"{env} is set in Studio's environment, which decides this."
+            )
+    try:
+        restored = await asyncio.to_thread(_sandbox_apply, payload)
+        status = await asyncio.to_thread(_sandbox_status, False)
+    except Exception as exc:
+        raise log_and_http_error(
+            exc,
+            500,
+            "Could not save the sandbox settings.",
+            event = "settings.sandbox_update_failed",
+            log = logger,
+        ) from exc
+    logger.info(
+        "settings.sandbox_updated subject=%s dacl=%s grants=%s",
+        current_subject,
+        payload.allow_dacl_fallback,
+        payload.persistent_read_grants,
+    )
+    return status.model_copy(update = {"grants_restored": restored})
+
+
+@_owner_settings_router.get("/sandbox/prepare", response_model = SandboxPrepareJob)
+def get_sandbox_prepare(current_subject: str = Depends(get_current_subject)) -> SandboxPrepareJob:
+    from core.inference import mxc_host_prep_job
+    return _sandbox_job_response(mxc_host_prep_job.current())
+
+
+@_owner_settings_router.post("/sandbox/prepare", response_model = SandboxPrepareJob)
+async def start_sandbox_prepare(
+    request: Request,
+    current_subject: str = Depends(get_current_subject),
+    _ui_session: None = Depends(_require_ui_session),
+) -> SandboxPrepareJob:
+    """Run MXC's elevated host preparation; Windows shows its administrator prompt on this computer."""
+    import sys
+
+    from core.inference import mxc_host_prep_job, mxc_runtime
+    from utils.client_ip import _is_loopback, client_ip
+
+    if not _is_loopback(client_ip(request)):
+        raise HTTPException(
+            status_code = 403,
+            detail = (
+                "Prepare this PC from the computer running Studio: the Windows administrator "
+                "prompt appears there, not in this browser."
+            ),
+        )
+    if sys.platform != "win32":
+        raise HTTPException(status_code = 409, detail = "Host preparation is Windows-only.")
+    try:
+        await asyncio.to_thread(mxc_runtime.installation_identity)
+    except Exception as exc:
+        raise HTTPException(
+            status_code = 409, detail = "The MXC runtime is not installed; rerun Studio setup."
+        ) from exc
+    mxc_host_prep_job.add_finish_hook(_forget_sandbox_status)
+    job = await asyncio.to_thread(mxc_host_prep_job.start)
+    logger.info("settings.sandbox_prepare_started subject=%s job=%s", current_subject, job.id)
+    return _sandbox_job_response(job)
+
+
 router.include_router(_account_settings_router)
 router.include_router(_shared_settings_router)
 router.include_router(_owner_settings_router)
