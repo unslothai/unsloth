@@ -305,17 +305,8 @@ torch_float32 = torch.float32
 torch_float16 = torch.float16
 torch_bfloat16 = torch.bfloat16
 
-# torch's autocast APIs take the TORCH device name, so ROCm is "cuda" and mlx is "mps";
-# passing DEVICE_TYPE straight in raises `unknown device type for autocast`. Resolve the
-# probe once here rather than per matmul, in three tiers:
-#   "device" -- torch >= 2.4, the device-name form works;
-#   "legacy" -- torch 2.1-2.3 (the cu118onlytorch211 / cu121onlytorch220 extras), where
-#               is_autocast_enabled takes no argument and only ever means CUDA. Answering
-#               "disabled" there would make matmul_lora pre-cast the activation and then
-#               let autocast cast it again, changing results by the extra rounding;
-#   None     -- torch will not answer at all (npu on a build without that backend), so
-#               fail OPEN to "assume no ambient autocast" and let matmul_lora reconcile
-#               the dtypes itself rather than erroring on the probe.
+# Autocast needs the TORCH device name ("hip" raises). "legacy" = torch 2.1-2.3 zero-arg form: answering
+# False there double-rounds X under autocast. None = torch cannot answer: fail open to no autocast.
 try:
     torch.is_autocast_enabled(DEVICE_TYPE_TORCH)
     _AUTOCAST_PROBE = "device"
@@ -567,9 +558,7 @@ if DEVICE_TYPE == "xpu" and HAS_XPU_STREAM:
             )
             out_absmax += offset
 
-            # `out` is allocated with quant_state.dtype, so the kernel has to match
-            # it exactly: writing bf16 bits into an fp32 buffer silently corrupts the
-            # dequantized weight rather than failing.
+            # Kernel must match `out`'s dtype: bf16 bits in an fp32 buffer corrupt silently.
             fx = (
                 cdequantize_blockwise_fp16_nf4
                 if dtype == torch_float16
@@ -680,9 +669,7 @@ elif DEVICE_TYPE in ("cuda", "hip") and HAS_CUDA_STREAM:
             )
             out_absmax += offset
 
-            # `out` is allocated with quant_state.dtype, so the kernel has to match
-            # it exactly: writing bf16 bits into an fp32 buffer silently corrupts the
-            # dequantized weight rather than failing.
+            # Kernel must match `out`'s dtype: bf16 bits in an fp32 buffer corrupt silently.
             fx = (
                 cdequantize_blockwise_fp16_nf4
                 if dtype == torch_float16
@@ -761,7 +748,6 @@ else:
         )
         out_absmax += offset
 
-        # See the note above: the kernel must match the dtype `out` was allocated with.
         fx = (
             cdequantize_blockwise_fp16_nf4
             if dtype == torch_float16
@@ -1155,10 +1141,7 @@ def matmul_lora(
             W = W.dequantize()
         else:
             W = W.contiguous()
-        # torch.matmul never promotes a mixed-precision pair, so reconcile the
-        # activation to the weight dtype the way a plain Linear would. Under
-        # autocast the matmul is reconciled for us, and pre-casting would only
-        # round X through a second dtype, so leave it alone there.
+        # matmul never promotes mixed dtypes; skip under autocast to avoid double rounding.
         if X.dtype != W.dtype and not torch_is_autocast_enabled():
             X = X.to(W.dtype)
         out = torch_matmul(X, W.t(), out = out)
@@ -1166,7 +1149,6 @@ def matmul_lora(
         out = fp8_linear(X, W, W_quant)
     else:
         W = fast_dequantize(W, W_quant, use_global_buffer = True)
-        # See note above: align the activation dtype to the base weight dtype.
         if X.dtype != W.dtype and not torch_is_autocast_enabled():
             X = X.to(W.dtype)
         out = torch_matmul(X, W.t(), out = out)
@@ -1174,9 +1156,7 @@ def matmul_lora(
         del W
 
     if A is not None:
-        # The base matmul above fixes the compute dtype for this call, and under
-        # autocast that is the autocast dtype rather than W's. `addmm_` is in-place
-        # and so is not autocast-eligible, so both LoRA operands must follow `out`.
+        # In-place addmm_ is not autocast-eligible: follow `out` (autocast dtype), not W.
         dtype = out.dtype
         if X.dtype != dtype:
             X = X.to(dtype)

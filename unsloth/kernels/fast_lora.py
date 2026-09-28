@@ -23,13 +23,7 @@ from .utils import (
 
 
 def _dequantize_to(W, W_quant, dtype):
-    """Dequantize a base weight and reconcile it to the backward compute dtype.
-
-    The matmuls that consume it are in-place (`addmm_`) or write into `out=`, and
-    neither form is autocast-eligible, so a base weight stored in a dtype the
-    backward is not computing in has to be cast explicitly. A no-op whenever the
-    dtypes already agree, which is every ordinary fp16/bf16/fp32 run.
-    """
+    """Consumers are addmm_ / out= (not autocast-eligible), so cast explicitly."""
     W = fast_dequantize(W, W_quant)
     return W if W.dtype == dtype else W.to(dtype)
 
@@ -104,11 +98,7 @@ class LoRA_MLP(torch.autograd.Function):
         h = _forward_function(e, g)
         i = matmul_lora(h, downW, downW_quant, downA, downB, downS)
 
-        # X can reach here in a dtype the projections do not compute in, and the
-        # in-place addmm_ below is not autocast-eligible, so it would not be
-        # reconciled for us. Pin the saved activation to the compute dtype
-        # (== e.dtype) so backward stays consistent; remember the incoming dtype
-        # to restore it on the dX grad.
+        # Save X in the compute dtype (backward addmm_ is not autocast-eligible); dX gets input_dtype back.
         ctx.input_dtype = dtype
         X = X.to(e.dtype)
 
@@ -151,7 +141,6 @@ class LoRA_MLP(torch.autograd.Function):
         e = e.view(-1, e.shape[-1])
         g = g.view(-1, g.shape[-1])
         dtype = X.dtype
-        # X (and thus dtype) is the compute dtype pinned in forward; align dY too.
         if dY.dtype != dtype:
             dY = dY.to(dtype)
 
@@ -188,7 +177,6 @@ class LoRA_MLP(torch.autograd.Function):
         d_downA.addmm_(h.t(), dY @ downB.t(), alpha = downS, beta = 0)
         d_downB.addmm_(downA.t() @ h.t(), dY, alpha = downS, beta = 0)
 
-        # df @ upB.t() and de @ gateB.t() each feed both a weight grad and dX; compute once.
         up_dB = df @ upB.t()
         gate_dB = de @ gateB.t()
 
@@ -411,9 +399,7 @@ class LoRA_QKV(torch.autograd.Function):
             K = K.view(orig_shape[0], orig_shape[1], -1)
             V = V.view(orig_shape[0], orig_shape[1], -1)
 
-        # matmul_lora computed in the projection compute dtype == Q.dtype, which
-        # X need not share. Pin the saved activation to it so backward is
-        # dtype-consistent, and remember the incoming dtype for the dX grad.
+        # Save X in the compute dtype (== Q.dtype); dX gets input_dtype back.
         ctx.input_dtype = dtype
         X = X.to(Q.dtype)
 
@@ -460,7 +446,6 @@ class LoRA_QKV(torch.autograd.Function):
         dV = dV.view(-1, dV.shape[-1])
         X = X.view(-1, X.shape[-1])
         dtype = X.dtype
-        # X (and thus dtype) is the compute dtype pinned in forward; align grads.
         if dQ.dtype != dtype:
             dQ = dQ.to(dtype)
         if dK.dtype != dtype:
@@ -487,7 +472,6 @@ class LoRA_QKV(torch.autograd.Function):
         d_VA = torch.empty_like(VA)
         d_VB = torch.empty_like(VB)
 
-        # d<Q|K|V> @ <Q|K|V>B.t() each feed both a weight grad and dX; compute once.
         q_dB = dQ @ QB.t()
         k_dB = dK @ KB.t()
         v_dB = dV @ VB.t()
@@ -607,9 +591,7 @@ class LoRA_W(torch.autograd.Function):
     def forward(ctx, X: torch.Tensor, W, W_quant, A, B, S):
         dtype = X.dtype
         XW = matmul_lora(X, W, W_quant, A, B, S)
-        # Pin the saved activation to the compute dtype (== XW.dtype), which X
-        # need not share, so backward is dtype-consistent; remember the incoming
-        # dtype for the returned dX grad.
+        # Save X in the compute dtype (== XW.dtype); dX gets input_dtype back.
         ctx.input_dtype = dtype
         X = X.to(XW.dtype)
         ctx.custom_saved_tensors = (
@@ -630,7 +612,6 @@ class LoRA_W(torch.autograd.Function):
         dY = dY.reshape(-1, dY.shape[-1])  # Must be reshape
         X = X.reshape(-1, X.shape[-1])  # Must be reshape
         dtype = X.dtype
-        # X (and thus dtype) is the compute dtype pinned in forward; align dY too.
         if dY.dtype != dtype:
             dY = dY.to(dtype)
 
@@ -641,7 +622,6 @@ class LoRA_W(torch.autograd.Function):
         d_A = torch.empty_like(A)
         d_B = torch.empty_like(B)
 
-        # dY @ B.t() feeds both the d_A weight grad and dX; compute once.
         y_dB = dY @ B.t()
 
         # d_A = X.t() @ (dY @ B.t()), d_B = (A.t() @ X.t()) @ dY, both scaled by S.
