@@ -7410,7 +7410,7 @@ def test_saved_parallel_slots_reach_an_api_load(monkeypatch):
     assert rec.calls[0].n_parallel == 8
 
 
-def test_parallel_slots_are_stored_and_gated_on_gguf():
+def test_parallel_slots_are_stored_and_reach_either_backend():
     override = settings.normalize_model_override({"n_parallel": 8})
     assert override == {"n_parallel": 8}
     # Blank, out of range and non-integer all mean "follow the server-wide default".
@@ -7419,9 +7419,13 @@ def test_parallel_slots_are_stored_and_gated_on_gguf():
 
     gguf = settings.model_override_load_kwargs(override, is_gguf = True)
     assert gguf["n_parallel"] == 8
-    # A safetensors load has no llama-server slots, exactly as the picker gates it.
-    assert "n_parallel" not in settings.model_override_load_kwargs(override, is_gguf = False)
+    safetensors = settings.model_override_load_kwargs(override, is_gguf = False)
+    assert safetensors["n_parallel"] == 8
+    for flag in ("n_batch", "n_ubatch"):
+        stored = settings.normalize_model_override({flag: 512})
+        assert flag not in settings.model_override_load_kwargs(stored, is_gguf = False)
     LoadRequest(model_path = "unsloth/B-GGUF", **gguf)
+    LoadRequest(model_path = "unsloth/B", **safetensors)
 
 
 def test_override_route_persists_parallel_slots(override_store):
@@ -10047,11 +10051,13 @@ def test_auto_switch_loads_an_unloaded_mlx_model(monkeypatch):
         "unsloth/Qwen3-MLX", "/srv/models/Qwen3-MLX", (), is_gguf = False
     )
     monkeypatch.setattr(resolver, "_scan", (time.monotonic(), {"unsloth/qwen3-mlx": entry}))
+    settings.set_model_override("unsloth/Qwen3-MLX", n_parallel = 8)
 
     _run_hook("unsloth/Qwen3-MLX")
 
     assert [c.model_path for c in calls] == ["/srv/models/Qwen3-MLX"]
     assert calls[0].gguf_variant is None
+    assert calls[0].n_parallel == 8
     # The alias lands on the orchestrator, leaving the llama.cpp backend untouched.
     assert orchestrator._openai_advertised_id == "unsloth/Qwen3-MLX"
     assert getattr(llama, "_openai_advertised_id", None) is None
@@ -11718,6 +11724,12 @@ def test_a_stale_idle_reload_stash_diverts_a_refusal_into_a_reload(monkeypatch):
         )(),
     )
     kw._last_unloaded_model = ("unsloth/Idle-GGUF", "Q4_K_M", "unsloth/Idle-GGUF")
+    # Fictional repo, blocked Hub: answer "no GGUF" so resolution still reaches the double (#11551).
+    import utils.models.model_config as model_config
+
+    monkeypatch.setattr(
+        model_config, "detect_gguf_model_remote", lambda identifier, hf_token = None: None
+    )
 
     with pytest.raises(Exception):
         asyncio.run(
