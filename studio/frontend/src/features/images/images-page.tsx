@@ -713,6 +713,9 @@ function SliderField({
 }
 
 // Matches the field-label style used across Unsloth.
+// Prompt boxes: smaller radius, scrollbar inset from the corners.
+const IMAGE_PROMPT_BOX = "image-prompt-box rounded-lg";
+
 function Field({
   label,
   hint,
@@ -5160,6 +5163,7 @@ export function ImagesPage({
             <Field label={workflow === "edit" ? "Instruction" : "Prompt"}>
               <Textarea
                 rows={4}
+                className={cn(IMAGE_PROMPT_BOX, "min-h-32")}
                 placeholder={
                   examplesDismissed[workflow] ? undefined : WORKFLOW_EXAMPLE_PROMPTS[workflow]
                 }
@@ -5178,6 +5182,7 @@ export function ImagesPage({
               open={negativeOpen}
               onOpenChange={setNegativeOpen}
               hint="What to steer the image away from. Only used when guidance is above 0."
+              textareaClassName={IMAGE_PROMPT_BOX}
             />
             {/* LoRA adapters: shown whenever the loaded model + quant can apply them. Each carries a 0-2 weight. */}
             {loraCapable && (

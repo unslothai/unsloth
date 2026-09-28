@@ -4810,6 +4810,30 @@ html.force-reduced-motion .sidebar-section-drop-line {
 	}
 }
 
+/* Images prompt boxes: inset the scroll track so the thumb stays inside the
+   rounded corners. Chromium ignores ::-webkit-scrollbar while scrollbar-width
+   or scrollbar-color is set, so reset them. */
+@supports selector(::-webkit-scrollbar) {
+	.image-prompt-box,
+	.dark .image-prompt-box {
+		scrollbar-width: auto;
+		scrollbar-color: auto;
+	}
+}
+
+.image-prompt-box::-webkit-scrollbar {
+	width: 12px;
+}
+
+.image-prompt-box::-webkit-scrollbar-track {
+	margin-block: 12px;
+}
+
+.image-prompt-box::-webkit-scrollbar-thumb {
+	border: 4px solid transparent;
+	background-clip: padding-box;
+}
+
 /* Composer textarea: keep the scroll thumb faint until the user hovers or
    drags the thumb itself, so a tall draft never shows a heavy dark rail. */
 .composer-input,
