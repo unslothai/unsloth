@@ -1112,7 +1112,8 @@ def _pin_pristine_sft_loss_type(config_cls):
 
 _UNSLOTH_KBIT_PREP_GUARD_FLAG = "_unsloth_skips_kbit_prep_for_peft_models"
 
-# Appended after TRL's __init__. Dense only when every expert-count key the config has is 0, so real MoE keeps its aux loss.
+# TRL >= 1.7 enables the aux loss whenever output_router_logits is set; dense configs (every expert count 0, e.g.
+# granite-4.0-h-350m) return no router logits and crash on `aux_loss.to`. Real MoE keeps its aux loss.
 _DENSE_ROUTER_AUX_LOSS_OFF = (
     "if getattr(self, 'aux_loss_enabled', False) and hasattr(getattr(self, 'model', None), 'config'):\n"
     "    _text_config = self.model.config\n"
@@ -2703,7 +2704,6 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         )
         RLTrainer_post += vllm_chat_template_sync
 
-    # TRL >= 1.7 treats any config with output_router_logits as MoE; a dense one (0 experts, e.g. granite-4.0-h) returns no router logits, so its aux loss is int 0 and `.to` crashes.
     if "model" in call_args:
         RLTrainer_post += _DENSE_ROUTER_AUX_LOSS_OFF
 
