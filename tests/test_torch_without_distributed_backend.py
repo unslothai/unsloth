@@ -25,14 +25,21 @@ _C10D = "torch._C._distributed_c10d"
 
 
 def _missing_c10d():
-    return ModuleNotFoundError(f"No module named '{_C10D}'; 'torch._C' is not a package", name = _C10D)
+    return ModuleNotFoundError(
+        f"No module named '{_C10D}'; 'torch._C' is not a package", name = _C10D
+    )
 
 
 class _Raises(importlib.abc.MetaPathFinder):
     def __init__(self, prefix, error):
         self.prefix, self.error, self.hits = prefix, error, 0
 
-    def find_spec(self, name, path = None, target = None):
+    def find_spec(
+        self,
+        name,
+        path = None,
+        target = None,
+    ):
         if name == self.prefix or name.startswith(self.prefix + "."):
             self.hits += 1
             raise self.error
@@ -54,12 +61,23 @@ def accelerate_dtensor(monkeypatch):
     for module in (other, accelerate.utils, accelerate.accelerator):
         monkeypatch.setattr(module, "model_has_dtensor", original)
     # What `from torch.distributed.tensor import DTensor` does on a torch without the backend.
-    for name in [n for n in sys.modules if n.startswith("torch.distributed.tensor") or n.startswith("torch.distributed._tensor")]:
+    for name in [
+        n
+        for n in sys.modules
+        if n.startswith("torch.distributed.tensor") or n.startswith("torch.distributed._tensor")
+    ]:
         monkeypatch.delitem(sys.modules, name)
     for attr in ("tensor", "_tensor"):
         monkeypatch.delattr(torch.distributed, attr, raising = False)
-    monkeypatch.setattr(sys, "meta_path", [_Raises("torch.distributed.tensor", _missing_c10d()),
-                                           _Raises("torch.distributed._tensor", _missing_c10d()), *sys.meta_path])
+    monkeypatch.setattr(
+        sys,
+        "meta_path",
+        [
+            _Raises("torch.distributed.tensor", _missing_c10d()),
+            _Raises("torch.distributed._tensor", _missing_c10d()),
+            *sys.meta_path,
+        ],
+    )
     return original
 
 
