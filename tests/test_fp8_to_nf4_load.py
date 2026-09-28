@@ -556,8 +556,14 @@ def test_a_load_that_raises_before_loading_hands_the_config_back(monkeypatch):
     original = dict(config.quantization_config)
 
     @fp8_to_nf4.track_explicit_4bit_request
-    def from_pretrained(model_name = None, load_in_4bit = True, **kwargs):
-        assert check_and_disable_bitsandbytes_loading(config, load_in_4bit = load_in_4bit, verbose = False)[0]
+    def from_pretrained(
+        model_name = None,
+        load_in_4bit = True,
+        **kwargs,
+    ):
+        assert check_and_disable_bitsandbytes_loading(
+            config, load_in_4bit = load_in_4bit, verbose = False
+        )[0]
         assert fp8_to_nf4.fp8_to_nf4_armed(config)
         raise RuntimeError("prefetch stalled")
 
@@ -571,7 +577,11 @@ def test_planner_sizes_checkpoint_16bit_linears_as_4bit_in_quantize_all_mode(mon
     from unsloth.models import fp8_to_nf4
 
     config = SimpleNamespace(
-        **{fp8_to_nf4.UNSLOTH_FP8_TO_NF4_ATTR: {"modules_to_not_convert": ["vision_tower", "lm_head"]}}
+        **{
+            fp8_to_nf4.UNSLOTH_FP8_TO_NF4_ATTR: {
+                "modules_to_not_convert": ["vision_tower", "lm_head"]
+            }
+        }
     )
     monkeypatch.delenv("UNSLOTH_FP8_TO_NF4_QUANTIZE_16BIT", raising = False)
     kept = fp8_to_nf4.fp8_to_nf4_planner_quantization_config(config, ["lm_head"])
@@ -598,7 +608,10 @@ def test_planner_sizes_an_armed_load_expert_merge_in_the_load_dtype():
         token = fp8_to_nf4._ARMED_CONFIGS.set([config] if armed else None)
         try:
             model, quantizer, _ = planner.build_meta_model(
-                repo, config = config, dtype = torch.bfloat16, rewritten_quantization_config = dict(rewritten)
+                repo,
+                config = config,
+                dtype = torch.bfloat16,
+                rewritten_quantization_config = dict(rewritten),
             )
             units = [(name, 0) for name, _ in model.named_modules() if name.endswith(".mlp")]
             transient = planner._load_transient_by_unit(model, units, quantizer)
