@@ -25,6 +25,7 @@ transformers names. Only the text decoder loads; unrecognised checkpoints return
 import contextlib
 import functools
 import hashlib
+import inspect
 import json
 import re
 import uuid
@@ -89,7 +90,9 @@ def _fp8_block_quantization(quant) -> Optional[dict]:
         if weights.get("strategy") != "block" or not weights.get("block_structure"):
             return None
         if acts is not None and not (
-            acts.get("dynamic") and acts.get("type") == "float" and int(acts.get("num_bits", 8)) == 8
+            acts.get("dynamic")
+            and acts.get("type") == "float"
+            and int(acts.get("num_bits", 8)) == 8
         ):
             return None
         if group.get("output_activations") is not None:
@@ -308,7 +311,14 @@ def _fp8_dequantize_on_load_available() -> bool:
     return callable(getattr(FineGrainedFP8HfQuantizer, "update_weight_conversions", None))
 
 
-def _fetch(model_name, filename, token, revision, local_files_only):
+def _fetch(
+    model_name,
+    filename,
+    token,
+    revision,
+    local_files_only,
+    cache_dir = None,
+):
     if os.path.isdir(model_name):
         path = os.path.join(model_name, filename)
         return path if os.path.isfile(path) else None
@@ -320,6 +330,7 @@ def _fetch(model_name, filename, token, revision, local_files_only):
             token = token,
             revision = revision,
             local_files_only = local_files_only,
+            cache_dir = cache_dir,
         )
     except Exception:
         return None
@@ -335,11 +346,12 @@ def prepare_mistral_format_checkpoint(
     token = None,
     revision = None,
     local_files_only = False,
+    cache_dir = None,
 ) -> Optional[str]:
     """Write (or reuse) a transformers view of a Mistral-format checkpoint; None if unsupported."""
     if not _mistral4_available():
         return None
-    params_path = _fetch(model_name, "params.json", token, revision, local_files_only)
+    params_path = _fetch(model_name, "params.json", token, revision, local_files_only, cache_dir)
     if params_path is None:
         return None
     with open(params_path, encoding = "utf-8") as f:
@@ -355,13 +367,20 @@ def prepare_mistral_format_checkpoint(
         return None
 
     index_path = _fetch(
-        model_name, "consolidated.safetensors.index.json", token, revision, local_files_only
+        model_name,
+        "consolidated.safetensors.index.json",
+        token,
+        revision,
+        local_files_only,
+        cache_dir,
     )
     if index_path is not None:
         with open(index_path, encoding = "utf-8") as f:
             weight_map = json.load(f)["weight_map"]
     else:
-        single = _fetch(model_name, "consolidated.safetensors", token, revision, local_files_only)
+        single = _fetch(
+            model_name, "consolidated.safetensors", token, revision, local_files_only, cache_dir
+        )
         if single is None:
             return None
         from safetensors import safe_open
@@ -387,6 +406,7 @@ def prepare_mistral_format_checkpoint(
             revision = revision,
             token = token,
             local_files_only = local_files_only,
+            cache_dir = cache_dir,
             allow_patterns = shards + ["params.json", *list(_TOKENIZER_FILES)],
         )
         for shard in shards:
@@ -430,7 +450,7 @@ def prepare_mistral_format_checkpoint(
     for name in _TOKENIZER_FILES:
         src = os.path.join(source_dir, name)
         if not os.path.isfile(src):
-            src = _fetch(model_name, name, token, revision, local_files_only)
+            src = _fetch(model_name, name, token, revision, local_files_only, cache_dir)
         if src and os.path.isfile(src):
             import shutil
             shutil.copyfile(src, tmp(name))
@@ -506,7 +526,12 @@ def _write_tokenizer_from_tekken(tekken_path, view, tmp):
     tokenizer.save(tmp("tokenizer.json"))
     os.replace(tmp("tokenizer.json"), os.path.join(view, "tokenizer.json"))
     if not os.path.isfile(os.path.join(view, "tokenizer_config.json")):
-        named = {"<s>": "bos_token", "</s>": "eos_token", "<unk>": "unk_token", "<pad>": "pad_token"}
+        named = {
+            "<s>": "bos_token",
+            "</s>": "eos_token",
+            "<unk>": "unk_token",
+            "<pad>": "pad_token",
+        }
         tokenizer_config = {
             "tokenizer_class": "PreTrainedTokenizerFast",
             "clean_up_tokenization_spaces": False,
@@ -647,12 +672,43 @@ def _forget_load_conversions(model):
 def mistral_format_redirect(fn):
     """Retry `from_pretrained` against the Mistral-format view the loader found."""
 
+    try:
+        signature = inspect.signature(fn)
+    except (TypeError, ValueError):
+        signature = None
+
+    def _argument(args, kwargs, name, default = None):
+        if name in kwargs:
+            return kwargs[name]
+        try:
+            return signature.bind_partial(*args, **kwargs).arguments.get(name, default)
+        except Exception:
+            return default
+
     @functools.wraps(fn)
     def _wrapper(*args, **kwargs):
         try:
             return fn(*args, **kwargs)
         except MistralFormatRedirect as redirect:
             view, source = redirect.path, redirect.source
+        if view is not None and _argument(args, kwargs, "fast_inference", False):
+            raise NotImplementedError(
+                f"Unsloth: `{source}` is in Mistral's own format, which Unsloth loads through "
+                "transformers only. Use `fast_inference = False`, or serve it with vLLM directly."
+            )
+        if (
+            view is not None
+            and str(source).lower().endswith("-bf16")
+            and not os.path.isdir(os.path.expanduser(str(source)))
+            and _argument(args, kwargs, "quantization_config") is None
+            and signature is not None
+        ):
+            # The loader's -bf16 rule already switched this load to 16bit; the view path lost the suffix.
+            bound = signature.bind_partial(*args, **kwargs)
+            bound.arguments.update(load_in_4bit = False, load_in_8bit = False, load_in_16bit = True)
+            if "load_in_fp8" in signature.parameters:
+                bound.arguments["load_in_fp8"] = False
+            args, kwargs = bound.args, bound.kwargs
         if view is not None:
             if "model_name" in kwargs or not args:
                 kwargs["model_name"] = view

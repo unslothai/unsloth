@@ -330,13 +330,22 @@ def _is_mistral_format_checkpoint(
         return False
 
 
-def _adapter_base_is_mistral_format(model_name, token, revision, local_files_only):
+def _adapter_base_is_mistral_format(
+    model_name,
+    token,
+    revision,
+    local_files_only,
+    cache_dir = None,
+):
     # A cached config.json settles it without a Hub request (most adapter bases).
     if not os.path.isdir(model_name):
         try:
             from huggingface_hub import try_to_load_from_cache
             if isinstance(
-                try_to_load_from_cache(model_name, "config.json", revision = revision), str
+                try_to_load_from_cache(
+                    model_name, "config.json", revision = revision, cache_dir = cache_dir
+                ),
+                str,
             ):
                 return False
         except Exception:
@@ -1016,7 +1025,11 @@ class FastLanguageModel(FastLlamaModel):
             if _is_mistral_format_checkpoint(model_name, token, base_revision, local_files_only):
                 # Known architectures load via a translated view; others keep the error.
                 _view = prepare_mistral_format_checkpoint(
-                    model_name, token, base_revision, local_files_only
+                    model_name,
+                    token,
+                    base_revision,
+                    local_files_only,
+                    cache_dir = kwargs.get("cache_dir", None),
                 )
                 if _view is not None:
                     if not was_disabled:
@@ -1078,9 +1091,14 @@ class FastLanguageModel(FastLlamaModel):
             if on_model_resolved is not None:
                 on_model_resolved(model_name)
             # No revision: the caller's ref names the adapter repo, and the base loads unpinned below.
-            if _adapter_base_is_mistral_format(model_name, token, None, local_files_only):
+            _cache_dir = kwargs.get("cache_dir", None)
+            if _adapter_base_is_mistral_format(
+                model_name, token, None, local_files_only, _cache_dir
+            ):
                 model_name = (
-                    prepare_mistral_format_checkpoint(model_name, token, None, local_files_only)
+                    prepare_mistral_format_checkpoint(
+                        model_name, token, None, local_files_only, cache_dir = _cache_dir
+                    )
                     or model_name
                 )
             # '-bf16' hub repos load bf16; a local dir keeps the requested quant unless 16bit is set. Say so: dropping the flags silently resurfaces as an OOM that never mentions quantization.
@@ -1849,7 +1867,11 @@ class FastModel(FastBaseModel):
             if _is_mistral_format_checkpoint(model_name, token, base_revision, local_files_only):
                 # Known architectures load via a translated view; others keep the error.
                 _view = prepare_mistral_format_checkpoint(
-                    model_name, token, base_revision, local_files_only
+                    model_name,
+                    token,
+                    base_revision,
+                    local_files_only,
+                    cache_dir = kwargs.get("cache_dir", None),
                 )
                 if _view is not None:
                     if not was_disabled:
@@ -2047,9 +2069,14 @@ class FastModel(FastBaseModel):
             if on_model_resolved is not None:
                 on_model_resolved(model_name)
             # No revision: the caller's ref names the adapter repo, and the base loads unpinned below.
-            if _adapter_base_is_mistral_format(model_name, token, None, local_files_only):
+            _cache_dir = kwargs.get("cache_dir", None)
+            if _adapter_base_is_mistral_format(
+                model_name, token, None, local_files_only, _cache_dir
+            ):
                 model_name = (
-                    prepare_mistral_format_checkpoint(model_name, token, None, local_files_only)
+                    prepare_mistral_format_checkpoint(
+                        model_name, token, None, local_files_only, cache_dir = _cache_dir
+                    )
                     or model_name
                 )
             # '-bf16' hub repos load bf16; a local dir keeps the requested quant unless 16bit is set. Say so: dropping the flags silently resurfaces as an OOM that never mentions quantization.

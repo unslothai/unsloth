@@ -318,9 +318,9 @@ def test_large3_params_translate_to_mistral4():
             num_bits = 4
         ),
         lambda p: p["yarn"].update(apply_scale = True),
-        lambda p: p["quantization_config"]["config_groups"]["FP8_BLOCK"]["input_activations"].update(
-            num_bits = 4
-        ),
+        lambda p: p["quantization_config"]["config_groups"]["FP8_BLOCK"][
+            "input_activations"
+        ].update(num_bits = 4),
         lambda p: p["quantization_config"]["config_groups"]["FP8_BLOCK"].update(
             targets = ["re:.*experts.*"]
         ),  # vLLM scales attention differently
@@ -749,3 +749,53 @@ def test_tekken_only_checkpoint_gets_a_bos_tokenizer(tmp_path, hub_cache):
     reference = mistral_common.Tekkenizer.from_file(str(tmp_path / "src" / "tekken.json"))
     for sample in (text, "  hell\n\nworld12345", "wor ld 🚀"):
         assert tok(sample).input_ids == [1] + reference.encode(sample, bos = False, eos = False)
+
+
+def _redirecting_loader(calls):
+    @mf.mistral_format_redirect
+    def from_pretrained(
+        model_name = None,
+        max_seq_length = 2048,
+        dtype = None,
+        load_in_4bit = True,
+        load_in_8bit = False,
+        load_in_16bit = False,
+        fast_inference = False,
+        revision = None,
+        quantization_config = None,
+        **kwargs,
+    ):
+        calls.append(
+            dict(model_name = model_name, load_in_4bit = load_in_4bit, load_in_16bit = load_in_16bit)
+        )
+        if len(calls) == 1:
+            raise mf.MistralFormatRedirect("/views/large3", model_name)
+        return object(), "tokenizer"
+
+    return from_pretrained
+
+
+def test_redirect_keeps_the_bf16_repo_rule_and_refuses_fast_inference(monkeypatch):
+    monkeypatch.setattr(mf, "_mistral_format_conversions", _null_context)
+    calls = []
+    # The loader loads '-BF16' hub repos in 16bit; the view path has lost that suffix.
+    _redirecting_loader(calls)(
+        "mistralai/Mistral-Large-3-675B-Instruct-2512-BF16", 4096, None, True
+    )
+    assert calls[1] == dict(model_name = "/views/large3", load_in_4bit = False, load_in_16bit = True)
+    calls.clear()
+    _redirecting_loader(calls)("mistralai/Mistral-Large-3-675B-Instruct-2512")
+    assert calls[1] == dict(model_name = "/views/large3", load_in_4bit = True, load_in_16bit = False)
+    with pytest.raises(NotImplementedError, match = "fast_inference = False"):
+        _redirecting_loader([])("mistralai/Mistral-Large-3-675B-Instruct-2512", fast_inference = True)
+
+
+def test_view_downloads_honour_cache_dir(tmp_path, monkeypatch):
+    seen = []
+    monkeypatch.setattr(
+        mf,
+        "_fetch",
+        lambda *args, **kwargs: seen.append(args[5] if len(args) > 5 else kwargs) or None,
+    )
+    assert mf.prepare_mistral_format_checkpoint("org/repo", cache_dir = str(tmp_path)) is None
+    assert seen == [str(tmp_path)]
