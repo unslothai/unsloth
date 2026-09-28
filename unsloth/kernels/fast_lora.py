@@ -24,9 +24,7 @@ from .utils import (
 
 _is_compiling = torch.compiler.is_compiling
 
-# Inductor before torch 2.11 miscompiles the traced backward of the LoRA Functions below (seen on
-# 2.10: LoRA gradients read stale memory), so there torch.compile keeps them opaque, a graph break
-# as before the 4bit kernels became traceable. The kernels inside run the same either way.
+# Inductor before torch 2.11 miscompiles these Functions' traced backward (wrong LoRA gradients).
 TRACE_LORA_FUNCTIONS = Version(torch.__version__) >= Version("2.11.0")
 
 
@@ -191,8 +189,7 @@ class LoRA_MLP(torch.autograd.Function):
 
         # dX = matmul_lora(df, upW.t(), ...) + matmul_lora(de, gateW.t(), ...), expanded below.
         upW = fast_dequantize(upW.t(), upW_quant)
-        # Reusing X's storage for dX is an eager memory saving only: torch 2.11's AOT autograd
-        # rejects a backward that mutates a forward input which requires grad.
+        # Eager only: AOT autograd rejects a backward mutating a forward input that requires grad.
         dX = torch.matmul(df, upW.t(), out = X if ctx.inplace and not _is_compiling() else None)
         del upW
         dX.addmm_(df @ upB.t(), upA.t(), alpha = upS)
