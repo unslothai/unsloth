@@ -23,6 +23,7 @@ from ._utils import apply_unsloth_gradient_checkpointing
 from ._utils import __version__, importlib_version
 from ._utils import move_to_device
 from ._utils import per_layer_device
+from ._utils import embedding_applies_scale
 from ._utils import (
     _get_inference_mode_context_manager,
     _prepare_model_for_qat,
@@ -35,6 +36,7 @@ from .loader_utils import (
     _exclude_rope_inv_freq_from_ddp,
     _get_fp8_mode_and_check_settings,
     _restore_dropped_fp8_scales,
+    _prepare_compressed_tensors_model,
     planner_class_mismatch_reason,
     planner_model_class,
     planner_config_overrides,
@@ -43,6 +45,7 @@ from .loader_utils import (
     planner_quantization_kwargs,
     requested_device_map,
     resolve_unsloth_device_map,
+    warn_if_bitsandbytes_quantized_nothing,
 )
 from ..utils.packing import (
     get_packed_info_from_kwargs,
@@ -968,7 +971,7 @@ def LlamaModel_fast_forward(
 
     train_embed_tokens = self.embed_tokens.weight.requires_grad
 
-    if IS_GEMMA:
+    if IS_GEMMA and not embedding_applies_scale(self.embed_tokens):
         normalizer = torch.tensor(math_sqrt(self.config.hidden_size), dtype = inputs_embeds.dtype)
 
         if train_embed_tokens:
@@ -1014,13 +1017,23 @@ def LlamaModel_fast_forward(
     else:
         padding_mask = None
 
-        attention_mask = _prepare_4d_causal_attention_mask_for_sdpa(
-            attention_mask,
-            (batch_size, seq_length),
-            inputs_embeds,
-            past_key_values_length,
-            sliding_window = getattr(self.config, "sliding_window", None),
-        )
+        # Gemma2 builds its own masks below; a 4D sliding mask here would also window the global layers.
+        if IS_GEMMA2:
+            # No padding: keep the flash path, which windows each layer itself.
+            if (
+                HAS_FLASH_ATTENTION_SOFTCAPPING
+                and attention_mask.dim() == 2
+                and bool(attention_mask.all())
+            ):
+                attention_mask = None
+        else:
+            attention_mask = _prepare_4d_causal_attention_mask_for_sdpa(
+                attention_mask,
+                (batch_size, seq_length),
+                inputs_embeds,
+                past_key_values_length,
+                sliding_window = getattr(self.config, "sliding_window", None),
+            )
         # Must NOT convert to bool; that weirdly causes errors.
 
     hidden_states = inputs_embeds
@@ -1050,27 +1063,32 @@ def LlamaModel_fast_forward(
     dynamic_SWA_mask = None
     dynamic_GA_mask = None
     if IS_GEMMA2:
+        # An unpadded prefill shares the static [n, n] masks instead of two [bsz, 1, q, q] copies.
+        unpadded_prefill = (
+            attention_mask is not None
+            and past_key_values_length == 0
+            and attention_mask.dim() == 2
+            and bool(attention_mask.all())
+        )
         if HAS_FLASH_ATTENTION_SOFTCAPPING and attention_mask is None:
             self.SWA_mask = True
             self.GA_mask = False
-        elif attention_mask is not None:
+        elif attention_mask is not None and not unpadded_prefill:
             # Unsloth needs a 2D mask, not [2, 1, n, n] (#853), converted to float not bool
             # (pytorch/pytorch#103749).
 
-            dynamic_SWA_mask = _prepare_4d_causal_attention_mask_for_sdpa(
-                attention_mask,
-                (batch_size, seq_length),
-                inputs_embeds,
-                past_key_values_length,
-                sliding_window = self.config.sliding_window,
-            )
-            dynamic_GA_mask = _prepare_4d_causal_attention_mask_for_sdpa(
-                attention_mask,
-                (batch_size, seq_length),
-                inputs_embeds,
-                past_key_values_length,
-                sliding_window = None,
-            )
+            if attention_mask.dim() == 2:
+                # The SDPA helper returns None for an all-ones mask; the softcapping kernels need a tensor.
+                key_value_length = past_key_values_length + seq_length
+                dynamic_SWA_mask = AttentionMaskConverter(
+                    is_causal = True, sliding_window = self.config.sliding_window
+                ).to_4d(attention_mask, seq_length, inputs_embeds.dtype, key_value_length)
+                dynamic_GA_mask = AttentionMaskConverter(is_causal = True).to_4d(
+                    attention_mask, seq_length, inputs_embeds.dtype, key_value_length
+                )
+            else:
+                dynamic_SWA_mask = attention_mask
+                dynamic_GA_mask = attention_mask
             use_static_mask = False
 
         elif not hasattr(self, "SWA_mask"):
@@ -1340,6 +1358,83 @@ def _LlamaModel_fast_forward_inference(
 LlamaModel_fast_forward_inference = _LlamaModel_fast_forward_inference()
 
 
+# Copy of unsloth_zoo.device_map_planner's tables, for zoos predating detect_logit_transforms.
+_FALLBACK_TRANSFORM_FIELDS = (
+    ("logit_softcapping", ("final_logit_softcapping", "logits_soft_cap", "output_logit_soft_cap")),
+    ("logit_scale_multiply", ("logit_scale", "lm_head_multiplier", "output_multiplier")),
+    ("logit_scale_divide", ("logits_scaling",)),
+)
+_FALLBACK_TRANSFORM_BUCKETS = tuple(bucket for bucket, _ in _FALLBACK_TRANSFORM_FIELDS)
+# `logits_scaling` is not one knob: Granite divides by it, HyperCLOVA X multiplies (MuP),
+# and MiniCPM3 scales the hidden states before the head, so it is not a logit transform.
+_FALLBACK_BUCKET_OVERRIDES = {
+    ("logits_scaling", "hyperclovax"): "logit_scale_multiply",
+    ("logits_scaling", "minicpm3"): None,
+}
+
+
+def resolve_logit_transforms(config):
+    """What the loss must do to the logits, as (softcapping, multiply, divide).
+
+    Every loss branch reads it from here so they cannot drift apart. 0 means off, so an
+    absent field must read as 0 and not as 1.
+    """
+    if detect_logit_transforms is not None:
+        transforms = detect_logit_transforms(config)
+        return (
+            transforms["logit_softcapping"],
+            transforms["logit_scale_multiply"],
+            transforms["logit_scale_divide"],
+        )
+    # Same table as detect_logit_transforms: the zoo version must not pick the loss.
+    found = dict.fromkeys(_FALLBACK_TRANSFORM_BUCKETS, 0)
+    model_type = getattr(config, "model_type", "") or ""
+    for bucket, names in _FALLBACK_TRANSFORM_FIELDS:
+        for name in names:
+            target = _FALLBACK_BUCKET_OVERRIDES.get((name, model_type), bucket)
+            if target is None or found[target]:
+                continue
+            # Nullable: a None reaches the kernel and raises instead of reading as "off".
+            value = getattr(config, name, 0) or 0
+            if value:
+                found[target] = value
+                break
+    return (
+        found["logit_softcapping"],
+        found["logit_scale_multiply"],
+        found["logit_scale_divide"],
+    )
+
+
+def resolve_logit_scaling(config):
+    """The single factor fast_cross_entropy_loss takes, with the divisor folded in."""
+    logit_softcapping, logit_scale_multiply, logit_scale_divide = resolve_logit_transforms(config)
+    logit_scaling = logit_scale_multiply
+    if logit_scale_divide:
+        logit_scaling = (logit_scaling or 1.0) / logit_scale_divide
+    return logit_softcapping, logit_scaling
+
+
+def apply_logit_transforms(logits, logit_softcapping, logit_scaling):
+    """Scale, then soft cap, the order the kernels and the reference both use. Only for
+    branches that return the logits; the loss paths let the kernel apply them."""
+    if logit_scaling != 0:
+        if logits.requires_grad:
+            logits = logit_scaling * logits
+        else:
+            logits *= logit_scaling
+    if logit_softcapping != 0:
+        if logits.requires_grad:
+            logits = (1.0 / logit_softcapping) * logits
+            logits = torch.tanh(logits)
+            logits = logit_softcapping * logits
+        else:
+            logits *= 1.0 / logit_softcapping
+            logits.tanh_()
+            logits *= logit_softcapping
+    return logits
+
+
 def CausalLM_fast_forward(fast_forward_inference):
     def _CausalLM_fast_forward(
         self,
@@ -1402,8 +1497,6 @@ def CausalLM_fast_forward(fast_forward_inference):
         lm_head = self.lm_head.weight
         lm_head_device = lm_head.device
 
-        logit_softcapping = getattr(self.config, "final_logit_softcapping", 0)
-        logit_scaling = getattr(self.config, "logit_scale", 0)
         dtype = lm_head.dtype
         # Skip int max() if either is a tensor (HF selective-decode form).
         if isinstance(num_logits_to_keep, torch.Tensor) or isinstance(logits_to_keep, torch.Tensor):
@@ -1444,8 +1537,16 @@ def CausalLM_fast_forward(fast_forward_inference):
                 if n_items is None:
                     n_items = kwargs.get("n_items", None)
 
-                if self.config.model_type == "falcon_h1":
-                    hidden_states = hidden_states * self.config.lm_head_multiplier
+                # Without these the fused branch optimizes a different loss than the branch below.
+                logit_softcapping, logit_scale_multiply, logit_scale_divide = (
+                    resolve_logit_transforms(self.config)
+                )
+
+                if self.config.model_type == "falcon_h1" and logit_scale_multiply:
+                    # Via the resolver, so a nullable lm_head_multiplier reads as "off".
+                    hidden_states = hidden_states * logit_scale_multiply
+                    # Now folded into the hidden states, so the kernel must not scale again.
+                    logit_scale_multiply = 0
 
                 # Packed-boundary guard on raw labels (the fused kernel shifts internally). This branch RETURNS,
                 # so mask_packed_sequence_boundaries() below is dead on packed paths: it needs
@@ -1470,6 +1571,8 @@ def CausalLM_fast_forward(fast_forward_inference):
                     target_gb = None,
                     torch_compile = True,
                     logit_softcapping = logit_softcapping,
+                    logit_scale_multiply = logit_scale_multiply,
+                    logit_scale_divide = logit_scale_divide,
                 )
                 if not return_dict:
                     # Fused CE never materializes logits; use EMPTY_LOGITS like the return_dict branch below (#2068).
@@ -1489,22 +1592,8 @@ def CausalLM_fast_forward(fast_forward_inference):
 
         logits = logits.to(_get_dtype(dtype_from_config(self.config)))
         loss = None
-        # Which field carries the scale is per family (cohere logit_scale, granite logits_scaling,
-        # falcon_h1 lm_head_multiplier). The planner sizes the head's card from the same answer, so a
-        # new family is taught once, not twice.
-        if detect_logit_transforms is not None:
-            _transforms = detect_logit_transforms(self.config)
-            logit_softcapping = _transforms["logit_softcapping"]
-            logit_scaling = _transforms["logit_scale_multiply"]
-            if not logit_scaling and _transforms["logit_scale_divide"]:
-                logit_scaling = 1 / _transforms["logit_scale_divide"]
-        else:
-            logit_softcapping = getattr(self.config, "final_logit_softcapping", 0)
-            logit_scaling = getattr(self.config, "logit_scale", 0)
-            if self.config.model_type == "granite":
-                logit_scaling = 1 / getattr(self.config, "logits_scaling", 1)
-            elif self.config.model_type == "falcon_h1":
-                logit_scaling = self.config.lm_head_multiplier
+        # Same answer the fused branch above reads, so the two branches cannot drift apart.
+        logit_softcapping, logit_scaling = resolve_logit_scaling(self.config)
 
         if labels is not None:
             shift_logits = logits
@@ -1526,20 +1615,7 @@ def CausalLM_fast_forward(fast_forward_inference):
                 n_items = n_items,
             )
         else:
-            if logit_scaling != 0:
-                if logits.requires_grad:
-                    logits = logit_scaling * logits
-                else:
-                    logits *= logit_scaling
-            if logit_softcapping != 0:
-                if logits.requires_grad:
-                    logits = (1.0 / logit_softcapping) * logits
-                    logits = torch.tanh(logits)
-                    logits = logit_softcapping * logits
-                else:
-                    logits *= 1.0 / logit_softcapping
-                    logits.tanh_()
-                    logits *= logit_softcapping
+            logits = apply_logit_transforms(logits, logit_softcapping, logit_scaling)
 
         if not return_dict:
             output = (logits,) + outputs[1:]
@@ -2542,8 +2618,34 @@ class FastLlamaModel:
 
         # Disable bitsandbytes loading if the model has non-bitsandbytes quantization.
         load_in_4bit, load_in_8bit, _ckpt_quant_method = check_and_disable_bitsandbytes_loading(
-            model_config, load_in_4bit = load_in_4bit, load_in_8bit = load_in_8bit
+            model_config,
+            load_in_4bit = load_in_4bit,
+            load_in_8bit = load_in_8bit,
+            rewrite_modelopt = not _vllm_will_load_weights(fast_inference, num_labels),
+            token = token,
+            model_name = model_name,
+            revision = revision,
+            hub_kwargs = {
+                "cache_dir": kwargs.get("cache_dir"),
+                "subfolder": kwargs.get("subfolder"),
+                "local_files_only": kwargs.get("local_files_only", False),
+            },
         )
+        from .modelopt_fp8 import (
+            keep_fp8_scale_names_on_save,
+            move_config_overrides_onto_config,
+            keep_task_heads_unquantized,
+            modelopt_planner_quantization_config,
+            modelopt_rewritten,
+            pop_modelopt_key_mapping,
+        )
+
+        _modelopt_rewritten = modelopt_rewritten(model_config)
+        if _modelopt_rewritten:
+            verify_fp8_support_if_applicable(model_config)
+        if _modelopt_rewritten and num_labels is not None:
+            keep_task_heads_unquantized(model_config, AutoModelForSequenceClassification)
+        pop_modelopt_key_mapping(model_config, kwargs)
         # Correct UNSLOTH_MODEL_NAME's bnb tokens now the effective bnb state is known (the per-load env
         # was built before remap/disable). gpt-oss only.
         sync_unsloth_model_name_bnb_flags(load_in_4bit, load_in_8bit)
@@ -2559,7 +2661,11 @@ class FastLlamaModel:
         if _planner_skip_reason is None and num_labels is not None:
             _planner_skip_reason = (
                 planner_class_mismatch_reason(
-                    resolve_model_class(AutoModelForSequenceClassification, model_config),
+                    resolve_model_class(
+                        AutoModelForSequenceClassification,
+                        model_config,
+                        trust_remote_code = trust_remote_code,
+                    ),
                     planner_model_class(model_config, trust_remote_code = trust_remote_code),
                 )
                 or "num_labels loads a task head the repo config does not describe"
@@ -2606,6 +2712,9 @@ class FastLlamaModel:
                 load_in_4bit = load_in_4bit,
                 load_in_8bit = load_in_8bit,
                 quantization_config = kwargs.get("quantization_config", None),
+                rewritten_quantization_config = modelopt_planner_quantization_config(model_config)
+                if _modelopt_rewritten
+                else None,
                 # The same extra the bnb config below adds.
                 extra_skip_modules = ["out_proj"] if IS_FALCON_H1 else None,
             ),
@@ -2692,11 +2801,19 @@ class FastLlamaModel:
                         and not _head.weight.is_floating_point()
                     ):
                         _head.to(dtype)
+                warn_if_bitsandbytes_quantized_nothing(
+                    model, kwargs.get("quantization_config", None), model_name
+                )
                 # Attach dispatch hooks for bnb multi-device loads. The hooks stand aside only when vLLM
                 # owns the weights, which it never does here: vLLM has no classification head, so this
                 # branch loaded the weights in-process even though the caller asked for fast_inference.
                 from unsloth.models.vision import _attach_bnb_multidevice_hooks
+                from unsloth.models._remote_code_buffers import (
+                    restore_remote_code_non_persistent_buffers,
+                )
 
+                # transformers 5 leaves remote code's non-persistent buffers (RoPE inv_freq) uninitialised.
+                restore_remote_code_non_persistent_buffers(model)
                 _attach_bnb_multidevice_hooks(
                     model,
                     load_in_4bit = load_in_4bit,
@@ -2715,13 +2832,20 @@ class FastLlamaModel:
                     subfolder = kwargs.get("subfolder"),
                     cache_dir = kwargs.get("cache_dir"),
                     variant = kwargs.get("variant"),
+                    dtype = dtype,
                 )
+                _prepare_compressed_tensors_model(model)
             elif not fast_inference:
-                if user_config is not None:
+                if user_config is not None or _modelopt_rewritten:
                     # Transformers 5.x @strict model init rejects extra kwargs next to config=, so set the override
                     # on the config and pass the single config object through.
                     if max_position_embeddings is not None:
                         model_config.max_position_embeddings = max_position_embeddings
+                    _rope_scaling = kwargs.pop("rope_scaling", None)
+                    if _rope_scaling is not None:
+                        model_config.rope_scaling = _rope_scaling
+                    if _modelopt_rewritten and user_config is None:
+                        move_config_overrides_onto_config(model_config, kwargs)
                     model = AutoModelForCausalLM.from_pretrained(
                         model_name,
                         config = model_config,
@@ -2743,8 +2867,16 @@ class FastLlamaModel:
                         revision = revision,
                         **kwargs,
                     )
+                warn_if_bitsandbytes_quantized_nothing(
+                    model, kwargs.get("quantization_config", None), model_name
+                )
                 from unsloth.models.vision import _attach_bnb_multidevice_hooks
+                from unsloth.models._remote_code_buffers import (
+                    restore_remote_code_non_persistent_buffers,
+                )
 
+                # transformers 5 leaves remote code's non-persistent buffers (RoPE inv_freq) uninitialised.
+                restore_remote_code_non_persistent_buffers(model)
                 _attach_bnb_multidevice_hooks(
                     model,
                     load_in_4bit = load_in_4bit,
@@ -2763,7 +2895,9 @@ class FastLlamaModel:
                     subfolder = kwargs.get("subfolder"),
                     cache_dir = kwargs.get("cache_dir"),
                     variant = kwargs.get("variant"),
+                    dtype = dtype,
                 )
+                _prepare_compressed_tensors_model(model)
                 model.fast_generate = make_fast_generate_wrapper(model.generate)
                 model.fast_generate_batches = None
             else:
@@ -2818,6 +2952,8 @@ class FastLlamaModel:
         finally:
             raise_handler.remove()
             os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = old_hf_transfer
+        if _modelopt_rewritten:
+            keep_fp8_scale_names_on_save(model)
 
         # Counteract saved tokenizers.
         tokenizer_name = model_name if tokenizer_name is None else tokenizer_name

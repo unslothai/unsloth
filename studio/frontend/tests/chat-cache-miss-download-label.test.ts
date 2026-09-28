@@ -119,7 +119,7 @@ test("an unknown total still updates the toast the user is looking at", () => {
   const hook = readText("../src/features/chat/hooks/use-chat-model-runtime.ts");
   const start = hook.indexOf("prog.expected_bytes === 0 &&");
   assert.ok(start > 0, "the unknown-total branch moved");
-  const end = hook.indexOf("} else if (prog.progress >= 1 && hasShownProgress)", start);
+  const end = hook.indexOf("allDownloadsComplete &&", start);
   assert.ok(end > start, "the branch after the unknown-total one moved");
   const branch = hook.slice(start, end);
 

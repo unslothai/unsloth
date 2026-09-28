@@ -50,7 +50,7 @@ export function SettingsRow({
       <div
         className={cn(
           // Widest floor that leaves already-fitting rows unchanged.
-          "flex min-w-[11rem] flex-1 basis-0 gap-2.5",
+          "flex min-w-[calc(11rem*var(--ui-space-scale,1))] flex-1 basis-0 gap-2.5",
           alignTop ? "items-start" : "items-center",
         )}
       >
@@ -89,7 +89,7 @@ export function SettingsRow({
                     />
                   </button>
                 </TooltipTrigger>
-                <TooltipContent className="max-w-[300px] text-ui-11 leading-snug">
+                <TooltipContent className="max-w-[calc(300px*var(--ui-space-scale,1))] text-ui-11 leading-snug">
                   {hint}
                 </TooltipContent>
               </Tooltip>
@@ -107,7 +107,7 @@ export function SettingsRow({
           className={cn(
             "flex max-w-full shrink-0",
             // Line the control up with the first description line, not the label.
-            alignTop ? "items-start pt-[21px]" : "items-center",
+            alignTop ? "items-start pt-[calc(21px*var(--ui-space-scale,1))]" : "items-center",
           )}
         >
           {children}

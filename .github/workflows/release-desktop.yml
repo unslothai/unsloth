@@ -806,9 +806,33 @@ jobs:
         with:
           workspaces: 'studio/src-tauri -> target'
 
-          # Windows release builds can spend many minutes uploading the target cache
-          # after signed artifacts are ready, which blocks the publisher for no release benefit.
-          save-if: ${{ matrix.platform != 'windows-latest' }}
+          # Restore only, on every platform. Windows already did not save, because a
+          # release build there can spend many minutes uploading the target cache after
+          # the signed artifacts are ready, blocking the publisher for no release
+          # benefit. The other legs now do not either, for a different reason.
+          #
+          # This job holds TAURI_SIGNING_PRIVATE_KEY, APPLE_ID, APPLE_PASSWORD,
+          # APPLE_CERTIFICATE, KEYCHAIN_PASSWORD and the AZURE_* signing credentials,
+          # and it was the only job in the organisation where a secret-bearing run wrote
+          # a cache that pull requests can read. GitHub makes caches written on the
+          # default branch restorable by every PR, so the blast radius of anything that
+          # serialised one of those values into studio/src-tauri/target would have been
+          # every contributor who can open one. That is the shape of the 2026-09-21
+          # cargo-miri disclosure, where miri wrote the whole environment under target/
+          # and CI cached it.
+          #
+          # Nothing here does that today, and it was checked rather than assumed: all
+          # 673 locked dependencies were audited from source, 20 build scripts declare
+          # cargo:rerun-if-env-changed, and the 27 variables they name include none of
+          # the above. See tests/studio/test_cached_paths_hold_no_credentials.py for the
+          # full result and the two runtime-constructed cases. But cargo writes the
+          # VALUE of any rerun-if-env-changed variable into
+          # target/<profile>/.fingerprint/*.json, which rust-cache preserves for
+          # dependencies, so that clean result is a property of 673 third-party build
+          # scripts rather than of anything in this repository, and it is re-decided by
+          # every `cargo update`. Restoring is free of that risk; saving is not worth it
+          # for a workflow_dispatch-only release that runs a handful of times a month.
+          save-if: false
 
       # ── macOS: fail before the build if notarization cannot run ──
       - name: Check Apple notarization credentials

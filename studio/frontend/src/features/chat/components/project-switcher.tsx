@@ -69,7 +69,7 @@ export function ProjectSwitcher({
                 ? "Loading project"
                 : "Pick a project"
           }
-          className="-mx-1 flex h-[34px] shrink-0 items-center gap-2 rounded-full pl-3 pr-2.5 transition-colors hover:bg-[#ececec] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring dark:hover:bg-accent"
+          className="-mx-1 flex h-[calc(34px*var(--ui-space-scale,1))] shrink-0 items-center gap-2 rounded-full pl-3 pr-2.5 transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
         >
           <HugeiconsIcon
             icon={Folder01Icon}
@@ -77,7 +77,8 @@ export function ProjectSwitcher({
             className="size-icon shrink-0 text-foreground/70"
           />
           <span className="flex min-w-0 flex-1 items-baseline">
-            <span className="min-w-0 flex max-w-[150px] flex-1 items-baseline truncate font-heading text-ui-16 font-medium leading-tight text-black dark:text-white">
+            {/* Block: text-overflow skips flex containers, so the ellipsis never showed. */}
+            <span className="block min-w-0 max-w-[calc(150px*var(--ui-space-scale,1))] flex-1 truncate font-heading text-ui-16 font-medium leading-tight text-black dark:text-foreground">
               {label}
             </span>
           </span>

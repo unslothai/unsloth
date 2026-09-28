@@ -202,9 +202,10 @@ def test_pinning_the_pair_makes_this_machine_irrelevant(host):
 def test_the_installed_family_decides_the_skip(family, torch_owns_rocm, expect_reinstall):
     """The other half: without this, pinning both to None would satisfy the test above while
     the feature they gate quietly stopped working."""
+    # 2.11.0: gfx110X-all is floored, so a 2.10 build would reinstall for the floor.
     with ambient("bare"):
         calls = _route(
-            "gfx1103", "2.10.0+rocm7.13.0|7.13|", family = family, torch_owns_rocm = torch_owns_rocm
+            "gfx1103", "2.11.0+rocm7.13.0|7.13|", family = family, torch_owns_rocm = torch_owns_rocm
         )
     rerouted = "repo.amd.com/rocm/whl/gfx110X-all/" in calls
     assert rerouted is expect_reinstall, (
