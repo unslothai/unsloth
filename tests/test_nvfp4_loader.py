@@ -129,6 +129,33 @@ def test_dtype_casts_keep_the_nvfp4_storage_dtypes(ckpt, monkeypatch):
         model.to(torch.float16)
         assert {n: p.dtype for n, p in module.named_parameters()} == dtypes
         assert torch.equal(module(x), want) and want.abs().max() > 0
+        # Fused LoRA paths dequantize through the quant state, which must follow the cast.
+        assert module.weight.quant_state.dtype == torch.float16
+
+
+def test_peft_merge_dequantizes_the_packed_base(ckpt, monkeypatch):
+    # merge_and_unload / merge_adapter / merged_4bit add the dense delta into base_layer.weight.
+    from peft import LoraConfig, get_peft_model
+    from unsloth.kernels.nvfp4 import nvfp4_dequantize
+    from unsloth.models import loader_utils
+
+    monkeypatch.setenv("UNSLOTH_COMPRESSED_TENSORS_FP8_KERNELS", "0")
+    path, kinds = ckpt["qwen3"]
+    model = _load_raw(path, "qwen3")
+    loader_utils._prepare_compressed_tensors_model(model)
+    name = next(n for n, k in kinds.items() if k == "nvfp4")
+    model = get_peft_model(model, LoraConfig(r = 4, target_modules = [name.split(".")[-1]]))
+    lora = _module(model, "base_model.model." + name)
+    torch.nn.init.normal_(lora.lora_B["default"].weight, std = 0.02)
+    base = lora.get_base_layer()
+    want = nvfp4_dequantize(
+        base.weight_packed, base.weight_scale, base.weight_global_scale, torch.bfloat16
+    )
+    want += lora.get_delta_weight("default")
+    merged = model.merge_and_unload()
+    layer = _module(merged, name)
+    assert type(layer) is torch.nn.Linear and not hasattr(layer, "weight_packed")
+    assert torch.equal(layer.weight, want)
 
 
 def test_opt_out_keeps_the_full_decompress(ckpt, monkeypatch):

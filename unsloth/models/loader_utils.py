@@ -1590,7 +1590,50 @@ class _UnslothNVFP4Linear(torch.nn.Linear):
                 if param.device != device:
                     param = torch.nn.Parameter(param.data.to(device), requires_grad = False)
                 self._parameters[name] = param
+        # The compute dtype follows the cast (model.half() dequantizes to fp16 from then on).
+        dtype = getattr(self, "_unsloth_nvfp4_dtype", torch.bfloat16)
+        self._unsloth_nvfp4_dtype = fn(torch.empty(0, dtype = dtype)).dtype
         return self
+
+    def dequantize_(self):
+        """Turn this layer into a plain nn.Linear holding the dense weight (PEFT merges add into `.weight`)."""
+        from unsloth.kernels.nvfp4 import nvfp4_dequantize
+
+        with torch.no_grad():
+            W = nvfp4_dequantize(
+                self.weight_packed,
+                self.weight_scale,
+                self.weight_global_scale,
+                getattr(self, "_unsloth_nvfp4_dtype", torch.bfloat16),
+            )
+        for name in ("weight_packed", "weight_scale", "weight_global_scale", "input_global_scale"):
+            self._parameters.pop(name, None)
+        self.__dict__.pop("forward", None)
+        self.__class__ = torch.nn.Linear
+        self.weight = torch.nn.Parameter(W, requires_grad = False)
+        self._unsloth_compressed_tensors_nvfp4 = False
+        return self
+
+
+def _patch_peft_merge_for_nvfp4():
+    """PEFT merges add the dense LoRA delta into base_layer.weight: dequantize a packed NVFP4 base first."""
+    try:
+        from peft.tuners.lora import layer as lora_layer
+    except Exception:
+        return
+    merge = lora_layer.Linear.merge
+    if getattr(merge, "_unsloth_nvfp4", False):
+        return
+
+    @functools.wraps(merge)
+    def patched_merge(self, *args, **kwargs):
+        base_layer = self.get_base_layer()
+        if isinstance(base_layer, _UnslothNVFP4Linear):
+            base_layer.dequantize_()
+        return merge(self, *args, **kwargs)
+
+    patched_merge._unsloth_nvfp4 = True
+    lora_layer.Linear.merge = patched_merge
 
 
 def _route_compressed_tensors_nvfp4_to_unsloth(model):
@@ -1649,6 +1692,7 @@ def _route_compressed_tensors_nvfp4_to_unsloth(model):
         module.forward = _unsloth_compressed_tensors_nvfp4_forward.__get__(module)
         module._unsloth_compressed_tensors_nvfp4 = True
     _remove_compressed_tensors_decompress_hook(model)
+    _patch_peft_merge_for_nvfp4()
     model._unsloth_compressed_tensors_nvfp4 = len(nvfp4)
     return len(nvfp4)
 
