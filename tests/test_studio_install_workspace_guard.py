@@ -1526,6 +1526,7 @@ def _run_sh_launcher_repair(
     assert res.returncode == 0 and "REPAIR_DONE" in res.stdout, res.stderr
 
 
+@pytest.mark.skipif(os.name != "posix", reason = "runs the POSIX installer function")
 def test_install_sh_launcher_restores_a_missing_or_malformed_install_id(tmp_path):
     """Without the id the backend reports "", which the baked id never matches, so the launcher
     would start a new Studio on every click and never open one."""
@@ -1560,6 +1561,7 @@ def test_install_sh_launcher_restores_a_missing_or_malformed_install_id(tmp_path
     ], "temp file left behind"
 
 
+@pytest.mark.skipif(os.name != "posix", reason = "runs the POSIX installer function")
 def test_install_sh_launcher_repair_is_a_no_op_without_the_id_path(tmp_path):
     """A studio.conf from an older install names no id file, so there is nothing to repair."""
     studio_home, data_dir, baked = _generated_sh_launcher(tmp_path)
