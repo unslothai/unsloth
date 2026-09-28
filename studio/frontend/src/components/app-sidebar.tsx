@@ -5016,7 +5016,7 @@ export function AppSidebar() {
               className={cn(
                 "relative z-10 flex items-center gap-[calc(8.5px*var(--ui-space-scale,1))] group-data-[collapsible=icon]:hidden",
                 usesDesktopTitlebar
-                  ? "justify-between pl-[var(--studio-sidebar-brand-inset)] pr-3"
+                  ? "justify-between pl-4 pr-3"
                   : "justify-between",
               )}
             >
@@ -5041,7 +5041,7 @@ export function AppSidebar() {
                   <img
                     src="/circle-logo-small.png"
                     alt="Unsloth"
-                    className="relative top-px h-[var(--studio-sidebar-brand-size)] w-[var(--studio-sidebar-brand-size)] shrink-0 rounded-full object-cover"
+                    className="relative top-px h-[calc(22px+0.5rem*var(--ui-font-scale,1))] w-[calc(22px+0.5rem*var(--ui-font-scale,1))] shrink-0 rounded-full object-cover"
                   />
                   <span className="relative -top-px truncate font-heading text-[calc(13px+0.5rem*var(--ui-font-scale,1))] font-semibold tracking-[0em] leading-tight text-black dark:text-foreground dark:tracking-[0.02em]">
                     unsloth
