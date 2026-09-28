@@ -188,6 +188,7 @@ def strip_server_executed_tool_call(line: str, pending_call: bool = False) -> st
 
     not_really_final = ("tool_calls", "stop", "function_call") if pending_call else ("tool_calls",)
     changed = False
+    calls_withheld = False
     kept_choices = []
     for choice in choices:
         if not isinstance(choice, dict):
@@ -201,7 +202,7 @@ def strip_server_executed_tool_call(line: str, pending_call: bool = False) -> st
             if isinstance(src, dict) and "tool_calls" in src:
                 src = {k: v for k, v in src.items() if k != "tool_calls"}
                 choice[src_key] = src
-                withheld = True
+                withheld = calls_withheld = True
         if choice.get("finish_reason") in not_really_final:
             # Blanked, not renamed: the turn has not finished, the loop answers in the next
             # one. Cannot be keyed on a call withheld on this line, since the arguments
@@ -219,6 +220,9 @@ def strip_server_executed_tool_call(line: str, pending_call: bool = False) -> st
     if not changed:
         return line
     payload = {**payload, "choices": kept_choices}
+    if calls_withheld:
+        # Names the withheld calls by id; the caller never saw them.
+        payload.pop("_mcp_provenance", None)
     if not _choices_say_anything(kept_choices) and "usage" not in payload:
         return None
     return "data: " + json.dumps(payload, separators = (",", ":"))

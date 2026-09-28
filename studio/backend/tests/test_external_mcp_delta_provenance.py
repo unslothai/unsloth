@@ -344,3 +344,21 @@ def test_the_prefix_test_only_looks_at_other_declared_names():
     assert _is_strict_prefix_of_declared("ab", {"a", "ab"}) is False
     assert _is_strict_prefix_of_declared("a", {"a"}) is False
     assert _is_strict_prefix_of_declared("a", set()) is False
+
+
+def test_a_caller_without_ui_events_never_sees_the_stamp():
+    from core.inference.sse_control_frames import strip_server_executed_tool_call
+
+    chunk = {
+        "choices": [
+            {
+                "index": 0,
+                "delta": {"content": "hi", "tool_calls": [{"index": 0, "id": "call_0"}]},
+                "finish_reason": None,
+            }
+        ],
+        "_mcp_provenance": {"call_0": {"mcp_server": DISPLAY}},
+    }
+    out = json.loads(strip_server_executed_tool_call("data: " + json.dumps(chunk))[len("data: ") :])
+    assert out["choices"][0]["delta"] == {"content": "hi"}
+    assert "_mcp_provenance" not in out
