@@ -446,7 +446,7 @@ export function WindowTitlebar({
               aria-hidden="true"
               absoluteStrokeWidth
               strokeWidth={1.5}
-              size={17}
+              size={16}
             />
           </WindowControlButton>
           <WindowControlButton
@@ -462,7 +462,7 @@ export function WindowTitlebar({
                 aria-hidden="true"
                 absoluteStrokeWidth
                 strokeWidth={1.5}
-                size={17}
+                size={14}
                 className="rotate-180"
               />
             ) : (
@@ -470,7 +470,7 @@ export function WindowTitlebar({
                 aria-hidden="true"
                 absoluteStrokeWidth
                 strokeWidth={1.5}
-                size={17}
+                size={14}
               />
             )}
           </WindowControlButton>
@@ -489,7 +489,7 @@ export function WindowTitlebar({
               aria-hidden="true"
               absoluteStrokeWidth
               strokeWidth={1.5}
-              size={17}
+              size={20}
             />
           </WindowControlButton>
         </div>
