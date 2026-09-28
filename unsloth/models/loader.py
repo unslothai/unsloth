@@ -1135,6 +1135,7 @@ class FastLanguageModel(FastLlamaModel):
                 trust_remote_code = trust_remote_code,
                 local_files_only = local_files_only,
             )
+            _raise_if_modeling_ignores_config(model_config, model_types)
 
         if not was_disabled:
             enable_progress_bars()
@@ -2090,6 +2091,7 @@ class FastModel(FastBaseModel):
                     trust_remote_code = trust_remote_code,
                     local_files_only = local_files_only,
                 )
+            _raise_if_modeling_ignores_config(model_config, model_types)
 
         if not was_disabled:
             enable_progress_bars()

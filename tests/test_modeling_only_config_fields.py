@@ -76,3 +76,19 @@ def test_supported_transformers_is_not_refused(monkeypatch):
 def test_other_model_types_untouched():
     loader._raise_if_modeling_ignores_config(_k2(), ["llama"])
     loader._raise_if_modeling_ignores_config(None, ["exaone_moe"])
+
+
+def test_adapter_base_config_is_checked():
+    import ast
+    tree = ast.parse(inspect.getsource(loader))
+    checked = set()
+    for cls in (n for n in tree.body if isinstance(n, ast.ClassDef)):
+        for fn in (n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == "from_pretrained"):
+            for node in ast.walk(fn):
+                if isinstance(node, ast.If) and isinstance(node.test, ast.Name) and node.test.id == "is_peft":
+                    if any(
+                        isinstance(c, ast.Call) and getattr(c.func, "id", None) == "_raise_if_modeling_ignores_config"
+                        for c in ast.walk(node)
+                    ):
+                        checked.add(cls.name)
+    assert {"FastLanguageModel", "FastModel"} <= checked
