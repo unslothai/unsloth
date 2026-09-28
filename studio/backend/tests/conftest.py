@@ -158,6 +158,23 @@ def _contain_installer_venv_root(tmp_path_factory, monkeypatch):
 
 
 @pytest.fixture(autouse = True)
+def _reset_gpu_query_cache():
+    # Only when already imported: importing utils.hardware would change import-order tests.
+    def _reset():
+        gpu_query = sys.modules.get("utils.hardware.gpu_query")
+        if gpu_query is not None:
+            gpu_query.reset()
+        hw = sys.modules.get("utils.hardware.hardware")
+        if hw is not None and hasattr(hw, "_last_good_visible_info"):
+            with hw._last_good_visible_lock:
+                hw._last_good_visible_info.clear()
+
+    _reset()
+    yield
+    _reset()
+
+
+@pytest.fixture(autouse = True)
 def _isolate_studio_home(_studio_home_root, monkeypatch):
     home = _studio_home_root / f"home-{next(_studio_home_counter)}"
     home.mkdir()

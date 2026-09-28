@@ -729,7 +729,34 @@ def _flex_attn_impl_for(config, other_attn_implementation):
     return None
 
 
-def _flash_unsupported_sub_configs(config):
+def _sibling_model_class_for_config(model_class, child_config):
+    """Sibling PreTrainedModel for a tower the Auto classes do not register (Apertus 1.5 vision tokenizer)."""
+    import sys
+
+    module = sys.modules.get(getattr(model_class, "__module__", None) or "")
+    if module is None:
+        return None
+    try:
+        from transformers.modeling_utils import PreTrainedModel
+    except Exception:
+        return None
+    config_type = type(child_config)
+    candidates = []
+    for value in vars(module).values():
+        if (
+            isinstance(value, type)
+            and issubclass(value, PreTrainedModel)
+            and getattr(value, "config_class", None) is config_type
+        ):
+            candidates.append(value)
+    if not candidates:
+        return None
+    # Concrete model over its *PreTrainedModel base: the class Transformers validates.
+    candidates.sort(key = lambda klass: (klass.__name__.endswith("PreTrainedModel"), klass.__name__))
+    return candidates[0]
+
+
+def _flash_unsupported_sub_configs(config, model_class = None):
     """{sub-config: fallback} for towers lacking flash, which Transformers rejects (LFM2-VL SigLIP2)."""
     try:
         from transformers import AutoModel, AutoModelForCausalLM
@@ -755,6 +782,8 @@ def _flash_unsupported_sub_configs(config):
                 continue
         if isinstance(child_class, (list, tuple)):
             child_class = child_class[0] if child_class else None
+        if child_class is None and model_class is not None:
+            child_class = _sibling_model_class_for_config(model_class, child_config)
         if child_class is None:
             continue
         if getattr(child_class, "_supports_flash_attn", False) or getattr(
@@ -765,8 +794,15 @@ def _flash_unsupported_sub_configs(config):
     return out
 
 
-def _scoped_flash_attention(config, supports_sdpa):
-    unsupported = _flash_unsupported_sub_configs(config)
+def _scoped_flash_attention(
+    config,
+    supports_sdpa,
+    model_class = None,
+):
+    if model_class is None:
+        unsupported = _flash_unsupported_sub_configs(config)
+    else:
+        unsupported = _flash_unsupported_sub_configs(config, model_class)
     if not unsupported:
         return "flash_attention_2"
     if not _transformers_supports_attn_impl_mapping():
@@ -826,6 +862,22 @@ def _declares_flex_support(model_class):
     return None
 
 
+def _declares_no_sdpa(model_class):
+    # An explicit `_supports_sdpa = False` below PreTrainedModel (MiMo-V2-Flash sinks) beats the zoo's source-level guess.
+    try:
+        from transformers.modeling_utils import PreTrainedModel
+    except Exception:
+        return False
+    for klass in getattr(model_class, "__mro__", ()):
+        if klass is PreTrainedModel:
+            break
+        if not isinstance(klass, type):
+            continue
+        if "_supports_sdpa" in vars(klass):
+            return vars(klass)["_supports_sdpa"] is False
+    return False
+
+
 def _model_class_supports_flash_attention(model_class):
     """Whether installed transformers lets this class dispatch flash attention."""
     if model_class is None:
@@ -837,12 +889,48 @@ def _model_class_supports_flash_attention(model_class):
     new_flag_dispatched = PreTrainedModel is not None and hasattr(
         PreTrainedModel, "_supports_flash_attn"
     )
+    if not _flash_attention_2_is_compatible(model_class):
+        return False
     if new_flag_dispatched and not _flash_dispatch_reads_legacy_flag(PreTrainedModel):
         return bool(getattr(model_class, "_supports_flash_attn", False))
     return bool(
         getattr(model_class, "_supports_flash_attn_2", False)
         or getattr(model_class, "_supports_flash_attn", False)
     )
+
+
+def _flash_attention_2_is_compatible(model_class):
+    # transformers 5 silently rewrites flash_attention_2 to compatible[0] (_check_and_adjust_attn_implementation).
+    compatible = getattr(model_class, "_compatible_flash_implementations", None)
+    if not isinstance(compatible, (list, tuple)) or not compatible:
+        return True
+    if any(str(name).split("|")[-1] == "flash_attention_2" for name in compatible):
+        return True
+    return _flash_implementation_available(str(compatible[0]).split("|")[-1])
+
+
+def _flash_implementation_available(name):
+    try:
+        from transformers.utils import import_utils
+    except Exception:
+        return False
+    checks = {
+        "flash_attention_3": "is_flash_attn_3_available",
+        "flash_attention_4": "is_flash_attn_4_available",
+    }
+    if name in checks:
+        check = getattr(import_utils, checks[name], None)
+        try:
+            return bool(check()) if check is not None else False
+        except Exception:
+            return False
+    if "/" in name:
+        check = getattr(import_utils, "is_kernels_available", None)
+        try:
+            return bool(check()) if check is not None else False
+        except Exception:
+            return False
+    return False
 
 
 def _flash_dispatch_reads_legacy_flag(PreTrainedModel) -> bool:
@@ -2098,7 +2186,7 @@ def resolve_attention_implementation(
     model_type = model_type_name.lower()
     if supports_sdpa is None:
         supports_sdpa = model_class is not None and getattr(model_class, "_supports_sdpa", False)
-    if _is_sdpa_excluded(model_type):
+    if _is_sdpa_excluded(model_type) or _declares_no_sdpa(model_class):
         supports_sdpa = False
     supports_flash_attention = _model_class_supports_flash_attention(
         model_class
@@ -2138,7 +2226,9 @@ def resolve_attention_implementation(
             and supports_flash_attention
             and not flex_forced_for_head_dim
         ):
-            attn_impl = _set_attn_impl(config, _scoped_flash_attention(config, supports_sdpa))
+            attn_impl = _set_attn_impl(
+                config, _scoped_flash_attention(config, supports_sdpa, model_class)
+            )
         elif flash_attention_disabled:
             attn_impl = _disable_flash_attention_if_needed(
                 config,
@@ -2187,7 +2277,7 @@ def resolve_attention_implementation(
     else:
         final_attn_impl = requested_attn_implementation
         if final_attn_impl == "flash_attention_2":
-            final_attn_impl = _scoped_flash_attention(config, supports_sdpa)
+            final_attn_impl = _scoped_flash_attention(config, supports_sdpa, model_class)
         _set_attn_impl(config, final_attn_impl)
 
     # An explicit "sdpa" is kept even on a conservatively unsupported model, except where SDPA is known-broken, which still downgrades to eager just as flex falls back for _FLEX_EXCLUDED_MODELS. A synthesized default sdpa (requested is None) also downgrades.
@@ -3990,6 +4080,19 @@ def _accelerate_execution_device(module):
     if device is None or device.type == "meta":
         return None
     return device
+
+
+def embedding_applies_scale(embedding) -> bool:
+    """True if the embedding applies sqrt(hidden_size) itself (Gemma / Gemma2 from transformers 5.4.0), through PEFT wrappers."""
+    for _ in range(4):
+        if embedding is None:
+            return False
+        if getattr(embedding, "embed_scale", None) is not None:
+            return True
+        embedding = getattr(embedding, "base_layer", None) or getattr(
+            embedding, "original_module", None
+        )
+    return False
 
 
 def per_layer_device(module, default = 0):

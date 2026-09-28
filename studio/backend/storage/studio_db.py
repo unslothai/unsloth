@@ -18,6 +18,7 @@ import re
 import shutil
 import sqlite3
 import threading
+import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -446,6 +447,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             fork_boundary_message_id TEXT,
             fork_title_base TEXT,
             settings_json TEXT,
+            modified_at INTEGER,
             FOREIGN KEY(project_id) REFERENCES chat_projects(id) ON DELETE CASCADE
         )
         """
@@ -482,6 +484,9 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     # Null on every earlier row, which then numbers from its whole title.
     if "fork_title_base" not in chat_thread_cols:
         conn.execute("ALTER TABLE chat_threads ADD COLUMN fork_title_base TEXT")
+    # Last rename, move or (un)archive. Null until then.
+    if "modified_at" not in chat_thread_cols:
+        conn.execute("ALTER TABLE chat_threads ADD COLUMN modified_at INTEGER")
     if "updated_at" not in chat_thread_cols:
         conn.execute("ALTER TABLE chat_threads ADD COLUMN updated_at INTEGER")
         # Floor at created_at: forked threads copy older ancestor messages, so the fork's creation time wins.
@@ -1993,6 +1998,7 @@ def _chat_thread_from_row(row: sqlite3.Row, include_settings: bool = True) -> di
         "forkedFromMessageId": data.get("forked_from_message_id"),
         "forkBoundaryMessageId": data.get("fork_boundary_message_id"),
         "forkTitleBase": data.get("fork_title_base"),
+        "modifiedAt": data.get("modified_at"),
     }
     if include_settings:
         thread["settings"] = _json_loads(data.get("settings_json"), None)
@@ -2191,6 +2197,17 @@ def update_chat_thread(
             "fork_title_base = CASE WHEN title = ? THEN fork_title_base ELSE NULL END"
         )
         values.append(patch.get("title"))
+    # Stamp real renames, moves and (un)archives. The CASE reads the pre-update row.
+    edited = [
+        (column, value)
+        for key, (column, value) in allowed.items()
+        if key in patch and key in ("title", "projectId", "archived")
+    ]
+    if edited:
+        changed = " OR ".join(f"{column} IS NOT ?" for column, _ in edited)
+        assignments.append(f"modified_at = CASE WHEN {changed} THEN ? ELSE modified_at END")
+        values.extend(value for _, value in edited)
+        values.append(int(time.time() * 1000))
     if not assignments and settings_write is None:
         return get_chat_thread(id)
 
@@ -4772,6 +4789,49 @@ def delete_chat_attachment(message_id: str, attachment_id: str) -> bool:
         raise
     finally:
         conn.close()
+
+
+def count_chat_messages_for_threads(thread_ids: list[str]) -> dict[str, int]:
+    """User and assistant messages per thread on its newest branch, without reading bodies.
+
+    Mirrors the frontend's ``summarizeChatMessages``. Unknown ids count 0.
+    """
+    unique_thread_ids = list(dict.fromkeys(thread_ids))
+    rows_by_thread: dict[str, list[tuple[str, Optional[str], str, int]]] = {
+        tid: [] for tid in unique_thread_ids
+    }
+    if not unique_thread_ids:
+        return {}
+    conn = get_connection()
+    try:
+        for start in range(0, len(unique_thread_ids), _SQLITE_IN_CHUNK_SIZE):
+            chunk = unique_thread_ids[start : start + _SQLITE_IN_CHUNK_SIZE]
+            placeholders = ",".join("?" for _ in chunk)
+            for row in conn.execute(
+                f"""
+                SELECT thread_id, id, parent_id, role, created_at FROM chat_messages
+                WHERE thread_id IN ({placeholders})
+                ORDER BY created_at ASC, id ASC
+                """,
+                chunk,
+            ):
+                rows_by_thread[row[0]].append((row[1], row[2], row[3], row[4]))
+    finally:
+        conn.close()
+    counts: dict[str, int] = {}
+    for tid, rows in rows_by_thread.items():
+        path = rows
+        if any(parent for _, parent, _, _ in rows):
+            by_id = {row[0]: row for row in rows}
+            # First newest message, matching the frontend.
+            at = max(rows, key = lambda row: row[3]) if rows else None
+            path, seen = [], set()
+            while at is not None and at[0] not in seen:
+                seen.add(at[0])
+                path.append(at)
+                at = by_id.get(at[1]) if at[1] else None
+        counts[tid] = sum(1 for _, _, role, _ in path if role in ("user", "assistant"))
+    return counts
 
 
 def list_chat_messages_for_threads(thread_ids: list[str]) -> list[dict]:
