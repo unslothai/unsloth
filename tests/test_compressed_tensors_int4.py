@@ -131,9 +131,7 @@ def test_kernels_decode_bit_exact_and_multiply_like_dense(
     import unsloth.kernels.int4_packed as ip
 
     for rows, gemv in itertools.product((1, 3, 5, 64), (True, False)):
-        if gemv and bits > 4:
-            continue
-        monkeypatch.setattr(ip, "GEMV_MAX_WORK", 1 << 62 if gemv else 0)
+        monkeypatch.setattr(ip, "GEMV_MAX_ROWS", 1 << 30 if gemv else 0)
         x = torch.randn(rows, in_f, device = "cuda", dtype = torch.bfloat16)
         y = int4_matmul(x, W, qs)
         want = x.float() @ ref.float().t()
