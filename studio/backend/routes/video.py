@@ -53,6 +53,9 @@ from loggers.media_progress import (
 from models.inference import (
     DiffusionDownloadPlanResponse,
     GalleryFlagsPatch,
+    GalleryMoveRequest,
+    GalleryProjectRequest,
+    GalleryProjectResponse,
     GalleryVideo,
     VideoGalleryListResponse,
     VideoGenerateProgressResponse,
@@ -141,6 +144,12 @@ async def video_download_plan(
 ):
     """The repos + files this pick needs, so the frontend stages them through the Hub
     download manager instead of the load downloading inline. Mirrors /images/download-plan."""
+    from routes.inference import (
+        _refuse_disabled_nvfp4_checkpoint,
+        _refuse_disabled_nvfp4_request,
+    )
+
+    _refuse_disabled_nvfp4_request(request)
     if account_access.managed_account():
         await asyncio.to_thread(account_access.require_media_references, request)
     if account_access.managed_account():
@@ -152,6 +161,7 @@ async def video_download_plan(
         request = request.model_copy(
             update = {"hf_token": account_access.account_hf_token(request.hf_token)}
         )
+    await _refuse_disabled_nvfp4_checkpoint(request)
     from core.inference.diffusion import resolve_local_single_file
     from core.inference.video import (
         assert_video_precision_available,
@@ -266,6 +276,12 @@ async def load_video_model_gated(
     """Everything ``POST /video/load`` does, plus who asked for it. Media auto-switch awaits this rather than the
     route so the idle unload can tell an API-loaded pipeline from one the user picked on the Video page.
     """
+    from routes.inference import (
+        _refuse_disabled_nvfp4_checkpoint,
+        _refuse_disabled_nvfp4_request,
+    )
+
+    _refuse_disabled_nvfp4_request(request)
     if account_access.managed_account():
         await asyncio.to_thread(account_access.require_media_references, request)
     account_access.require_idle_other_accounts()
@@ -278,6 +294,7 @@ async def load_video_model_gated(
         request = request.model_copy(
             update = {"hf_token": account_access.account_hf_token(request.hf_token)}
         )
+    await _refuse_disabled_nvfp4_checkpoint(request)
     # Same as the image load: tested at entry, because `begin_load` returns before the worker
     # moves a byte, and written at the launch below, because the validation in between 400s
     # without starting one and the record would be permanent.
@@ -731,9 +748,20 @@ async def video_status(
     from core.inference.video import get_video_backend
     from hub.utils.host_paths import redact_host_paths
 
-    status_dict = get_video_backend().status()
+    backend = get_video_backend()
+    status_dict = backend.status()
     if account_access.resident_hidden("video", status_dict.get("repo_id")):
         return account_access.hidden_resident_response()
+    # Step-skip counters trace a clip as it runs, which generate-progress hides from other accounts:
+    # shown only to the account whose clip produced them, from one owner-then-stats read.
+    if (
+        status_dict.get("transformer_cache_stats") is not None
+        and account_access.account_scope() is not None
+    ):
+        view = getattr(backend, "static_skip_view", None)
+        owner, stats = view() if callable(view) else (None, status_dict["transformer_cache_stats"])
+        visible = owner is None or owner == current_account_id()
+        status_dict = {**status_dict, "transformer_cache_stats": stats if visible else None}
     # This route answers long after the request that resolved the reference ended, so there is
     # no handle in context to put back.
     return redact_host_paths(VideoStatusResponse(**status_dict), via_api_key = via_api_key)
@@ -955,6 +983,51 @@ def _forget_terminal_video(video_id: Optional[str]) -> None:
         get_video_backend().forget_terminal_video(video_id)
     except Exception as e:  # noqa: BLE001 -- never fail a delete over progress bookkeeping
         logger.debug(f"Could not clear the terminal video record for {video_id!r}: {e}")
+
+
+@router.post("/video/gallery/{video_id}/move", response_model = GalleryVideo)
+async def move_gallery_video(
+    video_id: str,
+    body: GalleryMoveRequest,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Move one video to just after ``after_id``. Dropping among pins pins it, elsewhere unpins it."""
+    from core.inference import video_gallery
+
+    try:
+        record = await asyncio.to_thread(video_gallery.move, video_id, body.after_id)
+    except KeyError:
+        # The neighbour left the shelf; the client resyncs.
+        raise HTTPException(status_code = 409, detail = "The gallery changed; try the move again.")
+    except OSError as exc:
+        logger.warning("video_gallery.move_failed: %s", exc)
+        raise HTTPException(status_code = 500, detail = "Could not save the new order.")
+    if record is None:
+        raise HTTPException(status_code = 404, detail = "Video not found.")
+    return GalleryVideo(**record)
+
+
+@router.post("/video/gallery/{video_id}/project", response_model = GalleryProjectResponse)
+async def add_gallery_video_to_project(
+    video_id: str,
+    body: GalleryProjectRequest,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Copy one video into a chat project's folder."""
+    from core.inference import video_gallery
+    from core.inference.gallery_projects import ProjectNotFound, copy_into_project
+
+    path = await asyncio.to_thread(video_gallery.owned_video_path, video_id)
+    if path is None:
+        raise HTTPException(status_code = 404, detail = "Video not found.")
+    try:
+        result = await asyncio.to_thread(copy_into_project, path, body.project_id, "videos")
+    except ProjectNotFound:
+        raise HTTPException(status_code = 404, detail = "Project not found.")
+    except OSError as exc:
+        logger.warning("video_gallery.add_to_project_failed: %s", exc)
+        raise HTTPException(status_code = 500, detail = "Could not copy the video into the project.")
+    return GalleryProjectResponse(**result)
 
 
 @router.patch("/video/gallery/{video_id}", response_model = GalleryVideo)

@@ -248,13 +248,22 @@ def test_anthropic_reasoning_args_maps_effort_only_to_enable_thinking():
         is True
     )
     assert _anthropic_reasoning_args(_basic_payload())["enable_thinking"] is None
-    # An explicit boolean always wins over the effort mapping.
-    assert (
-        _anthropic_reasoning_args(_basic_payload(enable_thinking = True, reasoning_effort = "none"))[
-            "enable_thinking"
-        ]
-        is True
-    )
+    # An explicit boolean always wins; a contradictory effort is removed rather than
+    # riding along into model-specific template resolution.
+    assert _anthropic_reasoning_args(
+        _basic_payload(enable_thinking = True, reasoning_effort = "none")
+    ) == {
+        "enable_thinking": True,
+        "reasoning_effort": None,
+        "preserve_thinking": None,
+    }
+    assert _anthropic_reasoning_args(
+        _basic_payload(enable_thinking = False, reasoning_effort = "high")
+    ) == {
+        "enable_thinking": False,
+        "reasoning_effort": None,
+        "preserve_thinking": None,
+    }
 
 
 # thinking x reasoning_effort, every combination. The request model documents
@@ -1031,6 +1040,57 @@ class TestAnthropicMessagesToOpenAI:
         ]
         result = anthropic_messages_to_openai(msgs)
         assert result[0]["content"] == "Line 1\nLine 2"
+
+    @pytest.mark.parametrize(
+        "content, expected",
+        [
+            ("permission denied", "Error: permission denied"),
+            ("Error: disk full", "Error: disk full"),
+            ("", "Error: tool returned no content"),
+            (None, "Error: tool returned no content"),
+            ([{"type": "text", "text": "exit 1"}], "Error: exit 1"),
+            ([], "Error: tool returned no content"),
+        ],
+    )
+    def test_tool_result_is_error_marks_the_tool_message(self, content, expected):
+        block = {"type": "tool_result", "tool_use_id": "tu_1", "is_error": True, "content": content}
+        request = AnthropicMessagesRequest(
+            max_tokens = 16, messages = [{"role": "user", "content": [block]}]
+        )
+        result = anthropic_messages_to_openai([m.model_dump() for m in request.messages])
+        assert result == [{"role": "tool", "tool_call_id": "tu_1", "content": expected}]
+
+    @pytest.mark.parametrize("flag", [{}, {"is_error": False}, {"is_error": None}])
+    @pytest.mark.parametrize("content", ["42", ""])
+    def test_tool_result_without_is_error_is_unchanged(self, flag, content):
+        block = {"type": "tool_result", "tool_use_id": "tu_1", "content": content, **flag}
+        request = AnthropicMessagesRequest(
+            max_tokens = 16, messages = [{"role": "user", "content": [block]}]
+        )
+        result = anthropic_messages_to_openai([m.model_dump() for m in request.messages])
+        assert result == [{"role": "tool", "tool_call_id": "tu_1", "content": content}]
+
+    def test_tool_result_is_error_with_image_prepends_the_marker(self):
+        image = {
+            "type": "image",
+            "source": {"type": "base64", "media_type": "image/png", "data": "AAAA"},
+        }
+        msgs = [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "tu_1",
+                        "is_error": True,
+                        "content": [{"type": "text", "text": "crashed"}, image],
+                    }
+                ],
+            }
+        ]
+        parts = anthropic_messages_to_openai(msgs)[0]["content"]
+        assert [p["type"] for p in parts] == ["text", "text", "image_url"]
+        assert [p["text"] for p in parts[:2]] == ["Error:", "crashed"]
 
     def test_tool_result_search_results_keep_title_source_and_text(self):
         msgs = [
@@ -2588,7 +2648,7 @@ class TestNormalizeAnthropicOpenAIImages:
             _normalize_anthropic_openai_images(msgs, is_vision = False)
         assert exc.value.status_code == 400
 
-    def test_reencodes_jpeg_data_url_to_png(self):
+    def test_forwards_jpeg_data_url_unchanged(self):
         original_url = _jpeg_data_url()
         msgs = [
             {
@@ -2600,9 +2660,17 @@ class TestNormalizeAnthropicOpenAIImages:
             }
         ]
         _normalize_anthropic_openai_images(msgs, is_vision = True)
-        new_url = msgs[0]["content"][1]["image_url"]["url"]
-        assert new_url.startswith("data:image/png;base64,")
-        assert new_url != original_url
+        assert msgs[0]["content"][1]["image_url"]["url"] == original_url
+
+    def test_reencodes_webp_data_url_to_png(self):
+        from PIL import Image
+
+        buf = _BytesIO()
+        Image.new("RGB", (2, 2), (255, 0, 0)).save(buf, format = "WEBP")
+        url = "data:image/webp;base64," + _b64.b64encode(buf.getvalue()).decode("ascii")
+        msgs = [{"role": "user", "content": [{"type": "image_url", "image_url": {"url": url}}]}]
+        _normalize_anthropic_openai_images(msgs, is_vision = True)
+        assert msgs[0]["content"][0]["image_url"]["url"].startswith("data:image/png;base64,iVBOR")
 
     def test_remote_url_is_replaced_by_the_bytes_we_fetched(self, monkeypatch):
         import core.inference.external_provider as ep
@@ -2624,7 +2692,8 @@ class TestNormalizeAnthropicOpenAIImages:
             }
         ]
         _normalize_anthropic_openai_images(msgs, is_vision = True)
-        assert msgs[0]["content"][0]["image_url"]["url"].startswith("data:image/png;base64,")
+        # The bytes are JPEG whatever the server declared, and are labelled as such.
+        assert msgs[0]["content"][0]["image_url"]["url"] == _jpeg_data_url()
 
     def test_bad_base64_raises_400(self):
         msgs = [
@@ -2651,6 +2720,24 @@ class TestNormalizeAnthropicOpenAIImages:
 class TestAnthropicRequestedStudioTools:
     def test_recognizes_server_tool_by_type(self):
         tools = [{"type": "web_search_20250305", "name": "web_search"}]
+        assert _anthropic_requested_studio_tools(tools) == {"web_search"}
+
+    @pytest.mark.parametrize(
+        "tool_type",
+        [
+            "web_search",
+            "web_search_20250305",
+            "web_search_20260209",
+            "web_search_20260318",
+            "web_fetch",
+            "web_fetch_20250910",
+            "web_fetch_20260209",
+            "web_fetch_20260309",
+            "web_fetch_20260318",
+        ],
+    )
+    def test_recognizes_every_web_server_tool_version(self, tool_type):
+        tools = [{"type": tool_type, "name": tool_type.split("_2")[0]}]
         assert _anthropic_requested_studio_tools(tools) == {"web_search"}
 
     def test_recognizes_read_skill_server_tool_by_type(self):
@@ -3417,11 +3504,14 @@ class TestAnthropicMessagesToolRouting:
         assert '"type": "error"' in blob
         assert "event: message_stop" not in blob
 
-    def test_mixed_server_and_client_tools_rejected_with_400(self, monkeypatch):
+    @pytest.mark.parametrize(
+        "tool_type", ["web_search_20250305", "web_search_20260209", "web_search_20260318"]
+    )
+    def test_mixed_server_and_client_tools_rejected_with_400(self, monkeypatch, tool_type):
         _mock_backend(monkeypatch)
         payload = _basic_payload(
             tools = [
-                {"type": "web_search_20250305", "name": "web_search"},
+                {"type": tool_type, "name": "web_search"},
                 {"name": "custom", "input_schema": {"type": "object"}},
             ],
         )
@@ -3643,17 +3733,22 @@ class TestAnthropicMessagesToolRouting:
         _drive(anthropic_messages(payload, request = None, current_subject = "t"))
         assert backend.calls[0][0] == "plain"
 
-    def test_server_tool_alias_enters_tool_path_when_policy_unset(self, monkeypatch):
+    @pytest.mark.parametrize(
+        "tool_type", ["web_search_20250305", "web_search_20260209", "web_search_20260318"]
+    )
+    def test_server_tool_alias_enters_tool_path_when_policy_unset(self, monkeypatch, tool_type):
         # Mirror of the previous test for the default (None) policy. An omitted
         # permission_mode still runs here because web_search is a safe server tool
         # (only a selected terminal/python would require the missing gate).
         backend = _mock_backend(monkeypatch)
         payload = _basic_payload(
-            tools = [{"type": "web_search_20250305", "name": "web_search"}],
+            tools = [{"type": tool_type, "name": "web_search"}],
         )
 
         _drive(anthropic_messages(payload, request = None, current_subject = "t"))
-        assert backend.calls[0][0] == "tools"
+        call_kind, kwargs = backend.calls[0]
+        assert call_kind == "tools"
+        assert [tool["function"]["name"] for tool in kwargs["tools"]] == ["web_search"]
 
     def test_api_server_tool_request_keeps_the_current_date(self, monkeypatch):
         import routes.inference as inf_mod

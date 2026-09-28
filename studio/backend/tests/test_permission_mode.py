@@ -2761,6 +2761,50 @@ def test_auto_mode_gates_high_risk_calls():
     assert exec_fn.disable_sandbox_seen == [False], _diag(events, exec_fn)
 
 
+class _ApprovalRecordingExecuteTool(_FakeExecuteTool):
+    def __init__(self):
+        super().__init__()
+        self.approved_seen = []
+
+    def __call__(
+        self,
+        name,
+        arguments,
+        *,
+        host_access_approved = False,
+        **kwargs,
+    ):
+        self.approved_seen.append(host_access_approved)
+        return super().__call__(name, arguments, disable_sandbox = kwargs.get("disable_sandbox"))
+
+
+@pytest.mark.parametrize(
+    "code, decisions, approved",
+    [
+        # Gated and allowed: the user saw the host path and let it through.
+        ('open(\\"/srv/data.csv\\").read()', ["allow"], [True]),
+        # Not gated in auto, so nobody approved anything.
+        ("print(1)", [], [False]),
+    ],
+)
+def test_the_approval_reaches_the_executor(code, decisions, approved):
+    exec_fn = _ApprovalRecordingExecuteTool()
+    session = f"{_SESSION}-{uuid.uuid4().hex}"
+    decision_iter = iter(decisions)
+    for ev in run_safetensors_tool_loop(
+        single_turn = _multi_turn([_tool_call("python", f'{{"code": "{code}"}}'), "final"]),
+        messages = [{"role": "user", "content": "hi"}],
+        tools = _DEFAULT_TOOLS,
+        execute_tool = exec_fn,
+        session_id = session,
+        confirm_tool_calls = True,
+        permission_mode = "auto",
+    ):
+        if ev["type"] == "tool_start" and ev.get("awaiting_confirmation"):
+            resolve_tool_decision(ev["approval_id"], next(decision_iter), session_id = session)
+    assert exec_fn.approved_seen == approved
+
+
 def test_auto_mode_does_not_gate_ordinary_mutation():
     # The core of "Approve for me": an ordinary in-workdir write is not high risk,
     # so auto runs it without a prompt even though it is not read-only.

@@ -121,7 +121,7 @@ export function ChatSearchDialog() {
     <CommandDialog
       open={isOpen}
       onOpenChange={setOpen}
-      className="chat-search-surface rounded-3xl! max-sm:rounded-none! top-1/2 -translate-y-1/2 w-[635px] max-w-[calc(100%-2rem)] gap-0 p-0 ring-0 duration-[180ms] ease-[cubic-bezier(0.16,1,0.3,1)] sm:max-w-[635px]"
+      className="chat-search-surface rounded-3xl! max-sm:rounded-none! top-1/2 -translate-y-1/2 w-[calc(635px*var(--ui-space-scale,1))] max-w-[calc(100%-2rem)] gap-0 p-0 ring-0 duration-[180ms] ease-[cubic-bezier(0.16,1,0.3,1)] sm:max-w-[calc(635px*var(--ui-space-scale,1))]"
       overlayClassName="bg-transparent supports-backdrop-filter:backdrop-blur-none"
     >
       <Command className="rounded-3xl p-0" shouldFilter={false}>
@@ -155,7 +155,7 @@ export function ChatSearchDialog() {
         <CommandList
           className={cn(
             "cmd-native-scrollbar hover-scrollbar p-1",
-            compactList ? "max-h-[420px]" : "h-[420px] max-h-[60dvh]",
+            compactList ? "max-h-[calc(420px*var(--ui-space-scale,1))]" : "h-[calc(420px*var(--ui-space-scale,1))] max-h-[60dvh]",
           )}
         >
           <CommandEmpty className="py-6 text-center text-xs text-muted-foreground">

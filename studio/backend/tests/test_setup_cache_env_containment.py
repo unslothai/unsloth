@@ -122,6 +122,23 @@ _TOOLCHAIN_PINNED = (
 )
 
 
+def _a_temp_root_the_policy_accepts(monkeypatch, tmp_path):
+    """A temporary root the fallback will actually publish into, on either platform.
+
+    _holding_dir_is_safe asks POSIX mode bits on Linux and macOS, which any directory under
+    tmp_path satisfies, but on Windows there is no ownership to read and it accepts exactly one
+    root: %LOCALAPPDATA%\\Temp. A test that simply pointed gettempdir at tmp_path therefore
+    measured the refusal instead of the fallback, and two of them asserted the fallback was
+    published and failed on windows-latest while passing here. So move LOCALAPPDATA as well,
+    which keeps everything inside tmp_path and exercises the real rule rather than skipping it.
+    """
+    root = tmp_path / "Temp"
+    root.mkdir()
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(root))
+    return root
+
+
 def _as_the_compiler_sees_it(path):
     """The path as cpp_builder puts it on the command line.
 
@@ -314,10 +331,8 @@ def test_a_refused_root_gets_a_parseable_cache_rather_than_torchs_own(monkeypatc
     the same install returns to the same cache every launch."""
     refused = tmp_path / "o'brien" / "studio"
     refused.mkdir(parents = True)
-    temp_root = tmp_path / "tmp"
-    temp_root.mkdir()
+    temp_root = _a_temp_root_the_policy_accepts(monkeypatch, tmp_path)
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(refused))
-    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(temp_root))
     sr = _load_storage_roots()
     monkeypatch.setattr(sr.tempfile, "gettempdir", lambda: str(temp_root))
 
@@ -727,9 +742,9 @@ def test_an_inherited_unreadable_compiler_cache_is_refused(monkeypatch, tmp_path
     setup.ps1 still establishes provenance before it deletes a stored value.
     """
     monkeypatch.setenv("TORCHINDUCTOR_CACHE_DIR", str(tmp_path / "their choice"))
+    temp_root = _a_temp_root_the_policy_accepts(monkeypatch, tmp_path)
     sr = _load_storage_roots()
-    (tmp_path / "tmp").mkdir()
-    monkeypatch.setattr(sr.tempfile, "gettempdir", lambda: str(tmp_path / "tmp"))
+    monkeypatch.setattr(sr.tempfile, "gettempdir", lambda: str(temp_root))
 
     sr._setup_cache_env()
 

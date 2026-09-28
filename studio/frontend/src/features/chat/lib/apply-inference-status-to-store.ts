@@ -4,6 +4,7 @@
 // Barrel import (lint rule); the model-picker cycle is fine because the call
 // happens at runtime, not module eval.
 import {
+  adoptCachedRepoConfig,
   loadedContextFields,
   resolveResidentInitialConfig,
   savedContextPin,
@@ -156,6 +157,8 @@ export function applyActiveModelStatusToStore(
   // Only reached with a model active, so this is the one place both the status poll and the
   // readopt path can publish residency from. Without it a load looks unloaded for up to 10s.
   useChatRuntimeStore.setState({ residentCheckpoint: checkpointId });
+  // Before the settings panel can open on it, which reads only the repo id.
+  adoptCachedRepoConfig(checkpointId, status.gguf_variant ?? null);
 
   const store = useChatRuntimeStore.getState();
   const previousCheckpoint =
@@ -250,10 +253,9 @@ export function applyActiveModelStatusToStore(
       : hydratingExistingModel)
       ? resolveResidentInitialConfig(checkpointId, status.gguf_variant ?? null)
       : null;
-  const rememberedNParallel =
-    status.is_gguf && remembered?.remembered
-      ? (remembered.config.nParallel ?? null)
-      : null;
+  const rememberedNParallel = remembered?.remembered
+    ? (remembered.config.nParallel ?? null)
+    : null;
   const rememberedNBatch =
     status.is_gguf && remembered?.remembered
       ? (remembered.config.nBatch ?? null)
@@ -320,8 +322,12 @@ export function applyActiveModelStatusToStore(
     incoming: status.requested_context_length,
     // MLX reports a requested context as well, so the rule below is about any
     // backend that sizes its own window, not llama.cpp alone.
-    isGguf: (status.is_gguf ?? true) || (status.is_mlx ?? false),
-    isMlx: status.is_mlx ?? false,
+    isGguf:
+      (status.is_gguf ?? true) ||
+      (status.is_mlx ?? false) ||
+      (status.is_npu ?? false),
+    // An NPU status echoes the request itself (null for Auto), so like MLX a positive one is a pin.
+    isMlx: (status.is_mlx ?? false) || (status.is_npu ?? false),
     seedLoadParams,
     modelChanged: slotsModelChanged,
     // Both fields: a record written before the MLX pin moved still carries it in maxSeqLength.
@@ -561,18 +567,14 @@ export function applyActiveModelStatusToStore(
         mlxKvQuantNote: status.mlx_kv_quant_note ?? null,
       }),
     // Baseline only, never the control: the echo is the RESOLVED count and would pin a blank
-    // "server default" control. The rollback re-sends the baseline, so without this a rollback
-    // after a tab reload loses the override. Refresh on every echo: another client
-    // can reload the same model with a different count.
     ...(seedLoadParams &&
       status.requested_parallel_slots != null && {
         loadedNParallel: status.requested_parallel_slots,
       }),
-    // A slotless model must not keep the previous GGUF's baseline, since the rollback re-sends
-    // it. /status omits the echo for non-GGUF and nulls it for diffusion, so an absent field
-    // on a GGUF means an older backend.
+    // A slotless load must not keep the previous model's baseline, since the rollback
+    // re-sends it. /status nulls the echo for a load that decodes one reply at a time.
     ...(seedLoadParams &&
-      (status.is_gguf === false || status.requested_parallel_slots === null) && {
+      status.requested_parallel_slots === null && {
         loadedNParallel: null,
       }),
     // Per-model: a change underneath this tab blanks the control like performLoad's cross-model

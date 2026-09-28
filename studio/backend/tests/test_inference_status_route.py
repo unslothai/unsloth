@@ -341,3 +341,43 @@ def test_status_does_not_list_one_transformers_load_twice(monkeypatch):
     response = asyncio.run(inference_route.get_status(current_subject = "test"))
 
     assert response.loading == ["/home/alice/models/local-llama"]
+
+
+@pytest.mark.parametrize(
+    "override, reason, applied",
+    [
+        ("{{ override }}", None, True),
+        ("{{ override }}", "it could not render a conversation", False),
+        ("   ", None, False),
+    ],
+)
+def test_status_classifies_the_template_generation_renders(monkeypatch, override, reason, applied):
+    """Capabilities follow an applied MLX override; the editor's default stays the shipped one."""
+    backend = _FakeInferenceBackend()
+    backend.active_model_name = "org/mlx-model"
+    backend.models = {
+        "org/mlx-model": {
+            "is_mlx": True,
+            "chat_template_info": {"template": "{{ shipped }}"},
+            "chat_template_override_requested": override,
+            "chat_template_override_reason": reason,
+        }
+    }
+    backend.loading_models = set()
+    _patch_fast_status(monkeypatch, backend)
+    monkeypatch.setattr(inference_route, "load_inference_config", lambda _model: None)
+    detect = inference_route._detect_safetensors_features
+    monkeypatch.setattr(
+        inference_route,
+        "_detect_safetensors_features",
+        lambda _backend, template, *a, **k: dict(
+            detect(_backend, template),
+            supports_tools = True,
+            supports_reasoning = template == "{{ override }}",
+        ),
+    )
+
+    response = asyncio.run(inference_route.get_status(current_subject = "test"))
+
+    assert response.supports_reasoning is applied
+    assert response.chat_template == "{{ shipped }}"

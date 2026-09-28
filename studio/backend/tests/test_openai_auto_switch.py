@@ -1993,7 +1993,7 @@ def test_build_index_covers_legacy_default_lmstudio_and_custom_roots(monkeypatch
     monkeypatch.setattr(
         studio_db, "list_scan_folders", lambda: [{"path": str(tmp_path / "custom")}]
     )
-    for sub in ("active", "previous", "legacy", "default", "lmstudio", "custom"):
+    for sub in ("active", "previous", "legacy", "default", "lmstudio", "custom", "custom/hub"):
         (tmp_path / sub).mkdir()
 
     resolver._build_index()
@@ -2004,6 +2004,7 @@ def test_build_index_covers_legacy_default_lmstudio_and_custom_roots(monkeypatch
     assert str((tmp_path / "default").resolve()) in hf
     assert str((tmp_path / "previous").resolve()) in hf
     assert str((tmp_path / "custom").resolve()) in hf
+    assert str((tmp_path / "custom" / "hub").resolve()) in hf
     assert str((tmp_path / "lmstudio").resolve()) in lm
 
 
@@ -2461,6 +2462,48 @@ def test_snapshot_selector_skips_only_the_unreadable_child(tmp_path, monkeypatch
     selected = select_gguf_cache_snapshot_for_repo_dir(repo)
     assert selected is not None
     assert selected[3] == readable
+
+
+def test_path_companion_roots_widen_only_the_snapshot_the_repo_would_hand_out(tmp_path):
+    """#10599: loading by path widens to the sibling revisions of the SAME repo dir,
+    and only when the path is the one a repo-level selection resolves to."""
+    repo, old, newer = _vision_gguf_cache_repo(tmp_path)
+    (newer / "mmproj-vision-model-F16.gguf").write_bytes(b"GGUF companion")
+    os.utime(old, (1_000, 1_000))
+    os.utime(newer, (2_000, 2_000))
+
+    assert tuple(map(Path, resolver.local_path_gguf_companion_roots(str(old)))) == (old, newer)
+    # A revision the selector would not hand out is pinned, so it keeps its own root only.
+    assert resolver.local_path_gguf_companion_roots(str(newer)) == ()
+
+    pinned = repo / "snapshots" / "newer-weights-revision"
+    pinned.mkdir(parents = True)
+    (pinned / "vision-model-Q4_K_M.gguf").write_bytes(b"GGUF weights")
+    os.utime(pinned, (3_000, 3_000))
+    assert resolver.local_path_gguf_companion_roots(str(old)) == ()
+    assert tuple(map(Path, resolver.local_path_gguf_companion_roots(str(pinned)))) == (
+        pinned,
+        newer,
+        old,
+    )
+
+
+@pytest.mark.parametrize("kind", ["plain_dir", "repo_dir", "missing", "file", "repo_id"])
+def test_path_companion_roots_refuse_anything_outside_an_hf_cache_snapshot(tmp_path, kind):
+    """The widening reaches sibling revisions of one ``models--`` dir and nothing else."""
+    repo, old, _newer = _vision_gguf_cache_repo(tmp_path)
+    candidates = {
+        "plain_dir": tmp_path / "loose-model-dir",
+        "repo_dir": repo,
+        "missing": old.parent / "absent-revision",
+        "file": old / "vision-model-Q4_K_M.gguf",
+        "repo_id": Path("org/Vision-GGUF"),
+    }
+    target = candidates[kind]
+    if kind == "plain_dir":
+        target.mkdir()
+        (target / "vision-model-Q4_K_M.gguf").write_bytes(b"GGUF weights")
+    assert resolver.local_path_gguf_companion_roots(str(target)) == ()
 
 
 def test_disjoint_companion_roots_preserve_selected_snapshot_ancestor_walk(tmp_path):
@@ -4360,6 +4403,7 @@ def test_chat_audio_input_guards_target_before_switch(monkeypatch):
         gguf_only = False,
         audio_preflight = None,
         image_preflight = None,
+        tool_images_only = False,
     ):
         captured.update(
             require_vision = require_vision,
@@ -4450,6 +4494,58 @@ def test_completions_rejects_object_prompt_before_switch(monkeypatch):
         )
     assert exc.value.status_code == 400
     assert rec.calls == []  # no switch before rejection
+
+
+def _raise_reached(*_args, **_kwargs):
+    raise _Reached()
+
+
+_IGNORED_COMPLETIONS_PARAMS = [
+    ({"echo": True}, "echo"),
+    ({"suffix": " the end."}, "suffix"),
+    ({"best_of": 3}, "best_of"),
+    ({"best_of": 3, "n": 2}, "best_of"),
+    ({"best_of": 2, "stream": True}, "best_of"),
+]
+
+
+@pytest.mark.parametrize("extra, param", _IGNORED_COMPLETIONS_PARAMS)
+def test_completions_rejects_ignored_params_before_switch(monkeypatch, extra, param):
+    backend, rec = _wired(monkeypatch, _FakeBackend("org/A-GGUF"), ("/p/B", "Q8_0", "org/B-GGUF"))
+    body = {"model": "org/B-GGUF", "prompt": "hi", **extra}
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(inference_route.openai_completions(_json_body_request(body), "tester"))
+    assert exc.value.status_code == 400
+    assert exc.value.detail["error"]["code"] == "unsupported_parameter"
+    assert exc.value.detail["error"]["param"] == param
+    assert rec.calls == []
+
+
+@pytest.mark.parametrize("extra, param", _IGNORED_COMPLETIONS_PARAMS)
+def test_completions_rejects_ignored_params_without_switch(monkeypatch, extra, param):
+    backend, rec = _wired(monkeypatch, _FakeBackend("org/A-GGUF"), None, enabled = False)
+    monkeypatch.setattr(inference_route, "_fill_recommended_sampling_completions", _raise_reached)
+    body = {"prompt": "hi", "max_tokens": 8, **extra}
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(inference_route.openai_completions(_json_body_request(body), "tester"))
+    assert exc.value.status_code == 400
+    assert exc.value.detail["error"]["param"] == param
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {"echo": False, "suffix": "", "best_of": 1},
+        {"echo": None, "suffix": None, "best_of": None},
+        {"best_of": 2, "n": 2},
+    ],
+)
+def test_completions_default_ignored_params_still_proxy(monkeypatch, extra):
+    backend, rec = _wired(monkeypatch, _FakeBackend("org/A-GGUF"), None, enabled = False)
+    monkeypatch.setattr(inference_route, "_fill_recommended_sampling_completions", _raise_reached)
+    body = {"prompt": "hi", "max_tokens": 8, **extra}
+    with pytest.raises(_Reached):
+        asyncio.run(inference_route.openai_completions(_json_body_request(body), "tester"))
 
 
 def test_embeddings_rejects_object_input_before_switch(monkeypatch):
@@ -5665,6 +5761,18 @@ def test_chat_count_tokens_collapses_system_turns(monkeypatch):
             {"enable_thinking": True, "preserve_thinking": True},
             {"enable_thinking": True, "preserve_thinking": True},
             id = "preserve_thinking",
+        ),
+        pytest.param(
+            "reasoning_effort",
+            {"chat_template_kwargs": {"reasoning_effort": "none"}},
+            {"reasoning_effort": "none"},
+            id = "nested_effort",
+        ),
+        pytest.param(
+            "enable_thinking",
+            {"chat_template_kwargs": {"preserve_thinking": True}},
+            {"preserve_thinking": True},
+            id = "nested_preserve_thinking",
         ),
         # Nothing selected: send nothing, so llama-server keeps its load-time defaults.
         pytest.param("enable_thinking", {}, None, id = "template_default"),
@@ -7138,6 +7246,76 @@ def test_a_matching_explicit_ctx_flag_survives_auto_switch(monkeypatch):
     assert request.llama_extra_args == ["--ctx-size", "100352"]
 
 
+def test_a_ctx_flag_saved_from_the_picker_reaches_an_api_load(monkeypatch):
+    """#11511: the picker saves its slider context beside a typed -c. Its own load runs at the
+    -c (llama.cpp takes the last one), so an API auto-switch of the same row must too, instead
+    of stripping the flag as a stale shadow of the slider."""
+    _mock_override_store(monkeypatch)
+    saved = _put(
+        "unsloth/B-GGUF:Q4_K_M",
+        llama_extra_args = ["-c", "300000", "--rope-scaling", "yarn"],
+        custom_context_length = 262144,
+    )
+    entry = saved.overrides["unsloth/B-GGUF:Q4_K_M"]
+    assert entry["custom_context_length"] == 300000
+    assert entry["llama_extra_args"] == ["-c", "300000", "--rope-scaling", "yarn"]
+
+    backend, rec = _wired(
+        monkeypatch, _FakeBackend(None), ("unsloth/B-GGUF", "Q4_K_M", "unsloth/B-GGUF")
+    )
+    _run_hook("unsloth/B-GGUF")
+    request = rec.calls[0]
+    assert request.max_seq_length == 300000
+    assert request.llama_extra_args == ["-c", "300000", "--rope-scaling", "yarn"]
+
+
+@pytest.mark.parametrize(
+    "extra_args, fields, expected",
+    [
+        # llama.cpp's last -c wins, in either spelling.
+        (
+            ["--ctx-size", "8192", "-c", "65536"],
+            {"max_seq_length": 4096, "custom_context_length": 4096},
+            {"max_seq_length": 65536, "custom_context_length": 65536},
+        ),
+        # -c 0 asks llama.cpp for the model's own context: nothing to record.
+        (["-c", "0"], {"custom_context_length": 4096}, {"custom_context_length": 4096}),
+        # No context field sent: none is invented, the flag stays the only control.
+        (["-c", "65536"], {"kv_cache_dtype": "q8_0"}, {}),
+        # No -c: the slider value is stored as sent.
+        (["--top-k", "40"], {"custom_context_length": 4096}, {"custom_context_length": 4096}),
+        # Past the stored ceiling the slider value stays, so the flag is still checked on load.
+        (["-c", "99999999"], {"custom_context_length": 4096}, {"custom_context_length": 4096}),
+    ],
+)
+def test_a_saved_ctx_flag_sets_only_the_context_fields_sent(
+    monkeypatch, extra_args, fields, expected
+):
+    _mock_override_store(monkeypatch)
+    saved = _put("unsloth/B-GGUF:Q4_K_M", llama_extra_args = extra_args, **fields)
+    entry = saved.overrides["unsloth/B-GGUF:Q4_K_M"]
+    stored = {
+        key: entry[key] for key in ("max_seq_length", "custom_context_length") if key in entry
+    }
+    assert stored == expected
+
+
+def test_a_fill_keeps_the_sent_context_when_it_does_not_store_the_flag(monkeypatch):
+    """A fill (the localStorage migration) keeps a stored row's flags, so a -c in its payload is
+    not what any load will run with and must not rewrite the context."""
+    _mock_override_store(monkeypatch)
+    _put("unsloth/B-GGUF:Q4_K_M", llama_extra_args = ["--top-k", "7"])
+    saved = _put(
+        "unsloth/B-GGUF:Q4_K_M",
+        llama_extra_args = ["-c", "65536"],
+        custom_context_length = 4096,
+        fill_absent_fields = True,
+    )
+    entry = saved.overrides["unsloth/B-GGUF:Q4_K_M"]
+    assert entry["llama_extra_args"] == ["--top-k", "7"]
+    assert entry["custom_context_length"] == 4096
+
+
 @pytest.mark.parametrize(
     "stored_max_seq_length",
     ["100352", "not-a-number", 100352.0, True, [100352], {"v": 100352}],
@@ -7232,7 +7410,7 @@ def test_saved_parallel_slots_reach_an_api_load(monkeypatch):
     assert rec.calls[0].n_parallel == 8
 
 
-def test_parallel_slots_are_stored_and_gated_on_gguf():
+def test_parallel_slots_are_stored_and_reach_either_backend():
     override = settings.normalize_model_override({"n_parallel": 8})
     assert override == {"n_parallel": 8}
     # Blank, out of range and non-integer all mean "follow the server-wide default".
@@ -7241,9 +7419,13 @@ def test_parallel_slots_are_stored_and_gated_on_gguf():
 
     gguf = settings.model_override_load_kwargs(override, is_gguf = True)
     assert gguf["n_parallel"] == 8
-    # A safetensors load has no llama-server slots, exactly as the picker gates it.
-    assert "n_parallel" not in settings.model_override_load_kwargs(override, is_gguf = False)
+    safetensors = settings.model_override_load_kwargs(override, is_gguf = False)
+    assert safetensors["n_parallel"] == 8
+    for flag in ("n_batch", "n_ubatch"):
+        stored = settings.normalize_model_override({flag: 512})
+        assert flag not in settings.model_override_load_kwargs(stored, is_gguf = False)
     LoadRequest(model_path = "unsloth/B-GGUF", **gguf)
+    LoadRequest(model_path = "unsloth/B", **safetensors)
 
 
 def test_override_route_persists_parallel_slots(override_store):
@@ -9115,6 +9297,125 @@ def test_an_invalidated_index_rebuilds_on_a_host_that_just_booted(monkeypatch):
         assert built == [1], kwargs
 
 
+def _settable_resolver_clock(monkeypatch):
+    """Advance resolver time by assigning ``clock.now``."""
+    clock = types.SimpleNamespace(now = 1000.0)
+    monkeypatch.setattr(resolver, "time", types.SimpleNamespace(monotonic = lambda: clock.now))
+    return clock
+
+
+def _counted_scans(monkeypatch, index = None):
+    scans = []
+    monkeypatch.setattr(resolver, "_build_index", lambda: scans.append(1) or dict(index or {}))
+    monkeypatch.setattr(resolver, "_last_scan_s", 0.0)
+    return scans
+
+
+@pytest.mark.parametrize(
+    "loaded, requested",
+    [
+        ("unsloth/A-GGUF", "claude-haiku-4-5"),
+        ("/elsewhere/unscanned.gguf", "/elsewhere/unscanned.gguf"),
+        ("/elsewhere/unscanned.gguf", "unscanned"),
+    ],
+)
+def test_a_name_that_is_not_on_disk_rescans_once_not_per_request(monkeypatch, loaded, requested):
+    clock = _settable_resolver_clock(monkeypatch)
+    monkeypatch.setattr(resolver, "_scan", (clock.now - 60.0, {}))
+    scans = _counted_scans(monkeypatch)
+    warmed = []
+
+    def _warm_lands():
+        # Simulate a background scan without counting it as blocking.
+        warmed.append(1)
+        resolver._scan = (clock.now, {})
+
+    monkeypatch.setattr(resolver, "warm_index_soon", _warm_lands)
+    real_resolve = resolver.resolve_local_gguf
+    backend, rec = _wired(monkeypatch, _FakeBackend(loaded, "Q4_K_M"), None)
+    monkeypatch.setattr(resolver, "resolve_local_gguf", real_resolve)
+
+    for _ in range(4):
+        clock.now += resolver._CACHE_TTL_S + 1
+        _run_hook(requested)
+
+    assert scans == [1]
+    assert warmed
+    assert rec.calls == []
+    assert backend.model_identifier == loaded
+
+
+def test_a_remembered_miss_still_finds_a_model_that_appears_later(monkeypatch):
+    clock = _settable_resolver_clock(monkeypatch)
+    monkeypatch.setattr(resolver, "_scan", (clock.now - 60.0, {}))
+    scans = _counted_scans(monkeypatch)
+    monkeypatch.setattr(resolver, "warm_index_soon", lambda: None)
+    assert resolver.resolve_local_gguf_for_switch("org/b") is None
+    assert scans == [1]
+
+    # Simulate background discovery without invalidation.
+    added = {"org/b": _entry("org/b", "Q4_K_M")}
+    clock.now += resolver._CACHE_TTL_S + 1
+    monkeypatch.setattr(resolver, "_scan", (clock.now, added))
+    assert resolver.resolve_local_gguf_for_switch("org/b") is not None
+
+    # Stale hits must rescan before switching.
+    clock.now += resolver._CACHE_TTL_S + 1
+    assert resolver.resolve_local_gguf_for_switch("org/b") is None
+    assert scans == [1, 1]
+
+
+def test_an_invalidation_forgets_a_remembered_miss(monkeypatch):
+    # Download completion must make the new model discoverable immediately.
+    clock = _settable_resolver_clock(monkeypatch)
+    monkeypatch.setattr(resolver, "_scan", (clock.now - 60.0, {}))
+    scans = _counted_scans(monkeypatch)
+    monkeypatch.setattr(resolver, "warm_index_soon", lambda: None)
+    assert resolver.resolve_local_gguf_for_switch("org/b") is None
+
+    monkeypatch.setattr(
+        resolver, "_build_index", lambda: scans.append(1) or {"org/b": _entry("org/b")}
+    )
+    resolver.invalidate_index(additions_only = True)
+    assert resolver.resolve_local_gguf_for_switch("org/b") is not None
+    assert scans == [1, 1]
+
+
+def test_a_remembered_miss_expires_and_a_failed_scan_proves_nothing(monkeypatch):
+    clock = _settable_resolver_clock(monkeypatch)
+    monkeypatch.setattr(resolver, "_scan", (clock.now - 60.0, {}))
+    scans = _counted_scans(monkeypatch)
+    monkeypatch.setattr(resolver, "warm_index_soon", lambda: None)
+    assert resolver.resolve_local_gguf_for_switch("org/b") is None
+
+    # Misses expire if background refresh never completes.
+    clock.now += 2 * resolver._duty_window() + 1
+    assert resolver.resolve_local_gguf_for_switch("org/b") is None
+    assert scans == [1, 1]
+
+    def _fail():
+        scans.append(1)
+        raise OSError("scan root vanished")
+
+    monkeypatch.setattr(resolver, "_build_index", _fail)
+    monkeypatch.setattr(resolver, "_misses", {})
+    clock.now += resolver._CACHE_TTL_S + 1
+    assert resolver.resolve_local_gguf_for_switch("org/b") is None
+    clock.now += resolver._CACHE_TTL_S + 1
+    assert resolver.resolve_local_gguf_for_switch("org/b") is None
+    assert scans == [1, 1, 1, 1]
+
+
+def test_an_oversized_name_is_not_remembered(monkeypatch):
+    clock = _settable_resolver_clock(monkeypatch)
+    monkeypatch.setattr(resolver, "_scan", (clock.now - 60.0, {}))
+    _counted_scans(monkeypatch)
+    monkeypatch.setattr(resolver, "warm_index_soon", lambda: None)
+    assert resolver.resolve_local_gguf_for_switch("x" * (resolver._MAX_MISS_NAME + 1)) is None
+    assert resolver.resolve_local_gguf_for_switch("x" * resolver._MAX_MISS_NAME) is None
+    assert [len(name) for _scope, name in resolver._misses] == [resolver._MAX_MISS_NAME]
+
+
 # The resident short circuit is the one path that answers without consulting the
 # index, so it must never say yes where the pre-existing resident check says no.
 # Anything it accepts, main would have accepted too: a miss only costs the scan.
@@ -9381,6 +9682,7 @@ def test_a_video_request_labels_the_switch_refusal_video(monkeypatch):
         require_video = False,
         audio_preflight = None,
         image_preflight = None,
+        tool_images_only = False,
     ):
         captured.update(
             require_vision = require_vision,
@@ -9749,11 +10051,13 @@ def test_auto_switch_loads_an_unloaded_mlx_model(monkeypatch):
         "unsloth/Qwen3-MLX", "/srv/models/Qwen3-MLX", (), is_gguf = False
     )
     monkeypatch.setattr(resolver, "_scan", (time.monotonic(), {"unsloth/qwen3-mlx": entry}))
+    settings.set_model_override("unsloth/Qwen3-MLX", n_parallel = 8)
 
     _run_hook("unsloth/Qwen3-MLX")
 
     assert [c.model_path for c in calls] == ["/srv/models/Qwen3-MLX"]
     assert calls[0].gguf_variant is None
+    assert calls[0].n_parallel == 8
     # The alias lands on the orchestrator, leaving the llama.cpp backend untouched.
     assert orchestrator._openai_advertised_id == "unsloth/Qwen3-MLX"
     assert getattr(llama, "_openai_advertised_id", None) is None
@@ -11420,6 +11724,12 @@ def test_a_stale_idle_reload_stash_diverts_a_refusal_into_a_reload(monkeypatch):
         )(),
     )
     kw._last_unloaded_model = ("unsloth/Idle-GGUF", "Q4_K_M", "unsloth/Idle-GGUF")
+    # Fictional repo, blocked Hub: answer "no GGUF" so resolution still reaches the double (#11551).
+    import utils.models.model_config as model_config
+
+    monkeypatch.setattr(
+        model_config, "detect_gguf_model_remote", lambda identifier, hf_token = None: None
+    )
 
     with pytest.raises(Exception):
         asyncio.run(

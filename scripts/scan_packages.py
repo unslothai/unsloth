@@ -1772,13 +1772,56 @@ _MARKER_ENV_VARS = (
 )
 
 
+def _marker_can_hold_without_extras(parsed) -> bool:
+    """Can a parsed PEP 508 marker be true on SOME target with no extra requested?
+
+    Markers have no negation, only ``and``/``or`` over comparisons, so the formula is monotone in
+    its atoms: it can be true somewhere iff it is true with every non-``extra`` comparison set to
+    True and every ``extra`` comparison evaluated against the empty extra. That keeps
+    ``sys_platform == 'win32'`` and ``python_version >= '3.8' or extra == 'dev'`` (true on some
+    target) and drops ``extra == 'dev' and python_version >= '3.9'``, which no target installs
+    without the extra. Raises on a shape it does not know, so the caller keeps the dep.
+    """
+    groups: list[list[bool]] = [[]]
+    for item in parsed:
+        if isinstance(item, list):
+            groups[-1].append(_marker_can_hold_without_extras(item))
+        elif isinstance(item, tuple) and len(item) == 3:
+            lhs, op, rhs = item
+            names = {type(lhs).__name__, type(rhs).__name__}
+            if names != {"Variable", "Value"}:
+                raise ValueError(f"unexpected marker atom {item!r}")
+            variable = lhs if type(lhs).__name__ == "Variable" else rhs
+            if variable.value != "extra":
+                groups[-1].append(True)
+                continue
+            from packaging.markers import Marker
+
+            env = {"extra": ""}
+            text = f"{lhs.serialize()} {op.serialize()} {rhs.serialize()}"
+            groups[-1].append(bool(Marker(text).evaluate(env)))
+        elif item == "or":
+            groups.append([])
+        elif item == "and":
+            continue
+        else:
+            raise ValueError(f"unexpected marker token {item!r}")
+    return any(all(group) for group in groups)
+
+
 def _marker_holds_by_default(marker: str) -> bool:
-    """Keep (scan) a dep unless its marker is purely ``extra``-gated. The scanner runs on one OS/Python but a package may be installed on another, so a marker that can be true on a different target is always kept; only a marker depending solely on ``extra`` and false with no extra requested is dropped. Conservative: on any uncertainty, keep."""
+    """Keep (scan) a dep unless no install reaches it without an extra. The scanner runs on one OS/Python but a package may be installed on another, so a marker that can be true on a different target is always kept; a marker false on every target once no extra is requested (``extra == 'dev'``, ``extra == 'dev' and python_version >= '3.9'``) is dropped. Conservative: on any uncertainty, keep."""
     m = marker.strip()
     if not m or "extra" not in m:
         return True  # no extra gate: installed by default on some target -> scan
     if any(v in m for v in _MARKER_ENV_VARS):
-        return True  # also platform/python gated: true on some target -> scan
+        # Also platform/python gated. Those atoms can each be true on some target, but an extra
+        # still has to be requested when it is AND-ed with them.
+        try:
+            from packaging.markers import Marker
+            return _marker_can_hold_without_extras(Marker(m)._markers)
+        except Exception:
+            return True  # an unknown shape: keep, and scan it
     # Pure extra marker: decide by evaluating with no extra requested.
     try:
         from packaging.markers import Marker, default_environment

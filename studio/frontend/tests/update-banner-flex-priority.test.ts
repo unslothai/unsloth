@@ -64,21 +64,38 @@ for (const [name, source] of CARDS) {
 
   test(`the ${name} card stops shrinking at its buttons`, () => {
     const stacked = classes(source, "pointer-events-auto flex ");
-    // The floor is the header and the action row. It has to follow
-    // --ui-font-scale, not be measured once at the default type size:
-    // Settings > Appearance goes to 20px, where the action row wraps at every
-    // card width and a 128px floor cuts the buttons in half. A fixed part plus
-    // a scaled one, since only some of the card moves with the setting, and
-    // scaling the whole box asked 256px where 209 was needed.
+    // The floor is the header and the action row, and the two cards reach it
+    // two different ways. The desktop card still writes it out against
+    // --ui-font-scale. The browser card stopped naming a height at all: a
+    // constant is calibrated at one type size, and #11458 made the spacing
+    // inside the card follow the setting too, so at 20px the written floor
+    // came to 209px while the content needed about 301 and the action row was
+    // cut. Its surface declares neither min-h-0 nor overflow-hidden, so its
+    // automatic minimum size is its own content and cannot go stale.
     assert.ok(
       !/\bmin-h-0\b/.test(stacked),
       "min-h-0 lets the rail squeeze the card to nothing",
     );
-    assert.match(
-      source,
-      /min-h-\[calc\(\d+px\+\d+px\*var\(--ui-font-scale,1\)\)\]/,
-      "the floor does not track the type size in the shape index.css uses",
-    );
+    if (name === "web") {
+      const surface = classes(source, "relative flex max-h-[");
+      for (const zeroesTheFloor of ["min-h-0", "overflow-hidden"]) {
+        assert.ok(
+          !surface.split(/\s+/).includes(zeroesTheFloor),
+          `${zeroesTheFloor} puts the card's floor back to nothing`,
+        );
+      }
+      assert.doesNotMatch(
+        source,
+        /min-h-\[/,
+        "the card names a height again, which goes stale at the next type size",
+      );
+    } else {
+      assert.match(
+        source,
+        /min-h-\[calc\(\d+px\+\d+px\*var\(--ui-font-scale,1\)\)\]/,
+        "the floor does not track the type size in the shape index.css uses",
+      );
+    }
     assert.ok(
       !/12rem\*var\(--ui-font-scale/.test(source),
       "the whole box is being scaled again, which over-reserves the floor",
@@ -100,11 +117,13 @@ test("a card with no notes panel does not shrink at all", () => {
       /["\s]min-h-\[calc\(/,
       `the ${name} card floors unconditionally again, around a card that may paint none of it`,
     );
-    assert.match(
-      source,
-      /has-\[\[data-slot=update-release-notes\]\]:min-h-\[calc\(/,
-      `the ${name} card's floor is not gated on its notes panel`,
-    );
+    if (name !== "web") {
+      assert.match(
+        source,
+        /has-\[\[data-slot=update-release-notes\]\]:min-h-\[calc\(/,
+        `the ${name} card's floor is not gated on its notes panel`,
+      );
+    }
     assert.match(
       source,
       /has-\[\[data-slot=update-release-notes\]\]:shrink\b/,
@@ -200,7 +219,7 @@ test("the llama.cpp card takes the desktop updater's floor only with its changel
   // Only the conditional branch may carry a floor.
   assert.doesNotMatch(classes(LLAMA, "pointer-events-auto flex "), /min-h-/);
   assert.doesNotMatch(slot, /\bmin-h-0\b/);
-  assert.ok(LLAMA.includes("max-w-[448px]"));
+  assert.ok(LLAMA.includes("max-w-[calc(448px*var(--ui-space-scale,1))]"));
 });
 
 test("the llama.cpp changelog uses the desktop update notes layout", () => {

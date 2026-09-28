@@ -51,10 +51,13 @@ test("the render prop is built once, at module scope", () => {
 test("ThreadMessage sends each kind to the component that names it", () => {
   const body = block("const ThreadMessage: FC = () => {");
   assert.match(body, /threadMessageKind\(role, isEditing\)/);
-  assert.match(body, /case "edit":\s*return <EditComposer \/>;/);
-  assert.match(body, /case "user":\s*return <UserMessage \/>;/);
-  assert.match(body, /case "assistant":\s*return <AssistantMessage \/>;/);
+  // The kind picks the component; the row renders it below, followed by the fork divider.
+  assert.match(body, /case "edit":\s*body = <EditComposer \/>;/);
+  assert.match(body, /case "user":\s*body = <UserMessage \/>;/);
+  assert.match(body, /case "assistant":\s*body = <AssistantMessage \/>;/);
+  // An unknown kind renders nothing at all, divider included.
   assert.match(body, /default:\s*return null;/);
+  assert.match(body, /\{body\}\s*<ForkContinuationRule \/>/);
 });
 
 test("research-reply ownership is selected as an answer, not as the message list", () => {

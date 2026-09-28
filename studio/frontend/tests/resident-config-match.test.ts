@@ -399,13 +399,26 @@ test("selectModel weighs the config and the lease before confirming a reload", (
   // written only by a completed load, so this path must not adopt one.
   // Widened as the gate's preamble grows: what matters is that the guard opens the block
   // the identity check sits in, not how many reads it makes first.
+  // Scoped to the adoption short-circuit: the runtime also checks residency while
+  // cancelling a superseded run, and adopting an earlier occurrence would read this
+  // guard as missing.
   const guard = USE_CHAT_MODEL_RUNTIME.lastIndexOf(
     "if (!forceReload && !nativePathToken) {",
-    identityCheck,
+    confirmPrompt,
   );
   assert.ok(
     guard > 0,
     "the resident short-circuit no longer excludes native-lease picks",
+  );
+  // Scoped past the guard: the runtime also checks residency when it reconciles a
+  // cancelled run, and reading the first occurrence would measure the wrong block.
+  const adoptionIdentityCheck = USE_CHAT_MODEL_RUNTIME.indexOf(
+    "residentModelMatchesPick(status",
+    guard,
+  );
+  assert.ok(
+    adoptionIdentityCheck > guard && adoptionIdentityCheck < confirmPrompt,
+    "the resident short-circuit no longer wraps the identity check",
   );
 });
 
@@ -720,9 +733,7 @@ test("a non-GGUF resident is not judged on a GGUF invocation field", () => {
     }),
     false,
   );
-  // And a non-GGUF resident answers for the two fields the backend actually compares,
-  // which is all _mlx_runtime_settings_match looks at. cache_type_kv is deliberately not
-  // among them: it is a llama.cpp flag, and the non-GGUF branch never reads it.
+  // Non-GGUF matches only what the backend acts on; cache_type_kv is a llama.cpp flag it never reads.
   assert.equal(
     matches({ ...DEFAULTS, is_gguf: false, cache_type_kv: "q8_0" }, BLANK),
     true,
@@ -1125,9 +1136,9 @@ test("a diffusion pick is reduced to its lowest GPU, as the backend reduces it",
 
 test("no llama.cpp invocation field decides against a non-GGUF resident", () => {
   // The non-GGUF branch of /load checks identity and _mlx_runtime_settings_match, then
-  // answers already_loaded. Every other field here is a llama.cpp flag it never reads, so
-  // a persisted Manual mode, tensor split, slot count or batch size raised the prompt for
-  // a load that could not have changed anything.
+  // answers already_loaded. Every field here is a llama.cpp flag it never reads, so a
+  // persisted Manual mode, tensor split or batch size raised the prompt for a load that
+  // could not have changed anything.
   const resident = { ...DEFAULTS, is_gguf: false };
   assert.equal(
     matches(resident, {
@@ -1136,7 +1147,6 @@ test("no llama.cpp invocation field decides against a non-GGUF resident", () => 
       gpuLayers: 20,
       nCpuMoe: 8,
       tensorParallel: true,
-      nParallel: 4,
       nBatch: 2048,
       nUbatch: 512,
       selectedGpuIds: [1],
@@ -1150,6 +1160,19 @@ test("no llama.cpp invocation field decides against a non-GGUF resident", () => 
     matches({ ...resident, is_gguf: true }, { ...BLANK, nParallel: 4 }),
     false,
   );
+});
+
+test("a resident decoding at another width is not adopted, whichever backend", () => {
+  for (const is_gguf of [true, false]) {
+    assert.equal(
+      matches({ ...DEFAULTS, is_gguf, requested_parallel_slots: 4 }, { ...BLANK, nParallel: 2 }),
+      false,
+    );
+    assert.equal(
+      matches({ ...DEFAULTS, is_gguf, requested_parallel_slots: 2 }, { ...BLANK, nParallel: 2 }),
+      true,
+    );
+  }
 });
 
 test("a diffusion resident is judged on its NGL, not on the placement fields", () => {

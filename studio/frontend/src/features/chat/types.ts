@@ -53,6 +53,12 @@ export interface ThreadRecord {
    *  and the parent thread's "N forks" indicator. */
   forkedFromThreadId?: string | null;
   forkedFromMessageId?: string | null;
+  /** This thread's own copy of the last inherited message. The "Continued from chat" divider
+   *  sits after it. Null on forks taken before the column existed, which show no divider. */
+  forkBoundaryMessageId?: string | null;
+  /** The name this thread's generated title numbers from, so the next fork of it is the next
+   *  number. Cleared on rename, and null on anything the user named. */
+  forkTitleBase?: string | null;
   /** this chat's own settings, applied when it is opened; absent means the global ones. */
   settings?:
     | import("./utils/thread-scoped-settings").ThreadScopedSettings
