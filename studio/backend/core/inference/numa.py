@@ -5,7 +5,9 @@
 
 from __future__ import annotations
 
+import functools
 import shutil
+import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -102,8 +104,22 @@ def read_numa_topology() -> NumaTopology:
     return NumaTopology(node_free_mib = free)
 
 
-def numactl_available() -> bool:
-    return shutil.which("numactl") is not None
+@functools.lru_cache(maxsize = 1)
+def numactl_problem() -> str | None:
+    """None if numactl can set an interleave policy here, else "missing" or "blocked".
+
+    Docker's default seccomp profile refuses set_mempolicy without CAP_SYS_NICE, and
+    numactl then exits before exec'ing the server, so presence alone is not enough."""
+    exe = shutil.which("numactl")
+    if exe is None:
+        return "missing"
+    try:
+        probe = subprocess.run(
+            [exe, "--interleave=all", exe, "--show"], capture_output = True, timeout = 10
+        )
+    except (OSError, subprocess.SubprocessError):
+        return "blocked"
+    return None if probe.returncode == 0 else "blocked"
 
 
 @dataclass(frozen = True)
@@ -150,15 +166,26 @@ def decide_interleave(
             f"(~{total} MiB); interleave cannot help -- free memory or use a smaller quant",
         )
 
-    avail = numactl_available() if has_numactl is None else has_numactl
-    if not avail:
-        return InterleaveDecision(
-            False,
+    if has_numactl is None:
+        problem = numactl_problem()
+    else:
+        problem = None if has_numactl else "missing"
+    if problem is not None:
+        need = (
             f"model ~{model_mib} MiB exceeds the smallest NUMA node's free RAM "
             f"(~{smallest} MiB) and needs interleaving across {topo.node_count} nodes, "
-            f"but `numactl` is not installed. Install numactl (e.g. `apt install "
-            f"numactl`) or the model may fail to fit a single node.",
         )
+        if problem == "missing":
+            fix = (
+                "but `numactl` is not installed. Install numactl (e.g. `apt install "
+                "numactl`) or the model may fail to fit a single node."
+            )
+        else:
+            fix = (
+                "but `numactl` cannot set a memory policy here (in Docker, add "
+                "--cap-add=SYS_NICE) so the model may fail to fit a single node."
+            )
+        return InterleaveDecision(False, need + fix)
 
     return InterleaveDecision(
         True,

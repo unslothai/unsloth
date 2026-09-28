@@ -6,6 +6,8 @@
 from __future__ import annotations
 
 import sys
+
+import pytest
 import types as _types
 from pathlib import Path
 
@@ -61,6 +63,7 @@ from core.inference.numa import (  # noqa: E402
     _parse_online,
     decide_interleave,
 )
+import core.inference.numa as numa  # noqa: E402
 
 _GiB = 1024**3
 _MiB = 1024**2
@@ -164,3 +167,24 @@ def test_decision_is_frozen_dataclass():
     except AttributeError:
         return
     raise AssertionError("InterleaveDecision should be immutable")
+
+
+def test_numactl_blocked_by_seccomp_does_not_wrap(monkeypatch):
+    # Docker without CAP_SYS_NICE: numactl exists but set_mempolicy is refused.
+    monkeypatch.setattr(numa, "numactl_problem", lambda: "blocked")
+    d = decide_interleave(583 * _GiB, cpu_only = True, topology = _USER_TOPO)
+    assert not d.interleave and not d.prefix
+    assert "SYS_NICE" in d.reason
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason = "shell script stands in for numactl")
+def test_numactl_probe_runs_the_policy(monkeypatch, tmp_path):
+    fake = tmp_path / "numactl"
+    fake.write_text("#!/bin/sh\necho 'set_mempolicy: Operation not permitted' >&2\nexit 1\n")
+    fake.chmod(0o755)
+    monkeypatch.setenv("PATH", str(tmp_path))
+    numa.numactl_problem.cache_clear()
+    try:
+        assert numa.numactl_problem() == "blocked"
+    finally:
+        numa.numactl_problem.cache_clear()

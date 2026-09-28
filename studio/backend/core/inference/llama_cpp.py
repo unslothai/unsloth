@@ -28548,8 +28548,7 @@ class LlamaCppBackend:
                         cmd.extend(["--numa", "distribute"])
                         logger.info("NUMA: %s", _numa.reason)
                     elif _cpu_only and (
-                        "numactl` is not installed" in _numa.reason
-                        or "interleave cannot help" in _numa.reason
+                        "but `numactl`" in _numa.reason or "interleave cannot help" in _numa.reason
                     ):
                         logger.warning("NUMA: %s", _numa.reason)
                 except Exception as _numa_exc:  # never block a load on the NUMA probe
