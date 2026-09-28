@@ -75,12 +75,19 @@ def host_prep_remediation() -> str | None:
     return advice
 
 
+def _is_cmd(selected_executable: str) -> bool:
+    return Path(selected_executable).name.casefold() in {"cmd", "cmd.exe"}
+
+
 def _terminal_probe(selected_executable: str, workdir: Path, canary: Path, outside_write: Path):
     name = Path(selected_executable).name.casefold()
     read_capture = workdir / "outside-read.txt"
-    if name in {"cmd", "cmd.exe"}:
+    if _is_cmd(selected_executable):
+        # The quoted redirect is the positive control for quoting: a command line that mangles quotes
+        # also fails the denied read and write below, which would otherwise pass without isolation.
         command = (
             "echo ok>inside.txt"
+            ' & echo ok>"inside quoted.txt"'
             f' & type "{canary}" >"{read_capture}" 2>nul'
             f' & (echo bad>"{outside_write}") 2>nul'
             " & echo UNSLOTH_MXC_TERMINAL_PROBE_OK"
@@ -281,6 +288,7 @@ def _probe(
                 or outside_write.exists()
                 or "outside-secret" in outside_read
                 or not (workdir / "inside.txt").is_file()
+                or (_is_cmd(selected_executable) and not (workdir / "inside quoted.txt").is_file())
             ):
                 return False, "the live MXC Terminal positive/negative controls failed"
             return True, "the selected Terminal passed the live MXC positive and negative controls"
