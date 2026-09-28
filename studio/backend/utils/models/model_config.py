@@ -3585,12 +3585,14 @@ def detect_gguf_model_remote(repo_id: str, hf_token: Optional[str] = None) -> Op
             last_err = e
             # 404 / RepoNotFound is permanent -- don't retry
             err_name = type(e).__name__
+            # A refusal by status too (DisabledRepoError, a bare 403): retrying cannot change it,
+            # and the cache fallback below would skip the refused-repo policy.
             if err_name in (
                 "RepositoryNotFoundError",
                 "GatedRepoError",
                 "RevisionNotFoundError",
                 "EntryNotFoundError",
-            ):
+            ) or _is_hub_refusal(e):
                 logger.debug(f"Could not check GGUF files for '{repo_id}': {e}")
                 _note_gguf_remote_detect_failure(e)
                 return None

@@ -516,3 +516,22 @@ def test_only_the_load_that_shows_the_warning_may_use_the_cached_copy(monkeypatc
     asyncio.run(inference._run_tracked_load_model_impl(request, object(), "subject"))
     assert seen == [True]
     assert inference._load_warnings_reach_user.get() is False
+
+
+@pytest.mark.parametrize("status", [403, 404])
+def test_a_refusal_known_only_by_its_status_takes_the_refused_repo_policy(
+    monkeypatch, _isolated, status
+):
+    # DisabledRepoError or a bare HTTP 403: not retried into the ordinary cache route, where an
+    # API key would get the copy with no warning.
+    class DisabledRepoError(Exception):
+        def __init__(self):
+            super().__init__(f"{status} Client Error")
+            self.response = SimpleNamespace(status_code = status, headers = {})
+
+    _download(_isolated, GGUF)
+    _refuse(monkeypatch, DisabledRepoError())
+    config, rejections = _load(gguf_variant = VARIANT, owner_session = True)
+    assert rejections.served_from_cache == [REPO]
+    with pytest.raises(GgufRepoUnreadableError):
+        _load(hf_token = "hf_" + "k" * 34, gguf_variant = VARIANT, owner_session = False)
