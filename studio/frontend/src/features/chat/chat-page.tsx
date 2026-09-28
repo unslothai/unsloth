@@ -1793,8 +1793,6 @@ function ProjectLanding({
                 )}
               >
                 {/* Same items as the project's menu in the Library, less the two that lead here. */}
-                <OpenProjectFolderItem projectId={projectId} />
-                <DropdownMenuSeparator />
                 {/* Edit and Pin as the sidebar and Library name them; the dialog holds name, instructions and folders. */}
                 <DropdownMenuItem onSelect={() => setEditingProject(true)}>
                   <HugeiconsIcon icon={Settings02Icon} strokeWidth={1.75} className="size-icon" />
@@ -1869,6 +1867,7 @@ function ProjectLanding({
                     />
                   </DropdownMenuSubContent>
                 </DropdownMenuSub>
+                <OpenProjectFolderItem projectId={projectId} />
                 <DropdownMenuSeparator />
                 <DropdownMenuItem
                   variant="destructive"

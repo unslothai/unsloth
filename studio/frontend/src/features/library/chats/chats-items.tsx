@@ -662,9 +662,15 @@ function ChatLocation({
           if (projectId) filterProject(projectId);
           else if (section) viewSection(section.id);
         }}
-        className={cn(CHIP, "block truncate")}
+        // Icon first, so a location is not read as a count.
+        className={cn(CHIP, "max-w-full")}
       >
-        {projectId ? projectName : section?.name}
+        <HugeiconsIcon
+          icon={projectId ? Folder02Icon : LayerIcon}
+          strokeWidth={1.75}
+          className="size-3.5 shrink-0"
+        />
+        <span className="truncate">{projectId ? projectName : section?.name}</span>
       </button>
     );
   }
@@ -680,7 +686,7 @@ function ChatLocation({
           className={cn(CHIP, "shrink")}
         >
           <HugeiconsIcon
-            icon={Folder01Icon}
+            icon={Folder02Icon}
             strokeWidth={1.75}
             className="size-3.5 shrink-0"
           />
@@ -1328,7 +1334,7 @@ function ProjectMenu({
         <MenuTrigger variant={variant} />
         <DropdownMenuContent align="end" className={cn(MENU, "w-52")}>
           <MenuItem
-            icon={Folder01Icon}
+            icon={MessageCircleIcon}
             label={t("library.chats.menu.viewChats")}
             onSelect={() => actions.viewProject(project.id)}
           />
@@ -1579,7 +1585,7 @@ export function SectionMenuItems({
     <>
       {!onPage && (
         <MenuItem
-          icon={LayerIcon}
+          icon={MessageCircleIcon}
           label={t("library.chats.menu.viewChats")}
           onSelect={() => actions.viewSection(section.id)}
         />

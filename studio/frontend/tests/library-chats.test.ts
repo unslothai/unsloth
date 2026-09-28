@@ -511,12 +511,13 @@ test("a project's home menu carries the Library project menu's items", () => {
   const page = readSrc("features/chat/chat-page.tsx");
   const menu = page.slice(page.indexOf('aria-label="Project options"'), page.indexOf("<ProjectComposer"));
   const order = [
-    "<OpenProjectFolderItem projectId={projectId} />",
     "setEditingProject(true)",
     "togglePinProject(projectId)",
     "setFavoriteProjects([projectId], !projectFavorite)",
     'shell.sections.moveTo',
     "<BulkExportItems",
+    // Under Export, in the same group.
+    "<OpenProjectFolderItem projectId={projectId} />",
     "openProjectDelete()",
   ];
   let at = -1;
@@ -525,6 +526,9 @@ test("a project's home menu carries the Library project menu's items", () => {
     assert.ok(next > at, `${marker} in order`);
     at = next;
   }
+  const folderToDelete = menu.slice(menu.indexOf("<OpenProjectFolderItem"), menu.indexOf("openProjectDelete()"));
+  assert.equal(folderToDelete.match(/<DropdownMenuSeparator \/>/g)?.length, 1);
+  assert.ok(!menu.slice(0, menu.indexOf("setEditingProject(true)")).includes("<DropdownMenuSeparator"));
   // Filed the same way as from the Library, which shares the hook.
   assert.match(page, /const fileProjectInSection = useFileProjectInSection\(\);/);
   assert.match(readSrc("features/library/chats/chats-library.tsx"), /const fileProjectInSection = useFileProjectInSection\(\);/);
@@ -570,4 +574,14 @@ test("a section's menu reads New chat, New project and Edit", () => {
   const library = readSrc("features/library/chats/chats-library.tsx");
   assert.match(library, /if \(newProjectSection\) fileProjectInSection\(project, newProjectSection\);/);
   assert.match(library, /openSectionId \? newProjectInSection\(openSectionId\) : setCreatingProject\(true\)/);
+});
+
+test("a chat card's location has its project or section icon; View chats has the chat icon", () => {
+  const items = readSrc("features/library/chats/chats-items.tsx");
+  const plain = items.slice(items.indexOf("  if (plain) {"), items.indexOf('<span className="flex min-w-0 items-center gap-3">'));
+  assert.match(plain, /icon=\{projectId \? Folder02Icon : LayerIcon\}/);
+  assert.match(plain, /<span className="truncate">\{projectId \? projectName : section\?\.name\}<\/span>/);
+  const viewChats = items.match(/icon=\{(\w+)\}\s*label=\{t\("library\.chats\.menu\.viewChats"\)\}/g) ?? [];
+  assert.equal(viewChats.length, 2);
+  for (const item of viewChats) assert.match(item, /MessageCircleIcon/);
 });
