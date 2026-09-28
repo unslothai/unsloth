@@ -888,6 +888,24 @@ def _compile_repeated_blocks(
                 install_real_rope(logger)
             except Exception as exc:  # noqa: BLE001 - optimisation only
                 _warn(logger, "qwen-image-2.1 real rope", exc)
+        # Before the compile: the regional compile traces whatever forward the blocks carry at the first call.
+        try:
+            from .diffusion_int8_fused import install as install_int8_fused
+            install_int8_fused(transformer, logger, offload_active = offload_active)
+        except Exception as exc:  # noqa: BLE001 - optimisation only
+            _warn(logger, "int8 fused mlp", exc)
+        if type(transformer).__name__ == "QwenImageTransformer2DModel":
+            try:
+                from .diffusion_qwenimage_rope import install as install_qwen_real_rope
+                install_qwen_real_rope(transformer, logger)
+            except Exception as exc:  # noqa: BLE001 - optimisation only
+                _warn(logger, "qwen-image real rope", exc)
+        if type(transformer).__name__ == "ZImageTransformer2DModel":
+            try:
+                from .diffusion_zimage_fused import install as install_zimage_fused
+                install_zimage_fused(transformer, logger, offload_active = offload_active)
+            except Exception as exc:  # noqa: BLE001 - optimisation only
+                _warn(logger, "z-image fused attention", exc)
         try:
             transformer.compile_repeated_blocks(**dit_kwargs)
             engaged = True
@@ -1343,6 +1361,8 @@ def _compile_vae_decode(
     # A dual-DiT family calls apply_speed_optims twice over the same pipe.
     if getattr(vae, "_unsloth_compiled_decode", False):
         return True
+    if getattr(vae, "_unsloth_compile_decode_error", None):
+        return False
     _install_inductor_backports(logger)
     if _vae_declares_repeated_blocks(vae):
         return _compile_vae_regionally(vae, logger, max_autotune = max_autotune)

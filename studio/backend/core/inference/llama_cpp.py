@@ -3209,8 +3209,12 @@ def _cached_variant_candidates(
     hf_variant: str,
     *,
     require_mmproj: bool = False,
+    strict: bool = False,
 ) -> Generator[tuple[str, str, list[str], Path], None, None]:
-    """Yield complete cached variant copies in snapshot preference order."""
+    """Yield complete cached variant copies in snapshot preference order.
+
+    A copy whose recorded download is unfinished or cancelled comes last, and ``strict``
+    drops it: only a copy that can run without the Hub qualifies then."""
     try:
         from hub.utils.gguf_sources import (
             cached_gguf_manifest_complete,
@@ -3249,7 +3253,8 @@ def _cached_variant_candidates(
                 continue
             yield candidate
         # Keep existing reuse semantics when no completed duplicate is available.
-        yield from pending_downloads
+        if not strict:
+            yield from pending_downloads
     except Exception as e:
         logger.debug(f"Cache lookup for variant failed: {e}")
 
@@ -3354,8 +3359,10 @@ def cached_gguf_for_load(
     require_mmproj: bool = False,
     verify_sizes: bool = False,
     hf_token: Optional[str] = None,
+    strict: bool = False,
 ) -> Optional[str]:
-    """Return a cached GGUF that can be loaded without downloading."""
+    """Return a cached GGUF that can be loaded without downloading (``strict``: and whose
+    recorded download is complete, see _cached_variant_candidates)."""
     if not hf_variant:
         return None
     hf_repo = _resolve_repo_id_casing(hf_repo)
@@ -3363,6 +3370,7 @@ def cached_gguf_for_load(
         hf_repo,
         hf_variant,
         require_mmproj = require_mmproj,
+        strict = strict,
     ):
         if verify_sizes and not _cached_candidate_matches_revision_size(
             hf_repo, candidate, hf_token
@@ -7206,6 +7214,8 @@ class LlamaCppBackend:
         self._last_load_warning: Optional[str] = None
         # Same, for a quant fallback: the download fills the pair, the launch publishes it.
         self._variant_fallback_warning: Optional[str] = None
+        # The route's Hub notice for the running model, so /status matches the load response.
+        self.hub_access_warning: Optional[str] = None
         self._pending_variant_fallback: Optional[tuple[str, str]] = None
         # Set per launch by _record_carveout_advice; None on nearly every load.
         self._last_carveout_advice: Optional[dict] = None
@@ -14687,6 +14697,7 @@ class LlamaCppBackend:
         reverse -- the placement everything was priced against is the one that just
         died."""
         self._last_load_warning = None
+        self.hub_access_warning = None
         # Same lifetime, same reason: the advice describes the placement the dying
         # child was priced against and must not be reported against its replacement.
         self._last_carveout_advice = None

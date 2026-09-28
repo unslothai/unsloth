@@ -96,6 +96,7 @@ export const hi = {
     useModelScope: "ModelScope इस्तेमाल करें",
     useModelScopeHint: "इसके बजाय ModelScope से खोजें और डाउनलोड करें। आप सेटिंग्स में वापस बदल सकते हैं।",
     useModelScopeFailed: "ModelScope पर स्विच नहीं हो सका।",
+    updateToken: "टोकन अपडेट करें",
     hfToken: {
       label: "HF टोकन",
       saved: "सहेजा गया",
@@ -2436,6 +2437,8 @@ export const hi = {
       tokenRejectedTitle: "Hugging Face टोकन अस्वीकार किया गया",
       tokenRejectedBody:
         "सेटिंग्स → सामान्य में अपना टोकन अपडेट करें, फिर पुनः प्रयास करें।",
+      tokenRejectedAnonymousBody:
+        "सार्वजनिक मॉडल इसके बिना दिखाए जा रहे हैं। निजी और प्रतिबंधित मॉडल तक पहुंचने के लिए सेटिंग्स → सामान्य में अपना टोकन अपडेट करें।",
       hubUnreachable: "Hugging Face तक नहीं पहुंच सके",
       cantUseModel: "मॉडल को ट्रेनिंग के लिए उपयोग नहीं कर सकते",
       reasonTypeMismatch:
