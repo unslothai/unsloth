@@ -322,7 +322,7 @@ def _build_model(
         # Nothing to save over laya's own build.
         return original(cfg, encoder_dir = encoder_dir)
     # A one-row placeholder, with row 0 standing in for the padding id so the check below can
-    # tell the embedding was sized and padded from the config. ModernBERT-large's pad id is 50283.
+    # tell the embedding was sized and padded from the config.
     placeholder_pad = None if pad_token_id is None else 0
     config.vocab_size, config.pad_token_id = 1, placeholder_pad
     try:
