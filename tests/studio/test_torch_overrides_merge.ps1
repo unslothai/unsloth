@@ -40,6 +40,11 @@ function Check($name, $cond) {
 # The helper reads $SkipTorch from its enclosing scope.
 $SkipTorch = $false
 
+# Nested in Install-UnslothStudio beside the helper, so it is out of scope here: the helper logs
+# a DIAG line when an ambient torch shadows the venv's (#11980). Stubbed like substep below.
+$script:tauriLogCalls = @()
+function Write-TauriLog { param($Tag, $Message) $script:tauriLogCalls += "$Tag $Message" }
+
 # Stand-in interpreter: the helper only runs `& $PythonExe -c` and reads `name==version` lines.
 $work = Join-Path ([System.IO.Path]::GetTempPath()) ("unsloth-ovtest-" + [guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Path $work -Force | Out-Null

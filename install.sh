@@ -7586,14 +7586,17 @@ _warn_if_torch_shadowed() {
     _wits_venv_ver="$1"
     [ -n "$_wits_venv_ver" ] || return 0
     [ "$_TORCH_SHADOW_WARNED" = false ] || return 0
-    # Same probe, minus the -I: what `import torch` will actually pick up at runtime.
+    # The same probe minus the -I, so this is what `import torch` will actually pick up at
+    # runtime. Same torch== shape as the isolated probe and selected BY that prefix, not by
+    # position: sitecustomize and import hooks print to stdout, and the two versions have to be
+    # compared like for like or every install reports a shadow that is not there.
     _wits_amb_ver=$("$_VENV_PY" -c "
 from importlib.metadata import version, PackageNotFoundError
 try:
-    print(version('torch'))
+    print('torch==' + version('torch'))
 except PackageNotFoundError:
     pass
-" 2>/dev/null | tail -n 1) || _wits_amb_ver=""
+" 2>/dev/null | sed -n 's/^torch==//p' | head -n 1) || _wits_amb_ver=""
     [ -n "$_wits_amb_ver" ] || return 0
     [ "$_wits_amb_ver" != "$_wits_venv_ver" ] || return 0
     _TORCH_SHADOW_WARNED=true

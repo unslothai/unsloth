@@ -10131,7 +10131,12 @@ exit 0
         # rest were resolved against the venv's. Say so once -- it is the only part the user can
         # act on, and after the -I fix the install itself no longer fails (#11980).
         if (-not $script:TorchShadowWarned) {
-            $ambient = & $PythonExe -c "from importlib.metadata import version, PackageNotFoundError`ntry:`n    print(version('torch'))`nexcept PackageNotFoundError:`n    pass" 2>$null | Select-Object -Last 1
+            # Same torch== shape as the isolated probe, matched BY that prefix rather than by
+            # position: the two versions must be compared like for like, and stdout can carry
+            # sitecustomize or import-hook noise.
+            $ambientLine = & $PythonExe -c "from importlib.metadata import version, PackageNotFoundError`ntry:`n    print('torch==' + version('torch'))`nexcept PackageNotFoundError:`n    pass" 2>$null |
+                Where-Object { $_ -match '^torch==' } | Select-Object -First 1
+            $ambient = if ($ambientLine) { $ambientLine -replace '^torch==', '' } else { $null }
             $venvTorch = $lines[0] -replace '^torch==', ''
             if ($ambient -and $ambient -ne $venvTorch) {
                 $script:TorchShadowWarned = $true
@@ -11402,10 +11407,11 @@ sys.exit(2 if conflict else (0 if installed else 1))
 $script:WoaResolverEnvSaved = $null
 $script:MirrorEnvSaved = @{}
 $script:InstallTorchMirror = $null
+# Once-per-run guard for the shadowed-torch warning (#11980); twin of install.sh's. Reset with the
+# others, and ahead of them: the pair below must stay the last two lines before the try (#11290).
+$script:TorchShadowWarned = $false
 $script:WoaSessionOverrides = $null
 $script:TorchOverridesFile = $null
-# Once-per-run guard for the shadowed-torch warning (#11980); twin of install.sh's.
-$script:TorchShadowWarned = $false
 try {
     Install-UnslothStudio @args
 } finally {
