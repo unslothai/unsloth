@@ -343,8 +343,6 @@ def fp8_to_nf4_planner_quantization_config(config, llm_int8_skip_modules = None)
     }
 
 
-
-
 class _LoadState:
     """Book-keeping for the one fp8 -> NF4 load in flight. Module level, never on an op or a
     converter: the loader deep-copies those once per target key."""

@@ -56,8 +56,6 @@ needs_fp8_gpu = pytest.mark.skipif(
 )
 
 
-
-
 def _quantize_block_fp8(weight):
     rows, cols = weight.shape
     grid_r, grid_c = -(-rows // _BLOCK), -(-cols // _BLOCK)
@@ -174,8 +172,6 @@ def moe_pair(tmp_path_factory):
     return _build(str(tmp_path_factory.mktemp("fp8_moe")), moe = True)
 
 
-
-
 def _fingerprint(model):
     """name -> tensors that define the loaded weight: packed NF4 bytes and the full quant state."""
     out = {}
@@ -244,8 +240,6 @@ def _free(*models):
 
     gc.collect()
     torch.cuda.empty_cache()
-
-
 
 
 @needs_cuda
@@ -415,8 +409,6 @@ def test_unavailable_keeps_todays_fp8_load(dense_pair, capsys):
     assert _count_4bit(model) == 0 and _count_fp8(model) > 0
     assert "cannot quantize to 4bit here" in capsys.readouterr().out
     _free(model)
-
-
 
 
 def _fp8_config():
