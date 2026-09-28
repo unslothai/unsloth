@@ -3831,12 +3831,17 @@ class TestKvBytes:
             return type("Entry", (), attrs)()
 
         full, ring, window = _entry(), _entry(max_size = 512), _entry(window_size = 512)
-        converted = mm._quantize_like_runtime([full, ring, window], 4)
-        assert converted == [
-            ("converted", {"group_size": MLX_KV_GROUP_SIZE, "bits": 4}),
+        quantized = ("converted", {"group_size": MLX_KV_GROUP_SIZE, "bits": 4})
+        assert mm._quantize_like_runtime([full, ring], 4) == [quantized, ring]
+        # Past two entries the last full-attention one stays float, as the load keeps it.
+        last = _entry()
+        assert mm._quantize_like_runtime([full, last, ring, window], 4) == [
+            quantized,
+            last,
             ring,
             window,
         ]
+        assert mm._quantize_like_runtime([full, ring, window], 4) is None
         assert mm._quantize_like_runtime([ring, window], 4) is None
         assert mm._quantize_like_runtime([full], None) is None
 
@@ -4521,7 +4526,7 @@ class TestShardsTheLoaderReads:
             5001,
             4,
             3_520_856_064,
-            53_084_160,
+            56_852_480,
             717_152_431,
             36,
             "4-bit",
@@ -4531,7 +4536,7 @@ class TestShardsTheLoaderReads:
             5000,
             4,
             3_520_856_064,
-            53_084_160,
+            56_852_480,
             717_151_119,
             36,
             "4-bit",

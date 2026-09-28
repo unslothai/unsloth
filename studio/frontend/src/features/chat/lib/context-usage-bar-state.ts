@@ -25,6 +25,8 @@ export type ContextUsageBarInput = {
   // MLX keeps generating past the window instead of stopping there, so it needs the
   // opposite advice from llama.cpp once a conversation outgrows the limit.
   isMlx?: boolean;
+  contextUnboundedWhenBatched?: boolean;
+  parallelSlots?: number | null;
   /** context_length_enforced as the load reported it; null where it does not answer. */
   contextEnforced?: boolean | null;
   contextBudget?: number | null;
@@ -52,6 +54,8 @@ function contextLimitAdvice(
   total: number,
   isMlx: boolean | undefined,
   enforced: boolean | null | undefined,
+  unboundedWhenBatched: boolean | undefined,
+  slots: number | null | undefined,
   budget: number | null | undefined,
 ): ContextLimitAdvice {
   if ((used / total) * 100 <= 85) return "none";
@@ -61,7 +65,13 @@ function contextLimitAdvice(
   // nothing rotates and nothing stops, so neither of the other two is true of it. An
   // unjudged MLX window says the same thing operationally: the probe could not build a
   // cache, so none was bounded and it grows exactly as a confirmed false one does.
-  if (enforced === false || (isMlx && enforced == null)) return "unenforced-limit";
+  if (
+    enforced === false ||
+    (isMlx && enforced == null) ||
+    (unboundedWhenBatched && (slots ?? 1) > 1)
+  ) {
+    return "unenforced-limit";
+  }
   if (!isMlx) return "stops-at-limit";
   return used > total ? "mlx-past-limit" : "mlx-near-limit";
 }
@@ -88,6 +98,8 @@ export function deriveContextUsageBar({
   completionTokens,
   isMlx,
   contextEnforced,
+  contextUnboundedWhenBatched,
+  parallelSlots,
   contextBudget,
 }: ContextUsageBarInput): ContextUsageBarState | null {
   const limit = typeof total === "number" && total > 0 ? total : null;
@@ -138,6 +150,8 @@ export function deriveContextUsageBar({
       limit,
       isMlx,
       contextEnforced,
+      contextUnboundedWhenBatched,
+      parallelSlots,
       contextBudget,
     ),
   };

@@ -112,9 +112,6 @@ export type StandingConfigDefaults = {
 type SettingCheck = {
   /** Placement, which the backend rewrites wholesale on a preserved CPU fallback. */
   placement?: true;
-  /** One of the two fields `_mlx_runtime_settings_match` compares. The non-GGUF branch of /load
-   *  checks identity and those, then answers already_loaded, so nothing else here may decide
-   *  against a safetensors or MLX resident. */
   mlxComparable?: true;
   /** Placement the diffusion branch of `_runtime_matches_intent` replaces wholesale with one
    *  `_diffusion_manual_ngl` comparison. */
@@ -244,10 +241,6 @@ const requestedGpuMemoryMode = (
 const cleanTemplate = (value: string | null | undefined): string | null =>
   value?.trim() ? value : null;
 
-/** Mirrors the fields `_runtime_matches_intent` reloads for, plus the MLX pair
- *  `_mlx_runtime_settings_match` compares. Nearly every check is unconditionally pinned: a
- *  config reaches here only after `applyModelLoadConfigToRuntime` resolved each field with `??
- *  null`, so an unset field asks for the default. Only `llamaExtraArgs` is optional. */
 const SETTING_CHECKS: SettingCheck[] = [
   {
     // Resolved, not compared raw: an unset length is Auto, which the load sends as 0 for a cross-model
@@ -293,8 +286,7 @@ const SETTING_CHECKS: SettingCheck[] = [
   },
   {
     chatOnly: true,
-    // Unknown default: null against the status's resolved count is a reload, the safe direction.
-    // defaultParallelSlots is the EFFECTIVE count, so a build that clamps to one slot reloads.
+    mlxComparable: true,
     pinned: () => true,
     agrees: (c, s, standing) =>
       (c.nParallel ?? standing.parallelSlots) ===
@@ -591,8 +583,6 @@ export function residentRuntimeMatchesConfig(
   const diffusion = status.is_diffusion === true;
   return SETTING_CHECKS.every(
     (check) =>
-      // The non-GGUF branch of /load checks identity and the MLX pair, then answers already_loaded, so
-      // no llama.cpp invocation field may decide against one.
       (status.is_gguf === false && !check.mlxComparable) ||
       (diffusion && check.chatOnly) ||
       (diffusion && check.ggufPlacement) ||
@@ -602,3 +592,4 @@ export function residentRuntimeMatchesConfig(
       check.agrees(config, status, standing),
   );
 }
+
