@@ -336,6 +336,21 @@ def test_cpu_placed_model_is_swapped_at_the_first_forward():
     )
 
 
+@needs_cuda
+def test_zimage_swiglu_deferred_swap_engages_under_inference_mode():
+    zmod = pytest.importorskip("diffusers.models.transformers.transformer_z_image")
+    torch.manual_seed(0)
+    ff = _quantize(zmod.FeedForward(256, 512).to(torch.bfloat16).eval())
+    assert fused.install(ff) == 1
+    ff = ff.cuda()
+    x = torch.randn(1, 64, 256, device = "cuda", dtype = torch.bfloat16)
+    with torch.inference_mode():
+        ref = type(ff).forward(ff, x)
+        out = ff(x)
+    assert fused.is_installed(ff)
+    assert torch.equal(out, ref)
+
+
 def test_offload_skips_install():
     assert fused.install(torch.nn.Linear(8, 8), offload_active = True) == 0
 

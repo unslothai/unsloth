@@ -859,7 +859,12 @@ def run_on_first_call(module: Any, key: str, fn: Any) -> None:
         if handle is not None:
             handle.remove()
         try:
-            fn(mod)
+            import torch
+
+            # Studio renders under inference_mode, where detaching / viewing a torchao weight subclass raises
+            # "Cannot set version_counter for inference tensor" and the fused SwiGLU / QKV silently stayed off.
+            with torch.inference_mode(False), torch.no_grad():
+                fn(mod)
         except Exception:  # noqa: BLE001 - an optimisation: the stock path stays
             pass
         return None
