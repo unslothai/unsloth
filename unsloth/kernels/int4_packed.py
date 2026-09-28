@@ -737,6 +737,8 @@ def int4_matmul(
         if (
             fast
             and not torch.is_grad_enabled()
+            # The layout was picked for this compute dtype; a later .float() / .half() leaves the scales behind.
+            and qs.dtype == qs.scale.dtype
             and M <= _fast_rows(qs.layout, x2.device.index or 0)
         ):
             call = _fast_args(packed, qs)
