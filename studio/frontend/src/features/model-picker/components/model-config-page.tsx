@@ -2864,6 +2864,7 @@ export function ModelConfigPage({
     isActiveModel ? memoryEstimateRequest : null,
     residentEstimateSettings,
     residentContext,
+    targetIsMlx ? { kvQuant: loadedMlxKvQuantRequested ?? null } : undefined,
   );
   const residentEstimate = useMemoryEstimate(residentEstimateRequest, {
     refreshMemory: true,
