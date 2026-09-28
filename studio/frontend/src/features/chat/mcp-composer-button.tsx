@@ -24,7 +24,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { useShortcut } from "@/features/settings";
+import { loadSystemOneSettings, useShortcut } from "@/features/settings";
 
 import { subscribeToMcpServerMutationSettlements } from "./api/mcp-server-mutation-tracker";
 import {
@@ -74,9 +74,6 @@ function normalizeMcpUrl(url: string): string {
   return (url || "").trim().toLowerCase().replace(/\/+$/, "");
 }
 
-// Static, so it is not rebuilt on every render.
-const PRESET_URLS = new Set(MCP_PRESETS.map((p) => normalizeMcpUrl(p.url)));
-
 export function McpComposerButton({
   side = "bottom",
 }: {
@@ -102,6 +99,7 @@ export function McpComposerButton({
   );
   const pendingUrlsRef = useRef(new Set<string>());
   const [hintKey, setHintKey] = useState<string | null>(null);
+  const [decisionsUrl, setDecisionsUrl] = useState<string | null>(null);
   const listRefreshGenerationRef = useRef(0);
   const hasLoadedServerSnapshotRef = useRef(false);
 
@@ -114,6 +112,11 @@ export function McpComposerButton({
       const generation = listRefreshGenerationRef.current + 1;
       listRefreshGenerationRef.current = generation;
       setServersLoaded(false);
+      loadSystemOneSettings().then(
+        (settings) =>
+          setDecisionsUrl(settings.enabled ? settings.mcpUrl : null),
+        () => setDecisionsUrl(null),
+      );
       try {
         const rows = await listMcpServers({
           waitForPendingMutations,
@@ -170,12 +173,24 @@ export function McpComposerButton({
     };
   }, [refresh, dialogOpen]);
 
+  const presets: readonly McpPreset[] = decisionsUrl
+    ? [
+        ...MCP_PRESETS,
+        {
+          id: "unsloth-decisions",
+          displayName: "Unsloth Decisions",
+          url: decisionsUrl,
+        },
+      ]
+    : MCP_PRESETS;
   const enabledUrls = new Set(
     servers.filter((s) => s.is_enabled).map((s) => normalizeMcpUrl(s.url)),
   );
   // Non-preset servers, shown below the presets so they stay toggleable.
   const customServers = servers.filter(
-    (s) => !s.builtin_id && !PRESET_URLS.has(normalizeMcpUrl(s.url)),
+    (s) =>
+      !s.builtin_id &&
+      !presets.some((p) => normalizeMcpUrl(p.url) === normalizeMcpUrl(s.url)),
   );
   const blenderEnabled = servers.some(
     (server) => server.builtin_id === "blender" && server.is_enabled,
@@ -346,7 +361,7 @@ export function McpComposerButton({
               The loaded model cannot use MCP tools
             </DropdownMenuLabel>
           )}
-          {MCP_PRESETS.map((preset) => {
+          {presets.map((preset) => {
             const norm = normalizeMcpUrl(preset.url);
             return renderRow({
               key: preset.id,

@@ -26,6 +26,7 @@ export type SystemOneSettings = {
   loadingModel: string | null;
   installing: boolean;
   error: string | null;
+  mcpUrl: string;
 };
 
 export type SystemOneDownloadPlan = {
@@ -58,6 +59,8 @@ type ApiSystemOneSettings = {
   loading_model: string | null;
   installing: boolean;
   error: string | null;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  mcp_url: string;
 };
 
 type ApiSystemOneDownloadPlan = {
@@ -90,6 +93,7 @@ function fromApi(settings: ApiSystemOneSettings): SystemOneSettings {
     loadingModel: settings.loading_model,
     installing: settings.installing,
     error: settings.error,
+    mcpUrl: settings.mcp_url,
   };
 }
 
