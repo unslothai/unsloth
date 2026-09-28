@@ -576,9 +576,9 @@ const CUSTOM_CHROME_STYLE = {
   "--studio-desktop-titlebar-height": "var(--studio-windows-caption-height,42px)",
   "--studio-sidebar-expanded-width": "17.5rem",
   "--studio-sidebar-collapsed-width": "3rem",
-  // Clears the titlebar navigation (left-1, three 30px buttons, two gap-0.5) plus a 10px gap.
+  // Clear the navigation slot plus a scaled 10px gap in the shared header row.
   "--studio-collapsed-chat-controls-inset":
-    "calc(90px + 18px * var(--ui-space-scale, 1))",
+    "calc(max(134px, 134px * var(--ui-space-scale, 1)) + 10px * var(--ui-space-scale, 1))",
   "--studio-startup-top-inset": "calc(var(--studio-windows-caption-height,42px) + 8px)",
   "--studio-content-top-inset": "0px",
   "--studio-non-chat-content-top-inset": "var(--studio-windows-caption-height,42px)",
@@ -599,10 +599,9 @@ const CUSTOM_CHROME_STYLE = {
   // The row's buttons end 6.5px above the macOS traffic-light row, so the sidebar's brand
   // rises with them and keeps the same gap below.
   "--studio-sidebar-brand-lift": "6.5px",
-  // The navigation centres on the 26px window controls, which sit top-1 (4px) down.
-  "--studio-titlebar-row-center": "calc(13px + 4px * var(--ui-space-scale, 1))",
-  // Min, max and close: three 26px buttons, two gap-0.5 and right-1, which mirrors the
-  // navigation's left-1 so both corners hold the same margin.
+  // Center shared-row controls on the window caption band.
+  "--studio-titlebar-row-center": "calc(var(--studio-windows-caption-height,42px) / 2)",
+  // Reserve all three caption targets so page controls cannot overlap them.
   "--studio-window-control-inset": "var(--studio-windows-control-inset,136px)",
 } as CSSProperties;
 

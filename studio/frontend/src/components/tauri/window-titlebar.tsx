@@ -492,9 +492,7 @@ export function WindowTitlebar({
               runWindowAction((appWindow) => appWindow.toggleMaximize())
             }
           >
-            {maximized ? (
-              // Mirrored, not rotated: Windows puts the front window bottom-left. Copy's ink spans
-              // 20 of its 24 units, so 12px draws the 10px glyph its neighbours do.
+            {windowsCaption ? <WindowsCaptionGlyph kind={maximized ? "restore" : "maximize"} /> : maximized ? (
               <Copy
                 aria-hidden="true"
                 absoluteStrokeWidth
@@ -520,7 +518,7 @@ export function WindowTitlebar({
             // app-closing arrives well ahead of that.
             onClick={() => runWindowAction((appWindow) => appWindow.close())}
             // Close also owns the corner, as on a native Windows titlebar.
-            className="after:right-[calc(-4px*var(--ui-space-scale,1))] hover:bg-destructive/10 hover:text-destructive focus-visible:ring-destructive/70 dark:hover:bg-destructive/20 dark:hover:text-destructive"
+            className={windowsCaption ? "hover:bg-[#e81123] hover:text-white dark:hover:text-white active:bg-[#e81123]/60" : "hover:bg-destructive/10 hover:text-destructive focus-visible:ring-destructive/70 dark:hover:bg-destructive/20 dark:hover:text-destructive"}
           >
             {windowsCaption ? <WindowsCaptionGlyph kind="close" /> : <X
               aria-hidden="true"
