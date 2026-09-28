@@ -579,3 +579,36 @@ def test_planner_sizes_checkpoint_16bit_linears_as_4bit_in_quantize_all_mode(mon
     monkeypatch.setenv("UNSLOTH_FP8_TO_NF4_QUANTIZE_16BIT", "1")
     quantized = fp8_to_nf4.fp8_to_nf4_planner_quantization_config(config, ["lm_head"])
     assert quantized["llm_int8_skip_modules"] == ["lm_head"]
+
+
+@needs_feature
+def test_planner_sizes_an_armed_load_expert_merge_in_the_load_dtype():
+    # The fused expert stack is built in bf16 before bitsandbytes packs it: plan that transient.
+    planner = pytest.importorskip("unsloth_zoo.device_map_planner")
+    from transformers import AutoConfig
+
+    from unsloth.models import fp8_to_nf4
+
+    assert fp8_to_nf4.install_fp8_to_nf4_quantizer()
+    repo = "trl-internal-testing/tiny-Qwen3MoeForCausalLM"
+    config = AutoConfig.from_pretrained(repo)
+    rewritten = {"quant_method": "bitsandbytes", "load_in_4bit": True, "bnb_4bit_quant_type": "nf4"}
+    measured = {}
+    for armed in (False, True):
+        token = fp8_to_nf4._ARMED_CONFIGS.set([config] if armed else None)
+        try:
+            model, quantizer, _ = planner.build_meta_model(
+                repo, config = config, dtype = torch.bfloat16, rewritten_quantization_config = dict(rewritten)
+            )
+            units = [(name, 0) for name, _ in model.named_modules() if name.endswith(".mlp")]
+            transient = planner._load_transient_by_unit(model, units, quantizer)
+            measured[armed] = (
+                quantizer.pre_quantized,
+                planner._compute_module_sizes(model, quantizer)[""],
+                max(transient.values()),
+            )
+        finally:
+            fp8_to_nf4._ARMED_CONFIGS.reset(token)
+    assert measured[False][0] and not measured[True][0]
+    assert measured[True][1] == measured[False][1]  # weights still sized as 4bit
+    assert measured[True][2] == 4 * measured[False][2]  # bf16 stack, not packed nibbles

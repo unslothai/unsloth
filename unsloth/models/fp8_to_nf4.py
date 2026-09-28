@@ -998,6 +998,14 @@ def install_fp8_to_nf4_quantizer() -> bool:
         _unsloth_fp8_model = None
         _unsloth_fp8_kept = 0
 
+        def __init__(self, quantization_config, **kwargs):
+            # The device-map planner builds this from the rewritten config without `pre_quantized`
+            # (transformers' own load always passes it). An armed load quantizes at runtime, so size
+            # its expert merges in the load dtype, not as packed 4bit (a 4x smaller transient).
+            if "pre_quantized" not in kwargs and _ARMED_CONFIGS.get():
+                kwargs["pre_quantized"] = False
+            super().__init__(quantization_config, **kwargs)
+
         def _process_model_before_weight_loading(self, model, **kwargs):
             global _STATE
             config = getattr(model, "config", None)
