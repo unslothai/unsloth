@@ -1677,6 +1677,37 @@ if [ -z "${UNSLOTH_EXE:-}" ] || [ ! -x "${UNSLOTH_EXE:-}" ]; then
     exit 1
 fi
 
+# A missing or malformed id makes /api/health report "", which the baked id never matches: restore ours no-clobber (the desktop app mints it too), leaving a different valid id or an unreadable file alone.
+_repair_studio_install_id() (
+    LC_ALL=C
+    export LC_ALL
+    _rid_file=${STUDIO_INSTALL_ID_FILE:-}
+    [ -n "$_rid_file" ] && [ -n "$_EXPECTED_STUDIO_ROOT_ID" ] || return 0
+    _rid_has_valid() {
+        [ -e "$_rid_file" ] || return 1
+        [ -f "$_rid_file" ] || return 0
+        _rid_cur=$({ cat "$_rid_file"; } 2>/dev/null) || return 0
+        _rid_cur=${_rid_cur#"${_rid_cur%%[![:space:]]*}"}
+        _rid_cur=${_rid_cur%"${_rid_cur##*[![:space:]]}"}
+        case "$_rid_cur" in
+            "" | *[!0123456789abcdef]*) return 1 ;;
+        esac
+        [ "${#_rid_cur}" -eq 64 ]
+    }
+    _rid_has_valid && return 0
+    mkdir -p "$(dirname "$_rid_file")" 2>/dev/null || return 0
+    _rid_tmp=$(mktemp "$_rid_file.XXXXXX" 2>/dev/null) || return 0
+    if printf '%s' "$_EXPECTED_STUDIO_ROOT_ID" > "$_rid_tmp" 2>/dev/null; then
+        if ! ln "$_rid_tmp" "$_rid_file" 2>/dev/null && ! _rid_has_valid; then
+            mv -f "$_rid_tmp" "$_rid_file" 2>/dev/null || true
+        fi
+        chmod 600 "$_rid_file" 2>/dev/null || true
+    fi
+    rm -f "$_rid_tmp" 2>/dev/null
+    return 0
+)
+_repair_studio_install_id
+
 BASE_PORT=8888
 MAX_PORT_OFFSET=20
 TIMEOUT_SEC=60
@@ -2039,6 +2070,8 @@ LAUNCHER_EOF
     _css_quoted_exe=$(printf '%s' "$_css_exe" | sed "s/'/'\\\\''/g")
     {
         printf '%s\n' "UNSLOTH_EXE='$_css_quoted_exe'"
+        _css_quoted_id_file=$(printf '%s' "$_css_id_file" | sed "s/'/'\\\\''/g")
+        printf '%s\n' "STUDIO_INSTALL_ID_FILE='$_css_quoted_id_file'"
         if [ "$_STUDIO_HOME_REDIRECT" = "env" ]; then
             # An override resolving to the legacy default shares ~/.unsloth/llama.cpp.
             _css_legacy_studio="$HOME/.unsloth/studio"

@@ -5358,6 +5358,35 @@ $studioHomeExport`$ErrorActionPreference = 'Stop'
 `$timeoutSec = 60
 `$pollIntervalMs = 1000
 `$_ExpectedStudioRootId = '$_studioRootId'
+`$_StudioInstallIdFile = '$($_studioIdFile -replace "'", "''")'
+
+# A missing or malformed id makes /api/health report "", which the baked id never matches: restore ours no-clobber (the desktop app mints it too), leaving a different valid id or an unreadable file alone.
+function Repair-StudioInstallId {
+    `$idTmp = `$null
+    try {
+        if (Test-Path -LiteralPath `$_StudioInstallIdFile -PathType Container) { return }
+        if (Test-Path -LiteralPath `$_StudioInstallIdFile -PathType Leaf) {
+            `$current = ([System.IO.File]::ReadAllText(`$_StudioInstallIdFile)).Trim()
+            if (`$current -cmatch '^[0-9a-f]{64}$') { return }
+        }
+        [System.IO.Directory]::CreateDirectory((Split-Path -Parent `$_StudioInstallIdFile)) | Out-Null
+        `$idTmp = "`$_StudioInstallIdFile.`$([System.IO.Path]::GetRandomFileName()).tmp"
+        [System.IO.File]::WriteAllText(`$idTmp, `$_ExpectedStudioRootId)
+        try {
+            [System.IO.File]::Move(`$idTmp, `$_StudioInstallIdFile)
+        } catch [System.IO.IOException] {
+            `$incumbent = ''
+            try { `$incumbent = ([System.IO.File]::ReadAllText(`$_StudioInstallIdFile)).Trim() } catch { return }
+            if (`$incumbent -cnotmatch '^[0-9a-f]{64}$') {
+                Move-Item -LiteralPath `$idTmp -Destination `$_StudioInstallIdFile -Force
+            }
+        }
+    } catch {
+    } finally {
+        if (`$idTmp) { Remove-Item -LiteralPath `$idTmp -Force -ErrorAction SilentlyContinue }
+    }
+}
+Repair-StudioInstallId
 
 function Test-StudioHealth {
     param([Parameter(Mandatory = `$true)][int]`$Port)
