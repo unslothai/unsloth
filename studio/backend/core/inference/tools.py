@@ -5093,8 +5093,7 @@ _SHELL_PARAM_CASE_RE = re.compile(r"\$\{(\w+)(\^\^|,,|\^|,)\}")
 # /etc/passwd.
 _SHELL_PARAM_INDIRECT_RE = re.compile(r"\$\{!(\w+)\}")
 _SHELL_PARAM_VALUE_OP_RE = re.compile(r"\$\{([A-Za-z_]\w*)(:?)([-=+])([^{}]*)\}")
-# Where a NAME=value word is an assignment rather than an argument: after one of these characters, or a
-# word from _SHELL_ASSIGN_KEYWORDS.
+# A NAME=value word is an assignment (not an argument) after one of these characters or keywords.
 _SHELL_ASSIGN_POSITION_CHARS = frozenset(";&|(\n'\"`{")
 _SHELL_ASSIGN_KEYWORDS = frozenset(
     ("export", "local", "declare", "typeset", "readonly", "then", "do", "else", "{", "!", "time")
@@ -5450,8 +5449,7 @@ def _shell_assignment_expansions(
     # Positional: each use sees the binding active where it stands; the last binding covers loops.
     pieces, pos = [], 0
     matches = list(_SHELL_ASSIGN_RE.finditer(command))
-    # A run of assignments is a command prefix only when a command word, not a separator, ends it:
-    # `A=1 B=2; echo $A` binds both in the shell, `A=1 B=2 echo $A` binds neither for the argument.
+    # An assignment run is a command prefix only when a command word ends it: `A=1 B=2 echo $A`, not `A=1 B=2;`.
     prefix = [False] * len(matches)
     for i in range(len(matches) - 1, -1, -1):
         m = matches[i]
@@ -5503,8 +5501,7 @@ def _shell_assignment_expansions(
             # `a=$a$a` repeated doubles each time: past the path cap keep the earlier binding.
             if len(val) > _MAX_PATH_SCAN_CHARS:
                 continue
-        # `x=../..; (x=); cat "$x/auth/auth.db"`: a scoped empty assignment must not erase the outer binding,
-        # while a top-level `x=` does clear it (`x=./p/; x=; cat "$x../../auth/auth.db"`).
+        # Only a scoped empty assignment (`(x=)`) keeps the outer binding; a top-level `x=` clears it.
         if not val and var in env:
             if inert_states is None:
                 inert_states = _assignment_inert_states(command)
