@@ -366,9 +366,10 @@ def _sm_count(index):
     return torch.cuda.get_device_properties(index).multi_processor_count
 
 
-# The fused GEMV decodes the whole weight once per row, decode + cuBLAS is flat in rows. B200 sweep: for 2 / 4-bit the
-# GEMV wins or ties up to ~2**24 multiply-adds (1024 x 4096 at 4 rows) and is 2-4x slower past it; 8-bit never wins.
-GEMV_MAX_WORK = 1 << 24
+# The fused GEMV decodes the whole weight once per row; decode + cuBLAS is flat in rows. One row: the GEMV wins on
+# RTX PRO 6000 (2x) and roughly ties on B200. Two to four rows: decode + cuBLAS is 2-4x faster per B200 layer and
+# +50% batch-4 decode tok/s on RTX PRO 6000 (Qwen3-8B W4A16).
+GEMV_MAX_ROWS = 1
 
 
 def int4_matmul(
@@ -382,7 +383,7 @@ def int4_matmul(
     x2 = x.reshape(-1, shape[-1])
     M = x2.shape[0]
     N = qs.shape[0]
-    if qs.bits > 4 or M * N * shape[-1] > GEMV_MAX_WORK:
+    if M > GEMV_MAX_ROWS:
         W = int4_dequantize(packed, qs, x.dtype)
         y = torch.matmul(x2, W.t(), out = None if out is None else out.view(M, N))
         return y.view(*shape[:-1], N)
