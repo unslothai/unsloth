@@ -1226,8 +1226,7 @@ def reserve_h3_fast_decoder(
     speed_mode: Optional[str],
     workflow: Optional[str] = None,
 ) -> bool:
-    """Mark ``vae`` when apply_h3_vae_speedups will swap in the fused decoder; called BEFORE apply_speed_optims so it
-    skips the VAE block compile the fused stack would bypass. Same arguments as that call; never raises."""
+    """Mark ``vae`` before apply_speed_optims when the fused decoder will engage, so its block compile is skipped."""
     try:
         engages = (
             vae is not None

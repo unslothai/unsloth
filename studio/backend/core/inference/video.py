@@ -5829,9 +5829,7 @@ class VideoBackend:
         effective_speed = resolve_speed_mode(speed_mode, is_gguf = False, dense_default = SPEED_DEFAULT)
         h3_vae_speed = effective_speed
         if effective_speed == SPEED_MAX:
-            # Max no longer retraces on a new caption (the prompt-length dims and temb compile dynamic / unbacked from
-            # the first forward), but it still does not pay: max-autotune measured 2.41 against 2.45 s/step at
-            # 1344x768x124 while the first render took 110 s against 48 s, about 45 renders to break even.
+            # max-autotune: 2.41 vs 2.45 s/step but 110 vs 48 s first render (~45 renders to break even).
             logger.info(
                 "video.speed_mode: MiniMax-H3 runs the 'default' regional profile under max "
                 "(max-autotune's first-render cost is not repaid by its 2% faster step)"

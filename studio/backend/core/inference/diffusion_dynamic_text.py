@@ -48,9 +48,7 @@ _FAMILY_SOURCES: dict[str, tuple[str, ...]] = {
     "MiniMaxH3Transformer3DModel": _MINIMAX_H3_SOURCES,
 }
 
-# Sources compiled UNBACKED instead: a backed symbol still specialises a size of 1. H3's temb has one row per distinct
-# timestep, 1 on the first step and 2 after it, so every first render compiled MiniMaxH3TransformerBlock twice
-# (7.5 of 18.7 s). Unbacked never specialises 0/1: one graph for 1, 2 and 3 rows.
+# Unbacked: a backed symbol specialises size 1, and H3's temb has 1 row on step 1, 2 after (a second compile).
 _FAMILY_UNBACKED: dict[str, tuple[str, ...]] = {
     "MiniMaxH3Transformer3DModel": ("L['temb']",),
 }
@@ -130,9 +128,7 @@ def install(
     *,
     dynamic: Any = None,
 ) -> bool:
-    """Arm the family's sources around the DiT forward for a compile made with ``dynamic``. None (automatic dynamic):
-    the dynamic and the unbacked sources. True: every dim is already dynamic, but a backed symbol still specialises a
-    size of 1, so only the unbacked sources are armed (dense H3 compiles with dynamic=True). False (static): nothing."""
+    """Arm sources for a ``dynamic`` compile: None arms dynamic + unbacked, True only unbacked, False nothing."""
     if dynamic is False:
         return False
     if getattr(transformer, "_unsloth_dynamic_text", None) is not None:

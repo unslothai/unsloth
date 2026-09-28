@@ -798,8 +798,7 @@ def _compile_repeated_blocks(
         except Exception as exc:  # noqa: BLE001 - optimisation only
             _warn(logger, "compile_repeated_blocks", exc)
             continue
-        # Automatic dynamic arms the prompt-length and unbacked sources; dynamic=True (a dense H3) still needs the
-        # unbacked temb, or its size-1 first step compiles a second graph. install() is a no-op for a static compile.
+        # dynamic=True (dense H3) still needs the unbacked temb, else step 1 compiles a second graph.
         try:
             from . import diffusion_dynamic_text
             diffusion_dynamic_text.install(transformer, logger, dynamic = dit_kwargs["dynamic"])
@@ -1086,9 +1085,7 @@ def _vae_decode_compile_allowed(pipe: Any, speed_mode: str) -> bool:
     """U-Nets always; a DiT only on ``max`` (it costs a 60-70 s slower first render) or with the env forced on."""
     if _denoiser_unet(pipe) is not None:
         return True
-    # MiniMax-H3's fused decoder reads each block's weights and never calls the block, so compiled blocks would never
-    # run while status claimed the compile. The fused decoder is the default and wins even over a forced compile;
-    # UNSLOTH_H3_VAE_FAST=0 restores the stock block stack, and with it this compile.
+    # H3's fused decoder never calls the blocks, so compiling them would be reported but never run.
     if getattr(getattr(pipe, "vae", None), "_unsloth_decode_blocks_bypassed", False):
         return False
     raw = os.environ.get(COMPILE_VAE_ENV, "").strip().lower()
@@ -1211,11 +1208,8 @@ def _compile_vae_regionally(
     logger: Any,
     max_autotune: bool = False,
 ) -> bool:
-    """Compile the VAE's repeated block, not ``decode``. A tiled video decode loops over temporal chunks and spatial
-    tiles in Python, so compiling ``decode`` unrolls the loop into one graph: MiniMax-H3 at 960x544 is 6 chunks x 15
-    tiles x 36 ViT blocks, which fails with RecursionError static and CantSplit dynamic. The block itself sees one
-    tile, whose shape is fixed by the tile size rather than the video, so static costs one graph per tile batch size:
-    0.95 s against 2.17 s eager at 960x544x121, cold 7 s."""
+    """Compile the VAE's repeated block, not ``decode``: a tiled decode unrolls its Python tile loop into one graph
+    (RecursionError static, CantSplit dynamic on MiniMax-H3); a block sees one fixed-shape tile."""
     try:
         kwargs: dict[str, Any] = {"fullgraph": False, "dynamic": False}
         if max_autotune:

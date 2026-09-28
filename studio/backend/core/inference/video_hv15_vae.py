@@ -3,11 +3,8 @@
 
 """HunyuanVideo-1.5 VAE: build the causal attention mask with one masked_fill instead of a Python loop.
 
-Diffusers' ``HunyuanVideo15AttnBlock.prepare_causal_attention_mask`` writes the mask row by row, ``seq_len`` slice
-assignments per call (7,936 per 832x480 tile, 48,360 untiled), so an eager decode spends 0.46 of 5.13 s launching
-them and a compiled decoder unrolls them into one graph that inductor cannot schedule (RecursionError in
-``reorder_for_peak_memory``). Row ``i`` may attend to column ``j`` iff frame(j) <= frame(i): the same values,
-bit-identical decode.
+The stock per-row loop unrolls under compile into a graph inductor cannot schedule (RecursionError in
+``reorder_for_peak_memory``). Same values, bit-identical decode.
 """
 
 from __future__ import annotations
@@ -54,8 +51,7 @@ def _stock_loop(cls: type) -> bool:
 
 
 def install_vectorised_causal_mask(pipe: Any, logger: Any = None) -> int:
-    """Point every HV1.5 VAE attention block of ``pipe.vae`` at the vectorised mask. Per instance, so nothing
-    outside this pipe changes. Returns the number of blocks patched (0 for other VAEs). Never raises."""
+    """Patch each HV1.5 VAE attention block instance of ``pipe``; returns the count patched. Never raises."""
     vae = getattr(pipe, "vae", None)
     if vae is None or type(vae).__name__ != _VAE_CLASS:
         return 0
