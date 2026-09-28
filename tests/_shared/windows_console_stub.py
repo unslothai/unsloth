@@ -31,8 +31,12 @@ def _launcher_dir() -> Path | None:
     return None
 
 
-def console_stub_bytes(exit_code: int = 0) -> bytes | None:
-    """Launcher + shebang + zip, or None where no distlib launcher ships."""
+def console_stub_bytes(exit_code: int = 0, *, source: str | None = None) -> bytes | None:
+    """Launcher + shebang + zip, or None where no distlib launcher ships.
+
+    `source` replaces the default body (exit with `exit_code`) with a __main__.py of the
+    caller's own, for a stand-in that has to stay alive or read its arguments.
+    """
     directory = _launcher_dir()
     if directory is None:
         return None
@@ -45,6 +49,7 @@ def console_stub_bytes(exit_code: int = 0) -> bytes | None:
         return None
     stream = io.BytesIO()
     with zipfile.ZipFile(stream, "w") as archive:
-        archive.writestr("__main__.py", f"import sys\nsys.exit({int(exit_code)})\n")
+        body = source if source is not None else f"import sys\nsys.exit({int(exit_code)})\n"
+        archive.writestr("__main__.py", body)
     shebang = b'#!"' + sys.executable.encode("utf-8") + b'"\n'
     return path.read_bytes() + shebang + stream.getvalue()

@@ -649,17 +649,6 @@
       }
     },
     {
-      "file": "tests/python/test_windows_installer_concurrency_guard.py",
-      "rule": "AV009",
-      "severity": "error",
-      "reason": "Follow-up: replace the renamed PING.EXE with the console launcher stub once tests/_shared/windows_console_stub.py lands.",
-      "digests": {
-        "3662d42a1d0f7381": 3,
-        "5fb0a17dc9f754d7": 1,
-        "c61dc099ef8bb52c": 1
-      }
-    },
-    {
       "file": "tests/python/test_windows_installer_resolver_fallback.py",
       "rule": "AV003",
       "severity": "error",
@@ -755,15 +744,6 @@
       "digests": {
         "0fe0fa4a2b3b18cd": 1,
         "7218f0bf6a4089e2": 1
-      }
-    },
-    {
-      "file": "tests/security/test_release_desktop_signing_simulation.py",
-      "rule": "AV009",
-      "severity": "error",
-      "reason": "Superseded by the console launcher stub.",
-      "digests": {
-        "ed6603add748154b": 1
       }
     },
     {
@@ -902,22 +882,12 @@
     },
     {
       "file": "tests/studio/install/test_keep_install_backcompat_9979.py",
-      "rule": "AV009",
-      "severity": "error",
-      "reason": "Superseded by the console launcher stub.",
-      "digests": {
-        "5e150dd26b8eb23c": 1
-      }
-    },
-    {
-      "file": "tests/studio/install/test_keep_install_backcompat_9979.py",
       "rule": "AV010",
       "severity": "warn",
       "reason": "pre-existing warning",
       "digests": {
         "0aba85a2bc216166": 1,
-        "51254a6afd836b71": 1,
-        "c9c5cad596adab0f": 1
+        "51254a6afd836b71": 1
       }
     },
     {
@@ -1033,7 +1003,7 @@
       "severity": "warn",
       "reason": "pre-existing warning",
       "digests": {
-        "6221482519161fca": 1,
+        "a49dbf9acdf60239": 1,
         "bded8f746784039f": 1
       }
     },
