@@ -45,6 +45,14 @@ def store(monkeypatch):
     monkeypatch.setattr(
         studio_db, "upsert_app_settings", lambda updates, **_: values.update(updates) or values
     )
+
+    def compare_and_set(key, expected, value):
+        if values.get(key) != expected:
+            return False
+        values[key] = value
+        return True
+
+    monkeypatch.setattr(studio_db, "compare_and_set_app_setting", compare_and_set)
     monkeypatch.setattr(hub_settings, "_operator_env", None)
     monkeypatch.setattr(hub_settings, "_operator_endpoints", None, raising = False)
     monkeypatch.setattr(hub_settings, "_saved_only_endpoints", frozenset(), raising = False)
@@ -254,8 +262,36 @@ def test_an_api_key_cannot_move_the_endpoint_or_source(client, store):
         == 403
     )
     assert client.put("/hub/source", json = {"source": "modelscope"}).status_code == 403
+    assert client.post("/hub/source-notice").status_code == 403
     client.app.dependency_overrides[settings.authenticated_via_api_key] = lambda: False
     assert client.get("/hub").json() == before
+
+
+def test_the_owner_is_told_once_and_the_automatic_source_is_kept(client, store, monkeypatch):
+    import hub.modelscope.router as modelscope
+
+    def no_adapter():
+        raise RuntimeError("port exhausted")
+
+    monkeypatch.delenv("HF_ENDPOINT")
+    monkeypatch.setenv("UNSLOTH_MIRROR_FALLBACK", "1")
+    monkeypatch.setattr(modelscope, "internal_endpoint", no_adapter)
+    hub_settings.apply_hub_settings()
+    assert client.post("/hub/source-notice").json() == {"granted": False}
+    assert store == {}
+
+    monkeypatch.setattr(modelscope, "internal_endpoint", lambda: "http://127.0.0.1:1234")
+    hub_settings.apply_hub_settings()
+    grants = [client.post("/hub/source-notice").json()["granted"] for _ in range(2)]
+    assert grants == [True, False]
+    assert store == {hub_settings.SOURCE_KEY: "modelscope"}
+    store.clear()
+    # Another tab saves between this claim's read and its insert.
+    monkeypatch.setattr(studio_db, "compare_and_set_app_setting", lambda *_: False)
+    assert client.post("/hub/source-notice").json() == {"granted": False}
+    store[hub_settings.SOURCE_KEY] = "modelscope"
+    monkeypatch.setenv("UNSLOTH_MIRROR_FALLBACK", "0")
+    assert client.get("/hub").json()["source"] == "modelscope"
 
 
 @pytest.mark.parametrize(

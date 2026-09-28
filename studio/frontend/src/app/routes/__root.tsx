@@ -40,6 +40,7 @@ import {
   stepInterfaceScale,
   triggerShortcut,
   useInterfaceScaleStore,
+  useHubSourceNotice,
   useSettingsDialogStore,
   useShortcut,
   useShortcutAvailable,
@@ -183,6 +184,11 @@ function PersonalizationSyncMount() {
 // subscribed across navigation, instead of coming and going with /studio.
 function LowDiskNoticeMount() {
   useLowDiskNotice();
+  return null;
+}
+
+function HubSourceNoticeMount() {
+  useHubSourceNotice();
   return null;
 }
 
@@ -661,6 +667,7 @@ function RootLayout() {
       <ReloadSnapshotPrivacy />
       {!isAuthFlowRoute && <ChatSettingsHydrationMount />}
       {!isAuthFlowRoute && <LowDiskNoticeMount />}
+      {!isAuthFlowRoute && <HubSourceNoticeMount />}
       {/* Opens itself when API traffic arrives; hides on the full monitor page. */}
       {!isAuthFlowRoute && <ApiMonitorOverlay />}
       <HfTokenWarningDialog />

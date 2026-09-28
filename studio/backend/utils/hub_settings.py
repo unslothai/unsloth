@@ -152,6 +152,15 @@ def set_hub_source(source: str) -> HubSettings:
     return get_hub_settings()
 
 
+def claim_automatic_source() -> bool:
+    """Save the automatic ModelScope default. True only for the call that saved it, whose client tells the owner."""
+    if not get_hub_settings().source_automatic or active_source() != MODELSCOPE:
+        return False
+    from storage.studio_db import compare_and_set_app_setting
+
+    return compare_and_set_app_setting(SOURCE_KEY, None, MODELSCOPE)
+
+
 def set_hub_settings(hf_endpoint: str, datasets_server_follows_endpoint: bool) -> HubSettings:
     """Validate, persist and apply. Raises ValueError on an unusable endpoint."""
     endpoint = validate_hub_endpoint(hf_endpoint)

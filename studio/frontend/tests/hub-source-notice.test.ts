@@ -1,0 +1,40 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+import assert from "node:assert/strict";
+import { register } from "node:module";
+import test from "node:test";
+
+// The claim both saves ModelScope and grants the notice, so anything but an explicit grant
+// shows nothing: a notice on a failed claim would announce a switch that was never saved.
+register("./store-stub-resolver.mjs", import.meta.url);
+const { setAuthFetchHandler } = await import("./helpers/store-stubs/auth.ts");
+const { claimHubSourceNotice } = await import(
+  "../src/features/settings/api/hub-settings.ts"
+);
+
+test("only an explicit grant shows the notice", async (t) => {
+  t.after(() => setAuthFetchHandler(null));
+  const urls: string[] = [];
+  const answer = (respond: () => Response) =>
+    setAuthFetchHandler((url, init) => {
+      urls.push(`${init?.method} ${url}`);
+      return respond();
+    });
+
+  answer(() => Response.json({ granted: true }));
+  assert.equal(await claimHubSourceNotice(), true);
+  assert.deepEqual(urls, ["POST /api/settings/hub/source-notice"]);
+
+  for (const refused of [
+    () => Response.json({ granted: false }),
+    () => Response.json({ detail: "Not Found" }),
+    () => Response.json({ granted: true }, { status: 500 }),
+    () => {
+      throw new Error("network down");
+    },
+  ]) {
+    answer(refused);
+    assert.equal(await claimHubSourceNotice(), false);
+  }
+});
