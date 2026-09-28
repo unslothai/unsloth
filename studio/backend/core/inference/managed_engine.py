@@ -483,6 +483,7 @@ class ManagedEngine:
                 *command,
             ],
             secrets = secrets,
+            withhold = tuple(key.upper() for key in _HF_TOKEN_ENV_KEYS if key not in secrets),
         )
 
     @property

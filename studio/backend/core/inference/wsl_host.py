@@ -58,6 +58,10 @@ exec 3<&-
 wait $child
 status=$?
 kill $watcher 2>/dev/null
+# Workers the engine forked outlive a crashed leader and would hold GPU memory.
+if kill -0 -$child 2>/dev/null; then
+  kill -TERM -$child 2>/dev/null; sleep 5; kill -KILL -$child 2>/dev/null
+fi
 exit $status
 """
 
@@ -282,17 +286,24 @@ def guest_command(
     *,
     env: dict[str, str] | None = None,
     secrets: dict[str, str] | None = None,
+    withhold: tuple[str, ...] = (),
 ) -> tuple[list[str], dict[str, str]]:
     """wsl.exe argv plus the Windows env for it. Secrets cross through WSLENV, never argv, so they
     stay out of the Windows process list."""
     exe = wsl_exe()
     if exe is None:
         raise RuntimeError("WSL is not installed.")
-    windows_env = dict(os.environ)
     secrets = secrets or {}
+    # `withhold` keys the caller chose not to send (an anonymous load) must not ride in on the
+    # user's own WSLENV either.
+    windows_env = {key: value for key, value in os.environ.items() if key.upper() not in withhold}
     windows_env.update(secrets)
     shared = [item for item in windows_env.get("WSLENV", "").split(":") if item]
-    shared = [item for item in shared if item.split("/")[0] not in secrets]
+    shared = [
+        item
+        for item in shared
+        if item.split("/")[0] not in secrets and item.split("/")[0].upper() not in withhold
+    ]
     windows_env["WSLENV"] = ":".join([*shared, *(f"{key}/u" for key in secrets)])
     command = [exe, "-d", distro_name(), "-u", "root", "--cd", "/root", "--", "/usr/bin/env"]
     command += [f"{key}={value}" for key, value in (env or {}).items()]
@@ -335,6 +346,7 @@ def download(
     spec: dict,
     name: str,
     progress = None,
+    cancel = None,
 ) -> Path:
     """Fetch a pinned artifact once; a partial or tampered file never survives the hash check."""
     import httpx
@@ -351,11 +363,16 @@ def download(
         response.raise_for_status()
         with partial.open("wb") as handle:
             for chunk in response.iter_bytes(1 << 20):
+                if cancel is not None and cancel.is_set():
+                    break
                 handle.write(chunk)
                 digest.update(chunk)
                 done += len(chunk)
                 if progress:
                     progress(f"Downloading {name}: {done >> 20} / {spec['size'] >> 20} MiB")
+    if cancel is not None and cancel.is_set():
+        partial.unlink(missing_ok = True)
+        raise RuntimeError("Installation cancelled.")
     if digest.hexdigest() != spec["sha256"]:
         partial.unlink(missing_ok = True)
         raise RuntimeError(f"{name} did not match its pinned checksum. Retry the installation.")
@@ -371,12 +388,12 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def ensure_distro(progress = None) -> None:
+def ensure_distro(progress = None, cancel = None) -> None:
     """Idempotent: import the private distro, configure it, and install uv inside it."""
     from utils.paths.storage_roots import studio_root
 
     if not distro_ready():
-        rootfs = download(ROOTFS, "ubuntu-24.04-wsl.rootfs.tar.gz", progress)
+        rootfs = download(ROOTFS, "ubuntu-24.04-wsl.rootfs.tar.gz", progress, cancel)
         if progress:
             progress("Creating the Unsloth WSL environment")
         # A half-imported distro from an interrupted run would make --import fail.
@@ -406,7 +423,7 @@ def ensure_distro(progress = None) -> None:
     try:
         guest(["test", "-x", f"{GUEST_ROOT}/bin/uv"])
     except RuntimeError:
-        archive = download(UV, "uv-x86_64-unknown-linux-gnu.tar.gz", progress)
+        archive = download(UV, "uv-x86_64-unknown-linux-gnu.tar.gz", progress, cancel)
         guest(
             [
                 "tar",
@@ -420,7 +437,7 @@ def ensure_distro(progress = None) -> None:
     write_state(state = "ready", distro = distro_name())
 
 
-def prepare(progress = None) -> None:
+def prepare(progress = None, cancel = None) -> None:
     """Everything before the engine's own packages. Raises ``Waiting`` for a user step."""
     state = wsl_state()
     if state.startswith("blocked"):
@@ -431,7 +448,7 @@ def prepare(progress = None) -> None:
         if progress:
             progress("Approve the Windows prompt to install WSL")
         enable_wsl()
-    ensure_distro(progress)
+    ensure_distro(progress, cancel)
 
 
 def _uuid_table(output: str) -> dict[int, str]:

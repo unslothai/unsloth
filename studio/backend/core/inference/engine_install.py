@@ -995,7 +995,7 @@ def _install_wsl(engine: str, cancel: threading.Event) -> None:
 
     guest_root = wsl_host.GUEST_ROOT
     _update(engine, phase = "preparing_wsl", message = "Setting up the Unsloth WSL environment")
-    wsl_host.prepare(lambda text: _update(engine, activity = text))
+    wsl_host.prepare(lambda text: _update(engine, activity = text), cancel)
     if cancel.is_set():
         raise RuntimeError("Installation cancelled.")
     root = engine_root() / engine

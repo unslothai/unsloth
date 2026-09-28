@@ -9,6 +9,7 @@ import signal
 import subprocess
 import sys
 import time
+import types
 from pathlib import Path
 
 import pytest
@@ -91,7 +92,7 @@ def test_restart_leaves_a_waiting_job_not_an_interrupted_one(wsl, monkeypatch):
     monkeypatch.setattr(install, "support_reason", lambda *a, **k: None)
     monkeypatch.setattr(install, "_record_manifest", lambda engine: None)
 
-    def prepare(progress = None):
+    def prepare(progress = None, cancel = None):
         raise wsl_host.Waiting(
             "Restart Windows to finish installing WSL, then click Install again."
         )
@@ -119,6 +120,41 @@ def test_secrets_cross_through_wslenv_not_argv(wsl, monkeypatch):
     assert env["WSLENV"] == "USERPROFILE/p:HF_TOKEN/u"
     subprocess.run(command, env = env, check = True, capture_output = True)
     assert wsl()[-1]["shared"]["HF_TOKEN"] == "hf_secret"
+
+
+def test_an_anonymous_load_withholds_a_token_the_user_shares_through_wslenv(wsl, monkeypatch):
+    monkeypatch.setenv("WSLENV", "USERPROFILE/p:HF_TOKEN/u")
+    monkeypatch.setenv("HF_TOKEN", "hf_ambient")
+    command, env = wsl_host.guest_command(["python", "-V"], withhold = ("HF_TOKEN",))
+    assert "HF_TOKEN" not in env
+    assert env["WSLENV"] == "USERPROFILE/p"
+
+
+def test_cancel_stops_a_download_and_leaves_no_partial(tmp_path, monkeypatch):
+    import contextlib
+    import threading
+
+    cancel = threading.Event()
+    monkeypatch.setattr(wsl_host, "host_dir", lambda: tmp_path)
+
+    class Response:
+        def raise_for_status(self):
+            pass
+
+        def iter_bytes(self, size):
+            for _ in range(1000):
+                cancel.set()
+                yield b"x" * 16
+
+    monkeypatch.setitem(
+        sys.modules,
+        "httpx",
+        types.SimpleNamespace(stream = lambda *a, **k: contextlib.nullcontext(Response())),
+    )
+    spec = {"url": "https://example.invalid/r", "sha256": "0" * 64, "size": 16000}
+    with pytest.raises(RuntimeError, match = "cancelled"):
+        wsl_host.download(spec, "rootfs.tar.gz", cancel = cancel)
+    assert list((tmp_path / "downloads").iterdir()) == []
 
 
 def test_gpus_are_selected_by_uuid(monkeypatch):
@@ -195,6 +231,16 @@ def test_runner_survives_idle_and_reports_the_engine_exit_code(tmp_path):
         stdin = subprocess.PIPE,
     )
     assert proc.wait(timeout = 15) == 7
+
+
+def test_runner_reaps_workers_left_behind_when_the_engine_exits(tmp_path):
+    pids = tmp_path / "pids"
+    engine = f"import subprocess, sys; child = subprocess.Popen(['sleep', '300']); open({str(pids)!r}, 'w').write(str(child.pid)); sys.exit(3)"
+    proc = subprocess.Popen(
+        [str(_runner(tmp_path)), sys.executable, "-c", engine], stdin = subprocess.PIPE
+    )
+    assert proc.wait(timeout = 20) == 3
+    assert _gone(int(pids.read_text()), 5)
 
 
 def test_runner_stops_the_engine_when_studio_is_killed(tmp_path):
