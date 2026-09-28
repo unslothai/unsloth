@@ -46,8 +46,13 @@ def store(monkeypatch):
         studio_db, "upsert_app_settings", lambda updates, **_: values.update(updates) or values
     )
 
-    def compare_and_set(key, expected, value):
-        if values.get(key) != expected:
+    def compare_and_set(
+        key,
+        expected,
+        value,
+        absent = (),
+    ):
+        if values.get(key) != expected or any(k in values for k in absent):
             return False
         values[key] = value
         return True
@@ -327,12 +332,29 @@ def test_the_owner_is_told_once_and_the_automatic_source_is_kept(client, store, 
     assert grants == [True, False]
     assert store == {hub_settings.SOURCE_KEY: "modelscope"}
     store.clear()
-    # Another tab saves between this claim's read and its insert.
-    monkeypatch.setattr(studio_db, "compare_and_set_app_setting", lambda *_: False)
+    claim = studio_db.compare_and_set_app_setting
+
+    def endpoint_saved_meanwhile(*args, **kwargs):
+        # Another tab saves an endpoint between this claim's read and its insert.
+        store[hub_settings.HF_ENDPOINT_KEY] = MIRROR
+        return claim(*args, **kwargs)
+
+    monkeypatch.setattr(studio_db, "compare_and_set_app_setting", endpoint_saved_meanwhile)
     assert client.post("/hub/source-notice").json() == {"granted": False}
+    assert store == {hub_settings.HF_ENDPOINT_KEY: MIRROR}
+    store.clear()
     store[hub_settings.SOURCE_KEY] = "modelscope"
     monkeypatch.setenv("UNSLOTH_MIRROR_FALLBACK", "0")
     assert client.get("/hub").json()["source"] == "modelscope"
+
+
+def test_the_claim_insert_requires_the_endpoint_to_stay_unsaved():
+    source, endpoint = hub_settings.SOURCE_KEY, hub_settings.HF_ENDPOINT_KEY
+    studio_db.upsert_app_settings({endpoint: MIRROR})
+    assert not studio_db.compare_and_set_app_setting(source, None, "modelscope", absent = (endpoint,))
+    assert studio_db.get_app_setting(source, None) is None
+    assert studio_db.compare_and_set_app_setting(source, None, "modelscope", absent = ("unset",))
+    assert studio_db.get_app_setting(source, None) == "modelscope"
 
 
 @pytest.mark.parametrize(

@@ -158,7 +158,8 @@ def claim_automatic_source() -> bool:
         return False
     from storage.studio_db import compare_and_set_app_setting
 
-    return compare_and_set_app_setting(SOURCE_KEY, None, MODELSCOPE)
+    # An endpoint saved since the read above is a choice too: the claim must not override it.
+    return compare_and_set_app_setting(SOURCE_KEY, None, MODELSCOPE, absent = (HF_ENDPOINT_KEY,))
 
 
 def set_hub_settings(hf_endpoint: str, datasets_server_follows_endpoint: bool) -> HubSettings:
