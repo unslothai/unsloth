@@ -727,13 +727,13 @@ _decode_compile_config = CompileConfig(
     mode = "reduce-overhead",
 )
 try:
-    from unsloth_zoo.temporary_patches.utils import UNSLOTH_DECODE_COMPILE
+    from unsloth_zoo.temporary_patches.utils import unsloth_decode_compile
 except ImportError:
-    UNSLOTH_DECODE_COMPILE = None
+    unsloth_decode_compile = None
 
 
 def _compiles_decode(model):
-    if UNSLOTH_DECODE_COMPILE is None:
+    if unsloth_decode_compile is None:
         return False
     if os.environ.get("UNSLOTH_COMPILE_DECODE", "1") == "0":
         return False
@@ -758,25 +758,26 @@ def _compiles_decode(model):
     )
 
 
-_HAS_MAX_CACHE_LEN = hasattr(GenerationConfig(), "max_cache_len")
-
-
-def _decode_cache_bucket(model, input_len, kwargs):
+def _decode_cache_bucket(length):
     # A static cache of a new length recompiles the decode step; round it up to a power of
-    # two (>= 1024) so later calls reuse it. HF keeps the largest length seen (#46424).
-    if not _HAS_MAX_CACHE_LEN or kwargs.get("max_cache_len") is not None:
-        return None
-    config = kwargs.get("generation_config") or getattr(model, "generation_config", None)
-    if getattr(config, "max_cache_len", None) is not None:
-        return None
-    max_new_tokens = kwargs.get("max_new_tokens", getattr(config, "max_new_tokens", None))
-    if max_new_tokens is not None:
-        needed = input_len + max_new_tokens
-    else:
-        needed = kwargs.get("max_length", getattr(config, "max_length", None))
-    if type(needed) is not int or needed <= 0:
-        return None
-    return max(1024, 1 << (needed - 1).bit_length())
+    # two (>= 1024) so later calls with a different max_new_tokens reuse it.
+    if type(length) is not int or length <= 0:
+        return length
+    return max(1024, 1 << (length - 1).bit_length())
+
+
+def _bucket_static_cache(prepare_static_cache):
+    # Resize where transformers sizes it (prompt, inputs_embeds and max_length already counted);
+    # `max_cache_len` is the third argument of _prepare_static_cache on every 5.x release.
+    @functools.wraps(prepare_static_cache)
+    def bucketed(*args, **kwargs):
+        if "max_cache_len" in kwargs:
+            kwargs["max_cache_len"] = _decode_cache_bucket(kwargs["max_cache_len"])
+        elif len(args) >= 3:
+            args = (*args[:2], _decode_cache_bucket(args[2]), *args[3:])
+        return prepare_static_cache(*args, **kwargs)
+
+    return bucketed
 
 
 try:
@@ -1167,18 +1168,16 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
         if cache_implementation is not None:
             kwargs["compile_config"] = compile_config
 
-    if compile_decode:
-        bucket = _decode_cache_bucket(self, input_ids.shape[1], kwargs)
-        if bucket is not None:
-            kwargs["max_cache_len"] = bucket
-        previous_decode_compile = UNSLOTH_DECODE_COMPILE[0]
-        UNSLOTH_DECODE_COMPILE[0] = True
+    decode_scope = unsloth_decode_compile() if compile_decode else contextlib.nullcontext()
+    bucketing = compile_decode and "_prepare_static_cache" not in self.__dict__ and hasattr(self, "_prepare_static_cache")
+    if bucketing:
+        self._prepare_static_cache = _bucket_static_cache(self._prepare_static_cache)
     try:
-        with torch.inference_mode(), autocaster:
+        with decode_scope, torch.inference_mode(), autocaster:
             output = self._old_generate(*args, **kwargs)
     finally:
-        if compile_decode:
-            UNSLOTH_DECODE_COMPILE[0] = previous_decode_compile
+        if bucketing:
+            del self._prepare_static_cache
         _clear_generation_caches(self)
 
     return output
