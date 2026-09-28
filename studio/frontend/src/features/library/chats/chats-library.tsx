@@ -63,10 +63,10 @@ import {
   Archive03Icon,
   ArchiveRestoreIcon,
   Cancel01Icon,
-  DashboardSquare01Icon,
   Delete02Icon,
   Folder01Icon,
   FolderAddIcon,
+  InboxIcon,
   LayerIcon,
   MoreHorizontalIcon,
   PencilEdit02Icon,
@@ -170,7 +170,7 @@ const SECTION_LABELS: Record<ChatsSection, TranslationKey> = {
 };
 
 const SECTION_ICONS: Record<ChatsSection, IconSvgElement> = {
-  all: DashboardSquare01Icon,
+  all: InboxIcon,
   chats: MessageCircleIcon,
   projects: Folder01Icon,
   sections: LayerIcon,
