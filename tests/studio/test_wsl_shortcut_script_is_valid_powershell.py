@@ -275,13 +275,14 @@ def test_the_wsl_lane_arms_the_4688_half_of_the_watch() -> None:
 def test_the_generated_emit_carries_both_spellings_of_define_dynamic_assembly() -> None:
     """The outer catch is empty, so guessing the wrong spelling costs the icon refresh silently.
 
-    `install.ps1`'s `New-StudioDynamicAssembly` tries the static
-    `AssemblyBuilder::DefineDynamicAssembly` and falls back to
-    `AppDomain.CurrentDomain.DefineDynamicAssembly`, and says why: the static form is documented for
-    .NET Framework 4.5 through 4.8.1, so the Windows PowerShell 5.1 host this script is launched
-    under should take the first branch, but nothing in this repository can run a .NET Framework host
-    to confirm it. The generated WSL script had only the static form under a bare `catch {}`, which
-    is the combination that fails invisibly. Carry the same fallback.
+    `install.sh` generates this script and emits its own icon-refresh thunk in it, which is the
+    last emit left in the tree: `install.ps1` no longer defines a type at all. The block tries the
+    static `AssemblyBuilder::DefineDynamicAssembly` and falls back to
+    `AppDomain.CurrentDomain.DefineDynamicAssembly`, and the reason is worth keeping written down:
+    the static form is documented for .NET Framework 4.5 through 4.8.1, so the Windows PowerShell
+    5.1 host this script is launched under should take the first branch, but nothing in this
+    repository can run a .NET Framework host to confirm it. The generated script had only the static
+    form under a bare `catch {}`, which is the combination that fails invisibly. Keep both.
     """
     script = _render()
     assert (
