@@ -20,7 +20,6 @@ _CONV_CLASSES = frozenset({"QwenImageCausalConv3d"})
 
 
 class _Gate:
-
     def __init__(self) -> None:
         self.on = False
 
