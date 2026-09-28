@@ -808,10 +808,8 @@ def install_compressed_tensors_bnb_quantizer() -> bool:
 
         def _process_model_after_weight_loading(self, model, **kwargs):
             config = getattr(model, "config", None)
-            if (
-                config is not None
-                and getattr(config, UNSLOTH_COMPRESSED_TENSORS_ATTR, None) is not None
-            ):
+            plan = getattr(config, UNSLOTH_COMPRESSED_TENSORS_ATTR, None)
+            if plan is not None:
                 try:
                     delattr(config, UNSLOTH_COMPRESSED_TENSORS_ATTR)
                 except AttributeError:
@@ -819,8 +817,14 @@ def install_compressed_tensors_bnb_quantizer() -> bool:
             # Load-only: save_pretrained would reverse them into packed names without metadata.
             drop_load_only_conversions(model)
             if getattr(self, "_unsloth_int4_packed", None):
-                from .compressed_tensors_int4 import finalize_int4_packed_linears
+                from .compressed_tensors_int4 import (
+                    finalize_int4_packed_linears,
+                    save_packed_with_checkpoint_config,
+                )
                 finalize_int4_packed_linears(model, self._unsloth_ct_dtype)
+                # Leftover layers were re-quantized to bitsandbytes, which the checkpoint config cannot describe.
+                if plan is not None and not self._unsloth_int4_leftover:
+                    save_packed_with_checkpoint_config(model, plan)
             return super()._process_model_after_weight_loading(model, **kwargs)
 
         def _unsloth_keep_storage_dtype(self, target_patterns):
