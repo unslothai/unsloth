@@ -1852,7 +1852,7 @@ export function ChatProvidersSettings({
                               className="h-8 px-2 text-xs font-medium text-foreground/80 hover:bg-muted/45"
                               onClick={() => {
                                 clearModelSelection();
-                                setManualModelIds("");
+                                if (!modelSearchQuery.trim()) setManualModelIds("");
                               }}
                             >
                               Clear

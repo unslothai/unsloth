@@ -42,3 +42,10 @@ test("both model lists wire their buttons to the scoped handlers", () => {
     2,
   );
 });
+
+test("Clear keeps typed model IDs while a search is active", () => {
+  assert.match(
+    dialog,
+    /clearModelSelection\(\);\s*if \(!modelSearchQuery\.trim\(\)\) setManualModelIds\(""\);/,
+  );
+});
