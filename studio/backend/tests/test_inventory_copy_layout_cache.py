@@ -1,15 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Downloaded models in a Hugging Face cache written without symlinks must stay listed.
-
-Where symlinks are unavailable (Windows without Developer Mode, some network shares and
-container mounts), huggingface_hub moves each finished blob into ``snapshots/<rev>/`` instead of
-linking it, so ``blobs/`` ends up empty or absent. The Hub page inventory used to require a file
-under ``blobs/`` and dropped these repos, while the older ``/api/models/local`` scan listed them.
-
-No GPU/network: the cache layouts are built by hand, matching what huggingface_hub leaves.
-"""
+"""A Hugging Face cache written without symlinks (files in ``snapshots/``, empty ``blobs/``) stays listed."""
 
 from __future__ import annotations
 
@@ -95,7 +87,6 @@ def test_copy_layout_gguf_is_listed_as_a_loadable_gguf_row(tmp_path):
 
 
 def test_copy_layout_subdirectory_weights_are_discovered(tmp_path):
-    # Split quants and diffusers components live in per-quant / per-component subdirectories.
     _copy_layout(tmp_path, files = ("UD-Q4_K_XL/Tiny-UD-Q4_K_XL-00001-of-00002.gguf",))
     assert _discovered_ids(tmp_path) == [REPO]
 
@@ -119,7 +110,6 @@ def test_symlink_layout_is_still_discovered(tmp_path):
 
 
 def test_repo_with_an_in_flight_blob_is_still_discovered(tmp_path):
-    # A copy-layout download writes the blob under blobs/ first and moves it when it finishes.
     repo = _repo_dir(tmp_path)
     _write(repo / "blobs" / "deadbeef.incomplete")
     assert _discovered_ids(tmp_path) == [REPO]
@@ -188,8 +178,7 @@ def test_the_snapshot_probe_is_bounded(tmp_path, monkeypatch):
 
 
 def test_only_the_snapshot_that_is_classified_is_probed(tmp_path):
-    # An older populated revision beside a newer empty one: the row would be classified from
-    # the newer one and show as an unknown, unloadable model, so the repo stays hidden.
+    # The row is classified from the newer, empty revision, so it stays hidden.
     repo = _copy_layout(tmp_path)
     newer = repo / "snapshots" / ("f" * 40)
     newer.mkdir()
@@ -198,8 +187,6 @@ def test_only_the_snapshot_that_is_classified_is_probed(tmp_path):
 
 
 def test_a_huge_snapshot_directory_is_read_only_up_to_the_limit(tmp_path, monkeypatch):
-    # rglob lists a whole directory before yielding its first entry; on a share holding a
-    # million entries that stalls the inventory, so the probe must stop reading at the limit.
     repo = _repo_dir(tmp_path)
     snapshot = repo / "snapshots" / REV
     snapshot.mkdir(parents = True)
@@ -255,7 +242,6 @@ def test_a_huge_snapshot_directory_is_read_only_up_to_the_limit(tmp_path, monkey
     "name", sorted(local_inventory.hf_cache_scan._CACHE_ENTRIES_TO_IGNORE | {".DS_Store"})
 )
 def test_os_metadata_alone_does_not_count_as_content(tmp_path, name):
-    # Explorer and Finder drop these into folders on a share; they are not a download.
     repo = _repo_dir(tmp_path)
     (repo / "blobs").mkdir(parents = True)
     _write(repo / "snapshots" / REV / name, b"\0" * 16)
@@ -286,8 +272,7 @@ class _SortedListing:
 
 
 def test_an_unreadable_directory_does_not_hide_a_readable_sibling(tmp_path, monkeypatch):
-    # A share that refuses one folder: the model in another is still found. The locked folder
-    # is listed last, so a depth-first walk meets it first.
+    # Listed last, so the depth-first walk meets the locked folder first.
     repo = _repo_dir(tmp_path)
     (repo / "blobs").mkdir(parents = True)
     locked = repo / "snapshots" / REV / "z-locked"
@@ -326,6 +311,5 @@ def test_an_entry_that_cannot_be_statted_is_skipped(tmp_path, monkeypatch):
         def is_file(self, follow_symlinks = True):
             return self._entry.is_file(follow_symlinks = follow_symlinks)
 
-    # The broken entry sorts first, so skipping it is what finds the model.
     monkeypatch.setattr(os, "scandir", lambda path = ".": _SortedListing(path, real_scandir, _Entry))
     assert _discovered_ids(tmp_path) == [REPO]

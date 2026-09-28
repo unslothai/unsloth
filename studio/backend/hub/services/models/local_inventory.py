@@ -265,17 +265,10 @@ def _hf_repo_dir_has_content(repo_dir: Path) -> bool:
 
 
 def _hf_snapshots_hold_files(repo_dir: Path) -> bool:
-    """Whether the snapshot the row is classified from holds a real file, for caches written
-    without symlinks.
-
-    Where symlinks are unavailable (Windows without Developer Mode, some network shares),
-    huggingface_hub moves each finished blob into ``snapshots/<rev>/`` and leaves ``blobs/``
-    empty, so checking ``blobs/`` alone hid every model downloaded that way. Only the newest
-    snapshot is probed, since that is the one ``_scan_hf_cache`` classifies. Stops at the first
-    file and reads at most as many entries as the model-file probe, streamed from ``scandir``
-    (``rglob`` lists a whole directory before yielding, so a huge one on a share would stall
-    it); a dangling link is not a file, OS metadata (Finder, Explorer) is not a download, and
-    an unreadable directory or entry is skipped rather than ending the search."""
+    """Whether the newest snapshot (the one ``_scan_hf_cache`` classifies) holds a real file.
+    Without symlinks huggingface_hub moves blobs into ``snapshots/<rev>/`` and leaves ``blobs/``
+    empty. Walked with ``scandir``, bounded by entries read (``rglob`` lists a whole directory
+    before yielding); unreadable entries are skipped."""
     snapshot = hf_cache_scan.latest_snapshot_dir(repo_dir)
     if snapshot is None:
         return False
@@ -285,7 +278,6 @@ def _hf_snapshots_hold_files(repo_dir: Path) -> bool:
         try:
             entries = os.scandir(pending.pop())
         except OSError:
-            # One unreadable directory on a share hides nothing else in the snapshot.
             continue
         with entries:
             listing = iter(entries)
@@ -295,7 +287,6 @@ def _hf_snapshots_hold_files(repo_dir: Path) -> bool:
                 except StopIteration:
                     break
                 except OSError:
-                    # The listing itself failed part way; the other directories still count.
                     break
                 walked += 1
                 if walked > model_common._HF_CACHE_MODEL_FILE_PROBE_LIMIT:
