@@ -159,9 +159,9 @@ def test_a_link_out_of_the_tree_keeps_the_per_launch_grant(host, tmp_path):
 
 def test_a_link_to_a_file_in_the_same_tree_is_granted(host):
     venv = _runtime(host)
-    Path(venv, "python.exe").write_bytes(b"")
+    Path(venv, "python.dat").write_bytes(b"")
     try:
-        os.symlink(Path(venv, "python.exe"), Path(venv, "python3.exe"))
+        os.symlink(Path(venv, "python.dat"), Path(venv, "python3.dat"))
     except OSError:
         pytest.skip("symlinks are not available")
     assert mxc_read_grants.ineligible_reason(venv) is None
