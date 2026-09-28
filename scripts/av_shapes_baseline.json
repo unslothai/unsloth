@@ -188,20 +188,6 @@
     },
     {
       "file": "install.sh",
-      "rule": "AV003",
-      "severity": "error",
-      "reason": "Follow-up: the WSL shortcut helper still emits the SHChangeNotify stub. install.ps1 moved to a Python ctypes call, which the Windows side of a WSL install cannot assume; porting needs a Windows-side answer first.",
-      "digests": {
-        "1897f2aa96938163": 1,
-        "3317dda9215e254f": 1,
-        "c8db648faf495659": 2,
-        "c8fa2e7a650eb3af": 1,
-        "c96dd772e1920082": 1,
-        "cb6ff73cf7b8ed0c": 1
-      }
-    },
-    {
-      "file": "install.sh",
       "rule": "AV015",
       "severity": "warn",
       "reason": "pre-existing warning",
@@ -829,15 +815,6 @@
     },
     {
       "file": "tests/sh/test_wsl_shortcut_script_location.sh",
-      "rule": "AV003",
-      "severity": "error",
-      "reason": "Pins the install.sh WSL helper recorded above; goes with it.",
-      "digests": {
-        "ed5258165f0a8925": 1
-      }
-    },
-    {
-      "file": "tests/sh/test_wsl_shortcut_script_location.sh",
       "rule": "AV015",
       "severity": "warn",
       "reason": "pre-existing warning",
@@ -1291,24 +1268,6 @@
       "digests": {
         "7d89fa0df467321d": 1,
         "a4083e2a30bc3f7e": 1
-      }
-    },
-    {
-      "file": "tests/studio/test_wsl_shortcut_script_is_valid_powershell.py",
-      "rule": "AV003",
-      "severity": "error",
-      "reason": "Validates the install.sh WSL helper recorded above; goes with it.",
-      "digests": {
-        "14db729e0d1df21f": 1,
-        "605726d25d6c74fe": 1,
-        "611de8088070073f": 1,
-        "8d7e802bd274b18c": 1,
-        "9ba5999e0a404e34": 1,
-        "9d08db7625c25e4b": 1,
-        "a7adeb5fbb15c560": 1,
-        "b0099be6101029bb": 1,
-        "c4c5312af5715290": 1,
-        "fbd34206a5c7c998": 1
       }
     },
     {
