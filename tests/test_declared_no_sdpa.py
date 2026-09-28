@@ -1,12 +1,5 @@
 # SPDX-License-Identifier: AGPL-3.0-only
-"""A class that declares `_supports_sdpa = False` must resolve to eager, not sdpa.
-
-unsloth_zoo's compiler reports SDPA support from source (ALL_ATTENTION_FUNCTIONS has "sdpa"), and
-FastModel passes that as supports_sdpa=True. MiMoV2FlashForCausalLM declares `_supports_sdpa = False`
-(its attention sinks have no SDPA path), so the load died in transformers with
-"MiMoV2FlashForCausalLM does not support an attention implementation through
-torch.nn.functional.scaled_dot_product_attention yet".
-"""
+"""A class declaring `_supports_sdpa = False` (MiMo-V2-Flash) resolves to eager, not sdpa."""
 
 from types import SimpleNamespace
 
@@ -56,7 +49,6 @@ def test_classes_that_do_not_opt_out_keep_sdpa():
     assert (
         _utils.resolve_attention_implementation(Inherits, _config(), supports_sdpa = True) == "sdpa"
     )
-    # PreTrainedModel's own default is not a declaration by the architecture.
     assert (
         _utils.resolve_attention_implementation(BarePreTrained, _config(), supports_sdpa = True)
         == "sdpa"

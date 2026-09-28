@@ -1,10 +1,5 @@
 # SPDX-License-Identifier: AGPL-3.0-only
-"""A class that lists its only compatible flash kernels without flash_attention_2 must not get flash_attention_2.
-
-transformers 5 rewrites a flash_attention_2 request on such a class to its first compatible kernel
-(MiMoV2FlashPreTrainedModel._compatible_flash_implementations = ["flash_attention_4"]), so FastModel on
-MiMo-V2-Flash / MiMo-V2.6 died with "FlashAttention4 has been toggled on, but ... doesn't seem to be installed".
-"""
+"""A class whose `_compatible_flash_implementations` excludes FA2 (MiMo-V2-Flash: FA4 only) is not given FA2."""
 
 from types import SimpleNamespace
 
@@ -35,7 +30,6 @@ class ListsFa2(_Base):
 
 @pytest.fixture(autouse = True)
 def _no_fa3_fa4_or_hub_kernels(monkeypatch):
-    # The fallback only applies when the kernel transformers would switch to is missing.
     monkeypatch.setattr(_utils, "_flash_implementation_available", lambda name: False)
 
 

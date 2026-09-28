@@ -827,9 +827,7 @@ def _declares_flex_support(model_class):
 
 
 def _declares_no_sdpa(model_class):
-    """True when the architecture's own class sets `_supports_sdpa = False` (for example
-    MiMoV2FlashForCausalLM, whose sinks have no SDPA path). transformers raises on an sdpa
-    request for such a class, so a source-level guess of SDPA support must not override it."""
+    # An explicit `_supports_sdpa = False` below PreTrainedModel (MiMo-V2-Flash sinks) beats the zoo's source-level guess.
     try:
         from transformers.modeling_utils import PreTrainedModel
     except Exception:
@@ -866,11 +864,7 @@ def _model_class_supports_flash_attention(model_class):
 
 
 def _flash_attention_2_is_compatible(model_class):
-    """transformers 5 lets a class name the only flash kernels it works with (`_compatible_flash_implementations`,
-    e.g. mimo_v2_flash / gpt_oss / granite_swa: ["flash_attention_4"] for sinks or asymmetric head dims) and silently
-    rewrites a flash_attention_2 request to the first of them, which then fails to import when that kernel is not
-    installed. Unsloth only ever requests flash_attention_2, so such a class takes the non-flash branch unless the
-    kernel transformers would switch to is actually available (FA3 / FA4 installed, or the kernels hub package)."""
+    # transformers 5 silently rewrites flash_attention_2 to compatible[0] (_check_and_adjust_attn_implementation).
     compatible = getattr(model_class, "_compatible_flash_implementations", None)
     if not isinstance(compatible, (list, tuple)) or not compatible:
         return True
@@ -895,7 +889,6 @@ def _flash_implementation_available(name):
         except Exception:
             return False
     if "/" in name:
-        # A hub kernel ("kernels-community/..."): only reachable through a kernels version transformers accepts.
         check = getattr(import_utils, "is_kernels_available", None)
         try:
             return bool(check()) if check is not None else False
