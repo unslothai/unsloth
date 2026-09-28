@@ -430,7 +430,7 @@ test("sections have created and last modified dates, and Last modified is the de
 test("chat, project and section cards are a little shorter than square, dated bottom left", () => {
   const items = readSrc("features/library/chats/chats-items.tsx");
   const card = items.slice(items.indexOf("const CARD = cn("), items.indexOf("const ICON ="));
-  assert.match(card, /aspect-\[6\/5\]/);
+  assert.match(card, /aspect-\[7\/6\]/);
   // Grows to fit a two-line name rather than clipping it, and rows stay even.
   assert.doesNotMatch(card, /overflow-hidden/);
   assert.match(card, /self-stretch/);
@@ -452,6 +452,7 @@ test("chat, project and section tiles share one box and hover tint", () => {
 test("grid cards share a two-line title and a footer of contents over date", () => {
   const items = readSrc("features/library/chats/chats-items.tsx");
   assert.match(items, /const CARD_TITLE =\s*"[^"]*\[overflow-wrap:anywhere\]/);
+  assert.match(items, /const CARD_TITLE =\s*"[^"]*font-medium text-ui-14 /);
   const footer = items.slice(items.indexOf("function CardFooter("), items.indexOf("const CARD_TITLE"));
   assert.match(footer, /flex-col items-start/);
   assert.match(footer, /\{meta && <span className="w-full min-w-0 truncate">\{meta\}<\/span>\}\s*<span className="truncate">\{date\}<\/span>/);

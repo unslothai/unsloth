@@ -80,7 +80,7 @@ import { CARD_SHADOW, OVERLAY_CONTROL, RAISED_SURFACE } from "../surface";
 const CARD = cn(
   RAISED_SURFACE,
   CARD_SHADOW,
-  "group/chat relative flex aspect-[6/5] cursor-pointer flex-col gap-2.5 self-stretch rounded-xl px-5 pb-3.5 pt-5 transition hover:bg-neutral-100 hover:shadow-none dark:hover:bg-accent/60",
+  "group/chat relative flex aspect-[7/6] cursor-pointer flex-col gap-2.5 self-stretch rounded-xl px-5 pb-3.5 pt-5 transition hover:bg-neutral-100 hover:shadow-none dark:hover:bg-accent/60",
 );
 import {
   type ChatContents,
@@ -1261,7 +1261,7 @@ function CardFooter({ meta, date, className }: { meta?: ReactNode; date: string;
 
 // Two lines; a long unbroken name wraps instead of running out on one line.
 const CARD_TITLE =
-  "block w-full rounded text-left font-medium text-ui-15 leading-snug text-foreground outline-none [overflow-wrap:anywhere] focus-visible:ring-2 focus-visible:ring-ring";
+  "block w-full rounded text-left font-medium text-ui-14 leading-snug text-foreground outline-none [overflow-wrap:anywhere] focus-visible:ring-2 focus-visible:ring-ring";
 
 /** Group name and count in words; a bare number beside "Today" read as part of the name. */
 export function GroupHeading({
