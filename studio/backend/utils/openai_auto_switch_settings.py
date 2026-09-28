@@ -599,6 +599,7 @@ def model_override_load_kwargs(override: dict[str, Any], *, is_gguf: bool) -> di
         ("llama_extra_args", "llama_extra_args"),
         ("kv_cache_dtype", "cache_type_kv"),
         ("mlx_kv_bits", "mlx_kv_bits"),
+        ("n_parallel", "n_parallel"),
         ("speculative_type", "speculative_type"),
         ("spec_draft_n_max", "spec_draft_n_max"),
         ("reasoning_budget", "reasoning_budget"),
@@ -611,8 +612,6 @@ def model_override_load_kwargs(override: dict[str, Any], *, is_gguf: bool) -> di
             kwargs[target] = override[source]
 
     if is_gguf:
-        if override.get("n_parallel") is not None:
-            kwargs["n_parallel"] = override["n_parallel"]
         if override.get("n_batch") is not None:
             kwargs["n_batch"] = override["n_batch"]
         if override.get("n_ubatch") is not None:

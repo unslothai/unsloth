@@ -261,10 +261,9 @@ export function applyActiveModelStatusToStore(
       : hydratingExistingModel)
       ? resolveResidentInitialConfig(checkpointId, status.gguf_variant ?? null)
       : null;
-  const rememberedNParallel =
-    status.is_gguf && remembered?.remembered
-      ? (remembered.config.nParallel ?? null)
-      : null;
+  const rememberedNParallel = remembered?.remembered
+    ? (remembered.config.nParallel ?? null)
+    : null;
   const rememberedNBatch =
     status.is_gguf && remembered?.remembered
       ? (remembered.config.nBatch ?? null)
@@ -576,18 +575,14 @@ export function applyActiveModelStatusToStore(
         mlxKvQuantNote: status.mlx_kv_quant_note ?? null,
       }),
     // Baseline only, never the control: the echo is the RESOLVED count and would pin a blank
-    // "server default" control. The rollback re-sends the baseline, so without this a rollback
-    // after a tab reload loses the override. Refresh on every echo: another client
-    // can reload the same model with a different count.
     ...(seedLoadParams &&
       status.requested_parallel_slots != null && {
         loadedNParallel: status.requested_parallel_slots,
       }),
-    // A slotless model must not keep the previous GGUF's baseline, since the rollback re-sends
-    // it. /status omits the echo for non-GGUF and nulls it for diffusion, so an absent field
-    // on a GGUF means an older backend.
+    // A slotless load must not keep the previous model's baseline, since the rollback
+    // re-sends it. /status nulls the echo for a load that decodes one reply at a time.
     ...(seedLoadParams &&
-      (status.is_gguf === false || status.requested_parallel_slots === null) && {
+      status.requested_parallel_slots === null && {
         loadedNParallel: null,
       }),
     // Per-model: a change underneath this tab blanks the control like performLoad's cross-model
