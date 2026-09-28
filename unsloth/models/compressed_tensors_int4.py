@@ -347,6 +347,21 @@ def patch_peft_merge_for_int4_packed_linears() -> bool:
     unmerge._unsloth_int4_patched = True
     LoraLinear.merge = merge
     LoraLinear.unmerge = unmerge
+    try:
+        from peft.tuners.tuners_utils import BaseTuner
+    except Exception:
+        return True
+    original_unload = BaseTuner._unload_and_optionally_merge
+
+    @functools.wraps(original_unload)
+    def _unload_and_optionally_merge(self, *args, **kwargs):
+        model = original_unload(self, *args, **kwargs)
+        # Unloaded, a merge is permanent: the stash kept only for unmerge would pin the packed weights.
+        for module in model.modules():
+            module.__dict__.pop(_PACKED_STATE, None)
+        return model
+
+    BaseTuner._unload_and_optionally_merge = _unload_and_optionally_merge
     return True
 
 

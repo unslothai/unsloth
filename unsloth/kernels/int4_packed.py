@@ -617,6 +617,10 @@ def int4_matmul(
     x2 = x.reshape(-1, shape[-1])
     M = x2.shape[0]
     N = qs.shape[0]
+    if (
+        M == 0
+    ):  # Nothing to launch; the kernels reject a zero grid and the split below divides by M.
+        return x.new_empty((*shape[:-1], N)) if out is None else out
     if x2.is_cuda and not torch.is_grad_enabled():
         index = x2.device.index or 0
         y = None
