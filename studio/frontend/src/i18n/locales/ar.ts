@@ -3116,12 +3116,6 @@ export const ar = {
         contents: "المحتويات",
         oneMessage: "رسالة واحدة",
         messageCount: "{count} رسائل",
-        oneImage: "صورة واحدة",
-        imageCount: "{count} صور",
-        oneHtml: "كتلة HTML واحدة",
-        htmlCount: "{count} كتل HTML",
-        oneSource: "مصدر واحد",
-        sourceCount: "{count} مصادر",
       },
       badges: {
         pinned: "مثبتة",

@@ -410,21 +410,14 @@ export function validateChatsSection(value: unknown): ChatsSection | undefined {
 /** What a chat holds, for the Contents column. */
 export interface ChatContents {
   messages: number;
-  images: number;
-  /** Fenced ```html blocks. */
-  html: number;
 }
 
-type ContentPart = { type?: string; text?: string };
-
-/** Counts along the shown branch: from the newest message back through its parents. */
+/** Messages along the shown branch: from the newest message back through its parents. */
 export function summarizeChatMessages(
   messages: readonly {
     id: string;
     parentId?: string | null;
     role?: string;
-    content?: unknown;
-    attachments?: unknown;
     createdAt: number;
   }[],
 ): ChatContents {
@@ -443,25 +436,8 @@ export function summarizeChatMessages(
       at = at.parentId ? byId.get(at.parentId) : undefined;
     }
   }
-  const out: ChatContents = { messages: 0, images: 0, html: 0 };
-  for (const message of path) {
-    if (message.role !== "user" && message.role !== "assistant") continue;
-    out.messages += 1;
-    const parts = Array.isArray(message.content) ? (message.content as ContentPart[]) : [];
-    for (const part of parts) {
-      if (part?.type === "image") out.images += 1;
-      if (part?.type === "text" && typeof part.text === "string") {
-        out.html += part.text.match(/^\s*```html\b/gim)?.length ?? 0;
-      }
-    }
-    const attachments = Array.isArray(message.attachments)
-      ? (message.attachments as { type?: string; contentType?: string }[])
-      : [];
-    for (const attachment of attachments) {
-      if (attachment?.type === "image" || attachment?.contentType?.startsWith("image/")) {
-        out.images += 1;
-      }
-    }
-  }
-  return out;
+  return {
+    messages: path.filter((message) => message.role === "user" || message.role === "assistant")
+      .length,
+  };
 }

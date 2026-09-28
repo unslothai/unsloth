@@ -3064,12 +3064,6 @@ export const ja = {
         contents: "内容",
         oneMessage: "1 件のメッセージ",
         messageCount: "{count} 件のメッセージ",
-        oneImage: "1 枚の画像",
-        imageCount: "{count} 枚の画像",
-        oneHtml: "1 個の HTML ブロック",
-        htmlCount: "{count} 個の HTML ブロック",
-        oneSource: "1 件のソース",
-        sourceCount: "{count} 件のソース",
       },
       badges: {
         pinned: "ピン留め",

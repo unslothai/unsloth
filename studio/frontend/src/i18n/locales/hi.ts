@@ -3123,12 +3123,6 @@ export const hi = {
         contents: "सामग्री",
         oneMessage: "1 संदेश",
         messageCount: "{count} संदेश",
-        oneImage: "1 छवि",
-        imageCount: "{count} छवियाँ",
-        oneHtml: "1 HTML ब्लॉक",
-        htmlCount: "{count} HTML ब्लॉक",
-        oneSource: "1 स्रोत",
-        sourceCount: "{count} स्रोत",
       },
       badges: {
         pinned: "पिन की गई",

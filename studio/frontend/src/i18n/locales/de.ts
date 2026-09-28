@@ -3185,12 +3185,6 @@ export const de = {
         contents: "Inhalt",
         oneMessage: "1 Nachricht",
         messageCount: "{count} Nachrichten",
-        oneImage: "1 Bild",
-        imageCount: "{count} Bilder",
-        oneHtml: "1 HTML-Block",
-        htmlCount: "{count} HTML-Blöcke",
-        oneSource: "1 Quelle",
-        sourceCount: "{count} Quellen",
       },
       badges: {
         pinned: "Angeheftet",

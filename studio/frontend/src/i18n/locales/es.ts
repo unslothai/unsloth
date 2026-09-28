@@ -3182,12 +3182,6 @@ export const es = {
         contents: "Contenido",
         oneMessage: "1 mensaje",
         messageCount: "{count} mensajes",
-        oneImage: "1 imagen",
-        imageCount: "{count} imágenes",
-        oneHtml: "1 bloque HTML",
-        htmlCount: "{count} bloques HTML",
-        oneSource: "1 fuente",
-        sourceCount: "{count} fuentes",
       },
       badges: {
         pinned: "Fijado",

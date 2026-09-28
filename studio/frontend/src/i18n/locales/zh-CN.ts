@@ -3024,12 +3024,6 @@ export const zhCN = {
         contents: "内容",
         oneMessage: "1 条消息",
         messageCount: "{count} 条消息",
-        oneImage: "1 张图片",
-        imageCount: "{count} 张图片",
-        oneHtml: "1 个 HTML 代码块",
-        htmlCount: "{count} 个 HTML 代码块",
-        oneSource: "1 个来源",
-        sourceCount: "{count} 个来源",
       },
       badges: {
         pinned: "已置顶",

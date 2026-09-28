@@ -262,25 +262,23 @@ test("the Chats tab opens on All, and a project opens its home in Chat", () => {
   assert.match(readSrc("features/library/chats/chats-items.tsx"), /<OpenChatFolderItem item=\{chat\} \/>/);
 });
 
-test("contents count the shown branch, its images and HTML blocks", () => {
-  const message = (
-    id: string,
-    parentId: string | null,
-    role: string,
-    createdAt: number,
-    content: unknown[],
-    attachments: unknown[] = [],
-  ) => ({ id, parentId, role, createdAt, content, attachments });
+test("contents count messages on the shown branch", () => {
+  const message = (id: string, parentId: string | null, role: string, createdAt: number) => ({
+    id,
+    parentId,
+    role,
+    createdAt,
+  });
   const summary = summarizeChatMessages([
-    message("u1", null, "user", 1, [{ type: "text", text: "hi" }], [{ type: "image" }]),
-    message("a1", "u1", "assistant", 2, [{ type: "text", text: "```html\n<p/>\n```\n```python\n```" }]),
+    message("u1", null, "user", 1),
+    message("a1", "u1", "assistant", 2),
     // An older sibling of a1, from a regenerate: not on the shown branch.
-    message("a0", "u1", "assistant", 1.5, [{ type: "image", image: "x" }]),
-    message("u2", "a1", "user", 3, [{ type: "image", image: "y" }]),
-    message("s", null, "system", 0, []),
+    message("a0", "u1", "assistant", 1.5),
+    message("u2", "a1", "user", 3),
+    message("s", null, "system", 0),
   ]);
-  assert.deepEqual(summary, { messages: 3, images: 2, html: 1 });
-  assert.deepEqual(summarizeChatMessages([]), { messages: 0, images: 0, html: 0 });
+  assert.deepEqual(summary, { messages: 3 });
+  assert.deepEqual(summarizeChatMessages([]), { messages: 0 });
 });
 
 test("one date column picks created, last active or last modified", () => {

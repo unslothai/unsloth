@@ -3183,12 +3183,6 @@ export const it = {
         contents: "Contenuto",
         oneMessage: "1 messaggio",
         messageCount: "{count} messaggi",
-        oneImage: "1 immagine",
-        imageCount: "{count} immagini",
-        oneHtml: "1 blocco HTML",
-        htmlCount: "{count} blocchi HTML",
-        oneSource: "1 fonte",
-        sourceCount: "{count} fonti",
       },
       badges: {
         pinned: "Fissata",

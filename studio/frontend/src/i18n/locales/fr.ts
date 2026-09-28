@@ -3196,12 +3196,6 @@ export const fr = {
         contents: "Contenu",
         oneMessage: "1 message",
         messageCount: "{count} messages",
-        oneImage: "1 image",
-        imageCount: "{count} images",
-        oneHtml: "1 bloc HTML",
-        htmlCount: "{count} blocs HTML",
-        oneSource: "1 source",
-        sourceCount: "{count} sources",
       },
       badges: {
         pinned: "Épinglé",

@@ -3144,12 +3144,6 @@ export const ptBR = {
         contents: "Conteúdo",
         oneMessage: "1 mensagem",
         messageCount: "{count} mensagens",
-        oneImage: "1 imagem",
-        imageCount: "{count} imagens",
-        oneHtml: "1 bloco HTML",
-        htmlCount: "{count} blocos HTML",
-        oneSource: "1 fonte",
-        sourceCount: "{count} fontes",
       },
       badges: {
         pinned: "Fixado",

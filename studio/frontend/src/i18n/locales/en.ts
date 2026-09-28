@@ -3102,12 +3102,6 @@ export const en = {
         contents: "Contents",
         oneMessage: "1 message",
         messageCount: "{count} messages",
-        oneImage: "1 image",
-        imageCount: "{count} images",
-        oneHtml: "1 HTML block",
-        htmlCount: "{count} HTML blocks",
-        oneSource: "1 source",
-        sourceCount: "{count} sources",
       },
       badges: {
         pinned: "Pinned",

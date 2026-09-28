@@ -3110,12 +3110,6 @@ export const ko = {
         contents: "내용",
         oneMessage: "메시지 1개",
         messageCount: "메시지 {count}개",
-        oneImage: "이미지 1개",
-        imageCount: "이미지 {count}개",
-        oneHtml: "HTML 블록 1개",
-        htmlCount: "HTML 블록 {count}개",
-        oneSource: "소스 1개",
-        sourceCount: "소스 {count}개",
       },
       badges: {
         pinned: "고정됨",

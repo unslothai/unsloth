@@ -3143,12 +3143,6 @@ export const ru = {
         contents: "Содержимое",
         oneMessage: "1 сообщение",
         messageCount: "Сообщений: {count}",
-        oneImage: "1 изображение",
-        imageCount: "Изображений: {count}",
-        oneHtml: "1 блок HTML",
-        htmlCount: "Блоков HTML: {count}",
-        oneSource: "1 источник",
-        sourceCount: "Источников: {count}",
       },
       badges: {
         pinned: "Закреплён",

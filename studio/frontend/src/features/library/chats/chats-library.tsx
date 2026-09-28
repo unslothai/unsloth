@@ -135,7 +135,7 @@ import {
   sortProjects,
   sortSections,
 } from "./model";
-import { useChatContents, useProjectSourceCounts } from "./contents";
+import { useChatContents } from "./contents";
 import { useChatFavoritesStore } from "./favorites-store";
 import { useChatsPrefsStore } from "./prefs-store";
 
@@ -780,7 +780,6 @@ export function ChatsLibrary({
 
   const listed = view === "list" && !embedded;
   const chatContents = useChatContents(listed ? shownChats : NO_CHATS);
-  const projectSources = useProjectSourceCounts(listed);
 
   // One date column per list: its title picks the date, its arrow flips the order.
   const dateColumn = <K extends string>(
@@ -863,7 +862,6 @@ export function ChatsLibrary({
     projectSectionOf,
     dateField: prefs.dateField,
     chatContents,
-    projectSources,
     viewSection: (id) => go({ chatSection: id }),
     newChatInSection: (id) => newChatInSection(id),
     renameSection: setRenamingSection,

@@ -2,7 +2,6 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { type SidebarItem, listStoredChatMessagesMany } from "@/features/chat";
-import { listAllDocuments } from "@/features/rag";
 import { useEffect, useMemo, useState } from "react";
 import { type ChatContents, summarizeChatMessages } from "./model";
 
@@ -22,7 +21,7 @@ function threadIdsOf(chat: SidebarItem): string[] {
 function combine(summaries: ChatContents[]): ChatContents {
   return summaries.reduce(
     (best, next) => (next.messages > best.messages ? next : best),
-    { messages: 0, images: 0, html: 0 },
+    { messages: 0 },
   );
 }
 
@@ -67,28 +66,4 @@ export function useChatContents(chats: readonly SidebarItem[]): ReadonlyMap<stri
     }
     return out;
   }, [chats, version]);
-}
-
-/** Sources per project; null while loading or when document search is unavailable. */
-export function useProjectSourceCounts(enabled: boolean): ReadonlyMap<string, number> | null {
-  const [counts, setCounts] = useState<Map<string, number> | null>(null);
-  useEffect(() => {
-    if (!enabled) return;
-    let cancelled = false;
-    listAllDocuments()
-      .then((documents) => {
-        if (cancelled) return;
-        const next = new Map<string, number>();
-        for (const document of documents) {
-          if (!document.projectId || document.threadId) continue;
-          next.set(document.projectId, (next.get(document.projectId) ?? 0) + 1);
-        }
-        setCounts(next);
-      })
-      .catch(() => undefined);
-    return () => {
-      cancelled = true;
-    };
-  }, [enabled]);
-  return counts;
 }

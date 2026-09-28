@@ -123,8 +123,6 @@ export interface ChatsActions {
   dateField: DateField;
   /** Per chat row id; absent until read. */
   chatContents: ReadonlyMap<string, ChatContents>;
-  /** Sources per project; null when unknown. */
-  projectSources: ReadonlyMap<string, number> | null;
   selection: ReadonlySet<string>;
   toggleSelected: (id: string) => void;
   open: (chat: SidebarItem) => void;
@@ -743,45 +741,12 @@ function chatContentsLabel(
   t: ReturnType<typeof useT>,
 ): string {
   if (!contents) return "";
-  const parts = [
-    countLabel(
-      contents.messages,
-      "library.chats.list.oneMessage",
-      "library.chats.list.messageCount",
-      t,
-    ),
-  ];
-  if (contents.images > 0) {
-    parts.push(
-      countLabel(
-        contents.images,
-        "library.chats.list.oneImage",
-        "library.chats.list.imageCount",
-        t,
-      ),
-    );
-  }
-  if (contents.html > 0) {
-    parts.push(
-      countLabel(
-        contents.html,
-        "library.chats.list.oneHtml",
-        "library.chats.list.htmlCount",
-        t,
-      ),
-    );
-  }
-  return parts.join(" · ");
-}
-
-function projectContentsLabel(
-  stats: ProjectStats | undefined,
-  sources: number | undefined,
-  t: ReturnType<typeof useT>,
-): string {
-  const chats = chatCount(stats?.chats ?? 0, t);
-  if (!sources) return chats;
-  return `${chats} · ${countLabel(sources, "library.chats.list.oneSource", "library.chats.list.sourceCount", t)}`;
+  return countLabel(
+    contents.messages,
+    "library.chats.list.oneMessage",
+    "library.chats.list.messageCount",
+    t,
+  );
 }
 
 const DATE_LABELS: Record<DateField, TranslationKey> = {
@@ -818,7 +783,7 @@ export function DateHeader({
             <button
               type="button"
               className={cn(
-                "flex items-center gap-1 rounded-sm outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring data-[state=open]:text-foreground",
+                "group/date flex items-center gap-1 rounded-sm outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring data-[state=open]:text-foreground",
                 active && "text-foreground",
               )}
             >
@@ -826,7 +791,8 @@ export function DateHeader({
               <HugeiconsIcon
                 icon={ChevronDownStandardIcon}
                 strokeWidth={2}
-                className="size-3"
+                // Shown on hover, focus or while open.
+                className="size-3 opacity-0 transition-opacity group-hover/date:opacity-100 group-focus-visible/date:opacity-100 group-data-[state=open]/date:opacity-100"
               />
             </button>
           </DropdownMenuTrigger>
@@ -1501,11 +1467,7 @@ export function ProjectRow({
       ) : (
         <>
           <span className={cn(CONTENTS_COLUMN, CELL)}>
-            {projectContentsLabel(
-              stats,
-              actions.projectSources?.get(project.id),
-              t,
-            )}
+            {chatCount(stats?.chats ?? 0, t)}
           </span>
           <span className={cn(DATE_COLUMN, CELL)}>
             {formatDate(
