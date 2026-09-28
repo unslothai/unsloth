@@ -169,9 +169,7 @@ jobs:
       - name: Scanner-shape gate self-test
         run: python scripts/lint_av_shapes.py --self-test
 
-      # Fails on a new line shaped like what heuristic scanners quarantine (native imports in
-      # scripts, reflection emit, encoded or remote payloads, credential-path lists beside network
-      # code, renamed system binaries). Each finding says why and what to write instead.
+      # New lines only; existing ones live in scripts/av_shapes_baseline.json.
       - name: No new code shapes that heuristic scanners quarantine
         run: python scripts/lint_av_shapes.py
 

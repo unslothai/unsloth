@@ -32,11 +32,7 @@ def _launcher_dir() -> Path | None:
 
 
 def console_stub_bytes(exit_code: int = 0, *, source: str | None = None) -> bytes | None:
-    """Launcher + shebang + zip, or None where no distlib launcher ships.
-
-    `source` replaces the default body (exit with `exit_code`) with a __main__.py of the
-    caller's own, for a stand-in that has to stay alive or read its arguments.
-    """
+    """Launcher + shebang + zip, or None where no distlib launcher ships. `source` replaces the exit-only body."""
     directory = _launcher_dir()
     if directory is None:
         return None
