@@ -978,7 +978,7 @@ class ExportBackend:
             return (
                 False,
                 "Portable torchao FP8/INT8 export needs torchao, which could not be loaded "
-                "on this Windows ROCm build. Update Unsloth Studio to install it, or use "
+                "on this Windows ROCm build. Update Unsloth to install it, or use "
                 "16-bit merged or GGUF quantization instead.",
                 None,
             )
