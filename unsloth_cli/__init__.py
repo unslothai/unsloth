@@ -53,6 +53,14 @@ def _reconfigure_entry_point_streams():
 if _is_entry_point:
     _reconfigure_entry_point_streams()
 
+from unsloth_cli._ssl_keylog import (
+    drop_unwritable_ssl_keylog_file as _drop_unwritable_ssl_keylog_file,
+)
+
+# Before any command module builds an HTTPS client; the Studio backend's workers inherit the result.
+if _is_entry_point:
+    _drop_unwritable_ssl_keylog_file()
+
 from unsloth_cli._system_dir_guard import check_working_directory as _check_working_directory
 
 # Running from System32 or a subdir breaks commands; move out before the command imports, since
@@ -99,6 +107,7 @@ def _prepare_entry_point():
     if _entry_point_prepared:
         return
     _reconfigure_entry_point_streams()
+    _drop_unwritable_ssl_keylog_file()
     _expand_attached_np_short()
     # Set last, so a raise leaves the work retryable rather than silently skipped.
     _entry_point_prepared = True
