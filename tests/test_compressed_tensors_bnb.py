@@ -1060,7 +1060,9 @@ def test_an_explicit_bnb_4bit_config_is_not_replaced_by_the_default_nf4_one():
     assert guards and all("not _explicit_bnb_4bit" in guard for guard in guards), guards
 
 
-@pytest.mark.skipif(not HAS_CONVERTERS, reason = "needs the transformers 5 loader")
+@pytest.mark.skipif(
+    not (HAS_CT and HAS_CONVERTERS), reason = "needs compressed-tensors and the transformers 5 loader"
+)
 def test_both_loaders_treat_an_explicit_bnb_4bit_config_as_the_4bit_request():
     # The loader passes load_in_4bit = False with an explicit config; a bnb 4-bit config must still arm the plan.
     import ast, inspect
