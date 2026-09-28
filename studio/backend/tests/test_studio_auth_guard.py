@@ -2512,6 +2512,23 @@ def test_a_top_level_empty_assignment_clears_the_binding(studio_home):
     assert not tools._references_studio_credential_here(command.replace("../../", "./"), workdir)
 
 
+@pytest.mark.parametrize(
+    "command",
+    [
+        'x=../..; x= cat "$x/auth/auth.db"',
+        'x=../..; x= sqlite3 "$x/auth/auth.db" "select jwt_secret from auth_user"',
+        'x=../..; x=/tmp cat "$x/auth/auth.db"',
+        "x=../.. bash -c 'cat \"$x/auth/auth.db\"'",
+    ],
+)
+def test_a_command_prefix_assignment_binds_only_the_child(studio_home, command):
+    workdir = str(studio_home / "sandbox" / _SESSION)
+    assert tools._references_studio_credential_here(command, workdir)
+    assert not tools._references_studio_credential_here(
+        command.replace("../..", "./project"), workdir
+    )
+
+
 def test_self_doubling_assignments_stay_bounded(studio_home):
     workdir = str(studio_home / "sandbox" / _SESSION)
     doubling = "a=X; " + "a=$a$a; " * 40

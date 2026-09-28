@@ -4021,9 +4021,13 @@ def _references_studio_credential_here(
                 quoted_modes = (False, True)
         seen = {text}
         for include_quoted in quoted_modes:
-            final, positional_text = _shell_assignment_expansions(
+            final, positional_text, saw_prefix = _shell_assignment_expansions(
                 text, include_quoted = include_quoted, quote_states = quote_states
             )
+            if saw_prefix and (_assign_expand_depth == 0 or _positional_assignments):
+                positional_text = _shell_assignment_expansions(
+                    text, include_quoted = include_quoted, quote_states = quote_states, skip_prefix = True
+                )[1]
             variants = (
                 ((True, positional_text), (False, final))
                 if _assign_expand_depth == 0
@@ -5313,7 +5317,7 @@ def _expand_shell_assignments(
     """Best-effort substitution of `NAME=value ... $NAME`, so a sensitive path split across an
     assignment and an argument (p=/etc; cat $p/passwd) is still visible to the scan. Also applies
     pattern replacement. Fail-open: only adds detections."""
-    final, positional = _shell_assignment_expansions(command, include_quoted = _include_quoted)
+    final, positional, _ = _shell_assignment_expansions(command, include_quoted = _include_quoted)
     return positional if _positional else final
 
 
@@ -5322,9 +5326,14 @@ def _shell_assignment_expansions(
     *,
     include_quoted: bool = True,
     quote_states = None,
-) -> "tuple[str, str]":
-    """(last binding everywhere, binding active at each use) from one walk of the assignments."""
+    skip_prefix: bool = False,
+) -> "tuple[str, str, bool]":
+    """(last binding everywhere, binding active at each use, saw a command-prefix assignment).
+
+    `x=/tmp cat "$x"` expands the argument with the OUTER x and only hands /tmp to the child, so with
+    *skip_prefix* such assignments bind nothing; the last-binding result keeps them for the child."""
     env = {}
+    saw_prefix = False
 
     def repl_default(m):
         name, colon, op, operand = m.groups()
@@ -5368,7 +5377,20 @@ def _shell_assignment_expansions(
 
     # Positional: each use sees the binding active where it stands; the last binding covers loops.
     pieces, pos = [], 0
-    for match in _SHELL_ASSIGN_RE.finditer(command):
+    matches = list(_SHELL_ASSIGN_RE.finditer(command))
+    # A run of assignments is a command prefix only when a command word, not a separator, ends it:
+    # `A=1 B=2; echo $A` binds both in the shell, `A=1 B=2 echo $A` binds neither for the argument.
+    prefix = [False] * len(matches)
+    for i in range(len(matches) - 1, -1, -1):
+        m = matches[i]
+        if (quote_states is None or not quote_states[m.start(1)]) and (
+            _assignment_is_a_command_prefix(command, m.start(2))
+        ):
+            chained = (
+                i + 1 < len(matches) and not command[m.end(2) : matches[i + 1].start(1)].strip()
+            )
+            prefix[i] = prefix[i + 1] if chained else True
+    for i, match in enumerate(matches):
         if not include_quoted and ("'" in command or '"' in command):
             if quote_states is None:
                 quote_states = _shell_quote_states(command)
@@ -5378,6 +5400,10 @@ def _shell_assignment_expansions(
         pieces.append(expand(command[pos : match.start(2)]))
         pieces.append(expand(val))
         pos = match.end(2)
+        if prefix[i]:
+            saw_prefix = True
+            if skip_prefix:
+                continue
         if _shell_assign_value_self_references(var, val):
             # Studio home vars stay references: `H=$H; cat "$H/auth/auth.db"` must still name the install.
             if var.upper() in _STUDIO_HOME_ENV_VARS:
@@ -5394,8 +5420,8 @@ def _shell_assignment_expansions(
             continue
         env[var] = val
     if not env:
-        return command, command
-    return expand(command), "".join(pieces) + expand(command[pos:])
+        return command, command, saw_prefix
+    return expand(command), "".join(pieces) + expand(command[pos:]), saw_prefix
 
 
 def _expand_param_defaults(command: str) -> str:
