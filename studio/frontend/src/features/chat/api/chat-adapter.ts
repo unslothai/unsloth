@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { attachedMediaUnavailableReason } from "../lib/attached-media-gate";
+import { externalModelLabel } from "../lib/external-model-label";
 import { mlxRuntimeStateFrom } from "../lib/mlx-runtime-state";
 import { minPSamplingPayload } from "../lib/min-p-policy";
 import {
@@ -14,6 +16,7 @@ import {
   serverTuningLoadPayload,
 } from "../lib/server-tuning-fields";
 import { authFetch, getAuthToken } from "@/features/auth";
+import { withSandboxAttachmentPaths } from "../sandbox-attachments";
 import { prepareHfTokenForUse } from "@/features/hf-auth";
 import { DOWNLOAD_KIND } from "@/features/hub/download-manager/constants";
 import {
@@ -197,6 +200,7 @@ import {
   providerSupportsFastMode,
 } from "../provider-capabilities";
 import { selectCodeToolNames } from "./code-tool-placement";
+import { skillToolsOffered } from "./skill-tools";
 import { ragScopeContextLength } from "./rag-context-length";
 import {
   type PendingImageEditReference,
@@ -1981,8 +1985,14 @@ export async function buildLocalTokenCountExtras(
   // tools-on default answer and the server renders a catalog the completion does not.
   // No budget, because the completion sends none either, so a policy that injects tools
   // past this false gets the server default on both sides.
+  // The completion always sends thread_id; the server dates a thread's prompt from it.
+  const threadField = threadId ? { thread_id: threadId } : {};
   if (!supportsTools) {
-    return { enable_tools: false, bypass_permissions: bypassPermissions };
+    return {
+      enable_tools: false,
+      bypass_permissions: bypassPermissions,
+      ...threadField,
+    };
   }
 
   const ragProjectId = await resolveProjectId(threadId);
@@ -1992,8 +2002,9 @@ export async function buildLocalTokenCountExtras(
   const ragOn = ragEnabled || projectRagEnabled;
 
   await settleSkillsForText("");
-  const hasEnabledSkills = getSkillsSnapshot().skills.some(
-    (skill) => skill.valid && !skill.shadowed && skill.enabled,
+  const hasEnabledSkills = skillToolsOffered(
+    getSkillsSnapshot().skills,
+    codeToolsEnabled,
   );
   if (
     !toolsEnabled &&
@@ -2006,7 +2017,11 @@ export async function buildLocalTokenCountExtras(
   ) {
     // Explicit false, not omission: the server defaults tools on. The permission level rides
     // along because `--enable-tools` still outranks that false in _effective_enable_tools.
-    return { enable_tools: false, bypass_permissions: bypassPermissions };
+    return {
+      enable_tools: false,
+      bypass_permissions: bypassPermissions,
+      ...threadField,
+    };
   }
 
   return {
@@ -2032,7 +2047,7 @@ export async function buildLocalTokenCountExtras(
     mcp_enabled: mcpEnabledForChat,
     // Top level, not inside rag_scope: an archived thread puts search_conversation and its
     // compaction nudge in the prompt whether or not RAG is on, and the completion sends it here.
-    ...(threadId ? { thread_id: threadId } : {}),
+    ...threadField,
     // Armed research puts the deep_research schema in the prompt, so the count carries it.
     ...(deepResearchEnabled ? { deep_research_armed: true } : {}),
     // Keeps search_knowledge_base and its grounding nudge in the prompt. No retrieval runs for
@@ -2327,6 +2342,9 @@ const VISIBLE_MODEL_RUNTIME_KEYS = [
   "activeGgufVariant",
   "activeModelIsLocal",
   "loadedContextLength",
+  "loadedContextEnforced",
+  "loadedContextUnboundedWhenBatched",
+  "loadedParallelSlots",
   "maxContextLength",
   "nativeContextLength",
   "loadedIsGguf",
@@ -2391,6 +2409,7 @@ const VISIBLE_MODEL_RUNTIME_KEYS = [
   "loadedMlxKvBitsRequested",
   "mlxKvQuantReason",
   "mlxKvQuantNote",
+  "loadedContextBudget",
   "loadedIsMultimodal",
   "loadedIsDiffusion",
   "speculativeType",
@@ -3159,6 +3178,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
     // A DSpark sidecar is ~11 GB, and Auto reaches it.
     speculative_type?: string | null;
     spec_draft_n_max?: number | null;
+    n_parallel?: number | null;
   }): Promise<boolean> {
     // Before the POST, so an abort costs nothing: no request was sent.
     options?.abortSignal?.throwIfAborted();
@@ -3373,6 +3393,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
         cache_type_kv: config.kvCacheDtype,
         tensor_parallel: effectiveTensorParallel,
         disable_vision: effectiveDisableVision,
+        n_parallel: config.nParallel ?? null,
         speculative_type: effectiveSpeculativeType,
         spec_draft_n_max: effectiveSpecDraftNMax,
         ...(candidate.kind === "gguf"
@@ -3381,7 +3402,6 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
               gpu_memory_mode: effectiveGpuMemoryMode,
               // A remembered manual DiffusionGemma split (0 especially) must not be refused as a full-GGUF occupant.
               gpu_layers: effectiveGpuLayers,
-              n_parallel: config.nParallel ?? null,
               reasoning_budget: isDiffusion ? -1 : config.reasoningBudget,
               reasoning_budget_message: isDiffusion
                 ? ""
@@ -3442,6 +3462,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           : "",
       tensor_parallel: effectiveTensorParallel,
       disable_vision: effectiveDisableVision,
+      n_parallel: config.nParallel ?? null,
       // GGUF-only; the split ratio is never remembered (it is bound to an exact GPU set), so
       // llama.cpp's free-VRAM default stays in charge.
       ...(candidate.kind === "gguf"
@@ -3450,8 +3471,6 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
             gpu_layers: effectiveGpuLayers,
             n_cpu_moe: effectiveNCpuMoe,
             gpu_ids: effectiveGpuIds ?? undefined,
-            // Per-model too, or the auto-load reverts a remembered override.
-            n_parallel: config.nParallel ?? null,
             ...(config.nBatch != null ? { n_batch: config.nBatch } : {}),
             ...(config.nUbatch != null ? { n_ubatch: config.nUbatch } : {}),
             // Remembered like the rest of this block, or the auto-load reverts the override.
@@ -3531,13 +3550,12 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
         display_name: loadResp.display_name ?? candidate.id,
         is_gguf: loadResp.is_gguf ?? candidate.kind === "gguf",
       });
+      const committedSlots =
+        (loadResp.is_diffusion ?? false) ? null : (config.nParallel ?? null);
       if (candidate.kind === "gguf") {
         // The saved Context Length, not fitMaxSeqLength: the wire value is Auto-resolved on a
         // same-model reload, so pinning it turns Auto into a number the user never set.
         const keepCustomCtx = resolveExplicitCtxPin(config.customContextLength);
-        // Diffusion ignores --parallel, so counting slots there would mint a phantom override.
-        const committedSlots =
-          (loadResp.is_diffusion ?? false) ? null : (config.nParallel ?? null);
         // same rule for the batch sizes
         const committedNBatch =
           (loadResp.is_diffusion ?? false) ? null : (config.nBatch ?? null);
@@ -3629,9 +3647,8 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           kvCacheDtype: loadResp.cache_type_kv ?? null,
           loadedKvCacheDtype: loadResp.cache_type_kv ?? null,
           ...mlxRuntimeStateFrom(loadResp),
-          // GGUF-only and never sent here: a staged override would be saved for a model that cannot use it.
-          nParallel: null,
-          loadedNParallel: null,
+          nParallel: committedSlots,
+          loadedNParallel: committedSlots,
           reasoningBudget: -1,
           loadedReasoningBudget: -1,
           loadedReasoningBudgetRequested: -1,
@@ -4959,9 +4976,14 @@ export function createOpenAIStreamAdapter(
         runtime.preserveThinking
       );
       const survivingMessages = pruneOutboundHistory(messages, replayReasoning);
+      const { messages: renderedMessages, sandboxAttachments } =
+        supportsStudioToolsForThisTurn &&
+        studioLocalCodeTools.includes("python")
+          ? withSandboxAttachmentPaths(survivingMessages)
+          : { messages: survivingMessages, sandboxAttachments: [] };
       // toOpenAIMessages emits assistant tool_calls plus role="tool" follow-ups; the backend Gemini
       // translator rebuilds the functionCall/functionResponse parts.
-      let outboundMessages = survivingMessages
+      let outboundMessages = renderedMessages
         .flatMap((message) => toOpenAIMessages(message, replayReasoning))
         .filter((message): message is NonNullable<typeof message> =>
           Boolean(message),
@@ -5143,6 +5165,17 @@ export function createOpenAIStreamAdapter(
       addSystemInstruction(outboundMessages, effectiveDisabledToolGuard);
       addSystemInstruction(outboundMessages, artifactInstruction);
 
+      const blockAttachmentRun = (reason: string): never => {
+        toast.error(reason);
+        // Flip on->off so compare-mode waitForRunEnd resolves: this gate fires before setThreadRunning(true).
+        const gatedThreadKey = resolvedThreadId || "__default";
+        // Own token: siblings share "__default", so an ownerless clear would drop entries that are still generating.
+        const gateOwner = createImageGateRunOwner();
+        runtime.setThreadRunning(gatedThreadKey, true, { owner: gateOwner });
+        runtime.setThreadRunning(gatedThreadKey, false, { owner: gateOwner });
+        clearSelectedImageEditReference();
+        throw new Error(reason);
+      };
       // Block when ANY image is in the outbound payload and the loaded model cannot process images;
       // switching models means starting a new chat.
       if (imageBase64) {
@@ -5164,17 +5197,25 @@ export function createOpenAIStreamAdapter(
           mmprojFallbackReason: runtime.mmprojFallbackReason,
         });
         if (imageGateReason) {
-          toast.error(imageGateReason);
-          // Flip the per-thread running flag on->off so compare-mode waitForRunEnd resolves: this gate
-          // fires before the streaming path's setThreadRunning(true).
-          const gatedThreadKey = resolvedThreadId || "__default";
-          // Own token: siblings share "__default", so an ownerless clear would drop entries that are still generating.
-          const gateOwner = createImageGateRunOwner();
-          runtime.setThreadRunning(gatedThreadKey, true, { owner: gateOwner });
-          runtime.setThreadRunning(gatedThreadKey, false, { owner: gateOwner });
-          clearSelectedImageEditReference();
-          throw new Error(imageGateReason);
+          blockAttachmentRun(imageGateReason);
         }
+      }
+      // Media attached before a model loaded skipped the add-time check; recorded audio is not counted.
+      const answeringModel = runtime.models.find(
+        (m) => m.id === params.checkpoint,
+      );
+      const attachedMediaReason = attachedMediaUnavailableReason({
+        activeModel: answeringModel,
+        checkpoint: params.checkpoint,
+        modelLabel:
+          answeringModel?.name ||
+          externalModelLabel(params.checkpoint) ||
+          params.checkpoint,
+        audio: Boolean(findLatestUserAudioBase64(survivingMessages, false)),
+        video: Boolean(videoBase64),
+      });
+      if (attachedMediaReason) {
+        blockAttachmentRun(attachedMediaReason);
       }
       if (audioBase64 && !queuedRunSettings) {
         const audioName = runtime.pendingAudioName;
@@ -6114,8 +6155,9 @@ export function createOpenAIStreamAdapter(
           if (supportsStudioToolsForThisTurn) {
             await settleSkillsForText(lastUserText(outboundMessages));
           }
-          const hasEnabledSkills = getSkillsSnapshot().skills.some(
-            (skill) => skill.valid && !skill.shadowed && skill.enabled,
+          const hasEnabledSkills = skillToolsOffered(
+            getSkillsSnapshot().skills,
+            codeToolsEnabled,
           );
           if (externalSelection && externalProvider) {
             // Per-thread container reuse; empty falls back to container_auto. Anthropic uses its own key.
@@ -6325,6 +6367,9 @@ export function createOpenAIStreamAdapter(
                     ...(sandboxSessionId
                       ? { session_id: sandboxSessionId }
                       : {}),
+                    ...(sandboxAttachments.length > 0
+                      ? { sandbox_attachments: sandboxAttachments }
+                      : {}),
                     ...(resolvedThreadId
                       ? { thread_id: resolvedThreadId }
                       : {}),
@@ -6472,6 +6517,9 @@ export function createOpenAIStreamAdapter(
             video_base64: findLatestUserVideoBase64(currentTurnMessages),
             cancel_id: cancelId,
             ...(sandboxSessionId ? { session_id: sandboxSessionId } : {}),
+            ...(sandboxAttachments.length > 0
+              ? { sandbox_attachments: sandboxAttachments }
+              : {}),
             ...(resolvedThreadId ? { thread_id: resolvedThreadId } : {}),
             ...(useAdapter === undefined ? {} : { use_adapter: useAdapter }),
             ...localReasoningFields,
