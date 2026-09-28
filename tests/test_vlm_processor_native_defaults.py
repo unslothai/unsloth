@@ -45,7 +45,9 @@ def _load(*names):
 
 
 NS, MISSING = _load(
-    "_missing_torchvision_error", "_native_default_image_processor", "_construct_vlm_processor_fallback"
+    "_missing_torchvision_error",
+    "_native_default_image_processor",
+    "_construct_vlm_processor_fallback",
 )
 Step3p7Processor = getattr(transformers, "Step3p7Processor", None)
 
