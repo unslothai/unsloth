@@ -268,8 +268,20 @@ def pick_best_gguf(filenames: list[str]) -> Optional[str]:
         by_quant.setdefault(extract_quant_label(name).upper(), name)
     for quant in GGUF_QUANT_PREFERENCE:
         filename = by_quant.get(quant.upper())
-        if filename is not None:
-            return filename
+        if filename is None:
+            continue
+        if quant in _FLOAT_PRECISION_QUANTS:
+            # The list leaves out quants such as Q4_0, Q3_K and TQ1_0; the first listed of them still beats full precision.
+            filename = next(
+                (
+                    name
+                    for name in by_quant.values()
+                    if (token := extract_quant_token(name))
+                    and token.upper() not in _FLOAT_PRECISION_QUANTS
+                ),
+                filename,
+            )
+        return filename
     return gguf_files[0]
 
 
