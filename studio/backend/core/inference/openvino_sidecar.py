@@ -247,21 +247,56 @@ def chat_history(messages: list[dict]) -> list[dict]:
     return ([{"role": "system", "content": "\n\n".join(system)}] if system else []) + rest
 
 
-def finish_reason(res: Any, calls: list) -> str:
+def finish_reason(res: Any, calls: list, out_of_room: bool = False) -> str:
+    """``out_of_room``: the token budget or the context is used up, which OpenVINO can report as a
+    plain stop (it generates nothing when the prompt fills the context)."""
     if calls:
         return "tool_calls"
     reasons = getattr(res, "finish_reasons", None) or []
-    return "length" if reasons and reasons[0] == ov_genai.GenerationFinishReason.LENGTH else "stop"
+    hit = reasons and reasons[0] == ov_genai.GenerationFinishReason.LENGTH
+    return "length" if hit or out_of_room else "stop"
 
 
-def build_app(pipe, model_id: str) -> FastAPI:
+def _text_config(model_dir: str) -> dict:
+    try:
+        cfg = json.loads((Path(model_dir) / "config.json").read_text())
+    except (OSError, ValueError):
+        return {}
+    return cfg.get("text_config") or cfg
+
+
+def model_context(model_dir: str, cache_gb: Optional[float] = None) -> Optional[int]:
+    """Tokens a request may use: the model's ``max_position_embeddings``, capped by what the KV
+    cache holds. OpenVINO silently generates nothing for a request the cache cannot fit."""
+    cfg = _text_config(model_dir)
+    context = cfg.get("max_position_embeddings")
+    try:
+        # Hybrid models (Qwen3-Next style) keep KV only in their full-attention layers.
+        types_ = cfg.get("layer_types") or []
+        layers = sum("full" in str(t) for t in types_) or cfg["num_hidden_layers"]
+        heads = cfg.get("num_key_value_heads") or cfg["num_attention_heads"]
+        head_dim = cfg.get("head_dim") or cfg["hidden_size"] // cfg["num_attention_heads"]
+    except (KeyError, TypeError, ZeroDivisionError):
+        return context
+    if not cache_gb:
+        return context
+    # ponytail: f16 K+V per token and a 15% margin, measured on Arc B60 (3 GB held ~140k tokens
+    # of Ornith 35B although KV_CACHE_PRECISION is u8); ask OpenVINO for the real figure if it
+    # ever exposes one.
+    capacity = int(cache_gb * 2**30 / (layers * 2 * heads * head_dim * 2) * 0.85)
+    return min(context, capacity) if context else capacity
+
+
+def build_app(pipe, model_id: str, context: Optional[int] = None) -> FastAPI:
     tok = pipe.get_tokenizer()
     lock = threading.Lock()
     app = FastAPI()
 
-    def config(req: ChatRequest):
+    def config(req: ChatRequest, prompt_tokens: int):
         cfg = ov_genai.GenerationConfig()
-        cfg.max_new_tokens = req.max_completion_tokens or req.max_tokens or 4096
+        wanted = req.max_completion_tokens or req.max_tokens or 4096
+        # Never ask for more than the context has left; the reply then ends with "length".
+        cfg.max_new_tokens = min(wanted, context - prompt_tokens) if context else wanted
         temp = 0.6 if req.temperature is None else req.temperature
         cfg.do_sample = temp > 0
         cfg.temperature = max(temp, 1e-4)
@@ -300,16 +335,39 @@ def build_app(pipe, model_id: str) -> FastAPI:
             text_prompt = prompt(req, thinking)
         except Exception as exc:  # the template's raise_exception, e.g. a misplaced system message
             raise HTTPException(400, f"The chat template rejected the messages: {exc}") from exc
-        cfg = config(req)
+        prompt_tokens = tok.encode(text_prompt, add_special_tokens = False).input_ids.shape[-1]
+        if context and prompt_tokens >= context:
+            raise HTTPException(
+                400,
+                f"This model's maximum context length is {context} tokens (model limit or KV "
+                f"cache size), but the messages use {prompt_tokens}. Shorten the conversation "
+                "or the tool list.",
+            )
+        cfg = config(req, prompt_tokens)
+
+        def finish(res: Any, calls: list) -> str:
+            done = usage(res)["completion_tokens"]
+            full = context is not None and prompt_tokens + done >= context
+            return finish_reason(res, calls, done >= cfg.max_new_tokens or full)
+
+        def usage(res: Any) -> dict:
+            metrics = getattr(res, "perf_metrics", None)
+            done = metrics.get_num_generated_tokens() if metrics is not None else 0
+            return {
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": done,
+                "total_tokens": prompt_tokens + done,
+            }
         rid, created = f"chatcmpl-{uuid.uuid4().hex[:24]}", int(time.time())
 
-        def chunk(delta: dict, finish: Optional[str] = None) -> str:
+        def chunk(delta: dict, finish: Optional[str] = None, **extra) -> str:
             body = {
                 "id": rid,
                 "object": "chat.completion.chunk",
                 "created": created,
                 "model": model_id,
                 "choices": [{"index": 0, "delta": delta, "finish_reason": finish}],
+                **extra,
             }
             return f"data: {json.dumps(body)}\n\n"
 
@@ -336,9 +394,10 @@ def build_app(pipe, model_id: str) -> FastAPI:
                     {
                         "index": 0,
                         "message": message,
-                        "finish_reason": finish_reason(res, calls),
+                        "finish_reason": finish(res, calls),
                     }
                 ],
+                "usage": usage(res),
             }
 
         def events():
@@ -376,7 +435,9 @@ def build_app(pipe, model_id: str) -> FastAPI:
                 yield chunk({"content": rest})
             if calls:
                 yield chunk({"tool_calls": calls})
-            yield chunk({}, finish_reason(result.get("res"), calls))
+            yield chunk(
+                {}, finish(result.get("res"), calls), usage = usage(result.get("res"))
+            )
             yield "data: [DONE]\n\n"
 
         return StreamingResponse(events(), media_type = "text/event-stream")
@@ -410,7 +471,7 @@ def main() -> None:
     except Exception:
         pipe = ov_genai.LLMPipeline(args.model, args.device, **props)
     uvicorn.run(
-        build_app(pipe, args.model_id), host = "127.0.0.1", port = args.port, log_level = "warning"
+        build_app(pipe, args.model_id, model_context(args.model, sched.cache_size)), host = "127.0.0.1", port = args.port, log_level = "warning"
     )
 
 

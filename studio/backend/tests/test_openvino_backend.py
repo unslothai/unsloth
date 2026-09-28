@@ -184,6 +184,7 @@ def test_finish_reason_reports_length(monkeypatch):
     assert finish_reason(res(1), []) == "stop"
     assert finish_reason(None, []) == "stop"
     assert finish_reason(res(2), [{"id": "c"}]) == "tool_calls"
+    assert finish_reason(res(1), [], out_of_room = True) == "length"
 
 
 def _sidecar(monkeypatch):
@@ -290,3 +291,14 @@ def test_think_splitter_edge_cases(monkeypatch):
     assert all(k == "content" for k, _ in out) and "".join(t for _, t in out) == long + "tail"
     # Thinking off, bare </think> with nothing before it.
     assert run(sc.ThinkSplitter(False), ["</think>\n\nA"]) == [("content", "A")]
+
+
+def test_model_context_reads_config(monkeypatch, tmp_path):
+    sc = _sidecar(monkeypatch)
+    assert sc.model_context(str(tmp_path)) is None  # no config.json
+    (tmp_path / "config.json").write_text("{broken")
+    assert sc.model_context(str(tmp_path)) is None
+    (tmp_path / "config.json").write_text('{"max_position_embeddings": 4096}')
+    assert sc.model_context(str(tmp_path)) == 4096
+    (tmp_path / "config.json").write_text('{"text_config": {"max_position_embeddings": 262144}}')
+    assert sc.model_context(str(tmp_path)) == 262144

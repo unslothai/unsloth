@@ -71,6 +71,8 @@ What the sidecar supports:
 | reasoning (`<think>`) | returned as `reasoning_content`; `enable_thinking` switches it off |
 | tools | yes. `tools` go into the chat template; `<tool_call>` blocks (Qwen XML or JSON) come back as OpenAI `tool_calls` |
 | images / audio / video | refused with 400 |
+| `usage` | prompt and completion tokens, in the reply and in the last stream chunk |
+| context limit | the model's `max_position_embeddings`, capped by the KV cache (`--cache-gb`, default 3 GB); a longer prompt is a 400, `max_tokens` is cut to what is left |
 
 ### Using it from opencode
 
@@ -129,6 +131,26 @@ curl http://127.0.0.1:8000/v1/chat/completions -H "Authorization: Bearer $KEY" \
 
 If port 8000 is already taken (for example by another Studio), `studio run` moves to the next free
 port and prints it. Point the client at that port, or stop the other process first.
+
+### Context limit and the KV cache
+
+OpenVINO generates nothing, and reports a normal stop, when a request does not fit the KV cache. The
+sidecar estimates the cache's capacity from the model config (f16 K+V with a 15% margin) and turns
+such requests into a 400 up front. On an Arc Pro B60 with Ornith 35B INT4 the 3 GB cache holds about
+133k tokens, far below the model's 262k, and the card has no memory left to grow it. Set the
+client's context limit to match (opencode: `"limit": {"context": 130000}`), so it compacts the
+history in time.
+
+### Integration tests
+
+`tests/test_openvino_live.py` drives a running Studio over HTTP (tool calls, reasoning, validation,
+token limits, disconnects):
+
+```bash
+UNSLOTH_E2E_OPENVINO=1 UNSLOTH_E2E_BASE_URL=http://127.0.0.1:8000 UNSLOTH_E2E_API_KEY=<key> \
+  pytest studio/backend/tests/test_openvino_live.py
+# UNSLOTH_E2E_OPENVINO_LONG=1 adds the context-boundary case (minutes of prefill)
+```
 
 ### How tool calls work
 
