@@ -140,7 +140,7 @@ function FilterMenu({
           <HugeiconsIcon icon={FilterMailIcon} strokeWidth={1.75} className="size-5" />
         </button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" sideOffset={4} className="w-max min-w-36">
+      <DropdownMenuContent align="end" sideOffset={4} className="library-menu w-max min-w-36">
         {showTypes && (
           <>
             <DropdownMenuLabel className="px-3 pb-1 pt-2 text-muted-foreground font-normal">
@@ -230,7 +230,7 @@ function SortMenu({
           {value === "default" || !current ? t("library.toolbar.sort") : t(current.label)}
         </button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="start" sideOffset={4} className="w-max min-w-36">
+      <DropdownMenuContent align="start" sideOffset={4} className="library-menu w-max min-w-36">
         {options.map(({ value: option, label }) => (
           <SortRadio
             key={option}
@@ -290,7 +290,7 @@ function NewMenu({ onSelect }: { onSelect: (action: NewAction) => void }) {
           <HugeiconsIcon icon={ChevronDownStandardIcon} strokeWidth={2} className="size-4" />
         </button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" className="w-44">
+      <DropdownMenuContent align="end" className="library-menu w-44">
         {NEW_OPTIONS.map(({ value, label, icon }) => (
           <DropdownMenuItem key={value} onSelect={() => onSelect(value)}>
             <HugeiconsIcon icon={icon} strokeWidth={1.75} className={ICON} />

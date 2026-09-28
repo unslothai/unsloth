@@ -448,3 +448,13 @@ test("project cards in the grid leave out the instructions", () => {
   const card = items.slice(items.indexOf("export function ProjectCard("), items.indexOf("export function ProjectRow("));
   assert.doesNotMatch(card, /instructions/);
 });
+
+test("library menus draw visible dividers in dark mode", () => {
+  const css = readSrc("index.css");
+  assert.match(
+    css,
+    /\.dark \.library-actions-menu \[data-slot="dropdown-menu-separator"\],\s*\.dark \.library-menu \[data-slot="dropdown-menu-separator"\] \{\s*background-color: var\(--color-neutral-600\);/,
+  );
+  const toolbar = readSrc("features/library/components/library-toolbar.tsx");
+  assert.equal(toolbar.match(/className="library-menu /g)?.length, 3);
+});

@@ -3004,6 +3004,12 @@ html[data-chat-font] .aui-root {
 		background-color: var(--color-neutral-700);
 	}
 
+	/* Library menus: dividers the default border hides in dark. */
+	.dark .library-actions-menu [data-slot="dropdown-menu-separator"],
+	.dark .library-menu [data-slot="dropdown-menu-separator"] {
+		background-color: var(--color-neutral-600);
+	}
+
 	/* Model selector: tighter than the menus above so it lifts off the
 	   composer it overlaps (chatbox geometry). Account menu stays flat. */
 	.dark .unsloth-model-selector-menu {
