@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import codecs
 import json
 import os
 import sys
@@ -890,6 +891,19 @@ def test_indented_separator_inside_a_block_scalar_stays_in_the_frontmatter(isola
 
     assert record["valid"] is True
     assert record["description"] == "Use for reports.\n---\nAlso for summaries."
+
+
+def test_skill_manifest_saved_with_a_utf8_byte_order_mark_is_valid(isolated_skills):
+    home, _ = isolated_skills
+    root = _write_skill(home, "agents", "marked", body = "Follow the steps.")
+    manifest = root / "SKILL.md"
+    manifest.write_bytes(codecs.BOM_UTF8 + manifest.read_bytes())
+
+    record = next(item for item in skills.list_skills(home = home) if item["name"] == "marked")
+
+    assert record["valid"] is True
+    assert record["description"] == "Use this skill for testing."
+    assert skills.read_skill_manifest("marked", home = home)["instructions"] == "Follow the steps."
 
 
 def test_read_skill_tool_applies_defaults_for_null_arguments(isolated_skills, monkeypatch):
