@@ -273,6 +273,32 @@ def test_ltx2_fused_matches_stock():
 
 
 @needs_cuda
+def test_ltx2_reflect_decoder_keeps_contiguous_weights(monkeypatch):
+    from diffusers import AutoencoderKLLTX2Video
+
+    from core.inference.video_ltx2 import _VIDEO_VAE_CONFIG
+
+    monkeypatch.delenv("UNSLOTH_VAE_FUSED_CL_WEIGHTS", raising = False)
+    cfg = dict(_VIDEO_VAE_CONFIG)
+    cfg.update(
+        latent_channels = 16, block_out_channels = (32, 64, 128, 128), decoder_block_out_channels = (32, 64, 64, 128),
+        layers_per_block = (1, 1, 1, 1, 1), decoder_layers_per_block = (1, 1, 1, 1, 1),
+    )  # fmt: skip
+    convs = lambda v: [m.weight for m in v.decoder.modules() if isinstance(m, torch.nn.Conv3d)]  # noqa: E731
+    reflect = (
+        AutoencoderKLLTX2Video(**{**cfg, "decoder_spatial_padding_mode": "reflect"})
+        .cuda()
+        .bfloat16()
+        .eval()
+    )
+    assert F.install(reflect) > 0
+    assert all(w.is_contiguous() for w in convs(reflect))
+    zeros = AutoencoderKLLTX2Video(**cfg).cuda().bfloat16().eval()
+    assert F.install(zeros) > 0
+    assert all(w.is_contiguous(memory_format = torch.channels_last_3d) for w in convs(zeros))
+
+
+@needs_cuda
 def test_guard_falls_back_to_stock_for_good(monkeypatch):
     from diffusers import AutoencoderKL
 

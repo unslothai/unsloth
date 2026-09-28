@@ -2025,6 +2025,15 @@ def channels_last_weights(vae: Any) -> int:
     return n
 
 
+def _fuses_a_conv(vae: Any) -> bool:
+    torch = _torch()
+    return any(
+        getattr(m.__dict__.get("forward"), "_unsloth_vae_fused", False)
+        and any(isinstance(c, (torch.nn.Conv2d, torch.nn.Conv3d)) for c in m.modules())
+        for m in vae.modules()
+    )
+
+
 SUPPORTED_VAES = frozenset(
     {
         "AutoencoderKL",
@@ -2055,11 +2064,14 @@ def install(
     if done:
         return done  # idempotent: a dual-DiT family runs the speed layer once per expert over the same VAE
     n = _install(vae, logger)
-    # channels-last weights only where measured faster; the Wan lineage keeps its own (Qwen-Image conv3d is slower)
+    # channels-last weights only where measured faster; the Wan lineage keeps its own (Qwen-Image conv3d is slower).
+    # Only when fused passes feed the convs: LTX-2's reflect-padded decoder fuses none, and relaid weights alone decode
+    # 0.64x (A100) / 0.68x (RTX PRO 6000) / 0.80x (B200) at 768x512x121.
     if (
         n
         and type(vae).__name__ in _CL_WEIGHT_VAES
         and os.environ.get("UNSLOTH_VAE_FUSED_CL_WEIGHTS", "1") != "0"
+        and _fuses_a_conv(vae)
     ):
         channels_last_weights(vae)
     if n:
