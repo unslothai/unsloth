@@ -78,6 +78,7 @@ def hub_calls(monkeypatch, tmp_path):
     monkeypatch.setattr(
         gguf_variants, "_VARIANT_REQUIREMENT_LAST_KNOWN", OrderedDict(), raising = False
     )
+    monkeypatch.setattr(gguf_variants, "_VARIANT_REQUIREMENT_FORGOTTEN", False, raising = False)
     return calls
 
 
@@ -238,5 +239,29 @@ def test_a_requirement_learned_under_another_token_still_counts(hub_calls, reque
         )
     )
     gguf_variants._variant_requirement_cache_set_many(REPO, "hf_" + "a" * 34, {QUANT: requirement})
+    gguf_variants._VARIANT_REQUIREMENT_CACHE.clear()
+    assert _answer(**request_kwargs).dependencies_resolved is False
+
+
+@pytest.mark.parametrize("request_kwargs", HUBLESS)
+def test_an_evicted_requirement_is_not_read_as_nothing_required(
+    hub_calls, monkeypatch, request_kwargs
+):
+    # A long session listed enough variants to push this one's requirement out. Its drafter may
+    # still be missing, so the copy stays unresolved rather than being called complete.
+    _repo, snapshot = _snapshot()
+    _write(snapshot / MAIN)
+    requirement = SimpleNamespace(
+        expected_files = (
+            download_manifest.ExpectedFile(MAIN, 256),
+            download_manifest.ExpectedFile(f"mtp-Sole-{QUANT}.gguf", 128),
+        )
+    )
+    for cap in ("_VARIANT_HASH_MAX", "_VARIANT_REQUIREMENT_LAST_KNOWN_MAX"):
+        monkeypatch.setattr(gguf_variants, cap, 2, raising = False)
+    gguf_variants._variant_requirement_cache_set_many(REPO, None, {QUANT: requirement})
+    gguf_variants._variant_requirement_cache_set_many(
+        "org/Other-GGUF", None, {"Q8_0": requirement, "Q6_K": requirement}
+    )
     gguf_variants._VARIANT_REQUIREMENT_CACHE.clear()
     assert _answer(**request_kwargs).dependencies_resolved is False

@@ -177,6 +177,7 @@ def _variant_requirement_cache_get(key: tuple[str, str, str]) -> Optional[_GgufV
 def _variant_requirement_cache_set_many(
     repo_id: str, hf_token: Optional[str], requirements: dict[str, _GgufVariantRequirement]
 ) -> None:
+    global _VARIANT_REQUIREMENT_FORGOTTEN
     with _VARIANT_HASH_LOCK:
         now = time.monotonic()
         for quant, requirement in requirements.items():
@@ -188,8 +189,9 @@ def _variant_requirement_cache_set_many(
             _VARIANT_REQUIREMENT_LAST_KNOWN.move_to_end(known)
         while len(_VARIANT_REQUIREMENT_CACHE) > _VARIANT_HASH_MAX:
             _VARIANT_REQUIREMENT_CACHE.popitem(last = False)
-        while len(_VARIANT_REQUIREMENT_LAST_KNOWN) > _VARIANT_HASH_MAX:
+        while len(_VARIANT_REQUIREMENT_LAST_KNOWN) > _VARIANT_REQUIREMENT_LAST_KNOWN_MAX:
             _VARIANT_REQUIREMENT_LAST_KNOWN.popitem(last = False)
+            _VARIANT_REQUIREMENT_FORGOTTEN = True
 
 
 # The newest requirement each live listing reported, kept past the refresh TTL above: a
@@ -199,11 +201,20 @@ def _variant_requirement_cache_set_many(
 _VARIANT_REQUIREMENT_LAST_KNOWN: "OrderedDict[tuple[str, str], _GgufVariantRequirement]" = (
     OrderedDict()
 )
+# Far above the refresh cache: only a very long session reaches it. Once anything has been
+# evicted, an absent entry may be a forgotten companion, not "nothing required".
+_VARIANT_REQUIREMENT_LAST_KNOWN_MAX = 65536
+_VARIANT_REQUIREMENT_FORGOTTEN = False
 
 
 def _variant_requirement_last_known(key: tuple[str, ...]) -> Optional[_GgufVariantRequirement]:
     with _VARIANT_HASH_LOCK:
         return _VARIANT_REQUIREMENT_LAST_KNOWN.get(key[:2])
+
+
+def _variant_requirement_may_be_forgotten() -> bool:
+    with _VARIANT_HASH_LOCK:
+        return _VARIANT_REQUIREMENT_FORGOTTEN
 
 
 def _build_gguf_variant_requirements(siblings: list) -> dict[str, _GgufVariantRequirement]:
@@ -1459,6 +1470,8 @@ async def get_gguf_variants_answer(
                     requirement = _variant_requirement_last_known(
                         _variant_hash_cache_key(response.repo_id, v.quant, hf_token)
                     )
+                    if requirement is None and _variant_requirement_may_be_forgotten():
+                        return response
                     for expected in requirement.expected_files if requirement is not None else ():
                         target = snapshot / expected.path
                         if not target.is_file() or (
