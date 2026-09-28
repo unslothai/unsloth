@@ -874,6 +874,9 @@ def test_auto_targets_keep_packed_experts_as_they_kept_the_per_expert_linears(
     _swap_planned_stacks(model, _keys(layers = 1), torch.bfloat16)
     _materialize_packed(model)
     model.max_seq_length = 64
+    # Real Kimi layers carry attention Linears; without any, get_peft_regex has nothing to target.
+    model.layers[0].self_attn = nn.Module()
+    model.layers[0].self_attn.q_proj = nn.Linear(H, H, bias = False)
     model.vision_tower = nn.Module()
     model.vision_tower.attn = nn.Module()
     model.vision_tower.attn.q_proj = nn.Linear(H, H, bias = False)
