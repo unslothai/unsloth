@@ -371,6 +371,42 @@ test("a token carried by a Request input is retried and recorded like an init he
   }
 });
 
+test("through the relay, a Request's own token is dropped from the anonymous retry", async () => {
+  const relay = "http://127.0.0.1:8888/api/hub/proxy";
+  const hub = stubHub({ rejectedToken: OAUTH, relay });
+  Object.defineProperty(globalThis, "localStorage", {
+    configurable: true,
+    value: { getItem: () => "session" },
+  });
+  setHubSessionRefresh(async () => false);
+  try {
+    setHfEndpoints(relay, null, "huggingface", { endpoint: true });
+    const request = new Request(`${relay}/api/models?search=qwen`, {
+      headers: { Authorization: `Bearer ${OAUTH}` },
+    });
+    const response = await fetchHub(request);
+    assert.equal(response.status, 200);
+    assert.deepEqual(
+      hub.sent.map((s) => [s.authorization, s.hfAuthorization]),
+      [
+        ["Bearer session", `Bearer ${OAUTH}`],
+        ["Bearer session", null],
+      ],
+    );
+    assert.equal(isHfTokenRejected(OAUTH, hubRejectionScope(request.url)), true);
+  } finally {
+    hub.restore();
+    resetHfEndpoints();
+    clearHfTokenRejected();
+    Reflect.deleteProperty(globalThis, "localStorage");
+  }
+});
+
+test("a cached valid verdict does not clear a refusal a read just saw", () => {
+  const source = readFileSync(new URL("../src/features/hf-auth/api.ts", import.meta.url), "utf8");
+  assert.equal(source.includes("clearHfTokenRejected("), false);
+});
+
 test("clearing a refusal is not reported as a new one", () => {
   noteHfTokenRejected(OAUTH, hubRejectionScope());
   assert.equal(hasRejectedHfToken(), true);

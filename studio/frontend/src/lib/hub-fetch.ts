@@ -28,13 +28,12 @@ function requestUrl(input: Parameters<typeof fetch>[0]): string {
       : input.url;
 }
 
-/** The headers this call sends: a Request input's own, with `init.headers` on top. */
+/** The headers this call sends: as fetch does, `init.headers` replaces a Request input's own. */
 function requestHeaders(input: Parameters<typeof fetch>[0], init: RequestInit): Headers {
-  const headers = new Headers(
+  if (init.headers !== undefined) return new Headers(init.headers);
+  return new Headers(
     typeof Request !== "undefined" && input instanceof Request ? input.headers : undefined,
   );
-  new Headers(init.headers).forEach((value, key) => headers.set(key, value));
-  return headers;
 }
 
 function takesSession(url: string): boolean {
@@ -74,7 +73,7 @@ function sentHfToken(
   return token || null;
 }
 
-/** `init.headers` replaces a Request input's headers, so the copy starts from both. */
+/** Explicit headers, so a Request input's own Authorization cannot come back later. */
 function withoutHfToken(input: Parameters<typeof fetch>[0], init: RequestInit): RequestInit {
   const headers = requestHeaders(input, init);
   headers.delete("Authorization");
