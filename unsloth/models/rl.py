@@ -18,11 +18,13 @@ import torch
 from typing import Any, Callable, Dict, List, Literal, Optional, Tuple, Union
 import copyreg
 import importlib
+import importlib.util
 import collections
 import inspect
 import os
 import re
 import sys
+import warnings
 from contextlib import contextmanager
 from unsloth_zoo.compiler import create_new_function
 from unsloth_zoo.log import logger
@@ -1993,7 +1995,9 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         _trainer_src = inspect.getsource(RLTrainer)
         _trainer_module = inspect.getmodule(RLTrainer)
         _trainer_module_src = inspect.getsource(_trainer_module) if _trainer_module else ""
-        if "trl.experimental" in _trainer_src or "trl.experimental" in _trainer_module_src:
+        if not RLTrainer.__module__.startswith("trl.experimental.") and (
+            "trl.experimental" in _trainer_src or "trl.experimental" in _trainer_module_src
+        ):
             for _parent in RLTrainer.__mro__[1:]:
                 if _parent is object:
                     continue
@@ -2011,7 +2015,9 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         _config_src = inspect.getsource(RLConfig)
         _config_module = inspect.getmodule(RLConfig)
         _config_module_src = inspect.getsource(_config_module) if _config_module else ""
-        if "trl.experimental" in _config_src or "trl.experimental" in _config_module_src:
+        if not RLConfig.__module__.startswith("trl.experimental.") and (
+            "trl.experimental" in _config_src or "trl.experimental" in _config_module_src
+        ):
             for _parent in RLConfig.__mro__[1:]:
                 if _parent is object:
                     continue
@@ -3262,7 +3268,7 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
 
     _resolved_module = _trainer_resolved_module or _config_resolved_module
     _model_location = (
-        _resolved_module.__name__ if _resolved_module is not None else f"trl.trainer.{trainer_file}"
+        _resolved_module.__name__ if _resolved_module is not None else trainer.__name__
     )
     created_module = create_new_function(
         f"Unsloth{RLTrainer_name}",
@@ -3658,6 +3664,85 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
     return RLTrainer_source
 
 
+# TRL 0.29+ keeps these only in trl.experimental.<name>.<name>_trainer, which the trl.trainer walk never sees.
+_TRL_EXPERIMENTAL_TRAINERS = (
+    "bco",
+    "cpo",
+    "gkd",
+    "nash_md",
+    "online_dpo",
+    "orpo",
+    "ppo",
+    "prm",
+    "xpo",
+)
+
+
+def _import_trl_experimental_trainers():
+    import trl.trainer
+
+    modules = {}
+    if importlib.util.find_spec("trl.experimental") is None:
+        return modules
+    available = set(dir(trl.trainer))
+    # Silences TRLExperimentalWarning, which the package raises on first import.
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        for name in _TRL_EXPERIMENTAL_TRAINERS:
+            # Still under trl.trainer (a real module, or a 0.26-0.28 shim the walk resolves itself).
+            if f"{name}_trainer" in available:
+                continue
+            try:
+                if importlib.util.find_spec(f"trl.experimental.{name}") is None:
+                    continue
+                modules[name] = importlib.import_module(f"trl.experimental.{name}.{name}_trainer")
+            except Exception as e:
+                logger.info(f"Unsloth: Could not import trl.experimental.{name}: {e}")
+    return modules
+
+
+def _patch_trl_experimental_trainer(name, module):
+    # Run the trl.trainer pipeline on the experimental module through temporary trl.trainer aliases, then rebind the experimental namespaces and drop the aliases so trl's public surface is unchanged.
+    import trl
+    import trl.trainer
+
+    trainer_file = f"{name}_trainer"
+    prefix = name.split("_")[0]
+    names = [
+        x
+        for x in dir(module)
+        if (x.endswith("Trainer") or x.endswith("Config"))
+        and x not in ("Trainer", "Config")
+        and not x.startswith("_")
+        and prefix in x.lower()
+    ]
+    _missing = object()
+    aliased = {(trl.trainer, trainer_file): getattr(trl.trainer, trainer_file, _missing)}
+    for x in names:
+        aliased[(trl.trainer, x)] = trl.trainer.__dict__.get(x, _missing)
+        aliased[(trl, x)] = trl.__dict__.get(x, _missing)
+    try:
+        setattr(trl.trainer, trainer_file, module)
+        for x in names:
+            setattr(trl.trainer, x, getattr(module, x))
+        _patch_trl_rl_trainers(trainer_file)
+        patched = {
+            x: getattr(module, x) for x in names if _is_unsloth_patched_config(getattr(module, x))
+        }
+    finally:
+        for (owner, attr), value in aliased.items():
+            if value is _missing:
+                owner.__dict__.pop(attr, None)
+            else:
+                setattr(owner, attr, value)
+    package = sys.modules.get(f"trl.experimental.{name}")
+    config_module = sys.modules.get(f"trl.experimental.{name}.{name}_config")
+    for owner in (package, config_module):
+        for x, cls in patched.items():
+            if owner is not None and hasattr(owner, x):
+                setattr(owner, x, cls)
+
+
 def patch_trl_rl_trainers():
     import trl.trainer
 
@@ -3665,11 +3750,18 @@ def patch_trl_rl_trainers():
     all_trainers = [
         x for x in all_trainers if x.islower() and x.endswith("_trainer") and x != "base_trainer"
     ]
+    # Imported before the walk rebinds trl.trainer.sft_trainer.SFTTrainer, so GKDTrainer(SFTTrainer) keeps TRL's own base whatever the user's import order.
+    experimental = _import_trl_experimental_trainers()
     for trainer in all_trainers:
         try:
             _patch_trl_rl_trainers(trainer)
         except Exception as e:
             logger.warning_once(f"Unsloth: Could not patch trl.trainer.{trainer}: {e}")
+    for name, module in experimental.items():
+        try:
+            _patch_trl_experimental_trainer(name, module)
+        except Exception as e:
+            logger.warning_once(f"Unsloth: Could not patch trl.experimental.{name}: {e}")
     return
 
 

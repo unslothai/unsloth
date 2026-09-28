@@ -31,6 +31,8 @@ const {
   truncateAttachmentPreviewText,
 } = await import("../src/features/chat/attachment-content.ts");
 const { definePDFJSModule } = await import("unpdf");
+const { readRtfAttachmentContent } =
+  await import("../src/features/chat/rtf.ts");
 
 type StubNode = {
   nodeType: number;
@@ -248,6 +250,15 @@ test("readAttachmentText reads a bounded slice of a large html file", async () =
   assert.equal(label, null);
   assert.equal(truncated, true);
   assert.equal(text.length, 1_000_000);
+});
+
+test("readAttachmentText does not decode a file only the python tool reads", async () => {
+  const file = new File([new Uint8Array([0x50, 0x41, 0x52, 0x31])], "t.PARQUET");
+  assert.deepEqual(await readAttachmentText(file, file.name, file.type), {
+    label: null,
+    text: "t.PARQUET has no preview: only the python tool can read it.",
+    truncated: false,
+  });
 });
 
 // the adapter sends the extraction; the preview shows the markup unextracted
@@ -997,4 +1008,73 @@ test("a UTF-16 Markdown file previews as its text in the document viewer", async
   const { readFile } = await import("node:fs/promises");
   const dialog = await readFile(new URL("../src/components/assistant-ui/attachment-document-dialog.tsx", import.meta.url), "utf8");
   assert.match(dialog, /blob instanceof File\s*\?\s*await readAttachmentText\(blob, source\.name, source\.contentType\)/);
+});
+
+async function readRtf(rtf: string | Uint8Array<ArrayBuffer>): Promise<string> {
+  const content = await readRtfAttachmentContent(
+    new File([rtf], "doc.rtf"),
+    "doc.rtf",
+  );
+  assert.equal(content.label, "RTF");
+  return content.text;
+}
+
+test("TextEdit output decodes bytes by the font charset, not the ANSI code page", async () => {
+  const text = await readRtf(
+    [
+      "{\\rtf1\\ansi\\ansicpg936\\cocoartf2870",
+      "{\\fonttbl\\f0\\fswiss\\fcharset0 Helvetica;}",
+      "{\\colortbl;\\red255\\green255\\blue255;}",
+      "{\\*\\expandedcolortbl;;}",
+      "\\f0\\fs24 \\cf0 H\\'e9llo \\'93world\\'94\\",
+      "\\",
+      "Tab\there \\uc0\\u26085 \\u26412 \\",
+      "}",
+    ].join("\n"),
+  );
+  assert.equal(text, "Héllo “world”\n\nTab\there 日本");
+});
+
+test("Word-style output reads fields, tables and double-byte fonts", async () => {
+  const text = await readRtf(
+    new Uint8Array([
+      ...new TextEncoder().encode(
+        [
+          "{\\rtf1\\ansi\\ansicpg1252\\deff0\\uc1",
+          "{\\fonttbl{\\f0\\fnil\\fcharset134 SimSun;}{\\f1\\fcharset0 Arial;}{\\f2\\fcharset128 MS Mincho;}{\\f3\\fcharset204 Arial;}}",
+          "{\\header Page header\\par}",
+          "{\\info{\\title Secret title}}",
+          "\\pard \\'c4\\'e3\\'ba\\'c3 \\f1 caf\\'e9\\emdash\\u8364?\\u-10179?\\u-8704?\\{x\\}\\par",
+          '{\\field{\\*\\fldinst{HYPERLINK "https://x.test"}}{\\fldrslt link}}\\par',
+          "{\\pict\\bin4 ",
+        ].join("\n"),
+      ),
+      0x7d,
+      0x7b,
+      0x5c,
+      0x7d,
+      ...new TextEncoder().encode(
+        [
+          "}",
+          "\\trowd\\cellx100\\cellx200",
+          "\\pard\\intbl first\\par second\\par\\cell b\\cell\\row",
+          "\\pard after\\par more \\f2\\'83e\\'83X\\'83g\\'83\\\\ \\f3\\'cf\\plain\\'c4\\'e3\\par}",
+        ].join("\n"),
+      ),
+    ]),
+  );
+  assert.equal(
+    text,
+    "你好 café—€😀{x}\nlink\nfirst second\tb\nafter\nmore テストソ П你",
+  );
+});
+
+test("an RTF reader stays bounded", async () => {
+  const long = await readRtf(
+    `{\\rtf1 ${"x".repeat(11 * 1024 * 1024)}${"{".repeat(2000)}`,
+  );
+  assert.ok(long.length < 11 * 1024 * 1024);
+  assert.match(long, /^x+\n\n\[Truncated: [^\n]*\]$/);
+  await assert.rejects(readRtf(`{\\rtf1 ${"{".repeat(2000)}`), /nest too deeply/);
+  await assert.rejects(readRtf("plain text"), /Not an RTF file/);
 });

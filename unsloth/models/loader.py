@@ -308,8 +308,6 @@ def _is_mistral_format_checkpoint(
     revision = None,
     local_files_only = False,
 ):
-    """True for a checkpoint in Mistral's own format (`params.json`, no `config.json`), which
-    AutoConfig cannot read. Answers False on any doubt, including offline."""
     # Meta's original Llama checkpoints also ship `params.json`, so require a Mistral-only file.
     markers = ("tekken.json", "consolidated.safetensors", "consolidated.safetensors.index.json")
     try:
@@ -1350,7 +1348,6 @@ class FastLanguageModel(FastLlamaModel):
             peft_load_kwargs = {}
             if kwargs.get("cache_dir") is not None:
                 peft_load_kwargs["cache_dir"] = kwargs["cache_dir"]
-            # Grouped linears (DeepSeek-V4 o_a_proj): the LoRA mapping is not saved, re-register it.
             _grouped_config = register_grouped_linear_lora_for_adapter(
                 model,
                 old_model_name,
