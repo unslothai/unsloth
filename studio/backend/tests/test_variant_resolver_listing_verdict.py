@@ -48,8 +48,11 @@ def test_a_whole_listing_that_names_no_file_for_the_variant_raises_helpfully(
     msg = str(exc_info.value)
     assert "Q7_0" in msg
     # The offered table uses the SAME identity the variants picker advertised,
-    # whatever the label extraction made of the filename (here "Q2_0").
-    assert "Available variants: Q2_0" in msg
+    # whatever the label extraction makes of the filename.
+    from utils.models.model_config import _extract_quant_label, _qualified_variant_name
+
+    advertised = _qualified_variant_name(BONSAI_FILES[0], _extract_quant_label(BONSAI_FILES[0]))
+    assert f"Available variants: {advertised}" in msg
 
 
 def test_a_whole_listing_of_only_companion_ggufs_is_not_a_variant_table(
