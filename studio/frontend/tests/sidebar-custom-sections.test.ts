@@ -117,6 +117,37 @@ test("rows file into a section, move between sections, and come back out", () =>
   assert.equal(useSidebarOrganizationStore.getState().sectionByChatId.c3, undefined);
 });
 
+test("a section records when it was made, and renames and filings stamp it", () => {
+  resetStore();
+  const store = useSidebarOrganizationStore.getState();
+  const a = store.createCustomSection("A")!;
+  const b = store.createCustomSection("B")!;
+  const stamp = (id: string, at: number) =>
+    useSidebarOrganizationStore.setState((state) => ({
+      customSections: state.customSections.map((section) =>
+        section.id === id ? { ...section, modifiedAt: at } : section,
+      ),
+    }));
+  const section = (id: string) =>
+    useSidebarOrganizationStore.getState().customSections.find((entry) => entry.id === id)!;
+  assert.ok(section(a).createdAt && section(a).modifiedAt);
+  stamp(a, 1);
+  stamp(b, 1);
+  // A rename to the same name, or filing where a chat already is, changes nothing.
+  store.renameCustomSection(a, "A");
+  store.setChatsSection(["c1"], a);
+  assert.ok(section(a).modifiedAt! > 1);
+  stamp(a, 1);
+  store.setChatsSection(["c1"], a);
+  assert.equal(section(a).modifiedAt, 1);
+  // Moving a chat stamps both ends; a project filing stamps too.
+  store.setChatsSection(["c1"], b);
+  assert.ok(section(a).modifiedAt! > 1 && section(b).modifiedAt! > 1);
+  stamp(a, 1);
+  store.setProjectsSection(["p1"], a);
+  assert.ok(section(a).modifiedAt! > 1);
+});
+
 test("deleting a section returns its rows and forgets its order and visibility", () => {
   resetStore();
   const store = useSidebarOrganizationStore.getState();

@@ -190,6 +190,8 @@ const SECTION_ICONS: Partial<Record<ChatsSection, IconSvgElement>> = {
 
 const SECTION_SORTS: SortChoice<SectionSortKey>[] = [
   { value: "updated", label: "library.chats.list.lastActive" },
+  { value: "modified", label: "library.chats.list.lastModified" },
+  { value: "created", label: "library.chats.list.created" },
   { value: "name", label: "library.list.name" },
   { value: "chats", label: "library.chats.toolbar.sortChats" },
 ];
@@ -890,12 +892,11 @@ export function ChatsLibrary({
     DATE_FIELDS,
     prefs.dateField,
   );
-  // Sections record only their chats' last activity.
   const sectionDateColumn = dateColumn(
     prefs.sectionSort,
-    (sort) => prefs.set({ sectionSort: { key: "updated", desc: sort.desc } }),
-    ["updated"],
-    "updated",
+    (sectionSort) => prefs.set({ sectionSort }),
+    DATE_FIELDS,
+    prefs.dateField,
   );
 
   const actions: ChatsActions = {

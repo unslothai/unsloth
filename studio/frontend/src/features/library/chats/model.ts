@@ -36,7 +36,7 @@ export type ChatSort = { key: ChatSortKey; desc: boolean };
 export type ProjectSortKey = "name" | DateField | "chats";
 export type ProjectSort = { key: ProjectSortKey; desc: boolean };
 /** "updated" is a section's latest chat; "chats" is how many it holds. */
-export type SectionSortKey = "name" | "updated" | "chats";
+export type SectionSortKey = "name" | DateField | "chats";
 export type SectionSort = { key: SectionSortKey; desc: boolean };
 export type ChatGroupBy = "none" | "project" | "section" | "date";
 
@@ -232,11 +232,11 @@ export type MixedEntry<C, P, S> =
   | { kind: "section"; item: S };
 
 /** All: chats, projects and sections as one list on the chat sort. Pinned chats and projects
- *  lead when `pinnedFirst`. A section's date is its latest chat. */
+ *  lead when `pinnedFirst`. */
 export function mixEntries<
   C extends ChatEntry,
   P extends ProjectEntry,
-  S extends { id: string; name: string },
+  S extends SectionEntry,
 >(
   chats: readonly C[],
   projects: readonly P[],
@@ -270,7 +270,8 @@ export function mixEntries<
     ...sections.map((item) => ({
       entry: { kind: "section", item } as const,
       name: item.name,
-      time: options.sectionStats.get(item.id)?.lastActive ?? 0,
+      time:
+        sort.key === "name" ? 0 : sectionTime(item, options.sectionStats.get(item.id), sort.key),
       pin: false,
     })),
   ];
@@ -313,7 +314,26 @@ export function sectionStats(
   return out;
 }
 
-export function sortSections<T extends { id: string; name: string }>(
+export interface SectionEntry {
+  id: string;
+  name: string;
+  createdAt?: number;
+  modifiedAt?: number;
+}
+
+/** "updated" is its latest chat; "modified" its own last edit, or that chat if later. */
+export function sectionTime(
+  section: SectionEntry,
+  stats: SectionStats | undefined,
+  field: DateField,
+): number {
+  const lastActive = stats?.lastActive ?? 0;
+  if (field === "created") return section.createdAt ?? 0;
+  if (field === "modified") return Math.max(section.modifiedAt ?? 0, lastActive);
+  return lastActive;
+}
+
+export function sortSections<T extends SectionEntry>(
   sections: readonly T[],
   sort: SectionSort,
   stats: ReadonlyMap<string, SectionStats>,
@@ -322,7 +342,9 @@ export function sortSections<T extends { id: string; name: string }>(
   const collate = new Intl.Collator(locale, { numeric: true, sensitivity: "base" }).compare;
   const value = (section: T) => {
     const entry = stats.get(section.id);
-    return sort.key === "chats" ? (entry?.chats ?? 0) : (entry?.lastActive ?? 0);
+    if (sort.key === "chats") return entry?.chats ?? 0;
+    if (sort.key === "name") return 0;
+    return sectionTime(section, entry, sort.key);
   };
   return [...sections].sort((a, b) => {
     const ascending = sort.key === "name" ? collate(a.name, b.name) : value(a) - value(b);

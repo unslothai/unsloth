@@ -91,6 +91,7 @@ import {
   type SectionStats,
   chatTime,
   projectTime,
+  sectionTime,
 } from "./model";
 
 const ICON = "size-icon";
@@ -1470,11 +1471,7 @@ export function ProjectCard({
             ` · ${t("library.chats.project.archivedCount", { count: stats?.archived ?? 0 })}`}
         </span>
         <span className="shrink-0">
-          {formatActivityTime(
-            stats?.lastActive ?? project.updatedAt,
-            locale,
-            t,
-          )}
+          {formatDate(projectTime(project, stats, actions.dateField), actions.dateField, {}, locale, t)}
         </span>
       </div>
     </div>
@@ -1713,11 +1710,9 @@ export function SectionCard({
       </button>
       <div className="mt-auto flex items-center justify-between gap-2 text-ui-12 text-muted-foreground">
         <span className="truncate">{sectionCountLabel(stats, t)}</span>
-        {(stats?.lastActive ?? 0) > 0 && (
-          <span className="shrink-0">
-            {formatActivityTime(stats?.lastActive ?? 0, locale, t)}
-          </span>
-        )}
+        <span className="shrink-0">
+          {formatDate(sectionTime(section, stats, actions.dateField), actions.dateField, {}, locale, t)}
+        </span>
       </div>
     </div>
   );
@@ -1764,7 +1759,7 @@ export function SectionRow({
         </span>
       </div>
       {layout === "files" ? (
-        <FileColumns modified={stats?.lastActive ?? 0} />
+        <FileColumns modified={sectionTime(section, stats, "modified")} />
       ) : (
         <>
           {/* Sections have no location: an empty cell keeps the columns aligned. */}
@@ -1774,11 +1769,14 @@ export function SectionRow({
           <span className={cn(CONTENTS_COLUMN, CELL)}>
             {sectionCountLabel(stats, t)}
           </span>
-          {/* A section records only when its chats were last active. */}
           <span className={cn(DATE_COLUMN, CELL)}>
-            {layout === "own" || actions.dateField === "updated"
-              ? formatDate(stats?.lastActive ?? 0, "updated", {}, locale, t)
-              : ""}
+            {formatDate(
+              sectionTime(section, stats, actions.dateField),
+              actions.dateField,
+              {},
+              locale,
+              t,
+            )}
           </span>
         </>
       )}
@@ -1789,6 +1787,7 @@ export function SectionRow({
 
 export function SectionListHeader({ date }: { date: DateColumn }) {
   const t = useT();
+  const { dateField } = useChatsActions();
   return (
     <div
       className={cn(
@@ -1800,7 +1799,7 @@ export function SectionListHeader({ date }: { date: DateColumn }) {
       <span className={CONTENTS_COLUMN}>
         {t("library.chats.list.contents")}
       </span>
-      <DateHeader {...date} field="updated" />
+      <DateHeader {...date} field={dateField} />
       <span className="w-8 shrink-0" />
     </div>
   );

@@ -18,6 +18,7 @@ import {
   modelsByChat,
   projectStats,
   sectionStats,
+  sectionTime,
   sortChats,
   sortSections,
   sortProjects,
@@ -403,4 +404,25 @@ test("an empty Library opens on Chats whatever the start tab", () => {
   assert.match(page, /if \(emptyOnLoad === null && loaded\) setEmptyOnLoad\(items\.length === 0 && folders\.length === 0\);/);
   assert.doesNotMatch(page, /settings\.startTab === "last" &&\n\s*tabVisible\("chats"\)/);
   assert.match(page, /!\(preferred === "favorites" && hasStarredChats\)/);
+});
+
+test("sections have created and last modified dates, and Last modified is the default", async () => {
+  const stats = { chats: 1, projects: 0, lastActive: 50 };
+  const section = { id: "s", name: "S", createdAt: 10, modifiedAt: 80 };
+  assert.equal(sectionTime(section, stats, "created"), 10);
+  assert.equal(sectionTime(section, stats, "updated"), 50);
+  assert.equal(sectionTime(section, stats, "modified"), 80);
+  // A newer chat counts as a change, as it does for chats; old sections have no created date.
+  assert.equal(sectionTime({ id: "o", name: "O" }, stats, "modified"), 50);
+  assert.equal(sectionTime({ id: "o", name: "O" }, stats, "created"), 0);
+  const sorted = sortSections(
+    [section, { id: "t", name: "T", modifiedAt: 90 }],
+    { key: "modified", desc: true },
+    new Map([["s", stats]]),
+  );
+  assert.deepEqual(ids(sorted), ["t", "s"]);
+  const prefs = readSrc("features/library/chats/prefs-store.ts");
+  assert.match(prefs, /dateField: "modified",/);
+  assert.match(prefs, /sort: \{ key: "modified", desc: true \},/);
+  assert.doesNotMatch(readSrc("features/library/chats/chats-items.tsx"), /field="updated"/);
 });

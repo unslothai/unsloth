@@ -21,10 +21,10 @@ export interface ChatsPrefs {
 
 export const DEFAULT_CHATS_PREFS: ChatsPrefs = {
   view: "list",
-  sort: { key: "updated", desc: true },
-  projectSort: { key: "updated", desc: true },
-  sectionSort: { key: "updated", desc: true },
-  dateField: "updated",
+  sort: { key: "modified", desc: true },
+  projectSort: { key: "modified", desc: true },
+  sectionSort: { key: "modified", desc: true },
+  dateField: "modified",
   groupBy: "date",
   pinnedFirst: true,
 };
@@ -38,11 +38,22 @@ export const useChatsPrefsStore = create<ChatsPrefs & { set: (patch: Partial<Cha
     }),
     {
       name: LIBRARY_CHATS_PREFS_STORAGE_KEY,
-      version: 2,
-      // v2 made list the default view: reset grids saved earlier.
+      version: 3,
+      // v2: list is the default view. v3: Last modified is the default date, so an untouched
+      // Last active moves with it.
       migrate: (persisted, version) => {
-        const saved = (persisted ?? {}) as Partial<ChatsPrefs>;
-        return version < 2 ? { ...saved, view: "list" } : saved;
+        const saved = { ...((persisted ?? {}) as Partial<ChatsPrefs>) };
+        if (version < 2) saved.view = "list";
+        if (version < 3) {
+          const modified = { key: "modified", desc: true } as const;
+          const untouched = (sort?: { key: string; desc: boolean }) =>
+            !sort || (sort.key === "updated" && sort.desc);
+          if (!saved.dateField || saved.dateField === "updated") saved.dateField = "modified";
+          if (untouched(saved.sort)) saved.sort = modified;
+          if (untouched(saved.projectSort)) saved.projectSort = modified;
+          if (untouched(saved.sectionSort)) saved.sectionSort = modified;
+        }
+        return saved;
       },
     },
   ),
