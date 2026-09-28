@@ -229,7 +229,7 @@ def test_wsl_launch_command(wsl, monkeypatch):
     monkeypatch.setattr(wsl_host, "to_guest_path", lambda path: "/mnt/c/" + Path(path).name)
     guest = Path(wsl_host.GUEST_ROOT) / "engines" / "vllm" / "env-abc" / "bin"
     guest.mkdir(parents = True)
-    (guest / "python").write_text("")
+    (guest / "python").write_text("", encoding = "utf-8")
     (guest / "python").chmod(0o755)
     engine = managed_engine.ManagedEngine("vllm")
     engine.context = 2048
@@ -267,7 +267,7 @@ def test_sglang_launcher_is_read_through_mnt(wsl, monkeypatch):
     monkeypatch.setattr(wsl_host, "to_guest_path", lambda path: "/mnt/c/" + Path(path).name)
     guest = Path(wsl_host.GUEST_ROOT) / "engines" / "sglang" / "env-abc" / "bin"
     guest.mkdir(parents = True)
-    (guest / "python").write_text("")
+    (guest / "python").write_text("", encoding = "utf-8")
     (guest / "python").chmod(0o755)
     engine = managed_engine.ManagedEngine("sglang")
     engine.context = 2048
