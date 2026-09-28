@@ -23,6 +23,7 @@ import openvino_genai as ov_genai
 import uvicorn
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
+from starlette.concurrency import iterate_in_threadpool
 from pydantic import BaseModel, ConfigDict
 
 THINK_OPEN, THINK_CLOSE = "<think>", "</think>"
@@ -400,8 +401,18 @@ def build_app(pipe, model_id: str, context: Optional[int] = None) -> FastAPI:
                 "usage": usage(res),
             }
 
+        # Set when the client goes away, so the model stops instead of finishing an unread reply.
+        cancelled = threading.Event()
+
+        def streamer(piece: str):
+            pieces.put(piece)
+            if cancelled.is_set():
+                return ov_genai.StreamingStatus.CANCEL
+            return ov_genai.StreamingStatus.RUNNING
+
+        pieces: "queue.Queue[Optional[str]]" = queue.Queue()
+
         def events():
-            pieces: "queue.Queue[Optional[str]]" = queue.Queue()
             result: dict = {}
 
             def run():
@@ -410,7 +421,7 @@ def build_app(pipe, model_id: str, context: Optional[int] = None) -> FastAPI:
                         result["res"] = pipe.generate(
                             text_prompt,
                             generation_config = cfg,
-                            streamer = lambda s: pieces.put(s) or ov_genai.StreamingStatus.RUNNING,
+                            streamer = streamer,
                         )
                 finally:
                     pieces.put(None)
@@ -440,7 +451,14 @@ def build_app(pipe, model_id: str, context: Optional[int] = None) -> FastAPI:
             )
             yield "data: [DONE]\n\n"
 
-        return StreamingResponse(events(), media_type = "text/event-stream")
+        async def guarded():
+            try:
+                async for event in iterate_in_threadpool(events()):
+                    yield event
+            finally:
+                cancelled.set()
+
+        return StreamingResponse(guarded(), media_type = "text/event-stream")
 
     return app
 

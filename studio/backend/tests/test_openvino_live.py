@@ -347,11 +347,14 @@ def test_concurrent_requests_both_answer():
     assert [o.status_code for o in out] == [200, 200]
 
 
-def test_client_disconnect_does_not_wedge_the_model():
-    body = {"model": "x", "stream": True, "max_tokens": 400, "messages": [{"role": "user", "content": "Write a long story."}]}
+def test_client_disconnect_stops_generation():
+    """A dropped stream must free the model: the next request may not wait out 3000 tokens."""
+    body = {"model": "x", "stream": True, "max_tokens": 3000, "messages": [{"role": "user", "content": "Write a very long story."}]}
     with httpx.stream("POST", URL, json = body, headers = AUTH, timeout = 60) as r:
         for i, _ in enumerate(r.iter_lines()):
             if i > 5:
                 break
-    r = chat({"messages": FRANCE, "enable_thinking": False, "max_tokens": 300}, timeout = 180)
+    t = time.monotonic()
+    r = chat({"messages": FRANCE, "enable_thinking": False, "max_tokens": 300}, timeout = 300)
     assert "Paris" in r["content"]
+    assert time.monotonic() - t < 20, f"next request waited {time.monotonic() - t:.0f}s"
