@@ -1463,6 +1463,47 @@ def test_forcing_the_drafter_refits_a_context_replayed_from_auto(tmp_path):
     assert result["cmd"][result["cmd"].index("--spec-type") + 1] == "draft-mtp"
 
 
+def test_a_replayed_context_gets_the_slot_refit_of_a_fresh_drafter_load(tmp_path):
+    def slot_bound_backend():
+        backend, gguf = _replayed_context_mtp_backend(tmp_path)
+        backend._get_gpu_memory = lambda _binary = None, **_kw: [(0, 45_914, 46_080)]
+        backend._get_gpu_free_memory = lambda _binary = None, **_kw: [(0, 45_914)]
+        backend._estimate_kv_cache_bytes = lambda n_ctx, *args, **kwargs: n_ctx * 16_000
+        backend._estimate_mtp_overhead_bytes = (
+            lambda n_ctx, *args, _np = None, n_parallel = None, **kwargs: n_ctx * 5_000
+            + int(_np or n_parallel or 4) * 3 * 1024**3
+        )
+        caps = backend.probe_server_capabilities()
+        backend.probe_server_capabilities = lambda _binary = None: {
+            **caps,
+            "supports_kv_unified": True,
+        }
+        return backend, gguf
+
+    backend, gguf = slot_bound_backend()
+    auto = _launch(backend, gguf, n_ctx = 0, n_parallel = 4, speculative_type = "auto")
+    assert backend.spec_fallback_reason == "drafter_no_vram"
+    backend, gguf = slot_bound_backend()
+    fresh = _launch(backend, gguf, n_ctx = 0, n_parallel = 4, speculative_type = "mtp")
+
+    backend, gguf = slot_bound_backend()
+    result = _launch(
+        backend,
+        gguf,
+        n_ctx = _launched_ctx(auto),
+        max_seq_length_auto_derived = True,
+        n_parallel = 4,
+        speculative_type = "mtp",
+    )
+
+    assert fresh["cmd"][fresh["cmd"].index("--parallel") + 1] != "4"
+    assert _launched_ctx(fresh) > 8192
+    assert _launched_ctx(result) == _launched_ctx(fresh)
+    assert result["cmd"][result["cmd"].index("--parallel") + 1] == (
+        fresh["cmd"][fresh["cmd"].index("--parallel") + 1]
+    )
+
+
 def test_forcing_the_drafter_keeps_a_typed_context(tmp_path):
     replayed = _replayed_auto_context(tmp_path)
     backend, gguf = _replayed_context_mtp_backend(tmp_path)

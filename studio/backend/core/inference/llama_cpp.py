@@ -25625,11 +25625,15 @@ class LlamaCppBackend:
                                 # on Auto.
                                 max_available_ctx = min(_AUTO_OFFLOAD_CTX, native_ctx_for_cap)
 
-                        if explicit_ctx and not (
-                            intent.max_seq_length_auto_derived
+                        if (
+                            explicit_ctx
+                            and intent.max_seq_length_auto_derived
                             and _mtp_reserves_gpu
                             and (_canonicalize_spec_mode(speculative_type) or "auto") != "auto"
                         ):
+                            # Fitted without the drafter: size it like a fresh MTP load, slot re-fit included.
+                            explicit_ctx = False
+                        if explicit_ctx:
                             # Honor the requested context verbatim. If it fits,
                             # pin GPUs and skip --fit; else ship -c <ctx> --fit
                             # on and let llama-server flex -ngl (CPU offload).
