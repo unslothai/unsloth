@@ -45,80 +45,46 @@ def test_resolve_pq2_0_from_live_listing(monkeypatch):
     assert shards == []
 
 
-def test_wrong_variant_does_not_synthesize_when_listing_succeeds(monkeypatch):
+def test_a_selection_saved_as_q2_0_still_resolves_the_packed_file(monkeypatch):
+    # Before PQ2_0 had its own label the menu offered this file as Q2_0.
     monkeypatch.setattr(
         "huggingface_hub.list_repo_files",
         lambda repo_id, token = None: [_BONSAI_FILE],
     )
-    monkeypatch.setattr(
-        llama_cpp_module,
-        "_cached_variant_resolution",
-        lambda *_a, **_k: (None, []),
-    )
 
-    filename, shards = llama_cpp_module._resolve_variant_gguf_files(
-        _BONSAI_REPO,
-        "Q2_0",
-    )
-    assert filename is None
-    assert shards == []
-
-
-def test_requirements_cache_resolves_when_listing_fails(monkeypatch):
-    import sys
-    import types
-
-    def _fail_list(*_a, **_k):
-        raise OSError("hub down")
-
-    monkeypatch.setattr("huggingface_hub.list_repo_files", _fail_list)
-    monkeypatch.setattr(
-        llama_cpp_module,
-        "_cached_variant_resolution",
-        lambda *_a, **_k: (None, []),
-    )
-
-    class _Req:
-        main_filenames = frozenset({_BONSAI_FILE})
-        target_filenames = (_BONSAI_FILE,)
-
-    fake = types.ModuleType("hub.services.models.gguf_variants")
-    fake.gguf_variant_requirements = lambda *_a, **_k: _Req()
-    monkeypatch.setitem(sys.modules, "hub.services.models.gguf_variants", fake)
-
-    filename, shards = llama_cpp_module._resolve_variant_gguf_files(
-        _BONSAI_REPO,
-        "PQ2_0",
-    )
+    filename, shards = llama_cpp_module._resolve_variant_gguf_files(_BONSAI_REPO, "Q2_0")
     assert filename == _BONSAI_FILE
     assert shards == []
 
 
-def test_does_not_synthesize_when_listing_and_cache_miss(monkeypatch):
-    import sys
-    import types
+@pytest.mark.parametrize(
+    ("variant", "expected"),
+    [
+        ("Q2_0", "Ternary-Bonsai-1.7B-Q2_0.gguf"),
+        ("PQ2_0", "Ternary-Bonsai-1.7B-PQ2_0.gguf"),
+        ("Q2_0_g64", "Ternary-Bonsai-1.7B-Q2_0_g64.gguf"),
+    ],
+)
+def test_packed_plain_and_grouped_q2_files_each_resolve_to_their_own(
+    monkeypatch, variant, expected
+):
+    files = [
+        "Ternary-Bonsai-1.7B-PQ2_0.gguf",
+        "Ternary-Bonsai-1.7B-Q2_0.gguf",
+        "Ternary-Bonsai-1.7B-Q2_0_g64.gguf",
+    ]
+    monkeypatch.setattr("huggingface_hub.list_repo_files", lambda repo_id, token = None: files)
 
-    def _fail_list(*_a, **_k):
-        raise OSError("hub down")
-
-    monkeypatch.setattr("huggingface_hub.list_repo_files", _fail_list)
-    monkeypatch.setattr(
-        llama_cpp_module,
-        "_cached_variant_resolution",
-        lambda *_a, **_k: (None, []),
+    filename, _ = llama_cpp_module._resolve_variant_gguf_files(
+        "prism-ml/Ternary-Bonsai-1.7B-gguf", variant
     )
+    assert filename == expected
 
-    fake = types.ModuleType("hub.services.models.gguf_variants")
-    fake.gguf_variant_requirements = lambda *_a, **_k: None
-    monkeypatch.setitem(sys.modules, "hub.services.models.gguf_variants", fake)
-    monkeypatch.setattr(
-        "hub.utils.gguf.list_gguf_variants_from_hf_cache",
-        lambda *_a, **_k: None,
-    )
 
-    filename, shards = llama_cpp_module._resolve_variant_gguf_files(
-        _BONSAI_REPO,
-        "PQ2_0",
-    )
-    assert filename is None
-    assert shards == []
+def test_an_ordinary_q2_0_repo_is_unchanged(monkeypatch):
+    files = ["Tiny-Q2_0.gguf", "Tiny-Q4_0.gguf"]
+    monkeypatch.setattr("huggingface_hub.list_repo_files", lambda repo_id, token = None: files)
+
+    assert extract_quant_token("Tiny-Q2_0.gguf") == "Q2_0"
+    filename, _ = llama_cpp_module._resolve_variant_gguf_files("org/Tiny-GGUF", "Q2_0")
+    assert filename == "Tiny-Q2_0.gguf"
