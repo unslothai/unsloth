@@ -224,13 +224,30 @@ def test_cmd_isolated_is_never_replayed_on_the_host(windows, monkeypatch, tmp_pa
 
 
 @pytest.mark.parametrize(
-    "command", ["echo a&rm -rf x", "dir&&rm -rf x", "echo x|rm -rf x", "r^m -rf x", '"r"m -rf x']
+    "command",
+    [
+        "echo a&rm -rf x",
+        "dir&&rm -rf x",
+        "echo x|rm -rf x",
+        "r^m -rf x",
+        '"r"m -rf x',
+    ],
 )
 def test_cmd_isolated_screens_every_reading_of_the_command(windows, monkeypatch, tmp_path, command):
     windows(bash_cap = _cap(False, MSYS), cmd_cap = _cap(True))
     plan, result = _exec(monkeypatch, tmp_path, command)
     assert plan is None
     assert result.startswith("Blocked command(s) for safety: rm"), result
+
+
+def test_cmd_isolated_does_not_treat_single_quotes_as_quoting(windows, monkeypatch, tmp_path):
+    windows(bash_cap = _cap(False, MSYS), cmd_cap = _cap(True))
+    monkeypatch.setattr(
+        tools, "_BLOCKED_COMMANDS", tools._BLOCKED_COMMANDS_COMMON | tools._BLOCKED_COMMANDS_WIN
+    )
+    plan, result = _exec(monkeypatch, tmp_path, "echo 'ok & rmdir /s /q x & echo done'")
+    assert plan is None
+    assert result.startswith("Blocked command(s) for safety: rmdir"), result
 
 
 def test_a_tool_list_without_the_terminal_never_probes(windows):

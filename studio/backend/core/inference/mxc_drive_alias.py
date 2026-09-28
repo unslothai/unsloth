@@ -163,8 +163,11 @@ def _save_record(aliases: dict[str, dict]) -> bool:
         logger.info("Could not write the MXC drive alias record: %s", exc)
         return False
     finally:
-        if temporary.exists():
-            temporary.unlink()
+        try:
+            temporary.unlink(missing_ok = True)
+        except OSError as exc:
+            # Raising here would skip the caller's removal of the mapping it just made.
+            logger.info("Could not remove %s: %s", temporary, exc)
 
 
 @contextmanager

@@ -21299,13 +21299,13 @@ def _bash_exec(
     # Block dangerous commands (skipped when the sandbox is disabled)
     if not disable_sandbox:
         if profile == "cmd_isolated":
-            # The cmd lexer misses separators glued to a word (a&powershell) and cmd drops ^ escapes, so
-            # screen every reading; this is defence in depth, the MXC container is the boundary.
+            # The cmd lexer misses separators glued to a word (a&powershell), cmd drops ^ escapes and
+            # ' does not quote, so screen every reading; defence in depth, MXC is the boundary.
             unescaped = command.replace("^", "")
             blocked = set().union(
                 *(
                     _find_blocked_commands(text, posix = posix)
-                    for text in (command, unescaped)
+                    for text in (command, unescaped, _cmd_reading(command))
                     for posix in (False, True)
                 )
             )

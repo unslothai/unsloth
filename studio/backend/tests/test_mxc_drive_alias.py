@@ -213,6 +213,27 @@ def test_an_unwritable_record_undoes_the_mapping(host, tmp_path, monkeypatch):
     assert host.table == {}
 
 
+def test_a_record_temp_file_that_cannot_be_removed_still_undoes_the_mapping(
+    host, tmp_path, monkeypatch
+):
+    # Security software holding the new file: the replace and the cleanup both fail.
+    real_replace, real_unlink = os.replace, Path.unlink
+
+    def held(path, *args, **kwargs):
+        if str(path).endswith(".tmp"):
+            raise PermissionError("the file is in use")
+        return real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(
+        os,
+        "replace",
+        lambda src, dst: held(src) if str(src).endswith(".tmp") else real_replace(src, dst),
+    )
+    monkeypatch.setattr(Path, "unlink", held)
+    assert mxc_drive_alias.acquire(_workdir(tmp_path)) is None
+    assert host.table == {}
+
+
 def test_no_free_letter_maps_nothing(host, tmp_path):
     host.drives = mxc_drive_alias.LETTERS
     assert mxc_drive_alias.acquire(_workdir(tmp_path)) is None
