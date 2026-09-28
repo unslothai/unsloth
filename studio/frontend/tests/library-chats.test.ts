@@ -355,7 +355,8 @@ test("shift-click selects a range anchored on a chat id", () => {
 test("a chat exports per pane with Markdown, several chats combined or per chat", () => {
   const items = readSrc("features/library/chats/chats-items.tsx");
   assert.match(items, /chatExportOptions\(\)\.map/);
-  assert.match(items, /COMBINED_EXPORT_FORMATS_LIST\.map/);
+  assert.match(items, /<BulkExportItems onExport=/);
+  assert.match(readSrc("features/chat/components/bulk-export-items.tsx"), /COMBINED_EXPORT_FORMATS_LIST\.map/);
   assert.match(items, /disabled=\{!actions\.projectChatCounts\.get\(project\.id\)\}/);
   const library = readSrc("features/library/chats/chats-library.tsx");
   assert.match(library, /for \(const id of threadIds\) await exportConversationByFormat\(id, choice\.format\);/);
@@ -519,4 +520,35 @@ test("a favorite project tile uses the open project folder, not the file folder"
   );
   assert.match(tile, /icon=\{Folder02Icon\}/);
   assert.doesNotMatch(tile, /Folder01Icon/);
+});
+
+test("a project's home menu carries the Library project menu's items", () => {
+  const page = readSrc("features/chat/chat-page.tsx");
+  const menu = page.slice(page.indexOf('aria-label="Project options"'), page.indexOf("<ProjectComposer"));
+  const order = [
+    "<OpenProjectFolderItem projectId={projectId} />",
+    "setEditingProject(true)",
+    "togglePinProject(projectId)",
+    "setFavoriteProjects([projectId], !projectFavorite)",
+    'shell.sections.moveTo',
+    "<BulkExportItems",
+    "openProjectDelete()",
+  ];
+  let at = -1;
+  for (const marker of order) {
+    const next = menu.indexOf(marker);
+    assert.ok(next > at, `${marker} in order`);
+    at = next;
+  }
+  // Filed the same way as from the Library, which shares the hook.
+  assert.match(page, /const fileProjectInSection = useFileProjectInSection\(\);/);
+  assert.match(readSrc("features/library/chats/chats-library.tsx"), /const fileProjectInSection = useFileProjectInSection\(\);/);
+  assert.match(page, /<SectionNameDialog\s+open=\{active && creatingSection\}/);
+  assert.match(menu, /<DropdownMenuSubTrigger disabled=\{items\.length === 0\}>/);
+});
+
+test("filing a project in a section unpins it and shows the section", () => {
+  const hook = readSrc("features/chat/hooks/use-file-project-in-section.ts");
+  assert.match(hook, /if \(pins\.pinnedIds\.includes\(project\.id\)\) pins\.unpin\(project\.id\);/);
+  assert.match(hook, /organization\.setSectionHidden\(sectionId, false\);/);
 });

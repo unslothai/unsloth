@@ -14,10 +14,9 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import {
-  COMBINED_EXPORT_FORMATS_LIST,
+  BulkExportItems,
   type ConvExportFormat,
   type ConversationExportFormat,
-  EXPORT_FORMATS_LIST,
   chatExportOptions,
   type ProjectRecord,
   type SidebarCustomSection,
@@ -232,25 +231,7 @@ export function ExportSubmenu({
       </DropdownMenuSubTrigger>
       <DropdownMenuSubContent className={cn(MENU, bulk ? "w-56" : "w-48")}>
         {bulk ? (
-          <>
-            {COMBINED_EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
-              <DropdownMenuItem
-                key={`merged-${fmt}`}
-                onSelect={() => onExport({ kind: "bulk", format: fmt, merged: true })}
-              >
-                {label} {t("settings.chat.exportCombinedSuffix")}
-              </DropdownMenuItem>
-            ))}
-            <DropdownMenuSeparator className="mx-3" />
-            {EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
-              <DropdownMenuItem
-                key={`separate-${fmt}`}
-                onSelect={() => onExport({ kind: "bulk", format: fmt, merged: false })}
-              >
-                {label} {t("settings.chat.exportPerChatSuffix")}
-              </DropdownMenuItem>
-            ))}
-          </>
+          <BulkExportItems onExport={(format, merged) => onExport({ kind: "bulk", format, merged })} />
         ) : (
           chatExportOptions().map(({ label, format }) => (
             <DropdownMenuItem key={format} onSelect={() => onExport({ kind: "chat", format })}>

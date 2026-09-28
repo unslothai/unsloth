@@ -33,8 +33,7 @@ import {
   compareModelDisplayName,
   deleteChatItems,
   deleteChatProject,
-  exportBulkConversationsMerged,
-  exportBulkConversationsSeparate,
+  exportThreads,
   forkChatRow,
   moveChatItemToProject,
   normalizeSectionName,
@@ -52,6 +51,7 @@ import {
   usePinnedChatsStore,
   usePinnedProjectsStore,
   useSidebarOrganizationStore,
+  useFileProjectInSection,
 } from "@/features/chat";
 import { type TranslationKey, useLocale, useT } from "@/i18n";
 import { MessageCircleIcon, StarPointedIcon } from "@/lib/hugeicons-derived";
@@ -296,7 +296,6 @@ export function ChatsLibrary({
   const setChatsSection = useSidebarOrganizationStore((s) => s.setChatsSection);
   const createCustomSection = useSidebarOrganizationStore((s) => s.createCustomSection);
   const setSectionHidden = useSidebarOrganizationStore((s) => s.setSectionHidden);
-  const setProjectsSection = useSidebarOrganizationStore((s) => s.setProjectsSection);
   const sectionByProjectId = useSidebarOrganizationStore((s) => s.sectionByProjectId);
   const renameCustomSection = useSidebarOrganizationStore((s) => s.renameCustomSection);
   const setPendingNewChatSection = useSidebarOrganizationStore((s) => s.setPendingNewChatSection);
@@ -703,26 +702,8 @@ export function ChatsLibrary({
     } else setMovingIntoNew({ kind: "section", chats });
   };
 
-  /** null unfiles. Filing unpins, since Pinned would still show the project. */
-  const fileProjectInSection = (project: ProjectRecord, sectionId: string | null, name?: string) => {
-    const leaving = projectSectionOf.get(project.id);
-    setProjectsSection([project.id], sectionId);
-    if (sectionId) {
-      if (pinnedProjects.has(project.id)) unpinProject(project.id);
-      setSectionHidden(sectionId, false);
-    }
-    toast.success(
-      sectionId
-        ? t("library.chats.toast.projectMoved", {
-            project: project.name,
-            section: name ?? sectionNames.get(sectionId) ?? "",
-          })
-        : t("library.chats.toast.projectUnfiled", {
-            project: project.name,
-            section: (leaving && sectionNames.get(leaving)) ?? "",
-          }),
-    );
-  };
+  // Shared with the project's home, so both file a project the same way.
+  const fileProjectInSection = useFileProjectInSection();
 
   const moveProject = (project: ProjectRecord, destination: ChatDestination) => {
     if (destination.kind === "section") fileProjectInSection(project, destination.id);
@@ -788,18 +769,13 @@ export function ChatsLibrary({
 
   const exportChats = async (chats: SidebarItem[], choice: ChatExportChoice, name?: string) => {
     const threadIds = [...new Set(chats.flatMap((chat) => chat.threadIds ?? [chat.id]))];
-    const stem = (name ?? (chats.length === 1 ? (chats[0]?.title ?? "chats") : "chats"))
-      .replace(/[^\p{L}\p{N}_-]+/gu, "_")
-      .slice(0, 48);
-    const basename = `${stem || "chats"}-${new Date().toISOString().slice(0, 10)}`;
     try {
       if (choice.kind === "chat") {
         // One file per pane, as on the Projects page.
         for (const id of threadIds) await exportConversationByFormat(id, choice.format);
-      } else if (choice.merged || threadIds.length === 1) {
-        await exportBulkConversationsMerged(threadIds, choice.format, basename);
       } else {
-        await exportBulkConversationsSeparate(threadIds, choice.format, basename);
+        const stem = name ?? (chats.length === 1 ? (chats[0]?.title ?? "chats") : "chats");
+        await exportThreads(threadIds, choice.format, choice.merged, stem);
       }
     } catch (err) {
       if (!isDownloadCancelled(err)) toast.error(t("settings.data.exportFailed"));
