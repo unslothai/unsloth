@@ -275,8 +275,7 @@ _PER_HEAD_PARAMETERS = ("A_log",)
 
 
 def _narrow_zero_padded_head_parameters(model):
-    """Narrow 1-D per-head parameters of remote-code modules that were loaded zero-padded past
-    `num_heads`. Only exact zero padding is narrowed; anything else is left for the loader to report."""
+    # Kimi-K3 ships KDA A_log zero-padded ([128] for 96 heads); fla's backward does dA.view_as(A_log). vLLM narrows it too.
     narrowed = []
     for name, module in model.named_modules():
         if not _is_remote_code(type(module)):
