@@ -2603,9 +2603,9 @@ def detect_think_prefill(
     unclosed block that swallows the answer; in that case return ``""`` and fall back to plain text.
 
     ``preserves_think_close`` says the stream keeps that closer anyway, as
-    ``NativeToolTokenDecoder`` does so the parser can see a call rehearsed inside the block. The
-    special-token list then says nothing, and skipping the opener is the same bug mirrored: a stray
-    ``</think>``.
+    ``NativeToolTokenDecoder`` does so the parser can see a call rehearsed inside the block, and as
+    a path streaming the detokenizer's own text does. The special-token list then says nothing, and
+    skipping the opener is the same bug mirrored: a stray ``</think>``.
     """
     if not prompt:
         return ""
@@ -3078,6 +3078,10 @@ def render_prompt_with_boundary(
     the kwarg get a manual splice, taking the partial from *messages* (which the caller already
     swept) rather than a separate copy: a raw partial could close the turn or open another role
     instead of resuming (#7066)."""
+    from core.inference.mcp_images import prepare_image_turn_boundaries
+
+    for template in _selected_chat_template_strings(processor, tools):
+        messages = prepare_image_turn_boundaries(messages, template)
     extra = {"tools": tools} if tools else {}
     partial = trailing_assistant_text(messages) if continue_final_message else None
     if not partial:
@@ -3128,6 +3132,10 @@ def apply_chat_template_for_generation(
     inside the trailing assistant turn, so the model resumes the partial instead of restarting
     it."""
     # Shared choke point for the transformers and MLX backends (#7066).
+    from core.inference.mcp_images import prepare_image_turn_boundaries
+
+    for template in _selected_chat_template_strings(tokenizer, tools):
+        messages = prepare_image_turn_boundaries(messages, template)
     messages, tools, _markup = neutralize_for_render(tokenizer, messages, tools)
     reasoning_kwargs: dict = {}
     if enable_thinking is not None:

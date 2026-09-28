@@ -15,7 +15,9 @@ import logging
 import os
 import queue
 import re
+import shutil
 import threading
+import uuid
 from collections.abc import Callable
 
 from core.rag import account_db as rag_db
@@ -68,6 +70,21 @@ def _remove_upload(stored_path: str | None, *, keep_path: str | None = None) -> 
             os.remove(target)
     except Exception:  # noqa: BLE001 - upload cleanup must not block ingestion.
         logger.warning("failed to remove RAG upload %s", stored_path, exc_info = True)
+
+
+def _copy_upload(stored_path: str | None) -> str | None:
+    if not stored_path or not os.path.isfile(stored_path):
+        return None
+    from utils.paths import ensure_dir, rag_uploads_root
+
+    ext = os.path.splitext(stored_path)[1].lower()
+    target = str(ensure_dir(rag_uploads_root()) / f"{uuid.uuid4().hex}{ext}")
+    try:
+        shutil.copyfile(stored_path, target)
+    except OSError:
+        _remove_upload(target)
+        raise
+    return target
 
 
 def _emit(job_id: str, event: dict) -> None:

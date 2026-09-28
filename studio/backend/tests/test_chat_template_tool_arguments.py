@@ -309,3 +309,75 @@ def test_lenient_template_never_sees_a_split_conversation():
 
     apply_chat_template_for_generation(_Lenient(), _parallel_conv())
     assert seen["n"] == 4  # unsplit
+
+
+_MINISTRAL_IMAGE_TEMPLATE = """
+{% set ns = namespace(index=0) %}
+{% for message in messages %}
+{% if message.role == 'user' or (message.role == 'assistant' and not message.tool_calls) %}
+{% if (message.role == 'user') != (ns.index % 2 == 0) %}
+{{ raise_exception('After the optional system message, conversation roles must alternate user and assistant roles except for tool calls and results.') }}
+{% endif %}
+{% set ns.index = ns.index + 1 %}
+{% endif %}
+{% for part in message.content if message.content is not string %}
+{% if part.type == 'image' %}[IMG]{% endif %}
+{% endfor %}
+{% endfor %}
+"""
+
+
+class _MinistralImageTokenizer:
+    chat_template = _MINISTRAL_IMAGE_TEMPLATE
+
+    def apply_chat_template(self, messages, **kwargs):
+        from transformers.utils.chat_template_utils import _compile_jinja_template
+        self.messages = messages
+        return _compile_jinja_template(self.chat_template).render(messages = messages)
+
+
+@pytest.mark.parametrize("processor", [False, True])
+def test_tool_image_turn_renders_with_ministral_alternation(processor):
+    from core.inference.chat_template_helpers import render_prompt_with_boundary
+    from core.inference.mcp_images import placeholder_turn
+
+    conversation = _conv({})
+    conversation.append(placeholder_turn(1))
+    conversation.append({"role": "assistant", "content": "The image is red."})
+    conversation.append({"role": "user", "content": "Another screenshot, please."})
+    conversation.extend(_conv({})[1:])
+    conversation.append(placeholder_turn(1))
+    tokenizer = _MinistralImageTokenizer()
+    render = render_prompt_with_boundary if processor else apply_chat_template_for_generation
+    assert render(tokenizer, conversation).count("[IMG]") == 2
+    assert [m["role"] for m in tokenizer.messages] == [
+        "user",
+        "assistant",
+        "tool",
+        "assistant",
+        "user",
+        "assistant",
+        "user",
+        "assistant",
+        "tool",
+        "assistant",
+        "user",
+    ]
+    assert len(conversation) == 9
+
+
+def test_image_boundary_repair_preserves_markers_and_working_templates():
+    from core.inference.mcp_images import placeholder_turn, prepare_image_turn_boundaries
+
+    conversation = _conv({}) + [placeholder_turn(1)]
+    assert prepare_image_turn_boundaries(conversation, None) is conversation
+    assert prepare_image_turn_boundaries(conversation, "{{ messages }}") is conversation
+    fixed = prepare_image_turn_boundaries(conversation, _MINISTRAL_IMAGE_TEMPLATE)
+    assert fixed[-1] is conversation[-1]
+    assert prepare_image_turn_boundaries(fixed, _MINISTRAL_IMAGE_TEMPLATE) is fixed
+
+
+def test_image_boundary_repair_does_not_hide_invalid_caller_roles():
+    conversation = _conv({}) + [{"role": "user", "content": "A second user turn."}]
+    with pytest.raises(Exception, match = "conversation roles must alternate"):
+        apply_chat_template_for_generation(_MinistralImageTokenizer(), conversation)

@@ -201,7 +201,7 @@ def test_duplicate_column_error_is_swallowed(clock, monkeypatch):
         def __getattr__(self, name):
             return getattr(self._inner, name)
 
-    monkeypatch.setattr(runs_db, "get_connection", lambda: _Racy(real_get()))
+    monkeypatch.setattr(runs_db, "get_connection", lambda **kw: _Racy(real_get(**kw)))
     runs_db._connect()  # must not raise
     assert state["fired"], "the simulated race did not fire"
 
@@ -385,7 +385,7 @@ def _migration_blocked(monkeypatch):
         def __getattr__(self, name):
             return getattr(self._inner, name)
 
-    monkeypatch.setattr(runs_db, "get_connection", lambda: _Locked(real_get()))
+    monkeypatch.setattr(runs_db, "get_connection", lambda **kw: _Locked(real_get(**kw)))
     try:
         yield
     finally:
@@ -444,9 +444,13 @@ def test_a_real_no_such_column_error_is_not_swallowed(clock, monkeypatch):
     """The degradations key on the lease columns by name, not on the error class.
 
     A `no such column` naming anything else is a genuine schema fault and must surface.
+
+    The fault goes in at _connect, the handle get_progress actually uses. Since #11525 a warm
+    thread reuses its pooled connection without calling get_connection, and _seed() has just
+    pooled one, so a fault injected there was never reached when this test ran on its own.
     """
     _seed()
-    real_get = runs_db.get_connection
+    real_connect = runs_db._connect
 
     class _Boom:
         def __init__(self, inner):
@@ -460,7 +464,7 @@ def test_a_real_no_such_column_error_is_not_swallowed(clock, monkeypatch):
         def __getattr__(self, name):
             return getattr(self._inner, name)
 
-    monkeypatch.setattr(runs_db, "get_connection", lambda: _Boom(real_get()))
+    monkeypatch.setattr(runs_db, "_connect", lambda: _Boom(real_connect()))
     with pytest.raises(sqlite3.OperationalError, match = "some_other_column"):
         runs_db.get_progress("run-1")
 
@@ -700,8 +704,13 @@ def test_the_admission_marker_matches_the_route_that_emits_it():
 
     assert inference_route._OPENAI_ADMISSION_SSE_WAIT.startswith(runs_mod._ADMISSION_WAIT_MARKER)
     assert inference_route._OPENAI_ADMISSION_SSE_DONE.startswith(runs_mod._ADMISSION_DONE_MARKER)
-    # And neither may match the stall keep-alive, which is the opposite signal.
-    for marker in (runs_mod._ADMISSION_WAIT_MARKER, runs_mod._ADMISSION_DONE_MARKER):
+    assert inference_route._OPENAI_TOOL_HEARTBEAT_SSE.startswith(runs_mod._TOOL_HEARTBEAT_MARKER)
+    # And none may match the stall keep-alive, which is the opposite signal.
+    for marker in (
+        runs_mod._ADMISSION_WAIT_MARKER,
+        runs_mod._ADMISSION_DONE_MARKER,
+        runs_mod._TOOL_HEARTBEAT_MARKER,
+    ):
         assert not inference_route._OPENAI_PASSTHROUGH_SSE_KEEPALIVE.startswith(marker)
     # The two must stay distinct, or the done branch would swallow every wait.
     assert not inference_route._OPENAI_ADMISSION_SSE_WAIT.startswith(

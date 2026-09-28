@@ -1455,6 +1455,73 @@ def test_local_inventory_lists_a_hermes_dir_registered_as_a_scan_folder_once(mon
     ]
 
 
+def _hf_home_with_gguf(hf_home: Path) -> None:
+    repo = hf_home / "hub" / "models--Org--Model-GGUF"
+    blob = repo / "blobs" / ("a" * 64)
+    blob.parent.mkdir(parents = True)
+    blob.write_bytes(b"GGUF" + b"\x03\x00\x00\x00" + b"\x00" * 64)
+    snapshot = repo / "snapshots" / ("0" * 40)
+    snapshot.mkdir(parents = True)
+    (snapshot / "Model-Q4_K_M.gguf").symlink_to(blob)
+    (repo / "refs").mkdir()
+    (repo / "refs" / "main").write_text("0" * 40)
+
+
+@pytest.mark.parametrize("registered", [("hf_home",), ("hf_home/hub",), ("hf_home", "hf_home/hub")])
+def test_local_inventory_lists_a_registered_hf_home(monkeypatch, tmp_path, registered):
+    _hf_home_with_gguf(tmp_path / "hf_home")
+    monkeypatch.setattr(local_inventory, "note_scan_folder_scanned", lambda *_a, **_k: None)
+
+    rows = asyncio.run(
+        local_inventory._collect_models_from_default_sources(
+            tmp_path / "models",
+            tmp_path / "hf",
+            tmp_path / "legacy",
+            tmp_path / "default",
+            (),
+            (),
+            (),
+            (),
+            [{"path": str(tmp_path / path)} for path in registered],
+        )
+    )
+    rows = local_inventory._filter_and_dedupe_local_models(rows)
+
+    assert [(row.source, row.model_id) for row in rows] == [("hf_cache", "Org/Model-GGUF")]
+
+
+def test_local_inventory_checks_for_hf_home_hub_off_the_event_loop(monkeypatch, tmp_path):
+    _hf_home_with_gguf(tmp_path / "hf_home")
+    monkeypatch.setattr(local_inventory, "note_scan_folder_scanned", lambda *_a, **_k: None)
+    real = local_inventory.hf_cache_scan.scan_folder_hf_caches
+    on_loop = []
+
+    def _spy(folder):
+        try:
+            asyncio.get_running_loop()
+            on_loop.append(True)
+        except RuntimeError:
+            on_loop.append(False)
+        return real(folder)
+
+    monkeypatch.setattr(local_inventory.hf_cache_scan, "scan_folder_hf_caches", _spy)
+    asyncio.run(
+        local_inventory._collect_models_from_default_sources(
+            tmp_path / "models",
+            tmp_path / "hf",
+            tmp_path / "legacy",
+            tmp_path / "default",
+            (),
+            (),
+            (),
+            (),
+            [{"path": str(tmp_path / "hf_home")}],
+        )
+    )
+
+    assert on_loop and not any(on_loop)
+
+
 def test_list_local_gguf_variants_skips_big_endian_sibling(tmp_path):
     (tmp_path / "model-Q4_K_M-be.gguf").write_bytes(b"x" * 100)
     (tmp_path / "model-Q4_K_M.gguf").write_bytes(b"y" * 10)
@@ -2274,6 +2341,7 @@ def test_cached_models_scan_marks_a_companion_only_pipeline_partial(monkeypatch,
     )
 
     assert row["partial"] is True
+    assert row["companion_prefetch"] is True
     # A companion-only snapshot arrived intact, so it has no Resume / Redownload story.
     assert row["partial_transport"] is None
 
@@ -2296,6 +2364,7 @@ def test_cached_models_scan_keeps_a_complete_pipeline_loadable(monkeypatch, tmp_
     )
 
     assert row["partial"] is False
+    assert row["companion_prefetch"] is False
     assert row["single_file"] is False
 
 
@@ -3986,6 +4055,62 @@ def test_hf_cache_scan_fallback_row_uses_local_model_info_alias(monkeypatch, tmp
     assert rows[0].model_format == "unknown"
 
 
+@pytest.mark.parametrize(
+    "with_denoiser, download_partial, expected",
+    [(False, False, True), (True, False, False), (False, True, False)],
+    ids = ["companion-only", "complete-pipeline", "interrupted-download"],
+)
+def test_hf_cache_scan_flags_a_companion_only_pipeline(
+    monkeypatch, tmp_path, with_denoiser, download_partial, expected
+):
+    """The local listing must carry companion_prefetch like the cached one: the Hub merges both."""
+    cache_dir = tmp_path / "hub"
+    repo_dir = cache_dir / "models--Org--Pipeline"
+    snapshot = repo_dir / "snapshots" / _SNAPSHOT_SHA
+    for rel in ("vae/diffusion_pytorch_model.safetensors", "text_encoder/model.safetensors"):
+        (snapshot / rel).parent.mkdir(parents = True, exist_ok = True)
+        (snapshot / rel).write_bytes(b"weights")
+    (snapshot / "transformer").mkdir(parents = True, exist_ok = True)
+    (snapshot / "transformer" / "config.json").write_text("{}", encoding = "utf-8")
+    if with_denoiser:
+        (snapshot / "transformer" / "diffusion_pytorch_model.safetensors").write_bytes(b"weights")
+    (snapshot / "model_index.json").write_text(
+        json.dumps(
+            {
+                "_class_name": "QwenImagePipeline",
+                "transformer": ["diffusers", "QwenImageTransformer2DModel"],
+                "vae": ["diffusers", "AutoencoderKLQwenImage"],
+                "text_encoder": ["transformers", "Qwen2_5_VLForConditionalGeneration"],
+            }
+        ),
+        encoding = "utf-8",
+    )
+    (repo_dir / "refs").mkdir(parents = True, exist_ok = True)
+    (repo_dir / "refs" / "main").write_text(_SNAPSHOT_SHA)
+    (repo_dir / "blobs").mkdir(parents = True, exist_ok = True)
+    (repo_dir / "blobs" / "blob").write_bytes(b"content")
+    monkeypatch.setattr(
+        local_inventory.hf_cache_scan,
+        "is_snapshot_partial",
+        lambda *_args, **_kwargs: download_partial,
+    )
+    monkeypatch.setattr(
+        local_inventory.hf_cache_scan,
+        "is_gguf_repo_partial",
+        lambda *_args, **_kwargs: False,
+    )
+
+    rows = [
+        row for row in local_inventory._scan_hf_cache(cache_dir) if row.model_id == "Org/Pipeline"
+    ]
+
+    assert rows
+    assert all(row.companion_prefetch is expected for row in rows)
+    if expected:
+        # Still partial, so no picker loads a pipeline without its denoiser.
+        assert all(row.partial for row in rows)
+
+
 def test_hf_cache_scan_uses_gguf_partial_row_for_variant_state(monkeypatch, tmp_path):
     monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
     cache_dir = tmp_path / "hub"
@@ -4068,6 +4193,32 @@ def test_qwen3_asr_gguf_name_hint_is_not_classified_as_chat(monkeypatch, tmp_pat
 
     assert catalog_classification._gguf_path_task(asr) == "automatic-speech-recognition"
     assert catalog_classification._gguf_path_task(chat) == "text-generation"
+
+
+def test_a_gguf_with_no_architecture_is_classified_from_its_name(monkeypatch, tmp_path):
+    """``unsloth/Qwen-Image-2.1-GGUF`` files have kv_count 0; a name that says nothing stays None."""
+    from hub.services.models import catalog_classification
+
+    image = tmp_path / "qwen-image-2.1-Q4_K_M.gguf"
+    chat = tmp_path / "Some-Chat-7B-Q4_K_M.gguf"
+    image.write_bytes(b"gguf")
+    chat.write_bytes(b"gguf")
+    monkeypatch.setattr(catalog_classification, "_gguf_architecture", lambda _path: None)
+    monkeypatch.setattr(catalog_classification, "_gguf_family_buildable", lambda _hints: True)
+
+    assert (
+        catalog_classification._gguf_path_task(image, ("unsloth/Qwen-Image-2.1-GGUF",))
+        == "text-to-image"
+    )
+    assert catalog_classification._gguf_path_task(chat) is None
+
+    # H3's conditioner is kv_count 0 too; only the fl2va / ref2va denoisers are video.
+    conditioner = tmp_path / "qwen3vl_32b_minimax_h3-Q4_K_M.gguf"
+    denoiser = tmp_path / "minimax_h3_fl2va_pruned-Q4_K.gguf"
+    conditioner.write_bytes(b"gguf")
+    denoiser.write_bytes(b"gguf")
+    assert catalog_classification._gguf_path_task(conditioner) is None
+    assert catalog_classification._gguf_path_task(denoiser) == "text-to-video"
 
 
 def test_local_inventory_filters_embedder_configured_by_snapshot_path(monkeypatch, tmp_path):
@@ -4307,6 +4458,166 @@ def test_gguf_variants_partial_marker_overrides_size_only_downloaded(monkeypatch
     assert result.dependencies_resolved is False
     assert result.variants[0].downloaded is False
     assert result.variants[0].partial is True
+
+
+def test_local_gguf_state_demotes_matching_main_until_companion_completes(monkeypatch, tmp_path):
+    repo_id = "Org/CompanionRepo"
+    quant = "UD-Q4_K_XL"
+    state_quant = quant.lower()
+    main_name = "Model-UD-Q4_K_XL.gguf"
+    companion_name = "MTP/mtp-Q8_0.gguf"
+    hub_cache = tmp_path / "hub"
+    repo_dir = hub_cache / "models--Org--CompanionRepo"
+    snapshot = repo_dir / "snapshots" / ("a" * 40)
+    snapshot.mkdir(parents = True)
+    (repo_dir / "blobs").mkdir()
+    (repo_dir / "blobs" / "main").write_bytes(b"m")
+    (repo_dir / "refs").mkdir()
+    (repo_dir / "refs" / "main").write_text("a" * 40, encoding = "utf-8")
+    (snapshot / main_name).write_bytes(b"m")
+    (snapshot / "Model-Q8_0.gguf").write_bytes(b"8")
+
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "studio-state")
+    monkeypatch.setattr(inventory_scan, "hf_cache_roots", lambda **_kw: [hub_cache])
+    monkeypatch.setattr(
+        "utils.hf_cache_settings.get_hf_cache_paths",
+        lambda: SimpleNamespace(hub_cache = hub_cache),
+    )
+    inventory_scan.invalidate_hf_cache_scans()
+    assert download_manifest.write_manifest(
+        "model",
+        repo_id,
+        state_quant,
+        [
+            download_manifest.ExpectedFile(path = main_name, size = 1, sha256 = "main"),
+            download_manifest.ExpectedFile(
+                path = companion_name,
+                size = 2,
+                sha256 = "companion",
+            ),
+        ],
+        "xet",
+        hub_cache = hub_cache,
+    )
+    assert download_manifest.write_cancel_marker(
+        "model",
+        repo_id,
+        state_quant,
+        "xet",
+        hub_cache = hub_cache,
+    )
+
+    try:
+        partial = asyncio.run(
+            gguf_variants.get_gguf_variants_response(repo_id, prefer_local_cache = True)
+        )
+        rows = [row for row in partial.variants if row.quant.lower() == state_quant]
+        assert len(rows) == 1
+        row = rows[0]
+        assert row.filename == main_name
+        assert row.quant == quant
+        assert row.size_bytes == 1
+        assert row.download_size_bytes == 3
+        assert row.download_remaining_bytes == 2
+        assert row.downloaded is False
+        assert row.partial is True
+        assert row.partial_transport == "xet"
+        assert row.partial_resumable is False
+        assert partial.default_variant == "Q8_0"
+
+        download_manifest.clear_cancel_marker(
+            "model",
+            repo_id,
+            state_quant,
+            hub_cache = hub_cache,
+        )
+        companion = snapshot / companion_name
+        companion.parent.mkdir()
+        companion.write_bytes(b"mt")
+        inventory_scan.invalidate_hf_cache_scans()
+
+        completed = asyncio.run(
+            gguf_variants.get_gguf_variants_response(repo_id, prefer_local_cache = True)
+        )
+    finally:
+        inventory_scan.invalidate_hf_cache_scans()
+
+    completed_row = next(row for row in completed.variants if row.quant == quant)
+    assert completed_row.filename == main_name
+    assert completed_row.downloaded is True
+    assert completed_row.partial is False
+    assert completed_row.partial_transport is None
+    assert completed.default_variant == quant
+
+
+@pytest.mark.parametrize("pin_snapshot", [True, False])
+def test_complete_gguf_ignores_newer_state_but_keeps_state_only_quant(
+    monkeypatch, tmp_path, pin_snapshot
+):
+    repo_id = "Org/PinnedRepo"
+    hub_cache = tmp_path / "hub"
+    repo_dir = hub_cache / "models--Org--PinnedRepo"
+    old_snapshot = repo_dir / "snapshots" / "old"
+    new_snapshot = repo_dir / "snapshots" / "new"
+    old_snapshot.mkdir(parents = True)
+    new_snapshot.mkdir(parents = True)
+    (repo_dir / "blobs").mkdir()
+    (repo_dir / "refs").mkdir()
+    (repo_dir / "refs" / "main").write_text("new", encoding = "utf-8")
+    (old_snapshot / "Model-Q4_K_M.gguf").write_bytes(b"4")
+    (new_snapshot / "Model-Q8_0.gguf").write_bytes(b"8")
+    os.utime(old_snapshot, (1, 1))
+    os.utime(new_snapshot, (2, 2))
+
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "studio-state")
+    monkeypatch.setattr(inventory_scan, "hf_cache_roots", lambda **_kw: [hub_cache])
+    monkeypatch.setattr(
+        "utils.hf_cache_settings.get_hf_cache_paths",
+        lambda: SimpleNamespace(hub_cache = hub_cache),
+    )
+    inventory_scan.invalidate_hf_cache_scans()
+    assert download_manifest.write_manifest(
+        "model",
+        repo_id,
+        "Q4_K_M",
+        [
+            download_manifest.ExpectedFile(
+                path = "Model-Q4_K_M.gguf",
+                size = 1,
+                sha256 = "newer-main",
+            )
+        ],
+        "xet",
+        hub_cache = hub_cache,
+    )
+    assert download_manifest.write_cancel_marker(
+        "model", repo_id, "Q4_K_M", "xet", hub_cache = hub_cache
+    )
+    assert download_manifest.write_cancel_marker(
+        "model", repo_id, "q5_k_m", "xet", hub_cache = hub_cache
+    )
+
+    try:
+        result = asyncio.run(
+            gguf_variants.get_gguf_variants_response(
+                repo_id,
+                prefer_local_cache = True,
+                local_path = str(old_snapshot) if pin_snapshot else None,
+            )
+        )
+    finally:
+        inventory_scan.invalidate_hf_cache_scans()
+
+    q4 = next(row for row in result.variants if row.quant == "Q4_K_M")
+    assert q4.filename == "Model-Q4_K_M.gguf"
+    assert q4.downloaded is True
+    assert q4.partial is False
+    q5_rows = [row for row in result.variants if row.quant.lower() == "q5_k_m"]
+    assert len(q5_rows) == 1
+    assert q5_rows[0].downloaded is False
+    assert q5_rows[0].partial is True
+    assert q5_rows[0].partial_transport == "xet"
+    assert result.default_variant == "Q4_K_M"
 
 
 def test_gguf_variants_scopes_partial_state_to_requested_cache(monkeypatch, tmp_path):
@@ -5872,6 +6183,176 @@ def test_delete_variant_unlinks_unshared_blob(monkeypatch, tmp_path):
     assert (repo_dir / "blobs" / "q8blob").exists()
     q8 = repo_dir / "snapshots" / "rev1" / "model-Q8_0.gguf"
     assert q8.is_symlink() and q8.exists()
+
+
+_SHARED_XET_HASH = "ab" + "cd" * 31
+
+
+def _share_variant_blob(
+    hub_cache,
+    repo_dir,
+    blob_name,
+    xet_hash = _SHARED_XET_HASH,
+):
+    pytest.importorskip("huggingface_hub.utils._shared_blobs")
+    store = hub_cache / "blobs"
+    store.mkdir(exist_ok = True)
+    (store / ".huggingface-shared-blobs").write_text("1\n")
+    payload = store / xet_hash[:2] / xet_hash
+    payload.parent.mkdir(exist_ok = True)
+    blob = repo_dir / "blobs" / blob_name
+    if payload.exists():
+        blob.unlink()
+    else:
+        blob.replace(payload)
+    with payload.with_name(f"{xet_hash}.refs").open("a") as refs:
+        refs.write(f"{repo_dir.name}/blobs/{blob_name}\n")
+    blob.symlink_to(os.path.relpath(payload, blob.parent))
+    return payload
+
+
+def test_delete_variant_sweeps_shared_xet_blob(monkeypatch, tmp_path):
+    repo_dir = tmp_path / "models--Org--Repo-GGUF"
+    repo = _build_variant_cache_repo(
+        repo_dir,
+        blob_specs = {"q4blob": b"x" * 200, "q8blob": b"y" * 300},
+        snapshot_links = [
+            ("rev1", "model-Q4_K_M.gguf", "q4blob"),
+            ("rev1", "model-Q8_0.gguf", "q8blob"),
+        ],
+    )
+    payload = _share_variant_blob(tmp_path, repo_dir, "q4blob")
+    _shared_setup_13(monkeypatch, repo, tmp_path)
+
+    result = deletion._delete_cached_model_blocking("Org/Repo-GGUF", "Q4_K_M", None)
+
+    assert result["status"] == "deleted"
+    assert not (repo_dir / "blobs" / "q4blob").is_symlink()
+    assert not payload.exists()
+    assert not payload.with_name(f"{payload.name}.refs").exists()
+    assert (repo_dir / "blobs" / "q8blob").exists()
+    q8 = repo_dir / "snapshots" / "rev1" / "model-Q8_0.gguf"
+    assert q8.is_symlink() and q8.exists()
+
+
+def test_delete_variant_keeps_shared_xet_blob_referenced_by_other_repo(monkeypatch, tmp_path):
+    repo_dir = tmp_path / "models--Org--Repo-GGUF"
+    repo = _build_variant_cache_repo(
+        repo_dir,
+        blob_specs = {"q4blob": b"x" * 200},
+        snapshot_links = [("rev1", "model-Q4_K_M.gguf", "q4blob")],
+    )
+    payload = _share_variant_blob(tmp_path, repo_dir, "q4blob")
+    other_dir = tmp_path / "models--Org--Other-GGUF"
+    other_repo = _build_variant_cache_repo(
+        other_dir,
+        blob_specs = {"q4blob": b"x" * 200},
+        snapshot_links = [("rev1", "model-Q4_K_M.gguf", "q4blob")],
+    )
+    other_repo.repo_id = "Org/Other-GGUF"
+    _share_variant_blob(tmp_path, other_dir, "q4blob")
+    _shared_setup_13(monkeypatch, repo, tmp_path)
+
+    result = deletion._delete_cached_model_blocking("Org/Repo-GGUF", "Q4_K_M", None)
+
+    assert result["status"] == "deleted"
+    assert not (repo_dir / "blobs" / "q4blob").is_symlink()
+    assert payload.exists()
+    other = other_dir / "snapshots" / "rev1" / "model-Q4_K_M.gguf"
+    assert other.is_symlink() and other.exists()
+    # huggingface_hub 1.32 cannot rewrite the manifest on Windows (it fsyncs a read-only handle), so a stale line for the removed link may stay; it names nothing on disk and is ignored.
+    manifest = payload.with_name(f"{payload.name}.refs")
+    live = [line for line in manifest.read_text().splitlines() if os.path.lexists(tmp_path / line)]
+    assert live == ["models--Org--Other-GGUF/blobs/q4blob"]
+
+    monkeypatch.setattr(
+        deletion.cache_inventory,
+        "all_hf_cache_scans",
+        lambda: [SimpleNamespace(repos = [other_repo])],
+    )
+    deletion._delete_cached_model_blocking("Org/Other-GGUF", "Q4_K_M", None)
+
+    assert not payload.exists()
+    assert not manifest.exists()
+
+
+def test_reclaim_replaced_variant_sweeps_shared_xet_blob(monkeypatch, tmp_path):
+    repo_dir = tmp_path / "models--Org--Repo-GGUF"
+    repo = _build_variant_cache_repo(
+        repo_dir,
+        blob_specs = {"q4blob": b"x" * 200, "q8blob": b"y" * 300},
+        snapshot_links = [
+            ("rev1", "model-Q4_K_M.gguf", "q4blob"),
+            ("rev1", "model-Q8_0.gguf", "q8blob"),
+        ],
+    )
+    payload = _share_variant_blob(tmp_path, repo_dir, "q4blob")
+    _shared_setup_13(monkeypatch, repo, tmp_path)
+
+    result = deletion.reclaim_replaced_gguf_variant(
+        "Org/Repo-GGUF", "Q4_K_M", frozenset({"newq4blob"}), None, hub_cache = tmp_path
+    )
+
+    assert result["status"] == "reclaimed"
+    assert result["deleted_blobs"] == 1
+    assert not (repo_dir / "blobs" / "q4blob").is_symlink()
+    assert not payload.exists()
+    assert (repo_dir / "blobs" / "q8blob").exists()
+
+
+def test_unlink_variant_blob_sweeps_when_cache_root_is_in_another_form(tmp_path):
+    real = tmp_path / "real"
+    repo_dir = real / "models--Org--Repo-GGUF"
+    _build_variant_cache_repo(
+        repo_dir,
+        blob_specs = {"q4blob": b"x" * 200},
+        snapshot_links = [("rev1", "model-Q4_K_M.gguf", "q4blob")],
+    )
+    payload = _share_variant_blob(real, repo_dir, "q4blob")
+    alias = tmp_path / "alias"
+    try:
+        alias.symlink_to(real, target_is_directory = True)
+    except OSError:
+        pytest.skip("directory symlinks unavailable")
+    (repo_dir / "snapshots" / "rev1" / "model-Q4_K_M.gguf").unlink()
+    blob = alias / repo_dir.name / "blobs" / "q4blob"
+
+    # The resolved root differs lexically from the blob's path, as a Windows 8.3 short name does.
+    freed = deletion._unlink_variant_blob(blob, real.resolve())
+
+    assert freed == 200
+    assert not payload.exists()
+    assert not payload.with_name(f"{payload.name}.refs").exists()
+
+
+def _load_fresh_deletion(monkeypatch, shared_blobs_module):
+    import importlib.util
+
+    monkeypatch.setitem(sys.modules, "huggingface_hub.utils._shared_blobs", shared_blobs_module)
+    spec = importlib.util.spec_from_file_location("_deletion_probe", deletion.__file__)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_shared_blob_helpers_disabled_when_private_signature_changes(monkeypatch):
+    stub = SimpleNamespace(
+        shared_blob_target = lambda blob_path: None,
+        sweep_shared_blob = lambda store_path, cache_root: 0,
+    )
+    fresh = _load_fresh_deletion(monkeypatch, stub)
+    assert fresh.shared_blob_target is None
+    assert fresh.sweep_shared_blob is None
+
+
+def test_shared_blob_helpers_kept_when_signature_matches(monkeypatch):
+    stub = SimpleNamespace(
+        shared_blob_target = lambda blob_path, cache_dir: None,
+        sweep_shared_blob = lambda store_path, *, cache_dir: 0,
+    )
+    fresh = _load_fresh_deletion(monkeypatch, stub)
+    assert fresh.shared_blob_target is stub.shared_blob_target
+    assert fresh.sweep_shared_blob is stub.sweep_shared_blob
 
 
 def test_delete_variant_surfaces_locked_file_as_conflict(monkeypatch, tmp_path):
