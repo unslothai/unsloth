@@ -14,6 +14,7 @@ import types
 
 import pytest
 
+from core.inference import diffusion_compile_config as compile_config
 from core.inference import diffusion_speed as ds_mod
 from core.inference.diffusion_speed import (
     SPEED_DEFAULT,
@@ -58,6 +59,13 @@ def _target(
 
 def _family(*, compile_ok = True):
     return types.SimpleNamespace(supports_torch_compile = compile_ok)
+
+
+@pytest.fixture(autouse = True)
+def _fresh_compile_knobs():
+    compile_config._reset_for_tests()
+    yield
+    compile_config._reset_for_tests()
 
 
 @pytest.fixture(autouse = True)

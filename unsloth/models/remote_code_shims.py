@@ -5,6 +5,7 @@
 
 import functools
 import inspect
+import re
 
 import torch
 
@@ -260,6 +261,88 @@ def _fill_missing_loss(cls):
     return True
 
 
+class _LegacyCacheView:
+    """Read-only `view[i] == (keys, values)` of a Cache; transformers 5 removed Cache.__getitem__."""
+
+    __slots__ = ("cache",)
+
+    def __init__(self, cache):
+        self.cache = cache
+
+    def _layers(self):
+        return getattr(self.cache, "layers", None) or []
+
+    def __len__(self):
+        return len(self._layers())
+
+    def __getitem__(self, index):
+        layer = self._layers()[index]
+        return (layer.keys, layer.values)
+
+    def __iter__(self):
+        for i in range(len(self)):
+            yield self[i]
+
+    def __getattr__(self, name):
+        return getattr(self.cache, name)
+
+
+def _needs_legacy_view(cache):
+    if cache is None or isinstance(cache, (tuple, list)):
+        return False
+    return not hasattr(type(cache), "__getitem__") and hasattr(cache, "layers")
+
+
+def _repair_multimodal_cache_indexing(cls):
+    """Phi-4-reasoning-vision indexes `past_key_values[-1][-1]` here per decode step: pass a tuple view, return the real cache."""
+    name = "prepare_inputs_labels_for_multimodal"
+    original = None
+    for klass in cls.__mro__:
+        if name in klass.__dict__:
+            original = klass.__dict__[name]
+            break
+    if original is None or getattr(original, "_unsloth_cache_view", False):
+        return False
+    try:
+        parameters = list(inspect.signature(original).parameters)
+    except (TypeError, ValueError):
+        return False
+    if "past_key_values" not in parameters:
+        return False
+    try:
+        source = inspect.getsource(original)
+    except (OSError, TypeError):
+        return False
+    # Code already on the Cache API (get_seq_length, isinstance Cache) must keep the real cache.
+    if re.search(r"past_key_values\s*\[", source) is None:
+        return False
+    position = parameters.index("past_key_values") - 1
+
+    @functools.wraps(original)
+    def prepare_inputs_labels_for_multimodal(self, *args, **kwargs):
+        args = list(args)
+        if "past_key_values" in kwargs:
+            cache = kwargs["past_key_values"]
+            if _needs_legacy_view(cache):
+                kwargs["past_key_values"] = _LegacyCacheView(cache)
+        elif len(args) > position:
+            cache = args[position]
+            if _needs_legacy_view(cache):
+                args[position] = _LegacyCacheView(cache)
+        else:
+            cache = None
+        output = original(self, *args, **kwargs)
+        if isinstance(output, tuple):
+            output = tuple(cache if isinstance(x, _LegacyCacheView) else x for x in output)
+        return output
+
+    prepare_inputs_labels_for_multimodal._unsloth_cache_view = True
+    setattr(cls, name, prepare_inputs_labels_for_multimodal)
+    # Static cache: prefill mask arrives as 4D / BlockMask, not the 2D padding mask this prep compacts by.
+    cls._supports_static_cache = False
+    return True
+
+
 def _rebind_accelerate_hook(model):
     # device_map loading keeps the bound original as `_old_forward`, bypassing class repairs.
     if getattr(type(model), "_unsloth_original_forward", None) is None:
@@ -316,6 +399,8 @@ def apply_remote_code_shims(model):
         repaired.append(f"{cls.__name__}.get_output_embeddings")
     if _is_remote_code(cls) and _fill_missing_loss(cls):
         repaired.append(f"{cls.__name__}.forward")
+    if _is_remote_code(cls) and _repair_multimodal_cache_indexing(cls):
+        repaired.append(f"{cls.__name__}.prepare_inputs_labels_for_multimodal")
     narrowed = _narrow_zero_padded_head_parameters(model)
     if narrowed:
         repaired.append(

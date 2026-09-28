@@ -1118,7 +1118,10 @@ mkdir -p "$WORK/whl/uv-0.12.1.data/scripts" && cp "$WORK/src/uv-fake-triple/uv" 
 WHEEL_SHA=$( (sha256sum "$WORK/uv-fake.whl" 2>/dev/null || shasum -a 256 "$WORK/uv-fake.whl") | awk '{print $1}')
 _sa=$(grep -n '^_SETUP_UV_PINNED_VERSION=' "$SETUP_SH" | cut -d: -f1)
 _sb=$(awk -v s="$(grep -n '^_setup_install_uv_pinned() {' "$SETUP_SH" | cut -d: -f1)" 'NR > s && /^}$/ { print NR; exit }' "$SETUP_SH")
-sed -n "${_sa},${_sb}p" "$SETUP_SH" > "$WORK/uvfns_setup.sh"
+# Include the shared probe used to validate the pinned uv binary.
+_pa=$(grep -n '^_SETUP_PROBE_TARGET=' "$SETUP_SH" | cut -d: -f1)
+_pb=$(awk -v s="$(grep -n '^_setup_probe_version() {' "$SETUP_SH" | cut -d: -f1)" 'NR > s && /^}$/ { print NR; exit }' "$SETUP_SH")
+{ sed -n "${_pa},${_pb}p" "$SETUP_SH"; sed -n "${_sa},${_sb}p" "$SETUP_SH"; } > "$WORK/uvfns_setup.sh"
 cp "$WORK/uvfns.sh" "$WORK/uvfns_install.sh"
 for _run in install:good install:bad setup:good setup:bad; do
     _wh="$WORK/wheel_${_run%:*}_${_run#*:}"; mkdir -p "$_wh"; _want=$WHEEL_SHA; [ "${_run#*:}" = good ] || _want=$(printf '0%.0s' $(seq 64))

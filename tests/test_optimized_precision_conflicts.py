@@ -71,6 +71,7 @@ def loader():
         patch_compiling_bitsandbytes = lambda: None,
         _get_dtype = lambda dtype: dtype,
         _revision_for_tokenizer_repo = lambda *args: None,
+        _raise_if_modeling_ignores_config = lambda *args: None,
     )
     exec(compile(ast.Module(body = [helper, method], type_ignores = []), str(path), "exec"), env)
     return env, captured
