@@ -54,6 +54,11 @@ if not _IS_MLX:
 logger = get_logger(__name__)
 
 
+def _load_in_4bit_kwargs(load_in_4bit: bool) -> dict:
+    # True is the loaders' default; passing it reads as an explicit request to requantize fp8 checkpoints to NF4.
+    return {} if load_in_4bit else {"load_in_4bit": False}
+
+
 def _export_runtime_available() -> bool:
     """True if export can run: MLX active, or Unsloth imported (only succeeds on a GPU host)."""
     return bool(_IS_MLX) or (FastLanguageModel is not None)
@@ -750,7 +755,7 @@ class ExportBackend:
                     model_name = checkpoint_path,
                     max_seq_length = max_seq_length,
                     dtype = None,
-                    load_in_4bit = load_in_4bit,
+                    **_load_in_4bit_kwargs(load_in_4bit),
                     trust_remote_code = trust_remote_code,
                     token = token,
                     local_files_only = local_files_only,
@@ -790,7 +795,7 @@ class ExportBackend:
                     model_name = checkpoint_path,
                     max_seq_length = max_seq_length,
                     dtype = None,
-                    load_in_4bit = load_in_4bit,
+                    **_load_in_4bit_kwargs(load_in_4bit),
                     trust_remote_code = trust_remote_code,
                     token = token,
                     local_files_only = local_files_only,
@@ -804,7 +809,7 @@ class ExportBackend:
                     model_name = checkpoint_path,
                     max_seq_length = max_seq_length,
                     dtype = None,
-                    load_in_4bit = load_in_4bit,
+                    **_load_in_4bit_kwargs(load_in_4bit),
                     trust_remote_code = trust_remote_code,
                     token = token,
                     local_files_only = local_files_only,
