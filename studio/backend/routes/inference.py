@@ -41742,7 +41742,7 @@ async def get_gallery_image_file(
         raise HTTPException(status_code = 404, detail = "Image not found.")
     # Immutable content (id is unique per image), so let the browser cache it.
     headers = {"Cache-Control": "private, max-age=31536000, immutable"}
-    if thumb:
+    if thumb is not None:
         size = max(32, min(1024, thumb))
         try:
             data = await asyncio.to_thread(image_gallery.thumbnail, path, size)

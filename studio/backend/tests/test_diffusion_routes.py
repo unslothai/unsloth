@@ -354,6 +354,8 @@ def test_gallery_serve_thumb_is_a_webp_and_falls_back_to_the_png(client, monkeyp
     thumb = client.get(f"{url}?thumb=5000")
     assert thumb.headers["content-type"] == "image/webp" and thumb.content == b"WEBP"
     assert sizes == [1024]
+    assert client.get(f"{url}?thumb=0").headers["content-type"] == "image/webp"
+    assert sizes == [1024, 32]
     original = client.get(url)
     assert original.headers["content-type"] == "image/png" and original.content == b"PNG"
 
