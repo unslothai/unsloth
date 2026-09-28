@@ -1,6 +1,5 @@
 # SPDX-License-Identifier: AGPL-3.0-only
-"""Kimi-K3 ships KDA A_log zero-padded ([128] for 96 heads). Quantized loads keep the padded tensor and the
-fla backward (`dA.view_as(A_log)`) fails, so apply_remote_code_shims narrows it to num_heads."""
+"""Kimi-K3 KDA A_log is stored zero-padded past num_heads; fla's backward needs it narrowed."""
 
 import importlib.util
 import os
@@ -30,8 +29,27 @@ def _remote_attention_class():
             self.num_heads = heads
             self.A_log = nn.Parameter(stored.clone())
 
+        def forward(self, g):
+            return _KdaGate.apply(g, self.A_log)
+
     KimiDeltaAttention.__module__ = mod.__name__
     return KimiDeltaAttention
+
+
+class _KdaGate(torch.autograd.Function):
+    # Mirrors fla/ops/kda/gate.py: forward reads A_log[:H], backward returns dA.view_as(A_log).
+    @staticmethod
+    def forward(ctx, g, A_log):
+        H = g.shape[-1]
+        ctx.save_for_backward(g, A_log)
+        return g * A_log[:H].exp()
+
+    @staticmethod
+    def backward(ctx, dy):
+        g, A_log = ctx.saved_tensors
+        H = g.shape[-1]
+        dA = (dy * g * A_log[:H].exp()).sum(0)
+        return dy * A_log[:H].exp(), dA.view_as(A_log)
 
 
 def _model(attn):
@@ -47,16 +65,14 @@ def test_zero_padded_a_log_is_narrowed_and_backward_shape_matches():
     shims.apply_remote_code_shims(model)
     assert model.attn.A_log.shape == (3,)
     assert torch.equal(model.attn.A_log.detach(), stored[:3])
-    assert model.attn.A_log.requires_grad
-    # The KDA gate backward does grad.view_as(A_log) with a per-head gradient.
-    per_head_grad = torch.ones(3)
-    assert per_head_grad.view_as(model.attn.A_log).shape == (3,)
+    model.attn(torch.randn(2, 3)).sum().backward()
+    assert model.attn.A_log.grad.shape == (3,)
 
 
 def test_nonzero_tail_and_exact_size_are_left_alone():
     cls = _remote_attention_class()
-    m1 = _model(cls(3, torch.randn(4)))  # tail not zero: not padding
-    m2 = _model(cls(4, torch.randn(4)))  # already the right size
+    m1 = _model(cls(3, torch.randn(4)))
+    m2 = _model(cls(4, torch.randn(4)))
     shims.apply_remote_code_shims(m1)
     shims.apply_remote_code_shims(m2)
     assert m1.attn.A_log.shape == (4,) and m2.attn.A_log.shape == (4,)
