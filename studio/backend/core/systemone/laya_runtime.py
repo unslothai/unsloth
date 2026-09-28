@@ -151,7 +151,42 @@ def _laya():
             for name in [n for n in sys.modules if n == "laya" or n.startswith("laya.")]:
                 del sys.modules[name]
             raise
+        for name in [n for n in sys.modules if n == "laya" or n.startswith("laya.")]:
+            sys.modules[name].open = _utf8_open
         return module
+
+
+def _utf8_open(
+    file,
+    mode = "r",
+    buffering = -1,
+    encoding = None,
+    errors = None,
+    newline = None,
+    closefd = True,
+    opener = None,
+):
+    """``open`` for the vendored laya modules: text mode defaults to UTF-8.
+
+    laya reads ``rl_agent_config.json`` and ``tokenizer_config.json`` with a bare ``open()``,
+    which decodes with the locale's code page (ANSI on Windows, ASCII under a C locale). A
+    checkpoint whose tokenizer config holds non-ASCII special tokens then fails to read, and
+    ``_fix_tokenizer_config`` swallows that and skips the repair the model needs to load.
+    The vendored files stay byte-identical to the wheel (vendor/README.md), so the encoding is
+    supplied here, as each laya module's own ``open``.
+    """
+    if encoding is None and "b" not in mode:
+        encoding = "utf-8"
+    return open(
+        file,
+        mode,
+        buffering,
+        encoding = encoding,
+        errors = errors,
+        newline = newline,
+        closefd = closefd,
+        opener = opener,
+    )
 
 
 def is_cached(checkpoint: Checkpoint) -> bool:
