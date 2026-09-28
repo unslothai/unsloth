@@ -58,6 +58,14 @@ foreach ($name in $shared) {
     if ($name -ne "Invoke-BoundedVideoControllerScan") { Invoke-Expression (Get-FunctionText $setupPs1 $name) }
 }
 
+# The gate also takes AMD evidence from the host (HIP SDK, ROCm variables, hipinfo or amd-smi on
+# PATH), which an AMD machine running this test really has. Only the fakes below may answer.
+foreach ($v in @("UNSLOTH_ROCM_GFX_ARCH", "_UNSLOTH_ROCM_GFX_ARCH_HANDOFF", "HIP_PATH", "HIP_PATH_57", "ROCM_PATH", "UNSLOTH_ENABLE_AMD_SMI")) {
+    [Environment]::SetEnvironmentVariable($v, $null)
+}
+$env:PATH = (@("$env:PATH" -split [System.IO.Path]::PathSeparator | Where-Object {
+    $_ -and -not (Test-Path -LiteralPath (Join-Path $_ "hipinfo.exe")) -and -not (Test-Path -LiteralPath (Join-Path $_ "amd-smi.exe"))
+}) -join [System.IO.Path]::PathSeparator)
 $script:FakeRegistryNames = @()
 $script:FakeRegistryThrows = $false
 function Get-IntelRegistryAdapterNames {
