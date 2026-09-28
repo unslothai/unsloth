@@ -27,6 +27,10 @@ from hub.utils.hf_tokens import (
     HfTokenArg,
     apply_token_to_child_env,
     cache_reads_authorized,
+    call_with_anonymous_retry,
+    collecting_hub_token_rejections,
+    HUB_TOKEN_REJECTED_ERROR,
+    is_rejected_credential_error,
     is_anonymous,
     normalize_token,
 )
@@ -862,7 +866,12 @@ def _raw_config_has_vision_config(
                 is_cached = lambda: _config_json_already_cached(model_name, revision),
             ):
                 return None
-            config_path = Path(hf_hub_download(**download_kwargs))
+            config_path = Path(
+                call_with_anonymous_retry(
+                    lambda token: hf_hub_download(**{**download_kwargs, "token": token}),
+                    hf_token,
+                )
+            )
         config = json.loads(config_path.read_text(encoding = "utf-8-sig"))
         architectures = config.get("architectures") or []
         model_type = config.get("model_type")
@@ -1201,7 +1210,9 @@ def _hub_model_info(
         # Shared, so whichever probe reads first fixes the bound the rest inherit.
         "timeout": _HUB_MODEL_INFO_TIMEOUT if timeout is None else timeout,
     }
-    info = hf_model_info(repo_id, **kwargs)
+    info = call_with_anonymous_retry(
+        lambda token: hf_model_info(repo_id, **{**kwargs, "token": token}), hf_token
+    )
 
     if scope is not None:
         scope[key] = info
@@ -3395,7 +3406,12 @@ def _looks_like_gguf_repo(repo_id: str, gguf_variant: Optional[str] = None) -> b
     )
 
 
-def _gguf_repo_unreadable_message(repo_id: str, error: Optional[Exception]) -> str:
+def _gguf_repo_unreadable_message(
+    repo_id: str,
+    error: Optional[Exception],
+    *,
+    token_rejected: bool = False,
+) -> str:
     if error is None:
         return (
             f"Could not load the GGUF repo '{repo_id}': Studio is offline and the repo is not "
@@ -3408,6 +3424,13 @@ def _gguf_repo_unreadable_message(repo_id: str, error: Optional[Exception]) -> s
         cause += f", HTTP {status}"
     if first_line:
         cause += f": {first_line}"
+    if token_rejected:
+        # Anonymous access could not answer either: private, gated or missing without it.
+        return (
+            f"Could not read the GGUF repo '{repo_id}' from Hugging Face ({cause}). "
+            f"{HUB_TOKEN_REJECTED_ERROR} If Studio reaches the Hub through a proxy, mirror "
+            "or HF_ENDPOINT, check that as well."
+        )
     return (
         f"Could not read the GGUF repo '{repo_id}' from Hugging Face ({cause}). "
         "Unsloth needs the repo's file list to pick a GGUF file. Check the Hugging Face "
@@ -3929,11 +3952,14 @@ def get_base_model_from_lora_identifier(
     last_exc = None
     for _attempt in range(2):  # one retry: a transient blip must not skip the base
         try:
-            cfg_path = hf_hub_download(
-                identifier,
-                "adapter_config.json",
-                token = normalize_token(hf_token),
-                cache_dir = active_hf_hub_cache(),
+            cfg_path = call_with_anonymous_retry(
+                lambda token: hf_hub_download(
+                    identifier,
+                    "adapter_config.json",
+                    token = token,
+                    cache_dir = active_hf_hub_cache(),
+                ),
+                normalize_token(hf_token),
             )
         except (EntryNotFoundError, RepositoryNotFoundError):
             # No adapter_config.json -> not a resolvable LoRA; caller scans the identifier.
@@ -4354,14 +4380,20 @@ class ModelConfig:
             detect_failures: List[Exception] = []
             failure_token = _gguf_remote_detect_failure.set(detect_failures)
             try:
-                gguf_filename = detect_gguf_model_remote(identifier, hf_token = hf_token)
+                with collecting_hub_token_rejections() as token_rejections:
+                    gguf_filename = detect_gguf_model_remote(identifier, hf_token = hf_token)
             finally:
                 _gguf_remote_detect_failure.reset(failure_token)
             # A failed listing is not "no GGUF"; a refused repo is never served from cache (#11551).
             if not gguf_filename and _looks_like_gguf_repo(identifier, gguf_variant):
                 if detect_failures:
                     raise GgufRepoUnreadableError(
-                        _gguf_repo_unreadable_message(identifier, detect_failures[-1])
+                        _gguf_repo_unreadable_message(
+                            identifier,
+                            detect_failures[-1],
+                            token_rejected = token_rejections.refused
+                            and is_rejected_credential_error(detect_failures[-1], hf_token),
+                        )
                     ) from None
                 if _env_offline():
                     raise GgufRepoUnreadableError(_gguf_repo_unreadable_message(identifier, None))
@@ -4397,7 +4429,9 @@ class ModelConfig:
                         # absent; without one, let the load path resolve it.
                         try:
                             from huggingface_hub import list_repo_files
-                            repo_files = list_repo_files(identifier, token = hf_token)
+                            repo_files = call_with_anonymous_retry(
+                                lambda token: list_repo_files(identifier, token = token), hf_token
+                            )
                         except Exception:
                             repo_files = None
                         if repo_files and not _gguf_files_for_variant(repo_files, variant):
@@ -4508,11 +4542,14 @@ class ModelConfig:
                 try:
                     from huggingface_hub import hf_hub_download
 
-                    config_path = hf_hub_download(
-                        identifier,
-                        "adapter_config.json",
-                        token = hf_token,
-                        cache_dir = active_hf_hub_cache(),
+                    config_path = call_with_anonymous_retry(
+                        lambda token: hf_hub_download(
+                            identifier,
+                            "adapter_config.json",
+                            token = token,
+                            cache_dir = active_hf_hub_cache(),
+                        ),
+                        hf_token,
                     )
                     with open(config_path, "r", encoding = "utf-8-sig") as f:
                         adapter_config = json.load(f)

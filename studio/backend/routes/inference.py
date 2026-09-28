@@ -81,7 +81,14 @@ from utils.audio_tokens import GGUF_TTS_AUDIO_TYPES as _GGUF_TTS_AUDIO_TYPES
 from utils.upload_limits import STT_AUDIO_B64_MAX_CHARS, STT_AUDIO_RAW_MAX_BYTES
 from hub.dependencies import get_hf_token, get_request_hf_token
 from hub.utils.hf_errors import modelscope_missing
-from hub.utils.hf_tokens import HfTokenArg
+from hub.utils.hf_tokens import (
+    HUB_TOKEN_REJECTED_ERROR,
+    is_token_rejection,
+    HUB_TOKEN_REJECTED_WARNING,
+    HfTokenArg,
+    call_hub_with_anonymous_retry,
+    collecting_hub_token_rejections,
+)
 from hub.services.models.ollama import (
     acquire_ollama_model_ref,
     is_ollama_manifest_ref,
@@ -11200,7 +11207,8 @@ def _remote_gguf_companion_bytes(
         from utils.models.drafters import dflash_budget_bytes, split_listing_is_complete
         from utils.models.model_config import dspark_preference_key
 
-        info = model_info(repo, token = hf_token, files_metadata = True)
+        # A refused token must not zero the companion bytes and slip past the training budget.
+        info = call_hub_with_anonymous_retry(model_info, hf_token, repo, files_metadata = True)
         total = 0
         mtp_bytes = 0
         dspark_candidates: list[tuple[str, int]] = []
@@ -11333,8 +11341,9 @@ def _remote_drafter_repo_bytes(spec: str, *, hf_token: Optional[str]) -> int:
         from utils.models.drafters import dflash_budget_bytes, split_listing_is_complete
 
         from hub.utils.gguf import drop_shadowed_appledouble_siblings
+        from hub.utils.hf_tokens import call_hub_with_anonymous_retry
 
-        info = model_info(repo, token = hf_token, files_metadata = True)
+        info = call_hub_with_anonymous_retry(model_info, hf_token, repo, files_metadata = True)
         sizes: dict[str, int] = {}
         # A sidecar's few KB stands in for the drafter the launch then fetches, and this figure
         # is what admits or refuses a load beside a training run.
@@ -16134,6 +16143,15 @@ def _cancel_scoped_load_attempt(
         return attempt, is_running
 
 
+def _with_token_rejected_warning(response, token_rejections):
+    """Tell the user the model loaded without their token, which Hugging Face refused."""
+    if not token_rejections.recovered or not isinstance(response, LoadResponse):
+        return response
+    existing = response.memory_warning
+    warning = f"{existing} {HUB_TOKEN_REJECTED_WARNING}" if existing else HUB_TOKEN_REJECTED_WARNING
+    return response.model_copy(update = {"memory_warning": warning})
+
+
 async def _run_tracked_load_model_impl(
     request: LoadRequest,
     fastapi_request: Request,
@@ -16152,15 +16170,16 @@ async def _run_tracked_load_model_impl(
     try:
         if attempt.cancel_event.is_set():
             raise HTTPException(status_code = 409, detail = "Model load cancelled")
-        response = await _load_model_impl(
-            request,
-            fastapi_request,
-            current_subject,
-            current_request_counted = current_request_counted,
-            on_reload_confirmed = on_reload_confirmed,
-            load_cancel_event = attempt.cancel_event,
-        )
-        return response
+        with collecting_hub_token_rejections() as token_rejections:
+            response = await _load_model_impl(
+                request,
+                fastapi_request,
+                current_subject,
+                current_request_counted = current_request_counted,
+                on_reload_confirmed = on_reload_confirmed,
+                load_cancel_event = attempt.cancel_event,
+            )
+        return _with_token_rejected_warning(response, token_rejections)
     finally:
         if attempt.cancel_event.is_set() and not attempt.cancel_complete.is_set():
             if not await asyncio.to_thread(
@@ -16587,6 +16606,7 @@ async def _load_model_impl(
     native_grant_backed = False
     model_log_label = request.model_path
     gguf_load_stack = ExitStack()
+    token_rejections = gguf_load_stack.enter_context(collecting_hub_token_rejections())
     try:
         # Validate user pass-through args up front so a managed-flag collision
         # returns 400 before any model work.
@@ -17735,6 +17755,9 @@ async def _load_model_impl(
         if isinstance(e, SidecarSwapInProgress):
             # Lost the spawn-time race to a sidecar install/repair: retryable 409.
             raise HTTPException(status_code = 409, detail = str(e))
+        if token_rejections.refused and (is_hf_authentication_error(e) or is_token_rejection(e)):
+            logger.warning("Load of '%s' failed: Hugging Face rejected the token", model_log_label)
+            raise HTTPException(status_code = 400, detail = HUB_TOKEN_REJECTED_ERROR)
         # Friendlier message for models Unsloth cannot load.
         redacted_msg = redact_native_paths(str(e))
         _unsupported_quantization = _unsupported_quantization_detail(redacted_msg)
@@ -17945,6 +17968,7 @@ async def validate_model(
     model_log_label = request.model_path
 
     ollama_load_stack = ExitStack()
+    token_rejections = ollama_load_stack.enter_context(collecting_hub_token_rejections())
     try:
         resolved_ollama_path = await _lease_ollama_model_ref(
             request,
@@ -18292,7 +18316,11 @@ async def validate_model(
         return restore_inventory_handles(
             ValidateModelResponse(
                 valid = True,
-                message = "Model identifier is valid.",
+                message = (
+                    f"Model identifier is valid. {HUB_TOKEN_REJECTED_WARNING}"
+                    if token_rejections.recovered
+                    else "Model identifier is valid."
+                ),
                 identifier = model_log_label if native_grant_backed else config.identifier,
                 resident = await asyncio.to_thread(
                     _validated_target_is_resident,
@@ -18333,12 +18361,23 @@ async def validate_model(
     except Exception as e:
         # Restored here rather than at each raise below: every branch quotes this string.
         redacted_msg = restore_inventory_handles(redact_native_paths(str(e)))
+        if token_rejections.refused and (is_hf_authentication_error(e) or is_token_rejection(e)):
+            raise HTTPException(status_code = 400, detail = HUB_TOKEN_REJECTED_ERROR)
         if is_hf_authentication_error(e):
             raise HTTPException(
                 status_code = 400,
                 detail = (
                     "Hugging Face authentication failed. Check or clear the token "
                     "in Settings, and confirm access to this gated repository."
+                ),
+            )
+        if _raised_repository_not_found(e):
+            # The Hub answers alike for a missing repo and a private one, so the message names both.
+            raise HTTPException(
+                status_code = 400,
+                detail = (
+                    f"'{model_log_label}' was not found on Hugging Face, or it is private. "
+                    "Check the name, or add a token with access to it in Settings."
                 ),
             )
         _unsupported_quantization = _unsupported_quantization_detail(redacted_msg)
@@ -18387,6 +18426,21 @@ async def validate_model(
 
     finally:
         ollama_load_stack.close()
+
+
+def _raised_repository_not_found(error: BaseException) -> bool:
+    seen: set[int] = set()
+    current: Optional[BaseException] = error
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if type(current).__name__ == "RepositoryNotFoundError":
+            return True
+        if isinstance(current, (ValueError, RuntimeError)):
+            return False
+        current = current.__cause__ or (
+            None if current.__suppress_context__ else current.__context__
+        )
+    return False
 
 
 def _upgrade_check_config_target(request: TransformersUpgradeCheckRequest) -> str:

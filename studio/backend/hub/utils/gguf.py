@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Optional, Sequence
 
+from hub.utils.hf_tokens import call_with_anonymous_retry
 from loggers import get_logger
 from utils.paths.path_utils import (
     drop_shadowed_appledouble_names as _drop_shadowed_appledouble_names,
@@ -1144,10 +1145,14 @@ def list_gguf_variants(
             return _ready_cached_variants(cached)
 
     try:
-        info = HfApi(token = hf_token).model_info(
-            repo_id,
-            files_metadata = True,
-            timeout = _GGUF_MODEL_INFO_TIMEOUT_SECONDS,
+        # A refused credential retries once anonymously: a public listing still answers.
+        info = call_with_anonymous_retry(
+            lambda token: HfApi(token = token).model_info(
+                repo_id,
+                files_metadata = True,
+                timeout = _GGUF_MODEL_INFO_TIMEOUT_SECONDS,
+            ),
+            hf_token,
         )
     except Exception as exc:
         if type(exc).__name__ in (
