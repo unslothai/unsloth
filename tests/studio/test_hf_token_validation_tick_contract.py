@@ -63,6 +63,7 @@ def test_validation_result_must_belong_to_the_current_normalized_token():
     complete = re.compile(shape.group(1))
     assert complete.fullmatch("hf_" + "a" * 34)
     assert complete.fullmatch("hf_oauth_" + "a" * 30)
+    assert not complete.fullmatch("hf_oauth_" + "a" * 29)
     assert not complete.fullmatch("hf_" + "a" * 33)
     assert not complete.fullmatch("hf_" + "a" * 34 + "-")
     assert "if (completed.token !== normalizedToken)" in source
