@@ -1,8 +1,11 @@
 # SPDX-License-Identifier: GNU Affero General Public License v3.0
 # Copyright 2023-present the Unsloth team. All rights reserved.
 
+import functools
+import inspect
 import logging
 import warnings
+from typing import Optional
 from dataclasses import asdict
 from unsloth import DEVICE_TYPE
 
@@ -56,12 +59,6 @@ def supports_tma():
     return _SUPPORTS_TMA
 
 
-try:
-    from torch.compiler import allow_in_graph
-except ImportError:
-    from torch._dynamo import allow_in_graph
-
-
 def _is_tracing(*tensors):
     """True if tensors are fake tensors used during torch.compile tracing (Triton cannot run). Not torch.compiler.is_compiling(): that is True during both tracing AND execution, and only tracing must skip the kernels."""
     for t in tensors:
@@ -72,6 +69,7 @@ def _is_tracing(*tensors):
 
 
 _per_device_alloc_fns = {}
+_FUSED_MUL_WARN = False
 
 
 def get_per_device_per_stream_alloc_fn(device):
@@ -101,8 +99,7 @@ def log_kernel_info(
         logger.debug(f"{kernel_name} autotuned best_config: {best_config}")
 
 
-@allow_in_graph
-def grouped_gemm_forward(
+def _grouped_gemm_forward_impl(
     X: torch.Tensor,
     W: torch.Tensor,
     topk: int,
@@ -276,8 +273,7 @@ def grouped_gemm_forward(
     return y
 
 
-@allow_in_graph
-def grouped_gemm_dX(
+def _grouped_gemm_dX_impl(
     dY: torch.Tensor,
     W: torch.Tensor,
     gather_indices: torch.Tensor,
@@ -417,8 +413,7 @@ def grouped_gemm_dX(
     return dX
 
 
-@allow_in_graph
-def grouped_gemm_dW(
+def _grouped_gemm_dW_impl(
     X: torch.Tensor,
     dY: torch.Tensor,
     m_sizes: torch.Tensor,
@@ -563,6 +558,100 @@ def grouped_gemm_dW(
             log_kernel_info(compiled_kernel)
 
     return dW
+
+
+# Opaque ops: allow_in_graph let AOT trace the body on fake tensors, keeping torch.empty and dropping the launch.
+# Not triton_op: torch.compile rejects prune_configs_by on triton.autotune.
+def _fwd_fake(X, W, topk, m_sizes, gather_indices, topk_weights, permute_x, permute_y, *args):
+    N = W.shape[1] if W.ndim == 3 else W.shape[0] // m_sizes.shape[0]
+    total_tokens = gather_indices.shape[0] if (permute_x or permute_y) else X.numel() // X.shape[-1]
+    return X.new_empty((total_tokens, N))
+
+
+def _dX_fake(dY, W, gather_indices, m_sizes, topk, *args):
+    total_tokens = (
+        gather_indices.shape[0] if gather_indices is not None else dY.numel() // dY.shape[-1]
+    )
+    return dY.new_empty((total_tokens, W.shape[-1]))
+
+
+def _dW_fake(X, dY, m_sizes, *args):
+    return X.new_empty((m_sizes.shape[0], dY.shape[-1], X.shape[-1]))
+
+
+_OPTIONAL_TENSORS = ("gather_indices", "topk_weights")
+
+
+def _make_op(name, impl, fake):
+    """torch.library.custom_op (torch >= 2.4) over impl; torch.compiler.disable where it is missing."""
+    custom_op = getattr(getattr(torch, "library", None), "custom_op", None)
+    if custom_op is None:
+        return torch._dynamo.disable(impl)
+    existing = getattr(getattr(torch.ops, "unsloth", None), name, None)
+    if existing is not None:
+        # grouped_gemm is also importable as a top-level package (glm4_moe, tests): reuse the registration.
+        return existing
+    params = [
+        p.replace(
+            default = inspect.Parameter.empty,
+            annotation = Optional[torch.Tensor] if p.name in _OPTIONAL_TENSORS else p.annotation,
+        )
+        for p in inspect.signature(impl).parameters.values()
+    ]
+    names = [p.name for p in params]
+
+    def op(*args):
+        return impl(**dict(zip(names, args)))
+
+    op.__signature__ = inspect.Signature(params, return_annotation = torch.Tensor)
+    op.__name__ = name
+    op = custom_op(f"unsloth::{name}", op, mutates_args = ())
+    op.register_fake(fake)
+    return op
+
+
+_grouped_gemm_forward_op = _make_op("grouped_gemm_forward", _grouped_gemm_forward_impl, _fwd_fake)
+_grouped_gemm_dX_op = _make_op("grouped_gemm_dX", _grouped_gemm_dX_impl, _dX_fake)
+_grouped_gemm_dW_op = _make_op("grouped_gemm_dW", _grouped_gemm_dW_impl, _dW_fake)
+
+
+def _signature(impl):
+    params = inspect.signature(impl).parameters.values()
+    return tuple(p.name for p in params), {
+        p.name: p.default for p in params if p.default is not p.empty
+    }
+
+
+_SIGNATURES = {
+    impl: _signature(impl)
+    for impl in (_grouped_gemm_forward_impl, _grouped_gemm_dX_impl, _grouped_gemm_dW_impl)
+}
+
+
+def _dispatch(impl, op, args, kwargs):
+    names, defaults = _SIGNATURES[impl]
+    bound = dict(defaults)
+    bound.update(zip(names, args))
+    bound.update(kwargs)
+    # Eager calls skip the custom-op dispatcher; traced calls (dynamo, or fake tensors under make_fx) need the op.
+    if torch.compiler.is_compiling() or _is_tracing(bound[names[0]], bound[names[1]]):
+        return op(*[bound[n] for n in names])
+    return impl(**bound)
+
+
+@functools.wraps(_grouped_gemm_forward_impl)
+def grouped_gemm_forward(*args, **kwargs) -> torch.Tensor:
+    return _dispatch(_grouped_gemm_forward_impl, _grouped_gemm_forward_op, args, kwargs)
+
+
+@functools.wraps(_grouped_gemm_dX_impl)
+def grouped_gemm_dX(*args, **kwargs) -> torch.Tensor:
+    return _dispatch(_grouped_gemm_dX_impl, _grouped_gemm_dX_op, args, kwargs)
+
+
+@functools.wraps(_grouped_gemm_dW_impl)
+def grouped_gemm_dW(*args, **kwargs) -> torch.Tensor:
+    return _dispatch(_grouped_gemm_dW_impl, _grouped_gemm_dW_op, args, kwargs)
 
 
 class GroupedGemm(torch.autograd.Function):

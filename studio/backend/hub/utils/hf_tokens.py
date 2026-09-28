@@ -115,21 +115,21 @@ _REPO_ACCESS_TTL_S = 60.0
 _REPO_ACCESS_UNREACHABLE_TTL_S = 30.0
 _REPO_ACCESS_CACHE_MAX = 1024
 # ``None`` is a THIRD value, not a miss: "the Hub could not be asked", never a denial.
-_repo_access_cache: dict[tuple[str, str, str], tuple[float, Optional[bool]]] = {}
+_repo_access_cache: dict[tuple[str, ...], tuple[float, Optional[bool]]] = {}
 _CACHE_MISS = object()
 _repo_access_lock = threading.Lock()
 # One probe per key: the probe runs outside _repo_access_lock, so a cold key would
 # otherwise open a connection per caller.
-_repo_access_inflight: dict[tuple[str, str, str], threading.Lock] = {}
+_repo_access_inflight: dict[tuple[str, ...], threading.Lock] = {}
 
 # An answered NO never expires and its eviction is remembered, since 429/5xx are "unaskable"
 # yet reachable: a refused caller is otherwise one outage from access.
 _DENIAL_MEMORY_MAX = 8192
-_denied_repo_access: dict[tuple[str, str, str], float] = {}
+_denied_repo_access: dict[tuple[str, ...], float] = {}
 _denial_memory_is_complete = True
 
 
-def _remember_denial(key: tuple[str, str, str], now: float) -> None:
+def _remember_denial(key: tuple[str, ...], now: float) -> None:
     global _denial_memory_is_complete
     with _repo_access_lock:
         _denied_repo_access.pop(key, None)
@@ -144,17 +144,17 @@ def _denial_memory_lost_an_entry() -> bool:
         return not _denial_memory_is_complete
 
 
-def _forget_denial(key: tuple[str, str, str]) -> None:
+def _forget_denial(key: tuple[str, ...]) -> None:
     with _repo_access_lock:
         _denied_repo_access.pop(key, None)
 
 
-def _denial_is_remembered(key: tuple[str, str, str]) -> bool:
+def _denial_is_remembered(key: tuple[str, ...]) -> bool:
     with _repo_access_lock:
         return key in _denied_repo_access
 
 
-def _with_remembered_denial(key: tuple[str, str, str], verdict: Optional[bool]) -> Optional[bool]:
+def _with_remembered_denial(key: tuple[str, ...], verdict: Optional[bool]) -> Optional[bool]:
     """ "Could not ask" reads as the last answer if that was no; once any refusal is evicted, no
     key may claim it was never refused."""
     if verdict is None and (_denial_is_remembered(key) or _denial_memory_lost_an_entry()):
@@ -807,7 +807,7 @@ def _hub_offline() -> bool:
         return False
 
 
-def _cached_repo_access(key: tuple[str, str, str], now: float):
+def _cached_repo_access(key: tuple[str, ...], now: float):
     """``None`` is a verdict of its own ("could not be asked"), so a miss needs its own sentinel."""
     cached = _repo_access_cache.get(key)
     if cached is not None and cached[0] > now:
@@ -822,11 +822,13 @@ def _explicit_token_reaches_repo(
     offline: bool = False,
 ) -> Optional[bool]:
     # None asks the public question, under its own key: a public repo answers 200 for every
-    # token, so a shared key would let any string claim that verdict.
+    # token, so a shared key would let any string claim that verdict. The endpoint too: the
+    # same repo id on another Hub is another repo.
     key = (
         repo_id.casefold(),
         repo_type,
         hashlib.sha256(token.encode()).hexdigest()[:16] if token else "anonymous",
+        _probe_endpoint(),
     )
     cached = _cached_repo_access(key, time.monotonic())
     if cached is not _CACHE_MISS:
@@ -840,7 +842,7 @@ def _explicit_token_reaches_repo(
         if cached is not _CACHE_MISS:
             return _with_remembered_denial(key, cached)  # type: ignore[arg-type]
         try:
-            allowed = _probe_repo_access(repo_id, token, repo_type)
+            allowed = _probe_repo_access(repo_id, token, repo_type, endpoint = key[3])
         except _ProbeTimedOut:
             allowed = None
         except Exception:
@@ -877,7 +879,7 @@ def _evict_repo_access_locked() -> None:
         _repo_access_cache.clear()
 
 
-def _inflight_lock(key: tuple[str, str, str]) -> threading.Lock:
+def _inflight_lock(key: tuple[str, ...]) -> threading.Lock:
     with _repo_access_lock:
         lock = _repo_access_inflight.get(key)
         if lock is None:
@@ -895,6 +897,16 @@ def _probe_endpoint() -> str:
     URL both clients reject and every probe on that machine is denied. ``hf_endpoint_url``
     is where the backend already normalises it; falls back since this module sits beneath.
     """
+    try:
+        from utils.hub_settings import MODELSCOPE, active_source, hugging_face_endpoint
+    except Exception:
+        active_source = None
+    # The cache holds Hugging Face snapshots: ModelScope's same-named repo cannot vouch for them.
+    if active_source is not None and active_source() == MODELSCOPE:
+        try:
+            return hugging_face_endpoint()
+        except Exception:
+            return "https://huggingface.co"
     try:
         from utils.utils import hf_endpoint_url
         return hf_endpoint_url().rstrip("/")
@@ -960,7 +972,13 @@ def _has_hf_error_code(response) -> bool:
         return False
 
 
-def _probe_repo_access(repo_id: str, token: Optional[str], repo_type: str) -> Optional[bool]:
+def _probe_repo_access(
+    repo_id: str,
+    token: Optional[str],
+    repo_type: str,
+    *,
+    endpoint: Optional[str] = None,
+) -> Optional[bool]:
     response = None
     try:
         from huggingface_hub import constants
@@ -976,7 +994,7 @@ def _probe_repo_access(repo_id: str, token: Optional[str], repo_type: str) -> Op
         # than the one memoized.
         if any(segment in {".", ".."} for segment in repo_id.split("/")):
             return False
-        path = f"{_probe_endpoint()}/api/{repo_type}s/{quote(repo_id, safe = '/')}/auth-check"
+        path = f"{endpoint or _probe_endpoint()}/api/{repo_type}s/{quote(repo_id, safe = '/')}/auth-check"
         response = get_session().get(
             path,
             # False, not None: None falls back to the ambient login, asking the public

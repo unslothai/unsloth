@@ -222,6 +222,12 @@ if _IS_MLX:
     except Exception:
         pass
     try:
+        from .import_fixes import fix_transformers5_legacy_config_types as _fix_legacy_types
+        _fix_legacy_types()
+        del _fix_legacy_types
+    except Exception:
+        pass
+    try:
         import unsloth_zoo
     except ImportError as _e:
         raise ImportError(

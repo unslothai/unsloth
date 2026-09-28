@@ -8,10 +8,11 @@ handlers explicitly send their database transaction through Starlette's threadpo
 """
 
 import asyncio
+import re
 import sqlite3
 from typing import Annotated, Any, Literal, Optional, Union
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
 from pydantic import (
     BaseModel,
     BeforeValidator,
@@ -23,6 +24,7 @@ from pydantic import (
 )
 
 from auth.authentication import get_current_subject
+from core import chat_originals
 from auth import policy
 from routes.chat_generation_runs import cancel_account_run
 from core.inference.llama_server_args import (
@@ -409,6 +411,10 @@ class ChatPresetLoadConfig(BaseModel):
     customContextLength: Optional[int] = Field(default = None, gt = 0)
     maxSeqLength: Optional[float] = None
     kvCacheDtype: Optional[str] = None
+    mlxKvQuant: Optional[
+        Literal["auto", "8", "6", "5", "4", "3", "2", "tq-4", "tq-3.5", "tq-3", "tq-2"]
+    ] = None
+    # Declared only because extra="forbid" would 400 the whole save for a client still sending it.
     mlxKvBits: Optional[Literal[8, 6, 5, 4, 3, 2]] = None
     speculativeType: Optional[str] = None
     specDraftNMax: Optional[int] = Field(default = None, ge = 1, le = 16)
@@ -830,6 +836,7 @@ async def delete_threads(
     # Archived turns and uploaded documents are keyed by thread id and unreferenced once the thread
     # is gone, so drop them rather than leaking scopes per deleted chat.
     await run_in_threadpool(_remove_thread_rag_data, payload.ids, cutoff = cutoff)
+    await run_in_threadpool(chat_originals.sweep)
     return {"status": "deleted", "sandboxes_removed": removed, "sandboxes_kept": kept}
 
 
@@ -966,6 +973,9 @@ def _decode_attachment_base64(payload: str) -> bytes:
     corrupted bytes, so raise 422."""
     import base64
 
+    # An imported file part can keep its data URL; base64 has no ':', so this never cuts a payload.
+    if payload[:5].lower() == "data:" and "," in payload:
+        payload = payload.split(",", 1)[1]
     normalized = "".join(payload.split())
     altchars = b"-_" if ("-" in normalized or "_" in normalized) else None
     normalized += "=" * (-len(normalized) % 4)
@@ -973,6 +983,19 @@ def _decode_attachment_base64(payload: str) -> bytes:
         return base64.b64decode(normalized, altchars = altchars, validate = True)
     except Exception as exc:  # noqa: BLE001 - corrupt stored payload
         raise HTTPException(status_code = 422, detail = "Attachment data is corrupt") from exc
+
+
+_ATTACHMENT_TAG_RE = re.compile(r"<attachment name=[^\n]*>\n(.*)\n</attachment>", re.DOTALL)
+_ATTACHMENT_LABEL_RE = re.compile(r"\[(?:PDF|DOCX|HTML|ODS|ODT|XLSX|PPTX|RTF): [^\n]*\]\n")
+
+
+def _attachment_body_text(text: str) -> str:
+    """An attachment's text without its chat wrapper, as the file itself reads."""
+    tagged = _ATTACHMENT_TAG_RE.fullmatch(text)
+    if tagged:
+        return tagged.group(1)
+    labelled = _ATTACHMENT_LABEL_RE.match(text)
+    return text[labelled.end() :] if labelled else text
 
 
 _AUDIO_FORMAT_MEDIA_TYPES = {
@@ -994,21 +1017,47 @@ def _safe_image_media_type(media_type: str) -> str:
     return "application/octet-stream"
 
 
+@router.post("/attachment-originals")
+def upload_attachment_original(
+    file: UploadFile = File(...), current_subject: str = Depends(get_current_subject)
+) -> dict:
+    """Store an attachment's original file; the message records the returned hash. Any name is
+    taken, since the python tool reads every text and code format. Sync, so disk writes run in
+    the threadpool."""
+    try:
+        sha256, size = chat_originals.save(
+            iter(lambda: file.file.read(1024 * 1024), b""),
+            chat_originals.max_bytes(file.filename or ""),
+        )
+    except chat_originals.TooLarge:
+        raise HTTPException(status_code = 413, detail = f"{file.filename} is too large")
+    chat_originals.sweep()
+    return {"sha256": sha256, "sizeBytes": size}
+
+
 @router.get("/attachments/{message_id}/{attachment_id}/file")
 def get_attachment_file(
     message_id: str,
     attachment_id: str,
     current_subject: str = Depends(get_current_subject),
 ):
-    """Serve one attachment's stored content: image or audio bytes, or
-    extracted text."""
+    """Serve one attachment's stored content: a document's original file, image, audio or video
+    bytes, or extracted text."""
     import urllib.parse
 
-    from fastapi.responses import Response
+    from fastapi.responses import FileResponse, Response
 
     attachment = get_chat_attachment(message_id, attachment_id)
     if attachment is None:
         raise HTTPException(status_code = 404, detail = "Attachment not found")
+
+    original = chat_originals.path_for(attachment)
+    if original is not None:
+        return FileResponse(
+            original,
+            media_type = "application/octet-stream",
+            headers = {"X-Content-Type-Options": "nosniff"},
+        )
 
     attachment_content_type = attachment.get("contentType")
     texts: list[str] = []
@@ -1048,9 +1097,19 @@ def get_attachment_file(
                     )
                 )
                 return Response(content = data, media_type = media_type)
+        file_data = part.get("data")
+        mime_type = str(part.get("mimeType") or attachment_content_type or "")
+        mime_type = mime_type.split(";", 1)[0].strip().lower()
+        if (
+            part.get("type") == "file"
+            and isinstance(file_data, str)
+            and file_data
+            and re.fullmatch(r"video/[a-z0-9.+-]+", mime_type)
+        ):
+            return Response(content = _decode_attachment_base64(file_data), media_type = mime_type)
         text = part.get("text")
         if isinstance(text, str) and text:
-            texts.append(text)
+            texts.append(_attachment_body_text(text))
     if texts:
         return Response(content = "\n".join(texts), media_type = "text/plain; charset=utf-8")
     raise HTTPException(status_code = 404, detail = "Attachment has no stored content")
@@ -1076,6 +1135,7 @@ def delete_attachment(
         ) from exc
     if not deleted:
         raise HTTPException(status_code = 404, detail = "Attachment not found")
+    chat_originals.sweep()
     return {"ok": True}
 
 
@@ -1214,6 +1274,7 @@ async def delete_project(
         logger.warning("failed to delete RAG sources for project %s", project_id, exc_info = True)
     # The project's chats go with it, so their archives and documents have to as well.
     await run_in_threadpool(_remove_thread_rag_data, member_ids, cutoff = cutoff)
+    await run_in_threadpool(chat_originals.sweep)
     if project.get("sandboxPath"):
         from core.inference.tools import (
             finish_workspace_delete_when_idle,
@@ -1375,8 +1436,8 @@ def save_thread_message(
     if get_chat_thread(thread_id) is None:
         raise HTTPException(status_code = 404, detail = f"Thread {thread_id} not found")
     try:
-        return ChatMessage(
-            **upsert_chat_message(payload.model_dump(), allow_generation_edit = allow_generation_edit)
+        saved = upsert_chat_message(
+            payload.model_dump(), allow_generation_edit = allow_generation_edit
         )
     except sqlite3.IntegrityError as exc:
         if get_chat_thread(thread_id) is None:
@@ -1391,6 +1452,8 @@ def save_thread_message(
             log = logger,
             headers = _conflict_headers(exc),
         ) from exc
+    chat_originals.sweep()
+    return ChatMessage(**saved)
 
 
 @router.put("/threads/{thread_id}/messages", response_model = ChatMessageListResponse)
@@ -1411,16 +1474,11 @@ def replace_thread_messages(
         raise HTTPException(status_code = 404, detail = f"Thread {thread_id} not found")
     messages = [message.model_dump() for message in payload.messages]
     try:
-        return ChatMessageListResponse(
-            messages = [
-                ChatMessage(**m)
-                for m in sync_chat_messages(
-                    thread_id,
-                    messages,
-                    prune_missing = payload.pruneMissing,
-                    deleted_message_ids = payload.deletedMessageIds,
-                )
-            ]
+        synced = sync_chat_messages(
+            thread_id,
+            messages,
+            prune_missing = payload.pruneMissing,
+            deleted_message_ids = payload.deletedMessageIds,
         )
     except sqlite3.IntegrityError as exc:
         if get_chat_thread(thread_id) is None:
@@ -1435,6 +1493,8 @@ def replace_thread_messages(
             log = logger,
             headers = _conflict_headers(exc),
         ) from exc
+    chat_originals.sweep()
+    return ChatMessageListResponse(messages = [ChatMessage(**m) for m in synced])
 
 
 @router.get("/count", response_model = ChatCountResponse)
@@ -1556,6 +1616,7 @@ async def clear_history(
     await run_in_threadpool(
         _remove_thread_rag_data, list(dict.fromkeys(thread_ids + cleared)), cutoff = cutoff
     )
+    await run_in_threadpool(chat_originals.sweep)
     # "Clear all chats" is the common bulk delete.
     # delete_files matches DELETE /threads: off by default, since the files are the user's.
     removed, kept = await _remove_sandboxes(list(dict.fromkeys(thread_ids + cleared)), delete_files)
