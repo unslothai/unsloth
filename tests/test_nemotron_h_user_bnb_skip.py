@@ -45,6 +45,11 @@ def test_user_bnb_config_gets_nemotron_h_skip_modules():
         "llm_int8_skip_modules"
     ] == ["lm_head"]
 
+    # transformers reads a dict with a load flag as bitsandbytes even without quant_method.
+    shorthand = {"load_in_4bit": True}
+    out = _with_architecture_skip_modules(shorthand, ["nemotron_h"])
+    assert "out_proj" in out["llm_int8_skip_modules"] and "llm_int8_skip_modules" not in shorthand
+
 
 def test_other_architectures_and_quantizers_are_untouched():
     from unsloth.models.vision import _with_architecture_skip_modules

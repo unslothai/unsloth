@@ -97,6 +97,7 @@ from ._custom_dtype import resolve_dtype, trusted_custom_dtype
 from .remote_code_shims import apply_remote_code_shims
 from .grouped_linear_lora import register_grouped_linear_lora
 from .loader_utils import (
+    _bnb_bits_requested,
     DEFAULT_DEVICE_MAP,
     OFFLOAD_EMBEDDING_AUTO,
     planner_config_overrides,
@@ -1295,19 +1296,13 @@ def _with_architecture_skip_modules(quantization_config, model_types):
     extra = _architecture_skip_modules(model_types)
     if quantization_config is None or not extra:
         return quantization_config
-    is_dict = isinstance(quantization_config, dict)
-
-    def get(key, default = None):
-        if is_dict:
-            return quantization_config.get(key, default)
-        return getattr(quantization_config, key, default)
-
-    method = get("quant_method", "")
-    method = str(getattr(method, "value", method) or "").lower()
-    is_bnb = "bitsandbytes" in method or type(quantization_config).__name__ == "BitsAndBytesConfig"
-    if not is_bnb or not (get("load_in_4bit", False) or get("load_in_8bit", False)):
+    if _bnb_bits_requested(quantization_config) is None:
         return quantization_config
-    current = get("llm_int8_skip_modules", None)
+    is_dict = isinstance(quantization_config, dict)
+    if is_dict:
+        current = quantization_config.get("llm_int8_skip_modules", None)
+    else:
+        current = getattr(quantization_config, "llm_int8_skip_modules", None)
     # None = transformers' defaults, which an explicit list replaces: start from Unsloth's own list.
     merged = list(SKIP_QUANTIZATION_MODULES) if current is None else list(current)
     missing = [m for m in extra if m not in merged]
