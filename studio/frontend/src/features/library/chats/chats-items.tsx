@@ -21,6 +21,7 @@ import {
   type SidebarItem,
   OpenChatFolderItem,
   OpenProjectFolderItem,
+  useChatNavigationStore,
   compareModelDisplayName,
 } from "@/features/chat";
 import { type TranslationKey, useLocale, useT } from "@/i18n";
@@ -47,6 +48,8 @@ import {
   PinOffIcon,
   PlusSignIcon,
   Settings02Icon,
+  ViewIcon,
+  ViewOffSlashIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import {
@@ -417,6 +420,10 @@ function ChatMenu({
   const t = useT();
   const actions = useChatsActions();
   const pinned = actions.pinned.has(chat.id);
+  const threadIds = chat.threadIds?.length ? chat.threadIds : [chat.id];
+  const unread = useChatNavigationStore((s) =>
+    threadIds.some((id) => s.unreadThreadIds.has(id)),
+  );
   return (
     <Isolate
       className={cn(variant === "card" && "absolute right-2 top-2 z-10")}
@@ -452,6 +459,23 @@ function ChatMenu({
                 onToggle={() =>
                   actions.setFavorite([chat], !actions.favorites.has(chat.id))
                 }
+              />
+              <MenuItem
+                icon={unread ? ViewIcon : ViewOffSlashIcon}
+                label={t(
+                  unread
+                    ? "shell.selection.markRead"
+                    : "shell.selection.markUnread",
+                )}
+                onSelect={() => {
+                  const store = useChatNavigationStore.getState();
+                  if (unread) store.clearThreadsUnread(threadIds);
+                  else
+                    store.markThreadsUnread(
+                      threadIds,
+                      Object.fromEntries(threadIds.map((id) => [id, chat.id])),
+                    );
+                }}
               />
             </>
           )}

@@ -47,6 +47,7 @@ import {
   notifyChatHistoryUpdated,
   renameChatItem,
   sandboxSessionIdsHolding,
+  useChatNavigationStore,
   useChatPreferencesStore,
   useChatProjects,
   useChatRuntimeStore,
@@ -74,6 +75,8 @@ import {
   PinOffIcon,
   Search01Icon,
   Upload01Icon,
+  ViewIcon,
+  ViewOffSlashIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { ArrowDownIcon, ChevronDownIcon, MoreHorizontalIcon } from "lucide-react";
@@ -156,6 +159,9 @@ export function ProjectsPage() {
     () => new Set(pinnedProjectIds),
     [pinnedProjectIds],
   );
+  const unreadThreadIds = useChatNavigationStore((s) => s.unreadThreadIds);
+  const markThreadsUnread = useChatNavigationStore((s) => s.markThreadsUnread);
+  const clearThreadsUnread = useChatNavigationStore((s) => s.clearThreadsUnread);
   const confirmDeleteChats = useChatPreferencesStore((s) => s.confirmDeleteChats);
   const alwaysDeleteChatFiles = useChatPreferencesStore(
     (s) => s.alwaysDeleteChatFiles,
@@ -1001,6 +1007,9 @@ export function ProjectsPage() {
                     {chats.map((chat) => {
                       const chatPinned = pinnedChatIdSet.has(chat.id);
                       const chatThreadIds = getSidebarItemThreadIds(chat);
+                      const chatUnread = chatThreadIds.some((id) =>
+                        unreadThreadIds.has(id),
+                      );
                       // Every chat here sits in a project, so the folder is the project's.
                       const chatSandboxId = sandboxSessionIdFor(
                         chatThreadIds[0] ?? chat.id,
@@ -1078,6 +1087,22 @@ export function ProjectsPage() {
                               >
                                 <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} className="size-icon" />
                                 <span>Rename</span>
+                              </DropdownMenuItem>
+                              {/* The dot a finished reply leaves, put back or taken off by hand. */}
+                              <DropdownMenuItem
+                                onSelect={() =>
+                                  chatUnread
+                                    ? clearThreadsUnread(chatThreadIds)
+                                    : markThreadsUnread(
+                                        chatThreadIds,
+                                        Object.fromEntries(
+                                          chatThreadIds.map((id) => [id, chat.id]),
+                                        ),
+                                      )
+                                }
+                              >
+                                <HugeiconsIcon icon={chatUnread ? ViewIcon : ViewOffSlashIcon} strokeWidth={1.75} className="size-icon" />
+                                <span>{chatUnread ? "Mark as read" : "Mark as unread"}</span>
                               </DropdownMenuItem>
                               {chatSandboxId ? (
                                 isTauri ? (

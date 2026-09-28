@@ -303,3 +303,9 @@ test("Favorites draws starred chats, projects and sections as file cards, withou
   assert.match(readSrc("features/library/chats/favorites-store.ts"), /sectionIds: readIds\(saved\?\.sectionIds\)/);
   assert.match(readSrc("features/library/library-page.tsx"), /favoriteMarks=\{tab !== "favorites"\}/);
 });
+
+test("the Library chat menu marks a chat read or unread", () => {
+  const items = readSrc("features/library/chats/chats-items.tsx");
+  assert.match(items, /unread \? ViewIcon : ViewOffSlashIcon/);
+  assert.match(items, /"shell\.selection\.markRead"/);
+});

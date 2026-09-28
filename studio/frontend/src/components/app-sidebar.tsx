@@ -4303,7 +4303,11 @@ export function AppSidebar() {
     list: ChatListContext,
     P: RowMenuParts,
   ) {
+    const threadIds = getSidebarItemThreadIds(item);
     const isPinned = pinnedIdSet.has(item.id);
+    const alreadyUnread = threadIds.some((threadId) =>
+      unreadThreadIds.has(threadId),
+    );
     // "Open chat folder" moved to the Library's Chats tab.
     // A compare row's id is the pair id while runningByThreadId is per pane thread; aggregate.
     const isGenerating =
@@ -4321,6 +4325,21 @@ export function AppSidebar() {
             <P.Item onSelect={() => togglePinnedChat(item.id)}>
               <HugeiconsIcon icon={isPinned ? PinOffIcon : PinIcon} strokeWidth={1.75} className="size-icon" />
               <span>{isPinned ? "Unpin" : "Pin"}</span>
+            </P.Item>
+            {/* The dot a finished reply leaves, put back or taken off by hand. */}
+            <P.Item
+              onSelect={() =>
+                alreadyUnread
+                  ? clearThreadsUnread(threadIds)
+                  : markThreadsUnread(threadIds, rowIdByThreadId)
+              }
+            >
+              <HugeiconsIcon icon={alreadyUnread ? ViewIcon : ViewOffSlashIcon} strokeWidth={1.75} className="size-icon" />
+              <span>
+                {alreadyUnread
+                  ? t("shell.selection.markRead")
+                  : t("shell.selection.markUnread")}
+              </span>
             </P.Item>
             {/* Above: edits the row. Below: copies or moves the chat. */}
             <P.Separator />
