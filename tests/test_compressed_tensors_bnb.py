@@ -1,17 +1,15 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU Affero General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU Affero General Public License for more details.
+# You should have received a copy of the GNU Affero General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 """Loading a compressed-tensors packed INT4 / INT8 checkpoint straight into bitsandbytes 4-bit.
 
@@ -1063,8 +1061,7 @@ def test_both_loaders_treat_an_explicit_bnb_4bit_config_as_the_4bit_request():
         requantize_packed = quantization_config_selects_bnb_4bit(explicit),
     )
     assert getattr(config, UNSLOTH_COMPRESSED_TENSORS_ATTR, None) is not None
-    # Unarmed (vLLM reads the checkpoint itself): the check clears 4-bit, and the caller's flags must not
-    # override it, or vLLM is asked for a bitsandbytes load of compressed-tensors shards.
+    # Unarmed (vLLM reads the checkpoint itself), the check clears 4-bit.
     unarmed = _Config(quantization_config = _w4a16())
     checked_4bit, _, _ = check_and_disable_bitsandbytes_loading(
         unarmed, load_in_4bit = True, load_in_8bit = False, verbose = False, requantize_packed = False
