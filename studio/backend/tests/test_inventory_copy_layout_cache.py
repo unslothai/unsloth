@@ -185,3 +185,13 @@ def test_the_snapshot_probe_is_bounded(tmp_path, monkeypatch):
     assert _discovered_ids(tmp_path) == []
     monkeypatch.setattr(local_inventory.model_common, "_HF_CACHE_MODEL_FILE_PROBE_LIMIT", 2000)
     assert _discovered_ids(tmp_path) == [REPO]
+
+
+def test_only_the_snapshot_that_is_classified_is_probed(tmp_path):
+    # An older populated revision beside a newer empty one: the row would be classified from
+    # the newer one and show as an unknown, unloadable model, so the repo stays hidden.
+    repo = _copy_layout(tmp_path)
+    newer = repo / "snapshots" / ("f" * 40)
+    newer.mkdir()
+    os.utime(repo / "snapshots" / REV, (1, 1))
+    assert _discovered_ids(tmp_path) == []
