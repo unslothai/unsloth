@@ -7,11 +7,11 @@ import {
   withAbort,
 } from "@/features/hub/lib/abort-signals";
 import { hubTokenHeader } from "@/features/hub/lib/hub-token-header";
-import { readFastApiError } from "@/lib/format-fastapi-error";
 import { localPathCacheKey } from "@/features/hub/lib/local-path";
 import { isHuggingFaceOffline } from "@/features/hub/lib/network";
 import { fingerprintToken } from "@/features/hub/lib/token-fingerprint";
 import { bumpInventoryVersion } from "@/features/hub/stores/inventory-events";
+import { readFastApiError } from "@/lib/format-fastapi-error";
 import {
   discardDeletedInventoryHints,
   discardDeletedModelInventoryHints,
@@ -305,7 +305,9 @@ export async function listCachedDatasets(): Promise<CachedDatasetRepo[]> {
   const response = await withHubTimeout(INVENTORY_TIMEOUT_MS, (signal) =>
     authFetch("/api/hub/datasets/cached", { signal }),
   );
-  const data = await parseJsonOrThrow<{ cached: CachedDatasetRepo[] }>(response);
+  const data = await parseJsonOrThrow<{ cached: CachedDatasetRepo[] }>(
+    response,
+  );
   return data.cached;
 }
 
@@ -356,8 +358,15 @@ export async function fetchDeleteImpact(
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(
         variant
-          ? { repo_id: repoId, variant, ...(cachePath ? { cache_path: cachePath } : {}) }
-          : { repo_id: repoId, ...(cachePath ? { cache_path: cachePath } : {}) },
+          ? {
+              repo_id: repoId,
+              variant,
+              ...(cachePath ? { cache_path: cachePath } : {}),
+            }
+          : {
+              repo_id: repoId,
+              ...(cachePath ? { cache_path: cachePath } : {}),
+            },
       ),
     });
     if (!response.ok) return null;
@@ -567,4 +576,46 @@ export function invalidateGgufVariantsCache(repoId?: string): void {
     }
   }
   bumpGgufVariantsCacheVersion(repoId);
+}
+
+export interface PortableModelResult {
+  status: "exported" | "imported" | "already_present";
+  repo_id: string;
+  variant?: string;
+  path: string;
+  files: number;
+  size_bytes: number;
+}
+
+/** Copy a downloaded model's snapshot into `destination` as plain files (#8798). */
+export async function exportCachedModel(
+  repoId: string,
+  destination: string,
+  variant?: string | null,
+): Promise<PortableModelResult> {
+  const payload: Record<string, string> = { repo_id: repoId, destination };
+  if (variant) {
+    payload.variant = variant;
+  }
+  const response = await authFetch("/api/hub/export-model", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  await throwIfNotOk(response);
+  return (await response.json()) as PortableModelResult;
+}
+
+/** Copy an exported model folder into the models cache so it shows as downloaded. */
+export async function importModelFolder(
+  source: string,
+): Promise<PortableModelResult> {
+  const response = await authFetch("/api/hub/import-model", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ source }),
+  });
+  await throwIfNotOk(response);
+  bumpInventoryVersion();
+  return (await response.json()) as PortableModelResult;
 }

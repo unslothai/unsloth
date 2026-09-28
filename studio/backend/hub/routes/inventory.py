@@ -37,6 +37,7 @@ from hub.schemas.inventory import (
     CachedGgufResponse,
     CachedModelsResponse,
     DeleteCachedModelResponse,
+    PortableModelResponse,
     DeleteImpactResponse,
     GgufVariantsResponse,
     HiddenModelsResponse,
@@ -47,6 +48,7 @@ from hub.schemas.inventory import (
     ScanFolderInfo,
     ScanFoldersResponse,
 )
+from hub.services.models import portable
 from hub.services.models import (
     cache_inventory,
     companion_cleanup,
@@ -375,3 +377,40 @@ async def delete_cached_model(
         resolve_host_path_reference(cache_path) or cache_path,
         only_if_orphan,
     )
+
+
+@router.post("/export-model", response_model = PortableModelResponse, response_model_exclude_none = True)
+async def export_model(
+    repo_id: str = Body(...),
+    destination: str = Body(...),
+    variant: Optional[str] = Body(None),
+    current_subject: str = Depends(get_current_subject),
+):
+    """Copy a downloaded model's snapshot into a folder as plain files (#8798)."""
+    try:
+        return await asyncio.to_thread(
+            portable.export_cached_model,
+            repo_id,
+            variant,
+            resolve_host_path_reference(destination) or destination,
+        )
+    except portable.PortableModelError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc))
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code = 404, detail = str(exc))
+
+
+@router.post("/import-model", response_model = PortableModelResponse, response_model_exclude_none = True)
+async def import_model(
+    source: str = Body(..., embed = True),
+    current_subject: str = Depends(get_current_subject),
+):
+    """Copy an exported model folder into the models cache (#8798)."""
+    try:
+        return await asyncio.to_thread(
+            portable.import_model_folder, resolve_host_path_reference(source) or source
+        )
+    except portable.PortableModelError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc))
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code = 404, detail = str(exc))

@@ -367,6 +367,17 @@ class DeleteCachedModelResponse(BaseModel):
     variant: Optional[str] = None
 
 
+class PortableModelResponse(BaseModel):
+    """An export to a plain folder, or an import of one back into the cache (#8798)."""
+
+    status: str
+    repo_id: str
+    variant: Optional[str] = None
+    path: str
+    files: int
+    size_bytes: int
+
+
 class CompanionAssetInfo(BaseModel):
     """A companion base repo (text encoders, VAE, tokenizer, configs) in the cache."""
 
