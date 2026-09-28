@@ -277,14 +277,26 @@ export function usePersonalizationSync(enabled: boolean): void {
           const keepLocalChatWidth =
             remote.chatWidthSaved === false ||
             remote.appearance.customization?.chatWidth === undefined;
+          const keepLocalComposerAttachments =
+            remote.composerAttachmentsSaved === false ||
+            remote.appearance.customization?.composerAttachments === undefined;
+          const keepLocalSentAttachments =
+            remote.sentAttachmentsSaved === false ||
+            remote.appearance.customization?.sentAttachments === undefined;
           const nextCustomization = keepLocalCustomization
             ? localCustomization
-            : keepLocalChatWidth
-              ? {
-                  ...remoteCustomization,
+            : {
+                ...remoteCustomization,
+                ...(keepLocalChatWidth && {
                   chatWidth: localCustomization.chatWidth,
-                }
-              : remoteCustomization;
+                }),
+                ...(keepLocalComposerAttachments && {
+                  composerAttachments: localCustomization.composerAttachments,
+                }),
+                ...(keepLocalSentAttachments && {
+                  sentAttachments: localCustomization.sentAttachments,
+                }),
+              };
           const remoteLanguage = remoteLanguagePreference(
             remote.version,
             remote.appearance.language,

@@ -461,7 +461,7 @@ export function DebuggingTab() {
     );
 
   return (
-    <div className="flex flex-col gap-6">
+    <div className="settings-page">
       <SettingsSection
         title={t("settings.debugging.logSection")}
         description={t("settings.debugging.sourceHint")}
