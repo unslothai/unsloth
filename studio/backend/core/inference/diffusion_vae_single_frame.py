@@ -1,28 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Single-frame fast path for the causal 3D VAE the Qwen-Image family decodes images with.
-
-``AutoencoderKLQwenImage`` is a video VAE (Wan lineage): every ``QwenImageCausalConv3d`` pads
-``kernel_t - 1`` zero frames in FRONT of its input and runs a 3D conv, and ``_decode`` walks the
-frames with a feature cache that ``.clone()``s a slice after every conv. An image is ONE frame, so:
-
-* with no cached frame, the only temporal kernel slice that meets real data is the last one, and
-  the conv is exactly ``conv2d(x[:, :, 0], weight[:, :, -1], bias)`` over the same spatial padding.
-  Eager was running three times the conv FLOPs, most of them against zeros, plus a padded
-  three-frame copy of every activation;
-* the first chunk of the cached walk never runs a temporal (up/down)sample conv and never reads a
-  cache slot, so ``decoder(x, feat_cache=None)`` computes the same image without the clones.
-
-Also what makes the decode compile well: inductor's conv layout optimisation only applies to 2D
-convolutions, so the stock graph (24 conv3d) gained nothing from compile while the rewritten one is
-a plain 2D conv net. Idea credited to ComfyUI's single-frame Wan VAE path (ideas only, no code).
-
-Only a single frame, untiled, takes the fast decode/encode; every other call runs the stock method,
-bit-identical: the per-conv 2D form is gated to the fast calls, so a tiled or multi-frame walk (whose
-first chunk also reaches each conv with no cache and one frame) keeps its 3D convs. Not bit-identical to the 3D conv (a different cuDNN algorithm): PSNR ~60 dB on the
-Qwen-Image-2512 VAE, so it is armed only on a non-``off`` speed tier. Kill switch, read at install
-(never inside the compiled decode): ``UNSLOTH_DIFFUSION_VAE_SINGLE_FRAME=0``."""
+"""Single-frame fast path for the Qwen-Image causal 3D VAE: one frame with no cache only meets the last
+temporal kernel slice, so each conv is exactly ``conv2d(x[:, :, 0], weight[:, :, -1], bias)``, and the
+first chunk of the cached walk equals ``decoder(x, feat_cache=None)``. Gated to single-frame untiled
+calls (tiled / multi-frame keep 3D convs). PSNR ~60 dB vs 3D (different cuDNN algo), so non-``off``
+tiers only. Kill switch, read at install: ``UNSLOTH_DIFFUSION_VAE_SINGLE_FRAME=0``."""
 
 from __future__ import annotations
 
@@ -37,7 +20,6 @@ _CONV_CLASSES = frozenset({"QwenImageCausalConv3d"})
 
 
 class _Gate:
-    """Shared by one VAE's convs: on only for the duration of a fast single-frame decode / encode."""
 
     def __init__(self) -> None:
         self.on = False
@@ -146,7 +128,6 @@ def install(vae: Any, logger: Any = None) -> bool:
         convs = [m for m in vae.modules() if type(m).__name__ in _CONV_CLASSES]
         if not convs or not callable(getattr(vae, "_decode", None)):
             return False
-        # Probe the attributes the fast path reads, before arming anything.
         for m in convs:
             _ = (m._padding[5], m.kernel_size[0], m.stride[0], m.dilation[0], m.groups)
         gate = _Gate()

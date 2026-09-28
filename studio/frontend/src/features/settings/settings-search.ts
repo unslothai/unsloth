@@ -11,7 +11,12 @@ import type { SettingsTab } from "./stores/settings-dialog-store";
  * (profile, connections) are still reachable from search.
  */
 export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
-  accounts: ["settings.accounts.title", "settings.accounts.create"],
+  accounts: [
+    "settings.accounts.title",
+    "settings.accounts.create",
+    "settings.general.managedProviderUrls.sectionTitle",
+    "settings.general.managedProviderUrls.enableLabel",
+  ],
   general: [
     "settings.general.account",
     "settings.general.password",
@@ -24,8 +29,6 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.general.previewSharing.sectionTitle",
     "settings.general.previewSharing.enableLabel",
     "settings.general.previewSharing.revokeLabel",
-    "settings.general.managedProviderUrls.sectionTitle",
-    "settings.general.managedProviderUrls.enableLabel",
     "settings.general.rag.sectionTitle",
     "settings.general.rag.embeddingModel",
     "settings.general.helperLlm.sectionTitle",
@@ -69,6 +72,8 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.appearance.custom.headingFont.label",
     "settings.appearance.custom.chatFont.label",
     "settings.appearance.custom.chatWidth.label",
+    "settings.appearance.custom.composerAttachments.label",
+    "settings.appearance.custom.sentAttachments.label",
     "settings.appearance.custom.codeFont.label",
     "settings.appearance.custom.contrast.label",
     "settings.appearance.custom.pointerCursors.label",

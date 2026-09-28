@@ -592,13 +592,8 @@ class GraphedForward:
 
 
 class GraphedCompiledCall(GraphedForward):
-    """``GraphedForward`` for a WHOLE-module compiled denoiser (the SDXL U-Net's ``Module.compile``).
-
-    ``nn.Module.__call__`` serves such a module from ``_compiled_call_impl`` and never reads the
-    ``forward`` slot, and a graph in the slot would be traced by that compile. So the replay sits in
-    ``_compiled_call_impl`` itself and captures the compiled callable: dynamo's guard check runs on
-    the host at capture and the recorded inductor kernels replay without it. The warm-up call is where
-    the (static) compile happens, before the capture. Takes the ``module(...)`` call signature."""
+    """``GraphedForward`` for a whole-module compiled denoiser (SDXL U-Net): ``Module.__call__`` serves it from
+    ``_compiled_call_impl`` and never reads ``forward``, so the replay sits there and captures the compiled callable."""
 
     def __init__(self, module: Any, **kwargs: Any) -> None:
         compiled = getattr(module, "_compiled_call_impl", None)
