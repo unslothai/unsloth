@@ -224,7 +224,7 @@ def test_an_off_torch_load_pins_its_card_at_spawn():
 def test_every_spawn_site_passes_the_pin():
     load = inspect.getsource(sd_cpp_backend.SdCppDiffusionBackend._run_load)
     assert "env = spawn_env," in load
-    assert "if mode == \"server\" and off_torch is None" in load
+    assert 'if mode == "server" and off_torch is None' in load
     restart = inspect.getsource(sd_cpp_backend.SdCppDiffusionBackend._restart_server_on_cpu_backend)
     assert "env = state.spawn_env()," in restart
     oneshot = inspect.getsource(sd_cpp_backend.SdCppDiffusionBackend._generate_oneshot)
@@ -260,6 +260,5 @@ def test_the_load_route_skips_the_arbiter_only_once_native_is_active():
 
 def test_training_keeps_an_off_torch_images_model():
     import routes.training as training_routes
-
     source = inspect.getsource(training_routes)
     assert 'getattr(diffusion, "runs_off_torch_device", False) is True' in source
