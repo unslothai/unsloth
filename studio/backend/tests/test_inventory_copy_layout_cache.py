@@ -164,3 +164,24 @@ def test_unreadable_snapshot_tree_does_not_break_the_scan(tmp_path, monkeypatch)
 
     monkeypatch.setattr(Path, "iterdir", iterdir)
     assert _discovered_ids(tmp_path) == ["unsloth/Other-GGUF"]
+
+
+def test_finder_metadata_alone_does_not_count_as_content(tmp_path):
+    # A failed copy to a macOS share can leave only the AppleDouble companion behind.
+    repo = _repo_dir(tmp_path)
+    (repo / "blobs").mkdir(parents = True)
+    _write(
+        repo / "snapshots" / REV / ("._" + GGUF), b"\x00\x05\x16\x07\x00\x02\x00\x00" + b"\0" * 24
+    )
+    assert _discovered_ids(tmp_path) == []
+
+
+def test_the_snapshot_probe_is_bounded(tmp_path, monkeypatch):
+    repo = _repo_dir(tmp_path)
+    for index in range(5):
+        (repo / "snapshots" / REV / f"empty{index}").mkdir(parents = True)
+    _write(repo / "snapshots" / REV / "zz" / GGUF)
+    monkeypatch.setattr(local_inventory.model_common, "_HF_CACHE_MODEL_FILE_PROBE_LIMIT", 3)
+    assert _discovered_ids(tmp_path) == []
+    monkeypatch.setattr(local_inventory.model_common, "_HF_CACHE_MODEL_FILE_PROBE_LIMIT", 2000)
+    assert _discovered_ids(tmp_path) == [REPO]

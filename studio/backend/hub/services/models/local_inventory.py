@@ -270,16 +270,21 @@ def _hf_snapshots_hold_files(repo_dir: Path) -> bool:
     Where symlinks are unavailable (Windows without Developer Mode, some network shares),
     huggingface_hub moves each finished blob into ``snapshots/<rev>/`` and leaves ``blobs/``
     empty, so checking ``blobs/`` alone hid every model downloaded that way. Stops at the first
-    file; a dangling link is not a file, and an unreadable tree counts as empty."""
+    file and walks at most as many entries as the model-file probe; a dangling link is not a
+    file, Finder metadata is not a download, and an unreadable tree counts as empty."""
     snapshots_dir = repo_dir / "snapshots"
     try:
         if not snapshots_dir.is_dir():
             return False
+        walked = 0
         for revision in snapshots_dir.iterdir():
-            if revision.is_file():
-                return True
-            if revision.is_dir() and any(p.is_file() for p in revision.rglob("*")):
-                return True
+            entries = [revision] if not revision.is_dir() else revision.rglob("*")
+            for entry in entries:
+                walked += 1
+                if walked > model_common._HF_CACHE_MODEL_FILE_PROBE_LIMIT:
+                    return False
+                if entry.is_file() and not is_appledouble_metadata(entry):
+                    return True
     except OSError:
         return False
     return False
