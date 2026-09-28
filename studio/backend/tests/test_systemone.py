@@ -1545,3 +1545,111 @@ def test_encoders_that_keep_the_padding_id_match_laya(tmp_path):
     )
     with torch.inference_mode():
         assert torch.equal(fast(*args)[0], reference(*args)[0])
+
+
+def _cuda_tiny_agent(
+    tmp_path,
+    monkeypatch,
+    torch,
+    capture = True,
+):
+    if not torch.cuda.is_available() or torch.version.hip:
+        pytest.skip("needs a CUDA GPU")
+    import transformers
+
+    if capture and int(transformers.__version__.split(".")[0]) < 5:
+        pytest.skip("transformers 4.x ModernBERT cannot be captured")
+    laya = laya_runtime._laya()
+    encoder_dir, cfg = _tiny_laya_encoder(tmp_path)
+    torch.manual_seed(0)
+    model = laya.common.build_model({**cfg, "head_layers": 2}, encoder_dir = encoder_dir).eval()
+    agent = SimpleNamespace(model = model, device = torch.device("cpu"), dtype = torch.float32)
+    monkeypatch.setattr(laya_runtime, "_precision", lambda device, fp16_checkpoint: (None, None))
+    laya_runtime._place(agent, torch.device("cuda"), False)
+    return agent
+
+
+def _padded_eager(model, batch, key, torch):
+    rows = batch["input_ids"].shape[0]
+    shapes = {
+        "input_ids": key[:2],
+        "attention_mask": key[:2],
+        "marker_pos": (key[0], key[2]),
+        "marker_mask": (key[0], key[2]),
+        "qtype": key[:1],
+    }
+    padded = {name: torch.zeros(shape, dtype = batch[name].dtype) for name, shape in shapes.items()}
+    for name, value in batch.items():
+        if value.dim() == 1:
+            padded[name][:rows] = value
+        else:
+            padded[name][:rows, : value.shape[1]] = value
+        padded[name][rows:] = padded[name][:1]
+    with torch.inference_mode():
+        return laya_runtime._decision_logits(
+            model, *(padded[name].cuda() for name in laya_runtime._INPUTS)
+        )
+
+
+def test_cuda_graphs_sharing_a_pool_replay_in_any_order(tmp_path, monkeypatch):
+    torch = pytest.importorskip("torch")
+    agent = _cuda_tiny_agent(tmp_path, monkeypatch, torch)
+    generator = torch.Generator().manual_seed(1)
+    shapes = [(1, 20, 2), (3, 40, 5), (2, 100, 3), (6, 200, 9)]
+
+    def request(rows, tokens, options):
+        ids = torch.randint(5, 300, (rows, tokens), generator = generator)
+        mask = torch.ones(rows, tokens, dtype = torch.long)
+        mask[1:, tokens // 2 :] = 0
+        positions = torch.randint(0, tokens // 2, (rows, options), generator = generator)
+        markers = torch.ones(rows, options, dtype = torch.bool)
+        markers[1:, options - 1] = False
+        return dict(
+            zip(
+                laya_runtime._INPUTS,
+                (ids, mask, positions, markers, torch.randint(0, 3, (rows,), generator = generator)),
+            )
+        )
+
+    graphs = None
+    # Capture order A B C D, then replay out of order, interleaving buckets.
+    for index in [0, 1, 2, 3, 0, 2, 1, 3, 3, 0, 1, 0, 2]:
+        batch = request(*shapes[index])
+        got = laya_runtime._run_model(agent, batch).clone()
+        graphs = agent.__dict__["_unsloth_graphs"]
+        key = graphs.graphs and next(
+            k
+            for k in graphs.graphs
+            if k[0] >= shapes[index][0] and k[1] >= shapes[index][1] and k[2] >= shapes[index][2]
+        )
+        want = _padded_eager(agent.model, batch, key, torch)
+        assert torch.equal(got, want[: shapes[index][0], : shapes[index][2]]), (index, key)
+    assert len(graphs.graphs) == 4 and not graphs.broken
+
+
+def test_cuda_graphs_over_the_memory_budget_run_eagerly(tmp_path, monkeypatch):
+    torch = pytest.importorskip("torch")
+    agent = _cuda_tiny_agent(tmp_path, monkeypatch, torch)
+    batch = dict(zip(laya_runtime._INPUTS, _tiny_decision_batch(torch, rows = 3, tokens = 40)))
+    graphs = agent.__dict__["_unsloth_graphs"] = laya_runtime._CUDAGraphs(agent)
+    # The first capture alone takes more than the budget.
+    graphs.max_pool_bytes = 1 << 20
+    reserved = iter([0, 2 << 20])
+    monkeypatch.setattr(torch.cuda, "memory_reserved", lambda device = None: next(reserved))
+    logits = laya_runtime._run_model(agent, batch)
+    assert graphs.broken and not graphs.graphs
+    with torch.inference_mode():
+        reference = agent.model(*(value.cuda() for value in batch.values()))[0]
+    torch.testing.assert_close(logits, reference, atol = 1e-4, rtol = 1e-4)
+
+
+def test_rocm_never_builds_cuda_graphs(tmp_path, monkeypatch):
+    torch = pytest.importorskip("torch")
+    agent = _cuda_tiny_agent(tmp_path, monkeypatch, torch, capture = False)
+    # transformers 4.x would torch.compile ModernBERT, which a faked ROCm version sends looking for HIP.
+    agent.model.encoder.config.reference_compile = False
+    monkeypatch.setattr(torch.version, "hip", "6.2")
+    monkeypatch.setattr(laya_runtime, "_CUDAGraphs", None)
+    batch = dict(zip(laya_runtime._INPUTS, _tiny_decision_batch(torch, rows = 3, tokens = 40)))
+    laya_runtime._run_model(agent, batch)
+    assert "_unsloth_graphs" not in agent.__dict__

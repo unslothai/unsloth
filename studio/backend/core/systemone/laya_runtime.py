@@ -761,6 +761,8 @@ def _run_model(agent, batch):
         fast
         and device.type == "cuda"
         and os.environ.get("UNSLOTH_SYSTEMONE_CUDA_GRAPHS", "") != "0"
+        # ROCm reports "cuda" too; as in diffusion_cuda_graph.py, graphs are CUDA only.
+        and not torch.version.hip
     ):
         graphs = agent.__dict__.get("_unsloth_graphs")
         if graphs is None:
@@ -1035,6 +1037,12 @@ class _CUDAGraphs:
                 return None
             self.graphs[key] = entry
             self.pool_bytes += max(0, torch.cuda.memory_reserved(self.agent.device) - before)
+            if self.pool_bytes > self.max_pool_bytes:
+                # Over budget: the pool is only released with every graph in it, so drop them all and stay eager.
+                logger.warning("Laya CUDA graphs need more memory than allowed; running eagerly")
+                self.graphs.clear()
+                self.broken = True
+                return None
         graph, static, logits = entry
         # Padding tokens are masked; padding rows repeat row 0 so every row has a real token to attend to.
         static["input_ids"].zero_()
