@@ -28,11 +28,12 @@ function Check {
     else { Write-Host "  FAIL  $Name" -ForegroundColor Red; $script:failures++ }
 }
 
+# The tokens are joined at run time so this file does not itself carry the shapes it bans.
 $bannedConstructs = @(
     @("compiles no C# at all", "(?m)^[ \t]*Add-Type\b(?![^\r\n]*-AssemblyName)"),
-    @("emits no P/Invoke stubs", "DefinePInvokeMethod"),
-    @("defines no dynamic assembly", "DefineDynamicAssembly"),
-    @("declares no native import", "DllImport")
+    @("emits no P/Invoke stubs", ('DefinePInvoke' + 'Method')),
+    @("defines no dynamic assembly", ('DefineDynamic' + 'Assembly')),
+    @("declares no native import", ('Dll' + 'Import'))
 )
 $bannedTypeNames = @("UnslothStudioFinalPathV3", "UnslothStudioProcessImageV1", "UnslothShellIconRefresh", "UnslothStudioConsoleModeV1")
 foreach ($pair in @(@("install.ps1", $installPath), @("studio/setup.ps1", $setupPath))) {
@@ -43,13 +44,13 @@ foreach ($pair in @(@("install.ps1", $installPath), @("studio/setup.ps1", $setup
     }
 }
 
-$banSelfTest = @'
-Add-Type -TypeDefinition "public class X {}"
-$null = [AppDomain]::CurrentDomain.DefineDynamicAssembly($name, "Run")
-$null = $builder.DefinePInvokeMethod("CreateFileW", "kernel32.dll")
-[DllImport("kernel32.dll")]
-class UnslothStudioFinalPathV3 {}
-'@
+$banSelfTest = @(
+    'Add-Type -TypeDefinition "public class X {}"',
+    ('$null = [AppDomain]::CurrentDomain.' + 'DefineDynamic' + 'Assembly($name, "Run")'),
+    ('$null = $builder.' + 'DefinePInvoke' + 'Method("CreateFileW", "kernel32.dll")'),
+    ('[' + 'Dll' + 'Import("kernel32.dll")]'),
+    'class UnslothStudioFinalPathV3 {}'
+) -join "`n"
 foreach ($ban in $bannedConstructs) {
     Check "the '$($ban[0])' rule can fire at all" ([regex]::Matches($banSelfTest, $ban[1]).Count -gt 0)
 }
