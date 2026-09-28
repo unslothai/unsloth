@@ -2485,6 +2485,17 @@ def test_an_unfinished_alias_scan_fails_closed(studio_home, monkeypatch):
     assert not tools._references_studio_credential_here('echo "A=$A B=$B"', workdir)
 
 
+@pytest.mark.parametrize("rebind", ["x=$x/safe", "x=/tmp", "x=./project"])
+@pytest.mark.parametrize("reader", ['sqlite3 "$x/auth/auth.db" .dump', 'cat "$x/auth/auth.db"'])
+def test_a_later_rebinding_does_not_hide_an_earlier_read(studio_home, rebind, reader):
+    workdir = str(studio_home / "sandbox" / _SESSION)
+    command = f"x=../..; {reader}; {rebind}"
+    assert tools._references_studio_credential_here(command, workdir)
+    assert not tools._references_studio_credential_here(
+        command.replace("../..", "./project"), workdir
+    )
+
+
 @pytest.mark.parametrize("scope", ["(x=)", "$(x=)", "echo $(x=)", "{ (x=); }"])
 def test_a_scoped_empty_assignment_keeps_the_outer_binding(studio_home, scope):
     workdir = str(studio_home / "sandbox" / _SESSION)

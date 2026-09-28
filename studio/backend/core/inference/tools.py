@@ -3939,6 +3939,7 @@ def _references_studio_credential_here(
     _unescaped: bool = False,
     _assign_expand_depth: int = 0,
     _quoted_assignments: bool = False,
+    _positional_assignments: bool = False,
 ) -> bool:
     """`_references_studio_credential`, plus the relative paths *text* would open from *workdir*.
 
@@ -4012,27 +4013,36 @@ def _references_studio_credential_here(
     # sensitive-path scan uses, and it only ADDS detections.
     if "$" in text:
         # Quoted bindings scanned separately: log text shaped like an assignment must not overwrite real ones.
-        modes = (
+        quoted_modes = (
             (False, True)
             if _assign_expand_depth == 0 and ("'" in text or '"' in text)
             else (_quoted_assignments,)
         )
-        for include_quoted in modes:
-            expanded = _expand_shell_assignments(text, _include_quoted = include_quoted)
-            if expanded == text:
-                continue
-            # Exhausted expansion budget fails closed: unresolved aliases may still hide the auth path.
-            if _assign_expand_depth >= _MAX_SHELL_ASSIGN_EXPAND_PASSES or (
-                "$" in expanded and len(expanded) > max(_MAX_TERMINAL_SCAN_CHARS, len(text))
-            ):
-                return True
-            if _references_studio_credential_here(
-                expanded,
-                workdir,
-                _assign_expand_depth = _assign_expand_depth + 1,
-                _quoted_assignments = include_quoted,
-            ):
-                return True
+        positional_modes = (
+            (True, False) if _assign_expand_depth == 0 else (_positional_assignments,)
+        )
+        seen = {text}
+        for include_quoted in quoted_modes:
+            for positional in positional_modes:
+                expanded = _expand_shell_assignments(
+                    text, _include_quoted = include_quoted, _positional = positional
+                )
+                if expanded in seen:
+                    continue
+                seen.add(expanded)
+                # Exhausted expansion budget fails closed: unresolved aliases may still hide the auth path.
+                if _assign_expand_depth >= _MAX_SHELL_ASSIGN_EXPAND_PASSES or (
+                    "$" in expanded and len(expanded) > max(_MAX_TERMINAL_SCAN_CHARS, len(text))
+                ):
+                    return True
+                if _references_studio_credential_here(
+                    expanded,
+                    workdir,
+                    _assign_expand_depth = _assign_expand_depth + 1,
+                    _quoted_assignments = include_quoted,
+                    _positional_assignments = positional,
+                ):
+                    return True
     # A `cd` earlier in the command moves where every later relative path opens from.
     if workdir and ("cd" in text.lower() or "pushd" in text.lower()):
         for offset, limit, cwd in _cwds_after_cd(workdir, text):
@@ -5284,7 +5294,12 @@ def _shell_assign_value_self_references(name: str, value: str) -> bool:
     )
 
 
-def _expand_shell_assignments(command: str, *, _include_quoted: bool = True) -> str:
+def _expand_shell_assignments(
+    command: str,
+    *,
+    _include_quoted: bool = True,
+    _positional: bool = False,
+) -> str:
     """Best-effort substitution of `NAME=value ... $NAME`, so a sensitive path split across an
     assignment and an argument (p=/etc; cat $p/passwd) is still visible to the scan. Also applies
     pattern replacement. Fail-open: only adds detections."""
@@ -5329,6 +5344,9 @@ def _expand_shell_assignments(command: str, *, _include_quoted: bool = True) -> 
         return _SHELL_VAR_RE.sub(lambda m: env.get(m.group(1) or m.group(2), m.group(0)), text)
 
     quote_states = None
+    # _positional: each use sees the binding active where it stands, so `x=../..; cat "$x/auth/auth.db"; x=/tmp`
+    # still names the auth path; the default (last binding everywhere) covers loops that bind after the use.
+    pieces, pos = [], 0
     for match in _SHELL_ASSIGN_RE.finditer(command):
         if not _include_quoted:
             if quote_states is None:
@@ -5336,6 +5354,10 @@ def _expand_shell_assignments(command: str, *, _include_quoted: bool = True) -> 
             if quote_states[match.start(1)]:
                 continue
         var, val = match.groups()
+        if _positional:
+            pieces.append(expand(command[pos : match.start(2)]))
+            pieces.append(expand(val))
+            pos = match.end(2)
         if _shell_assign_value_self_references(var, val):
             # Studio home vars stay references: `H=$H; cat "$H/auth/auth.db"` must still name the install.
             if var.upper() in _STUDIO_HOME_ENV_VARS:
@@ -5350,7 +5372,11 @@ def _expand_shell_assignments(command: str, *, _include_quoted: bool = True) -> 
         if not val and var in env:
             continue
         env[var] = val
-    return expand(command) if env else command
+    if not env:
+        return command
+    if _positional:
+        return "".join(pieces) + expand(command[pos:])
+    return expand(command)
 
 
 def _expand_param_defaults(command: str) -> str:
