@@ -140,6 +140,36 @@ def test_kernels_decode_bit_exact_and_multiply_like_dense(
 
 
 @needs_gpu
+@needs_ct
+def test_jit_launch_fallback_matches_the_compiled_launcher(monkeypatch):
+    # Triton < 3.7 launchers reject CompiledKernel[grid](*runtime_args); the JIT launch must give the same bits.
+    import unsloth.kernels.int4_packed as ip
+
+    torch.manual_seed(0)
+    packed, ref, gs = _packed_layer(200, 512, 4, 128, True, False, torch.bfloat16, "group")
+    W = packed["weight_packed"]
+
+    def run():
+        qs = ip.Int4QuantState(
+            packed["weight_scale"], None, None, (200, 512), 4, gs, torch.bfloat16
+        )
+        x = torch.randn(
+            3,
+            512,
+            device = "cuda",
+            dtype = torch.bfloat16,
+            generator = torch.Generator("cuda").manual_seed(1),
+        )
+        return ip.int4_dequantize(W, qs), ip.int4_matmul(x, W, qs)
+
+    fast = run()
+    monkeypatch.setattr(ip, "_FAST_LAUNCH", False)
+    jit = run()
+    assert torch.equal(fast[0], ref) and torch.equal(jit[0], ref)
+    assert torch.equal(fast[1], jit[1])
+
+
+@needs_gpu
 @pytest.mark.skipif(
     not (HAS_CT and HAS_CONVERTERS), reason = "needs compressed-tensors and the transformers 5 loader"
 )
