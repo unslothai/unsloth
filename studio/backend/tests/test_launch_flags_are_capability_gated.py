@@ -605,4 +605,35 @@ def test_a_flood_before_readiness_keeps_the_startup_head():
 def test_the_offload_report_covers_metal_and_env_pinned_layers():
     src = inspect.getsource(LlamaCppBackend.load_model)
     assert "(_detected_gpus or _metal_capable_host())" in src
-    assert "_device_selection_is_cpu(extra_args, env) or _env_fixes_gpu_layers(env)" in src
+    start = src.index("self._offload_overridden = ")
+    assignment = src[start : src.index("\n                if ", start)]
+    assert "_device_selection_is_cpu(extra_args, env)" in assignment
+    assert "_env_fixes_gpu_layers(env)" in assignment
+
+
+def test_the_active_log_file_stops_growing_past_its_cap(tmp_path, monkeypatch):
+    monkeypatch.setattr(llama_cpp_module, "_LLAMA_LOG_FULL_BYTES", 4096)
+    backend = LlamaCppBackend.__new__(LlamaCppBackend)
+    backend._stdout_lines = []
+    log = tmp_path / "llama.log"
+    backend._llama_log_fh = open(log, "w", encoding = "utf-8")
+    lines = [f"0.00.{i:06d} I slot launch: id 0 | task {i} | padding padding" for i in range(2000)]
+    lines += ["0.09.000000 W srv  a warning after the cap", "\trepeat_last_n = 64", "error: boom"]
+    backend._process = _types.SimpleNamespace(stdout = iter(f"{l}\n" for l in lines))
+    backend._drain_stdout()
+    backend._llama_log_fh.close()
+    text = log.read_text(encoding = "utf-8")
+    assert len(text) < 4096 + 512
+    assert "keeping warnings and errors only" in text
+    assert "a warning after the cap" in text and "error: boom" in text
+    assert "repeat_last_n" not in text
+
+
+def test_metal_device_rows_count_as_gpu():
+    rows = [
+        "device_info:",
+        "  - MTL0    : Apple M3 Max (98304 MiB, 98303 MiB free)",
+        "  - CPU     : Apple M3 Max",
+    ]
+    assert llama_cpp_module.llama_saw_gpu_device(rows) is True
+    assert llama_cpp_module.llama_saw_gpu_device([rows[0], rows[2]]) is False

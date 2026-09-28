@@ -737,6 +737,10 @@ _TRACE_VERBOSITY_HELP_RE = re.compile(r"\b4:\s*trace\b", re.IGNORECASE)
 _LOG_VERBOSITY_FLAGS = frozenset(
     {"-lv", "--verbosity", "--log-verbosity", "-v", "--verbose", "--log-verbose", "--log-disable"}
 )
+# Past this many bytes the active llama-server log keeps only warnings and errors: trace adds
+# about 30 lines a request for the server's whole life.
+_LLAMA_LOG_FULL_BYTES = 64 * 1024 * 1024
+_LOG_LEVEL_TOKEN_RE = re.compile(r"^\S+ ([A-Z]) ")
 # Post-startup stdout kept in memory. The startup head is never trimmed: readers parse load lines
 # for the server's whole life, and failure diagnostics read only the last 50 to 80 lines.
 _STDOUT_TRIM_AT = 20000
@@ -761,7 +765,8 @@ _GPU_MODEL_BUFFER_RE = re.compile(
     re.IGNORECASE,
 )
 _DEVICE_ROW_RE = re.compile(
-    r"-\s*(CUDA|ROCm|ROCM|HIP|Metal|Vulkan|SYCL|OpenCL|MUSA|CANN|CPU)\w*\s*:",
+    # MTL: ggml-metal names its devices MTL0, MTL1 (GGML_METAL_NAME), never "Metal".
+    r"-\s*(CUDA|ROCm|ROCM|HIP|Metal|MTL|Vulkan|SYCL|OpenCL|MUSA|CANN|CPU)\w*\s*:",
     re.IGNORECASE,
 )
 _GPU_DEVICE_PREFIXES = (
@@ -769,6 +774,7 @@ _GPU_DEVICE_PREFIXES = (
     "rocm",
     "hip",
     "metal",
+    "mtl",
     "vulkan",
     "sycl",
     "opencl",
@@ -17536,6 +17542,7 @@ class LlamaCppBackend:
         drain-thread join in ``_wait_for_health``.
         """
         startup_len: Optional[int] = None
+        log_bytes = 0
         try:
             for line in self._process.stdout:
                 line = line.rstrip()
@@ -17560,6 +17567,19 @@ class LlamaCppBackend:
                     fh = getattr(self, "_llama_log_fh", None)
                     if fh is not None:
                         try:
+                            if log_bytes >= _LLAMA_LOG_FULL_BYTES:
+                                level = _LOG_LEVEL_TOKEN_RE.match(line)
+                                if not (
+                                    level.group(1) in "WE"
+                                    if level is not None
+                                    else ("error" in line_lower or "fail" in line_lower)
+                                ):
+                                    continue
+                            elif log_bytes + len(line) + 1 >= _LLAMA_LOG_FULL_BYTES:
+                                fh.write(
+                                    "[studio] log past 64 MiB: keeping warnings and errors only\n"
+                                )
+                            log_bytes += len(line) + 1
                             fh.write(line + "\n")
                             fh.flush()
                         except (ValueError, OSError):
@@ -31155,7 +31175,7 @@ class LlamaCppBackend:
                     self._gpu_offload_layers = parse_gpu_offload_counts(self._stdout_lines)
                 else:
                     self._gpu_offload_layers = None
-                self._gpu_backend_unavailable = bool(_detected_gpus) and (
+                self._gpu_backend_unavailable = bool(_detected_gpus or _metal_capable_host()) and (
                     llama_saw_gpu_device(self._stdout_lines) is False
                 )
                 # Not _GPU_OFFLOAD_OVERRIDE_FLAGS: --fit on is exactly the split to report.
