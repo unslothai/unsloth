@@ -294,6 +294,17 @@ def model_context(model_dir: str, cache_gb: Optional[float] = None) -> Optional[
     return min(context, capacity) if context else capacity
 
 
+def generation_error(exc: Exception) -> tuple[int, str]:
+    """Status and message for a failed generate(). OpenVINO drops a request the cache cannot hold
+    and raises about it; that is the caller's prompt being too long, so a 400."""
+    message = str(exc)
+    if "did not fit in the available cache budget" in message:
+        return 400, (
+            "The conversation does not fit in the model's KV cache. Shorten it or the tool list."
+        )
+    return 500, f"Generation failed: {message[:500]}"
+
+
 def build_app(
     pipe,
     model_id: str,
@@ -388,8 +399,11 @@ def build_app(
             return f"data: {json.dumps(body)}\n\n"
 
         if not req.stream:
-            with lock:
-                res = pipe.generate(text_prompt, generation_config = cfg)
+            try:
+                with lock:
+                    res = pipe.generate(text_prompt, generation_config = cfg)
+            except Exception as exc:
+                raise HTTPException(*generation_error(exc)) from exc
             splitter = ThinkSplitter(thinking)
             parts = splitter.feed(res.texts[0]) + splitter.flush()
             tool_splitter = ToolSplitter(bool(tools_for(req)))
@@ -440,6 +454,8 @@ def build_app(
                             generation_config = cfg,
                             streamer = streamer,
                         )
+                except Exception as exc:  # re-raised to the client below, not lost in the thread
+                    result["error"] = exc
                 finally:
                     pieces.put(None)
 
@@ -457,6 +473,12 @@ def build_app(
 
             while (piece := pieces.get()) is not None:
                 yield from deltas(splitter.feed(piece))
+            if "error" in result:
+                status, message = generation_error(result["error"])
+                error = {"message": message, "type": "server_error", "code": status}
+                yield f"data: {json.dumps({'error': error})}\n\n"
+                yield "data: [DONE]\n\n"
+                return
             yield from deltas(splitter.flush())
             rest, calls = tool_splitter.finish(tools_for(req))
             if rest:
