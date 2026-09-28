@@ -1,19 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""A VLM repo without preprocessor_config.json still gets its native processor. No GPU needed.
+"""A VLM repo without preprocessor_config.json (Step-3.7-Flash) still gets its native processor.
 
-stepfun-ai/Step-3.7-Flash(-FP8) ships only a remote `Step3VLProcessor` whose sizes are hardcoded,
-so there is no preprocessor_config.json. Loaded untrusted, Unsloth builds the native
-`Step3p7ForConditionalGeneration`, and `_construct_vlm_processor_fallback` died in
-`AutoImageProcessor.from_pretrained`, leaving a bare tokenizer. The remote processor then produced
-`patch_pixel_values` / `num_patches`, which the native forward ignores: "Image features and image
-tokens do not match, tokens: 493, features: 169". The fallback now builds the image processor
-transformers registers for the checkpoint's model_type at its class defaults.
-
-The two functions are extracted from vision.py with ast so nothing heavy has to import; the
-helpers they call are the real transformers / tokenizers objects, with the hub resolver and the
-offline classifier stubbed for a local directory.
+Without it the remote processor's patch_pixel_values are ignored by the native forward ("tokens: 493,
+features: 169"). Functions are ast-extracted from vision.py; hub resolver and offline check stubbed.
 """
 
 import ast

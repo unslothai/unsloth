@@ -1142,9 +1142,7 @@ def _native_default_image_processor(
     local_files_only = False,
     revision = None,
 ):
-    """The transformers image processor registered for this checkpoint's model_type, built with
-    its class defaults; None when transformers has none. Only for repos with no
-    preprocessor_config.json, whose native processor port encodes the upstream defaults."""
+    """Image processor transformers registers for the checkpoint's model_type, at class defaults; else None."""
     import transformers
     from transformers import AutoConfig
 
@@ -1221,8 +1219,7 @@ def _construct_vlm_processor_fallback(
         except Exception as _ip_err:
             if _is_offline_related_error(_ip_err):
                 raise
-            # No preprocessor_config.json (Step-3.7-Flash ships only its remote processor, which
-            # hardcodes the sizes): the native class for the checkpoint's model_type, at defaults.
+            # No preprocessor_config.json (Step-3.7-Flash hardcodes sizes in its remote processor).
             image_processor = _native_default_image_processor(
                 load_path,
                 model_type,
