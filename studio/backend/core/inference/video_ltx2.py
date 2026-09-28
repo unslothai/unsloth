@@ -410,9 +410,8 @@ LTX23_DISTILLED_SIGMAS: tuple[float, ...] = (
 
 
 def ltx2_distilled_ids(*ids: Optional[str]) -> bool:
-    """True when the loaded checkpoint is the distilled DiT, decided like the generation defaults (the first id
-    naming a variant wins, the selected file before its repo), so sigmas, guidance and the 8-step default stay in
-    lockstep: a dev file under a repo or folder named '...distilled...' stays dev."""
+    """Distilled DiT, by the generation defaults' precedence (selected file before repo): a dev file under a
+    '...distilled...' folder stays dev."""
     from .video_families import video_generation_variant
     return (
         video_generation_variant(*(str(i) if i is not None else None for i in ids)) == "distilled"
@@ -431,12 +430,8 @@ _LTX2_GUIDANCE_OFF: dict[str, float] = {
 
 
 def ltx2_distilled_guidance_kwargs(call_params: Any, guidance: Optional[float]) -> dict[str, float]:
-    """Explicit guidance kwargs for a DISTILLED LTX-2/2.3 DiT: STG, modality isolation and
-    rescale off, audio CFG tied to the video CFG. The distilled DiT is sampled with a single
-    unguided forward per step (Lightricks' distilled pipeline); at the default guidance 1.0 this
-    is one batch-1 forward per step instead of four forward-equivalents. Only kwargs the
-    installed pipeline accepts are returned, so an older diffusers (whose defaults are already
-    off) gets the same call it always did."""
+    """Distilled LTX-2/2.3 guidance: STG, modality and rescale off, audio CFG = video CFG (one unguided forward per
+    step). Only kwargs the installed pipeline accepts, so older diffusers get the call they always did."""
     kwargs = {k: v for k, v in _LTX2_GUIDANCE_OFF.items() if k in call_params}
     if "audio_guidance_scale" in call_params:
         # Pre-#14447: audio follows the video CFG.
@@ -616,11 +611,8 @@ def _ltx23_hub_cached_file(repo_id: str, filename: str) -> Optional[Path]:
 def ltx23_prequant_eligible(
     checkpoint_filename: Optional[str], repo_id: Optional[str] = None
 ) -> bool:
-    """Whether the hosted DiT may replace this pick's own: the official file, by name AND identity.
-
-    A local file or folder is verified by content. A Hub id must be the official repo; its cached copy is verified by
-    content too, and before the download the id is the identity (the load re-checks the file it resolved). Anything
-    else, a third-party repo included, is not substituted."""
+    """Whether the hosted DiT may replace this pick's own: the official file by name AND identity (local content, or
+    the official Hub repo, its cached copy verified by content; the load re-checks)."""
     if not checkpoint_filename or not repo_id:
         return False
     if Path(str(checkpoint_filename)).name.lower() not in LTX23_PREQUANT_SOURCE_FILES:
@@ -643,9 +635,8 @@ def ltx23_prequant_eligible(
 
 
 class _LTX23PrequantConfig:
-    """The transformer "class" handed to ``load_prequantized_transformer``: builds the 2.3 config
-    (2.0 base config + the 2.3 overrides, identical to the checkpoint's recorded config) instead
-    of reading ``<base>/transformer``, which the single-file 2.3 repo does not have."""
+    """Transformer "class" for ``load_prequantized_transformer``: the 2.0 config + 2.3 overrides, since the
+    single-file 2.3 repo has no ``transformer/``."""
 
     def __init__(self, config_repo: str):
         self.config_repo = config_repo
@@ -732,10 +723,8 @@ LTX2_RECOMPILE_LIMIT = 64
 
 
 def ensure_recompile_limit(limit: int = LTX2_RECOMPILE_LIMIT) -> None:
-    """Raise dynamo's recompile limit in the CALLING thread's context, before a render.
-
-    diffusion_speed raises it at load, but torch >= 2.12 keeps config writes per thread context,
-    so the render thread (a copy of the generate caller's context) still sees the default 8."""
+    """Raise dynamo's recompile limit in the calling thread: torch >= 2.12 keeps config per thread context, so the
+    render thread would otherwise see the default 8 despite the load-time raise."""
     try:
         import torch._dynamo.config as dynamo_cfg
     except Exception:  # noqa: BLE001 -- no dynamo, nothing compiled
@@ -758,16 +747,9 @@ def _recompile_limit_hit(exc: BaseException) -> bool:
 
 
 def install_stg_compile_adapter(transformer: Any) -> int:
-    """Make a regionally compiled LTX-2 block tolerate the STG pass.
-
-    The transformer hands the perturbed block ``all_perturbed = torch.all(mask == 0)``, a 0-d
-    tensor, and LTX2Attention branches on it (``if all_perturbed:``): a data-dependent branch
-    that fails a fullgraph compile, after which the compile guard drops the whole DiT to eager.
-    Wrapping the compiled call converts the tensor to a Python bool BEFORE entering the graph
-    (one host sync, only on the STG call; dynamo specialises the bool). Installed outermost
-    over the guard, carrying its marker so ``guard_compiled_blocks`` stays idempotent. A new
-    shape past the recompile limit drops the DiT to eager through the same guard instead of
-    failing the render. Returns the number of blocks adapted."""
+    """Convert the STG pass's 0-d ``all_perturbed`` tensor to a bool before the compiled block (LTX2Attention branches
+    on it, which fails fullgraph and drops the DiT to eager). Keeps the guard's marker so ``guard_compiled_blocks``
+    stays idempotent; past the recompile limit drops to eager instead of failing. Returns blocks adapted."""
     try:
         import torch
     except Exception:  # noqa: BLE001

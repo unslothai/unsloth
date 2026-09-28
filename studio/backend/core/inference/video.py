@@ -2048,7 +2048,7 @@ class VideoBackend:
         claimed_assets = (
             (H3_GGUF_REPO, H3_COMPONENT_REPO, H3_LEGACY_COMPONENT_REPO) if h3_native else ()
         )
-        # The hosted LTX-2.3 FP8 DiT is a third repo: claim it with _loading, asked as the worker asks.
+        # Claim the hosted LTX-2.3 FP8 DiT repo with _loading.
         if _ltx23_prequant_serves_on_card(
             fam,
             resolve_video_model_kind(gguf_filename, model_kind),
@@ -5025,7 +5025,7 @@ class VideoBackend:
             from .video_ltx2 import is_ltx23_checkpoint, load_ltx23_pipeline
 
             if fam.name == "ltx-2" and is_ltx23_checkpoint(checkpoint_path):
-                # Explicit fp8 on the distilled file takes the hosted DiT (#742); the dense quant below is pipeline-only. Resident only: offload hooks' Module.to() rejects torchao tensors.
+                # Explicit fp8 takes the hosted DiT, resident only: offload hooks' Module.to() rejects torchao tensors.
                 ltx23_override = None
                 ltx23_scheme = normalize_transformer_quant(transformer_quant)
                 seeded = None
