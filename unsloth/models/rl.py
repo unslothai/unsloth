@@ -1716,6 +1716,53 @@ def _replace_outputs_logits(outputs, hidden_states):
     raise TypeError(f"Unsupported output type for GRPO hidden-state fallback: {type(outputs)}")
 
 
+# Sticky per model: its head input is not hidden_states[-1] in a way we can reproduce, so every call returns real logits.
+_UNSLOTH_GRPO_HIDDEN_STATES_UNSAFE_ATTR = "_unsloth_grpo_hidden_states_unsafe"
+_UNSLOTH_GRPO_HIDDEN_STATES_VERIFIED_ATTR = "_unsloth_grpo_hidden_states_verified"
+
+
+def _grpo_pre_head_hidden_divisor(model):
+    """MiniCPM3 divides hidden states by ``logits_scaling`` between ``hidden_states[-1]`` and ``lm_head``. Compiled forwards return them after that line, so only this wrapper must repeat it."""
+    from .rl_replacements import _unsloth_text_configs
+
+    for config in _unsloth_text_configs(getattr(model, "config", None)):
+        if getattr(config, "model_type", None) == "minicpm3":
+            scaling = getattr(config, "logits_scaling", None)
+            return float(scaling) if scaling else None
+    return None
+
+
+def _grpo_hidden_states_reproduce_logits(model, hidden_states, logits):
+    """Does the head on our hidden states give the forward's own last-position logits? ``None`` when it cannot be checked."""
+    from .rl_replacements import detect_logit_transforms, _unsloth_get_model_config
+
+    get_output_embeddings = getattr(model, "get_output_embeddings", None)
+    head = get_output_embeddings() if callable(get_output_embeddings) else None
+    weight = getattr(head, "weight", None)
+    if (
+        detect_logit_transforms is None
+        or not isinstance(weight, torch.Tensor)
+        or weight.is_meta
+        or not isinstance(logits, torch.Tensor)
+        or logits.shape[-1] != weight.shape[0]
+        or hidden_states.shape[-1] != weight.shape[-1]
+    ):
+        return None
+    transforms = detect_logit_transforms(_unsloth_get_model_config(model))
+    with torch.no_grad():
+        got = head(hidden_states[..., -1:, :].to(weight.dtype)).float()
+        if transforms["logit_scale_multiply"]:
+            got = got * float(transforms["logit_scale_multiply"])
+        if transforms["logit_scale_divide"]:
+            got = got / float(transforms["logit_scale_divide"])
+        if transforms["logit_softcapping"]:
+            cap = float(transforms["logit_softcapping"])
+            got = cap * torch.tanh(got / cap)
+        want = logits[..., -1:, :].float().to(got.device)
+        tolerance = 5e-2 * float(want.abs().max()) + 1e-3
+        return bool(float((got - want).abs().max()) <= tolerance)
+
+
 def _install_grpo_hidden_states_forward_wrapper(model):
     if model is None or getattr(model, _UNSLOTH_GRPO_HIDDEN_STATES_WRAPPED_ATTR, False):
         return False
@@ -1735,7 +1782,9 @@ def _install_grpo_hidden_states_forward_wrapper(model):
         # accelerate's extract_model_from_parallel(keep_fp32_wrapper = False), called every GRPO step, rebinds the forward as MethodType, so the module arrives as a leading positional argument; original_forward is already bound, so drop it.
         while len(args) != 0 and args[0] is target_model:
             args = args[1:]
-        if os.environ.get("UNSLOTH_RETURN_HIDDEN_STATES", "0") != "1":
+        if os.environ.get("UNSLOTH_RETURN_HIDDEN_STATES", "0") != "1" or getattr(
+            target_model, _UNSLOTH_GRPO_HIDDEN_STATES_UNSAFE_ATTR, False
+        ):
             setattr(target_model, _UNSLOTH_GRPO_HIDDEN_STATES_DEGRADED_ATTR, True)
             return original_forward(*args, **kwargs)
 
@@ -1797,6 +1846,23 @@ def _install_grpo_hidden_states_forward_wrapper(model):
             return original_forward(*args, **forward_kwargs)
 
         hidden_states = hidden_states[-1]
+        divisor = _grpo_pre_head_hidden_divisor(target_model)
+        if divisor is not None:
+            hidden_states = hidden_states / divisor
+        # Once per model: a head input we do not reproduce (another pre-head transform) would silently train a different objective.
+        if getattr(target_model, _UNSLOTH_GRPO_HIDDEN_STATES_VERIFIED_ATTR, None) is None:
+            verdict = _grpo_hidden_states_reproduce_logits(
+                target_model, hidden_states, getattr(outputs, "logits", None)
+            )
+            if verdict is not None:
+                setattr(target_model, _UNSLOTH_GRPO_HIDDEN_STATES_VERIFIED_ATTR, verdict)
+            if verdict is False:
+                setattr(target_model, _UNSLOTH_GRPO_HIDDEN_STATES_UNSAFE_ATTR, True)
+                logger.warning(
+                    f"Unsloth: {model_name}'s head input is not its last hidden state; GRPO will use its full logits instead."
+                )
+                setattr(target_model, _UNSLOTH_GRPO_HIDDEN_STATES_DEGRADED_ATTR, True)
+                return original_forward(*args, **kwargs)
         if num_logits_to_keep != 0:
             hidden_states = hidden_states[:, -num_logits_to_keep:, :]
         # Only the last layer is read, and accelerate's AlignDevicesHook.post_forward copies every tensor in the returned object to the input device, so keeping the rest costs a cross-device copy per layer as well as the memory.
@@ -1834,6 +1900,91 @@ def _wrap_grpo_hidden_states_fallback(trainer_cls, attributes = ("model", "ref_m
 
     wrapped_init._unsloth_grpo_hidden_states_init_wrapped = True
     trainer_cls.__init__ = wrapped_init
+
+
+_UNSLOTH_DDP_GRAD_FORWARD_ATTR = "_unsloth_ddp_forward_with_grad"
+
+
+def _unsloth_find_ddp(model):
+    seen = 0
+    while model is not None and seen < 4:
+        if isinstance(model, torch.nn.parallel.DistributedDataParallel):
+            return model
+        model = getattr(model, "_orig_mod", None)
+        seen += 1
+    return None
+
+
+def _unsloth_note_ddp_forward(module, args):
+    if torch.is_grad_enabled():
+        setattr(module, _UNSLOTH_DDP_GRAD_FORWARD_ATTR, True)
+
+
+def _unsloth_average_gradients(ddp, bucket_bytes = 64 << 20):
+    """What DDP's reducer does at the end of backward: average every trainable grad over the process group. A param with a grad on any rank gets one everywhere (zero-filled), so every rank issues the same collectives."""
+    import torch.distributed as dist
+
+    group = ddp.process_group
+    world_size = dist.get_world_size(group)
+    params = [p for p in ddp.module.parameters() if p.requires_grad]
+    if world_size <= 1 or len(params) == 0:
+        return
+    device = params[0].device
+    present = torch.tensor([p.grad is not None for p in params], dtype = torch.uint8, device = device)
+    dist.all_reduce(present, op = dist.ReduceOp.MAX, group = group)
+    buckets = {}
+    for p, has_grad in zip(params, present.tolist()):
+        if not has_grad:
+            continue
+        if p.grad is None:
+            p.grad = torch.zeros_like(p)
+        buckets.setdefault((p.grad.device, p.grad.dtype), []).append(p.grad)
+    for grads in buckets.values():
+        start = 0
+        while start < len(grads):
+            stop, size = start, 0
+            while stop < len(grads) and (
+                stop == start
+                or size + grads[stop].numel() * grads[stop].element_size() <= bucket_bytes
+            ):
+                size += grads[stop].numel() * grads[stop].element_size()
+                stop += 1
+            chunk = grads[start:stop]
+            flat = torch.cat([g.reshape(-1) for g in chunk])
+            dist.all_reduce(flat, group = group)
+            flat.div_(world_size)
+            offset = 0
+            for g in chunk:
+                g.copy_(flat[offset : offset + g.numel()].view_as(g))
+                offset += g.numel()
+            start = stop
+
+
+def _wrap_grpo_ddp_gradient_sync(trainer_cls):
+    """GRPO's gradient pass runs the unwrapped model (zoo's grpo_accumulated_loss), so DDP.forward never arms the reducer and backward never all-reduces: every rank trained its own copy. Average the grads where DDP would have."""
+    original_training_step = trainer_cls.training_step
+    if getattr(original_training_step, "_unsloth_grpo_ddp_sync_wrapped", False):
+        return
+
+    def training_step(self, model, *args, **kwargs):
+        ddp = _unsloth_find_ddp(model)
+        if ddp is not None:
+            if not getattr(ddp, "_unsloth_ddp_forward_hooked", False):
+                ddp.register_forward_pre_hook(_unsloth_note_ddp_forward)
+                ddp._unsloth_ddp_forward_hooked = True
+            setattr(ddp, _UNSLOTH_DDP_GRAD_FORWARD_ATTR, False)
+        loss = original_training_step(self, model, *args, **kwargs)
+        # require_backward_grad_sync is False inside no_sync(): only the micro-step where DDP would reduce.
+        if (
+            ddp is not None
+            and ddp.require_backward_grad_sync
+            and not getattr(ddp, _UNSLOTH_DDP_GRAD_FORWARD_ATTR, False)
+        ):
+            _unsloth_average_gradients(ddp)
+        return loss
+
+    training_step._unsloth_grpo_ddp_sync_wrapped = True
+    trainer_cls.training_step = training_step
 
 
 def _backport_vision_dataset_gate(RLTrainer_source):
@@ -3391,6 +3542,10 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             logger.info(
                 f"Unsloth: Could not wrap GRPO hidden-state fallback for {RLTrainer_name}: {e}"
             )
+        try:
+            _wrap_grpo_ddp_gradient_sync(getattr(created_module, f"Unsloth{RLTrainer_name}"))
+        except Exception as e:
+            logger.info(f"Unsloth: Could not wrap GRPO DDP gradient sync for {RLTrainer_name}: {e}")
     if trainer_file == "gkd_trainer" and "_unsloth_trl_compute_loss" in RLTrainer_source:
         try:
             _wrap_grpo_hidden_states_fallback(
