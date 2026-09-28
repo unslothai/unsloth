@@ -318,8 +318,8 @@ def _build_model(
         return original(cfg, encoder_dir = encoder_dir)
     config = AutoConfig.from_pretrained(encoder_dir)
     vocab_size, pad_token_id = config.vocab_size, getattr(config, "pad_token_id", None)
-    if vocab_size <= 1:
-        # Nothing to save over laya's own build.
+    # ModernBERT reads pad_token_id only for this embedding; others keep it (RoBERTa's position ids).
+    if config.model_type != "modernbert" or vocab_size <= 1:
         return original(cfg, encoder_dir = encoder_dir)
     # A one-row placeholder, with row 0 standing in for the padding id so the check below can
     # tell the embedding was sized and padded from the config.
