@@ -625,3 +625,23 @@ def test_planner_sizes_an_armed_load_expert_merge_in_the_load_dtype():
     assert measured[False][0] and not measured[True][0]
     assert measured[True][1] == measured[False][1]  # weights still sized as 4bit
     assert measured[True][2] == 4 * measured[False][2]  # bf16 stack, not packed nibbles
+
+
+def test_mistral_format_views_are_not_armed(monkeypatch):
+    # A Mistral-format view renames its fp8 scales itself; fp8 -> 4bit keeps the fp8 load there.
+    from unsloth.models import fp8_to_nf4, mistral_format
+
+    config = SimpleNamespace(
+        quantization_config = {
+            "quant_method": "fp8",
+            "weight_block_size": [128, 128],
+            "activation_scheme": "dynamic",
+        }
+    )
+    monkeypatch.setattr(mistral_format, "_active_conversions", 1)
+    token = fp8_to_nf4._EXPLICIT_4BIT.set(True)
+    try:
+        assert not fp8_to_nf4.maybe_arm_fp8_to_nf4(config, True, False, verbose = False)
+    finally:
+        fp8_to_nf4._EXPLICIT_4BIT.reset(token)
+    assert config.quantization_config["quant_method"] == "fp8"

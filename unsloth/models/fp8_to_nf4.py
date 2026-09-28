@@ -252,6 +252,16 @@ def maybe_arm_fp8_to_nf4(
         return False
     if fp8_to_nf4_disabled():
         return False
+    from .mistral_format import mistral_format_conversions_active
+
+    if mistral_format_conversions_active():
+        # Mistral-named scales go through the view's own renames, which this converter does not compose with.
+        if verbose and explicit_4bit_requested():
+            print(
+                "Unsloth: 4bit loading of a Mistral-format fp8 checkpoint is not supported yet. "
+                "Loading the fp8 weights instead."
+            )
+        return False
     if str(quant.get("expert_dtype") or "").lower() in _PACKED_EXPERT_DTYPES:
         # DeepSeek-V4-Flash: fp8 attention, packed FP4 experts. Not handled here.
         if verbose and explicit_4bit_requested():
