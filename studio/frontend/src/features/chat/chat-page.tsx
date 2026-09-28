@@ -1401,7 +1401,6 @@ function ProjectLanding({
   // Project-level options (the header kebab menu).
   const [editingProject, setEditingProject] = useState(false);
   const [deletingProject, setDeletingProject] = useState(false);
-  // "New section" in the menu: the new section gets the project.
   const createCustomSection = useSidebarOrganizationStore((s) => s.createCustomSection);
   const fileProjectInSection = useFileProjectInSection();
   const [creatingSection, setCreatingSection] = useState(false);
@@ -1754,7 +1753,6 @@ function ProjectLanding({
                   </button>
                 )}
               >
-                {/* The Library's project menu, less the two items that lead here. */}
                 <ProjectMenuItems
                   project={{ id: projectId, name: projectName }}
                   chatCount={items.length}

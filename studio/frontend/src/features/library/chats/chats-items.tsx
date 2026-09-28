@@ -1579,7 +1579,6 @@ export function SectionMenuItems({
   const actions = useChatsActions();
   return (
     <>
-      {/* On the page, its New button has both. */}
       {!onPage && (
         <>
           <MenuItem
@@ -1594,7 +1593,6 @@ export function SectionMenuItems({
           />
         </>
       )}
-      {/* Edit, as in the sidebar's section menu. */}
       <MenuItem
         icon={Settings02Icon}
         label={t("shell.sections.edit")}

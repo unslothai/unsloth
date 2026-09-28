@@ -351,7 +351,6 @@ test("the project page edits through the same dialog the sidebar opens", async (
   const page = await readSrcAsync("features/chat/chat-page.tsx");
   assert.ok(!page.includes("Rename project"), "the rename-only dialog is still there");
   assert.ok(!page.includes("commitProjectRename"), "the rename call is still there");
-  // The Library's project menu, whose Edit opens this page's dialog.
   assert.match(page, /onEdit=\{\(\) => setEditingProject\(true\)\}/);
   // The record behind the header, and the dialog it feeds.
   assert.match(

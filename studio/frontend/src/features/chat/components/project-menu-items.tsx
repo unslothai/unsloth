@@ -76,7 +76,6 @@ export function ProjectMenuItems({
   onNewChat?: () => void;
   onEdit: () => void;
   onDelete: () => void;
-  /** Opens the page's new section dialog; the page files the project there. */
   onNewSection: () => void;
   subClassName?: string;
 }) {

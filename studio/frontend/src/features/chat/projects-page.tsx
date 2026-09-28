@@ -178,7 +178,6 @@ export function ProjectsPage() {
 
   const [creating, setCreating] = useState(false);
   const [editing, setEditing] = useState<ProjectRecord | null>(null);
-  // "New section" from a project's menu: the new section gets the project.
   const [sectionFor, setSectionFor] = useState<ProjectRecord | null>(null);
   const createCustomSection = useSidebarOrganizationStore((s) => s.createCustomSection);
   const fileProjectInSection = useFileProjectInSection();
@@ -812,8 +811,6 @@ export function ProjectsPage() {
                     )}
                   />
                 </button>
-                {/* The space up to Updated opens the chats too, for the mouse; the chevron is the
-                    keyboard control. */}
                 {/* biome-ignore lint/a11y/useKeyWithClickEvents: the chevron is the keyboard target */}
                 {/* biome-ignore lint/a11y/noStaticElementInteractions: a wider mouse target for the chevron */}
                 <span
@@ -863,7 +860,6 @@ export function ProjectsPage() {
                     onKeyDown={(e) => e.stopPropagation()}
                     className="app-user-menu menu-soft-surface menu-flat-destructive ring-0 w-52 py-2 font-heading rounded-[14px] border-0"
                   >
-                    {/* The Library's project menu. */}
                     <ProjectMenuItems
                       project={project}
                       onNewChat={() => newChatInProject(project.id)}
@@ -1017,7 +1013,6 @@ export function ProjectsPage() {
                                   </DropdownMenuItem>
                                 </DropdownMenuSubContent>
                               </DropdownMenuSub>
-                              {/* Under Export, as in the Library's chat menu. */}
                               <OpenChatFolderItem item={chat} />
                               <DropdownMenuSeparator />
                               <DropdownMenuItem onSelect={() => void archiveChat(chat)}>

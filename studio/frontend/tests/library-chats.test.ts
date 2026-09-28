@@ -509,7 +509,6 @@ test("a favorite project tile uses the open project folder, not the file folder"
 
 test("a project's home and the Projects page use the Library project menu", () => {
   const items = readSrc("features/chat/components/project-menu-items.tsx");
-  // Library order; without New chat, the folder goes under Export.
   const order = [
     "onNewChat && (",
     "<OpenProjectFolderItem projectId={project.id} />",
@@ -536,7 +535,6 @@ test("a project's home and the Projects page use the Library project menu", () =
   const projects = readSrc("features/chat/projects-page.tsx");
   assert.match(projects, /<ProjectMenuItems\s+project=\{project\}\s+onNewChat=/);
   assert.match(projects, /onNewChat=\{\(\) => newChatInProject\(project\.id\)\}/);
-  // Filed the same way everywhere, through the shared hook.
   for (const source of [page, projects, readSrc("features/library/chats/chats-library.tsx"), items]) {
     assert.match(source, /useFileProjectInSection\(\)/);
   }
@@ -559,14 +557,12 @@ test("Import chats sits in the project and section menus", () => {
   const runner = readSrc("features/chat/utils/import-chats.ts");
   assert.match(runner, /onSaved: \(threadId\) => threadIds\.push\(threadId\)/);
   assert.match(runner, /setChatsSection\(\[\.\.\.new Set\(threadIds\)\], target\.sectionId\)/);
-  // The Projects page imports through the same runner.
   assert.match(readSrc("features/chat/projects-page.tsx"), /await runChatImport\(source, \{/);
 });
 
 test("the empty space in a Projects page row opens its chats", () => {
   const page = readSrc("features/chat/projects-page.tsx");
   assert.match(page, /<span\s+aria-hidden="true"\s+onClick=\{\(\) => toggleProjectChats\(project\.id\)\}\s+className="-my-4 min-w-0 flex-1 cursor-pointer self-stretch"/);
-  // After the chevron, before Updated.
   const chevron = page.indexOf("<ChevronDownIcon");
   const spacer = page.indexOf('className="-my-4 min-w-0 flex-1 cursor-pointer self-stretch"');
   const updated = page.indexOf('className="hidden w-40 shrink-0 text-sm text-muted-foreground sm:block"');
@@ -596,7 +592,6 @@ test("a section's menu reads New chat, New project and Edit", () => {
   assert.match(menu, /icon=\{FolderAddIcon\}\s*label=\{t\("library\.chats\.toolbar\.newProject"\)\}\s*onSelect=\{\(\) => actions\.newProjectInSection\(section\.id\)\}/);
   assert.match(menu, /icon=\{Settings02Icon\}\s*label=\{t\("shell\.sections\.edit"\)\}/);
   assert.doesNotMatch(menu, /newChatInSection"\)|renameTitle/);
-  // A project made there, or from the section page's New button, is filed in the section.
   const library = readSrc("features/library/chats/chats-library.tsx");
   assert.match(library, /if \(newProjectSection\) fileProjectInSection\(project, newProjectSection\);/);
   assert.match(library, /openSectionId \? newProjectInSection\(openSectionId\) : setCreatingProject\(true\)/);
