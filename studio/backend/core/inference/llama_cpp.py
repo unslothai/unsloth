@@ -23436,17 +23436,9 @@ class LlamaCppBackend:
                 logger.info("Load cancelled before teardown")
                 return False
 
-            # Fail fast before killing the live server; the key includes context/spec so a changed launch may retry.
-            _abort_memo_model = "\x00".join(
-                [
-                    model_identifier or "",
-                    hf_variant or "",
-                    gguf_path or "",
-                    str(n_ctx),
-                    str(speculative_type or ""),
-                    " ".join(str(a) for a in (extra_args or [])),
-                ]
-            )
+            # Fail fast before killing the live server. Keyed on the whole request, so an
+            # identical replay is blocked but any changed setting (quant, -c, TP, spec) retries.
+            _abort_memo_model = repr(replace(intent, hf_token = None, force_reload = False))
             if LlamaCppBackend._sched_reserve_aborts(binary, _abort_memo_model):
                 logger.warning(
                     "Skipping reload of '%s': it already aborted in the llama.cpp "
@@ -27063,9 +27055,11 @@ class LlamaCppBackend:
                                     # Footprint alone over budget: floor to the minimum context.
                                     _cpu_cap = 4096
                                 else:
-                                    # MTP KV unsizeable (_mtp_bytes == 0): trim the budget to still reserve MTP RAM.
+                                    # Draft KV unsizeable: trim the budget to still reserve MTP RAM.
                                     _cpu_budget = _CPU_RAM_BUDGET_FRAC
-                                    if _mtp_will_engage_cpu and mtp_overhead_fn is None:
+                                    if _mtp_will_engage_cpu and (
+                                        mtp_overhead_fn is None or _mtp_kv_unsized
+                                    ):
                                         _cpu_budget -= _MTP_VRAM_RESERVE_FRAC
                                     _fit = self._fit_context_to_vram(
                                         requested_ctx = _ctx_ceiling,

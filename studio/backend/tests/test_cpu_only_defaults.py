@@ -289,3 +289,10 @@ def test_changed_settings_are_allowed_to_retry(crashing):
     before = crashing.spawns
     crashing.load(n_ctx = 2048)
     assert crashing.spawns > before
+
+
+def test_toggling_tensor_parallel_is_allowed_to_retry(crashing):
+    crashing.load(tensor_parallel = True)
+    before = crashing.spawns
+    crashing.load()
+    assert crashing.spawns > before
