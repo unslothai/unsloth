@@ -718,6 +718,58 @@ _compile_config = CompileConfig(
 )
 _compile_config.disable = True  # Must set manually
 
+# Decode steps compile (CUDA graphs over the static cache) for these model types. Needs an
+# unsloth_zoo whose generated forwards can be traced during decode; UNSLOTH_COMPILE_DECODE=0 opts out.
+COMPILE_DECODE_MODELS = ("qwen3_5", "qwen3_5_moe")
+_decode_compile_config = CompileConfig(
+    fullgraph = False,
+    dynamic = None,
+    mode = "reduce-overhead",
+)
+try:
+    from unsloth_zoo.temporary_patches.utils import UNSLOTH_DECODE_COMPILE
+except ImportError:
+    UNSLOTH_DECODE_COMPILE = None
+
+
+def _compiles_decode(model):
+    if UNSLOTH_DECODE_COMPILE is None:
+        return False
+    if os.environ.get("UNSLOTH_COMPILE_DECODE", "1") == "0":
+        return False
+    if os.environ.get("UNSLOTH_COMPILE_DISABLE", "0") in ("1", "partial"):
+        return False
+    config = model.config
+    model_types = (
+        getattr(config, "model_type", None),
+        getattr(getattr(config, "text_config", None), "model_type", None),
+    )
+    return any(
+        isinstance(mt, str) and mt.removesuffix("_text") in COMPILE_DECODE_MODELS
+        for mt in model_types
+    )
+
+_HAS_MAX_CACHE_LEN = hasattr(GenerationConfig(), "max_cache_len")
+
+
+def _decode_cache_bucket(model, input_len, kwargs):
+    # A static cache of a new length recompiles the decode step; round it up to a power of
+    # two (>= 1024) so later calls reuse it. HF keeps the largest length seen (#46424).
+    if not _HAS_MAX_CACHE_LEN or kwargs.get("max_cache_len") is not None:
+        return None
+    config = kwargs.get("generation_config") or getattr(model, "generation_config", None)
+    if getattr(config, "max_cache_len", None) is not None:
+        return None
+    max_new_tokens = kwargs.get("max_new_tokens", getattr(config, "max_new_tokens", None))
+    if max_new_tokens is not None:
+        needed = input_len + max_new_tokens
+    else:
+        needed = kwargs.get("max_length", getattr(config, "max_length", None))
+    if type(needed) is not int or needed <= 0:
+        return None
+    return max(1024, 1 << (needed - 1).bit_length())
+
+
 try:
     torch_compiler_set_stance = torch.compiler.set_stance
 except:
@@ -1086,6 +1138,8 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
         cache_implementation = None
         dynamic_implementation = _dynamic_cache_choice(kwargs)
 
+    compile_decode = cache_implementation == "static" and not force_dynamic_cache and _compiles_decode(self)
+    compile_config = _decode_compile_config if compile_decode else _compile_config
     if "generation_config" in kwargs:
         kwargs["generation_config"].cache_implementation = (
             dynamic_implementation if force_dynamic_cache else cache_implementation
@@ -1094,18 +1148,25 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
         if force_dynamic_cache:
             kwargs["cache_implementation"] = dynamic_implementation
         if cache_implementation is not None:
-            kwargs["generation_config"].compile_config = _compile_config
+            kwargs["generation_config"].compile_config = compile_config
     else:
         kwargs["cache_implementation"] = (
             dynamic_implementation if force_dynamic_cache else cache_implementation
         )
         if cache_implementation is not None:
-            kwargs["compile_config"] = _compile_config
+            kwargs["compile_config"] = compile_config
 
+    if compile_decode:
+        bucket = _decode_cache_bucket(self, input_ids.shape[1], kwargs)
+        if bucket is not None:
+            kwargs["max_cache_len"] = bucket
+        UNSLOTH_DECODE_COMPILE[0] = True
     try:
         with torch.inference_mode(), autocaster:
             output = self._old_generate(*args, **kwargs)
     finally:
+        if compile_decode:
+            UNSLOTH_DECODE_COMPILE[0] = False
         _clear_generation_caches(self)
 
     return output

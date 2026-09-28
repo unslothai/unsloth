@@ -4473,7 +4473,12 @@ def patch_enable_input_require_grads():
         return
 
     def _patched_enable_input_require_grads(self):
+        import torch
+
         def make_inputs_require_grads(module, input, output):
+            # Dynamo graph-breaks on requires_grad_(); a compiled decode step records no grad anyway.
+            if torch.compiler.is_compiling() and not torch.is_grad_enabled():
+                return
             output.requires_grad_(True)
 
         hooks = []
