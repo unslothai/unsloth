@@ -44,7 +44,6 @@ def _dequant(
     op = _op_cls(patched)(_Quantizer())
     if hasattr(op, "_dequantize_one"):
         return op._dequantize_one(q, s, output_dtype = torch.bfloat16)
-    # transformers 5.5: the whole conversion op, block from the config.
     return op.convert({"weight$": [q], "weight_scale_inv": [s]}, full_layer_name = "w")["w"]
 
 
@@ -72,7 +71,6 @@ def test_ragged_rows_match_block_reference(cols):
 
 
 def test_ragged_rows_already_cast_weight():
-    # The loader can hand the FP8 weight over already cast to the load dtype.
     q, s = _case(576, 2560, seed = 2)
     assert torch.equal(_dequant(q.to(torch.bfloat16), s).to(torch.bfloat16), _reference(q, s))
 

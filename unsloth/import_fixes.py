@@ -2886,7 +2886,6 @@ def _pad_fp8_dequantize_ragged_blocks(op_cls):
     if convert is None or getattr(convert, "_unsloth_ragged_blocks", False):
         return
 
-    # transformers 5.5: block from the config.
     @functools.wraps(convert)
     def ragged_convert(self, input_dict, *args, **kwargs):
         try:
