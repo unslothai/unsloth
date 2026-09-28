@@ -191,7 +191,9 @@ def test_a_uv_failure_under_the_freeze_never_falls_back_to_pip(monkeypatch, mod)
 
     monkeypatch.setattr(mod, "USE_UV", True)
     monkeypatch.setattr(mod, "_TORCH_FREEZE_ACTIVE", True)
-    monkeypatch.setattr(mod.subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(a, 1, b"no solution"))
+    monkeypatch.setattr(
+        mod.subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(a, 1, b"no solution")
+    )
     ran = []
     monkeypatch.setattr(mod, "run", lambda *a, **k: ran.append(a))
     with pytest.raises(SystemExit):

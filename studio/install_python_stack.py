@@ -9745,7 +9745,11 @@ def _pip_install_once(
 
         elif _TORCH_FREEZE_ACTIVE:
             _step("error", f"{label} needs uv to keep the installed torch", _red)
-            _safe_print(_red("   Install uv and re-run, or set UNSLOTH_TORCH_UPGRADE=1 and re-run install.sh."))
+            _safe_print(
+                _red(
+                    "   Install uv and re-run, or set UNSLOTH_TORCH_UPGRADE=1 and re-run install.sh."
+                )
+            )
             sys.exit(1)
         elif _woa_overrides_are_load_bearing():
             _step("error", f"{label} needs uv on the Windows on ARM stack", _red)
