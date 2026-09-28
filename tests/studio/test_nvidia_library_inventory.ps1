@@ -380,7 +380,7 @@ function Test-WinArm64Venv { $false }
 function Get-PinnedTorchIndexUrl { $null }
 function Get-PersistedWoaTorchIndex { $null }
 function Get-WoaTorchIndexMarker { $null }
-$WinArm64EffectiveTorchIndexUrl = $null; $HasROCm = $false; $script:ROCmGfxArch = $null; $HasNvidiaSmi = $false
+$WinArm64EffectiveTorchIndexUrl = $null; $HasROCm = $false; $script:ROCmGfxArch = $null; $HasNvidiaSmi = $false; $HasNvidiaDriverEvidence = $false
 foreach ($case in @(@{ Flag = $true; Want = $true }, @{ Flag = $false; Want = $false })) {
     $script:NvidiaDriverLibraryOnly = $case.Flag
     Invoke-Expression $kindBlock
