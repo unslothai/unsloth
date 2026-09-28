@@ -985,6 +985,19 @@ def fp8_linear(
     weight_scale,
     bias = None,
 ):
+    # Transposed block view (LoRA_MLP backward's downW.t()): the block kernel re-orients rectangular scale grids
+    # from the shapes, but a square grid (or non-square blocks) is ambiguous, so dequantize the stored layout.
+    if (
+        _is_transposed_view(weight)
+        and weight_scale.ndim == 2
+        and weight_scale.shape[1] > 1
+        and (
+            weight_scale.shape[0] == weight_scale.shape[1]
+            or len(set(getattr(weight_scale, "block_size", None) or [128, 128])) > 1
+        )
+    ):
+        out = torch.matmul(X, weight_dequant(weight, weight_scale, X.dtype).t())
+        return out if bias is None else out + bias
     # Per-tensor (scalar scale) or block FP8 (2D scale, multiple columns).
     if weight_scale.numel() == 1 or (weight_scale.ndim == 2 and weight_scale.shape[1] > 1):
         out = fp8_block_quant_linear(X, weight, weight_scale)
