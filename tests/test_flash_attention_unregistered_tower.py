@@ -1,7 +1,5 @@
 # SPDX-License-Identifier: AGPL-3.0-only
-# A tower whose config is not registered with the Auto classes (Apertus 1.5's vision tokenizer)
-# was invisible to the flash scoping, so FastVisionModel handed it flash_attention_2 and the load raised
-# "Apertus1p5VisionTokenizerModel does not support Flash Attention 2 yet".
+# Unregistered towers got flash_attention_2: "Apertus1p5VisionTokenizerModel does not support Flash Attention 2 yet".
 import sys
 import types
 
@@ -19,7 +17,6 @@ def _flash_available(monkeypatch):
 
 
 def _composite(module_name):
-    """A fake modeling module: flash-capable composite + an unregistered tower without flash or sdpa."""
     mod = types.ModuleType(module_name)
 
     class TowerConfig(PretrainedConfig):
@@ -118,7 +115,7 @@ def test_apertus1p5_vision_tokenizer_kept_off_flash(monkeypatch):
 
     config = transformers.Apertus1p5Config()
     unsupported = _utils._flash_unsupported_sub_configs(config, Apertus1p5ForConditionalGeneration)
-    # The README-pinned port names the field vision_tokenizer_config, the upstream PR vision_config.
+    # README-pinned port: vision_tokenizer_config; upstream PR: vision_config.
     vision_fields = [k for k in unsupported if k.startswith("vision")]
     assert vision_fields and all(unsupported[k] == "eager" for k in vision_fields)
     assert "text_config" not in unsupported

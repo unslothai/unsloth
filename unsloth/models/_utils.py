@@ -730,11 +730,7 @@ def _flex_attn_impl_for(config, other_attn_implementation):
 
 
 def _sibling_model_class_for_config(model_class, child_config):
-    """The PreTrainedModel in `model_class`'s own modeling module built from `child_config`'s class.
-
-    Towers that are not registered with the Auto classes (Apertus 1.5's vision tokenizer) are only
-    reachable this way.
-    """
+    """Sibling PreTrainedModel for a tower the Auto classes do not register (Apertus 1.5 vision tokenizer)."""
     import sys
 
     module = sys.modules.get(getattr(model_class, "__module__", None) or "")
@@ -755,7 +751,7 @@ def _sibling_model_class_for_config(model_class, child_config):
             candidates.append(value)
     if not candidates:
         return None
-    # The concrete model over its *PreTrainedModel base: that is the class Transformers validates.
+    # Concrete model over its *PreTrainedModel base: the class Transformers validates.
     candidates.sort(key = lambda klass: (klass.__name__.endswith("PreTrainedModel"), klass.__name__))
     return candidates[0]
 
