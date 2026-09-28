@@ -26941,10 +26941,7 @@ async def produce_openai_chat_completions(
             )
         try:
             await asyncio.to_thread(
-                _inline_request_remote_images
-                if _serves_several_images(backend)
-                else _inline_selected_remote_image,
-                payload,
+                _inline_served_remote_images, payload, _serves_several_images(backend)
             )
         except HTTPException as exc:
             raise _reject(exc.status_code, exc.detail)
@@ -35382,8 +35379,9 @@ def _inline_request_remote_images(payload) -> None:
                 part.image_url.url = fetches.inline(part.image_url.url)
 
 
-def _inline_selected_remote_image(payload) -> None:
-    # A single-image model reads only the image _extract_content_parts selects.
+def _inline_served_remote_images(payload, several: bool) -> None:
+    # Only what the renderers read: the image _extract_content_parts selects, and on a
+    # multi-image model every user turn's (_conversation_with_image_markers).
     latest = latest_user = None
     for message in payload.messages:
         if message.role in ("system", "developer") or not isinstance(message.content, list):
@@ -35405,9 +35403,18 @@ def _inline_selected_remote_image(payload) -> None:
             latest = part
             if message.role == "user":
                 latest_user = part
-    part = latest_user or latest
-    if part is not None and not part.image_url.url.startswith("data:"):
-        part.image_url.url = _RemoteImageFetches().inline(part.image_url.url)
+    selected = latest_user or latest
+    fetches = _RemoteImageFetches()
+    for message in payload.messages:
+        if not isinstance(message.content, list):
+            continue
+        for part in message.content:
+            if (
+                isinstance(part, ImageContentPart)
+                and not part.image_url.url.startswith("data:")
+                and (part is selected or (several and message.role == "user"))
+            ):
+                part.image_url.url = fetches.inline(part.image_url.url)
 
 
 def _normalize_openai_image_parts_for_llama(openai_messages: list[dict], on_image = None) -> bool:

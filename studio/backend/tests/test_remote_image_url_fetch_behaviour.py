@@ -420,6 +420,29 @@ class TestSafetensorsAndMlxFetchToo:
         assert fetched == ["https://images.example/new.webp"]
         assert backend.calls[0]["image"].size == (2, 2)
 
+    def test_a_multi_image_model_fetches_only_user_turn_images(self, monkeypatch):
+        fetched = []
+
+        def _fetch(url, *_a, **_k):
+            fetched.append(url)
+            return None if "old" in url else ("image/webp", _webp_b64())
+
+        monkeypatch.setattr(external_provider, "safe_fetch_remote_image_sync", _fetch)
+        backend = safetensors._ScriptedBackend(safetensors._fixed("a cat"))
+        backend.models["sf-model"]["is_vision"] = True
+        backend.models["sf-model"]["chat_template_info"]["accepts_multiple_images"] = True
+        client = _client(monkeypatch, safetensors._llama_stub())
+        safetensors._install(monkeypatch, backend)
+        first = _chat_body("https://images.example/a.webp", model = "sf-model")["messages"][0]
+        reply = _chat_body("https://images.example/old.webp", model = "sf-model")["messages"][0]
+        body = _chat_body("https://images.example/b.webp", model = "sf-model")
+        body["messages"][:0] = [first, {**reply, "role": "assistant"}]
+        r = client.post("/v1/chat/completions", json = body)
+
+        assert r.status_code == 200, r.text
+        assert fetched == ["https://images.example/a.webp", "https://images.example/b.webp"]
+        assert len(backend.calls[0]["images"]) == 2
+
     def test_a_text_only_model_refuses_before_any_fetch(self, monkeypatch):
         def _never(*_a, **_k):
             raise AssertionError("a text-only model must refuse before fetching")
