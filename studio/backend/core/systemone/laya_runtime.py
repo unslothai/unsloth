@@ -247,7 +247,7 @@ class _MLXAgent:
 
 def _load_checkpoint(checkpoint: Checkpoint):
     root = _checkpoint_dir(checkpoint)
-    laya = _laya()
+    _laya()
 
     # Evict only once the new checkpoint is on disk, so a long or failed download leaves the resident model serving.
     _evict()
@@ -256,14 +256,101 @@ def _load_checkpoint(checkpoint: Checkpoint):
     if device == "mlx":
         return _MLXAgent(folder), device
     if device not in ("cuda", "cpu"):
-        return laya.load(str(root), subfolder = checkpoint.subfolder, device = device), device
+        return _load_laya(str(root), subfolder = checkpoint.subfolder, device = device), device
     import torch
 
     # Built on CPU and cast before the move, so the device never holds laya's fp32 copy.
-    agent = laya.load(str(root), subfolder = checkpoint.subfolder, device = "cpu")
     fp16_checkpoint = checkpoint.name in CHECKPOINTS or _stored_fp16(folder)
+    weights, _ = _precision(torch.device(device), fp16_checkpoint)
+    agent = _load_laya(
+        str(root), subfolder = checkpoint.subfolder, device = "cpu", embedding_dtype = weights
+    )
     _place(agent, torch.device(device), fp16_checkpoint)
     return agent, str(agent.device.type)
+
+
+_build_lock = threading.Lock()
+# Token ids a config may name; the placeholder vocabulary must still contain all of them.
+_SPECIAL_TOKEN_IDS = (
+    "pad_token_id",
+    "bos_token_id",
+    "eos_token_id",
+    "cls_token_id",
+    "sep_token_id",
+    "mask_token_id",
+)
+
+
+def _load_laya(
+    path: str,
+    *,
+    embedding_dtype = None,
+    **kwargs,
+):
+    """``laya.load`` without randomly initialising the encoder's vocabulary embedding.
+
+    laya builds a randomly initialised fp32 encoder and then loads the checkpoint over it. For mmBERT's
+    256000 x 768 embedding that init alone took ~3.2 GB of scratch RAM and ~8 s, all of it overwritten
+    by laya's strict load. The embedding is created with ``skip_init`` instead, in the dtype it will be
+    served in; the rest of the model, including buffers the checkpoint does not carry, is built as before.
+    """
+    laya = _laya()
+    hook = getattr(laya, "agent", None)
+    if not hasattr(hook, "build_model"):
+        return laya.load(path, **kwargs)
+    with _build_lock:
+        original = hook.build_model
+
+        def build_model(cfg, encoder_dir = None):
+            return _build_model(cfg, encoder_dir, original, embedding_dtype)
+
+        hook.build_model = build_model
+        try:
+            return laya.load(path, **kwargs)
+        finally:
+            hook.build_model = original
+
+
+def _build_model(
+    cfg,
+    encoder_dir,
+    original,
+    embedding_dtype = None,
+):
+    """laya.common.build_model, with the vocabulary embedding allocated but not initialised."""
+    import os
+
+    import torch
+    from transformers import AutoConfig, AutoModel
+
+    if not encoder_dir or not os.path.exists(encoder_dir):
+        return original(cfg, encoder_dir = encoder_dir)
+    config = AutoConfig.from_pretrained(encoder_dir)
+    vocab_size = config.vocab_size
+    ids = [getattr(config, name, None) for name in _SPECIAL_TOKEN_IDS]
+    config.vocab_size = 1 + max([i for i in ids if isinstance(i, int) and i >= 0] + [0])
+    encoder = AutoModel.from_config(config, attn_implementation = "sdpa")
+    config.vocab_size = vocab_size
+    placeholder = encoder.get_input_embeddings()
+    if type(placeholder) is not torch.nn.Embedding or placeholder.num_embeddings >= vocab_size:
+        # An encoder laid out differently from ModernBERT: build it laya's way.
+        return original(cfg, encoder_dir = encoder_dir)
+    encoder.set_input_embeddings(
+        torch.nn.utils.skip_init(
+            torch.nn.Embedding,
+            vocab_size,
+            placeholder.embedding_dim,
+            padding_idx = placeholder.padding_idx,
+            max_norm = placeholder.max_norm,
+            norm_type = placeholder.norm_type,
+            scale_grad_by_freq = placeholder.scale_grad_by_freq,
+            sparse = placeholder.sparse,
+            dtype = embedding_dtype or placeholder.weight.dtype,
+        )
+    )
+    return _laya().common.DecisionModel(
+        encoder, cfg.get("head_layers", 2), len(cfg.get("act_costs", {})) + 1
+    )
 
 
 def _stored_fp16(folder: Path) -> bool:
@@ -584,14 +671,17 @@ def _forward(agent, items: list[dict[str, Any]]):
             if "memory" not in reason and "allocate" not in reason:
                 raise
         # Past the handler, so the traceback no longer keeps the MLX arrays alive while the CPU copy loads.
-        laya = _laya()
-
         logger.warning("Laya ran out of GPU memory; moving it to CPU")
         agent.model = None
         _release_memory()
         try:
-            cpu = laya.load(str(agent.folder), device = "cpu")
-            _place(cpu, torch.device("cpu"), _stored_fp16(Path(agent.folder)))
+            cpu_device, fp16_checkpoint = torch.device("cpu"), _stored_fp16(Path(agent.folder))
+            cpu = _load_laya(
+                str(agent.folder),
+                device = "cpu",
+                embedding_dtype = _precision(cpu_device, fp16_checkpoint)[0],
+            )
+            _place(cpu, cpu_device, fp16_checkpoint)
         except Exception:
             # Callers hold _run_lock, so drop the half-moved agent here; the next request loads it again.
             _agent = _loaded = _device_name = None

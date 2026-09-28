@@ -1192,3 +1192,95 @@ def test_fp16_overflow_reruns_in_fp32(monkeypatch, gpu_agent):
     logits, _ = laya_runtime._forward(agent, _items())
     assert calls == [torch.float16, torch.float32] and agent.dtype == torch.float32
     assert logits.tolist() == [[1.0, 0.5]]
+
+
+def _tiny_laya_encoder(tmp_path):
+    pytest.importorskip("torch")
+    from transformers import ModernBertConfig
+
+    config = ModernBertConfig(
+        vocab_size = 300,
+        hidden_size = 64,
+        intermediate_size = 96,
+        num_hidden_layers = 3,
+        num_attention_heads = 4,
+        pad_token_id = 0,
+        bos_token_id = 2,
+        eos_token_id = 1,
+        cls_token_id = 1,
+        sep_token_id = 1,
+        mask_token_id = 4,
+        global_attn_every_n_layers = 3,
+        local_attention = 16,
+    )
+    encoder_dir = tmp_path / "encoder"
+    config.save_pretrained(encoder_dir)
+    return str(encoder_dir), {"encoder": "tiny", "head_layers": 1, "act_costs": {"escalate": 0.5}}
+
+
+def test_skip_init_build_matches_laya_after_loading(tmp_path):
+    torch = pytest.importorskip("torch")
+    laya = laya_runtime._laya()
+    encoder_dir, cfg = _tiny_laya_encoder(tmp_path)
+    reference = laya.common.build_model(cfg, encoder_dir = encoder_dir).eval()
+    fast = laya_runtime._build_model(cfg, encoder_dir, laya.common.build_model).eval()
+    embedding = fast.encoder.get_input_embeddings()
+    assert embedding.num_embeddings == 300 and fast.encoder.config.vocab_size == 300
+    assert embedding.padding_idx == reference.encoder.get_input_embeddings().padding_idx
+    # laya loads strictly, so every parameter and persistent buffer comes from the checkpoint.
+    fast.load_state_dict(reference.state_dict(), strict = True)
+    ours = dict(fast.named_parameters()) | dict(fast.named_buffers())
+    theirs = dict(reference.named_parameters()) | dict(reference.named_buffers())
+    assert ours.keys() == theirs.keys()
+    # Includes the rotary inv_freq buffers, which the checkpoint does not carry.
+    assert any("inv_freq" in name for name in theirs)
+    assert all(torch.equal(ours[name], theirs[name]) for name in theirs)
+    assert repr(fast) == repr(reference)
+    assert fast.encoder.config.to_dict() == reference.encoder.config.to_dict()
+    ids = torch.randint(5, 300, (2, 20))
+    args = (
+        ids,
+        torch.ones_like(ids),
+        torch.tensor([[3, 7]] * 2),
+        torch.ones(2, 2, dtype = torch.bool),
+        torch.zeros(2, dtype = torch.long),
+    )
+    with torch.inference_mode():
+        assert torch.equal(fast(*args)[0], reference(*args)[0])
+
+
+def test_skip_init_embedding_is_built_in_the_serving_dtype(tmp_path):
+    torch = pytest.importorskip("torch")
+    laya = laya_runtime._laya()
+    encoder_dir, cfg = _tiny_laya_encoder(tmp_path)
+    fast = laya_runtime._build_model(cfg, encoder_dir, laya.common.build_model, torch.float16)
+    assert fast.encoder.get_input_embeddings().weight.dtype == torch.float16
+    assert fast.encoder.embeddings.norm.weight.dtype == torch.float32
+
+
+def test_build_without_an_encoder_dir_is_laya_own(tmp_path):
+    sentinel = object()
+    calls = []
+
+    def original(cfg, encoder_dir = None):
+        calls.append(encoder_dir)
+        return sentinel
+
+    assert laya_runtime._build_model({}, None, original) is sentinel
+    assert laya_runtime._build_model({}, str(tmp_path / "missing"), original) is sentinel
+    assert calls == [None, str(tmp_path / "missing")]
+
+
+def test_build_hook_is_restored_even_when_loading_fails(monkeypatch):
+    laya = laya_runtime._laya()
+    original = laya.agent.build_model
+    seen = []
+
+    def boom(path, **kwargs):
+        seen.append(laya.agent.build_model is not original)
+        raise FileNotFoundError(path)
+
+    monkeypatch.setattr(laya, "load", boom)
+    with pytest.raises(FileNotFoundError):
+        laya_runtime._load_laya("missing", device = "cpu")
+    assert seen == [True] and laya.agent.build_model is original
