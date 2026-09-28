@@ -1251,6 +1251,15 @@ class TestEstimateMemoryRoute:
             "load_in_4bit": seen["load_in_4bit"],
         }
 
+        # /load's own vocabulary prices the same width; TurboQuant is priced at full width,
+        # the width the load fits it at, and never asks the mx.quantize probe.
+        widths.clear()
+        resp = _estimate(model_path = "org/model", n_ctx = 32_768, mlx_kv_quant = "4")
+        assert (seen["kv_bits"], resp.context_fitted, widths) == (4, 24_576, [(str(tmp_path), 4)])
+        widths.clear()
+        resp = _estimate(model_path = "org/model", mlx_kv_quant = "tq-4", mlx_kv_bits = 4)
+        assert (asked["kv_bits"], seen["kv_bits"], widths) == (None, None, [])
+
         # A width the load would refuse is priced at full width, fitted or pinned.
         refuses["answer"] = True
         resp = _estimate(model_path = "org/model", mlx_kv_bits = 4)
@@ -3678,19 +3687,24 @@ class TestMlxEstimateKvBits:
     """Which requested KV widths reach the MLX planner, and which are dropped."""
 
     @pytest.mark.parametrize(
-        "requested, expected",
+        "quant, bits, expected",
         [
-            (4, 4),
-            (8, 8),
-            (7, None),
-            (0, None),
-            (None, None),
-            (True, None),
-            ("4", None),
+            (None, 4, 4),
+            (None, 8, 8),
+            (None, 7, None),
+            (None, 0, None),
+            (None, None, None),
+            (None, True, None),
+            ("4", None, 4),
+            (" 8 ", 4, 8),
+            ("auto", 8, None),
+            ("tq-4", 4, None),
+            ("bogus", 4, None),
         ],
     )
-    def test_kv_bits_resolution(self, requested, expected):
-        assert ri._mlx_estimate_kv_bits(requested) == expected
+    def test_kv_bits_resolution(self, quant, bits, expected):
+        # An explicit mlx_kv_quant wins over the superseded width, as on /load.
+        assert ri._mlx_estimate_kv_bits(quant, bits) == expected
 
 
 import glob  # noqa: E402

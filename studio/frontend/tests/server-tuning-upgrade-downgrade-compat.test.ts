@@ -356,16 +356,16 @@ test("the backfill offers non-GGUF weights, keyed by repo id, after the v2 pass 
   const snapshot = "/hf/models--mlx-community--Model-4bit/snapshots/abc";
   const template = { chatTemplateOverride: "{{ messages }}" };
   assert.ok(savePerModelConfig(folder, null, config(template)));
-  assert.ok(savePerModelConfig(snapshot, null, config({ mlxKvBits: 8 })));
+  assert.ok(savePerModelConfig(snapshot, null, config({ mlxKvQuant: "8" })));
   // A newer build's record under the repo id makes adoption decline, and the path stays put.
   const declined = "/hf/models--org--Newer/snapshots/def";
-  assert.ok(savePerModelConfig("org/Newer", null, config({ mlxKvBits: 4 })));
+  assert.ok(savePerModelConfig("org/Newer", null, config({ mlxKvQuant: "4" })));
   const map = readMap();
   const newer = Object.keys(map).find((key) => key.includes("org/newer"));
   assert.ok(newer);
   map[newer].version = 99;
   writeMap(map);
-  assert.ok(savePerModelConfig(declined, null, config({ mlxKvBits: 4 })));
+  assert.ok(savePerModelConfig(declined, null, config({ mlxKvQuant: "4" })));
   // Identities the resolver never keys.
   const link = "/home/u/.ollama/.studio_links/ab12/model-latest.gguf";
   assert.ok(savePerModelConfig(link, null, config(template)));
@@ -387,7 +387,7 @@ test("the backfill offers non-GGUF weights, keyed by repo id, after the v2 pass 
     new Set(puts),
     new Set([folder, "mlx-community/model-4bit"]),
   );
-  assert.equal(resolveInitialConfig(declined, null).config.mlxKvBits, 4);
+  assert.equal(resolveInitialConfig(declined, null).config.mlxKvQuant, "4");
   assert.equal(store.get(BACKFILL_FLAG), "1");
 });
 

@@ -1053,6 +1053,8 @@ class TestLoadHubDownloadExclusion:
             "parallel_slots",
             "is_mlx",
             "is_npu",
+            "mlx_kv_quant",
+            "mlx_kv_quant_requested",
             "mlx_kv_bits",
             "mlx_kv_bits_requested",
             "mlx_kv_quant_eligibility",
@@ -1078,7 +1080,7 @@ class TestLoadHubDownloadExclusion:
 
         fields = route._llama_runtime_fields(backend)
         assert fields["is_mlx"] is False
-        assert fields["mlx_kv_bits_requested"] is None
+        assert fields["mlx_kv_quant_requested"] is None
 
     def test_in_flight_marker_counts_and_normalizes_case(self):
         assert not hf_gguf_load_in_flight(REPO)

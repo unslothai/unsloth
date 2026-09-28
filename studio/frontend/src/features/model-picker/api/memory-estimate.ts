@@ -68,7 +68,7 @@ export interface MemoryEstimateRequest {
   nCtx?: number | null;
   cacheTypeKv?: string | null;
   maxSeqLength?: number | null;
-  mlxKvBits?: number | null;
+  mlxKvQuant?: string | null;
   nParallel?: number | null;
   nBatch?: number | null;
   nUbatch?: number | null;
@@ -147,7 +147,7 @@ function estimateRequestBody(
     n_ctx: payload.nCtx ?? null,
     cache_type_kv: payload.cacheTypeKv ?? null,
     max_seq_length: payload.maxSeqLength ?? null,
-    mlx_kv_bits: payload.mlxKvBits ?? null,
+    mlx_kv_quant: payload.mlxKvQuant ?? null,
     n_parallel: payload.nParallel ?? null,
     n_batch: payload.nBatch ?? null,
     n_ubatch: payload.nUbatch ?? null,

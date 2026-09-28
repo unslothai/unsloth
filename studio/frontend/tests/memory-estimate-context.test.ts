@@ -204,10 +204,10 @@ test("the non-GGUF context and MLX cache width reach the backend", async () => {
   await fetchMemoryEstimate({
     modelPath: "mlx-community/Qwen3-8B-4bit",
     maxSeqLength: 4096,
-    mlxKvBits: 8,
+    mlxKvQuant: "tq-4",
   });
   assert.equal(sent!.max_seq_length, 4096);
-  assert.equal(sent!.mlx_kv_bits, 8);
+  assert.equal(sent!.mlx_kv_quant, "tq-4");
 });
 
 test("every field sent is also a field the hook re-fetches for", () => {
@@ -230,7 +230,7 @@ test("every field sent is also a field the hook re-fetches for", () => {
     "../src/features/model-picker/hooks/use-memory-estimate.ts",
     "estimateKey",
   );
-  assert.ok(wire.has("maxSeqLength") && wire.has("mlxKvBits"), "test is stale");
+  assert.ok(wire.has("maxSeqLength") && wire.has("mlxKvQuant"), "test is stale");
   const unwatched = [...wire].filter((field) => !key.has(field));
   assert.deepEqual(
     unwatched,

@@ -126,16 +126,29 @@ class LoadRequest(BaseModel):
             "(e.g. 'f16', 'bf16', 'q8_0', 'q4_0', 'q4_1', 'q5_0', 'q5_1', 'iq4_nl', 'f32')"
         ),
     )
-    mlx_kv_bits: Optional[int] = Field(
+    mlx_kv_quant: Optional[str] = Field(
         None,
         description = (
-            "MLX KV cache quantization bit width (8, 6, 5, 4, 3 or 2). MLX takes a bit "
-            "width rather than a llama.cpp dtype name, so this is separate from "
-            "cache_type_kv. Omit for an unquantized cache. Ignored by non-MLX "
-            "backends; a model whose cache layout cannot be quantized reports "
-            "the reason instead of applying it."
+            "MLX KV cache quantization: 'auto' for an unquantized cache, '8'/'6'/'5'/'4'/'3'/'2' "
+            "for an mx.quantize width, or 'tq-4'/'tq-3.5'/'tq-3'/'tq-2' for TurboQuant. MLX names a "
+            "width rather than a llama.cpp dtype, so this is separate from cache_type_kv. Ignored "
+            "by non-MLX backends; a model whose cache layout cannot be quantized reports the reason "
+            "instead of applying it."
         ),
     )
+    mlx_kv_bits: Optional[float] = Field(
+        None, description = "Superseded by mlx_kv_quant; read only when mlx_kv_quant is omitted."
+    )
+
+    @model_validator(mode = "after")
+    def derive_mlx_kv_quant(self):
+        """A bare width only ever meant mx.quantize; null is how a client spells Auto."""
+
+        if "mlx_kv_quant" not in self.model_fields_set and self.mlx_kv_bits is not None:
+            from core.inference.mlx_inference import encode_mlx_kv_quant
+            self.mlx_kv_quant = encode_mlx_kv_quant(self.mlx_kv_bits)
+        return self
+
     gpu_ids: Optional[List[int]] = Field(
         None,
         description = (
@@ -946,9 +959,14 @@ class EstimateMemoryRequest(BaseModel):
         "for GGUF and max_seq_length for everything else -- and pricing one from the "
         "other quotes a context the load will not use.",
     )
+    mlx_kv_quant: Optional[str] = Field(
+        None,
+        description = "MLX KV cache quantization in /load's vocabulary ('auto', '8', 'tq-4', ...). "
+        "A TurboQuant choice is priced at full width, as the load fits it.",
+    )
     mlx_kv_bits: Optional[int] = Field(
         None,
-        description = "MLX KV cache width, mirroring /load's own field. Not derived "
+        description = "Superseded by mlx_kv_quant; read only when mlx_kv_quant is omitted. Not derived "
         "from cache_type_kv: that is llama.cpp's setting, it survives in the config of "
         "a model that never used it, and reading it here would quantize an estimate "
         "for a load whose cache stays full width.",
@@ -1371,16 +1389,21 @@ class _InferenceRuntimeFields(BaseModel):
         False,
         description = "Whether the active model runs on the AMD Ryzen AI NPU (FastFlowLM through Lemonade)",
     )
-    mlx_kv_bits: Optional[int] = Field(
-        None, description = "MLX KV quantization bit width actually applied, if any"
+    mlx_kv_quant: Optional[str] = Field(
+        None, description = "MLX KV cache quantization actually applied, in mlx_kv_quant's vocabulary"
     )
-    mlx_kv_bits_requested: Optional[int] = Field(
+    mlx_kv_quant_requested: Optional[str] = Field(
         None,
         description = (
-            "MLX KV quantization bit width the load asked for. Differs from "
-            "mlx_kv_bits when the model could not honor it, which is exactly "
-            "when the reason matters."
+            "MLX KV cache quantization the load asked for. Differs from mlx_kv_quant when the model "
+            "could not honor it, which is exactly when the reason matters."
         ),
+    )
+    mlx_kv_bits: Optional[float] = Field(
+        None, description = "mlx_kv_quant as a bare width, kept for clients reading the older field"
+    )
+    mlx_kv_bits_requested: Optional[float] = Field(
+        None, description = "mlx_kv_quant_requested as a bare width, kept for the same reason"
     )
     chat_template_override: Optional[str] = Field(
         None,
