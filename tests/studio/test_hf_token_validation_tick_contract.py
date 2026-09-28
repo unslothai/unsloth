@@ -52,7 +52,7 @@ def test_validation_result_must_belong_to_the_current_normalized_token():
     assert "useDebouncedValue(normalizedToken, 500)" in source
     assert 'normalizedToken && !normalizedToken.startsWith("hf_")' in source
     assert 'error: "Token must start with hf_."' in source
-    assert "if (!COMPLETE_HF_TOKEN.test(normalizedToken)) return INITIAL" in source
+    assert "if (!isCompleteHfTokenShape(normalizedToken)) return INITIAL" in source
     assert "if (completed.token !== normalizedToken)" in source
     assert "if (completed.token !== debouncedToken)" not in source
 

@@ -12,6 +12,7 @@ import types
 
 import pytest
 import torch
+from real_accelerator import has_real_cuda
 
 os.environ.setdefault("UNSLOTH_COMPILE_DISABLE", "1")
 import unsloth.models.rl_replacements as rl
@@ -482,7 +483,7 @@ def test_dense_fallback_projects_on_the_head_device():
 
 
 @pytest.mark.skipif(
-    not torch.cuda.is_available(),
+    not has_real_cuda(),
     reason = "needs a second device to split hidden states from the head",
 )
 def test_chunked_loss_with_heads_on_another_device():
@@ -539,7 +540,7 @@ def test_minicpm3_scales_hidden_states_before_the_head_so_falls_back():
 
 
 @pytest.mark.skipif(
-    not torch.cuda.is_available(),
+    not has_real_cuda(),
     reason = "needs a second device to split hidden states from the head",
 )
 def test_dense_fallback_colocates_with_the_labels():

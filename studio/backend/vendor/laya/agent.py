@@ -28,7 +28,7 @@ def _fix_tokenizer_config(path: str):
     if not os.path.exists(cfg_file):
         return
     try:
-        with open(cfg_file) as f:
+        with open(cfg_file, encoding = "utf-8") as f:
             tcfg = json.load(f)
         changed = False
         if tcfg.get("tokenizer_class") in (None, "TokenizersBackend"):
@@ -44,7 +44,7 @@ def _fix_tokenizer_config(path: str):
             tcfg["extra_special_tokens"] = {"extra_%d" % i: t for i, t in enumerate(extra)}
             changed = True
         if changed:
-            with open(cfg_file, "w") as f:
+            with open(cfg_file, "w", encoding = "utf-8") as f:
                 json.dump(tcfg, f, indent=2)
     except Exception:
         pass
@@ -153,7 +153,7 @@ class Agent:
                 f"(e.g. 'convaiinnovations/laya') or a directory your own training run wrote."
             )
 
-        with open(cfg_path) as f:
+        with open(cfg_path, encoding = "utf-8") as f:
             self.cfg = json.load(f)
 
         weights_path = os.path.join(model_dir, "model.safetensors")
