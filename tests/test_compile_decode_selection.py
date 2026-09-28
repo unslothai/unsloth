@@ -25,27 +25,40 @@ def _zoo_supports_it(monkeypatch):
     monkeypatch.delenv("UNSLOTH_COMPILE_DISABLE", raising = False)
 
 
-@pytest.mark.parametrize("model", [
-    _model("qwen3_5", "qwen3_5_text"),
-    _model("qwen3_5_moe", "qwen3_5_moe_text"),
-    _model("qwen3_5_text"),
-    _model("qwen3_5_moe_text"),
-])
+@pytest.mark.parametrize(
+    "model",
+    [
+        _model("qwen3_5", "qwen3_5_text"),
+        _model("qwen3_5_moe", "qwen3_5_moe_text"),
+        _model("qwen3_5_text"),
+        _model("qwen3_5_moe_text"),
+    ],
+)
 def test_qwen3_5_compiles_decode(model):
     assert _compiles_decode(model)
 
 
-@pytest.mark.parametrize("model", [
-    _model("llama"),
-    _model("gemma3", "gemma3_text"),
-    _model("qwen3_next"),
-    _model("qwen3_vl", "qwen3_vl_text"),
-])
+@pytest.mark.parametrize(
+    "model",
+    [
+        _model("llama"),
+        _model("gemma3", "gemma3_text"),
+        _model("qwen3_next"),
+        _model("qwen3_vl", "qwen3_vl_text"),
+    ],
+)
 def test_other_models_keep_eager_decode(model):
     assert not _compiles_decode(model)
 
 
-@pytest.mark.parametrize("env", [("UNSLOTH_COMPILE_DECODE", "0"), ("UNSLOTH_COMPILE_DISABLE", "1"), ("UNSLOTH_COMPILE_DISABLE", "partial")])
+@pytest.mark.parametrize(
+    "env",
+    [
+        ("UNSLOTH_COMPILE_DECODE", "0"),
+        ("UNSLOTH_COMPILE_DISABLE", "1"),
+        ("UNSLOTH_COMPILE_DISABLE", "partial"),
+    ],
+)
 def test_opt_outs(monkeypatch, env):
     monkeypatch.setenv(*env)
     assert not _compiles_decode(_model("qwen3_5", "qwen3_5_text"))
@@ -73,7 +86,9 @@ def test_old_zoo_keeps_eager_decode(monkeypatch):
     assert not _compiles_decode(_model("qwen3_5", "qwen3_5_text"))
 
 
-@pytest.mark.parametrize("length, bucket", [(74, 1024), (1024, 1024), (1025, 2048), (1501, 2048), (3100, 4096)])
+@pytest.mark.parametrize(
+    "length, bucket", [(74, 1024), (1024, 1024), (1025, 2048), (1501, 2048), (3100, 4096)]
+)
 def test_bucket_rounds_up(length, bucket):
     assert _decode_cache_bucket(length) == bucket
 
@@ -90,7 +105,13 @@ def _recorder():
 def test_wrapper_buckets_keyword_length():
     # transformers 5.17 passes max_cache_len by keyword, after counting prompt / inputs_embeds.
     seen, prepare = _recorder()
-    _bucket_static_cache(prepare)(cache_implementation = "static", batch_size = 1, max_cache_len = 1501, prefill_chunk_size = None, model_kwargs = {})
+    _bucket_static_cache(prepare)(
+        cache_implementation = "static",
+        batch_size = 1,
+        max_cache_len = 1501,
+        prefill_chunk_size = None,
+        model_kwargs = {},
+    )
     assert seen == [2048]
 
 

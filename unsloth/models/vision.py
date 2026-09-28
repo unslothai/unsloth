@@ -1169,7 +1169,11 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
             kwargs["compile_config"] = compile_config
 
     decode_scope = unsloth_decode_compile() if compile_decode else contextlib.nullcontext()
-    bucketing = compile_decode and "_prepare_static_cache" not in self.__dict__ and hasattr(self, "_prepare_static_cache")
+    bucketing = (
+        compile_decode
+        and "_prepare_static_cache" not in self.__dict__
+        and hasattr(self, "_prepare_static_cache")
+    )
     if bucketing:
         self._prepare_static_cache = _bucket_static_cache(self._prepare_static_cache)
     try:
