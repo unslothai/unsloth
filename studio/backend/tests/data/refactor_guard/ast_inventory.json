@@ -29,6 +29,9 @@
       "CountAborted": {
         "kind": "class"
       },
+      "GgufDownloadCancelled": {
+        "kind": "class"
+      },
       "GgufLoadIntent": {
         "kind": "class"
       },
@@ -44,10 +47,22 @@
       "ParavirtualPlacement": {
         "kind": "class"
       },
+      "_AMD_SMI_TOTAL_TOLERANCE": {
+        "kind": "assign"
+      },
+      "_ANCHOR_ARGS_CHARS": {
+        "kind": "assign"
+      },
+      "_ANCHOR_TEXT_CHARS": {
+        "kind": "assign"
+      },
       "_ANSWER_PIVOT": {
         "kind": "assign"
       },
       "_APPLE_UNIFIED_MEMORY_FRACTION": {
+        "kind": "assign"
+      },
+      "_AUTO_OFFLOAD_CTX": {
         "kind": "assign"
       },
       "_BIG_ENDIAN_GGUF_FILENAME_RE": {
@@ -59,7 +74,16 @@
       "_CANONICAL_SPEC_MODES": {
         "kind": "assign"
       },
+      "_CGROUP_ROOT": {
+        "kind": "assign"
+      },
       "_CHAT_LOADS_IN_FLIGHT": {
+        "kind": "assign"
+      },
+      "_CONTINUE_AFTER_LENGTH_STATUS": {
+        "kind": "assign"
+      },
+      "_CONTINUE_TRUNCATED_ANSWER_STATUS": {
         "kind": "assign"
       },
       "_CPU_DEVICE_VALUES": {
@@ -79,6 +103,9 @@
       },
       "_CTX_FIT_VRAM_FRACTION": {
         "kind": "assign"
+      },
+      "_CombinedCancelEvent": {
+        "kind": "class"
       },
       "_CpuFallbackRuntime": {
         "kind": "class"
@@ -110,13 +137,31 @@
       "_DRAFTER_KINDS": {
         "kind": "assign"
       },
+      "_DRAFT_GPU_LAYER_FLAGS": {
+        "kind": "assign"
+      },
+      "_FAILURE_QUOTE_CHARS": {
+        "kind": "assign"
+      },
+      "_FAILURE_SCAN_TAIL_CHARS": {
+        "kind": "assign"
+      },
       "_FINAL_ANSWER_SIGNAL": {
+        "kind": "assign"
+      },
+      "_FIT_FLOOR_MIN_CTX": {
+        "kind": "assign"
+      },
+      "_FIT_MIN_CTX": {
         "kind": "assign"
       },
       "_FORCED_PLAN_INTENT": {
         "kind": "assign"
       },
       "_GEMMA_MTP_FAMILY_RE": {
+        "kind": "assign"
+      },
+      "_GENERATION_CPU_AFFINITY_FLAGS": {
         "kind": "assign"
       },
       "_GGML_GPU_BACKEND_RE": {
@@ -128,10 +173,25 @@
       "_GGUF_KNOWN_QUANT_RE": {
         "kind": "assign"
       },
+      "_GGUF_METADATA_LOGGED": {
+        "kind": "assign"
+      },
+      "_GGUF_METADATA_LOGGED_LOCK": {
+        "kind": "assign"
+      },
+      "_GGUF_METADATA_LOGGED_MAX": {
+        "kind": "assign"
+      },
       "_GGUF_REHEARSAL_ARGS_RE": {
         "kind": "assign"
       },
+      "_GGUF_UINT_WIDTHS": {
+        "kind": "assign"
+      },
       "_GPU_DEVICE_PREFIXES": {
+        "kind": "assign"
+      },
+      "_GPU_MODEL_BUFFER_RE": {
         "kind": "assign"
       },
       "_GPU_OFFLOAD_MARKERS": {
@@ -140,10 +200,22 @@
       "_GPU_OFFLOAD_OVERRIDE_FLAGS": {
         "kind": "assign"
       },
+      "_HF_DRAFT_FLAGS": {
+        "kind": "assign"
+      },
+      "_HOST_RAM_HEADROOM_MIB": {
+        "kind": "assign"
+      },
       "_IGPU_HOST_RESERVE_MIB": {
         "kind": "assign"
       },
+      "_IMATRIX_TOKEN_RE": {
+        "kind": "assign"
+      },
       "_INKLING_REASONING_EFFORT": {
+        "kind": "assign"
+      },
+      "_INSTALLER_WRAPPER_RE": {
         "kind": "assign"
       },
       "_LEGACY_SPEC_MODE_MAP": {
@@ -164,19 +236,58 @@
       "_LLAMA_ARG_TRUE_VALUES": {
         "kind": "assign"
       },
+      "_LLAMA_FIT_MIN_CTX": {
+        "kind": "assign"
+      },
+      "_LLAMA_FIT_TARGET_DEFAULT_MIB": {
+        "kind": "assign"
+      },
+      "_LLAMA_RANDOM_SEED": {
+        "kind": "assign"
+      },
       "_LOADS_IN_FLIGHT": {
         "kind": "assign"
       },
       "_LOADS_IN_FLIGHT_LOCK": {
         "kind": "assign"
       },
+      "_LOCAL_DRAFT_FLAGS": {
+        "kind": "assign"
+      },
       "_LlamaStreamCancelled": {
         "kind": "class"
+      },
+      "_MAX_IDENTICAL_TOOL_RESULTS": {
+        "kind": "assign"
+      },
+      "_MAX_LENGTH_CONTINUATIONS": {
+        "kind": "assign"
       },
       "_MAX_TOOL_CALLS_PER_TURN": {
         "kind": "assign"
       },
+      "_MIN_USEFUL_RESULT_TOKENS": {
+        "kind": "assign"
+      },
+      "_MISS": {
+        "kind": "assign"
+      },
+      "_MLA_MTP_FAST_ARCHS": {
+        "kind": "assign"
+      },
+      "_MMPROJ_OFFLOAD_ENV_VAR": {
+        "kind": "assign"
+      },
+      "_MMPROJ_OFFLOAD_FLAGS": {
+        "kind": "assign"
+      },
+      "_MMPROJ_OFFLOAD_NEG_ENV_VAR": {
+        "kind": "assign"
+      },
       "_MTP_MIN_SIZE_B": {
+        "kind": "assign"
+      },
+      "_MTP_SHARD_SUFFIX_RE": {
         "kind": "assign"
       },
       "_MTP_VRAM_RESERVE_FRAC": {
@@ -188,13 +299,28 @@
       "_OVERRIDE_TENSOR_FLAGS": {
         "kind": "assign"
       },
+      "_PAGEABLE_OVERRIDE_NOTE": {
+        "kind": "assign"
+      },
+      "_PAGEABLE_OVERRIDE_TEXT_ONLY_NOTICE": {
+        "kind": "assign"
+      },
       "_PARAVIRTUAL_DIFFUSION_NO_NGL_ERROR": {
         "kind": "assign"
       },
       "_PERMANENT_HUB_ERRORS": {
         "kind": "assign"
       },
+      "_PROC_ROOT": {
+        "kind": "assign"
+      },
+      "_PROC_SELF_CGROUP": {
+        "kind": "assign"
+      },
       "_PROVISIONAL_ARGS_MIN_CHARS": {
+        "kind": "assign"
+      },
+      "_QWEN38_MODEL_RE": {
         "kind": "assign"
       },
       "_REASONING_EFFORT_SCALE": {
@@ -207,6 +333,9 @@
         "kind": "assign"
       },
       "_SHARD_RE": {
+        "kind": "assign"
+      },
+      "_SIDECAR_ADAPTER_FLAGS": {
         "kind": "assign"
       },
       "_SPEC_ENV_VARS": {
@@ -224,6 +353,15 @@
       "_SWA_PATTERN_SOURCE_RE": {
         "kind": "assign"
       },
+      "_TARGET_KV_EXCLUDES_NEXTN_ARCHS": {
+        "kind": "assign"
+      },
+      "_TARGET_ROLLBACK_SPEC_TYPES": {
+        "kind": "assign"
+      },
+      "_TENSOR_SPLIT_FLAGS": {
+        "kind": "assign"
+      },
       "_TEXT_TOOL_GEMMA_RE": {
         "kind": "assign"
       },
@@ -236,22 +374,67 @@
       "_THREAD_OVERRIDE_FLAGS": {
         "kind": "assign"
       },
-      "_TOOL_TEMPLATE_MARKERS": {
+      "_UNRECOVERABLE_LOCAL_ERRNOS": {
         "kind": "assign"
       },
-      "_UNRECOVERABLE_LOCAL_ERRNOS": {
+      "_UNSET": {
+        "kind": "assign"
+      },
+      "_VALID_CACHE_TYPES": {
+        "kind": "assign"
+      },
+      "_VALID_KV_CACHE_TYPES": {
+        "kind": "assign"
+      },
+      "_VRAM_FLOOR_RESERVE_MIB": {
         "kind": "assign"
       },
       "_VULKAN_DIFFUSION_GPU_IDS_ERROR": {
         "kind": "assign"
       },
+      "_WINDOW_NOTICE_MARKER": {
+        "kind": "assign"
+      },
+      "_ZERO_ROOM_MARKER": {
+        "kind": "assign"
+      },
       "_accumulated_spec_types": {
+        "kind": "def"
+      },
+      "_active_vram_fraction": {
+        "kind": "def"
+      },
+      "_anchor_text": {
         "kind": "def"
       },
       "_apply_igpu_host_reserve_mib": {
         "kind": "def"
       },
+      "_apply_seeded_llama_request": {
+        "kind": "def"
+      },
       "_arch_aliases": {
+        "kind": "def"
+      },
+      "_arch_has_fast_mla_mtp": {
+        "kind": "def"
+      },
+      "_arch_mtp_skips_target_kv_copy": {
+        "kind": "def"
+      },
+      "_archive_and_recall": {
+        "kind": "def"
+      },
+      "_archive_branch_transcript": {
+        "kind": "def"
+      },
+      "_archive_content_on_branch": {
+        "kind": "def"
+      },
+      "_archive_is_degraded": {
+        "kind": "def"
+      },
+      "_archive_message_text": {
         "kind": "def"
       },
       "_args_place_tensors_on_cpu": {
@@ -260,7 +443,22 @@
       "_auto_mode_drops_mtp": {
         "kind": "def"
       },
+      "_backend_supports_tools": {
+        "kind": "def"
+      },
       "_backfill_usage_from_timings": {
+        "kind": "def"
+      },
+      "_boundary_metadata": {
+        "kind": "def"
+      },
+      "_branch_boundary": {
+        "kind": "def"
+      },
+      "_branch_boundary_anchor": {
+        "kind": "def"
+      },
+      "_branch_non_system": {
         "kind": "def"
       },
       "_build_ngram_mod_flags": {
@@ -287,6 +485,12 @@
       "_cached_variant_resolution": {
         "kind": "def"
       },
+      "_cached_variant_sizes": {
+        "kind": "def"
+      },
+      "_can_reset_epoch": {
+        "kind": "def"
+      },
       "_canonicalize_spec_mode": {
         "kind": "def"
       },
@@ -296,7 +500,13 @@
       "_coerce_reasoning_effort": {
         "kind": "def"
       },
+      "_compaction_fit_kwargs": {
+        "kind": "def"
+      },
       "_companion_snapshot_sibling": {
+        "kind": "def"
+      },
+      "_conversation_recall_reserve": {
         "kind": "def"
       },
       "_cpu_runtime_owner_alive": {
@@ -308,10 +518,16 @@
       "_diffusion_manual_ngl": {
         "kind": "def"
       },
+      "_draft_is_split_across_host": {
+        "kind": "def"
+      },
       "_drafter_path_kind": {
         "kind": "def"
       },
       "_drafter_set_bytes": {
+        "kind": "def"
+      },
+      "_effective_headroom_ratio": {
         "kind": "def"
       },
       "_effective_main_cache_types": {
@@ -323,10 +539,22 @@
       "_emitted_n_batch": {
         "kind": "def"
       },
+      "_env_asks_for_the_native_context": {
+        "kind": "def"
+      },
+      "_env_fixes_gpu_layers": {
+        "kind": "def"
+      },
       "_env_main_cache_type_for_budget": {
         "kind": "def"
       },
+      "_env_mmproj_offload_value": {
+        "kind": "def"
+      },
       "_env_places_tensors_on_cpu": {
+        "kind": "def"
+      },
+      "_env_sets_mmproj_offload": {
         "kind": "def"
       },
       "_extra_args_device": {
@@ -341,6 +569,9 @@
       "_extra_args_draft_device_pin": {
         "kind": "def"
       },
+      "_extra_args_draft_gpu_layers": {
+        "kind": "def"
+      },
       "_extra_args_draft_offloaded_to_cpu": {
         "kind": "def"
       },
@@ -350,7 +581,16 @@
       "_extra_args_main_device": {
         "kind": "def"
       },
+      "_extra_args_mmproj_offload_value": {
+        "kind": "def"
+      },
       "_extra_args_mtp_draft_path": {
+        "kind": "def"
+      },
+      "_extra_args_mtp_draft_source": {
+        "kind": "def"
+      },
+      "_extra_args_n_parallel": {
         "kind": "def"
       },
       "_extra_args_n_ubatch": {
@@ -371,10 +611,19 @@
       "_extra_args_set_any_flag": {
         "kind": "def"
       },
+      "_extra_args_set_mmproj_offload": {
+        "kind": "def"
+      },
       "_extra_args_set_spec_type": {
         "kind": "def"
       },
       "_extra_args_spec_draft_n_max": {
+        "kind": "def"
+      },
+      "_extra_args_split_mode": {
+        "kind": "def"
+      },
+      "_extra_args_tensor_split": {
         "kind": "def"
       },
       "_extract_model_size_b": {
@@ -387,6 +636,12 @@
         "kind": "def"
       },
       "_finalize_reasoning_only_cumulative": {
+        "kind": "def"
+      },
+      "_fit_context": {
+        "kind": "def"
+      },
+      "_fit_with_instruction_pins": {
         "kind": "def"
       },
       "_flash_attn_enabled_from_args": {
@@ -440,6 +695,12 @@
       "_hub_download_in_flight": {
         "kind": "def"
       },
+      "_idle_slot_clearing_active": {
+        "kind": "def"
+      },
+      "_inject_recall": {
+        "kind": "def"
+      },
       "_is_big_endian_gguf_path": {
         "kind": "def"
       },
@@ -461,6 +722,9 @@
       "_is_gemma_mtp_name": {
         "kind": "def"
       },
+      "_is_installer_entrypoint": {
+        "kind": "def"
+      },
       "_is_mtp_model_name": {
         "kind": "def"
       },
@@ -470,10 +734,19 @@
       "_is_positive_int": {
         "kind": "def"
       },
+      "_is_published_mtp_drafter_name": {
+        "kind": "def"
+      },
       "_is_rehearsal_prefix": {
         "kind": "def"
       },
       "_is_root_dflash_drafter_path": {
+        "kind": "def"
+      },
+      "_is_window_notice": {
+        "kind": "def"
+      },
+      "_keeps_compaction_boundary": {
         "kind": "def"
       },
       "_kv_bytes_per_elem": {
@@ -491,10 +764,22 @@
       "_lib_dir_has_ggml_backend": {
         "kind": "def"
       },
+      "_linux_math_core_count": {
+        "kind": "def"
+      },
       "_llama_lib_dir": {
         "kind": "def"
       },
       "_load_swa_cache": {
+        "kind": "def"
+      },
+      "_loader_path_var": {
+        "kind": "def"
+      },
+      "_memory_tool_withheld": {
+        "kind": "def"
+      },
+      "_metal_capable_host": {
         "kind": "def"
       },
       "_metal_device_is_paravirtual": {
@@ -503,7 +788,16 @@
       "_mla_mtp_auto_enabled": {
         "kind": "def"
       },
+      "_mmproj_env_is_audio_only": {
+        "kind": "def"
+      },
       "_native_linux_system_rocm_lib_dirs": {
+        "kind": "def"
+      },
+      "_normalized_load_mode": {
+        "kind": "def"
+      },
+      "_note_gguf_metadata_read": {
         "kind": "def"
       },
       "_pad_kv_cells": {
@@ -527,7 +821,16 @@
       "_period_from_layer_types": {
         "kind": "def"
       },
+      "_pick_dspark": {
+        "kind": "def"
+      },
       "_pick_mmproj": {
+        "kind": "def"
+      },
+      "_pick_mtp": {
+        "kind": "def"
+      },
+      "_pick_mtp_root_only": {
         "kind": "def"
       },
       "_pipeline_parallel_disabled_by_args": {
@@ -536,10 +839,31 @@
       "_planned_main_cache_types": {
         "kind": "def"
       },
+      "_planned_scratch_cache_type": {
+        "kind": "def"
+      },
+      "_prefix_user_text": {
+        "kind": "def"
+      },
+      "_prepend_loader_dir": {
+        "kind": "def"
+      },
       "_probe_dns_dead": {
         "kind": "def"
       },
       "_quant_label_for_endian": {
+        "kind": "def"
+      },
+      "_recall_top_k": {
+        "kind": "def"
+      },
+      "_records_boundary": {
+        "kind": "def"
+      },
+      "_report_live_llama_timings": {
+        "kind": "def"
+      },
+      "_request_uses_checkpoint": {
         "kind": "def"
       },
       "_resolve_llama_binary": {
@@ -554,6 +878,15 @@
       "_resolve_swa_pattern": {
         "kind": "def"
       },
+      "_resolve_variant_gguf_files": {
+        "kind": "def"
+      },
+      "_resolved_mmproj_offload": {
+        "kind": "def"
+      },
+      "_retrieval_budget": {
+        "kind": "assign"
+      },
       "_save_swa_cache": {
         "kind": "def"
       },
@@ -564,6 +897,12 @@
         "kind": "def"
       },
       "_should_suppress_forced_no_tool_output": {
+        "kind": "def"
+      },
+      "_sidecar_adapter_bytes": {
+        "kind": "def"
+      },
+      "_sidecar_adapter_paths": {
         "kind": "def"
       },
       "_snapshot_dir_of": {
@@ -578,7 +917,22 @@
       "_source_declares_option": {
         "kind": "def"
       },
+      "_spilled_decode_threads": {
+        "kind": "def"
+      },
+      "_split_mode_confines_to_one_device": {
+        "kind": "def"
+      },
+      "_sticky_compaction_boundary": {
+        "kind": "def"
+      },
+      "_sticky_compaction_state": {
+        "kind": "def"
+      },
       "_strip_flag_pairs": {
+        "kind": "def"
+      },
+      "_subsequence_index": {
         "kind": "def"
       },
       "_swa_cache_path": {
@@ -594,6 +948,12 @@
         "kind": "def"
       },
       "_sweep_abandoned_cpu_runtimes": {
+        "kind": "def"
+      },
+      "_vram_reserve_floor_mib": {
+        "kind": "def"
+      },
+      "_vram_usable_mib": {
         "kind": "def"
       },
       "_with_gguf_load_marker": {
@@ -660,8 +1020,14 @@
       "_TOOL_CALL_NAME_RE": {
         "kind": "assign"
       },
+      "_TOOL_SIGNAL_OVERLAP": {
+        "kind": "assign"
+      },
       "_UNRESTRICTED_REHEARSAL_RE": {
         "kind": "assign"
+      },
+      "_accepts_kwarg": {
+        "kind": "def"
       },
       "_accepts_output_callback": {
         "kind": "def"
@@ -678,10 +1044,16 @@
       "_coerce_arguments_with_provenance": {
         "kind": "def"
       },
+      "_dense_message_tokens": {
+        "kind": "def"
+      },
       "_detect_render_html_tool_start": {
         "kind": "def"
       },
       "_earliest_tool_signal": {
+        "kind": "def"
+      },
+      "_first_detected_tool_name": {
         "kind": "def"
       },
       "_has_genuine_tool_signal": {
@@ -700,6 +1072,12 @@
         "kind": "def"
       },
       "_reprompt_intent_text": {
+        "kind": "def"
+      },
+      "_search_images_kwargs": {
+        "kind": "def"
+      },
+      "_spent_prompt_tokens": {
         "kind": "def"
       },
       "_status_for_tool": {
@@ -724,12 +1102,15 @@
   },
   "core.inference.tool_call_parser": {
     "compiled": {
-      "INTENT_SIGNAL": "\"(?im)(\\\\b(i['\\\\u2019](ll|m going to|m gonna)|i am (going to|gonna)|i will|i shall)\\\\b(?!\\\\s+(?:not|never)\\\\b)(?!\\\\s+(?:do(?:ing)?\\\\s+my\\\\s+best|try\\\\s+my\\\\s+best|be\\\\s+(?:able|happy|glad)\\\\s+to\\\\b|assist\\\\b|help\\\\s+you\\\\b(?!\\\\s+(?:search|check|look|find|fetch|get|call|use|run|query|invoke|analy[sz]e|review|inspect|read|gather|examine|retrieve|browse|consult|verify|confirm|compute|calculate|determine|identify|render))|give\\\\s+you\\\\s+accurate\\\\b))|\\\\b(?:let me|allow me)\\\\b(?!\\\\s+(?:not|never|know)\\\\b)(?!\\\\s+to\\\\s+(?:do(?:ing)?\\\\s+my\\\\s+best|try\\\\s+my\\\\s+best|be\\\\s+(?:able|happy|glad)\\\\s+to\\\\b|assist\\\\b|help\\\\s+you\\\\b(?!\\\\s+(?:search|check|look|find|fetch|get|call|use|run|query|invoke|analy[sz]e|review|inspect|read|gather|examine|retrieve|browse|consult|verify|confirm|compute|calculate|determine|identify|render))|give\\\\s+you\\\\s+accurate\\\\b))|(?:^|[.!?]\\\\s+)\\\\s*(?:the\\\\s+)?first\\\\s+step\\\\b|(?:^|[.!?]\\\\s+)\\\\s*first\\\\s*[,:–—-]?\\\\s+(?:my|our)\\\\s+(?:plan|approach|step)\\\\b|(?:^|[.!?]\\\\s+)\\\\s*first\\\\s*[,:–—-]?\\\\s+(?:i|we|let['’]?s|let us)\\\\b|(?:^|[.!?]\\\\s+)\\\\s*first\\\\s*[,:–—-]?\\\\s+(?:search|check|look|find|fetch|get|call|use|run|query|invoke|analy[sz]e|review|inspect|read|gather|examine|retrieve|browse|consult|verify|confirm|compute|calculate|determine|identify|render)\\\\b|\\\\b(?:step \\\\d+:?|here['\\\\u2019]?s (?:my |the |a )?(?:plan|approach))|\\\\b(?:now i|next i)\\\\b)\" flags=42",
+      "INTENT_SIGNAL": "\"(?im)(\\\\b(i['\\\\u2019](ll|m going to|m gonna)|i am (going to|gonna)|i will|i shall)\\\\b(?!\\\\s+(?:not|never)\\\\b)(?!\\\\s+(?:do(?:ing)?\\\\s+my\\\\s+best|try\\\\s+my\\\\s+best|be\\\\s+(?:able|happy|glad)\\\\s+to\\\\b|assist\\\\b|help\\\\s+you\\\\b(?!\\\\s+(?:search|check|look|find|fetch|get|call|use|run|query|invoke|analy[sz]e|review|inspect|read|gather|examine|retrieve|browse|consult|verify|confirm|compute|calculate|determine|identify|render))|give\\\\s+you\\\\s+accurate\\\\b|(?:dig\\\\s+in|help\\\\s+analy[sz]e)\\\\b(?=[^\\\\w]*\\\\Z)))|\\\\b(?:let me|allow me)\\\\b(?!\\\\s+(?:not|never|know)\\\\b)(?!\\\\s+(?:dig\\\\s+in|help\\\\s+analy[sz]e)\\\\b(?=[^\\\\w]*\\\\Z))(?!\\\\s+to\\\\s+(?:do(?:ing)?\\\\s+my\\\\s+best|try\\\\s+my\\\\s+best|be\\\\s+(?:able|happy|glad)\\\\s+to\\\\b|assist\\\\b|help\\\\s+you\\\\b(?!\\\\s+(?:search|check|look|find|fetch|get|call|use|run|query|invoke|analy[sz]e|review|inspect|read|gather|examine|retrieve|browse|consult|verify|confirm|compute|calculate|determine|identify|render))|give\\\\s+you\\\\s+accurate\\\\b|(?:dig\\\\s+in|help\\\\s+analy[sz]e)\\\\b(?=[^\\\\w]*\\\\Z)))|(?:^|[.!?]\\\\s+)\\\\s*(?:the\\\\s+)?first\\\\s+step\\\\b|(?:^|[.!?]\\\\s+)\\\\s*first\\\\s*[,:–—-]?\\\\s+(?:my|our)\\\\s+(?:plan|approach|step)\\\\b|(?:^|[.!?]\\\\s+)\\\\s*first\\\\s*[,:–—-]?\\\\s+(?:i|we|let['’]?s|let us)\\\\b|(?:^|[.!?]\\\\s+)\\\\s*first\\\\s*[,:–—-]?\\\\s+(?:search|check|look|find|fetch|get|call|use|run|query|invoke|analy[sz]e|review|inspect|read|gather|examine|retrieve|browse|consult|verify|confirm|compute|calculate|determine|identify|render)\\\\b|\\\\b(?:step \\\\d+:?|here['\\\\u2019]?s (?:my |the |a )?(?:plan|approach))|\\\\b(?:now i|next i)\\\\b)\" flags=42",
       "_ATTR_FUNC_OPEN_RE": "'<function\\\\s+name=\"' flags=32",
+      "_BACKTICK_RUN_RE": "'`+' flags=32",
       "_BARE_JSON_NAME_RE": "'\"name\"\\\\s*:\\\\s*\"([^\"]+)\"' flags=32",
+      "_BLOCKED_BODY_MASK_RUN_RE": "'\\ue000+' flags=32",
       "_DEEPSEEK_BEGIN_RE": "'<｜(?:tool▁calls▁begin|tool_calls_begin|tool calls begin|tool\\\\\\\\_calls\\\\\\\\_begin|tool▁calls)｜>' flags=32",
       "_DEEPSEEK_R1_CLOSE_RE": "'```[\\\\s\\\\r\\\\n]*<｜tool▁call▁end｜>' flags=32",
       "_EMBEDDED_MARKER_RE": "'<｜(?:tool▁calls▁begin|tool_calls_begin|tool calls begin|tool\\\\\\\\_calls\\\\\\\\_begin|tool▁calls)｜>|<\\\\|tool_calls_section_begin\\\\|>|<\\\\|tool_call_begin\\\\|>' flags=32",
+      "_FENCE_ONLY_RE": "'[\\\\w.\\\\-]*[ \\\\t]*\\\\n?[ \\\\t]*`{3,}[a-zA-Z0-9_+-]*' flags=32",
       "_FUNC_CLOSE_TAG_RE": "'</function>' flags=32",
       "_GEMMA_BARE_TC_PREFIX_RE": "'(?<!\\\\w)call\\\\s*(?::\\\\s*[\\\\w\\\\.\\\\-]*)?$' flags=32",
       "_GEMMA_BARE_TC_RE": "'(?<!\\\\w)call\\\\s*:\\\\s*([\\\\w\\\\.\\\\-]+)\\\\s*\\\\{' flags=32",
@@ -738,6 +1119,7 @@
       "_GLM_JSON_NUMERIC_RE": "'-?\\\\d+(?:\\\\.\\\\d+)?(?:[eE][+-]?\\\\d+)?' flags=32",
       "_GLM_TC_OPEN_RE": "'<tool_call>\\\\s*([\\\\w.\\\\-]+)\\\\s*(?=\\\\n|<arg_key>|</tool_call>)' flags=32",
       "_KIMI_ID_RE": "'^(?:functions\\\\.)?([\\\\w\\\\.\\\\-]+)(?::(\\\\d+))?$' flags=32",
+      "_LEADING_JSON_FENCE_RE": "'^`{3,}[a-zA-Z0-9_+-]*[ \\\\t]*\\\\r?\\\\n' flags=32",
       "_LLAMA3_CALL_CHAIN_RE": "'\\\\s*;\\\\s*([\\\\w\\\\.\\\\-]+)\\\\s*\\\\.\\\\s*call\\\\s*\\\\(' flags=32",
       "_LLAMA3_KEY_RE": "'\\\\w+' flags=32",
       "_LLAMA3_LIT_RE": "'true|false|null' flags=32",
@@ -783,7 +1165,7 @@
       "_TOOL_CLOSED_PATS[7]": "'<\\\\|tool_call_begin\\\\|>.*?<\\\\|tool_call_end\\\\|>' flags=48"
     },
     "regexes": {
-      "re.compile(\"(?im)(\\\\b(i['\\\\u2019](ll|m going to|m gonna)|i am (going to|gonna)|i will|i shall)\\\\b(?!\\\\s+(?:not|never)\\\\b)(?!\\\\s+\" + _HELP_OFFER + ')|\\\\b(?:let me|allow me)\\\\b(?!\\\\s+(?:not|never|know)\\\\b)(?!\\\\s+to\\\\s+' + _HELP_OFFER + \")|(?:^|[.!?]\\\\s+)\\\\s*(?:the\\\\s+)?first\\\\s+step\\\\b|(?:^|[.!?]\\\\s+)\\\\s*first\\\\s*[,:–—-]?\\\\s+(?:my|our)\\\\s+(?:plan|approach|step)\\\\b|(?:^|[.!?]\\\\s+)\\\\s*first\\\\s*[,:–—-]?\\\\s+(?:i|we|let['’]?s|let us)\\\\b|(?:^|[.!?]\\\\s+)\\\\s*first\\\\s*[,:–—-]?\\\\s+\" + _ACTION_VERB + \"\\\\b|\\\\b(?:step \\\\d+:?|here['\\\\u2019]?s (?:my |the |a )?(?:plan|approach))|\\\\b(?:now i|next i)\\\\b)\")": 1,
+      "re.compile(\"(?im)(\\\\b(i['\\\\u2019](ll|m going to|m gonna)|i am (going to|gonna)|i will|i shall)\\\\b(?!\\\\s+(?:not|never)\\\\b)(?!\\\\s+\" + _HELP_OFFER + ')|\\\\b(?:let me|allow me)\\\\b(?!\\\\s+(?:not|never|know)\\\\b)(?!\\\\s+' + _SIGN_OFF + ')(?!\\\\s+to\\\\s+' + _HELP_OFFER + \")|(?:^|[.!?]\\\\s+)\\\\s*(?:the\\\\s+)?first\\\\s+step\\\\b|(?:^|[.!?]\\\\s+)\\\\s*first\\\\s*[,:–—-]?\\\\s+(?:my|our)\\\\s+(?:plan|approach|step)\\\\b|(?:^|[.!?]\\\\s+)\\\\s*first\\\\s*[,:–—-]?\\\\s+(?:i|we|let['’]?s|let us)\\\\b|(?:^|[.!?]\\\\s+)\\\\s*first\\\\s*[,:–—-]?\\\\s+\" + _ACTION_VERB + \"\\\\b|\\\\b(?:step \\\\d+:?|here['\\\\u2019]?s (?:my |the |a )?(?:plan|approach))|\\\\b(?:now i|next i)\\\\b)\")": 1,
       "re.compile('\"name\"\\\\s*:\\\\s*\"([^\"]+)\"')": 1,
       "re.compile('(?<!\\\\w)call\\\\s*(?::\\\\s*[\\\\w\\\\.\\\\-]*)?$')": 1,
       "re.compile('(?<!\\\\w)call\\\\s*:\\\\s*([\\\\w\\\\.\\\\-]+)\\\\s*\\\\{')": 1,
@@ -812,6 +1194,7 @@
       "re.compile('<tool_call>\\\\s*\\\\{')": 1,
       "re.compile('<tool_call>|<function(?:=|\\\\s+name=\")|<\\\\|tool_call>|<\\\\|python_tag\\\\|>(?=\\\\s*(?:\\\\{|[A-Za-z_][\\\\w.]*\\\\())')": 1,
       "re.compile('<｜tool▁call▁begin｜>(?=\\\\s*function|\\\\s*$).*$', re.DOTALL)": 1,
+      "re.compile('[\\\\w.\\\\-]*[ \\\\t]*\\\\n?[ \\\\t]*`{3,}[a-zA-Z0-9_+-]*')": 1,
       "re.compile('\\\\[TOOL_CALLS\\\\](?=\\\\s*(?:[\\\\[{]|[A-Za-z_][\\\\w.\\\\-]*(?:[\\\\[{]|\\\\s*$))|\\\\s*$).*$', re.DOTALL)": 1,
       "re.compile('\\\\[TOOL_CALLS\\\\]\\\\s*[\\\\w\\\\.\\\\-]+\\\\s*(?:\\\\[ARGS\\\\])?\\\\s*\\\\{.*?\\\\}', re.DOTALL)": 1,
       "re.compile('\\\\[TOOL_CALLS\\\\]\\\\s*\\\\[.*?\\\\](?:\\\\s*</s>)?', re.DOTALL)": 1,
@@ -822,7 +1205,10 @@
       "re.compile('\\\\s*;\\\\s*([\\\\w\\\\.\\\\-]+)\\\\s*\\\\.\\\\s*call\\\\s*\\\\(')": 1,
       "re.compile('\\\\s*</(?:parameter|param)>\\\\s*$')": 1,
       "re.compile('\\\\w+')": 1,
+      "re.compile('\\ue000+')": 1,
       "re.compile('^(?:functions\\\\.)?([\\\\w\\\\.\\\\-]+)(?::(\\\\d+))?$')": 1,
+      "re.compile('^`{3,}[a-zA-Z0-9_+-]*[ \\\\t]*\\\\r?\\\\n')": 1,
+      "re.compile('`+')": 1,
       "re.compile('```[\\\\s\\\\r\\\\n]*' + re.escape(_DEEPSEEK_CALL_END))": 1,
       "re.compile('true|false|null')": 1,
       "re.compile(_DEEPSEEK_OPEN_RE_SRC + '(?=\\\\s*(?:<｜tool▁call▁begin｜>|function)|\\\\s*$).*$', re.DOTALL)": 1,
@@ -850,6 +1236,9 @@
         "kind": "assign"
       },
       "RAG_SEARCH_CAP_NUDGE": {
+        "kind": "assign"
+      },
+      "RAG_SEARCH_TOOLS": {
         "kind": "assign"
       },
       "RENDER_HTML_REPEAT_NUDGE": {
@@ -920,7 +1309,25 @@
       "_ATTR_FUNC_OPEN_RE": {
         "kind": "assign"
       },
+      "_BACKTICK_RUN_RE": {
+        "kind": "assign"
+      },
+      "_BARE_JSON_ARGS_KEYS": {
+        "kind": "assign"
+      },
+      "_BARE_JSON_CLASSIFY_KEYS": {
+        "kind": "assign"
+      },
       "_BARE_JSON_NAME_RE": {
+        "kind": "assign"
+      },
+      "_BLOCKED_BODY_MASK": {
+        "kind": "assign"
+      },
+      "_BLOCKED_BODY_MASK_RUN_RE": {
+        "kind": "assign"
+      },
+      "_CONTAINING_WRAPPERS": {
         "kind": "assign"
       },
       "_DEEPSEEK_BEGIN_RE": {
@@ -956,7 +1363,13 @@
       "_EMBEDDED_MARKER_RE": {
         "kind": "assign"
       },
+      "_EXECUTION_CLASS_HINTS": {
+        "kind": "assign"
+      },
       "_EXTENSION_SAMPLE": {
+        "kind": "assign"
+      },
+      "_FENCE_ONLY_RE": {
         "kind": "assign"
       },
       "_FUNC_CLOSE_TAG_RE": {
@@ -1013,6 +1426,9 @@
       "_HELP_OFFER": {
         "kind": "assign"
       },
+      "_INFERENCE_WRAPPER_OPENERS": {
+        "kind": "assign"
+      },
       "_KIMI_ARG_BEGIN": {
         "kind": "assign"
       },
@@ -1029,6 +1445,12 @@
         "kind": "assign"
       },
       "_KIMI_SECTION_END": {
+        "kind": "assign"
+      },
+      "_LEADING_JSON_FENCE_RE": {
+        "kind": "assign"
+      },
+      "_LENGTH_PROGRESS_TAIL_CHARS": {
         "kind": "assign"
       },
       "_LLAMA3_BARE_JSON_SENTINELS": {
@@ -1059,6 +1481,18 @@
         "kind": "assign"
       },
       "_LLAMA3_WS_RE": {
+        "kind": "assign"
+      },
+      "_MARKERLESS_TRUSTED_PREFIXES": {
+        "kind": "assign"
+      },
+      "_MARKUP_OPENERS": {
+        "kind": "assign"
+      },
+      "_MAX_FENCE_CHARS": {
+        "kind": "assign"
+      },
+      "_MAX_GEMMA_PREFIX_TAIL": {
         "kind": "assign"
       },
       "_MISTRAL_ARGS_MARKER": {
@@ -1092,6 +1526,9 @@
         "kind": "assign"
       },
       "_SENTINEL_MAX_LEN": {
+        "kind": "assign"
+      },
+      "_SIGN_OFF": {
         "kind": "assign"
       },
       "_STRIP_SENTINELS": {
@@ -1129,20 +1566,40 @@
         "kind": "def",
         "signature": "src: str, start: int"
       },
+      "_balanced_paren_end": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str, paren_start: int"
+      },
       "_bare_json_call_shaped": {
         "decorators": [],
         "kind": "def",
         "signature": "obj"
+      },
+      "_blocked_markerless_body_spans": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str, enabled_tool_names"
       },
       "_consume_mistral_call": {
         "decorators": [],
         "kind": "def",
         "signature": "obj_text: str, out: list[dict], id_offset: int"
       },
+      "_decoded_key": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "literal: str"
+      },
       "_disabled_gemma_call_end_containing_signal": {
         "decorators": [],
         "kind": "def",
         "signature": "content: str, enabled_tool_names: Optional[set]"
+      },
+      "_escaped_string_content_spans": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str, start: int, end: int"
       },
       "_find_outside_json_strings": {
         "decorators": [],
@@ -1157,7 +1614,7 @@
       "_first_sentinel": {
         "decorators": [],
         "kind": "def",
-        "signature": "text: str, start: int"
+        "signature": "text: str, start: int, enabled_tool_names=None"
       },
       "_gemma_balanced_brace_end": {
         "decorators": [],
@@ -1209,6 +1666,26 @@
         "kind": "def",
         "signature": "text: str, vs: int, *, strict: bool=False"
       },
+      "_has_execution_class_hint": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str"
+      },
+      "_has_gemma_bare_trigger": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str"
+      },
+      "_inference_wrapper_spans": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str"
+      },
+      "_inside_leading_markerless_body": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "content: str, signal: int, enabled_tool_names: Optional[set]"
+      },
       "_inside_open_parameter": {
         "decorators": [],
         "kind": "def",
@@ -1218,6 +1695,11 @@
         "decorators": [],
         "kind": "def",
         "signature": "text: str, found: int"
+      },
+      "_last_bare_call_word": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str"
       },
       "_leading_json_value_end": {
         "decorators": [],
@@ -1234,15 +1716,49 @@
         "kind": "def",
         "signature": "content: str, enabled_tool_names: Optional[set]=None"
       },
+      "_markerless_blocked_execution": {
+        "kind": "assign"
+      },
+      "_markerless_execution_class": {
+        "kind": "assign"
+      },
+      "_markerless_promotable": {
+        "kind": "assign"
+      },
+      "_mask_blocked_bodies": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str, enabled_tool_names, *, think: bool=False"
+      },
+      "_merge_spans": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "spans: list"
+      },
       "_mistral_region_end": {
         "decorators": [],
         "kind": "def",
-        "signature": "text: str, idx: int"
+        "signature": "text: str, idx: int, *, open_envelope_runs_to_eof: bool=False"
+      },
+      "_next_top_level_comma": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str, start: int, end: int"
       },
       "_normalize_for_repeat": {
         "decorators": [],
         "kind": "def",
         "signature": "text: str"
+      },
+      "_only_a_code_fence": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "between: str"
+      },
+      "_open_inline_code_run": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str, pos: int"
       },
       "_parse_bare_rehearsals": {
         "decorators": [],
@@ -1309,6 +1825,16 @@
         "kind": "def",
         "signature": "content: str, *, id_offset: int, allow_incomplete: bool=True"
       },
+      "_partial_call_word_len": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str"
+      },
+      "_promotable_gemma_call_pos": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str, start: int, enabled_tool_names"
+      },
       "_safe_cut": {
         "decorators": [],
         "kind": "def",
@@ -1323,6 +1849,16 @@
         "decorators": [],
         "kind": "def",
         "signature": "text: str, pos: int"
+      },
+      "_strictly_inside": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "spans: list, pos: int"
+      },
+      "_string_content_spans": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str, start: int, end: int"
       },
       "_strip_function_xml_calls": {
         "decorators": [],
@@ -1339,6 +1875,11 @@
         "kind": "def",
         "signature": "text: str, *, final: bool"
       },
+      "_strip_leading_code_fence": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str"
+      },
       "_strip_mistral_closed_calls": {
         "decorators": [],
         "kind": "def",
@@ -1349,13 +1890,28 @@
         "kind": "def",
         "signature": "content: str"
       },
+      "_top_level_args_values": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str, start: int, end: int"
+      },
       "_top_level_bare_json_name": {
         "decorators": [],
         "kind": "def",
         "signature": "probe: str"
       },
+      "_top_level_maskable_values": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str, start: int, end: int, keep: str=None"
+      },
       "_trim_param_value": {
         "kind": "assign"
+      },
+      "_unmask_blocked_bodies": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str, bodies: list"
       },
       "_unmatched_think_closer": {
         "decorators": [],
@@ -1377,10 +1933,40 @@
         "kind": "def",
         "signature": "content: str"
       },
+      "blocked_bare_json_chain_may_continue": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str, enabled_tool_names: Optional[set]"
+      },
+      "blocked_gemma_chain_may_continue": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str, enabled_tool_names: Optional[set]"
+      },
+      "blocked_markerless_prefix_end": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str, start: int, enabled_tool_names"
+      },
+      "continue_after_length_message": {
+        "decorators": [],
+        "kind": "def",
+        "signature": ""
+      },
+      "gemma_tail_may_hide_a_call": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "tail: str, enabled_tool_names: Optional[set]"
+      },
       "has_tool_signal": {
         "decorators": [],
         "kind": "def",
         "signature": "text: str"
+      },
+      "held_bare_gemma_tail_len": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str, enabled_tool_names: Optional[set]"
       },
       "is_reprompt_repeat": {
         "decorators": [],
@@ -1397,15 +1983,40 @@
         "kind": "def",
         "signature": "text: str"
       },
+      "leading_bare_gemma_call_is_promotable": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "stripped: str, enabled_tool_names"
+      },
       "parse_tool_calls_from_text": {
         "decorators": [],
         "kind": "def",
         "signature": "content: str, *, id_offset: int=0, allow_incomplete: bool=True, enabled_tool_names: Optional[set]=None"
       },
+      "promotable_gemma_call_pos": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str, enabled_tool_names, start: int=0, *, floor: int=0, streaming: bool=False"
+      },
+      "reasoning_cap_spent_message": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "max_tokens: Optional[int]=None"
+      },
+      "repeated_result_message": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "tool_name: str, times: int, last_result: str"
+      },
       "reprompt_to_act_message": {
         "decorators": [],
         "kind": "def",
         "signature": "tool_hint: str"
+      },
+      "starved_result_message": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "tool_name: str, result: str"
       },
       "strip_leading_bare_json_call": {
         "decorators": [],
@@ -1426,12 +2037,22 @@
         "decorators": [],
         "kind": "def",
         "signature": "text: str, *, final: bool=False, enabled_tool_names: Optional[set]=None"
+      },
+      "thinking_exhausted_message": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "context_length: Optional[int]=None"
+      },
+      "unfinished_thought_progress": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "reasoning: str"
       }
     }
   },
   "core.tool_healing": {
     "compiled": {
-      "_CODE_SPAN_RE": "'^[ \\\\t]*(?:>[ \\\\t]*)*(?:```+[^`\\\\n]*|~~~+[^\\\\n]*)$.*?(?:^[ \\\\t]*(?:>[ \\\\t]*)*(?:```+|~~~+)[ \\\\t\\\\r]*$|\\\\Z)|``(?:[^`]|`(?!`))*?``|`[^`\\\\n]*`' flags=56",
+      "_CODE_SPAN_RE": "'^[ \\\\t]*(?:>[ \\\\t]*)*(?:(?P<bt>```+)[^`\\\\n]*$.*?(?:^[ \\\\t]*(?:>[ \\\\t]*)*(?P=bt)`*[ \\\\t\\\\r]*$|\\\\Z)|(?P<tl>~~~+)[^\\\\n]*$.*?(?:^[ \\\\t]*(?:>[ \\\\t]*)*(?P=tl)~*[ \\\\t\\\\r]*$|\\\\Z))|``(?:[^`]|`(?!`))*?``|`[^`\\\\n]*`' flags=56",
       "_GEMMA_NEXT_KEY_RE": "'\\\\s*[A-Za-z_][\\\\w.\\\\-]*\\\\s*:' flags=32",
       "_MISTRAL_ARRAY_RE": "'\\\\[TOOL_CALLS\\\\]\\\\s*(?=\\\\[)' flags=32",
       "_MISTRAL_BRACKET_RE": "'\\\\[TOOL_CALLS\\\\]\\\\s*([\\\\w-]+)(?:\\\\[CALL_ID\\\\][\\\\w-]+)?(?:\\\\[ARGS\\\\])?\\\\s*(?=\\\\{)' flags=32",
@@ -1439,7 +2060,7 @@
       "_REHEARSAL_RE": "'(?<!\\\\[CALL_ID\\\\])\\\\b([\\\\w-]+)\\\\[ARGS\\\\]\\\\s*(?=\\\\{)' flags=32",
       "_REHEARSAL_TAIL_STRIP_RE": "'(?<!\\\\[CALL_ID\\\\])\\\\b([\\\\w-]+)\\\\[ARGS\\\\]\\\\s*(?:\\\\{.*)?$' flags=48",
       "_TC_END_TAG_RE": "'</tool_call>|<\\\\|end_message\\\\|>' flags=32",
-      "_TC_FUNC_CLOSED_PAT": "'<function=[\\\\w-]+>.*?</function>' flags=48",
+      "_TC_FUNC_CLOSED_PAT": "'<function=[\\\\w.-]+>.*?</function>' flags=48",
       "_TC_FUNC_CLOSE_RE": "'\\\\s*</function>\\\\s*$' flags=32",
       "_TC_FUNC_START_RE": "'<function=([\\\\w-]+)>\\\\s*' flags=32",
       "_TC_GEMMA_CLOSED_PAT": "'<\\\\|tool_call>.*?<tool_call\\\\|>' flags=48",
@@ -1457,7 +2078,7 @@
       "_TOOL_ALL_PATS[11]": "'(?<!\\\\[CALL_ID\\\\])\\\\b([\\\\w-]+)\\\\[ARGS\\\\]\\\\s*(?:\\\\{.*)?$' flags=48",
       "_TOOL_ALL_PATS[1]": "'<\\\\|tool_call>.*?<tool_call\\\\|>' flags=48",
       "_TOOL_ALL_PATS[2]": "'<tool_call\\\\|>' flags=32",
-      "_TOOL_ALL_PATS[3]": "'<function=[\\\\w-]+>.*?</function>' flags=48",
+      "_TOOL_ALL_PATS[3]": "'<function=[\\\\w.-]+>.*?</function>' flags=48",
       "_TOOL_ALL_PATS[4]": "'\\\\[TOOL_CALLS\\\\]\\\\s*[\\\\w-]+(?:\\\\[CALL_ID\\\\][\\\\w-]+)?(?:\\\\[ARGS\\\\])?\\\\s*\\\\{[^{}]*(?:\\\\{[^{}]*\\\\}[^{}]*)*\\\\}' flags=48",
       "_TOOL_ALL_PATS[5]": "'(?<!\\\\[CALL_ID\\\\])\\\\b([\\\\w-]+)\\\\[ARGS\\\\]\\\\s*\\\\{[^{}]*(?:\\\\{[^{}]*\\\\}[^{}]*)*\\\\}' flags=48",
       "_TOOL_ALL_PATS[6]": "'\\\\[/TOOL_CALLS\\\\]' flags=32",
@@ -1465,11 +2086,11 @@
       "_TOOL_ALL_PATS[8]": "'<\\\\|tool_call>.*$' flags=48",
       "_TOOL_ALL_PATS[9]": "'<function=[\\\\w-]+>.*$' flags=48",
       "_TOOL_CLOSED_BLOCK_PATS[0]": "'<tool_call>.*?</tool_call>' flags=48",
-      "_TOOL_CLOSED_BLOCK_PATS[1]": "'<function=[\\\\w-]+>.*?</function>' flags=48",
+      "_TOOL_CLOSED_BLOCK_PATS[1]": "'<function=[\\\\w.-]+>.*?</function>' flags=48",
       "_TOOL_CLOSED_PATS[0]": "'<tool_call>.*?</tool_call>' flags=48",
       "_TOOL_CLOSED_PATS[1]": "'<\\\\|tool_call>.*?<tool_call\\\\|>' flags=48",
       "_TOOL_CLOSED_PATS[2]": "'<tool_call\\\\|>' flags=32",
-      "_TOOL_CLOSED_PATS[3]": "'<function=[\\\\w-]+>.*?</function>' flags=48",
+      "_TOOL_CLOSED_PATS[3]": "'<function=[\\\\w.-]+>.*?</function>' flags=48",
       "_TOOL_CLOSED_PATS[4]": "'\\\\[TOOL_CALLS\\\\]\\\\s*[\\\\w-]+(?:\\\\[CALL_ID\\\\][\\\\w-]+)?(?:\\\\[ARGS\\\\])?\\\\s*\\\\{[^{}]*(?:\\\\{[^{}]*\\\\}[^{}]*)*\\\\}' flags=48",
       "_TOOL_CLOSED_PATS[5]": "'(?<!\\\\[CALL_ID\\\\])\\\\b([\\\\w-]+)\\\\[ARGS\\\\]\\\\s*\\\\{[^{}]*(?:\\\\{[^{}]*\\\\}[^{}]*)*\\\\}' flags=48",
       "_TOOL_CLOSED_PATS[6]": "'\\\\[/TOOL_CALLS\\\\]' flags=32",
@@ -1489,7 +2110,7 @@
       "re.compile('<\\\\|tool_call>\\\\s*call\\\\s*:\\\\s*([\\\\w.\\\\-]+)\\\\s*\\\\{')": 1,
       "re.compile('<function=([\\\\w-]+)>\\\\s*')": 1,
       "re.compile('<function=[\\\\w-]+>.*$', re.DOTALL)": 1,
-      "re.compile('<function=[\\\\w-]+>.*?</function>', re.DOTALL)": 1,
+      "re.compile('<function=[\\\\w.-]+>.*?</function>', re.DOTALL)": 1,
       "re.compile('<parameter=([\\\\w-]+)>[^\\\\S\\\\n]*')": 1,
       "re.compile('<think>.*?(?:</think>|$)|\\\\[THINK\\\\].*?(?:\\\\[/THINK\\\\]|$)', re.DOTALL)": 1,
       "re.compile('<think>|\\\\[THINK\\\\]')": 1,
@@ -1504,12 +2125,15 @@
       "re.compile('\\\\s*</function>\\\\s*$')": 1,
       "re.compile('\\\\s*</parameter>\\\\s*$')": 1,
       "re.compile('\\\\s*[A-Za-z_][\\\\w.\\\\-]*\\\\s*:')": 1,
-      "re.compile('^[ \\\\t]*(?:>[ \\\\t]*)*(?:```+[^`\\\\n]*|~~~+[^\\\\n]*)$.*?(?:^[ \\\\t]*(?:>[ \\\\t]*)*(?:```+|~~~+)[ \\\\t\\\\r]*$|\\\\Z)|``(?:[^`]|`(?!`))*?``|`[^`\\\\n]*`', re.DOTALL | re.MULTILINE)": 1,
+      "re.compile('^[ \\\\t]*(?:>[ \\\\t]*)*(?:(?P<bt>```+)[^`\\\\n]*$.*?(?:^[ \\\\t]*(?:>[ \\\\t]*)*(?P=bt)`*[ \\\\t\\\\r]*$|\\\\Z)|(?P<tl>~~~+)[^\\\\n]*$.*?(?:^[ \\\\t]*(?:>[ \\\\t]*)*(?P=tl)~*[ \\\\t\\\\r]*$|\\\\Z))|``(?:[^`]|`(?!`))*?``|`[^`\\\\n]*`', re.DOTALL | re.MULTILINE)": 1,
       "re.match('\\\\s*</tool_call>', content[span_end:])": 1,
       "re.match('\\\\s*\\\\[/TOOL_CALLS\\\\]', content[end:])": 1,
       "re.search('<tool_call>\\\\s*$', content[:span_start])": 1
     },
     "symbols": {
+      "EXECUTION_CLASS_TOOL_NAMES": {
+        "kind": "assign"
+      },
       "_BRACKETED_JSON_ONE_LEVEL": {
         "kind": "assign"
       },
@@ -1526,6 +2150,9 @@
         "kind": "assign"
       },
       "_MAX_BRACKET_SCAN_CHARS": {
+        "kind": "assign"
+      },
+      "_MCP_TOOL_PREFIX": {
         "kind": "assign"
       },
       "_MISTRAL_ARRAY_RE": {
@@ -1629,7 +2256,7 @@
       "_code_spans": {
         "decorators": [],
         "kind": "def",
-        "signature": "text: str"
+        "signature": "text: str, start: int=0"
       },
       "_decode_array_items": {
         "decorators": [],
@@ -1671,10 +2298,30 @@
         "kind": "def",
         "signature": "content: str, markers"
       },
+      "_markerless_blocked_execution": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "name, enabled_tool_names"
+      },
+      "_markerless_execution_class": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "name"
+      },
+      "_markerless_promotable": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "name, enabled_tool_names"
+      },
       "_normalise_gemma_quoted_strings": {
         "decorators": [],
         "kind": "def",
         "signature": "src: str"
+      },
+      "_normalized_tool_name": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "name"
       },
       "_quote_gemma_array_elements": {
         "decorators": [],

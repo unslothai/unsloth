@@ -210,7 +210,8 @@ class TestTheLaunchPathActuallyCallsIt:
     def test_called_before_every_launch_path(self):
         source = Path(studio_cli.__file__).resolve().read_text(encoding = "utf-8")
         call = source.find("_clear_hsa_override_contradicting_install(")
-        # The definition comes first; find the CALL, which follows it.
+        # The definition comes first;
+        # find the CALL, which follows it.
         call = source.find("_clear_hsa_override_contradicting_install(", call + 1)
         assert call != -1, "the CLI must clear a contradicting override before launching"
         for marker in (
@@ -342,3 +343,30 @@ def test_a_rocm_metapackage_orphaned_by_a_switch_to_generic_wheels_arbitrates_no
         tmp_path / "orphaned", "rocm_sdk_libraries_gfx1151", torch_needs_rocm = False
     )
     assert _installed_rocm_single_arch(orphaned) is None
+
+
+class TestPublishingTheArbiterForTheDesktopShellImport:
+    """#11125 imports absent ROCm names back out of the login shell on a desktop
+    launch. There the GUI environment never carried the override, so the clear is a
+    no-op and its verdict says nothing: the backend needs the installed arch itself,
+    published whether or not anything was cleared here."""
+
+    def test_the_installed_arch_is_published_even_with_no_override_set(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("HSA_OVERRIDE_GFX_VERSION", raising = False)
+        monkeypatch.delenv(studio_cli.ROCM_INSTALLED_ARCH_ENV, raising = False)
+        monkeypatch.setattr(studio_cli.platform, "system", lambda: "Linux")
+        venv = _make_venv(tmp_path, "rocm_sdk_libraries_gfx1151")
+        monkeypatch.setattr(studio_cli, "STUDIO_HOME", venv.parent)
+        monkeypatch.setattr(studio_cli.sys, "prefix", str(venv))
+        assert studio_cli._clear_hsa_override_before_launch(silent = True) is None
+        assert os.environ[studio_cli.ROCM_INSTALLED_ARCH_ENV] == "gfx1151"
+
+    def test_generic_wheels_publish_nothing_to_arbitrate_with(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("HSA_OVERRIDE_GFX_VERSION", raising = False)
+        monkeypatch.delenv(studio_cli.ROCM_INSTALLED_ARCH_ENV, raising = False)
+        monkeypatch.setattr(studio_cli.platform, "system", lambda: "Linux")
+        venv = _make_venv(tmp_path, None)
+        monkeypatch.setattr(studio_cli, "STUDIO_HOME", venv.parent)
+        monkeypatch.setattr(studio_cli.sys, "prefix", str(venv))
+        studio_cli._clear_hsa_override_before_launch(silent = True)
+        assert studio_cli.ROCM_INSTALLED_ARCH_ENV not in os.environ

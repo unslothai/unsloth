@@ -566,6 +566,58 @@ for _case in dbremoved nodb; do
     esac
 done
 
+# ── 3j7. A default root the ownership gate refuses is skipped, not removed, so a studio.db
+# sitting in it is still on disk. Unlike a refused CUSTOM root, which is somebody else's by
+# definition, this is our own path: the summary must not answer "No studio.db was found". ──
+H=$(new_home)
+mkdir -p "$H/.unsloth/studio"
+: > "$H/.unsloth/studio/studio.db"
+_out=$(run_uninstall_out "$H" Linux)
+# The refusal goes to stderr, like every other one in the script, so ask for it separately.
+_err=$(printf '#!/bin/sh\necho Linux\n' > "$STUB_BIN/uname"; chmod +x "$STUB_BIN/uname";
+       env -u UNSLOTH_STUDIO_HOME -u STUDIO_HOME UNSLOTH_APPLICATIONS_DIR="$APPS_DIR" \
+           HOME="$H" PATH="$STUB_BIN:$PATH" sh "$UNINSTALL_SH" 2>&1 >/dev/null)
+case "$_err" in
+    *"refusing to remove non-Unsloth path"*)
+        echo "  PASS: refused default root: says it refused"; PASS=$((PASS+1)) ;;
+    *)  echo "  FAIL: refused default root: never says it refused"; FAIL=$((FAIL+1)) ;;
+esac
+if [ -f "$H/.unsloth/studio/studio.db" ]; then
+    echo "  PASS: refused default root: the database survived"; PASS=$((PASS+1))
+else
+    echo "  FAIL: refused default root: the database was removed"; FAIL=$((FAIL+1))
+fi
+case "$_out" in
+    *"No studio.db was found"*)
+        echo "  FAIL: refused default root: claimed no studio.db was found"; FAIL=$((FAIL+1)) ;;
+    *)  echo "  PASS: refused default root: no claim that none was found"; PASS=$((PASS+1)) ;;
+esac
+case "$_out" in
+    *"carries no Unsloth install marker"*)
+        echo "  PASS: refused default root: names the kept directory"; PASS=$((PASS+1)) ;;
+    *)  echo "  FAIL: refused default root: never names the kept directory"; FAIL=$((FAIL+1)) ;;
+esac
+# It was refused BECAUSE it is not ours, so the generic "remove those paths by hand" advice
+# would undo the point of the gate.
+case "$_out" in
+    *"those paths by hand"*)
+        echo "  FAIL: refused default root: told the reader to delete a foreign directory"
+        FAIL=$((FAIL+1)) ;;
+    *)  echo "  PASS: refused default root: no advice to delete it"; PASS=$((PASS+1)) ;;
+esac
+
+# ── 3j8. A dangling symlink at ~/.unsloth/studio is still an entry at that path: -e follows the
+# link and misses it, while _remove_path unlinks it as present. ──
+H=$(new_home)
+mkdir -p "$H/.unsloth"
+ln -s "$H/.unsloth/nowhere" "$H/.unsloth/studio"
+run_uninstall "$H" Linux
+if [ -L "$H/.unsloth/studio" ]; then
+    echo "  PASS: a dangling symlink at the default root is refused, not unlinked"; PASS=$((PASS+1))
+else
+    echo "  FAIL: a dangling symlink at the default root was removed"; FAIL=$((FAIL+1))
+fi
+
 # ── 3k. _set_marker must survive a write it cannot perform. 3i only proves the mktemp guard,
 # since an empty marker path never runs the redirection. This drives it directly: the marker
 # dir exists at startup and is gone by the write, as an operator clearing /tmp mid-run would

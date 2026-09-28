@@ -13,6 +13,11 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import {
+  linkStagedFolders,
+  ProjectFolderPicker,
+  type StagedFolder,
+} from "@/features/rag";
+import {
   ProjectSourceDropzone,
   type StagedSource,
   uploadStagedSources,
@@ -30,9 +35,8 @@ function currentRoute(): string {
   return window.location.pathname + window.location.search;
 }
 
-// Create-project dialog for the composer, sidebar, and projects page. Creating
-// opens the new project; `onCreated` overrides that for callers with their own
-// follow-up (the sidebar's "move this chat to a new project").
+// Create-project dialog for the composer, sidebar and projects page. Creating opens the new
+// project; `onCreated` overrides that for callers with their own follow-up.
 export function NewProjectDialog({
   open,
   onOpenChange,
@@ -52,16 +56,19 @@ export function NewProjectDialog({
   const navigate = useNavigate();
   const [name, setName] = useState("");
   const [staged, setStaged] = useState<StagedSource[]>([]);
+  const [folders, setFolders] = useState<StagedFolder[]>([]);
   const [busy, setBusy] = useState(false);
-  // A desktop drop reaches `staged` only once its native registration settles.
-  // Creating before then would upload without the files the user just dropped.
+  // A desktop drop reaches `staged` only once its native registration settles. Creating before
+  // then would upload without the files the user just dropped.
   const [stagingDrop, setStagingDrop] = useState(false);
-  // Uploads outlive this component, so a slow one must not yank the user to the
-  // new project after they have navigated away.
+  // Same for a folder pick still resolving over IPC.
+  const [pickingFolder, setPickingFolder] = useState(false);
+  // Uploads outlive this component, so a slow one must not yank the user to the new project after
+  // they have navigated away.
   const mounted = useRef(true);
   useEffect(() => {
-    // Set on setup, not just cleared on cleanup: StrictMode replays
-    // setup/cleanup/setup, which would otherwise leave this false forever.
+    // Set on setup, not just cleared on cleanup: StrictMode replays setup/cleanup/setup, which would
+    // otherwise leave this false forever.
     mounted.current = true;
     return () => {
       mounted.current = false;
@@ -71,11 +78,13 @@ export function NewProjectDialog({
   function reset() {
     setName("");
     setStaged([]);
+    setFolders([]);
     setStagingDrop(false);
+    setPickingFolder(false);
   }
 
-  // Every close path routes through here: callers keep this mounted, so a draft
-  // left behind would resurface (and upload) on the next project.
+  // Every close path routes through here: callers keep this mounted, so a draft left behind would
+  // resurface, and upload, on the next project.
   function close() {
     if (busy) return;
     reset();
@@ -84,14 +93,16 @@ export function NewProjectDialog({
 
   async function commitCreate() {
     const trimmed = name.trim();
-    if (!trimmed || busy || stagingDrop) return;
+    if (!trimmed || busy || stagingDrop || pickingFolder) return;
     setBusy(true);
-    // Sidebar callers keep this mounted across routes, so unmounting alone
-    // cannot tell whether the user has moved on during a slow upload.
+    // Sidebar callers keep this mounted across routes, so unmounting alone cannot tell whether the
+    // user has moved on during a slow upload.
     const origin = currentRoute();
     try {
       const project = await createChatProject(trimmed);
       // Upload before closing so the Sources panel lists them on first fetch.
+      // Folders first: their leases expire in minutes, and uploads can be slow.
+      await linkStagedFolders(project.id, folders);
       await uploadStagedSources(project.id, staged);
       if (!mounted.current) return;
       const stayedOnRoute = currentRoute() === origin;
@@ -131,8 +142,8 @@ export function NewProjectDialog({
           <DialogTitle className="text-ui-21">{title}</DialogTitle>
         </DialogHeader>
         {/* Name field: folder glyph in its own cell, divided from the input. */}
-        <div className="flex items-stretch overflow-hidden rounded-[16px] border border-border bg-background transition-colors focus-within:border-ring has-[input:disabled]:opacity-50 dark:border-transparent dark:bg-white/[0.06]">
-          <span className="flex w-9 shrink-0 items-center justify-center text-muted-foreground">
+        <div className="flex items-stretch overflow-hidden rounded-[16px] border border-border bg-background transition-colors focus-within:border-ring has-[input:disabled]:opacity-50 dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))]">
+          <span className="flex w-10 shrink-0 items-center justify-center pl-1 text-muted-foreground">
             <HugeiconsIcon
               icon={Folder02Icon}
               strokeWidth={1.75}
@@ -163,6 +174,12 @@ export function NewProjectDialog({
           disabled={busy}
           onPendingChange={setStagingDrop}
         />
+        <ProjectFolderPicker
+          folders={folders}
+          onChange={setFolders}
+          disabled={busy}
+          onPendingChange={setPickingFolder}
+        />
         <DialogFooter className="flex-wrap gap-2 sm:justify-end">
           <Button type="button" variant="ghost" disabled={busy} onClick={close}>
             Cancel
@@ -170,9 +187,13 @@ export function NewProjectDialog({
           <Button
             type="button"
             onClick={() => void commitCreate()}
-            disabled={!name.trim() || busy || stagingDrop}
+            disabled={!name.trim() || busy || stagingDrop || pickingFolder}
           >
-            {busy ? "Creating…" : stagingDrop ? "Adding sources…" : submitLabel}
+            {busy
+              ? "Creating…"
+              : stagingDrop || pickingFolder
+                ? "Adding sources…"
+                : submitLabel}
           </Button>
         </DialogFooter>
       </DialogContent>

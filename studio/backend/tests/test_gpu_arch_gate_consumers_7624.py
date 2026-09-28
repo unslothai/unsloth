@@ -146,7 +146,7 @@ def _backend(
     backend._amd_apu_wants_unified_memory = lambda *args, **kwargs: False
     backend._find_llama_server_binary = lambda include_denied = False: "/fake/llama-server"
     backend._is_vulkan_backend = lambda _binary = None: False
-    backend._wait_for_health = lambda timeout: True
+    backend._wait_for_health = lambda timeout, **_kw: True
     backend._detect_audio_type_strict = lambda: None
     backend._apply_detected_audio = lambda _detected: True
     return backend, _write_gguf(tmp_path / "model.gguf")
@@ -548,7 +548,7 @@ class TestArchRetryDropsTensorSplit:
         assert LlamaCppBackend._without_tensor_split(cmd) is None
         # Known limitation, pinned not fixed: the scan is positional, so a VALUE
         # spelled exactly like the flag is removed as if it were one and the
-        # two-token form then swallows the argument after it. No Studio-built argv
+        # two-token form then swallows the argument after it. No Unsloth-built argv
         # can reach this -- the only free-text values are the model path and the
         # HF-derived --alias, llama.cpp's own value tokens being numbers or enum
         # words -- so teaching the scanner every flag's arity is not worth it. If a
@@ -612,15 +612,28 @@ class TestArchRetryRestoresTheMemoryPolicy:
         # Snapshotted at the launch, not re-derived at the retry: re-probing
         # residency for the SURVIVORS would mark an APU survivor mlock-applicable
         # against a lock-free argv, turning every later duplicate load into a reload.
-        assert "_mem_policy_for_cmd = (" in text
-        _snap = [
-            _line.strip().rstrip(",")
-            for _line in text.split("_mem_policy_for_cmd = (")[1].split(")")[0].splitlines()
-            if _line.strip()
-        ]
+        # One helper, so every site that mutates `cmd` retakes the same shape.
+        assert "def _snapshot_policy_for_cmd():" in text
+        assert "_mem_policy_for_cmd = _snapshot_policy_for_cmd()" in text
+        _body = text.split("def _snapshot_policy_for_cmd():")[1].split("return (")[1]
+        _members = []
+        for _line in _body.splitlines():
+            if _line.strip() == ")":
+                break
+            if _line.strip():
+                _members.append(_line.strip().rstrip(","))
+        _snap = _members
         assert _snap == [
             "_mem_host_resident",
             "self._memory_state",
+            # With the pair: a stale DirectIO bit beside a restored one is the drift
+            # the snapshot exists to prevent.
+            "self._memory_direct_io",
+            # Same reason: a rung that strips a COPY clears it while `cmd` still owes
+            # DirectIO.
+            "self._memory_dio_applicable",
+            # Copied in, so a later strip cannot reach the snapshot the fallback uses.
+            "list(self._memory_dio_flags)",
             "self._memory_policy_active",
             "self._memory_mlock_applicable",
         ]
@@ -641,6 +654,13 @@ class TestArchRetryRestoresTheMemoryPolicy:
         assert _restored == [
             "_mem_host_resident",
             "self._memory_state",
+            # With the pair: a stale DirectIO bit beside a restored one is the drift
+            # the snapshot exists to prevent.
+            "self._memory_direct_io",
+            # Same reason: a rung that strips a COPY clears it while `cmd` still owes
+            # DirectIO.
+            "self._memory_dio_applicable",
+            "self._memory_dio_flags",
             "self._memory_policy_active",
             "self._memory_mlock_applicable",
         ]
@@ -1047,3 +1067,43 @@ class TestGatedTensorModeStillDeduplicates:
         backend._tensor_parallel = True
         request = dict(_GATED_REQUEST, tensor_parallel = False)
         assert backend.adopt_load_intent_if_matched(GgufLoadIntent(**request)) is False
+
+
+class TestArchRetryAsksResidencyTheSameWayTheLaunchDid:
+    """The rung's residency question has to be the launch's question.
+
+    An unprobed device answers the conservative "host resident", and
+    `_mem_should_mlock` is always False under no-reserve, so gating the rung's probe
+    on it alone contradicted the launch's own verdict for the same devices. Not
+    cosmetic: the rung re-records the placement.
+    """
+
+    def _load_model_source(self):
+        import inspect
+
+        from core.inference.llama_cpp import LlamaCppBackend
+        return inspect.getsource(LlamaCppBackend.load_model)
+
+    def test_every_probe_vulkan_gate_admits_the_directio_probe(self):
+        """Across all three sites: the defect was that they disagreed."""
+        gates = [
+            line.strip()
+            for line in self._load_model_source().splitlines()
+            if line.strip().startswith("probe_vulkan = ")
+        ]
+        assert len(gates) == 3, gates
+        assert all("_mem_probe_for_dio" in gate for gate in gates), gates
+
+    def test_the_residency_arm_records_from_the_argv(self):
+        """`cmd` may carry the managed DirectIO pair, which `_mem_extras +
+        _retry_managed` does not add up to. Rebuilding from the parts records a mapped
+        load for a streaming child, and the comparator then asks for a reload that
+        relaunching reproduces."""
+        src = self._load_model_source()
+        marker = "Arch-crash retry changed where the weights live"
+        assert marker in src
+        arm = src[: src.index(marker)]
+        arm = arm[arm.rindex("_retry_host_resident and not _mem_host_resident") :]
+        compact = "".join(arm.split())
+        assert "self._record_memory_state(cmd,env)" in compact
+        assert "self._record_memory_state(list(_mem_extras)" not in compact

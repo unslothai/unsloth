@@ -11,6 +11,7 @@ up to nine independent 90s timeouts. These tests pin the shared-probe contract: 
 subprocess per run, invalidated whenever pip changes what is installed.
 """
 
+import ast
 import importlib.util
 import os
 import subprocess
@@ -192,6 +193,117 @@ class TestMemoization:
         assert mock_run.call_count == 1
         assert second[2] == "2.10.0+rocm7.1"
 
+    def test_pip_install_try_invalidates_the_cache(self):
+        """The other installer. It puts the Windows AMD ROCm trio on disk, so a memo it
+        does not clear can answer for the build it just replaced."""
+        with patch.object(stack_mod.subprocess, "run", return_value = _probe_result()):
+            assert stack_mod._probe_torch_runtime()[2] == "2.9.1+cu128"
+
+        with (
+            patch.object(stack_mod, "USE_UV", False),
+            patch.object(stack_mod, "CONSTRAINTS", Path("/nonexistent/constraints.txt")),
+            patch.object(
+                stack_mod.subprocess, "run", return_value = MagicMock(returncode = 0, stdout = b"")
+            ),
+        ):
+            assert stack_mod.pip_install_try("ROCm torch (Windows)", "torch") is True
+
+        out = _probe_result("2.10.0+rocm7.1|7.1.12345|")
+        with patch.object(stack_mod.subprocess, "run", return_value = out) as mock_run:
+            assert stack_mod._probe_torch_runtime()[2] == "2.10.0+rocm7.1"
+        assert mock_run.call_count == 1
+
+    def test_the_torchao_probe_sees_the_reinstalled_torch(self):
+        """The consumer that would actually read a stale answer. _select_torchao_spec
+        reads _probe_installed_torch_version() between the two repair points, so a memo
+        surviving the reinstall pins torchao against the torch that was just replaced.
+        """
+        with patch.object(stack_mod.subprocess, "run", return_value = _probe_result()):
+            assert stack_mod._probe_installed_torch_version() == "2.9.1+cu128"
+
+        with (
+            patch.object(stack_mod, "USE_UV", False),
+            patch.object(stack_mod, "CONSTRAINTS", Path("/nonexistent/constraints.txt")),
+            patch.object(
+                stack_mod.subprocess, "run", return_value = MagicMock(returncode = 0, stdout = b"")
+            ),
+        ):
+            assert stack_mod.pip_install_try("ROCm torch (Windows)", "torch") is True
+
+        out = _probe_result("2.10.0+rocm7.1|7.1.12345|")
+        with patch.object(stack_mod.subprocess, "run", return_value = out):
+            assert stack_mod._probe_installed_torch_version() == "2.10.0+rocm7.1"
+
+    @pytest.mark.parametrize("installer", ["pip_install", "pip_install_try"])
+    def test_a_real_reinstall_is_really_reclassified(self, tmp_path, installer):
+        """The mocked versions above prove the memo was dropped. This proves the answer
+        that replaces it comes from the venv as it is NOW: two real torch packages, a
+        real probe subprocess either side of a real call into the installer.
+        """
+
+        def _torch(where, version):
+            pkg = where / "torch"
+            pkg.mkdir(parents = True)
+            (pkg / "__init__.py").write_text(
+                "from . import version\nfrom .version import __version__\n", encoding = "utf-8"
+            )
+            (pkg / "version.py").write_text(
+                f"__version__ = '{version}'\nhip = None\ncuda = None\n", encoding = "utf-8"
+            )
+            return where
+
+        before = _torch(tmp_path / "before", "2.9.1+cpu")
+        after = _torch(tmp_path / "after", "2.10.0+cu128")
+
+        with patch.dict(os.environ, {"PYTHONPATH": str(before)}):
+            assert stack_mod._probe_torch_runtime()[2] == "2.9.1+cpu"
+        # Still the remembered answer while nothing has installed anything.
+        with patch.dict(os.environ, {"PYTHONPATH": str(after)}):
+            assert stack_mod._probe_torch_runtime()[2] == "2.9.1+cpu"
+
+        with (
+            patch.object(stack_mod, "USE_UV", False),
+            patch.object(stack_mod, "CONSTRAINTS", Path("/nonexistent/constraints.txt")),
+            patch.object(
+                stack_mod.subprocess, "run", return_value = MagicMock(returncode = 0, stdout = b"")
+            ),
+        ):
+            getattr(stack_mod, installer)("torch repair", "torch")
+
+        with patch.dict(os.environ, {"PYTHONPATH": str(after)}):
+            assert stack_mod._probe_torch_runtime()[2] == "2.10.0+cu128"
+
+    def test_every_installer_entry_point_invalidates(self):
+        """Read from the module rather than listed here, so a third installer helper
+        cannot be added without either invalidating or failing this.
+
+        The two that exist route through _build_pip_cmd / _build_uv_cmd, which is what
+        makes a function an installer rather than a probe. The one exemption builds into a
+        scratch --target and installs nothing; `TestScratchPrefetch` runs it to prove that,
+        rather than trusting how its source reads.
+        """
+        tree = ast.parse(Path(stack_mod.__file__).read_text(encoding = "utf-8"))
+        installers = {}
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.FunctionDef):
+                continue
+            called = {
+                sub.func.id
+                for sub in ast.walk(node)
+                if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name)
+            }
+            if called & {"_build_pip_cmd", "_build_uv_cmd"}:
+                installers[node.name] = called
+        assert SCRATCH_PREFETCHERS <= set(installers), "an exempted prefetcher no longer builds"
+        assert set(installers) - SCRATCH_PREFETCHERS == {"_pip_install_once", "pip_install_try"}, (
+            f"a new installer entry point appeared: {sorted(installers)}. It has to drop "
+            "the torch classification too, or it will answer for the build it replaced"
+        )
+        for name in set(installers) - SCRATCH_PREFETCHERS:
+            assert "_invalidate_torch_runtime_probe" in installers[name], (
+                f"{name}() installs packages without dropping the memoized torch " "classification"
+            )
+
     def test_explicit_invalidation_forces_a_reprobe(self):
         with patch.object(stack_mod.subprocess, "run", return_value = _probe_result()) as mock_run:
             stack_mod._probe_torch_runtime()
@@ -200,11 +312,60 @@ class TestMemoization:
         assert mock_run.call_count == 2
 
 
+# Builds a command without dropping the torch classification, which is only safe because it
+# installs nothing into the environment. TestScratchPrefetch runs each one to hold it to that.
+SCRATCH_PREFETCHERS = {"_prefetch_diffusers_main"}
+
+
+class TestScratchPrefetch:
+    """#11635's prefetch warms uv's cache by building into a throwaway --target. Run it with the
+    subprocess stubbed and read the command it actually issues: exactly one --target, naming a
+    directory it made under the temp root, and removed afterwards."""
+
+    @pytest.mark.parametrize("git", [True, False], ids = ["from-git", "from-archive"])
+    def test_the_prefetch_builds_only_into_a_scratch_target(self, git, tmp_path):
+        req_root = tmp_path / "requirements"
+        req_root.mkdir()
+        (req_root / "diffusers-main.txt").write_text(
+            "diffusers @ git+https://github.com/huggingface/diffusers@abc\n", encoding = "utf-8"
+        )
+        commands = []
+
+        def run(cmd, **kwargs):
+            commands.append(list(cmd))
+            return subprocess.CompletedProcess(cmd, 0, stdout = "")
+
+        with (
+            patch.object(stack_mod, "REQ_ROOT", req_root),
+            patch.object(stack_mod, "_diffusers_main_requested", return_value = True),
+            patch.object(stack_mod, "_diffusers_main_needs_dependency_pass", return_value = True),
+            patch.object(stack_mod, "_startup_repair_failed", return_value = False),
+            patch.object(stack_mod, "_bootstrap_uv", return_value = True),
+            patch.object(stack_mod, "_has_working_git", return_value = git),
+            patch.object(
+                stack_mod, "_diffusers_main_archive", return_value = "https://example/d.tar.gz"
+            ),
+            patch.object(stack_mod, "_pinned_cmd_and_env", side_effect = lambda cmd: (cmd, None)),
+            patch.object(stack_mod.subprocess, "run", side_effect = run),
+        ):
+            assert stack_mod._prefetch_diffusers_main() == 0
+
+        assert len(commands) == 1, commands
+        cmd = commands[0]
+        targets = [
+            i for i, arg in enumerate(cmd) if arg == "--target" or arg.startswith("--target=")
+        ]
+        assert len(targets) == 1 and cmd[targets[0]] == "--target", cmd
+        target = Path(cmd[targets[0] + 1])
+        assert target.parent == Path(stack_mod.tempfile.gettempdir()), target
+        assert target.name.startswith(stack_mod._PREFETCH_SCRATCH_PREFIX), target
+        assert not target.exists(), "the scratch target was left behind"
+
+
 class TestConsumersShareTheProbe:
     def test_probe_installed_torch_version_uses_the_shared_result(self):
         with patch.object(stack_mod.subprocess, "run", return_value = _probe_result()) as mock_run:
             assert stack_mod._probe_installed_torch_version() == "2.9.1+cu128"
-            # Second consumer, same run: no new interpreter.
             assert stack_mod._probe_installed_torch_version() == "2.9.1+cu128"
         assert mock_run.call_count == 1
 
@@ -216,3 +377,80 @@ class TestConsumersShareTheProbe:
         boom = subprocess.TimeoutExpired(cmd = "python", timeout = 90)
         with patch.object(stack_mod.subprocess, "run", side_effect = boom):
             assert stack_mod._probe_installed_torch_version() is None
+
+
+class TestVersionlessBuildsStillClassify:
+    """An empty version field is not no answer: "" is a torch whose __version__ is
+    missing, which the pins repair, and None is a probe that learned nothing and must
+    leave the venv alone. TestProbeParsing pins that at the probe; these pin it where
+    it decides something, since gating on the version alone would skip the repair.
+    """
+
+    @patch.object(stack_mod, "NO_TORCH", False)
+    @patch.object(stack_mod, "pip_install")
+    def test_cpu_pin_still_replaces_a_versionless_cuda_build(self, mock_pip):
+        out = _probe_result("||12.8")  # no version, cuda "12.8"
+        with patch.object(
+            stack_mod,
+            "_explicit_cpu_torch_index_url",
+            return_value = "https://download.pytorch.org/whl/cpu",
+        ):
+            with patch.object(stack_mod.subprocess, "run", return_value = out):
+                stack_mod._ensure_cpu_torch()
+        assert mock_pip.called, "a CUDA build under an explicit CPU pin must be replaced"
+
+    @patch.object(stack_mod, "NO_TORCH", False)
+    @patch.object(stack_mod, "pip_install")
+    def test_cpu_pin_still_replaces_a_versionless_rocm_build(self, mock_pip):
+        out = _probe_result("|7.1.12345|")  # no version, hip set
+        with patch.object(
+            stack_mod,
+            "_explicit_cpu_torch_index_url",
+            return_value = "https://download.pytorch.org/whl/cpu",
+        ):
+            with patch.object(stack_mod.subprocess, "run", return_value = out):
+                stack_mod._ensure_cpu_torch()
+        assert mock_pip.called, "a ROCm build under an explicit CPU pin must be replaced"
+
+    @patch.object(stack_mod, "NO_TORCH", False)
+    @patch.object(stack_mod, "pip_install")
+    def test_cpu_pin_leaves_a_cpu_build_with_no_version_alone(self, mock_pip):
+        # Every field empty is a CPU build with an unreadable version: nothing to repair.
+        with patch.object(
+            stack_mod,
+            "_explicit_cpu_torch_index_url",
+            return_value = "https://download.pytorch.org/whl/cpu",
+        ):
+            with patch.object(stack_mod.subprocess, "run", return_value = _probe_result("||")):
+                stack_mod._ensure_cpu_torch()
+        mock_pip.assert_not_called()
+
+    @patch.object(stack_mod, "NO_TORCH", False)
+    @patch.object(stack_mod, "pip_install")
+    def test_cpu_pin_leaves_the_venv_alone_when_the_probe_said_nothing(self, mock_pip):
+        # Exit 0 with no line of ours: we learned nothing, so we touch nothing.
+        with patch.object(
+            stack_mod,
+            "_explicit_cpu_torch_index_url",
+            return_value = "https://download.pytorch.org/whl/cpu",
+        ):
+            with patch.object(
+                stack_mod.subprocess, "run", return_value = _probe_result(raw = "unrelated chatter\n")
+            ):
+                stack_mod._ensure_cpu_torch()
+        mock_pip.assert_not_called()
+
+    @patch.object(stack_mod, "NO_TORCH", False)
+    @patch.object(stack_mod, "IS_MACOS", False)
+    @patch.object(stack_mod, "IS_WINDOWS", False)
+    @patch.object(stack_mod, "pip_install")
+    def test_xpu_pin_still_repairs_a_versionless_build(self, mock_pip):
+        # An unreadable version is not a supported +xpu build, and the pin forces the family.
+        with patch.object(
+            stack_mod,
+            "_explicit_xpu_torch_index_url",
+            return_value = "https://download.pytorch.org/whl/xpu",
+        ):
+            with patch.object(stack_mod.subprocess, "run", return_value = _probe_result("||")):
+                stack_mod._ensure_xpu_torch()
+        assert mock_pip.called, "an unidentifiable build under an explicit XPU pin must be repaired"

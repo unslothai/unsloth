@@ -45,6 +45,7 @@ function job(overrides: Partial<ManagedDownload> = {}): ManagedDownload {
     completeOnDisk: false,
     fraction: 0.99,
     bytesPerSec: 0,
+    etaSeconds: 0,
     error: null,
     startedAt: 1,
   };
@@ -327,4 +328,36 @@ test("a new generation resets the fraction, not only the bytes", () => {
   // Without the reset the mark still holds, which is what keeps a sibling-quant dip off the bar.
   const held = resolveProgressUpdate(job({ fraction: 0.99 }), emptyReading());
   assert.equal(held.fraction, 0.99);
+});
+
+test("a held transfer reading is reported as held, not as a measurement", () => {
+  // The card may keep drawing the last figure, but a consumer that subtracts it
+  // from the CURRENT expectedBytes is mixing two plans: after an XET-to-HTTP
+  // reclaim the retry's first reading is a legitimate zero against a shrunken
+  // total, and the bytes held behind it belong to the previous, larger one.
+  const held = resolveProgressUpdate(
+    job({ downloadedBytes: 3 * GB, completedBytes: 3 * GB }),
+    emptyReading({ expected_bytes: GB / 2 }),
+  );
+
+  assert.equal(held.measuredTransfer, false);
+  assert.equal(held.downloadedBytes, 3 * GB);
+  assert.equal(held.expected, GB / 2);
+
+  // The next poll that carries bytes is a measurement again.
+  const measured = resolveProgressUpdate(
+    job({ downloadedBytes: 3 * GB, completedBytes: 3 * GB }),
+    emptyReading({ downloaded_bytes: GB / 10, expected_bytes: GB / 2 }),
+  );
+
+  assert.equal(measured.measuredTransfer, true);
+  assert.equal(measured.downloadedBytes, GB / 10);
+
+  // A generation bump measures the new run's counter outright, zero included.
+  const reset = resolveProgressUpdate(job({ downloadedBytes: 3 * GB }), emptyReading(), {
+    resetMonotonic: true,
+  });
+
+  assert.equal(reset.measuredTransfer, true);
+  assert.equal(reset.downloadedBytes, 0);
 });

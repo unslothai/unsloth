@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useAppShellReadySignal } from "@/components/app-readiness";
+import { GuidedTour, useGuidedTourController } from "@/features/tour";
+import { apiMonitorTourSteps } from "./tour";
+
 // Full-page monitor for Unsloth's OpenAI-compatible API server. Settings still owns
 // configuration (keys, auto-switch, examples); this page owns observability.
 
@@ -18,7 +22,7 @@ import { fetchDeviceType, usePlatformStore } from "@/config/env";
 import { getInferenceStatus, unloadModel } from "@/features/chat/api/chat-api";
 import { resolveInferenceCheckpointId } from "@/features/chat/lib/apply-inference-status-to-store";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
-import type { ApiMonitorEntry } from "@/features/chat/types/api";
+import type { ApiMonitorEntry } from "@/features/chat";
 import { isExternalModelId } from "@/features/chat/external-providers";
 import { modelIdsMatch } from "@/features/hub/lib/model-identity";
 import { useSettingsDialogStore } from "@/features/settings";
@@ -269,7 +273,11 @@ function RequestRow({
           {entry.model}
         </div>
         {entry.error ? (
-          <div className="min-w-0 break-words pl-4 text-ui-11 text-red-600 dark:text-red-400">
+          // Backend error text can quote the request, so keep it out too.
+          <div
+            data-reload-snapshot-sensitive
+            className="min-w-0 break-words pl-4 text-ui-11 text-red-600 dark:text-red-400"
+          >
             {entry.error}
           </div>
         ) : null}
@@ -312,7 +320,9 @@ function RequestRow({
           <span>{formatTime(entry.started_at)}</span>
         </span>
       </div>
+      {/* A prompt or reply excerpt, same as the expanded payload below it. */}
       <p
+        data-reload-snapshot-sensitive
         className={cn(
           "line-clamp-2 pl-4 text-ui-11 leading-[1.45]",
           entry.error
@@ -339,6 +349,10 @@ function PayloadBlock({
   loading?: boolean;
   tone?: "error";
 }): ReactElement {
+  const preview =
+    body.length > 12_000
+      ? `${body.slice(0, 11_997).replace(/[\uD800-\uDBFF]$/, "")}...`
+      : body;
   return (
     <section className="flex min-w-0 flex-col gap-1.5">
       <div className="flex items-center justify-between gap-2">
@@ -346,23 +360,25 @@ function PayloadBlock({
           {title}
         </h3>
         <div className="flex items-center gap-1">
-          {truncated ? (
+          {truncated || preview !== body ? (
             <span className="text-ui-10 text-muted-foreground">
               preview only
             </span>
           ) : null}
-          {body ? (
+          {body && !truncated ? (
             <CopyButton value={body} label={`Copy ${title.toLowerCase()}`} />
           ) : null}
         </div>
       </div>
+      {/* Prompt and reply bodies, so keep them out of the reload snapshot. */}
       <pre
+        data-reload-snapshot-sensitive
         className={cn(
           "max-h-72 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-muted/50 p-3 text-ui-11 leading-[1.55]",
           tone === "error" && "bg-red-500/5 text-red-700 dark:text-red-400",
         )}
       >
-        {loading && !body ? "Loading…" : body || "–"}
+        {loading && !body ? "Loading…" : preview || "–"}
       </pre>
     </section>
   );
@@ -387,6 +403,7 @@ function RequestDetail({
   const reply = detailIsCurrent
     ? (detail.reply ?? entry.reply_preview)
     : entry.reply_preview;
+
 
   return (
     <div className="flex min-w-0 flex-col gap-5 p-5">
@@ -461,7 +478,11 @@ function RequestDetail({
             value: entry.decode_ms != null ? formatDuration(entry.decode_ms) : "–",
           },
           {
-            label: "Speed",
+            label: "Prompt speed",
+            value: formatTokPerSec(entry.prompt_tok_per_sec) ?? "–",
+          },
+          {
+            label: "Generation speed",
             value: formatTokPerSec(entry.tok_per_sec) ?? "–",
           },
           {
@@ -510,6 +531,11 @@ function RequestDetail({
 }
 
 export function ApiMonitorPage(): ReactElement {
+  const signalReady = useAppShellReadySignal();
+  const tour = useGuidedTourController({
+    id: "api-monitor",
+    steps: apiMonitorTourSteps,
+  });
   const {
     data,
     entries,
@@ -525,6 +551,14 @@ export function ApiMonitorPage(): ReactElement {
     loadingDetails,
     requestDetail,
   } = useApiMonitor();
+  const reloadReadySent = useRef(false);
+  useEffect(() => {
+    if (loading || reloadReadySent.current) {
+      return;
+    }
+    reloadReadySent.current = true;
+    signalReady();
+  }, [loading, signalReady]);
   const serverUrl = usePlatformStore((s) => s.serverUrl);
   const cloudflareUrl = usePlatformStore((s) => s.cloudflareUrl);
   const [unloading, setUnloading] = useState(false);
@@ -671,7 +705,8 @@ export function ApiMonitorPage(): ReactElement {
         : "No model loaded";
 
   return (
-    <main className="mx-auto flex w-full max-w-6xl flex-col gap-6 px-6 pb-10 pt-12 font-heading sm:px-10">
+    <main className="mx-auto flex w-full max-w-6xl 3xl:max-w-[calc(1440px*var(--ui-space-scale,1))] 4xl:max-w-[calc(1760px*var(--ui-space-scale,1))] flex-col gap-6 px-6 pb-10 pt-12 max-sm:px-4 max-sm:pt-8 font-heading sm:px-10">
+      <GuidedTour {...tour.tourProps} />
       <header className="flex flex-wrap items-start justify-between gap-4">
         <div className="flex min-w-0 flex-col gap-1">
           <h1 className="text-ui-30 font-semibold leading-[1.04] tracking-[-0.028em] text-foreground sm:text-ui-34">
@@ -681,7 +716,7 @@ export function ApiMonitorPage(): ReactElement {
             Live traffic through Unsloth&apos;s OpenAI-compatible server.
           </p>
         </div>
-        <div className="flex flex-wrap items-center gap-2">
+        <div data-tour="api-toolbar" className="flex flex-wrap items-center gap-2">
           <Button
             type="button"
             variant="outline"
@@ -769,7 +804,10 @@ export function ApiMonitorPage(): ReactElement {
       </header>
 
       {/* Checked first when a client can't reach the API: base URL and what is loaded. */}
-      <section className="flex flex-wrap items-center gap-x-6 gap-y-3 rounded-xl border border-border/60 bg-card px-4 py-3">
+      <section
+        data-tour="api-endpoint"
+        className="flex flex-wrap items-center gap-x-6 gap-y-3 rounded-xl border border-border/60 bg-card px-4 py-3"
+      >
         <div className="flex min-w-0 items-center gap-2.5">
           <span className="flex size-8 shrink-0 items-center justify-center rounded-lg border border-border/60 bg-muted/40">
             <HugeiconsIcon
@@ -900,7 +938,7 @@ export function ApiMonitorPage(): ReactElement {
             onChange={(event) => setQuery(event.target.value)}
             placeholder="Search model, endpoint, preview or error"
             aria-label="Search API requests"
-            className="h-9 w-full min-w-0 flex-1 rounded-full border-none bg-muted shadow-none dark:bg-background sm:w-64 sm:flex-none"
+            className="h-9 w-full min-w-0 flex-1 max-sm:basis-full rounded-full border-none bg-muted shadow-none dark:bg-background sm:w-64 sm:flex-none"
           />
           <Select
             value={statusFilter}
@@ -910,7 +948,7 @@ export function ApiMonitorPage(): ReactElement {
           >
             <SelectTrigger
               aria-label="Filter by status"
-              className="h-9 w-[150px] rounded-full border-none bg-muted shadow-none dark:bg-background"
+              className="h-9 w-[calc(150px*var(--ui-space-scale,1))] rounded-full border-none bg-muted shadow-none dark:bg-background"
             >
               <SelectValue />
             </SelectTrigger>
@@ -927,8 +965,11 @@ export function ApiMonitorPage(): ReactElement {
           </span>
         </div>
 
-        <div className="grid min-h-0 grid-cols-1 lg:grid-cols-[minmax(0,380px)_minmax(0,1fr)]">
-          <div className="max-h-[560px] min-h-[220px] overflow-y-auto border-b border-border/60 lg:border-b-0 lg:border-r">
+        <div
+          data-tour="api-log"
+          className="grid min-h-0 grid-cols-1 lg:grid-cols-[minmax(0,380px)_minmax(0,1fr)] 4xl:grid-cols-[minmax(0,480px)_minmax(0,1fr)]"
+        >
+          <div className="max-h-[calc(560px*var(--ui-space-scale,1))] min-h-[calc(220px*var(--ui-space-scale,1))] max-lg:max-h-[45dvh] 3xl:max-h-[calc(100dvh-22rem*var(--ui-space-scale,1))] overflow-y-auto border-b border-border/60 lg:border-b-0 lg:border-r">
             {loading ? (
               <div className="flex flex-col gap-3 p-4">
                 {[0, 1, 2].map((i) => (
@@ -940,7 +981,7 @@ export function ApiMonitorPage(): ReactElement {
                 {entries.length > 0
                   ? "No requests match this filter."
                   : loggingDisabled
-                    ? "Recording is off: UNSLOTH_STUDIO_DISABLE_API_MONITOR is set. Requests and model loads still run normally, they are just not listed here. Unset the variable and restart Studio to re-enable."
+                    ? "Recording is off: UNSLOTH_STUDIO_DISABLE_API_MONITOR is set. Requests and model loads still run normally, they are just not listed here. Unset the variable and restart Unsloth to re-enable."
                     : "No API traffic yet. Point a client at the base URL above to see requests here."}
               </p>
             ) : (
@@ -955,7 +996,7 @@ export function ApiMonitorPage(): ReactElement {
             )}
           </div>
 
-          <div className="max-h-[560px] min-h-[220px] overflow-y-auto">
+          <div className="max-h-[calc(560px*var(--ui-space-scale,1))] min-h-[calc(220px*var(--ui-space-scale,1))] max-lg:max-h-[45dvh] 3xl:max-h-[calc(100dvh-22rem*var(--ui-space-scale,1))] overflow-y-auto">
             {selected ? (
               <RequestDetail
                 entry={selected}

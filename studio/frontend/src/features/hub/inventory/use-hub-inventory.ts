@@ -4,13 +4,16 @@
 import {
   type ManagedDownload,
   clearCompletedInventoryHint,
+  downloadInventoryHintKind,
   useDownloadManagerStore,
 } from "@/features/hub/download-manager";
 import { useHfTokenStore } from "@/features/hub/stores/hf-token-store";
 import { useCallback, useEffect, useMemo, useRef } from "react";
 import type { LocalDatasetInfo } from "./api";
 import {
+  activeDownloadRepoKeys,
   dedupeSameSourceHubCacheRows,
+  markDownloadingRows,
   partialSetFromRows,
 } from "./inventory-dedupe";
 import {
@@ -23,10 +26,16 @@ import {
 } from "./inventory-hint-store";
 import {
   type PendingInventoryHints,
+  inventoryHintKey,
   nextInventoryHintExpiryDelay,
+  repoKey,
 } from "./inventory-hints";
 import { resolveInventorySettlement } from "./inventory-settlement";
-import type { CachedInventoryRow, LocalInventoryRow } from "./types";
+import type {
+  CachedInventoryRow,
+  InventoryHint,
+  LocalInventoryRow,
+} from "./types";
 import {
   type DeviceInventorySource,
   useDeviceInventorySources,
@@ -34,9 +43,10 @@ import {
 import {
   buildCachedInventoryRow,
   buildLocalInventoryRows,
+  cachedInventoryId,
   defaultCapabilities,
-  normalizeTimestamp,
 } from "./view-models";
+import { normalizeTimestamp } from "./inventory-timestamps";
 import {
   INVENTORY_FRESHNESS_WINDOW_MS,
   isInventoryStampFresh,
@@ -47,6 +57,7 @@ export interface HubInventory {
   localRows: LocalInventoryRow[];
   availableSet: Set<string>;
   partialSet: Set<string>;
+  downloadingSet: Set<string>;
   downloadedReady: boolean;
   inventorySettled: boolean;
   inventoryError: boolean;
@@ -82,7 +93,12 @@ const LOCAL_DATASET_INVENTORY_SOURCE = [
 
 type LiveInventoryJob = Pick<
   ManagedDownload,
-  "kind" | "repoId" | "variant" | "state" | "startedAt"
+  | "kind"
+  | "repoId"
+  | "variant"
+  | "inventoryKind"
+  | "state"
+  | "startedAt"
 > & {
   displayBytes: number;
 };
@@ -130,6 +146,39 @@ function liveInventoryRank(job: ManagedDownload): number {
   return 0;
 }
 
+export function liveInventorySelectionKey(
+  job: Pick<ManagedDownload, "kind" | "repoId" | "variant" | "inventoryKind">,
+): string {
+  return inventoryHintKey(
+    downloadInventoryHintKind(job.kind, job.variant, job.inventoryKind),
+    job.repoId,
+  );
+}
+
+export function observedKeyProtections(
+  jobs: Record<string, ManagedDownload>,
+): Record<InventoryHint["kind"], Set<string>> {
+  const keys: Record<InventoryHint["kind"], Set<string>> = {
+    model: new Set(),
+    gguf: new Set(),
+    dataset: new Set(),
+  };
+  for (const job of Object.values(jobs)) {
+    if (
+      job.external ||
+      (job.state !== "running" &&
+        job.state !== "cancelling" &&
+        job.state !== "complete")
+    ) {
+      continue;
+    }
+    keys[
+      downloadInventoryHintKind(job.kind, job.variant, job.inventoryKind)
+    ].add(repoKey(job.repoId));
+  }
+  return keys;
+}
+
 function shouldSurfaceLiveJob(
   job: ManagedDownload,
   isDatasetMode: boolean,
@@ -146,7 +195,7 @@ function liveJobDisplayBytes(job: ManagedDownload): number {
   return Math.max(job.downloadedBytes, job.completedBytes, 0);
 }
 
-function createLiveInventoryJobsSelector(isDatasetMode: boolean): (state: {
+export function createLiveInventoryJobsSelector(isDatasetMode: boolean): (state: {
   jobs: Record<string, ManagedDownload>;
 }) => LiveInventoryJob[] {
   let cache: { signature: string; jobs: LiveInventoryJob[] } = {
@@ -154,35 +203,42 @@ function createLiveInventoryJobsSelector(isDatasetMode: boolean): (state: {
     jobs: [],
   };
   return (state) => {
-    const selectedByRepo = new Map<string, ManagedDownload>();
+    const selectedByRepoAndKind = new Map<string, ManagedDownload>();
     for (const job of Object.values(state.jobs)) {
       if (!shouldSurfaceLiveJob(job, isDatasetMode)) continue;
-      const repoKey = job.repoId.trim().toLowerCase();
-      if (!repoKey) continue;
-      const current = selectedByRepo.get(repoKey);
+      if (!repoKey(job.repoId)) continue;
+      const selectionKey = liveInventorySelectionKey(job);
+      const current = selectedByRepoAndKind.get(selectionKey);
       if (
         !current ||
         liveInventoryRank(job) > liveInventoryRank(current) ||
         (liveInventoryRank(job) === liveInventoryRank(current) &&
           job.startedAt > current.startedAt)
       ) {
-        selectedByRepo.set(repoKey, job);
+        selectedByRepoAndKind.set(selectionKey, job);
       }
     }
-    const jobs = [...selectedByRepo.values()]
+    const jobs = [...selectedByRepoAndKind.values()]
       .map((job) => ({
         kind: job.kind,
         repoId: job.repoId,
         variant: job.variant,
+        inventoryKind: job.inventoryKind,
         state: job.state,
         startedAt: job.startedAt,
         displayBytes: liveJobDisplayBytes(job),
       }))
-      .sort((a, b) => a.repoId.localeCompare(b.repoId));
+      .sort(
+        (a, b) =>
+          repoKey(a.repoId).localeCompare(repoKey(b.repoId)) ||
+          liveInventorySelectionKey(a).localeCompare(
+            liveInventorySelectionKey(b),
+          ),
+      );
     const signature = jobs
       .map(
         (job) =>
-          `${job.kind}\u0001${job.repoId.toLowerCase()}\u0001${job.variant ?? ""}\u0001${job.state}\u0001${job.startedAt}\u0001${job.displayBytes}`,
+          `${job.kind}\u0001${job.repoId.toLowerCase()}\u0001${job.variant ?? ""}\u0001${job.inventoryKind ?? ""}\u0001${job.state}\u0001${job.startedAt}\u0001${job.displayBytes}`,
       )
       .join("\u0002");
     if (signature === cache.signature) return cache.jobs;
@@ -196,25 +252,26 @@ function liveDownloadInventoryRows(
   isDatasetMode: boolean,
 ): CachedInventoryRow[] {
   return jobs.map((job) => {
+    const inventoryKind = downloadInventoryHintKind(
+      job.kind,
+      job.variant,
+      job.inventoryKind,
+    );
     const modelFormat = isDatasetMode
       ? "unknown"
-      : job.variant
+      : inventoryKind === "gguf"
         ? "gguf"
         : "safetensors";
     return {
       ...buildCachedInventoryRow(
         {
           repo_id: job.repoId,
-          inventory_id: `cache:${modelFormat}:${job.repoId}`,
+          inventory_id: cachedInventoryId(modelFormat, job.repoId),
           load_id: job.repoId,
           model_format: modelFormat,
-          runtime:
-            modelFormat === "gguf"
-              ? "llama_cpp"
-              : modelFormat === "safetensors"
-                ? "transformers"
-                : "unknown",
           size_bytes: job.displayBytes,
+          // live jobs already use epoch milliseconds
+          last_modified: job.startedAt,
           partial: true,
           partial_transport: null,
           optimistic: true,
@@ -333,8 +390,14 @@ export function useHubInventory(
         kind: "gguf",
         rows: cachedGgufSource.rows,
         previouslyObserved: observedInventoryKeys.gguf,
+        refreshStartedAt: cachedGgufSource.refreshStartedAt,
       }),
-    [cachedGgufSource.rows, observedInventoryKeys.gguf, pendingForRender],
+    [
+      cachedGgufSource.rows,
+      cachedGgufSource.refreshStartedAt,
+      observedInventoryKeys.gguf,
+      pendingForRender,
+    ],
   );
   const cachedModelsReconciliation = useMemo(
     () =>
@@ -343,8 +406,14 @@ export function useHubInventory(
         kind: "model",
         rows: cachedModelsSource.rows,
         previouslyObserved: observedInventoryKeys.model,
+        refreshStartedAt: cachedModelsSource.refreshStartedAt,
       }),
-    [cachedModelsSource.rows, observedInventoryKeys.model, pendingForRender],
+    [
+      cachedModelsSource.rows,
+      cachedModelsSource.refreshStartedAt,
+      observedInventoryKeys.model,
+      pendingForRender,
+    ],
   );
   const cachedDatasetsReconciliation = useMemo(
     () =>
@@ -353,24 +422,31 @@ export function useHubInventory(
         kind: "dataset",
         rows: cachedDatasetsSource.rows,
         previouslyObserved: observedInventoryKeys.dataset,
+        refreshStartedAt: cachedDatasetsSource.refreshStartedAt,
       }),
     [
       cachedDatasetsSource.rows,
+      cachedDatasetsSource.refreshStartedAt,
       observedInventoryKeys.dataset,
       pendingForRender,
     ],
   );
 
   useEffect(() => {
+    const protectedObservedKeys = observedKeyProtections(
+      useDownloadManagerStore.getState().jobs,
+    );
     const reconciliations: PendingHintReconciliationCommit[] = [];
     if (!isDatasetMode) {
       reconciliations.push(
         {
           kind: "gguf",
+          protectedObservedKeys: protectedObservedKeys.gguf,
           reconciliation: cachedGgufReconciliation,
         },
         {
           kind: "model",
+          protectedObservedKeys: protectedObservedKeys.model,
           reconciliation: cachedModelsReconciliation,
         },
       );
@@ -378,6 +454,7 @@ export function useHubInventory(
     if (isDatasetMode) {
       reconciliations.push({
         kind: "dataset",
+        protectedObservedKeys: protectedObservedKeys.dataset,
         reconciliation: cachedDatasetsReconciliation,
       });
     }
@@ -467,7 +544,6 @@ export function useHubInventory(
           isGguf: false,
           loadId: ds.id,
           modelFormat: "unknown" as const,
-          runtime: "unknown" as const,
           formatVariant: null,
           capabilities: defaultCapabilities("unknown"),
           updatedAt: normalizeTimestamp(ds.updated_at),
@@ -494,25 +570,60 @@ export function useHubInventory(
     [cachedDatasetRows, localDatasetRows],
   );
 
-  const cachedRows = isDatasetMode
-    ? dedupedDatasetInventory.cachedRows
-    : dedupedModelInventory.cachedRows;
-  const effectiveLocalRows = isDatasetMode
-    ? dedupedDatasetInventory.localRows
-    : dedupedModelInventory.localRows;
+  const downloadingSet = useMemo(
+    () => activeDownloadRepoKeys(liveInventoryJobs),
+    [liveInventoryJobs],
+  );
+  const cachedRows = useMemo(
+    () =>
+      markDownloadingRows(
+        isDatasetMode
+          ? dedupedDatasetInventory.cachedRows
+          : dedupedModelInventory.cachedRows,
+        (row) => row.repoId,
+        downloadingSet,
+      ),
+    [
+      dedupedDatasetInventory.cachedRows,
+      dedupedModelInventory.cachedRows,
+      downloadingSet,
+      isDatasetMode,
+    ],
+  );
+  const effectiveLocalRows = useMemo(
+    () =>
+      markDownloadingRows(
+        isDatasetMode
+          ? dedupedDatasetInventory.localRows
+          : dedupedModelInventory.localRows,
+        (row) => row.repoId,
+        downloadingSet,
+      ),
+    [
+      dedupedDatasetInventory.localRows,
+      dedupedModelInventory.localRows,
+      downloadingSet,
+      isDatasetMode,
+    ],
+  );
 
   const availableSet = useMemo(() => {
     const set = new Set<string>();
-    for (const row of cachedRows) set.add(row.repoId.toLowerCase());
+    for (const row of cachedRows) {
+      if (!row.companionPrefetch) set.add(row.repoId.toLowerCase());
+    }
     for (const row of effectiveLocalRows) {
-      if (row.repoId) set.add(row.repoId.toLowerCase());
+      if (row.repoId && !row.companionPrefetch) set.add(row.repoId.toLowerCase());
     }
     return set;
   }, [cachedRows, effectiveLocalRows]);
 
   const partialSet = useMemo(() => {
     return partialSetFromRows(
-      [...cachedRows, ...effectiveLocalRows],
+      [
+        ...cachedRows.filter((row) => !row.companionPrefetch),
+        ...effectiveLocalRows.filter((row) => !row.companionPrefetch),
+      ],
       (row) => row.repoId,
     );
   }, [cachedRows, effectiveLocalRows]);
@@ -637,17 +748,14 @@ export function useHubInventory(
       void refreshDeviceInventory();
     }, 500);
     return () => window.clearTimeout(timer);
-  }, [
-    emptyRevalidationRequired,
-    enabled,
-    refreshDeviceInventory,
-  ]);
+  }, [emptyRevalidationRequired, enabled, refreshDeviceInventory]);
 
   return {
     cachedRows,
     localRows: effectiveLocalRows,
     availableSet,
     partialSet,
+    downloadingSet,
     downloadedReady,
     inventorySettled,
     inventoryError: inventoryFailed,

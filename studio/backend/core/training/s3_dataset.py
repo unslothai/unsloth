@@ -16,12 +16,19 @@ Credentials are read once to build the client and never logged or persisted.
 
 from __future__ import annotations
 
+from core.training.account_jobs import (
+    account_path,
+    managed_account,
+    require_explicit_credentials,
+)
+from utils.paths import ensure_dir, tmp_root
 import logging
 import os
 import shutil
 import tempfile
 from importlib.util import find_spec
 from typing import Callable, Optional
+from utils.paths.path_utils import drop_shadowed_appledouble_names
 
 logger = logging.getLogger(__name__)
 
@@ -67,7 +74,8 @@ def _build_s3_client(s3_config: dict):
     Uses explicit access keys when provided, otherwise falls back to the
     default credential chain (IAM role / instance profile / env / shared creds).
     """
-    import boto3  # lazy: optional dependency
+    require_explicit_credentials({"s3_dataset": s3_config})
+    import boto3
 
     region = s3_config.get("region") or "us-east-1"
     use_iam_role = bool(s3_config.get("use_iam_role"))
@@ -97,12 +105,15 @@ def _list_dataset_keys(client, bucket: str, prefix: Optional[str]) -> list[str]:
         for obj in page.get("Contents", []):
             key = obj["Key"]
             if key.endswith("/"):
-                continue  # directory placeholder
+                continue
             if os.path.basename(key).lower() in _IGNORED_METADATA_FILENAMES:
                 continue
             if key.lower().endswith(SUPPORTED_EXTENSIONS):
                 keys.append(key)
-    return keys
+    # A Mac sync uploads Finder metadata under the shard's own extension and
+    # _validate_single_extension_family cannot see it, so a key is dropped only when the object it
+    # would describe is in the same listing.
+    return drop_shadowed_appledouble_names(keys)
 
 
 def _extension_family(key: str) -> str:
@@ -181,7 +192,11 @@ def prepare_s3_dataset_download(
     _validate_single_extension_family(keys)
 
     owns_temp_dir = dest_dir is None
-    target_dir = dest_dir or tempfile.mkdtemp(prefix = "unsloth_s3_dataset_")
+    account_path(dest_dir)
+    target_dir = dest_dir or tempfile.mkdtemp(
+        prefix = "unsloth_s3_dataset_",
+        **({"dir": str(ensure_dir(tmp_root()))} if managed_account() else {}),
+    )
     try:
         os.makedirs(target_dir, exist_ok = True)
 

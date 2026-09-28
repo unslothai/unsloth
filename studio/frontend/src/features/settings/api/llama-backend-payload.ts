@@ -148,7 +148,7 @@ export function llamaBackendSelectionNeedsApply(
   status: LlamaBackendStatus | null,
   selected: LlamaBackend | null,
 ): boolean {
-  // A null backendRequest is a choice written by a newer Studio. Untouched it is
+  // A null backendRequest is a choice written by a newer Unsloth. Untouched it is
   // not dirty, but picking a backend over it is an explicit replacement.
   const requested = selected ?? status?.backendRequest ?? null;
   if (!status || requested === null) {

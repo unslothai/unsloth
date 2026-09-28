@@ -77,14 +77,10 @@ test("the seconds round-trip", async () => {
     // biome-ignore lint/style/useNamingConvention: API schema
     media_idle_unload_active: true,
   };
-  const saved = await updateOpenAIAutoSwitchSettings(
-    true,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    600,
-  );
+  const saved = await updateOpenAIAutoSwitchSettings({
+    enabled: true,
+    mediaAutoUnloadIdleSeconds: 600,
+  });
   assert.equal(saved.mediaAutoUnloadIdleSeconds, 600);
   assert.equal(saved.mediaIdleUnloadActive, true);
   nextBody = { ...API };
@@ -93,14 +89,10 @@ test("the seconds round-trip", async () => {
 test("saving it alone leaves the chat TTL untouched", async () => {
   invalidateOpenAIAutoSwitchSettings();
   bodies.length = 0;
-  await updateOpenAIAutoSwitchSettings(
-    true,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    600,
-  );
+  await updateOpenAIAutoSwitchSettings({
+    enabled: true,
+    mediaAutoUnloadIdleSeconds: 600,
+  });
   assert.deepEqual(JSON.parse(bodies[0] ?? "{}"), {
     enabled: true,
     // biome-ignore lint/style/useNamingConvention: API schema
@@ -111,7 +103,7 @@ test("saving it alone leaves the chat TTL untouched", async () => {
 test("saving the chat TTL does not send a media TTL", async () => {
   invalidateOpenAIAutoSwitchSettings();
   bodies.length = 0;
-  await updateOpenAIAutoSwitchSettings(true, 300);
+  await updateOpenAIAutoSwitchSettings({ enabled: true, autoUnloadIdleSeconds: 300 });
   assert.deepEqual(JSON.parse(bodies[0] ?? "{}"), {
     enabled: true,
     // biome-ignore lint/style/useNamingConvention: API schema

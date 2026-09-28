@@ -10,11 +10,21 @@ API_MONITOR_PAGE = REPO / "studio/frontend/src/features/api-monitor/api-monitor-
 MONITOR_LINK = REPO / "studio/frontend/src/features/settings/components/monitor-link.tsx"
 REMOTE_ACCESS = REPO / "studio/frontend/src/features/settings/components/remote-access-section.tsx"
 GENERAL_TAB = REPO / "studio/frontend/src/features/settings/tabs/general-tab.tsx"
+SETTINGS = REPO / "studio/frontend/src/features/settings"
 
 
 def test_dialog_content_can_shrink_inside_the_dialog_grid():
     source = SETTINGS_DIALOG.read_text(encoding = "utf-8")
-    assert "flex h-full min-h-0 min-w-0 w-full max-sm:flex-col" in source
+    assert "flex h-full min-h-0 min-w-0 w-full" in source
+    # Stacks on the dialog's measured width (`data-stacked`), not a viewport breakpoint: #11648 made the
+    # interface scale work in the browser, and `max-sm:` reads the viewport, which a larger UI does not change.
+    # Tailwind's data variant reads the attribute on the element carrying the class, so both sit in one tag.
+    at = source.index("min-w-0 w-full data-stacked:flex-col")
+    tag = source[source.rindex("<div", 0, at) : source.index(">", at)]
+    assert (
+        "data-stacked={stacked || undefined}" in tag
+    ), "the stacking attribute left the flex container"
+    assert "group/settings" in tag, "the stacked children read group/settings off this container"
     assert "relative flex min-h-0 min-w-0 flex-1 flex-col" in source
 
 
@@ -47,8 +57,25 @@ def test_remote_access_card_can_shrink():
 
 
 def test_embedding_model_controls_stack_on_the_narrowest_viewports():
-    source = GENERAL_TAB.read_text(encoding = "utf-8")
-    assert (
-        'className="max-[360px]:flex-col max-[360px]:items-stretch max-[360px]:gap-3"'
-    ) in source
-    assert 'className="w-[220px] max-[360px]:min-w-0 max-[360px]:flex-1"' in source
+    # The picker has already moved once, from the General tab to Documents & RAG, and pinning the filename turned that
+    # move into a red build even though both responsive classes came along untouched.
+    # follow the component, since the contract is that the control stacks and fills the row under 360px.
+    owners = [
+        path
+        for path in sorted(SETTINGS.rglob("*.tsx"))
+        if "<EmbeddingModelPicker" in path.read_text(encoding = "utf-8")
+    ]
+    assert owners, "no settings surface renders EmbeddingModelPicker"
+
+    missing = [
+        str(path.relative_to(REPO))
+        for path in owners
+        if not (
+            'className="max-[360px]:flex-col max-[360px]:items-stretch max-[360px]:gap-3"'
+            in (source := path.read_text(encoding = "utf-8"))
+            # The fixed width has to give way at the breakpoint: flex-1 for the
+            # combobox, a full row for the picker trigger.
+            and ("max-[360px]:w-full" in source or "max-[360px]:flex-1" in source)
+        )
+    ]
+    assert missing == []

@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Shared fenced-code helpers for the HTML-artifact render paths, hoisted from
-// markdown-text.tsx so the in-place collapse and the post-message auto-render
-// agree on what counts as a renderable HTML fence.
+// Shared fenced-code helpers for the HTML-artifact render paths, hoisted from markdown-text.tsx
+// so the in-place collapse and the post-message auto-render agree on what counts as a renderable
+// HTML fence.
 
 export type CodeFence = {
   language: string | null;
@@ -11,7 +11,19 @@ export type CodeFence = {
 };
 
 // Matches one fenced block spanning the whole string (one pre-split block).
-export const CODE_FENCE_RE = /^```([^\r\n`]*)\r?\n([\s\S]*?)\r?\n?```$/;
+//
+// THE CLOSE IS THREE OR MORE, NOT EXACTLY THREE. CommonMark wants the closing run to be "at least
+// as many" as the opener, and a model closing a fence whose body holds three backticks writes four.
+// `{3}` matched such a line by its LAST three and handed the surplus to `source` (`x = 1\n\``); a
+// bare lazy `+?` is the other half of the rule and accepts a one- or two-backtick run as a close.
+// The close needs a LINE BREAK before it unless the body is empty, so the alternation is outside
+// the body group: without that, `` ```\nfoo```` `` matched with the run eaten and gave `foo` where
+// CommonMark gives `foo```` `. A fence that closes on the same line it opens has no body at all.
+//
+// Against `micromark`: `{3}` and `+?` each disagreed on 54 of 540 shapes; the shape above was this
+// rule's one regression, found by review and now a row in the test.
+export const CODE_FENCE_RE =
+  /^```([^\r\n`]*)\r?\n(?:([\s\S]*?)\r?\n`{3,}|`{3,})$/;
 
 export type ToolCallPartLike = {
   type?: string;
@@ -47,10 +59,21 @@ export function getCodeFence(blockContent: string): CodeFence | null {
   if (!match) {
     return null;
   }
+  // A block can hold MORE than one fence (a reply with a footnote is one block) and the greedy body
+  // would then span both, prose included. CommonMark closes a fence at the FIRST bare run on its
+  // own line, so a body that still contains one means the real close came earlier and this match
+  // ran past it: `` ```md / A: / ``` / B / ``` `` is a fence holding `A:`, the paragraph `B` and an
+  // empty fence, not one fence holding ``A:\n```\nB``. Requiring a following OPENER missed that,
+  // and `B` is prose. A delimiter-shaped line that is NOT bare (it carries an info string) is
+  // ordinary code and still allowed, which is what lets a tutorial quote ```` ```js ```` inline.
+  if (/^ {0,3}`{3,}[\t ]*\r?$/m.test(match[2])) {
+    return null;
+  }
 
   return {
     language: match[1]?.trim() || null,
-    source: match[2],
+    // Absent only for a fence that closes on the line after it opens.
+    source: match[2] ?? "",
   };
 }
 
@@ -79,8 +102,8 @@ export function isFullHtmlDocument(source: string): boolean {
 export interface HtmlFence {
   source: string;
   isFullDocument: boolean;
-  // Plain 3-backtick unindented fence: the only form the in-place collapser
-  // (CODE_FENCE_RE) recognizes, so only these may be skipped as already shown.
+  // Plain 3-backtick unindented fence: the only form the in-place collapser (CODE_FENCE_RE)
+  // recognizes, so only these may be skipped as already shown.
   isPlainFence: boolean;
   index: number;
 }
@@ -88,9 +111,9 @@ export interface HtmlFence {
 // Opening fence: up to 3 leading spaces, >=3 backticks, then a backtick-free info string.
 const FENCE_OPEN_RE = /^( {0,3})(`{3,})([^`\r\n]*)$/;
 
-// Scan a full message for every closed ```html fence. Line-based so multiple
-// fences are found and backticks inside a <script> string never split a block
-// (a close must be its own fence line). Drops unterminated/SVG fences.
+// Scan a full message for every closed ```html fence. Line-based so multiple fences are found and
+// backticks inside a <script> string never split a block (a close must be its own fence line).
+// Drops unterminated and SVG fences.
 export function extractHtmlFences(text: string): HtmlFence[] {
   const lines = text.split(/\r?\n/);
   const fences: HtmlFence[] = [];

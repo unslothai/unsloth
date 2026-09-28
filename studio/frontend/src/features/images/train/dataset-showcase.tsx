@@ -25,8 +25,8 @@ import {
 // Rows of 5 in the settings column, so this fills two and a bit before "+N more".
 const MAX_TILES = 12;
 
-// A single thumbnail tile: auth-fetches its object URL and revokes it on unmount.
-// The tile opens the labeling grid; its own corner button removes the image.
+// A single thumbnail tile: auth-fetches its object URL and revokes it on unmount. The tile opens
+// the labeling grid; its own corner button removes the image.
 function ShowcaseTile({
   dataset,
   filename,
@@ -45,7 +45,8 @@ function ShowcaseTile({
     let obj: string | null = null;
     let cancelled = false;
     fetchGalleryObjectUrl(diffusionDatasetImageUrl(dataset, filename, 256))
-      // The fetch returns the blob's size alongside the URL for the gallery's byte budget; a single tile only needs the URL.
+      // The fetch returns the blob's size alongside the URL for the gallery's byte budget; a single
+      // tile only needs the URL.
       .then(({ url: u }) => {
         if (cancelled) {
           URL.revokeObjectURL(u);
@@ -105,7 +106,7 @@ function ShowcaseTile({
             onClick={remove}
             disabled={deleting}
             aria-label={`Remove ${filename}`}
-            className="absolute right-0.5 top-0.5 flex size-5 items-center justify-center rounded-full bg-background/90 text-muted-foreground opacity-0 shadow-sm ring-1 ring-border backdrop-blur-sm transition-opacity hover:text-destructive focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring group-hover/thumb:opacity-100"
+            className="absolute right-0.5 top-0.5 flex size-5 items-center justify-center rounded-full bg-background/90 text-muted-foreground opacity-0 any-pointer-coarse:opacity-100 shadow-sm ring-1 ring-border backdrop-blur-sm transition-opacity hover:text-destructive focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring group-hover/thumb:opacity-100"
           >
             {deleting ? (
               <Spinner className="size-2.5" />
@@ -120,8 +121,8 @@ function ShowcaseTile({
   );
 }
 
-// A compact preview of a dataset's images: up to MAX_TILES sampled thumbnails plus a "+N more" tile that opens the full
-// labeling grid. Refreshes on selection or `refreshKey` change.
+// A compact preview of a dataset's images: up to MAX_TILES sampled thumbnails plus a "+N more"
+// tile that opens the full labeling grid. Refreshes on selection or `refreshKey` change.
 export function DatasetShowcase({
   dataset,
   imageCount,
@@ -144,8 +145,8 @@ export function DatasetShowcase({
     listDiffusionDatasetImages(dataset)
       .then((r) => {
         if (cancelled) return;
-        // Sample up to MAX_TILES evenly across the folder so the strip represents the whole set, not just the first few files.
-        // clips have no thumbnail endpoint, so the strip shows images only.
+        // Sample up to MAX_TILES evenly across the folder so the strip represents the whole set, not
+        // just the first few files. Clips have no thumbnail endpoint, so the strip shows images only.
         const all = imageRecordsOnly(r.images).map((im) => im.filename);
         if (all.length <= MAX_TILES) {
           setNames(all);

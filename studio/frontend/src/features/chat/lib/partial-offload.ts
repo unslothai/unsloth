@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { CPU_FALLBACK_MESSAGE } from "../utils/mmproj-fallback";
+
 /** What a load's layer split is worth telling the user, from llama.cpp's own count.
  *
  * Kept free of React so it can be tested: the runtime hook pulls in the router and
@@ -98,9 +100,7 @@ export function offloadWarning(counts: OffloadCounts): OffloadWarning | null {
   if (cpuFallbackReason === "vulkan_startup_crash") {
     return {
       titleSuffix: " on CPU",
-      description:
-        "The auto-selected Vulkan backend crashed during startup, so GPU " +
-        "acceleration is disabled for this model session.",
+      description: CPU_FALLBACK_MESSAGE,
     };
   }
   // An unrecognised reason is still a reason: say nothing rather than guess at it.

@@ -13,6 +13,7 @@ wiring behind the /load, /validate and /status echoes.
 
 from __future__ import annotations
 
+import importlib.util
 import inspect
 import re
 import struct
@@ -26,10 +27,10 @@ _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
-# Same external-dep stubs as the other llama_cpp unit tests.
-_loggers_stub = _types.ModuleType("loggers")
-_loggers_stub.get_logger = lambda name: __import__("logging").getLogger(name)
-sys.modules.setdefault("loggers", _loggers_stub)
+if importlib.util.find_spec("loggers") is None:
+    _loggers_stub = _types.ModuleType("loggers")
+    _loggers_stub.get_logger = lambda name: __import__("logging").getLogger(name)
+    sys.modules.setdefault("loggers", _loggers_stub)
 
 _structlog_stub = _types.ModuleType("structlog")
 _structlog_stub.get_logger = lambda *a, **k: __import__("logging").getLogger("stub")
@@ -227,8 +228,13 @@ def test_load_model_commits_requested_from_intent():
     # come from the immutable pre-reduction intent.
     src = inspect.getsource(LlamaCppBackend.load_model)
     commit = src.find("self._requested_n_parallel = max(1, int(intent.n_parallel))")
-    healthy = src.find("self._healthy = True\n", 0, commit if commit != -1 else None)
-    snapshot = src.find("self._last_load_intent = intent")
+    # The commit goes through _publish_healthy(), which sets _healthy under the
+    # spawn lock so a teardown cannot land between the successful probe and the
+    # commit. The invariant this test guards is unchanged: health is published
+    # first, so a failed start cannot poison the next inheritance check.
+    # Matched without the argument list, so adding one does not break this again.
+    healthy = src.find("self._publish_healthy(", 0, commit if commit != -1 else None)
+    snapshot = src.find("self._last_load_intent = replace(intent")
     assert commit != -1, "load_model must commit the requested slot count"
     assert healthy != -1 and healthy < commit < snapshot
 
@@ -312,6 +318,22 @@ def _load_impl_source() -> str:
     return body[: body.index("\n@router.")]
 
 
+def _first_load_dispatch(load_impl: str) -> int:
+    """Where the body first hands a load to a backend.
+
+    The GGUF call now goes through _run_gguf_load_attempt, a health-wait helper
+    defined above _load_model_impl, so no single backend method name marks the
+    load any more. Whichever spelling survives, the load is still what every
+    assertion here has to sit before.
+    """
+    found = [pos for n in _LOAD_DISPATCH if (pos := load_impl.find(n)) != -1]
+    assert found, f"no load dispatch in _load_model_impl; looked for {_LOAD_DISPATCH}"
+    return min(found)
+
+
+_LOAD_DISPATCH = ("_run_gguf_load_attempt(", "llama_backend.load_model", "backend.load_model,")
+
+
 def test_route_resolves_slots_once_before_dedupe_guard_and_load():
     load_impl = _load_impl_source()
     resolve = load_impl.index("_resolve_parallel_slots(request, fastapi_request)")
@@ -320,12 +342,12 @@ def test_route_resolves_slots_once_before_dedupe_guard_and_load():
     resolved_intent = load_impl.index("_resolve_gguf_load_intent(")
     resolved_dedupe = load_impl.index("_reuse_loaded_gguf(", resolved_intent)
     guard = load_impl.index("_guard_chat_load_against_training")
-    load_call = load_impl.index("llama_backend.load_model")
+    load_call = _first_load_dispatch(load_impl)
     assert resolve < fast_dedupe < active_intent
     assert active_intent < resolved_intent < resolved_dedupe
     assert resolved_dedupe < guard < load_call
     # Both immutable intents and the guard share the value; resolution runs once.
-    assert load_impl.count("n_parallel = _n_parallel") == 3
+    assert load_impl.count("n_parallel = _n_parallel") == 4
     assert load_impl.count("_resolve_parallel_slots(request, fastapi_request)") == 1
     assert "fastapi_request.app.state" not in load_impl
 
@@ -553,3 +575,44 @@ def test_training_guard_keeps_slots_for_an_unclassified_gguf(monkeypatch, tmp_pa
     one = _guard_required_gb(monkeypatch, gguf, n_parallel = 1, diffusion = None)
     many = _guard_required_gb(monkeypatch, gguf, n_parallel = 8, diffusion = None)
     assert many > one
+
+
+def test_the_unsloth_load_hands_its_requested_slots_to_the_runtime():
+    """The resolved width reaches the non-GGUF load too, not only llama-server's."""
+    load_impl = _load_impl_source()
+    call = load_impl.index("asyncio.to_thread(\n                backend.load_model,")
+    kwargs = load_impl[call : load_impl.index("\n            )", call)]
+    assert "n_parallel = _n_parallel" in kwargs
+    assert "request.n_parallel" not in load_impl
+    assert "clamp_parallel_slots" not in load_impl
+
+
+def test_a_load_reply_carries_the_two_window_facts_and_the_width_that_selects_them():
+    """The three window facts are read as a set, so a reply carrying some answers nothing."""
+    from models.inference import LoadResponse, _InferenceRuntimeFields
+    from routes.inference import _unsloth_serving_fields
+
+    info = {
+        "context_length_enforced": True,
+        "context_unbounded_when_batched": True,
+        "parallel_slots": 4,
+        "can_batch": True,
+    }
+
+    def reply(**overrides):
+        return LoadResponse(
+            status = "loaded",
+            model = "m",
+            display_name = "m",
+            inference = {},
+            **_unsloth_serving_fields({**info, **overrides}),
+        ).model_dump()
+
+    body = reply()
+    assert (
+        body["context_length_enforced"],
+        body["context_unbounded_when_batched"],
+        body["parallel_slots"],
+    ) == (True, True, 4)
+    assert reply(can_batch = False, context_unbounded_when_batched = False)["parallel_slots"] == 1
+    assert _InferenceRuntimeFields.model_fields["context_unbounded_when_batched"].default is False

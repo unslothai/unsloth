@@ -3,10 +3,14 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import {
-  offloadCountsFrom,
-  offloadWarning,
-} from "../src/features/chat/lib/partial-offload.ts";
+
+import { registerBundlerResolver } from "./helpers/kit.ts";
+
+registerBundlerResolver();
+
+const { offloadCountsFrom, offloadWarning } = await import(
+  "../src/features/chat/lib/partial-offload.ts"
+);
 
 test("a split load is reported", () => {
   assert.match(
