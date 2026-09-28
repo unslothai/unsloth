@@ -58,7 +58,7 @@ if not HAS_FLEX_ATTENTION:
         Q = Q * torch.tensor(s**-0.5, dtype = Q.dtype)
         A = torch.matmul(Q, K.transpose(2, 3))
         A = t * torch.tanh(A / t)
-        A += causal_mask[:q_len, :q_len]
+        A += causal_mask[..., :q_len, :q_len]
         # Much slower under torch compile than the masked_fill_ it replaces.
         A = torch.nn.functional.softmax(A, dim = -1, dtype = torch.float32).to(Q.dtype)
         A = torch.matmul(A, V)
@@ -163,7 +163,7 @@ def slow_inference_attention_softcapping(Q, K, V, causal_mask, self, bsz, q_len)
     A /= t
     torch_tanh(A, out = A)
     A *= t
-    A += causal_mask[:q_len, :q_len]
+    A += causal_mask[..., :q_len, :q_len]
     # Much slower under torch compile than the masked_fill_ it replaces.
     A = torch_nn_functional_softmax(A, dim = -1, dtype = torch.float32).to(Q.dtype)
     A = torch_matmul(A, V)
