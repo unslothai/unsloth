@@ -1865,6 +1865,8 @@ def _install_grpo_hidden_states_forward_wrapper(model):
                     f"Unsloth: {model_name}'s head input is not its last hidden state; GRPO will use its full logits instead."
                 )
                 setattr(target_model, _UNSLOTH_GRPO_HIDDEN_STATES_DEGRADED_ATTR, True)
+                # Free every layer's hidden states (and their graph) before the second forward.
+                del outputs, hidden_states
                 return original_forward(*args, **kwargs)
         if num_logits_to_keep != 0:
             hidden_states = hidden_states[:, -num_logits_to_keep:, :]
