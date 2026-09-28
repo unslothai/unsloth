@@ -1614,6 +1614,7 @@ def _llm_compressor_imports_in_subprocess():
             stdout = subprocess.PIPE,
             stderr = subprocess.DEVNULL,
             text = True,
+            encoding = "utf-8",
             timeout = 600,
         )
         if completed.returncode != 0:
