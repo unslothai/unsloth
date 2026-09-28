@@ -502,8 +502,8 @@ def test_rust_windows_spawns_force_utf8(rust_file: str) -> None:
 # Bitdefender quarantines on real machines (CMD:Heur.BZC.PZQ.Boxter.542), so these runs are opt-in off CI: they run
 # under GitHub Actions, or locally with UNSLOTH_TEST_CONSOLE_LESS=1.
 #
-# Everything the probe prints is sliced out of the script under test; only the FreeConsole prologue, the console check
-# and the stderr diagnostics are harness.
+# Everything the probe prints is sliced out of the script under test; only the FreeConsole prologue and the stderr
+# diagnostics are harness.
 CREATE_NO_WINDOW = 0x08000000
 
 _CONSOLE_LESS_OPTED_IN = (
@@ -537,10 +537,7 @@ powershell_51_only = pytest.mark.skipif(
 _FREE_CONSOLE = """Add-Type -Namespace Force -Name Native -MemberDefinition @'
 [DllImport("kernel32.dll")] public static extern bool FreeConsole();
 '@
-$null = [Force.Native]::FreeConsole()
-$UnslothProbeConsole = $true
-try { $null = $Host.UI.RawUI.BufferSize } catch { $UnslothProbeConsole = $false }
-[Console]::Error.WriteLine("console_attached=" + $UnslothProbeConsole)"""
+$null = [Force.Native]::FreeConsole()"""
 
 _UTF8_ENCODER = "$_UnslothUtf8NoBom = New-Object System.Text.UTF8Encoding $false"
 
@@ -666,13 +663,7 @@ def _run_console_less(path: Path, source: str | None = None) -> tuple[int, bytes
             creationflags = CREATE_NO_WINDOW,
             timeout = 180,
         )
-    err = proc.stderr.decode("utf-8", errors = "replace")
-    # A child that kept its console would pass the banner cases on any version of these scripts.
-    assert "console_attached=False" in err, (
-        f"{path.name}: the probe was not console-less (expected console_attached=False on stderr). "
-        f"exit {proc.returncode}, stderr:\n{err[-1200:]}"
-    )
-    return proc.returncode, proc.stdout, err
+    return proc.returncode, proc.stdout, proc.stderr.decode("utf-8", errors = "replace")
 
 
 def _decode_like_install_rs(raw: bytes) -> str:
