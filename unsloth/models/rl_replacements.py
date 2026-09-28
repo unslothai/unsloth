@@ -3897,6 +3897,8 @@ def _unsloth_gkd_dense_head(model):
     bias = getattr(head, "bias", None)
     if bias is not None and (bias.dim() != 1 or bias.shape[0] != weight.shape[0]):
         return None
+    if weight.is_meta or (bias is not None and bias.is_meta):
+        return None
     return head
 
 
@@ -4062,6 +4064,11 @@ def _unsloth_gkd_chunked_loss(self, model, inputs, num_items_in_batch, layout):
         return _unsloth_gkd_note_fallback(self, "output head is not a dense nn.Linear")
     if student_head.weight.shape[0] != teacher_head.weight.shape[0]:
         return _unsloth_gkd_note_fallback(self, "vocab mismatch")
+    # DDP(find_unused_parameters=True) marks a head skipped in forward as unused, then its grad hook fires twice.
+    if getattr(model, "find_unused_parameters", False) and any(
+        p is not None and p.requires_grad for p in (student_head.weight, student_head.bias)
+    ):
+        return _unsloth_gkd_note_fallback(self, "DDP find_unused_parameters with a trainable head")
 
     prior_hidden_states = os.environ.get("UNSLOTH_RETURN_HIDDEN_STATES")
     os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "1"

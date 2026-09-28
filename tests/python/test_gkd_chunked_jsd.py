@@ -498,3 +498,31 @@ def test_chunked_loss_with_heads_on_another_device():
     loss.backward()
     torch.testing.assert_close(loss.cpu().double(), expected.double(), rtol = 1e-5, atol = 1e-7)
     assert student.mix.grad is not None and student.mix.grad.device.type == "cpu"
+
+
+def test_offloaded_meta_heads_fall_back():
+    """Accelerate CPU / disk offload keeps weights on meta between forwards; only the hooked forward can read them."""
+    model = _TinyLM(97, 16, 0.0, 1)
+    assert rl._unsloth_gkd_dense_head(model) is model.lm_head
+    model.lm_head.to("meta")
+    assert rl._unsloth_gkd_dense_head(model) is None
+
+
+def test_ddp_find_unused_with_trainable_head_falls_back():
+    """DDP(find_unused_parameters=True) marks a head skipped in forward as unused, then its grad hook fires twice."""
+    student, teacher = _TinyLM(97, 16, 0.0, 1), _TinyLM(97, 24, 5.0, 2)
+    ddp = torch.nn.parallel.DistributedDataParallel.__new__(
+        torch.nn.parallel.DistributedDataParallel
+    )
+    torch.nn.Module.__init__(ddp)
+    ddp.module, ddp.find_unused_parameters = student, True
+    ddp.forward = student.forward  # the stub has no process group
+    trainer = _trainer(0.5, student, teacher)
+    trainer.accelerator = types.SimpleNamespace(unwrap_model = lambda m: getattr(m, "module", m))
+    layout = {"shift": "shift", "num_items_in_batch": False}
+    assert rl._unsloth_gkd_chunked_loss(trainer, ddp, _inputs(97), None, layout) is None
+    assert any(
+        "find_unused_parameters" in reason for reason in trainer._unsloth_gkd_chunked_fallbacks
+    )
+    student.lm_head.weight.requires_grad_(False)
+    assert rl._unsloth_gkd_chunked_loss(trainer, ddp, _inputs(97), None, layout) is not None
