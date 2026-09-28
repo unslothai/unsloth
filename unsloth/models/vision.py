@@ -1146,7 +1146,6 @@ def _preprocessor_config_exists(
     revision = None,
 ):
     from transformers.utils import cached_file
-
     return (
         cached_file(
             load_path,
