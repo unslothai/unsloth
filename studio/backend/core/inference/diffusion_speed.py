@@ -871,6 +871,9 @@ def compile_dynamic(transformer: Any, dynamic: Optional[bool]) -> Optional[bool]
     (text + target, length s87 - s89) then fuses into torchao's per-row activation-quant reduction, which inductor
     cannot split (CantSplit, every render failed). Automatic dynamic (None) compiles the first shapes static and only
     generalises what actually varies: stable after ~3 recompiles, same numerics."""
+    # Static kernels for video DiTs: dynamic shapes made LTX-2.3's QK-norm + RoPE kernels ~3x slower.
+    if transformer is not None and getattr(transformer, "_unsloth_compile_static", False):
+        return False
     if dynamic and transformer is not None and _carries_torchao_weights(transformer):
         return None
     return dynamic
