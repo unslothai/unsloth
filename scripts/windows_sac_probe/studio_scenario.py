@@ -275,10 +275,16 @@ def resolve_studio_home(value: str) -> Path:
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
-        raise urllib.error.HTTPError(req.full_url, code, f"refusing redirect to {newurl}", headers, fp)
+        raise urllib.error.HTTPError(
+            req.full_url, code, f"refusing redirect to {newurl}", headers, fp
+        )
 
 
-def studio_identity_error(base_url: str, home: Path, timeout: float = 10) -> Optional[str]:
+def studio_identity_error(
+    base_url: str,
+    home: Path,
+    timeout: float = 10,
+) -> Optional[str]:
     """None when `base_url` signs our nonce with this home's secret (storage.compute_identity_proof), else why not.
     /api/liveness is public, so anything holding the port can claim to be Studio."""
     nonce = secrets.token_bytes(32)
@@ -290,7 +296,13 @@ def studio_identity_error(base_url: str, home: Path, timeout: float = 10) -> Opt
             proof = json.loads(response.read(65536)).get("proof")
         TIMED.record("GET", "/api/auth/identity", (time.monotonic() - start) * 1000.0, 200)
     except Exception as exc:  # noqa: BLE001 - any failure means unverified
-        TIMED.record("GET", "/api/auth/identity", (time.monotonic() - start) * 1000.0, "error", str(exc)[:400])
+        TIMED.record(
+            "GET",
+            "/api/auth/identity",
+            (time.monotonic() - start) * 1000.0,
+            "error",
+            str(exc)[:400],
+        )
         return f"/api/auth/identity did not answer ({str(exc)[:200]})"
     # Read after the challenge: Studio creates the secret on the first one it answers.
     db = home / "auth" / "auth.db"
