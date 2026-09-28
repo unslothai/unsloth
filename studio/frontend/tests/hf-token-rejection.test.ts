@@ -46,12 +46,15 @@ function stubHub(opts: {
 }) {
   const sent: Sent[] = [];
   const realFetch = globalThis.fetch;
-  globalThis.fetch = (async (input: string, init?: RequestInit) => {
-    const headers = new Headers(init?.headers);
+  globalThis.fetch = (async (input: string | Request, init?: RequestInit) => {
+    // As fetch does: init.headers, when given, replace a Request's own.
+    const isRequest = input instanceof Request;
+    const headers = new Headers(init?.headers ?? (isRequest ? input.headers : undefined));
+    const url = isRequest ? input.url : String(input);
     const authorization = headers.get("authorization");
     const hfAuthorization = headers.get("x-hf-authorization");
-    sent.push({ url: String(input), authorization, hfAuthorization });
-    const viaRelay = opts.relay !== undefined && String(input).startsWith(opts.relay);
+    sent.push({ url, authorization, hfAuthorization });
+    const viaRelay = opts.relay !== undefined && url.startsWith(opts.relay);
     const hubToken = viaRelay ? hfAuthorization : authorization;
     const upstream: Record<string, string> = viaRelay ? { "X-Hub-Upstream": "1" } : {};
     if (hubToken) {
@@ -326,6 +329,42 @@ test("a refusal recorded against one Hub endpoint does not skip the token on ano
       hub.sent.map((s) => s.authorization),
       [`Bearer ${OAUTH}`],
     );
+  } finally {
+    hub.restore();
+    clearHfTokenRejected();
+  }
+});
+
+test("a refusal by the datasets server does not skip the token on the model Hub", async () => {
+  const datasetsScope = hubRejectionScope("https://datasets-server.huggingface.co/size?dataset=x");
+  assert.notEqual(datasetsScope, hubRejectionScope("https://huggingface.co/api/models"));
+  assert.equal(hubRejectionScope("https://huggingface.co/api/models"), hubRejectionScope());
+  noteHfTokenRejected(OAUTH, datasetsScope);
+  const hub = stubHub({});
+  try {
+    const response = await fetchHub("https://huggingface.co/api/models/me/private", withToken(OAUTH));
+    assert.equal(response.status, 200);
+    assert.deepEqual(
+      hub.sent.map((s) => s.authorization),
+      [`Bearer ${OAUTH}`],
+    );
+  } finally {
+    hub.restore();
+    clearHfTokenRejected();
+  }
+});
+
+test("a token carried by a Request input is retried and recorded like an init header", async () => {
+  const hub = stubHub({ rejectedToken: OAUTH });
+  try {
+    const request = new Request(API, { headers: { Authorization: `Bearer ${OAUTH}`, "X-Probe": "1" } });
+    const response = await fetchHub(request);
+    assert.equal(response.status, 200);
+    assert.deepEqual(
+      hub.sent.map((s) => s.authorization),
+      [`Bearer ${OAUTH}`, null],
+    );
+    assert.equal(isHfTokenRejected(OAUTH, hubRejectionScope(API)), true);
   } finally {
     hub.restore();
     clearHfTokenRejected();

@@ -4,6 +4,7 @@
 /** Hub fetch: the adapter and relays take the Unsloth session; a relay forwards the HF token in `X-HF-Authorization`. */
 
 import {
+  getHfDatasetsServerBase,
   getHfEndpoint,
   getHubSource,
   isModelScopeHubUrl,
@@ -27,6 +28,15 @@ function requestUrl(input: Parameters<typeof fetch>[0]): string {
       : input.url;
 }
 
+/** The headers this call sends: a Request input's own, with `init.headers` on top. */
+function requestHeaders(input: Parameters<typeof fetch>[0], init: RequestInit): Headers {
+  const headers = new Headers(
+    typeof Request !== "undefined" && input instanceof Request ? input.headers : undefined,
+  );
+  new Headers(init.headers).forEach((value, key) => headers.set(key, value));
+  return headers;
+}
+
 function takesSession(url: string): boolean {
   return isModelScopeHubUrl(url) || isProxiedHubUrl(url);
 }
@@ -37,7 +47,7 @@ function withHubAuth(
 ): RequestInit {
   const url = requestUrl(input);
   if (!takesSession(url)) return init;
-  const headers = new Headers(init.headers);
+  const headers = requestHeaders(input, init);
   const hfToken = headers.get("Authorization");
   if (hfToken && isProxiedHubUrl(url)) headers.set("X-HF-Authorization", hfToken);
   let token: string | null = null;
@@ -53,15 +63,20 @@ function withHubAuth(
 
 /** The Hugging Face token this request would send the Hub, or null. ModelScope is excluded:
  * its relay takes the Unsloth session and drops the HF token. */
-function sentHfToken(url: string, init: RequestInit): string | null {
+function sentHfToken(
+  input: Parameters<typeof fetch>[0],
+  init: RequestInit,
+  url: string,
+): string | null {
   if (isModelScopeHubUrl(url)) return null;
-  const header = new Headers(init.headers).get("Authorization");
+  const header = requestHeaders(input, init).get("Authorization");
   const token = header?.replace(/^Bearer\s+/i, "").trim();
   return token || null;
 }
 
-function withoutHfToken(init: RequestInit): RequestInit {
-  const headers = new Headers(init.headers);
+/** `init.headers` replaces a Request input's headers, so the copy starts from both. */
+function withoutHfToken(input: Parameters<typeof fetch>[0], init: RequestInit): RequestInit {
+  const headers = requestHeaders(input, init);
   headers.delete("Authorization");
   return { ...init, headers };
 }
@@ -96,9 +111,26 @@ function isHubRefusal(response: Response, url: string): boolean {
   return isProxiedHubUrl(url) ? response.headers.has(UPSTREAM_HEADER) : !takesSession(url);
 }
 
-/** Which Hub a token refusal belongs to: switching endpoint or source starts clean. */
-export function hubRejectionScope(): string {
-  return `${getHubSource()}|${getHfEndpoint()}`;
+/** Which Hub a token refusal belongs to: the endpoint or datasets server the request went to
+ * (its origin for any other URL), so a refusal by one never skips the token on another. */
+export function hubRejectionScope(url?: string): string {
+  const endpoint = getHfEndpoint();
+  let target = endpoint;
+  if (url !== undefined) {
+    target =
+      [endpoint, getHfDatasetsServerBase()].find(
+        (base) => url === base || url.startsWith(`${base.replace(/\/+$/, "")}/`),
+      ) ?? urlOrigin(url);
+  }
+  return `${getHubSource()}|${target}`;
+}
+
+function urlOrigin(url: string): string {
+  try {
+    return new URL(url, globalThis.location?.href).origin;
+  } catch {
+    return url;
+  }
 }
 
 /** A second, optional attempt: a network error or timeout there must not replace the answer
@@ -120,12 +152,12 @@ export async function fetchHub(
   init: RequestInit = {},
 ): Promise<Response> {
   const url = requestUrl(input);
-  const hfToken = sentHfToken(url, init);
+  const hfToken = sentHfToken(input, init, url);
   const retryable = hfToken !== null && isRetryableRead(input, init);
   // Already refused this session: every read with it would 401 again, so ask anonymously.
-  const scope = hubRejectionScope();
+  const scope = hubRejectionScope(url);
   const skipToken = retryable && isHfTokenRejected(hfToken, scope);
-  let response = await fetchWithSession(input, skipToken ? withoutHfToken(init) : init, url);
+  let response = await fetchWithSession(input, skipToken ? withoutHfToken(input, init) : init, url);
   if (skipToken && !response.ok && [401, 403, 404].includes(response.status)) {
     // What anonymous access cannot read may still be the token's to read: the refusal could
     // have been the Hub's verifier briefly failing. A token that answers again is cleared.
@@ -140,7 +172,7 @@ export async function fetchHub(
   } else if (retryable && !skipToken && isHubRefusal(response, url)) {
     // A token the Hub accepts gets 404 for a repo it cannot see, so this 401 is the token
     // being refused. Public data still answers without it; anything else keeps the original.
-    const anonymous = await probe(input, withoutHfToken(init), url);
+    const anonymous = await probe(input, withoutHfToken(input, init), url);
     if (anonymous?.ok) {
       void response.body?.cancel().catch(() => undefined);
       noteHfTokenRejected(hfToken, scope);
