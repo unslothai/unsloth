@@ -140,7 +140,10 @@ def test_empty_repeated_blocks_is_not_regional():
     assert ds_mod._vae_declares_repeated_blocks(None) is False
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs CUDA + inductor")
+@pytest.mark.skipif(
+    not torch.cuda.is_available() or not ds_mod.torch_compile_runtime_available(),
+    reason = "needs a GPU and a working inductor (Windows ROCm has no Triton)",
+)
 def test_tiny_minimax_h3_vae_decode_compiles_once_per_tile_shape():
     """Real diffusers H3 VAE, tiny config: the tiled decode used to be one unrolled graph; now one block graph."""
     diffusers = pytest.importorskip("diffusers")
