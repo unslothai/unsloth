@@ -168,6 +168,16 @@ def test_a_link_to_a_file_in_the_same_tree_is_granted(host):
     assert mxc_read_grants.ensure([venv]) == (venv,)
 
 
+def test_a_credential_named_link_inside_the_tree_is_refused(host):
+    venv = _runtime(host)
+    try:
+        os.symlink(Path(venv, "Lib", "site-packages", "six", "__init__.py"), Path(venv, ".env"))
+    except OSError:
+        pytest.skip("symlinks are not available")
+    assert "credential file" in mxc_read_grants.ineligible_reason(venv)
+    assert mxc_read_grants.ensure([venv]) == ()
+
+
 def test_a_link_that_leaves_the_tree_through_an_inner_link_is_refused(host, tmp_path):
     venv = _runtime(host)
     elsewhere = tmp_path / "elsewhere"

@@ -157,12 +157,12 @@ def _tree_problem(root: str, *, deep: bool) -> str | None:
         try:
             with os.scandir(directory) as entries:
                 for entry in entries:
+                    if entry.name.casefold() in CREDENTIAL_FILES:
+                        return f"it holds a credential file ({entry.path})"
                     if _is_reparse(entry):
                         if _links_within(entry.path, real_root):
                             continue  # e.g. setup-python's python3.exe -> python.exe; the target is scanned anyway
                         return f"it contains a reparse point ({entry.path})"
-                    if entry.name.casefold() in CREDENTIAL_FILES:
-                        return f"it holds a credential file ({entry.path})"
                     if deep and entry.is_dir(follow_symlinks = False):
                         pending.append(entry.path)
         except OSError as exc:
