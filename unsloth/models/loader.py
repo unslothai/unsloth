@@ -25,6 +25,7 @@ from ._custom_dtype import register_custom_dtype
 from .granite import FastGraniteModel
 from .llama import FastLlamaModel, logger, _vllm_will_load_weights
 from .mistral import FastMistralModel
+from .. import llmman
 from .qwen2 import FastQwen2Model
 from .qwen3 import FastQwen3Model
 from .qwen3_moe import FastQwen3MoeModel
@@ -782,6 +783,8 @@ class FastLanguageModel(FastLlamaModel):
             if q_load_in_8bit:
                 load_in_8bit = True
                 load_in_4bit = False
+
+        model_name, use_exact_model_name = llmman.maybe_resolve(model_name, use_exact_model_name)
 
         # Login to allow private models. Before normalization: dtype is also derived below from a 4bit config's compute dtype, which is not a request for the whole model.
         user_float32 = _requested_float32(dtype)
@@ -1622,6 +1625,8 @@ class FastModel(FastBaseModel):
             if q_load_in_8bit:
                 load_in_8bit = True
                 load_in_4bit = False
+
+        model_name, use_exact_model_name = llmman.maybe_resolve(model_name, use_exact_model_name)
 
         # Login to allow private models. Before normalization: dtype is also derived below from a 4bit config's compute dtype, which is not a request for the whole model.
         user_float32 = _requested_float32(dtype)
