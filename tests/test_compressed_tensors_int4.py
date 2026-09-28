@@ -33,6 +33,7 @@ from unsloth.models.compressed_tensors_bnb import _transformers_supports_weight_
 try:
     import inspect
     from compressed_tensors.quantization.lifecycle.forward import dequantize as _ct_dequantize
+
     HAS_CT = True
     # compressed-tensors 0.19 dropped GPTQ activation ordering (#840): its compressor ignores weight_g_idx.
     CT_HONOURS_G_IDX = "g_idx" in inspect.signature(_ct_dequantize).parameters
@@ -145,6 +146,77 @@ def test_kernels_decode_bit_exact_and_multiply_like_dense(
         dx = int4_matmul_t(dy, W, qs)
         want = dy.float() @ ref.float()
         assert ((dx.float() - want).norm() / want.norm()) < 5e-3
+
+
+def _has_marlin():
+    if not has_real_cuda():
+        return False
+    import unsloth.kernels.int4_packed as ip
+
+    return bool(ip._marlin_api())
+
+
+MARLIN_CASES = [
+    (4, 128, True, "group"),
+    (4, 32, True, "group"),
+    (8, 128, True, "group"),
+    (4, None, True, "channel"),
+    (4, 128, False, "group"),
+    (4, 64, False, "group"),
+]
+
+
+def _qs(ip, packed, shape, bits, gs):
+    return ip.Int4QuantState(
+        packed["weight_scale"], packed.get("weight_zero_point"), None, shape, bits, gs, torch.bfloat16
+    )
+
+
+@needs_gpu
+@needs_ct
+@pytest.mark.skipif(not _has_marlin(), reason = "needs vLLM's Marlin kernels")
+@pytest.mark.parametrize("bits,group,sym,strategy", MARLIN_CASES)
+def test_marlin_takes_no_grad_decode_rows_and_matches_the_exact_decode(bits, group, sym, strategy):
+    import unsloth.kernels.int4_packed as ip
+
+    torch.manual_seed(0)
+    packed, ref, gs = _packed_layer(256, 512, bits, group, sym, False, torch.bfloat16, strategy)
+    W = packed["weight_packed"]
+    qs = _qs(ip, packed, (256, 512), bits, gs)
+    for rows in (1, 3, ip._marlin_max_rows(torch.cuda.current_device())):
+        x = torch.randn(rows, 512, device = "cuda", dtype = torch.bfloat16)
+        with torch.no_grad():
+            y = ip.int4_matmul(x, W, qs)
+        assert qs._marlin[1] is not None
+        want = x.float() @ ref.float().t()
+        assert y.shape == (rows, 256) and y.dtype == torch.bfloat16
+        assert ((y.float() - want).norm() / want.norm()) < 5e-3
+    # Training forwards never build the repacked copy.
+    qs = _qs(ip, packed, (256, 512), bits, gs)
+    ip.int4_matmul(x[:1], W, qs)
+    assert qs._marlin is None
+
+
+@needs_gpu
+@needs_ct
+@pytest.mark.parametrize("why", ["broken_import", "kill_switch"])
+def test_decode_rows_fall_back_when_marlin_is_unavailable(why, monkeypatch):
+    import unsloth.kernels.int4_packed as ip
+
+    monkeypatch.setattr(ip, "_MARLIN_API", None)
+    if why == "broken_import":
+        monkeypatch.setitem(sys.modules, "vllm", None)
+    else:
+        monkeypatch.setenv("UNSLOTH_INT4_MARLIN", "0")
+    torch.manual_seed(0)
+    packed, ref, gs = _packed_layer(256, 512, 4, 128, True, False, torch.bfloat16)
+    qs = _qs(ip, packed, (256, 512), 4, gs)
+    x = torch.randn(3, 512, device = "cuda", dtype = torch.bfloat16)
+    with torch.no_grad():
+        y = ip.int4_matmul(x, packed["weight_packed"], qs)
+    assert ip._MARLIN_API is False and qs._marlin[1] is None
+    want = x.float() @ ref.float().t()
+    assert ((y.float() - want).norm() / want.norm()) < 5e-3
 
 
 @needs_gpu
@@ -319,3 +391,55 @@ def test_adopt_swaps_plain_linears_and_leaves_routers_to_the_decompress_converte
     m = rx.search("gate.weight_packed")
     assert m and "gate.weight_packed".replace(m.group(0), "weight", 1) == "gate.weight"
     assert rx.search("proj.weight_packed") is None
+
+
+@needs_gpu
+@pytest.mark.skipif(
+    not (HAS_CT and HAS_CONVERTERS), reason = "needs compressed-tensors and the transformers 5 loader"
+)
+@pytest.mark.usefixtures("restore_llama_patches")
+def test_a_full_save_of_the_packed_route_reloads(tmp_path, monkeypatch):
+    # The saved tensors stay packed, so the saved config must be the checkpoint's, not the runtime bnb one.
+    import json
+    from transformers import AutoModelForCausalLM
+    from unsloth import FastLanguageModel
+    from test_compressed_tensors_bnb import _tokenizer_free_load, _write_tiny_packed_llama
+
+    monkeypatch.setenv("UNSLOTH_COMPRESSED_TENSORS_INT4", "packed")
+    packed_dir, _ = _write_tiny_packed_llama(str(tmp_path))
+    _tokenizer_free_load(packed_dir, str(tmp_path))
+    kw = dict(max_seq_length = 64, dtype = torch.bfloat16)
+    model, tokenizer = FastLanguageModel.from_pretrained(packed_dir, load_in_4bit = True, **kw)
+    runtime = model.config.quantization_config
+    out = str(tmp_path / "saved")
+    model.save_pretrained(out)
+    tokenizer.save_pretrained(out)
+    assert model.config.quantization_config is runtime
+    saved = json.load(open(f"{out}/config.json"))["quantization_config"]
+    assert saved["quant_method"] == "compressed-tensors"
+    ids = torch.randint(0, 256, (1, 16), device = "cuda:0")
+    with torch.no_grad():
+        want = model(input_ids = ids).logits.float()
+        again, _ = FastLanguageModel.from_pretrained(out, load_in_4bit = True, **kw)
+        assert torch.equal(again(input_ids = ids).logits.float(), want)
+        plain = AutoModelForCausalLM.from_pretrained(out, dtype = torch.bfloat16, device_map = {"": 0})
+        got = plain(input_ids = ids).logits.float()
+    assert (got - want).abs().max() < 1e-2 * want.abs().max()
+    del plain, again
+    merged = FastLanguageModel.get_peft_model(
+        model, r = 4, target_modules = ["q_proj"]
+    ).merge_and_unload()
+    merged.save_pretrained(str(tmp_path / "merged"))
+    tokenizer.save_pretrained(str(tmp_path / "merged"))
+    ignore = json.load(open(f"{tmp_path}/merged/config.json"))["quantization_config"]["ignore"]
+    assert (
+        "model.layers.0.self_attn.q_proj" in ignore
+        and "model.layers.0.self_attn.k_proj" not in ignore
+    )
+    with torch.no_grad():
+        want = merged(input_ids = ids).logits.float()
+        plain = AutoModelForCausalLM.from_pretrained(
+            str(tmp_path / "merged"), dtype = torch.bfloat16, device_map = {"": 0}
+        )
+        got = plain(input_ids = ids).logits.float()
+    assert (got - want).abs().max() < 1e-2 * want.abs().max()
