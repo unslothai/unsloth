@@ -2678,7 +2678,12 @@ def iter_resolved_published_releases(
     matched_any = fast_path_release_tag is not None
     skipped_invalid = 0
     yielded_valid = fast_path_release_tag is not None
-    for bundle in iter_published_release_bundles(repo):
+    bundles: Iterable[PublishedReleaseBundle] = iter_published_release_bundles(repo)
+    if pin is not None:
+        # The tested pin first: a lower build created or republished after it would
+        # otherwise come first in the API's order. Older builds stay compatibility fallbacks.
+        bundles = sorted(bundles, key = lambda b: (b.release_tag or "").strip() != pin)
+    for bundle in bundles:
         if not published_release_matches_request(bundle, normalized_requested):
             continue
         if pin is not None and not release_within_pin(bundle.release_tag, pin, repo):
@@ -11452,95 +11457,116 @@ def install_prebuilt(
                     validation_model_cache_path(install_dir),
                 )
                 probe_resolved = False
-                last_failure: PrebuiltFallback | None = None
-                for release_index, plan in enumerate(
-                    iter_release_plans(release_plans, published_repo)
-                ):
-                    choice = plan.attempts[0]
-                    backfill = diffusion_visual_server_backfill_needed(install_dir, host, choice)
-                    if existing_install_matches_plan(install_dir, host, plan):
-                        if backfill:
-                            log(
-                                f"existing install matches fallback {plan.release_tag} but is missing "
-                                "the DiffusionGemma visual-server; re-extracting to backfill it"
-                            )
-                        else:
-                            log(
-                                "existing llama.cpp install already matches fallback release "
-                                f"{plan.release_tag} upstream_tag={plan.llama_tag}; skipping reinstall"
-                            )
-                            # An older release kept after the newest failed is a fallback.
-                            _record_reused_selection(plan, choice, release_index > 0)
-                            return
-                    log(
-                        "selected "
-                        f"{choice.name} ({choice.source_label}) from published release "
-                        f"{plan.release_tag} for {host.system} {host.machine}"
-                    )
-                    # Outside the handler, so a transient failure cannot demote to an older release.
-                    if not probe_resolved and any(
-                        prebuilt_needs_functional_validation(attempt) for attempt in plan.attempts
+                # Two passes: when every release at or below the default pin fails to download
+                # or validate here, the pin is lifted and the newer releases are tried before
+                # giving up, so the pin never turns a working prebuilt install into a source build.
+                tried_releases: set[str] = set()
+                for _pin_pass in range(2):
+                    last_failure: PrebuiltFallback | None = None
+                    for release_index, plan in enumerate(
+                        iter_release_plans(release_plans, published_repo)
                     ):
-                        probe = resolve_validation_model(probe)
-                        probe_resolved = True
-                    try:
-                        choice, selected_staging_dir, _ = validate_prebuilt_attempts(
-                            plan.attempts,
-                            host,
-                            install_dir,
-                            work_dir,
-                            probe,
-                            requested_tag = requested_tag,
-                            llama_tag = plan.llama_tag,
-                            release_tag = plan.release_tag,
-                            approved_checksums = plan.approved_checksums,
-                            initial_fallback_used = release_index > 0,
-                            # Skip is gated per-attempt inside, so pass the dir always.
-                            existing_install_dir = install_dir,
-                            # Persist only the deliberate choice, not a transient fallback.
-                            force_cpu = persist_force_cpu,
-                            llama_backend = persist_llama_backend,
-                            backend_request = persist_backend_request,
-                            rocm_gfx = persist_rocm_gfx,
-                            walk_back = plan.walk_back,
+                        if plan.release_tag in tried_releases:
+                            continue
+                        tried_releases.add(plan.release_tag)
+                        choice = plan.attempts[0]
+                        backfill = diffusion_visual_server_backfill_needed(
+                            install_dir, host, choice
                         )
-                    except ExistingInstallSatisfied as satisfied:
-                        # Third reuse path: the reinstall was skipped, so
-                        # write_prebuilt_metadata does not run here either.
-                        _record_reused_selection(plan, satisfied.choice, satisfied.used_fallback)
-                        return
-                    except PrebuiltFallback as exc:
-                        if _environment_fatal_reason(exc):
-                            raise
-                        last_failure = exc
+                        if existing_install_matches_plan(install_dir, host, plan):
+                            if backfill:
+                                log(
+                                    f"existing install matches fallback {plan.release_tag} but is missing "
+                                    "the DiffusionGemma visual-server; re-extracting to backfill it"
+                                )
+                            else:
+                                log(
+                                    "existing llama.cpp install already matches fallback release "
+                                    f"{plan.release_tag} upstream_tag={plan.llama_tag}; skipping reinstall"
+                                )
+                                # An older release kept after the newest failed is a fallback.
+                                _record_reused_selection(plan, choice, release_index > 0)
+                                return
                         log(
-                            "published release "
-                            f"{plan.release_tag} upstream_tag={plan.llama_tag} failed; "
-                            "trying an older published prebuilt if one remains "
-                            f"({textwrap.shorten(str(exc), width = 200, placeholder = '...')})"
+                            "selected "
+                            f"{choice.name} ({choice.source_label}) from published release "
+                            f"{plan.release_tag} for {host.system} {host.machine}"
                         )
-                        continue
+                        # Outside the handler, so a transient failure cannot demote to an older release.
+                        if not probe_resolved and any(
+                            prebuilt_needs_functional_validation(attempt)
+                            for attempt in plan.attempts
+                        ):
+                            probe = resolve_validation_model(probe)
+                            probe_resolved = True
+                        try:
+                            choice, selected_staging_dir, _ = validate_prebuilt_attempts(
+                                plan.attempts,
+                                host,
+                                install_dir,
+                                work_dir,
+                                probe,
+                                requested_tag = requested_tag,
+                                llama_tag = plan.llama_tag,
+                                release_tag = plan.release_tag,
+                                approved_checksums = plan.approved_checksums,
+                                initial_fallback_used = release_index > 0,
+                                # Skip is gated per-attempt inside, so pass the dir always.
+                                existing_install_dir = install_dir,
+                                # Persist only the deliberate choice, not a transient fallback.
+                                force_cpu = persist_force_cpu,
+                                llama_backend = persist_llama_backend,
+                                backend_request = persist_backend_request,
+                                rocm_gfx = persist_rocm_gfx,
+                                walk_back = plan.walk_back,
+                            )
+                        except ExistingInstallSatisfied as satisfied:
+                            # Third reuse path: the reinstall was skipped, so
+                            # write_prebuilt_metadata does not run here either.
+                            _record_reused_selection(
+                                plan, satisfied.choice, satisfied.used_fallback
+                            )
+                            return
+                        except PrebuiltFallback as exc:
+                            if _environment_fatal_reason(exc):
+                                raise
+                            last_failure = exc
+                            log(
+                                "published release "
+                                f"{plan.release_tag} upstream_tag={plan.llama_tag} failed; "
+                                "trying an older published prebuilt if one remains "
+                                f"({textwrap.shorten(str(exc), width = 200, placeholder = '...')})"
+                            )
+                            continue
 
-                    activate_install_tree(selected_staging_dir, install_dir, host)
-                    try:
-                        ensure_converter_scripts(install_dir, plan.llama_tag)
-                    except Exception as exc:
-                        log(
-                            "converter script fetch failed after activation; install remains valid "
-                            f"({textwrap.shorten(str(exc), width = 200, placeholder = '...')})"
-                        )
-                    try:
-                        ensure_diffusion_visual_server(
-                            install_dir, host, plan.release_tag, plan.approved_checksums
-                        )
-                    except Exception as exc:
-                        log(
-                            "diffusion visual server step skipped; install remains valid "
-                            f"({textwrap.shorten(str(exc), width = 200, placeholder = '...')})"
-                        )
-                    return
-                if last_failure is not None:
-                    raise last_failure
+                        activate_install_tree(selected_staging_dir, install_dir, host)
+                        try:
+                            ensure_converter_scripts(install_dir, plan.llama_tag)
+                        except Exception as exc:
+                            log(
+                                "converter script fetch failed after activation; install remains valid "
+                                f"({textwrap.shorten(str(exc), width = 200, placeholder = '...')})"
+                            )
+                        try:
+                            ensure_diffusion_visual_server(
+                                install_dir, host, plan.release_tag, plan.approved_checksums
+                            )
+                        except Exception as exc:
+                            log(
+                                "diffusion visual server step skipped; install remains valid "
+                                f"({textwrap.shorten(str(exc), width = 200, placeholder = '...')})"
+                            )
+                        return
+                    if last_failure is None:
+                        break
+                    pin = release_pin_for(llama_tag, published_release_tag, published_repo)
+                    if _pin_pass or pin is None or _RELEASE_PIN_STATE["suspended"]:
+                        raise last_failure
+                    suspend_release_pin(
+                        f"every prebuilt at or below the pinned release {pin} failed here "
+                        f"({textwrap.shorten(str(last_failure), width = 200, placeholder = '...')})"
+                    )
+                    release_plans = _select(backend).release_plans
     except BusyInstallConflict as exc:
         log("prebuilt install path is blocked by an in-use llama.cpp install")
         log(f"prebuilt busy reason: {exc}")

@@ -64,6 +64,7 @@ on:
       - 'studio/backend/utils/**'
       - 'studio/backend/requirements/**'
       - 'studio/install_*.py'
+      - 'studio/llama_prebuilt_pins.json'
       - 'studio/node_prebuilt_pins.json'
       - '.github/workflows/windows-application-control-ci.yml'
   push:
@@ -84,6 +85,7 @@ on:
       - 'studio/backend/utils/**'
       - 'studio/backend/requirements/**'
       - 'studio/install_*.py'
+      - 'studio/llama_prebuilt_pins.json'
       - 'studio/node_prebuilt_pins.json'
       - '.github/workflows/windows-application-control-ci.yml'
   workflow_dispatch:

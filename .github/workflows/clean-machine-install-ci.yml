@@ -61,6 +61,7 @@ on:
       # overlay makes them THIS ref's code, so they decide whether a clean machine gets
       # a native prebuilt or a toolchain-dependent fallback.
       - 'studio/install_*_prebuilt.py'
+      - 'studio/llama_prebuilt_pins.json'
       - 'studio/prebuilt_core.py'
       - 'studio/install_manifest.py'
       - 'studio/node_prebuilt_pins.json'
@@ -109,6 +110,7 @@ on:
       - 'studio/install_python_stack.py'
       - '.github/scripts/Watch-ForCompiler.ps1'
       - 'studio/install_*_prebuilt.py'
+      - 'studio/llama_prebuilt_pins.json'
       - 'studio/prebuilt_core.py'
       - 'studio/install_manifest.py'
       - 'studio/node_prebuilt_pins.json'

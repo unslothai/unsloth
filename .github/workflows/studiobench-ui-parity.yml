@@ -171,6 +171,7 @@ on:
       # tests.studio.studiobench imports the tests package.
       - 'studio/setup.sh'
       - 'studio/install_*.py'
+      - 'studio/llama_prebuilt_pins.json'
       - 'studio/prebuilt_core.py'
       - 'studio/nvidia_probe.py'
       - 'studio/node_prebuilt_pins.json'

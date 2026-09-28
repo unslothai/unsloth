@@ -291,3 +291,85 @@ def test_the_pin_is_not_a_user_pin_for_setup():
     assert '_DEFAULT_LLAMA_TAG="latest"' in setup_sh
     assert '$DefaultLlamaTag = "latest"' in setup_ps1
     assert "llama_prebuilt_pins" not in re.sub(r"(?m)^\s*#.*$", "", setup_sh)
+
+
+def test_when_every_capped_prebuilt_fails_the_newer_release_is_installed(
+    pinned, tmp_path, monkeypatch
+):
+    # The pinned bundle resolves but fails to download or validate here: the pin is lifted
+    # and the newer release installed, instead of a source build.
+    host = MOD.detect_host()
+
+    def plan(tag):
+        return MOD.InstallReleasePlan(
+            requested_tag = "latest",
+            llama_tag = tag.split("-")[0],
+            release_tag = tag,
+            attempts = [
+                MOD.AssetChoice(
+                    repo = FORK,
+                    tag = tag,
+                    name = f"app-{tag}-linux-x64-cpu.tar.gz",
+                    url = f"https://example.com/app-{tag}-linux-x64-cpu.tar.gz",
+                    source_label = "published",
+                    install_kind = "linux-cpu",
+                    expected_sha256 = "a" * 64,
+                )
+            ],
+            approved_checksums = None,
+        )
+
+    def select(**kwargs):
+        suspended = MOD._RELEASE_PIN_STATE["suspended"]
+        return MOD.BackendSelection(
+            backend = kwargs.get("backend"),
+            host = host,
+            published_repo = FORK,
+            published_release_tag = "",
+            requested_tag = "latest",
+            release_plans = [plan("b11250-mix-2222222"), plan(PIN)] if suspended else [plan(PIN)],
+            persist_llama_backend = None,
+            persist_rocm_gfx = None,
+        )
+
+    tried = []
+
+    def validate(attempts, *args, **kwargs):
+        tried.append(kwargs["release_tag"])
+        if kwargs["release_tag"] == PIN:
+            raise MOD.PrebuiltFallback("download failed: 502")
+        return attempts[0], tmp_path / "staged", None
+
+    monkeypatch.setattr(MOD, "select_backend_install", select)
+    monkeypatch.setattr(MOD, "existing_install_current_without_plan", lambda *a, **k: False)
+    monkeypatch.setattr(MOD, "existing_install_matches_plan", lambda *a, **k: False)
+    monkeypatch.setattr(MOD, "resolve_validation_model", lambda probe: probe)
+    monkeypatch.setattr(MOD, "validate_prebuilt_attempts", validate)
+    activated = []
+    monkeypatch.setattr(
+        MOD, "activate_install_tree", lambda staged, install, host: activated.append(1)
+    )
+    monkeypatch.setattr(MOD, "ensure_converter_scripts", lambda *a, **k: None)
+    monkeypatch.setattr(MOD, "ensure_diffusion_visual_server", lambda *a, **k: None)
+
+    MOD.install_prebuilt(tmp_path / "llama.cpp", "latest", FORK, "")
+    assert tried == [PIN, "b11250-mix-2222222"], "the failed pin is not retried"
+    assert activated == [1]
+    assert MOD._RELEASE_PIN_STATE["suspended"] is True
+
+
+def test_the_exact_pin_is_preferred_over_a_lower_build_listed_before_it(pinned, monkeypatch):
+    # A lower build republished after the pin comes first in the API listing.
+    tags = ["b11250-mix-2222222", "b11100-mix-0000000", PIN, "b11050-mix-1111111"]
+    monkeypatch.setattr(
+        MOD,
+        "iter_published_release_bundles",
+        lambda repo, tag = "": iter([_bundle(t) for t in tags if not tag or t == tag]),
+    )
+    monkeypatch.setattr(MOD, "validated_checksums_for_bundle", lambda repo, bundle: object())
+    monkeypatch.setenv("UNSLOTH_LLAMA_DISABLE_DOWNLOAD_HOST_RESOLVE", "1")
+    resolved = [
+        r.bundle.release_tag for r in MOD.iter_resolved_published_releases("latest", FORK, "")
+    ]
+    assert resolved[0] == PIN
+    assert resolved[1:] == ["b11100-mix-0000000", "b11050-mix-1111111"]

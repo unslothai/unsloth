@@ -58,6 +58,7 @@ on:
       # checkout's installer modules and reads its prebuilt pins on the head side of the
       # comparison.
       - 'studio/install_*.py'
+      - 'studio/llama_prebuilt_pins.json'
       - 'studio/prebuilt_core.py'
       - 'studio/nvidia_probe.py'
       - 'studio/node_prebuilt_pins.json'

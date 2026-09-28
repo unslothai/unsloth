@@ -27,6 +27,7 @@ on:
       - 'studio/frontend/**'
       - 'studio/setup.sh'
       - 'studio/install_*.py'
+      - 'studio/llama_prebuilt_pins.json'
       # install_node_prebuilt.py trusts the archives pinned here (setup.sh:1243).
       - 'studio/node_prebuilt_pins.json'
       - 'studio/prebuilt_core.py'
@@ -84,6 +85,7 @@ on:
       - 'studio/frontend/**'
       - 'studio/setup.sh'
       - 'studio/install_*.py'
+      - 'studio/llama_prebuilt_pins.json'
       - 'studio/node_prebuilt_pins.json'
       - 'studio/prebuilt_core.py'
       - 'studio/install_manifest.py'

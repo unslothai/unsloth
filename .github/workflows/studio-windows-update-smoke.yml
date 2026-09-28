@@ -44,6 +44,7 @@ on:
       # last executed edge of the installer chain that was not listed here.
       - 'studio/backend/utils/**'
       - 'studio/install_*.py'
+      - 'studio/llama_prebuilt_pins.json'
       - 'studio/node_prebuilt_pins.json'
       - 'unsloth_cli/**'
       # frontend-dist-restore keys its cache on exactly these three globs, and a miss
@@ -74,6 +75,7 @@ on:
       - 'studio/prebuilt_core.py'
       - 'studio/backend/utils/**'
       - 'studio/install_*.py'
+      - 'studio/llama_prebuilt_pins.json'
       - 'studio/node_prebuilt_pins.json'
       - 'unsloth_cli/**'
       - 'studio/frontend/*'

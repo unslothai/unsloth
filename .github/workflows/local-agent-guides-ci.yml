@@ -67,6 +67,7 @@ on:
       # decide what is installed.
       - 'studio/setup.sh'
       - 'studio/install_*.py'
+      - 'studio/llama_prebuilt_pins.json'
       - 'studio/prebuilt_core.py'
       - 'studio/nvidia_probe.py'
       - 'studio/node_prebuilt_pins.json'
@@ -109,6 +110,7 @@ on:
       # decide what is installed.
       - 'studio/setup.sh'
       - 'studio/install_*.py'
+      - 'studio/llama_prebuilt_pins.json'
       - 'studio/prebuilt_core.py'
       - 'studio/nvidia_probe.py'
       - 'studio/node_prebuilt_pins.json'

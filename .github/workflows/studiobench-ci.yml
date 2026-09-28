@@ -48,6 +48,7 @@ on:
       # setup.sh runs this at setup.sh:5130 and setup.ps1 at setup.ps1:9025, so it is the
       # last executed edge of the installer chain that was not listed here.
       - 'studio/install_*.py'
+      - 'studio/llama_prebuilt_pins.json'
       - 'studio/node_prebuilt_pins.json'
       - '.github/workflows/studiobench-ci.yml'
       # The liveness job boots Studio through boot-studio-api-only.sh, which runs this
@@ -85,6 +86,7 @@ on:
       - 'studio/setup.sh'
       - 'studio/prebuilt_core.py'
       - 'studio/install_*.py'
+      - 'studio/llama_prebuilt_pins.json'
       - 'studio/node_prebuilt_pins.json'
       - '.github/workflows/studiobench-ci.yml'
       # The liveness job boots Studio through boot-studio-api-only.sh, which runs this
