@@ -1135,6 +1135,84 @@ def _missing_torchvision_error(error = None):
     return False
 
 
+# Only where class defaults are the checkpoint's settings (Step-3.7 hardcodes them remotely).
+_NATIVE_DEFAULT_IMAGE_PROCESSOR_TYPES = frozenset({"step3p7"})
+
+
+def _preprocessor_config_exists(
+    load_path,
+    token = None,
+    cache_dir = None,
+    local_files_only = False,
+    revision = None,
+):
+    from transformers.utils import cached_file
+    return (
+        cached_file(
+            load_path,
+            "preprocessor_config.json",
+            token = token,
+            cache_dir = cache_dir,
+            local_files_only = local_files_only,
+            revision = revision,
+            _raise_exceptions_for_missing_entries = False,
+        )
+        is not None
+    )
+
+
+def _native_default_image_processor(
+    load_path,
+    model_type,
+    token = None,
+    cache_dir = None,
+    local_files_only = False,
+    revision = None,
+):
+    """Image processor transformers registers for the checkpoint's model_type, at class defaults; else None."""
+    import transformers
+    from transformers import AutoConfig
+
+    try:
+        from transformers.models.auto.image_processing_auto import IMAGE_PROCESSOR_MAPPING_NAMES
+    except Exception:
+        return None
+    model_types = [model_type]
+    try:
+        config = AutoConfig.from_pretrained(
+            load_path,
+            token = token,
+            trust_remote_code = False,
+            cache_dir = cache_dir,
+            local_files_only = local_files_only,
+            revision = revision,
+        )
+        model_types.insert(0, config.model_type)
+    except Exception:
+        pass
+    for mt in model_types:
+        if mt not in _NATIVE_DEFAULT_IMAGE_PROCESSOR_TYPES:
+            continue
+        names = IMAGE_PROCESSOR_MAPPING_NAMES.get(mt)
+        if not names:
+            continue
+        if isinstance(names, dict):  # transformers 5: {"torchvision": ..., "pil": ...}
+            names = [names.get("torchvision"), names.get("pil"), *names.values()]
+        elif isinstance(names, str):
+            names = [names]
+        else:  # transformers 4: (slow, fast)
+            names = list(reversed(names))
+        for name in names:
+            cls = getattr(transformers, name, None) if name else None
+            if cls is None:
+                continue
+            try:
+                return cls()
+            except Exception:
+                continue
+    return None
+
+
 def _construct_vlm_processor_fallback(
     tokenizer_name,
     model_type,
@@ -1158,14 +1236,39 @@ def _construct_vlm_processor_fallback(
             local_files_only = local_files_only,
             revision = revision,
         )
-        image_processor = AutoImageProcessor.from_pretrained(
-            load_path,
-            token = token,
-            trust_remote_code = trust_remote_code,
-            cache_dir = cache_dir,
-            local_files_only = local_files_only,
-            revision = revision,
-        )
+        try:
+            image_processor = AutoImageProcessor.from_pretrained(
+                load_path,
+                token = token,
+                trust_remote_code = trust_remote_code,
+                cache_dir = cache_dir,
+                local_files_only = local_files_only,
+                revision = revision,
+            )
+        except Exception as _ip_err:
+            # Only a missing preprocessor_config.json (local or Hub); a present-but-broken one keeps its error.
+            if (
+                _is_offline_related_error(_ip_err)
+                or _missing_torchvision_error(_ip_err)
+                or _preprocessor_config_exists(
+                    load_path,
+                    token = token,
+                    cache_dir = cache_dir,
+                    local_files_only = local_files_only,
+                    revision = revision,
+                )
+            ):
+                raise
+            image_processor = _native_default_image_processor(
+                load_path,
+                model_type,
+                token = token,
+                cache_dir = cache_dir,
+                local_files_only = local_files_only,
+                revision = revision,
+            )
+            if image_processor is None:
+                raise
         # Load the tokenizer via PreTrainedTokenizerFast, bypassing the tokenizer_class check and resolving the cached snapshot first so transformers does not call model_info (#7481).
         tok = _load_pretrained_tokenizer_fast(
             tokenizer_name,
