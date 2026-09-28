@@ -77,7 +77,8 @@ def operator_hf_endpoint() -> str:
     return _operator_endpoint() or DEFAULTS_BY_HEALTH_KEY["hf_endpoint"]
 
 
-def _read_stored() -> dict:
+def _read_stored() -> dict | None:
+    """The saved hub settings: ``{}`` before the database exists, None when it cannot be read."""
     keys = [HF_ENDPOINT_KEY, DATASETS_SERVER_FOLLOWS_KEY, SOURCE_KEY]
     try:
         from utils.account_context import OWNER, run_as
@@ -87,6 +88,8 @@ def _read_stored() -> dict:
             from utils.paths.storage_roots import studio_db_path
 
             path = run_as(OWNER, studio_db_path)
+            if not path.exists():
+                return {}
             with closing(sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri = True)) as conn:
                 rows = conn.execute(
                     "SELECT key, value_json FROM app_settings WHERE key IN (?, ?, ?)", keys
@@ -97,7 +100,7 @@ def _read_stored() -> dict:
         return run_as(OWNER, get_app_settings, keys)
     except Exception as exc:  # noqa: BLE001 - a missing or unreadable db keeps the environment's values
         logger.debug("hub settings read failed (%s)", exc)
-        return {}
+        return None
 
 
 def _automatic_modelscope(stored: dict) -> bool:
@@ -113,7 +116,9 @@ def _automatic_modelscope(stored: dict) -> bool:
 
 def get_hub_settings() -> HubSettings:
     stored = _read_stored()
-    automatic = _automatic_modelscope(stored)
+    # A failed read may hide a saved choice, so it never selects the automatic default.
+    automatic = stored is not None and _automatic_modelscope(stored)
+    stored = stored or {}
     if automatic:
         source = MODELSCOPE
     else:

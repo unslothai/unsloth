@@ -227,6 +227,30 @@ def test_windows_reads_the_registry_time_zone_and_adapter_resolvers(
         mainland_china.in_mainland_china.cache_clear()
 
 
+@pytest.mark.parametrize(
+    "database, automatic", [(None, True), ("garbage", False), ("malformed row", False)]
+)
+def test_only_a_missing_database_reads_as_unconfigured(monkeypatch, database, automatic):
+    import sqlite3
+
+    from utils.account_context import OWNER, run_as
+    from utils.paths.storage_roots import studio_db_path
+
+    monkeypatch.delitem(sys.modules, "storage.studio_db")
+    monkeypatch.delenv("HF_ENDPOINT", raising = False)
+    monkeypatch.setenv("UNSLOTH_MIRROR_FALLBACK", "1")
+    monkeypatch.setattr(hub_settings, "_operator_env", None)
+    path = run_as(OWNER, studio_db_path)
+    path.parent.mkdir(parents = True, exist_ok = True)
+    if database == "garbage":
+        path.write_bytes(b"not a database" * 100)
+    elif database == "malformed row":
+        with sqlite3.connect(path) as conn:
+            conn.execute("CREATE TABLE app_settings (key TEXT PRIMARY KEY, value_json TEXT)")
+            conn.execute("INSERT INTO app_settings VALUES (?, ?)", (hub_settings.SOURCE_KEY, "{"))
+    assert hub_settings.get_hub_settings().source_automatic is automatic
+
+
 def test_windows_resolvers_come_from_adapters_that_are_up():
     import ctypes
 
