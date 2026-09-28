@@ -138,6 +138,8 @@ function Write-StudioLine {
 # "auto" restores detection. Overrides Unsloth's Settings > System selection.
 $DefaultLlamaPrForce = ""
 $DefaultLlamaSource = "https://github.com/ggml-org/llama.cpp"
+# The default "latest" stops at the tested release in llama_prebuilt_pins.json;
+# $env:UNSLOTH_LLAMA_TAG = "latest" asks for the newest one.
 $DefaultLlamaTag = "latest"
 $DefaultLlamaForceCompileRef = "master"
 

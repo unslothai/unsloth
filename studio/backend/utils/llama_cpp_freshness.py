@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import json
+import os
 import re
 from datetime import datetime
 from pathlib import Path
@@ -13,6 +15,7 @@ from typing import Optional
 import structlog
 
 from utils.prebuilt import freshness_flow as _flow
+from utils.prebuilt.update_flow import find_installer_script
 
 logger = structlog.get_logger(__name__)
 
@@ -20,6 +23,10 @@ logger = structlog.get_logger(__name__)
 STALENESS_THRESHOLD_DAYS = 3
 
 _INSTALL_MARKER_NAME = "UNSLOTH_PREBUILT_INFO.json"
+# Beside install_llama_prebuilt.py, which caps its own "latest" at the same pin.
+_PINS_NAME = "llama_prebuilt_pins.json"
+_FORK_REPO = "unslothai/llama.cpp"
+_UPSTREAM_REPO = "ggml-org/llama.cpp"
 
 _marker_cache: dict[str, Optional[dict]] = {}
 _release_memo: dict[str, tuple[float, Optional[str]]] = {}
@@ -141,6 +148,52 @@ def parse_base_build(tag: object) -> Optional[int]:
     return int(m.group(1)) if m else None
 
 
+def default_release_pin() -> Optional[str]:
+    """The tested release llama_prebuilt_pins.json names, mirroring install_llama_prebuilt.default_release_pin: None under an UNSLOTH_LLAMA_TAG / UNSLOTH_LLAMA_RELEASE_TAG override or when the file is absent or unreadable."""
+    if any(
+        os.environ.get(name, "").strip()
+        for name in ("UNSLOTH_LLAMA_TAG", "UNSLOTH_LLAMA_RELEASE_TAG")
+    ):
+        return None
+    try:
+        override = os.environ.get("UNSLOTH_LLAMA_PINS_FILE", "").strip()
+        if override:
+            pins = Path(override).expanduser()
+        else:
+            script = find_installer_script(
+                env_var = "UNSLOTH_LLAMA_INSTALLER", script_name = "install_llama_prebuilt.py"
+            )
+            if script is None:
+                return None
+            pins = script.parent / _PINS_NAME
+        payload = json.loads(pins.read_text(encoding = "utf-8"))
+    except (OSError, ValueError):
+        return None
+    tag = payload.get("release_tag") if isinstance(payload, dict) else None
+    if parse_base_build(tag) is None:
+        return None
+    return tag.strip()
+
+
+def pinned_update_target(
+    repo: Optional[str], latest: Optional[str], installed: Optional[str]
+) -> Optional[str]:
+    """The release an update should move to: the newest published one, capped at the default pin the installer applies. Unchanged when no pin applies or the newest is unknown or already at or below the pin. An install already past the pin caps at its own release, as the installer does, so it is neither offered a downgrade nor nagged further past it."""
+    pin = default_release_pin()
+    if pin is None or not latest or repo not in (_FORK_REPO, _UPSTREAM_REPO):
+        return latest
+    installed_build = parse_base_build(installed)
+    if installed_build is not None and installed_build > parse_base_build(pin):
+        pin = installed.strip()
+    pin_build, latest_build = parse_base_build(pin), parse_base_build(latest)
+    if latest_build is None:
+        return latest
+    if repo == _UPSTREAM_REPO:
+        return latest if latest_build <= pin_build else f"b{pin_build}"
+    # On the fork another mix of the pin's build is a different bundle, so it is capped too.
+    return latest if latest_build < pin_build else pin
+
+
 def is_behind(installed: Optional[str], latest: Optional[str]) -> bool:
     """Whether `installed` is genuinely behind `latest`, comparing the FULL release identity (so a mix build can legitimately be the latest) with a base-build guard so a lagging GitHub /releases/latest can never read as an update or a downgrade. Identical tags are not behind (clearing the sticky banner post-update); a higher base build on `latest` is behind and a lower one is NOT (downgrade guard); at the same base build a different or new mix is behind, but a bare ``bNNNN`` never supersedes a mix build (extra PRs); non-bNNNN tags are behind by plain inequality, since they already differ."""
     if not installed or not latest:
@@ -170,11 +223,17 @@ def check_prebuilt_freshness(
         threshold_days = threshold_days,
         now = now,
         read_marker = lambda p: read_install_marker(p),
-        latest_release = lambda repo: latest_published_release(repo),
+        latest_release = lambda repo: _pinned_latest(binary_path, repo),
         behind = lambda installed, latest: is_behind(installed, latest),
         display_tag = lambda marker: marker.get("tag") or marker.get("release_tag"),
         compare_tag = lambda marker: marker.get("release_tag") or marker.get("tag"),
     )
+
+
+def _pinned_latest(binary_path: Optional[str], repo: str) -> Optional[str]:
+    marker = read_install_marker(binary_path) or {}
+    installed = marker.get("release_tag") or marker.get("tag")
+    return pinned_update_target(repo, latest_published_release(repo), installed)
 
 
 def format_stale_warning(info: dict) -> str:

@@ -51,6 +51,11 @@ import pytest
 
 # A test that hides nvidia-smi to fake a CPU host must not find the real GPUs through NVML.
 os.environ.setdefault("UNSLOTH_NVIDIA_LIBRARY_PROBE", "0")
+# The shipped llama_prebuilt_pins.json caps "latest"; release fixtures here are fictional, so
+# no pin applies unless a test names its own file.
+os.environ.setdefault(
+    "UNSLOTH_LLAMA_PINS_FILE", str(_iso.parent / "_shared" / "no_llama_prebuilt_pins.json")
+)
 
 
 @pytest.fixture(autouse = True)

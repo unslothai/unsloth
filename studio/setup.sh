@@ -31,6 +31,9 @@ fi
 #   _DEFAULT_LLAMA_SOURCE   : git clone URL for source builds
 #   _DEFAULT_LLAMA_TAG      : llama.cpp ref to build ("latest" = newest release,
 #                             "master" = bleeding-edge, "bNNNN" = specific tag)
+#                             The default "latest" stops at the tested release in
+#                             llama_prebuilt_pins.json; UNSLOTH_LLAMA_TAG=latest
+#                             asks for the newest one.
 #                             Prefer "latest" over "master" -- "master" bypasses
 #                             the prebuilt resolver (no matching GitHub release),
 #                             forces a source build, and causes HTTP 422 errors.

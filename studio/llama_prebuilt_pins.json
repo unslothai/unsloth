@@ -1,0 +1,5 @@
+{
+  "schema_version": 1,
+  "comment": "The unslothai/llama.cpp release a default install, `unsloth studio update` and the in-app update resolve to. Releases above it are skipped until it is bumped. UNSLOTH_LLAMA_TAG or UNSLOTH_LLAMA_RELEASE_TAG (including UNSLOTH_LLAMA_TAG=latest) override it. To bump: set release_tag to a tested release of that repo.",
+  "release_tag": "b11160-mix-a6922cc"
+}

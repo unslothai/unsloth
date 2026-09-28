@@ -37,6 +37,12 @@ from pathlib import Path
 
 import pytest
 
+# The shipped llama_prebuilt_pins.json caps the llama.cpp update target; release fixtures
+# here are fictional, so no pin applies unless a test names its own file.
+os.environ.setdefault(
+    "UNSLOTH_LLAMA_PINS_FILE", str(Path(__file__).resolve().parent / "no_llama_prebuilt_pins.json")
+)
+
 # Add backend root to sys.path (mirrors app launch)
 _backend_root = Path(__file__).resolve().parent.parent
 if str(_backend_root) not in sys.path:

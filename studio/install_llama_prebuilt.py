@@ -285,6 +285,91 @@ DEFAULT_PUBLISHED_SHA256_ASSET = os.environ.get(
 UPSTREAM_REPO = "ggml-org/llama.cpp"
 UPSTREAM_RELEASES_API = f"https://api.github.com/repos/{UPSTREAM_REPO}/releases/latest"
 
+# The tested fork release a default "latest" install resolves to. Releases above it are
+# skipped, so a regressed build (Qwen MTP broke in b10995-b11027) reaches nobody until the
+# pin is bumped. Not a user pin: UNSLOTH_LLAMA_TAG / UNSLOTH_LLAMA_RELEASE_TAG (including
+# UNSLOTH_LLAMA_TAG=latest) turn it off, and every keep/force path still reads "latest".
+LLAMA_PINS_FILENAME = "llama_prebuilt_pins.json"
+# One installer run is one process: "suspended" is set once the capped plan found nothing
+# installable, "installed_release" once from the install dir's marker.
+_RELEASE_PIN_STATE: dict[str, Any] = {"suspended": False, "installed_release": None}
+
+
+def llama_pins_path() -> Path:
+    """UNSLOTH_LLAMA_PINS_FILE points at another pins file (a missing one means no pin)."""
+    override = os.environ.get("UNSLOTH_LLAMA_PINS_FILE", "").strip()
+    if override:
+        return Path(override).expanduser()
+    return Path(__file__).resolve().parent / LLAMA_PINS_FILENAME
+
+
+def _release_build_number(tag: str | None) -> int | None:
+    match = re.match(r"b(\d+)", tag.strip()) if isinstance(tag, str) else None
+    return int(match.group(1)) if match else None
+
+
+def default_release_pin() -> str | None:
+    """The release llama_prebuilt_pins.json names, or None when no pin applies.
+
+    None when an env override names a version, when this run already fell back past
+    the pin, or when the file is absent or unreadable (today's newest-release behaviour).
+    An install on disk already past the pin caps at its own release instead, so it is
+    left where it is: neither downgraded to the pin nor moved further past it.
+    """
+    for name in ("UNSLOTH_LLAMA_TAG", "UNSLOTH_LLAMA_RELEASE_TAG"):
+        if os.environ.get(name, "").strip():
+            return None
+    if _RELEASE_PIN_STATE["suspended"]:
+        return None
+    try:
+        payload = json.loads(llama_pins_path().read_text(encoding = "utf-8"))
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError) as exc:
+        log(f"ignoring unreadable {LLAMA_PINS_FILENAME}: {exc}")
+        return None
+    tag = payload.get("release_tag") if isinstance(payload, dict) else None
+    pin_build = _release_build_number(tag)
+    if pin_build is None:
+        return None
+    installed = _RELEASE_PIN_STATE["installed_release"]
+    installed_build = _release_build_number(installed)
+    if installed_build is not None and installed_build > pin_build:
+        return installed.strip()
+    return tag.strip()
+
+
+def release_pin_for(
+    requested_tag: str | None, published_release_tag: str | None, repo: str | None
+) -> str | None:
+    """The pin that caps this resolution: only a "latest" request, with no release named,
+    against the fork or the upstream repo it is cut from."""
+    if normalized_requested_llama_tag(requested_tag) != "latest":
+        return None
+    if (published_release_tag or "").strip():
+        return None
+    if (repo or DEFAULT_PUBLISHED_REPO) not in (DEFAULT_PUBLISHED_REPO, UPSTREAM_REPO):
+        return None
+    return default_release_pin()
+
+
+def release_within_pin(release_tag: str | None, pin: str, repo: str | None) -> bool:
+    """Whether a release is at or below the pin. Upstream publishes one release per build,
+    so its bNNNN matching the pin's base is the pin; on the fork another mix of the same
+    build is a different bundle and is not."""
+    build, pin_build = _release_build_number(release_tag), _release_build_number(pin)
+    if build is None or pin_build is None:
+        return False
+    if (repo or DEFAULT_PUBLISHED_REPO) == UPSTREAM_REPO:
+        return build <= pin_build
+    return build < pin_build or (release_tag or "").strip() == pin
+
+
+def suspend_release_pin(reason: str) -> None:
+    if not _RELEASE_PIN_STATE["suspended"]:
+        log(f"{reason}; trying the newest published release instead of the pinned one")
+    _RELEASE_PIN_STATE["suspended"] = True
+
 
 TEST_MODEL_URL = "https://huggingface.co/ggml-org/models/resolve/main/tinyllamas/stories260K.gguf"
 TEST_MODEL_SHA256 = "270cba1bd5109f42d03350f60406024560464db173c0e387d91f0426d3bd256d"
@@ -1044,10 +1129,16 @@ def upstream_web_release_tags(repo: str, *, limit: int = 30) -> list[str]:
 def latest_upstream_release_tag() -> str:
     """The newest upstream build tag, which the source-build fallback compiles.
 
+    Under the default pin that is the pin's own base build: the fork cuts each release
+    from an upstream build, so a source fallback compiles the version the pin names.
+
     Only a bNNNN REST answer is taken: /releases/latest resolves by make_latest, which
     upstream points at a pointer release packaging no prebuilt, and the source build
     must compile the version the prebuilt path would have installed.
     """
+    pin = default_release_pin()
+    if pin is not None:
+        return f"b{_release_build_number(pin)}"
     rest_tag = ""
     try:
         payload = fetch_json(UPSTREAM_RELEASES_API)
@@ -1537,6 +1628,39 @@ def resolve_simple_install_release_plans(
     *,
     max_release_fallbacks: int = DEFAULT_MAX_PREBUILT_RELEASE_FALLBACKS,
 ) -> "tuple[str, Sequence[InstallReleasePlan]]":
+    pin = release_pin_for(llama_tag, published_release_tag, published_repo)
+    try:
+        return _resolve_simple_install_release_plans(
+            llama_tag,
+            host,
+            published_repo,
+            published_release_tag,
+            max_release_fallbacks = max_release_fallbacks,
+        )
+    except PrebuiltFallback as exc:
+        if pin is None:
+            raise
+        # The pin is a default, never a reason to fail the install or build from source.
+        suspend_release_pin(
+            f"nothing at or below the pinned release {pin} is installable here ({exc})"
+        )
+    return _resolve_simple_install_release_plans(
+        llama_tag,
+        host,
+        published_repo,
+        published_release_tag,
+        max_release_fallbacks = max_release_fallbacks,
+    )
+
+
+def _resolve_simple_install_release_plans(
+    llama_tag: str,
+    host: HostInfo,
+    published_repo: str,
+    published_release_tag: str,
+    *,
+    max_release_fallbacks: int = DEFAULT_MAX_PREBUILT_RELEASE_FALLBACKS,
+) -> "tuple[str, Sequence[InstallReleasePlan]]":
     repo = published_repo or DEFAULT_PUBLISHED_REPO
     # The fork (unslothai) ships a manifest describing every bundle's GPU/arch
     # coverage, so all fork hosts select from it. Upstream (ggml-org) ships no
@@ -1559,10 +1683,14 @@ def resolve_simple_install_release_plans(
     release_limit = max(1, max_release_fallbacks)
     plans: list[InstallReleasePlan] = []
     last_error: PrebuiltFallback | None = None
+    # The macOS floor answers a concrete tag above, so the pin caps only a plain "latest".
+    pin = release_pin_for(requested_tag, published_release_tag, repo)
 
     try:
         releases = iter_release_payloads_by_time(repo, published_release_tag, requested_tag)
         for release in releases:
+            if pin is not None and not release_within_pin(release.get("tag_name"), pin, repo):
+                continue
             try:
                 plan = direct_upstream_release_plan(release, host, repo, requested_tag)
                 if plan is None:
@@ -2392,6 +2520,22 @@ def resolve_published_release(
     published_repo: str,
     published_release_tag: str = "",
 ) -> ResolvedPublishedRelease:
+    pin = release_pin_for(requested_tag, published_release_tag, published_repo)
+    try:
+        return _resolve_published_release(requested_tag, published_repo, published_release_tag)
+    except PrebuiltFallback as exc:
+        # Upstream ships no manifest, so it always lands here; its cap is the pin's build.
+        if pin is None or (published_repo or DEFAULT_PUBLISHED_REPO) != DEFAULT_PUBLISHED_REPO:
+            raise
+        suspend_release_pin(f"no usable published release at or below the pin {pin} ({exc})")
+    return _resolve_published_release(requested_tag, published_repo, published_release_tag)
+
+
+def _resolve_published_release(
+    requested_tag: str | None,
+    published_repo: str,
+    published_release_tag: str = "",
+) -> ResolvedPublishedRelease:
     repo = published_repo or DEFAULT_PUBLISHED_REPO
     normalized_requested = normalized_requested_llama_tag(requested_tag)
 
@@ -2408,9 +2552,12 @@ def resolve_published_release(
             checksums = validated_checksums_for_bundle(repo, bundle),
         )
 
+    pin = release_pin_for(normalized_requested, published_release_tag, repo)
     skipped_invalid = 0
     for bundle in iter_published_release_bundles(repo):
         if not published_release_matches_request(bundle, normalized_requested):
+            continue
+        if pin is not None and not release_within_pin(bundle.release_tag, pin, repo):
             continue
         try:
             checksums = validated_checksums_for_bundle(repo, bundle)
@@ -2451,9 +2598,14 @@ def iter_resolved_published_releases(
     # back past too-new prebuilts via continue_after_fast_path, otherwise a broken
     # latest drops to source build. Pinned tags use the same CDN path so in-app updates
     # avoid the API entirely (#9970). Any rejection/network error falls through to the API.
+    # A pinned default asks the download host for the pin itself, the release a capped
+    # "latest" answers, and the API walk below skips everything above it.
+    pin = release_pin_for(normalized_requested, published_release_tag, repo)
     fast_path_tag: str | None = None
     if published_release_tag:
         fast_path_tag = published_release_tag
+    elif pin is not None:
+        fast_path_tag = pin
     elif normalized_requested == "latest":
         fast_path_tag = ""
 
@@ -2512,6 +2664,8 @@ def iter_resolved_published_releases(
     yielded_valid = fast_path_release_tag is not None
     for bundle in iter_published_release_bundles(repo):
         if not published_release_matches_request(bundle, normalized_requested):
+            continue
+        if pin is not None and not release_within_pin(bundle.release_tag, pin, repo):
             continue
         if fast_path_release_tag is not None and bundle.release_tag == fast_path_release_tag:
             # Already yielded from the download host.
@@ -8893,6 +9047,10 @@ def _expected_release_tag_without_plan(
         pinned_macos = pinned_macos_release_tag(host, repo)
         if pinned_macos is not None:
             return pinned_macos
+    # The default pin names the answer outright; upstream's release for that build is bNNNN.
+    pin = release_pin_for(requested, "", repo)
+    if pin is not None:
+        return pin if repo == DEFAULT_PUBLISHED_REPO else f"b{_release_build_number(pin)}"
     if not _download_host_resolve_enabled() or repo != DEFAULT_PUBLISHED_REPO:
         # The API path, or a repo the selector never resolves through the download host:
         # /releases/latest for a custom repo could disagree with the selector forever.
@@ -11439,7 +11597,8 @@ def parse_args() -> argparse.Namespace:
         default = DEFAULT_LLAMA_TAG,
         help = (
             "llama.cpp release tag. Defaults to the latest usable published Unsloth "
-            "release unless UNSLOTH_LLAMA_TAG overrides it."
+            "release at or below the tested pin in llama_prebuilt_pins.json, unless "
+            "UNSLOTH_LLAMA_TAG overrides it (UNSLOTH_LLAMA_TAG=latest lifts the pin)."
         ),
     )
     parser.add_argument(
@@ -11746,6 +11905,10 @@ def resolve_backends_payload(
 
 def main() -> int:
     args = parse_args()
+    if args.install_dir:
+        # An install already past the default pin is left at its release, not downgraded.
+        marker = load_prebuilt_metadata(Path(args.install_dir).expanduser()) or {}
+        _RELEASE_PIN_STATE["installed_release"] = marker.get("release_tag") or marker.get("tag")
     if args.check_existing_install is not None:
         install_dir = Path(args.check_existing_install)
         return EXIT_SUCCESS if reusable_existing_install(install_dir, detect_host()) else 1

@@ -12,6 +12,7 @@ on:
   pull_request:
     paths:
       - 'studio/install_llama_prebuilt.py'
+      - 'studio/llama_prebuilt_pins.json'
       - 'studio/setup.sh'
       - 'install.sh'
       - '.github/scripts/assert-llama-loads.sh'
@@ -64,6 +65,7 @@ on:
     # clean-machine-install-ci.yml and mlx-ci.yml already do exactly this.
     paths:
       - 'studio/install_llama_prebuilt.py'
+      - 'studio/llama_prebuilt_pins.json'
       - 'studio/setup.sh'
       - 'install.sh'
       - '.github/scripts/assert-llama-loads.sh'

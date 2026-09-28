@@ -964,8 +964,10 @@ def _capture_install_cmd(
     repo = "unslothai/llama.cpp",
     asset = None,
     latest = "b9518",
+    produced = None,
 ) -> list:
-    """Run start_update() with the installer subprocess stubbed; return the argv."""
+    """Run start_update() with the installer subprocess stubbed; return the argv. The stub
+    installs *produced*, the newest published release (*latest*) unless named."""
     install_dir = tmp_path / "llama.cpp"
     binary = _write_install(install_dir, tag, repo = repo, asset = asset)
     monkeypatch.setattr(upd, "_find_binary", lambda: binary)
@@ -981,7 +983,7 @@ def _capture_install_cmd(
 
     def _on_start(cmd):
         captured["cmd"] = cmd
-        _write_install(install_dir, latest, repo = repo, asset = asset)
+        _write_install(install_dir, produced or latest, repo = repo, asset = asset)
 
     monkeypatch.setattr(upd.subprocess, "run", _fake_run)
     _patch_installer_popen(monkeypatch, on_start = _on_start)
@@ -1053,6 +1055,26 @@ def test_install_cmd_pins_offered_release_tag(monkeypatch, tmp_path):
     cmd = _capture_install_cmd(monkeypatch, tmp_path, latest = "b9601-mix-a0e2906")
     # The full release identity is pinned, not the bare upstream base.
     assert cmd[cmd.index("--published-release-tag") + 1] == "b9601-mix-a0e2906"
+
+
+def test_install_cmd_pins_the_default_release_pin_not_a_newer_release(monkeypatch, tmp_path):
+    # studio/llama_prebuilt_pins.json caps what Update installs: the banner offers the pin,
+    # so the installer is pinned to it rather than to the newest published release.
+    pins = tmp_path / "llama_prebuilt_pins.json"
+    pins.write_text(json.dumps({"schema_version": 1, "release_tag": "b11160-mix-a6922cc"}))
+    monkeypatch.setenv("UNSLOTH_LLAMA_PINS_FILE", str(pins))
+    monkeypatch.delenv("UNSLOTH_LLAMA_TAG", raising = False)
+    monkeypatch.delenv("UNSLOTH_LLAMA_RELEASE_TAG", raising = False)
+    monkeypatch.setattr(sys, "platform", "linux")
+    cmd = _capture_install_cmd(
+        monkeypatch,
+        tmp_path,
+        tag = "b11007-mix-3e83366",
+        latest = "b11200-mix-ffffff1",
+        produced = "b11160-mix-a6922cc",
+    )
+    assert cmd[cmd.index("--published-release-tag") + 1] == "b11160-mix-a6922cc"
+    assert upd.get_update_status()["job"]["state"] == "success"
 
 
 def test_install_cmd_pins_on_windows(monkeypatch, tmp_path):

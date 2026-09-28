@@ -763,3 +763,81 @@ def test_release_fetch_cannot_outlive_its_deadline(monkeypatch, fetch):
     assert getattr(fr, fetch)("unslothai/llama.cpp", timeout = 0.25) is None
     # Pins the implemented timeout + 1, not merely "faster than the 30s stall".
     assert time.monotonic() - started < 2.0
+
+
+# The default release pin (studio/llama_prebuilt_pins.json).
+
+_PIN = "b11160-mix-a6922cc"
+
+
+@pytest.fixture
+def _pinned(monkeypatch, tmp_path):
+    pins = tmp_path / "llama_prebuilt_pins.json"
+    pins.write_text(json.dumps({"schema_version": 1, "release_tag": _PIN}))
+    monkeypatch.setenv("UNSLOTH_LLAMA_PINS_FILE", str(pins))
+    monkeypatch.delenv("UNSLOTH_LLAMA_TAG", raising = False)
+    monkeypatch.delenv("UNSLOTH_LLAMA_RELEASE_TAG", raising = False)
+    return pins
+
+
+def _pinned_install(tmp_path, tag):
+    install_dir = tmp_path / "llama.cpp"
+    _write_marker(install_dir, tag = tag.split("-")[0], release_tag = tag)
+    return str(_fake_binary(install_dir, layout = "root"))
+
+
+def test_the_update_target_stops_at_the_pin(monkeypatch, tmp_path, _pinned):
+    binary = _pinned_install(tmp_path, "b11007-mix-3e83366")
+    monkeypatch.setattr(
+        fr, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b11200-mix-ffffff1"
+    )
+    info = fr.check_prebuilt_freshness(binary)
+    assert info["latest_tag"] == _PIN
+    assert info["behind"] is True
+
+
+def test_an_install_at_the_pin_is_not_offered_a_newer_release(monkeypatch, tmp_path, _pinned):
+    binary = _pinned_install(tmp_path, _PIN)
+    monkeypatch.setattr(
+        fr, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b11200-mix-ffffff1"
+    )
+    info = fr.check_prebuilt_freshness(binary)
+    assert info["latest_tag"] == _PIN
+    assert info["behind"] is False
+
+
+def test_an_install_past_the_pin_is_left_where_it_is(monkeypatch, tmp_path, _pinned):
+    binary = _pinned_install(tmp_path, "b11180-mix-1111111")
+    monkeypatch.setattr(
+        fr, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b11200-mix-ffffff1"
+    )
+    info = fr.check_prebuilt_freshness(binary)
+    assert info["latest_tag"] == "b11180-mix-1111111"
+    assert info["behind"] is False
+
+
+@pytest.mark.parametrize("env", ["UNSLOTH_LLAMA_TAG", "UNSLOTH_LLAMA_RELEASE_TAG"])
+def test_an_env_override_lifts_the_update_pin(monkeypatch, tmp_path, _pinned, env):
+    monkeypatch.setenv(env, "latest")
+    binary = _pinned_install(tmp_path, _PIN)
+    monkeypatch.setattr(
+        fr, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b11200-mix-ffffff1"
+    )
+    assert fr.check_prebuilt_freshness(binary)["latest_tag"] == "b11200-mix-ffffff1"
+
+
+def test_pinned_update_target_rules(_pinned):
+    target = fr.pinned_update_target
+    assert target("unslothai/llama.cpp", "b11100-mix-0000000", None) == "b11100-mix-0000000"
+    assert target("unslothai/llama.cpp", "b11160-mix-bbbbbbb", None) == _PIN
+    assert target("unslothai/llama.cpp", None, None) is None
+    assert target("ggml-org/llama.cpp", "b11210", "b11100") == "b11160"
+    assert target("someone/llama.cpp", "b11210", None) == "b11210"
+
+
+def test_the_shipped_pins_file_is_found_beside_the_installer(monkeypatch):
+    monkeypatch.delenv("UNSLOTH_LLAMA_PINS_FILE", raising = False)
+    monkeypatch.delenv("UNSLOTH_LLAMA_TAG", raising = False)
+    monkeypatch.delenv("UNSLOTH_LLAMA_RELEASE_TAG", raising = False)
+    shipped = Path(__file__).resolve().parents[2] / "llama_prebuilt_pins.json"
+    assert fr.default_release_pin() == json.loads(shipped.read_text())["release_tag"]
