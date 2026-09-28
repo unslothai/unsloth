@@ -238,6 +238,13 @@ def chat_history(messages: list[dict]) -> list[dict]:
     return ([{"role": "system", "content": "\n\n".join(system)}] if system else []) + rest
 
 
+def finish_reason(res: Any, calls: list) -> str:
+    if calls:
+        return "tool_calls"
+    reasons = getattr(res, "finish_reasons", None) or []
+    return "length" if reasons and reasons[0] == ov_genai.GenerationFinishReason.LENGTH else "stop"
+
+
 def build_app(pipe, model_id: str) -> FastAPI:
     tok = pipe.get_tokenizer()
     lock = threading.Lock()
@@ -314,18 +321,19 @@ def build_app(pipe, model_id: str) -> FastAPI:
                     {
                         "index": 0,
                         "message": message,
-                        "finish_reason": "tool_calls" if calls else "stop",
+                        "finish_reason": finish_reason(res, calls),
                     }
                 ],
             }
 
         def events():
             pieces: "queue.Queue[Optional[str]]" = queue.Queue()
+            result: dict = {}
 
             def run():
                 try:
                     with lock:
-                        pipe.generate(
+                        result["res"] = pipe.generate(
                             text_prompt,
                             generation_config = cfg,
                             streamer = lambda s: pieces.put(s) or ov_genai.StreamingStatus.RUNNING,
@@ -353,7 +361,7 @@ def build_app(pipe, model_id: str) -> FastAPI:
                 yield chunk({"content": rest})
             if calls:
                 yield chunk({"tool_calls": calls})
-            yield chunk({}, "tool_calls" if calls else "stop")
+            yield chunk({}, finish_reason(result.get("res"), calls))
             yield "data: [DONE]\n\n"
 
         return StreamingResponse(events(), media_type = "text/event-stream")

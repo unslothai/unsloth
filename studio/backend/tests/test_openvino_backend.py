@@ -169,3 +169,17 @@ def test_chat_history_joins_system_messages(monkeypatch):
         [{"role": "system", "content": "a"}, {"role": "user", "content": "q"}, {"role": "system", "content": "b"}]
     )
     assert joined == [{"role": "system", "content": "a\n\nb"}, {"role": "user", "content": "q"}]
+
+
+def test_finish_reason_reports_length(monkeypatch):
+    fake = types.ModuleType("openvino_genai")
+    fake.GenerationFinishReason = types.SimpleNamespace(STOP = 1, LENGTH = 2)
+    monkeypatch.setitem(sys.modules, "openvino_genai", fake)
+    monkeypatch.delitem(sys.modules, "core.inference.openvino_sidecar", raising = False)
+    from core.inference.openvino_sidecar import finish_reason
+
+    res = lambda *r: types.SimpleNamespace(finish_reasons = list(r))
+    assert finish_reason(res(2), []) == "length"
+    assert finish_reason(res(1), []) == "stop"
+    assert finish_reason(None, []) == "stop"
+    assert finish_reason(res(2), [{"id": "c"}]) == "tool_calls"
