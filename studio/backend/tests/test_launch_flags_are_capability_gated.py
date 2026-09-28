@@ -590,3 +590,19 @@ class TestTheStdoutBufferIsBounded:
     def test_a_short_log_is_untouched(self):
         lines = [f"line {i}" for i in range(500)]
         assert self._drain(lines) == lines
+
+
+def test_a_flood_before_readiness_keeps_the_startup_head():
+    backend = LlamaCppBackend.__new__(LlamaCppBackend)
+    backend._stdout_lines = []
+    lines = ["load_tensors: offloaded 13/37 layers to GPU"] + [f"trace {i}" for i in range(30000)]
+    backend._process = _types.SimpleNamespace(stdout = iter(f"{l}\n" for l in lines))
+    backend._drain_stdout()
+    assert backend._stdout_lines[0] == lines[0]
+    assert len(backend._stdout_lines) <= llama_cpp_module._STDOUT_TRIM_AT
+
+
+def test_the_offload_report_covers_metal_and_env_pinned_layers():
+    src = inspect.getsource(LlamaCppBackend.load_model)
+    assert "(_detected_gpus or _metal_capable_host())" in src
+    assert "_device_selection_is_cpu(extra_args, env) or _env_fixes_gpu_layers(env)" in src

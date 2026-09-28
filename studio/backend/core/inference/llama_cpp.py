@@ -17543,7 +17543,9 @@ class LlamaCppBackend:
                     lines = self._stdout_lines
                     lines.append(line)
                     if len(lines) > _STDOUT_TRIM_AT:
-                        head = min(startup_len or 0, _STDOUT_HEAD_MAX, len(lines))
+                        # Before readiness the whole log so far is startup: keep its head too.
+                        head = _STDOUT_HEAD_MAX if startup_len is None else startup_len
+                        head = min(head, _STDOUT_HEAD_MAX, len(lines))
                         del lines[head : len(lines) - _STDOUT_TAIL_KEEP]
                     # Two forms across llama.cpp builds. Only readiness lines wake the
                     # probe: waking on every tensor-load log spins startup.
@@ -31142,9 +31144,10 @@ class LlamaCppBackend:
                         gpu_indices is not None or use_fit or gpu_memory_mode == "manual",
                         _detected_gpus,
                     )
-                # Gated like the classifier: llama.cpp logs 0/N on CPU-only hosts too.
+                # Gated like the classifier: llama.cpp logs 0/N on CPU-only hosts too. Apple
+                # Silicon offloads through Metal with an empty CUDA/HIP probe.
                 if (
-                    _detected_gpus
+                    (_detected_gpus or _metal_capable_host())
                     and not _arch_gate_forced_cpu
                     and not _deliberate_cpu_only
                     and (gpu_indices is not None or use_fit or gpu_memory_mode == "manual")
@@ -31156,9 +31159,11 @@ class LlamaCppBackend:
                     llama_saw_gpu_device(self._stdout_lines) is False
                 )
                 # Not _GPU_OFFLOAD_OVERRIDE_FLAGS: --fit on is exactly the split to report.
-                self._offload_overridden = _extra_args_set_any_flag(
-                    extra_args, _GPU_LAYER_FLAGS
-                ) or _device_selection_is_cpu(extra_args, env)
+                self._offload_overridden = (
+                    _extra_args_set_any_flag(extra_args, _GPU_LAYER_FLAGS)
+                    or _device_selection_is_cpu(extra_args, env)
+                    or _env_fixes_gpu_layers(env)
+                )
                 if (
                     self._gpu_offload_layers is not None
                     and 0 < self._gpu_offload_layers[0] < self._gpu_offload_layers[1]

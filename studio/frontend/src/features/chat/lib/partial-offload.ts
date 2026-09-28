@@ -68,38 +68,39 @@ export function offloadWarning(counts: OffloadCounts): OffloadWarning | null {
   }
   // An unrecognised reason is still a reason: say nothing rather than guess at it.
   if (cpuFallbackReason) return null;
+  if (typeof offloaded !== "number" || typeof total !== "number") return null;
+  if (total <= 0 || offloaded >= total) return null;
+  // Before the pin check: a requested GPU split that got no GPU at all was not what anyone asked for.
+  // Backend failure logs the same 0/M, and a smaller quant would not help there.
+  if (offloaded <= 0 && gpuBackendUnavailable && gpuLayers !== 0) {
+    return {
+      titleSuffix: ", on CPU",
+      description:
+        "The GPU was found but llama.cpp could not use it, so the model runs " +
+        "entirely on CPU and generation will be slow. This is a backend " +
+        "problem rather than a size one, so a smaller quantization will not " +
+        "help. The llama-server log in Settings > Logs has the reason.",
+    };
+  }
   const manualPin =
     gpuMemoryMode === "manual" &&
     typeof gpuLayers === "number" &&
     gpuLayers >= 0;
   if (manualPin || offloadOverridden) return null;
-  if (typeof offloaded !== "number" || typeof total !== "number") return null;
-  if (total <= 0 || offloaded >= total) return null;
   if (offloaded <= 0) {
-    // Backend failure logs the same 0/M; a smaller quant would not help there.
-    if (gpuBackendUnavailable) {
-      return {
-        titleSuffix: ", on CPU",
-        description:
-          "The GPU was found but llama.cpp could not use it, so the model runs " +
-          "entirely on CPU and generation will be slow. This is a backend " +
-          "problem rather than a size one, so a smaller quantization will not " +
-          "help. The llama-server log in Settings > Logs has the reason.",
-      };
-    }
     return {
       titleSuffix: ", on CPU",
       description:
         `None of the ${total} layers fit on the GPU, so the model runs entirely on ` +
-        "CPU and generation will be slow. A smaller quantization would leave room " +
-        "on the GPU.",
+        "CPU and generation will be slow. A smaller quantization or a shorter " +
+        "context may leave room on the GPU.",
     };
   }
   return {
     titleSuffix: ", partly on CPU",
     description:
       `${offloaded} of ${total} layers are on the GPU. The rest run on CPU, so ` +
-      "generation will be slower. A smaller quantization would fit entirely on " +
-      "the GPU.",
+      "generation will be slower. A smaller quantization or a shorter context " +
+      "may let more of it fit on the GPU.",
   };
 }

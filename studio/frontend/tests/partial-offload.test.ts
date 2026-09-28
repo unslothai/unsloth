@@ -134,7 +134,7 @@ test("a GPU that llama.cpp could not use is not a size problem", () => {
     gpuBackendUnavailable: true,
   });
   assert.match(broken?.description ?? "", /could not use it/);
-  assert.doesNotMatch(broken?.description ?? "", /smaller quantization would/);
+  assert.doesNotMatch(broken?.description ?? "", /may leave room|may let more/);
   assert.match(
     offloadWarning({ offloaded: 0, total: 60 })?.description ?? "",
     /None of the 60 layers fit/,
@@ -160,4 +160,38 @@ test("a known reason for the CPU wins over the counts", () => {
     offloadWarning({ offloaded: 0, total: 60, cpuFallbackReason: "something" }),
     null,
   );
+});
+
+test("a requested GPU split that got no GPU at all still warns", () => {
+  for (const counts of [
+    { gpuMemoryMode: "manual", gpuLayers: 20 },
+    { gpuMemoryMode: "auto", gpuLayers: -1, offloadOverridden: true },
+  ]) {
+    const warning = offloadWarning({
+      offloaded: 0,
+      total: 60,
+      gpuBackendUnavailable: true,
+      ...counts,
+    });
+    assert.match(warning?.description ?? "", /could not use it/);
+  }
+  // Manual 0 layers asked for the CPU.
+  assert.equal(
+    offloadWarning({
+      offloaded: 0,
+      total: 60,
+      gpuBackendUnavailable: true,
+      gpuMemoryMode: "manual",
+      gpuLayers: 0,
+    }),
+    null,
+  );
+});
+
+test("the advice does not promise that a smaller quantization fits", () => {
+  for (const offloaded of [0, 38]) {
+    const text = offloadWarning({ offloaded, total: 60 })?.description ?? "";
+    assert.match(text, /smaller quantization or a shorter context may/);
+    assert.doesNotMatch(text, /would fit entirely|would leave room/);
+  }
 });
