@@ -84,6 +84,10 @@ class LoadRequest(BaseModel):
             "(llama.cpp or MLX) choose the context itself."
         ),
     )
+    max_seq_length_auto_derived: bool = Field(
+        False,
+        description = "max_seq_length is the previous load's fitted context, not a user choice",
+    )
     load_in_4bit: bool = Field(True, description = "Load model in 4-bit quantization")
     is_lora: bool = Field(False, description = "Whether this is a LoRA adapter")
     gguf_variant: Optional[str] = Field(

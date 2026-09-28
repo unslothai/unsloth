@@ -574,6 +574,7 @@ class GgufLoadIntent:
     # for the session.
     disable_vision: bool = False
     n_ctx: int = 4096
+    max_seq_length_auto_derived: bool = False
     chat_template_override: Optional[str] = None
     cache_type_kv: Optional[str] = None
     speculative_type: Optional[str] = None
@@ -25624,7 +25625,11 @@ class LlamaCppBackend:
                                 # on Auto.
                                 max_available_ctx = min(_AUTO_OFFLOAD_CTX, native_ctx_for_cap)
 
-                        if explicit_ctx:
+                        if explicit_ctx and not (
+                            intent.max_seq_length_auto_derived
+                            and _mtp_reserves_gpu
+                            and (_canonicalize_spec_mode(speculative_type) or "auto") != "auto"
+                        ):
                             # Honor the requested context verbatim. If it fits,
                             # pin GPUs and skip --fit; else ship -c <ctx> --fit
                             # on and let llama-server flex -ngl (CPU offload).
