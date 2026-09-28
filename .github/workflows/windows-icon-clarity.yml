@@ -47,7 +47,10 @@ jobs:
         shell: pwsh
         run: |
           $config = Join-Path $env:RUNNER_TEMP 'icon-ci-tauri.json'
-          '{"bundle":{"createUpdaterArtifacts":false}}' | Set-Content -LiteralPath $config -Encoding utf8
+          # Windows automatically merges tauri.windows.conf.json, which has a
+          # production Azure signing command. This evidence build has no signing
+          # credentials: override it explicitly, without editing release config.
+          '{"bundle":{"createUpdaterArtifacts":false,"windows":{"signCommand":null}}}' | Set-Content -LiteralPath $config -Encoding utf8
           npx --prefix studio tauri build --bundles nsis --config $config
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Extract actual Windows app and installer icon resources
