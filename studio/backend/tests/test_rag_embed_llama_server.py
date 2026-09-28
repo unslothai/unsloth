@@ -338,6 +338,33 @@ def test_gpu_available_apple_metal(monkeypatch):
     assert LlamaServerBackend._gpu_available() is True
 
 
+_REAL_POPEN = subprocess.Popen
+_FAKE_BINARY = "/bin/llama-server"
+
+
+def _intercept_server_popen(
+    monkeypatch,
+    proc,
+    captured = None,
+):
+    """Answer the embed server's own launch with `proc`, and nothing else.
+
+    `mod.subprocess` is the process-wide subprocess module, so a blanket Popen patch also answers
+    every other thread that starts a process while the test runs, and a recorder keeps whichever
+    argv came last. On #11902's macOS Uploads run that replaced the server's command with a
+    foreign one: `'--pooling' is not in list`. Everything that is not the server passes through.
+    """
+
+    def popen(cmd, *args, **kwargs):
+        if isinstance(cmd, (list, tuple)) and cmd and cmd[0] == _FAKE_BINARY:
+            if captured is not None:
+                captured["cmd"] = list(cmd)
+            return proc
+        return _REAL_POPEN(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(mod.subprocess, "Popen", popen)
+
+
 def _patch_spawn_deps(
     monkeypatch,
     proc,
@@ -346,12 +373,12 @@ def _patch_spawn_deps(
 ):
     # Force CPU so spawn never depends on a host GPU.
     monkeypatch.setattr(config, "EMBED_DEVICE", "cpu")
-    monkeypatch.setattr(LlamaServerBackend, "_resolve_binary", lambda self: "/bin/llama-server")
+    monkeypatch.setattr(LlamaServerBackend, "_resolve_binary", lambda self: _FAKE_BINARY)
     monkeypatch.setattr(
         LlamaServerBackend, "_resolve_model_path", lambda self, model_name = None: "/m/bge.gguf"
     )
     monkeypatch.setattr(LlamaServerBackend, "_find_free_port", staticmethod(lambda: free_port))
-    monkeypatch.setattr(mod.subprocess, "Popen", lambda *a, **k: proc)
+    _intercept_server_popen(monkeypatch, proc)
 
 
 def test_spawn_uses_explicit_port(monkeypatch):
@@ -382,21 +409,55 @@ def test_spawn_refreshes_pooling_for_a_replaced_model(monkeypatch, tmp_path):
     proc = _FakeProc(alive = True)
     captured = {}
 
-    monkeypatch.setattr(backend, "_resolve_binary", lambda: "/bin/llama-server")
+    monkeypatch.setattr(backend, "_resolve_binary", lambda: _FAKE_BINARY)
     monkeypatch.setattr(backend, "_resolve_model_path", lambda model_name = None: str(path))
     monkeypatch.setattr(backend, "_find_free_port", lambda: 47000)
     monkeypatch.setattr(backend, "_wait_for_health", lambda *a, **k: True)
     monkeypatch.setattr(backend, "_build_env", lambda *a, **k: {})
 
-    def fake_popen(cmd, **_kwargs):
-        captured["cmd"] = cmd
-        return proc
-
-    monkeypatch.setattr(mod.subprocess, "Popen", fake_popen)
+    _intercept_server_popen(monkeypatch, proc, captured)
     backend._spawn_once(False)
 
     assert captured["cmd"][captured["cmd"].index("--pooling") + 1] == "mean"
     assert backend._model_pooling == "mean"
+
+
+def test_a_process_started_elsewhere_during_spawn_does_not_replace_the_server_command(
+    monkeypatch, tmp_path
+):
+    """Another thread starting a process mid-spawn must neither be handed the fake server nor
+    overwrite the command the test reads back."""
+    path = tmp_path / "embed.gguf"
+    _write_gguf(path, "qwen3", 1)
+    backend = LlamaServerBackend()
+    proc = _FakeProc(alive = True)
+    captured = {}
+    foreign = {}
+
+    def other_thread_starts_a_process():
+        child = subprocess.Popen(
+            [sys.executable, "-c", "pass"], stdout = subprocess.DEVNULL, stderr = subprocess.DEVNULL
+        )
+        foreign["real"] = child is not proc
+        child.wait(timeout = 30)
+
+    def health_while_another_thread_spawns(*_a, **_k):
+        thread = threading.Thread(target = other_thread_starts_a_process)
+        thread.start()
+        thread.join(timeout = 30)
+        return True
+
+    monkeypatch.setattr(backend, "_resolve_binary", lambda: _FAKE_BINARY)
+    monkeypatch.setattr(backend, "_resolve_model_path", lambda model_name = None: str(path))
+    monkeypatch.setattr(backend, "_find_free_port", lambda: 47000)
+    monkeypatch.setattr(backend, "_wait_for_health", health_while_another_thread_spawns)
+    monkeypatch.setattr(backend, "_build_env", lambda *a, **k: {})
+    _intercept_server_popen(monkeypatch, proc, captured)
+    backend._spawn_once(False)
+
+    assert foreign.get("real") is True, "the other thread was handed the fake server"
+    assert captured["cmd"][0] == _FAKE_BINARY
+    assert captured["cmd"][captured["cmd"].index("--pooling") + 1] == "mean"
 
 
 def test_spawn_fails_loud_on_early_exit(monkeypatch):

@@ -46,7 +46,7 @@ export function isRecommendableFormat(
 }
 
 /** Format filter for the listing toggle. "safetensors" means anything that is neither GGUF nor MLX. */
-export type FormatFilter = "all" | "gguf" | "mlx" | "safetensors";
+export type FormatFilter = "all" | "gguf" | "mlx" | "safetensors" | "npu";
 
 export function matchesFormatFilter(
   id: string,
@@ -60,6 +60,8 @@ export function matchesFormatFilter(
       return isMlxId(id);
     case "safetensors":
       return !isGgufId(id, hintedIsGguf) && !isMlxId(id);
+    case "npu":
+      return false;
     default:
       return true;
   }
@@ -474,4 +476,17 @@ export function intelIntRecommendations(
   }
   for (const [source, id] of bySource) out.set(id, source);
   return out;
+}
+
+export function recommendedEmptyState({
+  isLoading,
+  error,
+  hubPhase,
+}: {
+  isLoading: boolean;
+  error: string | null;
+  hubPhase: "available" | "probing" | "unavailable";
+}): "loading" | "failed" | "empty" {
+  if (isLoading) return "loading";
+  return error || hubPhase !== "available" ? "failed" : "empty";
 }

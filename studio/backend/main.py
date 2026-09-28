@@ -251,11 +251,10 @@ if _STUDIO_ROOT_RESOLVED != _LEGACY_STUDIO_ROOT or _MASTER_ROOT is not None:
     mark_managed_llama_cpp_path(_MANAGED_LLAMA_CPP_PATH)
 
 # huggingface_hub reads HF_ENDPOINT itself, at import, unnormalised and unvalidated.
-# Rewrite it first, before anything imports the library.
-from utils.hf_endpoint import normalize_hf_endpoint_env as _normalize_hf_endpoint_env
+from utils.hub_settings import apply_hub_settings as _apply_hub_settings
 
-_normalize_hf_endpoint_env()
-del _normalize_hf_endpoint_env
+_apply_hub_settings()
+del _apply_hub_settings
 
 # The studio bundles unsloth_zoo; declare unsloth present (as `import unsloth` does) so its
 # lazy submodule imports and the DiffusionGemma runner don't trip the install guard.
@@ -351,6 +350,7 @@ from routes import (
 from routes.llama import router as llama_router
 from routes.llama_compat import is_engine_probe_path, router as llama_compat_router
 from routes.whisper import router as whisper_router
+from routes.npu import router as npu_router
 from routes.preview import router as preview_router
 from hub.routes import (
     inventory_router as hub_inventory_router,
@@ -365,7 +365,9 @@ from hub.utils.download_registry import (
     terminate_active_downloads as terminate_hub_downloads,
 )
 from routes.settings import router as settings_router
+from routes.systemone import router as systemone_router
 from routes.prompts import router as prompts_router
+from routes.library import router as library_router
 from routes.profile_stats import router as profile_stats_router
 from auth import policy as auth_policy, storage
 from auth.authentication import authenticated_via_api_key, get_current_subject
@@ -396,11 +398,17 @@ from utils.client_ip import client_ip
 from utils.hf_endpoint import (
     DEFAULTS_BY_HEALTH_KEY as _HF_ENDPOINT_DEFAULTS,
     endpoint_is_reachable_by as _endpoint_is_reachable_by,
+    browser_hf_endpoint,
     csp_asset_sources,
     csp_connect_sources,
-    get_hf_endpoint,
     get_hf_datasets_server,
 )
+from hub import endpoint_proxy as _hub_endpoint_proxy
+from hub.modelscope.router import (
+    BROWSER_PREFIX as _MODELSCOPE_BROWSER_PREFIX,
+    build_router as _build_modelscope_router,
+)
+from utils.hub_settings import active_source as _active_hub_source
 from utils.update_status import (
     get_studio_install_source_status,
     get_studio_update_status,
@@ -655,6 +663,18 @@ def _post_warm_background_work(generation: Optional[int] = None) -> None:
         return
     _start_linked_folder_auto_sync(generation)
 
+    try:
+        from core import chat_originals
+        from core.training.account_jobs import startup_reconciliation_accounts
+        from utils.account_context import run_as
+
+        for account in startup_reconciliation_accounts():
+            if _post_warm_retired(generation):
+                return
+            run_as(account, chat_originals.sweep, True)
+    except Exception:  # noqa: BLE001
+        pass
+
     # Last, and deliberately so: it is the only item here that is pure latency work rather than
     # correctness, so everything above keeps its place in the queue. Roughly 5.3s of diffusers
     # import that the first image load would otherwise pay, moved onto this thread, and only on
@@ -746,6 +766,13 @@ async def lifespan(app: FastAPI):
         start_sandbox_recovery()
     except Exception:  # noqa: BLE001
         pass
+
+    try:
+        from hub.services.models.account_access import adopt_unnamed_public_proofs
+        from utils.hub_settings import operator_hf_endpoint
+        adopt_unnamed_public_proofs(operator_hf_endpoint())
+    except Exception:  # noqa: BLE001 -- unnamed proofs are then only ignored
+        _lifespan_log.warning("could not name recorded public-repo proofs", exc_info = True)
 
     # Remove stale .venv_overlay from old versions; switching now uses .venv_t5/.
     overlay_dir = Path(__file__).resolve().parent.parent.parent / ".venv_overlay"
@@ -1054,12 +1081,16 @@ def _reportable_hf_endpoints(request) -> dict:
     Cloudflare tunnel the peer IS loopback, being the local cloudflared process
     rather than the visitor, and an address it cannot determine reads as remote.
     """
+    from utils.hub_settings import saved_only_endpoints
+
+    # The owner-only settings route guards a saved endpoint; the browser reaches it through the relay.
+    hidden = saved_only_endpoints()
     reported = {}
     for key, value in (
-        ("hf_endpoint", get_hf_endpoint()),
+        ("hf_endpoint", browser_hf_endpoint()),
         ("hf_datasets_server", get_hf_datasets_server()),
     ):
-        if _endpoint_is_reachable_by(value, client_ip(request)):
+        if value not in hidden and _endpoint_is_reachable_by(value, client_ip(request)):
             reported[key] = value
         else:
             reported[key] = _HF_ENDPOINT_DEFAULTS[key]
@@ -1128,6 +1159,10 @@ def _build_csp(script_nonce: "str | None" = None, *, docs: bool = False) -> str:
     )
 
 
+# Any of these means the response already says how a browser may cache or revalidate it.
+_CACHE_POLICY_HEADERS = ("cache-control", "expires", "etag", "last-modified")
+
+
 class SecurityHeadersMiddleware:
     """Set baseline security headers; splice per-response inline-script nonces into CSP. Pure ASGI (not
     BaseHTTPMiddleware) so streaming responses are not wrapped in an anyio stream."""
@@ -1166,6 +1201,14 @@ class SecurityHeadersMiddleware:
                     "Permissions-Policy",
                     "camera=(), microphone=(self), geolocation=()",
                 )
+                # An API read with no cache policy and no validators can never be reused, yet Chromium and
+                # WebView2 still write each one to the disk cache. The UI polls several for as long as it is
+                # open, and the API monitor returns its whole history each time: ~200 KB of disk writes every
+                # 2 s from an idle desktop app. Routes with their own policy or validators keep them.
+                if path.startswith("/api/") and not any(
+                    name in headers for name in _CACHE_POLICY_HEADERS
+                ):
+                    headers["Cache-Control"] = "no-store"
                 headers["server"] = "unsloth-studio"
             await send(message)
 
@@ -1254,6 +1297,7 @@ import json as _json_for_413  # noqa: E402
 from utils.upload_limits import (  # noqa: E402
     STT_AUDIO_JSON_MAX_BYTES,
     STT_AUDIO_RAW_MAX_BYTES,
+    LIBRARY_UPLOAD_MAX_BYTES,
     UNSTRUCTURED_RECIPE_UPLOAD_MAX_BYTES,
     VIDEO_INPUT_REFERENCE_JSON_MAX_BYTES,
     VIDEO_INPUT_REFERENCE_MAX_BYTES,
@@ -1275,6 +1319,7 @@ _BODY_PROTECTED_PREFIXES = (
     "/api/settings",
     "/api/train",
     "/api/export",
+    "/api/library",
     "/mcp",
 )
 _DATASET_UPLOAD_PASSTHROUGH_PREFIXES = (
@@ -1295,6 +1340,7 @@ _VIDEO_MULTIPART_UPLOAD_PATHS = (
     "/v1/videos",
     "/api/inference/videos",
 )
+_LIBRARY_UPLOAD_PATH = "/api/library/uploads"
 _BODY_UPLOAD_PASSTHROUGH_PREFIXES = (
     *_DATASET_UPLOAD_PASSTHROUGH_PREFIXES,
     _DATA_RECIPE_UNSTRUCTURED_UPLOAD_PASSTHROUGH_PREFIX,
@@ -1304,6 +1350,7 @@ _BODY_UPLOAD_PASSTHROUGH_EXACT_PATHS = (
     _DIFFUSION_DATASET_UPLOAD_PATH,
     *_STT_MULTIPART_UPLOAD_PATHS,
     *_VIDEO_MULTIPART_UPLOAD_PATHS,
+    _LIBRARY_UPLOAD_PATH,
 )
 # Which of those may arrive with no Content-Length and be counted instead of refused. Deliberately NOT the
 # whole set above: this middleware runs before authentication, and a counted body is a held body, so the dataset
@@ -1322,6 +1369,8 @@ def _get_upload_passthrough_request_max_bytes(path: str) -> int:
             upload_request_limit_bytes(VIDEO_INPUT_REFERENCE_MAX_BYTES),
             VIDEO_INPUT_REFERENCE_JSON_MAX_BYTES,
         )
+    if path.rstrip("/") == _LIBRARY_UPLOAD_PATH:
+        return upload_request_limit_bytes(LIBRARY_UPLOAD_MAX_BYTES)
     # The trailing-slash variant reaches this middleware BEFORE the router's redirect_slashes
     # 307, so it must resolve to the same cap. JSON sub-routes keep extra path components.
     if (
@@ -1573,7 +1622,11 @@ app.add_middleware(
     allow_headers = ["*"],
     # allow_headers is the REQUEST side; a response header is unreadable to JS unless
     # exposed, and Studio is cross-origin from tauri://localhost and tunnels.
-    expose_headers = ["X-Unsloth-Conflict-Kind"],
+    expose_headers = [
+        "X-Unsloth-Conflict-Kind",
+        "X-Unsloth-Refusal",
+        *_hub_endpoint_proxy.EXPOSED_HEADERS,
+    ],
     # is_allowed_origin closes the moment the tunnel URL clears, but a preflight already cached by the browser
     # does not. Measured in WebKit: with Starlette's 600s default, a state-changing request still REACHED the
     # server after remote access was stopped. Keep the stale window short.
@@ -1613,6 +1666,7 @@ app.include_router(video_openai_router, prefix = "/api/inference", tags = ["infe
 app.include_router(video_openai_router, prefix = "/v1", tags = ["openai-compat"])
 
 app.include_router(inference_router, prefix = "/v1", tags = ["openai-compat"])
+app.include_router(systemone_router, prefix = "/v1", tags = ["systemone"])
 # llama-server / Ollama discovery probes. Declares its own full paths (/props, /version, /api/tags, ...) so it
 # needs no prefix, and must be registered ahead of the SPA catch-all in serve_frontend() or /props and /version
 # go on resolving to index.html with a 200.
@@ -1626,11 +1680,13 @@ app.include_router(settings_router, prefix = "/api/settings", tags = ["settings"
 app.include_router(mcp_servers_router, prefix = "/api/mcp/servers", tags = ["mcp"])
 app.include_router(skills_router, prefix = "/api/skills", tags = ["skills"])
 app.include_router(prompts_router, prefix = "/api/prompts", tags = ["prompts"])
+app.include_router(library_router, prefix = "/api/library", tags = ["library"])
 app.include_router(profile_stats_router, prefix = "/api/profile", tags = ["profile"])
 app.include_router(datasets_router, prefix = "/api/datasets", tags = ["datasets"])
 app.include_router(data_recipe_router, prefix = "/api/data-recipe", tags = ["data-recipe"])
 app.include_router(llama_router, prefix = "/api/llama", tags = ["llama"])
 app.include_router(whisper_router, prefix = "/api/whisper", tags = ["whisper"])
+app.include_router(npu_router, prefix = "/api/npu", tags = ["npu"])
 app.include_router(export_router, prefix = "/api/export", tags = ["export"])
 app.include_router(rag_router, prefix = "/api/rag", tags = ["rag"])
 app.include_router(training_history_router, prefix = "/api/train", tags = ["training-history"])
@@ -1638,6 +1694,20 @@ app.include_router(hub_inventory_router, prefix = "/api/hub", tags = ["hub"])
 app.include_router(hub_datasets_router, prefix = "/api/hub/datasets", tags = ["hub"])
 app.include_router(picker_templates_router, prefix = "/api/picker", tags = ["picker"])
 app.include_router(hub_token_router, prefix = "/api/hub", tags = ["hub"])
+app.include_router(
+    _build_modelscope_router(browser = True),
+    prefix = _MODELSCOPE_BROWSER_PREFIX,
+    include_in_schema = False,
+)
+for _prefix, _upstream, _pages in (
+    (_hub_endpoint_proxy.HUB_PREFIX, browser_hf_endpoint, True),
+    (_hub_endpoint_proxy.DATASETS_SERVER_PREFIX, get_hf_datasets_server, False),
+):
+    app.include_router(
+        _hub_endpoint_proxy.build_router(_prefix, _upstream, anonymous_pages = _pages),
+        prefix = _prefix,
+        tags = ["hub"],
+    )
 app.include_router(youtube_router, prefix = "/api/youtube", tags = ["youtube"])
 
 from routes.convert import router as convert_router
@@ -1918,6 +1988,17 @@ async def health_check(request: Request):
         # Unauthenticated on purpose: an endpoint URL is not a host fingerprint,
         # and the frontend needs it before a token exists.
         **_reportable_hf_endpoints(request),
+        "hub_source": _active_hub_source(),
+        "hub_proxy": _hub_endpoint_proxy.relay_path(
+            _hub_endpoint_proxy.HUB_PREFIX,
+            browser_hf_endpoint(),
+            _HF_ENDPOINT_DEFAULTS["hf_endpoint"],
+        ),
+        "datasets_server_proxy": _hub_endpoint_proxy.relay_path(
+            _hub_endpoint_proxy.DATASETS_SERVER_PREFIX,
+            get_hf_datasets_server(),
+            _HF_ENDPOINT_DEFAULTS["hf_datasets_server"],
+        ),
         **({"desktop_owner": owner} if (owner := _desktop_owner()) else {}),
     }
     # Lockstep with /api/liveness: the launcher falls back to this route on a backend too old
@@ -1988,6 +2069,9 @@ async def health_check(request: Request):
         authed["chat_only_detail"] = snapshot[2]
         authed["device_type"] = device_type
         authed["apple_silicon"] = is_apple_silicon()
+        from utils.paths.file_manager import file_manager_kind
+
+        authed["file_manager"] = file_manager_kind()
         # base predates the bearer await; never ship "detecting" beside a measurement.
         authed.pop("hardware_detecting", None)
         # Same for the deferred marker: the client reads it first and would keep the old reason.
@@ -2105,7 +2189,15 @@ def _get_cached_system_gpu_info(
             visibility_info = {"available": False, "devices": []}
 
         try:
-            utilization_info = get_visible_gpu_utilization() or {"devices": []}
+            import contextlib
+
+            from utils.hardware import gpu_query
+
+            # Already behind a 10 s cache: no stale-while-revalidate on top.
+            with (
+                contextlib.nullcontext() if refresh_memory else gpu_query.display_reads(max_stale = 0)
+            ):
+                utilization_info = get_visible_gpu_utilization() or {"devices": []}
         except Exception as e:
             logger.debug(f"Failed to get GPU utilization info: {e}")
             utilization_info = {"devices": []}
@@ -2225,10 +2317,7 @@ def _probe_dense_quant_supported() -> bool:
     sharpens, since an unprobed scheme counts as usable and a later load can record a kernel
     failure in ``_SMOKE_CACHE``."""
     try:
-        from core.inference.diffusion_device import (
-            diffusion_device_scope,
-            resolve_diffusion_device_target,
-        )
+        from core.inference.diffusion_device import resolve_diffusion_device_target
         from core.inference.diffusion_transformer_quant import dense_quant_host_capable
 
         import torch
@@ -2236,10 +2325,10 @@ def _probe_dense_quant_supported() -> bool:
         count = torch.cuda.device_count() if torch.cuda.is_available() else 0
         if count <= 1:
             return bool(dense_quant_host_capable(resolve_diffusion_device_target()))
+        # No device scope: cudaSetDevice pins a primary context on every card (CUDA 12).
         for ordinal in range(count):
-            with diffusion_device_scope(ordinal):
-                if not dense_quant_host_capable(resolve_diffusion_device_target(ordinal = ordinal)):
-                    return False
+            if not dense_quant_host_capable(resolve_diffusion_device_target(ordinal = ordinal)):
+                return False
         return True
     except Exception:  # noqa: BLE001 -- a capability probe must never fail a status request
         return False
@@ -2254,10 +2343,7 @@ def _probe_dense_quant_schemes() -> list[str]:
     the load-time helper runs ``_scheme_supported``, which spawns the smoke probe or allocates in
     this process. Like the capability bit, it sharpens as loads record verdicts in ``_SMOKE_CACHE``."""
     try:
-        from core.inference.diffusion_device import (
-            diffusion_device_scope,
-            resolve_diffusion_device_target,
-        )
+        from core.inference.diffusion_device import resolve_diffusion_device_target
         from core.inference.diffusion_transformer_quant import auto_scheme_candidates_cached
 
         import torch
@@ -2267,10 +2353,9 @@ def _probe_dense_quant_schemes() -> list[str]:
             return list(auto_scheme_candidates_cached(resolve_diffusion_device_target()))
         common: Optional[list[str]] = None
         for ordinal in range(count):
-            with diffusion_device_scope(ordinal):
-                schemes = list(
-                    auto_scheme_candidates_cached(resolve_diffusion_device_target(ordinal = ordinal))
-                )
+            schemes = list(
+                auto_scheme_candidates_cached(resolve_diffusion_device_target(ordinal = ordinal))
+            )
             common = schemes if common is None else [s for s in common if s in schemes]
         return common or []
     except Exception:  # noqa: BLE001 -- a capability probe must never fail a status request
@@ -2304,6 +2389,15 @@ def _dense_quant_supported() -> bool:
     if "torch" in sys.modules and "torchao" in sys.modules:
         return _refresh_dense_quant_capability()
     return bool(_dense_quant_capability)
+
+
+def _nvfp4_diffusion_enabled() -> bool:
+    """Whether image and video generation may offer NVFP4 (``UNSLOTH_NVFP4_DIFFUSION``)."""
+    try:
+        from core.inference.diffusion_nvfp4_flag import nvfp4_diffusion_enabled
+        return nvfp4_diffusion_enabled()
+    except Exception:  # noqa: BLE001 -- a capability read must never fail a status request
+        return False
 
 
 def _dense_quant_schemes() -> list[str]:
@@ -2412,6 +2506,8 @@ def get_system_info(
         # pure read of that same pass.
         "dense_quant_supported": _dense_quant_supported(),
         "dense_quant_schemes": _dense_quant_schemes(),
+        # Torch-free env read, safe on this polled route.
+        "nvfp4_diffusion": _nvfp4_diffusion_enabled(),
     }
 
 

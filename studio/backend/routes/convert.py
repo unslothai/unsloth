@@ -31,7 +31,7 @@ model, tokenizer = FastLanguageModel.from_pretrained(
 )
 print("STAGE saving", flush=True)
 model.save_pretrained_openvino(
-    f"{model_id}-{format_type}", tokenizer=tokenizer, quant_method=quant_method,
+    f"{model_id}-{format_type}", tokenizer=tokenizer, quantization_type=quant_method,
 )
 """
 

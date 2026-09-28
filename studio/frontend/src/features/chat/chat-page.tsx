@@ -79,6 +79,7 @@ import {
   useNativeModelDrop,
   useNativePathLeasesSupported,
 } from "@/features/native-intents";
+import { isNpuModelId } from "@/features/npu";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { isTauri } from "@/lib/api-base";
 import { chatModelLoaded } from "./lib/chat-model-loaded";
@@ -257,6 +258,7 @@ import { isAssistantLocalThreadId } from "./utils/thread-ids";
 import {
   consumeProjectSourcesPending,
   hasProjectSourcesPending,
+  noteProjectLandingMounted,
 } from "@/features/rag/components/project-source-dropzone";
 import {
   exportConversationCsv,
@@ -1369,6 +1371,7 @@ function ProjectLanding({
   // Drop the marker once committed: React may replay the initializer above.
   useEffect(() => {
     consumeProjectSourcesPending(projectId);
+    return noteProjectLandingMounted(projectId);
   }, [projectId]);
   const [pendingNewThreadId, setPendingNewThreadId] = useState<string | null>(
     null,
@@ -2300,6 +2303,15 @@ export function ChatPage({
   );
   const contextUsage = useChatRuntimeStore((state) => state.contextUsage);
   const loadedIsGguf = useChatRuntimeStore((state) => state.loadedIsGguf);
+  const loadedContextUnboundedWhenBatched = useChatRuntimeStore(
+    (state) => state.loadedContextUnboundedWhenBatched,
+  );
+  const loadedParallelSlots = useChatRuntimeStore(
+    (state) => state.loadedParallelSlots,
+  );
+  const loadedContextBudget = useChatRuntimeStore(
+    (state) => state.loadedContextBudget,
+  );
   const loadedContextEnforced = useChatRuntimeStore(
     (state) => state.loadedContextEnforced,
   );
@@ -2395,6 +2407,7 @@ export function ChatPage({
 
     isModelSelectionIntentCurrent,
     selectModel,
+    loadNpuModel,
     ejectModel,
     cancelLoading,
     loadingModel,
@@ -3224,6 +3237,13 @@ export function ChatPage({
           return;
         }
       }
+      if (isNpuModelId(value)) {
+        void loadNpuModel(value, {
+          forceReload: meta?.forceReload,
+          config: meta?.config,
+        });
+        return;
+      }
       if (isExternalSelection) {
         // Any pending local preflight is stale now, even before it has published a loading run.
         const externalIntentId = invalidatePendingModelSelection();
@@ -3468,6 +3488,7 @@ export function ChatPage({
     [
       activeThreadId,
       externalProvidersForChat,
+      loadNpuModel,
       modelsFromStore,
       stageOrLoad,
       view,
@@ -3857,6 +3878,7 @@ export function ChatPage({
       updatedAt: lora.updatedAt,
       source: lora.source,
       exportType: lora.exportType,
+      sizeBytes: lora.sizeBytes,
       audioType: lora.audioType,
     }));
     return [...fromLoras, ...localModels];
@@ -4243,6 +4265,9 @@ export function ChatPage({
                   platformChatOnlyReason,
                 )}
                 contextEnforced={loadedContextEnforced}
+                contextUnboundedWhenBatched={loadedContextUnboundedWhenBatched}
+                parallelSlots={loadedParallelSlots}
+                contextBudget={loadedContextBudget}
                 className="h-[var(--studio-chat-control-height,34px)]"
               />
             ) : null}
@@ -4456,6 +4481,7 @@ export function ChatPage({
               modelId={inferenceParams.checkpoint}
               ggufVariant={activeGgufVariant ?? null}
               isGguf={activeModelIsGguf}
+              isLora={activeModelIsLora}
               isDiffusion={activeModelIsDiffusion}
               nativeContextLength={nativeContextLength}
               loadedContextLength={loadedContextLength}

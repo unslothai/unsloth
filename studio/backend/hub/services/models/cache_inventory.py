@@ -206,6 +206,28 @@ def all_hf_cache_scans():
     return hf_cache_scan.all_hf_cache_scans()
 
 
+def _blob_key(file_obj, fallback: str) -> str:
+    """Key existing files by inode: no-symlink snapshot paths are their own blob_path, and reuse hard links them."""
+    blob_path = getattr(file_obj, "blob_path", None)
+    if not blob_path:
+        return fallback
+    try:
+        st = Path(blob_path).stat()
+    except OSError:
+        return str(blob_path)
+    return f"inode:{st.st_dev}:{st.st_ino}" if st.st_ino else str(blob_path)
+
+
+def repo_unique_size_bytes(repo_info) -> int:
+    """Every file across revisions, each stored copy counted once (see ``_blob_key``)."""
+    unique: dict[str, int] = {}
+    for revision in repo_info.revisions:
+        rev_id = getattr(revision, "commit_hash", None) or str(id(revision))
+        for f in cached_repo_files(revision):
+            unique[_blob_key(f, f"{rev_id}:{f.file_name}")] = int(f.size_on_disk or 0)
+    return sum(unique.values())
+
+
 def _repo_gguf_size_bytes(repo_info) -> int:
     """Sum primary GGUF blob sizes across revisions, deduped by blob path (HF hardlinks shared blobs); mmproj is excluded so a vision-adapter-only repo isn't classed as GGUF."""
     unique_blobs: dict[str, int] = {}
@@ -215,12 +237,7 @@ def _repo_gguf_size_bytes(repo_info) -> int:
             # Snapshot-relative: only the directory marks an MTP/ drafter as a companion.
             name = _cached_repo_file_name(f)
             if _is_main_gguf_filename(name):
-                blob_path = getattr(f, "blob_path", None)
-                size = f.size_on_disk or 0
-                if blob_path:
-                    unique_blobs[str(blob_path)] = size
-                else:
-                    unique_blobs[f"{rev_id}:{name}"] = size
+                unique_blobs[_blob_key(f, f"{rev_id}:{name}")] = f.size_on_disk or 0
     return sum(unique_blobs.values())
 
 
@@ -583,6 +600,7 @@ def _scan_cached_gguf(
         variant_states = None
 
     seen_lower: dict[str, dict] = {}
+    repo_cache_roots: dict[str, set[Path]] = {}
     for hf_cache in cache_scans:
         for repo_info in hf_cache.repos:
             try:
@@ -684,7 +702,11 @@ def _scan_cached_gguf(
                         tts_only = row_task == "text-to-speech",
                     )
                 )
-                # Only the winning cache root loads, so the loser's vision flag must not carry over.
+                # Preserve a snapshot-pinned load id for a single cache: refs/main can
+                # be stale or dangling even when a different snapshot holds the quant.
+                # Only a repository spanning distinct cache roots needs repo-wide
+                # resolution so chat can choose the requested quant's owning copy.
+                repo_cache_roots.setdefault(key, set()).add(repo_path.parent)
                 if _prefer_cache_row(row, existing):
                     seen_lower[key] = row
                 elif last_modified > existing.get("last_modified", 0.0):
@@ -693,6 +715,15 @@ def _scan_cached_gguf(
                 repo_label = getattr(repo_info, "repo_id", "<unknown>")
                 logger.warning("Skipping cached GGUF repo %s: %s", repo_label, scrub_paths(e))
                 continue
+    from hub.utils.gguf_sources import CHAT_GGUF_TASKS
+
+    for key, row in seen_lower.items():
+        if (
+            len(repo_cache_roots.get(key, ())) > 1
+            and not row["partial"]
+            and row["task"] in CHAT_GGUF_TASKS
+        ):
+            row["load_id"] = row["repo_id"]
     return sorted(seen_lower.values(), key = lambda c: c["repo_id"])
 
 
@@ -834,9 +865,8 @@ def _repo_non_gguf_model_payload(repo_info) -> _CachedNonGgufPayload:
     def _record_blob(
         target: dict[str, tuple[int, float]], file_obj, rev_id: str, file_name: str
     ) -> None:
-        blob_path = getattr(file_obj, "blob_path", None)
         size = int(file_obj.size_on_disk or 0)
-        key = str(blob_path) if blob_path else f"{rev_id}:{file_name}"
+        key = _blob_key(file_obj, f"{rev_id}:{file_name}")
         value = (size, _blob_mtime(file_obj))
         target[key] = value
         all_weight_blobs[key] = value
@@ -1148,6 +1178,8 @@ def _scan_cached_models(
                     "task": row_task,
                     "audio_type": audio_type,
                     "partial": snapshot_partial,
+                    # Still partial so no picker loads it, but the Hub must not offer "Continue": that pulls the denoiser a GGUF replaces.
+                    "companion_prefetch": companion_only and not download_partial,
                     "partial_transport": (
                         hf_cache_scan.partial_transport_for(
                             "model",
