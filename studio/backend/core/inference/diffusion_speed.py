@@ -392,8 +392,7 @@ def apply_speed_optims(
     on_cuda = getattr(target, "device", None) == "cuda"
     family_allows_compile = bool(getattr(family, "supports_torch_compile", True))
 
-    # Near-lossless (PSNR ~60 dB): a one-frame image through the Qwen-Image causal 3D VAE as a 2D conv net. Before
-    # channels_last, which a 5D-weight VAE otherwise refuses outright.
+    # Before channels_last, which a 5D-weight VAE refuses.
     applied["vae_single_frame"] = _vae_single_frame(pipe, logger)
     # Lossless: a channels-last VAE speeds up its convs with no numeric change.
     applied["channels_last"] = _vae_channels_last(pipe, logger)
@@ -680,8 +679,7 @@ def _divisibility_proof_available() -> bool:
 
 
 def _dits_merge_streams(dits: list) -> bool:
-    """Whether a stream-merging block must compile static. Not once inductor can prove the split (the CantSplit root
-    cause): FLUX.1 then compiles dynamic like every other DiT, one artifact across resolutions."""
+    """Whether a stream-merging block must compile static: not once inductor can prove the CantSplit split."""
     if _divisibility_proof_available():
         return False
     broad = os.environ.get(_STREAM_MERGE_DETECT_ENV) == "1"
@@ -1065,11 +1063,8 @@ COMPILE_VAE_ENV = "UNSLOTH_DIFFUSION_COMPILE_VAE"
 _VAE_TRUE_TOKENS = ("1", "true", "yes", "on")
 _VAE_FALSE_TOKENS = ("0", "false", "no", "off")
 
-# Not a correctness list: these decode correctly compiled but measured SLOWER than eager, or not worth the compile.
-# The Qwen-Image VAE stays eager even with its single-frame 2D path (diffusion_vae_single_frame): compiled it saves
-# ~23 ms per 1024 decode (35.8 -> 12.8 ms, B200) but costs a ~54 s first render, and a ~175 s recompile on the next
-# resolution (automatic dynamic) or a longer one-off dynamic compile. Keyed by class, never by the single-frame
-# marker, which is installed after the compile-cache fingerprint is taken.
+# Correct compiled but not worth it (Qwen-Image VAE: ~54 s first compile for ~23 ms/decode). Keyed by class, never by
+# the single-frame marker, which is installed after the compile-cache fingerprint is taken.
 _VAE_COMPILE_DENY: frozenset[str] = frozenset({"AutoencoderKLQwenImage", "AutoencoderKLWan"})
 
 # ``auto`` compiles only measured VAEs: video DiTs also pass through apply_speed_optims.
@@ -1171,9 +1166,7 @@ def _compile_vae_decode(
     try:
         import torch
 
-        # dynamic=True, never automatic dynamic: one compile serves every resolution. Automatic dynamic compiles the
-        # first shape static and then pays a second, generalising compile on the next resolution (max tier, B200:
-        # 3-289 s on the FLUX.1 VAE, 175 s on Qwen-Image), for no steady-state gain on FLUX.1 (27.0 vs 26.5 ms).
+        # dynamic=True: automatic dynamic pays a second compile on the next resolution for no steady-state gain.
         kwargs: dict[str, Any] = {"fullgraph": False, "dynamic": True}
         if max_autotune:
             kwargs["mode"] = "max-autotune-no-cudagraphs"
