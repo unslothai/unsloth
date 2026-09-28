@@ -3293,6 +3293,19 @@ def _find_local_gguf_by_variant(
 
     Returns the absolute path, or ``None`` if no match.
     """
+    found = _find_local_gguf_by_exact_variant(directory, variant, model_root)
+    # Packed quants (PQ2_0) used to be labelled by their inner Q2_0 token, so a selection saved
+    # before that still names Q2_0. Honour it only while no file answers to Q2_0 itself.
+    if found is None and re.fullmatch(r"q[0-9]+_[0-9]+", (variant or "").strip().lower()):
+        found = _find_local_gguf_by_exact_variant(directory, "P" + variant.strip(), model_root)
+    return found
+
+
+def _find_local_gguf_by_exact_variant(
+    directory: str,
+    variant: str,
+    model_root: Optional[str] = None,
+) -> Optional[str]:
     p = _resolve_gguf_dir(Path(directory))
     if p is None:
         return _direct_gguf_for_variant(directory, variant, model_root)

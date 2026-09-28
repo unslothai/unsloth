@@ -88,3 +88,36 @@ def test_an_ordinary_q2_0_repo_is_unchanged(monkeypatch):
     assert extract_quant_token("Tiny-Q2_0.gguf") == "Q2_0"
     filename, _ = llama_cpp_module._resolve_variant_gguf_files("org/Tiny-GGUF", "Q2_0")
     assert filename == "Tiny-Q2_0.gguf"
+
+
+def _write_gguf(path):
+    import struct
+    path.write_bytes(b"GGUF" + struct.pack("<I", 3) + b"\0" * 64)
+    return path
+
+
+def test_a_local_selection_saved_as_q2_0_still_resolves_the_packed_file(tmp_path):
+    from utils.models.model_config import _find_local_gguf_by_variant
+
+    packed = _write_gguf(tmp_path / _BONSAI_FILE)
+    assert _find_local_gguf_by_variant(str(tmp_path), "Q2_0") == str(packed)
+    assert _find_local_gguf_by_variant(str(tmp_path), "PQ2_0") == str(packed)
+
+
+def test_a_local_q2_0_file_keeps_its_own_label_beside_a_packed_one(tmp_path):
+    from utils.models.model_config import _find_local_gguf_by_variant
+
+    _write_gguf(tmp_path / "Ternary-Bonsai-1.7B-PQ2_0.gguf")
+    plain = _write_gguf(tmp_path / "Ternary-Bonsai-1.7B-Q2_0.gguf")
+    assert _find_local_gguf_by_variant(str(tmp_path), "Q2_0") == str(plain)
+
+
+def test_a_models_pin_on_q2_0_aliases_the_packed_quant():
+    from types import SimpleNamespace
+
+    from core.inference.local_model_resolver import _legacy_variant_aliases
+
+    packed = SimpleNamespace(quant = "PQ2_0", filename = _BONSAI_FILE)
+    assert ("q2_0", "PQ2_0") in _legacy_variant_aliases([packed])
+    plain = SimpleNamespace(quant = "Q2_0", filename = "Ternary-Bonsai-1.7B-Q2_0.gguf")
+    assert all(legacy != "q2_0" for legacy, _ in _legacy_variant_aliases([packed, plain]))

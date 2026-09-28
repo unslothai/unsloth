@@ -15,6 +15,7 @@ seconds since auto-switch consults it per request.
 
 from __future__ import annotations
 
+import re
 import threading
 import time
 from dataclasses import dataclass
@@ -332,11 +333,15 @@ def _legacy_variant_aliases(variants) -> tuple[tuple[str, str], ...]:
             if not quant or not filename:
                 continue
             legacy = _qualified_variant_name(filename, _extract_quant_label(filename))
-            key = str(legacy).lower()
-            if not key or key in current:
-                continue
-            # None = ambiguous: a second file claimed it, so it names neither.
-            seen[key] = None if key in seen else str(quant)
+            keys = [str(legacy).lower()]
+            # Packed quants (PQ2_0) were published as their inner Q2_0 token.
+            if re.fullmatch(r"pq[0-9]+_[0-9]+", str(quant).lower()):
+                keys.append(str(quant).lower()[1:])
+            for key in dict.fromkeys(keys):
+                if not key or key in current:
+                    continue
+                # None = ambiguous: a second file claimed it, so it names neither.
+                seen[key] = None if key in seen else str(quant)
         return tuple((legacy, quant) for legacy, quant in seen.items() if quant is not None)
     except Exception:
         return ()
