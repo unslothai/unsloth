@@ -73,10 +73,10 @@ export const es = {
   },
   turns: {
     label: "Turno {number}",
-    pinnedLabel: "Turno {number}, fijado",
-    pinned: "Fijado",
-    pin: "Fijar turno",
-    unpin: "Dejar de fijar turno",
+    bookmarkedLabel: "Turno {number}, en marcadores",
+    bookmarked: "En marcadores",
+    bookmark: "Añadir turno a marcadores",
+    removeBookmark: "Quitar marcador",
     navigator: "Turnos",
   },
   picker: {
@@ -1866,7 +1866,7 @@ export const es = {
       inlineEditResponseDescription: "Mostrar Editar respuesta en cada respuesta, en lugar de en el menú Más.",
       turnNavigation: "Navegación por turnos",
       turnNavigationDescription:
-        "Numera cada turno, fija turnos y salta entre ellos desde una barra junto a los chats largos.",
+        "Numera cada turno, añade turnos a marcadores y salta entre ellos desde una barra junto a los chats largos.",
       modelDisclaimer: "Mostrar aviso del modelo",
       modelDisclaimerDescription:
         'Muestra "Los LLM pueden cometer errores" bajo el cuadro de chat.',

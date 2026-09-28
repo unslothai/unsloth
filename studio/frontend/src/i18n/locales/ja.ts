@@ -74,10 +74,10 @@ export const ja = {
   },
   turns: {
     label: "ターン {number}",
-    pinnedLabel: "ターン {number}（ピン留め済み）",
-    pinned: "ピン留め済み",
-    pin: "ターンをピン留め",
-    unpin: "ピン留めを解除",
+    bookmarkedLabel: "ターン {number}（ブックマーク済み）",
+    bookmarked: "ブックマーク済み",
+    bookmark: "ターンをブックマーク",
+    removeBookmark: "ブックマークを解除",
     navigator: "ターン",
   },
   picker: {
@@ -1822,7 +1822,7 @@ export const ja = {
       inlineEditResponseDescription: "応答の編集を「その他」メニューではなく、各応答に表示します。",
       turnNavigation: "ターンナビゲーション",
       turnNavigationDescription:
-        "各ターンに番号を付け、ターンをピン留めし、長いチャットの横のバーからターン間を移動します。",
+        "各ターンに番号を付け、ターンをブックマークし、長いチャットの横のバーからターン間を移動します。",
       modelDisclaimer: "モデルの免責事項を表示",
       modelDisclaimerDescription: 'チャットボックスの下に "LLMs can make mistakes" と表示します。',
       projectAttachments: "プロジェクト全体でファイルを共有",

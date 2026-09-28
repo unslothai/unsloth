@@ -73,10 +73,10 @@ export const hi = {
   },
   turns: {
     label: "टर्न {number}",
-    pinnedLabel: "टर्न {number}, पिन किया गया",
-    pinned: "पिन किया गया",
-    pin: "टर्न पिन करें",
-    unpin: "टर्न अनपिन करें",
+    bookmarkedLabel: "टर्न {number}, बुकमार्क किया गया",
+    bookmarked: "बुकमार्क किया गया",
+    bookmark: "टर्न बुकमार्क करें",
+    removeBookmark: "बुकमार्क हटाएँ",
     navigator: "टर्न",
   },
   picker: {
@@ -1843,7 +1843,7 @@ export const hi = {
       inlineEditResponseDescription: "जवाब संपादित करें को More मेन्यू के बजाय हर जवाब पर दिखाएँ।",
       turnNavigation: "टर्न नेविगेशन",
       turnNavigationDescription:
-        "हर टर्न को नंबर दें, टर्न पिन करें और लंबी चैट के किनारे की पट्टी से उनके बीच जाएँ।",
+        "हर टर्न को नंबर दें, टर्न बुकमार्क करें और लंबी चैट के किनारे की पट्टी से उनके बीच जाएँ।",
       modelDisclaimer: "मॉडल अस्वीकरण दिखाएं",
       modelDisclaimerDescription:
         'चैट बॉक्स के नीचे "LLMs can make mistakes" दिखाएं।',

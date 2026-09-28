@@ -73,10 +73,10 @@ export const de = {
   },
   turns: {
     label: "Runde {number}",
-    pinnedLabel: "Runde {number}, angeheftet",
-    pinned: "Angeheftet",
-    pin: "Runde anheften",
-    unpin: "Runde lösen",
+    bookmarkedLabel: "Runde {number}, mit Lesezeichen",
+    bookmarked: "Mit Lesezeichen",
+    bookmark: "Lesezeichen für Runde setzen",
+    removeBookmark: "Lesezeichen entfernen",
     navigator: "Runden",
   },
   picker: {
@@ -1875,7 +1875,7 @@ export const de = {
       inlineEditResponseDescription: "Antwort bearbeiten bei jeder Antwort anzeigen statt im Menü „Mehr“.",
       turnNavigation: "Rundennavigation",
       turnNavigationDescription:
-        "Jede Runde nummerieren, Runden anheften und in langen Chats über eine Leiste am Rand zwischen ihnen springen.",
+        "Jede Runde nummerieren, Lesezeichen für Runden setzen und in langen Chats über eine Leiste am Rand zwischen ihnen springen.",
       modelDisclaimer: "Modell-Hinweis anzeigen",
       modelDisclaimerDescription:
         "Zeigt „LLMs können Fehler machen“ unter dem Chatfeld an.",

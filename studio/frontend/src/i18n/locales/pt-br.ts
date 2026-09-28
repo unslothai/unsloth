@@ -73,10 +73,10 @@ export const ptBR = {
   },
   turns: {
     label: "Turno {number}",
-    pinnedLabel: "Turno {number}, fixado",
-    pinned: "Fixado",
-    pin: "Fixar turno",
-    unpin: "Desafixar turno",
+    bookmarkedLabel: "Turno {number}, nos favoritos",
+    bookmarked: "Nos favoritos",
+    bookmark: "Adicionar turno aos favoritos",
+    removeBookmark: "Remover dos favoritos",
     navigator: "Turnos",
   },
   picker: {
@@ -1853,7 +1853,7 @@ export const ptBR = {
       inlineEditResponseDescription: "Mostrar Editar resposta em cada resposta, em vez de no menu Mais.",
       turnNavigation: "Navegação por turnos",
       turnNavigationDescription:
-        "Numera cada turno, fixa turnos e permite pular entre eles por uma barra ao lado de conversas longas.",
+        "Numera cada turno, adiciona turnos aos favoritos e permite pular entre eles por uma barra ao lado de conversas longas.",
       modelDisclaimer: "Mostrar aviso do modelo",
       modelDisclaimerDescription:
         'Mostra "LLMs podem cometer erros" abaixo da caixa de chat.',

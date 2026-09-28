@@ -73,10 +73,10 @@ export const fr = {
   },
   turns: {
     label: "Tour {number}",
-    pinnedLabel: "Tour {number}, épinglé",
-    pinned: "Épinglé",
-    pin: "Épingler le tour",
-    unpin: "Détacher le tour",
+    bookmarkedLabel: "Tour {number}, en signet",
+    bookmarked: "En signet",
+    bookmark: "Ajouter le tour aux signets",
+    removeBookmark: "Retirer le signet",
     navigator: "Tours",
   },
   picker: {
@@ -1872,7 +1872,7 @@ export const fr = {
       inlineEditResponseDescription: "Afficher Modifier la réponse sur chaque réponse, plutôt que dans le menu Plus.",
       turnNavigation: "Navigation par tour",
       turnNavigationDescription:
-        "Numéroter chaque tour, épingler des tours et passer de l’un à l’autre depuis une barre à côté des longues discussions.",
+        "Numéroter chaque tour, ajouter des tours aux signets et passer de l’un à l’autre depuis une barre à côté des longues discussions.",
       modelDisclaimer: "Afficher l'avertissement du modèle",
       modelDisclaimerDescription:
         'Afficher "Les LLM peuvent faire des erreurs" sous la zone de discussion.',

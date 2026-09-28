@@ -73,10 +73,10 @@ export const ko = {
   },
   turns: {
     label: "턴 {number}",
-    pinnedLabel: "턴 {number}, 고정됨",
-    pinned: "고정됨",
-    pin: "턴 고정",
-    unpin: "턴 고정 해제",
+    bookmarkedLabel: "턴 {number}, 북마크됨",
+    bookmarked: "북마크됨",
+    bookmark: "턴 북마크",
+    removeBookmark: "북마크 해제",
     navigator: "턴",
   },
   picker: {
@@ -1832,7 +1832,7 @@ export const ko = {
       inlineEditResponseDescription: "응답 편집을 더보기 메뉴 대신 모든 응답에 표시합니다.",
       turnNavigation: "턴 탐색",
       turnNavigationDescription:
-        "각 턴에 번호를 붙이고, 턴을 고정하고, 긴 채팅 옆의 막대에서 턴 사이를 이동합니다.",
+        "각 턴에 번호를 붙이고, 턴을 북마크하고, 긴 채팅 옆의 막대에서 턴 사이를 이동합니다.",
       modelDisclaimer: "모델 고지 표시",
       modelDisclaimerDescription:
         '채팅 상자 아래에 "LLMs can make mistakes" 문구를 표시합니다.',

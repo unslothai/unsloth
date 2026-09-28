@@ -73,10 +73,10 @@ export const ar = {
   },
   turns: {
     label: "الدور {number}",
-    pinnedLabel: "الدور {number}، مثبّت",
-    pinned: "مثبّت",
-    pin: "تثبيت الدور",
-    unpin: "إلغاء تثبيت الدور",
+    bookmarkedLabel: "الدور {number}، عليه إشارة مرجعية",
+    bookmarked: "عليه إشارة مرجعية",
+    bookmark: "إضافة إشارة مرجعية للدور",
+    removeBookmark: "إزالة الإشارة المرجعية",
     navigator: "الأدوار",
   },
   picker: {
@@ -1837,7 +1837,7 @@ export const ar = {
       inlineEditResponseDescription: "إبقاء تعديل الرد على كل رد بدلًا من قائمة المزيد.",
       turnNavigation: "التنقل بين الأدوار",
       turnNavigationDescription:
-        "ترقيم كل دور وتثبيت الأدوار والانتقال بينها من شريط بجانب المحادثات الطويلة.",
+        "ترقيم كل دور وإضافة إشارات مرجعية للأدوار والانتقال بينها من شريط بجانب المحادثات الطويلة.",
       modelDisclaimer: "إظهار إخلاء مسؤولية النموذج",
       modelDisclaimerDescription:
         'إظهار عبارة "LLMs can make mistakes" أسفل مربع المحادثة.',

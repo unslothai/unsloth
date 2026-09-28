@@ -73,10 +73,10 @@ export const ru = {
   },
   turns: {
     label: "Ход {number}",
-    pinnedLabel: "Ход {number}, закреплён",
-    pinned: "Закреплено",
-    pin: "Закрепить ход",
-    unpin: "Открепить ход",
+    bookmarkedLabel: "Ход {number}, в закладках",
+    bookmarked: "В закладках",
+    bookmark: "Добавить ход в закладки",
+    removeBookmark: "Удалить закладку",
     navigator: "Ходы",
   },
   picker: {
@@ -1849,7 +1849,7 @@ export const ru = {
       inlineEditResponseDescription: "Показывать «Изменить ответ» у каждого ответа, а не в меню «Ещё».",
       turnNavigation: "Навигация по ходам",
       turnNavigationDescription:
-        "Нумеровать каждый ход, закреплять ходы и переходить между ними с помощью полосы рядом с длинными чатами.",
+        "Нумеровать каждый ход, добавлять ходы в закладки и переходить между ними с помощью полосы рядом с длинными чатами.",
       modelDisclaimer: "Показывать предупреждение о модели",
       modelDisclaimerDescription:
         "Показывать сообщение «LLM могут ошибаться» под полем ввода.",

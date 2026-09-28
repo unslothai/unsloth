@@ -92,8 +92,8 @@ import {
 } from "@/features/chat";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import {
-  PinTurnButton,
-  PinTurnMenuItem,
+  BookmarkTurnButton,
+  BookmarkTurnMenuItem,
   TurnNavigator,
   UserTurnLabel,
 } from "@/components/assistant-ui/turn-navigation";
@@ -8676,7 +8676,7 @@ const AssistantActionBar: FC = () => {
                 Save to project sources
               </ActionBarMorePrimitive.Item>
             )}
-            <PinTurnMenuItem className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-[12px] px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground" />
+            <BookmarkTurnMenuItem className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-[12px] px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground" />
           </ActionBarMorePrimitive.Content>
         </ActionBarMorePrimitive.Root>
         <MessageTiming side="top" className="h-8 px-2" />
@@ -8757,7 +8757,7 @@ const UserActionBar: FC = () => {
       )}
       <ForkCountBadge />
       <ForkMessageButton />
-      <PinTurnButton />
+      <BookmarkTurnButton />
       <DeleteMessageButton />
     </ActionBarPrimitive.Root>
   );

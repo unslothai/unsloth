@@ -76,10 +76,10 @@ export const en = {
   },
   turns: {
     label: "Turn {number}",
-    pinnedLabel: "Turn {number}, pinned",
-    pinned: "Pinned",
-    pin: "Pin turn",
-    unpin: "Unpin turn",
+    bookmarkedLabel: "Turn {number}, bookmarked",
+    bookmarked: "Bookmarked",
+    bookmark: "Bookmark turn",
+    removeBookmark: "Remove bookmark",
     navigator: "Turns",
   },
   picker: {
@@ -1835,7 +1835,7 @@ export const en = {
         "Keep Edit response on every response, instead of in the More menu.",
       turnNavigation: "Turn navigation",
       turnNavigationDescription:
-        "Number each turn, pin turns, and jump between them from a rail beside long chats.",
+        "Number each turn, bookmark turns, and jump between them from a rail beside long chats.",
       modelDisclaimer: "Model disclaimer",
       modelDisclaimerDescription:
         'Show "LLMs can make mistakes" under the chat box.',

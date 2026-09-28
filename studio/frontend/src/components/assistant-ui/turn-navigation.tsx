@@ -6,7 +6,7 @@ import {
   useAui,
   useAuiState,
 } from "@assistant-ui/react";
-import { PinIcon, PinOffIcon } from "@hugeicons/core-free-icons";
+import { Bookmark02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   type FC,
@@ -32,9 +32,9 @@ import {
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import { useDetachThreadFromBottom } from "@/components/assistant-ui/use-intent-aware-autoscroll";
 import {
+  useBookmarkedTurnsStore,
   useChatPreferencesStore,
   useChatRuntimeStore,
-  usePinnedTurnsStore,
 } from "@/features/chat";
 import { FIND_SKIP_ATTRIBUTE } from "@/features/find-in-page";
 import { prefersReducedMotion } from "@/features/settings";
@@ -52,73 +52,77 @@ const PYRAMID_REACH = 3;
 // math blocks above the target settle from placeholder heights once reached, so the jump re-aligns briefly
 const JUMP_ALIGN_FRAMES = 4;
 
-function useIsTurnPinned(
+function useIsTurnBookmarked(
   threadId: string | undefined,
   openerId: string | undefined,
 ): boolean {
-  return usePinnedTurnsStore((state) =>
+  return useBookmarkedTurnsStore((state) =>
     threadId && openerId
-      ? (state.pinnedByThread[threadId]?.includes(openerId) ?? false)
+      ? (state.bookmarkedByThread[threadId]?.includes(openerId) ?? false)
       : false,
   );
 }
 
-// pin state for the turn holding the current message, null when turn pins are unavailable
-function useTurnPin(): { pinned: boolean; toggle: () => void } | null {
+// bookmark state for the turn holding the current message, null when turn bookmarks are unavailable
+function useTurnBookmark(): { bookmarked: boolean; toggle: () => void } | null {
   const enabled = useChatPreferencesStore((state) => state.showTurnNavigation);
   const incognito = useChatRuntimeStore((state) => state.incognito);
   const threadId = useAuiState(({ threadListItem }) => threadListItem.remoteId);
   const openerId = useAuiState(({ thread, message }) =>
     enabled ? turnOpenerIdAt(thread.messages, message.index) : undefined,
   );
-  const pinned = useIsTurnPinned(threadId, openerId);
-  const togglePinnedTurn = usePinnedTurnsStore(
-    (state) => state.togglePinnedTurn,
+  const bookmarked = useIsTurnBookmarked(threadId, openerId);
+  const toggleBookmarkedTurn = useBookmarkedTurnsStore(
+    (state) => state.toggleBookmarkedTurn,
   );
   if (!enabled || incognito || !threadId || !openerId) {
     return null;
   }
-  return { pinned, toggle: () => togglePinnedTurn(threadId, openerId) };
+  return { bookmarked, toggle: () => toggleBookmarkedTurn(threadId, openerId) };
 }
 
-export const PinTurnButton: FC = () => {
+export const BookmarkTurnButton: FC = () => {
   const t = useT();
-  const turnPin = useTurnPin();
-  if (!turnPin) {
+  const turnBookmark = useTurnBookmark();
+  if (!turnBookmark) {
     return null;
   }
   return (
     <TooltipIconButton
-      tooltip={t(turnPin.pinned ? "turns.unpin" : "turns.pin")}
-      aria-pressed={turnPin.pinned}
-      onClick={turnPin.toggle}
+      tooltip={t(
+        turnBookmark.bookmarked ? "turns.removeBookmark" : "turns.bookmark",
+      )}
+      aria-pressed={turnBookmark.bookmarked}
+      onClick={turnBookmark.toggle}
     >
       <HugeiconsIcon
-        icon={turnPin.pinned ? PinOffIcon : PinIcon}
+        icon={Bookmark02Icon}
         strokeWidth={1.75}
-        className="size-icon"
+        className={cn("size-icon", turnBookmark.bookmarked && "fill-current")}
       />
     </TooltipIconButton>
   );
 };
 
-export const PinTurnMenuItem: FC<{ className?: string }> = ({ className }) => {
+export const BookmarkTurnMenuItem: FC<{ className?: string }> = ({
+  className,
+}) => {
   const t = useT();
-  const turnPin = useTurnPin();
-  if (!turnPin) {
+  const turnBookmark = useTurnBookmark();
+  if (!turnBookmark) {
     return null;
   }
   return (
     <ActionBarMorePrimitive.Item
-      onSelect={turnPin.toggle}
+      onSelect={turnBookmark.toggle}
       className={className}
     >
       <HugeiconsIcon
-        icon={turnPin.pinned ? PinOffIcon : PinIcon}
+        icon={Bookmark02Icon}
         strokeWidth={1.75}
-        className="size-icon"
+        className={cn("size-icon", turnBookmark.bookmarked && "fill-current")}
       />
-      {t(turnPin.pinned ? "turns.unpin" : "turns.pin")}
+      {t(turnBookmark.bookmarked ? "turns.removeBookmark" : "turns.bookmark")}
     </ActionBarMorePrimitive.Item>
   );
 };
@@ -135,7 +139,7 @@ const UserTurnLabelText: FC = () => {
   );
   const threadId = useAuiState(({ threadListItem }) => threadListItem.remoteId);
   const messageId = useAuiState(({ message }) => message.id);
-  const pinned = useIsTurnPinned(threadId, messageId);
+  const bookmarked = useIsTurnBookmarked(threadId, messageId);
   if (turn === 0) {
     return null;
   }
@@ -144,13 +148,13 @@ const UserTurnLabelText: FC = () => {
       {...{ [FIND_SKIP_ATTRIBUTE]: "" }}
       className="aui-user-turn-label flex select-none items-center gap-1 font-medium text-muted-foreground/80 text-ui-11"
     >
-      {pinned && (
+      {bookmarked && (
         <HugeiconsIcon
-          icon={PinIcon}
+          icon={Bookmark02Icon}
           strokeWidth={2}
-          className="size-3"
+          className="size-3 fill-current"
           role="img"
-          aria-label={t("turns.pinned")}
+          aria-label={t("turns.bookmarked")}
         />
       )}
       <span>{t("turns.label", { number: turn })}</span>
@@ -279,17 +283,17 @@ const TurnRail: FC<{ viewportRef: RefObject<HTMLElement | null> }> = ({
   );
   const threadId = useAuiState(({ threadListItem }) => threadListItem.remoteId);
   const incognito = useChatRuntimeStore((state) => state.incognito);
-  const pinnedIds = usePinnedTurnsStore((state) =>
-    threadId ? state.pinnedByThread[threadId] : undefined,
+  const bookmarkedIds = useBookmarkedTurnsStore((state) =>
+    threadId ? state.bookmarkedByThread[threadId] : undefined,
   );
-  const togglePinnedTurn = usePinnedTurnsStore(
-    (state) => state.togglePinnedTurn,
+  const toggleBookmarkedTurn = useBookmarkedTurnsStore(
+    (state) => state.toggleBookmarkedTurn,
   );
   const openerIds = useMemo(
     () => (signature ? signature.split("\n") : []),
     [signature],
   );
-  const pinned = useMemo(() => new Set(pinnedIds), [pinnedIds]);
+  const bookmarked = useMemo(() => new Set(bookmarkedIds), [bookmarkedIds]);
   const anchorRef = useRef<HTMLDivElement>(null);
   const [preview, setPreview] = useState<TurnPreview | null>(null);
   const hideTimerRef = useRef<number | undefined>(undefined);
@@ -431,7 +435,7 @@ const TurnRail: FC<{ viewportRef: RefObject<HTMLElement | null> }> = ({
   const markers = useMemo(
     () =>
       openerIds.map((openerId, index) => {
-        const isPinned = pinned.has(openerId);
+        const isBookmarked = bookmarked.has(openerId);
         return (
           <button
             key={openerId}
@@ -439,9 +443,12 @@ const TurnRail: FC<{ viewportRef: RefObject<HTMLElement | null> }> = ({
             data-turn-id={openerId}
             data-turn={index + 1}
             tabIndex={index === 0 ? 0 : -1}
-            aria-label={t(isPinned ? "turns.pinnedLabel" : "turns.label", {
-              number: index + 1,
-            })}
+            aria-label={t(
+              isBookmarked ? "turns.bookmarkedLabel" : "turns.label",
+              {
+                number: index + 1,
+              },
+            )}
             onClick={onMarkerClick}
             onPointerEnter={showPreview}
             onPointerLeave={hidePreview}
@@ -451,8 +458,8 @@ const TurnRail: FC<{ viewportRef: RefObject<HTMLElement | null> }> = ({
           >
             <span
               className={cn(
-                "h-0.5 w-2 rounded-full transition-[width,height,background-color] duration-150 ease-out group-data-[dist=0]:w-5 group-data-[dist=1]:w-4 group-data-[dist=2]:w-3 group-data-[dist=3]:w-2.5 group-data-[hovering]/rail:h-[1.5px] motion-reduce:transition-none",
-                isPinned
+                "h-1 w-2 rounded-full transition-[width,height,background-color] duration-150 ease-out group-data-[dist=0]:w-5 group-data-[dist=1]:w-4 group-data-[dist=2]:w-3 group-data-[dist=3]:w-2.5 group-data-[hovering]/rail:h-[3px] motion-reduce:transition-none",
+                isBookmarked
                   ? "bg-primary"
                   : "bg-muted-foreground/40 group-data-[dist=0]:bg-foreground",
               )}
@@ -460,14 +467,14 @@ const TurnRail: FC<{ viewportRef: RefObject<HTMLElement | null> }> = ({
           </button>
         );
       }),
-    [openerIds, pinned, t, onMarkerClick, showPreview, hidePreview],
+    [openerIds, bookmarked, t, onMarkerClick, showPreview, hidePreview],
   );
 
   if (openerIds.length < MIN_NAVIGATOR_TURNS) {
     return null;
   }
 
-  const previewPinned = preview ? pinned.has(preview.openerId) : false;
+  const previewBookmarked = preview ? bookmarked.has(preview.openerId) : false;
   // sticky inside the viewport so wheel scrolling over the rail still reaches the thread; the rail sits 2px clear of the scrollbar
   return (
     <div
@@ -500,19 +507,21 @@ const TurnRail: FC<{ viewportRef: RefObject<HTMLElement | null> }> = ({
               <button
                 type="button"
                 tabIndex={-1}
-                aria-label={t(previewPinned ? "turns.unpin" : "turns.pin")}
-                onClick={() => togglePinnedTurn(threadId, preview.openerId)}
+                aria-label={t(
+                  previewBookmarked ? "turns.removeBookmark" : "turns.bookmark",
+                )}
+                onClick={() => toggleBookmarkedTurn(threadId, preview.openerId)}
                 className={cn(
                   "flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-md hover:bg-sidebar-accent",
-                  previewPinned
+                  previewBookmarked
                     ? "text-primary"
                     : "text-muted-foreground hover:text-sidebar-foreground",
                 )}
               >
                 <HugeiconsIcon
-                  icon={previewPinned ? PinOffIcon : PinIcon}
+                  icon={Bookmark02Icon}
                   strokeWidth={1.75}
-                  className="size-3.5"
+                  className={cn("size-4", previewBookmarked && "fill-current")}
                 />
               </button>
             )}

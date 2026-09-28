@@ -1828,7 +1828,7 @@ export const it = {
       inlineEditResponseDescription: "Mostra Modifica risposta su ogni risposta, invece che nel menu Altro.",
       turnNavigation: "Navigazione per turni",
       turnNavigationDescription:
-        "Numera ogni turno, fissa i turni e passa dall'uno all'altro da una barra accanto alle chat lunghe.",
+        "Numera ogni turno, aggiungi turni ai segnalibri e passa dall'uno all'altro da una barra accanto alle chat lunghe.",
       modelDisclaimer: "Mostra l'avviso sul modello",
       modelDisclaimerDescription:
         "Mostra «Gli LLM possono commettere errori» sotto il campo della chat.",
@@ -2313,10 +2313,10 @@ export const it = {
   },
   turns: {
     label: "Turno {number}",
-    pinnedLabel: "Turno {number}, fissato",
-    pinned: "Fissato",
-    pin: "Fissa il turno",
-    unpin: "Rimuovi il turno fissato",
+    bookmarkedLabel: "Turno {number}, nei segnalibri",
+    bookmarked: "Nei segnalibri",
+    bookmark: "Aggiungi il turno ai segnalibri",
+    removeBookmark: "Rimuovi segnalibro",
     navigator: "Turni",
   },
   picker: {

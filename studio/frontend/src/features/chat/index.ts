@@ -151,7 +151,7 @@ export {
   type SectionLanding,
 } from "./hooks/use-section-drag";
 export { usePinnedChatsStore } from "./stores/pinned-chats-store";
-export { usePinnedTurnsStore } from "./stores/pinned-turns-store";
+export { useBookmarkedTurnsStore } from "./stores/bookmarked-turns-store";
 export { usePinnedProjectsStore } from "./stores/pinned-projects-store";
 export {
   applyManualOrder,

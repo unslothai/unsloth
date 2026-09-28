@@ -99,7 +99,7 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
       showInlineEditResponse: false,
       setShowInlineEditResponse: (showInlineEditResponse) =>
         set({ showInlineEditResponse }),
-      // off by default: turn labels, turn pins and the navigator rail stay opt in
+      // off by default: turn labels, turn bookmarks and the navigator rail stay opt in
       showTurnNavigation: false,
       setShowTurnNavigation: (showTurnNavigation) =>
         set({ showTurnNavigation }),
