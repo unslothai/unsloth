@@ -68,6 +68,11 @@ def public_model_id(identifier: Optional[str]) -> Optional[str]:
     """
     if not identifier:
         return identifier
+    # A Hub repo can be named ``org/name.gguf``. That is still a repo id, not a
+    # local file, so the org and the ``.gguf`` leaf stay. A file inside a repo
+    # has two or more slashes and still reduces to its stem.
+    if _is_hub_repo_id(identifier):
+        return identifier
     if not _looks_like_path(identifier):
         return identifier
     repo_id = hf_cache_repo_id(identifier)
