@@ -354,8 +354,7 @@ def test_an_fp32_promoted_family_keeps_the_flat_plan(monkeypatch):
 
 
 def test_a_reference_family_the_guard_cannot_size_keeps_the_flat_plan(monkeypatch):
-    # FLUX.2 Klein takes up to four ~1 MP references the generation guard never counts (no reference_resolutions),
-    # so a promoted tier would have no headroom for them. Qwen-Image-2.1 declares them, so the guard sizes it.
+    # Klein's references are unsized by the guard (no reference_resolutions); Qwen-Image-2.1 declares them.
     import core.inference.diffusion as d
     from core.inference.diffusion_families import detect_family
 
@@ -393,8 +392,7 @@ def _resident_after_placement(plan, sizes):
 def test_generation_guard_never_refuses_the_calibrated_2048_canvas_on_a_promoted_tier(
     max_speed, tile_side, sizes
 ):
-    # The promoted tier places the transformer resident, which lowers the free VRAM the guard reads; the 2048 canvas
-    # it was sized for must still run (tiled), never come back as a 400.
+    # Resident transformer lowers the free VRAM the guard reads; the 2048 canvas must still run tiled, not 400.
     act = calibrated_image_activation("qwen-image-2.1", max_speed = max_speed)
     promoted = 0
     for step in range(10 * 4, 48 * 4 + 1):
@@ -493,7 +491,6 @@ def test_controlnet_on_a_calibrated_tier_budgets_its_forward_and_residuals(famil
     assert "without ControlNet" in verdict.message
     assert "balanced memory mode" in verdict.message
     assert "fewer input images" not in verdict.message
-    # plenty of room: runs
     roomy = _guard(40 * GIB, 48 * GIB, calibrated = True, controlnet = True, **kw)
     assert roomy.action == dm.ACTIVATION_RUN
 

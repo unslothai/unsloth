@@ -1041,7 +1041,7 @@ class _LoadState:
     # The exact variant hint the memory plan was built from (family + checkpoint name + repo ids). Stored rather than
     # rebuilt so generate()'s activation re-check budgets with the SAME distilled / edit multipliers the load did.
     variant_hint: str = ""
-    # The tier was promoted by measured activations, which leave no room for a later ControlNet.
+    # Promoted tiers leave no room for a later ControlNet.
     calibrated_placement: bool = False
 
 
@@ -1643,13 +1643,12 @@ def _calibrated_activation(fam: Any, target: Any) -> Any:
     """Measured activations apply only where measured: NVIDIA with a sub-quadratic attention kernel."""
     if getattr(target, "backend", None) != "cuda" or getattr(target, "vendor", None) != "nvidia":
         return None
-    # Measured without input images: a reference family the generation guard cannot size (no reference_resolutions)
-    # would run up to four ~1 MP references past the 2048 canvas the promoted tier budgets.
+    # Measured without input images: references the guard cannot size (no reference_resolutions) would overflow.
     if getattr(fam, "reference", False) and not tuple(
         getattr(fam, "reference_resolutions", ()) or ()
     ):
         return None
-    # Measured at 16-bit: an fp16-incompatible family promoted to fp32 (Z-Image on pre-Ampere) holds ~2x.
+    # Measured at 16-bit only; fp32-promoted families (Z-Image pre-Ampere) do not qualify.
     compute = _resolve_diffusion_compute_dtype(fam, getattr(target, "dtype", None))
     if (_float_load_itemsize(compute) or 2) > 2:
         return None
@@ -8004,8 +8003,7 @@ class DiffusionBackend:
                 del cn_model
                 raise RuntimeError(DIFFUSION_CANCELLED_MSG)
             # Placement follows the base offload policy (resident base -> resident, offloaded -> group offload).
-            # A calibrated tier budgets only the base model, so its ControlNet streams too. Best-effort, except there:
-            # a resident fallback would overflow that tier.
+            # Calibrated tiers budget only the base model: ControlNet must stream, no resident fallback.
             calibrated = bool(getattr(state, "calibrated_placement", False))
             if (getattr(state, "offload_policy", OFFLOAD_NONE) != OFFLOAD_NONE or calibrated) and (
                 _offload_controlnet_module(cn_model, state.device, logger)

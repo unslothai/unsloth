@@ -936,7 +936,7 @@ class CalibratedImageActivation:
         )
 
 
-# NVIDIA worst case per (off / eager / default, max) tier; U-Nets stay unlisted: they cannot stream encoders beside them.
+# NVIDIA worst case per (off / eager / default, max) tier; U-Nets unlisted (cannot stream encoders).
 _ACTIVATION_MARGIN = 1.2
 _MEASURED_IMAGE_ACTIVATION_MIB: dict[
     str, tuple[tuple[int, int, int, int, int], tuple[int, int, int, int, int]]
@@ -1321,7 +1321,6 @@ def plan_diffusion_memory(
     if (
         calibrated_activation is not None
         and mode == MEMORY_MODE_AUTO
-        # the legacy flag only counts when no memory mode was supplied, as above
         and not (explicit_offload and normalize_memory_mode(requested_mode) is None)
         and can_offload
         and not device_memory.is_unified
@@ -2278,9 +2277,7 @@ def image_activation_verdict(
         budget = _safe_device_budget_mib(device_memory)
         if budget is None:
             return ImageActivationVerdict(ACTIVATION_RUN)
-        # A calibrated tier measured only the unconditioned denoise, so conditioned work gets no `planned` exemption.
-        # A ControlNet counts as one more output-sized input image: its forward plus the residuals the base
-        # consumes stay far below the flat per-pixel conditioning rate.
+        # Calibrated tiers measured only the unconditioned denoise; a ControlNet counts as one output-sized image.
         input_pixels = max(0, int(condition_pixels or 0))
         conditioned = bool(calibrated_placement) and (input_pixels > 0 or bool(controlnet))
         if calibrated_placement and controlnet:

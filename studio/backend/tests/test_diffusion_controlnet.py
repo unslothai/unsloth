@@ -414,8 +414,7 @@ def test_controlnet_pipe_not_cached_after_unload_race(monkeypatch):
 def test_controlnet_streams_beside_a_calibrated_resident_tier(
     monkeypatch, policy, calibrated, streamed
 ):
-    # A calibrated tier budgets only the base model's measured activations; a resident 6+ GB FLUX.1 ControlNet
-    # beside it can overflow, so it streams. A flat resident tier keeps the resident ControlNet.
+    # Calibrated tiers stream the ControlNet; flat resident tiers keep it resident.
     import threading
 
     from core.inference import diffusion as d
