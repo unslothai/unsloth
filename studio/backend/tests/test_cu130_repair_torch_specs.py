@@ -119,3 +119,63 @@ def test_both_cuda_repairs_use_the_route_aware_specs(mod):
         "_CUDA_TORCH_PKG_SPEC",
         "_TORCH_FLAVOR_REPAIR_PKG_SPEC",
     ]
+
+
+@pytest.mark.parametrize(
+    "platform, resident, pinned",
+    [
+        ("linux", "2.13.0", True),
+        ("linux", "2.14.0", True),
+        ("linux", "2.12.1", False),
+        ("linux", "2.11.0", False),
+        ("linux", None, False),
+        ("win32", "2.13.0", False),
+        ("darwin", "2.13.0", False),
+    ],
+)
+def test_core_update_freezes_only_torch_past_the_released_ceiling(
+    monkeypatch, mod, platform, resident, pinned
+):
+    monkeypatch.setattr(mod.sys, "platform", platform)
+    monkeypatch.setattr(mod, "_resident_torch_release", lambda: resident)
+    monkeypatch.setattr(
+        mod,
+        "_resident_torch_trio_pins",
+        lambda: ["torch==2.13.0+cu130", "torchvision==0.28.0+cu130", "torchaudio==2.11.0+cu130"],
+    )
+    monkeypatch.setenv("UV_OVERRIDE", "/existing/overrides.txt")
+    with mod._FreezeNewTorchForCoreUpdate() as freeze:
+        value = mod.os.environ["UV_OVERRIDE"]
+        if pinned:
+            first, rest = value.split(" ", 1)
+            assert rest == "/existing/overrides.txt"
+            assert Path(first).read_text().split() == [
+                "torch==2.13.0+cu130",
+                "torchvision==0.28.0+cu130",
+                "torchaudio==2.11.0+cu130",
+            ]
+        else:
+            assert value == "/existing/overrides.txt"
+    assert mod.os.environ["UV_OVERRIDE"] == "/existing/overrides.txt"
+    if pinned:
+        assert not freeze._path.exists()
+
+
+def test_core_update_freeze_restores_an_unset_override(monkeypatch, mod):
+    monkeypatch.setattr(mod.sys, "platform", "linux")
+    monkeypatch.setattr(mod, "_resident_torch_release", lambda: "2.13.0")
+    monkeypatch.setattr(mod, "_resident_torch_trio_pins", lambda: ["torch==2.13.0+cu130"])
+    monkeypatch.delenv("UV_OVERRIDE", raising = False)
+    with mod._FreezeNewTorchForCoreUpdate():
+        assert mod.os.environ["UV_OVERRIDE"].endswith(".txt")
+    assert "UV_OVERRIDE" not in mod.os.environ
+
+
+def test_both_core_updates_run_under_the_freeze():
+    source = _INSTALL_SCRIPT.read_text(encoding = "utf-8")
+    assert (
+        source.count(
+            'with _FreezeNewTorchForCoreUpdate():\n            pip_install(\n                "Updating core packages"'
+        )
+        == 2
+    )

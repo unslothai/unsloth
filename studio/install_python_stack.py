@@ -445,6 +445,62 @@ def _cuda_repair_torch_specs(
     return _CU130_NEW_INSTALL_TORCH_PKG_SPEC
 
 
+def _resident_torch_trio_pins() -> list[str]:
+    """``name==version`` for the installed torch, torchvision and torchaudio (local tag kept)."""
+    from importlib.metadata import PackageNotFoundError, version as _dist_version
+
+    pins = []
+    for name in ("torch", "torchvision", "torchaudio"):
+        try:
+            pins.append(f"{name}=={_dist_version(name)}")
+        except PackageNotFoundError:
+            pass
+    return pins
+
+
+class _FreezeNewTorchForCoreUpdate:
+    """Pin the resident torch trio via UV_OVERRIDE while unsloth / unsloth-zoo re-resolve.
+
+    A released unsloth declares a torch ceiling (2026.9.11: <2.13.0), and a with-deps upgrade
+    honours it: on a torch 2.13 install `studio update` swapped torch for PyPI's 2.12.1 and lost
+    the matching prebuilt kernels. install.sh freezes the trio the same way for every with-deps
+    unsloth install (_build_unsloth_torch_overrides). Scoped to Linux with torch >= 2.13, the
+    releases past that ceiling, so every other install resolves exactly as before.
+    """
+
+    def __enter__(self):
+        self._path = None
+        self._previous = os.environ.get("UV_OVERRIDE")
+        release = _resident_torch_release()
+        if not (
+            sys.platform.startswith("linux")
+            and release is not None
+            and int(release.split(".")[1]) >= 13
+        ):
+            return self
+        pins = _resident_torch_trio_pins()
+        if not pins:
+            return self
+        fd, name = tempfile.mkstemp(prefix = "unsloth-torch-overrides-", suffix = ".txt")
+        with os.fdopen(fd, "w", encoding = "utf-8") as handle:
+            handle.write("\n".join(pins) + "\n")
+        self._path = Path(name)
+        # UV_OVERRIDE is a space-separated file list; earlier files never re-pin the trio.
+        os.environ["UV_OVERRIDE"] = " ".join(
+            filter(None, (_uv_safe_path(self._path), self._previous))
+        )
+        return self
+
+    def __exit__(self, *exc):
+        if self._path is not None:
+            if self._previous is None:
+                os.environ.pop("UV_OVERRIDE", None)
+            else:
+                os.environ["UV_OVERRIDE"] = self._previous
+            self._path.unlink(missing_ok = True)
+        return False
+
+
 # torchao's cpp is built for ONE torch release AND CUDA major. Either mismatch costs the
 # kernels, never the import: torchao/__init__.py has caught the dlopen failure since 0.12 and
 # import_fixes.py filters that warning. Match torchao to the installed torch (pytorch/ao#2919):
@@ -11651,16 +11707,17 @@ def install_python_stack() -> int:
         # Local dev install: update the released core packages, then overlay the
         # checkout as an editable install (--no-deps so torch is not re-resolved).
         _progress("base packages")
-        pip_install(
-            "Updating core packages",
-            "--no-cache-dir",
-            "--upgrade-package",
-            "unsloth",
-            "--upgrade-package",
-            "unsloth-zoo",
-            "unsloth",
-            "unsloth-zoo",
-        )
+        with _FreezeNewTorchForCoreUpdate():
+            pip_install(
+                "Updating core packages",
+                "--no-cache-dir",
+                "--upgrade-package",
+                "unsloth",
+                "--upgrade-package",
+                "unsloth-zoo",
+                "unsloth",
+                "unsloth-zoo",
+            )
         _overlay_local_core_packages(local_repo)
     elif package_name != "unsloth":
         # Custom package name (for testing): install directly.
@@ -11678,16 +11735,17 @@ def install_python_stack() -> int:
             if (desktop_min_ver and package_name == "unsloth")
             else package_name
         )
-        pip_install(
-            "Updating core packages",
-            "--no-cache-dir",
-            "--upgrade-package",
-            "unsloth",
-            "--upgrade-package",
-            "unsloth-zoo",
-            unsloth_spec,
-            "unsloth-zoo",
-        )
+        with _FreezeNewTorchForCoreUpdate():
+            pip_install(
+                "Updating core packages",
+                "--no-cache-dir",
+                "--upgrade-package",
+                "unsloth",
+                "--upgrade-package",
+                "unsloth-zoo",
+                unsloth_spec,
+                "unsloth-zoo",
+            )
 
     # The package just installed may ship a newer copy of this file. Raised rather than rerun
     # here, so the pass lock is released first; the rerun repeats the cheap steps above.

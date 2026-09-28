@@ -11,7 +11,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 INSTALL_SH="${1:-$SCRIPT_DIR/../../install.sh}"
 _FUNC_FILE=$(mktemp)
 {
-    for fn in _torch_index_url_leaf _cu130_torch213_route _torchaudio_for_torch_minor _torch_release_in_window _previous_torch_pin; do
+    for fn in _run_bounded _pypi_unsloth_admits_torch _torch_index_url_leaf _cu130_torch213_route _torchaudio_for_torch_minor _torch_release_in_window _previous_torch_pin; do
         sed -n "/^${fn}()/,/^}/p" "$INSTALL_SH"
         echo ""
     done
@@ -23,11 +23,17 @@ unset UNSLOTH_TORCH_UPGRADE
 
 VENV_DIR=$(mktemp -d)
 mkdir -p "$VENV_DIR/bin"
+# Answers the version probe (-c) with $1 and runs anything else (the PyPI gate) on a real python.
 _stub_python() {
-    printf '#!/bin/sh\necho %s\n' "$1" > "$VENV_DIR/bin/python"
+    printf '#!/bin/sh\nif [ "$1" = "-c" ]; then echo %s; else exec python3 "$@"; fi\n' "$1" > "$VENV_DIR/bin/python"
     chmod +x "$VENV_DIR/bin/python"
 }
 CU130="https://download.pytorch.org/whl/cu130"
+_pypi_fixture() {
+    printf '{"info": {"requires_dist": ["numpy", "%s", "torchvision"]}}' "$1" > "$VENV_DIR/pypi.json"
+    export UNSLOTH_PYPI_JSON_URL="file://$VENV_DIR/pypi.json"
+}
+_pypi_fixture "torch<2.15.0,>=2.4.0"
 
 echo "=== route: only cu130 + Linux/WSL + x86_64 + Python 3.13 ==="
 _stub_python 3.13
@@ -51,6 +57,19 @@ for py in 3.11 3.12 3.14; do
 done
 rm -f "$VENV_DIR/bin/python"
 assert_eq "no venv python never"           "no" "$(_cu130_torch213_route "$CU130")"
+
+echo "=== route: only once the PyPI release admits torch 2.13 ==="
+_stub_python 3.13
+assert_eq "release admits 2.13"            "yes" "$(_cu130_torch213_route "$CU130")"
+_pypi_fixture "torch<2.13.0,>=2.4.0"
+assert_eq "release still capped below 2.13" "no" "$(_cu130_torch213_route "$CU130")"
+_pypi_fixture "torch>=2.4.0"
+assert_eq "uncapped release"               "yes" "$(_cu130_torch213_route "$CU130")"
+_pypi_fixture "torch<2.15.0,>=2.4.0 ; extra == \\\"x\\\""
+assert_eq "extra-only torch is no evidence" "no" "$(_cu130_torch213_route "$CU130")"
+export UNSLOTH_PYPI_JSON_URL="http://127.0.0.1:9/unreachable"
+assert_eq "unreachable index keeps the old window" "no" "$(_cu130_torch213_route "$CU130")"
+_pypi_fixture "torch<2.15.0,>=2.4.0"
 
 echo "=== preservation window keeps every existing 2.4-2.14 release ==="
 PRESERVE='torch>=2.4,<2.15.0'

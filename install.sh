@@ -5910,7 +5910,39 @@ _cu130_torch213_route() {
     case "$OS" in linux|wsl) ;; *) echo "no"; return ;; esac
     case "$_ARCH" in x86_64|amd64) ;; *) echo "no"; return ;; esac
     _ctr_py=$("$VENV_DIR/bin/python" -c "import sys; print('%d.%d' % sys.version_info[:2])" 2>/dev/null || echo "")
-    [ "$_ctr_py" = "3.13" ] && echo "yes" || echo "no"
+    [ "$_ctr_py" = "3.13" ] || { echo "no"; return; }
+    _pypi_unsloth_admits_torch "2.13.0"
+}
+
+# "yes" only when the newest unsloth on PyPI declares a torch range containing $1. `studio update` first runs the setup code of the INSTALLED release, which re-resolves unsloth under its own torch cap: a 2.13 install next to a release capped below it is downgraded to PyPI's generic torch on the first update. Any failure (offline, mirror without the JSON API, unparsable spec) answers "no", which keeps the pre-2.13 window. UNSLOTH_PYPI_JSON_URL points it at a mirror's JSON API.
+_pypi_unsloth_admits_torch() {
+    _pua_url="${UNSLOTH_PYPI_JSON_URL:-https://pypi.org/pypi/unsloth/json}"
+    _pua_out=$(_run_bounded --secs 20 "$VENV_DIR/bin/python" - "$_pua_url" "$1" 2>/dev/null <<'PY' || true
+import json, re, sys, urllib.request
+url, want = sys.argv[1], sys.argv[2]
+def rel(v):
+    return tuple(int(x) for x in re.findall(r"\d+", v)[:3]) + (0,) * (3 - len(re.findall(r"\d+", v)[:3]))
+try:
+    with urllib.request.urlopen(url, timeout = 15) as r:
+        reqs = json.load(r)["info"].get("requires_dist") or []
+    specs = [q for q in reqs if re.match(r"^torch\s*[<>=!~(]", q) and "extra ==" not in q]
+    if len(specs) != 1:
+        raise ValueError(specs)
+    ops = {"<": lambda a, b: a < b, "<=": lambda a, b: a <= b, ">": lambda a, b: a > b,
+           ">=": lambda a, b: a >= b, "==": lambda a, b: a == b, "!=": lambda a, b: a != b}
+    body = specs[0].split(";", 1)[0][len("torch"):].strip().strip("()")
+    ok = True
+    for part in filter(None, (p.strip() for p in body.split(","))):
+        m = re.fullmatch(r"(<=|>=|==|!=|<|>)\s*([0-9][0-9.]*)", part)
+        if m is None:
+            raise ValueError(part)
+        ok = ok and ops[m.group(1)](rel(want), rel(m.group(2)))
+    print("yes" if ok else "no")
+except Exception:
+    print("no")
+PY
+)
+    [ "$(printf '%s' "$_pua_out" | tail -n 1)" = "yes" ] && echo "yes" || echo "no"
 }
 
 # torchaudio for a kept torch minor: 2.11 is the last release (stable ABI, no torch pin), so newer minors pair with it.
