@@ -96,6 +96,7 @@ export const ptBR = {
     useModelScope: "Usar ModelScope",
     useModelScopeHint: "Pesquise e baixe pelo ModelScope. Você pode voltar nas Configurações.",
     useModelScopeFailed: "Não foi possível mudar para o ModelScope.",
+    updateToken: "Atualizar token",
     hfToken: {
       label: "Token do HF",
       saved: "Salvo",
@@ -2450,6 +2451,8 @@ export const ptBR = {
       tokenRejectedTitle: "Token do Hugging Face rejeitado",
       tokenRejectedBody:
         "Atualize seu token em Configurações → Geral e tente novamente.",
+      tokenRejectedAnonymousBody:
+        "Os modelos públicos são exibidos sem ele. Atualize seu token em Configurações → Geral para acessar modelos privados e restritos.",
       hubUnreachable: "Não foi possível acessar o Hugging Face",
       cantUseModel: "Não é possível usar o modelo para treinamento",
       reasonTypeMismatch:

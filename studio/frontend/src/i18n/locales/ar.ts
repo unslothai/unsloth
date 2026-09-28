@@ -95,6 +95,7 @@ export const ar = {
     useModelScope: "استخدام ModelScope",
     useModelScopeHint: "ابحث ونزّل من ModelScope بدلًا من ذلك. يمكنك العودة من الإعدادات.",
     useModelScopeFailed: "تعذّر التبديل إلى ModelScope.",
+    updateToken: "تحديث الرمز",
     hfToken: {
       label: "توكن HF",
       saved: "محفوظ",
@@ -2429,6 +2430,8 @@ export const ar = {
       tokenRejectedTitle: "رُفض توكن Hugging Face",
       tokenRejectedBody:
         "حدّث التوكن في الإعدادات ← عام، ثم أعد المحاولة.",
+      tokenRejectedAnonymousBody:
+        "تُعرض النماذج العامة بدونه. حدّث التوكن في الإعدادات ← عام للوصول إلى النماذج الخاصة والمقيّدة.",
       hubUnreachable: "تعذّر الوصول إلى Hugging Face",
       cantUseModel: "لا يمكن استخدام النموذج للتدريب",
       reasonTypeMismatch:
