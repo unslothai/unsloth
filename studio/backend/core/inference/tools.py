@@ -416,6 +416,8 @@ _SUBSTITUTION_SPAN_STEP = 64
 # neither: the `$(` in `sed "s/\$(CC)/gcc/" Makefile` opens no command substitution.
 _ESCAPED_CHAR_STATE = "\\"
 _WIN_CONDITIONAL_KEYWORDS = frozenset({"exist", "defined", "errorlevel", "not"})
+# cmd's `IF [/I] [NOT] a OP b command`: the comparison stands where the command word would.
+_WIN_COMPARISON_OPS = frozenset({"==", "equ", "neq", "lss", "leq", "gtr", "geq"})
 _FIND_EXEC_FLAGS = frozenset({"-exec", "-execdir", "-ok", "-okdir"})
 # A find action is COMPLETE at its terminator: words after it are find's next predicate, not CMD's. Reading past it
 # took a following `-exec grep -e safe {} +` for sed's script.
@@ -1690,14 +1692,37 @@ def _find_blocked_commands(command: str, posix: "bool | None" = None) -> set[str
     sed_xargs: "dict[int, int]" = {}  # sed word -> the xargs that builds its argv
     xargs_index = -1  # an xargs awaiting the command it wraps
     coproc_kw = False  # the word just consumed was the `coproc` KEYWORD, so a name may follow
+    if_condition = False  # just after cmd's IF, where a comparison may precede the command
+    skip_tokens = 0
     for token_index, token in enumerate(tokens):
         after_coproc = coproc_kw
         coproc_kw = False
+        if skip_tokens:
+            skip_tokens -= 1
+            continue
         if skip_operand:
             # `exec -a NAME cmd` and `if exist FILE cmd` both put an operand where the command word would otherwise
             # be.
             skip_operand = False
             continue
+        if expect_command and token.lower() == "if":
+            # cmd's IF is case-insensitive; reading `IF` as the command word hid the command after its condition.
+            if_condition = True
+            prefix_pending = False
+            prefix_command = ""
+            xargs_index = -1
+            continue
+        if if_condition and expect_command:
+            low = token.lower()
+            if low in {"/i", "not"}:
+                continue
+            if_condition = False
+            following = tokens[token_index + 1].lower() if token_index + 1 < len(tokens) else ""
+            if following in _WIN_COMPARISON_OPS:
+                skip_tokens = 2
+                continue
+            if "==" in token.strip("="):
+                continue
         if expect_command and token.lower() in _WIN_CONDITIONAL_KEYWORDS:
             skip_operand = token.lower() != "not"
             continue
@@ -9280,6 +9305,9 @@ def _build_safe_env(workdir: str, shell: "str | None" = None) -> dict[str, str]:
         # Append the CANONICAL (realpath) trusted git dir, scanning past any untrusted user shim that sorts first on
         # PATH; the canonical path cannot be retargeted via a junction after the trust check.
         _trusted_git_dir, git_ext = _resolve_trusted_windows_git()
+        if not _trusted_git_dir and shell == "cmd_isolated":
+            # Git installed for Git Bash only is not on PATH; bash found it, so use its Git\cmd.
+            _trusted_git_dir, git_ext = _windows_bash_git_cmd_dir(), ".EXE"
         if _trusted_git_dir:
             path_entries.append(_trusted_git_dir)
 
@@ -9851,6 +9879,23 @@ def _windows_bash() -> "str | None":
         if os.path.isfile(candidate) and _is_trusted_windows_bash(candidate):
             return candidate
     return None
+
+
+def _windows_bash_git_cmd_dir() -> str:
+    """The trusted ``Git\\cmd`` dir of the install the resolved bash belongs to, or ""."""
+    bash = _windows_bash()
+    if not bash:
+        return ""
+    bin_dir = os.path.dirname(bash)
+    for root in (os.path.dirname(bin_dir), os.path.dirname(os.path.dirname(bin_dir))):
+        candidate = os.path.join(root, "cmd")
+        if (
+            root
+            and os.path.isfile(os.path.join(candidate, "git.exe"))
+            and _is_trusted_windows_program_dir(candidate)
+        ):
+            return os.path.realpath(candidate)
+    return ""
 
 
 def _windows_bash_userland_dirs() -> list[str]:

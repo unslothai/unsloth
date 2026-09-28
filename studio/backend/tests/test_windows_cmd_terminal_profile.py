@@ -6,6 +6,7 @@
 Faked platform throughout, since studio-backend-ci is Linux-only; the native tests cover a real host.
 """
 
+import os
 import sys
 from pathlib import Path
 
@@ -131,6 +132,20 @@ def test_cmd_env_drops_bash_userland_and_disables_git_helpers(windows, monkeypat
     assert env["GIT_TERMINAL_PROMPT"] == "0"
 
 
+def test_cmd_env_finds_git_installed_for_git_bash_only(windows, monkeypatch, tmp_path):
+    windows()
+    _userland(monkeypatch, tmp_path)
+    (tmp_path / "Git" / "bin").mkdir()
+    (tmp_path / "Git" / "cmd").mkdir()
+    (tmp_path / "Git" / "cmd" / "git.exe").write_bytes(b"MZ")
+    monkeypatch.setattr(tools, "_resolve_trusted_windows_git", lambda: ("", ""))
+    monkeypatch.setattr(tools, "_windows_bash", lambda: str(tmp_path / "Git" / "bin" / "bash.exe"))
+    monkeypatch.setattr(tools, "_is_trusted_windows_program_dir", lambda _path: True)
+    env = tools._build_safe_env(str(tmp_path), shell = "cmd_isolated")
+    assert os.path.realpath(tmp_path / "Git" / "cmd") in env["PATH"]
+    assert str(tmp_path / "Git" / "cmd") not in tools._build_safe_env(str(tmp_path))["PATH"]
+
+
 def test_default_env_is_unchanged(windows, monkeypatch, tmp_path):
     windows()
     userland = _userland(monkeypatch, tmp_path)
@@ -248,6 +263,29 @@ def test_cmd_isolated_does_not_treat_single_quotes_as_quoting(windows, monkeypat
     plan, result = _exec(monkeypatch, tmp_path, "echo 'ok & rmdir /s /q x & echo done'")
     assert plan is None
     assert result.startswith("Blocked command(s) for safety: rmdir"), result
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "if 1==1 rmdir /s /q x",
+        "IF exist x rmdir /s /q x",
+        "if /i not a==b rmdir x",
+        "if 1 equ 1 rmdir x",
+        "if 1 == 1 rmdir x",
+        'if "a"=="a" rmdir x',
+    ],
+)
+def test_the_blocklist_reads_past_a_cmd_if_condition(windows, monkeypatch, command):
+    windows()
+    monkeypatch.setattr(
+        tools, "_BLOCKED_COMMANDS", tools._BLOCKED_COMMANDS_COMMON | tools._BLOCKED_COMMANDS_WIN
+    )
+    found = tools._find_blocked_commands(command, posix = False) | tools._find_blocked_commands(
+        command, posix = True
+    )
+    assert "rmdir" in found, command
+    assert tools._find_blocked_commands("if 1==1 echo rmdir", posix = False) == set()
 
 
 def test_a_tool_list_without_the_terminal_never_probes(windows):
