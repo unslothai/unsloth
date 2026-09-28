@@ -44,7 +44,9 @@ def _load(*names):
     return ns, wanted
 
 
-NS, MISSING = _load("_native_default_image_processor", "_construct_vlm_processor_fallback")
+NS, MISSING = _load(
+    "_missing_torchvision_error", "_native_default_image_processor", "_construct_vlm_processor_fallback"
+)
 Step3p7Processor = getattr(transformers, "Step3p7Processor", None)
 
 
@@ -101,3 +103,13 @@ def test_repo_without_preprocessor_config_gets_native_processor(tmp_path):
 def test_unknown_model_type_returns_none(tmp_path):
     (tmp_path / "config.json").write_text(json.dumps({"model_type": "not_a_real_model_type"}))
     assert NS["_native_default_image_processor"](str(tmp_path), "not_a_real_model_type") is None
+
+
+@pytest.mark.skipif(Step3p7Processor is None, reason = "no native step3p7 in this transformers")
+def test_broken_preprocessor_config_is_not_replaced_by_defaults(tmp_path):
+    repo = _step_repo(tmp_path)
+    (tmp_path / "preprocessor_config.json").write_text(
+        json.dumps({"image_processor_type": "NoSuchImageProcessor"})
+    )
+    processor, err = NS["_construct_vlm_processor_fallback"](repo, "step3p5", None, False)
+    assert processor is None and err is not None

@@ -1217,7 +1217,13 @@ def _construct_vlm_processor_fallback(
                 revision = revision,
             )
         except Exception as _ip_err:
-            if _is_offline_related_error(_ip_err):
+            # Only a missing preprocessor_config.json (OSError); a present-but-broken one keeps its error.
+            if (
+                not isinstance(_ip_err, OSError)
+                or _is_offline_related_error(_ip_err)
+                or _missing_torchvision_error(_ip_err)
+                or os.path.isfile(os.path.join(load_path, "preprocessor_config.json"))
+            ):
                 raise
             # No preprocessor_config.json (Step-3.7-Flash hardcodes sizes in its remote processor).
             image_processor = _native_default_image_processor(
