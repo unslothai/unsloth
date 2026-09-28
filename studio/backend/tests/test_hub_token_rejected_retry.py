@@ -356,3 +356,44 @@ def test_oauth_tokens_are_redacted_whole():
     assert any(p.fullmatch(JWS) for p in LlamaCppBackend._SECRET_VALUE_RES)
     assert research_redaction._QUERY_OPAQUE_TOKEN.search(JWS).group(0).startswith("hf_oauth_")
     assert re.search(r"hf_oauth_\S*eyJ", redact_log_text(line)) is None
+
+
+def test_an_ambient_token_the_hub_never_sees_is_not_blamed(monkeypatch):
+    # HF_HUB_DISABLE_IMPLICIT_TOKEN=1: huggingface_hub keeps the ambient token off the wire,
+    # so a 401 is about the repo and the saved token must not be called rejected.
+    monkeypatch.setattr(hf_tokens, "_ambient_hf_token", lambda: (True, OAUTH))
+    monkeypatch.setenv("HF_HUB_DISABLE_IMPLICIT_TOKEN", "1")
+    calls = []
+    with collecting_hub_token_rejections() as rejections:
+        with pytest.raises(RepositoryNotFoundError):
+            call_with_anonymous_retry(_refused_with_a_token(calls), None)
+    assert calls == [None]
+    assert not rejections.rejected
+
+
+def test_the_remote_code_scan_reads_public_files_without_a_refused_token(monkeypatch):
+    from hub.utils.hf_tokens import anonymous_retrying
+
+    calls = []
+
+    def hf_hub_download(
+        repo_id,
+        filename,
+        *,
+        token = None,
+        cache_dir = None,
+    ):
+        calls.append(token)
+        if token is False:
+            return f"/cache/{repo_id}/{filename}"
+        raise RepositoryNotFoundError(reason = "OAuth token verification failed")
+
+    download = anonymous_retrying(hf_hub_download)
+    assert download(REPO, "config.json", token = OAUTH, cache_dir = "x") == f"/cache/{REPO}/config.json"
+    assert calls == [OAUTH, False]
+
+
+def test_an_anonymous_download_401_does_not_blame_a_saved_token():
+    exc = RepositoryNotFoundError()
+    assert not is_rejected_credential_error(exc, False)
+    assert is_rejected_credential_error(exc, OAUTH)

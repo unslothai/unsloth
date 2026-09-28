@@ -83,6 +83,7 @@ from hub.dependencies import get_hf_token, get_request_hf_token
 from hub.utils.hf_errors import modelscope_missing
 from hub.utils.hf_tokens import (
     HUB_TOKEN_REJECTED_ERROR,
+    is_token_rejection,
     HUB_TOKEN_REJECTED_WARNING,
     HfTokenArg,
     collecting_hub_token_rejections,
@@ -17550,7 +17551,7 @@ async def _load_model_impl(
         if isinstance(e, SidecarSwapInProgress):
             # Lost the spawn-time race to a sidecar install/repair: retryable 409.
             raise HTTPException(status_code = 409, detail = str(e))
-        if token_rejections.refused and is_hf_authentication_error(e):
+        if token_rejections.refused and (is_hf_authentication_error(e) or is_token_rejection(e)):
             logger.warning("Load of '%s' failed: Hugging Face rejected the token", model_log_label)
             raise HTTPException(status_code = 400, detail = HUB_TOKEN_REJECTED_ERROR)
         # Friendlier message for models Unsloth cannot load.
@@ -18157,7 +18158,7 @@ async def validate_model(
     except Exception as e:
         # Restored here rather than at each raise below: every branch quotes this string.
         redacted_msg = restore_inventory_handles(redact_native_paths(str(e)))
-        if token_rejections.refused and is_hf_authentication_error(e):
+        if token_rejections.refused and (is_hf_authentication_error(e) or is_token_rejection(e)):
             raise HTTPException(status_code = 400, detail = HUB_TOKEN_REJECTED_ERROR)
         if is_hf_authentication_error(e):
             raise HTTPException(

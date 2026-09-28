@@ -431,11 +431,11 @@ def test_inference_worker_load_scope_resets(monkeypatch):
 
     seen = []
 
-    def scoped(backend, config, resp_queue):
+    def load(backend, config, resp_queue):
         call_hub_with_anonymous_retry(_Hub(), BAD)
         seen.append(saved_token_rejected(BAD))
 
-    monkeypatch.setattr(worker, "_handle_load_scoped", scoped)
-    worker._handle_load(None, {}, None)
+    worker._in_token_rejection_scope(load)(None, {}, None)
+    assert worker._handle_load.__wrapped__ is not None
     assert seen == [True]
     assert not saved_token_rejected(BAD)

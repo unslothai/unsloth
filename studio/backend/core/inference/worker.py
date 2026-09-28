@@ -12,6 +12,7 @@ mp.Queue, and exits on shutdown or unload. Pattern follows core/training/worker.
 
 from __future__ import annotations
 
+import functools
 import base64
 import inspect
 import json
@@ -524,13 +525,20 @@ def _drop_a_rejected_token(config: dict) -> None:
         )
 
 
+def _in_token_rejection_scope(handler):
+    """Run one load in its own rejected-token scope, so a verdict never outlives it."""
+
+    @functools.wraps(handler)
+    def scoped(*args, **kwargs):
+        from hub.utils.hf_tokens import token_rejection_scope
+        with token_rejection_scope():
+            return handler(*args, **kwargs)
+
+    return scoped
+
+
+@_in_token_rejection_scope
 def _handle_load(backend, config: dict, resp_queue: Any) -> None:
-    from hub.utils.hf_tokens import token_rejection_scope
-    with token_rejection_scope():
-        _handle_load_scoped(backend, config, resp_queue)
-
-
-def _handle_load_scoped(backend, config: dict, resp_queue: Any) -> None:
     try:
         mc = _build_model_config(config)
         _drop_a_rejected_token(config)

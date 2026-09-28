@@ -8,6 +8,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import logging
+import os
 import re
 import threading
 import time
@@ -1105,9 +1106,27 @@ def _sent_credential(hf_token: HfTokenArg) -> Optional[str]:
     if isinstance(hf_token, str):
         return hf_token.strip() or None
     if hf_token is None:
+        if _implicit_token_disabled():
+            # huggingface_hub sends no ambient token then, so a 401 is about the repo.
+            return None
         _known, ambient = _ambient_hf_token()
         return ambient or None
     return None
+
+
+def _implicit_token_disabled() -> bool:
+    if os.environ.get("HF_HUB_DISABLE_IMPLICIT_TOKEN", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    ):
+        return True
+    try:
+        from huggingface_hub import constants
+    except Exception:
+        return False
+    return bool(getattr(constants, "HF_HUB_DISABLE_IMPLICIT_TOKEN", False))
 
 
 # huggingface_hub's own wording (hf_raise_for_status), optionally behind "ClassName: ".
@@ -1216,6 +1235,19 @@ def call_with_anonymous_retry(read, hf_token: HfTokenArg):
 def call_hub_with_anonymous_retry(fn, hf_token: HfTokenArg, *args, **kwargs):
     """``call_with_anonymous_retry`` for a huggingface_hub-style ``fn(*args, token = ..., **kwargs)``."""
     return call_with_anonymous_retry(lambda token: fn(*args, token = token, **kwargs), hf_token)
+
+
+def anonymous_retrying(fn):
+    """*fn* (a huggingface_hub read taking ``token=``) with the rejected-token retry built in."""
+
+    def read(
+        *args,
+        token: HfTokenArg = None,
+        **kwargs,
+    ):
+        return call_hub_with_anonymous_retry(fn, token, *args, **kwargs)
+
+    return read
 
 
 def hf_token_rejected_hint(exc: BaseException) -> str:
