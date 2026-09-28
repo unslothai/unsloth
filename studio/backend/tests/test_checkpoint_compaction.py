@@ -3906,7 +3906,6 @@ def test_an_image_turn_is_judged_on_its_words_not_its_attachment():
 
 
 def _refused_continuation_metadata(boundary):
-    """What a Max Tokens continuation records when its replayed partial fills the window."""
     return {
         "contextTruncation": {
             "fits": False,
@@ -3973,7 +3972,6 @@ def test_a_continuation_that_could_not_fit_keeps_the_epoch_it_resumed(monkeypatc
 
 
 def test_resolving_refused_continuations_stays_linear(monkeypatch):
-    """Thousands of refused rows under one parent must not rescan the transcript per row."""
     import time
 
     from core.inference import checkpoint, llama_cpp
@@ -3999,7 +3997,6 @@ def test_resolving_refused_continuations_stays_linear(monkeypatch):
 
 
 def test_a_retry_sibling_is_not_mistaken_for_the_reply_a_refusal_resumed(monkeypatch):
-    """Only a sibling whose text the refused row extends was resumed; a Retry is not."""
     from core.inference import checkpoint
     from routes import inference as inference_routes
 

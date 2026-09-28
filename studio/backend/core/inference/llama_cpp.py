@@ -1638,7 +1638,7 @@ def _resumed_reply(message: dict, cuts: dict, positions: dict) -> dict:
         at, rows = cuts.get(message.get("parentId", message.get("parent_id")), ((), ()))
         end = bisect.bisect_left(at, position)
         earlier = rows[max(0, end - _RESUME_SIBLINGS) : end]
-        # Newest first: the resumed reply is the latest earlier cut this one extends (a refusal adds nothing).
+        # Newest earlier cut wins; equal text counts, since a refusal adds nothing.
         source = next(
             (
                 row
