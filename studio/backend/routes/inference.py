@@ -26934,7 +26934,9 @@ async def produce_openai_chat_completions(
         finally:
             _tracker.__exit__(None, None, None)
 
-    if not using_gguf and _messages_have_remote_image(payload.messages):
+    if not using_gguf and _messages_have_remote_image(
+        m for m in payload.messages if m.role not in ("system", "developer")
+    ):
         if not model_info.get("is_vision"):
             raise _reject(
                 400, "Image provided but current model is text-only. Load a vision model."
