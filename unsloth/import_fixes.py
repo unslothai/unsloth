@@ -2831,7 +2831,7 @@ def _cast_fp8_dequantize_to_model_dtype(op_cls):
 
 
 def _fp8_pad_ragged_block(quantized, scales, block):
-    """Zero-pad a block-FP8 weight whose last row/column block is ragged to the scale grid, or None."""
+    """Zero-pad a block-FP8 weight with a ragged last block to its ceil scale grid, else None."""
     import torch
 
     try:
@@ -2840,8 +2840,7 @@ def _fp8_pad_ragged_block(quantized, scales, block):
         block_m, block_n = int(block[0]), int(block[1])
     except Exception:
         return None
-    # Packed FP4 (int8 / float4 x2) doubles its columns inside transformers; the loader may also hand
-    # the FP8 weight over already cast, so only exclude the packed dtypes.
+    # Packed FP4 doubles its columns inside transformers; FP8 may arrive already cast, so exclude only packed.
     packed = (torch.int8, torch.uint8, getattr(torch, "float4_e2m1fn_x2", torch.int8))
     if quantized.dtype in packed or (rows % block_m == 0 and cols % block_n == 0):
         return None
@@ -2855,9 +2854,7 @@ def _fp8_pad_ragged_block(quantized, scales, block):
 
 
 def _pad_fp8_dequantize_ragged_blocks(op_cls):
-    """transformers refuses block-FP8 weights with a ragged last block, e.g. GLM-5.3 `kv_a_proj_with_mqa`
-    (576 rows, 5 scale rows of a 128 block), so a 16-bit load fails. Zero-pad the weight to the
-    configured block, dequantize with the original math, slice back."""
+    """16-bit loads of block-FP8 weights with a ragged last block (GLM-5.3 kv_a_proj_with_mqa: 576 rows) raise: pad, dequantize, slice."""
     if op_cls is None:
         return
 
@@ -2867,8 +2864,7 @@ def _pad_fp8_dequantize_ragged_blocks(op_cls):
 
     original = getattr(op_cls, "_dequantize_one", None)
     if original is not None:
-        # Newer transformers derive the block as rows // scale_rows: a ragged grid either raises or,
-        # when the division happens to be exact (200 rows, 2 scale rows), uses the wrong block.
+        # rows // scale_rows: raises on a ragged grid, or silently picks the wrong block when it divides (200 / 2).
         if getattr(original, "_unsloth_ragged_blocks", False):
             return
 
@@ -2890,7 +2886,7 @@ def _pad_fp8_dequantize_ragged_blocks(op_cls):
     if convert is None or getattr(convert, "_unsloth_ragged_blocks", False):
         return
 
-    # transformers 5.5: one weight$ / weight_scale_inv pair, block from the config.
+    # transformers 5.5: block from the config.
     @functools.wraps(convert)
     def ragged_convert(self, input_dict, *args, **kwargs):
         try:
