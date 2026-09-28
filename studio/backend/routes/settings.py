@@ -4541,7 +4541,8 @@ async def update_sandbox_settings(
     for value, env in locks:
         if value is not None and saved.locked_by_environment(env):
             raise HTTPException(
-                status_code = 409, detail = f"{env} is set in Studio's environment, which decides this."
+                status_code = 409,
+                detail = f"{env} is set in the environment Unsloth runs in, which decides this.",
             )
     try:
         restored = await asyncio.to_thread(_sandbox_apply, payload)
@@ -4586,7 +4587,7 @@ async def start_sandbox_prepare(
         raise HTTPException(
             status_code = 403,
             detail = (
-                "Prepare this PC from the computer running Studio: the Windows administrator "
+                "Prepare this PC from the computer running Unsloth: the Windows administrator "
                 "prompt appears there, not in this browser."
             ),
         )

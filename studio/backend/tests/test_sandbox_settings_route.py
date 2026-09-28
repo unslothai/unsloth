@@ -247,7 +247,7 @@ def test_prepare_is_refused_from_a_remote_browser(host, windows, monkeypatch):
     with _client(OWNER) as client:
         response = client.post("/sandbox/prepare")
     assert response.status_code == 403
-    assert "computer running Studio" in response.json()["detail"]
+    assert "computer running Unsloth" in response.json()["detail"]
     assert calls["start"] == 0
 
 
