@@ -111,7 +111,7 @@ test("a chat's Move to submenu groups projects and sections, New first and Remov
     trigger: sub.indexOf('<span>{t("shell.sections.moveTo")}</span>'),
     projects: sub.indexOf('<P.Label>{t("shell.navigation.projects")}</P.Label>'),
     newProject: sub.indexOf("<span>New project</span>"),
-    destinations: sub.indexOf("{projects.filter((project) => project.id !== item.projectId).map((project) => ("),
+    destinations: sub.indexOf("{moveProjects.map((project) => ("),
     removeProject: sub.indexOf('t("shell.sections.removeFromProject")'),
     rule: sub.indexOf("<P.Separator />"),
     sections: sub.indexOf("{renderSectionItems(P, {"),
@@ -134,7 +134,7 @@ test("a chat's Move to submenu groups projects and sections, New first and Remov
   const newSection = items.indexOf('t("shell.sections.newSection")');
   const list = items.indexOf("{destinations.map((section) => (");
   // The project or section the row is already in is left out, not offered greyed out.
-  assert.match(items, /const destinations = customSections\.filter\(\(section\) => section\.id !== config\.current\);/);
+  assert.match(items, /const destinations = customSections\n\s*\.filter\(\(section\) => section\.id !== config\.current\)\n\s*\.slice\(0, MOVE_TO_MAX\);/);
   assert.doesNotMatch(APP_SIDEBAR, /disabled=\{config\.current === section\.id\}|disabled=\{item\.projectId === project\.id\}/);
   const remove = items.indexOf("{config.anyFiled && (");
   assert.ok(newSection < list && list < remove, "the Sections group is out of order");
@@ -455,5 +455,19 @@ test("a sidebar menu heading has more room above it than below", async () => {
   assert.match(
     css,
     /\.unsloth-plus-menu\.sidebar-row-menu :is\(\n\s*\[data-slot="dropdown-menu-label"\],\n\s*\[data-slot="context-menu-label"\]\n\s*\) \{\n\s*@apply pl-2\.5 pr-2\.5 pt-2 pb-1 text-ui-11;/,
+  );
+});
+
+// A long list of projects or sections made "Move to" slow to open, so each group lists at most the
+// 12 most recent: projects by last update, sections newest first as the store keeps them.
+test("Move to lists at most the 12 most recent projects and sections", () => {
+  assert.match(APP_SIDEBAR, /const MOVE_TO_MAX = 12;/);
+  assert.match(
+    APP_SIDEBAR,
+    /const recentProjects = useMemo\(\n\s*\(\) => \[\.\.\.projects\]\.sort\(\(a, b\) => b\.updatedAt - a\.updatedAt\),/,
+  );
+  assert.match(
+    APP_SIDEBAR,
+    /const moveProjects = recentProjects\n\s*\.filter\(\(project\) => project\.id !== item\.projectId\)\n\s*\.slice\(0, MOVE_TO_MAX\);/,
   );
 });

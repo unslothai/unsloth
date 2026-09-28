@@ -389,6 +389,8 @@ const MOVE_TO_MENU =
 // which doubled the gap at both its ends; -my-0.5 gives that 2px back.
 const MOVE_TO_LIST =
   "no-scrollbar -my-0.5 max-h-[calc(260px*var(--ui-space-scale,1))] overflow-y-auto overscroll-contain";
+// Most projects, and most sections, a "Move to" lists: the most recent, so a long list stays light.
+const MOVE_TO_MAX = 12;
 // Folder rows match their hover pill.
 const DROP_INTO_ROW_CUE = `${DROP_CUE_CLASS} before:pointer-events-none before:absolute before:inset-x-0 before:top-0 before:bottom-px before:rounded-full before:bg-primary/8 before:border-[1.5px] before:border-primary before:content-['']`;
 // The menu keeps a 1px gap between rows. A pointer resting on that gap would hit the section
@@ -1121,6 +1123,11 @@ export function AppSidebar() {
   const { displayTitle, avatarDataUrl } = useEffectiveProfile();
 
   const { projects, hasLoaded: projectsLoaded } = useChatProjects();
+  // Most recently updated first, for "Move to".
+  const recentProjects = useMemo(
+    () => [...projects].sort((a, b) => b.updatedAt - a.updatedAt),
+    [projects],
+  );
   const activeProjectId = isChatRoute
     ? ((search.project as string | undefined) ?? null)
     : null;
@@ -4171,7 +4178,9 @@ export function AppSidebar() {
       ? customSections.find((section) => section.id === config.current)
       : undefined;
     // The section the rows are in is not a place to move them to, so it is left out, not greyed.
-    const destinations = customSections.filter((section) => section.id !== config.current);
+    const destinations = customSections
+      .filter((section) => section.id !== config.current)
+      .slice(0, MOVE_TO_MAX);
     return (
       <>
         {config.heading && <P.Label>{t("shell.sections.sectionsHeading")}</P.Label>}
@@ -4365,6 +4374,9 @@ export function AppSidebar() {
   ) {
     const threadIds = getSidebarItemThreadIds(item);
     const isPinned = pinnedIdSet.has(item.id);
+    const moveProjects = recentProjects
+      .filter((project) => project.id !== item.projectId)
+      .slice(0, MOVE_TO_MAX);
     // A compare row outside a project spans two sandboxes, and there is no
     // honest single folder to offer for it.
     const sandboxSessionId =
@@ -4459,9 +4471,9 @@ export function AppSidebar() {
                   <span>New project</span>
                 </P.Item>
                 {/* The project the chat is in is not a place to move it to: left out, not greyed. */}
-                {projects.some((project) => project.id !== item.projectId) && (
+                {moveProjects.length > 0 && (
                   <div className={MOVE_TO_LIST}>
-                    {projects.filter((project) => project.id !== item.projectId).map((project) => (
+                    {moveProjects.map((project) => (
                       <P.Item
                         key={project.id}
                         onSelect={() => void moveChatToProjectFromMenu(item, project.id)}
