@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Optional, Sequence
 
+from hub.utils.hf_tokens import call_with_anonymous_retry
 from loggers import get_logger
 from utils.paths.path_utils import (
     drop_shadowed_appledouble_names as _drop_shadowed_appledouble_names,
@@ -31,7 +32,6 @@ class GgufVariantInfo:
     size_bytes: int
     display_label: Optional[str] = None
     download_size_bytes: int = 0
-    shard_count: int = 0
 
 
 GGUF_QUANT_PREFERENCE = [
@@ -73,11 +73,7 @@ GGUF_QUANT_PREFERENCE = [
     "F32",
 ]
 
-_GGUF_SPLIT_SUFFIX_RE = re.compile(r"-\d{3,}-of-\d{3,}", re.IGNORECASE)
-_GGUF_CANONICAL_SPLIT_RE = re.compile(
-    r"^(?P<prefix>.+)-(?P<index>\d{5})-of-(?P<total>\d{5})\.gguf$",
-    re.IGNORECASE,
-)
+_GGUF_SPLIT_SUFFIX_RE = re.compile(r"-\d{3,}-of-(\d{3,})", re.IGNORECASE)
 _GGUF_QUANT_RE = re.compile(
     r"(UD-)?"
     r"(MXFP[0-9]+(?:_[A-Z0-9]+)*"
@@ -273,8 +269,20 @@ def pick_best_gguf(filenames: list[str]) -> Optional[str]:
         by_quant.setdefault(extract_quant_label(name).upper(), name)
     for quant in GGUF_QUANT_PREFERENCE:
         filename = by_quant.get(quant.upper())
-        if filename is not None:
-            return filename
+        if filename is None:
+            continue
+        if quant in _FLOAT_PRECISION_QUANTS:
+            # The list leaves out quants such as Q4_0, Q3_K and TQ1_0; the first listed of them still beats full precision.
+            filename = next(
+                (
+                    name
+                    for name in by_quant.values()
+                    if (token := extract_quant_token(name))
+                    and token.upper() not in _FLOAT_PRECISION_QUANTS
+                ),
+                filename,
+            )
+        return filename
     return gguf_files[0]
 
 
@@ -362,27 +370,10 @@ def gguf_variant_family(filename: str) -> str:
     return _unknown_gguf_variant_key(filename)
 
 
-def complete_gguf_shard_count(filenames: Sequence[str], first_filename: str) -> int:
-    """Return a complete canonical split's part count, otherwise zero."""
-    normalized_first = first_filename.replace("\\", "/")
-    first_match = _GGUF_CANONICAL_SPLIT_RE.match(normalized_first.rsplit("/", 1)[-1])
-    if first_match is None or int(first_match.group("index")) != 1:
-        return 0
-    total = int(first_match.group("total"))
-    if total < 2:
-        return 0
-
-    family = gguf_variant_family(normalized_first).casefold()
-    indices: list[int] = []
-    for filename in filenames:
-        normalized = filename.replace("\\", "/")
-        if gguf_variant_family(normalized).casefold() != family:
-            continue
-        match = _GGUF_CANONICAL_SPLIT_RE.match(normalized.rsplit("/", 1)[-1])
-        if match is None or match.group("total") != first_match.group("total"):
-            return 0
-        indices.append(int(match.group("index")))
-    return total if sorted(indices) == list(range(1, total + 1)) else 0
+def gguf_shard_set(filename: str) -> tuple[str, int]:
+    # A quant shipped both whole and split is two copies of one checkpoint, not one set of shards.
+    split = _GGUF_SPLIT_SUFFIX_RE.search(filename.rsplit("/", 1)[-1])
+    return gguf_variant_family(filename), int(split.group(1)) if split else 0
 
 
 def gguf_checkpoint_family(filename: str) -> Optional[str]:
@@ -820,12 +811,12 @@ def _apply_gguf_display_labels(variants: list[GgufVariantInfo]) -> None:
 
 
 def group_gguf_variant_files(entries) -> dict[str, tuple[str, int]]:
-    """``variant key -> (first filename, size of that variant's shard family)``. *entries* is an iterable of ``(path, size)`` for main GGUFs only, already filtered of mmproj, drafters and big-endian builds. Sizes are summed across the shards of ONE family, never across families: a repo that ships the same quant twice (``BF16/QwQ-32B-BF16-*`` beside ``BF16/QwQ-32B.BF16-*``) therefore advertises what a load would actually read rather than the total of both copies. The family kept is the one holding the lexicographically first file, which is the shard the lister and the loader open."""
-    families: dict[str, dict[str, list[tuple[str, int]]]] = {}
+    """``variant key -> (first filename, summed size of ONE shard set)``: a quant shipped twice (``QwQ-32B-BF16-*`` beside ``QwQ-32B.BF16-*``, or whole beside split) keeps only the set holding the first file, the one the loader opens."""
+    families: dict[str, dict[tuple[str, int], list[tuple[str, int]]]] = {}
     for path, size in entries:
-        families.setdefault(gguf_variant_key(path), {}).setdefault(
-            gguf_variant_family(path), []
-        ).append((path, int(size or 0)))
+        families.setdefault(gguf_variant_key(path), {}).setdefault(gguf_shard_set(path), []).append(
+            (path, int(size or 0))
+        )
     grouped: dict[str, tuple[str, int]] = {}
     for key, by_family in families.items():
         chosen = min(by_family.values(), key = lambda members: min(path for path, _ in members))
@@ -1074,7 +1065,6 @@ def list_partial_gguf_variants_from_state(
             )
         )
         main_filename: Optional[str] = None
-        main_filenames: list[str] = []
         size_bytes = 0
         companion_bytes = 0
         imatrix_only = False
@@ -1096,7 +1086,6 @@ def list_partial_gguf_variants_from_state(
                     continue
                 if main_filename is None:
                     main_filename = expected.path
-                main_filenames.append(expected.path)
                 size_bytes += max(0, int(expected.size or 0))
         if main_filename is None:
             # An older build could download the imatrix as a variant of its own, so naming the synthetic file after the variant would put that interrupted row back in the menu at zero bytes. Only when NOTHING eligible was found.
@@ -1109,7 +1098,6 @@ def list_partial_gguf_variants_from_state(
                 quant = variant,
                 size_bytes = size_bytes,
                 download_size_bytes = size_bytes + companion_bytes,
-                shard_count = complete_gguf_shard_count(main_filenames, main_filename),
             )
         )
 
@@ -1169,10 +1157,14 @@ def list_gguf_variants(
             return _ready_cached_variants(cached)
 
     try:
-        info = HfApi(token = hf_token).model_info(
-            repo_id,
-            files_metadata = True,
-            timeout = _GGUF_MODEL_INFO_TIMEOUT_SECONDS,
+        # A refused credential retries once anonymously: a public listing still answers.
+        info = call_with_anonymous_retry(
+            lambda token: HfApi(token = token).model_info(
+                repo_id,
+                files_metadata = True,
+                timeout = _GGUF_MODEL_INFO_TIMEOUT_SECONDS,
+            ),
+            hf_token,
         )
     except Exception as exc:
         if type(exc).__name__ in (
@@ -1215,12 +1207,7 @@ def list_gguf_variants(
         main_files.append((filename, int(getattr(sibling, "size", 0) or 0)))
 
     variants = [
-        GgufVariantInfo(
-            filename = filename,
-            quant = quant,
-            size_bytes = size,
-            shard_count = complete_gguf_shard_count([path for path, _size in main_files], filename),
-        )
+        GgufVariantInfo(filename = filename, quant = quant, size_bytes = size)
         for quant, (filename, size) in group_gguf_variant_files(main_files).items()
     ]
 
@@ -1313,12 +1300,7 @@ def list_local_gguf_variants(
         main_files.append((rel, size))
 
     variants = [
-        GgufVariantInfo(
-            filename = filename,
-            quant = quant,
-            size_bytes = size,
-            shard_count = complete_gguf_shard_count([path for path, _size in main_files], filename),
-        )
+        GgufVariantInfo(filename = filename, quant = quant, size_bytes = size)
         for quant, (filename, size) in group_gguf_variant_files(main_files).items()
     ]
     variants.sort(key = lambda variant: -variant.size_bytes)

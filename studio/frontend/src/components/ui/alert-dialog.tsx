@@ -65,7 +65,7 @@ function AlertDialogContent({
         data-size={size}
         className={cn(
           // Same short-viewport guard as DialogContent: scroll rather than clip the actions off screen.
-          "data-open:animate-in data-closed:animate-out data-closed:fade-out-0 data-open:fade-in-0 data-closed:zoom-out-95 data-open:zoom-in-95 bg-background ring-foreground/5 max-h-[calc(100dvh-var(--studio-window-chrome-top,0px)-2rem)] gap-6 overflow-y-auto rounded-4xl p-6 ring-1 duration-100 data-[size=default]:max-w-xs data-[size=sm]:max-w-xs data-[size=default]:sm:max-w-md group/alert-dialog-content fixed top-[calc(50%+var(--studio-window-chrome-top,0px)/2)] left-1/2 z-50 grid w-full -translate-x-1/2 -translate-y-1/2 outline-none",
+          "data-open:animate-in data-closed:animate-out data-closed:fade-out-0 data-open:fade-in-0 data-closed:zoom-out-95 data-open:zoom-in-95 bg-background ring-[color-mix(in_oklab,var(--foreground)_calc(5%*var(--contrast-edge-gain,1)),transparent)] max-h-[calc(100dvh-var(--studio-window-chrome-top,0px)-2rem)] gap-6 overflow-y-auto rounded-4xl p-6 ring-1 duration-100 data-[size=default]:max-w-xs data-[size=sm]:max-w-xs data-[size=default]:sm:max-w-md group/alert-dialog-content fixed top-[calc(50%+var(--studio-window-chrome-top,0px)/2)] left-1/2 z-50 grid w-full -translate-x-1/2 -translate-y-1/2 outline-none",
           // Confirms stay centered cards on phones rather than going full screen, but take the
           // width available instead of a fixed 20rem. Important: the data-[size] rules outrank a plain max-w.
           "max-sm:max-w-[calc(100%-2rem)]!",
