@@ -5897,6 +5897,114 @@ def get_vulkan_inference_gpu_info() -> Optional[Dict[str, Any]]:
     return result
 
 
+def _installed_llama_backend() -> Optional[str]:
+    """What the installed llama.cpp prebuilt records it runs on, the same answer Settings shows."""
+    from core.inference.llama_cpp import LlamaCppBackend
+    from utils.llama_cpp_freshness import read_install_marker
+    from utils.prebuilt.llama_backend import marker_backend
+
+    return marker_backend(read_install_marker(LlamaCppBackend._find_llama_server_binary()))
+
+
+def _smi_inference_device(
+    index: int,
+    ordinal: int,
+    name: Optional[str],
+    total_gb: Optional[float],
+    used_gb: Optional[float],
+) -> Dict[str, Any]:
+    known = total_gb is not None and used_gb is not None
+    return {
+        "index": index,
+        "index_kind": "physical",
+        "visible_ordinal": ordinal,
+        "name": name,
+        "memory_total_gb": total_gb,
+        "vram_used_gb": used_gb,
+        "vram_free_gb": round(max(0.0, total_gb - used_gb), 2) if known else None,
+        "vram_utilization_pct": round((used_gb / total_gb) * 100, 1)
+        if known and total_gb > 0
+        else None,
+        "shared_memory": False,
+    }
+
+
+def _nvidia_inference_devices() -> list[Dict[str, Any]]:
+    from . import nvidia
+
+    rows = [
+        row
+        for row in (nvidia.get_physical_gpu_inventory().get("devices") or [])
+        if isinstance(row.get("index"), int)
+    ]
+    if not rows:
+        return []
+    usage = nvidia.get_visible_gpu_utilization([row["index"] for row in rows])
+    usage_by_index = {d.get("index"): d for d in usage.get("devices") or []}
+    devices = []
+    for ordinal, row in enumerate(rows):
+        util = usage_by_index.get(row["index"], {})
+        devices.append(
+            _smi_inference_device(
+                row["index"],
+                ordinal,
+                row.get("name"),
+                row.get("memory_total_gb") or util.get("vram_total_gb"),
+                util.get("vram_used_gb"),
+            )
+        )
+    return devices
+
+
+def _amd_inference_devices() -> list[Dict[str, Any]]:
+    from . import amd
+
+    vram_mib, gpu_ids = amd.get_gpu_vram_report()
+    devices = []
+    for ordinal, gpu_id in enumerate(gpu_ids):
+        free_total = vram_mib.get(gpu_id)
+        total_gb = round(free_total[1] / 1024, 2) if free_total else None
+        used_gb = round((free_total[1] - free_total[0]) / 1024, 2) if free_total else None
+        # amd-smi's metric call carries no marketing name.
+        devices.append(_smi_inference_device(gpu_id, ordinal, None, total_gb, used_gb))
+    return devices
+
+
+def get_cross_vendor_inference_gpu_info() -> Optional[Dict[str, Any]]:
+    """llama.cpp's GPUs when its CUDA or ROCm build is the other vendor from torch, else None.
+
+    A ROCm torch with a CUDA llama.cpp (or the reverse) runs chat on cards the training
+    inventory never lists. Read from nvidia-smi / amd-smi only: torch answers for the
+    other vendor, and a CUDA or HIP context opened here would pin VRAM in this process.
+    """
+    try:
+        llama_backend = _installed_llama_backend()
+    except Exception as e:
+        logger.debug("Could not read the installed llama.cpp backend: %s", e)
+        return None
+    if llama_backend not in ("cuda", "rocm") or llama_backend == _backend_label(get_device()):
+        return None
+    try:
+        devices = (
+            _nvidia_inference_devices() if llama_backend == "cuda" else _amd_inference_devices()
+        )
+    except Exception as e:
+        logger.debug("%s inference GPU query failed: %s", llama_backend, e)
+        return None
+    # No answer keeps the old fallback to the training inventory: an empty list would
+    # tell the load estimate this host has no GPU at all.
+    if not devices:
+        return None
+    return {
+        "available": True,
+        "backend": llama_backend,
+        "backend_cuda_visible_devices": None,
+        "parent_visible_gpu_ids": [],
+        "devices": devices,
+        "index_kind": "physical",
+    }
+
+
 def _repair_smi_visible_devices(
     devices: list[Dict[str, Any]], parent_visible_ids: Optional[list[int]]
 ) -> bool:

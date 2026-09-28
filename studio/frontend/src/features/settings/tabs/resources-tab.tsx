@@ -668,6 +668,26 @@ export function ResourcesTab() {
               ) : (
                 ` · ${t("settings.resources.gpu.unavailable")}`
               )}
+              {/* Names the card a GGUF load lands on when the list below is
+                  the training backend's, e.g. CUDA llama.cpp beside ROCm torch. */}
+              {separateInferenceGpu.available &&
+                inferenceDisplay.usageDevices.map((device, index) => (
+                  <span
+                    key={`${device.index ?? index}-${device.name ?? "gpu"}`}
+                    className="block normal-case"
+                  >
+                    {`${
+                      device.name ??
+                      t("settings.resources.gpu.deviceWithIndex", {
+                        index: deviceOrdinal(device) ?? index,
+                      })
+                    } · ${t("settings.resources.gpu.used", {
+                      value: isFiniteNumber(device.vram_used_gb)
+                        ? formatGiB(device.vram_used_gb)
+                        : unknownLabel,
+                    })}`}
+                  </span>
+                ))}
               {separateInferenceGpu.available &&
                 inferenceDisplay.sharedDevices.length > 0 && (
                   <span className="block normal-case">

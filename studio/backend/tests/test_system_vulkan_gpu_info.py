@@ -398,3 +398,175 @@ def test_system_gpu_info_still_derives_free_when_the_probe_reports_none(monkeypa
     )
 
     assert gpu["devices"][0]["vram_free_gb"] == 18.0
+
+
+def _refuse(*args, **kwargs):
+    raise AssertionError("this vendor's reader must not run")
+
+
+def _mixed_host(monkeypatch, *, torch_rocm, llama_backend):
+    """Stubs a host whose torch and llama.cpp are pinned by the test, never read off the runner."""
+    import utils.hardware as hardware
+    import utils.hardware.hardware as hw
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    torch_backend = "rocm" if torch_rocm else "cuda"
+    torch_card = "AMD Radeon AI PRO R9700" if torch_rocm else "NVIDIA GeForce RTX 3080"
+    monkeypatch.setattr(
+        hardware,
+        "get_backend_visible_gpu_info",
+        lambda: {
+            "available": True,
+            "backend": torch_backend,
+            "index_kind": "physical",
+            "devices": [
+                {"index": 0, "index_kind": "physical", "name": torch_card, "memory_total_gb": 32.0}
+            ],
+        },
+    )
+    monkeypatch.setattr(
+        hardware,
+        "get_visible_gpu_utilization",
+        lambda: {"available": True, "backend": torch_backend, "devices": []},
+    )
+    monkeypatch.setattr(hardware, "get_vulkan_inference_gpu_info", lambda: None)
+    monkeypatch.setattr(hw, "get_device", lambda: hw.DeviceType.CUDA)
+    monkeypatch.setattr(hw, "IS_ROCM", torch_rocm)
+    monkeypatch.setattr(hw, "_installed_llama_backend", lambda: llama_backend)
+    monkeypatch.setattr(LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda: False))
+    monkeypatch.setattr(
+        LlamaCppBackend, "_backend_lacks_gpu_lib", staticmethod(lambda binary = None: False)
+    )
+    monkeypatch.setattr(main, "_system_gpu_cache", None)
+
+
+def test_rocm_torch_with_a_cuda_llama_cpp_reports_the_nvidia_card(monkeypatch):
+    """The Discord report: an RTX 3080 beside an R9700, ROCm torch, llama.cpp switched to
+    CUDA. The chat model sat on the 3080 while the System tab listed only the AMD card."""
+    import utils.hardware.amd as amd
+    import utils.hardware.nvidia as nvidia
+
+    _mixed_host(monkeypatch, torch_rocm = True, llama_backend = "cuda")
+    monkeypatch.setattr(
+        nvidia,
+        "get_physical_gpu_inventory",
+        lambda: {
+            "available": True,
+            "devices": [
+                {
+                    "vendor": "nvidia",
+                    "index": 0,
+                    "name": "NVIDIA GeForce RTX 3080",
+                    "memory_total_gb": 10.0,
+                }
+            ],
+        },
+    )
+    asked = []
+
+    def _usage(parent_visible_ids, parent_cuda_visible_devices = None):
+        asked.append(parent_visible_ids)
+        return {"devices": [{"index": 0, "vram_used_gb": 7.88, "vram_total_gb": 10.0}]}
+
+    monkeypatch.setattr(nvidia, "get_visible_gpu_utilization", _usage)
+    monkeypatch.setattr(amd, "get_gpu_vram_report", _refuse)
+
+    gpu, inference_gpu = main._get_cached_system_gpu_info(
+        SimpleNamespace(debug = lambda *args: None)
+    )
+
+    assert gpu["backend"] == "rocm"
+    assert inference_gpu is not gpu
+    assert inference_gpu["backend"] == "cuda"
+    assert inference_gpu["available"] is True
+    assert inference_gpu["index_kind"] == "physical"
+    # nvidia-smi row numbers are not the ordinals a pin is applied in.
+    assert inference_gpu["gguf_gpu_ids_supported"] is False
+    assert asked == [[0]]
+    (card,) = inference_gpu["devices"]
+    assert card["name"] == "NVIDIA GeForce RTX 3080"
+    assert card["index"] == 0
+    assert card["memory_total_gb"] == 10.0
+    assert card["vram_used_gb"] == 7.88
+    assert card["vram_free_gb"] == 2.12
+    assert card["vram_utilization_pct"] == 78.8
+
+
+def test_rocm_torch_with_a_rocm_llama_cpp_keeps_the_training_inventory(monkeypatch):
+    """Control for the test above: same vendor, so there is nothing separate to report."""
+    import utils.hardware.amd as amd
+    import utils.hardware.nvidia as nvidia
+
+    _mixed_host(monkeypatch, torch_rocm = True, llama_backend = "rocm")
+    monkeypatch.setattr(nvidia, "get_physical_gpu_inventory", _refuse)
+    monkeypatch.setattr(nvidia, "get_visible_gpu_utilization", _refuse)
+    monkeypatch.setattr(amd, "get_gpu_vram_report", _refuse)
+
+    gpu, inference_gpu = main._get_cached_system_gpu_info(
+        SimpleNamespace(debug = lambda *args: None)
+    )
+
+    assert inference_gpu is gpu
+    assert inference_gpu["backend"] == "rocm"
+
+
+def test_cuda_torch_with_a_rocm_llama_cpp_reports_the_amd_card(monkeypatch):
+    import utils.hardware.amd as amd
+    import utils.hardware.nvidia as nvidia
+
+    _mixed_host(monkeypatch, torch_rocm = False, llama_backend = "rocm")
+    monkeypatch.setattr(nvidia, "get_physical_gpu_inventory", _refuse)
+    # {amd-smi id: (free MiB, total MiB)}, plus every id the call enumerated.
+    monkeypatch.setattr(amd, "get_gpu_vram_report", lambda: ({0: (8192, 32768)}, [0]))
+
+    gpu, inference_gpu = main._get_cached_system_gpu_info(
+        SimpleNamespace(debug = lambda *args: None)
+    )
+
+    assert gpu["backend"] == "cuda"
+    assert inference_gpu["backend"] == "rocm"
+    (card,) = inference_gpu["devices"]
+    assert card["memory_total_gb"] == 32.0
+    assert card["vram_used_gb"] == 24.0
+    assert card["vram_free_gb"] == 8.0
+
+
+def test_a_silent_nvidia_smi_falls_back_to_the_training_inventory(monkeypatch):
+    """An empty cross-vendor list would read as "this host has no GPU" to the load estimate."""
+    import utils.hardware.nvidia as nvidia
+
+    _mixed_host(monkeypatch, torch_rocm = True, llama_backend = "cuda")
+    monkeypatch.setattr(
+        nvidia, "get_physical_gpu_inventory", lambda: {"available": False, "devices": []}
+    )
+    monkeypatch.setattr(nvidia, "get_visible_gpu_utilization", _refuse)
+
+    gpu, inference_gpu = main._get_cached_system_gpu_info(
+        SimpleNamespace(debug = lambda *args: None)
+    )
+
+    assert inference_gpu is gpu
+
+
+def test_a_vulkan_llama_cpp_never_asks_the_cross_vendor_probe(monkeypatch):
+    """CUDA torch with a Vulkan llama.cpp keeps the Vulkan inventory exactly as before."""
+    import utils.hardware as hardware
+
+    vulkan_info = {
+        "available": True,
+        "backend": "vulkan",
+        "devices": [{"index": 0, "index_kind": "vulkan", "name": "Vulkan0", "memory_total_gb": 8.0}],
+        "index_kind": "vulkan",
+    }
+    _mixed_host(monkeypatch, torch_rocm = False, llama_backend = "vulkan")
+    monkeypatch.setattr(hardware, "get_vulkan_inference_gpu_info", lambda: vulkan_info)
+    monkeypatch.setattr(hardware, "get_cross_vendor_inference_gpu_info", _refuse)
+
+    gpu, inference_gpu = main._get_cached_system_gpu_info(
+        SimpleNamespace(debug = lambda *args: None)
+    )
+
+    assert gpu["backend"] == "cuda"
+    assert inference_gpu["backend"] == "vulkan"
+    assert inference_gpu["devices"] == vulkan_info["devices"]
+    assert inference_gpu["gguf_gpu_ids_supported"] is True

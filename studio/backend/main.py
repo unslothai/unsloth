@@ -2167,6 +2167,7 @@ def _get_cached_system_gpu_info(
     import time
     from utils.hardware import (
         get_backend_visible_gpu_info,
+        get_cross_vendor_inference_gpu_info,
         get_visible_gpu_utilization,
         get_vulkan_inference_gpu_info,
     )
@@ -2289,15 +2290,21 @@ def _get_cached_system_gpu_info(
             inference_gpu_info = gpu_info
         else:
             vulkan_info = get_vulkan_inference_gpu_info()
-            inference_gpu_info = (
-                {
+            # A CUDA llama.cpp beside ROCm torch (or the reverse) runs on cards gpu_info never lists.
+            cross_vendor_info = (
+                get_cross_vendor_inference_gpu_info() if vulkan_info is None else None
+            )
+            if vulkan_info is not None:
+                inference_gpu_info = {
                     **vulkan_info,
                     # Pinnable only once the probe enumerated devices: without ordinals there is nothing to offer.
                     "gguf_gpu_ids_supported": bool(vulkan_info.get("devices")),
                 }
-                if vulkan_info is not None
-                else gpu_info
-            )
+            elif cross_vendor_info is not None:
+                # SMI row numbers, not the ordinals a pin is applied in.
+                inference_gpu_info = {**cross_vendor_info, "gguf_gpu_ids_supported": False}
+            else:
+                inference_gpu_info = gpu_info
 
         combined_info = (gpu_info, inference_gpu_info)
         _system_gpu_cache = (time.monotonic(), combined_info)
