@@ -2997,17 +2997,28 @@ html[data-chat-font] .aui-root {
 		box-shadow: 0 8px 28px -6px var(--background) !important;
 	}
 
-	/* Library card menus: match the card menu button so they stand off the cards. */
-	.dark [data-slot="dropdown-menu-content"].library-actions-menu,
-	.dark [data-slot="dropdown-menu-sub-content"].library-actions-menu {
-		--accent: var(--color-neutral-600);
-		background-color: var(--color-neutral-700);
+	/* Library menus in dark: the sidebar menus' surface, text, hover, dividers and red. */
+	.dark :is([data-slot="dropdown-menu-content"], [data-slot="dropdown-menu-sub-content"]):is(.library-actions-menu, .library-menu) {
+		--library-menu-surface: color-mix(in srgb, var(--card), white 7%);
+		--accent: color-mix(in srgb, var(--library-menu-surface), white 10%);
+		--accent-foreground: #fff;
+		--destructive: #ed716a;
+		background-color: var(--library-menu-surface);
+		color: #fff;
+		box-shadow: none !important;
 	}
 
-	/* Library menus: dividers the default border hides in dark. */
-	.dark .library-actions-menu [data-slot="dropdown-menu-separator"],
-	.dark .library-menu [data-slot="dropdown-menu-separator"] {
-		background-color: var(--color-neutral-600);
+	.dark :is(.library-actions-menu, .library-menu) [data-slot="dropdown-menu-separator"] {
+		background-color: color-mix(in srgb, var(--card), white 16%);
+	}
+
+	/* Library header row once stuck: the chat composer's shadow, cast below only. */
+	.library-header-row[data-stuck] {
+		box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16);
+		clip-path: inset(0 0 -40px 0);
+	}
+	.dark .library-header-row[data-stuck] {
+		box-shadow: 0 4px 20px 4px var(--background);
 	}
 
 	/* Model selector: tighter than the menus above so it lifts off the

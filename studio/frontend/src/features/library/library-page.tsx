@@ -1034,13 +1034,13 @@ function LibraryView({ search }: { search: LibrarySearch }) {
                   <HugeiconsIcon icon={MoreHorizontalIcon} strokeWidth={1.75} className="size-5" />
                 </button>
               </DropdownMenuTrigger>
-              <DropdownMenuContent align="center" side="top" className="w-48">
+              <DropdownMenuContent align="center" side="top" className="library-menu w-48">
                 <DropdownMenuSub>
                   <DropdownMenuSubTrigger className="gap-2.5">
                     <HugeiconsIcon icon={FolderExportIcon} strokeWidth={1.75} className="size-icon" />
                     {t("library.selection.move")}
                   </DropdownMenuSubTrigger>
-                  <DropdownMenuSubContent className="max-h-[min(--spacing(80),var(--radix-dropdown-menu-content-available-height))] w-56">
+                  <DropdownMenuSubContent className="library-menu max-h-[min(--spacing(80),var(--radix-dropdown-menu-content-available-height))] w-56">
                     <DropdownMenuItem onSelect={() => bulkMove(null)}>
                       <HugeiconsIcon icon={Folder01Icon} strokeWidth={1.75} className="size-icon" />
                       {t("library.menu.noFolder")}
