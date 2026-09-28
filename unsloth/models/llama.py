@@ -40,7 +40,7 @@ from .loader_utils import (
     planner_class_mismatch_reason,
     planner_model_class,
     planner_config_overrides,
-    compressed_tensors_planner_bits,
+    compressed_tensors_planner_quantization,
     compressed_tensors_prepared_config,
     planner_hub_kwargs,
     planner_kwargs_with_max_memory,
@@ -2739,8 +2739,12 @@ class FastLlamaModel:
             # The caller's own config, still untouched in kwargs here, overrides the flags: loader.py clears
             # them whenever it forwards one.
             **planner_quantization_kwargs(
-                *compressed_tensors_planner_bits(model_config, load_in_4bit, load_in_8bit),
-                quantization_config = kwargs.get("quantization_config", None),
+                **compressed_tensors_planner_quantization(
+                    model_config,
+                    load_in_4bit,
+                    load_in_8bit,
+                    kwargs.get("quantization_config", None),
+                ),
                 rewritten_quantization_config = modelopt_planner_quantization_config(model_config)
                 if _modelopt_rewritten
                 else fp8_to_nf4_planner_quantization_config(

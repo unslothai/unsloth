@@ -281,7 +281,13 @@ def _packed_tensor_meta(checkpoint_files) -> dict:
 _STACKED_PACKED_EXPERTS = "_unsloth_int4_stacked_experts"
 
 
-def adopt_int4_packed_linears(model, ct_config, checkpoint_files, dtype) -> tuple:
+def adopt_int4_packed_linears(
+    model,
+    ct_config,
+    checkpoint_files,
+    dtype,
+    skip_modules = (),
+) -> tuple:
     """Swap every packed plain ``nn.Linear`` for an ``Int4PackedLinear`` shell.
 
     Returns ``(swapped, leftover)``: ``leftover`` packed modules (routers, renamed prefixes) keep the
@@ -298,6 +304,10 @@ def adopt_int4_packed_linears(model, ct_config, checkpoint_files, dtype) -> tupl
             module = None
         if isinstance(module, Int4PackedLinear):
             swaps.append((name, None, None, None))
+            continue
+        # The caller's bnb skip list keeps a module dense: its converter decompresses it instead.
+        if any(f".{key}." in f".{name}." for key in skip_modules or ()):
+            leftover.append(name)
             continue
         if module is None and ".experts." in name:
             # Stacked by their own converter, so no longer in the checkpoint's per-expert layout.
@@ -1125,7 +1135,11 @@ def install_compressed_tensors_bnb_quantizer() -> bool:
                 self._unsloth_int4_leftover = []
                 if keep is None and _int4_packed_plan(plan):
                     swapped, leftover = adopt_int4_packed_linears(
-                        model, self._unsloth_ct_config, kwargs.get("checkpoint_files"), dtype
+                        model,
+                        self._unsloth_ct_config,
+                        kwargs.get("checkpoint_files"),
+                        dtype,
+                        getattr(self.quantization_config, "llm_int8_skip_modules", None),
                     )
                     self._unsloth_int4_packed = swapped
                     self._unsloth_int4_leftover = leftover if swapped else []
@@ -1159,6 +1173,7 @@ def install_compressed_tensors_bnb_quantizer() -> bool:
             if getattr(self, "_unsloth_int4_packed", None):
                 from .compressed_tensors_int4 import (
                     finalize_int4_packed_linears,
+                    refuse_mixed_packed_full_save,
                     save_packed_with_checkpoint_config,
                 )
                 finalize_int4_packed_linears(model, self._unsloth_ct_dtype)
@@ -1169,6 +1184,8 @@ def install_compressed_tensors_bnb_quantizer() -> bool:
                     and not model.__dict__.get(_STACKED_PACKED_EXPERTS)
                 ):
                     save_packed_with_checkpoint_config(model, plan)
+                else:
+                    refuse_mixed_packed_full_save(model)
             stacks = finalize_packed_mxfp4_experts(model)
             if stacks or self._unsloth_packed_linears:
                 print(
