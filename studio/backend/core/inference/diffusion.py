@@ -1739,6 +1739,18 @@ def _auto_quant_eager_reason(
     return reason
 
 
+def _uninstall_fused_dit_patches() -> None:
+    """Restore the process-global fused DiT patches so the next load honours its own kill switches."""
+    try:
+        from .diffusion_qwenimage_rope import uninstall as uninstall_qwen_real_rope
+        from .diffusion_zimage_fused import uninstall as uninstall_zimage_fused
+
+        uninstall_qwen_real_rope()
+        uninstall_zimage_fused()
+    except Exception:  # noqa: BLE001 - teardown is best effort
+        pass
+
+
 def _clear_exception_frames(exc: BaseException) -> None:
     """Release failed-call locals while preserving traceback locations."""
     errors, seen = [exc], set()
@@ -6949,6 +6961,7 @@ class DiffusionBackend:
                             reset_nvfp4_state()
                         except Exception:  # noqa: BLE001 - teardown is best effort
                             pass
+                        _uninstall_fused_dit_patches()
                         if eager_patched:
                             uninstall_patches()
                             uninstall_arch_patches()
@@ -9291,6 +9304,7 @@ class DiffusionBackend:
             reset_nvfp4_state()
         except Exception:  # noqa: BLE001 - teardown is best effort
             pass
+        _uninstall_fused_dit_patches()
         if state.eager_patched:
             # Lazy import to keep diffusion.py torch-free to import.
             from .diffusion_eager_patches import uninstall_patches
