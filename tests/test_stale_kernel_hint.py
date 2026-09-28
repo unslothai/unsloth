@@ -108,15 +108,44 @@ def test_the_wheel_names_are_the_published_ones(fixes):
         {"libc": ("glibc", "2.31")},
         {"libc": ("", "")},
         {"free_threaded": True},
+        {"torch_version": "2.14.0.dev20260901+cu130"},
+        {"torch_version": "2.13.0rc1+cu130"},
     ],
 )
 def test_anywhere_else_it_names_a_source_rebuild(monkeypatch, fixes, host):
     _host(monkeypatch, fixes, **host)
-    hint = fixes.stale_kernel_hint("flash_attn", _STALE)
+    hint = fixes.stale_kernel_hint("causal_conv1d", _STALE)
     assert "releases/download" not in hint
     assert hint.endswith(
-        "pip install --no-deps --no-build-isolation --force-reinstall --no-binary flash-attn flash-attn"
+        "pip install --no-deps --no-build-isolation --force-reinstall --no-binary causal-conv1d causal-conv1d"
     )
+
+
+@pytest.mark.parametrize(
+    "host, pinned",
+    [
+        ({"py": (3, 12)}, True),
+        ({"torch_version": "2.14.0.dev20260901+cu130"}, True),
+        ({"torch_version": "2.12.1+cu130"}, False),
+    ],
+)
+def test_flash_attn_rebuilds_from_a_revision_that_compiles_on_torch_2_13(
+    monkeypatch, fixes, host, pinned
+):
+    _host(monkeypatch, fixes, **host)
+    hint = fixes.stale_kernel_hint("flash_attn", _STALE)
+    if pinned:
+        assert hint.endswith(f'--force-reinstall "{fixes._FLASH_ATTN_TORCH213_SOURCE}"')
+    else:
+        assert hint.endswith("--no-binary flash-attn flash-attn")
+
+
+def test_the_flash_attn_source_pin_is_the_one_the_prebuilt_wheels_use(fixes):
+    source = (_REPO_ROOT / ".github" / "scripts" / "prebuilt_wheels.py").read_text(
+        encoding = "utf-8"
+    )
+    ref = fixes._FLASH_ATTN_TORCH213_SOURCE.rsplit("@", 1)[1]
+    assert f'"ref": "{ref}"' in source
 
 
 def test_a_chained_cause_is_found(monkeypatch, fixes):
