@@ -121,3 +121,28 @@ def test_a_models_pin_on_q2_0_aliases_the_packed_quant():
     assert ("q2_0", "PQ2_0") in _legacy_variant_aliases([packed])
     plain = SimpleNamespace(quant = "Q2_0", filename = "Ternary-Bonsai-1.7B-Q2_0.gguf")
     assert all(legacy != "q2_0" for legacy, _ in _legacy_variant_aliases([packed, plain]))
+
+
+def test_a_local_selection_saved_as_q2_0_still_resolves_a_grouped_file(tmp_path):
+    from utils.models.model_config import _find_local_gguf_by_variant
+    grouped = _write_gguf(tmp_path / "Ternary-Bonsai-1.7B-Q2_0_g64.gguf")
+    assert _find_local_gguf_by_variant(str(tmp_path), "Q2_0") == str(grouped)
+
+
+def test_q2_0_names_neither_when_a_packed_and_a_grouped_file_both_claim_it(tmp_path):
+    from utils.models.model_config import _find_local_gguf_by_variant
+
+    _write_gguf(tmp_path / "Ternary-Bonsai-1.7B-PQ2_0.gguf")
+    _write_gguf(tmp_path / "Ternary-Bonsai-1.7B-Q2_0_g64.gguf")
+    assert _find_local_gguf_by_variant(str(tmp_path), "Q2_0") is None
+
+
+def test_a_models_pin_on_q2_0_aliases_a_lone_grouped_quant():
+    from types import SimpleNamespace
+
+    from core.inference.local_model_resolver import _legacy_variant_aliases
+
+    grouped = SimpleNamespace(quant = "Q2_0_g64", filename = "Ternary-Bonsai-1.7B-Q2_0_g64.gguf")
+    assert ("q2_0", "Q2_0_g64") in _legacy_variant_aliases([grouped])
+    packed = SimpleNamespace(quant = "PQ2_0", filename = _BONSAI_FILE)
+    assert all(legacy != "q2_0" for legacy, _ in _legacy_variant_aliases([grouped, packed]))

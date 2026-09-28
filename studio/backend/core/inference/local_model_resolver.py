@@ -334,9 +334,10 @@ def _legacy_variant_aliases(variants) -> tuple[tuple[str, str], ...]:
                 continue
             legacy = _qualified_variant_name(filename, _extract_quant_label(filename))
             keys = [str(legacy).lower()]
-            # Packed quants (PQ2_0) were published as their inner Q2_0 token.
-            if re.fullmatch(r"pq[0-9]+_[0-9]+", str(quant).lower()):
-                keys.append(str(quant).lower()[1:])
+            # Packed (PQ2_0) and grouped (Q2_0_g64) quants were published as their inner Q2_0.
+            inner = re.fullmatch(r"p?(q[0-9]+_[0-9]+)(?:_g[0-9]+)?", str(quant).lower())
+            if inner and inner.group(1) != str(quant).lower():
+                keys.append(inner.group(1))
             for key in dict.fromkeys(keys):
                 if not key or key in current:
                     continue

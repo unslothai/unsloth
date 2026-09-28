@@ -3294,10 +3294,30 @@ def _find_local_gguf_by_variant(
     Returns the absolute path, or ``None`` if no match.
     """
     found = _find_local_gguf_by_exact_variant(directory, variant, model_root)
-    # Packed quants (PQ2_0) used to be labelled by their inner Q2_0 token, so a selection saved
-    # before that still names Q2_0. Honour it only while no file answers to Q2_0 itself.
-    if found is None and re.fullmatch(r"q[0-9]+_[0-9]+", (variant or "").strip().lower()):
-        found = _find_local_gguf_by_exact_variant(directory, "P" + variant.strip(), model_root)
+    wanted = (variant or "").strip()
+    # Packed (PQ2_0) and grouped (Q2_0_g64) quants used to be labelled by their inner Q2_0
+    # token, so a selection saved before that still names Q2_0. Honour it only while no file
+    # answers to Q2_0 itself and exactly one packed or grouped file claims it.
+    if found is None and re.fullmatch(r"q[0-9]+_[0-9]+", wanted.lower()):
+        labels = {"P" + wanted}
+        root = _resolve_gguf_dir(Path(directory))
+        grouped = re.compile(re.escape(wanted) + r"_g[0-9]+", re.IGNORECASE)
+        try:
+            files = (
+                _iter_gguf_files(root, recursive = True) if root is not None else [Path(directory)]
+            )
+            labels.update(
+                label for f in files if grouped.fullmatch(label := _extract_quant_label(f.name))
+            )
+        except OSError:
+            pass
+        claimed = {
+            path
+            for label in labels
+            if (path := _find_local_gguf_by_exact_variant(directory, label, model_root))
+        }
+        if len(claimed) == 1:
+            found = claimed.pop()
     return found
 
 
