@@ -2213,6 +2213,9 @@ export const ptBR = {
         loading: "Carregando…",
         loadedOn: "Carregado em {device}",
         download: "Baixar",
+        downloadConfirmTitle: "Baixar Laya {model}?",
+        downloadConfirmBody:
+          "A API de decisão precisa deste modelo para responder às solicitações. Cerca de {size}, baixado uma única vez no seu cache do Hugging Face.",
         unload: "Descarregar",
         downloadBusy: "Um modelo da API de decisões já está sendo baixado.",
         downloadFailed: "Não foi possível iniciar o download.",

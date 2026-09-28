@@ -2209,6 +2209,9 @@ export const ru = {
         loading: "Загрузка…",
         loadedOn: "Загружена на {device}",
         download: "Скачать",
+        downloadConfirmTitle: "Скачать Laya {model}?",
+        downloadConfirmBody:
+          "API решений нужна эта модель, чтобы отвечать на запросы. Около {size}, загружается один раз в кэш Hugging Face.",
         unload: "Выгрузить",
         downloadBusy: "Модель API решений уже скачивается.",
         downloadFailed: "Не удалось начать скачивание.",

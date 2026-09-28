@@ -2147,6 +2147,9 @@ export const zhCN = {
         loading: "正在加载…",
         loadedOn: "已加载到 {device}",
         download: "下载",
+        downloadConfirmTitle: "下载 Laya {model}？",
+        downloadConfirmBody:
+          "决策 API 需要此模型来响应请求。约 {size}，只需下载一次到你的 Hugging Face 缓存。",
         unload: "卸载",
         downloadBusy: "已有一个决策 API 模型正在下载。",
         downloadFailed: "无法开始下载。",

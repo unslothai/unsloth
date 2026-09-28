@@ -2202,6 +2202,9 @@ export const it = {
         loading: "Caricamento…",
         loadedOn: "Caricato su {device}",
         download: "Scarica",
+        downloadConfirmTitle: "Scaricare Laya {model}?",
+        downloadConfirmBody:
+          "L'API decisionale ha bisogno di questo modello per rispondere alle richieste. Circa {size}, scaricato una sola volta nella cache di Hugging Face.",
         unload: "Rimuovi dalla memoria",
         downloadBusy: "Un modello dell'API decisionale è già in download.",
         downloadFailed: "Impossibile avviare il download.",

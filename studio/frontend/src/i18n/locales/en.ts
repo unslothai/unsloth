@@ -2192,6 +2192,9 @@ export const en = {
         loading: "Loading…",
         loadedOn: "Loaded on {device}",
         download: "Download",
+        downloadConfirmTitle: "Download Laya {model}?",
+        downloadConfirmBody:
+          "The Decision API needs this model to answer requests. About {size}, fetched once into your Hugging Face cache.",
         unload: "Unload",
         downloadBusy: "A Decision API model is already downloading.",
         downloadFailed: "Couldn't start the download.",

@@ -2167,6 +2167,9 @@ export const ja = {
         loading: "読み込み中…",
         loadedOn: "{device} に読み込み済み",
         download: "ダウンロード",
+        downloadConfirmTitle: "Laya {model} をダウンロードしますか？",
+        downloadConfirmBody:
+          "Decision API がリクエストに応答するにはこのモデルが必要です。約 {size}、Hugging Face キャッシュに一度だけダウンロードされます。",
         unload: "アンロード",
         downloadBusy: "判定 API のモデルはすでにダウンロード中です。",
         downloadFailed: "ダウンロードを開始できませんでした。",

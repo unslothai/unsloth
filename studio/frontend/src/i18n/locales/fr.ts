@@ -2242,6 +2242,9 @@ export const fr = {
         loading: "Chargement…",
         loadedOn: "Chargé sur {device}",
         download: "Télécharger",
+        downloadConfirmTitle: "Télécharger Laya {model} ?",
+        downloadConfirmBody:
+          "L'API de décision a besoin de ce modèle pour répondre aux requêtes. Environ {size}, téléchargé une seule fois dans votre cache Hugging Face.",
         unload: "Décharger",
         downloadBusy: "Un modèle de l'API de décision est déjà en cours de téléchargement.",
         downloadFailed: "Impossible de lancer le téléchargement.",

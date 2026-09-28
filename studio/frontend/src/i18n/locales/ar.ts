@@ -2197,6 +2197,9 @@ export const ar = {
         loading: "جارٍ التحميل…",
         loadedOn: "مُحمَّل على {device}",
         download: "تنزيل",
+        downloadConfirmTitle: "هل تريد تنزيل Laya {model}؟",
+        downloadConfirmBody:
+          "تحتاج واجهة API للقرارات إلى هذا النموذج للرد على الطلبات. حجمه نحو {size}، ويُنزَّل مرة واحدة إلى ذاكرة Hugging Face المؤقتة.",
         unload: "إلغاء التحميل",
         downloadBusy: "يجري بالفعل تنزيل نموذج لواجهة القرارات.",
         downloadFailed: "تعذّر بدء التنزيل.",

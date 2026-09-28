@@ -1,6 +1,17 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogMedia,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import {
   Select,
@@ -63,6 +74,9 @@ export function DecisionApiSection(): ReactElement | null {
     model: string;
     plan: SystemOneDownloadPlan;
   } | null>(null);
+  const [confirmPlan, setConfirmPlan] = useState<SystemOneDownloadPlan | null>(
+    null,
+  );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -154,11 +168,13 @@ export function DecisionApiSection(): ReactElement | null {
     try {
       const next = await updateSystemOneSettings(patch);
       setSettings(next);
-      // Download on the switch, not on the first request: a first API call should not sit behind a 700 MB transfer.
+      // Offer the download on the switch, not on the first request: a first API call should not sit behind a 700 MB transfer.
       if (next.enabled && downloadAfter) {
         const nextPlan = await resolveSystemOneDownload();
         setPlanState({ model: next.model, plan: nextPlan });
-        await startDownload(nextPlan);
+        if (nextPlan.repo && !nextPlan.cached && nextPlan.files.length > 0) {
+          setConfirmPlan(nextPlan);
+        }
       }
     } catch (err) {
       setError(
@@ -419,6 +435,41 @@ export function DecisionApiSection(): ReactElement | null {
           </Select>
         </SettingsRow>
       </div>
+
+      <AlertDialog
+        open={confirmPlan !== null}
+        onOpenChange={(open) => {
+          if (!open) setConfirmPlan(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogMedia>
+              <HugeiconsIcon icon={TaskDone01Icon} strokeWidth={1.75} />
+            </AlertDialogMedia>
+            <AlertDialogTitle>
+              {t("settings.apiKeys.decisionApi.downloadConfirmTitle", {
+                model: modelLabel(settings.model),
+              })}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {t("settings.apiKeys.decisionApi.downloadConfirmBody", {
+                size: formatBytes(confirmPlan?.sizeBytes || sizeBytes),
+              })}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                if (confirmPlan) void startDownload(confirmPlan);
+              }}
+            >
+              {t("settings.apiKeys.decisionApi.download")}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </section>
   );
 }

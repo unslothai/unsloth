@@ -50,6 +50,20 @@ test("turning it on or picking a model downloads, the device does not", () => {
   );
 });
 
+test("a download the switch or model picker starts waits for the user to confirm", () => {
+  const apply = SECTION.slice(
+    SECTION.indexOf("const apply = async"),
+    SECTION.indexOf("const unload = async"),
+  );
+  assert.doesNotMatch(apply, /startDownload\(/);
+  assert.match(apply, /setConfirmPlan\(nextPlan\)/);
+  assert.match(
+    SECTION,
+    /<AlertDialogAction[\s\S]*?startDownload\(confirmPlan\)[\s\S]*?<\/AlertDialogAction>/,
+  );
+  assert.match(en.settings.apiKeys.decisionApi.downloadConfirmBody, /\{size\}/);
+});
+
 test("the download goes through the manager with the exact files and one scope", () => {
   assert.match(SECTION, /const DOWNLOAD_SCOPE = "systemone";/);
   assert.match(SECTION, /scopeId: DOWNLOAD_SCOPE,/);
