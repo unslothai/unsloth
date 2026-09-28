@@ -139,7 +139,7 @@ from ..device_type import (
     apply_gfx101x_triton_workaround,
     gfx101x_triton_workaround_applied,
 )
-from ..import_fixes import UNSLOTH_ENABLE_LOGGING
+from ..import_fixes import UNSLOTH_ENABLE_LOGGING, stale_kernel_hint
 from unsloth_zoo.log import logger
 from unsloth_zoo.tokenizer_utils import (
     patch_tokenizer as _patch_tokenizer,
@@ -3439,11 +3439,13 @@ elif DEVICE_TYPE == "cuda":
                         "To update flash-attn, do the below:\n"
                         '\npip install --no-deps --no-build-isolation --upgrade "flash-attn>=2.6.3"'
                     )
-            except:
+            except Exception as error:
                 print(
                     "Unsloth: Your Flash Attention 2 installation seems to be broken. "
                     "Using Xformers instead. No performance changes will be seen."
                 )
+                if hint := stale_kernel_hint("flash_attn", error):
+                    print(hint)
 
                 import transformers.utils.import_utils
 

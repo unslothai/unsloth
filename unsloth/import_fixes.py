@@ -27,6 +27,7 @@ import re
 import logging
 import textwrap
 import warnings
+import platform
 import sys
 import threading
 import functools
@@ -8651,6 +8652,60 @@ def _is_broken_causal_conv1d_error(error) -> bool:
     return False
 
 
+# Our Linux x86_64 cp313 CUDA 13 builds for torch 2.13 / 2.14, the minors whose extension ABI no
+# upstream wheel matches (release prebuilt-wheels-cu13, .github/workflows/prebuilt-cuda-wheels.yml).
+_PREBUILT_KERNEL_RELEASE_URL = (
+    "https://github.com/unslothai/unsloth/releases/download/prebuilt-wheels-cu13"
+)
+_PREBUILT_KERNEL_VERSIONS = {
+    "flash_attn": "2.8.4",
+    "causal_conv1d": "1.7.0",
+    "mamba_ssm": "2.3.2.post1",
+}
+
+
+def stale_kernel_hint(package: str, error) -> str:
+    """How to rebuild ``package`` when ``error`` says its extension was built for another torch, else ""."""
+    checked = set()
+    current = error
+    while current is not None and id(current) not in checked:
+        checked.add(id(current))
+        if "undefined symbol" in str(current):
+            break
+        current = getattr(current, "__cause__", None) or getattr(current, "__context__", None)
+    else:
+        return ""
+    try:
+        import torch
+
+        torch_version = str(torch.__version__)
+        cuda = str(torch.version.cuda or "")
+        cxx11 = bool(getattr(torch._C, "_GLIBCXX_USE_CXX11_ABI", True))
+    except Exception:
+        return ""
+    minor = ".".join(torch_version.split("+")[0].split(".")[:2])
+    head = f"Unsloth: {package} was built for a different torch than {torch_version}, so its fast kernels are off."
+    if (
+        package in _PREBUILT_KERNEL_VERSIONS
+        and sys.platform.startswith("linux")
+        and platform.machine().lower() in ("x86_64", "amd64")
+        and sys.version_info[:2] == (3, 13)
+        and minor in ("2.13", "2.14")
+        and cuda.startswith("13.")
+        and cxx11
+    ):
+        wheel = (
+            f"{package}-{_PREBUILT_KERNEL_VERSIONS[package]}+cu13torch{minor}cxx11abiTRUE"
+            "-cp313-cp313-linux_x86_64.whl"
+        )
+        return f"{head} To restore them:\n  pip install --no-deps --force-reinstall {_PREBUILT_KERNEL_RELEASE_URL}/{wheel}"
+    dist = package.replace("_", "-")
+    return (
+        f"{head} To restore them, rebuild it against this torch:\n"
+        f"  pip install --no-deps --no-build-isolation --force-reinstall --no-binary {dist} {dist}"
+    )
+
+
 def _is_broken_vllm_error(error) -> bool:
     checked = set()
     current = error
@@ -9124,6 +9179,7 @@ def disable_broken_causal_conv1d():
     except Exception as error:
         if not _is_broken_causal_conv1d_error(error):
             return
+        hint = stale_kernel_hint("causal_conv1d", error)
 
     CAUSAL_CONV1D_BROKEN = True
     _clear_causal_conv1d_modules()
@@ -9133,6 +9189,8 @@ def disable_broken_causal_conv1d():
         "Unsloth: Detected broken causal_conv1d binary; "
         "disabling causal_conv1d fast path and continuing import."
     )
+    if hint:
+        print(hint)
 
 
 _BNB_ROCM_DLL_RE = re.compile(r"libbitsandbytes_rocm(\d+)\.dll", re.IGNORECASE)
