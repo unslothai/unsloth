@@ -147,6 +147,18 @@ def test_reset_terminal_profile_cache_forgets_the_advertised_profile():
     assert tools._request_profile == [None, 0.0]
 
 
+def test_a_refresh_started_before_a_reset_does_not_publish_its_profile(monkeypatch):
+    monkeypatch.setattr(tools, "_request_profile", [None, 0.0])
+
+    def profile_computed_under_the_old_setting(_disable_sandbox = False):
+        tools.reset_terminal_profile_cache()  # the setting flips while the probe runs
+        return "cmd_isolated"
+
+    monkeypatch.setattr(tools, "_terminal_profile", profile_computed_under_the_old_setting)
+    assert tools._refresh_request_profile() == "cmd_isolated"
+    assert tools._request_profile == [None, 0.0]
+
+
 def test_the_remediation_names_the_same_host_prep_command(monkeypatch):
     monkeypatch.setattr(mxc_probe, "_host_prep_cache", {})
     monkeypatch.setattr(mxc_probe.mxc_runtime, "installation_identity", lambda: "id")

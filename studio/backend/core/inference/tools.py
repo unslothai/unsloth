@@ -10011,18 +10011,25 @@ def _terminal_profile(disable_sandbox: bool = False) -> str:
 _request_profile: list = [None, 0.0]
 _request_profile_lock = threading.Lock()
 _REQUEST_PROFILE_REFRESH_SECONDS = 240.0
+# Bumped by every reset: a refresh that started earlier must not publish the profile it computed.
+_request_profile_generation = 0
 
 
 def reset_terminal_profile_cache() -> None:
     """Forget the advertised Terminal profile, so the next request re-checks it (isolation settings changed)."""
+    global _request_profile_generation
     with _request_profile_lock:
         _request_profile[:] = [None, 0.0]
+        _request_profile_generation += 1
 
 
 def _refresh_request_profile() -> str:
+    with _request_profile_lock:
+        generation = _request_profile_generation
     profile = _terminal_profile(False)
     with _request_profile_lock:
-        _request_profile[:] = [profile, time.monotonic()]
+        if generation == _request_profile_generation:
+            _request_profile[:] = [profile, time.monotonic()]
     return profile
 
 
