@@ -23,8 +23,8 @@ def test_grpo_logit_scaling_uses_model_config_helper():
     # Whitespace-insensitive: the formatter wraps one of the two calls and not the other.
     flat = "".join(src.split())
     assert (
-        flat.count("=_unsloth_resolve_logit_scales(model_config)") == 2
-    ), "both fallback arms must resolve the scales from the unwrapped config"
+        flat.count("=_unsloth_resolve_logit_scales(model_config)") == 3
+    ), "every fallback arm (two GRPO, one GKD) must resolve the scales from the unwrapped config"
     assert "_unsloth_resolve_logit_scales(model)" not in flat
     assert src.count("model_config = _unsloth_get_model_config(model)") >= 2
     # Helper source is injected into the compiled GRPO trainer.
