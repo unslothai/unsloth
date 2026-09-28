@@ -1,4 +1,5 @@
-# SPDX-License-Identifier: AGPL-3.0-only Copyright 2026-present the Unsloth AI Inc.
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 """Whether a failed image generation can still say WHY once it is no longer running.
 
@@ -86,7 +87,7 @@ def test_the_route_classifies_it_and_never_relays_engine_text(monkeypatch):
 
 
 def test_the_progress_route_puts_the_classified_reason_on_the_response():
-    """Wiring, read from the route's own source: the response must carry the CLASSIFIED."""
+    """Wiring: the response must carry the CLASSIFIED value, not the engine's."""
     src = _src("routes/inference.py")
     at = src.index("async def diffusion_generate_progress")
     body = src[at : at + 6000]
@@ -302,7 +303,7 @@ def test_an_attempt_specific_progress_answer_is_only_about_that_attempt():
 
 
 def test_a_retained_outcome_is_the_callers_own_account(monkeypatch):
-    """Keyed by account as well as attempt, and answered before the guards that hide another."""
+    """Keyed by account and attempt, and answered before the guards that hide another account's run."""
     from core.inference.generate_outcomes import (
         _retain_generate_failure,
         generate_failure_for_attempt,

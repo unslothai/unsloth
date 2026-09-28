@@ -3352,7 +3352,7 @@ class SdCppDiffusionBackend:
             return _with_mirrors(repos)
 
     def _retained_generate_failure(self, exc, attempt_id):
-        """Record *exc* against *attempt_id* and hand it back, for the raises the handler."""
+        """Record *exc* against *attempt_id* for raises the handler below cannot see."""
         self._last_generate_error = str(exc) or type(exc).__name__
         # The attempt too: the block that normally sets this has not run.
         self._last_generate_attempt = attempt_id

@@ -1900,7 +1900,7 @@ class DiffusionBackend:
                 self._generate_lock.release()
 
     def _retained_generate_failure(self, exc, attempt_id):
-        """Record *exc* against *attempt_id* and hand it back, for the raises the handler in."""
+        """Record *exc* against *attempt_id* for raises ``generate``'s own handler cannot see."""
         self._last_generate_error = str(exc) or type(exc).__name__
         self._last_generate_attempt = attempt_id
         _retain_generate_failure(attempt_id, self._last_generate_error, logged = False)

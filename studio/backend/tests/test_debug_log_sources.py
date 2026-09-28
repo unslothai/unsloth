@@ -333,7 +333,7 @@ def test_a_live_server_session_still_wins(tmp_path, monkeypatch):
 
 
 def test_a_writers_own_spelling_of_a_path_resolves_to_its_source():
-    """The failure toast carries the path llama_cpp.py printed, and only the backend can."""
+    """Only the backend can match the raw path llama_cpp.py printed to a listed source."""
     path = _seed("llama-server", "llama-1765000101-port-8080.log")
     expected = next(s for s in debug_log_sources.list_sources() if s.label == path.name).id
     assert debug_log_sources.source_id_for_path(str(path)) == expected
@@ -342,7 +342,7 @@ def test_a_writers_own_spelling_of_a_path_resolves_to_its_source():
 
 
 def test_a_relative_spelling_resolves_to_the_same_source(monkeypatch):
-    """A relative UNSLOTH_STUDIO_HOME is supported, and makes the runner print a relative."""
+    """A relative UNSLOTH_STUDIO_HOME makes the runner print a relative path; it still matches."""
     path = _seed("llama-server", "llama-1765000102-port-8080.log")
     expected = next(s for s in debug_log_sources.list_sources() if s.label == path.name).id
     monkeypatch.chdir(_home())
@@ -353,7 +353,7 @@ def test_a_relative_spelling_resolves_to_the_same_source(monkeypatch):
 
 
 def test_an_unexpanded_home_spelling_resolves_to_the_same_source(monkeypatch, tmp_path):
-    """The case _scan_roots already documents: an unexpanded value (a systemd."""
+    """An unexpanded home (systemd EnvironmentFile, dotenv) still matches its listed source."""
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", "~/studio")
     directory = tmp_path / "~" / "studio" / "logs" / "llama-server"
@@ -369,7 +369,7 @@ def test_an_unexpanded_home_spelling_resolves_to_the_same_source(monkeypatch, tm
 
 
 def test_a_path_naming_nothing_listed_matches_nothing():
-    """Falling back to family recency is the intended behaviour for an unmatched path;."""
+    """An unmatched path falls back to family recency rather than inventing a match."""
     _seed("llama-server", "llama-1765000104-port-8080.log")
     for absent in ("", "   ", None, "/nowhere/llama-9.log", "/etc/passwd"):
         assert debug_log_sources.source_id_for_path(absent) is None, absent
