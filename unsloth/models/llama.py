@@ -23,6 +23,7 @@ from ._utils import apply_unsloth_gradient_checkpointing
 from ._utils import __version__, importlib_version
 from ._utils import move_to_device
 from ._utils import per_layer_device
+from ._utils import embedding_applies_scale
 from ._utils import (
     _get_inference_mode_context_manager,
     _prepare_model_for_qat,
@@ -35,6 +36,7 @@ from .loader_utils import (
     _exclude_rope_inv_freq_from_ddp,
     _get_fp8_mode_and_check_settings,
     _restore_dropped_fp8_scales,
+    _prepare_compressed_tensors_model,
     planner_class_mismatch_reason,
     planner_model_class,
     planner_config_overrides,
@@ -969,7 +971,7 @@ def LlamaModel_fast_forward(
 
     train_embed_tokens = self.embed_tokens.weight.requires_grad
 
-    if IS_GEMMA:
+    if IS_GEMMA and not embedding_applies_scale(self.embed_tokens):
         normalizer = torch.tensor(math_sqrt(self.config.hidden_size), dtype = inputs_embeds.dtype)
 
         if train_embed_tokens:
@@ -1015,13 +1017,23 @@ def LlamaModel_fast_forward(
     else:
         padding_mask = None
 
-        attention_mask = _prepare_4d_causal_attention_mask_for_sdpa(
-            attention_mask,
-            (batch_size, seq_length),
-            inputs_embeds,
-            past_key_values_length,
-            sliding_window = getattr(self.config, "sliding_window", None),
-        )
+        # Gemma2 builds its own masks below; a 4D sliding mask here would also window the global layers.
+        if IS_GEMMA2:
+            # No padding: keep the flash path, which windows each layer itself.
+            if (
+                HAS_FLASH_ATTENTION_SOFTCAPPING
+                and attention_mask.dim() == 2
+                and bool(attention_mask.all())
+            ):
+                attention_mask = None
+        else:
+            attention_mask = _prepare_4d_causal_attention_mask_for_sdpa(
+                attention_mask,
+                (batch_size, seq_length),
+                inputs_embeds,
+                past_key_values_length,
+                sliding_window = getattr(self.config, "sliding_window", None),
+            )
         # Must NOT convert to bool; that weirdly causes errors.
 
     hidden_states = inputs_embeds
@@ -1051,27 +1063,32 @@ def LlamaModel_fast_forward(
     dynamic_SWA_mask = None
     dynamic_GA_mask = None
     if IS_GEMMA2:
+        # An unpadded prefill shares the static [n, n] masks instead of two [bsz, 1, q, q] copies.
+        unpadded_prefill = (
+            attention_mask is not None
+            and past_key_values_length == 0
+            and attention_mask.dim() == 2
+            and bool(attention_mask.all())
+        )
         if HAS_FLASH_ATTENTION_SOFTCAPPING and attention_mask is None:
             self.SWA_mask = True
             self.GA_mask = False
-        elif attention_mask is not None:
+        elif attention_mask is not None and not unpadded_prefill:
             # Unsloth needs a 2D mask, not [2, 1, n, n] (#853), converted to float not bool
             # (pytorch/pytorch#103749).
 
-            dynamic_SWA_mask = _prepare_4d_causal_attention_mask_for_sdpa(
-                attention_mask,
-                (batch_size, seq_length),
-                inputs_embeds,
-                past_key_values_length,
-                sliding_window = self.config.sliding_window,
-            )
-            dynamic_GA_mask = _prepare_4d_causal_attention_mask_for_sdpa(
-                attention_mask,
-                (batch_size, seq_length),
-                inputs_embeds,
-                past_key_values_length,
-                sliding_window = None,
-            )
+            if attention_mask.dim() == 2:
+                # The SDPA helper returns None for an all-ones mask; the softcapping kernels need a tensor.
+                key_value_length = past_key_values_length + seq_length
+                dynamic_SWA_mask = AttentionMaskConverter(
+                    is_causal = True, sliding_window = self.config.sliding_window
+                ).to_4d(attention_mask, seq_length, inputs_embeds.dtype, key_value_length)
+                dynamic_GA_mask = AttentionMaskConverter(is_causal = True).to_4d(
+                    attention_mask, seq_length, inputs_embeds.dtype, key_value_length
+                )
+            else:
+                dynamic_SWA_mask = attention_mask
+                dynamic_GA_mask = attention_mask
             use_static_mask = False
 
         elif not hasattr(self, "SWA_mask"):
@@ -2608,6 +2625,8 @@ class FastLlamaModel:
             token = token,
             model_name = model_name,
             revision = revision,
+            # vLLM reads the checkpoint itself, so it cannot take the in-process fp8 -> 4bit route.
+            allow_fp8_to_nf4 = not _vllm_will_load_weights(fast_inference, num_labels),
             hub_kwargs = {
                 "cache_dir": kwargs.get("cache_dir"),
                 "subfolder": kwargs.get("subfolder"),
@@ -2623,6 +2642,14 @@ class FastLlamaModel:
             pop_modelopt_key_mapping,
         )
 
+        from .fp8_to_nf4 import (
+            disarm_fp8_to_nf4,
+            fp8_to_nf4_armed,
+            fp8_to_nf4_planner_quantization_config,
+        )
+
+        # The fp8 config was parked on model_config, so the load must be handed this config.
+        _fp8_to_nf4 = fp8_to_nf4_armed(model_config)
         _modelopt_rewritten = modelopt_rewritten(model_config)
         if _modelopt_rewritten:
             verify_fp8_support_if_applicable(model_config)
@@ -2697,7 +2724,10 @@ class FastLlamaModel:
                 quantization_config = kwargs.get("quantization_config", None),
                 rewritten_quantization_config = modelopt_planner_quantization_config(model_config)
                 if _modelopt_rewritten
-                else None,
+                else fp8_to_nf4_planner_quantization_config(
+                    model_config,
+                    SKIP_QUANTIZATION_MODULES + (["out_proj"] if IS_FALCON_H1 else []),
+                ),
                 # The same extra the bnb config below adds.
                 extra_skip_modules = ["out_proj"] if IS_FALCON_H1 else None,
             ),
@@ -2764,16 +2794,19 @@ class FastLlamaModel:
                             set_task_config_attr(model_config, _cfg_key, _cfg_val)
                         else:
                             setattr(model_config, _cfg_key, _cfg_val)
-                model = AutoModelForSequenceClassification.from_pretrained(
-                    model_name,
-                    config = model_config,
-                    device_map = device_map,
-                    token = token,
-                    trust_remote_code = trust_remote_code,
-                    attn_implementation = preferred_attn_impl,
-                    revision = revision,
-                    **kwargs,
-                )
+                try:
+                    model = AutoModelForSequenceClassification.from_pretrained(
+                        model_name,
+                        config = model_config,
+                        device_map = device_map,
+                        token = token,
+                        trust_remote_code = trust_remote_code,
+                        attn_implementation = preferred_attn_impl,
+                        revision = revision,
+                        **kwargs,
+                    )
+                finally:
+                    disarm_fp8_to_nf4(model_config)
                 # Defensive: ensure the task head is in a floating dtype, guarding against any path leaving it
                 # as integer storage (#5027).
                 for _head_name in ("score", "classifier", "qa_outputs"):
@@ -2817,8 +2850,9 @@ class FastLlamaModel:
                     variant = kwargs.get("variant"),
                     dtype = dtype,
                 )
+                _prepare_compressed_tensors_model(model)
             elif not fast_inference:
-                if user_config is not None or _modelopt_rewritten:
+                if user_config is not None or _modelopt_rewritten or _fp8_to_nf4:
                     # Transformers 5.x @strict model init rejects extra kwargs next to config=, so set the override
                     # on the config and pass the single config object through.
                     if max_position_embeddings is not None:
@@ -2826,18 +2860,22 @@ class FastLlamaModel:
                     _rope_scaling = kwargs.pop("rope_scaling", None)
                     if _rope_scaling is not None:
                         model_config.rope_scaling = _rope_scaling
-                    if _modelopt_rewritten and user_config is None:
+                    if (_modelopt_rewritten or _fp8_to_nf4) and user_config is None:
                         move_config_overrides_onto_config(model_config, kwargs)
-                    model = AutoModelForCausalLM.from_pretrained(
-                        model_name,
-                        config = model_config,
-                        device_map = device_map,
-                        token = token,
-                        trust_remote_code = trust_remote_code,
-                        attn_implementation = preferred_attn_impl,
-                        revision = revision,
-                        **kwargs,
-                    )
+                    try:
+                        model = AutoModelForCausalLM.from_pretrained(
+                            model_name,
+                            config = model_config,
+                            device_map = device_map,
+                            token = token,
+                            trust_remote_code = trust_remote_code,
+                            attn_implementation = preferred_attn_impl,
+                            revision = revision,
+                            **kwargs,
+                        )
+                    finally:
+                        # The load deep-copied the config; give the caller's object its fp8 block back.
+                        disarm_fp8_to_nf4(model_config)
                 else:
                     model = AutoModelForCausalLM.from_pretrained(
                         model_name,
@@ -2879,6 +2917,7 @@ class FastLlamaModel:
                     variant = kwargs.get("variant"),
                     dtype = dtype,
                 )
+                _prepare_compressed_tensors_model(model)
                 model.fast_generate = make_fast_generate_wrapper(model.generate)
                 model.fast_generate_batches = None
             else:

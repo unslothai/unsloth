@@ -71,6 +71,8 @@ import {
   scanFolderStatusCopy,
   useDownloadManagerStore,
   useHfTokenStore,
+  HubFailureHint,
+  useHubAvailability,
   useOnlineStatus,
   pendingDrafterPresentation,
 } from "@/features/hub";
@@ -217,6 +219,7 @@ import {
   matchesFormatFilter,
   orderRecommendedRows,
   paramsFromId,
+  recommendedEmptyState,
   searchRowFitsDevice,
   searchableRecommendedIds,
   type CuratedBudget,
@@ -513,11 +516,15 @@ function formatBytes(bytes: number): string {
 const CAPABILITY_BADGES: {
   key: keyof ModelCapabilities;
   title: string;
+  /** Glyph colour, one per capability like the vision badge's indigo, so the kinds tell apart at a glance. */
+  tone: string;
   Glyph: (props: { className: string }) => ReactNode;
 }[] = [
   {
     key: "videoGen",
     title: "Generates video",
+    // Warm, at the vision indigo's lightness and chroma: amber-300 outshone every other tag.
+    tone: "text-[oklch(0.5_0.1_55)] dark:text-[oklch(0.78_0.09_60)]",
     Glyph: (props) => (
       <HugeiconsIcon icon={FlimSlateIcon} strokeWidth={1.8} {...props} />
     ),
@@ -525,6 +532,8 @@ const CAPABILITY_BADGES: {
   {
     key: "imageGen",
     title: "Generates images",
+    // Pink, as the Hub tags diffusion models.
+    tone: "text-pink-700 dark:text-pink-300",
     Glyph: (props) => (
       <HugeiconsIcon icon={Image03Icon} strokeWidth={1.8} {...props} />
     ),
@@ -534,6 +543,9 @@ const CAPABILITY_BADGES: {
     // Direction-neutral, unlike the two above: `audio` covers ASR and classification as well as
     // synthesis, so a Whisper row would claim to generate what it consumes.
     title: "Audio",
+    // Teal, not the Hub's rose, which is too close to the image pink at this size; held to the
+    // vision indigo's lightness and chroma, as sky-300 read brighter than the tags beside it.
+    tone: "text-[oklch(0.5_0.08_190)] dark:text-[oklch(0.78_0.08_190)]",
     Glyph: (props) => (
       <HugeiconsIcon icon={AudioWave01Icon} strokeWidth={1.8} {...props} />
     ),
@@ -564,12 +576,16 @@ function CapabilityIcons({ caps }: { caps: ModelCapabilities }) {
   const scope = useContext(CapabilityScope);
   return (
     <>
-      {visibleCapabilityBadges(caps, scope).map(({ key, title, Glyph }) => (
+      {visibleCapabilityBadges(caps, scope).map(({ key, title, tone, Glyph }) => (
+        // The vision badge's pill (same height and px-1.5), so every glyph tag in the row is one width.
         <span
           key={key}
           title={title}
           aria-label={title}
-          className="flex size-[calc(18px*var(--ui-space-scale,1))] shrink-0 items-center justify-center rounded-md border border-border text-muted-foreground"
+          className={cn(
+            "flex h-[calc(18px*var(--ui-space-scale,1))] shrink-0 items-center justify-center rounded-md border border-border px-1.5",
+            tone,
+          )}
         >
           <Glyph className="size-3" />
         </span>
@@ -950,17 +966,17 @@ const META_COLUMN = {
   // Fits "UD-Q4_K_XL"; a hard cap, so longer quants clip.
   quant: "min-[560px]:w-[7.2em]",
   // Each width below is the widest set its scope can draw: anything wider makes min-w-min expand the
-  // slot and shift every column after it. This slot holds capability glyphs (18px), the vision badge
-  // (24px) and the "on disk" mark (14px), gap-1 between them; scope draws no glyph.
-  badge: "min-w-min min-[560px]:w-[calc(24px*var(--ui-space-scale,1))]",
-  // One glyph plus the disk mark (18 + 4 + 14).
-  badgeMid: "min-w-min min-[560px]:w-[calc(36px*var(--ui-space-scale,1))]",
+  // slot and shift every column after it. This slot holds capability glyphs and the vision badge
+  // (both 26px pills) and the "on disk" mark (14px), gap-1 between them; scope draws no glyph.
+  badge: "min-w-min min-[560px]:w-[calc(26px*var(--ui-space-scale,1))]",
+  // One glyph plus the disk mark (26 + 4 + 14).
+  badgeMid: "min-w-min min-[560px]:w-[calc(44px*var(--ui-space-scale,1))]",
   // On Device draws the vision badge (26px) and, since partials are listed, the partial mark
   // (14px) beside it. 44px is that pair with its gap: reserving only the badge let a row drawing
   // both grow past the slot and carry its quant chip 18px left of every other row.
   badgeDevice: "min-w-min min-[560px]:w-[calc(44px*var(--ui-space-scale,1))]",
-  // Hub draws the disk mark and no vision badge (18+4+14). A second glyph grows it via min-w-min.
-  badgeWide: "min-w-min min-[560px]:w-[calc(36px*var(--ui-space-scale,1))]",
+  // Hub draws the disk mark and no vision badge (26+4+14). A second glyph grows it via min-w-min.
+  badgeWide: "min-w-min min-[560px]:w-[calc(44px*var(--ui-space-scale,1))]",
   // The fit mark (Hub rows), one 18px glyph.
   vram: "min-w-min min-[560px]:w-[calc(18px*var(--ui-space-scale,1))]",
   // Device rows reserve the slot rather than hug the chip. This is the last variable column, so
@@ -2956,6 +2972,7 @@ export function HubModelPicker({
   const debouncedQuery = useDebouncedValue(query);
   // Shared Hub search stack so the picker and Hub run one implementation. Scoped to unsloth like the old listing.
   const online = useOnlineStatus();
+  const { phase: hubPhase } = useHubAvailability();
   // Sanitize to anonymous on a malformed token, matching the Hub page.
   const accessToken = hfApiToken(hfToken);
   // Recommended section: a live unsloth listing sorted by the dropdown, the same sort that drives search results.
@@ -2968,6 +2985,8 @@ export function HubModelPicker({
     fetchMore,
     scannedCount,
     hasMore,
+    error: searchError,
+    retry: retrySearch,
   } = useHubModelSearch(debouncedQuery, {
     ownerScope: "unsloth",
     sortBy: recommendedSort,
@@ -5592,6 +5611,16 @@ export function HubModelPicker({
   const showDownloaded = section === "downloaded";
   const showCustom = section === "downloaded";
   const showRecommendedSection = !showHfSection && section === "recommended";
+  const recommendedEmpty = recommendedEmptyState({
+    isLoading: recommendedSearch.isLoading,
+    error: recommendedSearch.error,
+    hubPhase,
+  });
+  const searchEmpty = recommendedEmptyState({
+    isLoading,
+    error: searchError,
+    hubPhase,
+  });
   const downloadedEmpty =
     pinnedRows.length === 0 &&
     visibleCachedGguf.length === 0 &&
@@ -6638,9 +6667,12 @@ export function HubModelPicker({
           ref={scrollRef}
           onScroll={(e) => updateListFades(e.currentTarget)}
           className={cn(
-            // The list sits within the menu padding so gaps match; scroll-py and symmetric px keep the
-            // focus ring off the overflow clip edges during keyboard nav.
-            "model-list-scroll max-h-[calc(335px*var(--ui-space-scale,1))] overflow-y-auto scroll-py-1.5 px-0.5 mr-1",
+            // The list sits within the menu padding so gaps match; scroll-py and the side padding keep
+            // the focus ring off the overflow clip edges during keyboard nav. The panel is padded 16px
+            // on the left but 8px on the right (16px with external providers), so the scroller can run
+            // near the edge for its scrollbar; the right inset makes up the difference, and a row's
+            // hover pill sits 18px from both edges.
+            "model-list-scroll max-h-[calc(335px*var(--ui-space-scale,1))] overflow-y-auto scroll-py-1.5 pl-0.5 pr-1.5 mr-1 in-data-[external=true]:pr-0.5 in-data-[external=true]:mr-0",
             listScrolled && "is-scrolled",
             listMoreBelow && "is-bottom-faded",
           )}
@@ -7652,14 +7684,20 @@ export function HubModelPicker({
                     {showNpuBrowse ? (
                       <ListLabel divider={!npuBrowseFolded}>Unsloth</ListLabel>
                     ) : null}
-                    {recommendedSearch.isLoading &&
-                    recommendedRows.length === 0 ? (
+                    {recommendedRows.length === 0 &&
+                    recommendedEmpty === "loading" ? (
                       <div className="flex items-center gap-2 px-5 py-3">
                         <Spinner className="size-3 text-muted-foreground" />
                         <span className="text-xs text-muted-foreground">
                           Loading models…
                         </span>
                       </div>
+                    ) : recommendedRows.length === 0 &&
+                      recommendedEmpty === "failed" ? (
+                      <HubFailureHint
+                        message={recommendedSearch.error}
+                        onRetry={recommendedSearch.retry}
+                      />
                     ) : recommendedRows.length === 0 ? (
                       <div className="px-2.5 py-2 text-xs text-muted-foreground">
                         No models found.
@@ -7899,13 +7937,15 @@ export function HubModelPicker({
                 formatFilter !== "npu" ? (
                   <>
                     {searchRowIds.length === 0 && !isLoading ? (
-                      filteredRecommendedIds.length === 0 ? (
+                      filteredRecommendedIds.length > 0 ? null : searchEmpty === "failed" ? (
+                        <HubFailureHint message={searchError} onRetry={retrySearch} />
+                      ) : (
                         <div className="px-2.5 py-2 text-xs text-muted-foreground">
                           {communityDiscoveryEnabled
                             ? "No matching models."
                             : "No matching Unsloth models."}
                         </div>
-                      ) : null
+                      )
                     ) : (
                       searchRowIds.map((id) => {
                         const vram = vramMap.get(id);

@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import gc
+import importlib.util
 import logging
 import sys
 import threading
@@ -13,7 +14,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from .catalog import LOCAL_NAME, Checkpoint
+from .catalog import CHECKPOINTS, LOCAL_NAME, Checkpoint
 
 logger = logging.getLogger(__name__)
 
@@ -23,8 +24,8 @@ RUN_WAIT_S = 30.0
 MAX_PENDING = 8
 FAILURE_BACKOFF_S = 60.0
 _REQUIRED_DIRS = ("encoder", "tokenizer")
-LAYA_REQUIREMENT = "laya==0.3.5"
-INSTALL_TIMEOUT_S = 300
+# laya 0.3.5 ships inside Studio (see vendor/README.md), so the Decision API never installs anything.
+_VENDORED_LAYA = Path(__file__).resolve().parent.parent.parent / "vendor" / "laya"
 
 _state_lock = threading.Lock()
 _run_lock = threading.Lock()
@@ -35,9 +36,7 @@ _device_name: str | None = None
 _loader: threading.Thread | None = None
 _loading: Checkpoint | None = None
 _failure: tuple[Checkpoint, str, float] | None = None
-_install_lock = threading.Lock()
-_installer: threading.Thread | None = None
-_install_failure: tuple[str, float] | None = None
+_import_lock = threading.Lock()
 
 
 class Unavailable(Exception):
@@ -129,95 +128,30 @@ def _checkpoint_dir(checkpoint: Checkpoint, *, local_only: bool = False) -> Path
     return root
 
 
-def package_available() -> bool:
-    import importlib.util
-    return importlib.util.find_spec("laya") is not None
+def _laya():
+    """The vendored laya package, registered as top-level ``laya`` (its modules import each other relatively).
 
-
-def _install_command() -> list[str]:
-    import sys
-
-    from utils.mlx_repair import _uv_executable
-
-    # No deps: laya's deps are all Studio pins, so the install can never move them.
-    uv = _uv_executable()
-    if uv:
-        return [uv, "pip", "install", "--python", sys.executable, "--no-deps", LAYA_REQUIREMENT]
-    return [sys.executable, "-m", "pip", "install", "--no-deps", LAYA_REQUIREMENT]
-
-
-def ensure_package() -> None:
-    global _install_failure
-    if package_available():
-        _install_failure = None
-        return
-    with _install_lock:
-        if package_available():
-            return
-        if _install_failure and time.monotonic() < _install_failure[1]:
-            raise RuntimeError(_install_failure[0])
-        import importlib
-        import os
-        import subprocess
-
-        from utils.mlx_repair import _MLX_ENV_ALLOWLIST, _venv_root
-
-        # Same allowlisted env as the MLX self-heal: secrets/package-source vars cannot steer the install.
-        env = {key: os.environ[key] for key in _MLX_ENV_ALLOWLIST if key in os.environ}
-        if (venv_root := _venv_root()) is not None:
-            env["VIRTUAL_ENV"] = venv_root
-        logger.info("Installing %s for the Decision API", LAYA_REQUIREMENT)
+    Loaded by file path, not from ``sys.path``: a laya installed in the venv (Studio pinned one before
+    vendoring it) must not replace this copy, since this module drives laya internals.
+    """
+    if (module := sys.modules.get("laya")) is not None:
+        return module
+    with _import_lock:
+        if (module := sys.modules.get("laya")) is not None:
+            return module
+        init = _VENDORED_LAYA / "__init__.py"
+        spec = importlib.util.spec_from_file_location(
+            "laya", init, submodule_search_locations = [str(_VENDORED_LAYA)]
+        )
+        module = importlib.util.module_from_spec(spec)
+        sys.modules["laya"] = module
         try:
-            result = subprocess.run(
-                _install_command(),
-                env = env,
-                capture_output = True,
-                text = True,
-                encoding = "utf-8",
-                errors = "replace",
-                timeout = INSTALL_TIMEOUT_S,
-            )
-            detail = ((result.stderr or result.stdout).strip().splitlines() or [""])[-1]
-            ok = result.returncode == 0
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            detail, ok = type(exc).__name__, False
-        importlib.invalidate_caches()
-        if ok and package_available():
-            _install_failure = None
-            return
-        message = (
-            f"Could not install {LAYA_REQUIREMENT}. Check the internet connection. {detail}".strip()
-        )
-        logger.warning("Decision API install failed: %s", message)
-        _install_failure = (message, time.monotonic() + FAILURE_BACKOFF_S)
-        raise RuntimeError(message)
-
-
-def install_in_background() -> None:
-    global _installer, _install_failure
-    if package_available():
-        _install_failure = None
-        return
-    with _state_lock:
-        if _installer is not None and _installer.is_alive():
-            return
-        if _install_failure and time.monotonic() < _install_failure[1]:
-            return
-        _installer = threading.Thread(
-            target = _install_quietly, name = "systemone-install", daemon = True
-        )
-        _installer.start()
-
-
-def _install_quietly() -> None:
-    try:
-        ensure_package()
-    except RuntimeError:
-        pass
-
-
-def installing() -> bool:
-    return _install_lock.locked() or (_installer is not None and _installer.is_alive())
+            spec.loader.exec_module(module)
+        except BaseException:
+            for name in [n for n in sys.modules if n == "laya" or n.startswith("laya.")]:
+                del sys.modules[name]
+            raise
+        return module
 
 
 def is_cached(checkpoint: Checkpoint) -> bool:
@@ -293,11 +227,11 @@ class _MLXAgent:
     def __init__(self, folder: Path):
         import json
 
-        from laya.agent import Agent
-        from laya.common import clamp_temperature
         from transformers import AutoTokenizer
         from unsloth_zoo.mlx.decision import load_decision_model
 
+        laya = _laya()
+        clamp_temperature = laya.common.clamp_temperature
         self.folder = folder
         self.cfg = json.loads((folder / "rl_agent_config.json").read_text(encoding = "utf-8"))
         self.tok = AutoTokenizer.from_pretrained(str(folder / "tokenizer"))
@@ -307,21 +241,133 @@ class _MLXAgent:
         self.temperature_by_options = {
             k: clamp_temperature(v) for k, v in self.cfg.get("temperature_by_options", {}).items()
         }
-        self._to_internal = Agent._to_internal
+        self._to_internal = laya.agent.Agent._to_internal
         self.model = load_decision_model(folder)
 
 
 def _load_checkpoint(checkpoint: Checkpoint):
     root = _checkpoint_dir(checkpoint)
-    import laya
+    laya = _laya()
 
     # Evict only once the new checkpoint is on disk, so a long or failed download leaves the resident model serving.
     _evict()
     device = _device()
+    folder = root / checkpoint.subfolder if checkpoint.subfolder else root
     if device == "mlx":
-        folder = root / checkpoint.subfolder if checkpoint.subfolder else root
         return _MLXAgent(folder), device
-    return laya.load(str(root), subfolder = checkpoint.subfolder, device = device), device
+    if device not in ("cuda", "cpu"):
+        return laya.load(str(root), subfolder = checkpoint.subfolder, device = device), device
+    import torch
+
+    # Built on CPU and cast before the move, so the device never holds laya's fp32 copy.
+    agent = laya.load(str(root), subfolder = checkpoint.subfolder, device = "cpu")
+    fp16_checkpoint = checkpoint.name in CHECKPOINTS or _stored_fp16(folder)
+    _place(agent, torch.device(device), fp16_checkpoint)
+    return agent, str(agent.device.type)
+
+
+def _stored_fp16(folder: Path) -> bool:
+    """Whether the checkpoint's weights are saved as float16, as all three published Laya checkpoints are."""
+    import json
+    import math
+    import struct
+
+    try:
+        with open(folder / "model.safetensors", "rb") as f:
+            header = json.loads(f.read(struct.unpack("<Q", f.read(8))[0]))
+    except (OSError, ValueError, struct.error):
+        return False
+    sizes: dict[str, int] = {}
+    for name, meta in header.items():
+        if name != "__metadata__" and isinstance(meta, dict):
+            sizes[meta["dtype"]] = sizes.get(meta["dtype"], 0) + math.prod(meta["shape"])
+    return bool(sizes) and max(sizes, key = sizes.get) == "F16"
+
+
+def _precision(device, fp16_checkpoint: bool):
+    """(weight dtype, compute dtype) for ``device``; ``(None, None)`` keeps laya's fp32 weights and compute.
+
+    An fp16 checkpoint held in fp16 is exact (fp16 -> fp32 is lossless), and fp16 compute tracked fp32 about
+    10x closer than bf16 on both GPU and CPU. Anything else follows the device: bf16 where it is native, else fp16.
+    """
+    import os
+    import platform
+
+    import torch
+
+    if os.environ.get("UNSLOTH_SYSTEMONE_FP32", "") == "1":
+        return None, None
+    if device.type == "cuda":
+        if fp16_checkpoint:
+            return torch.float16, torch.float16
+        if torch.version.hip:
+            bf16 = torch.cuda.is_bf16_supported()
+        else:
+            # By capability: pre-Ampere NVIDIA reports is_bf16_supported() through slow emulation.
+            bf16 = torch.cuda.get_device_capability(device)[0] >= 8
+        dtype = torch.bfloat16 if bf16 else torch.float16
+        return dtype, dtype
+    # CPU only where the ISA has the format natively (AVX512-FP16 / AMX); emulated fp16 or bf16 is slower than fp32.
+    # Measured on x86 only, so other CPUs keep fp32.
+    if device.type == "cpu" and platform.machine().lower() in ("x86_64", "amd64"):
+        mkldnn = getattr(torch.ops, "mkldnn", None)
+        try:
+            if fp16_checkpoint and mkldnn._is_mkldnn_fp16_supported():
+                return torch.float16, torch.float16
+            if not fp16_checkpoint and mkldnn._is_mkldnn_bf16_supported():
+                return torch.bfloat16, torch.bfloat16
+        except (AttributeError, RuntimeError):
+            pass
+    return None, None
+
+
+def _fp32_output(module, args, output):
+    return output.float()
+
+
+def _cast_matmul_weights(model, dtype) -> None:
+    """Cast the matmul and lookup weights only.
+
+    Norms stay fp32 (CPU layer_norm rejects low-precision parameters) and embedding outputs return to fp32,
+    so the residual stream keeps laya's precision. With bf16 compute this is bit-identical to fp32 weights,
+    since autocast rounds each weight to the same bf16 either way.
+    """
+    import torch.nn as nn
+    for module in model.modules():
+        if isinstance(module, (nn.Linear, nn.Embedding)):
+            module.to(dtype)
+        elif isinstance(module, nn.MultiheadAttention):
+            module.in_proj_weight.data = module.in_proj_weight.data.to(dtype)
+            if module.in_proj_bias is not None:
+                module.in_proj_bias.data = module.in_proj_bias.data.to(dtype)
+        if isinstance(module, nn.Embedding) and not getattr(module, "_unsloth_fp32_output", False):
+            module.register_forward_hook(_fp32_output)
+            module._unsloth_fp32_output = True
+
+
+def _place(agent, device, fp16_checkpoint: bool) -> None:
+    """Move a CPU-built laya agent to ``device`` in the precision :func:`_precision` picks for it."""
+    import torch
+
+    agent.__dict__["_unsloth_fp16_checkpoint"] = fp16_checkpoint
+    weights, compute = _precision(device, fp16_checkpoint)
+    # Cast on the CPU side of the move: before moving to an accelerator, after coming back from one.
+    if device.type == "cpu":
+        agent.model.to(device)
+    if weights is None:
+        agent.model.float()
+    else:
+        _cast_matmul_weights(agent.model, weights)
+    if device.type != "cpu":
+        try:
+            agent.model.to(device)
+        except (RuntimeError, torch.cuda.OutOfMemoryError):
+            # Same fallback as laya's own loader: a device that cannot hold the model leaves it on CPU.
+            logger.warning("Laya could not be placed on %s; running it on CPU", device)
+            _place(agent, torch.device("cpu"), fp16_checkpoint)
+            _release_memory()
+            return
+    agent.device, agent.dtype = device, compute or torch.float32
 
 
 def _hub_download_active(checkpoint: Checkpoint) -> bool:
@@ -348,14 +394,9 @@ def _load(checkpoint: Checkpoint) -> None:
     global _agent, _loaded, _device_name, _loading, _failure
     started = time.monotonic()
     try:
-        ensure_package()
         agent, device = _load_checkpoint(checkpoint)
     except Exception as exc:
-        message = (
-            str(exc)
-            if isinstance(exc, RuntimeError) and _install_failure
-            else f"Could not load {checkpoint.name}: {type(exc).__name__}: {exc}"
-        )
+        message = f"Could not load {checkpoint.name}: {type(exc).__name__}: {exc}"
         logger.warning("System One load failed: %s", message)
         with _state_lock:
             _failure = (checkpoint, message, time.monotonic() + FAILURE_BACKOFF_S)
@@ -431,7 +472,7 @@ _HEAD_CACHE_SIZE = 1024
 
 
 def _state_ids(tok, state, room: int) -> tuple[list[int], bool]:
-    from laya.common import serialize_state
+    serialize_state = _laya().common.serialize_state
 
     text = serialize_state(state).replace(tok.mask_token, " ")
     chars = max(4096, room * 16)
@@ -447,7 +488,9 @@ def _state_ids(tok, state, room: int) -> tuple[list[int], bool]:
 def _head(agent, question: dict[str, Any], max_len: int, head_max_len: int):
     import json
 
-    from laya.common import build_sequence, render_options
+    common = _laya().common
+    build_sequence = common.build_sequence
+    render_options = common.render_options
 
     cache = agent.__dict__.setdefault("_unsloth_heads", {})
     key = json.dumps(question, ensure_ascii = False)
@@ -464,7 +507,10 @@ def _head(agent, question: dict[str, Any], max_len: int, head_max_len: int):
 
 def _predict(agent, state, questions: dict[str, dict[str, Any]]) -> tuple[dict[str, Any], bool]:
     import numpy as np
-    from laya.common import QTYPES, confidence_from_probs
+
+    common = _laya().common
+    QTYPES = common.QTYPES
+    confidence_from_probs = common.confidence_from_probs
 
     max_len = int(agent.cfg.get("max_len", 512))
     head_max_len = int(agent.cfg.get("head_max_len", 192))
@@ -475,7 +521,8 @@ def _predict(agent, state, questions: dict[str, dict[str, Any]]) -> tuple[dict[s
             heads.append(_head(agent, questions[name], max_len, head_max_len))
         except ValueError:
             raise ValueError(
-                "question %r options exceed head_max_len=%d" % (name, head_max_len)
+                f"Question {name!r} options exceed the Laya context window ({max_len} tokens). "
+                "Use fewer or shorter criteria."
             ) from None
     room = max(0, max_len - min(len(ids) for ids, _, _ in heads))
     state_ids, state_cut = _state_ids(agent.tok, state, room)
@@ -524,7 +571,8 @@ def _predict(agent, state, questions: dict[str, dict[str, Any]]) -> tuple[dict[s
 def _forward(agent, items: list[dict[str, Any]]):
     global _agent, _loaded, _device_name
     import torch
-    from laya.common import collate_items
+
+    collate_items = _laya().common.collate_items
 
     batch = collate_items([items], agent.tok.pad_token_id)
     if agent.device == "mlx":
@@ -536,13 +584,14 @@ def _forward(agent, items: list[dict[str, Any]]):
             if "memory" not in reason and "allocate" not in reason:
                 raise
         # Past the handler, so the traceback no longer keeps the MLX arrays alive while the CPU copy loads.
-        import laya
+        laya = _laya()
 
         logger.warning("Laya ran out of GPU memory; moving it to CPU")
         agent.model = None
         _release_memory()
         try:
             cpu = laya.load(str(agent.folder), device = "cpu")
+            _place(cpu, torch.device("cpu"), _stored_fp16(Path(agent.folder)))
         except Exception:
             # Callers hold _run_lock, so drop the half-moved agent here; the next request loads it again.
             _agent = _loaded = _device_name = None
@@ -557,10 +606,15 @@ def _forward(agent, items: list[dict[str, Any]]):
         if agent.device.type == "cpu" or ("memory" not in reason and "cuda" not in reason):
             raise
         logger.warning("Laya ran out of GPU memory; moving it to CPU")
-        agent.device, agent.dtype = torch.device("cpu"), torch.float32
-        agent.model.to(agent.device)
+        _place(agent, torch.device("cpu"), agent.__dict__.get("_unsloth_fp16_checkpoint", False))
         _device_name = "cpu"
         _release_memory()
+        logits = _run_model(agent, batch)
+    if agent.dtype == torch.float16 and not bool(torch.isfinite(logits).all()):
+        # fp16 activations overflowed; the fp16 weights widen to fp32 exactly, so rerun at full precision.
+        logger.warning("Laya overflowed in float16; continuing in float32")
+        agent.model.float()
+        agent.dtype = torch.float32
         logits = _run_model(agent, batch)
     return logits.float().cpu().numpy(), int(batch["attention_mask"].sum())
 
@@ -571,7 +625,11 @@ def _run_model(agent, batch):
     device = agent.device
     with (
         torch.inference_mode(),
-        torch.autocast(device_type = device.type, dtype = agent.dtype, enabled = device.type == "cuda"),
+        torch.autocast(
+            device_type = device.type,
+            dtype = agent.dtype,
+            enabled = device.type in ("cuda", "cpu") and agent.dtype != torch.float32,
+        ),
     ):
         logits, _ = agent.model(
             batch["input_ids"].to(device),
@@ -585,7 +643,8 @@ def _run_model(agent, batch):
 
 def _probabilities(agent, row, k: int, qtype: int):
     import numpy as np
-    from laya.common import temp_bucket
+
+    temp_bucket = _laya().common.temp_bucket
 
     scale = agent.temperature_by_options.get(temp_bucket(qtype, k), agent.temperature[qtype])
     z = row[:k] / scale
@@ -635,7 +694,7 @@ def _decide(checkpoint: Checkpoint, state, questions: dict[str, dict[str, Any]])
         try:
             result, truncated = _predict(agent, state, laya_questions)
         except ValueError as exc:
-            raise Unavailable(400, "invalid_request_error", str(exc)) from None
+            raise Unavailable(422, "invalid_request_error", str(exc)) from None
     finally:
         _run_lock.release()
     return {
@@ -653,14 +712,15 @@ def status() -> dict[str, Any]:
             "loaded_model": _loaded.name if _loaded else None,
             "device": _device_name,
             "loading_model": _loading.name if _loading else None,
-            "installing": installing(),
-            "error": failure[1] if failure else (_install_failure[0] if _install_failure else None),
+            # Kept for the settings API: laya is vendored, so there is never an install in flight.
+            "installing": False,
+            "error": failure[1] if failure else None,
             "error_model": failure[0].name if failure else None,
         }
 
 
 def unload() -> bool:
-    global _agent, _loaded, _device_name, _failure, _install_failure
+    global _agent, _loaded, _device_name, _failure
     with _state_lock:
         # _loading: a load claimed but not yet started would otherwise land after this unload.
         if _loading is not None or (_loader is not None and _loader.is_alive()):
@@ -668,6 +728,6 @@ def unload() -> bool:
     with _run_lock:
         was_loaded = _agent is not None
         _agent = _loaded = _device_name = None
-        _failure = _install_failure = None
+        _failure = None
     _release_memory()
     return was_loaded

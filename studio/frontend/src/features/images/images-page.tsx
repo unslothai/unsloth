@@ -235,6 +235,7 @@ import {
 import {
   shouldContinueGenerating,
   shouldReportGenerateError,
+  stopButtonLabel,
 } from "./lib/generation-stop";
 import {
   ALLOW_OVERSIZED_HINT,
@@ -546,6 +547,7 @@ function formatTimestamp(epochSeconds: number): string {
 function genStepLabel(p: DiffusionGenerateProgress): string {
   // Text encoding happens before the first scheduler tick, so step 0 means "working, not denoising yet".
   if (p.step === 0) return "Preparing (text encoding + warmup)…";
+  if (p.phase === "decode") return "Decoding…";
   const base = `Step ${p.step}/${p.total_steps}`;
   const eta = p.eta_seconds != null ? formatEta(p.eta_seconds) : "";
   return eta ? `${base} · ~${eta}` : base;
@@ -1470,6 +1472,7 @@ export function ImagesPage({
 
   const [busy, setBusy] = useState<Busy>(null);
   const [genDone, setGenDone] = useState<number | null>(null);
+  const [stopping, setStopping] = useState(false);
   const [genStep, setGenStep] = useState<DiffusionGenerateProgress | null>(null);
   const genPollTimer = useRef<ReturnType<typeof setInterval> | null>(null);
   // visibilitychange handler active while a generation poll runs: background tabs clamp
@@ -2525,7 +2528,7 @@ export function ImagesPage({
           return;
         }
         setGenStep((prev) => {
-          if (prev && prev.step === p.step && prev.eta_seconds === p.eta_seconds) return prev;
+          if (prev && prev.step === p.step && prev.eta_seconds === p.eta_seconds && prev.phase === p.phase) return prev;
           return p;
         });
       } catch {
@@ -4068,6 +4071,7 @@ export function ImagesPage({
     setGenStep(null);
     // Fresh run: a Stop from the PREVIOUS run must not cancel this one.
     cancelRequested.current = false;
+    setStopping(false);
     cancelAcked.current = false;
     // Per-run, like the two above: a cancel POST still outstanding from the PREVIOUS run would
     // leave the guard set and swallow this run's own Stop.
@@ -4087,7 +4091,7 @@ export function ImagesPage({
         // Skip the state update (and re-render) when nothing the bar shows moved.
         setGenStep((prev) => {
           if (!p.active) return null;
-          if (prev && prev.step === p.step && prev.eta_seconds === p.eta_seconds) return prev;
+          if (prev && prev.step === p.step && prev.eta_seconds === p.eta_seconds && prev.phase === p.phase) return prev;
           return p;
         });
       } catch {
@@ -4229,6 +4233,7 @@ export function ImagesPage({
       setBusy(null);
       setGenDone(null);
       setGenStep(null);
+      setStopping(false);
     }
   }, [allowOversized, prompt, negativePrompt, width, height, steps, guidance, seed, batchSize, count, workflow, initImage, maskImage, strength, extendPct, extendSides, upscaleFactor, upscaleStrength, referenceImages, loras, loraCapable, controlnetCapable, controlnetId, controlImage, controlType, controlStrength, ensureSrc, loadGallery, refreshStatus, unifiedEdit, localizedMode, localizedLayer, maxExtras, referenceResolution, conditioning, editSize, editSizing, sizeLimits]);
 
@@ -4236,6 +4241,7 @@ export function ImagesPage({
   // races the run that is already finishing.
   const handleCancelGenerate = useCallback(async () => {
     cancelRequested.current = true;
+    setStopping(true);
     // One Stop on the wire at a time. The button stays enabled so the click still latches, but a
     // second POST would target whatever is active when IT arrives.
     const token = runToken.current;
@@ -4246,11 +4252,13 @@ export function ImagesPage({
     try {
       const { cancelled } = await cancelDiffusionGeneration(abort.signal);
       cancelAcked.current = Boolean(cancelled);
+      if (!cancelled) setStopping(false);
     } catch {
       // An abort means the next run dropped this one on purpose, so there is nothing to report.
       // Otherwise the request never landed and the denoise runs on, so the click is not handled.
       if (!abort.signal.aborted) {
         cancelAcked.current = false;
+        setStopping(false);
         toast.error("Could not reach the server to stop this generation; it is still running");
       }
     } finally {
@@ -4540,24 +4548,6 @@ export function ImagesPage({
         />
       </div>
       <LoadedBuildSummary status={status} />
-      {/* A resident full pipeline is reloadable by repo id alone, so it keeps Reapply even before a
-          user-initiated load; GGUF/single_file residents hide the button. */}
-      {status?.loaded && (canReapply || status?.model_kind === "pipeline") && (
-        <Tooltip>
-          <TooltipTrigger asChild={true}>
-            <Button
-              variant="secondary"
-              size="sm"
-              disabled={busy !== null}
-              onClick={handleReapply}
-            >
-              <HugeiconsIcon icon={ArrowReloadHorizontalIcon} className="mr-2 size-3.5" />
-              Reapply to loaded model
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent>Reload the current model with these advanced options</TooltipContent>
-        </Tooltip>
-      )}
     </>
   );
 
@@ -4578,7 +4568,7 @@ export function ImagesPage({
       <div className="pointer-events-none relative z-40 grid h-[calc(48px*var(--ui-space-scale,1))] shrink-0 grid-cols-[minmax(0,var(--media-rail-width,calc(408px*var(--ui-space-scale,1))))_minmax(13rem,1fr)] @max-[30rem]:grid-cols-[minmax(0,1fr)_auto]">
         <div
           className={cn(
-            "pointer-events-none flex h-full min-w-0 items-start overflow-hidden @[50rem]:border-r @[50rem]:border-border/60",
+            "pointer-events-none flex h-full min-w-0 items-start overflow-hidden pr-3 @[50rem]:border-r @[50rem]:border-border/60",
             isMobile
               ? "pl-12"
               : !pinned && isTauri
@@ -4625,7 +4615,7 @@ export function ImagesPage({
                     variant="outline"
                     size="sm"
                     aria-label="Cancel load"
-                    className="!h-[calc(34px*var(--ui-space-scale,1))] rounded-full text-xs"
+                    className="!h-[calc(34px*var(--ui-space-scale,1))] shrink-0 rounded-full text-xs"
                     onClick={() => void handleCancelLoad()}
                   >
                     Cancel load
@@ -5336,7 +5326,7 @@ export function ImagesPage({
 
           </div>
           {/* The scroll mask provides the fade; leave the footer unpainted to avoid dark-mode banding. */}
-          <div className="relative z-10 flex shrink-0 justify-center px-10 pt-0.5 pb-4">
+          <div className="relative z-10 flex shrink-0 flex-wrap justify-center gap-2 px-4 pt-0.5 pb-4">
             {busy === "generating" ? (
               /* Replaces Generate while a run is in flight. Every workflow funnels through the same
                  handler, so one control stops all of them. */
@@ -5346,16 +5336,34 @@ export function ImagesPage({
                 onClick={handleCancelGenerate}
               >
                 <Spinner className="mr-2 size-4" />
-                {genDone != null && count > 1 ? `Stop (${genDone}/${count})` : "Stop"}
+                {stopButtonLabel({ stopping, done: genDone, count })}
               </Button>
             ) : (
-              <Button
-                className="relative z-10 h-11 px-8 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
-                onClick={handleGenerateWithRecall}
-                disabled={busy !== null || !imagePresets.hydrated || (!status?.loaded && !rememberedModel)}
-              >
-                Generate
-              </Button>
+              <>
+                <Button
+                  className="relative z-10 h-11 px-8 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
+                  onClick={handleGenerateWithRecall}
+                  disabled={busy !== null || !imagePresets.hydrated || (!status?.loaded && !rememberedModel)}
+                >
+                  Generate
+                </Button>
+                {status?.loaded && (canReapply || status?.model_kind === "pipeline") && (
+                  <Tooltip>
+                    <TooltipTrigger asChild={true}>
+                      <Button
+                        className="relative z-10 h-11 px-5"
+                        variant="secondary"
+                        disabled={busy !== null}
+                        onClick={handleReapply}
+                      >
+                        <HugeiconsIcon icon={ArrowReloadHorizontalIcon} className="mr-2 size-4" />
+                        Reapply
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent>Reload the current model with the advanced options</TooltipContent>
+                  </Tooltip>
+                )}
+              </>
             )}
           </div>
         </div>

@@ -81,9 +81,9 @@ test("navigation rows align while the profile footer ignores the scroll rail", a
   );
   // New Chat is the only outside row that aligns with the scroller's rail.
   assert.equal(source.match(/(?<!const )rowPadding[,}]/g)?.length, 1);
-  // Nav rows, pinned chats, Projects, Recents, and training runs sit inside the
-  // scroller; the footer is the sixth unrailed use outside it.
-  assert.equal(source.match(/unrailedRowPadding[,}]/g)?.length, 6);
+  // Nav rows, pinned chats, custom sections, Projects, Recents, and training runs sit
+  // inside the scroller; the footer is the seventh unrailed use outside it.
+  assert.equal(source.match(/unrailedRowPadding[,}]/g)?.length, 7);
 
   const footer = source
     .split("<SidebarFooter")[1]

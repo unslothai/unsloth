@@ -20,6 +20,9 @@ class _FakeDeviceModule:
     def device_count(self) -> int:
         return self._device_count
 
+    def is_available(self) -> bool:
+        return self._device_count > 0
+
     def device(self, device):
         self.device_calls.append(device)
         return ("device-context", device)
@@ -80,9 +83,14 @@ class _LaunchVisitor(ast.NodeVisitor):
 def _load_device_context_helper(fake_torch: _FakeTorch):
     source = FP8_SOURCE.read_text(encoding = "utf-8")
     tree = ast.parse(source)
+    namespace = {"torch": fake_torch, "nullcontext": nullcontext}
     for node in tree.body:
+        if isinstance(node, ast.Assign) and any(
+            getattr(t, "id", None) in ("_CUDA_MULTI_DEVICE", "_XPU_MULTI_DEVICE")
+            for t in node.targets
+        ):
+            exec(ast.get_source_segment(source, node), namespace)
         if isinstance(node, ast.FunctionDef) and node.name == "_fp8_triton_device_context":
-            namespace = {"torch": fake_torch, "nullcontext": nullcontext}
             exec(ast.get_source_segment(source, node), namespace)
             return namespace["_fp8_triton_device_context"]
     raise AssertionError("_fp8_triton_device_context was not found")

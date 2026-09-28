@@ -69,6 +69,7 @@ from .models.loader_utils import (
     _tokenizer_wants_local_only,
 )
 from .models._utils import _convert_torchao_model
+from .models.mistral_format import raise_if_merging_mistral_format_view
 from .ollama_template_mappers import OLLAMA_TEMPLATES, MODEL_TO_OLLAMA_TEMPLATE_MAPPER
 from transformers import ProcessorMixin, PreTrainedTokenizerBase
 from huggingface_hub import HfApi
@@ -997,6 +998,7 @@ def unsloth_save_model(
         gc.collect()
 
     save_method = save_method.lower().replace(" ", "_")
+    raise_if_merging_mistral_format_view(model, save_method)
     if save_method != "lora" and save_method != "merged_16bit" and save_method != "merged_4bit":
         raise RuntimeError(
             "Unsloth: You must select one of 3 options when saving models:\n"
@@ -1596,6 +1598,34 @@ def _compressed_quantize_pythonpath():
     return pp or None
 
 
+def _llm_compressor_imports_in_subprocess():
+    """True only if a fresh interpreter, launched like the export's quantize runner, imports an llm-compressor inside _LLM_COMPRESSOR_SPEC."""
+    # sys.path[0] as `python _compressed_quantize.py` sets it; the caller's cwd is kept so relative PYTHONPATH entries resolve the same way.
+    probe = (
+        f"import sys; sys.path[0] = {os.path.dirname(os.path.abspath(__file__))!r}\n"
+        "import llmcompressor\n"
+        "from llmcompressor import oneshot\n"
+        "from llmcompressor.modifiers.quantization import QuantizationModifier\n"
+        "print(llmcompressor.__version__)\n"
+    )
+    try:
+        completed = subprocess.run(
+            [sys.executable, "-c", probe],
+            stdout = subprocess.PIPE,
+            stderr = subprocess.DEVNULL,
+            text = True,
+            timeout = 600,
+        )
+        if completed.returncode != 0:
+            return False
+        from packaging.requirements import Requirement
+
+        version = completed.stdout.strip().splitlines()[-1].strip()
+        return Requirement(_LLM_COMPRESSOR_SPEC).specifier.contains(version, prereleases = True)
+    except Exception:
+        return False
+
+
 def install_llm_compressor():
     """Import llm-compressor, installing a version-pinned copy on first use for FP8/FP4 export and pinning the current torch + transformers so pip does not upgrade them. UNSLOTH_DISABLE_LLM_COMPRESSOR_AUTOINSTALL=1 forbids the auto-install. Returns (oneshot, QuantizationModifier)."""
     try:
@@ -1604,6 +1634,10 @@ def install_llm_compressor():
         return oneshot, QuantizationModifier
     except Exception:
         pass
+
+    # The in-process import can fail under Unsloth's transformers patches while the unpatched quantize subprocess imports fine. Reinstalling cannot fix that, and pip's pinned re-resolve backtracks destructively (numpy<2 from source), so skip it. The caller discards the return value.
+    if _llm_compressor_imports_in_subprocess():
+        return None, None
 
     # Opt-out for locked-down / air-gapped setups: forbid the auto-install, require a manual one.
     if os.environ.get("UNSLOTH_DISABLE_LLM_COMPRESSOR_AUTOINSTALL", "0").lower() not in (
@@ -1681,6 +1715,8 @@ def install_llm_compressor():
         from llmcompressor import oneshot
         from llmcompressor.modifiers.quantization import QuantizationModifier
     except Exception as e:
+        if _llm_compressor_imports_in_subprocess():
+            return None, None
         raise RuntimeError(
             "Unsloth: llm-compressor was installed but could not be imported. "
             "Please restart your Python session and try again.\n"
@@ -3894,6 +3930,7 @@ def unsloth_save_pretrained_gguf(
     "iq3_xxs" : "3.06 bpw quantization",
     "q3_k_xs" : "3-bit extra small quantization",
     """
+    raise_if_merging_mistral_format_view(self, "gguf")  # the converter would read Mistral names
     _assert_export_target_is_not_base_with_lora_layers(self)
 
     if tokenizer is None:
@@ -4505,6 +4542,7 @@ def unsloth_push_to_hub_gguf(
 
     `quantization_method` may be an alias -- "not_quantized" (fast conversion, big files), "fast_quantized" (fast conversion, OK size), "quantized" (slow conversion, small files) -- or a llama.cpp ftype: f32, f16, q8_0, q4_0, q4_1, q5_0, q5_1, or a k-quant q2_k / q3_k_s / q3_k_m / q3_k_l / q4_k_s / q4_k_m / q5_k_s / q5_k_m / q6_k. The _m and _l k-quants keep the attention and feed_forward.w2 tensors a level or two above the nominal width; q2_k_l is the Unsloth preset adding --output-tensor-type q8_0 --token-embedding-type q8_0.
     """
+    raise_if_merging_mistral_format_view(self, "gguf")  # the converter would read Mistral names
     _assert_export_target_is_not_base_with_lora_layers(self)
     if tokenizer is None:
         raise ValueError("Unsloth: Saving to GGUF must have a tokenizer.")
@@ -4590,7 +4628,8 @@ def unsloth_push_to_hub_gguf(
     print("Unsloth: Uploading GGUF to Huggingface Hub...")
 
     try:
-        from huggingface_hub import HfApi
+        from huggingface_hub import CommitOperationAdd, HfApi
+        from huggingface_hub.errors import HfHubHTTPError
 
         api = HfApi(token = token)
 
@@ -4606,7 +4645,16 @@ def unsloth_push_to_hub_gguf(
             private = private,
             exist_ok = True,
         )
+        if revision is not None and not revision.startswith("refs/pr/"):
+            try:
+                api.create_branch(
+                    repo_id = full_repo_id, repo_type = "model", branch = revision, exist_ok = True
+                )
+            except HfHubHTTPError as error:
+                if not create_pr or error.response.status_code != 403:
+                    raise
 
+        operations = []
         for file_location in all_file_locations:
             original_name = os.path.basename(file_location)
             if cleanup_temp and "unsloth_gguf_" in original_name:
@@ -4616,52 +4664,34 @@ def unsloth_push_to_hub_gguf(
                 proper_name = f"{model_name}.{quant_suffix}"
             else:
                 proper_name = original_name.replace(os.path.basename(save_directory), model_name)
-
-            print(f"Uploading {proper_name}...")
-
-            api.upload_file(
-                path_or_fileobj = file_location,
-                path_in_repo = proper_name,
-                repo_id = full_repo_id,
-                repo_type = "model",
-                commit_message = commit_message,
-                commit_description = commit_description,
-                create_pr = create_pr,
-                revision = revision,
+            operations.append(
+                CommitOperationAdd(path_in_repo = proper_name, path_or_fileobj = file_location)
             )
 
         config_path = os.path.join(actual_save_directory, "config.json")
         if os.path.exists(config_path):
-            print("Uploading config.json...")
-            api.upload_file(
-                path_or_fileobj = config_path,
-                path_in_repo = "config.json",
-                repo_id = full_repo_id,
-                repo_type = "model",
-                commit_message = f"{commit_message} - config",
-                create_pr = create_pr,
-                revision = revision,
+            operations.append(
+                CommitOperationAdd(path_in_repo = "config.json", path_or_fileobj = config_path)
             )
 
         if modelfile_location and os.path.exists(modelfile_location):
-            print("Uploading Ollama Modelfile...")
-            api.upload_file(
-                path_or_fileobj = modelfile_location,
-                path_in_repo = "Modelfile",
-                repo_id = full_repo_id,
-                repo_type = "model",
-                commit_message = f"{commit_message} - Ollama Modelfile",
-                create_pr = create_pr,
-                revision = revision,
+            operations.append(
+                CommitOperationAdd(path_in_repo = "Modelfile", path_or_fileobj = modelfile_location)
             )
 
+        if isinstance(datasets, str):
+            datasets = [datasets]
+        # In the README so it lands in the same commit, not a second one on main.
+        datasets_yaml = "".join(f"- {json.dumps(d)}\n" for d in datasets or [])
+        if datasets_yaml:
+            datasets_yaml = "datasets:\n" + datasets_yaml
         readme_content = f"""---
 tags:
 - gguf
 - llama.cpp
 - unsloth
 {"- vision-language-model" if is_vlm else ""}
----
+{datasets_yaml}---
 
 # {repo_id.split("/")[-1]} : GGUF
 
@@ -4673,16 +4703,8 @@ This model was finetuned and converted to GGUF format using [Unsloth](https://gi
 
 ## Available Model files:
 """
-        for file in all_file_locations:
-            original_name = os.path.basename(file)
-            if cleanup_temp and "unsloth_gguf_" in original_name:
-                quant_suffix = (
-                    original_name.split(".", 1)[1] if "." in original_name else original_name
-                )
-                proper_name = f"{model_name}.{quant_suffix}"
-            else:
-                proper_name = original_name.replace(os.path.basename(save_directory), model_name)
-            readme_content += f"- `{proper_name}`\n"
+        for operation in operations[: len(all_file_locations)]:
+            readme_content += f"- `{operation.path_in_repo}`\n"
 
         if is_vlm and modelfile_location:
             readme_content += "\n## ⚠️ Ollama Note for Vision Models\n"
@@ -4711,17 +4733,33 @@ This model was finetuned and converted to GGUF format using [Unsloth](https://gi
         with open(readme_path, "w", encoding = "utf-8") as f:
             f.write(readme_content)
 
-        api.upload_file(
-            path_or_fileobj = readme_path,
-            path_in_repo = "README.md",
+        operations.append(CommitOperationAdd(path_in_repo = "README.md", path_or_fileobj = readme_path))
+
+        commit = api.create_commit(
             repo_id = full_repo_id,
             repo_type = "model",
-            commit_message = "Add README",
+            operations = operations,
+            commit_message = (
+                commit_message if commit_message is not None else "Trained with Unsloth"
+            ),
+            commit_description = commit_description,
             create_pr = create_pr,
             revision = revision,
         )
 
-        print(f"Unsloth: Successfully uploaded GGUF to https://huggingface.co/{full_repo_id}")
+        destination = getattr(commit, "pr_url", None)
+        if destination is None:
+            from urllib.parse import quote
+            destination = f"https://huggingface.co/{full_repo_id}"
+            if create_pr:
+                destination += "/discussions"
+            elif revision is not None:
+                destination += (
+                    f"/discussions/{revision.rsplit('/', 1)[-1]}"
+                    if revision.startswith("refs/pr/")
+                    else f"/tree/{quote(revision, safe = '')}"
+                )
+        print(f"Unsloth: Successfully uploaded GGUF to {destination}")
 
         if tags is None:
             tags = []
@@ -4737,15 +4775,6 @@ This model was finetuned and converted to GGUF format using [Unsloth](https://gi
             )
         except:
             pass
-
-        if datasets:
-            try:
-                from huggingface_hub import metadata_update
-                metadata_update(full_repo_id, {"datasets": datasets}, overwrite = True, token = token)
-            except Exception as e:
-                logger.warning_once(
-                    f"Unsloth: Could not update datasets metadata for {full_repo_id}: {e}"
-                )
 
     except Exception as e:
         raise RuntimeError(f"Failed to upload to Hugging Face Hub: {_describe_exception(e)}") from e
@@ -5660,8 +5689,10 @@ def unsloth_generic_save(
             datasets = datasets,
         )
     else:
+        raise_if_merging_mistral_format_view(model, save_method)
         _prewarm_base_model_hub_cache(model, save_method = save_method, token = token)
         from unsloth_zoo.saving_utils import merge_and_overwrite_lora
+
         merge_and_overwrite_lora(
             get_model_name,
             model = model,
@@ -7009,6 +7040,8 @@ def _openvino_transformers_mismatch(model_type, task):
             [sys.executable, "-c", _OPENVINO_BOUNDS_PROBE, model_type, task],
             capture_output = True,
             text = True,
+            encoding = "utf-8",
+            errors = "replace",
             timeout = 300,
         )
         low, high = json.loads(probe.stdout.strip().splitlines()[-1])
@@ -7054,10 +7087,15 @@ def _unsloth_save_openvino(
     if not is_main_process:
         return None
 
-    # Everything that can reject the request runs before the merge, which writes a full 16bit checkpoint. Remote code is trusted only when the model or tokenizer was already loaded through it.
+    # Everything that can reject the request runs before the merge, which writes a full 16bit checkpoint. optimum-cli takes one --trust-remote-code for the model and tokenizer loads together, so it follows the model's approved load decision, as the GGUF-LoRA converter does: a custom tokenizer alone must not let the reload run a built-in-loaded model's unvetted auto_map code.
     export_kwargs = dict(export_kwargs)
-    if _loaded_via_remote_code(model) or _loaded_via_remote_code(tokenizer):
+    if _loaded_via_remote_code(model):
         export_kwargs.setdefault("trust_remote_code", True)
+    elif _loaded_via_remote_code(tokenizer) and "trust_remote_code" not in export_kwargs:
+        logger.warning_once(
+            "Unsloth: the tokenizer was loaded through remote code but the model was not, so the "
+            "OpenVINO export runs without trust_remote_code and may skip converting the tokenizer."
+        )
     export_kwargs.setdefault("library", "transformers")
     # optimum-cli cannot infer the task from a local directory. Same VLM test as the torchao and compressed exports: a bare *ForConditionalGeneration also matches text seq2seq.
     config = getattr(model, "config", None)
