@@ -1874,7 +1874,9 @@ export function ImagesPage({
         return;
       }
       galleryCache.thumbById.set(image.id, url, bytes);
-      const evicted = galleryCache.thumbById.prune(new Set([image.id, ...visibleIds.current]));
+      const evicted = galleryCache.thumbById.prune(
+        new Set([image.id, ...visibleIds.current, galleryCache.selectedId ?? ""]),
+      );
       setThumbById((prev) => {
         const next = { ...prev, [image.id]: url };
         for (const id of evicted) delete next[id];

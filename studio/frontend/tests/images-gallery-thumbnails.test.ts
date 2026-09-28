@@ -38,6 +38,9 @@ test("strip tiles fetch and show thumbnails, falling back to a cached original",
   assert.ok(observer.includes("void ensureThumb(image);"));
   assert.ok(!observer.includes("ensureSrc("));
   assert.ok(page.includes("fetchGalleryObjectUrl(galleryThumbnailUrl(image.url))"));
+  // The canvas shows the selected thumbnail while its original loads, even with the tile off-screen.
+  const thumbPrune = between(page, "galleryCache.thumbById.prune(", ");");
+  assert.ok(thumbPrune.includes("galleryCache.selectedId"));
 });
 
 test("the canvas, viewer and downloads read only the original", () => {
