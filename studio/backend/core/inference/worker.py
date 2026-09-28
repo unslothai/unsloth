@@ -616,7 +616,7 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
             if getattr(backend, "device", None) == "mlx":
                 load_kwargs["parallel_mode"] = config.get("mlx_parallel_mode")
                 load_kwargs["distributed_group"] = config.get("_mlx_distributed_group")
-                load_kwargs["kv_bits"] = config.get("mlx_kv_bits")
+                load_kwargs["kv_quant"] = config.get("mlx_kv_quant")
                 load_kwargs["chat_template_override"] = config.get("chat_template_override")
             success = backend.load_model(**load_kwargs)
         finally:
@@ -640,13 +640,12 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
             _entry = (
                 _bm.get(mc.identifier) or _bm.get(getattr(backend, "active_model_name", None)) or {}
             )
-            # The whole group: the parent reports all four and can recompute none of
-            # them once the worker holds the model.
             for _ctx_field in (
                 "context_length",
                 "native_context_length",
                 "max_context_length",
                 "requested_context_length",
+                "context_length_fitted",
                 "mlx_context_budget",
             ):
                 try:
@@ -675,6 +674,8 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                         "context_unbounded_when_batched",
                         "mlx_kv_bits",
                         "mlx_kv_bits_requested",
+                        "mlx_kv_quant",
+                        "mlx_kv_quant_requested",
                         "mlx_kv_quant_eligibility",
                         "mlx_kv_quant_reason",
                         "mlx_kv_quant_note",

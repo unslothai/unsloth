@@ -36,8 +36,10 @@ export interface SidebarCustomSection {
   name: string;
   /** How its chats are ordered. Manual by default, like Pinned: it is a list the user built. */
   sort: SidebarChatSort;
-  /** When it was made, for recency. Absent on sections saved before it was recorded. */
+  /** Absent on sections made before these were recorded. */
   createdAt?: number;
+  /** Last rename, or chat or project filed in or out. */
+  modifiedAt?: number;
 }
 
 /** The fixed section the "Show" toggles can hide, beside the user's own. Pinned always shows, as
@@ -176,6 +178,19 @@ export interface SidebarOrganizationState {
 }
 
 /** Trims and bounds a section name. Empty when there is nothing to name it with. */
+function readTime(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0;
+}
+
+function touchSections(
+  sections: SidebarCustomSection[],
+  ids: ReadonlySet<string>,
+): SidebarCustomSection[] {
+  if (ids.size === 0) return sections;
+  const now = Date.now();
+  return sections.map((section) => (ids.has(section.id) ? { ...section, modifiedAt: now } : section));
+}
+
 export function normalizeSectionName(name: string): string {
   return name.replace(/\s+/g, " ").trim().slice(0, CUSTOM_SECTION_NAME_MAX);
 }
@@ -343,7 +358,8 @@ export function mergePersistedOrganization(
         id: entry.id,
         name,
         sort: readSort(entry.sort, "manual"),
-        ...(typeof entry.createdAt === "number" ? { createdAt: entry.createdAt } : {}),
+        ...(readTime(entry.createdAt) ? { createdAt: entry.createdAt } : {}),
+        ...(readTime(entry.modifiedAt) ? { modifiedAt: entry.modifiedAt } : {}),
       });
     }
   }
@@ -428,7 +444,7 @@ export const useSidebarOrganizationStore = create<SidebarOrganizationState>()(
           const at = firstCustom !== -1 ? firstCustom : order.indexOf(PINNED_SECTION_KEY) + 1;
           return {
             customSections: [
-              { id, name: clean, sort: "manual", createdAt: Date.now() },
+              { id, name: clean, sort: "manual", createdAt: Date.now(), modifiedAt: Date.now() },
               ...state.customSections,
             ],
             sectionOrder: [...order.slice(0, at), id, ...order.slice(at)],
@@ -441,7 +457,9 @@ export const useSidebarOrganizationStore = create<SidebarOrganizationState>()(
         if (!clean) return;
         set((state) => ({
           customSections: state.customSections.map((section) =>
-            section.id === sectionId ? { ...section, name: clean } : section,
+            section.id === sectionId && section.name !== clean
+              ? { ...section, name: clean, modifiedAt: Date.now() }
+              : section,
           ),
         }));
       },
@@ -482,11 +500,20 @@ export const useSidebarOrganizationStore = create<SidebarOrganizationState>()(
             return state;
           }
           const next = assignmentMap(state.sectionByChatId);
+          const touched = new Set<string>();
           for (const id of chatIds) {
-            if (sectionId) next[id] = sectionId;
-            else delete next[id];
+            const from = next[id];
+            if (from === (sectionId ?? undefined)) continue;
+            if (from) touched.add(from);
+            if (sectionId) {
+              next[id] = sectionId;
+              touched.add(sectionId);
+            } else delete next[id];
           }
-          return { sectionByChatId: next };
+          return {
+            sectionByChatId: next,
+            customSections: touchSections(state.customSections, touched),
+          };
         }),
       setProjectsSection: (projectIds, sectionId) =>
         set((state) => {
@@ -494,11 +521,20 @@ export const useSidebarOrganizationStore = create<SidebarOrganizationState>()(
             return state;
           }
           const next = assignmentMap(state.sectionByProjectId);
+          const touched = new Set<string>();
           for (const id of projectIds) {
-            if (sectionId) next[id] = sectionId;
-            else delete next[id];
+            const from = next[id];
+            if (from === (sectionId ?? undefined)) continue;
+            if (from) touched.add(from);
+            if (sectionId) {
+              next[id] = sectionId;
+              touched.add(sectionId);
+            } else delete next[id];
           }
-          return { sectionByProjectId: next };
+          return {
+            sectionByProjectId: next,
+            customSections: touchSections(state.customSections, touched),
+          };
         }),
       setSectionHidden: (key, hidden) =>
         set((state) => {

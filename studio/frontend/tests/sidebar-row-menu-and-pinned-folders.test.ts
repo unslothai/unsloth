@@ -351,8 +351,7 @@ test("the project page edits through the same dialog the sidebar opens", async (
   const page = await readSrcAsync("features/chat/chat-page.tsx");
   assert.ok(!page.includes("Rename project"), "the rename-only dialog is still there");
   assert.ok(!page.includes("commitProjectRename"), "the rename call is still there");
-  assert.match(page, /onSelect=\{\(\) => setEditingProject\(true\)\}/);
-  assert.match(page, /<span>Edit project<\/span>/);
+  assert.match(page, /onEdit=\{\(\) => setEditingProject\(true\)\}/);
   // The record behind the header, and the dialog it feeds.
   assert.match(
     page,
@@ -478,7 +477,7 @@ test("Move to lists at most the 12 most recently active projects and sections", 
     APP_SIDEBAR.indexOf("const recentSections = useMemo("),
     APP_SIDEBAR.indexOf("const sidebarProjectRecords = useMemo("),
   );
-  assert.match(sections, /section\.createdAt \?\? 0/);
+  assert.match(sections, /Math\.max\(section\.createdAt \?\? 0, section\.modifiedAt \?\? 0\)/);
   assert.match(sections, /touch\(sectionByChatId\[item\.id\], item\.updatedAt\)/);
   assert.match(sections, /touch\(sectionId, projectActivityAt\.get\(projectId\) \?\? 0\)/);
   assert.match(

@@ -6846,6 +6846,58 @@ def disable_torchaudio_if_cuda_mismatched():
         sys.modules["torchaudio"] = None
 
 
+def _torch_distributed_unavailable():
+    """True when torch has no `torch._C._distributed_c10d` (AMD's Windows ROCm wheels, torch 2.11)."""
+    try:
+        import torch.distributed as dist
+        return not dist.is_available()
+    except Exception:
+        return False
+
+
+def _is_missing_torch_distributed(exc):
+    name = getattr(exc, "name", None) or ""
+    return name.startswith("torch._C._distributed") or "torch._C._distributed" in str(exc)
+
+
+def fix_accelerate_dtensor_check_without_torch_distributed():
+    """Backport huggingface/accelerate#4250: accelerate 1.15.0's `prepare_model` calls `model_has_dtensor`,
+    which imports `torch.distributed.tensor` and kills every Trainer on a torch without a distributed
+    backend (huggingface/accelerate#4249). No DTensor can exist there, so the answer is False.
+    """
+    if not _torch_distributed_unavailable():
+        return False
+    if importlib.util.find_spec("accelerate") is None:
+        return False
+    try:
+        import accelerate.utils.other as acc_other
+    except Exception:
+        return False
+    original = getattr(acc_other, "model_has_dtensor", None)
+    if original is None:
+        return False
+    if getattr(original, "__unsloth_patched__", False):
+        return True
+
+    @functools.wraps(original)
+    def model_has_dtensor(model):
+        try:
+            return original(model)
+        except ImportError as exc:
+            if _is_missing_torch_distributed(exc):
+                return False
+            raise
+
+    model_has_dtensor.__unsloth_patched__ = True
+    acc_other.model_has_dtensor = model_has_dtensor
+    # Both re-export the function by name at import time.
+    for module_name in ("accelerate.utils", "accelerate.accelerator"):
+        module = sys.modules.get(module_name)
+        if getattr(module, "model_has_dtensor", None) is original:
+            module.model_has_dtensor = model_has_dtensor
+    return True
+
+
 def disable_broken_wandb():
     """Disable wandb if it's installed but cannot actually import.
 
