@@ -6821,6 +6821,13 @@ _ALWAYS_SAFE_TOOLS = frozenset(
 )
 
 
+def never_needs_approval(name: str) -> bool:
+    """search_conversation reads back only this chat's own compacted turns, which the model was
+    already shown, and is offered with every user tool off whenever compaction reset the chat.
+    Asking for it in Ask mode put an approval card on Studio's own memory (#11671)."""
+    return name == "search_conversation"
+
+
 def is_always_safe_tool(name: str) -> bool:
     """True for tools that never need an auto-mode prompt on any arguments, so a caller (e.g. the
     streaming provisional card) can allow them before the full arguments are known. render_html
