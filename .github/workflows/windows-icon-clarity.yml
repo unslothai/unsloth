@@ -1,0 +1,67 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+# Narrow Windows evidence job: no signing, release upload, or publication.
+name: Windows desktop icon evidence
+on:
+  push:
+    branches: [fix/windows-icon-clarity]
+    paths:
+      - 'studio/src-tauri/icons/**'
+      - 'studio/src-tauri/tests/*windows_icon*'
+      - '.github/workflows/windows-icon-clarity.yml'
+  pull_request:
+    paths:
+      - 'studio/src-tauri/icons/**'
+      - 'studio/src-tauri/tests/*windows_icon*'
+      - '.github/workflows/windows-icon-clarity.yml'
+permissions:
+  contents: read
+jobs:
+  extract-real-windows-resources:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable @ 2026-03-27
+      - uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: false
+          workspaces: studio/src-tauri -> target
+      - name: Audit lockfile before npm install
+        run: python scripts/lockfile_supply_chain_audit.py
+      - name: Install pinned Tauri CLI and build frontend
+        shell: pwsh
+        run: |
+          npm ci --prefix studio --no-fund --no-audit
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm ci --prefix studio/frontend --no-fund --no-audit
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm run build --prefix studio/frontend
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Build actual unsigned desktop executable and NSIS installer
+        shell: pwsh
+        run: |
+          $config = Join-Path $env:RUNNER_TEMP 'icon-ci-tauri.json'
+          '{"bundle":{"createUpdaterArtifacts":false}}' | Set-Content -LiteralPath $config -Encoding utf8
+          npx --prefix studio tauri build --bundles nsis --config $config
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Extract actual Windows app and installer icon resources
+        shell: pwsh
+        run: |
+          $exe = 'studio/src-tauri/target/release/unsloth-studio.exe'
+          $nsis = @(Get-ChildItem -Path studio/src-tauri/target/release/bundle/nsis -Filter '*.exe')
+          if (!(Test-Path $exe) -or $nsis.Count -ne 1) { throw 'Expected actual desktop exe and exactly one NSIS installer' }
+          ./studio/src-tauri/tests/windows_icon_resource.ps1 -Executable $exe -Installer $nsis[0].FullName -Output "$env:RUNNER_TEMP/icon-evidence"
+      - name: Preserve exact Windows evidence even on extraction failure
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: windows-icon-resources
+          path: ${{ runner.temp }}/icon-evidence/
+          if-no-files-found: warn
+          retention-days: 14
