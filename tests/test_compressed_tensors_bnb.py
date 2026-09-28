@@ -1097,6 +1097,16 @@ def test_the_planner_sizes_a_packed_int8_checkpoint_at_8_bits(bits, route, want,
     assert compressed_tensors_planner_bits(config, True, False) == want
     assert compressed_tensors_planner_bits(_Config(), True, False) == (True, False)
     assert compressed_tensors_planner_bits(config, False, False) == (False, False)
+    # An explicit bnb 4-bit config would override the 8-bit flags in the planner: it must be dropped too.
+    from transformers import BitsAndBytesConfig
+    from unsloth.models.loader_utils import compressed_tensors_planner_quantization
+
+    explicit = BitsAndBytesConfig(load_in_4bit = True)
+    got = compressed_tensors_planner_quantization(config, False, False, explicit)
+    if want == (False, True):
+        assert got == dict(load_in_4bit = False, load_in_8bit = True, quantization_config = None)
+    else:
+        assert got["quantization_config"] is explicit
     import ast, inspect
     from unsloth.models import llama, vision
 
@@ -1108,7 +1118,7 @@ def test_the_planner_sizes_a_packed_int8_checkpoint_at_8_bits(bits, route, want,
             and getattr(node.func, "id", None) == "planner_quantization_kwargs"
         ]
         assert calls and all(
-            "compressed_tensors_planner_bits" in ast.unparse(call) for call in calls
+            "compressed_tensors_planner_quantization" in ast.unparse(call) for call in calls
         ), module.__name__
 
 

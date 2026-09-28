@@ -299,6 +299,25 @@ def save_packed_with_checkpoint_config(model, quantization_config) -> None:
     model.save_pretrained = save_pretrained
 
 
+def refuse_mixed_packed_full_save(model) -> None:
+    """Packed layers beside converted ones (stacked experts, leftovers): no one config reloads that mix."""
+    original = model.save_pretrained
+    packed = [m for m in model.modules() if isinstance(m, Int4PackedLinear)]
+
+    @functools.wraps(original)
+    def save_pretrained(*args, **kwargs):
+        if any(isinstance(m, Int4PackedLinear) for m in packed):
+            raise RuntimeError(
+                "Unsloth: This model keeps compressed-tensors packed layers next to converted ones, and no "
+                "single config can reload that mix, so a full save is refused. Save the LoRA adapter with the "
+                "PEFT model's save_pretrained, or reload with UNSLOTH_COMPRESSED_TENSORS_INT4=nf4 for a full "
+                "bitsandbytes save."
+            )
+        return original(*args, **kwargs)
+
+    model.save_pretrained = save_pretrained
+
+
 _MISSING = object()
 
 

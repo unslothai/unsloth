@@ -274,6 +274,26 @@ def compressed_tensors_planner_bits(model_config, load_in_4bit, load_in_8bit):
     return load_in_4bit, load_in_8bit
 
 
+def compressed_tensors_planner_quantization(
+    model_config, load_in_4bit, load_in_8bit, quantization_config
+):
+    """Planner flags + config: a packed INT8 load is sized at 8 bits even under an explicit bnb 4-bit config."""
+    wants_4bit = bool(load_in_4bit) or (
+        quantization_config is not None
+        and quantization_config_selects_bnb_4bit(quantization_config)
+    )
+    if (
+        compressed_tensors_planner_bits(model_config, wants_4bit, load_in_8bit) == (False, True)
+        and wants_4bit
+    ):
+        return dict(load_in_4bit = False, load_in_8bit = True, quantization_config = None)
+    return dict(
+        load_in_4bit = load_in_4bit,
+        load_in_8bit = load_in_8bit,
+        quantization_config = quantization_config,
+    )
+
+
 def compressed_tensors_prepared_config(model_config):
     """`model_config` if armed for packed compressed-tensors re-quantization (plan must size from it), else None."""
     if model_config is None:

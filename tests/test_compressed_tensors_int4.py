@@ -18,6 +18,7 @@ matmul; the route loads a tiny packed Llama (built by test_compressed_tensors_bn
 it with the same checkpoint decompressed to bf16 on disk.
 """
 
+import copy
 import itertools
 import os
 import sys
@@ -450,6 +451,10 @@ def test_adopt_swaps_plain_linears_and_leaves_routers_to_the_decompress_converte
     path = str(tmp_path / "model.safetensors")
     save_file(tensors, path)
     ct_config = _build_quantization_config(_w4a16())
+    skipped, _ = adopt_int4_packed_linears(
+        copy.deepcopy(model), ct_config, [path], torch.bfloat16, skip_modules = ["proj"]
+    )
+    assert skipped == []  # a caller-skipped module stays with the decompress converter
     swapped, leftover = adopt_int4_packed_linears(model, ct_config, [path], torch.bfloat16)
     assert swapped == ["proj"] and leftover == ["gate"]
     # The stacked expert is not in the checkpoint's layout any more, so a full save must not claim it is.
@@ -535,3 +540,42 @@ def test_an_empty_batch_returns_an_empty_output(grad, lead):
     x = torch.randn(*lead, 512, device = "cuda", dtype = torch.bfloat16)
     with torch.set_grad_enabled(grad):
         assert int4_matmul(x, packed["weight_packed"], qs).shape == (*lead, 200)
+
+
+def test_a_mixed_packed_layout_refuses_a_full_save():
+    # Packed layers beside converted experts: no single saved config could reload them.
+    from torch import nn
+    from unsloth.models.compressed_tensors_int4 import (
+        Int4PackedLinear,
+        refuse_mixed_packed_full_save,
+    )
+
+    class Model(nn.Module):
+        def save_pretrained(self, *args, **kwargs):
+            return "saved"
+
+    model = Model()
+    layer = Int4PackedLinear.__new__(Int4PackedLinear)
+    nn.Module.__init__(layer)
+    model.layer = layer
+    refuse_mixed_packed_full_save(model)
+    with pytest.raises(RuntimeError, match = "full save is refused"):
+        model.save_pretrained("out")
+    layer.__class__ = nn.Linear  # what a LoRA merge's densify leaves behind
+    assert model.save_pretrained("out") == "saved"
+
+
+@needs_gpu
+@needs_ct
+def test_training_single_row_forward_uses_the_backward_weights():
+    # fast = False is the autograd forward: it must multiply the same rounded weights int4_matmul_t uses.
+    from unsloth.kernels.int4_packed import Int4QuantState, int4_dequantize, int4_matmul
+
+    packed, _, gs = _packed_layer(200, 512, 4, 128, True, True, torch.bfloat16)
+    qs = Int4QuantState(
+        packed["weight_scale"], None, packed.get("weight_g_idx"), (200, 512), 4, gs, torch.bfloat16
+    )
+    W = packed["weight_packed"]
+    x = torch.randn(1, 512, device = "cuda", dtype = torch.bfloat16)
+    want = x @ int4_dequantize(W, qs, torch.bfloat16).t()
+    assert torch.equal(int4_matmul(x, W, qs, fast = False), want)

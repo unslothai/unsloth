@@ -749,7 +749,7 @@ def int4_matmul(
         W = int4_dequantize(packed, qs, x.dtype)
         y = torch.matmul(x2, W.t(), out = None if out is None else out.view(M, N))
         return y.view(*shape[:-1], N)
-    if M > GEMV_MAX_ROWS:
+    if M > GEMV_MAX_ROWS or not fast:
         W = int4_dequantize(packed, qs, x.dtype)
         y = torch.matmul(x2, W.t(), out = None if out is None else out.view(M, N))
         return y.view(*shape[:-1], N)
