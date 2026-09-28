@@ -93,6 +93,19 @@ def test_llama_server_gets_a_tagged_png_upright():
     assert _quadrants(sent) == _AS_DISPLAYED[6][1]
 
 
+def test_a_tagged_png_is_decoded_once(monkeypatch):
+    opened = []
+    real_open = Image.open
+
+    def counting_open(*args, **kwargs):
+        opened.append(args)
+        return real_open(*args, **kwargs)
+
+    monkeypatch.setattr(Image, "open", counting_open)
+    _sent_to_llama(_photo(6, "PNG"), "image/png")
+    assert len(opened) == 1
+
+
 @pytest.mark.parametrize("subsampling", [0, 1, 2])
 def test_a_tagged_jpeg_keeps_its_colour_detail(subsampling):
     head, b64 = _sent_to_llama(_photo(6, subsampling = subsampling)).split(",", 1)

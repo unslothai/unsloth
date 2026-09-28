@@ -35160,7 +35160,7 @@ def _image_bytes_to_png_b64(raw: bytes) -> str:
     """Convert image bytes to base64 PNG for formats llama-server cannot decode."""
     from PIL import Image
 
-    img = _scaled_from_16_bit(_exif_upright(Image.open(io.BytesIO(raw)))).convert("RGB")
+    img = _scaled_from_16_bit(Image.open(io.BytesIO(raw))).convert("RGB")
     buf = io.BytesIO()
     img.save(buf, format = "PNG")
     return base64.b64encode(buf.getvalue()).decode("ascii")
@@ -35245,8 +35245,8 @@ def _llama_image_data_url(raw: bytes) -> str:
         img.load()
         upright = _exif_upright(img)
     if upright is not img:
+        buf = io.BytesIO()
         if raw.startswith(b"\xff\xd8") and _stb_reads_jpeg(raw):
-            buf = io.BytesIO()
             upright.save(
                 buf,
                 format = "JPEG",
@@ -35254,7 +35254,8 @@ def _llama_image_data_url(raw: bytes) -> str:
                 subsampling = JpegImagePlugin.get_sampling(img),
             )
             return f"data:image/jpeg;base64,{base64.b64encode(buf.getvalue()).decode('ascii')}"
-        return f"data:image/png;base64,{_image_bytes_to_png_b64(raw)}"
+        _scaled_from_16_bit(upright).convert("RGB").save(buf, format = "PNG")
+        return f"data:image/png;base64,{base64.b64encode(buf.getvalue()).decode('ascii')}"
     if raw.startswith(_PNG_SIGNATURE) and _stb_reads_png(raw):
         return f"data:image/png;base64,{base64.b64encode(raw).decode('ascii')}"
     if raw.startswith(b"\xff\xd8") and _stb_reads_jpeg(raw):
