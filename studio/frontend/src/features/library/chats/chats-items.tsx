@@ -24,6 +24,7 @@ import {
   OpenChatFolderItem,
   OpenProjectFolderItem,
   canForkChatRow,
+  pickAndImportChats,
   useChatNavigationStore,
   useChatRuntimeStore,
   useForkInFlight,
@@ -53,6 +54,7 @@ import {
   PinOffIcon,
   PlusSignIcon,
   Settings02Icon,
+  Upload01Icon,
   ViewIcon,
   ViewOffSlashIcon,
 } from "@hugeicons/core-free-icons";
@@ -1373,6 +1375,11 @@ function ProjectMenu({
             disabled={!actions.projectChatCounts.get(project.id)}
             onExport={(choice) => actions.exportProject(project, choice)}
           />
+          <MenuItem
+            icon={Upload01Icon}
+            label={t("settings.chat.importChats")}
+            onSelect={() => void pickAndImportChats({ projectId: project.id, name: project.name })}
+          />
           <DropdownMenuSeparator className="mx-3" />
           <MenuItem
             icon={Delete02Icon}
@@ -1618,6 +1625,14 @@ export function SectionMenuItems({
         bulk
         disabled={!actions.sectionChatCounts.get(section.id)}
         onExport={(choice) => actions.exportSection(section, choice)}
+      />
+      {/* Into no project, filed in the section. */}
+      <MenuItem
+        icon={Upload01Icon}
+        label={t("settings.chat.importChats")}
+        onSelect={() =>
+          void pickAndImportChats({ projectId: null, sectionId: section.id, name: section.name })
+        }
       />
       <DropdownMenuSeparator className="mx-3" />
       <MenuItem

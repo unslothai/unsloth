@@ -63,6 +63,8 @@ export interface ImportProgress {
 
 export interface ImportOptions {
   onProgress?: (progress: ImportProgress) => void;
+  /** Each chat saved, so a caller can file them (in a section, say). */
+  onSaved?: (threadId: string) => void;
 }
 
 export interface ImportResult {
@@ -445,12 +447,14 @@ export async function importConversationsFromSource(
     totalBytes: source.size,
   };
   const report = () => options.onProgress?.({ ...progress });
+  const saved = (threadId: string) => options.onSaved?.(threadId);
 
   if (/\.csv$/i.test(source.name)) {
     const text = await readAllText(source, CSV_MAX_BYTES, "CSV");
     for (const conversation of parseImportText(text, source.name)) {
       await writeConversation(conversation, projectId);
       progress.imported++;
+      saved(conversation.threadId);
     }
     if (progress.imported > 0) notifyChatHistoryUpdated();
     report();
@@ -497,6 +501,7 @@ export async function importConversationsFromSource(
         const task = writeConversation(conversation, projectId)
           .then(() => {
             progress.imported++;
+            saved(conversation.threadId);
           })
           .catch(() => {
             // Keep importing after one conversation fails to save.
@@ -524,6 +529,7 @@ export async function importConversationsFromSource(
       try {
         await writeConversation(conversation, projectId);
         progress.imported++;
+        saved(conversation.threadId);
       } catch {
         progress.failed++;
       }

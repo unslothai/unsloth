@@ -6,7 +6,7 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import { readSrcAsync } from "./helpers/kit.ts";
+import { readSrc, readSrcAsync } from "./helpers/kit.ts";
 import { formatWorkedFor } from "../src/lib/format-worked-for.ts";
 
 const PAGE = await readSrcAsync("features/chat/projects-page.tsx");
@@ -82,8 +82,9 @@ test("the disclosure sits with the name it opens", () => {
 // One project, two lists: the page edits it through the dialog the sidebar opens.
 test("the row menu edits a project rather than only renaming it", () => {
   assert.match(PAGE, /import \{ EditProjectDialog \} from "\.\/components\/edit-project-dialog";/);
-  assert.match(PAGE, /onSelect=\{\(\) => setEditing\(project\)\}/);
-  assert.match(PAGE, /<span>Edit<\/span>/);
+  // The Library's project menu, whose Edit opens this page's dialog.
+  assert.match(PAGE, /onEdit=\{\(\) => setEditing\(project\)\}/);
+  assert.match(readSrc("features/chat/components/project-menu-items.tsx"), /<Item icon=\{Settings02Icon\} onSelect=\{onEdit\}>/);
   assert.match(PAGE, /<EditProjectDialog\n\s*project=\{editing\}/);
   // Delete still routes to this page's own confirmation.
   assert.match(PAGE, /onDelete=\{\(project\) => openProjectDelete\(project\)\}/);

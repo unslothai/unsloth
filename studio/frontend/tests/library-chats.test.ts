@@ -507,44 +507,71 @@ test("a favorite project tile uses the open project folder, not the file folder"
   assert.doesNotMatch(tile, /Folder01Icon/);
 });
 
-test("a project's home menu carries the Library project menu's items", () => {
-  const page = readSrc("features/chat/chat-page.tsx");
-  const menu = page.slice(page.indexOf('aria-label="Project options"'), page.indexOf("<ProjectComposer"));
+test("a project's home and the Projects page use the Library project menu", () => {
+  const items = readSrc("features/chat/components/project-menu-items.tsx");
+  // Library order; without View chats and New chat, the folder goes under Export.
   const order = [
-    "setEditingProject(true)",
-    "togglePinProject(projectId)",
-    "setFavoriteProjects([projectId], !projectFavorite)",
-    'shell.sections.moveTo',
+    "onView && (",
+    "onNewChat && (",
+    "<OpenProjectFolderItem projectId={project.id} />",
+    "onSelect={onEdit}",
+    "togglePin(project.id)",
+    "setFavorites([project.id], !favorite)",
+    "shell.sections.moveTo",
     "<BulkExportItems",
-    // Under Export, in the same group.
-    "<OpenProjectFolderItem projectId={projectId} />",
-    "openProjectDelete()",
+    "settings.chat.importChats",
+    "{!opening && <OpenProjectFolderItem",
+    "onSelect={onDelete}",
   ];
   let at = -1;
   for (const marker of order) {
-    const next = menu.indexOf(marker);
+    const next = items.indexOf(marker);
     assert.ok(next > at, `${marker} in order`);
     at = next;
   }
-  const folderToDelete = menu.slice(menu.indexOf("<OpenProjectFolderItem"), menu.indexOf("openProjectDelete()"));
-  assert.equal(folderToDelete.match(/<DropdownMenuSeparator \/>/g)?.length, 1);
-  assert.ok(!menu.slice(0, menu.indexOf("setEditingProject(true)")).includes("<DropdownMenuSeparator"));
-  // Filed the same way as from the Library, which shares the hook.
-  assert.match(page, /const fileProjectInSection = useFileProjectInSection\(\);/);
-  assert.match(readSrc("features/library/chats/chats-library.tsx"), /const fileProjectInSection = useFileProjectInSection\(\);/);
+  const page = readSrc("features/chat/chat-page.tsx");
+  const homeMenu = page.slice(page.indexOf("<ProjectMenuItems"), page.indexOf("/>", page.indexOf("<ProjectMenuItems")));
+  assert.match(homeMenu, /project=\{\{ id: projectId, name: projectName \}\}\s+chatCount=\{items\.length\}/);
+  assert.doesNotMatch(homeMenu, /onView|onNewChat/);
   assert.match(page, /<SectionNameDialog\s+open=\{active && creatingSection\}/);
-  assert.match(menu, /<DropdownMenuSubTrigger disabled=\{items\.length === 0\}>/);
+  const projects = readSrc("features/chat/projects-page.tsx");
+  assert.match(projects, /<ProjectMenuItems\s+project=\{project\}\s+onView=/);
+  assert.match(projects, /onNewChat=\{\(\) => openProject\(project\.id\)\}/);
+  // Filed the same way everywhere, through the shared hook.
+  for (const source of [page, projects, readSrc("features/library/chats/chats-library.tsx"), items]) {
+    assert.match(source, /useFileProjectInSection\(\)/);
+  }
 });
 
 test("Edit and Pin read the same, with the sidebar's icon, in the project menus", () => {
-  const page = readSrc("features/chat/chat-page.tsx");
-  const menu = page.slice(page.indexOf('aria-label="Project options"'), page.indexOf("<ProjectComposer"));
-  assert.match(menu, /icon=\{Settings02Icon\}[\s\S]*?t\("library\.chats\.menu\.edit"\)/);
-  assert.match(menu, /t\(projectPinned \? "settings\.data\.library\.unpin" : "settings\.data\.library\.pin"\)/);
+  const menu = readSrc("features/chat/components/project-menu-items.tsx");
+  assert.match(menu, /<Item icon=\{Settings02Icon\} onSelect=\{onEdit\}>\s*\{t\("library\.chats\.menu\.edit"\)\}/);
+  assert.match(menu, /t\(pinned \? "settings\.data\.library\.unpin" : "settings\.data\.library\.pin"\)/);
   assert.doesNotMatch(menu, /Edit project|Pin project|Edit03Icon/);
   const items = readSrc("features/library/chats/chats-items.tsx");
   assert.match(items, /icon=\{Settings02Icon\}\s*label=\{t\("library\.chats\.menu\.edit"\)\}/);
   assert.match(readSrc("i18n/locales/en.ts"), /\n        edit: "Edit",/);
+});
+
+test("Import chats sits in the project and section menus", () => {
+  const items = readSrc("features/library/chats/chats-items.tsx");
+  assert.match(items, /pickAndImportChats\(\{ projectId: project\.id, name: project\.name \}\)/);
+  assert.match(items, /pickAndImportChats\(\{ projectId: null, sectionId: section\.id, name: section\.name \}\)/);
+  const runner = readSrc("features/chat/utils/import-chats.ts");
+  assert.match(runner, /onSaved: \(threadId\) => threadIds\.push\(threadId\)/);
+  assert.match(runner, /setChatsSection\(threadIds, target\.sectionId\)/);
+  // The Projects page imports through the same runner.
+  assert.match(readSrc("features/chat/projects-page.tsx"), /await runChatImport\(source, \{/);
+});
+
+test("the empty space in a Projects page row opens its chats", () => {
+  const page = readSrc("features/chat/projects-page.tsx");
+  assert.match(page, /<span\s+aria-hidden="true"\s+onClick=\{\(\) => toggleProjectChats\(project\.id\)\}\s+className="-my-4 min-w-0 flex-1 cursor-pointer self-stretch"/);
+  // After the chevron, before Updated.
+  const chevron = page.indexOf("<ChevronDownIcon");
+  const spacer = page.indexOf('className="-my-4 min-w-0 flex-1 cursor-pointer self-stretch"');
+  const updated = page.indexOf('className="hidden w-40 shrink-0 text-sm text-muted-foreground sm:block"');
+  assert.ok(chevron < spacer && spacer < updated);
 });
 
 test("filing a project in a section unpins it and shows the section", () => {

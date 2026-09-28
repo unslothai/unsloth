@@ -334,6 +334,7 @@ export {
 } from "./components/open-chat-folder-item";
 export { BulkExportItems, exportThreads } from "./components/bulk-export-items";
 export { useFileProjectInSection } from "./hooks/use-file-project-in-section";
+export { pickAndImportChats } from "./utils/import-chats";
 export { useForkInFlight } from "./utils/fork-in-flight";
 export { showForkCreatedToast } from "./utils/fork-toast";
 export { clearAllChats, countAllChats } from "./utils/clear-all-chats";

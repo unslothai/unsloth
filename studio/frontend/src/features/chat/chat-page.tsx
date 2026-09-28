@@ -29,7 +29,6 @@ import { usePlatformStore } from "@/config/env";
 import { CopyableErrorChip } from "@/components/ui/copyable-error-chip";
 import {
   DropdownMenuItem,
-  DropdownMenuLabel,
   DropdownMenuSeparator,
   DropdownMenuSub,
   DropdownMenuSubContent,
@@ -95,7 +94,6 @@ import {
 import {
   Archive03Icon,
   BubbleChatTemporaryIcon,
-  Cancel01Icon,
   Delete02Icon,
   Download01Icon,
   Edit03Icon,
@@ -103,15 +101,12 @@ import {
   Folder01Icon,
   Folder02Icon,
   FolderExportIcon,
-  LayerIcon,
   LayoutAlignRightIcon,
   MoreHorizontalIcon,
   MoreVerticalIcon,
   PinIcon,
   PinOffIcon,
   PencilEdit02Icon,
-  PlusSignIcon,
-  Settings02Icon,
   Telescope02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -182,19 +177,13 @@ import {
   useChatSidebarItems,
 } from "./hooks/use-chat-sidebar-items";
 import { usePinnedChatsStore } from "./stores/pinned-chats-store";
-import { usePinnedProjectsStore } from "./stores/pinned-projects-store";
 import {
   normalizeSectionName,
   useSidebarOrganizationStore,
 } from "./stores/sidebar-organization-store";
 import { SectionNameDialog } from "./components/section-name-dialog";
-import { OpenProjectFolderItem } from "./components/open-chat-folder-item";
-import { BulkExportItems, exportThreads } from "./components/bulk-export-items";
+import { ProjectMenuItems } from "./components/project-menu-items";
 import { useFileProjectInSection } from "./hooks/use-file-project-in-section";
-import type { ConvExportFormat } from "./prompt-storage/prompt-storage-dialog";
-import { useChatFavoritesStore } from "@/features/library/chats/favorites-store";
-import { useT } from "@/i18n";
-import { StarPointedIcon } from "@/lib/hugeicons-derived";
 import {
   clearTrainingCompareHandoff,
   getTrainingCompareHandoff,
@@ -1410,39 +1399,12 @@ function ProjectLanding({
   } | null>(null);
 
   // Project-level options (the header kebab menu).
-  const pinnedProjectIds = usePinnedProjectsStore((s) => s.pinnedIds);
-  const togglePinProject = usePinnedProjectsStore((s) => s.togglePin);
-  const projectPinned = pinnedProjectIds.includes(projectId);
   const [editingProject, setEditingProject] = useState(false);
   const [deletingProject, setDeletingProject] = useState(false);
-  // The rest of the Library's project menu: favorite, file in a section.
-  const t = useT();
-  const projectFavorite = useChatFavoritesStore((s) => s.projectIds.includes(projectId));
-  const setFavoriteProjects = useChatFavoritesStore((s) => s.setProjects);
-  const sections = useSidebarOrganizationStore((s) => s.customSections);
-  const projectSectionId = useSidebarOrganizationStore(
-    (s) => s.sectionByProjectId[projectId] ?? null,
-  );
+  // "New section" in the menu: the new section gets the project.
   const createCustomSection = useSidebarOrganizationStore((s) => s.createCustomSection);
   const fileProjectInSection = useFileProjectInSection();
   const [creatingSection, setCreatingSection] = useState(false);
-  const leavingSection = sections.find((section) => section.id === projectSectionId);
-
-  async function handleProjectExport(
-    format: ConvExportFormat,
-    merged: boolean,
-  ): Promise<void> {
-    try {
-      const threads = await listStoredChatThreads({
-        projectId,
-        includeArchived: false,
-      });
-      const ids = [...new Set(threads.map((thread) => thread.id))];
-      if (ids.length > 0) await exportThreads(ids, format, merged, `project-${projectName}`);
-    } catch (error) {
-      if (!isDownloadCancelled(error)) toast.error("Export failed.");
-    }
-  }
 
   /** A project workspace is a bigger thing to remove than a chat's sandbox, so it asks from
    *  scratch rather than following the chat preference, as the sidebar does it. */
@@ -1792,90 +1754,15 @@ function ProjectLanding({
                   </button>
                 )}
               >
-                {/* Same items as the project's menu in the Library, less the two that lead here. */}
-                {/* Edit and Pin as the sidebar and Library name them; the dialog holds name, instructions and folders. */}
-                <DropdownMenuItem onSelect={() => setEditingProject(true)}>
-                  <HugeiconsIcon icon={Settings02Icon} strokeWidth={1.75} className="size-icon" />
-                  <span>{t("library.chats.menu.edit")}</span>
-                </DropdownMenuItem>
-                <DropdownMenuItem onSelect={() => togglePinProject(projectId)}>
-                  <HugeiconsIcon icon={projectPinned ? PinOffIcon : PinIcon} strokeWidth={1.75} className="size-icon" />
-                  <span>{t(projectPinned ? "settings.data.library.unpin" : "settings.data.library.pin")}</span>
-                </DropdownMenuItem>
-                <DropdownMenuItem onSelect={() => setFavoriteProjects([projectId], !projectFavorite)}>
-                  <HugeiconsIcon
-                    icon={StarPointedIcon}
-                    strokeWidth={1.75}
-                    className={cn("size-icon", projectFavorite && "[&_path]:fill-current")}
-                  />
-                  <span>
-                    {t(projectFavorite ? "library.menu.removeFromFavorites" : "library.menu.addToFavorites")}
-                  </span>
-                </DropdownMenuItem>
-                <DropdownMenuSeparator />
-                {/* Sections only: projects never nest. */}
-                <DropdownMenuSub>
-                  <DropdownMenuSubTrigger>
-                    <HugeiconsIcon icon={FolderExportIcon} strokeWidth={1.75} className="size-icon" />
-                    <span>{t("shell.sections.moveTo")}</span>
-                  </DropdownMenuSubTrigger>
-                  <DropdownMenuSubContent className="unsloth-plus-menu max-h-[var(--radix-dropdown-menu-content-available-height)] w-56 overflow-y-auto">
-                    <DropdownMenuLabel className="font-normal text-muted-foreground">
-                      {t("shell.sections.sectionsHeading")}
-                    </DropdownMenuLabel>
-                    <DropdownMenuItem onSelect={() => setCreatingSection(true)}>
-                      <HugeiconsIcon icon={PlusSignIcon} strokeWidth={1.75} className="size-icon" />
-                      <span>{t("shell.sections.newSection")}</span>
-                    </DropdownMenuItem>
-                    {sections
-                      .filter((section) => section.id !== projectSectionId)
-                      .map((section) => (
-                        <DropdownMenuItem
-                          key={section.id}
-                          onSelect={() =>
-                            fileProjectInSection({ id: projectId, name: projectName }, section.id)
-                          }
-                        >
-                          <HugeiconsIcon icon={LayerIcon} strokeWidth={1.75} className="size-icon" />
-                          <span className="truncate">{section.name}</span>
-                        </DropdownMenuItem>
-                      ))}
-                    {projectSectionId && (
-                      <DropdownMenuItem
-                        onSelect={() =>
-                          fileProjectInSection({ id: projectId, name: projectName }, null)
-                        }
-                      >
-                        <HugeiconsIcon icon={Cancel01Icon} strokeWidth={1.75} className="size-icon" />
-                        <span className="truncate">
-                          {leavingSection
-                            ? t("shell.sections.removeFrom", { name: leavingSection.name })
-                            : t("shell.sections.removeFromSection")}
-                        </span>
-                      </DropdownMenuItem>
-                    )}
-                  </DropdownMenuSubContent>
-                </DropdownMenuSub>
-                <DropdownMenuSub>
-                  <DropdownMenuSubTrigger disabled={items.length === 0}>
-                    <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} className="size-icon" />
-                    <span>{t("common.export")}</span>
-                  </DropdownMenuSubTrigger>
-                  <DropdownMenuSubContent className="unsloth-plus-menu w-56">
-                    <BulkExportItems
-                      onExport={(format, merged) => void handleProjectExport(format, merged)}
-                    />
-                  </DropdownMenuSubContent>
-                </DropdownMenuSub>
-                <OpenProjectFolderItem projectId={projectId} />
-                <DropdownMenuSeparator />
-                <DropdownMenuItem
-                  variant="destructive"
-                  onSelect={() => openProjectDelete()}
-                >
-                  <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-icon" />
-                  <span>Delete project</span>
-                </DropdownMenuItem>
+                {/* The Library's project menu, less the two items that lead here. */}
+                <ProjectMenuItems
+                  project={{ id: projectId, name: projectName }}
+                  chatCount={items.length}
+                  onEdit={() => setEditingProject(true)}
+                  onDelete={() => openProjectDelete()}
+                  onNewSection={() => setCreatingSection(true)}
+                  subClassName="unsloth-plus-menu"
+                />
               </NonModalDropdownMenu>
             </div>
 
