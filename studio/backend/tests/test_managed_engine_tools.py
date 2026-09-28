@@ -520,9 +520,7 @@ def test_a_catalog_with_tool_choice_none_is_plain_chat(native):
     backend, requests = native
     backend.models["sf-model"]["supports_tools"] = False
     result = run(
-        route_test._request(
-            tools = [route_test.LOOKUP_TOOL], tool_choice = "none", enable_tools = False
-        )
+        route_test._request(tools = [route_test.LOOKUP_TOOL], tool_choice = "none", enable_tools = False)
     )
     assert result["choices"][0]["message"]["content"]
     assert requests == []  # served by the plain path, not the native tool route

@@ -254,6 +254,7 @@ def gpu_memory_fraction(gpu_ids: list[int], reserve_mib: int = 512) -> float:
     """
     from utils.hardware.nvidia import _nvidia_smi_executable
     from utils.vram_budget_settings import get_vram_budget_fraction
+
     try:
         result = subprocess.run(
             [
