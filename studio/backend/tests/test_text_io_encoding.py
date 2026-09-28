@@ -32,7 +32,10 @@ def _shared_setup_1(__file__):
 BACKEND_ROOT = Path(__file__).resolve().parent.parent
 
 # Not runtime source. Shipped plugins under plugins/*/src are, so only builds are skipped.
-_SKIPPED_DIRS = ("node_modules", "build", "tests", "__pycache__")
+# vendor/ holds third-party source kept byte-identical to its wheel and pinned by per-file
+# hashes (vendor/README.md), so it is fixed upstream, not here; ruff and the formatter hook
+# skip it for the same reason.
+_SKIPPED_DIRS = ("node_modules", "build", "tests", "__pycache__", "vendor")
 
 # Path.open()'s signature is what tells it apart from other libraries' open(),
 # e.g. fitz.open(stream=...) and av.open(..., metadata_errors=...).
