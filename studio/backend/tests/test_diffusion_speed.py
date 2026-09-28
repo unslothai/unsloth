@@ -675,6 +675,23 @@ def test_eager_vae_decode_keeps_contiguous_weights(monkeypatch, tier):
     assert applied["channels_last"] is False and pipe.vae.mem_format == torch.contiguous_format
 
 
+@pytest.mark.parametrize("tier", [SPEED_EAGER, SPEED_DEFAULT])
+def test_fused_vae_keeps_its_channels_last_weights(monkeypatch, tier):
+    # The fused passes hand cuDNN channels-last activations; the contiguous cleanup decoded 1.4x slower.
+    torch = _stub_torch(monkeypatch)
+    monkeypatch.delenv(ds_mod.COMPILE_VAE_ENV, raising = False)
+    pipe = _Pipe(with_compile = True)
+
+    def fused(p, logger):
+        p.vae._unsloth_vae_fused_cl_weights = True
+        return True
+
+    monkeypatch.setattr(ds_mod, "_install_fused_vae", fused)
+    applied = apply_speed_optims(pipe, _target(), is_gguf = False, family = _family(), speed_mode = tier)
+    assert applied["vae_fused"] is True
+    assert applied["channels_last"] is True and pipe.vae.mem_format == torch.channels_last
+
+
 @pytest.mark.parametrize(
     "backend, device", [("rocm", "cuda"), ("mps", "mps"), ("xpu", "xpu"), ("cpu", "cpu")]
 )

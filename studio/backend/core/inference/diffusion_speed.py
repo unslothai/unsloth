@@ -502,8 +502,14 @@ def apply_speed_optims(
             eager_when_tiled = _vae_eager_when_tiled(pipe),
         )
 
-    if applied["channels_last"] and not _channels_last_decode_wins(
-        pipe, target, applied["compiled_vae_decode"], offload_active
+    # Fused passes feed cuDNN channels-last activations: contiguous weights there decode 1.4x slower (AutoencoderKL).
+    fused_cl = bool(getattr(getattr(pipe, "vae", None), "_unsloth_vae_fused_cl_weights", False))
+    if (
+        applied["channels_last"]
+        and not fused_cl
+        and not _channels_last_decode_wins(
+            pipe, target, applied["compiled_vae_decode"], offload_active
+        )
     ):
         applied["channels_last"] = not _vae_contiguous(pipe, logger)
     elif applied["compiled_vae_decode"] and not _channels_last_decode_wins(

@@ -1107,6 +1107,7 @@ def install_group_norm_vae(vae: Any, logger: Any = None) -> int:
 
 def uninstall(vae: Any) -> None:
     vae.__dict__.pop("_unsloth_vae_fused_installed", None)
+    vae.__dict__.pop("_unsloth_vae_fused_cl_weights", None)
     for m in vae.modules():
         if isinstance(getattr(m, "processor", None), FusedSingleHeadProcessor):
             m.processor = m.processor.fallback
@@ -2087,6 +2088,8 @@ def install(
         and _fuses_a_conv(vae)
     ):
         channels_last_weights(vae)
+        # The speed layer's contiguous-decode cleanup must not undo this.
+        vae._unsloth_vae_fused_cl_weights = True
     if n:
         vae._unsloth_vae_fused_installed = n
         if logger is not None:
