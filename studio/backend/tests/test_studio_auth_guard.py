@@ -2551,6 +2551,16 @@ def test_a_real_rebinding_still_moves_the_path(studio_home, rebind):
     )
 
 
+def test_many_empty_self_references_scan_in_linear_time(studio_home):
+    import time
+
+    workdir = str(studio_home / "sandbox" / _SESSION)
+    command = 'echo "' + " ".join(f"A{i}=$A{i}" for i in range(20000)) + '"'
+    started = time.perf_counter()
+    assert not tools._references_studio_credential_here(command, workdir)
+    assert time.perf_counter() - started < 10
+
+
 def test_self_doubling_assignments_stay_bounded(studio_home):
     workdir = str(studio_home / "sandbox" / _SESSION)
     doubling = "a=X; " + "a=$a$a; " * 40

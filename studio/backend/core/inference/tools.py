@@ -3208,8 +3208,9 @@ def _assignment_is_a_command_prefix(text: str, value_start: int) -> bool:
         elif char in " \t;&|\n":
             break
         index += 1
-    following = text[index:].lstrip(" \t")
-    return bool(following) and following[0] not in ";&|\n"
+    while index < len(text) and text[index] in " \t":
+        index += 1
+    return index < len(text) and text[index] not in ";&|\n"
 
 
 def _assignment_is_inert(text: str, index: int) -> bool:
@@ -3238,6 +3239,31 @@ def _assignment_is_inert(text: str, index: int) -> bool:
         elif character == ")":
             depth = max(depth - 1, 0)
     return bool(quote) or depth > 0
+
+
+def _assignment_inert_states(text: str) -> "list[bool]":
+    """`_assignment_is_inert(text, i)` for every i in one pass (index len(text) included)."""
+    states = []
+    quote = ""
+    escaped = False
+    depth = 0
+    for character in text:
+        states.append(bool(quote) or depth > 0)
+        if escaped:
+            escaped = False
+        elif character == "\\" and quote != "'":
+            escaped = True
+        elif quote:
+            if character == quote:
+                quote = ""
+        elif character in "'\"":
+            quote = character
+        elif character == "(":
+            depth += 1
+        elif character == ")":
+            depth = max(depth - 1, 0)
+    states.append(bool(quote) or depth > 0)
+    return states
 
 
 def _rebinds_the_studio_home_first(text: str) -> bool:
@@ -5340,6 +5366,7 @@ def _shell_assignment_expansions(
     *skip_prefix* such assignments bind nothing; the last-binding result keeps them for the child."""
     env = {}
     saw_prefix = False
+    inert_states = None
 
     def repl_default(m):
         name, colon, op, operand = m.groups()
@@ -5439,8 +5466,11 @@ def _shell_assignment_expansions(
                 continue
         # `x=../..; (x=); cat "$x/auth/auth.db"`: a scoped empty assignment must not erase the outer binding,
         # while a top-level `x=` does clear it (`x=./p/; x=; cat "$x../../auth/auth.db"`).
-        if not val and var in env and _assignment_is_inert(command, match.start(1)):
-            continue
+        if not val and var in env:
+            if inert_states is None:
+                inert_states = _assignment_inert_states(command)
+            if inert_states[match.start(1)]:
+                continue
         env[var] = val
     if not env:
         return command, command, saw_prefix
