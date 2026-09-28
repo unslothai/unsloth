@@ -3157,7 +3157,7 @@ export const ptBR = {
         moveTo: "Mover para projeto",
         viewChats: "Ver chats",
         newChatInProject: "Novo chat no projeto",
-        editProject: "Editar projeto",
+        edit: "Editar",
         deleteProject: "Excluir projeto",
         newChatInSection: "Novo chat na seção",
       },

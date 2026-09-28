@@ -3037,7 +3037,7 @@ export const zhCN = {
         moveTo: "移动到项目",
         viewChats: "查看聊天",
         newChatInProject: "在项目中新建聊天",
-        editProject: "编辑项目",
+        edit: "编辑",
         deleteProject: "删除项目",
         newChatInSection: "在分区中新建聊天",
       },

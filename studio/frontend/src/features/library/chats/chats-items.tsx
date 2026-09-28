@@ -1373,7 +1373,7 @@ function ProjectMenu({
           <DropdownMenuSeparator className="mx-3" />
           <MenuItem
             icon={Settings02Icon}
-            label={t("library.chats.menu.editProject")}
+            label={t("library.chats.menu.edit")}
             onSelect={() => actions.editProject(project)}
           />
           <MenuItem

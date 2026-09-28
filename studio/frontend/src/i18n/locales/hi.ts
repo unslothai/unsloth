@@ -3136,7 +3136,7 @@ export const hi = {
         moveTo: "प्रोजेक्ट में ले जाएँ",
         viewChats: "चैट देखें",
         newChatInProject: "प्रोजेक्ट में नई चैट",
-        editProject: "प्रोजेक्ट संपादित करें",
+        edit: "संपादित करें",
         deleteProject: "प्रोजेक्ट हटाएँ",
         newChatInSection: "सेक्शन में नई चैट",
       },

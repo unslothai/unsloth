@@ -547,6 +547,17 @@ test("a project's home menu carries the Library project menu's items", () => {
   assert.match(menu, /<DropdownMenuSubTrigger disabled=\{items\.length === 0\}>/);
 });
 
+test("Edit and Pin read the same, with the sidebar's icon, in the project menus", () => {
+  const page = readSrc("features/chat/chat-page.tsx");
+  const menu = page.slice(page.indexOf('aria-label="Project options"'), page.indexOf("<ProjectComposer"));
+  assert.match(menu, /icon=\{Settings02Icon\}[\s\S]*?t\("library\.chats\.menu\.edit"\)/);
+  assert.match(menu, /t\(projectPinned \? "settings\.data\.library\.unpin" : "settings\.data\.library\.pin"\)/);
+  assert.doesNotMatch(menu, /Edit project|Pin project|Edit03Icon/);
+  const items = readSrc("features/library/chats/chats-items.tsx");
+  assert.match(items, /icon=\{Settings02Icon\}\s*label=\{t\("library\.chats\.menu\.edit"\)\}/);
+  assert.match(readSrc("i18n/locales/en.ts"), /\n        edit: "Edit",/);
+});
+
 test("filing a project in a section unpins it and shows the section", () => {
   const hook = readSrc("features/chat/hooks/use-file-project-in-section.ts");
   assert.match(hook, /if \(pins\.pinnedIds\.includes\(project\.id\)\) pins\.unpin\(project\.id\);/);

@@ -3077,7 +3077,7 @@ export const ja = {
         moveTo: "プロジェクトに移動",
         viewChats: "チャットを表示",
         newChatInProject: "プロジェクトで新しいチャット",
-        editProject: "プロジェクトを編集",
+        edit: "編集",
         deleteProject: "プロジェクトを削除",
         newChatInSection: "セクションで新しいチャット",
       },

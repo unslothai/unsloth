@@ -3209,7 +3209,7 @@ export const fr = {
         moveTo: "Déplacer vers un projet",
         viewChats: "Voir les discussions",
         newChatInProject: "Nouvelle discussion dans le projet",
-        editProject: "Modifier le projet",
+        edit: "Modifier",
         deleteProject: "Supprimer le projet",
         newChatInSection: "Nouvelle discussion dans la section",
       },

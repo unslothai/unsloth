@@ -111,6 +111,7 @@ import {
   PinOffIcon,
   PencilEdit02Icon,
   PlusSignIcon,
+  Settings02Icon,
   Telescope02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -1794,13 +1795,14 @@ function ProjectLanding({
                 {/* Same items as the project's menu in the Library, less the two that lead here. */}
                 <OpenProjectFolderItem projectId={projectId} />
                 <DropdownMenuSeparator />
+                {/* Edit and Pin as the sidebar and Library name them; the dialog holds name, instructions and folders. */}
                 <DropdownMenuItem onSelect={() => setEditingProject(true)}>
-                  <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} className="size-icon" />
-                  <span>Edit project</span>
+                  <HugeiconsIcon icon={Settings02Icon} strokeWidth={1.75} className="size-icon" />
+                  <span>{t("library.chats.menu.edit")}</span>
                 </DropdownMenuItem>
                 <DropdownMenuItem onSelect={() => togglePinProject(projectId)}>
                   <HugeiconsIcon icon={projectPinned ? PinOffIcon : PinIcon} strokeWidth={1.75} className="size-icon" />
-                  <span>{projectPinned ? "Unpin project" : "Pin project"}</span>
+                  <span>{t(projectPinned ? "settings.data.library.unpin" : "settings.data.library.pin")}</span>
                 </DropdownMenuItem>
                 <DropdownMenuItem onSelect={() => setFavoriteProjects([projectId], !projectFavorite)}>
                   <HugeiconsIcon

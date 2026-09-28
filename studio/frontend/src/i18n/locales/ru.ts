@@ -3156,7 +3156,7 @@ export const ru = {
         moveTo: "Переместить в проект",
         viewChats: "Показать чаты",
         newChatInProject: "Новый чат в проекте",
-        editProject: "Изменить проект",
+        edit: "Изменить",
         deleteProject: "Удалить проект",
         newChatInSection: "Новый чат в разделе",
       },

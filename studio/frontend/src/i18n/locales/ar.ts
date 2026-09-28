@@ -3129,7 +3129,7 @@ export const ar = {
         moveTo: "نقل إلى مشروع",
         viewChats: "عرض المحادثات",
         newChatInProject: "محادثة جديدة في المشروع",
-        editProject: "تعديل المشروع",
+        edit: "تعديل",
         deleteProject: "حذف المشروع",
         newChatInSection: "محادثة جديدة في القسم",
       },
