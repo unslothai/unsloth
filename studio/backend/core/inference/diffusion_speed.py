@@ -457,10 +457,11 @@ def apply_speed_optims(
     on_cuda = getattr(target, "device", None) == "cuda"
     family_allows_compile = bool(getattr(family, "supports_torch_compile", True))
 
-    # Before channels_last, which a 5D-weight VAE refuses.
     applied["vae_single_frame"] = _vae_single_frame(pipe, logger)
     # Lossless: a channels-last VAE speeds up its convs with no numeric change.
-    applied["channels_last"] = _vae_channels_last(pipe, logger, fused = on_cuda and _fused_vae_planned(pipe))
+    applied["channels_last"] = _vae_channels_last(
+        pipe, logger, fused = on_cuda and _fused_vae_planned(pipe)
+    )
     # Near-lossless, not bit-identical, so never on "off" (returned above).
     applied["vae_fp16_decode"] = _video_vae_half_decode(pipe, target, family, logger)
     if on_cuda:
@@ -591,8 +592,7 @@ def _vae_single_frame(pipe: Any, logger: Any) -> bool:
         return False
 
 
-# Slower in channels_last on the stock path (QwenImage21 1024 decode, B200: 72.7 vs 89 ms); with the fused norms installed
-# channels_last wins (104.7 vs 121.0 ms), so the deny applies only where those norms do not install.
+# channels_last: slower on the stock path (72.7 vs 89 ms), faster once the fused norms install (104.7 vs 121.0 ms).
 _VAE_CHANNELS_LAST_DENY: frozenset[str] = frozenset({"AutoencoderKLQwenImage21"})
 
 
@@ -606,7 +606,12 @@ def _cudnn_benchmark_pointless(pipe: Any) -> bool:
     return type(getattr(pipe, "vae", None)).__name__ in _CUDNN_BENCHMARK_DENY_VAES
 
 
-def _vae_channels_last(pipe: Any, logger: Any, *, fused: bool = False) -> bool:
+def _vae_channels_last(
+    pipe: Any,
+    logger: Any,
+    *,
+    fused: bool = False,
+) -> bool:
     vae = getattr(pipe, "vae", None)
     if vae is None or not hasattr(vae, "to"):
         return False
