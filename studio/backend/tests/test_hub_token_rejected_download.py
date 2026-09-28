@@ -155,6 +155,7 @@ def test_an_anonymous_caller_is_never_retried():
 
 def test_ambient_without_any_host_token_is_not_retried(monkeypatch):
     monkeypatch.setattr(hf_tokens, "_ambient_hf_token", lambda: (True, None))
+    monkeypatch.setattr(hf_tokens, "_wire_hf_token", lambda: None)
     hub = _Hub()
     with pytest.raises(RepositoryNotFoundError):
         call_hub_with_anonymous_retry(hub, None)
@@ -163,6 +164,7 @@ def test_ambient_without_any_host_token_is_not_retried(monkeypatch):
 
 def test_ambient_host_token_is_retried(monkeypatch):
     monkeypatch.setattr(hf_tokens, "_ambient_hf_token", lambda: (True, BAD))
+    monkeypatch.setattr(hf_tokens, "_wire_hf_token", lambda: BAD)
     hub = _Hub()
     assert call_hub_with_anonymous_retry(hub, None) == "ok"
     assert hub.tokens == [None, False]

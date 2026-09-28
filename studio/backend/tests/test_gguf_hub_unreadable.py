@@ -47,6 +47,7 @@ def _isolated(tmp_path, monkeypatch):
     monkeypatch.setattr(mc.time, "sleep", lambda *_: None)
     # No ambient credential, so a 401 here is the repo's answer and is not retried anonymously.
     monkeypatch.setattr(hf_tokens, "_ambient_hf_token", lambda: (True, None))
+    monkeypatch.setattr(hf_tokens, "_wire_hf_token", lambda: None)
     monkeypatch.setattr(
         llama_cpp.LlamaCppBackend,
         "_find_llama_server_binary",
