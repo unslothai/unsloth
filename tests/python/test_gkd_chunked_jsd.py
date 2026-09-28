@@ -479,3 +479,22 @@ def test_dense_fallback_projects_on_the_head_device():
     head = torch.nn.Linear(4, 5).to("meta")
     logits = rl._unsloth_gkd_project(torch.randn(2, 3, 4), head, 0.5, 30.0)
     assert logits.device == head.weight.device and logits.shape == (2, 3, 5)
+
+
+@pytest.mark.skipif(
+    not torch.cuda.is_available(),
+    reason = "needs a second device to split hidden states from the head",
+)
+def test_chunked_loss_with_heads_on_another_device():
+    """A dispatched model can return hidden states from one device while a tied lm_head sits on another."""
+    vocab = 97
+    student, teacher = _TinyLM(vocab, 16, 0.0, 1), _TinyLM(vocab, 24, 5.0, 2)
+    trainer, inputs = _trainer(0.5, student, teacher), _inputs(vocab)
+    layout = {"shift": "shift", "num_items_in_batch": False}
+    expected = rl._unsloth_gkd_chunked_loss(trainer, student, inputs, None, layout)
+    student.lm_head.cuda()
+    teacher.lm_head.cuda()
+    loss = rl._unsloth_gkd_chunked_loss(trainer, student, inputs, None, layout)
+    loss.backward()
+    torch.testing.assert_close(loss.cpu().double(), expected.double(), rtol = 1e-5, atol = 1e-7)
+    assert student.mix.grad is not None and student.mix.grad.device.type == "cpu"

@@ -4127,6 +4127,9 @@ def _unsloth_gkd_chunked_loss(self, model, inputs, num_items_in_batch, layout):
             **extra,
         )
 
+    # A dispatched model can return hidden states off its head's device; the zoo's accumulators follow the states.
+    student_states = student_states.to(student_head.weight.device)
+    teacher_states = teacher_states.to(teacher_head.weight.device)
     loss, _entropy_sum, _n_valid = distillation_chunked_jsd(
         student_states,
         teacher_states.detach(),
