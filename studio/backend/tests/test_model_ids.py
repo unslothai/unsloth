@@ -104,6 +104,13 @@ def test_display_model_name_leaves_ordinary_ids_alone():
     assert display_model_name("") == ""
 
 
+def test_relative_one_slash_gguf_still_reduces_to_the_stem():
+    assert public_model_id("models/foo.gguf") == "foo"
+    assert public_model_id("Joshua65535/qwen2.5-1.5b-instruct-q4_k_m.gguf") == (
+        "Joshua65535/qwen2.5-1.5b-instruct-q4_k_m.gguf"
+    )
+
+
 def test_hub_repo_ending_in_gguf_stays_a_repo_id():
     # lex-au/Orpheus-3b-FT-Q8_0.gguf is a Hub repo. The same module already
     # treats it as one for the display label, and refuses to strip .gguf.
