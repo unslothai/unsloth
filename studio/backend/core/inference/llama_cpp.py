@@ -28762,6 +28762,10 @@ class LlamaCppBackend:
                 # own devices, the child aborting on a pin it cannot see. The
                 # draft-device forms count too: parsed with no drafter loaded.
                 _child_gpu_physical_ids: Optional[tuple[int, ...]] = None
+                # Set when companion flags were fitted to the child's mask, so a respawn on
+                # other cards can fit them again (see the arch-crash retry).
+                _companion_fit_mask: Optional[list[int]] = None
+                _companion_added_device: Optional[list[str]] = None
                 if not is_vulkan_backend and _gpu_mem:
                     _child_gpu_physical_ids = self._unmasked_child_gpu_physical_ids()
 
@@ -28882,12 +28886,17 @@ class LlamaCppBackend:
                         _extra_args_main_device(cmd) is None
                         and str(env.get("LLAMA_ARG_DEVICE", "")).strip()
                     ):
+                        _had_main_device = _extra_args_main_device(cmd) is not None
                         _pin_ids, _companion_widen = _widen_pin_ids_for_companion_devices(
                             cmd,
                             _pin_ids,
                             self._resolve_visible_physical_ids(),
                             may_widen = not gpu_ids,
                         )
+                        if _companion_widen:
+                            _companion_fit_mask = list(_pin_ids)
+                            if not _had_main_device and _extra_args_main_device(cmd) is not None:
+                                _companion_added_device = list(cmd[-2:])
                     if _companion_widen:
                         logger.info(
                             "Companion device flags name GPUs by their unpinned "
@@ -30113,10 +30122,38 @@ class LlamaCppBackend:
                                 "weights outgrow; set "
                                 "GGML_CUDA_ENABLE_UNIFIED_MEMORY=1 for the respawn."
                             )
+                        _retry_mask = list(_remaining)
+                        if _companion_fit_mask is not None:
+                            # The companion flags and the generated main --device were
+                            # numbered for the crashed launch's mask: fit them to this one,
+                            # reading each token as a position in that previous mask.
+                            if _companion_added_device is not None:
+                                for _k in range(len(cmd) - 1, 0, -1):
+                                    if cmd[_k - 1 : _k + 1] == _companion_added_device:
+                                        del cmd[_k - 1 : _k + 1]
+                                        break
+                            _had_main_device = _extra_args_main_device(cmd) is not None
+                            _retry_mask, _refit = _widen_pin_ids_for_companion_devices(
+                                cmd,
+                                list(_remaining),
+                                list(_companion_fit_mask),
+                                may_widen = not gpu_ids,
+                            )
+                            _companion_added_device = (
+                                list(cmd[-2:])
+                                if not _had_main_device and _extra_args_main_device(cmd) is not None
+                                else None
+                            )
+                            _companion_fit_mask = list(_retry_mask)
+                            if _refit:
+                                logger.info(
+                                    "Refitted companion device flags to the retry's mask: %s",
+                                    _refit,
+                                )
                         self._emit_child_gpu_visibility(
-                            env, ",".join(str(i) for i in _remaining), prefer_rocr = True
+                            env, ",".join(str(i) for i in _retry_mask), prefer_rocr = True
                         )
-                        _child_gpu_physical_ids = tuple(int(i) for i in _remaining)
+                        _child_gpu_physical_ids = tuple(int(i) for i in _retry_mask)
                         # Same for the inherited env twins of the flags dropped
                         # below: the new mask re-indexes the survivors under them.
                         self._clear_split_placement_env(env)

@@ -160,3 +160,28 @@ def test_an_explicit_pin_still_renumbers_a_companion_on_one_of_its_cards():
     assert pin == [2, 3]
     assert _value(cmd, "--mmproj-device") == "CUDA1"
     assert "--device" not in cmd
+
+
+def test_an_arch_crash_retry_refits_the_companion_to_the_new_mask():
+    # [0] widened to [0, 1] for the projector on CUDA1; GPU 0 then crashes and the
+    # respawn is masked to physical 2. Read through the crashed launch's mask, the
+    # projector still names physical 1, and the main model moves to physical 2.
+    cmd, first, _ = _widen([0], ["--mmproj-device", "CUDA1"])
+    assert first == [0, 1] and cmd[-2:] == ["--device", "CUDA0"]
+    del cmd[-2:]  # the generated main --device, as the retry drops it
+    retry, note = llama_cpp._widen_pin_ids_for_companion_devices(cmd, [2], first)
+    assert retry == [2, 1]
+    assert _value(cmd, "--mmproj-device") == "CUDA1"
+    assert _value(cmd, "--device") == "CUDA0"
+    assert note
+
+
+def test_the_arch_crash_retry_refits_companions_in_source():
+    import inspect
+
+    src = inspect.getsource(llama_cpp.LlamaCppBackend.load_model)
+    retry = src.index("_arch_crash_retry_gpu_ids(")
+    window = src[retry : retry + 12000]
+    assert "_companion_fit_mask" in window
+    assert "list(_companion_fit_mask)" in window
+    assert '",".join(str(i) for i in _retry_mask)' in window
