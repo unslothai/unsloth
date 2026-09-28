@@ -15,6 +15,18 @@ import asyncio
 import sys
 from pathlib import Path
 
+import pytest
+
+
+def _shared_setup_1():
+    resp = asyncio.run(
+        rt.stop_training(
+            rt.TrainingStopRequest(save = True, expected_job_id = "job_1"),
+            current_subject = "t",
+        )
+    )
+    return resp
+
 
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
@@ -22,6 +34,15 @@ if _BACKEND_DIR not in sys.path:
 
 import routes.training as rt
 from core.training.training import TrainingBackend, TrainingProgress
+
+
+async def _inline_to_thread(function, /, *args, **kwargs):
+    return function(*args, **kwargs)
+
+
+@pytest.fixture(autouse = True)
+def _run_route_helpers_inline(monkeypatch):
+    monkeypatch.setattr(rt.asyncio, "to_thread", _inline_to_thread)
 
 
 class _WedgedProc:
@@ -168,7 +189,7 @@ def test_late_stop_does_not_unfinish_a_completed_run(monkeypatch):
     b = _running(monkeypatch)
     b._handle_event(dict(_DONE))
 
-    resp = asyncio.run(rt.stop_training(rt.TrainingStopRequest(save = True), current_subject = "t"))
+    resp = _shared_setup_1()
     assert resp.status == "idle"
     assert b._should_stop is False
 
@@ -202,7 +223,7 @@ def test_stop_and_save_losing_the_race_to_the_pump_keeps_the_run_completed(monke
 
     b.stop_training = stop_after_complete
 
-    resp = asyncio.run(rt.stop_training(rt.TrainingStopRequest(save = True), current_subject = "t"))
+    resp = _shared_setup_1()
     assert resp.status == "idle"
     assert b._should_stop is False, "a run that finished in the gap must not latch a stop"
     assert (b._terminal_finalize_payload or {}).get("status") == "completed"
@@ -214,7 +235,7 @@ def test_stop_and_save_losing_the_race_to_the_pump_keeps_the_run_completed(monke
 
 def test_stop_mid_run_still_works(monkeypatch):
     b = _running(monkeypatch)
-    resp = asyncio.run(rt.stop_training(rt.TrainingStopRequest(save = True), current_subject = "t"))
+    resp = _shared_setup_1()
     assert resp.status == "stopped"
     assert b._should_stop is True
 
@@ -226,7 +247,12 @@ def test_cancel_mid_run_still_works(monkeypatch):
     monkeypatch.setattr(
         "storage.studio_db.mark_run_cancel_requested", lambda *a, **k: True, raising = False
     )
-    resp = asyncio.run(rt.stop_training(rt.TrainingStopRequest(save = False), current_subject = "t"))
+    resp = asyncio.run(
+        rt.stop_training(
+            rt.TrainingStopRequest(save = False, expected_job_id = "job_1"),
+            current_subject = "t",
+        )
+    )
     assert resp.status == "stopped"
     assert b._cancel_requested is True
 
@@ -251,3 +277,51 @@ def test_surfaces_tolerate_a_backend_without_is_run_finished(monkeypatch):
     st = asyncio.run(rt.get_training_status(current_subject = "t"))
     assert st.is_training_running is False
     assert rt._run_finished(_Minimal()) is False
+
+
+def test_status_retains_resolved_repo_through_preparation_and_clears_on_next_load(monkeypatch):
+    b = _running(monkeypatch)
+    b._handle_event({"type": "model_load_started"})
+    b._handle_event({"type": "model_load_resolved", "repo_id": "org/resolved"})
+    st = asyncio.run(rt.get_training_status(current_subject = "t"))
+    assert st.details["model_download_repo_id"] == "org/resolved"
+    b._handle_event({"type": "model_load_completed"})
+    st = asyncio.run(rt.get_training_status(current_subject = "t"))
+    assert st.details["model_download_repo_id"] == "org/resolved"
+    b._handle_event({"type": "model_load_started"})
+    assert b._model_download_repo_id is None
+
+
+def test_status_does_not_report_download_after_worker_finishes(monkeypatch):
+    b = _running(monkeypatch)
+    b._handle_event({"type": "model_load_started"})
+    b._handle_event({"type": "model_load_resolved", "repo_id": "org/resolved"})
+    b._handle_event(dict(_DONE))
+    st = asyncio.run(rt.get_training_status(current_subject = "t"))
+    assert st.details["model_download_repo_id"] is None
+
+
+def test_worker_reports_remote_repo_but_not_local_paths(monkeypatch, tmp_path):
+    import ast
+    import os
+    import queue
+    import time
+
+    source = Path(__file__).parents[1] / "core/training/worker.py"
+    tree = ast.parse(source.read_text(encoding = "utf-8"))
+    report = next(
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.FunctionDef) and n.name == "_report_model_repo"
+    )
+    events = queue.SimpleQueue()
+    namespace = {"event_queue": events, "os": os, "time": time}
+    exec(compile(ast.Module(body = [report], type_ignores = []), str(source), "exec"), namespace)
+    b = _running(monkeypatch)
+    b._handle_event({"type": "model_load_started"})
+    namespace["_report_model_repo"]("org/actual-download")
+    b._handle_event(events.get_nowait())
+    status = asyncio.run(rt.get_training_status(current_subject = "t"))
+    assert status.details["model_download_repo_id"] == "org/actual-download"
+    namespace["_report_model_repo"](str(tmp_path))
+    assert events.empty()

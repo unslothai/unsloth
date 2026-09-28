@@ -173,7 +173,7 @@ pub(crate) fn backend_version_stale_reason(version: Option<&str>) -> Option<Stri
 // The backend package this build shipped with, stamped by the release workflow
 // from the same pypi_version as the updater manifest. Local and CI builds leave
 // it unset, so the floor above stays their only gate.
-pub(super) fn expected_backend_version() -> &'static str {
+pub(crate) fn expected_backend_version() -> &'static str {
     option_env!("UNSLOTH_DESKTOP_BACKEND_VERSION").unwrap_or(MIN_DESKTOP_BACKEND_VERSION)
 }
 

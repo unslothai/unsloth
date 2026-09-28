@@ -65,7 +65,6 @@ def _collect_config_fields(config_class: type[BaseModel]) -> list[tuple[str, Any
 
     for name, field_info in config_class.model_fields.items():
         annotation = field_info.annotation
-        # Recurse into nested models
         if isinstance(annotation, type) and issubclass(annotation, BaseModel):
             for nested_name, nested_field in annotation.model_fields.items():
                 if nested_name in seen_names:
@@ -95,11 +94,9 @@ def add_options_from_config(config_class: type[BaseModel]) -> Callable:
         original_params = list(sig.parameters.values())
         original_param_names = {p.name for p in original_params}
 
-        # Build new parameters: config fields first, then original params
         new_params = []
 
         for field_name, field_info in fields:
-            # Skip fields already defined in function signature (e.g., with envvar)
             if field_name in original_param_names:
                 continue
             annotation = field_info.annotation
@@ -107,7 +104,6 @@ def add_options_from_config(config_class: type[BaseModel]) -> Callable:
             help_text = field_info.description or ""
 
             if _is_list_type(annotation):
-                # Repeatable option: --flag a --flag b -> ["a", "b"]
                 default = typer.Option(None, flag_name, help = help_text)
                 param = inspect.Parameter(
                     field_name,
@@ -141,7 +137,6 @@ def add_options_from_config(config_class: type[BaseModel]) -> Callable:
                 )
             new_params.append(param)
 
-        # Add original params, excluding config_overrides (will be injected)
         for param in original_params:
             if param.name != "config_overrides":
                 new_params.append(param)
@@ -155,7 +150,6 @@ def add_options_from_config(config_class: type[BaseModel]) -> Callable:
                 if key in field_names:
                     if kwargs[key] is not None:
                         config_overrides[key] = kwargs[key]
-                    # Only delete if not an explicitly declared parameter
                     if key not in original_param_names:
                         del kwargs[key]
 

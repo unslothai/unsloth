@@ -14,7 +14,7 @@ latest_snapshot_from_cache_path = hf_cache_state.latest_snapshot_from_cache_path
 
 @pytest.fixture(autouse = True)
 def _known_cache_root(monkeypatch, tmp_path):
-    monkeypatch.setattr(hf_cache_state, "hf_cache_roots", lambda: [tmp_path])
+    monkeypatch.setattr(hf_cache_state, "hf_cache_roots", lambda **kw: [tmp_path])
 
 
 def _model_repo(root: Path, repo_id: str) -> Path:
@@ -138,7 +138,7 @@ def test_rejects_lookalike_repo_outside_known_cache(monkeypatch, tmp_path):
     allowed.mkdir()
     repo_root = _model_repo(tmp_path / "outside", "Org/Model")
     _snapshot(repo_root, "rev", ("config.json",))
-    monkeypatch.setattr(hf_cache_state, "hf_cache_roots", lambda: [allowed])
+    monkeypatch.setattr(hf_cache_state, "hf_cache_roots", lambda **kw: [allowed])
 
     assert (
         latest_snapshot_from_cache_path(str(repo_root), "model", "Org/Model", ("config.json",))
@@ -236,6 +236,7 @@ def test_refs_directory_symlink_cannot_escape_cache(tmp_path):
 
 def test_training_pin_prefers_a_snapshot_that_has_weights(tmp_path):
     # refs/main can point at a metadata-only revision while a complete snapshot sits beside it.
+
     from core.training.training import _resolve_model_snapshot
 
     repo_root = _model_repo(tmp_path, "Org/Model")
@@ -253,6 +254,7 @@ def test_training_pin_prefers_a_snapshot_that_has_weights(tmp_path):
 
 def test_training_pin_still_falls_back_to_metadata_only_snapshots(tmp_path):
     # With no weights anywhere the pin is unchanged, so the worker's Hub retry still runs.
+
     from core.training.training import _resolve_model_snapshot
 
     repo_root = _model_repo(tmp_path, "Org/Model")
@@ -265,6 +267,7 @@ def test_training_pin_skips_a_weights_only_snapshot_without_metadata(tmp_path):
     # A newer weights-only fetch (interrupted download, or an allow_patterns pull that never took
     # config.json) must not displace an older complete sibling: the start route rejects a snapshot
     # with no loader metadata, so picking it 400s a run that used to work.
+
     from core.training.training import _resolve_model_snapshot
 
     repo_root = _model_repo(tmp_path, "Org/Model")
@@ -282,6 +285,7 @@ def test_training_pin_skips_a_weights_only_snapshot_without_metadata(tmp_path):
 def test_training_pin_ignores_weight_names_the_start_route_rejects(tmp_path):
     # consolidated.safetensors has no transformers loader path and is not in _MODEL_WEIGHT_CANDIDATES,
     # so treating it as "has weights" selects a snapshot the start route then rejects.
+
     from core.training.training import _resolve_model_snapshot
 
     repo_root = _model_repo(tmp_path, "Org/Model")

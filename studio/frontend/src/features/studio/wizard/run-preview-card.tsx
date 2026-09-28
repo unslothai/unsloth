@@ -13,6 +13,7 @@ import {
   useTrainingConfigStore,
   useTrainingReadiness,
   useTrainingResourceNotices,
+  useTrainingTransformersUpgradeNotice,
 } from "@/features/training";
 import { useGpuInfo } from "@/hooks";
 import { type TranslationKey, useLocale, useT } from "@/i18n";
@@ -104,7 +105,7 @@ function ResourceNoticeRow({
               <HugeiconsIcon icon={InformationCircleIcon} className="size-3" />
             </button>
           </TooltipTrigger>
-          <TooltipContent side="top" className="max-w-[260px] leading-relaxed">
+          <TooltipContent side="top" className="max-w-[calc(260px*var(--ui-space-scale,1))] leading-relaxed">
             {description}
           </TooltipContent>
         </Tooltip>
@@ -158,6 +159,43 @@ function ResourceNoticeList({
           description={t(resourceNoticeDescriptionKey(notice))}
         />
       ))}
+    </section>
+  );
+}
+
+/** What the run will really do about transformers and precision.
+ *
+ * The method row above is what the user picked, not what the backend will run: a model
+ * routed to the latest-transformers sidecar always loads 16-bit, so "QLoRA · 4-bit" for
+ * one of those is a VRAM promise the run cannot keep. Stated here, before Start. When
+ * the model also ships its own code the dialog offers both ways in and only one keeps
+ * 4-bit, so the precision line names the action rather than asserting one answer. */
+function TransformersUpgradeNotice(): ReactElement | null {
+  const t = useT();
+  const { installVersion, fourBitUnavailable, installSwitchesTo16Bit } =
+    useTrainingTransformersUpgradeNotice();
+  if (!(installVersion || fourBitUnavailable || installSwitchesTo16Bit)) {
+    return null;
+  }
+  return (
+    <section className="flex flex-col gap-2 rounded-lg border border-amber-500/25 bg-amber-500/[0.06] px-3 py-2.5">
+      {installVersion ? (
+        <p className="text-ui-10p5 leading-relaxed text-foreground/80">
+          {t("studio.preview.noticeTransformersUpgrade", {
+            version: installVersion,
+          })}
+        </p>
+      ) : null}
+      {fourBitUnavailable ? (
+        <p className="text-ui-10p5 leading-relaxed text-foreground/80">
+          {t("studio.preview.noticeSixteenBitOnly")}
+        </p>
+      ) : null}
+      {installSwitchesTo16Bit ? (
+        <p className="text-ui-10p5 leading-relaxed text-foreground/80">
+          {t("studio.preview.noticeInstallSwitchesSixteenBit")}
+        </p>
+      ) : null}
     </section>
   );
 }
@@ -380,9 +418,10 @@ export function RunPreviewCard({
 
   return (
     <aside
+      data-tour="studio-run-preview"
       className={cn(
-        "elevated-card elevated-card-dark-border flex flex-col gap-7 bg-foreground/[0.012] p-6",
-        "dark:bg-white/[0.018]",
+        "elevated-card elevated-card-dark-border flex flex-col gap-7 bg-[color-mix(in_oklab,var(--foreground)_calc(1.2%*var(--contrast-wash-gain,1)),transparent)] p-6",
+        "dark:bg-[rgb(255_255_255_/_calc(0.018*var(--contrast-wash-gain,1)))]",
       )}
     >
       <header className="flex items-center justify-between gap-3">
@@ -393,8 +432,8 @@ export function RunPreviewCard({
           className={cn(
             "inline-flex h-5 items-center rounded-full px-2 text-ui-10 font-medium tracking-nav",
             isReady
-              ? "bg-foreground/[0.06] text-foreground/90 dark:bg-white/[0.08]"
-              : "bg-foreground/[0.03] text-muted-foreground/70 dark:bg-white/[0.04]",
+              ? "bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)] text-foreground/90 dark:bg-[rgb(255_255_255_/_calc(0.08*var(--contrast-wash-gain,1)))]"
+              : "bg-[color-mix(in_oklab,var(--foreground)_calc(3%*var(--contrast-wash-gain,1)),transparent)] text-muted-foreground/70 dark:bg-[rgb(255_255_255_/_calc(0.04*var(--contrast-wash-gain,1)))]",
           )}
         >
           {isReady ? t("studio.preview.ready") : t("studio.preview.notReady")}
@@ -474,7 +513,7 @@ export function RunPreviewCard({
           label={t("studio.preview.hardware")}
           value={
             gpu.available
-              ? `${gpu.name} · ${gpu.memoryTotalGb} GB`
+              ? `${gpu.name} · ${gpu.memoryTotalGb} GiB`
               : t("studio.preview.noGpu")
           }
         />
@@ -488,7 +527,9 @@ export function RunPreviewCard({
 
       <ResourceNoticeList notices={resourceNotices} />
 
-      <div className="-mx-6 h-px bg-foreground/[0.07] dark:bg-white/[0.06]" />
+      <TransformersUpgradeNotice />
+
+      <div className="-mx-6 h-px bg-[color-mix(in_oklab,var(--foreground)_calc(7%*var(--contrast-wash-gain,1)),transparent)] dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))]" />
 
       <div className="-mt-2">{startCta}</div>
     </aside>

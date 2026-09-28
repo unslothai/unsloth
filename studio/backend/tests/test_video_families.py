@@ -16,6 +16,39 @@ from core.inference.video_families import (
     snap_video_size,
     supported_video_family_names,
 )
+from core.inference.video_minimax_h3 import (
+    estimate_h3_diffusers_host_ram_gb,
+    estimate_h3_diffusers_vram_gb,
+)
+
+
+def test_h3_measured_diffusers_memory_estimates():
+    assert estimate_h3_diffusers_vram_gb(960, 544, 124) == pytest.approx(73.68, abs = 0.02)
+    assert estimate_h3_diffusers_vram_gb(1344, 768, 124) == pytest.approx(78.74, abs = 0.02)
+    assert estimate_h3_diffusers_vram_gb(1344, 768, 345) == pytest.approx(96.98, abs = 0.02)
+    assert estimate_h3_diffusers_host_ram_gb(126) == 150
+    assert estimate_h3_diffusers_host_ram_gb(132) == 85
+
+
+def test_the_host_floor_tracks_the_components_the_load_holds():
+    """The VRAM floor is rebuilt from the engaged components; the host floor has to be too, or an
+    80 GB device running the int8 conditioner and the int8 denoiser clears the VRAM check at 55 GB
+    and is then told it needs 150 GB of system RAM for 47.5 GB of weights."""
+    from core.inference.video_minimax_h3 import (
+        H3_TEXT_ENCODER_BF16_GB,
+        H3_TRANSFORMER_BF16_GB,
+    )
+
+    # Unset is the released pair, so the shipped number is unchanged to the decimal.
+    assert estimate_h3_diffusers_host_ram_gb(
+        126, text_encoder_gb = H3_TEXT_ENCODER_BF16_GB, transformer_gb = H3_TRANSFORMER_BF16_GB
+    ) == pytest.approx(150.0, abs = 0.001)
+    # The hosted int8 conditioner + int8 denoiser: the sum, not the released one.
+    assert estimate_h3_diffusers_host_ram_gb(
+        126, text_encoder_gb = 27.2, transformer_gb = 20.3
+    ) == pytest.approx(64.5, abs = 0.001)
+    # Above the tier the answer is the tier's, whatever the components.
+    assert estimate_h3_diffusers_host_ram_gb(132, text_encoder_gb = 27.2, transformer_gb = 20.3) == 85
 
 
 @pytest.mark.parametrize(
@@ -145,12 +178,29 @@ def test_generation_defaults_distilled_vs_dev():
 
 def test_supported_names():
     assert supported_video_family_names() == (
+        "minimax-h3",
         "ltx-2",
         "wan2.2-ti2v-5b",
         "wan2.2-t2v-a14b",
         "hunyuanvideo-1.5",
         "hunyuanvideo-1.5-720p",
     )
+
+
+def test_minimax_h3_family_and_frame_lattice():
+    fam = detect_video_family("MiniMaxAI/MiniMax-H3")
+    assert fam is not None and fam.name == "minimax-h3"
+    # fl2va loads the superset that also serves text-only requests.
+    assert fam.modular_workflow == "fl2va"
+    assert fam.has_audio is True
+    assert fam.supports_keyframes is True
+    assert fam.supports_cfg is False
+    assert fam.frame_step == 17
+    assert fam.frame_offset == 5
+    assert snap_num_frames(fam, 124) == 124
+    assert snap_num_frames(fam, 125) == 141
+    assert snap_num_frames(fam, 1) == 124
+    assert snap_num_frames(fam, 999) == 345
 
 
 def test_wan_snap_num_frames_4k_plus_1():
@@ -331,7 +381,7 @@ def test_video_resolution_presets_are_upstream_sanctioned():
 def test_curated_gguf_repos_are_unsloth_mirrors():
     """No curated video GGUF pick may point at a community repack.
 
-    ``gguf_repo`` is a one-click download, so its availability is Studio's problem: a rename or
+    ``gguf_repo`` is a one-click download, so its availability is Unsloth's problem: a rename or
     takedown upstream turns the pick into a 404 no client can fix.
     """
     from core.inference.video_families import _FAMILIES
@@ -339,3 +389,129 @@ def test_curated_gguf_repos_are_unsloth_mirrors():
     curated = {fam.name: fam.gguf_repo for fam in _FAMILIES if fam.gguf_repo}
     assert curated["wan2.2-ti2v-5b"] == "unsloth/Wan2.2-TI2V-5B-GGUF"
     assert all(repo.startswith("unsloth/") for repo in curated.values()), curated
+
+
+def test_minimax_h3_offers_every_advertised_aspect_ratio():
+    from core.inference.video_minimax_h3 import H3_CANVAS_MAX_PIXELS, h3_canvas_for_aspect
+
+    fam = detect_video_family("MiniMaxAI/MiniMax-H3")
+    presets = fam.resolution_presets
+    ratios = {round(w / h, 3) for w, h in presets}
+    # The six ratios advertised by the model card.
+    for aspect in ((21, 9), (16, 9), (4, 3), (1, 1), (3, 4), (9, 16)):
+        derived = h3_canvas_for_aspect(*aspect)
+        assert round(derived[0] / derived[1], 3) in ratios, f"{aspect} has no preset"
+    assert fam.resolution_presets[0] == (1344, 768), "16:9 stays the default"
+
+    # Reduced tiers may be smaller than the resolved canvas. The legacy 1024 square is the
+    # only entry above the area cap.
+    for width, height in presets:
+        assert width % 32 == 0 and height % 32 == 0, (width, height)
+        if (width, height) == (1024, 1024):
+            continue
+        assert width * height <= H3_CANVAS_MAX_PIXELS, (width, height)
+        rule_width, rule_height = h3_canvas_for_aspect(width, height)
+        assert width <= rule_width and height <= rule_height, (width, height)
+
+
+def _resident_fam(**kwargs):
+    from core.inference.video_families import VideoFamily
+
+    base = dict(
+        name = "test-video",
+        pipeline_class = "TestPipeline",
+        transformer_class = "TestTransformer3DModel",
+        base_repo = "org/test-video",
+    )
+    base.update(kwargs)
+    return VideoFamily(**base)
+
+
+def test_the_per_scheme_row_wins_and_the_float_is_the_fallback():
+    from core.inference.video_families import video_family_prequant_resident_gb
+
+    fam = _resident_fam(
+        prequant_resident_gb = 20.3,
+        prequant_resident_gb_by_scheme = (("nvfp4", 8.1), ("fp8", 13.6)),
+    )
+    assert video_family_prequant_resident_gb(fam, "nvfp4") == pytest.approx(8.1)
+    assert video_family_prequant_resident_gb(fam, "fp8") == pytest.approx(13.6)
+    assert video_family_prequant_resident_gb(fam, "int8") == pytest.approx(20.3)
+
+
+def test_an_unmeasured_family_reports_nothing_rather_than_guessing():
+    import types
+
+    from core.inference.video_families import video_family_prequant_resident_gb
+
+    assert video_family_prequant_resident_gb(_resident_fam(), "nvfp4") is None
+    assert video_family_prequant_resident_gb(types.SimpleNamespace(), "nvfp4") is None
+    fam = _resident_fam(prequant_resident_gb_by_scheme = (("nvfp4",), ("nvfp4", "big")))
+    assert video_family_prequant_resident_gb(fam, "nvfp4") is None
+
+
+def test_the_h3_measurement_still_answers_through_the_helper():
+    from core.inference.video_families import video_family_prequant_resident_gb
+
+    fam = detect_video_family("MiniMaxAI/MiniMax-H3")
+    assert video_family_prequant_resident_gb(fam, "int8") == pytest.approx(fam.prequant_resident_gb)
+    assert video_family_prequant_resident_gb(fam, "fp8") == pytest.approx(fam.prequant_resident_gb)
+
+
+def test_every_hosted_nvfp4_denoiser_carries_its_measured_resident_size():
+    from core.inference.video_families import (
+        _FAMILIES,
+        video_family_prequant_resident_gb,
+    )
+
+    expected = {
+        "wan2.2-ti2v-5b": 2.9,
+        "wan2.2-t2v-a14b": 16.2,
+        "hunyuanvideo-1.5": 4.8,
+        "hunyuanvideo-1.5-720p": 4.8,
+    }
+    hosting = {
+        fam.name
+        for fam in _FAMILIES
+        if any(scheme == "nvfp4" for scheme, _repo in fam.prequant_repos)
+    }
+    assert hosting == set(expected)
+    for fam in _FAMILIES:
+        if fam.name not in expected:
+            continue
+        assert video_family_prequant_resident_gb(fam, "nvfp4") == pytest.approx(expected[fam.name])
+
+
+def test_the_measured_nvfp4_size_is_a_4_bit_fraction_of_the_term_it_replaces():
+    from core.inference.video_families import (
+        _FAMILIES,
+        video_family_prequant_resident_gb,
+    )
+
+    seen = 0
+    for fam in _FAMILIES:
+        if not any(scheme == "nvfp4" for scheme, _repo in fam.prequant_repos):
+            continue
+        measured = video_family_prequant_resident_gb(fam, "nvfp4")
+        if measured is None or not fam.bf16_components_gb:
+            continue
+        seen += 1
+        assert (
+            0.2 * fam.bf16_components_gb[0] < measured < 0.4 * fam.bf16_components_gb[0]
+        ), fam.name
+    assert seen == 4
+
+
+def test_the_a14b_row_prices_both_experts_not_one():
+    from core.inference.video_families import (
+        detect_video_family,
+        video_family_prequant_resident_gb,
+    )
+
+    fam = detect_video_family("Wan-AI/Wan2.2-T2V-A14B-Diffusers")
+    assert fam.is_moe
+    names = {entry[-1] for entry in fam.prequant_filenames}
+    assert len(names) == 2
+    measured = video_family_prequant_resident_gb(fam, "nvfp4")
+    assert measured == pytest.approx(16.2)
+    assert measured > 0.25 * fam.bf16_components_gb[0]

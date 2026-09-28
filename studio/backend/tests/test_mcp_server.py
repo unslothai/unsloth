@@ -176,10 +176,13 @@ def test_clamp_restricts_to_inclusive_bounds():
 
 def test_export_and_checkpoint_tools_expose_forwarded_fields():
     export_props = set(_get_tool("export_gguf").parameters["properties"])
-    assert {"hf_token", "imatrix", "imatrix_path"} <= export_props
+    assert {"hf_token", "imatrix", "imatrix_path", "private"} <= export_props
 
     checkpoint_props = set(_get_tool("load_checkpoint").parameters["properties"])
     assert {"hf_token", "approved_remote_code_fingerprint"} <= checkpoint_props
+
+    stop_schema = _get_tool("stop_training").parameters
+    assert "expected_job_id" in stop_schema["required"]
 
 
 def _stub_module(monkeypatch, name, **attrs):
@@ -199,8 +202,8 @@ def test_export_gguf_forwards_hf_token_and_imatrix(monkeypatch):
         def __init__(self, **kwargs):
             captured.update(kwargs)
 
-    async def fake_export(request, current_subject):
-        return {"current_subject": current_subject}
+    async def fake_export(request, current_subject, allow_ambient):
+        return {"current_subject": current_subject, "allow_ambient": allow_ambient}
 
     _stub_module(monkeypatch, "models", ExportGGUFRequest = FakeExportGGUFRequest)
     _stub_module(monkeypatch, "routes")
@@ -216,6 +219,7 @@ def test_export_gguf_forwards_hf_token_and_imatrix(monkeypatch):
             hf_token = "hf_secret",
             imatrix = True,
             imatrix_path = "/tmp/imatrix.dat",
+            private = True,
         )
     )
 
@@ -223,7 +227,11 @@ def test_export_gguf_forwards_hf_token_and_imatrix(monkeypatch):
     assert captured["imatrix"] is True
     assert captured["imatrix_path"] == "/tmp/imatrix.dat"
     assert captured["quantization_method"] == ["Q4_K_M", "Q8_0"]
+    assert captured["private"] is True
     assert result["current_subject"] == "mcp"
+    # A direct call skips FastAPI, so the route's Depends default never resolves; MCP has to
+    # name the policy itself or allow_ambient arrives as a truthy Depends object.
+    assert result["allow_ambient"] is False
 
 
 def test_load_checkpoint_forwards_token_and_fingerprint(monkeypatch):
@@ -233,15 +241,15 @@ def test_load_checkpoint_forwards_token_and_fingerprint(monkeypatch):
         def __init__(self, **kwargs):
             captured.update(kwargs)
 
-    async def fake_load(request, current_subject):
-        return {"current_subject": current_subject}
+    async def fake_load(request, current_subject, allow_ambient):
+        return {"current_subject": current_subject, "allow_ambient": allow_ambient}
 
     _stub_module(monkeypatch, "models", LoadCheckpointRequest = FakeLoadCheckpointRequest)
     _stub_module(monkeypatch, "routes")
     _stub_module(monkeypatch, "routes.export", load_checkpoint = fake_load)
 
     tool = _get_tool("load_checkpoint")
-    asyncio.run(
+    result = asyncio.run(
         tool.fn(
             checkpoint_path = "/tmp/ckpt",
             approved_remote_code_fingerprint = "sha256:abc",
@@ -251,6 +259,88 @@ def test_load_checkpoint_forwards_token_and_fingerprint(monkeypatch):
 
     assert captured["hf_token"] == "hf_secret"
     assert captured["approved_remote_code_fingerprint"] == "sha256:abc"
+    assert result["allow_ambient"] is False
+
+
+@pytest.mark.parametrize("load_in_4bit", [None, True, False])
+def test_load_checkpoint_leaves_unset_load_in_4bit_to_the_route(monkeypatch, load_in_4bit):
+    from models.export import LoadCheckpointRequest
+
+    captured = {}
+
+    async def fake_load(request, current_subject, allow_ambient):
+        captured["fields_set"] = request.model_fields_set
+        captured["load_in_4bit"] = request.load_in_4bit
+        return {}
+
+    _stub_module(monkeypatch, "models", LoadCheckpointRequest = LoadCheckpointRequest)
+    _stub_module(monkeypatch, "routes")
+    _stub_module(monkeypatch, "routes.export", load_checkpoint = fake_load)
+
+    extra = {} if load_in_4bit is None else {"load_in_4bit": load_in_4bit}
+    asyncio.run(_get_tool("load_checkpoint").fn(checkpoint_path = "/tmp/ckpt", **extra))
+
+    # The route only picks 16-bit for a full fine-tune when load_in_4bit was not sent.
+    assert ("load_in_4bit" in captured["fields_set"]) is (load_in_4bit is not None)
+    if load_in_4bit is not None:
+        assert captured["load_in_4bit"] is load_in_4bit
+
+
+def test_stop_training_forwards_job_scope(monkeypatch):
+    captured = {}
+
+    class FakeTrainingStopRequest:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    async def fake_stop(request, current_subject):
+        assert isinstance(request, FakeTrainingStopRequest)
+        captured["current_subject"] = current_subject
+        return {"status": "stopped"}
+
+    _stub_module(monkeypatch, "routes")
+    _stub_module(
+        monkeypatch,
+        "routes.training",
+        TrainingStopRequest = FakeTrainingStopRequest,
+        stop_training = fake_stop,
+    )
+
+    tool = _get_tool("stop_training")
+    result = asyncio.run(tool.fn(expected_job_id = "job-A", save = False))
+
+    assert captured["expected_job_id"] == "job-A"
+    assert captured["save"] is False
+    assert captured["current_subject"] == "mcp"
+    assert result == {"status": "stopped"}
+
+
+def test_start_training_forwards_as_api_key_caller(monkeypatch):
+    captured = {}
+
+    class FakeTrainingStartRequest:
+        @classmethod
+        def model_validate(cls, config):
+            captured["config"] = config
+            return cls()
+
+    async def fake_start(request, current_subject, via_api_key):
+        assert isinstance(request, FakeTrainingStartRequest)
+        captured["current_subject"] = current_subject
+        captured["via_api_key"] = via_api_key
+        return {"status": "queued"}
+
+    _stub_module(monkeypatch, "models", TrainingStartRequest = FakeTrainingStartRequest)
+    _stub_module(monkeypatch, "routes")
+    _stub_module(monkeypatch, "routes.training", start_training = fake_start)
+
+    tool = _get_tool("start_training")
+    result = asyncio.run(tool.fn(config = {"model_name": "unsloth/test"}))
+
+    assert captured["config"] == {"model_name": "unsloth/test"}
+    assert captured["current_subject"] == "mcp"
+    assert captured["via_api_key"] is True
+    assert result == {"status": "queued"}
 
 
 def test_list_training_runs_clamps_pagination(monkeypatch):

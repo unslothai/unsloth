@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { ModelInventoryFormat } from "../inventory";
+import type { HubModelRunSelection } from "../lib/model-run-selection";
 import { GgufDownloadCard } from "./gguf-download-card";
 import { SafetensorsDownloadCard } from "./safetensors-download-card";
 
@@ -11,8 +12,9 @@ export function DownloadSection({
   isDownloaded,
   isPartial = false,
   partialTransport = null,
+  partialResumable = false,
+  companionPrefetch = false,
   modelFormat,
-  canRun = true,
   isActive,
   activeQuant,
   preferredGgufFile = null,
@@ -20,22 +22,24 @@ export function DownloadSection({
   preferredGgufFileIntent = 0,
   isLoadingThisModel,
   gpuGb,
+  gpuCount,
   systemRamGb,
   cachePath,
   knownBytes,
-  onLoad,
-  onUseInChat,
-  onEject,
-  onTrain,
+  onRun,
+  runPending = false,
   onChange,
+  showMemoryBar = true,
+  mediaRuntime = false,
 }: {
   repoId: string;
   isGguf: boolean;
   isDownloaded: boolean;
   isPartial?: boolean;
   partialTransport?: string | null;
+  partialResumable?: boolean;
+  companionPrefetch?: boolean;
   modelFormat?: ModelInventoryFormat | null;
-  canRun?: boolean;
   isActive: boolean;
   activeQuant: string | null;
   preferredGgufFile?: string | null;
@@ -43,14 +47,17 @@ export function DownloadSection({
   preferredGgufFileIntent?: number;
   isLoadingThisModel: boolean;
   gpuGb?: number;
+  gpuCount?: number;
   systemRamGb?: number;
   cachePath?: string | null;
   knownBytes?: number | null;
-  onLoad: (opts: { ggufVariant?: string; expectedBytes?: number }) => void;
-  onUseInChat?: () => void;
-  onEject?: () => void;
-  onTrain?: () => void;
+  onRun?: (selection: HubModelRunSelection) => void;
+  runPending?: boolean;
   onChange?: () => void;
+  /** False for diffusion / audio / video GGUFs, which do not load through
+   *  llama.cpp and so have nothing the KV estimator can say about them. */
+  showMemoryBar?: boolean;
+  mediaRuntime?: boolean;
 }) {
   if (isGguf || preferredGgufFile) {
     return (
@@ -59,17 +66,18 @@ export function DownloadSection({
         isActive={isActive}
         activeQuant={activeQuant}
         preferredFile={preferredGgufFile}
-
         preferredFileIntent={preferredGgufFileIntent}
         isLoadingThisModel={isLoadingThisModel}
         gpuGb={gpuGb}
+        gpuCount={gpuCount}
         systemRamGb={systemRamGb}
         cachePath={cachePath}
         isPartial={isPartial}
-        onLoad={onLoad}
-        onUseInChat={onUseInChat}
-        onEject={onEject}
+        onRun={onRun}
+        runPending={runPending}
         onChange={onChange}
+        showMemoryBar={showMemoryBar}
+        mediaRuntime={mediaRuntime}
       />
     );
   }
@@ -79,16 +87,15 @@ export function DownloadSection({
       isDownloaded={isDownloaded}
       isPartial={isPartial}
       partialTransport={partialTransport}
+      partialResumable={partialResumable}
+      companionPrefetch={companionPrefetch}
       modelFormat={modelFormat}
-      canRun={canRun}
       isActive={isActive}
       isLoadingThisModel={isLoadingThisModel}
       cachePath={cachePath}
       knownBytes={knownBytes}
-      onLoad={onLoad}
-      onUseInChat={onUseInChat}
-      onEject={onEject}
-      onTrain={onTrain}
+      onRun={onRun ? () => onRun({}) : undefined}
+      runPending={runPending}
       onChange={onChange}
     />
   );

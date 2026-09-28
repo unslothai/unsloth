@@ -7,7 +7,7 @@ import test from "node:test";
 import {
   createScopedSingleFlightRequest,
   createSingleFlightRequest,
-} from "../src/features/training/lib/single-flight-request.ts";
+} from "../src/lib/single-flight-request.ts";
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
