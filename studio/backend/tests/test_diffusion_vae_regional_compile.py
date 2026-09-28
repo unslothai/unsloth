@@ -46,7 +46,12 @@ class _RegionalVae(torch.nn.Module):
 
 
 def _inductor_error(msg):
-    from torch._inductor.exc import InductorError  # noqa: PLC0415
+    try:
+        from torch._inductor.exc import InductorError  # noqa: PLC0415
+    except ImportError:  # torch < 2.7 raises BackendCompilerFailed instead
+        from torch._dynamo.exc import BackendCompilerFailed  # noqa: PLC0415
+
+        return BackendCompilerFailed("inductor", RuntimeError(msg))
     try:
         return InductorError(RuntimeError(msg), None)
     except TypeError:  # constructor signature varies by torch version
@@ -104,7 +109,8 @@ def test_regional_vae_compile_failure_falls_back_and_settles_status():
     assert ds_mod._compile_vae_decode(pipe, None) is True
     assert vae.decode(torch.zeros(1)).item() == 2  # eager answer, same value
     state = types.SimpleNamespace(speed_optims = ("compiled", "compiled_vae_decode"))
-    assert "RecursionError" in ds_mod.settle_compile_fallback(state, pipe)
+    reason = ds_mod.settle_compile_fallback(state, pipe)
+    assert "RecursionError" in reason or "BackendCompilerFailed" in reason  # torch < 2.7 wraps it
     assert "compiled_vae_decode" not in state.speed_optims
     assert "compile_fallback_eager" in state.speed_optims
     # a later apply_speed_optims pass does not retry the broken lowering
