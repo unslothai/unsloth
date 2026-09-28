@@ -1411,7 +1411,7 @@ def _zoo_peft_forward_keeps_fp8_inputs():
     )
 
 
-def _route_compressed_tensors_fp8_to_unsloth(model):
+def _route_compressed_tensors_fp8_to_unsloth(model, skip = ()):
     # Opt-in: saves memory, but on-the-fly dequant trains slower than the decompressed bf16 model.
     if os.environ.get("UNSLOTH_COMPRESSED_TENSORS_FP8_KERNELS", "0") != "1":
         return 0
@@ -1421,6 +1421,9 @@ def _route_compressed_tensors_fp8_to_unsloth(model):
         return 0
     routable = []
     for module in model.modules():
+        # Modules another route already owns (NVFP4) do not count against the all-or-nothing check.
+        if module in skip:
+            continue
         scheme = getattr(module, "quantization_scheme", None)
         if scheme is None or getattr(scheme, "weights", None) is None:
             continue
@@ -1460,16 +1463,136 @@ def _route_compressed_tensors_fp8_to_unsloth(model):
         module._unsloth_compressed_tensors_fp8 = True
         converted += 1
     if converted:
-        for owner in (model, getattr(model, "model", None), getattr(model, "base_model", None)):
-            hook = getattr(owner, "ct_decompress_hook", None)
-            if hook is not None:
-                hook.remove()
-                try:
-                    delattr(owner, "ct_decompress_hook")
-                except AttributeError:
-                    pass
+        _remove_compressed_tensors_decompress_hook(model)
         model._unsloth_compressed_tensors_fp8 = converted
     return converted
+
+
+def _remove_compressed_tensors_decompress_hook(model):
+    for owner in (model, getattr(model, "model", None), getattr(model, "base_model", None)):
+        hook = getattr(owner, "ct_decompress_hook", None)
+        if hook is not None:
+            hook.remove()
+            try:
+                delattr(owner, "ct_decompress_hook")
+            except AttributeError:
+                pass
+
+
+def _nvfp4_scheme_supported(scheme):
+    weights = getattr(scheme, "weights", None)
+    if weights is None or getattr(scheme, "output_activations", None) is not None:
+        return False
+    enum = lambda v: str(getattr(v, "value", v)) if v is not None else None
+    fmt = enum(getattr(scheme, "format", None))
+    return (
+        str(enum(getattr(weights, "type", None))) == "float"
+        and getattr(weights, "num_bits", None) == 4
+        and getattr(weights, "group_size", None) == 16
+        and enum(getattr(weights, "strategy", None)) == "tensor_group"
+        and not getattr(weights, "dynamic", False)
+        # "static" is an alias of "weight": calibration order only, columns stored in place (no g_idx).
+        and enum(getattr(weights, "actorder", None)) in (None, "weight", "static")
+        and fmt in (None, "nvfp4-pack-quantized")
+    )
+
+
+def _nvfp4_module_routable(module):
+    packed = getattr(module, "weight_packed", None)
+    scale = getattr(module, "weight_scale", None)
+    global_scale = getattr(module, "weight_global_scale", None)
+    return (
+        isinstance(module, torch.nn.Linear)
+        and isinstance(packed, torch.Tensor)
+        and packed.dtype == torch.uint8
+        and packed.dim() == 2
+        and packed.device.type in ("cuda", "xpu")
+        and isinstance(scale, torch.Tensor)
+        and scale.dtype == torch.float8_e4m3fn
+        and tuple(scale.shape) == (packed.shape[0], packed.shape[1] * 2 // 16)
+        and isinstance(global_scale, torch.Tensor)
+        and global_scale.numel() == 1
+        and getattr(module, "weight_zero_point", None) is None
+        and "weight" not in module._parameters
+        and type(module) is torch.nn.Linear
+    )
+
+
+def _unsloth_compressed_tensors_nvfp4_forward(self, input):
+    from unsloth.kernels.nvfp4 import nvfp4_linear
+
+    # W4A16: the checkpoint's NVFP4 activation quantization is not applied.
+    out = nvfp4_linear(input, self.weight_packed, self.weight_scale, self.weight_global_scale)
+    if self.bias is not None:
+        out = out + self.bias.to(out.dtype)
+    return out
+
+
+class _UnslothNVFP4Linear(torch.nn.Linear):
+    """nn.Linear whose `weight` is the packed NVFP4 tensor carrying an NVFP4QuantState.
+
+    PEFT and get_lora_parameters read `.weight`; the state_dict keeps only weight_packed, and the uint8 dtype keeps
+    compiled LoRA forwards from casting activations to it. Built on each access so `.to()` / device moves stay valid.
+    """
+
+    @property
+    def weight(self):
+        from unsloth.kernels.nvfp4 import NVFP4QuantState
+
+        packed = self.weight_packed
+        packed.quant_state = NVFP4QuantState(
+            self.weight_scale, self.weight_global_scale, (packed.shape[0], packed.shape[1] * 2)
+        )
+        return packed
+
+
+def _route_compressed_tensors_nvfp4_to_unsloth(model):
+    """Keep NVFP4 (nvfp4-pack-quantized) weights packed and run them W4A16; decompress or FP8-route the rest."""
+    if os.environ.get("UNSLOTH_COMPRESSED_TENSORS_NVFP4_KERNELS", "1") == "0":
+        return 0
+    if getattr(getattr(model, "config", None), "quantization_config", None) is None:
+        return 0
+    try:
+        from compressed_tensors.compressors import decompress_module
+    except Exception:
+        decompress_module = None
+    nvfp4, others = [], []
+    for module in model.modules():
+        scheme = getattr(module, "quantization_scheme", None)
+        if scheme is None or getattr(scheme, "weights", None) is None:
+            continue
+        if str(getattr(getattr(module, "quantization_status", None), "value", "")) != "compressed":
+            continue
+        if _nvfp4_scheme_supported(scheme) and _nvfp4_module_routable(module):
+            nvfp4.append(module)
+        else:
+            others.append(module)
+    if not nvfp4:
+        return 0
+    if others and decompress_module is None:
+        print("Unsloth: this compressed-tensors has no per-module decompress; decompressing the NVFP4 layers too.")
+        return 0
+    fp8_routed = _route_compressed_tensors_fp8_to_unsloth(model, skip = set(nvfp4)) if others else 0
+    if others and not fp8_routed:
+        try:
+            with torch.inference_mode(False), torch.no_grad():
+                for module in others:
+                    decompress_module(module)
+                    _remove_same_device_compressed_tensors_offload(module)
+        except Exception as e:
+            print(f"Unsloth: could not decompress the non-NVFP4 compressed-tensors layers ({e}).")
+            return 0
+    for module in nvfp4:
+        for name in ("weight_packed", "weight_scale", "weight_global_scale", "input_global_scale"):
+            param = getattr(module, name, None)
+            if isinstance(param, torch.Tensor):
+                param.requires_grad_(False)
+        module.__class__ = _UnslothNVFP4Linear
+        module.forward = _unsloth_compressed_tensors_nvfp4_forward.__get__(module)
+        module._unsloth_compressed_tensors_nvfp4 = True
+    _remove_compressed_tensors_decompress_hook(model)
+    model._unsloth_compressed_tensors_nvfp4 = len(nvfp4)
+    return len(nvfp4)
 
 
 _FP8_DEQUANT_DTYPES = (torch.bfloat16, torch.float16, torch.float32)
@@ -1736,7 +1859,9 @@ def _remove_same_device_compressed_tensors_offload(model):
 
 def _decompress_compressed_tensors_model(model):
     """Decompress at load: PEFT skips the first-forward hook, and in `generate` it yields inference tensors."""
-    if getattr(model, "_unsloth_compressed_tensors_fp8", 0):
+    if getattr(model, "_unsloth_compressed_tensors_fp8", 0) or getattr(
+        model, "_unsloth_compressed_tensors_nvfp4", 0
+    ):
         return False
     quant_config = getattr(getattr(model, "config", None), "quantization_config", None)
     if isinstance(quant_config, dict):
@@ -1781,8 +1906,13 @@ def _decompress_compressed_tensors_model(model):
 
 
 def _prepare_compressed_tensors_model(model, full_finetuning = False):
-    # Routed FP8 weights are frozen, so full finetuning always takes the decompressed bf16 weights.
-    if full_finetuning or not _route_compressed_tensors_fp8_to_unsloth(model):
+    # Routed FP8 / NVFP4 weights are frozen, so full finetuning always takes the decompressed bf16 weights.
+    if full_finetuning:
+        _decompress_compressed_tensors_model(model)
+        return
+    if _route_compressed_tensors_nvfp4_to_unsloth(model):
+        return
+    if not _route_compressed_tensors_fp8_to_unsloth(model):
         _decompress_compressed_tensors_model(model)
 
 
