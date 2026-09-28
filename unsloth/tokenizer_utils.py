@@ -341,11 +341,7 @@ def _apply_post_load_tokenizer_fixes(
 
 
 def _fix_post_load_chat_template(tokenizer):
-    """FastModel never calls load_correct_tokenizer, so a chat template that ignores add_generation_prompt
-    (ERNIE-4.5 always appends "<|im_start|>assistant\n<think>\n") was never repaired there: every training
-    text then ended in an open assistant header that train_on_responses_only supervised, and the fine-tuned
-    model never stopped generating. Same exclusions as load_correct_tokenizer; only a template whose output
-    ignores the flag is changed, and a repair failure leaves the template as it was."""
+    # FastModel twin of load_correct_tokenizer's repair (same exclusions): an unrepaired always-on generation prompt (ERNIE-4.5) ends every training text in an open assistant header.
     text_tokenizer = getattr(tokenizer, "tokenizer", tokenizer)
     old = getattr(text_tokenizer, "chat_template", None)
     if not isinstance(old, str) or not old:
@@ -1181,7 +1177,7 @@ def _fix_chat_template(chat_template, is_sharegpt = False):
     open_tag = lambda body: "{%" + dash_l + " " + body + " " + dash_r + "%}"
 
     # Case 1: the template ends with a single trailing {{ expr }} that is the generation prefix, so wrap it in an {% if add_generation_prompt %} block.
-    # Whitespace around the expression is allowed (ERNIE-4.5 ends with `{%- endfor %}\n {{- "<|im_start|>assistant..." }}`); it moves inside the block with it.
+    # Surrounding whitespace allowed (ERNIE-4.5: `{%- endfor %}\n {{- "..." }}`); it moves inside the block.
     trailing = after_endfor.strip()
     if (
         "{%" + dash_l + " if" not in after_endfor

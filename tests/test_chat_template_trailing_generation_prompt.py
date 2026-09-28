@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""A chat template that always appends the generation prompt after its message loop, with whitespace
-before the trailing expression (baidu/ERNIE-4.5-21B-A3B-Thinking: `{%- endfor %}\\n {{- "<|im_start|>assistant\\n<think>\\n"}}`),
-must be repaired, and FastModel's post-load tokenizer fixes must repair it too (FastModel never calls
-load_correct_tokenizer). Unrepaired, every rendered training text ends in an open assistant header that
-train_on_responses_only supervises, and the fine-tuned model never stops generating."""
+"""ERNIE-4.5-style templates always append the generation prompt after the loop; both repair paths must fix them."""
 
 import pytest
 
@@ -14,7 +10,7 @@ from transformers import PreTrainedTokenizerFast
 
 from unsloth.tokenizer_utils import _fix_chat_template, _apply_post_load_tokenizer_fixes
 
-# Tail of the real ERNIE-4.5 Thinking template (tokenizer_config.json, rev 4341bb42), message loop simplified.
+# Tail of baidu/ERNIE-4.5-21B-A3B-Thinking's template, message loop simplified.
 ERNIE_LIKE = (
     "{{- '<|im_start|>system\\n<global_setting>\\nthink_mode=True\\n</global_setting><|im_end|>\\n\\n' }}"
     "{%- for message in messages %}"
