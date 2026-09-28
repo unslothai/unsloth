@@ -117,6 +117,7 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "composerSettings.showContext",
     "settings.chat.pastedTextThreshold",
     "settings.chat.groups.conversations.title",
+    "settings.chat.library.label",
     "settings.chat.groups.display.title",
     "settings.chat.modelSelection.title",
     "settings.chat.currentDate.label",

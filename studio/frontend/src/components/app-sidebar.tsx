@@ -98,7 +98,6 @@ import {
   Download01Icon,
   Edit03Icon,
   FolderExportIcon,
-  FolderOpenIcon,
   Folder01Icon,
   Folder02Icon,
   FlimSlateIcon,
@@ -152,10 +151,7 @@ import {
   ChatSearchDialog,
   clearNewChatDraft,
   canForkChatRow,
-  chatExportOptions,
   EditProjectDialog,
-  OpenChatFolderUnavailableItem,
-  exportConversationByFormat,
   forkChatRow,
   showForkCreatedToast,
   getSidebarItemThreadIds,
@@ -163,7 +159,6 @@ import {
   sandboxSessionIdsHolding,
   deleteChatProject,
   deleteChatItem,
-  listStoredChatThreads,
   moveChatItemToProject,
   notifyChatHistoryUpdated,
   renameChatItem,
@@ -191,9 +186,7 @@ import {
   customSectionIdOf,
   PROJECTS_SECTION_KEY,
   PINNED_SECTION_KEY,
-  inSectionOrder,
   resolveSectionOrder,
-  assignmentMap,
   type SidebarChatSort,
   type SidebarCustomSection,
   type SidebarOrganizeBy,
@@ -208,13 +201,11 @@ import {
   recentChatItemAtSlot,
   useChatNavigationStore,
   SectionNameDialog,
+  removeCustomSectionWithUndo,
   sectionKeyLanding,
   useSectionDrag,
 } from "@/features/chat";
 import { sandboxSessionIdFor } from "@/components/assistant-ui/sandbox-files";
-import {
-  revealSandbox,
-} from "@/components/assistant-ui/sandbox-reveal";
 import { NewProjectDialog } from "@/features/chat/components/new-project-dialog";
 import {
   sidebarNavRowPinned,
@@ -266,7 +257,6 @@ import {
   type ComponentType,
   type ReactNode,
 } from "react";
-import { isDownloadCancelled } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
 import {
   folderRingKey,
@@ -1221,9 +1211,6 @@ export function AppSidebar() {
   );
   const renameCustomSection = useSidebarOrganizationStore(
     (s) => s.renameCustomSection,
-  );
-  const deleteCustomSection = useSidebarOrganizationStore(
-    (s) => s.deleteCustomSection,
   );
   const setCustomSectionSort = useSidebarOrganizationStore(
     (s) => s.setCustomSectionSort,
@@ -3529,56 +3516,9 @@ export function AppSidebar() {
   /** Deletes a section. Nothing in it is deleted: its rows go back where they came from, and the
    *  toast can put the section back with them. */
   function removeCustomSection(section: SidebarCustomSection) {
-    const state = useSidebarOrganizationStore.getState();
-    const index = state.customSections.findIndex((s) => s.id === section.id);
-    const chatIds = Object.keys(state.sectionByChatId).filter(
-      (id) => state.sectionByChatId[id] === section.id,
-    );
-    const projectIds = Object.keys(state.sectionByProjectId).filter(
-      (id) => state.sectionByProjectId[id] === section.id,
-    );
-    const order = state.manualOrder[customSectionScope(section.id)];
-    const hidden = state.hiddenSections.includes(section.id);
-    // The sections drawn after it, so undo can put it back above the first one still there.
-    const drawnOrder = resolveSectionOrder(state.sectionOrder, state.customSections);
-    const followers = drawnOrder.slice(drawnOrder.indexOf(section.id) + 1);
-    deleteCustomSection(section.id);
+    const undo = removeCustomSectionWithUndo(section);
     toast.success(t("shell.sections.deleted", { name: section.name }), {
-      action: {
-        label: t("shell.sections.undo"),
-        onClick: () => {
-          useSidebarOrganizationStore.setState((now) => {
-            if (now.customSections.some((s) => s.id === section.id)) return now;
-            const restored = [...now.customSections];
-            restored.splice(Math.min(index, restored.length), 0, section);
-            const sectionByChatId = assignmentMap(now.sectionByChatId);
-            for (const id of chatIds) sectionByChatId[id] ??= section.id;
-            const sectionByProjectId = assignmentMap(now.sectionByProjectId);
-            for (const id of projectIds) sectionByProjectId[id] ??= section.id;
-            const sectionOrder = resolveSectionOrder(now.sectionOrder, now.customSections);
-            const follower = followers.find((key) => sectionOrder.includes(key));
-            sectionOrder.splice(
-              follower === undefined ? sectionOrder.length : sectionOrder.indexOf(follower),
-              0,
-              section.id,
-            );
-            return {
-              // In the order the sidebar now draws them, which the sections left behind may have
-              // been dragged out of since: the Show and Section lists read top to bottom like it.
-              customSections: inSectionOrder(restored, sectionOrder),
-              sectionOrder,
-              sectionByChatId,
-              sectionByProjectId,
-              hiddenSections: hidden
-                ? [...now.hiddenSections, section.id]
-                : now.hiddenSections,
-              manualOrder: order
-                ? { ...now.manualOrder, [customSectionScope(section.id)]: order }
-                : now.manualOrder,
-            };
-          });
-        },
-      },
+      action: { label: t("shell.sections.undo"), onClick: undo },
     });
   }
 
@@ -4365,12 +4305,9 @@ export function AppSidebar() {
   ) {
     const threadIds = getSidebarItemThreadIds(item);
     const isPinned = pinnedIdSet.has(item.id);
-    // A compare row outside a project spans two sandboxes, and there is no
-    // honest single folder to offer for it.
-    const sandboxSessionId =
-      item.type === "single" || item.projectId
-        ? sandboxSessionIdFor(threadIds[0] ?? item.id, item.projectId)
-        : undefined;
+    const alreadyUnread = threadIds.some((threadId) =>
+      unreadThreadIds.has(threadId),
+    );
     // A compare row's id is the pair id while runningByThreadId is per pane thread; aggregate.
     const isGenerating =
       item.type === "compare"
@@ -4389,6 +4326,22 @@ export function AppSidebar() {
               <span>{isPinned ? "Unpin" : "Pin"}</span>
             </P.Item>
             <P.Item
+              onSelect={() =>
+                alreadyUnread
+                  ? clearThreadsUnread(threadIds)
+                  : markThreadsUnread(threadIds, rowIdByThreadId)
+              }
+            >
+              <HugeiconsIcon icon={alreadyUnread ? ViewIcon : ViewOffSlashIcon} strokeWidth={1.75} className="size-icon" />
+              <span>
+                {alreadyUnread
+                  ? t("shell.selection.markRead")
+                  : t("shell.selection.markUnread")}
+              </span>
+            </P.Item>
+            {/* Above: edits the row. Below: copies or moves the chat. */}
+            <P.Separator />
+            <P.Item
               disabled={!canForkChatRow(item) || isGenerating || forkInFlight}
               title="Copy this chat into a new one, from its last message"
               onSelect={() => void forkChatFromRow(item)}
@@ -4396,47 +4349,6 @@ export function AppSidebar() {
               <GitBranchIcon strokeWidth={1.75} className="size-icon" />
               <span>Fork</span>
             </P.Item>
-            {/* Rename through Fork act on the row; the rule sets off what reaches outside it. */}
-            <P.Separator />
-            {sandboxSessionId ? (
-              isTauri ? (
-                <P.Item
-                  title="Open the folder this chat's tool calls read and write"
-                  onSelect={() => {
-                    void (async () => {
-                      try {
-                        // A chat moved between projects keeps the sandbox it wrote to, so its own
-                        // history names the folder, not current membership. A failed read is
-                        // reported below rather than caught per pane.
-                        const ids =
-                          threadIds.length > 0 ? threadIds : [item.id];
-                        const distinct = await sandboxSessionIdsHolding(ids);
-                        if (distinct.length > 1) {
-                          toast.error("This chat wrote to more than one folder.", {
-                            description:
-                              "It ran tools on both sides of a move, so open the folder from a tool card instead.",
-                          });
-                          return;
-                        }
-                        await revealSandbox(distinct[0] ?? sandboxSessionId);
-                      } catch (error) {
-                        toast.error("Could not open the chat folder.", {
-                          description:
-                            error instanceof Error
-                              ? error.message
-                              : String(error),
-                        });
-                      }
-                    })();
-                  }}
-                >
-                  <HugeiconsIcon icon={FolderOpenIcon} strokeWidth={1.75} className="size-icon" />
-                  <span>Open chat folder</span>
-                </P.Item>
-              ) : (
-                <OpenChatFolderUnavailableItem Item={P.Item} />
-              )
-            ) : null}
             {/* Projects and sections in one place: both are where the chat is kept. */}
             <P.Sub>
               <P.SubTrigger>
@@ -4494,44 +4406,6 @@ export function AppSidebar() {
                   anyFiled: !pinnedIdSet.has(item.id) && Boolean(sectionByChatId[item.id]),
                   heading: true,
                 })}
-              </P.SubContent>
-            </P.Sub>
-            <P.Sub>
-              <P.SubTrigger>
-                <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} className="size-icon" />
-                <span>Export</span>
-              </P.SubTrigger>
-              <P.SubContent {...sidebarSubmenuOffsets} className="unsloth-plus-menu sidebar-row-menu sidebar-menu w-48">
-                {chatExportOptions().map(({ label, format }) => (
-                  <P.Item
-                    key={label}
-                    onSelect={async () => {
-                      try {
-                        const ids = item.type === "single"
-                          ? [item.id]
-                          : (await listStoredChatThreads({ pairId: item.id })).map((t) => t.id);
-                        for (const id of ids) {
-                          await exportConversationByFormat(id, format);
-                        }
-                      } catch (error) {
-                        if (!isDownloadCancelled(error)) {
-                          toast.error("Export failed.");
-                        }
-                      }
-                    }}
-                  >
-                    {label}
-                  </P.Item>
-                ))}
-                <P.Separator />
-                {/* Bulk export and import live in Settings -> Data. */}
-                <P.Item
-                  onSelect={() =>
-                    useSettingsDialogStore.getState().openDialog("data")
-                  }
-                >
-                  Export all chats…
-                </P.Item>
               </P.SubContent>
             </P.Sub>
             <P.Separator />
