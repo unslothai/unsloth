@@ -52,6 +52,10 @@ _TOKENIZER_FILES = (
     "tokenizer.json",
     "tokenizer_config.json",
     "special_tokens_map.json",
+    "tokenizer.model",
+    "vocab.json",
+    "merges.txt",
+    "added_tokens.json",
     "chat_template.jinja",
     "generation_config.json",
     "SYSTEM_PROMPT.txt",
@@ -84,7 +88,9 @@ def _fp8_block_quantization(quant) -> Optional[dict]:
             return None
         if weights.get("strategy") != "block" or not weights.get("block_structure"):
             return None
-        if acts is not None and not (acts.get("dynamic") and acts.get("type") == "float"):
+        if acts is not None and not (
+            acts.get("dynamic") and acts.get("type") == "float" and int(acts.get("num_bits", 8)) == 8
+        ):
             return None
         if group.get("output_activations") is not None:
             return None

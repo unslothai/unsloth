@@ -318,6 +318,9 @@ def test_large3_params_translate_to_mistral4():
             num_bits = 4
         ),
         lambda p: p["yarn"].update(apply_scale = True),
+        lambda p: p["quantization_config"]["config_groups"]["FP8_BLOCK"]["input_activations"].update(
+            num_bits = 4
+        ),
         lambda p: p["quantization_config"]["config_groups"]["FP8_BLOCK"].update(
             targets = ["re:.*experts.*"]
         ),  # vLLM scales attention differently
