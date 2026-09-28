@@ -378,10 +378,6 @@ async function loadLocalModelSelection(
       // biome-ignore lint/style/useNamingConvention: api schema
       tensor_parallel: false,
     });
-    // A recipe run loads its model with no panel open, so a split load was
-    // announced here as a plain success and the run just came out slow. The
-    // helper reads cpu_fallback_reason off the same response, so a recovered
-    // Vulkan crash reports the crash rather than blaming the model's size.
     const offloadNotice = offloadWarning(offloadCountsFrom(loadResp));
     const successOptions = {
       description: offloadNotice?.description,

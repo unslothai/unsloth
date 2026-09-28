@@ -1708,12 +1708,6 @@ export function SharedComposer({
         // Persist the GPU Memory mode on a non-diffusion GGUF compare-load too, so an applied manual
         // choice survives a restart.
         persistGpuMemoryModeOnLoad(resp, effectiveGpuMemoryMode);
-        // Compare mode times two models against each other, so a pane that
-        // quietly landed half on the CPU does not just run slow, it invalidates
-        // the comparison being made. There is no per-pane success toast to
-        // correct here, so this warns or says nothing; the helper reads
-        // cpu_fallback_reason off the same response, so a recovered Vulkan crash
-        // names the crash instead of blaming the model's size.
         const compareOffload = offloadWarning(offloadCountsFrom(resp));
         if (compareOffload) {
           toast.warning(

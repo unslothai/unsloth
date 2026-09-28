@@ -108,9 +108,6 @@ test("every auto-load path forwards the offload counts", () => {
   const calls = source.match(CALL_SITES) ?? [];
   assert.ok(calls.length > 0, "no showAutoLoadSuccess call sites found");
   for (const call of calls) {
-    // Through the shared reader, so a field added to the split (the mode, and
-    // then whether extras overrode the placement) reaches every load path at
-    // once rather than the one whose call site got updated.
     assert.match(call, FORWARDS_COUNTS);
   }
 });

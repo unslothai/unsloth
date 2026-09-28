@@ -1071,7 +1071,6 @@ export function AudioPage({
         );
         if (!isCurrent()) return;
         if (res.is_audio && isTtsAudioType(res.audio_type)) {
-          // A GGUF TTS model can be split across the CPU by automatic fitting too.
           const offloadNotice = offloadWarning(offloadCountsFrom(res));
           const showToast = offloadNotice ? toast.warning : toast.success;
           showToast(

@@ -29,9 +29,6 @@ test("a full offload is the normal case and says nothing", () => {
 });
 
 test("no layers on the GPU is the worst case, not an excluded one", () => {
-  // cpu_fallback_reason is only ever set for the Vulkan startup-crash recovery,
-  // so an ordinary --fit on load that got nothing onto the GPU has no other
-  // reporting at all: it announced plain success and simply ran slowly.
   const warning = offloadWarning({ offloaded: 0, total: 60 });
   assert.equal(warning?.titleSuffix, ", on CPU");
   assert.match(warning?.description ?? "", /^None of the 60 layers fit/);
@@ -51,9 +48,6 @@ test("a nonsense total cannot produce a warning", () => {
 });
 
 test("a split the user pinned themselves is not warned about", () => {
-  // Manual mode with an explicit layer count means the user chose that count.
-  // The model may well fit, so "pick a smaller quantization" would be advice
-  // against their own decision.
   assert.equal(
     offloadWarning({
       offloaded: 20,
@@ -72,8 +66,6 @@ test("a split the user pinned themselves is not warned about", () => {
 });
 
 test("an -ngl passed through extras counts as the user's own choice", () => {
-  // Auto mode respects an inherited -ngl rather than stripping it, so the mode
-  // still reads "auto" for a split the user picked deliberately.
   assert.equal(
     offloadWarning({
       offloaded: 20,
@@ -83,7 +75,6 @@ test("an -ngl passed through extras counts as the user's own choice", () => {
     }),
     null,
   );
-  // Including the all-on-CPU case, which is a legitimate thing to ask for.
   assert.equal(
     offloadWarning({ offloaded: 0, total: 60, offloadOverridden: true }),
     null,
@@ -121,9 +112,6 @@ test("every load path reads the response the same way", () => {
 });
 
 test("Manual mode with GPU Layers on Auto is still an automatic spill", () => {
-  // Manual + Auto layers hands placement back to llama.cpp exactly like Auto
-  // mode does, and the response still reads "manual", so the mode alone is not
-  // the question: the requested count is.
   assert.notEqual(
     offloadWarning({
       offloaded: 20,
@@ -140,9 +128,6 @@ test("Manual mode with GPU Layers on Auto is still an automatic spill", () => {
 });
 
 test("a GPU that llama.cpp could not use is not a size problem", () => {
-  // A failed CUDA/ROCm init logs the same 0/M line as a fit that placed no
-  // layers, and telling a user with a broken install to pick a smaller
-  // quantization sends them to re-download a model that was never the problem.
   const broken = offloadWarning({
     offloaded: 0,
     total: 60,
@@ -150,12 +135,10 @@ test("a GPU that llama.cpp could not use is not a size problem", () => {
   });
   assert.match(broken?.description ?? "", /could not use it/);
   assert.doesNotMatch(broken?.description ?? "", /smaller quantization would/);
-  // A genuine zero-layer fit still gets the size wording.
   assert.match(
     offloadWarning({ offloaded: 0, total: 60 })?.description ?? "",
     /None of the 60 layers fit/,
   );
-  // It only speaks to the all-CPU case; a split load is a split load.
   assert.match(
     offloadWarning({ offloaded: 20, total: 60, gpuBackendUnavailable: true })
       ?.description ?? "",
@@ -164,9 +147,6 @@ test("a GPU that llama.cpp could not use is not a size problem", () => {
 });
 
 test("a known reason for the CPU wins over the counts", () => {
-  // A recovered Vulkan startup crash leaves a 0/M line behind it. Reading that
-  // as "nothing fit" would blame the model's size for a backend crash and
-  // recommend a quantization that changes nothing.
   const warning = offloadWarning({
     offloaded: 0,
     total: 60,
