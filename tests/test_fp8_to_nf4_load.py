@@ -12,13 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""`load_in_4bit = True` on a block-FP8 checkpoint loads NF4, dequantizing one tensor at a time.
-
-The fixtures are tiny random Qwen3 / Qwen3-MoE models quantized to fine-grained FP8 exactly like
-the published `*-FP8` repos (e4m3 weights, fp32 `weight_scale_inv` per 128x128 block, ragged last
-blocks, a `modules_to_not_convert` list). The reference is the same checkpoint dequantized to bf16
-by an independent formula and loaded with `load_in_4bit = True`: every NF4 byte must match.
-"""
+"""`load_in_4bit = True` on a block-FP8 checkpoint must give NF4 bytes identical to loading the
+same checkpoint dequantized to bf16 by an independent formula."""
 
 import json
 import os
@@ -59,7 +54,6 @@ needs_fp8_gpu = pytest.mark.skipif(
 )
 
 
-# ---------------------------------------------------------------- fixtures
 
 
 def _quantize_block_fp8(weight):
@@ -178,7 +172,6 @@ def moe_pair(tmp_path_factory):
     return _build(str(tmp_path_factory.mktemp("fp8_moe")), moe = True)
 
 
-# ---------------------------------------------------------------- helpers
 
 
 def _fingerprint(model):
@@ -251,7 +244,6 @@ def _free(*models):
     torch.cuda.empty_cache()
 
 
-# ---------------------------------------------------------------- GPU loads
 
 
 @needs_cuda
@@ -423,7 +415,6 @@ def test_unavailable_keeps_todays_fp8_load(dense_pair, capsys):
     _free(model)
 
 
-# ---------------------------------------------------------------- CPU units
 
 
 def _fp8_config():
@@ -444,7 +435,6 @@ def test_arming_needs_an_explicit_request(monkeypatch):
 
     monkeypatch.delenv("UNSLOTH_FP8_TO_NF4", raising = False)
     config = _fp8_config()
-    # Outside a from_pretrained call nothing is explicit: today's behaviour.
     assert check_and_disable_bitsandbytes_loading(config, load_in_4bit = True, verbose = False)[:2] == (
         False,
         False,

@@ -12,16 +12,10 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 """Load a block-FP8 checkpoint straight into bitsandbytes NF4 (``load_in_4bit = True``).
 
-transformers would refuse a BitsAndBytesConfig on a checkpoint that already carries an fp8
-``quantization_config``, so Unsloth used to drop the 4bit request and train in FP8. Here the fp8
-block is parked on the config, the load runs as an on-the-fly bitsandbytes 4bit load, and every
-FP8 tensor is dequantized with its ``weight_scale_inv`` inside the weight converters, before any
-expert merge and right before bitsandbytes quantizes it. So only the tensors of one converter are
-ever held in 16 bits, never the whole model, and the NF4 result is bit-identical to loading the
-dequantized 16-bit checkpoint.
-
-Modules the checkpoint stores in 16 bits (its ``modules_to_not_convert``: routers, forget gates,
-vision towers, heads) are kept out of bitsandbytes, as the checkpoint author chose.
+The fp8 block is parked off the config so transformers runs a bnb 4bit load; each FP8 tensor is
+dequantized inside its weight converter right before bnb quantizes it, so only one converter's
+tensors are ever 16-bit and NF4 is bit-identical to loading the dequantized checkpoint. The
+checkpoint's ``modules_to_not_convert`` stay out of bitsandbytes.
 """
 
 import contextvars
@@ -349,9 +343,6 @@ def fp8_to_nf4_planner_quantization_config(config, llm_int8_skip_modules = None)
     }
 
 
-# ---------------------------------------------------------------------------------------------
-# Load-time machinery (transformers >= 5)
-# ---------------------------------------------------------------------------------------------
 
 
 class _LoadState:
@@ -373,8 +364,7 @@ class _LoadState:
             k for k in headers if k.endswith(".weight_scale_inv")
         } | self.dot_scale_keys
         self.native_keys = self.fp8_keys | self.scale_keys
-        # Refined to the keys the model has a parameter for once the renaming is known (the
-        # checkpoint's MTP layers, which transformers drops as unexpected, never reach a converter).
+        # Refined once renaming is known: dropped MTP layers never reach a converter.
         self.expected_fp8 = set(self.fp8_keys)
         self.expected_scales = set(self.scale_keys)
         self.headers = headers
@@ -405,7 +395,6 @@ def _scale_pattern_for(pattern: str) -> str:
 
 def _scale_as_fp32(scale: torch.Tensor) -> torch.Tensor:
     if scale.dtype == torch.uint8:
-        # E8M0 exponents stored as bytes.
         return (scale.to(torch.float32) - 127.0).exp2()
     return scale.to(torch.float32)
 
@@ -535,9 +524,8 @@ def _build_classes():
         ):
             self.generic = generic
             self.stack = stack
-            # (weight patterns in merge order, concat dim): this op then replaces a following
-            # MergeModulelist(dim=0) + Concatenate and writes each expert straight into the final
-            # stack, so the only 16-bit tensor ever held is that stack.
+            # (patterns in merge order, concat dim): replaces MergeModulelist + Concatenate by writing
+            # each expert straight into the final stack, the only 16-bit tensor ever held.
             self.fuse = fuse
 
         def _fused(
@@ -670,7 +658,6 @@ def _build_classes():
                     outputs = []
                 for i in range(len(weights)):
                     weight, scale = weights[i], scales[i]
-                    # Drop the fp8 copy as soon as it is dequantized.
                     weights[i] = None
                     if weight.dtype in _FP8_DTYPES:
                         converted = _dequantize_block_fp8(
@@ -953,7 +940,6 @@ def install_fp8_to_nf4_quantizer() -> bool:
             and not other
             and len(conv.target_patterns) == 1
         ):
-            # Concatenate runs on the (experts, rows, cols) stacks MergeModulelist built.
             operations = [DequantOp(fuse = ([p + "$" for p in weight_sources], ops[1].dim % 3))]
         else:
             operations = [DequantOp(stack = bool(stack_ok and merges))] + ops
