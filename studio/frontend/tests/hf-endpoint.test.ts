@@ -20,12 +20,17 @@ const {
   getHfEndpoint,
   resetHfEndpoints,
   setHfEndpoints,
+  setHubSessionRefresh,
   useHfDatasetsServer,
   useHfEndpoint,
 } = await import("../src/lib/hf-endpoint.ts");
 
-const { isHuggingFaceOffline, markRemoteNetworkOffline, clearRemoteBackoff } =
-  await import("../src/features/hub/lib/network.ts");
+const {
+  isHuggingFaceOffline,
+  markRemoteNetworkOffline,
+  clearRemoteBackoff,
+  fetchWithTimeout,
+} = await import("../src/features/hub/lib/network.ts");
 
 test("before /api/health answers, both endpoints are the official ones", () => {
   resetHfEndpoints();
@@ -148,4 +153,87 @@ test("the Hub offline backoff keys on the configured mirror, not huggingface.co"
   clearRemoteBackoff("https://hf-mirror.com");
   assert.equal(isHuggingFaceOffline(), false);
   resetHfEndpoints();
+});
+
+test("the ModelScope adapter gets the Unsloth session, never the Hugging Face token", async () => {
+  const adapter = "http://127.0.0.1:8888/api/hub/modelscope";
+  const sent: (string | null)[] = [];
+  let session: string | null = "expired";
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async (_input: unknown, init?: RequestInit) => {
+    const auth = new Headers(init?.headers).get("authorization");
+    sent.push(auth);
+    return new Response("[]", { status: auth === "Bearer expired" ? 401 : 200 });
+  }) as typeof fetch;
+  Object.defineProperty(globalThis, "localStorage", {
+    configurable: true,
+    value: { getItem: (key: string) => (key === "unsloth_auth_token" ? session : null) },
+  });
+  setHubSessionRefresh(async () => {
+    session = "fresh";
+    return true;
+  });
+  const hfToken = { headers: { Authorization: "Bearer hf_x" } };
+  try {
+    setHfEndpoints(adapter, undefined, "modelscope");
+    const answer = await fetchWithTimeout(`${adapter}/api/models`, hfToken);
+    await fetchWithTimeout("https://cdn.example.com/a.png", hfToken);
+    setHfEndpoints("https://huggingface.co", undefined, "huggingface");
+    await fetchWithTimeout("https://huggingface.co/api/models", hfToken);
+    await fetchWithTimeout(`${adapter}/api/models/a/b`, hfToken);
+    session = null;
+    await fetchWithTimeout(`${adapter}/api/models/a/c`, hfToken);
+    assert.equal(answer.status, 200);
+  } finally {
+    globalThis.fetch = realFetch;
+    Reflect.deleteProperty(globalThis, "localStorage");
+    setHubSessionRefresh(async () => false);
+    resetHfEndpoints();
+  }
+  assert.deepEqual(sent, [
+    "Bearer expired",
+    "Bearer fresh",
+    "Bearer hf_x",
+    "Bearer hf_x",
+    "Bearer fresh",
+    null,
+  ]);
+});
+
+test("a relay to a custom endpoint gets the session, and the Hugging Face token beside it", async () => {
+  const relay = "http://127.0.0.1:8888/api/hub/proxy";
+  const datasets = "http://127.0.0.1:8888/api/hub/datasets-server-proxy";
+  const sent: (string | null)[][] = [];
+  let refreshes = 0;
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: string, init?: RequestInit) => {
+    const headers = new Headers(init?.headers);
+    sent.push([headers.get("authorization"), headers.get("x-hf-authorization")]);
+    const gated = input.includes("gated");
+    const stale = input.includes("stale") && headers.get("authorization") === "Bearer session";
+    return new Response("[]", { status: gated || stale ? 401 : 200, headers: gated ? { "X-Hub-Upstream": "1" } : {} });
+  }) as typeof fetch;
+  let session = "session";
+  Object.defineProperty(globalThis, "localStorage", { configurable: true, value: { getItem: () => session } });
+  setHubSessionRefresh(async () => Boolean((session = `fresh${++refreshes}`)));
+  const hfToken = { headers: { Authorization: "Bearer hf_x" } };
+  try {
+    setHfEndpoints(relay, datasets, "huggingface", { endpoint: true, datasetsServer: true });
+    await fetchWithTimeout(`${relay}/api/models`, hfToken);
+    await fetchWithTimeout(`${datasets}/splits?dataset=a/b`, {});
+    assert.equal((await fetchWithTimeout(`${relay}/api/models/org/gated`, hfToken)).status, 401);
+    assert.equal((await fetchWithTimeout(`${relay}/api/models/stale`, hfToken)).status, 200);
+    setHfEndpoints("https://huggingface.co", "https://datasets-server.huggingface.co");
+    await fetchWithTimeout(`${datasets}/splits?dataset=a/c`, hfToken);
+    await fetchWithTimeout("https://huggingface.co/api/models", hfToken);
+  } finally {
+    globalThis.fetch = realFetch;
+    Reflect.deleteProperty(globalThis, "localStorage");
+    setHubSessionRefresh(async () => false);
+    resetHfEndpoints();
+  }
+  assert.equal(refreshes, 1);
+  const both = ["Bearer session", "Bearer hf_x"];
+  const fresh = ["Bearer fresh1", "Bearer hf_x"];
+  assert.deepEqual(sent, [both, ["Bearer session", null], both, both, fresh, fresh, ["Bearer hf_x", null]]);
 });

@@ -278,7 +278,8 @@ test("the chat menu carries the sidebar's items, without the move", () => {
   ]) {
     assert.ok(menu.includes(label), `${label} is missing from the chat menu`);
   }
-  assert.match(menu, /chatUnread \? "Mark as read" : "Mark as unread"/);
+  assert.ok(!menu.includes("Mark as unread"));
+  assert.ok(!menu.includes("Mark as read"));
   assert.match(menu, /<span>Open chat folder<\/span>/);
   // Desktop opens the folder; the browser says why it cannot.
   assert.match(menu, /isTauri \? \(/);
@@ -342,10 +343,11 @@ test("a row is a container, and each of its controls is its own button", () => {
   ]) {
     assert.match(PAGE, opener);
   }
-  // The row keeps the hover it paints its controls from, and gives up the focus ring to them.
+  // The row keeps the hover it paints its controls from, and gives up the focus
+  // ring to them. The wash carries the contrast gain (appearance-custom-store.ts).
   assert.match(
     PAGE,
-    /className="group\/project-row relative flex items-center gap-3 rounded-xl px-5 py-4 text-left transition-colors duration-150 hover:bg-muted\/70 dark:hover:bg-white\/\[0\.055\]"/,
+    /className="group\/project-row relative flex items-center gap-3 rounded-xl px-5 py-4 text-left transition-colors duration-150 hover:bg-muted\/70 dark:hover:bg-\[rgb\(255_255_255_\/_calc\(0\.055\*var\(--contrast-wash-gain,1\)\)\)\]"/,
   );
   assert.match(
     PAGE,

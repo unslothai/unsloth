@@ -62,7 +62,11 @@ def test_build_usage_chunk_openai_shape():
         {
             "input_tokens": 5507,
             "output_tokens": 252,
-            "input_tokens_details": {"cached_tokens": 4736},
+            "input_tokens_details": {"cached_tokens": 4736, "cache_write_tokens": 64},
+            "output_tokens_details": {
+                "reasoning_tokens": 12,
+                "accepted_prediction_tokens": 9,
+            },
         },
     )
     assert line is not None
@@ -72,6 +76,11 @@ def test_build_usage_chunk_openai_shape():
     assert usage["completion_tokens"] == 252
     assert usage["total_tokens"] == 5759
     assert usage["prompt_tokens_details"]["cached_tokens"] == 4736
+    assert usage["prompt_tokens_details"]["cache_write_tokens"] == 64
+    assert usage["completion_tokens_details"] == {
+        "reasoning_tokens": 12,
+        "accepted_prediction_tokens": 9,
+    }
     # Anthropic-only keys must not leak onto the OpenAI shape.
     assert "cache_creation_input_tokens" not in usage
     assert "cache_read_input_tokens" not in usage

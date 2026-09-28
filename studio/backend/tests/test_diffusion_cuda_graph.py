@@ -735,6 +735,9 @@ def test_stats_and_describe_are_json_safe(stub_torch):
         "eager_calls": 1,
         "fallbacks": 0,
         "cap_skips": 0,
+        "refused_float": 0,
+        "refused_host_tensor": 0,
+        "refused_object": 0,
         "poisoned": False,
         "capture_error": None,
     }
@@ -823,3 +826,196 @@ def test_real_cuda_capture_replays_bit_identically():
         assert torch.equal(after, want)
     finally:
         cg.uninstall_all([handle])
+
+
+class _FakeNVFP4Linear:
+    """Named exactly as the real class, since ``is_nvfp4_flashinfer_linear`` gates on the NAME."""
+
+    def __init__(
+        self,
+        *,
+        baked = True,
+        in_features = 4,
+        out_features = 8,
+    ):
+        self.a_gsf = 1.0
+        self.in_features = in_features
+        self.out_features = out_features
+        if baked is not None:
+            self.activation_scales_baked = bool(baked)
+
+
+_FakeNVFP4Linear.__name__ = "NVFP4FlashInferLinear"
+
+
+class _NVFP4DiT(_FakeDiT):
+    """A denoiser whose module tree holds the given NVFP4 linears."""
+
+    def __init__(self, layers):
+        super().__init__()
+        self._layers = list(layers)
+
+    def named_modules(self):
+        yield "", self
+        for name, layer in self._layers:
+            yield name, layer
+
+
+@pytest.fixture
+def record_prewarm(monkeypatch):
+    from core.inference import diffusion_nvfp4_linear as nl
+
+    calls: list = []
+    monkeypatch.setattr(
+        nl,
+        "nvfp4_prewarm",
+        lambda transformer, shapes, **kwargs: calls.append((transformer, tuple(shapes))) or 0,
+    )
+    return calls
+
+
+def test_capture_prewarms_the_nvfp4_layers_before_the_warmup(stub_torch, record_prewarm):
+    module = _NVFP4DiT([("blocks.0.attention.to_q", _FakeNVFP4Linear())])
+    handle = _armed(module)
+    handle(_t((2, 8, 4)), timestep = _t((1,)), return_dict = False)
+
+    assert len(record_prewarm) == 1
+    tuned_module, shapes = record_prewarm[0]
+    assert tuned_module is module
+    assert 1 in shapes and 16 in shapes
+    assert handle.stats["captures"] == 1
+    assert handle.poisoned is False
+
+
+def test_capture_does_not_prewarm_a_model_without_nvfp4_layers(stub_torch, record_prewarm):
+    handle = _armed()
+    handle(_t(), timestep = _t((1,)), return_dict = False)
+    assert record_prewarm == []
+    assert handle.stats["captures"] == 1
+
+
+def test_unbaked_activation_scales_poison_the_capture(stub_torch, record_prewarm):
+    module = _NVFP4DiT(
+        [
+            ("blocks.0.attention.to_q", _FakeNVFP4Linear()),
+            ("blocks.1.attention.to_q", _FakeNVFP4Linear(baked = False)),
+        ]
+    )
+    handle = _armed(module)
+    out = handle(_t(), timestep = _t((1,)), return_dict = False)
+
+    assert handle.poisoned is True
+    assert handle.stats["captures"] == 0
+    assert "unbaked activation scales" in handle.capture_error["msg"]
+    assert "blocks.1.attention.to_q" in handle.capture_error["msg"]
+    assert record_prewarm == []
+    assert module.calls == 1  # the eager fallback only
+    assert out[0].value == ("out", 1)
+
+
+def test_a_layer_that_cannot_answer_counts_as_unbaked(stub_torch, record_prewarm):
+    """Fail closed: a layer from some other build with no flag is not assumed to be baked."""
+    module = _NVFP4DiT([("blocks.0.attention.to_q", _FakeNVFP4Linear(baked = None))])
+    handle = _armed(module)
+    handle(_t(), timestep = _t((1,)), return_dict = False)
+    assert handle.poisoned is True
+    assert record_prewarm == []
+
+
+def test_prewarm_token_counts_are_bounded_and_sorted(stub_torch):
+    counts = cg._prewarm_token_counts([_t((2, 8, 4)), _t((1,)), _t((4, 4))])
+    assert counts[0] == 1  # the modulation M is always tuned
+    assert counts == tuple(sorted(set(counts)))
+    assert set(counts) >= {1, 4, 16}
+    assert len(cg._prewarm_token_counts([_t((n, 4)) for n in range(2, 40)])) <= 8
+
+
+_RESOLVED_ON = {
+    "cuda_graph": {
+        "value": "on",
+        "requested": None,
+        "source": "auto",
+        "status": "applied",
+        "reason": "denoiser step captured per input shape, replayed bit-identically",
+    },
+    "speed_mode": {"value": "max"},
+}
+
+
+def test_live_status_is_unchanged_before_the_first_call(stub_torch):
+    handle = _armed()
+    resolved, optims = cg.live_status(_RESOLVED_ON, ("compiled", "cuda_graph"), (handle,))
+    assert resolved is _RESOLVED_ON
+    assert optims == ["compiled", "cuda_graph"]
+    assert cg.never_engaged((handle,)) is None
+    assert cg.never_engaged(()) is None
+
+
+def test_live_status_turns_off_when_every_call_was_refused(stub_torch):
+    class KVCache:
+        pass
+
+    handle = _armed()
+    for _ in range(3):
+        handle(_t(), timestep = KVCache(), return_dict = False)
+    assert handle.stats["refused_object"] == 3
+
+    resolved, optims = cg.live_status(_RESOLVED_ON, ("compiled", "cuda_graph"), (handle,))
+    assert resolved["cuda_graph"]["value"] == "off"
+    assert resolved["cuda_graph"]["reason"] == (
+        "armed, but all 3 denoiser call(s) so far ran eager (3 with a non-tensor argument)"
+    )
+    assert resolved["cuda_graph"]["status"] == "applied"
+    assert resolved["speed_mode"] is _RESOLVED_ON["speed_mode"]
+    assert optims == ["compiled"]
+    assert _RESOLVED_ON["cuda_graph"]["value"] == "on"
+    assert json.loads(json.dumps(resolved)) == resolved
+
+
+def test_live_status_names_float_refusals_and_a_poisoned_capture(stub_torch):
+    handle = _armed()
+    handle(_t(), timestep = 0.5, return_dict = False)
+    assert "1 with a float argument" in cg.never_engaged((handle,))
+
+    poisoned = _armed()
+    poisoned(_t(device_type = "cpu"), timestep = _t((1,)), return_dict = False)
+    assert cg.never_engaged((poisoned,)) == (
+        "capture failed (RuntimeError); every denoiser step runs eager"
+    )
+
+
+def test_live_status_turns_off_when_a_graph_that_replayed_is_poisoned(stub_torch):
+    handle = _armed()
+    handle(_t(), timestep = _t((1,)), return_dict = False)
+    handle(_t(), timestep = _t((1,)), return_dict = False)
+    assert handle.stats["replays"] == 2 and cg.never_engaged((handle,)) is None
+    # A later shape whose capture fails poisons the wrapper: it never replays again.
+    handle(_t(device_type = "cpu"), timestep = _t((1,)), return_dict = False)
+    assert handle.poisoned
+    resolved, optims = cg.live_status(_RESOLVED_ON, ("compiled", "cuda_graph"), (handle,))
+    assert resolved["cuda_graph"]["value"] == "off"
+    assert resolved["cuda_graph"]["reason"] == (
+        "capture failed (RuntimeError); every denoiser step runs eager"
+    )
+    assert optims == ["compiled"]
+    other = _armed()
+    other(_t(), timestep = _t((1,)), return_dict = False)
+    assert cg.never_engaged((handle, other)) is None
+
+
+def test_live_status_keeps_on_once_a_graph_replayed(stub_torch):
+    handle = _armed()
+    handle(_t(), timestep = _t((1,)), return_dict = False)
+    handle(_t(), timestep = _t((1,)), return_dict = False)
+    handle(_t(), timestep = 0.25, return_dict = False)
+    assert handle.stats["replays"] == 2
+    resolved, optims = cg.live_status(_RESOLVED_ON, ("cuda_graph",), (handle,))
+    assert resolved is _RESOLVED_ON
+    assert optims == ["cuda_graph"]
+
+
+def test_live_status_tolerates_a_record_without_the_control(stub_torch):
+    handle = _armed()
+    handle(_t(), timestep = 0.5, return_dict = False)
+    assert cg.live_status(None, ("cuda_graph",), (handle,)) == (None, [])
+    assert cg.live_status({}, (), (handle,)) == ({}, [])

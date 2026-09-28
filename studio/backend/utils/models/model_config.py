@@ -1161,6 +1161,8 @@ _hub_model_info_scope: ContextVar[Optional[_HubModelInfoScope]] = ContextVar(
 
 # Bound the Hub lookup so a DNS-dead session fails fast to the cache instead of hanging on retries.
 _HUB_MODEL_INFO_TIMEOUT = 15.0
+# Unbounded before #10230; three identical 15s reads never pass on a slow link (#11551).
+_GGUF_LISTING_TIMEOUTS = (_HUB_MODEL_INFO_TIMEOUT, 30.0, 60.0)
 
 
 @_contextlib.contextmanager
@@ -1204,6 +1206,29 @@ def _hub_model_info(
     if scope is not None:
         scope[key] = info
     return info
+
+
+def _is_timeout_error(exc: BaseException) -> bool:
+    if isinstance(exc, TimeoutError):
+        return True
+    return any("Timeout" in cls.__name__ for cls in type(exc).__mro__)
+
+
+def _hub_model_info_slow_link(
+    repo_id: str,
+    hf_token: HfTokenArg = None,
+    *,
+    files_metadata: bool = False,
+):
+    """Re-read with a longer bound only after a timeout; a refusal fails on the first attempt."""
+    for attempt, timeout in enumerate(_GGUF_LISTING_TIMEOUTS):
+        try:
+            return _hub_model_info(
+                repo_id, hf_token, files_metadata = files_metadata, timeout = timeout
+            )
+        except Exception as e:
+            if attempt == len(_GGUF_LISTING_TIMEOUTS) - 1 or not _is_timeout_error(e):
+                raise
 
 
 # Revision-less entries keep the historical 3-part key; pinned entries append revision.
@@ -2105,7 +2130,11 @@ def detect_mmproj_file(
                         break
             elif allow_disjoint_search_root:
                 _add(root_resolved)
-            if allow_disjoint_search_root:
+            # Only a root that does NOT hold the weights: for the one that does, the
+            # ancestor walk above IS this function's guard and rglob defeats it, so a
+            # sibling QUANT's projector becomes a candidate and wins the shorter-stem
+            # tiebreak. A disjoint revision still recurses, which #10210 needs.
+            if allow_disjoint_search_root and not root_contains_start:
                 recursive_root = root_resolved
         except OSError:
             pass
@@ -2755,7 +2784,7 @@ _GGUF_KNOWN_QUANT_RE = re.compile(
 
 
 _FLOAT_PRECISION_QUANTS = frozenset({"BF16", "F16", "F32"})
-_GGUF_SPLIT_SUFFIX_RE = re.compile(r"-\d{3,}-of-\d{3,}", re.IGNORECASE)
+_GGUF_SPLIT_SUFFIX_RE = re.compile(r"-\d{3,}-of-(\d{3,})", re.IGNORECASE)
 
 
 def _select_known_quant_match(text: str):
@@ -2814,6 +2843,12 @@ def _gguf_variant_family(filename: str) -> str:
         return stem or "gguf"
     parents = filename.rsplit("/", 1)[0].strip("/")
     return f"{parents}/{stem}" if parents and stem else stem or "gguf"
+
+
+# MIRROR of ``hub.utils.gguf.gguf_shard_set``.
+def _gguf_shard_set(filename: str) -> tuple[str, int]:
+    split = _GGUF_SPLIT_SUFFIX_RE.search(filename.rsplit("/", 1)[-1])
+    return _gguf_variant_family(filename), int(split.group(1)) if split else 0
 
 
 # MIRROR of ``hub.utils.gguf._GGUF_BPW_SUFFIX_RE``. Applied with ``match`` against the text that
@@ -3043,7 +3078,7 @@ def list_gguf_variants(
         return cached if cached is not None else ([], False)
 
     try:
-        info = _hub_model_info(repo_id, hf_token, files_metadata = True)
+        info = _hub_model_info_slow_link(repo_id, hf_token, files_metadata = True)
     except Exception as e:
         # Permanent errors (deleted/gated/bad revision) must surface; stale cache would mask the
         # real cause. Matches the early return in ``detect_gguf_model_remote``.
@@ -3112,19 +3147,10 @@ def list_gguf_variants(
 
 
 def _group_gguf_variant_files(entries: list[tuple[str, str, int]]) -> dict[str, tuple[str, int]]:
-    """``quant -> (first filename, size of that quant's shard family)``.
-
-    MIRROR of ``hub.utils.gguf.group_gguf_variant_files`` over ``(name, quant, size)`` triples.
-    Sizes are summed across the shards of ONE family, never across families: a repo shipping the
-    same quant twice (QwQ-32B's BF16 as ``QwQ-32B-BF16-*`` beside ``QwQ-32B.BF16-*``) would
-    otherwise charge both copies to a row the loader only ever opens one of, and
-    ``routes/inference.py`` bills this ``size_bytes`` to the VRAM guard, which then refuses a load
-    that fits. The family kept is the one holding the lexicographically first file, which is the
-    shard this lister advertises and the loader opens.
-    """
-    families: dict[str, dict[str, list[tuple[str, int]]]] = {}
+    """MIRROR of ``hub.utils.gguf.group_gguf_variant_files`` over ``(name, quant, size)`` triples; ``routes/inference.py`` bills this size to the VRAM guard."""
+    families: dict[str, dict[tuple[str, int], list[tuple[str, int]]]] = {}
     for name, quant, size in entries:
-        families.setdefault(quant, {}).setdefault(_gguf_variant_family(name), []).append(
+        families.setdefault(quant, {}).setdefault(_gguf_shard_set(name), []).append(
             (name, int(size or 0))
         )
     grouped: dict[str, tuple[str, int]] = {}
@@ -3337,20 +3363,74 @@ def _detect_gguf_from_hf_cache(repo_id: str) -> Optional[str]:
     return None
 
 
+class GgufRepoUnreadableError(ValueError):
+    """A ValueError so /load and /validate answer 400 with its text (#11551)."""
+
+
+# from_identifier's sink for the Hub error behind a detect_gguf_model_remote None.
+_gguf_remote_detect_failure: ContextVar[Optional[List[Exception]]] = ContextVar(
+    "gguf_remote_detect_failure", default = None
+)
+
+
+def _note_gguf_remote_detect_failure(error: Exception) -> None:
+    sink = _gguf_remote_detect_failure.get()
+    if sink is not None:
+        sink.append(error)
+
+
+_GGUF_REPO_NAME_RE = _re.compile(r"(?:^|[-_.])gguf(?:$|[-_.])", _re.IGNORECASE)
+
+
+def _looks_like_gguf_repo(repo_id: str, gguf_variant: Optional[str] = None) -> bool:
+    # A cached Transformers, diffusers or adapter checkpoint can still load from that cache.
+    if any(
+        (snap / name).is_file()
+        for snap in _iter_hf_cache_snapshots(repo_id)
+        for name in ("config.json", "model_index.json", "adapter_config.json")
+    ):
+        return False
+    return bool(gguf_variant) or bool(
+        _GGUF_REPO_NAME_RE.search(repo_id.rstrip("/").rsplit("/", 1)[-1])
+    )
+
+
+def _gguf_repo_unreadable_message(repo_id: str, error: Optional[Exception]) -> str:
+    if error is None:
+        return (
+            f"Could not load the GGUF repo '{repo_id}': Studio is offline and the repo is not "
+            "in the local cache. Connect to the internet once to download it, then try again."
+        )
+    status = getattr(getattr(error, "response", None), "status_code", None)
+    first_line = (str(error).strip().splitlines() or [""])[0][:200]
+    cause = type(error).__name__
+    if status is not None:
+        cause += f", HTTP {status}"
+    if first_line:
+        cause += f": {first_line}"
+    return (
+        f"Could not read the GGUF repo '{repo_id}' from Hugging Face ({cause}). "
+        "Unsloth needs the repo's file list to pick a GGUF file. Check the Hugging Face "
+        "token in Settings (clear it if it is expired or revoked), your network, proxy "
+        "or HF_ENDPOINT, then try again."
+    )
+
+
 def detect_gguf_model_remote(repo_id: str, hf_token: Optional[str] = None) -> Optional[str]:
     """Return the best GGUF filename in a HF repo, or None.
 
-    Retries (3 attempts, 1s/2s/4s backoff) on transient HF Hub failures: a
+    Retries (3 attempts bounded 15s/30s/60s, 1s/2s backoff) on transient HF Hub failures: a
     silent None would make the caller treat a GGUF-only repo as non-GGUF and
     fall through to MLX on Apple Silicon. Offline falls back to the local cache.
+    A None from a failed Hub read is also reported to ``_gguf_remote_detect_failure``.
     """
     if _env_offline():
         return _detect_gguf_from_hf_cache(repo_id)
 
     last_err: Optional[Exception] = None
-    for attempt in range(3):
+    for attempt, timeout in enumerate(_GGUF_LISTING_TIMEOUTS):
         try:
-            info = _hub_model_info(repo_id, hf_token)
+            info = _hub_model_info(repo_id, hf_token, timeout = timeout)
             repo_files = []
             for sibling in info.siblings:
                 fname = sibling.rfilename
@@ -3377,6 +3457,7 @@ def detect_gguf_model_remote(repo_id: str, hf_token: Optional[str] = None) -> Op
                 "EntryNotFoundError",
             ):
                 logger.debug(f"Could not check GGUF files for '{repo_id}': {e}")
+                _note_gguf_remote_detect_failure(e)
                 return None
             if attempt < 2:
                 time.sleep(2**attempt)
@@ -3392,6 +3473,8 @@ def detect_gguf_model_remote(repo_id: str, hf_token: Optional[str] = None) -> Op
         return cached
 
     logger.warning(f"Could not check GGUF files for '{repo_id}' after 3 attempts: {last_err}")
+    if last_err is not None:
+        _note_gguf_remote_detect_failure(last_err)
     return None
 
 
@@ -3650,7 +3733,13 @@ def scan_exported_models(
                     not is_appledouble_metadata(f)
                     for f in (*checkpoint_dir.glob("*.safetensors"), *checkpoint_dir.glob("*.bin"))
                 )
-                has_gguf = any(_iter_gguf_files(checkpoint_dir))
+                # Same filter as the flat layout: mmproj and imatrix files are not main models.
+                gguf_list = [
+                    f
+                    for f in _iter_gguf_files(checkpoint_dir)
+                    if not _is_mmproj(f.name) and not _is_imatrix_path(f.name)
+                ]
+                has_gguf = bool(gguf_list)
 
                 base_model = None
                 export_type = None
@@ -3673,7 +3762,6 @@ def scan_exported_models(
                         pass
                 elif has_gguf:
                     export_type = "gguf"
-                    gguf_list = list(_iter_gguf_files(checkpoint_dir))
                     # checkpoint_dir first, then run_dir (export.py writes metadata to the top-level dir)
                     for meta_dir in (checkpoint_dir, run_dir):
                         export_meta = meta_dir / "export_metadata.json"
@@ -3687,7 +3775,7 @@ def scan_exported_models(
                             pass
 
                     display_name = f"{run_dir.name} / {checkpoint_dir.name}"
-                    model_path = str(gguf_list[0]) if gguf_list else str(checkpoint_dir)
+                    model_path = str(gguf_list[0])
                     results.append((display_name, model_path, export_type, base_model))
                     logger.debug(f"Found GGUF export: {display_name}")
                     continue
@@ -4263,7 +4351,20 @@ class ModelConfig:
                 )
         else:
             # Does the HF repo contain GGUF files?
-            gguf_filename = detect_gguf_model_remote(identifier, hf_token = hf_token)
+            detect_failures: List[Exception] = []
+            failure_token = _gguf_remote_detect_failure.set(detect_failures)
+            try:
+                gguf_filename = detect_gguf_model_remote(identifier, hf_token = hf_token)
+            finally:
+                _gguf_remote_detect_failure.reset(failure_token)
+            # A failed listing is not "no GGUF"; a refused repo is never served from cache (#11551).
+            if not gguf_filename and _looks_like_gguf_repo(identifier, gguf_variant):
+                if detect_failures:
+                    raise GgufRepoUnreadableError(
+                        _gguf_repo_unreadable_message(identifier, detect_failures[-1])
+                    ) from None
+                if _env_offline():
+                    raise GgufRepoUnreadableError(_gguf_repo_unreadable_message(identifier, None))
             if gguf_filename:
                 # Preflight: verify the llama-server binary exists before a multi-GB download.
                 # include_denied: a transiently locked binary still exists and the lock clears in time.
