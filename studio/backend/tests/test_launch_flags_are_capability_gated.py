@@ -518,7 +518,6 @@ TRACE_HELP = NEW_HELP + (
     "                                         - 5: debug\n"
     "                                        (default: 3)\n"
 )
-# Earlier builds: the same flag, but 4 is not a trace level.
 PRE_TRACE_HELP = NEW_HELP + (
     "-lv,   --verbosity, --log-verbosity N   Set the verbosity threshold. Messages with a higher verbosity will be\n"
     "                                        ignored.\n"
@@ -605,7 +604,6 @@ def test_a_flood_before_readiness_keeps_the_startup_head():
 def test_the_offload_report_covers_metal_and_env_pinned_layers():
     src = inspect.getsource(LlamaCppBackend.load_model)
     assert "(_detected_gpus or _metal_capable_host())" in src
-    # A positive count is kept without a locally probed GPU (RPC, SYCL); only a zero needs one.
     assert "_offload_counts[0] <= 0" in src
     start = src.index("self._offload_overridden = ")
     assignment = src[start : src.index("\n                if ", start)]

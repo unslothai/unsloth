@@ -729,20 +729,16 @@ _GPU_OFFLOAD_MARKERS = (
 _OFFLOADED_LAYERS_RE = re.compile(
     r"offloaded\s+(\d+)\s*/\s*(\d+)\s+layers?\s+to\s+gpu", re.IGNORECASE
 )
-# llama.cpp "logs : reduce" (#23021) moved libllama's INFO lines to trace (4), below the default
-# threshold (3): "offloaded N/M layers to GPU", the device table and the model buffer sizes that
-# the classifiers here read. Level 4 is trace, not debug (5): no prompt text, no per-token lines.
+# llama.cpp #23021 moved libllama INFO (offload counts, device table, buffer sizes) to trace (4).
 _LLAMA_TRACE_VERBOSITY = 4
 _TRACE_VERBOSITY_HELP_RE = re.compile(r"\b4:\s*trace\b", re.IGNORECASE)
 _LOG_VERBOSITY_FLAGS = frozenset(
     {"-lv", "--verbosity", "--log-verbosity", "-v", "--verbose", "--log-verbose", "--log-disable"}
 )
-# Past this many bytes the active llama-server log keeps only warnings and errors: trace adds
-# about 30 lines a request for the server's whole life.
+# Past this, the active llama-server log keeps only warnings and errors.
 _LLAMA_LOG_FULL_BYTES = 64 * 1024 * 1024
 _LOG_LEVEL_TOKEN_RE = re.compile(r"^\S+ ([A-Z]) ")
-# Post-startup stdout kept in memory. The startup head is never trimmed: readers parse load lines
-# for the server's whole life, and failure diagnostics read only the last 50 to 80 lines.
+# The startup head is never trimmed: its load lines are read for the server's whole life.
 _STDOUT_TRIM_AT = 20000
 _STDOUT_TAIL_KEEP = 5000
 _STDOUT_HEAD_MAX = 5000
@@ -31164,9 +31160,7 @@ class LlamaCppBackend:
                         gpu_indices is not None or use_fit or gpu_memory_mode == "manual",
                         _detected_gpus,
                     )
-                # llama.cpp logs 0/N on CPU-only hosts too, so a zero count needs a GPU we expected
-                # (Apple Silicon offloads through Metal with an empty CUDA/HIP probe). A positive
-                # count is llama.cpp's own word, which covers RPC, SYCL and other unprobed builds.
+                # CPU-only hosts log 0/N too, so a zero needs an expected GPU; a positive count stands.
                 _offload_counts = (
                     None
                     if _arch_gate_forced_cpu or _deliberate_cpu_only

@@ -70,8 +70,7 @@ export function offloadWarning(counts: OffloadCounts): OffloadWarning | null {
   if (cpuFallbackReason) return null;
   if (typeof offloaded !== "number" || typeof total !== "number") return null;
   if (total <= 0 || offloaded >= total) return null;
-  // Before the pin check: a requested GPU split that got no GPU at all was not what anyone asked for.
-  // Backend failure logs the same 0/M, and a smaller quant would not help there.
+  // Before the pin check: a GPU backend that failed to load is never what was asked for.
   if (offloaded <= 0 && gpuBackendUnavailable && gpuLayers !== 0) {
     return {
       titleSuffix: ", on CPU",
