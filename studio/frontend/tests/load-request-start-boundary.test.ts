@@ -68,6 +68,7 @@ function chatApi(prepared: Prepared) {
           return prepared;
         },
       },
+      "@/features/settings/low-disk-check": { checkDiskSpace: () => Promise.resolve() },
       "@/features/igpu-carveout": {
         dismissCarveoutAdviceForModel: () => {},
         showCarveoutAdvice: () => {},

@@ -99,31 +99,61 @@ test("an empty open folder says it is empty", () => {
   assert.match(APP_SIDEBAR, /if \(chats\.length === 0\) rows \+= 1;/);
 });
 
-// The submenu holds actions and destinations. The rule separates them, actions above.
-test("the Project submenu puts its actions above the destinations", () => {
+// A chat's "Move to" holds projects and sections, each its own group under a heading: its New
+// first, then the destinations, then its Remove last and only where there is one to leave.
+test("a chat's Move to submenu groups projects and sections, New first and Remove last", () => {
   const sub = APP_SIDEBAR.slice(
-    APP_SIDEBAR.indexOf("<span>Project</span>"),
+    APP_SIDEBAR.indexOf("{/* Projects and sections in one place"),
     APP_SIDEBAR.indexOf("<span>Export</span>"),
   );
-  assert.ok(sub.length > 0, "the Project submenu moved");
-  const newProject = sub.indexOf("<span>New project</span>");
-  const sources = sub.indexOf("<span>Project sources</span>");
-  const rule = sub.indexOf("<DropdownMenuSeparator />");
-  const recents = sub.indexOf("<span>Recents</span>");
-  for (const [name, at] of Object.entries({
-    newProject,
-    sources,
-    rule,
-    recents,
-  })) {
-    assert.notEqual(at, -1, `${name} is gone from the Project submenu`);
+  assert.ok(sub.length > 0, "the Move to submenu moved");
+  const at = {
+    trigger: sub.indexOf('<span>{t("shell.sections.moveTo")}</span>'),
+    projects: sub.indexOf('<P.Label>{t("shell.navigation.projects")}</P.Label>'),
+    newProject: sub.indexOf("<span>New project</span>"),
+    destinations: sub.indexOf("{moveProjects.map((project) => ("),
+    removeProject: sub.indexOf('t("shell.sections.removeFromProject")'),
+    rule: sub.indexOf("<P.Separator />"),
+    sections: sub.indexOf("{renderSectionItems(P, {"),
+  };
+  for (const [name, index] of Object.entries(at)) {
+    assert.notEqual(index, -1, `${name} is gone from the Move to submenu`);
   }
-  assert.ok(newProject < sources, "Project sources is not under New project");
-  assert.ok(sources < rule, "Project sources fell below the rule");
-  assert.ok(rule < recents, "the destinations are not under the rule");
-  // The old wording is gone.
-  assert.ok(!APP_SIDEBAR.includes("<span>Move to project</span>"));
-  assert.ok(!APP_SIDEBAR.includes("<span>Save to project sources</span>"));
+  const order = Object.values(at);
+  assert.deepEqual([...order].sort((a, b) => a - b), order, "the Move to submenu is out of order");
+  // Remove from project only where there is one to leave.
+  assert.match(sub, /\{item\.projectId && \(\n\s*<P\.Item onSelect=\{\(\) => void moveChatToProject\(item, null\)\}>/);
+  // New project and New section share one icon.
+  assert.match(sub, /icon=\{PlusSignIcon\}[^\n]*\n\s*<span>New project<\/span>/);
+  const items = APP_SIDEBAR.slice(
+    APP_SIDEBAR.indexOf("function renderSectionItems("),
+    APP_SIDEBAR.indexOf('/** "Move to" for rows that only sections take'),
+  );
+  assert.match(items, /icon=\{PlusSignIcon\}[^\n]*\n\s*<span>\{t\("shell\.sections\.newSection"\)\}<\/span>/);
+  // Sections run New section, the sections, then Remove from section, only where there is one.
+  const newSection = items.indexOf('t("shell.sections.newSection")');
+  const list = items.indexOf("{destinations.map((section) => (");
+  // The project or section the row is already in is left out, not offered greyed out.
+  assert.match(items, /const destinations = recentSections\n\s*\.filter\(\(section\) => section\.id !== config\.current\)\n\s*\.slice\(0, MOVE_TO_MAX\);/);
+  assert.doesNotMatch(APP_SIDEBAR, /disabled=\{config\.current === section\.id\}|disabled=\{item\.projectId === project\.id\}/);
+  const remove = items.indexOf("{config.anyFiled && (");
+  assert.ok(newSection < list && list < remove, "the Sections group is out of order");
+  // No Project sources, no separate Project or Section submenus, no ellipsis on New section.
+  assert.ok(!APP_SIDEBAR.includes("<span>Project sources</span>"));
+  assert.ok(!APP_SIDEBAR.includes("<span>Project</span>"));
+  // A folder or a selection only goes to sections, so its submenu is "Section", as ChatGPT's is,
+  // under the icon its sections carry.
+  const sectionOnly = APP_SIDEBAR.slice(APP_SIDEBAR.indexOf("function renderSectionSubmenu("));
+  assert.match(
+    sectionOnly,
+    /<P\.SubTrigger>\n\s*<HugeiconsIcon icon=\{LayerIcon\} strokeWidth=\{1\.75\} className="size-icon" \/>\n\s*<span>\{t\("shell\.sections\.section"\)\}<\/span>/,
+  );
+  // Edit opens a settings dialog for a folder as for a section: the cog, not a pencil.
+  assert.match(
+    APP_SIDEBAR,
+    /<P\.Item onSelect=\{\(\) => setEditingProject\(project\)\}>\n\s*<HugeiconsIcon icon=\{Settings02Icon\}/,
+  );
+  assert.ok(!APP_SIDEBAR.includes("newSectionEllipsis"));
 });
 
 // The folder menu: pin beside Project home, Edit for the dialog that owns the name, and no
@@ -186,7 +216,7 @@ test("a pinned folder is a row of Pinned, not of Projects", () => {
     APP_SIDEBAR.indexOf("const sidebarProjectRecords = useMemo("),
     APP_SIDEBAR.indexOf("const visibleProjectRecords"),
   );
-  assert.match(records, /\.filter\(\(p\) => !pinnedProjectIdSet\.has\(p\.id\)\)/);
+  assert.match(records, /\.filter\(\(p\) => !pinnedProjectIdSet\.has\(p\.id\) && !sectionByProjectId\[p\.id\]\)/);
   assert.ok(
     !records.includes("pinnedProjectIds"),
     "the Projects list still folds the pinned folders in",
@@ -194,13 +224,13 @@ test("a pinned folder is a row of Pinned, not of Projects", () => {
   // The header owns "New project", so its test counts every project, pinned or not.
   assert.match(
     APP_SIDEBAR,
-    /const projectsSectionConfigured =\n\s*organizeBy === "project" && projects\.length > 0;/,
+    /const projectsSectionConfigured =\n\s*organizeBy === "project" &&\n\s*!projectsSectionHidden &&\n\s*\(projects\.length > 0 \|\| projectsLoaded\);/,
   );
   assert.match(
     APP_SIDEBAR,
     /const projectsSectionRendered =\n[\s\S]{0,200}?projectsSectionConfigured;/,
   );
-  assert.match(APP_SIDEBAR, /\{projectsSectionRendered && \(/);
+  assert.match(APP_SIDEBAR, /if \(!projectsSectionRendered\) return null;/);
 });
 
 // Moving a folder into Pinned must not undo an order the user had already dragged it into: the
@@ -255,8 +285,203 @@ test("the walk reads the rows in the order Pinned draws them", () => {
     APP_SIDEBAR,
     /const pinnedSectionChatItems = useMemo\(\n\s*\(\) =>\n\s*chatListsOnScreen && pinnedOpen\n\s*\? pinnedRows\.flatMap\(\(row\) =>\n\s*row\.kind === "project"\n\s*\? folderChatItems\(true, \[row\.project\]\)\n\s*: \[row\.item\],/,
   );
+  // The walk reads pinnedItems then projectItems, so the two are every section above Recents in
+  // the order the user dragged them into, split at Pinned.
   assert.match(
     APP_SIDEBAR,
-    /pinnedItems: pinnedSectionChatItems,\n\s*projectItems: sectionProjectChatItems,/,
+    /pinnedItems: upToPinnedChatItems,\n(?:\s*\/\/[^\n]*\n)*\s*projectItems: belowPinnedChatItems,/,
+  );
+  assert.match(
+    APP_SIDEBAR,
+    /for \(const key of orderedSectionKeys\) \{\n\s*const items =\n\s*key === PINNED_SECTION_KEY\n\s*\? pinnedSectionChatItems\n\s*: key === PROJECTS_SECTION_KEY\n\s*\? sectionProjectChatItems/,
+  );
+});
+
+// Pinning is its own grouping. Organizing in one list used to empty Pinned of its folders, so a
+// project pinned to the top vanished along with the section the setting was actually about.
+test("a pinned folder stays in Pinned when the sidebar is one list", () => {
+  const rows = APP_SIDEBAR.slice(
+    APP_SIDEBAR.indexOf("const pinnedRows = useMemo("),
+    APP_SIDEBAR.indexOf("const pinnedRowIds = useMemo("),
+  );
+  assert.ok(rows.length > 0, "pinnedRows moved");
+  assert.ok(
+    !rows.includes("organizeBy"),
+    "Pinned still drops its folders when the sidebar organizes in one list",
+  );
+  assert.match(
+    rows,
+    /for \(const project of pinnedProjectBase\) \{\n\s*rows\.push\(\{ kind: "project", id: project\.id, project \}\);/,
+  );
+  // Pinned's own folder rows are selectable wherever they are drawn, while the Projects
+  // section's leave with the section.
+  assert.match(
+    APP_SIDEBAR,
+    /if \(pinnedOpen\) \{\n\s*for \(const project of pinnedProjectRecords\) ids\.add\(project\.id\);/,
+  );
+  assert.match(
+    APP_SIDEBAR,
+    /if \(projectsOpen && projectsSectionConfigured\) \{\n\s*for \(const project of visibleProjectRecords\) ids\.add\(project\.id\);/,
+  );
+});
+
+// The three orders were each captioned with what they do. The names say it, and the captions
+// made a four-item radio group twice as tall as every other menu in the sidebar.
+test("the sort options are names, with nothing written under them", () => {
+  const options = APP_SIDEBAR.slice(
+    APP_SIDEBAR.indexOf("const CHAT_SORT_OPTIONS"),
+    APP_SIDEBAR.indexOf("const ORGANIZE_OPTIONS"),
+  );
+  assert.ok(!options.includes("hint"), "the sort options still carry captions");
+  // Every sort opens as a submenu of plain names, ticked on the right like the rest of the menu.
+  assert.match(
+    APP_SIDEBAR,
+    /\{config\.options\.map\(\(option\) => \(\n\s*<DropdownMenuRadioItem key=\{option\.value\} value=\{option\.value\}>\n\s*\{t\(option\.key\)\}\n\s*<\/DropdownMenuRadioItem>/,
+  );
+  assert.match(APP_SIDEBAR, /options: CHAT_SORT_OPTIONS,/);
+  // And the strings go with them, in every language.
+  for (const key of ["priorityHint", "lastUpdatedHint", "manualOrderHint"]) {
+    assert.ok(!APP_SIDEBAR.includes(key), `${key} is still read`);
+  }
+});
+
+// The project page's own header kebab still opened a name-only dialog, so the same project
+// offered two different "edit" depending on which list it was reached from.
+test("the project page edits through the same dialog the sidebar opens", async () => {
+  const page = await readSrcAsync("features/chat/chat-page.tsx");
+  assert.ok(!page.includes("Rename project"), "the rename-only dialog is still there");
+  assert.ok(!page.includes("commitProjectRename"), "the rename call is still there");
+  assert.match(page, /onEdit=\{\(\) => setEditingProject\(true\)\}/);
+  // The record behind the header, and the dialog it feeds.
+  assert.match(
+    page,
+    /projects\.find\(\(project\) => project\.id === projectId\)/,
+  );
+  assert.match(
+    page,
+    /project=\{active && editingProject \? \(currentProject \?\? null\) : null\}/,
+  );
+  // Delete hands back to the page's own confirmation, as it does in the sidebar.
+  assert.match(
+    page,
+    /onDelete=\{\(\) => \{\n\s*setEditingProject\(false\);\n\s*openProjectDelete\(\);/,
+  );
+  // And that confirmation says what else it takes: the workspace folder, named where the record
+  // has a path. Without it, deleting from here always left the folder with nothing able to reach it.
+  assert.match(
+    page,
+    /function openProjectDelete\(\): void \{\n\s*setDeleteFilesOnDelete\(false\);\n\s*setDeletingProject\(true\);/,
+  );
+  assert.match(
+    page,
+    /const deleteFiles = deleteFilesOnDelete;\n\s*setDeletingProject\(false\);\n\s*setDeleteFilesOnDelete\(false\);/,
+  );
+  assert.match(page, /await deleteChatProject\(projectId, \{ deleteFiles \}\);/);
+  assert.match(
+    page,
+    /id="chat-landing-delete-project-files"[\s\S]{0,220}?currentProject\?\.rootPath \?\?\n\s*"The project workspace folder will be removed from disk\."/,
+  );
+  assert.match(page, /\{deleteFilesOnDelete \? "Delete all" : "Delete"\}/);
+  // Nothing opens the confirmation without seeding the switch first.
+  assert.equal(
+    (page.match(/setDeletingProject\((?!false\))/g) ?? []).length,
+    1,
+    "setDeletingProject is called outside its opener",
+  );
+});
+
+// A pinned folder stays in one-list mode, but its chats are already Recents rows there: expanding
+// it would draw each of them twice and publish both copies to the walk and the selection.
+test("a pinned folder in one list is a way in, not a second copy of its chats", () => {
+  assert.match(
+    APP_SIDEBAR,
+    /if \(!chatListsOnScreen \|\| organizeBy !== "project" \|\| !open\) return \[\];/,
+  );
+  assert.match(APP_SIDEBAR, /const listsChats = organizeBy === "project";/);
+  assert.match(
+    APP_SIDEBAR,
+    /const expanded = listsChats && !collapsedProjectIds\.has\(project\.id\);/,
+  );
+  // Nothing to expand into, so the row opens the project instead of toggling into an empty block.
+  assert.match(
+    APP_SIDEBAR,
+    /if \(listsChats\) toggleProjectCollapsed\(project\.id\);\n\s*else openProject\(project\.id\);/,
+  );
+  // Everything a folder draws under itself hangs off that one flag.
+  for (const gated of [
+    /\{expanded &&\n\s*visibleChats\.map\(/,
+    /\{expanded && projectChats\.length === 0 && \(/,
+    /\{expanded &&\n\s*projectChats\.length > PROJECT_CHAT_LIMIT && \(/,
+  ]) {
+    assert.match(APP_SIDEBAR, gated);
+  }
+  // And the row count the scroll fade measures counts nothing where nothing is drawn.
+  assert.match(
+    APP_SIDEBAR,
+    /const projectChatRowCount = useMemo\(\(\) => \{\n[^\n]*\n\s*if \(organizeBy !== "project"\) return 0;/,
+  );
+});
+
+// "Remove from <name>", and lists that scroll: forty projects ran the submenu off the window,
+// taking the Sections group and both Removes out of reach.
+test("Move to names what a row leaves, and its lists scroll inside the window", async () => {
+  assert.match(
+    APP_SIDEBAR,
+    /leaving\n\s*\? t\("shell\.sections\.removeFrom", \{ name: leaving\.name \}\)\n\s*: t\("shell\.sections\.removeFromProject"\);/,
+  );
+  assert.match(
+    APP_SIDEBAR,
+    /\{leaving\n\s*\? t\("shell\.sections\.removeFrom", \{ name: leaving\.name \}\)\n\s*: t\("shell\.sections\.removeFromSection"\)\}/,
+  );
+  for (const locale of ["en", "de", "ja"]) {
+    const source = await readSrcAsync(`i18n/locales/${locale}.ts`);
+    assert.match(source, /removeFrom: "[^"]*\{name\}[^"]*",/, locale);
+  }
+  // Each group's list scrolls past about seven rows, with no scrollbar to eat the right padding,
+  // and the submenu as a whole stays inside the window.
+  assert.match(APP_SIDEBAR, /const MOVE_TO_LIST =\n\s*"no-scrollbar -my-0\.5 max-h-\[calc\(260px\*var\(--ui-space-scale,1\)\)\] overflow-y-auto overscroll-contain";/);
+  // Rows keep one gap across the list's ends, and Remove reads with an X like a close.
+  assert.match(APP_SIDEBAR, /const MENU_ROW_MARGIN_PX = 2;/);
+  assert.equal((APP_SIDEBAR.match(/icon=\{Cancel01Icon\}[^\n]*\n\s*<span className="truncate">/g) ?? []).length, 2);
+  assert.doesNotMatch(APP_SIDEBAR, /MinusSignCircleIcon/);
+  assert.match(APP_SIDEBAR, /const MOVE_TO_MENU =\n\s*"max-h-\[var\(--radix-dropdown-menu-content-available-height,var\(--radix-context-menu-content-available-height\)\)\] overflow-y-auto";/);
+  assert.equal((APP_SIDEBAR.match(/<div className=\{MOVE_TO_LIST\}>/g) ?? []).length, 2);
+  assert.equal((APP_SIDEBAR.match(/sidebar-menu w-52", MOVE_TO_MENU\)/g) ?? []).length, 2);
+});
+
+test("a sidebar menu heading has more room above it than below", async () => {
+  const css = await readSrcAsync("index.css");
+  assert.match(
+    css,
+    /\.unsloth-plus-menu\.sidebar-row-menu :is\(\n\s*\[data-slot="dropdown-menu-label"\],\n\s*\[data-slot="context-menu-label"\]\n\s*\) \{\n\s*@apply pl-2\.5 pr-2\.5 pt-2 pb-1 text-ui-11;/,
+  );
+});
+
+// A long list of projects or sections made "Move to" slow to open, so each group lists at most the
+// 12 most recently active. Neither a project's updatedAt (edits only) nor section order (drags)
+// is recency, so both rank by their chats' activity.
+test("Move to lists at most the 12 most recently active projects and sections", () => {
+  assert.match(APP_SIDEBAR, /const MOVE_TO_MAX = 12;/);
+  const activity = APP_SIDEBAR.slice(
+    APP_SIDEBAR.indexOf("const projectActivityAt = useMemo("),
+    APP_SIDEBAR.indexOf("const recentProjects = useMemo("),
+  );
+  assert.match(activity, /chatsByProjectId\.get\(project\.id\)\?\.\[0\]\?\.updatedAt/);
+  assert.match(
+    APP_SIDEBAR,
+    /\[\.\.\.projects\]\.sort\(\n\s*\(a, b\) => \(projectActivityAt\.get\(b\.id\) \?\? 0\) - \(projectActivityAt\.get\(a\.id\) \?\? 0\),/,
+  );
+  // The sidebar's own folder order reads the same activity.
+  assert.match(APP_SIDEBAR, /const lastActivityAt = \(project: ProjectRecord\) => projectActivityAt\.get\(project\.id\) \?\? 0;/);
+  const sections = APP_SIDEBAR.slice(
+    APP_SIDEBAR.indexOf("const recentSections = useMemo("),
+    APP_SIDEBAR.indexOf("const sidebarProjectRecords = useMemo("),
+  );
+  assert.match(sections, /Math\.max\(section\.createdAt \?\? 0, section\.modifiedAt \?\? 0\)/);
+  assert.match(sections, /touch\(sectionByChatId\[item\.id\], item\.updatedAt\)/);
+  assert.match(sections, /touch\(sectionId, projectActivityAt\.get\(projectId\) \?\? 0\)/);
+  assert.match(
+    APP_SIDEBAR,
+    /const moveProjects = recentProjects\n\s*\.filter\(\(project\) => project\.id !== item\.projectId\)\n\s*\.slice\(0, MOVE_TO_MAX\);/,
   );
 });

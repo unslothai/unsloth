@@ -154,6 +154,26 @@ def test_logging_reports_an_empty_status_so_the_active_one_is_sent_once():
     assert owner.training_progress.num_tokens == 384
 
 
+def test_unbounded_run_reports_the_trainer_epoch():
+    owner = _make_owner()
+
+    _drive(owner._create_progress_callback(), steps = 3)
+
+    assert owner.training_progress.epoch == 1.5
+
+
+def test_bounded_run_reports_epochs_over_the_whole_dataset():
+    owner = _make_owner()
+    owner._kept_row_fraction = 0.1
+    reported: list[float] = []
+    owner.add_progress_callback(lambda progress: reported.append(progress.epoch))
+
+    _drive(owner._create_progress_callback(), steps = 3)
+
+    assert [epoch for epoch in reported if epoch][:3] == [0.05, 0.1, 0.15]
+    assert owner.training_progress.epoch == pytest.approx(0.15)
+
+
 def test_parent_status_advances_over_the_whole_chain():
     owner = _make_owner()
     backend = TrainingBackend()

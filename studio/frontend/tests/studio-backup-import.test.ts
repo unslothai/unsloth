@@ -138,6 +138,8 @@ function backup() {
       updatedAt: 2100,
       forkedFromThreadId: "t1",
       forkedFromMessageId: "m2",
+      forkBoundaryMessageId: "m5",
+      forkTitleBase: "Recipe",
     },
   ];
   const messages: MessageRecord[] = [
@@ -202,6 +204,12 @@ test("a Studio backup restores one chat per thread, with titles, branches, archi
   assert.equal(recipeMessages[1].parentId, recipeMessages[0].id);
   assert.equal(recipe.forkedFromThreadId, trip.id);
   assert.equal(recipe.forkedFromMessageId, tripMessages[1].id);
+  // The divider's anchor is one of this thread's own messages, so it remaps to the new id.
+  assert.equal(recipe.forkBoundaryMessageId, recipeMessages[1].id);
+  assert.notEqual(recipe.forkBoundaryMessageId, "m5");
+  // A name rather than an id, so it restores as it stands and the next fork of this one
+  // is numbered rather than suffixed again.
+  assert.equal(recipe.forkTitleBase, "Recipe");
 });
 
 test("importing the same backup twice reuses the project and never reuses a thread or message id", async () => {

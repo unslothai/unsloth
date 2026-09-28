@@ -309,7 +309,7 @@ export function ProgressSection({
               </span>
               <span>{pct}%</span>
             </div>
-            <Progress value={pct} className="h-2 bg-foreground/5" />
+            <Progress value={pct} className="h-2 bg-[color-mix(in_oklab,var(--foreground)_calc(5%*var(--contrast-wash-gain,1)),transparent)]" />
           </div>
 
           {!isHistorical && (

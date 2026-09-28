@@ -416,7 +416,16 @@ class TestBuildShRocm:
         body = open(_WORKFLOW, encoding = "utf-8").read()
         assert "DEFAULT_ROCM_VERSION: '7.2.4'" in body
         assert "DEFAULT_TORCH_INDEX_URL: 'https://download.pytorch.org/whl/rocm7.2'" in body
-        assert "6.2" not in body.replace("ubuntu-22.04", "")
+        # ROCm 6.2, which is what this file must no longer mention anywhere. The plain
+        # substring also matched the version comment on a pinned action
+        # (`docker/metadata-action@<sha>  # v6.2.0`), which has nothing to do with ROCm
+        # and would have forced the next person to either unpin the action or weaken the
+        # check. Comments and the `runs-on` image name are dropped first; everything the
+        # workflow actually executes still has to be free of it.
+        meaningful = "\n".join(line.split("#", 1)[0] for line in body.splitlines()).replace(
+            "ubuntu-22.04", ""
+        )
+        assert "6.2" not in meaningful
         # per RUN on main: a sha would still pair a scheduled run with a dispatch on
         # an unchanged main, and the group keeps only one pending run
         assert "github.ref == 'refs/heads/main' && github.run_id" in body
@@ -450,11 +459,13 @@ class TestTheUserFacingDocsCoverWsl:
             assert needle in text, needle
 
     def test_the_readme_no_longer_says_native_linux_only(self):
+        # The README keeps one line for AMD and sends the reader to the Hub page, whose WSL
+        # flags the test above pins. What it must not do is bring back the claim that sent
+        # Windows users away, or lose the link that replaces the detail.
         text = open(_README, encoding = "utf-8").read()
         assert "needs native Linux" not in text
-        assert "/dev/dxg" in text and "docker/run.sh --rocm" in text
-        assert "UNSLOTH_IMAGE=unsloth-rocm:latest" in text
-        assert "RDNA3 cards have no bridge path yet" in text
+        assert "native Linux only" not in text
+        assert "https://hub.docker.com/r/unsloth/unsloth-rocm" in text
 
 
 # ── entrypoint-rocm.sh ───────────────────────────────────────────────────────
@@ -545,7 +556,10 @@ class TestRocmEntrypoint:
         assert "modprobe" not in err, err
         assert "run.sh --rocm" in err
 
-    @pytest.mark.skipif(os.geteuid() == 0, reason = "root reads a mode-0 file")
+    @pytest.mark.skipif(
+        os.name != "posix" or os.geteuid() == 0,
+        reason = "needs POSIX mode bits, and root reads a mode-0 file regardless",
+    )
     def test_an_unreadable_kfd_names_the_group_ids(self, tmp_path):
         rc, ran, err = _entrypoint(tmp_path, readable = False)
         assert rc == 1 and not ran
@@ -829,7 +843,16 @@ class TestRocmEntrypoint:
         out.write_text("")
         env = {"PATH": os.environ["PATH"], "GITHUB_OUTPUT": str(out)}
         env.update({k: str(v) for k, v in wf["env"].items()})
-        env.update({"IN_UNSLOTH": "", "IN_ZOO": "", "IN_ROCM": "", "IN_INDEX": "", "IN_GFX": ""})
+        env.update(
+            {
+                "IN_UNSLOTH": "",
+                "IN_ZOO": "",
+                "IN_NOTEBOOKS": "",
+                "IN_ROCM": "",
+                "IN_INDEX": "",
+                "IN_GFX": "",
+            }
+        )
         env.update(inputs)
         proc = subprocess.run(
             ["bash", "-e", "-c", step["run"]], env = env, capture_output = True, text = True
@@ -879,50 +902,67 @@ class TestRocmEntrypoint:
         assert "load_in_4bit = four_bit" in smoke and "ROCM_GFX=gfx906" in smoke
         entry = open(_ENTRYPOINT, encoding = "utf-8").read()
         assert "ROCM_GFX=gfx906 ROCM_VERSION=6.3.4" in entry
+        # The Studio venv is installed by install.sh with the index pinned, which
+        # skips the reroute that would notice gfx906, and the builder has no GPU
+        # to probe, so the arch has to be forwarded or the prebuilt wheel goes in.
+        studio = open(os.path.join(_DOCKER, "Dockerfile.studio-rocm"), encoding = "utf-8").read()
+        install = studio[
+            studio.index(". /etc/unsloth-rocm-build") : studio.index("bash install.sh --local")
+        ]
+        assert 'UNSLOTH_TORCH_INDEX_URL="${TORCH_INDEX_URL}"' in install
+        assert 'UNSLOTH_ROCM_GFX_ARCH="${ROCM_GFX}"' in install
 
     def test_the_studio_image_is_published_from_the_base_digest_with_the_same_refs(self):
         """docker/Dockerfile.studio-rocm is built by the same run as the base, on the
         base by digest (a tag can already be a newer run's) with the refs the base
-        baked, and takes the base's tags with a -studio leaf under the same gates."""
+        baked, and takes the base's tags with a -studio leaf under the same gates.
+        Neither tag set moves until both digests exist: a :latest that moved while the
+        Studio build then failed would leave :studio on the previous base."""
         import yaml
 
         wf = yaml.safe_load(open(_WORKFLOW, encoding = "utf-8"))
         build = wf["jobs"]["build-studio"]
-        assert build["needs"] == ["prepare", "build"]
+        assert "build" in build["needs"] and "tag" not in build["needs"], build["needs"]
+        assert "build-studio" in wf["jobs"]["tag"]["needs"], wf["jobs"]["tag"]["needs"]
         step = next(s for s in build["steps"] if s.get("id") == "build")
         assert step["with"]["file"] == "./docker/Dockerfile.studio-rocm"
         args = dict(ln.split("=", 1) for ln in step["with"]["build-args"].splitlines() if ln)
         assert args["BASE_IMAGE"].endswith("@${{ needs.build.outputs.digest }}"), args
         assert args["UNSLOTH_STUDIO_REF"] == "${{ needs.prepare.outputs.unsloth_ref }}"
         assert args["UNSLOTH_STUDIO_ZOO_REF"] == "${{ needs.prepare.outputs.zoo_ref }}"
+        # the notebooks too: the layer is keyed on this string, so a mutable ref
+        # would be a cache hit on the next run and ship the old set
+        assert args["UNSLOTH_NOTEBOOKS_REF"] == "${{ needs.prepare.outputs.notebooks_commit }}"
+        prepare = wf["jobs"]["prepare"]
+        assert prepare["outputs"]["notebooks_commit"] == "${{ steps.notebooks.outputs.commit }}"
+        resolve = next(s for s in prepare["steps"] if s.get("id") == "notebooks")
+        assert "git ls-remote https://github.com/unslothai/notebooks" in resolve["run"]
 
-        # no stable tag moves until both digests exist, and both manifests are created in ONE
-        # job, back to back. That orders the two writes WITHIN a run; it does not order two
-        # RUNS, which the per-run concurrency group deliberately lets overlap. Same shape as
-        # docker-publish.yml for latest + core, so the pairing window is repo-wide rather
-        # than this workflow's, and closing it needs a real lock: a shared concurrency group
-        # cancels a PENDING job (tests/studio/test_main_runs_survive_merge_bursts.py), which
-        # would drop a whole run's tags instead.
-        tag = wf["jobs"]["tag"]
-        assert tag["needs"] == ["prepare", "build", "build-studio"]
-        ids = [s.get("id") for s in tag["steps"]]
-        names = [s.get("name") for s in tag["steps"]]
-        assert ids.index("meta") < ids.index("meta_studio")
-        assert names.index("Create manifest") < names.index("Create Studio manifest")
-        assert "tag-studio" not in wf["jobs"]
-
-        def tag_lines(step_id):
-            meta = next(s for s in tag["steps"] if s.get("id") == step_id)
+        def tag_lines(job):
+            meta = next(s for s in wf["jobs"][job]["steps"] if s.get("id") == "meta")
             return [ln for ln in meta["with"]["tags"].splitlines() if ln.strip()]
 
-        studio, base = tag_lines("meta_studio"), tag_lines("meta")
+        tag = wf["jobs"]["tag-studio"]
+        assert "build-studio" in tag["needs"] and "tag" in tag["needs"], tag["needs"]
+        studio, base = tag_lines("tag-studio"), tag_lines("tag")
         assert len(studio) == len(base) == 5
         for s_ln, b_ln in zip(studio, base):
             assert "studio" in s_ln, s_ln
             # the same enable= gate as the base line it mirrors
             assert s_ln.split(",enable=", 1)[1:] == b_ln.split(",enable=", 1)[1:], (s_ln, b_ln)
-        create = next(s for s in tag["steps"] if s.get("name") == "Create Studio manifest")
-        assert create["env"]["DIGEST"] == "${{ needs.build-studio.outputs.digest }}"
+        # the page describes both images, so it syncs only once both moved
+        assert "tag-studio" in wf["jobs"]["hub-readme"]["needs"]
+
+    def test_a_notebooks_override_gets_sha_tags_only(self, tmp_path):
+        """A dispatch that bakes another notebooks ref is an experiment like any
+        other override: :studio and :latest name the default build only."""
+        for ref in ("", "main"):
+            rc, got, out = self._build_args(tmp_path, IN_NOTEBOOKS = ref)
+            assert rc == 0 and got["stable"] == "true", (ref, out)
+        rc, got, out = self._build_args(tmp_path, IN_NOTEBOOKS = "some-branch")
+        assert rc == 0 and got["stable"] == "false", out
+        rc, got, out = self._build_args(tmp_path, IN_NOTEBOOKS = "some-branch", IN_GFX = "gfx1151")
+        assert rc == 0 and got["gfx_tag"] == "false", out
 
     def test_the_gfx_tag_needs_every_other_input_at_its_default(self):
         """A feature-branch ref plus rocm_gfx=gfx1151 must not replace the public
@@ -1033,11 +1073,12 @@ class TestStudioLaunchRocm:
         body = open(_STUDIO_DOCKERFILE, encoding = "utf-8").read()
         assert 'CMD ["/usr/local/bin/unsloth-studio-launch"]' in body
         assert "COPY studio_run.sh /usr/local/bin/unsloth-studio-run" in body
-        assert "COPY studio_launch_rocm.sh /usr/local/bin/unsloth-studio-launch" in body
-        # the CUDA image's studio-password program waits on JupyterLab, which this
-        # image does not run; nothing here may invoke or ship it
-        assert "studio_password" not in body
+        # The single-service ROCm launcher was replaced by the shared studio_launch.sh
+        # under supervisord once this image gained JupyterLab (#11286); the
+        # program list itself is asserted in test_docker_studio_rocm_jupyter.py.
+        assert "COPY studio_launch.sh /usr/local/bin/unsloth-studio-launch" in body
+        assert "COPY supervisord.conf /etc/supervisor/supervisord.conf" in body
         # the gfx906 base removes bitsandbytes; the Studio venv must be told the arch
         assert 'UNSLOTH_ROCM_GFX_ARCH="${ROCM_GFX}"' in body
         ignore = open(os.path.join(_DOCKER, ".dockerignore"), encoding = "utf-8").read()
-        assert "!studio_launch_rocm.sh" in ignore and "!studio_run.sh" in ignore
+        assert "!studio_launch.sh" in ignore and "!studio_run.sh" in ignore

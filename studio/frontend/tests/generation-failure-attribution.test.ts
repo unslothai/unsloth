@@ -218,7 +218,7 @@ test("a retained failure says whether it was logged, since its text cannot", () 
   assert.match(page, /reportedWasLogged = retainedFailureWasLogged\(p\)/);
   assert.match(
     page,
-    /typeof \(err as \{ errorLogged\?: boolean \}\)\.errorLogged === "boolean"/,
+    /const logged = \(err as \{ errorLogged\?: boolean \}\)\.errorLogged;[\s\S]{0,120}typeof logged === "boolean"/,
   );
 });
 
