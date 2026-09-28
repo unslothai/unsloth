@@ -2027,6 +2027,7 @@ export function ModelConfigPage({
   const loadedGpuIds = useChatRuntimeStore((s) => s.loadedGpuIds);
   const loadedGpuIndexKind = useChatRuntimeStore((s) => s.loadedGpuIndexKind);
   const loadedCpuFallback = useChatRuntimeStore((s) => s.loadedCpuFallback);
+  const residentModelLoading = useChatRuntimeStore((s) => s.modelLoading);
   const residentEstimateSettings = useChatRuntimeStore(
     useShallow(selectResidentEstimateSettings),
   );
@@ -2859,12 +2860,17 @@ export function ModelConfigPage({
     Math.max(nativeMaxSeqLength, maxSeqLengthValue),
   );
   // No resident credit without a reported context; pending settings cannot price it.
-  const residentContext = servedWindow(activeLoadedContext);
+  // activeLoadedContext is GGUF-only; an MLX resident reports its served window here.
+  const residentContext = servedWindow(
+    targetIsMlx && isActiveModel ? loadedContextLength : activeLoadedContext,
+  );
   const residentEstimateRequest = resolveResidentEstimateRequest(
     isActiveModel ? memoryEstimateRequest : null,
     residentEstimateSettings,
     residentContext,
-    targetIsMlx ? { kvQuant: loadedMlxKvQuantRequested ?? null } : undefined,
+    targetIsMlx && !residentModelLoading
+      ? { kvQuant: loadedMlxKvQuantRequested ?? null }
+      : undefined,
   );
   const residentEstimate = useMemoryEstimate(residentEstimateRequest, {
     refreshMemory: true,

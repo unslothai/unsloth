@@ -75,7 +75,7 @@ export function resolveResidentEstimateRequest(
 ): MemoryEstimateRequest | null {
   if (
     !source ||
-    !settings ||
+    (!settings && !mlx) ||
     context == null ||
     !Number.isFinite(context) ||
     context <= 0
@@ -86,7 +86,8 @@ export function resolveResidentEstimateRequest(
     ggufVariant: source.ggufVariant,
     hfToken: source.hfToken,
     nativePathToken: source.nativePathToken,
-    ...settings,
+    // An MLX load records none of the llama.cpp settings the selector requires.
+    ...(settings ?? {}),
     nCtx: Math.floor(context),
     ...(mlx
       ? { maxSeqLength: Math.floor(context), mlxKvQuant: mlx.kvQuant }
