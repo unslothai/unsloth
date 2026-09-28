@@ -3364,9 +3364,15 @@ def _detect_gguf_from_hf_cache(repo_id: str) -> Optional[str]:
 
 def _hf_cache_main_gguf_files(repo_id: str, *, every_snapshot: bool = False) -> list[str]:
     """Main GGUF paths of the first cached snapshot of *repo_id* that holds any, or with
-    *every_snapshot* of all of them (newest first, each path once)."""
+    *every_snapshot* of all of them (newest first, each path once), remembered caches included
+    as the strict load lookup includes them."""
     found: list[str] = []
-    for snap in _iter_hf_cache_snapshots(repo_id):
+    if every_snapshot:
+        from core.inference.llama_cpp import _cached_gguf_snapshots
+        snapshots = _cached_gguf_snapshots(repo_id)
+    else:
+        snapshots = _iter_hf_cache_snapshots(repo_id)
+    for snap in snapshots:
         rel_files = []
         for f in _iter_gguf_files(snap, recursive = True):
             rel = f.relative_to(snap).as_posix()
@@ -3481,9 +3487,12 @@ def _refused_repo_cached_gguf(
     refuses the repo, or None.
 
     Complete means every shard present and, when the download recorded a manifest, every file
-    it names (a projector or drafter the variant needs included). Authorization is the cache's
-    usual rule: the owner's session may read its own downloads; an explicit token must reach
-    the repo; anonymous callers, API keys without a token and other accounts may not."""
+    it names (a projector or drafter the variant needs included). Only the owner's session,
+    which may read its own downloads: anyone else sent the token the Hub just refused for this
+    repo, and neither an earlier ``/auth-check`` verdict nor a probe that cannot answer outranks
+    that refusal."""
+    if not owner_session:
+        return None
     if not cache_reads_authorized(
         _refused_repo_cache_token(hf_token, owner_session), repo_id = repo_id
     ):
@@ -3495,9 +3504,14 @@ def _refused_repo_cached_gguf(
         return (local_file, gguf_variant) if local_file else None
     # Auto: the preferred variant first, then the next one down, so an interrupted Q8 beside
     # a complete Q4 still serves the Q4. Every snapshot: the complete one can be older.
-    remaining = _hf_cache_main_gguf_files(repo_id, every_snapshot = True)
+    remaining = sorted(_hf_cache_main_gguf_files(repo_id, every_snapshot = True))
     while remaining:
-        best = _pick_best_gguf(remaining)
+        # As the healthy-Hub auto pick: a repo-root checkpoint before a subdirectory one at the
+        # same quant, and sorted, so the answer does not follow directory enumeration order.
+        root_rows = [
+            f for f in remaining if "/" not in _qualified_variant_name(f, _extract_quant_label(f))
+        ]
+        best = _pick_best_gguf(root_rows or remaining)
         if not best:
             return None
         label = _extract_quant_label(best)

@@ -66,6 +66,10 @@ def _isolated(tmp_path, monkeypatch):
     monkeypatch.setattr(mc, "is_vision_model", lambda *a, **k: False)
     monkeypatch.setattr(mc, "detect_audio_type", lambda *a, **k: None)
     monkeypatch.setattr(mc, "is_model_cached", lambda *a, **k: False)
+    # Only this test's cache: no copies remembered from caches the host used before.
+    import hub.utils.gguf_sources as gguf_sources
+
+    monkeypatch.setattr(gguf_sources, "gguf_cache_snapshots", lambda repo: [])
     return tmp_path
 
 
@@ -200,16 +204,28 @@ def test_callers_the_cache_rules_refuse_stay_refused(monkeypatch, _isolated, tok
         _load(hf_token = token, gguf_variant = VARIANT)
 
 
-def test_an_explicit_token_the_hub_still_admits_follows_the_cache_rule(monkeypatch, _isolated):
+@pytest.mark.parametrize(
+    "verdict", [True, None], ids = ["cached_auth_check_yes", "probe_cannot_answer"]
+)
+def test_a_token_the_hub_just_refused_is_not_outranked_by_the_cache_rule(
+    monkeypatch, _isolated, verdict
+):
+    # The listing refused this very token. A /auth-check "yes" still in its cache, or a probe
+    # that times out on a host whose only credential downloaded the repo, must not let an API
+    # key or another account read the downloaded copy.
     _download(_isolated, GGUF)
-    _refuse(monkeypatch)
+    _refuse(monkeypatch, GatedRepoError("403 Client Error", status_code = 403))
     monkeypatch.setattr(
         hf_tokens,
         "_explicit_token_reaches_repo",
-        lambda repo, token, repo_type, offline = False: True,
+        lambda repo, token, repo_type, offline = False: verdict,
     )
-    config, _ = _load(hf_token = "hf_" + "k" * 34, gguf_variant = VARIANT)
-    assert config.is_gguf and config.gguf_file
+    # This token downloaded the copy, so an unanswerable probe would otherwise be settled by it.
+    monkeypatch.setattr(hf_tokens, "_caller_populated_the_cache", lambda *a, **k: True)
+    monkeypatch.setattr(hf_tokens, "_repo_present_on_disk", lambda *a, **k: True)
+    for _ in range(2):
+        with pytest.raises(GgufRepoUnreadableError):
+            _load(hf_token = "hf_" + "k" * 34, gguf_variant = VARIANT, owner_session = False)
 
 
 def test_a_revoked_grant_is_refused_even_for_a_managed_accounts_token(monkeypatch, _isolated):
@@ -402,3 +418,36 @@ def test_a_missing_llama_server_fails_before_the_cached_copy_is_returned(monkeyp
     )
     with pytest.raises(llama_cpp.LlamaServerNotFoundError):
         _load(gguf_variant = VARIANT, owner_session = True)
+
+
+@pytest.mark.parametrize("listed", ["root_first", "subdir_first"])
+def test_auto_selection_prefers_the_root_checkpoint_whatever_the_listing_order(
+    monkeypatch, _isolated, listed
+):
+    # As the healthy-Hub pick: the bare repo id is the root checkpoint, not distilled/.
+    root, sub = "Qwen3-0.6B-Q6_K.gguf", "distilled/Qwen3-0.6B-Q6_K.gguf"
+    snapshot = _download(_isolated, root, sub)
+    order = [root, sub] if listed == "root_first" else [sub, root]
+    monkeypatch.setattr(mc, "_hf_cache_main_gguf_files", lambda repo, **k: list(order))
+    _refuse(monkeypatch)
+    config, _ = _load(owner_session = True)
+    assert Path(config.gguf_file) == snapshot / root
+
+
+def test_auto_selection_finds_a_copy_in_a_remembered_cache(
+    monkeypatch, _isolated, tmp_path_factory
+):
+    # The active cache was switched to an empty one; the explicit-variant lookup still finds the
+    # remembered copy, so automatic selection must too.
+    import hub.utils.gguf_sources as gguf_sources
+
+    remembered = _download(tmp_path_factory.mktemp("previous_cache"), GGUF)
+    monkeypatch.setattr(
+        gguf_sources,
+        "gguf_cache_snapshots",
+        lambda repo: [remembered] if repo == REPO else [],
+    )
+    _refuse(monkeypatch)
+    config, _ = _load(owner_session = True)
+    assert Path(config.gguf_file) == remembered / GGUF
+    assert config.gguf_variant == VARIANT
