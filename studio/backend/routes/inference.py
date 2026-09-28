@@ -19686,6 +19686,7 @@ def _decode_and_resize_image(backend, encoded: str):
     image_data = base64.b64decode(encoded)
     image = Image.open(BytesIO(image_data))
     image.load()
+    image = _exif_upright(image)
     # After the resize: converting first resamples interpolated RGB, a different picture.
     image = _scaled_from_16_bit(backend.resize_image(image))
     if image.mode not in ("RGB", "RGBA"):
@@ -35123,6 +35124,28 @@ def _scaled_from_16_bit(image):
     return image.point(lambda v: v * (1.0 / 257), mode = "L")
 
 
+def _exif_upright(image):
+    # Only what the chat preview honours: the EXIF block, not XMP, and never for WebP.
+    from PIL import Image
+
+    exif = Image.Exif()
+    try:
+        if image.info.get("exif"):
+            exif.load(image.info["exif"])
+    except Exception:
+        return image
+    method = {
+        2: Image.Transpose.FLIP_LEFT_RIGHT,
+        3: Image.Transpose.ROTATE_180,
+        4: Image.Transpose.FLIP_TOP_BOTTOM,
+        5: Image.Transpose.TRANSPOSE,
+        6: Image.Transpose.ROTATE_270,
+        7: Image.Transpose.TRANSVERSE,
+        8: Image.Transpose.ROTATE_90,
+    }.get(None if image.format == "WEBP" else exif.get(0x0112))
+    return image if method is None else image.transpose(method)
+
+
 def _pil_to_png_b64(img) -> str:
     buf = io.BytesIO()
     # Composited, not merely converted: convert("RGB") keeps whatever colour sits
@@ -35137,7 +35160,7 @@ def _image_bytes_to_png_b64(raw: bytes) -> str:
     """Convert image bytes to base64 PNG for formats llama-server cannot decode."""
     from PIL import Image
 
-    img = _scaled_from_16_bit(Image.open(io.BytesIO(raw))).convert("RGB")
+    img = _scaled_from_16_bit(_exif_upright(Image.open(io.BytesIO(raw)))).convert("RGB")
     buf = io.BytesIO()
     img.save(buf, format = "PNG")
     return base64.b64encode(buf.getvalue()).decode("ascii")
@@ -35216,10 +35239,22 @@ def _llama_image_data_url(raw: bytes) -> str:
     Avoid inflating photos while still rejecting corrupt images with Pillow:
     stb_image silently accepts some truncated JPEGs. Callers map failures to HTTP 400.
     """
-    from PIL import Image
+    from PIL import Image, JpegImagePlugin
 
     with Image.open(io.BytesIO(raw)) as img:
         img.load()
+        upright = _exif_upright(img)
+    if upright is not img:
+        if raw.startswith(b"\xff\xd8") and _stb_reads_jpeg(raw):
+            buf = io.BytesIO()
+            upright.save(
+                buf,
+                format = "JPEG",
+                qtables = img.quantization,
+                subsampling = JpegImagePlugin.get_sampling(img),
+            )
+            return f"data:image/jpeg;base64,{base64.b64encode(buf.getvalue()).decode('ascii')}"
+        return f"data:image/png;base64,{_image_bytes_to_png_b64(raw)}"
     if raw.startswith(_PNG_SIGNATURE) and _stb_reads_png(raw):
         return f"data:image/png;base64,{base64.b64encode(raw).decode('ascii')}"
     if raw.startswith(b"\xff\xd8") and _stb_reads_jpeg(raw):
