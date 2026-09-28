@@ -565,3 +565,17 @@ def test_a_load_that_raises_before_loading_hands_the_config_back(monkeypatch):
         from_pretrained("x", load_in_4bit = True)
     assert config.quantization_config == original
     assert not fp8_to_nf4.fp8_to_nf4_armed(config)
+
+
+def test_planner_sizes_checkpoint_16bit_linears_as_4bit_in_quantize_all_mode(monkeypatch):
+    from unsloth.models import fp8_to_nf4
+
+    config = SimpleNamespace(
+        **{fp8_to_nf4.UNSLOTH_FP8_TO_NF4_ATTR: {"modules_to_not_convert": ["vision_tower", "lm_head"]}}
+    )
+    monkeypatch.delenv("UNSLOTH_FP8_TO_NF4_QUANTIZE_16BIT", raising = False)
+    kept = fp8_to_nf4.fp8_to_nf4_planner_quantization_config(config, ["lm_head"])
+    assert kept["llm_int8_skip_modules"] == ["lm_head", "vision_tower"]
+    monkeypatch.setenv("UNSLOTH_FP8_TO_NF4_QUANTIZE_16BIT", "1")
+    quantized = fp8_to_nf4.fp8_to_nf4_planner_quantization_config(config, ["lm_head"])
+    assert quantized["llm_int8_skip_modules"] == ["lm_head"]

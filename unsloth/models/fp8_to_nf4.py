@@ -360,13 +360,18 @@ def disarm_fp8_to_nf4(config) -> bool:
     return True
 
 
+def _quantize_16bit_requested() -> bool:
+    return os.environ.get(_ENV_QUANTIZE_ALL, "0").strip().lower() in ("1", "true", "on", "yes")
+
+
 def fp8_to_nf4_planner_quantization_config(config, llm_int8_skip_modules = None) -> Optional[dict]:
     """What the device-map planner must size an armed load as: a bitsandbytes 4bit load."""
     plan = getattr(config, UNSLOTH_FP8_TO_NF4_ATTR, None) if config is not None else None
     if plan is None:
         return None
     skip = list(llm_int8_skip_modules or [])
-    for name in plan.get("modules_to_not_convert") or []:
+    # Quantize-all mode quantizes the checkpoint's 16-bit Linears too: size them as 4bit.
+    for name in [] if _quantize_16bit_requested() else plan.get("modules_to_not_convert") or []:
         if name not in skip:
             skip.append(name)
     return {
@@ -1020,12 +1025,7 @@ def install_fp8_to_nf4_quantizer() -> bool:
             self._unsloth_fp8_model = None
             # Here, not before loading: only now are the caller's key_mapping renamings known.
             keep, quantize = [], []
-            quantize_all = os.environ.get(_ENV_QUANTIZE_ALL, "0").strip().lower() in (
-                "1",
-                "true",
-                "on",
-                "yes",
-            )
+            quantize_all = _quantize_16bit_requested()
             if model is not None:
                 keep, quantize, reached = _high_precision_linears(
                     model, _STATE.headers, weight_conversions
