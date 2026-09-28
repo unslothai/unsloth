@@ -3917,36 +3917,85 @@ def _refused_continuation_metadata(boundary):
     }
 
 
-@pytest.mark.parametrize("with_source", [True, False])
-def test_a_continuation_that_could_not_fit_keeps_the_epoch_it_resumed(monkeypatch, with_source):
-    """With no resumed reply stored, the refusal still rules."""
+def _cut_metadata(boundary):
+    return {**_checkpoint_metadata(boundary), "incomplete": {"reason": "length"}}
+
+
+@pytest.mark.parametrize(
+    ("case", "resolved"),
+    [
+        ("extends", True),
+        ("adds_nothing", True),
+        ("no_source", False),
+        ("source_not_cut", False),
+        ("source_created_later", False),
+    ],
+)
+def test_a_continuation_that_could_not_fit_keeps_the_epoch_it_resumed(monkeypatch, case, resolved):
+    """Only an earlier Max Tokens cut this row extends (or repeats) was resumed."""
     from core.inference import checkpoint, llama_cpp
     from routes import inference as inference_routes
 
     partial = "Here is the Rust version:\n\nfn main() {"
+    refused_text = partial if case == "adds_nothing" else partial + "\n    run();\n}"
+    cut = _turn(
+        id = "cut",
+        parentId = "user-1",
+        content = partial,
+        metadata = _checkpoint_metadata(4) if case == "source_not_cut" else _cut_metadata(4),
+    )
+    refused = _turn(
+        id = "resumed",
+        parentId = "user-1",
+        content = [{"type": "text", "text": refused_text}],
+        metadata = _refused_continuation_metadata(4),
+    )
+    replies = {"no_source": [refused], "source_created_later": [refused, cut]}.get(
+        case, [cut, refused]
+    )
     rows = [
         _row(id = "user-1", content = "Write it in Rust."),
-        _turn(id = "cut", parentId = "user-1", content = partial, metadata = _checkpoint_metadata(4)),
-        _turn(
-            id = "resumed",
-            parentId = "user-1",
-            content = [{"type": "text", "text": partial + "\n    run();\n}"}],
-            metadata = _refused_continuation_metadata(4),
-        ),
+        *replies,
         _row(id = "user-2", parentId = "resumed", content = "Now fix the bugs."),
     ]
     branch = [
         {"role": "user", "content": "Write it in Rust."},
-        {"role": "assistant", "content": partial + "\n    run();\n}"},
+        {"role": "assistant", "content": refused_text},
         {"role": "user", "content": "Now fix the bugs."},
     ]
-    if not with_source:
-        rows = [row for row in rows if row["id"] != "cut"]
     _stub_studio_db(monkeypatch, rows)
     monkeypatch.setattr(checkpoint, "CONTEXT_POLICY", "checkpoint")
 
-    assert inference_routes._thread_has_checkpoint("t1", branch) is with_source
-    assert llama_cpp._sticky_compaction_state("t1", branch) == ((4, True) if with_source else (0, False))
+    assert inference_routes._thread_has_checkpoint("t1", branch) is resolved
+    assert llama_cpp._sticky_compaction_state("t1", branch) == (
+        (4, True) if resolved else (0, False)
+    )
+
+
+def test_resolving_refused_continuations_stays_linear(monkeypatch):
+    """Thousands of refused rows under one parent must not rescan the transcript per row."""
+    import time
+
+    from core.inference import checkpoint, llama_cpp
+
+    rows = [_row(id = "user-1", content = "q")]
+    rows += [
+        _turn(
+            id = f"r{index}",
+            parentId = "user-1",
+            content = "same text",
+            metadata = {**_refused_continuation_metadata(4), "incomplete": {"reason": "length"}},
+        )
+        for index in range(5000)
+    ]
+    _stub_studio_db(monkeypatch, rows)
+    monkeypatch.setattr(checkpoint, "CONTEXT_POLICY", "checkpoint")
+
+    started = time.perf_counter()
+    llama_cpp._compaction_branch_states(
+        rows, [{"role": "user", "content": "q"}, {"role": "assistant", "content": "same text"}]
+    )
+    assert time.perf_counter() - started < 2.0
 
 
 def test_a_retry_sibling_is_not_mistaken_for_the_reply_a_refusal_resumed(monkeypatch):
@@ -3956,7 +4005,12 @@ def test_a_retry_sibling_is_not_mistaken_for_the_reply_a_refusal_resumed(monkeyp
 
     rows = [
         _row(id = "user-1", content = "Write it in Rust."),
-        _turn(id = "retry", parentId = "user-1", content = "Something else.", metadata = _checkpoint_metadata(4)),
+        _turn(
+            id = "retry",
+            parentId = "user-1",
+            content = "Something else.",
+            metadata = _checkpoint_metadata(4),
+        ),
         _turn(
             id = "refused",
             parentId = "user-1",

@@ -9,6 +9,7 @@ OpenAI-compatible /v1/chat/completions endpoint.
 
 import ast
 import atexit
+import bisect
 import contextlib
 import ctypes
 import errno
@@ -1589,37 +1590,68 @@ def _row_truncation(message: dict) -> Optional[dict]:
     return truncation if isinstance(truncation, dict) else None
 
 
-def _resumed_reply(stored: list[dict], message: dict) -> dict:
+# The auto-continue limit is 3 rounds; a manual Continue chain longer than this keeps its refusal.
+_RESUME_HOPS = 8
+_RESUME_SIBLINGS = 16
+
+
+def _max_tokens_cut(message: dict) -> bool:
+    metadata = message.get("metadata")
+    metadata = metadata if isinstance(metadata, dict) else {}
+    custom = metadata.get("custom")
+    custom = custom if isinstance(custom, dict) else {}
+    incomplete = metadata.get("incomplete") or custom.get("incomplete")
+    reason = incomplete.get("reason") if isinstance(incomplete, dict) else incomplete
+    return reason == "length"
+
+
+def _row_key(row: dict):
+    return row.get("id") or id(row)
+
+
+def _resumable_cuts(stored: list[dict]) -> dict:
+    """Max Tokens cuts per parent: ([positions], [rows]) in creation order."""
+    cuts: dict = {}
+    for position, row in enumerate(stored):
+        if row.get("role") == "assistant" and _max_tokens_cut(row):
+            at, rows = cuts.setdefault(row.get("parentId", row.get("parent_id")), ([], []))
+            at.append(position)
+            rows.append(row)
+    return cuts
+
+
+def _resumed_reply(message: dict, cuts: dict, positions: dict) -> dict:
     """The reply an unfitted Max Tokens continuation resumed: its refusal records no epoch,
     but the epoch in force is still the resumed reply's."""
-    seen = set()
-    while True:
+    for _ in range(_RESUME_HOPS):
         truncation = _row_truncation(message)
         if (
             truncation is None
             or truncation.get("fits")
             or truncation.get("latest_turn_role") != "assistant"
-            or id(message) in seen
         ):
             return message
-        seen.add(id(message))
-        parent = message.get("parentId", message.get("parent_id"))
+        position = positions.get(_row_key(message))
+        if position is None:
+            return message
         text = _reply_text(message.get("content"))
-        source = None
-        for row in stored:
-            if (
-                row is message
-                or row.get("role") != "assistant"
-                or row.get("parentId", row.get("parent_id")) != parent
-            ):
-                continue
-            resumed = _reply_text(row.get("content")).rstrip()
-            if resumed and len(resumed) < len(text) and text.startswith(resumed):
-                if source is None or len(resumed) > len(_reply_text(source.get("content")).rstrip()):
-                    source = row
+        at, rows = cuts.get(message.get("parentId", message.get("parent_id")), ((), ()))
+        end = bisect.bisect_left(at, position)
+        earlier = rows[max(0, end - _RESUME_SIBLINGS) : end]
+        # Newest first: the resumed reply is the latest earlier cut this one extends (a refusal adds nothing).
+        source = next(
+            (
+                row
+                for row in reversed(earlier)
+                if (resumed := _reply_text(row.get("content")).rstrip())
+                and text.startswith(resumed)
+            ),
+            None,
+        )
         if source is None:
             return message
         message = source
+    return message
 
 
 def _compaction_branch_states(
@@ -1657,9 +1689,11 @@ def _compaction_branch_states(
             candidates = exact
 
     # A COMPLETED row with no truncation ends the epoch; only active/aborted are placeholders.
+    cuts = _resumable_cuts(stored)
+    positions = {_row_key(row): position for position, row in enumerate(stored)}
     states = []
     for message in candidates:
-        metadata = _resumed_reply(stored, message).get("metadata")
+        metadata = _resumed_reply(message, cuts, positions).get("metadata")
         metadata = metadata if isinstance(metadata, dict) else {}
         custom = metadata.get("custom")
         custom = custom if isinstance(custom, dict) else {}
