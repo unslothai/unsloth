@@ -2660,66 +2660,10 @@ def detect_gguf_model(path: str, model_root: Optional[str] = None) -> Optional[s
     return None
 
 
-# Preferred GGUF quant levels, descending. UD (Unsloth Dynamic) variants beat standard
-# quants on quality per bit; ordered by size/quality tradeoff, not raw quality.
-_GGUF_QUANT_PREFERENCE = [
-    # UD variants (best quality per bit) -- Q4 is the sweet spot
-    "UD-Q4_K_XL",
-    "UD-Q4_K_L",
-    "UD-Q5_K_XL",
-    "UD-Q3_K_XL",
-    "UD-Q6_K_XL",
-    "UD-Q6_K_S",
-    "UD-Q8_K_XL",
-    "UD-Q2_K_XL",
-    "UD-IQ4_NL",
-    "UD-IQ4_XS",
-    "UD-IQ3_S",
-    "UD-IQ3_XXS",
-    "UD-IQ2_M",
-    "UD-IQ2_XXS",
-    "UD-IQ1_M",
-    "UD-IQ1_S",
-    # Standard quants (fallback for non-Unsloth repos)
-    "Q4_K_M",
-    "Q4_K_S",
-    "Q5_K_M",
-    "Q5_K_S",
-    "Q6_K",
-    "Q8_0",
-    "Q3_K_M",
-    "Q3_K_L",
-    "Q3_K_S",
-    "Q2_K",
-    "Q2_K_L",
-    "IQ4_NL",
-    "IQ4_XS",
-    "IQ3_M",
-    "IQ3_XXS",
-    "IQ2_M",
-    "IQ1_M",
-    "F16",
-    "BF16",
-    "F32",
-]
-
-
 def _pick_best_gguf(filenames: list[str]) -> Optional[str]:
-    """Pick the best GGUF file: quant levels in _GGUF_QUANT_PREFERENCE order, else first .gguf."""
-    from hub.utils.gguf import drop_shadowed_appledouble_names
-
-    # See hub.utils.gguf.pick_best_gguf: the first matching name wins.
-    filenames = drop_shadowed_appledouble_names(list(filenames))
-    gguf_files = [f for f in filenames if f.lower().endswith(".gguf")]
-    if not gguf_files:
-        return None
-
-    for quant in _GGUF_QUANT_PREFERENCE:
-        for f in gguf_files:
-            if quant in f:
-                return f
-
-    return gguf_files[0]
+    """Pick the best GGUF file by the model picker's ranking, so a bare repo id loads its default."""
+    from hub.utils.gguf import pick_best_gguf
+    return pick_best_gguf(filenames)
 
 
 @dataclass
