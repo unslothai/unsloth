@@ -160,7 +160,6 @@ export function useFloatingPanelLayout(
       const maxTop = Math.max(0, constraintsBox.height - height);
       const currentLeft = monitorBox.left - constraintsBox.left;
       const currentTop = monitorBox.top - constraintsBox.top;
-      // A restored left overrides place() for one pass.
       const restoreTo = restoreLeftRef.current;
       let left =
         restoreTo === null
@@ -251,7 +250,6 @@ export function useFloatingPanelLayout(
     }
   }, [hidden, publisher]);
 
-  // Restore the user's left once the container widens again.
   useLayoutEffect(() => {
     if (narrowedRef.current === narrowed) {
       return;
@@ -377,7 +375,6 @@ export function useFloatingPanelLayout(
     const { left, top, baseLeft, constraintsWidth, constraintsHeight } =
       session;
     dragSessionRef.current = null;
-    // Only a net horizontal move on release is a new placement.
     if (left !== baseLeft) {
       hasDraggedLeftRef.current = true;
       chosenLeftRef.current = narrowedRef.current ? null : left;
