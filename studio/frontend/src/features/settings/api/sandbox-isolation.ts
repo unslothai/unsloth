@@ -104,7 +104,8 @@ type ApiSandboxStatus = {
   windows?: ApiWindowsStatus | null;
   // biome-ignore lint/style/useNamingConvention: API schema
   checked_at?: number;
-  restored?: number;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  grants_restored?: number | null;
 };
 
 type ApiHostPrepJob = {
@@ -160,7 +161,7 @@ export function statusFromApi(status: ApiSandboxStatus): SandboxStatus {
     windows: windowsFromApi(status.windows),
     checkedAt: status.checked_at ?? 0,
   };
-  if (typeof status.restored === "number") out.restored = status.restored;
+  if (typeof status.grants_restored === "number") out.restored = status.grants_restored;
   return out;
 }
 

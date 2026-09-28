@@ -168,7 +168,7 @@ test("an unknown host preparation stays null rather than reading as prepared", a
 
 test("a save sends only the fields it changes, in snake_case, and reports restored grants", async () => {
   const { api, calls } = loadApi(() =>
-    json({ ...WINDOWS_STATUS, restored: 2 }),
+    json({ ...WINDOWS_STATUS, grants_restored: 2 }),
   );
   const status = await api.updateSandboxSettings(
     { allowDaclFallback: false },
