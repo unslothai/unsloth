@@ -1875,7 +1875,7 @@ export function FavoriteSectionTile({
           className={FILE_CARD_ICON_CLASS}
         />
       }
-      time={stats?.lastActive ?? 0}
+      time={sectionTime(section, stats, "modified")}
       onOpen={() => actions.viewSection(section.id)}
       menu={<SectionMenu section={section} variant="card" />}
     />

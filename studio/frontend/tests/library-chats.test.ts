@@ -673,3 +673,9 @@ test("a favorite chat card dates from its last edit", () => {
   const items = readSrc("features/library/chats/chats-items.tsx");
   assert.doesNotMatch(items, /time=\{chat\.updatedAt\}/);
 });
+
+test("a favorite section card dates as its list row does", () => {
+  const items = readSrc("features/library/chats/chats-items.tsx");
+  const tile = items.slice(items.indexOf("export function FavoriteSectionTile("));
+  assert.match(tile.slice(0, 800), /time=\{sectionTime\(section, stats, "modified"\)\}/);
+});
