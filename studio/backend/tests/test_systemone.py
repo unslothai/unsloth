@@ -164,6 +164,38 @@ def test_answers_in_jev_wire_format(client, runtime):
     assert runtime == ["laya-multilingual"]
 
 
+def test_sdk_request_ids_are_present_and_unique(client):
+    from uuid import UUID
+
+    first = _post(client).headers["x-typesafe-request-id"]
+    second = _post(client).headers["x-typesafe-request-id"]
+    assert UUID(first).version == UUID(second).version == 4
+    assert first != second
+
+
+@pytest.mark.parametrize("kind", ["noul", "choice", "score"])
+@pytest.mark.parametrize("value", [42, 1.5, False])
+def test_invalid_criterion_values_are_rejected_before_loading(client, runtime, kind, value):
+    criteria = [value, "high"] if kind == "score" else {"true": value, "false": None}
+    response = _post(client, questions = {"q": {"type": kind, "criteria": criteria}})
+    assert response.status_code == 422, response.text
+    assert "q" in response.json()["detail"]["message"]
+    assert "criteria" in response.json()["detail"]["message"]
+    assert runtime == []
+
+
+@pytest.mark.parametrize("kind", ["noul", "choice", "score"])
+def test_sdk_structured_and_null_criteria_remain_supported(client, kind):
+    values = [None, "plain text", {"weight": 3}, ["nested", False]]
+    for value in values:
+        criteria = [value, "high"] if kind == "score" else {"true": value, "false": None}
+        response = _post(client, questions = {"q": {"type": kind, "criteria": criteria}})
+        assert response.status_code == 200, response.text
+        assert laya_runtime._agent.calls[-1][1]["q"]["criteria"] == criteria
+        if kind == "score":
+            assert response.json()["answers"]["q"]["legend"]["0"] == value
+
+
 def test_model_loaded_once_and_questions_forwarded(client, runtime):
     _post(client)
     _post(client, state = {"subject": "Charged twice"}, questions = {"q": {"type": "noul"}})
@@ -185,23 +217,23 @@ def test_named_checkpoint_swaps_the_resident_model(client, runtime):
     "body, status, error_type",
     [
         ({"model": "gpt-4"}, 400, "api_usage_error"),
-        ({"questions": {"q": {"type": "maybe"}}}, 400, "api_usage_error"),
-        ({"questions": {"q": {"type": "choice"}}}, 400, "invalid_request_error"),
-        ({"questions": {"q": {"type": "choice", "criteria": {}}}}, 400, "invalid_request_error"),
+        ({"questions": {"q": {"type": "maybe"}}}, 422, "api_usage_error"),
+        ({"questions": {"q": {"type": "choice"}}}, 422, "invalid_request_error"),
+        ({"questions": {"q": {"type": "choice", "criteria": {}}}}, 422, "invalid_request_error"),
         (
             {"questions": {"q": {"type": "score", "criteria": [str(i) for i in range(11)]}}},
-            400,
+            422,
             "invalid_request_error",
         ),
         (
             {"questions": {"q": {"type": "noul", "criteria": {"yes": "x"}}}},
-            400,
+            422,
             "invalid_request_error",
         ),
         ({"images": ["data:image/png;base64,AAAA"]}, 400, "api_usage_error"),
         (
             {"questions": {f"q{i}": {"type": "noul"} for i in range(65)}},
-            400,
+            422,
             "invalid_request_error",
         ),
     ],
@@ -220,7 +252,7 @@ def test_malformed_requests_are_validation_errors(client, body):
     assert _post(client, **body).status_code == 422
 
 
-def test_laya_refusal_becomes_a_bad_request(client, monkeypatch):
+def test_laya_refusal_becomes_a_validation_error(client, monkeypatch):
     def refuse(state, questions):
         raise ValueError("question 'team' options exceed head_max_len=256")
 
@@ -228,7 +260,7 @@ def test_laya_refusal_becomes_a_bad_request(client, monkeypatch):
         laya_runtime, "_load_checkpoint", lambda c: (SimpleNamespace(predict = refuse), "cpu")
     )
     response = _post(client)
-    assert response.status_code == 400
+    assert response.status_code == 422
     assert "head_max_len" in response.json()["detail"]["message"]
 
 
@@ -239,6 +271,8 @@ def test_truncated_state_is_rejected(client, monkeypatch):
     response = _post(client)
     assert response.status_code == 422
     assert "context window" in response.json()["detail"]["message"]
+    assert "shorten" in response.json()["detail"]["message"].lower()
+    assert "answers" not in response.json()
 
 
 def test_failed_load_backs_off_and_reports_why(client, monkeypatch):
@@ -576,7 +610,7 @@ def test_misspelled_model_setting_is_not_fetched_from_the_hub(client, monkeypatc
 
 def test_oversized_state_is_refused(client, runtime):
     response = _post(client, state = "x" * (systemone.MAX_STATE_CHARS + 1))
-    assert response.status_code == 400
+    assert response.status_code == 422
     assert runtime == []
 
 
@@ -877,11 +911,11 @@ def test_route_module_imports_without_pep604_aliases():
 def test_oversized_question_text_is_refused_before_the_model(client, runtime):
     questions = {"q": {"type": "noul", "instructions": "x" * systemone.MAX_QUESTION_CHARS}}
     response = _post(client, questions = questions)
-    assert response.status_code == 400
+    assert response.status_code == 422
     assert "longer than" in response.json()["detail"]["message"]
     criteria = {f"option {i}": "y" * 200 for i in range(200)}
     assert (
-        _post(client, questions = {"q": {"type": "choice", "criteria": criteria}}).status_code == 400
+        _post(client, questions = {"q": {"type": "choice", "criteria": criteria}}).status_code == 422
     )
     assert runtime == []
     assert _post(client).status_code == 200
@@ -908,6 +942,21 @@ def test_real_laya_answers_through_the_route(client, monkeypatch):
     long_response = _post(client, state = "word " * 3000)
     assert long_response.status_code == 422
     assert "context window" in long_response.json()["detail"]["message"]
+    options_response = _post(
+        client,
+        questions = {
+            "route": {
+                "type": "choice",
+                "instructions": "Choose the best option",
+                "criteria": {f"option {i} zero one": None for i in range(255)},
+            },
+        },
+    )
+    assert options_response.status_code == 422
+    message = options_response.json()["detail"]["message"]
+    assert "route" in message and "context window" in message and "criteria" in message
+    assert "answers" not in options_response.json()
+    assert _post(client).status_code == 200
 
 
 class WordTokenizer:

@@ -58,6 +58,7 @@ def _multimodal_auto_classes():
     for name in (
         "AutoModelForImageTextToText",
         "AutoModelForTextToWaveform",
+        "AutoModelForMultimodalLM",
     ):
         extra = getattr(transformers, name, None)
         if extra is not None and extra not in classes:

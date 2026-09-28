@@ -19,6 +19,7 @@ import unicodedata
 import uuid
 
 from . import os_sandbox
+from . import mxc_read_grants
 from . import mxc_runtime
 from .mxc_runtime import MXC_SCHEMA_VERSION
 
@@ -433,9 +434,14 @@ def build_launch_request(
     workdir = _safe_canonical_path(plan.workdir, directory = True)
     limitations = _scan_workdir(workdir, required = required)
     selected_runtime = _selected_runtime(plan)
-    readonly = _runtime_read_roots(selected_runtime, _trusted_terminal_path_dirs(plan))
-    readonly = _without_nested(readonly + _model_read_roots(workdir, readonly))
+    runtime_roots = _runtime_read_roots(selected_runtime, _trusted_terminal_path_dirs(plan))
+    readonly = _without_nested(runtime_roots + _model_read_roots(workdir, runtime_roots))
     _reject_grants_over_dacl_journal([workdir, *readonly])
+    # Tier 3 walks every readonly tree per launch; a one-time grant on the runtime folders skips it.
+    if dacl_fallback_enabled():
+        mxc_read_grants.ensure(runtime_roots)
+    else:
+        mxc_read_grants.revoke_recorded()
     execution_argv = list(plan.argv)
     execution_argv[0] = selected_runtime
     if plan.execution_kind == "terminal" and is_cmd_argv(plan.argv):

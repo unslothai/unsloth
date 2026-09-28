@@ -78,6 +78,11 @@ from core.inference.context_window import (
 from core.inference.llama_tool_schema import llama_grammar_tools
 from core.inference.stream_errors import stream_error_from_chunk
 from hub.utils.hf_errors import modelscope_missing
+from hub.utils.hf_tokens import (
+    call_hub_with_anonymous_retry,
+    hf_token_rejected_hint,
+    is_rejected_credential_error,
+)
 from core.inference.llama_server_args import (
     _CACHE_RAM_FLAGS,
     _CTX_CHECKPOINTS_FLAGS,
@@ -2523,7 +2528,9 @@ def _fetch_swa_entry_from_hf(repo_id: str) -> Optional[object]:
         # Avoid caching the expected 404 for GGUF repos without config.json.
         if hf_file_definitely_absent(repo_id, "config.json"):
             return None
-        cfg_path = hf_hub_download(
+        cfg_path = call_hub_with_anonymous_retry(
+            hf_hub_download,
+            None,
             repo_id,
             "config.json",
             repo_type = "model",
@@ -3287,11 +3294,12 @@ def _cached_candidate_matches_revision_size(
     try:
         from huggingface_hub import get_paths_info
         infos = list(
-            get_paths_info(
+            call_hub_with_anonymous_retry(
+                get_paths_info,
+                hf_token,
                 repo_id,
                 paths,
                 revision = snap.name,
-                token = hf_token,
             )
         )
     except Exception as e:
@@ -3823,7 +3831,7 @@ def _resolve_variant_gguf_files(
     try:
         from huggingface_hub import list_repo_files
 
-        files = list_repo_files(hf_repo, token = hf_token)
+        files = call_hub_with_anonymous_retry(list_repo_files, hf_token, hf_repo)
         gguf_files = _gguf_files_for_variant(files, hf_variant)
         if gguf_files:
             gguf_filename = gguf_files[0]
@@ -17353,7 +17361,7 @@ class LlamaCppBackend:
             from huggingface_hub import get_paths_info, list_repo_files
             from core.inference.openai_auto_download import _DISK_RESERVE_BYTES
 
-            files = list_repo_files(hf_repo, token = hf_token)
+            files = call_hub_with_anonymous_retry(list_repo_files, hf_token, hf_repo)
             from hub.utils.gguf import drop_shadowed_appledouble_names, gguf_checkpoint_family
 
             gguf_files = [
@@ -17371,7 +17379,9 @@ class LlamaCppBackend:
                 return None
 
             # Sizes for all GGUF files
-            path_infos = list(get_paths_info(hf_repo, gguf_files, token = hf_token))
+            path_infos = list(
+                call_hub_with_anonymous_retry(get_paths_info, hf_token, hf_repo, gguf_files)
+            )
             size_map = {p.path: (p.size or 0) for p in path_infos}
 
             # Group by variant: shards share a prefix before -NNNNN-of-NNNNN
@@ -18691,7 +18701,9 @@ class LlamaCppBackend:
         try:
             from huggingface_hub import get_paths_info, try_to_load_from_cache
 
-            path_infos = list(get_paths_info(hf_repo, all_gguf_files, token = hf_token))
+            path_infos = list(
+                call_hub_with_anonymous_retry(get_paths_info, hf_token, hf_repo, all_gguf_files)
+            )
             total_bytes = sum((p.size or 0) for p in path_infos)
 
             # Subtract bytes already in the HF cache so we only preflight
@@ -18841,6 +18853,8 @@ class LlamaCppBackend:
                 raise GgufDownloadCancelled(str(e)) from e
             raise RuntimeError(
                 f"Failed to download GGUF file '{gguf_filename}' from {hf_repo}: {e}"
+                # Only when a token went out: an anonymous 401 is a private or missing repo.
+                f"{hf_token_rejected_hint(e) if is_rejected_credential_error(e, hf_token) else ''}"
             )
 
         dl_elapsed = time.monotonic() - dl_start
@@ -18936,7 +18950,9 @@ class LlamaCppBackend:
             if cancel_event.is_set():
                 return None
             try:
-                target = _pick_from(list_repo_files(hf_repo, token = hf_token))
+                target = _pick_from(
+                    call_hub_with_anonymous_retry(list_repo_files, hf_token, hf_repo)
+                )
                 listing_answered = True
                 listing_failed = False
                 break
@@ -19614,7 +19630,7 @@ class LlamaCppBackend:
         """
         try:
             from huggingface_hub import model_info
-            info = model_info(hf_repo, token = hf_token, files_metadata = True)
+            info = call_hub_with_anonymous_retry(model_info, hf_token, hf_repo, files_metadata = True)
             return {
                 name: int(getattr(sibling, "size", 0) or 0)
                 for sibling in (getattr(info, "siblings", None) or [])
@@ -20886,7 +20902,7 @@ class LlamaCppBackend:
     # credential the child obtained elsewhere, or one held in a variable whose
     # name says nothing (GITHUB_PAT, MY_THING).
     _SECRET_VALUE_RES = (
-        re.compile(r"hf_[A-Za-z0-9]{20,}"),
+        re.compile(r"hf_(?:oauth_[A-Za-z0-9._~+/=-]{20,}|[A-Za-z0-9]{20,})"),
         re.compile(r"github_pat_[A-Za-z0-9_]{20,}"),
         re.compile(r"gh[pousr]_[A-Za-z0-9]{20,}"),
         re.compile(r"sk-[A-Za-z0-9_\-]{20,}"),

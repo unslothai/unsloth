@@ -1822,15 +1822,15 @@ def _install_grpo_hidden_states_forward_wrapper(model):
     return True
 
 
-def _wrap_grpo_hidden_states_fallback(trainer_cls):
+def _wrap_grpo_hidden_states_fallback(trainer_cls, attributes = ("model", "ref_model")):
     original_init = trainer_cls.__init__
     if getattr(original_init, "_unsloth_grpo_hidden_states_init_wrapped", False):
         return
 
     def wrapped_init(self, *args, **kwargs):
         original_init(self, *args, **kwargs)
-        _install_grpo_hidden_states_forward_wrapper(getattr(self, "model", None))
-        _install_grpo_hidden_states_forward_wrapper(getattr(self, "ref_model", None))
+        for attribute in attributes:
+            _install_grpo_hidden_states_forward_wrapper(getattr(self, attribute, None))
 
     wrapped_init._unsloth_grpo_hidden_states_init_wrapped = True
     trainer_cls.__init__ = wrapped_init
@@ -3390,6 +3390,16 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         except Exception as e:
             logger.info(
                 f"Unsloth: Could not wrap GRPO hidden-state fallback for {RLTrainer_name}: {e}"
+            )
+    if trainer_file == "gkd_trainer" and "_unsloth_trl_compute_loss" in RLTrainer_source:
+        try:
+            _wrap_grpo_hidden_states_fallback(
+                getattr(created_module, f"Unsloth{RLTrainer_name}"),
+                attributes = ("model", "teacher_model"),
+            )
+        except Exception as e:
+            logger.info(
+                f"Unsloth: Could not wrap GKD hidden-state fallback for {RLTrainer_name}: {e}"
             )
 
 
