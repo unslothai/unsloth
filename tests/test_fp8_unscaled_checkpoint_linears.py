@@ -107,6 +107,14 @@ def test_bf16_linear_stays_linear_and_skip_list_is_restored(tmp_path):
     assert config.modules_to_not_convert == ["lm_head"]
 
 
+def test_skip_entry_the_checkpoint_already_lists_survives_the_restore(tmp_path):
+    files = [_llama_checkpoint(tmp_path, BF16)]
+    fix_transformers_fp8_unscaled_checkpoint_linears()
+    types, config = _preprocess(_llama(), ["lm_head", exact(BF16)], files)
+    assert types[BF16] == "Linear"
+    assert config.modules_to_not_convert == ["lm_head", exact(BF16)]
+
+
 def test_not_an_fp8_checkpoint_changes_nothing(tmp_path):
     files = [
         _write(

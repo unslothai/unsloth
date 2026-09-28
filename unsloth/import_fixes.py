@@ -2940,17 +2940,19 @@ def fix_transformers_fp8_unscaled_checkpoint_linears():
                 extra = _fp8_unscaled_linear_patterns(model, dtypes)
             except Exception:
                 extra = []
-        if not extra:
+        saved = getattr(qconfig, "modules_to_not_convert", None) if extra else None
+        original = list(saved or [])
+        added = [p for p in extra if p not in original]
+        if not added:
             return method(self, model, *args, **kwargs)
-        original = list(getattr(qconfig, "modules_to_not_convert", None) or [])
-        qconfig.modules_to_not_convert = original + [p for p in extra if p not in original]
+        qconfig.modules_to_not_convert = original + added
         try:
             return method(self, model, *args, **kwargs)
         finally:
+            # Strip only what was added: the checkpoint may list the same pattern itself.
             current = list(getattr(qconfig, "modules_to_not_convert", None) or [])
-            qconfig.modules_to_not_convert = (
-                [p for p in current if p not in extra] or original or None
-            )
+            restored = [p for p in current if p not in added]
+            qconfig.modules_to_not_convert = restored if restored or saved is not None else None
 
     _process_model_before_weight_loading._unsloth_unscaled_linears = True
     quantizer_cls._process_model_before_weight_loading = _process_model_before_weight_loading
