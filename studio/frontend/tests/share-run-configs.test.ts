@@ -20,7 +20,9 @@ const { mergeSharedRunConfig } = await import(
 const { createRunConfigInbox } = await import(
   "../src/features/model-picker/sharing/inbox.ts"
 );
-const { resolveRunConfigTarget } = await import("./helpers/sharing-target.ts");
+const { isKnownNonGgufModel, resolveRunConfigTarget } = await import(
+  "./helpers/sharing-target.ts"
+);
 const { DEFAULT_PER_MODEL_CONFIG } = await import(
   "../src/features/model-picker/model-config/per-model-config.ts"
 );
@@ -44,92 +46,59 @@ test("null, false, zero and empty values survive; omissions retain the existing 
     const parsed = parseRunConfigLink(createRunConfigLink({ config: patch }));
     assert.equal(parsed.kind, "valid");
     if (parsed.kind !== "valid") throw new Error("Invalid test fixture");
-    assert.deepEqual(
-      mergeSharedRunConfig(defaults, parsed.value.config, false),
-      {
-        ...defaults,
-        ...patch,
-      },
-    );
+    assert.deepEqual(mergeSharedRunConfig(defaults, parsed.value.config), {
+      ...defaults,
+      ...patch,
+    });
   }
   assert.deepEqual(
-    mergeSharedRunConfig(defaults, { nParallel: undefined }, false),
+    mergeSharedRunConfig(defaults, { nParallel: undefined }),
     defaults,
   );
   const patch = { llamaExtraArgs: ["--metrics"] };
-  const merged = mergeSharedRunConfig(defaults, patch, false);
+  const merged = mergeSharedRunConfig(defaults, patch);
   merged.llamaExtraArgs?.push("--verbose");
   assert.deepEqual(patch.llamaExtraArgs, ["--metrics"]);
   assert.deepEqual(defaults.llamaExtraArgs, ["--metrics"]);
 });
 
-test("a shared context pin replaces its legacy field while unrelated defaults remain", () => {
+test("safetensors-only settings are neither shared nor imported", () => {
   const defaults = {
     ...DEFAULT_PER_MODEL_CONFIG,
     customContextLength: 4096,
     maxSeqLength: 2048,
-    nParallel: 8,
+    mlxKvQuant: "8" as const,
   };
-  for (const value of [8192, null]) {
-    assert.deepEqual(
-      mergeSharedRunConfig(defaults, { maxSeqLength: value }, false),
-      {
-        ...defaults,
-        customContextLength: null,
-        maxSeqLength: value,
-      },
-    );
-    assert.deepEqual(
-      mergeSharedRunConfig(defaults, { customContextLength: value }, false),
-      {
-        ...defaults,
-        customContextLength: value,
-        maxSeqLength: null,
-      },
-    );
-  }
-  assert.deepEqual(mergeSharedRunConfig(defaults, { nParallel: 2 }, false), {
-    ...defaults,
-    nParallel: 2,
+  const link = createRunConfigLink({
+    config: {
+      customContextLength: 8192,
+      maxSeqLength: 8192,
+      mlxKvQuant: "4",
+    },
   });
+  assert.ok(!link.includes("maxSeqLength"));
+  assert.ok(!link.includes("mlxKv"));
+  const parsed = parseRunConfigLink(link);
+  assert.ok(parsed.kind === "valid");
+  assert.deepEqual(parsed.value.config, { customContextLength: 8192 });
   assert.deepEqual(
-    mergeSharedRunConfig(defaults, { maxSeqLength: undefined }, false),
-    defaults,
+    mergeSharedRunConfig(defaults, {
+      customContextLength: 8192,
+      maxSeqLength: 1024,
+      mlxKvQuant: "4",
+    }),
+    { ...defaults, customContextLength: 8192 },
   );
-  const agreed = { customContextLength: 8192, maxSeqLength: 8192 };
-  assert.deepEqual(mergeSharedRunConfig(defaults, agreed, false), {
-    ...defaults,
-    ...agreed,
-  });
-  assert.throws(() => createRunConfigLink({ config: defaults }), /must agree/);
-});
-
-test("GGUF imports use the requested context when both context fields are shared", () => {
-  const defaults = {
-    ...DEFAULT_PER_MODEL_CONFIG,
-    customContextLength: 4096,
-    maxSeqLength: 2048,
-  };
-  for (const patch of [
-    { customContextLength: null, maxSeqLength: 8192 },
-    { customContextLength: 8192, maxSeqLength: null },
-    { customContextLength: 8192, maxSeqLength: 8192 },
+  for (const query of [
+    "maxSeqLength=8192",
+    "mlxKvQuant=4",
+    "mlxKvBits=4",
+    "isGguf=true",
+    "isGguf=false",
   ]) {
-    const parsed = parseRunConfigLink(createRunConfigLink({ config: patch }));
-    assert.ok(parsed.kind === "valid");
-    assert.deepEqual(
-      mergeSharedRunConfig(defaults, parsed.value.config, true),
-      {
-        ...defaults,
-        customContextLength: 8192,
-        maxSeqLength: null,
-      },
-    );
-  }
-  for (const patch of [{ nParallel: 2 }, { maxSeqLength: undefined }, {}]) {
-    assert.deepEqual(mergeSharedRunConfig(defaults, patch, true), {
-      ...defaults,
-      ...(patch.nParallel !== undefined ? { nParallel: patch.nParallel } : {}),
+    assert.deepEqual(parseRunConfigLink(`unsloth://run?v=1&${query}`), {
+      kind: "invalid",
+      error: "This run configuration link contains an unsupported setting.",
     });
   }
 });
@@ -249,13 +218,17 @@ test("omitted model identity inherits the selected model and native capability l
   );
 });
 
-test("an explicit native format cannot inherit a GGUF variant or native file token", () => {
+test("a linked model opens as GGUF even when the recipient lists it as safetensors", () => {
+  const inventory = {
+    ...selection,
+    models: [{ id: "owner/other", isGguf: false, isLora: false }],
+  };
   const target = resolveRunConfigTarget(
-    { model: selection.params.checkpoint, isGguf: false, config: {} },
-    selection,
+    { model: "owner/other", ggufVariant: "Q8_0", config: {} },
+    inventory,
   );
-  assert.equal(target?.meta.isGguf, false);
-  assert.equal(target?.meta.ggufVariant, undefined);
+  assert.equal(target?.meta.isGguf, true);
+  assert.equal(target?.meta.ggufVariant, "Q8_0");
   assert.equal(target?.meta.nativePathToken, undefined);
   assert.equal(target?.meta.loadId, undefined);
 });
@@ -272,11 +245,6 @@ test("a different model uses its inventory format without inheriting the selecte
   assert.equal(target?.meta.isGguf, true);
   assert.equal(target?.meta.ggufVariant, undefined);
   assert.equal(target?.meta.nativePathToken, undefined);
-  const explicit = resolveRunConfigTarget(
-    { model: "owner/other", isGguf: false, config: {} },
-    inventory,
-  );
-  assert.equal(explicit?.meta.isGguf, false);
 });
 
 test("exported GGUF and adapter identities use existing inventory metadata", () => {
@@ -309,6 +277,8 @@ test("exported GGUF and adapter identities use existing inventory metadata", () 
   );
   assert.equal(adapter?.meta.isLora, true);
   assert.equal(adapter?.meta.isGguf, false);
+  assert.equal(isKnownNonGgufModel("/models/adapter", inventory), true);
+  assert.equal(isKnownNonGgufModel("/models/export", inventory), false);
 });
 
 for (const id of [
@@ -336,39 +306,40 @@ for (const id of [
   });
 }
 
-for (const isGguf of [false, true]) {
-  test(`settings-only links preserve the recipient's known format: GGUF=${isGguf}`, () => {
-    const target = resolveRunConfigTarget(
-      {
-        isGguf: !isGguf,
-        ggufVariant: isGguf ? undefined : "Q8_0",
-        config: { nParallel: 3 },
-      },
-      {
-        ...selection,
-        loadedIsGguf: isGguf,
-        activeGgufVariant: isGguf ? "Q4_K_M" : null,
-      },
-    );
-    assert.equal(target?.meta.isGguf, isGguf);
-    assert.equal(target?.meta.ggufVariant, isGguf ? "Q4_K_M" : undefined);
-    assert.equal(target?.meta.isDownloaded, true);
-    assert.equal(target?.meta.loadId, selection.activeLoadId);
-  });
-}
+test("settings-only links keep the recipient's GGUF selection and flag a known safetensors model", () => {
+  const gguf = resolveRunConfigTarget({ config: { nParallel: 3 } }, selection);
+  assert.equal(gguf?.meta.isGguf, true);
+  assert.equal(gguf?.meta.ggufVariant, "Q4_K_M");
+  assert.equal(gguf?.meta.isDownloaded, true);
+  assert.equal(gguf?.meta.loadId, selection.activeLoadId);
+  assert.equal(isKnownNonGgufModel("owner/model", selection), false);
+  const native = { ...selection, loadedIsGguf: false, activeGgufVariant: null };
+  const target = resolveRunConfigTarget(
+    { ggufVariant: "Q8_0", config: { nParallel: 3 } },
+    native,
+  );
+  assert.equal(target?.meta.isGguf, false);
+  assert.equal(target?.meta.ggufVariant, undefined);
+  assert.equal(isKnownNonGgufModel("owner/model", native), true);
+  assert.equal(isKnownNonGgufModel("", native), false);
+  assert.equal(
+    isKnownNonGgufModel("/models/model-Q4_K_M.gguf", {
+      ...native,
+      params: { checkpoint: "/models/model-Q4_K_M.gguf" },
+    }),
+    false,
+  );
+});
 
-for (const [model, isGguf] of [
-  ["owner/Model-GGUF", true],
-  ["owner/native", false],
-] as const) {
-  test(`a settings-only link's format does not decide how the recipient's own model opens: GGUF=${isGguf}`, () => {
+for (const model of ["owner/Model-GGUF", "owner/native"]) {
+  test(`settings-only links open a recipient model of unknown format as GGUF: ${model}`, () => {
     const unknown = {
       ...selection,
       loadedIsGguf: null,
       activeGgufVariant: null,
       activeNativePathToken: null,
     };
-    const value = { isGguf: !isGguf, config: { nParallel: 3 } };
+    const value = { config: { nParallel: 3 } };
     for (const target of [
       resolveRunConfigTarget(
         value,
@@ -381,8 +352,9 @@ for (const [model, isGguf] of [
       }),
     ]) {
       assert.equal(target?.id, model);
-      assert.equal(target?.meta.isGguf, isGguf);
+      assert.equal(target?.meta.isGguf, true);
       assert.equal(target?.meta.ggufVariant, undefined);
     }
+    assert.equal(isKnownNonGgufModel(model, unknown), false);
   });
 }

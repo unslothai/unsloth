@@ -179,6 +179,13 @@ export function openRunConfigTarget({
   if (!target) {
     return;
   }
+  if (!target.meta.isGguf) {
+    runConfigInbox.clear(pending.id);
+    toast.error(
+      "Shared run settings apply only to GGUF models. Reopen the link and choose a GGUF model.",
+    );
+    return;
+  }
   const controller = new AbortController();
   const loadingToast = toast.loading("Resolving shared model…");
   resolveCachedRunConfigTarget(target, {

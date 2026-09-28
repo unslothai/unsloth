@@ -54,8 +54,8 @@ export function SharedRunConfigLinkHandler({
       key={pending.id}
       fallback={
         <LazyImportFailure
-          message="Shared run settings could not load. Reload Studio and reopen the link to try again."
-          reloadLabel="Reload Studio"
+          message="Shared run settings could not load. Reload Unsloth and reopen the link to try again."
+          reloadLabel="Reload Unsloth"
           dismissLabel="Dismiss"
           onDismiss={() => runConfigInbox.clear(pending.id)}
           testId="shared-run-settings-unavailable"

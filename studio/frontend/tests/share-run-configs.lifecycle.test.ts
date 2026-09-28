@@ -440,6 +440,29 @@ for (const reason of [
   });
 }
 
+test("a chosen model known to be safetensors is refused before any lookup", () => {
+  const app = harness();
+  Object.assign(app.runtime, {
+    models: [{ id: "owner/native", isGguf: false, isLora: false }],
+  });
+  app.inbox.submit({
+    id: "settings-only",
+    value: { config: { nParallel: 3 } },
+    selectedModel: "owner/native",
+  });
+  const pending = app.inbox.getSnapshot();
+  assert.ok(pending);
+  assert.equal(
+    app.openRunConfigTarget({ ...app.open, pending, location: app.nav.location }),
+    undefined,
+  );
+  assert.equal(app.inbox.getSnapshot(), null);
+  assert.deepEqual(app.lookups, []);
+  assert.deepEqual(app.errors, [
+    "Shared run settings apply only to GGUF models. Reopen the link and choose a GGUF model.",
+  ]);
+});
+
 test("availability binds the canonical draft before handing off the editor", async () => {
   const app = harness();
   app.openRunConfigTarget({ ...app.open, location: app.nav.location });
@@ -668,7 +691,6 @@ for (const phase of ["resolving", "resolved", "scheduled"] as const) {
         canImport: true,
         ready: true,
         hydrated: true,
-        isGguf: true,
         key,
         pending: app.inbox.getSnapshot(),
         onImport: () => assert.fail("A newer edit must not be overwritten"),
@@ -737,7 +759,6 @@ for (const editedVariant of ["Q4_K_M", "Q8_0"]) {
         canImport: true,
         ready: true,
         hydrated: true,
-        isGguf: true,
         key,
         pending: app.inbox.getSnapshot(),
         onImport: () => undefined,
@@ -775,7 +796,6 @@ test("older edits and edits to another quant do not prevent an intentional impor
     canImport: true,
     ready: true,
     hydrated: true,
-    isGguf: true,
     key,
     pending: app.inbox.getSnapshot(),
     onImport: () => undefined,

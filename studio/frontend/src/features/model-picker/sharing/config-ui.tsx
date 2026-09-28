@@ -57,10 +57,9 @@ export function SharedRunConfigActions({
         pending,
         key,
         hydrated,
-        isGguf: target.isGguf,
         onImport,
       }),
-    [canImport, hydrated, key, onImport, pending, ready, target.isGguf],
+    [canImport, hydrated, key, onImport, pending, ready],
   );
   return (
     <>
@@ -148,25 +147,15 @@ export function SharedRunConfigReview({
   const selection = [model, ggufVariant].filter(Boolean).join(" · ");
   const download = downloadNote(model, ggufVariant);
   return (
-    <details
-      open={true}
-      className="group mb-5 rounded-2xl border border-border/60"
-    >
-      <summary className="flex cursor-pointer list-none items-center justify-between gap-3 rounded-2xl px-4 py-3 outline-none focus-visible:ring-2 focus-visible:ring-ring/60 [&::-webkit-details-marker]:hidden">
-        <span className="min-w-0">
-          <span className="flex min-w-0 items-center gap-2">
-            <span className="min-w-0 truncate text-ui-13 font-medium leading-[1.25] tracking-nav text-foreground">
-              {reviewTitle(keys.length > 0, model, ggufVariant)}
-            </span>
-            {keys.length > 0 && (
-              <span className="shrink-0 rounded-md bg-[rgb(0_0_0_/_calc(0.04*var(--contrast-wash-gain,1)))] px-1.5 py-0.5 text-ui-10 font-medium tabular-nums text-muted-foreground dark:bg-muted">
-                {keys.length}
-              </span>
-            )}
+    <details open={true} className="group mb-5 border-b border-border pb-5">
+      <summary className="grid cursor-pointer list-none grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 rounded-md outline-none focus-visible:ring-2 focus-visible:ring-ring/60 focus-visible:ring-offset-2 focus-visible:ring-offset-background [&::-webkit-details-marker]:hidden">
+        <span className="flex min-h-8 min-w-0 items-center gap-2">
+          <span className="min-w-0 truncate text-ui-13 font-medium leading-[1.25] tracking-nav text-foreground">
+            {reviewTitle(keys.length > 0, model, ggufVariant)}
           </span>
-          {selection && (
-            <span className="mt-1 block text-ui-11 text-muted-foreground [overflow-wrap:anywhere]">
-              {selection}
+          {keys.length > 0 && (
+            <span className="shrink-0 rounded-md bg-[rgb(0_0_0_/_calc(0.04*var(--contrast-wash-gain,1)))] px-1.5 py-0.5 text-ui-10 font-medium tabular-nums text-muted-foreground dark:bg-muted">
+              {keys.length}
             </span>
           )}
         </span>
@@ -174,8 +163,13 @@ export function SharedRunConfigReview({
           aria-hidden="true"
           className="size-3.5 shrink-0 -rotate-90 text-muted-foreground transition-transform duration-200 group-open:rotate-0 group-hover:text-foreground motion-reduce:transition-none"
         />
+        {selection && (
+          <span className="col-span-2 -mt-1 min-w-0 text-ui-11 text-muted-foreground [overflow-wrap:anywhere]">
+            {selection}
+          </span>
+        )}
       </summary>
-      <div className="space-y-3 px-4 pb-3.5">
+      <div className="mt-3 space-y-3">
         {keys.length > 0 && (
           <dl className="space-y-2">
             {keys.map((key) => (
@@ -186,7 +180,7 @@ export function SharedRunConfigReview({
                 <dt className="text-ui-12 text-muted-foreground">
                   {SHARED_CONFIG_FIELDS[key].label}
                 </dt>
-                <dd className="min-w-0 whitespace-pre-wrap text-right text-ui-12 tabular-nums text-foreground [overflow-wrap:anywhere]">
+                <dd className="min-w-0 whitespace-pre-wrap text-right text-ui-12 text-foreground [overflow-wrap:anywhere]">
                   {formatSharedConfigValue(key, currentConfig)}
                 </dd>
                 {JSON.stringify(config[key]) !==
@@ -200,9 +194,7 @@ export function SharedRunConfigReview({
             ))}
           </dl>
         )}
-        <div
-          className={`space-y-1 text-ui-11 leading-relaxed text-muted-foreground ${keys.length > 0 ? "border-t border-border/60 pt-3" : ""}`}
-        >
+        <div className="space-y-1 text-pretty text-ui-12 leading-relaxed text-muted-foreground">
           {download && <p>{download}</p>}
           <p>{savedSettingsNote(remember, hasSavedSettings)}</p>
         </div>

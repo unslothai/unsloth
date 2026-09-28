@@ -3567,19 +3567,21 @@ export function ModelConfigPage({
           >
             Reset
           </Button>
-          <SharedRunConfigControls
-            className={FOOTER_BUTTON_CLASS}
-            target={target}
-            config={config}
-            ready={!extraArgsHydrating}
-            canImport={variant !== "sidebar"}
-            isDiffusion={resolvedIsDiffusion}
-            disabled={
-              sharedExtraArgsRefused ||
-              (!extraArgsLoadable && !sharedExtraArgsCleared)
-            }
-            onImport={handleSharedConfigImport}
-          />
+          {target.isGguf && (
+            <SharedRunConfigControls
+              className={FOOTER_BUTTON_CLASS}
+              target={target}
+              config={config}
+              ready={!extraArgsHydrating}
+              canImport={variant !== "sidebar"}
+              isDiffusion={resolvedIsDiffusion}
+              disabled={
+                sharedExtraArgsRefused ||
+                (!extraArgsLoadable && !sharedExtraArgsCleared)
+              }
+              onImport={handleSharedConfigImport}
+            />
+          )}
         </div>
       </div>
 

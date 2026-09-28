@@ -11,15 +11,11 @@ import {
   CTX_CHECKPOINTS_MIN,
   KV_CACHE_DTYPES,
   LOAD_MODES,
-  MAX_SEQ_LENGTH_MAX,
-  MAX_SEQ_LENGTH_MIN,
-  MLX_KV_QUANTS,
   N_BATCH_MAX,
   N_BATCH_MIN,
   N_PARALLEL_MAX,
   N_PARALLEL_MIN,
   SPECULATIVE_TYPES,
-  mlxKvQuantLabel,
 } from "../model-config/per-model-config";
 import { validSharedExtraArgs } from "./extra-args";
 
@@ -45,7 +41,7 @@ const cacheType = nullable(
 
 export type SharedConfigKey = Exclude<
   keyof PerModelConfig,
-  "chatTemplateOverride" | "tensorSplit"
+  "chatTemplateOverride" | "tensorSplit" | "maxSeqLength" | "mlxKvQuant"
 >;
 type Field = { label: string; valid: Validator; error?: string };
 
@@ -56,17 +52,7 @@ export const SHARED_CONFIG_FIELDS: Record<SharedConfigKey, Field> = {
       integer(value, CONTEXT_LENGTH_MIN, 2_147_483_647),
     ),
   },
-  maxSeqLength: {
-    label: "Max sequence length",
-    valid: nullable((value) =>
-      integer(value, MAX_SEQ_LENGTH_MIN, MAX_SEQ_LENGTH_MAX),
-    ),
-  },
   kvCacheDtype: { label: "KV cache type", valid: cacheType },
-  mlxKvQuant: {
-    label: "MLX KV quantization",
-    valid: nullable((value) => choice(value, MLX_KV_QUANTS)),
-  },
   speculativeType: {
     label: "Speculative decoding",
     valid: nullable((value) => choice(value, SPECULATIVE_TYPES)),
@@ -165,9 +151,6 @@ export function formatSharedConfigValue(
     return formatExtraArgs(config.llamaExtraArgs) || "No extra arguments";
   }
   const value = config[key];
-  if (key === "mlxKvQuant" && typeof value === "string") {
-    return mlxKvQuantLabel(value);
-  }
   return value == null
     ? "Default"
     : typeof value === "string" && value !== ""
@@ -178,7 +161,6 @@ export function formatSharedConfigValue(
 export function mergeSharedRunConfig(
   defaults: PerModelConfig,
   patch: Partial<PerModelConfig>,
-  isGguf: boolean,
 ): PerModelConfig {
   const provided = Object.fromEntries(
     SHARED_CONFIG_KEYS.filter((key) => Object.hasOwn(patch, key))
@@ -186,22 +168,6 @@ export function mergeSharedRunConfig(
       .filter(([, value]) => value !== undefined)
       .map(([key, value]) => [key, Array.isArray(value) ? [...value] : value]),
   );
-  if (isGguf && Object.hasOwn(provided, "maxSeqLength")) {
-    provided.customContextLength ??= provided.maxSeqLength;
-    provided.maxSeqLength = null;
-  }
-  if (
-    Object.hasOwn(provided, "customContextLength") &&
-    !Object.hasOwn(provided, "maxSeqLength")
-  ) {
-    provided.maxSeqLength = null;
-  }
-  if (
-    Object.hasOwn(provided, "maxSeqLength") &&
-    !Object.hasOwn(provided, "customContextLength")
-  ) {
-    provided.customContextLength = null;
-  }
   const gpuSelectionChanged = (
     ["selectedGpuIds", "selectedGpuIndexKind"] as const
   ).some(

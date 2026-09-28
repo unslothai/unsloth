@@ -38,6 +38,9 @@ type CachedVariantsResponse = Pick<
 
 export class RunConfigResolutionError extends Error {}
 
+const notGgufMessage =
+  "This model has no GGUF files. Shared run settings apply only to GGUF models.";
+
 function readVariantsResponse(value: unknown): CachedVariantsResponse {
   if (!value || typeof value !== "object") {
     throw new Error("Invalid GGUF variants response.");
@@ -120,10 +123,7 @@ function resolveLocalTarget(
     };
   }
   if (listing.variants.length === 0) {
-    return {
-      ...target,
-      meta: { ...target.meta, isGguf: false, ggufVariant: undefined },
-    };
+    throw new RunConfigResolutionError(notGgufMessage);
   }
   const variant = findCachedVariant(target, listing);
   if (!variant) {
@@ -180,9 +180,7 @@ async function resolveHubRunConfigTarget(
   target: RunConfigTarget,
   options: ResolutionOptions,
 ): Promise<RunConfigTarget> {
-  const readInventory = <
-    K extends "cachedGguf" | "cachedModels" | "localModels",
-  >(
+  const readInventory = <K extends "cachedGguf" | "localModels">(
     source: K,
   ) => {
     const current = useDeviceInventoryStore.getState()[source];
@@ -200,7 +198,7 @@ async function resolveHubRunConfigTarget(
   };
   const [cached, local] = await withAbort(
     Promise.allSettled([
-      readInventory(target.meta.isGguf ? "cachedGguf" : "cachedModels"),
+      readInventory("cachedGguf"),
       readInventory("localModels"),
     ]),
     options.signal,
@@ -222,7 +220,7 @@ async function resolveHubRunConfigTarget(
       .filter(
         (row) =>
           !row.partial &&
-          row.isGguf === target.meta.isGguf &&
+          row.isGguf &&
           row.repoId !== null &&
           residentModelIdMatches(target.id, row.repoId),
       )
@@ -232,16 +230,6 @@ async function resolveHubRunConfigTarget(
       })),
   ];
   for (const candidate of candidates) {
-    if (!target.meta.isGguf) {
-      return {
-        ...target,
-        meta: {
-          ...target.meta,
-          loadId: candidate.loadId,
-          isDownloaded: true,
-        },
-      };
-    }
     let listing: CachedVariantsResponse;
     try {
       listing = await listCachedVariants(
@@ -275,9 +263,8 @@ async function resolveHubVariantTarget(
   options: ResolutionOptions,
 ): Promise<RunConfigTarget> {
   if (
-    !target.meta.isGguf ||
-    (target.meta.ggufVariant &&
-      !target.meta.ggufVariant.toLowerCase().endsWith(".gguf"))
+    target.meta.ggufVariant &&
+    !target.meta.ggufVariant.toLowerCase().endsWith(".gguf")
   ) {
     return target;
   }
@@ -293,6 +280,9 @@ async function resolveHubVariantTarget(
     return target;
   }
   options.signal.throwIfAborted();
+  if (listing.variants.length === 0 && listing.dependencies_resolved) {
+    throw new RunConfigResolutionError(notGgufMessage);
+  }
   const requested = target.meta.ggufVariant ?? listing.default_variant;
   const variant = listing.variants.find((entry) =>
     target.meta.ggufVariant

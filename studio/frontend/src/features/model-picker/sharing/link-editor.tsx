@@ -25,7 +25,7 @@ import {
   navigateRunConfig,
   openRunConfigTarget,
 } from "./link-lifecycle";
-import { isRunConfigModelInput } from "./target";
+import { isKnownNonGgufModel, isRunConfigModelInput } from "./target";
 
 export function SharedRunConfigLinkEditor({
   pending,
@@ -43,11 +43,15 @@ export function SharedRunConfigLinkEditor({
   const navigation = useRef<RunConfigNavigation | null>(null);
   const hfToken = useHfTokenStore((state) => state.token) || undefined;
   const inventoryVersion = useInventoryVersion();
-  const checkpoint = useChatRuntimeStore((state) => state.params.checkpoint);
+  const currentModel = useChatRuntimeStore((state) =>
+    isExternalModelId(state.params.checkpoint) ||
+    isKnownNonGgufModel(state.params.checkpoint, state)
+      ? ""
+      : state.params.checkpoint,
+  );
   const settingsHydrated = useChatRuntimeStore(
     (state) => state.settingsHydrated,
   );
-  const currentModel = isExternalModelId(checkpoint) ? "" : checkpoint;
   const canOpen =
     hasAuthToken() &&
     !mustChangePassword() &&
@@ -110,11 +114,11 @@ export function SharedRunConfigLinkEditor({
     >
       <DialogContent className="content-start gap-5">
         <DialogHeader>
-          <DialogTitle>Choose a model</DialogTitle>
+          <DialogTitle>Choose a GGUF model</DialogTitle>
           <DialogDescription>
             This link contains settings without a model. Enter a Hugging Face
-            model ID, a local model path on this Studio machine, or an Ollama
-            reference to review the settings with that model.
+            GGUF model ID, a local GGUF path on the machine running Unsloth, or
+            an Ollama reference to review the settings with that model.
           </DialogDescription>
         </DialogHeader>
         <form
@@ -136,12 +140,12 @@ export function SharedRunConfigLinkEditor({
               htmlFor="shared-run-model"
               className="block text-sm font-medium"
             >
-              Model ID or local path
+              GGUF model ID or local path
             </label>
             <Input
               id="shared-run-model"
               autoComplete="off"
-              placeholder="owner/model or local model path"
+              placeholder="owner/model-GGUF or local GGUF path"
               value={modelInput}
               onChange={(event) => setModelInput(event.target.value)}
             />

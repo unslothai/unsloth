@@ -18,7 +18,6 @@ export function scheduleRunConfigImport({
   pending,
   key,
   hydrated,
-  isGguf,
   onImport,
 }: {
   canImport: boolean;
@@ -26,7 +25,6 @@ export function scheduleRunConfigImport({
   pending: RunConfigRequest | null;
   key: string;
   hydrated: boolean;
-  isGguf: boolean;
   onImport: (
     changes: Partial<PerModelConfig>,
     model?: string,
@@ -69,7 +67,7 @@ export function scheduleRunConfigImport({
     if (!patch) {
       return;
     }
-    const merged = mergeSharedRunConfig(draft.config, patch, isGguf);
+    const merged = mergeSharedRunConfig(draft.config, patch);
     const changes = Object.fromEntries(
       SHARED_CONFIG_KEYS.filter(
         (field) =>
@@ -81,7 +79,7 @@ export function scheduleRunConfigImport({
     }
     markModelConfigDraftEdited(key);
     patchModelConfigDraft(key, (current) =>
-      mergeSharedRunConfig(current, patch, isGguf),
+      mergeSharedRunConfig(current, patch),
     );
     onImport(changes, pending.value.model, ggufVariant);
     toast.success("Settings imported from link", {

@@ -17,7 +17,6 @@ import {
 } from "../model-config/model-identity";
 import type { SharedRunConfig } from "./links";
 
-const ggufName = /(?:-gguf|\.gguf)$/i;
 const invalidCharacters = /[\p{Cc}\p{Cs}]/u;
 
 export function isRunConfigModelInput(model: string): boolean {
@@ -43,29 +42,34 @@ type ModelSelection = {
   loras: readonly Pick<ChatLoraSummary, "id" | "exportType">[];
 };
 
-function resolveFormat(
-  shared: SharedRunConfig,
-  id: string,
-  knownFormat: boolean | null | undefined,
-  selectedVariant: string | null,
-  selectedModel?: string,
-) {
-  const value =
-    selectedModel && (isStandaloneGgufPath(id) || isOllamaModelId(id))
-      ? { ...shared, isGguf: true, ggufVariant: undefined }
-      : shared.model
-        ? shared
-        : { ...shared, isGguf: undefined };
-  const format = value.model ? value.isGguf : (knownFormat ?? value.isGguf);
-  const ggufVariant =
-    format === false || isStandaloneGgufPath(id)
-      ? undefined
-      : (value.ggufVariant ?? selectedVariant ?? undefined);
+function knownModel(id: string, selection: ModelSelection) {
+  const sameModel = residentModelIdMatches(id, selection.params.checkpoint);
+  const model = selection.models.find((entry) =>
+    residentModelIdMatches(id, entry.id),
+  );
+  const lora = selection.loras.find((entry) =>
+    residentModelIdMatches(id, entry.id),
+  );
   return {
-    ggufVariant,
+    sameModel,
+    model,
+    lora,
     isGguf:
-      format ?? Boolean(ggufVariant || (knownFormat ?? ggufName.test(id))),
+      (sameModel ? selection.loadedIsGguf : null) ??
+      model?.isGguf ??
+      (lora?.exportType ? lora.exportType === "gguf" : undefined),
   };
+}
+
+export function isKnownNonGgufModel(
+  id: string,
+  selection: ModelSelection,
+): boolean {
+  return (
+    id !== "" &&
+    !isStandaloneGgufPath(id) &&
+    knownModel(id, selection).isGguf === false
+  );
 }
 
 export function resolveRunConfigTarget(
@@ -77,23 +81,20 @@ export function resolveRunConfigTarget(
   if (!id || isExternalModelId(id)) {
     return null;
   }
-  const sameModel = residentModelIdMatches(id, selection.params.checkpoint);
-  const model = selection.models.find((entry) =>
-    residentModelIdMatches(id, entry.id),
-  );
-  const lora = selection.loras.find((entry) =>
-    residentModelIdMatches(id, entry.id),
-  );
-  const loraFormat = lora?.exportType && lora.exportType === "gguf";
-  const knownFormat =
-    (sameModel ? selection.loadedIsGguf : null) ?? model?.isGguf ?? loraFormat;
-  const { isGguf, ggufVariant } = resolveFormat(
-    value,
+  const { sameModel, model, lora, isGguf: knownFormat } = knownModel(
     id,
-    knownFormat,
-    sameModel ? selection.activeGgufVariant : null,
-    selectedModel,
+    selection,
   );
+  const singleFile =
+    isStandaloneGgufPath(id) ||
+    (Boolean(selectedModel) && isOllamaModelId(id));
+  const isGguf = singleFile || Boolean(value.model) || knownFormat !== false;
+  const ggufVariant =
+    isGguf && !singleFile
+      ? (value.ggufVariant ??
+        (sameModel ? selection.activeGgufVariant : null) ??
+        undefined)
+      : undefined;
   const sameArtifact =
     sameModel &&
     selection.loadedIsGguf === isGguf &&

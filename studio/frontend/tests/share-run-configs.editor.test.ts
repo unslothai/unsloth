@@ -211,7 +211,6 @@ test("local sharing preserves the recipient's quant unless the sender explicitly
     assert.equal(variant.props.checked, false);
     assert.equal(initial.value.model, undefined);
     assert.equal(initial.value.ggufVariant, undefined);
-    assert.equal(initial.value.isGguf, undefined);
     const unchanged = targetModule.resolveRunConfigTarget(
       initial.value,
       selection,
@@ -233,22 +232,27 @@ test("local sharing preserves the recipient's quant unless the sender explicitly
   assert.equal(shareable.value.ggufVariant, "Q4_K_M");
 });
 
-test("the model format travels with the model only when no shared variant implies it", () => {
+test("shared links carry no model format and always open as GGUF", () => {
   const recipient = {
     params: { checkpoint: "" },
     activeGgufVariant: null,
     loadedIsGguf: null,
     activeNativePathToken: null,
     activeLoadId: null,
-    models: [{ id: "owner/model", isGguf: true, isLora: false }],
+    models: [{ id: "owner/Model-GGUF", isGguf: false, isLora: false }],
     loras: [],
   };
   const opens = (
     value: Parameters<typeof targetModule.resolveRunConfigTarget>[0],
   ) => targetModule.resolveRunConfigTarget(value, recipient)?.meta.isGguf;
-  const render = shareDialogHarness(DEFAULT_PER_MODEL_CONFIG);
+  const render = shareDialogHarness({
+    ...DEFAULT_PER_MODEL_CONFIG,
+    maxSeqLength: 4096,
+    mlxKvQuant: "8",
+  });
   const initial = render();
-  assert.equal(initial.choice("format"), undefined);
+  assert.equal(initial.choice("maxSeqLength"), undefined);
+  assert.equal(initial.choice("mlxKvQuant"), undefined);
   assert.equal(initial.value.ggufVariant, "Q4_K_M");
   assert.equal(Object.hasOwn(initial.value, "isGguf"), false);
   assert.equal(opens(initial.value), true);
@@ -258,7 +262,7 @@ test("the model format travels with the model only when no shared variant implie
     ) => void
   )(false);
   const modelOnly = render();
-  assert.equal(modelOnly.value.isGguf, true);
+  assert.equal(Object.hasOwn(modelOnly.value, "isGguf"), false);
   assert.equal(opens(modelOnly.value), true);
   (
     modelOnly.choice("model")?.props.onCheckedChange as (
@@ -268,16 +272,8 @@ test("the model format travels with the model only when no shared variant implie
   const settingsOnly = render();
   assert.equal(Object.hasOwn(settingsOnly.value, "model"), false);
   assert.equal(Object.hasOwn(settingsOnly.value, "isGguf"), false);
-  const native = shareDialogHarness(DEFAULT_PER_MODEL_CONFIG, true, {
-    id: "owner/model",
-    displayName: "Model",
-    isGguf: false,
-    apiLoadable: true,
-    meta: { source: "hub", isLora: false },
-  })();
-  assert.equal(native.choice("format"), undefined);
-  assert.equal(native.value.isGguf, false);
-  assert.equal(opens(native.value), false);
+  assert.ok(!settingsOnly.link.includes("maxSeqLength"));
+  assert.ok(!settingsOnly.link.includes("mlxKv"));
 });
 
 for (const [address, destination] of [
@@ -288,9 +284,9 @@ for (const [address, destination] of [
   ["http://192.168.1.20:8888", "desktop"],
   ["http://10.0.0.2:8888", "desktop"],
   ["http://[fd00::1]:8888", "desktop"],
-  ["https://studio.example.com", "desktop"],
-  ["https://studio.trycloudflare.com", "desktop"],
-  ["https://studio.ngrok.app", "desktop"],
+  ["https://unsloth.example.com", "desktop"],
+  ["https://unsloth.trycloudflare.com", "desktop"],
+  ["https://unsloth.ngrok.app", "desktop"],
   ["https://localhost.example.com", "desktop"],
 ]) {
   test(`share dialog defaults safely at ${address}`, (t) => {
@@ -328,7 +324,7 @@ test("extra arguments are always selectable and empty arguments are shared only 
       reasoningBudgetMessage: "Sender instruction",
     });
     const { tree, config, choice } = render();
-    const imported = mergeSharedRunConfig(recipient, config, true);
+    const imported = mergeSharedRunConfig(recipient, config);
     const messageChoice = choice("reasoningBudgetMessage");
     assert.ok(messageChoice);
     assert.equal(messageChoice.props.disabled, true);
@@ -394,7 +390,7 @@ test("automatic GPU settings preserve recipient overrides until explicitly selec
   const initial = render();
   assert.deepEqual(initial.config, {});
   assert.deepEqual(
-    mergeSharedRunConfig(recipient, initial.config, true),
+    mergeSharedRunConfig(recipient, initial.config),
     recipient,
   );
   for (const key of Object.keys(automatic)) {
@@ -405,7 +401,7 @@ test("automatic GPU settings preserve recipient overrides until explicitly selec
     (choice.props.onCheckedChange as (checked: boolean) => void)(true);
   }
   assert.deepEqual(render().config, automatic);
-  assert.deepEqual(mergeSharedRunConfig(recipient, render().config, true), {
+  assert.deepEqual(mergeSharedRunConfig(recipient, render().config), {
     ...recipient,
     ...automatic,
     tensorSplit: null,
@@ -509,13 +505,14 @@ test("Share opens and closes its dialog", () => {
 test("closing an editor before its sharing UI loads cancels the import, while effect replay retains it", async () => {
   const inbox = createRunConfigInbox();
   const target = {
-    id: "owner/model",
+    id: "owner/Model-GGUF",
     displayName: "Model",
-    isGguf: false,
+    ggufVariant: "Q4_K_M",
+    isGguf: true,
     apiLoadable: true,
     meta: { source: "hub" as const, isLora: false },
   };
-  const key = modelConfigDraftKey(target.id, undefined);
+  const key = modelConfigDraftKey(target.id, target.ggufVariant);
   inbox.submit({
     id: "pending",
     draftKey: key,
@@ -576,10 +573,9 @@ test("closing an editor before its sharing UI loads cancels the import, while ef
   const fallback = tree[0].props.fallback as StubElement;
   assert.equal(fallback.props.disabled, true);
   assert.equal(fallback.props.className, props.className);
-  assert.equal(
-    tree.find((element) => element.type === actions)?.props.target,
-    target,
-  );
+  const loaded = tree.find((element) => element.type === actions);
+  assert.equal(loaded?.props.target, target);
+  assert.equal(loaded?.props.hydrated, false);
   const release = effects[1]();
   assert.ok(release);
   release();
@@ -651,7 +647,7 @@ test("review renders field labels and argument values as text", () => {
   const imported = {
     nParallel: 3,
     llamaExtraArgs: args,
-    maxSeqLength: null,
+    customContextLength: null,
   };
   const tree = SharedRunConfigReview({
     config: imported,
@@ -974,6 +970,86 @@ test("settings-only chooser keeps the import while accepting recipient-local mod
   ]) {
     assert.equal(targetModule.isRunConfigModelInput(model), false, model);
   }
+});
+
+test("a recipient's known safetensors model opens the GGUF chooser instead", () => {
+  const inbox = createRunConfigInbox();
+  const dialog = Symbol("dialog");
+  const runtime = {
+    params: { checkpoint: "owner/native" },
+    settingsHydrated: true,
+    activeGgufVariant: null,
+    loadedIsGguf: false as boolean | null,
+    activeNativePathToken: null,
+    activeLoadId: null,
+    models: [],
+    loras: [],
+  };
+  const { SharedRunConfigLinkEditor } = loadWithStubs<{
+    SharedRunConfigLinkEditor: typeof LinkEditor;
+  }>(
+    new URL(
+      "../src/features/model-picker/sharing/link-editor.tsx",
+      import.meta.url,
+    ),
+    {
+      "react/jsx-runtime": stubJsxRuntime(),
+      react: {
+        useState: () => ["", () => undefined],
+        useRef: () => ({ current: null }),
+        useEffect: () => undefined,
+      },
+      "@/components/ui/button": { Button: "button" },
+      "@/components/ui/input": { Input: "input" },
+      "@/components/ui/dialog": {
+        Dialog: dialog,
+        DialogContent: "content",
+        DialogDescription: "description",
+        DialogHeader: "header",
+        DialogTitle: "title",
+      },
+      "@/features/auth": {
+        hasAuthToken: () => true,
+        mustChangePassword: () => false,
+      },
+      "@/features/chat": {
+        isExternalModelId: () => false,
+        useChatRuntimeStore: (select: (state: typeof runtime) => unknown) =>
+          select(runtime),
+      },
+      "@/features/hub": {
+        useHfTokenStore: () => "",
+        useInventoryVersion: () => 0,
+      },
+      "@tanstack/react-router": {
+        useNavigate: () => undefined,
+        useRouterState: () => ({ pathname: "/chat" }),
+      },
+      "./inbox": { runConfigInbox: inbox },
+      "./link-lifecycle": {},
+      "./target": targetModule,
+    },
+  );
+  const chooser = () => {
+    const pending = inbox.getSnapshot();
+    assert.ok(pending);
+    return elements(
+      SharedRunConfigLinkEditor({ pending, chatSearch: null }),
+    ).find((element) => element.type === dialog);
+  };
+  inbox.submit({ id: "settings-only", value: { config: { nParallel: 3 } } });
+  assert.equal(chooser()?.props.open, true);
+  assert.match(text(chooser()), /Choose a GGUF model/);
+  for (const loadedIsGguf of [true, null]) {
+    runtime.loadedIsGguf = loadedIsGguf;
+    assert.equal(chooser()?.props.open, false);
+  }
+  runtime.loadedIsGguf = false;
+  inbox.submit({
+    id: "linked",
+    value: { model: "owner/Model-GGUF", config: { nParallel: 3 } },
+  });
+  assert.equal(chooser()?.props.open, false);
 });
 
 test("startup intake waits for mount effects and survives strict effect replay", async () => {

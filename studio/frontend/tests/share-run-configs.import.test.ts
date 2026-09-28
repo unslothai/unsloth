@@ -64,7 +64,7 @@ function harness(
       meta: {
         source: "hub",
         isLora: false,
-        isGguf: ggufVariant !== null,
+        isGguf: true,
         ggufVariant: ggufVariant ?? undefined,
       },
     },
@@ -91,7 +91,6 @@ function harness(
     canImport: true,
     ready: true,
     hydrated: true,
-    isGguf: ggufVariant !== null,
     pending: inbox.getSnapshot(),
     onImport: (
       value: Partial<Config>,
@@ -152,57 +151,50 @@ test("settings imports report only explicit variants retained by target resoluti
   }
 });
 
-for (const isGguf of [true, false]) {
-  for (const context of ["8192", "null"]) {
-    test(`shared native context ${context} imports into ${isGguf ? "GGUF" : "native"} settings and load requests`, async (t) => {
-      const parsed = parseRunConfigLink(
-        `unsloth://run?v=1&maxSeqLength=${context}`,
+for (const context of ["8192", "null"]) {
+  test(`a shared context ${context} imports into GGUF settings and load requests`, async (t) => {
+    const parsed = parseRunConfigLink(
+      `unsloth://run?v=1&customContextLength=${context}`,
+    );
+    assert.ok(parsed.kind === "valid");
+    const app = harness(t, parsed.value.config);
+    drafts.patchModelConfigDraft(app.key, (config) => ({
+      ...config,
+      customContextLength: 4096,
+    }));
+    app.schedule(app.options);
+    await Promise.resolve();
+    const config = drafts.readModelConfigDraft(app.key)?.config;
+    assert.ok(config);
+    const value = context === "null" ? null : 8192;
+    assert.equal(config.customContextLength, value);
+    assert.equal(config.maxSeqLength, 4096);
+    assert.deepEqual(app.changes, [{ customContextLength: value }]);
+    assert.deepEqual(config.llamaExtraArgs, ["--no-warmup"]);
+    assert.equal(app.inbox.getSnapshot(), null);
+    for (const presetSource of [
+      "builtin-default",
+      "custom",
+      "modified",
+    ] as const) {
+      const requested = resolveLoadMaxSeqLength({
+        modelId: "owner/model",
+        isGguf: true,
+        ggufVariant: "Q4_K_M",
+        customContextLength: config.customContextLength,
+        pinnedMaxSeqLength: config.maxSeqLength,
+        loadedContextLength: 4096,
+        currentCheckpoint: "owner/model",
+        activeGgufVariant: "Q4_K_M",
+        defaultMaxSeqLength: 2048,
+        presetSource,
+      });
+      assert.equal(
+        requested,
+        value ?? (presetSource === "builtin-default" ? 0 : 4096),
       );
-      assert.ok(parsed.kind === "valid");
-      const app = harness(t, parsed.value.config);
-      drafts.patchModelConfigDraft(app.key, (config) => ({
-        ...config,
-        customContextLength: 4096,
-      }));
-      app.schedule({ ...app.options, isGguf });
-      await Promise.resolve();
-      const config = drafts.readModelConfigDraft(app.key)?.config;
-      assert.ok(config);
-      const value = context === "null" ? null : 8192;
-      const expected = {
-        customContextLength: isGguf ? value : null,
-        maxSeqLength: isGguf ? null : value,
-      };
-      assert.equal(config.customContextLength, expected.customContextLength);
-      assert.equal(config.maxSeqLength, expected.maxSeqLength);
-      assert.deepEqual(app.changes, [expected]);
-      assert.deepEqual(config.llamaExtraArgs, ["--no-warmup"]);
-      assert.equal(app.inbox.getSnapshot(), null);
-      for (const presetSource of [
-        "builtin-default",
-        "custom",
-        "modified",
-      ] as const) {
-        const requested = resolveLoadMaxSeqLength({
-          modelId: "owner/model",
-          isGguf,
-          ggufVariant: isGguf ? "Q4_K_M" : null,
-          customContextLength: config.customContextLength,
-          pinnedMaxSeqLength: config.maxSeqLength,
-          loadedContextLength: 4096,
-          currentCheckpoint: "owner/model",
-          activeGgufVariant: isGguf ? "Q4_K_M" : null,
-          defaultMaxSeqLength: 2048,
-          presetSource,
-        });
-        assert.equal(
-          requested,
-          value ??
-            (isGguf ? (presetSource === "builtin-default" ? 0 : 4096) : 2048),
-        );
-      }
-    });
-  }
+    }
+  });
 }
 
 test("Strict Mode cleanup leaves the request for the surviving editor and applies once", async (t) => {
@@ -358,7 +350,7 @@ for (const model of [undefined, "owner/model"]) {
   });
 }
 
-test("review lists only changed fields including cleared context aliases and exact argv values", async (t) => {
+test("review lists only changed fields and exact argv values", async (t) => {
   const patch = {
     customContextLength: 8192,
     llamaExtraArgs: ["--rope-scaling", "yarn"],
@@ -374,7 +366,6 @@ test("review lists only changed fields including cleared context aliases and exa
   assert.deepEqual(app.changes, [
     {
       customContextLength: 8192,
-      maxSeqLength: null,
       llamaExtraArgs: patch.llamaExtraArgs,
     },
   ]);

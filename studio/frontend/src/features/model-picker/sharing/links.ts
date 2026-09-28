@@ -19,7 +19,6 @@ export const DESKTOP_RUN_CONFIG_URL_WARNING_LENGTH = 2_083;
 export type SharedRunConfig = {
   model?: string;
   ggufVariant?: string;
-  isGguf?: boolean;
   config: Partial<PerModelConfig>;
 };
 export type RunConfigLinkResult =
@@ -112,13 +111,6 @@ function readParameter(
       result.ggufVariant = value;
       return;
     }
-    case "isGguf": {
-      if (value !== "true" && value !== "false") {
-        throw new Error("The model format must be true or false.");
-      }
-      result.isGguf = value === "true";
-      return;
-    }
     default:
       readConfigField(result.config, key, value);
   }
@@ -129,19 +121,6 @@ function readConfigField(
   key: string,
   value: string,
 ): void {
-  if (key === "mlxKvBits") {
-    let bits: unknown;
-    try {
-      bits = JSON.parse(value);
-    } catch {
-      throw new Error(configFieldError("mlxKvQuant"));
-    }
-    if (bits !== null && typeof bits !== "number") {
-      throw new Error(configFieldError("mlxKvQuant"));
-    }
-    key = "mlxKvQuant";
-    value = bits === null ? "null" : String(bits);
-  }
   if (!isSharedConfigKey(key)) {
     throw new Error(
       "This run configuration link contains an unsupported setting.",
@@ -167,30 +146,16 @@ function parseParameters(query: string): SharedRunConfig {
   const seen = new Set<string>();
   const result: SharedRunConfig = { config: {} };
   for (const [key, value] of new URLSearchParams(query)) {
-    const canonicalKey = key === "mlxKvBits" ? "mlxKvQuant" : key;
-    if (seen.has(canonicalKey)) {
+    if (seen.has(key)) {
       throw new Error(
         "This run configuration link contains a repeated setting.",
       );
     }
-    seen.add(canonicalKey);
+    seen.add(key);
     readParameter(result, key, value);
   }
   if (!seen.has("v")) {
     throw new Error("This run configuration link is missing its version.");
-  }
-  if (result.isGguf === false && result.ggufVariant !== undefined) {
-    throw new Error("A GGUF variant requires a GGUF model.");
-  }
-  const { customContextLength, maxSeqLength } = result.config;
-  if (
-    customContextLength != null &&
-    maxSeqLength != null &&
-    customContextLength !== maxSeqLength
-  ) {
-    throw new Error(
-      "Context length and max sequence length must agree. Share only one, or use the same value for both.",
-    );
   }
   return result;
 }
@@ -245,9 +210,6 @@ function encodeParameters(value: SharedRunConfig): URLSearchParams {
   if (value.ggufVariant !== undefined) {
     params.set("ggufVariant", value.ggufVariant);
   }
-  if (value.isGguf !== undefined) {
-    params.set("isGguf", String(value.isGguf));
-  }
   for (const key of SHARED_CONFIG_KEYS) {
     const field = value.config[key];
     if (field !== undefined) {
@@ -268,7 +230,7 @@ function browserLink(params: URLSearchParams, address: string): string {
     url.username ||
     url.password
   ) {
-    throw new Error("Use an HTTP or HTTPS Studio address.");
+    throw new Error("Use an HTTP or HTTPS Unsloth Web address.");
   }
   url.pathname = "/chat";
   // Force document navigation from /chat: link intake ignores same-document hash changes.
