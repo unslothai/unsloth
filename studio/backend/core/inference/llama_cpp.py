@@ -3762,7 +3762,10 @@ def _resolve_variant_gguf_files(
             )
 
     if not gguf_filename:
-        if repo_files is not None:
+        repo_name = hf_repo.split("/")[-1].replace("-GGUF", "")
+        synthesised = f"{repo_name}-{hf_variant}.gguf"
+        # A listing that holds the synthesised name answers for it, so only refuse when it does not.
+        if repo_files is not None and synthesised not in repo_files:
             try:
                 from utils.models.model_config import (
                     _extract_quant_label,
@@ -3797,8 +3800,7 @@ def _resolve_variant_gguf_files(
                     f"GGUF variant '{hf_variant}' not found in {hf_repo}. "
                     f"Available variants: {available}"
                 )
-        repo_name = hf_repo.split("/")[-1].replace("-GGUF", "")
-        gguf_filename = f"{repo_name}-{hf_variant}.gguf"
+        gguf_filename = synthesised
     return gguf_filename, gguf_extra_shards
 
 

@@ -117,3 +117,15 @@ def test_a_whole_listing_still_names_a_variant_it_advertises(monkeypatch, no_cac
     filename, shards = llama_cpp._resolve_variant_gguf_files("unsloth/Llama-3.2-1B-GGUF", "Q4_K_M")
     assert filename == "Llama-3.2-1B-Instruct-Q4_K_M.gguf"
     assert shards == []
+
+
+def test_a_listed_file_under_the_synthesised_name_is_never_refused(monkeypatch, no_cached_variant):
+    """The synthesised name is the last tier's guess; when the listing holds exactly that file,
+    the listing is answering for it and the load must get it, not a refusal."""
+    files = ["Tiny-imat-mix.gguf", "Tiny-Q4_K_M.gguf"]
+    monkeypatch.setattr(llama_cpp, "_gguf_files_for_variant", lambda files, variant: [])
+    monkeypatch.setattr("huggingface_hub.list_repo_files", lambda repo_id, token = None: files)
+
+    filename, shards = llama_cpp._resolve_variant_gguf_files("org/Tiny-GGUF", "imat-mix")
+    assert filename == "Tiny-imat-mix.gguf"
+    assert shards == []
