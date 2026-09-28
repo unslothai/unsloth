@@ -261,8 +261,7 @@ def _fill_missing_loss(cls):
 
 
 class _LegacyCacheView:
-    """Read-only tuple view of a transformers 5 Cache: `view[i]` is (keys, values) of layer i,
-    as `past_key_values[i]` was before transformers 5 removed Cache.__getitem__."""
+    """Read-only `view[i] == (keys, values)` of a Cache; transformers 5 removed Cache.__getitem__."""
 
     __slots__ = ("cache",)
 
@@ -291,10 +290,7 @@ def _needs_legacy_view(cache):
 
 
 def _repair_multimodal_cache_indexing(cls):
-    """LLaVA-style remote code (Phi-4-reasoning-vision) reads `past_key_values[-1][-1].shape[-2]`
-    in `prepare_inputs_labels_for_multimodal` on every decode step, which a transformers 5
-    DynamicCache no longer supports, so generate() raised "'DynamicCache' object is not
-    subscriptable". Hand the method a tuple view of the cache and give the real cache back."""
+    """Phi-4-reasoning-vision indexes `past_key_values[-1][-1]` here per decode step: pass a tuple view, return the real cache."""
     name = "prepare_inputs_labels_for_multimodal"
     original = None
     for klass in cls.__mro__:
@@ -309,7 +305,7 @@ def _repair_multimodal_cache_indexing(cls):
         return False
     if "past_key_values" not in parameters:
         return False
-    position = parameters.index("past_key_values") - 1  # without self
+    position = parameters.index("past_key_values") - 1
 
     @functools.wraps(original)
     def prepare_inputs_labels_for_multimodal(self, *args, **kwargs):

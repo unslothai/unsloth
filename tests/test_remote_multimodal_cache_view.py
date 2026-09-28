@@ -1,8 +1,4 @@
-"""LLaVA-style remote code (Phi-4-reasoning-vision, phi4-siglip) reads
-`past_key_values[-1][-1].shape[-2]` in prepare_inputs_labels_for_multimodal on every decode step.
-transformers 5 removed Cache.__getitem__, so generate() raised
-"'DynamicCache' object is not subscriptable". apply_remote_code_shims hands that method a tuple
-view and returns the real cache."""
+"""Phi-4-reasoning-vision generate() on transformers 5: "'DynamicCache' object is not subscriptable"."""
 
 import pytest
 import torch
@@ -34,7 +30,6 @@ def _remote_class():
         ):
             return None
 
-        # Verbatim logic of the remote decode-step branch.
         def prepare_inputs_labels_for_multimodal(
             self, input_ids, position_ids, attention_mask, past_key_values, labels, images
         ):
@@ -94,10 +89,9 @@ def test_repaired_decode_step_extends_mask_to_cache_length(positional):
     assert f"{cls.__name__}.prepare_inputs_labels_for_multimodal" in repaired
     cache = _cache(past_len = 7)
     _, position_ids, attention_mask, returned, _, _ = _decode_step(model, cache, positional)
-    assert returned is cache  # the model keeps the real Cache, never the view
+    assert returned is cache
     assert attention_mask.shape == (1, 8)
     assert position_ids.tolist() == [[7]]
-    # Idempotent.
     assert f"{cls.__name__}.prepare_inputs_labels_for_multimodal" not in apply_remote_code_shims(
         model
     )
