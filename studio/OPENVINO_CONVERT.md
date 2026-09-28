@@ -69,7 +69,7 @@ What the sidecar supports:
 |---|---|
 | streaming and plain JSON replies | yes |
 | reasoning (`<think>`) | returned as `reasoning_content`; `enable_thinking` switches it off |
-| tools | no. Tool definitions are dropped, so agents such as opencode get plain text replies |
+| tools | yes. `tools` go into the chat template; `<tool_call>` blocks (Qwen XML or JSON) come back as OpenAI `tool_calls` |
 | images / audio / video | refused with 400 |
 
 ### Using it from opencode
@@ -79,12 +79,18 @@ What the sidecar supports:
 "ornith-local": {
   "npm": "@ai-sdk/openai-compatible",
   "options": { "baseURL": "http://127.0.0.1:8000/v1", "apiKey": "<key printed by studio run>" },
-  "models": { "ornith-35b": { "name": "Ornith 35B (OpenVINO INT4)" } }
+  "models": { "ornith-35b": { "name": "Ornith 35B (OpenVINO INT4)", "tool_call": true, "reasoning": true } }
 }
 ```
 
 `studio run` reuses the same key across runs (`--api-key-name`, default `cli`), so it only has to
 be pasted in once. Then run `opencode --model ornith-local/ornith-35b`.
+
+Without `"tool_call": true` opencode sends no tools, so MCP servers and skills stay unused. Each tool
+schema is part of every prompt: a few dozen tools are fine, but hundreds (for example a whole MCP
+gateway) make the first reply take minutes on an Arc GPU. Expose a smaller set instead, such as an
+[MCPJungle](https://github.com/mcpjungle/MCPJungle) tool group
+(`http://127.0.0.1:8080/v0/groups/<group>/mcp`).
 
 ### Using it from pi
 
@@ -124,18 +130,14 @@ curl http://127.0.0.1:8000/v1/chat/completions -H "Authorization: Bearer $KEY" \
 If port 8000 is already taken (for example by another Studio), `studio run` moves to the next free
 port and prints it. Point the client at that port, or stop the other process first.
 
-### Why no tools yet
+### How tool calls work
 
-The model can call tools (it emits `<tool_call>{...}</tool_call>`), but the sidecar does not wire
-them up:
-
-1. `tools` are not passed to `apply_chat_template`, so the prompt never lists them.
-2. No parser turns `<tool_call>` text into OpenAI `tool_calls` deltas (llama.cpp does this with
-   `--jinja`; OpenVINO GenAI has no equivalent).
-3. `tool_calls` / `role: "tool"` messages are flattened to text in the history.
-
-Adding them means doing those three things, plus a streaming `<tool_call>` splitter like
-`ThinkSplitter`, then setting `supports_tools = True`.
+The sidecar passes `tools` to the model's chat template and holds back streamed text from the first
+`<tool_call>` on. At the end of the reply it parses the blocks into OpenAI `tool_calls` (parameter
+types follow the tool's JSON schema) and finishes with `finish_reason: "tool_calls"`. Markup it
+cannot parse is returned as plain content. Assistant `tool_calls` and `role: "tool"` messages are
+kept in the history, and several system messages (opencode sends two) are joined into one, since
+Qwen-style templates accept a single leading system message.
 
 ## API
 
