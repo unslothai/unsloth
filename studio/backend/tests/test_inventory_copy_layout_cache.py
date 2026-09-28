@@ -109,7 +109,7 @@ def test_both_inventories_agree_on_a_copy_layout_repo(tmp_path):
 
 def test_symlink_layout_is_still_discovered(tmp_path):
     if not _symlinks_available(tmp_path):
-        pytest.skip("symlinks unavailable")
+        pytest.skip(reason = "no symlink support here (Windows without Developer Mode)")
     repo = _repo_dir(tmp_path)
     blob = _write(repo / "blobs" / "a")
     link = repo / "snapshots" / REV / GGUF
@@ -142,7 +142,7 @@ def test_repo_without_any_downloaded_file_stays_hidden(tmp_path, build):
 
 def test_dangling_snapshot_link_does_not_count_as_content(tmp_path):
     if not _symlinks_available(tmp_path):
-        pytest.skip("symlinks unavailable")
+        pytest.skip(reason = "no symlink support here (Windows without Developer Mode)")
     repo = _repo_dir(tmp_path)
     (repo / "blobs").mkdir(parents = True)
     link = repo / "snapshots" / REV / GGUF
