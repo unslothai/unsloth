@@ -504,3 +504,89 @@ class TestTheFlaglessFixupKeepsMlaKAndVEqual:
         cmd, _ = _flagless_v_cache_fixup(known_off = True, cmd = self.CMD, env = {}, mla = False)
         assert cmd[cmd.index("--cache-type-k") + 1] == "q8_0"
         assert cmd[cmd.index("--cache-type-v") + 1] == "f16"
+
+
+# The -lv block of b11160 and later (llama.cpp "logs : reduce", #23021).
+TRACE_HELP = NEW_HELP + (
+    "-lv,   --verbosity, --log-verbosity N   Set the verbosity threshold. Messages with a higher verbosity will be\n"
+    "                                        ignored. Values:\n"
+    "                                         - 0: generic output\n"
+    "                                         - 1: error\n"
+    "                                         - 2: warning\n"
+    "                                         - 3: info\n"
+    "                                         - 4: trace (more info)\n"
+    "                                         - 5: debug\n"
+    "                                        (default: 3)\n"
+)
+# Earlier builds: the same flag, but 4 is not a trace level.
+PRE_TRACE_HELP = NEW_HELP + (
+    "-lv,   --verbosity, --log-verbosity N   Set the verbosity threshold. Messages with a higher verbosity will be\n"
+    "                                        ignored.\n"
+)
+
+
+class TestTraceVerbosityRestoresTheLoadLog:
+    """Load lines the offload report and classifiers read are trace-level on current builds."""
+
+    def test_a_trace_build_is_detected(self, tmp_path, monkeypatch):
+        assert probe(tmp_path, monkeypatch, TRACE_HELP)["supports_trace_verbosity"] is True
+
+    @pytest.mark.parametrize(
+        "help_text,returncode",
+        [(PRE_TRACE_HELP, 0), (NEW_HELP, 0), (TRACE_HELP, 1), ("", 0)],
+    )
+    def test_anything_else_fails_closed(self, tmp_path, monkeypatch, help_text, returncode):
+        caps = probe(tmp_path, monkeypatch, help_text, returncode)
+        assert caps["supports_trace_verbosity"] is False
+
+    def test_an_unprobeable_binary_fails_closed(self, tmp_path):
+        caps = LlamaCppBackend.probe_server_capabilities(str(tmp_path / "absent"))
+        assert caps["supports_trace_verbosity"] is False
+
+    def test_a_trace_build_gets_level_4(self):
+        args = llama_cpp_module._trace_verbosity_args({"supports_trace_verbosity": True}, [], {})
+        assert args == ["--verbosity", "4"]
+
+    @pytest.mark.parametrize(
+        "extra_args",
+        [["-lv", "2"], ["--verbosity=5"], ["--log-verbosity", "1"], ["-v"], ["--log-disable"]],
+    )
+    def test_the_users_own_logging_choice_wins(self, extra_args):
+        caps = {"supports_trace_verbosity": True}
+        assert llama_cpp_module._trace_verbosity_args(caps, extra_args, {}) == []
+
+    def test_the_env_form_wins_too(self):
+        caps = {"supports_trace_verbosity": True}
+        env = {"LLAMA_ARG_LOG_VERBOSITY": "3"}
+        assert llama_cpp_module._trace_verbosity_args(caps, None, env) == []
+
+    def test_other_builds_get_nothing(self):
+        assert llama_cpp_module._trace_verbosity_args({}, None, {}) == []
+
+    def test_the_launch_emits_it(self):
+        src = inspect.getsource(LlamaCppBackend.load_model)
+        assert "cmd.extend(_trace_verbosity_args(_caps, extra_args, os.environ))" in src
+
+
+class TestTheStdoutBufferIsBounded:
+    """Level 4 adds about 30 lines a request; the buffer lives as long as the server."""
+
+    def _drain(self, lines):
+        backend = LlamaCppBackend.__new__(LlamaCppBackend)
+        backend._stdout_lines = []
+        backend._process = _types.SimpleNamespace(stdout = iter(f"{l}\n" for l in lines))
+        backend._drain_stdout()
+        return backend._stdout_lines
+
+    def test_the_startup_head_and_the_tail_survive(self):
+        startup = [f"load {i}" for i in range(200)] + ["main: server is listening on 127.0.0.1"]
+        requests = [f"request {i}" for i in range(60000)]
+        kept = self._drain(startup + requests)
+        assert len(kept) <= llama_cpp_module._STDOUT_TRIM_AT
+        assert kept[: len(startup)] == startup
+        assert kept[-1] == "request 59999"
+        assert len(kept) >= len(startup) + llama_cpp_module._STDOUT_TAIL_KEEP
+
+    def test_a_short_log_is_untouched(self):
+        lines = [f"line {i}" for i in range(500)]
+        assert self._drain(lines) == lines

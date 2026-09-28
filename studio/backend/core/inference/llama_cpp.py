@@ -729,6 +729,32 @@ _GPU_OFFLOAD_MARKERS = (
 _OFFLOADED_LAYERS_RE = re.compile(
     r"offloaded\s+(\d+)\s*/\s*(\d+)\s+layers?\s+to\s+gpu", re.IGNORECASE
 )
+# llama.cpp "logs : reduce" (#23021) moved libllama's INFO lines to trace (4), below the default
+# threshold (3): "offloaded N/M layers to GPU", the device table and the model buffer sizes that
+# the classifiers here read. Level 4 is trace, not debug (5): no prompt text, no per-token lines.
+_LLAMA_TRACE_VERBOSITY = 4
+_TRACE_VERBOSITY_HELP_RE = re.compile(r"\b4:\s*trace\b", re.IGNORECASE)
+_LOG_VERBOSITY_FLAGS = frozenset(
+    {"-lv", "--verbosity", "--log-verbosity", "-v", "--verbose", "--log-verbose", "--log-disable"}
+)
+# Post-startup stdout kept in memory. The startup head is never trimmed: readers parse load lines
+# for the server's whole life, and failure diagnostics read only the last 50 to 80 lines.
+_STDOUT_TRIM_AT = 20000
+_STDOUT_TAIL_KEEP = 5000
+_STDOUT_HEAD_MAX = 5000
+
+
+def _trace_verbosity_args(caps: dict, extra_args: Optional[Iterable[str]], environ) -> list[str]:
+    """``--verbosity 4`` when the build hides load lines at its default and the user chose none."""
+    if not caps.get("supports_trace_verbosity"):
+        return []
+    if _extra_args_set_any_flag(extra_args, _LOG_VERBOSITY_FLAGS):
+        return []
+    if "LLAMA_ARG_LOG_VERBOSITY" in environ:
+        return []
+    return ["--verbosity", str(_LLAMA_TRACE_VERBOSITY)]
+
+
 _GPU_MODEL_BUFFER_RE = re.compile(
     r"\b(?:CUDA|ROCm|ROCM|HIP|SYCL)(\d+)\s+model buffer size\s*=\s*"
     r"([0-9]+(?:\.[0-9]+)?)\s+MiB\b",
@@ -9133,6 +9159,7 @@ class LlamaCppBackend:
                 # Fails CLOSED, unlike --jinja: a build without --reasoning exits on it.
                 "supports_reasoning_flag": False,
                 "supports_no_mmproj_offload": False,
+                "supports_trace_verbosity": False,
                 "supports_video_fps": False,
                 "supports_load_mode": False,
                 "spec_draft_ngl_flag": None,
@@ -9167,6 +9194,7 @@ class LlamaCppBackend:
         spec_draft_n_max_flag: Optional[str] = None
         spec_draft_n_max_default: Optional[int] = None
         supports_kv_unified = False
+        supports_trace_verbosity = False
         # See the fallback dict: these fail open.
         supports_no_context_shift = True
         supports_jinja = True
@@ -9382,6 +9410,12 @@ class LlamaCppBackend:
                     spec_draft_n_max_default = int(_n_max_default.group(1))
 
             supports_kv_unified = _is_real("--kv-unified")
+            # Fails closed: an older build's level 4 may be per-token debug on the decode path.
+            supports_trace_verbosity = bool(
+                probe_ok
+                and _is_real("--verbosity")
+                and _TRACE_VERBOSITY_HELP_RE.search(blocks.get("--verbosity") or "")
+            )
             # Only once the help actually parsed AND `--help` succeeded. Empty
             # `blocks` means the probe told us nothing, and a nonzero exit means
             # the listing may be a fragment; neither may read as "absent" for a
@@ -9519,6 +9553,7 @@ class LlamaCppBackend:
             "reasoning_budget_probe_inconclusive": not (probe_ok and help_nonempty),
             "supports_reasoning_flag": supports_reasoning_flag,
             "supports_no_mmproj_offload": supports_no_mmproj_offload,
+            "supports_trace_verbosity": supports_trace_verbosity,
             "supports_video_fps": supports_video_fps,
             "supports_load_mode": supports_load_mode,
             "spec_draft_ngl_flag": spec_draft_ngl_flag,
@@ -17500,15 +17535,22 @@ class LlamaCppBackend:
         post-mortem has the full output even if the crash predates the
         drain-thread join in ``_wait_for_health``.
         """
+        startup_len: Optional[int] = None
         try:
             for line in self._process.stdout:
                 line = line.rstrip()
                 if line:
-                    self._stdout_lines.append(line)
+                    lines = self._stdout_lines
+                    lines.append(line)
+                    if len(lines) > _STDOUT_TRIM_AT:
+                        head = min(startup_len or 0, _STDOUT_HEAD_MAX, len(lines))
+                        del lines[head : len(lines) - _STDOUT_TAIL_KEEP]
                     # Two forms across llama.cpp builds. Only readiness lines wake the
                     # probe: waking on every tensor-load log spins startup.
                     line_lower = line.lower()
                     if "server is listening" in line_lower or "model loaded" in line_lower:
+                        if startup_len is None:
+                            startup_len = len(self._stdout_lines)
                         health_probe_event = getattr(self, "_health_probe_event", None)
                         if health_probe_event is not None:
                             health_probe_event.set()
@@ -27262,6 +27304,7 @@ class LlamaCppBackend:
                 # Enable Jinja chat template rendering
                 if _caps.get("supports_jinja", True):
                     cmd.extend(["--jinja"])
+                cmd.extend(_trace_verbosity_args(_caps, extra_args, os.environ))
 
                 # KV cache data type
                 _valid_cache_types = _VALID_CACHE_TYPES
