@@ -140,12 +140,13 @@ def _write_legacy_q2_offset_mismatch_gguf(
     *,
     mismatch_tensor: str = "blk.0.weight",
     architecture: str | None = None,
+    second_offset: int = 1088,
 ) -> Path:
     """Two-tensor header where the second offset matches legacy Q2_0 packing, not mainline."""
     _GGML_TYPE_Q2_0 = 42
     _GGML_TYPE_F32 = 0
     # Mainline Q2_0 [64, 64] -> 1152 bytes; legacy Prism packing -> 1088 bytes.
-    legacy_running = 1088
+    legacy_running = second_offset
     body = b""
     kv_count = 0
     if architecture is not None:
@@ -171,6 +172,14 @@ def _write_legacy_q2_offset_mismatch_gguf(
 def test_gguf_mainline_q2_offset_mismatch_detects_legacy_packing(tmp_path: Path):
     p = _write_legacy_q2_offset_mismatch_gguf(tmp_path / "bonsai-legacy.gguf")
     assert gguf_mainline_q2_offset_mismatch(str(p)) == "blk.0.weight"
+
+
+def test_gguf_mainline_q2_probe_accepts_a_mainline_group_64_file(tmp_path: Path):
+    """A current Q2_0 (group 64) upload lays the next tensor out at 1152 bytes: never refused."""
+    p = _write_legacy_q2_offset_mismatch_gguf(
+        tmp_path / "Ternary-Bonsai-27B-Q2_g64.gguf", second_offset = 1152
+    )
+    assert gguf_mainline_q2_offset_mismatch(str(p)) is None
 
 
 def test_gguf_mainline_q2_probe_on_reported_dspark_q4_1_filename(tmp_path: Path):

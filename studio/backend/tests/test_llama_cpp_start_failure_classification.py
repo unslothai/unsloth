@@ -37,7 +37,13 @@ if not hasattr(sys.modules["structlog"], "get_logger"):
     sys.modules["structlog"].get_logger = _structlog_stub.get_logger
 
 from core.inference.llama_cpp import LlamaCppBackend  # noqa: E402
-from test_gguf_metadata import _write_legacy_q2_offset_mismatch_gguf
+
+# The fixture writer lives beside this file; tests/ is a package, so put it on the path the
+# way the other sibling-helper imports here do.
+if str(Path(__file__).resolve().parent) not in sys.path:
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from test_gguf_metadata import _write_legacy_q2_offset_mismatch_gguf  # noqa: E402
 import time
 
 _classify = LlamaCppBackend._classify_llama_start_failure

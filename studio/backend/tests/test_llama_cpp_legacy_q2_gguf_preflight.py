@@ -16,7 +16,15 @@ import pytest
 
 import core.inference.llama_cpp as llama_cpp_module
 from core.inference.llama_cpp import GgufLoadIntent, LlamaCppBackend
-from test_gguf_metadata import _write_legacy_q2_offset_mismatch_gguf
+import sys as _sys
+from pathlib import Path as _Path
+
+# The fixture writer lives beside this file; tests/ is a package, so put it on the path the
+# way the other sibling-helper imports here do.
+if str(_Path(__file__).resolve().parent) not in _sys.path:
+    _sys.path.insert(0, str(_Path(__file__).resolve().parent))
+
+from test_gguf_metadata import _write_legacy_q2_offset_mismatch_gguf  # noqa: E402
 
 
 def test_reported_dspark_q4_1_refused_before_teardown(monkeypatch, tmp_path):
