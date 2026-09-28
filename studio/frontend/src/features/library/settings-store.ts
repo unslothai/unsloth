@@ -55,9 +55,9 @@ export const DEFAULT_LIBRARY_SETTINGS: LibrarySettings = {
 export const SUGGESTED_LIMITS = [20, 40, 80] as const;
 
 export const CARD_COLUMNS: Record<LibrarySettings["cardSize"], { minWidth: number; max: number }> = {
-  small: { minWidth: 170, max: 6 },
-  medium: { minWidth: 200, max: 5 },
-  large: { minWidth: 240, max: 4 },
+  small: { minWidth: 140, max: 6 },
+  medium: { minWidth: 170, max: 5 },
+  large: { minWidth: 210, max: 4 },
 };
 
 export type LibraryView = "grid" | "list";

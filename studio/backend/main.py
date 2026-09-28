@@ -663,6 +663,18 @@ def _post_warm_background_work(generation: Optional[int] = None) -> None:
         return
     _start_linked_folder_auto_sync(generation)
 
+    try:
+        from core import chat_originals
+        from core.training.account_jobs import startup_reconciliation_accounts
+        from utils.account_context import run_as
+
+        for account in startup_reconciliation_accounts():
+            if _post_warm_retired(generation):
+                return
+            run_as(account, chat_originals.sweep, True)
+    except Exception:  # noqa: BLE001
+        pass
+
     # Last, and deliberately so: it is the only item here that is pure latency work rather than
     # correctness, so everything above keeps its place in the queue. Roughly 5.3s of diffusers
     # import that the first image load would otherwise pay, moved onto this thread, and only on
@@ -1147,6 +1159,10 @@ def _build_csp(script_nonce: "str | None" = None, *, docs: bool = False) -> str:
     )
 
 
+# Any of these means the response already says how a browser may cache or revalidate it.
+_CACHE_POLICY_HEADERS = ("cache-control", "expires", "etag", "last-modified")
+
+
 class SecurityHeadersMiddleware:
     """Set baseline security headers; splice per-response inline-script nonces into CSP. Pure ASGI (not
     BaseHTTPMiddleware) so streaming responses are not wrapped in an anyio stream."""
@@ -1185,6 +1201,14 @@ class SecurityHeadersMiddleware:
                     "Permissions-Policy",
                     "camera=(), microphone=(self), geolocation=()",
                 )
+                # An API read with no cache policy and no validators can never be reused, yet Chromium and
+                # WebView2 still write each one to the disk cache. The UI polls several for as long as it is
+                # open, and the API monitor returns its whole history each time: ~200 KB of disk writes every
+                # 2 s from an idle desktop app. Routes with their own policy or validators keep them.
+                if path.startswith("/api/") and not any(
+                    name in headers for name in _CACHE_POLICY_HEADERS
+                ):
+                    headers["Cache-Control"] = "no-store"
                 headers["server"] = "unsloth-studio"
             await send(message)
 
@@ -2162,7 +2186,15 @@ def _get_cached_system_gpu_info(
             visibility_info = {"available": False, "devices": []}
 
         try:
-            utilization_info = get_visible_gpu_utilization() or {"devices": []}
+            import contextlib
+
+            from utils.hardware import gpu_query
+
+            # Already behind a 10 s cache: no stale-while-revalidate on top.
+            with (
+                contextlib.nullcontext() if refresh_memory else gpu_query.display_reads(max_stale = 0)
+            ):
+                utilization_info = get_visible_gpu_utilization() or {"devices": []}
         except Exception as e:
             logger.debug(f"Failed to get GPU utilization info: {e}")
             utilization_info = {"devices": []}
@@ -2282,10 +2314,7 @@ def _probe_dense_quant_supported() -> bool:
     sharpens, since an unprobed scheme counts as usable and a later load can record a kernel
     failure in ``_SMOKE_CACHE``."""
     try:
-        from core.inference.diffusion_device import (
-            diffusion_device_scope,
-            resolve_diffusion_device_target,
-        )
+        from core.inference.diffusion_device import resolve_diffusion_device_target
         from core.inference.diffusion_transformer_quant import dense_quant_host_capable
 
         import torch
@@ -2293,10 +2322,10 @@ def _probe_dense_quant_supported() -> bool:
         count = torch.cuda.device_count() if torch.cuda.is_available() else 0
         if count <= 1:
             return bool(dense_quant_host_capable(resolve_diffusion_device_target()))
+        # No device scope: cudaSetDevice pins a primary context on every card (CUDA 12).
         for ordinal in range(count):
-            with diffusion_device_scope(ordinal):
-                if not dense_quant_host_capable(resolve_diffusion_device_target(ordinal = ordinal)):
-                    return False
+            if not dense_quant_host_capable(resolve_diffusion_device_target(ordinal = ordinal)):
+                return False
         return True
     except Exception:  # noqa: BLE001 -- a capability probe must never fail a status request
         return False
@@ -2311,10 +2340,7 @@ def _probe_dense_quant_schemes() -> list[str]:
     the load-time helper runs ``_scheme_supported``, which spawns the smoke probe or allocates in
     this process. Like the capability bit, it sharpens as loads record verdicts in ``_SMOKE_CACHE``."""
     try:
-        from core.inference.diffusion_device import (
-            diffusion_device_scope,
-            resolve_diffusion_device_target,
-        )
+        from core.inference.diffusion_device import resolve_diffusion_device_target
         from core.inference.diffusion_transformer_quant import auto_scheme_candidates_cached
 
         import torch
@@ -2324,10 +2350,9 @@ def _probe_dense_quant_schemes() -> list[str]:
             return list(auto_scheme_candidates_cached(resolve_diffusion_device_target()))
         common: Optional[list[str]] = None
         for ordinal in range(count):
-            with diffusion_device_scope(ordinal):
-                schemes = list(
-                    auto_scheme_candidates_cached(resolve_diffusion_device_target(ordinal = ordinal))
-                )
+            schemes = list(
+                auto_scheme_candidates_cached(resolve_diffusion_device_target(ordinal = ordinal))
+            )
             common = schemes if common is None else [s for s in common if s in schemes]
         return common or []
     except Exception:  # noqa: BLE001 -- a capability probe must never fail a status request
