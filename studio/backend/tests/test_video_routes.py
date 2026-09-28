@@ -685,20 +685,6 @@ def test_generate_native_sd_cli_exit_points_at_the_log(client, monkeypatch, code
     assert "GGML_ASSERT" not in progress["error"]
 
 
-@pytest.mark.parametrize("code", ["-6", "3221225477"])
-def test_generate_native_sd_cli_exit_points_at_the_log(client, monkeypatch, code):
-    backend = video_module.get_video_backend()
-    backend.loaded = True
-
-    def _crash(**kwargs):
-        raise RuntimeError(f"sd-cli exited {code}. Last output:\nGGML_ASSERT(n_dims == 3) failed")
-
-    monkeypatch.setattr(backend, "generate", _crash)
-    progress = _shared_setup_4(client)
-    assert "Settings > Logs" in progress["error"]
-    assert "GGML_ASSERT" not in progress["error"]
-
-
 def test_generate_value_error_reports_reason(client, monkeypatch):
     # Bad client input is feedback: the terminal failed state carries the reason.
     backend = video_module.get_video_backend()
