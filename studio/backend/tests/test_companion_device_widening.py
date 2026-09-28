@@ -21,9 +21,12 @@ def _widen(
     pin_ids,
     cmd,
     inherited = None,
+    may_widen = True,
 ):
     cmd = list(cmd)
-    widened, note = llama_cpp._widen_pin_ids_for_companion_devices(cmd, pin_ids, inherited)
+    widened, note = llama_cpp._widen_pin_ids_for_companion_devices(
+        cmd, pin_ids, inherited, may_widen = may_widen
+    )
     return cmd, widened, note
 
 
@@ -140,4 +143,20 @@ def test_load_model_uses_the_argv_and_skips_an_unmappable_mask():
     at = src.index("_widen_pin_ids_for_companion_devices(")
     window = src[at - 400 : at + 200]
     assert "_visibility_mask_is_unmappable()" in window
-    assert "cmd, _pin_ids, self._resolve_visible_physical_ids()" in window
+    assert 'env.get("LLAMA_ARG_DEVICE", "")' in window
+    assert "may_widen = not gpu_ids" in src[at : at + 300]
+
+
+def test_an_explicit_gpu_ids_pin_is_never_widened_onto_another_card():
+    # gpu_ids is the pool the training guard budgeted: a companion outside it stays refused.
+    cmd, pin, note = _widen([0], ["--mmproj-device", "CUDA1"], may_widen = False)
+    assert pin == [0]
+    assert cmd == ["--mmproj-device", "CUDA1"]
+    assert note == ""
+
+
+def test_an_explicit_pin_still_renumbers_a_companion_on_one_of_its_cards():
+    cmd, pin, _ = _widen([2, 3], ["--mmproj-device", "CUDA3"], may_widen = False)
+    assert pin == [2, 3]
+    assert _value(cmd, "--mmproj-device") == "CUDA1"
+    assert "--device" not in cmd

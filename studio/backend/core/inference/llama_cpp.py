@@ -6065,7 +6065,11 @@ _COMPANION_DEVICE_FLAG_GROUPS = (
 
 
 def _widen_pin_ids_for_companion_devices(
-    cmd: List[str], pin_ids: list[int], inherited_ids: Optional[list[int]]
+    cmd: List[str],
+    pin_ids: list[int],
+    inherited_ids: Optional[list[int]],
+    *,
+    may_widen: bool = True,
 ) -> tuple[list[int], str]:
     """Fit a pinned GPU mask to the companion devices the launch argv names (#11810).
 
@@ -6084,8 +6088,10 @@ def _widen_pin_ids_for_companion_devices(
     the pinned cards instead of spreading over the wider mask under ``-ngl -1``. A token
     that maps to no card the parent can see is left alone, so the mask never reaches past
     the parent's. Reads the argv, not the request's extra args, so flags that were
-    stripped (explicit gpu_ids own placement) change nothing. Returns the mask and a log
-    note, empty when nothing changed.
+    stripped (explicit gpu_ids own placement) change nothing. With ``may_widen`` False
+    (an explicit gpu_ids pin, the pool the training guard budgeted) a companion is only
+    renumbered within the pinned cards; one naming another card is left for llama.cpp to
+    refuse, as before. Returns the mask and a log note, empty when nothing changed.
     """
     if not pin_ids:
         return list(pin_ids), ""
@@ -6118,6 +6124,8 @@ def _widen_pin_ids_for_companion_devices(
                     physical = n
                 elif n < len(inherited_ids):
                     physical = int(inherited_ids[n])
+                if not may_widen and physical not in main_ids:
+                    physical = None
             tokens.append((token, physical))
         if any(physical is not None for _, physical in tokens):
             sites.append((at, lead, tokens))
@@ -28866,10 +28874,19 @@ class LlamaCppBackend:
                     # mask and the flags here, after the inherited order resolved and
                     # rewrote the split, before the mask becomes the child's environment.
                     # A uuid/MIG mask cannot say which card CUDA<n> meant: leave it be.
+                    # An inherited LLAMA_ARG_DEVICE is the user's main-device choice in the
+                    # unpinned numbering; widening would have to append a --device that
+                    # overrides it, so that launch is left as it was.
                     _companion_widen = ""
-                    if not self._visibility_mask_is_unmappable():
+                    if not self._visibility_mask_is_unmappable() and not (
+                        _extra_args_main_device(cmd) is None
+                        and str(env.get("LLAMA_ARG_DEVICE", "")).strip()
+                    ):
                         _pin_ids, _companion_widen = _widen_pin_ids_for_companion_devices(
-                            cmd, _pin_ids, self._resolve_visible_physical_ids()
+                            cmd,
+                            _pin_ids,
+                            self._resolve_visible_physical_ids(),
+                            may_widen = not gpu_ids,
                         )
                     if _companion_widen:
                         logger.info(
