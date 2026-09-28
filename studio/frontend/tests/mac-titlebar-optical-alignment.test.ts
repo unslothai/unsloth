@@ -23,7 +23,7 @@ test("mac titlebar navigation shifts buttons with centered glyphs", async () => 
   );
 
   const enlargedIconClass =
-    'className="size-icon !size-[calc(var(--icon-size)+1px)]"';
+    'className={customTitlebar ? "size-[18px]" : "size-icon !size-[calc(var(--icon-size)+1px)]"}';
   assert.equal(titlebar.split(enlargedIconClass).length - 1, 3);
 });
 

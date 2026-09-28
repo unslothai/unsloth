@@ -93,7 +93,7 @@ function WindowControlButton({
       title={label}
       onClick={onClick}
       className={cn(
-        "relative z-[80] inline-flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-[10px] text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-foreground dark:hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring",
+        "relative z-[80] inline-flex size-[34px] shrink-0 items-center justify-center rounded-[10px] text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-foreground dark:hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring",
         className,
       )}
     >
@@ -117,15 +117,18 @@ export function DesktopTitlebarNavigation({
   const stopTitlebarDrag = (event: MouseEvent<HTMLButtonElement>) => {
     event.stopPropagation();
   };
-  // Window chrome: the band around these is a fixed 34px, so they keep their
-  // size while the slot holding them scales.
-  const buttonClass =
-    "inline-flex size-[30px] shrink-0 items-center justify-center rounded-[10px] text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
+  // Custom window chrome uses fixed targets; native macOS keeps its existing layout.
+  const customTitlebar = shouldUseCustomWindowTitlebar();
+  const buttonClass = cn(
+    customTitlebar ? "size-[34px]" : "size-[30px]",
+    "inline-flex shrink-0 items-center justify-center rounded-[10px] text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+  );
 
   return (
     <div
       className={cn(
-        "flex mt-[var(--studio-titlebar-navigation-margin-top,0px)] translate-y-[var(--studio-titlebar-navigation-offset-y,0px)] items-center gap-0.5",
+        "flex mt-[var(--studio-titlebar-navigation-margin-top,0px)] translate-y-[var(--studio-titlebar-navigation-offset-y,0px)] items-center",
+        customTitlebar ? "gap-[6px]" : "gap-0.5",
         className,
       )}
       role="toolbar"
@@ -147,13 +150,13 @@ export function DesktopTitlebarNavigation({
           <HugeiconsIcon
             icon={LayoutAlignLeftIcon}
             strokeWidth={1.75}
-            className="size-icon !size-[calc(var(--icon-size)+1px)]"
+            className={customTitlebar ? "size-[18px]" : "size-icon !size-[calc(var(--icon-size)+1px)]"}
           />
         </button>
       ) : (
         // Holds the slot the navbar's own trigger sits in, so it is the
         // button's fixed size, not a scaled one.
-        <div aria-hidden="true" className="size-[30px] shrink-0" />
+        <div aria-hidden="true" className={cn("shrink-0", customTitlebar ? "size-[34px]" : "size-[30px]")} />
       )}
       <button
         type="button"
@@ -170,7 +173,7 @@ export function DesktopTitlebarNavigation({
         <ArrowLeft
           aria-hidden="true"
           strokeWidth={1.75}
-          className="size-icon !size-[calc(var(--icon-size)+1px)]"
+          className={customTitlebar ? "size-[18px]" : "size-icon !size-[calc(var(--icon-size)+1px)]"}
         />
       </button>
       <button
@@ -188,7 +191,7 @@ export function DesktopTitlebarNavigation({
         <ArrowRight
           aria-hidden="true"
           strokeWidth={1.75}
-          className="size-icon !size-[calc(var(--icon-size)+1px)]"
+          className={customTitlebar ? "size-[18px]" : "size-icon !size-[calc(var(--icon-size)+1px)]"}
         />
       </button>
     </div>
@@ -219,11 +222,11 @@ export function WindowTitlebar({
     : "0px";
 
   // The buttons in this slot are fixed but their padding and gaps scale, so
-  // the slot grows with them and never shrinks under the three 30px buttons.
+  // the slot grows with them and never shrinks under the three 34px buttons.
   // The drag region starts where it ends.
   const titlebarNavigationWidth =
     showSidebarSurface && !pinned
-      ? "max(7rem, calc(7rem * var(--ui-space-scale, 1)))"
+      ? "max(134px, calc(134px * var(--ui-space-scale, 1)))"
       : sidebarWidth;
   const contentBorderLeft = pinned ? `calc(${sidebarWidth} + 12px)` : "0px";
 
@@ -397,7 +400,7 @@ export function WindowTitlebar({
           <div
             className={cn(
               "pointer-events-auto absolute left-0 top-0 flex h-full min-w-0 items-center",
-              "pl-4",
+              "pl-[20px]",
             )}
             style={{ width: titlebarNavigationWidth }}
             onMouseDown={handleDragMouseDown}
@@ -414,14 +417,14 @@ export function WindowTitlebar({
           className="pointer-events-auto absolute top-0 h-full"
           style={{
             left: titlebarNavigationWidth,
-            right: "var(--studio-window-control-inset,112px)",
+            right: "var(--studio-window-control-inset,136px)",
           }}
           onMouseDown={handleDragMouseDown}
           onDoubleClick={handleDragDoubleClick}
           aria-hidden="true"
         />
         <div
-          className="pointer-events-auto absolute right-1 top-0 flex h-full items-center gap-0.5"
+          className="pointer-events-auto absolute right-[12px] top-0 flex h-full items-center gap-[6px]"
           role="toolbar"
           aria-label="Window controls"
         >
@@ -433,7 +436,7 @@ export function WindowTitlebar({
               aria-hidden="true"
               absoluteStrokeWidth
               strokeWidth={1.5}
-              size={16}
+              size={18}
             />
           </WindowControlButton>
           <WindowControlButton
@@ -447,7 +450,7 @@ export function WindowTitlebar({
                 aria-hidden="true"
                 absoluteStrokeWidth
                 strokeWidth={1.5}
-                size={14}
+                size={18}
                 className="rotate-180"
               />
             ) : (
@@ -455,7 +458,7 @@ export function WindowTitlebar({
                 aria-hidden="true"
                 absoluteStrokeWidth
                 strokeWidth={1.5}
-                size={14}
+                size={18}
               />
             )}
           </WindowControlButton>
@@ -473,7 +476,7 @@ export function WindowTitlebar({
               aria-hidden="true"
               absoluteStrokeWidth
               strokeWidth={1.5}
-              size={20}
+              size={18}
             />
           </WindowControlButton>
         </div>

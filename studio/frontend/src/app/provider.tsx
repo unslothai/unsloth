@@ -568,21 +568,21 @@ const MAC_NATIVE_CHROME_STYLE = {
 
 const CUSTOM_CHROME_STYLE = {
   "--studio-titlebar-height": "0px",
-  "--studio-custom-titlebar-height": "34px",
-  "--studio-desktop-titlebar-height": "34px",
+  "--studio-custom-titlebar-height": "42px",
+  "--studio-desktop-titlebar-height": "42px",
   "--studio-sidebar-expanded-width": "17.5rem",
   "--studio-sidebar-collapsed-width": "3rem",
   "--studio-collapsed-chat-controls-inset": "12px",
-  "--studio-startup-top-inset": "42px",
-  "--studio-content-top-inset": "34px",
-  "--studio-hidden-route-top-inset": "34px",
+  "--studio-startup-top-inset": "50px",
+  "--studio-content-top-inset": "42px",
+  "--studio-hidden-route-top-inset": "42px",
   // Same split as the native-mac block: chat chrome scales, window chrome does not.
   "--studio-chat-header-height": "calc(48px * var(--ui-space-scale, 1))",
   "--studio-chat-header-padding-top": "calc(9px * var(--ui-space-scale, 1))",
   "--studio-media-header-left-inset": "calc(0.5rem * var(--ui-space-scale, 1))",
   "--studio-chat-control-height": "calc(33px * var(--ui-space-scale, 1))",
   "--studio-chat-header-right-inset": "0px",
-  "--studio-window-control-inset": "112px",
+  "--studio-window-control-inset": "136px",
 } as CSSProperties;
 
 // Mirror the titlebar heights onto <html>: overlays portalled into document.body read the wrapper styles as empty.
@@ -599,17 +599,17 @@ function DesktopChromeVarsEffect({
       value === null
         ? el.style.removeProperty(name)
         : el.style.setProperty(name, value);
-    set("--studio-custom-titlebar-height", usesCustomTitlebar ? "34px" : null);
+    set("--studio-custom-titlebar-height", usesCustomTitlebar ? "42px" : null);
     set(
       "--studio-mac-titlebar-height",
       usesNativeMacTitlebar ? NATIVE_MAC_TITLEBAR_HEIGHT_VAR : null,
     );
-    set("--studio-window-control-inset", usesCustomTitlebar ? "112px" : null);
+    set("--studio-window-control-inset", usesCustomTitlebar ? "136px" : null);
     // How far body-portaled surfaces must stay clear of the top: either titlebar paints over them.
     set(
       "--studio-window-chrome-top",
       usesCustomTitlebar
-        ? "34px"
+        ? "42px"
         : usesNativeMacTitlebar
           ? NATIVE_MAC_TITLEBAR_HEIGHT_VAR
           : null,
