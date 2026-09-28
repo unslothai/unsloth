@@ -158,6 +158,23 @@ def _contain_installer_venv_root(tmp_path_factory, monkeypatch):
 
 
 @pytest.fixture(autouse = True)
+def _reset_gpu_query_cache():
+    # Only when already imported: importing utils.hardware would change import-order tests.
+    def _reset():
+        gpu_query = sys.modules.get("utils.hardware.gpu_query")
+        if gpu_query is not None:
+            gpu_query.reset()
+        hw = sys.modules.get("utils.hardware.hardware")
+        if hw is not None and hasattr(hw, "_last_good_visible_info"):
+            with hw._last_good_visible_lock:
+                hw._last_good_visible_info.clear()
+
+    _reset()
+    yield
+    _reset()
+
+
+@pytest.fixture(autouse = True)
 def _isolate_studio_home(_studio_home_root, monkeypatch):
     home = _studio_home_root / f"home-{next(_studio_home_counter)}"
     home.mkdir()
@@ -422,6 +439,15 @@ def _hf_cache_is_empty(_empty_hf_hub_cache, monkeypatch):
     except Exception:  # optional deps absent on some CI legs
         return
     monkeypatch.setattr(constants, "HF_HUB_CACHE", _empty_hf_hub_cache)
+
+
+@pytest.fixture(autouse = True)
+def _no_live_metal_wired_ceiling(monkeypatch):
+    """Keep Metal context verdicts off the host's live GPU memory."""
+    from core.inference.llama_cpp import LlamaCppBackend
+    monkeypatch.setattr(
+        LlamaCppBackend, "_apple_metal_wired_ceiling_bytes", staticmethod(lambda: 0)
+    )
 
 
 @pytest.fixture(autouse = True)
@@ -1239,3 +1265,44 @@ def _drop_the_idle_reload_stash_between_tests():
         yield
     finally:
         _keepwarm._set_last_unloaded(None)
+
+
+# Run with the NVFP4 switch on; test_nvfp4_diffusion_flag and test_build_prequant_checkpoint must stay off.
+_NVFP4_ENABLED_TEST_MODULES = frozenset(
+    {
+        "test_dense_quant_rocm_gate_9396",
+        "test_diffusion_auto_policy",
+        "test_diffusion_backend",
+        "test_diffusion_inference_info",
+        "test_diffusion_lora",
+        "test_diffusion_more_families",
+        "test_diffusion_native_quant",
+        "test_diffusion_pipeline_prequant",
+        "test_diffusion_precision",
+        "test_diffusion_prequant",
+        "test_diffusion_quant_pad",
+        "test_diffusion_routes",
+        "test_diffusion_te_prequant",
+        "test_diffusion_transformer_quant",
+        "test_train_precision_scheme_contract",
+        "test_video_backend",
+        "test_video_families",
+        "test_video_h3_te_quant",
+        "test_video_prequant",
+        "test_video_routes",
+        "test_xformers_stub_diffusion_parity",
+    }
+)
+_NVFP4_ENABLED_TEST_PREFIX = "test_diffusion_nvfp4_"
+
+
+@pytest.fixture(autouse = True)
+def _nvfp4_diffusion_enabled_for_nvfp4_tests(request, monkeypatch):
+    """Switch NVFP4 on for the modules above; every other module sees the default (off)."""
+    module = getattr(request, "module", None)
+    name = getattr(module, "__name__", "").rsplit(".", 1)[-1]
+    if name in _NVFP4_ENABLED_TEST_MODULES or name.startswith(_NVFP4_ENABLED_TEST_PREFIX):
+        monkeypatch.setenv("UNSLOTH_NVFP4_DIFFUSION", "1")
+    else:
+        monkeypatch.delenv("UNSLOTH_NVFP4_DIFFUSION", raising = False)
+    yield

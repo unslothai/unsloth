@@ -82,7 +82,8 @@ def _grouped_gemm_forward_kernel(
         m_end = m_start + m_size
 
         if m_size > 0:
-            n_start = expert_idx * N
+            # int64: expert_idx * N * K passes 2^31 once the weight holds 2^31 elements.
+            n_start = expert_idx.to(tl.int64) * N
 
             num_m_tiles = tl.cdiv(m_size, BLOCK_SIZE_M)
             num_n_tiles = tl.cdiv(N, BLOCK_SIZE_N)
@@ -116,7 +117,8 @@ def _grouped_gemm_forward_kernel(
                         gather_indices_ptr + indices_to_gather,
                         mask = indices_to_gather < TOTAL_TOKENS,
                     )
-                    expert_token_offsets = expert_token_idx[:, None]
+                    expert_token_offsets = expert_token_idx.to(tl.int64)[:, None]
+                    indices_to_gather_64 = indices_to_gather.to(tl.int64)
 
                     # Masks for permuted load and store
                     row_mask = gather_offsets < m_size
@@ -128,21 +130,21 @@ def _grouped_gemm_forward_kernel(
                     load_idx = (
                         (expert_token_offsets // TOPK) * K
                     )  # Permute on load from token to expert order, dividing by TOPK to index the original token count.
-                    store_idx = indices_to_gather[:, None] * N
+                    store_idx = indices_to_gather_64[:, None] * N
                 else:
                     off_am = tile_m_idx * BLOCK_SIZE_M
                     if not PERMUTE_Y:
                         # These will already be computed if permuting y
                         offs_am = off_am + m_block_range
                         row_mask = offs_am[:, None] < m_size
-                        row_idx = m_start + offs_am[:, None]
+                        row_idx = (m_start + offs_am[:, None]).to(tl.int64)
                         store_idx = row_idx * N
                         if not USE_TMA_LOAD_X:
                             load_idx = row_idx * K
 
                 if PERMUTE_Y:
                     if not USE_TMA_LOAD_X:
-                        load_idx = indices_to_gather[:, None] * K
+                        load_idx = indices_to_gather_64[:, None] * K
                     store_idx = expert_token_offsets * N
 
                 # topk weights are always loaded in expert order: pre-multiplication scales hidden states before

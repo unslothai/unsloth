@@ -63,22 +63,38 @@ $setupPs1 = Join-Path $root "studio\setup.ps1"
 
 Write-Host ""
 Write-Host "=== shared inventory helper ==="
-$blockNames = @("Get-NvidiaNvmlLibraryPath", "Get-NvidiaLibraryProbeType", "Read-NvidiaLibraryRaw", "Get-NvidiaLibraryInventory")
+$blockNames = @("New-StudioChildScriptDirectory", "Get-NvidiaNvmlLibraryPath", "Read-NvidiaLibraryRawViaPython", "Read-NvidiaLibraryRaw", "Get-NvidiaLibraryInventory", "Test-StudioChildScriptDirectoryElevated", "Get-NvidiaSystem32Dir")
 $installParts = @(Get-HelperSources $installPs1 $blockNames)
 $setupParts = @(Get-HelperSources $setupPs1 $blockNames)
-$installBlock = $installParts[3]
-$setupBlock = $setupParts[3]
-$setupPath = $setupParts[0]
-$readBlock = $setupParts[2]
+$installBlock = $installParts[4]
+$setupBlock = $setupParts[4]
+$setupPath = $setupParts[1]
+$readBlock = $setupParts[3]
+$viaPythonBlock = $setupParts[2]
+$probeBody = ""
+$probeAt = $viaPythonBlock.IndexOf("`$probeSource = @'")
+if ($probeAt -ge 0) {
+    $bodyStart = $viaPythonBlock.IndexOf("`n", $probeAt) + 1
+    $bodyEnd = $viaPythonBlock.IndexOf("`n'@", $bodyStart)
+    if ($bodyEnd -gt $bodyStart) { $probeBody = $viaPythonBlock.Substring($bodyStart, $bodyEnd - $bodyStart) }
+}
+Check "the embedded probe was found" ($probeBody.Length -gt 200)
 # install.ps1 nests its helpers one level deeper; compare the two copies without indentation.
 $strip = { param($text) ($text -split "`n" | ForEach-Object { $_.TrimStart() }) -join "`n" }
 for ($k = 0; $k -lt $blockNames.Count; $k++) {
     Check "install.ps1 and setup.ps1 carry the same $($blockNames[$k])" ((& $strip $installParts[$k]) -eq (& $strip $setupParts[$k]))
 }
 # The installer must not spawn a C# compiler (windows-no-compiler-ci): the methods are emitted.
-Check "the inventory compiles nothing" ((($setupParts -join "`n") -notmatch 'Add-Type') -and ($setupParts[1] -match 'New-StudioEmittedNativeType'))
-Check "the emission is gated on the native-type capability" ($setupParts[1] -match 'if \(-not \(Test-StudioCanDefineNativeTypes\)\) \{ return \$null \}')
+$joined = ($setupParts -join "`n")
+Check "the inventory compiles nothing" ($joined -notmatch 'Add-Type')
+Check "the inventory emits nothing" ($joined -notmatch 'New-StudioEmittedNativeType|DefinePInvokeMethod|Reflection\.Emit')
+Check "the apparatus it used to need is gone from the file entirely" (
+    ([System.IO.File]::ReadAllText($setupPs1) -notmatch 'New-StudioEmittedNativeType|Test-StudioCanDefineNativeTypes'))
+Check "the reader goes through the Python rung" ($setupParts[2] -match 'Read-NvidiaLibraryRawViaPython')
+Check "nvcuda.dll is handed to the probe by its System32 path" ($viaPythonBlock -match '\$cudaHint = if \(\$windows\) \{ Join-Path \(Get-NvidiaSystem32Dir\) "nvcuda\.dll" \}')
+Invoke-Expression $setupParts[6]
 Invoke-Expression $setupPath
+Invoke-Expression $setupParts[4]
 $pathRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("unsloth-nvml-" + [guid]::NewGuid().ToString("N"))
 $sys32 = Join-Path (Join-Path $pathRoot "root") "System32"
 $nvsmi = Join-Path (Join-Path $pathRoot "pf") "NVIDIA Corporation\NVSMI"
@@ -86,7 +102,7 @@ New-Item -ItemType Directory -Path $sys32, $nvsmi -Force | Out-Null
 $savedRoot = $env:SystemRoot; $savedPf = $env:ProgramFiles
 try {
     $env:SystemRoot = Join-Path $pathRoot "root"; $env:ProgramFiles = Join-Path $pathRoot "pf"
-    Check "no nvml.dll on disk keeps the bare name" ((Get-NvidiaNvmlLibraryPath) -eq "nvml.dll")
+    Check "no nvml.dll on disk still names the System32 path" ((Get-NvidiaNvmlLibraryPath) -eq (Join-Path $sys32 "nvml.dll"))
     Set-Content -Path (Join-Path $nvsmi "nvml.dll") -Value ""
     Check "an NVSMI-only nvml.dll is named by its path" ((Get-NvidiaNvmlLibraryPath) -eq (Join-Path $nvsmi "nvml.dll"))
     Set-Content -Path (Join-Path $sys32 "nvml.dll") -Value ""
@@ -96,15 +112,13 @@ try {
     Remove-Item -LiteralPath $pathRoot -Recurse -Force -ErrorAction SilentlyContinue
 }
 Check "a failed driver-version read is not an inventory" (
-    $readBlock -match 'nvmlSystemGetCudaDriverVersion_v2\(\[ref\]\$ver\) -ne 0' -and
-    $readBlock -match 'cuDriverGetVersion\(\[ref\]\$ver\) -ne 0')
+    $probeBody -match 'nvmlSystemGetCudaDriverVersion_v2\(ctypes\.byref\(packed\)\) != 0' -and
+    $probeBody -match 'cuDriverGetVersion\(ctypes\.byref\(packed\)\) != 0')
 
 # The real libraries, in a child so the fake type below can own this session.
 $helperFile = Join-Path ([System.IO.Path]::GetTempPath()) ("unsloth-inventory-" + [System.IO.Path]::GetRandomFileName() + ".ps1")
-$emitters = @(Get-HelperSources $setupPs1 @("New-StudioDynamicAssembly", "New-StudioEmittedNativeType"))
-# The capability gate is a Windows policy probe; the child stands in for it and answers yes.
-$gateStub = 'function Test-StudioCanDefineNativeTypes { return $true }'
-$helperBody = (@($gateStub) + $emitters + $setupParts) -join "`n"
+$pythonStub = 'function Get-NvidiaProbePythonExe { $c = Get-Command python3 -ErrorAction SilentlyContinue; if (-not $c) { $c = Get-Command python -ErrorAction SilentlyContinue }; if ($c) { return $c.Source } return "" }'
+$helperBody = (@($pythonStub) + $setupParts) -join "`n"
 Set-Content -LiteralPath $helperFile -Value ($helperBody + "`n`$inv = Get-NvidiaLibraryInventory`nif (`$inv) { `$inv | ConvertTo-Json -Compress } else { 'null' }")
 $pwshExe = (Get-Process -Id $PID).Path
 $realJson = & $pwshExe -NoProfile -File $helperFile 2>&1 | Select-Object -Last 1
@@ -139,8 +153,29 @@ Check "an empty probe is no inventory" ($null -eq (Probe-Raw ""))
 Check "a zero driver version is no inventory" ($null -eq (Probe-Raw "nvml;0;0;8.9"))
 Check "no capabilities is no inventory" ($null -eq (Probe-Raw "nvml;13;0;"))
 Check "an unreadable capability voids the inventory" ($null -eq (Probe-Raw "nvml;13;0;N/A,8.9"))
+$script:Notices = @()
+function Write-StudioLine { param([string]$Line, [string]$ForegroundColor = "") $script:Notices += $Line }
+$null = Probe-Raw ""
+Check "an empty probe without an opt-out prints nothing" ($script:Notices.Count -eq 0)
+foreach ($optOut in @("UNSLOTH_NVIDIA_PYTHON_PROBE", "UNSLOTH_EARLY_PYTHON_PROBE")) {
+    $saved = [Environment]::GetEnvironmentVariable($optOut)
+    try {
+        [Environment]::SetEnvironmentVariable($optOut, "0")
+        $script:Notices = @()
+        $null = Probe-Raw ""
+        Check "$optOut=0 says the libraries were not read and how to choose a wheel" (
+            $script:Notices.Count -eq 1 -and $script:Notices[0] -match 'UNSLOTH_TORCH_INDEX_FAMILY')
+        $script:Notices = @()
+        $null = Probe-Raw "nvml;13;1;8.9"
+        Check "$optOut=0 with an answer prints nothing" ($script:Notices.Count -eq 0)
+    } finally { [Environment]::SetEnvironmentVariable($optOut, $saved) }
+}
+function Write-StudioLine { param([string]$Line, [string]$ForegroundColor = "") }
+$null = Probe-Raw ""
 Check "one unreadable GPU voids the reader's source too" ($readBlock -notmatch '\bcontinue\b')
-Check "the CUDA driver API is read with the mask lifted" ($readBlock -match 'Remove-Item Env:CUDA_VISIBLE_DEVICES' -and $readBlock -match '\$env:CUDA_VISIBLE_DEVICES = \$saved')
+Check "the CUDA driver API is read with the mask lifted" (
+    $probeBody -match 'os\.environ\.pop\("CUDA_VISIBLE_DEVICES", None\)' -and
+    $probeBody -match 'os\.environ\["CUDA_VISIBLE_DEVICES"\] = saved')
 Check "setup.ps1 initialises the cache with its other script state" (
     (Get-Content -LiteralPath $setupPs1 -Raw) -match '(?m)^\$script:NvidiaLibraryInventoryProbed = \$false')
 Check "the answer is cached" ($null -eq (Get-NvidiaLibraryInventory))
@@ -254,6 +289,13 @@ $HasROCm = $true
 Check "a Vulkan prebuilt is kept for any GPU vendor" ((Get-GpuPrebuiltToKeepOverSourceBuild -InstallDir $install) -eq "vulkan")
 $HasROCm = $false
 Check "a Vulkan prebuilt with no GPU at all is not kept" ((Get-GpuPrebuiltToKeepOverSourceBuild -InstallDir $install) -eq "")
+# A driver library below CUDA 11 does not promote NVIDIA, but the card still runs Vulkan.
+$script:NvidiaDriverLibraryOnly = $true
+Check "a Vulkan prebuilt is kept for an NVIDIA GPU only the driver library found" ((Get-GpuPrebuiltToKeepOverSourceBuild -InstallDir $install) -eq "vulkan")
+$script:NvidiaDriverLibraryOnly = $false
+# Read on every keep, so each run resets it: Set-StrictMode, and a rerun in the same session.
+Check "setup.ps1 resets the driver-library-only flag with the other per-run state" (
+    (Get-Content -LiteralPath $setupPs1 -Raw) -match '(?m)^\$script:NvidiaSmiRejected = \$false\r?\n\$script:NvidiaDriverLibraryOnly = \$false')
 $script:FakeIntelAdapters = @("Intel(R) UHD Graphics 770")
 Check "a Vulkan prebuilt is kept for an Intel adapter that is not an XPU part" ((Get-GpuPrebuiltToKeepOverSourceBuild -InstallDir $install) -eq "vulkan")
 $script:FakeIntelAdapters = @()
@@ -306,6 +348,46 @@ Check "the retry has the longer bound" (($script:FakeSmiBounds[0..1] -join ",") 
 $script:FakeSmiTimeouts = 0
 $script:FakeSmiStdout = "| CUDA Version: 12.6 |"
 Check "a readable banner is still authoritative" ((Get-TorchIndexUrl) -eq "https://download.pytorch.org/whl/cu126")
+
+# The promotion runs as written in each file: a driver below CUDA 11 must not claim the host from Intel/AMD.
+function Get-PromotionBlock([string]$Text) {
+    $at = $Text.IndexOf('if (-not $HasNvidiaSmi -and (Get-NvidiaLibraryInventory)) {')
+    $ast = [System.Management.Automation.Language.Parser]::ParseInput($Text.Substring($at), [ref]$null, [ref]$null)
+    return $ast.EndBlock.Statements[0].Extent.Text
+}
+foreach ($file in @($installPs1, $setupPs1)) {
+    $block = Get-PromotionBlock (Get-Content -LiteralPath $file -Raw)
+    foreach ($case in @(@{ Major = 10; Want = $false }, @{ Major = 11; Want = $true }, @{ Major = 12; Want = $true })) {
+        $script:FakeInventory = @{ Source = "nvml"; CudaMajor = $case.Major; CudaMinor = 2; ComputeCaps = @("6.1"); Count = 1 }
+        function Get-NvidiaLibraryInventory { param([int]$TimeoutSec = 10) return $script:FakeInventory }
+        $HasNvidiaSmi = $false
+        $script:NvidiaDriverLibraryOnly = $false
+        Invoke-Expression $block
+        Check "$(Split-Path -Leaf $file): a CUDA $($case.Major) driver library $(if ($case.Want) { 'promotes' } else { 'does not promote' }) NVIDIA" ($HasNvidiaSmi -eq $case.Want)
+        if ($file -eq $setupPs1) {
+            Check "setup.ps1: a CUDA $($case.Major) driver library still counts as an NVIDIA GPU for keeping a prebuilt" (
+                ($HasNvidiaSmi -or $script:NvidiaDriverLibraryOnly) -eq $true)
+        }
+    }
+}
+
+# The update's kind guard runs before the keeper and deleted the bundle the keeper would have kept.
+$setupText = Get-Content -LiteralPath $setupPs1 -Raw
+$from = $setupText.IndexOf('$_nvidiaKinds = if (Test-WinArm64Venv) {')
+$to = $setupText.IndexOf('if ($existingKind -and ($existingKind -notin $expectedKinds))', $from)
+$kindBlock = $setupText.Substring($from, $to - $from)
+function Test-WinArm64Venv { $false }
+function Get-PinnedTorchIndexUrl { $null }
+function Get-PersistedWoaTorchIndex { $null }
+function Get-WoaTorchIndexMarker { $null }
+$WinArm64EffectiveTorchIndexUrl = $null; $HasROCm = $false; $script:ROCmGfxArch = $null; $HasNvidiaSmi = $false
+foreach ($case in @(@{ Flag = $true; Want = $true }, @{ Flag = $false; Want = $false })) {
+    $script:NvidiaDriverLibraryOnly = $case.Flag
+    Invoke-Expression $kindBlock
+    Check "the update's kind guard $(if ($case.Want) { 'keeps' } else { 'does not keep' }) a CUDA bundle $(if ($case.Flag) { 'for an NVIDIA GPU only a pre-CUDA 11 driver library found' } else { 'with no NVIDIA evidence' })" (
+        ($expectedKinds -contains "windows-cuda") -eq $case.Want)
+}
+$script:NvidiaDriverLibraryOnly = $false
 
 Write-Host ""
 if ($failures -gt 0) { Write-Host "$failures check(s) failed" -ForegroundColor Red; exit 1 }

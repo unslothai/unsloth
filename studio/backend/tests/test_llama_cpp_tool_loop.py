@@ -3050,6 +3050,29 @@ def test_gated_python_call_still_streams_its_arguments(monkeypatch):
     assert events.index(provisional[0]) < events.index(gated[0])
 
 
+@pytest.mark.parametrize("verdict", ["allow", "deny"])
+def test_only_an_approved_call_is_marked_approved(monkeypatch, verdict):
+    first_stream = _streamed_structured_tool_call("python", {"code": "print(1)"}, "call_gated")
+    final_stream = [_sse({"content": "Done."}), _done()]
+    backend, _payloads = _backend_and_payloads(monkeypatch, [first_stream, final_stream])
+    seen: list = []
+    monkeypatch.setattr(
+        "core.inference.tools.execute_tool",
+        lambda name, arguments, **kwargs: seen.append(kwargs.get("host_access_approved")) or "OK",
+    )
+    monkeypatch.setattr("core.inference.llama_cpp.wait_tool_decision", lambda *_a, **_k: verdict)
+
+    _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "run it"}],
+        [{"type": "function", "function": {"name": "python"}}],
+        confirm_tool_calls = True,
+        permission_mode = "ask",
+    )
+
+    assert seen == ([True] if verdict == "allow" else [])
+
+
 def test_auto_mode_render_html_suppresses_provisional_card_under_confirm(monkeypatch):
     """render_html is no longer unconditionally safe (a networked canvas asks), so
     with confirm_tool_calls set under permission_mode="auto" its early provisional
