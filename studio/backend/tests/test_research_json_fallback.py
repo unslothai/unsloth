@@ -5,6 +5,7 @@
 
 import asyncio
 import json
+import threading
 from types import SimpleNamespace
 
 import httpx
@@ -23,7 +24,8 @@ from .test_sf_client_tools_passthrough import _ScriptedBackend, _fixed, _install
 
 
 _NO_GRAMMAR_ENGINE = (
-    "response_format needs the llama.cpp grammar engine; load a GGUF model to use it."
+    "response_format needs a grammar engine, and the transformers backend has none; load an "
+    "MLX or GGUF model to use it."
 )
 # Same code and param, different cause. The real-route cases keep these strings honest.
 _AUDIO_REFUSAL_MESSAGE = (
@@ -107,6 +109,10 @@ def research_call(monkeypatch):
 def test_local_json_research_recovers_through_the_real_route(
     monkeypatch, research_call, is_mlx, phase, forced_tools
 ):
+    from core.inference import grammar_constraint
+
+    # MLX refuses only without its engine; pinned so a Mac with llguidance tests this too.
+    monkeypatch.setattr(grammar_constraint, "LLGUIDANCE_AVAILABLE", False)
     backend = _ScriptedBackend(_fixed('{"ok": true}'))
     backend.models[backend.active_model_name]["is_mlx"] = is_mlx
     _install(monkeypatch, backend, supports_tools = forced_tools)
@@ -509,8 +515,15 @@ def test_json_fallback_does_not_refund_transport_retries(monkeypatch, research_c
     sent = []
     delays = []
     real_sleep = asyncio.sleep
+    owner = threading.get_ident()
 
-    async def sleep(delay):
+    # `research_runs.asyncio` is the asyncio module, so this patches every event loop in
+    # the process; a TestClient portal another test left running polls with
+    # asyncio.sleep(0.1) from its own thread. Only this thread's sleeps are the retry
+    # loop's (see _capture_backoff in test_research_runs_hardening.py).
+    async def sleep(delay, *args, **kwargs):
+        if threading.get_ident() != owner:
+            return await real_sleep(delay, *args, **kwargs)
         delays.append(delay)
         await real_sleep(0)
 

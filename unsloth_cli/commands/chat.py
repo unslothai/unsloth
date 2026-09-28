@@ -78,15 +78,20 @@ def _get_base_load_in_4bit(model_config) -> bool:
         with open(adapter_cfg_path, encoding = "utf-8") as f:
             adapter_cfg = json.load(f)
 
+        trained_in_4bit = adapter_cfg.get("unsloth_load_in_4bit")
+        if isinstance(trained_in_4bit, bool):
+            return trained_in_4bit
         training_method = adapter_cfg.get("unsloth_training_method")
         if training_method == "lora":
             return False
-        elif training_method == "qlora":
+        if training_method == "qlora":
             return True
-        elif not training_method:
-            if model_config.base_model and "-bnb-4bit" not in model_config.base_model.lower():
-                return False
-            return True
+        if (
+            not training_method
+            and model_config.base_model
+            and "-bnb-4bit" not in model_config.base_model.lower()
+        ):
+            return False
         return True
     except Exception:
         return True
@@ -322,6 +327,15 @@ def chat(
         chat_backend = load_chat_backend(model, model_config = model_config, **load_opts)
 
     name = model_config.display_name or model
+    # Name the quant the server kept, not the local pick (a local dir's display name is a file stem).
+    kept = getattr(chat_backend, "gguf_variant", None) if server_mode else None
+    picked = getattr(model_config, "gguf_variant", None)
+    if kept and kept != picked:
+        if picked:
+            base = name.removesuffix(f" ({picked})")
+        else:
+            base = model.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
+        name = f"{base} ({kept})"
     show_thinking = think
     compare_mode = compare
     messages = []
@@ -499,7 +513,10 @@ def chat(
                 )
 
             messages.append(
-                {"role": "assistant", "content": visible_text(answer, show_thinking = False)}
+                {
+                    "role": "assistant",
+                    "content": visible_text(answer, show_thinking = False, final = True),
+                }
             )
     finally:
         chat_backend.close()

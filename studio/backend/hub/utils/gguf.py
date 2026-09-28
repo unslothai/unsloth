@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Optional, Sequence
 
+from hub.utils.hf_tokens import call_with_anonymous_retry
 from loggers import get_logger
 from utils.paths.path_utils import (
     drop_shadowed_appledouble_names as _drop_shadowed_appledouble_names,
@@ -72,7 +73,7 @@ GGUF_QUANT_PREFERENCE = [
     "F32",
 ]
 
-_GGUF_SPLIT_SUFFIX_RE = re.compile(r"-\d{3,}-of-\d{3,}", re.IGNORECASE)
+_GGUF_SPLIT_SUFFIX_RE = re.compile(r"-\d{3,}-of-(\d{3,})", re.IGNORECASE)
 _GGUF_QUANT_RE = re.compile(
     r"(UD-)?"
     r"(MXFP[0-9]+(?:_[A-Z0-9]+)*"
@@ -268,8 +269,20 @@ def pick_best_gguf(filenames: list[str]) -> Optional[str]:
         by_quant.setdefault(extract_quant_label(name).upper(), name)
     for quant in GGUF_QUANT_PREFERENCE:
         filename = by_quant.get(quant.upper())
-        if filename is not None:
-            return filename
+        if filename is None:
+            continue
+        if quant in _FLOAT_PRECISION_QUANTS:
+            # The list leaves out quants such as Q4_0, Q3_K and TQ1_0; the first listed of them still beats full precision.
+            filename = next(
+                (
+                    name
+                    for name in by_quant.values()
+                    if (token := extract_quant_token(name))
+                    and token.upper() not in _FLOAT_PRECISION_QUANTS
+                ),
+                filename,
+            )
+        return filename
     return gguf_files[0]
 
 
@@ -355,6 +368,12 @@ def _unknown_gguf_variant_key(filename: str) -> str:
 def gguf_variant_family(filename: str) -> str:
     """The shard family *filename* belongs to: its directory plus its shard-stripped name. The unit a row and a download plan describe. Every shard of one split GGUF shares a family, which is why summing sizes within a family is right; two files that do NOT share one are two different checkpoints, so summing across them is not."""
     return _unknown_gguf_variant_key(filename)
+
+
+def gguf_shard_set(filename: str) -> tuple[str, int]:
+    # A quant shipped both whole and split is two copies of one checkpoint, not one set of shards.
+    split = _GGUF_SPLIT_SUFFIX_RE.search(filename.rsplit("/", 1)[-1])
+    return gguf_variant_family(filename), int(split.group(1)) if split else 0
 
 
 def gguf_checkpoint_family(filename: str) -> Optional[str]:
@@ -792,12 +811,12 @@ def _apply_gguf_display_labels(variants: list[GgufVariantInfo]) -> None:
 
 
 def group_gguf_variant_files(entries) -> dict[str, tuple[str, int]]:
-    """``variant key -> (first filename, size of that variant's shard family)``. *entries* is an iterable of ``(path, size)`` for main GGUFs only, already filtered of mmproj, drafters and big-endian builds. Sizes are summed across the shards of ONE family, never across families: a repo that ships the same quant twice (``BF16/QwQ-32B-BF16-*`` beside ``BF16/QwQ-32B.BF16-*``) therefore advertises what a load would actually read rather than the total of both copies. The family kept is the one holding the lexicographically first file, which is the shard the lister and the loader open."""
-    families: dict[str, dict[str, list[tuple[str, int]]]] = {}
+    """``variant key -> (first filename, summed size of ONE shard set)``: a quant shipped twice (``QwQ-32B-BF16-*`` beside ``QwQ-32B.BF16-*``, or whole beside split) keeps only the set holding the first file, the one the loader opens."""
+    families: dict[str, dict[tuple[str, int], list[tuple[str, int]]]] = {}
     for path, size in entries:
-        families.setdefault(gguf_variant_key(path), {}).setdefault(
-            gguf_variant_family(path), []
-        ).append((path, int(size or 0)))
+        families.setdefault(gguf_variant_key(path), {}).setdefault(gguf_shard_set(path), []).append(
+            (path, int(size or 0))
+        )
     grouped: dict[str, tuple[str, int]] = {}
     for key, by_family in families.items():
         chosen = min(by_family.values(), key = lambda members: min(path for path, _ in members))
@@ -1138,10 +1157,14 @@ def list_gguf_variants(
             return _ready_cached_variants(cached)
 
     try:
-        info = HfApi(token = hf_token).model_info(
-            repo_id,
-            files_metadata = True,
-            timeout = _GGUF_MODEL_INFO_TIMEOUT_SECONDS,
+        # A refused credential retries once anonymously: a public listing still answers.
+        info = call_with_anonymous_retry(
+            lambda token: HfApi(token = token).model_info(
+                repo_id,
+                files_metadata = True,
+                timeout = _GGUF_MODEL_INFO_TIMEOUT_SECONDS,
+            ),
+            hf_token,
         )
     except Exception as exc:
         if type(exc).__name__ in (

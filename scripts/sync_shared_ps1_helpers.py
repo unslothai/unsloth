@@ -51,7 +51,7 @@ def dedented(source: str) -> str:
     """Drop the common indentation, which is the only difference allowed."""
     lines = source.splitlines()
     body = [line for line in lines if line.strip()]
-    indent = min(len(line) - len(line.lstrip(" ")) for line in body)
+    indent = min((len(line) - len(line.lstrip(" ")) for line in body), default = 0)
     return "\n".join(line[indent:] if line.strip() else "" for line in lines)
 
 
@@ -100,7 +100,7 @@ def main() -> int:
         # run into the function keyword and hide the declaration from every
         # reader of this file, this script included.
         comment = dedented(install_text[leading_comment_start(install_text, start) : start])
-        comment = comment.rstrip("\n") + "\n"
+        comment = comment.rstrip("\n") + "\n" if comment else ""
         _, after = function_span(setup_text, previous)
         setup_text = setup_text[:after] + "\n\n" + comment + wanted + setup_text[after:]
         stale.append(name)

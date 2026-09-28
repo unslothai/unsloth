@@ -221,7 +221,7 @@ export function EmbeddingModelPicker({
                       // unannounced. Same role the Hub's own on-device dot carries.
                       role="img"
                       aria-label={t("settings.general.rag.onDevice")}
-                      className="size-[5px] shrink-0 rounded-full bg-status-success"
+                      className="size-[calc(5px*var(--ui-space-scale,1))] shrink-0 rounded-full bg-status-success"
                     />
                   ) : null}
                   <span className="truncate font-mono text-ui-11">

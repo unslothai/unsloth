@@ -133,6 +133,9 @@ def _load_remote_code_configs(
             return configs
 
         from huggingface_hub import hf_hub_download
+        from hub.utils.hf_tokens import anonymous_retrying
+
+        hf_hub_download = anonymous_retrying(hf_hub_download)
         from huggingface_hub.utils import EntryNotFoundError
         from utils.hf_cache_settings import active_hf_hub_cache
         from utils.hf_probe import hf_file_definitely_absent

@@ -19,8 +19,6 @@ import {
 import { cn } from "@/lib/utils";
 import { toast } from "@/lib/toast";
 
-// All registerNativeAttachmentPath takes. The picker itself accepts image/*,
-// so name the droppable formats instead of surfacing the backend's refusal.
 const NATIVE_IMAGE_EXTS = ["jpg", "jpeg", "png", "webp", "gif"];
 
 /** Shared image picker that returns a data URL. */
@@ -120,7 +118,17 @@ export function ImageDropzone({
         data-reload-snapshot-sensitive
         className={cn("relative overflow-hidden rounded-[10px] border border-border", className)}
       >
-        <img src={value} alt="Source" className="max-h-44 w-full object-contain bg-muted/30" />
+        {/* Checkerboard behind the preview, so a transparent upload shows its alpha. */}
+        <img
+          src={value}
+          alt="Source"
+          className="max-h-44 w-full object-contain bg-muted/30"
+          style={{
+            backgroundImage:
+              "repeating-conic-gradient(rgb(128 128 128 / 0.28) 0% 25%, transparent 0% 50%)",
+            backgroundSize: "16px 16px",
+          }}
+        />
         <Tooltip>
           <TooltipTrigger asChild={true}>
             <Button
