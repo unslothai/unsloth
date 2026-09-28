@@ -994,3 +994,31 @@ def test_is_gguf_embedding_model_checks_every_split_for_classifier_head(tmp_path
         tensor_names = ("cls.weight",),
     )
     assert is_gguf_embedding_model(str(first), model_identifier = "local/model") is False
+
+
+# ggml block sizes, from the static_asserts in ggml/src/ggml-common.h.
+_GGML_BLOCK_BYTES = {7: 24, 11: 110, 15: 292, 34: 54, 35: 66, 42: 18}
+
+
+@pytest.mark.parametrize("ggml_type", sorted(_GGML_BLOCK_BYTES))
+def test_a_valid_tensor_after_q2_0_is_not_reported_as_legacy_packing(tmp_path: Path, ggml_type):
+    """Every tensor after a Q2_0 one is walked, so a wrong block size for any type refuses a loadable file."""
+    from utils.models.gguf_metadata import _GGML_TYPE_LAYOUT
+
+    blck, type_size = _GGML_TYPE_LAYOUT[ggml_type]
+    assert type_size == _GGML_BLOCK_BYTES[ggml_type]
+    n = 768
+    second = ((n // blck) * _GGML_BLOCK_BYTES[ggml_type] + 31) // 32 * 32
+    tensor_info = b""
+    for name, t, ne, offset in (
+        ("token_embd.weight", 42, (64, 64), 0),
+        ("blk.0.attn_q.weight", ggml_type, (n,), 1152),
+        ("blk.0.norm.weight", 0, (1,), 1152 + second),
+    ):
+        tensor_info += _enc_string(name) + struct.pack("<I", len(ne))
+        for dim in ne:
+            tensor_info += struct.pack("<Q", dim)
+        tensor_info += struct.pack("<I", t) + struct.pack("<Q", offset)
+    p = tmp_path / "mixed-Q2_0.gguf"
+    p.write_bytes(struct.pack("<IIQQ", _GGUF_MAGIC, 3, 3, 0) + tensor_info)
+    assert gguf_mainline_q2_offset_mismatch(str(p)) is None

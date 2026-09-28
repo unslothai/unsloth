@@ -3658,6 +3658,21 @@ def _quant_label_for_endian(path: str) -> Optional[str]:
         return None
 
 
+def _refuse_legacy_q2_gguf_before_teardown(path: str) -> None:
+    """Raise the Prism legacy Q2_0 message when *path* uses the old Q2_0 packing (#11259)."""
+    from utils.models.gguf_metadata import (
+        gguf_mainline_q2_offset_mismatch,
+        prism_legacy_q2_gguf_user_message,
+    )
+
+    legacy_tensor = gguf_mainline_q2_offset_mismatch(path)
+    if legacy_tensor is None:
+        return
+    message = prism_legacy_q2_gguf_user_message(tensor_name = legacy_tensor)
+    logger.error("Refusing legacy Prism Q2_0 GGUF before teardown: %s (%s)", message, path)
+    raise ValueError(message)
+
+
 def _gguf_files_for_variant(files: Iterable[str], variant: str) -> list[str]:
     """Return main GGUF files matching a requested variant.
 
@@ -23220,20 +23235,7 @@ class LlamaCppBackend:
                         gguf_path,
                     )
                     raise ValueError(_early_non_chat)
-                from utils.models.gguf_metadata import (
-                    gguf_mainline_q2_offset_mismatch,
-                    prism_legacy_q2_gguf_user_message,
-                )
-
-                _legacy_q2 = gguf_mainline_q2_offset_mismatch(gguf_path)
-                if _legacy_q2 is not None:
-                    _legacy_msg = prism_legacy_q2_gguf_user_message(tensor_name = _legacy_q2)
-                    logger.error(
-                        "Refusing legacy Prism Q2_0 GGUF before teardown: %s (%s)",
-                        _legacy_msg,
-                        gguf_path,
-                    )
-                    raise ValueError(_legacy_msg)
+                _refuse_legacy_q2_gguf_before_teardown(gguf_path)
 
             # The same refusal for a REPO load, which is what the Model Hub actually sends:
             # the route resolves every Hub model to hf_repo, so leaving this to the
@@ -23268,6 +23270,22 @@ class LlamaCppBackend:
                         hf_repo,
                     )
                     raise ValueError(_early_non_chat)
+                # A Hub load whose file is already on disk is judged from its header too. A
+                # first download has nothing to read yet; its start failure is classified
+                # with the same message.
+                _legacy_q2_probe = _preflight_model_path
+                if not _legacy_q2_probe:
+                    try:
+                        # Local only: the header and tensor table sit at the front of the
+                        # file, so a copy still being verified reads the same layout.
+                        _legacy_q2_probe = cached_gguf_for_load(
+                            hf_repo, hf_variant, verify_sizes = False, hf_token = hf_token
+                        )
+                    except Exception as e:  # noqa: BLE001 -- no cached copy is not a verdict
+                        logger.debug("Legacy Q2_0 probe found no cached copy: %s", e)
+                        _legacy_q2_probe = None
+                if _legacy_q2_probe and Path(_legacy_q2_probe).is_file():
+                    _refuse_legacy_q2_gguf_before_teardown(_legacy_q2_probe)
 
             # The probe can take a moment on a slow Hub, so re-read the cancel flag rather
             # than tearing down a healthy server for a load that was called off.
