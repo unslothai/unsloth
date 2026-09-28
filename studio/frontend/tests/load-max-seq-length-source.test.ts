@@ -24,7 +24,7 @@ const GGUF = {
   activeGgufVariant: null as string | null,
   pinnedMaxSeqLength: null as number | null,
   defaultMaxSeqLength: 4096,
-  presetSource: "user" as const,
+  presetSource: "custom" as const,
 };
 const RELOAD = {
   ...GGUF,
