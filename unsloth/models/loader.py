@@ -998,8 +998,7 @@ class FastLanguageModel(FastLlamaModel):
                     f"to obtain the latest transformers build, then restart this session."
                 )
             if _is_mistral_format_checkpoint(model_name, token, base_revision, local_files_only):
-                # An architecture transformers already implements is loaded through a
-                # translated view of the same shards; anything else keeps the explanation.
+                # Known architectures load via a translated view; others keep the error.
                 _view = prepare_mistral_format_checkpoint(
                     model_name, token, base_revision, local_files_only
                 )
@@ -1821,8 +1820,7 @@ class FastModel(FastBaseModel):
                     f"to obtain the latest transformers build, then restart this session."
                 )
             if _is_mistral_format_checkpoint(model_name, token, base_revision, local_files_only):
-                # An architecture transformers already implements is loaded through a
-                # translated view of the same shards; anything else keeps the explanation.
+                # Known architectures load via a translated view; others keep the error.
                 _view = prepare_mistral_format_checkpoint(
                     model_name, token, base_revision, local_files_only
                 )

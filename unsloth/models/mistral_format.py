@@ -11,25 +11,12 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Load checkpoints published only in Mistral's own format through transformers.
+"""Load Mistral-format checkpoints (params.json + consolidated*.safetensors, no config.json,
+e.g. Mistral-Large-3) as transformers `mistral4` via a translated view of the same shards.
 
-Mistral-Large-3 (and its Base, BF16 and FP8 uploads) ships `params.json` and
-`consolidated*.safetensors` and no `config.json`. Its text decoder is the same
-architecture transformers implements as `mistral4` (MLA attention, softmax routed
-MoE with a shared expert, YaRN with the llama 4 attention scale): Mistral publishes
-Mistral-Small-4 in both formats and its tensors are byte for byte the same under the
-two naming schemes, the per-expert `w1` / `w3` / `w2` being the halves of the fused
-`gate_up_proj` and the rows of `down_proj`.
-
-So instead of converting 700 GB on disk, a small directory is written next to the
-cache holding a translated `config.json`, an index pointing at the original shards
-and the tokenizer files. The key renames and the expert merges are handed to
-transformers as weight conversions for that one load only, and dropped afterwards so
-`save_pretrained` writes ordinary transformers names.
-
-Only the text decoder is loaded; the vision encoder in the same shards is skipped.
-Anything this module does not recognise returns None and the loader keeps its
-previous error message.
+Mistral-Small-4 ships in both formats with byte-identical tensors, which fixes the name
+mapping. Conversions are registered for one load only so `save_pretrained` writes
+transformers names. Only the text decoder loads; unrecognised checkpoints return None.
 """
 
 import contextlib
@@ -47,7 +34,6 @@ __all__ = [
     "mistral_format_redirect",
 ]
 
-# Keys of the multimodal parts that share the shards with the text decoder.
 _NON_TEXT_PREFIXES = (
     "vision_encoder.",
     "patch_merger.",
@@ -69,8 +55,7 @@ _VIEW_MARKER = "unsloth_mistral_format.json"
 
 
 class MistralFormatRedirect(Exception):
-    """Raised by the loader when a Mistral-format checkpoint has a transformers view;
-    `mistral_format_redirect` catches it and loads the view instead."""
+    """Raised by the loader; `mistral_format_redirect` catches it and loads the view."""
 
     def __init__(self, path, source):
         super().__init__(f"Unsloth: loading {source} through its transformers view at {path}")
@@ -79,8 +64,7 @@ class MistralFormatRedirect(Exception):
 
 
 def _fp8_block_quantization(quant) -> Optional[dict]:
-    """compressed-tensors FP8 128x128 block weights with dynamic activations (what
-    Mistral-Large-3 ships) as a transformers fine-grained FP8 config, else None."""
+    """compressed-tensors FP8 128x128 block (Mistral-Large-3) as fine-grained FP8 config, else None."""
     if not isinstance(quant, dict):
         return None
     if str(quant.get("quant_method", "")).lower().replace("_", "-") != "compressed-tensors":
@@ -105,8 +89,7 @@ def _fp8_block_quantization(quant) -> Optional[dict]:
         block = this_block
     if block is None:
         return None
-    # The ignore list names the Mistral modules through their transformers names already
-    # (q_a_proj, kv_a_proj_with_mqa, gate, lm_head, embed_tokens); vision entries do not apply.
+    # The ignore list already uses transformers module names.
     not_convert = []
     for entry in quant.get("ignore") or []:
         name = str(entry)
@@ -125,18 +108,16 @@ def _fp8_block_quantization(quant) -> Optional[dict]:
 
 
 def mistral_params_to_mistral4_config(params: dict) -> Optional[dict]:
-    """Translate a Mistral `params.json` into `Mistral4Config` keyword arguments, the way
-    Mistral itself translated Mistral-Small-4's. None when the checkpoint is not an MLA
-    mixture of experts with a shared expert, or uses something `mistral4` cannot express."""
+    """`params.json` -> `Mistral4Config` kwargs as Mistral did for Small-4; None if not expressible."""
     if not isinstance(params, dict):
         return None
     moe = params.get("moe")
     if not params.get("qk_nope_head_dim") or not isinstance(moe, dict):
         return None
     if not params.get("q_lora_rank"):
-        return None  # a plain `wq` has no published Mistral-format checkpoint to map from
+        return None
     if params.get("quantization"):
-        return None  # per-tensor FP8 (Small-4 style); that family also ships config.json
+        return None  # per-tensor FP8: Small-4 ships config.json
     if int(moe.get("num_shared_experts") or 0) < 1:
         return None
     if int(moe.get("route_every_n", 1)) != 1:
@@ -144,7 +125,7 @@ def mistral_params_to_mistral4_config(params: dict) -> Optional[dict]:
     if str(moe.get("renorm_strategy", "WEIGHTS")).upper() != "WEIGHTS":
         return None
     if moe.get("use_load_balancing_bias"):
-        return None  # sigmoid-style correction bias; mistral4 routes with a plain softmax
+        return None  # mistral4 routes with plain softmax
     if params.get("sliding_window"):
         return None
 
@@ -163,8 +144,7 @@ def mistral_params_to_mistral4_config(params: dict) -> Optional[dict]:
             "original_max_position_embeddings": original,
             "beta_fast": float(yarn.get("beta", 32)),
             "beta_slow": float(yarn.get("alpha", 1)),
-            # Same values Mistral wrote into Mistral-Small-4's config.json for the same
-            # `apply_scale: false` yarn block.
+            # Matches Mistral-Small-4's config.json for `apply_scale: false`.
             "mscale": 1.0,
             "mscale_all_dim": 1.0,
             "llama_4_scaling_beta": float(llama4.get("beta", 0.0)),
@@ -224,10 +204,7 @@ def mistral_params_to_mistral4_config(params: dict) -> Optional[dict]:
 
 
 def mistral_format_weight_conversions():
-    """Renames and merges from Mistral's tensor names to `Mistral4ForCausalLM`'s.
-
-    Renames chain in order; the expert merges run last and name their own targets. The
-    name correspondence is the one Mistral-Small-4's two uploads share byte for byte."""
+    """Mistral -> `Mistral4ForCausalLM` renames (chained in order), then expert merges."""
     from transformers.core_model_loading import (
         Concatenate,
         MergeModulelist,
@@ -259,14 +236,11 @@ def mistral_format_weight_conversions():
         (r"\.experts\.(\d+)\.w1\.", r".mlp.experts.\1.gate_proj."),
         (r"\.experts\.(\d+)\.w2\.", r".mlp.experts.\1.down_proj."),
         (r"\.experts\.(\d+)\.w3\.", r".mlp.experts.\1.up_proj."),
-        # compressed-tensors' block scale is the dequantization multiplier, which is what
-        # transformers' fine-grained FP8 calls weight_scale_inv.
+        # compressed-tensors' block scale is the multiplier transformers calls weight_scale_inv.
         (r"\.weight_scale$", ".weight_scale_inv"),
     ]
     conversions = [WeightRenaming(source_patterns = s, target_patterns = t) for s, t in renames]
-    # Scales first: transformers stops at the first converter that matches, and a `.weight`
-    # source also matches the `.weight_scale_inv` key next to it. These only apply to a load
-    # that keeps FP8; see `_mistral_format_conversions` for the dequantizing one.
+    # Scales first: transformers stops at the first match and `.weight` also matches `.weight_scale_inv`.
     for suffix, merge in (
         (".weight_scale_inv", True),
         (".weight_scale_inv", False),
@@ -338,9 +312,7 @@ def prepare_mistral_format_checkpoint(
     revision = None,
     local_files_only = False,
 ) -> Optional[str]:
-    """Write (or reuse) a transformers view of a Mistral-format checkpoint and return its
-    directory, or None when the architecture is not one `mistral4` implements, this
-    transformers has no `mistral4`, or the files cannot be read."""
+    """Write (or reuse) a transformers view of a Mistral-format checkpoint; None if unsupported."""
     if not _mistral4_available():
         return None
     params_path = _fetch(model_name, "params.json", token, revision, local_files_only)
@@ -369,7 +341,6 @@ def prepare_mistral_format_checkpoint(
     weight_map = {k: v for k, v in weight_map.items() if not k.startswith(_NON_TEXT_PREFIXES)}
     shards = sorted(set(weight_map.values()))
 
-    # The view names the shards by absolute path, so nothing is linked or copied.
     shard_paths = {}
     if os.path.isdir(model_name):
         for shard in shards:
@@ -434,10 +405,7 @@ def _is_expert_scale_merge(conversion):
 
 
 def _register_mistral4_causal_lm():
-    # transformers only reaches Mistral4 through Mistral3's vision wrapper, so AutoModelForCausalLM
-    # does not know the text-only config the view carries. The pairing is transformers' own;
-    # `AutoModelForCausalLM.register` skips transformers' native configs, so add it the same way
-    # register does for everything else.
+    # AutoModelForCausalLM lacks Mistral4Config and `register` refuses native configs.
     from transformers import Mistral4Config, Mistral4ForCausalLM
     from transformers.models.auto.modeling_auto import MODEL_FOR_CAUSAL_LM_MAPPING
     if MODEL_FOR_CAUSAL_LM_MAPPING.get(Mistral4Config, None) is None:
@@ -446,12 +414,11 @@ def _register_mistral4_causal_lm():
 
 @contextlib.contextmanager
 def _mistral_format_conversions():
-    """Register the Mistral-name conversions for Mistral4ForCausalLM for one load, then put
-    back whatever was registered before."""
+    """Register Mistral-name conversions for one load, then restore the previous ones."""
     from transformers import conversion_mapping as cm
 
     _register_mistral4_causal_lm()
-    cm.get_checkpoint_conversion_mapping("mistral4")  # builds the cache
+    cm.get_checkpoint_conversion_mapping("mistral4")
     key = "Mistral4ForCausalLM"
     cache = cm._checkpoint_conversion_mapping_cache
     had_entry, previous = key in cache, cache.get(key)
@@ -459,8 +426,7 @@ def _mistral_format_conversions():
     cm.register_checkpoint_conversion_mapping(
         key, mistral_format_weight_conversions(), overwrite = True
     )
-    # A dequantizing FP8 load folds each expert's scale into its weight inside transformers'
-    # own `.weight` converters, so the separate scale merges must not claim those keys first.
+    # Dequantizing FP8 folds scales in transformers' `.weight` converters; scale merges must not claim them.
     fp8_quantizer, original_update = None, None
     try:
         from transformers.quantizers.quantizer_finegrained_fp8 import FineGrainedFP8HfQuantizer
@@ -492,7 +458,6 @@ def _mistral_format_conversions():
 
 
 def _forget_load_conversions(model):
-    # The model was read under Mistral's names; saving must write transformers' own.
     seen = set()
     for module in (model, getattr(model, "model", None), getattr(model, "base_model", None)):
         if module is not None and id(module) not in seen:
@@ -504,8 +469,7 @@ def _forget_load_conversions(model):
 
 
 def mistral_format_redirect(fn):
-    """Retry a `from_pretrained` against the transformers view the loader found for a
-    Mistral-format checkpoint."""
+    """Retry `from_pretrained` against the Mistral-format view the loader found."""
 
     @functools.wraps(fn)
     def _wrapper(*args, **kwargs):
@@ -517,7 +481,6 @@ def mistral_format_redirect(fn):
             kwargs["model_name"] = view
         else:
             args = (view,) + tuple(args[1:])
-        # The view pins the snapshot it was built from.
         kwargs.pop("revision", None)
         print(
             f"Unsloth: `{source}` is in Mistral's own format. Loading its text decoder "

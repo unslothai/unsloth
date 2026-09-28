@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
-"""Mistral-format checkpoints (params.json + consolidated*.safetensors, no config.json)
-load through transformers' Mistral4 without an on-disk conversion.
-
-Mistral-Large-3 ships only that format. The tiny checkpoints here are written with
-Mistral's tensor names spelled out by hand (the scheme vLLM's MistralLarge3 mapper and
-the real Large-3 shard headers use), then loaded through the view and compared with the
-transformers model they were written from. The module is exec'd from its file so the
-tests do not need `import unsloth` (which wants an accelerator).
+"""Tiny checkpoints written under Mistral's tensor names (as in vLLM's MistralLarge3 mapper
+and the real Large-3 shard headers) load through the view and match the source model.
+The module is exec'd from its file so `import unsloth` (needs an accelerator) is avoided.
 """
 
 import importlib.util
@@ -108,8 +103,7 @@ LARGE3_PARAMS = {
     },
 }
 
-# Text tensor names of one dense layer (0) and one MoE layer (3) of the real Large-3 FP8
-# shards, layer and expert indices folded (read from the safetensors headers).
+# Text tensor names of Large-3 FP8 dense layer 0 and MoE layer 3, from the shard headers.
 LARGE3_TEXT_KEYS = {
     "layers.L.attention.kv_a_norm.weight",
     "layers.L.attention.q_a_norm.weight",
@@ -371,8 +365,6 @@ def test_bf16_checkpoint_loads_exactly(tmp_path, hub_cache):
     with torch.no_grad():
         assert torch.equal(model(input_ids = ids).logits, reference(input_ids = ids).logits)
 
-    # The conversions were for that load only: the save has transformers names and
-    # plain transformers reads it back.
     model.save_pretrained(tmp_path / "resaved")
     again = Mistral4ForCausalLM.from_pretrained(tmp_path / "resaved", dtype = torch.float32)
     with torch.no_grad():
