@@ -1,22 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Backport of the symbolic divisibility proof PyTorch first shipped in torch 2.14.0.
+"""Backport of torch 2.14's polynomial-gcd proof in ``SizeVarAllocator.statically_known_multiple_of``.
 
-Inductor splits a flat iteration range against a kernel group in ``SIMDKernel._split_iteration_ranges`` and raises
-``CantSplit`` unless ``SizeVarAllocator.statically_known_multiple_of(size, group)`` proves the division exact. For a
-SYMBOLIC group torch <= 2.11 asked ``Eq(numerator % denominator, 0)``, i.e. sympy's own ``Mod``, which cancels
-``(4096*s87 - 4096*s89) % (s87 - s89)`` to 0. torch 2.12.0 switched that line to torch's
-``Mod`` (``torch.utils._sympy.functions``), which only proves divisibility through ``(p / q).is_integer``, and sympy
-leaves an Add over an Add unevaluated, so the same expression became unprovable. On 2.12.x and 2.13.x every
-``torch.compile(dynamic=True)`` of a block holding such a tensor fails to lower (Qwen-Image-2.1 on torchao fp8 /
-int8 weights, FLUX.1 single-stream blocks). 2.14 first asks whether a polynomial gcd covers the denominator; this
-module adds exactly that proof on torch builds whose own check misses it (decided by a probe, not by a version
-string), and changes nothing where the stock check already proves the canonical case.
-
-Sound by construction: it only ever turns a False into a True when ``gcd(numerator, denominator)`` equals the
-denominator up to sign, i.e. the numerator is an integer-polynomial multiple of it.
-
+torch 2.12 / 2.13 cannot prove ``(k*a - k*b) % (a - b) == 0`` and raise inductor ``CantSplit`` under
+``torch.compile(dynamic=True)`` (Qwen-Image-2.1 torchao fp8 / int8, FLUX.1 single-stream blocks). Probe-gated, not
+version-gated; only turns False into True when the gcd equals the denominator up to sign.
 Kill switch: ``UNSLOTH_DIFFUSION_INDUCTOR_BACKPORTS=0``."""
 
 from __future__ import annotations
@@ -45,8 +34,7 @@ def _gcd_proves_multiple(allocator: Any, numerator: Any, denominator: Any) -> bo
     if numerator == 0:
         return True
     try:
-        # sympy's gcd works over the rationals, so a fractional coefficient would "cover" a non-multiple:
-        # gcd((a + b) / 2, a + b) == a + b. Only integer polynomials carry the divisibility guarantee.
+        # sympy gcd is over the rationals: gcd((a + b) / 2, a + b) == a + b, so require integer polynomials.
         for expr in (numerator, denominator):
             if any(not number.is_integer for number in expr.atoms(sympy.Number)):
                 return False

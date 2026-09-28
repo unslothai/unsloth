@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock
 import pytest
 from starlette.requests import Request
 
-from core.inference import llama_keepwarm
+from core.inference import chat_generation_runs, llama_keepwarm
 from core.inference.chat_generation_runs import (
     _EVENT_FLUSH_SECONDS,
     ChatGenerationSupervisor,
@@ -310,6 +310,38 @@ async def test_a_prefill_reporting_only_progress_renews_the_lease(durable_run, m
     # The lease counts writes, so it renewed three times before the first token.
     assert sampled["progress"][1] == 3, sampled["progress"]
     assert runs_db.get_run("run-1", "alice")["status"] == "completed"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "comment, reaped",
+    [("_OPENAI_TOOL_HEARTBEAT_SSE", []), ("_OPENAI_PASSTHROUGH_SSE_KEEPALIVE", ["run-1"])],
+)
+async def test_a_silent_tool_holds_the_lease_but_a_stalled_stream_does_not(
+    durable_run, monkeypatch, comment, reaped
+):
+    comment = getattr(inference, comment)
+    now = {"ms": runs_db.now_ms()}
+    monkeypatch.setattr(runs_db, "now_ms", lambda: now["ms"])
+    sampled = {}
+
+    async def body():
+        now["ms"] += 21 * 60_000
+        yield comment
+        # Asked for only once the producer has handled the comment before it.
+        yield comment
+        sampled["reaped"] = runs_db.reconcile_runs(stale_after_ms = 1_200_000)
+        yield "data: [DONE]\n\n"
+
+    async def fake(_payload, _request, _subject, *, cancel_on_disconnect):
+        # Preparation has already read its own interval; only the stream's rate limit is lifted.
+        monkeypatch.setattr(chat_generation_runs, "_renew_interval_seconds", lambda: 0.0)
+        return SimpleNamespace(status_code = 200, body_iterator = body())
+
+    monkeypatch.setattr(inference, "produce_openai_chat_completions", fake)
+    supervisor = ChatGenerationSupervisor(SimpleNamespace(state = SimpleNamespace()))
+    await supervisor._produce("run-1")
+    assert sampled["reaped"] == reaped
 
 
 async def _subscriber_sequences(after = 0):
