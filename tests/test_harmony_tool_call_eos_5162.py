@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-only
 """unslothai/unsloth#5162: gpt-oss must stop on <|call|> (200012). AST-extracted, no unsloth/CUDA import."""
 
 import ast
