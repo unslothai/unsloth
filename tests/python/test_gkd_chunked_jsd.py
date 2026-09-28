@@ -576,3 +576,75 @@ def test_prediction_head_before_the_decoder_falls_back():
     model.decoder = decoder
     model.get_output_embeddings = lambda: model.decoder
     assert rl._unsloth_gkd_dense_head(model) is None
+
+
+class _MaskBlindLM(_TinyLM):
+    """Causal and position aware, and like Unsloth's training forward it ignores ``attention_mask``."""
+
+    def forward(self, input_ids, attention_mask):
+        x = self.embed[input_ids]
+        steps = torch.arange(1, x.shape[1] + 1, dtype = x.dtype).view(1, -1, 1)
+        hidden = torch.tanh((x.cumsum(dim = 1) / steps + 0.1 * steps) @ self.mix)
+        if os.environ.get("UNSLOTH_RETURN_HIDDEN_STATES", "0") == "1":
+            return types.SimpleNamespace(logits = hidden)
+        return types.SimpleNamespace(logits = self.lm_head(hidden))
+
+
+@pytest.mark.parametrize("shift", ["prompt", "shift"])
+def test_left_padded_rows_score_as_if_unpadded(shift, monkeypatch):
+    """TRL's DataCollatorForChatML left-pads; a mask-blind forward must not see the pads."""
+    monkeypatch.setenv("UNSLOTH_GKD_CHUNK_SIZE", "8")
+    vocab, pad = 97, 0
+    student, teacher = _MaskBlindLM(vocab, 16, 0.0, 1), _MaskBlindLM(vocab, 24, 0.0, 2)
+    g = torch.Generator().manual_seed(0)
+    # (prompt, completion) lengths; row 2's completion starts before the padded prompt width.
+    rows = [(5, 7), (3, 4), (2, 9)]
+    width, prompt_width = max(p + c for p, c in rows), max(p for p, _ in rows)
+    input_ids = torch.full((3, width), pad)
+    attention_mask = torch.zeros_like(input_ids)
+    labels = torch.full_like(input_ids, -100)
+    for i, (p, c) in enumerate(rows):
+        ids = torch.randint(1, vocab, (p + c,), generator = g)
+        input_ids[i, width - p - c :], attention_mask[i, width - p - c :] = ids, 1
+        labels[i, width - c :] = ids[p:]
+    inputs = {
+        "input_ids": input_ids,
+        "attention_mask": attention_mask,
+        "labels": labels,
+        "prompts": input_ids[:, :prompt_width],
+    }
+    scored = labels.clone()
+    if shift == "prompt":
+        scored[:, :prompt_width] = -100
+
+    # Reference: each row alone, pads stripped, TRL's own per-token JSD summed then averaged.
+    monkeypatch.setenv("UNSLOTH_RETURN_HIDDEN_STATES", "0")
+    total, count = 0.0, 0
+    for i in range(3):
+        keep = attention_mask[i].bool()
+        ids, lab = input_ids[i, keep][None], scored[i, keep][None]
+        s = student(ids, None).logits[:, :-1]
+        with torch.no_grad():
+            t = teacher(ids, None).logits[:, :-1]
+        total = total + GKDTrainer.generalized_jsd_loss(
+            s, t, labels = lab[:, 1:], beta = 0.5, reduction = "sum"
+        )
+        count += int((lab[:, 1:] != -100).sum())
+    want = total / count
+
+    layout = {"shift": shift, "num_items_in_batch": False}
+    aligned = rl._unsloth_gkd_right_align(inputs, layout)
+    got = rl._unsloth_gkd_chunked_loss(
+        _trainer(0.5, student, teacher), student, aligned, None, layout
+    )
+    torch.testing.assert_close(got.double(), want, rtol = 1e-5, atol = 1e-7)
+    # TRL's dense loss (every fallback) scores the aligned rows the same way.
+    if shift == "prompt":
+        monkeypatch.setenv("UNSLOTH_RETURN_HIDDEN_STATES", "0")
+        s = student(aligned["input_ids"], None).logits[:, aligned["prompts"].shape[1] - 1 : -1]
+        with torch.no_grad():
+            t = teacher(aligned["input_ids"], None).logits[:, aligned["prompts"].shape[1] - 1 : -1]
+        dense = GKDTrainer.generalized_jsd_loss(
+            s, t, labels = aligned["labels"][:, aligned["prompts"].shape[1] :], beta = 0.5
+        )
+        torch.testing.assert_close(dense, want, rtol = 1e-5, atol = 1e-7)
