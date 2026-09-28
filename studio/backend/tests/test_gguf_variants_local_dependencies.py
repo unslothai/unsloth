@@ -17,6 +17,8 @@ from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
 
+from collections import OrderedDict
+
 import pytest
 
 from hub.services.models import gguf_variants
@@ -73,6 +75,9 @@ def hub_calls(monkeypatch, tmp_path):
     monkeypatch.setattr("huggingface_hub.model_info", refused)
     monkeypatch.setattr("huggingface_hub.list_repo_files", refused)
     inventory_scan.invalidate_hf_cache_scans()
+    monkeypatch.setattr(
+        gguf_variants, "_VARIANT_REQUIREMENT_LAST_KNOWN", OrderedDict(), raising = False
+    )
     return calls
 
 
@@ -185,9 +190,26 @@ def test_a_companion_the_hub_named_earlier_must_be_on_disk(
             download_manifest.ExpectedFile(drafter, 128),
         )
     )
-    monkeypatch.setattr(gguf_variants, "_variant_requirement_cache_get", lambda key: requirement)
+    monkeypatch.setattr(gguf_variants, "_variant_requirement_last_known", lambda key: requirement)
 
     assert _answer(**request_kwargs).dependencies_resolved is drafter_on_disk
+
+
+@pytest.mark.parametrize("request_kwargs", HUBLESS)
+def test_a_requirement_past_its_refresh_ttl_still_counts_without_the_hub(hub_calls, request_kwargs):
+    _repo, snapshot = _snapshot()
+    _write(snapshot / MAIN)
+    drafter = f"mtp-Sole-{QUANT}.gguf"
+    requirement = SimpleNamespace(
+        expected_files = (
+            download_manifest.ExpectedFile(MAIN, 256),
+            download_manifest.ExpectedFile(drafter, 128),
+        )
+    )
+    gguf_variants._variant_requirement_cache_set_many("org/Sole-GGUF", None, {QUANT: requirement})
+    # The live listing's entry expires; what it said the variant needs does not.
+    gguf_variants._VARIANT_REQUIREMENT_CACHE.clear()
+    assert _answer(**request_kwargs).dependencies_resolved is False
 
 
 def test_a_live_listing_still_resolves_dependencies(hub_calls, monkeypatch):

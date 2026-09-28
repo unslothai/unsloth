@@ -3358,6 +3358,12 @@ def _detect_gguf_from_hf_cache(repo_id: str) -> Optional[str]:
     Excludes mmproj (vision projector) files so a partial cache holding only
     the projector cannot route it as the main model.
     """
+    rel_files = _hf_cache_main_gguf_files(repo_id)
+    return _pick_best_gguf(rel_files) if rel_files else None
+
+
+def _hf_cache_main_gguf_files(repo_id: str) -> list[str]:
+    """Main GGUF paths of the first cached snapshot of *repo_id* that holds any."""
     for snap in _iter_hf_cache_snapshots(repo_id):
         rel_files = []
         for f in _iter_gguf_files(snap, recursive = True):
@@ -3372,8 +3378,8 @@ def _detect_gguf_from_hf_cache(repo_id: str) -> Optional[str]:
                 continue
             rel_files.append(rel)
         if rel_files:
-            return _pick_best_gguf(rel_files)
-    return None
+            return rel_files
+    return []
 
 
 class GgufRepoUnreadableError(ValueError):
@@ -3481,19 +3487,28 @@ def _refused_repo_cached_gguf(
         return None
     from core.inference.llama_cpp import cached_gguf_for_load
 
-    variant = gguf_variant
-    if not variant:
-        best = _detect_gguf_from_hf_cache(repo_id)
+    if gguf_variant:
+        local_file = cached_gguf_for_load(repo_id, gguf_variant, strict = True)
+        return (local_file, gguf_variant) if local_file else None
+    # Auto: the preferred variant first, then the next one down, so an interrupted Q8 beside
+    # a complete Q4 still serves the Q4.
+    remaining = _hf_cache_main_gguf_files(repo_id)
+    while remaining:
+        best = _pick_best_gguf(remaining)
         if not best:
             return None
         label = _extract_quant_label(best)
-        if not label:
-            return None
-        variant = _qualified_variant_name(best, label)
-    local_file = cached_gguf_for_load(repo_id, variant)
-    if not local_file:
-        return None
-    return local_file, variant
+        variant = _qualified_variant_name(best, label) if label else None
+        local_file = cached_gguf_for_load(repo_id, variant, strict = True) if variant else None
+        if local_file:
+            return local_file, variant
+        remaining = [
+            f
+            for f in remaining
+            if f != best
+            and not (label and _qualified_variant_name(f, _extract_quant_label(f)) == variant)
+        ]
+    return None
 
 
 def detect_gguf_model_remote(repo_id: str, hf_token: Optional[str] = None) -> Optional[str]:
@@ -4445,34 +4460,42 @@ class ModelConfig:
             finally:
                 _gguf_remote_detect_failure.reset(failure_token)
             # A failed listing is not "no GGUF" (#11551). A refused repo is served from its
-            # downloaded copy only to a caller who may read that cache, with a warning.
-            if not gguf_filename and _looks_like_gguf_repo(identifier, gguf_variant):
-                if detect_failures and _is_hub_refusal(detect_failures[-1]):
-                    cached = _refused_repo_cached_gguf(
-                        identifier, gguf_variant, hf_token, owner_session = owner_session
+            # downloaded copy only to a caller who may read that cache, with a warning. Decided
+            # by the GGUF on disk, not the repo-name heuristic below: a healthy Hub would have
+            # found that GGUF whatever the repo is called.
+            if not gguf_filename and detect_failures and _is_hub_refusal(detect_failures[-1]):
+                cached = _refused_repo_cached_gguf(
+                    identifier, gguf_variant, hf_token, owner_session = owner_session
+                )
+                if cached is not None:
+                    local_file, cached_variant = cached
+                    logger.warning(
+                        "Hugging Face refused '%s' (%s); loading the downloaded copy.",
+                        identifier,
+                        type(detect_failures[-1]).__name__,
                     )
-                    if cached is not None:
-                        local_file, cached_variant = cached
-                        logger.warning(
-                            "Hugging Face refused '%s' (%s); loading the downloaded copy.",
-                            identifier,
-                            type(detect_failures[-1]).__name__,
+                    from core.inference.llama_cpp import _snapshot_dir_of
+
+                    # The snapshot root, so a repo-root mmproj or drafter is found for a main
+                    # file in a non-quant subdirectory.
+                    snapshot = _snapshot_dir_of(local_file)
+                    local_config = cls.from_identifier(
+                        model_id = local_file,
+                        hf_token = hf_token,
+                        gguf_variant = cached_variant,
+                        drafter_accept = drafter_accept,
+                        gguf_companion_roots = gguf_companion_roots
+                        or ((str(snapshot),) if snapshot is not None else None),
+                        mmproj_accept = mmproj_accept,
+                    )
+                    if local_config is not None and local_config.is_gguf:
+                        token_rejections.served_from_cache.append(identifier)
+                        return _dataclass_replace(
+                            local_config,
+                            identifier = identifier,
+                            display_name = f"{identifier.split('/')[-1]} ({cached_variant})",
                         )
-                        local_config = cls.from_identifier(
-                            model_id = local_file,
-                            hf_token = hf_token,
-                            gguf_variant = cached_variant,
-                            drafter_accept = drafter_accept,
-                            gguf_companion_roots = gguf_companion_roots,
-                            mmproj_accept = mmproj_accept,
-                        )
-                        if local_config is not None and local_config.is_gguf:
-                            token_rejections.served_from_cache.append(identifier)
-                            return _dataclass_replace(
-                                local_config,
-                                identifier = identifier,
-                                display_name = f"{identifier.split('/')[-1]} ({cached_variant})",
-                            )
+            if not gguf_filename and _looks_like_gguf_repo(identifier, gguf_variant):
                 if detect_failures:
                     raise GgufRepoUnreadableError(
                         _gguf_repo_unreadable_message(

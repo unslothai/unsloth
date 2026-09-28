@@ -15968,10 +15968,14 @@ def _with_token_rejected_warning(response, token_rejections):
 
 
 def _owner_session(fastapi_request) -> bool:
-    """The machine owner's own UI session: not a managed account, not an sk-unsloth API key."""
+    """The machine owner's own UI session: not a managed account and no API key of any kind.
+
+    _request_has_api_key, not _request_used_api_key: the latter excludes Unsloth's internal
+    workflow keys for API monitoring, and a data-recipe subprocess holds one of those.
+    """
     if fastapi_request is None or account_access.managed_account():
         return False
-    return not _request_used_api_key(fastapi_request)
+    return not _request_has_api_key(fastapi_request)
 
 
 async def _run_tracked_load_model_impl(

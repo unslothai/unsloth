@@ -183,8 +183,24 @@ def _variant_requirement_cache_set_many(
             key = _variant_hash_cache_key(repo_id, quant, hf_token)
             _VARIANT_REQUIREMENT_CACHE[key] = (requirement, now)
             _VARIANT_REQUIREMENT_CACHE.move_to_end(key)
+            _VARIANT_REQUIREMENT_LAST_KNOWN[key] = requirement
+            _VARIANT_REQUIREMENT_LAST_KNOWN.move_to_end(key)
         while len(_VARIANT_REQUIREMENT_CACHE) > _VARIANT_HASH_MAX:
             _VARIANT_REQUIREMENT_CACHE.popitem(last = False)
+        while len(_VARIANT_REQUIREMENT_LAST_KNOWN) > _VARIANT_HASH_MAX:
+            _VARIANT_REQUIREMENT_LAST_KNOWN.popitem(last = False)
+
+
+# The newest requirement each live listing reported, kept past the refresh TTL above: a
+# Hub-less completeness proof must not read an expired entry as "nothing required".
+_VARIANT_REQUIREMENT_LAST_KNOWN: "OrderedDict[tuple[str, str, str], _GgufVariantRequirement]" = (
+    OrderedDict()
+)
+
+
+def _variant_requirement_last_known(key: tuple[str, str, str]) -> Optional[_GgufVariantRequirement]:
+    with _VARIANT_HASH_LOCK:
+        return _VARIANT_REQUIREMENT_LAST_KNOWN.get(key)
 
 
 def _build_gguf_variant_requirements(siblings: list) -> dict[str, _GgufVariantRequirement]:
@@ -1437,7 +1453,7 @@ async def get_gguf_variants_answer(
                         return response
                     if not cached_gguf_manifest_complete(response.repo_id, v.quant, snapshot):
                         return response
-                    requirement = _variant_requirement_cache_get(
+                    requirement = _variant_requirement_last_known(
                         _variant_hash_cache_key(response.repo_id, v.quant, hf_token)
                     )
                     for expected in requirement.expected_files if requirement is not None else ():

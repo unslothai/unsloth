@@ -285,6 +285,79 @@ def test_only_the_owners_own_session_counts_as_the_owner(monkeypatch, managed, a
     import routes.inference as inference
 
     monkeypatch.setattr(inference.account_access, "managed_account", lambda: managed)
-    monkeypatch.setattr(inference, "_request_used_api_key", lambda request: api_key)
+    monkeypatch.setattr(inference, "_request_has_api_key", lambda request: api_key)
     assert inference._owner_session(object()) is expected
     assert inference._owner_session(None) is False
+
+
+def test_an_internal_workflow_key_is_not_the_owner(monkeypatch):
+    # A data-recipe subprocess holds an internal sk-unsloth key: never the owner's session.
+    import routes.inference as inference
+
+    monkeypatch.setattr(inference.account_access, "managed_account", lambda: False)
+    monkeypatch.setattr(inference, "_request_api_key_token", lambda request: "sk-unsloth-internal")
+    monkeypatch.setattr(inference.auth_storage, "is_internal_api_key", lambda token: True)
+    assert inference._request_used_api_key(object()) is False
+    assert inference._owner_session(object()) is False
+
+
+def test_a_cancelled_download_is_not_run_when_the_hub_refuses(monkeypatch, _isolated):
+    # Its main file is on disk, but the download was cancelled: not a complete copy.
+    _download(_isolated, GGUF)
+    import hub.utils.gguf_sources as gguf_sources
+
+    monkeypatch.setattr(
+        gguf_sources, "cached_gguf_source_partial", lambda repo, quant, snapshot: True
+    )
+    _refuse(monkeypatch)
+    with pytest.raises(GgufRepoUnreadableError):
+        _load(gguf_variant = VARIANT, owner_session = True)
+
+
+def test_auto_selection_falls_back_to_the_next_complete_variant(monkeypatch, _isolated):
+    # The preferred UD-Q4_K_XL was interrupted after its first shard; Q8_0 is complete.
+    snapshot = _download(
+        _isolated,
+        f"{VARIANT}/Qwen3-0.6B-{VARIANT}-00001-of-00002.gguf",
+        "Qwen3-0.6B-Q8_0.gguf",
+    )
+    _refuse(monkeypatch)
+    config, rejections = _load(owner_session = True)
+    assert Path(config.gguf_file) == snapshot / "Qwen3-0.6B-Q8_0.gguf"
+    assert config.gguf_variant == "Q8_0"
+    assert rejections.served_from_cache == [REPO]
+
+
+def test_the_refusal_fallback_passes_the_snapshot_root_as_the_companion_root(
+    monkeypatch, _isolated
+):
+    # A main file in a non-quant subdirectory still finds a repo-root projector or drafter.
+    monkeypatch.setattr(
+        hf_cache_settings,
+        "get_hf_cache_paths",
+        lambda: SimpleNamespace(hub_cache = _isolated, source = "environment"),
+    )
+    snapshot = _download(_isolated, f"distilled/Qwen3-0.6B-{VARIANT}.gguf")
+    _refuse(monkeypatch)
+    seen = []
+    real = ModelConfig.from_identifier.__func__
+
+    def spy(cls, model_id, *args, **kwargs):
+        if model_id != REPO:
+            seen.append(kwargs.get("gguf_companion_roots"))
+        return real(cls, model_id, *args, **kwargs)
+
+    monkeypatch.setattr(ModelConfig, "from_identifier", classmethod(spy))
+    config, _ = _load(owner_session = True)
+    assert config.is_gguf
+    assert seen == [(str(snapshot),)]
+
+
+def test_a_repo_not_named_gguf_still_runs_its_downloaded_gguf(monkeypatch, _isolated):
+    # _looks_like_gguf_repo says no for this name, yet a healthy Hub would have found the GGUF.
+    monkeypatch.setattr(mc, "_looks_like_gguf_repo", lambda *a, **k: False)
+    snapshot = _download(_isolated, GGUF)
+    _refuse(monkeypatch)
+    config, rejections = _load(gguf_variant = VARIANT, owner_session = True)
+    assert Path(config.gguf_file) == snapshot / GGUF
+    assert rejections.served_from_cache == [REPO]
