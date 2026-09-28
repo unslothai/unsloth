@@ -16164,6 +16164,20 @@ def _with_token_rejected_warning(response, token_rejections):
     return response.model_copy(update = {"memory_warning": warning})
 
 
+def _remember_hub_access_warning(response, token_rejections) -> None:
+    """Keep a GGUF load's Hub notice for /status: the client re-shows the status warning after a
+    load, and without this dismisses the one the load response carried."""
+    if isinstance(response, LoadResponse) and response.is_gguf:
+        warnings = _hub_access_warnings(token_rejections)
+        get_llama_cpp_backend().hub_access_warning = " ".join(warnings) or None
+
+
+def _status_load_warning(llama_backend) -> Optional[str]:
+    """The running GGUF's load warning as its load response carried it."""
+    notices = (llama_backend.last_load_warning, getattr(llama_backend, "hub_access_warning", None))
+    return " ".join(notice for notice in notices if notice) or None
+
+
 # Set by the /load wrapper that shows a refused repo's cached-copy warning. Loads nobody reports
 # back (auto-switch, idle restore, preview) keep the Hub's refusal instead of running it silently.
 _load_warnings_reach_user: contextvars.ContextVar[bool] = contextvars.ContextVar(
@@ -16213,7 +16227,9 @@ async def _run_tracked_load_model_impl(
                 )
         finally:
             _load_warnings_reach_user.reset(warnings_token)
-        return _with_token_rejected_warning(response, token_rejections)
+        response = _with_token_rejected_warning(response, token_rejections)
+        _remember_hub_access_warning(response, token_rejections)
+        return response
     finally:
         if attempt.cancel_event.is_set() and not attempt.cancel_complete.is_set():
             if not await asyncio.to_thread(
@@ -20168,7 +20184,7 @@ async def get_status(current_subject: str):
                     llama_backend, _native_grant_backed, _model_id
                 ),
                 gguf_variant = llama_backend.hf_variant,
-                memory_warning = llama_backend.last_load_warning,
+                memory_warning = _status_load_warning(llama_backend),
                 loading = _loading,
                 # Plus anything the Unsloth registry still holds: the GGUF load
                 # only unloaded the ACTIVE one, so a model cached behind it is

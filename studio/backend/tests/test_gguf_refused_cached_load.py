@@ -535,3 +535,41 @@ def test_a_refusal_known_only_by_its_status_takes_the_refused_repo_policy(
     assert rejections.served_from_cache == [REPO]
     with pytest.raises(GgufRepoUnreadableError):
         _load(hf_token = "hf_" + "k" * 34, gguf_variant = VARIANT, owner_session = False)
+
+
+def test_status_keeps_the_cached_copy_warning_the_load_carried(monkeypatch):
+    # The client re-applies /status after a load and shows its memory_warning, so a warning only
+    # on the load response is dismissed as soon as it appears.
+    import routes.inference as inference_routes
+    from models.inference import LoadResponse
+
+    backend = SimpleNamespace(last_load_warning = "Runs partly from disk.", hub_access_warning = None)
+    monkeypatch.setattr(inference_routes, "get_llama_cpp_backend", lambda: backend)
+    response = LoadResponse(
+        status = "loaded",
+        model = REPO,
+        display_name = REPO,
+        inference = {},
+        is_gguf = True,
+        memory_warning = backend.last_load_warning,
+    )
+    with collecting_hub_token_rejections() as rejections:
+        rejections.served_from_cache.append(REPO)
+        warned = inference_routes._with_token_rejected_warning(response, rejections)
+        inference_routes._remember_hub_access_warning(warned, rejections)
+    assert inference_routes._status_load_warning(backend) == warned.memory_warning
+    assert hub_refused_cached_copy_warning(REPO) in warned.memory_warning
+
+    # The next GGUF load that the Hub answers drops it.
+    with collecting_hub_token_rejections() as rejections:
+        inference_routes._remember_hub_access_warning(response, rejections)
+    assert inference_routes._status_load_warning(backend) == "Runs partly from disk."
+
+
+def test_a_new_load_forgets_the_previous_hub_warning():
+    backend = llama_cpp.LlamaCppBackend.__new__(llama_cpp.LlamaCppBackend)
+    backend._last_load_warning = None
+    backend._variant_fallback_warning = None
+    backend.hub_access_warning = "Hugging Face refused it."
+    backend._begin_load_warnings()
+    assert backend.hub_access_warning is None
