@@ -75,7 +75,16 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
-import { type ReactNode, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
+import {
+  type ReactNode,
+  type SetStateAction,
+  useCallback,
+  useDeferredValue,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { NameDialog } from "../components/library-dialogs";
 import { type HeaderTab, LibraryHeader } from "../components/library-header";
 import type { LibrarySearch } from "../search";
@@ -180,7 +189,6 @@ const SECTION_LABELS: Record<ChatsSection, TranslationKey> = {
   archived: "library.chats.sections.archived",
 };
 
-// All has no icon.
 const SECTION_ICONS: Partial<Record<ChatsSection, IconSvgElement>> = {
   chats: MessageCircleIcon,
   projects: Folder01Icon,
@@ -244,8 +252,6 @@ function errorDescription(err: unknown): string | undefined {
   return err instanceof Error ? err.message : undefined;
 }
 
-
-/** Starred chats and projects for the Favorites tab: list rows and grid cards. */
 export interface FavoriteChatEntries {
   rows: ReactNode[];
   cards: { key: string; node: ReactNode }[];
@@ -318,14 +324,12 @@ export function ChatsLibrary({
   const currentSection = openSectionId
     ? (sections.find((entry) => entry.id === openSectionId) ?? null)
     : null;
-  // Ignore filings into deleted sections.
   const sectionOf = useMemo(
     () =>
       new Map(Object.entries(sectionByChatId).filter(([, sectionId]) => sectionNames.has(sectionId))),
     [sectionByChatId, sectionNames],
   );
 
-  // From the listed chats, not a second thread read.
   const models = useMemo(
     () => modelsByChat([...items, ...archivedItems]),
     [items, archivedItems],
@@ -333,21 +337,23 @@ export function ChatsLibrary({
 
   const [ownQuery, setQuery] = useState("");
   const query = embedded ? embedded.query : ownQuery;
-  // Keeps typing responsive on long lists.
   const listQuery = useDeferredValue(query);
   const [filters, setFilters] = useState<ChatFilters>(EMPTY_CHAT_FILTERS);
-  const [selection, setSelection] = useState<Set<string>>(new Set());
+  const [selection, setSelectionState] = useState<Set<string>>(new Set());
   const selectionAnchor = useRef<string | null>(null);
+  // Clearing drops the shift-click anchor too, or the next range reaches a row no longer selected.
+  const setSelection = useCallback((next: SetStateAction<Set<string>>) => {
+    if (typeof next !== "function" && next.size === 0) selectionAnchor.current = null;
+    setSelectionState(next);
+  }, []);
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
   const [renaming, setRenaming] = useState<SidebarItem | null>(null);
   const [editing, setEditing] = useState<ProjectRecord | null>(null);
   const [creatingProject, setCreatingProject] = useState(false);
   const [pendingDelete, setPendingDelete] = useState<PendingDelete | null>(null);
-  // Chats waiting for a new project or section from "Move to" to be named.
   const [movingIntoNew, setMovingIntoNew] = useState<{
     kind: "project" | "section";
     chats: SidebarItem[];
-    /** A project moving into the new section. */
     project?: ProjectRecord;
   } | null>(null);
   // Just-created section: its store update lands a render after the page opens.
@@ -357,7 +363,6 @@ export function ChatsLibrary({
     setAwaitedSection(null);
   }
 
-  // Reset search and selection when switching pill or section.
   const scope = `${section}:${openSectionId ?? ""}`;
   const [shownScope, setShownScope] = useState(scope);
   if (shownScope !== scope) {
@@ -375,7 +380,6 @@ export function ChatsLibrary({
       replace,
     });
 
-  // A missing section falls back to the section list.
   const sectionGone = openSectionId !== null && currentSection === null && openSectionId !== awaitedSection;
   useEffect(() => {
     if (sectionGone) void navigate({ to: "/library", search: { show: "chats", chatView: "sections" }, replace: true });
@@ -400,7 +404,6 @@ export function ChatsLibrary({
     () => ({ pinned, favorites, projectNames, models, sectionOf, sectionNames }),
     [pinned, favorites, projectNames, models, sectionOf, sectionNames],
   );
-  // Skip groupings that would yield a single group.
   const groupOptions: ChatGroupBy[] = [
     "none",
     "date",
@@ -419,7 +422,6 @@ export function ChatsLibrary({
     () => projectStats(projects, items, archivedItems),
     [projects, items, archivedItems],
   );
-  // Chats each project or section exports; zero disables Export.
   const { projectChatCounts, sectionChatCounts } = useMemo(() => {
     const byProject = new Map<string, number>();
     const bySection = new Map<string, number>();
@@ -454,7 +456,6 @@ export function ChatsLibrary({
     );
     return sortSections(matched, prefs.sectionSort, sectionStatsById, locale);
   }, [sections, query, prefs.sectionSort, sectionStatsById, locale, embedded, favoriteSections]);
-  // All: one list of chats, projects and sections on the chat sort.
   const mixed = section === "all" && !embedded;
   const allEntries = useMemo(
     () =>
@@ -487,7 +488,6 @@ export function ChatsLibrary({
     () => allEntries?.slice(0, visibleCount) ?? null,
     [allEntries, visibleCount],
   );
-  // Memoized so the memos below stay stable.
   const shownChats = useMemo(
     () =>
       shownEntries
@@ -495,7 +495,6 @@ export function ChatsLibrary({
         : visibleChats.slice(0, visibleCount),
     [shownEntries, visibleChats, visibleCount],
   );
-  // Date groups follow the date the list shows.
   const groupTime = prefs.dateField;
   const groupingOptions = useMemo(
     () => ({
@@ -510,7 +509,6 @@ export function ChatsLibrary({
     () => groupChats(shownChats, groupBy, groupingOptions),
     [shownChats, groupBy, groupingOptions],
   );
-  // Drawn order, for shift-click ranges.
   const shownOrder = useMemo(
     () => groups.flatMap((group) => group.items.map((chat) => chat.id)),
     [groups],
@@ -546,7 +544,6 @@ export function ChatsLibrary({
       showProjects: true,
       projects: projects.map((p) => ({ id: p.id, name: p.name })),
       sections: openSectionId ? [] : sections.map((s) => ({ id: s.id, name: s.name })),
-      // Top 20, plus ticked ones so they can be unticked.
       models: allModelFacets
         .filter((facet, index) => index < 20 || filters.models.has(facet.model))
         .map(({ model, count }) => ({ model, count, label: compareModelDisplayName(model) })),
@@ -577,7 +574,6 @@ export function ChatsLibrary({
     }
   }
 
-  // Bulk actions only touch visible rows.
   const visibleIds = useMemo(() => new Set(shownChats.map((chat) => chat.id)), [shownChats]);
   if ([...selection].some((id) => !visibleIds.has(id))) {
     setSelection(new Set([...selection].filter((id) => visibleIds.has(id))));
@@ -598,7 +594,6 @@ export function ChatsLibrary({
 
   const activeChatId = () => useChatRuntimeStore.getState().activeThreadId ?? undefined;
 
-  /** Opens the project's home in Chat, as the sidebar does. */
   const openProject = (id: string) => {
     const runtime = useChatRuntimeStore.getState();
     runtime.setActiveThreadId(null);
@@ -652,7 +647,6 @@ export function ChatsLibrary({
     }
   }
 
-  /** `name`: for a just-created project not yet in the reloaded list. */
   const moveToProject = (chats: SidebarItem[], destination: string | null, name?: string) => {
     setSelection(new Set());
     void run(
@@ -702,7 +696,6 @@ export function ChatsLibrary({
     } else setMovingIntoNew({ kind: "section", chats });
   };
 
-  // Shared with the project's home, so both file a project the same way.
   const fileProjectInSection = useFileProjectInSection();
 
   const moveProject = (project: ProjectRecord, destination: ChatDestination) => {
@@ -710,7 +703,6 @@ export function ChatsLibrary({
     else if (destination.kind === "newSection") setMovingIntoNew({ kind: "section", chats: [], project });
   };
 
-  /** Per chat, so one failure does not fail the rest. */
   async function eachChat(
     chats: SidebarItem[],
     act: (chat: SidebarItem) => Promise<unknown>,
@@ -771,7 +763,6 @@ export function ChatsLibrary({
     const threadIds = [...new Set(chats.flatMap((chat) => chat.threadIds ?? [chat.id]))];
     try {
       if (choice.kind === "chat") {
-        // One file per pane, as on the Projects page.
         for (const id of threadIds) await exportConversationByFormat(id, choice.format);
       } else {
         const stem = name ?? (chats.length === 1 ? (chats[0]?.title ?? "chats") : "chats");
@@ -839,7 +830,6 @@ export function ChatsLibrary({
   const listed = view === "list" && !embedded;
   const chatContents = useChatContents(listed ? shownChats : NO_CHATS);
 
-  // One date column per list: its title picks the date, its arrow flips the order.
   const dateColumn = <K extends string>(
     sort: { key: K; desc: boolean },
     setSort: (next: { key: DateField; desc: boolean }) => void,
@@ -920,14 +910,12 @@ export function ChatsLibrary({
     archive: archiveChats,
     unarchive: unarchiveChats,
     exportChats: (chats, choice) => void exportChats(chats, choice),
-    // Same preference as the sidebar.
     remove: (chats) => {
       const target = { kind: "chats", chats, deleteFiles: alwaysDeleteChatFiles } as const;
       if (confirmDeleteChats) setPendingDelete(target);
       else void confirmDelete(target);
     },
     viewProject: openProject,
-    // Favorites has no filter bar, so there it opens the project.
     filterProject: embedded
       ? openProject
       : (id) => setFilters((current) => ({ ...current, projects: new Set([id]) })),
@@ -968,7 +956,6 @@ export function ChatsLibrary({
   };
 
   const narrowed = Boolean(query.trim()) || chatFiltersActive(filters);
-  // Show location parts the list doesn't already imply, and only if some row fills them.
   const showProject =
     groupBy !== "project" && shownChats.some((chat) => chat.projectId);
   const showSection =
@@ -1110,7 +1097,6 @@ export function ChatsLibrary({
       );
     };
     return (
-      // Container for the column queries in chats-items.
       <div className={cn("@container", spaced && "mt-6")}>
         {list && (
           <ChatListHeader
@@ -1230,7 +1216,6 @@ export function ChatsLibrary({
     );
   }
 
-  /** Filters narrow chats only; search narrows projects and sections too. */
   function renderAll() {
     if (!loaded || !projectsLoaded) return <LoadingRows />;
     const nothing =
@@ -1331,7 +1316,6 @@ export function ChatsLibrary({
   const sectionPills = (
     <nav aria-label={t("library.chats.sections.ariaLabel")} className="flex flex-wrap items-center gap-x-8 gap-y-2 pl-3.5">
       {CHATS_SECTIONS.map((entry) => {
-        // A section page keeps the Sections pill lit.
         const active = openSectionId ? entry === "sections" : entry === section;
         return (
           <button
@@ -1340,7 +1324,6 @@ export function ChatsLibrary({
             aria-current={active ? "page" : undefined}
             onClick={() => go(entry === "all" ? {} : { chatView: entry })}
             className={cn(
-              // Plain text, aligned with the tab labels above (their px-3.5).
               "flex h-8 items-center gap-2 rounded-sm font-heading text-ui-14 text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring",
               active && "font-medium text-foreground",
             )}
@@ -1434,7 +1417,6 @@ export function ChatsLibrary({
   const selectedPinned = selectedChats.length > 0 && selectedChats.every((chat) => pinned.has(chat.id));
   const selectedFavorite =
     selectedChats.length > 0 && selectedChats.every((chat) => favorites.has(chat.id));
-  // Common location of the selection, omitted from "Move to"; undefined if they differ.
   const shared = <T,>(of: (chat: SidebarItem) => T): T | undefined => {
     const first = selectedChats[0];
     if (!first) return undefined;
@@ -1477,7 +1459,6 @@ export function ChatsLibrary({
         };
   })();
 
-  /** Starred projects first, then starred chats. */
   function favoriteEntries(): FavoriteChatEntries {
     const projectsShown = loaded && projectsLoaded ? visibleProjects : [];
     const sectionsShown = loaded ? visibleSections : [];
@@ -1628,7 +1609,6 @@ export function ChatsLibrary({
                   </button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="center" side="top" className="library-actions-menu w-52">
-                  {/* Grid view has no header checkbox. */}
                   {selectedChats.length < shownChats.length && (
                     <DropdownMenuItem
                       onSelect={() => setSelection(new Set(shownChats.map((chat) => chat.id)))}
@@ -1707,7 +1687,6 @@ export function ChatsLibrary({
         title={t("library.chats.toolbar.newProject")}
         submitLabel={t("library.dialog.create")}
         onCreated={(project) => {
-          // From "Move to": file the chats and stay on this list.
           if (movingIntoNew?.kind === "project") {
             moveToProject(movingIntoNew.chats, project.id, project.name);
             setMovingIntoNew(null);
@@ -1727,7 +1706,6 @@ export function ChatsLibrary({
             fileProjectInSection(movingIntoNew.project, sectionId, normalizeSectionName(name));
             return;
           }
-          // From "New": open the new section's page.
           if (movingIntoNew.chats.length === 0) {
             setAwaitedSection(sectionId);
             go({ chatSection: sectionId });

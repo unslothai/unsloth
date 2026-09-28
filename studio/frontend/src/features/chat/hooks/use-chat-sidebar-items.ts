@@ -36,7 +36,6 @@ export interface SidebarItem {
   updatedAt: number;
   /** Last rename, move or (un)archive. */
   modifiedAt?: number;
-  /** Models its panes ran. */
   modelIds?: string[];
   isFork?: boolean;
   projectId?: string | null;

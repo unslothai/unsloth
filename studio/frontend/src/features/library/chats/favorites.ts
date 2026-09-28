@@ -8,7 +8,6 @@ import { matchesTerms, searchTerms } from "./model";
 
 /** Starred chats, projects and sections Favorites lists for `query`, excluding archived chats. */
 export function useFavoriteChatMatches(query: string, enabled: boolean): number {
-  // Metadata only, and only while Favorites is open.
   const { items } = useChatSidebarItems({ enabled, requireMessages: false });
   const { projects } = useChatProjects();
   const sections = useSidebarOrganizationStore((s) => s.customSections);
@@ -24,7 +23,6 @@ export function useFavoriteChatMatches(query: string, enabled: boolean): number 
     const starredSections = new Set(sectionIds);
     const names = new Map(projects.map((project) => [project.id, project.name]));
     const sectionNames = new Map(sections.map((section) => [section.id, section.name]));
-    // Same fields as filterChats.
     const chats = items.filter((chat) => {
       if (!starredChats.has(chat.id)) return false;
       const sectionId = sectionByChatId[chat.id];

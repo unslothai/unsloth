@@ -186,7 +186,6 @@ test("chats tab validates its view and sits between Folders and Images", () => {
   const search = readSrc("features/library/search.ts");
   const tabs = search.slice(search.indexOf("LIBRARY_TABS = ["), search.indexOf("] as const"));
   assert.match(tabs, /"folders",\s*\/\/[^\n]*\n\s*"chats",\s*"images",/);
-  // One strip: no divider sets the tab apart.
   assert.doesNotMatch(readSrc("features/library/components/library-header.tsx"), /separated/);
 });
 
@@ -196,10 +195,8 @@ test("a starred chat narrows by the Favorites flag and lists in the Favorites ta
   assert.deepEqual(ids(filterChats(chats, "", starred, favorites)), ["a", "d"]);
   assert.deepEqual(ids(filterChats(chats, "", starred, context)), []);
   const page = readSrc("features/library/library-page.tsx");
-  // Only Favorites counts (and draws) starred chats.
   assert.match(page, /useFavoriteChatMatches\(query, tab === "favorites" && !folderId\)/);
   assert.match(page, /if \(favoriteChats > 0\) return renderFavorites\(\);/);
-  // Listed among the files, not under a heading of their own.
   assert.match(page, /leading=\{entries\.rows\}/);
   assert.match(page, /\.\.\.entries\.cards,/);
 });
@@ -223,7 +220,6 @@ test("section stats count filed chats and live projects, and sections sort by th
   assert.deepEqual(stats.get("s2"), { chats: 0, projects: 1, lastActive: 0 });
   assert.deepEqual(ids(sortSections(sections, { key: "updated", desc: true }, stats)), ["s1", "s2"]);
   assert.deepEqual(ids(sortSections(sections, { key: "name", desc: false }, stats)), ["s2", "s1"]);
-  // A section page has its own URL.
   assert.equal(validateChatsSection("sections"), "sections");
   const search = readSrc("features/library/search.ts");
   assert.match(search, /typeof search\.chatSection === "string" \? \{ chatSection: search\.chatSection \}/);
@@ -243,24 +239,18 @@ test("the Chats tab opens on All, and a project opens its home in Chat", () => {
   assert.equal(validateChatsSection("all"), "all");
   const library = readSrc("features/library/chats/chats-library.tsx");
   assert.match(library, /search\.chatSection \? "chats" : \(search\.chatView \?\? "all"\)/);
-  // All is the tab's bare URL; every other pill names itself.
   assert.match(library, /go\(entry === "all" \? \{\} : \{ chatView: entry \}\)/);
-  // A project opens its home in Chat, not a Library page.
   assert.match(library, /void navigate\(\{ to: "\/chat", search: \{ project: id \} \}\)/);
   assert.doesNotMatch(readSrc("features/library/search.ts"), /project\?: string/);
-  // Chat settings links to the Library instead of managing chats.
   assert.doesNotMatch(readSrc("features/settings/tabs/data-tab.tsx"), /manageChats/);
   assert.match(
     readSrc("features/settings/tabs/chat-tab.tsx"),
     /void navigate\(\{ to: "\/library", search: \{ show: "chats" \} \}\)/,
   );
-  // All is one list of chats, projects and sections, without headings.
   assert.match(library, /return chatListing\(true\);/);
   assert.match(library, /mixEntries\(visibleChats, visibleProjects, visibleSections, \{/);
-  // One list: no Pinned or date headings in All.
   assert.match(library, /const ungrouped = embedded \|\| section === "all";/);
   assert.match(library, /pinned: pinnedFirst && !ungrouped \? pinned : undefined,/);
-  // The chat menu opens the chat's folder; the recents menu no longer does.
   assert.match(readSrc("features/library/chats/chats-items.tsx"), /<OpenChatFolderItem item=\{chat\} \/>/);
 });
 
@@ -340,7 +330,6 @@ test("deleting clears stars and pins only once the chats are gone", () => {
   assert.ok(deleted !== -1);
   assert.ok(block.indexOf("setFavoriteChats(ids, false)") > deleted);
   assert.ok(block.indexOf("setPinned(ids, false)") > deleted);
-  // The sidebar's confirm preference applies here too.
   assert.match(library, /if \(confirmDeleteChats\) setPendingDelete\(target\);/);
 });
 
@@ -432,11 +421,9 @@ test("chat, project and section cards are a little shorter than square, dated bo
   const items = readSrc("features/library/chats/chats-items.tsx");
   const card = items.slice(items.indexOf("const CARD = cn("), items.indexOf("const ICON ="));
   assert.match(card, /aspect-\[8\/7\]/);
-  // Grows to fit a two-line name rather than clipping it, and rows stay even.
   assert.doesNotMatch(card, /overflow-hidden/);
   assert.match(card, /self-stretch/);
   assert.doesNotMatch(items, /cn\(CARD, "min-h-/);
-  // The date is its own left-aligned line, not pushed right beside the counts.
   assert.doesNotMatch(items, /justify-between gap-2 text-ui-12 text-muted-foreground/);
 });
 
@@ -446,7 +433,6 @@ test("chat, project and section tiles share one box and hover tint", () => {
   assert.equal(items.split("group-hover/chat:bg-primary/10").length - 1, 1, "one tile style");
   assert.match(items, /<div className=\{cn\(TILE, className\)\}>/);
   assert.match(items, /<span className=\{TILE\}>/);
-  // The grid checkbox no longer hides the tile to take its place.
   assert.doesNotMatch(items, /group-hover\/chat:opacity-0/);
 });
 
@@ -470,7 +456,6 @@ test("grid cards share a two-line title and a footer of contents over date", () 
     assert.match(card, /<span className="line-clamp-2">/);
     assert.match(card, /<CardFooter/);
   }
-  // No model line, archived count or kind badge in the grid.
   assert.doesNotMatch(cards[0], /modelLabel|model &&/);
   assert.match(cards[0], /<ChatBadges chat=\{chat\} marksOnly \/>/);
   assert.doesNotMatch(cards[1], /archived/);
@@ -562,4 +547,14 @@ test("filing a project in a section unpins it and shows the section", () => {
   const hook = readSrc("features/chat/hooks/use-file-project-in-section.ts");
   assert.match(hook, /if \(pins\.pinnedIds\.includes\(project\.id\)\) pins\.unpin\(project\.id\);/);
   assert.match(hook, /organization\.setSectionHidden\(sectionId, false\);/);
+});
+
+test("clearing the selection drops the shift-click anchor", () => {
+  const library = readSrc("features/library/chats/chats-library.tsx");
+  assert.match(
+    library,
+    /const setSelection = useCallback\(\(next: SetStateAction<Set<string>>\) => \{\n\s*if \(typeof next !== "function" && next\.size === 0\) selectionAnchor\.current = null;/,
+  );
+  // Every emptying write goes through the wrapper, never the raw state setter.
+  assert.doesNotMatch(library, /setSelectionState\(new Set\(\)\)/);
 });

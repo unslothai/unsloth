@@ -27,7 +27,6 @@ export interface ProjectEntry {
   updatedAt: number;
 }
 
-/** The one date column's choices: created, last active, last modified. */
 export const DATE_FIELDS = ["created", "updated", "modified"] as const;
 export type DateField = (typeof DATE_FIELDS)[number];
 
@@ -43,9 +42,7 @@ export type ChatGroupBy = "none" | "project" | "section" | "date";
 export type ChatFlag = "favorite" | "pinned" | "forks" | "compare";
 export const CHAT_FLAGS: ChatFlag[] = ["favorite", "pinned", "forks", "compare"];
 
-/** Filter value for chats outside any project. */
 export const NO_PROJECT = "none";
-/** Filter value for chats outside any section. */
 export const NO_SECTION = "none";
 
 export interface ChatFilters {
@@ -89,9 +86,7 @@ export interface ChatContext {
   pinned: ReadonlySet<string>;
   favorites?: ReadonlySet<string>;
   projectNames: ReadonlyMap<string, string>;
-  /** Model ids per chat row, from its pane threads. */
   models: ReadonlyMap<string, string[]>;
-  /** Chat row id -> id of the sidebar section it is filed in. */
   sectionOf?: ReadonlyMap<string, string>;
   sectionNames?: ReadonlyMap<string, string>;
 }
@@ -225,7 +220,6 @@ export function sortProjects<T extends ProjectEntry>(
   });
 }
 
-/** One row of All: a chat, project or section. */
 export type MixedEntry<C, P, S> =
   | { kind: "chat"; item: C }
   | { kind: "project"; item: P }
@@ -286,11 +280,9 @@ export function mixEntries<
 export interface SectionStats {
   chats: number;
   projects: number;
-  /** Latest chat time; 0 when empty. */
   lastActive: number;
 }
 
-/** Per section: live chats and still-existing projects filed in it. */
 export function sectionStats(
   sections: readonly { id: string }[],
   chats: readonly ChatEntry[],
@@ -384,12 +376,9 @@ export function dateBucketKey(bucket: DateBucket): string {
 export interface ChatGroup<T> {
   key: string;
   items: T[];
-  /** Set for project groups; null is the "no project" group. */
   projectId?: string | null;
-  /** Set for section groups; null is the "no section" group. */
   sectionId?: string | null;
   bucket?: DateBucket;
-  /** The leading group of pinned chats. */
   pinned?: boolean;
 }
 
@@ -440,7 +429,6 @@ export function groupChats<T extends ChatEntry>(
   if (by === "date") {
     out.sort((a, b) => (oldestFirst ? a.latest - b.latest : b.latest - a.latest));
   } else {
-    // The "none" group goes last.
     const outside = ({ group }: { group: ChatGroup<T> }) =>
       Number(by === "project" ? group.projectId === null : group.sectionId === null);
     out.sort((a, b) => outside(a) - outside(b));
@@ -451,7 +439,6 @@ export function groupChats<T extends ChatEntry>(
     : grouped;
 }
 
-/** Distinct models across the chats, most used first. */
 export function modelFacets(
   chats: readonly ChatEntry[],
   models: ReadonlyMap<string, string[]>,
@@ -482,7 +469,6 @@ export function validateChatsSection(value: unknown): ChatsSection | undefined {
   return CHATS_SECTIONS.find((section) => section === value);
 }
 
-/** What a chat holds, for the Contents column. */
 export interface ChatContents {
   messages: number;
 }

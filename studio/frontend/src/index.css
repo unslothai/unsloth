@@ -3005,7 +3005,6 @@ html[data-chat-font] .aui-root {
 		--destructive: #ed716a;
 		background-color: var(--library-menu-surface);
 		color: #fff;
-		/* The + menu's page-coloured shadow. */
 		box-shadow: 0 4px 14px var(--background) !important;
 	}
 

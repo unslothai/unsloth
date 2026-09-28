@@ -74,7 +74,6 @@ import { useLibrarySettingsStore } from "../settings-store";
 import { SortRadio } from "../components/library-toolbar";
 import { CARD_SHADOW, OVERLAY_CONTROL, RAISED_SURFACE } from "../surface";
 
-// File-tab card style, a little shorter than square; date bottom left.
 // No overflow-hidden, so a two-line name grows its row instead of clipping; the row stretches to match.
 const CARD = cn(
   RAISED_SURFACE,
@@ -95,7 +94,6 @@ import {
 } from "./model";
 
 const ICON = "size-icon";
-// Library menu surface, so these menus match the file tabs' in both themes.
 const MENU = "library-actions-menu";
 // Fits the window, and each group scrolls past ~7 rows so Sections stays reachable.
 const MOVE_TO_MENU =
@@ -104,7 +102,6 @@ const MOVE_TO_LIST =
   "no-scrollbar -my-0.5 max-h-[calc(260px*var(--ui-space-scale,1))] overflow-y-auto overscroll-contain";
 const MENU_LABEL = "px-3 pb-1 pt-2 font-normal text-muted-foreground";
 
-/** A chat exports one file per pane; several export combined or per chat. */
 export type ChatExportChoice =
   | { kind: "chat"; format: ConversationExportFormat }
   | { kind: "bulk"; format: ConvExportFormat; merged: boolean };
@@ -130,13 +127,9 @@ export interface ChatsActions {
   selectable: boolean;
   models: ReadonlyMap<string, string[]>;
   sections: readonly SidebarCustomSection[];
-  /** Chat row id -> the section it is filed in. */
   sectionOf: ReadonlyMap<string, string>;
-  /** Project id -> the section it is filed in. */
   projectSectionOf: ReadonlyMap<string, string>;
-  /** The date the lists show. */
   dateField: DateField;
-  /** Per chat row id; absent until read. */
   chatContents: ReadonlyMap<string, ChatContents>;
   selection: ReadonlySet<string>;
   /** `range`: shift-click, from the last toggled row. */
@@ -162,13 +155,11 @@ export interface ChatsActions {
   exportChats: (chats: SidebarItem[], choice: ChatExportChoice) => void;
   remove: (chats: SidebarItem[]) => void;
   viewProject: (projectId: string) => void;
-  /** Project chip: narrows the list to that project. */
   filterProject: (projectId: string) => void;
   newChatIn: (projectId: string | null) => void;
   editProject: (project: ProjectRecord) => void;
   togglePinProject: (projectId: string) => void;
   exportProject: (project: ProjectRecord, choice: ChatExportChoice) => void;
-  /** Live chats per project and section, as their Export writes. */
   projectChatCounts: ReadonlyMap<string, number>;
   sectionChatCounts: ReadonlyMap<string, number>;
   deleteProject: (project: ProjectRecord) => void;
@@ -214,7 +205,6 @@ export function ExportSubmenu({
   disabled = false,
 }: {
   onExport: (choice: ChatExportChoice) => void;
-  /** Several chats: combined and per chat choices. */
   bulk?: boolean;
   disabled?: boolean;
 }) {
@@ -253,7 +243,6 @@ export function MoveSubmenu({
 }: {
   /** Shared project of the moved chats (null for none); undefined when they differ. */
   project?: string | null;
-  /** Same, for sections. */
   section?: string | null;
   onMove: (destination: ChatDestination) => void;
   /** Sections only, for moving a project (projects never nest). */
@@ -368,7 +357,6 @@ function ForkItem({ chat }: { chat: SidebarItem }) {
   );
 }
 
-/** "More actions" trigger for rows and cards, matching the file tabs. */
 function MenuTrigger({ variant }: { variant: "row" | "card" }) {
   const t = useT();
   return (
@@ -559,12 +547,10 @@ function ChatMenu({
   );
 }
 
-// Chat, project and section tiles share one box, with a brand tint on hover.
 const TILE =
   "flex size-9 shrink-0 items-center justify-center rounded-[10px] bg-muted text-foreground/70 transition-colors group-hover/chat:bg-primary/10 group-hover/chat:text-primary";
 const TILE_ICON = "size-5";
 
-/** Chat kind icon (bubble, compare, fork) in the project and section tile box. */
 function ChatTile({
   chat,
   className,
@@ -640,7 +626,6 @@ function modelLabel(
 const CHIP =
   "inline-flex min-w-0 max-w-full items-center gap-1.5 rounded-sm text-left outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring";
 
-/** Project and section links that narrow the list; nothing when the chat has neither. */
 function ChatLocation({
   chat,
   showProject,
@@ -650,7 +635,6 @@ function ChatLocation({
   chat: SidebarItem;
   showProject: boolean;
   showSection: boolean;
-  /** Cards: the project, else the section, as bare text. */
   plain?: boolean;
 }) {
   const t = useT();
@@ -743,7 +727,6 @@ function SectionChip({
 /** "own": under its own header; "files": among files; object: among chats (All). */
 export type CollectionRowLayout = "own" | "files" | { showLocation: boolean };
 
-/** File-list Modified and Size cells, for chats or projects listed among files. */
 function FileColumns({ modified }: { modified: number }) {
   const locale = useLocale();
   return (
@@ -788,12 +771,10 @@ function groupedTime(
   });
 }
 
-/** Relative times by default; inside a date group, `groupedTime`. */
 export interface RowTimes {
   bucket?: DateBucket["kind"];
 }
 
-/** A date in the chosen field: created as a date, the others relative. Empty for 0. */
 function formatDate(
   ts: number,
   field: DateField,
@@ -836,7 +817,6 @@ const DATE_LABELS: Record<DateField, TranslationKey> = {
   modified: "library.chats.list.lastModified",
 };
 
-/** One date column: its title picks the date, its arrow flips the order. */
 export function DateHeader({
   fields,
   field,
@@ -872,7 +852,6 @@ export function DateHeader({
               <HugeiconsIcon
                 icon={ChevronDownStandardIcon}
                 strokeWidth={2}
-                // Shown on hover, focus or while open.
                 className="size-3 opacity-0 transition-opacity group-hover/date:opacity-100 group-focus-visible/date:opacity-100 group-data-[state=open]/date:opacity-100"
               />
             </button>
@@ -915,7 +894,6 @@ export function DateHeader({
   );
 }
 
-/** Header props for a list's date column. */
 export interface DateColumn {
   fields: readonly DateField[];
   sortKey: string;
@@ -957,7 +935,6 @@ function SelectBox({
   );
 }
 
-// Same row insets as the file tabs, so columns line up.
 const ROW_INSET = "pl-4 pr-6";
 const CELL = "truncate text-ui-13 text-muted-foreground";
 // Columns follow the list's width, not the window's; the date column hides last.
@@ -1021,7 +998,6 @@ export function ChatListHeader({
   const t = useT();
   const { selectable, dateField } = useChatsActions();
   return (
-    // Padding outside the row, as in the file list, so the checkbox and Name align with rows.
     <div className="pb-2">
       <div
         className={cn(
@@ -1079,9 +1055,7 @@ export function ChatRow({
   /** Off inside a project or when grouped by it (sections likewise). */
   showProject: boolean;
   showSection: boolean;
-  /** Draw the Location column even if this row names nothing (All: a project may need it). */
   locationColumn?: boolean;
-  /** Among files (Favorites): use the file list's columns. */
   fileColumns?: boolean;
   times?: RowTimes;
 }) {
@@ -1201,7 +1175,6 @@ export function ChatCard({
         <ChatBadges chat={chat} marksOnly />
       </div>
       <ChatMenu chat={chat} archived={archived} variant="card" />
-      {/* Bottom right, as on file cards, so the tile stays put on hover. */}
       <SelectBox chat={chat} visible={selecting} className="absolute bottom-3.5 end-4 flex" />
       <button
         type="button"
@@ -1218,14 +1191,12 @@ export function ChatCard({
       <CardFooter
         meta={location}
         date={formatDate(chatTime(chat, actions.dateField), actions.dateField, times, locale, t)}
-        // Clear of the select box.
         className={selecting ? "pe-7" : undefined}
       />
     </div>
   );
 }
 
-/** A card's footer: what it holds on one line, the date under it, bottom left. */
 function CardFooter({ meta, date, className }: { meta?: ReactNode; date: string; className?: string }) {
   return (
     <div
@@ -1240,7 +1211,6 @@ function CardFooter({ meta, date, className }: { meta?: ReactNode; date: string;
   );
 }
 
-// Two lines; a long unbroken name wraps instead of running out on one line.
 const CARD_TITLE =
   "block w-full rounded text-left font-medium text-ui-14 leading-snug text-foreground outline-none [overflow-wrap:anywhere] focus-visible:ring-2 focus-visible:ring-ring";
 
@@ -1252,7 +1222,6 @@ export function GroupHeading({
 }: {
   children: ReactNode;
   count: number;
-  /** In place of "N chats", for a group of something else. */
   countLabel?: string;
 }) {
   const t = useT();
@@ -1266,7 +1235,6 @@ export function GroupHeading({
   );
 }
 
-/** Project or section tile, as on the Projects page; brand tint on row hover. */
 function CollectionTile({ icon }: { icon: IconSvgElement }) {
   return (
     <span className={TILE}>
@@ -1275,7 +1243,6 @@ function CollectionTile({ icon }: { icon: IconSvgElement }) {
   );
 }
 
-/** Project or section page header, styled like a project's home in Chat. */
 export function CollectionHeader({
   icon,
   name,
@@ -1287,7 +1254,6 @@ export function CollectionHeader({
 }: {
   icon: IconSvgElement;
   name: string;
-  /** Back-link label: Projects or Sections. */
   parent: string;
   onParent: () => void;
   marks?: ReactNode;
@@ -1338,7 +1304,6 @@ export function CollectionHeader({
   );
 }
 
-/** Round "more" button, matching a project's home in Chat. */
 export const HEADER_MORE_BUTTON =
   "inline-flex size-9 shrink-0 items-center justify-center rounded-full text-muted-foreground outline-none transition-colors hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring data-[state=open]:bg-muted data-[state=open]:text-foreground";
 
@@ -1598,7 +1563,6 @@ function SectionMenu({
   );
 }
 
-/** Section actions, shared by its row menu and its page. */
 export function SectionMenuItems({
   section,
   onPage = false,
@@ -1742,7 +1706,6 @@ export function SectionRow({
         <FileColumns modified={sectionTime(section, stats, "modified")} />
       ) : (
         <>
-          {/* Sections have no location: an empty cell keeps the columns aligned. */}
           {layout !== "own" && layout.showLocation && (
             <span className={LOCATION_COLUMN} />
           )}
@@ -1785,7 +1748,6 @@ export function SectionListHeader({ date }: { date: DateColumn }) {
   );
 }
 
-/** A starred chat, project or section among the Favorites file cards, drawn the same way. */
 function FavoriteTile({
   title,
   icon,
@@ -1866,7 +1828,6 @@ export function FavoriteProjectTile({
   return (
     <FavoriteTile
       title={project.name}
-      // Open folder, as in the Chats tab, so a project is not taken for a file folder.
       icon={
         <HugeiconsIcon
           icon={Folder02Icon}

@@ -13,7 +13,6 @@ export interface ChatsPrefs {
   sort: ChatSort;
   projectSort: ProjectSort;
   sectionSort: SectionSort;
-  /** Which date the list's date column shows. */
   dateField: DateField;
   groupBy: ChatGroupBy;
   pinnedFirst: boolean;

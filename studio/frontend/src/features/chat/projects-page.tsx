@@ -1061,7 +1061,6 @@ export function ProjectsPage() {
                                 <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} className="size-icon" />
                                 <span>Rename</span>
                               </DropdownMenuItem>
-                              {/* The dot a finished reply leaves, put back or taken off by hand. */}
                               <DropdownMenuItem
                                 onSelect={() =>
                                   chatUnread

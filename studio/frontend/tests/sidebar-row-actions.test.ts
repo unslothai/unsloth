@@ -111,8 +111,7 @@ test("double-clicking a chat title renames it in place", () => {
   );
 });
 
-// Marking one chat unread was only reachable by selecting it first and using the bulk menu, and
-// the dot could never be taken off again: the item was disabled on the rows that carried one.
+// Regression: per-row Mark as unread/read, and the dot must be removable.
 test("a chat row marks itself read or unread from its own menu", () => {
   assert.match(
     APP_SIDEBAR,
@@ -131,12 +130,10 @@ test("a chat row marks itself read or unread from its own menu", () => {
       `the row and bulk menus no longer say the same thing for ${key}`,
     );
   }
-  // Both go by the dot the row already draws.
   assert.match(
     APP_SIDEBAR,
     /const alreadyUnread = threadIds\.some\(\(threadId\) =>\n\s*unreadThreadIds\.has\(threadId\),\n\s*\);/,
   );
-  // An eye that is open once the row is read, crossed out while it is not.
   assert.equal(
     (
       APP_SIDEBAR.match(
@@ -238,7 +235,6 @@ test("a chat row forks from its own menu", async () => {
   const ROW_MENU = await readSrcAsync(
     "features/chat/components/chat-row-menu.ts",
   );
-  // Fork follows the rule after Mark as unread, beside Move to.
   assert.match(
     APP_SIDEBAR,
     /t\("shell\.selection\.markUnread"\)\}\n\s*<\/span>\n\s*<\/P\.Item>\n\s*\{\/\*[^]*?\*\/\}\n\s*<P\.Separator \/>\n\s*<P\.Item\n\s*disabled=\{!canForkChatRow\(item\)/,
@@ -247,7 +243,6 @@ test("a chat row forks from its own menu", async () => {
     APP_SIDEBAR,
     /<P\.Item\n\s*disabled=\{!canForkChatRow\(item\)[^]*?<span>Fork<\/span>\n\s*<\/P\.Item>\n\s*\{\/\* Projects and sections in one place[^]*?\*\/\}\n\s*<P\.Sub>/,
   );
-  // Export moved to the Library's Chats tab.
   const rowMenu = APP_SIDEBAR.slice(
     APP_SIDEBAR.indexOf("function renderChatRowMenuItems("),
     APP_SIDEBAR.indexOf("function renderChatSidebarItem("),

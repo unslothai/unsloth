@@ -133,14 +133,12 @@ test("a section records when it was made, and renames and filings stamp it", () 
   assert.ok(section(a).createdAt && section(a).modifiedAt);
   stamp(a, 1);
   stamp(b, 1);
-  // A rename to the same name, or filing where a chat already is, changes nothing.
   store.renameCustomSection(a, "A");
   store.setChatsSection(["c1"], a);
   assert.ok(section(a).modifiedAt! > 1);
   stamp(a, 1);
   store.setChatsSection(["c1"], a);
   assert.equal(section(a).modifiedAt, 1);
-  // Moving a chat stamps both ends; a project filing stamps too.
   store.setChatsSection(["c1"], b);
   assert.ok(section(a).modifiedAt! > 1 && section(b).modifiedAt! > 1);
   stamp(a, 1);
@@ -820,7 +818,6 @@ test("sidebar and account menus read white on a lighter surface in dark mode", a
 
 
 test("undoing a removed section puts it back where it was drawn", async () => {
-  // One removal for the sidebar and the Library alike.
   assert.match(APP_SIDEBAR, /const undo = removeCustomSectionWithUndo\(section\);/);
   const body = await readSrcAsync("features/chat/stores/remove-custom-section.ts");
   assert.match(body, /const followers = drawnOrder\.slice\(drawnOrder\.indexOf\(section\.id\) \+ 1\);/);
