@@ -8,8 +8,11 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from _en_catalog import en_string
+
 REPO = Path(__file__).resolve().parents[2]
 THREAD_TSX = REPO / "studio/frontend/src/components/assistant-ui/thread.tsx"
+MESSAGE_MENU_TIME_TSX = REPO / "studio/frontend/src/components/assistant-ui/message-menu-time.tsx"
 DETAILS_TSX = (
     REPO / "studio/frontend/src/components/assistant-ui/message-response-details-sheet.tsx"
 )
@@ -350,10 +353,46 @@ def _without_comments(tag: str) -> str:
 
 
 def test_assistant_more_menu_exposes_response_details_action():
-    src = THREAD_TSX.read_text(encoding = "utf-8")
+    """The More menu still opens the details sheet. Since #11928 the item lives in
+    MessageMenuTime, beside the response's timestamp, so the action is followed through the
+    prop thread.tsx hands it.
+
+    Deliberately literal about today's wiring: thread.tsx passes an inline callback that opens
+    the sheet and renders the sheet with `open={detailsOpen}`, and the menu item carries both
+    the label and `onSelect={onShowDetails}` on one tag and is not disabled. A refactor that respells either line updates this test with it, which is cheaper and
+    more honest than a hand-written JavaScript reader that tries to accept every equivalent
+    spelling. Comments are removed first, so commented-out wiring does not count.
+    """
+    src = _without_block_comments(THREAD_TSX.read_text(encoding = "utf-8"))
     assert "MessageResponseDetailsSheet" in src
-    assert "See response details" in src
-    assert "setDetailsOpen(true)" in src
+    # The component inspected below is the one thread.tsx imports.
+    assert re.search(
+        r"""import\s*\{\s*MessageMenuTime\s*\}\s*from\s*["']@/components/assistant-ui/message-menu-time["']""",
+        src,
+    ), "thread.tsx no longer imports MessageMenuTime from message-menu-time.tsx"
+    caller = _opening_tag(src, "<MessageMenuTime ")
+    assert (
+        caller
+        and re.match(
+            r"<MessageMenuTime\s+onShowDetails=\{\s*\(\)\s*=>\s*setDetailsOpen\(\s*true\s*\)\s*\}",
+            caller,
+        )
+    ), f"thread.tsx no longer hands MessageMenuTime a callback that opens the details sheet: {caller}"
+    assert not _spread_overrides(caller, "onShowDetails"), caller
+    sheet = _opening_tag(src, "<MessageResponseDetailsSheet")
+    assert sheet and re.search(r"(?<![\w-])open=\{\s*detailsOpen\s*\}", sheet), sheet
+    assert not _spread_overrides(sheet, "open"), sheet
+    menu = _without_block_comments(MESSAGE_MENU_TIME_TSX.read_text(encoding = "utf-8"))
+    item = _opening_tag(menu, "<ActionBarMorePrimitive.Item")
+    assert item, "message-menu-time.tsx no longer renders a More-menu item"
+    assert re.search(r'(?<![\w-])aria-label="See response details"', item), item
+    assert re.search(r"(?<![\w-])onSelect=\{\s*onShowDetails\s*\}", item), item
+    # A later `{...props}` could replace either prop.
+    assert not _spread_overrides(item, "aria-label"), item
+    assert not _spread_overrides(item, "onSelect"), item
+    # A statically disabled item cannot be selected at all.
+    disabled = re.search(r"(?<![\w-])disabled(?:=\{\s*([^{}]*?)\s*\})?(?=[\s/>])", item)
+    assert disabled is None or disabled.group(1) == "false", item
 
 
 def test_response_details_sheet_uses_unsloth_sheet_and_key_sections():
@@ -422,7 +461,8 @@ def test_response_model_badge_is_user_configurable_and_rendered_once_per_message
     assert "showResponseModel: false" in prefs_src
     assert "showResponseModel: saved?.showResponseModel ?? false" in prefs_src
     # The visible label lives in the locale file; the tab holds only the key that resolves to it.
-    assert 'showResponseModel: "Show response model"' in EN_LOCALE_TS.read_text(encoding = "utf-8")
+    # By key, not wording: #11924 dropped the leading "Show" from this and seven other labels.
+    assert en_string("settings.chat.showResponseModel", EN_LOCALE_TS)
     assert 't("settings.chat.showResponseModel")' in chat_tab_src
     assert "setShowResponseModel" in chat_tab_src
     details_src = DETAILS_TSX.read_text(encoding = "utf-8")

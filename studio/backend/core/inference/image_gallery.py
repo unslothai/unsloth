@@ -23,7 +23,8 @@ from typing import Any, Optional
 from core.inference import gallery_flags
 from loggers import get_logger
 from utils.account_context import is_owner_context
-from utils.paths import ensure_account_dir, ensure_dir, studio_root
+from utils.paths import ensure_account_dir, studio_root
+from utils.paths.relocations import location_dir
 from utils.paths.storage_roots import account_path
 
 logger = get_logger(__name__)
@@ -36,7 +37,7 @@ _ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 
 def gallery_dir() -> Path:
     if is_owner_context():
-        return ensure_dir(studio_root() / "images")
+        return location_dir("images", studio_root() / "images")
     return ensure_account_dir(account_path("images"))
 
 
@@ -70,13 +71,16 @@ def _png_bytes(image: Any, meta: dict[str, Any]) -> bytes:
 def save(image: Any, meta: dict[str, Any]) -> dict[str, Any]:
     """Persist a PIL image with its recipe embedded; return the gallery record."""
     image_id = uuid.uuid4().hex
+    # Encoded before the folder is looked up: a Settings move during the encode would otherwise
+    # finish first, and the image land in the folder it left.
+    data = _png_bytes(image, meta)
     directory = gallery_dir()
     final_path = directory / f"{image_id}.png"
     # Write to a dotted temp (skipped by the *.png glob) then atomically rename, so a crash mid-write never leaves a
     # truncated {id}.png in the listing.
     tmp_path = directory / f".{image_id}.png.tmp"
     try:
-        tmp_path.write_bytes(_png_bytes(image, meta))
+        tmp_path.write_bytes(data)
         os.replace(tmp_path, final_path)
     except BaseException:
         try:
@@ -136,7 +140,9 @@ def _read_meta(path: Path, *, strict_io: bool = False) -> Optional[dict[str, Any
 
     try:
         with Image.open(path) as im:
-            raw = im.text.get(_META_KEY)  # type: ignore[attr-defined]
+            # _png_bytes writes the chunk before IDAT, so the header parse has it; im.text would
+            # decode every pixel looking for chunks after IDAT.
+            raw = im.info.get(_META_KEY) or im.text.get(_META_KEY)  # type: ignore[attr-defined]
     except OSError as exc:
         if strict_io and exc.errno not in (None, errno.ENOENT):
             raise

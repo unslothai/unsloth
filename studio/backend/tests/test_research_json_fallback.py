@@ -23,7 +23,8 @@ from .test_sf_client_tools_passthrough import _ScriptedBackend, _fixed, _install
 
 
 _NO_GRAMMAR_ENGINE = (
-    "response_format needs the llama.cpp grammar engine; load a GGUF model to use it."
+    "response_format needs a grammar engine, and the transformers backend has none; load an "
+    "MLX or GGUF model to use it."
 )
 # Same code and param, different cause. The real-route cases keep these strings honest.
 _AUDIO_REFUSAL_MESSAGE = (
@@ -107,6 +108,10 @@ def research_call(monkeypatch):
 def test_local_json_research_recovers_through_the_real_route(
     monkeypatch, research_call, is_mlx, phase, forced_tools
 ):
+    from core.inference import grammar_constraint
+
+    # MLX refuses only without its engine; pinned so a Mac with llguidance tests this too.
+    monkeypatch.setattr(grammar_constraint, "LLGUIDANCE_AVAILABLE", False)
     backend = _ScriptedBackend(_fixed('{"ok": true}'))
     backend.models[backend.active_model_name]["is_mlx"] = is_mlx
     _install(monkeypatch, backend, supports_tools = forced_tools)

@@ -144,6 +144,12 @@ async def video_download_plan(
 ):
     """The repos + files this pick needs, so the frontend stages them through the Hub
     download manager instead of the load downloading inline. Mirrors /images/download-plan."""
+    from routes.inference import (
+        _refuse_disabled_nvfp4_checkpoint,
+        _refuse_disabled_nvfp4_request,
+    )
+
+    _refuse_disabled_nvfp4_request(request)
     if account_access.managed_account():
         await asyncio.to_thread(account_access.require_media_references, request)
     if account_access.managed_account():
@@ -155,6 +161,7 @@ async def video_download_plan(
         request = request.model_copy(
             update = {"hf_token": account_access.account_hf_token(request.hf_token)}
         )
+    await _refuse_disabled_nvfp4_checkpoint(request)
     from core.inference.diffusion import resolve_local_single_file
     from core.inference.video import (
         assert_video_precision_available,
@@ -269,6 +276,12 @@ async def load_video_model_gated(
     """Everything ``POST /video/load`` does, plus who asked for it. Media auto-switch awaits this rather than the
     route so the idle unload can tell an API-loaded pipeline from one the user picked on the Video page.
     """
+    from routes.inference import (
+        _refuse_disabled_nvfp4_checkpoint,
+        _refuse_disabled_nvfp4_request,
+    )
+
+    _refuse_disabled_nvfp4_request(request)
     if account_access.managed_account():
         await asyncio.to_thread(account_access.require_media_references, request)
     account_access.require_idle_other_accounts()
@@ -281,6 +294,7 @@ async def load_video_model_gated(
         request = request.model_copy(
             update = {"hf_token": account_access.account_hf_token(request.hf_token)}
         )
+    await _refuse_disabled_nvfp4_checkpoint(request)
     # Same as the image load: tested at entry, because `begin_load` returns before the worker
     # moves a byte, and written at the launch below, because the validation in between 400s
     # without starting one and the record would be permanent.
@@ -734,9 +748,20 @@ async def video_status(
     from core.inference.video import get_video_backend
     from hub.utils.host_paths import redact_host_paths
 
-    status_dict = get_video_backend().status()
+    backend = get_video_backend()
+    status_dict = backend.status()
     if account_access.resident_hidden("video", status_dict.get("repo_id")):
         return account_access.hidden_resident_response()
+    # Step-skip counters trace a clip as it runs, which generate-progress hides from other accounts:
+    # shown only to the account whose clip produced them, from one owner-then-stats read.
+    if (
+        status_dict.get("transformer_cache_stats") is not None
+        and account_access.account_scope() is not None
+    ):
+        view = getattr(backend, "static_skip_view", None)
+        owner, stats = view() if callable(view) else (None, status_dict["transformer_cache_stats"])
+        visible = owner is None or owner == current_account_id()
+        status_dict = {**status_dict, "transformer_cache_stats": stats if visible else None}
     # This route answers long after the request that resolved the reference ended, so there is
     # no handle in context to put back.
     return redact_host_paths(VideoStatusResponse(**status_dict), via_api_key = via_api_key)
