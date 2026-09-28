@@ -74,6 +74,11 @@ def test_second_call_uses_the_cache_and_distinct_specializations_get_their_own_e
     if not triton_launch._ENABLED:
         pytest.skip("fast launch is CUDA only")
     x = torch.randn(64, device = "cuda")
+    compiled = _axpy[(1,)](x, x, torch.empty(64, device = "cuda"), 64, 2, BLOCK = 128, ADD = False)
+    if not hasattr(compiled, "packed_metadata"):
+        pytest.skip(
+            "this Triton returns no packed_metadata, so every launch takes its own path"
+        )
     _run(x, x, torch.empty(64, device = "cuda"), 64, 2, False)
     assert len(triton_launch._CACHE) == 1
     _run(x, x, torch.empty(64, device = "cuda"), 64, 2, False)
