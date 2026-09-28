@@ -31,7 +31,9 @@ THINK_OPEN, THINK_CLOSE = "<think>", "</think>"
 _STRAY_THINK_WINDOW = 4000
 TOOL_OPEN = "<tool_call>"
 _FUNC_RE = re.compile(r"<function=([^>\s]+)>(.*?)(?:</function>|$)", re.DOTALL)
-_PARAM_RE = re.compile(r"<parameter=([^>\s]+)>\n?(.*?)\n?(?:</parameter>|(?=<parameter=)|$)", re.DOTALL)
+_PARAM_RE = re.compile(
+    r"<parameter=([^>\s]+)>\n?(.*?)\n?(?:</parameter>|(?=<parameter=)|$)", re.DOTALL
+)
 
 
 class ChatRequest(BaseModel):
@@ -93,7 +95,10 @@ class ThinkSplitter:
         self.held += piece
         idx = self.held.find(THINK_CLOSE)
         if idx >= 0:
-            reasoning, rest = self.held[:idx].strip(), self.held[idx + len(THINK_CLOSE) :].lstrip("\n")
+            reasoning, rest = (
+                self.held[:idx].strip(),
+                self.held[idx + len(THINK_CLOSE) :].lstrip("\n"),
+            )
             self.held = None
             return ([("reasoning", reasoning)] if reasoning else []) + self._split(rest)
         if len(self.held) > _STRAY_THINK_WINDOW:
@@ -301,7 +306,9 @@ def build_app(pipe, model_id: str) -> FastAPI:
             rest, calls = tool_splitter.finish(tools_for(req))
             message = {"role": "assistant", "content": (content + rest) or None}
             if calls:
-                message["tool_calls"] = [{k: v for k, v in c.items() if k != "index"} for c in calls]
+                message["tool_calls"] = [
+                    {k: v for k, v in c.items() if k != "index"} for c in calls
+                ]
             reasoning = "".join(t for k, t in parts if k == "reasoning")
             if reasoning:
                 message["reasoning_content"] = reasoning
