@@ -351,15 +351,6 @@
     },
     {
       "file": "studio/backend/tests/test_install_mxc_prebuilt.py",
-      "rule": "AV004",
-      "severity": "error",
-      "reason": "Test decodes the launcher argument studio/install_mxc_prebuilt.py builds, to assert what it runs.",
-      "digests": {
-        "9f35fad52d60530b": 1
-      }
-    },
-    {
-      "file": "studio/backend/tests/test_install_mxc_prebuilt.py",
       "rule": "AV010",
       "severity": "warn",
       "reason": "pre-existing warning",
@@ -565,15 +556,6 @@
       "reason": "pre-existing warning",
       "digests": {
         "ef8ebbf5fc756aa9": 1
-      }
-    },
-    {
-      "file": "studio/install_mxc_prebuilt.py",
-      "rule": "AV004",
-      "severity": "error",
-      "reason": "Follow-up: the elevated MXC runtime step passes its script as an encoded command. Shipped code; should pass a signed script file instead.",
-      "digests": {
-        "680637966354f5a9": 1
       }
     },
     {
