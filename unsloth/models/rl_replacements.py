@@ -3802,8 +3802,7 @@ def vllm_generation_init_patch():
 RL_ADDITIONAL_FUNCTIONS["vllm_generation"].append(vllm_generation_init_patch)
 
 
-# GKD chunked JSD over hidden states (#11554): TRL's dense path holds two full (batch, seq, vocab) logits.
-# Anything not reproduced exactly returns None and TRL's own compute_loss runs.
+# GKD chunked JSD (#11554): anything not reproduced exactly returns None and TRL's own compute_loss runs.
 try:
     from unsloth_zoo.rl_replacements import distillation_chunked_jsd
 except Exception:
@@ -4123,7 +4122,6 @@ def _unsloth_gkd_chunked_loss(self, model, inputs, num_items_in_batch, layout):
         unwrapped_teacher, teacher_states, teacher_head.weight
     )
     if not (student_hidden and teacher_hidden):
-        # A forward ignored UNSLOTH_RETURN_HIDDEN_STATES: go dense for this call instead of re-running a forward.
         if student_hidden:
             student_states = _unsloth_gkd_project(
                 student_states, student_head, student_scale, student_softcap
