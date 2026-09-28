@@ -16,8 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-# Anchor: up to MAX interior words from the chunk's start, shrunk toward MIN
-# to recover a unique match.
+# Anchor: up to MAX interior words from the chunk's start, shrunk toward MIN to recover a unique match.
 MAX_ANCHOR_WORDS = 12
 MIN_ANCHOR_WORDS = 4
 
@@ -39,9 +38,11 @@ def _norm_token(token: str) -> str:
 
 def _anchor_tokens(page_text: str, match: LocatorMatch) -> list[str]:
     """Normalized anchor tokens from the chunk's leading span. Drops first and last
-    token (boundaries often slice mid-word) when long enough."""
+    token (boundaries often slice mid-word) when long enough. Pipes are split out so
+    Markdown table cells (``|Q1|$1.2M|``) become individual words that match the PDF
+    word stream."""
     segment = page_text[match.start : match.end]
-    raw = segment.split()
+    raw = segment.replace("|", " ").split()
     if len(raw) >= MIN_ANCHOR_WORDS + 2:
         raw = raw[1:-1]
     tokens = [t for t in (_norm_token(w) for w in raw) if t]
@@ -93,7 +94,7 @@ def _rects_from_words(page_words: list, indices: list[int], pw: float, ph: float
     for j in indices:
         w = page_words[j]
         x0, y0, x1, y1 = float(w[0]), float(w[1]), float(w[2]), float(w[3])
-        key = (w[5], w[6])  # block, line
+        key = (w[5], w[6])
         box = lines.get(key)
         if box is None:
             lines[key] = [x0, y0, x1, y1]

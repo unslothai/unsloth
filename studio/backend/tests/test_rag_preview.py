@@ -129,6 +129,11 @@ def test_preview_routes_and_signed_file(rag_home, stub_embeddings):
         == 401
     )
 
+    from auth.authentication import request_admitted_without_credential
+
+    app.dependency_overrides[request_admitted_without_credential] = lambda: True
+    assert c.get(f"/api/rag/documents/{doc_id}/file-url").status_code == 403
+
 
 def test_norm_token_decomposes_ligatures():
     # NFKC folds ligature glyphs to ASCII so anchors match (search_for misses these).
@@ -165,10 +170,31 @@ def test_locator_handles_midword_anchor_and_locates_line():
     assert r["width"] > 0 and r["height"] > 0
 
 
+def test_locator_anchors_through_markdown_table_pipes():
+    # Markdown table cells are pipe-joined with no spaces; the locator splits on pipes
+    # so a table-row chunk still anchors to the raw PDF word stream.
+    import pymupdf
+
+    from core.rag.locators import LocatorMatch, _regions_for_match
+
+    doc = pymupdf.open()
+    page = doc.new_page()
+    page.insert_text((72, 200), "Quarter Revenue Growth Q1 sales strong here", fontsize = 12)
+    # What the Markdown parser stores for the row (cells joined by pipes, no spaces).
+    page_text = "|Quarter|Revenue|Growth|Q1|sales|strong|here|"
+    match = LocatorMatch(page_index = 0, page_number = 1, start = 0, end = len(page_text))
+    rects = _regions_for_match(doc, page_text, match)
+    doc.close()
+
+    assert rects, "a Markdown table row should still anchor to the page words"
+
+
 def test_sign_verify_roundtrip(rag_home):
     from routes import rag as rag_routes
+    from utils.account_context import OWNER
 
     tok = rag_routes._sign_document("doc-123")
-    assert rag_routes._verify_document_token(tok) == "doc-123"
-    assert rag_routes._verify_document_token("doc-123.0.deadbeef") is None  # expired/bad
-    assert rag_routes._verify_document_token("garbage") is None
+    assert rag_routes._verify_document_token("doc-123", tok) == OWNER
+    assert rag_routes._verify_document_token("doc-456", tok) is None
+    assert rag_routes._verify_document_token("doc-123", "0..deadbeef") is None
+    assert rag_routes._verify_document_token("doc-123", "garbage") is None

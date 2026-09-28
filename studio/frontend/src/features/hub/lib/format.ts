@@ -1,6 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+const SECONDS_PER_MINUTE = 60;
+const MINUTES_PER_HOUR = 60;
+const HOURS_PER_DAY = 24;
+const SECONDS_PER_HOUR = SECONDS_PER_MINUTE * MINUTES_PER_HOUR;
+const MAX_DISPLAYABLE_ETA_SECONDS = HOURS_PER_DAY * SECONDS_PER_HOUR;
+
 export function formatBytes(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes < 0) return "N/A";
   if (bytes === 0) return "0 B";
@@ -24,23 +30,21 @@ export function formatRate(bytesPerSec: number): string {
   return `${formatBytes(bytesPerSec)}/s`;
 }
 
+// A day or more collapses to "> 24h left": a precise multi-day figure reads as
+// broken, but hiding it leaves a genuinely slow download with no estimate.
 export function formatEta(seconds: number): string {
   if (!Number.isFinite(seconds) || seconds <= 0) return "";
   const s = Math.round(seconds);
-  if (s < 60) return `${s}s left`;
-  if (s < 3600) {
-    const m = Math.floor(s / 60);
-    const rem = s % 60;
+  if (s >= MAX_DISPLAYABLE_ETA_SECONDS) return `> ${HOURS_PER_DAY}h left`;
+  if (s < SECONDS_PER_MINUTE) return `${s}s left`;
+  if (s < SECONDS_PER_HOUR) {
+    const m = Math.floor(s / SECONDS_PER_MINUTE);
+    const rem = s % SECONDS_PER_MINUTE;
     return rem ? `${m}m ${rem}s left` : `${m}m left`;
   }
-  if (s < 86400) {
-    const h = Math.floor(s / 3600);
-    const rem = Math.floor((s % 3600) / 60);
-    return rem ? `${h}h ${rem}m left` : `${h}h left`;
-  }
-  const d = Math.floor(s / 86400);
-  const rem = Math.floor((s % 86400) / 3600);
-  return rem ? `${d}d ${rem}h left` : `${d}d left`;
+  const h = Math.floor(s / SECONDS_PER_HOUR);
+  const rem = Math.floor((s % SECONDS_PER_HOUR) / SECONDS_PER_MINUTE);
+  return rem ? `${h}h ${rem}m left` : `${h}h left`;
 }
 
 export function ownerOf(id: string): string {

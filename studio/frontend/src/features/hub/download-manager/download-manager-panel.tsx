@@ -8,10 +8,10 @@ import {
 } from "@/components/ui/tooltip";
 import { hasAuthToken, mustChangePassword } from "@/features/auth/session";
 import { isTauri } from "@/lib/api-base";
+import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { cn } from "@/lib/utils";
 import {
   Alert02Icon,
-  ArrowDown01Icon,
   Cancel01Icon,
   CheckmarkCircle02Icon,
   Download01Icon,
@@ -19,13 +19,14 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useRouterState } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
-import { DownloadProgressBar } from "./download-progress-bar";
 import {
   type ManagedDownload,
   downloadManager,
   hydrateDownloadManager,
   useDownloadManagerStore,
 } from "./download-manager-controller";
+import { DownloadProgressBar } from "./download-progress-bar";
+import { presentedProgress } from "./download-presentation";
 
 function createOrderedJobKeysSelector(): (state: {
   jobs: Record<string, ManagedDownload>;
@@ -73,6 +74,16 @@ function canUseDownloadManager(pathname: string): boolean {
 }
 
 function variantSuffix(job: ManagedDownload): string {
+  if (job.variant?.startsWith("@")) {
+    // The staging page tagged the entry it picked, which is the only reliable answer: a checkpoint
+    // can be a curated single .safetensors and companion repos carry .safetensors too, so the
+    // extension decides nothing. The old guess stays for jobs persisted before the flag existed,
+    // which would otherwise change label mid-download after a restart.
+    const isModelFile =
+      job.checkpoint ??
+      job.scopedFiles?.some((file) => file.toLowerCase().endsWith(".gguf"));
+    return ` · ${isModelFile ? "Model file" : "Required assets"}`;
+  }
   return job.variant ? ` · ${job.variant}` : "";
 }
 
@@ -105,12 +116,15 @@ function DownloadRow({ jobKey }: { jobKey: string }) {
     job.state === "complete" ||
     job.state === "cancelled" ||
     job.state === "error";
+  const progress = presentedProgress(job);
   return (
     <li className="flex flex-col gap-1.5 py-2.5 pl-4 pr-3">
       <div className="flex items-center gap-2">
-        <span className="min-w-0 flex-1 truncate text-[12.5px] font-medium text-foreground">
-          {job.repoId}
-          <span className="text-muted-foreground">{variantSuffix(job)}</span>
+        <span className="min-w-0 flex-1 truncate text-ui-12p5 font-medium text-foreground">
+          {job.presentation?.label ?? job.repoId}
+          <span className="text-muted-foreground">
+            {job.presentation ? ` · ${job.repoId}` : variantSuffix(job)}
+          </span>
         </span>
         {job.state === "complete" && (
           <HugeiconsIcon
@@ -139,7 +153,7 @@ function DownloadRow({ jobKey }: { jobKey: string }) {
               }
               className={cn(
                 "inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground transition-colors",
-                "hover:bg-foreground/[0.06] hover:text-foreground disabled:cursor-default disabled:opacity-50 dark:hover:bg-white/[0.06]",
+                "hover:bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)] hover:text-foreground disabled:cursor-default disabled:opacity-50 dark:hover:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))]",
               )}
             >
               <HugeiconsIcon
@@ -154,18 +168,21 @@ function DownloadRow({ jobKey }: { jobKey: string }) {
           </TooltipContent>
         </Tooltip>
       </div>
+      {job.presentation ? (
+        <div className="truncate text-ui-10p5 text-muted-foreground">
+          {job.presentation.filename}
+        </div>
+      ) : null}
       {active ? (
         <DownloadProgressBar
-          progress={{
-            expectedBytes: job.expectedBytes,
-            downloadedBytes: job.downloadedBytes,
-            fraction: job.fraction,
-          }}
+          progress={progress}
           bytesPerSec={job.bytesPerSec}
+          cancelling={job.state === "cancelling"}
+          etaSeconds={job.etaSeconds}
         />
       ) : null}
       {terminal || job.state === "cancelling" || job.error ? (
-        <div className="px-0 text-[11px] text-muted-foreground tabular-nums">
+        <div className="px-0 text-ui-11 text-muted-foreground tabular-nums">
           <StatusLine job={job} />
         </div>
       ) : null}
@@ -201,8 +218,10 @@ export function DownloadManagerPanel({
       className={cn(
         // Standalone: anchor bottom-right. In a shared stack (positioned=false)
         // flow as a right-aligned row so overlays stack instead of overlapping.
+        // min-h-0 there: a flex item's min-height defaults to auto, so the capped
+        // stack would squeeze the update card instead of this list.
         "pointer-events-none",
-        positioned ? "fixed bottom-4 right-4 z-50" : "flex justify-end",
+        positioned ? "fixed bottom-4 right-4 z-50" : "flex min-h-0 justify-end",
       )}
     >
       {collapsed ? (
@@ -217,7 +236,7 @@ export function DownloadManagerPanel({
               <HugeiconsIcon
                 icon={Download01Icon}
                 strokeWidth={1.75}
-                className="size-[18px]"
+                className="size-[calc(18px*var(--ui-space-scale,1))]"
               />
               {activeCount > 0 && (
                 <span className="hub-download-fab-badge">{activeCount}</span>
@@ -229,25 +248,25 @@ export function DownloadManagerPanel({
           </TooltipContent>
         </Tooltip>
       ) : (
-        <div className="hub-download-panel pointer-events-auto w-[min(400px,calc(100vw-2rem))] overflow-hidden">
-          <div className="flex items-center gap-2 border-b border-foreground/[0.07] py-2 pl-4 pr-3">
-            <span className="min-w-0 flex-1 truncate text-[12.5px] font-semibold text-foreground">
+        <div className="hub-download-panel pointer-events-auto flex min-h-0 w-[min(400px,calc(100vw-2rem))] flex-col overflow-hidden">
+          <div className="flex items-center gap-2 border-b border-[color-mix(in_oklab,var(--foreground)_calc(7%*var(--contrast-edge-gain,1)),transparent)] py-2 pl-4 pr-3">
+            <span className="min-w-0 flex-1 truncate text-ui-12p5 font-semibold text-foreground">
               {headerLabel}
             </span>
             <button
               type="button"
               aria-label="Collapse downloads"
               onClick={() => setCollapsed(true)}
-              className="inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-foreground/[0.06] hover:text-foreground dark:hover:bg-white/[0.06]"
+              className="inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)] hover:text-foreground dark:hover:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))]"
             >
               <HugeiconsIcon
-                icon={ArrowDown01Icon}
+                icon={ChevronDownStandardIcon}
                 strokeWidth={1.75}
                 className="size-3.5"
               />
             </button>
           </div>
-          <ul className="max-h-[60vh] divide-y divide-foreground/[0.06] overflow-y-auto [scrollbar-width:thin]">
+          <ul className="max-h-[60dvh] divide-y divide-foreground/[0.06] overflow-y-auto [scrollbar-width:thin]">
             {jobKeys.map((jobKey) => (
               <DownloadRow key={jobKey} jobKey={jobKey} />
             ))}

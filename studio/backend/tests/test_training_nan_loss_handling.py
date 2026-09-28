@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Pin Studio's behavior when a training event reports non-finite (NaN/Inf) loss.
+"""Pin Unsloth's behavior when a training event reports non-finite (NaN/Inf) loss.
 
 The training event handler used to filter NaN/Inf to None silently while
 leaving the previous finite loss in progress.loss — so the API kept reporting

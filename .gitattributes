@@ -6,8 +6,22 @@
 # them when run in WSL/Linux (e.g. `set -e` -> "set: Illegal option -").
 *.sh text eol=lf
 
-# Normalize Studio frontend sources to LF. Scoped to the frontend tree (rather
+# The vendored Swagger UI / ReDoc bundles are pinned by sha256 in
+# studio/backend/assets/docs_ui/docs_ui_manifest.json and must stay byte-identical to the
+# releases they came from. Without this a Windows clone (core.autocrlf=true) rewrites the
+# .js/.css/LICENSE files to CRLF, so every digest drifts and the bytes Unsloth serves are no
+# longer the ones that were reviewed. -text disables conversion in both directions.
+studio/backend/assets/docs_ui/** -text
+
+# Normalize Unsloth frontend sources to LF. Scoped to the frontend tree (rather
 # than repo-wide *.ts/*.tsx/... rules) so the policy can't force LF on files
 # elsewhere. text=auto lets Git detect and leave binary assets (logos, fonts)
 # untouched while text files (.ts/.tsx/.json/.html/.svg/...) are stored as LF.
 studio/frontend/** text=auto eol=lf
+
+# Authenticode signs the bytes of a .ps1, so a line ending rewrite invalidates any signature
+# the release attaches. install.ps1 is LF with no BOM, and without this rule a Windows clone
+# (core.autocrlf=true) stores it back as CRLF, after which Get-AuthenticodeSignature reports
+# HashMismatch. WDAC treats that as tampering, which is worse than shipping unsigned.
+# -text disables conversion in both directions, matching the docs_ui rule above.
+*.ps1 -text

@@ -19,13 +19,14 @@ export function InfoHint({ children }: { children: ReactNode }) {
       <TooltipTrigger asChild>
         <button
           type="button"
+          data-slot="info-hint"
           aria-label="More info"
-          className="inline-flex size-4 shrink-0 cursor-help items-center justify-center rounded-full text-muted-foreground/70 transition-colors hover:text-[#383835] dark:hover:text-[#e8e8e8] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          className="inline-flex size-3 shrink-0 cursor-help items-center justify-center rounded-full text-muted-foreground/70 transition-colors hover:text-[#383835] dark:hover:text-[#e8e8e8] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
         >
           <HugeiconsIcon
             icon={InformationCircleIcon}
             strokeWidth={1.75}
-            className="size-3.5"
+            className="size-2.5"
           />
         </button>
       </TooltipTrigger>
@@ -34,7 +35,7 @@ export function InfoHint({ children }: { children: ReactNode }) {
         align="center"
         sideOffset={6}
         collisionPadding={12}
-        className="[&_span>svg]:hidden! duration-0 max-w-[240px] text-left"
+        className="[&_span>svg]:hidden! duration-0 max-w-[calc(240px*var(--ui-space-scale,1))] text-left"
       >
         {children}
       </TooltipContent>

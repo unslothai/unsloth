@@ -6,7 +6,8 @@ from unsloth.models.mapper import FLOAT_TO_INT_MAPPER, MAP_TO_UNSLOTH_16bit
 
 
 def _no_remote_mapper():
-    return {}, {}, {}
+    # int_to_float, float_to_int, map_to_16bit, fp8_block, fp8_row
+    return {}, {}, {}, {}, {}
 
 
 class TestGetModelName(unittest.TestCase):
@@ -21,7 +22,6 @@ class TestGetModelName(unittest.TestCase):
     @patch.object(loader_utils, "_get_new_mapper", _no_remote_mapper)
     def test_resolution_matrix(self):
         cases = [
-            # Core mappings
             ("meta-llama/Llama-2-7b-hf", True, "unsloth/llama-2-7b-bnb-4bit", True),
             ("meta-llama/Llama-2-7b-hf", False, "unsloth/llama-2-7b", True),
             (
@@ -102,7 +102,19 @@ class TestGetModelName(unittest.TestCase):
             ),
             ("unsloth/Kimi-K2-Instruct", True, "unsloth/Kimi-K2-Instruct-BF16", True),
             ("unsloth/Kimi-K2-Instruct", False, "unsloth/Kimi-K2-Instruct", False),
-            # Fallback-to-original behavior
+            # DeepScaleR-1.5B must resolve to its own 16bit repo, not another model
+            (
+                "agentica-org/DeepScaleR-1.5B-Preview",
+                False,
+                "unsloth/DeepScaleR-1.5B-Preview",
+                True,
+            ),
+            (
+                "agentica-org/DeepScaleR-1.5B-Preview",
+                True,
+                "unsloth/DeepScaleR-1.5B-Preview-unsloth-bnb-4bit",
+                True,
+            ),
             "nonexistent-user/nonexistent-model-123",
             "google/gemma-3-random-prototype-123",
             "imdatta0/nanoqwen-fp8",
@@ -111,7 +123,6 @@ class TestGetModelName(unittest.TestCase):
             ("unsloth/llama-2-7b-bnb-4bit", True, "unsloth/llama-2-7b-bnb-4bit", False),
             ("unsloth/llama-2-7b-bnb-4bit", False, "unsloth/llama-2-7b", True),
             ("google/gemma-2-9b", True, "unsloth/gemma-2-9b-bnb-4bit", True),
-            # GPT-OSS behavior
             ("openai/gpt-oss-20b", False, "unsloth/gpt-oss-20b", True),
             ("openai/gpt-oss-20b", True, "unsloth/gpt-oss-20b-unsloth-bnb-4bit", True),
             ("unsloth/gpt-oss-20b", True, "unsloth/gpt-oss-20b-unsloth-bnb-4bit", True),
@@ -157,6 +168,10 @@ class TestGetModelName(unittest.TestCase):
             with self.subTest(src = src):
                 self.assertEqual(FLOAT_TO_INT_MAPPER[src], expected)
         self.assertEqual(MAP_TO_UNSLOTH_16bit["qwen/qwen3-8b-fp8"], "unsloth/Qwen3-8B-FP8")
+        self.assertEqual(
+            MAP_TO_UNSLOTH_16bit["agentica-org/deepscaler-1.5b-preview"],
+            "unsloth/DeepScaleR-1.5B-Preview",
+        )
 
 
 if __name__ == "__main__":

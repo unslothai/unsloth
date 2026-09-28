@@ -152,7 +152,7 @@ export function TrainingLossChartCard({
                     value: formatMetric(avgRaw),
                   }),
                   position: "insideTopRight",
-                  fontSize: 10,
+                  fontSize: "calc(0.625rem * var(--ui-font-scale, 1))",
                   fill: "#3b82f6",
                 }}
               />

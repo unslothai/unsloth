@@ -7,18 +7,18 @@ import type {
   CachedInventoryRow,
   LocalInventoryRow,
 } from "@/features/hub/inventory/types";
+import { ownerOf, repoOf } from "@/features/hub/lib/format";
 import type {
   CapabilityFilter,
   DiscoverRow,
   ModelFormatFilter,
 } from "../types";
+import { estimateSizeFromDtypes, isGgufLike } from "./hf-model-meta";
 import {
+  type CapabilityKey,
   detectBaseModel,
   detectCapabilities,
-  type CapabilityKey,
 } from "./model-capabilities";
-import { ownerOf, repoOf } from "@/features/hub/lib/format";
-import { estimateSizeFromDtypes, isGgufLike } from "./hf-model-meta";
 export {
   detectResultFormat,
   isUnslothFinetunable,
@@ -39,6 +39,7 @@ export const CAPABILITY_FILTER_OPTIONS: ReadonlyArray<{
   { value: "vision", label: "Vision" },
   { value: "audio", label: "Audio" },
   { value: "embedding", label: "Embeddings" },
+  { value: "diffusion", label: "Image/video gen" },
 ];
 
 export const FORMAT_FILTER_OPTIONS: ReadonlyArray<{
@@ -189,6 +190,37 @@ export function toHfModelResult(raw: unknown): HfModelResult | null {
   };
 }
 
+// Must cover every row field buildDiscoverRows reads, or the memoised Discover grid goes stale.
+export function discoveryInventorySignature(
+  cachedRows: readonly CachedInventoryRow[],
+  localRows: readonly LocalInventoryRow[],
+): string {
+  const state = (row: {
+    partial?: boolean;
+    downloading?: boolean;
+    companionPrefetch?: boolean;
+  }) =>
+    row.companionPrefetch
+      ? "x"
+      : row.partial
+        ? row.downloading
+          ? "d"
+          : "p"
+        : "c";
+  const parts: string[] = [];
+  for (const row of cachedRows) {
+    parts.push(
+      `c:${row.repoId.toLowerCase()}:${row.modelFormat}:${state(row)}`,
+    );
+  }
+  for (const row of localRows) {
+    parts.push(
+      `l:${(row.repoId ?? row.id).toLowerCase()}:${row.modelFormat}:${state(row)}`,
+    );
+  }
+  return parts.sort().join("|");
+}
+
 export function buildDiscoverRows(
   results: HfModelResult[],
   cachedRows: CachedInventoryRow[],
@@ -201,16 +233,28 @@ export function buildDiscoverRows(
       localRows,
       formatHint: result.isGguf ? "gguf" : "non-gguf",
     });
-    const partial = Boolean(
-      resource.cachedRow?.partial ?? resource.localRow?.partial ?? false,
-    );
+    const companionPrefetch =
+      (resource.cachedRow?.companionPrefetch ??
+        resource.localRow?.companionPrefetch) === true;
+    const partial =
+      !companionPrefetch &&
+      Boolean(
+        resource.cachedRow?.partial ?? resource.localRow?.partial ?? false,
+      );
+    const downloading =
+      partial &&
+      Boolean(
+        resource.cachedRow?.downloading ?? resource.localRow?.downloading,
+      );
     return {
       id: result.id,
       owner: ownerOf(result.id),
       repo: repoOf(result.id),
       result,
-      isAvailableOnDevice: Boolean(resource.cachedRow || resource.localRow),
+      isAvailableOnDevice:
+        !companionPrefetch && Boolean(resource.cachedRow || resource.localRow),
       isPartialOnDevice: partial,
+      isDownloadingOnDevice: downloading,
       summary: buildSummary(result),
       capabilities: detectCapabilities(
         result.tags,

@@ -71,22 +71,27 @@ def _capture(monkeypatch, *, base_url: str, threshold) -> dict:
     return captured
 
 
+def _capture_at_threshold(
+    *args,
+    threshold = 200_000,
+    **kwargs,
+):
+    """_capture at the shared 200k compaction threshold."""
+    return _capture(*args, threshold = threshold, **kwargs)
+
+
 # ── cloud OpenAI carries the compaction field verbatim ──────────────
 
 
 def test_cloud_openai_sets_compaction_block(monkeypatch):
-    captured = _capture(
-        monkeypatch,
-        base_url = "https://api.openai.com/v1",
-        threshold = 200_000,
-    )
+    captured = _capture_at_threshold(monkeypatch, base_url = "https://api.openai.com/v1")
     assert captured["body"].get("context_management") == [
         {"type": "compaction", "compact_threshold": 200_000}
     ]
 
 
 def test_cloud_openai_below_default_threshold_passes_through(monkeypatch):
-    # Studio doesn't clamp the OpenAI side -- the API accepts whatever the
+    # Unsloth doesn't clamp the OpenAI side -- the API accepts whatever the
     # caller sends, so a small probe like 60k still goes through.
     captured = _capture(
         monkeypatch,
@@ -105,11 +110,7 @@ def test_non_cloud_base_silently_drops_compaction(monkeypatch):
     # ollama / llama.cpp / "custom" presets collapse to provider="openai"
     # but lack context_management. Sending the field would 400 them, so it
     # must NOT appear on the wire.
-    captured = _capture(
-        monkeypatch,
-        base_url = "http://127.0.0.1:11434/v1",
-        threshold = 200_000,
-    )
+    captured = _capture_at_threshold(monkeypatch, base_url = "http://127.0.0.1:11434/v1")
     assert "context_management" not in captured["body"]
 
 
@@ -121,10 +122,9 @@ def test_azure_openai_base_url_carries_compaction_block(monkeypatch):
     # (context_management, prompt_cache_retention, container shell) under
     # a *.openai.azure.com base URL. Treat it as cloud so the compaction
     # field reaches the API.
-    captured = _capture(
+    captured = _capture_at_threshold(
         monkeypatch,
         base_url = "https://my-resource.openai.azure.com/openai/v1",
-        threshold = 200_000,
     )
     assert captured["body"].get("context_management") == [
         {"type": "compaction", "compact_threshold": 200_000}
@@ -151,7 +151,7 @@ def test_azure_openai_mixed_case_base_url_matches(monkeypatch):
 def test_cloud_gate_uses_hostname_not_substring(monkeypatch):
     # CodeQL py/incomplete-url-substring-sanitization: an attacker
     # controlling base_url could embed `api.openai.com` or
-    # `.openai.azure.com` in a path or subdomain on an arbitrary host to
+    # an Azure managed suffix in a path or subdomain on an arbitrary host to
     # slip cloud-only body fields to their own server. The
     # hostname-anchored helper must reject both shapes.
     for evil in [
@@ -159,12 +159,11 @@ def test_cloud_gate_uses_hostname_not_substring(monkeypatch):
         "https://api.openai.com.attacker.com/v1",
         "https://attacker.com/.openai.azure.com/v1",
         "https://my-resource.openai.azure.com.attacker.com/openai/v1",
+        "https://attacker.com/.services.ai.azure.com/openai/v1",
+        "https://my-resource.services.ai.azure.com.attacker.com/openai/v1",
+        "https://my-resource.services.ai.azure.com@attacker.com/openai/v1",
     ]:
-        captured = _capture(
-            monkeypatch,
-            base_url = evil,
-            threshold = 200_000,
-        )
+        captured = _capture_at_threshold(monkeypatch, base_url = evil)
         assert "context_management" not in captured["body"], evil
         assert "prompt_cache_retention" not in captured["body"], evil
 

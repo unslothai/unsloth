@@ -1,0 +1,118 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+import { documentKind, isMarkdown, sheetDelimiter } from "@/components/file-viewer/kind";
+import { isAudioAttachment } from "@/features/chat/attachment-content";
+
+export type AttachmentPreviewKind = "image" | "audio" | "video" | "text" | "document";
+
+export type AttachmentAudioPart = { data: string; format: string };
+
+export type AttachmentVideoPart = { data: string; mimeType: string };
+
+type AttachmentContentPart = {
+  type: string;
+  text?: string;
+  image?: string;
+  audio?: AttachmentAudioPart;
+  data?: string;
+  mimeType?: string;
+};
+
+export type AttachmentSelection = {
+  kind: AttachmentPreviewKind;
+  name: string;
+  contentType: string | undefined;
+  file: File | undefined;
+  image: string | undefined;
+  audio: AttachmentAudioPart | undefined;
+  video: AttachmentVideoPart | undefined;
+  text: string | undefined;
+  hasOriginal: boolean;
+};
+
+const VIDEO_MIME = /^video\//i;
+
+function isViewableDocument(
+  name: string,
+  contentType: string | undefined,
+  file: File | undefined,
+  hasOriginal: boolean,
+  hasText: boolean,
+): boolean {
+  if (isMarkdown(name, contentType)) return Boolean(file) || hasText;
+  if (!documentKind(name, contentType)) return false;
+  return Boolean(file) || hasOriginal || (sheetDelimiter(name, contentType) !== null && hasText);
+}
+
+/**
+ * Picks the parts a preview can show out of the attachment in scope.
+ *
+ * useAuiState reads through useSyncExternalStore, so this runs on every store
+ * notification and on every render, and useShallow gates the re-render rather
+ * than the call. It therefore only selects; the audio data URL is derived from
+ * `audio` afterwards, because concatenating the base64 payload here and then
+ * comparing that string in useShallow costs the whole payload every time.
+ */
+export const selectAttachmentSource = ({
+  attachment,
+}: {
+  attachment: {
+    type?: string;
+    name: string;
+    contentType?: string;
+    content?: AttachmentContentPart[];
+  };
+}): AttachmentSelection => {
+  const parts = attachment.content ?? [];
+  const held = (attachment as { file?: unknown }).file;
+  const file = held instanceof File ? held : undefined;
+  const contentType =
+    file?.type ||
+    attachment.contentType ||
+    undefined;
+  const audio = parts.find((part) => part.type === "audio")?.audio;
+  const video = parts.find(
+    (part): part is AttachmentContentPart & AttachmentVideoPart =>
+      part.type === "file" && Boolean(part.data) && VIDEO_MIME.test(part.mimeType ?? ""),
+  );
+  const isImage = attachment.type === "image";
+  // Before audio: the audio names include .mp4 and .webm, which a clip shares.
+  const isVideo = !isImage && !audio && (!!video || VIDEO_MIME.test(contentType ?? ""));
+  const isAudio =
+    !isImage &&
+    !isVideo &&
+    (!!audio || isAudioAttachment(attachment.name, contentType));
+  const text = parts
+    .filter((part) => part.type === "text")
+    .map((part) => part.text)
+    .join("\n");
+  const hasOriginal = Boolean((attachment as { original?: unknown }).original);
+  const isDocument =
+    !isImage &&
+    !isAudio &&
+    !isVideo &&
+    isViewableDocument(attachment.name, contentType, file, hasOriginal, Boolean(text));
+
+  return {
+    kind: isImage
+      ? "image"
+      : isVideo
+        ? "video"
+        : isAudio
+          ? "audio"
+          : isDocument
+            ? "document"
+            : "text",
+    name: attachment.name,
+    contentType,
+    file,
+    image: isImage
+      ? parts.find((part) => part.type === "image")?.image
+      : undefined,
+    audio: isImage ? undefined : audio,
+    video: isVideo ? video : undefined,
+    text: text || undefined,
+    hasOriginal,
+  };
+};

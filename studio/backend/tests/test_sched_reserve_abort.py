@@ -1,75 +1,21 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Guards for the ggml graph-scheduler abort handling in load_model.
+"""ggml graph-scheduler abort (GGML_ASSERT(*cur_backend_id != -1)): matcher, message, memo.
 
-A CPU-only user loading GLM-5.2 (MLA + sparse-attention "indexer" + embedded MTP)
-hit `GGML_ASSERT(*cur_backend_id != -1)` in `ggml_backend_sched_split_graph` during
-`sched_reserve`: the CPU backend cannot run an op in the graph. Studio's startup
-crash raised a generic "invalid GGUF or out of memory" message and the UI replayed
-`POST /load`, re-reading the ~583 GB weights into the identical crash every ~3.5 min.
-
-These tests pin: (1) the abort matcher recognises the real backtrace tail and only
-that, (2) the classifier surfaces the actionable message, (3) the per-(binary,model)
-memo round-trips and is mtime-invalidated, and (4) load_model fails fast on a memoed
-abort and records on crash. No GPU, no network, fully deterministic.
+Load-path behaviour (fail-fast replay, retry on changed settings) lives in
+test_cpu_only_defaults.py beside the launch harness.
 """
 
 from __future__ import annotations
 
-import ast
-import inspect
 import os
 import sys
-import textwrap
-import types as _types
 from pathlib import Path
 
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
-
-# External-dep stubs so importing the backend doesn't require structlog / loggers /
-# httpx -- only installed when the real module is missing (mirrors test_tp_vision_regression).
-try:
-    import structlog  # noqa: F401
-except ImportError:
-    _structlog_stub = _types.ModuleType("structlog")
-    _structlog_stub.get_logger = lambda *a, **k: __import__("logging").getLogger("stub")
-    sys.modules["structlog"] = _structlog_stub
-try:
-    import loggers  # noqa: F401
-except ImportError:
-    _loggers_stub = _types.ModuleType("loggers")
-    _loggers_stub.get_logger = lambda name: __import__("logging").getLogger(name)
-    sys.modules["loggers"] = _loggers_stub
-try:
-    import httpx  # noqa: F401
-except ImportError:
-    _httpx_stub = _types.ModuleType("httpx")
-    for _exc in (
-        "ConnectError",
-        "TimeoutException",
-        "ReadTimeout",
-        "ReadError",
-        "RemoteProtocolError",
-        "CloseError",
-        "HTTPError",
-        "RequestError",
-    ):
-        setattr(_httpx_stub, _exc, type(_exc, (Exception,), {}))
-    _httpx_stub.Timeout = type("T", (), {"__init__": lambda s, *a, **k: None})
-    _httpx_stub.Response = type("Response", (), {})
-    _httpx_stub.Client = type(
-        "C",
-        (),
-        {
-            "__init__": lambda s, **kw: None,
-            "__enter__": lambda s: s,
-            "__exit__": lambda s, *a: None,
-        },
-    )
-    sys.modules["httpx"] = _httpx_stub
 
 from core.inference.llama_cpp import LlamaCppBackend  # noqa: E402
 
@@ -198,128 +144,3 @@ def test_memo_safe_with_missing_binary_or_model():
     assert not LlamaCppBackend._sched_reserve_aborts(None, "m")
     assert not LlamaCppBackend._sched_reserve_aborts("/x", None)
     LlamaCppBackend._record_sched_reserve_abort(None, None)  # no-op, no raise
-
-
-# ---- load_model wiring (source-level, no GPU/network needed) ---------------
-
-
-def _load_model_src() -> str:
-    return textwrap.dedent(inspect.getsource(LlamaCppBackend.load_model))
-
-
-def _call_line(fn, attr):
-    """First line where load_model calls method `attr`, or None."""
-    return next(
-        (
-            node.lineno
-            for node in ast.walk(fn)
-            if isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Attribute)
-            and node.func.attr == attr
-        ),
-        None,
-    )
-
-
-def test_load_model_fails_fast_on_memoed_abort():
-    """load_model must consult the memo and raise before the download/spawn, so a
-    replayed /load doesn't re-read the weights."""
-    src = _load_model_src()
-    assert "_sched_reserve_aborts(binary, _abort_memo_model)" in src
-    assert "_sched_reserve_abort_message()" in src
-    fn = ast.parse(src).body[0]
-    guard_line = _call_line(fn, "_sched_reserve_aborts")
-    download_line = _call_line(fn, "_download_gguf")
-    assert download_line is None or guard_line < download_line
-
-
-def test_failfast_guard_runs_before_killing_the_live_server():
-    """The memo guard must precede _kill_process so a known-bad reload does not tear
-    down a working server (PR review fix)."""
-    fn = ast.parse(_load_model_src()).body[0]
-    guard_line = _call_line(fn, "_sched_reserve_aborts")
-    kill_line = _call_line(fn, "_kill_process")
-    assert guard_line is not None and kill_line is not None
-    assert guard_line < kill_line
-
-
-def test_abort_memo_key_includes_variant_and_launch_settings():
-    """The memo key must include the variant AND the launch settings (context, spec),
-    so a failed quant does not block a different quant, and changing -c / spec (the
-    recommended recovery) is allowed to retry while an identical replay stays blocked."""
-    src = _load_model_src()
-    assert "_abort_memo_model" in src
-    for tok in ("hf_variant", "gguf_path", "str(n_ctx)", "speculative_type", "extra_args"):
-        assert tok in src, tok
-
-    def key(
-        model = "repo",
-        variant = "",
-        gguf = "",
-        n_ctx = 4096,
-        spec = "",
-        extra = "",
-    ):
-        return "\x00".join([model, variant, gguf, str(n_ctx), spec, extra])
-
-    base = key(variant = "UD-Q6_K")
-    assert base != key(variant = "UD-Q4_K_XL")  # different quant -> retry allowed
-    assert base != key(variant = "UD-Q6_K", n_ctx = 2048)  # lower context -> retry allowed
-    assert base != key(variant = "UD-Q6_K", spec = "off")  # disable spec -> retry allowed
-    assert base == key(variant = "UD-Q6_K")  # identical replay -> still blocked
-
-
-def test_load_model_records_abort_on_crash():
-    """On a startup crash matching the signature, load_model must record the memo."""
-    src = _load_model_src()
-    assert "_record_sched_reserve_abort(binary, _abort_memo_model)" in src
-    assert "_is_sched_reserve_abort(" in src
-
-
-def test_abort_memo_deferred_until_mmproj_fallback_ruled_out():
-    """The signature is captured up front but the memo is recorded only on a terminal
-    raise, after the text-only mmproj fallback is ruled out, so a VLM that recovers
-    text-only is not blocked by the fail-fast guard next time (PR review fix)."""
-    src = _load_model_src()
-    assert "_was_sched_abort = " in src
-    assert "if _was_sched_abort:" in src
-    fn = ast.parse(src).body[0]
-    strip_line = _call_line(fn, "_strip_mmproj_args")
-    record_line = _call_line(fn, "_record_sched_reserve_abort")
-    # Recording happens after the projector strip, i.e. only once the fallback is tried.
-    assert strip_line is not None and record_line is not None
-    assert record_line > strip_line
-
-
-def test_sched_abort_captured_before_mtp_fallback():
-    """The no-spec MTP fallback resets the stdout tail, so the first launch's scheduler
-    abort must be captured before it runs and folded into the terminal decision; else a
-    differently-failing fallback drops the memo and the UI replays the load (PR review fix)."""
-    src = _load_model_src()
-    assert "_pre_fallback_sched_abort = False" in src
-    assert "_pre_fallback_sched_abort = _pre_fallback_sched_abort or (" in src
-    # The capture is set before the no-spec fallback spawns.
-    fn = ast.parse(src).body[0]
-    capture_line = next(
-        (
-            n.lineno
-            for n in ast.walk(fn)
-            if isinstance(n, ast.Assign)
-            and any(
-                isinstance(t, ast.Name) and t.id == "_pre_fallback_sched_abort" for t in n.targets
-            )
-            and isinstance(n.value, ast.BoolOp)
-        ),
-        None,
-    )
-    fallback_line = next(
-        (
-            n.lineno
-            for n in ast.walk(fn)
-            if isinstance(n, ast.Call)
-            and any(isinstance(a, ast.Name) and a.id == "fallback_cmd" for a in n.args)
-        ),
-        None,
-    )
-    assert capture_line is not None and fallback_line is not None
-    assert capture_line < fallback_line

@@ -14,7 +14,7 @@ and already-clean names untouched.
 from __future__ import annotations
 
 import os
-from typing import Optional
+from typing import Iterable, Optional
 
 _GGUF_SUFFIX = ".gguf"
 
@@ -32,17 +32,36 @@ def _looks_like_path(identifier: str) -> bool:
         return True
     if identifier.startswith(("/", "\\", "./", "../", ".\\", "..\\", "~")):
         return True
-    if len(identifier) >= 2 and identifier[1] == ":":  # Windows drive, e.g. C:\
+    if len(identifier) >= 2 and identifier[1] == ":":
         return True
     if identifier.count("/") >= 2 or "\\" in identifier:
         return True
     return False
 
 
+def hf_cache_repo_id(path: Optional[str]) -> Optional[str]:
+    """``.../models--org--name/snapshots/<sha>`` -> ``org/name``, else None.
+
+    A model loaded from the HF cache is identified by its snapshot dir, whose
+    basename is a commit hash; recover the repo id so callers don't show that.
+    """
+    if not path:
+        return None
+    parts = str(path).replace("\\", "/").split("/")
+    for index, part in enumerate(parts):
+        # Only inside the real cache layout: a "models--" name alone is not a repo id.
+        if part.startswith("models--") and parts[index + 1 : index + 2] == ["snapshots"]:
+            return part[len("models--") :].replace("--", "/")
+    return None
+
+
 def public_model_id(identifier: Optional[str]) -> Optional[str]:
     """Return a clean, path-free public id for *identifier*.
 
-    - Local GGUF path -> the file stem with ``.gguf`` stripped, e.g.
+    - HF cache path -> the repo id it came from, e.g.
+      ``~/.cache/huggingface/hub/models--unsloth--X-GGUF/snapshots/<sha>`` ->
+      ``unsloth/X-GGUF``.
+    - Other local GGUF path -> the file stem with ``.gguf`` stripped, e.g.
       ``/srv/models/Qwen3-30B-A3B-Q4_K_M.gguf`` -> ``Qwen3-30B-A3B-Q4_K_M``.
     - HF repo id (``org/model``) and already-clean names -> returned unchanged.
     - ``None`` / empty -> returned unchanged.
@@ -51,10 +70,41 @@ def public_model_id(identifier: Optional[str]) -> Optional[str]:
         return identifier
     if not _looks_like_path(identifier):
         return identifier
+    repo_id = hf_cache_repo_id(identifier)
+    if repo_id:
+        return repo_id
     name = os.path.basename(identifier.replace("\\", "/").rstrip("/"))
     if name.lower().endswith(_GGUF_SUFFIX):
         name = name[: -len(_GGUF_SUFFIX)]
     return name or identifier
+
+
+def _is_hub_repo_id(identifier: str) -> bool:
+    """``org/name``, including Hub repos named ``org/name.gguf``. A file reference
+    carries a repo id plus a filename, so two or more slashes."""
+    if identifier.count("/") != 1:
+        return False
+    stem = (
+        identifier[: -len(_GGUF_SUFFIX)]
+        if identifier.lower().endswith(_GGUF_SUFFIX)
+        else identifier
+    )
+    return not _looks_like_path(stem)
+
+
+def display_model_name(identifier: Optional[str]) -> Optional[str]:
+    """The short label a UI should show for *identifier*.
+
+    Trailing segment of the public id, so a HF cache snapshot reads as ``X-GGUF`` and
+    not its commit sha. Splitting the raw identifier instead leaks the host layout on
+    Windows, where ``C:\\Users\\...`` has no ``/`` to split on.
+    """
+    if not identifier:
+        return identifier
+    if _is_hub_repo_id(identifier):
+        return identifier.split("/")[1]
+    clean = public_model_id(identifier)
+    return clean.rsplit("/", 1)[-1] or clean
 
 
 def model_id_matches(requested: Optional[str], internal: Optional[str]) -> bool:
@@ -69,3 +119,40 @@ def model_id_matches(requested: Optional[str], internal: Optional[str]) -> bool:
     if requested == internal:
         return True
     return public_model_id(internal) == requested
+
+
+# Mirror Zoo’s MLX repository substitution without importing the ML stack.
+_BNB_SUFFIXES = ("-unsloth-bnb-4bit", "-bnb-4bit")
+
+
+def mlx_bnb_base_repo(model_name: Optional[str]) -> Optional[str]:
+    """Return the replacement base repository, or None."""
+    if not isinstance(model_name, str) or not model_name.startswith("unsloth/"):
+        return None
+    if os.path.exists(model_name):
+        return None
+    for suffix in _BNB_SUFFIXES:
+        if model_name.endswith(suffix):
+            return model_name[: -len(suffix)]
+    return None
+
+
+def mlx_host_bnb_base_repo(model_name: Optional[str]) -> Optional[str]:
+    """Return the MLX replacement, excluding diffusion models."""
+    import utils.hardware.hardware as hw
+    from core.inference.diffusion_families import detect_family
+
+    if hw.get_device() != hw.DeviceType.MLX:
+        return None
+    if not isinstance(model_name, str) or detect_family(model_name) is not None:
+        return None
+    return mlx_bnb_base_repo(model_name)
+
+
+def mlx_bnb_substitutions(repos: Iterable[str]) -> list[tuple[str, str]]:
+    swaps = []
+    for repo in repos:
+        base = mlx_bnb_base_repo(repo)
+        if base:
+            swaps.append((repo, base))
+    return swaps

@@ -31,6 +31,7 @@ const UNSUPPORTED_PIPELINE_TAGS: ReadonlySet<string> = new Set([
   "text-to-video",
   "video-to-video",
   "image-to-video",
+  "image-text-to-video",
   "video-text-to-text",
   "video-classification",
   "unconditional-image-generation",
@@ -60,6 +61,11 @@ const UNSUPPORTED_LIBRARY_TAGS: ReadonlySet<string> = new Set([
   "flux",
   "controlnet",
   "lora-diffusers",
+  // ComfyUI-style single-file repos, including the VAE / text-encoder mirrors that carry no
+  // denoiser at all. Checked AFTER the pipeline tag, so a real single-file checkpoint keeps its
+  // Images/Video routing; only a taskless one (which is what a companion mirror is) lands here,
+  // where it would otherwise read as a chat model and be offered by the chat picker.
+  "diffusion-single-file",
 ]);
 
 const FORMAT_TAG_LABEL: Record<string, string> = {
@@ -90,13 +96,6 @@ const FORMAT_NAME_PATTERNS: ReadonlyArray<{ key: string; pattern: RegExp }> = [
   { key: "ctranslate2", pattern: /(?:^|[-_./])ctranslate2(?:$|[-_./])/i },
 ];
 
-const SUPPORTED_QUANT_METHODS: ReadonlySet<string> = new Set([
-  "bitsandbytes",
-  "bnb",
-  "bnb_4bit",
-  "bnb_8bit",
-]);
-
 const UNSUPPORTED_QUANT_METHODS: Record<string, string> = {
   awq: "AWQ quantization",
   gptq: "GPTQ quantization",
@@ -126,6 +125,31 @@ export type UnslothSupportStatus = "supported" | "unsupported";
 export interface UnslothSupport {
   status: UnslothSupportStatus;
   reason: string | null;
+  /** Set when Unsloth runs this model on a dedicated page rather than in chat. The status stays "unsupported" because the chat pickers gate on it, but the UI must not call it unsupported: the Images and Video pages load it. */
+  supportedIn?: "images" | "video";
+}
+
+// Generation tasks the Images / Video pages handle. Mirrors IMAGE_GEN_TASKS and the video picker's tasks; image-to-video is included for LTX-2.3.
+const IMAGE_PAGE_TASKS: ReadonlySet<string> = new Set([
+  "text-to-image",
+  "image-to-image",
+  "image-text-to-image",
+]);
+const VIDEO_PAGE_TASKS: ReadonlySet<string> = new Set([
+  "text-to-video",
+  "image-to-video",
+  "image-text-to-video",
+]);
+
+/** Which Unsloth page runs this pipeline task, if any. */
+export function studioPageForTask(
+  pipelineTag?: string | null,
+): "images" | "video" | undefined {
+  const tag = pipelineTag?.toLowerCase().trim();
+  if (!tag) return undefined;
+  if (IMAGE_PAGE_TASKS.has(tag)) return "images";
+  if (VIDEO_PAGE_TASKS.has(tag)) return "video";
+  return undefined;
 }
 
 export function excludedFormatTagsForDevice(
@@ -147,19 +171,39 @@ function repoLeaf(modelId: string): string {
   return parts.at(-1) ?? modelId;
 }
 
-function detectFormatKey(
+// A hub repo's format tags describe every artifact it ships, and native checkpoints
+// routinely coexist with optional ONNX/OpenVINO/TF Lite/Core ML exports
+// (openai-community/gpt2 carries both pytorch and tflite). Those export tags alone must not
+// hide the repo, while quantization, runtime formats and export-only repos stay rejected.
+const EXPORT_FORMAT_TAGS: ReadonlySet<string> = new Set([
+  "onnx",
+  "openvino",
+  "tflite",
+  "coreml",
+]);
+
+function detectUnsupportedFormatKey(
   modelId: string | null | undefined,
   lowerTags: ReadonlySet<string>,
+  excludedFormats: ReadonlySet<string>,
 ): string | null {
+  const hasNativeWeights = lowerTags.has("pytorch") || lowerTags.has("safetensors");
   for (const tag of lowerTags) {
-    if (FORMAT_TAG_LABEL[tag]) return tag;
+    if (hasNativeWeights && EXPORT_FORMAT_TAGS.has(tag)) continue;
+    if (FORMAT_TAG_LABEL[tag]) {
+      if (excludedFormats.has(tag)) return tag;
+      continue;
+    }
     const alias = FORMAT_ALIAS_TAGS[tag];
-    if (alias) return alias;
+    if (alias && excludedFormats.has(alias)) return alias;
   }
   if (modelId) {
+    // Owner implies format even when local metadata lacks tags; mirrors the
+    // backend's _looks_like_mlx_repo heuristic.
+    if (excludedFormats.has("mlx") && modelId.trim().toLowerCase().startsWith("mlx-community/")) return "mlx";
     const name = repoLeaf(modelId);
     for (const { key, pattern } of FORMAT_NAME_PATTERNS) {
-      if (pattern.test(name)) return key;
+      if (excludedFormats.has(key) && pattern.test(name)) return key;
     }
   }
   return null;
@@ -196,9 +240,6 @@ export function classifyUnslothSupport({
     (modelId ? /(?:^|[-_.])gguf$/i.test(repoLeaf(modelId)) : false);
 
   if (normalizedQuant && !isGguf) {
-    if (SUPPORTED_QUANT_METHODS.has(normalizedQuant)) {
-      return { status: "supported", reason: null };
-    }
     if (Object.hasOwn(UNSUPPORTED_QUANT_METHODS, normalizedQuant)) {
       return {
         status: "unsupported",
@@ -211,6 +252,8 @@ export function classifyUnslothSupport({
     return {
       status: "unsupported",
       reason: `Pipeline task: ${pipeline}.`,
+      // Not chat-loadable, but the Images/Video pages run it, so the UI must not present it as unsupported.
+      supportedIn: studioPageForTask(pipeline),
     };
   }
   for (const tag of lowerTags) {
@@ -227,8 +270,8 @@ export function classifyUnslothSupport({
       reason: `Library: ${library}.`,
     };
   }
-  const formatKey = detectFormatKey(modelId, lowerTags);
-  if (formatKey && formatTags.has(formatKey)) {
+  const formatKey = detectUnsupportedFormatKey(modelId, lowerTags, formatTags);
+  if (formatKey) {
     const label = FORMAT_TAG_LABEL[formatKey] ?? `${formatKey.toUpperCase()} weights`;
     return {
       status: "unsupported",

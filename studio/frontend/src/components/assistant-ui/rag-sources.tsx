@@ -9,27 +9,26 @@ import type { FC } from "react";
 import { type Citation, parseCitations } from "./citation-utils";
 import { CitationBadge } from "./tool-ui-knowledge-base";
 
-export const RagSourcesGroup: FC = () => {
-  const message = useMessage();
-
-  const all: Citation[] = [];
-  for (const part of message.content ?? []) {
-    if (part.type === "tool-call" && part.toolName === "search_knowledge_base") {
-      all.push(...parseCitations(part.result));
-    }
-  }
-
+export const DocumentSourcesGroup: FC<{ sources: Citation[] }> = ({
+  sources: all,
+}) => {
   // Map updates keep first-seen order, so dedup to best-scoring chunk per doc.
   const byDoc = new Map<string, Citation>();
   for (const c of all) {
     const key = c.documentId ?? c.filename;
     const prev = byDoc.get(key);
-    if (!prev || (c.score ?? -Infinity) > (prev.score ?? -Infinity)) {
+    if (
+      !prev ||
+      (c.score ?? Number.NEGATIVE_INFINITY) >
+        (prev.score ?? Number.NEGATIVE_INFINITY)
+    ) {
       byDoc.set(key, c);
     }
   }
   const sources = Array.from(byDoc.values());
-  if (sources.length === 0) return null;
+  if (sources.length === 0) {
+    return null;
+  }
 
   return (
     <div className="mt-2 mb-3">
@@ -43,4 +42,19 @@ export const RagSourcesGroup: FC = () => {
       </div>
     </div>
   );
+};
+
+export const RagSourcesGroup: FC = () => {
+  const message = useMessage();
+
+  const sources: Citation[] = [];
+  for (const part of message.content ?? []) {
+    if (
+      part.type === "tool-call" &&
+      part.toolName === "search_knowledge_base"
+    ) {
+      sources.push(...parseCitations(part.result));
+    }
+  }
+  return <DocumentSourcesGroup sources={sources} />;
 };

@@ -3,17 +3,22 @@
 
 import { authFetch } from "@/features/auth";
 import { readFastApiError } from "@/lib/format-fastapi-error";
+import type { ColorThemeId } from "../lib/color-themes";
+import type { AppearanceCustomization } from "../stores/appearance-custom-store";
 
 export type PersonalizationProfile = {
   displayName: string;
   nickname: string;
   avatarDataUrl: string | null;
   avatarShape: "circle" | "rounded";
+  showGreetingSloth: boolean;
 };
 
 export type PersonalizationAppearance = {
   theme: "light" | "dark" | "system";
+  palette: ColorThemeId;
   language: string | null;
+  customization: AppearanceCustomization;
 };
 
 export type Personalization = {
@@ -22,18 +27,37 @@ export type Personalization = {
   appearance: PersonalizationAppearance;
   // Distinguishes server hydrate from first local migration.
   saved: boolean;
+  // False when the stored record predates these fields (legacy migration): the
+  // client then keeps local values instead of the server-filled defaults.
+  customizationSaved: boolean;
+  chatWidthSaved?: boolean;
+  composerAttachmentsSaved?: boolean;
+  sentAttachmentsSaved?: boolean;
+  paletteSaved: boolean;
+  greetingSlothSaved: boolean;
 };
 
 export async function loadPersonalization(): Promise<Personalization> {
   const res = await authFetch("/api/settings/personalization");
   if (!res.ok) {
-    throw new Error(await readFastApiError(res, "Failed to load personalization"));
+    throw new Error(
+      await readFastApiError(res, "Failed to load personalization"),
+    );
   }
   return (await res.json()) as Personalization;
 }
 
 export async function savePersonalization(
-  data: Omit<Personalization, "saved">,
+  data: Omit<
+    Personalization,
+    | "saved"
+    | "customizationSaved"
+    | "chatWidthSaved"
+    | "composerAttachmentsSaved"
+    | "sentAttachmentsSaved"
+    | "paletteSaved"
+    | "greetingSlothSaved"
+  >,
 ): Promise<void> {
   const res = await authFetch("/api/settings/personalization", {
     method: "PUT",
@@ -41,6 +65,8 @@ export async function savePersonalization(
     body: JSON.stringify(data),
   });
   if (!res.ok) {
-    throw new Error(await readFastApiError(res, "Failed to save personalization"));
+    throw new Error(
+      await readFastApiError(res, "Failed to save personalization"),
+    );
   }
 }

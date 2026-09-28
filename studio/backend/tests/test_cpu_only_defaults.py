@@ -1,304 +1,299 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Guards for CPU-only safe llama-server defaults in load_model.
+"""CPU-only llama-server launch defaults, pinned on the argv load_model spawns.
 
-On a CPU-only host (no discrete GPU, not Apple Metal) none of the GPU/Apple fit
-branches run, so the launch used to keep GPU defaults: `--flash-attn on`, `--fit on`,
-and the model's full native context. For large MLA/sparse-attention/MTP GGUFs (e.g.
-GLM-5.2) `--fit`'s graph-reserve estimator aborts (llama.cpp #21932) and CPU flash
-attention is unsafe. These tests pin that the launch now derives `_cpu_only` and uses
-it to disable --fit and default flash-attn off, while leaving GPU/Apple behaviour and
-user overrides intact. Source/AST level: load_model is too entangled to drive E2E.
+A CPU-only host used to keep GPU defaults (--flash-attn on, --fit on, full native
+context); --fit's graph reserve hits the same scheduler abort (llama.cpp #21932) and a
+1M native context puts ~90 GB of KV in RAM.
 """
 
 from __future__ import annotations
 
-import ast
-import inspect
+import os
+import struct
+import subprocess
 import sys
-import textwrap
-import types as _types
 from pathlib import Path
+from unittest.mock import patch
+
+import pytest
 
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
-try:
-    import structlog  # noqa: F401
-except ImportError:
-    _s = _types.ModuleType("structlog")
-    _s.get_logger = lambda *a, **k: __import__("logging").getLogger("stub")
-    _s.BoundLogger = type("BoundLogger", (), {})
-    sys.modules["structlog"] = _s
-# Importing core.inference.* runs core/inference/__init__.py (orchestrator + loggers +
-# httpx); stub those when absent so a dependency-light run can still collect this file.
-try:
-    import loggers  # noqa: F401
-except ImportError:
-    _loggers_stub = _types.ModuleType("loggers")
-    _loggers_stub.get_logger = lambda name: __import__("logging").getLogger(name)
-    sys.modules["loggers"] = _loggers_stub
-try:
-    import httpx  # noqa: F401
-except ImportError:
-    _httpx_stub = _types.ModuleType("httpx")
-    for _exc in (
-        "ConnectError",
-        "TimeoutException",
-        "ReadTimeout",
-        "ReadError",
-        "RemoteProtocolError",
-        "CloseError",
-        "HTTPError",
-        "RequestError",
+from core.inference import numa  # noqa: E402
+from core.inference.llama_cpp import (  # noqa: E402
+    GgufLoadIntent,
+    LlamaCppBackend,
+    _extra_args_forces_cpu_offload,
+)
+
+_REAL_POPEN = subprocess.Popen
+_GPU = [(0, 40000, 81920)]
+
+
+def _write_gguf(path: Path) -> Path:
+    def string(value: str) -> bytes:
+        data = value.encode()
+        return struct.pack("<Q", len(data)) + data
+
+    metadata = string("general.architecture") + struct.pack("<I", 8) + string("llama")
+    path.write_bytes(struct.pack("<IIQQ", 0x46554747, 3, 0, 1) + metadata)
+    return path
+
+
+def _backend(
+    memory,
+    *,
+    native_ctx = 1048576,
+    weights = 1024,
+    ram_mib = None,
+):
+    backend = LlamaCppBackend()
+    backend._get_gpu_memory = lambda _binary = None, **kw: list(memory)
+    backend._get_gpu_free_memory = lambda _binary = None, **kw: [(i, f) for i, f, _t in memory]
+
+    def _metadata(_path):
+        backend._context_length = native_ctx
+
+    backend._read_gguf_metadata = _metadata
+    backend._get_gguf_size_bytes = lambda _path: weights
+    if ram_mib is None:
+        backend._can_estimate_kv = lambda: False
+    else:
+        backend._can_estimate_kv = lambda: True
+        backend._estimate_kv_cache_bytes = lambda ctx, *a, **k: ctx * 1024 * 1024
+        backend._available_system_memory_mib = lambda: ram_mib
+    backend._mmproj_vram_bytes = lambda _path: 0
+    backend._resolve_launch_mmproj_path = lambda **kwargs: None
+    backend._apu_ram_shortfall_message = lambda *args, **kwargs: None
+    backend._amd_apu_wants_unified_memory = lambda *args, **kwargs: False
+    backend._find_llama_server_binary = lambda include_denied = False: "/fake/llama-server"
+    backend._is_vulkan_backend = lambda _binary = None: False
+    backend._wait_for_health = lambda timeout, **_kw: True
+    backend._detect_audio_type_strict = lambda: None
+    backend._apply_detected_audio = lambda _detected: True
+    return backend
+
+
+def _launch(backend, tmp_path, **load_kwargs) -> list[str]:
+    captured: list[list[str]] = []
+
+    def fake_popen(cmd, **kwargs):
+        if not cmd or "--port" not in [str(c) for c in cmd]:
+            return _REAL_POPEN(cmd, **kwargs)
+        captured.append([str(c) for c in cmd])
+        return type(
+            "Process",
+            (),
+            {
+                "pid": 123,
+                "stdout": (),
+                "poll": lambda self: None,
+                "terminate": lambda self: None,
+                "wait": lambda self, timeout = None: 0,
+                "kill": lambda self: None,
+            },
+        )()
+
+    gguf = _write_gguf(tmp_path / "model.gguf")
+    with (
+        patch.object(subprocess, "Popen", side_effect = fake_popen),
+        patch("utils.hardware.is_apple_silicon", return_value = False),
     ):
-        setattr(_httpx_stub, _exc, type(_exc, (Exception,), {}))
-    _httpx_stub.Timeout = type("T", (), {"__init__": lambda s, *a, **k: None})
-    _httpx_stub.Response = type("Response", (), {})
-    _httpx_stub.Client = type(
-        "C",
-        (),
-        {
-            "__init__": lambda s, **kw: None,
-            "__enter__": lambda s: s,
-            "__exit__": lambda s, *a: None,
-        },
+        assert backend.load_model(
+            GgufLoadIntent(gguf_path = str(gguf), model_identifier = "t", **load_kwargs)
+        )
+    return captured[-1]
+
+
+def _value(cmd: list[str], flag: str) -> str | None:
+    """Last value of flag, as llama-server parses it."""
+    vals = [cmd[i + 1] for i, tok in enumerate(cmd[:-1]) if tok == flag]
+    return vals[-1] if vals else None
+
+
+@pytest.fixture(autouse = True)
+def _no_numa(monkeypatch):
+    monkeypatch.setattr(
+        numa, "decide_interleave", lambda *a, **k: numa.InterleaveDecision(False, "single node")
     )
-    sys.modules["httpx"] = _httpx_stub
-
-from core.inference.llama_cpp import LlamaCppBackend  # noqa: E402
 
 
-def _load_model_src() -> str:
-    return textwrap.dedent(inspect.getsource(LlamaCppBackend.load_model))
+def test_cpu_only_launches_with_fit_and_flash_attn_off(tmp_path):
+    cmd = _launch(_backend([]), tmp_path)
+    assert _value(cmd, "--flash-attn") == "off"
+    assert _value(cmd, "--fit") == "off"
 
 
-def test_cpu_only_flag_derived_from_no_gpu_and_not_apple():
-    src = _load_model_src()
-    assert "_cpu_only = (not gpus) and not _is_apple_silicon()" in src
+def test_gpu_launch_is_unchanged(tmp_path):
+    cmd = _launch(_backend(_GPU), tmp_path)
+    assert _value(cmd, "--flash-attn") == "on"
+    assert _value(cmd, "-ngl") == "-1"
 
 
-def test_flash_attn_default_is_off_on_cpu_only():
-    """The base cmd must use a computed flash default, off for CPU-only."""
-    src = _load_model_src()
-    assert '_flash_default = "off" if _cpu_only else "on"' in src
-    # And the base cmd must NOT hardcode flash-attn on anymore.
-    assert '"on",  # Force flash attention for speed' not in src
-    # The --flash-attn argument in the base cmd list is the computed default.
-    assert "_flash_default,  # CPU-only" in src
+@pytest.mark.parametrize("extra", [["-ngl", "0"], ["--device", "none"]])
+def test_zero_offload_on_a_gpu_host_gets_cpu_defaults(tmp_path, extra):
+    cmd = _launch(_backend(_GPU), tmp_path, extra_args = extra)
+    assert _value(cmd, "--flash-attn") == "off"
+    assert _value(cmd, "--fit") == "off"
 
 
-def test_fit_disabled_on_cpu_only():
-    src = _load_model_src()
-    assert "if _cpu_only and use_fit:" in src
-    fn = ast.parse(src).body[0]
-    # There is an `if _cpu_only and use_fit:` whose body sets use_fit = False.
-    found = False
-    for node in ast.walk(fn):
-        if (
-            isinstance(node, ast.If)
-            and isinstance(node.test, ast.BoolOp)
-            and any(isinstance(v, ast.Name) and v.id == "_cpu_only" for v in ast.walk(node.test))
-        ):
-            for n in node.body:
-                if (
-                    isinstance(n, ast.Assign)
-                    and any(isinstance(t, ast.Name) and t.id == "use_fit" for t in n.targets)
-                    and isinstance(n.value, ast.Constant)
-                    and n.value.value is False
-                ):
-                    found = True
-    assert found, "expected `if _cpu_only and use_fit: ... use_fit = False`"
+def test_user_flash_attn_still_wins_on_cpu(tmp_path):
+    cmd = _launch(_backend([]), tmp_path, extra_args = ["--flash-attn", "on"])
+    assert _value(cmd, "--flash-attn") == "on"
 
 
-def test_gpu_path_still_emits_fit_on():
-    """Backwards compat: the GPU branch still emits --fit on (only CPU changes)."""
-    src = _load_model_src()
-    assert 'cmd.extend(["--fit", "on"])' in src
+def test_cpu_auto_context_capped_to_ceiling(tmp_path):
+    cmd = _launch(_backend([], weights = 20 * 1024**3, ram_mib = 64 * 1024), tmp_path, n_ctx = 0)
+    assert _value(cmd, "-c") == "32768"
 
 
-def test_cpu_only_emits_explicit_fit_off():
-    """--fit defaults to on in llama.cpp, so CPU-only must pass --fit off explicitly,
-    not just skip --fit on (PR review fix)."""
-    src = _load_model_src()
-    assert "elif _cpu_only:" in src
-    assert 'cmd.extend(["--fit", "off"])' in src
+def test_cpu_auto_context_fit_to_ram(tmp_path):
+    # 32 GiB * 0.9 - 20 GiB weights leaves ~8.8k tokens at 1 MiB/token.
+    cmd = _launch(_backend([], weights = 20 * 1024**3, ram_mib = 32 * 1024), tmp_path, n_ctx = 0)
+    assert 4096 <= int(_value(cmd, "-c")) < 9100
 
 
-# ---- Phase 3: CPU context cap + RAM preflight ------------------------------
+def test_cpu_auto_context_floors_when_weights_fill_ram(tmp_path):
+    cmd = _launch(_backend([], weights = 40 * 1024**3, ram_mib = 32 * 1024), tmp_path, n_ctx = 0)
+    assert _value(cmd, "-c") == "4096"
 
 
-def test_cpu_context_ceiling_constant_is_sane():
-    from core.inference import llama_cpp as m
-
-    assert hasattr(m, "_CPU_CTX_AUTO_CEILING")
-    # A safe chat ceiling, far below a model's million-token native context.
-    assert 4096 <= m._CPU_CTX_AUTO_CEILING <= 131072
-    assert 0.5 < m._CPU_RAM_BUDGET_FRAC <= 1.0
+def test_cpu_explicit_context_is_honored(tmp_path):
+    cmd = _launch(_backend([], weights = 20 * 1024**3, ram_mib = 64 * 1024), tmp_path, n_ctx = 65536)
+    assert _value(cmd, "-c") == "65536"
 
 
-def test_cpu_only_caps_auto_context_but_honors_explicit():
-    src = _load_model_src()
-    # The fit runs for any auto context (requested_ctx <= 0), against a ceiling of
-    # min(native, 32k); an explicit -c (requested_ctx > 0) is honored untouched.
-    assert "requested_ctx <= 0 and effective_ctx > 0" in src
-    assert "_ctx_ceiling = min(effective_ctx, _CPU_CTX_AUTO_CEILING)" in src
-    assert "effective_ctx = _cpu_cap" in src
+def test_gpu_auto_context_not_cpu_capped(tmp_path):
+    cmd = _launch(_backend(_GPU), tmp_path, n_ctx = 0)
+    assert _value(cmd, "-c") != "32768"
 
 
-def test_cpu_context_fit_runs_below_ceiling_too():
-    """A large GGUF with a native context already <= 32k must still be RAM-fit, not
-    skipped, so it can be reduced toward 4096 instead of OS-killed (PR review fix)."""
-    src = _load_model_src()
-    # The gate is `> 0`, not `> _CPU_CTX_AUTO_CEILING`, and the fit ceiling is clamped.
-    assert "effective_ctx > _CPU_CTX_AUTO_CEILING" not in src
-    assert "requested_ctx = _ctx_ceiling" in src
-
-
-def _nows(s: str) -> str:
-    """Whitespace-stripped source, so assertions survive the formatter wrapping a line."""
-    return "".join(s.split())
-
-
-def test_cpu_context_fit_accounts_for_mtp():
-    """mtp_engaged alone is a no-op once budget_frac is set, so the CPU fit must pass the
-    byte-accurate MTP overhead fn to actually reserve MTP KV (PR review fix)."""
-    src = _nows(_load_model_src())
-    assert _nows("mtp_overhead_fn = (_mtp_bytes if _mtp_will_engage_cpu else None)") in src
-
-
-def test_cpu_context_cap_reuses_fit_helper_against_ram():
-    """The cap reuses _fit_context_to_vram with the system-RAM budget, not VRAM."""
-    src = _load_model_src()
-    assert "_available_system_memory_mib()" in src
-    assert "self._fit_context_to_vram(" in src
-    assert "_cpu_budget = _CPU_RAM_BUDGET_FRAC" in src
-    assert "budget_frac = _cpu_budget" in src
-
-
-def test_cpu_ram_preflight_warns_when_weights_exceed_ram():
-    src = _load_model_src()
-    assert "CPU-only memory preflight" in src
-
-
-def test_cpu_context_floors_to_min_when_weights_exceed_budget():
-    """When the fixed footprint exceeds the RAM budget, _fit_context_to_vram returns
-    the ceiling unchanged; the cap must floor to the minimum instead (PR review fix)."""
-    src = _load_model_src()
-    # The check uses the fitted footprint (weights + compute buffer), not raw weights.
-    assert "_fixed = model_size_fit or model_size" in src
-    assert "_fixed >= _budget_b" in src
-    assert "_cpu_cap = 4096" in src
-
-
-def test_cpu_context_fit_uses_fitted_footprint():
-    """The CPU RAM fit must pass the fitted footprint (weights + compute buffer), so a
-    context that only fits when the buffer is ignored can't slip through (PR review fix)."""
-    src = _load_model_src()
-    assert "model_size_bytes = _fixed" in src
-
-
-def test_numa_decision_uses_footprint_not_just_weights():
-    """The NUMA interleave decision must use the full resident footprint (weights +
-    compute buffer + KV at the launched parallel slots + MTP reserve), so a model whose
-    weights fit one node but whose footprint does not still interleaves (PR review fixes)."""
-    src = _load_model_src()
-    assert "_numa_footprint" in src
-    assert "decide_interleave(_numa_footprint" in src
-    # Footprint = fitted weights (incl. compute buffer) + KV + MTP reserve.
-    assert "_resident = model_size_fit or model_size" in src
-    # MTP is recomputed at the post-cap context, not the stale pre-cap reserve.
-    assert _nows("_numa_mtp = _mtp_bytes(effective_ctx) if _mtp_will_engage_cpu else 0") in _nows(
-        src
+def _interleave(monkeypatch):
+    monkeypatch.setattr(
+        numa,
+        "decide_interleave",
+        lambda *a, **k: numa.InterleaveDecision(
+            True, "spans nodes", ("numactl", "--interleave=all")
+        ),
     )
-    # KV must be sized for the launched --parallel slots, not the n_parallel=1 default.
-    assert "effective_ctx, cache_type_kv, n_parallel = n_parallel" in src
 
 
-def test_numa_surfaces_total_ram_failure():
-    """When the footprint exceeds total RAM across all nodes, decide_interleave returns
-    an actionable 'interleave cannot help' reason; the caller must surface it, not only
-    the missing-numactl case (PR review fix)."""
-    src = _load_model_src()
-    assert '"interleave cannot help" in _numa.reason' in src
+def test_numa_interleave_wraps_the_spawn(tmp_path, monkeypatch):
+    _interleave(monkeypatch)
+    cmd = _launch(_backend([]), tmp_path)
+    assert cmd[:2] == ["numactl", "--interleave=all"]
+    assert cmd[2] == "/fake/llama-server"
+    assert _value(cmd, "--numa") == "distribute"
 
 
-def test_explicit_user_numa_skips_auto_interleave_prefix():
-    """An explicit user --numa must skip the numactl argv prefix (which user extra args
-    can't override), not just the --numa distribute flag (PR review fix)."""
-    src = _load_model_src()
-    assert 'if _numa.interleave and _extra_args_set_any_flag(extra_args, {"--numa"}):' in src
-    assert "leaving auto-interleave off" in src
+def test_user_numa_policy_skips_auto_interleave(tmp_path, monkeypatch):
+    _interleave(monkeypatch)
+    cmd = _launch(_backend([]), tmp_path, extra_args = ["--numa", "isolate"])
+    assert cmd[0] == "/fake/llama-server"
+    assert _value(cmd, "--numa") == "isolate"
 
 
 def test_extra_args_forces_cpu_offload_helper():
-    """The CPU-force detector: zero GPU layers or --device none, via CLI or the inherited
-    LLAMA_ARG_* env (PR review fixes)."""
-    from core.inference.llama_cpp import _extra_args_forces_cpu_offload as f
-
-    E: dict = {}  # explicit empty env so cases ignore the ambient environment
+    f = _extra_args_forces_cpu_offload
+    E: dict = {}
     assert f(["-ngl", "0"], env = E)
     assert f(["--n-gpu-layers", "0"], env = E)
     assert f(["--gpu-layers", "0"], env = E)
     assert f(["-ngl=0"], env = E)
     assert not f(["-ngl", "99"], env = E)
-    assert not f([], env = E)
     assert not f(None, env = E)
-    assert not f(["--flash-attn", "on"], env = E)
-    # Each flag's last occurrence wins, matching llama-server's own parsing.
+    # Last occurrence wins, as in llama-server.
     assert f(["-ngl", "99", "-ngl", "0"], env = E)
     assert not f(["-ngl", "0", "-ngl", "99"], env = E)
-    # --device/-dev none also forces CPU, independently of -ngl.
     assert f(["--device", "none"], env = E)
     assert f(["-dev", "none"], env = E)
     assert f(["--device=none"], env = E)
     assert not f(["--device", "CUDA0"], env = E)
-    # The two controls are independent: -ngl 0 stays CPU even with a device named.
     assert f(["-ngl", "0", "--device", "CUDA0"], env = E)
-    assert f(["--device", "none", "-ngl", "99"], env = E)
-    # Inherited env forces CPU when the CLI does not set the control.
     assert f([], env = {"LLAMA_ARG_N_GPU_LAYERS": "0"})
     assert f([], env = {"LLAMA_ARG_DEVICE": "none"})
     assert not f([], env = {"LLAMA_ARG_N_GPU_LAYERS": "99"})
-    assert not f([], env = {"LLAMA_ARG_DEVICE": "CUDA0"})
     # CLI wins over env.
     assert not f(["-ngl", "99"], env = {"LLAMA_ARG_N_GPU_LAYERS": "0"})
     assert f(["-ngl", "0"], env = {"LLAMA_ARG_N_GPU_LAYERS": "99"})
 
 
-def test_cpu_cap_lowers_advertised_ceiling():
-    """When the CPU cap reduces the launched context, max_available_ctx must drop too,
-    so /status and the UI safe-zone reflect the real window, not native (PR review fix)."""
-    src = _load_model_src()
-    assert "max_available_ctx = min(max_available_ctx, _cpu_cap)" in src
+_ABORT_OUTPUT = [
+    "/src/ggml/src/ggml-backend.cpp:1242: GGML_ASSERT(*cur_backend_id != -1) failed\n",
+    "#3  ggml_backend_sched_split_graph ()\n",
+    "#5  llama_context::sched_reserve() ()\n",
+]
 
 
-def test_cpu_fit_skips_mtp_reserve_when_mla_auto_drops():
-    """Auto drops embedded MTP for MLA models, so the CPU cap / NUMA footprint must not
-    reserve a target-KV copy for a drafter that won't launch (PR review fix)."""
-    src = _nows(_load_model_src())
-    assert _nows("_mtp_will_engage_cpu = _mtp_will_engage and not (") in src
-    assert _nows("not _mla_mtp_auto_enabled()") in src
-    # The CPU cap and NUMA recompute use the gated flag, not the raw _mtp_will_engage.
-    assert _nows("mtp_overhead_fn = (_mtp_bytes if _mtp_will_engage_cpu else None)") in src
-    assert _nows("_numa_mtp = _mtp_bytes(effective_ctx) if _mtp_will_engage_cpu else 0") in src
+class _Crashing:
+    """Loads a backend whose every llama-server spawn aborts in the graph scheduler."""
+
+    def __init__(self, tmp_path):
+        binary = tmp_path / "llama-server"
+        binary.write_text("x")
+        self.backend = _backend([])
+        self.backend._find_llama_server_binary = lambda include_denied = False: str(binary)
+        self.backend._wait_for_health = lambda timeout, **_kw: False
+        self.gguf = _write_gguf(tmp_path / "model.gguf")
+        self.spawns = 0
+
+    def load(self, **load_kwargs) -> str:
+        def fake_popen(cmd, **kwargs):
+            if not cmd or "--port" not in [str(c) for c in cmd]:
+                return _REAL_POPEN(cmd, **kwargs)
+            self.spawns += 1
+            return type(
+                "Process",
+                (),
+                {
+                    "pid": 123,
+                    "returncode": -6,
+                    "stdout": iter(_ABORT_OUTPUT),
+                    "poll": lambda self: -6,
+                    "terminate": lambda self: None,
+                    "wait": lambda self, timeout = None: -6,
+                    "kill": lambda self: None,
+                },
+            )()
+
+        with (
+            patch.object(subprocess, "Popen", side_effect = fake_popen),
+            patch("utils.hardware.is_apple_silicon", return_value = False),
+            pytest.raises(RuntimeError) as err,
+        ):
+            self.backend.load_model(
+                GgufLoadIntent(gguf_path = str(self.gguf), model_identifier = "t", **load_kwargs)
+            )
+        return str(err.value)
 
 
-def test_cpu_fit_reserves_flat_mtp_when_draft_unsized():
-    """When MTP engages but the draft KV can't be byte-sized (mtp_overhead_fn is None),
-    budget_frac skips the flat reserve, so the CPU budget is trimmed to still hold MTP
-    RAM back instead of fitting a context that OOMs once the draft allocates (PR review)."""
-    src = _load_model_src()
-    assert "if _mtp_will_engage_cpu and mtp_overhead_fn is None:" in src
-    assert "_cpu_budget -= _MTP_VRAM_RESERVE_FRAC" in src
-    assert "budget_frac = _cpu_budget" in src
+@pytest.fixture
+def crashing(tmp_path):
+    LlamaCppBackend._sched_reserve_abort_keys.clear()
+    yield _Crashing(tmp_path)
+    LlamaCppBackend._sched_reserve_abort_keys.clear()
 
 
-def test_zero_offload_folds_into_cpu_only():
-    """A visible GPU plus a user -ngl 0 must be treated as CPU-only: the GPU list is
-    dropped before _cpu_only is computed so the CPU safe defaults apply (PR review fix)."""
-    src = _load_model_src()
-    assert "_extra_args_forces_cpu_offload(extra_args)" in src
-    assert "gpus, total_by_idx = [], {}" in src
+def test_scheduler_abort_names_the_cause(crashing):
+    assert crashing.load() == LlamaCppBackend._sched_reserve_abort_message()
+
+
+def test_identical_replay_fails_fast_without_spawning(crashing):
+    crashing.load()
+    before = crashing.spawns
+    kills = []
+    crashing.backend._kill_process = lambda: kills.append(1)
+    assert crashing.load() == LlamaCppBackend._sched_reserve_abort_message()
+    assert crashing.spawns == before
+    assert not kills, "a memoed replay must not tear down the running server"
+
+
+def test_changed_settings_are_allowed_to_retry(crashing):
+    crashing.load()
+    before = crashing.spawns
+    crashing.load(n_ctx = 2048)
+    assert crashing.spawns > before

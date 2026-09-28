@@ -67,9 +67,19 @@ def test_skips_mtp_drafter_for_main_weights(tmp_path):
     assert total == 100
 
 
-def test_prefers_the_complete_snapshot(tmp_path, monkeypatch):
-    from huggingface_hub import constants as hf_constants
+def test_skips_dspark_drafter_for_main_weights(tmp_path):
+    # Same contract for a DSpark drafter, whose filename carries a Q8_0 token.
+    root = tmp_path / "repo"
+    main = _write(root / "model-Q8_0.gguf", 100)
+    _write(root / "dspark" / "dspark-model-Q8_0.gguf", 50)
 
+    path, total = models_route._resolve_quant_gguf(str(root), "Q8_0", is_local = True)
+
+    assert path == str(main)
+    assert total == 100
+
+
+def test_prefers_the_complete_snapshot(tmp_path, monkeypatch):
     cache = tmp_path / "hub"
     snaps = cache / "models--org--repo" / "snapshots"
     # Partial older snapshot: one small shard.
@@ -78,7 +88,10 @@ def test_prefers_the_complete_snapshot(tmp_path, monkeypatch):
     complete_first = _write(snaps / "bbbb" / "model-00001-of-00002-Q4_K_M.gguf", 30)
     _write(snaps / "bbbb" / "model-00002-of-00002-Q4_K_M.gguf", 40)
 
-    monkeypatch.setattr(hf_constants, "HF_HUB_CACHE", str(cache))
+    monkeypatch.setattr(
+        "utils.hf_cache_settings.known_hf_hub_caches",
+        lambda: [cache],
+    )
 
     path, total = models_route._resolve_quant_gguf("org/repo", "Q4_K_M", is_local = False)
 

@@ -52,8 +52,8 @@ export function ShutdownDialog({
     onAfterShutdown?.();
     document.body.innerHTML = `
       <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;font-family:sans-serif;gap:12px">
-        <p style="font-size:1.1rem;font-weight:600;margin:0">Unsloth Studio has stopped.</p>
-        <p style="font-size:0.9rem;color:#888;margin:0">You can now close this tab.</p>
+        <p style="font-size:calc(1.1rem * var(--ui-font-scale, 1));font-weight:600;margin:0">Unsloth has stopped.</p>
+        <p style="font-size:calc(0.9rem * var(--ui-font-scale, 1));color:#888;margin:0">You can now close this tab.</p>
       </div>`;
   };
 
@@ -61,7 +61,7 @@ export function ShutdownDialog({
     <AlertDialog open={open} onOpenChange={onOpenChange}>
       <AlertDialogContent>
         <AlertDialogHeader>
-          <AlertDialogTitle>Stop Unsloth Studio?</AlertDialogTitle>
+          <AlertDialogTitle>Stop Unsloth?</AlertDialogTitle>
           <AlertDialogDescription>
             This will shut down the server. Any active training or inference
             jobs will be terminated. You can restart it any time from the
@@ -71,7 +71,15 @@ export function ShutdownDialog({
         <AlertDialogFooter>
           <AlertDialogCancel>Cancel</AlertDialogCancel>
           <AlertDialogAction
-            onClick={handleStop}
+            onClick={(event) => {
+              // AlertDialogAction auto-closes the dialog by default.
+              // On the shutdown error path we toast + reset `stopping`
+              // to let the user retry, which only works if the dialog
+              // stays open. preventDefault keeps it open; on success
+              // the handler replaces document.body anyway.
+              event.preventDefault();
+              void handleStop();
+            }}
             disabled={stopping}
             variant="destructive"
           >

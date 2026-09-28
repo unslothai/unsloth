@@ -19,11 +19,42 @@ export const ChevronDownStandardIcon: IconSvgElement = [
   ],
 ];
 
+export const ChevronUpStandardIcon: IconSvgElement = [
+  [
+    "path",
+    {
+      d: "M5.99977 15L11.9998 9.00005L17.9998 15",
+      stroke: "currentColor",
+      strokeLinecap: "round",
+      strokeLinejoin: "round",
+      strokeWidth: "1.5",
+      key: "0",
+    },
+  ],
+];
+
 export const ChevronRightStandardIcon: IconSvgElement = [
   [
     "path",
     {
       d: "M9 6L15 12L9 18",
+      stroke: "currentColor",
+      strokeLinecap: "round",
+      strokeLinejoin: "round",
+      strokeWidth: "1.5",
+      key: "0",
+    },
+  ],
+];
+
+// A submenu arrow drawn against the right of its box, its tip as far from that edge as a
+// leading icon's stroke is from the left (x=2 less half a stroke). Set flush on a row's right
+// padding, the arrow and the row's icon then sit level, at any icon size.
+export const MenuChevronRightIcon: IconSvgElement = [
+  [
+    "path",
+    {
+      d: "M16 6L22 12L16 18",
       stroke: "currentColor",
       strokeLinecap: "round",
       strokeLinejoin: "round",

@@ -23,6 +23,8 @@ from typing import Optional
 
 from loggers import get_logger
 from utils.paths import storage_roots
+from hub.services.models import account_access
+from utils.account_context import current_account_id, is_owner_context
 from utils.security.remote_code_scan import CRITICAL, SCAN_RULES_VERSION
 
 logger = get_logger(__name__)
@@ -48,7 +50,9 @@ def cache_disabled() -> bool:
 
 
 def _store_path():
-    return storage_roots.studio_root() / "security" / "remote_code_approvals.json"
+    if is_owner_context():
+        return storage_roots.studio_root() / "security" / "remote_code_approvals.json"
+    return storage_roots.account_path("security/remote_code_approvals.json")
 
 
 def _env_offline() -> bool:
@@ -69,10 +73,10 @@ def approval_target_key(targets) -> str:
 def _load() -> dict:
     """Parsed store, or an empty skeleton on any error (fail-safe = re-prompt)."""
     try:
-        with open(_store_path()) as f:
+        with open(_store_path(), encoding = "utf-8-sig") as f:
             data = json.load(f)
-        # Validate the shape, not just the version: a hand-edited ``subjects`` that is not a
-        # dict (e.g. ``[]``) would otherwise crash lookup/record instead of failing safe.
+        # Validate the shape, not just the version: a hand-edited ``subjects`` that is not a dict would
+        # crash lookup/record instead of failing safe.
         if (
             isinstance(data, dict)
             and data.get("version") == _SCHEMA_VERSION
@@ -92,7 +96,7 @@ def _save(data: dict) -> None:
     storage_roots.ensure_dir(path.parent)
     tmp = path.parent / f".{path.name}.tmp-{os.getpid()}"
     try:
-        with open(tmp, "w") as f:
+        with open(tmp, "w", encoding = "utf-8") as f:
             json.dump(data, f, indent = 2)
         try:
             os.chmod(tmp, 0o600)
@@ -130,7 +134,7 @@ def _file_lock():
                 import fcntl
                 fcntl.flock(fd, fcntl.LOCK_EX)
         except Exception:
-            pass  # locking unavailable; the thread lock still applies
+            pass
         yield
     finally:
         try:
@@ -148,6 +152,8 @@ def _file_lock():
 def lookup(subject: str, target_key: str) -> Optional[StoredApproval]:
     """The stored approval for (subject, target_key), or None. A CRITICAL entry (e.g. a
     hand-edited store) is refused so it can never seed an approval."""
+    if account_access.managed_account():
+        subject = current_account_id()
     if not subject or cache_disabled():
         return None
     with _lock:
@@ -176,13 +182,15 @@ def record(
     scanner_version: int = SCANNER_VERSION,
 ) -> None:
     """Persist a user's explicit approval. CRITICAL is never stored."""
+    if account_access.managed_account():
+        subject = current_account_id()
     if not subject or not fingerprint or cache_disabled() or max_severity == CRITICAL:
         return
     with _lock, _file_lock():
         data = _load()
         subjects = data.setdefault("subjects", {})
         subj = subjects.get(subject)
-        if not isinstance(subj, dict):  # tolerate a hand-edited non-dict entry
+        if not isinstance(subj, dict):
             subj = subjects[subject] = {}
         subj[target_key] = {
             "commit_sha": commit_sha,
@@ -196,6 +204,8 @@ def record(
 
 def forget(subject: str, target_key: str) -> None:
     """Drop an approval (e.g. the user declined / discarded the download)."""
+    if account_access.managed_account():
+        subject = current_account_id()
     if not subject:
         return
     with _lock, _file_lock():
@@ -219,7 +229,9 @@ def resolve_commit_sha(target: str, hf_token: Optional[str] = None) -> Optional[
     fresh every call: the default branch is mutable, so a cached SHA could mask a moved repo
     and reuse stale consent. None falls back to the authoritative fingerprint (never fail-open).
     """
+    hf_token = account_access.account_hf_token(hf_token)
     from utils.paths import is_local_path
+
     try:
         if is_local_path(target) or _env_offline():
             return None

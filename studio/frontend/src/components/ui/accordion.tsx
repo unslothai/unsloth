@@ -7,7 +7,7 @@ import { Accordion as AccordionPrimitive } from "radix-ui";
 import type * as React from "react";
 
 import { cn } from "@/lib/utils";
-import { ArrowDown01Icon, ArrowUp01Icon } from "@hugeicons/core-free-icons";
+import { ChevronDownStandardIcon, ChevronUpStandardIcon } from "@/lib/chevron-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 
 function Accordion({
@@ -56,13 +56,13 @@ function AccordionTrigger({
       >
         {children}
         <HugeiconsIcon
-          icon={ArrowDown01Icon}
+          icon={ChevronDownStandardIcon}
           strokeWidth={2}
           data-slot="accordion-trigger-icon"
           className="pointer-events-none shrink-0 group-aria-expanded/accordion-trigger:hidden"
         />
         <HugeiconsIcon
-          icon={ArrowUp01Icon}
+          icon={ChevronUpStandardIcon}
           strokeWidth={2}
           data-slot="accordion-trigger-icon"
           className="pointer-events-none hidden shrink-0 group-aria-expanded/accordion-trigger:inline"

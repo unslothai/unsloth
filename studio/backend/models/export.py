@@ -6,7 +6,7 @@
 from pathlib import Path, PureWindowsPath
 
 from pydantic import BaseModel, Field, field_validator
-from typing import List, Optional, Literal, Dict, Any
+from typing import List, Optional, Literal, Dict, Any, Union
 
 
 def _validate_save_directory(value: str) -> str:
@@ -80,9 +80,8 @@ class ExportStatusResponse(BaseModel):
         False,
         description = "True while a load / export / cleanup operation is running",
     )
-    # Recovery fields: when a blocking export POST is cut off by a Cloudflare tunnel
-    # timeout (524 at ~100s), the client polls this endpoint to learn the real
-    # outcome of the operation that kept running on the backend.
+    # Recovery fields: when a blocking export POST is cut off by a Cloudflare tunnel timeout (524 at
+    # ~100s), the client polls this endpoint to learn the real outcome.
     active_op_kind: Optional[str] = Field(
         None,
         description = "Kind of the currently running op (load_checkpoint / export_* / cleanup)",
@@ -158,16 +157,29 @@ class ExportCommonOptions(BaseModel):
 class ExportMergedModelRequest(ExportCommonOptions):
     """Request for exporting a merged PEFT model."""
 
-    format_type: Literal["16-bit (FP16)", "4-bit (FP4)"] = Field(
+    format_type: Literal[
         "16-bit (FP16)",
-        description = "Export precision / format for the merged model",
+        "4-bit (FP4)",
+        "FP8 (compressed-tensors)",
+        "NVFP4 (compressed-tensors)",
+    ] = Field(
+        "16-bit (FP16)",
+        description = "Export precision / format for the merged model. The compressed-tensors "
+        "options run llm-compressor for vLLM (FP8 is data-free; NVFP4 calibrates).",
+    )
+    compressed_method: Optional[str] = Field(
+        None,
+        description = "Optional quantized-export alias. Either a compressed-tensors scheme "
+        "(e.g. 'fp8', 'fp8_static', 'w8a8', 'w4a16', 'mxfp4', 'mxfp8', 'nvfp4' - NVIDIA only) "
+        "from unsloth.save COMPRESSED_EXPORT_SCHEMES, or a portable torchao alias "
+        "('torchao_fp8', 'torchao_int8') from TORCHAO_EXPORT_SCHEMES that needs no NVIDIA GPU. "
+        "When set, it overrides format_type. Lets the export UI expose the full set of formats "
+        "beyond the quick buttons.",
     )
 
 
 class ExportBaseModelRequest(ExportCommonOptions):
     """Request for exporting a non-PEFT (base) model."""
-
-    # Uses fields from ExportCommonOptions only
 
 
 class ExportGGUFRequest(BaseModel):
@@ -183,9 +195,10 @@ class ExportGGUFRequest(BaseModel):
     def _check_save_directory(cls, v):
         return _validate_save_directory(v)
 
-    quantization_method: str = Field(
+    quantization_method: Union[str, List[str]] = Field(
         "Q4_K_M",
-        description = 'GGUF quantization method (e.g. "Q4_K_M")',
+        description = 'GGUF quantization method(s). A single method (e.g. "Q4_K_M") or a list '
+        '(e.g. ["Q4_K_M", "Q8_0"]) to produce multiple GGUFs from one model load.',
     )
     push_to_hub: bool = Field(
         False,
@@ -199,9 +212,31 @@ class ExportGGUFRequest(BaseModel):
         None,
         description = "Hugging Face token for GGUF upload",
     )
+    imatrix: bool = Field(
+        False,
+        description = "Use an importance matrix (auto-downloads the upstream unsloth GGUF "
+        "imatrix). Required for the IQ low-bit quants such as iq2_xxs / iq4_xs.",
+    )
+    imatrix_path: Optional[str] = Field(
+        None,
+        description = "Path to a custom imatrix file; overrides the auto-download when set.",
+    )
+    private: bool = Field(
+        False,
+        description = "If True, create a private Hugging Face Hub repository",
+    )
 
 
 class ExportLoRAAdapterRequest(ExportCommonOptions):
     """Request for exporting only the LoRA adapter (not merged)."""
 
-    # Uses fields from ExportCommonOptions only
+    gguf: bool = Field(
+        False,
+        description = "If True, also convert the adapter to a GGUF LoRA file "
+        "(llama.cpp convert_lora_to_gguf.py), loadable with `llama-cli --lora ...`.",
+    )
+    gguf_outtype: Literal["q8_0", "f16", "bf16", "f32"] = Field(
+        "q8_0",
+        description = "GGUF LoRA output float type (only used when gguf=True). "
+        "Q8_0 falls back to F16 per tensor for dims not divisible by the block size (32).",
+    )

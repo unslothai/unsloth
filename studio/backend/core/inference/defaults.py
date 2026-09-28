@@ -3,11 +3,15 @@
 
 """Default model lists for inference, split by platform."""
 
+from typing import Iterable
+
 import utils.hardware.hardware as hw
+from core.inference.model_ids import mlx_bnb_base_repo
 
 DEFAULT_MODELS_GGUF = [
     "unsloth/Qwen3.6-27B-MTP-GGUF",
     "unsloth/Qwen3.6-35B-A3B-MTP-GGUF",
+    "unsloth/DeepSeek-V4-Flash-GGUF",
     "unsloth/gemma-4-E2B-it-GGUF",
     "unsloth/gemma-4-E4B-it-GGUF",
     "unsloth/gemma-4-31B-it-GGUF",
@@ -27,6 +31,7 @@ DEFAULT_MODELS_GGUF = [
 DEFAULT_MODELS_STANDARD = [
     "unsloth/Qwen3.6-27B-MTP-GGUF",
     "unsloth/Qwen3.6-35B-A3B-MTP-GGUF",
+    "unsloth/DeepSeek-V4-Flash-GGUF",
     "unsloth/gemma-4-E2B-it-GGUF",
     "unsloth/gemma-4-E4B-it-GGUF",
     "unsloth/gemma-4-31B-it-GGUF",
@@ -48,8 +53,22 @@ DEFAULT_MODELS_STANDARD = [
 ]
 
 
+def suggestions_for_host(models: Iterable[str], device) -> list[str]:
+    """Name MLX suggestions by their loaded repositories, preserving order."""
+    if device != hw.DeviceType.MLX:
+        return list(models)
+    from core.inference.diffusion_families import detect_family
+
+    def _named(model: str) -> str:
+        if detect_family(model) is not None:
+            return model
+        return mlx_bnb_base_repo(model) or model
+
+    return list(dict.fromkeys(_named(model) for model in models))
+
+
 def get_default_models() -> list[str]:
-    hw.get_device()  # ensures detect_hardware() has run
+    device = hw.get_device()  # ensures detect_hardware() has run
     if hw.CHAT_ONLY:
         return list(DEFAULT_MODELS_GGUF)
-    return list(DEFAULT_MODELS_STANDARD)
+    return suggestions_for_host(DEFAULT_MODELS_STANDARD, device)

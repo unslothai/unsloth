@@ -10,7 +10,7 @@ RL_PATH = os.path.join(REPO_ROOT, "unsloth", "models", "rl_replacements.py")
 
 
 def _load_orpo_rewriter(name = "orpo_trainer_text_tokenizer"):
-    src = open(RL_PATH).read()
+    src = open(RL_PATH, encoding = "utf-8").read()
     tree = ast.parse(src)
     ns = {"re": re}
     # Materialise sibling module-level _-prefixed assignments the rewriter may reference.
@@ -221,8 +221,7 @@ def __init__(self, processing_class):
     rewritten = rewriter("__init__", source)
 
     class _Tokenizer:
-        # Inner tokenizer must NOT be consulted when the processor exposes
-        # pad_token_id itself.
+        # Inner tokenizer must NOT be consulted when the processor exposes pad_token_id itself.
         pad_token_id = 999
 
     class _Processor:

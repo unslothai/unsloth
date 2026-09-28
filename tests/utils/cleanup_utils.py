@@ -14,7 +14,6 @@ def clear_memory(
 ):
     """Comprehensive memory clearing for persistent memory leaks."""
 
-    # Save logging levels to restore later.
     saved_log_levels = {}
     for name, logger in logging.Logger.manager.loggerDict.items():
         if isinstance(logger, logging.Logger):
@@ -35,11 +34,9 @@ def clear_memory(
             "bnb_config",
         ]
 
-    # Clear LRU caches first (important for memory leaks).
     if clear_all_caches:
         clear_all_lru_caches(verbose)
 
-    # Delete specified variables.
     g = globals()
     deleted_vars = []
     for var in variables_to_clear:
@@ -50,13 +47,11 @@ def clear_memory(
     if verbose and deleted_vars:
         print(f"Deleted variables: {deleted_vars}")
 
-    # Multiple GC passes for circular references.
     for i in range(3):
         collected = gc.collect()
         if verbose and collected > 0:
             print(f"GC pass {i+1}: collected {collected} objects")
 
-    # CUDA cleanup
     if torch.cuda.is_available():
         if verbose:
             mem_before = torch.cuda.memory_allocated() / 1024**3
@@ -68,7 +63,6 @@ def clear_memory(
             torch.cuda.reset_peak_memory_stats()
             torch.cuda.reset_accumulated_memory_stats()
 
-            # Clear JIT cache.
             if hasattr(torch.jit, "_state") and hasattr(torch.jit._state, "_clear_class_state"):
                 torch.jit._state._clear_class_state()
 
@@ -84,7 +78,6 @@ def clear_memory(
             if mem_before > 0:
                 print(f"Memory freed: {mem_before - mem_after:.2f} GB")
 
-    # Restore original logging levels.
     logging.getLogger().setLevel(root_level)
     for name, level in saved_log_levels.items():
         if name in logging.Logger.manager.loggerDict:
@@ -108,7 +101,6 @@ def clear_all_lru_caches(verbose = True):
     # Static list to avoid RuntimeError during iteration.
     modules = list(sys.modules.items())
 
-    # Clear caches in all loaded modules.
     for module_name, module in modules:
         if module is None:
             continue
@@ -134,7 +126,6 @@ def clear_all_lru_caches(verbose = True):
         except Exception:
             continue
 
-    # Clear specific known caches.
     known_caches = [
         "transformers.utils.hub.cached_file",
         "transformers.tokenization_utils_base.get_tokenizer",

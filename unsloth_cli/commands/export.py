@@ -6,6 +6,8 @@ from typing import Optional
 
 import typer
 
+from unsloth_cli._studio_deps import studio_backend_imports
+
 
 EXPORT_FORMATS = ["merged-16bit", "merged-4bit", "gguf", "lora"]
 GGUF_QUANTS = ["q4_k_m", "q5_k_m", "q8_0", "f16"]
@@ -17,7 +19,8 @@ def list_checkpoints(
     ),
 ):
     """List checkpoints detected in the outputs directory."""
-    from studio.backend.core.export import ExportBackend
+    with studio_backend_imports("unsloth list-checkpoints"):
+        from studio.backend.core.export import ExportBackend
 
     backend = ExportBackend()
     checkpoints = backend.scan_checkpoints(outputs_dir = str(outputs_dir))
@@ -54,11 +57,19 @@ def export(
         None, "--repo-id", help = "HuggingFace repo ID (username/model-name)."
     ),
     hf_token: Optional[str] = typer.Option(
-        None, "--hf-token", envvar = "HF_TOKEN", help = "HuggingFace token."
+        None,
+        "--hf-token",
+        envvar = "HF_TOKEN",
+        help = "HuggingFace token, for gated or private checkpoints and Hub pushes.",
     ),
     private: bool = typer.Option(False, "--private", help = "Make the HuggingFace repo private."),
     max_seq_length: int = typer.Option(2048, "--max-seq-length"),
-    load_in_4bit: bool = typer.Option(True, "--load-in-4bit/--no-load-in-4bit"),
+    load_in_4bit: Optional[bool] = typer.Option(
+        None,
+        "--load-in-4bit/--no-load-in-4bit",
+        help = "Load the checkpoint in 4-bit. Default: 16-bit for an unquantized full model "
+        "(except with merged-4bit), 4-bit otherwise.",
+    ),
 ):
     """Export a checkpoint to various formats (merged, GGUF, LoRA adapter)."""
     if format not in EXPORT_FORMATS:
@@ -72,7 +83,12 @@ def export(
         typer.echo("Error: --repo-id required when using --push-to-hub", err = True)
         raise typer.Exit(code = 2)
 
-    from studio.backend.core.export import ExportBackend
+    # A full model is saved as loaded, so merged-4bit still needs the 4-bit load.
+    if load_in_4bit is None and format == "merged-4bit":
+        load_in_4bit = True
+
+    with studio_backend_imports("unsloth export"):
+        from studio.backend.core.export import ExportBackend
 
     backend = ExportBackend()
 
@@ -81,6 +97,7 @@ def export(
         checkpoint_path = str(checkpoint),
         max_seq_length = max_seq_length,
         load_in_4bit = load_in_4bit,
+        hf_token = hf_token,
     )
     if not success:
         typer.echo(f"Error: {message}", err = True)
@@ -114,6 +131,7 @@ def export(
             push_to_hub = push_to_hub,
             repo_id = repo_id,
             hf_token = hf_token,
+            private = private,
         )
     elif format == "lora":
         success, message, output_path = backend.export_lora_adapter(
