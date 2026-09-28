@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-only
 """Phi-4-reasoning-vision generate() on transformers 5: "'DynamicCache' object is not subscriptable"."""
 
 import pytest
