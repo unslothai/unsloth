@@ -294,6 +294,10 @@ export const MLX_KV_QUANTS = [
 export type MlxKvQuant = (typeof MLX_KV_QUANTS)[number];
 const VALID_MLX_KV_QUANTS = new Set<string>(MLX_KV_QUANTS);
 
+export function mlxKvQuantLabel(quant: string): string {
+  return quant.startsWith("tq-") ? `TurboQuant ${quant.slice(3)}-bit` : `${quant}-bit`;
+}
+
 /** A bare width only ever meant mx.quantize; null is how a saved Auto spells itself. */
 export function normalizeMlxKvQuant(
   value: unknown,

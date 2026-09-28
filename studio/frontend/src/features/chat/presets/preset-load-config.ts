@@ -12,6 +12,7 @@ import {
   MAX_SEQ_LENGTH_MAX,
   DEFAULT_MAX_SEQ_LENGTH,
   KV_CACHE_DTYPES,
+  mlxKvQuantLabel,
   normalizeMlxKvQuant,
   N_BATCH_MAX,
   N_BATCH_MIN,
@@ -364,11 +365,7 @@ export function formatPresetLoadConfigSummary(
     parts.push(`KV ${config.kvCacheDtype}`);
   }
   if (config.mlxKvQuant) {
-    parts.push(
-      config.mlxKvQuant.startsWith("tq-")
-        ? `MLX KV TurboQuant ${config.mlxKvQuant.slice(3)}-bit`
-        : `MLX KV ${config.mlxKvQuant}-bit`,
-    );
+    parts.push(`MLX KV ${mlxKvQuantLabel(config.mlxKvQuant)}`);
   }
   if (config.speculativeType && config.speculativeType !== "auto") {
     parts.push(`Spec ${config.speculativeType}`);

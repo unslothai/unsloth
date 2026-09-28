@@ -147,6 +147,7 @@ import {
   MAX_SEQ_LENGTH_MIN,
   MAX_SEQ_LENGTH_STEP,
   MLX_KV_QUANTS,
+  mlxKvQuantLabel,
   type MlxKvQuant,
   N_BATCH_LLAMA_DEFAULT,
   N_BATCH_MAX,
@@ -1049,12 +1050,6 @@ function GpuMemorySettings({
 }
 
 const MLX_KV_QUANT_AUTO = "auto";
-
-function mlxKvQuantLabel(quant: string): string {
-  return quant.startsWith("tq-")
-    ? `TurboQuant ${quant.slice(3)}-bit`
-    : `${quant}-bit`;
-}
 
 function AdvancedSettingsToggle({
   checked,

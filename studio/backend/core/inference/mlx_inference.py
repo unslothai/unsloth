@@ -1600,14 +1600,6 @@ MLX_KV_QUANT_NO_REUSE = (
     "The installed mlx-lm cannot measure a quantized cache entry, so prompt-cache "
     "reuse across turns is disabled while this is on."
 )
-MLX_TURBOQUANT_DISTRIBUTED_TEXT = (
-    "TurboQuant is not available for this model under distributed inference. Run it on a "
-    "single device, or turn TurboQuant off."
-)
-MLX_TURBOQUANT_LORA_TEXT = (
-    "TurboQuant is not available for a LoRA adapter on a text model. Merge the adapter into an MLX "
-    "model first, or turn TurboQuant off."
-)
 MLX_TURBOQUANT_TEXT_LOAD = (
     "TurboQuant is not available for this model: it could not be loaded through the runtime "
     "TurboQuant requires. The model is served without it."
@@ -1615,12 +1607,13 @@ MLX_TURBOQUANT_TEXT_LOAD = (
 
 
 def _turboquant_refusal(*, is_vision, is_distributed, is_lora):
+    """Why a text model cannot take the mlx-vlm route TurboQuant lives on, else ""."""
     if is_vision:
         return ""
     if is_distributed:
-        return MLX_TURBOQUANT_DISTRIBUTED_TEXT
+        return "TurboQuant is not available under distributed inference. Run on one device, or turn it off."
     if is_lora:
-        return MLX_TURBOQUANT_LORA_TEXT
+        return "TurboQuant is not available for a LoRA adapter on a text model. Merge it first, or turn TurboQuant off."
     return ""
 
 
@@ -1679,8 +1672,7 @@ def _kv_entry_nbytes(entry):
 
 
 def _normalize_mlx_kv_bits(value):
-    """Supported mx.quantize width, else None: a stray width is ignored, not a failed load."""
-
+    """Supported bit width, or None when unset or out of domain."""
     if value is None:
         return None
     try:
@@ -1688,7 +1680,7 @@ def _normalize_mlx_kv_bits(value):
     except (TypeError, ValueError):
         logger.warning("MLX kv_bits=%r is not an integer; ignoring", value)
         return None
-    if bits not in MLX_KV_BITS_CHOICES or float(value) != bits:
+    if bits not in MLX_KV_BITS_CHOICES:
         logger.warning(
             "MLX kv_bits=%s unsupported (choose %s); ignoring",
             bits,
@@ -4170,7 +4162,7 @@ class MLXInferenceBackend:
             processor = tokenizer_or_processor
             self._model = model
             self._processor = processor
-            self._tokenizer = processor.tokenizer if hasattr(processor, "tokenizer") else processor
+            self._tokenizer = getattr(processor, "tokenizer", processor)
             self._is_vlm = True
         else:
             tokenizer = tokenizer_or_processor
@@ -4863,7 +4855,6 @@ class MLXInferenceBackend:
                     sampler = sampler,
                 )
                 gen_kwargs.update(self._kv_window_generate_kwargs())
-                gen_kwargs.update(self._kv_runtime_quant_kwargs())
                 if prompt_cache is not None:
                     gen_kwargs["prompt_cache"] = prompt_cache
                 else:
@@ -5411,7 +5402,6 @@ class MLXInferenceBackend:
         from core.inference.chat_template_helpers import detect_think_prefill
 
         # Detected once: the decoder keeps the delimiters the normalizer below consumes.
-        # Re-emit an open <think> prefill from the prompt (see _generate_text).
         prefill = detect_think_prefill(
             prompt,
             getattr(chat_target, "all_special_tokens", None),
