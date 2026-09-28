@@ -186,60 +186,32 @@ def test_mainland_china_follows_the_installer_rules(
 
 
 @pytest.mark.parametrize(
-    "zone, adapters, expected",
+    "zone, resolvers, expected",
     [
-        ("China Standard Time", {}, True),
-        ("Singapore Standard Time", {}, False),
-        (
-            "Singapore Standard Time",
-            {"{a}": None, "{b}": {"DhcpNameServer": "10.0.0.1 223.5.5.5"}},
-            True,
-        ),
-        (
-            "Singapore Standard Time",
-            {"{a}": {"NameServer": "192.168.1.1,223.6.6.6", "DhcpNameServer": ""}},
-            True,
-        ),
-        (
-            "Singapore Standard Time",
-            {"{a}": {"NameServer": "8.8.8.8", "DhcpNameServer": "223.5.5.5"}},
-            False,
-        ),
-        ("Singapore Standard Time", {"{a}": {"NameServer": "223.5.5.50,8.8.8.8"}}, False),
+        ("China Standard Time", [], True),
+        ("Singapore Standard Time", [], False),
+        ("Singapore Standard Time", ["192.168.1.1", "223.5.5.5"], True),
+        ("Singapore Standard Time", ["223.5.5.50", "8.8.8.8"], False),
     ],
 )
-def test_windows_reads_the_registry_time_zone_and_resolvers(monkeypatch, zone, adapters, expected):
+def test_windows_reads_the_registry_time_zone_and_adapter_resolvers(
+    monkeypatch, zone, resolvers, expected
+):
     from utils import mainland_china
 
-    class _Key(dict):
+    class _Key:
         def __enter__(self):
             return self
 
         def __exit__(self, *_):
             return False
 
-    def open_key(parent, path):
-        if path.endswith("TimeZoneInformation"):
-            return _Key(TimeZoneKeyName = zone)
-        if path == mainland_china._WINDOWS_INTERFACES:
-            return _Key(adapters)
-        if parent[path] is None:
-            raise OSError(path)
-        return _Key(parent[path])
-
-    def value(key, name):
-        if name not in key:
-            raise OSError(name)
-        return key[name], 1
-
-    def enum_key(key, index):
-        if index >= len(key):
-            raise OSError(index)
-        return list(key)[index]
-
     registry = _types.SimpleNamespace(
-        HKEY_LOCAL_MACHINE = None, OpenKey = open_key, QueryValueEx = value, EnumKey = enum_key
+        HKEY_LOCAL_MACHINE = None,
+        OpenKey = lambda *_: _Key(),
+        QueryValueEx = lambda _key, name: (zone, 1),
     )
+    monkeypatch.setattr(mainland_china, "_windows_resolvers", lambda: resolvers)
     monkeypatch.setitem(sys.modules, "winreg", registry)
     monkeypatch.setattr(mainland_china.sys, "platform", "win32")
     monkeypatch.delenv("TZ", raising = False)
@@ -248,6 +220,39 @@ def test_windows_reads_the_registry_time_zone_and_resolvers(monkeypatch, zone, a
         assert mainland_china.in_mainland_china() is expected
     finally:
         mainland_china.in_mainland_china.cache_clear()
+
+
+def test_windows_resolvers_come_from_adapters_that_are_up():
+    import ctypes
+
+    from utils import mainland_china as mc
+
+    keep = []
+
+    def servers(*addresses):
+        head = ctypes.POINTER(mc._Server)()
+        for address in reversed(addresses):
+            family, octets = (2, address.split(".")) if "." in address else (23, ["0"] * 4)
+            raw = (ctypes.c_ubyte * 16)(family, 0, 0, 0, *map(int, octets))
+            node = mc._Server(
+                next = head, address = mc._Address(ctypes.cast(raw, ctypes.POINTER(ctypes.c_ubyte)), 16)
+            )
+            keep.extend([raw, node])
+            head = ctypes.pointer(node)
+        return head
+
+    head = ctypes.POINTER(mc._Adapter)()
+    for status, dns in reversed(
+        [
+            (1, servers("::1", "192.168.1.1")),
+            (2, servers("223.5.5.5")),
+            (1, servers("119.29.29.29")),
+        ]
+    ):
+        adapter = mc._Adapter(next = head, dns = dns, oper_status = status)
+        keep.append(adapter)
+        head = ctypes.pointer(adapter)
+    assert mc._up_adapter_resolvers(head) == ["192.168.1.1", "119.29.29.29"]
 
 
 @pytest.fixture

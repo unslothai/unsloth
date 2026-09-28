@@ -5,8 +5,8 @@
 
 from __future__ import annotations
 
+import ctypes
 import functools
-import itertools
 import os
 import re
 import sys
@@ -30,7 +30,6 @@ _MAINLAND_RESOLVER = re.compile(
 )
 _NAMESERVER = re.compile(r"^[ \t]*nameserver[ \t]+(\S+)[ \t]*$", re.MULTILINE)
 _RESOLV_CONFS = ("/etc/resolv.conf", "/run/systemd/resolve/resolv.conf")
-_WINDOWS_INTERFACES = r"SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces"
 
 
 def _time_zone() -> str:
@@ -58,38 +57,81 @@ def _time_zone() -> str:
         return ""
 
 
-def _adapter_resolvers(winreg, interface) -> list[str]:
-    # A static list replaces the DHCP one, as the resolver does.
-    for value in ("NameServer", "DhcpNameServer"):
-        try:
-            configured = str(winreg.QueryValueEx(interface, value)[0]).strip()
-        except OSError:
-            continue
-        if configured:
-            return re.split(r"[\s,]+", configured)
-    return []
+class _Address(ctypes.Structure):
+    _fields_ = [("sockaddr", ctypes.POINTER(ctypes.c_ubyte)), ("length", ctypes.c_int)]
+
+
+class _Server(ctypes.Structure):
+    pass
+
+
+_Server._fields_ = [
+    ("header", ctypes.c_ulonglong),
+    ("next", ctypes.POINTER(_Server)),
+    ("address", _Address),
+]
+
+
+# The leading fields of IP_ADAPTER_ADDRESSES, through OperStatus.
+class _Adapter(ctypes.Structure):
+    pass
+
+
+_Adapter._fields_ = [
+    ("header", ctypes.c_ulonglong),
+    ("next", ctypes.POINTER(_Adapter)),
+    ("name", ctypes.c_char_p),
+    ("unicast", ctypes.c_void_p),
+    ("anycast", ctypes.c_void_p),
+    ("multicast", ctypes.c_void_p),
+    ("dns", ctypes.POINTER(_Server)),
+    ("suffix", ctypes.c_wchar_p),
+    ("description", ctypes.c_wchar_p),
+    ("friendly_name", ctypes.c_wchar_p),
+    ("physical_address", ctypes.c_ubyte * 8),
+    ("physical_address_length", ctypes.c_ulong),
+    ("flags", ctypes.c_ulong),
+    ("mtu", ctypes.c_ulong),
+    ("if_type", ctypes.c_ulong),
+    ("oper_status", ctypes.c_int),
+]
+_OPER_STATUS_UP = 1
+_AF_INET = 2
+
+
+def _up_adapter_resolvers(adapter) -> list[str]:
+    """IPv4 DNS servers of the adapters that are up, from a GetAdaptersAddresses list."""
+    servers: list[str] = []
+    while adapter:
+        if adapter.contents.oper_status == _OPER_STATUS_UP:
+            server = adapter.contents.dns
+            while server:
+                raw = server.contents.address
+                if raw.length >= 8 and raw.sockaddr[0] | raw.sockaddr[1] << 8 == _AF_INET:
+                    servers.append(".".join(str(raw.sockaddr[i]) for i in range(4, 8)))
+                server = server.contents.next
+        adapter = adapter.contents.next
+    return servers
 
 
 def _windows_resolvers() -> list[str]:
-    # Unlike the installer's .NET query, the registry also lists adapters that are down.
-    import winreg
-
-    servers: list[str] = []
+    """What the installer's .NET query lists: DNS servers of the adapters that are up."""
+    skip_unicast_anycast_multicast, buffer_overflow = 0x7, 111
     try:
-        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, _WINDOWS_INTERFACES) as interfaces:
-            for index in itertools.count():
-                try:
-                    name = winreg.EnumKey(interfaces, index)
-                except OSError:
-                    break
-                try:
-                    with winreg.OpenKey(interfaces, name) as interface:
-                        servers += _adapter_resolvers(winreg, interface)
-                except OSError:
-                    continue
+        get_adapters = ctypes.WinDLL("iphlpapi").GetAdaptersAddresses
+        size = ctypes.c_ulong(16 * 1024)
+        for _ in range(3):
+            buffer = ctypes.create_string_buffer(size.value)
+            result = get_adapters(
+                0, skip_unicast_anycast_multicast, None, buffer, ctypes.byref(size)
+            )
+            if result != buffer_overflow:
+                break
     except OSError:
-        pass
-    return servers
+        return []
+    if result != 0:
+        return []
+    return _up_adapter_resolvers(ctypes.cast(buffer, ctypes.POINTER(_Adapter)))
 
 
 def _resolvers() -> list[str]:
