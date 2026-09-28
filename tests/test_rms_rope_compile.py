@@ -121,7 +121,17 @@ def _cos_sin(rope_size, head_dim, dtype):
     return emb.cos().to(dtype), emb.sin().to(dtype)
 
 
-def _rope_case(fn, bsz, seq, n_heads, n_kv, head_dim, dtype, with_indices):
+def _rope_case(
+    fn,
+    bsz,
+    seq,
+    n_heads,
+    n_kv,
+    head_dim,
+    dtype,
+    with_indices,
+    pure = False,
+):
     g = torch.Generator(device = "cuda").manual_seed(0)
     # Q/K as LlamaAttention_fast_forward makes them: projection output viewed and transposed.
     q_lin = torch.randn(bsz, seq, n_heads * head_dim, device = "cuda", generator = g, dtype = dtype)
@@ -142,7 +152,11 @@ def _rope_case(fn, bsz, seq, n_heads, n_kv, head_dim, dtype, with_indices):
     q_before, k_before = q_lin.detach().clone(), k_lin.detach().clone()
     Q_out, K_out = fn(Q, K, cos, sin, indices)
     torch.autograd.backward((Q_out, K_out), (dQ, dK))
-    if with_indices:
+    if pure:
+        # The compiled ops rotate copies: neither projection may change.
+        assert _bytes_equal(q_lin.detach(), q_before), "the q projection was mutated"
+        assert _bytes_equal(k_lin.detach(), k_before), "the k projection was mutated"
+    elif with_indices:
         # The rope-indices path clones a strided Q / K; main rotates a contiguous one in place (a
         # single head, where the transpose is contiguous). The positions path rotates the
         # projection output in place on main (transposing back is already contiguous).
@@ -170,6 +184,7 @@ def test_rope_compiled_matches_eager(shape, with_indices, dtype):
         *shape,
         dtype,
         with_indices,
+        pure = TRACEABLE,
     )
     for e, c, name in zip(eager, compiled, ("Q", "K", "dQ", "dK")):
         assert _bytes_equal(e, c), name
@@ -204,6 +219,66 @@ def test_rope_matches_the_rotation_formula():
     torch.testing.assert_close(Q_out, q * cos[:16] + rot * sin[:16], rtol = 1e-5, atol = 1e-5)
 
 
+def test_rope_dynamic_shapes():
+    """dynamic=True turns sizes, head counts included, into SymInts in the launch grid (divmod
+    rejected them)."""
+    if not TRACEABLE:
+        pytest.skip("this torch has no torch.library.triton_op")
+    cos, sin = _cos_sin(64, 64, torch.bfloat16)
+
+    def f(q_lin, k_lin, bsz, seq, n_heads, n_kv):
+        Q = q_lin.view(bsz, seq, n_heads, 64).transpose(1, 2)
+        K = k_lin.view(bsz, seq, n_kv, 64).transpose(1, 2)
+        return fast_rope_embedding(Q, K, cos, sin, None)
+
+    compiled = torch.compile(f, fullgraph = True, dynamic = True)
+    for seq in (16, 24, 40):
+        g = torch.Generator(device = "cuda").manual_seed(seq)
+        q_lin = torch.randn(2, seq, 8 * 64, device = "cuda", generator = g, dtype = torch.bfloat16)
+        k_lin = torch.randn(2, seq, 2 * 64, device = "cuda", generator = g, dtype = torch.bfloat16)
+        for e, c in zip(
+            f(q_lin.clone(), k_lin.clone(), 2, seq, 8, 2), compiled(q_lin, k_lin, 2, seq, 8, 2)
+        ):
+            assert _bytes_equal(e, c), seq
+
+
+@pytest.mark.parametrize("compiled", [False, True], ids = ["eager", "compiled"])
+@pytest.mark.parametrize("with_indices", [False, True], ids = ["positions", "rope_indices"])
+def test_rope_expanded_gradient(with_indices, compiled):
+    """Q.sum() hands the backward a stride-0 gradient; rotating it in place through that view
+    gave wrong dQ / dK."""
+    g = torch.Generator(device = "cuda").manual_seed(0)
+    q_lin = torch.randn(2, 16, 4 * 64, device = "cuda", generator = g).requires_grad_(True)
+    k_lin = torch.randn(2, 16, 2 * 64, device = "cuda", generator = g).requires_grad_(True)
+    cos, sin = _cos_sin(80, 64, torch.float32)
+    indices = torch.arange(16, dtype = torch.int32).repeat(2, 1).cuda() if with_indices else None
+    fn = _compile(fast_rope_embedding) if compiled else fast_rope_embedding
+    Q_out, K_out = fn(
+        q_lin.view(2, 16, 4, 64).transpose(1, 2),
+        k_lin.view(2, 16, 2, 64).transpose(1, 2),
+        cos,
+        sin,
+        indices,
+    )
+    (Q_out.sum() + K_out.sum()).backward()
+    # d/dx of sum(x * cos + rotate_half(x) * sin): cos + rotate_half^T(ones) * sin, per position.
+    ones = torch.ones(16, 64, device = "cuda")
+    rot_t = torch.cat((ones[..., 32:], -ones[..., :32]), dim = -1)
+    per_pos = cos[:16] + rot_t * sin[:16]
+    torch.testing.assert_close(
+        q_lin.grad.view(2, 16, 4, 64),
+        per_pos[None, :, None].expand(2, 16, 4, 64),
+        rtol = 1e-5,
+        atol = 1e-5,
+    )
+    torch.testing.assert_close(
+        k_lin.grad.view(2, 16, 2, 64),
+        per_pos[None, :, None].expand(2, 16, 2, 64),
+        rtol = 1e-5,
+        atol = 1e-5,
+    )
+
+
 def test_tiny_llama_decoder_layers_compile_fullgraph():
     """Every decoder layer of an Unsloth LoRA Llama compiles with fullgraph=True inside Unsloth's
     gradient checkpointing, and the loss matches eager."""
@@ -222,7 +297,15 @@ def test_tiny_llama_decoder_layers_compile_fullgraph():
         r = 8,
         lora_alpha = 16,
         lora_dropout = 0,
-        target_modules = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
+        target_modules = [
+            "q_proj",
+            "k_proj",
+            "v_proj",
+            "o_proj",
+            "gate_proj",
+            "up_proj",
+            "down_proj",
+        ],
         use_gradient_checkpointing = "unsloth",
         random_state = 3407,
     )

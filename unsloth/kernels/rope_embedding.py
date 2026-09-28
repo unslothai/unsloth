@@ -171,10 +171,9 @@ def _rope_rows(Q, cos, sin, seq_len, n_heads, head_dim, backward, wrap):
     # large also hurts performance.
     BLOCK_SIZE, num_warps = calculate_settings(head_dim // 2)
     # group_size = 4 # 4 or 8, too large group_size can hurt performance.
-    div: int
-    mod: int
-    div, mod = divmod(n_heads, ROPE_GROUP_SIZE)
-    n_groups: int = div + (mod != 0)
+    n_groups = (
+        n_heads + ROPE_GROUP_SIZE - 1
+    ) // ROPE_GROUP_SIZE  # also a SymInt under dynamic=True
     wrap(_rope_embedding)[
         (
             Q.shape[0],
@@ -220,7 +219,8 @@ class Fast_RoPE_Embedding(torch.autograd.Function):
         n_heads: int
         head_dim: int
         batch, seq_len, n_heads, head_dim = dY.shape
-        dY = dY.reshape(batch * seq_len, n_heads * head_dim)
+        # contiguous: an expanded gradient (e.g. from Q.sum()) would be rotated through stride 0.
+        dY = dY.contiguous().reshape(batch * seq_len, n_heads * head_dim)
         with torch_gpu_device(dY.device):
             _rope_rows(dY, ctx.cos, ctx.sin, seq_len, n_heads, head_dim, True, _eager_kernel)
         dY = dY.reshape(batch, seq_len, n_heads, head_dim)
@@ -298,7 +298,9 @@ class Fast_RoPE_Embedding_QK(torch.autograd.Function):
         dK_out = dK.clone() if not dK.is_contiguous() else dK
 
         with torch_gpu_device(dQ.device):
-            _rope_qk(dQ_out, dK_out, ctx.cos, ctx.sin, rope_ptr, ctx.has_indices, True, _eager_kernel)
+            _rope_qk(
+                dQ_out, dK_out, ctx.cos, ctx.sin, rope_ptr, ctx.has_indices, True, _eager_kernel
+            )
 
         return (dQ_out, dK_out, None, None, None)
 
@@ -313,8 +315,7 @@ if _TRACEABLE:
     ) -> torch.Tensor:
         # Q: [batch, seq_len, n_heads, head_dim] at any strides.
         batch, seq_len, n_heads, head_dim = Q.shape
-        out = torch.empty((batch, seq_len, n_heads, head_dim), dtype = Q.dtype, device = Q.device)
-        out.copy_(Q)
+        out = Q.clone(memory_format = torch.contiguous_format)
         rows = out.view(batch * seq_len, n_heads * head_dim)
         _rope_rows(rows, cos, sin, seq_len, n_heads, head_dim, backward, _traced_kernel)
         return out
@@ -326,7 +327,9 @@ if _TRACEABLE:
         cos, sin = ctx.saved_tensors
         return torch.ops.unsloth.rope_embedding(dY, cos, sin, True), None, None, None
 
-    _rope_embedding_op.register_autograd(_rope_embedding_op_backward, setup_context = _rope_setup_context)
+    _rope_embedding_op.register_autograd(
+        _rope_embedding_op_backward, setup_context = _rope_setup_context
+    )
 
     @torch.library.triton_op("unsloth::rope_embedding_qk", mutates_args = ())
     def _rope_embedding_qk_op(

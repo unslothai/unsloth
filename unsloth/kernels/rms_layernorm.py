@@ -244,7 +244,6 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
 _TRACEABLE = hasattr(torch.library, "triton_op") and hasattr(torch.library, "wrap_triton")
 
 
-
 def _traced_kernel(kernel):
     # wrap_triton takes the JITFunction under triton.heuristics; every heuristic here only turns
     # a bool argument into a constexpr, which the callers pass explicitly.
@@ -280,7 +279,9 @@ if _TRACEABLE:
         dX = torch.ops.unsloth.rms_layernorm_backward(dY.contiguous(), X, W, r, ctx.eps, ctx.gemma)
         return dX, None, None, None
 
-    _rms_layernorm_op.register_autograd(_rms_layernorm_op_backward, setup_context = _rms_setup_context)
+    _rms_layernorm_op.register_autograd(
+        _rms_layernorm_op_backward, setup_context = _rms_setup_context
+    )
 
 
 @torch.compiler.disable
