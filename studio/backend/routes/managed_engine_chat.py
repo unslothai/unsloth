@@ -101,14 +101,18 @@ async def managed_tool_chat(
         and get_tool_policy() is not False
     )
     has_history = any(m.role == "tool" or m.tool_calls for m in payload.messages)
-    if not (tools_on or mcp_on or payload.tools or has_history):
+    info = backend.models.get(backend.active_model_name, {})
+    # A catalog sent with tool_choice "none" and no tool turns cannot produce a call, so a model
+    # without a parser serves it as plain chat; one with a parser still renders the catalog.
+    idle_catalog = payload.tool_choice == "none" and not has_history
+    client_tools = None if idle_catalog and not info.get("supports_tools") else payload.tools
+    if not (tools_on or mcp_on or client_tools or has_history):
         return None
 
     def reject(message):
         api.api_monitor.fail(monitor_id, message)
         return HTTPException(status_code = 400, detail = message)
 
-    info = backend.models.get(backend.active_model_name, {})
     if not info.get("supports_tools"):
         raise reject(
             "No native tool parser is configured for this model's chat template. Use Default for tool calling with this model."
