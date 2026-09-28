@@ -28,8 +28,8 @@ def rounded_mask(size: int) -> Image.Image:
     draw = ImageDraw.Draw(canvas)
     draw.rounded_rectangle(
         (0, 0, size * scale - 1, size * scale - 1),
-        radius=round(size * CORNER_FRACTION * scale),
-        fill=255,
+        radius = round(size * CORNER_FRACTION * scale),
+        fill = 255,
     )
     mask = canvas.resize((size, size), Image.Resampling.LANCZOS)
     if size <= 32:
@@ -46,7 +46,7 @@ def frame(source: Image.Image, size: int) -> Image.Image:
         # produces a dark fringe at the square's outer boundary. This is a
         # native-size detail pass, never a reduction of a smaller frame.
         sharp = image.convert("RGB").filter(
-            ImageFilter.UnsharpMask(radius=0.65, percent=125, threshold=2)
+            ImageFilter.UnsharpMask(radius = 0.65, percent = 125, threshold = 2)
         )
         green = source.getpixel((source.width // 2, source.height // 16))[:3]
         pixels = image.load()
@@ -68,12 +68,12 @@ def build(root: Path = ROOT) -> None:
     source = Image.open(ROOT / "icon.png").convert("RGBA")
     if source.size != (1024, 1024):
         raise ValueError("Windows icon source must be 1024x1024")
-    (root / "windows-icon.png").parent.mkdir(parents=True, exist_ok=True)
-    frame(source, 1024).save(root / "windows-icon.png", optimize=False)
+    (root / "windows-icon.png").parent.mkdir(parents = True, exist_ok = True)
+    frame(source, 1024).save(root / "windows-icon.png", optimize = False)
     payloads = []
     for size in SIZES:
         output = io.BytesIO()
-        frame(source, size).save(output, format="PNG", optimize=False)
+        frame(source, size).save(output, format = "PNG", optimize = False)
         data = output.getvalue()
         (root / f"windows-{size}.png").write_bytes(data)
         payloads.append(data)
@@ -82,9 +82,13 @@ def build(root: Path = ROOT) -> None:
     offset = 6 + 16 * len(SIZES)
     entries = []
     for size, data in zip(SIZES, payloads):
-        entries.append(struct.pack("<BBBBHHII", size % 256, size % 256, 0, 0, 1, 32, len(data), offset))
+        entries.append(
+            struct.pack("<BBBBHHII", size % 256, size % 256, 0, 0, 1, 32, len(data), offset)
+        )
         offset += len(data)
-    (root / "icon.ico").write_bytes(struct.pack("<HHH", 0, 1, len(SIZES)) + b"".join(entries) + b"".join(payloads))
+    (root / "icon.ico").write_bytes(
+        struct.pack("<HHH", 0, 1, len(SIZES)) + b"".join(entries) + b"".join(payloads)
+    )
 
 
 if __name__ == "__main__":
