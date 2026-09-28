@@ -21,6 +21,7 @@ const { resetHfEndpoints, setHfEndpoints, setHubSessionRefresh } = await import(
 );
 const { fetchHub, hubRejectionScope } = await import("../src/lib/hub-fetch.ts");
 const {
+  HF_TOKEN_REJECTION_RECHECK_MS,
   clearHfTokenRejected,
   hasRejectedHfToken,
   hfTokenRejectionVersion,
@@ -405,6 +406,74 @@ test("through the relay, a Request's own token is dropped from the anonymous ret
 test("a cached valid verdict does not clear a refusal a read just saw", () => {
   const source = readFileSync(new URL("../src/features/hf-auth/api.ts", import.meta.url), "utf8");
   assert.equal(source.includes("clearHfTokenRejected("), false);
+});
+
+test("refusals by two Hubs are both kept", () => {
+  const models = hubRejectionScope("https://huggingface.co/api/models");
+  const datasets = hubRejectionScope("https://datasets-server.huggingface.co/size?dataset=x");
+  try {
+    noteHfTokenRejected(OAUTH, models);
+    noteHfTokenRejected(OAUTH, datasets);
+    assert.equal(isHfTokenRejected(OAUTH, models), true);
+    assert.equal(isHfTokenRejected(OAUTH, datasets), true);
+    clearHfTokenRejected(datasets);
+    assert.equal(isHfTokenRejected(OAUTH, models), true);
+    assert.equal(isHfTokenRejected(OAUTH, datasets), false);
+  } finally {
+    clearHfTokenRejected();
+  }
+});
+
+test("a datasets server under the model endpoint gets its own scope", () => {
+  setHfEndpoints("https://mirror.example", "https://mirror.example/datasets-server", "huggingface");
+  try {
+    assert.notEqual(
+      hubRejectionScope("https://mirror.example/datasets-server/size?dataset=x"),
+      hubRejectionScope("https://mirror.example/api/models"),
+    );
+    assert.equal(
+      hubRejectionScope("https://mirror.example/datasets-server/size?dataset=x"),
+      "huggingface|https://mirror.example/datasets-server",
+    );
+  } finally {
+    resetHfEndpoints();
+  }
+});
+
+test("after the recheck window the token is tried again, and an answer clears the refusal", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: 1_000_000 });
+  const scope = hubRejectionScope(API);
+  noteHfTokenRejected(OAUTH, scope);
+  const hub = stubHub({});
+  try {
+    await fetchHub(API, withToken(OAUTH));
+    assert.equal(hub.sent[0].authorization, null, "skipped while the refusal is fresh");
+    t.mock.timers.tick(HF_TOKEN_REJECTION_RECHECK_MS + 1);
+    await fetchHub(API, withToken(OAUTH));
+    assert.equal(hub.sent[1].authorization, `Bearer ${OAUTH}`);
+    assert.equal(hasRejectedHfToken(), false);
+  } finally {
+    hub.restore();
+    clearHfTokenRejected();
+  }
+});
+
+test("a token still refused after the recheck is recorded again without a new notification", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: 1_000_000 });
+  const scope = hubRejectionScope(API);
+  noteHfTokenRejected(OAUTH, scope);
+  const before = hfTokenRejectionVersion();
+  const hub = stubHub({ rejectedToken: OAUTH });
+  try {
+    t.mock.timers.tick(HF_TOKEN_REJECTION_RECHECK_MS + 1);
+    const response = await fetchHub(API, withToken(OAUTH));
+    assert.equal(response.status, 200);
+    assert.equal(isHfTokenRejected(OAUTH, scope), true);
+    assert.equal(hfTokenRejectionVersion(), before);
+  } finally {
+    hub.restore();
+    clearHfTokenRejected();
+  }
 });
 
 test("clearing a refusal is not reported as a new one", () => {

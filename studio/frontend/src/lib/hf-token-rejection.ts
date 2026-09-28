@@ -10,9 +10,14 @@
 
 type Listener = () => void;
 
-let rejectedFingerprint: string | null = null;
-// The Hub the refusal came from: a mirror can refuse a token another endpoint accepts.
-let rejectedScope: string | null = null;
+/** After this long the token is tried again: a verifier that failed for a while must not hide
+ * private and gated repos for the rest of the session. Still refused, it is recorded again
+ * without a second notification. */
+export const HF_TOKEN_REJECTION_RECHECK_MS = 10 * 60 * 1000;
+
+// One refusal per Hub (scope): a mirror or the datasets server can refuse a token another
+// endpoint accepts, and recording one must not forget another.
+const refusals = new Map<string | null, { fingerprint: string; at: number }>();
 let version = 0;
 const listeners = new Set<Listener>();
 
@@ -30,17 +35,7 @@ function normalized(token: string | null | undefined): string {
   return token?.trim() ?? "";
 }
 
-/** Record that the Hub at *scope* refused *token*. True only the first time for that pair. */
-export function noteHfTokenRejected(
-  token: string | null | undefined,
-  scope: string | null = null,
-): boolean {
-  const value = normalized(token);
-  if (!value) return false;
-  const next = fingerprint(value);
-  if (rejectedFingerprint === next && rejectedScope === scope) return false;
-  rejectedFingerprint = next;
-  rejectedScope = scope;
+function notify(): void {
   version += 1;
   for (const listener of listeners) {
     try {
@@ -49,37 +44,53 @@ export function noteHfTokenRejected(
       // One broken subscriber must not stop the others hearing about it.
     }
   }
+}
+
+/** Record that the Hub at *scope* refused *token*. True only when this is news for that Hub. */
+export function noteHfTokenRejected(
+  token: string | null | undefined,
+  scope: string | null = null,
+): boolean {
+  const value = normalized(token);
+  if (!value) return false;
+  const next = fingerprint(value);
+  const known = refusals.get(scope);
+  refusals.set(scope, { fingerprint: next, at: Date.now() });
+  if (known?.fingerprint === next) return false;
+  notify();
   return true;
 }
 
-/** Whether the Hub has refused *token* in this session. A different token starts clean, and
- * with a *scope* so does a different Hub endpoint. */
+/** Whether the Hub at *scope* refused *token* recently enough to skip it. Without a scope:
+ * whether any Hub has refused it this session. A different token starts clean. */
 export function isHfTokenRejected(
   token: string | null | undefined,
   scope?: string | null,
 ): boolean {
   const value = normalized(token);
-  if (!value || rejectedFingerprint !== fingerprint(value)) return false;
-  return scope === undefined || rejectedScope === scope;
+  if (!value) return false;
+  const wanted = fingerprint(value);
+  if (scope === undefined) {
+    return [...refusals.values()].some((entry) => entry.fingerprint === wanted);
+  }
+  const entry = refusals.get(scope);
+  return (
+    entry?.fingerprint === wanted && Date.now() - entry.at < HF_TOKEN_REJECTION_RECHECK_MS
+  );
 }
 
 /** Whether any token is currently recorded as refused. */
 export function hasRejectedHfToken(): boolean {
-  return rejectedFingerprint !== null;
+  return refusals.size > 0;
 }
 
-export function clearHfTokenRejected(): void {
-  if (rejectedFingerprint === null) return;
-  rejectedFingerprint = null;
-  rejectedScope = null;
-  version += 1;
-  for (const listener of listeners) {
-    try {
-      listener();
-    } catch {
-      // As above.
-    }
-  }
+/** Forget the refusal by *scope*, or every refusal without one. */
+export function clearHfTokenRejected(scope?: string | null): void {
+  const changed = scope === undefined ? refusals.size > 0 : refusals.has(scope);
+  if (!changed) return;
+  if (scope === undefined) refusals.clear();
+  else refusals.delete(scope);
+  notify();
 }
 
 /** For useSyncExternalStore: changes whenever the rejected token does. */

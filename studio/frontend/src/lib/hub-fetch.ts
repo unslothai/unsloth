@@ -116,10 +116,12 @@ export function hubRejectionScope(url?: string): string {
   const endpoint = getHfEndpoint();
   let target = endpoint;
   if (url !== undefined) {
+    // The most specific base first: a datasets server can live under the model endpoint.
     target =
-      [endpoint, getHfDatasetsServerBase()].find(
-        (base) => url === base || url.startsWith(`${base.replace(/\/+$/, "")}/`),
-      ) ?? urlOrigin(url);
+      [endpoint, getHfDatasetsServerBase()]
+        .sort((a, b) => b.length - a.length)
+        .find((base) => url === base || url.startsWith(`${base.replace(/\/+$/, "")}/`)) ??
+      urlOrigin(url);
   }
   return `${getHubSource()}|${target}`;
 }
@@ -163,11 +165,15 @@ export async function fetchHub(
     const withToken = await probe(input, init, url);
     if (withToken?.ok) {
       void response.body?.cancel().catch(() => undefined);
-      clearHfTokenRejected();
+      clearHfTokenRejected(scope);
       response = withToken;
     } else {
       void withToken?.body?.cancel().catch(() => undefined);
     }
+  } else if (retryable && !skipToken && response.ok) {
+    // Past the recheck window the token went out again and was accepted: that Hub no
+    // longer refuses it.
+    clearHfTokenRejected(scope);
   } else if (retryable && !skipToken && isHubRefusal(response, url)) {
     // A token the Hub accepts gets 404 for a repo it cannot see, so this 401 is the token
     // being refused. Public data still answers without it; anything else keeps the original.
