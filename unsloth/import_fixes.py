@@ -8658,9 +8658,7 @@ def _is_broken_causal_conv1d_error(error) -> bool:
 _PREBUILT_KERNEL_RELEASE_URL = (
     "https://github.com/unslothai/unsloth/releases/download/prebuilt-wheels-cu13"
 )
-_FLASH_ATTN_TORCH213_SOURCE = (
-    "flash-attn @ git+https://github.com/Dao-AILab/flash-attention@edb5c76ee329b18ed95d1f7ea9aa522a1331ab7d"
-)
+_FLASH_ATTN_TORCH213_SOURCE = "flash-attn @ git+https://github.com/Dao-AILab/flash-attention@edb5c76ee329b18ed95d1f7ea9aa522a1331ab7d"
 _PREBUILT_KERNEL_VERSIONS = {
     "flash_attn": "2.8.4",
     "causal_conv1d": "1.7.0",
@@ -8726,7 +8724,7 @@ def stale_kernel_hint(package: str, error) -> str:
         # The last flash-attn release predates the c++20 switch torch 2.13 headers need.
         return (
             f"{head} To restore them, rebuild it against this torch:\n"
-            f"  pip install --no-deps --no-build-isolation --no-cache-dir --force-reinstall \"{_FLASH_ATTN_TORCH213_SOURCE}\""
+            f'  pip install --no-deps --no-build-isolation --no-cache-dir --force-reinstall "{_FLASH_ATTN_TORCH213_SOURCE}"'
         )
     return (
         f"{head} To restore them, rebuild it against this torch:\n"

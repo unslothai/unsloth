@@ -141,9 +141,7 @@ def test_flash_attn_rebuilds_from_a_revision_that_compiles_on_torch_2_13(
 
 
 def test_the_flash_attn_source_pin_is_the_one_the_prebuilt_wheels_use(fixes):
-    source = (_REPO_ROOT / ".github" / "scripts" / "prebuilt_wheels.py").read_text(
-        encoding = "utf-8"
-    )
+    source = (_REPO_ROOT / ".github" / "scripts" / "prebuilt_wheels.py").read_text(encoding = "utf-8")
     ref = fixes._FLASH_ATTN_TORCH213_SOURCE.rsplit("@", 1)[1]
     assert f'"ref": "{ref}"' in source
 
@@ -178,7 +176,9 @@ def test_a_chained_cause_is_found(monkeypatch, fixes):
     [
         ImportError("No module named 'flash_attn_2_cuda'"),
         OSError("libcudart.so.13: cannot open shared object file"),
-        ImportError("libcusparse.so.12: undefined symbol: __nvJitLinkAddData_12_8, version libnvJitLink.so.12"),
+        ImportError(
+            "libcusparse.so.12: undefined symbol: __nvJitLinkAddData_12_8, version libnvJitLink.so.12"
+        ),
     ],
 )
 def test_other_failures_add_nothing(monkeypatch, fixes, error):
