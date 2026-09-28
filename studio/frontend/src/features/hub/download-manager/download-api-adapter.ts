@@ -1,0 +1,270 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+import { getHfToken } from "../stores/hf-token-store";
+import { toast } from "@/lib/toast";
+import {
+  type DownloadStartResult,
+  type DownloadStartState,
+  cancelDatasetDownload,
+  cancelModelDownload,
+  getDatasetDownloadProgress,
+  getDatasetDownloadStatus,
+  getDatasetTransportStatus,
+  getDownloadProgress,
+  getDownloadTransportCapabilities,
+  getGgufDownloadProgress,
+  getModelDownloadStatus,
+  getModelTransportStatus,
+  startDatasetDownload,
+  startModelDownload,
+} from "./api";
+import {
+  POLL_REQUEST_TIMEOUT_MS,
+  TRANSPORT_STATUS_RETRY_DELAY_MS,
+  TRANSPORT_STATUS_TIMEOUT_MS,
+} from "./download-manager-config";
+import {
+  DOWNLOAD_KIND,
+  TRANSPORT,
+  type ResolvedTransport,
+  type TransportMode,
+} from "./constants";
+import type {
+  DownloadRequest,
+  ManagedDownload,
+  ProgressLike,
+} from "./download-manager-types";
+import {
+  type PollSignal,
+  disposableTimeoutSignal,
+  pollSignal,
+} from "../lib/abort-signals";
+
+let lastXetUnavailableWarningReason: string | null = null;
+
+export async function withPollRequestTimeout<T>(
+  parent: AbortController | null,
+  request: (signal: AbortSignal) => Promise<T>,
+): Promise<T> {
+  const poll: PollSignal = parent
+    ? pollSignal(parent.signal, POLL_REQUEST_TIMEOUT_MS)
+    : disposableTimeoutSignal(POLL_REQUEST_TIMEOUT_MS);
+  try {
+    return await request(poll.signal);
+  } finally {
+    poll.dispose();
+  }
+}
+
+export function apiGetStatus(job: ManagedDownload, signal: AbortSignal) {
+  return job.kind === DOWNLOAD_KIND.DATASET
+    ? getDatasetDownloadStatus(job.repoId, signal)
+    : getModelDownloadStatus(job.repoId, job.variant, signal);
+}
+
+export function apiGetProgress(
+  job: ManagedDownload,
+  signal: AbortSignal,
+): Promise<ProgressLike> {
+  const token = getHfToken() || null;
+  if (job.kind === DOWNLOAD_KIND.DATASET) {
+    return getDatasetDownloadProgress(job.repoId, {
+      signal,
+      hfToken: token,
+      expectedBytes: job.expectedBytes,
+    });
+  }
+  if (job.variant) {
+    return getGgufDownloadProgress(job.repoId, {
+      variant: job.variant,
+      expectedBytes: job.expectedBytes,
+      hfToken: token,
+      signal,
+    });
+  }
+  return getDownloadProgress(job.repoId, {
+    signal,
+    hfToken: token,
+    expectedBytes: job.expectedBytes,
+  });
+}
+
+export function apiStart(
+  req: DownloadRequest,
+  useXet: boolean,
+  hfToken: string | null,
+): Promise<DownloadStartResult> {
+  // Already RESOLVED ("xet"/"http"), never "auto": effectiveTransportMode() asked the backend what
+  // auto means here, and that answer must reach both the worker and the on-disk transport marker.
+  const transport_mode = useXet ? TRANSPORT.XET : TRANSPORT.HTTP;
+  return req.kind === DOWNLOAD_KIND.DATASET
+    ? startDatasetDownload({
+        repo_id: req.repoId,
+        hf_token: hfToken,
+        use_xet: useXet,
+        transport_mode,
+      })
+    : startModelDownload({
+        repo_id: req.repoId,
+        // A scoped job carries its scope instead of a quant; the backend derives the same "@scope" variant this surface keyed it under.
+        gguf_variant: req.scopeId ? null : req.variant,
+        scope_id: req.scopeId ?? null,
+        files: req.files,
+        hf_token: hfToken,
+        use_xet: useXet,
+        transport_mode,
+      });
+}
+
+export function apiCancel(job: ManagedDownload, signal?: AbortSignal) {
+  const generation = Number.isSafeInteger(job.serverGeneration)
+    ? job.serverGeneration
+    : undefined;
+  return job.kind === DOWNLOAD_KIND.DATASET
+    ? cancelDatasetDownload({ repo_id: job.repoId, generation, signal })
+    : cancelModelDownload({
+        repo_id: job.repoId,
+        gguf_variant: job.variant,
+        generation,
+        signal,
+      });
+}
+
+export function apiCancelRequest(
+  req: DownloadRequest,
+  generation: number | undefined,
+  signal?: AbortSignal,
+) {
+  if (!Number.isSafeInteger(generation)) return Promise.resolve();
+  return req.kind === DOWNLOAD_KIND.DATASET
+    ? cancelDatasetDownload({ repo_id: req.repoId, generation, signal })
+    : cancelModelDownload({
+        repo_id: req.repoId,
+        gguf_variant: req.variant,
+        generation,
+        signal,
+      });
+}
+
+function apiTransportStatus(
+  req: DownloadRequest,
+  signal?: AbortSignal,
+) {
+  const token = getHfToken() || null;
+  return req.kind === DOWNLOAD_KIND.DATASET
+    ? getDatasetTransportStatus(req.repoId, signal)
+    : getModelTransportStatus(req.repoId, req.variant, token, signal);
+}
+
+function wait(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    globalThis.setTimeout(resolve, ms);
+  });
+}
+
+export async function apiTransportStatusWithRetry(
+  req: DownloadRequest,
+): Promise<Awaited<ReturnType<typeof apiTransportStatus>>> {
+  const request = async () => {
+    const timeout = disposableTimeoutSignal(TRANSPORT_STATUS_TIMEOUT_MS);
+    try {
+      return await apiTransportStatus(req, timeout.signal);
+    } finally {
+      timeout.dispose();
+    }
+  };
+  try {
+    return await request();
+  } catch {
+    await wait(TRANSPORT_STATUS_RETRY_DELAY_MS);
+    return request();
+  }
+}
+
+export async function effectiveTransportMode(
+  preferred: TransportMode,
+): Promise<ResolvedTransport> {
+  if (preferred === TRANSPORT.HTTP) {
+    return TRANSPORT.HTTP;
+  }
+  // Probe only for Auto, and only at download start: a host whose CAS is unreachable but which has
+  // recorded no failure yet would otherwise discover that by stalling for 30s.
+  const capabilities = await getDownloadTransportCapabilities(
+    preferred === TRANSPORT.AUTO ? { probe: true } : {},
+  );
+  if (preferred === TRANSPORT.AUTO) {
+    // Resolve "auto" from the backend's own verdict, not independently: the resolved transport is
+    // compared against an existing partial's `.transport` marker, so the two must agree.
+    return capabilities.auto_resolves_to === TRANSPORT.HTTP
+      ? TRANSPORT.HTTP
+      : TRANSPORT.XET;
+  }
+  if (capabilities.xet.available === true) {
+    lastXetUnavailableWarningReason = null;
+    return preferred;
+  }
+  if (capabilities.xet.available === null) {
+    return preferred;
+  }
+  const reason =
+    capabilities.xet.reason ?? "Unsloth will use HTTP downloads instead.";
+  if (lastXetUnavailableWarningReason !== reason) {
+    lastXetUnavailableWarningReason = reason;
+    toast.warning("Xet download transport unavailable", {
+      description: reason,
+    });
+  }
+  return TRANSPORT.HTTP;
+}
+
+export function describeUnacceptedStart(state: DownloadStartState): string {
+  switch (state) {
+    case "deleting":
+      return "This repository is being removed. Try again once it finishes.";
+    case "repository_owned":
+      return "A dictation model download is using this repository. Try again once it finishes.";
+    case "running":
+    case "cancelling":
+      return "Another download for this repository is already in progress. Wait for it to finish or cancel it first.";
+    default:
+      return "The download could not be started. Try again in a moment.";
+  }
+}
+
+export function accessErrorMessage(raw: string): string | null {
+  const lower = raw.toLowerCase();
+  const hasAccessSignal =
+    lower.includes("unauthorized") ||
+    lower.includes("forbidden") ||
+    lower.includes("gated") ||
+    lower.includes("repository not found");
+  if (!hasAccessSignal) return null;
+  return "Couldn't access this Hugging Face repo with the token used for this download. Update the HF token and restart the download, or delete the partial download if you no longer need it.";
+}
+
+export const pollAccessErrorMessage = accessErrorMessage;
+
+export function normalizeDownloadError(
+  error: unknown,
+  fallback = "Failed to start download",
+): string {
+  const raw =
+    error instanceof Error
+      ? error.message
+      : typeof error === "string"
+        ? error
+        : fallback;
+  return accessErrorMessage(raw) ?? raw;
+}
+
+export function isRequestTimeout(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    (error.name === "AbortError" || error.name === "TimeoutError")
+  );
+}
+
+export function resetDownloadApiAdapterState(): void {
+  lastXetUnavailableWarningReason = null;
+}
