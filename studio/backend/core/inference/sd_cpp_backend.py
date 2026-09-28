@@ -3352,15 +3352,10 @@ class SdCppDiffusionBackend:
             return _with_mirrors(repos)
 
     def _retained_generate_failure(self, exc, attempt_id):
-        """Record *exc* against *attempt_id* and hand it back, for the raises the handler
-        below cannot see: no model loaded, a dead resident server, or a superseding load.
-        With nothing retained, a client whose POST was lost was told its request never
-        reached the server."""
+        """Record *exc* against *attempt_id* and hand it back, for the raises the handler."""
         self._last_generate_error = str(exc) or type(exc).__name__
         # The attempt too: the block that normally sets this has not run.
         self._last_generate_attempt = attempt_id
-        # Unlogged: the route answers every one of these as a 409 or 400 WITHOUT logging,
-        # so offering the log would open an unrelated one.
         _retain_generate_failure(attempt_id, self._last_generate_error, logged = False)
         return exc
 
@@ -3423,8 +3418,7 @@ class SdCppDiffusionBackend:
         controlnet: Optional[tuple[str, str, str, float, float, float]] = None,
         # load_identity() of the caller's status() read; refuse rather than run a different load (#9448)
         expected_load: Optional[LoadIdentity] = None,
-        # Client id for THIS request, echoed back beside a retained failure. Absent from
-        # an older client, which gets the pre-existing gallery probe.
+        # Client id for THIS request, echoed back beside a retained failure.
         attempt_id: Optional[str] = None,
         # Interface parity only: the activation guard is diffusers-only.
         allow_oversized: bool = False,
@@ -3507,9 +3501,6 @@ class SdCppDiffusionBackend:
                 self._gen = _SdGen(total_steps = int(steps))
                 # Cleared at the START, so the retained reason is never read as this run's.
                 self._last_generate_error = None
-                # The id THIS request carried, kept with the reason: a post that never
-                # reached the backend started no run, so nothing carries its id, and a
-                # concurrent client's run carries its own.
                 self._last_generate_attempt = attempt_id
             try:
                 ref_pngs: list[bytes] = []
@@ -3669,17 +3660,10 @@ class SdCppDiffusionBackend:
                 self._last_generate_error = None
                 return result
             except SdCppCancelled as exc:
-                # Per attempt too, like the branch below: a cancel by an unload or
-                # a superseding load produced no image, so a client settling a lost POST
-                # must not read the transition to idle as success. The diffusers engine
-                # reaches its generic handler for this; this branch would be silent.
                 self._last_generate_error = DIFFUSION_CANCELLED_MSG
                 _retain_generate_failure(attempt_id, DIFFUSION_CANCELLED_MSG)
                 raise RuntimeError(DIFFUSION_CANCELLED_MSG) from exc
             except BaseException as exc:
-                # See the diffusers engine: idle progress is the only channel left once the
-                # POST is lost, so the reason has to outlive _gen, and the per-attempt
-                # record has to outlive the runs after it. Raw; the route classifies.
                 self._last_generate_error = str(exc) or type(exc).__name__
                 _retain_generate_failure(attempt_id, self._last_generate_error)
                 raise
@@ -4012,11 +3996,8 @@ class SdCppDiffusionBackend:
                 "total_steps": 0,
                 "fraction": 0.0,
                 "eta_seconds": None,
-                # Idle is not the same as fine. Only while it is the LAST thing that
-                # happened: the next generation clears it on success.
+                # Idle is not the same as fine.
                 "error": getattr(self, "_last_generate_error", None),
-                # WHICH attempt the reason belongs to, so a caller settling a LOST
-                # post can reject one that is not its own. None if no id was sent.
                 "generation_attempt": getattr(self, "_last_generate_attempt", None),
             }
         return {
@@ -4025,8 +4006,6 @@ class SdCppDiffusionBackend:
             "total_steps": gen.total_steps,
             "fraction": min(gen.step / gen.total_steps, 1.0),
             "eta_seconds": gen.eta_seconds,
-            # WHOSE run this is: a caller settling a lost POST that never arrived
-            # would otherwise take a concurrent client's run going idle for its own.
             "generation_attempt": getattr(self, "_last_generate_attempt", None),
         }
 

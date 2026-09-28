@@ -220,10 +220,6 @@ function makeWorld(options: {
     },
     "../lib/debug-log-buffer": debugLogBuffer,
     "../lib/debug-log-error": debugLogError,
-    // No "View logs" request pending: these cases are the tab opened directly, so
-    // the picker keeps its own default source rather than a failure's family. Callable
-    // AND carrying getState, like the real zustand store: the tab subscribes to the
-    // pending request as a hook and reads the rest imperatively.
     "../stores/settings-dialog-store": {
       useSettingsDialogStore: Object.assign(
         (selector?: (state: DialogState) => unknown) =>

@@ -1,18 +1,6 @@
-// SPDX-License-Identifier: AGPL-3.0-only
-// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+// SPDX-License-Identifier: AGPL-3.0-only Copyright 2026-present the Unsloth AI Inc.
 
-/** When `loadModel` announces that the load request is actually going out.
- *
- * The chat hook decides which log a failure toast offers from this, because only a request
- * that was SENT can have left a runner log behind. Everything `loadModel` does before it --
- * preparing the HF token, which can prompt and be cancelled, and the abort check -- reaches
- * the hook's catch with no runner started, and naming `llama-server` there opens whatever
- * unrelated earlier attempt is newest on the host.
- *
- * So the ordering inside `loadModel` is the contract, not an implementation detail: drive
- * the real module and assert the callback fires after a proceeding token preparation and
- * never without one.
- */
+/** When `loadModel` announces that the load request is actually going out. */
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -39,8 +27,6 @@ function chatApi(prepared: Prepared) {
           _init: unknown,
           authOptions?: { onRequestStart?: () => void },
         ) => {
-          // Where authFetch itself announces the send: past its own local refusals, which
-          // is the boundary this contract is about.
           authOptions?.onRequestStart?.();
           order.push("request");
           return {
@@ -101,9 +87,6 @@ test("the request-start callback fires after the token is prepared and before th
 });
 
 test("a cancelled token prompt never announces a request", async () => {
-  // The case the hook cares about: a local or native GGUF pick skips the outer token
-  // preparation, so an invalid stored token prompts HERE and a cancel throws before the
-  // POST. A flag set before calling loadModel would already be true.
   const { module, order } = chatApi({ proceed: false });
   await assert.rejects(
     module.loadModel(
@@ -140,9 +123,6 @@ test("an abort that lands during token preparation never announces a request", a
 
 
 test("a local refusal inside authFetch never announces the send", async () => {
-  // The refusal that has no request behind it at all: a peer tab is mid account switch, so
-  // authFetch throws before any bytes leave. A caller that announced the send before calling
-  // it then offered the server log for a load the backend never saw.
   const order: string[] = [];
   const auth = loadWithStubs<{
     authFetch: (

@@ -310,8 +310,6 @@ def test_pipeline_runtime_error_is_sanitized_500(monkeypatch):
     monkeypatch.setattr(gallery_module, "save", _save)
     resp = cli.post("/v1/images/generations", json = {"prompt": "p", "size": "256x256"})
     assert resp.status_code == 500
-    # Classified, not echoed: the fallback plus fixed text naming the CLASS of failure, which
-    # is the point of the classification. The engine's own words still never leave.
     assert resp.json()["error"]["message"] == (
         "Image generation failed. The device ran out of memory. Try a smaller size, fewer "
         "steps, or a smaller batch."

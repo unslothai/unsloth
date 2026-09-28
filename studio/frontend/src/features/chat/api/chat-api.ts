@@ -282,9 +282,7 @@ export async function loadModel(
   if (options?.signal?.aborted)
     throw options.signal.reason ?? new DOMException("Aborted", "AbortError");
   // Announced after the token prompt, so a cancelled load never shows a row. The indicator
-  // otherwise had nothing to show until its next 5s poll. The callback goes to authFetch
-  // rather than firing here: its own account-transition gate refuses locally, with no
-  // request going out, and firing first described bytes that never left.
+  // otherwise had nothing to show until its next 5s poll.
   return withModelLoadNotice(
     options?.runtime ?? "chat",
     payload.model_path ?? null,

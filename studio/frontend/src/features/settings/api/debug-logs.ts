@@ -29,8 +29,7 @@ export interface DebugLogSource {
 export interface DebugLogSources {
   sources: DebugLogSource[];
   defaultSourceId: string | null;
-  /** The source a diagnostic's own path names, canonicalised by the backend. Null when no
-   * path was sent, when it matched nothing, or on a backend older than this field. */
+  /** The source a diagnostic's own path names, canonicalised by the backend. */
   matchedSourceId: string | null;
   fileLoggingDisabled: boolean;
   /** Where the logs live. Null on a backend older than this field. */
@@ -57,9 +56,6 @@ export async function loadDebugLogSources(
   signal?: AbortSignal,
   diagnosticPath?: string | null,
 ): Promise<DebugLogSources> {
-  // Matched server-side on purpose: the runner reports whatever spelling
-  // UNSLOTH_STUDIO_HOME gave it (a literal "~", a relative root) while the listing reports a
-  // realpath, so comparing the two here would miss the very file the diagnostic named.
   const query = diagnosticPath
     ? `?diagnostic_path=${encodeURIComponent(diagnosticPath)}`
     : "";

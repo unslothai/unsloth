@@ -1900,16 +1900,9 @@ class DiffusionBackend:
                 self._generate_lock.release()
 
     def _retained_generate_failure(self, exc, attempt_id):
-        """Record *exc* against *attempt_id* and hand it back, for the raises the handler in
-        ``generate`` cannot see: cancelled while queued for the slot, no model loaded, or a
-        superseding load. With nothing retained, a client whose POST was lost was told by
-        settleLostGeneration that its request never reached the server."""
+        """Record *exc* against *attempt_id* and hand it back, for the raises the handler in."""
         self._last_generate_error = str(exc) or type(exc).__name__
-        # The attempt too: the block that normally sets this has not run, so the reason would
-        # otherwise be attributed to whichever attempt ran last.
         self._last_generate_attempt = attempt_id
-        # Unlogged: the route answers every one of these as a 409 or 400 WITHOUT logging,
-        # so offering the log would open an unrelated one.
         _retain_generate_failure(attempt_id, self._last_generate_error, logged = False)
         return exc
 
@@ -8435,8 +8428,7 @@ class DiffusionBackend:
         controlnet: Optional[tuple[str, str, str, float, float, float]] = None,
         # load_identity() of the caller's status() read; refuse rather than run a different load (#9448)
         expected_load: Optional[LoadIdentity] = None,
-        # Client id for THIS request, echoed back beside a retained failure. Absent from
-        # an older client, which gets the pre-existing gallery probe.
+        # Client id for THIS request, echoed back beside a retained failure.
         attempt_id: Optional[str] = None,
         allow_oversized: bool = False,
     ) -> dict[str, Any]:
@@ -8465,12 +8457,8 @@ class DiffusionBackend:
                 # Publish an active (step 0) state before the slow pre-denoise setup so a reload mount probe does not
                 # read idle.
                 self._gen = _GenState(total_steps = steps)
-                # Cleared at the START, not only on success, so the retained reason can
-                # never be read as belonging to the run that is now in flight.
+                # Cleared at the START so the retained reason never reads as the in-flight run's.
                 self._last_generate_error = None
-                # The id THIS request carried, kept with the reason: a post that never
-                # reached the backend started no run, so nothing carries its id, and a
-                # concurrent client's run carries its own.
                 self._last_generate_attempt = attempt_id
             # Reset in the finally, so a failed or cancelled generation frees its reused outputs.
             static_skip_pipe = None
@@ -9124,13 +9112,6 @@ class DiffusionBackend:
                 self._last_generate_error = None
                 return result
             except BaseException as exc:
-                # Kept so the idle progress below can still say WHY: once the POST is
-                # lost past the proxy window that poll is the client's only channel, and
-                # clearing _gen alone reported "not running" for a failure, which the
-                # settling path read as success. Raw; the route classifies it through
-                # _generate_failure_detail, so engine text never escapes from here.
-                # Both: the slot answers a client with no attempt id, and the
-                # per-attempt record survives the runs that follow this one.
                 self._last_generate_error = str(exc) or type(exc).__name__
                 _retain_generate_failure(attempt_id, self._last_generate_error)
                 raise
@@ -9161,11 +9142,8 @@ class DiffusionBackend:
                 "total_steps": 0,
                 "fraction": 0.0,
                 "eta_seconds": None,
-                # Idle is not the same as fine. Carried only while it is the LAST thing that
-                # happened: the next generation clears it on success.
+                # Idle is not the same as fine.
                 "error": getattr(self, "_last_generate_error", None),
-                # WHICH attempt the reason belongs to, so a caller settling a LOST
-                # post can reject one that is not its own. None if no id was sent.
                 "generation_attempt": getattr(self, "_last_generate_attempt", None),
                 "phase": "denoise",
             }
@@ -9175,8 +9153,6 @@ class DiffusionBackend:
             "total_steps": gen.total_steps,
             "fraction": gen.step / gen.total_steps,  # step is 1..total, never over 1.0
             "eta_seconds": gen.eta_seconds,
-            # WHOSE run this is: a caller settling a lost POST that never arrived
-            # would otherwise take a concurrent client's run going idle for its own.
             "generation_attempt": getattr(self, "_last_generate_attempt", None),
             "phase": gen.phase,
         }

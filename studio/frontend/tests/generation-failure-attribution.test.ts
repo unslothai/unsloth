@@ -1,13 +1,6 @@
-// SPDX-License-Identifier: AGPL-3.0-only
-// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+// SPDX-License-Identifier: AGPL-3.0-only Copyright 2026-present the Unsloth AI Inc.
 
-/** Which attempt a retained generation failure belongs to.
- *
- * The reason outlives its run because a caller whose POST was lost has nothing else to
- * read, which is why it cannot be taken at face value: the POST may never have arrived,
- * or the run that failed may be an earlier one or a concurrent client's. Reporting either
- * is a failure that did not happen here, and it skips the gallery probe that says what did.
- */
+/** Which attempt a retained generation failure belongs to. */
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -35,9 +28,6 @@ test("a failure carrying this attempt's own id is this attempt's", () => {
 });
 
 test("a failure from any other run is not, however recent", () => {
-  // The two cases a monotonic counter cannot separate: a previous run of this client, and a
-  // run a concurrent client started AFTER this post and failed before this waiter polled.
-  // Both are "later than my baseline"; neither is this attempt.
   for (const other of ["attempt-earlier", "attempt-other-tab"]) {
     assert.equal(
       generationFailureForAttempt(
@@ -51,8 +41,7 @@ test("a failure from any other run is not, however recent", () => {
 });
 
 test("a reason that cannot be identified is not used", () => {
-  // An older backend, or a run started by a request that carried no id. The gallery probe
-  // still settles those, as it did before this field existed, rather than a guess here.
+  // An older backend, or a run started by a request that carried no id.
   for (const carried of [undefined, null, ""]) {
     assert.equal(
       generationFailureForAttempt(
@@ -90,8 +79,6 @@ test("no failure is no failure, whatever the id says", () => {
 });
 
 test("a minted id is unique, and something the backend will accept", () => {
-  // Bounded and patterned on the backend, because it comes off a request and goes back out
-  // on a response: attempt_id is max_length 64 with ^[A-Za-z0-9_-]+$.
   const ids = new Set<string>();
   for (let i = 0; i < 64; i++) {
     const id = newGenerationAttemptId();
@@ -107,10 +94,6 @@ test("a minted id is unique, and something the backend will accept", () => {
 });
 
 test("an id is minted per post and sent with it", () => {
-  // Source-shape, because images-page.tsx cannot be loaded on its own, and scoped to the
-  // generate loop's body: an id minted anywhere else would not describe one post. Asserted
-  // as: the mint, the payload field and the settle call all sit inside handleGenerate,
-  // between its start and the next top-level callback.
   const src = readFileSync(
     new URL("../src/features/images/images-page.tsx", import.meta.url),
     "utf8",
@@ -139,8 +122,7 @@ test("an id is minted per post and sent with it", () => {
 });
 
 test("only a failure the server logged offers the logs action", () => {
-  // The 500 paths log and answer with a classified reason, which always opens with this
-  // prefix. Nothing else is in the log the action would open.
+  // The 500 paths log and answer with a classified reason, which always opens with this prefix.
   assert.equal(generationFailureWasLogged("Image generation failed."), true);
   assert.equal(
     generationFailureWasLogged(
@@ -174,8 +156,6 @@ test("only a failure the server logged offers the logs action", () => {
     new URL("../src/features/images/images-page.tsx", import.meta.url),
     "utf8",
   );
-  // The prefix judgement is still the fallback for a failure the POST reported directly,
-  // where there is no retained record to ask.
   assert.match(
     page,
     /: generationFailureWasLogged\(msg\)\s*\)\s*\?\s*viewLogsAction\("server"\)\s*:\s*undefined/,
@@ -184,8 +164,6 @@ test("only a failure the server logged offers the logs action", () => {
 });
 
 test("a retained failure says whether it was logged, since its text cannot", () => {
-  // The reason a settling caller reads has already been classified, so a client-input
-  // failure the route answered WITHOUT logging carries the same prefix as an internal one.
   assert.equal(
     retainedFailureWasLogged({
       error: "Image generation failed.",
@@ -208,8 +186,6 @@ test("a retained failure says whether it was logged, since its text cannot", () 
     true,
   );
 
-  // The page carries the answer out of the settling loop with the error it throws, and
-  // prefers it over the prefix guess when it is there.
   const page = readFileSync(
     new URL("../src/features/images/images-page.tsx", import.meta.url),
     "utf8",
@@ -227,8 +203,6 @@ test("a video failure the backend did not log offers no logs action", () => {
     new URL("../src/features/video/video-page.tsx", import.meta.url),
     "utf8",
   );
-  // Both sites: the live poll and the mount-time resume, which shows the same terminal
-  // phase after a reload.
   const gates = page.match(/error_logged === false \? undefined : viewLogsAction\("server"\)/g);
   assert.equal(
     gates?.length,
@@ -242,10 +216,6 @@ test("a load that never reached the server offers no logs action", () => {
     new URL("../src/features/chat/hooks/use-chat-model-runtime.ts", import.meta.url),
     "utf8",
   );
-  // The flag is set immediately before the request goes out, on both the main load and
-  // the rollback, and nowhere else.
-  // Once: on the TARGET load. The rollback is a different request, and marking this on its
-  // behalf let the target's error borrow a log of a load that succeeded.
   const sets = runtime.match(/loadRequestIssued = true;/g);
   assert.equal(sets?.length, 1, "the request-issued flag is not set where the load is sent");
   assert.match(runtime, /let loadRequestIssued = false;/);
@@ -261,9 +231,6 @@ test("a run that failed across a reload is reported, not taken for finished", ()
     new URL("../src/features/images/images-page.tsx", import.meta.url),
     "utf8",
   );
-  // Both resume paths: the poll that finds the run already idle, and the mount probe that
-  // never saw it active at all. A reload leaves no POST to reject and no settling loop, so
-  // the retained reason is the only channel left.
   const calls = page.match(/reportResumedGenerateFailure\(/g);
   assert.equal(
     calls?.length,
@@ -284,29 +251,21 @@ test("a failure the user has already seen is not replayed on the next mount", ()
     new URL("../src/features/images/images-page.tsx", import.meta.url),
     "utf8",
   );
-  // One MODULE-level slot: a ref or state would reset on the very remount this guards, and
-  // it is deliberately lost on reload, which is the case the retained reason exists for.
   assert.match(
     page,
     /^let surfacedGenerateFailure: string \| null = null;$/m,
     "the already-surfaced failure is not remembered across a remount",
   );
-  // The backend keeps the reason until another run starts, so the idle probe answers with
-  // it on every later mount.
   assert.match(
     page,
     /if \(key === surfacedGenerateFailure\) return;/,
     "a retained failure is replayed once per navigation back to Images",
   );
-  // Not every failure carries an attempt: the OpenAI images route posts without one, so an
-  // id-keyed guard could never match its retained reason and replayed it on every mount.
   assert.match(
     page,
     /return attemptId \? `attempt:\$\{attemptId\}` : `reason:\$\{reason\}`;/,
     "an unattributed failure has no key, so it is replayed forever",
   );
-  // And the run that posted it marks its own attempt, so the first mount after a failure
-  // the user already saw in handleGenerate is silent too.
   assert.match(
     page,
     /markGenerateFailureSurfaced\(generateFailureKey\(postedAttemptId, msg\)\);/,
@@ -325,9 +284,6 @@ test("a synchronous video refusal the backend logged offers its log", () => {
     new URL("../src/features/video/video-page.tsx", import.meta.url),
     "utf8",
   );
-  // Polling never starts for a rejected POST, so neither progress branch can attach the
-  // action: this is the only place it can be offered. Classified refusals carry the
-  // fallback prefix and are logged first; a 400 carries the raw validation text.
   assert.match(
     page,
     /refusal\.startsWith\(VIDEO_FAILURE_LOGGED_PREFIX\)\s*\?\s*viewLogsAction\("server"\)\s*:\s*undefined/,
@@ -341,9 +297,6 @@ test("the load-issued flag is set at the send boundary, not before it", () => {
     new URL("../src/features/chat/hooks/use-chat-model-runtime.ts", import.meta.url),
     "utf8",
   );
-  // loadModel does its own token preparation and abort check before sending, so a flag set
-  // before the call is still set when that inner prompt is declined and the backend
-  // received nothing. onRequestStart fires at the actual send.
   const viaCallback = runtime.match(
     /onRequestStart: \(\) => \{\s*loadRequestIssued = true;\s*\},/g,
   );
@@ -355,8 +308,6 @@ test("the load-issued flag is set at the send boundary, not before it", () => {
 });
 
 test("a logged persistence failure also gets its log", () => {
-  // The route logs diffusion.persist_failed and answers with fixed text that carries no
-  // classification prefix, and the underlying disk error is only in that log.
   assert.equal(
     generationFailureWasLogged("Failed to save the generated image."),
     true,
@@ -378,8 +329,7 @@ test("a rollback request does not mark the failed load as sent", () => {
     new URL("../src/features/chat/hooks/use-chat-model-runtime.ts", import.meta.url),
     "utf8",
   );
-  // One setter, on the TARGET load only. The rollback that follows a failed switch is a
-  // different request, and its log is of a load that SUCCEEDED.
+  // One setter, on the TARGET load only.
   const setters = runtime.match(
     /onRequestStart: \(\) => \{\s*loadRequestIssued = true;\s*\},/g,
   );

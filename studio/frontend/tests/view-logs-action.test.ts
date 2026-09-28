@@ -1,14 +1,6 @@
-// SPDX-License-Identifier: AGPL-3.0-only
-// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+// SPDX-License-Identifier: AGPL-3.0-only Copyright 2026-present the Unsloth AI Inc.
 
-/** The "View logs" route a failure offers, and the request that carries it.
- *
- * A failure toast is the only thing pointing at Settings > Logs, so if this breaks the
- * reported experience comes back silently, from any of the three call sites (GGUF load,
- * image, video). The request's LIFETIME is asserted too: only the panel performing the
- * jump clears it, so it must survive a navigation back to its own tab and be dropped by
- * anything else. Held wider it replays later; narrower, a deep link in flight is lost.
- */
+/** The "View logs" route a failure offers, and the request that carries it. */
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -50,8 +42,6 @@ test("the action opens Logs on the family that failed", () => {
   const { viewLogsAction } = loadWithStubs<
     typeof import("../src/features/settings/lib/view-logs-action.ts")
   >(ACTION_URL, {
-    // Not the useT hook: two of the three call sites raise their toast from a callback
-    // outside a component body, so the action has to translate without one.
     "@/i18n": {
       translate: (key: string) => {
         translated.push(key);
@@ -97,8 +87,6 @@ test("a generation failure asks for the server log, a load failure for the runne
     "../stores/settings-dialog-store": { useSettingsDialogStore: store },
     "@/features/auth/account-session": { isAccountOwner: () => true },
   });
-  // The runner writes its own file per attempt, so a load's reason is there rather than in
-  // the server log; the diffusion runners log through the backend's own stream.
   for (const family of ["llama-server", "server"] as const) {
     reset();
     const action = viewLogsAction(family);
@@ -109,9 +97,6 @@ test("a generation failure asks for the server log, a load failure for the runne
 });
 
 test("a GGUF diffusion load asks for the diffusion runner's log, not the LLM one", () => {
-  // The chat hook loads diffusion models too, and llama_cpp.py writes their runner output
-  // under logs/diffusion-server (utils/debug_log_sources.py names the family). Asking for
-  // llama-server there opens an unrelated LLM log, which is the opposite of the point.
   reset();
   const { viewLogsAction } = loadWithStubs<
     typeof import("../src/features/settings/lib/view-logs-action.ts")
@@ -135,16 +120,12 @@ test("only a GGUF load is explained by a runner log; everything else is in the s
     "@/features/auth/account-session": { isAccountOwner: () => true },
   });
 
-  // The runners write a file per attempt and the backend names it in the diagnostic, so a
-  // GGUF failure's reason is in there.
   assert.equal(loadFailureLogFamily(true, false, RUNNER_LOG), "llama-server");
   assert.equal(
     loadFailureLogFamily(true, true, RUNNER_LOG),
     "diffusion-server",
   );
-  // A Transformers or MLX load has no runner at all. Answering llama-server for those
-  // opens whatever older GGUF attempt happens to be on the host -- an unrelated log,
-  // which reads as the reason and is not. performLoad's catch is shared by all of them.
+  // A Transformers or MLX load has no runner at all.
   for (const notGguf of [false, undefined] as const) {
     for (const diffusion of [true, false, undefined] as const) {
       assert.equal(
@@ -157,10 +138,6 @@ test("only a GGUF load is explained by a runner log; everything else is in the s
 });
 
 test("a load whose diagnostic names no runner log has none to open", () => {
-  // The same catch sees failures from before any runner started, in the client's
-  // preflight or in the backend ahead of the launch. The request going out does not
-  // tell those from a runner that ran and failed; the backend naming a log does, since
-  // it names one exactly when it has one.
   const { loadFailureLogFamily } = loadWithStubs<
     typeof import("../src/features/settings/lib/view-logs-action.ts")
   >(ACTION_URL, {
@@ -179,8 +156,6 @@ test("a load whose diagnostic names no runner log has none to open", () => {
       }
     }
   }
-  // And it is the runner question, not a blanket override: the same inputs with a named
-  // log still name the runner.
   assert.equal(loadFailureLogFamily(true, false, RUNNER_LOG), "llama-server");
   assert.equal(
     loadFailureLogFamily(true, true, RUNNER_LOG),
@@ -189,8 +164,6 @@ test("a load whose diagnostic names no runner log has none to open", () => {
 });
 
 test("the family and the path are read from the same diagnostic", () => {
-  // Source-shape: two answers derived from one value, because a family naming a runner
-  // while the action carries no path is the exact pairing that opens someone else's log.
   const src = readFileSync(
     new URL(
       "../src/features/chat/hooks/use-chat-model-runtime.ts",
@@ -211,10 +184,6 @@ test("the family and the path are read from the same diagnostic", () => {
     /viewLogsAction\(\s*loadFailureLogFamily\(isGguf, isDiffusion, runnerLogPath\),\s*runnerLogPath,\s*\)/,
     "the family and the path handed to the action are no longer the same value",
   );
-  // loadRequestIssued is read again, for a different question: whether the backend could
-  // have logged ANYTHING for this failure, which decides if the action exists at all. It
-  // must not reach the family, which is what equating the two got wrong -- a request
-  // issued is not a runner started, and that pairing opened someone else's log.
   assert.ok(
     !/loadFailureLogFamily\([^)]*loadRequestIssued/.test(src),
     "the hook still equates issuing the request with a runner having started",
@@ -245,8 +214,6 @@ test("the exact log the diagnostic named is carried, and wins over family recenc
     path,
     "/home/u/.unsloth/studio/logs/llama-server/llama-1765000000-port-8080.log",
   );
-  // A message without one must not invent a path, or the tab would match nothing and
-  // silently show no log at all instead of falling back to the family.
   assert.equal(failureLogPath("Failed to load model"), null);
   assert.equal(failureLogPath("Full log: "), null);
 
@@ -298,8 +265,6 @@ test("closing the dialog drops the request, like every other pending one", () =>
 });
 
 test("the sibling openers do not leave a stale log request behind", () => {
-  // Each opener nulls every request it does not set, so arriving at Data or Connections
-  // cannot carry a log family into a panel that never reads it.
   for (const open of [
     () => store.getState().openArchivedChats(),
     () => store.getState().openArchivedMedia("images"),
@@ -313,9 +278,6 @@ test("the sibling openers do not leave a stale log request behind", () => {
 });
 
 test("an account that cannot open Logs is offered no action at all", () => {
-  // Logs is owner-only and resolveSettingsTab reroutes a managed account to General,
-  // while the sources route is owner-guarded. A non-owner can still see this toast, so
-  // an unconditional button landed on an unrelated tab and read as broken.
   reset();
   const { viewLogsAction } = loadWithStubs<
     typeof import("../src/features/settings/lib/view-logs-action.ts")
@@ -324,8 +286,6 @@ test("an account that cannot open Logs is offered no action at all", () => {
     "../stores/settings-dialog-store": { useSettingsDialogStore: store },
     "@/features/auth/account-session": { isAccountOwner: () => false },
   });
-  // undefined, not a disabled or no-op action: every call site passes this straight through
-  // as sonner's `action`, where undefined renders nothing.
   for (const family of [
     "llama-server",
     "diffusion-server",
@@ -340,8 +300,6 @@ test("an account that cannot open Logs is offered no action at all", () => {
 });
 
 test("the owner-only tab list is what the gate is gating on", () => {
-  // If Logs ever stopped being owner-only the gate would be hiding a working button, and if
-  // the tab id changed the gate would be hiding nothing. Pinned against the real list.
   assert.equal(
     OWNER_ONLY_SETTINGS_TABS.has("debugging"),
     true,
@@ -352,9 +310,6 @@ test("the owner-only tab list is what the gate is gating on", () => {
 });
 
 test("a request arriving while Logs is already open is visible to a subscriber", async () => {
-  // openLogs only writes the store and reopening the current tab does not remount, so
-  // nothing re-read the request. The panel subscribes to this key, so what matters is
-  // that it MOVES on arrival and settles back on consumption.
   const { pendingLogRequestKey, NO_PENDING_LOG_REQUEST } = await import(
     "../src/features/settings/stores/settings-dialog-store.ts"
   );
@@ -369,8 +324,6 @@ test("a request arriving while Logs is already open is visible to a subscriber",
   const first = pendingLogRequestKey(store.getState());
   assert.notEqual(first, NO_PENDING_LOG_REQUEST);
 
-  // A second failure in the SAME family naming a DIFFERENT log has to look different, or
-  // the panel would not go and fetch the new one.
   store.getState().openLogs("llama-server", "/logs/llama-b.log");
   assert.notEqual(pendingLogRequestKey(store.getState()), first);
 
@@ -387,10 +340,6 @@ test("a request arriving while Logs is already open is visible to a subscriber",
 });
 
 test("an older in-flight refresh does not consume a newer request", async () => {
-  // The panel captures the request key its fetch was made FOR and compares it when the
-  // response lands. Without that, a pathless refresh in flight answers a request that
-  // arrived after it, takes the family's newest file and consumes it, aborting the
-  // exact-path refresh: after a failed switch the panel opens the rollback's log.
   const { pendingLogRequestKey, NO_PENDING_LOG_REQUEST } = await import(
     "../src/features/settings/stores/settings-dialog-store.ts"
   );
@@ -409,15 +358,11 @@ test("an older in-flight refresh does not consume a newer request", async () => 
     "the older fetch would be unable to tell it was answering someone else's request",
   );
 
-  // The refresh triggered BY the click captured the pending one, so it is the one allowed
-  // to consume it.
   const capturedByNewerFetch = pendingLogRequestKey(store.getState());
   assert.equal(capturedByNewerFetch, nowPending);
   store.getState().consumeLogFamilyRequest();
   assert.equal(pendingLogRequestKey(store.getState()), NO_PENDING_LOG_REQUEST);
 
-  // And that the panel performs that comparison: the guard lives in an async callback
-  // a static render never runs, so the store assertions above pass without it.
   const tab = await readFile(
     new URL("../src/features/settings/tabs/debugging-tab.tsx", import.meta.url),
     "utf8",

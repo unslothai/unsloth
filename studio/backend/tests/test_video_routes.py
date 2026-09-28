@@ -629,10 +629,7 @@ def test_generate_cancelled_reports_failed_with_sentinel(client, monkeypatch):
 
 
 def test_generate_pipeline_error_reports_sanitized_failure(client, monkeypatch):
-    # A loaded model failing mid-pipeline (CUDA OOM) is a server failure. The terminal state
-    # names the CLASS of failure from fixed text and never echoes the raw exception, which can
-    # carry local paths and argv. Reporting only "Video generation failed." was the complaint
-    # this classification answers: the user was told a generation failed and nothing else.
+    # A loaded model failing mid-pipeline (CUDA OOM) is a server failure.
     backend = video_module.get_video_backend()
     backend.loaded = True
 
@@ -1923,12 +1920,7 @@ def test_video_download_plan_still_refuses_a_bad_gpu_while_training_holds_the_ca
 
 
 def test_a_video_failure_says_whether_it_reached_the_log():
-    """A client-input failure is answered with its reason and never logged.
-
-    Once it is on the progress payload it reads like an internal one, so the page offering
-    "View logs" from the message alone opened an unrelated current log. The worker says
-    which it was instead.
-    """
+    """A client-input failure is answered with its reason and never logged."""
     import inspect
 
     from core.inference import video as video_module

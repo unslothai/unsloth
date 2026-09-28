@@ -57,12 +57,8 @@ interface SettingsDialogState {
   // toast). DataTab uses it as its initial subpage, then clears it. See requestsFor
   // for how long it lives unconsumed.
   archivedRequested: ArchivedShelf | null;
-  // Set when a failure offers "View logs"; the Logs tab reads it as its initial source
-  // family, then clears it. A family rather than a source id, which is a digest of the
-  // real path the frontend cannot compute.
   logFamilyRequested: string | null;
-  /** The exact log file the failure named, when its diagnostic carried one. Preferred over
-   *  family recency: a rolled-back switch writes a newer log than the attempt that failed. */
+  /** The exact log file the failure named, when its diagnostic carried one. */
   logSourcePathRequested: string | null;
   // Set when something asks for one connection's settings (the picker's Connected group gear).
   // ConnectionsTab hands it to the form, then clears it. Same lifetime as archivedRequested.
@@ -158,14 +154,7 @@ function requestsFor(state: SettingsDialogState, tab: SettingsTab) {
   };
 }
 
-/** One value identifying the log request currently pending, for a subscriber.
- *
- * The Logs panel needs a reason to refresh when a request ARRIVES while it is mounted:
- * reopening the tab it is on does not remount it, and manual refresh mode rescans nothing.
- * One derived string keeps that to a single subscription and a stable value while nothing
- * is pending. Both fields, so a second failure in the same family naming a different log
- * still looks different here.
- */
+/** One value identifying the log request currently pending, for a subscriber. */
 export function pendingLogRequestKey(state: {
   logFamilyRequested: string | null;
   logSourcePathRequested: string | null;

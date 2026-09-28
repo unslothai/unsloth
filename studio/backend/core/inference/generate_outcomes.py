@@ -1,5 +1,4 @@
-# SPDX-License-Identifier: AGPL-3.0-only
-# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+# SPDX-License-Identifier: AGPL-3.0-only Copyright 2026-present the Unsloth AI Inc.
 
 """Terminal outcomes of recent image generations, keyed by the attempt that ran them.
 
@@ -21,12 +20,7 @@ _RETAINED_GENERATE_FAILURES = 16
 
 
 def attempt_scope_key(attempt_id) -> Optional[str]:
-    """*attempt_id* qualified by the acting account, or None when there is no id.
-
-    The engines are shared across accounts, so an attempt is only identified by the pair.
-    It also makes a named lookup safe to answer before the guards that hide ANOTHER
-    account's generation: a caller can only ever match its own account's attempt.
-    """
+    """*attempt_id* qualified by the acting account, or None when there is no id."""
     if not attempt_id:
         return None
     from utils.account_context import current_account_id
@@ -34,12 +28,6 @@ def attempt_scope_key(attempt_id) -> Optional[str]:
     return f"{current_account_id()}\x00{attempt_id}"
 
 
-# One store per process, not per engine instance: a request can switch the active engine,
-# and an outcome kept on the instance that ran the generation goes with it.
-# reason, and whether the server LOGGED it. The second is not inferable from the first: a
-# validation failure is answered with its reason and never logged, and once classified it
-# is indistinguishable from an internal one, so a client offering "View logs" off the
-# message opened an unrelated current log.
 _OUTCOMES: "OrderedDict[str, tuple[str, bool]]" = OrderedDict()
 _OUTCOMES_LOCK = threading.Lock()
 
@@ -49,11 +37,7 @@ def _retain_generate_failure(
     reason: str,
     logged: bool = True,
 ) -> None:
-    """Record *reason* against *attempt_id*, oldest entries first out.
-
-    *logged* travels with it: the engine retains a reason before the route decides whether
-    to log it, so the route corrects the record with ``mark_generate_failure_unlogged``.
-    """
+    """Record *reason* against *attempt_id*, oldest entries first out."""
     attempt_id = attempt_scope_key(attempt_id)
     if not attempt_id:
         return
@@ -65,12 +49,7 @@ def _retain_generate_failure(
 
 
 def mark_generate_failure_unlogged(attempt_id) -> None:
-    """Note that this attempt's retained reason never reached a log.
-
-    The branches that answer a client-input failure deliberately do not log it, and a
-    settling caller reads the retained reason rather than that response, so without this
-    the reason looked like one the log would explain.
-    """
+    """Note that this attempt's retained reason never reached a log."""
     attempt_id = attempt_scope_key(attempt_id)
     if not attempt_id:
         return
@@ -81,20 +60,10 @@ def mark_generate_failure_unlogged(attempt_id) -> None:
 
 
 def clear_generate_failure(attempt_id) -> None:
-    """Forget any retained outcome for *attempt_id*: a new execution owns that id now.
-
-    The Tauri client retries a POST whose connection dropped, with the same serialized body
-    and so the same attempt id. A first execution's retained failure then outranked the
-    retry, which can be queued, running or already successful, so a settling client declared
-    the attempt failed and ignored the images the retry had produced.
-    """
+    """Forget any retained outcome for *attempt_id*: a new execution owns that id now."""
     key = attempt_scope_key(attempt_id)
     if not key:
         return
-    # Under the same lock as every other mutation: unlocked, this could land between the
-    # eviction test in _retain_generate_failure and its popitem, dropping one MORE retained
-    # outcome than the bound calls for and leaving that client reading its failed generation
-    # as absent.
     with _OUTCOMES_LOCK:
         _OUTCOMES.pop(key, None)
 
@@ -110,12 +79,7 @@ def generate_failure_was_logged(attempt_id) -> Optional[bool]:
 
 
 def generate_failure_for_attempt(attempt_id) -> Optional[str]:
-    """The raw reason the generation *attempt_id* failed with, if it did and is remembered.
-
-    Per attempt and independent of the active engine, so a caller settling a lost POST is
-    answered about ITS OWN generation however many have run since. None for an attempt that
-    succeeded, never ran, or has aged out.
-    """
+    """The raw reason the generation *attempt_id* failed with, if it did and is remembered."""
     attempt_id = attempt_scope_key(attempt_id)
     if not attempt_id:
         return None

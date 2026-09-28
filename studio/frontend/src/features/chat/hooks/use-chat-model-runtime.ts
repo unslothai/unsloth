@@ -1861,14 +1861,7 @@ export function useChatModelRuntime() {
       let cpuFallbackReason: CpuFallbackReason | null = null;
       let mmprojFallbackReason: MmprojFallbackReason | null = null;
       try {
-        // Whether THIS load's /api/inference/load was actually SENT. A load can fail before
-        // that -- a token prompt the user declines, an abort, a guard in the preflight above
-        // -- and the backend then has nothing about it in any log, so offering "View logs"
-        // there opens an unrelated current log and points at a false diagnosis.
-        //
-        // The TARGET request only. The rollback load that follows a failed switch is a
-        // different request, and marking this on its behalf let the target's error borrow
-        // the rollback's log, which is a log of a load that SUCCEEDED.
+        // Whether THIS load's /api/inference/load was actually SENT.
         let loadRequestIssued = false;
 
         async function performLoad(): Promise<void> {
@@ -2516,9 +2509,7 @@ export function useChatModelRuntime() {
 
               force_reload: forceReload,
             }, {
-              // The true send boundary. loadModel does its own token preparation and abort
-              // check first, so a flag set before this call is still set when that inner
-              // prompt is declined and the backend received nothing.
+              // The true send boundary.
               onRequestStart: () => {
                 loadRequestIssued = true;
               },
@@ -3375,19 +3366,9 @@ export function useChatModelRuntime() {
           if (!abortCtrl.signal.aborted) {
             const message =
               err instanceof Error ? err.message : "Failed to load model";
-            // The backend's diagnostic (summary, runner tail, log path) arrived intact
-            // and was shown as an 8s toast TITLE: a wall of prose with no way back to it.
-            // First line as the title, the rest as the description, plus a log action.
             const [summary, ...rest] = message.split("\n");
             const detail = rest.join("\n").trim();
-            // The path the diagnostic names answers both halves: it pins the exact
-            // attempt even when a rollback load lands after it, and its ABSENCE says no
-            // runner of this attempt's ever wrote one (a Transformers or MLX load, or a
-            // failure before the launch), whose reason is in the current server log.
             const runnerLogPath = failureLogPath(message);
-            // A named log pins the attempt, so it is evidence on its own; without one, the
-            // request having been sent is what says the backend could have logged anything
-            // at all.
             const logsAction =
               runnerLogPath || loadRequestIssued
                 ? viewLogsAction(

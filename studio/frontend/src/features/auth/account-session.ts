@@ -50,10 +50,7 @@ function subscribeSession(listener: () => void): () => void {
     for (const event of events) window.removeEventListener(event, listener);
   };
 }
-/** Ownership outside a component body, for a callback that cannot call a hook.
- *
- * Same source and same display-only caveat as useIsAccountOwner, which reads it reactively;
- * prefer the hook in anything that renders. */
+/** Ownership outside a component body, for a callback that cannot call a hook. */
 export function isAccountOwner(): boolean {
   return sessionAccount(getAuthToken())?.isOwner ?? false;
 }

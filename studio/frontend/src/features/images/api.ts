@@ -93,18 +93,10 @@ export interface DiffusionGenerateProgress {
   total_steps: number;
   fraction: number;
   eta_seconds: number | null;
-  /** Why the LAST generation failed, when one did and is no longer running.
-   *
-   * The only channel left when a POST is lost past the proxy window: without it an idle
-   * read of a failed run cannot be told from a finished one. Classified by the backend,
-   * so it is safe to show; absent on an older one. */
+  /** Why the LAST generation failed, when one did and is no longer running. */
   error?: string | null;
-  /** Which ATTEMPT the `error` belongs to: the id that request carried, sent only beside
-   * a reason. A lost POST that never arrived started no run, so nothing carries its id,
-   * and a later run may be another client's. Only an exact match is this attempt's. */
   generation_attempt?: string | null;
-  // Whether that reason reached the server log. False for a client-input failure the
-  // route answers without logging, which no log can explain.
+  // Whether that reason reached the server log.
   error_logged?: boolean | null;
   // Absent (sd.cpp engine) means "denoise".
   phase?: "denoise" | "decode" | null;

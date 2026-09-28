@@ -185,8 +185,6 @@ import { ReferenceImageEditor } from "./reference-image-editor";
 import { type ReferenceMedia, ReferenceMediaPicker } from "./reference-picker";
 import { viewLogsAction } from "@/features/settings/lib/view-logs-action";
 
-// The prefix every classified video failure carries, and every branch that produces one
-// calls logger.error first. Mirrors GENERATE_FAILURE_LOGGED_PREFIX on the image side.
 const VIDEO_FAILURE_LOGGED_PREFIX = "Video generation failed.";
 import {
   defaultReferenceVideoTrim,
@@ -2440,9 +2438,6 @@ function VideoGenerator({
             // The user's own Cancel surfaces as the backend's cancelled sentinel; not an error.
             if (!msg.toLowerCase().includes("cancelled"))
               toast.error(msg, {
-                // Only where the log can hold the failure: a client-input one is answered
-                // with its reason and never logged, and opening Logs then shows an
-                // unrelated current log.
                 action:
                   p.error_logged === false ? undefined : viewLogsAction("server"),
               });
@@ -3455,10 +3450,6 @@ function VideoGenerator({
       });
     } catch (err) {
       if (!isMounted.current) return;
-      // A refusal the backend CLASSIFIED carries the fallback prefix, and every branch that
-      // produces one logs the exception first; a 400 answers with the raw validation text
-      // and logs nothing. Polling never starts for either, so this is the only place the
-      // action can be offered for a synchronous failure.
       const refusal = err instanceof Error ? err.message : "Video generation failed";
       toast.error(refusal, {
         action: refusal.startsWith(VIDEO_FAILURE_LOGGED_PREFIX)

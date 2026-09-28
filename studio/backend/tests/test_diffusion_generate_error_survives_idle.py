@@ -1,5 +1,4 @@
-# SPDX-License-Identifier: AGPL-3.0-only
-# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+# SPDX-License-Identifier: AGPL-3.0-only Copyright 2026-present the Unsloth AI Inc.
 
 """Whether a failed image generation can still say WHY once it is no longer running.
 
@@ -41,8 +40,6 @@ def test_an_engine_retains_the_reason_past_the_clear_of_gen(engine):
         f"{engine} no longer retains a failed generation's reason, so idle progress "
         "cannot distinguish a failure from a finished run"
     )
-    # Cleared when the NEXT run starts, or a later poll would read a stale failure as
-    # belonging to the generation now in flight.
     assert re.search(
         r"self\._gen = _(?:Gen|Sd)[A-Za-z]*\(total_steps[^\n]*\n\s*#[^\n]*\n(?:\s*#[^\n]*\n)?\s*self\._last_generate_error = None",
         src,
@@ -68,11 +65,7 @@ def test_the_idle_branch_is_what_publishes_it(engine):
 
 
 def test_the_route_classifies_it_and_never_relays_engine_text(monkeypatch):
-    """The engine keeps the raw string; only the route decides what a caller may see.
-
-    Otherwise the field becomes a hole for the engine's own text, which carries local paths
-    and argv -- the thing _generate_failure_detail exists to keep out of a message.
-    """
+    """The engine keeps the raw string; only the route decides what a caller may see."""
     import routes.inference as route
 
     raw = (
@@ -84,8 +77,6 @@ def test_the_route_classifies_it_and_never_relays_engine_text(monkeypatch):
     assert "/home/somebody" not in classified, "a local path reached a client-visible message"
     assert "--argv" not in classified
     assert classified != raw and classified, "the raw text was relayed unchanged"
-    # And it still says something specific rather than collapsing to the bare fallback,
-    # which is the whole reason this PR touched these messages.
     assert (
         classified != route._GENERATE_FAILURE_FALLBACK
     ), "an out-of-memory failure classified to the bare fallback"
@@ -95,8 +86,7 @@ def test_the_route_classifies_it_and_never_relays_engine_text(monkeypatch):
 
 
 def test_the_progress_route_puts_the_classified_reason_on_the_response():
-    """Wiring, read from the route's own source: the response must carry the CLASSIFIED
-    value, not the engine's."""
+    """Wiring, read from the route's own source: the response must carry the CLASSIFIED."""
     src = _src("routes/inference.py")
     at = src.index("async def diffusion_generate_progress")
     body = src[at : at + 6000]
@@ -107,12 +97,7 @@ def test_the_progress_route_puts_the_classified_reason_on_the_response():
 
 @pytest.mark.parametrize("engine", ENGINES)
 def test_an_engine_identifies_the_reason_with_the_attempt_that_caused_it(engine):
-    """A retained reason is only useful if a caller can tell WHOSE run it came from.
-
-    A counter only answers "later", and later includes a concurrent client's run as well as
-    this attempt's, while a generation whose POST never reached the backend started no run at
-    all. So the engine keeps the id the request carried, and a caller matches it exactly.
-    """
+    """A retained reason is only useful if a caller can tell WHOSE run it came from."""
     src = _src(engine)
     assert (
         "self._last_generate_attempt = attempt_id" in src
@@ -123,32 +108,21 @@ def test_an_engine_identifies_the_reason_with_the_attempt_that_caused_it(engine)
     assert (
         "attempt_id: Optional[str] = None," in src
     ), f"{engine} does not accept an attempt id from the route"
-    # Recorded where the run STARTS, beside the clear, or the id and the reason would
-    # describe different moments. Searched from the clear, since the pre-admission handler
-    # writes the same field earlier in the file for the raises that never reach the start.
     clear = src.index("self._last_generate_error = None")
     recorded = src.index("self._last_generate_attempt = attempt_id", clear)
     assert (
         0 < recorded - clear < 600
     ), f"{engine} records the attempt id away from where the reason is cleared"
-    # And no counter left behind: a monotonic lower bound is what this replaced, and leaving
-    # it published invites the comparison it cannot support.
     assert "generation_seq" not in src, f"{engine} still publishes the superseded counter"
 
 
 def test_the_route_forwards_the_attempt_id_and_sends_it_only_beside_a_reason():
-    """Forwarded from the request, returned only with the failure it dates.
-
-    Without a reason there is nothing to attribute, and only the client that sent the id can
-    match it -- so a concurrent client has no business reading which attempt last failed.
-    """
+    """Forwarded from the request, returned only with the failure it dates."""
     src = _src("routes/inference.py")
     at = src.index("async def generate_diffusion_image")
     assert (
         "attempt_id = request.attempt_id," in src[at : at + 4000]
     ), "the generate route no longer forwards the attempt id to the engine"
-    # Widened as the route grows: the window has to reach the end of this handler, or the
-    # assertions below silently stop measuring anything.
     at = src.index("async def diffusion_generate_progress")
     body = src[at : at + 9000]
     assert 'if not progress.get("error"):' in body
@@ -168,13 +142,7 @@ def test_the_attempt_id_is_bounded_and_patterned_on_the_way_in():
 
 
 def test_a_failure_survives_the_runs_that_follow_it():
-    """One retained slot is not enough when a second client is queued.
-
-    A client whose POST was lost polls once a second. A queued client can take the slot in
-    that window, and the run it starts clears the slot: the settling client then reads the
-    newcomer going active and idle as its OWN success, and advances a batch past an output
-    that never arrived. Outcomes are therefore kept per attempt.
-    """
+    """One retained slot is not enough when a second client is queued."""
     import core.inference.generate_outcomes as outcomes
     from core.inference.generate_outcomes import (
         _RETAINED_GENERATE_FAILURES,
@@ -194,8 +162,6 @@ def test_a_failure_survives_the_runs_that_follow_it():
     assert generate_failure_for_attempt(None) is None
     assert generate_failure_for_attempt("") is None
 
-    # Bounded, oldest first out: only a settling caller reads one, and it reads it within
-    # seconds, so this cannot grow with uptime.
     for i in range(_RETAINED_GENERATE_FAILURES + 4):
         _retain_generate_failure(f"attempt-{i}", f"reason {i}")
     assert generate_failure_for_attempt("attempt-0") is None, "the bound is not enforced"
@@ -214,8 +180,6 @@ def test_an_engine_records_the_failure_against_its_own_attempt(engine):
     assert (
         "_retain_generate_failure(attempt_id," in src
     ), f"{engine} does not record the failure against the attempt that ran it"
-    # Both places that set the reason: the handler inside the run and the helper for the
-    # raises that precede it. Each has to record the per-attempt outcome beside it.
     at = 0
     seen = 0
     while True:
@@ -247,14 +211,7 @@ def test_the_progress_route_answers_about_the_attempt_it_was_asked_about():
 
 
 def test_the_native_cancel_branch_records_its_attempt_too():
-    """sd.cpp catches SdCppCancelled before the generic handler.
-
-    An unload or a superseding load cancels the run; no image was produced, so a client
-    settling a lost POST has to be told. The keyed lookup answers whenever the client names
-    its attempt, so a branch that only wrote the single slot left that client reading idle
-    as success. The diffusers engine raises RuntimeError for the same case and reaches its
-    generic handler, which already records.
-    """
+    """sd.cpp catches SdCppCancelled before the generic handler."""
     src = _src("core/inference/sd_cpp_backend.py")
     at = src.index("except SdCppCancelled as exc:")
     branch = src[at : at + 700]
@@ -267,12 +224,7 @@ def test_the_native_cancel_branch_records_its_attempt_too():
 
 @pytest.mark.parametrize("engine", ENGINES)
 def test_an_engine_says_whose_run_is_active(engine):
-    """On the active branch as well as the idle one.
-
-    A caller settling a lost POST asks whether ITS generation is running. Told only that
-    SOMETHING is, it counts a concurrent client's run as its own and reads that run going
-    idle as its own success.
-    """
+    """On the active branch as well as the idle one."""
     src = _src(engine)
     at = src.index("def generate_progress")
     body = src[at : at + 2200]
@@ -282,11 +234,7 @@ def test_an_engine_says_whose_run_is_active(engine):
 
 
 def test_an_attempt_specific_progress_answer_is_only_about_that_attempt():
-    """The route narrows active, the step counter and the reason to the attempt asked about.
-
-    Driven rather than read: the failure mode is a field left over from the global answer,
-    which source-shape assertions are bad at catching.
-    """
+    """The route narrows active, the step counter and the reason to the attempt asked about."""
     import asyncio
 
     import routes.inference as route
@@ -316,8 +264,6 @@ def test_an_attempt_specific_progress_answer_is_only_about_that_attempt():
         try:
             route.account_access = types.SimpleNamespace(
                 managed_account = lambda: False,
-                # None is the single-identity installation: there is nobody for the
-                # engine's slot to belong to but the caller.
                 account_scope = lambda: None,
                 generation_is_foreign = lambda *_a, **_k: False,
                 generation_is_mine = lambda *_a, **_k: True,
@@ -351,22 +297,12 @@ def test_an_attempt_specific_progress_answer_is_only_about_that_attempt():
     assert theirs.active is True, "the attempt that IS running must be told so"
     assert theirs.step == 7
 
-    # And an unnamed poll still gets the global answer, which is what the progress bar and
-    # an older client read.
     unnamed = answer(running_for_someone_else, None)
     assert unnamed.active is True and unnamed.step == 7
 
 
 def test_a_retained_outcome_is_the_callers_own_account(monkeypatch):
-    """Keyed by account as well as attempt, and answered before the guards that hide
-    another account's generation.
-
-    With managed accounts, a second account can start a generation between this caller's
-    failure and its next poll. The foreign-generation guard answers idle and hidden, which a
-    client that had already seen its own run active reads as success. Answering the named
-    lookup first is only safe because the key is account-qualified, so this test pins both
-    halves: the caller reads its own reason, and another account cannot read it.
-    """
+    """Keyed by account as well as attempt, and answered before the guards that hide another."""
     from core.inference.generate_outcomes import (
         _retain_generate_failure,
         generate_failure_for_attempt,
@@ -384,8 +320,6 @@ def test_a_retained_outcome_is_the_callers_own_account(monkeypatch):
     # And the owner is a third scope again.
     assert generate_failure_for_attempt("attempt-scoped") is None
 
-    # The route answers that lookup ahead of the hiding guards, or the caller never reaches
-    # it while someone else is generating.
     src = _src("routes/inference.py")
     at = src.index("async def diffusion_generate_progress")
     body = src[at : at + 6000]
@@ -397,12 +331,7 @@ def test_a_retained_outcome_is_the_callers_own_account(monkeypatch):
 
 
 def test_a_persisting_generation_counts_as_active_only_for_its_own_attempt():
-    """The persist window is global; a poll naming an attempt is not.
-
-    Records being written for any other Studio or OpenAI image request held the override on,
-    so a settling caller saw active and took the end of that window for its own success,
-    skipping the gallery proof.
-    """
+    """The persist window is global; a poll naming an attempt is not."""
     import asyncio
 
     import routes.inference as route
@@ -428,8 +357,6 @@ def test_a_persisting_generation_counts_as_active_only_for_its_own_attempt():
         try:
             route.account_access = types.SimpleNamespace(
                 managed_account = lambda: False,
-                # None is the single-identity installation: there is nobody for the
-                # engine's slot to belong to but the caller.
                 account_scope = lambda: None,
                 generation_is_foreign = lambda *_a, **_k: False,
                 generation_is_mine = lambda *_a, **_k: True,
@@ -474,13 +401,7 @@ def test_a_persisting_generation_counts_as_active_only_for_its_own_attempt():
 
 
 def test_a_retained_outcome_survives_an_engine_switch():
-    """The store belongs to the process, not to the engine instance that ran the generation.
-
-    A request can switch the active engine between diffusers and sd.cpp while a client is
-    still settling a lost POST. Kept on the instance, that client's reason became
-    unreachable the moment the other engine took over, and it was told either that its
-    request never arrived or that another run going idle was its own success.
-    """
+    """The store belongs to the process, not to the engine instance that ran the generation."""
     import core.inference.generate_outcomes as outcomes
     from core.inference.generate_outcomes import (
         _retain_generate_failure,
@@ -504,13 +425,7 @@ def test_a_retained_outcome_survives_an_engine_switch():
 
 
 def test_a_cancelled_attempt_settles_as_a_cancellation_not_a_failure():
-    """The sentinel survives classification, because it is the one reason that is not a failure.
-
-    A POST that returns normally answers 409 with the sentinel and the page treats that as
-    the requested outcome. A POST that was LOST has only the retained reason, and the generic
-    classifier turned the sentinel into "Image generation failed.", so the user's own Stop
-    toasted a failure.
-    """
+    """The sentinel survives classification, because it is the one reason that is not a failure."""
     from core.inference.diffusion_families import DIFFUSION_CANCELLED_MSG
     from routes.inference import _generate_failure_detail
 
@@ -525,14 +440,7 @@ def test_a_cancelled_attempt_settles_as_a_cancellation_not_a_failure():
 
 
 def test_an_unscoped_poll_on_a_multi_account_install_is_not_told_someone_elses_reason():
-    """The ENGINE's error slot is one per process; the keyed store is per account.
-
-    A poll that names no attempt reads the engine slot, and the account guards above only
-    hide a generation while it is ACTIVE. So once A's run had failed and left
-    media_generation, B's unscoped poll was answered with A's classified reason and the
-    attempt id that produced it. The keyed store is the authority: a reason this caller can
-    look up is a reason this caller owns.
-    """
+    """The ENGINE's error slot is one per process; the keyed store is per account."""
     import asyncio
     import types
 
@@ -591,20 +499,12 @@ def test_an_unscoped_poll_on_a_multi_account_install_is_not_told_someone_elses_r
         theirs.generation_attempt is None
     ), "another account's attempt id came back with the empty reason"
 
-    # A single-identity installation has nobody else for the slot to belong to, so the
-    # legacy answer an older client depends on is unchanged.
     solo = answer(None)
     assert solo.error, "a single-account install lost the unscoped legacy answer"
 
 
 def test_a_client_input_failure_is_not_reported_as_one_the_log_explains():
-    """Classification hides WHICH failure it was, so the record has to carry it.
-
-    The route answers a ValueError with its own reason and deliberately never logs it, and
-    a caller settling a lost POST reads the RETAINED reason rather than that response. By
-    then it wears the same "Image generation failed." prefix as an internal failure, so a
-    page judging the message alone offered "View logs" for a failure no log can explain.
-    """
+    """Classification hides WHICH failure it was, so the record has to carry it."""
     import core.inference.generate_outcomes as outcomes
     from core.inference.generate_outcomes import (
         _retain_generate_failure,
@@ -648,13 +548,7 @@ def test_the_route_marks_and_publishes_whether_the_failure_was_logged():
 
 
 def test_a_persist_failure_is_retained_for_the_client_that_cannot_read_the_response():
-    """The one failure raised AFTER the attempt was reported active.
-
-    A settling client whose POST was lost watches its attempt go active-to-idle and takes
-    that for success, and the images it never saved are not in the gallery to contradict it.
-    So the reason has to be readable from the progress poll, recorded before the finally
-    drops the persist marker.
-    """
+    """The one failure raised AFTER the attempt was reported active."""
     src = _src("routes/inference.py")
     at = src.index('logger.error("diffusion.persist_failed')
     window = src[at : at + 1600]
@@ -734,13 +628,7 @@ def test_an_unscoped_poll_sees_its_own_queued_attempt_not_a_stale_failure():
 
 
 def test_a_queued_attempt_is_pending_not_absent():
-    """The engine cannot name an attempt until it holds the generation slot.
-
-    A second run queued behind an active one therefore answered a named poll with active
-    False, and a settling client whose POST was lost read that as "the request never
-    arrived", or took the running run's newly saved record for proof that its own finished.
-    Driven, not read: the failure mode is a field carrying the global answer.
-    """
+    """The engine cannot name an attempt until it holds the generation slot."""
     import routes.inference as route
     from core.inference.generate_outcomes import attempt_scope_key
 
@@ -769,12 +657,7 @@ def test_a_queued_attempt_is_pending_not_absent():
 
 
 def test_a_reloaded_page_hears_about_a_persist_failure():
-    """A mount probe after a reload has lost its attempt id.
-
-    The keyed store is reachable only by id, so a persist failure recorded there alone was
-    invisible to the resumed poll: it saw an error-free idle state and refreshed a gallery
-    that had not changed, and the user was never told saving had failed.
-    """
+    """A mount probe after a reload has lost its attempt id."""
     import routes.inference as route
 
     class _Backend:
@@ -810,12 +693,7 @@ def test_a_reloaded_page_hears_about_a_persist_failure():
 
 
 def test_an_unscoped_poll_reads_the_log_flag_of_the_attempt_it_is_told_about():
-    """A reloaded page polls without an attempt id, and the record still knows.
-
-    A client-input failure is answered with its own reason and never logged, and the route
-    marks the record so. Looking the flag up under None answered "logged" anyway, so the
-    reloaded page offered a log that cannot hold that failure.
-    """
+    """A reloaded page polls without an attempt id, and the record still knows."""
     from core.inference.generate_outcomes import (
         _retain_generate_failure,
         mark_generate_failure_unlogged,
@@ -845,12 +723,7 @@ def test_an_unscoped_poll_reads_the_log_flag_of_the_attempt_it_is_told_about():
 
 
 def test_a_failure_class_is_matched_as_a_whole_word():
-    """Every exception class reaches this classifier now, so its needles have to be tokens.
-
-    "oom" as a substring made any message containing "boom", "bathroom" or "zoom" report
-    that the device had run out of memory, and told the user to shrink an image that was
-    never too big.
-    """
+    """Every exception class reaches this classifier now, so its needles have to be tokens."""
     from routes.inference import _GENERATE_FAILURE_FALLBACK, _generate_failure_detail
 
     for innocent in (
@@ -874,12 +747,7 @@ def test_a_failure_class_is_matched_as_a_whole_word():
 
 
 def test_a_new_execution_supersedes_the_outcome_retained_under_its_id():
-    """The Tauri client retries a dropped POST with the same body, so the same attempt id.
-
-    A first execution's retained failure then outranked the retry, which can be queued,
-    running or already successful, and the settling client declared the attempt failed and
-    ignored the images the retry had produced.
-    """
+    """The Tauri client retries a dropped POST with the same body, so the same attempt id."""
     from core.inference.generate_outcomes import (
         _retain_generate_failure,
         clear_generate_failure,
@@ -905,13 +773,7 @@ def test_a_new_execution_supersedes_the_outcome_retained_under_its_id():
 
 
 def test_a_live_execution_outranks_an_outcome_retained_under_its_id():
-    """A Tauri retry reuses the id, and the predecessor can fail after the retry starts.
-
-    The early clear happens when the retry takes the id, so a predecessor failing later
-    retains an outcome under an id the retry owns; the progress route answered from that
-    retained outcome before looking at the markers, so the client reported failure and
-    stopped settling while the retry was queued or running.
-    """
+    """A Tauri retry reuses the id, and the predecessor can fail after the retry starts."""
     import routes.inference as route
     from core.inference.generate_outcomes import _retain_generate_failure, attempt_scope_key
 
@@ -938,8 +800,6 @@ def test_a_live_execution_outranks_an_outcome_retained_under_its_id():
     finally:
         route._note_queued_attempt(key, -1)
 
-    # With no execution holding the id, the retained outcome answers again, which is what a
-    # settling client whose run really did fail needs.
     settled = _answer_progress(idle, "attempt-shared")
     assert settled.error, "a genuinely failed attempt stopped being told its reason"
 
@@ -960,12 +820,7 @@ def test_a_live_execution_outranks_an_outcome_retained_under_its_id():
 
 
 def test_a_stalled_persist_does_not_answer_for_a_retry_that_already_saved():
-    """Persist runs after the engine slot is released, so two executions can overlap.
-
-    A Tauri retry of one lost POST can generate and persist successfully while the original's
-    persist stalls; the original failing afterwards recorded that failure under the shared id,
-    so the settling client reported failure while the retry's images sat in the gallery.
-    """
+    """Persist runs after the engine slot is released, so two executions can overlap."""
     import routes.inference as route
 
     first = next(route._diffusion_execution_serial)
@@ -1010,11 +865,7 @@ def test_a_stalled_persist_does_not_answer_for_a_retry_that_already_saved():
 
 
 def test_the_finished_run_bookkeeping_is_bounded():
-    """Every generation supplies a fresh id, so this cannot grow per generation forever.
-
-    The serial only matters while a duplicate of the SAME id is still persisting, which is
-    seconds, so an evicted key is an id nothing is racing over any more.
-    """
+    """Every generation supplies a fresh id, so this cannot grow per generation forever."""
     import routes.inference as route
 
     saved = dict(route._diffusion_attempt_last_run)
@@ -1025,8 +876,6 @@ def test_the_finished_run_bookkeeping_is_bounded():
         assert (
             len(route._diffusion_attempt_last_run) == route._RETAINED_ATTEMPT_RUNS
         ), "the finished-run bookkeeping grows without bound"
-        # Oldest out first: the newest ids, which are the ones a retry could still share,
-        # are the ones kept.
         assert "acct\x00attempt-0" not in route._diffusion_attempt_last_run
         newest = f"acct\x00attempt-{route._RETAINED_ATTEMPT_RUNS + 9}"
         assert newest in route._diffusion_attempt_last_run
@@ -1039,12 +888,7 @@ def test_the_finished_run_bookkeeping_is_bounded():
 
 
 def test_clearing_a_retained_outcome_takes_the_same_lock():
-    """Every other mutation of the store holds it, and the bound is read-then-pop.
-
-    Unlocked, a clear could land between the eviction test in _retain_generate_failure and
-    its popitem, dropping one MORE outcome than the bound calls for and leaving that client
-    reading its failed generation as absent.
-    """
+    """Every other mutation of the store holds it, and the bound is read-then-pop."""
     import inspect
 
     from core.inference import generate_outcomes
@@ -1063,13 +907,7 @@ def test_clearing_a_retained_outcome_takes_the_same_lock():
 
 @pytest.mark.parametrize("engine", ENGINES)
 def test_a_failure_before_the_run_starts_is_retained_too(engine):
-    """The handler inside generate cannot see the raises that precede it.
-
-    Cancelled while queued for the generation slot, no model loaded, a dead resident server,
-    a superseding load: each raises before the try that retains, so a client whose POST was
-    lost found nothing recorded and settleLostGeneration reported that its request never
-    reached the server rather than the cancellation that actually happened.
-    """
+    """The handler inside generate cannot see the raises that precede it."""
     src = _src(engine)
     assert (
         "def _retained_generate_failure(self, exc, attempt_id):" in src
@@ -1084,8 +922,6 @@ def test_a_failure_before_the_run_starts_is_retained_too(engine):
     body = src[src.index("    def generate(") :]
     body = body[: body.index("    def generate_progress(")]
     head = body[: body.index("            try:")]
-    # The slot's own admission raises count as pre-run too, and are where the cancelled-in-
-    # queue case actually lives.
     if "def _generation_slot(" in src:
         at = src.index("def _generation_slot(")
         head += src[at : src.index("    def ", at + 10)]
@@ -1130,30 +966,18 @@ def test_the_cancelled_slot_wait_records_the_reason():
 
 
 def test_a_saved_generation_clears_what_was_retained_under_its_id():
-    """Images exist, so nothing under this id is a failure of this request any more.
-
-    A duplicate execution of one retried POST can fail while this one is still writing, and
-    its reason would then answer a settling client whose images are already in the gallery.
-    """
+    """Images exist, so nothing under this id is a failure of this request any more."""
     src = _src("routes/inference.py")
     at = src.index("records = await asyncio.to_thread(_persist)")
     window = src[at : at + 600]
     assert (
         "_clear_outcome(request.attempt_id)" in window
     ), "a successful save leaves a duplicate execution's failure to answer for it"
-    # After the save, not before it: clearing first would drop the reason of the execution
-    # that is still the newest if this save then fails.
     assert window.index("_clear_outcome") > window.index("_persist)")
 
 
 def test_a_queued_attempt_survives_the_foreign_run_guard():
-    """The guards answer idle for anything foreign, including our own queued request.
-
-    A managed account's attempt can be queued behind ANOTHER account's generation; a poll
-    naming it was answered with the hidden idle response, and a settling client whose POST
-    was lost read that as "the request never arrived" while it was still queued and would
-    later spend GPU time and create images.
-    """
+    """The guards answer idle for anything foreign, including our own queued request."""
     import asyncio
     import types as _types
 
@@ -1225,17 +1049,11 @@ def test_a_queued_attempt_survives_the_foreign_run_guard():
     finally:
         route._note_queued_attempt(key, -1)
 
-    # Someone else's attempt id gets nothing from the marker: the key is account-qualified,
-    # so a foreign poll cannot even name it.
     assert answer("attempt-theirs").active is False
 
 
 def test_a_successful_save_clears_the_unscoped_reason():
-    """That slot means "the last thing that happened", and the engine clears it at a START.
-
-    So a persist failure written after a newer run began outlived it: the newer run could
-    generate and save successfully and an unscoped probe still read the older failure.
-    """
+    """That slot means "the last thing that happened", and the engine clears it at a START."""
     import routes.inference as route
 
     class _Backend:
@@ -1249,12 +1067,9 @@ def test_a_successful_save_clears_the_unscoped_reason():
     assert (
         backend._last_generate_error is None
     ), "an older run's failure outlived a newer run that saved successfully"
-    # The attempt is left alone: a run in flight publishes it, and it is only read beside a
-    # reason.
+    # The attempt is left alone: a run in flight publishes it, and it is only read beside a reason.
     assert backend._last_generate_attempt == "attempt-older"
 
-    # Wired at the successful save, and only where a NEWER execution has not already
-    # described itself in the slot, which would be the same race the other way round.
     src = _src("routes/inference.py")
     at = src.index("records = await asyncio.to_thread(_persist)")
     window = src[at : at + 1200]
@@ -1268,11 +1083,7 @@ def test_a_successful_save_clears_the_unscoped_reason():
 
 
 def test_the_unscoped_slot_belongs_to_the_newest_execution():
-    """One slot, two executions that can overlap, and the engine clears it only at a START.
-
-    So whoever finishes LAST used to win: an older save wiped a newer failure, and an older
-    failure hid a newer success. The serial decides instead.
-    """
+    """One slot, two executions that can overlap, and the engine clears it only at a START."""
     import routes.inference as route
 
     saved = route._diffusion_unscoped_slot_serial
@@ -1294,8 +1105,6 @@ def test_the_unscoped_slot_belongs_to_the_newest_execution():
     finally:
         route._diffusion_unscoped_slot_serial = saved
 
-    # Both writes are guarded by it, and the engine's own write is stamped for the execution
-    # whose call it happened in.
     src = _src("routes/inference.py")
     at = src.index('logger.error("diffusion.persist_failed')
     window = src[at : at + 1600]
@@ -1310,12 +1119,7 @@ def test_the_unscoped_slot_belongs_to_the_newest_execution():
 
 
 def test_a_validation_failure_is_recorded_and_marked_unlogged():
-    """The pre-lock guards raise before the engine's handler, so nothing was recorded.
-
-    Marking corrects a record; it does not create one, so a settling client whose POST was
-    lost found nothing and was told its request never reached the server, when the answer was
-    a validation refusal the route had already written.
-    """
+    """The pre-lock guards raise before the engine's handler, so nothing was recorded."""
     src = _src("routes/inference.py")
     # The generate route's own handler, not the first ValueError in the file.
     at = src.index("_retain_generate_failure(request.attempt_id, str(exc))")
@@ -1354,11 +1158,7 @@ def test_a_validation_failure_is_recorded_and_marked_unlogged():
 
 @pytest.mark.parametrize("engine", ENGINES)
 def test_a_client_state_failure_is_retained_as_unlogged(engine):
-    """Cancelled, not loaded, a superseding load: every one is answered WITHOUT logging.
-
-    Retained as logged, the settling poll published error_logged true and the page offered
-    the log for an event that is not in it.
-    """
+    """Cancelled, not loaded, a superseding load: every one is answered WITHOUT logging."""
     src = _src(engine)
     helper = src[src.index("def _retained_generate_failure") :][:1200]
     assert (
@@ -1367,12 +1167,7 @@ def test_a_client_state_failure_is_retained_as_unlogged(engine):
 
 
 def test_a_retried_model_replacement_publishes_no_failure():
-    """The route retries a DiffusionModelReplacedError once, so it is not an outcome yet.
-
-    The engine records the reason on both channels before raising, and an unscoped poll has
-    no attempt id to be marked live by, so a page opened or reloaded during the retry read a
-    terminal "Image generation failed" for a run that was about to start again.
-    """
+    """The route retries a DiffusionModelReplacedError once, so it is not an outcome yet."""
     src = _src("routes/inference.py")
     at = src.index("except DiffusionModelReplacedError as exc:")
     window = src[at : at + 1200]

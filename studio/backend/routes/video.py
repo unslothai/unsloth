@@ -692,8 +692,6 @@ async def generate_video(
             ):
                 raise HTTPException(status_code = 409, detail = msg)
             logger.error("video.generate_failed: %s", exc, exc_info = True)
-            # Same classifier as the worker path, so a synchronous refusal and an async one
-            # give the caller the same reason rather than differing by which one caught it.
             raise HTTPException(status_code = 500, detail = video_failure_detail(exc))
         break
 
