@@ -106,3 +106,22 @@ def test_non_remote_class_is_untouched():
     assert not any(
         "prepare_inputs_labels_for_multimodal" in r for r in apply_remote_code_shims(model)
     )
+
+
+def test_cache_api_remote_prep_keeps_real_cache():
+    cls = _remote_class()
+
+    def prepare_inputs_labels_for_multimodal(
+        self, input_ids, position_ids, attention_mask, past_key_values, labels, images
+    ):
+        past = past_key_values.get_seq_length() if past_key_values is not None else 0
+        return input_ids, position_ids, attention_mask, past_key_values, past, labels
+
+    cls.prepare_inputs_labels_for_multimodal = prepare_inputs_labels_for_multimodal
+    model = cls(_Config())
+    assert not any(
+        "prepare_inputs_labels_for_multimodal" in r for r in apply_remote_code_shims(model)
+    )
+    cache = _cache(past_len = 5)
+    output = model.prepare_inputs_labels_for_multimodal(None, None, None, cache, None, None)
+    assert output[3] is cache and output[4] == 5

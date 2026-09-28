@@ -5,6 +5,7 @@
 
 import functools
 import inspect
+import re
 
 import torch
 
@@ -282,6 +283,9 @@ class _LegacyCacheView:
         for i in range(len(self)):
             yield self[i]
 
+    def __getattr__(self, name):
+        return getattr(self.cache, name)
+
 
 def _needs_legacy_view(cache):
     if cache is None or isinstance(cache, (tuple, list)):
@@ -304,6 +308,13 @@ def _repair_multimodal_cache_indexing(cls):
     except (TypeError, ValueError):
         return False
     if "past_key_values" not in parameters:
+        return False
+    try:
+        source = inspect.getsource(original)
+    except (OSError, TypeError):
+        return False
+    # Code already on the Cache API (get_seq_length, isinstance Cache) must keep the real cache.
+    if re.search(r"past_key_values\s*\[", source) is None:
         return False
     position = parameters.index("past_key_values") - 1
 
