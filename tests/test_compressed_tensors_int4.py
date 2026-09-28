@@ -147,6 +147,77 @@ def test_kernels_decode_bit_exact_and_multiply_like_dense(
         assert ((dx.float() - want).norm() / want.norm()) < 5e-3
 
 
+def _has_marlin():
+    if not has_real_cuda():
+        return False
+    import unsloth.kernels.int4_packed as ip
+
+    return bool(ip._marlin_api())
+
+
+MARLIN_CASES = [
+    (4, 128, True, "group"),
+    (4, 32, True, "group"),
+    (8, 128, True, "group"),
+    (4, None, True, "channel"),
+    (4, 128, False, "group"),
+    (4, 64, False, "group"),
+]
+
+
+def _qs(ip, packed, shape, bits, gs):
+    return ip.Int4QuantState(
+        packed["weight_scale"], packed.get("weight_zero_point"), None, shape, bits, gs, torch.bfloat16
+    )
+
+
+@needs_gpu
+@needs_ct
+@pytest.mark.skipif(not _has_marlin(), reason = "needs vLLM's Marlin kernels")
+@pytest.mark.parametrize("bits,group,sym,strategy", MARLIN_CASES)
+def test_marlin_takes_no_grad_decode_rows_and_matches_the_exact_decode(bits, group, sym, strategy):
+    import unsloth.kernels.int4_packed as ip
+
+    torch.manual_seed(0)
+    packed, ref, gs = _packed_layer(256, 512, bits, group, sym, False, torch.bfloat16, strategy)
+    W = packed["weight_packed"]
+    qs = _qs(ip, packed, (256, 512), bits, gs)
+    for rows in (1, 3, ip._marlin_max_rows(torch.cuda.current_device())):
+        x = torch.randn(rows, 512, device = "cuda", dtype = torch.bfloat16)
+        with torch.no_grad():
+            y = ip.int4_matmul(x, W, qs)
+        assert qs._marlin[1] is not None
+        want = x.float() @ ref.float().t()
+        assert y.shape == (rows, 256) and y.dtype == torch.bfloat16
+        assert ((y.float() - want).norm() / want.norm()) < 5e-3
+    # Training forwards never build the repacked copy.
+    qs = _qs(ip, packed, (256, 512), bits, gs)
+    ip.int4_matmul(x[:1], W, qs)
+    assert qs._marlin is None
+
+
+@needs_gpu
+@needs_ct
+@pytest.mark.parametrize("why", ["broken_import", "kill_switch"])
+def test_decode_rows_fall_back_when_marlin_is_unavailable(why, monkeypatch):
+    import unsloth.kernels.int4_packed as ip
+
+    monkeypatch.setattr(ip, "_MARLIN_API", None)
+    if why == "broken_import":
+        monkeypatch.setitem(sys.modules, "vllm", None)
+    else:
+        monkeypatch.setenv("UNSLOTH_INT4_MARLIN", "0")
+    torch.manual_seed(0)
+    packed, ref, gs = _packed_layer(256, 512, 4, 128, True, False, torch.bfloat16)
+    qs = _qs(ip, packed, (256, 512), 4, gs)
+    x = torch.randn(3, 512, device = "cuda", dtype = torch.bfloat16)
+    with torch.no_grad():
+        y = ip.int4_matmul(x, packed["weight_packed"], qs)
+    assert ip._MARLIN_API is False and qs._marlin[1] is None
+    want = x.float() @ ref.float().t()
+    assert ((y.float() - want).norm() / want.norm()) < 5e-3
+
+
 @needs_gpu
 @needs_ct
 def test_jit_launch_fallback_matches_the_compiled_launcher(monkeypatch):
