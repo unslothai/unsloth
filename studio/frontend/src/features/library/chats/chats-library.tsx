@@ -635,9 +635,11 @@ export function ChatsLibrary({
   };
 
   const newChatIn = (id: string | null) => {
+    clearNewChatDraft();
     const runtime = useChatRuntimeStore.getState();
     runtime.setActiveThreadId(null);
     runtime.setActiveProjectId(id);
+    runtime.setIncognito(false);
     void navigate({
       to: "/chat",
       search: id ? { project: id } : { new: crypto.randomUUID() },

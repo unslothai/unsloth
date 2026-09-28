@@ -625,3 +625,21 @@ test("the Chats library draws every project with the open project folder", () =>
   }
   assert.match(readSrc("features/library/chats/chats-library.tsx"), /projects: Folder02Icon,/);
 });
+
+test("the Library's New chat is a saved chat with an empty composer, like the sidebar's", () => {
+  const library = readSrc("features/library/chats/chats-library.tsx");
+  const newChatIn = library.slice(library.indexOf("const newChatIn = "), library.indexOf("async function run("));
+  assert.match(newChatIn, /clearNewChatDraft\(\);/);
+  assert.match(newChatIn, /runtime\.setIncognito\(false\);/);
+});
+
+test("a chat among Favorites files dates from its last edit, as the Chats view does", () => {
+  const items = readSrc("features/library/chats/chats-items.tsx");
+  assert.match(items, /<FileColumns modified=\{chatTime\(chat, "modified"\)\} \/>/);
+});
+
+test("Reset all local preferences clears the Chats library preferences", () => {
+  const general = readSrc("features/settings/tabs/general-tab.tsx");
+  const keys = general.slice(general.indexOf("const PREFS_KEYS"), general.indexOf("];", general.indexOf("const PREFS_KEYS")));
+  assert.match(keys, /LIBRARY_CHATS_PREFS_STORAGE_KEY/);
+});
