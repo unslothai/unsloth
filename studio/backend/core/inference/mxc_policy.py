@@ -296,6 +296,16 @@ def cmd_command_line(cmd_path: str, payload: str) -> str:
     return command_line
 
 
+def host_spawn_args(argv):
+    """What Popen gets for an unisolated launch: a cmd Terminal keeps cmd's own quoting there too."""
+    if not is_cmd_argv(argv):
+        return argv
+    try:
+        return cmd_command_line(_system_cmd(), argv[-1])
+    except MxcPolicyError:
+        return argv  # a multi-line or oversized command keeps today's argv behaviour on the host
+
+
 def _system_cmd() -> str:
     """System32's cmd.exe. COMSPEC is caller-controlled, so it is never consulted."""
     try:
@@ -308,7 +318,7 @@ def _system_cmd() -> str:
     except (AttributeError, OSError):
         pass
     system_root = os.environ.get("SystemRoot") or os.environ.get("WINDIR") or "C:\\Windows"
-    return os.path.join(system_root, "System32", "cmd.exe")
+    return ntpath.join(system_root, "System32", "cmd.exe")
 
 
 def _checked_cwd_alias(cwd_alias: str, workdir_identity: dict[str, int]) -> str:

@@ -15,7 +15,7 @@ _BACKEND_ROOT = Path(__file__).resolve().parents[1]
 if str(_BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(_BACKEND_ROOT))
 
-from core.inference import mxc_probe, os_sandbox, tools
+from core.inference import mxc_policy, mxc_probe, os_sandbox, tools
 
 BASH = r"C:\Program Files\Git\bin\bash.exe"
 
@@ -35,8 +35,10 @@ def windows(monkeypatch):
         bash = BASH,
         bash_cap = None,
         cmd_cap = None,
+        dacl = True,
     ):
         monkeypatch.setattr(tools, "_windows_bash", lambda: bash)
+        monkeypatch.setattr(mxc_policy, "dacl_fallback_enabled", lambda: dacl)
 
         def snapshot(
             *,
@@ -184,7 +186,8 @@ def _exec(monkeypatch, tmp_path, command):
 def test_cmd_isolated_runs_system_cmd_with_the_git_env(windows, monkeypatch, tmp_path):
     windows(bash_cap = _cap(False, MSYS), cmd_cap = _cap(True))
     plan, _result = _exec(monkeypatch, tmp_path, 'git commit -m "a b"')
-    assert plan.argv == (r"C:\Windows\System32\cmd.exe", "/c", 'git commit -m "a b"')
+    assert plan.argv == (tools._windows_system_cmd(), "/c", 'git commit -m "a b"')
+    assert plan.argv[0].lower().endswith("\\system32\\cmd.exe")
     assert plan.env["GIT_CONFIG_VALUE_0"] == "NUL"
     assert plan.execution_kind == "terminal"
 
@@ -201,3 +204,55 @@ def test_bash_profile_keeps_multiline_and_bash_argv(windows, monkeypatch, tmp_pa
     plan, _result = _exec(monkeypatch, tmp_path, "echo one\necho two")
     assert plan.argv == (BASH, "-c", "echo one\necho two")
     assert "GIT_CONFIG_COUNT" not in plan.env
+
+
+def test_bash_hosts_keep_bash_outside_the_measured_dacl_tier(windows):
+    windows(bash_cap = _cap(False, MSYS), cmd_cap = _cap(True), dacl = False)
+    assert tools._terminal_profile() == "bash"
+
+
+def test_cmd_isolated_strips_a_trailing_newline(windows, monkeypatch, tmp_path):
+    windows(bash_cap = _cap(False, MSYS), cmd_cap = _cap(True))
+    plan, _result = _exec(monkeypatch, tmp_path, "git status\r\n")
+    assert plan.argv[2] == "git status"
+
+
+def test_cmd_isolated_is_never_replayed_on_the_host(windows, monkeypatch, tmp_path):
+    windows(bash_cap = _cap(False, MSYS), cmd_cap = _cap(True))
+    plan, _result = _exec(monkeypatch, tmp_path, "dir")
+    assert plan.requested_mode == "required"
+
+
+@pytest.mark.parametrize(
+    "command", ["echo a&rm -rf x", "dir&&rm -rf x", "echo x|rm -rf x", "r^m -rf x", '"r"m -rf x']
+)
+def test_cmd_isolated_screens_every_reading_of_the_command(windows, monkeypatch, tmp_path, command):
+    windows(bash_cap = _cap(False, MSYS), cmd_cap = _cap(True))
+    plan, result = _exec(monkeypatch, tmp_path, command)
+    assert plan is None
+    assert result.startswith("Blocked command(s) for safety: rm"), result
+
+
+def test_a_tool_list_without_the_terminal_never_probes(windows):
+    calls = windows(bash_cap = _cap(False, MSYS), cmd_cap = _cap(True))
+    listed = [t for t in tools.ALL_TOOLS if t["function"]["name"] != "terminal"]
+    assert tools.apply_terminal_profile_for_request(listed) is listed
+    assert calls == []
+
+
+def test_approval_reads_a_cmd_command_the_way_cmd_splits_it(windows, monkeypatch):
+    windows(bash_cap = _cap(False, MSYS), cmd_cap = _cap(True))
+    command = "echo 'hi & del victim.txt & echo bye'"
+    assert tools._terminal_is_high_risk(command) is True
+    monkeypatch.setattr(tools, "_terminal_profile", lambda *_a, **_k: "bash")
+    assert tools._terminal_is_high_risk(command) is False  # bash keeps the whole thing one argument
+
+
+def test_host_launches_keep_cmd_quoting(monkeypatch):
+    monkeypatch.setattr(mxc_policy, "_system_cmd", lambda: r"C:\Windows\System32\cmd.exe")
+    assert mxc_policy.host_spawn_args(["cmd", "/c", 'type "a b.txt"']) == (
+        '"C:\\Windows\\System32\\cmd.exe" /d /s /c "type "a b.txt""'
+    )
+    assert mxc_policy.host_spawn_args(["bash", "-c", "ls"]) == ["bash", "-c", "ls"]
+    multiline = ["cmd", "/c", "echo a\necho b"]
+    assert mxc_policy.host_spawn_args(multiline) is multiline

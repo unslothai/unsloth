@@ -5693,10 +5693,28 @@ def _command_references_sensitive(command: str) -> bool:
     return any(_glob_hits_sensitive(c) or _references_sensitive_path(c) for c in candidates)
 
 
+def _cmd_reading(command: str) -> str:
+    """How cmd splits a command for the POSIX classifiers: ' is an ordinary character and ^ only escapes."""
+    return command.replace("^", "").replace("'", " ")
+
+
+def _reads_differently_under_cmd(command: str) -> bool:
+    """True when the isolated cmd Terminal will run ``command`` and cmd would split it unlike bash."""
+    return (
+        sys.platform == "win32"
+        and _cmd_reading(command) != command
+        and _terminal_profile() == "cmd_isolated"
+    )
+
+
 def _terminal_is_potentially_unsafe(command: str) -> bool:
     """Classify a terminal command for auto mode (fail closed)."""
     if not command or not command.strip():
         return False
+    if _reads_differently_under_cmd(command) and _terminal_is_potentially_unsafe(
+        _cmd_reading(command)
+    ):
+        return True
     # Redirections and substitutions can hide writes or nested commands; a quoted ">" false-positives into a prompt,
     # which is the safe direction.
     if ">" in command or "`" in command or "$(" in command or "<(" in command:
@@ -7994,6 +8012,12 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
         return True
     if not command or not command.strip():
         return False
+    if (
+        _depth == 0
+        and _reads_differently_under_cmd(command)
+        and _terminal_is_high_risk(_cmd_reading(command))
+    ):
+        return True
     # A credential/secret path read or write, or a sandbox escape (../), asks.
     if _command_references_sensitive(command):
         return True
@@ -9869,9 +9893,9 @@ def _get_shell_cmd(command: str) -> list[str]:
 
 
 def _windows_system_cmd() -> str:
-    """System32 cmd.exe: the one shell the isolated Terminal trusts, never a COMSPEC or PATH lookup."""
-    import ntpath
-    return ntpath.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32", "cmd.exe")
+    """System32 cmd.exe, resolved the same way MXC policy resolves it; never COMSPEC or PATH."""
+    from .mxc_policy import _system_cmd
+    return _system_cmd()
 
 
 def _terminal_profile(disable_sandbox: bool = False) -> str:
@@ -9889,9 +9913,12 @@ def _terminal_profile(disable_sandbox: bool = False) -> str:
     if disable_sandbox or os.environ.get("UNSLOTH_MXC_TERMINAL_CMD") == "0":
         return host_default
     try:
-        from . import mxc_probe
+        from . import mxc_policy, mxc_probe
 
         if bash:
+            # Measured only on MXC's DACL tier; BaseContainer hosts keep bash until it is.
+            if not mxc_policy.dacl_fallback_enabled():
+                return "bash"
             verdict = os_sandbox.capability_snapshot(
                 execution_kind = "terminal", selected_executable = bash
             )
@@ -9906,15 +9933,16 @@ def _terminal_profile(disable_sandbox: bool = False) -> str:
         return host_default
 
 
-def current_terminal_profile_for_request(bypass: bool) -> str:
-    """The profile a request's Terminal description should advertise; see _terminal_profile."""
-    return _terminal_profile(disable_sandbox = bypass)
-
-
 def apply_terminal_profile_for_request(tools: list[dict]) -> list[dict]:
     """Sandboxed requests only: advertise the shell _bash_exec will pick for this request. Blocking
-    (it may run the cached MXC probe), so async callers run it in a worker thread."""
-    return apply_terminal_profile_description(tools, current_terminal_profile_for_request(False))
+    (it may run the cached MXC probe), so async callers run it in a worker thread; a list without
+    the Terminal never probes."""
+    if not any(
+        isinstance(t, dict) and (t.get("function") or {}).get("name") == "terminal"
+        for t in tools or ()
+    ):
+        return tools
+    return apply_terminal_profile_description(tools, _terminal_profile(False))
 
 
 def _shell_argv(command: str, workdir: str, confinement) -> "tuple[list[str], str | None]":
@@ -21221,16 +21249,27 @@ def _bash_exec(
 
     # Chosen once, so the blocklist, env and argv all agree on the shell that will run this call.
     profile = _terminal_profile(disable_sandbox)
-    if profile == "cmd_isolated" and ("\n" in command.strip() or "\r" in command.strip()):
-        return _CMD_MULTILINE_REFUSED
+    if profile == "cmd_isolated":
+        # Models often end a command with a newline; cmd /s /c cannot carry one.
+        command = command.strip()
+        if "\n" in command or "\r" in command:
+            return _CMD_MULTILINE_REFUSED
 
     # Block dangerous commands (skipped when the sandbox is disabled)
     if not disable_sandbox:
-        blocked = (
-            _find_blocked_commands(command, posix = False)
-            if profile == "cmd_isolated"
-            else _find_blocked_commands(command)
-        )
+        if profile == "cmd_isolated":
+            # The cmd lexer misses separators glued to a word (a&powershell) and cmd drops ^ escapes, so
+            # screen every reading; this is defence in depth, the MXC container is the boundary.
+            unescaped = command.replace("^", "")
+            blocked = set().union(
+                *(
+                    _find_blocked_commands(text, posix = posix)
+                    for text in (command, unescaped)
+                    for posix in (False, True)
+                )
+            )
+        else:
+            blocked = _find_blocked_commands(command)
         if blocked:
             # Capped for the same reason the Python analyzer's error is: it lists what it found in the command it was
             # handed.
@@ -21293,6 +21332,10 @@ def _bash_exec(
             with _scratch_lock:
                 _active_scratch.add(_scratch_name)
         requested_mode = _requested_execution_mode(tool_execution_mode, disable_sandbox)
+        if profile == "cmd_isolated" and requested_mode == "auto" and not host_access_approved:
+            # Written for the isolated cmd Terminal and screened only by its lexer: never replayed on the host if
+            # isolation drops out between the profile check and the launch.
+            requested_mode = "required"
         base_preexec = (
             None
             if sys.platform == "win32"

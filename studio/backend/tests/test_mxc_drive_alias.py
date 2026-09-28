@@ -22,13 +22,20 @@ class _Host:
         self.refuse_define: set[str] = set()
         self.redirect: dict[str, str] = {}
         self.removed: list[tuple[str, str]] = []
+        self.network: set[str] = set()
 
     def logical_drives(self):
         return sum(1 << (ord(d) - ord("A")) for d in self.drives)
 
+    def definitions(self, letter):
+        return list(self.table.get(letter) or [])
+
     def query(self, letter):
         stack = self.table.get(letter)
         return stack[0] if stack else None
+
+    def network_letters(self):
+        return set(self.network)
 
     def define(self, letter, target):
         if letter in self.refuse_define:
@@ -59,6 +66,7 @@ def host(monkeypatch, tmp_path):
     monkeypatch.setattr(mxc_drive_alias, "_on_windows", lambda: True)
     monkeypatch.setattr(mxc_drive_alias, "_host", fake)
     monkeypatch.setattr(mxc_drive_alias, "_active", {})
+    monkeypatch.setattr(mxc_drive_alias, "_shadowed", {})
     monkeypatch.setattr(
         mxc_drive_alias, "record_path", lambda: tmp_path / "state" / "drive-aliases.json"
     )
@@ -122,7 +130,10 @@ def test_a_letter_redefined_by_someone_else_is_left_alone(host, tmp_path):
     again = mxc_drive_alias.acquire(workdir)
     assert again.letter == "Y"
     lease.release()
-    assert host.query("Z") == "\\??\\C:\\other-owner"
+    # The other definition stays in effect; ours under it is removed, so it cannot resurface later.
+    assert host.definitions("Z") == ["\\??\\C:\\other-owner"]
+    again.release()
+    assert host.query("Y") is None
 
 
 def test_a_dead_owners_mapping_is_reclaimed_only_while_it_still_matches(host, tmp_path):
@@ -147,6 +158,26 @@ def test_a_dead_owners_mapping_is_reclaimed_only_while_it_still_matches(host, tm
     assert host.query("Y") == "\\??\\C:\\now-someone-else"
     assert lease.letter == "Z"
     assert set(_record()) == {"Z"}
+
+
+def test_a_dead_owners_mapping_under_another_definition_is_still_removed(host, tmp_path):
+    stale = _workdir(tmp_path, "stale")
+    host.table["Z"] = ["\\??\\C:\\other-owner", "\\??\\" + stale]
+    path = mxc_drive_alias.record_path()
+    path.parent.mkdir(parents = True)
+    path.write_text(
+        json.dumps({"aliases": {"Z": {"target": stale, "pid": 99, "pid_create_time": 5.0}}}),
+        encoding = "utf-8",
+    )
+    lease = mxc_drive_alias.acquire(_workdir(tmp_path))
+    assert ("Z", stale) in host.removed
+    assert host.definitions("Z") == ["\\??\\C:\\other-owner"]
+    assert lease.letter == "Y"
+
+
+def test_a_disconnected_network_drive_letter_is_skipped(host, tmp_path):
+    host.network = {"Z"}
+    assert mxc_drive_alias.acquire(_workdir(tmp_path)).letter == "Y"
 
 
 def test_a_live_owners_mapping_is_never_reclaimed(host, tmp_path):
@@ -361,13 +392,8 @@ def test_the_alias_is_released_when_policy_or_spawn_fails(backend, tmp_path, mon
     assert leases[-1][1].released == 1
 
 
-def test_without_the_policy_kwarg_no_alias_is_taken(backend, tmp_path, monkeypatch):
-    sandbox_windows_mxc, _calls, leases = backend
-    monkeypatch.setattr(
-        sandbox_windows_mxc.mxc_policy,
-        "build_launch_request",
-        lambda _plan: {"policyHash": "sha256:controlled"},
-    )
-    plan = _terminal_plan(tmp_path)
-    sandbox_windows_mxc.prepare(plan, _capability(sandbox_windows_mxc, "qualified-wxc", plan))
-    assert leases == []
+def test_a_mapping_that_cannot_be_removed_keeps_its_record(host, tmp_path, monkeypatch):
+    lease = mxc_drive_alias.acquire(_workdir(tmp_path))
+    monkeypatch.setattr(host, "remove", lambda _letter, _target: False)
+    lease.release()
+    assert set(_record()) == {"Z"}

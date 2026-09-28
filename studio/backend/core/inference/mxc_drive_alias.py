@@ -31,6 +31,9 @@ DDD_EXACT_MATCH_ON_REMOVE = 0x4
 _lock = threading.Lock()
 # normcase(target) -> [letter, target, lease count]; the leases this process holds.
 _active: dict[str, list] = {}
+# (letter, target) -> [letter, target, lease count]: held mappings another definition now covers. Still removed, by
+# exact match, when their last lease ends, so ours never resurfaces once the other one goes.
+_shadowed: dict[tuple[str, str], list] = {}
 _host = None
 
 
@@ -66,11 +69,34 @@ class _Win32:
     def logical_drives(self) -> int:
         return int(self._kernel32.GetLogicalDrives())
 
-    def query(self, letter: str) -> str | None:
+    def definitions(self, letter: str) -> list[str]:
+        """Every definition of the letter, the one in effect first."""
         buffer = self._ctypes.create_unicode_buffer(32768)
-        if not self._kernel32.QueryDosDeviceW(f"{letter}:", buffer, len(buffer)):
-            return None
-        return buffer.value  # the first definition is the one in effect
+        size = self._kernel32.QueryDosDeviceW(f"{letter}:", buffer, len(buffer))
+        if not size:
+            return []
+        return [item for item in buffer[:size].split("\0") if item]
+
+    def query(self, letter: str) -> str | None:
+        found = self.definitions(letter)
+        return found[0] if found else None
+
+    def network_letters(self) -> set[str]:
+        """Persistent network drives, which stay undefined until they reconnect."""
+        import winreg
+
+        letters = set()
+        try:
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Network") as key:
+                index = 0
+                while True:
+                    try:
+                        letters.add(winreg.EnumKey(key, index).upper())
+                    except OSError:
+                        return letters
+                    index += 1
+        except OSError:
+            return letters
 
     def define(self, letter: str, target: str) -> bool:
         return bool(self._kernel32.DefineDosDeviceW(0, f"{letter}:", target))
@@ -172,8 +198,8 @@ def _reclaim(host, aliases: dict[str, dict], own_pid: int) -> None:
         if pid != own_pid and host.process_alive(pid, created):
             continue
         target = entry["target"]
-        if host.query(letter) == _expected(target) and not host.remove(letter, target):
-            continue  # still defined and not removable: keep the record, skip the letter
+        if _expected(target) in host.definitions(letter) and not host.remove(letter, target):
+            continue  # still defined, even under another definition, and not removable: keep the record
         aliases.pop(letter)
 
 
@@ -191,14 +217,22 @@ class AliasLease:
             self._released = True
             key = os.path.normcase(self.target)
             entry = _active.get(key)
-            if entry is None or entry[0] != self.letter:
-                return
+            if entry is not None and entry[0] == self.letter:
+                table, slot = _active, key
+            else:
+                table, slot = _shadowed, (self.letter, key)
+                entry = _shadowed.get(slot)
+                if entry is None:
+                    return
             entry[2] -= 1
             if entry[2] > 0:
                 return
-            _active.pop(key)
+            table.pop(slot)
             host = _get_host()
-            host.remove(self.letter, self.target)
+            if not host.remove(self.letter, self.target) and _expected(
+                self.target
+            ) in host.definitions(self.letter):
+                return  # still mapped: keep the record so a later acquire can reclaim it
             with _transaction() as aliases:
                 if aliases is not None and self.letter in aliases:
                     aliases.pop(self.letter)
@@ -219,15 +253,21 @@ def acquire(workdir: str) -> AliasLease | None:
                 if host.query(entry[0]) == _expected(entry[1]):
                     entry[2] += 1
                     return AliasLease(entry[0], entry[1])
-                _active.pop(key)  # redefined by someone else: never touch it, map afresh
+                # Covered by another definition: never touch that one; ours is removed when its leases end.
+                _shadowed[(entry[0], key)] = _active.pop(key)
             with _transaction() as aliases:
                 if aliases is None:
                     return None
                 own_pid, own_created = host.own_identity()
                 _reclaim(host, aliases, own_pid)
                 drives = host.logical_drives()
+                network = host.network_letters()
                 for letter in LETTERS:
-                    if drives & (1 << (ord(letter) - ord("A"))) or letter in aliases:
+                    if (
+                        drives & (1 << (ord(letter) - ord("A")))
+                        or letter in aliases
+                        or letter in network
+                    ):
                         continue
                     if host.query(letter) is not None:
                         continue

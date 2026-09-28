@@ -85,6 +85,7 @@ def test_cmd_command_line_keeps_embedded_quotes():
         ("echo a\recho b", "first line"),
         ("x" * mxc_policy.MAX_COMMAND_LINE, "command-line limit"),
     ],
+    ids = ["nul", "newline", "carriage_return", "too_long"],
 )
 def test_cmd_command_line_refuses_what_cmd_would_not_run_as_written(payload, message):
     with pytest.raises(mxc_policy.MxcPolicyError, match = message):
@@ -195,7 +196,14 @@ def test_cmd_probe_uses_the_production_shape(tmp_path):
     mxc_policy.cmd_command_line("C:\\Windows\\System32\\cmd.exe", argv[-1])
 
 
-def _cmd_probe(monkeypatch, tmp_path, *, quoted_file):
+def _cmd_probe(
+    monkeypatch,
+    tmp_path,
+    *,
+    quoted_file,
+    alias_root = None,
+    started_in = None,
+):
     seen = {}
 
     class Finished:
@@ -209,11 +217,25 @@ def _cmd_probe(monkeypatch, tmp_path, *, quoted_file):
             (workdir / "inside.txt").write_text("ok", encoding = "utf-8")
             if quoted_file:
                 (workdir / "inside quoted.txt").write_text("ok", encoding = "utf-8")
-            return "UNSLOTH_MXC_TERMINAL_PROBE_OK\n", None
+            cwd = started_in if started_in is not None else (seen["cwd_alias"] or str(workdir))
+            return f"{cwd}\nUNSLOTH_MXC_TERMINAL_PROBE_OK\n", None
 
-    def build(plan):
-        seen["plan"] = plan
+    def build(plan, cwd_alias = None):
+        seen["plan"], seen["cwd_alias"] = plan, cwd_alias
         return {}
+
+    class Lease:
+        root = alias_root
+        released = False
+
+        def release(self):
+            Lease.released = True
+
+    monkeypatch.setattr(mxc_probe.mxc_policy, "_safe_canonical_path", lambda path, directory: path)
+    monkeypatch.setattr(
+        mxc_probe.mxc_drive_alias, "acquire", lambda _w: Lease() if alias_root else None
+    )
+    seen["lease"] = Lease
 
     monkeypatch.setattr(mxc_probe.sys, "platform", "win32")
     monkeypatch.setattr(
@@ -230,7 +252,8 @@ def _cmd_probe(monkeypatch, tmp_path, *, quoted_file):
         lambda _proc: {"exitCode": 0, "cleanup": "complete"},
     )
     monkeypatch.setattr(mxc_probe.subprocess, "CREATE_NO_WINDOW", 0, raising = False)
-    return mxc_probe._probe(str(tmp_path / "cmd.exe"), "terminal")
+    result = mxc_probe._probe(str(tmp_path / "cmd.exe"), "terminal")
+    return result if alias_root is None else (*result, seen)
 
 
 def test_cmd_probe_needs_the_quoted_positive_control(monkeypatch, tmp_path):
@@ -239,3 +262,17 @@ def test_cmd_probe_needs_the_quoted_positive_control(monkeypatch, tmp_path):
     available, reason = _cmd_probe(monkeypatch, tmp_path, quoted_file = False)
     assert available is False
     assert "controls failed" in reason
+
+
+def test_cmd_probe_runs_from_the_drive_alias_like_production(monkeypatch, tmp_path):
+    available, _reason, seen = _cmd_probe(
+        monkeypatch, tmp_path, quoted_file = True, alias_root = "Z:\\"
+    )
+    assert available is True
+    assert seen["cwd_alias"] == "Z:\\"
+    assert seen["lease"].released
+    available, reason, seen = _cmd_probe(
+        monkeypatch, tmp_path, quoted_file = True, alias_root = "Z:\\", started_in = str(tmp_path)
+    )
+    assert available is False and "controls failed" in reason
+    assert seen["lease"].released

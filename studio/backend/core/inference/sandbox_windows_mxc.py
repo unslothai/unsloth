@@ -6,7 +6,6 @@ from __future__ import annotations
 
 from dataclasses import replace
 import hashlib
-import inspect
 import logging
 import os
 import subprocess
@@ -29,23 +28,9 @@ logger = logging.getLogger(__name__)
 CMD_PROFILE_LIMITATION = "terminal_cmd_profile_git_hooks_pager_editor_disabled"
 
 
-def _is_cmd_argv(argv) -> bool:
-    check = getattr(mxc_policy, "is_cmd_argv", None)
-    if check is not None:
-        return bool(check(argv))
-    return bool(argv) and os.path.basename(str(argv[0])).casefold() in {"cmd", "cmd.exe"}
-
-
-def _accepts_cwd_alias() -> bool:
-    try:
-        return "cwd_alias" in inspect.signature(mxc_policy.build_launch_request).parameters
-    except (TypeError, ValueError):
-        return False
-
-
 def _workdir_alias(plan):
     """(lease, limitations) for a cmd Terminal launch: stock git needs the workdir as a drive root."""
-    if plan.execution_kind != "terminal" or not _is_cmd_argv(plan.argv) or not _accepts_cwd_alias():
+    if plan.execution_kind != "terminal" or not mxc_policy.is_cmd_argv(plan.argv):
         return None, ()
     try:
         workdir = mxc_policy._safe_canonical_path(plan.workdir, directory = True)
@@ -156,10 +141,11 @@ def capability_snapshot(
 def prepare(plan, capability):
     lease, alias_limitations = _workdir_alias(plan)
     try:
-        if lease is None:
-            request = mxc_policy.build_launch_request(plan)
-        else:
-            request = mxc_policy.build_launch_request(plan, cwd_alias = lease.root)
+        request = (
+            mxc_policy.build_launch_request(plan, cwd_alias = lease.root)
+            if lease
+            else mxc_policy.build_launch_request(plan)
+        )
     except Exception as exc:
         if lease is not None:
             lease.release()
@@ -224,7 +210,7 @@ def prepare(plan, capability):
                     "env": with_session_packages(kwargs.get("env") or plan.env, plan.workdir),
                 }
                 try:
-                    proc = subprocess.Popen(plan.argv, **kwargs)
+                    proc = subprocess.Popen(mxc_policy.host_spawn_args(plan.argv), **kwargs)
                 except OSError as fallback_exc:
                     raise SandboxBuildError(
                         f"Windows MXC and software-safeguard launches both failed: {fallback_exc}"
