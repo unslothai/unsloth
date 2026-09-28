@@ -711,6 +711,49 @@ class TestFormatErrorMessage:
         assert msg == "Something completely unexpected"
 
 
+class TestSafeErrorDetailNamesAMetalFailure:
+    @pytest.mark.parametrize(
+        "message",
+        [
+            "[METAL] Command buffer execution failed: Caused GPU Timeout Error "
+            "(0000000b:kIOGPUCommandBufferCallbackErrorTimeout)",
+            "[METAL] Command buffer execution failed: Ignored (for causing prior/excessive "
+            "GPU errors) (0000000e:kIOGPUCommandBufferCallbackErrorSubmissionsIgnored)",
+        ],
+        ids = ["watchdog", "ignored"],
+    )
+    def test_a_dead_queue_says_the_gpu_stopped(self, message):
+        from utils.utils import is_metal_queue_dead, safe_error_detail
+        assert is_metal_queue_dead(Exception(message))
+        assert safe_error_detail(Exception(message)) == (
+            "The GPU stopped responding. Reload the model to recover."
+        )
+
+    @pytest.mark.parametrize(
+        "message",
+        [
+            "[malloc] Unable to allocate 42949672960 bytes.",
+            "[METAL] Command buffer execution failed: Insufficient Memory.",
+        ],
+        ids = ["malloc", "command-buffer"],
+    )
+    def test_an_allocation_failure_says_memory_and_leaves_the_queue_alive(self, message):
+        """mlx wraps this like a watchdog kill, but recovers from it."""
+        from utils.utils import is_metal_queue_dead, safe_error_detail
+
+        assert not is_metal_queue_dead(Exception(message))
+        assert safe_error_detail(Exception(message)) == (
+            "Ran out of memory. Try a smaller model or shorter input."
+        )
+
+    def test_an_ordinary_timeout_still_reads_as_upstream(self):
+        from utils.utils import is_metal_queue_dead, safe_error_detail
+
+        error = TimeoutError("read timed out")
+        assert not is_metal_queue_dead(error)
+        assert safe_error_detail(error) == "Could not reach an upstream service. Please try again."
+
+
 class TestAuthSafeRedirectHandler:
     """A Hub token must not leave the origin the operator configured.
 

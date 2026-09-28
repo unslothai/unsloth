@@ -2303,6 +2303,15 @@ export function ChatPage({
   );
   const contextUsage = useChatRuntimeStore((state) => state.contextUsage);
   const loadedIsGguf = useChatRuntimeStore((state) => state.loadedIsGguf);
+  const loadedContextUnboundedWhenBatched = useChatRuntimeStore(
+    (state) => state.loadedContextUnboundedWhenBatched,
+  );
+  const loadedParallelSlots = useChatRuntimeStore(
+    (state) => state.loadedParallelSlots,
+  );
+  const loadedContextBudget = useChatRuntimeStore(
+    (state) => state.loadedContextBudget,
+  );
   const loadedContextEnforced = useChatRuntimeStore(
     (state) => state.loadedContextEnforced,
   );
@@ -3869,6 +3878,7 @@ export function ChatPage({
       updatedAt: lora.updatedAt,
       source: lora.source,
       exportType: lora.exportType,
+      sizeBytes: lora.sizeBytes,
       audioType: lora.audioType,
     }));
     return [...fromLoras, ...localModels];
@@ -4255,6 +4265,9 @@ export function ChatPage({
                   platformChatOnlyReason,
                 )}
                 contextEnforced={loadedContextEnforced}
+                contextUnboundedWhenBatched={loadedContextUnboundedWhenBatched}
+                parallelSlots={loadedParallelSlots}
+                contextBudget={loadedContextBudget}
                 className="h-[var(--studio-chat-control-height,34px)]"
               />
             ) : null}
@@ -4468,6 +4481,7 @@ export function ChatPage({
               modelId={inferenceParams.checkpoint}
               ggufVariant={activeGgufVariant ?? null}
               isGguf={activeModelIsGguf}
+              isLora={activeModelIsLora}
               isDiffusion={activeModelIsDiffusion}
               nativeContextLength={nativeContextLength}
               loadedContextLength={loadedContextLength}

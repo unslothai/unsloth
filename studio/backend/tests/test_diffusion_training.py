@@ -81,8 +81,29 @@ def _isolated_runs_dir(monkeypatch, tmp_path):
     d = tmp_path / "runs" / "diffusion"
     d.mkdir(parents = True, exist_ok = True)
     monkeypatch.setattr(dts, "_runs_dir", lambda: d)
+    pumps = []
+    real_start = dts.DiffusionTrainingService.start
+
+    def start(self, *args, **kwargs):
+        job_id = real_start(self, *args, **kwargs)
+        pumps.append(self._pump)
+        return job_id
+
+    monkeypatch.setattr(dts.DiffusionTrainingService, "start", start)
 
     yield d
+
+    # The pump persists a run's record from its own thread once the run ends, which can be
+    # after the test has asserted on status and returned. It resolves _runs_dir() when it
+    # writes, so a late write lands in whichever test's dir is patched in by then: another
+    # test's history route then lists a run it never made (#12126, ['out', 'good']). Wait for
+    # every run this test started before the patch is undone.
+    for pump in pumps:
+        pump.join(timeout = 30)
+        assert not pump.is_alive(), (
+            "a diffusion run this test started is still running at teardown, so its record "
+            "would land in a later test's runs dir; stop it or wait for it in the test"
+        )
 
 
 def _happy_target(*, event_queue, stop_queue, config):

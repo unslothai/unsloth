@@ -30,10 +30,32 @@ on:
       - '.github/scripts/resolve-desktop-release.py'
       - '.github/scripts/clean-machine-env.sh'
       - '.github/scripts/clean-machine-assert.sh'
+      # The macOS job's toolchain strip step runs this helper by name, and
+      # clean-machine-env.sh sources it as a sibling.
+      - '.github/scripts/clean-machine-install-name-tool.sh'
       - '.github/workflows/release-desktop.yml'
       - 'studio/src-tauri/linux/**'
       - 'studio/src-tauri/src/**'
       - 'studio/src-tauri/tauri.conf.json'
+      # appimage-pr-build (pull_request only) builds the AppImage from this ref. The
+      # lockfile audit runs first and reads every default lockfile; npm ci and npm
+      # install --prefix studio read the manifests, lockfiles and .npmrc; tauri build
+      # compiles the crate with its build script, and embeds the capabilities, icons and
+      # Linux config overlay. A change to any of them changes the artifact the
+      # portability and model-download jobs test.
+      - 'scripts/lockfile_supply_chain_audit.py'
+      - 'studio/package.json'
+      - 'studio/package-lock.json'
+      - 'studio/frontend/package.json'
+      - 'studio/frontend/package-lock.json'
+      - 'studio/frontend/.npmrc'
+      - 'studio/backend/core/data_recipe/oxc-validator/package-lock.json'
+      - 'studio/src-tauri/Cargo.toml'
+      - 'studio/src-tauri/Cargo.lock'
+      - 'studio/src-tauri/build.rs'
+      - 'studio/src-tauri/capabilities/**'
+      - 'studio/src-tauri/icons/**'
+      - 'studio/src-tauri/tauri.linux.conf.json'
       - 'tests/security/test_release_desktop_appimage.py'
       - 'tests/studio/appimage_test_support.py'
       - 'tests/studio/appimage_portability_smoke.py'
@@ -65,7 +87,7 @@ concurrency:
   # a RUNNING main job being killed, but GitHub cancels any PENDING run in the group
   # the moment a newer one is queued, so a merge burst still leaves only the tip.
   # See studio-backend-ci.yml, which is grouped per commit on main for that reason.
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   # Drafts are listed only to a token with push access. Clean-machine CI intentionally
