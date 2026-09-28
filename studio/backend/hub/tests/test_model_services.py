@@ -4116,6 +4116,22 @@ def test_model_download_job_helpers_preserve_idle_shape():
     assert status.attempt == 1
 
 
+def test_model_download_status_reports_the_retry_attempt(monkeypatch):
+    registry = download_registry.DownloadRegistry()
+    monkeypatch.setattr(downloads, "_registry", registry)
+    key = downloads._download_job_key("Org/Model", "Q4_K_M")
+    assert registry.claim(key, download_registry.TRANSPORT_XET)[0]
+    generation = registry.current_generation(key)
+    registry.release_active_slot(key)
+    assert registry.claim(
+        key, download_registry.TRANSPORT_XET, generation = generation, replace_active = True
+    )[0]
+
+    status = downloads._job_status(key)
+
+    assert (status.generation, status.attempt) == (generation, 2)
+
+
 def test_gguf_repo_partial_treats_completed_disk_variant_as_clean(monkeypatch, tmp_path):
     monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
     snapshot = tmp_path / "cache" / "models--Org--Repo" / "snapshots" / "abc"
