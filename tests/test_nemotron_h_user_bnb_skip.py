@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
 """A caller's BitsAndBytesConfig must keep Nemotron-H's mixer.out_proj unquantized: the fused Mamba-2
 kernel runs F.linear on out_proj.weight, which crashes on a packed Params4bit."""
 
