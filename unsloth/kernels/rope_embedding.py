@@ -16,7 +16,7 @@ import torch
 from ..device_type import DEVICE_COUNT
 from typing import Tuple
 from .utils import calculate_settings, torch_gpu_device, torch_device_stream
-from .rms_layernorm import _TRACEABLE, _eager_kernel, _traced_kernel
+from .rms_layernorm import _TRACEABLE, _eager_kernel, _tag_compile_cache, _traced_kernel
 
 
 def _rope_embedding_QK(
@@ -355,6 +355,7 @@ if _TRACEABLE:
     _rope_embedding_qk_op.register_autograd(
         _rope_embedding_qk_op_backward, setup_context = _rope_qk_setup_context
     )
+    _tag_compile_cache(__file__)
 
 
 def _fast_rope_embedding_eager(Q, K, cos, sin, rope_embedding_indices):

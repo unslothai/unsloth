@@ -5,7 +5,9 @@
 decoder layer compiles with fullgraph=True) and give the same bytes as eager, forward and backward.
 Eager calls must stay exactly the autograd Functions they always were."""
 
+import hashlib
 import math
+import os
 
 import pytest
 import torch
@@ -407,3 +409,20 @@ def test_input_require_grads_hook_is_exact():
     assert compiled.requires_grad
     assert _bytes_equal(compiled.detach(), eager.detach())
     assert torch.signbit(compiled[0, 0]).all()
+
+
+def test_compile_cache_key_covers_the_kernel_source():
+    """Inductor's FX graph cache keys a triton_op call without the Triton source behind it, so a
+    warm cache returned an edited kernel as the previous one. The files' hashes in cache_key_tag
+    make an edited kernel a cache miss."""
+    from unsloth.kernels import rms_layernorm, rope_embedding
+
+    if not hasattr(getattr(torch.compiler, "config", None), "cache_key_tag"):
+        pytest.skip("torch has no compile cache key tag")
+    if not rms_layernorm._TRACEABLE:
+        pytest.skip("no triton_op, nothing is cached by op name")
+    tags = torch.compiler.config.cache_key_tag.split(",")
+    for mod in (rms_layernorm, rope_embedding):
+        with open(mod.__file__, "rb") as file:
+            digest = hashlib.sha256(file.read()).hexdigest()[:16]
+        assert f"unsloth/{os.path.basename(mod.__file__)}:{digest}" in tags

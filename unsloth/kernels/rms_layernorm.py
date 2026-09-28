@@ -9,6 +9,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import hashlib
+import os
 import triton
 import triton.language as tl
 import torch
@@ -244,6 +246,19 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
 _TRACEABLE = hasattr(torch.library, "triton_op") and hasattr(torch.library, "wrap_triton")
 
 
+def _tag_compile_cache(path):
+    # Inductor's FX graph cache keys a triton_op call without the Triton source behind it, so after
+    # an Unsloth upgrade a warm cache would keep serving the previous kernel. Key it on the file.
+    config = getattr(torch.compiler, "config", None)
+    if config is None or not hasattr(config, "cache_key_tag"):
+        return
+    with open(path, "rb") as file:
+        tag = f"unsloth/{os.path.basename(path)}:{hashlib.sha256(file.read()).hexdigest()[:16]}"
+    tags = [t for t in config.cache_key_tag.split(",") if t]
+    if tag not in tags:
+        config.cache_key_tag = ",".join(tags + [tag])
+
+
 def _traced_kernel(kernel):
     # wrap_triton takes the JITFunction under triton.heuristics; every heuristic here only turns
     # a bool argument into a constexpr, which the callers pass explicitly.
@@ -282,6 +297,7 @@ if _TRACEABLE:
     _rms_layernorm_op.register_autograd(
         _rms_layernorm_op_backward, setup_context = _rms_setup_context
     )
+    _tag_compile_cache(__file__)
 
 
 @torch.compiler.disable
