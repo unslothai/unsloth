@@ -663,7 +663,9 @@ def test_compressed_tensors_route_stacks_the_adopted_experts_verbatim():
 
 
 @pytest.mark.skipif(not has_real_cuda(), reason = "needs a CUDA device")
-@pytest.mark.skipif(not HAS_CT, reason = "needs compressed-tensors")
+@pytest.mark.skipif(
+    not (HAS_CT and HAS_CONVERTERS), reason = "needs compressed-tensors and the transformers 5 loader"
+)
 def test_remote_code_checkpoint_16bit_load_keeps_packed_stacks(tmp_path, monkeypatch):
     from transformers import AutoModelForCausalLM
     from unsloth.models.mxfp4_compressed_linear import install_compressed_tensors_keep_packed

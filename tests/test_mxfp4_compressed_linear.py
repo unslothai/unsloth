@@ -999,7 +999,9 @@ def test_a_dtype_cast_reaches_the_merge_and_unmerge(cast):
 
 
 @needs_zoo_packed_save
-@pytest.mark.skipif(not HAS_CT, reason = "needs compressed-tensors")
+@pytest.mark.skipif(
+    not (HAS_CT and HAS_CONVERTERS), reason = "needs compressed-tensors and the transformers 5 loader"
+)
 def test_the_sixteen_bit_route_decodes_in_the_load_dtype(tmp_path):
     peft = pytest.importorskip("peft")
     from transformers import AutoModelForCausalLM
