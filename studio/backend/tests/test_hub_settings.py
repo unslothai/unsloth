@@ -165,7 +165,6 @@ def test_mainland_china_defaults_to_modelscope_until_the_hub_is_configured(
         ("Asia/Singapore", "", "linux", False),
         ("Asia/Singapore", "nameserver 192.168.1.1\nnameserver 223.5.5.5\n", "linux", True),
         ("Asia/Singapore", "nameserver 223.5.5.50\n", "linux", False),
-        ("Asia/Singapore", "nameserver 223.5.5.5\n", "win32", False),
     ],
 )
 def test_mainland_china_follows_the_installer_rules(
@@ -187,22 +186,59 @@ def test_mainland_china_follows_the_installer_rules(
 
 
 @pytest.mark.parametrize(
-    "zone, expected", [("China Standard Time", True), ("Singapore Standard Time", False)]
+    "zone, adapters, expected",
+    [
+        ("China Standard Time", {}, True),
+        ("Singapore Standard Time", {}, False),
+        (
+            "Singapore Standard Time",
+            {"{a}": None, "{b}": {"DhcpNameServer": "10.0.0.1 223.5.5.5"}},
+            True,
+        ),
+        (
+            "Singapore Standard Time",
+            {"{a}": {"NameServer": "192.168.1.1,223.6.6.6", "DhcpNameServer": ""}},
+            True,
+        ),
+        (
+            "Singapore Standard Time",
+            {"{a}": {"NameServer": "8.8.8.8", "DhcpNameServer": "223.5.5.5"}},
+            False,
+        ),
+        ("Singapore Standard Time", {"{a}": {"NameServer": "223.5.5.50,8.8.8.8"}}, False),
+    ],
 )
-def test_windows_reads_the_registry_time_zone(monkeypatch, zone, expected):
+def test_windows_reads_the_registry_time_zone_and_resolvers(monkeypatch, zone, adapters, expected):
     from utils import mainland_china
 
-    class _Key:
+    class _Key(dict):
         def __enter__(self):
             return self
 
         def __exit__(self, *_):
             return False
 
+    def open_key(parent, path):
+        if path.endswith("TimeZoneInformation"):
+            return _Key(TimeZoneKeyName = zone)
+        if path == mainland_china._WINDOWS_INTERFACES:
+            return _Key(adapters)
+        if parent[path] is None:
+            raise OSError(path)
+        return _Key(parent[path])
+
+    def value(key, name):
+        if name not in key:
+            raise OSError(name)
+        return key[name], 1
+
+    def enum_key(key, index):
+        if index >= len(key):
+            raise OSError(index)
+        return list(key)[index]
+
     registry = _types.SimpleNamespace(
-        HKEY_LOCAL_MACHINE = None,
-        OpenKey = lambda *_: _Key(),
-        QueryValueEx = lambda _key, name: (zone, 1),
+        HKEY_LOCAL_MACHINE = None, OpenKey = open_key, QueryValueEx = value, EnumKey = enum_key
     )
     monkeypatch.setitem(sys.modules, "winreg", registry)
     monkeypatch.setattr(mainland_china.sys, "platform", "win32")

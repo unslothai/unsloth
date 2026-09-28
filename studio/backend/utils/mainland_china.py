@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import functools
+import itertools
 import os
 import re
 import sys
@@ -22,13 +23,14 @@ _ZONES = (
 )
 _WINDOWS_ZONE = "China Standard Time"
 # Mainland public DNS and cloud resolvers.
-_RESOLVER = re.compile(
-    r"^[ \t]*nameserver[ \t]+(223\.5\.5\.5|223\.6\.6\.6|119\.29\.29\.29|114\.114\.11[45]\.11[0459]"
+_MAINLAND_RESOLVER = re.compile(
+    r"223\.5\.5\.5|223\.6\.6\.6|119\.29\.29\.29|114\.114\.11[45]\.11[0459]"
     r"|182\.254\.116\.116|119\.28\.28\.28|180\.76\.76\.76|1\.2\.4\.8|210\.2\.4\.8"
-    r"|100\.100\.2\.13[68]|183\.60\.8[23]\.(19|98))[ \t]*$",
-    re.MULTILINE,
+    r"|100\.100\.2\.13[68]|183\.60\.8[23]\.(19|98)"
 )
+_NAMESERVER = re.compile(r"^[ \t]*nameserver[ \t]+(\S+)[ \t]*$", re.MULTILINE)
 _RESOLV_CONFS = ("/etc/resolv.conf", "/run/systemd/resolve/resolv.conf")
+_WINDOWS_INTERFACES = r"SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces"
 
 
 def _time_zone() -> str:
@@ -56,14 +58,50 @@ def _time_zone() -> str:
         return ""
 
 
-def _mainland_resolver() -> bool:
-    for path in _RESOLV_CONFS:
+def _adapter_resolvers(winreg, interface) -> list[str]:
+    # A static list replaces the DHCP one, as the resolver does.
+    for value in ("NameServer", "DhcpNameServer"):
         try:
-            if _RESOLVER.search(Path(path).read_text(encoding = "utf-8", errors = "replace")):
-                return True
+            configured = str(winreg.QueryValueEx(interface, value)[0]).strip()
         except OSError:
             continue
-    return False
+        if configured:
+            return re.split(r"[\s,]+", configured)
+    return []
+
+
+def _windows_resolvers() -> list[str]:
+    # Unlike the installer's .NET query, the registry also lists adapters that are down.
+    import winreg
+
+    servers: list[str] = []
+    try:
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, _WINDOWS_INTERFACES) as interfaces:
+            for index in itertools.count():
+                try:
+                    name = winreg.EnumKey(interfaces, index)
+                except OSError:
+                    break
+                try:
+                    with winreg.OpenKey(interfaces, name) as interface:
+                        servers += _adapter_resolvers(winreg, interface)
+                except OSError:
+                    continue
+    except OSError:
+        pass
+    return servers
+
+
+def _resolvers() -> list[str]:
+    if sys.platform == "win32":
+        return _windows_resolvers()
+    servers: list[str] = []
+    for path in _RESOLV_CONFS:
+        try:
+            servers += _NAMESERVER.findall(Path(path).read_text(encoding = "utf-8", errors = "replace"))
+        except OSError:
+            continue
+    return servers
 
 
 @functools.lru_cache(maxsize = 1)
@@ -71,7 +109,7 @@ def in_mainland_china() -> bool:
     zone = _time_zone()
     if zone == _WINDOWS_ZONE or any(zone == z or zone.endswith("/" + z) for z in _ZONES):
         return True
-    return sys.platform != "win32" and _mainland_resolver()
+    return any(_MAINLAND_RESOLVER.fullmatch(server) for server in _resolvers())
 
 
 def china_mirrors_enabled() -> bool:
