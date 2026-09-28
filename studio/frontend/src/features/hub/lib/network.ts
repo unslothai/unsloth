@@ -333,7 +333,7 @@ export function classifyFetchFailure(
 // in Authorization header"), or a bare 401. A 403 is left out on purpose: it is
 // the answer for a gated or private repo the token is valid for, not a rejection.
 const HUB_TOKEN_REJECTED_RE =
-  /\b401\b|unauthori[sz]ed|invalid credentials|invalid (?:user )?(?:access )?token|oauth token verification failed|token (?:has )?(?:expired|been revoked)/i;
+  /invalid credentials|invalid (?:user )?(?:access )?token|oauth token verification failed|token (?:has )?(?:expired|been revoked)/i;
 
 /**
  * The failure for a Hub that answered and refused the saved token. Built from

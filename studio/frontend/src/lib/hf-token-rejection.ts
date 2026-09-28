@@ -11,6 +11,8 @@
 type Listener = () => void;
 
 let rejectedFingerprint: string | null = null;
+// The Hub the refusal came from: a mirror can refuse a token another endpoint accepts.
+let rejectedScope: string | null = null;
 let version = 0;
 const listeners = new Set<Listener>();
 
@@ -28,13 +30,17 @@ function normalized(token: string | null | undefined): string {
   return token?.trim() ?? "";
 }
 
-/** Record that the Hub refused *token*. True only the first time for that token. */
-export function noteHfTokenRejected(token: string | null | undefined): boolean {
+/** Record that the Hub at *scope* refused *token*. True only the first time for that pair. */
+export function noteHfTokenRejected(
+  token: string | null | undefined,
+  scope: string | null = null,
+): boolean {
   const value = normalized(token);
   if (!value) return false;
   const next = fingerprint(value);
-  if (rejectedFingerprint === next) return false;
+  if (rejectedFingerprint === next && rejectedScope === scope) return false;
   rejectedFingerprint = next;
+  rejectedScope = scope;
   version += 1;
   for (const listener of listeners) {
     try {
@@ -46,15 +52,26 @@ export function noteHfTokenRejected(token: string | null | undefined): boolean {
   return true;
 }
 
-/** Whether the Hub has refused *token* in this session. A different token starts clean. */
-export function isHfTokenRejected(token: string | null | undefined): boolean {
+/** Whether the Hub has refused *token* in this session. A different token starts clean, and
+ * with a *scope* so does a different Hub endpoint. */
+export function isHfTokenRejected(
+  token: string | null | undefined,
+  scope?: string | null,
+): boolean {
   const value = normalized(token);
-  return !!value && rejectedFingerprint === fingerprint(value);
+  if (!value || rejectedFingerprint !== fingerprint(value)) return false;
+  return scope === undefined || rejectedScope === scope;
+}
+
+/** Whether any token is currently recorded as refused. */
+export function hasRejectedHfToken(): boolean {
+  return rejectedFingerprint !== null;
 }
 
 export function clearHfTokenRejected(): void {
   if (rejectedFingerprint === null) return;
   rejectedFingerprint = null;
+  rejectedScope = null;
   version += 1;
   for (const listener of listeners) {
     try {

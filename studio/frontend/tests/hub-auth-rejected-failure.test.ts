@@ -59,12 +59,14 @@ test("the SDK's error text is enough when the status was not kept", () => {
   for (const message of [
     "OAuth token verification failed: Invalid Compact JWS",
     "Invalid credentials in Authorization header",
-    "Api error with status 401",
-    "Unauthorized",
   ]) {
     assert.equal(hubAuthFailure({ message }, HF)?.kind, "auth-rejected", message);
   }
+  // A bare 401 can be the Studio relay's own session answer, so text alone that names no
+  // token is not a refusal of the Hugging Face token.
   for (const message of [
+    "Api error with status 401",
+    "Unauthorized",
     "Api error with status 403",
     "Api error with status 404",
     "Api error with status 429",

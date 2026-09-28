@@ -19,9 +19,10 @@ register("./bundler-resolver.mjs", import.meta.url);
 const { resetHfEndpoints, setHfEndpoints, setHubSessionRefresh } = await import(
   "../src/lib/hf-endpoint.ts"
 );
-const { fetchHub } = await import("../src/lib/hub-fetch.ts");
+const { fetchHub, hubRejectionScope } = await import("../src/lib/hub-fetch.ts");
 const {
   clearHfTokenRejected,
+  hasRejectedHfToken,
   hfTokenRejectionVersion,
   isHfTokenRejected,
   noteHfTokenRejected,
@@ -285,7 +286,7 @@ test("OAuth tokens are redacted from notifications and diagnostics", async () =>
 });
 
 test("after a refusal, a read anonymous access cannot answer still tries the token once", async () => {
-  noteHfTokenRejected(OAUTH);
+  noteHfTokenRejected(OAUTH, hubRejectionScope());
   // The verifier recovered: the token works again and the private repo answers with it.
   const hub = stubHub({ anonymousStatus: 404 });
   try {
@@ -302,7 +303,7 @@ test("after a refusal, a read anonymous access cannot answer still tries the tok
 });
 
 test("after a refusal, a token that is still refused leaves the anonymous answer and the flag", async () => {
-  noteHfTokenRejected(OAUTH);
+  noteHfTokenRejected(OAUTH, hubRejectionScope());
   const hub = stubHub({ rejectedToken: OAUTH, anonymousStatus: 404 });
   try {
     const response = await fetchHub("https://huggingface.co/api/models/me/private", withToken(OAUTH));
@@ -311,5 +312,51 @@ test("after a refusal, a token that is still refused leaves the anonymous answer
     assert.equal(isHfTokenRejected(OAUTH), true);
   } finally {
     hub.restore();
+  }
+});
+
+
+test("a refusal recorded against one Hub endpoint does not skip the token on another", async () => {
+  noteHfTokenRejected(OAUTH, "huggingface|https://mirror.example");
+  const hub = stubHub({});
+  try {
+    const response = await fetchHub("https://huggingface.co/api/models/me/private", withToken(OAUTH));
+    assert.equal(response.status, 200);
+    assert.deepEqual(
+      hub.sent.map((s) => s.authorization),
+      [`Bearer ${OAUTH}`],
+    );
+  } finally {
+    hub.restore();
+    clearHfTokenRejected();
+  }
+});
+
+test("clearing a refusal is not reported as a new one", () => {
+  noteHfTokenRejected(OAUTH, hubRejectionScope());
+  assert.equal(hasRejectedHfToken(), true);
+  clearHfTokenRejected();
+  assert.equal(hasRejectedHfToken(), false);
+});
+
+test("a failed anonymous probe keeps the Hub's 401 instead of throwing", async () => {
+  const realFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = (async () => {
+    calls += 1;
+    if (calls === 1) {
+      return new Response("{}", {
+        status: 401,
+        headers: { "X-Error-Message": "OAuth token verification failed: Invalid Compact JWS" },
+      });
+    }
+    throw new TypeError("Failed to fetch");
+  }) as typeof fetch;
+  try {
+    const response = await fetchHub("https://huggingface.co/api/models", withToken(OAUTH));
+    assert.equal(response.status, 401);
+    assert.equal(isHfTokenRejected(OAUTH), false);
+  } finally {
+    globalThis.fetch = realFetch;
   }
 });

@@ -4,6 +4,8 @@
 /** Hub fetch: the adapter and relays take the Unsloth session; a relay forwards the HF token in `X-HF-Authorization`. */
 
 import {
+  getHfEndpoint,
+  getHubSource,
   isModelScopeHubUrl,
   isProxiedHubUrl,
   refreshHubSession,
@@ -94,6 +96,25 @@ function isHubRefusal(response: Response, url: string): boolean {
   return isProxiedHubUrl(url) ? response.headers.has(UPSTREAM_HEADER) : !takesSession(url);
 }
 
+/** Which Hub a token refusal belongs to: switching endpoint or source starts clean. */
+export function hubRejectionScope(): string {
+  return `${getHubSource()}|${getHfEndpoint()}`;
+}
+
+/** A second, optional attempt: a network error or timeout there must not replace the answer
+ * the first request already got. */
+async function probe(
+  input: Parameters<typeof fetch>[0],
+  init: RequestInit,
+  url: string,
+): Promise<Response | null> {
+  try {
+    return await fetchWithSession(input, init, url);
+  } catch {
+    return null;
+  }
+}
+
 export async function fetchHub(
   input: Parameters<typeof fetch>[0],
   init: RequestInit = {},
@@ -102,29 +123,30 @@ export async function fetchHub(
   const hfToken = sentHfToken(url, init);
   const retryable = hfToken !== null && isRetryableRead(input, init);
   // Already refused this session: every read with it would 401 again, so ask anonymously.
-  const skipToken = retryable && isHfTokenRejected(hfToken);
+  const scope = hubRejectionScope();
+  const skipToken = retryable && isHfTokenRejected(hfToken, scope);
   let response = await fetchWithSession(input, skipToken ? withoutHfToken(init) : init, url);
   if (skipToken && !response.ok && [401, 403, 404].includes(response.status)) {
     // What anonymous access cannot read may still be the token's to read: the refusal could
     // have been the Hub's verifier briefly failing. A token that answers again is cleared.
-    const withToken = await fetchWithSession(input, init, url);
-    if (withToken.ok) {
+    const withToken = await probe(input, init, url);
+    if (withToken?.ok) {
       void response.body?.cancel().catch(() => undefined);
       clearHfTokenRejected();
       response = withToken;
     } else {
-      void withToken.body?.cancel().catch(() => undefined);
+      void withToken?.body?.cancel().catch(() => undefined);
     }
   } else if (retryable && !skipToken && isHubRefusal(response, url)) {
     // A token the Hub accepts gets 404 for a repo it cannot see, so this 401 is the token
     // being refused. Public data still answers without it; anything else keeps the original.
-    const anonymous = await fetchWithSession(input, withoutHfToken(init), url);
-    if (anonymous.ok) {
+    const anonymous = await probe(input, withoutHfToken(init), url);
+    if (anonymous?.ok) {
       void response.body?.cancel().catch(() => undefined);
-      noteHfTokenRejected(hfToken);
+      noteHfTokenRejected(hfToken, scope);
       response = anonymous;
     } else {
-      void anonymous.body?.cancel().catch(() => undefined);
+      void anonymous?.body?.cancel().catch(() => undefined);
     }
   }
   // The relay's own 502 means it could not reach the endpoint: fail as a direct fetch would.
