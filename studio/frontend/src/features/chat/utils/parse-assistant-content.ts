@@ -14,6 +14,7 @@ const THINK_CLOSE_TAG = "</think>";
 export function extractDeltaText(delta: unknown): {
   text: string;
   structuredReasoningContinues: boolean;
+  hasStructuredReasoning: boolean;
 } {
   const extractReasoningText = (payload: unknown): string => {
     if (typeof payload === "string") return payload;
@@ -33,14 +34,23 @@ export function extractDeltaText(delta: unknown): {
   };
 
   if (typeof delta === "string") {
-    return { text: delta, structuredReasoningContinues: false };
+    return {
+      text: delta,
+      structuredReasoningContinues: false,
+      hasStructuredReasoning: false,
+    };
   }
   if (!Array.isArray(delta)) {
-    return { text: "", structuredReasoningContinues: false };
+    return {
+      text: "",
+      structuredReasoningContinues: false,
+      hasStructuredReasoning: false,
+    };
   }
 
   let text = "";
   let structuredReasoningContinues = false;
+  let hasStructuredReasoning = false;
   for (const part of delta) {
     if (typeof part === "string") {
       text += part;
@@ -72,10 +82,11 @@ export function extractDeltaText(delta: unknown): {
       if (thinking) {
         text += `${THINK_OPEN_TAG}${thinking}${THINK_CLOSE_TAG}`;
         structuredReasoningContinues = true;
+        hasStructuredReasoning = true;
       }
     }
   }
-  return { text, structuredReasoningContinues };
+  return { text, structuredReasoningContinues, hasStructuredReasoning };
 }
 
 // ContentPart from @assistant-ui/react has readonly fields, so `last.text += text` fails
@@ -103,9 +114,14 @@ export function appendReasoningPart(parts: ContentPart[], text: string): void {
 
 export function parseAssistantContent(
   raw: string,
+  { parseThink = true }: { parseThink?: boolean } = {},
 ): ContentPart[] {
   const parts: ContentPart[] = [];
   if (!raw) {
+    return parts;
+  }
+  if (!parseThink) {
+    appendTextPart(parts, raw);
     return parts;
   }
 

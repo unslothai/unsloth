@@ -11,6 +11,7 @@ import structlog
 from loggers import get_logger
 from pathlib import Path
 from typing import List, Optional, Tuple
+from hub.utils.hf_tokens import HfTokenArg
 from storage.studio_db import get_connection
 from utils.training_runs import (
     build_default_output_dir_name,
@@ -142,6 +143,31 @@ def _read_checkpoint_loss(checkpoint_path: Path) -> Optional[float]:
     return None
 
 
+# Both probe every outputs folder, so an unreadable one is skipped, not fatal to the scan.
+def _has_own_model(path: Path) -> bool:
+    try:
+        return own_entry(path / "config.json") or own_entry(path / "adapter_config.json")
+    except OSError:
+        return False
+
+
+def _checkpoint_dirs(run_dir: Path) -> List[Path]:
+    try:
+        return sorted(
+            (
+                sub
+                for sub in run_dir.iterdir()
+                if sub.is_dir()
+                and sub.name.startswith("checkpoint-")
+                and within_account(sub)
+                and _has_own_model(sub)
+            ),
+            key = _checkpoint_sort_key,
+        )
+    except OSError:
+        return []
+
+
 def scan_checkpoints(
     outputs_dir: str | None = None,
 ) -> List[Tuple[str, List[Tuple[str, str, Optional[float]]], dict]]:
@@ -150,8 +176,8 @@ def scan_checkpoints(
     Returns:
         [(model_name, [(display_name, checkpoint_path, loss), ...], metadata), ...]
         metadata keys (optional): base_model, peft_type, lora_rank.
-        First checkpoint entry is the main adapter; its loss mirrors the latest
-        (highest-step) intermediate checkpoint. Numbered checkpoints are sorted
+        First entry is the main adapter (loss mirrors the highest-step checkpoint)
+        only when the run has a final save. Numbered checkpoints are sorted
         by numeric step descending; non-numbered checkpoint-* dirs keep the
         previous lexicographic directory order.
     """
@@ -171,11 +197,15 @@ def scan_checkpoints(
             if not within_account(item):
                 continue
 
-            config_file = item / "config.json"
-            adapter_config = item / "adapter_config.json"
-
-            if not (own_entry(config_file) or own_entry(adapter_config)):
+            has_root_model = _has_own_model(item)
+            valid_checkpoints = _checkpoint_dirs(item)
+            # A cancelled or crashed run has no final save but can still have checkpoints.
+            if not has_root_model and not valid_checkpoints:
                 continue
+
+            meta_dir = item if has_root_model else valid_checkpoints[0]
+            config_file = meta_dir / "config.json"
+            adapter_config = meta_dir / "adapter_config.json"
 
             # Training metadata from adapter_config.json / config.json
             metadata: dict = {}
@@ -217,39 +247,12 @@ def scan_checkpoints(
                     else:
                         metadata["base_model"] = name_part
 
-            # Valid training run.
-            checkpoints = []
-
-            # Main adapter placeholder — loss filled from the last checkpoint below.
-            checkpoints.append((item.name, str(item), None))
-
-            # Scan for intermediate checkpoints (checkpoint-N subdirs).
-            valid_checkpoints = []
-            for sub in item.iterdir():
-                if not sub.is_dir() or not sub.name.startswith("checkpoint-"):
-                    continue
-                if not within_account(sub):
-                    continue
-                sub_config = sub / "config.json"
-                sub_adapter = sub / "adapter_config.json"
-                if own_entry(sub_config) or own_entry(sub_adapter):
-                    valid_checkpoints.append(sub)
-
-            intermediate_checkpoints = []
-            for sub in sorted(valid_checkpoints, key = _checkpoint_sort_key):
-                loss = _read_checkpoint_loss(sub)
-                intermediate_checkpoints.append((sub.name, str(sub), loss))
-
-            checkpoints.extend(intermediate_checkpoints)
-
-            # Assign the latest checkpoint's loss to the main adapter entry.
-            if intermediate_checkpoints:
-                last_checkpoint_loss = intermediate_checkpoints[0][2]
-                checkpoints[0] = (
-                    checkpoints[0][0],
-                    checkpoints[0][1],
-                    last_checkpoint_loss,
-                )
+            checkpoints = [
+                (sub.name, str(sub), _read_checkpoint_loss(sub)) for sub in valid_checkpoints
+            ]
+            if has_root_model:
+                latest_loss = checkpoints[0][2] if checkpoints else None
+                checkpoints.insert(0, (item.name, str(item), latest_loss))
 
             models.append((item.name, checkpoints, metadata))
             logger.debug(f"Found model: {item.name} with {len(checkpoints)} checkpoint(s)")
@@ -267,6 +270,57 @@ def scan_checkpoints(
 
 def _is_model_dir(path: Path) -> bool:
     return (path / "config.json").exists() or (path / "adapter_config.json").exists()
+
+
+def is_unquantized_full_model_dir(path: str | Path) -> bool:
+    model_dir = Path(path)
+    try:
+        if (model_dir / "adapter_config.json").exists():
+            return False
+        config = json.loads((model_dir / "config.json").read_text(encoding = "utf-8-sig"))
+    except (OSError, ValueError):
+        return False
+    return isinstance(config, dict) and "quantization_config" not in config
+
+
+def _hub_model_config(repo_id: str, hf_token: HfTokenArg) -> Optional[dict]:
+    """config.json of a Hub model repo; None for an adapter repo or on any lookup failure."""
+    try:
+        from huggingface_hub import file_exists, hf_hub_download
+
+        # An adapter repo carries a base config.json too, so a remote LoRA would read as a full model.
+        if file_exists(repo_id, "adapter_config.json", token = hf_token):
+            return None
+        path = hf_hub_download(repo_id, "config.json", token = hf_token)
+        return json.loads(Path(path).read_text(encoding = "utf-8-sig"))
+    except Exception:
+        return None
+
+
+def is_unquantized_full_finetune(checkpoint_path: str, hf_token: HfTokenArg = None) -> bool:
+    """Whether a local or Hub checkpoint is an unquantized full model.
+
+    False when unsure, so the caller keeps the 4-bit load that used to fit."""
+    try:
+        is_local = Path(checkpoint_path).exists()
+    except OSError:
+        return False
+    if is_local:
+        return is_unquantized_full_model_dir(checkpoint_path)
+    config = _hub_model_config(checkpoint_path, hf_token)
+    return isinstance(config, dict) and "quantization_config" not in config
+
+
+def is_full_finetune_output(path: Optional[str]) -> bool:
+    if not path:
+        return False
+    try:
+        # Below 3.13 a symlink loop comes back as RuntimeError, not OSError, whatever
+        # `strict` says, and both callers run this outside any handler.
+        Path(path).resolve().relative_to(outputs_root().resolve())
+    except (OSError, RuntimeError, ValueError):
+        return False
+    return is_unquantized_full_model_dir(path)
 
 
 def has_preview_model(output_dir: Optional[str]) -> bool:

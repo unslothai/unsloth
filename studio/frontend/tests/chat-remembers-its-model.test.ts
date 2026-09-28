@@ -11,6 +11,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  atDefaultUiScale,
   installLocalStorageFake,
   readText,
   registerBundlerResolver,
@@ -39,17 +40,17 @@ const { wantsDownloadManagerStaging } = await import(
   "../src/features/chat/utils/model-download-staging.ts"
 );
 
-const notice = readText("../src/features/chat/components/chat-model-notice.tsx");
-const page = readText("../src/features/chat/chat-page.tsx");
-const runtimeProvider = readText("../src/features/chat/runtime-provider.tsx");
-const adapter = readText("../src/features/chat/api/chat-adapter.ts");
-const chatApi = readText("../src/features/chat/api/chat-api.ts");
-const types = readText("../src/features/chat/types.ts");
-const thread = readText("../src/components/assistant-ui/thread.tsx");
+const notice = atDefaultUiScale(readText("../src/features/chat/components/chat-model-notice.tsx"));
+const page = atDefaultUiScale(readText("../src/features/chat/chat-page.tsx"));
+const runtimeProvider = atDefaultUiScale(readText("../src/features/chat/runtime-provider.tsx"));
+const adapter = atDefaultUiScale(readText("../src/features/chat/api/chat-adapter.ts"));
+const chatApi = atDefaultUiScale(readText("../src/features/chat/api/chat-api.ts"));
+const types = atDefaultUiScale(readText("../src/features/chat/types.ts"));
+const thread = atDefaultUiScale(readText("../src/components/assistant-ui/thread.tsx"));
 const researchPanel = readText(
   "../src/features/chat/components/research-activity-panel.tsx",
 );
-const artifact = readText("../src/features/chat/artifacts/artifact-surface.tsx");
+const artifact = atDefaultUiScale(readText("../src/features/chat/artifacts/artifact-surface.tsx"));
 const switchSource = readText(
   "../src/features/chat/components/chat-model-notice-switch.ts",
 );
@@ -253,7 +254,7 @@ test("the conversation reserves the space the notice overlay takes", () => {
   // 0px so every surface without a notice keeps exactly the padding it had.
   assert.match(
     thread,
-    /pt-\[calc\(var\(--studio-content-top-inset,0px\)\+48px\+var\(--studio-chat-notice-height,0px\)\)\]/,
+    /pt-\[calc\(var\(--studio-content-top-inset,0px\)\+var\(--studio-chat-header-height,48px\)\+var\(--studio-chat-notice-height,0px\)\)\]/,
   );
   // And the fade moves down with it, or it would dissolve behind the opaque bar.
   const fade = slice(page, "chat-header-fade", '"');
@@ -304,15 +305,18 @@ test("the canvas panel reserves the notice's height too", () => {
   // preview/source tabs and the close control sit in exactly that band, and the
   // notice is opaque and takes pointer events at z-30. Same fix as the research
   // panel, and 0px whenever no notice is on screen.
+  // The 90 and the 122 now carry the UI scale, minus the content inset, which
+  // is window chrome and stays fixed. At the default both come to what they
+  // were, so the geometry this test describes is unchanged.
   const panel = slice(artifact, 'variant === "panel"', "aria-label=");
   assert.match(
     panel,
-    /marginTop:\s*\n?\s*"calc\(90px \+ var\(--studio-chat-notice-height, 0px\)\)"/,
+    /marginTop:\s*\n?\s*"calc\(var\(--studio-content-top-inset, 0px\) \+ \(90px - var\(--studio-content-top-inset, 0px\)\) \* var\(--ui-space-scale, 1\) \+ var\(--studio-chat-notice-height, 0px\)\)"/,
   );
   // Both edges move, or the panel keeps its height and overflows the bottom.
   assert.match(
     panel,
-    /height:\s*\n?\s*"calc\(100% - 122px - var\(--studio-chat-notice-height, 0px\)\)"/,
+    /height:\s*\n?\s*"calc\(100% - var\(--studio-content-top-inset, 0px\) - \(122px - var\(--studio-content-top-inset, 0px\)\) \* var\(--ui-space-scale, 1\) - var\(--studio-chat-notice-height, 0px\)\)"/,
   );
   // The class list must not still carry the fixed geometry the style replaces.
   assert.doesNotMatch(panel, /mt-\[90px\]/);
