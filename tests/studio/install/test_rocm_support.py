@@ -5887,13 +5887,18 @@ class TestWindowsRocmTorchaoGuard:
             patch.object(stack_mod.install_manifest, "installed_versions", return_value = ["0"]),
             patch.object(stack_mod.install_manifest, "damaged_payload_files", return_value = []),
             patch.object(stack_mod.subprocess, "run", return_value = subprocess_result),
+            patch.object(stack_mod, "pip_install_try", return_value = True) as mock_try,
         ):
             assert stack_mod.install_python_stack() == 0
 
-        installed_specs = [str(arg) for call in mock_pip.call_args_list for arg in call.args]
+        torchao_calls = [
+            [str(arg) for arg in call.args]
+            for call in mock_pip.call_args_list + mock_try.call_args_list
+            if any(str(arg).startswith("torchao") for arg in call.args)
+        ]
         # From PyPI: download.pytorch.org's rocm leaves serve Linux only.
-        assert any(arg.startswith("torchao") for arg in installed_specs)
-        assert "--index-url" not in installed_specs
+        assert torchao_calls
+        assert all("--index-url" not in c for c in torchao_calls)
 
 
 class TestProgressStepCountMatchesTotal:

@@ -5183,6 +5183,11 @@ def _install_torchao_for_torch(torch_version: "str | None", default_index: bool 
         # Redacted for display only; the installer below still gets the exact URL.
         + (f" from {_strip_index_url_credentials(index)}" if index else "")
     )
+    if default_index:
+        # Optional on Windows ROCm: only export uses it, and hides its formats without it.
+        if not pip_install_try("Installing dependency overrides", *args, spec):
+            _note(f"could not install {spec}; torchao export stays unavailable")
+        return
     if not index:
         pip_install("Installing dependency overrides", *args, spec)
         return

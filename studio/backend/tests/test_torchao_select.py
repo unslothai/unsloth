@@ -329,17 +329,23 @@ def test_windows_first_hop_uses_einx_wheel_without_shared_test_tree():
         (True, True),
     ],
 )
+@pytest.mark.parametrize("torchao_install_ok", [True, False])
 def test_installs_pypi_torchao_on_windows_rocm(
-    monkeypatch, tmp_path, rocm_windows_torch_installed, installed_torch_is_windows_rocm
+    monkeypatch,
+    tmp_path,
+    rocm_windows_torch_installed,
+    installed_torch_is_windows_rocm,
+    torchao_install_ok,
 ):
     """Windows ROCm gets the torch-matched torchao from PyPI (download.pytorch.org's rocm leaves
-    serve Linux only); the export worker loads it through unsloth/_torchao_nodist.py."""
+    serve Linux only); the export worker loads it through unsloth/_torchao_nodist.py. A failed
+    torchao install does not fail the install: only export needs it."""
     mod = _load_module(monkeypatch)
-    installed_specs: list[str] = []
+    pip_calls: list[list[str]] = []
     progress_labels: list[str] = []
 
     def _record_pip_install(*args, **kwargs):
-        installed_specs.extend(str(arg) for arg in args)
+        pip_calls.append([str(arg) for arg in args])
         return 0
 
     unstructured_plugin = tmp_path / "unstructured"
@@ -386,7 +392,23 @@ def test_installs_pypi_torchao_on_windows_rocm(
         mod, "_probe_torch_runtime", lambda *args, **kwargs: (True, True, "2.9.1+cpu", "", "")
     )
     monkeypatch.setattr(mod, "run", lambda *args, **kwargs: None)
-    monkeypatch.setattr(mod, "pip_install", _record_pip_install)
+
+    def _fatal_pip_install(*args, **kwargs):
+        # pip_install exits the installer on failure.
+        _record_pip_install(*args, **kwargs)
+        if not torchao_install_ok and any(str(a).startswith("torchao") for a in args):
+            raise SystemExit(1)
+        return 0
+
+    monkeypatch.setattr(mod, "pip_install", _fatal_pip_install)
+    monkeypatch.setattr(
+        mod,
+        "pip_install_try",
+        lambda *a, **k: (
+            _record_pip_install(*a, **k),
+            torchao_install_ok or not any(str(x).startswith("torchao") for x in a),
+        )[1],
+    )
     monkeypatch.setattr(mod, "_progress", lambda label: progress_labels.append(label))
     monkeypatch.setattr(mod, "LOCAL_DD_UNSTRUCTURED_PLUGIN", unstructured_plugin)
     monkeypatch.setattr(mod, "LOCAL_DD_GITHUB_PLUGIN", github_plugin)
@@ -403,8 +425,9 @@ def test_installs_pypi_torchao_on_windows_rocm(
 
     assert mod.install_python_stack() == 0
 
-    assert any(spec.startswith("torchao") for spec in installed_specs)
-    assert "--index-url" not in installed_specs
+    torchao_calls = [c for c in pip_calls if any(a.startswith("torchao") for a in c)]
+    assert torchao_calls
+    assert all("--index-url" not in c for c in torchao_calls)
     assert "dependency overrides (Windows ROCm)" in progress_labels
 
 
