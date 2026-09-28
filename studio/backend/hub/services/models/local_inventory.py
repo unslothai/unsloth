@@ -274,26 +274,43 @@ def _hf_snapshots_hold_files(repo_dir: Path) -> bool:
     snapshot is probed, since that is the one ``_scan_hf_cache`` classifies. Stops at the first
     file and reads at most as many entries as the model-file probe, streamed from ``scandir``
     (``rglob`` lists a whole directory before yielding, so a huge one on a share would stall
-    it); a dangling link is not a file, Finder metadata is not a download, and an unreadable
-    tree counts as empty."""
+    it); a dangling link is not a file, OS metadata (Finder, Explorer) is not a download, and
+    an unreadable directory or entry is skipped rather than ending the search."""
     snapshot = hf_cache_scan.latest_snapshot_dir(repo_dir)
     if snapshot is None:
         return False
     walked = 0
     pending = [snapshot]
-    try:
-        while pending:
-            with os.scandir(pending.pop()) as entries:
-                for entry in entries:
-                    walked += 1
-                    if walked > model_common._HF_CACHE_MODEL_FILE_PROBE_LIMIT:
-                        return False
+    while pending:
+        try:
+            entries = os.scandir(pending.pop())
+        except OSError:
+            # One unreadable directory on a share hides nothing else in the snapshot.
+            continue
+        with entries:
+            listing = iter(entries)
+            while True:
+                try:
+                    entry = next(listing)
+                except StopIteration:
+                    break
+                except OSError:
+                    # The listing itself failed part way; the other directories still count.
+                    break
+                walked += 1
+                if walked > model_common._HF_CACHE_MODEL_FILE_PROBE_LIMIT:
+                    return False
+                try:
                     if entry.is_dir(follow_symlinks = False):
                         pending.append(Path(entry.path))
-                    elif entry.is_file() and not is_appledouble_metadata(Path(entry.path)):
+                    elif (
+                        entry.is_file()
+                        and entry.name not in hf_cache_scan._CACHE_ENTRIES_TO_IGNORE
+                        and not is_appledouble_metadata(Path(entry.path))
+                    ):
                         return True
-    except OSError:
-        return False
+                except OSError:
+                    continue
     return False
 
 

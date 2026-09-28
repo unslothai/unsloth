@@ -249,3 +249,83 @@ def test_a_huge_snapshot_directory_is_read_only_up_to_the_limit(tmp_path, monkey
     monkeypatch.setattr(local_inventory.model_common, "_HF_CACHE_MODEL_FILE_PROBE_LIMIT", 50)
     assert local_inventory._hf_snapshots_hold_files(repo) is False
     assert read["entries"] <= 51
+
+
+@pytest.mark.parametrize("name", [".DS_Store", "Thumbs.db"])
+def test_os_metadata_alone_does_not_count_as_content(tmp_path, name):
+    # Explorer and Finder drop these into folders on a share; they are not a download.
+    if name not in local_inventory.hf_cache_scan._CACHE_ENTRIES_TO_IGNORE:
+        pytest.skip(reason = f"this huggingface_hub does not ignore {name}")
+    repo = _repo_dir(tmp_path)
+    (repo / "blobs").mkdir(parents = True)
+    _write(repo / "snapshots" / REV / name, b"\0" * 16)
+    assert _discovered_ids(tmp_path) == []
+
+
+class _SortedListing:
+    """``os.scandir`` in name order, so a test decides which entry the probe meets first."""
+
+    def __init__(
+        self,
+        path,
+        real_scandir,
+        wrap = lambda entry: entry,
+    ):
+        self._inner = real_scandir(path)
+        self._entries = sorted((wrap(e) for e in self._inner), key = lambda e: e.name)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self._inner.close()
+        return False
+
+    def __iter__(self):
+        return iter(self._entries)
+
+
+def test_an_unreadable_directory_does_not_hide_a_readable_sibling(tmp_path, monkeypatch):
+    # A share that refuses one folder: the model in another is still found. The locked folder
+    # is listed last, so a depth-first walk meets it first.
+    repo = _repo_dir(tmp_path)
+    (repo / "blobs").mkdir(parents = True)
+    locked = repo / "snapshots" / REV / "z-locked"
+    locked.mkdir(parents = True)
+    _write(repo / "snapshots" / REV / "a-weights" / GGUF)
+    real_scandir = os.scandir
+
+    def scandir(path = "."):
+        if Path(path) == locked:
+            raise PermissionError("denied")
+        return _SortedListing(path, real_scandir)
+
+    monkeypatch.setattr(os, "scandir", scandir)
+    assert _discovered_ids(tmp_path) == [REPO]
+
+
+def test_an_entry_that_cannot_be_statted_is_skipped(tmp_path, monkeypatch):
+    repo = _repo_dir(tmp_path)
+    (repo / "blobs").mkdir(parents = True)
+    snapshot = repo / "snapshots" / REV
+    _write(snapshot / "0-broken.bin")
+    _write(snapshot / GGUF)
+    real_scandir = os.scandir
+
+    class _Entry:
+        def __init__(self, entry):
+            self._entry = entry
+            self.name = entry.name
+            self.path = entry.path
+
+        def is_dir(self, follow_symlinks = True):
+            if self.name == "0-broken.bin":
+                raise OSError("stale handle")
+            return self._entry.is_dir(follow_symlinks = follow_symlinks)
+
+        def is_file(self, follow_symlinks = True):
+            return self._entry.is_file(follow_symlinks = follow_symlinks)
+
+    # The broken entry sorts first, so skipping it is what finds the model.
+    monkeypatch.setattr(os, "scandir", lambda path = ".": _SortedListing(path, real_scandir, _Entry))
+    assert _discovered_ids(tmp_path) == [REPO]
