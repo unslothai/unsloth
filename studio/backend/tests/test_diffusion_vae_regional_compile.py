@@ -50,7 +50,6 @@ def _inductor_error(msg):
         from torch._inductor.exc import InductorError  # noqa: PLC0415
     except ImportError:  # torch < 2.7 raises BackendCompilerFailed instead
         from torch._dynamo.exc import BackendCompilerFailed  # noqa: PLC0415
-
         return BackendCompilerFailed("inductor", RuntimeError(msg))
     try:
         return InductorError(RuntimeError(msg), None)
