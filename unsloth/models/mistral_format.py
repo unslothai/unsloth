@@ -386,8 +386,18 @@ def prepare_mistral_format_checkpoint(
         return None
 
     source_dir = os.path.dirname(shard_paths[shards[0]])
+    # Key on what the view copies or points at, so a checkpoint edited in place gets a fresh view.
+    source_files = {}
+    for name in _TOKENIZER_FILES + ("params.json",):
+        try:
+            stat = os.stat(os.path.join(source_dir, name))
+            source_files[name] = [stat.st_size, stat.st_mtime_ns]
+        except OSError:
+            pass
     digest = hashlib.sha256(
-        (os.path.realpath(source_dir) + json.dumps(config, sort_keys = True)).encode()
+        json.dumps(
+            [os.path.realpath(source_dir), config, weight_map, source_files], sort_keys = True
+        ).encode()
     ).hexdigest()[:16]
     safe_name = re.sub(r"[\\/:]+", "--", str(model_name).strip("/\\"))[-80:]
     view = os.path.join(_view_root(), f"{safe_name}-{digest}")
@@ -416,10 +426,86 @@ def prepare_mistral_format_checkpoint(
             import shutil
             shutil.copyfile(src, tmp(name))
             os.replace(tmp(name), os.path.join(view, name))
+    tekken = os.path.join(view, "tekken.json")
+    if os.path.isfile(tekken) and not os.path.isfile(os.path.join(view, "tokenizer.json")):
+        # transformers converts a lone tekken.json without BOS (5.17) or with shifted ids (5.5).
+        _write_tokenizer_from_tekken(tekken, view, tmp)
     with open(tmp(_VIEW_MARKER), "w", encoding = "utf-8") as f:
         json.dump({"source": str(model_name), "revision": revision}, f)
     os.replace(tmp(_VIEW_MARKER), marker)
     return view
+
+
+def _bytes_to_unicode():
+    bs = (
+        list(range(ord("!"), ord("~") + 1))
+        + list(range(ord("¡"), ord("¬") + 1))
+        + list(range(ord("®"), ord("ÿ") + 1))
+    )
+    cs, n = bs[:], 0
+    for b in range(256):
+        if b not in bs:
+            bs.append(b)
+            cs.append(256 + n)
+            n += 1
+    return dict(zip(bs, map(chr, cs)))
+
+
+def _write_tokenizer_from_tekken(tekken_path, view, tmp):
+    """tokenizer.json (+ tokenizer_config.json) from tekken.json, as tiktoken-style byte-level BPE:
+    ids match mistral-common's Tekkenizer, and the tokenizer.json Mistral ships beside it."""
+    import base64
+
+    from tokenizers import Regex, Tokenizer, decoders, pre_tokenizers, processors
+    from tokenizers.models import BPE
+
+    with open(tekken_path, encoding = "utf-8") as f:
+        tekken = json.load(f)
+    config = tekken["config"]
+    n_special = int(config["default_num_special_tokens"])
+    specials = {int(t["rank"]): t["token_str"] for t in tekken.get("special_tokens", [])}
+    special_strs = [specials.get(i, f"<SPECIAL_{i}>") for i in range(n_special)]
+    enc = _bytes_to_unicode()
+    ranks = {}
+    for entry in tekken["vocab"][: int(config["default_vocab_size"]) - n_special]:
+        ranks["".join(enc[b] for b in base64.b64decode(entry["token_bytes"]))] = len(ranks)
+    merges = []
+    for token, rank in ranks.items():
+        local = [
+            (token[:i], token[i:])
+            for i in range(1, len(token))
+            if token[:i] in ranks and token[i:] in ranks
+        ]
+        local.sort(key = lambda pair: (ranks[pair[0]], ranks[pair[1]]))
+        merges.extend((a, b, rank) for a, b in local)
+    merges.sort(key = lambda merge: merge[2])
+    vocab = {token: i for i, token in enumerate(special_strs)}
+    vocab.update({token: rank + n_special for token, rank in ranks.items()})
+    tokenizer = Tokenizer(BPE(vocab, [(a, b) for a, b, _ in merges], ignore_merges = True))
+    tokenizer.pre_tokenizer = pre_tokenizers.Sequence(
+        [
+            pre_tokenizers.Split(Regex(config["pattern"]), behavior = "isolated", invert = False),
+            pre_tokenizers.ByteLevel(add_prefix_space = False, use_regex = False),
+        ]
+    )
+    tokenizer.decoder = decoders.ByteLevel()
+    tokenizer.add_special_tokens(special_strs)
+    bos = special_strs[1]
+    tokenizer.post_processor = processors.TemplateProcessing(
+        single = f"{bos} $A", pair = f"{bos} $A $B", special_tokens = [(bos, 1)]
+    )
+    tokenizer.save(tmp("tokenizer.json"))
+    os.replace(tmp("tokenizer.json"), os.path.join(view, "tokenizer.json"))
+    if not os.path.isfile(os.path.join(view, "tokenizer_config.json")):
+        named = {"<s>": "bos_token", "</s>": "eos_token", "<unk>": "unk_token", "<pad>": "pad_token"}
+        tokenizer_config = {
+            "tokenizer_class": "PreTrainedTokenizerFast",
+            "clean_up_tokenization_spaces": False,
+            **{named[t]: t for t in special_strs if t in named},
+        }
+        with open(tmp("tokenizer_config.json"), "w", encoding = "utf-8") as f:
+            json.dump(tokenizer_config, f, indent = 2)
+        os.replace(tmp("tokenizer_config.json"), os.path.join(view, "tokenizer_config.json"))
 
 
 def is_mistral_format_view(path) -> bool:

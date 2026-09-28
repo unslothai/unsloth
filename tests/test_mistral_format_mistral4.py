@@ -609,6 +609,11 @@ src, adapter, stage = sys.argv[1:4]
 ids = torch.arange(3, 43).view(1, -1).cuda()
 if stage == "train":
     model, tok = FastModel.from_pretrained(src, max_seq_length = 64, load_in_4bit = False, dtype = torch.bfloat16)
+    try:
+        model.save_pretrained_gguf(os.path.join(adapter, "gguf"), tok)
+        raise SystemExit("GGUF export of a view was not refused")
+    except NotImplementedError:
+        pass
     model = FastModel.get_peft_model(model, r = 8, lora_alpha = 16, target_modules = ["q_b_proj", "o_proj", "gate_proj"])
     with torch.no_grad():
         for n, p in model.named_parameters():
@@ -619,6 +624,9 @@ if stage == "train":
         raise SystemExit("merged save of a view was not refused")
     except NotImplementedError:
         pass
+elif stage == "reload_lm":
+    from unsloth import FastLanguageModel
+    model, tok = FastLanguageModel.from_pretrained(adapter, max_seq_length = 64, load_in_4bit = False, dtype = torch.bfloat16)
 else:
     model, tok = FastModel.from_pretrained(adapter, max_seq_length = 64, load_in_4bit = False, dtype = torch.bfloat16)
 model.eval()
@@ -660,7 +668,7 @@ def test_lora_adapter_trained_on_a_view_reloads_in_a_fresh_process(tmp_path):
         [os.path.join(os.path.dirname(_PATH), os.pardir, os.pardir), env.get("PYTHONPATH", "")]
     )
     adapter = tmp_path / "adapter"
-    for stage in ("train", "reload"):
+    for stage in ("train", "reload", "reload_lm"):
         run = subprocess.run(
             [sys.executable, str(script), str(src), str(adapter), stage],
             env = env,
@@ -671,4 +679,67 @@ def test_lora_adapter_trained_on_a_view_reloads_in_a_fresh_process(tmp_path):
     with open(adapter / "adapter_config.json") as f:
         assert json.load(f)["base_model_name_or_path"] == str(src)  # portable: not the local view
     trained, reloaded = torch.load(adapter / "train.pt"), torch.load(adapter / "reload.pt")
+    assert torch.equal(trained, torch.load(adapter / "reload_lm.pt"))
     assert torch.equal(trained, reloaded)
+
+
+def _tiny_tekken(path):
+    import base64
+
+    words = [b"he", b"ll", b"hell", b"hello", b" w", b"or", b" wor", b"ld", b" world", b"12"]
+    vocab = [bytes([b]) for b in range(256)] + words
+    specials = ["<unk>", "<s>", "</s>", "[INST]", "[/INST]", "<pad>"] + [
+        f"<SPECIAL_{i}>" for i in range(6, 16)
+    ]
+    tekken = {
+        "config": {
+            "pattern": LARGE3_TEKKEN_PATTERN,
+            "num_vocab_tokens": len(vocab) + len(specials),
+            "default_vocab_size": len(vocab) + len(specials),
+            "default_num_special_tokens": len(specials),
+            "version": "v13",
+        },
+        "vocab": [
+            {"rank": i, "token_bytes": base64.b64encode(t).decode(), "token_str": None}
+            for i, t in enumerate(vocab)
+        ],
+        "special_tokens": [
+            {"rank": i, "token_str": s, "is_control": True} for i, s in enumerate(specials)
+        ],
+    }
+    with open(path, "w") as f:
+        json.dump(tekken, f)
+
+
+# config.pattern of the Large-3 tekken.json.
+LARGE3_TEKKEN_PATTERN = (
+    r"[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}]*[\p{Ll}\p{Lm}\p{Lo}\p{M}]+|"
+    r"[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}]+[\p{Ll}\p{Lm}\p{Lo}\p{M}]*|"
+    r"\p{N}| ?[^\s\p{L}\p{N}]+[\r\n/]*|\s*[\r\n]+|\s+(?!\S)|\s+"
+)
+
+
+def test_tekken_only_checkpoint_gets_a_bos_tokenizer(tmp_path, hub_cache):
+    # Large-3 BF16 ships tekken.json alone; transformers' own conversion drops BOS or shifts ids.
+    from transformers import AutoTokenizer
+
+    tensors = {
+        k: v.to(torch.bfloat16)
+        for k, v in _mistral_tensors(_reference(TINY_PARAMS), TINY_PARAMS).items()
+    }
+    _write(tmp_path / "src", tensors, TINY_PARAMS)
+    _tiny_tekken(tmp_path / "src" / "tekken.json")
+    view = mf.prepare_mistral_format_checkpoint(str(tmp_path / "src"))
+    assert {"tokenizer.json", "tokenizer_config.json"} <= set(os.listdir(view))
+    tok = AutoTokenizer.from_pretrained(view)
+    text = "hello world 12 é"
+    ids = tok(text).input_ids
+    n_special = 16
+    # BOS, then byte-level BPE over the inner vocab shifted past the special tokens.
+    assert ids[:4] == [1, n_special + 256 + 3, n_special + 256 + 8, n_special + ord(" ")]
+    assert tok.decode(ids, skip_special_tokens = True) == text
+    assert (tok.bos_token, tok.eos_token, tok.pad_token) == ("<s>", "</s>", "<pad>")
+    mistral_common = pytest.importorskip("mistral_common.tokens.tokenizers.tekken")
+    reference = mistral_common.Tekkenizer.from_file(str(tmp_path / "src" / "tekken.json"))
+    for sample in (text, "  hell\n\nworld12345", "wor ld 🚀"):
+        assert tok(sample).input_ids == [1] + reference.encode(sample, bos = False, eos = False)
