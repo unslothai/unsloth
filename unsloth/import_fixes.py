@@ -8683,7 +8683,9 @@ def stale_kernel_hint(package: str, error) -> str:
     current = error
     while current is not None and id(current) not in checked:
         checked.add(id(current))
-        if "undefined symbol" in str(current):
+        # A torch ABI break leaves a mangled c10 / at / torch symbol unresolved; other undefined
+        # symbols (e.g. CUDA libraries out of step) are not fixed by a rebuild.
+        if re.search(r"undefined symbol: (?:_ZN\w*?(?:3c10|2at|5torch)|aoti_torch_)", str(current)):
             break
         current = getattr(current, "__cause__", None) or getattr(current, "__context__", None)
     else:
@@ -8724,11 +8726,11 @@ def stale_kernel_hint(package: str, error) -> str:
         # The last flash-attn release predates the c++20 switch torch 2.13 headers need.
         return (
             f"{head} To restore them, rebuild it against this torch:\n"
-            f"  pip install --no-deps --no-build-isolation --force-reinstall \"{_FLASH_ATTN_TORCH213_SOURCE}\""
+            f"  pip install --no-deps --no-build-isolation --no-cache-dir --force-reinstall \"{_FLASH_ATTN_TORCH213_SOURCE}\""
         )
     return (
         f"{head} To restore them, rebuild it against this torch:\n"
-        f"  pip install --no-deps --no-build-isolation --force-reinstall --no-binary {dist} {dist}"
+        f"  pip install --no-deps --no-build-isolation --no-cache-dir --force-reinstall --no-binary {dist} {dist}"
     )
 
 

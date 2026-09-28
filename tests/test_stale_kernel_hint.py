@@ -117,7 +117,7 @@ def test_anywhere_else_it_names_a_source_rebuild(monkeypatch, fixes, host):
     hint = fixes.stale_kernel_hint("causal_conv1d", _STALE)
     assert "releases/download" not in hint
     assert hint.endswith(
-        "pip install --no-deps --no-build-isolation --force-reinstall --no-binary causal-conv1d causal-conv1d"
+        "pip install --no-deps --no-build-isolation --no-cache-dir --force-reinstall --no-binary causal-conv1d causal-conv1d"
     )
 
 
@@ -148,6 +148,20 @@ def test_the_flash_attn_source_pin_is_the_one_the_prebuilt_wheels_use(fixes):
     assert f'"ref": "{ref}"' in source
 
 
+@pytest.mark.parametrize(
+    "symbol",
+    [
+        "_ZN3c1013MessageLoggerC1EPKciib",
+        "_ZNK2at10TensorBase8data_ptrEv",
+        "aoti_torch_create_device_guard",
+    ],
+)
+def test_every_torch_abi_symbol_seen_in_practice_is_recognised(monkeypatch, fixes, symbol):
+    _host(monkeypatch, fixes)
+    error = ImportError(f"/x/causal_conv1d_cuda.so: undefined symbol: {symbol}")
+    assert "causal_conv1d-1.7.0" in fixes.stale_kernel_hint("causal_conv1d", error)
+
+
 def test_a_chained_cause_is_found(monkeypatch, fixes):
     _host(monkeypatch, fixes)
     try:
@@ -164,6 +178,7 @@ def test_a_chained_cause_is_found(monkeypatch, fixes):
     [
         ImportError("No module named 'flash_attn_2_cuda'"),
         OSError("libcudart.so.13: cannot open shared object file"),
+        ImportError("libcusparse.so.12: undefined symbol: __nvJitLinkAddData_12_8, version libnvJitLink.so.12"),
     ],
 )
 def test_other_failures_add_nothing(monkeypatch, fixes, error):
