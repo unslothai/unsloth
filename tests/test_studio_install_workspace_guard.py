@@ -1555,7 +1555,9 @@ def test_install_sh_launcher_restores_a_missing_or_malformed_install_id(tmp_path
     id_file.mkdir()
     _run_sh_launcher_repair(data_dir, baked)
     assert id_file.is_dir() and not any(id_file.iterdir())
-    assert not list((studio_home / "share").glob("*.tmp"))
+    assert [p.name for p in (studio_home / "share").iterdir()] == [
+        "studio_install_id"
+    ], "temp file left behind"
 
 
 def test_install_sh_launcher_repair_is_a_no_op_without_the_id_path(tmp_path):
@@ -1619,7 +1621,7 @@ def test_install_ps1_launcher_restores_a_missing_or_malformed_install_id(tmp_pat
     id_file.write_text(other)
     run()
     assert id_file.read_text() == other
-    assert not list(share.glob("*.tmp"))
+    assert [p.name for p in share.iterdir()] == ["studio_install_id"], "temp file left behind"
 
 
 def test_install_sh_never_bakes_a_planted_id_into_the_launcher(tmp_path):

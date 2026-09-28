@@ -1696,7 +1696,7 @@ _repair_studio_install_id() (
     }
     _rid_has_valid && return 0
     mkdir -p "$(dirname "$_rid_file")" 2>/dev/null || return 0
-    _rid_tmp="$_rid_file.$$.launcher.tmp"
+    _rid_tmp=$(mktemp "$_rid_file.XXXXXX" 2>/dev/null) || return 0
     if printf '%s' "$_EXPECTED_STUDIO_ROOT_ID" > "$_rid_tmp" 2>/dev/null; then
         if ! ln "$_rid_tmp" "$_rid_file" 2>/dev/null && ! _rid_has_valid; then
             mv -f "$_rid_tmp" "$_rid_file" 2>/dev/null || true

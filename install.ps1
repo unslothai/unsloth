@@ -5370,7 +5370,7 @@ function Repair-StudioInstallId {
             if (`$current -cmatch '^[0-9a-f]{64}$') { return }
         }
         [System.IO.Directory]::CreateDirectory((Split-Path -Parent `$_StudioInstallIdFile)) | Out-Null
-        `$idTmp = "`$_StudioInstallIdFile.`$PID.launcher.tmp"
+        `$idTmp = "`$_StudioInstallIdFile.`$([System.IO.Path]::GetRandomFileName()).tmp"
         [System.IO.File]::WriteAllText(`$idTmp, `$_ExpectedStudioRootId)
         try {
             [System.IO.File]::Move(`$idTmp, `$_StudioInstallIdFile)
