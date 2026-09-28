@@ -33,10 +33,14 @@ def _random_nvfp4(
 
 
 def _reference(packed, scale, global_scale, dtype):
+    from compressed_tensors.quantization import QuantizationArgs
+
     rows, half = packed.shape
     x_q = ct_helpers.unpack_fp4_from_uint8(packed, rows, half * 2, dtype = dtype)
+    # The weight args NVFP4PackedCompressor.decompress passes; compressed-tensors >= 0.19 no longer infers them.
+    args = QuantizationArgs(num_bits = 4, type = "float", strategy = "tensor_group", group_size = 16)
     return ct_forward.dequantize(
-        x_q = x_q, scale = scale.to(dtype), global_scale = global_scale, dtype = dtype
+        x_q = x_q, scale = scale.to(dtype), global_scale = global_scale, dtype = dtype, args = args
     )
 
 
@@ -57,6 +61,23 @@ def test_every_code_and_sign(N, device):
     ).reshape(16, 32)
     assert torch.equal(out.cpu(), expect)
     assert torch.signbit(out.cpu()[0, 16])  # code 8 is -0.0, as in compressed-tensors
+
+
+@needs_cuda
+def test_every_e4m3_group_scale(N):
+    # Before sm_89 Triton has no fp8e4nv, so the kernel decodes the scale bytes itself: all 256 codes, incl.
+    # subnormals, -0.0 and NaN, must equal torch's own fp8 conversion.
+    codes = torch.arange(256, dtype = torch.uint8, device = "cuda").reshape(16, 16)
+    scale = codes.view(torch.float8_e4m3fn)
+    packed = torch.full((16, 128), 0x22, dtype = torch.uint8, device = "cuda")  # every value 1.0
+    out = N.nvfp4_dequantize(packed, scale, torch.ones(1, device = "cuda"), torch.float32)
+    expect = scale.float().repeat_interleave(16, dim = 1)
+    assert torch.equal(out.isnan(), expect.isnan())
+    assert torch.equal(out.nan_to_num(), expect.nan_to_num())
+    finite = ~expect.isnan()
+    assert torch.equal(
+        out.signbit()[finite], expect.signbit()[finite]
+    )  # -0.0 (0x80) keeps its sign
 
 
 @pytest.mark.parametrize("device", _devices())

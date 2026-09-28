@@ -101,8 +101,12 @@ def test_dequantize_matches_compressed_tensors(mods):
     ct = pytest.importorskip("compressed_tensors.compressors.nvfp4.base")
     _, nvfp4, _ = mods
     packed, scale, gs = _packed(96, 160, 1)
+    from compressed_tensors.quantization import QuantizationArgs, QuantizationScheme
+
+    args = QuantizationArgs(num_bits = 4, type = "float", strategy = "tensor_group", group_size = 16)
     ref = ct.NVFP4PackedCompressor.decompress(
-        {"weight_packed": packed, "weight_scale": scale, "weight_global_scale": gs}, None
+        {"weight_packed": packed, "weight_scale": scale, "weight_global_scale": gs},
+        QuantizationScheme(targets = ["Linear"], weights = args),
     )["weight"]
     ours = nvfp4.nvfp4_dequantize(packed, scale, gs, ref.dtype)
     assert torch.equal(ours, ref)

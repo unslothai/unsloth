@@ -58,6 +58,19 @@ def _e2m1_to_float(code):
 
 
 @triton.jit
+def _e4m3_to_float(b):
+    # Triton has no float8e4nv before sm_89 (A100, T4), so the group scale arrives as raw bytes: sign, 4 exponent
+    # bits (bias 7), 3 mantissa bits; exponent 0 is subnormal (m * 2^-9) and 0x7F / 0xFF are NaN, as in torch.
+    exp = (b >> 3) & 15
+    man = b & 7
+    normal = (((exp + 120) << 23) | (man << 20)).to(tl.float32, bitcast = True)
+    value = tl.where(exp == 0, man.to(tl.float32) * 0.001953125, normal)
+    value = tl.where((b & 127) == 127, float("nan"), value)
+    # Sign as a bit, not a negation: -x can lower to 0 - x, which turns code 0x80 (-0.0) into +0.0.
+    return (value.to(tl.int32, bitcast = True) | ((b & 128) << 24)).to(tl.float32, bitcast = True)
+
+
+@triton.jit
 def _nvfp4_dequant_kernel(
     packed_ptr,
     scale_ptr,
@@ -68,6 +81,7 @@ def _nvfp4_dequant_kernel(
     scale_cols,
     BLOCK_R: tl.constexpr,
     BLOCK_C: tl.constexpr,
+    SCALE_E4M3_BYTES: tl.constexpr,
 ):
     # BLOCK_C packed bytes = BLOCK_C // 8 groups of 16 columns; the scale is divided once per group, not per element.
     r = tl.program_id(0) * BLOCK_R + tl.arange(0, BLOCK_R)
@@ -84,7 +98,8 @@ def _nvfp4_dequant_kernel(
         mask = row_ok & (g[None, :] < scale_cols),
         other = 0.0,
     )
-    group_scale = tl.math.div_rn(scale.to(tl.float32), tl.load(global_scale_ptr).to(tl.float32))
+    scale = _e4m3_to_float(scale.to(tl.int32)) if SCALE_E4M3_BYTES else scale.to(tl.float32)
+    group_scale = tl.math.div_rn(scale, tl.load(global_scale_ptr).to(tl.float32))
     # Low nibble is the even column: join + reshape interleaves (lo, hi) into contiguous output columns.
     values = tl.reshape(
         tl.join(_e2m1_to_float(byte & 15), _e2m1_to_float(byte >> 4)), (BLOCK_R, BLOCK_C // 8, 16)
@@ -110,6 +125,9 @@ def _nvfp4_dequantize_triton(
     rows, half = packed.shape
     out = torch.empty((rows, half * 2), dtype = dtype, device = packed.device)
     BLOCK_R, BLOCK_C = 8, 256
+    e4m3 = scale.dtype == torch.float8_e4m3fn
+    if e4m3:
+        scale = scale.view(torch.uint8)
     with _fp8_triton_device_context(packed):
         _nvfp4_dequant_kernel[(triton.cdiv(rows, BLOCK_R), triton.cdiv(half, BLOCK_C))](
             packed,
@@ -121,6 +139,7 @@ def _nvfp4_dequantize_triton(
             scale.shape[1],
             BLOCK_R = BLOCK_R,
             BLOCK_C = BLOCK_C,
+            SCALE_E4M3_BYTES = e4m3,
             num_warps = 4,
         )
     return out
