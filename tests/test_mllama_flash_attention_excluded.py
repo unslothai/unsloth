@@ -5,6 +5,7 @@ import unsloth  # noqa: F401
 import transformers
 
 from unsloth.models import _utils
+from real_accelerator import has_real_cuda
 
 pytestmark = pytest.mark.skipif(
     not hasattr(transformers, "MllamaConfig"), reason = "needs transformers with Mllama"
@@ -64,7 +65,10 @@ def test_flash_entries_of_a_mapping_fall_back(monkeypatch):
     assert impl == {"": "sdpa", "vision_config": "eager"}
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs CUDA")
+# has_real_cuda(), not torch.cuda.is_available(): tests/_zoo_aggressive_cuda_spoof.py patches
+# the latter to True process-wide, which would un-skip this on a CPU-only box. The CUDA probe
+# rather than has_real_accelerator() because the body allocates on "cuda".
+@pytest.mark.skipif(not has_real_cuda(), reason = "needs CUDA")
 def test_mllama_image_forward_runs_on_the_resolved_implementation(monkeypatch):
     monkeypatch.setattr(_utils, "HAS_FLASH_ATTENTION", True)
     model_class, config = _tiny_mllama()
