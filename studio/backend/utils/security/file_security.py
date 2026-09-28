@@ -245,15 +245,18 @@ def _fetch_security_status(
 ):
     """``security_repo_status`` (a dict) or None if unavailable. Hub metadata only; retries once on a transient error, then returns None so the caller can apply its local-fallback policy. ``revision`` scopes the scan to a specific cached commit (else the default branch)."""
     from huggingface_hub import model_info as hf_model_info
+    from hub.utils.hf_tokens import call_hub_with_anonymous_retry
 
     token_arg = hf_token if hf_token else False
     last_exc = None
     for attempt, timeout in enumerate((_REQUEST_TIMEOUT, _RETRY_TIMEOUT)):
         try:
-            info = hf_model_info(
+            # A refused token still gets the public repo's scan, as the worker's load will.
+            info = call_hub_with_anonymous_retry(
+                hf_model_info,
+                token_arg,
                 model_name,
                 revision = revision,
-                token = token_arg,
                 securityStatus = True,
                 timeout = timeout,
             )
