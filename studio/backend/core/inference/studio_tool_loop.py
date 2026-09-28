@@ -1093,32 +1093,16 @@ def _unrun_call_card(
 
 
 def _is_strict_prefix_of_declared(name: str, declared_names: set[str]) -> bool:
-    """Could this complete-looking name still be the start of a longer declared one?
-
-    Only a prefix of ANOTHER declared name counts, so the ordinary case -- a name no other
-    tool extends -- is unaffected and still stamped on the chunk that completes it.
-    """
+    """True if ``name`` is a strict prefix of another declared name (still streaming)."""
     return any(other != name and other.startswith(name) for other in declared_names)
 
 
 def _mcp_provenance_by_id(
     turn: "_Turn", declared_names: set[str], stamped: set[str]
 ) -> dict[str, Any]:
-    """Provenance for MCP calls whose id and whole name have both arrived.
+    """MCP provenance per call id once its whole name has streamed, once per id.
 
-    The relayed tool_calls delta carries none, so the card it paints shows the internal
-    server id until tool_start lands after the turn finishes streaming. Riding the same
-    chunk relabels it at once without disturbing the arguments still accumulating there.
-
-    The declared catalog is what says a streamed name is complete: ``mcp__srv__cre`` is well
-    formed too, and would name the wrong server. Once per id.
-
-    A declared name that is a strict PREFIX of another declared one is not evidence of
-    completeness, though: a server exposing both ``foo`` and ``foo_bar`` makes the fragment
-    ending at ``foo`` look finished, and a stamp there would name the wrong tool for the rest
-    of the turn, since the id is marked and ``_bar`` can no longer correct it. Those wait for
-    the authoritative provenance on ``tool_start``, which is what every call relied on before
-    this, rather than being relabelled early and wrongly.
+    Declared catalog decides completeness (``mcp__srv__cre`` is well formed too); strict-prefix names wait for tool_start.
     """
     stamps: dict[str, Any] = {}
     for call in turn.by_index.values():
@@ -1131,10 +1115,7 @@ def _mcp_provenance_by_id(
             continue
         if _is_strict_prefix_of_declared(name, declared_names):
             continue
-        # Declared means the name is whole, so the call is judged either way. Marked
-        # BEFORE asking whether it resolves: mcp_display_parts is a SQLite lookup that
-        # answers falsy for a server with no display_name, so stamping only on success
-        # re-ran it per chunk. tool_start still carries the authoritative provenance.
+        # Mark before the lookup: mcp_display_parts hits SQLite and is falsy without a display_name.
         stamped.add(call_id)
         if not mcp_display_parts(name):
             continue
@@ -1349,8 +1330,7 @@ async def stream_with_studio_tools(
             break
         provider_turns += 1
         turn = _Turn(round = provider_turns)
-        # Per turn, not per run: ids restart each turn and the client drops its mapping
-        # at tool_end, so the second call_0 is a new card needing its own name.
+        # Per turn: ids restart each turn, so a later call_0 is a new card.
         mcp_stamped_ids: set[str] = set()
         healer = StreamToolCallHealer(heal_names, tools) if heal_names else None
         # A healed text-form call never reaches the wire as a tool_calls key, so a headerless caller's stripper cannot

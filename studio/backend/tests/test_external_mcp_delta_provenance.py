@@ -1,16 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The MCP display name has to reach the card the provider's own delta paints.
-
-The relayed delta carries no provenance, so the card showed the internal server id until
-tool_start landed after the turn finished streaming. A stamp on the same chunk relabels
-it at once.
-
-On the chunk rather than as a second card event because the client appends arguments to
-what the card holds: an event carrying its own empty arguments would reset that text
-mid-stream and every later fragment would extend a corrupted string.
-"""
+"""MCP display name rides the provider's own tool_calls chunk, not a second card event (that would reset arguments)."""
 
 from __future__ import annotations
 
@@ -100,8 +91,7 @@ def named(monkeypatch):
     def _parts(tool_name: str):
         return (DISPLAY, "create_issue") if tool_name == MCP_NAME else None
 
-    # Two references: this loop imported its own, and provisional_tool_provenance reads
-    # the controller's module global.
+    # Two references: this module's import and the controller global provisional_tool_provenance reads.
     monkeypatch.setattr(loop_mod, "mcp_display_parts", _parts)
     monkeypatch.setattr(controller_mod, "mcp_display_parts", _parts)
     monkeypatch.setattr(loop_mod, "execute_tool", lambda name, arguments, **kw: "ok")
@@ -172,7 +162,6 @@ def test_the_display_name_rides_on_the_delta_that_completes_the_name(named):
 
 
 def test_the_stamp_beats_the_real_tool_start(named):
-    """The whole point: the card is relabelled while the turn is still streaming."""
     lines = _run(
         FakeTransport([[_delta(MCP_NAME), _delta(arguments = "{}"), _finish()], [_DONE]]),
         [_tool(MCP_NAME)],
@@ -221,7 +210,6 @@ def test_a_name_split_across_fragments_waits_until_it_is_whole(named):
     )
     stamped_at = [i for i, line in enumerate(lines) if '"_mcp_provenance"' in line]
     assert len(stamped_at) == 1
-    # Not on the first fragment: that one named a tool that does not exist.
     assert '"cre"' not in lines[stamped_at[0]]
     assert _stamps(lines)[0]["c1"]["mcp_server"] == DISPLAY
 
@@ -244,12 +232,7 @@ def test_an_undeclared_mcp_name_never_stamps(named):
 
 
 def test_a_server_that_cannot_be_named_is_asked_once_per_turn(named, monkeypatch):
-    """mcp_display_parts is a SQLite lookup, so asking it per chunk is not free.
-
-    It answers falsy for a server with no display_name or no row, and the scan runs on
-    every chunk carrying a tool_calls delta, so stamping only on success re-ran the query
-    for every fragment. Declared means the name is whole, so one answer settles it.
-    """
+    """mcp_display_parts is a SQLite lookup: at most once per id, not per fragment."""
 
     def _count_for(fragment_count: int) -> int:
         asked: list[str] = []
@@ -268,8 +251,7 @@ def test_a_server_that_cannot_be_named_is_asked_once_per_turn(named, monkeypatch
         assert _stamps(lines) == [], "an unnameable server must not be stamped"
         return len(asked)
 
-    # A SCALING property, not an exact count: tool_start names the call through the same
-    # helper, so a few lookups per turn are expected. The defect is growth with the stream.
+    # Scaling, not an exact count: tool_start also uses the helper.
     few, many = _count_for(4), _count_for(40)
     assert few == many, (
         f"{few} lookups for 4 argument fragments but {many} for 40: the scan is asking "
@@ -278,8 +260,7 @@ def test_a_server_that_cannot_be_named_is_asked_once_per_turn(named, monkeypatch
 
 
 def test_a_reused_call_id_is_named_again_on_the_next_turn(named):
-    """Providers restart ids every turn, and the client drops its id mapping at
-    tool_end, so the second ``c1`` is a different card that also needs naming."""
+    """Ids restart every turn, so the second ``c1`` is a new card."""
     lines = _run(
         FakeTransport(
             [
@@ -308,11 +289,7 @@ def test_a_provider_cannot_forge_the_stamp(named):
 
 
 def test_a_declared_name_that_another_tool_extends_is_not_stamped_early(monkeypatch):
-    """One server exposing both ``foo`` and ``foo_bar`` makes the fragment ending at ``foo``
-    look complete. Stamping there names the WRONG tool and marks the id, so the ``_bar``
-    fragment can no longer correct it, and the card carries the wrong name for the rest of
-    the turn. Both wait for tool_start instead, which is what every call relied on before.
-    """
+    """``foo`` vs ``foo_bar``: a strict-prefix name waits for tool_start instead of stamping wrongly."""
     short = "mcp__a3f9c1d2e4b6f807__foo"
     long = "mcp__a3f9c1d2e4b6f807__foo_bar"
 
@@ -325,8 +302,6 @@ def test_a_declared_name_that_another_tool_extends_is_not_stamped_early(monkeypa
     monkeypatch.setattr(loop_mod, "build_rag_autoinject", lambda *a, **k: None)
     monkeypatch.setattr(loop_mod, "is_high_risk_tool_call", lambda name, args: False)
 
-    # The call is to the LONGER tool, streamed so a fragment boundary falls exactly on the
-    # shorter declared name.
     lines = _run(
         FakeTransport(
             [
@@ -342,26 +317,18 @@ def test_a_declared_name_that_another_tool_extends_is_not_stamped_early(monkeypa
         [_tool(short), _tool(long)],
     )
     stamps = _stamps(lines)
-    # Deferring the ambiguous moment does not lose the stamp: the very next fragment makes
-    # the name unambiguous, and THAT is what stamps. So the card is relabelled during the
-    # turn as the PR intends, and with the right tool.
     assert len(stamps) == 1, f"expected exactly one stamp, got {stamps}"
     assert stamps[0]["c1"]["mcp_tool"] == "foo_bar"
     assert not any(
         '"mcp_tool": "foo"' in line for line in lines
     ), "stamped the shorter declared name, so the card read as the wrong tool"
 
-    # A call that really IS the shorter tool has no unambiguous moment while streaming, so
-    # it waits for tool_start rather than being relabelled on a guess. The cost of the fix,
-    # and only for a name another tool extends.
     lines = _run(
         FakeTransport([[_delta(short), _delta(arguments = "{}"), _finish()], [_DONE]]),
         [_tool(short), _tool(long)],
     )
     assert _stamps(lines) == []
 
-    # And the ordinary case is untouched: a declared name no other tool extends still
-    # stamps on the chunk that completes it, or this fix would have disabled the feature.
     lines = _run(
         FakeTransport([[_delta(long), _delta(arguments = "{}"), _finish()], [_DONE]]),
         [_tool(long)],

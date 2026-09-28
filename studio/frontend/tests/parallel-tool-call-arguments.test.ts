@@ -173,11 +173,7 @@ function liftDeltaLoop(): string {
     loopStart >= 0,
     "the delta.tool_calls loop moved in chat-adapter.ts",
   );
-  // The yield itself, found directly. Searching back from the first
-  // "addedToolCall ||" instead stopped at whatever `if (` preceded it, so once the
-  // adapter computed that condition into a variable the slice ended EARLY and this
-  // harness ran a truncated copy of the loop -- 16 of these tests then failed on
-  // names concatenating across calls, which the adapter does not do.
+  // Searching back for `if (` truncated the slice once the condition moved into a variable.
   const gate = adapterSource.indexOf(
     "if (forcePublish || canPublish(",
     loopStart,
@@ -188,8 +184,6 @@ function liftDeltaLoop(): string {
     lifted.includes("splitTopLevelJsonObjects"),
     "the loop no longer splits on JSON object boundaries",
   );
-  // The end of the slice, not just its start: a cut before these is what made the
-  // harness disagree with production.
   assert.ok(
     lifted.includes("endProviderTurn()"),
     "the lifted loop stops before the turn ends, so it is not the loop production runs",

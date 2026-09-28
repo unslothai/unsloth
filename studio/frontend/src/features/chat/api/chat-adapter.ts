@@ -7765,8 +7765,6 @@ export function createOpenAIStreamAdapter(
                     addedToolCall = true;
                   }
                 }
-                // The loop stamps the MCP display name onto the chunk that completes
-                // the name, so the card never shows the internal server id.
                 const mcpStamps = (
                   chunk as { _mcp_provenance?: Record<string, unknown> }
                 )._mcp_provenance;
@@ -7790,13 +7788,12 @@ export function createOpenAIStreamAdapter(
                   }
                 }
                 // After this chunk's deltas: a provider can put finish_reason on the same chunk as the turn's
-                // last name-only delta. Stamping above runs first, so a relabel lands before the turn drops cards.
+                // last name-only delta.
                 if (chunk.choices?.[0]?.finish_reason) {
                   // Ending the turn drops cards, so the publish below must see it rather than wait for the pacing gate.
                   replayStateChanged ||= endProviderTurn();
                 }
-                // A relabel adds no card and no characters, so the pacing gate alone
-                // would hold back a name completing on a later fragment.
+                // A relabel adds no characters, so the pacing gate alone would hold it back.
                 const forcePublish =
                   addedToolCall || replayStateChanged || stampedProvenance;
                 if (forcePublish || canPublish(streamedChars)) {

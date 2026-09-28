@@ -49,7 +49,6 @@ _CONTROL_KEYS = (
     "_toolStatus",
     "_diffusionFrame",
     "_reasoningDurationMs",
-    # Stamped by the loop after sanitising; a provider's own would name any server it likes.
     "_mcp_provenance",
 )
 
