@@ -4031,9 +4031,13 @@ def _unsloth_gkd_chunk_size(vocab_size):
     return int(min(1024, max(64, 1 << (max(rows, 1).bit_length() - 1))))
 
 
-def _unsloth_gkd_right_align(inputs, layout):
+def _unsloth_gkd_right_align(
+    inputs,
+    layout,
+    liger = False,
+):
     """Roll left-padded rows (TRL's ChatML collator and generate both left-pad) so they start at column 0: Unsloth's training forward drops the 2D mask (#11885).
-    The prompt layout's ``[:, P:]`` slice becomes ``labels[:, :P] = -100`` plus a one-column ``prompts``, so every path scores TRL's tokens.
+    The prompt layout's ``[:, P:]`` slice becomes ``labels[:, :P] = -100`` plus a one-column ``prompts``; TRL's Liger branch scores every label with no slice, so it only rolls.
     """
     try:
         attention_mask = inputs["attention_mask"]
@@ -4044,7 +4048,7 @@ def _unsloth_gkd_right_align(inputs, layout):
         return inputs
     aligned = dict(inputs)
     labels = inputs["labels"]
-    if layout["shift"] == "prompt":
+    if layout["shift"] == "prompt" and not liger:
         labels = labels.clone()
         labels[:, : inputs["prompts"].shape[1]] = -100
         aligned["prompts"] = inputs["prompts"][:, :1]
@@ -4219,7 +4223,9 @@ def gkd_trainer_compute_loss(function_name, function):
         "def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):\n"
         "    # Unsloth: chunked generalized JSD over hidden states; TRL's own loss below is the fallback.\n"
         "    if not return_outputs:\n"
-        f"        inputs = _unsloth_gkd_right_align(inputs, {layout!r})\n"
+        f"        inputs = _unsloth_gkd_right_align(\n"
+        f"            inputs, {layout!r}, getattr(self, 'use_liger_gkd_loss', False),\n"
+        "        )\n"
         "        loss = _unsloth_gkd_chunked_loss(\n"
         f"            self, model, inputs, num_items_in_batch, {layout!r},\n"
         "        )\n"

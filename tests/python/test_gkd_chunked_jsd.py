@@ -650,3 +650,13 @@ def test_left_padded_rows_score_as_if_unpadded(shift, monkeypatch):
         torch.testing.assert_close(
             trainer.compute_loss(student, inputs), want, rtol = 1e-5, atol = 1e-7
         )
+    # TRL's Liger branch has no prompt slice: its rows are rolled, every label kept.
+    liger = rl._unsloth_gkd_right_align(
+        inputs, {"shift": shift, "num_items_in_batch": False}, liger = True
+    )
+    assert liger["prompts"] is inputs["prompts"]
+    for i in range(3):
+        keep = attention_mask[i].bool()
+        width = int(keep.sum())
+        assert torch.equal(liger["labels"][i, :width], labels[i, keep])
+        assert torch.equal(liger["input_ids"][i, :width], input_ids[i, keep])
