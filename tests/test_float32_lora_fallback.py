@@ -11,6 +11,7 @@ import pytest
 import torch
 import unsloth  # noqa: F401
 
+from real_accelerator import has_real_cuda
 from unsloth.models.llama import _base_weight_dtype, _fused_lora_skip_reason
 
 
@@ -36,7 +37,7 @@ def test_float32_skip_reason():
 
 
 @pytest.mark.gpu
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs a real accelerator")
+@pytest.mark.skipif(not has_real_cuda(), reason = "needs a real CUDA device")
 def test_fp32_nf4_dequant_matches_bitsandbytes():
     import bitsandbytes as bnb
     from unsloth.kernels.utils import fast_dequantize
@@ -49,7 +50,7 @@ def test_fp32_nf4_dequant_matches_bitsandbytes():
 
 
 @pytest.mark.gpu
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs a real accelerator")
+@pytest.mark.skipif(not has_real_cuda(), reason = "needs a real CUDA device")
 def test_fp32_nf4_single_token_decode():
     # The 4bit gemv kernels are fp16/bf16 only, so fp32 must take the dequantize path.
     import bitsandbytes as bnb
