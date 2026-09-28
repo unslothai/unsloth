@@ -296,6 +296,53 @@ def test_media_keeps_existing_allowance_without_native_embedding_count():
     assert backend.count_chat_tokens.call_args.kwargs["prefer_native"] is False
 
 
+def test_image_history_is_counted_without_reserving_the_pool(monkeypatch):
+    httpx = _llama_httpx()
+    import base64
+    import binascii
+    import json
+    from types import MethodType
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    def respond(request):
+        if request.url.path == "/tokenize":
+            return httpx.Response(200, json = {"tokens": list(range(20))})
+        assert request.url.path == "/apply-template"
+        for message in json.loads(request.content)["messages"]:
+            for part in message["content"] if isinstance(message["content"], list) else []:
+                if part.get("type") == "image_url":
+                    try:
+                        base64.b64decode(part["image_url"]["url"].split(",")[-1], validate = True)
+                    except binascii.Error:
+                        return httpx.Response(
+                            500, json = {"error": {"message": "Invalid base64 value"}}
+                        )
+        return httpx.Response(200, json = {"prompt": "rendered prompt"})
+
+    client_type = httpx.Client
+    monkeypatch.setattr(
+        httpx, "Client", lambda **kw: client_type(transport = httpx.MockTransport(respond), **kw)
+    )
+    backend = _backend(0)
+    backend.base_url = "http://llama.test"
+    backend.is_loaded = True
+    backend.markup_profile = None
+    backend._auth_headers = None
+    backend.count_chat_tokens = MethodType(LlamaCppBackend.count_chat_tokens, backend)
+    payload = _payload()
+    payload.messages = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "Describe this"},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,AA=="}},
+            ],
+        }
+    ]
+    count = inference._count_gguf_admission_prompt(backend, payload, payload.messages)
+    assert count == 20 + inference._openai_llama_admission_image_tokens(backend)
+
+
 def test_counting_recovers_after_a_complete_outage(monkeypatch):
     async def scenario():
         queue = LlamaAdmissionQueue("count-recovery")
