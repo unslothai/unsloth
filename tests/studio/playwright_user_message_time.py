@@ -101,6 +101,21 @@ async def check(url):
             await page.keyboard.press("Shift+Tab")
             sentinel = page.locator(".aui-user-reveal-sentinel")
             assert await sentinel.evaluate("(e) => e === document.activeElement")
+            sentinel_style = await sentinel.evaluate(
+                "e => ({ display: getComputedStyle(e).display, "
+                "width: getComputedStyle(e).width, "
+                "height: getComputedStyle(e).height, "
+                "outlineStyle: getComputedStyle(e).outlineStyle, "
+                "outlineWidth: getComputedStyle(e).outlineWidth })"
+            )
+            expected_sentinel_style = {
+                "display": "block",
+                "width": "0px",
+                "height": "0px",
+                "outlineStyle": "solid",
+                "outlineWidth": "1px",
+            }
+            assert sentinel_style == expected_sentinel_style, sentinel_style
             delete = page.get_by_role("button", name = "Delete", exact = True)
             await delete.wait_for()
             await page.keyboard.press("Shift+Tab")
