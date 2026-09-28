@@ -278,6 +278,10 @@ def _fit_context(messages, **kwargs):
     # Whether `sticky_dropped` is the depth of a checkpoint RESET. Defaults to True, which
     # is what a caller with no thread state to consult has always assumed.
     sticky_is_checkpoint = bool(kwargs.pop("sticky_is_checkpoint", True))
+    # Whether THIS request carries `search_conversation`. The first reset of a thread never
+    # does (the archive is written during it), and a header naming a tool the model was not
+    # given makes it emit the call as plain text.
+    recall_offered = bool(kwargs.pop("recall_offered", True))
     requested_policy = kwargs.pop("context_policy", None)
     if requested_policy not in ("checkpoint", "rolling"):
         requested_policy = None
@@ -340,7 +344,7 @@ def _fit_context(messages, **kwargs):
             fitted, truncation = checkpoint.fit_checkpoint_context(
                 messages,
                 can_reset = lambda: not _is_degraded(),
-                searchable = lambda: not _is_degraded(),
+                searchable = lambda: recall_offered and not _is_degraded(),
                 **kwargs,
             )
             # `can_reset = False` has no phase two, so it refuses once the replayed
@@ -1565,6 +1569,67 @@ class _CompactionBranchState(NamedTuple):
     recorded: int
 
 
+def _reply_text(content) -> str:
+    """A stored reply's visible text, which a Max Tokens continuation re-sends verbatim."""
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return ""
+    return "".join(
+        str(part.get("text") or "")
+        for part in content
+        if isinstance(part, dict) and part.get("type") == "text"
+    )
+
+
+def _row_truncation(message: dict) -> Optional[dict]:
+    metadata = message.get("metadata")
+    metadata = metadata if isinstance(metadata, dict) else {}
+    custom = metadata.get("custom")
+    custom = custom if isinstance(custom, dict) else {}
+    truncation = metadata.get("contextTruncation") or custom.get("contextTruncation")
+    return truncation if isinstance(truncation, dict) else None
+
+
+def _resumed_reply(stored: list[dict], message: dict) -> dict:
+    """The reply a Max Tokens continuation resumed, when the continuation itself could not fit.
+
+    A continuation runs as a SIBLING of the cut reply and replays it as the final assistant
+    turn, so once the partial fills the window its fit refuses (`fits` false, blamed on the
+    assistant turn) and records no epoch. That says nothing about the thread's compaction:
+    the epoch in force is still the one the resumed reply recorded. Read as the thread's
+    state, it dropped `search_conversation` from the next turn and forced a fresh reset.
+    """
+    seen = set()
+    while True:
+        truncation = _row_truncation(message)
+        if (
+            truncation is None
+            or truncation.get("fits")
+            or truncation.get("latest_turn_role") != "assistant"
+            or id(message) in seen
+        ):
+            return message
+        seen.add(id(message))
+        parent = message.get("parentId", message.get("parent_id"))
+        text = _reply_text(message.get("content"))
+        source = None
+        for row in stored:
+            if (
+                row is message
+                or row.get("role") != "assistant"
+                or row.get("parentId", row.get("parent_id")) != parent
+            ):
+                continue
+            resumed = _reply_text(row.get("content")).rstrip()
+            if resumed and len(resumed) < len(text) and text.startswith(resumed):
+                if source is None or len(resumed) > len(_reply_text(source.get("content")).rstrip()):
+                    source = row
+        if source is None:
+            return message
+        message = source
+
+
 def _compaction_branch_states(
     stored: list[dict], branch_messages: Optional[list[dict]] = None
 ) -> list[_CompactionBranchState]:
@@ -1602,7 +1667,7 @@ def _compaction_branch_states(
     # A COMPLETED row with no truncation ends the epoch; only active/aborted are placeholders.
     states = []
     for message in candidates:
-        metadata = message.get("metadata")
+        metadata = _resumed_reply(stored, message).get("metadata")
         metadata = metadata if isinstance(metadata, dict) else {}
         custom = metadata.get("custom")
         custom = custom if isinstance(custom, dict) else {}
@@ -34847,6 +34912,7 @@ class LlamaCppBackend:
                     sticky_is_checkpoint = _sticky_is_checkpoint,
                     keeps_boundary = _keeps_compaction_boundary(thread_id),
                     can_reset = _can_reset,
+                    recall_offered = False,
                     **_compaction_fit_kwargs(context_policy, compaction_headroom_ratio),
                 )
                 if truncation:
@@ -35795,6 +35861,7 @@ class LlamaCppBackend:
                         anchor_ids = _rolling_anchor_ids,
                         keeps_boundary = _keeps_compaction_boundary(thread_id),
                         can_reset = _iteration_can_reset,
+                        recall_offered = "search_conversation" in (_enabled_tool_names or ()),
                         reserve_tokens = _conversation_recall_reserve(thread_id),
                         sticky_dropped = _iteration_sticky,
                         sticky_is_checkpoint = _iteration_sticky_is_checkpoint,
@@ -35972,6 +36039,7 @@ class LlamaCppBackend:
                             _backend_supports_tools(self),
                             tools_withheld = _memory_tool_withheld(thread_id, tools),
                         ),
+                        recall_offered = "search_conversation" in (_enabled_tool_names or ()),
                         **_compaction_fit_kwargs(context_policy, compaction_headroom_ratio),
                     )
                     # Recorded here, not left to the forwarding below. That list is

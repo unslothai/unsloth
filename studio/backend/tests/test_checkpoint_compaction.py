@@ -2363,8 +2363,12 @@ def test_the_tool_loop_reopens_only_where_an_epoch_actually_happened(monkeypatch
     assert inference_routes._thread_has_checkpoint("t1") is True
 
     # A refused fit records diagnostics, not an epoch that can be searched.
-    _thread({"fits": False, "dropped_messages": 12, "checkpoint": True})
+    _thread({"fits": False, "dropped_messages": 0, "checkpoint": True})
     assert inference_routes._thread_has_checkpoint("t1") is False
+
+    # A rescue did reset and archive what it dropped, so recall stays offered.
+    _thread({"fits": False, "dropped_messages": 12, "checkpoint": True})
+    assert inference_routes._thread_has_checkpoint("t1") is True
 
     _thread({"fits": True, "dropped_messages": 12, "checkpoint": True})
 
@@ -3900,3 +3904,141 @@ def test_a_nudge_sent_with_an_image_is_not_quoted_as_an_instruction():
 def test_an_image_turn_is_judged_on_its_words_not_its_attachment():
     assert carried_forward_items([_image_turn("continue")], max_tokens = 1024) == []
     assert carried_forward_items([_image_turn(INSTRUCTION)], max_tokens = 1024) == [INSTRUCTION]
+
+
+def _refused_continuation_metadata(boundary):
+    """What a Max Tokens continuation records when its replayed partial fills the window."""
+    return {
+        "contextTruncation": {
+            "fits": False,
+            "dropped_messages": boundary,
+            "boundary_messages": boundary,
+            "latest_turn_role": "assistant",
+        }
+    }
+
+
+@pytest.mark.parametrize("with_source", [True, False])
+def test_a_continuation_that_could_not_fit_keeps_the_epoch_it_resumed(monkeypatch, with_source):
+    """A continuation runs as a sibling of the cut reply and replays it as the final turn, so
+    once the partial fills the window its fit refuses and records no epoch. Read as the
+    thread's state, that dropped `search_conversation` from every later turn (Flappy Bird at
+    2044 tokens: the model emitted the call as plain text). The epoch in force is the one the
+    resumed reply recorded; with no resumed reply stored, the refusal still rules."""
+    from core.inference import checkpoint, llama_cpp
+    from routes import inference as inference_routes
+
+    partial = "Here is the Rust version:\n\nfn main() {"
+    rows = [
+        _row(id = "user-1", content = "Write it in Rust."),
+        _turn(id = "cut", parentId = "user-1", content = partial, metadata = _checkpoint_metadata(4)),
+        _turn(
+            id = "resumed",
+            parentId = "user-1",
+            content = [{"type": "text", "text": partial + "\n    run();\n}"}],
+            metadata = _refused_continuation_metadata(4),
+        ),
+        _row(id = "user-2", parentId = "resumed", content = "Now fix the bugs."),
+    ]
+    branch = [
+        {"role": "user", "content": "Write it in Rust."},
+        {"role": "assistant", "content": partial + "\n    run();\n}"},
+        {"role": "user", "content": "Now fix the bugs."},
+    ]
+    if not with_source:
+        rows = [row for row in rows if row["id"] != "cut"]
+    _stub_studio_db(monkeypatch, rows)
+    monkeypatch.setattr(checkpoint, "CONTEXT_POLICY", "checkpoint")
+
+    assert inference_routes._thread_has_checkpoint("t1", branch) is with_source
+    assert llama_cpp._sticky_compaction_state("t1", branch) == ((4, True) if with_source else (0, False))
+
+
+def test_a_retry_sibling_is_not_mistaken_for_the_reply_a_refusal_resumed(monkeypatch):
+    """Only a sibling whose text the refused row extends was resumed; a Retry is not."""
+    from core.inference import checkpoint
+    from routes import inference as inference_routes
+
+    rows = [
+        _row(id = "user-1", content = "Write it in Rust."),
+        _turn(id = "retry", parentId = "user-1", content = "Something else.", metadata = _checkpoint_metadata(4)),
+        _turn(
+            id = "refused",
+            parentId = "user-1",
+            content = "A different reply.",
+            metadata = _refused_continuation_metadata(4),
+        ),
+        _row(id = "user-2", parentId = "refused", content = "Now fix the bugs."),
+    ]
+    branch = [
+        {"role": "user", "content": "Write it in Rust."},
+        {"role": "assistant", "content": "A different reply."},
+        {"role": "user", "content": "Now fix the bugs."},
+    ]
+    _stub_studio_db(monkeypatch, rows)
+    monkeypatch.setattr(checkpoint, "CONTEXT_POLICY", "checkpoint")
+
+    assert inference_routes._thread_has_checkpoint("t1", branch) is False
+
+
+def test_a_reset_on_a_request_without_the_recall_tool_does_not_name_it(monkeypatch):
+    """The first reset of a thread never carries `search_conversation`, since the archive is
+    written during it. Naming the tool there made the model emit the call as plain text."""
+    from core.inference import llama_cpp
+
+    messages = _thread() + [{"role": "user", "content": "continue"}]
+    monkeypatch.setattr(llama_cpp, "_archive_is_degraded", lambda: False)
+
+    def _header(**kwargs):
+        fitted, truncation = llama_cpp._fit_context(
+            messages,
+            context_length = 1200,
+            max_tokens = 200,
+            count_tokens = count,
+            can_reset = True,
+            sticky_dropped = 0,
+            **kwargs,
+        )
+        assert truncation["checkpoint_started"] is True
+        return fitted[0]["content"]
+
+    withheld = _header(recall_offered = False)
+    assert checkpoint._NOT_SEARCHABLE in withheld
+    assert checkpoint._SEARCHABLE not in withheld
+    assert checkpoint._SEARCHABLE in _header(recall_offered = True)
+    assert checkpoint._SEARCHABLE in _header()
+
+
+@pytest.mark.parametrize(("dropped", "admitted"), [(4, True), (0, False)])
+def test_a_rescued_reset_still_offers_recall_but_is_never_replayed(monkeypatch, dropped, admitted):
+    """A reset that missed the reply reserve still archived what it dropped, so the next turn
+    must be able to search it; only its boundary stays unreplayed. A refusal drops nothing
+    and keeps saying no epoch happened."""
+    from core.inference import checkpoint, llama_cpp
+    from routes import inference as inference_routes
+
+    rows = [
+        _row(id = "user-1", content = "Write it in Rust."),
+        _turn(
+            id = "rust",
+            parentId = "user-1",
+            content = "fn main() {}",
+            metadata = {
+                "contextTruncation": {
+                    "fits": False,
+                    "checkpoint": True,
+                    "checkpoint_started": True,
+                    "dropped_messages": dropped,
+                    "boundary_messages": dropped,
+                    "latest_turn_role": "assistant",
+                }
+            },
+        ),
+        _row(id = "user-2", parentId = "rust", content = "Now fix the bugs."),
+    ]
+    branch = [{"role": row["role"], "content": row["content"]} for row in rows]
+    _stub_studio_db(monkeypatch, rows)
+    monkeypatch.setattr(checkpoint, "CONTEXT_POLICY", "checkpoint")
+
+    assert inference_routes._thread_has_checkpoint("t1", branch) is admitted
+    assert llama_cpp._sticky_compaction_state("t1", branch) == (0, False)
