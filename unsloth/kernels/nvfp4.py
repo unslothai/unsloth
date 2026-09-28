@@ -43,12 +43,10 @@ def _nvfp4_dequantize_torch(packed, scale, global_scale, dtype):
 
 @triton.jit
 def _e2m1_to_float(code):
+    # Build the fp32 bits: mag >= 2 is (1 + m / 2) * 2^(e - 1), mag 1 is 0.5, mag 0 is 0; bit 3 is the sign (code 8 = -0.0).
     mag = code & 7
-    exp = mag >> 1
-    # mag 0,1 -> 0, 0.5 ; mag >= 2 -> (2 + mantissa) * 2^(exp - 2)
-    pow2 = tl.where(exp == 1, 0.5, tl.where(exp == 2, 1.0, 2.0))
-    value = tl.where(mag < 2, mag.to(tl.float32) * 0.5, (2 + (mag & 1)).to(tl.float32) * pow2)
-    return value * tl.where((code & 8) != 0, -1.0, 1.0)  # multiply, not negate: code 8 is -0.0
+    bits = tl.where(mag >= 2, (((mag >> 1) + 126) << 23) | ((mag & 1) << 22), tl.where(mag == 1, 126 << 23, 0))
+    return (bits | ((code & 8) << 28)).to(tl.float32, bitcast = True)
 
 
 @triton.jit
@@ -57,22 +55,25 @@ def _nvfp4_dequant_kernel(
     scale_ptr,
     global_scale_ptr,
     out_ptr,
+    rows,
     half_cols,
     scale_cols,
-    BLOCK: tl.constexpr,
+    BLOCK_R: tl.constexpr,
+    BLOCK_C: tl.constexpr,
 ):
-    row = tl.program_id(0)
-    offs = tl.program_id(1) * BLOCK + tl.arange(0, BLOCK)
-    mask = offs < half_cols
-    byte = tl.load(packed_ptr + row * half_cols + offs, mask = mask, other = 0).to(tl.int32)
-    # Two columns per byte, 16 columns per scale: packed column p is in group p // 8.
-    scale = tl.load(scale_ptr + row * scale_cols + offs // 8, mask = mask, other = 0.0).to(tl.float32)
-    group_scale = tl.math.div_rn(scale, tl.load(global_scale_ptr).to(tl.float32))
-    lo = _e2m1_to_float(byte & 15) * group_scale
-    hi = _e2m1_to_float(byte >> 4) * group_scale
-    out_row = out_ptr + row * half_cols * 2 + offs * 2
-    tl.store(out_row, lo.to(out_ptr.dtype.element_ty), mask = mask)
-    tl.store(out_row + 1, hi.to(out_ptr.dtype.element_ty), mask = mask)
+    # BLOCK_C packed bytes = BLOCK_C // 8 groups of 16 columns; the scale is divided once per group, not per element.
+    r = tl.program_id(0) * BLOCK_R + tl.arange(0, BLOCK_R)
+    c = tl.program_id(1) * BLOCK_C + tl.arange(0, BLOCK_C)
+    g = tl.program_id(1) * (BLOCK_C // 8) + tl.arange(0, BLOCK_C // 8)
+    row_ok = r[:, None] < rows
+    byte = tl.load(packed_ptr + r[:, None] * half_cols + c[None, :], mask = row_ok & (c[None, :] < half_cols), other = 0).to(tl.int32)
+    scale = tl.load(scale_ptr + r[:, None] * scale_cols + g[None, :], mask = row_ok & (g[None, :] < scale_cols), other = 0.0)
+    group_scale = tl.math.div_rn(scale.to(tl.float32), tl.load(global_scale_ptr).to(tl.float32))
+    # Low nibble is the even column: join + reshape interleaves (lo, hi) into contiguous output columns.
+    values = tl.reshape(tl.join(_e2m1_to_float(byte & 15), _e2m1_to_float(byte >> 4)), (BLOCK_R, BLOCK_C // 8, 16))
+    values = tl.reshape(values * group_scale[:, :, None], (BLOCK_R, 2 * BLOCK_C))
+    oc = tl.program_id(1) * (2 * BLOCK_C) + tl.arange(0, 2 * BLOCK_C)
+    tl.store(out_ptr + r[:, None] * (2 * half_cols) + oc[None, :], values.to(out_ptr.dtype.element_ty), mask = row_ok & (oc[None, :] < 2 * half_cols))
 
 
 @_opaque_under_compile(
@@ -89,10 +90,10 @@ def _nvfp4_dequantize_triton(
 ) -> torch.Tensor:
     rows, half = packed.shape
     out = torch.empty((rows, half * 2), dtype = dtype, device = packed.device)
-    BLOCK = 1024
+    BLOCK_R, BLOCK_C = 8, 256
     with _fp8_triton_device_context(packed):
-        _nvfp4_dequant_kernel[(rows, triton.cdiv(half, BLOCK))](
-            packed, scale, global_scale, out, half, scale.shape[1], BLOCK = BLOCK
+        _nvfp4_dequant_kernel[(triton.cdiv(rows, BLOCK_R), triton.cdiv(half, BLOCK_C))](
+            packed, scale, global_scale, out, rows, half, scale.shape[1], BLOCK_R = BLOCK_R, BLOCK_C = BLOCK_C, num_warps = 4
         )
     return out
 
