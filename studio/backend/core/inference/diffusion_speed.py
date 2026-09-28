@@ -437,6 +437,7 @@ def apply_speed_optims(
     applied = {
         "channels_last": False,
         "vae_fp16_decode": False,
+        "vae_fused": False,
         "cudnn_benchmark": False,
         "tf32": False,
         "fp16_accum": False,
@@ -459,6 +460,8 @@ def apply_speed_optims(
     applied["channels_last"] = _vae_channels_last(pipe, logger)
     # Near-lossless, not bit-identical, so never on "off" (returned above).
     applied["vae_fp16_decode"] = _video_vae_half_decode(pipe, target, family, logger)
+    if on_cuda:
+        applied["vae_fused"] = _install_fused_vae(pipe, logger)
 
     if on_cuda:
         applied["cudnn_benchmark"] = _enable_cudnn_benchmark(logger)
@@ -511,8 +514,14 @@ def apply_speed_optims(
             eager_when_tiled = _vae_eager_when_tiled(pipe),
         )
 
-    if applied["channels_last"] and not _channels_last_decode_wins(
-        pipe, target, applied["compiled_vae_decode"], offload_active
+    # Fused passes feed cuDNN channels-last activations; contiguous weights would be relaid out per call.
+    fused_cl = bool(getattr(getattr(pipe, "vae", None), "_unsloth_vae_fused_cl_weights", False))
+    if (
+        applied["channels_last"]
+        and not fused_cl
+        and not _channels_last_decode_wins(
+            pipe, target, applied["compiled_vae_decode"], offload_active
+        )
     ):
         applied["channels_last"] = not _vae_contiguous(pipe, logger)
     elif applied["compiled_vae_decode"] and not _channels_last_decode_wins(
@@ -1108,8 +1117,34 @@ def vae_decode_compile_allowed(pipe: Any, speed_mode: str) -> bool:
     return _denoiser_unet(pipe) is None and _vae_decode_compile_allowed(pipe, speed_mode)
 
 
+def _install_fused_vae(pipe: Any, logger: Any) -> bool:
+    """Triton-fused VAE norm passes (diffusion_vae_fused), unless the env forces the VAE decode compile instead."""
+    if os.environ.get(COMPILE_VAE_ENV, "").strip().lower() in _VAE_TRUE_TOKENS:
+        return False
+    try:
+        from . import diffusion_vae_fused  # noqa: PLC0415 - Triton import only on CUDA loads
+        return diffusion_vae_fused.install(getattr(pipe, "vae", None), logger) > 0
+    except Exception as exc:  # noqa: BLE001 - optimisation only
+        _warn(logger, "fused vae", exc)
+        return False
+
+
+def _fused_vae_planned(pipe: Any) -> bool:
+    if os.environ.get(COMPILE_VAE_ENV, "").strip().lower() in _VAE_TRUE_TOKENS:
+        return False
+    try:
+        from . import diffusion_vae_fused  # noqa: PLC0415
+        return diffusion_vae_fused.will_install(getattr(pipe, "vae", None))
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _vae_decode_compile_allowed(pipe: Any, speed_mode: str) -> bool:
-    """U-Nets always; a DiT only on ``max`` (it costs a 60-70 s slower first render) or with the env forced on."""
+    """U-Nets always; a DiT only on ``max`` (it costs a 60-70 s slower first render) or with the env forced on.
+
+    Never when the fused eager VAE path engages: it is faster than the compiled decode, with no cold compile."""
+    if _fused_vae_planned(pipe):
+        return False
     if _denoiser_unet(pipe) is not None:
         return True
     raw = os.environ.get(COMPILE_VAE_ENV, "").strip().lower()
@@ -1354,7 +1389,17 @@ def _fuse_qkv(pipe: Any, logger: Any) -> bool:
     fn = getattr(pipe, "fuse_qkv_projections", None)
     if callable(fn):
         try:
+            vae = getattr(pipe, "vae", None)
+            fused_vae_attn = callable(getattr(vae, "modules", None)) and any(
+                type(getattr(m, "processor", None)).__name__ == "FusedSingleHeadProcessor"
+                for m in vae.modules()
+            )
             fn()
+            if (
+                fused_vae_attn
+            ):  # the pipe-level fuse resets every VAE processor to FusedAttnProcessor2_0
+                from . import diffusion_vae_fused  # noqa: PLC0415
+                diffusion_vae_fused.install_attention_processors(vae)
             return True
         except Exception as exc:  # noqa: BLE001 - optimisation only
             _warn(logger, "fuse_qkv_projections", exc)
