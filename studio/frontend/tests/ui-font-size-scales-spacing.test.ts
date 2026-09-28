@@ -168,7 +168,7 @@ test("the titlebar reserves room for its controls, which stay in the band", () =
   const titlebar = readSrc("components/tauri/window-titlebar.tsx");
   // Custom chrome has 34px targets inside a 42px band. Native macOS
   // retains its 30px navigation targets.
-  assert.match(titlebar, /customTitlebar \? "size-\[34px\]" : "size-\[30px\]"/);
+  assert.match(titlebar, /customTitlebar \? "size-\[min\(var\(--studio-titlebar-nav-target,34px\),var\(--studio-custom-titlebar-height,42px\)\)\]" : "size-\[30px\]"/);
   assert.match(titlebar, /inline-flex size-\[34px\] shrink-0/);
   // The collapsed navigation slot must hold the three targets, gaps and inset.
   assert.match(titlebar, /max\(134px, calc\(134px \* var\(--ui-space-scale, 1\)\)\)/);
