@@ -1625,6 +1625,7 @@ app.add_middleware(
     expose_headers = [
         "X-Unsloth-Conflict-Kind",
         "X-Unsloth-Refusal",
+        "x-typesafe-request-id",
         *_hub_endpoint_proxy.EXPOSED_HEADERS,
     ],
     # is_allowed_origin closes the moment the tunnel URL clears, but a preflight already cached by the browser

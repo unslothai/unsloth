@@ -27,6 +27,7 @@ import { PromptQueueList } from "@/components/assistant-ui/lazy-prompt-queue-lis
 import { QueueResumeIcon } from "@/components/assistant-ui/queue-resume-icon";
 import { ProgressiveMessages } from "@/components/assistant-ui/progressive-messages";
 import { MessageMenuTime } from "@/components/assistant-ui/message-menu-time";
+import { UserMessageTime } from "@/components/assistant-ui/user-message-time";
 import { MessageTiming } from "@/components/assistant-ui/message-timing";
 import { attachThreadFastCopy } from "@/components/assistant-ui/thread-fast-copy";
 import { threadHasResearchMessage } from "@/components/assistant-ui/thread-research-presence";
@@ -8731,6 +8732,7 @@ const UserActionBar: FC = () => {
       autohide="always"
       className="aui-user-action-bar-root flex gap-1 text-chat-icon-fg [&_button]:size-8 [&_button]:!rounded-full [&_button:hover]:bg-chat-icon-bg-hover [&_button:hover]:text-chat-icon-fg-hover"
     >
+      <UserMessageTime />
       <CopyButton />
       {!ownsResearchMessage && !researchActive && (
         <ActionBarPrimitive.Edit asChild={true}>
