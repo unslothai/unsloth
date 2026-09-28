@@ -75,11 +75,12 @@ import { useLibrarySettingsStore } from "../settings-store";
 import { SortRadio } from "../components/library-toolbar";
 import { CARD_SHADOW, OVERLAY_CONTROL, RAISED_SURFACE } from "../surface";
 
-// Same card style as the file tabs: square, date bottom left.
+// File-tab card style, a little shorter than square; date bottom left.
+// No overflow-hidden, so a two-line name grows its row instead of clipping; the row stretches to match.
 const CARD = cn(
   RAISED_SURFACE,
   CARD_SHADOW,
-  "group/chat relative flex aspect-square cursor-pointer flex-col gap-2.5 overflow-hidden rounded-xl px-5 pb-3.5 pt-5 transition hover:bg-neutral-100 hover:shadow-none dark:hover:bg-accent/60",
+  "group/chat relative flex aspect-[6/5] cursor-pointer flex-col gap-2.5 self-stretch rounded-xl px-5 pb-3.5 pt-5 transition hover:bg-neutral-100 hover:shadow-none dark:hover:bg-accent/60",
 );
 import {
   type ChatContents,
