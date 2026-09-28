@@ -4339,6 +4339,7 @@ export function AppSidebar() {
                   : t("shell.selection.markUnread")}
               </span>
             </P.Item>
+            {/* Above: edits the row. Below: copies or moves the chat. */}
             <P.Separator />
             <P.Item
               disabled={!canForkChatRow(item) || isGenerating || forkInFlight}
