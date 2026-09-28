@@ -463,31 +463,32 @@ def Gemma2Model_fast_forward_inference(
     bsz, q_len, hd = hidden_states.shape
     seq_len = past_key_values[0][0].shape[-2]
     if bsz != 1:
-        if HAS_FLASH_ATTENTION_SOFTCAPPING:
-            SWA = True
-            GA = False
-        else:
-            SWA = _prepare_4d_causal_attention_mask_for_sdpa(
-                attention_mask,
-                (bsz, q_len),
-                hidden_states,
-                seq_len,
-                sliding_window = self.config.sliding_window,
-            )
-            GA = _prepare_4d_causal_attention_mask_for_sdpa(
-                attention_mask,
-                (bsz, q_len),
-                hidden_states,
-                seq_len,
-            )
+        SWA = _prepare_4d_causal_attention_mask_for_sdpa(
+            attention_mask,
+            (bsz, q_len),
+            hidden_states,
+            seq_len,
+            sliding_window = self.config.sliding_window,
+        )
+        GA = _prepare_4d_causal_attention_mask_for_sdpa(
+            attention_mask,
+            (bsz, q_len),
+            hidden_states,
+            seq_len,
+        )
     else:
-        SWA = attention_mask
-        GA = attention_mask
+        # One row has no padding; the raw 2D mask cannot be sliced to the sliding window.
+        SWA = None
+        GA = None
     next_decoder_cache = []
     for idx, decoder_layer in enumerate(self.model.layers):
         # For pipeline parallelism every tensor must be on the same device; this movement happens once per GPU in PP.
         layer_device, device_index = per_layer_device(decoder_layer)
         hidden_states, position_ids = move_to_device(layer_device, hidden_states, position_ids)
+        if SWA is not None:
+            SWA = move_to_device(layer_device, SWA)
+        if GA is not None:
+            GA = move_to_device(layer_device, GA)
 
         use_sliding_window = idx % 2 == 0
 
