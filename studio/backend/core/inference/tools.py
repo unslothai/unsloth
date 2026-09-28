@@ -6822,9 +6822,7 @@ _ALWAYS_SAFE_TOOLS = frozenset(
 
 
 def never_needs_approval(name: str) -> bool:
-    """search_conversation reads back only this chat's own compacted turns, which the model was
-    already shown, and is offered with every user tool off whenever compaction reset the chat.
-    Asking for it in Ask mode put an approval card on Studio's own memory (#11671)."""
+    """search_conversation only reads this chat's own compacted turns (#11671)."""
     return name == "search_conversation"
 
 

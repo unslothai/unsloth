@@ -2834,9 +2834,7 @@ def test_ask_mode_gates_even_safe_calls():
 
 @pytest.mark.parametrize(("name", "gated"), [("search_conversation", False), ("web_search", True)])
 def test_ask_mode_never_gates_conversation_recall(name, gated):
-    """Recall reads back only this chat's own compacted turns and is offered with every user
-    tool off, so an approval card for it is Studio asking permission to use its own memory
-    (#11671). Every other tool, read-only ones included, still asks."""
+    """Every other tool, read-only ones included, still asks."""
     session = f"{_SESSION}-{uuid.uuid4().hex}"
     events = []
     for ev in run_safetensors_tool_loop(
