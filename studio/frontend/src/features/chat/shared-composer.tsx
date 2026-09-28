@@ -65,6 +65,11 @@ import { classifiedAttachmentFiles, isVideoFile } from "@/lib/video-utils";
 import { isDownloadCancelled } from "@/lib/native-files";
 import { isMultimodalResponse } from "./types/api";
 import { getImageInputUnavailableReason } from "./utils/image-input-support";
+import {
+  CHAT_IMAGE_ACCEPT,
+  isChatImageFile,
+  normalizeChatImage,
+} from "./image-normalize";
 import { modelIdsMatch } from "@/features/hub/lib/model-identity";
 import { CONVERSATION_MARKDOWN_LABEL } from "./utils/conversation-markdown";
 import { pasteClipboardFiles } from "./utils/clipboard-files";
@@ -237,7 +242,6 @@ export interface CompareHandle {
   waitForRunEnd: () => Promise<void>;
 }
 
-const IMAGE_ACCEPT = "image/jpeg,image/png,image/webp,image/gif";
 const MAX_IMAGE_SIZE = 20 * 1024 * 1024;
 
 // Inlined to avoid a new icon dep. Kept in sync with the main composer.
@@ -592,6 +596,7 @@ export function SharedComposer({
   const [running, setRunning] = useState(false);
   const [comparing, setComparing] = useState(false);
   const [pendingImages, setPendingImages] = useState<PendingImage[]>([]);
+  const [convertingImages, setConvertingImages] = useState(0);
   const [pendingAudio, setPendingAudio] = useState<{
     name: string;
     base64: string;
@@ -1040,6 +1045,7 @@ export function SharedComposer({
       let droppedImageForUnavailable = false;
       let audioSizeError: string | null = null;
       let videoUnsupported = false;
+      let conversionError: string | null = null;
       for (let i = 0; i < files.length; i++) {
         const file = files[i];
         if (!file) continue;
@@ -1061,19 +1067,33 @@ export function SharedComposer({
           videoUnsupported = true;
           continue;
         }
-        if (!file.type.match(/^image\/(jpeg|png|webp|gif)$/i)) continue;
+        if (!isChatImageFile(file)) continue;
         if (file.size > MAX_IMAGE_SIZE) continue;
         if (attachUnavailableReason) {
           droppedImageForUnavailable = true;
           continue;
         }
-        next.push({ id: crypto.randomUUID(), file });
+        let image: File;
+        setConvertingImages((count) => count + 1);
+        try {
+          image = await normalizeChatImage(file);
+        } catch (error) {
+          conversionError ??=
+            error instanceof Error ? error.message : String(error);
+          continue;
+        } finally {
+          setConvertingImages((count) => count - 1);
+        }
+        next.push({ id: crypto.randomUUID(), file: image });
       }
       if (droppedImageForUnavailable && attachUnavailableReason) {
         toast.error(attachUnavailableReason);
       }
       if (audioSizeError) {
         toast.error(audioSizeError);
+      }
+      if (conversionError) {
+        toast.error(conversionError);
       }
       if (videoUnsupported) {
         toast.error("Video can't be attached in compare mode", {
@@ -1097,8 +1117,7 @@ export function SharedComposer({
           const supported = files.some(
             (file) =>
               isAudioAttachmentFile(file) ||
-              (file.type.match(/^image\/(jpeg|png|webp|gif)$/i) &&
-                file.size <= MAX_IMAGE_SIZE),
+              (isChatImageFile(file) && file.size <= MAX_IMAGE_SIZE),
           );
           if (!supported) throw new Error("Unsupported compare attachment");
           await addFiles(files);
@@ -1151,7 +1170,7 @@ export function SharedComposer({
   useEffect(() => () => clearStuckImeTimer(), []);
 
   async function send() {
-    if (composingRef.current) {
+    if (composingRef.current || convertingImages > 0) {
       resetPromptQueue();
       return;
     }
@@ -1656,6 +1675,7 @@ export function SharedComposer({
               : "",
           tensor_parallel: effectiveTensorParallel,
           disable_vision: effectiveDisableVision,
+          n_parallel: ownConfig.nParallel ?? null,
           force_cancel_active:
             compareStopDecision?.forceCancelActive ?? false,
           ...(targetIsGguf
@@ -1665,9 +1685,6 @@ export function SharedComposer({
                 n_cpu_moe: effectiveNCpuMoe,
                 tensor_split: compareLoadKnobs.splitRatio ?? undefined,
                 gpu_ids: effectiveSelectedGpuIds ?? undefined,
-                n_parallel: ownConfig.nParallel ?? null,
-                // Only when this panel has read the stored value: omitted, the load inherits it, which keeps
-                // CLI-set flags working.
                 ...(ownConfig.llamaExtraArgs !== undefined
                   ? // biome-ignore lint/style/useNamingConvention: API schema
                     { llama_extra_args: ownConfig.llamaExtraArgs ?? [] }
@@ -1728,7 +1745,7 @@ export function SharedComposer({
         // Slots this compare load committed. Diffusion ignores --parallel, so a
         // count there would mint a phantom override a preset carries onto a GGUF.
         const committedSlots =
-          targetIsGguf && !(resp.is_diffusion ?? false)
+          ((resp.is_gguf ?? false) && !(resp.is_diffusion ?? false)) || (resp.is_mlx ?? false)
             ? (ownConfig.nParallel ?? null)
             : null;
         // same rule for the batch sizes
@@ -2039,6 +2056,7 @@ export function SharedComposer({
     !busy &&
     !isComposing &&
     !isDictating &&
+    convertingImages === 0 &&
     !sendUnavailableReason;
 
   // Compare mode swaps this composer in for the single-chat one and only one is ever on screen, so the
@@ -2438,7 +2456,7 @@ export function SharedComposer({
           <input
             ref={fileInputRef}
             type="file"
-            accept={IMAGE_ACCEPT}
+            accept={CHAT_IMAGE_ACCEPT}
             multiple
             className="hidden"
             onChange={(e) => {

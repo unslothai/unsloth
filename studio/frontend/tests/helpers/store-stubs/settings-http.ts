@@ -157,3 +157,7 @@ export async function authFetch(
     }),
   } as Response;
 }
+
+export function getAuthSessionEpoch(): number {
+  return 0;
+}
