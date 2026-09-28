@@ -2927,13 +2927,17 @@ def alternating_turns(messages: list) -> list:
         None,
     )
     turns = []
+    unheard = False
     for message in messages or []:
         turn = message
         if message is not newest_user:
             if not isinstance(message, dict) or message.get("role") not in ("user", "assistant"):
                 continue
             text = content_to_text(message.get("content")).strip()
-            if not text:
+            if message["role"] == "user":
+                unheard = not text
+            # The reply to a dropped recording would otherwise pair with the question before it.
+            if not text or unheard:
                 continue
             turn = named_turn({"role": message["role"], "content": text}, message)
         if turns and turns[-1]["role"] == turn["role"]:

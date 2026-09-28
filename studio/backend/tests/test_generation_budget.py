@@ -383,6 +383,33 @@ def test_an_audio_only_turn_keeps_the_conversation_before_it(monkeypatch):
     ]
 
 
+def test_the_reply_to_an_earlier_recording_stays_off_the_question_before_it(monkeypatch):
+    audio = object()
+    rendered = _rendered_audio_messages(
+        monkeypatch,
+        [
+            {"role": "user", "content": "Write a haiku about the sea"},
+            {"role": "assistant", "content": "Waves fold into foam"},
+            {"role": "user", "content": ""},
+            {"role": "assistant", "content": "Please count from one to five."},
+            {"role": "user", "content": ""},
+        ],
+        audio,
+    )
+
+    assert rendered[1:] == [
+        {"role": "user", "content": [{"type": "text", "text": "Write a haiku about the sea"}]},
+        {"role": "assistant", "content": [{"type": "text", "text": "Waves fold into foam"}]},
+        {
+            "role": "user",
+            "content": [
+                {"type": "audio", "audio": audio},
+                {"type": "text", "text": "Please transcribe this audio."},
+            ],
+        },
+    ]
+
+
 @pytest.mark.parametrize(
     "history, roles",
     [

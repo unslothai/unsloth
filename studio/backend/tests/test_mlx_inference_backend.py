@@ -2799,6 +2799,19 @@ def test_mlx_generate_audio_input_deltas_and_reject(monkeypatch):
                 audio_turn,
             ],
         ),
+        (
+            [
+                {"role": "user", "content": "Write a haiku"},
+                {"role": "assistant", "content": "Waves fold into foam"},
+                {"role": "user", "content": ""},
+                {"role": "assistant", "content": "Please count from one to five."},
+            ],
+            [
+                {"role": "user", "content": "Write a haiku"},
+                {"role": "assistant", "content": "Waves fold into foam"},
+                audio_turn,
+            ],
+        ),
     ):
         args["messages"] = [*history, {"role": "user", "content": ""}]
         list(backend.generate_audio_input_response(**args))
