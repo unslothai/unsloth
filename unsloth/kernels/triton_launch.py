@@ -1,15 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 
-# Low overhead eager launches for the NF4 kernels. Triton's JITFunction launch re-binds the
-# arguments and rebuilds the specialization key on every call, about 12 us of CPU against about
-# 5 us for launching the compiled kernel directly. A 1B QLoRA step makes around a thousand 4bit
-# launches, so on a fast GPU the difference shows up in the step time.
-#
-# The first call for a specialization goes through Triton, which compiles and launches the kernel
-# and returns the compiled kernel; later calls with the same specialization launch it directly.
-# The key covers everything Triton specializes on here: tensor dtypes and 16 byte alignment,
-# integers equal to 1, divisible by 16 or outside int32, the constexprs and the launch options.
+# Low overhead eager launches: the first call per specialization goes through Triton, later ones
+# launch the compiled kernel directly, skipping JITFunction's per-call argument binding. The key
+# covers what Triton specializes on: dtypes, 16 byte alignment, ints == 1 / % 16 / > int32, options.
 
 import hashlib
 import os

@@ -360,10 +360,6 @@ def test_matmul_lora_cuda_graph_capture_and_replay(path):
         assert torch.equal(static_y2, U.matmul_lora(static_x, q2, s2, A, B, 2.0))
 
 
-# ---------------------------------------------------------------------------------------------
-# torch.compile: every entry point traces as one graph and matches eager bit for bit.
-
-
 def _lora_block(
     dtype = torch.bfloat16,
     D = 256,
@@ -436,8 +432,7 @@ def test_fast_lora_compiles_fullgraph(nf4_kernels, which):
         assert explained.graph_break_count == 0, explained.break_reasons
     torch._dynamo.reset()
     compiled = _fwd_bwd(model, torch.compile(fn, fullgraph = fullgraph), X)
-    # The dequant inside is exact under compile (test_primitives_compile_fullgraph); the LoRA
-    # matmuls around it are plain torch, which does not promise compiled == eager bit for bit.
+    # The dequant is exact under compile; the plain torch LoRA matmuls around it need not be.
     assert len(compiled) == len(eager)
     for a, b in zip(eager, compiled):
         _assert_compiled_matches(b, a, exact = False)
@@ -452,8 +447,7 @@ def test_primitives_compile_fullgraph(nf4_kernels):
     cases = [
         (lambda q: U.fast_dequantize(q, s, use_global_buffer = True) * 1, (q,), True),
         (lambda q: U.fast_dequantize(q.t(), s) * 1, (q,), True),
-        # The GEMV is a reduction: Inductor re-emits the Triton kernel and, depending on the
-        # Triton version and launch config, may round a partial sum differently (1 ulp).
+        # Inductor re-emits the GEMV reduction and may round a partial sum 1 ulp differently.
         (lambda x: U.fast_gemv(x, q, s) * 1, (X1,), "close"),
         (lambda x: U.matmul_lora(x, q, s, A, B, 2.0) * 1, (X,), False),
     ]
@@ -484,8 +478,7 @@ def test_fast_linear_forward_compiles_fullgraph(nf4_kernels, bsz):
             assert explained.graph_break_count == 0, explained.break_reasons
         torch._dynamo.reset()
         compiled = torch.compile(fn, fullgraph = fullgraph, backend = "aot_eager")(X)
-    # aot_eager: inductor may lower the bsz=1 LoRA addmv differently (one bf16 ulp); the 4bit ops
-    # themselves are what this checks.
+    # aot_eager: inductor may lower the bsz=1 LoRA addmv one bf16 ulp differently.
     _assert_compiled_matches(compiled, eager, backend = "aot_eager")
 
 
@@ -524,8 +517,7 @@ def test_graph_break_is_not_mistaken_for_a_kernel_failure(nf4_kernels, monkeypat
     assert U._USE_NF4_KERNELS is True
 
 
-# Module-level code as a user script would write it: that is the shape that reproduced the stale
-# reads on torch 2.10 (the same steps inside a test function did not), so it runs as a script.
+# Runs as a module-level script: only that shape reproduced the torch 2.10 stale reads.
 _STALE_MEMORY_SCRIPT = """
 import sys, torch
 sys.path.insert(0, sys.argv[1])

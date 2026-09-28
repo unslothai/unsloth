@@ -482,10 +482,8 @@ def _quant_type(quant_state):
     return getattr(quant_state, "quant_type", "nf4")
 
 
-# Eager scratch for use_global_buffer, one per (kind, device) like the old global pair, used only
-# on the device's default stream: other streams, compiling and CUDA-graph capture get their own
-# output, so nothing queued elsewhere can find its buffer overwritten. Allocated outside inference
-# mode so a first use under generate() stays writable in training.
+# Eager use_global_buffer scratch per (kind, device), default stream only (other streams, compiling
+# and graph capture get fresh outputs); allocated outside inference mode so training can write it.
 _SCRATCH = {}
 _DEFAULT_STREAMS = {}
 
@@ -525,8 +523,7 @@ if (
         from .nf4_gemv import gemv_nf4, triton_gemv_eager
 
         _USE_NF4_KERNELS = True
-        # Eager decode takes the Triton GEMV where it measured faster than bitsandbytes' (see
-        # nf4_gemv.triton_gemv_eager). Compiled code always does, since ctypes cannot be traced.
+        # Eager decode uses the Triton GEMV where it is faster; compiled code always does.
         _TRITON_GEMV_EAGER = triton_gemv_eager()
     except Exception:
         pass
@@ -672,8 +669,7 @@ elif DEVICE_TYPE in ("cuda", "hip") and HAS_CUDA_STREAM:
         if code2 is None or dtype not in (torch_float16, torch_bfloat16):
             return bnb_functional.dequantize_4bit(W, quant_state, out = out)
         device = W.device
-        # Every launch below reads the live stream once, so the torch op between the two
-        # kernels (out_absmax += offset) is ordered with them on whatever stream is current.
+        # Each launch reads the live stream, so out_absmax += offset stays ordered between them.
         CUDA_STREAM = _get_tensor_stream(W)
 
         n_elements_absmax = absmax.numel()

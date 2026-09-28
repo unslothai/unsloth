@@ -75,8 +75,7 @@ def _gemv_nf4_kernel(
             q = tl.load(ABSMAX + blk, mask = bmask, other = 0).to(tl.int32)
             c2 = tl.load(CODE2 + q, mask = bmask, other = 0.0)
             s2 = tl.load(ABSMAX2 + blk // BLOCKSIZE2, mask = bmask, other = 0.0)
-            # Two separate fp32 roundings, as fast_dequantize does, whether or not the compiled
-            # graph re-emits this kernel with fp fusion on (see _mul in nf4.py).
+            # Two separate fp32 roundings as in fast_dequantize, even with fp fusion on.
             a = _mul(c2, s2, USE_MUL_RN)
             a = a + offset
         else:
@@ -104,9 +103,7 @@ def _gemv_nf4_words_kernel(
     BLOCK_N: tl.constexpr,
     BLOCK_K: tl.constexpr,
 ):
-    # Same math as _gemv_nf4_kernel, but the weight is read as int32 words of 8 nibbles and
-    # unpacked with one shift per value. Triton before 3.7 builds this form about 2x faster than
-    # the byte tile above (and 3.7 the other way round), so the config picks per Triton version.
+    # _gemv_nf4_kernel reading int32 words of 8 nibbles; faster before Triton 3.7, slower on 3.7.
     W = W.to(tl.pointer_type(tl.int32))
     pid = tl.program_id(0)
     rows = pid * BLOCK_N + tl.arange(0, BLOCK_N)
@@ -160,8 +157,7 @@ def triton_gemv_eager(device = None):
 
 
 def _word_aligned(W):
-    # Each row is K / 2 bytes with K a multiple of the blocksize, so rows stay 4 byte aligned when
-    # the tensor starts on one. The storage base always is; only a view can shift it.
+    # Rows are K / 2 bytes (K % blocksize == 0), so only a view can break 4 byte alignment.
     return (W.storage_offset() * W.element_size()) % 4 == 0
 
 

@@ -24,10 +24,8 @@ __all__ = [
     "dequantize_nf4",
 ]
 
-# CUDA multiplies with libdevice mul_rn: never contracted into an FMA with the following
-# + offset (torch.compile re-emits the kernel with fp fusion on), and it flushes subnormals to
-# zero like bitsandbytes' kernels. HIP has no mul_rn: it multiplies plainly with fp fusion off,
-# through an opaque custom op launched eagerly. TRITON_INTERPRET=1 (no libdevice) takes that route.
+# libdevice mul_rn is never contracted into an FMA (Inductor re-emits kernels with fp fusion on) and
+# flushes subnormals like bitsandbytes. HIP / TRITON_INTERPRET=1 lack it: fusion off, opaque op.
 _HAS_MUL_RN = torch.version.hip is None and os.environ.get("TRITON_INTERPRET", "0") != "1"
 
 
@@ -165,9 +163,7 @@ def _nf4_dequant_kernel(
     tl.store(out_ptr + out_offs, vals, mask = out_offs < n_elements, eviction_policy = EVICT)
 
 
-# Launch knobs: bytes per program, num_warps, WORDS, EVICT, LUT_MODE. Every combination is
-# bit-exact; the per-architecture choice is speed only. Keyed by compute capability, with the
-# first matching (capability prefix) entry used; () is the default everywhere else.
+# Per compute capability (prefix match, () default) launch knobs: speed only, all bit-exact.
 _CONFIGS = {
     (): (
         # (max n_bytes, target bytes per program, num_warps, words, evict, lut_mode)
@@ -175,15 +171,13 @@ _CONFIGS = {
         (1 << 20, 1024, 2, False, False, 0),
         (None, 2048, 4, False, False, 0),
     ),
-    # Blackwell datacenter (B200): int32 loads and the register table gather were 1.2x to 1.4x
-    # faster than the default at every Llama 8B / 70B shape on Triton 3.6 and 3.7.
+    # Blackwell datacenter (B200): int32 loads + register table gather.
     (10,): (
         (1 << 16, 256, 2, True, True, 2),
         (None, 1024, 2, True, True, 2),
     ),
 }
-# tl.gather on a register table does not compile on Triton 3.3 (3.6 and 3.7 verified); older
-# Triton uses the L1 table load, which gives identical values.
+# tl.gather on a register table fails to compile on Triton 3.3; older Triton uses the L1 load.
 _HAS_TL_GATHER = Version(triton.__version__) >= Version("3.6.0")
 # Tests and the sweep script set this to a (target, num_warps, words, evict, lut_mode) tuple.
 _CONFIG_OVERRIDE = None
@@ -269,8 +263,7 @@ if _HAS_MUL_RN:
     _traced_kernel = lambda: torch.library.wrap_triton(_nf4_dequant_kernel)
     _traced_guard = lambda device: contextlib.nullcontext()
 else:
-    # HIP: Inductor would re-emit a triton_op kernel with fp fusion on. An opaque custom op keeps
-    # the eager launch (fusion off), which also needs its own device guard.
+    # HIP: an opaque custom op keeps the eager launch (fusion off) and needs its own device guard.
     _register = torch.library.custom_op
     _traced_kernel = lambda: _nf4_dequant_kernel
     _traced_guard = torch.cuda.device
