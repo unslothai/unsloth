@@ -330,6 +330,19 @@ def _is_mistral_format_checkpoint(
         return False
 
 
+def _adapter_base_is_mistral_format(model_name, token, revision, local_files_only):
+    # A cached config.json settles it without a Hub request (most adapter bases).
+    if not os.path.isdir(model_name):
+        try:
+            from huggingface_hub import try_to_load_from_cache
+
+            if isinstance(try_to_load_from_cache(model_name, "config.json", revision = revision), str):
+                return False
+        except Exception:
+            pass
+    return _is_mistral_format_checkpoint(model_name, token, revision, local_files_only)
+
+
 def _mistral_format_error(model_name):
     return (
         f"Unsloth: `{model_name}` is a checkpoint in Mistral's own format: it ships `params.json` "
@@ -1005,6 +1018,8 @@ class FastLanguageModel(FastLlamaModel):
                     model_name, token, base_revision, local_files_only
                 )
                 if _view is not None:
+                    if not was_disabled:
+                        enable_progress_bars()
                     raise MistralFormatRedirect(_view, model_name)
                 raise RuntimeError(_mistral_format_error(model_name)) from autoconfig_exc
             combined_error = (
@@ -1061,6 +1076,13 @@ class FastLanguageModel(FastLlamaModel):
             # Report the loader decision before fetching this repo, including adapter bases.
             if on_model_resolved is not None:
                 on_model_resolved(model_name)
+            if _adapter_base_is_mistral_format(model_name, token, base_revision, local_files_only):
+                model_name = (
+                    prepare_mistral_format_checkpoint(
+                        model_name, token, base_revision, local_files_only
+                    )
+                    or model_name
+                )
             # '-bf16' hub repos load bf16; a local dir keeps the requested quant unless 16bit is set. Say so: dropping the flags silently resurfaces as an OOM that never mentions quantization.
             if model_name.lower().endswith("-bf16") and (
                 load_in_16bit or not os.path.isdir(os.path.expanduser(model_name))
@@ -1830,6 +1852,8 @@ class FastModel(FastBaseModel):
                     model_name, token, base_revision, local_files_only
                 )
                 if _view is not None:
+                    if not was_disabled:
+                        enable_progress_bars()
                     raise MistralFormatRedirect(_view, model_name)
                 raise RuntimeError(_mistral_format_error(model_name)) from autoconfig_exc
             combined_error = (
@@ -2022,6 +2046,13 @@ class FastModel(FastBaseModel):
             # Report the loader decision before fetching this repo, including adapter bases.
             if on_model_resolved is not None:
                 on_model_resolved(model_name)
+            if _adapter_base_is_mistral_format(model_name, token, base_revision, local_files_only):
+                model_name = (
+                    prepare_mistral_format_checkpoint(
+                        model_name, token, base_revision, local_files_only
+                    )
+                    or model_name
+                )
             # '-bf16' hub repos load bf16; a local dir keeps the requested quant unless 16bit is set. Say so: dropping the flags silently resurfaces as an OOM that never mentions quantization.
             if model_name.lower().endswith("-bf16") and (
                 load_in_16bit or not os.path.isdir(os.path.expanduser(model_name))

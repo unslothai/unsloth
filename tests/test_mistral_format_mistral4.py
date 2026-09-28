@@ -317,6 +317,7 @@ def test_large3_params_translate_to_mistral4():
         lambda p: p["quantization_config"]["config_groups"]["FP8_BLOCK"]["weights"].update(
             num_bits = 4
         ),
+        lambda p: p["yarn"].update(apply_scale = True),  # vLLM scales attention differently
     ],
 )
 def test_unsupported_params_decline(edit):
@@ -389,12 +390,52 @@ def test_view_skips_vision_tensors(tmp_path, hub_cache):
 def test_conversions_are_scoped_to_the_load():
     from transformers import conversion_mapping as cm
 
-    before = repr(cm.get_checkpoint_conversion_mapping("Mistral4ForCausalLM"))
+    # Class-name lookup came with USER_REGISTERED_MAPPINGS; <= 5.5 looks up model_type only.
+    by_class = hasattr(cm, "USER_REGISTERED_MAPPINGS")
+    key, other = ("Mistral4ForCausalLM", "mistral4") if by_class else ("mistral4", "Mistral4ForCausalLM")
+    before = repr(cm.get_checkpoint_conversion_mapping(key))
+    untouched = repr(cm.get_checkpoint_conversion_mapping(other))
     with mf._mistral_format_conversions():
-        inside = repr(cm.get_checkpoint_conversion_mapping("Mistral4ForCausalLM"))
+        inside = repr(cm.get_checkpoint_conversion_mapping(key))
+        # 5.17 also applies the model_type entry to the inner Mistral4Model: it must stay stock.
+        assert repr(cm.get_checkpoint_conversion_mapping(other)) == untouched
     assert "tok_embeddings" in inside and "tok_embeddings" not in before
-    assert repr(cm.get_checkpoint_conversion_mapping("Mistral4ForCausalLM")) == before
-    assert "Mistral4ForCausalLM" not in cm.USER_REGISTERED_MAPPINGS
+    assert repr(cm.get_checkpoint_conversion_mapping(key)) == before
+    assert key not in getattr(cm, "USER_REGISTERED_MAPPINGS", ())
+
+
+def test_view_is_published_atomically_and_names_its_source(tmp_path, hub_cache):
+    tensors = {
+        k: v.to(torch.bfloat16)
+        for k, v in _mistral_tensors(_reference(TINY_PARAMS), TINY_PARAMS).items()
+    }
+    _write(tmp_path / "src", tensors, TINY_PARAMS)
+    view = mf.prepare_mistral_format_checkpoint(str(tmp_path / "src"))
+    assert not [n for n in os.listdir(view) if n.endswith(".tmp")]
+
+    class _Config:
+        _name_or_path = view
+
+    class _Model:
+        config = _Config()
+        name_or_path = view
+
+    model = _Model()
+    mf._record_source(model)  # adapters saved later name the source, not this host's view
+    assert model.name_or_path == str(tmp_path / "src")
+
+
+@pytest.mark.parametrize("shard", ["../outside.safetensors", "/abs/outside.safetensors"])
+def test_index_shards_outside_the_repo_are_refused(tmp_path, hub_cache, shard):
+    tensors = {
+        k: v.to(torch.bfloat16)
+        for k, v in _mistral_tensors(_reference(TINY_PARAMS), TINY_PARAMS).items()
+    }
+    src = tmp_path / "src"
+    _write(src, tensors, TINY_PARAMS)
+    with open(src / "consolidated.safetensors.index.json", "w") as f:
+        json.dump({"weight_map": {k: shard for k in tensors}}, f)
+    assert mf.prepare_mistral_format_checkpoint(str(src)) is None
 
 
 def test_redirect_retries_with_the_view(monkeypatch):
@@ -451,6 +492,10 @@ def test_fp8_checkpoint_dequantizes_exactly_and_loads_natively(tmp_path, hub_cac
             tensors[name] = value.to(torch.bfloat16)
             dequant[name] = tensors[name].float()
     _write(tmp_path / "fp8", tensors, params)
+    if not mf._fp8_dequantize_on_load_available():
+        # No fp8 dequantize-on-load hook (transformers < 5.8): decline the view, never half-load it.
+        assert mf.prepare_mistral_format_checkpoint(str(tmp_path / "fp8")) is None
+        return
 
     # Reference weights: the dequantized values put back into the transformers layout.
     inter = params["moe"]["expert_hidden_dim"]
@@ -621,5 +666,7 @@ def test_lora_adapter_trained_on_a_view_reloads_in_a_fresh_process(tmp_path):
             text = True,
         )
         assert run.returncode == 0, run.stdout[-3000:] + run.stderr[-3000:]
+    with open(adapter / "adapter_config.json") as f:
+        assert json.load(f)["base_model_name_or_path"] == str(src)  # portable: not the local view
     trained, reloaded = torch.load(adapter / "train.pt"), torch.load(adapter / "reload.pt")
     assert torch.equal(trained, reloaded)

@@ -26,6 +26,8 @@ import contextlib
 import functools
 import hashlib
 import json
+import re
+import uuid
 import os
 from typing import Optional
 
@@ -136,6 +138,8 @@ def mistral_params_to_mistral4_config(params: dict) -> Optional[dict]:
     llama4 = params.get("llama_4_scaling") or {}
     yarn = params.get("yarn") or {}
     if yarn:
+        if yarn.get("apply_scale"):
+            return None  # the mscale below is the `apply_scale: false` translation
         original = int(yarn.get("original_max_position_embeddings", 8192))
         if llama4 and int(llama4.get("original_max_position_embeddings", original)) != original:
             return None  # mistral4 reads one original length for both
@@ -287,6 +291,14 @@ def _mistral4_available() -> bool:
         return False
 
 
+def _fp8_dequantize_on_load_available() -> bool:
+    try:
+        from transformers.quantizers.quantizer_finegrained_fp8 import FineGrainedFP8HfQuantizer
+    except Exception:
+        return False
+    return callable(getattr(FineGrainedFP8HfQuantizer, "update_weight_conversions", None))
+
+
 def _fetch(model_name, filename, token, revision, local_files_only):
     if os.path.isdir(model_name):
         path = os.path.join(model_name, filename)
@@ -326,6 +338,12 @@ def prepare_mistral_format_checkpoint(
     config = mistral_params_to_mistral4_config(params)
     if config is None:
         return None
+    if config.get("quantization_config") and not _fp8_dequantize_on_load_available():
+        print(
+            f"Unsloth: `{model_name}` stores fp8 weights; loading them through transformers needs "
+            "transformers >= 5.8. Please upgrade transformers."
+        )
+        return None
 
     index_path = _fetch(
         model_name, "consolidated.safetensors.index.json", token, revision, local_files_only
@@ -343,6 +361,11 @@ def prepare_mistral_format_checkpoint(
             weight_map = {k: "consolidated.safetensors" for k in f.keys()}
     weight_map = {k: v for k, v in weight_map.items() if not k.startswith(_NON_TEXT_PREFIXES)}
     shards = sorted(set(weight_map.values()))
+    for shard in shards:
+        # Lexical, not realpath: hub snapshot files are symlinks into the blob store.
+        norm = os.path.normpath(str(shard))
+        if os.path.isabs(norm) or os.path.splitdrive(norm)[0] or norm.split(os.sep)[0] == os.pardir:
+            return None
 
     shard_paths = {}
     if os.path.isdir(model_name):
@@ -366,14 +389,16 @@ def prepare_mistral_format_checkpoint(
     digest = hashlib.sha256(
         (os.path.realpath(source_dir) + json.dumps(config, sort_keys = True)).encode()
     ).hexdigest()[:16]
-    safe_name = str(model_name).strip("/").replace("/", "--")[-80:]
+    safe_name = re.sub(r"[\\/:]+", "--", str(model_name).strip("/\\"))[-80:]
     view = os.path.join(_view_root(), f"{safe_name}-{digest}")
     marker = os.path.join(view, _VIEW_MARKER)
     if os.path.isfile(marker):
         return view
 
     os.makedirs(view, exist_ok = True)
-    tmp = lambda name: os.path.join(view, name + ".tmp")
+    # Per-process temp names: ranks of one launch can build the same view at once.
+    suffix = f".{os.getpid()}.{uuid.uuid4().hex}.tmp"
+    tmp = lambda name: os.path.join(view, name + suffix)
     with open(tmp("config.json"), "w", encoding = "utf-8") as f:
         json.dump(config, f, indent = 2)
     with open(tmp("model.safetensors.index.json"), "w", encoding = "utf-8") as f:
@@ -389,14 +414,34 @@ def prepare_mistral_format_checkpoint(
             src = _fetch(model_name, name, token, revision, local_files_only)
         if src and os.path.isfile(src):
             import shutil
-            shutil.copyfile(src, os.path.join(view, name))
-    with open(marker, "w", encoding = "utf-8") as f:
+            shutil.copyfile(src, tmp(name))
+            os.replace(tmp(name), os.path.join(view, name))
+    with open(tmp(_VIEW_MARKER), "w", encoding = "utf-8") as f:
         json.dump({"source": str(model_name), "revision": revision}, f)
+    os.replace(tmp(_VIEW_MARKER), marker)
     return view
 
 
 def is_mistral_format_view(path) -> bool:
     return isinstance(path, str) and os.path.isfile(os.path.join(path, _VIEW_MARKER))
+
+
+def _record_source(model):
+    """Adapters record `model.name_or_path` as their base: name the source, not this host's view."""
+    for module in (model, getattr(model, "model", None), getattr(model, "base_model", None)):
+        view = getattr(getattr(module, "config", None), "_name_or_path", None)
+        if module is None or not is_mistral_format_view(view):
+            continue
+        try:
+            with open(os.path.join(view, _VIEW_MARKER), encoding = "utf-8") as f:
+                source = json.load(f).get("source")
+        except Exception:
+            source = None
+        if source:
+            try:
+                module.name_or_path = source
+            except Exception:
+                pass
 
 
 def raise_if_merging_mistral_format_view(model, save_method):
@@ -448,13 +493,16 @@ def _mistral_format_conversions():
 
     _register_mistral4_causal_lm()
     cm.get_checkpoint_conversion_mapping("mistral4")
-    key = "Mistral4ForCausalLM"
+    # Class-name lookup arrived with USER_REGISTERED_MAPPINGS; older releases look up model_type only.
+    # Never both: 5.17 would also apply a "mistral4" entry to the inner Mistral4Model.
+    user_registered = getattr(cm, "USER_REGISTERED_MAPPINGS", None)
+    keys = ("Mistral4ForCausalLM",) if user_registered is not None else ("mistral4",)
     cache = cm._checkpoint_conversion_mapping_cache
-    had_entry, previous = key in cache, cache.get(key)
-    was_user = key in cm.USER_REGISTERED_MAPPINGS
-    cm.register_checkpoint_conversion_mapping(
-        key, mistral_format_weight_conversions(), overwrite = True
-    )
+    previous = {key: (key in cache, cache.get(key)) for key in keys}
+    was_user = {key: user_registered is not None and key in user_registered for key in keys}
+    conversions = mistral_format_weight_conversions()
+    for key in keys:
+        cm.register_checkpoint_conversion_mapping(key, conversions, overwrite = True)
     # Dequantizing FP8 folds scales in transformers' `.weight` converters; scale merges must not claim them.
     fp8_quantizer, original_update = None, None
     try:
@@ -480,12 +528,14 @@ def _mistral_format_conversions():
         _active_conversions -= 1
         if original_update is not None:
             fp8_quantizer.update_weight_conversions = original_update
-        if had_entry:
-            cache[key] = previous
-        else:
-            cache.pop(key, None)
-        if not was_user:
-            cm.USER_REGISTERED_MAPPINGS.discard(key)
+        for key in keys:
+            had_entry, entry = previous[key]
+            if had_entry:
+                cache[key] = entry
+            else:
+                cache.pop(key, None)
+            if user_registered is not None and not was_user[key]:
+                user_registered.discard(key)
 
 
 def _forget_load_conversions(model):
@@ -522,6 +572,7 @@ def mistral_format_redirect(fn):
             result = fn(*args, **kwargs)
         model = result[0] if isinstance(result, tuple) else result
         _forget_load_conversions(model)
+        _record_source(model)
         return result
 
     return _wrapper
