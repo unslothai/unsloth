@@ -1002,3 +1002,20 @@ def test_an_ordinary_model_id_is_still_recorded_verbatim(monkeypatch):
             == 400
         )
         assert api_monitor.snapshot(include_details = False)[0]["model"] == requested
+
+
+def test_audio_generate_answers_with_the_text_the_clip_speaks(monkeypatch):
+    """The chat renders choices[0].message.content under the player and keeps it in
+    history, so it has to be the spoken text itself, whole, not a status label cut at
+    100 characters."""
+    cli, _calls, _saved = _make_client(monkeypatch)
+    text = (
+        "This sentence is deliberately longer than one hundred characters so that a "
+        "truncated label would show it. "
+    ) * 2
+    resp = cli.post(
+        "/v1/audio/generate",
+        json = {"model": "default", "messages": [{"role": "user", "content": text}]},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["choices"][0]["message"]["content"] == text
