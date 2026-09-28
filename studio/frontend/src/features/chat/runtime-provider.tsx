@@ -459,7 +459,7 @@ class PDFAttachmentAdapter implements AttachmentAdapter {
     const textError = getPdfAttachmentTextError(
       file.name,
       text,
-      pythonToolRunsInStudio() && !useChatRuntimeStore.getState().incognito,
+      pythonToolOpensAttachments(),
     );
     if (textError) {
       toast.error(textError);
@@ -482,12 +482,24 @@ class PDFAttachmentAdapter implements AttachmentAdapter {
       this.texts.get(attachment.id) ??
       (await extractPdfAttachmentText(attachment.file));
     this.texts.delete(attachment.id);
+    // Code or a temporary chat can change after the attach check passed.
+    const textError = getPdfAttachmentTextError(
+      attachment.name,
+      text,
+      pythonToolOpensAttachments(),
+    );
+    if (textError) toast.error(textError);
     return {
       id: attachment.id,
       type: "document",
       name: attachment.name,
       contentType: attachment.contentType,
-      content: [{ type: "text", text: `[PDF: ${attachment.name}]\n${text}` }],
+      content: [
+        {
+          type: "text",
+          text: `[PDF: ${attachment.name}]\n${textError ?? text}`,
+        },
+      ],
       status: { type: "complete" },
     };
   }
@@ -902,6 +914,10 @@ function pythonToolRunsInStudio(): boolean {
       provider.apiType,
     ),
   }).local.includes("python");
+}
+
+function pythonToolOpensAttachments(): boolean {
+  return pythonToolRunsInStudio() && !useChatRuntimeStore.getState().incognito;
 }
 
 class ToolOnlyAttachmentAdapter implements AttachmentAdapter {
