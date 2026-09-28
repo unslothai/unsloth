@@ -910,7 +910,6 @@ def test_fp8_linear_forward_patch_adds_the_bias():
     # fbgemm keeps its bias in fp32; the output must stay in the activation dtype.
     biased.bias.data = biased.bias.data.float()
     X = torch.randn(2, 4, dtype = torch.bfloat16)
-    # float8 weights: a non-float8 weight takes the plain F.linear fallback, not the kernel.
     biased.weight.data, plain.weight.data = (
         m.weight.data.to(torch.float8_e4m3fn) for m in (biased, plain)
     )

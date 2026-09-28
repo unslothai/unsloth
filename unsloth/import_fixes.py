@@ -2798,7 +2798,6 @@ _FP8_SCALE_SUFFIXES = (".weight_scale_inv", ".weight_scale")
 
 
 def _safetensors_header_dtypes(path):
-    """{tensor: dtype string} from a local safetensors header (8-byte length + JSON); reads no data."""
     import json
 
     with open(path, "rb") as f:
@@ -2813,7 +2812,7 @@ def _fp8_checkpoint_files(checkpoint_files, config):
     files = [str(f) for f in (checkpoint_files or []) if f]
     if files:
         return files
-    # transformers 4.x does not pass checkpoint_files to the quantizer: resolve the local copy.
+    # transformers 4.x does not pass checkpoint_files to the quantizer.
     import glob
 
     name = getattr(config, "_name_or_path", None) or getattr(config, "name_or_path", None)
@@ -2838,10 +2837,7 @@ def _fp8_checkpoint_files(checkpoint_files, config):
 
 
 def _fp8_checkpoint_tensor_dtypes(checkpoint_files, config):
-    """{tensor: dtype or None} for the checkpoint being loaded.
-
-    Shard headers are the authority (the index can omit tensors: Step-3.7-Flash-FP8's lists no
-    weight_scale_inv). The index is the fallback, with dtype unknown (None)."""
+    # Shard headers, not the index: Step-3.7-Flash-FP8's index omits weight_scale_inv.
     import json
 
     files = _fp8_checkpoint_files(checkpoint_files, config)
@@ -2866,10 +2862,6 @@ def _fp8_checkpoint_tensor_dtypes(checkpoint_files, config):
 
 
 def _fp8_unscaled_linear_patterns(model, tensor_dtypes):
-    """Exact-match skip patterns for Linear layers an FP8 checkpoint stores in high precision.
-
-    With header dtypes: a `.weight` that is not float8. Without (index only): a `.weight` with no
-    weight_scale(_inv) sibling. Nothing when the checkpoint shows no FP8 at all."""
     import torch.nn as nn
 
     if not tensor_dtypes:
@@ -2899,20 +2891,18 @@ def _fp8_unscaled_linear_patterns(model, tensor_dtypes):
     try:
         from transformers.conversion_mapping import get_model_conversion_mapping
 
-        # transformers 4.x: Unsloth's stub module returns None (no key renames there).
         renamings = get_model_conversion_mapping(model) or []
     except Exception:
         renamings = []
     try:
-        # transformers 5 matches skip entries as regexes; 4.x as substrings of the module name.
+        # transformers 5 matches skip entries as regexes; 4.x as substrings.
         from transformers.quantizers.quantizers_utils import should_convert_module  # noqa: F401
         exact = lambda n: re.escape(n) + "$"
     except Exception:
         exact = lambda n: n
     patterns = []
     for name in unscaled:
-        # Rename the parameter key, not the module name: checkpoint renames are written for
-        # keys with a trailing dot (`^vit_large_projector\.`), so a bare module name misses them.
+        # Rename the key, not the module name: renames need the trailing dot (`^vit_large_projector\.`).
         renamed = name + ".weight"
         for rename in renamings:
             try:
@@ -2930,12 +2920,7 @@ def _fp8_unscaled_linear_patterns(model, tensor_dtypes):
 
 
 def fix_transformers_fp8_unscaled_checkpoint_linears():
-    """Keep Linear layers an FP8 checkpoint stores in bf16 (no weight_scale_inv) unconverted.
-
-    The config's modules_to_not_convert is not reliable: Step-3.7-Flash-FP8 lists its bf16
-    projector as `vit_large_projector`, which transformers' rename (`^vit_large_projector\\.`)
-    never maps to `model.multi_modal_projector`, so the layer became an FP8Linear holding a bf16
-    weight and a random scale. The checkpoint's own tensor names are the authority."""
+    """Keep Linear layers an FP8 checkpoint stores unscaled in bf16 unconverted; modules_to_not_convert misses renamed ones."""
     try:
         from transformers.quantizers import quantizer_finegrained_fp8
     except Exception:
@@ -2964,7 +2949,6 @@ def fix_transformers_fp8_unscaled_checkpoint_linears():
         try:
             return method(self, model, *args, **kwargs)
         finally:
-            # Transient: the saved config keeps the checkpoint's own list.
             current = list(getattr(qconfig, "modules_to_not_convert", None) or [])
             qconfig.modules_to_not_convert = (
                 [p for p in current if p not in extra] or original or None

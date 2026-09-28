@@ -1018,8 +1018,7 @@ def module_forward_patch(forward_function, scale_attr = "weight_scale"):
     def patched_forward(self, X):
         weight = self.weight
         if weight.dtype not in _FP8_WEIGHT_DTYPES:
-            # A layer the checkpoint stores in bf16 but the skip list missed: its scale was never
-            # loaded, so the FP8 kernels would reject it (Triton) or apply a random scale.
+            # bf16 layer the skip list missed: its scale was never loaded.
             bias = self._parameters.get("bias")
             return torch.nn.functional.linear(
                 X, weight.to(X.dtype), None if bias is None else bias.to(X.dtype)

@@ -1,13 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team.
-"""An FP8Linear whose checkpoint weight stayed bf16 must run a plain linear.
-
-GLM-5.3-Flash's FP8 checkpoint keeps the linear-attention forget gate (f_a_proj, f_b_proj)
-in bf16 and lists them in modules_to_not_convert under their checkpoint names. transformers
-renames them to forget_gate.f_a_proj, the exclusion no longer matches, so they are built as
-FP8Linear holding a bf16 weight. transformers' own FP8Linear.forward runs F.linear for that;
-Unsloth's replacement forward handed the bf16 weight to the fp8 block kernel, which Triton
-rejects ("Unsupported lhs dtype fp8e4nv") on the first forward."""
+"""An FP8Linear holding a bf16 weight (GLM-5.3-Flash forget gate) must run a plain linear."""
 
 import pytest
 import torch
@@ -30,7 +23,6 @@ def test_bf16_weight_in_fp8linear_runs_plain_linear(bias):
     layer.weight = torch.nn.Parameter(
         torch.randn(128, 256, device = "cuda", dtype = torch.bfloat16) * 0.05, requires_grad = False
     )
-    # An fp32 bias (fbgemm keeps it that way) must not change the activation dtype.
     layer.bias = (
         torch.nn.Parameter(torch.randn(128, device = "cuda", dtype = bias))
         if bias is not None

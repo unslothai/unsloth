@@ -1,20 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""A Linear an FP8 checkpoint stores in bf16 must stay a plain Linear. No GPU needed.
-
-stepfun-ai/Step-3.7-Flash-FP8 stores its vision projector `vit_large_projector.weight` in bf16
-with no `weight_scale_inv` and lists it in `modules_to_not_convert` under that checkpoint name.
-transformers renames skip-list entries with the checkpoint key renames, but those are written for
-parameter keys (`^vit_large_projector\\.`, trailing dot), so the bare module name is never mapped
-to `model.multi_modal_projector`. The projector became an FP8Linear holding a bf16 weight and an
-uninitialised scale ("weight_scale_inv MISSING"), and the first forward died in Triton with
-"Unsupported lhs dtype fp8e4nv". The fix reads the checkpoint's own dtypes (shard headers; the
-index can omit tensors) and keeps every stored-bf16 Linear unconverted.
-
-Every test drives the real FineGrainedFP8HfQuantizer against real models built on the meta
-device and real (tiny) safetensors files carrying the checkpoint's tensor names.
-"""
+"""A Linear an FP8 checkpoint stores in bf16 (Step-3.7-Flash-FP8's projector) must stay a plain Linear."""
 
 import pytest
 
@@ -117,7 +104,6 @@ def test_bf16_linear_stays_linear_and_skip_list_is_restored(tmp_path):
     assert types[BF16] == "Linear"
     assert types["model.layers.0.self_attn.o_proj"] == "FP8Linear"
     assert types["model.layers.1.self_attn.q_proj"] == "FP8Linear"
-    # The saved config keeps the checkpoint's own list, not the derived patterns.
     assert config.modules_to_not_convert == ["lm_head"]
 
 
@@ -162,7 +148,6 @@ def _step():
 
 
 def _step_checkpoint(tmp_path):
-    # The real checkpoint's names: projector bf16 without a scale, experts FP8 with one.
     return [
         _write(
             tmp_path / "model.safetensors",
@@ -177,7 +162,6 @@ def _step_checkpoint(tmp_path):
 
 @pytest.mark.skipif(Step3p7 is None, reason = "no native step3p7 in this transformers")
 def test_step37_config_skip_list_alone_converts_the_projector(tmp_path):
-    # The defect on the installed transformers: its own path, with the fix bypassed.
     fix_transformers_fp8_unscaled_checkpoint_linears()
     patched = FineGrainedFP8HfQuantizer._process_model_before_weight_loading
     quantizer, _ = _quantizer(["lm_head", "vit_large_projector"])
