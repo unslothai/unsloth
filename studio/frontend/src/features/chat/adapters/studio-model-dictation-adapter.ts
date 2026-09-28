@@ -398,8 +398,6 @@ export function unloadSttModel(
       const params = new URLSearchParams();
       if (engine) params.set("engine", engine);
       if (model) params.set("model", model);
-      // Opt-out only: the default drains an in-flight transcription, right when the
-      // caller needs the memory back now.
       if (options?.wait === false) params.set("wait", "false");
       const query = params.size ? `?${params}` : "";
       const response = await authFetch(

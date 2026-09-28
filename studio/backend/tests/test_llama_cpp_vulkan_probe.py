@@ -235,11 +235,6 @@ def test_failed_device_type_lookup_keeps_the_snapshot_unknown(tmp_path):
 
 @pytest.mark.parametrize("columns", [4, 5], ids = ["no-name", "named"])
 def test_a_legacy_row_reads_unclassified_without_costing_a_page_lock(tmp_path, columns):
-    """A probe from before the status column reports no answer, so the snapshot
-    declines rather than claiming a reading it never took. The page-lock question
-    is unaffected: _vulkan_targets_are_igpus folds "no answer" into "not
-    integrated", so Keep Resident does not pin a model-sized host copy of a launch
-    fully offloaded to a discrete card, which is what #9549 reported."""
     binary = _make_vulkan_install(tmp_path)
     rows = [
         _row(

@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// mlock_applicable is what lets the panel say WHY the lock is off. Absent from
-// an older backend it must read true, or a frontend ahead of its server would
-// tell every user their model has nothing to pin (issue #9549).
 
 import assert from "node:assert/strict";
 import { register } from "node:module";
@@ -56,7 +53,6 @@ test("a discrete full offload maps through as not applicable", async () => {
   nextBody = { ...BASE, mlock_applicable: false };
   const settings = await loadModelMemorySettings({ force: true });
   assert.equal(settings.mlockApplicable, false);
-  // The three the UI had before, none of which distinguishes this case.
   assert.equal(settings.keepResident, true);
   assert.equal(settings.mlockActive, false);
   assert.equal(settings.reloadRequired, false);

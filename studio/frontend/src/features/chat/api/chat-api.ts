@@ -471,8 +471,7 @@ export async function unloadModel(payload: UnloadModelRequest): Promise<void> {
       body: JSON.stringify(payload),
     });
     await parseJsonOrThrow<unknown>(response, "Model unload");
-    // Only after the unload is known to have happened: a rejected one leaves the model
-    // resident and the notice true. A different model's unload leaves it standing.
+    // Only after a confirmed unload: a rejected one leaves the model resident.
     dismissCarveoutAdviceForModel(payload.model_path);
   });
 }

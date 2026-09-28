@@ -16,11 +16,7 @@ export type ModelMemorySettings = {
   defaultNoRamReserve: boolean;
   /** Whether --mlock applies; false when noRamReserve vetoes it. */
   mlockActive: boolean;
-  /**
-   * Whether the loaded model has a host copy to pin at all. False when it is
-   * fully offloaded to a discrete GPU, where the lock is skipped on purpose.
-   * True with nothing loaded.
-   */
+  /** False when fully offloaded to a discrete GPU; true with nothing loaded. */
   mlockApplicable: boolean;
   mlockSkipReason?: "full_gpu_offload" | "ungoverned" | null;
   /** A model is loaded whose --mlock state differs from the saved one. */
@@ -74,8 +70,7 @@ function fromApi(settings: ApiModelMemorySettings): ModelMemorySettings {
     defaultKeepResident: settings.default_keep_resident,
     defaultNoRamReserve: settings.default_no_ram_reserve,
     mlockActive: settings.mlock_active,
-    // Optional on the wire so a frontend newer than its backend does not start
-    // claiming every load has nothing to lock.
+    // Optional on the wire: an older backend must not read as nothing-to-lock.
     mlockApplicable: settings.mlock_applicable ?? true,
     mlockSkipReason:
       settings.mlock_skip_reason ??
@@ -184,7 +179,6 @@ async function saveModelMemorySettings(
 export function updateModelMemorySettings(
   patch: Partial<Pick<ModelMemorySettings, "keepResident" | "noRamReserve">>,
 ): Promise<ModelMemorySettings> {
-  // A GET already in flight predates this write, and later reads must wait for it.
   inFlightModelMemory = null;
   modelMemoryGeneration += 1;
   const previousWrites = pendingModelMemoryWrites ?? Promise.resolve();

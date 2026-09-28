@@ -1019,8 +1019,6 @@ class TestMlockActiveReflectsWhatWillActuallyBePassed:
         monkeypatch.setattr(mm, "get_no_ram_reserve", lambda: no_res)
         monkeypatch.setattr(rs, "get_model_memory_settings", lambda: (keep, no_res))
         monkeypatch.setattr(rs, "memlock_limit_bytes", lambda: 8 * 1024 * 1024)
-        # Same reason as _install_backend: a model left in either one reads as
-        # ungoverned.
         monkeypatch.setattr(arbiter, "current_owner", lambda: None)
         monkeypatch.setattr(orchestrator, "peek_inference_backend", lambda: None)
         return rs._model_memory_response()
@@ -1263,12 +1261,6 @@ class TestHostMemoryGate:
 
 
 class TestTheIgpuSnapshotCannotWithdrawThePageLock:
-    """The launch hands the page-lock classifier the fit's own iGPU reading so it
-    does not spawn a second probe. That stand-in is only sound while it can answer
-    for ANY ordinal: the planner-narrowed set answers for the devices the planner
-    kept, and a pass-through --device can put the child on one it dropped, where a
-    missing iGPU reads as "discrete" and the lock is withdrawn from a user who
-    asked for it."""
 
     @staticmethod
     def _derivation():
@@ -1298,14 +1290,10 @@ class TestTheIgpuSnapshotCannotWithdrawThePageLock:
         )
 
     def test_a_lossless_reading_is_reused(self):
-        """Every classified iGPU survived the planner, so the set can answer for
-        any ordinal the child is put on and the probe is not spawned again."""
         assert self._snapshot({1}, {0, 1}) == {1}
         assert self._snapshot(set(), {0, 1}) == set()
 
     def test_a_planner_narrowed_reading_defers_to_the_probe(self):
-        """The iGPU the planner dropped is exactly the one a --device override can
-        still select, and absence there is not evidence of a discrete card."""
         assert self._snapshot({1}, {0}) is None
         assert self._snapshot({0, 1}, {0}) is None
 
@@ -1313,8 +1301,6 @@ class TestTheIgpuSnapshotCannotWithdrawThePageLock:
         assert self._snapshot(None, {0, 1}) is None
 
     def test_the_launch_passes_the_lossless_snapshot_and_not_the_narrowed_set(self):
-        """Source check, because the two names differ by one intersection and
-        nothing else would notice them being swapped back."""
         import ast
         import inspect
         import textwrap
@@ -1333,13 +1319,9 @@ class TestTheIgpuSnapshotCannotWithdrawThePageLock:
         assert set(passed) == {"_mem_igpu_snapshot"}, passed
 
     def test_a_narrowed_set_really_would_have_withdrawn_the_lock(self, monkeypatch):
-        """The negative control: hand the classifier the narrowed set directly and
-        it answers 'not host-resident' for a launch running on the iGPU."""
         from core.inference.llama_cpp import LlamaCppBackend
 
         rows = [{"index": 1, "is_igpu": True, "type_known": True}]
-        # Through monkeypatch: a bare assignment here outlives the test and every
-        # later probe test in the same worker reads these rows instead of its own.
         monkeypatch.setattr(
             LlamaCppBackend, "_run_vulkan_probe", staticmethod(lambda binary = None: rows)
         )
@@ -1401,16 +1383,9 @@ class TestVulkanIgpuDetection:
         assert self._probe(monkeypatch, rows)("bin", None) is False
 
     def test_an_unreadable_probe_folds_into_not_integrated(self, monkeypatch):
-        """ "No answer" reads as "not an iGPU" HERE and only here. This predicate
-        gates a page-lock, so the cost of being wrong is a lock not taken; the
-        loader choice asks _vulkan_offload_is_discrete instead, which declines an
-        unread type rather than buffering host-backed weights."""
         assert self._probe(monkeypatch, [])("bin", None) is False
 
     def test_an_unknown_device_type_is_not_read_as_integrated(self, monkeypatch):
-        """A legacy five-column probe reports every type unread, so trusting the
-        absence would page-lock a model-sized host copy of a discrete full offload
-        -- the very reservation #9549 reports."""
         rows = [{"index": 0, "is_igpu": False, "type_known": False}]
         assert self._probe(monkeypatch, rows)("bin", None) is False
 
@@ -1588,9 +1563,6 @@ def _install_backend(monkeypatch, backend, *, keep, no_res):
     monkeypatch.setattr(mm, "get_keep_resident", lambda: keep)
     monkeypatch.setattr(mm, "get_no_ram_reserve", lambda: no_res)
     monkeypatch.setattr(mm, "should_mlock", lambda: keep and not no_res)
-    # An inactive llama backend alone is not "nothing loaded": the ungoverned check
-    # also reads the arbiter and the orchestrator singleton, which any earlier test
-    # can leave populated. The ungoverned cases override this after it returns.
     monkeypatch.setattr(arbiter, "current_owner", lambda: None)
     monkeypatch.setattr(orchestrator, "peek_inference_backend", lambda: None)
 
@@ -1726,9 +1698,6 @@ class TestMlockActiveReporting:
 
 
 class TestMlockApplicable:
-    """mlock_active alone cannot say WHY the lock is off, so the panel could not
-    tell "you vetoed it" from "there was nothing to lock" and said nothing at all
-    (issue #9549). This is the second bit that separates them."""
 
     def test_a_discrete_full_offload_reports_not_applicable(self, monkeypatch):
         import routes.settings as rs
@@ -1742,14 +1711,11 @@ class TestMlockApplicable:
         _install_backend(monkeypatch, backend, keep = True, no_res = False)
         body = rs._model_memory_response()
         assert body.mlock_applicable is False
-        # The three fields the UI had to work from before, all unremarkable.
         assert body.keep_resident is True
         assert body.mlock_active is False
         assert body.reload_required is False
 
     def test_a_host_resident_launch_reports_applicable(self, monkeypatch):
-        """A unified-memory APU or a partial offload: the lock does apply, and
-        on a real gfx1151 host it is emitted (measured, issue #9549)."""
         import routes.settings as rs
 
         backend = _fake_backend(
@@ -1762,8 +1728,6 @@ class TestMlockApplicable:
         assert rs._model_memory_response().mlock_applicable is True
 
     def test_with_nothing_loaded_it_is_applicable(self, monkeypatch):
-        """No launch to describe, so the panel says nothing rather than claiming
-        a placement it cannot know until something loads."""
         import routes.settings as rs
 
         _install_backend(monkeypatch, _fake_backend(), keep = True, no_res = False)
@@ -1861,7 +1825,6 @@ class TestMlockApplicable:
     def test_a_resident_stt_backend_is_ungoverned(self, monkeypatch):
         import routes.settings as rs
 
-        # The shape stt_registry.resident() really returns for a loaded sidecar.
         self._with_stt(
             monkeypatch,
             {"model": "base.en", "engine": "whisper.cpp", "device": "cpu", "loading": False},
@@ -1879,10 +1842,6 @@ class TestMlockApplicable:
         assert rs._model_memory_response().mlock_skip_reason == "ungoverned"
 
     def test_an_idle_stt_registry_is_still_no_launch(self, monkeypatch):
-        """resident() answers with all four keys whether or not a sidecar is up, so
-        the dict is always truthy. Reading it that way made every request with the
-        llama backend inactive report an ungoverned launch, and the panel told a
-        user with nothing loaded that their runner does not support the setting."""
         import routes.settings as rs
 
         self._with_stt(
@@ -1894,9 +1853,6 @@ class TestMlockApplicable:
         assert body.mlock_active is True
 
     def test_a_stale_chat_claim_is_not_a_live_runtime(self, monkeypatch):
-        """No chat unload path releases the arbiter, so CHAT ownership outlives the
-        model. Reading it as a resident runtime turned every unloaded session into
-        an ungoverned one; backend.is_active already answers for chat."""
         import core.inference.gpu_arbiter as arbiter
         import core.inference.orchestrator as orchestrator
         import routes.settings as rs
@@ -1914,10 +1870,6 @@ class TestMlockApplicable:
 
     @pytest.mark.parametrize("owner", ["diffusion", "video"])
     def test_a_cpu_only_media_runner_is_ungoverned(self, monkeypatch, owner):
-        """A CPU-only image or video load releases arbiter ownership on purpose,
-        so the owner is None while the pipeline is still resident. The notice
-        this response drives is the one that speaks for media runners, and
-        without this it reached only the ones that happened to hold the GPU."""
         import core.inference.gpu_arbiter as arbiter
         import core.inference.media_keepwarm as keepwarm
         import routes.settings as rs
@@ -1936,8 +1888,6 @@ class TestMlockApplicable:
         assert body.memlock_limit_bytes is None
 
     def test_an_unloaded_media_backend_is_still_no_launch(self, monkeypatch):
-        """Only residency counts. An imported but empty backend must not turn
-        the intent report into a claim about a launch that does not exist."""
         import core.inference.media_keepwarm as keepwarm
         import routes.settings as rs
 
@@ -2027,9 +1977,6 @@ class TestRecordedMemoryState:
         from core.inference.llama_cpp import LlamaCppBackend
 
         tree = ast.parse(textwrap.dedent(inspect.getsource(LlamaCppBackend.load_model)))
-        # Through the recorder, never by assigning _memory_state directly: it also
-        # records whether the child streams, from the same single parse, and a raw
-        # assignment leaves that half describing the launch before this one.
         for node in ast.walk(tree):
             if isinstance(node, ast.Assign):
                 assert not any(
@@ -2044,8 +1991,6 @@ class TestRecordedMemoryState:
             if not (isinstance(func, ast.Attribute) and func.attr == "_record_memory_state"):
                 continue
             assert node.args, ast.dump(node)
-            # The first launch records from the PARTS in argv order rather than a
-            # name, so "none" is seen; every other site names the argv it spawns.
             if isinstance(node.args[0], ast.Name):
                 recorded_from.append(node.args[0].id)
 
@@ -2492,8 +2437,6 @@ class TestADefaultLaunchRecordsItsApplicability:
         from core.inference.llama_cpp import LlamaCppBackend
 
         source = inspect.getsource(LlamaCppBackend.load_model)
-        # From the inventory read to the fit, so both halves are in scope: the
-        # snapshot taken off _gpu_mem, and the shared-id set derived from it.
         start = source.index("_gpu_mem = self._get_gpu_memory(")
         block = source[start : source.index("# The --fit fallback", start)]
         assert "if _gpu_mem" in block
@@ -3034,11 +2977,6 @@ class TestFitOffRetryDropsTheLock:
         return retry_managed, retry_mode, retry_extras
 
     def test_a_restored_reserving_mode_keeps_the_lock(self, monkeypatch):
-        """Restoring "none" puts a full host copy back, so the lock still has
-        something to act on. Dropping it left an unlocked reservation that can
-        never satisfy "keep resident": the settings route reported a reload
-        forever and the duplicate-load comparator rejected the running child, so
-        every later load of that model repeated the same fit crash and retry."""
         import utils.model_memory_settings as mm
 
         monkeypatch.setattr(mm, "get_keep_resident", lambda: True)
@@ -3046,7 +2984,6 @@ class TestFitOffRetryDropsTheLock:
         managed = ["--load-mode", "mmap+mlock"]
         retry_managed, retry_mode, retry_extras = self._rebuilt_retry_policy("none")
         assert (retry_managed, retry_mode) == ([], ["--load-mode", "none"])
-        # The question the arm asks before replacing anything.
         assert resolve_effective_memory_state([*retry_mode, *retry_extras], {})[1] is True
 
         dropped = resolve_effective_memory_state(
@@ -3062,8 +2999,6 @@ class TestFitOffRetryDropsTheLock:
         assert memory_state_satisfies_settings(kept, True, True) is True
 
     def test_a_restored_non_reserving_mode_still_drops_the_lock(self, monkeypatch):
-        """The control. "dio" streams the weights, so the full offload really has
-        no host copy and the lock goes, as it did before the guard."""
         import utils.model_memory_settings as mm
 
         monkeypatch.setattr(mm, "get_keep_resident", lambda: True)
@@ -3080,10 +3015,6 @@ class TestFitOffRetryDropsTheLock:
         assert memory_state_satisfies_settings(dropped, True, False) is True
 
     def test_a_normalized_v_cache_keeps_the_policy_block_findable(self):
-        """A hand-typed -ctv sits INSIDE the policy block, and the flash-attn-off
-        reset rewrites its value after the block was captured. Left alone, the
-        retry searches for a block that is no longer on argv, _replace_subsequence
-        no-ops, and the launch keeps a lock the arm just recorded as dropped."""
         from core.inference.llama_cpp import (
             LlamaCppBackend,
             _contains_subsequence,
@@ -3105,10 +3036,6 @@ class TestFitOffRetryDropsTheLock:
         assert _contains_subsequence(normalized, resynced)
 
     def test_a_dropped_tensor_split_keeps_the_policy_block_findable(self):
-        """The other half of the same fault. A user's --tensor-split survives the
-        policy into the block, and every site that narrows the device pool drops it
-        from argv by value, so the block stops matching. main was immune because it
-        anchored on _mem_managed alone; the whole-block replace is what needs this."""
         from core.inference.llama_cpp import (
             LlamaCppBackend,
             _contains_subsequence,
@@ -3136,9 +3063,6 @@ class TestFitOffRetryDropsTheLock:
         assert _contains_subsequence(gated, resynced)
 
     def test_every_placement_flag_drop_resyncs_the_policy_block(self):
-        """Source check, so a new narrowing site cannot be added without one. Each
-        of these rebinds cmd to a copy with placement flags removed, and the block
-        has to lose exactly the same ones."""
         import inspect
         import re
 
@@ -3164,13 +3088,10 @@ class TestFitOffRetryDropsTheLock:
         block = ["--load-mode", "mmap+mlock"]
         cmd = ["llama-server", *block, "--temp", "0.7"]
         assert _resynced_policy_argv(cmd, cmd, block) == block
-        # A resize is not the contract this helper is for, so it declines.
         assert _resynced_policy_argv(cmd, [*cmd, "--x"], block) == block
         assert _resynced_policy_argv(cmd, cmd, []) == []
 
     def test_the_launch_will_not_record_a_drop_it_could_not_make(self):
-        """Source check: the arm asks whether the block is still on argv before
-        it touches run_cmd or the placement markers."""
         import inspect
 
         from core.inference.llama_cpp import LlamaCppBackend
@@ -3184,7 +3105,6 @@ class TestFitOffRetryDropsTheLock:
         assert guard != -1, "the retry no longer checks that the block is present"
         assert guard < tail.find("_replace_subsequence("), "the check must come first"
         assert guard < tail.find("_mem_host_resident = False")
-        # And the block is kept in step with the one normalization that rewrites it.
         assert "_resynced_policy_argv(" in src
         assert "_pre_v_reset = cmd" in src
 
@@ -3268,13 +3188,10 @@ class TestFitOffRetryDropsTheLock:
             "_mem_policy_argv",
             "_retry_policy_argv",
             "requested_load_mode = load_mode",
-            # The drop is gated on the rebuilt policy having no host copy of its own.
             "[*_retry_load_mode, *_retry_extras]",
             "_fit_load_mode_env_view",
             "_mem_host_resident = False",
             "self._record_memory_state(run_cmd, env)",
-            # From the recorded state, not a flat False: a reserving mode the rebuild
-            # restored still has a host copy for the lock to act on.
             "self._memory_mlock_applicable = bool(",
             "_mem_host_resident or self._memory_state[1]",
         ):
@@ -3303,8 +3220,6 @@ class TestFitOffRetryClearsPolicyActivity:
         assert self._satisfied(monkeypatch, policy_active = True) is False
 
     def test_the_rebuilt_retry_hands_the_stripped_extras_back(self):
-        """Why the first launch's marker cannot be reused: it says the policy
-        stripped the extras, and this retry is the thing that undoes that."""
         settings = (True, False)
         original = ["--load-mode", "dio", "--temp", "0.7"]
         managed, initial_extras = apply_model_memory_policy(
@@ -3333,8 +3248,6 @@ class TestFitOffRetryClearsPolicyActivity:
         assert retry_extras == original
 
     def test_the_restored_child_survives_the_toggles_going_off(self, monkeypatch):
-        """dio streams the weights, so the retry child holds no lock and no
-        reservation, exactly what both toggles off would have launched."""
         import utils.model_memory_settings as mm
 
         monkeypatch.setattr(mm, "get_keep_resident", lambda: False)
@@ -3342,7 +3255,6 @@ class TestFitOffRetryClearsPolicyActivity:
         state = resolve_effective_memory_state(["--load-mode", "dio", "--temp", "0.7"], {})
         assert state == (False, False)
         assert memory_state_satisfies_settings(state, False, False) is True
-        # The marker carried over from the first attempt is what forced the reload.
         assert memory_state_satisfies_settings(state, True, False) is False
 
     def test_the_launch_recomputes_activity_without_the_managed_flag(self):
@@ -3355,8 +3267,6 @@ class TestFitOffRetryClearsPolicyActivity:
         # Whitespace-normalised, or pre-commit.ci's reflow reads as a behaviour change.
         # No longer bare bool(_mem_managed): a pair a later mmap shadows changes nothing
         # observable, so it is not activity. The other half is what the retry reuses.
-        # _load_mode_policy_suppressed is the third term: a per-model mode the toggles
-        # withheld leaves nothing on argv, so without it nothing ever gave the mode back.
         flat = "".join(src.split())
         assert (
             "self._memory_policy_active=("
@@ -3371,9 +3281,6 @@ class TestFitOffRetryClearsPolicyActivity:
         end = src.find("return False", branch)
         assert end != -1
         tail = src[branch:end]
-        # Recomputed over the retry's own extras; the env scrub still counts.
-        # Whitespace-normalised: the expression is reflowed by line length, and a
-        # reflow is not a behaviour change.
         flat_tail = "".join(tail.split())
         assert "_retry_touched=bool(_mem_scrubbed)or_retry_extras!=list(extra_argsor[])" in flat_tail
         assert "self._memory_policy_active = _retry_touched" in tail

@@ -3149,9 +3149,6 @@ class TestTheApuRetryRecomputesThePageLock:
             returncode = 1,
             output = "ROCm error: device kernel image is invalid",
             capture = capture,
-            # --no-mmap is the memory flag the policy supersedes with the legacy
-            # --mlock (this build reports no --load-mode), and -c 8192 is the entry
-            # a valueless-flag scan would eat with it.
             intent_kwargs = {"extra_args": ["--no-mmap", "-c", "8192"]},
         )
         retry = [(cmd, env) for cmd, env in launches if env.get("ROCR_VISIBLE_DEVICES") == "1"]

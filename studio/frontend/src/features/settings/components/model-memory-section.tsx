@@ -131,10 +131,6 @@ export function ModelMemorySection() {
     }
   };
 
-  // Both on suppresses --mlock. Say so, rather than looking like a no-op. mlockActive is read too,
-  // so a child still holding a lock from before the save is not told the veto already applies; it
-  // cannot be confused with the nothing-to-lock case, which the two notices below key on and which
-  // requires no-reserve OFF.
   const mlockVetoed =
     settings?.keepResident === true &&
     settings.noRamReserve === true &&
@@ -145,8 +141,6 @@ export function ModelMemorySection() {
     settings?.mlockActive === true && settings.memlockLimitBytes !== null
       ? settings.memlockLimitBytes
       : null;
-  // Not shown when no-reserve is the only setting on, or a lock is already
-  // active: either one would make "there is nothing to pin" false.
   const mlockNotApplicable =
     settings?.mlockSkipReason === "full_gpu_offload" &&
     settings.keepResident === true &&

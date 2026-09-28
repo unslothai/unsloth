@@ -438,9 +438,6 @@ test("a read deferred behind one save also waits for a save queued after it", as
   };
 
   try {
-    // The read lands BETWEEN the two saves, so it defers behind the first one
-    // while the second is appended afterwards. Settling the first must not let
-    // it snapshot the half-applied pair.
     const keepSave = updateModelMemorySettings({ keepResident: true });
     const read = loadModelMemorySettings({ force: true });
     const reserveSave = updateModelMemorySettings({ noRamReserve: true });
@@ -463,7 +460,6 @@ test("a read deferred behind one save also waits for a save queued after it", as
     assert.deepEqual(served, [{ keepResident: true, noRamReserve: true }]);
     assert.equal(settings.keepResident, true);
     assert.equal(settings.noRamReserve, true);
-    // A later caller gets the same answer, not the retired deferred promise.
     assert.deepEqual(await loadModelMemorySettings({ force: true }), settings);
   } finally {
     globalThis.fetch = original;
@@ -485,8 +481,6 @@ test("a rejected save releases the read queue", async () => {
   }) as typeof fetch;
 
   try {
-    // The panel hydrates by reading. A save that fails must not leave the write
-    // queue set, or every later read defers behind a promise nothing settles.
     await assert.rejects(updateModelMemorySettings({ keepResident: true }));
     const settings = await loadModelMemorySettings({ force: true });
     assert.equal(settings.keepResident, false);

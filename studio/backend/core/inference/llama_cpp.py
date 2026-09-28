@@ -6108,19 +6108,12 @@ def _contains_subsequence(tokens: List[str], run: List[str]) -> bool:
 
 
 def _resynced_after_flag_drop(block: List[str], dropped: Optional[List[str]]) -> List[str]:
-    """``block`` after the same flag removal the argv just took.
-
-    ``dropped`` is what the removal helper returned for the block itself: None
-    when it carried none of those flags, which leaves it as it was."""
+    """``block`` after the same flag removal the argv just took."""
     return block if dropped is None else dropped
 
 
 def _resynced_policy_argv(before: List[str], after: List[str], block: List[str]) -> List[str]:
-    """``block`` re-read from ``after`` at the offset it held in ``before``.
-
-    For a normalization pass that rewrites tokens in place without resizing: a
-    value it changes inside the block would otherwise leave the block
-    unfindable, and the retry that searches for it by value silently no-ops."""
+    """``block`` re-read from ``after`` at the offset it held in ``before``."""
     if not block or len(before) != len(after):
         return block
     for i in range(len(before) - len(block) + 1):
@@ -10506,8 +10499,7 @@ class LlamaCppBackend:
         if is_vulkan_backend:
             # gpu_indices are Vulkan ordinals here, which the ROCm APU helper
             # would read as physical ids and answer for the wrong device. The
-            # fit probe already records iGPU ordinals for normal launches. A
-            # standalone bookkeeping call without that snapshot stays conservative.
+            # fit probe records iGPU ordinals; without that snapshot stay conservative.
             if known_vulkan_igpus is not None:
                 if gpu_indices is None:
                     return bool(known_vulkan_igpus)
@@ -13755,8 +13747,6 @@ class LlamaCppBackend:
         rows: list[dict] = []
         for line in result.stdout.strip().splitlines():
             parts = line.split("\t")
-            # 4 columns from an older probe (no name); 5 with the name column;
-            # 6 with the device-type status column.
             if len(parts) not in (4, 5, 6):
                 continue
             try:
@@ -13820,11 +13810,7 @@ class LlamaCppBackend:
                 "Vulkan GPU memory detected: "
                 + ", ".join(f"VK{idx}={free}MiB" for idx, free, _total in gpus)
             )
-        # A snapshot only when every row was actually classified. None is "not
-        # measured", which is NOT the same claim as "no iGPUs": the probe reports
-        # all-False on a failed type query, so the two would otherwise share a value.
-        # Only the page-lock classifier reads the difference; the pricing consumers
-        # coerce None to the empty set and are unchanged either way.
+        # None = not measured, not "no iGPUs": the probe reports all-False on a failed type query.
         known_vulkan_igpus = (
             {row["index"] for row in rows if row["is_igpu"]}
             if rows and all(row.get("type_known", True) for row in rows)
@@ -24145,8 +24131,6 @@ class LlamaCppBackend:
                 _detected_gpus: list[tuple[int, int]] = []
                 _shared_gpu_ids: Optional[set[int]] = None
                 _known_vulkan_igpus: Optional[set[int]] = None
-                # The subset of the above the page-lock classifier may stand in for
-                # the probe with. None means "ask the probe"; see where it is bound.
                 _mem_igpu_snapshot: Optional[set[int]] = None
                 # Set when the arch gate emptied a non-empty GPU pool, so the env
                 # block below masks the child onto the CPU. Bound before the try for
@@ -24280,7 +24264,6 @@ class LlamaCppBackend:
                         if hasattr(_gpu_mem, "known_vulkan_igpus"):
                             _known_vulkan_igpus = _gpu_mem.known_vulkan_igpus
                         elif _gpu_mem:
-                            # Test and custom probes using the legacy list contract.
                             _known_vulkan_igpus = {
                                 idx for idx, _free, total in _gpu_mem if total <= 0
                             }
@@ -24365,22 +24348,13 @@ class LlamaCppBackend:
                     # GPU-aware speculative defaults; the list feeds the
                     # CPU-fallback check.
                     _detected_gpus = list(gpus)
-                    # Keep only classified iGPUs this launch can still target; a
-                    # failed inventory or type lookup stays unknown for the later probe.
                     if is_vulkan_backend:
                         _shared_gpu_ids = (
                             _known_vulkan_igpus.intersection(idx for idx, _free in _detected_gpus)
                             if _known_vulkan_igpus is not None
                             else None
                         )
-                        # The narrowed set answers for the devices the PLANNER kept,
-                        # which is what the pricing below wants. The page-lock
-                        # classifier is asked about the ordinals the CHILD ends up on,
-                        # and a pass-through --device can put it on one the planner
-                        # dropped; an iGPU missing from a narrowed set reads there as
-                        # "discrete" and silently withdraws the page-lock a Keep
-                        # Resident user asked for. Only a LOSSLESS set can stand in for
-                        # the probe, since only that one can answer for any ordinal.
+                        # Only a lossless set may stand in for the probe: --device can pick a dropped iGPU.
                         _mem_igpu_snapshot = (
                             _known_vulkan_igpus
                             if _known_vulkan_igpus is not None
@@ -28087,9 +28061,6 @@ class LlamaCppBackend:
                     # _mem_should_mlock is always False under no-reserve, so gating on it
                     # alone made the DirectIO branch unreachable on the Vulkan build.
                     probe_vulkan = _mem_should_mlock or _mem_probe_for_dio,
-                    # Already answered by the fit's own probe, so the classifier reuses
-                    # it instead of spawning a second one. The LOSSLESS snapshot, not
-                    # the planner-narrowed one: see where it is bound.
                     known_vulkan_igpus = _mem_igpu_snapshot,
                     # Over the built cmd AND the extras, so Unsloth's own --fit
                     # counts and a later user --fit still wins by last-arg.
@@ -28383,12 +28354,7 @@ class LlamaCppBackend:
                 ]
 
                 def _drop_from_policy_argv(names: Collection[str]) -> None:
-                    """Keep the block in step with a placement flag the argv just lost.
-
-                    A user's own --tensor-split / --split-mode sits INSIDE it, and every
-                    site that narrows the device pool drops those by value. The --fit off
-                    retry then searches for a block that is no longer on argv, and the
-                    replace it does is a silent no-op."""
+                    """Keep the block in step with a placement flag the argv just lost."""
                     nonlocal _mem_policy_argv
                     _mem_policy_argv = _resynced_after_flag_drop(
                         _mem_policy_argv, self._without_flags(_mem_policy_argv, names)
@@ -28447,11 +28413,7 @@ class LlamaCppBackend:
                         draft_mla = self._draft_kv_symmetry(cmd),
                     )
 
-                # Outside the fixup above, which stays a self-contained V-cache step: a
-                # -ctv the user typed sits INSIDE the policy block, and the reset
-                # rewrites its value, so the block the --fit off retry searches for by
-                # value would no longer be on argv. Re-read it from the same offset;
-                # that pass rewrites in place and never resizes.
+                # A user -ctv inside the block gets rewritten; re-read so the --fit off retry finds it.
                 _mem_policy_argv = _resynced_policy_argv(_pre_v_reset, cmd, _mem_policy_argv)
 
                 kv_cache_unified = _kv_unified_from_args(cmd)
@@ -28519,10 +28481,6 @@ class LlamaCppBackend:
                     tuple(_mem_managed) != MANAGED_DIO_FLAGS
                     or self._memory_direct_io != _ask((False, False), _off_view)[1]
                 )
-                # `_load_mode_policy_suppressed` too: a per-model mode this build could
-                # have emitted and the toggles withheld leaves the child differing from an
-                # unmanaged one with nothing on argv to show for it, so without this term
-                # turning the toggles off never relaunched to give the mode back.
                 self._memory_policy_active = (
                     _mem_managed_is_effective
                     or _load_mode_policy_suppressed
@@ -29709,25 +29667,12 @@ class LlamaCppBackend:
                             ):
                                 if _mem_managed:
                                     if not _contains_subsequence(run_cmd, _mem_policy_argv):
-                                        # Nothing to rewrite, so the child keeps the lock;
-                                        # recording it as dropped would describe an argv
-                                        # that never launched. Asked BEFORE the rebuild,
-                                        # which logs each decision as it makes it and would
-                                        # otherwise narrate a policy nothing here applies.
                                         logger.info(
                                             "Model Memory: the policy block is no longer on "
                                             "the argv, so the --fit off retry keeps the "
                                             "page-lock it was built with."
                                         )
                                     else:
-                                        # Rebuilt for the placement this retry really has,
-                                        # rather than merely deleting the managed pair: the
-                                        # policy hands back what the first launch stripped,
-                                        # and a restored RESERVING mode puts a host copy
-                                        # back, where the lock still applies exactly as it
-                                        # did on the initial build. Dropping it
-                                        # unconditionally left nothing able to satisfy "keep
-                                        # resident", so every load rebuilt the same child.
                                         _retry_managed, _retry_extras = (
                                             apply_model_memory_policy(
                                                 extra_args,
@@ -29753,9 +29698,6 @@ class LlamaCppBackend:
                                                 settings = _mem_settings,
                                             )
                                         )
-                                        # Over the rebuilt extras: this retry hands back what
-                                        # the first launch stripped. The scrub still counts,
-                                        # same env.
                                         _retry_touched = bool(
                                             _mem_scrubbed
                                         ) or _retry_extras != list(extra_args or [])
@@ -29763,10 +29705,6 @@ class LlamaCppBackend:
                                             [*_retry_load_mode, *_retry_extras],
                                             _fit_load_mode_env_view,
                                         )[1]:
-                                            # Said out loud: without it this retry is
-                                            # indistinguishable in the log from one where the
-                                            # policy emitted nothing at all, and the two lead
-                                            # to opposite conclusions about the child.
                                             logger.info(
                                                 "Model Memory: the rebuilt policy still "
                                                 "reserves host RAM, so the --fit off retry "
@@ -29788,18 +29726,12 @@ class LlamaCppBackend:
                                                 _retry_policy_argv,
                                             )
                                             _mem_host_resident = False
-                                            # The managed flag was the policy's only mark on
-                                            # this child unless it also scrubbed or stripped,
-                                            # and a child equal to an unmanaged one must not
-                                            # be torn down when the toggles go off.
                                             self._memory_policy_active = _retry_touched
                                             logger.info(
                                                 "Model Memory: dropping the page-lock for "
                                                 "the --fit off retry; it offloads every layer."
                                             )
                                 else:
-                                    # Nothing emitted, so there is no block to rewrite and
-                                    # nothing to keep: the retry simply has no host copy.
                                     _mem_host_resident = False
 
                                 # The other direction, which the page-lock arm cannot
@@ -29823,10 +29755,6 @@ class LlamaCppBackend:
                                         " ".join(_retry_dio),
                                     )
                                 self._record_memory_state(run_cmd, env)
-                                # From the state actually recorded, not the placement alone:
-                                # a reserving mode the rebuild restored still holds a host
-                                # copy, and calling the lock inapplicable there asks for a
-                                # reload no relaunch can satisfy.
                                 self._memory_mlock_applicable = bool(
                                     _mem_host_resident or self._memory_state[1]
                                 )

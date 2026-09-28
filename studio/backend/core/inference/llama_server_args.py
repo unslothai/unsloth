@@ -1525,6 +1525,7 @@ def apply_model_memory_policy(
     weights_in_host_memory: bool = True,
     gpu_offload_confirmed: bool = False,
     env: Optional[Mapping[str, str]] = None,
+    # Keyword-only in practice: inserting ahead of it rebinds `direct_io`.
     settings: Optional[tuple[bool, bool]] = None,
 ) -> tuple[list[str], list[str]]:
     """Resolve the Model Memory settings into llama-server flags, returning ``(managed_flags,
@@ -2245,9 +2246,6 @@ def memory_state_satisfies_settings(
     direct_io: Optional[bool] = None,
     dio_applicable: bool = False,
     dio_managed: bool = False,
-    # Last, and keyword-only in practice: the positional order above is the one
-    # every existing caller passes, and inserting ahead of it silently rebinds
-    # `direct_io` to a settings pair.
     settings: Optional[tuple[bool, bool]] = None,
 ) -> bool:
     """True when a launched ``(mlock, reserves_ram)`` matches the settings.

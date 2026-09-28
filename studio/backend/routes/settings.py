@@ -747,13 +747,7 @@ class ModelMemoryResponse(BaseModel):
     # Whether --mlock is passed on the next load. False when no_ram_reserve
     # vetoes it; the UI surfaces that rather than failing silently.
     mlock_active: bool
-    # False when the loaded model is fully offloaded to a discrete GPU: nothing in
-    # host RAM to pin, so the lock is skipped on purpose and the idle-unload veto
-    # carries residency alone. True with nothing loaded, like mlock_active, which
-    # reports the intent until a launch exists.
     mlock_applicable: bool = True
-    # Lets the UI distinguish a full GPU offload from a runner that does not use
-    # llama.cpp memory controls. Optional/defaulted for mixed-version clients.
     mlock_skip_reason: Optional[Literal["full_gpu_offload", "ungoverned"]] = None
     reload_required: bool
     # Soft RLIMIT_MEMLOCK when finite. mlock cannot exceed it, so the UI warns that residency will not
@@ -1072,15 +1066,7 @@ _NO_LAUNCH = object()
 
 
 def _media_model_is_resident() -> bool:
-    """Whether an image or video model is loaded.
-
-    The GPU arbiter does not answer this: a CPU-only diffusion or video load
-    releases ownership on purpose (routes/inference.py, routes/video.py), so
-    current_owner() is None while the pipeline is still resident. Read through
-    media_keepwarm, which returns None until the backend module is imported, so
-    an Unsloth that never opened those pages pays nothing and never pulls torch
-    in just to answer this.
-    """
+    """Whether an image or video model is loaded."""
     from core.inference.gpu_arbiter import DIFFUSION, VIDEO
     from core.inference.media_keepwarm import engine_if_imported
 
@@ -1121,15 +1107,10 @@ def _active_launch_placement():
             orchestrator = peek_inference_backend()
             resident_stt_model = getattr(orchestrator, "resident_stt_model", None)
             stt_status = resident_stt_model() if callable(resident_stt_model) else None
-            # The registry answers with all four keys whether or not a sidecar is up,
-            # so the dict itself is always truthy; only these two say one is there.
             stt_model_loaded = bool(
                 stt_status and (stt_status.get("model") or stt_status.get("loading"))
             )
             if (
-                # Media only. The chat claim outlives its model, since no unload path
-                # releases it, so reading it as a live runtime turns every unloaded
-                # session ungoverned; backend.is_active above already answers for chat.
                 current_owner() in (DIFFUSION, VIDEO)
                 or bool(getattr(orchestrator, "active_model_name", None))
                 or bool(getattr(orchestrator, "loading_models", None))
@@ -1143,9 +1124,6 @@ def _active_launch_placement():
         return (
             state,
             bool(getattr(backend, "_memory_policy_active", False)),
-            # A launch that still reserves host RAM has something to lock whatever the
-            # placement said, so it stays applicable; otherwise the panel would call a
-            # live reservation "nothing to act on".
             bool(getattr(backend, "_memory_mlock_applicable", True) or reserves_ram),
             getattr(backend, "_memory_direct_io", None),
             bool(getattr(backend, "_memory_dio_applicable", False)),
@@ -1220,20 +1198,8 @@ def _model_memory_reload_required(placement = None, settings = None) -> bool:
 
 
 def _model_memory_mlock_active(want_mlock: bool, placement = None) -> bool:
-    """Whether page-locking is actually in force, not merely asked for.
-
-    This drives the locked-memory cap warning, so taking it from the toggles
-    alone would tell a discrete-GPU user to raise a limit nothing consults.
-    With nothing running this is the intent, so the UI reflects the toggle. Once
-    a child exists it is what that child got: a full offload to a discrete GPU
-    skips the lock, and a diffusion runner has no load-mode at all, so claiming
-    otherwise would warn about ulimit -l for a lock nobody took. A user's own
-    --mlock counts, since the resolver reads the launched argv.
-    """
-    # No `not want_mlock` short-circuit: the toggles say what the NEXT load will ask
-    # for, and this reports what the running one got. A hand-typed --mlock holds the
-    # pages whatever the toggles read, and reporting no lock there hid the very cap
-    # warning that explains it.
+    """Whether page-locking is actually in force, not merely asked for."""
+    # No `not want_mlock` short-circuit: a hand-typed --mlock holds pages whatever the toggles say.
     if placement is None:
         placement = _active_launch_placement()
     state = placement[0]
@@ -1243,12 +1209,7 @@ def _model_memory_mlock_active(want_mlock: bool, placement = None) -> bool:
 
 
 def _model_memory_mlock_applicable(placement = None) -> bool:
-    """Whether the running launch has anything for page-locking to act on.
-
-    False when the launch has no host weights to lock or does not use llama.cpp
-    memory controls. With nothing running there is no launch to describe, so
-    this reports True, matching _model_memory_mlock_active.
-    """
+    """Whether the running launch has anything for page-locking to act on."""
     if placement is None:
         placement = _active_launch_placement()
     state, applicable = placement[0], placement[2]
