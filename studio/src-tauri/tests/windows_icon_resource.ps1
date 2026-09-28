@@ -11,9 +11,11 @@ Add-Type @'
 using System;
 using System.Runtime.InteropServices;
 public static class NativeIcons {
+  // lint-allow: AV001 narrowly scoped test harness calls Windows icon extraction only; no shipped code, dynamic load, or network.
   [DllImport("user32.dll", CharSet=CharSet.Unicode)]
   public static extern uint PrivateExtractIcons(string file, int index, int cx, int cy,
     IntPtr[] icons, uint[] ids, uint count, uint flags);
+  // lint-allow: AV001 destroy the extracted native icon handle from the same test harness.
   [DllImport("user32.dll")] public static extern bool DestroyIcon(IntPtr icon);
 }
 '@
