@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
 """The default llama.cpp install stops at the tested release in llama_prebuilt_pins.json.
 
 A "latest" request with no release named resolves the newest published release at or
