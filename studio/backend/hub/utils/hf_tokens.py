@@ -12,6 +12,7 @@ import os
 import re
 import threading
 import time
+import urllib.error
 from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Iterable, Literal, MutableMapping, Optional, Union
@@ -65,8 +66,13 @@ def apply_token_to_child_env(env: MutableMapping[str, str], hf_token: HfTokenArg
     """Grant a spawned probe exactly its caller's credential.
 
     A child env is seeded from the parent's, so not *setting* a token is not denying one.
-    Only the sentinel scrubs; ``None`` keeps the inherited env on purpose.
+    Only the sentinel scrubs; ``None`` keeps the inherited env on purpose. A token the Hub
+    refused in this request while anonymous reads worked goes to the child as anonymous too
+    (explicit tokens only: judging the ambient one imports huggingface_hub, which the pre-import
+    tier probe must not).
     """
+    if isinstance(hf_token, str) and hf_token and saved_token_rejected(hf_token):
+        hf_token = False
     if isinstance(hf_token, str) and hf_token:
         # Scrub before granting: setting HF_TOKEN alone leaves an operator credential
         # sitting in HF_HUB_TOKEN or a legacy alias, so the child holds two.
@@ -1126,17 +1132,17 @@ def _wire_hf_token() -> Optional[str]:
 
 
 def _implicit_token_disabled() -> bool:
-    if os.environ.get("HF_HUB_DISABLE_IMPLICIT_TOKEN", "").strip().lower() in (
-        "1",
-        "true",
-        "yes",
-        "on",
-    ):
-        return True
+    # huggingface_hub reads its constant, set at import; an env var changed later (the worker
+    # does) does not change what it sends, so only an unimportable client falls back to it.
     try:
         from huggingface_hub import constants
     except Exception:
-        return False
+        return os.environ.get("HF_HUB_DISABLE_IMPLICIT_TOKEN", "").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        )
     return bool(getattr(constants, "HF_HUB_DISABLE_IMPLICIT_TOKEN", False))
 
 
@@ -1156,6 +1162,9 @@ def is_token_rejection(exc: BaseException) -> bool:
         seen.add(id(link))
         status = getattr(getattr(link, "response", None), "status_code", None)
         if status == 401:
+            return True
+        if isinstance(link, urllib.error.HTTPError) and link.code == 401:
+            # The pre-import JSON reader's urllib error.
             return True
         if status is None and _HUB_401_TEXT.match(str(link)):
             return True

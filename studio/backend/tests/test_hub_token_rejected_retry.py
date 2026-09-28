@@ -365,7 +365,7 @@ def test_an_ambient_token_the_hub_never_sees_is_not_blamed(monkeypatch):
     # so a 401 is about the repo and the saved token must not be called rejected.
     monkeypatch.setattr(hf_tokens, "_ambient_hf_token", lambda: (True, OAUTH))
     monkeypatch.setattr(hf_tokens, "_wire_hf_token", lambda: OAUTH)
-    monkeypatch.setenv("HF_HUB_DISABLE_IMPLICIT_TOKEN", "1")
+    monkeypatch.setattr(huggingface_hub.constants, "HF_HUB_DISABLE_IMPLICIT_TOKEN", True)
     calls = []
     with collecting_hub_token_rejections() as rejections:
         with pytest.raises(RepositoryNotFoundError):
@@ -636,3 +636,61 @@ def test_a_private_repo_after_a_public_recovery_is_reported_as_refused():
             call_with_anonymous_retry(private, OAUTH)
     assert calls == [OAUTH, False, False, OAUTH]
     assert rejections.refused
+
+
+def test_an_env_flag_set_after_import_does_not_stop_the_retry(monkeypatch):
+    # huggingface_hub still sends the ambient token (its constant was read at import), so the
+    # 401 is the token's and the anonymous retry must run.
+    monkeypatch.setattr(hf_tokens, "_ambient_hf_token", lambda: (True, OAUTH))
+    monkeypatch.setattr(hf_tokens, "_wire_hf_token", lambda: OAUTH)
+    monkeypatch.setattr(huggingface_hub.constants, "HF_HUB_DISABLE_IMPLICIT_TOKEN", False)
+    monkeypatch.setenv("HF_HUB_DISABLE_IMPLICIT_TOKEN", "1")
+    calls = []
+
+    def read(token):
+        calls.append(token)
+        if token is None:
+            raise RepositoryNotFoundError(reason = "OAuth token verification failed")
+        return "public answer"
+
+    assert call_with_anonymous_retry(read, None) == "public answer"
+    assert calls == [None, False]
+
+
+def test_child_probes_read_anonymously_once_the_token_was_refused():
+    # The vision and AutoConfig probes run in a child: handing it the refused token makes a
+    # public model's probe 401 and read as "not a vision model".
+    from hub.utils.hf_tokens import apply_token_to_child_env
+
+    with collecting_hub_token_rejections():
+        call_with_anonymous_retry(_refused_with_a_token([]), OAUTH)
+        env = {"HF_TOKEN": "operator"}
+        apply_token_to_child_env(env, OAUTH)
+    assert "HF_TOKEN" not in env
+    assert env["HF_HUB_DISABLE_IMPLICIT_TOKEN"] == "1"
+    env = {}
+    apply_token_to_child_env(env, OAUTH)
+    assert env["HF_TOKEN"] == OAUTH, "a new request asks with the token again"
+
+
+def test_the_pre_import_json_reader_shares_the_request_refusal(monkeypatch):
+    import io
+    import urllib.error
+
+    from utils import transformers_version as tv
+
+    sent = []
+
+    def urlopen(request, timeout):
+        auth = request.get_header("Authorization")
+        sent.append(auth)
+        if auth:
+            raise urllib.error.HTTPError(request.full_url, 401, "Unauthorized", {}, None)
+        return io.BytesIO(b'{"model_type": "llama"}')
+
+    monkeypatch.setattr(tv, "_hf_urlopen", urlopen)
+    with collecting_hub_token_rejections() as rejections:
+        assert tv._hf_json("https://huggingface.co/a/resolve/main/config.json", OAUTH)
+        assert tv._hf_json("https://huggingface.co/a/resolve/main/tokenizer_config.json", OAUTH)
+    assert sent == [f"Bearer {OAUTH}", None, None]
+    assert rejections.recovered

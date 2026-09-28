@@ -148,21 +148,20 @@ def _hf_json(url: str, hf_token: str | None):
     A token the Hub no longer accepts (an expired OAuth token) is answered 401 even for public
     repos, while a token it accepts gets 404 for a repo it cannot see, so a 401 with a token
     is the token being refused and a public file still answers without it (#11551)."""
-    import urllib.error
     import urllib.request
 
-    headers = {"User-Agent": "unsloth-studio"}
-    if hf_token:
-        headers["Authorization"] = f"Bearer {hf_token}"
-    try:
+    from hub.utils.hf_tokens import call_with_anonymous_retry
+
+    def read(token):
+        headers = {"User-Agent": "unsloth-studio"}
+        if isinstance(token, str) and token:
+            headers["Authorization"] = f"Bearer {token}"
         with _hf_urlopen(urllib.request.Request(url, headers = headers), timeout = 10) as resp:
             return json.loads(resp.read().decode())
-    except urllib.error.HTTPError as exc:
-        if exc.code != 401 or not hf_token:
-            raise
-    anonymous = urllib.request.Request(url, headers = {"User-Agent": "unsloth-studio"})
-    with _hf_urlopen(anonymous, timeout = 10) as resp:
-        return json.loads(resp.read().decode())
+
+    # No token here sends none (not the ambient one), and the request's refusal record is shared
+    # with the huggingface_hub reads, so a refused token is not sent again.
+    return call_with_anonymous_retry(read, hf_token or False)
 
 
 def _hf_urlopen(req, timeout: int):
