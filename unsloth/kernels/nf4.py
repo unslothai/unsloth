@@ -130,14 +130,20 @@ def _nf4_dequant_kernel(
         i = tl.arange(0, 8)
         shifts = (i // 2) * 8 + (1 - (i % 2)) * 4
         nib = (w[:, :, None] >> shifts[None, None, :]) & 15
-        vals = _mul(_nf4_lut(lut_ptr, tl.reshape(nib, [ROWS, 2 * HALF]), LUT_MODE), scale, USE_MUL_RN)
+        vals = _mul(
+            _nf4_lut(lut_ptr, tl.reshape(nib, [ROWS, 2 * HALF]), LUT_MODE), scale, USE_MUL_RN
+        )
         vals = vals.to(out_ty)
     else:
         cols = tl.arange(0, HALF)
         byte_offs = rows[:, None] * HALF + cols[None, :]
         q = tl.load(W_ptr + byte_offs, mask = byte_offs < n_bytes, other = 0, eviction_policy = EVICT)
-        v_hi = _mul(_nf4_lut(lut_ptr, (q >> 4).to(tl.int32), LUT_MODE), scale, USE_MUL_RN).to(out_ty)
-        v_lo = _mul(_nf4_lut(lut_ptr, (q & 15).to(tl.int32), LUT_MODE), scale, USE_MUL_RN).to(out_ty)
+        v_hi = _mul(_nf4_lut(lut_ptr, (q >> 4).to(tl.int32), LUT_MODE), scale, USE_MUL_RN).to(
+            out_ty
+        )
+        v_lo = _mul(_nf4_lut(lut_ptr, (q & 15).to(tl.int32), LUT_MODE), scale, USE_MUL_RN).to(
+            out_ty
+        )
         vals = tl.interleave(v_hi, v_lo)  # [ROWS, 2 * HALF], high nibble first
 
     out_offs = rows[:, None] * (2 * HALF) + tl.arange(0, 2 * HALF)[None, :]
