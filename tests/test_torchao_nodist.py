@@ -146,3 +146,16 @@ def test_noop_where_torch_distributed_exists():
     if available != "True":
         pytest.skip("this torch has no torch.distributed")
     assert (fixed, hooked) == ("False", "False")
+
+
+def test_gpu_init_runs_the_fix_before_anything_imports_torchao():
+    """The torch symbol-skew fix must come first (torchao 0.18 on torch < 2.10), and the shim
+    must precede vllm's probe and unsloth_zoo, both of which import transformers."""
+    src = (_SHIM.parent / "_gpu_init.py").read_text(encoding = "utf-8")
+    order = [
+        src.index("\nfix_torchao_torch_symbol_skew()"),
+        src.index("\nfix_torchao_without_torch_distributed()"),
+        src.index("\ndisable_broken_vllm()"),
+        src.index("\n    import unsloth_zoo\n"),
+    ]
+    assert order == sorted(order)

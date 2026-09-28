@@ -597,6 +597,30 @@ def test_torchao_export_loadable_ignores_the_stub(monkeypatch):
     assert _stub.torchao_export_loadable() is False
 
 
+@pytest.mark.parametrize(
+    ("installed", "expect"),
+    [("0.14.0", False), ("0.15.0", True), ("0.17.0", True), ("0.18.0+rocm", True)],
+)
+def test_torchao_export_loadable_needs_transformers_minimum(
+    monkeypatch, tmp_path, installed, expect
+):
+    monkeypatch.setattr(_stub, "_is_windows_rocm", lambda: True)
+    (tmp_path / "unsloth").mkdir()
+    (tmp_path / "unsloth" / "_torchao_nodist.py").write_text("")
+    specs = {
+        "torchao": importlib.machinery.ModuleSpec("torchao", None),
+        "unsloth": importlib.machinery.ModuleSpec("unsloth", None, is_package = True),
+    }
+    specs["unsloth"].submodule_search_locations = [str(tmp_path / "unsloth")]
+    monkeypatch.setattr(
+        importlib.machinery.PathFinder,
+        "find_spec",
+        classmethod(lambda cls, name, *a, **k: specs.get(name)),
+    )
+    monkeypatch.setattr(importlib.metadata, "version", lambda name: installed)
+    assert _stub.torchao_export_loadable() is expect
+
+
 @pytest.mark.parametrize(("fix_result", "expect_real"), [(True, True), (False, False)])
 def test_real_or_stub(monkeypatch, fix_result, expect_real):
     monkeypatch.setattr(_stub, "_is_windows_rocm", lambda: True)
@@ -622,6 +646,42 @@ def test_real_or_stub(monkeypatch, fix_result, expect_real):
         assert bool(stubbed) is (not expect_real)
     finally:
         sys.modules.pop("torchao", None)
+
+
+@pytest.mark.parametrize("consumer_loaded", [False, True])
+def test_real_or_stub_replaces_a_stub_inherited_from_run_py(monkeypatch, consumer_loaded):
+    """spawn re-runs run.py as __mp_main__, which stubs torchao before the export worker starts."""
+    monkeypatch.setattr(_stub, "_is_windows_rocm", lambda: True)
+    # Simulated "already imported" consumer: json is always loaded; none of the real ones is required.
+    monkeypatch.setattr(_stub, "_STUB_CONSUMERS", ("json",) if consumer_loaded else ())
+    saved = {n: m for n, m in sys.modules.items() if n == "torchao" or n.startswith("torchao.")}
+    for name in saved:
+        monkeypatch.delitem(sys.modules, name)
+    calls = []
+
+    def fix():
+        calls.append("torchao" in sys.modules)
+        sys.modules["torchao"] = types.ModuleType("torchao")
+        return True
+
+    monkeypatch.setattr(
+        _stub,
+        "_load_torchao_nodist",
+        lambda: types.SimpleNamespace(fix_torchao_without_torch_distributed = fix),
+    )
+    try:
+        _stub.install_torchao_windows_rocm_stub()
+        assert _stub.is_stubbed("torchao")
+        result = _stub.install_torchao_windows_rocm_real_or_stub()
+        if consumer_loaded:
+            assert result is False and calls == [] and _stub.is_stubbed("torchao")
+        else:
+            assert result is True and calls == [False] and not _stub.is_stubbed("torchao")
+            assert not any(n.startswith("torchao.") for n in sys.modules)
+    finally:
+        for name in [n for n in sys.modules if n == "torchao" or n.startswith("torchao.")]:
+            del sys.modules[name]
+        sys.modules.update(saved)
 
 
 def test_real_or_stub_noop_off_windows_rocm(monkeypatch):
