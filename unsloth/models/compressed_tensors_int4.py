@@ -142,7 +142,9 @@ class Int4PackedLinear(nn.Linear):
 
     def forward(self, x):
         bias = self.bias
-        if torch.is_grad_enabled() and (x.requires_grad or (bias is not None and bias.requires_grad)):
+        if torch.is_grad_enabled() and (
+            x.requires_grad or (bias is not None and bias.requires_grad)
+        ):
             return _Int4LinearFunction.apply(x, self._parameters["weight_packed"], self, bias)
         # Nothing to differentiate: autograd.Function.apply alone costs ~20 us per call (inference is launch bound).
         from ..kernels.int4_packed import int4_matmul
@@ -246,6 +248,36 @@ def finalize_int4_packed_linears(model, dtype = None) -> int:
             module.quant_state
             count += 1
     return count
+
+
+def save_packed_with_checkpoint_config(model, quantization_config) -> None:
+    """A full save writes the packed tensors as loaded, so it must carry the checkpoint's compressed-tensors config
+    (not the runtime bitsandbytes one) for the directory to reload through this route."""
+    original = model.save_pretrained
+    packed = [(name, m) for name, m in model.named_modules() if isinstance(m, Int4PackedLinear)]
+
+    @functools.wraps(original)
+    def save_pretrained(*args, **kwargs):
+        # Layers a LoRA merge densified are written as plain weights: compressed-tensors skips `ignore` entries.
+        dense = [name for name, m in packed if not isinstance(m, Int4PackedLinear)]
+        saved = dict(quantization_config)
+        if dense:
+            saved["ignore"] = list(saved.get("ignore") or []) + dense
+        config = model.config
+        previous = config.__dict__.get("quantization_config", _MISSING)
+        config.quantization_config = saved
+        try:
+            return original(*args, **kwargs)
+        finally:
+            if previous is _MISSING:
+                config.__dict__.pop("quantization_config", None)
+            else:
+                config.quantization_config = previous
+
+    model.save_pretrained = save_pretrained
+
+
+_MISSING = object()
 
 
 # PEFT merge on a packed base would write into a throwaway view: densify first, restore after.
