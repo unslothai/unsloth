@@ -88,6 +88,7 @@ from hub.utils.hf_tokens import (
     HfTokenArg,
     call_hub_with_anonymous_retry,
     collecting_hub_token_rejections,
+    hub_refused_cached_copy_warning,
 )
 from hub.services.models.ollama import (
     acquire_ollama_model_ref,
@@ -5920,6 +5921,10 @@ async def _select_request_tools(
     # how that server runs.
     if payload.bypass_permissions:
         tools = apply_full_access_tool_descriptions(tools)
+    elif sys.platform == "win32":
+        # The isolated Windows Terminal runs cmd, not the host's Git Bash; say so in the schema.
+        from core.inference.tools import apply_terminal_profile_for_request
+        tools = await asyncio.to_thread(apply_terminal_profile_for_request, tools)
     if mcp_allowed:
         tools = tools + await get_enabled_mcp_tools()
     # getattr: callers hand in lighter payload objects than the request models, not all of
@@ -16143,13 +16148,54 @@ def _cancel_scoped_load_attempt(
         return attempt, is_running
 
 
+def _hub_access_warnings(token_rejections) -> list[str]:
+    """What this request's Hub reads tell the user: a refused token, a refused repo's copy."""
+    warnings = [HUB_TOKEN_REJECTED_WARNING] if token_rejections.recovered else []
+    warnings += [
+        hub_refused_cached_copy_warning(repo)
+        for repo in dict.fromkeys(token_rejections.served_from_cache)
+    ]
+    return warnings
+
+
 def _with_token_rejected_warning(response, token_rejections):
-    """Tell the user the model loaded without their token, which Hugging Face refused."""
-    if not token_rejections.recovered or not isinstance(response, LoadResponse):
+    """Tell the user the model loaded without their token, or from a copy the Hub now refuses."""
+    warnings = _hub_access_warnings(token_rejections)
+    if not warnings or not isinstance(response, LoadResponse):
         return response
     existing = response.memory_warning
-    warning = f"{existing} {HUB_TOKEN_REJECTED_WARNING}" if existing else HUB_TOKEN_REJECTED_WARNING
+    warning = " ".join(([existing] if existing else []) + warnings)
     return response.model_copy(update = {"memory_warning": warning})
+
+
+def _remember_hub_access_warning(response, token_rejections) -> None:
+    """Keep a GGUF load's Hub notice for /status, whose warning the client re-shows after a load."""
+    if isinstance(response, LoadResponse) and response.is_gguf:
+        warnings = _hub_access_warnings(token_rejections)
+        get_llama_cpp_backend().hub_access_warning = " ".join(warnings) or None
+
+
+def _status_load_warning(llama_backend) -> Optional[str]:
+    """The running GGUF's load warning as its load response carried it."""
+    notices = (llama_backend.last_load_warning, getattr(llama_backend, "hub_access_warning", None))
+    return " ".join(notice for notice in notices if notice) or None
+
+
+# True only in the user's /load, the one that shows the warning; background loads stay refused.
+_load_warnings_reach_user: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "load_warnings_reach_user", default = False
+)
+
+
+def _owner_session(fastapi_request) -> bool:
+    """The machine owner's own UI session: not a managed account and no API key of any kind.
+
+    _request_has_api_key, not _request_used_api_key: the latter excludes Unsloth's internal
+    workflow keys for API monitoring, and a data-recipe subprocess holds one of those.
+    """
+    if fastapi_request is None or account_access.managed_account():
+        return False
+    return not _request_has_api_key(fastapi_request)
 
 
 async def _run_tracked_load_model_impl(
@@ -16170,16 +16216,22 @@ async def _run_tracked_load_model_impl(
     try:
         if attempt.cancel_event.is_set():
             raise HTTPException(status_code = 409, detail = "Model load cancelled")
-        with collecting_hub_token_rejections() as token_rejections:
-            response = await _load_model_impl(
-                request,
-                fastapi_request,
-                current_subject,
-                current_request_counted = current_request_counted,
-                on_reload_confirmed = on_reload_confirmed,
-                load_cancel_event = attempt.cancel_event,
-            )
-        return _with_token_rejected_warning(response, token_rejections)
+        warnings_token = _load_warnings_reach_user.set(True)
+        try:
+            with collecting_hub_token_rejections() as token_rejections:
+                response = await _load_model_impl(
+                    request,
+                    fastapi_request,
+                    current_subject,
+                    current_request_counted = current_request_counted,
+                    on_reload_confirmed = on_reload_confirmed,
+                    load_cancel_event = attempt.cancel_event,
+                )
+        finally:
+            _load_warnings_reach_user.reset(warnings_token)
+        response = _with_token_rejected_warning(response, token_rejections)
+        _remember_hub_access_warning(response, token_rejections)
+        return response
     finally:
         if attempt.cancel_event.is_set() and not attempt.cancel_complete.is_set():
             if not await asyncio.to_thread(
@@ -16903,17 +16955,21 @@ async def _load_model_impl(
                     chat_template = _chat_template,
                 )
 
+        _caller_is_owner = _owner_session(fastapi_request) and _load_warnings_reach_user.get()
+
         # is_lora auto-detected from adapter_config.json on disk/HF.
         # Probe wrap so offline loads skip 30-60s of soft-failed network checks before
         # the worker starts. Off-loop: the guard can spend seconds on DNS plus a HEAD and
         # its TCP fallback, and this handler is awaited directly by the route, so running
         # it inline would stall every unrelated request. Same shape as /validate.
+
         def _resolve_config():
             with _hf_offline_if_unreachable_for(model_identifier):
                 return ModelConfig.from_identifier(
                     model_id = model_identifier,
                     hf_token = request.hf_token,
                     gguf_variant = request.gguf_variant,
+                    owner_session = _caller_is_owner,
                     # A native grant covers one directory, and this is the first
                     # pass that touches a drafter candidate, so the boundary has
                     # to travel with it rather than being applied afterwards.
@@ -17104,16 +17160,20 @@ async def _load_model_impl(
 
         # Mark the load and refuse one the download manager already owns BEFORE the eviction below: this 409 leaves nothing
         # loaded. It runs after argument inheritance, since a carried --no-mmproj changes the companion requirement.
-        if config.is_gguf and config.gguf_hf_repo:
+        # A refused repo's downloaded copy loads as a file, from that repo's cache all the same.
+        interlock_repo = config.is_gguf and (
+            config.gguf_hf_repo or getattr(config, "gguf_cache_repo", None)
+        )
+        if interlock_repo:
             from core.inference.llama_cpp import gguf_load_in_flight
 
-            gguf_load_stack.enter_context(gguf_load_in_flight(config.gguf_hf_repo))
+            gguf_load_stack.enter_context(gguf_load_in_flight(interlock_repo))
 
             from core.inference.llama_cpp import _hub_download_blocks_gguf_load
 
             if await asyncio.to_thread(
                 _hub_download_blocks_gguf_load,
-                config.gguf_hf_repo,
+                interlock_repo,
                 config.gguf_variant,
                 # Same predicate as the marker's own check, and as the loader's
                 # download gate: the projector is fetched whenever the repo ships one
@@ -17995,12 +18055,15 @@ async def validate_model(
         # /load; otherwise the stall just moves here and /load is never reached.
         # Off-loop twice over: the guard is a network round trip, and the first
         # from_identifier builds the detection registry (transformers, or the warm's lock).
+        _caller_is_owner = _owner_session(fastapi_request)
+
         def _resolve_config():
             with _hf_offline_if_unreachable_for(model_identifier):
                 return ModelConfig.from_identifier(
                     model_id = model_identifier,
                     hf_token = request.hf_token,
                     gguf_variant = request.gguf_variant,
+                    owner_session = _caller_is_owner,
                     # A native grant covers one directory, and this is the first
                     # pass that touches a drafter candidate, so the boundary has
                     # to travel with it rather than being applied afterwards.
@@ -18316,10 +18379,8 @@ async def validate_model(
         return restore_inventory_handles(
             ValidateModelResponse(
                 valid = True,
-                message = (
-                    f"Model identifier is valid. {HUB_TOKEN_REJECTED_WARNING}"
-                    if token_rejections.recovered
-                    else "Model identifier is valid."
+                message = " ".join(
+                    ["Model identifier is valid."] + _hub_access_warnings(token_rejections)
                 ),
                 identifier = model_log_label if native_grant_backed else config.identifier,
                 resident = await asyncio.to_thread(
@@ -20125,7 +20186,7 @@ async def get_status(current_subject: str):
                     llama_backend, _native_grant_backed, _model_id
                 ),
                 gguf_variant = llama_backend.hf_variant,
-                memory_warning = llama_backend.last_load_warning,
+                memory_warning = _status_load_warning(llama_backend),
                 loading = _loading,
                 # Plus anything the Unsloth registry still holds: the GGUF load
                 # only unloaded the ACTIVE one, so a model cached behind it is
@@ -36221,6 +36282,9 @@ async def anthropic_count_tokens(
             # Same schemas /messages renders under Full access, or the count prices a different prompt.
             from core.inference.tools import apply_full_access_tool_descriptions
             openai_tools = apply_full_access_tool_descriptions(openai_tools)
+        elif sys.platform == "win32":
+            from core.inference.tools import apply_terminal_profile_for_request
+            openai_tools = await asyncio.to_thread(apply_terminal_profile_for_request, openai_tools)
         _count_nudge = _build_tool_action_nudge(
             tools = openai_tools,
             model_name = _llama_public_model_id(llama_backend, payload.model),
@@ -36979,6 +37043,9 @@ async def anthropic_messages(
         _full_access = bool(getattr(payload, "bypass_permissions", False))
         if _full_access:
             openai_tools = apply_full_access_tool_descriptions(openai_tools)
+        elif sys.platform == "win32":
+            from core.inference.tools import apply_terminal_profile_for_request
+            openai_tools = await asyncio.to_thread(apply_terminal_profile_for_request, openai_tools)
 
         server_tool_choice = openai_tool_choice
         if isinstance(server_tool_choice, dict):

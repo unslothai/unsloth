@@ -94,6 +94,7 @@ export const ko = {
     useModelScope: "ModelScope 사용",
     useModelScopeHint: "대신 ModelScope에서 검색하고 다운로드합니다. 설정에서 다시 바꿀 수 있습니다.",
     useModelScopeFailed: "ModelScope로 전환하지 못했습니다.",
+    updateToken: "토큰 업데이트",
     hfToken: {
       label: "HF 토큰",
       saved: "저장됨",
@@ -2429,6 +2430,8 @@ export const ko = {
       tokenRejectedTitle: "Hugging Face 토큰이 거부되었습니다",
       tokenRejectedBody:
         "설정 → 일반에서 토큰을 업데이트한 후 다시 시도하세요.",
+      tokenRejectedAnonymousBody:
+        "공개 모델은 토큰 없이 표시됩니다. 비공개 및 접근 제한 모델을 사용하려면 설정 → 일반에서 토큰을 업데이트하세요.",
       hubUnreachable: "Hugging Face에 연결하지 못했습니다",
       cantUseModel: "이 모델은 학습에 사용할 수 없습니다",
       reasonTypeMismatch:
