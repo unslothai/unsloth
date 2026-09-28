@@ -55,7 +55,8 @@ def _record(dist_info: Path, rows) -> None:
     writer = csv.writer(buf, lineterminator = "\n")
     for row in rows:
         writer.writerow(row)
-    (dist_info / "RECORD").write_text(buf.getvalue(), encoding = "utf-8", newline = "")
+    with (dist_info / "RECORD").open("w", encoding = "utf-8", newline = "") as handle:
+        handle.write(buf.getvalue())
 
 
 def _write(path: Path, text: str) -> int:
@@ -186,11 +187,12 @@ def test_a_larger_file_is_not_damage(site_packages):
     assert install_manifest.damaged_payload_files(PKG) == []
 
 
-def test_an_absent_record_is_not_damage(site_packages):
-    """RECORD is optional per the installed-projects spec."""
+def test_an_absent_record_in_a_dist_info_is_damage(site_packages):
+    """uv and pip write RECORD last, so a managed wheel install without one was
+    interrupted, and every truncation of its payload is invisible to the size check."""
     _dist(site_packages)
     _write(site_packages / PKG / "__init__.py", "x = 1\n")
-    assert install_manifest.damaged_payload_files(PKG) == []
+    assert install_manifest.damaged_payload_files(PKG) == [f"{PKG}: RECORD is missing"]
 
 
 def test_an_unreadable_file_is_not_damage(site_packages):
@@ -307,9 +309,9 @@ def test_the_installers_ask_for_the_scan():
     repo = Path(__file__).resolve().parents[3]
     for name in ("studio/setup.sh", "studio/setup.ps1"):
         text = (repo / name).read_text(encoding = "utf-8")
-        assert "verify_install(deep = True)" in text, f"{name} stopped asking for the scan"
+        assert "'deep': True" in text, f"{name} stopped asking for the scan"
         # and it must survive an older module that has no such keyword
-        assert "except TypeError:" in text, f"{name} lost its older-tree fallback"
+        assert "inspect.signature" in text, f"{name} lost its older-tree fallback"
 
 
 def test_the_desktop_boot_path_does_not_ask_for_the_scan():
@@ -321,7 +323,6 @@ def test_the_desktop_boot_path_does_not_ask_for_the_scan():
 
     cli = (repo / "unsloth_cli" / "commands" / "studio.py").read_text(encoding = "utf-8")
     assert "def _install_state(deep: bool = False)" in cli
-    # verify-install is the one command that opts in.
     assert "_install_state(deep = True)" in cli
 
 
@@ -430,8 +431,8 @@ def test_the_budget_is_checked_before_every_stat(site_packages, monkeypatch):
 
     monkeypatch.setattr(Path, "stat", slow_stat)
     install_manifest.damaged_payload_files(PKG, budget_seconds = 5.0)
-    # The lower bound keeps the patched stat honest: unpatched the clock never
-    # moves, and the upper bound alone passes a scan that ignored the budget.
+    # The lower bound keeps the patched stat honest: unpatched the clock never moves, and the upper
+    # bound alone passes a scan that ignored the budget.
     assert 5.0 <= clock["now"] <= 6.0
 
 
@@ -570,7 +571,6 @@ def test_a_stat_that_never_returns_does_not_wedge_setup(site_packages, monkeypat
         assert install_manifest.damaged_payload_files(PKG, budget_seconds = 0.5) == []
         assert time.monotonic() - started < 5.0
     finally:
-        # The worker is a daemon, but this keeps it from outliving the test.
         released.set()
 
 
@@ -658,8 +658,10 @@ def _installer_helper_probe() -> str:
 
     repo = Path(__file__).resolve().parents[3]
     setup = (repo / "studio" / "setup.sh").read_text(encoding = "utf-8")
+    # Anchored on the probe itself, not on the `if !` that used to precede it: the same
+    # probe now lives in _setup_install_is_verified, which two callers share.
     match = re.search(
-        r'if ! "\$VENV_DIR/bin/python" -c "\n(import os, sys\n.*?)" "\$SCRIPT_DIR"', setup, re.S
+        r'"\$VENV_DIR/bin/python" -c "\n(import os, sys\n.*?)" "\$SCRIPT_DIR"', setup, re.S
     )
     assert match, "the manifest-helper probe moved; this test is reading the wrong block"
     return match.group(1)
@@ -686,13 +688,10 @@ def test_an_unimportable_helper_forces_the_dependency_pass(tmp_path, contents, e
     script_dir.mkdir()
     if contents is not None:
         (script_dir / "install_manifest.py").write_text(contents, encoding = "utf-8")
-    # -I -S so `script_dir` is the ONLY place install_manifest can come from. The probe
-    # imports it off sys.path, and an install_manifest reachable from site-packages or
-    # PYTHONPATH satisfies that import even when the directory under test is empty: the
-    # "absent" case then falls through to a real verify_install against whatever tree the
-    # runner happens to have, and answers about that instead. -I drops PYTHONPATH and the
-    # user site, -S drops site-packages. Neither is needed by the probe, whose only
-    # imports are os, sys and the file being tested.
+    # -I -S so `script_dir` is the ONLY place install_manifest can come from.
+    # The probe imports it off sys.path, and an install_manifest reachable from site-packages or PYTHONPATH satisfies
+    # that import even when the directory under test is empty: the "absent" case then falls through to a real
+    # verify_install against whatever tree the runner happens to have, and answers about that instead.
     result = subprocess.run(
         [sys.executable, "-I", "-S", "-c", _installer_helper_probe(), str(script_dir)],
         capture_output = True,

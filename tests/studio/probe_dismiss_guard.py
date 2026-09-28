@@ -184,7 +184,6 @@ WATCH_ITEM_JS = """
 }
 """
 
-# Find a real neutral target in the visible thread.
 WATCH_NEUTRAL_JS = """
 (wantUnfocusable) => {
   const v = window.__heavyThread.viewport();
@@ -214,7 +213,6 @@ WATCH_NEUTRAL_JS = """
 """
 
 
-# Record concurrent pointers and clicks for multi-pointer cases.
 MULTI_POINTER_INIT = """
 (() => {
   const st = { live: [], maxLive: 0, concurrentTypes: [], downs: [] };
@@ -250,7 +248,6 @@ MULTI_POINTER_INIT = """
 })()
 """
 
-# Find a non-item point inside the menu for the second pointer.
 MENU_BLANK_JS = """
 () => {
   const menu = document.querySelector('[role="menu"]');
@@ -510,7 +507,6 @@ async def one_case(
             "deleted": after["assistantMessages"] < before["assistantMessages"],
         }
     elif case in ("rightclick_then_click", "dragoff_then_click"):
-        # These dismissing gestures may produce no click.
         spot = await page.evaluate(WATCH_NEUTRAL_JS, False)
         if not spot:
             return {"case": case, "error": "no qualifying neutral spot in the viewport"}
@@ -542,7 +538,6 @@ async def one_case(
             "swallowedLaterClick": clicks < 1,
         }
     elif case == "select_then_quick_click":
-        # Exercise a click during the menu's exit animation.
         item = await page.evaluate(WATCH_ITEM_JS)
         if not item:
             return {"case": case, "error": "no menu item to select"}

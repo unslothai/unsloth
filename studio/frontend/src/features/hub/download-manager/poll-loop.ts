@@ -7,6 +7,7 @@ import {
   seededMeasuredTransfer,
 } from "./adopt-rules";
 import { invalidateGgufVariantsCache } from "../inventory/api";
+import { checkDiskSpace } from "@/features/settings/low-disk-check";
 import { getHfToken } from "../stores/hf-token-store";
 import { bumpInventoryVersion } from "../stores/inventory-events";
 import { toast } from "@/lib/toast";
@@ -19,11 +20,12 @@ import {
 } from "./api";
 import { cancelExternalJob, isExternalJob } from "./external-jobs";
 import {
+  CANCELLED_LINGER_MS,
   CANCEL_WATCHDOG_MS,
   COMPLETE_LINGER_MS,
+  ERROR_LINGER_MS,
   HIDDEN_POLL_INTERVAL_MS,
   IDLE_EVICT_GRACE_MS,
-  INTERRUPTED_DOWNLOAD_MESSAGE,
   INVENTORY_BUMP_DEBOUNCE_MS,
   POLL_BACKOFF_AFTER_MS,
   POLL_BACKOFF_INTERVAL_MS,
@@ -33,6 +35,7 @@ import {
   POLL_JITTER_MS,
   PROGRESS_POLL_BACKOFF_INTERVAL_MS,
   PROGRESS_POLL_INTERVAL_MS,
+  ATTEMPT_FLOOR_HOLD_MS,
   ACTIVE_STATES,
   TERMINAL_DISPLAY_STATES,
 } from "./download-manager-config";
@@ -97,9 +100,15 @@ import {
   setExpectedBytesForJob,
 } from "./download-manager-state";
 import {
+  floorHoldEnded,
   hasObservedExpectedBytes,
   resolveProgressUpdate,
+  serverRunChange,
 } from "./progress-reconcile";
+import {
+  presentationForExpectedBytesUpdate,
+  presentationForJobStart,
+} from "./download-presentation";
 import {
   clearWatchdog,
   runtimeRegistry,
@@ -183,6 +192,11 @@ export function applyProgressUpdate(
   const resolved = resolveProgressUpdate(job, progressResp);
   patchJob(key, {
     expectedBytes: resolved.expected,
+    presentation: presentationForExpectedBytesUpdate(
+      job.presentation,
+      job.expectedBytes,
+      resolved.expected,
+    ),
     downloadedBytes: resolved.downloadedBytes,
     measuredTransfer: resolved.measuredTransfer,
     completedBytes: resolved.completedBytes,
@@ -235,6 +249,16 @@ export function finalize(
   dismissStartToast(key);
   if (!job) return;
   if (TERMINAL_DISPLAY_STATES.has(job.state)) return;
+  // The operation that used the space is the one that should surface the pressure. requestStart
+  // reads the disk before a download, which is the right moment to refuse one, but a download
+  // that STARTS with room and then eats it crosses the threshold with nobody looking: there is
+  // no interval, so without this the warning waits for the next download attempt.
+  //
+  // force, so the reading is taken AFTER the write. Unforced it would be swallowed by the
+  // interval for any download shorter than 30 s, or handed the in-flight pre-download figure
+  // this call exists to correct. Still bounded to one reading in flight and one waiting, so a
+  // queue finishing together costs two rather than one per file.
+  void checkDiskSpace({ force: true });
   if (job.kind === DOWNLOAD_KIND.MODEL) {
     invalidateGgufVariantsCache(job.repoId);
   }
@@ -269,8 +293,7 @@ export function finalize(
       error: null,
     });
     notify(job, "onCancelled", 0);
-    // Stay in Downloads until dismissed so the user can resume the partial
-    // without searching the model again.
+    scheduleRemoval(key, CANCELLED_LINGER_MS);
   } else {
     const rawError =
       typeof opts.error === "string" && opts.error
@@ -284,6 +307,7 @@ export function finalize(
       etaSeconds: 0,
     });
     notify(job, "onError", 0);
+    scheduleRemoval(key, ERROR_LINGER_MS);
   }
   scheduleInventoryBump();
 }
@@ -304,22 +328,33 @@ function syncServerGeneration(
   key: string,
   job: ManagedDownload,
   status: PollStatus,
-): boolean {
-  const statusGeneration = status.generation;
-  const previousGeneration = job.serverGeneration;
-  const generationChanged =
-    typeof statusGeneration === "number" &&
-    Number.isSafeInteger(statusGeneration) &&
-    typeof previousGeneration === "number" &&
-    Number.isSafeInteger(previousGeneration) &&
-    statusGeneration !== previousGeneration;
-  if (
-    typeof statusGeneration === "number" &&
-    Number.isSafeInteger(statusGeneration)
-  ) {
-    patchJob(key, { serverGeneration: statusGeneration });
+  rt: JobRuntime,
+): "generation" | "attempt" | null {
+  const change = serverRunChange(
+    {
+      generation: job.serverGeneration,
+      attempt: rt.floorHold?.attempt ?? job.serverAttempt,
+    },
+    status,
+  );
+  const patch: Partial<ManagedDownload> = {};
+  if (Number.isSafeInteger(status.generation)) {
+    patch.serverGeneration = status.generation;
   }
-  return generationChanged;
+  if (change === "attempt") {
+    rt.floorHold = {
+      attempt: status.attempt as number,
+      remainingBytes: job.expectedBytes - job.downloadedBytes,
+      until: Date.now() + ATTEMPT_FLOOR_HOLD_MS,
+    };
+  } else {
+    if (change === "generation") rt.floorHold = null;
+    if (rt.floorHold == null && Number.isSafeInteger(status.attempt)) {
+      patch.serverAttempt = status.attempt;
+    }
+  }
+  if (Object.keys(patch).length > 0) patchJob(key, patch);
+  return change;
 }
 
 async function finalizeTerminalStatus(
@@ -385,7 +420,16 @@ function reconcileProgressAndSpeed(
     madeProgress,
   } = resolveProgressUpdate(current, progressResp, {
     resetMonotonic: generationChanged,
+    skipFloor: rt.floorHold != null,
   });
+  let acknowledgedAttempt: number | undefined;
+  if (
+    rt.floorHold &&
+    floorHoldEnded(rt.floorHold, expected, downloadedBytes, Date.now())
+  ) {
+    acknowledgedAttempt = rt.floorHold.attempt;
+    rt.floorHold = null;
+  }
   if (generationChanged) {
     // Another server owns this transfer, so the old samples describe a different run; the counter cannot say so, since a restart resumes from the same cache.
     rt.speedSamples.length = 0;
@@ -400,6 +444,9 @@ function reconcileProgressAndSpeed(
     fraction,
     bytesPerSec: speed.bytesPerSec,
     etaSeconds: speed.etaSeconds,
+    ...(acknowledgedAttempt !== undefined
+      ? { serverAttempt: acknowledgedAttempt }
+      : {}),
   });
   markPollSuccess(key, rt);
   return { madeProgress };
@@ -430,9 +477,7 @@ function handleIdleAfterProgress(
   } else {
     rt.idleSinceMs ??= Date.now();
     if (Date.now() - rt.idleSinceMs >= IDLE_EVICT_GRACE_MS) {
-      // The backend went idle with the card still up: keep a resumable row
-      // instead of dropping it. "gone" is only when the cache itself vanished.
-      finalize(key, "error", { error: INTERRUPTED_DOWNLOAD_MESSAGE });
+      finalize(key, "gone");
     }
   }
 }
@@ -477,7 +522,7 @@ async function tick(key: string): Promise<void> {
     if (!isCurrent(key, epoch)) return;
 
     // syncServerGeneration persists immediately, so a change seen before the progress path would look unchanged next tick; hold it until a progress poll consumes it.
-    if (syncServerGeneration(key, job, status)) {
+    if (syncServerGeneration(key, job, status, rt) !== null) {
       rt.pendingGenerationChange = true;
     }
 
@@ -648,7 +693,15 @@ export async function startJob(
   runtimeRegistry.runtimes.set(key, rt);
   const epoch = rt.epoch;
 
-  const expected = Math.max(existing?.expectedBytes ?? 0, req.expectedBytes);
+  const carryOverSeed = carriesOverSeed(
+    opts.adopt === true,
+    existing?.serverGeneration,
+    opts.generation,
+  );
+  const expected = Math.max(
+    carryOverSeed ? (existing?.expectedBytes ?? 0) : 0,
+    req.expectedBytes,
+  );
   const hfToken = getHfToken() || null;
   // Carry the stored preference UNRESOLVED so "auto" survives to effectiveTransportMode(); collapsing it to a boolean sends every download over HTTP.
   // Never awaited for an adopted job: suspending here let a concurrent adoptJob replace this runtime, leaving duplicate timers and a leaked listener.
@@ -668,11 +721,6 @@ export async function startJob(
     teardownRuntime(key);
     throw error;
   }
-  const carryOverSeed = carriesOverSeed(
-    opts.adopt === true,
-    existing?.serverGeneration,
-    opts.generation,
-  );
   const seedDownloaded = carryOverSeed ? (existing?.downloadedBytes ?? 0) : 0;
   const seedCompleted = carryOverSeed ? (existing?.completedBytes ?? 0) : 0;
   const seedFraction = carryOverSeed ? (existing?.fraction ?? 0) : 0;
@@ -687,6 +735,7 @@ export async function startJob(
       ? opts.generation
       : existing?.serverGeneration
     : undefined;
+  const seedAttempt = carryOverSeed ? existing?.serverAttempt : undefined;
   const adopted = opts.adopt
     ? adoptedTransports(
         { transport: opts.transport, cancelTransport: opts.cancelTransport },
@@ -695,6 +744,12 @@ export async function startJob(
     : { transport: mode, cancelTransport: undefined };
   const activeTransport = adopted.transport;
   const inventoryKind = downloadRequestInventoryKind(req);
+  const presentation = presentationForJobStart(
+    req.presentation,
+    existing?.presentation,
+    expected,
+    carryOverSeed,
+  );
   if (!opts.adopt && hasActiveRepoPeer(req.kind, req.repoId, key, req.variant)) {
     teardownRuntime(key);
     return;
@@ -710,6 +765,7 @@ export async function startJob(
     completedBytes: seedCompleted,
     completeOnDisk: false,
     expectedBytes: expected,
+    ...(presentation ? { presentation } : {}),
     fraction: seedFraction,
     bytesPerSec: 0,
     error: null,
@@ -724,6 +780,9 @@ export async function startJob(
       : {}),
     ...(Number.isSafeInteger(seedGeneration)
       ? { serverGeneration: seedGeneration }
+      : {}),
+    ...(Number.isSafeInteger(seedAttempt)
+      ? { serverAttempt: seedAttempt }
       : {}),
     ...(req.files && req.files.length > 0
       ? { scopedFiles: [...req.files] }
@@ -782,6 +841,7 @@ export async function startJob(
     if (
       onOriginRoute &&
       onOriginSelection &&
+      req.skipXetNotice !== true &&
       shouldShowXetNotice({
         kind: req.kind,
         transport: started,

@@ -10,12 +10,6 @@ export type ModelInventoryFormat =
   | "adapter"
   | "checkpoint"
   | "unknown";
-export type ModelInventoryRuntime =
-  | "llama_cpp"
-  | "transformers"
-  | "adapter"
-  | "unknown";
-
 export interface ModelInventoryCapabilities {
   canTrain: boolean;
   canChat: boolean;
@@ -43,7 +37,6 @@ export interface CachedInventoryRow {
   repo: string;
   isGguf: boolean;
   modelFormat: ModelInventoryFormat;
-  runtime: ModelInventoryRuntime;
   formatVariant?: string | null;
   capabilities: ModelInventoryCapabilities;
   bytes: number;
@@ -55,6 +48,7 @@ export interface CachedInventoryRow {
   partialTransport?: string | null;
   /** This partial can be continued byte for byte. */
   partialResumable?: boolean;
+  downloading?: boolean;
   /** A download manifest or cancel marker exists for some quant; moves on a sibling cancel, which changes neither bytes nor mtime. */
   hasVariantState?: boolean;
   pipelineTag?: string | null;
@@ -66,6 +60,8 @@ export interface CachedInventoryRow {
   // sd.cpp companion mirror: VAE / text encoders with no denoiser. Still listed, because these
   // run to tens of GB and the row is how they are seen and deleted, but never a pick.
   companion?: boolean;
+  // Holds only a GGUF load's VAE / text encoder: partial for loading, not a download to continue.
+  companionPrefetch?: boolean;
   tags?: string[];
   libraryName?: string | null;
   quantMethod?: string | null;
@@ -88,7 +84,6 @@ export interface LocalInventoryRow {
   path: string;
   isGguf: boolean;
   modelFormat: ModelInventoryFormat;
-  runtime: ModelInventoryRuntime;
   formatVariant?: string | null;
   capabilities: ModelInventoryCapabilities;
   baseModel?: string | null;
@@ -104,6 +99,8 @@ export interface LocalInventoryRow {
   partialTransport?: string | null;
   /** This partial can be continued byte for byte. */
   partialResumable?: boolean;
+  downloading?: boolean;
+  companionPrefetch?: boolean;
   activeCache?: boolean | null;
   pipelineTag?: string | null;
   tags?: string[];

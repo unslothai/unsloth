@@ -21,10 +21,11 @@ import re
 from dataclasses import dataclass, field
 from typing import Optional
 
-# declared HERE so the shape gate and the bound cannot drift
+from .diffusion_nvfp4_flag import nvfp4_blocked, without_nvfp4
+
 # The request model's ceiling on num_frames, declared HERE so the shape gate and the bound cannot drift: the gate's
-# refusal names the lattice point above the request, and suggesting one the request model would itself reject is a dead
-# end. VideoGenerateRequest imports this for its `le`.
+# refusal names the lattice point above the request, and suggesting one the request model would itself reject is a
+# dead end. VideoGenerateRequest imports this for its `le`.
 MAX_VIDEO_NUM_FRAMES = 1024
 
 # Runtime->route contract: routes match these EXACTLY for a 409 instead of a 500.
@@ -53,7 +54,6 @@ class VideoFamily:
     transformer2_class: Optional[str] = None
     is_moe: bool = False
     cfg2_kwarg: Optional[str] = None
-    # HunyuanVideo-1.5: __call__ takes NO guidance kwarg
     # HunyuanVideo-1.5 guidance: __call__ takes NO guidance kwarg; CFG lives on a ``guider`` whose scale is set per
     # request.
     guidance_via_guider: bool = False
@@ -79,6 +79,9 @@ class VideoFamily:
     bf16_components_gb: Optional[tuple[float, float, float]] = None
     # true when the DiT compiles cleanly with regional torch.compile (declares _repeated_blocks)
     supports_torch_compile: bool = True
+    # Opt-in to the CUDA-graph capture of the denoiser forward (diffusion_cuda_graph.py): only for a family that runs
+    # ONE forward per step with no CFG and no step cache, so a capture has one stable input tree to replay.
+    supports_cuda_graph: bool = False
     # Video DiTs are bf16-native, so fp16 promotes to float32; defaults True.
     fp16_incompatible: bool = True
     # Wan VAE decodes in float32 (bf16 causes banding / black frames), so the loader pins it back. Its size term is
@@ -99,6 +102,7 @@ class VideoFamily:
     # parameters), so 0.55 x 66.3 GB over-states it by 16 GB and a hard refusal turns away a load that fits. Measured
     # from Hub file metadata (2026-08-09): MiniMax-H3-FP8.pt 20,260,192,855 bytes, MiniMax-H3-INT8.pt 20,253,894,865.
     prequant_resident_gb: Optional[float] = None
+    prequant_resident_gb_by_scheme: tuple[tuple[str, float], ...] = field(default_factory = tuple)
     # Per-variant overrides as (base_repo, scheme, repo_id), keyed on the LOWERCASED upstream base id. A pre-quantized
     # checkpoint is baked from ONE base's weights and the loader refuses it for any other base, so a variant that ships
     # its own denoiser needs its own entry; a variant without one falls through to prequant_repos and, if that
@@ -150,9 +154,8 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         max_num_frames = 345,
         snap_frames_up = True,
         resolution_multiple = 32,
-        # model-card ratios use H3's canvas rule; the legacy 1024 square and cheaper 16:9 tiers are kept for
-        # compatibility
-        # Model-card ratios use H3's canvas rule. Keep the legacy 1024 square and cheaper 16:9 tiers for compatibility.
+        # Model-card ratios use H3's canvas rule. Keep the legacy 1024 square and cheaper 16:9 tiers for
+        # compatibility.
         resolution_presets = (
             (1344, 768),
             (1536, 672),
@@ -166,23 +169,28 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         duration_presets = (5.0, 10.0, 14.4),
         # Decimal GB resident estimates: transformer, Qwen3-VL conditioner, video+audio VAEs.
         bf16_components_gb = (66.3, 66.8, 11.1),
-        # regionally compilable: every block sees (1, S, 5376) plus an (S,) index tensor
         # Regionally compilable. The DiT declares _repeated_blocks (MiniMaxH3TransformerBlock +
         # MiniMaxH3TokenRefinerBlock); every block sees (1, S, 5376) plus an (S,) index tensor, where S is the PACKED
         # length (18,870 video + 207 audio rows + the caption's text rows at 960x544x124). The caption moves S by ~2%
-        # (19,096 at 19 tokens vs 19,479 at 402) and S cannot change mid-denoise, so dynamic=True traces once and holds:
-        # measured 1.298-1.342 s/step eager vs 1.000-1.040 compiled (1.30x), first forward 10.2 s, zero recompiles
-        # across captions of 19/19/37/128/402 tokens. The loader engages this only when the denoiser is RESIDENT;
-        # compiling inside a full CPU-offload rotation measured slower than eager, so that case stays on the no-compile
-        # tier.
+        # and S cannot change mid-denoise, so dynamic=True traces once and holds: measured 1.30x over eager with zero
+        # recompiles across captions of 19 to 402 tokens. The loader engages this only when the denoiser is RESIDENT;
+        # compiling inside a full CPU-offload rotation measured slower than eager.
         supports_torch_compile = True,
+        # Measured and declined. The early 1.006x does not survive pairing: at 960x544x124, 30 steps, fp8, the graph
+        # is 32.188 s p50 against 32.246 s eager over 5 renders per arm, 1.0018x, inside the 0.19% spread of a
+        # never-armed control. The capture works (29 replays/render, 0 eager, 0 fallbacks, bit-identical); there is
+        # nothing to win. The GPU is 92.7% busy either way, so removing ALL 25.3 s of host launch time (0.873 s/step
+        # to 0.1 ms) moved the wall 0.058 s: the host was never the wall. At 4 cores instead of 192 that 25.3 s is
+        # unchanged, so no weaker host turns H3 launch-bound. The cost is real: 3.93 GB held plus 4.03 GB at the
+        # capture peak, on a family already needing 87.5 GB, and 31.1 s on the first render (break-even ~530 videos).
+        # This is the CHEAPEST grid H3 ships, so the larger presets can only be more GPU-bound.
+        supports_cuda_graph = False,
         gguf_repo = "unsloth/MiniMax-H3-GGUF",
-        # the modular workflow builds each component through its own from_pretrained
         # Hosted pre-quantized FL2VA denoisers. The modular workflow builds each component through its own
         # from_pretrained, so there is no dense module to quantise in place: these are the ONLY way to run the 66.3 GB
         # transformer quantized, and seeding one also stops that download. Both schemes live in ONE repo, at the root,
-        # named <Model>-<SCHEME>.pt, which is the layout every image-side prequant repo already uses and the one
-        # prequant_repo_filename builds without help.
+        # named <Model>-<SCHEME>.pt, the layout every image-side prequant repo uses and the one prequant_repo_filename
+        # builds without help.
         prequant_repos = (("int8", "unsloth/MiniMax-H3-FP8"), ("fp8", "unsloth/MiniMax-H3-FP8")),
         # The INT8 denoiser is ConvRot-rotated (see diffusion_convrot): its weights live in a Hadamard-rotated basis and
         # are wrong unless the loader rotates the activations to match, so it carries the v2 format tag an Unsloth
@@ -199,10 +207,9 @@ _FAMILIES: tuple[VideoFamily, ...] = (
             ("int8", "ref2va", "MiniMax-H3-Ref2VA-INT8-ConvRot.pt"),
             ("fp8", "ref2va", "MiniMax-H3-Ref2VA-FP8.pt"),
         ),
-        # without a ref2va row above, a ref2va prequant pick is refused rather than served the keyframe checkpoint;
         # Keeps the two partitions honest: without a ref2va row above, a ref2va prequant pick is refused rather than
-        # served the keyframe checkpoint. Equal to H3_TASK_REFERENCES; the literal avoids importing the H3 helper module
-        # into the registry.
+        # served the keyframe checkpoint. Equal to H3_TASK_REFERENCES; the literal avoids importing the H3 helper
+        # module into the registry.
         prequant_partition_tasks = ("ref2va",),
         # Both schemes are ~20.3 GB resident against the 66.3 GB dense denoiser; see the field.
         prequant_resident_gb = 20.3,
@@ -237,8 +244,9 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         gguf_repo = "unsloth/LTX-2.3-GGUF",
         # pre-cast Gemma3-12B TE (fp32 ~49 GB on the hub, pre-cast ~13.2 GB): the biggest download win
         te_prequant_repos = (("fp8", "text_encoder", "unsloth/LTX-2-FP8"),),
+        # Hosted 2.3 DISTILLED DiT, used only by the 2.3 single-file assembly. fp8 only: LTX-2.3-INT8.pt predates the int8 excludes.
+        prequant_variant_repos = (("lightricks/ltx-2.3", "fp8", "unsloth/LTX-2.3-FP8"),),
     ),
-    # Wan2.2-TI2V-5B: ~5B single-stream DiT (UMT5 encoder), no audio
     # Wan2.2-TI2V-5B (diffusers >= 0.35, verified on 0.39): ~5B single-stream DiT (UMT5 encoder), no audio. Its VAE's
     # temporal compression 4 gives valid frame counts 4k+1. Defaults 50 steps / CFG 5.
     VideoFamily(
@@ -246,6 +254,9 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         pipeline_class = "WanPipeline",
         transformer_class = "WanTransformer3DModel",
         base_repo = "Wan-AI/Wan2.2-TI2V-5B-Diffusers",
+        prequant_repos = (("nvfp4", "unsloth/Wan2.2-TI2V-5B-NVFP4"),),
+        prequant_filenames = (("nvfp4", "Wan2.2-TI2V-5B-NVFP4.pt"),),
+        prequant_resident_gb_by_scheme = (("nvfp4", 2.9),),
         # "wan2.2-5b"/"wan-ti2v" are the picker/GGUF short ids; "wan2.2-ti2v" catches the repo stem
         aliases = ("wan2.2-5b", "wan-ti2v", "wan2.2-ti2v", "wan-ti2v-5b"),
         has_audio = False,
@@ -273,6 +284,13 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         pipeline_class = "WanPipeline",
         transformer_class = "WanTransformer3DModel",
         base_repo = "Wan-AI/Wan2.2-T2V-A14B-Diffusers",
+        prequant_repos = (("nvfp4", "unsloth/Wan2.2-T2V-A14B-NVFP4"),),
+        prequant_filenames = (
+            ("nvfp4", "Wan2.2-T2V-A14B-NVFP4.pt"),
+            ("nvfp4", "transformer_2", "Wan2.2-T2V-A14B-transformer_2-NVFP4.pt"),
+        ),
+        # BOTH experts: the plan subtracts one denoiser term and this family builds two.
+        prequant_resident_gb_by_scheme = (("nvfp4", 16.2),),
         aliases = ("wan2.2-14b", "wan-t2v", "wan2.2-t2v", "wan-t2v-a14b", "wan-a14b"),
         has_audio = False,
         # is_moe drives the dual-DiT optimisation layers; cfg2_kwarg names the pipeline kwarg for transformer_2's
@@ -289,7 +307,6 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         resolution_multiple = 16,
         # 480p + 720p presets. A14B's VAE is 8x so multiple 16 renders 720 exactly (TI2V-5B's 16x VAE floors it to 704).
         resolution_presets = ((1280, 720), (832, 480), (480, 832), (720, 1280)),
-        # bf16-RESIDENT: each expert ships FP32, so ~28.6 bf16 each and ~57.2 for BOTH
         # bf16-RESIDENT. Each expert ships FP32 (57.15 GB = 14.3B x 4), so ~28.6 bf16 each and ~57.2 for BOTH, not the
         # 114.3 fp32 sum. UMT5 TE bf16 (11.4); VAE fp32 (0.5).
         bf16_components_gb = (57.2, 11.4, 0.5),
@@ -304,6 +321,9 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         pipeline_class = "HunyuanVideo15Pipeline",
         transformer_class = "HunyuanVideo15Transformer3DModel",
         base_repo = "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v",
+        prequant_repos = (("nvfp4", "unsloth/HunyuanVideo-1.5-NVFP4"),),
+        prequant_filenames = (("nvfp4", "HunyuanVideo-1.5-Diffusers-480p_t2v-NVFP4.pt"),),
+        prequant_resident_gb_by_scheme = (("nvfp4", 4.8),),
         # No bare "hunyuanvideo" alias: it would also claim the incompatible 1.0 repos.
         aliases = ("hunyuanvideo-1-5", "hunyuanvideo1.5", "hunyuanvideo1-5", "hv15"),
         has_audio = False,
@@ -329,6 +349,10 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         pipeline_class = "HunyuanVideo15Pipeline",
         transformer_class = "HunyuanVideo15Transformer3DModel",
         base_repo = "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-720p_t2v",
+        # RTN, not GPTQ: the 720p transformer is separately trained; 480p corrections do not apply.
+        prequant_repos = (("nvfp4", "unsloth/HunyuanVideo-1.5-NVFP4"),),
+        prequant_filenames = (("nvfp4", "HunyuanVideo-1.5-Diffusers-720p_t2v-NVFP4.pt"),),
+        prequant_resident_gb_by_scheme = (("nvfp4", 4.8),),
         aliases = ("hunyuanvideo-1.5-diffusers-720p_t2v", "hv15-720p"),
         has_audio = False,
         guidance_via_guider = True,
@@ -420,6 +444,8 @@ def video_family_prequant_repo(
     the refusal path of a load request, and a table typo must not turn a legitimate pick into a
     500. A family object that predates these fields simply has no hosted checkpoint.
     """
+    if nvfp4_blocked(scheme):
+        return None
     base = _prequant_base_key(base_repo)
     if base:
         for entry in getattr(fam, "prequant_variant_repos", ()) or ():
@@ -435,6 +461,26 @@ def video_family_prequant_repo(
         if entry_scheme == scheme and repo_id:
             return repo_id
     return None
+
+
+def video_family_prequant_resident_gb(fam: VideoFamily, scheme: str) -> Optional[float]:
+    """The MEASURED resident size in decimal GB of this family's hosted ``scheme`` denoiser."""
+    if nvfp4_blocked(scheme):
+        return None
+    for entry in getattr(fam, "prequant_resident_gb_by_scheme", ()) or ():
+        if not isinstance(entry, (tuple, list)) or len(entry) != 2:
+            continue
+        entry_scheme, resident_gb = entry
+        if entry_scheme == scheme and resident_gb:
+            try:
+                return float(resident_gb)
+            except (TypeError, ValueError):  # a malformed row is "not measured", never a 500
+                continue
+    measured = getattr(fam, "prequant_resident_gb", None)
+    try:
+        return float(measured) if measured else None
+    except (TypeError, ValueError):
+        return None
 
 
 def video_family_prequant_task_specific(fam: VideoFamily, scheme: str, task: str) -> bool:
@@ -497,7 +543,7 @@ def video_family_prequant_schemes(fam: VideoFamily, task: Optional[str] = None) 
             schemes.append(entry[1])
     if task:
         schemes = [s for s in schemes if video_family_prequant_available(fam, s, task = task)]
-    return tuple(schemes)
+    return without_nvfp4(schemes)
 
 
 def snap_num_frames(fam: VideoFamily, num_frames: int) -> int:
@@ -549,20 +595,17 @@ def validate_video_request_shape(
 ) -> None:
     """Raise ``ValueError`` when a request asks for a shape ``fam`` does not support.
 
-    The generate route calls this at the API boundary so HTTP enforces exactly the
-    rules the Desktop interface offers: its resolution select lists only
-    ``resolution_presets`` and its duration select only lattice frame counts, while
-    the API took anything inside the coarse request bounds and then SNAPPED it. The
-    snap is silent and floors, so a 256x256 request survived untouched (256 divides
-    both 16 and 32) and denoised at a size no checkpoint was ever trained for.
+    The generate route calls this at the API boundary so HTTP enforces exactly the rules the Desktop
+    interface offers: its resolution select lists only ``resolution_presets`` and its duration
+    select only lattice frame counts, while the API took anything inside the coarse request bounds
+    and then SNAPPED it. The snap is silent and floors, so a 256x256 request survived untouched and
+    denoised at a size no checkpoint was ever trained for.
 
     This is a separate, explicit check rather than a change to ``snap_video_size`` /
-    ``snap_num_frames``, which internal callers still need. It stays silent for
-    anything it cannot judge -- a family that declares no presets keeps the old SIZE
-    snapping, since there is no table to judge a size against -- and ``None`` means
-    "use the family default", which is valid by construction. The frame lattice is
-    deliberately NOT part of that escape hatch: every family declares a ``frame_step``
-    whether or not it declares presets, so an off-lattice count is always refused.
+    ``snap_num_frames``, which internal callers still need. It stays silent for anything it cannot
+    judge (a family that declares no presets keeps the old SIZE snapping), and ``None`` means "use
+    the family default". The frame lattice is deliberately NOT part of that escape hatch: every
+    family declares a ``frame_step``, so an off-lattice count is always refused.
     """
     # Normalised to int pairs so membership holds however a family spelled its presets (the status payload hands them
     # out as lists, and a round-trip through it must not silently stop matching).
@@ -753,11 +796,21 @@ def default_video_generation_params(
     beats the family base repo. ``fallback`` is used when no identifier names a variant --
     callers pass the resolved family's own default so a Wan model loaded from an opaque local
     path under an explicit family_override still gets 50/5.0, not the hardcoded LTX 40/4.0."""
+    variant = video_generation_variant(*identifiers)
+    for key, steps, guidance in _VIDEO_GENERATION_DEFAULTS:
+        if key == variant:
+            return steps, guidance
+    return fallback
+
+
+def video_generation_variant(*identifiers: Optional[str]) -> Optional[str]:
+    """The ``_VIDEO_GENERATION_DEFAULTS`` key the first identifier naming one matches, or None; the precedence
+    ``default_video_generation_params`` uses, so every per-variant decision agrees with the defaults."""
     for identifier in identifiers:
         needle = (identifier or "").lower()
-        for key, steps, guidance in _VIDEO_GENERATION_DEFAULTS:
+        for key, _steps, _guidance in _VIDEO_GENERATION_DEFAULTS:
             # Match the key as a name segment: reject a preceding ASCII letter so "swan-video" does not false-match
             # "wan".
             if re.search(r"(?<![a-z])" + re.escape(key), needle):
-                return steps, guidance
-    return fallback
+                return key
+    return None

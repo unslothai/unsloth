@@ -20,6 +20,12 @@ from dataclasses import dataclass, field
 from typing import Any, Collection, Literal, Mapping, Sequence
 from urllib.parse import urlparse
 
+from core.inference.llama_tool_schema import unrelaxed
+from core.inference.mcp_images import split_images as split_mcp_images
+
+# Stamped by mcp_client on every tool it registers; the provenance the envelope
+# is trusted on.
+MCP_TOOL_PREFIX = "mcp__"
 from core.inference.tool_call_parser import TOOL_ERROR_NUDGE, TOOL_ERROR_PREFIXES
 
 
@@ -69,7 +75,6 @@ def _looks_like_broken_json(raw: str) -> bool:
         # json at all` healable.
         if error.msg.startswith("Expecting property name"):
             return False
-        # excluded for the opposite reason: `{"a": 1} trailing` decodes fully and then finds junk
         # Excluded for the opposite reason: a COMPLETE document with something after it. `{"a": 1} trailing` decodes
         # fully and then finds junk, so nothing was lost.
         if error.msg.startswith("Extra data"):
@@ -152,7 +157,6 @@ def _heal_arg_key(tool_name: str, tool_schemas = None) -> "str | None":
     key = _HEAL_ARG_CACHE.get(tool_name)
     if key is not None or not tool_schemas:
         return key
-    # not cached: caching by name would let one chat's MCP server decide another chat's healing
     # Not cached: the request's tools belong to the request, and caching them by name would let one chat's MCP server
     # decide another chat's healing.
     return _healable_keys_from(tool_schemas).get(tool_name)
@@ -185,8 +189,12 @@ class CoercedArguments:
 
 
 def canonical_arguments_text(arguments: Any) -> str:
-    """The one JSON encoding of an argument mapping, so the card and the replay agree."""
-    return json.dumps(arguments, ensure_ascii = False, sort_keys = True, separators = (",", ":"))
+    """The one JSON encoding of an argument mapping, so the card and the replay agree.
+
+    Not sorted: the replay must match the token sequence already in the prompt cache (#10791).
+    `canonical_tool_call_key` keeps its own sorted key for dedup.
+    """
+    return json.dumps(arguments, ensure_ascii = False, sort_keys = False, separators = (",", ":"))
 
 
 @dataclass(frozen = True)
@@ -197,7 +205,6 @@ class ToolCallDecision:
     tool_name: str
     arguments: dict[str, Any]
     tool_call_id: str = ""
-    # for an id-less call this is the spelling the client minted
     # The id the card carries on screen. For an id-less call that is the spelling the client minted, not the id the
     # conversation replays; otherwise the two are the same.
     card_call_id: str = ""
@@ -240,7 +247,6 @@ class ToolCallDecision:
         return None
 
     def tool_start_payload(self) -> dict[str, Any]:
-        """Build the payload fields for a real tool_start event."""
         fragment = self.unparsed_fragment
         # `raw` is the shape this module already uses for arguments it could not read into a schema, so the card shows
         # the model's own text under a name that means something rather than an internal sentinel.
@@ -255,7 +261,6 @@ class ToolCallDecision:
         }
 
     def tool_start_event(self) -> dict[str, Any]:
-        """Build the existing backend event shape for a real execution."""
         return {"type": "tool_start", **self.tool_start_payload()}
 
     def as_assistant_tool_call(self) -> dict[str, Any]:
@@ -290,16 +295,17 @@ class ToolCallCompletion:
     executed: bool = False
 
     def tool_end_payload(self) -> dict[str, Any]:
-        """Build the payload fields for a real tool_end event."""
+        # Not only in model_message(): the frontend PERSISTS this payload and serializes it back
+        # into a role="tool" message on the next turn, so an unmasked key is replayed then.
+        result = self.result
         return {
             "tool_name": self.decision.tool_name,
             "tool_call_id": self.decision.card_id,
-            "result": self.result,
+            "result": redact_studio_credentials(result) if isinstance(result, str) else result,
             "provenance": self.decision.provenance,
         }
 
     def tool_end_event(self) -> dict[str, Any]:
-        """Build the existing backend event shape for a real execution result."""
         return {"type": "tool_end", **self.tool_end_payload()}
 
     def tool_message(self) -> dict[str, Any]:
@@ -330,6 +336,17 @@ class ToolCallCompletion:
         if self.decision.tool_call_id:
             message["tool_call_id"] = self.decision.tool_call_id
         return message
+
+    def mcp_images(self) -> list[dict]:
+        """Images this call returned, and only for a call an MCP server served.
+
+        The envelope is a plain suffix, so any tool whose output happens to end in
+        one -- terminal output, a fetched page -- would otherwise have its bytes
+        decoded and attached as model image input.
+        """
+        if not self.executed or not self.decision.tool_name.startswith(MCP_TOOL_PREFIX):
+            return []
+        return split_mcp_images(self.result)[1]
 
 
 @dataclass(frozen = True)
@@ -364,10 +381,9 @@ _DECODE_ERRORS = (ValueError, RecursionError)
 _LITERAL_ERRORS = (*_DECODE_ERRORS, SyntaxError, MemoryError)
 
 
-# group 1 is the closing quote, which `endswith` cannot stand in for because an open string can end on an escaped one;
 # A JSON string, open or closed; group 1 is the closing quote, which `endswith` cannot stand in for because an open
-# string can end on an escaped one. The `\?$` tail stops a started match from ever failing, which would send `finditer`
-# back over every later quote.
+# string can end on an escaped one. The `\?$` tail stops a started match from ever failing, which would send
+# `finditer` back over every later quote.
 _JSON_STRING_RE = re.compile(r'"(?:[^"\\]|\\.)*(?:(")|\\?$)', re.S)
 _JSON_CLOSER = {"[": "]", "{": "}"}
 
@@ -482,6 +498,7 @@ def _read_schema(spec: Any) -> "tuple[Any, str | None, bool]":
     ``(None, ...)`` leaves it alone. A union collapses to its single non-null branch, so
     every branch must name one: reading the integer branch of ``anyOf: [{integer}, {$ref}]``
     would turn ``"001"`` into 1."""
+    spec = unrelaxed(spec)
     if not _readable(spec):
         return None, None, False
     union = _UNION_KEYWORDS & spec.keys()
@@ -499,6 +516,7 @@ def _read_schema(spec: Any) -> "tuple[Any, str | None, bool]":
             return None, None, False
         named = []
         for branch in branches:
+            branch = unrelaxed(branch)
             name = branch.get("type") if _readable(branch) else None
             if not isinstance(name, str) or _UNION_KEYWORDS & branch.keys():
                 return None, None, False
@@ -722,12 +740,14 @@ def mcp_display_parts(tool_name: str) -> "tuple[str, str] | None":
     if len(parts) < 3 or not parts[1] or not parts[2]:
         return None
     try:
+        from core.inference.tools import _mcp_raw_tool_name
         from storage import mcp_servers_db
-        server = mcp_servers_db.get_server(parts[1])
+
+        server = mcp_servers_db.get_server_for_tool(parts[1])
+        display = (server or {}).get("display_name")
+        return (str(display), _mcp_raw_tool_name(tool_name)) if display else None
     except Exception:  # noqa: BLE001
         return None
-    display = (server or {}).get("display_name")
-    return (str(display), parts[2]) if display else None
 
 
 def provisional_tool_provenance(tool_name: str) -> dict[str, object]:
@@ -737,6 +757,7 @@ def provisional_tool_provenance(tool_name: str) -> dict[str, object]:
     return tool_event_provenance(
         provisional = True,
         mcp_server = mcp[0] if mcp else None,
+        mcp_tool = mcp[1] if mcp else None,
     )
 
 
@@ -812,29 +833,6 @@ def is_tool_error(result: str) -> bool:
     return isinstance(result, str) and result.lstrip().startswith(TOOL_ERROR_PREFIXES)
 
 
-def _strip_mcp_image_suffix(result: str) -> str:
-    """Drop a trailing __MCP_IMAGES__ envelope only when it is the valid JSON
-    image array appended by _flatten_result, so legit tool text that merely
-    mentions the marker is not truncated."""
-    head, sep, payload = result.rpartition("\n__MCP_IMAGES__:")
-    if not sep:
-        return result
-    try:
-        images = json.loads(payload)
-    except (ValueError, RecursionError):
-        return result
-    if not isinstance(images, list) or not images:
-        return result
-    if not all(
-        isinstance(img, dict)
-        and isinstance(img.get("data"), str)
-        and isinstance(img.get("mimeType"), str)
-        for img in images
-    ):
-        return result
-    return head.rstrip()
-
-
 def _strip_files_sentinel(result: str) -> str:
     """Drop a trailing ``__FILES__`` envelope, and only that.
 
@@ -869,24 +867,133 @@ def _is_file_entry(entry: object) -> bool:
     )
 
 
+def _strip_images_sentinel(result: str) -> str:
+    """Drop the trailing ``__IMAGES__`` envelopes, and only those.
+
+    Validated rather than split on sight, like the two above and like
+    ``studio_tool_loop._carries_image_sentinel``: a tool whose own output quotes
+    the marker would otherwise lose everything after it while the card the user
+    reads still shows the whole result.
+
+    Every envelope, not just the last: a Gemini ``code_execution`` turn that drew
+    two figures stacks one per ``inlineData`` part, and stopping after the last
+    would replay the earlier plot's whole base64 data URI to the model.
+
+    Walked by index and cut once at the end. Re-partitioning the shortened string
+    each time copies it again, which is quadratic in the number of markers, and an
+    MCP server answering with 80,000 of them is 1.3 MB of text that held this
+    thread for seconds.
+    """
+    marker = "\n__IMAGES__:"
+    end = len(result)
+    cut = -1
+    while True:
+        start = result.rfind(marker, 0, end)
+        if start == -1:
+            break
+        try:
+            images = json.loads(result[start + len(marker) : end])
+        except (ValueError, RecursionError):
+            break
+        if not isinstance(images, list) or not images:
+            break
+        if not all(isinstance(image, str) and image for image in images):
+            break
+        cut = start
+        end = start
+    return result if cut == -1 else result[:cut].rstrip()
+
+
+def _strip_rag_sources_sentinel(result: str) -> str:
+    """Drop a trailing ``__RAG_SOURCES__`` source map, and only that.
+
+    The retrieval tools append ``RAG_SOURCES_SENTINEL`` plus a JSON list; a
+    result that merely mentions the marker is text.
+
+    Deliberately unbounded, like the walk above. Each source record repeats its whole
+    chunk, and ``search_knowledge_base`` takes the model's ``top_k`` without a ceiling,
+    so a real map has no size worth calling suspicious -- and one refused for being big
+    is a frontend-only blob left in the model's context, which ``_fit_result_to_room``
+    would then truncate into malformed JSON. What keeps unbounded MCP text away from
+    this decode is the gate on the emitting tools, not a length.
+    """
+    head, sep, payload = result.rpartition("\n__RAG_SOURCES__:")
+    if not sep:
+        return result
+    try:
+        sources = json.loads(payload)
+    except (ValueError, RecursionError):
+        return result
+    if not isinstance(sources, list):
+        return result
+    return head.rstrip()
+
+
 # Only these emit the file envelope, and only their output is defused first. An MCP tool or a fetched page ending in a
 # well-formed __FILES__ line is content, not an envelope, and stripping it would take that line away from the model.
 _SANDBOX_TOOLS = frozenset({"python", "terminal"})
 
+# Same rule for the other two envelopes. The image one is emitted by the sandbox tools
+# through `_created_file_sentinels` and by Gemini's hosted code_execution through the
+# provider; the source map by the retrieval tools that append `RAG_SOURCES_SENTINEL`. A
+# document an MCP tool read, or a page that was fetched, ending in a well-formed one of
+# either is content the model needs, and cutting it leaves the model reasoning over less
+# than the card the user is looking at.
+_IMAGE_SENTINEL_TOOLS = _SANDBOX_TOOLS | {"code_execution"}
+_SOURCE_MAP_TOOLS = frozenset({"search_knowledge_base", "search_conversation"})
+_WORKSPACE_TOOLS = _SANDBOX_TOOLS | {"edit_file"}
 
-def strip_result_for_model(result: str, tool_name: "str | None" = None) -> str:
-    """Remove frontend-only sentinels (image paths, RAG source map) before
-    feeding the result back to the model."""
+
+# `sk-unsloth-` + 32 hex (auth/storage.py), cached in the clear so the CLI can reuse it. Masked on
+# the way to the model, which is where it would leave the machine. The mask carries neither prefix,
+# so re-running is a no-op.
+_STUDIO_API_KEY_RE = re.compile(
+    # 8, not 32: a result cut to fit the window ends mid-key, and half a key is still one. Bare
+    # `sk-unsloth-` (prose about the format) still reads through.
+    # Hex, not alphanumeric: the token is `token_hex`, and the wider alphabet rewrote this repo's
+    # own `sk-unsloth-internal-workflow` to `[redacted]-workflow`.
+    r"sk-unsloth-[0-9a-fA-F]{8,}"
+    # `desktop-` + token_urlsafe(48); the floor keeps "desktop-app" out of it.
+    r"|desktop-[A-Za-z0-9_-]{40,}"
+)
+_STUDIO_SECRET_MASK = "[redacted]"
+
+
+def redact_studio_credentials(text: str) -> str:
+    """Mask any Unsloth Studio credential in text bound for the model/provider."""
+    # Two substring scans first: the alternation has no literal to anchor on and costs ~20x per MB.
+    if "sk-unsloth-" not in text and "desktop-" not in text:
+        return text
+    return _STUDIO_API_KEY_RE.sub(_STUDIO_SECRET_MASK, text)
+
+
+def strip_result_for_model(
+    result: str,
+    tool_name: "str | None" = None,
+    *,
+    redact: bool = True,
+) -> str:
+    """Remove frontend-only sentinels (image paths, RAG source map) and mask Studio credentials
+    before feeding the result back to the model.
+
+    ``redact = False`` is for the one caller that needs the strip to stay suffix-only
+    (`tools._split_frontend_suffix` re-derives the removed envelope from `startswith`); masking
+    rewrites bytes inside the body, which that comparison cannot survive. That path feeds the model
+    through `model_message` afterwards, so the mask is applied either way."""
     if tool_name is None or tool_name == "web_search":
         from .search_images import strip_images_suffix
         result = strip_images_suffix(result)
-    result = _strip_mcp_image_suffix(result)
+    # Always, whoever produced it: these bytes run to megabytes and the model must
+    # never be shown them as text. Provenance decides whether they become IMAGE
+    # input, which is a separate question answered in mcp_images._promote.
+    result = split_mcp_images(result)[0]
     if tool_name is None or tool_name in _SANDBOX_TOOLS:
         result = _strip_files_sentinel(result)
-    for sentinel in ("__IMAGES__:", "__RAG_SOURCES__:"):
-        if sentinel in result:
-            result = result.split(sentinel, 1)[0].rstrip()
-    return result
+    if tool_name is None or tool_name in _IMAGE_SENTINEL_TOOLS:
+        result = _strip_images_sentinel(result)
+    if tool_name is None or tool_name in _SOURCE_MAP_TOOLS:
+        result = _strip_rag_sources_sentinel(result)
+    return redact_studio_credentials(result) if redact else result
 
 
 def deferred_nudge_text(msgs: Sequence[dict]) -> str:
@@ -906,6 +1013,50 @@ def append_deferred_nudges(conversation: list, msgs: Sequence[dict]) -> None:
     """
     if msgs:
         conversation.append({"role": "user", "content": deferred_nudge_text(msgs)})
+
+
+def tool_call_limit_nudge(
+    tool_calls: Sequence[Mapping[str, Any]],
+    limit: int,
+    *,
+    final: bool = False,
+    unavailable_tools: Collection[str] = (),
+) -> dict:
+    described = []
+    for tool_call in tool_calls:
+        function = tool_call.get("function") or {}
+        arguments = function.get("arguments", {})
+        if not isinstance(arguments, str):
+            arguments = canonical_arguments_text(arguments)
+        described.append(f"{function.get('name', '')} {arguments}")
+    follow_up = (
+        "Do not describe results you did not receive."
+        if final
+        else "Call them again if you still need their results, and do not describe results "
+        "you did not receive."
+    )
+    if not final and unavailable_tools:
+        retryable_names = sorted(
+            {(call.get("function") or {}).get("name", "") for call in tool_calls}
+            - set(unavailable_tools)
+        )
+        follow_up = (
+            f"Do not retry {', '.join(sorted(unavailable_tools))}; "
+            "these tools are no longer available."
+        )
+        if retryable_names:
+            follow_up += (
+                f" You may retry the skipped calls for {', '.join(retryable_names)} "
+                "if you still need their results."
+            )
+        follow_up += " Do not describe results you did not receive."
+    return {
+        "role": "user",
+        "content": (
+            f"{len(tool_calls)} more tool call(s) in this batch were not executed because "
+            f"at most {limit} tool calls run per turn: {'; '.join(described)}. {follow_up}"
+        ),
+    }
 
 
 def _tool_name_from_schema(tool: Mapping[str, Any]) -> str:
@@ -966,6 +1117,10 @@ class ToolLoopController:
         self._one_shot_tools = one_shot_tools
         self._completed_one_shot_tools: set[str] = set()
         self._successful_keys: set[str] = set()
+        # `_workspace_novel_at[key]` is the distinct-call count when `key` last ran.
+        self._workspace_ran: set[str] = set()
+        self._workspace_novel = 0
+        self._workspace_novel_at: dict[str, int] = {}
         self._duplicate_noop_counts: dict[str, int] = {}
         self._duplicate_noop_limit = max(1, duplicate_noop_limit)
         self._history: list[_ToolCallRecord] = []
@@ -1017,6 +1172,7 @@ class ToolLoopController:
             forced = forced,
             provisional = provisional,
             mcp_server = mcp[0] if mcp else None,
+            mcp_tool = mcp[1] if mcp else None,
         )
         action: ToolAction = "execute"
         noop = ""
@@ -1057,6 +1213,23 @@ class ToolLoopController:
                 action = decision.action,
             )
         )
+        # One rerun per piece of NEW work, not per call: `read, edit, read, edit` would
+        # otherwise apply the edit twice. Here as well as in the prefilters, which a
+        # structured batch skips. A failed command can still have written, so it counts too.
+        if decision.tool_name in _WORKSPACE_TOOLS:
+            if decision.key not in self._workspace_ran:
+                self._workspace_ran.add(decision.key)
+                self._workspace_novel += 1
+            stale = {
+                key
+                for key in self._successful_keys
+                if key.partition(":")[0] in _WORKSPACE_TOOLS
+                and self._workspace_novel_at.get(key, 0) < self._workspace_novel
+            }
+            self._successful_keys -= stale
+            for key in stale:
+                self._duplicate_noop_counts.pop(key, None)
+            self._workspace_novel_at[decision.key] = self._workspace_novel
         if not failed:
             self._successful_keys.add(decision.key)
             if decision.tool_name in self._one_shot_tools:

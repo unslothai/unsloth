@@ -78,11 +78,15 @@ def _stalls(cap):
 
 
 def _wedged(n, *, decode = 8192.0):
-    """The user's signature: a held slot that never calls llama_decode()."""
+    """The user's signature: a held slot that never calls llama_decode().
+
+    The gauges are in the snapshot because /metrics renders them from the same table."""
     return [
         {
             "tokens_predicted_total": 4096.0,
             "prompt_tokens_total": 512.0,
+            "predicted_tokens_seconds": 0.0,
+            "prompt_tokens_seconds": 0.0,
             "n_decode_total": decode,
             "requests_processing": 1.0,
             "requests_deferred": 0.0,

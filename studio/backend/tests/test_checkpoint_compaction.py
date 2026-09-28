@@ -60,6 +60,47 @@ def _fit(messages, **kwargs):
     return fit_checkpoint_context(messages, **kwargs)
 
 
+def _turn(**overrides):
+    """One stored conversation turn, with per-test overrides."""
+    return {
+        "id": "a2",
+        "parentId": "user-1",
+        "role": "assistant",
+        "content": "Done.",
+        "metadata": _checkpoint_metadata(18),
+        **overrides,
+    }
+
+
+def _pending_turn(
+    *,
+    id = "a1",
+    parentId = "u1",
+    role = "assistant",
+    content = "Done.",
+    generationStatus = "completed",
+):
+    """A stored turn carrying only a generation status, with per-test overrides."""
+    return {
+        "id": id,
+        "parentId": parentId,
+        "role": role,
+        "content": content,
+        "metadata": {"generationStatus": generationStatus},
+    }
+
+
+def _row(**overrides):
+    """One stored conversation row without metadata, with per-test overrides."""
+    return {
+        "id": "u1",
+        "parentId": None,
+        "role": "user",
+        "content": "Continue",
+        **overrides,
+    }
+
+
 def test_a_reset_keeps_the_system_turn_and_the_newest_user_turn():
     messages = _thread() + [{"role": "user", "content": "continue"}]
 
@@ -496,23 +537,70 @@ def test_a_restated_instruction_does_not_crowd_out_every_other_rule():
     assert any(item.startswith("Second standing rule") for item in items)
 
 
-def test_a_process_with_tools_disabled_never_resets(monkeypatch):
-    """`supports_tools` is the TEMPLATE's capability, not "this request gets the tool".
-
-    `--disable-tools` sets the process policy to False, so every tool is refused and the
-    checkpoint override is blocked. Resetting anyway would leave the epoch behind a tool
-    that never arrives while the header tells the model to search for what was dropped.
-    """
+def test_a_process_with_tools_disabled_still_resets(monkeypatch):
+    """`--disable-tools` keeps checkpoint resets; a per-context hard-off still refuses them."""
     from core.inference import llama_cpp
+    from state.tool_policy import tools_force_disabled
 
     monkeypatch.setattr("core.rag.conversation_archive.enabled", lambda: True)
     monkeypatch.setattr("core.rag.conversation_archive.can_archive", lambda thread_id: True)
 
-    monkeypatch.setattr("state.tool_policy.get_tool_policy", lambda: None)
+    monkeypatch.setattr("state.tool_policy._tool_policy", None)
     assert llama_cpp._can_reset_epoch("thread-1", True) is True
 
-    monkeypatch.setattr("state.tool_policy.get_tool_policy", lambda: False)
-    assert llama_cpp._can_reset_epoch("thread-1", True) is False
+    monkeypatch.setattr("state.tool_policy._tool_policy", False)
+    assert llama_cpp._can_reset_epoch("thread-1", True) is True
+
+    with tools_force_disabled():
+        assert llama_cpp._can_reset_epoch("thread-1", True) is False
+
+
+def test_disable_tools_reopens_the_loop_for_recall_only(monkeypatch):
+    """The recall loop under `--disable-tools` offers search_conversation alone."""
+    import asyncio
+    import types
+
+    import routes.inference as routes_mod
+    from state.tool_policy import tools_force_disabled
+
+    monkeypatch.setattr("state.tool_policy._tool_policy", False)
+    monkeypatch.setattr(routes_mod, "_thread_has_conversation_archive", lambda _tid: True)
+    monkeypatch.setattr(routes_mod, "_thread_has_checkpoint", lambda *_a: True)
+    monkeypatch.setattr(routes_mod, "_enabled_agent_skills", lambda: [{"name": "hf-cli"}])
+    monkeypatch.setattr("core.inference.checkpoint.enabled", lambda: True)
+    monkeypatch.delenv("UNSLOTH_CONTEXT_OVERFLOW", raising = False)
+
+    payload = types.SimpleNamespace(
+        enabled_tools = ["web_search", "read_skill"],
+        rag_scope = None,
+        thread_id = "t1",
+        messages = [],
+        bypass_permissions = False,
+        context_overflow = "truncate_oldest",
+        context_policy = None,
+        deep_research_armed = True,
+    )
+    assert routes_mod._checkpoint_recall_may_enable_tools(payload) is True
+    with tools_force_disabled():
+        assert routes_mod._checkpoint_recall_may_enable_tools(payload) is False
+
+    tools = asyncio.run(
+        routes_mod._select_request_tools(
+            payload, tools_on = False, mcp_allowed = False, checkpoint_fitted = True
+        )
+    )
+    assert [tool["function"]["name"] for tool in tools] == ["search_conversation"]
+
+    monkeypatch.setattr("state.tool_policy._tool_policy", None)
+    tools = asyncio.run(
+        routes_mod._select_request_tools(
+            payload, tools_on = False, mcp_allowed = False, checkpoint_fitted = True
+        )
+    )
+    assert [tool["function"]["name"] for tool in tools] == [
+        "search_conversation",
+        "deep_research",
+    ]
 
 
 def _memory_tool_branch():
@@ -1468,19 +1556,16 @@ def test_a_wire_shaped_tool_branch_restores_the_stored_rows_boundary(monkeypatch
             "role": "user",
             "content": [{"type": "text", "text": "What happened?"}],
         },
-        {
-            "id": "assistant-retry",
-            "parentId": "user-1",
-            "role": "assistant",
-            "content": "An abandoned retry on a sibling branch.",
-            "metadata": _checkpoint_metadata(99),
-        },
-        {
-            "id": "user-retry",
-            "parentId": "assistant-retry",
-            "role": "user",
-            "content": "A sibling question the request did not select.",
-        },
+        _turn(
+            id = "assistant-retry",
+            content = "An abandoned retry on a sibling branch.",
+            metadata = _checkpoint_metadata(99),
+        ),
+        _row(
+            id = "user-retry",
+            parentId = "assistant-retry",
+            content = "A sibling question the request did not select.",
+        ),
     ]
     branch = [
         {"role": "user", "content": "Run the diagnostic."},
@@ -1515,13 +1600,7 @@ def test_parent_linked_identical_retry_siblings_keep_the_smaller_boundary(monkey
     from routes import inference as inference_routes
 
     def _reply(identifier, boundary):
-        return {
-            "id": identifier,
-            "parentId": "user-1",
-            "role": "assistant",
-            "content": "Done.",
-            "metadata": _checkpoint_metadata(boundary),
-        }
+        return _turn(id = identifier, metadata = _checkpoint_metadata(boundary))
 
     rows = [
         {"id": "user-1", "parentId": None, "role": "user", "content": "Do the work."},
@@ -1554,38 +1633,11 @@ def test_repeated_text_on_one_parent_chain_uses_only_the_newest_state(monkeypatc
     from routes import inference as inference_routes
 
     rows = [
-        {
-            "id": "user-1",
-            "parentId": None,
-            "role": "user",
-            "content": "First task.",
-        },
-        {
-            "id": "assistant-1",
-            "parentId": "user-1",
-            "role": "assistant",
-            "content": "Done.",
-            "metadata": {"generationStatus": "completed"},
-        },
-        {
-            "id": "user-2",
-            "parentId": "assistant-1",
-            "role": "user",
-            "content": "Second task.",
-        },
-        {
-            "id": "assistant-2",
-            "parentId": "user-2",
-            "role": "assistant",
-            "content": "Done.",
-            "metadata": _checkpoint_metadata(5),
-        },
-        {
-            "id": "user-3",
-            "parentId": "assistant-2",
-            "role": "user",
-            "content": "What happened?",
-        },
+        _row(id = "user-1", content = "First task."),
+        _pending_turn(id = "assistant-1", parentId = "user-1"),
+        _row(id = "user-2", parentId = "assistant-1", content = "Second task."),
+        _turn(id = "assistant-2", parentId = "user-2", metadata = _checkpoint_metadata(5)),
+        _row(id = "user-3", parentId = "assistant-2", content = "What happened?"),
     ]
     branch = [{"role": row["role"], "content": row["content"]} for row in rows]
     _stub_studio_db(monkeypatch, rows)
@@ -1603,26 +1655,18 @@ def test_authoritative_ancestry_stops_before_an_unmatched_stored_descendant(monk
 
     rows = [
         {"id": "user-1", "parentId": None, "role": "user", "content": "First task."},
-        {
-            "id": "assistant-1",
-            "parentId": "user-1",
-            "role": "assistant",
-            "content": "The common-prefix reply.",
-            "metadata": {"generationStatus": "completed"},
-        },
-        {
-            "id": "user-old",
-            "parentId": "assistant-1",
-            "role": "user",
-            "content": "The question before it was edited.",
-        },
-        {
-            "id": "assistant-old",
-            "parentId": "user-old",
-            "role": "assistant",
-            "content": "An unmatched old-branch reply.",
-            "metadata": _checkpoint_metadata(12),
-        },
+        _pending_turn(id = "assistant-1", parentId = "user-1", content = "The common-prefix reply."),
+        _row(
+            id = "user-old",
+            parentId = "assistant-1",
+            content = "The question before it was edited.",
+        ),
+        _turn(
+            id = "assistant-old",
+            parentId = "user-old",
+            content = "An unmatched old-branch reply.",
+            metadata = _checkpoint_metadata(12),
+        ),
     ]
     branch = [
         {"role": "user", "content": "First task."},
@@ -1697,27 +1741,19 @@ def test_the_newest_authoritative_state_controls_the_old_epoch(monkeypatch, meta
 
     rows = [
         {"id": "user-1", "parentId": None, "role": "user", "content": "First question."},
-        {
-            "id": "assistant-1",
-            "parentId": "user-1",
-            "role": "assistant",
-            "content": "The epoch started here.",
-            "metadata": _checkpoint_metadata(6),
-        },
+        _turn(
+            id = "assistant-1",
+            content = "The epoch started here.",
+            metadata = _checkpoint_metadata(6),
+        ),
         {"id": "user-2", "parentId": "assistant-1", "role": "user", "content": "Continue."},
-        {
-            "id": "assistant-2",
-            "parentId": "user-2",
-            "role": "assistant",
-            "content": "The newest reply.",
-            "metadata": metadata,
-        },
-        {
-            "id": "user-3",
-            "parentId": "assistant-2",
-            "role": "user",
-            "content": "Continue again.",
-        },
+        _turn(
+            id = "assistant-2",
+            parentId = "user-2",
+            content = "The newest reply.",
+            metadata = metadata,
+        ),
+        _row(id = "user-3", parentId = "assistant-2", content = "Continue again."),
     ]
     branch = [{"role": row["role"], "content": row["content"]} for row in rows]
     _stub_studio_db(monkeypatch, rows)
@@ -1735,13 +1771,7 @@ def test_a_cancelled_epoch_boundary_is_found_through_its_stored_descendant(monke
 
     rows = [
         {"id": "user-1", "parentId": None, "role": "user", "content": "First question."},
-        {
-            "id": "assistant-1",
-            "parentId": "user-1",
-            "role": "assistant",
-            "content": "The old epoch reply.",
-            "metadata": _checkpoint_metadata(6),
-        },
+        _turn(id = "assistant-1", content = "The old epoch reply.", metadata = _checkpoint_metadata(6)),
         {"id": "user-2", "parentId": "assistant-1", "role": "user", "content": "More work."},
         {
             "id": "assistant-2",
@@ -1761,12 +1791,7 @@ def test_a_cancelled_epoch_boundary_is_found_through_its_stored_descendant(monke
                 **_checkpoint_metadata(12, checkpoint_started = True),
             },
         },
-        {
-            "id": "user-3",
-            "parentId": "assistant-2",
-            "role": "user",
-            "content": "Continue after stopping.",
-        },
+        _row(id = "user-3", parentId = "assistant-2", content = "Continue after stopping."),
     ]
     # The adapter omits an unfinished local card, but user-3 durably descends from its row.
     assert conversation_archive._as_wire([rows[3]]) == []
@@ -1826,14 +1851,7 @@ def test_retrying_the_newest_turn_twice_still_resolves_the_proved_branch(monkeyp
     monkeypatch.setattr(checkpoint, "CONTEXT_POLICY", "checkpoint")
 
     for retry in range(3):
-        rows.append(
-            {
-                "id": f"fu{retry}",
-                "parentId": "a1",
-                "role": "user",
-                "content": f"A retried follow-up {retry}.",
-            }
-        )
+        rows.append(_row(id = f"fu{retry}", parentId = "a1", content = f"A retried follow-up {retry}."))
         assert llama_cpp._sticky_compaction_state("t1", branch) == (4, True)
         assert inference_routes._thread_has_checkpoint("t1", branch) is True
 
@@ -1847,13 +1865,7 @@ def test_the_unstored_newest_turn_cannot_move_the_request_to_a_sibling(monkeypat
     from core.inference import checkpoint, llama_cpp
 
     def _reply(identifier, boundary):
-        return {
-            "id": identifier,
-            "parentId": "u1",
-            "role": "assistant",
-            "content": "Done.",
-            "metadata": _checkpoint_metadata(boundary),
-        }
+        return _turn(id = identifier, parentId = "u1", metadata = _checkpoint_metadata(boundary))
 
     rows = [
         {"id": "u1", "parentId": None, "role": "user", "content": "Do the work."},
@@ -1884,20 +1896,8 @@ def test_an_indistinguishable_placeholder_twin_is_not_dropped_from_the_vote(monk
     for status in ("cancelled", "running"):
         rows = [
             {"id": "u1", "parentId": None, "role": "user", "content": "Do the work."},
-            {
-                "id": "a-live",
-                "parentId": "u1",
-                "role": "assistant",
-                "content": "Done.",
-                "metadata": {"generationStatus": status},
-            },
-            {
-                "id": "a-abandoned",
-                "parentId": "u1",
-                "role": "assistant",
-                "content": "Done.",
-                "metadata": _checkpoint_metadata(18),
-            },
+            _pending_turn(id = "a-live", generationStatus = status),
+            _turn(id = "a-abandoned", parentId = "u1"),
         ]
         branch = [
             {"role": "user", "content": "Do the work."},
@@ -1921,21 +1921,9 @@ def test_a_rewound_turn_does_not_match_an_assistant_reply_of_the_same_text(monke
 
     rows = [
         {"id": "u1", "parentId": None, "role": "user", "content": "Do the work."},
-        {
-            "id": "a1",
-            "parentId": "u1",
-            "role": "assistant",
-            "content": "The shared reply.",
-            "metadata": {"generationStatus": "completed"},
-        },
+        _pending_turn(content = "The shared reply."),
         {"id": "u2", "parentId": "a1", "role": "user", "content": "Take the next step."},
-        {
-            "id": "a2",
-            "parentId": "u2",
-            "role": "assistant",
-            "content": "Continue.",
-            "metadata": _checkpoint_metadata(18),
-        },
+        _turn(parentId = "u2", content = "Continue."),
     ]
     branch = [
         {"role": "user", "content": "Do the work."},
@@ -1962,21 +1950,9 @@ def test_a_chain_that_skips_past_the_settled_proof_is_refused(monkeypatch):
 
     rows = [
         {"id": "u1", "parentId": None, "role": "user", "content": "Do the work."},
-        {
-            "id": "a1",
-            "parentId": "u1",
-            "role": "assistant",
-            "content": "The shared reply.",
-            "metadata": {"generationStatus": "completed"},
-        },
+        _pending_turn(content = "The shared reply."),
         {"id": "u2", "parentId": "a1", "role": "user", "content": "Take the next step."},
-        {
-            "id": "a2",
-            "parentId": "u2",
-            "role": "assistant",
-            "content": "Abandoned reply.",
-            "metadata": _checkpoint_metadata(18),
-        },
+        _turn(parentId = "u2", content = "Abandoned reply."),
         {"id": "u3", "parentId": "a2", "role": "user", "content": "Continue."},
     ]
     branch = [
@@ -2003,21 +1979,9 @@ def test_a_repeated_text_earlier_in_the_request_cannot_admit_an_abandoned_row(mo
 
     rows = [
         {"id": "u1", "parentId": None, "role": "user", "content": "Q"},
-        {
-            "id": "a1",
-            "parentId": "u1",
-            "role": "assistant",
-            "content": "Same",
-            "metadata": {"generationStatus": "completed"},
-        },
+        _pending_turn(content = "Same"),
         {"id": "u2", "parentId": "a1", "role": "user", "content": "Q"},
-        {
-            "id": "a2",
-            "parentId": "u2",
-            "role": "assistant",
-            "content": "Same",
-            "metadata": _checkpoint_metadata(18),
-        },
+        _turn(parentId = "u2", content = "Same"),
         {"id": "u3", "parentId": "a2", "role": "user", "content": "Continue"},
     ]
     branch = [
@@ -2039,13 +2003,12 @@ def test_a_research_row_is_recognised_under_custom_metadata(monkeypatch):
 
     rows = [
         {"id": "u1", "parentId": None, "role": "user", "content": "First question."},
-        {
-            "id": "a1",
-            "parentId": "u1",
-            "role": "assistant",
-            "content": "The epoch reply.",
-            "metadata": _checkpoint_metadata(6),
-        },
+        _turn(
+            id = "a1",
+            parentId = "u1",
+            content = "The epoch reply.",
+            metadata = _checkpoint_metadata(6),
+        ),
         {"id": "u2", "parentId": "a1", "role": "user", "content": "Continue."},
         {
             "id": "a2",
@@ -2400,8 +2363,11 @@ def test_the_tool_loop_reopens_only_where_an_epoch_actually_happened(monkeypatch
     assert inference_routes._thread_has_checkpoint("t1") is True
 
     # A refused fit records diagnostics, not an epoch that can be searched.
-    _thread({"fits": False, "dropped_messages": 12, "checkpoint": True})
+    _thread({"fits": False, "dropped_messages": 0, "checkpoint": True})
     assert inference_routes._thread_has_checkpoint("t1") is False
+
+    _thread({"fits": False, "dropped_messages": 12, "checkpoint": True})
+    assert inference_routes._thread_has_checkpoint("t1") is True
 
     _thread({"fits": True, "dropped_messages": 12, "checkpoint": True})
 
@@ -3595,13 +3561,7 @@ def test_a_cancelled_reply_that_reached_text_is_still_validated(monkeypatch):
 
     rows = [
         {"id": "u1", "parentId": None, "role": "user", "content": "Q"},
-        {
-            "id": "a1",
-            "parentId": "u1",
-            "role": "assistant",
-            "content": "A1",
-            "metadata": {"generationStatus": "completed"},
-        },
+        _pending_turn(content = "A1"),
         {
             "id": "a2",
             "parentId": "a1",
@@ -3671,21 +3631,9 @@ def test_a_stored_reply_is_not_justified_by_a_user_turn_of_the_same_words(monkey
 
     rows = [
         {"id": "u1", "parentId": None, "role": "user", "content": "Start."},
-        {
-            "id": "a1",
-            "parentId": "u1",
-            "role": "assistant",
-            "content": "Done.",
-            "metadata": {"generationStatus": "completed"},
-        },
+        _pending_turn(id = "a1"),
         {"id": "u2", "parentId": "a1", "role": "user", "content": "Continue"},
-        {
-            "id": "a2",
-            "parentId": "u2",
-            "role": "assistant",
-            "content": "Continue",
-            "metadata": _checkpoint_metadata(30),
-        },
+        _turn(parentId = "u2", content = "Continue", metadata = _checkpoint_metadata(30)),
         {"id": "u3", "parentId": "a2", "role": "user", "content": "Next"},
     ]
     branch = [
@@ -3723,13 +3671,7 @@ def test_a_completed_tool_turn_past_the_tip_is_validated_by_its_results(monkeypa
 
     rows = [
         {"id": "u1", "parentId": None, "role": "user", "content": "Start."},
-        {
-            "id": "a1",
-            "parentId": "u1",
-            "role": "assistant",
-            "content": "Done.",
-            "metadata": {"generationStatus": "completed"},
-        },
+        _pending_turn(id = "a1"),
         {
             "id": "a2",
             "parentId": "a1",
@@ -3757,13 +3699,7 @@ def test_a_replayed_row_that_renders_no_text_is_refused_rather_than_trusted(monk
 
     rows = [
         {"id": "u1", "parentId": None, "role": "user", "content": "Start."},
-        {
-            "id": "a1",
-            "parentId": "u1",
-            "role": "assistant",
-            "content": "Done.",
-            "metadata": {"generationStatus": "completed"},
-        },
+        _pending_turn(id = "a1"),
         {
             "id": "a2",
             "parentId": "a1",
@@ -3796,22 +3732,15 @@ def test_a_second_explicit_root_is_not_wired_onto_the_branch_before_it(monkeypat
 
     rows = [
         {"id": "u1", "parentId": None, "role": "user", "content": "The first wording."},
-        {
-            "id": "a1",
-            "parentId": "u1",
-            "role": "assistant",
-            "content": "An abandoned reply.",
-            "metadata": _checkpoint_metadata(44),
-        },
+        _turn(
+            id = "a1",
+            parentId = "u1",
+            content = "An abandoned reply.",
+            metadata = _checkpoint_metadata(44),
+        ),
         # The edit: a root of its own, not a child of the branch it replaced.
         {"id": "u2", "parentId": None, "role": "user", "content": "The second wording."},
-        {
-            "id": "a2",
-            "parentId": "u2",
-            "role": "assistant",
-            "content": "The live reply.",
-            "metadata": {"generationStatus": "completed"},
-        },
+        _pending_turn(id = "a2", parentId = "u2", content = "The live reply."),
     ]
     branch = [
         {"role": "user", "content": "The second wording."},
@@ -3837,13 +3766,7 @@ def test_a_completed_reasoning_only_reply_is_replayed_so_it_must_match(monkeypat
 
     rows = [
         {"id": "u1", "parentId": None, "role": "user", "content": "Start."},
-        {
-            "id": "a1",
-            "parentId": "u1",
-            "role": "assistant",
-            "content": "Done.",
-            "metadata": {"generationStatus": "completed"},
-        },
+        _pending_turn(id = "a1"),
         {
             "id": "a2",
             "parentId": "a1",
@@ -3980,3 +3903,185 @@ def test_a_nudge_sent_with_an_image_is_not_quoted_as_an_instruction():
 def test_an_image_turn_is_judged_on_its_words_not_its_attachment():
     assert carried_forward_items([_image_turn("continue")], max_tokens = 1024) == []
     assert carried_forward_items([_image_turn(INSTRUCTION)], max_tokens = 1024) == [INSTRUCTION]
+
+
+def _refused_continuation_metadata(boundary):
+    return {
+        "contextTruncation": {
+            "fits": False,
+            "dropped_messages": boundary,
+            "boundary_messages": boundary,
+            "latest_turn_role": "assistant",
+        }
+    }
+
+
+def _cut_metadata(boundary):
+    return {**_checkpoint_metadata(boundary), "incomplete": {"reason": "length"}}
+
+
+@pytest.mark.parametrize(
+    ("case", "resolved"),
+    [
+        ("extends", True),
+        ("adds_nothing", True),
+        ("no_source", False),
+        ("source_not_cut", False),
+        ("source_created_later", False),
+    ],
+)
+def test_a_continuation_that_could_not_fit_keeps_the_epoch_it_resumed(monkeypatch, case, resolved):
+    """Only an earlier Max Tokens cut this row extends (or repeats) was resumed."""
+    from core.inference import checkpoint, llama_cpp
+    from routes import inference as inference_routes
+
+    partial = "Here is the Rust version:\n\nfn main() {"
+    refused_text = partial if case == "adds_nothing" else partial + "\n    run();\n}"
+    cut = _turn(
+        id = "cut",
+        parentId = "user-1",
+        content = partial,
+        metadata = _checkpoint_metadata(4) if case == "source_not_cut" else _cut_metadata(4),
+    )
+    refused = _turn(
+        id = "resumed",
+        parentId = "user-1",
+        content = [{"type": "text", "text": refused_text}],
+        metadata = _refused_continuation_metadata(4),
+    )
+    replies = {"no_source": [refused], "source_created_later": [refused, cut]}.get(
+        case, [cut, refused]
+    )
+    rows = [
+        _row(id = "user-1", content = "Write it in Rust."),
+        *replies,
+        _row(id = "user-2", parentId = "resumed", content = "Now fix the bugs."),
+    ]
+    branch = [
+        {"role": "user", "content": "Write it in Rust."},
+        {"role": "assistant", "content": refused_text},
+        {"role": "user", "content": "Now fix the bugs."},
+    ]
+    _stub_studio_db(monkeypatch, rows)
+    monkeypatch.setattr(checkpoint, "CONTEXT_POLICY", "checkpoint")
+
+    assert inference_routes._thread_has_checkpoint("t1", branch) is resolved
+    assert llama_cpp._sticky_compaction_state("t1", branch) == (
+        (4, True) if resolved else (0, False)
+    )
+
+
+def test_resolving_refused_continuations_stays_linear(monkeypatch):
+    import time
+
+    from core.inference import checkpoint, llama_cpp
+
+    rows = [_row(id = "user-1", content = "q")]
+    rows += [
+        _turn(
+            id = f"r{index}",
+            parentId = "user-1",
+            content = "same text",
+            metadata = {**_refused_continuation_metadata(4), "incomplete": {"reason": "length"}},
+        )
+        for index in range(5000)
+    ]
+    _stub_studio_db(monkeypatch, rows)
+    monkeypatch.setattr(checkpoint, "CONTEXT_POLICY", "checkpoint")
+
+    started = time.perf_counter()
+    llama_cpp._compaction_branch_states(
+        rows, [{"role": "user", "content": "q"}, {"role": "assistant", "content": "same text"}]
+    )
+    assert time.perf_counter() - started < 2.0
+
+
+def test_a_retry_sibling_is_not_mistaken_for_the_reply_a_refusal_resumed(monkeypatch):
+    from core.inference import checkpoint
+    from routes import inference as inference_routes
+
+    rows = [
+        _row(id = "user-1", content = "Write it in Rust."),
+        _turn(
+            id = "retry",
+            parentId = "user-1",
+            content = "Something else.",
+            metadata = _checkpoint_metadata(4),
+        ),
+        _turn(
+            id = "refused",
+            parentId = "user-1",
+            content = "A different reply.",
+            metadata = _refused_continuation_metadata(4),
+        ),
+        _row(id = "user-2", parentId = "refused", content = "Now fix the bugs."),
+    ]
+    branch = [
+        {"role": "user", "content": "Write it in Rust."},
+        {"role": "assistant", "content": "A different reply."},
+        {"role": "user", "content": "Now fix the bugs."},
+    ]
+    _stub_studio_db(monkeypatch, rows)
+    monkeypatch.setattr(checkpoint, "CONTEXT_POLICY", "checkpoint")
+
+    assert inference_routes._thread_has_checkpoint("t1", branch) is False
+
+
+def test_a_reset_on_a_request_without_the_recall_tool_does_not_name_it(monkeypatch):
+    """The first reset never carries the tool: the archive is written during it."""
+    from core.inference import llama_cpp
+
+    messages = _thread() + [{"role": "user", "content": "continue"}]
+    monkeypatch.setattr(llama_cpp, "_archive_is_degraded", lambda: False)
+
+    def _header(**kwargs):
+        fitted, truncation = llama_cpp._fit_context(
+            messages,
+            context_length = 1200,
+            max_tokens = 200,
+            count_tokens = count,
+            can_reset = True,
+            sticky_dropped = 0,
+            **kwargs,
+        )
+        assert truncation["checkpoint_started"] is True
+        return fitted[0]["content"]
+
+    withheld = _header(recall_offered = False)
+    assert checkpoint._NOT_SEARCHABLE in withheld
+    assert checkpoint._SEARCHABLE not in withheld
+    assert checkpoint._SEARCHABLE in _header(recall_offered = True)
+    assert checkpoint._SEARCHABLE in _header()
+
+
+@pytest.mark.parametrize(("dropped", "admitted"), [(4, True), (0, False)])
+def test_a_rescued_reset_still_offers_recall_but_is_never_replayed(monkeypatch, dropped, admitted):
+    """A rescue archived what it dropped; a refusal dropped nothing."""
+    from core.inference import checkpoint, llama_cpp
+    from routes import inference as inference_routes
+
+    rows = [
+        _row(id = "user-1", content = "Write it in Rust."),
+        _turn(
+            id = "rust",
+            parentId = "user-1",
+            content = "fn main() {}",
+            metadata = {
+                "contextTruncation": {
+                    "fits": False,
+                    "checkpoint": True,
+                    "checkpoint_started": True,
+                    "dropped_messages": dropped,
+                    "boundary_messages": dropped,
+                    "latest_turn_role": "assistant",
+                }
+            },
+        ),
+        _row(id = "user-2", parentId = "rust", content = "Now fix the bugs."),
+    ]
+    branch = [{"role": row["role"], "content": row["content"]} for row in rows]
+    _stub_studio_db(monkeypatch, rows)
+    monkeypatch.setattr(checkpoint, "CONTEXT_POLICY", "checkpoint")
+
+    assert inference_routes._thread_has_checkpoint("t1", branch) is admitted
+    assert llama_cpp._sticky_compaction_state("t1", branch) == (0, False)

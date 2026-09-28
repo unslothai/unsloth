@@ -18,8 +18,9 @@ promotes calls whose function name exactly matches a declared tool. Promotion
 removes EXACTLY the promoted calls' markup spans (the parser reports them):
 undeclared calls, unparseable blocks, and suppressed alternate formats keep
 every byte and relay as text, so healing can never silently delete model
-output. Responses without a tool signal, requests without tools, and Unsloth's
-own enable-tools loop are untouched. Per-request opt-out:
+output. Responses without a tool signal and requests without tools are untouched, as is
+any request whose ``response_format`` constrains decoding: a grammar has already fixed what
+the reply means. Per-request opt-out:
 ``auto_heal_tool_calls: false``. Process kill-switch:
 ``UNSLOTH_DISABLE_TOOL_CALL_HEALING=1``.
 """
@@ -35,7 +36,6 @@ from core.inference.tool_loop_controller import (
 )
 from core.tool_healing import parse_tool_calls_from_text
 
-# narrower than the loops' TOOL_XML_SIGNALS
 # Only the formats this healer's parser can promote -- narrower than the loops' broader TOOL_XML_SIGNALS. A loop-only
 # marker (Llama <|python_tag|>, bare [ARGS]) would buffer a streamed call as prose without promoting it, so keep a
 # healer-aligned list. Mistral's [TOOL_CALLS] IS promotable, so it stays in.
@@ -60,14 +60,19 @@ _HEALING_DISABLED = os.environ.get("UNSLOTH_DISABLE_TOOL_CALL_HEALING", "0") == 
 _NUDGE_DEFAULT = os.environ.get("UNSLOTH_TOOL_CALL_NUDGE", "0") == "1"
 
 
-def nudge_enabled(request_flag: Optional[bool]) -> bool:
+def response_format_constrains_decoding(response_format: Any) -> bool:
+    return response_format is not None and response_format != {"type": "text"}
+
+
+def nudge_enabled(request_flag: Optional[bool], *, response_format: Any = None) -> bool:
+    if response_format_constrains_decoding(response_format):
+        return False
     return _NUDGE_DEFAULT if request_flag is None else bool(request_flag)
 
 
 _MAX_SIGNAL_LEN = max(len(s) for s in _HEAL_SIGNALS)
-# a suspected-but-unclosed block larger than this is a false alarm, bounding memory on XML-lookalike prose
-# A suspected-but-unclosed tool block larger than this is declared a false alarm and flushed, bounding memory on a model
-# rambling XML-lookalike text.
+# A suspected-but-unclosed tool block larger than this is declared a false alarm and flushed, bounding memory on a
+# model rambling XML-lookalike text.
 _MAX_HOLD_CHARS = 64 * 1024
 
 
@@ -75,6 +80,8 @@ def heal_gate(
     auto_heal: Optional[bool],
     tools: Optional[list],
     tool_choice: Any = None,
+    *,
+    response_format: Any = None,
 ) -> Optional[set]:
     """Return the declared client-tool name set when healing applies, else None.
 
@@ -88,10 +95,14 @@ def heal_gate(
     markup stays text), and a forced ``{"type": "function", "function":
     {"name": N}}`` narrows promotion to that one function. ``"auto"`` /
     ``"required"`` / absent keep the full declared set.
+
+    A constraining ``response_format`` disables healing: schema strings resembling call markup would be promoted away.
     """
     if _HEALING_DISABLED or auto_heal is False:
         return None
     if tool_choice == "none":
+        return None
+    if response_format_constrains_decoding(response_format):
         return None
     names = set()
     for tool in tools or []:
@@ -329,14 +340,11 @@ class StreamToolCallHealer:
         self._buffer = ""
         self._holding = False
         self._id_offset = 0
-        # promotion is destructive, so a caller DISCARDING a promoted call (a turn truncated at finish_reason "length")
-        # has no other way to give the model's words back
-        # Markup span each promoted call was cut from, keyed by its call id. Promotion is destructive -- the span never
-        # reaches the client -- so a caller that ends up DISCARDING a promoted call (a turn truncated at finish_reason
-        # "length" cannot be executed) has no other way to give the model's own words back. Bounded by _MAX_HOLD_CHARS
-        # per span.
+        # Markup span each promoted call was cut from, keyed by its call id. Promotion is destructive -- the span
+        # never reaches the client -- so a caller that ends up DISCARDING a promoted call (a turn truncated at
+        # finish_reason "length" cannot be executed) has no other way to give the model's own words back. Bounded by
+        # _MAX_HOLD_CHARS per span.
         self._promoted_spans: dict[str, str] = {}
-        # structured delta.tool_calls upstream means grammar mode worked, so healing goes dormant
         # Structured delta.tool_calls seen upstream: grammar mode already worked, so healing goes dormant and text
         # relays verbatim.
         self.dormant = False

@@ -1,22 +1,42 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/** Resuming a response that stopped early (`length`, `cancelled`, `interrupted`): the conversation
- *  is re-sent with the partial as the final assistant turn plus `continue_final_message`, so
- *  the prompt ends mid-sentence and the new text is appended to the partial. */
+/** Resuming a response that stopped early (`length`, `cancelled`, `interrupted`): the conversation is re-sent
+ *  with the partial as the final assistant turn plus `continue_final_message`, so the prompt ends mid-sentence
+ *  and the new text is appended to the partial. */
 
-/** Why a turn ended before the model was done. */
-export type IncompleteReason = "length" | "cancelled" | "interrupted";
+/** Why a turn ended before the model was done. `context_window` is a `length` cut the same
+ *  request can never fit into, hence its own reason. `empty` is a clean finish that produced
+ *  nothing, which is a failure to report rather than an answer. */
+export type IncompleteReason =
+  | "length"
+  | "cancelled"
+  | "interrupted"
+  | "context_window"
+  | "empty";
 
 /** Metadata stamped on an assistant message that stopped early. */
 export type IncompleteInfo = {
   reason: IncompleteReason;
 };
 
+/** Whether a finished turn left anything on screen, which is what separates `empty` from a
+ *  real answer. Non-text parts (tool calls, images, sources) always count; text has to be
+ *  more than whitespace. */
+export function hasRenderableContent(
+  content: readonly { type: string; text?: string }[],
+): boolean {
+  return content.some(
+    (part) => part.type !== "text" || (part.text ?? "").trim().length > 0,
+  );
+}
+
 const INCOMPLETE_REASONS: readonly IncompleteReason[] = [
   "length",
   "cancelled",
   "interrupted",
+  "context_window",
+  "empty",
 ];
 
 /** Below this a shared boundary is likely coincidence, and trimming would eat output. */
@@ -27,6 +47,24 @@ const MAX_OVERLAP = 400;
 
 /** How much of the partial's opening a restart has to reproduce to be called a restart. */
 const RESTART_PROBE = 48;
+
+/** The stop reason for a turn. The provider reports a filled window on the event ending its
+ *  turn, so the model had already stopped: that outranks every inferred reason, missing ones
+ *  included. */
+export function resolveIncompleteReason<T extends IncompleteReason | null>(
+  reason: T,
+  contextWindowExceeded: boolean,
+): T | "context_window" {
+  return contextWindowExceeded ? "context_window" : reason;
+}
+
+/** Whether the provider reported this reason rather than the client inferring it; the provider
+ *  wins where they disagree. */
+export function isProviderReportedReason(
+  reason: IncompleteReason | null | undefined,
+): boolean {
+  return reason === "context_window";
+}
 
 /** Read the incomplete marker off an assistant message's metadata. */
 export function readIncompleteInfo(metadata: unknown): IncompleteInfo | null {
@@ -53,6 +91,11 @@ const STATUS_REASON: Record<
   cancelled: "cancelled",
   length: "length",
   interrupted: "error",
+  context_window: "length",
+  // Not `cancelled`: the bar reads that status as a real Stop and drops the stamped
+  // reason, losing the explanation on reload. `context_window` maps here for the same
+  // reason. Not `error` either, which would paint a red box over the bar.
+  empty: "length",
 };
 
 /** Restore assistant-ui's status without losing the product-specific stop reason. */
@@ -70,11 +113,26 @@ const INCOMPLETE_LABELS: Record<IncompleteReason, string> = {
   length: "Response hit the Max Tokens limit",
   cancelled: "Response stopped",
   interrupted: "Response interrupted",
+  context_window: "Response filled the model's context window",
+  empty: "The model returned an empty response",
 };
 
 /** The user-facing explanation of why a turn stopped. */
 export function incompleteLabel(reason: IncompleteReason): string {
   return INCOMPLETE_LABELS[reason];
+}
+
+/** A hosted window is fixed and the partial has nothing left to replay into, so the only
+ *  levers are a shorter conversation or a new one. */
+const INCOMPLETE_REMEDIES: Partial<Record<IncompleteReason, string>> = {
+  context_window: "Start a new chat, or shorten this one, to keep going",
+  // There is no partial to resume from, so the way out is another attempt.
+  empty: "Try again, or pick a different model",
+};
+
+/** What to do about a turn that stopped early, or `null` when resuming is the answer. */
+export function incompleteRemedy(reason: IncompleteReason): string | null {
+  return INCOMPLETE_REMEDIES[reason] ?? null;
 }
 
 /** Drop text the continuation repeated from the end of the partial: local models continue
@@ -284,8 +342,9 @@ export function readContinuationRequest(
 
 /** Resuming a Max Tokens cut WITHOUT asking: hitting the cap is not a decision the user made.
  *  Every other reason is left alone, since `cancelled` would restart what the user just
- *  stopped and `interrupted` can hide a broken link. Bounded, because a model that will not
- *  stop would loop forever and each round drives compaction harder. */
+ *  stopped, `interrupted` can hide a broken link, and `context_window` has no room left to
+ *  resume into. Bounded, because a model that will not stop would loop forever and each round
+ *  drives compaction harder. */
 export const AUTO_CONTINUE_LIMIT = 3;
 
 /** Rounds already spent per logical turn, keyed by the parent the continuation hangs off: a
@@ -803,12 +862,21 @@ export type AutoContinueRunSignal = {
   subscribe(onChange: () => void): () => void;
 };
 
+/** The run a hold was taken for. `AutoContinueRunSignal` answers off the STREAM, so it is silent
+ *  for a preflight the user STOPPED; this is pending for the whole preflight, so a merely slow run
+ *  settles nothing. It must be the run's OWN promise: the next round is claimed while the previous
+ *  is still winding down, so a thread-wide notice would lapse the successor's lease mid-preflight. */
+export type AutoContinueIssuedRun = {
+  whenSettled(onSettled: () => void): void;
+};
+
 /** Holds the lease of each continuation this tab is running, for as long as its own run runs. A
  *  hold is (message, thread) and arms when THAT thread starts generating; a hold taken while
  *  the thread is busy waits to see it idle first, or it would arm on its predecessor's run. A
  *  hold whose run has not appeared yet is renewed, never timed out: the preflight has no bound
  *  (settings pairing, then waiting while a large local GGUF loads), and a fixed arming timeout
- *  dropped the hold under a run that had since started streaming. */
+ *  dropped the hold under a run that had since started streaming. An unarmed hold is discarded
+ *  when its own run settles or preflight fails; a pending run keeps its renewals. */
 export function createAutoContinueLeaseKeeper({
   signal,
   renew = (messageId, holder, now) => tab.renew(messageId, holder, { now }),
@@ -821,6 +889,11 @@ export function createAutoContinueLeaseKeeper({
   now?: () => number;
 }): {
   hold: (messageId: string, threadId: string) => void;
+  settleOn: (
+    messageId: string,
+    threadId: string,
+    issued: AutoContinueIssuedRun | undefined,
+  ) => void;
   observe: () => void;
   failed: (threadId: string) => void;
   tick: () => void;
@@ -832,8 +905,13 @@ export function createAutoContinueLeaseKeeper({
     threadId: string;
     /** Seen idle since the hold was taken, so the next run to start is this hold's own. */
     idle: boolean;
+    /** The key was free when the hold was taken, so a true reading of it is this hold's own
+     *  run and never somebody else's. Never reassigned, unlike `idle`. */
+    ownsTheKey: boolean;
     /** That run has started. Only an armed hold is ever released. */
     armed: boolean;
+    /** That run has ended, per its own promise. Nothing running after it is that run. */
+    settled: boolean;
   };
   const holds = new Map<string, Hold>();
   let unsubscribe: (() => void) | null = null;
@@ -845,6 +923,17 @@ export function createAutoContinueLeaseKeeper({
   function observe(): void {
     const at = now();
     for (const [id, hold] of [...holds]) {
+      if (hold.settled && !hold.armed && hold.ownsTheKey) {
+        // Its own run is over and the stream never began: Stop during preflight. Discarded, not
+        // released, so the lease lapses on its own TTL and no `done` marker claims a message that
+        // produced not one token. Ahead of the running check so nothing on the thread now can arm
+        // it, and only while UNARMED, since the key carries a LIST of owners and dropping an armed
+        // hold costs a continuation that did stream its marker. `ownsTheKey` likewise: a hold taken
+        // on an already-busy key cannot arm off its own run, so one that streamed throughout is
+        // indistinguishable from one that was stopped. Undecidable, so renewed.
+        holds.delete(id);
+        continue;
+      }
       if (signal.isRunning(hold.threadId)) {
         // Only a run that started after this hold was taken can be its own.
         hold.armed ||= hold.idle;
@@ -857,7 +946,7 @@ export function createAutoContinueLeaseKeeper({
         release(hold.messageId, hold.threadId, at);
         continue;
       }
-      // Not armed yet, so its run is still in preflight, which has no upper bound. Kept and renewed
+      // Not armed and not settled, so its run is still in preflight, which has no upper bound. Kept and renewed
       // rather than timed out: dropping it stopped the renewals while the run was on its way, and
       // the lease then lapsed under a live continuation.
     }
@@ -880,12 +969,31 @@ export function createAutoContinueLeaseKeeper({
         threadId,
         // Claimed while the thread is between runs, the ordinary case: the bar only fires on a reply that has finished.
         idle: !signal.isRunning(threadId),
+        ownsTheKey: !signal.isRunning(threadId),
         armed: false,
+        settled: false,
       });
       unsubscribe ??= signal.subscribe(observe);
     },
+    /** Tie an existing hold to the run just issued for it. Separate from `hold` because the hold
+     *  is taken on the line BEFORE the run starts, so the promise does not exist yet. */
+    settleOn(messageId, threadId, issued) {
+      if (!issued || !messageId || !threadId) {
+        return;
+      }
+      const hold = holds.get(key(messageId, threadId));
+      if (!hold) {
+        return;
+      }
+      issued.whenSettled(() => {
+        // The captured hold, never a fresh lookup: the same key is claimed again as soon as
+        // the next round hits Max Tokens, and this run must not settle that round's preflight.
+        hold.settled = true;
+        observe();
+      });
+    },
     observe,
-    /** `threadId`'s run failed on its way out, before it ever reached the run signal. The one thing
+    /** `threadId`'s run failed on its way out, before it ever reached the run signal. A signal
      *  that can end a hold which never armed, and a fact rather than a deadline: the adapter
      *  threw, so the run is over. Armed holds are left alone, since the thread going idle settles
      *  them with the `done` marker. This one only discards, so the lease lapses on its own TTL. */
@@ -922,6 +1030,26 @@ export function createAutoContinueLeaseKeeper({
   };
 }
 
+/** Assistant messages whose run this page started. Only these auto-continue: `spent` resets on
+ *  reload, so a saved cut would otherwise re-run every time its chat is opened. */
+const startedThisSession = new Set<string>();
+
+/** Called by the chat adapter as each run starts, continuations included. */
+export function noteRunStartedThisSession(
+  messageId: string | null | undefined,
+): void {
+  if (messageId) {
+    startedThisSession.add(messageId);
+  }
+}
+
+/** Whether this page started the run that produced `messageId`. */
+export function runStartedThisSession(
+  messageId: string | null | undefined,
+): boolean {
+  return Boolean(messageId) && startedThisSession.has(messageId as string);
+}
+
 /** Whether THIS message is the one to continue automatically. `shouldAutoContinue` answers about
  *  the turn and keeps saying yes after a message has been claimed, since the budget is per
  *  turn while the claim is per message, so rendering off the turn's answer alone showed a
@@ -932,7 +1060,7 @@ export function shouldAutoContinueMessage(
   key: string | null | undefined,
   options: Parameters<typeof shouldAutoContinue>[2] = {},
 ): boolean {
-  if (wasAutoContinued(messageId)) {
+  if (!runStartedThisSession(messageId) || wasAutoContinued(messageId)) {
     return false;
   }
   return shouldAutoContinue(reason, key, options);
@@ -944,6 +1072,7 @@ export function shouldAutoContinueMessage(
 export function resetAutoContinue(key?: string): void {
   if (key === undefined) {
     spent.clear();
+    startedThisSession.clear();
     tab.reset();
   } else {
     spent.delete(key);

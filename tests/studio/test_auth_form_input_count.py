@@ -303,10 +303,7 @@ def test_auth_flow_routes_do_not_mount_global_settings():
         "dialog can mount on the auth routes"
     )
     assert "useSettingsDialogStore.getState().closeDialog();" in root
-    # The settings chord must stay inert on the auth routes. That used to be an
-    # early return inside a hand-rolled keydown handler; once the chords became
-    # rebindable it moved into useShortcut's `enabled` option. Lock the
-    # behaviour, not one spelling of it, so either form passes.
+    # The settings chord must stay inert on the auth routes.
     assert "if (isAuthFlowRoute) return;" in root or "{ enabled: !isAuthFlowRoute }" in root
     for route in ("login", "change-password"):
         assert "isAuthFlow: true" in (FRONTEND / f"app/routes/{route}.tsx").read_text(
@@ -317,12 +314,17 @@ def test_auth_flow_routes_do_not_mount_global_settings():
 def test_auth_redirect_targets_are_idempotent_and_concurrent(tmp_path: Path):
     if shutil.which("node") is None:
         pytest.skip("node not available")
-    probe = subprocess.run(
-        ["node", "--experimental-strip-types", "--version"],
-        capture_output = True,
-        text = True,
-        timeout = 5,
-    )
+    # A timeout is a SKIP: the first `node` of a job on a Windows runner pays for image
+    # scanning and a cold file cache, and 5s was not enough for a `--version` there.
+    try:
+        probe = subprocess.run(
+            ["node", "--experimental-strip-types", "--version"],
+            capture_output = True,
+            text = True,
+            timeout = 120,
+        )
+    except subprocess.TimeoutExpired:
+        pytest.skip("node did not answer --version in time on this runner")
     if probe.returncode != 0:
         pytest.skip("node --experimental-strip-types not available")
 
@@ -330,6 +332,7 @@ def test_auth_redirect_targets_are_idempotent_and_concurrent(tmp_path: Path):
         AUTH_API.read_text(encoding = "utf-8")
         .replace('from "@/lib/api-base"', 'from "./stubs.mjs"')
         .replace('from "./session"', 'from "./stubs.mjs"')
+        .replace('from "@/lib/account-transition"', 'from "./stubs.mjs"')
     )
     (tmp_path / "api.ts").write_text(source)
     (tmp_path / "stubs.mjs").write_text(
@@ -337,6 +340,12 @@ def test_auth_redirect_targets_are_idempotent_and_concurrent(tmp_path: Path):
             let access = null, refresh = null, passwordChange = false;
             export const apiUrl = (path) => path;
             export const isTauri = false;
+            // Read by the Tauri transport-failure path before it asks the native health
+            // check. This stub is the web build (isTauri false), where that path is never
+            // taken, but the import is unconditional and an ES module import of a name the
+            // stub does not export is a SyntaxError at instantiation, not at call time.
+            export const getApiPort = () => null;
+            export const accountTransitionPending = () => false;
             export const reset = (a = null, r = null) => { access = a; refresh = r; passwordChange = false; };
             export const clearAuthTokens = () => { access = null; refresh = null; };
             export const getAuthToken = () => access;
@@ -407,6 +416,7 @@ def test_auth_redirect_targets_are_idempotent_and_concurrent(tmp_path: Path):
         cwd = tmp_path,
         capture_output = True,
         text = True,
-        timeout = 30,
+        # The same cold-start allowance as the probe above, plus the work itself.
+        timeout = 180,
     )
     assert result.returncode == 0, f"stderr: {result.stderr}\nstdout: {result.stdout}"

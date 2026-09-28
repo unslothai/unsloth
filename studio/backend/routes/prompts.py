@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""
-Prompt storage API routes backed by studio.db.
-"""
+"""Prompt storage API routes backed by studio.db."""
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field

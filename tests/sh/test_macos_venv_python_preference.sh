@@ -7,32 +7,8 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+. "$SCRIPT_DIR/_harness.sh"
 INSTALL_SH="$SCRIPT_DIR/../../install.sh"
-PASS=0
-FAIL=0
-
-assert_eq() {
-    _label="$1"; _expected="$2"; _actual="$3"
-    if [ "$_actual" = "$_expected" ]; then
-        echo "  PASS: $_label"
-        PASS=$((PASS + 1))
-    else
-        echo "  FAIL: $_label (expected '$_expected', got '$_actual')"
-        FAIL=$((FAIL + 1))
-    fi
-}
-
-assert_contains() {
-    _label="$1"; _haystack="$2"; _needle="$3"
-    if echo "$_haystack" | grep -qF "$_needle"; then
-        echo "  PASS: $_label"
-        PASS=$((PASS + 1))
-    else
-        echo "  FAIL: $_label (expected to find '$_needle')"
-        FAIL=$((FAIL + 1))
-    fi
-}
-
 _FN=$(mktemp)
 sed -n '/^_uv_venv_arm64()/,/^}/p' "$INSTALL_SH" > "$_FN"
 [ -s "$_FN" ] || { echo "  FAIL: _uv_venv_arm64 not found in install.sh"; exit 1; }
@@ -108,7 +84,8 @@ _STREAM=$(mktemp)
     printf 'C_ERR=""; TAURI_MODE=true; UNSLOTH_VERBOSE=false\n'
     printf 'step() { :; }\ntauri_log() { :; }\n'
     for _f in _is_verbose tauri_stream_log tauri_clear_install_error _redact_install_output \
-              run_install_cmd _macos_has_selected_install_name_tool _run_uv_venv _uv_venv_arm64; do
+              run_install_cmd _ric_tee _ric_run _run_install_cmd_once _mirror_retry_install _mirror_failed_host \
+              _macos_has_selected_install_name_tool _run_uv_venv _uv_venv_arm64; do
         sed -n "/^$_f()/,/^}/p" "$INSTALL_SH"
     done
 } > "$_STREAM"

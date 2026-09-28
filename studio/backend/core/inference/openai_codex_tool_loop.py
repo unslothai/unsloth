@@ -36,6 +36,8 @@ class CodexRunContext:
     response_format: dict[str, Any] | None = None
     tool_choice: Any = None
     continue_final_message: bool = False
+    supports_vision: bool = False
+    promoted_image_parts: tuple = ()
 
 
 @dataclass(frozen = True)
@@ -100,13 +102,14 @@ def stream_codex_with_studio_tools(
             messages = run.messages,
             session_id = run.session_id,
             thread_id = run.thread_id,
-            # keep the Codex model id: the shared loop sums usage into one chunk
             # Before this loop was shared, Codex relayed the provider's own usage chunks and they carried the Codex
             # model id. The shared loop sums them into one synthetic chunk instead, so dropping the model here would
             # relabel that accounting "external" and move behaviour the Codex path is meant to keep.
             model = run.model,
             tool_choice = run.tool_choice,
             continue_final_message = run.continue_final_message,
+            supports_vision = run.supports_vision,
+            promoted_image_parts = run.promoted_image_parts,
         ),
         policy = ToolLoopPolicy(
             tools = policy.tools,

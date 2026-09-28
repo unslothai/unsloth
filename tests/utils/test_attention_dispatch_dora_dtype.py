@@ -74,9 +74,9 @@ def test_bf16_qkv_left_untouched(monkeypatch):
 
 
 def _run_xformers(monkeypatch, qkv_dtype, fp32_unsupported):
-    # Same #1013 fp32 downcast, but for the xformers backend. On sm_100+ (B200, sm_120)
-    # xformers' fp32-capable cutlass op is capability-rejected and only its flash-2 op
-    # runs (fp16/bf16 only), so fp32 must be downcast there too or the op raises.
+    # Same #1013 fp32 downcast, but for the xformers backend. On sm_100+ (B200, sm_120) xformers' fp32-capable cutlass
+    # op is capability-rejected and only its flash-2 op runs (fp16/bf16 only), so fp32 must be downcast there too or the
+    # op raises.
     captured = {}
 
     def fake_xformers_attention(

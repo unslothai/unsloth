@@ -148,7 +148,10 @@ def _resident_fast_path() -> str:
     return slice_between(
         read(RUNTIME),
         "          const confirmedStatus = await getInferenceStatus().catch(() => null);",
-        "      const lifecycleLease = useChatRuntimeStore",
+        # The lease claim, which the tail must not run into: the pick here never starts a load.
+        # `lifecycleLease` sits inside a bounded retry loop, so its own declaration is the first
+        # line that is about the load this tail does not start rather than about the adoption.
+        "      let lifecycleLease: ModelLifecycleLease | null = null;",
     )
 
 
@@ -512,7 +515,12 @@ export async function adoptResidentModel(props: any): Promise<void> {
   // The residency decision, which this file does not measure: the caller seeds the
   // status it wants adopted. resident-model-match.test.ts covers the real predicate.
   const adoptable = (_status: any): boolean => true;
-  const bailIfLoadInFlight = (): boolean => false;
+  // The superseded-pick guards the tail sits behind: nothing here supersedes the pick, so the
+  // epoch still matches the id it was minted with and no rival holds the picker entry.
+  let modelSelectionIntentEpoch = 0;
+  const loadIntentId = 0;
+  const rivalLoadStarted = (): boolean => false;
+  let pendingReplacementRollback: any = null;
   const restorePreviousConfig = (): void => {};
   const getInferenceStatus = async (): Promise<any> => props.residentStatus;
   const reconcilePersistedGpuIds = (ids: any): any => ids;
@@ -1091,7 +1099,6 @@ def test_a_loaded_model_reprices_the_open_thread(world_setup, expected_sent, cou
     [
         # Sent mid-count then stopped before any usage, so the snapshot guard cannot see the turn.
         pytest.param(True, None, id = "a_turn_arrives_mid_count"),
-        # Control: the branch the count priced is still the one on screen.
         pytest.param(False, 62, id = "branch_unchanged"),
     ],
 )
@@ -1155,11 +1162,11 @@ def test_a_turn_sent_while_counting_drops_the_count(send_a_turn, expected_total)
 @pytest.mark.parametrize(
     ("running", "grew", "expected_total"),
     [
-        # A run that BEGINS after the count was issued. The entry gate cannot catch this one: it
-        # ran when the thread was idle, so only the publish guard is left to drop the total.
+        # A run that BEGINS after the count was issued. The entry gate cannot catch this one: it ran when the thread was
+        # idle, so only the publish guard is left to drop the total.
         (True, True, None),
-        # Stopped before the count returned, so runningByThreadId is already false and the
-        # usage snapshot is still equal: only the content makes the branch look different.
+        # Stopped before the count returned, so runningByThreadId is already false and the usage snapshot is still
+        # equal: only the content makes the branch look different.
         (False, True, None),
         (False, False, 62),
     ],
@@ -1934,7 +1941,6 @@ def test_an_output_only_audio_gguf_is_never_recounted(model_flags, expected_coun
     [
         # Decoding on the local llama-server: the count would share the process with generation.
         ('{ "thread-a": true }', 0),
-        # A different thread, still the same llama-server.
         ('{ "thread-b": true }', 0),
         # Control: an idle server is what the count is for.
         ("{}", 1),

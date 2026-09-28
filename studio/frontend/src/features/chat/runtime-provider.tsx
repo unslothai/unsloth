@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { authFetch } from "@/features/auth";
+import { useAppShellReadySignal } from "@/components/app-readiness";
+import { authFetch, getAuthSessionEpoch } from "@/features/auth";
 import {
   classifiedAttachmentFile,
   needsAttachmentTrackInspection,
@@ -44,7 +45,11 @@ import {
   ThreadAutosaveHandle,
   createOpenAIStreamAdapter,
 } from "./api/chat-adapter";
-import { CHAT_HISTORY_UPDATED_EVENT } from "./api/chat-api";
+import {
+  CHAT_HISTORY_UPDATED_EVENT,
+  uploadChatAttachmentOriginal,
+} from "./api/chat-api";
+import { selectCodeToolNames } from "./api/code-tool-placement";
 import { getResearchThreadState } from "./api/research-api";
 import {
   cancelChatGenerationRun,
@@ -53,15 +58,23 @@ import {
   ChatGenerationStalledError,
   followChatGenerationRun,
   isTerminalChatGenerationRun,
+  toolApprovalIsPending,
 } from "./api/chat-generation-api";
 import {
   TEXT_ATTACHMENT_ACCEPT,
   extractDocxAttachmentText,
   extractHtmlAttachmentText,
+  extractOfficeAttachmentText,
   extractPdfAttachmentText,
   getDocumentAttachmentSizeError,
   getDocxAttachmentError,
 } from "./attachment-content";
+import {
+  type ChatAttachmentOriginal,
+  persistAttachmentOriginals,
+  reuseStagedUpload,
+  withAttachmentOriginal,
+} from "./attachment-originals";
 import { AudioAttachmentAdapter } from "./audio-attachment-adapter";
 import {
   isBinaryPropertyList,
@@ -77,18 +90,34 @@ import {
   loadConnectionsEnabled,
   loadExternalProviders,
   parseExternalModelId,
+  providerModelSupportsStudioTools,
   providerModelSupportsVision,
 } from "./external-providers";
+import {
+  CHAT_IMAGE_ACCEPT,
+  convertedImageType,
+  normalizeChatImage,
+} from "./image-normalize";
 import { chatModelLoaded } from "./lib/chat-model-loaded";
 import {
   type OpenDocumentAttachmentContent,
   readActiveOpenDocumentAttachmentContent,
   readOpenDocumentAttachmentContent,
 } from "./open-document";
-import { OPEN_DOCUMENT_ATTACHMENT_ACCEPT } from "./open-document-accept";
+import {
+  OPEN_DOCUMENT_ATTACHMENT_ACCEPT,
+  RTF_ATTACHMENT_ACCEPT,
+  TOOL_ONLY_ATTACHMENT_EXTENSIONS,
+} from "./open-document-accept";
+import {
+  providerHostsCodeExecution,
+  providerSupportsBuiltinCodeExecution,
+} from "./provider-capabilities";
+import { readRtfAttachmentContent } from "./rtf";
 import {
   awaitThreadScopedSettingsWrite,
   beginThreadScopedPairing,
+  codeToolsOn,
   commitHeldThreadScopedEditsToTheirThread,
   releaseHeldThreadScopedEdits,
   useChatRuntimeStore,
@@ -112,6 +141,8 @@ import {
   generationIsCorroboratedLive,
   threadHasDurableGenerationRun,
   generationNeedsRecovery,
+  requestParsesThinkTags,
+  restoreCarriedPartsFromRaw,
   isLiveGenerationRun,
   generationRawContent,
   loadGenerationOverlaySnapshot,
@@ -125,7 +156,9 @@ import {
   shouldPreserveGenerationMetadata,
   subscribeGenerationRecoveryTriggers,
 } from "./utils/chat-generation-recovery";
+import { createGenerationToolRecovery } from "./utils/generation-tool-recovery";
 import { mergeContextTruncation } from "./utils/context-truncation";
+import { registerLiveThreadView } from "./utils/live-thread-head";
 import {
   extractDeltaText,
   parseAssistantContent,
@@ -150,7 +183,9 @@ import {
   markThreadIncognito,
   saveStoredChatMessage,
   saveStoredChatThread,
+  syncStoredChatMessages,
   trackStoredChatThreadRecord,
+  unmarkThreadIncognito,
   updateStoredChatThread,
 } from "./utils/chat-history-storage";
 import {
@@ -224,10 +259,9 @@ class PreStreamAwareAttachmentAdapter implements AttachmentAdapter {
   }
 
   add(state: { file: File }) {
-    // A composite picks its adapter synchronously from the name and MIME type,
-    // and both say "video" for an audio-only 3GP recording, so settle that from
-    // the container's own tracks first, as the native readers do. Every other
-    // file goes straight through, keeping the delegate's own return.
+    // A composite picks its adapter synchronously from the name and MIME type, and both say "video"
+    // for an audio-only 3GP recording or a TypeScript .ts, so settle that from the file's own bytes
+    // first, as the native readers do. Every other file goes straight through.
     if (!needsAttachmentTrackInspection(state.file)) {
       return this.delegate.add(state);
     }
@@ -240,9 +274,6 @@ class PreStreamAwareAttachmentAdapter implements AttachmentAdapter {
     const file = await classifiedAttachmentFile(state.file);
     const added = await this.delegate.add({ ...state, file });
     if (Symbol.asyncIterator in added) {
-      // Only the audio and video adapters claim a 3GP and both resolve to one
-      // attachment, so this drains a generator to its last value rather than
-      // forwarding the progress an adapter here does not report.
       let last: PendingAttachment | undefined;
       for await (const value of added) last = value;
       if (!last) throw new Error("The attachment adapter yielded nothing.");
@@ -258,8 +289,16 @@ class PreStreamAwareAttachmentAdapter implements AttachmentAdapter {
   async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
     const threadIds = this.getThreadIds();
     const reservationToken = findPreStreamRunReservation(threadIds);
+    const { incognito } = useChatRuntimeStore.getState();
+    const epoch = getAuthSessionEpoch();
     try {
-      return await this.delegate.send(attachment);
+      return await withAttachmentOriginal(
+        attachment,
+        await this.delegate.send(attachment),
+        incognito,
+        epoch,
+        pythonToolRunsInStudio(),
+      );
     } catch (error) {
       if (
         reservationToken &&
@@ -273,9 +312,14 @@ class PreStreamAwareAttachmentAdapter implements AttachmentAdapter {
 }
 
 class VisionImageAdapter implements AttachmentAdapter {
-  accept = "image/jpeg,image/png,image/webp,image/gif";
+  accept = CHAT_IMAGE_ACCEPT;
+  private readonly converted = new Map<string, Promise<File | null>>();
 
-  async add({ file }: { file: File }): Promise<PendingAttachment> {
+  async *add({
+    file: picked,
+  }: {
+    file: File;
+  }): AsyncGenerator<PendingAttachment, void> {
     const state = useChatRuntimeStore.getState();
     const checkpoint = state.params.checkpoint;
     const activeModel = state.models.find((m) => m.id === checkpoint);
@@ -300,55 +344,84 @@ class VisionImageAdapter implements AttachmentAdapter {
       );
       externalModelLabel = externalSelection.modelId;
     }
-    const unavailableReason = getImageInputUnavailableReason({
-      activeModel,
-      isExternalModel,
-      externalSupportsVision,
-      externalModelLabel,
-      loadedIsMultimodal: state.loadedIsMultimodal,
-      modelLoaded,
-      loadError: state.lastModelLoadError,
-      visionDisabledByUser: state.loadedVisionDisabledByUser,
-      mmprojFallbackReason: state.mmprojFallbackReason,
-    });
+    const unavailableReason = !modelLoaded
+      ? null
+      : getImageInputUnavailableReason({
+          activeModel,
+          isExternalModel,
+          externalSupportsVision,
+          externalModelLabel,
+          loadedIsMultimodal: state.loadedIsMultimodal,
+          modelLoaded,
+          loadError: state.lastModelLoadError,
+          visionDisabledByUser: state.loadedVisionDisabledByUser,
+          mmprojFallbackReason: state.mmprojFallbackReason,
+        });
     if (unavailableReason) {
       toast.error(unavailableReason);
       throw new Error(unavailableReason);
     }
 
     const maxSize = 20 * 1024 * 1024;
-    if (file.size > maxSize) {
+    if (picked.size > maxSize) {
       throw new Error("Image size exceeds 20MB limit");
     }
-
-    return {
+    const attachment = {
       id: crypto.randomUUID(),
       type: "image",
-      name: file.name,
-      contentType: file.type,
-      file,
+      name: picked.name,
+      contentType: picked.type,
+      file: picked,
       status: { type: "requires-action", reason: "composer-send" },
+    } satisfies PendingAttachment;
+    if (convertedImageType(picked) === null) {
+      yield attachment;
+      return;
+    }
+    yield {
+      ...attachment,
+      status: { type: "running", reason: "uploading", progress: 0 },
     };
+    const conversion = normalizeChatImage(picked);
+    this.converted.set(
+      attachment.id,
+      conversion.catch(() => null),
+    );
+    let file: File;
+    try {
+      file = await conversion;
+    } catch (error) {
+      if (!this.converted.has(attachment.id)) {
+        return;
+      }
+      toast.error(error instanceof Error ? error.message : String(error));
+      throw error;
+    }
+    // Removed while converting: yielding again would put it back.
+    if (!this.converted.has(attachment.id)) {
+      return;
+    }
+    yield { ...attachment, name: file.name, contentType: file.type, file };
   }
 
   async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
+    const conversion = this.converted.get(attachment.id);
+    this.converted.delete(attachment.id);
+    const file = conversion ? await conversion : attachment.file;
     return {
       id: attachment.id,
       type: "image",
-      name: attachment.name,
-      contentType: attachment.contentType,
-      content: [
-        {
-          type: "image",
-          image: await this.fileToBase64DataURL(attachment.file),
-        },
-      ],
+      name: file?.name ?? attachment.name,
+      contentType: file?.type ?? attachment.contentType,
+      content: file
+        ? [{ type: "image", image: await this.fileToBase64DataURL(file) }]
+        : [],
       status: { type: "complete" },
     };
   }
 
-  async remove(): Promise<void> {
-    return Promise.resolve();
+  async remove(attachment: { id: string }): Promise<void> {
+    this.converted.delete(attachment.id);
   }
 
   private async fileToBase64DataURL(file: File): Promise<string> {
@@ -364,10 +437,9 @@ class VisionImageAdapter implements AttachmentAdapter {
 class PDFAttachmentAdapter implements AttachmentAdapter {
   accept = "application/pdf";
 
-  // Refused here, not at send: the composer empties itself before it awaits send(), so a ceiling
-  // that only fires there discards the typed message too. The throw is invisible: nothing
-  // subscribes to attachmentAddError and the picker never awaits addAttachment, so the toast is
-  // the only thing telling the user why no file appeared.
+  // Refused here, not at send: the composer empties itself before it awaits send(), so a ceiling that
+  // only fires there discards the typed message too. The throw is invisible (nothing subscribes to
+  // attachmentAddError and the picker never awaits addAttachment), so the toast is the only reason given.
   add({ file }: { file: File }): Promise<PendingAttachment> {
     const sizeError = getDocumentAttachmentSizeError(file, "PDF");
     if (sizeError) {
@@ -564,6 +636,123 @@ class DocxAttachmentAdapter implements AttachmentAdapter {
   }
 }
 
+const OFFICE_LABELS: Record<string, "XLSX" | "PPTX"> = {
+  xlsx: "XLSX",
+  xlsm: "XLSX",
+  pptx: "PPTX",
+};
+
+class OfficeAttachmentAdapter implements AttachmentAdapter {
+  accept = [
+    ".xlsx,.xlsm,.pptx",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "application/vnd.ms-excel.sheet.macroEnabled.12",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  ].join(",");
+
+  private label(name: string, type: string): "XLSX" | "PPTX" {
+    const extension = name.split(".").pop()?.toLowerCase() ?? "";
+    const byName = Object.hasOwn(OFFICE_LABELS, extension) ? OFFICE_LABELS[extension] : undefined;
+    return byName ?? (type.includes("presentationml") ? "PPTX" : "XLSX");
+  }
+
+  // Read at add: the composer drops the typed message before send(), so refuse unreadable files here.
+  private readonly texts = new Map<string, string>();
+
+  async add({ file }: { file: File }): Promise<PendingAttachment> {
+    const label = this.label(file.name, file.type);
+    let text: string;
+    try {
+      text = await extractOfficeAttachmentText(file, label);
+    } catch (cause) {
+      const message = (cause as Error | undefined)?.message;
+      const tooLarge = `${label} file is too large: ${file.name}`;
+      const error =
+        message === tooLarge || message === "File is too large to preview."
+          ? tooLarge
+          : `${label} file could not be read: ${file.name}`;
+      toast.error(error);
+      throw new Error(error);
+    }
+    const id = crypto.randomUUID();
+    this.texts.set(id, text);
+    return {
+      id,
+      type: "document",
+      name: file.name,
+      contentType: file.type,
+      file,
+      status: { type: "requires-action", reason: "composer-send" },
+    };
+  }
+
+  async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
+    const label = this.label(attachment.name, attachment.contentType ?? "");
+    const text = this.texts.get(attachment.id) ?? (await extractOfficeAttachmentText(attachment.file, label));
+    this.texts.delete(attachment.id);
+    return {
+      id: attachment.id,
+      type: "document",
+      name: attachment.name,
+      contentType: attachment.contentType,
+      content: [{ type: "text", text: `[${label}: ${attachment.name}]\n${text}` }],
+      status: { type: "complete" },
+    };
+  }
+
+  remove(attachment: Attachment): Promise<void> {
+    this.texts.delete(attachment.id);
+    return Promise.resolve();
+  }
+}
+
+class RtfAttachmentAdapter implements AttachmentAdapter {
+  accept = RTF_ATTACHMENT_ACCEPT;
+  // Read at add, like OfficeAttachmentAdapter: the composer drops the typed message before send().
+  private readonly texts = new Map<string, string>();
+
+  async add({ file }: { file: File }): Promise<PendingAttachment> {
+    let text: string;
+    try {
+      ({ text } = await readRtfAttachmentContent(file, file.name));
+    } catch (cause) {
+      const error = `RTF file could not be read: ${file.name}: ${(cause as Error).message}`;
+      toast.error(error);
+      throw new Error(error);
+    }
+    const id = crypto.randomUUID();
+    this.texts.set(id, text);
+    return {
+      id,
+      type: "document",
+      name: file.name,
+      contentType: file.type,
+      file,
+      status: { type: "requires-action", reason: "composer-send" },
+    };
+  }
+
+  async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
+    const text =
+      this.texts.get(attachment.id) ??
+      (await readRtfAttachmentContent(attachment.file, attachment.name)).text;
+    this.texts.delete(attachment.id);
+    return {
+      id: attachment.id,
+      type: "document",
+      name: attachment.name,
+      contentType: attachment.contentType,
+      content: [{ type: "text", text: `[RTF: ${attachment.name}]\n${text}` }],
+      status: { type: "complete" },
+    };
+  }
+
+  remove(attachment: Attachment): Promise<void> {
+    this.texts.delete(attachment.id);
+    return Promise.resolve();
+  }
+}
+
 class OpenDocumentAttachmentAdapter implements AttachmentAdapter {
   private readonly active = new Set<string>();
   private readonly sending = new Set<string>();
@@ -650,6 +839,124 @@ class OpenDocumentAttachmentAdapter implements AttachmentAdapter {
     this.sending.delete(attachment.id);
     this.content.delete(attachment.id);
     return Promise.resolve();
+  }
+}
+
+const MAX_TOOL_ONLY_ATTACHMENT_BYTES = 200 * 1024 * 1024;
+
+/** Whether this turn's python tool runs in Studio's sandbox; chat-adapter.ts decides it the same way. */
+function pythonToolRunsInStudio(): boolean {
+  const state = useChatRuntimeStore.getState();
+  // The effective Code state, as the send path computes it: Full access turns it on locally.
+  const codeToolsEnabled = codeToolsOn(state);
+  const external = parseExternalModelId(state.params.checkpoint);
+  if (!external) return state.supportsTools && codeToolsEnabled;
+  const provider = (
+    loadConnectionsEnabled() ? loadExternalProviders() : []
+  ).find((p) => p.id === external.providerId);
+  if (
+    !provider ||
+    providerModelSupportsStudioTools(
+      provider.providerType,
+      external.modelId,
+    ) !== true
+  ) {
+    return false;
+  }
+  return selectCodeToolNames({
+    codeToolsEnabled,
+    hostedCodeExecutionForThisTurn: providerSupportsBuiltinCodeExecution(
+      provider.providerType,
+      external.modelId,
+      provider.baseUrl,
+      provider.apiType,
+    ),
+    providerHostsCodeExecution: providerHostsCodeExecution(
+      provider.providerType,
+      provider.baseUrl,
+      provider.apiType,
+    ),
+  }).local.includes("python");
+}
+
+class ToolOnlyAttachmentAdapter implements AttachmentAdapter {
+  accept = TOOL_ONLY_ATTACHMENT_EXTENSIONS;
+  private readonly uploads = new Map<
+    string,
+    Promise<ChatAttachmentOriginal | null>
+  >();
+  private readonly uploadedAt = new Map<string, number>();
+
+  private upload(file: File): Promise<ChatAttachmentOriginal | null> {
+    return uploadChatAttachmentOriginal(file).catch(() => null);
+  }
+
+  async *add({
+    file,
+  }: {
+    file: File;
+  }): AsyncGenerator<PendingAttachment, void> {
+    const refusal = !pythonToolRunsInStudio()
+      ? `Turn on Code with a model that runs the python tool to attach ${file.name}.`
+      : useChatRuntimeStore.getState().incognito
+        ? `Temporary chats save no files, so the python tool cannot open ${file.name}.`
+        : file.size > MAX_TOOL_ONLY_ATTACHMENT_BYTES
+          ? `File is too large: ${file.name}`
+          : null;
+    if (refusal) {
+      toast.error(refusal);
+      throw new Error(refusal);
+    }
+    const attachment = {
+      id: crypto.randomUUID(),
+      type: "document",
+      name: file.name,
+      contentType: file.type,
+      file,
+      status: { type: "running", reason: "uploading", progress: 0 },
+    } satisfies PendingAttachment;
+    yield attachment;
+    const upload = this.upload(file);
+    this.uploads.set(attachment.id, upload);
+    this.uploadedAt.set(attachment.id, Date.now());
+    const original = await upload;
+    if (this.uploads.get(attachment.id) !== upload) return;
+    if (!original) {
+      this.uploads.delete(attachment.id);
+      toast.error(`Could not upload ${file.name}`);
+      yield { ...attachment, status: { type: "incomplete", reason: "error" } };
+      return;
+    }
+    yield {
+      ...attachment,
+      status: { type: "requires-action", reason: "composer-send" },
+    };
+  }
+
+  async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
+    const original =
+      (reuseStagedUpload(this.uploadedAt.get(attachment.id))
+        ? await this.uploads.get(attachment.id)
+        : null) ?? (await this.upload(attachment.file));
+    this.uploads.delete(attachment.id);
+    this.uploadedAt.delete(attachment.id);
+    const text = original
+      ? `[${attachment.name}: only the python tool can read this file]`
+      : `[${attachment.name} could not be uploaded, so it cannot be read]`;
+    const complete: CompleteAttachment = {
+      id: attachment.id,
+      type: "document",
+      name: attachment.name,
+      contentType: attachment.contentType,
+      content: [{ type: "text", text }],
+      status: { type: "complete" },
+    };
+    return original ? ({ ...complete, original } as CompleteAttachment) : complete;
+  }
+
+  async remove(attachment: { id: string }): Promise<void> {
+    this.uploads.delete(attachment.id);
+    this.uploadedAt.delete(attachment.id);
   }
 }
 
@@ -768,7 +1075,7 @@ function cloneAttachments(
   if (!Array.isArray(attachments)) {
     return [];
   }
-  return JSON.parse(JSON.stringify(attachments));
+  return JSON.parse(JSON.stringify(attachments.map((attachment) => ({ ...attachment, file: undefined }))));
 }
 
 function toThreadMessage(m: MessageRecord): ThreadMessage {
@@ -803,10 +1110,9 @@ function toThreadMessage(m: MessageRecord): ThreadMessage {
     generationStatus === "completed" &&
     custom.generationSettled !== true;
   // Persisted metadata alone must never restore a running message: a run that never terminalised
-  // still says "running" on every later load, and `{type:"running"}` unmounts Send. Ask
-  // whether the run is corroborated live, else show the partial as interrupted, which keeps
-  // every character and offers Continue. Unfinished runs only: a completed-but-unsettled run
-  // has a terminal status and is replayed by the follow instead.
+  // still says "running" on every later load, and `{type:"running"}` unmounts Send. Ask whether the
+  // run is corroborated live, else show the partial as interrupted, which keeps every character and
+  // offers Continue. Unfinished runs only: a completed-but-unsettled run is replayed by the follow.
   const needsGenerationRecovery =
     generationUnsettled ||
     (generationUnfinished && generationIsCorroboratedLive(custom, m.threadId));
@@ -865,7 +1171,29 @@ function scheduleGenerationRecovery(
   const recovery = (async () => {
     let cursor = Number(metadata.generationSeq ?? 0);
     if (!Number.isSafeInteger(cursor) || cursor < 0) cursor = 0;
-    let { raw, reasoningOpen } = generationRawContent(storedMessage.content);
+    const stored = generationRawContent(storedMessage.content);
+    const carried = stored.carried;
+    // A durable tool turn can be parked on an approval when the tab closes; the backend keeps waiting
+    // for the returning session, so this tab has to be able to answer. Keyed and scoped exactly as the
+    // live stream keys it (chat-adapter's toolConfirmationScopeId), so a card armed here and a card
+    // armed there are the same card to the store and to "Always allow".
+    const toolRecovery = createGenerationToolRecovery(carried, runId, cursor, {
+      register: (partId, approvalId, sessionId) =>
+        useChatRuntimeStore
+          .getState()
+          .setToolConfirmation(
+            partId,
+            approvalId,
+            sessionId,
+            `${sessionId || "_default"}:${threadId}`,
+          ),
+      resolve: (partId) =>
+        useChatRuntimeStore.getState().clearToolConfirmation(partId),
+    });
+    // Settled before disarmAll so an arm cannot land after the run is over.
+    let seededApprovals: Promise<void> | null = null;
+    let { raw, reasoningOpen } = stored;
+    let parseThink = metadata.parseThinkTags !== false;
     let completionTokens: number | undefined;
     let recoveryUsage:
       | {
@@ -897,6 +1225,23 @@ function scheduleGenerationRecovery(
       owner: serverCancel,
     });
 
+    // Save and finalisation share ONE rebuild: derived apart, the names lag a publish or are empty.
+    const rebuild = () =>
+      toolRecovery.withSources(
+        restoreCarriedPartsFromRaw(
+          reasoningOpen ? `${raw}</think>` : raw,
+          carried,
+          { parseThink },
+        ),
+      ) as MessageRecord["content"];
+    const toolNames = (content: MessageRecord["content"]): string[] =>
+      (Array.isArray(content) ? content : []).flatMap((part) => {
+        const card = part as { type?: string; toolName?: unknown };
+        return card.type === "tool-call" && typeof card.toolName === "string"
+          ? [card.toolName]
+          : [];
+      });
+
     /** Write one state of the reply to storage and to every view showing it. `running` is the
      *  caller's, not derived here: a follow that hit its no-progress deadline settles the message
      *  while its persisted run status is still non-terminal. */
@@ -905,9 +1250,7 @@ function scheduleGenerationRecovery(
       running: boolean,
     ) => {
       currentMetadata = nextMetadata;
-      const content = parseAssistantContent(
-        reasoningOpen ? `${raw}</think>` : raw,
-      ) as MessageRecord["content"];
+      const content = rebuild();
       await saveStoredChatMessage({
         id: storedMessage.id,
         threadId,
@@ -987,6 +1330,7 @@ function scheduleGenerationRecovery(
           timings: recoveryTimings,
           firstChunkAt,
           totalChunks,
+          toolCalls: toolNames(rebuild()),
         });
       }
       await commit(nextMetadata, generationNeedsRecovery(nextMetadata));
@@ -1000,7 +1344,7 @@ function scheduleGenerationRecovery(
       let followStalled = false;
       try {
         for await (const update of followChatGenerationRun(runId, {
-          replayFrom: cursor,
+          replayFrom: toolRecovery.replayFrom,
         })) {
           if (!identityValidated) {
             if (
@@ -1024,9 +1368,55 @@ function scheduleGenerationRecovery(
                 raw = lastRequestMessage.content;
               }
             }
+            // The run's session is known now, and the decision is resolved against it. A call that
+            // parked before the tab closed has no frame left to re-fold, so this is the only thing
+            // that puts its Approve/Deny back in front of the user.
+            //
+            // Only while the run can still be answered. A run that settled while parked (a backend
+            // restart terminalises surviving rows) has no _pending slot left, and no tool_end is
+            // coming to disarm the card, so arming from the seed would leave permanent Approve/Deny
+            // buttons whose confirm can only 404.
+            if (!isTerminalChatGenerationRun(update.run)) {
+              // Deliberately NOT awaited: this generator is suspended at the snapshot yield, so
+              // awaiting holds /events closed, and /events is the only thing that marks the run
+              // attended server-side (state/run_subscribers.py). A tab returning near the park
+              // ceiling would expire its approval during the very request asking whether it is
+              // still pending. Settled at the end of the loop instead.
+              seededApprovals = toolRecovery.armSeededApprovals(
+                update.run.requestPayload?.session_id,
+                (approvalId) =>
+                  toolApprovalIsPending(
+                    approvalId,
+                    typeof update.run.requestPayload?.session_id === "string"
+                      ? update.run.requestPayload.session_id
+                      : "",
+                  ),
+              );
+              // armSeededApprovals already treats an unanswerable check as "still parked"; this
+              // only stops an unhandled rejection before the join below reaches it.
+              seededApprovals.catch(() => {});
+            }
+            if (typeof metadata.parseThinkTags !== "boolean") {
+              parseThink = requestParsesThinkTags(update.run.requestPayload);
+              currentMetadata = {
+                ...currentMetadata,
+                parseThinkTags: parseThink,
+              };
+            }
             identityValidated = true;
           }
+          // Replay from 0 re-delivers already-saved chunks: apply them, but publish nothing.
+          let advanced = false;
+          if (update.event?.type === "chunk") {
+            toolRecovery.apply(
+              update.event.payload,
+              raw.length,
+              update.event.seq,
+              update.run.requestPayload.session_id,
+            );
+          }
           if (update.event && update.event.seq > cursor) {
+            advanced = true;
             cursor = update.event.seq;
             if (update.event.type === "chunk") {
               const chunk = update.event.payload as {
@@ -1082,7 +1472,13 @@ function scheduleGenerationRecovery(
                 typeof deltaRecord?.reasoning_content === "string"
                   ? deltaRecord.reasoning_content
                   : "";
-              const delta = extractDeltaText(deltaRecord?.content).text;
+              const { text: delta, hasStructuredReasoning } = extractDeltaText(
+                deltaRecord?.content,
+              );
+              if (!parseThink && (reasoning || hasStructuredReasoning)) {
+                parseThink = true;
+                currentMetadata = { ...currentMetadata, parseThinkTags: true };
+              }
               if (reasoning) {
                 if (!reasoningOpen) raw += "<think>";
                 raw += reasoning;
@@ -1096,7 +1492,7 @@ function scheduleGenerationRecovery(
             }
           }
           const shouldPublish =
-            update.event?.type === "chunk" ||
+            (update.event?.type === "chunk" && advanced) ||
             update.run.status !== lastPublishedStatus ||
             (["cancelled", "completed", "failed"].includes(update.run.status) &&
               cursor >= update.run.lastEventSeq);
@@ -1105,6 +1501,8 @@ function scheduleGenerationRecovery(
             await publish(update.run);
           }
           if (isTerminalChatGenerationRun(update.run)) {
+            // The disarm itself now lives in the finally, so it also covers the exits this branch
+            // never sees (a permanent follower error, a thread deleted in another tab).
             // Only another successful active-list sync would otherwise drop it, so the thread would keep
             // reading as durable and a later subscriber-owned stream would be capped, losing the
             // checkpoints that are its only persistence.
@@ -1117,7 +1515,8 @@ function scheduleGenerationRecovery(
       }
       if (followStalled || generationNeedsRecovery(currentMetadata)) {
         // Fence the run before presenting the reply as resumable: settling only in this tab leaves the
-        // row active, and create_run refuses a thread that already has one, so Continue would 409.
+        // row queued/running/cancelling, and create_run refuses a thread that already has an active
+        // generation, so Continue and the next message would both 409.
         // Best effort: a producer wedged inside the engine stays in `cancelling` for the sweeper.
         serverCancel();
         // The follow returned with the run still non-terminal, so its no-progress deadline expired.
@@ -1136,6 +1535,14 @@ function scheduleGenerationRecovery(
         );
       }
     } finally {
+      // EVERY exit, not just the terminal one: a permanent follower error (another tab deletes the
+      // thread, the run row cascades, the request 404s) throws past the terminal branch into the
+      // outer catch, leaving a seeded card in the global store for the session. `soleRequest` counts
+      // entries, so a later real approval reads as non-sole and loses its Enter/Escape chords.
+      // Joined first because the arming is no longer awaited at its call site, so without this a
+      // late arm lands after the disarm and leaves the card up on a finished run.
+      if (seededApprovals) await seededApprovals.catch(() => {});
+      toolRecovery.disarmAll();
       const store = useChatRuntimeStore.getState();
       store.setThreadRunning(threadId, false, { owner: serverCancel });
       store.clearThreadServerCancel(threadId, serverCancel);
@@ -1145,6 +1552,12 @@ function scheduleGenerationRecovery(
     .finally(() => generationRecoveries.delete(runId));
   generationRecoveries.set(runId, { promise: recovery, views });
 }
+
+/** What a temporary thread was started with, so saving it later keeps its starting model. */
+const temporaryThreadCreation = new Map<
+  string,
+  { modelId: string; modelGgufVariant: string | null | undefined; createdAt: number }
+>();
 
 export async function ensureThreadRecord({
   threadId,
@@ -1188,8 +1601,14 @@ export async function ensureThreadRecord({
   // A temporary chat skips the history list so a storage outage cannot block its first send.
   // Gated on the caller knowing the thread is new, not on its id: a `__LOCALID_` id is the
   // permanent key of every chat the app creates, so keying on the prefix tagged SAVED chats.
+  const creation = {
+    modelId: modelIdAtInit,
+    modelGgufVariant: modelGgufVariantAtInit,
+    createdAt: createdAtInit,
+  };
   if (incognitoAtInit && neverSent) {
     markThreadIncognito(threadId);
+    temporaryThreadCreation.set(threadId, creation);
     return;
   }
   // A point lookup, not a listing: this must not scale with how many chats exist.
@@ -1201,6 +1620,7 @@ export async function ensureThreadRecord({
   // real chat saving normally when the toggle flips on mid-stream.
   if (incognitoAtInit) {
     markThreadIncognito(threadId);
+    temporaryThreadCreation.set(threadId, creation);
     return;
   }
 
@@ -1227,6 +1647,83 @@ export async function ensureThreadRecord({
     if (existingAfterRace) {
       return;
     }
+    throw error;
+  }
+}
+
+/** Parents before children, so every saved message's parent already exists. */
+function parentsFirst(
+  items: readonly ExportedMessageRepositoryItem[],
+): ExportedMessageRepositoryItem[] {
+  const byId = new Map(items.map((item) => [item.message.id, item]));
+  const seen = new Set<string>();
+  const ordered: ExportedMessageRepositoryItem[] = [];
+  const visit = (item: ExportedMessageRepositoryItem) => {
+    if (seen.has(item.message.id)) return;
+    seen.add(item.message.id);
+    const parent = item.parentId ? byId.get(item.parentId) : undefined;
+    if (parent) visit(parent);
+    ordered.push(item);
+  };
+  items.forEach(visit);
+  return ordered;
+}
+
+/** Save a temporary chat to history: its row, then every message on every branch in one batch,
+ *  after which it saves like any other chat. The batch is one transaction, so a failure leaves at
+ *  most an empty row, which a retry reuses; the chat stays temporary until then. */
+export async function persistTemporaryThread({
+  threadId,
+  modelType,
+  messages,
+}: {
+  threadId: string;
+  modelType: ModelType;
+  messages: readonly ExportedMessageRepositoryItem[];
+}): Promise<void> {
+  unmarkThreadIncognito(threadId);
+  try {
+    const times = messages
+      .map(({ message }) => message.createdAt?.getTime?.())
+      .filter((time): time is number => typeof time === "number");
+    const creation = temporaryThreadCreation.get(threadId);
+    await ensureThreadRecord({
+      threadId,
+      modelType,
+      projectId: null,
+      incognito: false,
+      ...(creation && {
+        modelId: creation.modelId,
+        modelGgufVariant: creation.modelGgufVariant,
+      }),
+      createdAt:
+        creation?.createdAt ?? (times.length > 0 ? Math.min(...times) : Date.now()),
+    });
+    const epoch = getAuthSessionEpoch();
+    const records: MessageRecord[] = await Promise.all(parentsFirst(messages).map(async ({ parentId, message }) => {
+      // Documents kept in memory are uploaded now, before the File is lost to JSON.
+      const attachments =
+        message.role === "user"
+          ? cloneAttachments(await persistAttachmentOriginals(message.attachments, epoch))
+          : [];
+      const metadata = message.metadata?.custom as
+        | Record<string, unknown>
+        | undefined;
+      return {
+        id: message.id,
+        threadId,
+        parentId: parentId ?? null,
+        role: message.role,
+        content: cloneContent(message.content),
+        ...(attachments.length > 0 && { attachments }),
+        ...(metadata && { metadata }),
+        createdAt: message.createdAt?.getTime?.() ?? Date.now(),
+      };
+    }));
+    await syncStoredChatMessages(threadId, records, { pruneMissing: false });
+    temporaryThreadCreation.delete(threadId);
+  } catch (error) {
+    markThreadIncognito(threadId);
     throw error;
   }
 }
@@ -1398,7 +1895,6 @@ function createStudioDbAdapter(
         return streamTitle(thread.title || defaultTitle);
       }
 
-      // Compare: wait until both threads done.
       if (pairId) {
         const paired = (await listStoredChatThreads({ pairId })).find(
           (t) => t.id !== remoteId,
@@ -1619,7 +2115,10 @@ function useStudioRuntimeAdapters(
   backgroundedRef?: { current: boolean },
   newThreadSwitchStateRef?: { current: NewThreadSwitchState },
 ): StudioRuntimeAdapters {
+  const signalReady = useAppShellReadySignal();
   const aui = useAui();
+
+  useEffect(() => registerLiveThreadView(aui), [aui]);
 
   useEffect(() => {
     const recoverCurrentThread = () => {
@@ -1819,7 +2318,7 @@ function useStudioRuntimeAdapters(
             !pairId &&
             loadedTheRequestedThread
           ) {
-            window.dispatchEvent(new Event("unsloth:app-shell-ready"));
+            signalReady();
           }
           return result;
         };
@@ -1852,17 +2351,16 @@ function useStudioRuntimeAdapters(
           activeGenerationRuns = [];
           activeGenerationRunsLoaded = false;
         }
-        // The endpoint is named for active runs but returns rows, so a run that terminalised between
-        // the write and this read comes back with it, and force-writing `generationSettled: false`
-        // over a finished reply revives it. Take the still-live rows only; a failed read is silence.
-        // Publish the still-live rows as the corroboration toThreadMessage restores a running status from.
+        // The endpoint is named for active runs but returns rows, so a run that terminalised between the
+        // write and this read comes back with it, and force-writing `generationSettled: false` over a
+        // finished reply revives it. Publish the still-live rows only; a failed read is silence.
         activeGenerationRuns = activeGenerationRuns.filter(
           (run) => !isTerminalChatGenerationRun(run),
         );
-        // And drop any run the message snapshot already shows as finished: the runs read happens first,
-        // so a run that completed in between is still listed. Filtering the LIST rather than
-        // skipping at the overlay matters, since a stale mapping keeps the thread reading as durable
-        // and a later subscriber-owned stream would be capped.
+        // And drop any run the message snapshot already shows as finished: the runs read happens first, so
+        // a run that completed in between is still listed. Filtering the LIST rather than skipping at the
+        // overlay matters, since a stale mapping keeps the thread reading as durable and a later
+        // subscriber-owned stream would be capped.
         const terminalMessageRuns = new Set(
           msgs
             .filter((message) => {
@@ -2007,11 +2505,9 @@ function useStudioRuntimeAdapters(
             }
           | undefined;
         const store = useChatRuntimeStore.getState();
-        // Window check applies only when a local GGUF window is known; external
-        // providers have loadedContextLength === null. llama.cpp stops at the window, so
-        // a saved count past it is stale; MLX runs past it by design, and a thread whose
-        // recount is unsupported -- a VLM, or one carrying tool history -- would never
-        // get another count to replace the one rejected here.
+        // Window check applies only when a local GGUF window is known; external providers have
+        // loadedContextLength === null. llama.cpp stops at the window, so a saved count past it is stale;
+        // MLX runs past it by design, and a thread whose recount is unsupported would never get another.
         const localLimit = store.loadedIsGguf ? store.loadedContextLength : null;
         const withinLocalLimit =
           !localLimit || (savedUsage?.totalTokens ?? 0) <= localLimit;
@@ -2034,10 +2530,9 @@ function useStudioRuntimeAdapters(
           }
         }
         // Only when nothing was restored: saved usage is the last completion's exact totals, and
-        // refreshContextUsage does NOT stand down for usage already there, so it would overwrite
-        // them with an estimate whose completionTokens is 0. A thread opened after a model switch
-        // fails modelMatches and still gets priced (#7450). Primary pane only: a compare pane
-        // never owns the global bar.
+        // refreshContextUsage does NOT stand down for usage already there, so it would overwrite them with
+        // an estimate whose completionTokens is 0. A thread opened after a model switch fails modelMatches
+        // and still gets priced (#7450). Primary pane only: a compare pane never owns the global bar.
         if (!restoredUsage && modelType === "base" && !pairId) {
           void refreshContextUsage({ threadId: remoteId });
         }
@@ -2096,14 +2591,11 @@ function useStudioRuntimeAdapters(
             await deleteStoredChatThreads([remoteId]);
             return;
           }
-          // Published before the reads below: a temporary chat has no row to confirm, and a read that
-          // fails must not leave the runtime pointing at the previously open chat. Not while this pane
-          // is only mounted to keep its run attached, since a hidden pane naming itself active makes
-          // Export pull the unrelated base chat. Nor mid-switch: switchToNewThread() is async, so
-          // mainThreadId is still the OUTGOING thread for that gap, which the attempt check catches.
-          // Nor mid-switch: switchToNewThread() is async, so mainThreadId is still the OUTGOING thread for
-          // the whole gap, and a write landing there republishes the chat the user just left.
-          // attempt !== landedAttempt is that gap.
+          // Published before the reads below: a temporary chat has no row to confirm, and a read that fails
+          // must not leave the runtime pointing at the previously open chat. Not while this pane is only
+          // mounted to keep its run attached, since a hidden pane naming itself active makes Export pull the
+          // unrelated base chat. Nor mid-switch: switchToNewThread() is async, so mainThreadId is still the
+          // OUTGOING thread for that gap, and attempt !== landedAttempt is that gap.
           const switchState = newThreadSwitchStateRef?.current;
           const switchInFlight = Boolean(
             switchState &&
@@ -2170,12 +2662,10 @@ function useStudioRuntimeAdapters(
               sameResearchRun ||
               !incomingMetadata?.serverManaged ||
               existingRevision > incomingRevision);
-          // The backend owns this message and refuses client edits, and every field the save would send
-          // was just read back from it, so the request is answered 409 every time: one measured 43.6 s
-          // generation cost 265 PUTs, 256 rejected. `parentId` is the one field not echoed back, and
-          // it is dropped either way, since the server rejects the whole request.
-          // One measured 43.6 s generation: 265 PUTs, 256 rejected, plus 353 whole-thread GETs from the
-          // ensureStoredChatThread inside saveStoredChatMessage. Returning here drops both.
+          // The backend owns this message and refuses client edits, and every field the save would send was
+          // just read back from it, so the request is answered 409 every time: one measured 43.6 s generation
+          // cost 265 PUTs, 256 rejected, plus 353 whole-thread GETs from the ensureStoredChatThread inside
+          // saveStoredChatMessage. `parentId` is the one field not echoed back, and it is dropped either way.
           if (preserveServerManaged) {
             await throwIfHistoryWasCleared(remoteId);
             return;
@@ -2203,6 +2693,7 @@ function useStudioRuntimeAdapters(
       onInitialHistoryReady,
       pairId,
       reloadReadyThreadId,
+      signalReady,
     ],
   );
 
@@ -2229,7 +2720,10 @@ function useStudioRuntimeAdapters(
           new HtmlAttachmentAdapter(),
           new PDFAttachmentAdapter(),
           new DocxAttachmentAdapter(),
+          new OfficeAttachmentAdapter(),
           new OpenDocumentAttachmentAdapter(),
+          new RtfAttachmentAdapter(),
+          new ToolOnlyAttachmentAdapter(),
         ]),
         () => {
           const state = aui.threadListItem().getState();
@@ -2581,10 +3075,9 @@ function ThreadNewChatSwitch({
     useChatRuntimeStore.getState().setActiveThreadId(null);
   }, [aui, isLoading, newThreadSwitchStateRef, nonce, paused]);
 
-  // Reassert this view's thread when a switch started before it lands anyway. Leaving a landing
-  // for a saved chat and coming back before switchToThread resolves used to end with
-  // assistant-ui assigning that saved thread as the main one, since the promise does not know
-  // the route moved. Recognised by the exact id that switch asked for.
+  // Reassert this view's thread when a switch started before it lands anyway. Leaving a landing for a
+  // saved chat and coming back before switchToThread resolves used to end with assistant-ui assigning
+  // that saved thread as the main one. Recognised by the exact id that switch asked for.
   useEffect(() => {
     if (isLoading || paused) {
       return;
@@ -2745,11 +3238,9 @@ function ThreadScopedSettingsSync({
       return;
     }
     if (!enabled) {
-      // Compare panes share one composer between two threads, so no single chat's snapshot could
-      // apply: compare runs on the installation defaults and its edits move them. Said here rather
-      // than leaving the module pointing at the last single chat.
-      // Otherwise the module still points at the last single chat, whose stored pills a model load would
-      // read back through threadScopedOverride.
+      // Compare panes share one composer between two threads, so no single chat's snapshot could apply:
+      // compare runs on the installation defaults and its edits move them. Said here rather than leaving
+      // the module pointing at the last single chat, whose stored pills a model load would read back.
       applyThreadScopedSettings(null, null);
       return;
     }
@@ -2788,12 +3279,10 @@ function ThreadScopedSettingsSync({
 
     const sync = () => {
       if (cancelled || paired) return;
-      // The composer is live while this read is out, so hold any edit made meanwhile rather than
-      // writing it to the installation defaults. Drop to those defaults for the duration: until
-      // the read lands the store still holds the OUTGOING chat's values, and a send in that window
-      // would carry the previous chat's permission level and pills.
-      // A send in that window is captured by snapshotQueuedChatRunSettings and carries the previous
-      // chat's permission level and pills, so a chat stored as "ask" could run tools without asking.
+      // The composer is live while this read is out, so hold any edit made meanwhile rather than writing
+      // it to the installation defaults. Drop to those defaults for the duration: until the read lands
+      // the store still holds the OUTGOING chat's values, and a send in that window is captured by
+      // snapshotQueuedChatRunSettings, so a chat stored as "ask" could run tools without asking.
       if (!defaulted) {
         defaulted = true;
         applyThreadScopedSettings(null, null);
@@ -2804,11 +3293,9 @@ function ThreadScopedSettingsSync({
       const read = new AbortController();
       reads.add(read);
       // The deadline covers the WAITS as well as the read, neither of which is bounded on its own; in
-      // front of it their time went uncounted and the chain could outlast THREAD_PAIRING_WAIT_MS
-      // with the gate shut. Inside it, a stall is one failed attempt.
-      // The settings chain is a PATCH, and awaitStoredChatThreadWrites settles a row write opening with
-      // an unbounded getStoredChatThread. Inside the deadline a stall is one failed attempt, which
-      // retryThreadRead handles.
+      // front of it their time went uncounted and the chain could outlast THREAD_PAIRING_WAIT_MS with the
+      // gate shut. The settings chain is a PATCH, and awaitStoredChatThreadWrites opens with an unbounded
+      // getStoredChatThread. Inside the deadline a stall is one failed attempt, which retryThreadRead handles.
       void Promise.race([
         Promise.all([
           // This chat's own PATCH first: a read that overtakes it returns the pre-edit snapshot.
@@ -3274,6 +3761,7 @@ export function ChatRuntimeProvider({
   backgrounded?: boolean;
   onInitialHistoryReady?: () => void;
 }): ReactElement {
+  const signalReady = useAppShellReadySignal();
   // Read by the history adapter's own active-thread publication, the sibling of
   // ThreadBackendAutosave's, which needs the same stand-down. Kept in a ref so the memo below
   // never sees it change, since rebuilding the runtime hook would rebuild the runtime.
@@ -3309,9 +3797,9 @@ export function ChatRuntimeProvider({
     if (onInitialHistoryReady) {
       onInitialHistoryReady();
     } else if (modelType === "base" && !pairId) {
-      window.dispatchEvent(new Event("unsloth:app-shell-ready"));
+      signalReady();
     }
-  }, [modelType, onInitialHistoryReady, pairId]);
+  }, [modelType, onInitialHistoryReady, pairId, signalReady]);
 
   const aui = useAui({});
   useEffect(() => {

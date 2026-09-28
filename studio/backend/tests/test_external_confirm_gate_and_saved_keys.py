@@ -34,6 +34,7 @@ class FakeExternalClient:
 
     def __init__(self, **kwargs):
         FakeExternalClient.last = {"ctor": kwargs, "passthrough": None}
+        self.provider_type = kwargs.get("provider_type")
 
     def stream_chat_completion(self, **kwargs):
         FakeExternalClient.last["passthrough"] = kwargs
@@ -52,8 +53,12 @@ def _request(authorization = None):
     async def is_disconnected():
         return False
 
+    headers = {"X-Unsloth-Events": "1"}
+    if authorization:
+        headers["authorization"] = authorization
     return SimpleNamespace(
-        headers = {"authorization": authorization} if authorization else {},
+        # The confirm gate can only ask over these frames.
+        headers = headers,
         state = SimpleNamespace(skip_api_monitor = True),
         is_disconnected = is_disconnected,
     )
@@ -400,6 +405,8 @@ def test_transport_cancellation_is_wired_through_the_loop():
     from core.inference.external_tool_transport import OAICompatTransport
 
     class _Stalling:
+        provider_type = "custom"
+
         def __init__(self):
             self.torn_down = False
             self.released = asyncio.Event()

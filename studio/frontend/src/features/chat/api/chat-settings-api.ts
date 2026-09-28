@@ -75,8 +75,6 @@ export interface PersistedChatSettings {
   fitOnDeviceOnly?: boolean;
   /** Local GGUF chats: drop oldest turns instead of erroring at the window. */
   autoCompactEnabled?: boolean;
-  contextPolicy?: "inherit" | "checkpoint" | "rolling";
-  compactionHeadroomRatio?: number;
 }
 
 interface ChatSettingsResponse {
@@ -176,10 +174,9 @@ export async function saveChatSettingsPatchIfCurrent(
       patch,
     }),
   });
-  // A backend without this route answers 404 (--api-only) or 405 (the browser
-  // build's GET-only SPA catch-all). The desktop app adopts any backend above a
-  // version floor, so that pairing is supported, not a bug. Report "not
-  // applied" so the caller leaves the server alone.
+  // A backend without this route answers 404 (--api-only) or 405 (the browser build's GET-only SPA
+  // catch-all). The desktop app adopts any backend above a version floor, so that pairing is
+  // supported, not a bug. Report "not applied" so the caller leaves the server alone.
   if (response.status === 404 || response.status === 405) {
     return { settings: expected, applied: false };
   }

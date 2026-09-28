@@ -73,10 +73,9 @@ def test_zoo_reader_still_parses_what_unsloth_writes():
         _, dtype, _, _, _ = value.split(";", 4)
         name = dtype.strip().removeprefix("torch.")
         resolved = _get_dtype(name)
-        # The oracle is torch, not the value under test. Deriving `expected` from
-        # `resolved` made this assertion tautological for every non-None dtype, so a
-        # separately released unsloth_zoo that started resolving `float16` to the
-        # wrong thing would still have passed.
+        # The oracle is torch, not the value under test.
+        # Deriving `expected` from `resolved` made this assertion tautological for every non-None dtype, so a separately
+        # released unsloth_zoo that started resolving `float16` to the wrong thing would still have passed.
         if dtype.strip() == "None":
             expected = None
         else:

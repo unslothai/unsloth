@@ -6,13 +6,14 @@
 // only acceptable if that scroll-up wins until they come back down on their own.
 
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import {
   STICK_THRESHOLD_PX,
   isFollowingTail,
 } from "../src/components/tauri/log-follow.ts";
+
+import { readSrcAsync } from "./helpers/kit.ts";
 
 /** A log box 100px tall holding 500px of lines: 400px of travel, bottom at 400. */
 const TALL = { scrollHeight: 500, clientHeight: 100 };
@@ -55,10 +56,7 @@ test("a closed panel reports zeroes and stays armed to follow", () => {
 });
 
 test("LogDetails drives its scrolling through the shared predicate", async () => {
-  const source = await readFile(
-    new URL("../src/components/tauri/log-details.tsx", import.meta.url),
-    "utf8",
-  );
+  const source = await readSrcAsync("components/tauri/log-details.tsx");
 
   assert.match(source, /isFollowingTail\(log\)/);
   assert.match(source, /onScroll=\{handleScroll\}/);

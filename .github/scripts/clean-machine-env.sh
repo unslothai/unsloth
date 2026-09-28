@@ -1,11 +1,9 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
-#
 # Simulate a virgin developer machine on a GitHub-hosted runner. Two modes, because
 # "the tool is absent" and "the installer never called the tool" need different
 # mechanisms:
-#
 #   mask   Make the toolchain genuinely ABSENT: scrub PATH to OS defaults and (with
 #          --remove) move the real toolchain aside so `command -v git` correctly
 #          FAILS. Deliberately no general "poison shims": a failing shim is still FOUND
@@ -16,10 +14,8 @@
 #   trace  Leave the toolchain working behind wrappers that log the call then exec
 #          the real binary, answering whether the installer ever REACHES for a
 #          compiler/git without changing behaviour.
-#
 # Writes shell exports to $CLEAN_ENV_FILE (default ./clean-machine.env) to `source`;
 # nothing is exported globally, so other steps keep a normal environment.
-#
 # Usage:
 #   bash .github/scripts/clean-machine-env.sh mask [--remove]
 #   bash .github/scripts/clean-machine-env.sh trace
@@ -46,6 +42,8 @@ BIN="$WORK/bin"
 RESTORE="$WORK/restore.sh"
 mkdir -p "$BIN"
 : > "$TRACE"
+# The git wrapper appends where each git ran; a rerun must not inherit an older install's rows.
+: > "$TRACE.git-cwd"
 : > "$ENV_FILE"
 printf '#!/usr/bin/env bash\n# Undo clean-machine-env.sh --remove. Safe to run twice.\nset -uo pipefail\n' > "$RESTORE"
 chmod +x "$RESTORE"
@@ -235,9 +233,14 @@ if [ "$MODE" = "trace" ]; then
     if [ "$tool" = "install_name_tool" ]; then
       bash "$INSTALL_NAME_TOOL_HELPER" write passthrough "$BIN/$tool" "$real"
     else
+      # git also records where it ran: `submodule update` fetches whatever the CURRENT
+      # checkout's .gitmodules names, so notools has to see that it ran inside uv's checkout.
+      cwd_line=""
+      [ "$tool" = "git" ] && cwd_line="printf '%s\t%s\n' \"\$PWD\" \"\$*\" >> '$TRACE.git-cwd'"
       cat > "$BIN/$tool" <<WRAP
 #!/bin/sh
 printf '%s\t%s\n' "$tool" "\$*" >> "$TRACE"
+$cwd_line
 exec "$real" "\$@"
 WRAP
     fi

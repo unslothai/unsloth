@@ -1,7 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { DEFAULT_HYPERPARAMS, resolveCptTargetModules } from "@/config/training";
+import {
+  CPT_LORA_HYPERPARAMS,
+  DEFAULT_HYPERPARAMS,
+  resolveCptTargetModules,
+} from "@/config/training";
 import type {
   AdvancedSettingsBaseline,
   TrainingConfigState,
@@ -70,10 +74,10 @@ function countNonDefaultLoraSettings(
   const isCpt = state.trainingMethod === "cpt";
   const loraDefaults = {
     loraRank: isCpt
-      ? 128
+      ? CPT_LORA_HYPERPARAMS.loraRank
       : baselineValue(baseline, "loraRank", DEFAULT_HYPERPARAMS.loraRank),
     loraAlpha: isCpt
-      ? 32
+      ? CPT_LORA_HYPERPARAMS.loraAlpha
       : baselineValue(baseline, "loraAlpha", DEFAULT_HYPERPARAMS.loraAlpha),
     loraDropout: baselineValue(
       baseline,
@@ -81,7 +85,7 @@ function countNonDefaultLoraSettings(
       DEFAULT_HYPERPARAMS.loraDropout,
     ),
     loraVariant: isCpt
-      ? "rslora"
+      ? CPT_LORA_HYPERPARAMS.loraVariant
       : baselineValue(baseline, "loraVariant", DEFAULT_HYPERPARAMS.loraVariant),
   } as const;
   const count = Object.entries(loraDefaults).reduce(

@@ -22,6 +22,10 @@ export interface ManagedDownload {
   completedBytes: number;
   completeOnDisk: boolean;
   expectedBytes: number;
+  /** Optional display scope when an atomic model plan is transferring only one
+   *  missing companion. Counters remain plan-wide; the panel subtracts the
+   *  already-cached prefix for an honest artifact-sized progress bar. */
+  presentation?: DownloadPresentation;
   fraction: number;
   bytesPerSec: number;
   etaSeconds: number;
@@ -29,6 +33,7 @@ export interface ManagedDownload {
   startedAt: number;
   completedAt?: number;
   serverGeneration?: number;
+  serverAttempt?: number;
   /** Files a scoped job is fetching. Every file set of one repo rides the same scope slot, so this separates "my transfer is running" from "a different quant of this repo is running": adopting the latter reports ready for files nobody fetched. Unknown stays adoptable only for an UNSCOPED job. */
   scopedFiles?: string[];
   /** True for the entry that IS the model the user picked, false for companion repos. Only the stager can tell them apart, since a checkpoint may be a single `.safetensors` and companions carry `.safetensors` too. */
@@ -45,10 +50,22 @@ export interface DownloadRequest {
   variant: string | null;
   inventoryKind?: Exclude<InventoryHint["kind"], "dataset">;
   expectedBytes: number;
+  presentation?: DownloadPresentation;
   scopeId?: string | null;
   files?: string[];
   checkpoint?: boolean;
   callerToast?: CallerToast;
+  /** Skip repeat Xet notices for later entries in a staged plan. */
+  skipXetNotice?: boolean;
+}
+
+export interface DownloadPresentation {
+  label: string;
+  filename: string;
+  expectedBytes: number;
+  /** Plan bytes already present before this sole artifact starts. Frozen when
+   *  the presentation is attached, because later metadata may grow the plan. */
+  cachedPlanPrefixBytes?: number;
 }
 
 export interface CallerToast {
@@ -108,19 +125,9 @@ export interface JobListeners {
   onError?: (variant: string | null) => unknown;
 }
 
-export type ConflictOwner = "caller" | "downloads";
-
 export interface ConflictEntry {
-  owner: ConflictOwner;
   info: TransportConflictInfo;
   pending: DownloadRequest;
-}
-
-export function conflictInfoForOwner(
-  entry: ConflictEntry | undefined,
-  owner: ConflictOwner,
-): TransportConflictInfo | null {
-  return entry?.owner === owner ? entry.info : null;
 }
 
 export interface DownloadManagerState {
@@ -128,6 +135,12 @@ export interface DownloadManagerState {
   conflicts: Record<string, ConflictEntry>;
   completedHintSignature: string;
   completedInventoryHints: InventoryHint[];
+}
+
+export interface FloorHold {
+  attempt: number;
+  remainingBytes: number;
+  until: number;
 }
 
 export interface JobRuntime {
@@ -145,6 +158,8 @@ export interface JobRuntime {
   /**
    * A generation change seen on a status-only tick, held until a progress poll consumes it: status polls twice as often. */
   pendingGenerationChange?: boolean;
+  /** Set on an attempt change: the GGUF floor stays off until the killed run's partial is purged (see floorHoldEnded). Its attempt is persisted only when the hold ends, so a reload re-detects the retry. */
+  floorHold?: FloorHold | null;
   idleSinceMs: number | null;
   lastProgressPollAt: number | null;
   pollFailureStartedAt: number | null;

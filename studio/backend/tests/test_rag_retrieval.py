@@ -12,6 +12,15 @@ import pytest
 from core.rag import config, retrieval, store, tool
 from core.rag.chunking import Chunk
 
+
+def _shared_setup_1(monkeypatch):
+    from core.inference import tools
+    from storage import rag_db
+
+    _rag_is_available(monkeypatch, rag_db)
+    return tools
+
+
 VOCAB = ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf", "hotel"]
 
 
@@ -339,10 +348,7 @@ def test_search_for_autoinject_empty_query_or_scope(rag_home):
 
 def test_build_rag_autoinject_emits_pipeline(monkeypatch):
     # Auto-inject yields the same tool card + source-map a real call would.
-    from core.inference import tools
-    from storage import rag_db
-
-    _rag_is_available(monkeypatch, rag_db)
+    tools = _shared_setup_1(monkeypatch)
     monkeypatch.setattr(
         tool,
         "search_for_autoinject",
@@ -364,10 +370,7 @@ def test_build_rag_autoinject_emits_pipeline(monkeypatch):
 
 
 def test_build_rag_autoinject_skips_without_hit(monkeypatch):
-    from core.inference import tools
-    from storage import rag_db
-
-    _rag_is_available(monkeypatch, rag_db)
+    tools = _shared_setup_1(monkeypatch)
     monkeypatch.setattr(tool, "search_for_autoinject", lambda **k: None)
     assert (
         tools.build_rag_autoinject([{"role": "user", "content": "hi"}], {"thread_id": "t1"}) is None
@@ -465,10 +468,7 @@ def test_retrieve_hybrid_mode_selects_backend(monkeypatch):
 
 
 def test_scope_overrides_reach_retrieval(monkeypatch):
-    from core.inference import tools
-    from storage import rag_db
-
-    _rag_is_available(monkeypatch, rag_db)
+    tools = _shared_setup_1(monkeypatch)
     seen: dict = {}
 
     def fake_search(**kw):
@@ -489,10 +489,7 @@ def test_scope_overrides_reach_retrieval(monkeypatch):
 
 
 def test_build_rag_autoinject_scope_overrides_env(monkeypatch):
-    from core.inference import tools
-    from storage import rag_db
-
-    _rag_is_available(monkeypatch, rag_db)
+    tools = _shared_setup_1(monkeypatch)
     seen: dict = {}
 
     def fake_autoinject(**k):

@@ -8,12 +8,8 @@ import {
 } from "@/components/ui/tooltip";
 import { useHttpPartialsResumable, useRepoDownload } from "../download-manager";
 import { deleteCachedDataset } from "../inventory";
-import { cn } from "@/lib/utils";
-import { TrainIcon } from "../components/train-icon";
-import { HUB_POST_DOWNLOAD_ACTIONS_VISIBLE } from "../lib/hub-feature-flags";
 import { DotTag } from "./dot-tag";
 import { PathInfoButton } from "./path-info-button";
-import { HugeiconsIcon } from "@hugeicons/react";
 import { useState } from "react";
 import { useHfTokenStore } from "../stores/hf-token-store";
 import { formatBytes } from "../lib/format";
@@ -36,7 +32,6 @@ export function DatasetDownloadSection({
   partialResumable = false,
   cachePath,
   knownBytes,
-  onTrain,
   onChange,
 }: {
   repoId: string;
@@ -46,7 +41,6 @@ export function DatasetDownloadSection({
   partialResumable?: boolean;
   cachePath?: string | null;
   knownBytes?: number | null;
-  onTrain?: () => void;
   onChange?: () => void;
 }) {
   const hfToken = useHfTokenStore((s) => s.token);
@@ -162,23 +156,8 @@ export function DatasetDownloadSection({
           )}
         </div>
       </div>
-      {/* Train CTA hidden until Hub→train picker ships; divider pairs with it. */}
-      {(!isDownloaded || downloading || HUB_POST_DOWNLOAD_ACTIONS_VISIBLE) && (
-        <CardDivider />
-      )}
-      {isDownloaded && !downloading ? (
-        <button
-          type="button"
-          onClick={() => onTrain?.()}
-          className={cn(
-            "hub-action-btn w-28",
-            !HUB_POST_DOWNLOAD_ACTIONS_VISIBLE && "hidden",
-          )}
-        >
-          <HugeiconsIcon icon={TrainIcon} strokeWidth={1.75} />
-          Train
-        </button>
-      ) : (
+      {(!isDownloaded || downloading) && <CardDivider />}
+      {(!isDownloaded || downloading) && (
         <DownloadActionButton
           downloading={downloadAction.downloading}
           cancelling={downloadAction.cancelling}

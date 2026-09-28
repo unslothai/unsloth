@@ -64,8 +64,8 @@ BUSY_POLLS: dict[str, tuple[float, str]] = {
     "/api/models/download-progress": (1.0, "declared"),
     "/api/models/gguf-download-progress": (1.0, "declared"),
     "/api/datasets/download-progress": (1.0, "declared"),
-    "/api/inference/images/generate-progress": (1.0, "declared"),
-    "/api/inference/video/generate-progress": (1.0, "declared"),
+    "/api/inference/images/generate-progress": (0.3, "declared"),
+    "/api/inference/video/generate-progress": (0.3, "declared"),
     "/api/inference/images/load-progress": (1.0, "declared"),
     "/api/inference/video/load-progress": (1.0, "declared"),
     "/api/train/diffusion/status": (1.5, "declared"),
@@ -140,12 +140,10 @@ KNOWN_UNCLASSIFIED_POLLS: frozenset[str] = frozenset()
 # Re-measure and ratchet again whenever a suppression rule changes. An envelope carrying
 # the old number after a fix has stopped guarding anything.
 #
-# Busy rose from 260 to 325 for an ACCOUNTING change, not a volume regression.
-# /api/chat/threads/{id} and its /forks sibling sat in the `normal` class, in no scenario,
-# so the envelope never saw them: modelled over the busy window, 675 lines. A heartbeat
-# class brings them in at 59. The number goes up because they are finally being counted.
+# Chat detail and fork polls are included in the busy replay at 60 heartbeat lines.
+# Media milestones remove 120 access lines, reducing the combined replay from 299 to 179.
 STEADY_IDLE_LINE_ENVELOPE = 1170
-BUSY_LINE_ENVELOPE = 325
+BUSY_LINE_ENVELOPE = 195
 
 # One-shot requests the app makes once on startup. Present so the boot window is not
 # mistaken for steady state, and so a mutation record and a failure record exist to assert

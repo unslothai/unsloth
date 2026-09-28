@@ -312,20 +312,29 @@ def test_api_only_cors_tracks_published_public_url():
         allow_methods = ["*"],
         allow_headers = ["*"],
     )
-    request = Headers(
-        {
-            "origin": "https://browser-client.example",
-            "access-control-request-method": "POST",
-            "access-control-request-headers": "authorization,content-type",
-        }
-    )
-    assert middleware.preflight_response(request).status_code == 400
-    state.cloudflare_url = "https://public.trycloudflare.com"
-    response = middleware.preflight_response(request)
+
+    def _preflight(origin):
+        return middleware.preflight_response(
+            Headers(
+                {
+                    "origin": origin,
+                    "access-control-request-method": "POST",
+                    "access-control-request-headers": "authorization,content-type",
+                }
+            )
+        )
+
+    published = "https://public.trycloudflare.com"
+    assert _preflight(published).status_code == 400
+    state.cloudflare_url = published
+    response = _preflight(published)
     assert response.status_code == 200
-    assert response.headers["access-control-allow-origin"] == "https://browser-client.example"
+    assert response.headers["access-control-allow-origin"] == published
+    # The tunnel is the one origin that needs admitting, not a switch that admits all of them:
+    # plain api-only stays locked to the Tauri app for everyone else.
+    assert _preflight("https://browser-client.example").status_code == 400
     state.cloudflare_url = None
-    assert middleware.preflight_response(request).status_code == 400
+    assert _preflight(published).status_code == 400
 
 
 def test_run_server_exports_secure_env_for_cors():
@@ -378,7 +387,7 @@ def test_cors_preflight_cache_window_is_short():
     response = middleware.preflight_response(
         Headers(
             {
-                "origin": "https://browser-client.example",
+                "origin": "https://x.trycloudflare.com",
                 "access-control-request-method": "POST",
                 "access-control-request-headers": "authorization",
             }

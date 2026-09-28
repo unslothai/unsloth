@@ -69,9 +69,9 @@ Write-Output $gitNeeded
 def _needs_git(env: dict[str, str]) -> bool:
     merged = {k: v for k, v in os.environ.items() if not k.startswith(("UNSLOTH_", "STUDIO_"))}
     merged.update(env)
-    # run_pwsh, not subprocess.run: every case in this file goes through here, so a pwsh
-    # that died at startup would come back as $gitNeeded computing the wrong answer for
-    # one environment. See tests/_shared/unsloth_pwsh_runner.py.
+    # run_pwsh, not subprocess.run: every case in this file goes through here, so a pwsh that died at startup would come
+    # back as $gitNeeded computing the wrong answer for one environment.
+    # See tests/_shared/unsloth_pwsh_runner.py.
     result = run_pwsh(
         ["pwsh", "-NoProfile", "-NonInteractive", "-Command", _script()],
         check = True,
@@ -91,9 +91,7 @@ pwsh_only = pytest.mark.skipif(shutil.which("pwsh") is None, reason = "PowerShel
     [
         # The consumer install: prebuilt wheels and a prebuilt llama.cpp, so no git.
         ({}, False),
-        # --local clones unsloth-zoo.
         ({"STUDIO_LOCAL_INSTALL": "1"}, True),
-        # Opt-in source builds clone llama.cpp.
         ({"UNSLOTH_LLAMA_FORCE_COMPILE": "1"}, True),
         ({"UNSLOTH_LLAMA_PR": "1234"}, True),
         # PR_FORCE only forces a build for a positive integer.
@@ -125,9 +123,9 @@ def test_a_built_local_llama_dir_drops_the_source_build_git_requirement(tmp_path
 @pwsh_only
 @pytest.mark.parametrize("trigger", ["UNSLOTH_LLAMA_FORCE_COMPILE", "UNSLOTH_LLAMA_PR"])
 def test_an_unbuilt_local_llama_dir_still_requires_git(tmp_path, trigger):
-    # Nothing built at the canonical install location falls through to the normal install,
-    # so the source build still runs and still needs git. Suppressing the requirement here
-    # let a no-git host silently degrade to a prebuilt instead.
+    # Nothing built at the canonical install location falls through to the normal install, so the source build still
+    # runs and still needs git. Suppressing the requirement here let a no-git host silently degrade to a prebuilt
+    # instead.
     env = {
         "UNSLOTH_LOCAL_LLAMA_CPP_DIR": str(tmp_path),
         trigger: "1",

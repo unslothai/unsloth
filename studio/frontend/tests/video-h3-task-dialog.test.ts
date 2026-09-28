@@ -14,14 +14,11 @@
  */
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import test from "node:test";
 
-const source = readFileSync(
-  fileURLToPath(new URL("../src/features/video/video-page.tsx", import.meta.url)),
-  "utf8",
-);
+import { readSrc } from "./helpers/kit.ts";
+
+const source = readSrc("features/video/video-page.tsx");
 
 test("only a non-hub pick skips the plan, so a cached hub pick still gets one", () => {
   // The bypass is keyed on the pick's SOURCE. A curated artifact already on disk is still
