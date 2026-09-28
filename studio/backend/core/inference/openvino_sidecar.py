@@ -21,7 +21,7 @@ from typing import Any, Optional
 
 import openvino_genai as ov_genai
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict
 
@@ -93,9 +93,13 @@ class ThinkSplitter:
         self.held += piece
         idx = self.held.find(THINK_CLOSE)
         if idx >= 0:
-            reasoning, rest = self.held[:idx].strip(), self.held[idx + len(THINK_CLOSE) :].lstrip("\n")
+            before, _, reasoning = self.held[:idx].rpartition(THINK_OPEN)
+            rest = self.held[idx + len(THINK_CLOSE) :].lstrip("\n")
             self.held = None
-            return ([("reasoning", reasoning)] if reasoning else []) + self._split(rest)
+            out = [("content", before)] if before.strip() else []
+            if reasoning.strip():
+                out.append(("reasoning", reasoning.strip()))
+            return out + self._split(rest)
         if len(self.held) > _STRAY_THINK_WINDOW:
             rest, self.held = self.held, None
             return self._split(rest)
@@ -105,18 +109,23 @@ class ThinkSplitter:
         self.buf += piece
         out: list[tuple[str, str]] = []
         while self.buf:
-            tag = THINK_CLOSE if self.in_think else THINK_OPEN
-            idx = self.buf.find(tag)
+            # Outside a block a bare </think> is stray reasoning's end: dropped, not shown.
+            tags = (THINK_CLOSE,) if self.in_think else (THINK_OPEN, THINK_CLOSE)
+            idx, tag = min(((self.buf.find(t), t) for t in tags if t in self.buf), default = (-1, ""))
             if idx >= 0:
                 if idx:
                     out.append(("reasoning" if self.in_think else "content", self.buf[:idx]))
                 self.buf = self.buf[idx + len(tag) :]
-                if self.in_think:
+                if tag == THINK_CLOSE:
                     self.buf = self.buf.lstrip("\n")
-                self.in_think = not self.in_think
+                if tag == THINK_OPEN or self.in_think:
+                    self.in_think = not self.in_think
                 continue
             # Keep a possible partial tag at the end.
-            keep = next((k for k in range(len(tag) - 1, 0, -1) if self.buf.endswith(tag[:k])), 0)
+            keep = max(
+                (k for t in tags for k in range(len(t) - 1, 0, -1) if self.buf.endswith(t[:k])),
+                default = 0,
+            )
             emit = self.buf[: len(self.buf) - keep]
             if emit:
                 out.append(("reasoning" if self.in_think else "content", emit))
@@ -285,7 +294,13 @@ def build_app(pipe, model_id: str) -> FastAPI:
     @app.post("/v1/chat/completions")
     def chat(req: ChatRequest):
         thinking = thinking_enabled(req)
-        text_prompt, cfg = prompt(req, thinking), config(req)
+        if not req.messages:
+            raise HTTPException(400, "'messages' must not be empty.")
+        try:
+            text_prompt = prompt(req, thinking)
+        except Exception as exc:  # the template's raise_exception, e.g. a misplaced system message
+            raise HTTPException(400, f"The chat template rejected the messages: {exc}") from exc
+        cfg = config(req)
         rid, created = f"chatcmpl-{uuid.uuid4().hex[:24]}", int(time.time())
 
         def chunk(delta: dict, finish: Optional[str] = None) -> str:
