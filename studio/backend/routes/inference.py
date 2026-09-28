@@ -86,6 +86,7 @@ from hub.utils.hf_tokens import (
     is_token_rejection,
     HUB_TOKEN_REJECTED_WARNING,
     HfTokenArg,
+    call_hub_with_anonymous_retry,
     collecting_hub_token_rejections,
     hub_refused_cached_copy_warning,
 )
@@ -11199,7 +11200,9 @@ def _remote_gguf_companion_bytes(
         from utils.models.drafters import dflash_budget_bytes, split_listing_is_complete
         from utils.models.model_config import dspark_preference_key
 
-        info = model_info(repo, token = hf_token, files_metadata = True)
+        # Admission sizing: a refused token must not zero the companion bytes and let a
+        # vision or speculative load past the training budget.
+        info = call_hub_with_anonymous_retry(model_info, hf_token, repo, files_metadata = True)
         total = 0
         mtp_bytes = 0
         dspark_candidates: list[tuple[str, int]] = []

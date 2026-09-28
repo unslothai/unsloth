@@ -1222,10 +1222,15 @@ def call_with_anonymous_retry(read, hf_token: HfTokenArg):
         # Already refused in this request: ask anonymously first, and only a private or
         # gated repo, which anonymous access cannot answer, goes back to the credential.
         try:
-            return read(False)
+            result = read(False)
         except Exception as anonymous_exc:
             if not is_token_rejection(anonymous_exc):
                 raise
+        else:
+            # An earlier anonymous attempt may have failed transiently: this one is the
+            # recovery, and later token-sending calls must see it.
+            note_saved_token_rejected(hf_token)
+            return result
         return read(hf_token)
     try:
         return read(hf_token)

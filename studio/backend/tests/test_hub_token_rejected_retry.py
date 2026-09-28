@@ -457,3 +457,51 @@ def test_the_pre_import_config_reads_retry_without_a_refused_token(monkeypatch):
     sent.clear()
     tv._hf_json("https://huggingface.co/x/resolve/main/config.json", None)
     assert sent == [None]
+
+
+def test_an_anonymous_first_success_after_a_transient_failure_is_recorded():
+    from hub.utils.hf_tokens import saved_token_rejected
+
+    attempts = {"anonymous": 0}
+
+    def read(token):
+        if token is False:
+            attempts["anonymous"] += 1
+            if attempts["anonymous"] == 1:
+                raise TimeoutError("read timed out")
+            return "public answer"
+        raise RepositoryNotFoundError(reason = "OAuth token verification failed")
+
+    with collecting_hub_token_rejections() as rejections:
+        with pytest.raises(RepositoryNotFoundError):
+            call_with_anonymous_retry(read, OAUTH)
+        assert not saved_token_rejected(OAUTH)
+        # The caller's own retry: the anonymous-first path now answers.
+        assert call_with_anonymous_retry(read, OAUTH) == "public answer"
+        assert saved_token_rejected(OAUTH)
+        assert rejections.recovered
+
+
+def test_admission_sizing_counts_companions_when_the_token_is_refused(monkeypatch):
+    # The training guard sizes a GGUF with its mmproj: a refused token must not zero it.
+    import routes.inference as inference_routes
+
+    def model_info(
+        repo,
+        token = None,
+        files_metadata = False,
+    ):
+        if token is not False:
+            raise RepositoryNotFoundError(reason = "OAuth token verification failed")
+        return SimpleNamespace(
+            siblings = [
+                SimpleNamespace(rfilename = "Qwen3-VL-2B-Q4_K_M.gguf", size = 1_000_000_000),
+                SimpleNamespace(rfilename = "mmproj-F16.gguf", size = 800_000_000),
+            ]
+        )
+
+    monkeypatch.setattr(huggingface_hub, "model_info", model_info)
+    sized = inference_routes._remote_gguf_companion_bytes(
+        "unsloth/Qwen3-VL-2B-Instruct-GGUF", hf_token = OAUTH, include_mmproj = True
+    )
+    assert sized == 800_000_000
