@@ -4128,6 +4128,7 @@ class DebugLogSourceModel(BaseModel):
 class DebugLogSourcesResponse(BaseModel):
     sources: list[DebugLogSourceModel]
     default_source_id: Optional[str] = None
+    matched_source_id: Optional[str] = None
     file_logging_disabled: bool = False
     # Where the logs actually live, so a caller does not have to guess. The
     # desktop "Open logs folder" button otherwise falls back to a hard-coded
@@ -4158,6 +4159,7 @@ class DebugLogResponse(BaseModel):
 
 @_owner_settings_router.get("/debug/logs/sources", response_model = DebugLogSourcesResponse)
 def get_debug_log_sources(
+    diagnostic_path: Optional[str] = None,
     current_subject: str = Depends(get_current_subject),
     _ui_session: None = Depends(_require_ui_session),
 ) -> DebugLogSourcesResponse:
@@ -4179,6 +4181,7 @@ def get_debug_log_sources(
     return DebugLogSourcesResponse(
         sources = [DebugLogSourceModel(**vars(source)) for source in sources],
         default_source_id = debug_log_sources.default_source_id(),
+        matched_source_id = debug_log_sources.source_id_for_path(diagnostic_path, sources),
         file_logging_disabled = debug_log_sources.file_logging_disabled(),
         log_root = log_root,
     )
