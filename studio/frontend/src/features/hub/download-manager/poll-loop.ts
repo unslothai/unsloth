@@ -103,6 +103,7 @@ import {
   floorHoldEnded,
   hasObservedExpectedBytes,
   resolveProgressUpdate,
+  serverRunChange,
 } from "./progress-reconcile";
 import {
   presentationForExpectedBytesUpdate,
@@ -327,35 +328,33 @@ function syncServerGeneration(
   key: string,
   job: ManagedDownload,
   status: PollStatus,
+  rt: JobRuntime,
 ): "generation" | "attempt" | null {
-  const statusGeneration = status.generation;
-  const statusAttempt = status.attempt;
-  const generationChanged = runCounterChanged(
-    job.serverGeneration,
-    statusGeneration,
+  const change = serverRunChange(
+    {
+      generation: job.serverGeneration,
+      attempt: rt.floorHold?.attempt ?? job.serverAttempt,
+    },
+    status,
   );
-  const attemptChanged = runCounterChanged(job.serverAttempt, statusAttempt);
   const patch: Partial<ManagedDownload> = {};
-  if (Number.isSafeInteger(statusGeneration)) {
-    patch.serverGeneration = statusGeneration;
+  if (Number.isSafeInteger(status.generation)) {
+    patch.serverGeneration = status.generation;
   }
-  if (Number.isSafeInteger(statusAttempt)) {
-    patch.serverAttempt = statusAttempt;
+  if (change === "attempt") {
+    rt.floorHold = {
+      attempt: status.attempt as number,
+      remainingBytes: job.expectedBytes - job.downloadedBytes,
+      until: Date.now() + ATTEMPT_FLOOR_HOLD_MS,
+    };
+  } else {
+    if (change === "generation") rt.floorHold = null;
+    if (rt.floorHold == null && Number.isSafeInteger(status.attempt)) {
+      patch.serverAttempt = status.attempt;
+    }
   }
   if (Object.keys(patch).length > 0) patchJob(key, patch);
-  if (generationChanged) return "generation";
-  return attemptChanged ? "attempt" : null;
-}
-
-function runCounterChanged(
-  previous: number | undefined,
-  current: number | undefined,
-): boolean {
-  return (
-    Number.isSafeInteger(current) &&
-    Number.isSafeInteger(previous) &&
-    current !== previous
-  );
+  return change;
 }
 
 async function finalizeTerminalStatus(
@@ -423,10 +422,12 @@ function reconcileProgressAndSpeed(
     resetMonotonic: generationChanged,
     skipFloor: rt.floorHold != null,
   });
+  let acknowledgedAttempt: number | undefined;
   if (
     rt.floorHold &&
     floorHoldEnded(rt.floorHold, expected, downloadedBytes, Date.now())
   ) {
+    acknowledgedAttempt = rt.floorHold.attempt;
     rt.floorHold = null;
   }
   if (generationChanged) {
@@ -443,6 +444,9 @@ function reconcileProgressAndSpeed(
     fraction,
     bytesPerSec: speed.bytesPerSec,
     etaSeconds: speed.etaSeconds,
+    ...(acknowledgedAttempt !== undefined
+      ? { serverAttempt: acknowledgedAttempt }
+      : {}),
   });
   markPollSuccess(key, rt);
   return { madeProgress };
@@ -518,15 +522,8 @@ async function tick(key: string): Promise<void> {
     if (!isCurrent(key, epoch)) return;
 
     // syncServerGeneration persists immediately, so a change seen before the progress path would look unchanged next tick; hold it until a progress poll consumes it.
-    const runChange = syncServerGeneration(key, job, status);
-    if (runChange !== null) {
+    if (syncServerGeneration(key, job, status, rt) !== null) {
       rt.pendingGenerationChange = true;
-    }
-    if (runChange === "attempt") {
-      rt.floorHold = {
-        remainingBytes: job.expectedBytes - job.downloadedBytes,
-        until: Date.now() + ATTEMPT_FLOOR_HOLD_MS,
-      };
     }
 
     const terminalKind = terminalKindFromState(status.state);

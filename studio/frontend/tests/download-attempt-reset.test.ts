@@ -12,7 +12,7 @@ import { readSrc, registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
 
-const { floorHoldEnded, resolveProgressUpdate } =
+const { floorHoldEnded, resolveProgressUpdate, serverRunChange } =
   await import("../src/features/hub/download-manager/progress-reconcile.ts");
 
 const GB = 1024 ** 3;
@@ -50,27 +50,40 @@ function restartedReading(): ProgressLike {
   } as ProgressLike;
 }
 
-test("the status sync treats an attempt change like a generation change", () => {
-  const source = readSrc("features/hub/download-manager/poll-loop.ts");
-  const sync = source.indexOf("function syncServerGeneration(");
-  const body = source.slice(
-    sync,
-    source.indexOf("function runCounterChanged("),
+test("a new generation wins over an attempt change, and an unknown side is no change", () => {
+  const known = { generation: 7, attempt: 1 };
+  assert.equal(serverRunChange(known, { generation: 7, attempt: 1 }), null);
+  assert.equal(
+    serverRunChange(known, { generation: 7, attempt: 2 }),
+    "attempt",
   );
-  assert.match(body, /status\.attempt/);
-  assert.match(body, /job\.serverAttempt/);
-  assert.match(body, /if \(generationChanged\) return "generation";/);
-  assert.match(body, /return attemptChanged \? "attempt" : null;/);
+  assert.equal(
+    serverRunChange(known, { generation: 8, attempt: 1 }),
+    "generation",
+  );
+  assert.equal(serverRunChange(known, { generation: 7 }), null);
+  assert.equal(
+    serverRunChange({ generation: 7 }, { generation: 7, attempt: 2 }),
+    null,
+  );
 });
 
-test("an attempt change holds the GGUF floor off until the bytes left grow", () => {
+test("an attempt is persisted only once its hold ends, so a reload inside it re-detects the retry", () => {
   const source = readSrc("features/hub/download-manager/poll-loop.ts");
-  assert.match(source, /if \(runChange === "attempt"\) \{\s*rt\.floorHold = \{/);
-  assert.match(source, /skipFloor: rt\.floorHold != null,/);
   assert.match(
     source,
-    /floorHoldEnded\(rt\.floorHold, expected, downloadedBytes, Date\.now\(\)\)\s*\)\s*\{\s*rt\.floorHold = null;/,
+    /attempt: rt\.floorHold\?\.attempt \?\? job\.serverAttempt,/,
   );
+  assert.match(
+    source,
+    /if \(change === "attempt"\) \{\s*rt\.floorHold = \{\s*attempt: status\.attempt as number,/,
+  );
+  assert.match(
+    source,
+    /if \(rt\.floorHold == null && Number\.isSafeInteger\(status\.attempt\)\) \{\s*patch\.serverAttempt = status\.attempt;/,
+  );
+  assert.match(source, /acknowledgedAttempt = rt\.floorHold\.attempt;/);
+  assert.match(source, /skipFloor: rt\.floorHold != null,/);
 });
 
 const MB = 1024 * 1024;

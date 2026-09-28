@@ -62,8 +62,8 @@ export function resolveProgressUpdate(
     job.kind === DOWNLOAD_KIND.MODEL && job.variant !== null;
   const backendOwnsGgufProgress = isGgufVariantJob && reported > 0;
   // GGUF totals are backend-owned (non-monotonic); snapshots stay monotonic to
-  // absorb jitter, but a generation bump (XET redownload, restart, re-adoption)
-  // must drop the stale high-water mark and snap to the new run's bytes.
+  // absorb jitter, but a new generation or retry attempt must drop the stale
+  // high-water mark and snap to the new run's bytes.
   const resetMonotonic = opts.resetMonotonic === true;
   const trustBackend = backendOwnsGgufProgress || resetMonotonic;
   const expected = trustBackend
@@ -131,11 +131,11 @@ export function resolveProgressUpdate(
   const cappedFraction = Math.min(rawFraction, MAX_PROGRESS_FRACTION);
   // Keep the GGUF variant bar monotonic: backend progress is recomputed from the shared per-repo
   // blobs/ dir, so a sibling quant, generation bump, or no-metadata poll can dip one reading.
-  // Resets via startJob's seed fraction. NOT across a generation change, though. `resetMonotonic`
-  // is the caller saying another client restarted this job, and it already clears the byte counters
-  // -- carrying the old generation's high-water mark over pinned a retry that starts at 0 B to the
-  // previous run's 99% for its entire life, which is the stale card this whole path exists to
-  // remove.
+  // Resets via startJob's seed fraction. NOT across a generation or attempt change, though.
+  // `resetMonotonic` is the caller saying the run restarted, and it already clears the byte
+  // counters -- carrying the old run's high-water mark over pinned a retry that starts at 0 B to
+  // the previous run's 99% for its entire life. `skipFloor` covers the polls after that reset
+  // that can still read the killed attempt's partial.
   const fraction =
     isGgufVariantJob && !resetMonotonic && opts.skipFloor !== true
       ? Math.max(cappedFraction, job.fraction)
@@ -151,7 +151,28 @@ export function resolveProgressUpdate(
   };
 }
 
-// The killed partial only grows until the retry worker purges it, and a re-measured completed baseline lowers both counters alike, so more bytes left than at the attempt change means the new attempt is on screen.
+function runCounterChanged(
+  previous: number | undefined,
+  current: number | undefined,
+): boolean {
+  return (
+    Number.isSafeInteger(current) &&
+    Number.isSafeInteger(previous) &&
+    current !== previous
+  );
+}
+
+export function serverRunChange(
+  known: { generation?: number; attempt?: number },
+  status: { generation?: number; attempt?: number },
+): "generation" | "attempt" | null {
+  if (runCounterChanged(known.generation, status.generation)) {
+    return "generation";
+  }
+  return runCounterChanged(known.attempt, status.attempt) ? "attempt" : null;
+}
+
+// Bytes left only rise once the retry worker purges the killed partial; a re-measured baseline lowers both counters alike, so it cannot end the hold early.
 export function floorHoldEnded(
   hold: FloorHold,
   expectedBytes: number,

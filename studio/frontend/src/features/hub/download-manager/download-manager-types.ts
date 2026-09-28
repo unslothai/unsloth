@@ -136,6 +136,7 @@ export interface DownloadManagerState {
 }
 
 export interface FloorHold {
+  attempt: number;
   remainingBytes: number;
   until: number;
 }
@@ -155,7 +156,7 @@ export interface JobRuntime {
   /**
    * A generation change seen on a status-only tick, held until a progress poll consumes it: status polls twice as often. */
   pendingGenerationChange?: boolean;
-  /** Set on an attempt change: the GGUF floor stays off until the retry has purged the killed run's partial (see floorHoldEnded). */
+  /** Set on an attempt change: the GGUF floor stays off until the killed run's partial is purged (see floorHoldEnded). Its attempt is persisted only when the hold ends, so a reload re-detects the retry. */
   floorHold?: FloorHold | null;
   idleSinceMs: number | null;
   lastProgressPollAt: number | null;
