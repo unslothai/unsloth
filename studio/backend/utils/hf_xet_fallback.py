@@ -1004,19 +1004,26 @@ def hf_hub_download_with_xet_fallback(
         optional["stall_timeout"] = stall_timeout
     if interval is not None:
         optional["interval"] = interval
-    return _shared_hf_hub_download_with_xet_fallback(
-        repo_id,
-        filename,
+    from hub.utils.hf_tokens import call_with_anonymous_retry
+
+    # A rejected token 401s the metadata HEAD before any byte is written, so the anonymous
+    # retry starts (or resumes) the same file rather than racing a half-written one.
+    return call_with_anonymous_retry(
+        lambda token: _shared_hf_hub_download_with_xet_fallback(
+            repo_id,
+            filename,
+            token,
+            cancel_event = cancel_event,
+            repo_type = repo_type,
+            revision = revision,
+            **optional,
+            grace_period = grace_period,
+            on_status = on_status,
+            force_download = force_download,
+            cache_dir = cache_dir,
+            prepare_for_http_fn = partial(_studio_prepare_for_http, cache_dir = cache_dir),
+        ),
         token,
-        cancel_event = cancel_event,
-        repo_type = repo_type,
-        revision = revision,
-        **optional,
-        grace_period = grace_period,
-        on_status = on_status,
-        force_download = force_download,
-        cache_dir = cache_dir,
-        prepare_for_http_fn = partial(_studio_prepare_for_http, cache_dir = cache_dir),
     )
 
 

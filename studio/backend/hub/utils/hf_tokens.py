@@ -8,6 +8,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import logging
+import re
 import threading
 import time
 from contextlib import contextmanager
@@ -1045,14 +1046,16 @@ HUB_TOKEN_REJECTED_ERROR = (
 class HubTokenRejections:
     """What one request learned about its credential. Shared by the threads it hands off to."""
 
-    __slots__ = ("recovered", "refused", "_rejected")
+    __slots__ = ("recovered", "refused", "_rejected", "_recovered")
 
     def __init__(self) -> None:
         # A read answered anonymously after the credential was refused.
         self.recovered = False
         # A read refused with the credential that anonymous access could not answer either.
         self.refused = False
+        # Digests, never tokens: a traceback or debugger can print this.
         self._rejected: "set[str]" = set()
+        self._recovered: "set[str]" = set()
 
     @property
     def rejected(self) -> bool:
@@ -1079,6 +1082,18 @@ def collecting_hub_token_rejections():
         _hub_token_rejections.reset(reset)
 
 
+@contextmanager
+def token_rejection_scope():
+    """A fresh scope that forgets, on exit, what it learned: a long-lived worker thread must not
+    carry one load's verdict into the next, where the user may have replaced the token."""
+    sink = HubTokenRejections()
+    reset = _hub_token_rejections.set(sink)
+    try:
+        yield sink
+    finally:
+        _hub_token_rejections.reset(reset)
+
+
 def hub_token_rejections() -> Optional[HubTokenRejections]:
     return _hub_token_rejections.get()
 
@@ -1095,14 +1110,34 @@ def _sent_credential(hf_token: HfTokenArg) -> Optional[str]:
     return None
 
 
+# huggingface_hub's own wording (hf_raise_for_status), optionally behind "ClassName: ".
+_HUB_401_TEXT = re.compile(r"^(?:[A-Za-z]\w*: )?401 Client Error\b")
+
+
+def is_token_rejection(exc: BaseException) -> bool:
+    """A 401 anywhere in the chain. Transport code wraps Hub errors, so the head is not enough,
+    and the download ladder rebuilds a child process's Hub error from its text alone."""
+    seen: set[int] = set()
+    pending: list[Optional[BaseException]] = [exc]
+    while pending:
+        link = pending.pop()
+        if link is None or id(link) in seen:
+            continue
+        seen.add(id(link))
+        status = getattr(getattr(link, "response", None), "status_code", None)
+        if status == 401:
+            return True
+        if status is None and _HUB_401_TEXT.match(str(link)):
+            return True
+        pending += [link.__cause__, link.__context__]
+    return False
+
+
 def is_rejected_credential_error(exc: BaseException, hf_token: HfTokenArg) -> bool:
     """Whether *exc* is Hugging Face refusing the credential a read with *hf_token* sent."""
     if is_anonymous(hf_token) or _is_probe_timeout(exc):
         return False
-    status = getattr(getattr(exc, "response", None), "status_code", None)
-    if status != 401:
-        return False
-    return _sent_credential(hf_token) is not None
+    return is_token_rejection(exc) and _sent_credential(hf_token) is not None
 
 
 def _credential_rejected_this_request(hf_token: HfTokenArg) -> bool:
@@ -1111,6 +1146,27 @@ def _credential_rejected_this_request(hf_token: HfTokenArg) -> bool:
         return False
     credential = _sent_credential(hf_token)
     return credential is not None and _credential_identity(credential) in sink._rejected
+
+
+def note_saved_token_rejected(hf_token: HfTokenArg) -> None:
+    """Record that this request's reads with *hf_token* were refused while anonymous ones worked."""
+    sink = _hub_token_rejections.get()
+    credential = _sent_credential(hf_token)
+    if sink is None or credential is None:
+        return
+    identity = _credential_identity(credential)
+    sink._rejected.add(identity)
+    sink._recovered.add(identity)
+    sink.recovered = True
+
+
+def saved_token_rejected(hf_token: HfTokenArg) -> bool:
+    """Whether this request saw the Hub refuse *hf_token* while an anonymous read worked."""
+    sink = _hub_token_rejections.get()
+    credential = _sent_credential(hf_token)
+    if sink is None or credential is None:
+        return False
+    return _credential_identity(credential) in sink._recovered
 
 
 def call_with_anonymous_retry(read, hf_token: HfTokenArg):
@@ -1122,8 +1178,14 @@ def call_with_anonymous_retry(read, hf_token: HfTokenArg):
     fails too, the ORIGINAL error is raised, since it is the one callers classify.
     """
     if _credential_rejected_this_request(hf_token):
-        # Already refused in this request: skip the round trip it would refuse again.
-        return read(False)
+        # Already refused in this request: ask anonymously first, and only a private or
+        # gated repo, which anonymous access cannot answer, goes back to the credential.
+        try:
+            return read(False)
+        except Exception as anonymous_exc:
+            if not is_token_rejection(anonymous_exc):
+                raise
+        return read(hf_token)
     try:
         return read(hf_token)
     except Exception as exc:
@@ -1133,23 +1195,35 @@ def call_with_anonymous_retry(read, hf_token: HfTokenArg):
         credential = _sent_credential(hf_token)
         if sink is not None and credential is not None:
             sink._rejected.add(_credential_identity(credential))
-        anonymous_failed = False
         try:
             result = read(False)
         except Exception as anonymous_exc:
-            anonymous_failed = True
             logger.info(
                 "Hugging Face refused the credential (401); the anonymous retry failed too: %s",
                 type(anonymous_exc).__name__,
             )
-        if anonymous_failed:
             if sink is not None:
                 sink.refused = True
-            raise
+            raise exc from None
         logger.warning(
             "Hugging Face refused the credential (401); read anonymously instead. "
             "Update or clear the Hugging Face token."
         )
-        if sink is not None:
-            sink.recovered = True
+        note_saved_token_rejected(hf_token)
         return result
+
+
+def call_hub_with_anonymous_retry(fn, hf_token: HfTokenArg, *args, **kwargs):
+    """``call_with_anonymous_retry`` for a huggingface_hub-style ``fn(*args, token = ..., **kwargs)``."""
+    return call_with_anonymous_retry(lambda token: fn(*args, token = token, **kwargs), hf_token)
+
+
+def hf_token_rejected_hint(exc: BaseException) -> str:
+    """User-facing sentence for a 401 that the anonymous retry could not recover, else ''."""
+    if not is_token_rejection(exc):
+        return ""
+    return (
+        " Hugging Face answered 401: the saved Hugging Face token may have expired or been "
+        "revoked, or the repo is private or gated. Update the token in Settings, or remove it "
+        "to read public repos."
+    )

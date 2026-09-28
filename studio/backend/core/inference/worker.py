@@ -509,9 +509,31 @@ def _worker_reclaimable_gpu_gb(config: dict) -> dict[str, float] | None:
         return None
 
 
+def _drop_a_rejected_token(config: dict) -> None:
+    """The Hub rejected this load's token while anonymous reads worked (an expired or revoked
+    token 401s even public repos): load the rest anonymously, weights included."""
+    from hub.utils.hf_tokens import saved_token_rejected
+
+    token = _config_hf_token(config)
+    if token is not False and saved_token_rejected(token):
+        config["anonymous_hf_access"] = True
+        _apply_worker_hf_token_environment(config)
+        logger.warning(
+            "Hugging Face rejected the token for %s; loading it without the token.",
+            config.get("model_name"),
+        )
+
+
 def _handle_load(backend, config: dict, resp_queue: Any) -> None:
+    from hub.utils.hf_tokens import token_rejection_scope
+    with token_rejection_scope():
+        _handle_load_scoped(backend, config, resp_queue)
+
+
+def _handle_load_scoped(backend, config: dict, resp_queue: Any) -> None:
     try:
         mc = _build_model_config(config)
+        _drop_a_rejected_token(config)
 
         hf_token = _config_hf_token(config)
         load_in_4bit = _resolve_lora_4bit(mc, config.get("load_in_4bit", True))

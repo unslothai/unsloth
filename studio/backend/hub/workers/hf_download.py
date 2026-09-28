@@ -160,8 +160,38 @@ def _install_parent_death_watchdog(parent_pid: int | None) -> None:
     ).start()
 
 
+# One job per process, so a module global is the job's own memory: once the Hub has rejected
+# the token while an anonymous read of the same repo worked, every later read skips it.
+_REJECTED_TOKEN: str | None = None
+
+
 def _hf_token_arg(hf_token: str | None) -> HfTokenArg:
-    return hf_token if hf_token else False
+    if not hf_token or hf_token == _REJECTED_TOKEN:
+        return False
+    return hf_token
+
+
+def _metadata_read(fn, hf_token: str | None, *args, **kwargs):
+    """A metadata read that retries once anonymously when the Hub rejects the token (HTTP 401)."""
+    global _REJECTED_TOKEN
+    from hub.utils.hf_tokens import (
+        call_hub_with_anonymous_retry,
+        collecting_hub_token_rejections,
+        saved_token_rejected,
+    )
+
+    token = _hf_token_arg(hf_token)
+    with collecting_hub_token_rejections():
+        result = call_hub_with_anonymous_retry(fn, token, *args, **kwargs)
+        rejected = token is not False and saved_token_rejected(token)
+    if hf_token and rejected:
+        _REJECTED_TOKEN = hf_token
+        print(
+            "Hugging Face rejected the saved token (HTTP 401); downloading without it. "
+            "Update or remove the token in Settings if it has expired or been revoked.",
+            file = sys.stderr,
+        )
+    return result
 
 
 def _retry_metadata_fetch(repo_id: str, fetch, *, label: str):
@@ -187,9 +217,10 @@ def _model_info_with_retry(repo_id: str, hf_token: str | None):
 
     info = _retry_metadata_fetch(
         repo_id,
-        lambda timeout: hf_model_info(
+        lambda timeout: _metadata_read(
+            hf_model_info,
+            hf_token,
             repo_id,
-            token = _hf_token_arg(hf_token),
             timeout = timeout,
             files_metadata = True,
         ),
@@ -232,10 +263,12 @@ def _reuse_unchanged_files(
 
 def _dataset_info_with_retry(repo_id: str, hf_token: str | None):
     from huggingface_hub import HfApi
-    api = HfApi(token = _hf_token_arg(hf_token))
+    api = HfApi()
     return _retry_metadata_fetch(
         repo_id,
-        lambda timeout: api.dataset_info(
+        lambda timeout: _metadata_read(
+            api.dataset_info,
+            hf_token,
             repo_id,
             timeout = timeout,
             files_metadata = True,
