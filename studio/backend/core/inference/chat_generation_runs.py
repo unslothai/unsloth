@@ -70,6 +70,8 @@ def _background_request(
     run_id: str,
     cancel_event: threading.Event,
     timezone_headers: dict[str, str] | None = None,
+    *,
+    via_api_key: bool | None = None,
 ) -> Request:
     scope = {
         "type": "http",
@@ -98,7 +100,10 @@ def _background_request(
     async def receive():
         return {"type": "http.request", "body": b"", "more_body": False}
 
-    return Request(scope, receive)
+    request = Request(scope, receive)
+    if isinstance(via_api_key, bool):
+        request.state.api_monitor_via_api_key = via_api_key
+    return request
 
 
 def _chunk_finish_reason(chunk: dict[str, Any]) -> str | None:
@@ -751,13 +756,16 @@ class ChatGenerationSupervisor:
 
                 request_payload = dict(run["requestPayload"])
                 timezone_headers = request_payload.pop(db.TIMEZONE_HEADERS_FIELD, None)
+                via_api_key = request_payload.pop(db.API_MONITOR_ORIGIN_FIELD, None)
                 payload = ChatCompletionRequest.model_validate(request_payload)
                 # Switching, idle reload and auto-download all happen in the call below, and llama.cpp's first-token
                 # budget only starts after it. One touch afterwards cannot cover a preparation longer than the lease
                 # itself.
                 response = await produce_openai_chat_completions(
                     payload,
-                    _background_request(self.app, run_id, cancel_event, timezone_headers),
+                    _background_request(
+                        self.app, run_id, cancel_event, timezone_headers, via_api_key = via_api_key
+                    ),
                     owner,
                     cancel_on_disconnect = False,
                 )

@@ -344,6 +344,8 @@ def _loads(value: str | None, fallback: Any) -> Any:
 # Kept with the run for the producer but outside its identity, so a retried create from a browser whose offset moved
 # (DST) still matches the committed run.
 TIMEZONE_HEADERS_FIELD = "timezone_headers"
+# Server-derived monitor attribution, not a credential or part of retry identity.
+API_MONITOR_ORIGIN_FIELD = "api_monitor_via_api_key"
 
 
 def canonical_request(
@@ -367,7 +369,7 @@ def canonical_request(
             "requestPayload": {
                 key: value
                 for key, value in request_payload.items()
-                if key != TIMEZONE_HEADERS_FIELD
+                if key not in (TIMEZONE_HEADERS_FIELD, API_MONITOR_ORIGIN_FIELD)
             },
         },
         sort_keys = True,

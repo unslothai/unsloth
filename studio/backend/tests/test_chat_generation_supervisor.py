@@ -80,6 +80,79 @@ def _route_request(supervisor):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("scope", ["off", "inference", "full"])
+@pytest.mark.parametrize("tools", [False, True])
+@pytest.mark.parametrize("caller,expected", [("session", False), ("keyless", True), ("api-key", True), ("workflow", False)])
+async def test_durable_producer_preserves_monitor_origin(monkeypatch, scope, tools, caller, expected):
+    from auth import policy, storage
+    from utils import keyless_api_access as keyless
+
+    studio_db.upsert_chat_thread(
+        {"id": "thread-1", "title": "Chat", "modelType": "base", "modelId": "local", "createdAt": 1}
+    )
+    studio_db.upsert_chat_message(
+        {"id": "user-1", "threadId": "thread-1", "role": "user", "content": [], "createdAt": 2}
+    )
+    app = SimpleNamespace(state = SimpleNamespace(bind_host = "127.0.0.1"))
+    headers = [] if caller == "keyless" else [
+        (b"authorization", b"Bearer session-jwt" if caller == "session" else b"Bearer sk-unsloth-test")
+    ]
+    request = Request({
+        "type": "http", "method": "POST", "path": "/api/inference/chat-runs",
+        "headers": headers, "app": app, "client": ("127.0.0.1", 5000), "server": ("127.0.0.1", 8000),
+    })
+    # Model the completed authentication dependency, then change settings before
+    # the worker starts. Attribution belongs to admission, not current settings.
+    keyless.mark_keyless_admission(request, caller == "keyless")
+    monkeypatch.setattr(policy, "installation_has_managed_accounts", lambda: False)
+    monkeypatch.setattr(storage, "is_internal_api_key", lambda _token: caller == "workflow")
+    run = await run_routes.create_chat_generation_run(_create_payload(), request, "alice")
+    assert run["requestPayload"][runs_db.API_MONITOR_ORIGIN_FIELD] is expected
+    request.state.api_monitor_via_api_key = not expected
+    retry = await run_routes.create_chat_generation_run(_create_payload(), request, "alice")
+    assert retry["created"] is False
+    assert retry["requestPayload"][runs_db.API_MONITOR_ORIGIN_FIELD] is expected
+    monkeypatch.setattr(keyless, "get_keyless_api_access_scope", lambda: scope)
+    monkeypatch.setattr(keyless, "get_keyless_api_tools_enabled", lambda: tools)
+    observed = []
+
+    async def body():
+        yield "data: [DONE]\n\n"
+
+    async def fake(payload, background, _subject, *, cancel_on_disconnect):
+        observed.append(inference._request_used_api_key(background))
+        assert runs_db.API_MONITOR_ORIGIN_FIELD not in payload.model_extra
+        assert "authorization" not in background.headers
+        return SimpleNamespace(status_code = 200, body_iterator = body())
+
+    monkeypatch.setattr(inference, "produce_openai_chat_completions", fake)
+    await ChatGenerationSupervisor(app)._produce("run-1")
+    assert observed == [expected]
+
+
+def test_monitor_origin_is_not_part_of_retry_identity():
+    args = dict(thread_id = "t", user_message_id = "u", assistant_message_id = "a")
+    payload = {"model": "local"}
+    _, original = runs_db.canonical_request(**args, request_payload = payload)
+    for origin in (False, True):
+        encoded, identity = runs_db.canonical_request(
+            **args, request_payload = {**payload, runs_db.API_MONITOR_ORIGIN_FIELD: origin}
+        )
+        assert identity == original
+        assert json.loads(encoded)[runs_db.API_MONITOR_ORIGIN_FIELD] is origin
+
+
+def test_client_cannot_supply_monitor_origin():
+    from fastapi import HTTPException
+
+    payload = _create_payload()
+    payload.requestPayload[runs_db.API_MONITOR_ORIGIN_FIELD] = False
+    with pytest.raises(HTTPException) as exc:
+        run_routes._sanitize_request(payload)
+    assert exc.value.status_code == 400
+
+
+@pytest.mark.asyncio
 async def test_public_chat_wrapper_keeps_cancel_on_disconnect(monkeypatch):
     observed = []
 
