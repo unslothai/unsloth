@@ -2078,9 +2078,7 @@ def install(
     if done:
         return done  # idempotent: a dual-DiT family runs the speed layer once per expert over the same VAE
     n = _install(vae, logger)
-    # channels-last weights only where measured faster; the Wan lineage keeps its own (Qwen-Image conv3d is slower).
-    # Only when fused passes feed the convs: LTX-2's reflect-padded decoder fuses none, and relaid weights alone decode
-    # 0.64x (A100) / 0.68x (RTX PRO 6000) / 0.80x (B200) at 768x512x121.
+    # Only where measured faster, and only when a fused pass feeds a conv (relaid weights alone slow LTX-2's decode).
     if (
         n
         and type(vae).__name__ in _CL_WEIGHT_VAES
@@ -2088,7 +2086,6 @@ def install(
         and _fuses_a_conv(vae)
     ):
         channels_last_weights(vae)
-        # The speed layer's contiguous-decode cleanup must not undo this.
         vae._unsloth_vae_fused_cl_weights = True
     if n:
         vae._unsloth_vae_fused_installed = n

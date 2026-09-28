@@ -677,7 +677,6 @@ def test_eager_vae_decode_keeps_contiguous_weights(monkeypatch, tier):
 
 @pytest.mark.parametrize("tier", [SPEED_EAGER, SPEED_DEFAULT])
 def test_fused_vae_keeps_its_channels_last_weights(monkeypatch, tier):
-    # The fused passes hand cuDNN channels-last activations; the contiguous cleanup decoded 1.4x slower.
     torch = _stub_torch(monkeypatch)
     monkeypatch.delenv(ds_mod.COMPILE_VAE_ENV, raising = False)
     pipe = _Pipe(with_compile = True)

@@ -502,7 +502,7 @@ def apply_speed_optims(
             eager_when_tiled = _vae_eager_when_tiled(pipe),
         )
 
-    # Fused passes feed cuDNN channels-last activations: contiguous weights there decode 1.4x slower (AutoencoderKL).
+    # Fused passes feed cuDNN channels-last activations; contiguous weights would be relaid out per call.
     fused_cl = bool(getattr(getattr(pipe, "vae", None), "_unsloth_vae_fused_cl_weights", False))
     if (
         applied["channels_last"]
