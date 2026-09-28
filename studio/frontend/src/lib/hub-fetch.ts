@@ -8,7 +8,11 @@ import {
   isProxiedHubUrl,
   refreshHubSession,
 } from "@/lib/hf-endpoint";
-import { isHfTokenRejected, noteHfTokenRejected } from "@/lib/hf-token-rejection";
+import {
+  clearHfTokenRejected,
+  isHfTokenRejected,
+  noteHfTokenRejected,
+} from "@/lib/hf-token-rejection";
 
 // Set by the relay on the endpoint's own answers, whose 401 is about the Hugging Face token.
 const UPSTREAM_HEADER = "X-Hub-Upstream";
@@ -100,7 +104,18 @@ export async function fetchHub(
   // Already refused this session: every read with it would 401 again, so ask anonymously.
   const skipToken = retryable && isHfTokenRejected(hfToken);
   let response = await fetchWithSession(input, skipToken ? withoutHfToken(init) : init, url);
-  if (retryable && !skipToken && isHubRefusal(response, url)) {
+  if (skipToken && !response.ok && [401, 403, 404].includes(response.status)) {
+    // What anonymous access cannot read may still be the token's to read: the refusal could
+    // have been the Hub's verifier briefly failing. A token that answers again is cleared.
+    const withToken = await fetchWithSession(input, init, url);
+    if (withToken.ok) {
+      void response.body?.cancel().catch(() => undefined);
+      clearHfTokenRejected();
+      response = withToken;
+    } else {
+      void withToken.body?.cancel().catch(() => undefined);
+    }
+  } else if (retryable && !skipToken && isHubRefusal(response, url)) {
     // A token the Hub accepts gets 404 for a repo it cannot see, so this 401 is the token
     // being refused. Public data still answers without it; anything else keeps the original.
     const anonymous = await fetchWithSession(input, withoutHfToken(init), url);

@@ -283,3 +283,33 @@ test("OAuth tokens are redacted from notifications and diagnostics", async () =>
     }
   }
 });
+
+test("after a refusal, a read anonymous access cannot answer still tries the token once", async () => {
+  noteHfTokenRejected(OAUTH);
+  // The verifier recovered: the token works again and the private repo answers with it.
+  const hub = stubHub({ anonymousStatus: 404 });
+  try {
+    const response = await fetchHub("https://huggingface.co/api/models/me/private", withToken(OAUTH));
+    assert.equal(response.status, 200);
+    assert.deepEqual(
+      hub.sent.map((s) => s.authorization),
+      [null, `Bearer ${OAUTH}`],
+    );
+    assert.equal(isHfTokenRejected(OAUTH), false);
+  } finally {
+    hub.restore();
+  }
+});
+
+test("after a refusal, a token that is still refused leaves the anonymous answer and the flag", async () => {
+  noteHfTokenRejected(OAUTH);
+  const hub = stubHub({ rejectedToken: OAUTH, anonymousStatus: 404 });
+  try {
+    const response = await fetchHub("https://huggingface.co/api/models/me/private", withToken(OAUTH));
+    assert.equal(response.status, 404);
+    assert.equal(hub.sent.length, 2);
+    assert.equal(isHfTokenRejected(OAUTH), true);
+  } finally {
+    hub.restore();
+  }
+});
