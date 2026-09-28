@@ -1941,6 +1941,14 @@ def _fast_pixel_norm_act(norm: Any) -> Any:
     return fast
 
 
+def _ltx2_convs_fusable(vae: Any) -> bool:
+    """LTX-2's reflect-padded decoder fuses no conv: norm_out alone decoded 0.97-0.98x (L4 / A100 / RTX PRO 6000)."""
+    decoder = getattr(vae, "decoder", None)
+    return decoder is not None and any(
+        type(m).__name__ == "LTX2VideoCausalConv3d" and _ltx_conv_ok(m) for m in decoder.modules()
+    )
+
+
 def install_ltx2_vae(vae: Any, logger: Any = None) -> int:
     torch = _torch()
     if vae is None or not runtime_ok():
@@ -2049,7 +2057,12 @@ SUPPORTED_VAES = frozenset(
 
 def will_install(vae: Any) -> bool:
     """Whether :func:`install` would engage on ``vae`` here (class covered, NVIDIA CUDA, usable Triton, not disabled)."""
-    return vae is not None and type(vae).__name__ in SUPPORTED_VAES and runtime_ok()
+    return (
+        vae is not None
+        and type(vae).__name__ in SUPPORTED_VAES
+        and (type(vae).__name__ != "AutoencoderKLLTX2Video" or _ltx2_convs_fusable(vae))
+        and runtime_ok()
+    )
 
 
 def install(
@@ -2093,6 +2106,8 @@ def _install(vae: Any, logger: Any = None) -> int:
         n = install_hv15_vae(vae, logger)
         return n + (install_vectorised_blend(vae) if n else 0)
     if name == "AutoencoderKLLTX2Video":
+        if not _ltx2_convs_fusable(vae):
+            return 0
         n = install_ltx2_vae(vae, logger)
         return n + (install_vectorised_blend(vae) if n else 0)
     return 0

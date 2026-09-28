@@ -273,7 +273,7 @@ def test_ltx2_fused_matches_stock():
 
 
 @needs_cuda
-def test_ltx2_reflect_decoder_keeps_contiguous_weights(monkeypatch):
+def test_ltx2_reflect_decoder_stays_stock(monkeypatch):
     from diffusers import AutoencoderKLLTX2Video
 
     from core.inference.video_ltx2 import _VIDEO_VAE_CONFIG
@@ -291,8 +291,10 @@ def test_ltx2_reflect_decoder_keeps_contiguous_weights(monkeypatch):
         .bfloat16()
         .eval()
     )
-    assert F.install(reflect) > 0
+    assert F.will_install(reflect) is False
+    assert F.install(reflect) == 0
     assert all(w.is_contiguous() for w in convs(reflect))
+    assert not any("forward" in m.__dict__ for m in reflect.modules())
     zeros = AutoencoderKLLTX2Video(**cfg).cuda().bfloat16().eval()
     assert F.install(zeros) > 0
     assert all(w.is_contiguous(memory_format = torch.channels_last_3d) for w in convs(zeros))
