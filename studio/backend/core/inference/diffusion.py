@@ -1739,9 +1739,7 @@ def _auto_quant_eager_reason(
 
 
 def _uninstall_fused_dit_patches() -> None:
-    """Restore the process-global patches the speed layer's fused DiT paths install (the Qwen-Image RoPE table entry,
-    the Z-Image attention processor class), so the next load starts from stock and honours its own kill switches.
-    The int8 fused MLP forwards are per instance and go with the transformer."""
+    """Restore the process-global fused DiT patches so the next load honours its own kill switches."""
     try:
         from .diffusion_qwenimage_rope import uninstall as uninstall_qwen_real_rope
         from .diffusion_zimage_fused import uninstall as uninstall_zimage_fused

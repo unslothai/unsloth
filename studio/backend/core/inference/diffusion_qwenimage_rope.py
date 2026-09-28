@@ -1,15 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Qwen-Image (and 2512 / Edit, same transformer) RoPE in real arithmetic inside the regional compile.
-
-``QwenDoubleStreamAttnProcessor2_0`` picks its RoPE from ``ROPE_PER_DEVICE["cuda"]``, a partial of
-``apply_rotary_emb_qwen(use_real=False)``: a complex multiply Inductor cannot lower, so every block
-runs four eager ``BinaryFunctor<complex<float>>`` kernels plus the ``view_as_complex`` copies (about
-5 ms of a 61 ms int8 step at 1024px on a B200). The Qwen-Image-2.1 module
-(``diffusion_qwenimage21_rope``) already rewrites the same function in the card's probed fma form,
-bit-identical to the complex product; this points the Qwen-Image table entry at that wrapper.
-Probed on the first forward (the weights may still be on the CPU when the speed optims run).
+"""Qwen-Image RoPE in real arithmetic (Inductor cannot lower the complex multiply): points
+``ROPE_PER_DEVICE["cuda"]`` at ``diffusion_qwenimage21_rope``'s probed fma wrapper, bit-identical to the complex product.
 Kill switch: ``UNSLOTH_DIFFUSION_QWEN_REAL_ROPE=0`` (``UNSLOTH_DIFFUSION_Q21_REAL_ROPE=0`` also disables it).
 """
 
@@ -83,7 +76,7 @@ def _patch_table(index: int, logger: Any = None) -> bool:
 
 
 def install(transformer: Any, logger: Any = None) -> bool:
-    """Before the first compile. Patches now if the DiT is already on the GPU, else at its first forward."""
+    """Before the first compile; patches at the first forward if the DiT is not yet on the GPU."""
     if disabled():
         uninstall()  # a previous load may have patched the process-global table
         return False
@@ -108,7 +101,7 @@ def install(transformer: Any, logger: Any = None) -> bool:
 
 
 def uninstall(transformer: Any = None) -> None:
-    """Restore the stock table entry (process-global); drop ``transformer``'s pending first-forward install."""
+    """Restore the stock table entry; drop ``transformer``'s pending first-forward install."""
     if transformer is not None:
         from .diffusion_int8_fused import cancel_first_call
         cancel_first_call(transformer, "qwenimage_rope")

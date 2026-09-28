@@ -1,24 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Z-Image-Turbo attention inside the regional compile: RoPE in real arithmetic and one fused QKV GEMM.
-
-Stock ``ZSingleStreamAttnProcessor`` applies RoPE as a complex multiply, which Inductor cannot lower:
-every block runs two eager ``BinaryFunctor<complex<float>>`` kernels plus the ``view_as_complex``
-copies around them (about 2 ms of a 39 ms int8 step at 1024px on a B200). Here the same product is
-written as ``addcmul`` in the fma form the card's complex multiply uses (probed per device, the
-technique of ``diffusion_qwenimage21_rope``), so it fuses into the QK-norm kernel bit-identically.
-
-The three projections read the same activations, so for torchao int8 / fp8 weights (and plain
-bf16) they are concatenated into one Linear: one activation quantization and one GEMM with N = 3 x
-dim instead of three. For int8 that is exact (integer accumulation, per-row activation scale,
-per-output-row weight scale); ``to_q/to_k/to_v`` keep their weights as views of the fused one, so
-no memory is added. The fused Linear is held off the module tree (not a registered submodule) and
-is used only while ``to_q/to_k/to_v`` are still the plain Linears it was built from, so a LoRA or
-any later wrapper falls back to the stock projections.
-
-Guarded by a source fingerprint of the stock ``__call__``: a changed diffusers keeps the stock
-processor. Kill switch: ``UNSLOTH_DIFFUSION_ZIMAGE_FUSED=0``.
+"""Z-Image-Turbo attention inside the regional compile: RoPE as ``addcmul`` in the card's probed fma form
+(bit-identical to the complex multiply Inductor cannot lower) and one fused QKV GEMM (exact for int8:
+per-row scales). ``to_q/to_k/to_v`` weights become views of the fused one; the fused Linear is used only
+while they are still the modules it was built from, so LoRA / later wrappers fall back to stock.
+Kill switch: ``UNSLOTH_DIFFUSION_ZIMAGE_FUSED=0``.
 """
 
 from __future__ import annotations
@@ -158,8 +145,7 @@ def _stock_rope(x_in: Any, freqs_cis: Any) -> Any:
 
 
 def _fuse_linears(linears: list) -> Any:
-    """One ``nn.Linear`` over the concatenated outputs, or None. torchao tensors are rebuilt from their own
-    data/attribute lists (every per-output-row tensor concatenated); plain weights are concatenated."""
+    """One ``nn.Linear`` over the concatenated outputs, or None; torchao tensors are rebuilt from their data/attribute lists."""
     import torch
     from torch import nn
 
@@ -214,7 +200,6 @@ def _fuse_linears(linears: list) -> Any:
 
 
 def _share_storage(fused: Any, linears: list) -> bool:
-    """Point each Linear's weight at its row slice of the fused weight (views: no extra memory)."""
     from torch import nn
 
     start = 0
@@ -242,10 +227,9 @@ def install(
     logger: Any = None,
     offload_active: bool = False,
 ) -> dict:
-    """Patch the Z-Image attention processor class now; probe the card and fuse each block's QKV once the weights are
-    on the GPU (immediately if they already are, else right before the first forward). Before the first compile."""
+    """Before the first compile; probe + QKV fusion wait for the first forward if the weights are not on the GPU."""
     if zimage_fused_disabled():
-        uninstall()  # a previous load may have patched the process-global processor class
+        uninstall()  # a previous load may have patched the process-global class
         return {"real_rope": False, "fused_qkv": 0}
     if type(transformer).__name__ != "ZImageTransformer2DModel":
         return {"real_rope": False, "fused_qkv": 0}
@@ -338,13 +322,12 @@ def install_modules(
 
 
 def uninstall(transformer: Any = None) -> None:
-    """Restore the stock processor class method; drop the fused Linears (the per-row views stay valid) and
-    ``transformer``'s pending first-forward install."""
+    """Restore the stock processor; drop the fused Linears (the per-row views stay valid) and pending install."""
     if transformer is not None:
         from .diffusion_int8_fused import cancel_first_call
         cancel_first_call(transformer, "zimage_fused")
     with _LOCK:
-        if "stock" in _STATE:  # else nothing was patched: skip importing the diffusers module
+        if "stock" in _STATE:
             try:
                 import importlib
                 cls = importlib.import_module(_MODULE).ZSingleStreamAttnProcessor

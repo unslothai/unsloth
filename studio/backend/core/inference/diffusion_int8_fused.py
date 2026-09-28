@@ -1,31 +1,15 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Fused int8 activation path between two torchao int8 GEMMs of a DiT feed-forward.
+"""Fused int8 activation path between two torchao int8 GEMMs of a DiT feed-forward: one Triton kernel
+reads the int32 ``_int_mm`` output, applies dequant + GELU(tanh) / SwiGLU and writes int8 + the fp32 row scale.
 
-With torchao's dynamic int8 (``Int8Tensor``, per-row symmetric activations), a DiT MLP runs
-``_int_mm`` (int32 out) -> dequant -> GELU(tanh) -> per-row amax -> quantize -> ``_int_mm``. Inductor
-fuses the middle into one looped reduction that writes the GELU output (bf16 or fp32) to HBM and
-reads it back, about 2x the bytes of a single pass. This module replaces that middle with one
-Triton kernel that reads the int32 GEMM output, rebuilds each value in registers (twice: once for
-the row max of the pre-activation, once to quantize, the second read mostly hitting L2) and writes int8 + the fp32 row
-scale that the next ``_int_mm`` consumes.
+NUMERICS: bit-identical to EAGER torchao + ATen (every bf16 rounding kept, fp contraction off so
+``y * w_scale + bias`` rounds twice, row scale ``bf16(amax / 127.5)`` clamped at fp32 eps, quantizer multiplies by
+the correctly rounded reciprocal). The compiled stock path is NOT eager-exact (Inductor keeps fp32 chains).
 
-NUMERICS: bit-identical to EAGER torchao + ATen (every bf16 rounding of the stock chain is kept,
-fp contraction is off so ``y * w_scale + bias`` rounds twice like the two ATen kernels do, the row
-scale is ``bf16(amax / 127.5)`` clamped at fp32 eps and the quantizer multiplies by the correctly
-rounded reciprocal). The compiled stock path is NOT eager-exact (Inductor keeps fp32 chains), so
-this is at least as close to eager as what it replaces. GELU(tanh) is evaluated as ``y * sigmoid(2u)``
-(same function, ~1e-7 relative), which agreed with ATen on every one of 5e7 test elements after
-the bf16 rounding.
-
-Covered: ``diffusers.models.attention.FeedForward`` with ``GELU(approximate="tanh")`` (FLUX.1 double
-blocks, Qwen-Image, Wan) and ``FluxSingleTransformerBlock`` (attention output concatenated in
-front of the GELU branch before ``proj_out``), and the Z-Image SwiGLU FeedForward (see ``_SWIGLU_ALL_LAYOUTS`` for
-why the other SwiGLU layouts keep the stock path). Anything else, or any weight that is not a plain
-dynamic symmetric per-row ``Int8Tensor``, keeps the stock path. CUDA + Triton only: ROCm, CPU,
-MPS, Windows without the MSVC CRT headers, a Triton older than 3.2 or a failing kernel build leave
-the model untouched. Kill switch: ``UNSLOTH_DIFFUSION_INT8_FUSED=0``.
+Anything but a plain dynamic symmetric per-row ``Int8Tensor`` on CUDA + Triton >= 3.2 keeps the stock path.
+Kill switch: ``UNSLOTH_DIFFUSION_INT8_FUSED=0``.
 """
 
 from __future__ import annotations
@@ -47,7 +31,7 @@ _OP_NAME_SWIGLU = "int8_dq_swiglu_quant"
 _SWIGLU_ATTR = "_unsloth_i8_swiglu"
 
 _LOCK = threading.Lock()
-# The resolved op, read by the traced forwards (dynamo must not trace into the lru_cache'd registration).
+# Read by the traced forwards: dynamo must not trace into the lru_cache'd registration.
 _OP_HANDLE: Any = None
 # Marker on each patched module (no global registry: it would pin an unloaded transformer).
 _MARK = "_unsloth_i8_fused_prev"
@@ -697,13 +681,8 @@ def _split_spec(module: Any) -> Optional[tuple]:
     return None
 
 
-# The SwiGLU kernel is bit-exact vs eager torchao on every layout above, but it only runs on Z-Image. On FLUX.2-klein
-# and Qwen-Image-2.1 it moved the compiled output further from the eager bf16 render than the stock compiled int8 path
-# (12 seed/prompt pairs, 1024px, LPIPS vs the eager bf16 render):
-# FLUX.2-klein-4B mean 0.0631 -> 0.0715, worse on 10 of 12 pairs; Qwen-Image-2.1 mean 0.0386 -> 0.0385 but single
-# pairs moved by up to 0.066 either way (worst +0.051). The stock path moved by at most 0.0001 per pair across three
-# runs. Both are outside that spread, so those layouts keep the stock forward until the
-# drift is understood. The GELU kernel (FeedForward gelu-tanh, FLUX.1 single block) is not affected by this gate.
+# SwiGLU kernel is bit-exact vs eager but moved FLUX.2-klein / Qwen-Image-2.1 compiled renders further from eager bf16
+# (LPIPS) than the stock path: Z-Image only until understood.
 _SWIGLU_ALL_LAYOUTS = False
 
 
@@ -797,9 +776,7 @@ def _prepare_swiglu(module: Any) -> bool:
 
 
 def _exact_linear(*modules: Any) -> bool:
-    """Every module is a plain nn.Linear, not a subclass. A subclass can change what the GEMM sees (ConvRot's
-    ConvRotLinear rotates its input by a block Hadamard first), and the fused forward calls _int_mm on the
-    weight directly, so it would silently skip that step."""
+    """Plain nn.Linear only: a subclass (ConvRotLinear) may transform the input the fused _int_mm would skip."""
     from torch import nn
     return all(type(m) is nn.Linear for m in modules)
 
@@ -903,9 +880,7 @@ def install(
     logger: Any = None,
     offload_active: bool = False,
 ) -> int:
-    """Point every eligible block of ``transformer`` at the fused forward. Idempotent; returns the count (or the
-    count of candidates when the weights are not on the GPU yet: the swap then happens at the first forward).
-    Must run before the first compiled forward (the regional compile traces whatever ``forward`` is then)."""
+    """Idempotent; returns the (candidate) count. Must run before the first compiled forward, which traces ``forward``."""
     if int8_fused_disabled() or transformer is None or offload_active:
         return 0
     if resident_cuda_device(transformer) is not None:
@@ -1013,11 +988,7 @@ def _finalize(transformer: Any, logger: Any = None) -> int:
 
 
 def _hooked_forward_slot(module: Any) -> Optional[tuple]:
-    """(fn_ref, attribute) holding the module's own forward under a live diffusers hook chain, else None.
-
-    ``HookRegistry.register_hook`` replaces the instance ``forward`` with a wrapper and keeps the callable it wrapped in
-    the innermost ``HookFunctionReference``: ``original_forward`` for a hook with ``new_forward`` (FBCache, MagCache),
-    else ``forward``. ``remove_hook`` splices that callable back into ``module.forward``."""
+    """(fn_ref, attribute) holding the module's own forward in the innermost ``HookFunctionReference``, else None."""
     registry = getattr(module, "_diffusers_hook", None)
     fn_refs = getattr(registry, "_fn_refs", None)
     if not fn_refs or "forward" not in getattr(module, "__dict__", {}):
@@ -1052,9 +1023,7 @@ def _cache_hooks(module: Any) -> list:
 
 
 def _drop_compiled_inner(module: Any) -> Any:
-    """A cache hook whose inner forward the speed layer already armed with a compiled wrapper of the STOCK forward
-    (deferred install: the swap runs at the first forward, after the compile setup): drop that arming so the caller
-    re-arms it on the fused forward. Returns the stock inner it wrapped, else None."""
+    """Drop a cache hook's compiled wrapper of the STOCK inner forward (deferred install); return that inner, else None."""
     stock = None
     for hook in _cache_hooks(module):
         inner = getattr(hook, "_unsloth_orig_inner", None)

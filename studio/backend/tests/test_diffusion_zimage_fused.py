@@ -96,9 +96,7 @@ def _inputs(seq = 96):
 @needs_cuda
 @pytest.mark.parametrize("quant", ["bf16", "int8"])
 def test_compiled_block_stays_within_the_compile_floor(quant):
-    # Not bit-identical to the stock compiled block: moving RoPE and the QKV split into Inductor moves its fusion
-    # boundaries, and with emulate_precision_casts off those decide where bf16 rounding happens. The bar is the
-    # stock compile's own distance from eager.
+    # Not bit-identical to stock compiled (fusion boundaries move bf16 roundings): bar = stock compile's distance from eager.
     if quant == "int8":
         pytest.importorskip("torchao.quantization")
     blk = _block(quant)
@@ -155,7 +153,6 @@ class ZImageTransformer2DModel(torch.nn.Module):
 def test_kill_switch_on_a_later_load_restores_the_processor(monkeypatch):
     cls = zmod.ZSingleStreamAttnProcessor
     stock = cls.__dict__["__call__"]
-    # CPU weights: the class is patched now, the modules at the first forward.
     zf.install(ZImageTransformer2DModel())
     assert getattr(cls.__dict__["__call__"], "__unsloth_zimage_fused__", False)
     monkeypatch.setenv(zf.ZIMAGE_FUSED_ENV, "0")

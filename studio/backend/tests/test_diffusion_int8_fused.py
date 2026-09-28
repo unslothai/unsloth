@@ -29,8 +29,7 @@ needs_cuda = pytest.mark.skipif(
 
 
 def _require_int8tensor(module):
-    """Skip when this torchao's int8 config built the legacy tensor (torchao <= 0.17 ships the ``Int8Tensor`` class
-    but its config does not use it); the fused path then keeps the stock forward, so there is nothing to compare."""
+    """Skip when the torchao (<= 0.17) int8 config builds the legacy tensor: the fused path then keeps stock."""
     for m in module.modules():
         if isinstance(m, torch.nn.Linear) and type(m.weight).__name__ not in (
             "Parameter",
@@ -286,7 +285,6 @@ def _quantize(module):
 @needs_cuda
 @pytest.mark.parametrize("kind", ["diffusers_swiglu", "zimage", "flux2", "qwenimage21"])
 def test_swiglu_mlps_bit_identical_to_stock_eager(kind, monkeypatch):
-    # Kernel exactness on every SwiGLU layout, including the ones the quality gate keeps on the stock path.
     monkeypatch.setattr(fused, "_SWIGLU_ALL_LAYOUTS", True)
     torch.manual_seed(0)
     if kind == "diffusers_swiglu":
@@ -325,7 +323,6 @@ def _assert_within_compile_floor(compiled, stock_compiled, eager):
 
 @needs_cuda
 def test_cpu_placed_model_is_swapped_at_the_first_forward():
-    # Studio runs the speed optims BEFORE placement: install() on CPU weights defers to the first call.
     ff = _quantized_ff().cpu()
     assert fused.install(ff) == 1
     assert not fused.is_installed(ff)
@@ -346,8 +343,7 @@ def test_offload_skips_install():
 @needs_cuda
 @pytest.mark.parametrize("kind", ["gelu", "swiglu"])
 def test_convrot_linears_keep_the_stock_forward(kind, monkeypatch):
-    # MiniMax-H3's hosted int8 checkpoint swaps its MLP Linears onto ConvRotLinear, which rotates the input by a block
-    # Hadamard before the GEMM. The fused forward calls _int_mm on the weight directly and would skip the rotation.
+    # MiniMax-H3's ConvRotLinear rotates the input before the GEMM; the fused _int_mm would skip it.
     from core.inference.diffusion_convrot import _install_rotation
 
     if kind == "gelu":
@@ -392,8 +388,7 @@ def _swiglu_module(kind):
 
 @pytest.mark.parametrize("kind", ["diffusers_swiglu", "zimage", "flux2", "qwenimage21"])
 def test_swiglu_quality_gate_allows_zimage_only(kind):
-    # FLUX.2 and Qwen-Image-2.1 drifted further from bf16 with the fused SwiGLU than the stock compiled path does
-    # (see _SWIGLU_ALL_LAYOUTS). Device-free: the gate is a layout check, the candidate count drives the deferred swap.
+    # See _SWIGLU_ALL_LAYOUTS.
     ff = _swiglu_module(kind)
     assert fused._swiglu_candidate(ff) is (kind == "zimage")
     assert fused._swiglu_layout_allowed(ff) is (kind == "zimage")
@@ -464,8 +459,7 @@ def _flux_inputs():
 
 
 def _fake_cuda_install(monkeypatch, model):
-    """Run the real _finalize swap on a CPU model: the fused forwards fall back to the class forward off CUDA, so the
-    outputs stay exact and only the forward plumbing is under test. Returns the list the swapped forward appends to."""
+    """Real _finalize swap on CPU (fused forwards fall back off CUDA); returns the list the swapped forward appends to."""
     calls = []
     real = fused._flux_single_forward
 
@@ -501,8 +495,7 @@ def _two_steps(model):
 
 
 def test_fused_flux_single_keeps_fbcache_hooks_installed_before(monkeypatch):
-    # Studio engages the step cache before the speed layer: the swap must go under the FBCache block hooks, else
-    # the tail hook never records its residuals and the first reuse step reads None.
+    # Swap must go under the FBCache hooks, else the tail hook never records residuals and reuse reads None.
     import copy
 
     model = _tiny_flux()
@@ -516,7 +509,6 @@ def test_fused_flux_single_keeps_fbcache_hooks_installed_before(monkeypatch):
     out = _two_steps(model)
     assert torch.equal(out[0], ref[0]) and torch.equal(out[1], ref[1])
     assert [b.__dict__.get("forward") for b in model.single_transformer_blocks] == wrappers
-    # Step 1 computes every single block through the fused forward; step 2 reuses the cached tail and skips them.
     assert len(calls) == len(model.single_transformer_blocks)
 
     # Turning the cache off splices the hook's inner forward back: the fused forward must survive it.
@@ -542,7 +534,6 @@ def test_fused_flux_single_then_fbcache_and_uninstall_keeps_hooks(monkeypatch):
     out = _two_steps(model)
     assert torch.equal(out[0], ref[0]) and torch.equal(out[1], ref[1])
     assert len(calls) == len(model.single_transformer_blocks)
-    # Uninstall under a live cache restores the stock inner forward and leaves the hook wrappers in place.
     wrappers = [b.__dict__.get("forward") for b in model.single_transformer_blocks]
     fused.uninstall(model)
     assert [b.__dict__.get("forward") for b in model.single_transformer_blocks] == wrappers
@@ -552,8 +543,7 @@ def test_fused_flux_single_then_fbcache_and_uninstall_keeps_hooks(monkeypatch):
 
 
 def test_fused_flux_single_rearms_a_compiled_cache_inner(monkeypatch):
-    # Deferred install: the speed layer already armed the FBCache hooks' inner forward with a compiled wrapper of the
-    # stock forward before the first-forward swap; the swap must re-arm it on the fused forward, not bypass it.
+    # Deferred swap must re-arm the hooks' compiled inner on the fused forward, not bypass it.
     import copy
 
     from core.inference import diffusion_cache
@@ -595,8 +585,6 @@ def test_fused_flux_single_rearms_a_compiled_cache_inner(monkeypatch):
 
 @needs_cuda
 def test_int8_flux_under_fbcache_renders_through_the_fused_kernel():
-    # End to end on the real kernel: FBCache engaged first (Studio's order), then the swap; the reuse step must not
-    # fail and both steps must match the same int8 model without the swap.
     import copy
 
     tf = pytest.importorskip("diffusers.models.transformers.transformer_flux")
