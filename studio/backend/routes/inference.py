@@ -8808,6 +8808,52 @@ def _as_ollama_manifest_request(request):
     return request.model_copy(update = {"model_path": ref})
 
 
+def _as_local_scan_folder_request(request):
+    """*request* with a repo id a registered local root holds rewritten to that local path.
+
+    The picker lists scan-folder models under a repo-shaped id, which
+    ModelConfig.from_identifier classifies as remote, so /load would download the
+    repo into the hub cache even though complete weights are on disk. The
+    auto-switch resolver indexes exactly those roots (scan folders included), so
+    a positive hit is the weights the picker showed; a miss leaves the request
+    untouched for the existing remote path.
+    """
+    from core.inference.local_model_resolver import _is_abs_path_id, resolve_local_gguf
+
+    identifier = (request.model_path or "").strip()
+    # Only org/name ids: a bare name goes remote as unsloth/<name>, and a same-stemmed
+    # local file must not win it.
+    if (
+        not identifier
+        or "/" not in identifier
+        or is_ollama_manifest_ref(identifier)
+        or _is_abs_path_id(identifier)
+    ):
+        return request
+    # Same boundary as the manifest rewrite above: a managed account's grant named
+    # the id, and a native lease names one exact artifact a swap must not trade away.
+    if account_access.managed_account() or getattr(request, "native_path_lease", None):
+        return request
+    wanted = f"{identifier}:{request.gguf_variant}" if request.gguf_variant else identifier
+    try:
+        resolved = resolve_local_gguf(wanted)
+    except Exception:
+        # The resolver is best-effort by contract; a load never fails on its bookkeeping.
+        return request
+    if resolved is None:
+        return request
+    load_path, variant, _loader_id = resolved[:3]
+    if is_ollama_manifest_ref(str(load_path)):
+        # An Ollama tag reached by id: the manifest rewriter's lease handling owns it.
+        return request
+    logger.info(
+        "Resolved repo id '%s' to local path %s instead of downloading",
+        identifier,
+        load_path,
+    )
+    return request.model_copy(update = {"model_path": load_path, "gguf_variant": variant})
+
+
 async def _lease_ollama_model_ref(
     request: LoadRequest | ValidateModelRequest, *, operation: str, stack: ExitStack
 ) -> Optional[str]:
@@ -18049,6 +18095,7 @@ async def _load_model_impl(
     if account_access.managed_account() and not native_access_deferred:
         await asyncio.to_thread(account_access.require_model_access, request.model_path)
     request = await asyncio.to_thread(_as_ollama_manifest_request, request)
+    request = await asyncio.to_thread(_as_local_scan_folder_request, request)
     if account_access.managed_account():
         request = request.model_copy(
             update = {"hf_token": account_access.account_hf_token(request.hf_token)}
