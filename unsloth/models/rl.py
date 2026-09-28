@@ -18,11 +18,13 @@ import torch
 from typing import Any, Callable, Dict, List, Literal, Optional, Tuple, Union
 import copyreg
 import importlib
+import importlib.util
 import collections
 import inspect
 import os
 import re
 import sys
+import warnings
 from contextlib import contextmanager
 from unsloth_zoo.compiler import create_new_function
 from unsloth_zoo.log import logger
@@ -1110,6 +1112,19 @@ def _pin_pristine_sft_loss_type(config_cls):
 
 _UNSLOTH_KBIT_PREP_GUARD_FLAG = "_unsloth_skips_kbit_prep_for_peft_models"
 
+# TRL >= 1.7 enables the aux loss whenever output_router_logits is set; dense configs (every expert count 0, e.g.
+# granite-4.0-h-350m) return no router logits and crash on `aux_loss.to`. Real MoE keeps its aux loss.
+_DENSE_ROUTER_AUX_LOSS_OFF = (
+    "if getattr(self, 'aux_loss_enabled', False) and hasattr(getattr(self, 'model', None), 'config'):\n"
+    "    _text_config = self.model.config\n"
+    "    if hasattr(_text_config, 'get_text_config'): _text_config = _text_config.get_text_config()\n"
+    "    _n_experts = [getattr(_text_config, _k) for _k in ('num_local_experts', 'num_experts', 'n_routed_experts', 'moe_num_experts') if isinstance(getattr(_text_config, _k, None), int)]\n"
+    "    if _n_experts and all(_n == 0 for _n in _n_experts):\n"
+    "        self.aux_loss_enabled = False\n"
+    "        _text_config.output_router_logits = False\n"
+    "pass\n"
+)
+
 # The one assignment of `self.aux_loss_enabled` in TRL's GRPOTrainer.__init__, whatever its right-hand
 # side. TRL 1.7.0 wrote `is_moe and args.router_aux_loss_coef != 0.0`; TRL main (#7248) reads the
 # coefficient from the model config when it is None. Anchoring on the exact expression lost the
@@ -1807,15 +1822,15 @@ def _install_grpo_hidden_states_forward_wrapper(model):
     return True
 
 
-def _wrap_grpo_hidden_states_fallback(trainer_cls):
+def _wrap_grpo_hidden_states_fallback(trainer_cls, attributes = ("model", "ref_model")):
     original_init = trainer_cls.__init__
     if getattr(original_init, "_unsloth_grpo_hidden_states_init_wrapped", False):
         return
 
     def wrapped_init(self, *args, **kwargs):
         original_init(self, *args, **kwargs)
-        _install_grpo_hidden_states_forward_wrapper(getattr(self, "model", None))
-        _install_grpo_hidden_states_forward_wrapper(getattr(self, "ref_model", None))
+        for attribute in attributes:
+            _install_grpo_hidden_states_forward_wrapper(getattr(self, attribute, None))
 
     wrapped_init._unsloth_grpo_hidden_states_init_wrapped = True
     trainer_cls.__init__ = wrapped_init
@@ -1993,7 +2008,9 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         _trainer_src = inspect.getsource(RLTrainer)
         _trainer_module = inspect.getmodule(RLTrainer)
         _trainer_module_src = inspect.getsource(_trainer_module) if _trainer_module else ""
-        if "trl.experimental" in _trainer_src or "trl.experimental" in _trainer_module_src:
+        if not RLTrainer.__module__.startswith("trl.experimental.") and (
+            "trl.experimental" in _trainer_src or "trl.experimental" in _trainer_module_src
+        ):
             for _parent in RLTrainer.__mro__[1:]:
                 if _parent is object:
                     continue
@@ -2011,7 +2028,9 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         _config_src = inspect.getsource(RLConfig)
         _config_module = inspect.getmodule(RLConfig)
         _config_module_src = inspect.getsource(_config_module) if _config_module else ""
-        if "trl.experimental" in _config_src or "trl.experimental" in _config_module_src:
+        if not RLConfig.__module__.startswith("trl.experimental.") and (
+            "trl.experimental" in _config_src or "trl.experimental" in _config_module_src
+        ):
             for _parent in RLConfig.__mro__[1:]:
                 if _parent is object:
                     continue
@@ -2571,6 +2590,19 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                     "        args.padding_free = False\n"
                 )
             extra_args += max_length_check
+        elif trainer_file in ("dpo_trainer", "kto_trainer", "orpo_trainer", "cpo_trainer"):
+            # The fast forward cuts input_ids to model.max_seq_length but these trainers build labels at args.max_length, so a longer row crashes the logps gather.
+            extra_args += (
+                "_unsloth_model_msl = getattr(model, 'max_seq_length', None)\n"
+                "if isinstance(_unsloth_model_msl, int) and _unsloth_model_msl > 0 and hasattr(args, 'max_length'):\n"
+                "    if args.max_length is None or args.max_length > _unsloth_model_msl:\n"
+                "        print('Unsloth: `max_length = ' + str(args.max_length) + '` exceeds the model max_seq_length of ' + str(_unsloth_model_msl) + ', so it is reduced to ' + str(_unsloth_model_msl) + '.')\n"
+                "        args.max_length = _unsloth_model_msl\n"
+                # ORPO / CPO / KTO resolve a None prompt limit to 128, which must stay below max_length.
+                "        _unsloth_mpl = getattr(args, 'max_prompt_length', 0)\n"
+                "        if (_unsloth_mpl is None and args.max_length <= 128) or (_unsloth_mpl is not None and _unsloth_mpl >= args.max_length):\n"
+                "            args.max_prompt_length = args.max_length // 2\n"
+            )
 
     if "model" in call_args:
         training_check = (
@@ -2672,6 +2704,22 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         )
         RLTrainer_post += vllm_chat_template_sync
 
+    if "model" in call_args:
+        RLTrainer_post += _DENSE_ROUTER_AUX_LOSS_OFF
+
+    # TRL >= 1.7 writes router_aux_loss_coef to the config after MoE CausalLMs cached it at init; nll loss reads the stale copy.
+    if trainer_file == "sft_trainer":
+        RLTrainer_post += (
+            "if hasattr(self, 'aux_loss_enabled') and hasattr(getattr(self, 'model', None), 'modules'):\n"
+            "    for _module in self.model.modules():\n"
+            "        _config = getattr(_module, 'config', None)\n"
+            "        if 'router_aux_loss_coef' in vars(_module) and hasattr(_config, 'get_text_config'):\n"
+            "            _coef = getattr(_config.get_text_config(), 'router_aux_loss_coef', None)\n"
+            "            if _coef is not None:\n"
+            "                _module.router_aux_loss_coef = _coef\n"
+            "pass\n"
+        )
+
     # TRL >= 0.28 builds SamplingParams inside VLLMGeneration, which never sees args; hand it the user's vllm_sampling_params so the generate wrapper in rl_replacements.py can apply them.
     if trainer_file == "grpo_trainer":
         RLTrainer_post += (
@@ -2727,7 +2775,6 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         "num_generations": 8,
         # "steps_per_generation": 1,     # Otherwise defaults to ga_steps, which is wrong
         # "generation_batch_size": None, # Useless. If steps_per_generation is set, generation_batch_size clashes
-        "top_k": None,
         "vllm_mode": "colocate",
         "generation_kwargs": {},
         "bf16": False,
@@ -2745,24 +2792,27 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         replacements["warmup_ratio"] = 0.1
 
     for k, v in replacements.items():
-        x = f"{k}( = [^,\n]{{1,}})?,\n"
+        x = rf"\b{k}( = [^,\n]{{1,}})?,\n"
         y = f"'{v}'" if type(v) is str else f"{v}"
         y = f"{k} = {y},\n"
         arguments = re.sub(x, y, arguments)
 
-    # GRPO beta default is 0.001: TRL used 0.04 and now 0.00. See huggingface/trl#3516 and the verl docs.
     if trainer_file == "grpo_trainer":
         replacements = {
-            "loss_type": "bnpo",  # Default GRPO paper
-            "beta": 0.001,  # Recommended as seen in verl
+            # None = unset: resolved below to TRL's default "dapo" (huggingface/trl#3938, TRL >= 0.22; older TRL passes no num_items_in_batch for it, so "bnpo").
+            "loss_type": None,
+            # None = unset: resolved below to 0.0 for dapo / dr_grpo, else 0.001 (verl's recommendation; TRL used 0.04, now 0.0, huggingface/trl#3516).
+            "beta": None,
             "auto_find_batch_size": False,  # Cannot work on GRPO
             # See fengyao.notion.site/off-policy-rl and huggingface/trl#3867.
             "vllm_importance_sampling_correction": False,
-            # TRL >= 1.7.0 enables the MoE router aux loss by default (0.001), but the optimized GRPO forward does not compute it, so default it off; opt in via router_aux_loss_coef > 0.
+            # TRL >= 1.7.0 enables the MoE router aux loss by default (0.001), but the optimized GRPO forward does not compute it, so default it off.
             "router_aux_loss_coef": 0.0,
+            # None = unset, so the dapo check below can tell it from an explicit False.
+            "mask_truncated_completions": None,
         }
         for k, v in replacements.items():
-            x = f"{k}( = [^,\n]{{1,}})?,\n"
+            x = rf"\b{k}( = [^,\n]{{1,}})?,\n"
             y = f"'{v}'" if type(v) is str else f"{v}"
             y = f"{k} = {y},\n"
             arguments = re.sub(x, y, arguments)
@@ -2771,7 +2821,7 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
     if trainer_file == "sft_trainer":
         replacements = {"loss_type": "nll"}
         for k, v in replacements.items():
-            x = f"{k}( = [^,\n]{{1,}})?,\n"
+            x = rf"\b{k}( = [^,\n]{{1,}})?,\n"
             y = f"'{v}'" if type(v) is str else f"{v}"
             y = f"{k} = {y},\n"
             arguments = re.sub(x, y, arguments)
@@ -2841,7 +2891,32 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         )
         extra_args += pad_to_multiple_of
 
+    # Resolve the None loss_type / beta sentinels before any check reads them.
+    if trainer_file == "grpo_trainer" and "loss_type" in call_args:
+        _default_loss_type = "dapo" if trl_version >= Version("0.22.0") else "bnpo"
+        extra_args += (
+            "_unsloth_default_loss_type = loss_type is None\n"
+            "if _unsloth_default_loss_type:\n"
+            f"    loss_type = '{_default_loss_type}'\n"
+        )
+        if _default_loss_type == "dapo" and "beta" in call_args:
+            extra_args += (
+                "    if beta is None:\n"
+                "        print(\"Unsloth: GRPO now defaults to TRL's loss_type = 'dapo' with beta = 0.0. Set loss_type = 'bnpo', beta = 0.001 for Unsloth's previous default.\")\n"
+            )
+    if trainer_file == "grpo_trainer" and "beta" in call_args:
+        extra_args += (
+            "if beta is None:\n"
+            + (
+                "    beta = 0.0 if str(loss_type).lower() in ('dapo', 'dr_grpo') else 0.001\n"
+                if "loss_type" in call_args
+                else "    beta = 0.001\n"
+            )
+            + "\n"
+        )
+
     # Check for loss_type = dr_grpo and scale_rewards for GRPO; DAPO uses per-token loss, so BNPO loss is used. See huggingface/trl#3130 (comment 2746947835).
+    # TRL >= 0.22 defaults scale_rewards to "group" (= True).
     if "loss_type" in call_args and "scale_rewards" in call_args:
         check_dr_grpo = (
             "if loss_type.lower() == 'dr_grpo':\n"
@@ -2851,21 +2926,38 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             "if loss_type.lower() == 'dr_grpo':\n"
             "    if scale_rewards == None:\n"
             "        scale_rewards = True\n"
-            "    elif scale_rewards == True:\n"
-            "        print('Unsloth: The Dr GRPO paper recommends setting `scale_rewards` to False! Will override. Set it to `None` to force False.')\n"
+            "    elif scale_rewards == True or scale_rewards == 'group':\n"
+            "        print('Unsloth: The Dr GRPO paper recommends setting `scale_rewards` to False! Will override. Set it to `None` to keep scaling.')\n"
             "        scale_rewards = False\n"
-            "elif loss_type.lower() == 'dapo':\n"
-            "    if mask_truncated_completions != True:\n"
+            # Only an explicit dapo gets the paper's settings; the default keeps TRL's (masking every truncated row zeroes the update when all are).
+            "elif loss_type.lower() == 'dapo' and not _unsloth_default_loss_type:\n"
+            "    if mask_truncated_completions is None:\n"
             "        print('Unsloth: The DAPO paper recommends `mask_truncated_completions = True` - we will set it.')\n"
-            "    if epsilon_high != 0.28:\n"
+            "        mask_truncated_completions = True\n"
+            "    if epsilon_high is None:\n"
             "        print('Unsloth: The DAPO paper recommends `epsilon_high = 0.28` - we will set it.')\n"
+            "        epsilon_high = 0.28\n"
             "    if beta != 0.0:\n"
             "        print(f'[WARNING] Unsloth: The DAPO paper recommends setting `beta = 0.0` to remove the KL term - You have set it to {beta}.')\n"
-            "    mask_truncated_completions = True\n"
-            "    epsilon_high = 0.28\n"
+            # TRL clamps the CISPO IS weight at epsilon_high itself (not 1 + epsilon_high), so the 0.2 fallback would cap every weight below 1.
+            "elif loss_type.lower() == 'cispo':\n"
+            "    loss_type = 'cispo'\n"
+            "    if epsilon_high is None:\n"
+            "        print('Unsloth: CISPO caps the importance sampling weight at `epsilon_high`; the ScaleRL paper recommends `epsilon_high = 5.0` - we will set it.')\n"
+            "        epsilon_high = 5.0\n"
+            "    elif epsilon_high < 1.0:\n"
+            "        print(f'[WARNING] Unsloth: CISPO caps the importance sampling weight at `epsilon_high` itself, not 1 + epsilon_high, so {epsilon_high} caps every weight below 1. The ScaleRL paper uses 4 to 8.')\n"
+            "if mask_truncated_completions is None:\n"
+            "    mask_truncated_completions = False\n"
             "\n"
         )
+        if trainer_file != "grpo_trainer":
+            check_dr_grpo = "_unsloth_default_loss_type = False\n" + check_dr_grpo
         extra_args += check_dr_grpo
+
+    # GRPO on TRL < 0.20 crashes on the first step (no has_images / images, no reference logps path).
+    if trainer_file == "grpo_trainer" and trl_version < Version("0.20.0"):
+        extra_args += f"raise ImportError('Unsloth: GRPO needs trl >= 0.20.0, but trl=={trl_version} is installed. Please do `pip install --upgrade trl`.')\n"
 
     if (
         "per_device_train_batch_size" in call_args
@@ -3192,7 +3284,7 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
 
     _resolved_module = _trainer_resolved_module or _config_resolved_module
     _model_location = (
-        _resolved_module.__name__ if _resolved_module is not None else f"trl.trainer.{trainer_file}"
+        _resolved_module.__name__ if _resolved_module is not None else trainer.__name__
     )
     created_module = create_new_function(
         f"Unsloth{RLTrainer_name}",
@@ -3298,6 +3390,16 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         except Exception as e:
             logger.info(
                 f"Unsloth: Could not wrap GRPO hidden-state fallback for {RLTrainer_name}: {e}"
+            )
+    if trainer_file == "gkd_trainer" and "_unsloth_trl_compute_loss" in RLTrainer_source:
+        try:
+            _wrap_grpo_hidden_states_fallback(
+                getattr(created_module, f"Unsloth{RLTrainer_name}"),
+                attributes = ("model", "teacher_model"),
+            )
+        except Exception as e:
+            logger.info(
+                f"Unsloth: Could not wrap GKD hidden-state fallback for {RLTrainer_name}: {e}"
             )
 
 
@@ -3588,6 +3690,85 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
     return RLTrainer_source
 
 
+# TRL 0.29+ keeps these only in trl.experimental.<name>.<name>_trainer, which the trl.trainer walk never sees.
+_TRL_EXPERIMENTAL_TRAINERS = (
+    "bco",
+    "cpo",
+    "gkd",
+    "nash_md",
+    "online_dpo",
+    "orpo",
+    "ppo",
+    "prm",
+    "xpo",
+)
+
+
+def _import_trl_experimental_trainers():
+    import trl.trainer
+
+    modules = {}
+    if importlib.util.find_spec("trl.experimental") is None:
+        return modules
+    available = set(dir(trl.trainer))
+    # Silences TRLExperimentalWarning, which the package raises on first import.
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        for name in _TRL_EXPERIMENTAL_TRAINERS:
+            # Still under trl.trainer (a real module, or a 0.26-0.28 shim the walk resolves itself).
+            if f"{name}_trainer" in available:
+                continue
+            try:
+                if importlib.util.find_spec(f"trl.experimental.{name}") is None:
+                    continue
+                modules[name] = importlib.import_module(f"trl.experimental.{name}.{name}_trainer")
+            except Exception as e:
+                logger.info(f"Unsloth: Could not import trl.experimental.{name}: {e}")
+    return modules
+
+
+def _patch_trl_experimental_trainer(name, module):
+    # Run the trl.trainer pipeline on the experimental module through temporary trl.trainer aliases, then rebind the experimental namespaces and drop the aliases so trl's public surface is unchanged.
+    import trl
+    import trl.trainer
+
+    trainer_file = f"{name}_trainer"
+    prefix = name.split("_")[0]
+    names = [
+        x
+        for x in dir(module)
+        if (x.endswith("Trainer") or x.endswith("Config"))
+        and x not in ("Trainer", "Config")
+        and not x.startswith("_")
+        and prefix in x.lower()
+    ]
+    _missing = object()
+    aliased = {(trl.trainer, trainer_file): getattr(trl.trainer, trainer_file, _missing)}
+    for x in names:
+        aliased[(trl.trainer, x)] = trl.trainer.__dict__.get(x, _missing)
+        aliased[(trl, x)] = trl.__dict__.get(x, _missing)
+    try:
+        setattr(trl.trainer, trainer_file, module)
+        for x in names:
+            setattr(trl.trainer, x, getattr(module, x))
+        _patch_trl_rl_trainers(trainer_file)
+        patched = {
+            x: getattr(module, x) for x in names if _is_unsloth_patched_config(getattr(module, x))
+        }
+    finally:
+        for (owner, attr), value in aliased.items():
+            if value is _missing:
+                owner.__dict__.pop(attr, None)
+            else:
+                setattr(owner, attr, value)
+    package = sys.modules.get(f"trl.experimental.{name}")
+    config_module = sys.modules.get(f"trl.experimental.{name}.{name}_config")
+    for owner in (package, config_module):
+        for x, cls in patched.items():
+            if owner is not None and hasattr(owner, x):
+                setattr(owner, x, cls)
+
+
 def patch_trl_rl_trainers():
     import trl.trainer
 
@@ -3595,11 +3776,18 @@ def patch_trl_rl_trainers():
     all_trainers = [
         x for x in all_trainers if x.islower() and x.endswith("_trainer") and x != "base_trainer"
     ]
+    # Imported before the walk rebinds trl.trainer.sft_trainer.SFTTrainer, so GKDTrainer(SFTTrainer) keeps TRL's own base whatever the user's import order.
+    experimental = _import_trl_experimental_trainers()
     for trainer in all_trainers:
         try:
             _patch_trl_rl_trainers(trainer)
         except Exception as e:
             logger.warning_once(f"Unsloth: Could not patch trl.trainer.{trainer}: {e}")
+    for name, module in experimental.items():
+        try:
+            _patch_trl_experimental_trainer(name, module)
+        except Exception as e:
+            logger.warning_once(f"Unsloth: Could not patch trl.experimental.{name}: {e}")
     return
 
 

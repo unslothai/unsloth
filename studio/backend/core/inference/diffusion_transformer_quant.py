@@ -204,6 +204,110 @@ def apply_small_m_padding(
     return wrapped
 
 
+# Per-family int8 ConvRot (group, rotated fqn suffixes); not an exclusion, so plain artifacts still validate.
+_INT8_FAMILY_CONVROT: dict[str, tuple[int, tuple[str, ...]]] = {
+    "qwen-image-2.1": (
+        256,
+        (
+            "attn.to_q",
+            "attn.to_k",
+            "attn.to_v",
+            "attn.to_out.0",
+            "img_mlp.gate_layer",
+            "img_mlp.proj",
+            "img_mlp.out",
+        ),
+    ),
+}
+
+
+_INT8_FAMILY_CONVROT_FILENAME: dict[str, str] = {
+    "qwen-image-2.1": "Qwen-Image-2.1-INT8-ConvRot.safetensors",
+}
+
+INT8_CONVROT_ENV = "UNSLOTH_DIFFUSION_INT8_CONVROT"
+
+
+def int8_convrot_enabled() -> bool:
+    return (_os.environ.get(INT8_CONVROT_ENV) or "").strip().lower() in ("1", "on", "true", "yes")
+
+
+def convrot_spec_for_scheme(
+    scheme: str, family: Optional[str] = None
+) -> tuple[int, tuple[str, ...]]:
+    """The family's int8 ConvRot table entry, regardless of the opt-in flag."""
+    if scheme != TQ_INT8:
+        return 0, ()
+    return _INT8_FAMILY_CONVROT.get(str(family or "").strip().lower(), (0, ()))
+
+
+def convrot_prequant_filename(scheme: str, family: Optional[str] = None) -> Optional[str]:
+    if scheme != TQ_INT8:
+        return None
+    return _INT8_FAMILY_CONVROT_FILENAME.get(str(family or "").strip().lower())
+
+
+def convrot_fqns(
+    transformer: Any, filter_fn: Any, group: int, suffixes: tuple[str, ...]
+) -> tuple[str, ...]:
+    """Quantized Linears matching ``suffixes`` with width divisible by ``group`` (LoRA ``base_layer`` stays exact)."""
+    from .diffusion_convrot import rotatable_fqns
+
+    rotatable, _ = rotatable_fqns(transformer, filter_fn, group)
+    names = tuple(n for s in suffixes for n in (s, s + ".base_layer"))
+    return tuple(f for f in rotatable if any(f == n or f.endswith("." + n) for n in names))
+
+
+def apply_runtime_convrot(
+    transformer: Any,
+    scheme: str,
+    family: Optional[str],
+    filter_fn: Any,
+    *,
+    target: Any = None,
+    logger: Any = None,
+) -> tuple[str, ...]:
+    """Rotate BEFORE quantize_; a later failure leaves an exact dense model, so fallback stays correct."""
+    group, suffixes = convrot_spec_for_scheme(scheme, family)
+    if not group or not int8_convrot_enabled():
+        return ()
+    from .diffusion_convrot import CONVROT_ATTR, CONVROT_KIND, rotate_linears_, warm_rotation_cache
+
+    rotated = rotate_linears_(
+        transformer, convrot_fqns(transformer, filter_fn, group, suffixes), group
+    )
+    if rotated:
+        # forward device, not the weights' (CPU-first quantize)
+        weight = transformer.get_submodule(rotated[0]).weight
+        device = getattr(target, "torch_device", None) or getattr(target, "device", None)
+        dtype = getattr(target, "dtype", None)
+        try:
+            warm_rotation_cache(
+                transformer,
+                device or weight.device,
+                dtype if dtype is not None and not isinstance(dtype, str) else weight.dtype,
+            )
+        except Exception:  # noqa: BLE001 - only saves one recompile
+            pass
+    try:
+        setattr(
+            transformer,
+            CONVROT_ATTR,
+            {"kind": CONVROT_KIND, "group": group, "linears": len(rotated)},
+        )
+    except Exception:  # noqa: BLE001 - diagnostic marker only
+        pass
+    if logger is not None:
+        logger.info(
+            "diffusion.transformer_quant: ConvRot group %d on %d %s linears (%s)",
+            group,
+            len(rotated),
+            scheme,
+            family,
+        )
+    return rotated
+
+
 # nvfp4 raises on an empty activation; HunyuanVideo-1.5's attention trim hits it every t2v render.
 _HUNYUAN15_NVFP4_ZERO_ROW_TOKENS = ("image_embedder", "context_embedder_2")
 _NVFP4_FAMILY_ZERO_ROW_NAME_TOKENS: dict[str, tuple[str, ...]] = {
@@ -323,6 +427,18 @@ _FAMILY_AUTO_PREFER: dict[str, _AutoPrefer] = {
         backend = "flashinfer",
     ),
 }
+
+
+# AUTO keeps bf16 while it fits for these (measured with both sides compiled: INT8 was at most ~5% faster and failed the
+# default-on LPIPS bar); when bf16 would offload, INT8 is still picked.
+_FAMILY_AUTO_BF16_WHEN_RESIDENT: dict[str, str] = {
+    "lumina-2": "INT8 is no faster than compiled bf16 on a card that holds bf16 and changes image detail",
+    "hidream-i1": "INT8 is barely faster than compiled bf16 on a card that holds bf16 and changes image detail",
+}
+
+
+def auto_bf16_when_resident_reason(family: Optional[str]) -> Optional[str]:
+    return _FAMILY_AUTO_BF16_WHEN_RESIDENT.get(str(family or "").strip().lower())
 
 
 # Schemes denied for TRAINING on top of the inference table. Training holds a stricter bar because the evidence above
@@ -530,10 +646,12 @@ def _strip_paths(text: str) -> str:
 _SMOKE_CACHE: dict[tuple[str, str], bool] = {}
 
 
-def _smoke_cache_device_key(device: str) -> str:
-    """``device`` qualified with the current CUDA index, so each card is validated on its own."""
+def _smoke_cache_device_key(device: str, ordinal: Optional[int] = None) -> str:
+    """``device`` qualified with the current CUDA index, or ``ordinal`` when given."""
     if device != "cuda":
         return device
+    if ordinal is not None:
+        return f"cuda:{ordinal}"
     try:
         import torch
         return f"cuda:{torch.cuda.current_device()}"
@@ -951,6 +1069,23 @@ def select_transformer_quant_scheme(
     return None
 
 
+def explicit_scheme_cached_ok(
+    target: Any,
+    requested: Optional[str],
+    family: Optional[str] = None,
+) -> bool:
+    """``select_transformer_quant_scheme(...) == requested`` for an explicit scheme, read from ``_SMOKE_CACHE`` only:
+    never spawns the smoke probe, so a caller that must not touch the GPU (training active) can ask. Unprobed counts
+    as supported, like ``unproven_ok``; a probed failure does not."""
+    requested = normalize_transformer_quant(requested)
+    if requested in (None, TQ_AUTO) or not dense_transformer_supported(target):
+        return False
+    if nvfp4_blocked(requested) or _family_denied(family, requested, None):
+        return False
+    card = _smoke_cache_device_key(str(getattr(target, "device", "cuda")))
+    return _SMOKE_CACHE.get((requested, card), True)
+
+
 def dense_quant_host_capable(target: Any) -> bool:
     """Whether an ``auto`` request could engage a dense scheme on this host.
 
@@ -978,10 +1113,11 @@ def dense_quant_host_capable(target: Any) -> bool:
     # import fails, so an ABI skew would advertise a fast path every load then falls back from.
     if torchao_unavailable_reason() is not None:
         return False
-    cap = _capability()
+    ordinal = getattr(target, "ordinal", None)
+    cap = _capability(ordinal)
     if cap is None:
         return False
-    card = _smoke_cache_device_key(str(getattr(target, "device", "cuda")))
+    card = _smoke_cache_device_key(str(getattr(target, "device", "cuda")), ordinal)
     for floor, schemes in _AUTO_LADDER:
         if cap >= floor:
             return any(_SMOKE_CACHE.get((scheme, card), True) for scheme in without_nvfp4(schemes))
@@ -1079,11 +1215,12 @@ def auto_scheme_candidates_cached(target: Any, family: Optional[str] = None) -> 
     published ladder sharpens as loads record verdicts instead of paying for them here."""
     if not dense_transformer_supported(target):
         return ()
-    cap = _capability()
+    ordinal = getattr(target, "ordinal", None)
+    cap = _capability(ordinal)
     if cap is None:
         return ()
     device = str(getattr(target, "device", "cuda"))
-    card = _smoke_cache_device_key(device)
+    card = _smoke_cache_device_key(device, ordinal)
     return tuple(
         scheme
         for scheme in _auto_scheme_order(family, device, cap)
@@ -1092,10 +1229,10 @@ def auto_scheme_candidates_cached(target: Any, family: Optional[str] = None) -> 
     )
 
 
-def _capability() -> Optional[tuple[int, int]]:
+def _capability(ordinal: Optional[int] = None) -> Optional[tuple[int, int]]:
     try:
         import torch
-        major, minor = torch.cuda.get_device_capability()
+        major, minor = torch.cuda.get_device_capability(ordinal)
         return (int(major), int(minor))
     except Exception:
         return None
@@ -1733,15 +1870,17 @@ def quantize_transformer(
         # exclude_tokens_for_scheme, whose list is baked into prequant metadata.
         exclude = exclude_tokens_for_scheme(scheme, family) + ("lora_",)
         divisible = divisible_for_scheme(scheme)
+        filter_fn = make_filter_fn(
+            min_features,
+            exclude_name_tokens = exclude,
+            require_bf16 = scheme in _REQUIRE_BF16_SCHEMES,
+            require_divisible = divisible,
+        )
+        apply_runtime_convrot(transformer, scheme, family, filter_fn, target = target, logger = logger)
         quantize_(
             transformer,
             _make_quant_config(scheme, fast_accum = fast_accum),
-            filter_fn = make_filter_fn(
-                min_features,
-                exclude_name_tokens = exclude,
-                require_bf16 = scheme in _REQUIRE_BF16_SCHEMES,
-                require_divisible = divisible,
-            ),
+            filter_fn = filter_fn,
         )
         # Pad this family's small-M linears now that the weights are quantized and in place. Not best-effort: a raise
         # here means the transformer is quantized but not safely compilable, so it falls into the except below and the
