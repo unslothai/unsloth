@@ -535,7 +535,7 @@ test("a project's home and the Projects page use the Library project menu", () =
   assert.match(page, /<SectionNameDialog\s+open=\{active && creatingSection\}/);
   const projects = readSrc("features/chat/projects-page.tsx");
   assert.match(projects, /<ProjectMenuItems\s+project=\{project\}\s+onNewChat=/);
-  assert.match(projects, /onNewChat=\{\(\) => openProject\(project\.id\)\}/);
+  assert.match(projects, /onNewChat=\{\(\) => newChatInProject\(project\.id\)\}/);
   // Filed the same way everywhere, through the shared hook.
   for (const source of [page, projects, readSrc("features/library/chats/chats-library.tsx"), items]) {
     assert.match(source, /useFileProjectInSection\(\)/);
@@ -558,7 +558,7 @@ test("Import chats sits in the project and section menus", () => {
   assert.match(items, /pickAndImportChats\(\{ projectId: null, sectionId: section\.id, name: section\.name \}\)/);
   const runner = readSrc("features/chat/utils/import-chats.ts");
   assert.match(runner, /onSaved: \(threadId\) => threadIds\.push\(threadId\)/);
-  assert.match(runner, /setChatsSection\(threadIds, target\.sectionId\)/);
+  assert.match(runner, /setChatsSection\(\[\.\.\.new Set\(threadIds\)\], target\.sectionId\)/);
   // The Projects page imports through the same runner.
   assert.match(readSrc("features/chat/projects-page.tsx"), /await runChatImport\(source, \{/);
 });
@@ -654,4 +654,22 @@ test("Reset all local preferences clears the Chats library preferences", () => {
   const general = readSrc("features/settings/tabs/general-tab.tsx");
   const keys = general.slice(general.indexOf("const PREFS_KEYS"), general.indexOf("];", general.indexOf("const PREFS_KEYS")));
   assert.match(keys, /LIBRARY_CHATS_PREFS_STORAGE_KEY/);
+});
+
+test("a New chat from a project's menu on the Projects page is a saved chat with an empty composer", () => {
+  const page = readSrc("features/chat/projects-page.tsx");
+  const body = page.slice(page.indexOf("function newChatInProject("), page.indexOf("function newChatInProject(") + 300);
+  assert.match(body, /clearNewChatDraft\(\);/);
+  assert.match(body, /setIncognito\(false\)/);
+});
+
+test("imported comparisons are filed under their pair id, the row the section lists", () => {
+  const source = readSrc("features/chat/utils/chat-import.ts");
+  assert.match(source, /options\.onSaved\?\.\(conversation\.thread\?\.pairId \?\? conversation\.threadId\)/);
+  assert.doesNotMatch(source, /saved\(conversation\.threadId\)/);
+});
+
+test("a favorite chat card dates from its last edit", () => {
+  const items = readSrc("features/library/chats/chats-items.tsx");
+  assert.doesNotMatch(items, /time=\{chat\.updatedAt\}/);
 });

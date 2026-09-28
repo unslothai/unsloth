@@ -104,6 +104,7 @@ import {
   normalizeSectionName,
   useSidebarOrganizationStore,
 } from "./stores/sidebar-organization-store";
+import { clearNewChatDraft } from "./utils/composer-draft";
 import { runChatImport } from "./utils/import-chats";
 
 // Reveal this many more projects each time the user scrolls near the bottom.
@@ -433,6 +434,13 @@ export function ProjectsPage() {
     runtime.setActiveThreadId(null);
     runtime.setActiveProjectId(projectId);
     navigate({ to: "/chat", search: { project: projectId } });
+  }
+
+  // A saved chat with an empty composer, as the sidebar's New chat.
+  function newChatInProject(projectId: string) {
+    clearNewChatDraft();
+    useChatRuntimeStore.getState().setIncognito(false);
+    openProject(projectId);
   }
 
   async function handleBulkProjectExport(
@@ -858,7 +866,7 @@ export function ProjectsPage() {
                     {/* The Library's project menu. */}
                     <ProjectMenuItems
                       project={project}
-                      onNewChat={() => openProject(project.id)}
+                      onNewChat={() => newChatInProject(project.id)}
                       onEdit={() => setEditing(project)}
                       onDelete={() => openProjectDelete(project)}
                       onNewSection={() => setSectionFor(project)}

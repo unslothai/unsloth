@@ -1825,7 +1825,7 @@ export function FavoriteChatTile({ chat }: { chat: SidebarItem }) {
     <FavoriteTile
       title={chatTitle(chat, t)}
       icon={icon}
-      time={chat.updatedAt}
+      time={chatTime(chat, "modified")}
       onOpen={() => actions.open(chat)}
       menu={<ChatMenu chat={chat} archived={false} variant="card" />}
     />

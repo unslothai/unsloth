@@ -57,7 +57,7 @@ export async function runChatImport(source: ImportSource, target: ChatImportTarg
       return;
     }
     if (target.sectionId) {
-      useSidebarOrganizationStore.getState().setChatsSection(threadIds, target.sectionId);
+      useSidebarOrganizationStore.getState().setChatsSection([...new Set(threadIds)], target.sectionId);
     }
     const dest = target.name ?? "Recents";
     toast.success(
