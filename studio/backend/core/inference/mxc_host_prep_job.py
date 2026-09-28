@@ -96,7 +96,7 @@ def _run(job: HostPrepJob, proc: subprocess.Popen) -> None:
         # No timeout: killing the helper mid ACL propagation would leave the host half prepared.
         code = proc.wait()
     except Exception as exc:  # noqa: BLE001 - reported on the job, never raised into a thread
-        tail.append(f"Studio lost track of the preparation run: {exc}")
+        tail.append(f"Unsloth lost track of the preparation run: {exc}")
         code = None
     lines = list(tail)
     job.output_tail = lines

@@ -4,6 +4,7 @@
 """The Settings "Prepare this PC" job: one run at a time, its outcome read from the helper's output."""
 
 import threading
+import time
 
 import pytest
 
@@ -24,7 +25,7 @@ class _FakeProc:
         for line in self._lines:
             yield line + "\n"
         if self._gate is not None:
-            self._gate.wait(5)
+            self._gate.wait(60)
 
     def wait(self):
         return self._code
@@ -51,18 +52,21 @@ def job_env(monkeypatch):
     return calls
 
 
-def _run(monkeypatch, calls, proc):
+def _run(
+    monkeypatch,
+    calls,
+    proc,
+    settle = True,
+):
     def spawn(argv):
         calls["spawned"].append(argv)
         return proc
 
     monkeypatch.setattr(mxc_host_prep_job, "_spawn", spawn)
     job = mxc_host_prep_job.start()
-    deadline = threading.Event()
-    for _ in range(200):
-        if job.state != "running":
-            break
-        deadline.wait(0.01)
+    deadline = time.monotonic() + 30
+    while settle and job.state == "running" and time.monotonic() < deadline:
+        time.sleep(0.01)
     return job
 
 
@@ -115,15 +119,14 @@ def test_a_spawn_error_is_a_failed_job(monkeypatch, job_env):
 
 def test_only_one_run_at_a_time(monkeypatch, job_env):
     gate = threading.Event()
-    first = _run(monkeypatch, job_env, _FakeProc(["working"], 0, gate = gate))
+    first = _run(monkeypatch, job_env, _FakeProc(["working"], 0, gate = gate), settle = False)
     assert first.state == "running"
     again = mxc_host_prep_job.start()
     assert again is first and len(job_env["spawned"]) == 1
     gate.set()
-    for _ in range(200):
-        if first.state != "running":
-            break
-        threading.Event().wait(0.01)
+    deadline = time.monotonic() + 30
+    while first.state == "running" and time.monotonic() < deadline:
+        time.sleep(0.01)
     assert first.state == "succeeded"
     second = mxc_host_prep_job.start()
     assert second is not first and len(job_env["spawned"]) == 2

@@ -119,6 +119,11 @@ def windows(monkeypatch):
     monkeypatch.setattr(sys, "platform", "win32")
 
 
+@pytest.fixture
+def posix(monkeypatch):
+    monkeypatch.setattr(sys, "platform", "linux")
+
+
 def _client(account, via_api_key = False):
     app = FastAPI()
     app.include_router(settings.router)
@@ -135,7 +140,7 @@ def _client(account, via_api_key = False):
     return TestClient(app, raise_server_exceptions = False)
 
 
-def test_owner_reads_status_and_it_is_cached_until_refresh(host):
+def test_owner_reads_status_and_it_is_cached_until_refresh(host, posix):
     calls, _saved = host
     with _client(OWNER) as client:
         first = client.get("/sandbox")
@@ -217,7 +222,7 @@ def test_malformed_bodies_are_refused(host, windows, body):
         assert client.put("/sandbox", json = body).status_code == 422
 
 
-def test_settings_are_windows_only(host):
+def test_settings_are_windows_only(host, posix):
     with _client(OWNER) as client:
         assert client.put("/sandbox", json = {"allow_dacl_fallback": True}).status_code == 409
         assert client.post("/sandbox/prepare").status_code == 409
