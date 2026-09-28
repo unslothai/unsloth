@@ -250,7 +250,11 @@ def chat_history(messages: list[dict]) -> list[dict]:
     return ([{"role": "system", "content": "\n\n".join(system)}] if system else []) + rest
 
 
-def finish_reason(res: Any, calls: list, out_of_room: bool = False) -> str:
+def finish_reason(
+    res: Any,
+    calls: list,
+    out_of_room: bool = False,
+) -> str:
     """``out_of_room``: the token budget or the context is used up, which OpenVINO can report as a
     plain stop (it generates nothing when the prompt fills the context)."""
     if calls:
@@ -290,7 +294,11 @@ def model_context(model_dir: str, cache_gb: Optional[float] = None) -> Optional[
     return min(context, capacity) if context else capacity
 
 
-def build_app(pipe, model_id: str, context: Optional[int] = None) -> FastAPI:
+def build_app(
+    pipe,
+    model_id: str,
+    context: Optional[int] = None,
+) -> FastAPI:
     tok = pipe.get_tokenizer()
     lock = threading.Lock()
     app = FastAPI()
@@ -361,9 +369,14 @@ def build_app(pipe, model_id: str, context: Optional[int] = None) -> FastAPI:
                 "completion_tokens": done,
                 "total_tokens": prompt_tokens + done,
             }
+
         rid, created = f"chatcmpl-{uuid.uuid4().hex[:24]}", int(time.time())
 
-        def chunk(delta: dict, finish: Optional[str] = None, **extra) -> str:
+        def chunk(
+            delta: dict,
+            finish: Optional[str] = None,
+            **extra,
+        ) -> str:
             body = {
                 "id": rid,
                 "object": "chat.completion.chunk",
@@ -450,9 +463,7 @@ def build_app(pipe, model_id: str, context: Optional[int] = None) -> FastAPI:
                 yield chunk({"content": rest})
             if calls:
                 yield chunk({"tool_calls": calls})
-            yield chunk(
-                {}, finish(result.get("res"), calls), usage = usage(result.get("res"))
-            )
+            yield chunk({}, finish(result.get("res"), calls), usage = usage(result.get("res")))
             yield "data: [DONE]\n\n"
 
         async def guarded():
@@ -493,7 +504,10 @@ def main() -> None:
     except Exception:
         pipe = ov_genai.LLMPipeline(args.model, args.device, **props)
     uvicorn.run(
-        build_app(pipe, args.model_id, model_context(args.model, sched.cache_size)), host = "127.0.0.1", port = args.port, log_level = "warning"
+        build_app(pipe, args.model_id, model_context(args.model, sched.cache_size)),
+        host = "127.0.0.1",
+        port = args.port,
+        log_level = "warning",
     )
 
 

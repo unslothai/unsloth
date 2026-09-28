@@ -57,8 +57,14 @@ FRANCE = [{"role": "user", "content": "Capital of France? One word."}]
 MARKUP = ("<think>", "</think>", "<tool_call>")
 
 
-def post(body: dict, timeout: float = 300, headers = AUTH) -> httpx.Response:
-    return httpx.post(URL, json = {"model": "x", "max_tokens": 800, **body}, headers = headers, timeout = timeout)
+def post(
+    body: dict,
+    timeout: float = 300,
+    headers = AUTH,
+) -> httpx.Response:
+    return httpx.post(
+        URL, json = {"model": "x", "max_tokens": 800, **body}, headers = headers, timeout = timeout
+    )
 
 
 def chat(body: dict, timeout: float = 300) -> dict:
@@ -77,7 +83,14 @@ def chat(body: dict, timeout: float = 300) -> dict:
         }
     lines = [l[6:] for l in r.text.splitlines() if l.startswith("data: ")]
     assert lines and lines[-1] == "[DONE]", lines[-3:]
-    out = {"content": "", "reasoning": "", "calls": {}, "finish": None, "usage": None, "finishes": 0}
+    out = {
+        "content": "",
+        "reasoning": "",
+        "calls": {},
+        "finish": None,
+        "usage": None,
+        "finishes": 0,
+    }
     for raw in lines[:-1]:
         event = json.loads(raw)
         out["usage"] = event.get("usage") or out["usage"]
@@ -86,7 +99,9 @@ def chat(body: dict, timeout: float = 300) -> dict:
             out["content"] += delta.get("content") or ""
             out["reasoning"] += delta.get("reasoning_content") or ""
             for tc in delta.get("tool_calls") or []:
-                slot = out["calls"].setdefault(tc.get("index", 0), {"function": {"name": "", "arguments": ""}})
+                slot = out["calls"].setdefault(
+                    tc.get("index", 0), {"function": {"name": "", "arguments": ""}}
+                )
                 fn = tc.get("function") or {}
                 slot["function"]["name"] += fn.get("name") or ""
                 slot["function"]["arguments"] += fn.get("arguments") or ""
@@ -132,23 +147,43 @@ def test_opencode_shaped_request():
 
 
 def test_parameter_types_follow_schema():
-    r = chat({"messages": [{"role": "user", "content": "Read the first 5 lines of a.txt (use limit)"}], "tools": [READ]})
+    r = chat(
+        {
+            "messages": [
+                {"role": "user", "content": "Read the first 5 lines of a.txt (use limit)"}
+            ],
+            "tools": [READ],
+        }
+    )
     a = args_of(r["calls"][0])
     assert a["limit"] == 5 and isinstance(a["path"], str)
 
 
 def test_non_ascii_argument_preserved():
-    r = chat({"messages": [{"role": "user", "content": "Прочитай файл отчёт_2026.txt"}], "tools": [READ]})
+    r = chat(
+        {"messages": [{"role": "user", "content": "Прочитай файл отчёт_2026.txt"}], "tools": [READ]}
+    )
     assert args_of(r["calls"][0])["path"] == "отчёт_2026.txt"
 
 
 def test_picks_the_right_tool():
-    r = chat({"messages": [{"role": "user", "content": "What's the weather in Berlin?"}], "tools": [READ, WEATHER], "stream": True})
+    r = chat(
+        {
+            "messages": [{"role": "user", "content": "What's the weather in Berlin?"}],
+            "tools": [READ, WEATHER],
+            "stream": True,
+        }
+    )
     assert [c["function"]["name"] for c in r["calls"]] == ["weather"]
 
 
 def test_parallel_calls_have_distinct_ids():
-    msgs = [{"role": "user", "content": "Get the weather in Berlin and in Paris. Call the tool for both cities at once."}]
+    msgs = [
+        {
+            "role": "user",
+            "content": "Get the weather in Berlin and in Paris. Call the tool for both cities at once.",
+        }
+    ]
     r = post({"messages": msgs, "tools": [WEATHER]}).json()["choices"][0]["message"]
     cities = sorted(args_of(c)["city"] for c in r["tool_calls"])
     assert cities == ["Berlin", "Paris"]
@@ -158,9 +193,17 @@ def test_parallel_calls_have_distinct_ids():
 @pytest.mark.parametrize("stream", [False, True])
 def test_answer_uses_tool_result(stream):
     msgs = ASK_READ + [
-        {"role": "assistant", "content": None, "tool_calls": [
-            {"id": "call_1", "type": "function", "function": {"name": "read", "arguments": '{"path":"a.txt"}'}}
-        ]},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "read", "arguments": '{"path":"a.txt"}'},
+                }
+            ],
+        },
         {"role": "tool", "tool_call_id": "call_1", "content": "The secret code is 7429."},
     ]
     r = chat({"messages": msgs, "tools": [READ], "stream": stream})
@@ -169,7 +212,13 @@ def test_answer_uses_tool_result(stream):
 
 
 def test_no_call_when_not_needed():
-    r = chat({"messages": [{"role": "user", "content": "Say hello. Do not use tools."}], "tools": [READ], "stream": True})
+    r = chat(
+        {
+            "messages": [{"role": "user", "content": "Say hello. Do not use tools."}],
+            "tools": [READ],
+            "stream": True,
+        }
+    )
     no_markup(r)
     assert not r["calls"] and r["content"].strip()
 
@@ -181,7 +230,13 @@ def test_tool_choice_none_never_calls():
 
 
 def test_forced_tool_choice_object_is_accepted():
-    r = chat({"messages": ASK_READ, "tools": [READ], "tool_choice": {"type": "function", "function": {"name": "read"}}})
+    r = chat(
+        {
+            "messages": ASK_READ,
+            "tools": [READ],
+            "tool_choice": {"type": "function", "function": {"name": "read"}},
+        }
+    )
     assert r["calls"] and r["calls"][0]["function"]["name"] == "read"
 
 
@@ -200,16 +255,29 @@ def test_null_parameters_schema():
 
 def test_broken_arguments_in_history():
     msgs = ASK_READ + [
-        {"role": "assistant", "content": None, "tool_calls": [
-            {"id": "c", "type": "function", "function": {"name": "read", "arguments": "{broken"}}
-        ]},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "c",
+                    "type": "function",
+                    "function": {"name": "read", "arguments": "{broken"},
+                }
+            ],
+        },
         {"role": "tool", "tool_call_id": "c", "content": "ok"},
     ]
     assert post({"messages": msgs, "tools": [READ]}).status_code == 200
 
 
 def test_orphan_tool_message_is_not_a_server_error():
-    r = post({"messages": ASK_READ + [{"role": "tool", "tool_call_id": "nope", "content": "x"}], "tools": [READ]})
+    r = post(
+        {
+            "messages": ASK_READ + [{"role": "tool", "tool_call_id": "nope", "content": "x"}],
+            "tools": [READ],
+        }
+    )
     assert r.status_code < 500, r.text[:300]
 
 
@@ -248,10 +316,20 @@ def test_reasoning_split_from_content(thinking):
         ({"messages": ASK_READ, "temperature": -1}, 400),
         ({"messages": ASK_READ, "top_p": 1.5}, 400),
         (
-            {"messages": [{"role": "user", "content": [
-                {"type": "text", "text": "what"},
-                {"type": "image_url", "image_url": {"url": "data:image/png;base64,iVBORw0KGgo="}},
-            ]}]},
+            {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": "what"},
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": "data:image/png;base64,iVBORw0KGgo="},
+                            },
+                        ],
+                    }
+                ]
+            },
             400,
         ),
     ],
@@ -263,7 +341,9 @@ def test_rejected_requests(body, status):
 
 
 def test_malformed_json_body():
-    r = httpx.post(URL, content = b"{nope", headers = {**AUTH, "Content-Type": "application/json"}, timeout = 60)
+    r = httpx.post(
+        URL, content = b"{nope", headers = {**AUTH, "Content-Type": "application/json"}, timeout = 60
+    )
     assert r.status_code == 400
 
 
@@ -300,18 +380,27 @@ def test_huge_max_tokens_is_clamped():
 
 def test_prompt_over_context_is_rejected_fast():
     t = time.monotonic()
-    r = post({"messages": [{"role": "user", "content": "hello " * 300_000}], "max_tokens": 10}, timeout = 120)
+    r = post(
+        {"messages": [{"role": "user", "content": "hello " * 300_000}], "max_tokens": 10},
+        timeout = 120,
+    )
     assert r.status_code == 400 and "maximum context length" in r.text
     assert time.monotonic() - t < 30, "rejected before prefill"
 
 
 def _context_limit() -> int:
-    r = post({"messages": [{"role": "user", "content": "hello " * 300_000}], "max_tokens": 10}, timeout = 120)
+    r = post(
+        {"messages": [{"role": "user", "content": "hello " * 300_000}], "max_tokens": 10},
+        timeout = 120,
+    )
     return int(re.search(r"maximum context length is (\d+)", r.text).group(1))
 
 
 def _prompt_tokens(n_hello: int) -> int:
-    r = post({"messages": [{"role": "user", "content": "hello " * n_hello}], "max_tokens": 1}, timeout = 1800)
+    r = post(
+        {"messages": [{"role": "user", "content": "hello " * n_hello}], "max_tokens": 1},
+        timeout = 1800,
+    )
     return r.json()["usage"]["prompt_tokens"] if r.status_code == 200 else -1
 
 
@@ -321,12 +410,25 @@ def test_context_boundary():
     limit = _context_limit()
     overhead = _prompt_tokens(1000) - 1000  # template tokens around the user text
     below = limit - 50 - overhead
-    r = post({"messages": [{"role": "user", "content": "hello " * below + "\nSay OK."}], "max_tokens": 500, "enable_thinking": False}, timeout = 1800)
+    r = post(
+        {
+            "messages": [{"role": "user", "content": "hello " * below + "\nSay OK."}],
+            "max_tokens": 500,
+            "enable_thinking": False,
+        },
+        timeout = 1800,
+    )
     assert r.status_code == 200, r.text[:300]
     body = r.json()
     assert body["usage"]["completion_tokens"] > 0, f"nothing generated at {body['usage']}"
     assert body["usage"]["total_tokens"] <= limit
-    at = post({"messages": [{"role": "user", "content": "hello " * (limit - overhead)}], "max_tokens": 10}, timeout = 120)
+    at = post(
+        {
+            "messages": [{"role": "user", "content": "hello " * (limit - overhead)}],
+            "max_tokens": 10,
+        },
+        timeout = 120,
+    )
     assert at.status_code == 400
 
 
@@ -337,7 +439,13 @@ def test_concurrent_requests_both_answer():
     out = [None, None]
 
     def go(i):
-        out[i] = post({"messages": [{"role": "user", "content": f"Say the number {i + 1}."}], "enable_thinking": False, "max_tokens": 200})
+        out[i] = post(
+            {
+                "messages": [{"role": "user", "content": f"Say the number {i + 1}."}],
+                "enable_thinking": False,
+                "max_tokens": 200,
+            }
+        )
 
     threads = [threading.Thread(target = go, args = (i,)) for i in range(2)]
     for t in threads:
@@ -349,7 +457,12 @@ def test_concurrent_requests_both_answer():
 
 def test_client_disconnect_stops_generation():
     """A dropped stream must free the model: the next request may not wait out 3000 tokens."""
-    body = {"model": "x", "stream": True, "max_tokens": 3000, "messages": [{"role": "user", "content": "Write a very long story."}]}
+    body = {
+        "model": "x",
+        "stream": True,
+        "max_tokens": 3000,
+        "messages": [{"role": "user", "content": "Write a very long story."}],
+    }
     with httpx.stream("POST", URL, json = body, headers = AUTH, timeout = 60) as r:
         for i, _ in enumerate(r.iter_lines()):
             if i > 5:
