@@ -305,28 +305,6 @@ torch_float32 = torch.float32
 torch_float16 = torch.float16
 torch_bfloat16 = torch.bfloat16
 
-# Autocast needs the TORCH device name ("hip" raises). "legacy" = torch 2.1-2.3 zero-arg form: answering
-# False there double-rounds X under autocast. None = torch cannot answer: fail open to no autocast.
-try:
-    torch.is_autocast_enabled(DEVICE_TYPE_TORCH)
-    _AUTOCAST_PROBE = "device"
-except TypeError:
-    try:
-        torch.is_autocast_enabled()
-        _AUTOCAST_PROBE = "legacy"
-    except Exception:
-        _AUTOCAST_PROBE = None
-except Exception:
-    _AUTOCAST_PROBE = None
-
-
-def torch_is_autocast_enabled():
-    if _AUTOCAST_PROBE == "device":
-        return torch.is_autocast_enabled(DEVICE_TYPE_TORCH)
-    if _AUTOCAST_PROBE == "legacy":
-        return torch.is_autocast_enabled()
-    return False
-
 
 if importlib.util.find_spec("torchao") is not None:
     try:
@@ -669,7 +647,6 @@ elif DEVICE_TYPE in ("cuda", "hip") and HAS_CUDA_STREAM:
             )
             out_absmax += offset
 
-            # Kernel must match `out`'s dtype: bf16 bits in an fp32 buffer corrupt silently.
             fx = (
                 cdequantize_blockwise_fp16_nf4
                 if dtype == torch_float16
@@ -1069,6 +1046,10 @@ else:
     pass
 
 
+def _quant_state_dtype(quant_state):
+    return quant_state[2] if type(quant_state) is list else quant_state.dtype
+
+
 def fast_linear_forward(
     proj,
     X,
@@ -1088,7 +1069,8 @@ def fast_linear_forward(
             out = fp8_rowwise_gemv(X, W, W_quant)
         else:
             out = fp8_linear(X, W, W_quant)
-    elif bsz == 1 and q_len == 1:
+    elif bsz == 1 and q_len == 1 and _quant_state_dtype(W_quant) != torch_float32:
+        # The 4bit gemv kernels are fp16/bf16 only.
         out = fast_gemv(X, W, W_quant, out = out)
     else:
         W = fast_dequantize(W.t(), W_quant, use_global_buffer = True)
@@ -1127,6 +1109,8 @@ def matmul_lora(
     s,
     out = None,
 ):
+    dtype = X.dtype
+
     if X.dim() == 3:
         batch, seq_len, d = X.shape
         X = X.view(-1, X.shape[-1])
@@ -1141,29 +1125,18 @@ def matmul_lora(
             W = W.dequantize()
         else:
             W = W.contiguous()
-        # matmul never promotes mixed dtypes; skip under autocast to avoid double rounding.
-        if X.dtype != W.dtype and not torch_is_autocast_enabled():
-            X = X.to(W.dtype)
         out = torch_matmul(X, W.t(), out = out)
     elif W.dtype == torch.float8_e4m3fn:
         out = fp8_linear(X, W, W_quant)
     else:
         W = fast_dequantize(W, W_quant, use_global_buffer = True)
-        if X.dtype != W.dtype and not torch_is_autocast_enabled():
-            X = X.to(W.dtype)
         out = torch_matmul(X, W.t(), out = out)
     if W_quant is not None:
         del W
 
     if A is not None:
-        # In-place addmm_ is not autocast-eligible: follow `out` (autocast dtype), not W.
-        dtype = out.dtype
-        if X.dtype != dtype:
-            X = X.to(dtype)
         A, B = A.t(), B.t()
         XA = torch_matmul(X, A.to(dtype))
-        if XA.dtype != dtype:
-            XA = XA.to(dtype)
         out.addmm_(XA, B.to(dtype), alpha = s)
 
     return out.view(batch, seq_len, -1) if reshape else out

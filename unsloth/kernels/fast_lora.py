@@ -22,12 +22,6 @@ from .utils import (
 )
 
 
-def _dequantize_to(W, W_quant, dtype):
-    """Consumers are addmm_ / out= (not autocast-eligible), so cast explicitly."""
-    W = fast_dequantize(W, W_quant)
-    return W if W.dtype == dtype else W.to(dtype)
-
-
 class LoRA_MLP(torch.autograd.Function):
     """
     ### LoRA weights
@@ -98,10 +92,6 @@ class LoRA_MLP(torch.autograd.Function):
         h = _forward_function(e, g)
         i = matmul_lora(h, downW, downW_quant, downA, downB, downS)
 
-        # Save X in the compute dtype (backward addmm_ is not autocast-eligible); dX gets input_dtype back.
-        ctx.input_dtype = dtype
-        X = X.to(e.dtype)
-
         ctx.custom_saved_tensors = (
             gateW,
             gateW_quant,
@@ -141,8 +131,6 @@ class LoRA_MLP(torch.autograd.Function):
         e = e.view(-1, e.shape[-1])
         g = g.view(-1, g.shape[-1])
         dtype = X.dtype
-        if dY.dtype != dtype:
-            dY = dY.to(dtype)
 
         gateA, gateB, upA, upB, downA, downB = (
             gateA.to(dtype),
@@ -186,21 +174,18 @@ class LoRA_MLP(torch.autograd.Function):
         d_gateB.addmm_(gateA.t() @ X.t(), de, alpha = gateS, beta = 0)
 
         # dX = matmul_lora(df, upW.t(), ...) + matmul_lora(de, gateW.t(), ...), expanded below.
-        upW = _dequantize_to(upW.t(), upW_quant, dtype)
+        upW = fast_dequantize(upW.t(), upW_quant)
         dX = torch.matmul(df, upW.t(), out = X if ctx.inplace else None)
         del upW
         dX.addmm_(df @ upB.t(), upA.t(), alpha = upS)
 
-        gateW = _dequantize_to(gateW.t(), gateW_quant, dtype)
+        gateW = fast_dequantize(gateW.t(), gateW_quant)
         dX.addmm_(de, gateW.t())
         del gateW
         dX.addmm_(de @ gateB.t(), gateA.t(), alpha = gateS)
 
-        dX = dX.view(batch, seq_len, hd)
-        if dX.dtype != ctx.input_dtype:
-            dX = dX.to(ctx.input_dtype)
         return (
-            dX,
+            dX.view(batch, seq_len, hd),
             None,
             None,
             d_gateA.t(),
@@ -396,10 +381,6 @@ class LoRA_QKV(torch.autograd.Function):
             K = K.view(orig_shape[0], orig_shape[1], -1)
             V = V.view(orig_shape[0], orig_shape[1], -1)
 
-        # Save X in the compute dtype (== Q.dtype); dX gets input_dtype back.
-        ctx.input_dtype = dtype
-        X = X.to(Q.dtype)
-
         ctx.custom_saved_tensors = (
             QW,
             QW_quant,
@@ -443,12 +424,6 @@ class LoRA_QKV(torch.autograd.Function):
         dV = dV.view(-1, dV.shape[-1])
         X = X.view(-1, X.shape[-1])
         dtype = X.dtype
-        if dQ.dtype != dtype:
-            dQ = dQ.to(dtype)
-        if dK.dtype != dtype:
-            dK = dK.to(dtype)
-        if dV.dtype != dtype:
-            dV = dV.to(dtype)
 
         QA, QB, KA, KB, VA, VB = (
             QA.to(dtype),
@@ -481,26 +456,23 @@ class LoRA_QKV(torch.autograd.Function):
         d_VB.addmm_(VA.t() @ X.t(), dV, alpha = VS, beta = 0)
 
         # Combine the per-projection derivatives into dX.
-        QW = _dequantize_to(QW.t(), QW_quant, dtype)
+        QW = fast_dequantize(QW.t(), QW_quant)
         dX = torch.matmul(dQ, QW.t(), out = X if ctx.inplace else None)
         del QW
         dX.addmm_(dQ @ QB.t(), QA.t(), alpha = QS)
 
-        KW = _dequantize_to(KW.t(), KW_quant, dtype)
+        KW = fast_dequantize(KW.t(), KW_quant)
         dX.addmm_(dK, KW.t())
         del KW
         dX.addmm_(dK @ KB.t(), KA.t(), alpha = KS)
 
-        VW = _dequantize_to(VW.t(), VW_quant, dtype)
+        VW = fast_dequantize(VW.t(), VW_quant)
         dX.addmm_(dV, VW.t())
         del VW
         dX.addmm_(dV @ VB.t(), VA.t(), alpha = VS)
 
-        dX = dX.view(batch, seq_len, hd)
-        if dX.dtype != ctx.input_dtype:
-            dX = dX.to(ctx.input_dtype)
         return (
-            dX,
+            dX.view(batch, seq_len, hd),
             None,
             None,
             d_QA.t(),
@@ -584,9 +556,6 @@ class LoRA_W(torch.autograd.Function):
     def forward(ctx, X: torch.Tensor, W, W_quant, A, B, S):
         dtype = X.dtype
         XW = matmul_lora(X, W, W_quant, A, B, S)
-        # Save X in the compute dtype (== XW.dtype); dX gets input_dtype back.
-        ctx.input_dtype = dtype
-        X = X.to(XW.dtype)
         ctx.custom_saved_tensors = (
             W,
             W_quant,
@@ -605,8 +574,6 @@ class LoRA_W(torch.autograd.Function):
         dY = dY.reshape(-1, dY.shape[-1])  # Must be reshape
         X = X.reshape(-1, X.shape[-1])  # Must be reshape
         dtype = X.dtype
-        if dY.dtype != dtype:
-            dY = dY.to(dtype)
 
         A, B = A.to(dtype), B.to(dtype)
 
@@ -620,15 +587,12 @@ class LoRA_W(torch.autograd.Function):
         d_B.addmm_(A.t() @ X.t(), dY, alpha = S, beta = 0)
 
         # Get derivative for dX
-        W = _dequantize_to(W.t(), W_quant, dtype)
+        W = fast_dequantize(W.t(), W_quant)
         dX = dY @ W.t()
         del W
         dX.addmm_(dY @ B.t(), A.t(), alpha = S)
 
-        dX = dX.view(batch, seq_len, hd)
-        if dX.dtype != ctx.input_dtype:
-            dX = dX.to(ctx.input_dtype)
-        return dX, None, None, d_A.t(), d_B.t(), None
+        return dX.view(batch, seq_len, hd), None, None, d_A.t(), d_B.t(), None
 
 
 def apply_lora_o(self, X):
