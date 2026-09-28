@@ -206,6 +206,15 @@ def history_message(m: dict) -> dict:
     return out
 
 
+def chat_history(messages: list[dict]) -> list[dict]:
+    """Template-ready history. Qwen-style templates allow one system message, first; agents such
+    as opencode send several, so they are joined into one."""
+    history = [history_message(m) for m in messages]
+    system = [m["content"] for m in history if m["role"] == "system"]
+    rest = [m for m in history if m["role"] != "system"]
+    return ([{"role": "system", "content": "\n\n".join(system)}] if system else []) + rest
+
+
 def build_app(pipe, model_id: str) -> FastAPI:
     tok = pipe.get_tokenizer()
     lock = threading.Lock()
@@ -223,7 +232,7 @@ def build_app(pipe, model_id: str) -> FastAPI:
 
     def prompt(req: ChatRequest, thinking: bool) -> str:
         return tok.apply_chat_template(
-            [history_message(m) for m in req.messages],
+            chat_history(req.messages),
             add_generation_prompt = True,
             tools = tools_for(req) or None,
             extra_context = {"enable_thinking": thinking},

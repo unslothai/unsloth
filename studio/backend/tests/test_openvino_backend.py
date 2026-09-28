@@ -153,3 +153,14 @@ def test_a_crashing_sidecar_fails_the_load_with_its_output(tmp_path, monkeypatch
     with pytest.raises(ovb.OpenVinoError, match = "no GPU found"):
         backend.load(str(model))
     assert not backend.is_loaded and backend.loading_model is None
+
+
+
+def test_chat_history_joins_system_messages(monkeypatch):
+    monkeypatch.setitem(sys.modules, "openvino_genai", types.ModuleType("openvino_genai"))
+    from core.inference.openvino_sidecar import chat_history
+
+    joined = chat_history(
+        [{"role": "system", "content": "a"}, {"role": "user", "content": "q"}, {"role": "system", "content": "b"}]
+    )
+    assert joined == [{"role": "system", "content": "a\n\nb"}, {"role": "user", "content": "q"}]
