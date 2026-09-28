@@ -64,7 +64,7 @@ import {
   Cancel01Icon,
   CheckmarkSquare02Icon,
   Delete02Icon,
-  Folder01Icon,
+  Folder02Icon,
   FolderAddIcon,
   LayerIcon,
   MoreHorizontalIcon,
@@ -191,7 +191,7 @@ const SECTION_LABELS: Record<ChatsSection, TranslationKey> = {
 
 const SECTION_ICONS: Partial<Record<ChatsSection, IconSvgElement>> = {
   chats: MessageCircleIcon,
-  projects: Folder01Icon,
+  projects: Folder02Icon,
   sections: LayerIcon,
   archived: Archive03Icon,
 };
@@ -1268,13 +1268,13 @@ export function ChatsLibrary({
     if (visibleProjects.length === 0) {
       return query.trim() ? (
         <EmptyState
-          icon={Folder01Icon}
+          icon={Folder02Icon}
           title={t("library.empty.noMatchesTitle")}
           description={t("library.empty.noMatchesDescription")}
         />
       ) : (
         <EmptyState
-          icon={Folder01Icon}
+          icon={Folder02Icon}
           title={t("library.chats.empty.projectsTitle")}
           description={t("library.chats.empty.projectsDescription")}
           action={

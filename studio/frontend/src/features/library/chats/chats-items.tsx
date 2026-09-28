@@ -44,7 +44,6 @@ import {
   Download01Icon,
   Edit03Icon,
   FolderAddIcon,
-  Folder01Icon,
   Folder02Icon,
   FolderExportIcon,
   LayerIcon,
@@ -284,7 +283,7 @@ export function MoveSubmenu({
                 {projectTargets.map((entry) => (
                   <MenuItem
                     key={entry.id}
-                    icon={Folder01Icon}
+                    icon={Folder02Icon}
                     label={entry.name}
                     onSelect={() => onMove({ kind: "project", id: entry.id })}
                   />

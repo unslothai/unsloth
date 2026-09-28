@@ -15,7 +15,7 @@ import { StarPointedIcon } from "@/lib/hugeicons-derived";
 import { cn } from "@/lib/utils";
 import {
   FilterMailIcon,
-  Folder01Icon,
+  Folder02Icon,
   FolderAddIcon,
   LayerIcon,
   PencilEdit02Icon,
@@ -167,7 +167,7 @@ function FilterMenu({
             {facets.projects.map((project) => (
               <CheckItem
                 key={project.id}
-                icon={<HugeiconsIcon icon={Folder01Icon} strokeWidth={1.75} className={ICON} />}
+                icon={<HugeiconsIcon icon={Folder02Icon} strokeWidth={1.75} className={ICON} />}
                 label={project.name}
                 checked={filters.projects.has(project.id)}
                 onToggle={() =>

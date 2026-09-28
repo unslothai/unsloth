@@ -585,3 +585,10 @@ test("a chat card's location has its project or section icon; View chats has the
   assert.equal(viewChats.length, 2);
   for (const item of viewChats) assert.match(item, /MessageCircleIcon/);
 });
+
+test("the Chats library draws every project with the open project folder", () => {
+  for (const file of ["chats-library.tsx", "chats-toolbar.tsx", "chats-items.tsx"]) {
+    assert.doesNotMatch(readSrc(`features/library/chats/${file}`), /Folder01Icon/, file);
+  }
+  assert.match(readSrc("features/library/chats/chats-library.tsx"), /projects: Folder02Icon,/);
+});
