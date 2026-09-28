@@ -305,8 +305,7 @@ class Fast_RoPE_Embedding_QK(torch.autograd.Function):
         return (dQ_out, dK_out, None, None, None)
 
 
-# The autograd.Functions rotate Q, K and the incoming gradients in place, which torch.compile
-# cannot trace, so compiled graphs take these ops instead: the same kernels on fresh copies.
+# Compiled graphs take these ops: the same kernels on fresh copies (the Functions rotate in place).
 if _TRACEABLE:
 
     @torch.library.triton_op("unsloth::rope_embedding", mutates_args = ())

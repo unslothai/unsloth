@@ -4164,8 +4164,7 @@ def offload_output_embeddings(model, temporary_location: str = "_unsloth_tempora
 
 
 def config_return_dict(config):
-    # config.use_return_dict without its transformers 5 deprecation warning, which is a graph
-    # break under torch.compile (transformers 4 also forces tuples under torchscript).
+    # use_return_dict without its transformers 5 deprecation warning, a torch.compile graph break.
     return getattr(config, "return_dict", True) and not getattr(config, "torchscript", False)
 
 

@@ -241,14 +241,12 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
         return dX, None, None, None
 
 
-# The autograd.Function above reuses the incoming gradient as dX, a mutation torch.compile cannot
-# trace, so compiled graphs take these ops instead: the same kernels, with fresh outputs.
+# Compiled graphs take these ops: same kernels, fresh outputs (the Function writes dX over dY).
 _TRACEABLE = hasattr(torch.library, "triton_op") and hasattr(torch.library, "wrap_triton")
 
 
 def _tag_compile_cache(path):
-    # Inductor's FX graph cache keys a triton_op call without the Triton source behind it, so after
-    # an Unsloth upgrade a warm cache would keep serving the previous kernel. Key it on the file.
+    # Inductor's FX cache keys a triton_op without its source; key on the file so upgrades miss.
     config = getattr(torch.compiler, "config", None)
     if config is None or not hasattr(config, "cache_key_tag"):
         return
@@ -260,8 +258,7 @@ def _tag_compile_cache(path):
 
 
 def _traced_kernel(kernel):
-    # wrap_triton takes the JITFunction under triton.heuristics; every heuristic here only turns
-    # a bool argument into a constexpr, which the callers pass explicitly.
+    # wrap_triton needs the JITFunction under triton.heuristics; callers pass its constexprs.
     if isinstance(kernel, triton.runtime.autotuner.Heuristics):
         kernel = kernel.fn
     return torch.library.wrap_triton(kernel)

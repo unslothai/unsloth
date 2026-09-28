@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 
-"""fast_rms_layernorm and fast_rope_embedding must trace under torch.compile (no graph break, so a
-decoder layer compiles with fullgraph=True) and give the same bytes as eager, forward and backward.
-Eager calls must stay exactly the autograd Functions they always were."""
+"""fast_rms_layernorm / fast_rope_embedding trace under torch.compile with eager's bytes."""
 
 import hashlib
 import math
@@ -116,8 +114,7 @@ def test_rms_layernorm_eager_is_the_autograd_function(gemma):
 
 
 def _cos_sin(rope_size, head_dim, dtype):
-    # As LlamaRotaryEmbedding builds its cache: fp32 outer product, cat, then cast; the attention
-    # forward passes the whole [rope_size, head_dim] cache cast to Q's dtype.
+    # As LlamaRotaryEmbedding builds it: fp32 outer product, cat, cast to Q's dtype.
     inv_freq = 1.0 / (10000 ** (torch.arange(0, head_dim, 2, dtype = torch.int64).float() / head_dim))
     freqs = torch.outer(torch.arange(rope_size).float(), inv_freq)
     emb = torch.cat((freqs, freqs), dim = -1).cuda()
@@ -160,9 +157,6 @@ def _rope_case(
         assert _bytes_equal(q_lin.detach(), q_before), "the q projection was mutated"
         assert _bytes_equal(k_lin.detach(), k_before), "the k projection was mutated"
     elif with_indices:
-        # The rope-indices path clones a strided Q / K; main rotates a contiguous one in place (a
-        # single head, where the transpose is contiguous). The positions path rotates the
-        # projection output in place on main (transposing back is already contiguous).
         if n_heads > 1:
             assert _bytes_equal(q_lin.detach(), q_before), "the q projection was mutated"
         if n_kv > 1:
@@ -179,8 +173,7 @@ ROPE_SHAPES = [(2, 37, 8, 8, 64), (1, 64, 32, 8, 128), (3, 20, 4, 1, 64)]
     "shape", ROPE_SHAPES, ids = lambda s: f"b{s[0]}_s{s[1]}_h{s[2]}_kv{s[3]}_d{s[4]}"
 )
 def test_rope_compiled_matches_eager(shape, with_indices, dtype):
-    """Compiled forward and backward (dQ, dK through the transposed views, GQA included) are
-    byte-identical to eager, with no graph break."""
+    """Compiled forward and backward (GQA included) are byte-identical to eager, no graph break."""
     eager = _rope_case(fast_rope_embedding, *shape, dtype, with_indices)
     compiled = _rope_case(
         _compile(lambda q, k, c, s, i: fast_rope_embedding(q, k, c, s, i)),
@@ -223,8 +216,7 @@ def test_rope_matches_the_rotation_formula():
 
 
 def test_rope_dynamic_shapes():
-    """dynamic=True turns sizes, head counts included, into SymInts in the launch grid (divmod
-    rejected them)."""
+    """dynamic=True makes the launch grid SymInts (divmod rejected them)."""
     if not TRACEABLE:
         pytest.skip("this torch has no torch.library.triton_op")
     cos, sin = _cos_sin(64, 64, torch.bfloat16)
@@ -248,8 +240,7 @@ def test_rope_dynamic_shapes():
 @pytest.mark.parametrize("compiled", [False, True], ids = ["eager", "compiled"])
 @pytest.mark.parametrize("with_indices", [False, True], ids = ["positions", "rope_indices"])
 def test_rope_expanded_gradient(with_indices, compiled):
-    """Q.sum() hands the backward a stride-0 gradient; rotating it in place through that view
-    gave wrong dQ / dK."""
+    """Q.sum() gives a stride-0 gradient; rotating it in place gave wrong dQ / dK."""
     g = torch.Generator(device = "cuda").manual_seed(0)
     q_lin = torch.randn(2, 16, 4 * 64, device = "cuda", generator = g).requires_grad_(True)
     k_lin = torch.randn(2, 16, 2 * 64, device = "cuda", generator = g).requires_grad_(True)
@@ -283,8 +274,7 @@ def test_rope_expanded_gradient(with_indices, compiled):
 
 
 def test_tiny_llama_decoder_layers_compile_fullgraph():
-    """Every decoder layer of an Unsloth LoRA Llama compiles with fullgraph=True inside Unsloth's
-    gradient checkpointing, and the loss matches eager."""
+    """Decoder layers compile inside Unsloth's gradient checkpointing and match eager."""
     if not TRACEABLE:
         pytest.skip("this torch has no torch.library.triton_op")
     from unsloth import FastLanguageModel
@@ -323,8 +313,7 @@ def test_tiny_llama_decoder_layers_compile_fullgraph():
     eager_grads = [p.grad.clone() for p in params]
     model.zero_grad(set_to_none = True)
 
-    # Before torch 2.11 fast_lora keeps its autograd Functions opaque (their traced backward gives
-    # wrong LoRA gradients there), so those are the only graph breaks allowed.
+    # Before torch 2.11 fast_lora's Functions stay opaque: the only graph breaks allowed.
     trace_lora = fast_lora.TRACE_LORA_FUNCTIONS
     layers = model.base_model.model.model.layers
     for layer in layers:
@@ -343,11 +332,8 @@ def test_tiny_llama_decoder_layers_compile_fullgraph():
 
 
 def test_tiny_llama_causal_lm_compiles_fullgraph():
-    """Without gradient checkpointing the whole causal LM forward (embedding, decoder stack, loss)
-    compiles without the input embedding's requires-grad hook or the deprecated
-    config.use_return_dict read breaking the graph, and trains: the LoRA gradients match eager.
-    torch 2.10 still breaks inside the fused loss (inspect.signature); on torch 2.11 unsloth_zoo
-    keeps the fused loss out of the graph (a traced one returned zero gradients)."""
+    """The whole causal LM compiles with no requires-grad hook or use_return_dict graph break,
+    and its LoRA gradients match eager (torch 2.10 still breaks in the fused loss)."""
     if not TRACEABLE:
         pytest.skip("this torch has no torch.library.triton_op")
     from unsloth import FastLanguageModel
@@ -390,7 +376,11 @@ def test_tiny_llama_causal_lm_compiles_fullgraph():
     model.zero_grad(set_to_none = True)
 
     loss_opaque = getattr(fused_ce, "_FUSED_LOSS_OPAQUE", False)
-    fullgraph = fast_lora.TRACE_LORA_FUNCTIONS and Version(torch.__version__) >= Version("2.11.0") and not loss_opaque
+    fullgraph = (
+        fast_lora.TRACE_LORA_FUNCTIONS
+        and Version(torch.__version__) >= Version("2.11.0")
+        and not loss_opaque
+    )
     causal_lm = model.base_model.model
     causal_lm.forward = torch.compile(causal_lm.forward, fullgraph = fullgraph)
     loss = model(input_ids = ids, labels = ids).loss
@@ -409,8 +399,7 @@ def test_tiny_llama_causal_lm_compiles_fullgraph():
 
 
 def test_input_require_grads_hook_is_exact():
-    """The compiled hook returns x + -0.0 (exact, signed zeros kept) that requires grad; eager
-    still flips requires_grad in place."""
+    """Compiled, the hook returns x + -0.0 (exact) needing grad; eager flips requires_grad."""
     from transformers import AutoModelForCausalLM
 
     model = AutoModelForCausalLM.from_pretrained(
@@ -431,9 +420,7 @@ def test_input_require_grads_hook_is_exact():
 
 
 def test_compile_cache_key_covers_the_kernel_source():
-    """Inductor's FX graph cache keys a triton_op call without the Triton source behind it, so a
-    warm cache returned an edited kernel as the previous one. The files' hashes in cache_key_tag
-    make an edited kernel a cache miss."""
+    """A warm FX graph cache served an edited kernel as the old one; key it on the files."""
     from unsloth.kernels import rms_layernorm, rope_embedding
 
     if not hasattr(getattr(torch.compiler, "config", None), "cache_key_tag"):
