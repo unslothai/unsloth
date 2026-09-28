@@ -26,6 +26,9 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict
 
 THINK_OPEN, THINK_CLOSE = "<think>", "</think>"
+# ponytail: fixed hold-back window for models that reason despite enable_thinking=false; longer
+# stray reasoning leaks into content (without the tag).
+_STRAY_THINK_WINDOW = 4000
 TOOL_OPEN = "<tool_call>"
 _FUNC_RE = re.compile(r"<function=([^>\s]+)>(.*?)(?:</function>|$)", re.DOTALL)
 _PARAM_RE = re.compile(r"<parameter=([^>\s]+)>\n?(.*?)\n?(?:</parameter>|(?=<parameter=)|$)", re.DOTALL)
@@ -80,8 +83,25 @@ class ThinkSplitter:
     def __init__(self, thinking: bool) -> None:
         self.in_think = thinking
         self.buf = ""
+        # With thinking off the template closes the think block, but some finetunes reason anyway
+        # and end with a bare ``</think>``; the start is held back until that can be told apart.
+        self.held: Optional[str] = None if thinking else ""
 
     def feed(self, piece: str) -> list[tuple[str, str]]:
+        if self.held is None:
+            return self._split(piece)
+        self.held += piece
+        idx = self.held.find(THINK_CLOSE)
+        if idx >= 0:
+            reasoning, rest = self.held[:idx].strip(), self.held[idx + len(THINK_CLOSE) :].lstrip("\n")
+            self.held = None
+            return ([("reasoning", reasoning)] if reasoning else []) + self._split(rest)
+        if len(self.held) > _STRAY_THINK_WINDOW:
+            rest, self.held = self.held, None
+            return self._split(rest)
+        return []
+
+    def _split(self, piece: str) -> list[tuple[str, str]]:
         self.buf += piece
         out: list[tuple[str, str]] = []
         while self.buf:
@@ -105,6 +125,9 @@ class ThinkSplitter:
         return out
 
     def flush(self) -> list[tuple[str, str]]:
+        if self.held is not None:
+            held, self.held = self.held, None
+            return self._split(held) + self.flush()
         rest, self.buf = self.buf, ""
         return [("reasoning" if self.in_think else "content", rest)] if rest else []
 

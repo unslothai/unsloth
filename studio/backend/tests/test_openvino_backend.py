@@ -65,6 +65,11 @@ def test_think_splitter_routes_reasoning_even_across_split_tags(monkeypatch):
     s = ThinkSplitter(thinking = False)
     assert s.feed("hi") + s.flush() == [("content", "hi")]
 
+    # Reasoning despite enable_thinking=false ends with a bare </think>.
+    s = ThinkSplitter(thinking = False)
+    out = s.feed("user wants X\n</th") + s.feed("ink>\n\nX") + s.feed("!") + s.flush()
+    assert out == [("reasoning", "user wants X"), ("content", "X"), ("content", "!")]
+
 
 def test_tool_splitter_turns_tool_call_markup_into_tool_calls(monkeypatch):
     monkeypatch.setitem(sys.modules, "openvino_genai", types.ModuleType("openvino_genai"))
