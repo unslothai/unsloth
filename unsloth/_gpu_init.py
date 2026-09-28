@@ -82,6 +82,12 @@ configure_amdgpu_asic_id_table_path()
 patch_torch_missing_attribute_error()
 # Must precede `import unsloth_zoo` below, which imports bnb on ROCm.
 fix_bitsandbytes_rocm_arch_detection()
+# Before unsloth_zoo (whose torchao stub then stands down) and transformers: real torchao on a
+# torch without torch.distributed (Windows ROCm). No-op elsewhere.
+from ._torchao_nodist import fix_torchao_without_torch_distributed
+
+fix_torchao_without_torch_distributed()
+del fix_torchao_without_torch_distributed
 disable_broken_causal_conv1d()
 disable_broken_vllm()
 fix_message_factory_issue()

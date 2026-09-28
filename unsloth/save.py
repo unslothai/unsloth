@@ -6678,7 +6678,12 @@ def _unsloth_save_torchao(
         quant_type = Float8WeightOnlyConfig()
         safe_serialization = True
     elif kind == "int8":
-        quant_type = Int8WeightOnlyConfig()
+        # version 2 (Int8Tensor) is what transformers can serialize; torchao 0.17 defaults to 1
+        # (AffineQuantizedTensor -> "Unsupported tensor type" on save), 0.18 to 2.
+        _int8_fields = getattr(Int8WeightOnlyConfig, "__dataclass_fields__", {})
+        quant_type = (
+            Int8WeightOnlyConfig(version = 2) if "version" in _int8_fields else Int8WeightOnlyConfig()
+        )
         safe_serialization = False  # torchao only supports safetensors for float8 configs
     else:
         raise RuntimeError(f"Unsloth: unknown torchao export kind '{kind}' (expected fp8/int8).")

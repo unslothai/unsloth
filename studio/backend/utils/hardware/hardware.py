@@ -1719,16 +1719,22 @@ def _gpu_present_but_unusable_message(
 
 
 def export_capability() -> dict:
-    """Whether model export can run here, with a torch-aware reason when it cannot. Export runs through Unsloth, which hard-requires an accelerator (it calls ``torch.cuda`` at import and has no CPU path), so it is supported iff ``get_device() in {CUDA, XPU, MLX}``. The reason distinguishes a --no-torch install from a bare-CPU host. Safe to call without torch. Returns {export_supported, export_unsupported_reason, export_unsupported_message, win32_rocm}; ``win32_rocm`` hides the torchao formats, which are stubbed there."""
+    """Whether model export can run here, with a torch-aware reason when it cannot. Export runs through Unsloth, which hard-requires an accelerator (it calls ``torch.cuda`` at import and has no CPU path), so it is supported iff ``get_device() in {CUDA, XPU, MLX}``. The reason distinguishes a --no-torch install from a bare-CPU host. Safe to call without torch. Returns {export_supported, export_unsupported_reason, export_unsupported_message, torchao_export_supported}; the last is False only on Windows ROCm without a loadable torchao, where the portable FP8/INT8 formats are hidden."""
     device = get_device()
+    torchao_export_supported = True
     # get_device() ran detect_hardware(), so IS_ROCM (hip field OR "rocm" tag) is settled.
-    win32_rocm = sys.platform == "win32" and IS_ROCM
+    if sys.platform == "win32" and IS_ROCM:
+        try:
+            from core._torchao_stub import torchao_export_loadable
+            torchao_export_supported = torchao_export_loadable()
+        except Exception:
+            torchao_export_supported = False
     if device in (DeviceType.CUDA, DeviceType.XPU, DeviceType.MLX):
         return {
             "export_supported": True,
             "export_unsupported_reason": None,
             "export_unsupported_message": None,
-            "win32_rocm": win32_rocm,
+            "torchao_export_supported": torchao_export_supported,
         }
     verdict = current_chat_only_verdict()
     # No accelerator: name the blocker. Detection failure first, since the branches below all describe a measured host, so a broken probe would tell a GPU box to install PyTorch.
@@ -1771,7 +1777,7 @@ def export_capability() -> dict:
         "export_supported": False,
         "export_unsupported_reason": reason,
         "export_unsupported_message": message,
-        "win32_rocm": win32_rocm,
+        "torchao_export_supported": torchao_export_supported,
     }
 
 

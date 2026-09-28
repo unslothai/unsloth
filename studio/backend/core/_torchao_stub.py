@@ -227,6 +227,55 @@ def install_torchao_windows_rocm_stub() -> None:
                 sys.modules[_tao_name] = _make_mod_stub(_tao_name)
 
 
+def _load_torchao_nodist():
+    """unsloth/_torchao_nodist.py, loaded by path: importing unsloth here would start its GPU
+    stack before the worker is ready. None on an unsloth that predates it."""
+    try:
+        spec = importlib.machinery.PathFinder.find_spec("unsloth")
+        locations = list(spec.submodule_search_locations or ()) if spec else []
+        path = os.path.join(locations[0], "_torchao_nodist.py") if locations else None
+        if not path or not os.path.isfile(path):
+            return None
+        module_spec = importlib.util.spec_from_file_location("_studio_torchao_nodist", path)
+        module = importlib.util.module_from_spec(module_spec)
+        module_spec.loader.exec_module(module)
+        return module
+    except Exception:
+        return None
+
+
+def torchao_export_loadable() -> bool:
+    """Whether an export worker can get real torchao: always off Windows ROCm; there, torchao must
+    be installed and unsloth must ship the shim. Searches sys.path, so a stub already in
+    sys.modules does not count, and imports nothing."""
+    if not _is_windows_rocm():
+        return True
+    try:
+        if importlib.machinery.PathFinder.find_spec("torchao") is None:
+            return False
+        spec = importlib.machinery.PathFinder.find_spec("unsloth")
+        locations = list(spec.submodule_search_locations or ()) if spec else []
+        return bool(locations) and os.path.isfile(os.path.join(locations[0], "_torchao_nodist.py"))
+    except Exception:
+        return False
+
+
+def install_torchao_windows_rocm_real_or_stub() -> bool:
+    """Export worker: real torchao on Windows ROCm when it is installed and unsloth can import it
+    without torch.distributed, else the stub. True iff real torchao is loaded. No-op elsewhere."""
+    if not _is_windows_rocm():
+        return False
+    if "torchao" not in sys.modules:
+        module = _load_torchao_nodist()
+        try:
+            if module is not None and module.fix_torchao_without_torch_distributed():
+                return True
+        except Exception:
+            pass
+    install_torchao_windows_rocm_stub()
+    return not is_stubbed("torchao") and "torchao" in sys.modules
+
+
 def install_xformers_windows_rocm_stub() -> None:
     """Pre-stub xformers on Windows ROCm so diffusers can import at all. No-op elsewhere, and must
     precede diffusers: the Windows xformers pin is CUDA-only, so against a ROCm torch (no

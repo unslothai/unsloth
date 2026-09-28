@@ -10,6 +10,8 @@ venv (otherwise the cpp kernels are skipped). This pins that mapping.
 
 from __future__ import annotations
 
+import importlib
+import importlib.machinery
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -185,7 +187,7 @@ def test_the_torchao_step_pins_the_index_and_retries_without_it():
     after this ships can lag a release, so the pin must not be able to fail an install.
     Unlike torchcodec the retry stays FATAL if it also fails: torchao is not optional."""
     body = _torchao_installer_source()
-    assert "index = _torch_accelerator_index_url(torch_version)" in body
+    assert "index = None if default_index else _torch_accelerator_index_url(torch_version)" in body
     assert '"--index-url", index, spec' in body
     assert "retrying from the default index" in body
     # The unpinned attempt is pip_install, not pip_install_try: still fatal on failure.
@@ -327,12 +329,11 @@ def test_windows_first_hop_uses_einx_wheel_without_shared_test_tree():
         (True, True),
     ],
 )
-def test_skips_torchao_on_windows_rocm(
+def test_installs_pypi_torchao_on_windows_rocm(
     monkeypatch, tmp_path, rocm_windows_torch_installed, installed_torch_is_windows_rocm
 ):
-    """The overrides step must skip torchao on Windows ROCm: no working build exists
-    there (it imports an absent c10d backend and crashes transformers.quantizers),
-    so the installer skips it and relies on the runtime stub instead."""
+    """Windows ROCm gets the torch-matched torchao from PyPI (download.pytorch.org's rocm leaves
+    serve Linux only); the export worker loads it through unsloth/_torchao_nodist.py."""
     mod = _load_module(monkeypatch)
     installed_specs: list[str] = []
     progress_labels: list[str] = []
@@ -402,12 +403,14 @@ def test_skips_torchao_on_windows_rocm(
 
     assert mod.install_python_stack() == 0
 
-    assert not any(spec.startswith("torchao") for spec in installed_specs)
-    assert "dependency overrides (skipped, Windows ROCm)" in progress_labels
+    assert any(spec.startswith("torchao") for spec in installed_specs)
+    assert "--index-url" not in installed_specs
+    assert "dependency overrides (Windows ROCm)" in progress_labels
 
 
-# Windows-ROCm torchao export gate: the stub's config classes return None, which crashed
-# TorchAoConfig(quant_type=None).
+# Windows-ROCm torchao export: the stub's config classes return None, which crashed
+# TorchAoConfig(quant_type=None); the export worker now loads real torchao through
+# unsloth/_torchao_nodist.py and only falls back to the stub.
 
 import types
 
@@ -447,14 +450,33 @@ def _install_fake_unsloth_save(monkeypatch, *, has_method):
     monkeypatch.setitem(sys.modules, "unsloth.save", save)
 
 
+def _set_torchao(monkeypatch, state):
+    if state == "absent":
+        monkeypatch.delitem(sys.modules, "torchao", raising = False)
+    elif state == "stub":
+        monkeypatch.setitem(sys.modules, "torchao", _stub._make_mod_stub("torchao"))
+    else:
+        monkeypatch.setitem(sys.modules, "torchao", types.ModuleType("torchao"))
+
+
 @pytest.mark.parametrize(
-    ("win_rocm", "has_method", "expected"),
-    [(True, True, False), (False, True, True), (False, False, False)],
+    ("win_rocm", "torchao", "has_method", "expected"),
+    [
+        (True, "stub", True, False),
+        (True, "absent", True, False),
+        (True, "real", True, True),
+        (False, "real", True, True),
+        (False, "absent", True, True),
+        (False, "real", False, False),
+    ],
 )
-def test_torchao_export_gate(monkeypatch, win_rocm, has_method, expected):
+def test_torchao_export_gate(monkeypatch, win_rocm, torchao, has_method, expected):
     monkeypatch.setattr(_stub, "_is_windows_rocm", lambda: win_rocm)
+    _set_torchao(monkeypatch, torchao)
     _install_fake_unsloth_save(monkeypatch, has_method = has_method)
-    assert _export_helpers()["_torchao_export_supported"]() is expected
+    ns = _export_helpers()
+    ns["sys"] = sys
+    assert ns["_torchao_export_supported"]() is expected
 
 
 def test_is_torchao_alias_recognizes_all_forms(monkeypatch):
@@ -486,31 +508,112 @@ def _load_export_module_no_torch(monkeypatch):
     return importlib.import_module("core.export.export")
 
 
-@pytest.mark.parametrize("alias", ["torchao_fp8", "portable_fp8"])
-def test_torchao_export_rejected_early_on_windows_rocm(monkeypatch, alias):
-    mod = _load_export_module_no_torch(monkeypatch)
-    monkeypatch.setattr(mod, "_export_runtime_available", lambda: True)
-    monkeypatch.setattr(_stub, "_is_windows_rocm", lambda: True)
-    _install_fake_unsloth_save(monkeypatch, has_method = True)
+def _bare_backend(mod):
     be = mod.ExportBackend.__new__(mod.ExportBackend)
     be.current_model = object()
     be.current_tokenizer = object()
     be._audio_type = None
     be.is_peft = True
+    return be
 
-    ok, message, out = be.export_merged_model("/tmp/x", compressed_method = alias)
+
+@pytest.mark.parametrize("alias", ["torchao_fp8", "portable_fp8"])
+def test_torchao_export_rejected_early_when_stubbed(monkeypatch, alias):
+    mod = _load_export_module_no_torch(monkeypatch)
+    monkeypatch.setattr(mod, "_export_runtime_available", lambda: True)
+    monkeypatch.setattr(_stub, "_is_windows_rocm", lambda: True)
+    _set_torchao(monkeypatch, "stub")
+    _install_fake_unsloth_save(monkeypatch, has_method = True)
+
+    ok, message, out = _bare_backend(mod).export_merged_model("/tmp/x", compressed_method = alias)
     assert ok is False and out is None
     assert "Windows ROCm" in message and "torchao" in message.lower()
 
 
+def test_torchao_export_not_rejected_with_real_torchao_on_windows_rocm(monkeypatch):
+    mod = _load_export_module_no_torch(monkeypatch)
+    monkeypatch.setattr(mod, "_export_runtime_available", lambda: True)
+    monkeypatch.setattr(_stub, "_is_windows_rocm", lambda: True)
+    _set_torchao(monkeypatch, "real")
+    _install_fake_unsloth_save(monkeypatch, has_method = True)
+
+    ok, message, _ = _bare_backend(mod).export_merged_model(
+        "/tmp/x", compressed_method = "torchao_int8"
+    )
+    # Past the guard: the placeholder model is what fails now.
+    assert ok is False and "Windows ROCm" not in message
+
+
 @pytest.mark.parametrize(
-    ("platform", "is_rocm", "expected"),
-    [("win32", True, True), ("win32", False, False), ("linux", True, False)],
+    ("platform", "is_rocm", "loadable", "expected"),
+    [
+        ("win32", True, False, False),
+        ("win32", True, True, True),
+        ("win32", False, False, True),
+        ("linux", True, False, True),
+    ],
 )
-def test_export_capability_exposes_win32_rocm(monkeypatch, platform, is_rocm, expected):
+def test_export_capability_torchao_flag(monkeypatch, platform, is_rocm, loadable, expected):
     import utils.hardware.hardware as hw
 
     monkeypatch.setattr(hw, "get_device", lambda: hw.DeviceType.CUDA)
     monkeypatch.setattr(sys, "platform", platform)
     monkeypatch.setattr(hw, "IS_ROCM", is_rocm)
-    assert hw.export_capability()["win32_rocm"] is expected
+    monkeypatch.setattr(_stub, "torchao_export_loadable", lambda: loadable)
+    assert hw.export_capability()["torchao_export_supported"] is expected
+
+
+def test_torchao_export_loadable_ignores_the_stub(monkeypatch):
+    # The main process has already stubbed torchao; only an installed torchao counts.
+    monkeypatch.setattr(_stub, "_is_windows_rocm", lambda: True)
+    _set_torchao(monkeypatch, "stub")
+    real = importlib.machinery.PathFinder.find_spec
+    monkeypatch.setattr(
+        importlib.machinery.PathFinder,
+        "find_spec",
+        classmethod(lambda cls, name, *a, **k: None if name == "torchao" else real(name, *a, **k)),
+    )
+    assert _stub.torchao_export_loadable() is False
+
+
+@pytest.mark.parametrize(("fix_result", "expect_real"), [(True, True), (False, False)])
+def test_real_or_stub(monkeypatch, fix_result, expect_real):
+    monkeypatch.setattr(_stub, "_is_windows_rocm", lambda: True)
+    monkeypatch.delitem(sys.modules, "torchao", raising = False)
+    calls = []
+
+    def fix():
+        calls.append(1)
+        if fix_result:
+            sys.modules["torchao"] = types.ModuleType("torchao")
+        return fix_result
+
+    monkeypatch.setattr(
+        _stub,
+        "_load_torchao_nodist",
+        lambda: types.SimpleNamespace(fix_torchao_without_torch_distributed = fix),
+    )
+    stubbed = []
+    monkeypatch.setattr(_stub, "install_torchao_windows_rocm_stub", lambda: stubbed.append(1))
+    try:
+        assert _stub.install_torchao_windows_rocm_real_or_stub() is expect_real
+        assert calls == [1]
+        assert bool(stubbed) is (not expect_real)
+    finally:
+        sys.modules.pop("torchao", None)
+
+
+def test_real_or_stub_noop_off_windows_rocm(monkeypatch):
+    monkeypatch.setattr(_stub, "_is_windows_rocm", lambda: False)
+    monkeypatch.setattr(
+        _stub, "_load_torchao_nodist", lambda: pytest.fail("must not load the shim")
+    )
+    assert _stub.install_torchao_windows_rocm_real_or_stub() is False
+
+
+def test_load_torchao_nodist_reads_unsloths_file():
+    module = _stub._load_torchao_nodist()
+    if importlib.machinery.PathFinder.find_spec("unsloth") is None:
+        assert module is None
+    else:
+        assert callable(module.fix_torchao_without_torch_distributed)

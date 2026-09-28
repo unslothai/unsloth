@@ -9,6 +9,7 @@ import structlog
 import tempfile
 from loggers import get_logger
 import os
+import sys
 import shutil
 import contextlib
 from pathlib import Path
@@ -363,8 +364,8 @@ def _compressed_export_supported():
 
 
 def _torchao_export_supported():
-    """True if the installed unsloth build has the portable torchao FP8/INT8 export path; False on
-    Windows ROCm, where torchao is stubbed and its config classes return None."""
+    """True if the installed unsloth build has the portable torchao FP8/INT8 export path and a real
+    torchao to run it; False where torchao is stubbed (its config classes return None)."""
     try:
         if _torchao_runtime_unavailable():
             return False
@@ -377,7 +378,10 @@ def _torchao_export_supported():
 def _torchao_runtime_unavailable():
     try:
         from core._torchao_stub import _is_windows_rocm, is_stubbed
-        return _is_windows_rocm() or is_stubbed("torchao")
+        if is_stubbed("torchao"):
+            return True
+        # Windows ROCm only gets real torchao through install_torchao_windows_rocm_real_or_stub().
+        return _is_windows_rocm() and "torchao" not in sys.modules
     except Exception:
         return False
 
@@ -968,9 +972,9 @@ class ExportBackend:
         if _is_torchao_alias(compressed_alias) and _torchao_runtime_unavailable():
             return (
                 False,
-                "Portable torchao FP8/INT8 export is not supported on Windows ROCm: "
-                "torch.distributed and torchao are unavailable on this build. Use 16-bit "
-                "merged or GGUF quantization instead.",
+                "Portable torchao FP8/INT8 export needs torchao, which could not be loaded "
+                "on this Windows ROCm build. Update Unsloth Studio to install it, or use "
+                "16-bit merged or GGUF quantization instead.",
                 None,
             )
 

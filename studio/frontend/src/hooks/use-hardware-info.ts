@@ -34,8 +34,8 @@ export interface HardwareInfo {
     exportSupported: boolean | null;
     exportUnsupportedReason: string | null;
     exportUnsupportedMessage: string | null;
-    // Backend truth for the torchao export gate; never re-derive Windows ROCm from `rocm`.
-    win32Rocm: boolean;
+    // False only on Windows ROCm without a loadable torchao; absent from older backends = true.
+    torchaoExportSupported: boolean;
     // Whether video generation can run here. Same tri-state as export: `null` until the
     // authoritative response lands, and `null` too against a backend that predates the field,
     // so only an explicit `false` hides the generator.
@@ -60,7 +60,7 @@ const DEFAULT: HardwareInfo = {
     exportSupported: null,
     exportUnsupportedReason: null,
     exportUnsupportedMessage: null,
-    win32Rocm: false,
+    torchaoExportSupported: true,
     videoSupported: null,
     videoUnsupportedReason: null,
     videoUnsupportedMessage: null,
@@ -121,7 +121,7 @@ async function fetchOnce(): Promise<HardwareInfo> {
                 exportSupported: data?.export_supported ?? null,
                 exportUnsupportedReason: data?.export_unsupported_reason ?? null,
                 exportUnsupportedMessage: data?.export_unsupported_message ?? null,
-                win32Rocm: data?.win32_rocm ?? false,
+                torchaoExportSupported: data?.torchao_export_supported ?? true,
                 videoSupported: data?.video_supported ?? null,
                 videoUnsupportedReason: data?.video_unsupported_reason ?? null,
                 videoUnsupportedMessage: data?.video_unsupported_message ?? null,
