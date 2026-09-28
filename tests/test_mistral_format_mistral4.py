@@ -517,3 +517,109 @@ def test_fp8_checkpoint_dequantizes_exactly_and_loads_natively(tmp_path, hub_cac
     with torch.no_grad():
         logits = native(input_ids = ids).logits
     assert torch.isfinite(logits).all()
+
+
+def test_redirect_without_a_view_retries_the_same_call_with_conversions():
+    # Raised for a view or an adapter trained on one: same arguments, conversions on.
+    calls = []
+
+    @mf.mistral_format_redirect
+    def from_pretrained(
+        model_name = None,
+        revision = None,
+        **kwargs,
+    ):
+        calls.append((model_name, revision, mf.mistral_format_conversions_active()))
+        if not mf.mistral_format_conversions_active():
+            raise mf.MistralFormatRedirect(None, model_name)
+        return object(), "tokenizer"
+
+    from_pretrained("/adapters/large3-lora", revision = "abc")
+    assert calls == [
+        ("/adapters/large3-lora", "abc", False),
+        ("/adapters/large3-lora", "abc", True),
+    ]
+    assert not mf.mistral_format_conversions_active()
+
+
+def test_merged_save_from_a_view_is_refused(tmp_path, hub_cache):
+    _write(tmp_path / "src", _mistral_tensors(_reference(TINY_PARAMS), TINY_PARAMS), TINY_PARAMS)
+    view = mf.prepare_mistral_format_checkpoint(str(tmp_path / "src"))
+
+    class _Model:
+        config = type("C", (), {"_name_or_path": view})()
+
+    mf.raise_if_merging_mistral_format_view(_Model(), "lora")
+    for method in ("merged_16bit", "merged_4bit"):
+        with pytest.raises(NotImplementedError, match = "Save the LoRA adapter"):
+            mf.raise_if_merging_mistral_format_view(_Model(), method)
+
+
+_ADAPTER_SCRIPT = r"""
+import os, sys, torch
+from unsloth import FastModel
+src, adapter, stage = sys.argv[1:4]
+ids = torch.arange(3, 43).view(1, -1).cuda()
+if stage == "train":
+    model, tok = FastModel.from_pretrained(src, max_seq_length = 64, load_in_4bit = False, dtype = torch.bfloat16)
+    model = FastModel.get_peft_model(model, r = 8, lora_alpha = 16, target_modules = ["q_b_proj", "o_proj", "gate_proj"])
+    with torch.no_grad():
+        for n, p in model.named_parameters():
+            if "lora_B" in n: p.normal_(0, 0.05)
+    model.save_pretrained(adapter); tok.save_pretrained(adapter)
+    try:
+        model.save_pretrained_merged(os.path.join(adapter, "merged"), tok, save_method = "merged_16bit")
+        raise SystemExit("merged save of a view was not refused")
+    except NotImplementedError:
+        pass
+else:
+    model, tok = FastModel.from_pretrained(adapter, max_seq_length = 64, load_in_4bit = False, dtype = torch.bfloat16)
+model.eval()
+with torch.no_grad():
+    torch.save(model(input_ids = ids).logits.float().cpu(), os.path.join(adapter, stage + ".pt"))
+"""
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason = "FastModel needs a GPU")
+def test_lora_adapter_trained_on_a_view_reloads_in_a_fresh_process(tmp_path):
+    # The adapter's base is the view, whose index still names Mistral's tensors.
+    import subprocess
+    import sys
+
+    from huggingface_hub import snapshot_download
+    from transformers import AutoTokenizer
+
+    tok_dir = snapshot_download(
+        "trl-internal-testing/tiny-Qwen3ForCausalLM",
+        allow_patterns = ["tokenizer*", "vocab*", "merges*", "special*"],
+    )
+    params = json.loads(json.dumps(TINY_PARAMS))
+    params["vocab_size"] = -(-len(AutoTokenizer.from_pretrained(tok_dir)) // 128) * 128
+    src = tmp_path / "src"
+    _write(
+        src,
+        {k: v.to(torch.bfloat16) for k, v in _mistral_tensors(_reference(params), params).items()},
+        params,
+    )
+    AutoTokenizer.from_pretrained(tok_dir).save_pretrained(src)
+    script = tmp_path / "adapter_roundtrip.py"
+    script.write_text(_ADAPTER_SCRIPT)
+    env = dict(
+        os.environ,
+        HF_HUB_CACHE = str(tmp_path / "hub"),
+        UNSLOTH_COMPILE_LOCATION = str(tmp_path / "ucc"),
+    )
+    env["PYTHONPATH"] = os.pathsep.join(
+        [os.path.join(os.path.dirname(_PATH), os.pardir, os.pardir), env.get("PYTHONPATH", "")]
+    )
+    adapter = tmp_path / "adapter"
+    for stage in ("train", "reload"):
+        run = subprocess.run(
+            [sys.executable, str(script), str(src), str(adapter), stage],
+            env = env,
+            capture_output = True,
+            text = True,
+        )
+        assert run.returncode == 0, run.stdout[-3000:] + run.stderr[-3000:]
+    trained, reloaded = torch.load(adapter / "train.pt"), torch.load(adapter / "reload.pt")
+    assert torch.equal(trained, reloaded)

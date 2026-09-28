@@ -35,6 +35,8 @@ from peft import PeftConfig, PeftModel
 from .grouped_linear_lora import register_grouped_linear_lora_for_adapter
 from .mistral_format import (
     MistralFormatRedirect,
+    is_mistral_format_view,
+    mistral_format_conversions_active,
     mistral_format_redirect,
     prepare_mistral_format_checkpoint,
 )
@@ -1093,6 +1095,9 @@ class FastLanguageModel(FastLlamaModel):
 
         if not was_disabled:
             enable_progress_bars()
+        # A view, or an adapter trained on one, still names Mistral's tensors.
+        if is_mistral_format_view(model_name) and not mistral_format_conversions_active():
+            raise MistralFormatRedirect(None, model_name)
 
         if check_precision_flags and _precision_flags_conflict(
             load_in_4bit, load_in_8bit, load_in_16bit, load_in_fp8
@@ -2054,6 +2059,9 @@ class FastModel(FastBaseModel):
 
         if not was_disabled:
             enable_progress_bars()
+        # A view, or an adapter trained on one, still names Mistral's tensors.
+        if is_mistral_format_view(model_name) and not mistral_format_conversions_active():
+            raise MistralFormatRedirect(None, model_name)
 
         do_logging = os.environ.get("UNSLOTH_ENABLE_LOGGING", "0") == "1"
         if do_logging:

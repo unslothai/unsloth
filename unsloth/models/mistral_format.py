@@ -399,6 +399,24 @@ def is_mistral_format_view(path) -> bool:
     return isinstance(path, str) and os.path.isfile(os.path.join(path, _VIEW_MARKER))
 
 
+def raise_if_merging_mistral_format_view(model, save_method):
+    """Merged saves re-read the base shards, which a view names in Mistral's own layout."""
+    view = getattr(getattr(model, "config", None), "_name_or_path", None)
+    if str(save_method).strip().lower() == "lora" or not is_mistral_format_view(view):
+        return
+    try:
+        with open(os.path.join(view, _VIEW_MARKER), encoding = "utf-8") as f:
+            source = json.load(f).get("source") or view
+    except Exception:
+        source = view
+    raise NotImplementedError(
+        f"Unsloth: `{source}` was loaded from Mistral's own checkpoint format, and "
+        f'`save_method = "{save_method}"` (merged and GGUF exports) cannot read those '
+        f"shards yet. Save the LoRA adapter instead (`model.save_pretrained(...)` or "
+        f'`save_method = "lora"`); it reloads through the same path.'
+    )
+
+
 def _is_expert_scale_merge(conversion):
     from transformers.core_model_loading import WeightConverter
     targets = getattr(conversion, "target_patterns", None) or []
@@ -415,9 +433,17 @@ def _register_mistral4_causal_lm():
         MODEL_FOR_CAUSAL_LM_MAPPING._extra_content[Mistral4Config] = Mistral4ForCausalLM
 
 
+_active_conversions = 0
+
+
+def mistral_format_conversions_active() -> bool:
+    return _active_conversions > 0
+
+
 @contextlib.contextmanager
 def _mistral_format_conversions():
     """Register Mistral-name conversions for one load, then restore the previous ones."""
+    global _active_conversions
     from transformers import conversion_mapping as cm
 
     _register_mistral4_causal_lm()
@@ -447,9 +473,11 @@ def _mistral_format_conversions():
             return original_update(self, weight_conversions)
 
         fp8_quantizer.update_weight_conversions = update_weight_conversions
+    _active_conversions += 1
     try:
         yield
     finally:
+        _active_conversions -= 1
         if original_update is not None:
             fp8_quantizer.update_weight_conversions = original_update
         if had_entry:
@@ -480,15 +508,16 @@ def mistral_format_redirect(fn):
             return fn(*args, **kwargs)
         except MistralFormatRedirect as redirect:
             view, source = redirect.path, redirect.source
-        if "model_name" in kwargs or not args:
-            kwargs["model_name"] = view
-        else:
-            args = (view,) + tuple(args[1:])
-        kwargs.pop("revision", None)
-        print(
-            f"Unsloth: `{source}` is in Mistral's own format. Loading its text decoder "
-            f"as transformers' Mistral4 through {view} (no weights are copied)."
-        )
+        if view is not None:
+            if "model_name" in kwargs or not args:
+                kwargs["model_name"] = view
+            else:
+                args = (view,) + tuple(args[1:])
+            kwargs.pop("revision", None)
+            print(
+                f"Unsloth: `{source}` is in Mistral's own format. Loading its text decoder "
+                f"as transformers' Mistral4 through {view} (no weights are copied)."
+            )
         with _mistral_format_conversions():
             result = fn(*args, **kwargs)
         model = result[0] if isinstance(result, tuple) else result
