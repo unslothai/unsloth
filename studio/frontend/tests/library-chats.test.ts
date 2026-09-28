@@ -430,7 +430,7 @@ test("sections have created and last modified dates, and Last modified is the de
 test("chat, project and section cards are a little shorter than square, dated bottom left", () => {
   const items = readSrc("features/library/chats/chats-items.tsx");
   const card = items.slice(items.indexOf("const CARD = cn("), items.indexOf("const ICON ="));
-  assert.match(card, /aspect-\[7\/6\]/);
+  assert.match(card, /aspect-\[8\/7\]/);
   // Grows to fit a two-line name rather than clipping it, and rows stay even.
   assert.doesNotMatch(card, /overflow-hidden/);
   assert.match(card, /self-stretch/);
