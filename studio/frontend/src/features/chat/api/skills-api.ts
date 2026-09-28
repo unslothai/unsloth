@@ -4,6 +4,7 @@
 import { authFetch } from "@/features/auth";
 import { AUTH_SESSION_CLEARED_EVENT } from "@/features/auth/session";
 import { useEffect, useSyncExternalStore } from "react";
+import { refreshContextUsage } from "../utils/refresh-context-usage";
 
 export type SkillRecord = {
   name: string;
@@ -12,13 +13,23 @@ export type SkillRecord = {
   enabled: boolean;
   valid: boolean;
   shadowed: boolean;
+  linked?: boolean;
   shadowed_by?: "agents" | "claude" | "bundled" | null;
   error?: string | null;
   license?: string | null;
   compatibility?: string | null;
   metadata?: Record<string, string> | null;
   allowed_tools?: string | null;
+  path?: string | null;
 };
+
+export type SkillDraft = {
+  name: string;
+  description: string;
+  instructions: string;
+};
+
+export type SkillManifest = SkillRecord & { instructions: string };
 
 type SkillsSnapshot = {
   skills: readonly SkillRecord[];
@@ -135,10 +146,58 @@ export async function setSkillEnabled(
     error: null,
   });
   channel?.postMessage("changed");
-  void import("../utils/refresh-context-usage").then(
-    ({ refreshContextUsage }) => refreshContextUsage({ invalidate: true }),
-  );
+  void refreshContextUsage({ invalidate: true });
   return updated;
+}
+
+export const SKILL_NAME_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/;
+
+export function isValidSkillName(name: string): boolean {
+  return SKILL_NAME_PATTERN.test(name) && !name.includes("--");
+}
+
+async function skillsMutated(): Promise<void> {
+  channel?.postMessage("changed");
+  void refreshContextUsage({ invalidate: true });
+  await listSkills(true).catch(() => undefined);
+}
+
+export async function createSkill(draft: SkillDraft): Promise<SkillRecord> {
+  const response = await authFetch("/api/skills", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(draft),
+  });
+  const created = await parseResponse<SkillRecord>(response);
+  await skillsMutated();
+  return created;
+}
+
+export async function getSkillManifest(name: string): Promise<SkillManifest> {
+  const response = await authFetch(`/api/skills/${encodeURIComponent(name)}`);
+  return parseResponse<SkillManifest>(response);
+}
+
+export async function updateSkill(
+  name: string,
+  draft: Omit<SkillDraft, "name">,
+): Promise<SkillRecord> {
+  const response = await authFetch(`/api/skills/${encodeURIComponent(name)}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(draft),
+  });
+  const updated = await parseResponse<SkillRecord>(response);
+  await skillsMutated();
+  return updated;
+}
+
+export async function deleteSkill(name: string): Promise<void> {
+  const response = await authFetch(`/api/skills/${encodeURIComponent(name)}`, {
+    method: "DELETE",
+  });
+  await parseResponse<unknown>(response);
+  await skillsMutated();
 }
 
 // Spec skill names only, ending at a word boundary: `@example.com`, `@3pm`, `@Probe` are not mentions.
@@ -204,7 +263,5 @@ if (typeof window !== "undefined") {
 
 channel?.addEventListener("message", () => {
   void listSkills(true).catch(() => undefined);
-  void import("../utils/refresh-context-usage").then(
-    ({ refreshContextUsage }) => refreshContextUsage({ invalidate: true }),
-  );
+  void refreshContextUsage({ invalidate: true });
 });

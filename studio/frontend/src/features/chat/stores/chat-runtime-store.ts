@@ -11,7 +11,10 @@ import {
   pinnedReasoningEffort,
   useModelReasoningEffortStore,
 } from "@/features/model-picker/components/model-selector/model-reasoning-effort";
-import { loadedContextFields } from "@/features/model-picker/model-config/per-model-config";
+import {
+  loadedContextFields,
+  type MlxKvQuant,
+} from "@/features/model-picker/model-config/per-model-config";
 import {
   cachedPinnableGpuIndexKind,
   reconcileCachedGpuSelection,
@@ -88,12 +91,7 @@ import {
   migrateLegacyQwenDefaults,
   type QwenDefaultsMigration,
 } from "../utils/qwen-defaults-migration";
-import {
-  DEFAULT_AUTO_COMPACT_ENABLED,
-  DEFAULT_COMPACTION_HEADROOM_RATIO,
-  DEFAULT_CONTEXT_POLICY,
-  type LocalContextPolicy,
-} from "../utils/auto-compaction";
+import { DEFAULT_AUTO_COMPACT_ENABLED } from "../utils/auto-compaction";
 import { preserveThinkingDefaultFromLoad } from "../lib/resolve-preserve-thinking-default";
 import {
   THREAD_SCOPED_PARAM_KEYS,
@@ -2297,6 +2295,9 @@ type ChatRuntimeStore = {
   /** Whether loadedContextLength actually bounds the cache. Null where the backend does
    *  not answer, which is not the same as a confirmed false. */
   loadedContextEnforced: boolean | null;
+  loadedContextUnboundedWhenBatched: boolean;
+  loadedParallelSlots: number | null;
+  loadedContextBudget: number | null;
   modelRequiresTrustRemoteCode: boolean;
   supportsReasoning: boolean;
   reasoningAlwaysOn: boolean;
@@ -2393,14 +2394,11 @@ type ChatRuntimeStore = {
   autoHealToolCalls: boolean;
   nudgeToolCalls: boolean;
   autoCompactEnabled: boolean;
-  contextPolicy: LocalContextPolicy;
-  compactionHeadroomRatio: number;
   maxToolCallsPerMessage: number;
   toolCallTimeout: number;
   kvCacheDtype: string | null;
-  mlxKvBits: number | null;
-  /** Width the backend was last asked for; the verdict belongs beside it. */
-  loadedMlxKvBitsRequested: number | null;
+  mlxKvQuant: MlxKvQuant | null;
+  loadedMlxKvQuantRequested: MlxKvQuant | null;
   mlxKvQuantReason: string | null;
   chatTemplateOverrideReason: string | null;
   mlxKvQuantNote: string | null;
@@ -2418,8 +2416,9 @@ type ChatRuntimeStore = {
   /** User --spec-draft-n-max override (null = platform default). */
   specDraftNMax: number | null;
   loadedSpecDraftNMax: number | null;
-  /** --parallel slots override for GGUF loads (null = server default). Never re-seeded from an
-   *  echo: the resolved count would pin a blank control. */
+  /** User reply-width override, for either backend (null = server default). GGUF spends it
+   *  on llama-server's --parallel slots; MLX on how many replies decode together.
+   *  Never re-seeded from an echo: the resolved count would pin a blank control. */
   nParallel: number | null;
   /** Slots the last successful load sent (null = default); a rollback re-sends them so a failed
    *  switch cannot lose the override. */
@@ -2688,8 +2687,6 @@ type ChatRuntimeStore = {
   setAutoHealToolCalls: (enabled: boolean) => void;
   setNudgeToolCalls: (enabled: boolean) => void;
   setAutoCompactEnabled: (enabled: boolean) => void;
-  setContextPolicy: (policy: LocalContextPolicy) => void;
-  setCompactionHeadroomRatio: (ratio: number) => void;
   setMaxToolCallsPerMessage: (value: number) => void;
   setToolCallTimeout: (value: number) => void;
   setGpuMemoryMode: (mode: "auto" | "manual") => void;
@@ -2735,8 +2732,6 @@ type ScalarSettingKey =
   | "autoHealToolCalls"
   | "nudgeToolCalls"
   | "autoCompactEnabled"
-  | "contextPolicy"
-  | "compactionHeadroomRatio"
   | "maxToolCallsPerMessage"
   | "toolCallTimeout"
   | "reasoningEnabled"
@@ -2788,8 +2783,6 @@ const SCALAR_SETTING_KEYS = [
   "autoHealToolCalls",
   "nudgeToolCalls",
   "autoCompactEnabled",
-  "contextPolicy",
-  "compactionHeadroomRatio",
   "maxToolCallsPerMessage",
   "toolCallTimeout",
   "reasoningEnabled",
@@ -3564,6 +3557,7 @@ export function reconcilePinnedReasoningEffort(opts: {
   checkpoint: string;
   caps: ExternalReasoningCapabilities;
   providerType: string | null | undefined;
+  apiType?: "chat_completions" | "responses";
 }): void {
   const state = useChatRuntimeStore.getState();
   if (state.params.checkpoint !== opts.checkpoint) return;
@@ -3574,6 +3568,7 @@ export function reconcilePinnedReasoningEffort(opts: {
   const next = resolveExternalReasoningEffort({
     caps: opts.caps,
     providerType: opts.providerType,
+    apiType: opts.apiType,
     current: pinned
       ? state.reasoningEffort
       : (takeEffortDisplacedByPin() ?? state.reasoningEffort),
@@ -4113,6 +4108,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   loadedIsGguf: null,
   loadedIsMlx: null,
   loadedContextEnforced: null,
+  loadedContextUnboundedWhenBatched: false,
+  loadedParallelSlots: null,
+  loadedContextBudget: null,
   modelRequiresTrustRemoteCode: false,
   supportsReasoning: false,
   reasoningAlwaysOn: false,
@@ -4179,13 +4177,11 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   autoHealToolCalls: true,
   nudgeToolCalls: true,
   autoCompactEnabled: DEFAULT_AUTO_COMPACT_ENABLED,
-  contextPolicy: DEFAULT_CONTEXT_POLICY,
-  compactionHeadroomRatio: DEFAULT_COMPACTION_HEADROOM_RATIO,
   maxToolCallsPerMessage: 25,
   toolCallTimeout: 5,
   kvCacheDtype: null,
-  mlxKvBits: null,
-  loadedMlxKvBitsRequested: null,
+  mlxKvQuant: null,
+  loadedMlxKvQuantRequested: null,
   mlxKvQuantReason: null,
   chatTemplateOverrideReason: null,
   mlxKvQuantNote: null,
@@ -5132,8 +5128,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       toolFullOutput: {},
       activeDiffusionCanvasByThreadId: {},
       kvCacheDtype: null,
-      mlxKvBits: null,
-      loadedMlxKvBitsRequested: null,
+      mlxKvQuant: null,
+      loadedMlxKvQuantRequested: null,
       mlxKvQuantReason: null,
       chatTemplateOverrideReason: null,
       mlxKvQuantNote: null,
@@ -5819,30 +5815,6 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       );
       return {
         autoCompactEnabled,
-        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
-      };
-    }),
-  setContextPolicy: (contextPolicy) =>
-    set((state) => {
-      setScalarSettingVersion(
-        "contextPolicy",
-        contextPolicy,
-        state.contextPolicy,
-      );
-      return {
-        contextPolicy,
-        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
-      };
-    }),
-  setCompactionHeadroomRatio: (compactionHeadroomRatio) =>
-    set((state) => {
-      setScalarSettingVersion(
-        "compactionHeadroomRatio",
-        compactionHeadroomRatio,
-        state.compactionHeadroomRatio,
-      );
-      return {
-        compactionHeadroomRatio,
         queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
       };
     }),

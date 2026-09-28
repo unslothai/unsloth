@@ -63,6 +63,8 @@ export interface ImportProgress {
 
 export interface ImportOptions {
   onProgress?: (progress: ImportProgress) => void;
+  /** Each chat saved, by its row id (a comparison's pair id), so a caller can file it. */
+  onSaved?: (rowId: string) => void;
 }
 
 export interface ImportResult {
@@ -150,12 +152,7 @@ function oaiMessagesToRecords(
   baseTs: number,
 ): MessageRecord[] {
   const toolResults = new Map<string, string>();
-  for (const m of oaiMsgs) {
-    const msg = m as Record<string, unknown>;
-    if (msg.role === "tool" && typeof msg.tool_call_id === "string") {
-      toolResults.set(msg.tool_call_id, typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content ?? ""));
-    }
-  }
+  const pending: Array<{ turn: number; part: { toolCallId: string; result?: string } }> = [];
 
   const records: MessageRecord[] = [];
   let prevId: string | null = null;
@@ -164,7 +161,21 @@ function oaiMessagesToRecords(
   for (const m of oaiMsgs) {
     const msg = m as Record<string, unknown>;
     const role = msg.role as string;
-    if (role === "tool") continue;
+    if (role === "tool") {
+      if (typeof msg.tool_call_id !== "string") continue;
+      const result = typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content ?? "");
+      let at = pending.length - 1;
+      while (at >= 0 && pending[at].part.toolCallId !== msg.tool_call_id) at--;
+      if (at === -1) {
+        toolResults.set(msg.tool_call_id, result);
+      } else {
+        const { turn } = pending[at];
+        at = pending.findIndex((entry) => entry.turn === turn && entry.part.toolCallId === msg.tool_call_id);
+        pending[at].part.result = result;
+        pending.splice(at, 1);
+      }
+      continue;
+    }
 
     const id = crypto.randomUUID();
 
@@ -183,15 +194,15 @@ function oaiMessagesToRecords(
           // _raw matches what the stream adapter and the backend keep for arguments the model did not
           // emit as valid JSON.
           try { args = JSON.parse(argsStr); } catch { args = { _raw: argsStr }; }
-          const result = toolResults.get(tcId);
-          parts.push({
+          const part = {
             type: "tool-call",
             toolCallId: tcId,
             toolName: name,
             args,
             argsText: argsStr,
-            ...(result !== undefined ? { result } : {}),
-          });
+          };
+          parts.push(part);
+          pending.push({ turn: idx, part });
         }
       }
       content = parts;
@@ -211,6 +222,11 @@ function oaiMessagesToRecords(
     });
     prevId = id;
     idx++;
+  }
+
+  for (const { part } of pending) {
+    const result = toolResults.get(part.toolCallId);
+    if (result !== undefined) part.result = result;
   }
 
   return records;
@@ -431,12 +447,15 @@ export async function importConversationsFromSource(
     totalBytes: source.size,
   };
   const report = () => options.onProgress?.({ ...progress });
+  const saved = (conversation: { threadId: string; thread?: { pairId?: string } }) =>
+    options.onSaved?.(conversation.thread?.pairId ?? conversation.threadId);
 
   if (/\.csv$/i.test(source.name)) {
     const text = await readAllText(source, CSV_MAX_BYTES, "CSV");
     for (const conversation of parseImportText(text, source.name)) {
       await writeConversation(conversation, projectId);
       progress.imported++;
+      saved(conversation);
     }
     if (progress.imported > 0) notifyChatHistoryUpdated();
     report();
@@ -483,6 +502,7 @@ export async function importConversationsFromSource(
         const task = writeConversation(conversation, projectId)
           .then(() => {
             progress.imported++;
+            saved(conversation);
           })
           .catch(() => {
             // Keep importing after one conversation fails to save.
@@ -510,6 +530,7 @@ export async function importConversationsFromSource(
       try {
         await writeConversation(conversation, projectId);
         progress.imported++;
+        saved(conversation);
       } catch {
         progress.failed++;
       }

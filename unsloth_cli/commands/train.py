@@ -47,6 +47,31 @@ def _create_cli_trainer(model_name: str, hf_token: Optional[str]):
     return UnslothTrainer()
 
 
+def _optimizer_for_host(requested: Optional[str] = None) -> str:
+    """The CLI exposes no --optim, so trainer.py would fall back to its own `adamw_8bit`
+    literal, which cannot complete a step on Intel XPU. Resolve the same device policy the
+    Studio route and worker config use, so `unsloth train` lands on the same optimizer a
+    Studio run on this host would. Non-XPU hosts keep `adamw_8bit` exactly as before.
+
+    Takes `requested` rather than only filling a default, so a future --optim carrying a
+    bitsandbytes name is normalized too instead of reaching the trainer unchanged.
+    """
+    ensure_studio_backend_path()
+    with studio_backend_imports("unsloth train"):
+        from studio.backend.core.training.training import (
+            DEFAULT_TRAINING_OPTIMIZER,
+            normalize_training_optimizer_for_device,
+        )
+        from studio.backend.utils.hardware import get_device
+
+    optimizer = requested or DEFAULT_TRAINING_OPTIMIZER
+    try:
+        device_backend = get_device().value
+    except Exception:  # noqa: BLE001 -- an undetectable host keeps the historical default
+        return optimizer
+    return normalize_training_optimizer_for_device(optimizer, device_backend = device_backend)
+
+
 @add_options_from_config(Config)
 def train(
     config: Optional[Path] = typer.Option(
@@ -156,6 +181,7 @@ def train(
 
     training_kwargs = cfg.training_kwargs()
     training_kwargs["wandb_token"] = wandb_token
+    training_kwargs["optim"] = _optimizer_for_host(training_kwargs.get("optim"))
     started = trainer.start_training(dataset = ds, eval_dataset = eval_ds, **training_kwargs)
 
     if not started:

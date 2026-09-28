@@ -1074,12 +1074,55 @@ def active_backend_is_llama(model_name: str | None = None) -> bool:
         return False
 
 
-def _identity(is_llama: bool, name: str) -> str:
+def _llama_pooling(name: str, served = None) -> str | None:
+    try:
+        from .embed_llama_server import LlamaServerBackend, _gguf_pooling
+    except Exception:  # noqa: BLE001 - llama plumbing import must never block
+        return None
+    # The file the running server loaded wins over a cache search: moving the HF cache leaves it serving the old path.
+    backend = served if served is not None else _backend
+    desired = config.effective_gguf_repo_for_embedding_model(name)
+    if isinstance(backend, LlamaServerBackend):
+        path, repo, captured, alive = backend.pooling_identity_snapshot()
+    else:
+        path, repo, captured, alive = None, None, None, False
+    if path and repo == desired:
+        # A live server still serves the pooling captured at its spawn even if the file is
+        # replaced. ``served`` means an encode just completed on that same captured value. With a
+        # stopped ambient backend, however, the next spawn will read the file again, so pre-encode
+        # deduplication must do the same.
+        if served is not None or alive:
+            pooling = captured or _gguf_pooling(path)
+        elif os.path.isfile(path):
+            pooling = _gguf_pooling(path)
+        else:
+            pooling = LlamaServerBackend.cached_pooling(name)
+    else:
+        pooling = LlamaServerBackend.cached_pooling(name)
+    if pooling is None:
+        # Nothing on disk to read, so match no stored row: pre-encode dedupe must not take forced-CLS vectors as current.
+        return "unresolved"
+    return None if pooling == "cls" else pooling
+
+
+def _identity(
+    is_llama: bool,
+    name: str,
+    served = None,
+    served_identity: tuple[str | None, str | None] | None = None,
+) -> str:
     if is_llama:
+        if served_identity is None:
+            repo = config.effective_gguf_repo_for_embedding_model(name)
+            pooling = _llama_pooling(name, served)
+        else:
+            repo, captured_pooling = served_identity
+            pooling = None if captured_pooling == "cls" else captured_pooling
         return config.embedding_identity(
             "llama-server",
             name,
-            gguf_repo = config.effective_gguf_repo_for_embedding_model(name),
+            gguf_repo = repo,
+            pooling = pooling,
         )
     return config.embedding_identity("sentence-transformers", name)
 
@@ -1144,12 +1187,14 @@ def encode_with_identity(
     were never in, and a query then searches (or a document is stored against) the
     wrong half of the index."""
     _served_by.backend = None
+    _served_by.llama_identity = None
     vectors = encode(texts, model_name = model_name, normalize = normalize)
     served = getattr(_served_by, "backend", None)
+    served_identity = getattr(_served_by, "llama_identity", None)
     name = model_name or config.effective_embedding_model()
     if served is None:
         return vectors, embedding_identity(name)
-    return vectors, _identity(_is_llama_backend(served), name)
+    return vectors, _identity(_is_llama_backend(served), name, served, served_identity)
 
 
 def warm(model_name: str | None = None) -> None:
@@ -1172,8 +1217,12 @@ def encode(
     """
     backend = _get_backend(model_name)
     _served_by.backend = backend
+    _served_by.llama_identity = None
     try:
-        return backend.encode(texts, model_name = model_name, normalize = normalize)
+        vectors = backend.encode(texts, model_name = model_name, normalize = normalize)
+        served = getattr(_served_by, "backend", None) or backend
+        _served_by.llama_identity = getattr(served, "served_embedding_identity", lambda: None)()
+        return vectors
     except RuntimeError:
         if not (_is_llama_backend(backend) and getattr(backend, "_closed", False)):
             raise
@@ -1181,7 +1230,9 @@ def encode(
     if replacement is backend:
         raise RuntimeError("llama-server embedding backend was unloaded")
     _served_by.backend = replacement
-    return replacement.encode(texts, model_name = model_name, normalize = normalize)
+    vectors = replacement.encode(texts, model_name = model_name, normalize = normalize)
+    _served_by.llama_identity = getattr(replacement, "served_embedding_identity", lambda: None)()
+    return vectors
 
 
 def dim(model_name: str | None = None) -> int:

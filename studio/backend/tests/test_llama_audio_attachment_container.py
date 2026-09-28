@@ -691,6 +691,15 @@ def test_a_forwarded_wav_is_bounded_by_its_own_header(monkeypatch):
     assert base64.b64decode(encoded) == short_wav
 
 
+def test_an_inflated_block_align_cannot_shorten_a_forwarded_wav():
+    wav = bytearray(_wav_header(16_000, 1, 16, 32_000) + bytes(32_000))
+    wav[32:34] = (2_000).to_bytes(2, "little")  # nBlockAlign, which the decoder ignores
+    assert inference_route._wav_seconds(bytes(wav)) == 1.0
+    # Unless the samples are not byte-aligned: 12-bit samples pad to nBlockAlign's two bytes.
+    wav[32:36] = (2).to_bytes(2, "little") + (12).to_bytes(2, "little")
+    assert inference_route._wav_seconds(bytes(wav)) == 1.0
+
+
 def test_a_forwarded_mp3_is_bounded_by_its_frame_headers(monkeypatch):
     monkeypatch.setattr(inference_route, "_MAX_AUDIO_SECONDS", 60)
     try:

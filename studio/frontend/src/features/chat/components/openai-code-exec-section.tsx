@@ -421,7 +421,7 @@ export function OpenAICodeExecSection({
           max={TTL_MAX}
           value={ttlValue}
           onChange={(e) => onTtlChange(e.target.value)}
-          className="h-8 w-[72px] pl-3 text-sm tabular-nums"
+          className="h-8 w-[calc(72px*var(--ui-space-scale,1))] pl-3 text-sm tabular-nums"
         />
       </div>
 

@@ -862,12 +862,11 @@ fn open_existing_dir(dir: &std::path::Path) -> Result<(), String> {
     open_existing_dir_with(dir, |path| crate::process::open_detached(path))
 }
 
-/// Open the Unsloth directory in the system file manager.
+/// Open the Unsloth logs directory in the system file manager.
 #[tauri::command]
 pub fn open_logs_dir(window: tauri::WebviewWindow) -> Result<(), String> {
     crate::native_intents::ensure_main_window(&window)?;
-    let home = dirs::home_dir().ok_or("Could not determine home directory")?;
-    open_existing_dir(&home.join(".unsloth").join("studio"))
+    open_existing_dir(&diagnostics::logs_dir())
 }
 
 /// Open a models directory (resolved by the backend, e.g. the HF cache) in the

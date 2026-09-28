@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import Response
+from fastapi.responses import FileResponse, Response
 from fastapi.testclient import TestClient
 from starlette.middleware.gzip import GZipMiddleware
 
@@ -266,6 +266,24 @@ class TestMaxBodyMiddleware:
         assert cap == upload_request_limit_bytes()  # DB-aware cap + multipart overhead
         assert cap > default_request_body_limit_bytes()  # not the plain default body cap
 
+    def test_library_uploads_are_capped_before_parsing(self, main_module):
+        from utils.upload_limits import (
+            LIBRARY_UPLOAD_MAX_BYTES,
+            default_request_body_limit_bytes,
+            upload_request_limit_bytes,
+        )
+
+        assert "/api/library" in main_module._BODY_PROTECTED_PREFIXES
+        for path in ("/api/library/uploads", "/api/library/uploads/"):
+            assert main_module._get_upload_passthrough_request_max_bytes(path) == (
+                upload_request_limit_bytes(LIBRARY_UPLOAD_MAX_BYTES)
+            ), path
+        path = "/api/library/uploads/abc/text"
+        assert path not in main_module._BODY_UPLOAD_PASSTHROUGH_EXACT_PATHS
+        assert main_module._get_upload_passthrough_request_max_bytes(path) == (
+            default_request_body_limit_bytes()
+        )
+
     def test_diffusion_dataset_json_subroutes_keep_default_cap(self, main_module):
         # The exact-path passthrough must NOT sweep in the JSON sub-routes under the same prefix: a prefix match would let a large
         # caption/import body bypass the default JSON cap and be buffered up to the far larger upload limit.
@@ -500,6 +518,29 @@ def _make_csp_app(main_module, attach_nonce: str | None = None):
     return app
 
 
+def _make_api_cache_app(main_module, file_path: Path | None = None):
+    app = FastAPI()
+    app.add_middleware(main_module.SecurityHeadersMiddleware)
+
+    @app.get("/api/inference/monitor")
+    async def monitor():
+        return {"entries": []}
+
+    @app.get("/api/video/asset")
+    async def asset():
+        return Response(
+            content = b"mp4",
+            media_type = "video/mp4",
+            headers = {"Cache-Control": "private, max-age=31536000, immutable"},
+        )
+
+    @app.get("/api/file")
+    async def file():
+        return FileResponse(file_path)
+
+    return app
+
+
 class TestSecurityHeadersMiddleware:
     def test_csp_has_no_unsafe_inline_for_script_src(self, main_module):
         app = _make_csp_app(main_module)
@@ -530,6 +571,33 @@ class TestSecurityHeadersMiddleware:
         assert "microphone=(self)" in permissions_policy
         assert "geolocation=()" in permissions_policy
         assert r.headers["server"] == "unsloth-studio"
+
+    def test_api_read_without_cache_policy_is_no_store(self, main_module):
+        # Polled JSON like the API monitor: Chromium/WebView2 would write every poll to its disk cache.
+        app = _make_api_cache_app(main_module)
+        r = TestClient(app).get("/api/inference/monitor")
+        assert r.status_code == 200
+        assert r.headers["cache-control"] == "no-store"
+
+    def test_api_route_cache_policy_is_kept(self, main_module):
+        app = _make_api_cache_app(main_module)
+        r = TestClient(app).get("/api/video/asset")
+        assert r.headers["cache-control"] == "private, max-age=31536000, immutable"
+
+    def test_api_file_with_validators_stays_revalidatable(self, main_module, tmp_path):
+        # FileResponse carries ETag/Last-Modified, so the browser can revalidate instead of refetching.
+        path = tmp_path / "out.png"
+        path.write_bytes(b"png")
+        app = _make_api_cache_app(main_module, file_path = path)
+        r = TestClient(app).get("/api/file")
+        assert r.status_code == 200
+        assert "etag" in r.headers
+        assert "cache-control" not in r.headers
+
+    def test_non_api_response_gets_no_cache_policy(self, main_module):
+        app = _make_csp_app(main_module)
+        r = TestClient(app).get("/plain")
+        assert "cache-control" not in r.headers
 
     def test_mirror_endpoints_in_connect_src(self, main_module, monkeypatch):
         # A mirror must reach connect-src or the browser blocks the Hub calls.
@@ -1368,3 +1436,129 @@ class TestCspHfEndpoints:
         lan = TestClient(main_module.app, client = ("192.168.1.50", 40000))
         lan_expected = "https://huggingface.co" if "127.0.0.1" in endpoint else endpoint
         assert lan.get("/api/health").json()["hf_endpoint"] == lan_expected
+
+
+class TestRemoteAccessCORS:
+    """Publishing a tunnel must admit the tunnel, not every origin.
+
+    In plain --api-only (the desktop shell's own launch mode) the startup allowlist is the five
+    Tauri origins. Turning on Settings > Remote access used to replace that at request time with
+    unconditional reflection plus Access-Control-Allow-Credentials, on the loopback socket too, so
+    any page the user had open could read the local API's unauthenticated responses.
+    """
+
+    def test_configured_cors_exposes_typesafe_request_id(self, main_module):
+        cors = next(
+            middleware
+            for middleware in main_module.app.user_middleware
+            if middleware.cls is main_module.RemoteAccessCORSMiddleware
+        )
+        app = FastAPI()
+        app.add_middleware(cors.cls, **{**cors.kwargs, "remote_access_state": app.state})
+
+        @app.get("/decision")
+        async def decision():
+            return Response(headers = {"x-typesafe-request-id": "decision-request"})
+
+        response = TestClient(app).get("/decision", headers = {"Origin": "tauri://localhost"})
+        assert response.status_code == 200
+        assert response.headers["access-control-allow-origin"] in ("*", "tauri://localhost")
+        assert response.headers["x-typesafe-request-id"] == "decision-request"
+        exposed = response.headers["access-control-expose-headers"].lower().split(",")
+        assert "x-typesafe-request-id" in {header.strip() for header in exposed}
+
+
+    TUNNEL = "https://demo-abc.trycloudflare.com"
+
+    @staticmethod
+    def _client(main_module, allow_origins):
+        from utils.host_policy import cors_origins_for_mode
+
+        app = FastAPI()
+        app.state.cloudflare_url = None
+
+        @app.get("/api/auth/status")
+        async def _status():
+            return {"ok": True}
+
+        app.add_middleware(
+            main_module.RemoteAccessCORSMiddleware,
+            remote_access_state = app.state,
+            allow_origins = allow_origins or cors_origins_for_mode(api_only = True, secure = False),
+            allow_credentials = True,
+            allow_methods = ["*"],
+            allow_headers = ["*"],
+            max_age = 60,
+        )
+        return app, TestClient(app)
+
+    def _allowed(self, client, origin):
+        response = client.get("/api/auth/status", headers = {"Origin": origin})
+        return response.headers.get("access-control-allow-origin")
+
+    def _preflight(self, client, origin):
+        return client.options(
+            "/api/auth/status",
+            headers = {
+                "Origin": origin,
+                "Access-Control-Request-Method": "GET",
+                "Access-Control-Request-Headers": "authorization",
+            },
+        ).status_code
+
+    def test_a_published_tunnel_does_not_admit_an_arbitrary_origin(self, main_module):
+        app, client = self._client(main_module, None)
+        app.state.cloudflare_url = self.TUNNEL
+
+        for origin in ("https://evil.example", "null", "http://127.0.0.1:9999"):
+            assert self._allowed(client, origin) is None, origin
+            assert self._preflight(client, origin) == 400, origin
+
+    def test_the_tunnel_origin_itself_is_admitted(self, main_module):
+        app, client = self._client(main_module, None)
+        app.state.cloudflare_url = self.TUNNEL + "/"
+
+        # Default port and trailing slash are canonicalised, as _canonical_origin documents.
+        for origin in (self.TUNNEL, self.TUNNEL + ":443"):
+            assert self._allowed(client, origin) == origin, origin
+            assert self._preflight(client, origin) == 200, origin
+
+        app.state.cloudflare_url = None
+        assert self._allowed(client, self.TUNNEL) is None
+
+    def test_the_desktop_app_keeps_its_origin_either_way(self, main_module):
+        app, client = self._client(main_module, None)
+
+        for published in (None, self.TUNNEL):
+            app.state.cloudflare_url = published
+            assert self._allowed(client, "tauri://localhost") == "tauri://localhost"
+            assert self._preflight(client, "tauri://localhost") == 200
+
+    def test_the_browser_served_default_is_unchanged(self, main_module):
+        """Outside plain api-only the startup list is already ["*"]; nothing here narrows it."""
+        app, client = self._client(main_module, ["*"])
+
+        for published in (None, self.TUNNEL):
+            app.state.cloudflare_url = published
+            assert self._allowed(client, "https://evil.example") == "https://evil.example"
+
+
+def test_health_reports_the_default_for_a_settings_saved_endpoint(main_module, monkeypatch):
+    from starlette.requests import Request
+    import utils.hub_settings as hub_settings
+
+    local = Request({"type": "http", "headers": [], "client": ("127.0.0.1", 1)})
+    monkeypatch.setenv("HF_ENDPOINT", "https://hub.internal")
+    monkeypatch.setenv("HF_DATASETS_SERVER", "https://hub.internal")
+    monkeypatch.setattr(hub_settings, "_saved_only_endpoints", frozenset(), raising = False)
+    assert main_module._reportable_hf_endpoints(local) == {
+        "hf_endpoint": "https://hub.internal",
+        "hf_datasets_server": "https://hub.internal",
+    }
+    monkeypatch.setattr(
+        hub_settings, "_saved_only_endpoints", frozenset({"https://hub.internal"}), raising = False
+    )
+    assert main_module._reportable_hf_endpoints(local) == {
+        "hf_endpoint": "https://huggingface.co",
+        "hf_datasets_server": "https://datasets-server.huggingface.co",
+    }
