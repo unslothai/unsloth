@@ -243,6 +243,20 @@ test("after Retry, the preflight repairs a recently repaired runtime, once", asy
   assert.equal(run.errors.at(-1), "runtime damaged again");
 });
 
+test("a Retry that lands on a busy environment still repairs once the wait ends", async () => {
+  const preflight = { ...BUSY };
+  const run = harness(preflight, null, true);
+  run.allowHeldRepair();
+  await run.check();
+  assert.equal(run.waiting, true);
+  assert.equal(run.repairs, 0);
+
+  preflight.reason = "llama_runtime_binaries_missing";
+  await run.fireWait();
+  assert.equal(run.repairs, 1, "the click carried through the wait");
+  assert.equal(run.heldRepairAllowed(), false);
+});
+
 test("the wait is bounded, so a gate nobody releases still reaches Retry", async () => {
   const run = harness(BUSY);
   await run.check();

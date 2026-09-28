@@ -378,6 +378,8 @@ export function useTauriBackend() {
             preflight.reason === MANAGED_ENVIRONMENT_BUSY ||
             preflight.reason === MANAGED_ENVIRONMENT_UPDATING
           ) {
+            // Still the same Retry: the check the wait ends in may use it.
+            allowHeldRuntimeRepairRef.current = allowHeldRuntimeRepair;
             waitForManagedEnvironment(preflight.reason === MANAGED_ENVIRONMENT_BUSY);
             return;
           }
