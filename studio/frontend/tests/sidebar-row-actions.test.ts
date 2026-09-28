@@ -10,6 +10,7 @@ import test from "node:test";
 import vm from "node:vm";
 import ts from "typescript";
 import * as liveThreadHead from "../src/features/chat/utils/live-thread-head.ts";
+import { en } from "../src/i18n/locales/en.ts";
 import { readSrcAsync } from "./helpers/kit.ts";
 
 const APP_SIDEBAR = await readSrcAsync("components/app-sidebar.tsx");
@@ -216,16 +217,17 @@ test("a section's chevron appears on hovering anywhere in it", () => {
 test("the chat-folder hint names what to click instead", async () => {
   // The item is shared with the Projects page's chat rows, so the hint lives with it.
   const item = await readSrcAsync("features/chat/components/open-chat-folder-item.tsx");
+  const hint = en.library.chats.folder.chatHint;
   assert.ok(
-    !item.includes("card that created it"),
+    !hint.includes("card that created it"),
     "the hint still sends the user to a card it never identifies",
   );
   assert.ok(
-    item.includes("download a file from the tool result that wrote it"),
+    hint.includes("download a file from the tool result that wrote it"),
     "the hint no longer says where the files can be had",
   );
   // One hint, used twice on purpose: tooltip for the pointer, title for everything else.
-  assert.match(item, /const CHAT_FOLDER_HINT =\s*"Only the desktop app can open a chat's files folder/);
+  assert.match(item, /hintOverride \?\? t\("library\.chats\.folder\.chatHint"\)/);
   assert.match(item, /title=\{hint\}/);
   assert.match(item, /<TooltipContent[^>]*>\s*\{hint\}\s*<\/TooltipContent>/);
 });

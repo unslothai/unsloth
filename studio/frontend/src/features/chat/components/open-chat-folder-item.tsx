@@ -11,11 +11,29 @@ import {
 } from "@/components/ui/tooltip";
 import { FolderOpenIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { useT } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
 import { toast } from "@/lib/toast";
 import { useState, type ComponentProps, type ComponentType } from "react";
 import type { SidebarItem } from "../hooks/use-chat-sidebar-items";
 import { getSidebarItemThreadIds, sandboxSessionIdsHolding } from "./chat-row-menu";
+
+/** A 404 means no folder yet (made on a tool's first write), not a failure. */
+function reportRevealError(
+  error: unknown,
+  t: ReturnType<typeof useT>,
+  kind: "chat" | "project",
+): void {
+  if ((error as { status?: number } | null)?.status === 404) {
+    toast.info(t(`library.chats.folder.${kind}Missing` as const), {
+      description: t("library.chats.folder.missingDescription"),
+    });
+    return;
+  }
+  toast.error(t(`library.chats.folder.${kind}Failed` as const), {
+    description: error instanceof Error ? error.message : String(error),
+  });
+}
 
 /**
  * "Open chat folder" (desktop app only). A compare chat outside a project spans two
@@ -28,6 +46,7 @@ export function OpenChatFolderItem({
   item: SidebarItem;
   Item?: ComponentType<ComponentProps<typeof DropdownMenuItem>>;
 }) {
+  const t = useT();
   const threadIds = getSidebarItemThreadIds(item);
   const sandboxSessionId =
     item.type === "single" || item.projectId
@@ -37,7 +56,7 @@ export function OpenChatFolderItem({
   if (!isTauri) return <OpenChatFolderUnavailableItem Item={Item} />;
   return (
     <Item
-      title="Open the folder this chat's tool calls read and write"
+      title={t("library.chats.folder.openChatTitle")}
       onSelect={() => {
         void (async () => {
           try {
@@ -45,31 +64,23 @@ export function OpenChatFolderItem({
             const ids = threadIds.length > 0 ? threadIds : [item.id];
             const distinct = await sandboxSessionIdsHolding(ids);
             if (distinct.length > 1) {
-              toast.error("This chat wrote to more than one folder.", {
-                description:
-                  "It ran tools on both sides of a move, so open the folder from a tool card instead.",
+              toast.error(t("library.chats.folder.manyFolders"), {
+                description: t("library.chats.folder.manyFoldersDescription"),
               });
               return;
             }
             await revealSandbox(distinct[0] ?? sandboxSessionId);
           } catch (error) {
-            toast.error("Could not open the chat folder.", {
-              description: error instanceof Error ? error.message : String(error),
-            });
+            reportRevealError(error, t, "chat");
           }
         })();
       }}
     >
       <HugeiconsIcon icon={FolderOpenIcon} strokeWidth={1.75} className="size-icon" />
-      <span>Open chat folder</span>
+      <span>{t("library.chats.folder.openChat")}</span>
     </Item>
   );
 }
-
-const CHAT_FOLDER_HINT =
-  "Only the desktop app can open a chat's files folder. In a browser, download a file from the tool result that wrote it.";
-const PROJECT_FOLDER_HINT =
-  "Only the desktop app can open a project's folder. In a browser, download files from the tool results that wrote them.";
 
 /** "Open project folder": the workspace shared by the project's chats (desktop app only). */
 export function OpenProjectFolderItem({
@@ -79,26 +90,29 @@ export function OpenProjectFolderItem({
   projectId: string;
   Item?: ComponentType<ComponentProps<typeof DropdownMenuItem>>;
 }) {
+  const t = useT();
   const sandboxSessionId = sandboxSessionIdFor(undefined, projectId);
   if (!sandboxSessionId) return null;
   if (!isTauri) {
     return (
-      <OpenChatFolderUnavailableItem Item={Item} label="Open project folder" hint={PROJECT_FOLDER_HINT} />
+      <OpenChatFolderUnavailableItem
+        Item={Item}
+        label={t("library.chats.folder.openProject")}
+        hint={t("library.chats.folder.projectHint")}
+      />
     );
   }
   return (
     <Item
-      title="Open the folder this project's chats read and write"
+      title={t("library.chats.folder.openProjectTitle")}
       onSelect={() => {
-        void revealSandbox(sandboxSessionId).catch((error: unknown) => {
-          toast.error("Could not open the project folder.", {
-            description: error instanceof Error ? error.message : String(error),
-          });
-        });
+        void revealSandbox(sandboxSessionId).catch((error: unknown) =>
+          reportRevealError(error, t, "project"),
+        );
       }}
     >
       <HugeiconsIcon icon={FolderOpenIcon} strokeWidth={1.75} className="size-icon" />
-      <span>Open project folder</span>
+      <span>{t("library.chats.folder.openProject")}</span>
     </Item>
   );
 }
@@ -114,14 +128,16 @@ export function OpenProjectFolderItem({
 export function OpenChatFolderUnavailableItem({
   // The sidebar renders this row into its right-click menu too, which is a different Radix set.
   Item = DropdownMenuItem,
-  label = "Open chat folder",
-  hint = CHAT_FOLDER_HINT,
+  label,
+  hint: hintOverride,
 }: {
   Item?: ComponentType<ComponentProps<typeof DropdownMenuItem>>;
   label?: string;
   hint?: string;
 } = {}) {
+  const t = useT();
   const [hintOpen, setHintOpen] = useState(false);
+  const hint = hintOverride ?? t("library.chats.folder.chatHint");
 
   return (
     <Item
@@ -138,7 +154,7 @@ export function OpenChatFolderUnavailableItem({
       onBlur={() => setHintOpen(false)}
     >
       <HugeiconsIcon icon={FolderOpenIcon} strokeWidth={1.75} className="size-icon" />
-      <span>{label}</span>
+      <span>{label ?? t("library.chats.folder.openChat")}</span>
       <Tooltip open={hintOpen}>
         {/* Our wrapper, not the raw primitive: it registers the trigger element,
             without which the tooltip counts itself blocked by the open menu. */}

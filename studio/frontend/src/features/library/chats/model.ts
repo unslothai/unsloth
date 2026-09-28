@@ -390,15 +390,11 @@ export function modelFacets(
 
 /** Model ids per chat row; a compare pair is keyed by its pair id. */
 export function modelsByChat(
-  threads: readonly { id: string; pairId?: string | null; modelId?: string | null }[],
+  chats: readonly { id: string; modelIds?: readonly string[] }[],
 ): Map<string, string[]> {
   const out = new Map<string, string[]>();
-  for (const thread of threads) {
-    if (!thread.modelId) continue;
-    const key = thread.pairId || thread.id;
-    const list = out.get(key) ?? [];
-    if (!list.includes(thread.modelId)) list.push(thread.modelId);
-    out.set(key, list);
+  for (const chat of chats) {
+    if (chat.modelIds?.length) out.set(chat.id, [...chat.modelIds]);
   }
   return out;
 }

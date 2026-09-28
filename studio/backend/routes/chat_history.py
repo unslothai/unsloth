@@ -71,6 +71,7 @@ from storage.studio_db import (
     list_chat_settings,
     list_chat_messages,
     list_chat_messages_for_threads,
+    count_chat_messages_for_threads,
     list_chat_threads,
     remap_chat_thread_document_ids,
     sync_chat_messages,
@@ -184,6 +185,8 @@ class ChatThread(BaseModel):
     forkedFromMessageId: Optional[str] = None
     forkBoundaryMessageId: Optional[str] = None
     forkTitleBase: Optional[str] = None
+    # Server-set on rename, move or (un)archive.
+    modifiedAt: Optional[int] = None
     settings: Optional[ChatThreadSettings] = None
 
     @field_serializer("settings")
@@ -590,6 +593,10 @@ class ChatMessagesBatchRequest(BaseModel):
 
 class ChatMessagesBatchResponse(BaseModel):
     messagesByThreadId: dict[str, list[ChatMessage]]
+
+
+class ChatMessageCountsResponse(BaseModel):
+    countsByThreadId: dict[str, int]
 
 
 class ChatImportLedgerResponse(BaseModel):
@@ -1403,6 +1410,16 @@ def batch_thread_messages(
         if tid in by_thread:
             by_thread[tid].append(ChatMessage(**m))
     return ChatMessagesBatchResponse(messagesByThreadId = by_thread)
+
+
+@router.post("/messages:counts", response_model = ChatMessageCountsResponse)
+def count_thread_messages(
+    payload: ChatMessagesBatchRequest, current_subject: str = Depends(get_current_subject)
+):
+    """Per-thread message counts, without message bodies."""
+    return ChatMessageCountsResponse(
+        countsByThreadId = count_chat_messages_for_threads(payload.threadIds)
+    )
 
 
 @router.get("/threads/{thread_id}/messages/{message_id}", response_model = ChatMessage)

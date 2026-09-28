@@ -14,14 +14,20 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import {
+  COMBINED_EXPORT_FORMATS_LIST,
   type ConvExportFormat,
+  type ConversationExportFormat,
   EXPORT_FORMATS_LIST,
+  chatExportOptions,
   type ProjectRecord,
   type SidebarCustomSection,
   type SidebarItem,
   OpenChatFolderItem,
   OpenProjectFolderItem,
+  canForkChatRow,
   useChatNavigationStore,
+  useChatRuntimeStore,
+  useForkInFlight,
   compareModelDisplayName,
 } from "@/features/chat";
 import { type TranslationKey, useLocale, useT } from "@/i18n";
@@ -97,6 +103,11 @@ const MOVE_TO_LIST =
   "no-scrollbar -my-0.5 max-h-[calc(260px*var(--ui-space-scale,1))] overflow-y-auto overscroll-contain";
 const MENU_LABEL = "px-3 pb-1 pt-2 font-normal text-muted-foreground";
 
+/** A chat exports one file per pane; several export combined or per chat. */
+export type ChatExportChoice =
+  | { kind: "chat"; format: ConversationExportFormat }
+  | { kind: "bulk"; format: ConvExportFormat; merged: boolean };
+
 /** Move target; a null project or section id removes the chat from its current one. */
 export type ChatDestination =
   | { kind: "project"; id: string | null }
@@ -127,7 +138,8 @@ export interface ChatsActions {
   /** Per chat row id; absent until read. */
   chatContents: ReadonlyMap<string, ChatContents>;
   selection: ReadonlySet<string>;
-  toggleSelected: (id: string) => void;
+  /** `range`: shift-click, from the last toggled row. */
+  toggleSelected: (id: string, range?: boolean) => void;
   open: (chat: SidebarItem) => void;
   rename: (chat: SidebarItem) => void;
   togglePin: (chat: SidebarItem) => void;
@@ -143,19 +155,21 @@ export interface ChatsActions {
   newChatInSection: (sectionId: string) => void;
   renameSection: (section: SidebarCustomSection) => void;
   removeSection: (section: SidebarCustomSection) => void;
-  exportSection: (
-    section: SidebarCustomSection,
-    format: ConvExportFormat,
-  ) => void;
+  exportSection: (section: SidebarCustomSection, choice: ChatExportChoice) => void;
   archive: (chats: SidebarItem[]) => void;
   unarchive: (chats: SidebarItem[]) => void;
-  exportChats: (chats: SidebarItem[], format: ConvExportFormat) => void;
+  exportChats: (chats: SidebarItem[], choice: ChatExportChoice) => void;
   remove: (chats: SidebarItem[]) => void;
   viewProject: (projectId: string) => void;
+  /** Project chip: narrows the list to that project. */
+  filterProject: (projectId: string) => void;
   newChatIn: (projectId: string | null) => void;
   editProject: (project: ProjectRecord) => void;
   togglePinProject: (projectId: string) => void;
-  exportProject: (project: ProjectRecord, format: ConvExportFormat) => void;
+  exportProject: (project: ProjectRecord, choice: ChatExportChoice) => void;
+  /** Live chats per project and section, as their Export writes. */
+  projectChatCounts: ReadonlyMap<string, number>;
+  sectionChatCounts: ReadonlyMap<string, number>;
   deleteProject: (project: ProjectRecord) => void;
 }
 
@@ -195,13 +209,18 @@ function MenuItem({
 
 export function ExportSubmenu({
   onExport,
+  bulk = false,
+  disabled = false,
 }: {
-  onExport: (format: ConvExportFormat) => void;
+  onExport: (choice: ChatExportChoice) => void;
+  /** Several chats: combined and per chat choices. */
+  bulk?: boolean;
+  disabled?: boolean;
 }) {
   const t = useT();
   return (
     <DropdownMenuSub>
-      <DropdownMenuSubTrigger className="gap-2.5">
+      <DropdownMenuSubTrigger className="gap-2.5" disabled={disabled}>
         <HugeiconsIcon
           icon={Download01Icon}
           strokeWidth={1.75}
@@ -209,12 +228,34 @@ export function ExportSubmenu({
         />
         {t("common.export")}
       </DropdownMenuSubTrigger>
-      <DropdownMenuSubContent className={cn(MENU, "w-48")}>
-        {EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
-          <DropdownMenuItem key={fmt} onSelect={() => onExport(fmt)}>
-            {label}
-          </DropdownMenuItem>
-        ))}
+      <DropdownMenuSubContent className={cn(MENU, bulk ? "w-56" : "w-48")}>
+        {bulk ? (
+          <>
+            {COMBINED_EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
+              <DropdownMenuItem
+                key={`merged-${fmt}`}
+                onSelect={() => onExport({ kind: "bulk", format: fmt, merged: true })}
+              >
+                {label} {t("settings.chat.exportCombinedSuffix")}
+              </DropdownMenuItem>
+            ))}
+            <DropdownMenuSeparator className="mx-3" />
+            {EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
+              <DropdownMenuItem
+                key={`separate-${fmt}`}
+                onSelect={() => onExport({ kind: "bulk", format: fmt, merged: false })}
+              >
+                {label} {t("settings.chat.exportPerChatSuffix")}
+              </DropdownMenuItem>
+            ))}
+          </>
+        ) : (
+          chatExportOptions().map(({ label, format }) => (
+            <DropdownMenuItem key={format} onSelect={() => onExport({ kind: "chat", format })}>
+              {label}
+            </DropdownMenuItem>
+          ))
+        )}
       </DropdownMenuSubContent>
     </DropdownMenuSub>
   );
@@ -327,6 +368,23 @@ export function MoveSubmenu({
   );
 }
 
+/** Off while generating or forking, as in the sidebar. Mounts only when the menu opens. */
+function ForkItem({ chat }: { chat: SidebarItem }) {
+  const t = useT();
+  const actions = useChatsActions();
+  const generating = useChatRuntimeStore((s) => Boolean(s.runningByThreadId[chat.id]));
+  const forking = useForkInFlight((s) => s.forking);
+  return (
+    <DropdownMenuItem
+      disabled={!canForkChatRow(chat) || generating || forking}
+      onSelect={() => actions.fork(chat)}
+    >
+      <GitBranchIcon strokeWidth={1.75} className={ICON} />
+      {t("library.chats.menu.fork")}
+    </DropdownMenuItem>
+  );
+}
+
 /** "More actions" trigger for rows and cards, matching the file tabs. */
 function MenuTrigger({ variant }: { variant: "row" | "card" }) {
   const t = useT();
@@ -385,6 +443,7 @@ function FavoriteMark() {
   return (
     <HugeiconsIcon
       icon={StarPointedIcon}
+      role="img"
       aria-label={t("library.list.favorite")}
       strokeWidth={1.75}
       className="size-3.5 shrink-0 text-muted-foreground [&_path]:fill-current"
@@ -426,7 +485,7 @@ function ChatMenu({
   );
   return (
     <Isolate
-      className={cn(variant === "card" && "absolute right-2 top-2 z-10")}
+      className={cn(variant === "card" && "absolute end-2 top-2 z-10")}
     >
       <DropdownMenu>
         <MenuTrigger variant={variant} />
@@ -482,12 +541,7 @@ function ChatMenu({
           <DropdownMenuSeparator className="mx-3" />
           {!archived && (
             <>
-              {chat.type === "single" && (
-                <DropdownMenuItem onSelect={() => actions.fork(chat)}>
-                  <GitBranchIcon strokeWidth={1.75} className={ICON} />
-                  {t("library.chats.menu.fork")}
-                </DropdownMenuItem>
-              )}
+              {chat.type === "single" && <ForkItem chat={chat} />}
               <MoveSubmenu
                 project={chat.projectId ?? null}
                 section={actions.sectionOf.get(chat.id) ?? null}
@@ -495,9 +549,7 @@ function ChatMenu({
               />
             </>
           )}
-          <ExportSubmenu
-            onExport={(format) => actions.exportChats([chat], format)}
-          />
+          <ExportSubmenu onExport={(choice) => actions.exportChats([chat], choice)} />
           <DropdownMenuSeparator className="mx-3" />
           {archived ? (
             <MenuItem
@@ -573,6 +625,7 @@ function ChatBadges({ chat }: { chat: SidebarItem }) {
       {pinned.has(chat.id) && (
         <HugeiconsIcon
           icon={PinIcon}
+          role="img"
           aria-label={t("library.chats.badges.pinned")}
           strokeWidth={1.75}
           className="size-3.5 shrink-0 text-muted-foreground"
@@ -612,7 +665,7 @@ function ChatLocation({
   showSection: boolean;
 }) {
   const t = useT();
-  const { projectNames, viewProject, sectionOf, sections, viewSection } =
+  const { projectNames, filterProject, sectionOf, sections, viewSection } =
     useChatsActions();
   const projectId = showProject ? chat.projectId : null;
   const sectionId = showSection ? sectionOf.get(chat.id) : undefined;
@@ -631,7 +684,7 @@ function ChatLocation({
           type="button"
           onClick={(event) => {
             event.stopPropagation();
-            viewProject(projectId);
+            filterProject(projectId);
           }}
           className={cn(CHIP, "shrink")}
         >
@@ -847,7 +900,6 @@ export function DateHeader({
             ? "library.toolbar.sortAscending"
             : "library.toolbar.sortDescending",
         )}
-        aria-sort={active ? (desc ? "descending" : "ascending") : undefined}
         className={cn(
           "flex size-5 items-center justify-center rounded-full outline-none transition-colors hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring",
           active ? "text-foreground" : "opacity-50",
@@ -884,7 +936,11 @@ function SelectBox({
     <Isolate className={className}>
       <Checkbox
         checked={selection.has(chat.id)}
-        onCheckedChange={() => toggleSelected(chat.id)}
+        // onClick to read shift.
+        onClick={(event) => {
+          event.preventDefault();
+          toggleSelected(chat.id, event.shiftKey);
+        }}
         aria-label={t("settings.data.library.selectItem", {
           title: chatTitle(chat, t),
         })}
@@ -918,13 +974,17 @@ function SortHeader({
   onSortChange: (key: ChatSortKey) => void;
   className?: string;
 }) {
+  const t = useT();
   const active = sort.key === column;
   const Arrow = sort.desc ? ArrowDownIcon : ArrowUpIcon;
+  // aria-sort needs a columnheader, so the state goes in the label.
+  const direction = t(sort.desc ? "library.toolbar.sortDescending" : "library.toolbar.sortAscending");
   return (
     <button
       type="button"
       onClick={() => onSortChange(column)}
-      aria-sort={active ? (sort.desc ? "descending" : "ascending") : undefined}
+      aria-pressed={active}
+      aria-label={active ? `${label}, ${direction}` : undefined}
       className={cn(
         "flex items-center gap-1 text-left transition-colors hover:text-foreground",
         active && "text-foreground",
@@ -966,7 +1026,7 @@ export function ChatListHeader({
         )}
       >
         {selectable && (
-          <div className="absolute right-full top-1/2 mr-3 flex -translate-y-1/2">
+          <div className="absolute end-full top-1/2 me-3 flex -translate-y-1/2">
             <Checkbox
               checked={allSelected}
               onCheckedChange={onToggleAll}
@@ -1029,9 +1089,9 @@ export function ChatRow({
   return (
     // biome-ignore lint/a11y/useKeyWithClickEvents: the title button is the keyboard target
     <div
-      onClick={() =>
+      onClick={(event) =>
         actions.selection.size > 0
-          ? actions.toggleSelected(chat.id)
+          ? actions.toggleSelected(chat.id, event.shiftKey)
           : actions.open(chat)
       }
       className={cn(
@@ -1043,7 +1103,7 @@ export function ChatRow({
       <SelectBox
         chat={chat}
         visible={actions.selection.size > 0}
-        className="absolute right-full top-1/2 mr-3 flex -translate-y-1/2"
+        className="absolute end-full top-1/2 me-3 flex -translate-y-1/2"
       />
       <div className="flex min-w-0 flex-1 items-center gap-4 py-2">
         <ChatTile chat={chat} />
@@ -1053,7 +1113,7 @@ export function ChatRow({
               type="button"
               onClick={(event) => {
                 event.stopPropagation();
-                if (actions.selection.size > 0) actions.toggleSelected(chat.id);
+                if (actions.selection.size > 0) actions.toggleSelected(chat.id, event.shiftKey);
                 else actions.open(chat);
               }}
               className="truncate rounded text-left text-ui-14 text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
@@ -1123,8 +1183,8 @@ export function ChatCard({
   return (
     // biome-ignore lint/a11y/useKeyWithClickEvents: the title button is the keyboard target
     <div
-      onClick={() =>
-        selecting ? actions.toggleSelected(chat.id) : actions.open(chat)
+      onClick={(event) =>
+        selecting ? actions.toggleSelected(chat.id, event.shiftKey) : actions.open(chat)
       }
       className={cn(CARD, "min-h-40", selected && "ring-2 ring-foreground")}
     >
@@ -1139,7 +1199,7 @@ export function ChatCard({
         <SelectBox
           chat={chat}
           visible={selecting}
-          className="absolute left-2.5 top-1/2 flex -translate-y-1/2"
+          className="absolute start-2.5 top-1/2 flex -translate-y-1/2"
         />
         <span className="flex min-w-0 items-center gap-1.5">
           <ChatBadges chat={chat} />
@@ -1150,7 +1210,7 @@ export function ChatCard({
         type="button"
         onClick={(event) => {
           event.stopPropagation();
-          if (selecting) actions.toggleSelected(chat.id);
+          if (selecting) actions.toggleSelected(chat.id, event.shiftKey);
           else actions.open(chat);
         }}
         className="block w-full rounded text-left font-medium text-ui-15 leading-snug text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
@@ -1250,7 +1310,7 @@ export function CollectionHeader({
         <HugeiconsIcon
           icon={ChevronRightStandardIcon}
           strokeWidth={2}
-          className="size-3.5 shrink-0 text-muted-foreground"
+          className="size-3.5 shrink-0 text-muted-foreground rtl:rotate-180"
         />
         <span aria-current="page" className="truncate text-foreground">
           {name}
@@ -1293,7 +1353,7 @@ function ProjectMenu({
   const pinned = actions.pinnedProjects.has(project.id);
   return (
     <Isolate
-      className={cn(variant === "card" && "absolute right-2 top-2 z-10")}
+      className={cn(variant === "card" && "absolute end-2 top-2 z-10")}
     >
       <DropdownMenu>
         <MenuTrigger variant={variant} />
@@ -1335,7 +1395,9 @@ function ProjectMenu({
             onMove={(destination) => actions.moveProject(project, destination)}
           />
           <ExportSubmenu
-            onExport={(format) => actions.exportProject(project, format)}
+            bulk
+            disabled={!actions.projectChatCounts.get(project.id)}
+            onExport={(choice) => actions.exportProject(project, choice)}
           />
           <DropdownMenuSeparator className="mx-3" />
           <MenuItem
@@ -1379,6 +1441,7 @@ export function ProjectCard({
         {pinned && (
           <HugeiconsIcon
             icon={PinIcon}
+            role="img"
             aria-label={t("library.chats.badges.pinned")}
             strokeWidth={1.75}
             className="size-3.5 text-muted-foreground"
@@ -1462,6 +1525,7 @@ export function ProjectRow({
             {pinned && (
               <HugeiconsIcon
                 icon={PinIcon}
+                role="img"
                 aria-label={t("library.chats.badges.pinned")}
                 strokeWidth={1.75}
                 className="size-3.5 shrink-0 text-muted-foreground"
@@ -1543,7 +1607,7 @@ function SectionMenu({
 }) {
   return (
     <Isolate
-      className={cn(variant === "card" && "absolute right-2 top-2 z-10")}
+      className={cn(variant === "card" && "absolute end-2 top-2 z-10")}
     >
       <DropdownMenu>
         <MenuTrigger variant={variant} />
@@ -1591,7 +1655,9 @@ export function SectionMenuItems({
         onToggle={() => actions.toggleFavoriteSection(section.id)}
       />
       <ExportSubmenu
-        onExport={(format) => actions.exportSection(section, format)}
+        bulk
+        disabled={!actions.sectionChatCounts.get(section.id)}
+        onExport={(choice) => actions.exportSection(section, choice)}
       />
       <DropdownMenuSeparator className="mx-3" />
       <MenuItem

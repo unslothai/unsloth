@@ -159,10 +159,9 @@ test("project stats count live and archived chats and track last activity", () =
 
 test("models key compare pairs by pair id and rank facets by use", () => {
   const models = modelsByChat([
-    { id: "t1", modelId: "m1" },
-    { id: "t2", pairId: "pair", modelId: "m1" },
-    { id: "t3", pairId: "pair", modelId: "m2" },
-    { id: "t4", modelId: null },
+    { id: "t1", modelIds: ["m1"] },
+    { id: "pair", modelIds: ["m1", "m2"] },
+    { id: "t4" },
   ]);
   assert.deepEqual(models.get("pair"), ["m1", "m2"]);
   assert.equal(models.has("t4"), false);
@@ -308,4 +307,58 @@ test("the Library chat menu marks a chat read or unread", () => {
   const items = readSrc("features/library/chats/chats-items.tsx");
   assert.match(items, /unread \? ViewIcon : ViewOffSlashIcon/);
   assert.match(items, /"shell\.selection\.markRead"/);
+});
+
+test("the Library lists chat metadata and counts messages without reading them", () => {
+  const library = readSrc("features/library/chats/chats-library.tsx");
+  assert.match(library, /useChatSidebarItems\(\{ requireMessages: false \}\)/);
+  assert.match(
+    readSrc("features/library/chats/favorites.ts"),
+    /useChatSidebarItems\(\{ enabled, requireMessages: false \}\)/,
+  );
+  const contents = readSrc("features/library/chats/contents.ts");
+  assert.match(contents, /await countStoredChatMessages\(ids\)/);
+  // A re-render must not cancel a read in flight and ask for the same batch again.
+  assert.doesNotMatch(contents, /let cancelled/);
+  assert.match(contents, /!pending\.has\(key\)/);
+});
+
+test("last modified is the server's, stamped by renames, moves and archiving", () => {
+  const sidebar = readSrc("features/chat/hooks/use-chat-sidebar-items.ts");
+  assert.match(sidebar, /\.\.\.\(t\.modifiedAt \? \{ modifiedAt: t\.modifiedAt \} : \{\}\)/);
+  assert.doesNotMatch(readSrc("features/chat/index.ts"), /useChatModifiedStore/);
+});
+
+test("deleting clears stars and pins only once the chats are gone", () => {
+  const library = readSrc("features/library/chats/chats-library.tsx");
+  const start = library.indexOf("async function confirmDelete(");
+  const block = library.slice(start, library.indexOf("const { project } = target;", start));
+  const deleted = block.indexOf("await deleteChatItems(");
+  assert.ok(deleted !== -1);
+  assert.ok(block.indexOf("setFavoriteChats(ids, false)") > deleted);
+  assert.ok(block.indexOf("setPinned(ids, false)") > deleted);
+  // The sidebar's confirm preference applies here too.
+  assert.match(library, /if \(confirmDeleteChats\) setPendingDelete\(target\);/);
+});
+
+test("shift-click selects a range anchored on a chat id", () => {
+  const library = readSrc("features/library/chats/chats-library.tsx");
+  assert.match(library, /const selectionAnchor = useRef<string \| null>\(null\);/);
+  assert.match(library, /range && anchor \? rangeBetween\(shownOrder, anchor, id\) : \[id\]/);
+  const items = readSrc("features/library/chats/chats-items.tsx");
+  assert.match(items, /toggleSelected\(chat\.id, event\.shiftKey\)/);
+});
+
+test("a chat exports per pane with Markdown, several chats combined or per chat", () => {
+  const items = readSrc("features/library/chats/chats-items.tsx");
+  assert.match(items, /chatExportOptions\(\)\.map/);
+  assert.match(items, /COMBINED_EXPORT_FORMATS_LIST\.map/);
+  assert.match(items, /disabled=\{!actions\.projectChatCounts\.get\(project\.id\)\}/);
+  const library = readSrc("features/library/chats/chats-library.tsx");
+  assert.match(library, /for \(const id of threadIds\) await exportConversationByFormat\(id, choice\.format\);/);
+});
+
+test("fork is off while the chat generates or another fork runs", () => {
+  const items = readSrc("features/library/chats/chats-items.tsx");
+  assert.match(items, /disabled=\{!canForkChatRow\(chat\) \|\| generating \|\| forking\}/);
 });

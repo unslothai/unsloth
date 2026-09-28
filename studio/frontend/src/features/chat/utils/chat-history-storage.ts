@@ -4,6 +4,7 @@
 import {
   ChatMessageProtectedError,
   ChatThreadDeletedError,
+  batchCountChatMessages,
   batchListChatMessages,
   buildBackendChatExport,
   clearBackendChats,
@@ -41,7 +42,6 @@ import {
 import { ThreadRecordWriteCoordinator } from "./thread-record-write-coordinator";
 // eslint-disable-next-line no-restricted-imports -- this file is in the startup cycle; the chat barrel closes it.
 import { setForkBoundary } from "../stores/fork-boundary-store";
-import { isChatEdit, useChatModifiedStore } from "../stores/chat-modified-store";
 
 // Thread ids belonging to a temporary/incognito session. A thread is tagged once at creation
 // and stays tagged for life; readers and writers consult this set, never the live toggle.
@@ -1177,9 +1177,30 @@ export async function updateStoredChatThread(
     signal: options.signal,
   });
   if (!thread) return undefined;
-  const updated = await updateChatThread(threadId, patch, options);
-  if (updated && isChatEdit(patch)) useChatModifiedStore.getState().touch([threadId]);
-  return updated;
+  return updateChatThread(threadId, patch, options);
+}
+
+/** Message counts in one request. Threads the server has none for count legacy local messages.
+ *  Null on an older server. */
+export async function countStoredChatMessages(
+  threadIds: string[],
+): Promise<Map<string, number> | null> {
+  const ids = threadIds.filter((id) => !isThreadIncognito(id) && !isChatThreadDeleted(id));
+  const counts = await batchCountChatMessages(ids);
+  if (!counts) return null;
+  await Promise.all(
+    ids
+      .filter((id) => (counts.get(id) ?? 0) === 0)
+      .map(async (id) => {
+        const legacy = await readLegacyStore(
+          () => db.messages.where("threadId").equals(id).toArray(),
+          [] as MessageRecord[],
+        );
+        const n = legacy.filter((m) => m.role === "user" || m.role === "assistant").length;
+        if (n > 0) counts.set(id, n);
+      }),
+  );
+  return counts;
 }
 
 /** Messages for many threads in one request; a thread the batch has nothing for falls back to

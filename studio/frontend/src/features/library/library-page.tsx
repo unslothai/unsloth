@@ -239,8 +239,13 @@ function LibraryView({ search }: { search: LibrarySearch }) {
   const [preferred] = useState(() =>
     settings.startTab === "last" ? settings.lastTab : settings.startTab,
   );
-  // An empty Library opens on Chats, the only tab with content.
-  const nothingButChats = loaded && items.length === 0 && folders.length === 0;
+  // An empty Library opens on Chats, unless a start tab is set or Chats is hidden.
+  const nothingButChats =
+    loaded &&
+    items.length === 0 &&
+    folders.length === 0 &&
+    settings.startTab === "last" &&
+    tabVisible("chats");
   const tab: LibraryTab =
     search.show ??
     (nothingButChats

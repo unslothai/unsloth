@@ -8,9 +8,11 @@ import { matchesTerms, searchTerms } from "./model";
 
 /** Starred chats, projects and sections Favorites lists for `query`, excluding archived chats. */
 export function useFavoriteChatMatches(query: string, enabled: boolean): number {
-  const { items } = useChatSidebarItems();
+  // Metadata only, and only while Favorites is open.
+  const { items } = useChatSidebarItems({ enabled, requireMessages: false });
   const { projects } = useChatProjects();
   const sections = useSidebarOrganizationStore((s) => s.customSections);
+  const sectionByChatId = useSidebarOrganizationStore((s) => s.sectionByChatId);
   const chatIds = useChatFavoritesStore((s) => s.chatIds);
   const projectIds = useChatFavoritesStore((s) => s.projectIds);
   const sectionIds = useChatFavoritesStore((s) => s.sectionIds);
@@ -21,11 +23,19 @@ export function useFavoriteChatMatches(query: string, enabled: boolean): number 
     const starredProjects = new Set(projectIds);
     const starredSections = new Set(sectionIds);
     const names = new Map(projects.map((project) => [project.id, project.name]));
-    const chats = items.filter(
-      (chat) =>
-        starredChats.has(chat.id) &&
-        matchesTerms(terms, chat.title, chat.projectId ? names.get(chat.projectId) : undefined),
-    ).length;
+    const sectionNames = new Map(sections.map((section) => [section.id, section.name]));
+    // Same fields as filterChats.
+    const chats = items.filter((chat) => {
+      if (!starredChats.has(chat.id)) return false;
+      const sectionId = sectionByChatId[chat.id];
+      return matchesTerms(
+        terms,
+        chat.title,
+        chat.projectId ? names.get(chat.projectId) : undefined,
+        sectionId ? sectionNames.get(sectionId) : undefined,
+        ...(chat.modelIds ?? []),
+      );
+    }).length;
     const folders = projects.filter(
       (project) =>
         starredProjects.has(project.id) && matchesTerms(terms, project.name, project.instructions),
@@ -34,5 +44,5 @@ export function useFavoriteChatMatches(query: string, enabled: boolean): number 
       (section) => starredSections.has(section.id) && matchesTerms(terms, section.name),
     ).length;
     return chats + folders + filed;
-  }, [enabled, query, items, projects, sections, chatIds, projectIds, sectionIds]);
+  }, [enabled, query, items, projects, sections, sectionByChatId, chatIds, projectIds, sectionIds]);
 }

@@ -20,8 +20,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
-  COMBINED_EXPORT_FORMATS_LIST,
-  type ConvExportFormat,
+  exportConversationByFormat,
   DeleteChatFilesSwitch,
   EditProjectDialog,
   NewProjectDialog,
@@ -37,10 +36,10 @@ import {
   exportBulkConversationsMerged,
   exportBulkConversationsSeparate,
   forkChatRow,
-  listStoredChatThreads,
   moveChatItemToProject,
   normalizeSectionName,
   notifyChatHistoryUpdated,
+  rangeBetween,
   removeCustomSectionWithUndo,
   renameChatItem,
   showForkCreatedToast,
@@ -48,7 +47,6 @@ import {
   useChatPreferencesStore,
   useChatProjects,
   useChatRuntimeStore,
-  useChatModifiedStore,
   useChatSidebarItems,
   useForkInFlight,
   usePinnedChatsStore,
@@ -64,6 +62,7 @@ import {
   Archive03Icon,
   ArchiveRestoreIcon,
   Cancel01Icon,
+  CheckmarkSquare02Icon,
   Delete02Icon,
   Folder01Icon,
   FolderAddIcon,
@@ -76,7 +75,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
-import { type ReactNode, useEffect, useMemo, useState } from "react";
+import { type ReactNode, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { NameDialog } from "../components/library-dialogs";
 import { type HeaderTab, LibraryHeader } from "../components/library-header";
 import type { LibrarySearch } from "../search";
@@ -87,6 +86,7 @@ import {
   ChatCard,
   ChatListHeader,
   type ChatDestination,
+  type ChatExportChoice,
   ChatRow,
   type ChatsActions,
   ChatsActionsProvider,
@@ -198,18 +198,6 @@ function isDateField(key: string): key is DateField {
   return (DATE_FIELDS as readonly string[]).includes(key);
 }
 
-/** Adds each chat's last rename, move or archive, from any of its panes. */
-function withModified(
-  chats: SidebarItem[],
-  modifiedAt: Readonly<Record<string, number>>,
-): SidebarItem[] {
-  return chats.map((chat) => {
-    const ids = chat.threadIds?.length ? chat.threadIds : [chat.id];
-    const at = Math.max(0, ...ids.map((id) => modifiedAt[id] ?? 0));
-    return at ? { ...chat, modifiedAt: at } : chat;
-  });
-}
-
 type HeaderTabs = { items: HeaderTab[]; active: string; onChange: (key: string) => void };
 
 type PendingDelete =
@@ -283,13 +271,12 @@ export function ChatsLibrary({
   // Open section page; `section` is the pill. Projects have no page here: they open in Chat.
   const openSectionId = search.chatSection ?? null;
 
-  const { items: listedItems, archivedItems: listedArchived, loaded } = useChatSidebarItems();
-  const modifiedAt = useChatModifiedStore((s) => s.at);
-  const items = useMemo(() => withModified(listedItems, modifiedAt), [listedItems, modifiedAt]);
-  const archivedItems = useMemo(
-    () => withModified(listedArchived, modifiedAt),
-    [listedArchived, modifiedAt],
-  );
+  // Metadata only, like the sidebar. The default reads every message.
+  const {
+    items,
+    archivedItems,
+    loaded,
+  } = useChatSidebarItems({ requireMessages: false });
   const { projects, hasLoaded: projectsLoaded } = useChatProjects();
   const pinnedIds = usePinnedChatsStore((s) => s.pinnedIds);
   const togglePinned = usePinnedChatsStore((s) => s.togglePin);
@@ -298,6 +285,7 @@ export function ChatsLibrary({
   const togglePinProject = usePinnedProjectsStore((s) => s.togglePin);
   const unpinProject = usePinnedProjectsStore((s) => s.unpin);
   const alwaysDeleteChatFiles = useChatPreferencesStore((s) => s.alwaysDeleteChatFiles);
+  const confirmDeleteChats = useChatPreferencesStore((s) => s.confirmDeleteChats);
   // Shared with the sidebar: filing a chat here files it there.
   const sections = useSidebarOrganizationStore((s) => s.customSections);
   const sectionByChatId = useSidebarOrganizationStore((s) => s.sectionByChatId);
@@ -334,28 +322,19 @@ export function ChatsLibrary({
     [sectionByChatId, sectionNames],
   );
 
-  // Models come from thread records. Keyed on chat ids, not the lists, which rebuild on every
-  // streaming history event.
-  const [models, setModels] = useState<Map<string, string[]>>(new Map());
-  const chatSetKey = useMemo(
-    () => [...items, ...archivedItems].map((chat) => chat.id).sort().join(","),
+  // From the listed chats, not a second thread read.
+  const models = useMemo(
+    () => modelsByChat([...items, ...archivedItems]),
     [items, archivedItems],
   );
-  // biome-ignore lint/correctness/useExhaustiveDependencies: a new set of chats is the cue to re-read the threads
-  useEffect(() => {
-    let cancelled = false;
-    listStoredChatThreads({ includeArchived: true })
-      .then((threads) => !cancelled && setModels(modelsByChat(threads)))
-      .catch(() => undefined);
-    return () => {
-      cancelled = true;
-    };
-  }, [chatSetKey]);
 
   const [ownQuery, setQuery] = useState("");
   const query = embedded ? embedded.query : ownQuery;
+  // Keeps typing responsive on long lists.
+  const listQuery = useDeferredValue(query);
   const [filters, setFilters] = useState<ChatFilters>(EMPTY_CHAT_FILTERS);
   const [selection, setSelection] = useState<Set<string>>(new Set());
+  const selectionAnchor = useRef<string | null>(null);
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
   const [renaming, setRenaming] = useState<SidebarItem | null>(null);
   const [editing, setEditing] = useState<ProjectRecord | null>(null);
@@ -430,27 +409,60 @@ export function ChatsLibrary({
   // Pinned chats get their own group; floating them within groups broke time order.
   const pinnedFirst = prefs.pinnedFirst && !archived && !embedded;
   const visibleChats = useMemo(() => {
-    const matched = filterChats(scoped, query, filters, context);
+    const matched = filterChats(scoped, listQuery, filters, context);
     return sortChats(matched, prefs.sort, pinned, pinnedFirst, locale);
-  }, [scoped, query, filters, context, prefs.sort, pinnedFirst, pinned, locale]);
-  const shownChats = visibleChats.slice(0, visibleCount);
+  }, [scoped, listQuery, filters, context, prefs.sort, pinnedFirst, pinned, locale]);
+  // Memoized so the memos below stay stable.
+  const shownChats = useMemo(
+    () => visibleChats.slice(0, visibleCount),
+    [visibleChats, visibleCount],
+  );
   // Date groups follow the date the list shows.
   const groupTime = prefs.dateField;
+  const groupingOptions = useMemo(
+    () => ({
+      time: groupTime,
+      oldestFirst: prefs.sort.key !== "name" && !prefs.sort.desc,
+      pinned: pinnedFirst && !ungrouped ? pinned : undefined,
+      sectionOf,
+    }),
+    [groupTime, prefs.sort, pinnedFirst, ungrouped, pinned, sectionOf],
+  );
   const groups = useMemo(
+    () => groupChats(shownChats, groupBy, groupingOptions),
+    [shownChats, groupBy, groupingOptions],
+  );
+  // Drawn order, for shift-click ranges.
+  const shownOrder = useMemo(
+    () => groups.flatMap((group) => group.items.map((chat) => chat.id)),
+    [groups],
+  );
+  // Headings count all matches, not just the loaded page.
+  const groupTotals = useMemo(
     () =>
-      groupChats(shownChats, groupBy, {
-        time: groupTime,
-        oldestFirst: prefs.sort.key !== "name" && !prefs.sort.desc,
-        pinned: pinnedFirst && !ungrouped ? pinned : undefined,
-        sectionOf,
-      }),
-    [shownChats, groupBy, groupTime, prefs.sort, pinnedFirst, ungrouped, pinned, sectionOf],
+      groupBy === "none"
+        ? new Map<string, number>()
+        : new Map(
+            groupChats(visibleChats, groupBy, groupingOptions).map((g) => [g.key, g.items.length]),
+          ),
+    [visibleChats, groupBy, groupingOptions],
   );
 
   const stats = useMemo(
     () => projectStats(projects, items, archivedItems),
     [projects, items, archivedItems],
   );
+  // Chats each project or section exports; zero disables Export.
+  const { projectChatCounts, sectionChatCounts } = useMemo(() => {
+    const byProject = new Map<string, number>();
+    const bySection = new Map<string, number>();
+    for (const chat of items) {
+      if (chat.projectId) byProject.set(chat.projectId, (byProject.get(chat.projectId) ?? 0) + 1);
+      const sectionId = sectionOf.get(chat.id);
+      if (sectionId) bySection.set(sectionId, (bySection.get(sectionId) ?? 0) + 1);
+    }
+    return { projectChatCounts: byProject, sectionChatCounts: bySection };
+  }, [items, sectionOf]);
   const visibleProjects = useMemo(() => {
     const terms = searchTerms(query);
     const matched = projects.filter(
@@ -489,16 +501,18 @@ export function ChatsLibrary({
     );
   }, [openSectionId, projects, projectSectionOf, query, prefs.projectSort, stats, pinnedProjects, locale]);
 
+  const allModelFacets = useMemo(() => modelFacets(scoped, models), [scoped, models]);
   const facets = useMemo(
     () => ({
       showProjects: true,
       projects: projects.map((p) => ({ id: p.id, name: p.name })),
       sections: openSectionId ? [] : sections.map((s) => ({ id: s.id, name: s.name })),
-      models: modelFacets(scoped, models)
-        .slice(0, 20)
+      // Top 20, plus ticked ones so they can be unticked.
+      models: allModelFacets
+        .filter((facet, index) => index < 20 || filters.models.has(facet.model))
         .map(({ model, count }) => ({ model, count, label: compareModelDisplayName(model) })),
     }),
-    [openSectionId, projects, sections, scoped, models],
+    [openSectionId, projects, sections, allModelFacets, filters.models],
   );
 
   // Drop ticked filters whose project, section or model is gone: they can't be unticked.
@@ -507,7 +521,9 @@ export function ChatsLibrary({
     const liveSections = [...filters.sections].filter(
       (id) => sections.length > 0 && (id === NO_SECTION || sectionNames.has(id)),
     );
-    const liveModels = [...filters.models].filter((model) => facets.models.some((f) => f.model === model));
+    const liveModels = [...filters.models].filter((model) =>
+      allModelFacets.some((f) => f.model === model),
+    );
     if (
       liveProjects.length !== filters.projects.size ||
       liveSections.length !== filters.sections.size ||
@@ -634,7 +650,7 @@ export function ChatsLibrary({
             count: chats.length,
             project: name ?? sectionNames.get(sectionId) ?? "",
           })
-        : t("settings.data.library.movedChatsToRecents", { count: chats.length }),
+        : t("library.chats.toast.removedFromSection", { count: chats.length }),
     );
   };
 
@@ -673,22 +689,46 @@ export function ChatsLibrary({
     else if (destination.kind === "newSection") setMovingIntoNew({ kind: "section", chats: [], project });
   };
 
+  /** Per chat, so one failure does not fail the rest. */
+  async function eachChat(
+    chats: SidebarItem[],
+    act: (chat: SidebarItem) => Promise<unknown>,
+    success: (count: number) => string,
+    failure: string,
+  ) {
+    let done = 0;
+    let error: unknown;
+    for (const chat of chats) {
+      try {
+        await act(chat);
+        done += 1;
+      } catch (err) {
+        error = err;
+      }
+    }
+    if (done > 0) toast.success(success(done));
+    if (done < chats.length) toast.error(failure, { description: errorDescription(error) });
+  }
+
   const archiveChats = (chats: SidebarItem[]) => {
     setSelection(new Set());
-    void run(
-      () => archiveChatItems(chats, activeChatId(), () => {}),
-      chats.length === 1
-        ? t("settings.data.archivedOneChat")
-        : t("settings.data.archivedChatCount", { count: chats.length }),
+    void eachChat(
+      chats,
+      (chat) => archiveChatItems([chat], activeChatId(), () => {}),
+      (count) =>
+        count === 1
+          ? t("settings.data.archivedOneChat")
+          : t("settings.data.archivedChatCount", { count }),
       t("settings.data.failedToArchiveChats"),
     );
   };
 
   const unarchiveChats = (chats: SidebarItem[]) => {
     setSelection(new Set());
-    void run(
-      () => Promise.all(chats.map((chat) => unarchiveChatItem(chat))),
-      t("settings.data.library.restoredChats", { count: chats.length }),
+    void eachChat(
+      chats,
+      unarchiveChatItem,
+      (count) => t("settings.data.library.restoredChats", { count }),
       t("settings.data.library.restoreFailed"),
     );
   };
@@ -706,18 +746,20 @@ export function ChatsLibrary({
     );
   };
 
-  const exportChats = async (chats: SidebarItem[], format: ConvExportFormat, name?: string) => {
+  const exportChats = async (chats: SidebarItem[], choice: ChatExportChoice, name?: string) => {
     const threadIds = [...new Set(chats.flatMap((chat) => chat.threadIds ?? [chat.id]))];
-    const merges = COMBINED_EXPORT_FORMATS_LIST.some(({ fmt }) => fmt === format);
     const stem = (name ?? (chats.length === 1 ? (chats[0]?.title ?? "chats") : "chats"))
       .replace(/[^\p{L}\p{N}_-]+/gu, "_")
       .slice(0, 48);
     const basename = `${stem || "chats"}-${new Date().toISOString().slice(0, 10)}`;
     try {
-      if (merges || threadIds.length === 1) {
-        await exportBulkConversationsMerged(threadIds, format, basename);
+      if (choice.kind === "chat") {
+        // One file per pane, as on the Projects page.
+        for (const id of threadIds) await exportConversationByFormat(id, choice.format);
+      } else if (choice.merged || threadIds.length === 1) {
+        await exportBulkConversationsMerged(threadIds, choice.format, basename);
       } else {
-        await exportBulkConversationsSeparate(threadIds, format, basename);
+        await exportBulkConversationsSeparate(threadIds, choice.format, basename);
       }
     } catch (err) {
       if (!isDownloadCancelled(err)) toast.error(t("settings.data.exportFailed"));
@@ -747,16 +789,16 @@ export function ChatsLibrary({
     setPendingDelete(null);
     setSelection(new Set());
     if (target.kind === "chats") {
-      // Drop stars of deleted chats.
-      setFavoriteChats(
-        target.chats.map((chat) => chat.id),
-        false,
-      );
       await run(
-        () =>
-          deleteChatItems(target.chats, activeChatId(), () => {}, {
+        async () => {
+          await deleteChatItems(target.chats, activeChatId(), () => {}, {
             deleteFiles: target.deleteFiles,
-          }),
+          });
+          // After the delete: a failed one restores the chats with their marks.
+          const ids = target.chats.map((chat) => chat.id);
+          setFavoriteChats(ids, false);
+          setPinned(ids, false);
+        },
         t("settings.data.library.deletedChats", { count: target.chats.length }),
         t("settings.data.library.deleteFailed"),
       );
@@ -830,12 +872,21 @@ export function ChatsLibrary({
     selectable: !embedded,
     models,
     selection,
-    toggleSelected: (id) =>
+    toggleSelected: (id, range = false) => {
+      // Anchor on an id: the list can re-sort between clicks.
+      const anchor = selectionAnchor.current;
+      const ids = range && anchor ? rangeBetween(shownOrder, anchor, id) : [id];
+      const on = !selection.has(id);
       setSelection((current) => {
         const next = new Set(current);
-        if (!next.delete(id)) next.add(id);
+        for (const each of ids) {
+          if (on) next.add(each);
+          else next.delete(each);
+        }
         return next;
-      }),
+      });
+      selectionAnchor.current = id;
+    },
     open: openChat,
     rename: setRenaming,
     togglePin: (chat) => togglePinned(chat.id),
@@ -853,10 +904,18 @@ export function ChatsLibrary({
     moveProject,
     archive: archiveChats,
     unarchive: unarchiveChats,
-    exportChats: (chats, format) => void exportChats(chats, format),
-    remove: (chats) =>
-      setPendingDelete({ kind: "chats", chats, deleteFiles: alwaysDeleteChatFiles }),
+    exportChats: (chats, choice) => void exportChats(chats, choice),
+    // Same preference as the sidebar.
+    remove: (chats) => {
+      const target = { kind: "chats", chats, deleteFiles: alwaysDeleteChatFiles } as const;
+      if (confirmDeleteChats) setPendingDelete(target);
+      else void confirmDelete(target);
+    },
     viewProject: openProject,
+    // Favorites has no filter bar, so there it opens the project.
+    filterProject: embedded
+      ? openProject
+      : (id) => setFilters((current) => ({ ...current, projects: new Set([id]) })),
     sections,
     sectionOf,
     projectSectionOf,
@@ -872,19 +931,21 @@ export function ChatsLibrary({
       });
       if (openSectionId === entry.id) go({ chatView: "sections" }, true);
     },
-    exportSection: (entry, format) =>
+    exportSection: (entry, choice) =>
       void exportChats(
         items.filter((chat) => sectionOf.get(chat.id) === entry.id),
-        format,
+        choice,
         `section-${entry.name}`,
       ),
     newChatIn,
     editProject: setEditing,
     togglePinProject,
-    exportProject: (project, format) =>
+    projectChatCounts,
+    sectionChatCounts,
+    exportProject: (project, choice) =>
       void exportChats(
         items.filter((chat) => chat.projectId === project.id),
-        format,
+        choice,
         `project-${project.name}`,
       ),
     // Off by default: the workspace may hold the user's own files.
@@ -1056,7 +1117,7 @@ export function ChatsLibrary({
         {groups.map((group, index) => (
           <section key={group.key} aria-label={groupBy === "none" ? undefined : groupLabel(group)}>
             {groupBy !== "none" && (
-              <GroupHeading count={group.items.length}>{groupLabel(group)}</GroupHeading>
+              <GroupHeading count={groupTotals.get(group.key) ?? group.items.length}>{groupLabel(group)}</GroupHeading>
             )}
             {list ? (
               <div className={cn("flex flex-col", LIST_ROW_GAP, groupBy === "none" && "mt-1")}>
@@ -1097,7 +1158,7 @@ export function ChatsLibrary({
               className="rounded-full px-5"
               onClick={() => setVisibleCount((count) => count + PAGE_SIZE)}
             >
-              {t("settings.voice.recents.showMore", { count: visibleChats.length - visibleCount })}
+              {t("library.chats.list.showMore", { count: visibleChats.length - visibleCount })}
             </Button>
           </div>
         )}
@@ -1503,8 +1564,12 @@ export function ChatsLibrary({
           </div>
 
           {selectedChats.length > 0 && (
-            <div className="fixed bottom-8 left-1/2 z-30 flex font-sans -translate-x-1/2 items-center gap-2 rounded-full bg-sidebar py-2 pl-6 pr-2 text-sidebar-foreground shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:shadow-[0_8px_28px_-6px_var(--background)]">
-              <span className="mr-4 whitespace-nowrap text-sm font-medium">
+            <div
+              role="toolbar"
+              aria-label={t("shell.selection.countSelected", { count: selectedChats.length })}
+              className="fixed bottom-8 left-1/2 z-30 flex font-sans -translate-x-1/2 items-center gap-2 rounded-full bg-sidebar py-2 pl-6 pr-2 text-sidebar-foreground shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:shadow-[0_8px_28px_-6px_var(--background)]"
+            >
+              <span aria-live="polite" className="mr-4 whitespace-nowrap text-sm font-medium">
                 {t("shell.selection.countSelected", { count: selectedChats.length })}
               </span>
               {archived ? (
@@ -1558,6 +1623,15 @@ export function ChatsLibrary({
                   </button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="center" side="top" className="library-actions-menu w-52">
+                  {/* Grid view has no header checkbox. */}
+                  {selectedChats.length < shownChats.length && (
+                    <DropdownMenuItem
+                      onSelect={() => setSelection(new Set(shownChats.map((chat) => chat.id)))}
+                    >
+                      <HugeiconsIcon icon={CheckmarkSquare02Icon} strokeWidth={1.75} className="size-icon" />
+                      {t("settings.data.library.selectAll")}
+                    </DropdownMenuItem>
+                  )}
                   {!archived && (
                     <DropdownMenuItem onSelect={() => actions.setFavorite(selectedChats, !selectedFavorite)}>
                       <HugeiconsIcon
@@ -1575,7 +1649,10 @@ export function ChatsLibrary({
                       onMove={(destination) => moveChats(selectedChats, destination)}
                     />
                   )}
-                  <ExportSubmenu onExport={(format) => void exportChats(selectedChats, format)} />
+                  <ExportSubmenu
+                    bulk={selectedChats.length > 1}
+                    onExport={(choice) => void exportChats(selectedChats, choice)}
+                  />
                 </DropdownMenuContent>
               </DropdownMenu>
               <button

@@ -38,7 +38,7 @@ import { toast } from "@/lib/toast";
 import {
   chatExportOptions,
   DeleteChatFilesSwitch,
-  OpenChatFolderUnavailableItem,
+  OpenChatFolderItem,
   archiveChatItem,
   deleteChatItem,
   deleteChatProject,
@@ -46,7 +46,6 @@ import {
   getSidebarItemThreadIds,
   notifyChatHistoryUpdated,
   renameChatItem,
-  sandboxSessionIdsHolding,
   useChatNavigationStore,
   useChatPreferencesStore,
   useChatProjects,
@@ -57,8 +56,7 @@ import {
   type ProjectRecord,
 } from "@/features/chat";
 import { useSettingsDialogStore } from "@/features/settings";
-import { sandboxSessionIdFor } from "@/components/assistant-ui/sandbox-files";
-import { revealSandbox } from "@/components/assistant-ui/sandbox-reveal";
+import { useT } from "@/i18n";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { buildProjectsTourSteps } from "./tour";
 import { EditProjectDialog } from "./components/edit-project-dialog";
@@ -70,7 +68,6 @@ import {
   Edit03Icon,
   Folder02Icon,
   FolderAddIcon,
-  FolderOpenIcon,
   PinIcon,
   PinOffIcon,
   Search01Icon,
@@ -140,6 +137,7 @@ function formatUpdated(ts: number): string {
 }
 
 export function ProjectsPage() {
+  const t = useT();
   const signalReady = useAppShellReadySignal();
   const navigate = useNavigate();
   const { projects, hasLoaded } = useChatProjects();
@@ -595,26 +593,6 @@ export function ProjectsPage() {
     await deleteChat(target, deleteFiles);
   }
 
-  /** The folder this chat's tool calls wrote to, or a refusal when it wrote to two. */
-  async function openChatFolder(chat: SidebarItem, fallback: string) {
-    try {
-      const ids = getSidebarItemThreadIds(chat);
-      const distinct = await sandboxSessionIdsHolding(ids);
-      if (distinct.length > 1) {
-        toast.error("This chat wrote to more than one folder.", {
-          description:
-            "It ran tools on both sides of a move, so open the folder from a tool card instead.",
-        });
-        return;
-      }
-      await revealSandbox(distinct[0] ?? fallback);
-    } catch (error) {
-      toast.error("Could not open the chat folder.", {
-        description: error instanceof Error ? error.message : String(error),
-      });
-    }
-  }
-
   async function handleChatExport(
     chat: SidebarItem,
     format: ConversationExportFormat,
@@ -1010,11 +988,6 @@ export function ProjectsPage() {
                       const chatUnread = chatThreadIds.some((id) =>
                         unreadThreadIds.has(id),
                       );
-                      // Every chat here sits in a project, so the folder is the project's.
-                      const chatSandboxId = sandboxSessionIdFor(
-                        chatThreadIds[0] ?? chat.id,
-                        project.id,
-                      );
                       return (
                       <div
                         key={chat.id}
@@ -1102,23 +1075,11 @@ export function ProjectsPage() {
                                 }
                               >
                                 <HugeiconsIcon icon={chatUnread ? ViewIcon : ViewOffSlashIcon} strokeWidth={1.75} className="size-icon" />
-                                <span>{chatUnread ? "Mark as read" : "Mark as unread"}</span>
+                                <span>
+                                  {t(chatUnread ? "shell.selection.markRead" : "shell.selection.markUnread")}
+                                </span>
                               </DropdownMenuItem>
-                              {chatSandboxId ? (
-                                isTauri ? (
-                                  <DropdownMenuItem
-                                    title="Open the folder this chat's tool calls read and write"
-                                    onSelect={() =>
-                                      void openChatFolder(chat, chatSandboxId)
-                                    }
-                                  >
-                                    <HugeiconsIcon icon={FolderOpenIcon} strokeWidth={1.75} className="size-icon" />
-                                    <span>Open chat folder</span>
-                                  </DropdownMenuItem>
-                                ) : (
-                                  <OpenChatFolderUnavailableItem />
-                                )
-                              ) : null}
+                              <OpenChatFolderItem item={chat} />
                               <DropdownMenuSub>
                                 <DropdownMenuSubTrigger>
                                   <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} className="size-icon mr-1" />

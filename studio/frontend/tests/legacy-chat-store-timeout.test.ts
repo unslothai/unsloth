@@ -78,10 +78,6 @@ function loadStorage(options: {
         ThreadRecordWriteCoordinator: StubWriteCoordinator,
       },
       "../stores/fork-boundary-store": { setForkBoundary: () => {} },
-      "../stores/chat-modified-store": {
-        isChatEdit: () => false,
-        useChatModifiedStore: { getState: () => ({ touch: () => {} }) },
-      },
     },
   );
 }
