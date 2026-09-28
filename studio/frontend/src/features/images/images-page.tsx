@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { generationFailureLogsAction } from "@/features/settings/lib/view-logs-action";
 import { readImageModel, rememberImageModel, matchesRememberedModel, type RememberedImageModel } from "./image-model-recall";
 import {
   type ReactNode,
@@ -248,14 +249,7 @@ import {
 } from "./lib/memory-refusal";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { useStagedDownload, type StagedDownloadEntry } from "@/features/hub/download-manager";
-import {
-  generationFailureForAttempt,
-  generationFailureWasLogged,
-  retainedFailureWasLogged,
-  newGenerationAttemptId,
-} from "./lib/generation-failure";
 import { DiffusionTrainPanel } from "./train/diffusion-train-panel";
-import { viewLogsAction } from "@/features/settings/lib/view-logs-action";
 import {
   TrainBaseSelector,
   type TrainFamilyOption,
@@ -571,7 +565,6 @@ const SETTLE_MAX_FAILS = 5; // consecutive progress failures before calling the 
 async function settleLostGeneration(
   isCurrent: () => boolean,
   baseline: NewRecordProbeBaseline,
-  attemptId: string | null,
 ): Promise<void> {
   const start = Date.now();
   let fails = 0;
@@ -580,24 +573,15 @@ async function settleLostGeneration(
     await new Promise((r) => setTimeout(r, SETTLE_POLL_MS));
     if (!isCurrent()) return;
     let idle = false;
-    let reported: string | null = null;
-    let reportedWasLogged = true;
     try {
-      const p = await getGenerateProgress(attemptId);
+      const p = await getGenerateProgress();
       fails = 0;
-      reported = generationFailureForAttempt(p, attemptId);
-      reportedWasLogged = retainedFailureWasLogged(p);
       if (p.active) sawActive = true;
       else idle = true;
     } catch {
       fails += 1;
       if (fails >= SETTLE_MAX_FAILS) throw new Error("Lost connection to the image server.");
     }
-    // Outside the catch, so a reported reason is not counted as a transport failure.
-    if (reported)
-      throw Object.assign(new Error(reported), {
-        errorLogged: reportedWasLogged,
-      });
     if (!idle) continue;
     if (sawActive) return;
     // Idle on the very first look: the run may have finished or never started, so a gallery
@@ -622,33 +606,6 @@ async function settleLostGeneration(
   // Out of budget with the run still active: returning would report success and start the next
   // run against a busy backend.
   throw new Error("Timed out waiting for the image generation to finish.");
-}
-
-/** The failure this page session has already put in front of the user. */
-let surfacedGenerateFailure: string | null = null;
-
-/** The attempt if there is one, else the reason itself. */
-function generateFailureKey(attemptId: string | null, reason: string): string {
-  return attemptId ? `attempt:${attemptId}` : `reason:${reason}`;
-}
-
-function markGenerateFailureSurfaced(key: string): void {
-  surfacedGenerateFailure = key;
-}
-
-/** Toast a failure the backend RETAINED, for a run this page did not post itself. */
-function reportResumedGenerateFailure(progress: DiffusionGenerateProgress): void {
-  const reason = progress.error;
-  if (!reason) return;
-  if (!shouldReportGenerateError({ message: reason, stopRequested: false })) return;
-  const key = generateFailureKey(progress.generation_attempt ?? null, reason);
-  if (key === surfacedGenerateFailure) return;
-  markGenerateFailureSurfaced(key);
-  toast.error(reason, {
-    action: retainedFailureWasLogged(progress)
-      ? viewLogsAction("server")
-      : undefined,
-  });
 }
 
 // The chat tab model-load toast styling, reused verbatim so the diffusion load toast is identical.
@@ -2566,7 +2523,6 @@ export function ImagesPage({
           if (!isMounted.current) return;
           setBusy(null);
           setGenStep(null);
-          reportResumedGenerateFailure(p);
           // Re-fetch the first page to merge images the finished run saved, and resync status.
           void loadGallery();
           void refreshStatus();
@@ -2612,8 +2568,6 @@ export function ImagesPage({
           setBusy("generating");
           setGenStep(g);
           resumeGeneratePoll();
-        } else {
-          reportResumedGenerateFailure(g);
         }
       } catch {
         // Resume is best-effort; a failed probe just leaves the idle view.
@@ -4157,7 +4111,6 @@ export function ImagesPage({
     // Every gallery id this page has seen, captured BEFORE the first POST and grown as records
     // arrive: settleLostGeneration proves a lost POST landed by finding a record outside it.
     const knownIds = new Set(galleryCache.images.map((image) => image.id));
-    let postedAttemptId: string | null = null;
     try {
       for (let i = 0; i < runs; i++) {
         // Stop issuing more GPU generations once the page unmounted or Stop was pressed: the backend
@@ -4177,13 +4130,10 @@ export function ImagesPage({
           galleryCache.hasMore,
           knownIds,
         );
-        const attemptId = newGenerationAttemptId();
-        postedAttemptId = attemptId;
         let res: DiffusionGenerateResponse;
         try {
           res = await generateDiffusionImage({
             prompt: prompt.trim(),
-            attempt_id: attemptId,
             // Only send a negative prompt when guidance uses it, so the recipe does not record one the model ignored.
             negative_prompt: guidance > 0 ? negativePrompt.trim() || undefined : undefined,
             width: w,
@@ -4228,11 +4178,7 @@ export function ImagesPage({
           if (!(err instanceof GenerateResponseLostError)) throw err;
           // A record outside the baseline proves the request reached the backend. Taken per attempt, so
           // it reflects what the client could see when THIS post went out.
-          await settleLostGeneration(
-            () => isMounted.current,
-            probeBaseline,
-            attemptId,
-          );
+          await settleLostGeneration(() => isMounted.current, probeBaseline);
           if (!isMounted.current) break;
           await loadGallery();
           // loadGallery refreshes the module cache synchronously, so this run's records are folded in
@@ -4262,9 +4208,6 @@ export function ImagesPage({
         message: msg,
         stopRequested: cancelRequested.current && cancelAcked.current,
       });
-      if (report) {
-        markGenerateFailureSurfaced(generateFailureKey(postedAttemptId, msg));
-      }
       if (report && shouldOfferGenerateAnyway({ error: err, allowOversizedSent })) {
         toast.error(MEMORY_REFUSAL_TITLE, {
           description: msg,
@@ -4274,14 +4217,8 @@ export function ImagesPage({
             onClick: () => setOversizedRetryQueued(true),
           },
         });
-      } else if (report) {
-        const logged = (err as { errorLogged?: boolean }).errorLogged;
-        toast.error(msg, {
-          action: (typeof logged === "boolean" ? logged : generationFailureWasLogged(msg))
-            ? viewLogsAction("server")
-            : undefined,
-        });
-      }
+      } else if (report)
+        toast.error(msg, { action: generationFailureLogsAction(msg) });
     } finally {
       if (genPollTimer.current) clearInterval(genPollTimer.current);
       genPollTimer.current = null;

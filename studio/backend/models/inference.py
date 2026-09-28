@@ -4154,12 +4154,6 @@ class DiffusionGenerateRequest(BaseModel):
     """Request to generate one image from the loaded diffusion model."""
 
     prompt: str = Field(..., min_length = 1, description = "Text prompt")
-    attempt_id: Optional[str] = Field(
-        None,
-        max_length = 64,
-        pattern = r"^[A-Za-z0-9_-]+$",
-        description = "Client-generated id for this generation attempt",
-    )
     negative_prompt: Optional[str] = Field(
         None, description = "What to avoid (if the model supports it)"
     )
@@ -4509,15 +4503,6 @@ class DiffusionGenerateProgressResponse(BaseModel):
     total_steps: int = Field(0, description = "Total denoising steps for this run")
     fraction: float = Field(0.0, description = "step / total_steps, clamped to [0,1]")
     eta_seconds: Optional[float] = Field(None, description = "Estimated seconds remaining")
-    # The load twin below has always carried this.
-    error: Optional[str] = Field(None, description = "Why the last generation failed, if it did")
-    generation_attempt: Optional[str] = Field(
-        None, description = "The attempt id the retained failure belongs to"
-    )
-    # Whether that reason reached a log.
-    error_logged: Optional[bool] = Field(
-        None, description = "Whether the failure above was written to the server log"
-    )
     phase: Optional[str] = Field(
         None, description = "denoise | decode; null from engines that report no phase (sd.cpp)"
     )
@@ -5410,10 +5395,6 @@ class VideoGenerateProgressResponse(BaseModel):
     )
     error: Optional[str] = Field(
         None, description = "Client-safe failure detail when phase is 'failed'"
-    )
-    # Whether that failure reached a log.
-    error_logged: Optional[bool] = Field(
-        None, description = "Whether the failure above was written to the server log"
     )
 
 

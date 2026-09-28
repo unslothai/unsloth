@@ -93,11 +93,6 @@ export interface DiffusionGenerateProgress {
   total_steps: number;
   fraction: number;
   eta_seconds: number | null;
-  /** Why the LAST generation failed, when one did and is no longer running. */
-  error?: string | null;
-  generation_attempt?: string | null;
-  // Whether that reason reached the server log.
-  error_logged?: boolean | null;
   // Absent (sd.cpp engine) means "denoise".
   phase?: "denoise" | "decode" | null;
 }
@@ -159,8 +154,6 @@ export interface DiffusionLoadRequest {
 
 export interface DiffusionGenerateRequest {
   prompt: string;
-  /** This attempt's own id, echoed back beside a retained failure. */
-  attempt_id?: string;
   negative_prompt?: string;
   width?: number;
   height?: number;
@@ -320,16 +313,8 @@ export async function getDiffusionLoadProgress(
   );
 }
 
-export async function getGenerateProgress(
-  /** Ask about this attempt's own generation rather than the last one to run. */
-  attemptId?: string | null,
-): Promise<DiffusionGenerateProgress> {
-  const query = attemptId
-    ? `?attempt_id=${encodeURIComponent(attemptId)}`
-    : "";
-  return parseJson(
-    await authFetch(`/api/inference/images/generate-progress${query}`),
-  );
+export async function getGenerateProgress(): Promise<DiffusionGenerateProgress> {
+  return parseJson(await authFetch("/api/inference/images/generate-progress"));
 }
 
 export async function loadDiffusionModel(body: DiffusionLoadRequest): Promise<DiffusionStatus> {

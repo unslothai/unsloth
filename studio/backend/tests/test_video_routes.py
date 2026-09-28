@@ -685,6 +685,20 @@ def test_generate_native_sd_cli_exit_points_at_the_log(client, monkeypatch, code
     assert "GGML_ASSERT" not in progress["error"]
 
 
+@pytest.mark.parametrize("code", ["-6", "3221225477"])
+def test_generate_native_sd_cli_exit_points_at_the_log(client, monkeypatch, code):
+    backend = video_module.get_video_backend()
+    backend.loaded = True
+
+    def _crash(**kwargs):
+        raise RuntimeError(f"sd-cli exited {code}. Last output:\nGGML_ASSERT(n_dims == 3) failed")
+
+    monkeypatch.setattr(backend, "generate", _crash)
+    progress = _shared_setup_4(client)
+    assert "Settings > Logs" in progress["error"]
+    assert "GGML_ASSERT" not in progress["error"]
+
+
 def test_generate_value_error_reports_reason(client, monkeypatch):
     # Bad client input is feedback: the terminal failed state carries the reason.
     backend = video_module.get_video_backend()
@@ -1931,33 +1945,3 @@ def test_video_download_plan_still_refuses_a_bad_gpu_while_training_holds_the_ca
     )
     assert resp.status_code == 400
     assert seen == {"ids": [7], "allow_ranking": False}
-
-
-def test_a_video_failure_says_whether_it_reached_the_log():
-    """A client-input failure is answered with its reason and never logged."""
-    import inspect
-
-    from core.inference import video as video_module
-
-    src = inspect.getsource(video_module.VideoBackend._finish_generate_job)
-    assert (
-        "error_logged: bool = True" in src
-    ), "the terminal state cannot say whether the failure was logged"
-    assert (
-        '"error_logged": error_logged' in src
-    ), "the flag is accepted but never published, so a poll cannot read it"
-
-    body = inspect.getsource(video_module.VideoBackend._run_generate_body)
-    at = body.index("except ValueError")
-    branch = body[at : at + 600]
-    assert (
-        "error_logged = False" in branch
-    ), "the ValueError branch reports a failure it never logged as one the log explains"
-    # The classified branches keep the default, since they DO log.
-    at = body.index("except Exception as exc:")
-    assert "error_logged" not in body[at : at + 600]
-
-    # And the response model carries it through to the client.
-    from models.inference import VideoGenerateProgressResponse
-
-    assert "error_logged" in VideoGenerateProgressResponse.model_fields

@@ -198,9 +198,10 @@ def source_id_for_path(raw: Optional[str]) -> Optional[str]:
     if not isinstance(raw, str) or not raw.strip():
         return None
     wanted = set()
-    for spelling in (Path(raw.strip()), Path(raw.strip()).expanduser()):
+    for expand in (False, True):
         try:
-            wanted.add(_identity(os.path.realpath(spelling)))
+            spelling = Path(raw.strip())
+            wanted.add(_identity(os.path.realpath(spelling.expanduser() if expand else spelling)))
         except (OSError, ValueError, RuntimeError):
             pass
     if not wanted:

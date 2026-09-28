@@ -382,7 +382,6 @@ def test_generate_progress_route_logs_backend_snapshot(client, monkeypatch):
                 "total_steps": 0,
                 "fraction": 0.0,
                 "eta_seconds": None,
-                "error": None,
             },
         )
     ]

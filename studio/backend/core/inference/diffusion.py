@@ -31,7 +31,6 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable, Optional, Sequence
 
-from core.inference.generate_outcomes import _retain_generate_failure
 from core._torchao_stub import (
     hide_xformers_built_for_another_torch,
     install_torchao_windows_rocm_stub,
@@ -1911,19 +1910,8 @@ class DiffusionBackend:
                 self._transition_owns_slot = False
                 self._generate_lock.release()
 
-    def _retained_generate_failure(self, exc, attempt_id):
-        """Record *exc* against *attempt_id* for raises ``generate``'s own handler cannot see."""
-        self._last_generate_error = str(exc) or type(exc).__name__
-        self._last_generate_attempt = attempt_id
-        _retain_generate_failure(attempt_id, self._last_generate_error, logged = False)
-        return exc
-
     @contextmanager
-    def _generation_slot(
-        self,
-        cancel: threading.Event,
-        attempt_id = None,
-    ):
+    def _generation_slot(self, cancel: threading.Event):
         """Hold the generation lock, yielding to teardown and remaining cancellable.
 
         Lock acquisition is not FIFO. If a generation wins the lock after a load or unload has
@@ -1942,9 +1930,7 @@ class DiffusionBackend:
             while True:
                 while True:
                     if cancel.is_set():
-                        raise self._retained_generate_failure(
-                            RuntimeError(DIFFUSION_CANCELLED_MSG), attempt_id
-                        )
+                        raise RuntimeError(DIFFUSION_CANCELLED_MSG)
                     if self._generate_lock.acquire(timeout = 0.1):
                         break
                 with self._lock:
@@ -1963,14 +1949,10 @@ class DiffusionBackend:
                     break
                 self._generate_lock.release()
                 if cancelled:
-                    raise self._retained_generate_failure(
-                        RuntimeError(DIFFUSION_CANCELLED_MSG), attempt_id
-                    )
+                    raise RuntimeError(DIFFUSION_CANCELLED_MSG)
                 while True:
                     if cancel.is_set():
-                        raise self._retained_generate_failure(
-                            RuntimeError(DIFFUSION_CANCELLED_MSG), attempt_id
-                        )
+                        raise RuntimeError(DIFFUSION_CANCELLED_MSG)
                     # Whichever fence turned it away: _teardown_drained is still SET before the
                     # teardown is reserved, so waiting on that spun against the eject's own _lock.
                     with self._load_cancel_lock:
@@ -8441,8 +8423,6 @@ class DiffusionBackend:
         controlnet: Optional[tuple[str, str, str, float, float, float]] = None,
         # load_identity() of the caller's status() read; refuse rather than run a different load (#9448)
         expected_load: Optional[LoadIdentity] = None,
-        # Client id for THIS request, echoed back beside a retained failure.
-        attempt_id: Optional[str] = None,
         allow_oversized: bool = False,
     ) -> dict[str, Any]:
         import torch
@@ -8450,29 +8430,20 @@ class DiffusionBackend:
 
         # Per-generation cancel Event that unload()/a superseding load set (under _lock) to abort just this denoise.
         cancel = threading.Event()
-        with self._generation_slot(cancel, attempt_id = attempt_id):
+        with self._generation_slot(cancel):
             with self._lock:
                 state = self._state
                 if state is None:
-                    raise self._retained_generate_failure(
-                        RuntimeError(DIFFUSION_NOT_LOADED_MSG), attempt_id
-                    )
+                    raise RuntimeError(DIFFUSION_NOT_LOADED_MSG)
                 if cancel.is_set():
-                    raise self._retained_generate_failure(
-                        RuntimeError(DIFFUSION_CANCELLED_MSG), attempt_id
-                    )
+                    raise RuntimeError(DIFFUSION_CANCELLED_MSG)
                 # The slot admits on a zero fence, which a COMMITTED replacement also satisfies (#9448)
                 loaded_id = load_identity(state.repo_id, state.base_repo, state.family.name)
                 if expected_load is not None and expected_load != loaded_id:
-                    raise self._retained_generate_failure(
-                        DiffusionModelReplacedError(expected_load, loaded_id), attempt_id
-                    )
+                    raise DiffusionModelReplacedError(expected_load, loaded_id)
                 # Publish an active (step 0) state before the slow pre-denoise setup so a reload mount probe does not
                 # read idle.
                 self._gen = _GenState(total_steps = steps)
-                # Cleared at the START so the retained reason never reads as the in-flight run's.
-                self._last_generate_error = None
-                self._last_generate_attempt = attempt_id
             # Reset in the finally, so a failed or cancelled generation frees its reused outputs.
             static_skip_pipe = None
             restore_vae: Optional[Callable[[], None]] = None
@@ -9020,9 +8991,7 @@ class DiffusionBackend:
                             # and the compile-cache shape registry stop treating it as compiled.
                             settle_compile_fallback(state, state.pipe, logger)
                         if cancel.is_set():
-                            raise self._retained_generate_failure(
-                                RuntimeError(DIFFUSION_CANCELLED_MSG), attempt_id
-                            )
+                            raise RuntimeError(DIFFUSION_CANCELLED_MSG)
                         images.extend(out)
                         per_image_seeds.extend(s for _, s in chunk)
                         chunk_shapes.append(len(chunk))
@@ -9075,9 +9044,7 @@ class DiffusionBackend:
                 # interleave. The finally below repeats the clear for every other exit.
                 with self._generation_cancel_lock:
                     if cancel.is_set():
-                        raise self._retained_generate_failure(
-                            RuntimeError(DIFFUSION_CANCELLED_MSG), attempt_id
-                        )
+                        raise RuntimeError(DIFFUSION_CANCELLED_MSG)
                     if self._active_generate_cancel is cancel:
                         self._active_generate_cancel = None
                         self._active_generate_account = None
@@ -9122,12 +9089,7 @@ class DiffusionBackend:
                         upscale = upscale if workflow == "upscale" else None,
                     ),
                 )
-                self._last_generate_error = None
                 return result
-            except BaseException as exc:
-                self._last_generate_error = str(exc) or type(exc).__name__
-                _retain_generate_failure(attempt_id, self._last_generate_error)
-                raise
             finally:
                 if static_skip_pipe is not None:
                     try:
@@ -9155,9 +9117,6 @@ class DiffusionBackend:
                 "total_steps": 0,
                 "fraction": 0.0,
                 "eta_seconds": None,
-                # Idle is not the same as fine.
-                "error": getattr(self, "_last_generate_error", None),
-                "generation_attempt": getattr(self, "_last_generate_attempt", None),
                 "phase": "denoise",
             }
         return {
@@ -9166,7 +9125,6 @@ class DiffusionBackend:
             "total_steps": gen.total_steps,
             "fraction": gen.step / gen.total_steps,  # step is 1..total, never over 1.0
             "eta_seconds": gen.eta_seconds,
-            "generation_attempt": getattr(self, "_last_generate_attempt", None),
             "phase": gen.phase,
         }
 

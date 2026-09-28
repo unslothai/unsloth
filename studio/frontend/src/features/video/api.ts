@@ -109,8 +109,6 @@ export interface VideoGenerateProgress {
   video?: GalleryVideo | null;
   // Client-safe failure detail when phase is "failed".
   error?: string | null;
-  // Whether that failure reached the server log.
-  error_logged?: boolean | null;
 }
 
 export interface VideoLoadProgress {

@@ -33,14 +33,14 @@ import {
   serverWideReloadRequired,
 } from "../lib/server-wide-reload";
 import { isSettingsRouteAbsent } from "@/features/settings/api/settings-route-absent";
-import { loadModelMemorySettings } from "@/features/settings/api/model-memory";
-import { loadVramBudgetSettings } from "@/features/settings/api/vram-budget";
-import { loadOpenAIAutoSwitchSettings } from "@/features/settings";
 import {
   failureLogPath,
   loadFailureLogFamily,
   viewLogsAction,
 } from "@/features/settings/lib/view-logs-action";
+import { loadModelMemorySettings } from "@/features/settings/api/model-memory";
+import { loadVramBudgetSettings } from "@/features/settings/api/vram-budget";
+import { loadOpenAIAutoSwitchSettings } from "@/features/settings";
 import {
   confirmTransformersUpgradeIfNeeded,
   useTransformersUpgradeDialogStore,
@@ -1861,9 +1861,6 @@ export function useChatModelRuntime() {
       let cpuFallbackReason: CpuFallbackReason | null = null;
       let mmprojFallbackReason: MmprojFallbackReason | null = null;
       try {
-        // Whether THIS load's /api/inference/load was actually SENT.
-        let loadRequestIssued = false;
-
         async function performLoad(): Promise<void> {
           if (abortCtrl.signal.aborted) throw new Error("Cancelled");
           // The cancelled run may already have unloaded the model this load rolls back to, and its
@@ -2508,11 +2505,6 @@ export function useChatModelRuntime() {
               force_cancel_active: forceCancelActive,
 
               force_reload: forceReload,
-            }, {
-              // The true send boundary.
-              onRequestStart: () => {
-                loadRequestIssued = true;
-              },
             });
             cpuFallbackReason = loadResponse.cpu_fallback_reason ?? null;
             mmprojFallbackReason = loadResponse.mmproj_fallback_reason ?? null;
@@ -3366,16 +3358,16 @@ export function useChatModelRuntime() {
           if (!abortCtrl.signal.aborted) {
             const message =
               err instanceof Error ? err.message : "Failed to load model";
+            // The runner diagnostic is multi-line: summary as the title, the rest below it.
             const [summary, ...rest] = message.split("\n");
             const detail = rest.join("\n").trim();
             const runnerLogPath = failureLogPath(message);
-            const logsAction =
-              runnerLogPath || loadRequestIssued
-                ? viewLogsAction(
-                    loadFailureLogFamily(isGguf, isDiffusion, runnerLogPath),
-                    runnerLogPath,
-                  )
-                : undefined;
+            const logsAction = runnerLogPath
+              ? viewLogsAction(
+                  loadFailureLogFamily(isGguf, isDiffusion, runnerLogPath),
+                  runnerLogPath,
+                )
+              : undefined;
             if (loadToastDismissedRef.current) {
               toast.error(summary, {
                 description: detail || undefined,

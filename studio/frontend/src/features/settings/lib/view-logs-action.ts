@@ -48,3 +48,17 @@ export function viewLogsAction(
       useSettingsDialogStore.getState().openLogs(family, sourcePath ?? null),
   };
 }
+
+// Messages the backend writes to the server log; client-input refusals carry their own text instead.
+const LOGGED_GENERATION_FAILURES = [
+  "Image generation failed.",
+  "Video generation failed.",
+  "Failed to save the generated image.",
+];
+
+/** "View logs" for a generation failure the server logged, else undefined. */
+export function generationFailureLogsAction(message: string) {
+  return LOGGED_GENERATION_FAILURES.some((prefix) => message.startsWith(prefix))
+    ? viewLogsAction("server")
+    : undefined;
+}

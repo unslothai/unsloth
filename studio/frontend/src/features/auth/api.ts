@@ -22,8 +22,6 @@ type AuthFetchOptions = {
   retryNetworkErrors?: boolean;
   /** Synchronous policy check run immediately before any retry sends bytes. */
   beforeRetry?: () => void;
-  /** Run once, immediately before the FIRST attempt leaves this function. */
-  onRequestStart?: () => void;
 };
 
 let isRedirecting = false;
@@ -372,7 +370,6 @@ export async function authFetch(
 
   let response: Response;
   try {
-    options?.onRequestStart?.();
     response = await fetchWithTauriNetworkRetry(
       resolvedInput,
       {

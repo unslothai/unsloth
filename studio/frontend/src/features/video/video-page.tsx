@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { generationFailureLogsAction } from "@/features/settings/lib/view-logs-action";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   ArrowExpand01Icon,
@@ -183,9 +184,6 @@ import {
 } from "./reference-image-crop";
 import { ReferenceImageEditor } from "./reference-image-editor";
 import { type ReferenceMedia, ReferenceMediaPicker } from "./reference-picker";
-import { viewLogsAction } from "@/features/settings/lib/view-logs-action";
-
-const VIDEO_FAILURE_LOGGED_PREFIX = "Video generation failed.";
 import {
   defaultReferenceVideoTrim,
   H3_REFERENCE_MAX_SECONDS,
@@ -2437,10 +2435,7 @@ function VideoGenerator({
             const msg = p.error || "Video generation failed";
             // The user's own Cancel surfaces as the backend's cancelled sentinel; not an error.
             if (!msg.toLowerCase().includes("cancelled"))
-              toast.error(msg, {
-                action:
-                  p.error_logged === false ? undefined : viewLogsAction("server"),
-              });
+              toast.error(msg, { action: generationFailureLogsAction(msg) });
           }
           return;
         }
@@ -2511,11 +2506,7 @@ function VideoGenerator({
           // generation shows an idle page and loses the error.
           const msg = g.error || "Video generation failed";
           if (!msg.toLowerCase().includes("cancelled"))
-            toast.error(msg, {
-              // Same gate as the live poll above.
-              action:
-                g.error_logged === false ? undefined : viewLogsAction("server"),
-            });
+              toast.error(msg, { action: generationFailureLogsAction(msg) });
         }
       } catch {
         // Resume is best-effort; a failed probe just leaves the idle view.
@@ -3451,11 +3442,7 @@ function VideoGenerator({
     } catch (err) {
       if (!isMounted.current) return;
       const refusal = err instanceof Error ? err.message : "Video generation failed";
-      toast.error(refusal, {
-        action: refusal.startsWith(VIDEO_FAILURE_LOGGED_PREFIX)
-          ? viewLogsAction("server")
-          : undefined,
-      });
+      toast.error(refusal, { action: generationFailureLogsAction(refusal) });
       setBusy(null);
       setGenStep(null);
       // The refusal can be "No video model is loaded": re-read rather than leave Generate enabled

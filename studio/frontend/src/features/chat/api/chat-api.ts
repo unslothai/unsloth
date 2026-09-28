@@ -281,6 +281,7 @@ export async function loadModel(
     });
   if (options?.signal?.aborted)
     throw options.signal.reason ?? new DOMException("Aborted", "AbortError");
+  options?.onRequestStart?.();
   // Announced after the token prompt, so a cancelled load never shows a row. The indicator
   // otherwise had nothing to show until its next 5s poll.
   return withModelLoadNotice(
@@ -295,9 +296,7 @@ export async function loadModel(
       // Throttled like every other caller, so picking through several models costs one read.
       void checkDiskSpace();
       try {
-        const response = await authFetch(
-          "/api/inference/load",
-          {
+        const response = await authFetch("/api/inference/load", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -307,9 +306,7 @@ export async function loadModel(
             nativePathLease: undefined,
           }),
           signal: options?.signal,
-          },
-          { onRequestStart: options?.onRequestStart },
-        );
+        });
         const loaded = await parseJsonOrThrow<LoadModelResponse>(response, "Model load");
         // Unconditional: absent on nearly every load, anything malformed is ignored,
         // and the model is already resident by the time this runs. Both identities are

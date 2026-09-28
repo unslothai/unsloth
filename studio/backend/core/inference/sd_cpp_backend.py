@@ -30,7 +30,6 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Optional
 
-from core.inference.generate_outcomes import _retain_generate_failure
 from core.inference.diffusion_auto_policy import format_generation_for_log
 from core.inference.diffusion_compat import flux2_inner_dim_for_pick
 from core.inference.diffusion_device import (
@@ -3351,14 +3350,6 @@ class SdCppDiffusionBackend:
             )
             return _with_mirrors(repos)
 
-    def _retained_generate_failure(self, exc, attempt_id):
-        """Record *exc* against *attempt_id* for raises the handler below cannot see."""
-        self._last_generate_error = str(exc) or type(exc).__name__
-        # The attempt too: the block that normally sets this has not run.
-        self._last_generate_attempt = attempt_id
-        _retain_generate_failure(attempt_id, self._last_generate_error, logged = False)
-        return exc
-
     def _native_binary(self, state: _SdState) -> Optional[str]:
         """The sd.cpp binary this load runs: the resident server's, else the one-shot engine's."""
         binary = getattr(state.server, "binary", None) if state.server is not None else None
@@ -3418,8 +3409,6 @@ class SdCppDiffusionBackend:
         controlnet: Optional[tuple[str, str, str, float, float, float]] = None,
         # load_identity() of the caller's status() read; refuse rather than run a different load (#9448)
         expected_load: Optional[LoadIdentity] = None,
-        # Client id for THIS request, echoed back beside a retained failure.
-        attempt_id: Optional[str] = None,
         # Interface parity only: the activation guard is diffusers-only.
         allow_oversized: bool = False,
     ) -> dict[str, Any]:
@@ -3474,9 +3463,7 @@ class SdCppDiffusionBackend:
             with self._lock:
                 state = self._state
                 if state is None:
-                    raise self._retained_generate_failure(
-                        RuntimeError(DIFFUSION_NOT_LOADED_MSG), attempt_id
-                    )
+                    raise RuntimeError(DIFFUSION_NOT_LOADED_MSG)
                 # A resident server can exit while idle; drop stale state and report not-loaded so the client gets the
                 # reload path
                 if (
@@ -3485,23 +3472,16 @@ class SdCppDiffusionBackend:
                     and not state.server.is_alive()
                 ):
                     self._state = None
-                    raise self._retained_generate_failure(
-                        RuntimeError(DIFFUSION_NOT_LOADED_MSG), attempt_id
-                    )
+                    raise RuntimeError(DIFFUSION_NOT_LOADED_MSG)
                 # Same window as the diffusers engine: a replacement can commit while this waits (#9448)
                 loaded_id = load_identity(state.repo_id, state.base_repo, state.family.name)
                 if expected_load is not None and expected_load != loaded_id:
-                    raise self._retained_generate_failure(
-                        DiffusionModelReplacedError(expected_load, loaded_id), attempt_id
-                    )
+                    raise DiffusionModelReplacedError(expected_load, loaded_id)
                 self._active_generate_cancel = cancel
                 self._active_generate_account = current_account_id()
                 # Publish an active (step 0) state before the slow pre-generate setup so a reload probe does not read
                 # idle while this holds _generate_lock.
                 self._gen = _SdGen(total_steps = int(steps))
-                # Cleared at the START, so the retained reason is never read as this run's.
-                self._last_generate_error = None
-                self._last_generate_attempt = attempt_id
             try:
                 ref_pngs: list[bytes] = []
                 if conditioned:
@@ -3657,16 +3637,9 @@ class SdCppDiffusionBackend:
                         loras = active_loras,
                     ),
                 )
-                self._last_generate_error = None
                 return result
             except SdCppCancelled as exc:
-                self._last_generate_error = DIFFUSION_CANCELLED_MSG
-                _retain_generate_failure(attempt_id, DIFFUSION_CANCELLED_MSG)
                 raise RuntimeError(DIFFUSION_CANCELLED_MSG) from exc
-            except BaseException as exc:
-                self._last_generate_error = str(exc) or type(exc).__name__
-                _retain_generate_failure(attempt_id, self._last_generate_error)
-                raise
             finally:
                 self._gen = None
                 with self._lock:
@@ -3996,9 +3969,6 @@ class SdCppDiffusionBackend:
                 "total_steps": 0,
                 "fraction": 0.0,
                 "eta_seconds": None,
-                # Idle is not the same as fine.
-                "error": getattr(self, "_last_generate_error", None),
-                "generation_attempt": getattr(self, "_last_generate_attempt", None),
             }
         return {
             "active": True,
@@ -4006,7 +3976,6 @@ class SdCppDiffusionBackend:
             "total_steps": gen.total_steps,
             "fraction": min(gen.step / gen.total_steps, 1.0),
             "eta_seconds": gen.eta_seconds,
-            "generation_attempt": getattr(self, "_last_generate_attempt", None),
         }
 
     def cancel_generate(self, expected_account: Optional[str] = None) -> bool:

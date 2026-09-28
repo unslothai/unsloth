@@ -437,12 +437,7 @@ test("leaving Audio cancels an owned TTS load without touching a pre-request pro
   );
   assert.match(
     chatApiSource,
-    /if \(options\?\.signal\?\.aborted\)[\s\S]*authFetch\([\s\S]*"\/api\/inference\/load"[\s\S]*signal: options\?\.signal[\s\S]*onRequestStart: options\?\.onRequestStart/,
-  );
-  assert.doesNotMatch(
-    chatApiSource,
-    /^\s*options\?\.onRequestStart\?\.\(\);$/m,
-    "loadModel announces the send itself again, ahead of every local refusal",
+    /if \(options\?\.signal\?\.aborted\)[\s\S]*options\?\.onRequestStart\?\.\(\);[\s\S]*authFetch\("\/api\/inference\/load", \{[\s\S]*signal: options\?\.signal/,
   );
 });
 

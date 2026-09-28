@@ -40,9 +40,7 @@ from typing import (
     Union,
 )
 import functools
-import itertools
 import json
-from collections import OrderedDict
 import httpx
 from hub.services.models import account_access
 from hub.services.models.account_access import media_link_account, media_link_target
@@ -41444,88 +41442,6 @@ async def load_diffusion_model_gated(
 
 # Count of finished generations still writing their PNG/gallery records; generate-progress reports active while above 0. Mutated only on the event loop, so no lock.
 _diffusion_persist_active = 0
-# Which ATTEMPTS are in that window, so a named poll hears about its own records and nobody else's.
-_diffusion_persist_attempts: dict[str, int] = {}
-
-
-_diffusion_queued_attempts: dict[str, int] = {}
-
-
-def _note_queued_attempt(attempt_id, delta: int) -> None:
-    if not attempt_id:
-        return
-    held = _diffusion_queued_attempts.get(attempt_id, 0) + delta
-    if held > 0:
-        _diffusion_queued_attempts[attempt_id] = held
-    else:
-        _diffusion_queued_attempts.pop(attempt_id, None)
-
-
-_diffusion_execution_serial = itertools.count(1)
-_diffusion_attempt_last_run: "OrderedDict[str, int]" = OrderedDict()
-_RETAINED_ATTEMPT_RUNS = 64
-
-
-def _note_attempt_run_finished(attempt_id, serial: int) -> None:
-    if not attempt_id:
-        return
-    if _diffusion_attempt_last_run.get(attempt_id, 0) < serial:
-        _diffusion_attempt_last_run[attempt_id] = serial
-        _diffusion_attempt_last_run.move_to_end(attempt_id)
-    while len(_diffusion_attempt_last_run) > _RETAINED_ATTEMPT_RUNS:
-        _diffusion_attempt_last_run.popitem(last = False)
-
-
-def _attempt_run_was_superseded(attempt_id, serial: int) -> bool:
-    """Whether a LATER execution of *attempt_id* has already finished its run."""
-    if not attempt_id:
-        return False
-    return _diffusion_attempt_last_run.get(attempt_id, 0) > serial
-
-
-def _attempt_execution_is_live(attempt_id) -> bool:
-    """Whether a generate request is holding *attempt_id* right now."""
-    from core.inference.generate_outcomes import attempt_scope_key
-
-    key = attempt_scope_key(attempt_id) or ""
-    return bool(_diffusion_queued_attempts.get(key) or _diffusion_persist_attempts.get(key))
-
-
-# Which execution the engine's unscoped slot is describing.
-_diffusion_unscoped_slot_serial = 0
-
-
-def _note_unscoped_slot_serial(serial: int) -> None:
-    global _diffusion_unscoped_slot_serial
-    if serial > _diffusion_unscoped_slot_serial:
-        _diffusion_unscoped_slot_serial = serial
-
-
-def _unscoped_slot_is_newer_than(serial: int) -> bool:
-    """Whether a LATER execution has already described itself in the unscoped slot."""
-    return _diffusion_unscoped_slot_serial > serial
-
-
-def _clear_unscoped_generate_failure(backend) -> None:
-    """Drop the engine's unscoped reason after a save of ours succeeded."""
-    backend._last_generate_error = None
-
-
-def _note_unscoped_generate_failure(backend, attempt_id, reason: str) -> None:
-    """Park *reason* in the engine's unscoped slot, the only channel a reload has left."""
-    backend._last_generate_error = reason
-    backend._last_generate_attempt = attempt_id
-
-
-def _note_persisting_attempt(attempt_id, delta: int) -> None:
-    key = attempt_id if delta < 0 else attempt_id
-    if not key:
-        return
-    held = _diffusion_persist_attempts.get(key, 0) + delta
-    if held > 0:
-        _diffusion_persist_attempts[key] = held
-    else:
-        _diffusion_persist_attempts.pop(key, None)
 
 
 def generation_in_flight() -> bool:
@@ -41554,19 +41470,6 @@ _GENERATE_FAILURE_CLASSES: tuple[tuple[tuple[str, ...], str], ...] = (
 )
 
 
-_PERSIST_FAILURE_MSG = "Failed to save the generated image."
-
-
-@functools.lru_cache(maxsize = 1)
-def _generate_failure_patterns():
-    """The needles above as word-bounded patterns, compiled once."""
-    import re
-    return tuple(
-        (tuple(re.compile(rf"\b{re.escape(needle)}\b") for needle in needles), detail)
-        for needles, detail in _GENERATE_FAILURE_CLASSES
-    )
-
-
 def _generate_failure_detail(message: str) -> str:
     """A user-facing reason for a failed generation, built only from fixed text.
 
@@ -41574,15 +41477,9 @@ def _generate_failure_detail(message: str) -> str:
     renderer aborts inside its own text encoder, and the page showed "Image generation failed."
     with nothing to act on. Naming the CLASS of failure keeps the message useful without echoing
     the engine's text, which can carry local paths and argv."""
-    from core.inference.diffusion_families import DIFFUSION_CANCELLED_MSG
-
-    if str(message or "") == DIFFUSION_CANCELLED_MSG:
-        return DIFFUSION_CANCELLED_MSG
-    if str(message or "") == _PERSIST_FAILURE_MSG:
-        return _PERSIST_FAILURE_MSG
     text = str(message or "").lower()
-    for patterns, detail in _generate_failure_patterns():
-        if any(pattern.search(text) for pattern in patterns):
+    for needles, detail in _GENERATE_FAILURE_CLASSES:
+        if any(n in text for n in needles):
             return f"{_GENERATE_FAILURE_FALLBACK} {detail}"
     return _GENERATE_FAILURE_FALLBACK
 
@@ -41634,21 +41531,12 @@ async def generate_diffusion_image(
                 )
         # Ahead of the run: milestones key off the previous poll, so a resumed range logs nothing.
         reset_media_generation_progress("image")
-        from core.inference.generate_outcomes import attempt_scope_key as _attempt_key
-        from core.inference.generate_outcomes import clear_generate_failure
-
-        execution_serial = next(_diffusion_execution_serial)
-        queued_attempt = _attempt_key(request.attempt_id)
-        _note_queued_attempt(queued_attempt, 1)
-        # This execution owns the id from here.
-        clear_generate_failure(request.attempt_id)
         try:
             with account_access.media_generation("diffusion"):
                 result = await asyncio.to_thread(
                     backend.generate,
                     expected_load = expected_load,
                     prompt = request.prompt,
-                    attempt_id = request.attempt_id,
                     negative_prompt = request.negative_prompt,
                     width = None if size_omitted else request.width,
                     height = None if size_omitted else request.height,
@@ -41693,21 +41581,10 @@ async def generate_diffusion_image(
                 headers = {IMAGE_REFUSAL_HEADER: IMAGE_REFUSAL_MEMORY_ESTIMATE},
             )
         except ValueError as exc:
-            # Answered with its own reason and never logged.
-            from core.inference.generate_outcomes import (
-                _retain_generate_failure,
-                mark_generate_failure_unlogged,
-            )
-
-            _retain_generate_failure(request.attempt_id, str(exc))
-            mark_generate_failure_unlogged(request.attempt_id)
             raise HTTPException(status_code = 400, detail = str(exc))
         except DiffusionModelReplacedError as exc:
             if attempt > 0:
                 raise HTTPException(status_code = 409, detail = str(exc))
-            # Retried, so this request has NOT failed.
-            _clear_unscoped_generate_failure(backend)
-            clear_generate_failure(request.attempt_id)
             continue
         except RuntimeError as exc:
             # Match these two EXACT client-state messages (409); other RuntimeErrors are failures.
@@ -41719,14 +41596,6 @@ async def generate_diffusion_image(
         except Exception as exc:
             logger.error("diffusion.generate_failed: %s", exc, exc_info = True)
             raise HTTPException(status_code = 500, detail = _generate_failure_detail(str(exc)))
-        finally:
-            _note_queued_attempt(queued_attempt, -1)
-            _note_unscoped_slot_serial(execution_serial)
-
-    from core.inference.generate_outcomes import clear_generate_failure as _clear_outcome
-
-    _clear_outcome(request.attempt_id)
-    _note_attempt_run_finished(queued_attempt, execution_serial)
 
     # Persist each image with its full recipe. BOTH engines batch with a distinct seed per image, returned in ``seeds``, so each is individually reproducible.
     created_at = time.time()
@@ -41809,30 +41678,15 @@ async def generate_diffusion_image(
 
     # Hold generate-progress "active" across the persist so a reload mount probe cannot refresh the gallery before these records exist.
     global _diffusion_persist_active
-    from core.inference.generate_outcomes import _retain_generate_failure, attempt_scope_key
-
-    persisting_attempt = attempt_scope_key(request.attempt_id)
     _diffusion_persist_active += 1
-    _note_persisting_attempt(persisting_attempt, 1)
     try:
         with account_access.media_generation("diffusion"):
             records = await asyncio.to_thread(_persist)
-        # Saved: nothing retained under this id is a failure of this request any more.
-        _clear_outcome(request.attempt_id)
-        if not _unscoped_slot_is_newer_than(execution_serial):
-            _clear_unscoped_generate_failure(backend)
-            _note_unscoped_slot_serial(execution_serial)
     except Exception as exc:
         logger.error("diffusion.persist_failed: %s", exc)
-        if not _attempt_run_was_superseded(persisting_attempt, execution_serial):
-            _retain_generate_failure(request.attempt_id, _PERSIST_FAILURE_MSG)
-            if not _unscoped_slot_is_newer_than(execution_serial):
-                _note_unscoped_generate_failure(backend, request.attempt_id, _PERSIST_FAILURE_MSG)
-                _note_unscoped_slot_serial(execution_serial)
-        raise HTTPException(status_code = 500, detail = _PERSIST_FAILURE_MSG)
+        raise HTTPException(status_code = 500, detail = "Failed to save the generated image.")
     finally:
         _diffusion_persist_active -= 1
-        _note_persisting_attempt(persisting_attempt, -1)
 
     return DiffusionGenerateResponse(images = [GalleryImage(**r) for r in records])
 
@@ -42343,48 +42197,16 @@ async def diffusion_load_progress(
 
 
 @studio_router.get("/images/generate-progress", response_model = DiffusionGenerateProgressResponse)
-async def diffusion_generate_progress(
-    attempt_id: Optional[str] = Query(
-        None,
-        max_length = 64,
-        pattern = r"^[A-Za-z0-9_-]+$",
-        description = "Answer about this attempt's own generation",
-    ),
-    current_subject: str = Depends(get_current_subject),
-):
+async def diffusion_generate_progress(current_subject: str = Depends(get_current_subject)):
+    if account_access.managed_account() and account_access.generation_is_foreign("diffusion"):
+        return account_access.hidden_generate_progress_response(DiffusionGenerateProgressResponse)
+    mine = account_access.generation_is_mine("diffusion")
+    if not mine and account_access.resident_hidden("diffusion"):
+        return account_access.hidden_generate_progress_response(DiffusionGenerateProgressResponse)
     from core.inference.diffusion_engine_router import get_active_diffusion_engine
 
-    live = attempt_id is not None and _attempt_execution_is_live(attempt_id)
-    if attempt_id is not None and not live:
-        from core.inference.generate_outcomes import (
-            generate_failure_for_attempt,
-            generate_failure_was_logged,
-        )
-        retained = generate_failure_for_attempt(attempt_id)
-        if retained:
-            return DiffusionGenerateProgressResponse(
-                active = False,
-                step = 0,
-                total_steps = 0,
-                fraction = 0.0,
-                eta_seconds = None,
-                error = _generate_failure_detail(retained),
-                generation_attempt = attempt_id,
-                error_logged = generate_failure_was_logged(attempt_id) is not False,
-            )
-    # A live attempt of the CALLER'S OWN survives the guards below.
-    if not live:
-        if account_access.managed_account() and account_access.generation_is_foreign("diffusion"):
-            return account_access.hidden_generate_progress_response(
-                DiffusionGenerateProgressResponse
-            )
-    mine = account_access.generation_is_mine("diffusion")
-    if not live and not mine and account_access.resident_hidden("diffusion"):
-        return account_access.hidden_generate_progress_response(DiffusionGenerateProgressResponse)
-
     if (
-        not live
-        and not mine
+        not mine
         and account_access.managed_account()
         and account_access.resident_hidden(
             "diffusion", get_active_diffusion_engine().status().get("repo_id")
@@ -42392,63 +42214,11 @@ async def diffusion_generate_progress(
     ):
         return account_access.hidden_generate_progress_response(DiffusionGenerateProgressResponse)
 
-    engine = get_active_diffusion_engine()
-    progress = engine.generate_progress()
-    if attempt_id is not None:
-        from core.inference.generate_outcomes import generate_failure_for_attempt
-
-        raw_error = None if live else generate_failure_for_attempt(attempt_id)
-        # Active is per attempt too, not just the reason.
-        mine_is_running = bool(progress.get("active")) and (
-            progress.get("generation_attempt") == attempt_id
-        )
-        progress = {
-            **progress,
-            "error": raw_error,
-            "generation_attempt": attempt_id,
-            "active": mine_is_running,
-        }
-        if not mine_is_running:
-            # Another run's step counter is not this caller's progress either.
-            progress.update(step = 0, total_steps = 0, fraction = 0.0, eta_seconds = None)
-    if attempt_id is None and account_access.account_scope() is not None:
-        from core.inference.generate_outcomes import generate_failure_for_attempt
-        attributed = progress.get("generation_attempt")
-        if not (attributed and generate_failure_for_attempt(attributed)):
-            progress = {**progress, "error": None}
-    raw_error = progress.get("error")
-    progress = {
-        **progress,
-        "error": _generate_failure_detail(raw_error) if raw_error else None,
-    }
-    if progress.get("error"):
-        from core.inference.generate_outcomes import generate_failure_was_logged
-
-        attributed = attempt_id or progress.get("generation_attempt")
-        was_logged = generate_failure_was_logged(attributed) if attributed else None
-        progress = {**progress, "error_logged": True if was_logged is None else was_logged}
-    if not progress.get("error"):
-        progress.pop("generation_attempt", None)
+    progress = get_active_diffusion_engine().generate_progress()
     log_media_generation_progress("image", progress)
     # A finished generation still persisting its gallery record counts as active, so a reload probe keeps polling.
     if _diffusion_persist_active > 0 and not progress["active"]:
-        if attempt_id is None:
-            progress = {**progress, "active": True}
-        else:
-            from core.inference.generate_outcomes import attempt_scope_key
-            if _diffusion_persist_attempts.get(attempt_scope_key(attempt_id) or ""):
-                progress = {**progress, "active": True}
-    if attempt_id is not None and not progress["active"] and not progress.get("error"):
-        from core.inference.generate_outcomes import attempt_scope_key
-        if _diffusion_queued_attempts.get(attempt_scope_key(attempt_id) or ""):
-            progress = {**progress, "active": True}
-    # A reloaded page polls unscoped: its own queued request is pending, not the slot's stale failure.
-    if attempt_id is None and not progress["active"]:
-        from utils.account_context import current_account_id
-        own = f"{current_account_id()}\x00"
-        if any(key.startswith(own) for key in list(_diffusion_queued_attempts)):
-            progress = {**progress, "active": True, "error": None, "error_logged": None}
-            progress.pop("generation_attempt", None)
+        progress = {**progress, "active": True}
     return DiffusionGenerateProgressResponse(**progress)
 
 
@@ -42705,24 +42475,20 @@ async def _generate_openai_images(
         # Fall back to the resolved base repo so a local-path load still gets the right per-model steps/guidance.
         steps, guidance = default_generation_params(status.get("repo_id"), status.get("base_repo"))
         reset_media_generation_progress("image")
-        execution_serial = next(_diffusion_execution_serial)
         try:
             with account_access.media_generation("diffusion"):
-                try:
-                    result = await asyncio.to_thread(
-                        backend.generate,
-                        prompt = body.prompt,
-                        width = width,
-                        height = height,
-                        steps = steps,
-                        guidance = guidance,
-                        batch_size = body.n,
-                        expected_load = load_identity(
-                            status.get("repo_id"), status.get("base_repo"), status.get("family")
-                        ),
-                    )
-                finally:
-                    _note_unscoped_slot_serial(execution_serial)
+                result = await asyncio.to_thread(
+                    backend.generate,
+                    prompt = body.prompt,
+                    width = width,
+                    height = height,
+                    steps = steps,
+                    guidance = guidance,
+                    batch_size = body.n,
+                    expected_load = load_identity(
+                        status.get("repo_id"), status.get("base_repo"), status.get("family")
+                    ),
+                )
             break
         except DiffusionModelReplacedError:
             if attempt > 0:
@@ -42811,11 +42577,7 @@ async def _generate_openai_images(
             data = await asyncio.to_thread(_persist)
     except Exception as exc:  # noqa: BLE001
         logger.error("openai_images.persist_failed: %s", exc)
-        # Same ordering guard as /images/generate: a later execution's reason must survive.
-        if not _unscoped_slot_is_newer_than(execution_serial):
-            _note_unscoped_generate_failure(backend, None, _PERSIST_FAILURE_MSG)
-            _note_unscoped_slot_serial(execution_serial)
-        raise HTTPException(status_code = 500, detail = _PERSIST_FAILURE_MSG)
+        raise HTTPException(status_code = 500, detail = "Failed to save the generated image.")
     finally:
         _diffusion_persist_active -= 1
 

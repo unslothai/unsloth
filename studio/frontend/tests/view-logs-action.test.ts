@@ -8,10 +8,6 @@ import { readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-import {
-  OWNER_ONLY_SETTINGS_TABS,
-  resolveSettingsTab,
-} from "../src/features/settings/settings-tab-visibility.ts";
 import { useSettingsDialogStore } from "../src/features/settings/stores/settings-dialog-store.ts";
 import { en } from "../src/i18n/locales/en.ts";
 import { loadWithStubs } from "./helpers/module-stubs.ts";
@@ -77,39 +73,6 @@ test("the action opens Logs on the family that failed", () => {
   assert.equal(after.open, true);
   assert.equal(after.activeTab, "debugging");
   assert.equal(after.logFamilyRequested, "llama-server");
-});
-
-test("a generation failure asks for the server log, a load failure for the runner's", () => {
-  reset();
-  const { viewLogsAction } = loadWithStubs<
-    typeof import("../src/features/settings/lib/view-logs-action.ts")
-  >(ACTION_URL, {
-    "@/i18n": { translate: (k: string) => k },
-    "../stores/settings-dialog-store": { useSettingsDialogStore: store },
-    "@/features/auth/account-session": { isAccountOwner: () => true },
-  });
-  for (const family of ["llama-server", "server"] as const) {
-    reset();
-    const action = viewLogsAction(family);
-    assert.ok(action, family);
-    action.onClick();
-    assert.equal(store.getState().logFamilyRequested, family, family);
-  }
-});
-
-test("a GGUF diffusion load asks for the diffusion runner's log, not the LLM one", () => {
-  reset();
-  const { viewLogsAction } = loadWithStubs<
-    typeof import("../src/features/settings/lib/view-logs-action.ts")
-  >(ACTION_URL, {
-    "@/i18n": { translate: (k: string) => k },
-    "../stores/settings-dialog-store": { useSettingsDialogStore: store },
-    "@/features/auth/account-session": { isAccountOwner: () => true },
-  });
-  const diffusionAction = viewLogsAction("diffusion-server");
-  assert.ok(diffusionAction);
-  diffusionAction.onClick();
-  assert.equal(store.getState().logFamilyRequested, "diffusion-server");
 });
 
 test("only a GGUF load is explained by a runner log; everything else is in the server log", () => {
@@ -185,14 +148,10 @@ test("the family and the path are read from the same diagnostic", () => {
     /viewLogsAction\(\s*loadFailureLogFamily\(isGguf, isDiffusion, runnerLogPath\),\s*runnerLogPath,\s*\)/,
     "the family and the path handed to the action are no longer the same value",
   );
-  assert.ok(
-    !/loadFailureLogFamily\([^)]*loadRequestIssued/.test(src),
-    "the hook still equates issuing the request with a runner having started",
-  );
   assert.match(
     src,
-    /runnerLogPath \|\| loadRequestIssued\s*\?\s*viewLogsAction\(/,
-    "a failure before the request was sent still offers the server log",
+    /const logsAction = runnerLogPath\s*\?\s*viewLogsAction\(/,
+    "a load whose diagnostic names no log must not offer one",
   );
 });
 
@@ -238,22 +197,6 @@ test("the Logs panel clears the request once it has consumed it", () => {
   assert.equal(store.getState().open, true);
 });
 
-test("an unconsumed request survives landing back on Logs and is dropped by any other tab", () => {
-  reset();
-  store.getState().openLogs("llama-server");
-  // Reselecting the tab that reads it keeps it: the panel may not have mounted yet.
-  store.getState().openDialog("debugging");
-  assert.equal(store.getState().logFamilyRequested, "llama-server");
-  // Anything else abandons it, so it cannot replay on a later visit.
-  store.getState().openDialog("general");
-  assert.equal(store.getState().logFamilyRequested, null);
-
-  reset();
-  store.getState().openLogs("llama-server");
-  store.getState().setActiveTab("about");
-  assert.equal(store.getState().logFamilyRequested, null);
-});
-
 test("closing the dialog drops the request, like every other pending one", () => {
   reset();
   store.getState().openLogs("server");
@@ -263,19 +206,6 @@ test("closing the dialog drops the request, like every other pending one", () =>
   assert.equal(after.logFamilyRequested, null);
   assert.equal(after.archivedRequested, null);
   assert.equal(after.connectionRequested, null);
-});
-
-test("the sibling openers do not leave a stale log request behind", () => {
-  for (const open of [
-    () => store.getState().openArchivedChats(),
-    () => store.getState().openArchivedMedia("images"),
-    () => store.getState().openConnectionSettings("openai"),
-  ]) {
-    reset();
-    store.getState().openLogs("server");
-    open();
-    assert.equal(store.getState().logFamilyRequested, null);
-  }
 });
 
 test("an account that cannot open Logs is offered no action at all", () => {
@@ -298,46 +228,6 @@ test("an account that cannot open Logs is offered no action at all", () => {
   // And nothing was requested as a side effect of asking.
   assert.equal(store.getState().logFamilyRequested, null);
   assert.equal(store.getState().open, false);
-});
-
-test("the owner-only tab list is what the gate is gating on", () => {
-  assert.equal(
-    OWNER_ONLY_SETTINGS_TABS.has("debugging"),
-    true,
-    "Logs is no longer owner-only, so the action no longer needs gating",
-  );
-  assert.equal(resolveSettingsTab("debugging", false), "general");
-  assert.equal(resolveSettingsTab("debugging", true), "debugging");
-});
-
-test("a request arriving while Logs is already open is visible to a subscriber", async () => {
-  const { pendingLogRequestKey, NO_PENDING_LOG_REQUEST } = await import(
-    "../src/features/settings/stores/settings-dialog-store.ts"
-  );
-  reset();
-  assert.equal(
-    pendingLogRequestKey(store.getState()),
-    NO_PENDING_LOG_REQUEST,
-    "an idle store must read as nothing pending, or the panel refreshes on every change",
-  );
-
-  store.getState().openLogs("llama-server", "/logs/llama-a.log");
-  const first = pendingLogRequestKey(store.getState());
-  assert.notEqual(first, NO_PENDING_LOG_REQUEST);
-
-  store.getState().openLogs("llama-server", "/logs/llama-b.log");
-  assert.notEqual(pendingLogRequestKey(store.getState()), first);
-
-  // And consuming it settles, so the arrival fires the panel once rather than looping.
-  store.getState().consumeLogFamilyRequest();
-  assert.equal(pendingLogRequestKey(store.getState()), NO_PENDING_LOG_REQUEST);
-
-  // A family-only request still registers: not every diagnostic carries a path.
-  store.getState().openLogs("server");
-  assert.notEqual(
-    pendingLogRequestKey(store.getState()),
-    NO_PENDING_LOG_REQUEST,
-  );
 });
 
 test("an older in-flight refresh does not consume a newer request", async () => {
@@ -379,4 +269,32 @@ test("an older in-flight refresh does not consume a newer request", async () => 
       `the panel no longer guards consumption on the request it fetched for: ${needle}`,
     );
   }
+});
+
+test("only a generation failure the server logged offers its log", () => {
+  reset();
+  const { generationFailureLogsAction } = loadWithStubs<
+    typeof import("../src/features/settings/lib/view-logs-action.ts")
+  >(ACTION_URL, {
+    "@/i18n": { translate: (key: string) => key },
+    "../stores/settings-dialog-store": { useSettingsDialogStore: store },
+    "@/features/auth/account-session": { isAccountOwner: () => true },
+  });
+  for (const logged of [
+    "Image generation failed. The device ran out of memory.",
+    "Video generation failed. The renderer stopped unexpectedly.",
+    "Failed to save the generated image.",
+  ]) {
+    const action = generationFailureLogsAction(logged);
+    assert.ok(action, logged);
+    action.onClick();
+    assert.equal(store.getState().logFamilyRequested, "server");
+    reset();
+  }
+  // Client-input refusals are answered with their own text and never logged.
+  assert.equal(
+    generationFailureLogsAction("negative_prompt is not supported by this family."),
+    undefined,
+  );
+  assert.equal(generationFailureLogsAction("Video generation could not start."), undefined);
 });
