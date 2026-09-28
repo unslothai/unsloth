@@ -1134,8 +1134,7 @@ def _missing_torchvision_error(error = None):
     return False
 
 
-# Model types whose native image processor defaults are the checkpoint's own settings (Step-3.7
-# hardcodes them in its remote processor); other VLMs keep failing loudly without a config.
+# Only where class defaults are the checkpoint's settings (Step-3.7 hardcodes them remotely).
 _NATIVE_DEFAULT_IMAGE_PROCESSOR_TYPES = frozenset({"step3p7"})
 
 

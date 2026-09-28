@@ -92,7 +92,7 @@ def _step_repo(tmp_path):
 @pytest.mark.skipif(Step3p7Processor is None, reason = "no native step3p7 in this transformers")
 def test_repo_without_preprocessor_config_gets_native_processor(tmp_path):
     repo = _step_repo(tmp_path)
-    with pytest.raises(Exception):  # the defect's trigger: transformers alone cannot build it
+    with pytest.raises(Exception):
         transformers.AutoImageProcessor.from_pretrained(repo)
     # The loader passes the text sub-config's model_type (step3p5); the top-level one wins.
     processor, err = NS["_construct_vlm_processor_fallback"](repo, "step3p5", None, False)
