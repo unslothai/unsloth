@@ -19,13 +19,20 @@ function fromTile(event: React.SyntheticEvent<HTMLElement>): boolean {
 }
 
 /**
- * Drag-to-reorder for a horizontal gallery strip (Images and Video).
+ * Drag-to-reorder for a gallery strip: horizontal (Images, Video) or, with `axis: "y"`, a vertical
+ * list (Audio history).
  *
  * Tracked on the strip so gaps and ends are drop targets. Tiles carry `data-reorder-id` in display
- * order. A drop reports the id the tile now follows (null = front). Alt + Left / Right moves the
- * focused tile one slot. Drags that did not start on a tile are ignored.
+ * order. A drop reports the id the tile now follows (null = front). Alt + Left / Right (Up / Down
+ * on a list) moves the focused tile one slot. Drags that did not start on a tile are ignored.
  */
-export function useStripReorder(onMove: (id: string, afterId: string | null) => void) {
+export function useStripReorder(
+  onMove: (id: string, afterId: string | null) => void,
+  { axis = "x" }: { axis?: "x" | "y" } = {},
+) {
+  const vertical = axis === "y";
+  const backKey = vertical ? "ArrowUp" : "ArrowLeft";
+  const forwardKey = vertical ? "ArrowDown" : "ArrowRight";
   const dragIdRef = useRef<string | null>(null);
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [cue, setCue] = useState<StripDropCue | null>(null);
@@ -36,10 +43,10 @@ export function useStripReorder(onMove: (id: string, afterId: string | null) => 
     setCue(null);
   }, []);
 
-  /** The drop at `clientX`, or null if the tile would not move. */
+  /** The drop at pointer position `at` along the axis, or null if the tile would not move. */
   function resolve(
     strip: HTMLElement,
-    clientX: number,
+    at: number,
   ): { afterId: string | null; cue: StripDropCue } | null {
     const dragged = dragIdRef.current;
     if (!dragged) return null;
@@ -47,7 +54,7 @@ export function useStripReorder(onMove: (id: string, afterId: string | null) => 
     const order = tiles.map((tile) => tile.dataset.reorderId ?? "");
     let index = tiles.findIndex((tile) => {
       const rect = tile.getBoundingClientRect();
-      return clientX < rect.left + rect.width / 2;
+      return vertical ? at < rect.top + rect.height / 2 : at < rect.left + rect.width / 2;
     });
     if (index < 0) index = tiles.length;
     const from = order.indexOf(dragged);
@@ -67,7 +74,7 @@ export function useStripReorder(onMove: (id: string, afterId: string | null) => 
       if (!dragIdRef.current) return;
       event.preventDefault();
       event.dataTransfer.dropEffect = "move";
-      const next = resolve(event.currentTarget, event.clientX)?.cue ?? null;
+      const next = resolve(event.currentTarget, vertical ? event.clientY : event.clientX)?.cue ?? null;
       setCue((prev) =>
         prev?.id === next?.id && prev?.edge === next?.edge ? prev : next,
       );
@@ -81,7 +88,7 @@ export function useStripReorder(onMove: (id: string, afterId: string | null) => 
       const dragged = dragIdRef.current;
       if (!dragged) return;
       event.preventDefault();
-      const drop = resolve(event.currentTarget, event.clientX);
+      const drop = resolve(event.currentTarget, vertical ? event.clientY : event.clientX);
       end();
       if (drop) onMove(dragged, drop.afterId);
     },
@@ -103,7 +110,7 @@ export function useStripReorder(onMove: (id: string, afterId: string | null) => 
         if (
           !fromTile(event) ||
           !event.altKey ||
-          (event.key !== "ArrowLeft" && event.key !== "ArrowRight")
+          (event.key !== backKey && event.key !== forwardKey)
         ) {
           return;
         }
@@ -114,9 +121,9 @@ export function useStripReorder(onMove: (id: string, afterId: string | null) => 
         ].map((tile) => tile.dataset.reorderId ?? "");
         const from = order.indexOf(id);
         event.preventDefault();
-        if (event.key === "ArrowLeft" && from > 0) {
+        if (event.key === backKey && from > 0) {
           onMove(id, from > 1 ? order[from - 2] : null);
-        } else if (event.key === "ArrowRight" && from >= 0 && from < order.length - 1) {
+        } else if (event.key === forwardKey && from >= 0 && from < order.length - 1) {
           onMove(id, order[from + 1]);
         }
       },

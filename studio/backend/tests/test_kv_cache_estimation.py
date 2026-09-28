@@ -990,6 +990,104 @@ class TestHybridMambaEstimation:
         assert b._estimate_kv_cache_bytes(4096, "f16", n_parallel = 4) == (kv_only + 4 * per_slot)
 
 
+class TestSsmStateWithoutAttentionInterval:
+    """SSM headers with no full_attention_interval, recurrent layers per llama.cpp's is_recr."""
+
+    _SSM = {"ssm.inner_size": 1024, "ssm.state_size": 16, "ssm.conv_kernel": 4}
+
+    @staticmethod
+    def _per_layer(group):
+        return ((4 - 1) * (1024 + 2 * group * 16) + 16 * 1024) * 4
+
+    @pytest.mark.parametrize(
+        "arch, fields, recurrent",
+        [
+            pytest.param(
+                "granitehybrid",
+                {"attention.head_count_kv": [0, 0, 8, 0], "ssm.group_count": 1},
+                3,
+                id = "zero-kv-heads",
+            ),
+            pytest.param(
+                "nemotron_h",
+                {
+                    "attention.head_count_kv": [0, 0, 8, 0],
+                    "feed_forward_length": [0, 21504, 0, 0],
+                    "ssm.group_count": 8,
+                },
+                2,
+                id = "dense-nemotron-mlp-layers-are-not-ssm",
+            ),
+            pytest.param(
+                "nemotron_h_moe",
+                {
+                    "attention.head_count_kv": [0, 0, 2, 0],
+                    "feed_forward_length": [0, 1856, 0, 0],
+                    "ssm.group_count": 8,
+                },
+                2,
+                id = "nemotron-ffn-layers-are-not-ssm",
+            ),
+            pytest.param(
+                "jamba", {"attention.head_count_kv": [0, 8, 0, 0]}, 3, id = "mamba1-no-groups"
+            ),
+            pytest.param(
+                "falcon-h1",
+                {"attention.head_count_kv": 8, "ssm.group_count": 1},
+                4,
+                id = "parallel-every-layer",
+            ),
+            pytest.param(
+                "mamba2", {"attention.head_count": 0, "ssm.group_count": 1}, 4, id = "pure-mamba2"
+            ),
+            pytest.param("mamba", {"attention.head_count": 0}, 4, id = "pure-mamba1"),
+        ],
+    )
+    def test_recurrent_layers_follow_llama_cpp(self, arch, fields, recurrent):
+        b = _backend_from_gguf(
+            arch,
+            {"block_count": 4, "attention.head_count": 32, "embedding_length": 2048}
+            | self._SSM
+            | fields,
+        )
+        group = fields.get("ssm.group_count", 0)
+        assert b._mamba_recurrent_state_bytes() == recurrent * self._per_layer(group)
+        assert b._rollback_state_bytes(1) == b._mamba_recurrent_state_bytes()
+
+    def test_kda_and_non_ssm_headers_are_not_sized_here(self):
+        kda = _backend_from_gguf(
+            "kimi_linear",
+            {"block_count": 4, "attention.head_count_kv": [0, 0, 8, 0], "kda.head_dim": 128}
+            | self._SSM,
+        )
+        assert kda._mamba_recurrent_state_bytes() == 0
+        plain = _backend_from_gguf(
+            "granitehybrid", {"block_count": 4, "attention.head_count_kv": [0, 8, 0, 8]}
+        )
+        assert plain._mamba_recurrent_state_bytes() == 0
+
+    @pytest.mark.parametrize("key_length", [128, None], ids = ["gqa-path", "legacy-path"])
+    def test_the_estimate_charges_live_state_and_snapshots(self, key_length):
+        dims = (
+            {}
+            if key_length is None
+            else {"attention.key_length": 128, "attention.value_length": 128}
+        )
+        fields = {
+            "block_count": 4,
+            "attention.head_count": 32,
+            "embedding_length": 4096,
+            "attention.head_count_kv": [0, 0, 8, 0],
+            "ssm.group_count": 1,
+        } | dims
+        ssm = _backend_from_gguf("granitehybrid", fields | self._SSM)
+        attention_only = _backend_from_gguf("granitehybrid", fields)
+        state = 3 * self._per_layer(1)
+        kv = lambda b, **k: b._estimate_kv_cache_bytes(4096, "f16", n_parallel = 4, **k)  # noqa: E731
+        assert kv(ssm) - kv(attention_only) == 4 * state
+        assert kv(ssm, ctx_checkpoints = 5) - kv(ssm) == 4 * 5 * state
+
+
 # E. Path 3: Sliding Window Estimation
 
 
@@ -1218,6 +1316,33 @@ class TestLegacyEstimation:
         bpe = 2.0
         old_formula = int(2 * n_kv_heads * head_dim * n_layers * n_ctx * bpe)
         assert b._estimate_kv_cache_bytes(n_ctx, "f16") == old_formula
+
+    @pytest.mark.parametrize(
+        "overrides, flash_attn, k_heads, v_heads",
+        [
+            pytest.param(
+                {"_n_layers": 4, "_n_kv_heads_by_layer": [0, 0, 8, 4]},
+                True,
+                12,
+                12,
+                id = "per-layer-heads",
+            ),
+            pytest.param(
+                {"_n_layers": 4, "_n_kv_heads_by_layer": [0, 0, 8, 4]},
+                False,
+                12,
+                4 * 8,
+                id = "per-layer-heads-padded-v",
+            ),
+            pytest.param({"_n_kv_heads": None, "_n_heads": 0}, False, 0, 0, id = "pure-ssm"),
+        ],
+    )
+    def test_only_kv_bearing_layers_are_charged(self, overrides, flash_attn, k_heads, v_heads):
+        b = self._legacy_backend(**overrides)
+        kv = b._estimate_kv_cache_bytes(4096, "q8_0", flash_attn = flash_attn)
+        q8 = lc._kv_bytes_per_elem("q8_0")
+        # The FA-off retry rewrites a quantized V cache to f16.
+        assert kv == int((k_heads * q8 + v_heads * (q8 if flash_attn else 2)) * 128 * 4096)
 
 
 # H. Path Priority (selection order)

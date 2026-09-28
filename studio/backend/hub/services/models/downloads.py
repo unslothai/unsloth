@@ -119,6 +119,13 @@ def _load_in_flight(repo_id: str) -> bool:
             return True
     except Exception:
         pass
+    try:
+        from core.systemone.laya_runtime import loading_repo_ids
+        key = download_registry.normalize_repo_key(repo_id)
+        if any(download_registry.normalize_repo_key(r) == key for r in loading_repo_ids()):
+            return True
+    except Exception:
+        pass
     return _diffusion_load_in_flight(repo_id)
 
 
