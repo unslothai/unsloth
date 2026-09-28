@@ -105,7 +105,10 @@ def test_tool_splitter_turns_tool_call_markup_into_tool_calls(monkeypatch):
     assert s.feed("<tool_call>junk") == "" and s.finish(tools) == ("<tool_call>junk", [])
 
     msg = history_message(
-        {"role": "assistant", "tool_calls": [{"function": {"name": "read", "arguments": '{"a": 1}'}}]}
+        {
+            "role": "assistant",
+            "tool_calls": [{"function": {"name": "read", "arguments": '{"a": 1}'}}],
+        }
     )
     assert msg["tool_calls"][0]["function"]["arguments"] == {"a": 1} and msg["content"] == ""
 
@@ -161,13 +164,16 @@ def test_a_crashing_sidecar_fails_the_load_with_its_output(tmp_path, monkeypatch
     assert not backend.is_loaded and backend.loading_model is None
 
 
-
 def test_chat_history_joins_system_messages(monkeypatch):
     monkeypatch.setitem(sys.modules, "openvino_genai", types.ModuleType("openvino_genai"))
     from core.inference.openvino_sidecar import chat_history
 
     joined = chat_history(
-        [{"role": "system", "content": "a"}, {"role": "user", "content": "q"}, {"role": "system", "content": "b"}]
+        [
+            {"role": "system", "content": "a"},
+            {"role": "user", "content": "q"},
+            {"role": "system", "content": "b"},
+        ]
     )
     assert joined == [{"role": "system", "content": "a\n\nb"}, {"role": "user", "content": "q"}]
 
