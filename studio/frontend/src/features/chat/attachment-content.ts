@@ -1013,19 +1013,40 @@ export function decodeHtmlAttachmentBytes(
     return new TextDecoder(bom).decode(bytes);
   }
   const declared = declaredHtmlEncoding(bytes);
-  // A meta often outlives a re-save as UTF-8, so non-ASCII bytes that are valid UTF-8 win.
+  // A meta often outlives a re-save as UTF-8. Non-ASCII that is valid UTF-8 is almost never
+  // single-byte text, but a short CJK page can be valid in both, so its charset must fail too.
   // ASCII alone proves nothing: ISO-2022-JP is 7-bit.
-  const utf8 =
-    declared && declared !== "utf-8" ? strictUtf8(bytes, truncated) : null;
-  if (utf8 !== null && utf8.length !== bytes.length) {
-    return utf8;
+  if (declared && declared !== "utf-8") {
+    const utf8 = strictDecode("utf-8", bytes, truncated);
+    if (
+      utf8 !== null &&
+      utf8.length !== bytes.length &&
+      (!MULTIBYTE_HTML_ENCODINGS.has(declared) ||
+        strictDecode(declared, bytes, truncated) === null)
+    ) {
+      return utf8;
+    }
   }
   return new TextDecoder(declared ?? "utf-8").decode(bytes);
 }
 
-function strictUtf8(bytes: Uint8Array, truncated: boolean): string | null {
+const MULTIBYTE_HTML_ENCODINGS = new Set([
+  "big5",
+  "euc-jp",
+  "euc-kr",
+  "gb18030",
+  "gbk",
+  "iso-2022-jp",
+  "shift_jis",
+]);
+
+function strictDecode(
+  label: string,
+  bytes: Uint8Array,
+  truncated: boolean,
+): string | null {
   try {
-    return new TextDecoder("utf-8", { fatal: true }).decode(bytes, {
+    return new TextDecoder(label, { fatal: true }).decode(bytes, {
       stream: truncated,
     });
   } catch {

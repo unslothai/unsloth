@@ -1083,6 +1083,14 @@ test("a UTF-8 html page keeps its text when its meta names a legacy charset", as
     decodeHtmlAttachmentBytes(jis),
     '<meta charset="iso-2022-jp"><p>日本語</p>',
   );
+  const sjis = '<meta charset="Shift_JIS"><p>日本語のページです</p>';
+  assert.equal(decodeHtmlAttachmentBytes(new TextEncoder().encode(sjis)), sjis);
+  assert.equal(
+    decodeHtmlAttachmentBytes(
+      legacyPage('<meta charset="gbk"><p>', [0xd7, 0xa8, 0xd2, 0xb5]),
+    ),
+    '<meta charset="gbk"><p>专业</p>',
+  );
 });
 
 test("a UTF-16 Markdown file previews as its text in the document viewer", async () => {
