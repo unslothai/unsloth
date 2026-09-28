@@ -679,3 +679,13 @@ test("a favorite section card dates as its list row does", () => {
   const tile = items.slice(items.indexOf("export function FavoriteSectionTile("));
   assert.match(tile.slice(0, 800), /time=\{sectionTime\(section, stats, "modified"\)\}/);
 });
+
+test("a favorite project dates from its own last edit, as the Projects view does", () => {
+  const items = readSrc("features/library/chats/chats-items.tsx");
+  assert.doesNotMatch(items, /stats\?\.lastActive \?\? project\.updatedAt/);
+});
+
+test("a date sort on Sections also picks the date the rows show", () => {
+  const library = readSrc("features/library/chats/chats-library.tsx");
+  assert.match(library, /sectionSort: \{ key, desc \}, \.\.\.\(isDateField\(key\) \? \{ dateField: key \} : \{\}\)/);
+});

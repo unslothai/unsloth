@@ -1393,7 +1393,9 @@ export function ChatsLibrary({
         options={SECTION_SORTS}
         value={prefs.sectionSort.key}
         desc={prefs.sectionSort.desc}
-        onChange={(key, desc) => prefs.set({ sectionSort: { key, desc } })}
+        onChange={(key, desc) =>
+          prefs.set({ sectionSort: { key, desc }, ...(isDateField(key) ? { dateField: key } : {}) })
+        }
       />
     ) : section === "projects" ? (
       <SortMenu

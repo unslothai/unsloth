@@ -1505,7 +1505,7 @@ export function ProjectRow({
         </span>
       )}
       {layout === "files" ? (
-        <FileColumns modified={stats?.lastActive ?? project.updatedAt} />
+        <FileColumns modified={projectTime(project, stats, "modified")} />
       ) : (
         <>
           <span className={cn(CONTENTS_COLUMN, CELL)}>
@@ -1850,7 +1850,7 @@ export function FavoriteProjectTile({
           className={FILE_CARD_ICON_CLASS}
         />
       }
-      time={stats?.lastActive ?? project.updatedAt}
+      time={projectTime(project, stats, "modified")}
       onOpen={() => actions.viewProject(project.id)}
       menu={<ProjectMenu project={project} variant="card" />}
     />
