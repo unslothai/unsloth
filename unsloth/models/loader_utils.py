@@ -1563,9 +1563,34 @@ class _UnslothNVFP4Linear(torch.nn.Linear):
 
         packed = self.weight_packed
         packed.quant_state = NVFP4QuantState(
-            self.weight_scale, self.weight_global_scale, (packed.shape[0], packed.shape[1] * 2)
+            self.weight_scale,
+            self.weight_global_scale,
+            (packed.shape[0], packed.shape[1] * 2),
+            getattr(self, "_unsloth_nvfp4_dtype", torch.bfloat16),
         )
         return packed
+
+    def _apply(
+        self,
+        fn,
+        recurse = True,
+    ):
+        # model.to(dtype) / .half() may move the packed weight and its scales but never cast them: an fp16 global
+        # scale overflows past 65504 and dequantizes the layer to zeros.
+        quant = {}
+        for name in ("weight_packed", "weight_scale", "weight_global_scale", "input_global_scale"):
+            param = self._parameters.get(name)
+            if param is not None:
+                quant[name] = self._parameters.pop(name)
+        try:
+            super()._apply(fn, recurse)
+        finally:
+            for name, param in quant.items():
+                device = fn(param.data[:0]).device
+                if param.device != device:
+                    param = torch.nn.Parameter(param.data.to(device), requires_grad = False)
+                self._parameters[name] = param
+        return self
 
 
 def _route_compressed_tensors_nvfp4_to_unsloth(model):
@@ -1596,8 +1621,12 @@ def _route_compressed_tensors_nvfp4_to_unsloth(model):
             "Unsloth: this compressed-tensors has no per-module decompress; decompressing the NVFP4 layers too."
         )
         return 0
+    compute_dtype = _fp8_dequant_target_dtype(model)
+    # The FP8 kernels dequantize to bf16, so an fp16 model keeps its FP8 layers decompressed by default.
     fp8_routed = (
-        _route_compressed_tensors_fp8_to_unsloth(model, skip = set(nvfp4), default = "1")
+        _route_compressed_tensors_fp8_to_unsloth(
+            model, skip = set(nvfp4), default = "1" if compute_dtype == torch.bfloat16 else "0"
+        )
         if others
         else 0
     )
@@ -1616,6 +1645,7 @@ def _route_compressed_tensors_nvfp4_to_unsloth(model):
             if isinstance(param, torch.Tensor):
                 param.requires_grad_(False)
         module.__class__ = _UnslothNVFP4Linear
+        module._unsloth_nvfp4_dtype = compute_dtype
         module.forward = _unsloth_compressed_tensors_nvfp4_forward.__get__(module)
         module._unsloth_compressed_tensors_nvfp4 = True
     _remove_compressed_tensors_decompress_hook(model)

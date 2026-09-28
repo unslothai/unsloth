@@ -82,8 +82,11 @@ def _nvfp4_dequant_kernel(
     BLOCK_R: tl.constexpr,
     BLOCK_C: tl.constexpr,
     SCALE_E4M3_BYTES: tl.constexpr,
+    INT64_OFFSETS: tl.constexpr,
 ):
     r = tl.program_id(0) * BLOCK_R + tl.arange(0, BLOCK_R)
+    if INT64_OFFSETS:
+        r = r.to(tl.int64)
     c = tl.program_id(1) * BLOCK_C + tl.arange(0, BLOCK_C)
     g = tl.program_id(1) * (BLOCK_C // 8) + tl.arange(0, BLOCK_C // 8)
     row_ok = r[:, None] < rows
@@ -139,6 +142,8 @@ def _nvfp4_dequantize_triton(
             BLOCK_R = BLOCK_R,
             BLOCK_C = BLOCK_C,
             SCALE_E4M3_BYTES = e4m3,
+            # int32 offsets wrap once the output passes 2^31 elements; int64 only then, as it costs ~2%.
+            INT64_OFFSETS = rows * half * 2 >= 2**31,
             num_warps = 4,
         )
     return out

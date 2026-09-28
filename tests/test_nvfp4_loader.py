@@ -112,6 +112,25 @@ def test_nvfp4_layers_stay_packed_and_run_w4a16(ckpt, arch, monkeypatch):
             assert torch.equal(module(x), torch.nn.functional.linear(x, W))
 
 
+def test_dtype_casts_keep_the_nvfp4_storage_dtypes(ckpt, monkeypatch):
+    # model.to(fp16) must not cast the scales: an fp16 global scale overflows past 65504 and zeroes the layer.
+    from unsloth.models import loader_utils
+
+    monkeypatch.setenv("UNSLOTH_COMPRESSED_TENSORS_FP8_KERNELS", "0")
+    path, kinds = ckpt["qwen3"]
+    model = _load_raw(path, "qwen3")
+    loader_utils._prepare_compressed_tensors_model(model)
+    module = _module(model, next(n for n, k in kinds.items() if k == "nvfp4"))
+    dtypes = {n: p.dtype for n, p in module.named_parameters()}
+    x = torch.randn(3, module.in_features, device = "cuda", dtype = torch.float16)
+    with torch.no_grad():
+        module.weight_global_scale.fill_(1e5)
+        want = module(x)
+        model.to(torch.float16)
+        assert {n: p.dtype for n, p in module.named_parameters()} == dtypes
+        assert torch.equal(module(x), want) and want.abs().max() > 0
+
+
 def test_opt_out_keeps_the_full_decompress(ckpt, monkeypatch):
     from unsloth.models import loader_utils
 
@@ -169,6 +188,23 @@ def test_fp8_group_routes_with_the_fp8_kernels_by_default(ckpt, monkeypatch):
     ],
 )
 def test_lora_trains_on_the_packed_base_and_reloads(ckpt, arch, api, fp8_kernels, tmp_path):
+    _check_lora_case(ckpt, arch, api, fp8_kernels, tmp_path)
+
+
+@pytest.mark.parametrize("api", ["FastLanguageModel", "FastModel"])
+def test_lora_trains_in_float16(ckpt, api, tmp_path):
+    # T4 / V100 load in fp16: the NVFP4 quant state must dequantize to fp16, and the bf16-only FP8 kernels stay off.
+    _check_lora_case(ckpt, "qwen3", api, None, tmp_path, dtype = "float16")
+
+
+def _check_lora_case(
+    ckpt,
+    arch,
+    api,
+    fp8_kernels,
+    tmp_path,
+    dtype = "bfloat16",
+):
     import json
     import subprocess
 
@@ -184,8 +220,12 @@ def test_lora_trains_on_the_packed_base_and_reloads(ckpt, arch, api, fp8_kernels
         PYTHONPATH = root + os.pathsep + os.environ.get("PYTHONPATH", ""),
         UNSLOTH_COMPILE_LOCATION = str(tmp_path / "compiled"),
         UNSLOTH_IS_PRESENT = "1",
-        UNSLOTH_COMPRESSED_TENSORS_FP8_KERNELS = "1" if fp8_kernels else "0",
+        NVFP4_CASE_DTYPE = dtype,
     )
+    if fp8_kernels is not None:
+        env["UNSLOTH_COMPRESSED_TENSORS_FP8_KERNELS"] = "1" if fp8_kernels else "0"
+    else:
+        env.pop("UNSLOTH_COMPRESSED_TENSORS_FP8_KERNELS", None)
     run = subprocess.run(
         [
             sys.executable,

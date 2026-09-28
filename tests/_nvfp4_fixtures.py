@@ -264,6 +264,7 @@ def build(
 
 def run_lora_case(path, arch, api, out_dir):
     """Load with Fast{LanguageModel,Model}, LoRA, 5 steps, save, reload; returns a JSON-able report. Run in a fresh process."""
+    dtype = getattr(torch, os.environ.get("NVFP4_CASE_DTYPE", "bfloat16"))
     os.environ.setdefault("UNSLOTH_IS_PRESENT", "1")
     import unsloth
     import unsloth.kernels.nvfp4 as nv
@@ -281,9 +282,7 @@ def run_lora_case(path, arch, api, out_dir):
 
     nv.nvfp4_linear = recording
     Fast = getattr(unsloth, api)
-    model, _ = Fast.from_pretrained(
-        path, max_seq_length = 64, load_in_4bit = False, dtype = torch.bfloat16
-    )
+    model, _ = Fast.from_pretrained(path, max_seq_length = 64, load_in_4bit = False, dtype = dtype)
     model = Fast.get_peft_model(
         model,
         r = 8,
@@ -332,9 +331,7 @@ def run_lora_case(path, arch, api, out_dir):
 
     want = settled(model)
     model.save_pretrained(os.path.join(out_dir, "lora"))
-    fresh, _ = Fast.from_pretrained(
-        path, max_seq_length = 64, load_in_4bit = False, dtype = torch.bfloat16
-    )
+    fresh, _ = Fast.from_pretrained(path, max_seq_length = 64, load_in_4bit = False, dtype = dtype)
     fresh = PeftModel.from_pretrained(fresh, os.path.join(out_dir, "lora"))
     fresh.eval()
     got = settled(fresh)

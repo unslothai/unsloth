@@ -186,3 +186,18 @@ def test_fullgraph_compile_has_no_breaks_and_matches_eager(N):
     compiled(X).backward()
     assert X.grad.abs().sum() > 0
     torch.testing.assert_close(X.grad, eager)
+
+
+@needs_cuda
+def test_outputs_past_2_31_elements_use_64_bit_offsets(N):
+    # 131080 x 16384 outputs: int32 offsets of the last rows wrap negative.
+    rows, cols = 2**17 + 8, 16384
+    if torch.cuda.mem_get_info()[0] < 8 * 2**30:
+        pytest.skip("needs 8 GB free")
+    packed = torch.randint(0, 256, (rows, cols // 2), dtype = torch.uint8, device = "cuda")
+    scale = (torch.rand(rows, cols // 16, device = "cuda") + 0.5).to(torch.float8_e4m3fn)
+    gs = torch.tensor([2.0], device = "cuda")
+    W = N.nvfp4_dequantize(packed, scale, gs, torch.bfloat16)
+    tail = slice(rows - 16, rows)
+    want = N._nvfp4_dequantize_torch(packed[tail], scale[tail], gs, torch.bfloat16)
+    assert torch.equal(W[tail], want)
