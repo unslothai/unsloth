@@ -191,7 +191,9 @@ class _FakeServer:
         native_speed = None,
         threads = None,
         extra_args = None,
+        env = None,
     ):
+        self.env = env
         self.started = dict(
             files = files,
             vae_format = vae_format,
