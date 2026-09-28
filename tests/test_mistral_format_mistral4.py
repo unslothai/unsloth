@@ -317,7 +317,10 @@ def test_large3_params_translate_to_mistral4():
         lambda p: p["quantization_config"]["config_groups"]["FP8_BLOCK"]["weights"].update(
             num_bits = 4
         ),
-        lambda p: p["yarn"].update(apply_scale = True),  # vLLM scales attention differently
+        lambda p: p["yarn"].update(apply_scale = True),
+        lambda p: p["quantization_config"]["config_groups"]["FP8_BLOCK"].update(
+            targets = ["re:.*experts.*"]
+        ),  # vLLM scales attention differently
     ],
 )
 def test_unsupported_params_decline(edit):

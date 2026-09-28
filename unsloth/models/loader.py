@@ -1077,11 +1077,10 @@ class FastLanguageModel(FastLlamaModel):
             # Report the loader decision before fetching this repo, including adapter bases.
             if on_model_resolved is not None:
                 on_model_resolved(model_name)
-            if _adapter_base_is_mistral_format(model_name, token, base_revision, local_files_only):
+            # No revision: the caller's ref names the adapter repo, and the base loads unpinned below.
+            if _adapter_base_is_mistral_format(model_name, token, None, local_files_only):
                 model_name = (
-                    prepare_mistral_format_checkpoint(
-                        model_name, token, base_revision, local_files_only
-                    )
+                    prepare_mistral_format_checkpoint(model_name, token, None, local_files_only)
                     or model_name
                 )
             # '-bf16' hub repos load bf16; a local dir keeps the requested quant unless 16bit is set. Say so: dropping the flags silently resurfaces as an OOM that never mentions quantization.
@@ -2047,11 +2046,10 @@ class FastModel(FastBaseModel):
             # Report the loader decision before fetching this repo, including adapter bases.
             if on_model_resolved is not None:
                 on_model_resolved(model_name)
-            if _adapter_base_is_mistral_format(model_name, token, base_revision, local_files_only):
+            # No revision: the caller's ref names the adapter repo, and the base loads unpinned below.
+            if _adapter_base_is_mistral_format(model_name, token, None, local_files_only):
                 model_name = (
-                    prepare_mistral_format_checkpoint(
-                        model_name, token, base_revision, local_files_only
-                    )
+                    prepare_mistral_format_checkpoint(model_name, token, None, local_files_only)
                     or model_name
                 )
             # '-bf16' hub repos load bf16; a local dir keeps the requested quant unless 16bit is set. Say so: dropping the flags silently resurfaces as an OOM that never mentions quantization.

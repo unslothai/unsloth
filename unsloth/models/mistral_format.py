@@ -88,6 +88,9 @@ def _fp8_block_quantization(quant) -> Optional[dict]:
             return None
         if group.get("output_activations") is not None:
             return None
+        # Fine-grained FP8 has no targets: a narrower group would claim unscaled bf16 Linears.
+        if [str(t) for t in group.get("targets") or ["Linear"]] != ["Linear"]:
+            return None
         this_block = list(weights["block_structure"])
         if block is not None and this_block != block:
             return None
