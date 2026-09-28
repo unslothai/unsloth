@@ -501,6 +501,8 @@ def test_a_full_save_of_the_packed_route_reloads(tmp_path, monkeypatch):
     ).merge_and_unload()
     merged.save_pretrained(str(tmp_path / "merged"))
     tokenizer.save_pretrained(str(tmp_path / "merged"))
+    # A permanent merge must not keep the packed weights stashed for an unmerge that can never come.
+    assert not any("_unsloth_int4_packed_state" in m.__dict__ for m in merged.modules())
     ignore = json.load(open(f"{tmp_path}/merged/config.json"))["quantization_config"]["ignore"]
     assert (
         "model.layers.0.self_attn.q_proj" in ignore
@@ -513,3 +515,17 @@ def test_a_full_save_of_the_packed_route_reloads(tmp_path, monkeypatch):
         )
         got = plain(input_ids = ids).logits.float()
     assert (got - want).abs().max() < 1e-2 * want.abs().max()
+
+
+@needs_gpu
+@needs_ct
+@pytest.mark.parametrize("grad", [True, False])
+@pytest.mark.parametrize("lead", [(0,), (2, 0)])
+def test_an_empty_batch_returns_an_empty_output(grad, lead):
+    from unsloth.kernels.int4_packed import Int4QuantState, int4_matmul
+
+    packed, _, gs = _packed_layer(200, 512, 4, 128, True, False, torch.bfloat16)
+    qs = Int4QuantState(packed["weight_scale"], None, None, (200, 512), 4, gs, torch.bfloat16)
+    x = torch.randn(*lead, 512, device = "cuda", dtype = torch.bfloat16)
+    with torch.set_grad_enabled(grad):
+        assert int4_matmul(x, packed["weight_packed"], qs).shape == (*lead, 200)
