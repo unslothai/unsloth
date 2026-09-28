@@ -34,8 +34,8 @@ import {
   startWatching,
 } from "./new-traffic";
 import { useApiMonitorOverlayStore } from "./overlay-store";
-import { computeStats } from "./use-api-monitor";
 import { isFullyCovered, placeFloatingPanel } from "./panel-placement";
+import { computeStats } from "./use-api-monitor";
 
 // Live cadence while the panel is on screen.
 const OPEN_POLL_MS = 1500;
@@ -220,7 +220,7 @@ export function ApiMonitorOverlay(): ReactElement | null {
   const visible = isOpen && !onFullPage;
   const [panelKey, setPanelKey] = useState(0);
   const wasVisibleRef = useRef(visible);
-  // Reopening during exit gets fresh native size state and its own publisher.
+  // Remount on reopen: fresh native size and frame owner.
   useEffect(() => {
     if (wasVisibleRef.current && !visible) {
       setPanelKey((current) => current + 1);
@@ -307,7 +307,6 @@ function ApiMonitorPanel({
     <div
       ref={setConstraintsElement}
       className="pointer-events-none fixed"
-      // Use the same bounds during dragging, resizing, and release.
       style={{ zIndex, left: 16, right: 16, top: 64, bottom: 16 }}
     >
       <motion.div
