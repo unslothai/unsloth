@@ -28,9 +28,10 @@ dependencies = [
     "unsloth_zoo>=2026.9.7",
     "wheel>=0.42.0",
     "packaging",
-    # Ceiling tracks the newest torch an extra pins: the cu126/cu130-torch212x leaves
-    # ask for 2.12.x, which a <2.12.0 base made unresolvable against itself.
-    "torch>=2.4.0,<2.13.0",
+    # Ceiling tracks the newest torch an extra pins: the cu126/cu130-torch2140 leaves ask
+    # for 2.14.0, and Studio installs torch 2.13 on the cu130 route, which a <2.13.0 base
+    # would downgrade on the next `unsloth studio update`.
+    "torch>=2.4.0,<2.15.0",
     "torchvision",
     "numpy",
     "tqdm",
