@@ -617,6 +617,7 @@ def test_torchao_export_loadable_needs_transformers_minimum(
         "find_spec",
         classmethod(lambda cls, name, *a, **k: specs.get(name)),
     )
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name, *a, **k: specs.get(name))
     monkeypatch.setattr(importlib.metadata, "version", lambda name: installed)
     assert _stub.torchao_export_loadable() is expect
 
@@ -624,6 +625,7 @@ def test_torchao_export_loadable_needs_transformers_minimum(
 @pytest.mark.parametrize(("fix_result", "expect_real"), [(True, True), (False, False)])
 def test_real_or_stub(monkeypatch, fix_result, expect_real):
     monkeypatch.setattr(_stub, "_is_windows_rocm", lambda: True)
+    monkeypatch.setattr(_stub, "torchao_export_loadable", lambda: True)
     monkeypatch.delitem(sys.modules, "torchao", raising = False)
     calls = []
 
@@ -652,6 +654,7 @@ def test_real_or_stub(monkeypatch, fix_result, expect_real):
 def test_real_or_stub_replaces_a_stub_inherited_from_run_py(monkeypatch, consumer_loaded):
     """spawn re-runs run.py as __mp_main__, which stubs torchao before the export worker starts."""
     monkeypatch.setattr(_stub, "_is_windows_rocm", lambda: True)
+    monkeypatch.setattr(_stub, "torchao_export_loadable", lambda: True)
     # Simulated "already imported" consumer: json is always loaded; none of the real ones is required.
     monkeypatch.setattr(_stub, "_STUB_CONSUMERS", ("json",) if consumer_loaded else ())
     saved = {n: m for n, m in sys.modules.items() if n == "torchao" or n.startswith("torchao.")}
@@ -684,6 +687,52 @@ def test_real_or_stub_replaces_a_stub_inherited_from_run_py(monkeypatch, consume
         sys.modules.update(saved)
 
 
+def test_real_or_stub_keeps_the_stub_when_torchao_is_not_loadable(monkeypatch):
+    """torch <= 2.9 pairs with torchao 0.14, which transformers 5 rejects: never load it."""
+    monkeypatch.setattr(_stub, "_is_windows_rocm", lambda: True)
+    monkeypatch.setattr(_stub, "torchao_export_loadable", lambda: False)
+    monkeypatch.delitem(sys.modules, "torchao", raising = False)
+    monkeypatch.setattr(
+        _stub, "_load_torchao_nodist", lambda: pytest.fail("must not load the shim")
+    )
+    stubbed = []
+    monkeypatch.setattr(_stub, "install_torchao_windows_rocm_stub", lambda: stubbed.append(1))
+    assert _stub.install_torchao_windows_rocm_real_or_stub() is False
+    assert stubbed == [1]
+
+
+def test_shim_found_through_an_editable_finder(monkeypatch, tmp_path):
+    """setuptools editable installs can expose unsloth only through a meta-path finder."""
+    (tmp_path / "unsloth").mkdir()
+    (tmp_path / "unsloth" / "_torchao_nodist.py").write_text(
+        "def fix_torchao_without_torch_distributed():\n    return 'ok'\n"
+    )
+
+    class EditableFinder:
+        def find_spec(
+            self,
+            name,
+            path = None,
+            target = None,
+        ):
+            if name != "unsloth":
+                return None
+            spec = importlib.machinery.ModuleSpec("unsloth", None, is_package = True)
+            spec.submodule_search_locations = [str(tmp_path / "unsloth")]
+            return spec
+
+    monkeypatch.delitem(sys.modules, "unsloth", raising = False)
+    real = importlib.machinery.PathFinder.find_spec
+    monkeypatch.setattr(
+        importlib.machinery.PathFinder,
+        "find_spec",
+        classmethod(lambda cls, name, *a, **k: None if name == "unsloth" else real(name, *a, **k)),
+    )
+    monkeypatch.setattr(sys, "meta_path", [EditableFinder(), *sys.meta_path])
+    module = _stub._load_torchao_nodist()
+    assert module is not None and module.fix_torchao_without_torch_distributed() == "ok"
+
+
 def test_real_or_stub_noop_off_windows_rocm(monkeypatch):
     monkeypatch.setattr(_stub, "_is_windows_rocm", lambda: False)
     monkeypatch.setattr(
@@ -694,7 +743,7 @@ def test_real_or_stub_noop_off_windows_rocm(monkeypatch):
 
 def test_load_torchao_nodist_reads_unsloths_file():
     module = _stub._load_torchao_nodist()
-    if importlib.machinery.PathFinder.find_spec("unsloth") is None:
+    if importlib.util.find_spec("unsloth") is None:
         assert module is None
     else:
         assert callable(module.fix_torchao_without_torch_distributed)

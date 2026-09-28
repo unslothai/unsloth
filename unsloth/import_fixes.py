@@ -333,7 +333,11 @@ def fix_xformers_performance_issue():
     spec = importlib.util.find_spec("xformers")
     if spec is None:
         return
-    xformers_version = importlib_version("xformers")
+    try:
+        xformers_version = importlib_version("xformers")
+    except Exception:
+        # Studio's Windows ROCm xformers stub: in sys.modules, not installed.
+        return
     if Version(xformers_version) < Version("0.0.29"):
         xformers_location = spec.origin
         if xformers_location is None:

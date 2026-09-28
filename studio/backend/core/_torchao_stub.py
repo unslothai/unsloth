@@ -232,7 +232,7 @@ def _load_torchao_nodist():
     """unsloth/_torchao_nodist.py, loaded by path: importing unsloth here would start its GPU
     stack before the worker is ready. None on an unsloth that predates it."""
     try:
-        spec = importlib.machinery.PathFinder.find_spec("unsloth")
+        spec = importlib.util.find_spec("unsloth")
         locations = list(spec.submodule_search_locations or ()) if spec else []
         path = os.path.join(locations[0], "_torchao_nodist.py") if locations else None
         if not path or not os.path.isfile(path):
@@ -261,7 +261,7 @@ def torchao_export_loadable() -> bool:
         found = re.match(r"(\d+)\.(\d+)", importlib.metadata.version("torchao"))
         if not found or (int(found[1]), int(found[2])) < _TORCHAO_EXPORT_MIN:
             return False
-        spec = importlib.machinery.PathFinder.find_spec("unsloth")
+        spec = importlib.util.find_spec("unsloth")
         locations = list(spec.submodule_search_locations or ()) if spec else []
         return bool(locations) and os.path.isfile(os.path.join(locations[0], "_torchao_nodist.py"))
     except Exception:
@@ -282,7 +282,7 @@ def install_torchao_windows_rocm_real_or_stub() -> bool:
         for name in [n for n in sys.modules if n == "torchao" or n.startswith("torchao.")]:
             if getattr(sys.modules[name], "_unsloth_stub", None) is _STUB_SENTINEL:
                 del sys.modules[name]
-    if "torchao" not in sys.modules:
+    if "torchao" not in sys.modules and torchao_export_loadable():
         module = _load_torchao_nodist()
         try:
             if module is not None and module.fix_torchao_without_torch_distributed():
