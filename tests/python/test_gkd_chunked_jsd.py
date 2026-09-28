@@ -564,3 +564,15 @@ def test_dense_fallback_colocates_with_the_labels():
     got = rl._unsloth_gkd_chunked_loss(trainer, student, inputs, None, layout)
     assert got.device == inputs["labels"].device
     torch.testing.assert_close(got, want, rtol = 1e-6, atol = 1e-9)
+
+
+def test_prediction_head_before_the_decoder_falls_back():
+    """ModernBERT-decoder / RoBERTa-style: logits = decoder(lm_head(hidden)), so hidden states alone miss lm_head."""
+    model = _TinyLM(97, 16, 0.0, 1)
+    decoder = model.lm_head
+    model.lm_head = torch.nn.Sequential(
+        torch.nn.Linear(16, 16, dtype = torch.float64), torch.nn.GELU()
+    )
+    model.decoder = decoder
+    model.get_output_embeddings = lambda: model.decoder
+    assert rl._unsloth_gkd_dense_head(model) is None

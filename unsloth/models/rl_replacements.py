@@ -3887,6 +3887,10 @@ def _unsloth_gkd_dense_head(model):
         return None
     if type(head) is not torch.nn.Linear:
         return None
+    # An lm_head that is not the output embeddings runs before them (ModernBERT decoder, RoBERTa-style heads).
+    lm_head = getattr(model, "lm_head", None)
+    if isinstance(lm_head, torch.nn.Module) and lm_head is not head:
+        return None
     weight = getattr(head, "weight", None)
     if not isinstance(weight, torch.Tensor) or weight.dim() != 2 or weight.numel() == 0:
         return None
