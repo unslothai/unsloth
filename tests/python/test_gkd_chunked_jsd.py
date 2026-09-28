@@ -472,3 +472,10 @@ def test_batch_encoding_inputs_take_the_chunked_path():
     )
     assert got is not None
     torch.testing.assert_close(got, want)
+
+
+def test_dense_fallback_projects_on_the_head_device():
+    """A dispatched model can leave its final hidden states on another device than a tied lm_head."""
+    head = torch.nn.Linear(4, 5).to("meta")
+    logits = rl._unsloth_gkd_project(torch.randn(2, 3, 4), head, 0.5, 30.0)
+    assert logits.device == head.weight.device and logits.shape == (2, 3, 5)

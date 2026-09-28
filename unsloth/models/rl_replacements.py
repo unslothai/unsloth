@@ -3921,7 +3921,8 @@ def _unsloth_gkd_logit_transforms(model):
 
 def _unsloth_gkd_project(hidden_states, head, scale, softcap):
     """Full logits from hidden states, for the rare call where only one of the two forwards honoured the flag."""
-    logits = torch.nn.functional.linear(hidden_states.to(head.weight.dtype), head.weight, head.bias)
+    hidden_states = hidden_states.to(device = head.weight.device, dtype = head.weight.dtype)
+    logits = torch.nn.functional.linear(hidden_states, head.weight, head.bias)
     if scale != 1.0:
         logits = logits * scale
     if softcap:
