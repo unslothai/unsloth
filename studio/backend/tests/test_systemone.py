@@ -1754,3 +1754,63 @@ def test_rocm_never_builds_cuda_graphs(tmp_path, monkeypatch):
     batch = dict(zip(laya_runtime._INPUTS, _tiny_decision_batch(torch, rows = 3, tokens = 40)))
     laya_runtime._run_model(agent, batch)
     assert "_unsloth_graphs" not in agent.__dict__
+
+
+def _fake_mlx(monkeypatch, **zoo):
+    mx = SimpleNamespace(float16 = "float16", float32 = "float32")
+    monkeypatch.setitem(sys.modules, "mlx", SimpleNamespace(core = mx))
+    monkeypatch.setitem(sys.modules, "mlx.core", mx)
+    monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx.decision", SimpleNamespace(**zoo))
+
+
+def test_mlx_runs_fp16_checkpoints_in_fp16(monkeypatch, tmp_path):
+    import transformers
+
+    _fake_mlx(
+        monkeypatch, load_decision_model = lambda folder, compute_dtype = "float32": compute_dtype
+    )
+    fake_laya = SimpleNamespace(
+        common = SimpleNamespace(clamp_temperature = float),
+        agent = SimpleNamespace(Agent = SimpleNamespace(_to_internal = None)),
+    )
+    monkeypatch.setitem(sys.modules, "laya", fake_laya)
+    monkeypatch.setattr(transformers.AutoTokenizer, "from_pretrained", lambda path: None)
+    (tmp_path / "rl_agent_config.json").write_text("{}")
+    assert laya_runtime._MLXAgent(tmp_path, True).model == "float16"
+    assert laya_runtime._MLXAgent(tmp_path, False).model == "float32"
+    monkeypatch.setenv("UNSLOTH_SYSTEMONE_FP32", "1")
+    assert laya_runtime._MLXAgent(tmp_path, True).model == "float32"
+    monkeypatch.delenv("UNSLOTH_SYSTEMONE_FP32")
+    # An unsloth-zoo whose loader predates compute_dtype.
+    _fake_mlx(monkeypatch, load_decision_model = lambda folder, dtype = "float32": dtype)
+    old = laya_runtime._MLXAgent(tmp_path, True)
+    assert old.dtype == old.model == "float32"
+
+    monkeypatch.setattr(laya_runtime, "_checkpoint_dir", lambda checkpoint: tmp_path)
+    monkeypatch.setattr(laya_runtime, "_device", lambda: "mlx")
+    monkeypatch.setattr(laya_runtime, "_MLXAgent", lambda folder, fp16: fp16)
+    assert _REAL_LOAD(catalog.CHECKPOINTS["laya-english"]) == (True, "mlx")
+
+
+def test_mlx_fp16_overflow_reruns_in_fp32(monkeypatch, gpu_agent):
+    import numpy as np
+
+    _fake_mlx(monkeypatch)
+
+    class Model:
+        dtype = "float16"
+
+        def set_dtype(self, dtype):
+            self.dtype = dtype
+
+        def logits(self, batch):
+            return np.array([[np.inf if self.dtype == "float16" else 1.0, 0.5]])
+
+    agent = SimpleNamespace(device = "mlx", dtype = "float16", model = Model(), tok = gpu_agent.tok)
+    logits, _ = laya_runtime._forward(agent, _items())
+    assert logits.tolist() == [[1.0, 0.5]] and agent.dtype == agent.model.dtype == "float32"
+    # An fp32 agent has nothing wider to retry in: its non-finite logits come back without a set_dtype call.
+    agent.model.dtype = "float16"  # only makes the fake emit inf
+    agent.model.set_dtype = None
+    logits, _ = laya_runtime._forward(agent, _items())
+    assert np.isinf(logits[0, 0])

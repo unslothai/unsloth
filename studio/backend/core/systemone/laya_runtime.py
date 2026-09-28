@@ -259,9 +259,15 @@ class _MLXAgent:
 
     device = "mlx"
 
-    def __init__(self, folder: Path):
+    def __init__(
+        self,
+        folder: Path,
+        fp16_checkpoint: bool = False,
+    ):
+        import inspect
         import json
 
+        import mlx.core as mx
         from transformers import AutoTokenizer
         from unsloth_zoo.mlx.decision import load_decision_model
 
@@ -277,7 +283,11 @@ class _MLXAgent:
             k: clamp_temperature(v) for k, v in self.cfg.get("temperature_by_options", {}).items()
         }
         self._to_internal = laya.agent.Agent._to_internal
-        self.model = load_decision_model(folder)
+        # As _precision does for fp16 checkpoints on CUDA: exact fp16 weights, fp16 matmuls, fp32 norms.
+        # An unsloth-zoo without compute_dtype casts the whole model instead, so it stays fp32.
+        mixed = "compute_dtype" in inspect.signature(load_decision_model).parameters
+        self.dtype = mx.float16 if fp16_checkpoint and mixed and not _fp32_forced() else mx.float32
+        self.model = load_decision_model(folder, **({"compute_dtype": self.dtype} if mixed else {}))
 
 
 def _load_checkpoint(checkpoint: Checkpoint):
@@ -288,14 +298,14 @@ def _load_checkpoint(checkpoint: Checkpoint):
     _evict()
     device = _device()
     folder = root / checkpoint.subfolder if checkpoint.subfolder else root
+    fp16_checkpoint = checkpoint.name in CHECKPOINTS or _stored_fp16(folder)
     if device == "mlx":
-        return _MLXAgent(folder), device
+        return _MLXAgent(folder, fp16_checkpoint), device
     if device not in ("cuda", "cpu"):
         return _load_laya(str(root), subfolder = checkpoint.subfolder, device = device), device
     import torch
 
     # Built on CPU and cast before the move, so the device never holds laya's fp32 copy.
-    fp16_checkpoint = checkpoint.name in CHECKPOINTS or _stored_fp16(folder)
     weights, _ = _precision(torch.device(device), fp16_checkpoint)
     agent = _load_laya(
         str(root), subfolder = checkpoint.subfolder, device = "cpu", embedding_dtype = weights
@@ -410,18 +420,22 @@ def _stored_fp16(folder: Path) -> bool:
     return bool(sizes) and max(sizes, key = sizes.get) == "F16"
 
 
+def _fp32_forced() -> bool:
+    import os
+    return os.environ.get("UNSLOTH_SYSTEMONE_FP32", "") == "1"
+
+
 def _precision(device, fp16_checkpoint: bool):
     """(weight dtype, compute dtype) for ``device``; ``(None, None)`` keeps laya's fp32 weights and compute.
 
     An fp16 checkpoint held in fp16 is exact (fp16 -> fp32 is lossless), and fp16 compute tracked fp32 about
     10x closer than bf16 on both GPU and CPU. Anything else follows the device: bf16 where it is native, else fp16.
     """
-    import os
     import platform
 
     import torch
 
-    if os.environ.get("UNSLOTH_SYSTEMONE_FP32", "") == "1":
+    if _fp32_forced():
         return None, None
     if device.type == "cuda":
         if fp16_checkpoint:
@@ -698,12 +712,21 @@ def _predict(agent, state, questions: dict[str, dict[str, Any]]) -> tuple[dict[s
 
 def _forward(agent, items: list[dict[str, Any]]):
     global _agent, _loaded, _device_name
+    import numpy as np
     import torch
 
     batch = _collate(items, agent.tok.pad_token_id)
     if agent.device == "mlx":
         try:
-            return agent.model.logits(batch), int(batch["attention_mask"].sum())
+            logits = agent.model.logits(batch)
+            if not np.isfinite(logits).all():
+                import mlx.core as mx
+                if agent.dtype != mx.float32:
+                    logger.warning("Laya overflowed in float16; continuing in float32")
+                    agent.model.set_dtype(mx.float32)
+                    agent.dtype = mx.float32
+                    logits = agent.model.logits(batch)
+            return logits, int(batch["attention_mask"].sum())
         except RuntimeError as exc:
             # MLX reports exhausted memory as "[malloc] Unable to allocate ..." or "Insufficient Memory".
             reason = str(exc).lower()
