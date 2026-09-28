@@ -203,9 +203,8 @@ def _can_reset_epoch(
     try:
         from state.tool_policy import conversation_recall_allowed
 
-        # `supports_tools` is the TEMPLATE's capability, not "will this request be given
-        # the tool". Where recall is refused, resetting would strand the epoch behind a tool
-        # that never arrives; rolling re-injects the inline recall and needs no tool.
+        # `supports_tools` is the TEMPLATE's capability; where recall is refused a reset would
+        # strand the epoch behind a tool that never arrives, and rolling needs no tool.
         if not conversation_recall_allowed():
             return False
     except Exception:  # noqa: BLE001 -- an unreadable policy is "no", never an error

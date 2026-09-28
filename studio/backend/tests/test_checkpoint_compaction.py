@@ -538,8 +538,7 @@ def test_a_restated_instruction_does_not_crowd_out_every_other_rule():
 
 
 def test_a_process_with_tools_disabled_still_resets(monkeypatch):
-    """`--disable-tools` still admits search_conversation, so compaction keeps resetting; a
-    per-context hard-off refuses recall, so resetting there would strand the epoch."""
+    """`--disable-tools` keeps checkpoint resets; a per-context hard-off still refuses them."""
     from core.inference import llama_cpp
     from state.tool_policy import tools_force_disabled
 
@@ -592,7 +591,6 @@ def test_disable_tools_reopens_the_loop_for_recall_only(monkeypatch):
     )
     assert [tool["function"]["name"] for tool in tools] == ["search_conversation"]
 
-    # Without the CLI veto an armed research run is still offered, as before.
     monkeypatch.setattr("state.tool_policy._tool_policy", None)
     tools = asyncio.run(
         routes_mod._select_request_tools(

@@ -101,8 +101,7 @@ def get_tool_policy_default() -> Optional[bool]:
 
 
 def conversation_recall_allowed() -> bool:
-    """search_conversation only reads this thread's archive, so a CLI `--disable-tools` keeps it;
-    only `tools_force_disabled` (public surfaces, any thread_id) refuses it."""
+    """Recall reads only this thread's archive: `--disable-tools` keeps it, `tools_force_disabled` does not."""
     return not _force_disabled.get()
 
 
