@@ -572,18 +572,18 @@ const MAC_NATIVE_CHROME_STYLE = {
 // controls, which reserve --studio-window-control-inset on the right.
 const CUSTOM_CHROME_STYLE = {
   "--studio-titlebar-height": "0px",
-  "--studio-custom-titlebar-height": "42px",
-  "--studio-desktop-titlebar-height": "42px",
+  "--studio-custom-titlebar-height": "var(--studio-windows-caption-height,42px)",
+  "--studio-desktop-titlebar-height": "var(--studio-windows-caption-height,42px)",
   "--studio-sidebar-expanded-width": "17.5rem",
   "--studio-sidebar-collapsed-width": "3rem",
   // Clears the titlebar navigation (left-1, three 30px buttons, two gap-0.5) plus a 10px gap.
   "--studio-collapsed-chat-controls-inset":
     "calc(90px + 18px * var(--ui-space-scale, 1))",
-  "--studio-startup-top-inset": "50px",
+  "--studio-startup-top-inset": "calc(var(--studio-windows-caption-height,42px) + 8px)",
   "--studio-content-top-inset": "0px",
-  "--studio-non-chat-content-top-inset": "42px",
-  "--studio-non-chat-scroller-top": "42px",
-  "--studio-hidden-route-top-inset": "42px",
+  "--studio-non-chat-content-top-inset": "var(--studio-windows-caption-height,42px)",
+  "--studio-non-chat-scroller-top": "var(--studio-windows-caption-height,42px)",
+  "--studio-hidden-route-top-inset": "var(--studio-windows-caption-height,42px)",
   // Same split as the native-mac block: chat chrome scales, window chrome does not. Header
   // controls take the 30px of the navigation buttons and start 2px down, so they centre on
   // the window controls' line and clear the window edge.
@@ -603,8 +603,7 @@ const CUSTOM_CHROME_STYLE = {
   "--studio-titlebar-row-center": "calc(13px + 4px * var(--ui-space-scale, 1))",
   // Min, max and close: three 26px buttons, two gap-0.5 and right-1, which mirrors the
   // navigation's left-1 so both corners hold the same margin.
-  "--studio-window-control-inset":
-    "136px",
+  "--studio-window-control-inset": "var(--studio-windows-control-inset,136px)",
 } as CSSProperties;
 
 // Mirror the titlebar heights onto <html>: overlays portalled into document.body read the wrapper styles as empty.
@@ -621,17 +620,17 @@ function DesktopChromeVarsEffect({
       value === null
         ? el.style.removeProperty(name)
         : el.style.setProperty(name, value);
-    set("--studio-custom-titlebar-height", usesCustomTitlebar ? "42px" : null);
+    set("--studio-custom-titlebar-height", usesCustomTitlebar ? "var(--studio-windows-caption-height,42px)" : null);
     set(
       "--studio-mac-titlebar-height",
       usesNativeMacTitlebar ? NATIVE_MAC_TITLEBAR_HEIGHT_VAR : null,
     );
-    set("--studio-window-control-inset", usesCustomTitlebar ? "136px" : null);
+    set("--studio-window-control-inset", usesCustomTitlebar ? "var(--studio-windows-control-inset,136px)" : null);
     // How far body-portaled surfaces must stay clear of the top: either titlebar paints over them.
     set(
       "--studio-window-chrome-top",
       usesCustomTitlebar
-        ? "42px"
+        ? "var(--studio-windows-caption-height,42px)"
         : usesNativeMacTitlebar
           ? NATIVE_MAC_TITLEBAR_HEIGHT_VAR
           : null,
