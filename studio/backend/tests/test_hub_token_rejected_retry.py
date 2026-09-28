@@ -505,3 +505,38 @@ def test_admission_sizing_counts_companions_when_the_token_is_refused(monkeypatc
         "unsloth/Qwen3-VL-2B-Instruct-GGUF", hf_token = OAUTH, include_mmproj = True
     )
     assert sized == 800_000_000
+
+
+def test_training_admission_reads_safetensors_totals_without_a_refused_token(monkeypatch):
+    # Multimodal sizing needs the safetensors total; the config estimate is the text tower only.
+    from utils.hardware import hardware
+
+    monkeypatch.setattr("utils.utils.hf_env_offline", lambda: False)
+
+    def model_info(repo, token = None):
+        if token is not False:
+            raise RepositoryNotFoundError(reason = "OAuth token verification failed")
+        return SimpleNamespace(safetensors = {"total": 4_400_000_000})
+
+    monkeypatch.setattr(huggingface_hub, "model_info", model_info)
+    assert hardware._get_hf_safetensors_total_params("org/public-vlm", OAUTH) == 4_400_000_000
+
+
+def test_the_malware_status_is_read_without_a_refused_token(monkeypatch):
+    from utils.security import file_security
+
+    status = {"filesWithIssues": [{"path": "pytorch_model.bin", "level": "unsafe"}]}
+
+    def model_info(
+        repo,
+        revision = None,
+        token = None,
+        securityStatus = False,
+        timeout = None,
+    ):
+        if token is not False:
+            raise RepositoryNotFoundError(reason = "OAuth token verification failed")
+        return SimpleNamespace(security_repo_status = status)
+
+    monkeypatch.setattr(huggingface_hub, "model_info", model_info)
+    assert file_security._fetch_security_status("org/public-model", OAUTH) == status
