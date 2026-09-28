@@ -18,6 +18,7 @@ matmul; the route loads a tiny packed Llama (built by test_compressed_tensors_bn
 it with the same checkpoint decompressed to bf16 on disk.
 """
 
+import itertools
 import os
 import sys
 
@@ -101,7 +102,7 @@ CASES = [
 @needs_ct
 @pytest.mark.parametrize("bits,group,sym,actorder,scale_dtype,strategy", CASES)
 def test_kernels_decode_bit_exact_and_multiply_like_dense(
-    bits, group, sym, actorder, scale_dtype, strategy
+    bits, group, sym, actorder, scale_dtype, strategy, monkeypatch
 ):
     from unsloth.kernels.int4_packed import (
         Int4QuantState,
@@ -127,7 +128,12 @@ def test_kernels_decode_bit_exact_and_multiply_like_dense(
     assert torch.equal(int4_dequantize(W, qs), ref)
     # The fast_dequantize contract: a transposed packed view decodes to the transposed weight.
     assert torch.equal(int4_dequantize_weight(W.t(), qs), ref.t())
-    for rows in (1, 3, 5, 64):
+    import unsloth.kernels.int4_packed as ip
+
+    for rows, gemv in itertools.product((1, 3, 5, 64), (True, False)):
+        if gemv and bits > 4:
+            continue
+        monkeypatch.setattr(ip, "GEMV_MAX_WORK", 1 << 62 if gemv else 0)
         x = torch.randn(rows, in_f, device = "cuda", dtype = torch.bfloat16)
         y = int4_matmul(x, W, qs)
         want = x.float() @ ref.float().t()
