@@ -665,13 +665,13 @@ def _build_classes():
                     elif weight.is_floating_point() and weight.element_size() >= 2:
                         # A 16-bit tensor that shipped a scale anyway: take it as stored.
                         converted = weight.to(dtype)
+                        if out is not None:
+                            out[i].copy_(converted)
                     else:
                         raise RuntimeError(
                             f"Unsloth: `{full_layer_name}` is stored as {weight.dtype} with a scale, which the "
                             f"fp8 -> 4bit load cannot dequantize. Set {_ENV}=0 to load the checkpoint as it is."
                         )
-                        if out is not None:
-                            out[i].copy_(converted)
                     if out is None:
                         outputs.append(converted)
                     del weight

@@ -514,3 +514,28 @@ def test_block_dequant_matches_reference_formula(shape):
 
     got = fp8_to_nf4._dequantize_block_fp8(quant, scale, [128, 128], torch.bfloat16)
     assert torch.equal(got.view(torch.int16), expected.view(torch.int16))
+
+
+def test_stacked_16bit_weight_with_a_scale_is_copied_into_the_stack():
+    import unsloth.models.fp8_to_nf4 as fp8_to_nf4
+
+    dequantize_op, _ = fp8_to_nf4._build_classes()
+    torch.manual_seed(2)
+    quant, scale = _quantize_block_fp8(torch.randn(128, 128) * 0.02)
+    stored_16bit = (torch.randn(128, 128) * 0.02).to(torch.bfloat16)
+    fp8_to_nf4._STATE = SimpleNamespace(
+        block = [128, 128], dtype = torch.bfloat16, kept_fp8 = 0, dequantized = 0
+    )
+    try:
+        result = dequantize_op(stack = True).convert(
+            {
+                "mlp.experts.*.down_proj.weight": [quant, stored_16bit],
+                "mlp.experts.*.down_proj.weight_scale_inv": [scale, torch.ones(1, 1)],
+            },
+            target_patterns = ["mlp.experts.down_proj"],
+        )
+    finally:
+        fp8_to_nf4._STATE = None
+    stack = result["mlp.experts.*.down_proj.weight"]
+    assert torch.equal(stack[0], _dequantize_reference(quant, scale))
+    assert torch.equal(stack[1], stored_16bit)
