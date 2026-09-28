@@ -40835,6 +40835,7 @@ async def load_diffusion_model_gated(
         annotate_status,
         begin_load_on,
         engine_for,
+        off_torch_sd_cpp_device,
         predict_engine,
         select_and_activate_engine,
     )
@@ -40868,8 +40869,12 @@ async def load_diffusion_model_gated(
             model_kind = kind,
             base_repo = request.base_repo,
         )
+        # A native load on a card torch cannot see shares no VRAM with training or chat; settled
+        # after selection, since a fallback to diffusers lands on torch's card after all.
+        off_torch = await asyncio.to_thread(off_torch_sd_cpp_device)
         # Refuse while training is running: a multi-GB pipeline would compete with the training subprocess for VRAM.
-        _guard_diffusion_load_against_training()
+        if off_torch is None:
+            _guard_diffusion_load_against_training()
         # Take the GPU from chat only on a non-CPU device: gate on the device, not the engine name.
         # Pure resolve, so it can run before selection, which the refusal below has to precede.
         device = await asyncio.to_thread(lambda: resolve_diffusion_device_target().device)
@@ -41001,6 +41006,12 @@ async def load_diffusion_model_gated(
                     repo_id = request.model_path,
                     base_repo = request.base_repo,
                 )
+        if off_torch is not None:
+            if activated == ENGINE_SD_CPP:
+                # Like a CPU native load: nothing on torch's card to take, so chat stays resident.
+                needs_gpu = False
+            else:
+                _guard_diffusion_load_against_training()
 
         def _start_engine_load():
             # Recorded HERE for the reason the video route gives: inside the admitted callback,

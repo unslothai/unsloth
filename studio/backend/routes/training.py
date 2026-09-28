@@ -1892,12 +1892,16 @@ async def start_training(
                 # The ACTIVE engine, not the diffusers singleton: on a native (sd_cpp) selection the diffusers backend
                 # reports unloaded while the native engine still holds state.
                 diffusion = get_active_diffusion_engine()
-                if diffusion.is_loaded:
-                    logger.info(
-                        "Unloading diffusion (Images) model to free GPU memory for training"
-                    )
-                diffusion.unload()
-                gpu_arbiter.release(gpu_arbiter.DIFFUSION)
+                if getattr(diffusion, "runs_off_torch_device", False) is True:
+                    # Native on a card torch cannot see (UNSLOTH_DIFFUSION_SD_CPP_DEVICE): nothing to free.
+                    logger.info("Keeping the Images model: it runs outside torch's GPUs")
+                else:
+                    if diffusion.is_loaded:
+                        logger.info(
+                            "Unloading diffusion (Images) model to free GPU memory for training"
+                        )
+                    diffusion.unload()
+                    gpu_arbiter.release(gpu_arbiter.DIFFUSION)
             except Exception as e:
                 logger.warning("Could not unload diffusion model for training: %s", e)
 

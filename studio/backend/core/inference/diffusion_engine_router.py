@@ -16,6 +16,7 @@ Env knobs:
   UNSLOTH_DIFFUSION_SD_CPP=auto|0|1                 enable/disable the native route
   UNSLOTH_DIFFUSION_SD_CPP_MPS=0|1                  allow native on Apple MPS (default off)
   UNSLOTH_DIFFUSION_SD_CPP_INSTALL=auto|0|1         allow lazy binary install (in sd_cpp_backend)
+  UNSLOTH_DIFFUSION_SD_CPP_DEVICE=nvidia[:N]        run native on a card torch cannot see
 """
 
 from __future__ import annotations
@@ -23,6 +24,7 @@ from __future__ import annotations
 import os
 import sys
 import threading
+from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
 from core.inference.diffusion_device import resolve_diffusion_device_target
@@ -32,6 +34,7 @@ from core.inference.diffusion_families import (
     family_sd_cpp_supported,
 )
 from core.inference.sd_cpp_backend import (
+    _card_lookup_inventory,
     _install_allowed,
     _managed_tree_in_use,
     _server_binary_runnable,
@@ -63,6 +66,93 @@ _INSTALL_ACCELERATOR = {"rocm": "rocm", "cuda": "cuda", "xpu": "vulkan"}
 
 def _install_accelerator_for(backend: str) -> str:
     return _INSTALL_ACCELERATOR.get(backend, "auto")
+
+
+# Vendor named in UNSLOTH_DIFFUSION_SD_CPP_DEVICE -> the sd.cpp build that drives it.
+_OFF_TORCH_VENDOR_ACCELERATOR = {"nvidia": "cuda"}
+_off_torch_warned: set[str] = set()
+
+
+@dataclass(frozen = True)
+class OffTorchDevice:
+    """A card the native engine runs on that this process's torch cannot see. ``index`` is the
+    vendor's own physical number (nvidia-smi's row), never a torch ordinal."""
+
+    vendor: str
+    index: int
+    accelerator: str
+
+    @property
+    def label(self) -> str:
+        return f"{self.vendor}:{self.index}"
+
+    def child_env(self) -> dict[str, str]:
+        # nvidia-smi numbers cards in PCI order; CUDA's default is fastest-first.
+        return {"CUDA_DEVICE_ORDER": "PCI_BUS_ID", "CUDA_VISIBLE_DEVICES": str(self.index)}
+
+
+def _warn_off_torch_once(raw: str, message: str, *args: Any) -> None:
+    if raw in _off_torch_warned:
+        return
+    _off_torch_warned.add(raw)
+    logger.warning(message, *args)
+
+
+def _physical_inventory() -> dict:
+    return _card_lookup_inventory() or {}
+
+
+def off_torch_sd_cpp_device(backend: Optional[str] = None) -> Optional[OffTorchDevice]:
+    """The card ``UNSLOTH_DIFFUSION_SD_CPP_DEVICE`` asks native image generation to run on, when
+    torch cannot drive it (an NVIDIA card beside a ROCm torch). None keeps today's routing: unset,
+    unparseable, a vendor torch already serves, or an inventory that answered without that card."""
+    raw = os.environ.get("UNSLOTH_DIFFUSION_SD_CPP_DEVICE", "").strip().lower()
+    if not raw:
+        return None
+    vendor, _, index_text = raw.partition(":")
+    vendor = vendor.strip()
+    accelerator = _OFF_TORCH_VENDOR_ACCELERATOR.get(vendor)
+    try:
+        index = int(index_text) if index_text.strip() else 0
+    except ValueError:
+        index = -1
+    if accelerator is None or index < 0:
+        _warn_off_torch_once(
+            raw,
+            "UNSLOTH_DIFFUSION_SD_CPP_DEVICE=%r is not understood (expected nvidia or "
+            "nvidia:<index>); ignoring it",
+            raw,
+        )
+        return None
+    if backend is None:
+        backend = resolve_diffusion_device_target().backend
+    if _INSTALL_ACCELERATOR.get(backend) == accelerator:
+        # torch already drives this vendor, so gpu_ids is how a card is picked.
+        return None
+    inventory = _physical_inventory()
+    if not inventory.get("unknown") and vendor not in (inventory.get("unanswered") or ()):
+        present = any(
+            isinstance(device, dict)
+            and device.get("vendor") == vendor
+            and device.get("index") == index
+            for device in inventory.get("devices") or ()
+        )
+        if not present:
+            _warn_off_torch_once(
+                raw,
+                "UNSLOTH_DIFFUSION_SD_CPP_DEVICE=%s: this host lists no such card; ignoring it",
+                raw,
+            )
+            return None
+    # An unanswered probe is not an absent card, and the user named this one explicitly.
+    return OffTorchDevice(vendor = vendor, index = index, accelerator = accelerator)
+
+
+def image_install_accelerator(backend: str) -> str:
+    """The sd.cpp build the IMAGE engine wants: the off-torch card's when one is set, else torch's.
+    Video keeps ``_install_accelerator_for``, since torch places its loads."""
+    off_torch = off_torch_sd_cpp_device(backend)
+    return off_torch.accelerator if off_torch is not None else _install_accelerator_for(backend)
 
 
 # The engine the current load committed to, and why a non-native choice was made. Mutated only under _lock.
@@ -234,6 +324,11 @@ def select_and_activate_engine(
 
     target = resolve_diffusion_device_target()
     backend = target.backend
+    off_torch = off_torch_sd_cpp_device(backend)
+    if off_torch is not None:
+        # A card torch cannot see is only reachable natively, and torch's ordinals name other cards.
+        prefer_native = True
+        gpu_ordinal = None
     # CPU always native-eligible; MPS only when enabled; a GPU backend never, unless forced
     policy_eligible = backend == "cpu" or (backend == "mps" and mps_enabled) or prefer_native
     fam_ok = family_sd_cpp_supported(fam)
@@ -247,6 +342,8 @@ def select_and_activate_engine(
         install_accelerator = preferred_accelerator(
             _install_accelerator_for(backend), selected_card
         )
+        if off_torch is not None:
+            install_accelerator = preferred_accelerator(off_torch.accelerator, selected_card)
         # Probe the resident sd-server FIRST (the backend prefers it): a server-only install must still route to
         # native and should not pay an sd-cli download. Install the accelerator-matched build so a forced-native GPU
         # load gets the GPU server.
@@ -334,6 +431,9 @@ def select_and_activate_engine(
         reason = "native sd.cpp binary unavailable"
     else:
         reason = "diffusers selected"
+    if off_torch is not None:
+        reason = f"{reason}; UNSLOTH_DIFFUSION_SD_CPP_DEVICE={off_torch.label} not honoured"
+        logger.warning("image load stays on torch's device: %s", reason)
     return _activate(ENGINE_DIFFUSERS, reason)
 
 
@@ -352,10 +452,11 @@ def native_binary_installed(
     VAE and text encoder for a load that goes to diffusers. Without ``fam`` the question is the
     older one, "is there a binary at all".
     """
+    backend = resolve_diffusion_device_target().backend
+    if off_torch_sd_cpp_device(backend) is not None:
+        gpu_ordinal = None
     selected_card = _selected_card(gpu_ordinal)
-    install_accelerator = preferred_accelerator(
-        _install_accelerator_for(resolve_diffusion_device_target().backend), selected_card
-    )
+    install_accelerator = preferred_accelerator(image_install_accelerator(backend), selected_card)
     server_binary = usable_or_recorded_failure(
         ensure_sd_server_binary(allow_install = False, accelerator = install_accelerator),
         install_accelerator,
@@ -408,6 +509,9 @@ def predict_engine(
         return ENGINE_DIFFUSERS
 
     backend = resolve_diffusion_device_target().backend
+    if off_torch_sd_cpp_device(backend) is not None:
+        prefer_native = True
+        gpu_ordinal = None
     policy_eligible = backend == "cpu" or (backend == "mps" and mps_enabled) or prefer_native
     if not (policy_eligible and family_sd_cpp_supported(fam)):
         return ENGINE_DIFFUSERS
