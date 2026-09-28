@@ -39,14 +39,16 @@ import {
 import { FIND_SKIP_ATTRIBUTE } from "@/features/find-in-page";
 import { prefersReducedMotion } from "@/features/settings";
 import { useT } from "@/i18n";
+import { cn } from "@/lib/utils";
 
 const MIN_NAVIGATOR_TURNS = 3;
-// bounds the text a pasted log can put in the tooltip, which scrolls past its height cap
-const TURN_PREVIEW_CHARS = 4000;
-// long enough to cross from a marker onto the tooltip to scroll it
+// the card shows one line of the prompt and three of the reply, so a pasted log is cut well before that
+const PROMPT_PREVIEW_CHARS = 240;
+const REPLY_PREVIEW_CHARS = 480;
+// long enough to cross from a marker onto the card
 const PREVIEW_HIDE_DELAY_MS = 150;
-// how far the tooltip's near edge sits past the marker it opens from
-const PREVIEW_OFFSET_PX = 14;
+// markers this far either side of the hovered one widen with it
+const PYRAMID_REACH = 3;
 // math blocks above the target settle from placeholder heights once reached, so the jump re-aligns briefly
 const JUMP_ALIGN_FRAMES = 4;
 
@@ -212,23 +214,56 @@ function shineTurn(target: HTMLElement): void {
   );
 }
 
-function turnPreview(content: readonly { type: string; text?: string }[]) {
+type PreviewPart = { type: string; text?: string };
+
+// plain text for the card: markdown markers are dropped and every run of whitespace becomes one space
+function previewText(content: readonly PreviewPart[], maxChars: number) {
   const text = content
     .map((part) => (part.type === "text" ? (part.text ?? "") : ""))
-    .join("\n\n")
-    .replace(/[^\S\n]+/g, " ")
-    .replace(/\n{3,}/g, "\n\n")
+    .join("\n")
+    .replace(/```[^\n]*/g, " ")
+    .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/^\s*(?:#{1,6}|>|[-*+]|\d+[.)])\s+/gm, "")
+    .replace(/\*\*|__|`/g, "")
+    .replace(/\s+/g, " ")
     .trim();
-  return text.length > TURN_PREVIEW_CHARS
-    ? `${text.slice(0, TURN_PREVIEW_CHARS)}…`
-    : text;
+  return text.length > maxChars ? `${text.slice(0, maxChars)}…` : text;
+}
+
+// the first reply in the turn that has text, so a tool-only step does not blank the card
+function turnReplyText(
+  messages: readonly {
+    id: string;
+    role: string;
+    content: readonly PreviewPart[];
+  }[],
+  openerId: string,
+): string {
+  const start = messages.findIndex((message) => message.id === openerId);
+  if (start < 0) {
+    return "";
+  }
+  for (let index = start + 1; index < messages.length; index++) {
+    const message = messages[index];
+    if (message.role === "user") {
+      break;
+    }
+    if (message.role === "assistant") {
+      const text = previewText(message.content, REPLY_PREVIEW_CHARS);
+      if (text) {
+        return text;
+      }
+    }
+  }
+  return "";
 }
 
 interface TurnPreview {
+  openerId: string;
   turn: number;
-  pinned: boolean;
-  text: string;
-  // the anchor sits at the rail's centre, so a marker below it opens the tooltip upward
+  prompt: string;
+  reply: string;
+  // offset of the marker's centre from the anchor, which sits at the rail's centre
   markerTop: number;
 }
 
@@ -243,8 +278,12 @@ const TurnRail: FC<{ viewportRef: RefObject<HTMLElement | null> }> = ({
     ({ thread }) => threadTurns(thread.messages).signature,
   );
   const threadId = useAuiState(({ threadListItem }) => threadListItem.remoteId);
+  const incognito = useChatRuntimeStore((state) => state.incognito);
   const pinnedIds = usePinnedTurnsStore((state) =>
     threadId ? state.pinnedByThread[threadId] : undefined,
+  );
+  const togglePinnedTurn = usePinnedTurnsStore(
+    (state) => state.togglePinnedTurn,
   );
   const openerIds = useMemo(
     () => (signature ? signature.split("\n") : []),
@@ -259,12 +298,33 @@ const TurnRail: FC<{ viewportRef: RefObject<HTMLElement | null> }> = ({
     [],
   );
   useEffect(() => cancelHide, [cancelHide]);
-  // marked on the element rather than in state, so the memoized markers do not re-render on hover
-  const activeMarkerRef = useRef<HTMLButtonElement | null>(null);
+  // the pyramid is marked on the elements rather than held in state, so the memoized markers do not re-render on hover
+  const raisedRef = useRef<HTMLElement[]>([]);
   const setActiveMarker = useCallback((marker: HTMLButtonElement | null) => {
-    activeMarkerRef.current?.removeAttribute("data-active");
-    marker?.setAttribute("data-active", "");
-    activeMarkerRef.current = marker;
+    for (const element of raisedRef.current) {
+      element.removeAttribute("data-dist");
+      element.removeAttribute("data-hovering");
+    }
+    raisedRef.current = [];
+    const rail = marker?.parentElement;
+    if (!marker || !rail) {
+      return;
+    }
+    rail.setAttribute("data-hovering", "");
+    raisedRef.current.push(rail);
+    const siblings = rail.children;
+    const index = Array.prototype.indexOf.call(siblings, marker);
+    for (let dist = 0; dist <= PYRAMID_REACH; dist++) {
+      for (const neighbour of new Set([
+        siblings[index - dist],
+        siblings[index + dist],
+      ])) {
+        if (neighbour instanceof HTMLElement) {
+          neighbour.setAttribute("data-dist", String(dist));
+          raisedRef.current.push(neighbour);
+        }
+      }
+    }
   }, []);
 
   const jumpToTurn = useCallback(
@@ -306,20 +366,20 @@ const TurnRail: FC<{ viewportRef: RefObject<HTMLElement | null> }> = ({
     ) => {
       const marker = event.currentTarget;
       const anchor = anchorRef.current;
-      if (!anchor) {
+      const openerId = marker.dataset.turnId;
+      if (!anchor || !openerId) {
         return;
       }
       cancelHide();
       setActiveMarker(marker);
-      const message = aui
-        .thread()
-        .getState()
-        .messages.find((candidate) => candidate.id === marker.dataset.turnId);
+      const messages = aui.thread().getState().messages;
+      const opener = messages.find((candidate) => candidate.id === openerId);
       const box = marker.getBoundingClientRect();
       setPreview({
+        openerId,
         turn: Number(marker.dataset.turn),
-        pinned: marker.dataset.pinned !== undefined,
-        text: message ? turnPreview(message.content) : "",
+        prompt: opener ? previewText(opener.content, PROMPT_PREVIEW_CHARS) : "",
+        reply: turnReplyText(messages, openerId),
         markerTop:
           box.top + box.height / 2 - anchor.getBoundingClientRect().top,
       });
@@ -367,7 +427,7 @@ const TurnRail: FC<{ viewportRef: RefObject<HTMLElement | null> }> = ({
     markers[Math.min(Math.max(next, 0), markers.length - 1)]?.focus();
   }, []);
 
-  // memoized so showing the tooltip re-renders the rail without touching a marker
+  // memoized so showing the card re-renders the rail without touching a marker
   const markers = useMemo(
     () =>
       openerIds.map((openerId, index) => {
@@ -378,7 +438,6 @@ const TurnRail: FC<{ viewportRef: RefObject<HTMLElement | null> }> = ({
             type="button"
             data-turn-id={openerId}
             data-turn={index + 1}
-            data-pinned={isPinned || undefined}
             tabIndex={index === 0 ? 0 : -1}
             aria-label={t(isPinned ? "turns.pinnedLabel" : "turns.label", {
               number: index + 1,
@@ -388,9 +447,16 @@ const TurnRail: FC<{ viewportRef: RefObject<HTMLElement | null> }> = ({
             onPointerLeave={hidePreview}
             onFocus={showPreview}
             onBlur={hidePreview}
-            className="group flex min-h-1 w-8 flex-1 cursor-pointer items-center justify-end rounded-sm pr-1.5 outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            className="group flex min-h-1 w-full flex-1 cursor-pointer items-center justify-end rounded-sm pr-1.5 outline-none focus-visible:ring-1 focus-visible:ring-ring"
           >
-            <span className="h-0.5 w-4 rounded-full bg-muted-foreground/35 transition-[width,background-color] duration-100 group-hover:w-6 group-hover:bg-muted-foreground group-data-[active]:w-6 group-data-[active]:bg-muted-foreground group-data-[pinned]:h-[3px] group-data-[pinned]:bg-primary" />
+            <span
+              className={cn(
+                "h-0.5 w-2 rounded-full transition-[width,height,background-color] duration-150 ease-out group-data-[dist=0]:w-8.5 group-data-[dist=1]:w-6 group-data-[dist=2]:w-4 group-data-[dist=3]:w-3 group-data-[hovering]/rail:h-[1.5px] motion-reduce:transition-none",
+                isPinned
+                  ? "bg-primary"
+                  : "bg-muted-foreground/40 group-data-[dist=0]:bg-foreground",
+              )}
+            />
           </button>
         );
       }),
@@ -401,6 +467,7 @@ const TurnRail: FC<{ viewportRef: RefObject<HTMLElement | null> }> = ({
     return null;
   }
 
+  const previewPinned = preview ? pinned.has(preview.openerId) : false;
   // sticky inside the viewport so wheel scrolling over the rail still reaches the thread; the rail sits 2px clear of the scrollbar
   return (
     <div
@@ -413,37 +480,46 @@ const TurnRail: FC<{ viewportRef: RefObject<HTMLElement | null> }> = ({
         // markers shrink to fit the cap before the rail has to scroll
         style={{ height: `min(${openerIds.length * 0.75 + 0.5}rem, 40dvh)` }}
         onKeyDown={onRailKeyDown}
-        className="aui-turn-navigator pointer-events-auto absolute top-0 right-[-1.125rem] flex w-8 -translate-y-1/2 flex-col overflow-y-auto py-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+        className="aui-turn-navigator group/rail pointer-events-auto absolute top-0 right-[-1.125rem] flex w-12 -translate-y-1/2 flex-col overflow-y-auto py-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
       >
         {markers}
       </nav>
       {preview && (
         <div
           aria-hidden={true}
-          style={{
-            top:
-              preview.markerTop > 0
-                ? preview.markerTop + PREVIEW_OFFSET_PX
-                : preview.markerTop - PREVIEW_OFFSET_PX,
-          }}
+          style={{ top: preview.markerTop }}
           onPointerEnter={cancelHide}
           onPointerLeave={hidePreview}
-          data-placement={preview.markerTop > 0 ? "above" : "below"}
-          className="aui-turn-preview pointer-events-auto data-[placement=above]:-translate-y-full absolute right-[1.125rem] flex max-h-[min(36dvh,22rem)] w-max max-w-[28rem] flex-col gap-1 rounded-[14px] border border-sidebar-border bg-sidebar px-3.5 py-2.5 font-medium text-sidebar-foreground text-ui-13 leading-snug shadow-md"
+          className="aui-turn-preview pointer-events-auto absolute right-9.5 flex w-84 -translate-y-1/2 flex-col gap-1.5 rounded-2xl border border-sidebar-border bg-sidebar py-3 pr-2.5 pl-4 text-sidebar-foreground text-ui-13 shadow-md"
         >
-          <div className="flex shrink-0 items-center gap-1 text-muted-foreground text-ui-11">
-            {preview.pinned && (
-              <HugeiconsIcon
-                icon={PinIcon}
-                strokeWidth={2}
-                className="size-3"
-              />
+          <div className="flex items-center gap-2">
+            <p className="min-w-0 flex-1 truncate font-medium text-ui-13p5">
+              {preview.prompt || t("turns.label", { number: preview.turn })}
+            </p>
+            {threadId && !incognito && (
+              <button
+                type="button"
+                tabIndex={-1}
+                aria-label={t(previewPinned ? "turns.unpin" : "turns.pin")}
+                onClick={() => togglePinnedTurn(threadId, preview.openerId)}
+                className={cn(
+                  "flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-md hover:bg-sidebar-accent",
+                  previewPinned
+                    ? "text-primary"
+                    : "text-muted-foreground hover:text-sidebar-foreground",
+                )}
+              >
+                <HugeiconsIcon
+                  icon={previewPinned ? PinOffIcon : PinIcon}
+                  strokeWidth={1.75}
+                  className="size-3.5"
+                />
+              </button>
             )}
-            {t("turns.label", { number: preview.turn })}
           </div>
-          {preview.text && (
-            <p className="min-h-0 overflow-y-auto overscroll-contain whitespace-pre-line pr-1 [scrollbar-width:thin]">
-              {preview.text}
+          {preview.reply && (
+            <p className="line-clamp-3 pr-1.5 text-muted-foreground leading-relaxed">
+              {preview.reply}
             </p>
           )}
         </div>
