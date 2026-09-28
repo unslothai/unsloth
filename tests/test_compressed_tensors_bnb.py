@@ -1010,7 +1010,8 @@ def test_only_an_explicit_bnb_4bit_config_keeps_the_callers_flags():
             if isinstance(node, ast.If)
             and any("_checked_4bit" in ast.unparse(stmt) for stmt in node.body)
         ]
-        assert guards == ["not _explicit_bnb_4bit"], (module.__name__, guards)
+        # ... and only while the check kept 4-bit (an unarmed pre-quantized checkpoint must not reach vLLM as bnb).
+        assert guards == ["not (_explicit_bnb_4bit and _checked_4bit)"], (module.__name__, guards)
 
 
 def test_an_explicit_bnb_4bit_config_is_not_replaced_by_the_default_nf4_one():
@@ -1062,6 +1063,13 @@ def test_both_loaders_treat_an_explicit_bnb_4bit_config_as_the_4bit_request():
         requantize_packed = quantization_config_selects_bnb_4bit(explicit),
     )
     assert getattr(config, UNSLOTH_COMPRESSED_TENSORS_ATTR, None) is not None
+    # Unarmed (vLLM reads the checkpoint itself): the check clears 4-bit, and the caller's flags must not
+    # override it, or vLLM is asked for a bitsandbytes load of compressed-tensors shards.
+    unarmed = _Config(quantization_config = _w4a16())
+    checked_4bit, _, _ = check_and_disable_bitsandbytes_loading(
+        unarmed, load_in_4bit = True, load_in_8bit = False, verbose = False, requantize_packed = False
+    )
+    assert checked_4bit is False
 
 
 def test_the_flag_only_dict_shorthand_is_a_bnb_4bit_request():

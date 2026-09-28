@@ -446,6 +446,8 @@ def test_adopt_swaps_plain_linears_and_leaves_routers_to_the_decompress_converte
     ct_config = _build_quantization_config(_w4a16())
     swapped, leftover = adopt_int4_packed_linears(model, ct_config, [path], torch.bfloat16)
     assert swapped == ["proj"] and leftover == ["gate"]
+    # The stacked expert is not in the checkpoint's layout any more, so a full save must not claim it is.
+    assert model.__dict__.get("_unsloth_int4_stacked_experts") is True
     assert isinstance(model.proj, Int4PackedLinear)
     assert model.proj.weight_packed.dtype == torch.int32 and model.proj.weight_packed.shape == (
         16,
