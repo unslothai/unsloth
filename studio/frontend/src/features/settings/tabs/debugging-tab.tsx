@@ -188,8 +188,13 @@ export function DebuggingTab() {
     }
   }, [mode]);
 
+  // Selection order: a response older than the last one that selected never overrides it.
+  const sourceFetchSeqRef = useRef(0);
+  const appliedSourceFetchRef = useRef(0);
+
   const refreshSources = useCallback(
     async (options: { signal?: AbortSignal; reselect?: boolean } = {}) => {
+      const seq = ++sourceFetchSeqRef.current;
       try {
         // Bounded like the tail read: the poll loop and its failure recovery
         // both await this, so an unanswered /sources would freeze both.
@@ -205,6 +210,7 @@ export function DebuggingTab() {
         );
         setSources(result.sources);
         setLogRoot(result.logRoot);
+        if (seq < appliedSourceFetchRef.current) return;
         const dialog = useSettingsDialogStore.getState();
         const requested = dialog.logFamilyRequested;
         const byPath = result.matchedSourceId
@@ -223,6 +229,7 @@ export function DebuggingTab() {
         if (fromFailure && stillTheSameRequest)
           useSettingsDialogStore.getState().consumeLogFamilyRequest();
         if (fromFailure && !stillTheSameRequest) return;
+        appliedSourceFetchRef.current = seq;
         setSourceId((current) =>
           fromFailure
             ? fromFailure.id

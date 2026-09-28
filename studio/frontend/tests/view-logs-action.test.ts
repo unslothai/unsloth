@@ -263,6 +263,10 @@ test("an older in-flight refresh does not consume a newer request", async () => 
     "pendingLogRequestKey(dialog) === requestedFor",
     "if (fromFailure && stillTheSameRequest)",
     "if (fromFailure && !stillTheSameRequest) return;",
+    // An older response (e.g. a 404 reselect) never overrides a newer selection.
+    "const seq = ++sourceFetchSeqRef.current;",
+    "if (seq < appliedSourceFetchRef.current) return;",
+    "appliedSourceFetchRef.current = seq;",
   ]) {
     assert.ok(
       tab.includes(needle),
