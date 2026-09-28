@@ -20459,7 +20459,7 @@ def _missing_path_hint(output: str, workdir: str | None = None) -> str:
     )
 
 
-# Kept past the spill's head so a trailing traceback still reaches `_missing_path_hint`.
+# Kept past the spill's head so a trailing traceback still reaches `_missing_path_hint`; also the drain's read size.
 _DRAIN_TAIL_CHARS = 64 * 1024
 
 
@@ -20471,8 +20471,8 @@ def _drain_process_output(
     *,
     pgid = None,
 ) -> "tuple[str, bool, tuple[int, int]]":
-    """``proc.communicate(timeout=...)`` equivalent that also streams each stdout line to
-    ``output_callback`` as it is produced.
+    """``proc.communicate(timeout=...)`` equivalent that also streams each stdout line (in
+    ``_DRAIN_TAIL_CHARS`` pieces when longer) to ``output_callback`` as it is produced.
 
     Returns ``(output, timed_out, omitted)``. The joined output is what ``communicate`` would
     return: the same TextIOWrapper decodes the stream, so encoding, error replacement, and newline
@@ -20496,6 +20496,7 @@ def _drain_process_output(
         try:
             # Sized reads: a newline-free stream would otherwise arrive as one unbounded "line".
             for line in iter(lambda: proc.stdout.readline(_DRAIN_TAIL_CHARS), ""):
+                # Chars against a byte cap: UTF-8 never has fewer bytes than chars, so the head covers the spill.
                 if kept <= _SPILL_MAX_BYTES:
                     chunks.append(line)
                     kept += len(line)
@@ -20891,7 +20892,7 @@ def _python_exec(
 ) -> str:
     """Execute Python code in a subprocess sandbox. disable_sandbox (Bypass Permissions): skip the
     safety analysis and rlimit pre-exec, and use the host env minus secrets. output_callback:
-    optional callable(str) streamed each stdout line as it is produced; the returned result is
+    optional callable(str) streamed stdout as it is produced; the returned result is
     unchanged. tool_execution_mode selects automatic or required OS isolation; disable_sandbox
     keeps full access as a separate explicit choice."""
     if not code or not code.strip():
@@ -21022,8 +21023,8 @@ def _python_exec(
             watcher.start()
 
         # Always drain via _drain_process_output (output_callback may be None): it kills the captured group on
-        # cancellation, reaping a grandchild that outlived the leader, and returns bytes identical to communicate() so
-        # the streaming vs non-streaming result stays byte-identical.
+        # cancellation, reaping a grandchild that outlived the leader, and keeps the same bytes with or without a
+        # callback so the streaming vs non-streaming result stays byte-identical.
         output, timed_out, omitted = _drain_process_output(
             proc, timeout, output_callback, cancel_event, pgid = pgid
         )
@@ -21128,8 +21129,8 @@ def _bash_exec(
 ) -> str:
     """Execute a bash command in a subprocess sandbox. disable_sandbox (Bypass Permissions): skip
     the command blocklist and rlimit pre-exec, and use the host env minus secrets.
-    output_callback: optional callable(str) streamed each stdout line as it is produced; the
-    returned result is unchanged. tool_execution_mode follows _python_exec."""
+    output_callback: optional callable(str) streamed stdout as it is produced; the returned
+    result is unchanged. tool_execution_mode follows _python_exec."""
     if not command or not command.strip():
         return "No command provided."
 
@@ -21242,7 +21243,7 @@ def _bash_exec(
             watcher.start()
 
         # Always drain via _drain_process_output (see _python_exec): kills the captured group on cancellation and
-        # returns bytes identical to communicate(), keeping streaming vs non-streaming byte-identical.
+        # keeps the same bytes with or without a callback, so streaming vs non-streaming stays byte-identical.
         output, timed_out, omitted = _drain_process_output(
             proc, timeout, output_callback, cancel_event, pgid = pgid
         )
