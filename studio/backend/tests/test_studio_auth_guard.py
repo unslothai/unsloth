@@ -2485,6 +2485,16 @@ def test_an_unfinished_alias_scan_fails_closed(studio_home, monkeypatch):
     assert not tools._references_studio_credential_here('echo "A=$A B=$B"', workdir)
 
 
+@pytest.mark.parametrize("scope", ["(x=)", "$(x=)", "echo $(x=)", "{ (x=); }"])
+def test_a_scoped_empty_assignment_keeps_the_outer_binding(studio_home, scope):
+    workdir = str(studio_home / "sandbox" / _SESSION)
+    command = f'x=../..; {scope}; cat "$x/auth/auth.db"'
+    assert tools._references_studio_credential_here(command, workdir)
+    assert not tools._references_studio_credential_here(
+        command.replace("../..", "./project"), workdir
+    )
+
+
 def test_self_doubling_assignments_stay_bounded(studio_home):
     workdir = str(studio_home / "sandbox" / _SESSION)
     doubling = "a=X; " + "a=$a$a; " * 40

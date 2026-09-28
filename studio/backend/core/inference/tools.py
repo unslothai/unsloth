@@ -5346,6 +5346,9 @@ def _expand_shell_assignments(command: str, *, _include_quoted: bool = True) -> 
             # `a=$a$a` repeated doubles each time: past the path cap keep the earlier binding.
             if len(val) > _MAX_PATH_SCAN_CHARS:
                 continue
+        # `x=../..; (x=); cat "$x/auth/auth.db"`: a scoped empty assignment must not erase the outer binding.
+        if not val and var in env:
+            continue
         env[var] = val
     return expand(command) if env else command
 
