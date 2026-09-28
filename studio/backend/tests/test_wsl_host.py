@@ -444,3 +444,52 @@ def test_sglang_launcher_is_read_through_mnt(wsl, monkeypatch):
 def test_linux_launch_is_unchanged_without_wsl(monkeypatch):
     assert wsl_host.active() is (sys.platform == "win32")
     assert install._host_status() == {"host": "local"}
+
+
+def test_a_failed_reset_never_deletes_the_disk_of_a_registered_distro(wsl, monkeypatch, tmp_path):
+    host = tmp_path / "host"
+    (host / "distro").mkdir(parents = True)
+    (host / "distro" / "ext4.vhdx").write_text("a live distro's disk")
+    monkeypatch.setattr(wsl_host, "host_dir", lambda: host)
+    monkeypatch.setattr(wsl_host, "distro_ready", lambda: False)  # e.g. the probe timed out
+    monkeypatch.setattr(wsl_host, "download", lambda *a, **k: tmp_path / "rootfs.tar.gz")
+    monkeypatch.setenv("FAKE_WSL_UNREGISTER", "1")
+    monkeypatch.setenv("FAKE_WSL_DISTROS", "Unsloth-Engines-test")
+    with pytest.raises(RuntimeError, match = "Could not reset"):
+        wsl_host.ensure_distro()
+    assert (host / "distro" / "ext4.vhdx").exists()
+
+
+def test_removal_waits_for_an_unresponsive_but_registered_distro(wsl, monkeypatch):
+    root = install.engine_root() / "vllm"
+    root.mkdir(parents = True)
+    (root / "active.json").write_text("{}")
+    monkeypatch.setattr(wsl_host, "distro_ready", lambda: False)
+    monkeypatch.setenv("FAKE_WSL_DISTROS", "Unsloth-Engines-test")
+    with pytest.raises(RuntimeError, match = "not responding"):
+        install.remove("vllm")
+    assert (root / "active.json").exists()
+    monkeypatch.setenv("FAKE_WSL_DISTROS", "Ubuntu")
+    install.remove("vllm")
+    assert not root.exists()
+
+
+def test_host_gpu_probes_hide_their_console_window(monkeypatch):
+    from core.inference import engine_adapters
+
+    seen = []
+
+    def fake_run(args, *a, **k):
+        seen.append(k.get("creationflags"))
+        return subprocess.CompletedProcess(args, 0, stdout = "0, GPU-aaaa\n", stderr = "")
+
+    hidden = lambda: {"creationflags": 0x08000000}  # noqa: E731
+    for module in (install, engine_adapters):
+        monkeypatch.setattr(module, "windows_hidden_subprocess_kwargs", hidden)
+        monkeypatch.setattr(module.subprocess, "run", fake_run)
+    install._probe_rows(0)
+    try:
+        engine_adapters.gpu_memory_fraction([0], 1024)
+    except Exception:
+        pass
+    assert seen == [0x08000000] * 2

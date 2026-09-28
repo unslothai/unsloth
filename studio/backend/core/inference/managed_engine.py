@@ -11,6 +11,8 @@ import os
 import secrets
 import socket
 import subprocess
+
+from utils.subprocess_compat import windows_hidden_subprocess_kwargs
 import sys
 import threading
 import time
@@ -181,6 +183,7 @@ def validate_model(
                 "--format=csv,noheader,nounits",
             ],
             capture_output = True,
+            **windows_hidden_subprocess_kwargs(),
             text = True,
             encoding = "utf-8",
             errors = "replace",

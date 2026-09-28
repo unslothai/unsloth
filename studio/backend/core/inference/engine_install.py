@@ -22,6 +22,8 @@ import platform
 import re
 import shutil
 import subprocess
+
+from utils.subprocess_compat import windows_hidden_subprocess_kwargs
 import sys
 import sysconfig
 import tempfile
@@ -395,6 +397,7 @@ def _probe_rows(gpu_id):
                 *(["--id", str(gpu_id)] if gpu_id is not None else []),
             ],
             capture_output = True,
+            **windows_hidden_subprocess_kwargs(),
             text = True,
             encoding = "utf-8",
             errors = "replace",
@@ -1173,6 +1176,14 @@ def remove(engine: str) -> dict:
             raise RuntimeError("Engine directory must not be a symbolic link.")
         from . import wsl_host
 
+        if (
+            wsl_host.active()
+            and not wsl_host.distro_ready()
+            and wsl_host.wsl_exe() is not None
+            and wsl_host.distro_name() in wsl_host.registered_distros()
+        ):
+            # Forgetting the engine now would strand its files inside the distro.
+            raise RuntimeError("WSL is not responding, so the engine cannot be removed. Try again.")
         if wsl_host.active() and wsl_host.distro_ready():
             # The compile caches live beside the environments, not under them.
             wsl_host.guest(

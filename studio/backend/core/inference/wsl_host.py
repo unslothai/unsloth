@@ -16,6 +16,7 @@ import os
 import re
 import shutil
 import subprocess
+
 import sys
 import threading
 import time
@@ -406,7 +407,10 @@ def ensure_distro(progress = None, cancel = None) -> None:
         if progress:
             progress("Creating the Unsloth WSL environment")
         # A half-imported distro from an interrupted run would make --import fail.
-        run(["--unregister", distro_name()], timeout = 300)
+        code, output = run(["--unregister", distro_name()], timeout = 300)
+        # Its VHD lives in the target: never delete it under a distro that is still registered.
+        if code and distro_name() in registered_distros():
+            raise RuntimeError("Could not reset the WSL environment. " + output.strip()[-500:])
         target = host_dir() / "distro"
         # An import interrupted before registration leaves its VHD behind and --import refuses it.
         shutil.rmtree(target, ignore_errors = True)

@@ -7,6 +7,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import subprocess
+
+from utils.subprocess_compat import windows_hidden_subprocess_kwargs
 import json
 from pathlib import Path
 
@@ -262,6 +264,7 @@ def gpu_memory_fraction(gpu_ids: list[int], reserve_mib: int = 512) -> float:
                 "--format=csv,noheader,nounits",
             ],
             capture_output = True,
+            **windows_hidden_subprocess_kwargs(),
             text = True,
             encoding = "utf-8",
             errors = "replace",
