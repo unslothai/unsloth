@@ -3777,7 +3777,10 @@ def _resolve_variant_gguf_files(
             listed = [
                 f
                 for f in repo_files
-                if f.lower().endswith(".gguf") and not _is_companion_gguf_path(f)
+                if f.lower().endswith(".gguf")
+                and not _is_companion_gguf_path(f)
+                # The picker never offers a big-endian build, so neither may this table.
+                and not _is_big_endian_gguf_path(f, _quant_label_for_endian(f) or "")
             ]
             if listed:
                 # The listing answered; the variant genuinely has no file to name

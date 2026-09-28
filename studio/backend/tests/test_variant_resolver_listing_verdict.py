@@ -129,3 +129,15 @@ def test_a_listed_file_under_the_synthesised_name_is_never_refused(monkeypatch, 
     filename, shards = llama_cpp._resolve_variant_gguf_files("org/Tiny-GGUF", "imat-mix")
     assert filename == "Tiny-imat-mix.gguf"
     assert shards == []
+
+
+def test_a_big_endian_build_is_not_offered_in_the_verdict(monkeypatch, no_cached_variant):
+    """The picker drops big-endian builds, so the table the refusal names must too."""
+    files = ["Model-Q4_K_M.gguf", "Model-Q8_0-be.gguf"]
+    monkeypatch.setattr("huggingface_hub.list_repo_files", lambda repo_id, token = None: files)
+
+    with pytest.raises(ValueError) as info:
+        llama_cpp._resolve_variant_gguf_files("org/Model-GGUF", "Q2_K")
+    message = str(info.value)
+    assert "Q4_K_M" in message
+    assert "Q8_0" not in message
