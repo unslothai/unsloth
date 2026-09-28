@@ -42587,6 +42587,13 @@ async def diffusion_generate_progress(
         from core.inference.generate_outcomes import attempt_scope_key
         if _diffusion_queued_attempts.get(attempt_scope_key(attempt_id) or ""):
             progress = {**progress, "active": True}
+    # A reloaded page polls unscoped: its own queued request is pending, not the slot's stale failure.
+    if attempt_id is None and not progress["active"]:
+        from utils.account_context import current_account_id
+        own = f"{current_account_id()}\x00"
+        if any(key.startswith(own) for key in list(_diffusion_queued_attempts)):
+            progress = {**progress, "active": True, "error": None, "error_logged": None}
+            progress.pop("generation_attempt", None)
     return DiffusionGenerateProgressResponse(**progress)
 
 

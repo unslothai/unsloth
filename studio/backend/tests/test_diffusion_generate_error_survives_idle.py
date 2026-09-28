@@ -636,7 +636,7 @@ def test_the_route_marks_and_publishes_whether_the_failure_was_logged():
     """Wiring, from the route's own source: the 400 branch marks, the poll publishes."""
     src = _src("routes/inference.py")
     at = src.index("async def generate_diffusion_image")
-    body = src[at : at + 6000]
+    body = src[at : src.index("\n@router", at)]
     assert (
         "mark_generate_failure_unlogged(request.attempt_id)" in body
     ), "the branch that answers without logging leaves the record saying it logged"
@@ -704,6 +704,33 @@ def _answer_progress(payload, attempt_id):
             router.get_active_diffusion_engine = original_get
     finally:
         route.account_access = original
+
+
+def test_an_unscoped_poll_sees_its_own_queued_attempt_not_a_stale_failure():
+    """A reloaded page has lost its attempt id; its queued request must read pending."""
+    import routes.inference as route
+    from core.inference.generate_outcomes import attempt_scope_key
+
+    stale_idle = {
+        "active": False,
+        "step": 0,
+        "total_steps": 0,
+        "fraction": 0.0,
+        "eta_seconds": None,
+        "error": "CUDA out of memory. Tried to allocate 2.00 GiB",
+        "generation_attempt": "attempt-earlier",
+    }
+    key = attempt_scope_key("attempt-queued")
+    route._note_queued_attempt(key, 1)
+    try:
+        queued = _answer_progress(stale_idle, None)
+    finally:
+        route._note_queued_attempt(key, -1)
+    assert queued.active is True
+    assert queued.error is None
+
+    after = _answer_progress(stale_idle, None)
+    assert after.active is False and after.error
 
 
 def test_a_queued_attempt_is_pending_not_absent():
