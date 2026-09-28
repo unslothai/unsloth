@@ -471,9 +471,7 @@ def test_rocm_torch_with_a_cuda_llama_cpp_reports_the_nvidia_card(monkeypatch):
     monkeypatch.setattr(nvidia, "get_visible_gpu_utilization", _usage)
     monkeypatch.setattr(amd, "get_gpu_vram_report", _refuse)
 
-    gpu, inference_gpu = main._get_cached_system_gpu_info(
-        SimpleNamespace(debug = lambda *args: None)
-    )
+    gpu, inference_gpu = main._get_cached_system_gpu_info(SimpleNamespace(debug = lambda *args: None))
 
     assert gpu["backend"] == "rocm"
     assert inference_gpu is not gpu
@@ -502,9 +500,7 @@ def test_rocm_torch_with_a_rocm_llama_cpp_keeps_the_training_inventory(monkeypat
     monkeypatch.setattr(nvidia, "get_visible_gpu_utilization", _refuse)
     monkeypatch.setattr(amd, "get_gpu_vram_report", _refuse)
 
-    gpu, inference_gpu = main._get_cached_system_gpu_info(
-        SimpleNamespace(debug = lambda *args: None)
-    )
+    gpu, inference_gpu = main._get_cached_system_gpu_info(SimpleNamespace(debug = lambda *args: None))
 
     assert inference_gpu is gpu
     assert inference_gpu["backend"] == "rocm"
@@ -519,9 +515,7 @@ def test_cuda_torch_with_a_rocm_llama_cpp_reports_the_amd_card(monkeypatch):
     # {amd-smi id: (free MiB, total MiB)}, plus every id the call enumerated.
     monkeypatch.setattr(amd, "get_gpu_vram_report", lambda: ({0: (8192, 32768)}, [0]))
 
-    gpu, inference_gpu = main._get_cached_system_gpu_info(
-        SimpleNamespace(debug = lambda *args: None)
-    )
+    gpu, inference_gpu = main._get_cached_system_gpu_info(SimpleNamespace(debug = lambda *args: None))
 
     assert gpu["backend"] == "cuda"
     assert inference_gpu["backend"] == "rocm"
@@ -541,9 +535,7 @@ def test_a_silent_nvidia_smi_falls_back_to_the_training_inventory(monkeypatch):
     )
     monkeypatch.setattr(nvidia, "get_visible_gpu_utilization", _refuse)
 
-    gpu, inference_gpu = main._get_cached_system_gpu_info(
-        SimpleNamespace(debug = lambda *args: None)
-    )
+    gpu, inference_gpu = main._get_cached_system_gpu_info(SimpleNamespace(debug = lambda *args: None))
 
     assert inference_gpu is gpu
 
@@ -555,16 +547,16 @@ def test_a_vulkan_llama_cpp_never_asks_the_cross_vendor_probe(monkeypatch):
     vulkan_info = {
         "available": True,
         "backend": "vulkan",
-        "devices": [{"index": 0, "index_kind": "vulkan", "name": "Vulkan0", "memory_total_gb": 8.0}],
+        "devices": [
+            {"index": 0, "index_kind": "vulkan", "name": "Vulkan0", "memory_total_gb": 8.0}
+        ],
         "index_kind": "vulkan",
     }
     _mixed_host(monkeypatch, torch_rocm = False, llama_backend = "vulkan")
     monkeypatch.setattr(hardware, "get_vulkan_inference_gpu_info", lambda: vulkan_info)
     monkeypatch.setattr(hardware, "get_cross_vendor_inference_gpu_info", _refuse)
 
-    gpu, inference_gpu = main._get_cached_system_gpu_info(
-        SimpleNamespace(debug = lambda *args: None)
-    )
+    gpu, inference_gpu = main._get_cached_system_gpu_info(SimpleNamespace(debug = lambda *args: None))
 
     assert gpu["backend"] == "cuda"
     assert inference_gpu["backend"] == "vulkan"
