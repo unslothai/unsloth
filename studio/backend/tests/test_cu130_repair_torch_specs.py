@@ -59,7 +59,8 @@ def test_a_resident_release_is_kept(monkeypatch, mod, resident, expected):
     assert mod._cuda_repair_torch_specs(CU130, mod._TORCH_FLAVOR_REPAIR_PKG_SPEC) == expected
 
 
-@pytest.mark.parametrize("resident", [None, "2.15.0", "2.3.1"])
+# 2.4-2.8 are older than anything the cu130 index serves, so pinning them would fail the repair.
+@pytest.mark.parametrize("resident", [None, "2.15.0", "2.3.1", "2.6.0", "2.8.0"])
 def test_no_keepable_release_repairs_to_213(monkeypatch, mod, resident):
     _route(monkeypatch, mod, torch = resident)
     assert mod._cuda_repair_torch_specs(CU130, mod._CUDA_TORCH_PKG_SPEC) == (
@@ -134,7 +135,7 @@ def test_both_cuda_repairs_use_the_route_aware_specs(mod):
     ],
 )
 def test_core_update_freezes_only_torch_past_the_released_ceiling(
-    monkeypatch, mod, platform, resident, pinned
+    monkeypatch, tmp_path, mod, platform, resident, pinned
 ):
     monkeypatch.setattr(mod.sys, "platform", platform)
     monkeypatch.setattr(mod, "_resident_torch_release", lambda: resident)
@@ -143,20 +144,24 @@ def test_core_update_freezes_only_torch_past_the_released_ceiling(
         "_resident_torch_trio_pins",
         lambda: ["torch==2.13.0+cu130", "torchvision==0.28.0+cu130", "torchaudio==2.11.0+cu130"],
     )
-    monkeypatch.setenv("UV_OVERRIDE", "/existing/overrides.txt")
+    inherited = tmp_path / "overrides.txt"
+    inherited.write_text("Torch<2.13\ntorchvision>=0.1\nnumpy<3\n", encoding = "utf-8")
+    monkeypatch.setenv("UV_OVERRIDE", str(inherited))
     with mod._FreezeNewTorchForCoreUpdate() as freeze:
         value = mod.os.environ["UV_OVERRIDE"]
+        assert mod._TORCH_FREEZE_ACTIVE is pinned
         if pinned:
-            first, rest = value.split(" ", 1)
-            assert rest == "/existing/overrides.txt"
-            assert Path(first).read_text().split() == [
+            # One file: the inherited trio lines would make uv's resolution unsatisfiable.
+            assert Path(value).read_text(encoding = "utf-8").split() == [
                 "torch==2.13.0+cu130",
                 "torchvision==0.28.0+cu130",
                 "torchaudio==2.11.0+cu130",
+                "numpy<3",
             ]
         else:
-            assert value == "/existing/overrides.txt"
-    assert mod.os.environ["UV_OVERRIDE"] == "/existing/overrides.txt"
+            assert value == str(inherited)
+    assert mod.os.environ["UV_OVERRIDE"] == str(inherited)
+    assert mod._TORCH_FREEZE_ACTIVE is False
     if pinned:
         assert not freeze._path.exists()
 
@@ -179,3 +184,16 @@ def test_both_core_updates_run_under_the_freeze():
         )
         == 2
     )
+
+
+def test_a_uv_failure_under_the_freeze_never_falls_back_to_pip(monkeypatch, mod):
+    import subprocess
+
+    monkeypatch.setattr(mod, "USE_UV", True)
+    monkeypatch.setattr(mod, "_TORCH_FREEZE_ACTIVE", True)
+    monkeypatch.setattr(mod.subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(a, 1, b"no solution"))
+    ran = []
+    monkeypatch.setattr(mod, "run", lambda *a, **k: ran.append(a))
+    with pytest.raises(SystemExit):
+        mod._pip_install_once("Updating core packages", "unsloth")
+    assert ran == []

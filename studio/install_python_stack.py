@@ -393,8 +393,9 @@ _TORCH_FLAVOR_REPAIR_PKG_SPEC: tuple[str, str, str] = (
     "torchaudio>=2.4,<2.12.0",
 )
 
-# The install.sh _cu130_torch213_route: a repair keeps the resident 2.4-2.14 release, falling back to 2.13 only when unreadable.
+# The install.sh _cu130_torch213_route: a repair keeps a resident 2.9-2.14 release, else installs 2.13.
 _CU130_PRESERVE_TORCH_CEILING_MINOR = 15
+_CU130_FIRST_TORCH_MINOR = 9  # download.pytorch.org/whl/cu130 starts at torch 2.9.0
 _CU130_NEW_INSTALL_TORCH_PKG_SPEC: tuple[str, str, str] = (
     "torch>=2.13.0,<2.14.0",
     "torchvision>=0.28.0,<0.29.0",
@@ -431,7 +432,7 @@ def _cuda_repair_torch_specs(
     release = _resident_torch_release()
     if release is not None:
         minor = int(release.split(".")[1])
-        if 4 <= minor < _CU130_PRESERVE_TORCH_CEILING_MINOR:
+        if _CU130_FIRST_TORCH_MINOR <= minor < _CU130_PRESERVE_TORCH_CEILING_MINOR:
             # torchaudio 2.11 is the last release (stable ABI), so newer minors pair with it.
             audio_minor = min(minor, 11)
             return (
@@ -453,6 +454,11 @@ def _resident_torch_trio_pins() -> list[str]:
         except PackageNotFoundError:
             pass
     return pins
+
+
+_TORCH_TRIO_LINE = re.compile(r"^\s*torch(vision|audio)?([\s<>=!~;@\[]|$)", re.IGNORECASE)
+# True while _FreezeNewTorchForCoreUpdate's UV_OVERRIDE is the only thing keeping the trio.
+_TORCH_FREEZE_ACTIVE = False
 
 
 class _FreezeNewTorchForCoreUpdate:
@@ -478,17 +484,27 @@ class _FreezeNewTorchForCoreUpdate:
         pins = _resident_torch_trio_pins()
         if not pins:
             return self
+        # uv applies every override for a package, so an inherited torch line would conflict:
+        # fold the inherited files in without their trio entries, as install.sh does.
+        lines = list(pins)
+        for inherited in (self._previous or "").split():
+            try:
+                text = Path(inherited).read_text(encoding = "utf-8")
+            except OSError:
+                continue
+            lines += [l for l in text.splitlines() if not _TORCH_TRIO_LINE.match(l)]
         fd, name = tempfile.mkstemp(prefix = "unsloth-torch-overrides-", suffix = ".txt")
         with os.fdopen(fd, "w", encoding = "utf-8") as handle:
-            handle.write("\n".join(pins) + "\n")
+            handle.write("\n".join(lines) + "\n")
         self._path = Path(name)
-        # UV_OVERRIDE is a space-separated file list; earlier files never re-pin the trio.
-        os.environ["UV_OVERRIDE"] = " ".join(
-            filter(None, (_uv_safe_path(self._path), self._previous))
-        )
+        os.environ["UV_OVERRIDE"] = _uv_safe_path(self._path)
+        global _TORCH_FREEZE_ACTIVE
+        _TORCH_FREEZE_ACTIVE = True
         return self
 
     def __exit__(self, *exc):
+        global _TORCH_FREEZE_ACTIVE
+        _TORCH_FREEZE_ACTIVE = False
         if self._path is not None:
             if self._previous is None:
                 os.environ.pop("UV_OVERRIDE", None)
@@ -9705,10 +9721,23 @@ def _pip_install_once(
                 )
                 _safe_print(_red("   Install uv and re-run, or re-run install.ps1."))
                 _report_failed_command(label, result)
+            if _TORCH_FREEZE_ACTIVE:
+                _step("error", f"{label} failed and pip cannot stand in for it", _red)
+                _safe_print(
+                    _red(
+                        "   torch is held on its installed release through UV_OVERRIDE, which pip "
+                        "ignores: a pip fallback would downgrade it to the released cap."
+                    )
+                )
+                _report_failed_command(label, result)
             _safe_print(_red(f"   uv failed, falling back to pip..."))
             if result.stdout:
                 _safe_print(_redact_install_output(result.stdout))
 
+        elif _TORCH_FREEZE_ACTIVE:
+            _step("error", f"{label} needs uv to keep the installed torch", _red)
+            _safe_print(_red("   Install uv and re-run, or set UNSLOTH_TORCH_UPGRADE=1 and re-run install.sh."))
+            sys.exit(1)
         elif _woa_overrides_are_load_bearing():
             _step("error", f"{label} needs uv on the Windows on ARM stack", _red)
             _safe_print(
