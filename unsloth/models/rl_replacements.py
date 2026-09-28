@@ -434,6 +434,74 @@ RL_FUNCTIONS["dpo_trainer"].append(dpo_trainer_compute_loss_liger)
 RL_EXTRA_ARGS["dpo_trainer"].append(dpo_trainer_data_collator_vision_keys)
 
 
+# Unsloth's training forward drops the 2D mask, so right-align Online DPO rows (GRPO's left_pack_padding) before scoring.
+_ONLINE_DPO_MODEL_CALL = re.compile(
+    r"^(?P<indent>[ \t]*)output = model\(prompt_completion_ids, "
+    r"(?P<kwargs>attention_mask=prompt_completion_mask|\*\*model_kwargs)\)[ \t]*$",
+    flags = re.MULTILINE,
+)
+_ONLINE_DPO_LOGITS_SLICE = re.compile(
+    r"^(?P<indent>[ \t]*)(?P<line>logits = output\.logits\[:, start_idx:(?:end_idx|-1)\])[ \t]*$",
+    flags = re.MULTILINE,
+)
+
+
+def online_dpo_trainer__forward(function_name, function):
+    if function_name != "_forward" or "_unsloth_left_pad" in function:
+        return function
+    call = _ONLINE_DPO_MODEL_CALL.search(function)
+    logits_slice = _ONLINE_DPO_LOGITS_SLICE.search(function)
+    if call is None or logits_slice is None:
+        _warn_once(
+            "online_dpo_trainer._forward",
+            "Unsloth: Online DPO's _forward changed upstream, so left-padded prompts are scored "
+            "without right-aligning them. Please file a bug report.",
+        )
+        return function
+    i = call.group("indent")
+    # Vision rows keep TRL's layout: image tokens are placed by position.
+    has_vision = call.group("kwargs") == "**model_kwargs"
+    pack = (
+        f"{i}_unsloth_left_pad = None\n"
+        f"{i}if {'not vision_inputs' if has_vision else 'True'}:\n"
+        f"{i}    _unsloth_left_pad = (prompt_mask == 0).sum(dim = 1)\n"
+        f"{i}    _unsloth_order = torch.argsort(prompt_completion_mask != 0, dim = 1, descending = True, stable = True)\n"
+        f"{i}    prompt_completion_ids = prompt_completion_ids.gather(1, _unsloth_order)\n"
+        f"{i}    prompt_completion_mask = prompt_completion_mask.gather(1, _unsloth_order)\n"
+        + (
+            f'{i}    model_kwargs["attention_mask"] = prompt_completion_mask\n'
+            if has_vision
+            else ""
+        )
+        + call.group(0)
+    )
+    j = logits_slice.group("indent")
+    gather = (
+        f"{j}if _unsloth_left_pad is not None:\n"
+        f"{j}    _unsloth_index = (start_idx - _unsloth_left_pad).unsqueeze(1) + torch.arange(\n"
+        f"{j}        completion_ids.size(1), device = completion_ids.device\n"
+        f"{j}    ).unsqueeze(0)\n"
+        f"{j}    _unsloth_index = _unsloth_index.clamp(0, output.logits.size(1) - 1)\n"
+        # index_select: advanced indexing is ~40% slower, take_along_dim keeps a [B, C, V] int64 index.
+        f"{j}    _unsloth_rows, _unsloth_len = output.logits.shape[:2]\n"
+        f"{j}    _unsloth_index = _unsloth_index + _unsloth_len * torch.arange(\n"
+        f"{j}        _unsloth_rows, device = _unsloth_index.device\n"
+        f"{j}    ).unsqueeze(1)\n"
+        f"{j}    logits = output.logits.reshape(_unsloth_rows * _unsloth_len, -1).index_select(\n"
+        f"{j}        0, _unsloth_index.reshape(-1)\n"
+        f"{j}    ).view(_unsloth_rows, -1, output.logits.size(-1))\n"
+        # Drop [B, L, V] before log_softmax, else the copy above raises peak memory.
+        f"{j}    output = None\n"
+        f"{j}else:\n"
+        f"{j}    {logits_slice.group('line')}"
+    )
+    function = function[: logits_slice.start()] + gather + function[logits_slice.end() :]
+    return function[: call.start()] + pack + function[call.end() :]
+
+
+RL_FUNCTIONS["online_dpo_trainer"].append(online_dpo_trainer__forward)
+
+
 _WRAPPED_PACKING_SETUP = (
     "    import inspect as _inspect\n"
     "    try:\n"
@@ -765,7 +833,7 @@ RL_FUNCTIONS["sft_trainer"].append(sft_trainer_prepare_dataset)
 
 # Ignore mean_token_accuracy since it needs logits; it is overridden with our version.
 def sft_trainer_compute_loss(function_name, function):
-    if function_name != "compute_loss":
+    if function_name != "compute_loss" or "_unsloth_trl_compute_loss" in function:
         return function
 
     def compute_loss(
@@ -834,6 +902,42 @@ def orpo_trainer_text_tokenizer(function_name, function):
 
 RL_FUNCTIONS["orpo_trainer"].append(orpo_trainer_text_tokenizer)
 RL_FUNCTIONS["cpo_trainer"].append(orpo_trainer_text_tokenizer)
+
+
+# TRL 0.29+ ORPO/CPO tokenize_row never truncates the prompt and cuts answers to `max_length - longer_response_length`, so prompt + answer can exceed max_length. The fast forward cuts input_ids to max_seq_length while labels keep the full row, which crashes the log-prob gather. Hold each row to max_length the way TRL <= 0.25 did with max_prompt_length (keep a prompt budget, then cut the answer); rows that fit are untouched.
+_ORPO_ROW_CAP = (
+    "_unsloth_ul = max(len(chosen_tokens['input_ids']), len(rejected_tokens['input_ids']))\n"
+    "_unsloth_pl = max(len(chosen_tokens['prompt_input_ids']), len(rejected_tokens['prompt_input_ids']))\n"
+    "if self.max_length is not None and _unsloth_pl + _unsloth_ul > self.max_length:\n"
+    "    _unsloth_keep = min(_unsloth_pl, max(self.max_length - _unsloth_ul, self.max_length // 2))\n"
+    "    _unsloth_keep_start = getattr(self, 'truncation_mode', 'keep_end') == 'keep_start'\n"
+    "    for answer_tokens in [chosen_tokens, rejected_tokens, prompt_tokens]:\n"
+    "        for k in ['prompt_input_ids', 'prompt_attention_mask']:\n"
+    "            answer_tokens[k] = answer_tokens[k][:_unsloth_keep] if _unsloth_keep_start else answer_tokens[k][max(0, len(answer_tokens[k]) - _unsloth_keep):]\n"
+    "    for answer_tokens in [chosen_tokens, rejected_tokens]:\n"
+    "        for k in ['input_ids', 'attention_mask']:\n"
+    "            answer_tokens[k] = answer_tokens[k][: self.max_length - _unsloth_keep]\n"
+)
+
+
+def orpo_trainer_row_cap(function_name, function):
+    if (
+        function_name != "tokenize_row"
+        or "_unsloth_ul" in function
+        or "max_prompt_length" in function
+    ):
+        return function
+    # Before TRL's own response cut: its negative slice end can empty the shorter answer.
+    match = re.search(r"(?m)^([ \t]*)longer_response_length = max\(", function)
+    if match is None:
+        return function
+    indent = match.group(1)
+    block = "".join(indent + line + "\n" for line in _ORPO_ROW_CAP.splitlines())
+    return function[: match.start()] + block + function[match.start() :]
+
+
+RL_FUNCTIONS["orpo_trainer"].append(orpo_trainer_row_cap)
+RL_FUNCTIONS["cpo_trainer"].append(orpo_trainer_row_cap)
 
 
 # Resolve processing_class.pad_token_id through the inner tokenizer when a multimodal processor is supplied: processors lack pad_token_id, so ORPO/CPOTrainer.__init__ raises AttributeError in the collator and padding_value.
@@ -1927,7 +2031,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
 
             unwrapped_model = self.accelerator.unwrap_model(model, keep_fp32_wrapper = False)
 
-            lm_head = self.model.get_output_embeddings().weight
+            lm_head = unwrapped_model.get_output_embeddings().weight
 
             # Size on the dtype the forward actually runs in: with autocast off that is the model's own dtype.
             forward_dtype = (
@@ -2847,7 +2951,7 @@ RL_PRE_ITEMS["grpo_trainer"].append(
 
 
 def grpo_trainer_compute_loss(function_name, function):
-    if function_name != "compute_loss":
+    if function_name != "compute_loss" or "_unsloth_trl_compute_loss" in function:
         return function
 
     def compute_loss(
@@ -3696,3 +3800,437 @@ def vllm_generation_init_patch():
 
 
 RL_ADDITIONAL_FUNCTIONS["vllm_generation"].append(vllm_generation_init_patch)
+
+
+# GKD chunked JSD (#11554): anything not reproduced exactly returns None and TRL's own compute_loss runs.
+try:
+    from unsloth_zoo.rl_replacements import distillation_chunked_jsd
+except Exception:
+    distillation_chunked_jsd = None
+
+
+def _unsloth_gkd_canonical(source):
+    """``ast.unparse`` without docstrings/comments so checks survive reformatting; ``None`` if unparsable."""
+    import ast as _ast
+    import textwrap as _textwrap
+
+    try:
+        tree = _ast.parse(_textwrap.dedent(source))
+    except Exception:
+        return None
+    for node in _ast.walk(tree):
+        if isinstance(node, (_ast.FunctionDef, _ast.AsyncFunctionDef)) and node.body:
+            first = node.body[0]
+            if (
+                isinstance(first, _ast.Expr)
+                and isinstance(getattr(first, "value", None), _ast.Constant)
+                and isinstance(first.value.value, str)
+            ):
+                node.body = node.body[1:] or [_ast.Pass()]
+    try:
+        return _ast.unparse(tree)
+    except Exception:
+        return None
+
+
+def _unsloth_gkd_layout(source):
+    """Which TRL ``GKDTrainer.compute_loss`` this is, or ``None`` when it is not one we reproduce exactly.
+    ``prompt`` (TRL < 1.7) or ``shift`` (TRL >= 1.7); any extra input, loss knob or term must fall back.
+    """
+    source = _unsloth_gkd_canonical(source)
+    if source is None:
+        return None
+    call_args = "(input_ids=inputs['input_ids'], attention_mask=inputs['attention_mask'])"
+    if len(re.findall(r"(?<![\w.])model" + re.escape(call_args), source)) != 1:
+        return None
+    if source.count("self.teacher_model" + call_args) != 1:
+        return None
+    if "return (loss, student_outputs) if return_outputs else loss" not in source:
+        return None
+    calls = re.findall(
+        r"self\.generalized_jsd_loss\(student_logits=shifted_student_logits, "
+        r"teacher_logits=shifted_teacher_logits, labels=shifted_labels, beta=self\.beta"
+        r"(, num_items_in_batch=num_items_in_batch)?\)",
+        source,
+    )
+    if len(calls) != 1 or source.count("self.generalized_jsd_loss(") != 1:
+        return None
+    prompt_layout = (
+        "prompt_lengths = inputs['prompts'].shape[1]",
+        "shifted_student_logits = student_outputs.logits[:, prompt_lengths - 1:-1, :]",
+        "shifted_teacher_logits = teacher_outputs.logits[:, prompt_lengths - 1:-1, :]",
+        "shifted_labels = inputs['labels'][:, prompt_lengths:]",
+    )
+    shift_layout = (
+        "shifted_student_logits = student_outputs.logits[:, :-1, :]",
+        "shifted_teacher_logits = teacher_outputs.logits[:, :-1, :]",
+        "shifted_labels = inputs['labels'][:, 1:]",
+    )
+    is_prompt = all(x in source for x in prompt_layout)
+    is_shift = all(x in source for x in shift_layout)
+    if is_prompt == is_shift:
+        return None
+    return {"shift": "prompt" if is_prompt else "shift", "num_items_in_batch": bool(calls[0])}
+
+
+def _unsloth_gkd_dense_head(model):
+    """The output head when it is a plain dense ``[vocab, hidden]`` projection the chunked loss can read directly.
+    Rejects bnb heads (``nn.Linear`` subclasses with packed weights), PEFT heads and ZeRO-3 partitioned weights.
+    """
+    get_output_embeddings = getattr(model, "get_output_embeddings", None)
+    if not callable(get_output_embeddings):
+        return None
+    try:
+        head = get_output_embeddings()
+    except Exception:
+        return None
+    if type(head) is not torch.nn.Linear:
+        return None
+    # An lm_head that is not the output embeddings runs before them (ModernBERT decoder, RoBERTa-style heads).
+    lm_head = getattr(model, "lm_head", None)
+    if isinstance(lm_head, torch.nn.Module) and lm_head is not head:
+        return None
+    weight = getattr(head, "weight", None)
+    if not isinstance(weight, torch.Tensor) or weight.dim() != 2 or weight.numel() == 0:
+        return None
+    if weight.dtype not in (torch.float16, torch.bfloat16, torch.float32, torch.float64):
+        return None
+    if type(weight) not in (torch.Tensor, torch.nn.Parameter):
+        return None
+    bias = getattr(head, "bias", None)
+    if bias is not None and (bias.dim() != 1 or bias.shape[0] != weight.shape[0]):
+        return None
+    if weight.is_meta or (bias is not None and bias.is_meta):
+        return None
+    return head
+
+
+def _unsloth_gkd_logit_transforms(model):
+    """``(scale, softcap)`` exactly as the model's own forward applies them to its logits."""
+    model_config = _unsloth_get_model_config(model)
+    if detect_logit_transforms is not None:
+        _transforms = detect_logit_transforms(model_config)
+        logit_softcapping = _transforms["logit_softcapping"]
+        logit_scale_multiply = _transforms["logit_scale_multiply"]
+        logit_scale_divide = _transforms["logit_scale_divide"]
+    else:
+        logit_softcapping = _unsloth_get_final_logit_softcapping(model)
+        logit_scale_multiply, logit_scale_divide = _unsloth_resolve_logit_scales(model_config)
+    scale = 1.0
+    if logit_scale_multiply:
+        scale = scale * float(logit_scale_multiply)
+    if logit_scale_divide:
+        scale = scale / float(logit_scale_divide)
+    return scale, float(logit_softcapping or 0.0)
+
+
+def _unsloth_gkd_project(hidden_states, head, scale, softcap):
+    """Full logits from hidden states, for the rare call where only one of the two forwards honoured the flag."""
+    hidden_states = hidden_states.to(device = head.weight.device, dtype = head.weight.dtype)
+    logits = torch.nn.functional.linear(hidden_states, head.weight, head.bias)
+    if scale != 1.0:
+        logits = logits * scale
+    if softcap:
+        logits = softcap * torch.tanh(logits / softcap)
+    return logits
+
+
+def _unsloth_gkd_jsd_supported(trainer_class):
+    """Is ``trainer_class.generalized_jsd_loss`` one of TRL's own generalized JSDs, unchanged? Overrides keep the dense loss."""
+    cache = trainer_class.__dict__.get("_unsloth_gkd_jsd_supported_cache", None)
+    if cache is not None:
+        return cache
+    required = (
+        "student_logits = student_logits / temperature",
+        "teacher_logits = teacher_logits / temperature",
+        "student_log_probs = F.log_softmax(student_logits, dim=-1)",
+        "teacher_log_probs = F.log_softmax(teacher_logits, dim=-1)",
+        "if beta == 0:",
+        "jsd = F.kl_div(student_log_probs, teacher_log_probs, reduction='none', log_target=True)",
+        "elif beta == 1:",
+        "jsd = F.kl_div(teacher_log_probs, student_log_probs, reduction='none', log_target=True)",
+        "kl_teacher = F.kl_div(mixture_log_probs, teacher_log_probs, reduction='none', log_target=True)",
+        "kl_student = F.kl_div(mixture_log_probs, student_log_probs, reduction='none', log_target=True)",
+        "jsd = beta * kl_teacher + (1 - beta) * kl_student",
+        "mask = labels != -100",
+        "jsd = jsd[mask]",
+        "if reduction == 'batchmean':",
+    )
+    known = set(required) | {
+        "@staticmethod",
+        "def generalized_jsd_loss(student_logits, teacher_logits, labels=None, beta=0.5, temperature=1.0, reduction='batchmean'):",
+        "def generalized_jsd_loss(student_logits, teacher_logits, labels=None, beta=0.5, temperature=1.0, reduction='batchmean', num_items_in_batch=None):",
+        "else:",
+        "if labels is not None:",
+        "beta = torch.tensor(beta, dtype=student_log_probs.dtype)",
+        "beta = torch.tensor(beta, dtype=student_log_probs.dtype, device=student_log_probs.device)",
+        "mixture_log_probs = torch.logsumexp(torch.stack([student_log_probs + torch.log(1 - beta), teacher_log_probs + torch.log(beta)]), dim=0)",
+        "mixture_log_probs = torch.logsumexp(torch.stack([student_log_probs + torch.log1p(-beta), teacher_log_probs + torch.log(beta)]), dim=0)",
+        "if num_items_in_batch is not None:",
+        "jsd_sum = jsd.sum()",
+        "if isinstance(num_items_in_batch, torch.Tensor):",
+        "num_items_in_batch = num_items_in_batch.to(jsd_sum.device)",
+        "return jsd_sum / num_items_in_batch",
+        "return jsd.sum() / mask.sum() if labels is not None else jsd.sum() / (jsd.size(0) * jsd.size(1))",
+        "return jsd.sum() / mask.sum() if labels is not None else jsd.sum() / jsd.size(0)",
+        "denom = mask.sum().clamp_min(1) if labels is not None else max(jsd.size(0), 1)",
+        "return jsd.sum() / denom",
+        "elif reduction == 'sum':",
+        "return jsd.sum()",
+        "elif reduction == 'mean':",
+        "return jsd.mean()",
+        "return jsd",
+    }
+    ok = False
+    try:
+        source = _unsloth_gkd_canonical(inspect.getsource(trainer_class.generalized_jsd_loss))
+        lines = [line.strip() for line in source.splitlines() if line.strip()]
+        signature = next((line for line in lines if line.startswith("def ")), "")
+        ok = (
+            all(line in known for line in lines)
+            and all(line in lines for line in required)
+            # a num_items_in_batch parameter must come with its reduction, and vice versa
+            and (
+                ("num_items_in_batch=None" in signature)
+                == ("return jsd_sum / num_items_in_batch" in lines)
+            )
+        )
+    except Exception:
+        ok = False
+    try:
+        setattr(trainer_class, "_unsloth_gkd_jsd_supported_cache", ok)
+    except Exception:
+        pass
+    return ok
+
+
+def _unsloth_gkd_note_fallback(trainer, reason):
+    """Count why the chunked path declined (``trainer._unsloth_gkd_chunked_fallbacks``), log each reason once."""
+    try:
+        fallbacks = trainer.__dict__.setdefault("_unsloth_gkd_chunked_fallbacks", {})
+    except Exception:
+        return None
+    if reason not in fallbacks:
+        try:
+            from unsloth_zoo.log import logger as _gkd_logger
+            _gkd_logger.info(
+                f"Unsloth: GKD chunked JSD not used ({reason}); using TRL's dense loss."
+            )
+        except Exception:
+            pass
+    fallbacks[reason] = fallbacks.get(reason, 0) + 1
+    return None
+
+
+def _unsloth_gkd_chunk_size(vocab_size):
+    """Rows per chunk: ``UNSLOTH_GKD_CHUNK_SIZE`` when set, else about 2**26 logits per chunk, bounded to [64, 1024]."""
+    requested = os.environ.get("UNSLOTH_GKD_CHUNK_SIZE", "")
+    if requested.strip().isdigit() and int(requested) > 0:
+        return int(requested)
+    rows = (1 << 26) // max(int(vocab_size), 1)
+    return int(min(1024, max(64, 1 << (max(rows, 1).bit_length() - 1))))
+
+
+def _unsloth_gkd_chunked_loss(self, model, inputs, num_items_in_batch, layout):
+    """TRL's GKD loss without either full logits tensor, or ``None`` to run TRL's own ``compute_loss``."""
+    if layout is None:
+        return None
+    if distillation_chunked_jsd is None:
+        return _unsloth_gkd_note_fallback(self, "unsloth_zoo has no distillation_chunked_jsd")
+    if os.environ.get("UNSLOTH_GKD_CHUNKED", "1").lower() in ("0", "false", "no", "off"):
+        return _unsloth_gkd_note_fallback(self, "UNSLOTH_GKD_CHUNKED=0")
+    if getattr(self, "use_liger_gkd_loss", False):
+        return _unsloth_gkd_note_fallback(self, "use_liger_gkd_loss")
+    if getattr(self, "is_fsdp_enabled", False) or getattr(self, "is_deepspeed_enabled", False):
+        return _unsloth_gkd_note_fallback(self, "FSDP / DeepSpeed")
+    try:
+        missing = any(k not in inputs for k in ("input_ids", "attention_mask", "labels"))
+    except Exception:
+        missing = True
+    if missing:
+        return _unsloth_gkd_note_fallback(self, "inputs")
+    if layout["shift"] == "prompt" and "prompts" not in inputs:
+        return _unsloth_gkd_note_fallback(self, "inputs")
+    teacher_model = getattr(self, "teacher_model", None)
+    if teacher_model is None:
+        return _unsloth_gkd_note_fallback(self, "no teacher_model")
+    if not _unsloth_gkd_jsd_supported(type(self)):
+        return _unsloth_gkd_note_fallback(self, "generalized_jsd_loss is not TRL's")
+    try:
+        unwrapped_student = self.accelerator.unwrap_model(model)
+        unwrapped_teacher = self.accelerator.unwrap_model(teacher_model)
+    except Exception:
+        return _unsloth_gkd_note_fallback(self, "unwrap_model")
+    student_head = _unsloth_gkd_dense_head(unwrapped_student)
+    teacher_head = _unsloth_gkd_dense_head(unwrapped_teacher)
+    if student_head is None or teacher_head is None:
+        return _unsloth_gkd_note_fallback(self, "output head is not a dense nn.Linear")
+    if student_head.weight.shape[0] != teacher_head.weight.shape[0]:
+        return _unsloth_gkd_note_fallback(self, "vocab mismatch")
+    # MiniCPM3 divides hidden states by logits_scaling before lm_head; a wrapped forward's hidden_states[-1] predates it.
+    for unwrapped in (unwrapped_student, unwrapped_teacher):
+        for config in _unsloth_text_configs(_unsloth_get_model_config(unwrapped)):
+            if getattr(config, "model_type", None) == "minicpm3":
+                return _unsloth_gkd_note_fallback(
+                    self, "minicpm3 scales hidden states before the head"
+                )
+    # DDP(find_unused_parameters=True) marks a head skipped in forward as unused, then its grad hook fires twice.
+    if getattr(model, "find_unused_parameters", False) and any(
+        p is not None and p.requires_grad for p in (student_head.weight, student_head.bias)
+    ):
+        return _unsloth_gkd_note_fallback(self, "DDP find_unused_parameters with a trainable head")
+
+    prior_hidden_states = os.environ.get("UNSLOTH_RETURN_HIDDEN_STATES")
+    os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "1"
+    try:
+        student_outputs = model(
+            input_ids = inputs["input_ids"],
+            attention_mask = inputs["attention_mask"],
+        )
+        teacher_model.eval()
+        with torch.no_grad():
+            teacher_outputs = teacher_model(
+                input_ids = inputs["input_ids"],
+                attention_mask = inputs["attention_mask"],
+            )
+    finally:
+        if prior_hidden_states is None:
+            os.environ.pop("UNSLOTH_RETURN_HIDDEN_STATES", None)
+        else:
+            os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = prior_hidden_states
+
+    student_states = student_outputs.logits
+    teacher_states = teacher_outputs.logits
+    if layout["shift"] == "prompt":
+        prompt_lengths = inputs["prompts"].shape[1]
+        student_states = student_states[:, prompt_lengths - 1 : -1, :]
+        teacher_states = teacher_states[:, prompt_lengths - 1 : -1, :]
+        shifted_labels = inputs["labels"][:, prompt_lengths:]
+    else:
+        student_states = student_states[:, :-1, :]
+        teacher_states = teacher_states[:, :-1, :]
+        shifted_labels = inputs["labels"][:, 1:]
+
+    student_scale, student_softcap = _unsloth_gkd_logit_transforms(unwrapped_student)
+    teacher_scale, teacher_softcap = _unsloth_gkd_logit_transforms(unwrapped_teacher)
+    items = num_items_in_batch if layout["num_items_in_batch"] else None
+
+    student_hidden = _unsloth_grpo_returns_hidden_states(
+        unwrapped_student, student_states, student_head.weight
+    )
+    teacher_hidden = _unsloth_grpo_returns_hidden_states(
+        unwrapped_teacher, teacher_states, teacher_head.weight
+    )
+    if not (student_hidden and teacher_hidden):
+        if student_hidden:
+            student_states = _unsloth_gkd_project(
+                student_states, student_head, student_scale, student_softcap
+            )
+        if teacher_hidden:
+            with torch.no_grad():
+                teacher_states = _unsloth_gkd_project(
+                    teacher_states, teacher_head, teacher_scale, teacher_softcap
+                )
+        _unsloth_gkd_note_fallback(self, "a forward returned logits, not hidden states")
+        # TRL's dense path gets both logits on the input device (accelerate's top-level hook), beside the labels.
+        student_states = student_states.to(shifted_labels.device)
+        teacher_states = teacher_states.to(shifted_labels.device)
+        extra = {}
+        if layout["num_items_in_batch"]:
+            extra["num_items_in_batch"] = num_items_in_batch
+        return self.generalized_jsd_loss(
+            student_logits = student_states,
+            teacher_logits = teacher_states,
+            labels = shifted_labels,
+            beta = self.beta,
+            **extra,
+        )
+
+    # A dispatched model can return hidden states off its head's device; the zoo's accumulators follow the states.
+    student_states = student_states.to(student_head.weight.device)
+    teacher_states = teacher_states.to(teacher_head.weight.device)
+    loss, _entropy_sum, _n_valid = distillation_chunked_jsd(
+        student_states,
+        teacher_states.detach(),
+        student_head.weight,
+        teacher_head.weight.detach(),
+        shifted_labels != -100,
+        beta = float(self.beta),
+        chunk_size = _unsloth_gkd_chunk_size(student_head.weight.shape[0]),
+        num_items_in_batch = items,
+        student_lm_head_bias = student_head.bias,
+        teacher_lm_head_bias = None if teacher_head.bias is None else teacher_head.bias.detach(),
+        student_logit_scale = student_scale,
+        teacher_logit_scale = teacher_scale,
+        student_final_logit_softcapping = student_softcap,
+        teacher_final_logit_softcapping = teacher_softcap,
+        # No TRL release passes a temperature to generalized_jsd_loss (GKDConfig.temperature is for sampling).
+        temperature = 1.0,
+    )
+    try:
+        self._unsloth_gkd_chunked_calls = getattr(self, "_unsloth_gkd_chunked_calls", 0) + 1
+    except Exception:
+        pass
+    return loss
+
+
+def gkd_trainer_compute_loss(function_name, function):
+    """Route the generated ``compute_loss`` through the chunked loss, keeping TRL's body as the fallback."""
+    if function_name != "compute_loss" or "_unsloth_trl_compute_loss" in function:
+        return function
+    layout = _unsloth_gkd_layout(function)
+    if layout is None or distillation_chunked_jsd is None:
+        return function
+    renamed, n = re.subn(
+        r"\bdef compute_loss\(", "def _unsloth_trl_compute_loss(", function, count = 1
+    )
+    if n != 1:
+        return function
+    indent = re.search(r"^([ \t]*)def compute_loss\(", function, flags = re.MULTILINE).group(1)
+    wrapper = textwrap.indent(
+        "def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):\n"
+        "    # Unsloth: chunked generalized JSD over hidden states; TRL's own loss below is the fallback.\n"
+        "    if not return_outputs:\n"
+        "        loss = _unsloth_gkd_chunked_loss(\n"
+        f"            self, model, inputs, num_items_in_batch, {layout!r},\n"
+        "        )\n"
+        "        if loss is not None:\n"
+        "            return loss\n"
+        "    return self._unsloth_trl_compute_loss(\n"
+        "        model, inputs, return_outputs=return_outputs, num_items_in_batch=num_items_in_batch,\n"
+        "    )\n",
+        indent,
+    )
+    return wrapper + "\n" + renamed
+
+
+RL_FUNCTIONS["gkd_trainer"].append(gkd_trainer_compute_loss)
+for _gkd_item in (
+    _unsloth_get_model_config,
+    _unsloth_text_configs,
+    _unsloth_get_final_logit_softcapping,
+    _unsloth_resolve_logit_scales,
+    _unsloth_grpo_returns_hidden_states,
+    _unsloth_grpo_hidden_states_signal,
+    _unsloth_gkd_canonical,
+    _unsloth_gkd_jsd_supported,
+    _unsloth_gkd_note_fallback,
+    _unsloth_gkd_dense_head,
+    _unsloth_gkd_logit_transforms,
+    _unsloth_gkd_project,
+    _unsloth_gkd_chunk_size,
+    _unsloth_gkd_chunked_loss,
+):
+    RL_PRE_ITEMS["gkd_trainer"].append(inspect.getsource(_gkd_item))
+RL_PRE_ITEMS["gkd_trainer"].append(
+    "import re\n"
+    "import inspect\n"
+    "try:\n"
+    "    from unsloth_zoo.device_map_planner import detect_logit_transforms\n"
+    "except Exception:\n"
+    "    detect_logit_transforms = None\n"
+    "try:\n"
+    "    from unsloth_zoo.rl_replacements import distillation_chunked_jsd\n"
+    "except Exception:\n"
+    "    distillation_chunked_jsd = None\n"
+)

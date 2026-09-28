@@ -408,6 +408,7 @@ test("automatic GPU settings preserve recipient overrides until explicitly selec
   assert.deepEqual(mergeSharedRunConfig(recipient, render().config, true), {
     ...recipient,
     ...automatic,
+    tensorSplit: null,
   });
   const selected = shareDialogHarness({
     ...DEFAULT_PER_MODEL_CONFIG,

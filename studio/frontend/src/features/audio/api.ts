@@ -85,7 +85,10 @@ export interface AudioGalleryClip {
   sample_rate: number;
   duration_s: number;
   created_at: string;
+  pinned?: boolean;
   archived?: boolean;
+  /** The server's unpinned sort key: the drag key, else the file mtime. */
+  order_at?: number | null;
 }
 
 export interface AudioGalleryListResponse {
@@ -93,16 +96,40 @@ export interface AudioGalleryListResponse {
   has_more: boolean;
   next_before_mtime: number | null;
   next_before_id: string | null;
+  next_before_pin?: number | null;
+}
+
+/** Where the next page starts: the last clip's order key, id and pin rank (null if unpinned). */
+export interface AudioGalleryCursor {
+  mtime: number;
+  id: string;
+  pin?: number | null;
+}
+
+export function audioGalleryCursor(
+  page: AudioGalleryListResponse,
+): AudioGalleryCursor | null {
+  return page.next_before_mtime !== null && page.next_before_id !== null
+    ? {
+        mtime: page.next_before_mtime,
+        id: page.next_before_id,
+        pin: page.next_before_pin ?? null,
+      }
+    : null;
 }
 
 export async function listAudioGallery(
   offset: number,
   limit: number,
-  before?: { mtime: number; id: string } | null,
+  before?: AudioGalleryCursor | null,
   archived = false,
 ): Promise<AudioGalleryListResponse> {
+  const pin =
+    before?.pin !== null && before?.pin !== undefined
+      ? `&before_pin=${encodeURIComponent(before.pin)}`
+      : "";
   const cursor = before
-    ? `&before_mtime=${encodeURIComponent(before.mtime)}&before_id=${encodeURIComponent(before.id)}`
+    ? `&before_mtime=${encodeURIComponent(before.mtime)}&before_id=${encodeURIComponent(before.id)}${pin}`
     : "";
   const response = await authFetch(
     `/api/inference/audio/gallery?offset=${offset}&limit=${limit}&archived=${archived}${cursor}`,
@@ -112,7 +139,7 @@ export async function listAudioGallery(
 
 export async function setAudioClipFlags(
   id: string,
-  flags: { archived?: boolean },
+  flags: { pinned?: boolean; archived?: boolean },
 ): Promise<AudioGalleryClip> {
   const response = await authFetch(
     `/api/inference/audio/gallery/${encodeURIComponent(id)}`,
@@ -123,6 +150,38 @@ export async function setAudioClipFlags(
     },
   );
   return parseJson<AudioGalleryClip>(response);
+}
+
+/** Move one clip to just after `afterId` (null = top). */
+export async function moveAudioClip(
+  id: string,
+  afterId: string | null,
+): Promise<AudioGalleryClip> {
+  const response = await authFetch(
+    `/api/inference/audio/gallery/${encodeURIComponent(id)}/move`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ after_id: afterId }),
+    },
+  );
+  return parseJson<AudioGalleryClip>(response);
+}
+
+/** Copy one clip into a chat project's folder. */
+export async function addAudioClipToProject(
+  id: string,
+  projectId: string,
+): Promise<{ path: string; already: boolean }> {
+  const response = await authFetch(
+    `/api/inference/audio/gallery/${encodeURIComponent(id)}/project`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ project_id: projectId }),
+    },
+  );
+  return parseJson<{ path: string; already: boolean }>(response);
 }
 
 export async function deleteAudioClip(id: string): Promise<void> {

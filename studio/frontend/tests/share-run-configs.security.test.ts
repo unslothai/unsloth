@@ -20,10 +20,9 @@ const { sharedExtraArgsError, validSharedExtraArgs } = await import(
 );
 const { diagnoseExtraArgs, extraArgsAreLoadable, formatExtraArgs } =
   await import("../src/features/model-picker/model-config/llama-extra-args.ts");
-const { SHARED_CONFIG_KEYS, mergeSharedRunConfig } = await import(
-  "../src/features/model-picker/sharing/fields.ts"
-);
-const { DEFAULT_PER_MODEL_CONFIG } = await import(
+const { SHARED_CONFIG_KEYS, formatSharedConfigValue, mergeSharedRunConfig } =
+  await import("../src/features/model-picker/sharing/fields.ts");
+const { DEFAULT_PER_MODEL_CONFIG, MLX_KV_QUANTS } = await import(
   "../src/features/model-picker/model-config/per-model-config.ts"
 );
 
@@ -44,12 +43,12 @@ function rejects(query: string) {
 
 const fullConfig: Omit<
   typeof DEFAULT_PER_MODEL_CONFIG,
-  "chatTemplateOverride"
+  "chatTemplateOverride" | "tensorSplit"
 > = {
   customContextLength: 32768,
   maxSeqLength: 32768,
   kvCacheDtype: "q8_0",
-  mlxKvBits: 4,
+  mlxKvQuant: "4",
   speculativeType: "dspark",
   specDraftNMax: 8,
   specDraftCacheDtype: "q4_0",
@@ -144,6 +143,121 @@ test("every field and the complete payload round-trip in browser and desktop lin
       assert.ok(!url.includes("token=private"));
     }
   }
+});
+
+test("MLX links round-trip every upstream quantization mode and Auto", () => {
+  for (const mlxKvQuant of [...MLX_KV_QUANTS, null]) {
+    const value = { config: { mlxKvQuant } };
+    for (const base of [undefined, "http://localhost:8888"]) {
+      const link = createRunConfigLink(value, base);
+      assert.deepEqual(parseRunConfigLink(link), { kind: "valid", value });
+      assert.ok(!link.includes("mlxKvBits"));
+    }
+  }
+  assert.equal(
+    formatSharedConfigValue("mlxKvQuant", { mlxKvQuant: "tq-3.5" }),
+    "TurboQuant 3.5-bit",
+  );
+  assert.equal(formatSharedConfigValue("mlxKvQuant", { mlxKvQuant: "4" }), "4-bit");
+  assert.equal(formatSharedConfigValue("mlxKvQuant", { mlxKvQuant: null }), "Default");
+});
+
+test("legacy numeric MLX links import into the new field and re-share in its format", () => {
+  for (const prefix of prefixes) {
+    for (const bits of [8, 6, 5, 4, 3, 2, null]) {
+      const parsed = parseRunConfigLink(`${prefix}mlxKvBits=${bits}`);
+      assert.deepEqual(parsed, {
+        kind: "valid",
+        value: { config: { mlxKvQuant: bits === null ? null : String(bits) } },
+      });
+      assert.equal(parsed.kind, "valid");
+      if (parsed.kind !== "valid") throw new Error("Legacy MLX link rejected");
+      const merged = mergeSharedRunConfig(
+        { ...DEFAULT_PER_MODEL_CONFIG, mlxKvQuant: "tq-4" },
+        parsed.value.config,
+        false,
+      );
+      assert.equal(merged.mlxKvQuant, bits === null ? null : String(bits));
+      assert.equal(Object.hasOwn(merged, "mlxKvBits"), false);
+      const link = createRunConfigLink(parsed.value);
+      assert.ok(link.includes("mlxKvQuant="));
+      assert.ok(!link.includes("mlxKvBits"));
+      assert.deepEqual(parseRunConfigLink(link), parsed);
+    }
+  }
+});
+
+test("MLX links reject invalid legacy widths, invalid quantizations and duplicate aliases", () => {
+  for (const bits of [1, 3.5, 7, -1, "4", "tq-4", true, [], {}]) {
+    rejects(query("mlxKvBits", bits));
+  }
+  for (const quant of ["1", "3.5", "tq-5", "TQ-4", " 4 ", true, [], {}]) {
+    rejects(query("mlxKvQuant", quant));
+  }
+  for (const params of [
+    "mlxKvBits=4&mlxKvQuant=4",
+    "mlxKvQuant=tq-4&mlxKvBits=4",
+    "mlxKvBits=null&mlxKvQuant=null",
+    "mlxKvBits=4&mlxKvBits=4",
+    "mlxKvBits=4&%6DlxKvQuant=4",
+    "mlxKvBits=NaN",
+    "mlxKvBits=1e309",
+  ]) {
+    rejects(params);
+  }
+});
+
+test("GPU splits stay local and cannot be supplied through a shared link", () => {
+  for (const tensorSplit of [null, [3, 1]]) {
+    rejects(query("tensorSplit", tensorSplit));
+    const link = createRunConfigLink({ config: { tensorSplit, nParallel: 2 } });
+    assert.ok(!link.includes("tensorSplit"));
+    assert.deepEqual(parseRunConfigLink(link), {
+      kind: "valid",
+      value: { config: { nParallel: 2 } },
+    });
+  }
+});
+
+test("importing different GPU selection or automatic placement clears a local split", () => {
+  const current = {
+    ...DEFAULT_PER_MODEL_CONFIG,
+    gpuMemoryMode: "manual" as const,
+    gpuLayers: 32,
+    selectedGpuIds: [0, 1],
+    selectedGpuIndexKind: "physical" as const,
+    tensorSplit: [3, 1],
+  };
+  for (const patch of [
+    { selectedGpuIds: [1, 0] },
+    { selectedGpuIds: [0, 2] },
+    { selectedGpuIds: [0] },
+    { selectedGpuIds: null },
+    { selectedGpuIndexKind: "vulkan" as const },
+    { selectedGpuIndexKind: null },
+    { gpuMemoryMode: "auto" as const },
+    { gpuLayers: -1 },
+  ]) {
+    assert.equal(mergeSharedRunConfig(current, patch, true).tensorSplit, null);
+  }
+  for (const patch of [
+    { nParallel: 2 },
+    { selectedGpuIds: [0, 1] },
+    { selectedGpuIndexKind: "physical" as const },
+    { selectedGpuIds: undefined },
+  ]) {
+    assert.deepEqual(mergeSharedRunConfig(current, patch, true).tensorSplit, [3, 1]);
+  }
+  assert.equal(
+    mergeSharedRunConfig(
+      DEFAULT_PER_MODEL_CONFIG,
+      { selectedGpuIds: [0, 1] },
+      true,
+    ).tensorSplit,
+    null,
+  );
+  assert.deepEqual(current.tensorSplit, [3, 1]);
+  assert.deepEqual(current.selectedGpuIds, [0, 1]);
 });
 
 test("an empty link and independently omitted model identity fields are valid", () => {

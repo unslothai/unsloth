@@ -13,12 +13,13 @@ import {
   LOAD_MODES,
   MAX_SEQ_LENGTH_MAX,
   MAX_SEQ_LENGTH_MIN,
-  MLX_KV_BITS,
+  MLX_KV_QUANTS,
   N_BATCH_MAX,
   N_BATCH_MIN,
   N_PARALLEL_MAX,
   N_PARALLEL_MIN,
   SPECULATIVE_TYPES,
+  mlxKvQuantLabel,
 } from "../model-config/per-model-config";
 import { validSharedExtraArgs } from "./extra-args";
 
@@ -44,7 +45,7 @@ const cacheType = nullable(
 
 export type SharedConfigKey = Exclude<
   keyof PerModelConfig,
-  "chatTemplateOverride"
+  "chatTemplateOverride" | "tensorSplit"
 >;
 type Field = { label: string; valid: Validator; error?: string };
 
@@ -62,9 +63,9 @@ export const SHARED_CONFIG_FIELDS: Record<SharedConfigKey, Field> = {
     ),
   },
   kvCacheDtype: { label: "KV cache type", valid: cacheType },
-  mlxKvBits: {
-    label: "MLX KV bits",
-    valid: nullable((value) => choice(value, MLX_KV_BITS)),
+  mlxKvQuant: {
+    label: "MLX KV quantization",
+    valid: nullable((value) => choice(value, MLX_KV_QUANTS)),
   },
   speculativeType: {
     label: "Speculative decoding",
@@ -164,6 +165,9 @@ export function formatSharedConfigValue(
     return formatExtraArgs(config.llamaExtraArgs) || "No extra arguments";
   }
   const value = config[key];
+  if (key === "mlxKvQuant" && typeof value === "string") {
+    return mlxKvQuantLabel(value);
+  }
   return value == null
     ? "Default"
     : typeof value === "string" && value !== ""
@@ -197,6 +201,21 @@ export function mergeSharedRunConfig(
     !Object.hasOwn(provided, "customContextLength")
   ) {
     provided.customContextLength = null;
+  }
+  const gpuSelectionChanged = (
+    ["selectedGpuIds", "selectedGpuIndexKind"] as const
+  ).some(
+    (key) =>
+      Object.hasOwn(provided, key) &&
+      JSON.stringify(provided[key] ?? null) !==
+        JSON.stringify(defaults[key] ?? null),
+  );
+  if (
+    gpuSelectionChanged ||
+    provided.gpuMemoryMode === "auto" ||
+    provided.gpuLayers === -1
+  ) {
+    provided.tensorSplit = null;
   }
   return { ...defaults, ...provided };
 }

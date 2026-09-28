@@ -129,6 +129,19 @@ function readConfigField(
   key: string,
   value: string,
 ): void {
+  if (key === "mlxKvBits") {
+    let bits: unknown;
+    try {
+      bits = JSON.parse(value);
+    } catch {
+      throw new Error(configFieldError("mlxKvQuant"));
+    }
+    if (bits !== null && typeof bits !== "number") {
+      throw new Error(configFieldError("mlxKvQuant"));
+    }
+    key = "mlxKvQuant";
+    value = bits === null ? "null" : String(bits);
+  }
   if (!isSharedConfigKey(key)) {
     throw new Error(
       "This run configuration link contains an unsupported setting.",
@@ -154,12 +167,13 @@ function parseParameters(query: string): SharedRunConfig {
   const seen = new Set<string>();
   const result: SharedRunConfig = { config: {} };
   for (const [key, value] of new URLSearchParams(query)) {
-    if (seen.has(key)) {
+    const canonicalKey = key === "mlxKvBits" ? "mlxKvQuant" : key;
+    if (seen.has(canonicalKey)) {
       throw new Error(
         "This run configuration link contains a repeated setting.",
       );
     }
-    seen.add(key);
+    seen.add(canonicalKey);
     readParameter(result, key, value);
   }
   if (!seen.has("v")) {
