@@ -38,14 +38,18 @@ def _load(*names):
     }
     wanted = set(names)
     for node in ast.parse(source).body:
-        if isinstance(node, ast.FunctionDef) and node.name in wanted:
+        targets = [t.id for t in getattr(node, "targets", []) if isinstance(t, ast.Name)]
+        name = node.name if isinstance(node, ast.FunctionDef) else (targets or [None])[0]
+        if name in wanted:
             exec(ast.get_source_segment(source, node), ns)
-            wanted.discard(node.name)
+            wanted.discard(name)
     return ns, wanted
 
 
 NS, MISSING = _load(
+    "_NATIVE_DEFAULT_IMAGE_PROCESSOR_TYPES",
     "_missing_torchvision_error",
+    "_preprocessor_config_exists",
     "_native_default_image_processor",
     "_construct_vlm_processor_fallback",
 )
@@ -56,7 +60,7 @@ def test_functions_exist():
     assert not MISSING, f"not found in vision.py: {sorted(MISSING)}"
 
 
-def _step_repo(tmp_path):
+def _tokenizer_repo(tmp_path):
     from tokenizers import Tokenizer, models, pre_tokenizers
 
     specials = [
@@ -74,6 +78,11 @@ def _step_repo(tmp_path):
     tok.add_special_tokens(specials)
     tok.save(str(tmp_path / "tokenizer.json"))
     (tmp_path / "tokenizer_config.json").write_text(json.dumps({"unk_token": "<unk>"}))
+    return str(tmp_path)
+
+
+def _step_repo(tmp_path):
+    _tokenizer_repo(tmp_path)
     config = transformers.Step3p7Config()
     config.save_pretrained(str(tmp_path))
     assert not (tmp_path / "preprocessor_config.json").exists()
@@ -114,4 +123,12 @@ def test_broken_preprocessor_config_is_not_replaced_by_defaults(tmp_path):
         json.dumps({"image_processor_type": "NoSuchImageProcessor"})
     )
     processor, err = NS["_construct_vlm_processor_fallback"](repo, "step3p5", None, False)
+    assert processor is None and err is not None
+
+
+def test_unlisted_vlm_without_preprocessor_config_still_fails(tmp_path):
+    # LLaVA has a registered image processor, but its class defaults need not match the checkpoint.
+    repo = _tokenizer_repo(tmp_path)
+    transformers.LlavaConfig().save_pretrained(repo)
+    processor, err = NS["_construct_vlm_processor_fallback"](repo, "llava", None, False)
     assert processor is None and err is not None

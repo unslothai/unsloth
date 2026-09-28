@@ -1134,6 +1134,34 @@ def _missing_torchvision_error(error = None):
     return False
 
 
+# Model types whose native image processor defaults are the checkpoint's own settings (Step-3.7
+# hardcodes them in its remote processor); other VLMs keep failing loudly without a config.
+_NATIVE_DEFAULT_IMAGE_PROCESSOR_TYPES = frozenset({"step3p7"})
+
+
+def _preprocessor_config_exists(
+    load_path,
+    token = None,
+    cache_dir = None,
+    local_files_only = False,
+    revision = None,
+):
+    from transformers.utils import cached_file
+
+    return (
+        cached_file(
+            load_path,
+            "preprocessor_config.json",
+            token = token,
+            cache_dir = cache_dir,
+            local_files_only = local_files_only,
+            revision = revision,
+            _raise_exceptions_for_missing_entries = False,
+        )
+        is not None
+    )
+
+
 def _native_default_image_processor(
     load_path,
     model_type,
@@ -1164,6 +1192,8 @@ def _native_default_image_processor(
     except Exception:
         pass
     for mt in model_types:
+        if mt not in _NATIVE_DEFAULT_IMAGE_PROCESSOR_TYPES:
+            continue
         names = IMAGE_PROCESSOR_MAPPING_NAMES.get(mt)
         if not names:
             continue
@@ -1217,15 +1247,19 @@ def _construct_vlm_processor_fallback(
                 revision = revision,
             )
         except Exception as _ip_err:
-            # Only a missing preprocessor_config.json (OSError); a present-but-broken one keeps its error.
+            # Only a missing preprocessor_config.json (local or Hub); a present-but-broken one keeps its error.
             if (
-                not isinstance(_ip_err, OSError)
-                or _is_offline_related_error(_ip_err)
+                _is_offline_related_error(_ip_err)
                 or _missing_torchvision_error(_ip_err)
-                or os.path.isfile(os.path.join(load_path, "preprocessor_config.json"))
+                or _preprocessor_config_exists(
+                    load_path,
+                    token = token,
+                    cache_dir = cache_dir,
+                    local_files_only = local_files_only,
+                    revision = revision,
+                )
             ):
                 raise
-            # No preprocessor_config.json (Step-3.7-Flash hardcodes sizes in its remote processor).
             image_processor = _native_default_image_processor(
                 load_path,
                 model_type,
