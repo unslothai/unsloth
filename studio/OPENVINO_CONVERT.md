@@ -86,6 +86,57 @@ What the sidecar supports:
 `studio run` reuses the same key across runs (`--api-key-name`, default `cli`), so it only has to
 be pasted in once. Then run `opencode --model ornith-local/ornith-35b`.
 
+### Using it from pi
+
+Add a provider to `~/.pi/agent/models.json`:
+
+```json
+{
+  "providers": {
+    "unsloth-local": {
+      "baseUrl": "http://127.0.0.1:8000/v1",
+      "api": "openai-completions",
+      "apiKey": "<key printed by studio run>",
+      "models": [
+        { "id": "unsloth/ornith-35b-uncensored-int4-ov", "name": "Ornith 35B INT4 (OpenVINO)", "context": 32768 }
+      ]
+    }
+  }
+}
+```
+
+```bash
+pi --model unsloth-local/unsloth/ornith-35b-uncensored-int4-ov              # interactive
+pi --model unsloth-local/unsloth/ornith-35b-uncensored-int4-ov --print "…"  # one-shot
+```
+
+### Quick check with curl
+
+```bash
+KEY=<key printed by studio run>
+curl http://127.0.0.1:8000/v1/chat/completions -H "Authorization: Bearer $KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"messages": [{"role": "user", "content": "Capital of France? One word."}]}'
+# -> choices[0].message.content = "Paris", the reasoning in reasoning_content
+# add "stream": true for SSE, or "enable_thinking": false to skip reasoning
+```
+
+If port 8000 is already taken (for example by another Studio), `studio run` moves to the next free
+port and prints it. Point the client at that port, or stop the other process first.
+
+### Why no tools yet
+
+The model can call tools (it emits `<tool_call>{...}</tool_call>`), but the sidecar does not wire
+them up:
+
+1. `tools` are not passed to `apply_chat_template`, so the prompt never lists them.
+2. No parser turns `<tool_call>` text into OpenAI `tool_calls` deltas (llama.cpp does this with
+   `--jinja`; OpenVINO GenAI has no equivalent).
+3. `tool_calls` / `role: "tool"` messages are flattened to text in the history.
+
+Adding them means doing those three things, plus a streaming `<tool_call>` splitter like
+`ThinkSplitter`, then setting `supports_tools = True`.
+
 ## API
 
 | method | path | body / query | result |
