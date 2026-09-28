@@ -419,10 +419,14 @@ def run_attention(
             bsz, q_len, n_heads, head_dim
         )
     elif backend == XFORMERS:
+        base_mask = context.causal_mask
+        # Only CausalLM_fast_forward supplies the mask; a direct decoder call (Liger, TRL's get_decoder paths) would attend bidirectionally.
+        if base_mask is None and context.seq_info is None and q_len == kv_seq_len:
+            base_mask = xformers.attn_bias.LowerTriangularMask()
         attn_bias = build_xformers_block_causal_mask(
             context.seq_info,
             sliding_window = sliding_window,
-            base_mask = context.causal_mask,
+            base_mask = base_mask,
         )
         attn_bias = move_xformers_attention_bias(attn_bias, Q.device)
 
