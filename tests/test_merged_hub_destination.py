@@ -165,6 +165,7 @@ def saving(monkeypatch, tmp_path):
         _normalize_compressed_method = lambda method: None,
         _normalize_torchao_method = lambda method: None,
         _is_qwen3_5_vlm = lambda model: False,
+        raise_if_merging_mistral_format_view = lambda model, save_method: None,
         logger = SimpleNamespace(warning_once = lambda *args: None),
         # save_method="lora" leaves this module for the adapter save rather than the merge,
         # so record the handover instead of re-implementing it.

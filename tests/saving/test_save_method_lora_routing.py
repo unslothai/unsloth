@@ -228,6 +228,7 @@ _GENERIC_SAVE_STUBBED_HELPERS = frozenset(
         "_qwen3_5_vlm_state_dict_for_save",
         "_determine_username",
         "unsloth_save_model",
+        "raise_if_merging_mistral_format_view",
     }
 )
 
@@ -258,6 +259,7 @@ def _routing_environment(monkeypatch, model):
         _qwen3_5_vlm_state_dict_for_save = _not_reached,
         _determine_username = lambda repo, old, token: (repo, "owner"),
         unsloth_save_model = lambda *args, **kwargs: calls["adapter"].append(kwargs),
+        raise_if_merging_mistral_format_view = lambda model, save_method: None,
         logger = types.SimpleNamespace(warning_once = lambda *a, **k: None),
         gc = types.SimpleNamespace(collect = lambda: None),
         torch = types.SimpleNamespace(
@@ -421,6 +423,7 @@ def _adapter_save_environment(monkeypatch):
             cuda = types.SimpleNamespace(empty_cache = lambda: None),
         ),
         fast_save_pickle = lambda *args, **kwargs: None,
+        raise_if_merging_mistral_format_view = lambda model, save_method: None,
     ), uploads
 
 
@@ -885,7 +888,13 @@ def test_an_unreadable_signature_forwards_the_call_unchanged():
 def test_every_helper_the_generic_save_calls_is_loaded_or_stubbed():
     """A helper added to unsloth_generic_save and missing here surfaces as a NameError in every
     routing test at once (#11526's _refuse_unsaveable_text_core did). Name it instead."""
-    top_level = {node.name for node in _TREE.body if isinstance(node, ast.FunctionDef)}
+    # Package-relative imports count too: #12144's raise_if_merging_mistral_format_view came in that way.
+    top_level = {node.name for node in _TREE.body if isinstance(node, ast.FunctionDef)} | {
+        alias.asname or alias.name
+        for node in _TREE.body
+        if isinstance(node, ast.ImportFrom) and node.level
+        for alias in node.names
+    }
     generic_save = next(
         node
         for node in _TREE.body
