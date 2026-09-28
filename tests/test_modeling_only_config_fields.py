@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""K-EXAONE 2.0 (LGAI-EXAONE/K-EXAONE-2.0-750B-A37B-FP8) sets `swiglu_limits` (clamp 7.0 on
-layers 62-77) and per-layer `sliding_windows` (128, one 4096 layer) and no `sliding_window`.
-transformers without huggingface/transformers#47802 keeps both as plain attributes: the modeling
-code never reads them and every sliding layer gets the 4096 default window, so the checkpoint
-loads and trains as a different network with no error. K-EXAONE 1 (236B) has a single
-`sliding_window` of 128 matching its list and no clamp, and must keep loading."""
+"""K-EXAONE 2.0 fields (`swiglu_limits`, per-layer `sliding_windows`) ignored by transformers without huggingface/transformers#47802."""
 
 import inspect
 
@@ -54,7 +49,7 @@ def test_k_exaone_2_refused_when_transformers_ignores_its_fields(monkeypatch):
         pytest.skip("this transformers implements K-EXAONE 2.0")
     monkeypatch.delenv("UNSLOTH_ALLOW_IGNORED_CONFIG", raising = False)
     config = _k2()
-    assert config.sliding_window == 4096  # the silent default every sliding layer gets
+    assert config.sliding_window == 4096
     with pytest.raises(RuntimeError, match = "swiglu_limits, sliding_windows"):
         loader._raise_if_modeling_ignores_config(config, ["exaone_moe"])
 

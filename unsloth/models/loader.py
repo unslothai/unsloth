@@ -526,7 +526,6 @@ _fla_advised = False
 
 
 def _exaone_moe_windows_need_support(config, windows):
-    """Per-layer windows that disagree with the single `sliding_window` every sliding layer gets."""
     layer_types = getattr(config, "layer_types", None) or []
     single = getattr(config, "sliding_window", None)
     for layer_type, window in zip(layer_types, windows or []):
@@ -535,11 +534,7 @@ def _exaone_moe_windows_need_support(config, windows):
     return False
 
 
-# Config fields whose effect lives only in modeling code: an older transformers keeps them as
-# plain attributes and silently runs a different network. K-EXAONE 2.0 (750B) ships
-# `swiglu_limits` (SwiGLU clamp on its deep layers) and per-layer `sliding_windows` (128, one
-# 4096 layer) with no `sliding_window`, so transformers without huggingface/transformers#47802
-# ignores the clamp and gives every sliding layer the 4096 default window.
+# Config fields only modeling code reads; transformers without them silently builds another network (huggingface/transformers#47802).
 _MODELING_ONLY_CONFIG_FIELDS = {
     "exaone_moe": (
         ("swiglu_limits", lambda config, v: any(float(x or 0) for x in (v or []))),
