@@ -23,6 +23,8 @@ already_imported = [mod for mod in critical_modules if mod in sys.modules]
 from .import_fixes import (
     fix_message_factory_issue,
     patch_torch_missing_attribute_error,
+    disable_torchao_without_torch_distributed,
+    fix_accelerate_dtensor_check_without_torch_distributed,
     check_triton_py_ssize_t_clean,
     check_transformers_prequantized_vlm_quant_state,
     fix_torch_check_is_size,
@@ -80,6 +82,9 @@ configure_amdgpu_asic_id_table_path()
 # AttributeError at the first one of them to reach it (#8933). It imports torch, which is
 # why the ROCm table above comes first.
 patch_torch_missing_attribute_error()
+# Ahead of everything that imports transformers, whose quantizers import torchao (AMD Windows ROCm torch).
+disable_torchao_without_torch_distributed()
+fix_accelerate_dtensor_check_without_torch_distributed()
 # Must precede `import unsloth_zoo` below, which imports bnb on ROCm.
 fix_bitsandbytes_rocm_arch_detection()
 disable_broken_causal_conv1d()
@@ -110,6 +115,8 @@ del disable_broken_causal_conv1d
 del disable_broken_vllm
 del fix_message_factory_issue
 del patch_torch_missing_attribute_error
+del disable_torchao_without_torch_distributed
+del fix_accelerate_dtensor_check_without_torch_distributed
 del fix_torch_check_is_size
 del fix_torchao_torch_symbol_skew
 del propagate_torchao_fix_to_subprocesses
