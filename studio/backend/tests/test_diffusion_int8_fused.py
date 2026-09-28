@@ -554,6 +554,8 @@ def test_fused_flux_single_then_fbcache_and_uninstall_keeps_hooks(monkeypatch):
     assert [b.__dict__.get("forward") for b in model.single_transformer_blocks] == wrappers
     calls.clear()
     out = _two_steps(model)
+    # Both caches now hold the first run's residuals; a fresh reference would round step 0 differently on some CPUs.
+    ref = _two_steps(ref_model)
     assert torch.equal(out[0], ref[0]) and torch.equal(out[1], ref[1]) and not calls
 
 

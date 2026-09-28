@@ -54,7 +54,8 @@ def test_fuse_linears_rejects_mismatched_parts():
 def test_fuse_linears_plain_bf16_matches_and_shares_storage():
     parts = [torch.nn.Linear(16, 8, bias = False) for _ in range(3)]
     x = torch.randn(5, 16)
-    ref = torch.cat([p(x) for p in parts], dim = -1)
+    # One GEMM over the stacked weights: split GEMMs can round differently (AVX512 BLAS, AMD EPYC 9B45).
+    ref = torch.nn.functional.linear(x, torch.cat([p.weight for p in parts]))
     fused = zf._fuse_linears(parts)
     assert zf._share_storage(fused, parts)
     assert torch.equal(fused(x), ref)
