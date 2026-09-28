@@ -2757,11 +2757,52 @@ def test_mlx_generate_audio_input_deltas_and_reject(monkeypatch):
     # Audio-only current turn → transcribe default, never older-turn text.
     args["messages"] = [
         {"role": "user", "content": "old unrelated question"},
-        {"role": "user", "content": [{"type": "audio"}]},
+        {"role": "assistant", "content": "old answer"},
+        {"role": "user", "content": ""},
     ]
     list(backend.generate_audio_input_response(**args))
-    assert "Please transcribe this audio." in str(calls["messages"])
-    assert "old unrelated question" not in str(calls["messages"])
+    assert calls["messages"][1:] == [
+        {"role": "user", "content": "old unrelated question"},
+        {"role": "assistant", "content": "old answer"},
+        {
+            "role": "user",
+            "content": [
+                {"type": "audio", "audio": audio},
+                {"type": "text", "text": "Please transcribe this audio."},
+            ],
+        },
+    ]
+
+    audio_turn = {
+        "role": "user",
+        "content": [
+            {"type": "audio", "audio": audio},
+            {"type": "text", "text": "Please transcribe this audio."},
+        ],
+    }
+    for history, expected in (
+        ([{"role": "user", "content": "My name is Nilay"}], [audio_turn]),
+        (
+            [{"role": "user", "content": "My name is Nilay"}, {"role": "assistant", "content": ""}],
+            [audio_turn],
+        ),
+        (
+            [
+                {"role": "user", "content": "Weather in Paris?"},
+                {"role": "assistant", "content": None, "tool_calls": [{"id": "c1"}]},
+                {"role": "tool", "tool_call_id": "c1", "content": "sunny"},
+                {"role": "assistant", "content": "It is sunny."},
+            ],
+            [
+                {"role": "user", "content": "Weather in Paris?"},
+                {"role": "assistant", "content": "It is sunny."},
+                audio_turn,
+            ],
+        ),
+    ):
+        args["messages"] = [*history, {"role": "user", "content": ""}]
+        list(backend.generate_audio_input_response(**args))
+        assert calls["messages"][1:] == expected
 
     backend.models["m"]["audio_type"] = None
     with pytest.raises(RuntimeError, match = "not supported .* MLX"):

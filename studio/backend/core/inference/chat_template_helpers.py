@@ -14,7 +14,7 @@ import re
 import string
 import weakref
 from dataclasses import dataclass
-from typing import Optional
+from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -2919,6 +2919,30 @@ def messages_have_tool_history(messages) -> bool:
     )
 
 
+def alternating_turns(messages: list) -> list:
+    from core.inference.message_content import content_to_text, named_turn
+
+    newest_user = next(
+        (m for m in reversed(messages or []) if isinstance(m, dict) and m.get("role") == "user"),
+        None,
+    )
+    turns = []
+    for message in messages or []:
+        turn = message
+        if message is not newest_user:
+            if not isinstance(message, dict) or message.get("role") not in ("user", "assistant"):
+                continue
+            text = content_to_text(message.get("content")).strip()
+            if not text:
+                continue
+            turn = named_turn({"role": message["role"], "content": text}, message)
+        if turns and turns[-1]["role"] == turn["role"]:
+            turns[-1] = turn
+        elif turns or turn["role"] == "user":
+            turns.append(turn)
+    return turns
+
+
 def messages_with_attached_image(
     messages: list,
     system_prompt: str = "",
@@ -2926,6 +2950,7 @@ def messages_with_attached_image(
     structured_content: bool = False,
     image: int = 1,
     video: bool = False,
+    audio: Any = None,
 ) -> list:
     """The conversation to render for a turn that carries attached media.
 
@@ -2982,6 +3007,8 @@ def messages_with_attached_image(
         )
         for _ in range(int(wanted))
     ]
+    if audio is not None:
+        parts.append({"type": "audio", "audio": audio})
     if not parts and not fallback_user_text:
         return conversation
     for index in range(len(conversation) - 1, -1, -1):
