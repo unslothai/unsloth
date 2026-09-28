@@ -1729,7 +1729,7 @@ _UNSLOTH_GRPO_HIDDEN_STATES_VERIFIED_ATTR = "_unsloth_grpo_hidden_states_verifie
 
 
 def _grpo_pre_head_hidden_divisor(model):
-    """MiniCPM3 divides hidden states by ``logits_scaling`` between ``hidden_states[-1]`` and ``lm_head``. Compiled forwards return them after that line, so only this wrapper must repeat it."""
+    """MiniCPM3 divides by ``logits_scaling`` before ``lm_head``; compiled forwards already include it, this wrapper does not."""
     for config in _unsloth_text_configs(getattr(model, "config", None)):
         if getattr(config, "model_type", None) == "minicpm3":
             scaling = getattr(config, "logits_scaling", None)
@@ -1865,7 +1865,6 @@ def _install_grpo_hidden_states_forward_wrapper(model):
                     f"Unsloth: {model_name}'s head input is not its last hidden state; GRPO will use its full logits instead."
                 )
                 setattr(target_model, _UNSLOTH_GRPO_HIDDEN_STATES_DEGRADED_ATTR, True)
-                # Free every layer's hidden states (and their graph) before the second forward.
                 del outputs, hidden_states
                 return original_forward(*args, **kwargs)
         if num_logits_to_keep != 0:
@@ -1926,7 +1925,7 @@ def _unsloth_note_ddp_forward(module, args):
 
 
 def _unsloth_average_gradients(ddp, bucket_bytes = 64 << 20):
-    """What DDP's reducer does at the end of backward: average every trainable grad over the process group. A param with a grad on any rank gets one everywhere (zero-filled), so every rank issues the same collectives."""
+    """DDP reducer equivalent: average trainable grads; a grad on any rank is zero-filled elsewhere so ranks issue identical collectives."""
     import torch.distributed as dist
 
     group = ddp.process_group
@@ -1972,7 +1971,7 @@ def _unsloth_average_gradients(ddp, bucket_bytes = 64 << 20):
 
 
 def _wrap_grpo_ddp_gradient_sync(trainer_cls):
-    """GRPO's gradient pass runs the unwrapped model (zoo's grpo_accumulated_loss), so DDP.forward never arms the reducer and backward never all-reduces: every rank trained its own copy. Average the grads where DDP would have."""
+    """zoo's grpo_accumulated_loss runs the unwrapped model, so DDP never all-reduces: average grads where DDP would have."""
     original_training_step = trainer_cls.training_step
     if getattr(original_training_step, "_unsloth_grpo_ddp_sync_wrapped", False):
         return

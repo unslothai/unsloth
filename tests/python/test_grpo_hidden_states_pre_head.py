@@ -57,8 +57,6 @@ def test_minicpm3_hidden_states_carry_the_pre_head_scaling():
 
 
 class _PreHeadScaledLM(torch.nn.Module):
-    """A head fed something other than hidden_states[-1], by a transform the wrapper does not know about."""
-
     def __init__(self):
         super().__init__()
         torch.manual_seed(0)
