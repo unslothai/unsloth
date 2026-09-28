@@ -10,6 +10,7 @@ import huggingface_hub
 import pytest
 
 import core.inference.llama_cpp as llama_cpp
+import hub.utils.hf_tokens as hf_tokens
 import utils.hf_cache_settings as hf_cache_settings
 import utils.models.model_config as mc
 from utils.models.model_config import (
@@ -44,6 +45,8 @@ def _isolated(tmp_path, monkeypatch):
         hf_cache_settings, "get_hf_cache_paths", lambda: SimpleNamespace(hub_cache = tmp_path)
     )
     monkeypatch.setattr(mc.time, "sleep", lambda *_: None)
+    # No ambient credential, so a 401 here is the repo's answer and is not retried anonymously.
+    monkeypatch.setattr(hf_tokens, "_ambient_hf_token", lambda: (True, None))
     monkeypatch.setattr(
         llama_cpp.LlamaCppBackend,
         "_find_llama_server_binary",
