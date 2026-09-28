@@ -2564,6 +2564,67 @@ def delete_thread_documents(thread_id: str, *, created_before: Optional[str] = N
     return len(removed)
 
 
+def copy_thread_documents(source_thread_id: str, thread_id: str) -> tuple[dict[str, str], bool]:
+    """Copy a thread's finished uploads into another thread. Returns the source-to-copy document id
+    map and whether an upload still being ingested was left behind. Failed uploads are not copied
+    and not reported: the documents bar never shows them.
+
+    Files are copied before the transaction so rag.db's write lock is never held across file I/O.
+    """
+    from .ingestion import _copy_upload, _remove_upload
+
+    scope = store.thread_scope(thread_id)
+    copied: list = []
+    conn = rag_db.get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT * FROM documents WHERE scope=? ORDER BY created_at",
+            (store.thread_scope(source_thread_id),),
+        ).fetchall()
+        documents = [dict(row) for row in rows if row["status"] == "completed"]
+        for document in documents:
+            copied.append(_copy_upload(document["stored_path"]))
+        conn.execute("BEGIN IMMEDIATE")
+        sources = []
+        for document, stored_path in zip(documents, copied):
+            source = store.get_document(conn, document["id"])
+            if source is None or source["status"] != "completed":
+                raise RuntimeError("Source document changed while its file was being copied")
+            sources.append((source, stored_path))
+        document_ids = store.copy_documents(conn, sources, scope, thread_id = thread_id)
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        for stored_path in copied:
+            _remove_upload(stored_path)
+        raise
+    finally:
+        conn.close()
+    return document_ids, any(row["status"] in ("pending", "running") for row in rows)
+
+
+def thread_has_documents(thread_id: str) -> bool:
+    """Whether the thread has uploads that did not fail. Read over a metadata connection so a fork
+    can still report them when vec0 cannot load and nothing can be copied."""
+    if not rag_db.rag_db_path().is_file():
+        return False
+    conn = rag_db.get_metadata_connection()
+    try:
+        if not conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='documents'"
+        ).fetchone():
+            return False
+        return (
+            conn.execute(
+                "SELECT 1 FROM documents WHERE scope=? AND status != 'failed' LIMIT 1",
+                (store.thread_scope(thread_id),),
+            ).fetchone()
+            is not None
+        )
+    finally:
+        conn.close()
+
+
 def _delete_scope(
     scope: str,
     thread_id: str,

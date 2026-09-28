@@ -43,8 +43,17 @@ $script:FakeIntelAdapters = @()
 function Get-IntelRegistryAdapterNames { return $script:FakeIntelAdapters }
 
 # nvidia-smi stand-in: $script:FakeSmiStdout answers every probe, $script:FakeSmiRc is its exit code.
+# $script:FakeSmiTimeouts calls time out first (exit 124); every bound asked for is recorded.
+$script:FakeSmiTimeouts = 0
+$script:FakeSmiBounds = @()
 function Invoke-NvidiaSmiBounded {
     param([string]$Exe, [string[]]$SmiArgs = @(), [int]$TimeoutSec = 10, [switch]$StdoutOnly)
+    $script:FakeSmiBounds += $TimeoutSec
+    if ($script:FakeSmiTimeouts -gt 0) {
+        $script:FakeSmiTimeouts--
+        $global:LASTEXITCODE = 124
+        return ""
+    }
     $global:LASTEXITCODE = $script:FakeSmiRc
     return $script:FakeSmiStdout
 }
@@ -54,7 +63,7 @@ $setupPs1 = Join-Path $root "studio\setup.ps1"
 
 Write-Host ""
 Write-Host "=== shared inventory helper ==="
-$blockNames = @("Get-NvidiaNvmlLibraryPath", "Get-NvidiaLibraryProbeType", "Read-NvidiaLibraryRaw", "Get-NvidiaLibraryInventory")
+$blockNames = @("Get-NvidiaNvmlLibraryPath", "Get-NvidiaLibraryProbeType", "Read-NvidiaLibraryRaw", "Get-NvidiaLibraryInventory", "Get-NvidiaSystem32Dir")
 $installParts = @(Get-HelperSources $installPs1 $blockNames)
 $setupParts = @(Get-HelperSources $setupPs1 $blockNames)
 $installBlock = $installParts[3]
@@ -70,6 +79,7 @@ for ($k = 0; $k -lt $blockNames.Count; $k++) {
 Check "the inventory compiles nothing" ((($setupParts -join "`n") -notmatch 'Add-Type') -and ($setupParts[1] -match 'New-StudioEmittedNativeType'))
 Check "the emission is gated on the native-type capability" ($setupParts[1] -match 'if \(-not \(Test-StudioCanDefineNativeTypes\)\) \{ return \$null \}')
 Invoke-Expression $setupPath
+Invoke-Expression $setupParts[4]
 $pathRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("unsloth-nvml-" + [guid]::NewGuid().ToString("N"))
 $sys32 = Join-Path (Join-Path $pathRoot "root") "System32"
 $nvsmi = Join-Path (Join-Path $pathRoot "pf") "NVIDIA Corporation\NVSMI"
@@ -77,7 +87,7 @@ New-Item -ItemType Directory -Path $sys32, $nvsmi -Force | Out-Null
 $savedRoot = $env:SystemRoot; $savedPf = $env:ProgramFiles
 try {
     $env:SystemRoot = Join-Path $pathRoot "root"; $env:ProgramFiles = Join-Path $pathRoot "pf"
-    Check "no nvml.dll on disk keeps the bare name" ((Get-NvidiaNvmlLibraryPath) -eq "nvml.dll")
+    Check "no nvml.dll on disk still names the System32 path" ((Get-NvidiaNvmlLibraryPath) -eq (Join-Path $sys32 "nvml.dll"))
     Set-Content -Path (Join-Path $nvsmi "nvml.dll") -Value ""
     Check "an NVSMI-only nvml.dll is named by its path" ((Get-NvidiaNvmlLibraryPath) -eq (Join-Path $nvsmi "nvml.dll"))
     Set-Content -Path (Join-Path $sys32 "nvml.dll") -Value ""
@@ -86,6 +96,7 @@ try {
     $env:SystemRoot = $savedRoot; $env:ProgramFiles = $savedPf
     Remove-Item -LiteralPath $pathRoot -Recurse -Force -ErrorAction SilentlyContinue
 }
+Check "nvcuda.dll is bound by its System32 path" ($setupParts[1] -match '\$cuda = if \(\$windows\) \{ Join-Path \(Get-NvidiaSystem32Dir\) "nvcuda\.dll" \}')
 Check "a failed driver-version read is not an inventory" (
     $readBlock -match 'nvmlSystemGetCudaDriverVersion_v2\(\[ref\]\$ver\) -ne 0' -and
     $readBlock -match 'cuDriverGetVersion\(\[ref\]\$ver\) -ne 0')
@@ -279,6 +290,14 @@ Check "the cap applies to inventory capabilities" ((Get-TorchIndexUrl) -eq "http
 $script:FakeInventory = $null
 $script:Substeps = @()
 Check "an unreadable banner with no inventory keeps the cu126 default" ((Get-TorchIndexUrl) -eq "https://download.pytorch.org/whl/cu126")
+Check "the cu126 default names the override" (@($script:Substeps | Where-Object { $_ -match 'UNSLOTH_TORCH_INDEX_URL=https://download.pytorch.org/whl/cu128' }).Count -eq 1)
+# A congested driver: nvidia-smi times out once, and the longer retry reads the banner.
+$script:FakeSmiStdout = "| CUDA Version: 13.1 |"
+$script:FakeSmiTimeouts = 1
+$script:FakeSmiBounds = @()
+Check "a timed-out banner is retried and read" ((Get-TorchIndexUrl) -eq "https://download.pytorch.org/whl/cu130")
+Check "the retry has the longer bound" (($script:FakeSmiBounds[0..1] -join ",") -eq "10,45")
+$script:FakeSmiTimeouts = 0
 $script:FakeSmiStdout = "| CUDA Version: 12.6 |"
 Check "a readable banner is still authoritative" ((Get-TorchIndexUrl) -eq "https://download.pytorch.org/whl/cu126")
 
