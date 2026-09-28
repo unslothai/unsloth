@@ -1306,3 +1306,13 @@ def _nvfp4_diffusion_enabled_for_nvfp4_tests(request, monkeypatch):
     else:
         monkeypatch.delenv("UNSLOTH_NVFP4_DIFFUSION", raising = False)
     yield
+
+
+@pytest.fixture(autouse = True)
+def pin_installer_torch_vendor(monkeypatch):
+    """Automatic llama.cpp selection reads this interpreter's torch; pin it so a ROCm-torch dev box answers like CI."""
+    monkeypatch.delenv("UNSLOTH_FORCE_ROCM_TORCH", raising = False)
+    for module in list(sys.modules.values()):
+        # __dict__, not hasattr: a lazy module's __getattr__ would import on the probe.
+        if "_installed_torch_is_rocm" in (getattr(module, "__dict__", None) or {}):
+            monkeypatch.setattr(module, "_installed_torch_is_rocm", lambda: None)
