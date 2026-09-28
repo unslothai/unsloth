@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { generationFailureLogsAction } from "@/features/settings/lib/view-logs-action";
 import { readImageModel, rememberImageModel, matchesRememberedModel, type RememberedImageModel } from "./image-model-recall";
 import {
   type ReactNode,
@@ -4216,7 +4217,8 @@ export function ImagesPage({
             onClick: () => setOversizedRetryQueued(true),
           },
         });
-      } else if (report) toast.error(msg);
+      } else if (report)
+        toast.error(msg, { action: generationFailureLogsAction(msg) });
     } finally {
       if (genPollTimer.current) clearInterval(genPollTimer.current);
       genPollTimer.current = null;

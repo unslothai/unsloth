@@ -4031,6 +4031,38 @@ def _unsloth_gkd_chunk_size(vocab_size):
     return int(min(1024, max(64, 1 << (max(rows, 1).bit_length() - 1))))
 
 
+def _unsloth_gkd_right_align(
+    inputs,
+    layout,
+    liger = False,
+):
+    """Roll left-padded rows (TRL's ChatML collator and generate both left-pad) so they start at column 0: Unsloth's training forward drops the 2D mask (#11885).
+    The prompt layout's ``[:, P:]`` slice becomes ``labels[:, :P] = -100`` plus a one-column ``prompts``; TRL's Liger branch scores every label with no slice, so it only rolls.
+    """
+    try:
+        attention_mask = inputs["attention_mask"]
+        left_pad = (attention_mask.cumsum(dim = 1) == 0).sum(dim = 1, keepdim = True)
+    except Exception:
+        return inputs
+    if not bool(left_pad.any()):
+        return inputs
+    aligned = dict(inputs)
+    labels = inputs["labels"]
+    if layout["shift"] == "prompt" and not liger:
+        labels = labels.clone()
+        labels[:, : inputs["prompts"].shape[1]] = -100
+        aligned["prompts"] = inputs["prompts"][:, :1]
+    width = attention_mask.shape[1]
+    index = (torch.arange(width, device = attention_mask.device).unsqueeze(0) + left_pad) % width
+    for key, value in (
+        ("input_ids", inputs["input_ids"]),
+        ("attention_mask", attention_mask),
+        ("labels", labels),
+    ):
+        aligned[key] = value.gather(1, index)
+    return aligned
+
+
 def _unsloth_gkd_chunked_loss(self, model, inputs, num_items_in_batch, layout):
     """TRL's GKD loss without either full logits tensor, or ``None`` to run TRL's own ``compute_loss``."""
     if layout is None:
@@ -4191,6 +4223,9 @@ def gkd_trainer_compute_loss(function_name, function):
         "def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):\n"
         "    # Unsloth: chunked generalized JSD over hidden states; TRL's own loss below is the fallback.\n"
         "    if not return_outputs:\n"
+        f"        inputs = _unsloth_gkd_right_align(\n"
+        f"            inputs, {layout!r}, getattr(self, 'use_liger_gkd_loss', False),\n"
+        "        )\n"
         "        loss = _unsloth_gkd_chunked_loss(\n"
         f"            self, model, inputs, num_items_in_batch, {layout!r},\n"
         "        )\n"
@@ -4219,6 +4254,7 @@ for _gkd_item in (
     _unsloth_gkd_logit_transforms,
     _unsloth_gkd_project,
     _unsloth_gkd_chunk_size,
+    _unsloth_gkd_right_align,
     _unsloth_gkd_chunked_loss,
 ):
     RL_PRE_ITEMS["gkd_trainer"].append(inspect.getsource(_gkd_item))

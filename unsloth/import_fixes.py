@@ -2693,6 +2693,109 @@ def _transformers_rope_scaling_assignment_drops_theta():
         return False
 
 
+_REMOTE_MODEL_API_FLAG = "_unsloth_remote_model_api"
+
+
+def _tie_weights_accepting_new_keywords(own, accepted):
+    @functools.wraps(own)
+    def tie_weights(self, *args, **kwargs):
+        return own(self, *args, **{k: v for k, v in kwargs.items() if k in accepted})
+
+    setattr(tie_weights, _REMOTE_MODEL_API_FLAG, True)
+    return tie_weights
+
+
+def _patch_remote_model_class(cls, new_keywords):
+    if "transformers_modules" not in (getattr(cls, "__module__", "") or ""):
+        return
+    own = cls.__dict__.get("tie_weights")
+    if own is None or getattr(own, _REMOTE_MODEL_API_FLAG, False):
+        return
+    try:
+        params = inspect.signature(own).parameters
+    except (TypeError, ValueError):
+        return
+    if any(p.kind == p.VAR_KEYWORD for p in params.values()):
+        return
+    if all(k in params for k in new_keywords):
+        return
+    cls.tie_weights = _tie_weights_accepting_new_keywords(own, set(params))
+
+
+def _legacy_tied_weights_mapping(model, keys):
+    """4.x list -> 5.x {target: source}; only the output embedding is tied (the one tie 4.x made), other keys get no source rather than a wrong one."""
+    try:
+        embedding = model.get_input_embeddings()
+        output = model.get_output_embeddings()
+    except Exception:
+        return {}
+    weight = getattr(embedding, "weight", None)
+    output_weight = getattr(output, "weight", None)
+    if weight is None or output_weight is None:
+        return {}
+    names = {}
+    for name, param in model.named_parameters(remove_duplicate = False):
+        names.setdefault(id(param), name)
+    source = names.get(id(weight))
+    if source is None:
+        return {}
+    output_names = {
+        name
+        for name, param in model.named_parameters(remove_duplicate = False)
+        if param is output_weight
+    }
+    return {key: source for key in keys if key in output_names and key != source}
+
+
+def fix_transformers5_remote_code_model_api():
+    """Transformers 5 shims for 4.x remote code (Kimi-K3): OutputRecorder alias (before remote import),
+    tie_weights dropping new keywords, list _tied_weights_keys -> mapping. Only transformers_modules
+    classes; no-op on 4.57."""
+    try:
+        import transformers.utils.generic as generic
+    except Exception:
+        return
+    if not hasattr(generic, "OutputRecorder"):
+        try:
+            from transformers.utils.output_capturing import OutputRecorder
+            generic.OutputRecorder = OutputRecorder
+        except Exception:
+            pass
+    try:
+        from transformers import PreTrainedModel
+    except Exception:
+        return
+    if getattr(PreTrainedModel, _REMOTE_MODEL_API_FLAG, False):
+        return
+    try:
+        params = inspect.signature(PreTrainedModel.tie_weights).parameters
+    except (TypeError, ValueError):
+        params = {}
+    new_keywords = tuple(k for k in ("missing_keys", "recompute_mapping") if k in params)
+    original_post_init = PreTrainedModel.post_init
+
+    @functools.wraps(original_post_init)
+    def post_init(self, *args, **kwargs):
+        keys = getattr(self, "_tied_weights_keys", None)
+        if (
+            new_keywords
+            and isinstance(keys, (list, tuple))
+            and "transformers_modules" in (type(self).__module__ or "")
+        ):
+            self._tied_weights_keys = _legacy_tied_weights_mapping(self, keys)
+        if new_keywords:
+            for klass in type(self).__mro__:
+                _patch_remote_model_class(klass, new_keywords)
+        return original_post_init(self, *args, **kwargs)
+
+    PreTrainedModel.post_init = post_init
+    setattr(PreTrainedModel, _REMOTE_MODEL_API_FLAG, True)
+    if UNSLOTH_ENABLE_LOGGING:
+        logger.info(
+            "Unsloth: Remote modeling code written for transformers 4.x gets the 5.x model API shims."
+        )
+
+
 def _fp8_replace_swaps_named_experts(fn) -> bool:
     try:
         return 'endswith(".experts")' in inspect.getsource(fn)

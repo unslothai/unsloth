@@ -629,7 +629,7 @@ def test_generate_cancelled_reports_failed_with_sentinel(client, monkeypatch):
 
 
 def test_generate_pipeline_error_reports_sanitized_failure(client, monkeypatch):
-    # A loaded model failing mid-pipeline (CUDA OOM) is a server failure: the terminal state carries a generic message, never the raw exception.
+    # A loaded model failing mid-pipeline (CUDA OOM) is a server failure.
     backend = video_module.get_video_backend()
     backend.loaded = True
 
@@ -638,8 +638,51 @@ def test_generate_pipeline_error_reports_sanitized_failure(client, monkeypatch):
 
     monkeypatch.setattr(backend, "generate", _oom)
     progress = _shared_setup_4(client)
-    assert progress["error"] == "Video generation failed."
+    assert progress["error"].startswith("Video generation failed.")
+    assert "ran out of memory" in progress["error"]
+    # The engine's own text stays server-side.
     assert "CUDA" not in progress["error"]
+    assert "40.00 GiB" not in progress["error"]
+
+
+def test_generate_unclassified_error_keeps_the_bare_fallback(client, monkeypatch):
+    # Nothing recognised means nothing invented: the message must not grow a guess.
+    backend = video_module.get_video_backend()
+    backend.loaded = True
+
+    def _odd(**kwargs):
+        raise RuntimeError("something went sideways in /home/u/models/secret.safetensors")
+
+    monkeypatch.setattr(backend, "generate", _odd)
+    progress = _shared_setup_4(client)
+    assert progress["error"] == "Video generation failed."
+    assert "secret.safetensors" not in progress["error"]
+
+
+def test_generate_native_crash_points_at_the_log(client, monkeypatch):
+    backend = video_module.get_video_backend()
+    backend.loaded = True
+
+    def _crash(**kwargs):
+        raise RuntimeError("worker process exited with signal 6")
+
+    monkeypatch.setattr(backend, "generate", _crash)
+    progress = _shared_setup_4(client)
+    assert "Settings > Logs" in progress["error"]
+
+
+@pytest.mark.parametrize("code", ["-6", "3221225477"])
+def test_generate_native_sd_cli_exit_points_at_the_log(client, monkeypatch, code):
+    backend = video_module.get_video_backend()
+    backend.loaded = True
+
+    def _crash(**kwargs):
+        raise RuntimeError(f"sd-cli exited {code}. Last output:\nGGML_ASSERT(n_dims == 3) failed")
+
+    monkeypatch.setattr(backend, "generate", _crash)
+    progress = _shared_setup_4(client)
+    assert "Settings > Logs" in progress["error"]
+    assert "GGML_ASSERT" not in progress["error"]
 
 
 def test_generate_value_error_reports_reason(client, monkeypatch):
