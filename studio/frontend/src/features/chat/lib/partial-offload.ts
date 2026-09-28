@@ -90,17 +90,11 @@ export function offloadWarning(counts: OffloadCounts): OffloadWarning | null {
   if (offloaded <= 0) {
     return {
       titleSuffix: ", on CPU",
-      description:
-        `None of the ${total} layers fit on the GPU, so the model runs entirely on ` +
-        "CPU and generation will be slow. A smaller quantization or a shorter " +
-        "context may leave room on the GPU.",
+      description: `None of the ${total} layers fit on the GPU, so the model runs entirely on CPU and generation will be slow. A smaller quantization or a shorter context may leave room on the GPU.`,
     };
   }
   return {
     titleSuffix: ", partly on CPU",
-    description:
-      `${offloaded} of ${total} layers are on the GPU. The rest run on CPU, so ` +
-      "generation will be slower. A smaller quantization or a shorter context " +
-      "may let more of it fit on the GPU.",
+    description: `${offloaded} of ${total} layers are on the GPU. The rest run on CPU, so generation will be slower. A smaller quantization or a shorter context may let more of it fit on the GPU.`,
   };
 }
