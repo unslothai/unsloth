@@ -8,12 +8,14 @@ is swapped for PyPI's default on the next update. Studio installs torch 2.13 on 
 cu130 Python 3.13 route once this range admits it.
 """
 
-import tomllib
+import sys
 from pathlib import Path
 
 import pytest
 from packaging.requirements import Requirement
 from packaging.version import Version
+
+tomllib = pytest.importorskip("tomllib" if sys.version_info >= (3, 11) else "tomli")
 
 _PYPROJECT = tomllib.loads(
     (Path(__file__).resolve().parents[1] / "pyproject.toml").read_text(encoding = "utf-8")
