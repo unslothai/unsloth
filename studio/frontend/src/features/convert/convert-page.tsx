@@ -16,16 +16,18 @@ import { listLocalModels, type LocalModelInfo } from "@/features/hub";
 import { Spinner } from "@/components/ui/spinner";
 import { Progress } from "@/components/ui/progress";
 import { toast } from "@/lib/toast";
+import { useT, type TranslationKey } from "@/i18n";
 
 type ConvertJob = { state: "running" | "done" | "error"; stage: string };
 
-const STAGE_LABELS: Record<string, string> = {
-  starting: "Starting…",
-  loading: "Loading model…",
-  saving: "Quantizing and saving…",
+const STAGE_KEYS: Record<string, TranslationKey> = {
+  starting: "convert.stageStarting",
+  loading: "convert.stageLoading",
+  saving: "convert.stageSaving",
 };
 
 export function ConvertPage() {
+  const t = useT();
   const [format, setFormat] = useState("ov_int4");
   const [localModels, setLocalModels] = useState<LocalModelInfo[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -48,12 +50,12 @@ export function ConvertPage() {
         const next = (await res.json()) as ConvertJob;
         setJob({ ...next, modelId });
         if (next.state === "done") {
-          toast.success(`Converted ${modelId}`);
+          toast.success(t("convert.done", { model: modelId }));
           listLocalModels()
             .then((r) => setLocalModels(r.models))
             .catch(() => {});
         } else if (next.state === "error") {
-          toast.error(`Conversion of ${modelId} failed`, {
+          toast.error(t("convert.failed", { model: modelId }), {
             description: next.stage,
           });
         }
@@ -62,7 +64,7 @@ export function ConvertPage() {
       }
     }, 2000);
     return () => clearInterval(timer);
-  }, [job?.state, job?.modelId]);
+  }, [job?.state, job?.modelId, t]);
 
   useEffect(() => {
     let cancelled = false;
@@ -86,26 +88,30 @@ export function ConvertPage() {
       <main className="mx-auto max-w-7xl px-5 py-8 sm:px-9">
         <div className="mb-8 flex flex-col gap-0.5">
           <h1 className="text-ui-30 font-semibold text-foreground">
-            Convert Model
+            {t("convert.title")}
           </h1>
           <p className="text-sm text-muted-foreground">
-            Optimize your downloaded models for Intel Arc and OpenVINO
+            {t("convert.subtitle")}
           </p>
         </div>
 
         <SectionCard
           icon={<HugeiconsIcon icon={Exchange01Icon} className="size-5" />}
-          title="Conversion Settings"
-          description="Select a downloaded model and the target OpenVINO format."
+          title={t("convert.cardTitle")}
+          description={t("convert.cardDescription")}
         >
           <div className="flex flex-col gap-6 py-4">
             <div className="flex flex-col gap-2">
-              <label className="text-sm font-medium">Select Model</label>
+              <label className="text-sm font-medium">
+                {t("convert.selectModel")}
+              </label>
               <Select value={selectedModel} onValueChange={setSelectedModel}>
                 <SelectTrigger>
                   <SelectValue
                     placeholder={
-                      isLoading ? "Loading models..." : "Select a model..."
+                      isLoading
+                        ? t("convert.loadingModels")
+                        : t("convert.selectModelPlaceholder")
                     }
                   />
                 </SelectTrigger>
@@ -116,7 +122,7 @@ export function ConvertPage() {
                     </div>
                   ) : localModels.length === 0 ? (
                     <div className="p-4 text-center text-sm text-muted-foreground">
-                      No downloaded models found.
+                      {t("convert.noModels")}
                     </div>
                   ) : (
                     localModels
@@ -139,17 +145,19 @@ export function ConvertPage() {
               </Select>
             </div>
             <div className="flex flex-col gap-2">
-              <label className="text-sm font-medium">Target Format</label>
+              <label className="text-sm font-medium">
+                {t("convert.targetFormat")}
+              </label>
               <Select value={format} onValueChange={setFormat}>
                 <SelectTrigger>
-                  <SelectValue placeholder="Select format..." />
+                  <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="ov_int4">
-                    OpenVINO INT4 (Max speed on Core Ultra/Arc)
+                    {t("convert.formatInt4")}
                   </SelectItem>
                   <SelectItem value="ov_int8">
-                    OpenVINO INT8 (NNCF format)
+                    {t("convert.formatInt8")}
                   </SelectItem>
                 </SelectContent>
               </Select>
@@ -173,20 +181,24 @@ export function ConvertPage() {
                     modelId: selectedModel,
                   });
                 } catch (e) {
-                  toast.error("Failed to start conversion", {
+                  toast.error(t("convert.startFailed"), {
                     description: String(e),
                   });
                 }
               }}
               disabled={!selectedModel || job?.state === "running"}
             >
-              Start Conversion
+              {t("convert.start")}
             </Button>
             {job?.state === "running" ? (
               <div className="flex flex-col gap-1.5" aria-live="polite">
                 <div className="flex justify-between text-xs text-muted-foreground">
                   <span className="truncate">{job.modelId}</span>
-                  <span>{STAGE_LABELS[job.stage] ?? job.stage}</span>
+                  <span>
+                    {STAGE_KEYS[job.stage]
+                      ? t(STAGE_KEYS[job.stage])
+                      : job.stage}
+                  </span>
                 </div>
                 <Progress indeterminate />
               </div>

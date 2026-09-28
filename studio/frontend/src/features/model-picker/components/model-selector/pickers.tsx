@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useT } from "@/i18n";
 import { isChatGgufTask, reconcileGgufPinsAfterDelete } from "./reconcile-gguf-pins";
 
 import { ModelMemoryBar } from "@/components/model-memory-bar";
@@ -2925,6 +2926,7 @@ export function HubModelPicker({
   npu?: NpuPickerSource;
 }) {
   const gpu = useGpuInfo();
+  const tr = useT();
   const inferenceGpu = useInferenceGpuInfo();
   // The saved VRAM Budget, threaded into every fit call here. Passing it to the quant rows alone
   // left the parent rows and the "Fits on device" filter on the 0.97 default.
@@ -4507,9 +4509,9 @@ export function HubModelPicker({
   const intelIntBanner =
     !showHfSection && (section === "downloaded" || section === "converted") && intelIntRecs.size > 0 ? (
       <div className="mx-3 my-2 rounded-md border border-primary/30 bg-primary/5 px-3 py-2 text-xs text-foreground">
-        <span className="font-medium">Recommended for your Intel GPU: </span>
+        <span className="font-medium">{tr("convert.intelRecommended")} </span>
         {[...intelIntRecs.keys()].join(", ")}
-        <span className="text-muted-foreground"> (faster than the unconverted weights)</span>
+        <span className="text-muted-foreground"> {tr("convert.intelRecommendedHint")}</span>
       </div>
     ) : null;
 
