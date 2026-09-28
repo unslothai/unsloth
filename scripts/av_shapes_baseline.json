@@ -497,8 +497,8 @@
     {
       "file": "studio/backend/tests/test_sandbox_linux.py",
       "rule": "AV008",
-      "severity": "warn",
-      "reason": "pre-existing warning",
+      "severity": "error",
+      "reason": "Test inputs: the Linux sandbox must refuse reads of these credential paths.",
       "digests": {
         "026c56f9a7162c34": 1,
         "3fe813193837f351": 1,
@@ -792,7 +792,7 @@
     {
       "file": "tests/security/test_windows_blocked_issue_form.py",
       "rule": "AV004",
-      "severity": "error",
+      "severity": "warn",
       "reason": "Asserts the issue form does not ask users to run an encoded command.",
       "digests": {
         "6d795255fea81668": 1
