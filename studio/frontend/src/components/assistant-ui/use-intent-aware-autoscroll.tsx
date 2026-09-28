@@ -35,8 +35,6 @@ import {
  *   - Detect user intent (wheel up, swipe up, scroll direction) to detach.
  *     While detached, resize/mutation don't extend the deadline. Re-attach
  *     when the user scrolls down within 24px of the bottom.
- *   - "Auto-scroll while generating" off: a run started here follows until
- *     its user message reaches the top, then detaches.
  */
 
 // 2px, not 1: HiDPI subpixel rounding can leave a fractional gap that a
@@ -148,7 +146,6 @@ export function useIntentAwareAutoScroll(): {
 
   const userDetachedRef = useRef(false);
   const followUntilRef = useRef(0);
-  // Set by a run started while on screen. Opening a chat mid-stream still follows.
   const runStartedHereRef = useRef(false);
   // runEnd fires before the last chunk commits, so the hold outlives it briefly.
   const runEndAtRef = useRef(Number.NEGATIVE_INFINITY);
@@ -185,7 +182,6 @@ export function useIntentAwareAutoScroll(): {
     }
   }, []);
 
-  // The scroll-to-bottom button. Ends a held run's hold so the rest is followed.
   const scrollToBottom = useCallback<ScrollToBottom>((behavior) => {
     runStartedHereRef.current = false;
     scrollImplRef.current(behavior);
@@ -273,15 +269,12 @@ export function useIntentAwareAutoScroll(): {
         followUntilRef.current = performance.now() + FOLLOW_SETTLE_MS;
       };
 
-      // Auto-scroll is off and a run started here is streaming. Read per call so a mid-run toggle applies.
       const holdStill = (): boolean =>
         runStartedHereRef.current &&
         !useChatPreferencesStore.getState().autoScrollWhileGenerating &&
         (aui.thread().getState().isRunning ||
           performance.now() - runEndAtRef.current < FOLLOW_SETTLE_MS);
 
-      // scrollTop putting the new user message at the top, or the reply at mid-view when the
-      // message is taller. Null until the reply mounts.
       const holdCeiling = (): number | null => {
         const rows = el.querySelectorAll<HTMLElement>("[data-role]");
         let reply: HTMLElement | null = null;
@@ -315,7 +308,6 @@ export function useIntentAwareAutoScroll(): {
         settleCheckDue = false;
       };
 
-      // Detached by the hold, not the user. Turning auto-scroll on mid-run releases it.
       let parked = false;
 
       const detach = (): void => {
@@ -332,7 +324,6 @@ export function useIntentAwareAutoScroll(): {
         maxContentHeight = el.scrollHeight;
       };
 
-      // Held run: park at the ceiling once reached, then stop following.
       const parkIfHeld = (): boolean => {
         if (userDetachedRef.current || !holdStill()) {
           return false;

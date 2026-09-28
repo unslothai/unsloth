@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// "Auto-scroll while generating" (issue #11665): off, a streaming response grows below the reader
-// instead of dragging the thread to the bottom. The hook is a .tsx, which node's type stripping
-// cannot import, so its shape is pinned from source as chat-autoscroll-frame-budget.test.ts does.
+// The hook is .tsx, which node's type stripping cannot import, so its shape is pinned from source.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -51,15 +49,12 @@ test("the setting is read per call, so flipping it mid-run applies at once", () 
     holdStill,
     /useChatPreferencesStore\.getState\(\)\.autoScrollWhileGenerating/,
   );
-  // Only a running thread holds still: opening or switching a chat still lands on the bottom.
   assert.match(holdStill, /aui\.thread\(\)\.getState\(\)\.isRunning/);
 });
 
 test("only a run started on screen holds still, not one already streaming when opened", () => {
   const holdStill = body("const holdStill = (): boolean =>");
   assert.match(holdStill, /runStartedHereRef\.current &&/);
-  // An opened chat's messages arrive after its pin window, so holding still there would strand
-  // the reader at the top of a chat they never saw.
   for (const event of ["thread.initialize", "threadListItem.switchedTo"]) {
     const at = HOOK.indexOf(`useAuiEvent("${event}"`);
     assert.notEqual(at, -1, event);
@@ -76,18 +71,15 @@ test("only a run started on screen holds still, not one already streaming when o
 });
 
 test("a held run follows until its turn reaches the top, then parks", () => {
-  // A fixed pin window detached before a slow first token, leaving the reply out of sight.
   const onLayoutChange = body("const onLayoutChange = (): void => {");
   assert.match(onLayoutChange, /if \(!parkIfHeld\(\)\) \{\s*extendFollow\(\);/);
   const park = body("const parkIfHeld = (): boolean => {");
   assert.match(park, /!holdStill\(\)/);
   assert.match(park, /holdCeiling\(\)/);
-  // Detaching stops the run's last layout change re-pinning to the bottom.
   assert.match(
     park,
     /el\.scrollTo\(\{ top: ceiling, behavior: "instant" \}\);\s*detach\(\);/,
   );
-  // Same row attribute progressive-messages.tsx relies on.
   const ceiling = body("const holdCeiling = (): number | null => {");
   assert.match(ceiling, /querySelectorAll<HTMLElement>\("\[data-role\]"\)/);
   const tick = body("const tick = (): void => {");
@@ -112,7 +104,6 @@ test("reaching the bottom by hand does not re-attach while holding still", () =>
 });
 
 test("the hold outlives runEnd briefly, so the last chunk still parks", () => {
-  // runEnd fires before the final chunk commits; isRunning alone would pin it to the bottom.
   const holdStill = body("const holdStill = (): boolean =>");
   assert.match(
     holdStill,

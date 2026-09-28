@@ -403,7 +403,6 @@ export function ChatTab() {
           label={t("settings.chat.autoScroll")}
           description={t("settings.chat.autoScrollDescription")}
         >
-          {/* Same pill selector as Follow-up behavior. */}
           <div
             className="hub-tab-toggle inline-flex h-8 items-center rounded-full"
             role="group"

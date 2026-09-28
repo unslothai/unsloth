@@ -27,7 +27,7 @@ import {
 // until its thinking block is opened, and has no effect while toolVisibility is "expanded".
 // pastedTextMinChars: paste length that becomes a .txt attachment; 0 is off.
 // showInlineReadAloud / showInlineEditResponse: on keeps that action in each response's action bar
-// instead of its More menu. autoScrollWhileGenerating: on follows a streaming response down.
+// instead of its More menu.
 export interface ChatPreferencesState {
   plainTextComposer: boolean;
   setPlainTextComposer: (value: boolean) => void;
