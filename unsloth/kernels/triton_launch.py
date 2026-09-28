@@ -11,6 +11,7 @@
 # The key covers everything Triton specializes on here: tensor dtypes and 16 byte alignment,
 # integers equal to 1, divisible by 16 or outside int32, the constexprs and the launch options.
 
+import hashlib
 import os
 
 import torch
@@ -18,6 +19,7 @@ import triton
 
 __all__ = [
     "launch",
+    "tag_compile_cache",
 ]
 
 _ENABLED = torch.version.hip is None and os.environ.get("UNSLOTH_TRITON_FAST_LAUNCH", "1") != "0"
@@ -86,3 +88,17 @@ def launch(kernel, grid, args, n_tensors, constexprs, device_index, **options):
                 _CACHE[key] = (compiled, tuple(constexprs[name] for name in names))
         return
     kernel[grid](*args, **constexprs, **options)
+
+
+def tag_compile_cache(path):
+    """Add a hash of a kernel file to torch.compile's cache key. Inductor's FX graph cache keys a
+    torch.library.triton_op call without the Triton source behind it, so after an Unsloth upgrade
+    a warm cache would keep serving the previous kernel."""
+    config = getattr(torch.compiler, "config", None)
+    if config is None or not hasattr(config, "cache_key_tag"):
+        return
+    with open(path, "rb") as file:
+        tag = f"unsloth/{os.path.basename(path)}:{hashlib.sha256(file.read()).hexdigest()[:16]}"
+    tags = [t for t in config.cache_key_tag.split(",") if t]
+    if tag not in tags:
+        config.cache_key_tag = ",".join(tags + [tag])

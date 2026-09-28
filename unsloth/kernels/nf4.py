@@ -18,7 +18,7 @@ import triton.language as tl
 from triton.language.extra import libdevice
 from unsloth_zoo.utils import Version
 
-from .triton_launch import launch
+from .triton_launch import launch, tag_compile_cache
 
 __all__ = [
     "dequantize_nf4",
@@ -328,6 +328,9 @@ if not _HAS_MUL_RN:
     @_dequantize_nf4_out_op.register_fake
     def _(W, absmax, code2, absmax2, offset, code, blocksize, blocksize2, out):
         return None
+
+
+tag_compile_cache(__file__)
 
 
 def dequantize_nf4(

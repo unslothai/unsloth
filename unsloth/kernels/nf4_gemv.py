@@ -15,7 +15,7 @@ import triton
 import triton.language as tl
 
 from .nf4 import _HAS_MUL_RN, _mul
-from .triton_launch import launch
+from .triton_launch import launch, tag_compile_cache
 
 __all__ = [
     "gemv_nf4",
@@ -262,6 +262,7 @@ def _gemv_nf4_op(
 
 
 _KERNELS = (_gemv_nf4_kernel, _gemv_nf4_words_kernel)
+tag_compile_cache(__file__)
 _is_compiling = torch.compiler.is_compiling
 _current_device = torch.cuda.current_device
 

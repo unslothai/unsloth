@@ -4,6 +4,9 @@
 """The fused Triton NF4 dequant kernel must be byte-identical to bitsandbytes. Streams, CUDA
 graphs and torch.compile through fast_dequantize are covered in test_bnb_integration_compile.py."""
 
+import hashlib
+import os
+
 import pytest
 import torch
 
@@ -14,6 +17,7 @@ pytest.importorskip("triton")
 bnb_functional = pytest.importorskip("bitsandbytes.functional")
 
 from unsloth.kernels import nf4 as nf4_mod
+from unsloth.kernels import nf4_gemv as nf4_gemv_mod
 from unsloth.kernels.nf4 import dequantize_nf4
 
 _INT_VIEW = {torch.float16: torch.int16, torch.bfloat16: torch.int16, torch.float32: torch.int32}
@@ -225,3 +229,16 @@ def test_every_launch_config_is_exact(shape, words, evict, lut_mode, monkeypatch
                     nf4_mod, "_CONFIG_OVERRIDE", (target, 4, words, evict, lut_mode)
                 )
                 assert _bytes_equal(dequantize_nf4(*_args(q, s)), ref), (dtype, blocksize, target)
+
+
+def test_compile_cache_key_covers_the_kernel_source():
+    """Inductor's FX graph cache keys a triton_op call without the Triton source behind it: with a
+    warm cache, an edited kernel came back as the previous kernel's code. The kernel files' hashes
+    in cache_key_tag make an edited kernel a cache miss."""
+    if not hasattr(getattr(torch.compiler, "config", None), "cache_key_tag"):
+        pytest.skip("torch has no compile cache key tag")
+    tags = torch.compiler.config.cache_key_tag.split(",")
+    for mod in (nf4_mod, nf4_gemv_mod):
+        with open(mod.__file__, "rb") as file:
+            digest = hashlib.sha256(file.read()).hexdigest()[:16]
+        assert f"unsloth/{os.path.basename(mod.__file__)}:{digest}" in tags
