@@ -2788,6 +2788,11 @@ def fix_transformers_fp8_modulelist_experts():
             _cast_fp8_dequantize_to_model_dtype(getattr(fp8_integration, "Fp8Dequantize", None))
         except Exception:
             pass
+        try:
+            import transformers.integrations.finegrained_fp8 as fp8_integration
+            _pad_fp8_dequantize_ragged_blocks(getattr(fp8_integration, "Fp8Dequantize", None))
+        except Exception:
+            pass
         return method(self, model, *args, **kwargs)
 
     _process_model_before_weight_loading._unsloth_modulelist_experts = True
@@ -2823,6 +2828,92 @@ def _cast_fp8_dequantize_to_model_dtype(op_cls):
 
     cast_convert._unsloth_model_dtype = True
     op_cls.convert = cast_convert
+
+
+def _fp8_pad_ragged_block(quantized, scales, block):
+    """Zero-pad a block-FP8 weight with a ragged last block to its ceil scale grid, else None."""
+    import torch
+
+    try:
+        rows, cols = quantized.shape[-2:]
+        scale_rows, scale_cols = scales.shape[-2:]
+        block_m, block_n = int(block[0]), int(block[1])
+    except Exception:
+        return None
+    # Packed FP4 doubles its columns inside transformers; FP8 may arrive already cast, so exclude only packed.
+    packed = (torch.int8, torch.uint8, getattr(torch, "float4_e2m1fn_x2", torch.int8))
+    if quantized.dtype in packed or (rows % block_m == 0 and cols % block_n == 0):
+        return None
+    if -(-rows // block_m) != scale_rows or -(-cols // block_n) != scale_cols:
+        return None
+    padded = quantized.new_zeros(
+        (*quantized.shape[:-2], scale_rows * block_m, scale_cols * block_n)
+    )
+    padded[..., :rows, :cols] = quantized
+    return padded
+
+
+def _pad_fp8_dequantize_ragged_blocks(op_cls):
+    """16-bit loads of block-FP8 weights with a ragged last block (GLM-5.3 kv_a_proj_with_mqa: 576 rows) raise: pad, dequantize, slice."""
+    if op_cls is None:
+        return
+
+    def _block(self):
+        config = getattr(getattr(self, "hf_quantizer", None), "quantization_config", None)
+        return getattr(config, "weight_block_size", None)
+
+    original = getattr(op_cls, "_dequantize_one", None)
+    if original is not None:
+        # rows // scale_rows: raises on a ragged grid, or silently picks the wrong block when it divides (200 / 2).
+        if getattr(original, "_unsloth_ragged_blocks", False):
+            return
+
+        @functools.wraps(original)
+        def _dequantize_one(self, quantized, scales, *args, **kwargs):
+            block = _block(self)
+            padded = None if block is None else _fp8_pad_ragged_block(quantized, scales, block)
+            if padded is None:
+                return original(self, quantized, scales, *args, **kwargs)
+            rows, cols = quantized.shape[-2:]
+            out = original(self, padded, scales, *args, **kwargs)
+            return out[..., :rows, :cols].contiguous()
+
+        _dequantize_one._unsloth_ragged_blocks = True
+        op_cls._dequantize_one = _dequantize_one
+        return
+
+    convert = getattr(op_cls, "convert", None)
+    if convert is None or getattr(convert, "_unsloth_ragged_blocks", False):
+        return
+
+    @functools.wraps(convert)
+    def ragged_convert(self, input_dict, *args, **kwargs):
+        try:
+            weight = input_dict["weight$"]
+            scale = input_dict["weight_scale_inv"]
+            quantized = weight[0] if isinstance(weight, list) else weight
+            scales = scale[0] if isinstance(scale, list) else scale
+            block = _block(self)
+            padded = None if block is None else _fp8_pad_ragged_block(quantized, scales, block)
+        except Exception:
+            padded = None
+        if padded is None:
+            return convert(self, input_dict, *args, **kwargs)
+        rows, cols = quantized.shape[-2:]
+        input_dict = dict(input_dict)
+        input_dict["weight$"] = [padded] if isinstance(weight, list) else padded
+        out = convert(self, input_dict, *args, **kwargs)
+        for name, value in out.items():
+            tensor = value[0] if isinstance(value, list) and value else value
+            if getattr(tensor, "shape", None) is not None and tuple(tensor.shape[-2:]) == tuple(
+                padded.shape[-2:]
+            ):
+                tensor = tensor[..., :rows, :cols].contiguous()
+                out[name] = [tensor] if isinstance(value, list) else tensor
+        return out
+
+    ragged_convert._unsloth_ragged_blocks = True
+    op_cls.convert = ragged_convert
 
 
 def fix_transformers_is_torch_fx_available():
