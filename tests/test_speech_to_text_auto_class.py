@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Speech-in, text-out checkpoints (Voxtral, Voxtral Realtime, Qwen2-Audio) name a
-`*ForConditionalGeneration` class, so the loader treats them as VLMs and asks
-AutoModelForImageTextToText, which transformers 5 does not map for them: FastModel
-failed with "Unrecognized configuration class VoxtralConfig ... AutoModelForImageTextToText"
-before touching the weights. transformers 5 registers them under AutoModelForMultimodalLM.
-"""
+"""Voxtral / Qwen2-Audio are not mapped under AutoModelForImageTextToText on transformers 5."""
 
 import pytest
 
@@ -33,11 +28,10 @@ def _config(name):
 @pytest.mark.parametrize("name", ["VoxtralConfig", "VoxtralRealtimeConfig", "Qwen2AudioConfig"])
 def test_speech_to_text_models_resolve_to_a_class_that_maps(name):
     config = _config(name)
-    assert resolve_model_class(IMAGE_TEXT_CLASS, config) is None  # the defect is real here
+    assert resolve_model_class(IMAGE_TEXT_CLASS, config) is None
     resolved = _resolve_omni_auto_model(config)
     assert resolved is not None
     assert resolve_model_class(resolved, config) is not None
-    # and the class it resolves to selects AutoProcessor (the feature extractor), not AutoTokenizer
     assert resolved in _multimodal_auto_classes()
 
 
