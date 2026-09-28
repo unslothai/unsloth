@@ -279,3 +279,7 @@ def test_no_variant_autoselects_a_lowercase_quant_over_the_first_listed(
     filenames = [v.filename for v in QWEN_LOWERCASE_VARIANTS]
     assert mc._pick_best_gguf(filenames) == "qwen2.5-7b-instruct-q4_k_m-00001-of-00002.gguf"
     assert ModelConfig.from_identifier("Qwen/Qwen2.5-7B-Instruct-GGUF").gguf_variant == "q4_k_m"
+
+
+def test_no_variant_autoselect_matches_whole_quant_labels():
+    assert mc._pick_best_gguf(["m-Q6_K_P.gguf", "m-IQ4_XS.gguf"]) == "m-IQ4_XS.gguf"
