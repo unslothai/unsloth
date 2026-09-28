@@ -170,7 +170,9 @@ def test_fullgraph_compile_has_no_breaks_and_matches_eager(N):
 
     packed, scale, gs = _random_nvfp4(384, 256, "cuda")
     step = lambda X: N.nvfp4_linear(X, packed, scale, gs).float().square().mean()
-    X = torch.randn(64, 256, device = "cuda", dtype = torch.bfloat16, requires_grad = True)
+    # T4 (sm_75) trains in fp16: Inductor has no native bf16 there.
+    dtype = torch.bfloat16 if torch.cuda.get_device_capability() >= (8, 0) else torch.float16
+    X = torch.randn(64, 256, device = "cuda", dtype = dtype, requires_grad = True)
     step(X).backward()
     eager = X.grad.clone()
     X.grad = None
@@ -179,7 +181,7 @@ def test_fullgraph_compile_has_no_breaks_and_matches_eager(N):
     torch._dynamo.reset()
     compiled = torch.compile(step, fullgraph = True)
     for rows in (16, 48, 64):  # several shapes: dynamic-shape recompiles must stay correct
-        Xr = torch.randn(rows, 256, device = "cuda", dtype = torch.bfloat16, requires_grad = True)
+        Xr = torch.randn(rows, 256, device = "cuda", dtype = dtype, requires_grad = True)
         compiled(Xr).backward()
     compiled(X).backward()
     assert X.grad.abs().sum() > 0
