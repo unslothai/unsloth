@@ -17,7 +17,7 @@ def drop_unwritable_ssl_keylog_file():
     if not path:
         return False
     try:
-        with open(path, "a"):
+        with open(path, "a", encoding = "utf-8"):
             pass
         return False
     except OSError as exc:

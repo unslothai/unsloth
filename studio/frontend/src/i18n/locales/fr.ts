@@ -96,6 +96,7 @@ export const fr = {
     useModelScope: "Utiliser ModelScope",
     useModelScopeHint: "Rechercher et télécharger depuis ModelScope à la place. Vous pouvez revenir en arrière dans les Paramètres.",
     useModelScopeFailed: "Impossible de passer à ModelScope.",
+    updateToken: "Mettre à jour le jeton",
     hfToken: {
       label: "Token HF",
       saved: "Enregistré",
@@ -2481,6 +2482,8 @@ export const fr = {
       tokenRejectedTitle: "Token Hugging Face refusé",
       tokenRejectedBody:
         "Mettez à jour votre token dans Paramètres → Général, puis réessayez.",
+      tokenRejectedAnonymousBody:
+        "Les modèles publics s'affichent sans lui. Mettez à jour votre token dans Paramètres → Général pour accéder aux modèles privés et restreints.",
       hubUnreachable: "Impossible de joindre Hugging Face",
       cantUseModel: "Impossible d'utiliser le modèle pour l'entraînement",
       reasonTypeMismatch:

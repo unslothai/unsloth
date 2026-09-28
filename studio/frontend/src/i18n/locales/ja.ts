@@ -96,6 +96,7 @@ export const ja = {
     useModelScope: "ModelScope を使う",
     useModelScopeHint: "代わりに ModelScope で検索・ダウンロードします。設定からいつでも戻せます。",
     useModelScopeFailed: "ModelScope に切り替えられませんでした。",
+    updateToken: "トークンを更新",
     hfToken: {
       label: "HF トークン",
       saved: "保存済み",
@@ -2403,6 +2404,8 @@ export const ja = {
       tokenRejectedTitle: "Hugging Face トークンが拒否されました",
       tokenRejectedBody:
         "「設定」→「一般」でトークンを更新してから、再試行してください。",
+      tokenRejectedAnonymousBody:
+        "公開モデルはトークンなしで表示しています。非公開モデルやアクセス制限付きモデルを使うには、「設定」→「一般」でトークンを更新してください。",
       hubUnreachable: "Hugging Face に接続できませんでした",
       cantUseModel: "このモデルはトレーニングに使用できません",
       reasonTypeMismatch:
