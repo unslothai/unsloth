@@ -2799,6 +2799,170 @@ def fix_transformers_fp8_modulelist_experts():
     quantizer_cls._process_model_before_weight_loading = _process_model_before_weight_loading
 
 
+_FP8_SCALE_SUFFIXES = (".weight_scale_inv", ".weight_scale")
+
+
+def _safetensors_header_dtypes(path):
+    import json
+    with open(path, "rb") as f:
+        n = int.from_bytes(f.read(8), "little")
+        header = json.loads(f.read(n))
+    return {
+        k: v.get("dtype") for k, v in header.items() if k != "__metadata__" and isinstance(v, dict)
+    }
+
+
+def _fp8_checkpoint_files(checkpoint_files, config):
+    files = [str(f) for f in (checkpoint_files or []) if f]
+    if files:
+        return files
+    # transformers 4.x does not pass checkpoint_files to the quantizer.
+    import glob
+
+    name = getattr(config, "_name_or_path", None) or getattr(config, "name_or_path", None)
+    if not name:
+        return []
+    directory = str(name) if os.path.isdir(str(name)) else None
+    if directory is None:
+        try:
+            from huggingface_hub import try_to_load_from_cache
+            for filename in ("model.safetensors.index.json", "model.safetensors"):
+                hit = try_to_load_from_cache(
+                    name, filename, revision = getattr(config, "_commit_hash", None)
+                )
+                if isinstance(hit, str):
+                    directory = os.path.dirname(hit)
+                    break
+        except Exception:
+            return []
+    if directory is None:
+        return []
+    return sorted(glob.glob(os.path.join(directory, "*.safetensors")))
+
+
+def _fp8_checkpoint_tensor_dtypes(checkpoint_files, config):
+    # Shard headers, not the index: Step-3.7-Flash-FP8's index omits weight_scale_inv.
+    import json
+
+    files = _fp8_checkpoint_files(checkpoint_files, config)
+    dtypes = {}
+    for path in files:
+        if path.endswith(".safetensors") and os.path.isfile(path):
+            try:
+                dtypes.update(_safetensors_header_dtypes(path))
+            except Exception:
+                pass
+    if dtypes:
+        return dtypes
+    for directory in {os.path.dirname(f) for f in files}:
+        index = os.path.join(directory, "model.safetensors.index.json")
+        if os.path.isfile(index):
+            try:
+                with open(index, "r", encoding = "utf-8") as f:
+                    dtypes.update(dict.fromkeys(json.load(f).get("weight_map", {})))
+            except Exception:
+                pass
+    return dtypes
+
+
+def _fp8_unscaled_linear_patterns(model, tensor_dtypes):
+    import torch.nn as nn
+
+    if not tensor_dtypes:
+        return []
+    known = {k: v for k, v in tensor_dtypes.items() if v is not None}
+    if known:
+        if not any(str(v).upper().startswith("F8") for v in known.values()):
+            return []
+        unscaled = [
+            k[: -len(".weight")]
+            for k, v in known.items()
+            if k.endswith(".weight") and not str(v).upper().startswith("F8")
+        ]
+    else:
+        names = set(tensor_dtypes)
+        if not any(n.endswith(_FP8_SCALE_SUFFIXES) for n in names):
+            return []
+        unscaled = [
+            n[: -len(".weight")]
+            for n in names
+            if n.endswith(".weight")
+            and not any(n[: -len(".weight")] + s in names for s in _FP8_SCALE_SUFFIXES)
+        ]
+    if not unscaled:
+        return []
+    linears = {n for n, m in model.named_modules() if isinstance(m, nn.Linear)}
+    try:
+        from transformers.conversion_mapping import get_model_conversion_mapping
+        renamings = get_model_conversion_mapping(model) or []
+    except Exception:
+        renamings = []
+    try:
+        # transformers 5 matches skip entries as regexes; 4.x as substrings.
+        from transformers.quantizers.quantizers_utils import should_convert_module  # noqa: F401
+        exact = lambda n: re.escape(n) + "$"
+    except Exception:
+        exact = lambda n: n
+    patterns = []
+    for name in unscaled:
+        # Rename the key, not the module name: renames need the trailing dot (`^vit_large_projector\.`).
+        renamed = name + ".weight"
+        for rename in renamings:
+            try:
+                renamed, _ = rename.rename_source_key(renamed)
+            except Exception:
+                pass
+        renamed = renamed[: -len(".weight")] if renamed.endswith(".weight") else renamed
+        for candidate in (renamed, name):
+            if candidate in linears:
+                pattern = exact(candidate)
+                if pattern not in patterns:
+                    patterns.append(pattern)
+                break
+    return patterns
+
+
+def fix_transformers_fp8_unscaled_checkpoint_linears():
+    """Keep Linear layers an FP8 checkpoint stores unscaled in bf16 unconverted; modules_to_not_convert misses renamed ones."""
+    try:
+        from transformers.quantizers import quantizer_finegrained_fp8
+    except Exception:
+        return
+    quantizer_cls = getattr(quantizer_finegrained_fp8, "FineGrainedFP8HfQuantizer", None)
+    method = getattr(quantizer_cls, "_process_model_before_weight_loading", None)
+    if method is None or getattr(method, "_unsloth_unscaled_linears", False):
+        return
+
+    @functools.wraps(method)
+    def _process_model_before_weight_loading(self, model, *args, **kwargs):
+        extra = []
+        qconfig = getattr(self, "quantization_config", None)
+        if getattr(self, "pre_quantized", False) and qconfig is not None:
+            try:
+                dtypes = _fp8_checkpoint_tensor_dtypes(
+                    kwargs.get("checkpoint_files"), getattr(model, "config", None)
+                )
+                extra = _fp8_unscaled_linear_patterns(model, dtypes)
+            except Exception:
+                extra = []
+        saved = getattr(qconfig, "modules_to_not_convert", None) if extra else None
+        original = list(saved or [])
+        added = [p for p in extra if p not in original]
+        if not added:
+            return method(self, model, *args, **kwargs)
+        qconfig.modules_to_not_convert = original + added
+        try:
+            return method(self, model, *args, **kwargs)
+        finally:
+            # Strip only what was added: the checkpoint may list the same pattern itself.
+            current = list(getattr(qconfig, "modules_to_not_convert", None) or [])
+            restored = [p for p in current if p not in added]
+            qconfig.modules_to_not_convert = restored if restored or saved is not None else None
+
+    _process_model_before_weight_loading._unsloth_unscaled_linears = True
+    quantizer_cls._process_model_before_weight_loading = _process_model_before_weight_loading
+
+
 def _cast_fp8_dequantize_to_model_dtype(op_cls):
     # transformers 5.4 dequantizes to the scale's fp32; cast to the replaced parameter's dtype.
     convert = getattr(op_cls, "convert", None)
