@@ -1737,7 +1737,7 @@ export function ChatsLibrary({
         onSubmit={(name) => renamingSection && renameCustomSection(renamingSection.id, name)}
       />
       <AlertDialog open={pendingDelete !== null} onOpenChange={(open) => !open && setPendingDelete(null)}>
-        <AlertDialogContent>
+        <AlertDialogContent onOverlayClick={() => setPendingDelete(null)}>
           <AlertDialogHeader>
             <AlertDialogTitle className="break-words">{deleteCopy?.title}</AlertDialogTitle>
             <AlertDialogDescription>{deleteCopy?.description}</AlertDialogDescription>
