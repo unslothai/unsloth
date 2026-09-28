@@ -2799,7 +2799,6 @@ _FP8_SCALE_SUFFIXES = (".weight_scale_inv", ".weight_scale")
 
 def _safetensors_header_dtypes(path):
     import json
-
     with open(path, "rb") as f:
         n = int.from_bytes(f.read(8), "little")
         header = json.loads(f.read(n))
@@ -2890,7 +2889,6 @@ def _fp8_unscaled_linear_patterns(model, tensor_dtypes):
     linears = {n for n, m in model.named_modules() if isinstance(m, nn.Linear)}
     try:
         from transformers.conversion_mapping import get_model_conversion_mapping
-
         renamings = get_model_conversion_mapping(model) or []
     except Exception:
         renamings = []
