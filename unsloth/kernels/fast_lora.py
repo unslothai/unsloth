@@ -10,6 +10,7 @@
 # limitations under the License.
 
 import torch
+from unsloth_zoo.utils import Version
 from .utils import (
     _maybe_fake_quantize_activations,
     fast_dequantize,
@@ -20,6 +21,21 @@ from .utils import (
     torch_amp_custom_fwd,
     torch_amp_custom_bwd,
 )
+
+_is_compiling = torch.compiler.is_compiling
+
+# Inductor before torch 2.11 miscompiles the traced backward of the LoRA Functions below (seen on
+# 2.10: LoRA gradients read stale memory), so there torch.compile keeps them opaque, a graph break
+# as before the 4bit kernels became traceable. The kernels inside run the same either way.
+TRACE_LORA_FUNCTIONS = Version(torch.__version__) >= Version("2.11.0")
+
+
+def _apply(function, *args):
+    return function.apply(*args)
+
+
+if not TRACE_LORA_FUNCTIONS:
+    _apply = torch._dynamo.disable(_apply)
 
 
 class LoRA_MLP(torch.autograd.Function):
@@ -175,7 +191,9 @@ class LoRA_MLP(torch.autograd.Function):
 
         # dX = matmul_lora(df, upW.t(), ...) + matmul_lora(de, gateW.t(), ...), expanded below.
         upW = fast_dequantize(upW.t(), upW_quant)
-        dX = torch.matmul(df, upW.t(), out = X if ctx.inplace else None)
+        # Reusing X's storage for dX is an eager memory saving only: torch 2.11's AOT autograd
+        # rejects a backward that mutates a forward input which requires grad.
+        dX = torch.matmul(df, upW.t(), out = X if ctx.inplace and not _is_compiling() else None)
         del upW
         dX.addmm_(df @ upB.t(), upA.t(), alpha = upS)
 
@@ -219,7 +237,8 @@ def apply_lora_mlp_swiglu(
     gateW, gateW_quant, gateA, gateB, gateS = get_lora_parameters(self.gate_proj)
     upW, upW_quant, upA, upB, upS = get_lora_parameters(self.up_proj)
     downW, downW_quant, downA, downB, downS = get_lora_parameters(self.down_proj)
-    out = LoRA_MLP.apply(
+    out = _apply(
+        LoRA_MLP,
         X,
         gateW,
         gateW_quant,
@@ -255,7 +274,8 @@ def apply_lora_mlp_geglu_exact(
     gateW, gateW_quant, gateA, gateB, gateS = get_lora_parameters(self.gate_proj)
     upW, upW_quant, upA, upB, upS = get_lora_parameters(self.up_proj)
     downW, downW_quant, downA, downB, downS = get_lora_parameters(self.down_proj)
-    out = LoRA_MLP.apply(
+    out = _apply(
+        LoRA_MLP,
         X,
         gateW,
         gateW_quant,
@@ -287,7 +307,8 @@ def apply_lora_mlp_geglu_approx(self, X):
     gateW, gateW_quant, gateA, gateB, gateS = get_lora_parameters(self.gate_proj)
     upW, upW_quant, upA, upB, upS = get_lora_parameters(self.up_proj)
     downW, downW_quant, downA, downB, downS = get_lora_parameters(self.down_proj)
-    out = LoRA_MLP.apply(
+    out = _apply(
+        LoRA_MLP,
         X,
         gateW,
         gateW_quant,
@@ -457,7 +478,7 @@ class LoRA_QKV(torch.autograd.Function):
 
         # Combine the per-projection derivatives into dX.
         QW = fast_dequantize(QW.t(), QW_quant)
-        dX = torch.matmul(dQ, QW.t(), out = X if ctx.inplace else None)
+        dX = torch.matmul(dQ, QW.t(), out = X if ctx.inplace and not _is_compiling() else None)
         del QW
         dX.addmm_(dQ @ QB.t(), QA.t(), alpha = QS)
 
@@ -501,7 +522,8 @@ def apply_lora_qkv(
     QW, QW_quant, QA, QB, QS = get_lora_parameters(self.q_proj)
     KW, KW_quant, KA, KB, KS = get_lora_parameters(self.k_proj)
     VW, VW_quant, VA, VB, VS = get_lora_parameters(self.v_proj)
-    Q, K, V = LoRA_QKV.apply(
+    Q, K, V = _apply(
+        LoRA_QKV,
         X,
         QW,
         QW_quant,
@@ -598,7 +620,7 @@ class LoRA_W(torch.autograd.Function):
 def apply_lora_o(self, X):
     X = _maybe_fake_quantize_activations(X, self.o_proj)
     OW, OW_quant, OA, OB, OS = get_lora_parameters(self.o_proj)
-    O = LoRA_W.apply(X, OW, OW_quant, OA, OB, OS)
+    O = _apply(LoRA_W, X, OW, OW_quant, OA, OB, OS)
     return O
 
 
@@ -632,7 +654,7 @@ def fast_lora_forward(self, x: torch.Tensor, *args, **kwargs) -> torch.Tensor:
                 lora_B = self.lora_B[active_adapter].weight
                 scaling = self.scaling[active_adapter]
                 W = self.base_layer.weight
-                return LoRA_W.apply(x, W, QUANT_STATE(W), lora_A, lora_B, scaling)
+                return _apply(LoRA_W, x, W, QUANT_STATE(W), lora_A, lora_B, scaling)
             pass
         pass
 

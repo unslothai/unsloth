@@ -19,6 +19,7 @@ pytest.importorskip("triton")
 
 import unsloth  # noqa: F401  (patches first)
 import torch._dynamo.utils as dynamo_utils
+from unsloth.kernels import fast_lora
 from unsloth.kernels.rms_layernorm import Fast_RMS_Layernorm, fast_rms_layernorm
 from unsloth.kernels.rope_embedding import (
     Fast_RoPE_Embedding,
@@ -322,19 +323,20 @@ def test_tiny_llama_decoder_layers_compile_fullgraph():
     eager_grads = [p.grad.clone() for p in params]
     model.zero_grad(set_to_none = True)
 
+    # Before torch 2.11 fast_lora keeps its autograd Functions opaque (their traced backward gives
+    # wrong LoRA gradients there), so those are the only graph breaks allowed.
+    trace_lora = fast_lora.TRACE_LORA_FUNCTIONS
     layers = model.base_model.model.model.layers
     for layer in layers:
-        layer.forward = torch.compile(layer.forward, fullgraph = True)
+        layer.forward = torch.compile(layer.forward, fullgraph = trace_lora)
     loss = model(input_ids = ids, labels = ids).loss
     loss.backward()
+    reasons = [" ".join(str(k).split()) for k in dynamo_utils.counters["graph_break"]]
+    assert all("_apply" in r for r in reasons), reasons
     assert math.isfinite(loss.item())
     assert abs(loss.item() - eager_loss.item()) <= 1e-3 * abs(eager_loss.item())
     grads = [p.grad for p in params]
     assert grads and all(gr is not None and torch.isfinite(gr).all() for gr in grads)
-    if torch.__version__ < "2.11":
-        # Compiling the fast_lora autograd Functions gives wrong LoRA gradients before torch 2.11
-        # with or without these ops (unrelated to RMSNorm / RoPE).
-        return
     scale = max(g.abs().max().item() for g in eager_grads)
     worst = max((a.float() - b.float()).abs().max().item() for a, b in zip(grads, eager_grads))
     assert worst <= 1e-2 * scale, (worst, scale)
@@ -343,11 +345,14 @@ def test_tiny_llama_decoder_layers_compile_fullgraph():
 def test_tiny_llama_causal_lm_compiles_fullgraph():
     """Without gradient checkpointing the whole causal LM forward (embedding, decoder stack, loss)
     compiles without the input embedding's requires-grad hook or the deprecated
-    config.use_return_dict read breaking the graph (torch 2.10 still breaks inside the fused
-    loss, on inspect.signature)."""
+    config.use_return_dict read breaking the graph, and trains: the LoRA gradients match eager.
+    torch 2.10 still breaks inside the fused loss (inspect.signature); on torch 2.11 unsloth_zoo
+    keeps the fused loss out of the graph (a traced one returned zero gradients)."""
     if not TRACEABLE:
         pytest.skip("this torch has no torch.library.triton_op")
     from unsloth import FastLanguageModel
+    from unsloth_zoo.utils import Version
+    import unsloth_zoo.fused_losses.cross_entropy_loss as fused_ce
 
     model, _ = FastLanguageModel.from_pretrained(
         "hf-internal-testing/tiny-random-LlamaForCausalLM",
@@ -377,16 +382,30 @@ def test_tiny_llama_causal_lm_compiles_fullgraph():
     assert embeddings._forward_hooks, "enable_input_require_grads registered no hook"
     g = torch.Generator().manual_seed(0)
     ids = torch.randint(0, model.config.vocab_size, (2, 48), generator = g).cuda()
+    params = [p for p in model.parameters() if p.requires_grad]
 
     eager_loss = model(input_ids = ids, labels = ids).loss
+    eager_loss.backward()
+    eager_grads = [p.grad.detach().float().clone() for p in params]
+    model.zero_grad(set_to_none = True)
+
+    loss_opaque = getattr(fused_ce, "_FUSED_LOSS_OPAQUE", False)
+    fullgraph = fast_lora.TRACE_LORA_FUNCTIONS and Version(torch.__version__) >= Version("2.11.0") and not loss_opaque
     causal_lm = model.base_model.model
-    causal_lm.forward = torch.compile(causal_lm.forward, fullgraph = torch.__version__ >= "2.11")
+    causal_lm.forward = torch.compile(causal_lm.forward, fullgraph = fullgraph)
     loss = model(input_ids = ids, labels = ids).loss
     loss.backward()
-    reasons = " ".join(str(k) for k in dynamo_utils.counters["graph_break"])
-    assert "requires_grad_()" not in reasons and "logging.Logger" not in reasons, reasons
+    reasons = [" ".join(str(k).split()) for k in dynamo_utils.counters["graph_break"]]
+    assert not any("requires_grad_()" in r or "logging.Logger" in r for r in reasons), reasons
+    if loss_opaque and fast_lora.TRACE_LORA_FUNCTIONS:
+        assert all("_fused_loss_opaque" in r for r in reasons), reasons
     assert abs(loss.item() - eager_loss.item()) <= 1e-3 * abs(eager_loss.item())
-    assert all(p.grad is not None for p in model.parameters() if p.requires_grad)
+    total = sum(float(e.norm()) for e in eager_grads)
+    assert total > 0
+    for p, e in zip(params, eager_grads):
+        assert p.grad is not None
+        err = float((p.grad.float() - e).norm())
+        assert err <= 0.05 * float(e.norm()) + 1e-6, (err, float(e.norm()))
 
 
 def test_input_require_grads_hook_is_exact():
