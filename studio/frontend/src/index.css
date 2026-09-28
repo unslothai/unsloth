@@ -245,6 +245,8 @@
 	   then outgrow a phone screen carry their own viewport cap. See
 	   --ui-space-scale below. */
 	--spacing: calc(0.25rem * var(--ui-space-scale, 1));
+	--studio-sidebar-brand-inset: calc(4 * var(--spacing));
+	--studio-sidebar-brand-size: calc(22px + 0.5rem * var(--ui-font-scale, 1));
 	/*--shadow-2xs: 0px 0px 0px 0px hsl(0 0% 0% / 0);*/
 	/*--shadow-xs: 0px 0px 0px 0px hsl(0 0% 0% / 0);*/
 	/*--shadow-sm:*/
@@ -449,6 +451,8 @@
 	--letter-spacing: 0em;
 	/* Same scaled step as light; see the :root definition. */
 	--spacing: calc(0.25rem * var(--ui-space-scale, 1));
+	--studio-sidebar-brand-inset: calc(4 * var(--spacing));
+	--studio-sidebar-brand-size: calc(22px + 0.5rem * var(--ui-font-scale, 1));
 	--shadow-2xs: 0px 0px 0px 0px hsl(0 0% 0% / 0);
 	--shadow-xs: 0px 0px 0px 0px hsl(0 0% 0% / 0);
 	--shadow-sm: 0px 0px 0px 0px hsl(0 0% 0% / 0), 0px 1px 2px 0px hsl(0 0% 0% / 0);

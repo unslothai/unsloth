@@ -433,7 +433,8 @@ export function WindowTitlebar({
           <div
             className={cn(
               "pointer-events-auto absolute left-0 top-0 flex h-full min-w-0 items-center",
-              windowsCaption ? "pl-[2px]" : "pl-[20px]",
+              // Optically align the glyph with the logo: 6px button padding + ~2px SVG inset.
+              windowsCaption ? "pl-[calc(var(--studio-sidebar-brand-inset)-8px)]" : "pl-[20px]",
             )}
             style={{ width: titlebarNavigationWidth }}
             onMouseDown={handleDragMouseDown}
