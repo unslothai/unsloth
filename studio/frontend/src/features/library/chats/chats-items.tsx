@@ -783,7 +783,7 @@ export function DateHeader({
             <button
               type="button"
               className={cn(
-                "group/date flex items-center gap-1 rounded-sm outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring data-[state=open]:text-foreground",
+                "group/date flex items-center gap-1 outline-none transition-colors hover:text-foreground focus-visible:text-foreground data-[state=open]:text-foreground",
                 active && "text-foreground",
               )}
             >
@@ -796,7 +796,12 @@ export function DateHeader({
               />
             </button>
           </DropdownMenuTrigger>
-          <DropdownMenuContent align="start" className={cn(MENU, "w-44")}>
+          <DropdownMenuContent
+            align="start"
+            className={cn(MENU, "w-44")}
+            // Focus returning to the title after a pick left a ring around it.
+            onCloseAutoFocus={(event) => event.preventDefault()}
+          >
             {fields.map((option) => (
               <SortRadio
                 key={option}
