@@ -7214,8 +7214,7 @@ class LlamaCppBackend:
         self._last_load_warning: Optional[str] = None
         # Same, for a quant fallback: the download fills the pair, the launch publishes it.
         self._variant_fallback_warning: Optional[str] = None
-        # The route's Hub notice for the running model (a refused token or repo), so /status
-        # reports what the load response did. Set by the route, same lifetime as the above.
+        # The route's Hub notice for the running model, so /status matches the load response.
         self.hub_access_warning: Optional[str] = None
         self._pending_variant_fallback: Optional[tuple[str, str]] = None
         # Set per launch by _record_carveout_advice; None on nearly every load.

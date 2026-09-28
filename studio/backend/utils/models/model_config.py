@@ -3525,12 +3525,10 @@ def _refused_repo_cached_gguf(
         if local_file and _remembered_companions_present(repo_id, gguf_variant, local_file):
             return local_file, gguf_variant
         return None
-    # Auto: the preferred variant first, then the next one down, so an interrupted Q8 beside
-    # a complete Q4 still serves the Q4. Every snapshot: the complete one can be older.
+    # Auto: preferred variant first, falling through incomplete ones, across every snapshot.
     remaining = sorted(_hf_cache_main_gguf_files(repo_id, every_snapshot = True))
     while remaining:
-        # As the healthy-Hub auto pick: a repo-root checkpoint before a subdirectory one at the
-        # same quant, and sorted, so the answer does not follow directory enumeration order.
+        # Repo-root checkpoint first, as the healthy-Hub pick does.
         root_rows = [
             f for f in remaining if "/" not in _qualified_variant_name(f, _extract_quant_label(f))
         ]
@@ -3585,8 +3583,7 @@ def detect_gguf_model_remote(repo_id: str, hf_token: Optional[str] = None) -> Op
             last_err = e
             # 404 / RepoNotFound is permanent -- don't retry
             err_name = type(e).__name__
-            # A refusal by status too (DisabledRepoError, a bare 403): retrying cannot change it,
-            # and the cache fallback below would skip the refused-repo policy.
+            # Status-only refusals too (DisabledRepoError, bare 403), or the refused-repo policy is skipped.
             if err_name in (
                 "RepositoryNotFoundError",
                 "GatedRepoError",
@@ -4248,8 +4245,7 @@ class ModelConfig:
     gguf_hf_repo: Optional[str] = (
         None  # HF repo ID for -hf mode (e.g. "unsloth/gemma-3-4b-it-GGUF")
     )
-    # The HF repo a local GGUF was resolved from while the Hub refused it: the load runs the
-    # file, but the repo's download interlock still applies.
+    # Repo a refused-Hub cached GGUF came from, for the download interlock.
     gguf_cache_repo: Optional[str] = None
     gguf_variant: Optional[str] = None  # Quantization variant (e.g. "Q4_K_M")
     base_model: Optional[str] = None  # Base model (for LoRAs)
@@ -4504,10 +4500,8 @@ class ModelConfig:
                     gguf_filename = detect_gguf_model_remote(identifier, hf_token = hf_token)
             finally:
                 _gguf_remote_detect_failure.reset(failure_token)
-            # A failed listing is not "no GGUF" (#11551). A refused repo is served from its
-            # downloaded copy only to a caller who may read that cache, with a warning. Decided
-            # by the GGUF on disk, not the repo-name heuristic below: a healthy Hub would have
-            # found that GGUF whatever the repo is called.
+            # A failed listing is not "no GGUF" (#11551): a refused repo's downloaded copy goes
+            # only to a caller who may read that cache, with a warning.
             if not gguf_filename and detect_failures and _is_hub_refusal(detect_failures[-1]):
                 cached = _refused_repo_cached_gguf(
                     identifier, gguf_variant, hf_token, owner_session = owner_session
@@ -4521,8 +4515,7 @@ class ModelConfig:
                     )
                     from core.inference.llama_cpp import _snapshot_dir_of
 
-                    # The snapshot root, so a repo-root mmproj or drafter is found for a main
-                    # file in a non-quant subdirectory.
+                    # Snapshot root, so a repo-root mmproj or drafter is found.
                     snapshot = _snapshot_dir_of(local_file)
                     local_config = cls.from_identifier(
                         model_id = local_file,
@@ -4534,8 +4527,7 @@ class ModelConfig:
                         mmproj_accept = mmproj_accept,
                     )
                     if local_config is not None and local_config.is_gguf:
-                        # The remote branch's preflight: /load must not unload the resident
-                        # model for a launch that cannot start.
+                        # Preflight, so /load never unloads the resident model for nothing.
                         from core.inference.llama_cpp import (
                             LLAMA_SERVER_NOT_FOUND_DETAIL,
                             LlamaCppBackend,
@@ -4550,8 +4542,6 @@ class ModelConfig:
                             identifier = identifier,
                             display_name = f"{identifier.split('/')[-1]} ({cached_variant})",
                             gguf_cache_repo = identifier,
-                            # A Hub repo run from its cache, not a user's own file: the load
-                            # reports it as remote, so recovery guidance points at the Hub.
                             is_local = False,
                         )
             if not gguf_filename and _looks_like_gguf_repo(identifier, gguf_variant):

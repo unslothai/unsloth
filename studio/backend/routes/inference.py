@@ -16165,8 +16165,7 @@ def _with_token_rejected_warning(response, token_rejections):
 
 
 def _remember_hub_access_warning(response, token_rejections) -> None:
-    """Keep a GGUF load's Hub notice for /status: the client re-shows the status warning after a
-    load, and without this dismisses the one the load response carried."""
+    """Keep a GGUF load's Hub notice for /status, whose warning the client re-shows after a load."""
     if isinstance(response, LoadResponse) and response.is_gguf:
         warnings = _hub_access_warnings(token_rejections)
         get_llama_cpp_backend().hub_access_warning = " ".join(warnings) or None
@@ -16178,8 +16177,7 @@ def _status_load_warning(llama_backend) -> Optional[str]:
     return " ".join(notice for notice in notices if notice) or None
 
 
-# Set by the /load wrapper that shows a refused repo's cached-copy warning. Loads nobody reports
-# back (auto-switch, idle restore, preview) keep the Hub's refusal instead of running it silently.
+# True only in the user's /load, the one that shows the warning; background loads stay refused.
 _load_warnings_reach_user: contextvars.ContextVar[bool] = contextvars.ContextVar(
     "load_warnings_reach_user", default = False
 )

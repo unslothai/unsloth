@@ -194,15 +194,12 @@ def _variant_requirement_cache_set_many(
             _VARIANT_REQUIREMENT_FORGOTTEN = True
 
 
-# The newest requirement each live listing reported, kept past the refresh TTL above: a
-# Hub-less completeness proof must not read an expired entry as "nothing required". Keyed by
-# repo and variant, not credential: it describes the repo's files, and a token changed or
-# cleared since the listing must not forget a companion the copy still needs.
+# Newest requirement per (repo, variant), kept past the TTL so an expired entry never reads as
+# "nothing required". Not keyed by credential: it describes the repo's files.
 _VARIANT_REQUIREMENT_LAST_KNOWN: "OrderedDict[tuple[str, str], _GgufVariantRequirement]" = (
     OrderedDict()
 )
-# Far above the refresh cache: only a very long session reaches it. Once anything has been
-# evicted, an absent entry may be a forgotten companion, not "nothing required".
+# After any eviction an absent entry may be a forgotten companion.
 _VARIANT_REQUIREMENT_LAST_KNOWN_MAX = 65536
 _VARIANT_REQUIREMENT_FORGOTTEN = False
 
@@ -2171,8 +2168,6 @@ async def get_gguf_variants_answer(
                 best = pick_best_gguf(_default_variant_candidates(ready or response.variants))
                 response.default_variant = gguf_variant_key(best) if best else None
         if response.dependencies_resolved and locally_proven[0] is not None:
-            # The disk proof covered the rows it saw; a remembered folder's row it never
-            # examined must not inherit it.
             rows = frozenset(
                 (v.quant.lower(), v.filename)
                 for v in response.variants
