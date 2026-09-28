@@ -165,9 +165,8 @@ export function useDiscoverSearch({
     : modelSearch.needsRestart;
   // Surfaced regardless of availability: the failure IS the thing worth showing.
   const searchError = isDiscoverTab ? rawSearchError : null;
-  // A 401 never reaches the network layer as a failure (the Hub answered), so
-  // without this the panel called a refused token "Couldn't reach".
-  // Memoised: the toast effect below depends on it, and a fresh object per render re-ran it.
+  // A 401 is not a network failure, so the panel would otherwise say "Couldn't reach".
+  // Memoised: the toast effect below depends on it.
   const searchFailure = useMemo(
     () =>
       isDiscoverTab

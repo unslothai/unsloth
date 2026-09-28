@@ -174,23 +174,19 @@ export async function fetchHub(
   const started = hfTokenRejectionMark();
   let response = await fetchWithSession(input, skipToken ? withoutHfToken(input, init) : init, url);
   if (skipToken && !response.ok && [401, 403, 404].includes(response.status)) {
-    // What anonymous access cannot read may still be the token's to read: the refusal could
-    // have been the Hub's verifier briefly failing. A token that answers again is cleared.
+    // Anonymous could not read it: try the token again in case the refusal was transient.
     const withToken = await probe(input, init, url);
     if (withToken) {
-      // Still refused, the token's own answer (a 401) is the result, as on the first refusal:
-      // an anonymous 404 for a private repo would be cached as the repo being missing.
+      // Keep the token's answer: an anonymous 404 would be cached as the repo being missing.
       void response.body?.cancel().catch(() => undefined);
       if (tokenAccepted(withToken, url)) clearHfTokenRejected(scope);
       response = withToken;
     }
   } else if (retryable && !skipToken && tokenAccepted(response, url)) {
-    // Past the recheck window the token went out again and was accepted: that Hub no
-    // longer refuses it.
+    // Past the recheck window the token was accepted again.
     clearHfTokenRejected(scope);
   } else if (retryable && !skipToken && isHubRefusal(response, url)) {
-    // A token the Hub accepts gets 404 for a repo it cannot see, so this 401 is the token
-    // being refused. Public data still answers without it; anything else keeps the original.
+    // A valid token gets 404 for a repo it cannot see, so this 401 is the token being refused.
     const anonymous = await probe(input, withoutHfToken(input, init), url);
     if (anonymous?.ok) {
       void response.body?.cancel().catch(() => undefined);

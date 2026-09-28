@@ -1,30 +1,23 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/** Which saved Hugging Face token the Hub refused, so the UI can say so instead of "offline".
- *
- * A token the Hub accepts gets 404 for a repo it cannot see, never 401, so a 401 on a read that
- * carried a token which then succeeded anonymously means the token itself was refused (an
- * expired OAuth token, a revoked key). Keyed by a fingerprint, never the token, and dependency
- * free so hub-fetch stays importable under bare node. */
+/** Which saved Hugging Face token the Hub refused (a 401 that then succeeded anonymously).
+ * Keyed by a fingerprint, never the token; dependency free so hub-fetch runs under bare node. */
 
 /** "rejected" when a token is newly refused, "cleared" when a refusal is forgotten. */
 export type HfTokenRejectionEvent = "rejected" | "cleared";
 
 type Listener = (event: HfTokenRejectionEvent) => void;
 
-/** After this long the token is tried again: a verifier that failed for a while must not hide
- * private and gated repos for the rest of the session. Still refused, it is recorded again
- * without a second notification. */
+/** After this long the token is tried again, so a briefly failing verifier cannot hide private
+ * repos for the whole session. */
 export const HF_TOKEN_REJECTION_RECHECK_MS = 10 * 60 * 1000;
 
-// One refusal per Hub (scope): a mirror or the datasets server can refuse a token another
-// endpoint accepts, and recording one must not forget another.
+// One refusal per Hub (scope): a mirror can refuse a token another endpoint accepts.
 const refusals = new Map<string | null, { fingerprint: string; at: number }>();
 let version = 0;
 const listeners = new Set<Listener>();
-// Counts accepted-token evidence: a refusal seen by a request that started before a newer
-// success must not reinstate itself.
+// Accepted-token evidence: a refusal older than a newer success is ignored.
 let successes = 0;
 const lastSuccess = new Map<string | null, number>();
 let lastSuccessEverywhere = 0;
@@ -103,8 +96,7 @@ export function hasRejectedHfToken(): boolean {
   return refusals.size > 0;
 }
 
-/** Forget the refusal by *scope*, or every refusal without one. Also the evidence that
- * *scope* accepts the token now, so it is recorded even when nothing was refused. */
+/** Forget the refusal by *scope* (every refusal without one) and record the success. */
 export function clearHfTokenRejected(scope?: string | null): void {
   successes += 1;
   if (scope === undefined) lastSuccessEverywhere = successes;
