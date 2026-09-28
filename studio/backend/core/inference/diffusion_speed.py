@@ -457,13 +457,15 @@ def apply_speed_optims(
     family_allows_compile = bool(getattr(family, "supports_torch_compile", True))
 
     # Lossless: a channels-last VAE speeds up its convs with no numeric change.
-    applied["channels_last"] = _vae_channels_last(pipe, logger)
+    applied["channels_last"] = _vae_channels_last(
+        pipe, logger, fused = on_cuda and _fused_vae_planned(pipe)
+    )
     # Near-lossless, not bit-identical, so never on "off" (returned above).
     applied["vae_fp16_decode"] = _video_vae_half_decode(pipe, target, family, logger)
     if on_cuda:
         applied["vae_fused"] = _install_fused_vae(pipe, logger)
 
-    if on_cuda:
+    if on_cuda and not _cudnn_benchmark_pointless(pipe):
         applied["cudnn_benchmark"] = _enable_cudnn_benchmark(logger)
 
     if on_cuda:
@@ -579,9 +581,30 @@ def fp16_unet_offloaded(target: Any, pipe: Any, *, offload_active: bool) -> bool
     )
 
 
-def _vae_channels_last(pipe: Any, logger: Any) -> bool:
+# channels_last: slower on the stock path (72.7 vs 89 ms), faster once the fused norms install (104.7 vs 121.0 ms).
+_VAE_CHANNELS_LAST_DENY: frozenset[str] = frozenset({"AutoencoderKLQwenImage21"})
+
+
+# DiT-only VAEs: cudnn.benchmark saves ~3 ms per decode (fused, 1024) but re-tunes 0.7-2 s at every new resolution.
+_CUDNN_BENCHMARK_DENY_VAES: frozenset[str] = frozenset({"AutoencoderKLQwenImage21"})
+
+
+def _cudnn_benchmark_pointless(pipe: Any) -> bool:
+    if _denoiser_unet(pipe) is not None:
+        return False
+    return type(getattr(pipe, "vae", None)).__name__ in _CUDNN_BENCHMARK_DENY_VAES
+
+
+def _vae_channels_last(
+    pipe: Any,
+    logger: Any,
+    *,
+    fused: bool = False,
+) -> bool:
     vae = getattr(pipe, "vae", None)
     if vae is None or not hasattr(vae, "to"):
+        return False
+    if type(vae).__name__ in _VAE_CHANNELS_LAST_DENY and not fused:
         return False
     try:
         import torch
@@ -759,6 +782,7 @@ def _compile_repeated_blocks(
     unet = _denoiser_unet(pipe) if not dits else None
     if not dits and unet is None:
         return False
+    _install_inductor_backports(logger)
     # Before the stream-merge probe below, which reads the same block names.
     for transformer in dits:
         try:
@@ -891,13 +915,23 @@ def _compile_repeated_blocks(
     return engaged
 
 
+def _install_inductor_backports(logger: Any) -> bool:
+    """Probe-gated backport of torch 2.14's CantSplit divisibility proof for 2.12 / 2.13. Never fails a load."""
+    try:
+        from . import diffusion_inductor_backports
+        return diffusion_inductor_backports.install(logger)
+    except Exception as exc:  # noqa: BLE001 - optimisation only
+        _warn(logger, "inductor backports", exc)
+        return False
+
+
 def compile_dynamic(transformer: Any, dynamic: Optional[bool]) -> Optional[bool]:
     """The ``dynamic`` a DiT is actually compiled with, so compile-cache fingerprints key on the same value.
 
     dynamic=True makes even the constant segment starts symbolic, and on Qwen-Image-2.1 the attention output cat
-    (text + target, length s87 - s89) then fuses into torchao's per-row activation-quant reduction, which inductor
-    cannot split (CantSplit, every render failed). Automatic dynamic (None) compiles the first shapes static and only
-    generalises what actually varies: stable after ~3 recompiles, same numerics."""
+    (text + target, length s87 - s89) then fuses into torchao's per-row activation-quant reduction (CantSplit on torch
+    2.12 / 2.13 without ``diffusion_inductor_backports``). Even with the backport it is slower than automatic dynamic
+    (None), which does not recompile across prompt lengths or resolutions."""
     # Static kernels for video DiTs: dynamic shapes made LTX-2.3's QK-norm + RoPE kernels ~3x slower.
     if transformer is not None and getattr(transformer, "_unsloth_compile_static", False):
         return False
@@ -1299,6 +1333,7 @@ def _compile_vae_decode(
         return True
     if getattr(vae, "_unsloth_compile_decode_error", None):
         return False
+    _install_inductor_backports(logger)
     try:
         import torch
 
