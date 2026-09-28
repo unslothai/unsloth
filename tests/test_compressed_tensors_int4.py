@@ -31,10 +31,13 @@ import unsloth  # noqa: F401
 from unsloth.models.compressed_tensors_bnb import _transformers_supports_weight_converters
 
 try:
-    import compressed_tensors  # noqa: F401
+    import inspect
+    from compressed_tensors.quantization.lifecycle.forward import dequantize as _ct_dequantize
     HAS_CT = True
+    # compressed-tensors 0.19 dropped GPTQ activation ordering (#840): its compressor ignores weight_g_idx.
+    CT_HONOURS_G_IDX = "g_idx" in inspect.signature(_ct_dequantize).parameters
 except Exception:
-    HAS_CT = False
+    HAS_CT = CT_HONOURS_G_IDX = False
 
 HAS_CONVERTERS = _transformers_supports_weight_converters()
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -64,6 +67,8 @@ def _packed_layer(
         group_size = group_size if strategy == "group" else None,
         actorder = "weight" if actorder else None,
     )
+    if actorder and not CT_HONOURS_G_IDX:
+        pytest.skip("this compressed-tensors cannot write or decompress activation-ordered weights")
     scheme = QuantizationScheme(targets = ["Linear"], weights = args)
     w = torch.randn(out_f, in_f) * 0.05
     gs = group_size if strategy == "group" else in_f

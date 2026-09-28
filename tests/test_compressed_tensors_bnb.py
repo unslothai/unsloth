@@ -47,10 +47,13 @@ from unsloth.models.compressed_tensors_bnb import (
 from unsloth.models.loader_utils import check_and_disable_bitsandbytes_loading
 
 try:
-    import compressed_tensors  # noqa: F401
+    import inspect
+    from compressed_tensors.quantization.lifecycle.forward import dequantize as _ct_dequantize
     HAS_CT = True
+    # compressed-tensors 0.19 dropped GPTQ activation ordering (#840): its compressor ignores weight_g_idx.
+    CT_HONOURS_G_IDX = "g_idx" in inspect.signature(_ct_dequantize).parameters
 except Exception:
-    HAS_CT = False
+    HAS_CT = CT_HONOURS_G_IDX = False
 
 # Needs `update_weight_conversions` (transformers 5.8+); inert on 5.0-5.7.
 from unsloth.models.compressed_tensors_bnb import _transformers_supports_weight_converters
@@ -633,7 +636,8 @@ def _write_tiny_packed_llama(
     )
     model = LlamaForCausalLM(config).to(torch.bfloat16)
     sd = {k: v.detach().contiguous() for k, v in model.state_dict().items()}
-    # `actorder = "group"` was removed in compressed-tensors 0.19.0; "weight" hits the same g_idx path.
+    if actorder and not CT_HONOURS_G_IDX:
+        pytest.skip("this compressed-tensors cannot write or decompress activation-ordered weights")
     quant = _w4a16(
         weights = {
             "num_bits": num_bits,
