@@ -263,6 +263,7 @@ import {
   type PlusMenuItemId,
   usePlusMenuPrefsStore,
   writeComposerDraft,
+  normalizeChatImage,
 } from "@/features/chat";
 import {
   applySentTextGuard,
@@ -3027,7 +3028,9 @@ const Composer: FC<{
         prev.modelLoading ||
         state.params.checkpoint !== prev.params.checkpoint ||
         state.residentCheckpoint !== prev.residentCheckpoint ||
-        state.loadedIsMultimodal !== prev.loadedIsMultimodal
+        state.loadedIsMultimodal !== prev.loadedIsMultimodal ||
+        state.codeToolsEnabled !== prev.codeToolsEnabled ||
+        state.supportsTools !== prev.supportsTools
       ) {
         void retry();
       }
@@ -3405,7 +3408,9 @@ const Composer: FC<{
             const intent = intents[index]!;
             let file: File;
             try {
-              file = await nativeAttachmentIntentToFile(intent);
+              file = await normalizeChatImage(
+                await nativeAttachmentIntentToFile(intent),
+              );
             } catch (error) {
               // Report once below rather than one toast per file: a whole batch
               // can go unreadable at once (volume ejected, tokens expired).

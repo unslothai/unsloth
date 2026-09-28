@@ -982,7 +982,7 @@ def _decode_attachment_base64(payload: str) -> bytes:
 
 
 _ATTACHMENT_TAG_RE = re.compile(r"<attachment name=[^\n]*>\n(.*)\n</attachment>", re.DOTALL)
-_ATTACHMENT_LABEL_RE = re.compile(r"\[(?:PDF|DOCX|HTML|ODS|ODT|XLSX|PPTX): [^\n]*\]\n")
+_ATTACHMENT_LABEL_RE = re.compile(r"\[(?:PDF|DOCX|HTML|ODS|ODT|XLSX|PPTX|RTF): [^\n]*\]\n")
 
 
 def _attachment_body_text(text: str) -> str:
@@ -1017,14 +1017,14 @@ def _safe_image_media_type(media_type: str) -> str:
 def upload_attachment_original(
     file: UploadFile = File(...), current_subject: str = Depends(get_current_subject)
 ) -> dict:
-    """Store a chat document's original file; the message records the returned hash. Sync, so
-    disk writes run in the threadpool."""
-    from pathlib import PurePath
-
-    if PurePath(file.filename or "").suffix.lower() not in chat_originals.EXTENSIONS:
-        raise HTTPException(status_code = 415, detail = "Only documents keep their original file")
+    """Store an attachment's original file; the message records the returned hash. Any name is
+    taken, since the python tool reads every text and code format. Sync, so disk writes run in
+    the threadpool."""
     try:
-        sha256, size = chat_originals.save(iter(lambda: file.file.read(1024 * 1024), b""))
+        sha256, size = chat_originals.save(
+            iter(lambda: file.file.read(1024 * 1024), b""),
+            chat_originals.max_bytes(file.filename or ""),
+        )
     except chat_originals.TooLarge:
         raise HTTPException(status_code = 413, detail = f"{file.filename} is too large")
     chat_originals.sweep()
