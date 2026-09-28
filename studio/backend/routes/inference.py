@@ -13975,7 +13975,8 @@ def _mlx_load_identifier(identifier: str) -> str:
 
 def _mlx_estimate_load_in_4bit(config, request) -> bool:
     """The 4-bit setting the load resolves, not the one the panel sent."""
-    if not request.load_in_4bit:
+    # Same order as the load route: a full-finetune output loads 16-bit before any tier check.
+    if not _effective_load_in_4bit(config, request.load_in_4bit):
         return False
     from utils.transformers_version import latest_tier_active_for
 

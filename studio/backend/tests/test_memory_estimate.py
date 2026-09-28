@@ -1070,6 +1070,31 @@ class TestEstimateMemoryRoute:
         assert (resp.available, resp.reason, resp.total_bytes) == (False, "unsizable", 0)
         assert seen == {}
 
+    def test_a_full_finetune_output_is_priced_at_the_16_bit_it_loads_at(
+        self, monkeypatch, tmp_path
+    ):
+        # The load route resolves a Studio full-finetune output to 16-bit; pricing it 4-bit
+        # advertised a fitted window the real load could not hold.
+        self._mlx_target(monkeypatch, "/models/thing", is_lora = False, path = str(tmp_path))
+        seen = self._record_breakdown(
+            monkeypatch,
+            weights_bytes = 1,
+            kv_bytes = 1,
+            compute_bytes = 1,
+            total_bytes = 3,
+            gpu_bytes = 3,
+            layer_count = 2,
+        )
+        import utils.transformers_version as tv
+
+        monkeypatch.setattr(tv, "latest_tier_active_for", lambda *a, **kw: False)
+        monkeypatch.setattr(ri, "is_full_finetune_output", lambda path: path == str(tmp_path))
+        _estimate(model_path = "org/model", max_seq_length = 4096, load_in_4bit = True)
+        assert seen["load_in_4bit"] is False
+        monkeypatch.setattr(ri, "is_full_finetune_output", lambda path: False)
+        _estimate(model_path = "org/model", max_seq_length = 4096, load_in_4bit = True)
+        assert seen["load_in_4bit"] is True
+
     def test_the_snapshot_priced_is_the_one_the_load_would_open(self, monkeypatch, tmp_path):
         import utils.models.model_config as mc
 
