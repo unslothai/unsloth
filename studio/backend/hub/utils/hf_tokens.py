@@ -12,6 +12,7 @@ import os
 import re
 import threading
 import time
+import urllib.error
 from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Iterable, Literal, MutableMapping, Optional, Union
@@ -65,8 +66,13 @@ def apply_token_to_child_env(env: MutableMapping[str, str], hf_token: HfTokenArg
     """Grant a spawned probe exactly its caller's credential.
 
     A child env is seeded from the parent's, so not *setting* a token is not denying one.
-    Only the sentinel scrubs; ``None`` keeps the inherited env on purpose.
+    Only the sentinel scrubs; ``None`` keeps the inherited env on purpose. A token the Hub
+    refused in this request while anonymous reads worked goes to the child as anonymous too
+    (explicit tokens only: judging the ambient one imports huggingface_hub, which the pre-import
+    tier probe must not).
     """
+    if isinstance(hf_token, str) and hf_token and saved_token_rejected(hf_token):
+        hf_token = False
     if isinstance(hf_token, str) and hf_token:
         # Scrub before granting: setting HF_TOKEN alone leaves an operator credential
         # sitting in HF_HUB_TOKEN or a legacy alias, so the child holds two.
@@ -1137,17 +1143,17 @@ def _wire_hf_token() -> Optional[str]:
 
 
 def _implicit_token_disabled() -> bool:
-    if os.environ.get("HF_HUB_DISABLE_IMPLICIT_TOKEN", "").strip().lower() in (
-        "1",
-        "true",
-        "yes",
-        "on",
-    ):
-        return True
+    # huggingface_hub reads its constant, set at import; an env var changed later (the worker
+    # does) does not change what it sends, so only an unimportable client falls back to it.
     try:
         from huggingface_hub import constants
     except Exception:
-        return False
+        return os.environ.get("HF_HUB_DISABLE_IMPLICIT_TOKEN", "").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        )
     return bool(getattr(constants, "HF_HUB_DISABLE_IMPLICIT_TOKEN", False))
 
 
@@ -1167,6 +1173,9 @@ def is_token_rejection(exc: BaseException) -> bool:
         seen.add(id(link))
         status = getattr(getattr(link, "response", None), "status_code", None)
         if status == 401:
+            return True
+        if isinstance(link, urllib.error.HTTPError) and link.code == 401:
+            # The pre-import JSON reader's urllib error.
             return True
         if status is None and _HUB_401_TEXT.match(str(link)):
             return True
@@ -1208,6 +1217,13 @@ def saved_token_rejected(hf_token: HfTokenArg) -> bool:
     if sink is None or credential is None:
         return False
     return _credential_identity(credential) in sink._recovered
+
+
+def _is_missing_file(exc: BaseException) -> bool:
+    """The Hub answered that a file is absent from a repo it let us read (not the offline cache
+    lookup, which says nothing about the Hub)."""
+    names = {cls.__name__ for cls in type(exc).__mro__}
+    return "EntryNotFoundError" in names and "LocalEntryNotFoundError" not in names
 
 
 def call_with_anonymous_retry(read, hf_token: HfTokenArg):
@@ -1254,6 +1270,11 @@ def call_with_anonymous_retry(read, hf_token: HfTokenArg):
         except Exception as anonymous_exc:
             if _is_cancellation(anonymous_exc):
                 # The user stopped the load mid-retry: that is the answer, not the 401.
+                raise
+            if _is_missing_file(anonymous_exc):
+                # Anonymous access reads the repo and says the file is not there: that is the
+                # answer (an optional config), and the token was the one refused.
+                note_saved_token_rejected(hf_token)
                 raise
             logger.info(
                 "Hugging Face refused the credential (401); the anonymous retry failed too: %s",

@@ -510,14 +510,38 @@ def _worker_reclaimable_gpu_gb(config: dict) -> dict[str, float] | None:
         return None
 
 
+# The token environment as it was before a load scrubbed it, so the next load starts from it.
+_TOKEN_ENV_BEFORE_ANONYMOUS_LOAD: Optional[dict] = None
+
+
+def _token_env_keys() -> tuple:
+    from hub.utils.hf_tokens import _HF_TOKEN_ENV_KEYS
+    return (*_HF_TOKEN_ENV_KEYS, "HF_HUB_DISABLE_IMPLICIT_TOKEN")
+
+
+def _restore_token_environment() -> None:
+    """Undo an earlier load's anonymous scrub: a later load (a replaced token) must not
+    inherit it."""
+    global _TOKEN_ENV_BEFORE_ANONYMOUS_LOAD
+    saved, _TOKEN_ENV_BEFORE_ANONYMOUS_LOAD = _TOKEN_ENV_BEFORE_ANONYMOUS_LOAD, None
+    for key, value in (saved or {}).items():
+        if value is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = value
+
+
 def _drop_a_rejected_token(config: dict) -> None:
     """The Hub rejected this load's token while anonymous reads worked (an expired or revoked
     token 401s even public repos): load the rest anonymously, weights included."""
+    global _TOKEN_ENV_BEFORE_ANONYMOUS_LOAD
     from hub.utils.hf_tokens import saved_token_rejected
 
     token = _config_hf_token(config)
     if token is not False and saved_token_rejected(token):
         config["anonymous_hf_access"] = True
+        if _TOKEN_ENV_BEFORE_ANONYMOUS_LOAD is None:
+            _TOKEN_ENV_BEFORE_ANONYMOUS_LOAD = {k: os.environ.get(k) for k in _token_env_keys()}
         _apply_worker_hf_token_environment(config)
         logger.warning(
             "Hugging Face rejected the token for %s; loading it without the token.",
@@ -539,6 +563,7 @@ def _in_token_rejection_scope(handler):
 
 @_in_token_rejection_scope
 def _handle_load(backend, config: dict, resp_queue: Any) -> None:
+    _restore_token_environment()
     try:
         mc = _build_model_config(config)
         _drop_a_rejected_token(config)
