@@ -52,6 +52,7 @@ class Int4QuantState:
         "_launch",
         "_launchers",
         "_marlin",
+        "_tinygemm",
     )
 
     def __init__(self, scale, zero_point, g_idx, shape, bits, group_size, dtype):
@@ -65,6 +66,7 @@ class Int4QuantState:
         self._launch = None
         self._launchers = None
         self._marlin = None
+        self._tinygemm = None
 
 
 @triton.jit
@@ -532,6 +534,78 @@ def _marlin_weight(x2, packed, qs):
     return w
 
 
+# torch's built-in tinygemm (``_weight_int4pack_mm``, bf16, sm_80+) when Marlin is unavailable: 3-14x the GEMV /
+# decode + cuBLAS at 1-2 rows; rows up to which it still wins on Qwen3-8B shapes: A100 16, B200 4, RTX PRO 6000 16.
+TINYGEMM_MAX_ROWS = {8: 16, 10: 4, 11: 4, 12: 16}
+TINYGEMM_DEFAULT_ROWS = 4
+_TINYGEMM_CHECKED = {}
+
+
+@functools.lru_cache(maxsize = None)
+def _tinygemm_max_rows(index):
+    return TINYGEMM_MAX_ROWS.get(torch.cuda.get_device_capability(index)[0], TINYGEMM_DEFAULT_ROWS)
+
+
+def _tinygemm_weight(x2, packed, qs):
+    """``(weight, group, scales_and_zeros)`` for ``torch._weight_int4pack_mm``, or None when it cannot run this layer exactly."""
+    cached = qs._tinygemm
+    if cached is not None and cached[0] == packed.data_ptr():
+        return cached[1]
+    qs._tinygemm = (packed.data_ptr(), None)
+    N, K = qs.shape
+    group, scale, zp = qs.group_size, qs.scale, qs.zero_point
+    inner = next((t for t in (8, 4, 2) if K % (16 * t) == 0), None)
+    if (
+        os.environ.get("UNSLOTH_INT4_TINYGEMM", "1") == "0"
+        or torch.version.hip is not None
+        or not hasattr(torch, "_weight_int4pack_mm")
+        or qs.bits != 4
+        or qs.g_idx is not None
+        or group not in (32, 64, 128, 256)
+        or inner is None
+        or packed.dtype != torch.int32
+        or packed.shape != (N, K // 8)
+        or scale.dtype != torch.bfloat16
+        or x2.dtype != torch.bfloat16
+        or (zp is not None and zp.shape != ((N + 7) // 8, K // group))
+        or torch.cuda.get_device_capability(x2.device) < (8, 0)
+    ):
+        return None
+    try:
+        with _on_device(x2.device):
+            # Nibble i of word w is column 8w + i; tinygemm wants bytes (q[2j] << 4) | q[2j + 1].
+            shifts = torch.arange(0, 32, 8, device = packed.device, dtype = torch.int32)
+            b = packed.unsqueeze(-1) >> shifts
+            pairs = (((b & 15) << 4) | ((b >> 4) & 15)).to(torch.uint8).reshape(N, K // 2)
+            wq = torch._convert_weight_to_int4pack(pairs, inner)
+            del b, pairs
+            s = scale.reshape(N, -1).t()
+            if zp is None:
+                zero = torch.zeros_like(s)
+            else:
+                # (q - z) * s == (q - 8) * s + (8 - z) * s, tinygemm's float zero.
+                zs = torch.arange(0, 32, 4, device = zp.device, dtype = torch.int32)
+                z = ((zp.t().unsqueeze(-1) >> zs) & 15).reshape(zp.shape[1], -1)[:, :N]
+                zero = ((8 - z).float() * s.float()).to(torch.bfloat16)
+            w = (wq, group, torch.stack((s, zero), -1).contiguous())
+            key = (x2.device, zp is not None)
+            ok = _TINYGEMM_CHECKED.get(key)
+            if ok is None:
+                g = torch.Generator(device = x2.device).manual_seed(0)
+                probe = torch.randn(4, K, device = x2.device, dtype = x2.dtype, generator = g)
+                ref = probe.float() @ int4_dequantize(packed, qs, x2.dtype).float().t()
+                got = torch._weight_int4pack_mm(probe, *w).float()
+                ok = _TINYGEMM_CHECKED[key] = bool(
+                    ((got - ref).abs().max() <= 1e-2 * ref.abs().max() + 1e-3).item()
+                )
+    except Exception:
+        return None
+    if not ok:
+        return None
+    qs._tinygemm = (packed.data_ptr(), w)
+    return w
+
+
 def int4_matmul(
     x,
     packed,
@@ -543,10 +617,18 @@ def int4_matmul(
     x2 = x.reshape(-1, shape[-1])
     M = x2.shape[0]
     N = qs.shape[0]
-    if x2.is_cuda and not torch.is_grad_enabled() and M <= _marlin_max_rows(x2.device.index or 0):
-        w = _marlin_weight(x2, packed, qs)
-        if w is not None:
-            y = _marlin_call(w, x2 if x2.is_contiguous() else x2.contiguous())
+    if x2.is_cuda and not torch.is_grad_enabled():
+        index = x2.device.index or 0
+        y = None
+        if M <= _marlin_max_rows(index):
+            w = _marlin_weight(x2, packed, qs)
+            if w is not None:
+                y = _marlin_call(w, x2 if x2.is_contiguous() else x2.contiguous())
+        if y is None and M <= _tinygemm_max_rows(index):
+            w = _tinygemm_weight(x2, packed, qs)
+            if w is not None:
+                y = torch._weight_int4pack_mm(x2 if x2.is_contiguous() else x2.contiguous(), *w)
+        if y is not None:
             if out is not None:
                 out.view(M, N).copy_(y)
                 y = out
