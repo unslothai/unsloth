@@ -1120,11 +1120,10 @@ def _active_launch_placement():
                 return None, False, False, None, False, False, None
             return _NO_LAUNCH, False, True, None, False, False, None
         state = getattr(backend, "_memory_state", None)
-        reserves_ram = bool(isinstance(state, (tuple, list)) and len(state) >= 2 and state[1])
         return (
             state,
             bool(getattr(backend, "_memory_policy_active", False)),
-            bool(getattr(backend, "_memory_mlock_applicable", True) or reserves_ram),
+            bool(getattr(backend, "_memory_mlock_applicable", True)),
             getattr(backend, "_memory_direct_io", None),
             bool(getattr(backend, "_memory_dio_applicable", False)),
             # The pair the POLICY emitted, not the aggregate: a user's own `dio` must

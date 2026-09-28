@@ -28158,7 +28158,7 @@ class LlamaCppBackend:
                     if resolve_effective_memory_state(
                         [*_preview_load_mode, *_preview_extras],
                         _fit_load_mode_env_view,
-                    )[1]:
+                    )[0]:
                         _mem_host_resident = True
                         _mem_managed, _mem_extras = apply_model_memory_policy(
                             extra_args,
@@ -29673,30 +29673,24 @@ class LlamaCppBackend:
                                             "page-lock it was built with."
                                         )
                                     else:
-                                        _retry_managed, _retry_extras = (
-                                            apply_model_memory_policy(
-                                                extra_args,
-                                                supports_load_mode = bool(
-                                                    server_caps.get("supports_load_mode")
-                                                ),
-                                                weights_in_host_memory = False,
-                                                gpu_offload_confirmed = (
-                                                    _mem_gpu_offload_confirmed
-                                                ),
-                                                env = _fit_load_mode_env_view,
-                                                settings = _mem_settings,
-                                            )
+                                        _retry_managed, _retry_extras = apply_model_memory_policy(
+                                            extra_args,
+                                            supports_load_mode = bool(
+                                                server_caps.get("supports_load_mode")
+                                            ),
+                                            weights_in_host_memory = False,
+                                            gpu_offload_confirmed = (_mem_gpu_offload_confirmed),
+                                            env = _fit_load_mode_env_view,
+                                            settings = _mem_settings,
                                         )
-                                        _retry_load_mode, _retry_extras = (
-                                            apply_load_mode_policy(
-                                                _retry_extras,
-                                                supports_load_mode = bool(
-                                                    server_caps.get("supports_load_mode")
-                                                ),
-                                                weights_in_host_memory = False,
-                                                requested_load_mode = load_mode,
-                                                settings = _mem_settings,
-                                            )
+                                        _retry_load_mode, _retry_extras = apply_load_mode_policy(
+                                            _retry_extras,
+                                            supports_load_mode = bool(
+                                                server_caps.get("supports_load_mode")
+                                            ),
+                                            weights_in_host_memory = False,
+                                            requested_load_mode = load_mode,
+                                            settings = _mem_settings,
                                         )
                                         _retry_touched = bool(
                                             _mem_scrubbed
@@ -29755,9 +29749,7 @@ class LlamaCppBackend:
                                         " ".join(_retry_dio),
                                     )
                                 self._record_memory_state(run_cmd, env)
-                                self._memory_mlock_applicable = bool(
-                                    _mem_host_resident or self._memory_state[1]
-                                )
+                                self._memory_mlock_applicable = bool(_mem_host_resident)
                             _did_fit_retry = True
                             continue
                         return False

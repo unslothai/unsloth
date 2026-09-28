@@ -1261,7 +1261,6 @@ class TestHostMemoryGate:
 
 
 class TestTheIgpuSnapshotCannotWithdrawThePageLock:
-
     @staticmethod
     def _derivation():
         """The real binding, pulled out of load_model and run in a tiny scope."""
@@ -1698,7 +1697,6 @@ class TestMlockActiveReporting:
 
 
 class TestMlockApplicable:
-
     def test_a_discrete_full_offload_reports_not_applicable(self, monkeypatch):
         import routes.settings as rs
 
@@ -1729,7 +1727,6 @@ class TestMlockApplicable:
 
     def test_with_nothing_loaded_it_is_applicable(self, monkeypatch):
         import routes.settings as rs
-
         _install_backend(monkeypatch, _fake_backend(), keep = True, no_res = False)
         assert rs._model_memory_response().mlock_applicable is True
 
@@ -1754,7 +1751,9 @@ class TestMlockApplicable:
         _install_backend(monkeypatch, backend, keep = True, no_res = False)
         assert rs._model_memory_response().mlock_skip_reason == "full_gpu_offload"
 
-    def test_a_reserving_load_mode_keeps_full_offload_applicable(self, monkeypatch):
+    def test_a_reserving_load_mode_on_full_offload_is_not_applicable(self, monkeypatch):
+        # --load-mode none / --no-mmap on a full offload keeps no host copy to pin; a lock here
+        # would ask for a reload no launch can satisfy.
         import routes.settings as rs
 
         backend = _fake_backend(
@@ -1765,9 +1764,9 @@ class TestMlockApplicable:
         )
         _install_backend(monkeypatch, backend, keep = True, no_res = False)
         body = rs._model_memory_response()
-        assert body.mlock_applicable is True
-        assert body.mlock_skip_reason is None
-        assert body.reload_required is True
+        assert body.mlock_applicable is False
+        assert body.mlock_skip_reason == "full_gpu_offload"
+        assert body.reload_required is False
 
     def test_an_inactive_llama_backend_defers_to_the_gpu_owner(self, monkeypatch):
         import core.inference.gpu_arbiter as arbiter
@@ -3192,8 +3191,7 @@ class TestFitOffRetryDropsTheLock:
             "_fit_load_mode_env_view",
             "_mem_host_resident = False",
             "self._record_memory_state(run_cmd, env)",
-            "self._memory_mlock_applicable = bool(",
-            "_mem_host_resident or self._memory_state[1]",
+            "self._memory_mlock_applicable = bool(_mem_host_resident)",
         ):
             assert needle in tail, needle
 
@@ -3282,7 +3280,9 @@ class TestFitOffRetryClearsPolicyActivity:
         assert end != -1
         tail = src[branch:end]
         flat_tail = "".join(tail.split())
-        assert "_retry_touched=bool(_mem_scrubbed)or_retry_extras!=list(extra_argsor[])" in flat_tail
+        assert (
+            "_retry_touched=bool(_mem_scrubbed)or_retry_extras!=list(extra_argsor[])" in flat_tail
+        )
         assert "self._memory_policy_active = _retry_touched" in tail
         assert "self._memory_policy_active = _mem_policy_touched_extras" not in tail
 
