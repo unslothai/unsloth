@@ -11199,8 +11199,7 @@ def _remote_gguf_companion_bytes(
         from utils.models.drafters import dflash_budget_bytes, split_listing_is_complete
         from utils.models.model_config import dspark_preference_key
 
-        # Admission sizing: a refused token must not zero the companion bytes and let a
-        # vision or speculative load past the training budget.
+        # A refused token must not zero the companion bytes and slip past the training budget.
         info = call_hub_with_anonymous_retry(model_info, hf_token, repo, files_metadata = True)
         total = 0
         mtp_bytes = 0
@@ -16409,7 +16408,6 @@ async def _load_model_impl(
     native_grant_backed = False
     model_log_label = request.model_path
     gguf_load_stack = ExitStack()
-    # Shares the tracked wrapper's scope when there is one, so it can attach the warning.
     token_rejections = gguf_load_stack.enter_context(collecting_hub_token_rejections())
     try:
         # Validate user pass-through args up front so a managed-flag collision
@@ -17768,7 +17766,6 @@ async def validate_model(
     model_log_label = request.model_path
 
     ollama_load_stack = ExitStack()
-    # Every Hub read below, off-loop ones included, reports a refused credential here.
     token_rejections = ollama_load_stack.enter_context(collecting_hub_token_rejections())
     try:
         resolved_ollama_path = await _lease_ollama_model_ref(
@@ -18173,8 +18170,7 @@ async def validate_model(
                 ),
             )
         if _raised_repository_not_found(e):
-            # The Hub says the same thing for a missing repo and a private one it will not
-            # show this caller, so the message names both.
+            # The Hub answers alike for a missing repo and a private one, so the message names both.
             raise HTTPException(
                 status_code = 400,
                 detail = (
@@ -18238,7 +18234,6 @@ def _raised_repository_not_found(error: BaseException) -> bool:
         if type(current).__name__ == "RepositoryNotFoundError":
             return True
         if isinstance(current, (ValueError, RuntimeError)):
-            # These carry their own message; the ValueError branch below shows it.
             return False
         current = current.__cause__ or (
             None if current.__suppress_context__ else current.__context__

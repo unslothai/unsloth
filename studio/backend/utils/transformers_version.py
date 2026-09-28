@@ -143,11 +143,7 @@ def _hf_proxy_opener(url: str):
 
 
 def _hf_json(url: str, hf_token: str | None):
-    """GET a JSON file from the Hub, once more without the token if the Hub refuses it.
-
-    A token the Hub no longer accepts (an expired OAuth token) is answered 401 even for public
-    repos, while a token it accepts gets 404 for a repo it cannot see, so a 401 with a token
-    is the token being refused and a public file still answers without it (#11551)."""
+    """GET a JSON file from the Hub, once more without the token if the Hub refuses it (#11551)."""
     import urllib.request
 
     from hub.utils.hf_tokens import call_with_anonymous_retry
@@ -159,8 +155,7 @@ def _hf_json(url: str, hf_token: str | None):
         with _hf_urlopen(urllib.request.Request(url, headers = headers), timeout = 10) as resp:
             return json.loads(resp.read().decode())
 
-    # No token here sends none (not the ambient one), and the request's refusal record is shared
-    # with the huggingface_hub reads, so a refused token is not sent again.
+    # No token sends none here (not the ambient one).
     return call_with_anonymous_retry(read, hf_token or False)
 
 

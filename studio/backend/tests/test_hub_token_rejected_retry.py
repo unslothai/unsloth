@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A token Hugging Face refuses must not make public repos unreadable (#11551).
-
-An expired or revoked credential (an ``hf_oauth_`` token in the report) is answered 401 on
-every read, public repos included, and huggingface_hub reports that as
-RepositoryNotFoundError. A token the Hub accepts gets 404 for a repo it cannot see, so a 401
-on a read that carried one is the credential being refused: retry that read once
-anonymously, and say so.
-"""
+"""A token the Hub refuses (401 on every read) must not make public repos unreadable (#11551)."""
 
 import re
 from types import SimpleNamespace
@@ -219,9 +212,6 @@ def test_the_model_info_scope_keeps_each_credential_its_own(monkeypatch):
     assert calls == [OAUTH, False, other]
 
 
-# End to end through ModelConfig.from_identifier, the resolver /validate and /load call.
-
-
 @pytest.fixture
 def _gguf_env(tmp_path, monkeypatch):
     monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
@@ -309,9 +299,6 @@ def test_hub_gguf_listing_retries_anonymously(monkeypatch):
     assert calls == [OAUTH, False]
 
 
-# Error classification and redaction.
-
-
 def test_a_repo_level_401_is_not_reported_as_a_bad_token():
     assert not is_hf_authentication_error(
         RepositoryNotFoundError(reason = "Invalid username or password.")
@@ -361,8 +348,7 @@ def test_oauth_tokens_are_redacted_whole():
 
 
 def test_an_ambient_token_the_hub_never_sees_is_not_blamed(monkeypatch):
-    # HF_HUB_DISABLE_IMPLICIT_TOKEN=1: huggingface_hub keeps the ambient token off the wire,
-    # so a 401 is about the repo and the saved token must not be called rejected.
+    # huggingface_hub keeps the ambient token off the wire, so the 401 is about the repo.
     monkeypatch.setattr(hf_tokens, "_ambient_hf_token", lambda: (True, OAUTH))
     monkeypatch.setattr(hf_tokens, "_wire_hf_token", lambda: OAUTH)
     monkeypatch.setattr(huggingface_hub.constants, "HF_HUB_DISABLE_IMPLICIT_TOKEN", True)
@@ -403,8 +389,7 @@ def test_an_anonymous_download_401_does_not_blame_a_saved_token():
 
 
 def test_an_alias_huggingface_hub_never_sends_is_not_blamed(monkeypatch):
-    # HF_HUB_TOKEN and friends count for cache bookkeeping, but huggingface_hub's own
-    # get_token() does not read them, so a token=None read went out anonymously.
+    # huggingface_hub's get_token() never reads HF_HUB_TOKEN, so this read went out anonymously.
     monkeypatch.setattr(hf_tokens, "_ambient_hf_token", lambda: (True, OAUTH))
     monkeypatch.setattr(hf_tokens, "_wire_hf_token", lambda: None)
     calls = []
@@ -425,8 +410,6 @@ def test_a_cancelled_anonymous_retry_stays_a_cancellation():
 
 
 def test_the_pre_import_config_reads_retry_without_a_refused_token(monkeypatch):
-    # The worker picks its transformers tier from raw config/tokenizer reads before any
-    # huggingface_hub import; a refused token there must not hide a public repo's config.
     import io
     import json
     import urllib.error
@@ -476,14 +459,12 @@ def test_an_anonymous_first_success_after_a_transient_failure_is_recorded():
         with pytest.raises(RepositoryNotFoundError):
             call_with_anonymous_retry(read, OAUTH)
         assert not saved_token_rejected(OAUTH)
-        # The caller's own retry: the anonymous-first path now answers.
         assert call_with_anonymous_retry(read, OAUTH) == "public answer"
         assert saved_token_rejected(OAUTH)
         assert rejections.recovered
 
 
 def test_admission_sizing_counts_companions_when_the_token_is_refused(monkeypatch):
-    # The training guard sizes a GGUF with its mmproj: a refused token must not zero it.
     import routes.inference as inference_routes
 
     def model_info(
@@ -508,7 +489,6 @@ def test_admission_sizing_counts_companions_when_the_token_is_refused(monkeypatc
 
 
 def test_training_admission_reads_safetensors_totals_without_a_refused_token(monkeypatch):
-    # Multimodal sizing needs the safetensors total; the config estimate is the text tower only.
     from utils.hardware import hardware
 
     monkeypatch.setattr("utils.utils.hf_env_offline", lambda: False)
@@ -543,7 +523,6 @@ def test_the_malware_status_is_read_without_a_refused_token(monkeypatch):
 
 
 def test_an_explicit_remote_drafter_is_sized_without_a_refused_token(monkeypatch):
-    # The flat reserve undercharges a large public drafter beside a training run.
     import routes.inference as inference_routes
 
     def model_info(
@@ -563,7 +542,6 @@ def test_an_explicit_remote_drafter_is_sized_without_a_refused_token(monkeypatch
 
 
 def test_security_weight_indexes_are_read_without_a_refused_token(monkeypatch, tmp_path):
-    # An unread index is inconclusive, which blocks every flagged nested pickle.
     import json
 
     import utils.hf_probe
@@ -594,7 +572,6 @@ def test_security_weight_indexes_are_read_without_a_refused_token(monkeypatch, t
 
 
 def test_the_gguf_sliding_window_config_is_read_without_a_refused_token(monkeypatch, tmp_path):
-    # Without it, context sizing falls back to the one-global-in-four guess.
     import json
 
     import utils.hf_probe
@@ -622,8 +599,7 @@ def test_the_gguf_sliding_window_config_is_read_without_a_refused_token(monkeypa
 
 
 def test_a_private_repo_after_a_public_recovery_is_reported_as_refused():
-    # A public adapter recovered anonymously, then a private base no one lets in: /load must
-    # see the refusal and name the token, not answer 500.
+    # A public adapter recovered anonymously, then a private base no one can read.
     calls = []
 
     def private(token):
@@ -639,8 +615,6 @@ def test_a_private_repo_after_a_public_recovery_is_reported_as_refused():
 
 
 def test_an_env_flag_set_after_import_does_not_stop_the_retry(monkeypatch):
-    # huggingface_hub still sends the ambient token (its constant was read at import), so the
-    # 401 is the token's and the anonymous retry must run.
     monkeypatch.setattr(hf_tokens, "_ambient_hf_token", lambda: (True, OAUTH))
     monkeypatch.setattr(hf_tokens, "_wire_hf_token", lambda: OAUTH)
     monkeypatch.setattr(huggingface_hub.constants, "HF_HUB_DISABLE_IMPLICIT_TOKEN", False)
@@ -658,8 +632,6 @@ def test_an_env_flag_set_after_import_does_not_stop_the_retry(monkeypatch):
 
 
 def test_child_probes_read_anonymously_once_the_token_was_refused():
-    # The vision and AutoConfig probes run in a child: handing it the refused token makes a
-    # public model's probe 401 and read as "not a vision model".
     from hub.utils.hf_tokens import apply_token_to_child_env
 
     with collecting_hub_token_rejections():
@@ -697,8 +669,6 @@ def test_the_pre_import_json_reader_shares_the_request_refusal(monkeypatch):
 
 
 def test_an_anonymous_missing_file_answer_is_kept():
-    # A public repo without an optional config: the scanners skip a missing file, so the
-    # anonymous 404 must reach them rather than the refused token's 401.
     from huggingface_hub.utils import EntryNotFoundError
 
     def read(token):
@@ -713,8 +683,6 @@ def test_an_anonymous_missing_file_answer_is_kept():
 
 
 def test_a_later_load_in_the_same_worker_gets_its_token_environment_back(monkeypatch):
-    # A persistent worker scrubbed the env for a refused token; the next load, after the user
-    # replaced the token, must not inherit that scrub.
     import os
 
     from core.inference import worker
