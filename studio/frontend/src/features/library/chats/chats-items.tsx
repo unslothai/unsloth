@@ -1243,28 +1243,24 @@ export function ChatCard({
   );
 }
 
-/** A card's one footer line: what it holds, then when. */
+/** A card's footer: what it holds on one line, the date under it, bottom left. */
 function CardFooter({ meta, date, className }: { meta?: ReactNode; date: string; className?: string }) {
   return (
     <div
       className={cn(
-        "mt-auto flex min-w-0 items-center gap-1.5 text-ui-12 text-muted-foreground",
+        "mt-auto flex min-w-0 flex-col items-start gap-1 text-ui-12 text-muted-foreground",
         className,
       )}
     >
-      {meta && (
-        <>
-          <span className="min-w-0 truncate">{meta}</span>
-          <span aria-hidden="true">·</span>
-        </>
-      )}
-      <span className="shrink-0">{date}</span>
+      {meta && <span className="w-full min-w-0 truncate">{meta}</span>}
+      <span className="truncate">{date}</span>
     </div>
   );
 }
 
+// Two lines; a long unbroken name wraps instead of running out on one line.
 const CARD_TITLE =
-  "block w-full rounded text-left font-medium text-ui-15 leading-snug text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring";
+  "block w-full rounded text-left font-medium text-ui-15 leading-snug text-foreground outline-none [overflow-wrap:anywhere] focus-visible:ring-2 focus-visible:ring-ring";
 
 /** Group name and count in words; a bare number beside "Today" read as part of the name. */
 export function GroupHeading({
