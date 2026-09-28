@@ -490,23 +490,25 @@ def test_rust_windows_spawns_force_utf8(rust_file: str) -> None:
 #
 # A GitHub runner hands a CREATE_NO_WINDOW child a console anyway (GetConsoleOutputCP 437, GetConsoleWindow 0), so the
 # UTF-8 setter in the preamble succeeds there and every version of these scripts emits a clean banner. The cases above
-# therefore cannot tell this fix from what preceded it. Spawning the child with DETACHED_PROCESS instead puts it in the
-# state install.rs's own comment assumes CREATE_NO_WINDOW produces: "Console processes are not attached to a console if
-# they are created using CreateProcess with DETACHED_PROCESS"
-# (https://learn.microsoft.com/en-us/windows/console/creation-of-a-console). There the two diverge hard: without the
-# sink, Write-Host throws `HostException: GetConsoleScreenBufferInfo, The Win32 internal error "The handle is invalid"
-# 0x6`, the script dies with exit 1 and 2 bytes of stdout, and the user's setup log holds a PowerShell stack trace where
-# the banner should be.
+# therefore cannot tell this fix from what preceded it. Calling FreeConsole() in the child first puts it in the state
+# install.rs's own comment assumes CREATE_NO_WINDOW produces, and there the two diverge hard: without the sink,
+# Write-Host throws `HostException: GetConsoleScreenBufferInfo, The Win32 internal error "The handle is invalid" 0x6`,
+# the script dies with exit 1 and 2 bytes of stdout, and the user's setup log holds a PowerShell stack trace where the
+# banner should be.
 #
-# This used to be CREATE_NO_WINDOW plus a FreeConsole() P/Invoke at the top of the probe, which reaches the same state
-# from inside the child. The written .ps1 then carried an Add-Type/DllImport of kernel32 and was quarantined by
-# Bitdefender (CMD:Heur.BZC.PZQ.Boxter.542) on real machines, so the detach moved to the spawn and the probe no longer
-# declares any native call. The state is not taken on trust: the probe reports whether it can reach a console screen
-# buffer, and _run_console_less refuses a run that could.
+# DETACHED_PROCESS would reach that state from the spawn, but Windows PowerShell 5.1 started that way exits 0 without
+# running a line (checked on windows-latest and windows-11-arm, whatever stdin, -File or -Command), so the detach has to
+# happen inside the child. The FreeConsole prologue that does it is an Add-Type/DllImport of kernel32, which
+# Bitdefender quarantines on real machines (CMD:Heur.BZC.PZQ.Boxter.542), so these runs are opt-in off CI: they run
+# under GitHub Actions, or locally with UNSLOTH_TEST_CONSOLE_LESS=1.
 #
-# Everything the probe prints is sliced out of the script under test; only the console check and the stderr diagnostics
-# are harness.
-DETACHED_PROCESS = 0x00000008
+# Everything the probe prints is sliced out of the script under test; only the FreeConsole prologue, the console check
+# and the stderr diagnostics are harness.
+CREATE_NO_WINDOW = 0x08000000
+
+_CONSOLE_LESS_OPTED_IN = (
+    os.environ.get("GITHUB_ACTIONS") == "true" or os.environ.get("UNSLOTH_TEST_CONSOLE_LESS") == "1"
+)
 
 # studio/src-tauri/src/install.rs::powershell_launch_args, minus the -File the runner appends. Not Bypass:
 # RemoteSigned is what the shipped spawn uses.
@@ -530,11 +532,13 @@ powershell_51_only = pytest.mark.skipif(
     reason = "Windows PowerShell 5.1 is unavailable",
 )
 
-# The target state, observed rather than assumed. $Host.UI.RawUI reads the same console screen buffer Write-Host needs:
-# under a hidden CREATE_NO_WINDOW console it answers, and with no console at all it throws. Written first and straight
-# to the stderr handle, so a script that later dies on the banner has still said which state it died in. No native
-# declaration of any kind, so the probe file stays plain script.
-_CONSOLE_CHECK = """$UnslothProbeConsole = $true
+# Documented kernel32 calls and nothing else, so the probe reaches the target state without the scripts under test
+# knowing they are being tested.
+_FREE_CONSOLE = """Add-Type -Namespace Force -Name Native -MemberDefinition @'
+[DllImport("kernel32.dll")] public static extern bool FreeConsole();
+'@
+$null = [Force.Native]::FreeConsole()
+$UnslothProbeConsole = $true
 try { $null = $Host.UI.RawUI.BufferSize } catch { $UnslothProbeConsole = $false }
 [Console]::Error.WriteLine("console_attached=" + $UnslothProbeConsole)"""
 
@@ -597,7 +601,7 @@ def _console_less_probe(path: Path) -> str:
     # would be assuming the result.
     eap = _slice_optional(source, r'(?m)^[ \t]*\$ErrorActionPreference = "Stop"')
     assert eap, f"{path.name} no longer stops on error before the banner"
-    parts = [eap, _CONSOLE_CHECK, "", _slice_preamble(source), ""]
+    parts = [eap, _FREE_CONSOLE, "", _slice_preamble(source), ""]
     redirect_probe = _slice_optional(
         source,
         r"(?m)^[ \t]*\$script:StudioStdoutRedirected = \$false\n"
@@ -645,6 +649,8 @@ def _run_console_less(path: Path, source: str | None = None) -> tuple[int, bytes
     `source` is for the VT parity case, which runs this file's own function beside the one it
     replaced. A str keeps the lru_cache above workable; a dict would not hash.
     """
+    if not _CONSOLE_LESS_OPTED_IN:
+        pytest.skip("the FreeConsole probe trips AV heuristics; set UNSLOTH_TEST_CONSOLE_LESS=1 to run it")
     with tempfile.TemporaryDirectory() as workdir:
         # A file written here has no Zone.Identifier, so RemoteSigned admits it.
         probe = Path(workdir) / f"{path.stem}_console_less_probe.ps1"
@@ -657,16 +663,14 @@ def _run_console_less(path: Path, source: str | None = None) -> tuple[int, bytes
             [str(_WINDOWS_POWERSHELL), *TAURI_FLAGS, "-File", str(probe)],
             stdout = subprocess.PIPE,
             stderr = subprocess.PIPE,
-            # No console to inherit, and none allocated: see the note above DETACHED_PROCESS.
-            creationflags = DETACHED_PROCESS,
+            creationflags = CREATE_NO_WINDOW,
             timeout = 180,
         )
     err = proc.stderr.decode("utf-8", errors = "replace")
-    # Checked on every run, the VT parity one included: a child that still had a console would pass the banner cases
-    # on any version of these scripts, which is the blind spot this spawn exists to close.
+    # A child that kept its console would pass the banner cases on any version of these scripts.
     assert "console_attached=False" in err, (
-        f"{path.name}: the probe was not console-less (expected console_attached=False on stderr), so this run "
-        f"cannot tell the sink from its predecessor. exit {proc.returncode}, stderr:\n{err[-1200:]}"
+        f"{path.name}: the probe was not console-less (expected console_attached=False on stderr). "
+        f"exit {proc.returncode}, stderr:\n{err[-1200:]}"
     )
     return proc.returncode, proc.stdout, err
 
@@ -687,7 +691,7 @@ def _decode_like_install_rs(raw: bytes) -> str:
 def _explain(path: Path, code: int, raw: bytes, err: str) -> str:
     tail = "\n".join(line for line in err.splitlines() if line.strip())[-1200:]
     return (
-        f"\n{path.name} under a console-less DETACHED_PROCESS spawn: exit {code}, "
+        f"\n{path.name} under a console-less CREATE_NO_WINDOW spawn: exit {code}, "
         f"{len(raw)} stdout bytes.\nstderr:\n{tail}\n"
     )
 
