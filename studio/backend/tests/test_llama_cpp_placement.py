@@ -1499,8 +1499,9 @@ def test_a_replayed_context_gets_the_slot_refit_of_a_fresh_drafter_load(tmp_path
     assert fresh["cmd"][fresh["cmd"].index("--parallel") + 1] != "4"
     assert _launched_ctx(fresh) > 8192
     assert _launched_ctx(result) == _launched_ctx(fresh)
-    assert result["cmd"][result["cmd"].index("--parallel") + 1] == (
-        fresh["cmd"][fresh["cmd"].index("--parallel") + 1]
+    assert (
+        result["cmd"][result["cmd"].index("--parallel") + 1]
+        == (fresh["cmd"][fresh["cmd"].index("--parallel") + 1])
     )
 
 
