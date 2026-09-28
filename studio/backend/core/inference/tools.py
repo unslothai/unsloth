@@ -4011,10 +4011,8 @@ def _references_studio_credential_here(
         if homed != text and not _HOME_VARIABLE_RE.search(homed):
             if _references_studio_credential_here(homed, workdir, _expanded = _expanded):
                 return True
-    # Indirection, `r=$STUDIO_HOME; sqlite3 "$r/auth/auth.db"`. Same substitution the sensitive-path
-    # scan uses, and it only ADDS detections. Once per path through this analysis, so every branch
-    # above passes the flag on: resetting it let `a=$b b=$c c=$a` beside a run of escapes restart the
-    # passes at every level and recurse exponentially.
+    # Indirection, `r=$STUDIO_HOME; sqlite3 "$r/auth/auth.db"`; only ADDS detections. Once per path:
+    # a branch above resetting `_expanded` let `a=$b b=$c c=$a` beside escapes recurse exponentially.
     if "$" in text and not _expanded:
         # The WHOLE workdir-aware analysis, not only the literal scan: `d=../..; cd "$d"` moves the
         # directory every later relative path opens from, and handing the unexpanded text to the cwd
@@ -5255,19 +5253,14 @@ def _posix_join(parts) -> str:
 
 
 def _shell_assignments(command: str) -> "dict[str, str]":
-    """The `NAME=value` bindings in *command*, the last of each name winning.
-
-    A value naming its own variable takes the binding before it, `p=..; p=$p/auth` binding
-    `../auth`, or nothing when there is none, as the shell reads an unset name. Substituting the
-    name into its own value instead doubled it on every pass (`PATH=$PATH:/x`, or the ` fl=$fl"`
-    the capture reads out of `echo "hb=$hb fl=$fl"`) and the scan never settled."""
+    """`NAME=value` bindings, last wins; a self-reference takes the prior binding (`p=..; p=$p/auth`
+    -> `../auth`), as the shell does. Substituting it into itself doubled `PATH=$PATH:/x` forever."""
     env: "dict[str, str]" = {}
     for name, value in _SHELL_ASSIGN_RE.findall(command):
         own = re.compile(rf"\$(?:{name}\b|\{{!?{name}\b[^{{}}]*\}})")
         if own.search(value):
             value = own.sub(lambda _m: env.get(name, ""), value)
-            # `a=X; a=$a$a` repeated doubles the value each time; past what any path could be, the
-            # earlier binding stands.
+            # Repeated `a=$a$a` doubles; past any real path length the earlier binding stands.
             if len(value) > _MAX_PATH_SCAN_CHARS:
                 continue
         env[name] = value
@@ -5313,13 +5306,9 @@ def _expand_shell_assignments(command: str) -> str:
 
 
 def _shell_assignment_passes(command: str):
-    """Successive `_expand_shell_assignments` passes over *command*, while each changes it.
-
-    A pass resolves `b=$a` from the values the previous pass left, so a chain through n names settles
-    within n.bit_length() passes. The first pass is what the scan has always read. A cycle through
-    several names (`a=$b b=$c c=$a`), or values built of copies of each other (`b=$a$a`, `c=$b$b`),
-    never settles, so the later passes stop at the pass count, or once a pass outgrows the command
-    by more than any real path, where analysing the text costs far more than the command."""
+    """`_expand_shell_assignments` passes while each changes the text. A chain of n names settles
+    within n.bit_length() passes; cycles (`a=$b b=$c c=$a`) and copies (`b=$a$a`) never settle,
+    hence the pass cap and the size cap."""
     passes = len({name for name, _ in _SHELL_ASSIGN_RE.findall(command)}).bit_length() + 1
     limit = 4 * len(command) + _MAX_TERMINAL_SCAN_CHARS
     for index in range(passes):

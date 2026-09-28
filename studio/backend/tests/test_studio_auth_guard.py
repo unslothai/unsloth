@@ -1580,7 +1580,6 @@ _CHAIN = "; ".join(["v0=../.."] + [f"v{i}=$v{i - 1}" for i in range(1, 40)])
     ids = ("self-reference", "cycle", "copies", "chain", "doubling", "rebound", "padded"),
 )
 def test_assignment_expansion_settles(studio_home, monkeypatch, command, refused):
-    # Unbounded, the scan held the GIL and wedged the whole backend before the command ever ran.
     expand, calls = tools._expand_shell_assignments, []
 
     def counted(text, *args, **kwargs):
