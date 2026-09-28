@@ -682,6 +682,19 @@ def _masks_hide_every_accelerator(*, block_inventory: bool = False) -> bool:
     return True
 
 
+def _emptied_cuda_mask_hides_amd_on_a_mixed_host() -> bool:
+    """True when an emptied CUDA_VISIBLE_DEVICES, the usual way to steer an NVIDIA + AMD host to ROCm torch, is also what hides the AMD card from it. Stays a log line, not a mismatch: on an AMD-only host the same mask is deliberate, and "repair the installation" is the wrong advice for either. Blocks on the inventory, so detection only."""
+    if not _mask_is_emptied("CUDA_VISIBLE_DEVICES") or "HIP_VISIBLE_DEVICES" in os.environ:
+        return False
+    if not _torch_reports_a_hip_runtime():
+        return False
+    try:
+        devices = get_physical_gpu_inventory().get("devices") or []
+    except Exception:
+        return False
+    return {"nvidia", "amd"} <= {device.get("vendor") for device in devices}
+
+
 def _vendors_masked_off(*, block_inventory: bool = False) -> set:
     """Vendors whose devices are all hidden by a mask that can take effect here."""
     relevant = _relevant_visibility_masks(block_inventory = block_inventory)
@@ -1522,6 +1535,15 @@ def _detect_hardware_locked() -> DeviceType:
             _build_reason, _build_detail = _mismatch_verdict_for_this_host()
             if _build_reason is not None:
                 CHAT_ONLY_REASON, CHAT_ONLY_DETAIL = _build_reason, _build_detail
+            elif _emptied_cuda_mask_hides_amd_on_a_mixed_host():
+                logger.warning(
+                    "CUDA_VISIBLE_DEVICES=%r hides the AMD GPU from ROCm torch as well as the "
+                    "NVIDIA one: HIP reads it when HIP_VISIBLE_DEVICES is unset. Unset "
+                    "CUDA_VISIBLE_DEVICES (or set HIP_VISIBLE_DEVICES=0) before launching. "
+                    "To get ROCm torch on an NVIDIA + AMD host without the mask, install "
+                    "with UNSLOTH_FORCE_ROCM_TORCH=1.",
+                    os.environ.get("CUDA_VISIBLE_DEVICES"),
+                )
     print("Hardware detected: CPU training backend (no PyTorch/MLX GPU backend available)")
     return DEVICE
 
