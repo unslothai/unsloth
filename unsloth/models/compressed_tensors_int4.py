@@ -76,7 +76,7 @@ class _Int4LinearFunction(torch.autograd.Function):
         from ..kernels.int4_packed import int4_matmul
 
         qs = module.quant_state
-        out = int4_matmul(x.to(qs.dtype), packed, qs)
+        out = int4_matmul(x.to(qs.dtype), packed, qs, fast = False)
         if bias is not None:
             out = out + bias.to(out.dtype)
         ctx.module = module
@@ -126,6 +126,7 @@ class Int4PackedLinear(nn.Linear):
                 self._int4_group_size,
                 self.__dict__.get("_int4_dtype") or torch.bfloat16,
             )
+            qs.layout = self.__dict__.get("_int4_layout")
             self.__dict__["_int4_quant_state"] = qs
             packed.quant_state = qs
         elif getattr(packed, "quant_state", None) is not qs:
@@ -160,6 +161,23 @@ class Int4PackedLinear(nn.Linear):
 
     def reset_parameters(self):
         return
+
+    def _save_to_state_dict(self, destination, prefix, keep_vars):
+        super()._save_to_state_dict(destination, prefix, keep_vars)
+        # A repacked weight is saved in the checkpoint's own layout.
+        if self.__dict__.get("_int4_layout") and prefix + "weight_packed" in destination:
+            from ..kernels.int4_packed import int4_unpack
+            destination[prefix + "weight_packed"] = int4_unpack(
+                self._parameters["weight_packed"], self.quant_state
+            )
+
+    def _load_from_state_dict(self, state_dict, prefix, *args, **kwargs):
+        super()._load_from_state_dict(state_dict, prefix, *args, **kwargs)
+        # Incoming words are in the checkpoint layout.
+        if prefix + "weight_packed" in state_dict:
+            self.__dict__.pop("_int4_layout", None)
+            self.__dict__.pop("_int4_quant_state", None)
+            self._parameters["weight_packed"].__dict__.pop("quant_state", None)
 
     def _apply(self, fn, *args, **kwargs):
         # Casts skip packed words, scales and zero points (fp32 scale stays exact); moves still apply.
@@ -235,6 +253,8 @@ def make_int4_packed_linear(
 
 
 def finalize_int4_packed_linears(model, dtype = None) -> int:
+    from ..kernels.int4_packed import int4_repack_
+
     count = 0
     for module in model.modules():
         if isinstance(module, Int4PackedLinear):
@@ -245,7 +265,9 @@ def finalize_int4_packed_linears(model, dtype = None) -> int:
                 module.__dict__["_int4_dtype"] = dtype
             module.__dict__.pop("_int4_quant_state", None)
             module._parameters["weight_packed"].__dict__.pop("quant_state", None)
-            module.quant_state
+            qs = module.quant_state
+            if qs.layout is None and int4_repack_(module._parameters["weight_packed"], qs):
+                module.__dict__["_int4_layout"] = qs.layout
             count += 1
     return count
 
