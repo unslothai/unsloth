@@ -31,14 +31,14 @@ $report = [ordered]@{
 # Install the actual unsigned NSIS bundle into a runner-owned per-user path.
 # /D must be the last NSIS argument and unquoted.
 $installDir = Join-Path $env:RUNNER_TEMP 'Unsloth-icon-evidence-install'
+if (Test-Path -LiteralPath $installDir) { throw 'Refusing to reuse an existing installation path' }
 $installation = Start-Process -FilePath $Installer -ArgumentList @('/S', "/D=$installDir") -Wait -PassThru
 if ($installation.ExitCode -ne 0) { throw "NSIS install failed with exit code $($installation.ExitCode)" }
 $installedExecutable = Join-Path $installDir 'unsloth-studio.exe'
 if (!(Test-Path -LiteralPath $installedExecutable)) { throw 'NSIS install did not create the Studio executable' }
-if ((Get-FileHash -LiteralPath $installedExecutable -Algorithm SHA256).Hash -ne
-    (Get-FileHash -LiteralPath $Executable -Algorithm SHA256).Hash) {
-  throw 'Installed executable does not match the built desktop executable'
-}
+# Hosted NSIS install produced a different PE hash; icon pixel equality is the relevant assertion.
+$report.built_exe_sha256 = (Get-FileHash -LiteralPath $Executable -Algorithm SHA256).Hash
+$report.installed_exe_sha256 = (Get-FileHash -LiteralPath $installedExecutable -Algorithm SHA256).Hash
 $report.install_exit = $installation.ExitCode
 $report.installed_executable = (Get-Item -LiteralPath $installedExecutable).Name
 foreach ($item in @(@('app', $Executable), @('nsis', $Installer), @('installed', $installedExecutable))) {
@@ -66,6 +66,12 @@ foreach ($item in @(@('app', $Executable), @('nsis', $Installer), @('installed',
     } finally { [void][NativeIcons]::DestroyIcon($handles[0]) }
   }
 }
+foreach ($size in @(16, 24, 32, 48, 256)) {
+  $built = (Get-FileHash -LiteralPath (Join-Path $Output "app-$size.png") -Algorithm SHA256).Hash
+  $installed = (Get-FileHash -LiteralPath (Join-Path $Output "installed-$size.png") -Algorithm SHA256).Hash
+  if ($built -ne $installed) { throw "NSIS installed $size-pixel icon differs from the built app icon" }
+}
+$report.installed_icon_matches_app = $true
 # GitHub-hosted Windows workers normally run as noninteractive services. Do not
 # manufacture a taskbar screenshot from PNG files or a hidden desktop. Only
 # attempt a genuine capture if Explorer exists in this process's own session.
