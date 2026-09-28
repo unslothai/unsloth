@@ -5721,12 +5721,18 @@ def _command_references_sensitive(command: str) -> bool:
 
 
 _CMD_ECHO_OFF_RE = re.compile(r"(?<![^\s&|()])@+")
+# cmd control flow that runs the command after it: IF's condition, FOR's DO and CALL become separators.
+_CMD_CONTROL_RE = re.compile(
+    r"(?i)(?<![^\s&|()])(?:if\s+(?:/i\s+)?(?:not\s+)?(?:(?:exist|defined|errorlevel|cmdextversion)\s+\S+"
+    r"|\S+?\s*==\s*\S+|\S+\s+(?:equ|neq|lss|leq|gtr|geq)\s+\S+)|do|call)(?=\s)"
+)
 
 
 def _cmd_reading(command: str) -> str:
-    """How cmd splits a command for the POSIX classifiers: ' is an ordinary character, ^ only escapes
-    and a leading @ only turns the echo off."""
-    return _CMD_ECHO_OFF_RE.sub("", command.replace("^", "").replace("'", " "))
+    """How cmd splits a command for the POSIX classifiers: ' is an ordinary character, ^ only escapes,
+    a leading @ only turns the echo off, and IF / FOR ... DO / CALL run the command that follows."""
+    text = _CMD_ECHO_OFF_RE.sub("", command.replace("^", "").replace("'", " "))
+    return _CMD_CONTROL_RE.sub(" & ", text)
 
 
 def _reads_differently_under_cmd(command: str) -> bool:
@@ -12648,8 +12654,8 @@ TERMINAL_TOOL_FULL_ACCESS = {
 # its own schema, chosen per request; the module default keeps describing the host shell.
 _ISOLATED_CMD_SHELL_NOTE = (
     " The shell is cmd, running isolated, not bash: send one command per call, chain with &&, use "
-    "double quotes only, and use relative paths. git works without hooks, a pager or an editor, so "
-    "pass -m to git commit."
+    "double quotes only, and use relative paths. git, when installed, runs without hooks, a pager or "
+    "an editor, so pass -m to git commit."
 )
 
 TERMINAL_TOOL_CMD_ISOLATED = {
@@ -21451,7 +21457,8 @@ def _bash_exec(
             with _scratch_lock:
                 _active_scratch.add(_scratch_name)
         requested_mode = _requested_execution_mode(tool_execution_mode, disable_sandbox)
-        if profile == "cmd_isolated" and requested_mode == "auto" and not host_access_approved:
+        host_reach_approved = host_access_approved and _reaches_host_paths("terminal", command)
+        if profile == "cmd_isolated" and requested_mode == "auto" and not host_reach_approved:
             # Written for the isolated cmd Terminal and screened only by its lexer: never replayed on the host if
             # isolation drops out between the profile check and the launch.
             requested_mode = "required"
@@ -21472,8 +21479,7 @@ def _bash_exec(
                     execution_kind = "terminal",
                     cancel_event = cancel_event,
                 ),
-                host_access_approved = host_access_approved
-                and _reaches_host_paths("terminal", command),
+                host_access_approved = host_reach_approved,
             )
             proc = os_sandbox.spawn_prepared_launch(
                 prepared, **_apply_prepared_launch(prepared, popen_kwargs)

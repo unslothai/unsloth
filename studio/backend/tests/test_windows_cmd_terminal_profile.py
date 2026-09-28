@@ -182,7 +182,7 @@ def test_description_swap_is_copy_on_write():
         assert tools.apply_terminal_profile_description(listed, profile) is listed
 
 
-def _exec(monkeypatch, tmp_path, command):
+def _exec(monkeypatch, tmp_path, command, **kwargs):
     seen = {}
     monkeypatch.setattr(tools, "_get_workdir", lambda _sid: str(tmp_path))
     monkeypatch.setattr(tools, "_account_confinement", lambda: None)
@@ -195,7 +195,7 @@ def _exec(monkeypatch, tmp_path, command):
         raise os_sandbox.SandboxUnavailableError("stop here")
 
     monkeypatch.setattr(tools, "_prepare_tool_launch", prepare)
-    result = tools._bash_exec(command, session_id = "s1")
+    result = tools._bash_exec(command, session_id = "s1", **kwargs)
     return seen.get("plan"), result
 
 
@@ -342,6 +342,27 @@ def test_cmd_echo_off_prefix_does_not_hide_the_command(windows, monkeypatch, tmp
         assert result.startswith("Blocked command(s) for safety: rmdir"), result
     assert tools._terminal_is_high_risk("@del /q victim.txt") is True
     assert tools._cmd_reading("git log @{u} user@example.com") == "git log {u} user@example.com"
+
+
+def test_approval_and_blocklist_read_cmd_control_flow(windows, monkeypatch, tmp_path):
+    windows(bash_cap = _cap(False, MSYS), cmd_cap = _cap(True))
+    for command in ("IF 1==1 del /q victim.txt", "call del x", "for %i in (1) DO del x"):
+        assert tools._terminal_is_high_risk(command) is True, command
+    assert tools._terminal_is_high_risk('git commit -m "call me"') is False
+    monkeypatch.setattr(
+        tools, "_BLOCKED_COMMANDS", tools._BLOCKED_COMMANDS_COMMON | tools._BLOCKED_COMMANDS_WIN
+    )
+    plan, result = _exec(monkeypatch, tmp_path, "call rmdir /s /q build")
+    assert plan is None
+    assert result.startswith("Blocked command(s) for safety: rmdir"), result
+
+
+def test_an_approval_that_stays_in_the_workdir_keeps_cmd_isolation_required(
+    windows, monkeypatch, tmp_path
+):
+    windows(bash_cap = _cap(False, MSYS), cmd_cap = _cap(True))
+    plan, _result = _exec(monkeypatch, tmp_path, "dir", host_access_approved = True)
+    assert plan.requested_mode == "required"
 
 
 def test_host_launches_keep_cmd_quoting(monkeypatch):
