@@ -1363,3 +1363,149 @@ def test_high_special_token_ids_still_skip_the_embedding_init(tmp_path):
     )
     with torch.inference_mode():
         assert torch.equal(fast(*args)[0], reference(*args)[0])
+
+
+def _tiny_decision_batch(
+    torch,
+    rows = 4,
+    tokens = 40,
+):
+    generator = torch.Generator().manual_seed(0)
+    lengths = [tokens, 23, 9, 31][:rows]
+    ids = torch.randint(5, 300, (rows, tokens), generator = generator)
+    mask = torch.zeros(rows, tokens, dtype = torch.long)
+    for row, length in enumerate(lengths):
+        mask[row, :length] = 1
+        ids[row, length:] = 297
+    counts = [2, 5, 1, 3][:rows]
+    positions = torch.zeros(rows, 5, dtype = torch.long)
+    markers = torch.zeros(rows, 5, dtype = torch.bool)
+    for row, count in enumerate(counts):
+        positions[row, :count] = torch.randperm(lengths[row], generator = generator)[:count]
+        markers[row, :count] = True
+    return ids, mask, positions, markers, torch.tensor([0, 1, 2, 1][:rows])
+
+
+@pytest.mark.parametrize("head_layers", [1, 2, 3])
+def test_marker_head_matches_laya_forward(tmp_path, head_layers):
+    torch = pytest.importorskip("torch")
+    laya = laya_runtime._laya()
+    encoder_dir, cfg = _tiny_laya_encoder(tmp_path)
+    torch.manual_seed(0)
+    model = laya.common.build_model(
+        {**cfg, "head_layers": head_layers}, encoder_dir = encoder_dir
+    ).eval()
+    assert laya_runtime._marker_head(model)
+    args = _tiny_decision_batch(torch)
+    with torch.inference_mode():
+        want = model(*args)[0]
+        got = laya_runtime._decision_logits(model, *args)
+        assert got.dtype == want.dtype == torch.float32
+        torch.testing.assert_close(got, want, atol = 1e-5, rtol = 1e-4)
+        # Without padding the mask is dropped altogether.
+        unpadded = [arg[:1] for arg in args]
+        torch.testing.assert_close(
+            laya_runtime._decision_logits(model, *unpadded, padded = False),
+            model(*unpadded)[0],
+            atol = 1e-5,
+            rtol = 1e-4,
+        )
+
+
+def test_models_without_laya_head_keep_their_own_forward(tmp_path, monkeypatch):
+    pytest.importorskip("torch")
+    laya = laya_runtime._laya()
+    encoder_dir, cfg = _tiny_laya_encoder(tmp_path)
+    assert not laya_runtime._marker_head(
+        laya.common.build_model({**cfg, "head_layers": 0}, encoder_dir = encoder_dir)
+    )
+    model = laya.common.build_model(cfg, encoder_dir = encoder_dir)
+    model.scorer[2].approximate = "tanh"
+    assert not laya_runtime._marker_head(model)
+    model = laya.common.build_model(cfg, encoder_dir = encoder_dir)
+    monkeypatch.setenv("UNSLOTH_SYSTEMONE_FAST", "0")
+    assert not laya_runtime._marker_head(model)
+
+
+def test_collate_matches_laya():
+    torch = pytest.importorskip("torch")
+    collate_items = laya_runtime._laya().common.collate_items
+    items = [
+        {"ids": [2, 7, 9, 1], "markers": [1, 2], "qtype": 1},
+        {"ids": [2, 8, 1], "markers": [1], "qtype": 0},
+        {"ids": [2, 5, 6, 7, 8, 9, 1], "markers": [1, 3, 5, 6], "qtype": 2},
+    ]
+    want = collate_items([items], 297)
+    got = laya_runtime._collate(items, 297)
+    for name in laya_runtime._INPUTS:
+        assert got[name].dtype == want[name].dtype and torch.equal(got[name], want[name]), name
+
+
+def test_cuda_graphs_replay_the_eager_logits(tmp_path, monkeypatch):
+    torch = pytest.importorskip("torch")
+    if not torch.cuda.is_available():
+        pytest.skip("needs a CUDA GPU")
+    laya = laya_runtime._laya()
+    encoder_dir, cfg = _tiny_laya_encoder(tmp_path)
+    torch.manual_seed(0)
+    model = laya.common.build_model({**cfg, "head_layers": 2}, encoder_dir = encoder_dir).eval()
+    agent = SimpleNamespace(model = model, device = torch.device("cpu"), dtype = torch.float32)
+    monkeypatch.setattr(laya_runtime, "_precision", lambda device, fp16_checkpoint: (None, None))
+    laya_runtime._place(agent, torch.device("cuda"), False)
+    ids, mask, positions, markers, qtype = _tiny_decision_batch(torch, rows = 3, tokens = 40)
+    batch = dict(zip(laya_runtime._INPUTS, (ids, mask, positions, markers, qtype)))
+    graphed = laya_runtime._run_model(agent, batch).clone()
+    graphs = agent.__dict__["_unsloth_graphs"]
+    if graphs.broken:
+        # transformers 4.x: ModernBERT cannot be captured, so the model runs eagerly with the same logits.
+        import transformers
+
+        assert int(transformers.__version__.split(".")[0]) < 5
+        with torch.inference_mode():
+            reference = model(*(value.cuda() for value in batch.values()))[0]
+        torch.testing.assert_close(graphed, reference, atol = 1e-4, rtol = 1e-4)
+        return
+    assert list(graphs.graphs) == [(4, 64, 8)]
+    # The same padded bucket run eagerly: rows 3 -> 4 repeat row 0, tokens 40 -> 64 and options 5 -> 8 are masked.
+    padded = {
+        "input_ids": torch.zeros(4, 64, dtype = torch.long),
+        "attention_mask": torch.zeros(4, 64, dtype = torch.long),
+        "marker_pos": torch.zeros(4, 8, dtype = torch.long),
+        "marker_mask": torch.zeros(4, 8, dtype = torch.bool),
+        "qtype": torch.zeros(4, dtype = torch.long),
+    }
+    for name, value in batch.items():
+        if value.dim() == 1:
+            padded[name][:3] = value
+        else:
+            padded[name][:3, : value.shape[1]] = value
+        padded[name][3:] = padded[name][:1]
+    with torch.inference_mode():
+        eager = laya_runtime._decision_logits(
+            model, *(padded[name].cuda() for name in laya_runtime._INPUTS)
+        )
+    assert torch.equal(graphed, eager[:3, :5])
+    with torch.inference_mode():
+        reference = model(*(value.cuda() for value in batch.values()))[0]
+    torch.testing.assert_close(graphed, reference, atol = 1e-4, rtol = 1e-4)
+    # A second request with other contents replays the same graph.
+    batch["input_ids"] = torch.randint(5, 300, ids.shape)
+    with torch.inference_mode():
+        reference = model(*(value.cuda() for value in batch.values()))[0]
+    torch.testing.assert_close(
+        laya_runtime._run_model(agent, batch), reference, atol = 1e-4, rtol = 1e-4
+    )
+    assert len(graphs.graphs) == 1
+    # Moving or recasting the model drops the graphs that point at its old weights.
+    laya_runtime._place(agent, torch.device("cuda"), False)
+    assert "_unsloth_graphs" not in agent.__dict__
+    # Batches too large to be worth padding into a bucket run eagerly.
+    assert (
+        laya_runtime._CUDAGraphs(agent).run(
+            {"input_ids": torch.zeros(16, 1024), "marker_pos": torch.zeros(16, 2)}
+        )
+        is None
+    )
+    monkeypatch.setenv("UNSLOTH_SYSTEMONE_CUDA_GRAPHS", "0")
+    laya_runtime._run_model(agent, batch)
+    assert "_unsloth_graphs" not in agent.__dict__
