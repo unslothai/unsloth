@@ -4298,6 +4298,25 @@ def _effective_enable_tools(payload) -> Optional[bool]:
     return payload.enable_tools
 
 
+async def _materialize_sandbox_attachments(payload) -> None:
+    enabled = payload.enabled_tools
+    if (
+        not payload.sandbox_attachments
+        or not _effective_enable_tools(payload)
+        or (enabled is not None and "python" not in enabled)
+    ):
+        return
+    from starlette.concurrency import run_in_threadpool
+
+    from core.inference.tools import materialize_sandbox_attachments
+
+    await run_in_threadpool(
+        materialize_sandbox_attachments,
+        payload.session_id,
+        [(item.sha256, item.name) for item in payload.sandbox_attachments],
+    )
+
+
 def _tools_on_by_launcher_default_only(payload) -> bool:
     """True when tools are on ONLY because of the launcher's tools-on default:
     no CLI override is installed and the request itself asked for nothing."""
@@ -5805,10 +5824,14 @@ def _thread_has_checkpoint(thread_id, branch_messages = None) -> bool:
             list(studio_db.list_chat_messages(str(thread_id)) or []),
             _as_plain_messages(branch_messages),
         )
+        # A rescue (fits false, turns dropped) did archive; a refusal drops nothing.
         return bool(states) and all(
             state.truncation is not None
-            and state.truncation.get("fits")
             and state.truncation.get("checkpoint")
+            and (
+                state.truncation.get("fits")
+                or int(state.truncation.get("dropped_messages") or 0) > 0
+            )
             for state in states
         )
     except Exception:
@@ -5897,8 +5920,11 @@ async def _select_request_tools(
     if getattr(payload, "deep_research_armed", None):
         # Appended past every filter above, including the tools_on gate: arming research in the
         # composer is what offers this tool, and it is the only way the model can start a run.
+        # Not under `--disable-tools`, where the loop can open only for search_conversation.
         from core.inference.tools import DEEP_RESEARCH_TOOL
-        tools = tools + [DEEP_RESEARCH_TOOL]
+        from state.tool_policy import get_tool_policy
+        if get_tool_policy() is not False:
+            tools = tools + [DEEP_RESEARCH_TOOL]
     return tools
 
 
@@ -5965,10 +5991,10 @@ def _checkpoint_needs_search(payload = None) -> bool:
 
 
 def _checkpoint_recall_may_enable_tools(payload) -> bool:
-    """Whether checkpoint recovery can force the internal recall tool loop."""
-    from state.tool_policy import get_tool_policy
+    """Whether checkpoint recovery can force the internal recall tool loop (also under --disable-tools)."""
+    from state.tool_policy import conversation_recall_allowed
     return bool(
-        get_tool_policy() is not False
+        conversation_recall_allowed()
         and _rolling_context_policy(payload) is not None
         and _checkpoint_needs_search(payload)
         and _thread_has_conversation_archive(getattr(payload, "thread_id", None))
@@ -7576,6 +7602,20 @@ def _is_explicit_tensor_drop(request: LoadRequest) -> bool:
     return override is not None and override.strip().lower() != "tensor"
 
 
+def _unsloth_serving_fields(model_info: dict) -> dict:
+    """What a non-GGUF load says about serving replies, for the replies that report it."""
+    slots = model_info.get("parallel_slots")
+    batches = model_info.get("can_batch")
+    effective = None if slots is None or batches is None else (slots if batches else 1)
+    return {
+        "requested_parallel_slots": slots,
+        "parallel_slots": effective,
+        "context_length_enforced": model_info.get("context_length_enforced"),
+        "context_length_fitted": _positive_int_or_none(model_info.get("context_length_fitted")),
+        "context_unbounded_when_batched": bool(model_info.get("context_unbounded_when_batched")),
+    }
+
+
 def _llama_runtime_fields(llama_backend: LlamaCppBackend) -> dict:
     """Runtime state shared by load, dedupe, and status; duplicates echo active settings."""
     fields = {
@@ -7587,6 +7627,8 @@ def _llama_runtime_fields(llama_backend: LlamaCppBackend) -> dict:
         # Not MLX, so the MLX runtime fields report as absent.
         is_mlx = False,
         is_npu = False,
+        mlx_kv_quant = None,
+        mlx_kv_quant_requested = None,
         mlx_kv_bits = None,
         mlx_kv_bits_requested = None,
         mlx_kv_quant_eligibility = None,
@@ -7594,8 +7636,9 @@ def _llama_runtime_fields(llama_backend: LlamaCppBackend) -> dict:
         mlx_kv_quant_note = None,
         mlx_context_budget = None,
         chat_template_override_reason = None,
-        # llama.cpp allocates the window it reports: bounded by construction.
         context_length_enforced = True,
+        context_length_fitted = None,
+        context_unbounded_when_batched = False,
         # Older/custom backend doubles predate this additive runtime field.
         preserve_thinking_default = bool(getattr(llama_backend, "preserve_thinking_default", False)),
         speculative_type = llama_backend.requested_spec_mode,
@@ -13784,6 +13827,194 @@ def _local_gguf_main_path(config: ModelConfig) -> Optional[str]:
     return None
 
 
+def _mlx_estimate_ceiling(model_dir: str) -> Optional[int]:
+    """The window this checkpoint declares, held to what a load may be asked for."""
+    from types import SimpleNamespace
+
+    from core.inference.mlx_inference import mlx_native_context_length
+    from core.inference.mlx_memory import _snapshot_config
+    from core.inference.runtime_context import MAX_REQUESTABLE_CONTEXT
+
+    try:
+        config = _snapshot_config(model_dir)
+    except Exception:
+        return None
+    if config is None:
+        return None
+    native = mlx_native_context_length(SimpleNamespace(config = config))
+    return None if native is None else min(int(native), MAX_REQUESTABLE_CONTEXT)
+
+
+def _mlx_estimate_fitted_context(config, model_dir: str, load_in_4bit: bool, kv_bits):
+    """The window a load naming no Context Length would be fitted to."""
+    from core.inference.mlx_inference import (
+        mlx_fit_to_memory,
+        mlx_vlm_snapshot_store_available,
+    )
+
+    ceiling = _mlx_estimate_ceiling(model_dir)
+    if not ceiling:
+        return None
+    return mlx_fit_to_memory(
+        model_dir,
+        ceiling,
+        load_in_4bit = load_in_4bit,
+        retains_history = (
+            not getattr(config, "is_vision", False) or mlx_vlm_snapshot_store_available()
+        ),
+        kv_bits = kv_bits,
+    )
+
+
+def _mlx_estimate_available() -> bool:
+    """Whether this host would actually run the load through MLX."""
+    try:
+        from utils.mlx_repair import is_apple_silicon, mlx_stack_blockers
+    except Exception:
+        return False
+    try:
+        return bool(is_apple_silicon() and not mlx_stack_blockers())
+    except Exception:
+        return False
+
+
+def _the_revision_that_loads(snapshots: list) -> list:
+    """Just the revision `main` names, where it names one that is here."""
+    from hub.utils.hf_cache_state import ref_snapshot_dir
+
+    paths = [Path(snapshot) for snapshot in snapshots]
+    if not paths:
+        return paths
+    pinned = ref_snapshot_dir(paths[0].parent.parent)
+    return [pinned] if pinned is not None else paths
+
+
+def _local_mlx_model_dir(config: ModelConfig) -> Optional[str]:
+    def _complete(directory: Path, shards) -> bool:
+        named = [
+            (Path(shard).parent, match)
+            for shard in shards
+            if (match := _re.fullmatch(r"(.+)-(\d+)-of-(\d+)\.safetensors", Path(shard).name))
+        ]
+        if not named:
+            return _index_agrees(directory)
+        for parent, match in named:
+            stem, total = match.group(1), match.group(3)
+            width, count = len(match.group(2)), int(total)
+            if any(
+                not (parent / f"{stem}-{i:0{width}d}-of-{total}.safetensors").is_file()
+                for i in range(1, count + 1)
+            ):
+                return False
+        return _index_agrees(directory)
+
+    def _index_agrees(directory: Path) -> bool:
+        """Whether an index that describes THIS directory finds all of it here."""
+        index = directory / "model.safetensors.index.json"
+        if not index.is_file():
+            return True
+        try:
+            with open(index, encoding = "utf-8") as handle:
+                weight_map = json.load(handle).get("weight_map", {})
+            named = {shard for shard in weight_map.values() if isinstance(shard, str)}
+        except (ValueError, OSError, AttributeError):
+            return True
+        here = {
+            path.relative_to(directory).as_posix() for path in directory.glob("**/*.safetensors")
+        }
+        return not (named & here) or named <= here
+
+    def _usable(path) -> bool:
+        directory = Path(path)
+        if not directory.is_dir() or not (directory / "config.json").is_file():
+            return False
+        from core.inference.mlx_memory import mlx_shard_files
+
+        try:
+            snapshot = json.loads((directory / "config.json").read_text(encoding = "utf-8"))
+        except Exception:
+            snapshot = None
+        try:
+            shards = mlx_shard_files(
+                str(directory), snapshot if isinstance(snapshot, dict) else None
+            )
+        except Exception:
+            return False
+        if not shards:
+            return False
+        return _complete(directory, shards)
+
+    candidate = getattr(config, "path", None)
+    if candidate and _usable(candidate):
+        return str(candidate)
+    identifier = candidate or getattr(config, "identifier", None)
+    if not identifier or getattr(config, "is_local", False):
+        return None
+    names = [_mlx_load_identifier(str(identifier))]
+    if "/" not in names[0]:
+        names.append(f"unsloth/{names[0]}")
+    try:
+        from utils.models.model_config import _iter_hf_cache_snapshots
+        roots = _estimate_hf_cache_roots()
+    except Exception:
+        return None
+    for root in roots or [None]:
+        for name in names:
+            try:
+                snapshots = _iter_hf_cache_snapshots(name, cache_dir = root)
+            except Exception:
+                continue
+            for snapshot in _the_revision_that_loads(list(snapshots)):
+                if _usable(snapshot):
+                    return str(snapshot)
+    return None
+
+
+def _mlx_load_identifier(identifier: str) -> str:
+    """The repository the MLX load would actually open, not the one selected."""
+    try:
+        from unsloth_zoo.mlx.loader import _remap_unsloth_bnb_hub_id_for_mlx
+    except Exception:
+        return identifier
+    try:
+        return _remap_unsloth_bnb_hub_id_for_mlx(identifier, None)[0] or identifier
+    except Exception:
+        return identifier
+
+
+def _mlx_estimate_load_in_4bit(config, request) -> bool:
+    """The 4-bit setting the load resolves, not the one the panel sent."""
+    # Same order as the load route: a full-finetune output loads 16-bit before any tier check.
+    if not _effective_load_in_4bit(config, request.load_in_4bit):
+        return False
+    from utils.transformers_version import latest_tier_active_for
+
+    identifier = getattr(config, "identifier", None)
+    return not _offline_guarded(
+        (identifier, getattr(config, "base_model", None)),
+        latest_tier_active_for,
+        identifier,
+        request.hf_token,
+    )
+
+
+def _mlx_estimate_kv_bits(mlx_kv_quant, mlx_kv_bits = None) -> Optional[int]:
+    """The mx.quantize width the load would price, or None for a full-width cache."""
+    try:
+        from core.inference.mlx_inference import MLX_KV_BITS_CHOICES, parse_mlx_kv_quant
+    except Exception:
+        return None
+    if mlx_kv_quant is None:
+        if isinstance(mlx_kv_bits, bool) or not isinstance(mlx_kv_bits, int):
+            return None
+        return mlx_kv_bits if mlx_kv_bits in MLX_KV_BITS_CHOICES else None
+    bits, turboquant = parse_mlx_kv_quant(mlx_kv_quant)
+    # TurboQuant's layout is not one the planner prices; the load fits it at full width too.
+    if turboquant or bits not in MLX_KV_BITS_CHOICES:
+        return None
+    return bits
+
+
 def _is_embedding_gguf(config: ModelConfig) -> bool:
     """Whether this GGUF's pooling type makes llama-server launch with --embedding.
 
@@ -14172,7 +14403,10 @@ def _native_audio_post_handoff_free_gb() -> Optional[_NativeAudioAvailability]:
     reclaimable: dict[int, float] = {}
 
     def _read_live() -> bool:
-        utilization = hardware.get_visible_gpu_utilization()
+        from utils.hardware import gpu_query
+
+        with gpu_query.fresh_reads():
+            utilization = hardware.get_visible_gpu_utilization()
         live.clear()
         for device in utilization.get("devices", []):
             try:
@@ -14338,7 +14572,9 @@ def _wait_for_native_audio_gpu_free_gb(
     deadline = time.monotonic() + max(max_wait, 0.0)
     while True:
         try:
-            devices = get_visible_gpu_utilization().get("devices", [])
+            from utils.hardware import gpu_query
+            with gpu_query.fresh_reads():
+                devices = get_visible_gpu_utilization().get("devices", [])
             for device in devices:
                 if int(device["index"]) != int(gpu_index):
                     continue
@@ -15670,11 +15906,12 @@ def _mlx_runtime_settings_match(backend, request) -> bool:
     stored None on every request and reload forever.
     """
     entry = backend.models.get(backend.active_model_name, {}) or {}
-    if "mlx_kv_bits_requested" not in entry:
+    if "mlx_kv_quant_requested" not in entry:
         return True
-    from core.inference.mlx_inference import _normalize_mlx_kv_bits
+    from core.inference.mlx_inference import encode_mlx_kv_quant, parse_mlx_kv_quant
 
-    return entry["mlx_kv_bits_requested"] == _normalize_mlx_kv_bits(request.mlx_kv_bits) and (
+    requested = encode_mlx_kv_quant(*parse_mlx_kv_quant(getattr(request, "mlx_kv_quant", None)))
+    return entry["mlx_kv_quant_requested"] == requested and (
         entry.get("chat_template_override_requested") or None
     ) == (request.chat_template_override or None)
 
@@ -16178,6 +16415,7 @@ def _npu_load_response(resident, status: str) -> LoadResponse:
         max_context_length = model.max_context_length,
         native_context_length = model.max_context_length,
         context_length_enforced = True,
+        context_length_fitted = None,
         supports_reasoning = model.reasoning,
         reasoning_style = "enable_thinking",
         supports_tools = model.tools,
@@ -16576,6 +16814,7 @@ async def _load_model_impl(
             ):
                 api_monitor.discard(_load_event)  # nothing loaded, no monitor row
                 logger.info(f"Model already loaded (Unsloth): {model_log_label}, skipping reload")
+                backend.set_parallel_slots(_n_parallel)
                 # A no-op Unsloth load of a preview-owned checkpoint still claims it.
                 _set_preview_resident(None)
                 inference_config = load_inference_config(backend.active_model_name)
@@ -16612,6 +16851,9 @@ async def _load_model_impl(
                     has_audio_input = _model_info.get("has_audio_input", False),
                     has_video_input = _model_info.get("has_video_input", False),
                     is_mlx = bool(_model_info.get("is_mlx", False)),
+                    mlx_kv_quant = _model_info.get("mlx_kv_quant"),
+                    mlx_kv_quant_requested = _model_info.get("mlx_kv_quant_requested"),
+                    **_unsloth_serving_fields(_model_info),
                     mlx_kv_bits = _model_info.get("mlx_kv_bits"),
                     mlx_kv_bits_requested = _model_info.get("mlx_kv_bits_requested"),
                     mlx_kv_quant_eligibility = _model_info.get("mlx_kv_quant_eligibility"),
@@ -16637,7 +16879,6 @@ async def _load_model_impl(
                         _model_info.get("native_context_length")
                     ),
                     max_context_length = _positive_int_or_none(_model_info.get("max_context_length")),
-                    context_length_enforced = _model_info.get("context_length_enforced"),
                     mlx_context_budget = _model_info.get("mlx_context_budget"),
                     chat_template = _chat_template,
                 )
@@ -17293,12 +17534,13 @@ async def _load_model_impl(
                     else placement.requested_gpu_ids
                 ),
                 subject = current_subject,
-                mlx_kv_bits = request.mlx_kv_bits,
+                mlx_kv_quant = request.mlx_kv_quant,
                 chat_template_override = request.chat_template_override,
                 load_cancel_event = load_cancel_event,
                 on_prior_worker_released = _release_chat_after_teardown,
                 post_handoff_expected_free_gb = post_chat_handoff_expected_free_gb,
                 audio_device = request.audio_device,
+                n_parallel = _n_parallel,
                 cache_environment = cache_environment,
                 **anonymous_hf_kw,
                 **speech_codec_kw,
@@ -17425,6 +17667,9 @@ async def _load_model_impl(
             has_audio_input = _model_info.get("has_audio_input", config.has_audio_input),
             has_video_input = _model_info.get("has_video_input", False),
             is_mlx = bool(_model_info.get("is_mlx", False)),
+            mlx_kv_quant = _model_info.get("mlx_kv_quant"),
+            mlx_kv_quant_requested = _model_info.get("mlx_kv_quant_requested"),
+            **_unsloth_serving_fields(_model_info),
             mlx_kv_bits = _model_info.get("mlx_kv_bits"),
             mlx_kv_bits_requested = _model_info.get("mlx_kv_bits_requested"),
             mlx_kv_quant_eligibility = _model_info.get("mlx_kv_quant_eligibility"),
@@ -17446,7 +17691,6 @@ async def _load_model_impl(
             context_length = _positive_int_or_none(_model_info.get("context_length")),
             native_context_length = _positive_int_or_none(_model_info.get("native_context_length")),
             max_context_length = _positive_int_or_none(_model_info.get("max_context_length")),
-            context_length_enforced = _model_info.get("context_length_enforced"),
             mlx_context_budget = _model_info.get("mlx_context_budget"),
             chat_template = _chat_template,
         )
@@ -18700,17 +18944,16 @@ async def estimate_memory(
     fastapi_request: Request = None,
     current_subject: str = Depends(get_current_subject),
 ):
-    """Price a prospective GGUF load from its header, before anything is allocated.
+    """Price a prospective load from its metadata, before the load allocates anything.
 
-    Reads only GGUF metadata and file sizes, so it is safe to call on every settings
-    change: no model is loaded, no device is touched, nothing is downloaded. A model
-    that is not on this disk answers ``not_downloaded``.
+    Reads GGUF metadata and file sizes -- or, for an MLX repo, safetensors headers and the
+    shapes of an architecture built and never evaluated -- so it is safe to call on every
+    settings change: no model is loaded, no tensor data is read, nothing is downloaded.
 
-    The arithmetic is the loader's own KV, compute-buffer and companion sizing, which
-    is the point. Weights times a constant is fine until the KV cache stops being a
-    rounding error: at 262k tokens the cache can outweigh the weights, and it swings
-    fourfold on the cache dtype alone. Where the header cannot supply the dims this
-    answers ``kv_estimable = false`` rather than quoting an assumed total.
+    The arithmetic is the loader's own KV, compute-buffer and companion sizing. Weights
+    times a constant is fine until the KV cache stops being a rounding error: at 262k
+    tokens the cache can outweigh the weights. Where the metadata cannot supply the dims
+    this answers ``kv_estimable = false`` rather than quoting an assumed total.
     """
     native_access_deferred = _defers_access_to_native_grant(request)
     if account_access.managed_account() and not native_access_deferred:
@@ -18749,10 +18992,6 @@ async def estimate_memory(
     requested_slots = _resolve_parallel_slots(request, fastapi_request)
 
     def _estimate() -> EstimateMemoryResponse:
-        resolved_slots = _effective_parallel_slots(
-            requested_slots,
-            diffusion_kind = False,
-        )
         config = _cached_estimate_config(
             model_identifier,
             request.gguf_variant,
@@ -18764,12 +19003,58 @@ async def estimate_memory(
         if config is None:
             return EstimateMemoryResponse(available = False, reason = "unsizable")
         if not getattr(config, "is_gguf", False):
-            # Safetensors / MLX allocate on a different plan; the GGUF arithmetic
-            # would be a made-up number in a confident box.
-            return EstimateMemoryResponse(available = False, reason = "not_gguf")
+            if not _mlx_estimate_available():
+                return EstimateMemoryResponse(available = False, reason = "not_gguf")
+            from core.inference.native_audio import is_native_audio_model
+
+            if is_native_audio_model(model_identifier):
+                return EstimateMemoryResponse(available = False, reason = "not_gguf")
+            if getattr(config, "is_lora", False):
+                return EstimateMemoryResponse(available = False, reason = "unsizable")
+            model_dir = _local_mlx_model_dir(config)
+            if not model_dir:
+                return EstimateMemoryResponse(available = False, reason = "not_downloaded")
+            from core.inference.mlx_inference import mlx_kv_quant_is_refused
+            from core.inference.mlx_memory import mlx_memory_breakdown
+
+            mlx_load_in_4bit = _mlx_estimate_load_in_4bit(config, request)
+            mlx_kv_bits = _mlx_estimate_kv_bits(request.mlx_kv_quant, request.mlx_kv_bits)
+            # A width the cache takes applies under a pin or a fit alike: the window is then a budget.
+            if mlx_kv_bits is not None and mlx_kv_quant_is_refused(model_dir, mlx_kv_bits):
+                mlx_kv_bits = None
+            mlx_named_ctx = request.max_seq_length or 0
+            mlx_fitted_ctx = None
+            if not mlx_named_ctx:
+                mlx_fitted_ctx = _mlx_estimate_fitted_context(
+                    config, model_dir, mlx_load_in_4bit, mlx_kv_bits
+                )
+            mlx_priced_ctx = mlx_named_ctx or mlx_fitted_ctx or _mlx_estimate_ceiling(model_dir)
+            if not mlx_priced_ctx:
+                return EstimateMemoryResponse(available = False, reason = "unsizable")
+            mlx_breakdown = mlx_memory_breakdown(
+                model_dir,
+                n_ctx = mlx_priced_ctx,
+                kv_bits = mlx_kv_bits,
+                load_in_4bit = mlx_load_in_4bit,
+            )
+            if mlx_breakdown is None:
+                return EstimateMemoryResponse(available = False, reason = "unsizable")
+            return EstimateMemoryResponse(
+                **project_estimate_memory_response(
+                    build_memory_estimate(
+                        mlx_breakdown,
+                        quant_file_bytes = 0,
+                        context_fitted = mlx_fitted_ctx,
+                    )
+                )
+            )
         gguf_path = _local_gguf_main_path(config)
         if not gguf_path:
             return EstimateMemoryResponse(available = False, reason = "not_downloaded")
+        resolved_slots = _effective_parallel_slots(
+            requested_slots,
+            diffusion_kind = False,
+        )
         # Price the files on this disk, not the repository they came from.
         config = _localized_estimate_config(config, gguf_path)
 
@@ -19462,6 +19747,9 @@ async def generate_stream(
                     break
                 chunk = await asyncio.to_thread(next, gen, _DONE)
                 if chunk is _DONE:
+                    if cancel_event.is_set():
+                        mark_response_failed(_gs_scope)
+                        break
                     completed = True
                     break
                 if isinstance(chunk, GenStreamError):
@@ -19739,6 +20027,7 @@ async def get_status(current_subject: str):
                 max_context_length = _npu_model.max_context_length,
                 native_context_length = _npu_model.max_context_length,
                 context_length_enforced = True,
+                context_length_fitted = None,
                 supports_reasoning = _npu_model.reasoning,
                 reasoning_style = "enable_thinking",
                 supports_tools = _npu_model.tools,
@@ -19866,6 +20155,9 @@ async def get_status(current_subject: str):
             has_audio_input = has_audio_input,
             has_video_input = has_video_input,
             is_mlx = bool(model_info.get("is_mlx", False)),
+            mlx_kv_quant = model_info.get("mlx_kv_quant"),
+            mlx_kv_quant_requested = model_info.get("mlx_kv_quant_requested"),
+            **_unsloth_serving_fields(model_info),
             mlx_kv_bits = model_info.get("mlx_kv_bits"),
             mlx_kv_bits_requested = model_info.get("mlx_kv_bits_requested"),
             mlx_kv_quant_eligibility = model_info.get("mlx_kv_quant_eligibility"),
@@ -19889,7 +20181,6 @@ async def get_status(current_subject: str):
             context_length = _positive_int_or_none(model_info.get("context_length")),
             native_context_length = _positive_int_or_none(model_info.get("native_context_length")),
             max_context_length = _positive_int_or_none(model_info.get("max_context_length")),
-            context_length_enforced = model_info.get("context_length_enforced"),
             mlx_context_budget = model_info.get("mlx_context_budget"),
             # 0 is an answer (size it yourself); None means no request is recorded. Either
             # spelling: the route stamps max_seq_length_requested on every non-GGUF load,
@@ -25577,6 +25868,7 @@ async def produce_openai_chat_completions(
     # local path flattens them, so a part neither can serve has to be refused while both are
     # still reachable. Otherwise it is dropped in silence and the answer looks legitimate.
     _reject_unsupported_content_parts(payload)
+    await _materialize_sandbox_attachments(payload)
 
     # ── External provider routing ────────────────────────────────
     # encrypted_api_key is optional -- local providers (llama.cpp / vLLM / Ollama) may run without auth.
@@ -26168,6 +26460,9 @@ async def produce_openai_chat_completions(
                                 return
                             chunk_text = await asyncio.to_thread(next, gen, _DONE)
                             if chunk_text is _DONE:
+                                if cancel_event.is_set():
+                                    cancelled = True
+                                    mark_current_response_failed()
                                 break
                             if isinstance(chunk_text, GenStreamError):
                                 _msg = _friendly_gen_stream_error(chunk_text)
@@ -29821,20 +30116,77 @@ async def produce_openai_chat_completions(
                     final = token
                 return final
 
+            _produced: dict = {}
+
+            async def _produce_choices(_indices):
+                """These choices' first replies, asked for in one command."""
+                rows = [
+                    {} if idx == 0 else {"seed": _choice_seed(payload.seed, idx)}
+                    for idx in _indices
+                ]
+                batch_stats: dict = {}
+                texts = [""] * len(rows)
+                _finished = set()
+
+                def _drain_batch():
+                    for event in backend.generate_chat_batch(
+                        rows = rows,
+                        cancel_event = cancel_event,
+                        stats_holder = batch_stats,
+                        **gen_kwargs,
+                    ):
+                        if isinstance(event, GenStreamError):
+                            return event
+                        _row, _text = event
+                        if _text is None:
+                            _finished.add(_row)
+                        else:
+                            texts[_row] = _text
+                    return None
+
+                failed = await _run_blocking_generation(
+                    _drain_batch,
+                    cancel_event,
+                    name = "openai-chat-nonstream-batch",
+                )
+                _reported = batch_stats.get("stats") or []
+
+                def _keep(_row, idx):
+                    _stats = _reported[_row] if _row < len(_reported) else None
+                    if texts[_row] or _stats is not None:
+                        _produced[idx] = (texts[_row], _stats)
+
+                if isinstance(failed, GenStreamError):
+                    backend.reset_generation_state(cancel_event)
+                    logger.warning(
+                        "Falling back to one command per choice: %s",
+                        _friendly_gen_stream_error(failed),
+                    )
+                    for _row, idx in enumerate(_indices):
+                        if _row in _finished:
+                            _keep(_row, idx)
+                    return False
+                for _row, idx in enumerate(_indices):
+                    _keep(_row, idx)
+                return any(idx in _produced for idx in _indices)
+
             async def _one_choice(choice_index):
                 """One sampled answer, healing and nudge retry included.
 
-                A full generation of its own -- its own seed, its own stats --
-                exactly as the llama-server path drains its own ``n``.
+                Its own seed and its own stats, exactly as the llama-server path drains
+                its own ``n``. Everything after the reply runs per choice either way.
                 """
                 # Cleared per choice: one cancelled before it publishes must report
                 # nothing rather than inherit the previous choice's token count.
                 stats_holder.pop("stats", None)
-                full_text = await _run_blocking_generation(
-                    lambda: _drain_generate(choice_index = choice_index),
-                    cancel_event,
-                    name = "openai-chat-nonstream",
-                )
+                if choice_index in _produced:
+                    full_text, stats_holder["stats"] = _produced[choice_index]
+                else:
+                    full_text = await _run_blocking_generation(
+                        lambda: _drain_generate(choice_index = choice_index),
+                        cancel_event,
+                        name = "openai-chat-nonstream",
+                    )
                 if isinstance(full_text, GenStreamError):
                     backend.reset_generation_state(cancel_event)
                     _msg = _friendly_gen_stream_error(full_text)
@@ -29867,10 +30219,12 @@ async def produce_openai_chat_completions(
                 if _reasoning_text:
                     _msg["reasoning_content"] = _reasoning_text
                 # Budget exhaustion unless a heal below promotes a tool call; a cancelled turn
-                # stopped on request, not at the cap, so it stays "stop".
+                # stopped on request, not at the cap, so it stays "stop". A reply the
+                # batch produced reports its own end instead: a Stop aimed at some other
+                # choice must not rewrite the reason this one already finished for.
                 _finish = (
                     "stop"
-                    if cancel_event.is_set()
+                    if cancel_event.is_set() and choice_index not in _produced
                     else _stats_finish_reason(stats_holder.get("stats"))
                 )
                 if _sf_heal:
@@ -29960,12 +30314,19 @@ async def produce_openai_chat_completions(
                             _msg["tool_calls"] = _tcs[:1]
                 return _msg, _finish, stats_holder.get("stats")
 
+            from core.inference.llama_server_args import PARALLEL_DEFAULT
+
+            _width = getattr(backend, "effective_parallel_slots", PARALLEL_DEFAULT)
+            if _n > 1 and _width > 1 and payload.use_adapter is None and not cancel_event.is_set():
+                for _start in range(0, _n, _width):
+                    if cancel_event.is_set():
+                        break
+                    if not await _produce_choices(range(_start, min(_start + _width, _n))):
+                        break
+
             for _idx in range(_n):
-                # Stop spawning the remaining choices once cancelled. Index 0 runs
-                # regardless, so a cancelled turn still answers with one choice
-                # rather than the empty `choices` a client indexes into.
-                if _idx and cancel_event.is_set():
-                    break
+                if _idx and cancel_event.is_set() and _idx not in _produced:
+                    continue
                 _msg, _finish, _choice_stats = await _one_choice(_idx)
                 _choices.append(
                     CompletionChoice(
@@ -30025,9 +30386,11 @@ async def produce_openai_chat_completions(
             if len(_choices) > 1:
                 # Every choice, labelled, as the llama-server drain reports them:
                 # showing the last one alone would hide the rest of the turn.
+                # Numbered from the choice's own index, not its place in the list: a
+                # cancelled turn skips the choices the batch never produced.
                 _monitor_reply = "\n\n".join(
-                    f"Choice {_i + 1}:\n{_reply_text(_reply, _choice.finish_reason)}"
-                    for _i, (_reply, _choice) in enumerate(zip(_monitor_replies, _choices))
+                    f"Choice {_choice.index + 1}:\n{_reply_text(_reply, _choice.finish_reason)}"
+                    for _reply, _choice in zip(_monitor_replies, _choices)
                 )
             else:
                 _monitor_reply = _reply_text(_msg, _finish)
@@ -30529,12 +30892,17 @@ def _openai_model_objects() -> list[dict]:
         ):
             entry["task"] = _TTS_MODEL_TASK
 
-        for _field in ("native_context_length", "max_context_length"):
+        for _field in ("native_context_length", "max_context_length", "context_length_fitted"):
             _value = _positive_int_or_none(model_info.get(_field))
             if _value is not None:
                 entry[_field] = _value
-        if model_info.get("context_length_enforced") is not None:
-            entry["context_length_enforced"] = bool(model_info["context_length_enforced"])
+        _serving = _unsloth_serving_fields(model_info)
+        if _serving["context_length_enforced"] is not None:
+            entry["context_length_enforced"] = bool(_serving["context_length_enforced"])
+        if _serving["context_unbounded_when_batched"]:
+            entry["context_unbounded_when_batched"] = True
+        if _serving["parallel_slots"] is not None:
+            entry["parallel_slots"] = _serving["parallel_slots"]
         models.append(entry)
 
     return models

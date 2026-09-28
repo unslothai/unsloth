@@ -9,6 +9,7 @@ OpenAI-compatible /v1/chat/completions endpoint.
 
 import ast
 import atexit
+import bisect
 import contextlib
 import ctypes
 import errno
@@ -21,6 +22,8 @@ import os
 import re
 import struct
 from loggers import get_logger
+from utils.gpu_memory_events import invalidate_gpu_memory as _invalidate_gpu_memory
+from utils.gpu_memory_events import invalidates_gpu_memory as _invalidates_gpu_memory
 import shutil
 import signal
 import socket
@@ -201,13 +204,11 @@ def _can_reset_epoch(
         # carried-forward header tells the model to search. Same refusal, one scope down.
         return False
     try:
-        from state.tool_policy import get_tool_policy
+        from state.tool_policy import conversation_recall_allowed
 
-        # `supports_tools` is the TEMPLATE's capability, not "will this request be given
-        # the tool". `--disable-tools` refuses every tool for the life of the process, so
-        # resetting would strand the epoch behind a tool that never arrives. Rolling keeps
-        # the newest turns in view and re-injects the inline recall, needing no tool.
-        if get_tool_policy() is False:
+        # `supports_tools` is the TEMPLATE's capability; where recall is refused a reset would
+        # strand the epoch behind a tool that never arrives, and rolling needs no tool.
+        if not conversation_recall_allowed():
             return False
     except Exception:  # noqa: BLE001 -- an unreadable policy is "no", never an error
         return False
@@ -278,6 +279,8 @@ def _fit_context(messages, **kwargs):
     # Whether `sticky_dropped` is the depth of a checkpoint RESET. Defaults to True, which
     # is what a caller with no thread state to consult has always assumed.
     sticky_is_checkpoint = bool(kwargs.pop("sticky_is_checkpoint", True))
+    # Naming a tool the request lacks makes the model print the call as text.
+    recall_offered = bool(kwargs.pop("recall_offered", True))
     requested_policy = kwargs.pop("context_policy", None)
     if requested_policy not in ("checkpoint", "rolling"):
         requested_policy = None
@@ -340,7 +343,7 @@ def _fit_context(messages, **kwargs):
             fitted, truncation = checkpoint.fit_checkpoint_context(
                 messages,
                 can_reset = lambda: not _is_degraded(),
-                searchable = lambda: not _is_degraded(),
+                searchable = lambda: recall_offered and not _is_degraded(),
                 **kwargs,
             )
             # `can_reset = False` has no phase two, so it refuses once the replayed
@@ -1565,6 +1568,92 @@ class _CompactionBranchState(NamedTuple):
     recorded: int
 
 
+def _reply_text(content) -> str:
+    """A stored reply's visible text, which a Max Tokens continuation re-sends verbatim."""
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return ""
+    return "".join(
+        str(part.get("text") or "")
+        for part in content
+        if isinstance(part, dict) and part.get("type") == "text"
+    )
+
+
+def _row_truncation(message: dict) -> Optional[dict]:
+    metadata = message.get("metadata")
+    metadata = metadata if isinstance(metadata, dict) else {}
+    custom = metadata.get("custom")
+    custom = custom if isinstance(custom, dict) else {}
+    truncation = metadata.get("contextTruncation") or custom.get("contextTruncation")
+    return truncation if isinstance(truncation, dict) else None
+
+
+# The auto-continue limit is 3 rounds; a manual Continue chain longer than this keeps its refusal.
+_RESUME_HOPS = 8
+_RESUME_SIBLINGS = 16
+
+
+def _max_tokens_cut(message: dict) -> bool:
+    metadata = message.get("metadata")
+    metadata = metadata if isinstance(metadata, dict) else {}
+    custom = metadata.get("custom")
+    custom = custom if isinstance(custom, dict) else {}
+    incomplete = metadata.get("incomplete") or custom.get("incomplete")
+    reason = incomplete.get("reason") if isinstance(incomplete, dict) else incomplete
+    return reason == "length"
+
+
+def _row_key(row: dict):
+    return row.get("id") or id(row)
+
+
+def _resumable_cuts(stored: list[dict]) -> dict:
+    """Max Tokens cuts per parent: ([positions], [rows]) in creation order."""
+    cuts: dict = {}
+    for position, row in enumerate(stored):
+        if row.get("role") == "assistant" and _max_tokens_cut(row):
+            at, rows = cuts.setdefault(row.get("parentId", row.get("parent_id")), ([], []))
+            at.append(position)
+            rows.append(row)
+    return cuts
+
+
+def _resumed_reply(message: dict, cuts: dict, positions: dict) -> dict:
+    """The reply an unfitted Max Tokens continuation resumed: its refusal records no epoch,
+    but the epoch in force is still the resumed reply's."""
+    for _ in range(_RESUME_HOPS):
+        truncation = _row_truncation(message)
+        if (
+            truncation is None
+            or truncation.get("fits")
+            or truncation.get("latest_turn_role") != "assistant"
+        ):
+            return message
+        position = positions.get(_row_key(message))
+        if position is None:
+            return message
+        text = _reply_text(message.get("content"))
+        at, rows = cuts.get(message.get("parentId", message.get("parent_id")), ((), ()))
+        end = bisect.bisect_left(at, position)
+        earlier = rows[max(0, end - _RESUME_SIBLINGS) : end]
+        # Newest earlier cut wins; equal text counts, since a refusal adds nothing.
+        source = next(
+            (
+                row
+                for row in reversed(earlier)
+                if (resumed := _reply_text(row.get("content")).rstrip())
+                and text.startswith(resumed)
+            ),
+            None,
+        )
+        if source is None:
+            return message
+        message = source
+    return message
+
+
 def _compaction_branch_states(
     stored: list[dict], branch_messages: Optional[list[dict]] = None
 ) -> list[_CompactionBranchState]:
@@ -1600,9 +1689,11 @@ def _compaction_branch_states(
             candidates = exact
 
     # A COMPLETED row with no truncation ends the epoch; only active/aborted are placeholders.
+    cuts = _resumable_cuts(stored)
+    positions = {_row_key(row): position for position, row in enumerate(stored)}
     states = []
     for message in candidates:
-        metadata = message.get("metadata")
+        metadata = _resumed_reply(message, cuts, positions).get("metadata")
         metadata = metadata if isinstance(metadata, dict) else {}
         custom = metadata.get("custom")
         custom = custom if isinstance(custom, dict) else {}
@@ -11300,8 +11391,11 @@ class LlamaCppBackend:
         the GPU columns are the leading run of GPU<n> header labels and only GPU<n>
         rows are read."""
         try:
-            result = subprocess.run(
+            from utils.hardware import gpu_query
+
+            result = gpu_query.run_nvidia_smi(
                 ["nvidia-smi", "topo", "-m"],
+                cache = False,
                 capture_output = True,
                 text = True,
                 encoding = "utf-8",
@@ -11965,7 +12059,9 @@ class LlamaCppBackend:
         """Physical id -> SM (90 for sm_90) via nvidia-smi, honoring
         CUDA_VISIBLE_DEVICES; {} when unknown. Never raises."""
         try:
-            result = subprocess.run(
+            from utils.hardware import gpu_query
+
+            result = gpu_query.run_nvidia_smi(
                 ["nvidia-smi", "--query-gpu=index,compute_cap", "--format=csv,noheader"],
                 capture_output = True,
                 text = True,
@@ -13329,7 +13425,10 @@ class LlamaCppBackend:
             return LlamaCppBackend._get_gpu_free_memory_vulkan(binary)
         # ── NVIDIA via nvidia-smi ────────────────────────────────────
         try:
-            result = subprocess.run(
+            from utils.hardware import gpu_query
+
+            # Placement / fit: never a cached reading. A hung CLI raises so the MIG-aware NVML branch runs.
+            result = gpu_query.run_nvidia_smi(
                 [
                     "nvidia-smi",
                     "--query-gpu=index,memory.free,memory.total",
@@ -15270,7 +15369,11 @@ class LlamaCppBackend:
             if time.monotonic() >= deadline:
                 return None
             try:
-                return LlamaCppBackend._get_gpu_free_memory()
+                from utils.hardware import gpu_query
+
+                # Consecutive samples are compared: a cached one would read as settled.
+                with gpu_query.fresh_reads():
+                    return LlamaCppBackend._get_gpu_free_memory()
             except Exception:
                 return None
 
@@ -18344,6 +18447,7 @@ class LlamaCppBackend:
                 **_child_popen_kwargs(),
             )
             self._process = _spawned
+            _invalidate_gpu_memory("llama-server spawned")
             # macOS has no parent-death signal, so only this record reaps a runner
             # holding the GPU. Under the lock: adopting after the sweep re-adds a
             # pid it just forgot.
@@ -22707,6 +22811,7 @@ class LlamaCppBackend:
                 **_child_popen_kwargs(),
             )
             self._process = _spawned
+            _invalidate_gpu_memory("llama-server spawned")
             # Cross-session backstop for when parent-death cleanup did not run.
             # Under the lock: see _spawn_and_wait.
             self._record_server_pid(_spawned.pid)
@@ -22752,6 +22857,7 @@ class LlamaCppBackend:
                 # finished load could blank the marker of a queued one that had published.
                 self._memory_pending_launch = None
 
+    @_invalidates_gpu_memory("llama.cpp load")
     @_with_gguf_load_marker
     def load_model(
         self,
@@ -29176,6 +29282,7 @@ class LlamaCppBackend:
                                 **_child_popen_kwargs(),
                             )
                             self._process = _spawned
+                            _invalidate_gpu_memory("llama-server spawned")
                             # Inside the lock: written after a sweep reaped the child,
                             # _pid_start_identity yields no start time, and the bare pid
                             # left behind is one a later launch kills blind.
@@ -31751,6 +31858,7 @@ class LlamaCppBackend:
         avoid restarting a load the user just cancelled."""
         return self._cancel_event.is_set()
 
+    @_invalidates_gpu_memory("llama.cpp unload")
     def unload_model(self) -> bool:
         """Terminate the subprocess and cancel any in-flight download."""
         self._cancel_event.set()
@@ -32104,6 +32212,7 @@ class LlamaCppBackend:
 
         return is_process_shutting_down()
 
+    @_invalidates_gpu_memory("llama.cpp stop")
     def _kill_process(self, *, teardown: bool = False):
         """Terminate the subprocess if running.
 
@@ -34829,6 +34938,7 @@ class LlamaCppBackend:
                     sticky_is_checkpoint = _sticky_is_checkpoint,
                     keeps_boundary = _keeps_compaction_boundary(thread_id),
                     can_reset = _can_reset,
+                    recall_offered = False,
                     **_compaction_fit_kwargs(context_policy, compaction_headroom_ratio),
                 )
                 if truncation:
@@ -35175,6 +35285,7 @@ class LlamaCppBackend:
             has_text_only_provisional_card,
             is_always_safe_tool,
             is_high_risk_tool_call,
+            never_needs_approval,
         )
 
         # "full" and bypass_permissions are the same switch, whichever arrives
@@ -35777,6 +35888,7 @@ class LlamaCppBackend:
                         anchor_ids = _rolling_anchor_ids,
                         keeps_boundary = _keeps_compaction_boundary(thread_id),
                         can_reset = _iteration_can_reset,
+                        recall_offered = "search_conversation" in (_enabled_tool_names or ()),
                         reserve_tokens = _conversation_recall_reserve(thread_id),
                         sticky_dropped = _iteration_sticky,
                         sticky_is_checkpoint = _iteration_sticky_is_checkpoint,
@@ -35954,6 +36066,7 @@ class LlamaCppBackend:
                             _backend_supports_tools(self),
                             tools_withheld = _memory_tool_withheld(thread_id, tools),
                         ),
+                        recall_offered = "search_conversation" in (_enabled_tool_names or ()),
                         **_compaction_fit_kwargs(context_policy, compaction_headroom_ratio),
                     )
                     # Recorded here, not left to the forwarding below. That list is
@@ -37394,6 +37507,7 @@ class LlamaCppBackend:
                         bool(confirm_tool_calls)
                         and not bypass_permissions
                         and permission_mode != "off"
+                        and not never_needs_approval(decision.tool_name)
                     )
                     if needs_confirm and permission_mode == "auto":
                         needs_confirm = is_high_risk_tool_call(
