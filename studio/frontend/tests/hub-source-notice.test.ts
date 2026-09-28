@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { register } from "node:module";
 import test from "node:test";
 
@@ -37,4 +38,16 @@ test("only an explicit grant shows the notice", async (t) => {
     answer(refused);
     assert.equal(await claimHubSourceNotice(), false);
   }
+});
+
+test("the side-effect mount cannot renumber the existing app shell", () => {
+  const root = readFileSync(
+    new URL("../src/app/routes/__root.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.ok(
+    root.lastIndexOf("<HubSourceNoticeMount />") >
+      root.lastIndexOf("</SidebarProvider>"),
+    "a null-rendering root sibling must follow the rendered shell so React useId paths stay stable",
+  );
 });
