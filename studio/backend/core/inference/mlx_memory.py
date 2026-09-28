@@ -9,6 +9,8 @@ import glob
 import functools
 import json
 import os
+import threading
+from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Optional
 
@@ -972,7 +974,59 @@ class _MlxSizing:
     kv_group_size: int
 
 
+_SIZING_CACHE_MAX = 16
+_sizing_cache: "OrderedDict[tuple, Optional[_MlxSizing]]" = OrderedDict()
+_sizing_lock = threading.Lock()
+
+
+def _checkpoint_fingerprint(model_dir: str) -> tuple:
+    """Size and mtime of every config, index and shard file, so a changed download re-sizes."""
+    root = os.path.realpath(model_dir)
+    found = []
+    for pattern in ("*.json", "**/*.safetensors"):
+        for path in sorted(glob.glob(os.path.join(root, pattern), recursive = True)):
+            try:
+                stat = os.stat(path)
+            except OSError:
+                continue
+            found.append((os.path.relpath(path, root), stat.st_size, stat.st_mtime_ns))
+    return tuple(found)
+
+
 def _size_load(
+    model_dir: str, kv_bits: Optional[int], prefill_chunk: Optional[int], load_in_4bit: bool
+) -> Optional[_MlxSizing]:
+    """Cached ``_size_load_uncached``: every estimate prices the fit and the breakdown, and every
+    slider step prices again, each otherwise rebuilding the same weightless architecture."""
+    try:
+        key = (
+            os.path.realpath(model_dir),
+            kv_bits,
+            prefill_chunk,
+            bool(load_in_4bit),
+            os.environ.get("UNSLOTH_MLX_PROMPT_CACHE_BYTES"),
+            _checkpoint_fingerprint(model_dir),
+        )
+    except Exception:
+        return _size_load_uncached(model_dir, kv_bits, prefill_chunk, load_in_4bit)
+    with _sizing_lock:
+        if key in _sizing_cache:
+            _sizing_cache.move_to_end(key)
+            return _sizing_cache[key]
+    sizing = _size_load_uncached(model_dir, kv_bits, prefill_chunk, load_in_4bit)
+    with _sizing_lock:
+        _sizing_cache[key] = sizing
+        while len(_sizing_cache) > _SIZING_CACHE_MAX:
+            _sizing_cache.popitem(last = False)
+    return sizing
+
+
+def _clear_sizing_cache() -> None:
+    with _sizing_lock:
+        _sizing_cache.clear()
+
+
+def _size_load_uncached(
     model_dir: str, kv_bits: Optional[int], prefill_chunk: Optional[int], load_in_4bit: bool
 ) -> Optional[_MlxSizing]:
     """Everything about a load that does not move with the context, or None if it cannot be sized."""

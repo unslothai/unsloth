@@ -2425,6 +2425,11 @@ def _asking_the_architecture(model_dir, question):
         return None
 
 
+# Slider steps resend the width, and each answer is a weightless build.
+_kv_refusal_cache: dict = {}
+_kv_refusal_lock = threading.Lock()
+
+
 def mlx_kv_quant_is_refused(model_dir, bits) -> bool:
     """Whether a load would keep this checkpoint's cache at full width despite *bits*, by the
     eligibility probe's own rule (nothing to convert, or a converted cache the model cannot
@@ -2436,7 +2441,20 @@ def mlx_kv_quant_is_refused(model_dir, bits) -> bool:
         )
         return failure is not None or not converted
 
-    return _asking_the_architecture(model_dir, refused) is True
+    try:
+        from core.inference.mlx_memory import _checkpoint_fingerprint
+        key = (os.path.realpath(model_dir), bits, _checkpoint_fingerprint(model_dir))
+    except Exception:
+        return _asking_the_architecture(model_dir, refused) is True
+    with _kv_refusal_lock:
+        if key in _kv_refusal_cache:
+            return _kv_refusal_cache[key]
+    answer = _asking_the_architecture(model_dir, refused) is True
+    with _kv_refusal_lock:
+        _kv_refusal_cache[key] = answer
+        while len(_kv_refusal_cache) > 32:
+            _kv_refusal_cache.pop(next(iter(_kv_refusal_cache)))
+    return answer
 
 
 def _kv_quant_status(

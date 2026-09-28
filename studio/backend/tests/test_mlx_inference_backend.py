@@ -5297,6 +5297,33 @@ def test_the_mlx_mcp_snapshot_is_taken_under_the_same_guard_the_gguf_count_uses(
     assert guard < snapshot, "the guard must be held across the snapshot, not after it"
 
 
+@pytest.fixture(autouse = True)
+def _fresh_mlx_estimate_caches():
+    # Tests ask one path under different patched towers.
+    from core.inference import mlx_inference, mlx_memory
+
+    mlx_inference._kv_refusal_cache.clear()
+    mlx_memory._clear_sizing_cache()
+    yield
+    mlx_inference._kv_refusal_cache.clear()
+    mlx_memory._clear_sizing_cache()
+
+
+def test_a_width_refusal_is_asked_once_per_checkpoint_and_width(monkeypatch, tmp_path):
+    from core.inference import mlx_inference
+
+    (tmp_path / "config.json").write_text("{}")
+    asked = []
+    monkeypatch.setattr(
+        mlx_inference, "_asking_the_architecture", lambda d, q: asked.append(d) or True
+    )
+    assert mlx_inference.mlx_kv_quant_is_refused(str(tmp_path), 4) is True
+    assert mlx_inference.mlx_kv_quant_is_refused(str(tmp_path), 4) is True and len(asked) == 1
+    assert mlx_inference.mlx_kv_quant_is_refused(str(tmp_path), 8) is True and len(asked) == 2
+    (tmp_path / "config.json").write_text('{"changed": 1}')
+    assert mlx_inference.mlx_kv_quant_is_refused(str(tmp_path), 4) is True and len(asked) == 3
+
+
 def test_what_the_fit_is_asked_and_when_it_is_asked_at_all(monkeypatch, tmp_path):
     from core.inference import mlx_inference
 
@@ -5577,6 +5604,7 @@ def test_the_width_probe_judges_the_tower_the_sizing_would_price(monkeypatch):
             ),
         )
         marks = len(rewound)
+        mlx_inference._kv_refusal_cache.clear()
         answer = mlx_inference.mlx_kv_quant_is_refused("/d", 4)
         assert rewound[marks] == "held" and rewound[-1] == ("key",)
         return answer
@@ -5610,6 +5638,7 @@ def test_the_width_probe_judges_the_tower_the_sizing_would_price(monkeypatch):
         ),
     )
     marks = len(rewound)
+    mlx_inference._kv_refusal_cache.clear()
     assert mlx_inference.mlx_kv_quant_is_refused("/d", 4) is False
     assert rewound[marks:] == ["held", ("key",)]
 

@@ -3673,6 +3673,34 @@ from dataclasses import replace  # noqa: E402
 
 from core.inference import mlx_memory as mm  # noqa: E402
 
+
+@pytest.fixture(autouse = True)
+def _fresh_sizing_cache():
+    # Tests re-price one checkpoint under different patched internals.
+    from core.inference import mlx_inference
+
+    mm._clear_sizing_cache()
+    mlx_inference._kv_refusal_cache.clear()
+    yield
+    mm._clear_sizing_cache()
+    mlx_inference._kv_refusal_cache.clear()
+
+
+def test_a_load_is_sized_once_until_its_files_change(monkeypatch, tmp_path):
+    (tmp_path / "config.json").write_text("{}")
+    shard = tmp_path / "model.safetensors"
+    shard.write_bytes(b"x")
+    built = []
+    monkeypatch.setattr(
+        mm, "_size_load_uncached", lambda *a: built.append(a) or f"sizing{len(built)}"
+    )
+    first = mm._size_load(str(tmp_path), 4, None, True)
+    assert mm._size_load(str(tmp_path), 4, None, True) is first and len(built) == 1
+    assert mm._size_load(str(tmp_path), None, None, True) != first and len(built) == 2
+    shard.write_bytes(b"xy")
+    assert mm._size_load(str(tmp_path), 4, None, True) != first and len(built) == 3
+
+
 try:
     import importlib
 
