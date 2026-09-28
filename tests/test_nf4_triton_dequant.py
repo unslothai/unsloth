@@ -167,6 +167,10 @@ def test_hip_route_without_mul_rn_is_also_exact(monkeypatch):
 def test_exact_with_fp_fusion_on_or_off(fp_fusion):
     """Eager launches with fp fusion off; torch.compile re-emits the kernel with it on. Both must
     keep code2 * absmax2 and + offset as two roundings (fp32 output shows a 1 ulp scale error)."""
+    if fp_fusion and not nf4_mod._HAS_MUL_RN:
+        # Without libdevice.mul_rn (HIP, the interpreter) the kernel never runs with fusion on: eager
+        # launches pass fp_fusion=False and compiled graphs keep the op opaque (custom_op).
+        pytest.skip("no mul_rn: this route never launches with fp fusion on")
     for dtype in (torch.float32, torch.bfloat16):
         q, s = _quantize((4096, 4096), dtype, seed = 3)
         out = torch.empty(4096, 4096, dtype = dtype, device = "cuda")
