@@ -47,17 +47,19 @@ ROOTS = (REPO / "unsloth", REPO / "studio", REPO / "unsloth_cli")
 # The frontend tree is TypeScript;
 # node_modules is vendored third-party code.
 SKIP_DIRS = {"build", "dist", "frontend", "node_modules", "src-tauri", ".venv", "site-packages"}
-# Vendored packages kept byte-identical to their wheel and pinned by per-file hashes
-# (studio/backend/vendor/README.md), mapped to the loader that replaces each module's `open`
-# global with a UTF-8 one after exec_module returns. Only the calls that replacement reaches
-# are exempt (bare `open(...)` at function time, `open` not rebound locally), and only while
-# the loader still does it; studio/backend/tests/test_text_io_encoding.py runs the laya case
-# under a non-UTF-8 locale.
-UTF8_BY_LOADER = {
-    REPO / "studio/backend/vendor/laya": (
-        REPO / "studio/backend/core/systemone/laya_runtime.py",
-        ".open = _utf8_open",
-    ),
+# Reviewed call sites in vendored code that is kept byte-identical to its wheel and pinned
+# by per-file sha256 (studio/backend/vendor/laya_manifest.json), so the line numbers cannot
+# drift. Each is a bare `open()` in a function body of a module laya/__init__.py imports
+# eagerly, which laya_runtime._laya() rebinds to a UTF-8 `open` once exec_module returns;
+# studio/backend/tests/test_text_io_encoding.py runs that path under a non-UTF-8 locale.
+# Pinned by exact site rather than by a rule: a vendor update that adds, moves or drops a
+# call reds this scan until someone re-reviews it, and so does removing the loader rebind.
+VENDORED_LOADER = REPO / "studio/backend/core/systemone/laya_runtime.py"
+VENDORED_LOADER_REBIND = ".open = _utf8_open"
+REVIEWED_VENDORED_OFFENDERS = {
+    "studio/backend/vendor/laya/agent.py:31: open()",
+    "studio/backend/vendor/laya/agent.py:47: open()",
+    "studio/backend/vendor/laya/agent.py:156: open()",
 }
 GUARDED_METHODS = {"read_text", "write_text"}
 # Path classes, so an unbound `Path.open(p)` shifts every argument one right.
@@ -339,55 +341,10 @@ def _walked_sources():
     return [p for root in ROOTS if root.is_dir() for p in sorted(root.rglob("*.py"))]
 
 
-def _utf8_by_loader(path):
-    """Whether `path` is vendored source whose loader still swaps in a UTF-8 `open` global."""
-    parents = set(path.resolve().parents)
-    for vendored, (loader, marker) in UTF8_BY_LOADER.items():
-        if vendored.resolve() in parents:
-            return loader.is_file() and marker in loader.read_text(encoding = "utf-8")
-    return False
-
-
-def _binds_open(fn) -> bool:
-    """Whether `fn` makes `open` a local name, which a module-global swap cannot reach."""
-    args = fn.args
-    params = args.posonlyargs + args.args + args.kwonlyargs + [args.vararg, args.kwarg]
-    if any(a is not None and a.arg == "open" for a in params):
-        return True
-    for node in ast.walk(fn):
-        if isinstance(node, ast.Name) and node.id == "open" and isinstance(node.ctx, ast.Store):
-            return True
-        if isinstance(node, (ast.Import, ast.ImportFrom)):
-            if any((a.asname or a.name) == "open" for a in node.names):
-                return True
-    return False
-
-
-def _module_open_calls_at_call_time(tree) -> set:
-    """ids of bare `open(...)` calls that resolve the module's `open` global when they run.
-
-    Module-level and class-body calls run inside exec_module, before a loader can replace the
-    global, and `Path.open`, `read_text`, `io.open` never look it up, so none of those qualify.
-    """
-    covered = set()
-
-    def walk(node, in_function):
-        for child in ast.iter_child_nodes(node):
-            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
-                if isinstance(child, ast.Lambda) or not _binds_open(child):
-                    walk(child, True)
-                continue
-            if (
-                in_function
-                and isinstance(child, ast.Call)
-                and isinstance(child.func, ast.Name)
-                and child.func.id == "open"
-            ):
-                covered.add(id(child))
-            walk(child, in_function)
-
-    walk(tree, False)
-    return covered
+def _loader_rebinds_open() -> bool:
+    return VENDORED_LOADER.is_file() and VENDORED_LOADER_REBIND in VENDORED_LOADER.read_text(
+        encoding = "utf-8"
+    )
 
 
 def test_shipping_code_names_an_encoding():
@@ -406,12 +363,18 @@ def test_shipping_code_names_an_encoding():
         rel = path.relative_to(REPO).as_posix()
         visible_at = _imports_at_each_call(tree)
         foreign = _foreign_names(tree)
-        swapped = _module_open_calls_at_call_time(tree) if _utf8_by_loader(path) else set()
         for node in ast.walk(tree):
-            if isinstance(node, ast.Call) and id(node) not in swapped:
+            if isinstance(node, ast.Call):
                 name = _offender(node, visible_at.get(id(node), {}), foreign)
                 if name is not None:
                     offenders.append(f"{rel}:{node.lineno}: {name}")
+    if _loader_rebinds_open():
+        stale = sorted(REVIEWED_VENDORED_OFFENDERS.difference(offenders))
+        assert stale == [], (
+            f"Reviewed vendored call sites no longer found, so the vendored code changed: {stale}. "
+            "Re-review the new sites and update REVIEWED_VENDORED_OFFENDERS."
+        )
+        offenders = [o for o in offenders if o not in REVIEWED_VENDORED_OFFENDERS]
     assert offenders == [], (
         f"{len(offenders)} text read/write call sites in shipping code let the "
         "operator's locale decide the encoding, so they crash or silently "
@@ -461,22 +424,6 @@ def test_skips_foreign_openers_and_readers():
     assert not _offenders_in("import tarfile\nt = tarfile.open(p, 'r:gz')\n")
     # importlib.metadata Distribution.read_text takes a positional filename.
     assert not _offenders_in("s = dist.read_text('direct_url.json')\n")
-
-
-def test_loader_swap_exempts_only_the_calls_it_reaches():
-    def exempt(src):
-        return _module_open_calls_at_call_time(ast.parse(src))
-
-    # Function-time bare open resolves the swapped global.
-    assert exempt("def f(p):\n    return open(p).read()\n")
-    assert exempt("g = lambda p: open(p)\n")
-    # Import-time, Path methods, io.open and a locally rebound open never see the swap.
-    assert not exempt("f = open('x')\n")
-    assert not exempt("class C:\n    t = open('x').read()\n")
-    assert not exempt("def f(p):\n    return p.read_text() + p.open().read()\n")
-    assert not exempt("import io\ndef f(p):\n    return io.open(p)\n")
-    assert not exempt("def f(p, open=open):\n    return open(p)\n")
-    assert not exempt("def f(p):\n    from io import open\n    return open(p)\n")
 
 
 def test_test_trees_are_out_of_scope():
