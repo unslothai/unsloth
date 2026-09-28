@@ -3035,7 +3035,6 @@ export const zhCN = {
         open: "打开聊天",
         fork: "创建分支",
         moveTo: "移动到项目",
-        viewChats: "查看聊天",
         newChatInProject: "在项目中新建聊天",
         edit: "编辑",
         deleteProject: "删除项目",

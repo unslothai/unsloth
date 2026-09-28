@@ -3155,7 +3155,6 @@ export const ptBR = {
         open: "Abrir chat",
         fork: "Criar fork",
         moveTo: "Mover para projeto",
-        viewChats: "Ver chats",
         newChatInProject: "Novo chat no projeto",
         edit: "Editar",
         deleteProject: "Excluir projeto",

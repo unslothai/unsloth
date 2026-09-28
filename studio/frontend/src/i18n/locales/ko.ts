@@ -3121,7 +3121,6 @@ export const ko = {
         open: "채팅 열기",
         fork: "포크",
         moveTo: "프로젝트로 이동",
-        viewChats: "채팅 보기",
         newChatInProject: "프로젝트에서 새 채팅",
         edit: "편집",
         deleteProject: "프로젝트 삭제",

@@ -3207,7 +3207,6 @@ export const fr = {
         open: "Ouvrir la discussion",
         fork: "Forker",
         moveTo: "Déplacer vers un projet",
-        viewChats: "Voir les discussions",
         newChatInProject: "Nouvelle discussion dans le projet",
         edit: "Modifier",
         deleteProject: "Supprimer le projet",

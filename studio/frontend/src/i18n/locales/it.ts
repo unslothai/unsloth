@@ -3194,7 +3194,6 @@ export const it = {
         open: "Apri chat",
         fork: "Crea fork",
         moveTo: "Sposta nel progetto",
-        viewChats: "Vedi chat",
         newChatInProject: "Nuova chat nel progetto",
         edit: "Modifica",
         deleteProject: "Elimina progetto",

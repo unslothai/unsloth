@@ -3113,7 +3113,6 @@ export const en = {
         open: "Open chat",
         fork: "Fork",
         moveTo: "Move to project",
-        viewChats: "View chats",
         newChatInProject: "New chat in project",
         edit: "Edit",
         deleteProject: "Delete project",

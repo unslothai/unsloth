@@ -509,9 +509,8 @@ test("a favorite project tile uses the open project folder, not the file folder"
 
 test("a project's home and the Projects page use the Library project menu", () => {
   const items = readSrc("features/chat/components/project-menu-items.tsx");
-  // Library order; without View chats and New chat, the folder goes under Export.
+  // Library order; without New chat, the folder goes under Export.
   const order = [
-    "onView && (",
     "onNewChat && (",
     "<OpenProjectFolderItem projectId={project.id} />",
     "onSelect={onEdit}",
@@ -532,10 +531,10 @@ test("a project's home and the Projects page use the Library project menu", () =
   const page = readSrc("features/chat/chat-page.tsx");
   const homeMenu = page.slice(page.indexOf("<ProjectMenuItems"), page.indexOf("/>", page.indexOf("<ProjectMenuItems")));
   assert.match(homeMenu, /project=\{\{ id: projectId, name: projectName \}\}\s+chatCount=\{items\.length\}/);
-  assert.doesNotMatch(homeMenu, /onView|onNewChat/);
+  assert.doesNotMatch(homeMenu, /onNewChat/);
   assert.match(page, /<SectionNameDialog\s+open=\{active && creatingSection\}/);
   const projects = readSrc("features/chat/projects-page.tsx");
-  assert.match(projects, /<ProjectMenuItems\s+project=\{project\}\s+onView=/);
+  assert.match(projects, /<ProjectMenuItems\s+project=\{project\}\s+onNewChat=/);
   assert.match(projects, /onNewChat=\{\(\) => openProject\(project\.id\)\}/);
   // Filed the same way everywhere, through the shared hook.
   for (const source of [page, projects, readSrc("features/library/chats/chats-library.tsx"), items]) {
@@ -603,14 +602,21 @@ test("a section's menu reads New chat, New project and Edit", () => {
   assert.match(library, /openSectionId \? newProjectInSection\(openSectionId\) : setCreatingProject\(true\)/);
 });
 
-test("a chat card's location has its project or section icon; View chats has the chat icon", () => {
+test("a chat card's location has its project or section icon; menus leave out View chats", () => {
   const items = readSrc("features/library/chats/chats-items.tsx");
   const plain = items.slice(items.indexOf("  if (plain) {"), items.indexOf('<span className="flex min-w-0 items-center gap-3">'));
   assert.match(plain, /icon=\{projectId \? Folder02Icon : LayerIcon\}/);
   assert.match(plain, /<span className="truncate">\{projectId \? projectName : section\?\.name\}<\/span>/);
-  const viewChats = items.match(/icon=\{(\w+)\}\s*label=\{t\("library\.chats\.menu\.viewChats"\)\}/g) ?? [];
-  assert.equal(viewChats.length, 2);
-  for (const item of viewChats) assert.match(item, /MessageCircleIcon/);
+  // No View chats anywhere: clicking a project or section already shows its chats.
+  for (const file of [
+    "features/library/chats/chats-items.tsx",
+    "features/chat/components/project-menu-items.tsx",
+    "features/chat/projects-page.tsx",
+  ]) {
+    assert.doesNotMatch(readSrc(file), /viewChats/, file);
+  }
+  assert.doesNotMatch(readSrc("features/chat/components/project-menu-items.tsx"), /onView/);
+  assert.doesNotMatch(readSrc("i18n/locales/en.ts"), /viewChats/);
 });
 
 test("the Chats library draws every project with the open project folder", () => {

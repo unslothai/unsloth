@@ -3127,7 +3127,6 @@ export const ar = {
         open: "فتح المحادثة",
         fork: "إنشاء تفرع",
         moveTo: "نقل إلى مشروع",
-        viewChats: "عرض المحادثات",
         newChatInProject: "محادثة جديدة في المشروع",
         edit: "تعديل",
         deleteProject: "حذف المشروع",

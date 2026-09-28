@@ -11,7 +11,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { useChatFavoritesStore } from "@/features/library/chats/favorites-store";
 import { useT } from "@/i18n";
-import { MessageCircleIcon, StarPointedIcon } from "@/lib/hugeicons-derived";
+import { StarPointedIcon } from "@/lib/hugeicons-derived";
 import { isDownloadCancelled } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
@@ -58,14 +58,12 @@ function Item({
 }
 
 /**
- * The Library's project menu, for the project's home and the Projects page. With onView and
- * onNewChat it opens with them and the folder, as in the Library; the home puts the folder
- * under Export.
+ * The Library's project menu, for the project's home and the Projects page. With onNewChat it
+ * opens with it and the folder, as in the Library; the home puts the folder under Export.
  */
 export function ProjectMenuItems({
   project,
   chatCount,
-  onView,
   onNewChat,
   onEdit,
   onDelete,
@@ -75,7 +73,6 @@ export function ProjectMenuItems({
   project: { id: string; name: string };
   /** Off Export at 0; unknown (undefined) leaves it on. */
   chatCount?: number;
-  onView?: () => void;
   onNewChat?: () => void;
   onEdit: () => void;
   onDelete: () => void;
@@ -92,7 +89,7 @@ export function ProjectMenuItems({
   const sectionId = useSidebarOrganizationStore((s) => s.sectionByProjectId[project.id] ?? null);
   const fileProjectInSection = useFileProjectInSection();
   const leaving = sections.find((section) => section.id === sectionId);
-  const opening = Boolean(onView || onNewChat);
+  const opening = Boolean(onNewChat);
 
   async function exportProject(format: Parameters<typeof exportThreads>[1], merged: boolean) {
     try {
@@ -108,11 +105,6 @@ export function ProjectMenuItems({
     <>
       {opening && (
         <>
-          {onView && (
-            <Item icon={MessageCircleIcon} onSelect={onView}>
-              {t("library.chats.menu.viewChats")}
-            </Item>
-          )}
           {onNewChat && (
             <Item icon={PencilEdit02Icon} onSelect={onNewChat}>
               {t("library.chats.menu.newChatInProject")}

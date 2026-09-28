@@ -3193,7 +3193,6 @@ export const es = {
         open: "Abrir chat",
         fork: "Bifurcar",
         moveTo: "Mover a proyecto",
-        viewChats: "Ver chats",
         newChatInProject: "Nuevo chat en el proyecto",
         edit: "Editar",
         deleteProject: "Eliminar proyecto",

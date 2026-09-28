@@ -1335,11 +1335,6 @@ function ProjectMenu({
         <MenuTrigger variant={variant} />
         <DropdownMenuContent align="end" className={cn(MENU, "w-52")}>
           <MenuItem
-            icon={MessageCircleIcon}
-            label={t("library.chats.menu.viewChats")}
-            onSelect={() => actions.viewProject(project.id)}
-          />
-          <MenuItem
             icon={PencilEdit02Icon}
             label={t("library.chats.menu.newChatInProject")}
             onSelect={() => actions.newChatIn(project.id)}
@@ -1589,13 +1584,6 @@ export function SectionMenuItems({
   const actions = useChatsActions();
   return (
     <>
-      {!onPage && (
-        <MenuItem
-          icon={MessageCircleIcon}
-          label={t("library.chats.menu.viewChats")}
-          onSelect={() => actions.viewSection(section.id)}
-        />
-      )}
       {/* On the page, its New button has both. */}
       {!onPage && (
         <>

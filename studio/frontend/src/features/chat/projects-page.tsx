@@ -855,12 +855,9 @@ export function ProjectsPage() {
                     onKeyDown={(e) => e.stopPropagation()}
                     className="app-user-menu menu-soft-surface menu-flat-destructive ring-0 w-52 py-2 font-heading rounded-[14px] border-0"
                   >
-                    {/* The Library's project menu. View chats opens them here, in the row. */}
+                    {/* The Library's project menu. */}
                     <ProjectMenuItems
                       project={project}
-                      onView={() => {
-                        if (!chatsOpen) toggleProjectChats(project.id);
-                      }}
                       onNewChat={() => openProject(project.id)}
                       onEdit={() => setEditing(project)}
                       onDelete={() => openProjectDelete(project)}

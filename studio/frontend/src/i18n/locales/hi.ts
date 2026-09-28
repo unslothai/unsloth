@@ -3134,7 +3134,6 @@ export const hi = {
         open: "चैट खोलें",
         fork: "फ़ॉर्क करें",
         moveTo: "प्रोजेक्ट में ले जाएँ",
-        viewChats: "चैट देखें",
         newChatInProject: "प्रोजेक्ट में नई चैट",
         edit: "संपादित करें",
         deleteProject: "प्रोजेक्ट हटाएँ",

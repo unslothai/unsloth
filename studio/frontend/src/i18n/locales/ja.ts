@@ -3075,7 +3075,6 @@ export const ja = {
         open: "チャットを開く",
         fork: "フォーク",
         moveTo: "プロジェクトに移動",
-        viewChats: "チャットを表示",
         newChatInProject: "プロジェクトで新しいチャット",
         edit: "編集",
         deleteProject: "プロジェクトを削除",

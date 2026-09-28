@@ -3154,7 +3154,6 @@ export const ru = {
         open: "Открыть чат",
         fork: "Создать ответвление",
         moveTo: "Переместить в проект",
-        viewChats: "Показать чаты",
         newChatInProject: "Новый чат в проекте",
         edit: "Изменить",
         deleteProject: "Удалить проект",
