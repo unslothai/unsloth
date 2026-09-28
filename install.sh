@@ -5906,12 +5906,18 @@ _torch_release_in_window() {
 
 # "yes" when $1 is the cu130 index on Linux/WSL x86_64 with a Python 3.13 venv: the only route the torch 2.13/2.14 prebuilt wheels cover.
 _cu130_torch213_route() {
+    [ "$(_cu130_torch213_platform "$1")" = "yes" ] || { echo "no"; return; }
+    _pypi_unsloth_admits_torch "2.13.0"
+}
+
+# The local half of the route, with no network: it alone decides the preservation window, so a
+# PyPI outage on a re-run can never shrink it and downgrade an existing 2.13/2.14 install.
+_cu130_torch213_platform() {
     [ "$(_torch_index_url_leaf "$1")" = "cu130" ] || { echo "no"; return; }
     case "$OS" in linux|wsl) ;; *) echo "no"; return ;; esac
     case "$_ARCH" in x86_64|amd64) ;; *) echo "no"; return ;; esac
     _ctr_py=$("$VENV_DIR/bin/python" -c "import sys; print('%d.%d' % sys.version_info[:2])" 2>/dev/null || echo "")
-    [ "$_ctr_py" = "3.13" ] || { echo "no"; return; }
-    _pypi_unsloth_admits_torch "2.13.0"
+    [ "$_ctr_py" = "3.13" ] && echo "yes" || echo "no"
 }
 
 # "yes" only when the newest unsloth on PyPI admits torch $1: `studio update` runs the INSTALLED release's setup,
@@ -6975,10 +6981,12 @@ fi  # _torch_index_pinned guard (Radeon + Strix reroute)
 # Only this route has prebuilt kernel wheels for torch 2.13/2.14 (prebuilt-wheels-cu13, cp313), so new installs get 2.13;
 # preservation keeps a wider window so an existing 2.4-2.14 install stays on its release.
 _PRESERVE_TORCH_CONSTRAINT="$TORCH_CONSTRAINT"
-if [ "$SKIP_TORCH" = false ] && [ "$(_cu130_torch213_route "$TORCH_INDEX_URL")" = "yes" ]; then
+if [ "$SKIP_TORCH" = false ] && [ "$(_cu130_torch213_platform "$TORCH_INDEX_URL")" = "yes" ]; then
     _PRESERVE_TORCH_CONSTRAINT="torch>=2.4,<${_CU130_TORCH_CEILING}"
-    TORCH_CONSTRAINT="$_CU130_NEW_INSTALL_TORCH"
-    TORCHVISION_CONSTRAINT="torchvision>=0.28.0,<0.29.0"
+    if [ "$(_pypi_unsloth_admits_torch "2.13.0")" = "yes" ]; then
+        TORCH_CONSTRAINT="$_CU130_NEW_INSTALL_TORCH"
+        TORCHVISION_CONSTRAINT="torchvision>=0.28.0,<0.29.0"
+    fi
 fi
 _PREV_TORCH_PIN=""
 _PREV_FALLBACK_CONSTRAINT="$TORCH_CONSTRAINT"

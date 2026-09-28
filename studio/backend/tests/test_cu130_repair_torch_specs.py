@@ -197,3 +197,21 @@ def test_a_uv_failure_under_the_freeze_never_falls_back_to_pip(monkeypatch, mod)
     with pytest.raises(SystemExit):
         mod._pip_install_once("Updating core packages", "unsloth")
     assert ran == []
+
+
+def test_inherited_relative_includes_still_resolve(monkeypatch, tmp_path, mod):
+    monkeypatch.setattr(mod.sys, "platform", "linux")
+    monkeypatch.setattr(mod, "_resident_torch_release", lambda: "2.13.0")
+    monkeypatch.setattr(mod, "_resident_torch_trio_pins", lambda: ["torch==2.13.0+cu130"])
+    (tmp_path / "nested.txt").write_text("numpy<3\n", encoding = "utf-8")
+    inherited = tmp_path / "overrides.txt"
+    inherited.write_text("-r nested.txt\n--constraint=/abs/c.txt\n-r https://example.com/r.txt\n", encoding = "utf-8")
+    monkeypatch.setenv("UV_OVERRIDE", str(inherited))
+    with mod._FreezeNewTorchForCoreUpdate():
+        merged = Path(mod.os.environ["UV_OVERRIDE"]).read_text(encoding = "utf-8").splitlines()
+    assert merged == [
+        "torch==2.13.0+cu130",
+        f"-r {(tmp_path / 'nested.txt').resolve()}",
+        "--constraint=/abs/c.txt",
+        "-r https://example.com/r.txt",
+    ]

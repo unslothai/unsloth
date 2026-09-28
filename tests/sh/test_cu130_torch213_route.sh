@@ -11,7 +11,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 INSTALL_SH="${1:-$SCRIPT_DIR/../../install.sh}"
 _FUNC_FILE=$(mktemp)
 {
-    for fn in _run_bounded _pypi_unsloth_admits_torch _torch_index_url_leaf _cu130_torch213_route _torchaudio_for_torch_minor _torch_release_in_window _previous_torch_pin; do
+    for fn in _run_bounded _pypi_unsloth_admits_torch _torch_index_url_leaf _cu130_torch213_route _cu130_torch213_platform _torchaudio_for_torch_minor _torch_release_in_window _previous_torch_pin; do
         sed -n "/^${fn}()/,/^}/p" "$INSTALL_SH"
         echo ""
     done
@@ -70,6 +70,29 @@ assert_eq "extra-only torch is no evidence" "no" "$(_cu130_torch213_route "$CU13
 export UNSLOTH_PYPI_JSON_URL="http://127.0.0.1:9/unreachable"
 assert_eq "unreachable index keeps the old window" "no" "$(_cu130_torch213_route "$CU130")"
 _pypi_fixture "torch<2.15.0,>=2.4.0"
+
+echo "=== preservation never waits on PyPI ==="
+# Runs install.sh's own block: an existing 2.13 install re-run while PyPI is unreachable or
+# still capped keeps the wide window (only the new-install default waits on the gate).
+_PRESERVE_BLOCK=$(sed -n '/^_PRESERVE_TORCH_CONSTRAINT="\$TORCH_CONSTRAINT"$/,/^fi$/p' "$INSTALL_SH")
+assert_eq "block found in install.sh" "yes" "$([ -n "$_PRESERVE_BLOCK" ] && echo yes)"
+_CU130_TORCH_CEILING="2.15.0"; _CU130_NEW_INSTALL_TORCH="torch>=2.13.0,<2.14.0"; SKIP_TORCH=false; TORCH_INDEX_URL="$CU130"
+for gate in unreachable capped open; do
+    case "$gate" in
+        unreachable) export UNSLOTH_PYPI_JSON_URL="http://127.0.0.1:9/unreachable" ;;
+        capped) _pypi_fixture "torch<2.13.0,>=2.4.0" ;;
+        open) _pypi_fixture "torch<2.15.0,>=2.4.0" ;;
+    esac
+    TORCH_CONSTRAINT="torch>=2.4,<2.12.0"; TORCHVISION_CONSTRAINT="torchvision>=0.19,<0.27.0"
+    eval "$_PRESERVE_BLOCK"
+    assert_eq "PyPI $gate: 2.13 install kept" "torch==2.13.0" "$(_previous_torch_pin '2.13.0+cu130' "$_PRESERVE_TORCH_CONSTRAINT")"
+    want="torch>=2.4,<2.12.0"; [ "$gate" = open ] && want="torch>=2.13.0,<2.14.0"
+    assert_eq "PyPI $gate: new-install default" "$want" "$TORCH_CONSTRAINT"
+done
+_stub_python 3.12
+TORCH_CONSTRAINT="torch>=2.4,<2.12.0"; eval "$_PRESERVE_BLOCK"
+assert_eq "Python 3.12 keeps the old window" "torch>=2.4,<2.12.0" "$_PRESERVE_TORCH_CONSTRAINT"
+_stub_python 3.13
 
 echo "=== preservation window keeps every existing 2.4-2.14 release ==="
 PRESERVE='torch>=2.4,<2.15.0'

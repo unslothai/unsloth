@@ -456,6 +456,7 @@ def _resident_torch_trio_pins() -> list[str]:
     return pins
 
 
+_OVERRIDE_INCLUDE = re.compile(r"^(\s*(?:-r|-c|--requirement|--constraint)(?:\s+|=))(\S+)(.*)$")
 _TORCH_TRIO_LINE = re.compile(r"^\s*torch(vision|audio)?([\s<>=!~;@\[]|$)", re.IGNORECASE)
 # True while _FreezeNewTorchForCoreUpdate's UV_OVERRIDE is the only thing keeping the trio.
 _TORCH_FREEZE_ACTIVE = False
@@ -492,7 +493,15 @@ class _FreezeNewTorchForCoreUpdate:
                 text = Path(inherited).read_text(encoding = "utf-8")
             except OSError:
                 continue
-            lines += [l for l in text.splitlines() if not _TORCH_TRIO_LINE.match(l)]
+            base = Path(inherited).parent
+            for line in text.splitlines():
+                if _TORCH_TRIO_LINE.match(line):
+                    continue
+                # A relative -r / -c resolves against its own file, which is no longer this one.
+                include = _OVERRIDE_INCLUDE.match(line)
+                if include and "://" not in include[2] and not os.path.isabs(include[2]):
+                    line = f"{include[1]}{(base / include[2]).resolve()}{include[3]}"
+                lines.append(line)
         fd, name = tempfile.mkstemp(prefix = "unsloth-torch-overrides-", suffix = ".txt")
         with os.fdopen(fd, "w", encoding = "utf-8") as handle:
             handle.write("\n".join(lines) + "\n")
