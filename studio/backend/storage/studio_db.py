@@ -1959,8 +1959,7 @@ def add_scan_folder(path: str) -> dict:
 
 
 def remove_scan_folder(id: int) -> bool:
-    # sqlite INTEGER is signed 64-bit; ids outside that range cannot exist, and binding
-    # one raises rather than deleting nothing. Same guard as the hub copy.
+    # sqlite INTEGER is signed 64-bit: binding a wider id raises instead of matching nothing.
     if not -(2**63) <= id < 2**63:
         return False
     conn = get_connection()
