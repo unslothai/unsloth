@@ -694,3 +694,40 @@ def test_the_pre_import_json_reader_shares_the_request_refusal(monkeypatch):
         assert tv._hf_json("https://huggingface.co/a/resolve/main/tokenizer_config.json", OAUTH)
     assert sent == [f"Bearer {OAUTH}", None, None]
     assert rejections.recovered
+
+
+def test_an_anonymous_missing_file_answer_is_kept():
+    # A public repo without an optional config: the scanners skip a missing file, so the
+    # anonymous 404 must reach them rather than the refused token's 401.
+    from huggingface_hub.utils import EntryNotFoundError
+
+    def read(token):
+        if token is False:
+            raise EntryNotFoundError("404 Client Error: Entry Not Found")
+        raise RepositoryNotFoundError(reason = "OAuth token verification failed")
+
+    with collecting_hub_token_rejections() as rejections:
+        with pytest.raises(EntryNotFoundError):
+            call_with_anonymous_retry(read, OAUTH)
+    assert rejections.recovered
+
+
+def test_a_later_load_in_the_same_worker_gets_its_token_environment_back(monkeypatch):
+    # A persistent worker scrubbed the env for a refused token; the next load, after the user
+    # replaced the token, must not inherit that scrub.
+    import os
+
+    from core.inference import worker
+
+    monkeypatch.setenv("HF_TOKEN", "hf_" + "n" * 34)
+    monkeypatch.delenv("HF_HUB_DISABLE_IMPLICIT_TOKEN", raising = False)
+    monkeypatch.setattr(worker, "_TOKEN_ENV_BEFORE_ANONYMOUS_LOAD", None)
+    config = {"hf_token": OAUTH, "model_name": "org/public"}
+    with collecting_hub_token_rejections():
+        call_with_anonymous_retry(_refused_with_a_token([]), OAUTH)
+        worker._drop_a_rejected_token(config)
+    assert "HF_TOKEN" not in os.environ
+    assert os.environ["HF_HUB_DISABLE_IMPLICIT_TOKEN"] == "1"
+    worker._restore_token_environment()
+    assert os.environ["HF_TOKEN"] == "hf_" + "n" * 34
+    assert "HF_HUB_DISABLE_IMPLICIT_TOKEN" not in os.environ

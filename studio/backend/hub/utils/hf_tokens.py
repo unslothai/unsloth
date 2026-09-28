@@ -1208,6 +1208,13 @@ def saved_token_rejected(hf_token: HfTokenArg) -> bool:
     return _credential_identity(credential) in sink._recovered
 
 
+def _is_missing_file(exc: BaseException) -> bool:
+    """The Hub answered that a file is absent from a repo it let us read (not the offline cache
+    lookup, which says nothing about the Hub)."""
+    names = {cls.__name__ for cls in type(exc).__mro__}
+    return "EntryNotFoundError" in names and "LocalEntryNotFoundError" not in names
+
+
 def call_with_anonymous_retry(read, hf_token: HfTokenArg):
     """Run ``read(token)``, once more anonymously if Hugging Face refuses the credential.
 
@@ -1252,6 +1259,11 @@ def call_with_anonymous_retry(read, hf_token: HfTokenArg):
         except Exception as anonymous_exc:
             if _is_cancellation(anonymous_exc):
                 # The user stopped the load mid-retry: that is the answer, not the 401.
+                raise
+            if _is_missing_file(anonymous_exc):
+                # Anonymous access reads the repo and says the file is not there: that is the
+                # answer (an optional config), and the token was the one refused.
+                note_saved_token_rejected(hf_token)
                 raise
             logger.info(
                 "Hugging Face refused the credential (401); the anonymous retry failed too: %s",
