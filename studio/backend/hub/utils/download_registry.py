@@ -1222,6 +1222,7 @@ class DownloadRegistry:
         self._cancel_marker_transports: dict[str, str] = {}
         self._pending_cancel: dict[str, Optional[int]] = {}
         self._generations: dict[str, int] = {}
+        self._attempts: dict[str, int] = {}
         # Monotonic across keys so an evicted then re-claimed key never reuses a prior generation, which would let a stale cancel match a new run.
         self._generation_seq = 0
         self._deleting: dict[str, set[Optional[str]]] = {}
@@ -1248,6 +1249,7 @@ class DownloadRegistry:
                     self._jobs.pop(stale_key, None)
                     self._metadata.pop(stale_key, None)
                     self._generations.pop(stale_key, None)
+                    self._attempts.pop(stale_key, None)
                     if len(self._jobs) <= self._max_terminal:
                         break
 
@@ -1346,6 +1348,11 @@ class DownloadRegistry:
         key = normalize_job_key(key)
         with self._lock:
             return self._generations.get(key, 0)
+
+    def current_attempt(self, key: str) -> int:
+        key = normalize_job_key(key)
+        with self._lock:
+            return self._attempts.get(key, 1)
 
     def get_job_metadata(self, key: str) -> Optional[DownloadMetadata]:
         key = normalize_job_key(key)
@@ -1522,8 +1529,10 @@ class DownloadRegistry:
             if generation is None:
                 self._generation_seq += 1
                 self._generations[key] = self._generation_seq
+                self._attempts[key] = 1
             else:
                 self._generations[key] = generation
+                self._attempts[key] = self._attempts.get(key, 1) + 1
             self._jobs[key] = DownloadState("running")
             self._repo_active.setdefault(repo, active).add(key)
             if repo_type and repo_id:

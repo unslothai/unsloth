@@ -9,6 +9,7 @@ OpenAI-compatible /v1/chat/completions endpoint.
 
 import ast
 import atexit
+import bisect
 import contextlib
 import ctypes
 import errno
@@ -283,6 +284,8 @@ def _fit_context(messages, **kwargs):
     # Whether `sticky_dropped` is the depth of a checkpoint RESET. Defaults to True, which
     # is what a caller with no thread state to consult has always assumed.
     sticky_is_checkpoint = bool(kwargs.pop("sticky_is_checkpoint", True))
+    # Naming a tool the request lacks makes the model print the call as text.
+    recall_offered = bool(kwargs.pop("recall_offered", True))
     requested_policy = kwargs.pop("context_policy", None)
     if requested_policy not in ("checkpoint", "rolling"):
         requested_policy = None
@@ -345,7 +348,7 @@ def _fit_context(messages, **kwargs):
             fitted, truncation = checkpoint.fit_checkpoint_context(
                 messages,
                 can_reset = lambda: not _is_degraded(),
-                searchable = lambda: not _is_degraded(),
+                searchable = lambda: recall_offered and not _is_degraded(),
                 **kwargs,
             )
             # `can_reset = False` has no phase two, so it refuses once the replayed
@@ -1570,6 +1573,92 @@ class _CompactionBranchState(NamedTuple):
     recorded: int
 
 
+def _reply_text(content) -> str:
+    """A stored reply's visible text, which a Max Tokens continuation re-sends verbatim."""
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return ""
+    return "".join(
+        str(part.get("text") or "")
+        for part in content
+        if isinstance(part, dict) and part.get("type") == "text"
+    )
+
+
+def _row_truncation(message: dict) -> Optional[dict]:
+    metadata = message.get("metadata")
+    metadata = metadata if isinstance(metadata, dict) else {}
+    custom = metadata.get("custom")
+    custom = custom if isinstance(custom, dict) else {}
+    truncation = metadata.get("contextTruncation") or custom.get("contextTruncation")
+    return truncation if isinstance(truncation, dict) else None
+
+
+# The auto-continue limit is 3 rounds; a manual Continue chain longer than this keeps its refusal.
+_RESUME_HOPS = 8
+_RESUME_SIBLINGS = 16
+
+
+def _max_tokens_cut(message: dict) -> bool:
+    metadata = message.get("metadata")
+    metadata = metadata if isinstance(metadata, dict) else {}
+    custom = metadata.get("custom")
+    custom = custom if isinstance(custom, dict) else {}
+    incomplete = metadata.get("incomplete") or custom.get("incomplete")
+    reason = incomplete.get("reason") if isinstance(incomplete, dict) else incomplete
+    return reason == "length"
+
+
+def _row_key(row: dict):
+    return row.get("id") or id(row)
+
+
+def _resumable_cuts(stored: list[dict]) -> dict:
+    """Max Tokens cuts per parent: ([positions], [rows]) in creation order."""
+    cuts: dict = {}
+    for position, row in enumerate(stored):
+        if row.get("role") == "assistant" and _max_tokens_cut(row):
+            at, rows = cuts.setdefault(row.get("parentId", row.get("parent_id")), ([], []))
+            at.append(position)
+            rows.append(row)
+    return cuts
+
+
+def _resumed_reply(message: dict, cuts: dict, positions: dict) -> dict:
+    """The reply an unfitted Max Tokens continuation resumed: its refusal records no epoch,
+    but the epoch in force is still the resumed reply's."""
+    for _ in range(_RESUME_HOPS):
+        truncation = _row_truncation(message)
+        if (
+            truncation is None
+            or truncation.get("fits")
+            or truncation.get("latest_turn_role") != "assistant"
+        ):
+            return message
+        position = positions.get(_row_key(message))
+        if position is None:
+            return message
+        text = _reply_text(message.get("content"))
+        at, rows = cuts.get(message.get("parentId", message.get("parent_id")), ((), ()))
+        end = bisect.bisect_left(at, position)
+        earlier = rows[max(0, end - _RESUME_SIBLINGS) : end]
+        # Newest earlier cut wins; equal text counts, since a refusal adds nothing.
+        source = next(
+            (
+                row
+                for row in reversed(earlier)
+                if (resumed := _reply_text(row.get("content")).rstrip())
+                and text.startswith(resumed)
+            ),
+            None,
+        )
+        if source is None:
+            return message
+        message = source
+    return message
+
+
 def _compaction_branch_states(
     stored: list[dict], branch_messages: Optional[list[dict]] = None
 ) -> list[_CompactionBranchState]:
@@ -1605,9 +1694,11 @@ def _compaction_branch_states(
             candidates = exact
 
     # A COMPLETED row with no truncation ends the epoch; only active/aborted are placeholders.
+    cuts = _resumable_cuts(stored)
+    positions = {_row_key(row): position for position, row in enumerate(stored)}
     states = []
     for message in candidates:
-        metadata = message.get("metadata")
+        metadata = _resumed_reply(message, cuts, positions).get("metadata")
         metadata = metadata if isinstance(metadata, dict) else {}
         custom = metadata.get("custom")
         custom = custom if isinstance(custom, dict) else {}
@@ -34871,6 +34962,7 @@ class LlamaCppBackend:
                     sticky_is_checkpoint = _sticky_is_checkpoint,
                     keeps_boundary = _keeps_compaction_boundary(thread_id),
                     can_reset = _can_reset,
+                    recall_offered = False,
                     **_compaction_fit_kwargs(context_policy, compaction_headroom_ratio),
                 )
                 if truncation:
@@ -35217,6 +35309,7 @@ class LlamaCppBackend:
             has_text_only_provisional_card,
             is_always_safe_tool,
             is_high_risk_tool_call,
+            never_needs_approval,
         )
 
         # "full" and bypass_permissions are the same switch, whichever arrives
@@ -35819,6 +35912,7 @@ class LlamaCppBackend:
                         anchor_ids = _rolling_anchor_ids,
                         keeps_boundary = _keeps_compaction_boundary(thread_id),
                         can_reset = _iteration_can_reset,
+                        recall_offered = "search_conversation" in (_enabled_tool_names or ()),
                         reserve_tokens = _conversation_recall_reserve(thread_id),
                         sticky_dropped = _iteration_sticky,
                         sticky_is_checkpoint = _iteration_sticky_is_checkpoint,
@@ -35996,6 +36090,7 @@ class LlamaCppBackend:
                             _backend_supports_tools(self),
                             tools_withheld = _memory_tool_withheld(thread_id, tools),
                         ),
+                        recall_offered = "search_conversation" in (_enabled_tool_names or ()),
                         **_compaction_fit_kwargs(context_policy, compaction_headroom_ratio),
                     )
                     # Recorded here, not left to the forwarding below. That list is
@@ -37436,6 +37531,7 @@ class LlamaCppBackend:
                         bool(confirm_tool_calls)
                         and not bypass_permissions
                         and permission_mode != "off"
+                        and not never_needs_approval(decision.tool_name)
                     )
                     if needs_confirm and permission_mode == "auto":
                         needs_confirm = is_high_risk_tool_call(

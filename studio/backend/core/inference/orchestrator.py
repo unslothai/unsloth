@@ -244,6 +244,8 @@ def _audio_generation_timeout(
 _MLX_RUNTIME_MIRROR_FIELDS = (
     "mlx_kv_bits",
     "mlx_kv_bits_requested",
+    "mlx_kv_quant",
+    "mlx_kv_quant_requested",
     "mlx_kv_quant_eligibility",
     "mlx_kv_quant_reason",
     "mlx_kv_quant_note",
@@ -375,6 +377,7 @@ def _mirrored_model_entry(model_info: dict, model_name: str) -> dict:
         "max_context_length": model_info.get("max_context_length"),
         "requested_context_length": model_info.get("requested_context_length"),
         "context_length_enforced": model_info.get("context_length_enforced"),
+        "context_length_fitted": model_info.get("context_length_fitted"),
         "context_unbounded_when_batched": model_info.get("context_unbounded_when_batched"),
         "mlx_context_budget": model_info.get("mlx_context_budget"),
     }
@@ -1955,7 +1958,7 @@ class InferenceOrchestrator:
         subject: Optional[str] = None,
         tensor_parallel: bool = False,
         mlx_distributed: bool = False,
-        mlx_kv_bits: Optional[int] = None,
+        mlx_kv_quant: Optional[str] = None,
         chat_template_override: Optional[str] = None,
         load_cancel_event: Optional[threading.Event] = None,
         post_handoff_expected_free_gb: Optional[dict[int, float]] = None,
@@ -1999,7 +2002,7 @@ class InferenceOrchestrator:
                 "mlx_parallel_mode": ("tensor" if tensor_parallel else "pipeline")
                 if mlx_distributed
                 else None,
-                "mlx_kv_bits": mlx_kv_bits,
+                "mlx_kv_quant": mlx_kv_quant,
                 "chat_template_override": chat_template_override,
                 # Read in the worker, which hides the accelerators before detection.
                 "audio_device": audio_device,
