@@ -1147,7 +1147,9 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
         cache_implementation = None
         dynamic_implementation = _dynamic_cache_choice(kwargs)
 
-    compile_decode = cache_implementation == "static" and not force_dynamic_cache and _compiles_decode(self)
+    compile_decode = (
+        cache_implementation == "static" and not force_dynamic_cache and _compiles_decode(self)
+    )
     compile_config = _decode_compile_config if compile_decode else _compile_config
     if "generation_config" in kwargs:
         kwargs["generation_config"].cache_implementation = (
