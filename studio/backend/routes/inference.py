@@ -16933,16 +16933,18 @@ async def _load_model_impl(
 
         # Mark the load and refuse one the download manager already owns BEFORE the eviction below: this 409 leaves nothing
         # loaded. It runs after argument inheritance, since a carried --no-mmproj changes the companion requirement.
-        if config.is_gguf and config.gguf_hf_repo:
+        # A refused repo's downloaded copy loads as a file, from that repo's cache all the same.
+        interlock_repo = config.gguf_hf_repo or getattr(config, "gguf_cache_repo", None)
+        if config.is_gguf and interlock_repo:
             from core.inference.llama_cpp import gguf_load_in_flight
 
-            gguf_load_stack.enter_context(gguf_load_in_flight(config.gguf_hf_repo))
+            gguf_load_stack.enter_context(gguf_load_in_flight(interlock_repo))
 
             from core.inference.llama_cpp import _hub_download_blocks_gguf_load
 
             if await asyncio.to_thread(
                 _hub_download_blocks_gguf_load,
-                config.gguf_hf_repo,
+                interlock_repo,
                 config.gguf_variant,
                 # Same predicate as the marker's own check, and as the loader's
                 # download gate: the projector is fetched whenever the repo ships one

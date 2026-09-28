@@ -361,3 +361,44 @@ def test_a_repo_not_named_gguf_still_runs_its_downloaded_gguf(monkeypatch, _isol
     config, rejections = _load(gguf_variant = VARIANT, owner_session = True)
     assert Path(config.gguf_file) == snapshot / GGUF
     assert rejections.served_from_cache == [REPO]
+
+
+def test_auto_selection_finds_a_complete_variant_in_an_older_snapshot(monkeypatch, _isolated):
+    # The newest snapshot holds only an interrupted UD-Q4_K_XL; an older one a complete Q8_0.
+    import os
+
+    older = _download(_isolated, "Qwen3-0.6B-Q8_0.gguf")
+    newer = older.parent / ("b" * 40)
+    (newer / VARIANT).mkdir(parents = True)
+    (newer / VARIANT / f"Qwen3-0.6B-{VARIANT}-00001-of-00002.gguf").write_bytes(
+        b"GGUF" + b"\0" * 64
+    )
+    (older.parent.parent / "refs" / "main").write_text("b" * 40)
+    os.utime(older, (1_000_000_000, 1_000_000_000))
+    _refuse(monkeypatch)
+    config, rejections = _load(owner_session = True)
+    assert Path(config.gguf_file) == older / "Qwen3-0.6B-Q8_0.gguf"
+    assert config.gguf_variant == "Q8_0"
+    assert rejections.served_from_cache == [REPO]
+
+
+def test_the_downloaded_copy_keeps_its_repo_for_the_download_interlock(monkeypatch, _isolated):
+    # Not gguf_hf_repo (that would fetch from the Hub), but /load's marker and 409 need the repo.
+    _download(_isolated, GGUF)
+    _refuse(monkeypatch)
+    config, _ = _load(gguf_variant = VARIANT, owner_session = True)
+    assert config.gguf_hf_repo is None
+    assert config.gguf_cache_repo == REPO
+
+
+def test_a_missing_llama_server_fails_before_the_cached_copy_is_returned(monkeypatch, _isolated):
+    # /load must not unload the resident model for a launch that cannot start.
+    _download(_isolated, GGUF)
+    _refuse(monkeypatch)
+    monkeypatch.setattr(
+        llama_cpp.LlamaCppBackend,
+        "_find_llama_server_binary",
+        staticmethod(lambda *, include_denied = False: None),
+    )
+    with pytest.raises(llama_cpp.LlamaServerNotFoundError):
+        _load(gguf_variant = VARIANT, owner_session = True)

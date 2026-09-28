@@ -3362,8 +3362,10 @@ def _detect_gguf_from_hf_cache(repo_id: str) -> Optional[str]:
     return _pick_best_gguf(rel_files) if rel_files else None
 
 
-def _hf_cache_main_gguf_files(repo_id: str) -> list[str]:
-    """Main GGUF paths of the first cached snapshot of *repo_id* that holds any."""
+def _hf_cache_main_gguf_files(repo_id: str, *, every_snapshot: bool = False) -> list[str]:
+    """Main GGUF paths of the first cached snapshot of *repo_id* that holds any, or with
+    *every_snapshot* of all of them (newest first, each path once)."""
+    found: list[str] = []
     for snap in _iter_hf_cache_snapshots(repo_id):
         rel_files = []
         for f in _iter_gguf_files(snap, recursive = True):
@@ -3377,9 +3379,10 @@ def _hf_cache_main_gguf_files(repo_id: str) -> list[str]:
             ):
                 continue
             rel_files.append(rel)
-        if rel_files:
+        if rel_files and not every_snapshot:
             return rel_files
-    return []
+        found += [rel for rel in rel_files if rel not in found]
+    return found
 
 
 class GgufRepoUnreadableError(ValueError):
@@ -3491,8 +3494,8 @@ def _refused_repo_cached_gguf(
         local_file = cached_gguf_for_load(repo_id, gguf_variant, strict = True)
         return (local_file, gguf_variant) if local_file else None
     # Auto: the preferred variant first, then the next one down, so an interrupted Q8 beside
-    # a complete Q4 still serves the Q4.
-    remaining = _hf_cache_main_gguf_files(repo_id)
+    # a complete Q4 still serves the Q4. Every snapshot: the complete one can be older.
+    remaining = _hf_cache_main_gguf_files(repo_id, every_snapshot = True)
     while remaining:
         best = _pick_best_gguf(remaining)
         if not best:
@@ -4206,6 +4209,9 @@ class ModelConfig:
     gguf_hf_repo: Optional[str] = (
         None  # HF repo ID for -hf mode (e.g. "unsloth/gemma-3-4b-it-GGUF")
     )
+    # The HF repo a local GGUF was resolved from while the Hub refused it: the load runs the
+    # file, but the repo's download interlock still applies.
+    gguf_cache_repo: Optional[str] = None
     gguf_variant: Optional[str] = None  # Quantization variant (e.g. "Q4_K_M")
     base_model: Optional[str] = None  # Base model (for LoRAs)
 
@@ -4489,11 +4495,22 @@ class ModelConfig:
                         mmproj_accept = mmproj_accept,
                     )
                     if local_config is not None and local_config.is_gguf:
+                        # The remote branch's preflight: /load must not unload the resident
+                        # model for a launch that cannot start.
+                        from core.inference.llama_cpp import (
+                            LLAMA_SERVER_NOT_FOUND_DETAIL,
+                            LlamaCppBackend,
+                            LlamaServerNotFoundError,
+                        )
+
+                        if not LlamaCppBackend._find_llama_server_binary(include_denied = True):
+                            raise LlamaServerNotFoundError(LLAMA_SERVER_NOT_FOUND_DETAIL)
                         token_rejections.served_from_cache.append(identifier)
                         return _dataclass_replace(
                             local_config,
                             identifier = identifier,
                             display_name = f"{identifier.split('/')[-1]} ({cached_variant})",
+                            gguf_cache_repo = identifier,
                         )
             if not gguf_filename and _looks_like_gguf_repo(identifier, gguf_variant):
                 if detect_failures:
