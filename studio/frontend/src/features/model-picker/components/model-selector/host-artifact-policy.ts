@@ -26,15 +26,11 @@ export function classifyHost({
   denseQuantSupported?: boolean;
 }): HostClass {
   const backend = (deviceBackend ?? "").trim().toLowerCase();
-  // A resolved accelerated backend outranks the OS: no Mac reports one (hardware.py's
-  // DeviceType is {cuda, xpu, mlx, cpu}, plus "rocm" under IS_ROCM), while deviceType may
-  // still be the BROWSER's platform until an authenticated reply carries device_type
-  // (config/env.ts). Otherwise a Mac browser would classify a remote CUDA host as gguf-only.
+  // Backend outranks the OS: no Mac reports one of these, but deviceType can be the BROWSER's platform (config/env.ts).
   if (backend && budgetKnown && ACCELERATED_BACKENDS.has(backend)) {
     return denseQuantSupported ? "dense-quant" : "accelerated";
   }
-  // Mac outranks the rest of the backend string: no Mac can place a Modular Diffusers
-  // workflow, which needs mem_get_info that torch.mps does not expose, so video.py refuses.
+  // No Mac can place a Modular Diffusers workflow: it needs mem_get_info, which torch.mps lacks.
   if (deviceType === "mac") return "gguf-only";
   if (!(backend && budgetKnown)) return "unknown";
   if (GGUF_ONLY_BACKENDS.has(backend)) return "gguf-only";
