@@ -451,7 +451,7 @@ const TurnRail: FC<{ viewportRef: RefObject<HTMLElement | null> }> = ({
           >
             <span
               className={cn(
-                "h-0.5 w-2 rounded-full transition-[width,height,background-color] duration-150 ease-out group-data-[dist=0]:w-8.5 group-data-[dist=1]:w-6 group-data-[dist=2]:w-4 group-data-[dist=3]:w-3 group-data-[hovering]/rail:h-[1.5px] motion-reduce:transition-none",
+                "h-0.5 w-2 rounded-full transition-[width,height,background-color] duration-150 ease-out group-data-[dist=0]:w-5 group-data-[dist=1]:w-4 group-data-[dist=2]:w-3 group-data-[dist=3]:w-2.5 group-data-[hovering]/rail:h-[1.5px] motion-reduce:transition-none",
                 isPinned
                   ? "bg-primary"
                   : "bg-muted-foreground/40 group-data-[dist=0]:bg-foreground",
@@ -480,7 +480,7 @@ const TurnRail: FC<{ viewportRef: RefObject<HTMLElement | null> }> = ({
         // markers shrink to fit the cap before the rail has to scroll
         style={{ height: `min(${openerIds.length * 0.75 + 0.5}rem, 40dvh)` }}
         onKeyDown={onRailKeyDown}
-        className="aui-turn-navigator group/rail pointer-events-auto absolute top-0 right-[-1.125rem] flex w-12 -translate-y-1/2 flex-col overflow-y-auto py-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+        className="aui-turn-navigator group/rail pointer-events-auto absolute top-0 right-[-1.125rem] flex w-8 -translate-y-1/2 flex-col overflow-y-auto py-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
       >
         {markers}
       </nav>
@@ -490,7 +490,7 @@ const TurnRail: FC<{ viewportRef: RefObject<HTMLElement | null> }> = ({
           style={{ top: preview.markerTop }}
           onPointerEnter={cancelHide}
           onPointerLeave={hidePreview}
-          className="aui-turn-preview pointer-events-auto absolute right-9.5 flex w-84 -translate-y-1/2 flex-col gap-1.5 rounded-2xl border border-sidebar-border bg-sidebar py-3 pr-2.5 pl-4 text-sidebar-foreground text-ui-13 shadow-md"
+          className="aui-turn-preview pointer-events-auto absolute right-6 flex w-84 -translate-y-1/2 flex-col gap-1.5 rounded-2xl border border-sidebar-border bg-sidebar py-3 pr-2.5 pl-4 text-sidebar-foreground text-ui-13 shadow-md"
         >
           <div className="flex items-center gap-2">
             <p className="min-w-0 flex-1 truncate font-medium text-ui-13p5">
