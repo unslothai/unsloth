@@ -70,6 +70,9 @@ assert_eq "extra-only torch is no evidence" "no" "$(_cu130_torch213_route "$CU13
 export UNSLOTH_PYPI_JSON_URL="http://127.0.0.1:9/unreachable"
 assert_eq "unreachable index keeps the old window" "no" "$(_cu130_torch213_route "$CU130")"
 _pypi_fixture "torch<2.15.0,>=2.4.0"
+assert_eq "UV_EXCLUDE_NEWER keeps the old window" "no" "$(UV_EXCLUDE_NEWER=2026-06-01T00:00:00Z _cu130_torch213_route "$CU130")"
+assert_eq "UV_EXCLUDE_NEWER_PACKAGE keeps the old window" "no" "$(UV_EXCLUDE_NEWER_PACKAGE=unsloth=2026-06-01T00:00:00Z _cu130_torch213_route "$CU130")"
+assert_eq "empty cutoff is no cutoff" "yes" "$(UV_EXCLUDE_NEWER= _cu130_torch213_route "$CU130")"
 
 echo "=== preservation never waits on PyPI ==="
 # Runs install.sh's own block: an existing 2.13 install re-run while PyPI is unreachable or

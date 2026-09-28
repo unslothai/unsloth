@@ -5921,8 +5921,13 @@ _cu130_torch213_platform() {
 }
 
 # "yes" only when the newest unsloth on PyPI admits torch $1: `studio update` runs the INSTALLED release's setup,
-# which re-resolves under its own cap and would downgrade a newer torch. Any failure answers "no".
+# which re-resolves under its own cap and would downgrade a newer torch. Any failure answers "no", as does a uv
+# upload-date cutoff: "newest on PyPI" is then not what uv may pick.
 _pypi_unsloth_admits_torch() {
+    if [ -n "${UV_EXCLUDE_NEWER:-}" ] || [ -n "${UV_EXCLUDE_NEWER_PACKAGE:-}" ]; then
+        echo "no"
+        return
+    fi
     _pua_url="${UNSLOTH_PYPI_JSON_URL:-https://pypi.org/pypi/unsloth/json}"
     _pua_out=$(_run_bounded --secs 20 "$VENV_DIR/bin/python" - "$_pua_url" "$1" 2>/dev/null <<'PY' || true
 import json, re, sys, urllib.request
