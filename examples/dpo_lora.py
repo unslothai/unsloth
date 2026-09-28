@@ -63,7 +63,6 @@ def main() -> None:
         train_dataset = dataset,
         args = DPOConfig(
             max_length = MAX_SEQ_LENGTH,
-            max_prompt_length = 64,
             per_device_train_batch_size = 2,
             max_steps = MAX_STEPS,
             learning_rate = 5e-6,

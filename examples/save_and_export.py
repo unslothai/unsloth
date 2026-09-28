@@ -143,6 +143,7 @@ def main() -> None:
             out = merged_model.generate(**inputs, max_new_tokens = 32, do_sample = False)
             text = merged_tokenizer.decode(out[0], skip_special_tokens = True)
             infer_ok = PHRASE in text
+            print(f"[INFO] Generated text: {text[:200]!r}")
             print(f"[INFO] Merged model reproduces trained phrase: {infer_ok}")
             check(
                 infer_ok,
@@ -156,7 +157,7 @@ def main() -> None:
             gguf_dir = os.path.join(out_dir, "gguf")
             try:
                 merged_model.save_pretrained_gguf(
-                    gguf_dir, merged_tokenizer, quantization_method = "q8_0"
+                    gguf_dir, merged_tokenizer, quantization_method = "q4_k_m"
                 )
                 if glob.glob(os.path.join(out_dir, "**", "*.gguf"), recursive = True):
                     done.append("exported to GGUF")

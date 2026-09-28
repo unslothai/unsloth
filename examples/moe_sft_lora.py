@@ -20,13 +20,13 @@ from trl import SFTConfig, SFTTrainer
 import torch
 
 
-MODEL = "allenai/OLMoE-1B-7B-0924-Instruct"
+MODEL = "trl-internal-testing/tiny-Qwen3MoeForCausalLM"
 MAX_SEQ_LENGTH = 256
 LORA_RANK = 8
 MAX_STEPS = 3
 MAX_GRAD_NORM = 1e3
 SEED = 42
-TARGET_MODULES = ["q_proj", "k_proj", "v_proj", "o_proj"]
+TARGET_MODULES = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_up_proj", "down_proj"]
 
 QUESTIONS = ["What is 2+2?", "Capital of France?", "Is the sky blue?", "Hello"]
 ANSWERS = ["It is 4.", "Paris.", "Yes, it is blue.", "Hello, how can I help you?"]

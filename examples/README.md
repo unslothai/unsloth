@@ -1,4 +1,4 @@
-## Examples
+# Examples
 
 A collection of lightweight end-to-end scripts to quickly verify that Unsloth works on your device.
 Each example is a single self-contained Python script that uses a tiny model and a minimal number of steps, and prints a clear `[PASS]`, `[FAIL]`, or `[SKIP]` at the end.
@@ -13,7 +13,7 @@ Each example is a single self-contained Python script that uses a tiny model and
 | `grpo_fast_inference.py` | `unsloth/Qwen3-0.6B` | GRPO with `fast_inference=True` (vLLM rollout) |
 | `save_and_export.py` | `unsloth/Qwen3-0.6B` | Merge LoRA adapter, verify inference, export to GGUF |
 | `vision_sft_lora.py` | `unsloth/Qwen3.5-0.8B` | Vision LoRA SFT with `FastVisionModel` |
-| `moe_sft_lora.py` | `allenai/OLMoE-1B-7B-0924-Instruct` | MoE LoRA SFT with `FastModel` and `SFTTrainer` |
+| `moe_sft_lora.py` | `trl-internal-testing/tiny-Qwen3MoeForCausalLM` | MoE LoRA SFT with `FastModel` and `SFTTrainer` |
 
 ## Success Criteria
 
@@ -32,7 +32,7 @@ Examples require a GPU to run.
 Some scripts have optional dependencies:
 - `sft_qlora.py` — requires `bitsandbytes`
 - `grpo_fast_inference.py` — requires `vllm`
-- `save_and_export.py` — GGUF export requires a `llama-quantize` build (Unsloth will try to install it)
+- `save_and_export.py` — GGUF export requires a `llama-quantize` build (Unsloth will try to install it, and only the GGUF step is skipped if unavailable)
 
 Scripts skip cleanly with a `[SKIP]` message if a dependency is not available.
 
