@@ -323,22 +323,25 @@ try {
 $savedEnv = Save-Env @("OS")
 try {
     $env:OS = "Windows_NT"
+    # The tools are reached by their System32 path, so the label is stubbed at that call: the real
+    # icacls cannot raise a label from a standard account, which would skip the check under test.
     function Test-StudioChildScriptDirectoryElevated { return $false }
+    function Get-StudioSystem32Tool { param([string]$Name) return "C:\Windows\System32\$Name" }
+    function Invoke-StudioSystem32ToolBounded { param([string]$Exe, [string[]]$Arguments, [int]$TimeoutMs) return @{ Output = ""; ExitCode = 0 } }
     function Get-ChildItem { param($LiteralPath, [switch]$Force, $ErrorAction) return @([pscustomobject]@{ Name = "early.py" }) }
-    function icacls.exe { $global:LASTEXITCODE = 0 }
     Check "a directory with something already in it is refused" ([string]::IsNullOrWhiteSpace((New-StudioChildScriptDirectory)))
 } finally {
-    Remove-Item Function:Get-ChildItem, Function:icacls.exe -ErrorAction SilentlyContinue
+    Remove-Item Function:Get-ChildItem -ErrorAction SilentlyContinue
     foreach ($part in $setupParts[5..12]) { Invoke-Expression $part }
     Restore-Env $savedEnv
 }
 
-# With whoami absent the answer has to be "elevated", not "not elevated".
-$savedEnv = Save-Env @("PATH")
+# With whoami absent the answer has to be "elevated", not "not elevated". It is looked up in System32,
+# never on PATH, so the lookup itself is what goes missing here.
 try {
-    $env:PATH = ""
+    function Get-StudioSystem32Tool { param([string]$Name) return "" }
     Check "an unreadable token reads as elevated" ((Test-StudioChildScriptDirectoryElevated) -eq $true)
-} finally { Restore-Env $savedEnv }
+} finally { Invoke-Expression $setupParts[7] }
 
 $madeDir = New-StudioChildScriptDirectory
 Check "the directory is created" (-not [string]::IsNullOrWhiteSpace($madeDir))
