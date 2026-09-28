@@ -33,6 +33,14 @@ from transformers import AutoConfig
 from transformers import __version__ as transformers_version
 from peft import PeftConfig, PeftModel
 from .grouped_linear_lora import register_grouped_linear_lora_for_adapter
+from .fp8_to_nf4 import track_explicit_4bit_request
+from .mistral_format import (
+    MistralFormatRedirect,
+    is_mistral_format_view,
+    mistral_format_conversions_active,
+    mistral_format_redirect,
+    prepare_mistral_format_checkpoint,
+)
 from .loader_utils import (
     DEFAULT_DEVICE_MAP,
     OFFLOAD_EMBEDDING_AUTO,
@@ -321,6 +329,29 @@ def _is_mistral_format_checkpoint(
         return has("params.json") and not has("config.json") and any(has(m) for m in markers)
     except Exception:
         return False
+
+
+def _adapter_base_is_mistral_format(
+    model_name,
+    token,
+    revision,
+    local_files_only,
+    cache_dir = None,
+):
+    # A cached config.json settles it without a Hub request (most adapter bases).
+    if not os.path.isdir(model_name):
+        try:
+            from huggingface_hub import try_to_load_from_cache
+            if isinstance(
+                try_to_load_from_cache(
+                    model_name, "config.json", revision = revision, cache_dir = cache_dir
+                ),
+                str,
+            ):
+                return False
+        except Exception:
+            pass
+    return _is_mistral_format_checkpoint(model_name, token, revision, local_files_only)
 
 
 def _mistral_format_error(model_name):
@@ -700,6 +731,8 @@ def _fix_rope_inv_freq(model):
 class FastLanguageModel(FastLlamaModel):
     @staticmethod
     @_offline_aware_load
+    @mistral_format_redirect
+    @track_explicit_4bit_request
     def from_pretrained(
         model_name = "unsloth/Llama-3.2-1B-Instruct",
         max_seq_length = 2048,
@@ -1050,6 +1083,18 @@ class FastLanguageModel(FastLlamaModel):
                     f"to obtain the latest transformers build, then restart this session."
                 )
             if _is_mistral_format_checkpoint(model_name, token, base_revision, local_files_only):
+                # Known architectures load via a translated view; others keep the error.
+                _view = prepare_mistral_format_checkpoint(
+                    model_name,
+                    token,
+                    base_revision,
+                    local_files_only,
+                    cache_dir = kwargs.get("cache_dir", None),
+                )
+                if _view is not None:
+                    if not was_disabled:
+                        enable_progress_bars()
+                    raise MistralFormatRedirect(_view, model_name)
                 raise RuntimeError(_mistral_format_error(model_name)) from autoconfig_exc
             combined_error = (
                 "Unsloth: Failed to load model. Both AutoConfig and PeftConfig loading failed.\n\n"
@@ -1130,6 +1175,18 @@ class FastLanguageModel(FastLlamaModel):
                 load_in_8bit = False
                 load_in_fp8 = False
                 load_in_16bit = True
+            # After the -bf16 rule: the view path no longer carries the source's suffix.
+            # No revision: the caller's ref names the adapter repo, and the base loads unpinned below.
+            _cache_dir = kwargs.get("cache_dir", None)
+            if _adapter_base_is_mistral_format(
+                model_name, token, None, local_files_only, _cache_dir
+            ):
+                model_name = (
+                    prepare_mistral_format_checkpoint(
+                        model_name, token, None, local_files_only, cache_dir = _cache_dir
+                    )
+                    or model_name
+                )
 
             model_config = AutoConfig.from_pretrained(
                 model_name,
@@ -1141,6 +1198,9 @@ class FastLanguageModel(FastLlamaModel):
 
         if not was_disabled:
             enable_progress_bars()
+        # A view, or an adapter trained on one, still names Mistral's tensors.
+        if is_mistral_format_view(model_name) and not mistral_format_conversions_active():
+            raise MistralFormatRedirect(None, model_name)
 
         if check_precision_flags and _precision_flags_conflict(
             load_in_4bit, load_in_8bit, load_in_16bit, load_in_fp8
@@ -1503,6 +1563,8 @@ class FastModel(FastBaseModel):
 
     @staticmethod
     @_offline_aware_load
+    @mistral_format_redirect
+    @track_explicit_4bit_request
     def from_pretrained(
         model_name = "unsloth/Llama-3.2-11B-Vision-Instruct-bnb-4bit",
         max_seq_length = 2048,
@@ -1867,6 +1929,18 @@ class FastModel(FastBaseModel):
                     f"to obtain the latest transformers build, then restart this session."
                 )
             if _is_mistral_format_checkpoint(model_name, token, base_revision, local_files_only):
+                # Known architectures load via a translated view; others keep the error.
+                _view = prepare_mistral_format_checkpoint(
+                    model_name,
+                    token,
+                    base_revision,
+                    local_files_only,
+                    cache_dir = kwargs.get("cache_dir", None),
+                )
+                if _view is not None:
+                    if not was_disabled:
+                        enable_progress_bars()
+                    raise MistralFormatRedirect(_view, model_name)
                 raise RuntimeError(_mistral_format_error(model_name)) from autoconfig_exc
             combined_error = (
                 "Unsloth: Failed to load model. Both AutoConfig and PeftConfig loading failed.\n\n"
@@ -2083,6 +2157,18 @@ class FastModel(FastBaseModel):
                 load_in_8bit = False
                 load_in_fp8 = False
                 load_in_16bit = True
+            # After the -bf16 rule: the view path no longer carries the source's suffix.
+            # No revision: the caller's ref names the adapter repo, and the base loads unpinned below.
+            _cache_dir = kwargs.get("cache_dir", None)
+            if _adapter_base_is_mistral_format(
+                model_name, token, None, local_files_only, _cache_dir
+            ):
+                model_name = (
+                    prepare_mistral_format_checkpoint(
+                        model_name, token, None, local_files_only, cache_dir = _cache_dir
+                    )
+                    or model_name
+                )
 
             if user_config is not None:
                 model_config = user_config
@@ -2097,6 +2183,9 @@ class FastModel(FastBaseModel):
 
         if not was_disabled:
             enable_progress_bars()
+        # A view, or an adapter trained on one, still names Mistral's tensors.
+        if is_mistral_format_view(model_name) and not mistral_format_conversions_active():
+            raise MistralFormatRedirect(None, model_name)
 
         do_logging = os.environ.get("UNSLOTH_ENABLE_LOGGING", "0") == "1"
         if do_logging:

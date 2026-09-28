@@ -18,11 +18,16 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-from core._torchao_stub import install_torchao_windows_rocm_stub
+from core._torchao_stub import (
+    install_torchao_windows_rocm_real_or_stub,
+    install_torchao_windows_rocm_stub,
+)
 
 _BACKEND = Path(__file__).resolve().parent.parent  # studio/backend
 _CORE = _BACKEND / "core"
 _STUB = install_torchao_windows_rocm_stub.__name__  # a rename breaks the import loudly
+# The export worker loads real torchao when it can, falling back to the same stub.
+_REAL_OR_STUB = install_torchao_windows_rocm_real_or_stub.__name__
 
 _ENTRYPOINTS = [
     _CORE / "training" / "worker.py",
@@ -37,7 +42,9 @@ def _stub_call_linenos(node) -> list[int]:
     return [
         c.lineno
         for c in ast.walk(node)
-        if isinstance(c, ast.Call) and isinstance(c.func, ast.Name) and c.func.id == _STUB
+        if isinstance(c, ast.Call)
+        and isinstance(c.func, ast.Name)
+        and c.func.id in (_STUB, _REAL_OR_STUB)
     ]
 
 

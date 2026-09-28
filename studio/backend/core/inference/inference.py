@@ -72,6 +72,11 @@ from utils.gpu_memory_events import invalidates_gpu_memory as _invalidates_gpu_m
 logger = get_logger(__name__)
 
 
+def _load_in_4bit_kwargs(load_in_4bit: bool) -> dict:
+    # True is the loaders' default; passing it reads as an explicit request to requantize fp8 checkpoints to NF4.
+    return {} if load_in_4bit else {"load_in_4bit": False}
+
+
 def _hf_token_for_loader(hf_token: Optional[str] | bool) -> Optional[str] | bool:
     if hf_token is False:
         return False
@@ -880,7 +885,7 @@ class InferenceBackend:
                     model_name = load_path,
                     max_seq_length = max_seq_length,
                     dtype = dtype,
-                    load_in_4bit = load_in_4bit,
+                    **_load_in_4bit_kwargs(load_in_4bit),
                     device_map = device_map,
                     token = _hf_token_for_loader(hf_token),
                     trust_remote_code = trust_remote_code,
@@ -929,7 +934,7 @@ class InferenceBackend:
                     model_name = load_path,
                     max_seq_length = max_seq_length,
                     dtype = dtype,
-                    load_in_4bit = load_in_4bit,
+                    **_load_in_4bit_kwargs(load_in_4bit),
                     device_map = device_map,
                     token = _hf_token_for_loader(hf_token),
                     trust_remote_code = trust_remote_code,

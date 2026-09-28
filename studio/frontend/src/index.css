@@ -4511,6 +4511,14 @@ html[data-chat-font] .aui-root {
 	min-width: 0;
 }
 
+/* A load failure carries a real diagnostic: a summary line, the runner's output, and the
+   path of the log it came from. Default `white-space: normal` collapsed every newline to
+   a space, so the structure the backend built was destroyed on the way to the reader. */
+[data-sonner-toast][data-styled='true'] [data-title],
+[data-sonner-toast][data-styled='true'] [data-description] {
+	white-space: pre-wrap;
+}
+
 [data-sonner-toast][data-styled='true']:has([data-button]) {
 	display: grid !important;
 	grid-template-columns: minmax(0, 1fr);
@@ -4800,6 +4808,30 @@ html.force-reduced-motion .sidebar-section-drop-line {
 			font-size: max(16px, 1rem * var(--ui-font-scale, 1)) !important;
 		}
 	}
+}
+
+/* Images prompt boxes: inset the scroll track so the thumb stays inside the
+   rounded corners. Chromium ignores ::-webkit-scrollbar while scrollbar-width
+   or scrollbar-color is set, so reset them. */
+@supports selector(::-webkit-scrollbar) {
+	.image-prompt-box,
+	.dark .image-prompt-box {
+		scrollbar-width: auto;
+		scrollbar-color: auto;
+	}
+}
+
+.image-prompt-box::-webkit-scrollbar {
+	width: 12px;
+}
+
+.image-prompt-box::-webkit-scrollbar-track {
+	margin-block: 12px;
+}
+
+.image-prompt-box::-webkit-scrollbar-thumb {
+	border: 4px solid transparent;
+	background-clip: padding-box;
 }
 
 /* Composer textarea: keep the scroll thumb faint until the user hovers or
