@@ -516,6 +516,10 @@ class InferenceOrchestrator:
     def effective_parallel_slots(self) -> int:
         from core.inference.llama_server_args import PARALLEL_DEFAULT
 
+        # A managed engine yields plain text, not the (row, text) events a batch drain reads, so
+        # n > 1 is served one choice at a time.
+        if getattr(self, "_managed_engine", None) is not None:
+            return 1
         entry = self.models.get(self.active_model_name or "") or {}
         slots = entry.get("parallel_slots")
         return slots if isinstance(slots, int) and slots > 0 else PARALLEL_DEFAULT
@@ -2296,7 +2300,9 @@ class InferenceOrchestrator:
     def reap_dead_managed_engine(self):
         with self._subprocess_shutdown_lock:
             managed = getattr(self, "_managed_engine", None)
-            if managed is not None and self.active_model_name and not managed.alive():
+            # A cancelled load whose stop timed out keeps its handle with no active model name.
+            settled = self.active_model_name or not self.loading_models
+            if managed is not None and settled and not managed.alive():
                 self._shutdown_subprocess()
 
     def _load_managed_engine(

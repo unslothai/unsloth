@@ -467,3 +467,36 @@ def test_managed_route_never_forwards_a_bare_image_path(native):
         if part.get("type") == "image_url"
     ]
     assert urls and all(url.startswith("data:") for url in urls)
+
+
+def test_managed_engine_serves_multiple_choices_one_at_a_time():
+    # The non-streaming n > 1 route batches when slots > 1, and a managed engine yields plain
+    # text rather than the (row, text) events the batch drain unpacks.
+    from core.inference.orchestrator import InferenceOrchestrator
+
+    backend = InferenceOrchestrator.__new__(InferenceOrchestrator)
+    backend.models = {"m": {"parallel_slots": 4}}
+    backend.active_model_name = "m"
+    backend._managed_engine = None
+    assert backend.effective_parallel_slots == 4
+    backend._managed_engine = SimpleNamespace(model = "m")
+    assert backend.effective_parallel_slots == 1
+
+
+def test_engine_left_by_a_cancelled_load_is_reaped_once_it_dies():
+    import threading
+
+    from core.inference.orchestrator import InferenceOrchestrator
+
+    backend = InferenceOrchestrator.__new__(InferenceOrchestrator)
+    backend._subprocess_shutdown_lock = threading.RLock()
+    backend._managed_engine = SimpleNamespace(alive = lambda: False)
+    backend.active_model_name = None
+    reaped = []
+    backend._shutdown_subprocess = lambda *a, **k: reaped.append(True)
+    backend.loading_models = {"m"}
+    backend.reap_dead_managed_engine()
+    assert reaped == []  # a load still starting it is not reaped
+    backend.loading_models = set()
+    backend.reap_dead_managed_engine()
+    assert reaped == [True]
