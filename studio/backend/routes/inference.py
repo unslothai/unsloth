@@ -5909,6 +5909,10 @@ async def _select_request_tools(
     # how that server runs.
     if payload.bypass_permissions:
         tools = apply_full_access_tool_descriptions(tools)
+    elif sys.platform == "win32":
+        # The isolated Windows Terminal runs cmd, not the host's Git Bash; say so in the schema.
+        from core.inference.tools import apply_terminal_profile_for_request
+        tools = await asyncio.to_thread(apply_terminal_profile_for_request, tools)
     if mcp_allowed:
         tools = tools + await get_enabled_mcp_tools()
     # getattr: callers hand in lighter payload objects than the request models, not all of
@@ -35921,6 +35925,9 @@ async def anthropic_count_tokens(
             # Same schemas /messages renders under Full access, or the count prices a different prompt.
             from core.inference.tools import apply_full_access_tool_descriptions
             openai_tools = apply_full_access_tool_descriptions(openai_tools)
+        elif sys.platform == "win32":
+            from core.inference.tools import apply_terminal_profile_for_request
+            openai_tools = await asyncio.to_thread(apply_terminal_profile_for_request, openai_tools)
         _count_nudge = _build_tool_action_nudge(
             tools = openai_tools,
             model_name = _llama_public_model_id(llama_backend, payload.model),
@@ -36679,6 +36686,9 @@ async def anthropic_messages(
         _full_access = bool(getattr(payload, "bypass_permissions", False))
         if _full_access:
             openai_tools = apply_full_access_tool_descriptions(openai_tools)
+        elif sys.platform == "win32":
+            from core.inference.tools import apply_terminal_profile_for_request
+            openai_tools = await asyncio.to_thread(apply_terminal_profile_for_request, openai_tools)
 
         server_tool_choice = openai_tool_choice
         if isinstance(server_tool_choice, dict):

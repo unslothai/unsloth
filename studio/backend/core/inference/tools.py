@@ -1574,13 +1574,14 @@ def _join_escaped_newlines(text: str) -> str:
     return "".join(out)
 
 
-def _find_blocked_commands(command: str) -> set[str]:
+def _find_blocked_commands(command: str, posix: "bool | None" = None) -> set[str]:
     """Detect blocked commands at shell command position only.
 
     A token is at command position if it is the first token, or follows a shell separator /
     brace-group opener / new-command keyword, or a command-prefix wrapper like `env` / `time` /
     `xargs`. Tokens in argument position pass through. Also scans `find ... -exec CMD` and recurses
-    into bash -c / cmd /c.
+    into bash -c / cmd /c. ``posix`` names the dialect of the shell that will run the command; None
+    keeps the host default (_shell_is_posix).
     """
     blocked: set[str] = set()
 
@@ -1599,7 +1600,7 @@ def _find_blocked_commands(command: str) -> set[str]:
     # rm -rf x` and at a line break. Keyed to the shell that will actually run this, not to the OS: on a Windows host
     # with bash the non-posix lexer never split on `;`, so `if true; then rm -rf x; fi` came back with nothing
     # blocked.
-    lexed_posix = _shell_is_posix()
+    lexed_posix = _shell_is_posix() if posix is None else posix
     try:
         if not lexed_posix:
             tokens = shlex.split(command, posix = False)
@@ -1776,7 +1777,7 @@ def _find_blocked_commands(command: str) -> set[str]:
                 break
             _name, _sep, _value = nxt.partition("=")
             if _sep and _value:
-                blocked |= _find_blocked_commands(_value)
+                blocked |= _find_blocked_commands(_value, posix = posix)
 
     # find's `-exec`/`-execdir` and fd's `-x` / `-X` / `--exec` / `--exec-batch` all invoke CMD directly. Reading only
     # find's own flags left every fd form unscanned, so `fd -x rm -rf x` reached the hard blocklist as nothing at all.
@@ -1969,14 +1970,14 @@ def _find_blocked_commands(command: str) -> set[str]:
                 continue  # skip Windows switches like /s, /q, /v:on
             prev_base = os.path.basename(prev).lower()
             if is_unix_c and prev_base in _SHELLS:
-                blocked |= _find_blocked_commands(tokens[i + 1])
+                blocked |= _find_blocked_commands(tokens[i + 1], posix = posix)
             elif is_win_c and prev_base in _SHELLS_WIN:
                 # The cmd lexer keeps the marks, so `cmd /c "powershell ls"` would recurse on a first word of
                 # `"powershell` and match nothing.
                 payload = tokens[i + 1]
                 if len(payload) > 1 and payload[0] == '"' and payload[-1] == '"':
                     payload = payload[1:-1]
-                blocked |= _find_blocked_commands(payload)
+                blocked |= _find_blocked_commands(payload, posix = posix)
             break  # stop at first non-flag token
 
     # `cmd /c start "" prog` puts prog in a command position the scan above sees only as an argument, so screen what
@@ -1993,14 +1994,14 @@ def _find_blocked_commands(command: str) -> set[str]:
         # runnable; deciding whether `start` itself is executed is deliberately not attempted, since every local
         # approximation under-approximated.
         if j < len(tokens):
-            blocked |= _find_blocked_commands(tokens[j])
+            blocked |= _find_blocked_commands(tokens[j], posix = posix)
         if j + 1 < len(tokens) and _is_start_title(tokens[j]):
             k = j + 1
             # `start "my window" /min prog` puts switches after the title too.
             while k < len(tokens) and _win_switch(tokens[k].lower()) in _START_SWITCHES:
                 k += 2 if _win_switch(tokens[k].lower()) in _START_SWITCHES_WITH_VALUE else 1
             if k < len(tokens):
-                blocked |= _find_blocked_commands(tokens[k])
+                blocked |= _find_blocked_commands(tokens[k], posix = posix)
 
     # sed's `e COMMAND` hands COMMAND to the shell, a real command position the scan above sees only as a text
     # argument, so screen it like `bash -c`. The pattern-space forms yield an empty payload; the auto gate prompts on
@@ -2050,7 +2051,7 @@ def _find_blocked_commands(command: str) -> set[str]:
             for variant in _sed_program_variants(alternative, sed_vars or {}):
                 for payload in _sed_exec_payloads(variant):
                     if payload:
-                        blocked |= _find_blocked_commands(payload)
+                        blocked |= _find_blocked_commands(payload, posix = posix)
 
     return blocked
 
@@ -9186,7 +9187,22 @@ def _reusable_sandbox_temp_dir(temp_dir: str, workdir: str) -> bool:
     return _is_sandbox_temp_dir(temp_dir, workdir) and os.access(temp_dir, os.W_OK | os.X_OK)
 
 
-def _build_safe_env(workdir: str) -> dict[str, str]:
+# Git for Windows starts hooks, the pager and the editor through its MSYS sh.exe, which cannot start inside MXC, so a
+# hook turns every commit into a failure and an editor hangs the call. Compatibility defaults, not a boundary: a
+# command can override them with git -c, and MXC is what confines it. core.hooksPath=NUL names no hook at all.
+_ISOLATED_CMD_GIT_ENV = {
+    "GIT_CONFIG_COUNT": "1",
+    "GIT_CONFIG_KEY_0": "core.hooksPath",
+    "GIT_CONFIG_VALUE_0": "NUL",
+    "GIT_PAGER": "",
+    "GIT_EDITOR": "unsloth-no-editor",
+    "GIT_SEQUENCE_EDITOR": "unsloth-no-editor",
+    "GIT_TERMINAL_PROMPT": "0",
+    "GCM_INTERACTIVE": "never",
+}
+
+
+def _build_safe_env(workdir: str, shell: "str | None" = None) -> dict[str, str]:
     """Build a minimal, credential-free environment for sandboxed subprocesses.
 
     Whitelist-built from scratch (parent env NOT inherited): only
@@ -9200,6 +9216,9 @@ def _build_safe_env(workdir: str) -> dict[str, str]:
     pinned. On Windows only, Git-for-Windows install dirs from the host PATH are appended so bare
     ``git`` resolves (#7317). User-writable host PATH entries are never inherited: they could shadow
     auto-safe terminal commands.
+
+    ``shell="cmd_isolated"`` is the Windows MXC Terminal on cmd.exe: Git Bash's userland stays off
+    PATH and git gets the non-interactive settings in _ISOLATED_CMD_GIT_ENV.
     """
     # Start from the running interpreter's dir so 'python'/'pip' resolve to the same environment the Unsloth server
     # runs in.
@@ -9217,7 +9236,8 @@ def _build_safe_env(workdir: str) -> dict[str, str]:
         sysroot = os.environ.get("SystemRoot", r"C:\Windows")
         # Ahead of System32 and its DOS twins (bare `find` would hit FIND.EXE, not GNU find), behind the interpreter
         # dirs so a Git-shipped python.exe cannot shadow the environment this server runs in.
-        path_entries.extend(_windows_bash_userland_dirs())
+        if shell != "cmd_isolated":
+            path_entries.extend(_windows_bash_userland_dirs())
         path_entries.extend([os.path.join(sysroot, "System32"), sysroot])
     else:
         path_entries.extend(["/usr/local/bin", "/usr/bin", "/bin"])
@@ -9268,6 +9288,8 @@ def _build_safe_env(workdir: str) -> dict[str, str]:
         # cmd/CreateProcess search cwd before PATH for bare names; disable so a workdir rg.exe/git.exe cannot shadow
         # auto-approved commands.
         env["NoDefaultCurrentDirectoryInExePath"] = "1"
+        if shell == "cmd_isolated":
+            env.update(_ISOLATED_CMD_GIT_ENV)
     return env
 
 
@@ -9844,6 +9866,55 @@ def _get_shell_cmd(command: str) -> list[str]:
             return [bash, "-c", command]
         return ["cmd", "/c", command]
     return ["bash", "-c", command]
+
+
+def _windows_system_cmd() -> str:
+    """System32 cmd.exe: the one shell the isolated Terminal trusts, never a COMSPEC or PATH lookup."""
+    import ntpath
+    return ntpath.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32", "cmd.exe")
+
+
+def _terminal_profile(disable_sandbox: bool = False) -> str:
+    """Which shell the Terminal runs: "bash", "cmd_isolated" or "cmd_fallback".
+
+    Git Bash cannot start inside MXC (microsoft/mxc#1061), so when the MXC probe names exactly that
+    failure and cmd.exe qualifies instead, Auto runs the Terminal isolated on cmd rather than
+    unsandboxed on bash. Only the MSYS verdict triggers the cmd probe, so hosts without a working MXC
+    pay nothing extra. Full access and UNSLOTH_MXC_TERMINAL_CMD=0 keep the host shell.
+    """
+    if sys.platform != "win32":
+        return "bash"
+    bash = _windows_bash()
+    host_default = "bash" if bash else "cmd_fallback"
+    if disable_sandbox or os.environ.get("UNSLOTH_MXC_TERMINAL_CMD") == "0":
+        return host_default
+    try:
+        from . import mxc_probe
+
+        if bash:
+            verdict = os_sandbox.capability_snapshot(
+                execution_kind = "terminal", selected_executable = bash
+            )
+            if verdict.available or verdict.reason != mxc_probe.MSYS_NAMESPACE_REASON:
+                return "bash"
+        cmd = os_sandbox.capability_snapshot(
+            execution_kind = "terminal", selected_executable = _windows_system_cmd()
+        )
+        return "cmd_isolated" if cmd.available else host_default
+    except Exception as exc:  # noqa: BLE001 - a probe failure must never take the Terminal away
+        logger.warning(f"terminal profile check failed, keeping the host shell: {exc}")
+        return host_default
+
+
+def current_terminal_profile_for_request(bypass: bool) -> str:
+    """The profile a request's Terminal description should advertise; see _terminal_profile."""
+    return _terminal_profile(disable_sandbox = bypass)
+
+
+def apply_terminal_profile_for_request(tools: list[dict]) -> list[dict]:
+    """Sandboxed requests only: advertise the shell _bash_exec will pick for this request. Blocking
+    (it may run the cached MXC probe), so async callers run it in a worker thread."""
+    return apply_terminal_profile_description(tools, current_terminal_profile_for_request(False))
 
 
 def _shell_argv(command: str, workdir: str, confinement) -> "tuple[list[str], str | None]":
@@ -12460,6 +12531,43 @@ TERMINAL_TOOL_FULL_ACCESS = {
         "description": _to_full_access(TERMINAL_TOOL["function"]["description"], "terminal"),
     },
 }
+
+# The isolated Windows Terminal (see _terminal_profile) is cmd.exe inside MXC whatever the host shell is, so it gets
+# its own schema, chosen per request; the module default keeps describing the host shell.
+_ISOLATED_CMD_SHELL_NOTE = (
+    " The shell is cmd, running isolated, not bash: send one command per call, chain with &&, use "
+    "double quotes only, and use relative paths. git works without hooks, a pager or an editor, so "
+    "pass -m to git commit."
+)
+
+TERMINAL_TOOL_CMD_ISOLATED = {
+    "type": "function",
+    "function": {
+        **TERMINAL_TOOL["function"],
+        "description": "Execute a terminal command and return stdout/stderr."
+        + _SANDBOX_PATHS_NOTE
+        + _ISOLATED_CMD_SHELL_NOTE,
+    },
+}
+
+
+def apply_terminal_profile_description(tools: list[dict], profile: str) -> list[dict]:
+    """Swap the terminal schema for the one matching ``profile``. Like
+    apply_full_access_tool_descriptions, the input list is never mutated and a list with nothing to
+    swap is returned as-is; only "cmd_isolated" changes anything."""
+    if not tools or profile != "cmd_isolated":
+        return tools
+    swapped = False
+    out: list[dict] = []
+    for tool in tools:
+        name = (tool.get("function") or {}).get("name") if isinstance(tool, dict) else None
+        if name == "terminal":
+            out.append(TERMINAL_TOOL_CMD_ISOLATED)
+            swapped = True
+        else:
+            out.append(tool)
+    return out if swapped else tools
+
 
 # edit_file is registered below, once its schema exists.
 _FULL_ACCESS_TOOL_BY_NAME = {
@@ -21079,6 +21187,12 @@ def _python_exec(
                 pass
 
 
+_CMD_MULTILINE_REFUSED = (
+    "Execution error: the Terminal runs cmd, which runs only the first line of a multi-line "
+    "command. Send one line per call and chain dependent commands with &&."
+)
+
+
 def _bash_exec(
     command: str,
     cancel_event = None,
@@ -21105,9 +21219,18 @@ def _bash_exec(
     ):
         return _STUDIO_CREDENTIAL_BLOCKED
 
+    # Chosen once, so the blocklist, env and argv all agree on the shell that will run this call.
+    profile = _terminal_profile(disable_sandbox)
+    if profile == "cmd_isolated" and ("\n" in command.strip() or "\r" in command.strip()):
+        return _CMD_MULTILINE_REFUSED
+
     # Block dangerous commands (skipped when the sandbox is disabled)
     if not disable_sandbox:
-        blocked = _find_blocked_commands(command)
+        blocked = (
+            _find_blocked_commands(command, posix = False)
+            if profile == "cmd_isolated"
+            else _find_blocked_commands(command)
+        )
         if blocked:
             # Capped for the same reason the Python analyzer's error is: it lists what it found in the command it was
             # handed.
@@ -21143,7 +21266,11 @@ def _bash_exec(
         # Same pre-run snapshot as _python_exec. A command that writes a file used to produce "(no output)" and no
         # other trace anywhere in the product.
         _before = _snapshot_workdir_files(workdir)
-        safe_env = _build_bypass_env(workdir) if disable_sandbox else _build_safe_env(workdir)
+        safe_env = (
+            _build_bypass_env(workdir)
+            if disable_sandbox
+            else _build_safe_env(workdir, shell = profile if profile == "cmd_isolated" else None)
+        )
         popen_kwargs = dict(
             stdout = subprocess.PIPE,
             stderr = subprocess.STDOUT,
@@ -21158,7 +21285,10 @@ def _bash_exec(
         if sys.platform == "win32":
             popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
 
-        shell_argv, _scratch_name = _shell_argv(command, workdir, confinement)
+        if profile == "cmd_isolated":
+            shell_argv, _scratch_name = [_windows_system_cmd(), "/c", command], None
+        else:
+            shell_argv, _scratch_name = _shell_argv(command, workdir, confinement)
         if _scratch_name:
             with _scratch_lock:
                 _active_scratch.add(_scratch_name)
