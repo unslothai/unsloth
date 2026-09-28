@@ -29,6 +29,7 @@ import tempfile
 from types import SimpleNamespace
 
 import pytest
+from llama_patch_isolation import restore_llama_patches  # noqa: F401
 from real_accelerator import has_real_cuda  # tests/_shared, on sys.path via tests/conftest.py
 import torch
 
@@ -700,6 +701,7 @@ def _tokenizer_free_load(path, root):
     not (HAS_CT and HAS_CONVERTERS), reason = "needs compressed-tensors and the transformers 5 loader"
 )
 @pytest.mark.parametrize("variant", ["symmetric", "asymmetric", "actorder", "int8"])
+@pytest.mark.usefixtures("restore_llama_patches")
 def test_packed_checkpoint_loads_as_linear4bit_bit_identical_to_disk_route(
     variant, tmp_path, monkeypatch
 ):
@@ -734,6 +736,7 @@ def test_packed_checkpoint_loads_as_linear4bit_bit_identical_to_disk_route(
     not (HAS_CT and HAS_CONVERTERS), reason = "needs compressed-tensors and the transformers 5 loader"
 )
 @pytest.mark.parametrize("route", ["nf4", "packed"])
+@pytest.mark.usefixtures("restore_llama_patches")
 def test_packed_checkpoint_trains_with_lora(tmp_path, monkeypatch, route):
     from unsloth import FastLanguageModel
 

@@ -24,6 +24,7 @@ import sys
 
 import pytest
 import torch
+from llama_patch_isolation import restore_llama_patches  # noqa: F401
 from real_accelerator import has_real_cuda  # tests/_shared, on sys.path via tests/conftest.py
 
 import unsloth  # noqa: F401
@@ -176,6 +177,7 @@ def test_jit_launch_fallback_matches_the_compiled_launcher(monkeypatch):
     not (HAS_CT and HAS_CONVERTERS), reason = "needs compressed-tensors and the transformers 5 loader"
 )
 @pytest.mark.parametrize("variant", ["symmetric", "asymmetric", "actorder", "int8"])
+@pytest.mark.usefixtures("restore_llama_patches")
 def test_packed_route_keeps_the_checkpoint_weights_exactly(variant, tmp_path, monkeypatch):
     from unsloth import FastLanguageModel
     from unsloth.models.compressed_tensors_int4 import Int4PackedLinear
@@ -219,6 +221,7 @@ def test_packed_route_keeps_the_checkpoint_weights_exactly(variant, tmp_path, mo
 @pytest.mark.skipif(
     not (HAS_CT and HAS_CONVERTERS), reason = "needs compressed-tensors and the transformers 5 loader"
 )
+@pytest.mark.usefixtures("restore_llama_patches")
 def test_packed_route_lora_trains_merges_and_unmerges(tmp_path, monkeypatch):
     from unsloth import FastLanguageModel
     from unsloth.models.compressed_tensors_int4 import Int4PackedLinear
