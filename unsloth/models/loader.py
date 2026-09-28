@@ -1151,17 +1151,6 @@ class FastLanguageModel(FastLlamaModel):
             # Report the loader decision before fetching this repo, including adapter bases.
             if on_model_resolved is not None:
                 on_model_resolved(model_name)
-            # No revision: the caller's ref names the adapter repo, and the base loads unpinned below.
-            _cache_dir = kwargs.get("cache_dir", None)
-            if _adapter_base_is_mistral_format(
-                model_name, token, None, local_files_only, _cache_dir
-            ):
-                model_name = (
-                    prepare_mistral_format_checkpoint(
-                        model_name, token, None, local_files_only, cache_dir = _cache_dir
-                    )
-                    or model_name
-                )
             # '-bf16' hub repos load bf16; a local dir keeps the requested quant unless 16bit is set. Say so: dropping the flags silently resurfaces as an OOM that never mentions quantization.
             if model_name.lower().endswith("-bf16") and (
                 load_in_16bit or not os.path.isdir(os.path.expanduser(model_name))
@@ -1186,6 +1175,18 @@ class FastLanguageModel(FastLlamaModel):
                 load_in_8bit = False
                 load_in_fp8 = False
                 load_in_16bit = True
+            # After the -bf16 rule: the view path no longer carries the source's suffix.
+            # No revision: the caller's ref names the adapter repo, and the base loads unpinned below.
+            _cache_dir = kwargs.get("cache_dir", None)
+            if _adapter_base_is_mistral_format(
+                model_name, token, None, local_files_only, _cache_dir
+            ):
+                model_name = (
+                    prepare_mistral_format_checkpoint(
+                        model_name, token, None, local_files_only, cache_dir = _cache_dir
+                    )
+                    or model_name
+                )
 
             model_config = AutoConfig.from_pretrained(
                 model_name,
@@ -2132,17 +2133,6 @@ class FastModel(FastBaseModel):
             # Report the loader decision before fetching this repo, including adapter bases.
             if on_model_resolved is not None:
                 on_model_resolved(model_name)
-            # No revision: the caller's ref names the adapter repo, and the base loads unpinned below.
-            _cache_dir = kwargs.get("cache_dir", None)
-            if _adapter_base_is_mistral_format(
-                model_name, token, None, local_files_only, _cache_dir
-            ):
-                model_name = (
-                    prepare_mistral_format_checkpoint(
-                        model_name, token, None, local_files_only, cache_dir = _cache_dir
-                    )
-                    or model_name
-                )
             # '-bf16' hub repos load bf16; a local dir keeps the requested quant unless 16bit is set. Say so: dropping the flags silently resurfaces as an OOM that never mentions quantization.
             if model_name.lower().endswith("-bf16") and (
                 load_in_16bit or not os.path.isdir(os.path.expanduser(model_name))
@@ -2167,6 +2157,18 @@ class FastModel(FastBaseModel):
                 load_in_8bit = False
                 load_in_fp8 = False
                 load_in_16bit = True
+            # After the -bf16 rule: the view path no longer carries the source's suffix.
+            # No revision: the caller's ref names the adapter repo, and the base loads unpinned below.
+            _cache_dir = kwargs.get("cache_dir", None)
+            if _adapter_base_is_mistral_format(
+                model_name, token, None, local_files_only, _cache_dir
+            ):
+                model_name = (
+                    prepare_mistral_format_checkpoint(
+                        model_name, token, None, local_files_only, cache_dir = _cache_dir
+                    )
+                    or model_name
+                )
 
             if user_config is not None:
                 model_config = user_config

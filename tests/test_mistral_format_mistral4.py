@@ -799,3 +799,20 @@ def test_view_downloads_honour_cache_dir(tmp_path, monkeypatch):
     )
     assert mf.prepare_mistral_format_checkpoint("org/repo", cache_dir = str(tmp_path)) is None
     assert seen == [str(tmp_path)]
+
+
+def test_adapter_retry_on_a_view_base_refuses_fast_inference(tmp_path, monkeypatch):
+    # An adapter whose base became a view retries with no new path: vLLM cannot read it either.
+    monkeypatch.setattr(mf, "_mistral_format_conversions", _null_context)
+    (tmp_path / mf._VIEW_MARKER).write_text("{}")
+
+    @mf.mistral_format_redirect
+    def from_pretrained(
+        model_name = None,
+        fast_inference = False,
+        **kwargs,
+    ):
+        raise mf.MistralFormatRedirect(None, str(tmp_path))
+
+    with pytest.raises(NotImplementedError, match = "fast_inference = False"):
+        from_pretrained("org/adapter", fast_inference = True)

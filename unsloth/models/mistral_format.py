@@ -677,7 +677,12 @@ def mistral_format_redirect(fn):
     except (TypeError, ValueError):
         signature = None
 
-    def _argument(args, kwargs, name, default = None):
+    def _argument(
+        args,
+        kwargs,
+        name,
+        default = None,
+    ):
         if name in kwargs:
             return kwargs[name]
         try:
@@ -691,7 +696,10 @@ def mistral_format_redirect(fn):
             return fn(*args, **kwargs)
         except MistralFormatRedirect as redirect:
             view, source = redirect.path, redirect.source
-        if view is not None and _argument(args, kwargs, "fast_inference", False):
+        # An adapter whose base is a view retries with view None: vLLM cannot read either.
+        if (view is not None or is_mistral_format_view(source)) and _argument(
+            args, kwargs, "fast_inference", False
+        ):
             raise NotImplementedError(
                 f"Unsloth: `{source}` is in Mistral's own format, which Unsloth loads through "
                 "transformers only. Use `fast_inference = False`, or serve it with vLLM directly."
