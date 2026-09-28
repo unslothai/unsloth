@@ -1157,6 +1157,7 @@ def _usage_chunk_line(model: str, totals: dict[str, Any]) -> str | None:
     return _sse(
         {
             "id": "chatcmpl-external-tools",
+            "_usageAggregate": True,
             "object": "chat.completion.chunk",
             "model": model,
             "choices": [],

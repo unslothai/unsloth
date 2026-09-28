@@ -4,6 +4,8 @@
 """Async HTTP client proxying chat completions to external LLM providers. Most use OpenAI-compatible
 /v1/chat/completions; Anthropic uses the native Messages API, translated here."""
 
+from uuid import uuid4
+
 import asyncio
 import base64
 import io
@@ -1729,6 +1731,9 @@ class ExternalProviderClient:
         if response_format is not None:
             body["response_format"] = response_format
 
+        if self.provider_type == "openrouter":
+            # Server-owned markers keep unknown charges visible across tool rounds and retries.
+            yield f'data: {_json.dumps({"_openrouterAttempt": str(uuid4())})}'
         url = f"{self.base_url}/chat/completions"
         logger.info(
             "Proxying chat completion to %s (provider=%s, model=%s)",
@@ -1927,6 +1932,16 @@ class ExternalProviderClient:
                         relayed = sanitize_provider_sse_line(line)
                         if relayed is None:
                             continue
+                        if self.provider_type == "openrouter" and relayed.startswith("data:"):
+                            try:
+                                accounting = _json.loads(relayed[5:].strip())
+                            except (ValueError, TypeError):
+                                accounting = None
+                            if isinstance(accounting, dict) and isinstance(accounting.get("usage"), dict):
+                                # The shared tool loop sums tokens and withholds per-turn usage. Carry
+                                # the original receipt separately so generation ids and fractional charges survive.
+                                receipt = {key: accounting[key] for key in ("id", "model", "usage") if key in accounting}
+                                yield f'data: {_json.dumps({"_openrouterReceipt": receipt})}'
                         yield relayed
                     # Stream ended without [DONE] (some upstreams just close the connection). Emit tool_end so the
                     # card does not stay in "running" forever.

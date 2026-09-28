@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { createCostRecorder } from "./lib/cost-receipts";
 import { useAppShellReadySignal } from "@/components/app-readiness";
 import { authFetch, getAuthSessionEpoch } from "@/features/auth";
 import {
@@ -1215,6 +1216,7 @@ function scheduleGenerationRecovery(
     let totalChunks = Number(metadata.generationChunkCount ?? 0);
     if (!Number.isSafeInteger(totalChunks) || totalChunks < 0) totalChunks = 0;
     let currentMetadata = { ...metadata };
+    let recoveryCosts: ReturnType<typeof createCostRecorder> | null = null;
     const serverCancel = () => {
       void cancelChatGenerationRun(runId).catch(() => {});
     };
@@ -1461,6 +1463,10 @@ function scheduleGenerationRecovery(
                     chunk.context_truncated,
                   ),
                 };
+              }
+              if (update.run.requestPayload.provider_type === "openrouter") {
+                recoveryCosts ??= createCostRecorder(runId, update.run.requestPayload.external_model ?? "", currentMetadata.costReceipts, true);
+                if (recoveryCosts.observe(chunk)) currentMetadata = { ...currentMetadata, costReceipts: recoveryCosts.snapshot() };
               }
               if (chunk.usage) recoveryUsage = chunk.usage;
               if (chunk.timings) recoveryTimings = chunk.timings;

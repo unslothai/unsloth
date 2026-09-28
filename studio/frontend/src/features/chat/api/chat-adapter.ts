@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { createCostRecorder } from "../lib/cost-receipts";
 import { attachedMediaUnavailableReason } from "../lib/attached-media-gate";
 import { externalModelLabel } from "../lib/external-model-label";
 import { mlxRuntimeStateFrom } from "../lib/mlx-runtime-state";
@@ -5501,6 +5502,8 @@ export function createOpenAIStreamAdapter(
       let contextWindowExceeded = false;
       // Provisional reason on every streamed yield: an abort skips the terminal yields and a reload
       // rebuilds messages as "complete". Stop is only the guess; a reported window outranks it.
+      const costRecorder = externalProvider?.providerType === "openrouter"
+        ? createCostRecorder(cancelId, externalSelection!.modelId, continuation?.costReceipts) : null;
       const liveCustom = () => ({
         ...reasoningDurationTracker.metadata(),
         openaiCodexReasoning: codexReasoningLedger,
@@ -5521,6 +5524,7 @@ export function createOpenAIStreamAdapter(
             contextWindowExceeded,
           ),
         },
+        ...(costRecorder ? { costReceipts: costRecorder.snapshot() } : {}),
         ...generationCustom(),
       });
       // Why this turn stopped early. Drives the Continue affordance.
@@ -6785,6 +6789,9 @@ export function createOpenAIStreamAdapter(
             const canPublish = createStreamPublishGate();
 
             for await (const chunk of stream) {
+              if (costRecorder?.observe(chunk)) {
+                yield { content: liveAssistantContent(), metadata: { custom: liveCustom() } };
+              }
               const chunkModel = (chunk as { model?: unknown }).model;
               if (typeof chunkModel === "string" && chunkModel.length > 0) {
                 responseModelId = chunkModel;
@@ -8207,7 +8214,8 @@ export function createOpenAIStreamAdapter(
                 : undefined,
               responseDetails: buildResponseDetails(finishedAt),
               timing: finalTiming,
-              ...generationCustom(),
+              ...(costRecorder ? { costReceipts: costRecorder.snapshot() } : {}),
+        ...generationCustom(),
             },
           },
         };
@@ -8375,7 +8383,8 @@ export function createOpenAIStreamAdapter(
                   ),
                 },
                 timing: partialTiming,
-                ...generationCustom(),
+                ...(costRecorder ? { costReceipts: costRecorder.snapshot() } : {}),
+        ...generationCustom(),
               },
             },
           };

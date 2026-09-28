@@ -45,6 +45,9 @@ _CONTROL_TYPES = frozenset(
 
 # Unsloth extensions carried inside a chunk: in no provider's wire format, read with the same trust as the frames above.
 _CONTROL_KEYS = (
+    "_openrouterAttempt",
+    "_openrouterReceipt",
+    "_usageAggregate",
     "_toolEvent",
     "_toolStatus",
     "_diffusionFrame",

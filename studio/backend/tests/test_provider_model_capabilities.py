@@ -83,6 +83,7 @@ def test_openrouter_entry_maps_efforts_modalities_and_cap():
         },
         "max_output_tokens": 128000,
         "supported_parameters": ["reasoning", "tools", "temperature"],
+        "pricing": None,
     }
 
 
@@ -420,3 +421,67 @@ def test_model_catalog_route_answers_503_offline_with_nothing_cached(catalog_rou
     with pytest.raises(Exception) as excinfo:
         catalog_route()
     assert getattr(excinfo.value, "status_code", None) == 503
+
+
+def test_openrouter_prices_preserve_zero_decimals_and_conditions():
+    mapped = openrouter_model_capabilities(
+        {
+            "id": "vendor/fast",
+            "pricing": {
+                "prompt": "0",
+                "completion": "0.000002",
+                "request": "-1",
+                "image": "nan",
+                "input_cache_read": "1e-8",
+                "web_search": True,
+                "overrides": [{"min_prompt_tokens": 200000, "prompt": "0.000004"}],
+            },
+        }
+    )
+    assert mapped["pricing"]["rates"] == {
+        "prompt": "0",
+        "completion": "0.000002",
+        "input_cache_read": "1e-8",
+    }
+    assert mapped["pricing"]["overrides"][0]["min_prompt_tokens"] == 200000
+
+
+def test_openrouter_receipt_relay_retains_generation_and_fractional_cost(monkeypatch):
+    upstream = {
+        "id": "gen-charge",
+        "model": "vendor/served",
+        "choices": [],
+        "usage": {"cost": 0.000021, "cost_details": {"upstream_inference_cost": 0.5}},
+    }
+
+    def handler(request):
+        return httpx.Response(
+            200,
+            content = "data: " + json.dumps(upstream) + "\n\ndata: [DONE]\n\n",
+            headers = {"content-type": "text/event-stream"},
+        )
+
+    client = httpx.AsyncClient(transport = httpx.MockTransport(handler))
+    monkeypatch.setattr(ep_mod, "_http_client", client)
+    provider = ExternalProviderClient(
+        provider_type = "openrouter", api_key = "test", base_url = "https://openrouter.ai/api/v1"
+    )
+
+    async def run():
+        try:
+            return [
+                line
+                async for line in provider.stream_chat_completion(
+                    messages = [{"role": "user", "content": "hi"}], model = "vendor/requested"
+                )
+            ]
+        finally:
+            await client.aclose()
+
+    lines = asyncio.run(run())
+    frames = [
+        json.loads(line[5:]) for line in lines if line.startswith("data:") and "[DONE]" not in line
+    ]
+    assert "_openrouterAttempt" in frames[0]
+    receipt = next(frame["_openrouterReceipt"] for frame in frames if "_openrouterReceipt" in frame)
+    assert receipt == {key: upstream[key] for key in ("id", "model", "usage")}

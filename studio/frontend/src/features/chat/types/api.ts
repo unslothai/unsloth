@@ -710,8 +710,17 @@ export interface OpenAIChatChunkChoice {
 }
 
 export interface OpenAIChatChunk {
+  id?: string;
+  model?: string;
+  _openrouterAttempt?: string;
+  _openrouterReceipt?: { id?: string; model?: string; usage?: Record<string, unknown> };
+  _usageAggregate?: boolean;
   choices?: OpenAIChatChunkChoice[];
   usage?: {
+    cost?: number | null;
+    cost_details?: Record<string, unknown>;
+    prompt_tokens_details?: Record<string, unknown>;
+    completion_tokens_details?: Record<string, unknown>;
     prompt_tokens: number;
     completion_tokens: number;
     total_tokens: number;

@@ -3,6 +3,7 @@
 
 "use client";
 
+import { CostReceiptDetails } from "@/features/chat/components/recorded-cost";
 import {
   Sheet,
   SheetCloseButton,
@@ -437,6 +438,7 @@ export const MessageResponseDetailsSheet: FC<{
             />
           </DetailSection>
 
+          <CostReceiptDetails custom={message.metadata?.custom} />
           <DetailSection title="Tokens">
             <DetailRow label="Prompt" value={formatNumber(promptTokens)} mono />
             <DetailRow

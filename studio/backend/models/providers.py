@@ -177,6 +177,7 @@ class ProviderModelCapabilityInfo(BaseModel):
     reasoning: Optional[ProviderModelReasoningInfo] = None
     max_output_tokens: Optional[int] = None
     supported_parameters: Optional[list[str]] = None
+    pricing: Optional[dict] = None
 
 
 class ModelCatalogResponse(BaseModel):

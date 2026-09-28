@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { ComposerModelPricing } from "@/features/chat/components/composer-model-pricing";
 import {
   ComposerAttachments,
   UserMessageAttachments,
@@ -28,6 +29,7 @@ import { QueueResumeIcon } from "@/components/assistant-ui/queue-resume-icon";
 import { ProgressiveMessages } from "@/components/assistant-ui/progressive-messages";
 import { MessageMenuTime } from "@/components/assistant-ui/message-menu-time";
 import { UserMessageTime } from "@/components/assistant-ui/user-message-time";
+import { MessageCost, RecordedChatCost } from "@/features/chat/components/recorded-cost";
 import { MessageTiming } from "@/components/assistant-ui/message-timing";
 import { attachThreadFastCopy } from "@/components/assistant-ui/thread-fast-copy";
 import { threadHasResearchMessage } from "@/components/assistant-ui/thread-research-presence";
@@ -5548,6 +5550,7 @@ const Composer: FC<{
           </div>
         </ComposerPrimitive.AttachmentDropzone>
       )}
+      <RecordedChatCost />
     </ComposerPrimitive.Root>
     </ComposerPrimitive.Unstable_TriggerPopoverRoot>
     </PromptQueueContext.Provider>
@@ -7100,6 +7103,7 @@ const ComposerRightControls: FC<{
   };
   return (
     <div className="aui-composer-action-wrapper flex shrink-0 items-center gap-1.5">
+      <ComposerModelPricing side={menuSide} />
       <ReasoningToggle side={menuSide} />
       {/* Starts dictation; the recording bar then covers the input row and owns
           the stop and send actions. */}
@@ -7439,7 +7443,7 @@ const ContinueMessageBarForLastMessage: FC = () => {
       parentId: parent,
       runConfig: {
         custom: {
-          [CONTINUATION_RUN_CONFIG_KEY]: { partial, thoughtSignature },
+          [CONTINUATION_RUN_CONFIG_KEY]: { partial, thoughtSignature, costReceipts: messages[index].metadata?.custom?.costReceipts },
         },
       },
     });
@@ -7603,7 +7607,7 @@ const ContinueMessageBarForLastMessage: FC = () => {
       parentId,
       runConfig: {
         custom: {
-          [CONTINUATION_RUN_CONFIG_KEY]: { partial, thoughtSignature },
+          [CONTINUATION_RUN_CONFIG_KEY]: { partial, thoughtSignature, costReceipts: messages[index].metadata?.custom?.costReceipts },
         },
       },
     });
@@ -8522,7 +8526,7 @@ const AssistantActionBar: FC = () => {
         // remounts a bar when focus enters that message, so tabbing brings back what hovering
         // brings back and the controls return to the accessibility tree with it.
         autohide={speaking ? "never" : "not-last"}
-        className="aui-assistant-action-bar-root col-start-3 row-start-2 flex items-center gap-1 text-chat-icon-fg [&_button:not([data-slot=message-timing-trigger])]:size-8 [&_button]:!rounded-full [&_button:hover]:bg-chat-icon-bg-hover [&_button:hover]:text-chat-icon-fg-hover"
+        className="aui-assistant-action-bar-root col-start-3 row-start-2 flex items-center gap-1 text-chat-icon-fg [&_button:not([data-slot=message-timing-trigger]):not([data-slot=message-cost-trigger])]:size-8 [&_button]:!rounded-full [&_button:hover]:bg-chat-icon-bg-hover [&_button:hover]:text-chat-icon-fg-hover"
       >
         <CopyButton />
         {inlineEdit && <EditAssistantMessageButton />}
@@ -8670,6 +8674,7 @@ const AssistantActionBar: FC = () => {
             )}
           </ActionBarMorePrimitive.Content>
         </ActionBarMorePrimitive.Root>
+        <MessageCost onClick={() => setDetailsOpen(true)} />
         <MessageTiming side="top" className="h-8 px-2" />
       </ActionBarPrimitive.Root>
       <MessageResponseDetailsSheet

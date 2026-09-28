@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { ModelPriceLine } from "@/features/chat/components/model-pricing";
 import { isChatGgufTask, reconcileGgufPinsAfterDelete } from "./reconcile-gguf-pins";
 
 import { ModelMemoryBar } from "@/components/model-memory-bar";
@@ -1104,6 +1105,7 @@ function ConnectedGroupHeading({
 }
 
 function ModelRow({
+  subtitle,
   label,
   meta,
   selected,
@@ -1130,6 +1132,7 @@ function ModelRow({
   memory,
   className,
 }: {
+  subtitle?: ReactNode;
   label: string;
   meta?: string | null;
   selected?: boolean;
@@ -1500,6 +1503,7 @@ function ModelRow({
           ) : null}
         </span>
       </span>
+      {subtitle ? <span className="block max-w-full text-left leading-5">{subtitle}</span> : null}
       {showMemoryBar ? (
         <ModelMemoryBar segments={memorySegments} compact={true} />
       ) : null}
@@ -5787,6 +5791,7 @@ export function HubModelPicker({
         <div className="min-w-0 flex-1">
           <ModelRow
             label={model.name}
+            subtitle={model.providerType === "openrouter" ? <ModelPriceLine modelId={providerModelId} /> : undefined}
             // The provider's own id, the way a local row hovers its path: a label can be
             // rewritten, and one connection can offer two models that shorten to the same words.
             // With no heading above, the connection's name goes here too.

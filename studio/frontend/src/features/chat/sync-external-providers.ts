@@ -20,6 +20,7 @@ import {
   providerModelCatalogFetchedAt,
   setModelsDevCatalog,
   setProviderModelCatalog,
+  markProviderCatalogRefreshFailed,
 } from "./model-catalog";
 import {
   CUSTOM_BACKEND_PROVIDER_TYPE,
@@ -386,7 +387,8 @@ export async function refreshProviderModelCatalogs(
       if (isCurrent && !isCurrent()) return;
       if (models.length > 0) setProviderModelCatalog(providerType, models);
     } catch {
-      // Offline or unauthorized: the built-in tables answer until the next sync.
+      markProviderCatalogRefreshFailed(providerType);
+      // Offline or unauthorized: retain published rates with an explicit cached indicator.
     }
   }
 }

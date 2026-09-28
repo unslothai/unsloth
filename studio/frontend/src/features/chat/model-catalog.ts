@@ -29,6 +29,7 @@ export const REASONING_EFFORT_SCALE = [
 ] as const satisfies readonly ReasoningEffortLevel[];
 
 export interface ModelCatalogEntry {
+  pricing?: import("./lib/model-pricing").PublishedPricing | null;
   reasoning: boolean;
   efforts: readonly ReasoningEffortLevel[];
   mandatory: boolean;
@@ -40,6 +41,7 @@ export interface ModelCatalogEntry {
 }
 
 interface LiveCatalogRecord {
+  refreshFailed?: boolean;
   fetchedAt: number;
   models: Record<string, ModelCatalogEntry>;
 }
@@ -213,6 +215,7 @@ function fromLiveModel(model: ProviderModelCapabilityInfo): ModelCatalogEntry {
   const reasoning = model.reasoning ?? null;
   const defaultEffort = reasoning?.default_effort;
   return {
+    pricing: model.pricing,
     reasoning: reasoning != null,
     efforts: sortReasoningEfforts(reasoning?.supported_efforts ?? []),
     mandatory: reasoning?.mandatory === true,
@@ -270,6 +273,27 @@ export function clearProviderModelCatalog(providerType: string): void {
 export function providerModelCatalogFetchedAt(providerType: string): number | null {
   hydrateLiveCatalog();
   return LIVE_CATALOG.get(providerType)?.fetchedAt ?? null;
+}
+
+/** Prices never use the capability resolver's alias/base-model fallbacks. */
+export function exactModelPricing(providerType: string, modelId: string) {
+  hydrateLiveCatalog();
+  const record = LIVE_CATALOG.get(providerType);
+  const pricing = record?.models[modelId.trim().toLowerCase()]?.pricing;
+  return pricing && record ? {
+    ...pricing,
+    fetchedAt: record.fetchedAt,
+    cached: record.refreshFailed === true || Date.now() - record.fetchedAt > 86_400_000,
+  } : null;
+}
+
+export function markProviderCatalogRefreshFailed(providerType: string): void {
+  hydrateLiveCatalog();
+  const record = LIVE_CATALOG.get(providerType);
+  if (!record) return;
+  record.refreshFailed = true;
+  persistLiveCatalog();
+  notifyCatalogChange();
 }
 
 function lookupCandidates(providerType: string, modelId: string): string[] {

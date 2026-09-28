@@ -29,6 +29,7 @@
     }
   },
   "include": [
+    "smoke-openrouter-costs-main.tsx",
     "src",
     "smoke-ansi-main.tsx",
     "smoke-composer-icons-main.tsx",

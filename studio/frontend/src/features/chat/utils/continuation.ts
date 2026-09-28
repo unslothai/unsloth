@@ -316,6 +316,7 @@ export const CONTINUATION_RUN_CONFIG_KEY = "unslothContinuation";
 export type ContinuationRequest = {
   /** The partial answer to resume, exactly as it was rendered. */
   partial: string;
+  costReceipts?: unknown;
   /** Gemini text-part thoughtSignature from the turn being resumed: the sibling run drops the
    *  original assistant message, so replaying it here keeps the history signed. */
   thoughtSignature?: string;
@@ -328,14 +329,14 @@ export function readContinuationRequest(
   const custom = (runConfig as { custom?: Record<string, unknown> } | undefined)
     ?.custom;
   const request = custom?.[CONTINUATION_RUN_CONFIG_KEY] as
-    | { partial?: unknown; thoughtSignature?: unknown }
+    | { partial?: unknown; thoughtSignature?: unknown; costReceipts?: unknown }
     | undefined;
   const partial = request?.partial;
   if (typeof partial === "string" && partial.length > 0) {
     const signature = request?.thoughtSignature;
     return typeof signature === "string" && signature
-      ? { partial, thoughtSignature: signature }
-      : { partial };
+      ? { partial, thoughtSignature: signature, ...(request?.costReceipts ? { costReceipts: request.costReceipts } : {}) }
+      : { partial, ...(request?.costReceipts ? { costReceipts: request.costReceipts } : {}) };
   }
   return null;
 }

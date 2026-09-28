@@ -1391,3 +1391,12 @@ def test_reasoning_replay_during_tool_rounds_is_opt_in(executed, preserve):
     assert assistant.get("reasoning_content") == ("First thought." if preserve else None)
     assert assistant["tool_calls"][0]["function"]["name"] == "web_search"
     assert transport.requests[1]["messages"][-1]["role"] == "tool"
+
+
+def test_openrouter_receipts_survive_token_aggregation(executed):
+    receipt = {"id": "gen-accounting", "model": "vendor/served", "usage": {"cost": 0.000003}}
+    transport = FakeTransport([["data: " + json.dumps({"_openrouterAttempt": "attempt"}), _sse({"content": "ok"}), "data: " + json.dumps({"_openrouterReceipt": receipt}), "data: " + json.dumps({"id": "gen-accounting", "choices": [], "usage": {"prompt_tokens": 3, "completion_tokens": 2, "cost": 0.000003}}), _DONE]])
+    transport.sanitizes_provider_frames = True
+    frames = [json.loads(line[5:]) for line in _run(transport) if line.startswith("data:") and "[DONE]" not in line]
+    assert any(frame.get("_openrouterReceipt") == receipt for frame in frames)
+    assert any(frame.get("_usageAggregate") is True for frame in frames)
