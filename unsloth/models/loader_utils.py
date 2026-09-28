@@ -1416,9 +1416,8 @@ def _route_compressed_tensors_fp8_to_unsloth(
     skip = (),
     default = "0",
 ):
-    # Opt-in for FP8 checkpoints: on-the-fly dequant trains slower than the decompressed bf16 model. Beside NVFP4
-    # layers it is the default: the decompressed FP8 layers keep compressed-tensors' fake-quant forward, which
-    # graph-breaks (Qwen3.8-27B-NVFP4: 489 vs 566 ms/step, 40 vs 51 GB peak).
+    # Opt-in for FP8 checkpoints (on-the-fly dequant trains slower than bf16); default beside NVFP4, where the
+    # decompressed FP8 layers would keep compressed-tensors' graph-breaking fake-quant forward.
     if os.environ.get("UNSLOTH_COMPRESSED_TENSORS_FP8_KERNELS", default) != "1":
         return 0
     if getattr(getattr(model, "config", None), "quantization_config", None) is None:

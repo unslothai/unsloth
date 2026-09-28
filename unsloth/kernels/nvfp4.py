@@ -83,7 +83,6 @@ def _nvfp4_dequant_kernel(
     BLOCK_C: tl.constexpr,
     SCALE_E4M3_BYTES: tl.constexpr,
 ):
-    # BLOCK_C packed bytes = BLOCK_C // 8 groups of 16 columns; the scale is divided once per group, not per element.
     r = tl.program_id(0) * BLOCK_R + tl.arange(0, BLOCK_R)
     c = tl.program_id(1) * BLOCK_C + tl.arange(0, BLOCK_C)
     g = tl.program_id(1) * (BLOCK_C // 8) + tl.arange(0, BLOCK_C // 8)
