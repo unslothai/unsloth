@@ -30,7 +30,6 @@
   },
   "include": [
     "src",
-    "smoke-floating-monitors-main.tsx",
     "smoke-ansi-main.tsx",
     "smoke-composer-icons-main.tsx",
     "smoke-find-in-page-main.tsx",
