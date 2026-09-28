@@ -11,7 +11,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 INSTALL_SH="${1:-$SCRIPT_DIR/../../install.sh}"
 _FUNC_FILE=$(mktemp)
 {
-    for fn in _run_bounded _pypi_unsloth_admits_torch _torch_index_url_leaf _cu130_torch213_route _cu130_torch213_platform _torchaudio_for_torch_minor _torch_release_in_window _previous_torch_pin; do
+    for fn in _mirror_uv_project_config _mirror_configured _run_bounded _pypi_unsloth_admits_torch _torch_index_url_leaf _cu130_torch213_route _cu130_torch213_platform _torchaudio_for_torch_minor _torch_release_in_window _previous_torch_pin; do
         sed -n "/^${fn}()/,/^}/p" "$INSTALL_SH"
         echo ""
     done
@@ -73,6 +73,16 @@ _pypi_fixture "torch<2.15.0,>=2.4.0"
 assert_eq "UV_EXCLUDE_NEWER keeps the old window" "no" "$(UV_EXCLUDE_NEWER=2026-06-01T00:00:00Z _cu130_torch213_route "$CU130")"
 assert_eq "UV_EXCLUDE_NEWER_PACKAGE keeps the old window" "no" "$(UV_EXCLUDE_NEWER_PACKAGE=unsloth=2026-06-01T00:00:00Z _cu130_torch213_route "$CU130")"
 assert_eq "empty cutoff is no cutoff" "yes" "$(UV_EXCLUDE_NEWER= _cu130_torch213_route "$CU130")"
+for off in 1 true TRUE yes on " 1 "; do
+    assert_eq "UV_OFFLINE='$off' keeps the old window" "no" "$(UV_OFFLINE="$off" _cu130_torch213_route "$CU130")"
+done
+for off in 0 false no ""; do
+    assert_eq "UV_OFFLINE='$off' is online" "yes" "$(UV_OFFLINE="$off" _cu130_torch213_route "$CU130")"
+done
+assert_eq "UV_DEFAULT_INDEX keeps the old window" "no" "$(UV_DEFAULT_INDEX=https://mirror.example/simple _cu130_torch213_route "$CU130")"
+assert_eq "UV_INDEX_URL keeps the old window" "no" "$(UV_INDEX_URL=https://mirror.example/simple _cu130_torch213_route "$CU130")"
+_UVCFG="$VENV_DIR/uv.toml"; printf '[[index]]\nurl = "https://mirror.example/simple"\ndefault = true\n' > "$_UVCFG"
+assert_eq "uv.toml index keeps the old window" "no" "$(UV_CONFIG_FILE="$_UVCFG" _cu130_torch213_route "$CU130")"
 
 echo "=== preservation never waits on PyPI ==="
 # Runs install.sh's own block: an existing 2.13 install re-run while PyPI is unreachable or

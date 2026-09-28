@@ -5921,10 +5921,12 @@ _cu130_torch213_platform() {
 }
 
 # "yes" only when the newest unsloth on PyPI admits torch $1: `studio update` runs the INSTALLED release's setup,
-# which re-resolves under its own cap and would downgrade a newer torch. Any failure answers "no", as does a uv
-# upload-date cutoff: "newest on PyPI" is then not what uv may pick.
+# which re-resolves under its own cap and would downgrade a newer torch. Any failure answers "no", as does anything
+# making public PyPI's newest release not what uv will pick: an upload cutoff, offline mode, another package index.
 _pypi_unsloth_admits_torch() {
-    if [ -n "${UV_EXCLUDE_NEWER:-}" ] || [ -n "${UV_EXCLUDE_NEWER_PACKAGE:-}" ]; then
+    _pua_off=$(printf '%s' "${UV_OFFLINE:-}" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
+    case "$_pua_off" in 1|t|true|y|yes|on) echo "no"; return ;; esac
+    if [ -n "${UV_EXCLUDE_NEWER:-}${UV_EXCLUDE_NEWER_PACKAGE:-}" ] || _mirror_configured uv; then
         echo "no"
         return
     fi
