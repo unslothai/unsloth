@@ -3042,7 +3042,6 @@ export const zhCN = {
         newChatInSection: "在分区中新建聊天",
       },
       project: {
-        noInstructions: "无指令",
         archivedCount: "已归档 {count} 个",
         oneProject: "1 个项目",
         projectCount: "{count} 个项目",

@@ -3120,7 +3120,6 @@ export const en = {
         newChatInSection: "New chat in section",
       },
       project: {
-        noInstructions: "No instructions",
         archivedCount: "{count} archived",
         oneProject: "1 project",
         projectCount: "{count} projects",

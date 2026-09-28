@@ -3162,7 +3162,6 @@ export const ptBR = {
         newChatInSection: "Novo chat na seção",
       },
       project: {
-        noInstructions: "Sem instruções",
         archivedCount: "{count} arquivados",
         oneProject: "1 projeto",
         projectCount: "{count} projetos",

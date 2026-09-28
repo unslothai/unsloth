@@ -442,3 +442,9 @@ test("a chat tile tints on hover like project and section tiles", () => {
   // The grid checkbox no longer hides the tile to take its place.
   assert.doesNotMatch(items, /group-hover\/chat:opacity-0/);
 });
+
+test("project cards in the grid leave out the instructions", () => {
+  const items = readSrc("features/library/chats/chats-items.tsx");
+  const card = items.slice(items.indexOf("export function ProjectCard("), items.indexOf("export function ProjectRow("));
+  assert.doesNotMatch(card, /instructions/);
+});

@@ -1440,10 +1440,6 @@ export function ProjectCard({
       >
         {project.name}
       </button>
-      <p className="line-clamp-1 text-ui-13 text-muted-foreground">
-        {project.instructions?.trim() ||
-          t("library.chats.project.noInstructions")}
-      </p>
       <div className="mt-auto flex min-w-0 flex-col gap-1 text-ui-12 text-muted-foreground">
         <span className="truncate">
           {chatCount(stats?.chats ?? 0, t)}

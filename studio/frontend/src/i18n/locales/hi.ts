@@ -3141,7 +3141,6 @@ export const hi = {
         newChatInSection: "सेक्शन में नई चैट",
       },
       project: {
-        noInstructions: "कोई निर्देश नहीं",
         archivedCount: "{count} आर्काइव",
         oneProject: "1 प्रोजेक्ट",
         projectCount: "{count} प्रोजेक्ट",

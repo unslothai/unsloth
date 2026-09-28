@@ -3201,7 +3201,6 @@ export const it = {
         newChatInSection: "Nuova chat nella sezione",
       },
       project: {
-        noInstructions: "Nessuna istruzione",
         archivedCount: "{count} archiviate",
         oneProject: "1 progetto",
         projectCount: "{count} progetti",
