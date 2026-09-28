@@ -5388,8 +5388,9 @@ def _shell_assignment_expansions(
             # `a=$a$a` repeated doubles each time: past the path cap keep the earlier binding.
             if len(val) > _MAX_PATH_SCAN_CHARS:
                 continue
-        # `x=../..; (x=); cat "$x/auth/auth.db"`: a scoped empty assignment must not erase the outer binding.
-        if not val and var in env:
+        # `x=../..; (x=); cat "$x/auth/auth.db"`: a scoped empty assignment must not erase the outer binding,
+        # while a top-level `x=` does clear it (`x=./p/; x=; cat "$x../../auth/auth.db"`).
+        if not val and var in env and _assignment_is_inert(command, match.start(1)):
             continue
         env[var] = val
     if not env:

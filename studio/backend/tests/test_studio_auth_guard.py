@@ -2505,6 +2505,13 @@ def test_a_scoped_empty_assignment_keeps_the_outer_binding(studio_home, scope):
     )
 
 
+def test_a_top_level_empty_assignment_clears_the_binding(studio_home):
+    workdir = str(studio_home / "sandbox" / _SESSION)
+    command = 'x=./project/; x=; cat "$x../../auth/auth.db"'
+    assert tools._references_studio_credential_here(command, workdir)
+    assert not tools._references_studio_credential_here(command.replace("../../", "./"), workdir)
+
+
 def test_self_doubling_assignments_stay_bounded(studio_home):
     workdir = str(studio_home / "sandbox" / _SESSION)
     doubling = "a=X; " + "a=$a$a; " * 40
