@@ -431,9 +431,7 @@ def test_installs_pypi_torchao_on_windows_rocm(
     assert "dependency overrides (Windows ROCm)" in progress_labels
 
 
-# Windows-ROCm torchao export: the stub's config classes return None, which crashed
-# TorchAoConfig(quant_type=None); the export worker now loads real torchao through
-# unsloth/_torchao_nodist.py and only falls back to the stub.
+# Windows ROCm torchao export: real torchao via unsloth/_torchao_nodist.py, the stub as fallback.
 
 import types
 

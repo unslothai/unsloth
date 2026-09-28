@@ -11764,8 +11764,7 @@ def install_python_stack() -> int:
     if NO_TORCH:
         _progress("dependency overrides (skipped, no torch)")
     elif _rocm_windows_torch_installed or _installed_torch_is_windows_rocm():
-        # Stock torchao dies on import here (no torch.distributed): the export worker loads it
-        # through unsloth/_torchao_nodist.py, every other process keeps the runtime stub.
+        # Stock torchao dies on import here; only the export worker loads it (unsloth/_torchao_nodist.py).
         _progress("dependency overrides (Windows ROCm)")
         _install_torchao_for_torch(_probe_installed_torch_version(), default_index = True)
     else:
