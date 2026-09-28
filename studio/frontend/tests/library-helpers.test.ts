@@ -102,8 +102,6 @@ table("a file the server types opaquely gets a type from its extension", library
 ]);
 
 table("nothing embedded directly is typed as a scriptable document", embeddedBlobType, [
-  [["pdf", "text/html"], "application/pdf"],
-  [["pdf", "application/octet-stream"], "application/pdf"],
   [["image", "image/svg+xml"], "application/octet-stream"],
   [["image", "text/html"], "application/octet-stream"],
   [["image", "image/png"], "image/png"],

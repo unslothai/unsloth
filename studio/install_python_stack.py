@@ -9745,6 +9745,8 @@ def _has_working_git() -> bool:
 # _MLX_INSTALL_SPECS.
 _MLX_PINS: tuple[str, ...] = ("mlx==0.32.2", "mlx-metal==0.32.2", "mlx-lm==0.31.3")
 _MLX_VLM_SPEC = "mlx-vlm>=0.4.4,<=0.7.1"
+# Exact: llguidance.mlx / llguidance.hf are the API grammar_constraint.py binds to.
+_LLGUIDANCE_PIN = "llguidance==1.8.0"
 _MLX_NAMES: tuple[str, ...] = tuple(spec.partition("==")[0] for spec in _MLX_PINS) + ("mlx-vlm",)
 
 
@@ -11383,6 +11385,8 @@ def install_python_stack() -> int:
         # declared mlx-vlm range the step above honoured. Same gate, so the slot is spent on
         # every Apple Silicon run with torch, including the no-wheel branch.
         base_total += 1  # MLX stack re-resolve
+    if IS_MAC_ARM:
+        base_total += 1  # MLX grammar engine (step 11d), same gate as the step itself
     if NO_TORCH and not skip_base:
         # no-torch runtime deps, which this build announces on its own slot inside the core
         # step rather than folding into it. Same gate as the step itself.
@@ -11902,6 +11906,21 @@ def install_python_stack() -> int:
     #      already resident, so no git and a failed source build both degrade to a working install
     #      rather than no install.
     _diffusers_main_step()
+
+    # 11d. Apple Silicon grammar engine, outside skip_base (install.sh always skips base); failure only loses MLX response_format.
+    if IS_MAC_ARM:
+        if not _full_deps_requested() and _exact_distribution_spec_is_installed(_LLGUIDANCE_PIN):
+            _progress("MLX grammar engine (satisfied, skipped)")
+        else:
+            _progress("MLX grammar engine")
+            try:
+                pip_install(
+                    "Installing the MLX grammar engine (llguidance)",
+                    "--no-cache-dir",
+                    _LLGUIDANCE_PIN,
+                )
+            except SystemExit:
+                _note(f"{_LLGUIDANCE_PIN} failed to install; MLX response_format stays unavailable")
 
     # 12. Patch metadata for single-env compatibility
     _finalize_ran = _dd_deps_ran or _dd_ran or _patch_metadata_is_pending()

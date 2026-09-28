@@ -74,6 +74,7 @@ from core.inference.mcp_client import (
 )
 from storage import mcp_servers_db
 from utils.account_context import account_thread, current_account_id, is_owner_context
+from utils.current_date_prompt_settings import strip_current_date_update_note
 from core.inference.tool_confinement import ToolConfinementUnavailable, account_confinement
 from pathlib import Path
 from utils.paths.storage_roots import RetiredAccountError, ensure_dir
@@ -11454,6 +11455,8 @@ def _holds_no_user_files(target: str, owner: "str | None" = None) -> bool:
             # a real file there is the user's like any other.
             if _is_spill_artifact(target, parent, name):
                 continue
+            if _is_attachment_copy(target, parent, name):
+                continue
             return False
         budget -= 1
         if budget <= 0:
@@ -13646,14 +13649,14 @@ def _last_user_text(conversation: list[dict]) -> str:
             continue
         content = msg.get("content")
         if isinstance(content, str):
-            return content.strip()
+            return strip_current_date_update_note(content).strip()
         if isinstance(content, list):
             parts = [
                 p.get("text", "")
                 for p in content
                 if isinstance(p, dict) and p.get("type") in ("text", "input_text")
             ]
-            return " ".join(t for t in parts if t).strip()
+            return strip_current_date_update_note(" ".join(t for t in parts if t)).strip()
         return ""
     return ""
 
@@ -14088,6 +14091,30 @@ _MIN_SINGLE_BYTE_ASCII_RATIO = 3 / 4
 _ASCII_TEXT_BYTES = frozenset((*range(0x20, 0x7F), 0x09, 0x0A, 0x0D, 0x1B))
 
 _META_CHARSET_SCAN_BYTES = 2048
+_META_REFRESH_SCAN_BYTES = 4096
+_META_REFRESH_MAX_DELAY = 5
+_META_REFRESH_CONTENT_RE = re.compile(
+    r"\s*(\d+|(?=\.))(?:\.[\d.]*)?(?:(?=[\s;,])\s*[;,]?\s*(?:url\s*=\s*)?(.*))?\Z",
+    re.ASCII | re.IGNORECASE | re.DOTALL,
+)
+# Browsers leave an unterminated named reference in an attribute alone, so "&section=" stays literal instead of "§ion=".
+_ATTR_CHAR_REF_RE = re.compile(r"&(?:#[0-9]+;?|#[xX][0-9a-fA-F]+;?|[A-Za-z][A-Za-z0-9]*;)")
+# <plaintext> has no end tag: everything after it is text.
+_META_REFRESH_INERT_TAGS = frozenset(
+    (
+        b"iframe",
+        b"noembed",
+        b"noframes",
+        b"noscript",
+        b"plaintext",
+        b"script",
+        b"style",
+        b"template",
+        b"textarea",
+        b"title",
+        b"xmp",
+    )
+)
 # A comment or whole tag, quoted attribute values included, so markup inside them is never read as <meta>. As in the
 # browser prescan, an unterminated tag ends the scan.
 _HTML_TAG_RE = re.compile(
@@ -14240,6 +14267,60 @@ def _sniff_meta_charset(head: bytes, content_type: str) -> str | None:
     elif not is_xml:
         return None
     return prolog and _whatwg_codec(prolog.group(1))
+
+
+def _meta_refresh_target(body: bytes, page_url: str) -> str | None:
+    from html import unescape
+    from urllib.parse import urldefrag, urljoin, urlparse
+
+    def attr_text(value: bytes) -> str:
+        return _ATTR_CHAR_REF_RE.sub(
+            lambda ref: unescape(ref.group(0)), value.decode("utf-8", "replace")
+        )
+
+    base_url, seen_base, inert = page_url, False, None
+    for tag in _HTML_TAG_RE.finditer(body[:_META_REFRESH_SCAN_BYTES]):
+        name = (tag.group(1) or b"").lower()
+        if inert is not None:
+            end = tag.group(0)[: len(inert) + 3].lower()
+            if inert != b"plaintext" and end[:-1] == b"</" + inert and end[-1:] in b"\t\n\f\r />":
+                inert = None
+        elif name in _META_REFRESH_INERT_TAGS:
+            inert = name
+        elif name in (b"base", b"meta"):
+            attrs = {}
+            for attr, *values in _META_ATTR_RE.findall(tag.group(2)):
+                attrs.setdefault(attr.lower(), b"".join(values))
+            if name == b"base":
+                # Only the first <base href> counts, and only for a refresh that comes after it.
+                if b"href" in attrs and not seen_base:
+                    seen_base = True
+                    try:
+                        href = urljoin(page_url, attr_text(attrs[b"href"]).strip())
+                        if urlparse(href).scheme in ("http", "https"):
+                            base_url = href
+                    except ValueError:
+                        pass
+                continue
+            if attrs.get(b"http-equiv", b"").strip().lower() != b"refresh":
+                continue
+            match = _META_REFRESH_CONTENT_RE.match(attr_text(attrs.get(b"content", b"")))
+            if match is None:
+                continue
+            location = (match.group(2) or "").strip()
+            if location[:1] in ("'", '"'):
+                location = location[1:].split(location[0], 1)[0].strip()
+            if not location or int(match.group(1) or 0) > _META_REFRESH_MAX_DELAY:
+                return None
+            try:
+                target = urljoin(base_url, location)
+                scheme = urlparse(target).scheme
+            except ValueError:
+                return None
+            if scheme not in ("http", "https") or urldefrag(target)[0] == urldefrag(page_url)[0]:
+                return None
+            return target
+    return None
 
 
 def _extract_pdf_text(data: bytes) -> str:
@@ -14751,6 +14832,21 @@ def _pinned_netloc(ip: str, port: int | None) -> str:
     return f"{host}:{port}" if port else host
 
 
+def _redirect_hop(url: str, website_policy, deadline, cancel_event) -> tuple[str | None, str, list]:
+    from urllib.parse import urlparse
+    from .web_access_policy import check_url_access
+
+    allowed, reason, host = check_url_access(url, website_policy)
+    if not allowed:
+        return reason, "", []
+    parsed = urlparse(url)
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    ok, reason, pinned_ips = _resolve_with_budget(host, port, deadline, cancel_event)
+    if not ok:
+        return reason, "", []
+    return None, host, pinned_ips
+
+
 def _fetch_url_raw(
     url: str,
     timeout: int = 30,
@@ -14861,25 +14957,14 @@ def _fetch_url_raw(
                 if not location:
                     return "Failed to fetch URL: redirect missing Location header.", "", ""
                 current_url = urljoin(current_url, location)
-                # Server-controlled, so never scheme-upgraded; the gate below reads .port first, so the parse after it
-                # cannot raise.
-                allowed, policy_reason, redirect_host = check_url_access(
+                hop_error, current_host, pinned_ips = _redirect_hop(
                     current_url,
                     website_policy,
-                )
-                if not allowed:
-                    return policy_reason, "", ""
-                rp = urlparse(current_url)
-                rp_port = rp.port or (443 if rp.scheme == "https" else 80)
-                ok2, reason2, pinned_ips = _resolve_with_budget(
-                    redirect_host,
-                    rp_port,
                     deadline,
                     cancel_event,
                 )
-                if not ok2:
-                    return reason2, "", ""
-                current_host = redirect_host
+                if hop_error is not None:
+                    return hop_error, "", ""
                 continue
 
             # get_content_type() defaults to "text/plain" when the header is absent (RFC 2045); report "" instead so
@@ -14925,7 +15010,20 @@ def _fetch_url_raw(
                 if tail_error is not None:
                     return tail_error, "", ""
                 raw_bytes += tail
-            break
+            refresh_url = content_type == "text/html" and _meta_refresh_target(
+                raw_bytes, current_url
+            )
+            if not refresh_url:
+                break
+            current_url = refresh_url
+            hop_error, current_host, pinned_ips = _redirect_hop(
+                current_url,
+                website_policy,
+                deadline,
+                cancel_event,
+            )
+            if hop_error is not None:
+                return hop_error, "", ""
         else:
             return "Failed to fetch URL: too many redirects.", "", ""
 
@@ -19702,6 +19800,114 @@ def _quiet_unlink(path: str, dir_fd = None) -> None:
         os.unlink(path, dir_fd = dir_fd) if dir_fd is not None else os.unlink(path)
     except OSError:
         pass
+
+
+# Hidden, like the spill directory: a project chat's workdir can be the user's own folder.
+_ATTACHMENTS_DIR = ".unsloth_attachments"
+_ATTACHMENT_PREFIX_LEN = 12
+_ATTACHMENT_NAME_BYTES = 80
+_UNSAFE_NAME_CHARS = re.compile(r'[\x00-\x1f\x7f/\\:*?"<>|]')
+# Windows device names stay reserved with any extension (NUL.tar.gz is NUL).
+_RESERVED_NAME = re.compile(r"(?:CON|PRN|AUX|NUL|COM\d|LPT\d)", re.IGNORECASE)
+
+
+def sandbox_attachment_path(sha256: str, name: str) -> str:
+    """Mirrored by sandboxAttachmentPath in the frontend's sandbox-attachments.ts."""
+    base = _UNSAFE_NAME_CHARS.sub("_", name or "").strip(" .") or "attachment"
+    # In bytes: filesystems cap a name at 255, and macOS stores decomposed text that can triple it.
+    if len(base.encode()) > _ATTACHMENT_NAME_BYTES:
+        stem, ext = os.path.splitext(base)
+        ext = ext if len(ext.encode()) <= 16 else ""
+        room = _ATTACHMENT_NAME_BYTES - len(ext.encode())
+        # Stripped again so the basename the frontend sends back derives this same path.
+        base = (stem.encode()[:room].decode("utf-8", "ignore").rstrip(" .") or "attachment") + ext
+    if _RESERVED_NAME.fullmatch(base.split(".", 1)[0].rstrip(" ")):
+        base = "_" + base
+    return f"{_ATTACHMENTS_DIR}/{sha256[:_ATTACHMENT_PREFIX_LEN]}/{base}"
+
+
+def materialize_sandbox_attachments(
+    session_id: "str | None", attachments: "list[tuple[str, str]]"
+) -> None:
+    """Copy chat attachment originals into the sandbox, leaving one already there so edits survive."""
+    from core import chat_originals
+    with _session_in_flight(session_id):
+        workdir = _get_workdir(session_id)
+        for sha256, name in attachments:
+            source = chat_originals.originals_dir() / sha256
+            if not source.is_file():
+                continue
+            try:
+                _install_attachment_copy(workdir, sandbox_attachment_path(sha256, name), source)
+            except (OSError, ValueError):
+                logger.warning(
+                    "could not copy attachment %s into the sandbox", sha256, exc_info = True
+                )
+
+
+def _install_attachment_copy(workdir: str, relative: str, source: Path) -> None:
+    """The spill writer's discipline: no link followed, and `os.link` never replaces a name."""
+    *dirs, name = relative.split("/")
+    tmp = f".tmp-{uuid.uuid4().hex[:12]}"
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if not _DIR_FD_WRITES:
+        target = workdir
+        for part in dirs:
+            target = os.path.join(target, part)
+            if os.path.islink(target):
+                return
+            os.makedirs(target, mode = 0o700, exist_ok = True)
+        if os.path.realpath(target) != os.path.join(os.path.realpath(workdir), *dirs):
+            return
+        if os.path.lexists(os.path.join(target, name)):
+            return
+        tmp = os.path.join(target, tmp)
+        try:
+            with (
+                open(source, "rb") as src,
+                os.fdopen(os.open(tmp, flags | getattr(os, "O_NOFOLLOW", 0), 0o600), "wb") as out,
+            ):
+                shutil.copyfileobj(src, out, 1 << 20)
+            with contextlib.suppress(FileExistsError):
+                os.link(tmp, os.path.join(target, name))
+        finally:
+            _quiet_unlink(tmp)
+        return
+    fds = [os.open(workdir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)]
+    try:
+        for part in dirs:
+            with contextlib.suppress(FileExistsError):
+                os.mkdir(part, 0o700, dir_fd = fds[-1])
+            fds.append(os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd = fds[-1]))
+        with contextlib.suppress(FileNotFoundError):
+            os.stat(name, dir_fd = fds[-1], follow_symlinks = False)
+            return
+        try:
+            with (
+                open(source, "rb") as src,
+                os.fdopen(os.open(tmp, flags, 0o600, dir_fd = fds[-1]), "wb") as out,
+            ):
+                shutil.copyfileobj(src, out, 1 << 20)
+            with contextlib.suppress(FileExistsError):
+                os.link(tmp, name, src_dir_fd = fds[-1], dst_dir_fd = fds[-1])
+        finally:
+            _quiet_unlink(tmp, dir_fd = fds[-1])
+    finally:
+        for fd in fds:
+            os.close(fd)
+
+
+def _is_attachment_copy(sandbox: str, parent: str, name: str) -> bool:
+    prefix = os.path.basename(parent)
+    path = os.path.join(parent, name)
+    if (
+        os.path.dirname(parent) != os.path.join(sandbox, _ATTACHMENTS_DIR)
+        or not re.fullmatch(r"[0-9a-f]{12}", prefix)
+        or os.path.islink(path)
+    ):
+        return False
+    digest = _file_digest(path)
+    return digest is not None and digest.startswith(prefix)
 
 
 def _forget_spill_record(path: str) -> None:
