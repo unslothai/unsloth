@@ -8513,8 +8513,7 @@ exit 0
     }
 
     # ── BEGIN SHARED WITH studio/setup.ps1 (Get-NvidiaLibraryInventory) ──
-    # nvml.dll sits in System32 with current drivers and under NVSMI with older ones; a bare
-    # name reaches only the former, so name the file, as studio/nvidia_probe.py does.
+    # Full paths only: a bare name searches PATH, where ZLUDA's nvcuda.dll and nvml.dll pass for NVIDIA.
     function Get-NvidiaNvmlLibraryPath {
         $dirs = @()
         if ($env:SystemRoot) { $dirs += (Join-Path $env:SystemRoot "System32") }
@@ -8523,14 +8522,20 @@ exit 0
             $candidate = Join-Path $dir "nvml.dll"
             if (Test-Path -LiteralPath $candidate) { return $candidate }
         }
-        return "nvml.dll"
+        return (Join-Path (Get-NvidiaSystem32Dir) "nvml.dll")
+    }
+
+    function Get-NvidiaSystem32Dir {
+        $root = if ($env:SystemRoot) { $env:SystemRoot } else { "C:\Windows" }
+        return (Join-Path $root "System32")
     }
 
     # The driver's libraries as P/Invoke methods, emitted rather than compiled: the installer must
     # not spawn csc.exe (New-StudioEmittedNativeType). $null when the type cannot be built. A
     # missing library throws at the first call, not here.
     function Get-NvidiaLibraryProbeType {
-        $name = "UnslothNvidiaProbeV2"
+        # V3: a session that emitted V2 would keep its bare-name bindings.
+        $name = "UnslothNvidiaProbeV3"
         $existing = $name -as [type]
         if ($existing) { return $existing }
         # Dynamic Code Security can kill the process on an emitted load rather than throw: the
@@ -8538,7 +8543,7 @@ exit 0
         if (-not (Test-StudioCanDefineNativeTypes)) { return $null }
         $windows = ($env:OS -eq "Windows_NT")
         $nvml = if ($windows) { Get-NvidiaNvmlLibraryPath } else { "libnvidia-ml.so.1" }
-        $cuda = if ($windows) { "nvcuda.dll" } else { "libcuda.so.1" }
+        $cuda = if ($windows) { Join-Path (Get-NvidiaSystem32Dir) "nvcuda.dll" } else { "libcuda.so.1" }
         $int = [int]; $uint = [uint32]; $refInt = [int].MakeByRefType()
         $refUInt = [uint32].MakeByRefType(); $refPtr = [IntPtr].MakeByRefType()
         try {
