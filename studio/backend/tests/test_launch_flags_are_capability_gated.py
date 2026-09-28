@@ -605,6 +605,8 @@ def test_a_flood_before_readiness_keeps_the_startup_head():
 def test_the_offload_report_covers_metal_and_env_pinned_layers():
     src = inspect.getsource(LlamaCppBackend.load_model)
     assert "(_detected_gpus or _metal_capable_host())" in src
+    # A positive count is kept without a locally probed GPU (RPC, SYCL); only a zero needs one.
+    assert "_offload_counts[0] <= 0" in src
     start = src.index("self._offload_overridden = ")
     assignment = src[start : src.index("\n                if ", start)]
     assert "_device_selection_is_cpu(extra_args, env)" in assignment

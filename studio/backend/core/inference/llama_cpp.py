@@ -31164,17 +31164,24 @@ class LlamaCppBackend:
                         gpu_indices is not None or use_fit or gpu_memory_mode == "manual",
                         _detected_gpus,
                     )
-                # Gated like the classifier: llama.cpp logs 0/N on CPU-only hosts too. Apple
-                # Silicon offloads through Metal with an empty CUDA/HIP probe.
+                # llama.cpp logs 0/N on CPU-only hosts too, so a zero count needs a GPU we expected
+                # (Apple Silicon offloads through Metal with an empty CUDA/HIP probe). A positive
+                # count is llama.cpp's own word, which covers RPC, SYCL and other unprobed builds.
+                _offload_counts = (
+                    None
+                    if _arch_gate_forced_cpu or _deliberate_cpu_only
+                    else parse_gpu_offload_counts(self._stdout_lines)
+                )
                 if (
-                    (_detected_gpus or _metal_capable_host())
-                    and not _arch_gate_forced_cpu
-                    and not _deliberate_cpu_only
-                    and (gpu_indices is not None or use_fit or gpu_memory_mode == "manual")
+                    _offload_counts is not None
+                    and _offload_counts[0] <= 0
+                    and not (
+                        (_detected_gpus or _metal_capable_host())
+                        and (gpu_indices is not None or use_fit or gpu_memory_mode == "manual")
+                    )
                 ):
-                    self._gpu_offload_layers = parse_gpu_offload_counts(self._stdout_lines)
-                else:
-                    self._gpu_offload_layers = None
+                    _offload_counts = None
+                self._gpu_offload_layers = _offload_counts
                 self._gpu_backend_unavailable = bool(_detected_gpus or _metal_capable_host()) and (
                     llama_saw_gpu_device(self._stdout_lines) is False
                 )
