@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import gc
+import importlib.util
 import logging
 import sys
 import threading
@@ -23,8 +24,8 @@ RUN_WAIT_S = 30.0
 MAX_PENDING = 8
 FAILURE_BACKOFF_S = 60.0
 _REQUIRED_DIRS = ("encoder", "tokenizer")
-LAYA_REQUIREMENT = "laya==0.3.5"
-INSTALL_TIMEOUT_S = 300
+# laya 0.3.5 ships inside Studio (see vendor/README.md), so the Decision API never installs anything.
+_VENDORED_LAYA = Path(__file__).resolve().parent.parent.parent / "vendor" / "laya"
 
 _state_lock = threading.Lock()
 _run_lock = threading.Lock()
@@ -35,9 +36,7 @@ _device_name: str | None = None
 _loader: threading.Thread | None = None
 _loading: Checkpoint | None = None
 _failure: tuple[Checkpoint, str, float] | None = None
-_install_lock = threading.Lock()
-_installer: threading.Thread | None = None
-_install_failure: tuple[str, float] | None = None
+_import_lock = threading.Lock()
 
 
 class Unavailable(Exception):
@@ -129,95 +128,30 @@ def _checkpoint_dir(checkpoint: Checkpoint, *, local_only: bool = False) -> Path
     return root
 
 
-def package_available() -> bool:
-    import importlib.util
-    return importlib.util.find_spec("laya") is not None
+def _laya():
+    """The vendored laya package, registered as top-level ``laya`` (its modules import each other relatively).
 
-
-def _install_command() -> list[str]:
-    import sys
-
-    from utils.mlx_repair import _uv_executable
-
-    # No deps: laya's deps are all Studio pins, so the install can never move them.
-    uv = _uv_executable()
-    if uv:
-        return [uv, "pip", "install", "--python", sys.executable, "--no-deps", LAYA_REQUIREMENT]
-    return [sys.executable, "-m", "pip", "install", "--no-deps", LAYA_REQUIREMENT]
-
-
-def ensure_package() -> None:
-    global _install_failure
-    if package_available():
-        _install_failure = None
-        return
-    with _install_lock:
-        if package_available():
-            return
-        if _install_failure and time.monotonic() < _install_failure[1]:
-            raise RuntimeError(_install_failure[0])
-        import importlib
-        import os
-        import subprocess
-
-        from utils.mlx_repair import _MLX_ENV_ALLOWLIST, _venv_root
-
-        # Same allowlisted env as the MLX self-heal: secrets/package-source vars cannot steer the install.
-        env = {key: os.environ[key] for key in _MLX_ENV_ALLOWLIST if key in os.environ}
-        if (venv_root := _venv_root()) is not None:
-            env["VIRTUAL_ENV"] = venv_root
-        logger.info("Installing %s for the Decision API", LAYA_REQUIREMENT)
+    Loaded by file path, not from ``sys.path``: a laya installed in the venv (Studio pinned one before
+    vendoring it) must not replace this copy, since this module drives laya internals.
+    """
+    if (module := sys.modules.get("laya")) is not None:
+        return module
+    with _import_lock:
+        if (module := sys.modules.get("laya")) is not None:
+            return module
+        init = _VENDORED_LAYA / "__init__.py"
+        spec = importlib.util.spec_from_file_location(
+            "laya", init, submodule_search_locations = [str(_VENDORED_LAYA)]
+        )
+        module = importlib.util.module_from_spec(spec)
+        sys.modules["laya"] = module
         try:
-            result = subprocess.run(
-                _install_command(),
-                env = env,
-                capture_output = True,
-                text = True,
-                encoding = "utf-8",
-                errors = "replace",
-                timeout = INSTALL_TIMEOUT_S,
-            )
-            detail = ((result.stderr or result.stdout).strip().splitlines() or [""])[-1]
-            ok = result.returncode == 0
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            detail, ok = type(exc).__name__, False
-        importlib.invalidate_caches()
-        if ok and package_available():
-            _install_failure = None
-            return
-        message = (
-            f"Could not install {LAYA_REQUIREMENT}. Check the internet connection. {detail}".strip()
-        )
-        logger.warning("Decision API install failed: %s", message)
-        _install_failure = (message, time.monotonic() + FAILURE_BACKOFF_S)
-        raise RuntimeError(message)
-
-
-def install_in_background() -> None:
-    global _installer, _install_failure
-    if package_available():
-        _install_failure = None
-        return
-    with _state_lock:
-        if _installer is not None and _installer.is_alive():
-            return
-        if _install_failure and time.monotonic() < _install_failure[1]:
-            return
-        _installer = threading.Thread(
-            target = _install_quietly, name = "systemone-install", daemon = True
-        )
-        _installer.start()
-
-
-def _install_quietly() -> None:
-    try:
-        ensure_package()
-    except RuntimeError:
-        pass
-
-
-def installing() -> bool:
-    return _install_lock.locked() or (_installer is not None and _installer.is_alive())
+            spec.loader.exec_module(module)
+        except BaseException:
+            for name in [n for n in sys.modules if n == "laya" or n.startswith("laya.")]:
+                del sys.modules[name]
+            raise
+        return module
 
 
 def is_cached(checkpoint: Checkpoint) -> bool:
@@ -293,11 +227,11 @@ class _MLXAgent:
     def __init__(self, folder: Path):
         import json
 
-        from laya.agent import Agent
-        from laya.common import clamp_temperature
         from transformers import AutoTokenizer
         from unsloth_zoo.mlx.decision import load_decision_model
 
+        laya = _laya()
+        clamp_temperature = laya.common.clamp_temperature
         self.folder = folder
         self.cfg = json.loads((folder / "rl_agent_config.json").read_text(encoding = "utf-8"))
         self.tok = AutoTokenizer.from_pretrained(str(folder / "tokenizer"))
@@ -307,13 +241,13 @@ class _MLXAgent:
         self.temperature_by_options = {
             k: clamp_temperature(v) for k, v in self.cfg.get("temperature_by_options", {}).items()
         }
-        self._to_internal = Agent._to_internal
+        self._to_internal = laya.agent.Agent._to_internal
         self.model = load_decision_model(folder)
 
 
 def _load_checkpoint(checkpoint: Checkpoint):
     root = _checkpoint_dir(checkpoint)
-    import laya
+    laya = _laya()
 
     # Evict only once the new checkpoint is on disk, so a long or failed download leaves the resident model serving.
     _evict()
@@ -348,14 +282,9 @@ def _load(checkpoint: Checkpoint) -> None:
     global _agent, _loaded, _device_name, _loading, _failure
     started = time.monotonic()
     try:
-        ensure_package()
         agent, device = _load_checkpoint(checkpoint)
     except Exception as exc:
-        message = (
-            str(exc)
-            if isinstance(exc, RuntimeError) and _install_failure
-            else f"Could not load {checkpoint.name}: {type(exc).__name__}: {exc}"
-        )
+        message = f"Could not load {checkpoint.name}: {type(exc).__name__}: {exc}"
         logger.warning("System One load failed: %s", message)
         with _state_lock:
             _failure = (checkpoint, message, time.monotonic() + FAILURE_BACKOFF_S)
@@ -431,7 +360,7 @@ _HEAD_CACHE_SIZE = 1024
 
 
 def _state_ids(tok, state, room: int) -> tuple[list[int], bool]:
-    from laya.common import serialize_state
+    serialize_state = _laya().common.serialize_state
 
     text = serialize_state(state).replace(tok.mask_token, " ")
     chars = max(4096, room * 16)
@@ -447,7 +376,9 @@ def _state_ids(tok, state, room: int) -> tuple[list[int], bool]:
 def _head(agent, question: dict[str, Any], max_len: int, head_max_len: int):
     import json
 
-    from laya.common import build_sequence, render_options
+    common = _laya().common
+    build_sequence = common.build_sequence
+    render_options = common.render_options
 
     cache = agent.__dict__.setdefault("_unsloth_heads", {})
     key = json.dumps(question, ensure_ascii = False)
@@ -464,7 +395,10 @@ def _head(agent, question: dict[str, Any], max_len: int, head_max_len: int):
 
 def _predict(agent, state, questions: dict[str, dict[str, Any]]) -> tuple[dict[str, Any], bool]:
     import numpy as np
-    from laya.common import QTYPES, confidence_from_probs
+
+    common = _laya().common
+    QTYPES = common.QTYPES
+    confidence_from_probs = common.confidence_from_probs
 
     max_len = int(agent.cfg.get("max_len", 512))
     head_max_len = int(agent.cfg.get("head_max_len", 192))
@@ -525,7 +459,8 @@ def _predict(agent, state, questions: dict[str, dict[str, Any]]) -> tuple[dict[s
 def _forward(agent, items: list[dict[str, Any]]):
     global _agent, _loaded, _device_name
     import torch
-    from laya.common import collate_items
+
+    collate_items = _laya().common.collate_items
 
     batch = collate_items([items], agent.tok.pad_token_id)
     if agent.device == "mlx":
@@ -537,7 +472,7 @@ def _forward(agent, items: list[dict[str, Any]]):
             if "memory" not in reason and "allocate" not in reason:
                 raise
         # Past the handler, so the traceback no longer keeps the MLX arrays alive while the CPU copy loads.
-        import laya
+        laya = _laya()
 
         logger.warning("Laya ran out of GPU memory; moving it to CPU")
         agent.model = None
@@ -586,7 +521,8 @@ def _run_model(agent, batch):
 
 def _probabilities(agent, row, k: int, qtype: int):
     import numpy as np
-    from laya.common import temp_bucket
+
+    temp_bucket = _laya().common.temp_bucket
 
     scale = agent.temperature_by_options.get(temp_bucket(qtype, k), agent.temperature[qtype])
     z = row[:k] / scale
@@ -654,14 +590,15 @@ def status() -> dict[str, Any]:
             "loaded_model": _loaded.name if _loaded else None,
             "device": _device_name,
             "loading_model": _loading.name if _loading else None,
-            "installing": installing(),
-            "error": failure[1] if failure else (_install_failure[0] if _install_failure else None),
+            # Kept for the settings API: laya is vendored, so there is never an install in flight.
+            "installing": False,
+            "error": failure[1] if failure else None,
             "error_model": failure[0].name if failure else None,
         }
 
 
 def unload() -> bool:
-    global _agent, _loaded, _device_name, _failure, _install_failure
+    global _agent, _loaded, _device_name, _failure
     with _state_lock:
         # _loading: a load claimed but not yet started would otherwise land after this unload.
         if _loading is not None or (_loader is not None and _loader.is_alive()):
@@ -669,6 +606,6 @@ def unload() -> bool:
     with _run_lock:
         was_loaded = _agent is not None
         _agent = _loaded = _device_name = None
-        _failure = _install_failure = None
+        _failure = None
     _release_memory()
     return was_loaded

@@ -1372,8 +1372,6 @@ def _systemone_response() -> SystemOneSettingsResponse:
     from core.systemone import catalog, laya_runtime
 
     enabled = systemone_settings.get_enabled()
-    if enabled:
-        laya_runtime.install_in_background()
     runtime = laya_runtime.status()
     model = catalog.default_checkpoint().name
     error = runtime["error"]

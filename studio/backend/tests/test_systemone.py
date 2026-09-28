@@ -91,8 +91,6 @@ def runtime(monkeypatch):
         ("_loader", None),
         ("_loading", None),
         ("_failure", None),
-        ("_installer", None),
-        ("_install_failure", None),
     ):
         monkeypatch.setattr(laya_runtime, name, value)
     for name in (
@@ -117,7 +115,6 @@ def runtime(monkeypatch):
         laya_runtime, "_predict", lambda agent, state, qs: (agent.predict(state, qs), False)
     )
     monkeypatch.setattr(systemone_settings, "runtime_unavailable_reason", lambda: None)
-    monkeypatch.setattr(laya_runtime, "package_available", lambda: True)
     yield loads
     if laya_runtime._loader is not None:
         laya_runtime._loader.join(5)
@@ -291,91 +288,26 @@ def test_failed_load_backs_off_and_reports_why(client, monkeypatch):
     assert attempts == ["laya-multilingual"]
 
 
-class FakePip:
-    def __init__(
-        self,
-        monkeypatch,
-        returncode = 0,
-        stderr = "",
-        release = None,
-    ):
-        import subprocess
-
-        self.calls = []
-        self.installed = False
-        self.returncode, self.stderr, self.release = returncode, stderr, release
-        monkeypatch.setattr(laya_runtime, "package_available", lambda: self.installed)
-        monkeypatch.setattr(subprocess, "run", self.run)
-
-    def run(self, cmd, **kwargs):
-        self.calls.append((cmd, kwargs))
-        if self.release is not None:
-            self.release.wait(5)
-        self.installed = self.returncode == 0
-        return SimpleNamespace(returncode = self.returncode, stdout = "", stderr = self.stderr)
-
-
-def test_missing_package_is_installed_automatically(client, monkeypatch, runtime):
-    monkeypatch.setenv("UNSLOTH_TEST_SECRET", "do-not-forward")
-    pip = FakePip(monkeypatch)
-    response = _post(client)
-    assert response.status_code == 200, response.text
-    [(cmd, kwargs)] = pip.calls
-    assert cmd[-2:] == ["--no-deps", laya_runtime.LAYA_REQUIREMENT]
-    assert "UNSLOTH_TEST_SECRET" not in kwargs["env"]
-    assert runtime == ["laya-multilingual"]
-
-
-def test_failed_install_says_why_and_backs_off(client, monkeypatch, runtime):
-    pip = FakePip(monkeypatch, returncode = 1, stderr = "error: Failed to fetch laya\n")
-    first = _post(client)
-    assert first.status_code == 503
-    message = first.json()["detail"]["message"]
-    assert "Could not install laya==0.3.5" in message and "Failed to fetch laya" in message
-    assert _post(client).status_code == 503
-    assert len(pip.calls) == 1
-    assert runtime == []
-    assert client.get("/api/settings/systemone").json()["error"] == message
-
-
-def test_a_package_installed_by_hand_clears_the_old_install_error(client, monkeypatch):
-    monkeypatch.setattr(laya_runtime, "FAILURE_BACKOFF_S", 0.0)
-    pip = FakePip(monkeypatch, returncode = 1, stderr = "offline")
-    assert _post(client).status_code == 503
-    laya_runtime._loader.join(5)
-    pip.installed = True
-    assert _post(client).status_code == 200
-    body = client.get("/api/settings/systemone").json()
-    assert body["error"] is None and body["loaded_model"] == "laya-multilingual"
-
-
-def test_turning_it_back_on_retries_a_failed_install(client, monkeypatch):
-    pip = FakePip(monkeypatch, returncode = 1, stderr = "offline")
-    assert _post(client).status_code == 503
-    client.put("/api/settings/systemone", json = {"enabled": False})
-    pip.returncode = 0
-    client.put("/api/settings/systemone", json = {"enabled": True})
-    laya_runtime._installer.join(5)
-    assert pip.installed is True
-    assert _post(client).status_code == 200
-
-
-def test_settings_install_in_the_background_and_say_so(client, monkeypatch):
-    release = threading.Event()
-    pip = FakePip(monkeypatch, release = release)
-    assert client.get("/api/settings/systemone").json()["installing"] is True
-    release.set()
-    laya_runtime._installer.join(5)
+def test_settings_never_report_an_install(client):
     body = client.get("/api/settings/systemone").json()
     assert body["installing"] is False and body["error"] is None
-    assert len(pip.calls) == 1
 
 
-def test_nothing_installs_while_it_is_off(client, monkeypatch):
-    monkeypatch.setattr(systemone_settings, "_owner_setting", {}.get)
-    pip = FakePip(monkeypatch)
-    assert client.get("/api/settings/systemone").json()["installing"] is False
-    assert pip.calls == []
+def test_the_vendored_laya_wins_over_an_installed_one(monkeypatch, tmp_path):
+    pytest.importorskip("torch")
+    from pathlib import Path
+
+    for name in [n for n in sys.modules if n == "laya" or n.startswith("laya.")]:
+        monkeypatch.delitem(sys.modules, name)
+    decoy = tmp_path / "laya"
+    decoy.mkdir()
+    (decoy / "__init__.py").write_text("raise ImportError('installed laya was imported')\n")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    laya = laya_runtime._laya()
+    assert laya_runtime._laya() is laya and sys.modules["laya"] is laya
+    assert Path(laya.__file__).parent == laya_runtime._VENDORED_LAYA
+    assert Path(sys.modules["laya.common"].__file__).parent == laya_runtime._VENDORED_LAYA
+    assert callable(laya.load) and callable(laya.common.collate_items)
 
 
 def test_slow_load_answers_retry_after_instead_of_hanging(client, monkeypatch):
@@ -679,7 +611,7 @@ def test_mlx_answers_match_laya_on_cpu(monkeypatch):
     path = os.environ.get("SYSTEMONE_TEST_LAYA")
     if not path:
         pytest.skip("set SYSTEMONE_TEST_LAYA to a downloaded convaiinnovations/laya snapshot")
-    laya = pytest.importorskip("laya")
+    laya = laya_runtime._laya()
     if not laya_runtime._mlx_available():
         pytest.skip("needs unsloth_zoo.mlx.decision on Apple Silicon")
     from pathlib import Path
@@ -925,7 +857,6 @@ def test_real_laya_answers_through_the_route(client, monkeypatch):
     path = os.environ.get("SYSTEMONE_TEST_LAYA")
     if not path:
         pytest.skip("set SYSTEMONE_TEST_LAYA to a downloaded convaiinnovations/laya snapshot")
-    pytest.importorskip("laya")
     monkeypatch.setattr(laya_runtime, "_load_checkpoint", _REAL_LOAD)
     monkeypatch.setattr(laya_runtime, "_predict", _REAL_PREDICT)
     monkeypatch.setenv("UNSLOTH_SYSTEMONE_MODEL", path)
@@ -975,7 +906,7 @@ class WordTokenizer:
 
 
 def test_long_state_is_tokenized_only_as_far_as_the_model_reads():
-    pytest.importorskip("laya")
+    pytest.importorskip("torch")  # laya imports torch
     tok = WordTokenizer()
     ids, cut = laya_runtime._state_ids(tok, "word " * 100_000, 900)
     assert (ids, cut) == ([4] * 900, True)
@@ -984,7 +915,7 @@ def test_long_state_is_tokenized_only_as_far_as_the_model_reads():
 
 @pytest.mark.parametrize("words, cut", [(900, False), (901, True), (5000, True)])
 def test_state_cut_matches_the_full_tokenization(words, cut):
-    pytest.importorskip("laya")
+    pytest.importorskip("torch")
     ids, was_cut = laya_runtime._state_ids(WordTokenizer(), "word " * words, 900)
     assert (len(ids), was_cut) == (min(words, 900), cut)
 
@@ -1002,7 +933,9 @@ class MovableModel:
 def gpu_agent(monkeypatch):
     torch = pytest.importorskip("torch")
     collate = lambda groups, pad: {"attention_mask": torch.ones(1, len(groups[0][0]["ids"]))}
-    monkeypatch.setitem(sys.modules, "laya.common", SimpleNamespace(collate_items = collate))
+    monkeypatch.setitem(
+        sys.modules, "laya", SimpleNamespace(common = SimpleNamespace(collate_items = collate))
+    )
     return SimpleNamespace(
         device = torch.device("cuda"),
         dtype = torch.float16,
@@ -1092,7 +1025,7 @@ def test_mlx_out_of_memory_falls_back_to_cpu(monkeypatch, gpu_agent):
         monkeypatch.setattr(laya_runtime, "_loaded", "checkpoint")
         return laya_runtime._forward(agent, _items())
 
-    monkeypatch.setitem(sys.modules, "laya", SimpleNamespace(load = load))
+    monkeypatch.setattr(sys.modules["laya"], "load", load, raising = False)
     monkeypatch.setitem(
         sys.modules, "mlx.core", SimpleNamespace(clear_cache = lambda: cleared.append(True))
     )
@@ -1136,7 +1069,7 @@ def test_fast_path_matches_laya_predict():
     path = os.environ.get("SYSTEMONE_TEST_LAYA")
     if not path:
         pytest.skip("set SYSTEMONE_TEST_LAYA to a downloaded convaiinnovations/laya snapshot")
-    laya = pytest.importorskip("laya")
+    laya = laya_runtime._laya()
     agent = laya.load(path, subfolder = "multilingual", device = "cpu")
     questions = {name: laya_runtime._to_laya(q) for name, q in QUESTIONS.items()}
     questions["zeta"] = {
