@@ -251,11 +251,11 @@ def test_a_huge_snapshot_directory_is_read_only_up_to_the_limit(tmp_path, monkey
     assert read["entries"] <= 51
 
 
-@pytest.mark.parametrize("name", [".DS_Store", "Thumbs.db"])
+@pytest.mark.parametrize(
+    "name", sorted(local_inventory.hf_cache_scan._CACHE_ENTRIES_TO_IGNORE | {".DS_Store"})
+)
 def test_os_metadata_alone_does_not_count_as_content(tmp_path, name):
     # Explorer and Finder drop these into folders on a share; they are not a download.
-    if name not in local_inventory.hf_cache_scan._CACHE_ENTRIES_TO_IGNORE:
-        pytest.skip(reason = f"this huggingface_hub does not ignore {name}")
     repo = _repo_dir(tmp_path)
     (repo / "blobs").mkdir(parents = True)
     _write(repo / "snapshots" / REV / name, b"\0" * 16)
