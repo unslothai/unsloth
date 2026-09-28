@@ -632,19 +632,21 @@ def test_left_padded_rows_score_as_if_unpadded(shift, monkeypatch):
         count += int((lab[:, 1:] != -100).sum())
     want = total / count
 
-    layout = {"shift": shift, "num_items_in_batch": False}
-    aligned = rl._unsloth_gkd_right_align(inputs, layout)
-    got = rl._unsloth_gkd_chunked_loss(
-        _trainer(0.5, student, teacher), student, aligned, None, layout
+    # Through the generated compute_loss: the chunked path, then TRL's own body as every fallback runs it.
+    namespace = dict(vars(rl), GKDTrainer = GKDTrainer, empty_cache = lambda: None)
+    source = PROMPT_LAYOUT if shift == "prompt" else SHIFT_LAYOUT
+    exec(
+        "class _Generated(GKDTrainer):\n" + rl.gkd_trainer_compute_loss("compute_loss", source),
+        namespace,
     )
-    torch.testing.assert_close(got.double(), want, rtol = 1e-5, atol = 1e-7)
-    # TRL's dense loss (every fallback) scores the aligned rows the same way.
+    trainer = namespace["_Generated"].__new__(namespace["_Generated"])
+    trainer.__dict__.update(_trainer(0.5, student, teacher).__dict__)
+    monkeypatch.delenv("UNSLOTH_RETURN_HIDDEN_STATES")
+    torch.testing.assert_close(
+        trainer.compute_loss(student, inputs).double(), want, rtol = 1e-5, atol = 1e-7
+    )
     if shift == "prompt":
-        monkeypatch.setenv("UNSLOTH_RETURN_HIDDEN_STATES", "0")
-        s = student(aligned["input_ids"], None).logits[:, aligned["prompts"].shape[1] - 1 : -1]
-        with torch.no_grad():
-            t = teacher(aligned["input_ids"], None).logits[:, aligned["prompts"].shape[1] - 1 : -1]
-        dense = GKDTrainer.generalized_jsd_loss(
-            s, t, labels = aligned["labels"][:, aligned["prompts"].shape[1] :], beta = 0.5
+        monkeypatch.setenv("UNSLOTH_GKD_CHUNKED", "0")
+        torch.testing.assert_close(
+            trainer.compute_loss(student, inputs), want, rtol = 1e-5, atol = 1e-7
         )
-        torch.testing.assert_close(dense, want, rtol = 1e-5, atol = 1e-7)
