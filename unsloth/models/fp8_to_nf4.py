@@ -48,6 +48,9 @@ _ENV_QUANTIZE_ALL = "UNSLOTH_FP8_TO_NF4_QUANTIZE_16BIT"
 
 # None outside a load; True / False once the outermost from_pretrained has looked at its call.
 _EXPLICIT_4BIT = contextvars.ContextVar("unsloth_explicit_load_in_4bit", default = None)
+# Configs armed inside the outermost from_pretrained; disarmed when it returns or raises, so an
+# exception before the load's own restore (prefetch, device-map planning) cannot leak a stripped config.
+_ARMED_CONFIGS = contextvars.ContextVar("unsloth_fp8_to_nf4_armed_configs", default = None)
 
 _FP8_DTYPES = tuple(
     getattr(torch, name)
@@ -77,8 +80,9 @@ def requests_bnb_4bit(quantization_config) -> bool:
 
 def track_explicit_4bit_request(fn):
     """Record whether the caller itself asked for 4bit: ``load_in_4bit`` defaults to True, so only a
-    passed argument (or a bitsandbytes 4bit ``quantization_config``) is a request. The outermost
-    from_pretrained decides; the FastModel delegations inside it pass the flag on explicitly."""
+    passed argument is a request (a user ``quantization_config`` clears the loader's 4bit flag, so it
+    never arms). The outermost from_pretrained decides; the FastModel delegations inside it pass the
+    flag on explicitly."""
     try:
         signature = inspect.signature(fn)
     except (TypeError, ValueError):
@@ -97,9 +101,13 @@ def track_explicit_4bit_request(fn):
             explicit = bool(kwargs.get("load_in_4bit", False))
         explicit = explicit or requests_bnb_4bit(kwargs.get("quantization_config", None))
         token = _EXPLICIT_4BIT.set(explicit)
+        armed_token = _ARMED_CONFIGS.set([])
         try:
             return fn(*args, **kwargs)
         finally:
+            for armed in _ARMED_CONFIGS.get() or []:
+                disarm_fp8_to_nf4(armed)
+            _ARMED_CONFIGS.reset(armed_token)
             _EXPLICIT_4BIT.reset(token)
 
     return _wrapper
@@ -180,9 +188,9 @@ def _transformers_supports_fp8_to_nf4() -> Optional[str]:
         from transformers import core_model_loading as cml
         from transformers.conversion_mapping import get_model_conversion_mapping  # noqa: F401
         from transformers.quantizers import auto as quantizers_auto
-        from transformers.quantizers.quantizer_bnb_4bit import Bnb4BitHfQuantizer  # noqa: F401
+        from transformers.quantizers.quantizer_bnb_4bit import Bnb4BitHfQuantizer
     except Exception:
-        return "this transformers has no weight-conversion loader (transformers >= 5 is needed)"
+        return "this transformers has no weight-conversion loader (transformers >= 5.16 is needed)"
     for name in (
         "WeightConverter",
         "WeightRenaming",
@@ -196,6 +204,17 @@ def _transformers_supports_fp8_to_nf4() -> Optional[str]:
         return "transformers' WeightTransform has no add_tensor"
     if not isinstance(getattr(quantizers_auto, "AUTO_QUANTIZER_MAPPING", None), dict):
         return "transformers has no AUTO_QUANTIZER_MAPPING"
+    # Converters are rebuilt with these (5.5 to 5.16 added them one by one).
+    if not hasattr(cml, "_IdentityOp"):
+        return "transformers.core_model_loading has no `_IdentityOp`"
+    if not callable(getattr(Bnb4BitHfQuantizer, "update_weight_conversions", None)):
+        return "transformers' quantizers have no update_weight_conversions hook"
+    # Slots, not the signature: Unsloth wraps WeightConverter.__init__ as (*args, **kwargs).
+    converter_fields = set(getattr(cml.WeightConverter, "__slots__", ())) | set(
+        getattr(cml.WeightConverter, "__dataclass_fields__", {})
+    )
+    if "force_cpu" not in converter_fields:
+        return "transformers' WeightConverter predates force_cpu (transformers >= 5.16 is needed)"
     return None
 
 
@@ -252,6 +271,19 @@ def maybe_arm_fp8_to_nf4(
                 f"{reason}. Loading the fp8 weights instead."
             )
         return False
+    if quant.get("modules_to_convert"):
+        try:
+            from transformers.integrations.finegrained_fp8 import (  # noqa: F401
+                FP8Embedding,
+                replace_with_fp8_embedding,
+            )
+        except Exception:
+            if verbose:
+                print(
+                    "Unsloth: this fp8 checkpoint keeps fp8 embedding tables (modules_to_convert), which "
+                    "need transformers >= 5.17 to load in 4bit. Loading the fp8 weights instead."
+                )
+            return False
     if not install_fp8_to_nf4_quantizer():
         if verbose:
             print(
@@ -283,6 +315,9 @@ def maybe_arm_fp8_to_nf4(
         plan["stripped_text_config"] = any(stripped)
         plan["stripped_root_config"] = not all(stripped) if stripped else False
         setattr(config, UNSLOTH_FP8_TO_NF4_ATTR, plan)
+        armed_configs = _ARMED_CONFIGS.get()
+        if armed_configs is not None:
+            armed_configs.append(config)
     except Exception:
         for holder in holders:
             if getattr(holder, "quantization_config", None) is None:

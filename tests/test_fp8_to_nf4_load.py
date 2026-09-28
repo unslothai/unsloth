@@ -435,22 +435,26 @@ def test_arming_needs_an_explicit_request(monkeypatch):
     )
     assert config.quantization_config["quant_method"] == "fp8"
 
+    inside = {}
+
     @fp8_to_nf4.track_explicit_4bit_request
     def from_pretrained(
         model_name = None,
         load_in_4bit = True,
         **kwargs,
     ):
-        return check_and_disable_bitsandbytes_loading(
+        flags = check_and_disable_bitsandbytes_loading(
             config, load_in_4bit = load_in_4bit, verbose = False
         )
+        inside["armed"] = fp8_to_nf4.fp8_to_nf4_armed(config)
+        inside["stripped"] = not hasattr(config, "quantization_config")
+        return flags
 
     assert from_pretrained("x")[:2] == (False, False)
     config = _fp8_config()
     assert from_pretrained("x", load_in_4bit = True)[:2] == (True, False)
-    assert not hasattr(config, "quantization_config")
-    assert fp8_to_nf4.fp8_to_nf4_armed(config)
-    assert fp8_to_nf4.disarm_fp8_to_nf4(config)
+    assert inside == {"armed": True, "stripped": True}
+    # The outermost from_pretrained hands the caller's config back as it was.
     assert config.quantization_config["quant_method"] == "fp8"
     assert not fp8_to_nf4.fp8_to_nf4_armed(config)
 
@@ -516,6 +520,7 @@ def test_block_dequant_matches_reference_formula(shape):
     assert torch.equal(got.view(torch.int16), expected.view(torch.int16))
 
 
+@needs_feature
 def test_stacked_16bit_weight_with_a_scale_is_copied_into_the_stack():
     import unsloth.models.fp8_to_nf4 as fp8_to_nf4
 
@@ -539,3 +544,24 @@ def test_stacked_16bit_weight_with_a_scale_is_copied_into_the_stack():
     stack = result["mlp.experts.*.down_proj.weight"]
     assert torch.equal(stack[0], _dequantize_reference(quant, scale))
     assert torch.equal(stack[1], stored_16bit)
+
+
+@needs_feature
+def test_a_load_that_raises_before_loading_hands_the_config_back(monkeypatch):
+    # Prefetch or device-map planning can raise after arming, before the load restores the config.
+    from unsloth.models import fp8_to_nf4
+
+    monkeypatch.delenv("UNSLOTH_FP8_TO_NF4", raising = False)
+    config = _fp8_config()
+    original = dict(config.quantization_config)
+
+    @fp8_to_nf4.track_explicit_4bit_request
+    def from_pretrained(model_name = None, load_in_4bit = True, **kwargs):
+        assert check_and_disable_bitsandbytes_loading(config, load_in_4bit = load_in_4bit, verbose = False)[0]
+        assert fp8_to_nf4.fp8_to_nf4_armed(config)
+        raise RuntimeError("prefetch stalled")
+
+    with pytest.raises(RuntimeError, match = "prefetch stalled"):
+        from_pretrained("x", load_in_4bit = True)
+    assert config.quantization_config == original
+    assert not fp8_to_nf4.fp8_to_nf4_armed(config)
