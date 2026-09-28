@@ -8233,63 +8233,17 @@ def test_turboquant_leaves_every_cache_for_the_runtime_to_build():
     assert kinds() == ["QuantizedKVCache"] * 2
 
 
-def test_turboquant_sends_its_width_on_the_reused_vlm_session_too(monkeypatch):
-    """The path a TurboQuant load actually takes. The detour serves text models through mlx-vlm,
-    so _generate_vlm carries every eligible load, and its reused branch is a session rather than
-    an entry list -- a second place the width had to be lifted out of the fresh-cache branch."""
-    import sys
-    import types
-
+def test_turboquant_sends_its_width_on_both_vlm_cache_branches(monkeypatch):
+    """No pre-converted entry carries the width, so a reused session must still send it."""
     from core.inference.mlx_inference import MLXInferenceBackend
 
-    seen = {}
-    mlx_vlm = types.ModuleType("mlx_vlm")
-    mlx_vlm.prompt_utils = SimpleNamespace(
-        MODEL_CONFIG = {}, apply_chat_template = lambda *_a, **_k: "prompt"
-    )
-
-    def _vlm_stream(*_args, **kwargs):
-        seen.clear()
-        seen.update(kwargs)
-        yield SimpleNamespace(text = "ok", prompt_tokens = 3, generation_tokens = 1)
-
-    mlx_vlm.stream_generate = _vlm_stream
-    monkeypatch.setitem(sys.modules, "mlx_vlm", mlx_vlm)
-    monkeypatch.setattr(
-        "core.inference.chat_template_helpers.apply_chat_template_for_generation",
-        lambda *_a, **_k: "prompt",
-    )
-    monkeypatch.setattr(
-        "core.inference.chat_template_helpers.detect_think_prefill", lambda *_a, **_k: ""
-    )
-
     backend = MLXInferenceBackend()
-    backend._model = SimpleNamespace(config = {"model_type": "gemma3"})
-    backend._processor = SimpleNamespace(tokenizer = SimpleNamespace())
-    backend._is_vlm = True
     backend._reads_vision = True
     backend._kv_quant = {"kv_bits": 3.5}
     backend._turboquant = True
-    monkeypatch.setattr(backend, "_release_vlm_snapshots", lambda: None)
 
-    def _generate(session):
-        monkeypatch.setattr(backend, "_vlm_prompt_cache_session", lambda *_a, **_k: session)
-        list(
-            backend.generate_chat_response(
-                messages = [{"role": "user", "content": "hi"}], max_new_tokens = 1
-            )
-        )
-        return dict(seen)
-
-    class _Session:
-        cache = [object()]
-        media_block = None
-        step = 8
-        produced_tokens = 0
-        produced_seconds = 0.0
-
-        def __enter__(self):
-            return self
+    class _Session(contextlib.AbstractContextManager):
+        cache, media_block, step, produced_tokens, produced_seconds = [object()], None, 8, 0, 0.0
 
         def __exit__(self, *_exc):
             return False
@@ -8298,12 +8252,14 @@ def test_turboquant_sends_its_width_on_the_reused_vlm_session_too(monkeypatch):
             return None
 
     session = _Session()
-    fresh = _generate(None)
-    reused = _generate(session)
+    fresh = dict(_drive_vlm_generation(backend, monkeypatch))
+    reused = dict(_drive_vlm_generation(backend, monkeypatch, session = session))
     for kwargs in (fresh, reused):
-        assert kwargs["kv_bits"] == 3.5
-        assert kwargs["kv_quant_scheme"] == "turboquant"
-        assert kwargs["quantized_kv_start"] == 0
+        assert (kwargs["kv_bits"], kwargs["kv_quant_scheme"], kwargs["quantized_kv_start"]) == (
+            3.5,
+            "turboquant",
+            0,
+        )
     assert "prompt_cache" in reused and "prompt_cache" not in fresh
 
 
