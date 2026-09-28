@@ -118,6 +118,94 @@ def test_the_startup_read_leaves_studio_db_as_it_found_it(tmp_path, monkeypatch)
     assert not db.exists()
 
 
+@pytest.mark.parametrize(
+    "flag, configured, automatic",
+    [
+        ("1", {}, True),
+        ("0", {}, False),
+        ("1", {hub_settings.SOURCE_KEY: "huggingface"}, False),
+        ("1", {hub_settings.HF_ENDPOINT_KEY: ""}, False),
+        ("1", {"HF_ENDPOINT": MIRROR}, False),
+    ],
+)
+def test_mainland_china_defaults_to_modelscope_until_the_hub_is_configured(
+    store, monkeypatch, flag, configured, automatic
+):
+    import hub.modelscope.router as modelscope
+
+    monkeypatch.setattr(modelscope, "internal_endpoint", lambda: "http://127.0.0.1:1234")
+    monkeypatch.delenv("HF_ENDPOINT")
+    monkeypatch.setenv("UNSLOTH_MIRROR_FALLBACK", flag)
+    for key, value in configured.items():
+        if key == "HF_ENDPOINT":
+            monkeypatch.setenv(key, value)
+        else:
+            store[key] = value
+    hub_settings.apply_hub_settings()
+    settings = hub_settings.get_hub_settings()
+    expected = hub_settings.MODELSCOPE if automatic else hub_settings.HUGGINGFACE
+    assert (settings.source, settings.source_automatic) == (expected, automatic)
+    assert hub_settings.active_source() == expected
+    assert store == {k: v for k, v in configured.items() if k != "HF_ENDPOINT"}
+
+
+@pytest.mark.parametrize(
+    "zone, resolvers, platform, expected",
+    [
+        ("Asia/Shanghai", "", "linux", True),
+        (":/usr/share/zoneinfo/Asia/Urumqi", "", "darwin", True),
+        ("Asia/Singapore", "", "linux", False),
+        ("Asia/Singapore", "nameserver 192.168.1.1\nnameserver 223.5.5.5\n", "linux", True),
+        ("Asia/Singapore", "nameserver 223.5.5.50\n", "linux", False),
+        ("Asia/Singapore", "nameserver 223.5.5.5\n", "win32", False),
+    ],
+)
+def test_mainland_china_follows_the_installer_rules(
+    tmp_path, monkeypatch, zone, resolvers, platform, expected
+):
+    from utils import mainland_china
+
+    conf = tmp_path / "resolv.conf"
+    conf.write_text(resolvers)
+    monkeypatch.setattr(mainland_china, "_RESOLV_CONFS", (str(tmp_path / "missing"), str(conf)))
+    monkeypatch.setattr(mainland_china.sys, "platform", platform)
+    monkeypatch.setenv("TZ", zone)
+    monkeypatch.delenv("UNSLOTH_MIRROR_FALLBACK")
+    mainland_china.in_mainland_china.cache_clear()
+    try:
+        assert mainland_china.china_mirrors_enabled() is expected
+    finally:
+        mainland_china.in_mainland_china.cache_clear()
+
+
+@pytest.mark.parametrize(
+    "zone, expected", [("China Standard Time", True), ("Singapore Standard Time", False)]
+)
+def test_windows_reads_the_registry_time_zone(monkeypatch, zone, expected):
+    from utils import mainland_china
+
+    class _Key:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+    registry = _types.SimpleNamespace(
+        HKEY_LOCAL_MACHINE = None,
+        OpenKey = lambda *_: _Key(),
+        QueryValueEx = lambda _key, name: (zone, 1),
+    )
+    monkeypatch.setitem(sys.modules, "winreg", registry)
+    monkeypatch.setattr(mainland_china.sys, "platform", "win32")
+    monkeypatch.delenv("TZ", raising = False)
+    mainland_china.in_mainland_china.cache_clear()
+    try:
+        assert mainland_china.in_mainland_china() is expected
+    finally:
+        mainland_china.in_mainland_china.cache_clear()
+
+
 @pytest.fixture
 def client(store):
     app = FastAPI()

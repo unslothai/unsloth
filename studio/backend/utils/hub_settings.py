@@ -6,8 +6,9 @@
 The saved values are applied as ``HF_ENDPOINT`` / ``HF_DATASETS_SERVER``, which
 everything in Unsloth -- huggingface_hub, datasets, the browser via /api/health,
 and every worker process spawned afterwards -- already follows. Until the owner
-saves, whatever the operator exported stays in effect. ModelScope as the source
-points ``HF_ENDPOINT`` at the loopback adapter in ``hub.modelscope``.
+saves, whatever the operator exported stays in effect; in mainland China, with
+nothing saved or exported, the source defaults to ModelScope. ModelScope as the
+source points ``HF_ENDPOINT`` at the loopback adapter in ``hub.modelscope``.
 """
 
 from __future__ import annotations
@@ -53,6 +54,7 @@ class HubSettings:
     datasets_server_follows_endpoint: bool
     saved: bool
     source: str = HUGGINGFACE
+    source_automatic: bool = False
 
 
 def _capture_operator_env() -> dict[str, str | None]:
@@ -98,12 +100,29 @@ def _read_stored() -> dict:
         return {}
 
 
+def _automatic_modelscope(stored: dict) -> bool:
+    """ModelScope by default in mainland China, until a source or an endpoint is saved or exported."""
+    from utils.mainland_china import china_mirrors_enabled
+    return (
+        SOURCE_KEY not in stored
+        and HF_ENDPOINT_KEY not in stored
+        and not _operator_endpoint()
+        and china_mirrors_enabled()
+    )
+
+
 def get_hub_settings() -> HubSettings:
     stored = _read_stored()
-    source = stored.get(SOURCE_KEY) if stored.get(SOURCE_KEY) in SOURCES else HUGGINGFACE
+    automatic = _automatic_modelscope(stored)
+    if automatic:
+        source = MODELSCOPE
+    else:
+        source = stored.get(SOURCE_KEY) if stored.get(SOURCE_KEY) in SOURCES else HUGGINGFACE
     endpoint = stored.get(HF_ENDPOINT_KEY)
     if not isinstance(endpoint, str):
-        return HubSettings(_operator_endpoint(), False, saved = False, source = source)
+        return HubSettings(
+            _operator_endpoint(), False, saved = False, source = source, source_automatic = automatic
+        )
     try:
         endpoint = validate_hub_endpoint(endpoint)
     except ValueError:

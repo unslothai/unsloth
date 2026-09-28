@@ -127,6 +127,12 @@ def _no_real_mxc_drive_aliases(monkeypatch):
 
 
 @pytest.fixture(autouse = True)
+def _no_mainland_china_defaults(monkeypatch):
+    # A host in mainland China would otherwise default the model source to ModelScope.
+    monkeypatch.setenv("UNSLOTH_MIRROR_FALLBACK", "0")
+
+
+@pytest.fixture(autouse = True)
 def _isolate_agent_skills(_skills_home_root, monkeypatch):
     # A developer's own ~/.agents or ~/.claude skills must not leak into tool-selection tests.
     from core.inference import skills as _skills
