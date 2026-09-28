@@ -3724,15 +3724,24 @@ def _resolve_variant_gguf_files(
     tier fails soft (``(None, [])`` means "no opinion"). Module level, not inside
     ``_download_gguf``, so the pre-teardown header probe resolves exactly the file the
     download will open -- two copies of this cascade would let the two drift.
+
+    The one hard verdict: a listing that came back whole is authoritative. If it shows
+    downloadable GGUFs but no file for this variant, synthesising ``{repo}-{variant}``
+    would only produce a guaranteed-404 filename (a repo whose quant token sits inside
+    a longer token, e.g. ``Bonsai-2-27B-PQ2_0-CRACK.gguf``, advertises ``Q2_0`` and then
+    fails the mapping back). The user gets the variant table the picker advertised
+    instead of an opaque ``EntryNotFoundError`` from the download tier.
     """
     gguf_filename: Optional[str] = None
     gguf_extra_shards: list[str] = []
     if not hf_variant:
         return None, []
+    repo_files: Optional[list[str]] = None
     try:
         from huggingface_hub import list_repo_files
 
         files = list_repo_files(hf_repo, token = hf_token)
+        repo_files = list(files)
         gguf_files = _gguf_files_for_variant(files, hf_variant)
         if gguf_files:
             gguf_filename = gguf_files[0]
@@ -3754,7 +3763,47 @@ def _resolve_variant_gguf_files(
 
     if not gguf_filename:
         repo_name = hf_repo.split("/")[-1].replace("-GGUF", "")
-        gguf_filename = f"{repo_name}-{hf_variant}.gguf"
+        synthesised = f"{repo_name}-{hf_variant}.gguf"
+        # A listing that holds the synthesised name answers for it, so only refuse when it does not.
+        if repo_files is not None and synthesised not in repo_files:
+            try:
+                from utils.models.model_config import (
+                    _extract_quant_label,
+                    _qualified_variant_name,
+                )
+            except Exception:
+                _extract_quant_label = None  # type: ignore[assignment]
+                _qualified_variant_name = None  # type: ignore[assignment]
+            listed = [
+                f
+                for f in repo_files
+                if f.lower().endswith(".gguf")
+                and not _is_companion_gguf_path(f)
+                # The picker never offers a big-endian build, so neither may this table.
+                and not _is_big_endian_gguf_path(f, _quant_label_for_endian(f) or "")
+            ]
+            if listed:
+                # The listing answered; the variant genuinely has no file to name
+                # and a synthesised filename would 404 on the download tier. Speak
+                # with the SAME identities the variants picker advertised.
+                available = ", ".join(
+                    sorted(
+                        {
+                            (
+                                _qualified_variant_name(f, _extract_quant_label(f))
+                                if _extract_quant_label is not None
+                                and _qualified_variant_name is not None
+                                else f
+                            )
+                            for f in listed
+                        }
+                    )
+                )
+                raise ValueError(
+                    f"GGUF variant '{hf_variant}' not found in {hf_repo}. "
+                    f"Available variants: {available}"
+                )
+        gguf_filename = synthesised
     return gguf_filename, gguf_extra_shards
 
 
