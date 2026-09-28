@@ -62,6 +62,19 @@ class ManagedToolTransport:
                 await lines.aclose()
 
 
+def _with_model(line: str, public: str) -> str:
+    if not line.startswith("data:") or '"model"' not in line:
+        return line
+    try:
+        event = json.loads(line[5:])
+    except ValueError:
+        return line
+    if not isinstance(event, dict) or event.get("model") in (None, public):
+        return line
+    event["model"] = public
+    return "data: " + json.dumps(event)
+
+
 async def managed_tool_chat(
     payload,
     request,
@@ -132,6 +145,9 @@ async def managed_tool_chat(
     except ValueError as exc:
         raise reject(str(exc)) from exc
     engine = backend._managed_engine
+    # The engine serves config.identifier (a local path for directory loads); clients get the
+    # same public id as every other chat path.
+    public = api._orchestrator_public_model_id(backend) or engine.model
     body = {
         "model": engine.model,
         "messages": messages,
@@ -221,6 +237,8 @@ async def managed_tool_chat(
                 if response.status_code != 200:
                     raise api._openai_passthrough_error(response.status_code, response.text)
                 data = response.json()
+                if isinstance(data, dict) and "model" in data:
+                    data["model"] = public
                 api._monitor_openai_chunk(monitor_id, data, streaming = False)
                 yield data
                 return
@@ -251,7 +269,7 @@ async def managed_tool_chat(
                     and api._is_openai_usage_only_sse(line)
                 ):
                     continue
-                yield line
+                yield _with_model(line, public)
         except asyncio.CancelledError:
             cancel.set()
             raise
@@ -316,7 +334,7 @@ async def managed_tool_chat(
         "id": completion_id,
         "object": "chat.completion",
         "created": int(time.time()),
-        "model": engine.model,
+        "model": public,
         "choices": [
             {"index": 0, "message": {"role": "assistant", "content": ""}, "finish_reason": "stop"}
         ],
