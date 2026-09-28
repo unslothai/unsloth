@@ -3118,7 +3118,6 @@ export const ko = {
         compare: "비교",
       },
       menu: {
-        open: "채팅 열기",
         fork: "포크",
         moveTo: "프로젝트로 이동",
         newChatInProject: "프로젝트에서 새 채팅",

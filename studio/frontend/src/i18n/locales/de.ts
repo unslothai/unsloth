@@ -3193,7 +3193,6 @@ export const de = {
         compare: "Vergleich",
       },
       menu: {
-        open: "Chat öffnen",
         fork: "Forken",
         moveTo: "In Projekt verschieben",
         newChatInProject: "Neuer Chat im Projekt",

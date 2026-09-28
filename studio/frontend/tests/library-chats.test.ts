@@ -625,3 +625,15 @@ test("the Chats library draws every project with the open project folder", () =>
   }
   assert.match(readSrc("features/library/chats/chats-library.tsx"), /projects: Folder02Icon,/);
 });
+
+test("a chat's menu has no Open chat, and its folder sits under Export", () => {
+  const items = readSrc("features/library/chats/chats-items.tsx");
+  const menu = items.slice(items.indexOf("function ChatMenu("), items.indexOf("const TILE ="));
+  assert.doesNotMatch(menu, /library\.chats\.menu\.open"/);
+  const exportAt = menu.indexOf("<ExportSubmenu");
+  const folderAt = menu.indexOf("<OpenChatFolderItem");
+  assert.ok(exportAt !== -1 && folderAt > exportAt, "folder under Export");
+  assert.ok(!menu.slice(exportAt, folderAt).includes("DropdownMenuSeparator"), "same group as Export");
+  const projects = readSrc("features/chat/projects-page.tsx");
+  assert.ok(projects.indexOf("<OpenChatFolderItem item={chat} />") > projects.indexOf("Export all chats…"));
+});

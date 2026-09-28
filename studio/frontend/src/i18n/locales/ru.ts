@@ -3151,7 +3151,6 @@ export const ru = {
         compare: "Сравнение",
       },
       menu: {
-        open: "Открыть чат",
         fork: "Создать ответвление",
         moveTo: "Переместить в проект",
         newChatInProject: "Новый чат в проекте",

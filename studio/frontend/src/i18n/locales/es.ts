@@ -3190,7 +3190,6 @@ export const es = {
         compare: "Comparación",
       },
       menu: {
-        open: "Abrir chat",
         fork: "Bifurcar",
         moveTo: "Mover a proyecto",
         newChatInProject: "Nuevo chat en el proyecto",

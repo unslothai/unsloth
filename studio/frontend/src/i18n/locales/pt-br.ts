@@ -3152,7 +3152,6 @@ export const ptBR = {
         compare: "Comparação",
       },
       menu: {
-        open: "Abrir chat",
         fork: "Criar fork",
         moveTo: "Mover para projeto",
         newChatInProject: "Novo chat no projeto",

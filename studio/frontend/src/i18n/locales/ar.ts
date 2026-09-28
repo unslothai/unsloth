@@ -3124,7 +3124,6 @@ export const ar = {
         compare: "مقارنة",
       },
       menu: {
-        open: "فتح المحادثة",
         fork: "إنشاء تفرع",
         moveTo: "نقل إلى مشروع",
         newChatInProject: "محادثة جديدة في المشروع",

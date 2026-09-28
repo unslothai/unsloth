@@ -3072,7 +3072,6 @@ export const ja = {
         compare: "比較",
       },
       menu: {
-        open: "チャットを開く",
         fork: "フォーク",
         moveTo: "プロジェクトに移動",
         newChatInProject: "プロジェクトで新しいチャット",

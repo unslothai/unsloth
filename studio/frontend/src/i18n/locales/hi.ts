@@ -3131,7 +3131,6 @@ export const hi = {
         compare: "तुलना",
       },
       menu: {
-        open: "चैट खोलें",
         fork: "फ़ॉर्क करें",
         moveTo: "प्रोजेक्ट में ले जाएँ",
         newChatInProject: "प्रोजेक्ट में नई चैट",

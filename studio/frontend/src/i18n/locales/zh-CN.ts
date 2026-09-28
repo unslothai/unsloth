@@ -3032,7 +3032,6 @@ export const zhCN = {
         compare: "对比",
       },
       menu: {
-        open: "打开聊天",
         fork: "创建分支",
         moveTo: "移动到项目",
         newChatInProject: "在项目中新建聊天",

@@ -464,14 +464,8 @@ function ChatMenu({
     >
       <DropdownMenu>
         <MenuTrigger variant={variant} />
+        {/* No Open chat: clicking the chat opens it. */}
         <DropdownMenuContent align="end" className={cn(MENU, "w-52")}>
-          <MenuItem
-            icon={MessageCircleIcon}
-            label={t("library.chats.menu.open")}
-            onSelect={() => actions.open(chat)}
-          />
-          {!archived && <OpenChatFolderItem item={chat} />}
-          <DropdownMenuSeparator className="mx-3" />
           <MenuItem
             icon={Edit03Icon}
             label={t("common.rename")}
@@ -525,6 +519,7 @@ function ChatMenu({
             </>
           )}
           <ExportSubmenu onExport={(choice) => actions.exportChats([chat], choice)} />
+          {!archived && <OpenChatFolderItem item={chat} />}
           <DropdownMenuSeparator className="mx-3" />
           {archived ? (
             <MenuItem

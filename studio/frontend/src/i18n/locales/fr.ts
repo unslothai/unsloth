@@ -3204,7 +3204,6 @@ export const fr = {
         compare: "Comparaison",
       },
       menu: {
-        open: "Ouvrir la discussion",
         fork: "Forker",
         moveTo: "Déplacer vers un projet",
         newChatInProject: "Nouvelle discussion dans le projet",

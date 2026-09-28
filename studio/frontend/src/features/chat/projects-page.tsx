@@ -979,7 +979,6 @@ export function ProjectsPage() {
                                   {t(chatUnread ? "shell.selection.markRead" : "shell.selection.markUnread")}
                                 </span>
                               </DropdownMenuItem>
-                              <OpenChatFolderItem item={chat} />
                               <DropdownMenuSub>
                                 <DropdownMenuSubTrigger>
                                   <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} className="size-icon mr-1" />
@@ -1010,6 +1009,8 @@ export function ProjectsPage() {
                                   </DropdownMenuItem>
                                 </DropdownMenuSubContent>
                               </DropdownMenuSub>
+                              {/* Under Export, as in the Library's chat menu. */}
+                              <OpenChatFolderItem item={chat} />
                               <DropdownMenuSeparator />
                               <DropdownMenuItem onSelect={() => void archiveChat(chat)}>
                                 <HugeiconsIcon icon={Archive03Icon} strokeWidth={1.75} className="size-icon" />
