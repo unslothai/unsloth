@@ -21,14 +21,18 @@ export type ComposerKeyEvent = {
 export function imeKeydownBlocksComposerSubmit(
   event: ComposerKeyEvent,
   wasInCompositionSession: boolean,
+  openImeSession: boolean,
 ): boolean {
   const ime = event.isComposing === true || event.keyCode === 229;
   if (!ime) return false;
   // macOS built-in Pinyin (#12137) can mark idle Enter as composing even when
-  // no candidate session is active. Modifier chords stay IME-owned.
+  // no candidate session is active. Modifier chords stay IME-owned. A
+  // compositionstart without compositionend (watchdog-cleared composingRef, #5546)
+  // must still block so candidate-confirming Enter does not send.
   if (
     event.key === "Enter" &&
     !wasInCompositionSession &&
+    !openImeSession &&
     !event.metaKey &&
     !event.ctrlKey
   ) {

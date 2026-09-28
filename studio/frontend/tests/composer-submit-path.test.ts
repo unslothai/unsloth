@@ -64,6 +64,7 @@ test("the shipped main composer key handler protects IME and mention selection",
   let submits = 0;
   let prevented = 0;
   const composingRef = { current: false };
+  const imeSessionOpenRef = { current: false };
   const skipEnterRef = { current: false };
   const deps = {
     composerSubmitIntent,
@@ -73,6 +74,7 @@ test("the shipped main composer key handler protects IME and mention selection",
     submitOnEnter: true,
     skipEnterRef,
     composingRef,
+    imeSessionOpenRef,
     justSentRef: undefined,
     refreshStuckTimer: () => undefined,
     setCompositionState: (value: boolean) => {
@@ -115,6 +117,7 @@ test("the shipped main composer key handler protects IME and mention selection",
 test("idle IME Enter sends when no composition session was active (#12137)", () => {
   let submits = 0;
   const composingRef = { current: false };
+  const imeSessionOpenRef = { current: false };
   const skipEnterRef = { current: false };
   const deps = {
     composerSubmitIntent,
@@ -124,6 +127,7 @@ test("idle IME Enter sends when no composition session was active (#12137)", () 
     submitOnEnter: true,
     skipEnterRef,
     composingRef,
+    imeSessionOpenRef,
     justSentRef: undefined,
     refreshStuckTimer: () => undefined,
     setCompositionState: (value: boolean) => {

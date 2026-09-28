@@ -650,6 +650,7 @@ export function SharedComposer({
   const sendRef = useRef<(() => void) | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const composingRef = useRef(false);
+  const imeSessionOpenRef = useRef(false);
   const stuckImeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const audioInputRef = useRef<HTMLInputElement>(null);
@@ -2041,7 +2042,13 @@ export function SharedComposer({
     if (e.nativeEvent.isComposing || e.keyCode === 229) {
       composingRef.current = true;
       refreshStuckImeTimer();
-      if (!imeKeydownBlocksComposerSubmit(keyEvent, wasComposing)) {
+      if (
+        !imeKeydownBlocksComposerSubmit(
+          keyEvent,
+          wasComposing,
+          imeSessionOpenRef.current,
+        )
+      ) {
         const intent = composerSubmitIntent(
           composerKeyEventForImeSubmit(keyEvent),
           sendShortcut,
@@ -2446,12 +2453,14 @@ export function SharedComposer({
           );
         }}
         onCompositionStart={() => {
+          imeSessionOpenRef.current = true;
           setCompositionState(true);
         }}
         onCompositionUpdate={() => {
           refreshStuckImeTimer();
         }}
         onCompositionEnd={(e: CompositionEvent<HTMLTextAreaElement>) => {
+          imeSessionOpenRef.current = false;
           setCompositionState(false);
           setCurrentText(e.currentTarget.value);
         }}
@@ -2462,6 +2471,7 @@ export function SharedComposer({
         onBlur={() => {
           // Mac: switching input methods can fire compositionstart without a matching compositionend,
           // leaving composingRef pinned. The OS always commits or cancels before focus is lost.
+          imeSessionOpenRef.current = false;
           setCompositionState(false);
 
           skillMentions.close();

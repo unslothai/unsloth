@@ -19,6 +19,7 @@ test("idle macOS Pinyin Enter is not treated as IME-owned", () => {
     imeKeydownBlocksComposerSubmit(
       { ...enter, isComposing: true, keyCode: 229 },
       false,
+      false,
     ),
     false,
   );
@@ -41,6 +42,7 @@ test("modifier Enter during IME composition is still deferred to the IME", () =>
     imeKeydownBlocksComposerSubmit(
       { ...enter, isComposing: true, metaKey: true, keyCode: 13 },
       false,
+      false,
     ),
     true,
   );
@@ -51,11 +53,23 @@ test("active composition still blocks idle-looking Enter", () => {
     imeKeydownBlocksComposerSubmit(
       { ...enter, isComposing: true, keyCode: 229 },
       true,
+      true,
     ),
     true,
   );
   assert.equal(
-    imeKeydownBlocksComposerSubmit({ ...enter, isComposing: false }, true),
+    imeKeydownBlocksComposerSubmit({ ...enter, isComposing: false }, true, true),
     false,
+  );
+});
+
+test("compositionstart without end still blocks watchdog-cleared Enter", () => {
+  assert.equal(
+    imeKeydownBlocksComposerSubmit(
+      { ...enter, isComposing: true, keyCode: 229 },
+      false,
+      true,
+    ),
+    true,
   );
 });
