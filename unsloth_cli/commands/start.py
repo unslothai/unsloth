@@ -77,6 +77,7 @@ _HERMES_POSIX_INSTALL_HINT = (
 _HERMES_MIN_CONTEXT = 65536
 _DSH_PROVIDER = "unsloth"
 _DSH_ENV_KEY = "UNSLOTH_API_KEY"
+_DSH_PATCH_FILE = "unsloth.patch.yml"
 _DSH_PACKAGE = "@deepseek-ai/dsh"
 # dsh picks its sandbox+approval preset from DSH_PERMISSION_MODE via ??, so omitting it would inherit a danger-full-access exported in the parent shell, and "" is not unset to ??. Pin the mode in both directions instead of only setting it for --yolo.
 _DSH_SAFE_PERMISSION_MODE = "workspace-write"
@@ -583,11 +584,22 @@ _DSH_LAUNCHER_ARGS = frozenset(
 )
 
 
-def _dsh_command(args: list[str]) -> list[str]:
+# Launcher invocations that boot no profile, so they take no --patch overlay.
+_DSH_NO_PROFILE_ARGS = frozenset("-V --version plugin".split())
+
+
+def _dsh_command(args: list[str], patch: Optional[str] = None) -> list[str]:
     head = args[0] if args else ""
     if head in _DSH_LAUNCHER_ARGS or head.startswith(("--profile=", "--patch=")):
-        return ["dsh", *args]
-    return ["dsh", "web", *args]
+        command = ["dsh", *args]
+    else:
+        command = ["dsh", "web", *args]
+    if patch is not None and command[1] not in _DSH_NO_PROFILE_ARGS:
+        # `dsh <name>` only expands to `--profile <name>` when the name comes first, so the
+        # overlay goes after a bare profile name and ahead of a leading launcher option.
+        at = 1 if command[1].startswith("-") else 2
+        command[at:at] = ["--patch", patch]
+    return command
 
 
 class LoadOptions(NamedTuple):
@@ -1791,6 +1803,8 @@ _RESIDENT_RUNTIME_FIELDS = {
     "speculative_type": "speculative_type",
     "spec_draft_n_max": "spec_draft_n_max",
     # The applied value is null when the runtime refused the request.
+    # Scheme and width together; a bare width reads back as mx.quantize, so TurboQuant would reload as it. The width stays for servers without mlx_kv_quant.
+    "mlx_kv_quant_requested": "mlx_kv_quant",
     "mlx_kv_bits_requested": "mlx_kv_bits",
     # LoadRequest defaults this to True, so omitting it would reload a full-precision model in 4-bit. Null on GGUF, which has no such setting.
     "load_in_4bit": "load_in_4bit",
@@ -5017,37 +5031,47 @@ def write_pi_subagent_config(
     )
 
 
-def write_dsh_config(base: str, model: dict, path: Path) -> None:
+def write_dsh_patch(base: str, model: dict, path: Path) -> None:
+    """Write the dsh loader patch that points the booted profile at Unsloth.
+
+    dsh 0.1.7 dropped `settings.yaml`: it now imports a leftover one into the profile only
+    after the first boot has settled, so that boot still runs on the DeepSeek default. A
+    `--patch` overlay is read at boot on every dsh release this supports, and the file is
+    Unsloth's own, so it is rewritten whole rather than merged.
+    """
     import yaml
 
-    config = _read_yaml_object(path)
-    if config is None:
-        typer.echo(
-            f"Warning: couldn't parse {path} — add an '{_DSH_PROVIDER}' provider "
-            "there yourself, or move the file aside and re-run.",
-            err = True,
-        )
-        return
     model_entry = {"id": model["id"]}
     window = model.get("context_length") or model.get("max_context_length")
     if window:
         window = int(window)
         model_entry["contextWindow"] = window
         model_entry["maxTokens"] = min(window // 4, 8192)
-    _subdict(_subdict(config, "llm-pi-ai"), "providers")[_DSH_PROVIDER] = {
-        "displayName": "Unsloth Studio",
-        "api": "openai-completions",
-        "baseURL": f"{base}/v1",
-        "apiKeyEnv": _DSH_ENV_KEY,
-        # pi-ai reads an unknown base URL as OpenAI itself.
-        "compat": {"supportsDeveloperRole": False, "maxTokensField": "max_tokens"},
-        "models": [model_entry],
-    }
-    _subdict(config, "agent-default-model").update(
-        provider = _DSH_PROVIDER,
-        model = model["id"],
-    )
-    text = yaml.safe_dump(config, sort_keys = False)
+    entries = [
+        {
+            "id": "llm-pi-ai",
+            "name": "@deepseek-ai/dsh-llm-pi-ai",
+            "config": {
+                "providers": {
+                    _DSH_PROVIDER: {
+                        "displayName": "Unsloth Studio",
+                        "api": "openai-completions",
+                        "baseURL": f"{base}/v1",
+                        "apiKeyEnv": _DSH_ENV_KEY,
+                        # pi-ai reads an unknown base URL as OpenAI itself.
+                        "compat": {"supportsDeveloperRole": False, "maxTokensField": "max_tokens"},
+                        "models": [model_entry],
+                    }
+                }
+            },
+        },
+        {
+            "id": "agent-default-model",
+            "name": "@deepseek-ai/dsh-agent-default-model",
+            "config": {"provider": _DSH_PROVIDER, "model": model["id"]},
+        },
+    ]
+    text = yaml.safe_dump(entries, sort_keys = False)
     if not path.exists() or path.read_text(encoding = "utf-8") != text:
         path.parent.mkdir(parents = True, exist_ok = True)
         path.write_text(text, encoding = "utf-8")
@@ -5780,7 +5804,6 @@ def dsh(
     """Point DeepSeek Harness (dsh) at the running Unsloth server and start it."""
     model, ctx.args[:] = _consume_positional_model(model, ctx.args)
     _reject_as_subagent("dsh", ctx.args)
-    command = _dsh_command(ctx.args)
     install_hint = _npm_install_hint(_DSH_PACKAGE)
     _require_agent_for_launch("dsh", install_hint, launch)
     base, key, entry = _connect(
@@ -5806,7 +5829,10 @@ def dsh(
         ),
     )
     with _session_config("dsh", launch, persist = persist) as home:
-        write_dsh_config(base, entry, home / "settings.yaml")
+        patch = home / _DSH_PATCH_FILE
+        write_dsh_patch(base, entry, patch)
+        # A Windows dsh under WSL gets DSH_HOME translated through WSLENV, but not argv.
+        command = _dsh_command(ctx.args, _agent_config_path(patch, ["dsh"]))
         env = {
             _DSH_ENV_KEY: key,
             "DSH_HOME": str(home),

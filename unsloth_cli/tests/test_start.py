@@ -6333,62 +6333,56 @@ def test_connect_pi_no_launch_windows_relocates_userprofile(fake_studio, tmp_pat
 
 
 @pytest.fixture()
-def dsh_settings(tmp_path):
-    return tmp_path / "settings.yaml"
+def dsh_patch(tmp_path):
+    return tmp_path / "unsloth.patch.yml"
 
 
-def test_write_dsh_config_fresh(dsh_settings):
+def _dsh_entries(path):
     yaml = pytest.importorskip("yaml")
-    start.write_dsh_config(BASE, MODEL, dsh_settings)
-    config = yaml.safe_load(dsh_settings.read_text())
-    provider = config["llm-pi-ai"]["providers"]["unsloth"]
+    entries = yaml.safe_load(path.read_text())
+    # A loader patch is a top-level list of id-targeted entries, not a settings mapping.
+    assert isinstance(entries, list), entries
+    return {entry["id"]: entry for entry in entries}
+
+
+def test_write_dsh_patch_fresh(dsh_patch):
+    start.write_dsh_patch(BASE, MODEL, dsh_patch)
+    entries = _dsh_entries(dsh_patch)
+    assert set(entries) == {"llm-pi-ai", "agent-default-model"}
+    assert entries["llm-pi-ai"]["name"] == "@deepseek-ai/dsh-llm-pi-ai"
+    assert entries["agent-default-model"]["name"] == "@deepseek-ai/dsh-agent-default-model"
+    provider = entries["llm-pi-ai"]["config"]["providers"]["unsloth"]
     assert provider["api"] == "openai-completions"
     assert provider["baseURL"] == f"{BASE}/v1"
     assert provider["apiKeyEnv"] == "UNSLOTH_API_KEY"
-    assert "sk-unsloth" not in dsh_settings.read_text()
+    assert "sk-unsloth" not in dsh_patch.read_text()
     assert provider["compat"] == {"supportsDeveloperRole": False, "maxTokensField": "max_tokens"}
     assert provider["models"] == [
         {"id": MODEL["id"], "contextWindow": MODEL["context_length"], "maxTokens": 8192}
     ]
-    assert config["agent-default-model"] == {"provider": "unsloth", "model": MODEL["id"]}
+    assert entries["agent-default-model"]["config"] == {"provider": "unsloth", "model": MODEL["id"]}
 
 
-def test_write_dsh_config_without_window_omits_limits(dsh_settings):
-    yaml = pytest.importorskip("yaml")
-    start.write_dsh_config(BASE, {"id": "unsloth/unknown-window"}, dsh_settings)
-    config = yaml.safe_load(dsh_settings.read_text())
-    assert config["llm-pi-ai"]["providers"]["unsloth"]["models"] == [
-        {"id": "unsloth/unknown-window"}
-    ]
+def test_write_dsh_patch_without_window_omits_limits(dsh_patch):
+    start.write_dsh_patch(BASE, {"id": "unsloth/unknown-window"}, dsh_patch)
+    provider = _dsh_entries(dsh_patch)["llm-pi-ai"]["config"]["providers"]["unsloth"]
+    assert provider["models"] == [{"id": "unsloth/unknown-window"}]
 
 
-def test_write_dsh_config_preserves_and_idempotent(dsh_settings):
-    yaml = pytest.importorskip("yaml")
-    dsh_settings.write_text(
-        yaml.safe_dump(
-            {
-                "ui-onboarding": {"welcomeNoticeVersion": "2026-08-13.1"},
-                "llm-pi-ai": {"providers": {"anthropic": {"apiKeyEnv": "ANTHROPIC_API_KEY"}}},
-            }
-        )
-    )
-    start.write_dsh_config(BASE, MODEL, dsh_settings)
-    config = yaml.safe_load(dsh_settings.read_text())
-    assert config["ui-onboarding"] == {"welcomeNoticeVersion": "2026-08-13.1"}
-    assert config["llm-pi-ai"]["providers"]["anthropic"] == {"apiKeyEnv": "ANTHROPIC_API_KEY"}
-    assert config["llm-pi-ai"]["providers"]["unsloth"]["baseURL"] == f"{BASE}/v1"
-    before = dsh_settings.read_text()
-    start.write_dsh_config(BASE, MODEL, dsh_settings)
-    assert dsh_settings.read_text() == before
-
-
-def test_write_dsh_config_preserves_non_mapping_file(dsh_settings, capsys):
-    pytest.importorskip("yaml")
-    original = "- just\n- a\n- list\n"  # valid YAML, but not a mapping
-    dsh_settings.write_text(original)
-    start.write_dsh_config(BASE, MODEL, dsh_settings)
-    assert dsh_settings.read_text() == original  # user-managed file left untouched
-    assert "couldn't parse" in capsys.readouterr().err
+def test_write_dsh_patch_is_idempotent_and_follows_the_server(dsh_patch, capsys):
+    start.write_dsh_patch(BASE, MODEL, dsh_patch)
+    before = dsh_patch.read_text()
+    capsys.readouterr()
+    start.write_dsh_patch(BASE, MODEL, dsh_patch)
+    assert dsh_patch.read_text() == before
+    assert "Updated" not in capsys.readouterr().out
+    # Unsloth owns this file: a new server or model replaces the old one, it does not pile up.
+    start.write_dsh_patch("http://127.0.0.1:9999", {"id": "other"}, dsh_patch)
+    entries = _dsh_entries(dsh_patch)
+    provider = entries["llm-pi-ai"]["config"]["providers"]["unsloth"]
+    assert provider["baseURL"] == "http://127.0.0.1:9999/v1"
+    assert provider["models"] == [{"id": "other"}]
+    assert entries["agent-default-model"]["config"]["model"] == "other"
 
 
 @pytest.mark.parametrize(
@@ -6410,6 +6404,39 @@ def test_dsh_command_selects_web_only_for_app_arguments(args, expected):
     assert start._dsh_command(args) == expected
 
 
+@pytest.mark.parametrize(
+    ("args", "expected"),
+    [
+        # A bare profile name must stay first so dsh expands it to --profile <name>.
+        ([], ["dsh", "web", "--patch", "P"]),
+        (["--no-open"], ["dsh", "web", "--patch", "P", "--no-open"]),
+        (["web", "--no-open"], ["dsh", "web", "--patch", "P", "--no-open"]),
+        (
+            ["--profile", "headless", "fix the bug"],
+            ["dsh", "--patch", "P", "--profile", "headless", "fix the bug"],
+        ),
+        (["--profile=headless", "fix"], ["dsh", "--patch", "P", "--profile=headless", "fix"]),
+        (["--dump-config"], ["dsh", "--patch", "P", "--dump-config"]),
+        # --patch repeats and composes in order, so a caller's own overlay lands after ours
+        # and wins only on the keys it sets; the Unsloth provider stays defined.
+        (
+            ["--patch", "mine.yml", "--profile", "headless"],
+            ["dsh", "--patch", "P", "--patch", "mine.yml", "--profile", "headless"],
+        ),
+        (["--patch=mine.yml", "web"], ["dsh", "--patch", "P", "--patch=mine.yml", "web"]),
+        # Nothing boots a profile here, so there is nothing for an overlay to apply to.
+        (
+            ["plugin", "--profile", "web", "add", "x"],
+            ["dsh", "plugin", "--profile", "web", "add", "x"],
+        ),
+        (["-V"], ["dsh", "-V"]),
+        (["--version"], ["dsh", "--version"]),
+    ],
+)
+def test_dsh_command_places_the_patch_where_dsh_parses_it(args, expected):
+    assert start._dsh_command(args, "P") == expected
+
+
 def test_connect_dsh_no_launch(fake_studio, tmp_path):
     yaml = pytest.importorskip("yaml")
     result = CliRunner().invoke(start.start_app, ["dsh", "--no-launch"])
@@ -6418,10 +6445,28 @@ def test_connect_dsh_no_launch(fake_studio, tmp_path):
     home = tmp_path / "agents" / "dsh"
     _assert_env_set(result.output, "DSH_HOME", str(home))
     _assert_env_set(result.output, "DSH_TELEMETRY_DISABLED", "1")
-    assert _launch_command(result.output) == ["dsh", "web"]
-    config = yaml.safe_load((home / "settings.yaml").read_text())
-    assert config["agent-default-model"] == {"provider": "unsloth", "model": MODEL["id"]}
-    assert config["llm-pi-ai"]["providers"]["unsloth"]["baseURL"] == f"{BASE}/v1"
+    patch = home / "unsloth.patch.yml"
+    assert _launch_command(result.output) == ["dsh", "web", "--patch", str(patch)]
+    entries = {entry["id"]: entry for entry in yaml.safe_load(patch.read_text())}
+    assert entries["agent-default-model"]["config"] == {"provider": "unsloth", "model": MODEL["id"]}
+    assert entries["llm-pi-ai"]["config"]["providers"]["unsloth"]["baseURL"] == f"{BASE}/v1"
+    # dsh 0.1.7 imports a settings.yaml into the profile only after boot, so none is written.
+    assert not (home / "settings.yaml").exists()
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "WSL scenario")
+def test_dsh_under_wsl_gets_the_windows_patch_path(fake_studio, monkeypatch):
+    # WSLENV translates DSH_HOME for a Windows dsh, but a path on the command line reaches
+    # the Windows Node process verbatim, where a Linux path does not open.
+    windows_path = r"\\wsl.localhost\Ubuntu\tmp\unsloth.patch.yml"
+    monkeypatch.setenv("WSL_DISTRO_NAME", "Ubuntu")
+    shim = "/mnt/c/Users/x/AppData/Roaming/npm/dsh"
+    monkeypatch.setattr(start.shutil, "which", lambda _: shim)
+    monkeypatch.setattr(start, "is_deepseek_harness_executable", lambda _: True)
+    monkeypatch.setattr(start.subprocess, "check_output", lambda *args, **kwargs: windows_path)
+    captured = _capture_launch(monkeypatch, ["dsh", "--profile", "headless", "hi"])
+    command = captured["command"]
+    assert command[command.index("--patch") + 1] == windows_path, command
 
 
 def test_dsh_yolo_sets_permission_mode(fake_studio):

@@ -21,6 +21,8 @@ import os
 import re
 import struct
 from loggers import get_logger
+from utils.gpu_memory_events import invalidate_gpu_memory as _invalidate_gpu_memory
+from utils.gpu_memory_events import invalidates_gpu_memory as _invalidates_gpu_memory
 import shutil
 import signal
 import socket
@@ -201,13 +203,11 @@ def _can_reset_epoch(
         # carried-forward header tells the model to search. Same refusal, one scope down.
         return False
     try:
-        from state.tool_policy import get_tool_policy
+        from state.tool_policy import conversation_recall_allowed
 
-        # `supports_tools` is the TEMPLATE's capability, not "will this request be given
-        # the tool". `--disable-tools` refuses every tool for the life of the process, so
-        # resetting would strand the epoch behind a tool that never arrives. Rolling keeps
-        # the newest turns in view and re-injects the inline recall, needing no tool.
-        if get_tool_policy() is False:
+        # `supports_tools` is the TEMPLATE's capability; where recall is refused a reset would
+        # strand the epoch behind a tool that never arrives, and rolling needs no tool.
+        if not conversation_recall_allowed():
             return False
     except Exception:  # noqa: BLE001 -- an unreadable policy is "no", never an error
         return False
@@ -11300,8 +11300,11 @@ class LlamaCppBackend:
         the GPU columns are the leading run of GPU<n> header labels and only GPU<n>
         rows are read."""
         try:
-            result = subprocess.run(
+            from utils.hardware import gpu_query
+
+            result = gpu_query.run_nvidia_smi(
                 ["nvidia-smi", "topo", "-m"],
+                cache = False,
                 capture_output = True,
                 text = True,
                 encoding = "utf-8",
@@ -11965,7 +11968,9 @@ class LlamaCppBackend:
         """Physical id -> SM (90 for sm_90) via nvidia-smi, honoring
         CUDA_VISIBLE_DEVICES; {} when unknown. Never raises."""
         try:
-            result = subprocess.run(
+            from utils.hardware import gpu_query
+
+            result = gpu_query.run_nvidia_smi(
                 ["nvidia-smi", "--query-gpu=index,compute_cap", "--format=csv,noheader"],
                 capture_output = True,
                 text = True,
@@ -13329,7 +13334,10 @@ class LlamaCppBackend:
             return LlamaCppBackend._get_gpu_free_memory_vulkan(binary)
         # ── NVIDIA via nvidia-smi ────────────────────────────────────
         try:
-            result = subprocess.run(
+            from utils.hardware import gpu_query
+
+            # Placement / fit: never a cached reading. A hung CLI raises so the MIG-aware NVML branch runs.
+            result = gpu_query.run_nvidia_smi(
                 [
                     "nvidia-smi",
                     "--query-gpu=index,memory.free,memory.total",
@@ -15270,7 +15278,11 @@ class LlamaCppBackend:
             if time.monotonic() >= deadline:
                 return None
             try:
-                return LlamaCppBackend._get_gpu_free_memory()
+                from utils.hardware import gpu_query
+
+                # Consecutive samples are compared: a cached one would read as settled.
+                with gpu_query.fresh_reads():
+                    return LlamaCppBackend._get_gpu_free_memory()
             except Exception:
                 return None
 
@@ -18344,6 +18356,7 @@ class LlamaCppBackend:
                 **_child_popen_kwargs(),
             )
             self._process = _spawned
+            _invalidate_gpu_memory("llama-server spawned")
             # macOS has no parent-death signal, so only this record reaps a runner
             # holding the GPU. Under the lock: adopting after the sweep re-adds a
             # pid it just forgot.
@@ -22707,6 +22720,7 @@ class LlamaCppBackend:
                 **_child_popen_kwargs(),
             )
             self._process = _spawned
+            _invalidate_gpu_memory("llama-server spawned")
             # Cross-session backstop for when parent-death cleanup did not run.
             # Under the lock: see _spawn_and_wait.
             self._record_server_pid(_spawned.pid)
@@ -22752,6 +22766,7 @@ class LlamaCppBackend:
                 # finished load could blank the marker of a queued one that had published.
                 self._memory_pending_launch = None
 
+    @_invalidates_gpu_memory("llama.cpp load")
     @_with_gguf_load_marker
     def load_model(
         self,
@@ -29176,6 +29191,7 @@ class LlamaCppBackend:
                                 **_child_popen_kwargs(),
                             )
                             self._process = _spawned
+                            _invalidate_gpu_memory("llama-server spawned")
                             # Inside the lock: written after a sweep reaped the child,
                             # _pid_start_identity yields no start time, and the bare pid
                             # left behind is one a later launch kills blind.
@@ -31751,6 +31767,7 @@ class LlamaCppBackend:
         avoid restarting a load the user just cancelled."""
         return self._cancel_event.is_set()
 
+    @_invalidates_gpu_memory("llama.cpp unload")
     def unload_model(self) -> bool:
         """Terminate the subprocess and cancel any in-flight download."""
         self._cancel_event.set()
@@ -32104,6 +32121,7 @@ class LlamaCppBackend:
 
         return is_process_shutting_down()
 
+    @_invalidates_gpu_memory("llama.cpp stop")
     def _kill_process(self, *, teardown: bool = False):
         """Terminate the subprocess if running.
 
