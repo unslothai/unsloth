@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useT } from "@/i18n";
-import { hasRejectedHfToken, subscribeHfTokenRejected } from "@/lib/hf-token-rejection";
+import { subscribeHfTokenRejected } from "@/lib/hf-token-rejection";
 import { toast } from "@/lib/toast";
 import { useEffect } from "react";
 
@@ -12,9 +12,9 @@ export function useHfTokenRejectedToast(): void {
   const t = useT();
   useEffect(
     () =>
-      subscribeHfTokenRejected(() => {
-        // The store also notifies when a refusal is cleared; that is good news, not a toast.
-        if (!hasRejectedHfToken()) return;
+      subscribeHfTokenRejected((event) => {
+        // A cleared refusal is good news, even while another Hub still refuses the token.
+        if (event !== "rejected") return;
         toast.error(t("studio.modelPicker.tokenRejectedTitle"), {
           id: "hf-token-rejected",
           description: t("studio.modelPicker.tokenRejectedAnonymousBody"),

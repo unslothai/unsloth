@@ -306,12 +306,13 @@ test("after a refusal, a read anonymous access cannot answer still tries the tok
   }
 });
 
-test("after a refusal, a token that is still refused leaves the anonymous answer and the flag", async () => {
+test("after a refusal, a token that is still refused answers with its 401, not a cacheable 404", async () => {
   noteHfTokenRejected(OAUTH, hubRejectionScope());
   const hub = stubHub({ rejectedToken: OAUTH, anonymousStatus: 404 });
   try {
     const response = await fetchHub("https://huggingface.co/api/models/me/private", withToken(OAUTH));
-    assert.equal(response.status, 404);
+    // A size lookup caches a model 404 for the session; a 401 is only a transient miss.
+    assert.equal(response.status, 401);
     assert.equal(hub.sent.length, 2);
     assert.equal(isHfTokenRejected(OAUTH), true);
   } finally {
@@ -472,6 +473,24 @@ test("a token still refused after the recheck is recorded again without a new no
     assert.equal(hfTokenRejectionVersion(), before);
   } finally {
     hub.restore();
+    clearHfTokenRejected();
+  }
+});
+
+test("clearing one Hub's refusal while another still refuses is reported as a clear", () => {
+  const models = hubRejectionScope("https://huggingface.co/api/models");
+  const datasets = hubRejectionScope("https://datasets-server.huggingface.co/size?dataset=x");
+  const events: string[] = [];
+  const unsubscribe = subscribeHfTokenRejected((event) => events.push(event));
+  try {
+    noteHfTokenRejected(OAUTH, models);
+    noteHfTokenRejected(OAUTH, datasets);
+    clearHfTokenRejected(models);
+    // The toast listens for "rejected" only, so this recovery raises no warning.
+    assert.deepEqual(events, ["rejected", "rejected", "cleared"]);
+    assert.equal(hasRejectedHfToken(), true);
+  } finally {
+    unsubscribe();
     clearHfTokenRejected();
   }
 });

@@ -8,7 +8,10 @@
  * expired OAuth token, a revoked key). Keyed by a fingerprint, never the token, and dependency
  * free so hub-fetch stays importable under bare node. */
 
-type Listener = () => void;
+/** "rejected" when a token is newly refused, "cleared" when a refusal is forgotten. */
+export type HfTokenRejectionEvent = "rejected" | "cleared";
+
+type Listener = (event: HfTokenRejectionEvent) => void;
 
 /** After this long the token is tried again: a verifier that failed for a while must not hide
  * private and gated repos for the rest of the session. Still refused, it is recorded again
@@ -35,11 +38,11 @@ function normalized(token: string | null | undefined): string {
   return token?.trim() ?? "";
 }
 
-function notify(): void {
+function notify(event: HfTokenRejectionEvent): void {
   version += 1;
   for (const listener of listeners) {
     try {
-      listener();
+      listener(event);
     } catch {
       // One broken subscriber must not stop the others hearing about it.
     }
@@ -57,7 +60,7 @@ export function noteHfTokenRejected(
   const known = refusals.get(scope);
   refusals.set(scope, { fingerprint: next, at: Date.now() });
   if (known?.fingerprint === next) return false;
-  notify();
+  notify("rejected");
   return true;
 }
 
@@ -90,7 +93,7 @@ export function clearHfTokenRejected(scope?: string | null): void {
   if (!changed) return;
   if (scope === undefined) refusals.clear();
   else refusals.delete(scope);
-  notify();
+  notify("cleared");
 }
 
 /** For useSyncExternalStore: changes whenever the rejected token does. */

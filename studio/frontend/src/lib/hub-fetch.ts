@@ -163,12 +163,12 @@ export async function fetchHub(
     // What anonymous access cannot read may still be the token's to read: the refusal could
     // have been the Hub's verifier briefly failing. A token that answers again is cleared.
     const withToken = await probe(input, init, url);
-    if (withToken?.ok) {
+    if (withToken) {
+      // Still refused, the token's own answer (a 401) is the result, as on the first refusal:
+      // an anonymous 404 for a private repo would be cached as the repo being missing.
       void response.body?.cancel().catch(() => undefined);
-      clearHfTokenRejected(scope);
+      if (withToken.ok) clearHfTokenRejected(scope);
       response = withToken;
-    } else {
-      void withToken?.body?.cancel().catch(() => undefined);
     }
   } else if (retryable && !skipToken && response.ok) {
     // Past the recheck window the token went out again and was accepted: that Hub no
