@@ -257,6 +257,23 @@ def planner_quantization_kwargs(
     return kwargs
 
 
+def compressed_tensors_planner_bits(model_config, load_in_4bit, load_in_8bit):
+    """(load_in_4bit, load_in_8bit) to size an armed compressed-tensors load at: the packed route keeps INT8 at 8 bits."""
+    if not load_in_4bit or compressed_tensors_prepared_config(model_config) is None:
+        return load_in_4bit, load_in_8bit
+    try:
+        from .compressed_tensors_bnb import UNSLOTH_COMPRESSED_TENSORS_ATTR
+        from .compressed_tensors_int4 import int4_packed_route_enabled, int4_packed_supported_plan
+
+        plan = getattr(model_config, UNSLOTH_COMPRESSED_TENSORS_ATTR)
+        if int4_packed_route_enabled() and int4_packed_supported_plan(plan):
+            if max(int(g["weights"]["num_bits"]) for g in plan["config_groups"].values()) > 4:
+                return False, True
+    except Exception:
+        pass
+    return load_in_4bit, load_in_8bit
+
+
 def compressed_tensors_prepared_config(model_config):
     """`model_config` if armed for packed compressed-tensors re-quantization (plan must size from it), else None."""
     if model_config is None:
@@ -2389,6 +2406,9 @@ def quantization_config_selects_bnb_4bit(quantization_config):
     method = get("quant_method", "") or ""
     # BitsAndBytesConfig stores a QuantizationMethod enum, whose str() is the member name on some Pythons.
     method = str(getattr(method, "value", method)).lower()
+    # The dict shorthand {"load_in_4bit": True} has no quant_method; transformers reads it as bitsandbytes.
+    if not method and isinstance(quantization_config, dict):
+        method = "bitsandbytes"
     if "bitsandbytes" not in method:
         return False
     return bool(get("load_in_4bit", False)) and not bool(get("load_in_8bit", False))
