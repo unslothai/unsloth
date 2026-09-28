@@ -671,12 +671,18 @@ RULES = [
         "use the interpreter's own module entry point (python3 -m zipfile -e ARCHIVE DIR), unzip or tar",
         applies = lambda p: not p.endswith((".py", ".rs", ".js", ".mjs", ".cjs", ".ts", ".tsx")),
         needles = tuple(_J(p) for p in (("ext", "ract"), ("unpack_", "archive"))),
-        # Options may take an argument (-W ignore) or be combined with the command flag (-Ic); the
-        # call has to sit inside the quoted program, not in a later command or comment.
+        # Options may take an argument (-W ignore) or be combined with the command flag (-Ic). The
+        # call has to sit inside the quoted program (escaped quotes included, not a later command or
+        # comment) after an archive name, so an HTML node's .extract() is not an archive.
         line_patterns = [
             r"(?i)\b(?:python[0-9.]*|py|node|perl|ruby)(?:\.exe)?"
-            r"(?:\s+--?[\w-]+(?:\s+[^\s'\"-][^\s'\"]*)?)*?\s+-[a-z]*[ce]\s*(['\"])(?:(?!\1)[^\n])*?"
-            + _any(r"\." + _J(("ext", "ract")) + r"(?:all)?\s*\(", _J(("unpack_", "archive")))
+            r"(?:\s+--?[\w-]+(?:\s+[^\s'\"-][^\s'\"]*)?)*?\s+-[a-z]*[ce]\s*(['\"])(?:\\.|(?!\1)[^\n])*?"
+            + _any(
+                r"(?:zip|tar|archive)(?:\\.|(?!\1)[^\n])*?(?:\.|->)"
+                + _J(("ext", "ract"))
+                + r"(?:all)?\s*\(",
+                _J(("unpack_", "archive")),
+            )
         ],
     ),
 ]
@@ -1102,6 +1108,30 @@ def _fixtures() -> list[tuple[str, str, str, bool]]:
             "t.sh",
             "python3 -c 'import shutil; shutil." + _J(("unpack_", "archive")) + "(a, b)'",
             True,
+        ),
+        (
+            "AV016",
+            "t.sh",
+            'python3 -c "import zipfile; zipfile.ZipFile(\\"a.zip\\").'
+            + _J(("extract", "all"))
+            + '(\\"out\\")"',
+            True,
+        ),
+        (
+            "AV016",
+            "t.sh",
+            'perl -e \'use Archive::Tar; Archive::Tar->new("a.tar")->'
+            + _J(("ext", "ract"))
+            + "()'",
+            True,
+        ),
+        (
+            "AV016",
+            "t.sh",
+            "python3 -c 'from bs4 import BeautifulSoup; BeautifulSoup(x).div."
+            + _J(("ext", "ract"))
+            + "()'",
+            False,
         ),
         # Reading or checking an archive unpacks nothing.
         (
