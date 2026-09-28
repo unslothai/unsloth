@@ -10,7 +10,7 @@ with a hand-built two-key marker. Platforms are simulated through ``HostInfo``: 
 covers the path decisions and payload tables, not macOS dyld.
 
 Run natively on Windows too (the parity workflow's windows-latest row), where the loader
-answers for real for every genuine image: the healthy rows start a real System32 PE. The one
+answers for real for every genuine image: the healthy rows start a real console launcher. The one
 file that is not an image is answered with the ``ERROR_BAD_EXE_FORMAT`` the loader gives it,
 without being started (see ``_windows_non_pe_is_refused_not_started``): a .exe that is not a
 PE is taken for a DOS program, and on a Windows desktop that raises the modal "Unsupported
@@ -22,7 +22,6 @@ weakened: ``os.chmod`` cannot clear an execute bit Windows does not have, and
 import importlib.util
 import json
 import os
-import shutil
 import signal
 import subprocess
 import sys
@@ -43,36 +42,33 @@ SKIP_X_OK = pytest.mark.skipif(
 def _windows_runnable_stub() -> bytes | None:
     """Bytes of a real .exe that still starts after being copied somewhere else.
 
-    The keep path execs what it finds, so a Windows row needs a genuine PE. Copying
-    python.exe alone loses python3xx.dll and dies 0xC0000135, hence a System32 tool
-    whose imports are all KnownDLLs. Verified by running the copy, not assumed: an
-    unverifiable stub skips the module instead of reporting the loader's refusal as
-    a back-compat failure.
+    The keep path execs what it finds, so a Windows row needs a genuine PE. A renamed
+    System32 tool would do, but a Microsoft binary sitting at llama-server.exe is an AV
+    heuristic, so this is a pip-style console launcher instead (tests/_shared).
+    Verified by running the copy, not assumed: an unverifiable stub skips the module
+    instead of reporting the loader's refusal as a back-compat failure.
     """
-    for name in ("where.exe", "hostname.exe"):
-        source = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / name
-        if not source.is_file():
-            continue
-        with tempfile.TemporaryDirectory() as probe_dir:
-            copy = Path(probe_dir) / "llama-server.exe"
-            try:
-                shutil.copyfile(source, copy)
-                probe = subprocess.run([str(copy)], capture_output = True, timeout = 30)
-            except Exception:
-                continue
-            # A loader failure returns rather than raises, so an unchecked run would
-            # accept the very missing-DLL image this is picking a candidate to avoid,
-            # and every healthy fixture after it would inherit it.
-            if probe.returncode >= 0xC0000000:
-                continue
-        return source.read_bytes()
-    return None
+    from windows_console_stub import console_stub_bytes
+
+    stub = console_stub_bytes(0)
+    if stub is None:
+        return None
+    with tempfile.TemporaryDirectory() as probe_dir:
+        copy = Path(probe_dir) / "llama-server.exe"
+        try:
+            copy.write_bytes(stub)
+            probe = subprocess.run([str(copy)], capture_output = True, timeout = 60)
+        except Exception:
+            return None
+    # A loader failure returns rather than raises, so an unchecked run would accept the
+    # very image this is meant to rule out, and every healthy fixture would inherit it.
+    return stub if probe.returncode == 0 else None
 
 
 RUNNABLE_STUB = _windows_runnable_stub() if WINDOWS_HOST else None
 if WINDOWS_HOST and RUNNABLE_STUB is None:
     pytest.skip(
-        "no self-contained System32 .exe to stand in for llama-server",
+        "no runnable console launcher to stand in for llama-server",
         allow_module_level = True,
     )
 
