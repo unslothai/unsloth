@@ -295,8 +295,7 @@ class _on_device:
             self.ctx.__exit__(*exc)
 
 
-# CompiledKernel[grid](*args) takes only the runtime args from Triton 3.7; older launchers also want the
-# constexprs and raise TypeError, so fall back to the public JIT launch there.
+# Triton < 3.7 CompiledKernel launchers also want constexprs (TypeError): fall back to the JIT launch.
 _FAST_LAUNCH = None
 
 
@@ -323,7 +322,6 @@ def int4_dequantize(
     dtype = None,
     out = None,
 ):
-    """``[N, K]`` dense decode of a packed weight (exact)."""
     dtype = dtype or qs.dtype or torch.bfloat16
     (P, S, Z, G), (N, K, KP), (sp, ss, sz), meta = _launch_args(packed, qs)
     if out is None:
@@ -366,9 +364,7 @@ def _sm_count(index):
     return torch.cuda.get_device_properties(index).multi_processor_count
 
 
-# The fused GEMV decodes the whole weight once per row; decode + cuBLAS is flat in rows. One row: the GEMV wins on
-# RTX PRO 6000 (2x) and roughly ties on B200. Two to four rows: decode + cuBLAS is 2-4x faster per B200 layer and
-# +50% batch-4 decode tok/s on RTX PRO 6000 (Qwen3-8B W4A16).
+# The fused GEMV decodes the weight once per row: only one row beats decode + cuBLAS (measured B200, RTX PRO 6000).
 GEMV_MAX_ROWS = 1
 
 

@@ -219,8 +219,6 @@ def test_a_keyword_tensor_carried_across_layers_is_recomputed_once(use_reentrant
         gradient_checkpointing_kwargs = {"use_reentrant": use_reentrant}
     )
     calls_on, grads_on = _step(model)
-    # Held by closure, block_residual tied each recompute to the earlier layers' graph: the
-    # reentrant backward then ran through it again (an error here, nested recomputes under
-    # Unsloth's offloaded checkpoint).
+    # A closure-held block_residual tied each recompute to earlier layers' graphs.
     assert calls_on == 6
     assert all(torch.allclose(a, b, atol = 1e-6) for a, b in zip(grads_off, grads_on))
