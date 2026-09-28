@@ -49,6 +49,7 @@ from unsloth.models.loader_utils import check_and_disable_bitsandbytes_loading
 try:
     import inspect
     from compressed_tensors.quantization.lifecycle.forward import dequantize as _ct_dequantize
+
     HAS_CT = True
     # compressed-tensors 0.19 dropped GPTQ activation ordering (#840): its compressor ignores weight_g_idx.
     CT_HONOURS_G_IDX = "g_idx" in inspect.signature(_ct_dequantize).parameters
@@ -1095,6 +1096,49 @@ def test_both_loaders_treat_an_explicit_bnb_4bit_config_as_the_4bit_request():
         requantize_packed = quantization_config_selects_bnb_4bit(explicit),
     )
     assert getattr(config, UNSLOTH_COMPRESSED_TENSORS_ATTR, None) is not None
+
+
+def test_the_flag_only_dict_shorthand_is_a_bnb_4bit_request():
+    # transformers' AutoQuantizationConfig.from_dict reads {"load_in_4bit": True} as bitsandbytes.
+    from unsloth.models.loader_utils import (
+        _bnb_bits_requested,
+        quantization_config_selects_bnb_4bit,
+    )
+
+    assert quantization_config_selects_bnb_4bit({"load_in_4bit": True})
+    assert _bnb_bits_requested({"load_in_4bit": True}) == 4
+    assert not quantization_config_selects_bnb_4bit({"load_in_8bit": True})
+    assert not quantization_config_selects_bnb_4bit({"quant_method": "fp8", "load_in_4bit": True})
+
+
+@pytest.mark.parametrize(
+    "bits,route,want",
+    [(8, True, (False, True)), (4, True, (True, False)), (8, False, (True, False))],
+)
+def test_the_planner_sizes_a_packed_int8_checkpoint_at_8_bits(bits, route, want, monkeypatch):
+    # Kept packed, INT8 weights stay 8-bit: planning them as bnb 4-bit halves their budget and OOMs the load.
+    import unsloth.models.compressed_tensors_int4 as ct_int4
+    from unsloth.models.loader_utils import compressed_tensors_planner_bits
+
+    monkeypatch.setattr(ct_int4, "int4_packed_route_enabled", lambda: route)
+    config = _Config()
+    setattr(config, UNSLOTH_COMPRESSED_TENSORS_ATTR, _w4a16(weights = {"num_bits": bits}))
+    assert compressed_tensors_planner_bits(config, True, False) == want
+    assert compressed_tensors_planner_bits(_Config(), True, False) == (True, False)
+    assert compressed_tensors_planner_bits(config, False, False) == (False, False)
+    import ast, inspect
+    from unsloth.models import llama, vision
+
+    for module in (llama, vision):
+        calls = [
+            node
+            for node in ast.walk(ast.parse(inspect.getsource(module)))
+            if isinstance(node, ast.Call)
+            and getattr(node.func, "id", None) == "planner_quantization_kwargs"
+        ]
+        assert calls and all(
+            "compressed_tensors_planner_bits" in ast.unparse(call) for call in calls
+        ), module.__name__
 
 
 def test_exact_module_targets_win_over_a_class_target():

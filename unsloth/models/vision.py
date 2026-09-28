@@ -100,6 +100,7 @@ from .loader_utils import (
     DEFAULT_DEVICE_MAP,
     OFFLOAD_EMBEDDING_AUTO,
     planner_config_overrides,
+    compressed_tensors_planner_bits,
     compressed_tensors_prepared_config,
     planner_hub_kwargs,
     planner_kwargs_with_max_memory,
@@ -2173,8 +2174,7 @@ class FastBaseModel:
             **add_dtype_kwargs(torch_dtype),
             # A caller-supplied config overrides the flags: loader.py clears them when it forwards one, so the flags alone would size a 4bit load at full precision.
             **planner_quantization_kwargs(
-                load_in_4bit = load_in_4bit,
-                load_in_8bit = load_in_8bit,
+                *compressed_tensors_planner_bits(auto_config, load_in_4bit, load_in_8bit),
                 quantization_config = user_quantization_config,
                 rewritten_quantization_config = modelopt_planner_quantization_config(
                     auto_config, dequantize = load_in_16bit
