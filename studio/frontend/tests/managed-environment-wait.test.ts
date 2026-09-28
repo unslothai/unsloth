@@ -62,7 +62,11 @@ const BUSY: Preflight = {
   port: null,
 };
 
-function harness(preflight: Preflight, authFailure: string | null = null) {
+function harness(
+  preflight: Preflight,
+  authFailure: string | null = null,
+  runtimeRepairedRecently = false,
+) {
   const errors: string[] = [];
   const statuses: string[] = [];
   const messages: string[] = [];
@@ -126,6 +130,8 @@ function harness(preflight: Preflight, authFailure: string | null = null) {
       return Promise.resolve();
     },
     preflightStaleMessage: (_d: string, reason: string | null) => `stale:${reason}`,
+    wasRuntimeRepairedRecently: () => runtimeRepairedRecently,
+    runtimeRepairRecurrenceMessage: () => "runtime damaged again",
     externalConflictMessage: () => "conflict",
   };
 
@@ -209,6 +215,14 @@ test("a stale install that is not busy still repairs", async () => {
 
   assert.equal(run.repairs, 1, "only the busy reason may skip the repair");
   assert.equal(run.waiting, false);
+});
+
+test("a runtime damaged again soon after a repair explains instead of repairing", async () => {
+  const run = harness({ ...BUSY, reason: "llama_runtime_binaries_missing" }, null, true);
+  await run.check();
+
+  assert.equal(run.repairs, 0);
+  assert.equal(run.errors.at(-1), "runtime damaged again");
 });
 
 test("the wait is bounded, so a gate nobody releases still reaches Retry", async () => {
