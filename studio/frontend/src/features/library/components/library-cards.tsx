@@ -28,7 +28,7 @@ import {
 import { CardSelectionContext } from "./card-selection";
 import { LibraryActionsMenu } from "./library-actions";
 
-const CARD_SURFACE = cn(
+export const CARD_SURFACE = cn(
   RAISED_SURFACE,
   CARD_SHADOW,
   "group-hover/library-card:bg-neutral-100 group-hover/library-card:shadow-none dark:group-hover/library-card:bg-accent/60",
@@ -46,7 +46,7 @@ export function KindIcon({ item, className }: { item: LibraryItem; className?: s
 }
 
 // Audio and code glyphs are thin line art, so they get a larger size.
-const CARD_ICON_CLASS = "size-7";
+export const CARD_ICON_CLASS = "size-7";
 const LARGE_CARD_ICON_CLASS = "size-8.5";
 
 function cardIconClass(item: LibraryItem): string {

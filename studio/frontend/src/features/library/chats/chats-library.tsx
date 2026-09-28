@@ -64,7 +64,6 @@ import {
   Archive03Icon,
   ArchiveRestoreIcon,
   Cancel01Icon,
-  DashboardSquare01Icon,
   Delete02Icon,
   Folder01Icon,
   FolderAddIcon,
@@ -94,6 +93,9 @@ import {
   CollectionHeader,
   type DateColumn,
   ExportSubmenu,
+  FavoriteChatTile,
+  FavoriteProjectTile,
+  FavoriteSectionTile,
   HEADER_MORE_BUTTON,
   GroupHeading,
   MoveSubmenu,
@@ -176,8 +178,8 @@ const SECTION_LABELS: Record<ChatsSection, TranslationKey> = {
   archived: "library.chats.sections.archived",
 };
 
-const SECTION_ICONS: Record<ChatsSection, IconSvgElement> = {
-  all: DashboardSquare01Icon,
+// All has no icon.
+const SECTION_ICONS: Partial<Record<ChatsSection, IconSvgElement>> = {
   chats: MessageCircleIcon,
   projects: Folder01Icon,
   sections: LayerIcon,
@@ -311,12 +313,15 @@ export function ChatsLibrary({
   const favoriteProjectIds = useChatFavoritesStore((s) => s.projectIds);
   const setFavoriteChats = useChatFavoritesStore((s) => s.setChats);
   const setFavoriteProjects = useChatFavoritesStore((s) => s.setProjects);
+  const favoriteSectionIds = useChatFavoritesStore((s) => s.sectionIds);
+  const setFavoriteSections = useChatFavoritesStore((s) => s.setSections);
   const view = embedded ? embedded.view : prefs.view;
 
   const pinned = useMemo(() => new Set(pinnedIds), [pinnedIds]);
   const pinnedProjects = useMemo(() => new Set(pinnedProjectIds), [pinnedProjectIds]);
   const favorites = useMemo(() => new Set(favoriteIds), [favoriteIds]);
   const favoriteProjects = useMemo(() => new Set(favoriteProjectIds), [favoriteProjectIds]);
+  const favoriteSections = useMemo(() => new Set(favoriteSectionIds), [favoriteSectionIds]);
   const projectNames = useMemo(() => new Map(projects.map((p) => [p.id, p.name])), [projects]);
   const sectionNames = useMemo(() => new Map(sections.map((s) => [s.id, s.name])), [sections]);
   const currentSection = openSectionId
@@ -465,9 +470,11 @@ export function ChatsLibrary({
   );
   const visibleSections = useMemo(() => {
     const terms = searchTerms(query);
-    const matched = sections.filter((entry) => matchesTerms(terms, entry.name));
+    const matched = sections.filter(
+      (entry) => (!embedded || favoriteSections.has(entry.id)) && matchesTerms(terms, entry.name),
+    );
     return sortSections(matched, prefs.sectionSort, sectionStatsById, locale);
-  }, [sections, query, prefs.sectionSort, sectionStatsById, locale]);
+  }, [sections, query, prefs.sectionSort, sectionStatsById, locale, embedded, favoriteSections]);
   const sectionProjects = useMemo(() => {
     if (!openSectionId) return [];
     const terms = searchTerms(query);
@@ -819,6 +826,8 @@ export function ChatsLibrary({
     pinnedProjects,
     favorites,
     favoriteProjects,
+    favoriteSections,
+    favoriteMarks: !embedded,
     selectable: !embedded,
     models,
     selection,
@@ -839,6 +848,7 @@ export function ChatsLibrary({
       setSelection(new Set());
     },
     toggleFavoriteProject: (id) => setFavoriteProjects([id], !favoriteProjects.has(id)),
+    toggleFavoriteSection: (id) => setFavoriteSections([id], !favoriteSections.has(id)),
     fork: (chat) => void forkChat(chat),
     move: moveChats,
     moveProject,
@@ -1271,7 +1281,9 @@ export function ChatsLibrary({
               active && "font-medium text-foreground",
             )}
           >
-            <HugeiconsIcon icon={SECTION_ICONS[entry]} strokeWidth={1.75} className="size-4 shrink-0" />
+            {SECTION_ICONS[entry] && (
+              <HugeiconsIcon icon={SECTION_ICONS[entry]} strokeWidth={1.75} className="size-4 shrink-0" />
+            )}
             {t(SECTION_LABELS[entry])}
           </button>
         );
@@ -1404,6 +1416,7 @@ export function ChatsLibrary({
   /** Starred projects first, then starred chats. */
   function favoriteEntries(): FavoriteChatEntries {
     const projectsShown = loaded && projectsLoaded ? visibleProjects : [];
+    const sectionsShown = loaded ? visibleSections : [];
     const chatsShown = loaded ? visibleChats : [];
     return {
       rows: [
@@ -1412,6 +1425,14 @@ export function ChatsLibrary({
             key={`project:${project.id}`}
             project={project}
             stats={stats.get(project.id)}
+            layout="files"
+          />
+        )),
+        ...sectionsShown.map((entry) => (
+          <SectionRow
+            key={`section:${entry.id}`}
+            section={entry}
+            stats={sectionStatsById.get(entry.id)}
             layout="files"
           />
         )),
@@ -1429,11 +1450,15 @@ export function ChatsLibrary({
       cards: [
         ...projectsShown.map((project) => ({
           key: `project:${project.id}`,
-          node: <ProjectCard project={project} stats={stats.get(project.id)} />,
+          node: <FavoriteProjectTile project={project} stats={stats.get(project.id)} />,
+        })),
+        ...sectionsShown.map((entry) => ({
+          key: `section:${entry.id}`,
+          node: <FavoriteSectionTile section={entry} stats={sectionStatsById.get(entry.id)} />,
         })),
         ...chatsShown.map((chat) => ({
           key: `chat:${chat.id}`,
-          node: <ChatCard chat={chat} archived={false} showProject showSection />,
+          node: <FavoriteChatTile chat={chat} />,
         })),
       ],
     };

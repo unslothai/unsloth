@@ -768,6 +768,7 @@ function LibraryView({ search }: { search: LibrarySearch }) {
                   onSortChange={(key) => go({ ...search, sort: sortParam(nextSort(sort, key)) }, true)}
                   activity={false}
                   leading={entries.rows}
+                  favoriteMarks={false}
                 />
               </div>
             ) : (
@@ -849,6 +850,7 @@ function LibraryView({ search }: { search: LibrarySearch }) {
             sort={sort}
             onSortChange={(key) => go({ ...search, sort: sortParam(nextSort(sort, key)) }, true)}
             activity={tab === "suggested" && !folderId}
+            favoriteMarks={tab !== "favorites"}
           />
         </div>
       );

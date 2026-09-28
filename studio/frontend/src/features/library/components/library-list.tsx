@@ -181,6 +181,7 @@ export function LibraryList({
   onSortChange,
   activity,
   leading,
+  favoriteMarks = true,
 }: {
   folders: LibraryFolder[];
   items: LibraryItem[];
@@ -192,6 +193,8 @@ export function LibraryList({
   activity: boolean;
   /** Rows listed first, with own menus and no selection (Favorites' starred chats). */
   leading?: ReactNode;
+  /** Off in Favorites, where every item is starred. */
+  favoriteMarks?: boolean;
 }) {
   const t = useT();
   const actions = useLibraryActions();
@@ -289,7 +292,7 @@ export function LibraryList({
                     {t(modelLabelKey(item)!)}
                   </span>
                 )}
-                {item.favorite && (
+                {favoriteMarks && item.favorite && (
                   <HugeiconsIcon
                     icon={StarPointedIcon}
                     aria-label={t("library.list.favorite")}

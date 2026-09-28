@@ -297,3 +297,11 @@ test("one date column picks created, last active or last modified", () => {
   assert.match(items, /export function DateHeader\(/);
   assert.doesNotMatch(items, /CREATED_COLUMN/);
 });
+
+test("Favorites draws starred chats, projects and sections as file cards, without a star", () => {
+  const items = readSrc("features/library/chats/chats-items.tsx");
+  assert.match(items, /export function FavoriteSectionTile\(/);
+  assert.match(items, /if \(!useChatsActions\(\)\.favoriteMarks\) return null;/);
+  assert.match(readSrc("features/library/chats/favorites-store.ts"), /sectionIds: readIds\(saved\?\.sectionIds\)/);
+  assert.match(readSrc("features/library/library-page.tsx"), /favoriteMarks=\{tab !== "favorites"\}/);
+});

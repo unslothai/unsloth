@@ -57,7 +57,12 @@ import {
 } from "lucide-react";
 import { type ReactNode, createContext, useContext } from "react";
 import { formatActivityTime, formatCardTime } from "../format";
+import {
+  CARD_ICON_CLASS as FILE_CARD_ICON_CLASS,
+  CARD_SURFACE as FILE_CARD_SURFACE,
+} from "../components/library-cards";
 import { FILE_LIST_COLUMNS } from "../components/library-list";
+import { useLibrarySettingsStore } from "../settings-store";
 import { SortRadio } from "../components/library-toolbar";
 import { CARD_SHADOW, OVERLAY_CONTROL, RAISED_SURFACE } from "../surface";
 
@@ -103,6 +108,9 @@ export interface ChatsActions {
   pinnedProjects: ReadonlySet<string>;
   favorites: ReadonlySet<string>;
   favoriteProjects: ReadonlySet<string>;
+  favoriteSections: ReadonlySet<string>;
+  /** Off in Favorites, where every entry is starred. */
+  favoriteMarks: boolean;
   /** False in Favorites, where chats do not share the file selection. */
   selectable: boolean;
   models: ReadonlyMap<string, string[]>;
@@ -124,6 +132,7 @@ export interface ChatsActions {
   togglePin: (chat: SidebarItem) => void;
   setFavorite: (chats: SidebarItem[], favorite: boolean) => void;
   toggleFavoriteProject: (projectId: string) => void;
+  toggleFavoriteSection: (sectionId: string) => void;
   fork: (chat: SidebarItem) => void;
   move: (chats: SidebarItem[], destination: ChatDestination) => void;
   /** Moves a project into or out of a section; projects never nest. */
@@ -371,6 +380,7 @@ function FavoriteItem({
 
 function FavoriteMark() {
   const t = useT();
+  if (!useChatsActions().favoriteMarks) return null;
   return (
     <HugeiconsIcon
       icon={StarPointedIcon}
@@ -660,7 +670,7 @@ function FileColumns({ modified }: { modified: number }) {
   return (
     <>
       <span className={cn(FILE_LIST_COLUMNS.modified, FILE_LIST_COLUMNS.cell)}>
-        {formatCardTime(modified, locale)}
+        {modified ? formatCardTime(modified, locale) : ""}
       </span>
       <span className={cn(FILE_LIST_COLUMNS.size, FILE_LIST_COLUMNS.cell)} />
     </>
@@ -1585,6 +1595,10 @@ export function SectionMenuItems({
         label={t("shell.sections.renameTitle")}
         onSelect={() => actions.renameSection(section)}
       />
+      <FavoriteItem
+        favorite={actions.favoriteSections.has(section.id)}
+        onToggle={() => actions.toggleFavoriteSection(section.id)}
+      />
       <ExportSubmenu
         onExport={(format) => actions.exportSection(section, format)}
       />
@@ -1627,6 +1641,7 @@ export function SectionCard({
     >
       <div className="flex items-center gap-2">
         <CollectionTile icon={LayerIcon} />
+        {actions.favoriteSections.has(section.id) && <FavoriteMark />}
       </div>
       <SectionMenu section={section} variant="card" />
       <button
@@ -1685,24 +1700,31 @@ export function SectionRow({
           >
             {section.name}
           </button>
+          {actions.favoriteSections.has(section.id) && <FavoriteMark />}
           {layout === "files" && (
             <CollectionCount>{sectionCountLabel(stats, t)}</CollectionCount>
           )}
         </span>
       </div>
-      {/* Sections have no location: an empty cell keeps the columns aligned. */}
-      {layout !== "own" && layout !== "files" && layout.showLocation && (
-        <span className={LOCATION_COLUMN} />
+      {layout === "files" ? (
+        <FileColumns modified={stats?.lastActive ?? 0} />
+      ) : (
+        <>
+          {/* Sections have no location: an empty cell keeps the columns aligned. */}
+          {layout !== "own" && layout.showLocation && (
+            <span className={LOCATION_COLUMN} />
+          )}
+          <span className={cn(CONTENTS_COLUMN, CELL)}>
+            {sectionCountLabel(stats, t)}
+          </span>
+          {/* A section records only when its chats were last active. */}
+          <span className={cn(DATE_COLUMN, CELL)}>
+            {layout === "own" || actions.dateField === "updated"
+              ? formatDate(stats?.lastActive ?? 0, "updated", {}, locale, t)
+              : ""}
+          </span>
+        </>
       )}
-      <span className={cn(CONTENTS_COLUMN, CELL)}>
-        {sectionCountLabel(stats, t)}
-      </span>
-      {/* A section records only when its chats were last active. */}
-      <span className={cn(DATE_COLUMN, CELL)}>
-        {layout === "own" || actions.dateField === "updated"
-          ? formatDate(stats?.lastActive ?? 0, "updated", {}, locale, t)
-          : ""}
-      </span>
       <SectionMenu section={section} variant="row" />
     </div>
   );
@@ -1724,5 +1746,125 @@ export function SectionListHeader({ date }: { date: DateColumn }) {
       <DateHeader {...date} field="updated" />
       <span className="w-8 shrink-0" />
     </div>
+  );
+}
+
+/** A starred chat, project or section among the Favorites file cards, drawn the same way. */
+function FavoriteTile({
+  title,
+  icon,
+  time,
+  onOpen,
+  menu,
+}: {
+  title: string;
+  icon: ReactNode;
+  time: number;
+  onOpen: () => void;
+  menu: ReactNode;
+}) {
+  const locale = useLocale();
+  const showTime = useLibrarySettingsStore((s) => s.showCardDates);
+  return (
+    <div className="group/library-card group/chat relative">
+      <button
+        type="button"
+        aria-label={title}
+        onClick={onOpen}
+        className={cn(
+          "block w-full overflow-hidden rounded-xl text-left outline-none transition focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
+          FILE_CARD_SURFACE,
+        )}
+      >
+        <div className="flex aspect-square flex-col px-5 pb-3.5 pt-5">
+          <p className="line-clamp-2 break-words pr-7 font-medium text-ui-14 leading-snug text-foreground">
+            {title}
+          </p>
+          <div className="flex flex-1 items-center justify-center text-foreground">
+            {icon}
+          </div>
+          <p className="truncate pr-6 text-ui-13 text-muted-foreground">
+            {showTime && time ? formatCardTime(time, locale) : ""}
+          </p>
+        </div>
+      </button>
+      {menu}
+    </div>
+  );
+}
+
+export function FavoriteChatTile({ chat }: { chat: SidebarItem }) {
+  const t = useT();
+  const actions = useChatsActions();
+  const icon =
+    chat.type === "compare" ? (
+      <Columns2Icon strokeWidth={1.5} className={FILE_CARD_ICON_CLASS} />
+    ) : chat.isFork ? (
+      <GitBranchIcon strokeWidth={1.5} className={FILE_CARD_ICON_CLASS} />
+    ) : (
+      <HugeiconsIcon
+        icon={MessageCircleIcon}
+        strokeWidth={1.5}
+        className={FILE_CARD_ICON_CLASS}
+      />
+    );
+  return (
+    <FavoriteTile
+      title={chatTitle(chat, t)}
+      icon={icon}
+      time={chat.updatedAt}
+      onOpen={() => actions.open(chat)}
+      menu={<ChatMenu chat={chat} archived={false} variant="card" />}
+    />
+  );
+}
+
+export function FavoriteProjectTile({
+  project,
+  stats,
+}: {
+  project: ProjectRecord;
+  stats?: ProjectStats;
+}) {
+  const actions = useChatsActions();
+  return (
+    <FavoriteTile
+      title={project.name}
+      icon={
+        <HugeiconsIcon
+          icon={Folder01Icon}
+          strokeWidth={1.5}
+          className={FILE_CARD_ICON_CLASS}
+        />
+      }
+      time={stats?.lastActive ?? project.updatedAt}
+      onOpen={() => actions.viewProject(project.id)}
+      menu={<ProjectMenu project={project} variant="card" />}
+    />
+  );
+}
+
+export function FavoriteSectionTile({
+  section,
+  stats,
+}: {
+  section: SidebarCustomSection;
+  stats?: SectionStats;
+}) {
+  const actions = useChatsActions();
+  return (
+    <FavoriteTile
+      title={section.name}
+      icon={
+        <HugeiconsIcon
+          icon={LayerIcon}
+          strokeWidth={1.5}
+          className={FILE_CARD_ICON_CLASS}
+        />
+      }
+      time={stats?.lastActive ?? 0}
+      onOpen={() => actions.viewSection(section.id)}
+      menu={<SectionMenu section={section} variant="card" />}
+    />
   );
 }
