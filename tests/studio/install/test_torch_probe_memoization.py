@@ -295,7 +295,7 @@ class TestMemoization:
             if called & {"_build_pip_cmd", "_build_uv_cmd"}:
                 installers[node.name] = called
         assert SCRATCH_PREFETCHERS <= set(installers), "an exempted prefetcher no longer builds"
-        assert set(installers) - SCRATCH_PREFETCHERS == {"pip_install", "pip_install_try"}, (
+        assert set(installers) - SCRATCH_PREFETCHERS == {"_pip_install_once", "pip_install_try"}, (
             f"a new installer entry point appeared: {sorted(installers)}. It has to drop "
             "the torch classification too, or it will answer for the build it replaced"
         )

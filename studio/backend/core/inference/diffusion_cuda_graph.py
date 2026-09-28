@@ -196,9 +196,71 @@ def _drop_pool_if_unused() -> None:
         pass
 
 
+def _nvfp4_flashinfer_linears(module: Any) -> list:
+    try:
+        from .diffusion_nvfp4_linear import is_nvfp4_flashinfer_linear
+    except Exception:  # noqa: BLE001 - no backend module, no NVFP4 layers to find
+        return []
+    found: list = []
+    try:
+        for name, sub in module.named_modules():
+            if is_nvfp4_flashinfer_linear(sub):
+                found.append((name, sub))
+    except Exception:  # noqa: BLE001 - an exotic module tree is simply not an NVFP4 one
+        return []
+    return found
+
+
+def _protect_keyed(module: Any) -> bool:
+    """Whether the graph key needs the precision branch: lever armed AND the module holds NVFP4 layers."""
+    try:
+        from .diffusion_nvfp4_protect import module_controller
+        if not module_controller(module).armed:
+            return False
+        return bool(_nvfp4_flashinfer_linears(module))
+    except Exception:  # noqa: BLE001 - a tree we cannot walk simply keys the way it always did
+        return False
+
+
+def protect_graph_key(controller: Any = None) -> tuple:
+    from .diffusion_nvfp4_protect import protect_graph_key as _key
+    return _key(controller = controller)
+
+
+def _unbaked_nvfp4_layers(layers: list) -> list:
+    return [name for name, layer in layers if not getattr(layer, "activation_scales_baked", False)]
+
+
+def _prewarm_token_counts(live: list) -> tuple:
+    """Candidate GEMM row counts (M) from the warm-up's shapes, smallest first; bounded."""
+    counts = {1}
+    for tensor in live:
+        try:
+            shape = tuple(int(dim) for dim in tensor.shape)
+        except Exception:  # noqa: BLE001 - not a shaped tensor, nothing to read
+            continue
+        if len(shape) < 2:
+            continue
+        rows = 1
+        for dim in shape[:-1]:
+            rows *= dim
+        if rows > 0:
+            counts.add(rows)
+    return tuple(sorted(counts)[:8])
+
+
 def _warn(logger: Any, what: str, exc: Any) -> None:
     if logger is not None:
         logger.warning("diffusion.cuda_graph: %s failed: %s", what, exc)
+
+
+def _outer_layer(module: Any) -> Any:
+    """The ``_unsloth_outer_forward`` layer in ``module``'s forward slot (its ``inner`` None = class forward)."""
+    try:
+        slot = module.__dict__.get("forward")
+    except Exception:  # noqa: BLE001 - no instance dict, nothing layered
+        return None
+    return slot if getattr(slot, "_unsloth_outer_forward", False) is True else None
 
 
 class _Entry:
@@ -251,6 +313,8 @@ class GraphedForward:
         self.capture_error: Optional[dict] = None
         self.cache: dict = {}
         self.cap_hit = False
+        self.protect_keyed: Optional[bool] = None
+        self.protect_ctl: Any = None
         self.stats = {
             "captures": 0,
             "replays": 0,
@@ -264,11 +328,20 @@ class GraphedForward:
         _LIVE_WRAPPERS.add(self)
 
     def install(self) -> "GraphedForward":
-        """Write ``forward`` into the instance ``__dict__``; ``__setattr__`` would inspect it."""
+        """Set ``forward`` via ``__dict__`` (``__setattr__`` would inspect it), under any outer step-skip layer."""
+        outer = _outer_layer(self.module)
+        if outer is not None:
+            outer.inner = self
+            return self
         self.module.__dict__["forward"] = self
         return self
 
     def uninstall(self) -> "GraphedForward":
+        outer = _outer_layer(self.module)
+        if outer is not None:
+            if outer.inner is self:
+                outer.inner = None
+            return self
         self.module.__dict__.pop("forward", None)
         return self
 
@@ -369,6 +442,23 @@ class GraphedForward:
 
         try:
             key = graph_key((args, kwargs))
+            if self.protect_keyed is None:
+                self.protect_keyed = _protect_keyed(self.module)
+                if self.protect_keyed:
+                    from .diffusion_nvfp4_protect import module_controller
+                    self.protect_ctl = module_controller(self.module)
+                if self.protect_keyed:
+                    self.max_graphs *= 2
+                    if self.logger is not None:
+                        self.logger.info(
+                            "diffusion.cuda_graph: NVFP4 per-step precision is armed on %s; graph "
+                            "cap raised to %d (one graph per branch per input shape)",
+                            type(self.module).__name__,
+                            self.max_graphs,
+                        )
+            if self.protect_keyed:
+                # One graph per branch: a W4A4 replay at a W4A16 step means the lever never fired.
+                key = key + protect_graph_key(self.protect_ctl)
             entry = self.cache.get(key)
         except Exception:  # noqa: BLE001 - an unhashable tree is simply not capturable
             self.stats["refused_object"] += 1
@@ -447,12 +537,26 @@ class GraphedForward:
                 f"inside a captured region is baked in at its recorded value"
             )
 
+        nvfp4_layers = _nvfp4_flashinfer_linears(self.module)
+        unbaked = _unbaked_nvfp4_layers(nvfp4_layers)
+        if unbaked:
+            raise RuntimeError(
+                f"{len(unbaked)} NVFP4 linear(s) report unbaked activation scales "
+                f"(first: {unbaked[0]}); a scale still being calibrated would be frozen into the "
+                f"graph at whatever value this capture saw, so this load runs eager"
+            )
+
         # A tensor made under ``torch.inference_mode()``, which renders run in, refuses ``copy_``.
         with torch.inference_mode(False):
             entry.static = [torch.empty_like(t) for t in live]
         for dst, src in zip(entry.static, live):
             dst.copy_(src)
         static_args, static_kwargs = _rebuild(entry.in_spec, entry.static)
+
+        if nvfp4_layers:
+            # Before the warm-up: a captured tuning launch would bake in the default tactic.
+            from .diffusion_nvfp4_linear import nvfp4_prewarm
+            nvfp4_prewarm(self.module, _prewarm_token_counts(live), logger = self.logger)
 
         # Side stream: a workspace first created DURING capture is only valid while recording.
         side = torch.cuda.Stream()
