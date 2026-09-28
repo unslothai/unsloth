@@ -112,17 +112,19 @@ def capability_snapshot(
     elif dacl:
         remediation = (
             "Install the pinned Microsoft WXC runtime and prepare this host once as an "
-            "administrator; the null device step repeats after every reboot."
+            "administrator (Settings > Sandbox > Prepare this PC); the null device step repeats "
+            "after every reboot."
         )
     else:
         remediation = (
             "Install the pinned Microsoft WXC runtime and enable BaseContainer/PSEC. On Windows "
-            f"builds without it, set {mxc_policy.DACL_FALLBACK_ENV}=1 to use the AppContainer "
+            "builds without it, turn on Settings > Sandbox > Allow OS isolation on this Windows "
+            f"version (or set {mxc_policy.DACL_FALLBACK_ENV}=1) to use the AppContainer "
             "tier: it adds temporary permission entries to the granted host folders, removed "
             "on exit, and needs a one-time administrator host preparation plus one per reboot. "
             "Studio's own Python runtime folders get a permanent read-only entry instead, so "
-            f"launches stay fast; set {mxc_read_grants.PERSISTENT_GRANTS_ENV}=0 to keep every "
-            "entry temporary."
+            "launches stay fast; turn that off in the same place (or set "
+            f"{mxc_read_grants.PERSISTENT_GRANTS_ENV}=0) to keep every entry temporary."
         )
     # Only in DACL mode: a bare --probe allows the fallback, so it warns on hosts Studio never uses it on.
     host_prep = (
