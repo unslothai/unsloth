@@ -123,7 +123,15 @@ def update_download_size_bytes(
     if isinstance(binary_repo, str) and binary_repo and binary_repo != repo:
         repos.append(binary_repo)
     want = f"app-{latest_tag}-{suffix}"
+    # These are the NEWEST release's assets. When the target is the pin's build, only an
+    # asset of that build is its size: anything else would size a bundle the update never
+    # installs, so the estimate is left out instead.
+    target_build = parse_base_build(latest_tag)
+    pin = default_release_pin()
+    capped = target_build is not None and pin is not None and target_build == parse_base_build(pin)
     for r in repos:
+        if capped and r != repo:
+            continue
         assets = latest_release_assets(r, force_refresh = force_refresh)
         if not assets:
             continue
@@ -131,7 +139,7 @@ def update_download_size_bytes(
             return assets[want]
         # Tag formatting can vary (mix suffixes); fall back to the platform suffix.
         for name, size in assets.items():
-            if name.endswith(suffix):
+            if name.endswith(suffix) and (not capped or f"-b{target_build}-" in f"-{name}"):
                 return size
     return None
 
@@ -183,7 +191,9 @@ def pinned_update_target(
     if pin is None or not latest or repo not in (_FORK_REPO, _UPSTREAM_REPO):
         return latest
     installed_build = parse_base_build(installed)
-    if installed_build is not None and installed_build > parse_base_build(pin):
+    # At or past the pin's build the install is kept, as the installer keeps it: a
+    # different mix of the same build is another bundle, not an older one.
+    if installed_build is not None and installed_build >= parse_base_build(pin):
         pin = installed.strip()
     pin_build, latest_build = parse_base_build(pin), parse_base_build(latest)
     if latest_build is None:

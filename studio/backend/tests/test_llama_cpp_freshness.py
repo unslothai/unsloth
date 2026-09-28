@@ -830,6 +830,14 @@ def test_pinned_update_target_rules(_pinned):
     target = fr.pinned_update_target
     assert target("unslothai/llama.cpp", "b11100-mix-0000000", None) == "b11100-mix-0000000"
     assert target("unslothai/llama.cpp", "b11160-mix-bbbbbbb", None) == _PIN
+    # Another mix of the pin's build already installed is kept, as the installer keeps it.
+    assert target("unslothai/llama.cpp", "b11210-mix-ccccccc", "b11160-mix-bbbbbbb") == (
+        "b11160-mix-bbbbbbb"
+    )
+    assert not fr.is_behind(
+        "b11160-mix-bbbbbbb",
+        target("unslothai/llama.cpp", "b11210-mix-ccccccc", "b11160-mix-bbbbbbb"),
+    )
     assert target("unslothai/llama.cpp", None, None) is None
     assert target("ggml-org/llama.cpp", "b11210", "b11100") == "b11160"
     assert target("someone/llama.cpp", "b11210", None) == "b11210"
@@ -841,3 +849,16 @@ def test_the_shipped_pins_file_is_found_beside_the_installer(monkeypatch):
     monkeypatch.delenv("UNSLOTH_LLAMA_RELEASE_TAG", raising = False)
     shipped = Path(__file__).resolve().parents[2] / "llama_prebuilt_pins.json"
     assert fr.default_release_pin() == json.loads(shipped.read_text())["release_tag"]
+
+
+def test_the_update_size_under_a_pin_never_sizes_the_newer_release(monkeypatch, _pinned):
+    marker = {
+        "asset": "llama-b11007-bin-macos-arm64.tar.gz",
+        "published_repo": "unslothai/llama.cpp",
+    }
+    # The newest release is past the pin: its bundle is not what the update installs.
+    _patch_assets(monkeypatch, {"unslothai/llama.cpp": {"llama-b11210-bin-macos-arm64.tar.gz": 9}})
+    assert fr.update_download_size_bytes(marker, _PIN, "unslothai/llama.cpp") is None
+    # The pin is the newest release: its own bundle still sizes the update.
+    _patch_assets(monkeypatch, {"unslothai/llama.cpp": {"llama-b11160-bin-macos-arm64.tar.gz": 7}})
+    assert fr.update_download_size_bytes(marker, _PIN, "unslothai/llama.cpp") == 7
