@@ -298,6 +298,8 @@ def _icacls(root: str, *args: str) -> tuple[bool, str]:
             [icacls, root, *args, "/Q"],
             capture_output = True,
             text = True,
+            # icacls writes the console (OEM) codepage to a pipe; the codec exists only on Windows.
+            encoding = "oem" if os.name == "nt" else "utf-8",
             errors = "replace",
             timeout = GRANT_TIMEOUT_SECONDS,
             creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0),
