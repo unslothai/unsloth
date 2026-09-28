@@ -39,7 +39,7 @@ function rewindToStart(event: { currentTarget: HTMLInputElement }): void {
 }
 
 /** The wash reads on both the light and dark find-bar surfaces. */
-const FIND_BUTTON_CLASS = "size-8 hover:bg-black/[0.06] dark:hover:bg-white/10";
+const FIND_BUTTON_CLASS = "size-8 hover:bg-[rgb(0_0_0_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]";
 
 /** Coalesce a typing burst before the DOM search/highlight work runs. */
 export const FIND_QUERY_SETTLE_MS = 100;
@@ -203,7 +203,7 @@ export default function FindBar({
       // biome-ignore lint/a11y/useSemanticElements: this landmark contains the field and its navigation controls.
       role="search"
       aria-label={t("shell.find.label")}
-      className="find-bar-surface fixed top-[calc(var(--studio-content-top-inset,0px)+3.5rem)] right-4 z-50 flex h-13 w-[22.25rem] max-w-[calc(100vw-2rem)] items-center gap-1 rounded-full pr-4 pl-5 sm:w-[28.25rem]"
+      className="find-bar-surface fixed top-[calc(var(--studio-content-top-inset,0px)+3.5rem)] right-4 z-50 flex h-13 w-[calc(22.25rem*var(--ui-space-scale,1))] max-w-[calc(100vw-2rem)] items-center gap-1 rounded-full pr-4 pl-5 sm:w-[calc(28.25rem*var(--ui-space-scale,1))]"
     >
       <input
         ref={inputRef}
@@ -249,7 +249,7 @@ export default function FindBar({
         aria-label={t("shell.find.previous")}
         title={t("shell.find.previous")}
       >
-        <ArrowUpIcon strokeWidth={1.75} className="size-[18px]" />
+        <ArrowUpIcon strokeWidth={1.75} className="size-[calc(18px*var(--ui-space-scale,1))]" />
       </Button>
       <Button
         variant="ghost"
@@ -261,7 +261,7 @@ export default function FindBar({
         aria-label={t("shell.find.next")}
         title={t("shell.find.next")}
       >
-        <ArrowDownIcon strokeWidth={1.75} className="size-[18px]" />
+        <ArrowDownIcon strokeWidth={1.75} className="size-[calc(18px*var(--ui-space-scale,1))]" />
       </Button>
       <Button
         variant="ghost"
@@ -271,7 +271,7 @@ export default function FindBar({
         aria-label={t("shell.find.close")}
         title={t("shell.find.close")}
       >
-        <HugeiconsIcon icon={Cancel01Icon} className="size-[18px]" />
+        <HugeiconsIcon icon={Cancel01Icon} className="size-[calc(18px*var(--ui-space-scale,1))]" />
       </Button>
     </div>
   );

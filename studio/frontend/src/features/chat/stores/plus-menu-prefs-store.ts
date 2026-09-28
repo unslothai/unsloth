@@ -29,7 +29,7 @@ export const PLUS_MENU_ORDER: PlusMenuItemId[] = [
   "projects",
 ];
 
-// Chat with Files, MCP and Skills sit at the top level; everything else lives under "More".
+// Chat with files, MCP and Skills sit at the top level; everything else lives under "More".
 // Projects is a workspace the user opts into, not a per-message attachment.
 const DEFAULT_PINS: Record<PlusMenuItemId, boolean> = {
   chatWithFiles: true,

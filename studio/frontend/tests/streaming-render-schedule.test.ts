@@ -897,3 +897,70 @@ test("a reply dense with `]:` and no definition does not pay per occurrence", ()
   assert.ok(invalidMedian < 100,
     `500k of \`[]:\` cost ${invalidMedian.toFixed(1)}ms; invalid candidates are being rescanned`);
 });
+
+test("a reference label past the old cap still resolves against its definition", () => {
+  // A label resolves only when BOTH probes admit it, and the definition one moved to 999 while
+  // this one stayed at 200, so 201..999 stayed on the blocks path (unslothai/unsloth#9540).
+  for (const length of [200, 201, 400, 999]) {
+    const label = "L".repeat(length);
+    const reply = `See [guide][${label}].\n\n[${label}]: https://x.test/a\n`;
+    assert.equal(markdownRenderScope(reply), "document",
+      `a ${length}-character label did not reach the document path`);
+    assert.equal(markdownRenderKey(reply), `document:[${label}]: https://x.test/a`);
+  }
+  // 999 is CommonMark's, not Marked's, whose `def` label is uncapped but only SPLITS here. The
+  // render is remark, CommonMark-strict: 0 links past 999, so the blocks path loses nothing.
+  const tooLong = "L".repeat(1000);
+  assert.equal(markdownRenderScope(`See [guide][${tooLong}].\n\n[${tooLong}]: /u\n`), "blocks");
+});
+
+test("a run of `[` before a reference does not walk the widened label budget", () => {
+  // A run of `[` is one start position per character, so the widened budget is paid at each:
+  // 1743ms at 500k against 7.7ms bounding each seam. Loose, so a slow runner still separates them.
+  const run = `${"[".repeat(500000)}][x]`;
+  for (let i = 0; i < 3; i += 1) markdownRenderScope(run + " ");
+  const runs: number[] = [];
+  for (let i = 0; i < 5; i += 1) {
+    const t0 = performance.now();
+    markdownRenderScope(run + " ".repeat(i));
+    runs.push(performance.now() - t0);
+  }
+  const median = runs.sort((a, b) => a - b)[2]!;
+  assert.ok(median < 150,
+    `500k of \`[\` cost ${median.toFixed(1)}ms; the reference probe is walking every start position`);
+});
+
+test("a reply whose every `]` is escaped does not rescan the tail per seam", () => {
+  // `\][` leaves no unescaped `]` after the first seam, so the lookahead comes back empty and a
+  // cached -1 would rescan the tail per seam: quadratic, 196s at 500k against 162ms narrow.
+  const escaped = "\\][".repeat(166_666);
+  for (let i = 0; i < 3; i += 1) markdownRenderScope(escaped + " ");
+  const runs: number[] = [];
+  for (let i = 0; i < 5; i += 1) {
+    const t0 = performance.now();
+    markdownRenderScope(escaped + " ".repeat(i));
+    runs.push(performance.now() - t0);
+  }
+  const median = runs.sort((a, b) => a - b)[2]!;
+  assert.ok(median < 150,
+    `500k of \`\\][\` cost ${median.toFixed(1)}ms; an exhausted lookahead is being re-asked per seam`);
+});
+
+test("a seam whose reference label is past the cap is rejected once, not per `[`", () => {
+  // The window bounds the slice, not the start positions in it: packed with `[` and a label past
+  // the cap, it fails from every one and gives the window back nothing. Test that label once.
+  const packed = `${"[".repeat(3000)}][${"y".repeat(3000)}]`.repeat(83);
+  for (let i = 0; i < 3; i += 1) markdownRenderScope(packed + " ");
+  const runs: number[] = [];
+  for (let i = 0; i < 5; i += 1) {
+    const t0 = performance.now();
+    markdownRenderScope(packed + " ".repeat(i));
+    runs.push(performance.now() - t0);
+  }
+  const median = runs.sort((a, b) => a - b)[2]!;
+  assert.ok(median < 150,
+    `500k of packed \`[\` cost ${median.toFixed(1)}ms; the window is re-tested from every \`[\``);
+  // The rejection is a cost bound, not a change of answer: a label inside the cap still resolves.
+  const label = "L".repeat(400);
+  assert.equal(markdownRenderScope(`See [guide][${label}].\n\n[${label}]: /u\n`), "document");
+});

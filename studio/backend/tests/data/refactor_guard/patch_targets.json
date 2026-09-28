@@ -938,8 +938,6 @@
     "tests/test_media_auto_switch.py"
   ],
   "state.tool_policy.get_tool_policy": [
-    "tests/test_checkpoint_compaction.py",
-    "tests/test_checkpoint_compaction.py",
     "tests/test_checkpoint_compaction.py"
   ],
   "storage.studio_db.add_scan_folder_with_status": [

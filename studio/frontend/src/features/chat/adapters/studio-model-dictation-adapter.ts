@@ -20,6 +20,7 @@ import {
 } from "@/features/settings/stores/voice-settings-store";
 import type { DictationAdapter } from "@assistant-ui/react";
 import { toast } from "sonner";
+import { withAbort } from "../../hub/lib/abort-signals";
 import { encryptProviderApiKey } from "../api/providers-api";
 import { getExternalProviderApiKey } from "../external-providers";
 import { useExternalProvidersStore } from "../stores/external-providers-store";
@@ -118,6 +119,7 @@ export async function transcribeAudioBlob(
     model?: string;
     language?: string;
     engine?: SttEngine;
+    device?: SttDevice;
     providerId?: string;
     signal?: AbortSignal;
   } = {},
@@ -183,7 +185,7 @@ export async function transcribeAudioBlob(
   const engine = options.engine ?? sttEngineFor(model);
   const params = new URLSearchParams({ model, fast: "true", engine });
   if (language) params.set("language", language);
-  params.set("device", settings.sttDevice);
+  params.set("device", options.device ?? settings.sttDevice);
   const response = await authFetch(
     `/api/inference/audio/transcribe/raw?${params.toString()}`,
     {
@@ -259,14 +261,17 @@ function queueSttLifecycle(operation: () => Promise<void>): Promise<void> {
 export async function fetchSttStatus(
   refreshKey?: number,
   model?: string,
+  signal?: AbortSignal,
 ): Promise<SttStatus> {
   const params = new URLSearchParams();
   if (refreshKey !== undefined) params.set("refresh", String(refreshKey));
   if (model) params.set("model", model);
   const query = params.toString();
-  const response = await authFetch(
+  const request = authFetch(
     `/api/inference/audio/stt/status${query ? `?${query}` : ""}`,
+    { signal },
   );
+  const response = await withAbort(request, signal);
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
   return (await response.json()) as SttStatus;
 }

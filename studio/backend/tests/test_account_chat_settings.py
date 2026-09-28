@@ -365,6 +365,7 @@ OWNER_PATHS = [
         "/xet-notice/reserve": ("POST",),
         "/model-memory": ("GET", "PUT"),
         "/vram-budget": ("GET", "PUT"),
+        "/diffusion-accelerator-fallback": ("GET", "DELETE"),
         "/coding-agents": ("GET",),
         "/openai-auto-switch": ("GET", "PUT"),
         "/openai-auto-switch/overrides": ("GET", "PUT"),
