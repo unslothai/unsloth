@@ -1395,8 +1395,29 @@ def test_reasoning_replay_during_tool_rounds_is_opt_in(executed, preserve):
 
 def test_openrouter_receipts_survive_token_aggregation(executed):
     receipt = {"id": "gen-accounting", "model": "vendor/served", "usage": {"cost": 0.000003}}
-    transport = FakeTransport([["data: " + json.dumps({"_openrouterAttempt": "attempt"}), _sse({"content": "ok"}), "data: " + json.dumps({"_openrouterReceipt": receipt}), "data: " + json.dumps({"id": "gen-accounting", "choices": [], "usage": {"prompt_tokens": 3, "completion_tokens": 2, "cost": 0.000003}}), _DONE]])
+    transport = FakeTransport(
+        [
+            [
+                "data: " + json.dumps({"_openrouterAttempt": "attempt"}),
+                _sse({"content": "ok"}),
+                "data: " + json.dumps({"_openrouterReceipt": receipt}),
+                "data: "
+                + json.dumps(
+                    {
+                        "id": "gen-accounting",
+                        "choices": [],
+                        "usage": {"prompt_tokens": 3, "completion_tokens": 2, "cost": 0.000003},
+                    }
+                ),
+                _DONE,
+            ]
+        ]
+    )
     transport.sanitizes_provider_frames = True
-    frames = [json.loads(line[5:]) for line in _run(transport) if line.startswith("data:") and "[DONE]" not in line]
+    frames = [
+        json.loads(line[5:])
+        for line in _run(transport)
+        if line.startswith("data:") and "[DONE]" not in line
+    ]
     assert any(frame.get("_openrouterReceipt") == receipt for frame in frames)
     assert any(frame.get("_usageAggregate") is True for frame in frames)

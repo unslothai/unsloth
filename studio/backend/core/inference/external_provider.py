@@ -1937,10 +1937,16 @@ class ExternalProviderClient:
                                 accounting = _json.loads(relayed[5:].strip())
                             except (ValueError, TypeError):
                                 accounting = None
-                            if isinstance(accounting, dict) and isinstance(accounting.get("usage"), dict):
+                            if isinstance(accounting, dict) and isinstance(
+                                accounting.get("usage"), dict
+                            ):
                                 # The shared tool loop sums tokens and withholds per-turn usage. Carry
                                 # the original receipt separately so generation ids and fractional charges survive.
-                                receipt = {key: accounting[key] for key in ("id", "model", "usage") if key in accounting}
+                                receipt = {
+                                    key: accounting[key]
+                                    for key in ("id", "model", "usage")
+                                    if key in accounting
+                                }
                                 yield f'data: {_json.dumps({"_openrouterReceipt": receipt})}'
                         yield relayed
                     # Stream ended without [DONE] (some upstreams just close the connection). Emit tool_end so the
