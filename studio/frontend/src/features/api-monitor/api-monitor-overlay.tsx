@@ -22,7 +22,7 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
 import { XIcon } from "lucide-react";
-import { AnimatePresence, motion } from "motion/react";
+import { AnimatePresence, motion, useIsPresent } from "motion/react";
 import { type ReactElement, useEffect, useRef, useState } from "react";
 import { isLifecycleEntry, lifecycleLabel } from "./lifecycle";
 import {
@@ -44,6 +44,9 @@ import { computeStats } from "./use-api-monitor";
 
 // Live cadence while the panel is on screen.
 const OPEN_POLL_MS = 1500;
+// The body scrolls, so the grip may shrink below content size (the hardware monitor's floor).
+const MIN_PANEL_WIDTH = 280;
+const MIN_PANEL_HEIGHT = 200;
 // Closed, the poll only has to notice traffic started, so it backs off.
 const IDLE_POLL_MS = 5000;
 // Requests shown in the panel; the rest are one click away on the full page.
@@ -259,6 +262,7 @@ function ApiMonitorPanel({
   const entries = data?.entries ?? [];
   const stats = computeStats(entries);
   const serverStatus = data?.status ?? "idle";
+  const isPresent = useIsPresent();
   const [constraintsElement, setConstraintsElement] =
     useState<HTMLDivElement | null>(null);
   const {
@@ -273,7 +277,8 @@ function ApiMonitorPanel({
   } = useFloatingPanelLayout(
     constraintsElement,
     false,
-    false,
+    // An exiting panel must not stay an obstacle for the one reopening.
+    !isPresent,
     (size, bounds) => {
       const initial = placeFloatingPanel(
         size,
@@ -340,8 +345,8 @@ function ApiMonitorPanel({
             ? {
                 left: layout.left,
                 top: layout.top,
-                minWidth: Math.min(layout.minWidth, layout.maxWidth),
-                minHeight: Math.min(layout.minHeight, layout.maxHeight),
+                minWidth: Math.min(MIN_PANEL_WIDTH, layout.maxWidth),
+                minHeight: Math.min(MIN_PANEL_HEIGHT, layout.maxHeight),
                 maxWidth: layout.maxWidth,
                 maxHeight: layout.maxHeight,
               }

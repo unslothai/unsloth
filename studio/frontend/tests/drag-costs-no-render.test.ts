@@ -24,6 +24,14 @@ test("both monitors use the hardware monitor's shared interaction hook", () => {
   }
 });
 
+test("the API monitor can shrink at its opening corner and never dodges its own exiting panel", () => {
+  const panel = readSrc("features/api-monitor/api-monitor-overlay.tsx");
+  assert.match(panel, /minWidth: Math\.min\(MIN_PANEL_WIDTH, layout\.maxWidth\)/);
+  assert.match(panel, /minHeight: Math\.min\(MIN_PANEL_HEIGHT, layout\.maxHeight\)/);
+  assert.match(panel, /const isPresent = useIsPresent\(\);/);
+  assert.match(panel, /useFloatingPanelLayout\(\s*constraintsElement,\s*false,[^,]*!isPresent,/);
+});
+
 test("the card paints a drag frame through a transform", () => {
   const hook = readSrc("features/loaded-models/use-drag-position.ts");
   assert.match(hook, /panel\.style\.transform = `translate3d\(/);
