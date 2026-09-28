@@ -43,6 +43,7 @@ import {
   Delete02Icon,
   Download01Icon,
   Edit03Icon,
+  FolderAddIcon,
   Folder01Icon,
   Folder02Icon,
   FolderExportIcon,
@@ -147,6 +148,8 @@ export interface ChatsActions {
   /** Narrows the list to one section. Omitted where there are no filters (Favorites). */
   viewSection: (sectionId: string) => void;
   newChatInSection: (sectionId: string) => void;
+  /** New project dialog; the project is filed in the section. */
+  newProjectInSection: (sectionId: string) => void;
   renameSection: (section: SidebarCustomSection) => void;
   removeSection: (section: SidebarCustomSection) => void;
   exportSection: (section: SidebarCustomSection, choice: ChatExportChoice) => void;
@@ -1581,16 +1584,25 @@ export function SectionMenuItems({
           onSelect={() => actions.viewSection(section.id)}
         />
       )}
+      {/* On the page, its New button has both. */}
       {!onPage && (
-        <MenuItem
-          icon={PencilEdit02Icon}
-          label={t("library.chats.menu.newChatInSection")}
-          onSelect={() => actions.newChatInSection(section.id)}
-        />
+        <>
+          <MenuItem
+            icon={PencilEdit02Icon}
+            label={t("library.chats.toolbar.newChat")}
+            onSelect={() => actions.newChatInSection(section.id)}
+          />
+          <MenuItem
+            icon={FolderAddIcon}
+            label={t("library.chats.toolbar.newProject")}
+            onSelect={() => actions.newProjectInSection(section.id)}
+          />
+        </>
       )}
+      {/* Edit, as in the sidebar's section menu. */}
       <MenuItem
-        icon={Edit03Icon}
-        label={t("shell.sections.renameTitle")}
+        icon={Settings02Icon}
+        label={t("shell.sections.edit")}
         onSelect={() => actions.renameSection(section)}
       />
       <FavoriteItem

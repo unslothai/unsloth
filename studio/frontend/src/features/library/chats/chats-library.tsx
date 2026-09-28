@@ -350,6 +350,12 @@ export function ChatsLibrary({
   const [renaming, setRenaming] = useState<SidebarItem | null>(null);
   const [editing, setEditing] = useState<ProjectRecord | null>(null);
   const [creatingProject, setCreatingProject] = useState(false);
+  // Section a project made from its menu is filed in.
+  const [newProjectSection, setNewProjectSection] = useState<string | null>(null);
+  const newProjectInSection = (sectionId: string) => {
+    setNewProjectSection(sectionId);
+    setCreatingProject(true);
+  };
   const [pendingDelete, setPendingDelete] = useState<PendingDelete | null>(null);
   const [movingIntoNew, setMovingIntoNew] = useState<{
     kind: "project" | "section";
@@ -926,6 +932,7 @@ export function ChatsLibrary({
     chatContents,
     viewSection: (id) => go({ chatSection: id }),
     newChatInSection: (id) => newChatInSection(id),
+    newProjectInSection,
     renameSection: setRenamingSection,
     removeSection: (entry) => {
       const undo = removeCustomSectionWithUndo(entry);
@@ -1529,7 +1536,9 @@ export function ChatsLibrary({
                 onSearchChange={setQuery}
                 searchPlaceholder={searchPlaceholder}
                 onNewChat={() => (openSectionId ? newChatInSection(openSectionId) : newChatIn(null))}
-                onNewProject={() => setCreatingProject(true)}
+                onNewProject={() =>
+                  openSectionId ? newProjectInSection(openSectionId) : setCreatingProject(true)
+                }
                 onNewSection={() => setMovingIntoNew({ kind: "section", chats: [] })}
               />
             }
@@ -1683,6 +1692,7 @@ export function ChatsLibrary({
         onOpenChange={(open) => {
           setCreatingProject(open);
           if (!open && movingIntoNew?.kind === "project") setMovingIntoNew(null);
+          if (!open) setNewProjectSection(null);
         }}
         title={t("library.chats.toolbar.newProject")}
         submitLabel={t("library.dialog.create")}
@@ -1692,6 +1702,7 @@ export function ChatsLibrary({
             setMovingIntoNew(null);
             return;
           }
+          if (newProjectSection) fileProjectInSection(project, newProjectSection);
           openProject(project.id);
         }}
       />

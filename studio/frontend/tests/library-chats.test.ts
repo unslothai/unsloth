@@ -558,3 +558,16 @@ test("clearing the selection drops the shift-click anchor", () => {
   // Every emptying write goes through the wrapper, never the raw state setter.
   assert.doesNotMatch(library, /setSelectionState\(new Set\(\)\)/);
 });
+
+test("a section's menu reads New chat, New project and Edit", () => {
+  const items = readSrc("features/library/chats/chats-items.tsx");
+  const menu = items.slice(items.indexOf("export function SectionMenuItems("), items.indexOf("function sectionCountLabel("));
+  assert.match(menu, /label=\{t\("library\.chats\.toolbar\.newChat"\)\}/);
+  assert.match(menu, /icon=\{FolderAddIcon\}\s*label=\{t\("library\.chats\.toolbar\.newProject"\)\}\s*onSelect=\{\(\) => actions\.newProjectInSection\(section\.id\)\}/);
+  assert.match(menu, /icon=\{Settings02Icon\}\s*label=\{t\("shell\.sections\.edit"\)\}/);
+  assert.doesNotMatch(menu, /newChatInSection"\)|renameTitle/);
+  // A project made there, or from the section page's New button, is filed in the section.
+  const library = readSrc("features/library/chats/chats-library.tsx");
+  assert.match(library, /if \(newProjectSection\) fileProjectInSection\(project, newProjectSection\);/);
+  assert.match(library, /openSectionId \? newProjectInSection\(openSectionId\) : setCreatingProject\(true\)/);
+});
