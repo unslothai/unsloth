@@ -1475,7 +1475,10 @@ def test_the_uninstall_sweep_leaves_a_live_owner_and_never_follows_a_link(tmp_pa
     (victim / "ust-1234-abcdef03" / "precious.txt").write_text("not ours", encoding = "utf-8")
     linked = tmp_path / "Linked Unsloth" / "temp"
     linked.parent.mkdir()
-    linked.symlink_to(victim, target_is_directory = True)
+    try:
+        linked.symlink_to(victim, target_is_directory = True)
+    except (OSError, NotImplementedError):
+        pytest.skip("creating a symlink requires privilege on this host")
 
     result = _run_powershell(
         "\n".join(
@@ -1602,7 +1605,10 @@ def test_a_link_high_above_another_profile_is_still_a_link(tmp_path: Path):
 
     # Three levels above the temp directory, so neither it nor its parent is a link. Only a full walk sees this.
     redirected = tmp_path / "redirected profile"
-    redirected.symlink_to(real, target_is_directory = True)
+    try:
+        redirected.symlink_to(real, target_is_directory = True)
+    except (OSError, NotImplementedError):
+        pytest.skip("creating a symlink requires privilege on this host")
     aliased = redirected / "localappdata" / "Unsloth Studio" / "temp"
 
     other = tmp_path / "mine" / "Unsloth Studio" / "temp"
