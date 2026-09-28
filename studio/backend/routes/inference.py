@@ -15968,6 +15968,13 @@ def _with_token_rejected_warning(response, token_rejections):
     return response.model_copy(update = {"memory_warning": warning})
 
 
+# Set by the /load wrapper that shows a refused repo's cached-copy warning. Loads nobody reports
+# back (auto-switch, idle restore, preview) keep the Hub's refusal instead of running it silently.
+_load_warnings_reach_user: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "load_warnings_reach_user", default = False
+)
+
+
 def _owner_session(fastapi_request) -> bool:
     """The machine owner's own UI session: not a managed account and no API key of any kind.
 
@@ -15997,15 +16004,19 @@ async def _run_tracked_load_model_impl(
     try:
         if attempt.cancel_event.is_set():
             raise HTTPException(status_code = 409, detail = "Model load cancelled")
-        with collecting_hub_token_rejections() as token_rejections:
-            response = await _load_model_impl(
-                request,
-                fastapi_request,
-                current_subject,
-                current_request_counted = current_request_counted,
-                on_reload_confirmed = on_reload_confirmed,
-                load_cancel_event = attempt.cancel_event,
-            )
+        warnings_token = _load_warnings_reach_user.set(True)
+        try:
+            with collecting_hub_token_rejections() as token_rejections:
+                response = await _load_model_impl(
+                    request,
+                    fastapi_request,
+                    current_subject,
+                    current_request_counted = current_request_counted,
+                    on_reload_confirmed = on_reload_confirmed,
+                    load_cancel_event = attempt.cancel_event,
+                )
+        finally:
+            _load_warnings_reach_user.reset(warnings_token)
         return _with_token_rejected_warning(response, token_rejections)
     finally:
         if attempt.cancel_event.is_set() and not attempt.cancel_complete.is_set():
@@ -16728,7 +16739,7 @@ async def _load_model_impl(
                     chat_template = _chat_template,
                 )
 
-        _caller_is_owner = _owner_session(fastapi_request)
+        _caller_is_owner = _owner_session(fastapi_request) and _load_warnings_reach_user.get()
 
         # is_lora auto-detected from adapter_config.json on disk/HF.
         # Probe wrap so offline loads skip 30-60s of soft-failed network checks before
@@ -16934,8 +16945,10 @@ async def _load_model_impl(
         # Mark the load and refuse one the download manager already owns BEFORE the eviction below: this 409 leaves nothing
         # loaded. It runs after argument inheritance, since a carried --no-mmproj changes the companion requirement.
         # A refused repo's downloaded copy loads as a file, from that repo's cache all the same.
-        interlock_repo = config.gguf_hf_repo or getattr(config, "gguf_cache_repo", None)
-        if config.is_gguf and interlock_repo:
+        interlock_repo = config.is_gguf and (
+            config.gguf_hf_repo or getattr(config, "gguf_cache_repo", None)
+        )
+        if interlock_repo:
             from core.inference.llama_cpp import gguf_load_in_flight
 
             gguf_load_stack.enter_context(gguf_load_in_flight(interlock_repo))

@@ -70,6 +70,12 @@ def _isolated(tmp_path, monkeypatch):
     import hub.utils.gguf_sources as gguf_sources
 
     monkeypatch.setattr(gguf_sources, "gguf_cache_snapshots", lambda repo: [])
+    from collections import OrderedDict
+
+    from hub.services.models import gguf_variants
+
+    monkeypatch.setattr(gguf_variants, "_VARIANT_REQUIREMENT_LAST_KNOWN", OrderedDict())
+    monkeypatch.setattr(gguf_variants, "_VARIANT_REQUIREMENT_FORGOTTEN", False)
     return tmp_path
 
 
@@ -460,3 +466,53 @@ def test_the_downloaded_copy_is_reported_as_a_hub_model(monkeypatch, _isolated):
     _refuse(monkeypatch)
     config, _ = _load(gguf_variant = VARIANT, owner_session = True)
     assert config.is_local is False
+
+
+@pytest.mark.parametrize("projector_on_disk", [False, True])
+def test_a_companion_an_earlier_listing_named_must_be_on_disk(
+    monkeypatch, _isolated, projector_on_disk
+):
+    # No manifest, so the shards alone look complete; the live listing said it needs a projector.
+    from hub.services.models import gguf_variants
+    from hub.utils import download_manifest
+
+    snapshot = _download(_isolated, GGUF)
+    if projector_on_disk:
+        (snapshot / "mmproj-F16.gguf").write_bytes(b"GGUF" + b"\0" * 60)
+    requirement = SimpleNamespace(
+        expected_files = (
+            download_manifest.ExpectedFile(GGUF, (snapshot / GGUF).stat().st_size),
+            download_manifest.ExpectedFile("mmproj-F16.gguf", 64),
+        )
+    )
+    gguf_variants._variant_requirement_cache_set_many(REPO, None, {VARIANT: requirement})
+    _refuse(monkeypatch)
+    for variant in (VARIANT, None):
+        if projector_on_disk:
+            config, _ = _load(gguf_variant = variant, owner_session = True)
+            assert Path(config.gguf_file) == snapshot / GGUF
+        else:
+            with pytest.raises(GgufRepoUnreadableError):
+                _load(gguf_variant = variant, owner_session = True)
+
+
+def test_only_the_load_that_shows_the_warning_may_use_the_cached_copy(monkeypatch):
+    # Auto-switch, idle restore and preview call the impl directly and drop its response, so
+    # the warning would never be seen; only the /load wrapper turns the fallback on.
+    import asyncio
+
+    import routes.inference as inference
+
+    seen = []
+
+    async def impl(*args, **kwargs):
+        seen.append(inference._load_warnings_reach_user.get())
+        return None
+
+    monkeypatch.setattr(inference, "_load_model_impl", impl)
+    from models.inference import LoadRequest
+
+    request = LoadRequest(model_path = REPO)
+    asyncio.run(inference._run_tracked_load_model_impl(request, object(), "subject"))
+    assert seen == [True]
+    assert inference._load_warnings_reach_user.get() is False

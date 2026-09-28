@@ -3480,6 +3480,28 @@ def _refused_repo_cache_token(hf_token: HfTokenArg, owner_session: bool) -> HfTo
     return hf_token_arg(token, allow_ambient_token = owner_session)
 
 
+def _remembered_companions_present(repo_id: str, variant: str, local_file: str) -> bool:
+    """Whether every file an earlier live listing said *variant* needs is beside *local_file*.
+    A manifest-less download is otherwise judged by its shards alone."""
+    from core.inference.llama_cpp import _snapshot_dir_of
+    from hub.services.models import gguf_variants
+
+    requirement = gguf_variants._variant_requirement_last_known((repo_id.lower(), variant.lower()))
+    if requirement is None:
+        return not gguf_variants._variant_requirement_may_be_forgotten()
+    snapshot = _snapshot_dir_of(local_file)
+    if snapshot is None:
+        return False
+    try:
+        for expected in requirement.expected_files:
+            target = Path(snapshot) / expected.path
+            if not target.is_file() or (expected.size and target.stat().st_size != expected.size):
+                return False
+    except OSError:
+        return False
+    return True
+
+
 def _refused_repo_cached_gguf(
     repo_id: str, gguf_variant: Optional[str], hf_token: HfTokenArg, *, owner_session: bool
 ) -> Optional[tuple[str, str]]:
@@ -3501,7 +3523,9 @@ def _refused_repo_cached_gguf(
 
     if gguf_variant:
         local_file = cached_gguf_for_load(repo_id, gguf_variant, strict = True)
-        return (local_file, gguf_variant) if local_file else None
+        if local_file and _remembered_companions_present(repo_id, gguf_variant, local_file):
+            return local_file, gguf_variant
+        return None
     # Auto: the preferred variant first, then the next one down, so an interrupted Q8 beside
     # a complete Q4 still serves the Q4. Every snapshot: the complete one can be older.
     remaining = sorted(_hf_cache_main_gguf_files(repo_id, every_snapshot = True))
@@ -3517,7 +3541,7 @@ def _refused_repo_cached_gguf(
         label = _extract_quant_label(best)
         variant = _qualified_variant_name(best, label) if label else None
         local_file = cached_gguf_for_load(repo_id, variant, strict = True) if variant else None
-        if local_file:
+        if local_file and _remembered_companions_present(repo_id, variant, local_file):
             return local_file, variant
         remaining = [
             f
