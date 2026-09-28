@@ -334,7 +334,11 @@ def default_release_pin() -> str | None:
         return None
     installed = _RELEASE_PIN_STATE["installed_release"]
     installed_build = _release_build_number(installed)
-    if installed_build is not None and installed_build > pin_build:
+    # A mix name carries no order, so another mix of the pinned build counts as newer too.
+    if installed_build is not None and (
+        installed_build > pin_build
+        or (installed_build == pin_build and installed.strip() != tag.strip())
+    ):
         return installed.strip()
     return tag.strip()
 
@@ -363,6 +367,11 @@ def release_within_pin(release_tag: str | None, pin: str, repo: str | None) -> b
     if (repo or DEFAULT_PUBLISHED_REPO) == UPSTREAM_REPO:
         return build <= pin_build
     return build < pin_build or (release_tag or "").strip() == pin
+
+
+def _installed_release_tag(install_dir: Path) -> str | None:
+    marker = load_prebuilt_metadata(install_dir) or {}
+    return marker.get("release_tag") or marker.get("tag")
 
 
 def suspend_release_pin(reason: str) -> None:
@@ -1126,19 +1135,24 @@ def upstream_web_release_tags(repo: str, *, limit: int = 30) -> list[str]:
     return [tag for tag in web_release_tags(repo, limit = limit) if is_release_tag_like(tag)]
 
 
+def _source_fallback_tag(
+    requested_tag: str | None, published_repo: str | None, published_release_tag: str | None
+) -> str:
+    """The upstream build a source fallback compiles: under the default pin, the pin's own
+    base build (the fork cuts each release from one), with no GitHub call; else the newest."""
+    pin = release_pin_for(requested_tag, published_release_tag, published_repo)
+    if pin is not None:
+        return f"b{_release_build_number(pin)}"
+    return latest_upstream_release_tag()
+
+
 def latest_upstream_release_tag() -> str:
     """The newest upstream build tag, which the source-build fallback compiles.
-
-    Under the default pin that is the pin's own base build: the fork cuts each release
-    from an upstream build, so a source fallback compiles the version the pin names.
 
     Only a bNNNN REST answer is taken: /releases/latest resolves by make_latest, which
     upstream points at a pointer release packaging no prebuilt, and the source build
     must compile the version the prebuilt path would have installed.
     """
-    pin = default_release_pin()
-    if pin is not None:
-        return f"b{_release_build_number(pin)}"
     rest_tag = ""
     try:
         payload = fetch_json(UPSTREAM_RELEASES_API)
@@ -2641,7 +2655,9 @@ def iter_resolved_published_releases(
             # continue_after_fast_path has nothing to add. Falling through would re-resolve
             # the same tag below -- the same release twice, and an api.github.com call to
             # do it -- so a pin returns here whatever the walk-back flag says.
-            if not continue_after_fast_path or published_release_tag:
+            # Under the default pin an older release at or below it can still serve a host the
+            # pinned bundle cannot, so keep walking the capped releases instead of returning.
+            if published_release_tag or (not continue_after_fast_path and pin is None):
                 return
             fast_path_release_tag = resolved.bundle.release_tag
 
@@ -2736,8 +2752,8 @@ def resolve_requested_llama_tag(
             ).bundle.upstream_tag
         except Exception:
             pass
-    # Fall back to upstream ggml-org latest release tag
-    return latest_upstream_release_tag()
+    # Fall back to upstream ggml-org latest release tag (the pin's build under the default pin).
+    return _source_fallback_tag(normalized_requested, published_repo, published_release_tag)
 
 
 def resolve_requested_install_tag(
@@ -2854,7 +2870,7 @@ def resolve_source_build_plan(
             return source_build_plan_for_release(release)
         except Exception:
             pass
-    latest_tag = latest_upstream_release_tag()
+    latest_tag = _source_fallback_tag(normalized_requested, published_repo, published_release_tag)
     return SourceBuildPlan(
         source_url = "https://github.com/ggml-org/llama.cpp",
         source_ref = latest_tag,
@@ -11245,7 +11261,9 @@ def install_prebuilt(
     try:
         with install_lock(install_lock_path(install_dir)):
             # Read and plan from the marker under the install lock so a waiting
-            # update cannot undo a concurrent backend switch.
+            # update cannot undo a concurrent backend switch, nor pin back a release
+            # another updater just installed past the default pin.
+            _RELEASE_PIN_STATE["installed_release"] = _installed_release_tag(install_dir)
             backend, backend_mandatory = effective_backend_request(
                 llama_backend, install_dir = install_dir
             )
@@ -11907,8 +11925,9 @@ def main() -> int:
     args = parse_args()
     if args.install_dir:
         # An install already past the default pin is left at its release, not downgraded.
-        marker = load_prebuilt_metadata(Path(args.install_dir).expanduser()) or {}
-        _RELEASE_PIN_STATE["installed_release"] = marker.get("release_tag") or marker.get("tag")
+        _RELEASE_PIN_STATE["installed_release"] = _installed_release_tag(
+            Path(args.install_dir).expanduser()
+        )
     if args.check_existing_install is not None:
         install_dir = Path(args.check_existing_install)
         return EXIT_SUCCESS if reusable_existing_install(install_dir, detect_host()) else 1

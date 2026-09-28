@@ -94,8 +94,28 @@ def test_the_download_host_is_asked_for_the_pin_itself(pinned, monkeypatch):
 
     monkeypatch.setattr(MOD, "_download_host_resolved_release", fake_host)
     monkeypatch.delenv("UNSLOTH_LLAMA_DISABLE_DOWNLOAD_HOST_RESOLVE", raising = False)
-    walked = [r.bundle.release_tag for r in MOD.iter_resolved_published_releases("latest", FORK)]
-    assert asked == [PIN] and walked == [PIN]
+    first = next(iter(MOD.iter_resolved_published_releases("latest", FORK)))
+    assert asked == [PIN] and first.bundle.release_tag == PIN
+
+
+def test_after_the_pinned_fast_path_older_capped_releases_stay_reachable(
+    pinned, fork_listing, monkeypatch
+):
+    # A pinned bundle with no asset for this host must not jump the install past the pin
+    # while an older release at or below it could serve the host.
+    monkeypatch.setattr(
+        MOD,
+        "_download_host_resolved_release",
+        lambda repo, tag = "": MOD.ResolvedPublishedRelease(bundle = _bundle(tag), checksums = object()),
+    )
+    monkeypatch.delenv("UNSLOTH_LLAMA_DISABLE_DOWNLOAD_HOST_RESOLVE", raising = False)
+    walked = [
+        r.bundle.release_tag
+        for r in MOD.iter_resolved_published_releases(
+            "latest", FORK, continue_after_fast_path = False
+        )
+    ]
+    assert walked == [PIN, "b11100-mix-0000000"]
 
 
 @pytest.mark.parametrize(
@@ -141,6 +161,11 @@ def test_an_install_already_past_the_pin_is_not_downgraded(
     # Capped at its own release: neither downgraded to the pin nor moved further past it.
     assert seen == {"pin": "b11200-mix-ffffff1", "resolved": "b11200-mix-ffffff1"}
     MOD._RELEASE_PIN_STATE["installed_release"] = "b11030-mix-5ff778e"
+    assert MOD.default_release_pin() == PIN
+    # Mix names carry no order, so another mix of the pinned build is kept as well.
+    MOD._RELEASE_PIN_STATE["installed_release"] = "b11160-mix-bbbbbbb"
+    assert MOD.default_release_pin() == "b11160-mix-bbbbbbb"
+    MOD._RELEASE_PIN_STATE["installed_release"] = PIN
     assert MOD.default_release_pin() == PIN
 
 
@@ -209,8 +234,43 @@ def test_a_source_build_compiles_the_pins_build_without_asking_github(pinned, mo
         raise AssertionError("no network call is needed under a pin")
 
     monkeypatch.setattr(MOD, "fetch_json", offline)
-    assert MOD.latest_upstream_release_tag() == "b11160"
+    assert MOD._source_fallback_tag("latest", FORK, "") == "b11160"
     assert MOD.resolve_requested_llama_tag("latest", UPSTREAM) == "b11160"
+
+
+def test_a_custom_repo_source_fallback_is_not_capped(pinned, monkeypatch):
+    def no_release(*a, **k):
+        raise MOD.PrebuiltFallback("custom repo has no usable release")
+
+    monkeypatch.setattr(MOD, "resolve_published_release", no_release)
+    monkeypatch.setattr(MOD, "fetch_json", lambda url, *a, **k: {"tag_name": "b11223"})
+    assert MOD.resolve_requested_llama_tag("latest", "someone/llama.cpp") == "b11223"
+
+
+def test_the_installed_release_is_read_again_under_the_install_lock(pinned, tmp_path, monkeypatch):
+    install = tmp_path / "llama.cpp"
+    install.mkdir()
+    marker = install / "UNSLOTH_PREBUILT_INFO.json"
+    marker.write_text(json.dumps({"release_tag": "b11100-mix-0000000"}), encoding = "utf-8")
+    MOD._RELEASE_PIN_STATE["installed_release"] = "b11100-mix-0000000"
+    real_lock = MOD.install_lock
+
+    def lock_after_another_update(path):
+        # Another updater finished while this one waited for the lock.
+        marker.write_text(json.dumps({"release_tag": "b11200-mix-ffffff1"}), encoding = "utf-8")
+        return real_lock(path)
+
+    seen = {}
+
+    def stop(*a, **k):
+        seen["pin"] = MOD.default_release_pin()
+        raise RuntimeError("stop after planning starts")
+
+    monkeypatch.setattr(MOD, "install_lock", lock_after_another_update)
+    monkeypatch.setattr(MOD, "effective_backend_request", stop)
+    with pytest.raises(BaseException):
+        MOD.install_prebuilt(install, "latest", FORK, "")
+    assert seen["pin"] == "b11200-mix-ffffff1"
 
 
 def test_the_no_listing_current_check_expects_the_pin(pinned, monkeypatch):
