@@ -256,6 +256,8 @@ def _routing_environment(monkeypatch, model):
         _prewarm_base_model_hub_cache = lambda *args, **kwargs: calls["prewarm"].append(kwargs),
         _is_qwen3_5_vlm = lambda model: False,
         _qwen3_5_vlm_state_dict_for_save = _not_reached,
+        # A Mistral-format view (#12144) refuses merged saves; these fixtures are not one.
+        raise_if_merging_mistral_format_view = lambda model, save_method: None,
         _determine_username = lambda repo, old, token: (repo, "owner"),
         unsloth_save_model = lambda *args, **kwargs: calls["adapter"].append(kwargs),
         logger = types.SimpleNamespace(warning_once = lambda *a, **k: None),
