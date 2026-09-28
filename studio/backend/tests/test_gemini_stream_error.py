@@ -35,7 +35,7 @@ _OVERLOADED_SHOWN = {
 }
 
 
-def _stream_lines(monkeypatch, body):
+def _stream_lines(monkeypatch, body, **kwargs):
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
             200,
@@ -55,6 +55,7 @@ def _stream_lines(monkeypatch, body):
                 temperature = 0.7,
                 top_p = 0.95,
                 max_tokens = 64,
+                **kwargs,
             )
         ]
         await client.close()
@@ -115,3 +116,20 @@ def test_midstream_rate_limit_is_retried_by_research(monkeypatch):
 
     assert _parse_chunks(lines)[-1]["error"]["code"] == "429"
     assert research_runs._stream_rate_limit_delay(lines[0]) == 0.0
+
+
+def test_midstream_error_marks_web_search_aborted(monkeypatch):
+    lines = _stream_lines(monkeypatch, _frame(_TEXT) + _OVERLOADED, enabled_tools = ["web_search"])
+    tool_end = [
+        p["_toolEvent"]
+        for p in _parse_chunks(lines)
+        if p.get("_toolEvent", {}).get("type") == "tool_end"
+    ]
+
+    assert tool_end == [
+        {
+            "type": "tool_end",
+            "tool_call_id": "gemini_web_search",
+            "result": "(search aborted: The model is overloaded. Please try again later.)",
+        }
+    ]

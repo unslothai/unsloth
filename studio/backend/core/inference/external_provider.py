@@ -4584,6 +4584,7 @@ class ExternalProviderClient:
                 final_finish_reason: Optional[str] = None
                 bare_json = ""
                 stream_error: Optional[str] = None
+                stream_error_message = ""
                 try:
                     while True:
                         try:
@@ -4624,6 +4625,9 @@ class ExternalProviderClient:
                                 code if isinstance(code, int) else 502,
                                 _json.dumps(event),
                                 self.provider_type,
+                            )
+                            stream_error_message = str(
+                                error.get("message") or error.get("status") or code
                             )
                             break
 
@@ -5008,7 +5012,11 @@ class ExternalProviderClient:
                                 "type": "tool_end",
                                 "tool_call_id": web_search_tool_id,
                                 "result": (
-                                    "\n---\n".join(blocks) if blocks else "(search complete)"
+                                    f"(search aborted: {stream_error_message})"
+                                    if stream_error
+                                    else "\n---\n".join(blocks)
+                                    if blocks
+                                    else "(search complete)"
                                 ),
                             }
                         )
