@@ -341,7 +341,7 @@ def _apply_post_load_tokenizer_fixes(
 
 
 def _fix_post_load_chat_template(tokenizer):
-    # FastModel twin of load_correct_tokenizer's repair (same exclusions): an unrepaired always-on generation prompt (ERNIE-4.5) ends every training text in an open assistant header.
+    # FastModel twin of load_correct_tokenizer's template repair, same exclusions.
     text_tokenizer = getattr(tokenizer, "tokenizer", tokenizer)
     old = getattr(text_tokenizer, "chat_template", None)
     if not isinstance(old, str) or not old:

@@ -1,8 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""ERNIE-4.5-style templates always append the generation prompt after the loop; both repair paths must fix them."""
-
 import pytest
 
 tokenizers = pytest.importorskip("tokenizers")
