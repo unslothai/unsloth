@@ -336,3 +336,74 @@ def test_tiny_llama_decoder_layers_compile_fullgraph():
     scale = max(g.abs().max().item() for g in eager_grads)
     worst = max((a.float() - b.float()).abs().max().item() for a, b in zip(grads, eager_grads))
     assert worst <= 1e-2 * scale, (worst, scale)
+
+
+def test_tiny_llama_causal_lm_compiles_fullgraph():
+    """Without gradient checkpointing the whole causal LM forward (embedding, decoder stack, loss)
+    compiles without the input embedding's requires-grad hook or the deprecated
+    config.use_return_dict read breaking the graph (torch 2.10 still breaks inside the fused
+    loss, on inspect.signature)."""
+    if not TRACEABLE:
+        pytest.skip("this torch has no torch.library.triton_op")
+    from unsloth import FastLanguageModel
+
+    model, _ = FastLanguageModel.from_pretrained(
+        "hf-internal-testing/tiny-random-LlamaForCausalLM",
+        max_seq_length = 64,
+        load_in_4bit = False,
+        dtype = torch.bfloat16,
+    )
+    model = FastLanguageModel.get_peft_model(
+        model,
+        r = 8,
+        lora_alpha = 16,
+        lora_dropout = 0,
+        target_modules = [
+            "q_proj",
+            "k_proj",
+            "v_proj",
+            "o_proj",
+            "gate_proj",
+            "up_proj",
+            "down_proj",
+        ],
+        use_gradient_checkpointing = False,
+        random_state = 3407,
+    )
+    model.train()
+    embeddings = model.get_input_embeddings()
+    assert embeddings._forward_hooks, "enable_input_require_grads registered no hook"
+    g = torch.Generator().manual_seed(0)
+    ids = torch.randint(0, model.config.vocab_size, (2, 48), generator = g).cuda()
+
+    eager_loss = model(input_ids = ids, labels = ids).loss
+    causal_lm = model.base_model.model
+    causal_lm.forward = torch.compile(causal_lm.forward, fullgraph = torch.__version__ >= "2.11")
+    loss = model(input_ids = ids, labels = ids).loss
+    loss.backward()
+    reasons = " ".join(str(k) for k in dynamo_utils.counters["graph_break"])
+    assert "requires_grad_()" not in reasons and "logging.Logger" not in reasons, reasons
+    assert abs(loss.item() - eager_loss.item()) <= 1e-3 * abs(eager_loss.item())
+    assert all(p.grad is not None for p in model.parameters() if p.requires_grad)
+
+
+def test_input_require_grads_hook_is_exact():
+    """The compiled hook returns x + -0.0 (exact, signed zeros kept) that requires grad; eager
+    still flips requires_grad in place."""
+    from transformers import AutoModelForCausalLM
+
+    model = AutoModelForCausalLM.from_pretrained(
+        "hf-internal-testing/tiny-random-LlamaForCausalLM"
+    ).cuda()
+    model.requires_grad_(False)
+    model.enable_input_require_grads()
+    emb = model.get_input_embeddings()
+    with torch.no_grad():
+        emb.weight[0].fill_(-0.0)
+    ids = torch.tensor([[0, 1, 2]], device = "cuda")
+    eager = emb(ids)
+    assert eager.requires_grad
+    compiled = torch.compile(lambda i: emb(i), fullgraph = TRACEABLE)(ids)
+    assert compiled.requires_grad
+    assert _bytes_equal(compiled.detach(), eager.detach())
+    assert torch.signbit(compiled[0, 0]).all()

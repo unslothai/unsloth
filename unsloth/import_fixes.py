@@ -4204,23 +4204,48 @@ def check_fbgemm_gpu_version():
 
 def patch_enable_input_require_grads():
     """Patch PreTrainedModel.enable_input_require_grads to tolerate vision models
-    that raise NotImplementedError from get_input_embeddings()."""
+    that raise NotImplementedError from get_input_embeddings(), and so that its hook traces
+    under torch.compile."""
     import inspect
+    import torch
     from transformers import PreTrainedModel
 
-    # Only patch the new variant that iterates over self.modules(); see huggingface/transformers#41993.
     try:
         original_source = inspect.getsource(PreTrainedModel.enable_input_require_grads)
     except:
         return
 
+    class _RequireGrad(torch.autograd.Function):
+        # x + -0.0 is x exactly (signed zeros too); the anchor only makes the output need grad.
+        @staticmethod
+        def forward(ctx, x, anchor):
+            return x + anchor
+
+        @staticmethod
+        def backward(ctx, grad):
+            return grad, None
+
+    # Created here: torch.compile cannot create a tensor that requires grad inside a graph.
+    anchor = torch.tensor(-0.0, requires_grad = True)
+
+    def make_inputs_require_grads(module, input, output):
+        # requires_grad_() on an intermediate is a graph break under torch.compile.
+        if torch.compiler.is_compiling():
+            return _RequireGrad.apply(output, anchor)
+        output.requires_grad_(True)
+
+    # Older transformers hooks a single embedding (huggingface/transformers#41993 added the loop).
     if "for module in self.modules()" not in original_source:
+
+        def _patched_single_enable_input_require_grads(self):
+            self._require_grads_hook = self.get_input_embeddings().register_forward_hook(
+                make_inputs_require_grads
+            )
+
+        PreTrainedModel.enable_input_require_grads = _patched_single_enable_input_require_grads
         return
 
     def _patched_enable_input_require_grads(self):
-        def make_inputs_require_grads(module, input, output):
-            output.requires_grad_(True)
-
         hooks = []
         seen_modules = set()
 

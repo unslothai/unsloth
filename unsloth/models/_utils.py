@@ -13,6 +13,7 @@ from .._version import __version__
 
 __all__ = [
     "SUPPORTS_BFLOAT16",
+    "config_return_dict",
     "is_bfloat16_supported",
     "_requested_float32",
     "_mark_requested_float32",
@@ -108,6 +109,7 @@ __all__ = [
     "_patch_transformers_trainer_data_parallel",
     "patch_flex_attention_kernel_options",
 ]
+
 
 import torch
 from typing import Union, Optional, List, Any, Callable, Tuple, Iterator
@@ -4159,6 +4161,12 @@ def offload_output_embeddings(model, temporary_location: str = "_unsloth_tempora
     new_output_embeddings._offloaded_file_location = offloaded_W._offloaded_file_location
     model.set_output_embeddings(new_output_embeddings)
     return
+
+
+def config_return_dict(config):
+    # config.use_return_dict without its transformers 5 deprecation warning, which is a graph
+    # break under torch.compile (transformers 4 also forces tuples under torchscript).
+    return getattr(config, "return_dict", True) and not getattr(config, "torchscript", False)
 
 
 def is_bfloat16_supported():
