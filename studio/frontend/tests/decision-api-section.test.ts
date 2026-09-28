@@ -50,17 +50,18 @@ test("turning it on or picking a model downloads, the device does not", () => {
   );
 });
 
-test("a download the switch or model picker starts waits for the user to confirm", () => {
+test("a download the switch or model picker starts waits for the user to confirm, and declining undoes it", () => {
   const apply = SECTION.slice(
     SECTION.indexOf("const apply = async"),
     SECTION.indexOf("const unload = async"),
   );
   assert.doesNotMatch(apply, /startDownload\(/);
-  assert.match(apply, /setConfirmPlan\(nextPlan\)/);
+  assert.match(apply, /setConfirm\(\{ plan: nextPlan, undo \}\)/);
   assert.match(
     SECTION,
-    /<AlertDialogAction[\s\S]*?startDownload\(confirmPlan\)[\s\S]*?<\/AlertDialogAction>/,
+    /<AlertDialogAction[\s\S]*?startDownload\(accepted\.plan\)[\s\S]*?<\/AlertDialogAction>/,
   );
+  assert.match(SECTION, /void apply\(confirm\.undo, false\)/);
   assert.match(en.settings.apiKeys.decisionApi.downloadConfirmBody, /\{size\}/);
 });
 

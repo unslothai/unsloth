@@ -74,9 +74,10 @@ export function DecisionApiSection(): ReactElement | null {
     model: string;
     plan: SystemOneDownloadPlan;
   } | null>(null);
-  const [confirmPlan, setConfirmPlan] = useState<SystemOneDownloadPlan | null>(
-    null,
-  );
+  const [confirm, setConfirm] = useState<{
+    plan: SystemOneDownloadPlan;
+    undo: Parameters<typeof updateSystemOneSettings>[0];
+  } | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -163,6 +164,10 @@ export function DecisionApiSection(): ReactElement | null {
     patch: Parameters<typeof updateSystemOneSettings>[0],
     downloadAfter: boolean,
   ) => {
+    const undo =
+      patch.model !== undefined
+        ? { model: settings?.model }
+        : { enabled: settings?.enabled };
     setBusy(true);
     setError(null);
     try {
@@ -173,7 +178,7 @@ export function DecisionApiSection(): ReactElement | null {
         const nextPlan = await resolveSystemOneDownload();
         setPlanState({ model: next.model, plan: nextPlan });
         if (nextPlan.repo && !nextPlan.cached && nextPlan.files.length > 0) {
-          setConfirmPlan(nextPlan);
+          setConfirm({ plan: nextPlan, undo });
         }
       }
     } catch (err) {
@@ -437,9 +442,13 @@ export function DecisionApiSection(): ReactElement | null {
       </div>
 
       <AlertDialog
-        open={confirmPlan !== null}
+        open={confirm !== null}
         onOpenChange={(open) => {
-          if (!open) setConfirmPlan(null);
+          // Declining undoes the switch, so an enabled API never fetches the model on its first request.
+          if (!open && confirm) {
+            setConfirm(null);
+            void apply(confirm.undo, false);
+          }
         }}
       >
         <AlertDialogContent>
@@ -454,15 +463,18 @@ export function DecisionApiSection(): ReactElement | null {
             </AlertDialogTitle>
             <AlertDialogDescription>
               {t("settings.apiKeys.decisionApi.downloadConfirmBody", {
-                size: formatBytes(confirmPlan?.sizeBytes || sizeBytes),
+                size: formatBytes(confirm?.plan.sizeBytes || sizeBytes),
               })}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
             <AlertDialogAction
-              onClick={() => {
-                if (confirmPlan) void startDownload(confirmPlan);
+              onClick={(event) => {
+                event.preventDefault();
+                const accepted = confirm;
+                setConfirm(null);
+                if (accepted) void startDownload(accepted.plan);
               }}
             >
               {t("settings.apiKeys.decisionApi.download")}
