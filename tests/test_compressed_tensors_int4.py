@@ -294,6 +294,68 @@ def test_packed_linear_state_dict_round_trips_through_the_checkpoint_layout():
     assert lin.quant_state.layout is None and torch.equal(lin.dequantize_weight(), ref)
 
 
+def _repacked_linear():
+    from unsloth.models.compressed_tensors_int4 import (
+        Int4PackedLinear,
+        finalize_int4_packed_linears,
+    )
+
+    torch.manual_seed(0)
+    packed, ref, gs = _packed_layer(256, 1024, 4, 128, False, False, torch.bfloat16)
+    lin = Int4PackedLinear.__new__(Int4PackedLinear)
+    torch.nn.Module.__init__(lin)
+    lin.in_features, lin.out_features = 1024, 256
+    for name, tensor in packed.items():
+        lin.register_parameter(name, torch.nn.Parameter(tensor.clone(), requires_grad = False))
+    lin.register_parameter("bias", None)
+    lin._int4_bits, lin._int4_group_size = 4, gs
+    finalize_int4_packed_linears(torch.nn.Sequential(lin), torch.bfloat16)
+    assert lin.quant_state.layout is not None
+    return lin, packed, ref
+
+
+@needs_gpu
+@needs_ct
+@needs_sm80
+@pytest.mark.parametrize("cast", ["float", "half"])
+def test_repacked_linear_infers_after_a_dtype_cast(cast):
+    # The fused layout was picked for bf16; after a cast inference must take the exact dequantize path.
+    lin, _, ref = _repacked_linear()
+    getattr(lin, cast)()
+    dtype = lin.quant_state.dtype
+    x = torch.randn(2, 1024, device = "cuda", dtype = dtype)
+    with torch.no_grad():
+        y = lin(x)
+    want = x.float() @ ref.float().t()
+    assert y.dtype == dtype and ((y.float() - want).norm() / want.norm()) < 5e-3
+
+
+@needs_gpu
+@needs_ct
+@needs_sm80
+def test_adapter_saves_skip_unpacking_repacked_words(monkeypatch, tmp_path):
+    from peft import LoraConfig, get_peft_model
+    import unsloth.kernels.int4_packed as ip
+
+    lin, packed, _ = _repacked_linear()
+
+    class Tiny(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.proj = lin
+            self.head = torch.nn.Linear(256, 8, device = "cuda", dtype = torch.bfloat16)
+
+    model = get_peft_model(Tiny(), LoraConfig(r = 4, target_modules = ["head"]))
+    calls = []
+    real = ip.int4_unpack
+    monkeypatch.setattr(ip, "int4_unpack", lambda *a: calls.append(1) or real(*a))
+    model.save_pretrained(tmp_path)
+    assert calls == [] and (tmp_path / "adapter_model.safetensors").exists()
+    # A plain state_dict() still writes the checkpoint layout.
+    assert torch.equal(model.state_dict()["base_model.model.proj.weight_packed"], packed["weight_packed"])
+    assert calls == [1]
+
+
 @needs_gpu
 @needs_ct
 def test_jit_launch_fallback_matches_the_compiled_launcher(monkeypatch):

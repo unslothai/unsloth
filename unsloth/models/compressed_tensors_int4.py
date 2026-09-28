@@ -20,6 +20,7 @@ weight and decode it exactly per use (kernels/int4_packed.py). ``UNSLOTH_COMPRES
 selects the older NF4 re-quantization instead.
 """
 
+import contextlib
 import functools
 import os
 import types
@@ -164,8 +165,12 @@ class Int4PackedLinear(nn.Linear):
 
     def _save_to_state_dict(self, destination, prefix, keep_vars):
         super()._save_to_state_dict(destination, prefix, keep_vars)
-        # A repacked weight is saved in the checkpoint's own layout.
-        if self.__dict__.get("_int4_layout") and prefix + "weight_packed" in destination:
+        # A repacked weight is saved in the checkpoint's own layout; adapter saves drop base weights, so skip the copy.
+        if (
+            self.__dict__.get("_int4_layout")
+            and not _ADAPTER_ONLY_SAVES[0]
+            and prefix + "weight_packed" in destination
+        ):
             from ..kernels.int4_packed import int4_unpack
             destination[prefix + "weight_packed"] = int4_unpack(
                 self._parameters["weight_packed"], self.quant_state
@@ -319,6 +324,17 @@ def refuse_mixed_packed_full_save(model) -> None:
 
 
 _MISSING = object()
+_ADAPTER_ONLY_SAVES = [0]
+
+
+@contextlib.contextmanager
+def adapter_only_state_dict():
+    """``state_dict()`` calls inside keep repacked words by reference instead of unpacking a copy per layer."""
+    _ADAPTER_ONLY_SAVES[0] += 1
+    try:
+        yield
+    finally:
+        _ADAPTER_ONLY_SAVES[0] -= 1
 
 
 # PEFT merge on a packed base would write into a throwaway view: densify first, restore after.
@@ -403,6 +419,19 @@ def patch_peft_merge_for_int4_packed_linears() -> bool:
         return model
 
     BaseTuner._unload_and_optionally_merge = _unload_and_optionally_merge
+    try:
+        from peft import PeftModel
+    except Exception:
+        return True
+    original_save = PeftModel.save_pretrained
+
+    @functools.wraps(original_save)
+    def save_pretrained(self, *args, **kwargs):
+        # PEFT builds the adapter from model.state_dict() and keeps only adapter tensors.
+        with adapter_only_state_dict():
+            return original_save(self, *args, **kwargs)
+
+    PeftModel.save_pretrained = save_pretrained
     return True
 
 
