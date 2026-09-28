@@ -7,6 +7,7 @@ import {
   createJSONStorage,
   persist,
 } from "zustand/middleware";
+import { COLOR_THEMES, type ColorThemeId } from "../lib/color-themes.ts";
 import type { ResolvedTheme } from "./theme-store";
 
 // Best-effort persistence: localStorage can be blocked (private browsing) and
@@ -38,6 +39,8 @@ const guardedLocalStorage: StateStorage = {
 
 export type ReduceMotionSetting = "system" | "on" | "off";
 export type ChatWidthSetting = "standard" | "wide" | "full";
+export type ComposerAttachmentsSetting = "cards" | "compact";
+export type SentAttachmentsSetting = "auto" | "list" | "chips";
 
 export type CustomModeColors = {
   accent: string | null;
@@ -235,6 +238,8 @@ export type AppearanceCustomization = {
   headingFont: string | null;
   chatFont: string | null;
   chatWidth: ChatWidthSetting;
+  composerAttachments: ComposerAttachmentsSetting;
+  sentAttachments: SentAttachmentsSetting;
   codeFont: string | null;
   importedFonts: ImportedFont[];
   /** UI font size in px. null = app default (15). */
@@ -268,6 +273,8 @@ export const DEFAULT_CUSTOMIZATION: AppearanceCustomization = {
   headingFont: null,
   chatFont: null,
   chatWidth: "standard",
+  composerAttachments: "cards",
+  sentAttachments: "auto",
   codeFont: null,
   importedFonts: [],
   uiFontSize: null,
@@ -482,6 +489,12 @@ export function sanitizeCustomization(value: unknown): AppearanceCustomization {
       source.chatWidth === "wide" || source.chatWidth === "full"
         ? source.chatWidth
         : "standard",
+    composerAttachments:
+      source.composerAttachments === "compact" ? "compact" : "cards",
+    sentAttachments:
+      source.sentAttachments === "list" || source.sentAttachments === "chips"
+        ? source.sentAttachments
+        : "auto",
     codeFont: sanitizeFont(source.codeFont),
     importedFonts: sanitizeImportedFonts(source.importedFonts),
     uiFontSize: sanitizeSize(source.uiFontSize, UI_FONT_SIZE_RANGE),
@@ -690,14 +703,26 @@ function readableForeground(hex: string): string {
   return FOREGROUND_DARK_FALLBACK;
 }
 
+type PaletteSurfaces = { background: string; elevated: readonly string[] };
+
 /** Palette surfaces that custom colors do not replace. */
-const PALETTE_SURFACES: Record<
-  ResolvedTheme,
-  { background: string; elevated: string }
-> = {
-  light: { background: "#ffffff", elevated: "#ffffff" },
-  dark: { background: "#181818", elevated: "#272727" },
+const PALETTE_SURFACES: Record<ResolvedTheme, PaletteSurfaces> = {
+  light: { background: "#ffffff", elevated: ["#ffffff"] },
+  dark: { background: "#181818", elevated: ["#272727"] },
 };
+
+/** Flavor themes bring their own page and cards; light composers stay white. */
+function surfacesFor(
+  palette: ColorThemeId,
+  resolved: ResolvedTheme,
+): PaletteSurfaces {
+  const { background, surface } = COLOR_THEMES[palette][resolved];
+  if (!surface) return PALETTE_SURFACES[resolved];
+  return {
+    background,
+    elevated: resolved === "light" ? [surface, "#ffffff"] : [surface],
+  };
+}
 
 /**
  * Black for ink darker than its page, white for lighter. Raising pushes ink
@@ -866,6 +891,7 @@ const ACCENT_FG_VARS = [
 export function applyCustomizationToDocument(
   c: AppearanceCustomization,
   resolved: ResolvedTheme,
+  palette: ColorThemeId = "standard",
 ): void {
   if (typeof document === "undefined") return;
   const el = document.documentElement;
@@ -877,12 +903,12 @@ export function applyCustomizationToDocument(
   };
 
   const colors = c.colors[resolved];
-  const paletteSurfaces = PALETTE_SURFACES[resolved];
+  const paletteSurfaces = surfacesFor(palette, resolved);
 
   const accent = colors.accent
     ? legibleAccent(colors.accent, [
         colors.background ?? paletteSurfaces.background,
-        paletteSurfaces.elevated,
+        ...paletteSurfaces.elevated,
       ])
     : null;
   for (const name of ACCENT_VARS) setVar(name, accent);

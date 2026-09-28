@@ -41,6 +41,7 @@ from playwright.sync_api import sync_playwright
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _playwright_robust import (  # noqa: E402
     chromium_launch_args,
+    goto_with_socket_backoff,
     install_wall_clock_watchdog,
     report_failing_step,
     step_budget_s,
@@ -923,7 +924,7 @@ def settle_cards(page, timeout_ms: int = SETTLED_MS) -> None:
 
 
 def boot(page, path: str) -> None:
-    page.goto(f"{BASE}{path}", wait_until = "domcontentloaded")
+    goto_with_socket_backoff(page, f"{BASE}{path}", wait_until = "domcontentloaded")
     # Both cards are on a timer, so wait for them rather than for the worst case: this step runs 24 times and the job it
     # shares has minutes, not tens of minutes, to spare. The app card's 5s is shortened to E2E_DELAY_MS by the seed
     # script, llama.cpp keeps its 1s, and both still mount after first paint.
