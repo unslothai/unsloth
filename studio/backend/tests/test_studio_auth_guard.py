@@ -2485,6 +2485,15 @@ def test_an_unfinished_alias_scan_fails_closed(studio_home, monkeypatch):
     assert not tools._references_studio_credential_here('echo "A=$A B=$B"', workdir)
 
 
+def test_self_doubling_assignments_stay_bounded(studio_home):
+    workdir = str(studio_home / "sandbox" / _SESSION)
+    doubling = "a=X; " + "a=$a$a; " * 40
+    assert not tools._references_studio_credential_here(doubling + "echo $a", workdir)
+    assert tools._references_studio_credential_here(
+        "p=../..; " + doubling + "cat $p/auth/auth.db", workdir
+    )
+
+
 def test_growing_unresolved_assignments_fail_closed(studio_home):
     workdir = str(studio_home / "sandbox" / _SESSION)
     command = "a=" + "$b" * 64 + "; b=" + "$a" * 64 + "; echo $a"

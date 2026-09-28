@@ -5343,6 +5343,9 @@ def _expand_shell_assignments(command: str, *, _include_quoted: bool = True) -> 
             val = _SHELL_PARAM_VALUE_OP_RE.sub(repl_default, val)
             env.setdefault(var, "")
             val = expand(val)
+            # `a=$a$a` repeated doubles each time: past the path cap keep the earlier binding.
+            if len(val) > _MAX_PATH_SCAN_CHARS:
+                continue
         env[var] = val
     return expand(command) if env else command
 
