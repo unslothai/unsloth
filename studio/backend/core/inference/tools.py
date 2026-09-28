@@ -5032,6 +5032,12 @@ _SHELL_PARAM_CASE_RE = re.compile(r"\$\{(\w+)(\^\^|,,|\^|,)\}")
 # /etc/passwd.
 _SHELL_PARAM_INDIRECT_RE = re.compile(r"\$\{!(\w+)\}")
 _SHELL_PARAM_VALUE_OP_RE = re.compile(r"\$\{([A-Za-z_]\w*)(:?)([-=+])([^{}]*)\}")
+# Where a NAME=value word is an assignment rather than an argument: after one of these characters, or a
+# word from _SHELL_ASSIGN_KEYWORDS.
+_SHELL_ASSIGN_POSITION_CHARS = frozenset(";&|(\n'\"`{")
+_SHELL_ASSIGN_KEYWORDS = frozenset(
+    ("export", "local", "declare", "typeset", "readonly", "then", "do", "else", "{", "!", "time")
+)
 _SHELL_ASSIGN_RE = re.compile(r"(?:^|[\s;&|(])([A-Za-z_]\w*)=([^\s;&|)]*)")
 # Bash ANSI-C quoting ($'\x77' -> 'w') is expanded after this classifier, so decode $'...' bodies before the
 # sensitive-path scan.
@@ -5390,6 +5396,23 @@ def _shell_assignment_expansions(
                 i + 1 < len(matches) and not command[m.end(2) : matches[i + 1].start(1)].strip()
             )
             prefix[i] = prefix[i + 1] if chained else True
+    # `echo x=` is an argument, not an assignment: it binds nothing, so positional skips it too.
+    for i, m in enumerate(matches):
+        if prefix[i] or (quote_states is not None and quote_states[m.start(1)]):
+            continue
+        j = m.start(1) - 1
+        while j >= 0 and command[j] in " \t":
+            j -= 1
+        if j < 0 or command[j] in _SHELL_ASSIGN_POSITION_CHARS:
+            continue
+        if i and matches[i - 1].end(2) == j + 1:
+            prefix[i] = prefix[i - 1]
+            continue
+        k = j
+        while k >= 0 and command[k] not in " \t;&|(\n":
+            k -= 1
+        if command[k + 1 : j + 1] not in _SHELL_ASSIGN_KEYWORDS:
+            prefix[i] = True
     for i, match in enumerate(matches):
         if not include_quoted and ("'" in command or '"' in command):
             if quote_states is None:

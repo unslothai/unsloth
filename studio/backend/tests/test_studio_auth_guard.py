@@ -2529,6 +2529,28 @@ def test_a_command_prefix_assignment_binds_only_the_child(studio_home, command):
     )
 
 
+@pytest.mark.parametrize(
+    "argument", ["echo x=", "echo x=/tmp", "env x=./project true", "grep -r x= ."]
+)
+def test_an_assignment_shaped_argument_binds_nothing(studio_home, argument):
+    workdir = str(studio_home / "sandbox" / _SESSION)
+    command = f'x=../..; {argument}; cat "$x/auth/auth.db"'
+    assert tools._references_studio_credential_here(command, workdir)
+    assert not tools._references_studio_credential_here(
+        command.replace("../..", "./project"), workdir
+    )
+
+
+@pytest.mark.parametrize(
+    "rebind", ["x=./project", "export x=./project", "{ x=./project; }", "A=1 x=./project"]
+)
+def test_a_real_rebinding_still_moves_the_path(studio_home, rebind):
+    workdir = str(studio_home / "sandbox" / _SESSION)
+    assert not tools._references_studio_credential_here(
+        f'x=../..; {rebind}; cat "$x/auth/auth.db"', workdir
+    )
+
+
 def test_self_doubling_assignments_stay_bounded(studio_home):
     workdir = str(studio_home / "sandbox" / _SESSION)
     doubling = "a=X; " + "a=$a$a; " * 40
