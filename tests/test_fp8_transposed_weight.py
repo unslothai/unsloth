@@ -34,6 +34,15 @@ def _block(n, bs):
     return q, s, q.float() * full
 
 
+def _block_rect(n, k, bs):
+    torch.manual_seed(0)
+    s = torch.rand(-(-n // bs), -(-k // bs), device = "cuda") * 4 + 0.1
+    full = s.repeat_interleave(bs, 0)[:n].repeat_interleave(bs, 1)[:, :k]
+    q = (torch.randn(n, k, device = "cuda") * 0.02 / full).to(torch.float8_e4m3fn)
+    s.block_size = [bs, bs]
+    return q, s, q.float() * full
+
+
 @pytest.mark.parametrize("kind", ["rowwise", "block128", "block64"])
 def test_transposed_view_dequantizes_stored_layout(F, kind):
     q, s, ref = (
@@ -45,10 +54,15 @@ def test_transposed_view_dequantizes_stored_layout(F, kind):
     )
 
 
-@pytest.mark.parametrize("kind", ["rowwise", "block128"])
+@pytest.mark.parametrize("kind", ["rowwise", "block128", "block64", "block128_rect"])
 def test_fp8_linear_on_transposed_view(F, kind):
-    q, s, ref = _rowwise(256) if kind == "rowwise" else _block(256, 128)
-    X = torch.randn(64, 256, device = "cuda", dtype = torch.bfloat16)
+    if kind == "rowwise":
+        q, s, ref = _rowwise(256)
+    elif kind == "block128_rect":
+        q, s, ref = _block_rect(256, 384, 128)
+    else:
+        q, s, ref = _block(256, 128 if kind == "block128" else 64)
+    X = torch.randn(64, q.shape[0], device = "cuda", dtype = torch.bfloat16)
     y = F.fp8_linear(X, q.t(), s)
     expect = X.float() @ ref
     assert ((y.float() - expect).norm() / expect.norm()) < 0.05
