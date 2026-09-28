@@ -1,8 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 
-"""FastVisionModel patches a loaded Kimi K2.5 / K2.7 medias= processor so processor(text=, images=) works.
-
-Importing unsloth needs a GPU, so the block is pulled out of from_pretrained with ast (as in test_get_chat_template_processor.py)."""
+"""FastVisionModel patches Kimi K2.5 / K2.7 medias= processors; the block is ast-extracted since importing unsloth needs a GPU."""
 
 import ast
 import os
