@@ -787,8 +787,8 @@ def _is_port_free(host: str, port: int) -> bool:
     """Check if a port is available for binding. For a ``0.0.0.0`` wildcard host, also check whether anything
     is listening on ``127.0.0.1`` (and ``::1`` when IPv6 exists): an SSH tunnel may hold loopback while the
     wildcard bind succeeds, making Unsloth unreachable via ``localhost``. For a specific host, also check
-    whether anything already answers on the addresses it resolves to: Windows lets a ``127.0.0.1`` bind
-    succeed while another process listens on ``0.0.0.0``, and then takes that process's local traffic."""
+    whether anything already answers on the addresses it resolves to: Windows and macOS let a ``127.0.0.1``
+    bind succeed while another process listens on ``0.0.0.0``, and then take that process's local traffic."""
     import socket
 
     sockets = []
@@ -824,9 +824,10 @@ def _is_port_free(host: str, port: int) -> bool:
             probe.close()
 
     # A bind can succeed next to another process's listener: a wildcard bind while it holds localhost
-    # (e.g. an SSH -L tunnel), or on Windows a specific bind while it holds the wildcard. Either way the
-    # address is already served, so a successful connect means the port is taken. Windows only refuses a
-    # connect to a free port after ~2 s of SYN retries, so keep the wait short: a listener answers in ms.
+    # (e.g. an SSH -L tunnel), or on Windows and macOS a specific bind while it holds the wildcard. Either
+    # way the address is already served, so a successful connect means the port is taken. Windows only
+    # refuses a connect to a free port after ~2 s of SYN retries, so keep the wait short: a listener
+    # answers in ms.
     if is_wildcard_host(host):
         targets = [
             (socket.AF_INET, ("127.0.0.1", port)),

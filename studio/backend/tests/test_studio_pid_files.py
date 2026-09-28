@@ -457,8 +457,8 @@ def test_windows_reuseaddr_listener_is_not_reported_as_a_free_port():
 
 
 def test_a_loopback_bind_is_not_free_while_another_process_holds_the_wildcard():
-    # Windows lets a 127.0.0.1 bind succeed while another process listens on
-    # 0.0.0.0, and the new listener then takes that process's localhost
+    # Windows and macOS let a 127.0.0.1 bind succeed while another process
+    # listens on 0.0.0.0, and the new listener then takes that process's localhost
     # traffic. The probe has to see the listener so _resolve_port falls back.
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
         listener.bind(("0.0.0.0", 0))
