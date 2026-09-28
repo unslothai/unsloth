@@ -110,6 +110,7 @@ LOCK_CHAIN = (
     "Get-StudioSubstTarget",
     "Get-ElevationState",
     "Get-StudioEarlyPython",
+    "Invoke-StudioEarlyPythonScript",
     "Test-StudioPlainFile",
     "Test-UnslothCmdShimFile",
     "Invoke-StudioEarlyPython",
