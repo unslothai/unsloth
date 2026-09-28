@@ -1220,7 +1220,15 @@ def call_with_anonymous_retry(read, hf_token: HfTokenArg):
             # recovery, and later token-sending calls must see it.
             note_saved_token_rejected(hf_token)
             return result
-        return read(hf_token)
+        try:
+            return read(hf_token)
+        except Exception as exc:
+            # Refused both ways, as below: /load names the token rather than answering 500.
+            if is_rejected_credential_error(exc, hf_token):
+                sink = _hub_token_rejections.get()
+                if sink is not None:
+                    sink.refused = True
+            raise
     try:
         return read(hf_token)
     except Exception as exc:

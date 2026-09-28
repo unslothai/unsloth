@@ -619,3 +619,20 @@ def test_the_gguf_sliding_window_config_is_read_without_a_refused_token(monkeypa
     monkeypatch.setattr(huggingface_hub, "hf_hub_download", hf_hub_download)
     monkeypatch.setattr(utils.hf_probe, "hf_file_definitely_absent", lambda *a, **k: False)
     assert llama_cpp._fetch_swa_entry_from_hf("org/public-model") == 6
+
+
+def test_a_private_repo_after_a_public_recovery_is_reported_as_refused():
+    # A public adapter recovered anonymously, then a private base no one lets in: /load must
+    # see the refusal and name the token, not answer 500.
+    calls = []
+
+    def private(token):
+        calls.append(token)
+        raise RepositoryNotFoundError(reason = "OAuth token verification failed")
+
+    with collecting_hub_token_rejections() as rejections:
+        call_with_anonymous_retry(_refused_with_a_token(calls), OAUTH)
+        with pytest.raises(RepositoryNotFoundError):
+            call_with_anonymous_retry(private, OAUTH)
+    assert calls == [OAUTH, False, False, OAUTH]
+    assert rejections.refused
