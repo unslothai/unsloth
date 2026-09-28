@@ -47,6 +47,16 @@ ROOTS = (REPO / "unsloth", REPO / "studio", REPO / "unsloth_cli")
 # The frontend tree is TypeScript;
 # node_modules is vendored third-party code.
 SKIP_DIRS = {"build", "dist", "frontend", "node_modules", "src-tauri", ".venv", "site-packages"}
+# Vendored packages kept byte-identical to their wheel and pinned by per-file hashes
+# (studio/backend/vendor/README.md), mapped to the loader that gives their modules a UTF-8
+# `open`. Skipped only while that loader still does, so dropping it re-reds this scan;
+# studio/backend/tests/test_text_io_encoding.py runs the laya case under a non-UTF-8 locale.
+UTF8_BY_LOADER = {
+    REPO / "studio/backend/vendor/laya": (
+        REPO / "studio/backend/core/systemone/laya_runtime.py",
+        ".open = _utf8_open",
+    ),
+}
 GUARDED_METHODS = {"read_text", "write_text"}
 # Path classes, so an unbound `Path.open(p)` shifts every argument one right.
 PATH_CLASSES = {"Path", "PosixPath", "PurePath", "WindowsPath"}
@@ -327,6 +337,15 @@ def _walked_sources():
     return [p for root in ROOTS if root.is_dir() for p in sorted(root.rglob("*.py"))]
 
 
+def _utf8_by_loader(path):
+    """Whether `path` is vendored source whose loader still supplies a UTF-8 open."""
+    parents = set(path.resolve().parents)
+    for vendored, (loader, marker) in UTF8_BY_LOADER.items():
+        if vendored.resolve() in parents:
+            return loader.is_file() and marker in loader.read_text(encoding = "utf-8")
+    return False
+
+
 def test_shipping_code_names_an_encoding():
     offenders = []
     sources = _tracked_sources()
@@ -335,6 +354,8 @@ def test_shipping_code_names_an_encoding():
     roots = {r.resolve() for r in ROOTS}
     for path in sorted(sources):
         if not roots.intersection(path.resolve().parents) or _is_test_path(path):
+            continue
+        if _utf8_by_loader(path):
             continue
         try:
             tree = ast.parse(path.read_text(encoding = "utf-8"), filename = str(path))
