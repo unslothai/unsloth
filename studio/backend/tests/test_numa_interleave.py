@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Unit tests for the NUMA auto-interleave decision (core/inference/numa.py).
-
-Models the user's dual-NUMA Xeon (HF screenshots #23): node 0 ~465 GB free, node 1
-~223 GB free; a 583 GB GGUF exceeds the largest single node but fits across both, so
-`numactl --interleave=all` is the right call. The decision is pure and topology is
-injected, so these are deterministic on any host (no /sys, no numactl needed).
-"""
+"""NUMA auto-interleave decision on an injected dual-node topology (no /sys, no numactl)."""
 
 from __future__ import annotations
 
@@ -19,8 +13,7 @@ _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
-# Importing core.inference.numa runs core/inference/__init__.py (orchestrator + structlog
-# + loggers + httpx); stub those when absent so a dependency-light run can collect this.
+# Importing core.inference.numa runs core/inference/__init__.py: stub its heavy deps when absent.
 try:
     import structlog  # noqa: F401
 except ImportError:
@@ -72,7 +65,6 @@ from core.inference.numa import (  # noqa: E402
 _GiB = 1024**3
 _MiB = 1024**2
 
-# The user's box, in MiB free per node (from `numactl --hardware`).
 _USER_TOPO = NumaTopology(node_free_mib = {0: 465594, 1: 223814})
 _SINGLE = NumaTopology(node_free_mib = {0: 900_000})
 
@@ -92,7 +84,6 @@ def test_topology_aggregates():
 
 
 def test_interleaves_when_model_exceeds_largest_node_but_fits_across():
-    # 583 GB model: > 465 GB (node 0) but < ~689 GB total.
     d = decide_interleave(583 * _GiB, cpu_only = True, topology = _USER_TOPO, has_numactl = True)
     assert d.interleave is True
     assert d.prefix == ("numactl", "--interleave=all")
@@ -100,7 +91,6 @@ def test_interleaves_when_model_exceeds_largest_node_but_fits_across():
 
 
 def test_no_interleave_when_model_fits_every_node():
-    # A 200 GB model fits even the smaller node (223 GB) -> safe on any node, keep local.
     d = decide_interleave(200 * _GiB, cpu_only = True, topology = _USER_TOPO, has_numactl = True)
     assert d.interleave is False
     assert d.prefix == ()
@@ -108,8 +98,6 @@ def test_no_interleave_when_model_fits_every_node():
 
 
 def test_interleaves_when_fits_larger_node_but_not_smaller():
-    # 300 GB fits node 0 (465) but not node 1 (223); the loader is not bound, so first-
-    # touch could land on node 1. Interleave instead of gambling on placement (PR review).
     d = decide_interleave(300 * _GiB, cpu_only = True, topology = _USER_TOPO, has_numactl = True)
     assert d.interleave is True
     assert d.prefix == ("numactl", "--interleave=all")
@@ -128,7 +116,6 @@ def test_no_interleave_single_node():
 
 
 def test_model_too_big_for_all_nodes_blocks_with_message():
-    # 800 GB > ~689 GB total free across both nodes -> interleave can't help.
     d = decide_interleave(800 * _GiB, cpu_only = True, topology = _USER_TOPO, has_numactl = True)
     assert d.interleave is False
     assert "exceeds total free RAM" in d.reason
@@ -141,8 +128,6 @@ def test_numactl_missing_surfaces_actionable_warning():
 
 
 def test_too_big_and_numactl_missing_prefers_total_ram_message():
-    # Impossible across all nodes AND no numactl: the total-RAM guidance must win, so the
-    # user is not told to install numactl when interleaving could never help (PR review fix).
     d = decide_interleave(800 * _GiB, cpu_only = True, topology = _USER_TOPO, has_numactl = False)
     assert d.interleave is False
     assert "exceeds total free RAM" in d.reason
@@ -156,9 +141,7 @@ def test_unknown_model_size_does_not_force_interleave():
 
 
 def test_topology_restricted_to_cpuset_allowed_nodes(tmp_path, monkeypatch):
-    """A cpuset that allows only node 0 must drop host node 1 from the topology, so a
-    container is not told a node's RAM is usable when the child can't allocate there
-    (PR review fix)."""
+    """A cpuset allowing only node 0 drops host node 1 from the topology."""
     import core.inference.numa as m
 
     (tmp_path / "online").write_text("0-1")
@@ -170,7 +153,6 @@ def test_topology_restricted_to_cpuset_allowed_nodes(tmp_path, monkeypatch):
 
     monkeypatch.setattr(m, "_mems_allowed", lambda: {0})
     assert m.read_numa_topology().node_free_mib == {0: 100}
-    # No cpuset info (None) -> trust the online set, both nodes present.
     monkeypatch.setattr(m, "_mems_allowed", lambda: None)
     assert m.read_numa_topology().node_free_mib == {0: 100, 1: 200}
 

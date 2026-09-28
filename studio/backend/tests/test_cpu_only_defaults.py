@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""CPU-only llama-server launch defaults, pinned on the argv load_model spawns.
-
-A CPU-only host used to keep GPU defaults (--flash-attn on, --fit on, full native
-context); --fit's graph reserve hits the same scheduler abort (llama.cpp #21932) and a
-1M native context puts ~90 GB of KV in RAM.
-"""
+"""CPU-only llama-server launch defaults, pinned on the argv load_model spawns."""
 
 from __future__ import annotations
 
@@ -152,7 +147,6 @@ def test_cpu_auto_context_capped_to_ceiling(tmp_path):
 
 
 def test_cpu_auto_context_fit_to_ram(tmp_path):
-    # 32 GiB * 0.9 - 20 GiB weights leaves ~8.8k tokens at 1 MiB/token.
     cmd = _launch(_backend([], weights = 20 * 1024**3, ram_mib = 32 * 1024), tmp_path, n_ctx = 0)
     assert 4096 <= int(_value(cmd, "-c")) < 9100
 
@@ -206,7 +200,6 @@ def test_extra_args_forces_cpu_offload_helper():
     assert f(["-ngl=0"], env = E)
     assert not f(["-ngl", "99"], env = E)
     assert not f(None, env = E)
-    # Last occurrence wins, as in llama-server.
     assert f(["-ngl", "99", "-ngl", "0"], env = E)
     assert not f(["-ngl", "0", "-ngl", "99"], env = E)
     assert f(["--device", "none"], env = E)
@@ -217,7 +210,6 @@ def test_extra_args_forces_cpu_offload_helper():
     assert f([], env = {"LLAMA_ARG_N_GPU_LAYERS": "0"})
     assert f([], env = {"LLAMA_ARG_DEVICE": "none"})
     assert not f([], env = {"LLAMA_ARG_N_GPU_LAYERS": "99"})
-    # CLI wins over env.
     assert not f(["-ngl", "99"], env = {"LLAMA_ARG_N_GPU_LAYERS": "0"})
     assert f(["-ngl", "0"], env = {"LLAMA_ARG_N_GPU_LAYERS": "99"})
 

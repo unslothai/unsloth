@@ -3949,8 +3949,7 @@ _AMD_SMI_TOTAL_TOLERANCE = 0.10
 # reserve (_estimate_mtp_overhead_bytes). Applied to both the fit budget and pin.
 _MTP_VRAM_RESERVE_FRAC = 0.05
 
-# CPU-only: cap an auto context to this ceiling (a full native context puts tens to
-# hundreds of GB of KV + MTP reserve in RAM), then fit it to RAM. Explicit -c wins.
+# CPU-only: cap an auto context to this ceiling, then fit it to RAM; explicit -c wins.
 _CPU_CTX_AUTO_CEILING = 32768
 _CPU_RAM_BUDGET_FRAC = 0.9  # RAM headroom for compute buffers + OS
 
@@ -6519,10 +6518,7 @@ def _batch_ubatch_for_mmproj(
 def _extra_args_forces_cpu_offload(
     extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
 ) -> bool:
-    """True when the launch runs fully on CPU despite a visible GPU, so the CPU-only
-    safe defaults apply: zero GPU layers (-ngl 0 / --n-gpu-layers 0 / --gpu-layers 0)
-    or no device (--device/-dev none). CLI extras win (each control's last value); else
-    the inherited LLAMA_ARG_N_GPU_LAYERS / LLAMA_ARG_DEVICE env the child would honor."""
+    """True if -ngl 0 / --device none (last CLI value, else LLAMA_ARG_* env) keeps every layer on CPU."""
     args = [str(a) for a in extra_args] if extra_args else []
     ngl_zero: Optional[bool] = None
     device_none: Optional[bool] = None
@@ -7243,7 +7239,6 @@ class LlamaCppBackend:
         Default True, so every existing caller keeps today's behaviour.
         """
         self._process: Optional[subprocess.Popen] = None
-        # Spawn-time argv prefix (e.g. numactl --interleave=all); recomputed per load.
         self._numa_prefix: list[str] = []
         self._port: Optional[int] = None
         # Advisory memory notice from the load in flight, handed back on LoadResponse.
@@ -15608,9 +15603,7 @@ class LlamaCppBackend:
         if key is not None:
             cls._tensor_split_abort_keys.add(key)
 
-    # (binary, mtime, model) that aborted in the ggml graph scheduler this process
-    # (GGML_ASSERT(*cur_backend_id != -1)): an unsupported op, so reloading just
-    # repeats the crash. Keyed like the tensor-split memo; mtime drops it on update.
+    # (binary, mtime, model) that hit the ggml graph-scheduler abort this session; a reload repeats it.
     _sched_reserve_abort_keys: set[tuple] = set()
 
     @classmethod
@@ -20739,7 +20732,6 @@ class LlamaCppBackend:
                 "settings and reload."
             )
 
-        # ggml graph-scheduler abort: surface the real cause, not the generic fallback.
         if LlamaCppBackend._is_sched_reserve_abort(output or ""):
             return LlamaCppBackend._sched_reserve_abort_message()
         # An older llama.cpp refusing a quantized KV cache under --split-mode tensor.
@@ -21777,11 +21769,7 @@ class LlamaCppBackend:
 
     @staticmethod
     def _is_sched_reserve_abort(output: str) -> bool:
-        """True for the ggml graph-scheduler abort GGML_ASSERT(*cur_backend_id != -1):
-        no backend can run an op in the graph (e.g. an MLA/sparse-attention/MTP op
-        unimplemented on this build). Needs a ggml-abort marker plus a scheduler marker
-        (matched on the backtrace frames, which outlive the [New LWP] dump in a short
-        tail). Excludes the #6415 split-axis abort. stderr is merged into output."""
+        """True for GGML_ASSERT(*cur_backend_id != -1); matches backtrace frames, which outlive the [New LWP] dump."""
         text = (output or "").lower()
         if "ggml_assert" not in text and "ggml_abort" not in text:
             return False
@@ -22908,8 +22896,7 @@ class LlamaCppBackend:
             logger.debug(f"Could not open llama-server log file: {e}")
             self._llama_log_path = None
 
-        # Log the argv per attempt (mmproj retry re-enters with --mmproj stripped),
-        # redacting the API key. Prepend _numa_prefix so the log matches what runs.
+        # Prepend _numa_prefix so the logged argv matches what actually runs.
         _run_cmd = [*self._numa_prefix, *cmd]
         logger.info(f"Starting llama-server: {' '.join(self._redacted_cmd_for_log(_run_cmd))}")
 
@@ -23449,13 +23436,7 @@ class LlamaCppBackend:
                 logger.info("Load cancelled before teardown")
                 return False
 
-            # Fail fast BEFORE killing the live server (so a known-bad reload is
-            # non-destructive) if this exact launch already aborted in the graph
-            # scheduler this session: reloading re-reads the weights into the same crash
-            # (a startup crash 500s and the UI replays /load). The key includes the
-            # variant AND the launch settings (context, spec) so an identical replay is
-            # blocked but a user changing quant / lowering -c / disabling spec -- the
-            # exact recovery the error message recommends -- is allowed to retry.
+            # Fail fast before killing the live server; the key includes context/spec so a changed launch may retry.
             _abort_memo_model = "\x00".join(
                 [
                     model_identifier or "",
@@ -24246,7 +24227,6 @@ class LlamaCppBackend:
                 _gpu_mem: list[tuple[int, int, int]] = []
                 model_size = None  # set in the fit try; used by the APU RAM guard
                 model_size_fit = None  # weights + compute buffer; set in the fit try
-                # CPU-only (no GPU, not Apple Metal) drives the safe defaults below.
                 from utils.hardware import is_apple_silicon as _is_apple_silicon
 
                 _cpu_only = False
@@ -24403,8 +24383,6 @@ class LlamaCppBackend:
                     if gpu_ids:
                         _picked = set(gpu_ids)
                         gpus = [g for g in gpus if g[0] in _picked]
-                    # A user -ngl 0 / --device none keeps every layer on CPU even with a
-                    # visible GPU, so the CPU-only defaults and RAM-aware fit apply.
                     if gpus and _extra_args_forces_cpu_offload(extra_args):
                         logger.info("User set zero GPU offload (-ngl 0): treating as CPU-only.")
                         gpus, total_by_idx = [], {}
@@ -24596,9 +24574,7 @@ class LlamaCppBackend:
                     _mtp_will_engage = bool(
                         _user_mtp_via_extras or _user_draft_via_extras or _auto_studio_mtp
                     )
-                    # Auto drops embedded MTP for MLA models (GLM-5.2/DeepSeek/Kimi) unless
-                    # forced; mirror that gate so the CPU cap / NUMA footprint don't reserve
-                    # a target-KV copy for a drafter the launch will not start.
+                    # Mirror auto's MTP drop for MLA models so the CPU cap / NUMA footprint don't reserve an unused drafter.
                     _mtp_will_engage_cpu = _mtp_will_engage and not (
                         _auto_studio_mtp
                         and bool(self._nextn_predict_layers)
@@ -27060,18 +27036,13 @@ class LlamaCppBackend:
                         "native length."
                     )
 
-                # CPU-only safe defaults (user extra_args win, appended last): no --fit
-                # (its graph-reserve estimator hits the same abort, llama.cpp #21932, and
-                # mis-counts MTP KV #23472/#24117; offloads nothing on CPU) and flash-attn
-                # off (CPU FA is unsafe for large MLA/sparse/MTP graphs).
+                # No --fit (graph-reserve abort, llama.cpp #21932; MTP KV miscount #23472/#24117) and no CPU flash-attn (unsafe for large MLA/MTP graphs).
                 if _cpu_only and use_fit:
                     use_fit = False
                     logger.info("CPU-only host: launching with --fit off and --flash-attn off.")
 
                 if _cpu_only:
                     _avail_mib = self._available_system_memory_mib()
-                    # Preflight: weights over total RAM get OS-killed mid-load (interleave
-                    # spreads across nodes but can't beat the total).
                     if _avail_mib and model_size and model_size > _avail_mib * 1024 * 1024:
                         logger.warning(
                             "CPU-only memory preflight: model weights ~%.0f GB exceed "
@@ -27079,28 +27050,20 @@ class LlamaCppBackend:
                             model_size / (1024**3),
                             _avail_mib / 1024,
                         )
-                    # Fit an auto context to a RAM-aware ceiling (explicit -c is honored).
-                    # Runs for every auto context, not only above the ceiling: a large
-                    # small-context GGUF can still exceed RAM and must be reduced too.
+                    # Runs for every auto context: a large small-context GGUF can still exceed RAM.
                     if requested_ctx <= 0 and effective_ctx > 0:
                         _ctx_ceiling = min(effective_ctx, _CPU_CTX_AUTO_CEILING)
                         _cpu_cap = _ctx_ceiling
                         try:
                             if _avail_mib and model_size and self._can_estimate_kv():
                                 _budget_b = _avail_mib * _CPU_RAM_BUDGET_FRAC * 1024 * 1024
-                                # Fixed footprint = weights + compute buffer (the same lump
-                                # the load allocates), so a context that only fits ignoring
-                                # the buffer can't slip through and get OS-killed at startup.
+                                # Include the compute buffer so a context that only fits without it can't get OS-killed at startup.
                                 _fixed = model_size_fit or model_size
                                 if _fixed >= _budget_b:
-                                    # Footprint alone over budget: _fit_context_to_vram returns
-                                    # the ceiling unchanged, but KV could still OOM. Floor to
-                                    # the minimum so the tightest fit gets the smallest context.
+                                    # Footprint alone over budget: floor to the minimum context.
                                     _cpu_cap = 4096
                                 else:
-                                    # MTP engages but the draft KV can't be byte-sized:
-                                    # _mtp_bytes returns 0 and budget_frac skips the flat
-                                    # reserve, so trim the budget to still hold back MTP RAM.
+                                    # MTP KV unsizeable (_mtp_bytes == 0): trim the budget to still reserve MTP RAM.
                                     _cpu_budget = _CPU_RAM_BUDGET_FRAC
                                     if _mtp_will_engage_cpu and mtp_overhead_fn is None:
                                         _cpu_budget -= _MTP_VRAM_RESERVE_FRAC
@@ -27112,8 +27075,7 @@ class LlamaCppBackend:
                                         min_ctx = 4096,
                                         n_parallel = n_parallel,
                                         kv_on_gpu = True,  # KV lives in the RAM budget we fit
-                                        # mtp_engaged alone is a no-op once budget_frac is set;
-                                        # pass the byte-accurate overhead so MTP KV is reserved.
+                                        # mtp_engaged alone is a no-op once budget_frac is set; pass the byte-accurate overhead.
                                         mtp_engaged = _mtp_will_engage_cpu,
                                         mtp_overhead_fn = (
                                             _mtp_bytes if _mtp_will_engage_cpu else None
@@ -27130,8 +27092,7 @@ class LlamaCppBackend:
                                 _cpu_cap,
                             )
                             effective_ctx = _cpu_cap
-                            # Advertise the capped window as the ceiling too, so /status and
-                            # the UI safe-zone don't steer back to the unlaunched native size.
+                            # Advertise the capped window so the UI doesn't steer back to the unlaunched native size.
                             max_available_ctx = min(max_available_ctx, _cpu_cap)
 
                 # Gated like every other optional flag, but failing OPEN: these
@@ -27355,8 +27316,7 @@ class LlamaCppBackend:
                     cmd.extend(["-ngl", "-1", "--fit", "off"])
                     fully_gpu_offloaded = True
                 elif _cpu_only:
-                    # --fit defaults to on in recent llama.cpp, so omitting it still runs
-                    # the graph-reserve fitting step (same abort path); disable explicitly.
+                    # --fit defaults to on in recent llama.cpp; disable explicitly.
                     cmd.extend(["--fit", "off"])
 
                 # Expose Prometheus /metrics for the engine-stats logger, only
@@ -28530,25 +28490,16 @@ class LlamaCppBackend:
 
                 kv_cache_unified = _kv_unified_from_args(cmd)
 
-                # NUMA auto-interleave: when the model overflows one node but fits
-                # across all (else first-touch thrashes/OOMs), wrap with
-                # `numactl --interleave=all` (applied at the Popen sites) AND pass
-                # `--numa distribute` -- both are needed, numactl alone doesn't spread
-                # pages evenly (llama.cpp #19102). User --numa wins.
+                # numactl --interleave=all AND --numa distribute: numactl alone doesn't spread pages evenly (llama.cpp #19102).
                 self._numa_prefix = []
                 try:
                     from core.inference.numa import decide_interleave
 
-                    # Decide on the full resident footprint (weights + compute buffer + KV
-                    # at the capped context + MTP reserve), not weights alone, so a model
-                    # whose weights fit one node but whose footprint does not still
-                    # interleaves instead of first-touch thrashing on one node.
+                    # Decide on the full footprint (weights + buffer + KV + MTP), not weights alone.
                     _resident = model_size_fit or model_size
                     _numa_footprint = _resident
                     if _resident and effective_ctx > 0 and self._can_estimate_kv():
                         try:
-                            # Recompute MTP at the post-cap context; the pre-cap
-                            # _mtp_reserve_bytes would overstate a capped million-token load.
                             _numa_mtp = _mtp_bytes(effective_ctx) if _mtp_will_engage_cpu else 0
                             _numa_footprint = (
                                 _resident
@@ -28561,9 +28512,7 @@ class LlamaCppBackend:
                             _numa_footprint = _resident
                     _numa = decide_interleave(_numa_footprint, cpu_only = _cpu_only)
                     if _numa.interleave and _extra_args_set_any_flag(extra_args, {"--numa"}):
-                        # User set an explicit --numa policy: respect it. The numactl wrap
-                        # is an argv prefix they can't override, so skip it (and --numa
-                        # distribute) rather than force interleaving over their choice.
+                        # User --numa wins; skip the numactl prefix too.
                         logger.info("NUMA: user --numa set; leaving auto-interleave off")
                     elif _numa.interleave:
                         self._numa_prefix = list(_numa.prefix)
@@ -28573,8 +28522,6 @@ class LlamaCppBackend:
                         "numactl` is not installed" in _numa.reason
                         or "interleave cannot help" in _numa.reason
                     ):
-                        # Actionable: numactl missing, or the footprint exceeds total RAM
-                        # across all nodes (the weights-only preflight can't catch this).
                         logger.warning("NUMA: %s", _numa.reason)
                 except Exception as _numa_exc:  # never block a load on the NUMA probe
                     logger.debug("NUMA interleave probe failed: %s", _numa_exc)
@@ -29503,8 +29450,7 @@ class LlamaCppBackend:
                         )
                     return stripped
 
-                # Set by any failed spawn that hit the graph-scheduler abort; memoed only
-                # when the load ends terminally, so a fallback that recovers is not blocked.
+                # Memoed only when the load ends terminally, so a recovering fallback is not blocked.
                 _sched_abort_seen = False
 
                 def _spawn_and_wait(run_cmd, *, label = ""):
@@ -29567,8 +29513,7 @@ class LlamaCppBackend:
                             # Best-effort; never block the load on logging.
                             logger.debug(f"Could not open llama-server log file: {e}")
                             self._llama_log_path = None
-                        # _last_spawn_cmd stays un-prefixed (retry helpers slice it);
-                        # the NUMA prefix goes on the actual argv only, so retries don't double it.
+                        # _last_spawn_cmd stays un-prefixed (retry helpers slice it) so retries don't double the prefix.
                         _last_spawn_cmd = list(run_cmd)
                         # Read off the argv actually spawned rather than the intent, so
                         # every emitter is covered by construction.

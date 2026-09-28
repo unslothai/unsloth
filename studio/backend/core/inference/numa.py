@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""NUMA topology detection and an auto-interleave decision for CPU-only launches.
-
-Linux's first-touch policy faults a model's pages onto one node; if the GGUF is larger
-than that node's free RAM the load thrashes/fails despite ample total RAM.
-`numactl --interleave=all` spreads pages across nodes (llama.cpp discussion #19102).
-Pure stdlib, Linux-only (no-op decision elsewhere), side-effect free.
-"""
+"""NUMA topology and the auto-interleave decision for CPU-only launches (llama.cpp #19102)."""
 
 from __future__ import annotations
 
@@ -63,10 +57,7 @@ def _parse_online(spec: str) -> list[int]:
 
 
 def _mems_allowed() -> set[int] | None:
-    """NUMA nodes the process may allocate on (cpuset), from /proc/self/status
-    Mems_allowed_list. None when unavailable, so callers fall back to the online set.
-    numactl --interleave=all only spans these, so a cpuset-limited container must not
-    count host nodes it cannot use."""
+    """cpuset Mems_allowed_list nodes (numactl interleave only spans these); None if unavailable."""
     try:
         text = Path("/proc/self/status").read_text()
     except OSError:
@@ -84,7 +75,6 @@ def _node_memfree_mib(node: int) -> int | None:
     except OSError:
         return None
     for line in text.splitlines():
-        # "Node 0 MemFree:           465594 kB"
         if "MemFree:" in line:
             parts = line.split()
             try:
@@ -96,15 +86,11 @@ def _node_memfree_mib(node: int) -> int | None:
 
 
 def read_numa_topology() -> NumaTopology:
-    """Read NUMA node free memory from sysfs. Empty topology on non-Linux / no sysfs /
-    single-node (a single node is reported but callers treat node_count <= 1 as 'no
-    interleave needed')."""
+    """Per-node free memory from sysfs; empty topology on non-Linux / no sysfs."""
     try:
         online = (_NODE_ROOT / "online").read_text()
     except OSError:
         return NumaTopology()
-    # Restrict to cpuset-allowed nodes: under a Docker/systemd cpuset the child can only
-    # allocate on these, so counting other host nodes would overstate the fittable RAM.
     allowed = _mems_allowed()
     free: dict[int, int] = {}
     for node in _parse_online(online):
@@ -134,12 +120,7 @@ def decide_interleave(
     topology: NumaTopology | None = None,
     has_numactl: bool | None = None,
 ) -> InterleaveDecision:
-    """Interleave only when CPU-only, multi-node, and the footprint exceeds the smallest
-    node's free RAM but fits across all nodes; otherwise leave placement local. The
-    smallest node is the bound because the loader is not pinned, so first-touch may land
-    on any node. model_size_bytes should be the resident footprint (weights + KV), not
-    weights alone, so a model whose weights fit a node but whose footprint does not still
-    interleaves."""
+    """Interleave when CPU-only and the resident footprint (not weights alone) exceeds the smallest node but fits in total."""
     if not cpu_only:
         return InterleaveDecision(False, "not cpu-only; leaving NUMA placement to the OS")
     if not model_size_bytes or model_size_bytes <= 0:
@@ -153,9 +134,7 @@ def decide_interleave(
     smallest = topo.smallest_node_free_mib
     total = topo.total_free_mib
 
-    # Keep local only when the footprint fits EVERY node (the smallest). We don't bind
-    # the loader, so first-touch may land on any node; local placement is safe only when
-    # any node can hold it. A footprint that fits only the larger node still interleaves.
+    # The loader is not bound, so first-touch may land on any node: local only if the smallest fits.
     if model_mib <= smallest:
         return InterleaveDecision(
             False,
@@ -163,9 +142,7 @@ def decide_interleave(
             f"(smallest ~{smallest} MiB); keeping local placement",
         )
 
-    # Impossible across all nodes regardless of numactl: surface the smaller-quant /
-    # free-memory path before the numactl hint, so a too-big model is not told to
-    # install numactl when interleaving could never make it fit.
+    # Checked before numactl availability so a too-big model is not told to install numactl.
     if model_mib > total:
         return InterleaveDecision(
             False,
@@ -175,7 +152,6 @@ def decide_interleave(
 
     avail = numactl_available() if has_numactl is None else has_numactl
     if not avail:
-        # Needed but unavailable: surface it; caller decides whether to block.
         return InterleaveDecision(
             False,
             f"model ~{model_mib} MiB exceeds the smallest NUMA node's free RAM "
