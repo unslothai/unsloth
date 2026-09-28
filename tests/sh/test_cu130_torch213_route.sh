@@ -84,28 +84,42 @@ assert_eq "UV_INDEX_URL keeps the old window" "no" "$(UV_INDEX_URL=https://mirro
 _UVCFG="$VENV_DIR/uv.toml"; printf '[[index]]\nurl = "https://mirror.example/simple"\ndefault = true\n' > "$_UVCFG"
 assert_eq "uv.toml index keeps the old window" "no" "$(UV_CONFIG_FILE="$_UVCFG" _cu130_torch213_route "$CU130")"
 
-echo "=== preservation never waits on PyPI ==="
-# Runs install.sh's own block: an existing 2.13 install re-run while PyPI is unreachable or
-# still capped keeps the wide window (only the new-install default waits on the gate).
-_PRESERVE_BLOCK=$(sed -n '/^_PRESERVE_TORCH_CONSTRAINT="\$TORCH_CONSTRAINT"$/,/^fi$/p' "$INSTALL_SH")
-assert_eq "block found in install.sh" "yes" "$([ -n "$_PRESERVE_BLOCK" ] && echo yes)"
+echo "=== preservation never waits on PyPI; only a fresh home takes 2.13 ==="
+# Runs install.sh's own block (route, kept pin, new-install default) with substep stubbed.
+_PRESERVE_BLOCK=$(sed -n '/^_PRESERVE_TORCH_CONSTRAINT="\$TORCH_CONSTRAINT"$/,/^    TORCHVISION_CONSTRAINT="torchvision>=0.28.0,<0.29.0"$/p' "$INSTALL_SH"; echo fi)
+assert_eq "block found in install.sh" "yes" "$(printf '%s' "$_PRESERVE_BLOCK" | grep -q _CU130_NEW_INSTALL_ROUTE && echo yes)"
+substep() { :; }
 _CU130_TORCH_CEILING="2.15.0"; _CU130_NEW_INSTALL_TORCH="torch>=2.13.0,<2.14.0"; SKIP_TORCH=false; TORCH_INDEX_URL="$CU130"
+_run_block() {  # $1 existing-install flag, $2 previous torch version
+    _EXISTING_INSTALL="$1"; _PREV_TORCH_VER="$2"
+    TORCH_CONSTRAINT="torch>=2.4,<2.12.0"; TORCHVISION_CONSTRAINT="torchvision>=0.19,<0.27.0"
+    eval "$_PRESERVE_BLOCK"
+}
 for gate in unreachable capped open; do
     case "$gate" in
         unreachable) export UNSLOTH_PYPI_JSON_URL="http://127.0.0.1:9/unreachable" ;;
         capped) _pypi_fixture "torch<2.13.0,>=2.4.0" ;;
         open) _pypi_fixture "torch<2.15.0,>=2.4.0" ;;
     esac
-    TORCH_CONSTRAINT="torch>=2.4,<2.12.0"; TORCHVISION_CONSTRAINT="torchvision>=0.19,<0.27.0"
-    eval "$_PRESERVE_BLOCK"
-    assert_eq "PyPI $gate: 2.13 install kept" "torch==2.13.0" "$(_previous_torch_pin '2.13.0+cu130' "$_PRESERVE_TORCH_CONSTRAINT")"
+    _run_block true "2.13.0+cu130"
+    assert_eq "PyPI $gate: existing 2.13 kept" "torch==2.13.0" "$TORCH_CONSTRAINT"
+    assert_eq "PyPI $gate: kept pin falls back to the old default" "torch>=2.4,<2.12.0" "$_PREV_FALLBACK_CONSTRAINT"
+    _run_block true "2.11.0+cu130"
+    assert_eq "PyPI $gate: existing 2.11 kept" "torch==2.11.0" "$TORCH_CONSTRAINT"
+    _run_block true ""
+    assert_eq "PyPI $gate: existing home with unreadable torch stays on the old default" "torch>=2.4,<2.12.0" "$TORCH_CONSTRAINT"
+    _run_block false ""
     want="torch>=2.4,<2.12.0"; [ "$gate" = open ] && want="torch>=2.13.0,<2.14.0"
-    assert_eq "PyPI $gate: new-install default" "$want" "$TORCH_CONSTRAINT"
+    assert_eq "PyPI $gate: fresh home default" "$want" "$TORCH_CONSTRAINT"
 done
+UNSLOTH_TORCH_UPGRADE=1; _run_block true "2.11.0+cu130"; unset UNSLOTH_TORCH_UPGRADE
+assert_eq "UNSLOTH_TORCH_UPGRADE=1 moves an existing home to 2.13" "torch>=2.13.0,<2.14.0" "$TORCH_CONSTRAINT"
 _stub_python 3.12
-TORCH_CONSTRAINT="torch>=2.4,<2.12.0"; eval "$_PRESERVE_BLOCK"
+_run_block false ""
 assert_eq "Python 3.12 keeps the old window" "torch>=2.4,<2.12.0" "$_PRESERVE_TORCH_CONSTRAINT"
 _stub_python 3.13
+assert_eq "legacy layout records its torch before migrating" "yes" \
+    "$(grep -q '"\$STUDIO_HOME"/.venv/lib/python\*/site-packages/torch/version.py' "$INSTALL_SH" && echo yes)"
 
 echo "=== preservation window keeps every existing 2.4-2.14 release ==="
 PRESERVE='torch>=2.4,<2.15.0'
