@@ -28,7 +28,20 @@ $report = [ordered]@{
   explorer_session_ids = @((Get-Process explorer -ErrorAction SilentlyContinue | ForEach-Object SessionId))
   desktop_capture = 'not attempted'
 }
-foreach ($item in @(@('app', $Executable), @('nsis', $Installer))) {
+# Install the actual unsigned NSIS bundle into a runner-owned per-user path.
+# /D must be the last NSIS argument and unquoted.
+$installDir = Join-Path $env:RUNNER_TEMP 'Unsloth-icon-evidence-install'
+$installation = Start-Process -FilePath $Installer -ArgumentList @('/S', "/D=$installDir") -Wait -PassThru
+if ($installation.ExitCode -ne 0) { throw "NSIS install failed with exit code $($installation.ExitCode)" }
+$installedExecutable = Join-Path $installDir 'unsloth-studio.exe'
+if (!(Test-Path -LiteralPath $installedExecutable)) { throw 'NSIS install did not create the Studio executable' }
+if ((Get-FileHash -LiteralPath $installedExecutable -Algorithm SHA256).Hash -ne
+    (Get-FileHash -LiteralPath $Executable -Algorithm SHA256).Hash) {
+  throw 'Installed executable does not match the built desktop executable'
+}
+$report.install_exit = $installation.ExitCode
+$report.installed_executable = (Get-Item -LiteralPath $installedExecutable).Name
+foreach ($item in @(@('app', $Executable), @('nsis', $Installer), @('installed', $installedExecutable))) {
   foreach ($size in @(16, 24, 32, 48, 256)) {
     $handles = [IntPtr[]]::new(1)
     $ids = [uint32[]]::new(1)
@@ -59,7 +72,7 @@ foreach ($item in @(@('app', $Executable), @('nsis', $Installer))) {
 if ($report.explorer_session_ids -contains $report.session_id) {
   try {
   Add-Type -AssemblyName System.Windows.Forms
-    $process = Start-Process -FilePath $Executable -PassThru
+    $process = Start-Process -FilePath $installedExecutable -PassThru
     Start-Sleep -Seconds 8
     $bounds = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
     $capture = New-Object System.Drawing.Bitmap($bounds.Width, $bounds.Height)
@@ -75,5 +88,15 @@ if ($report.explorer_session_ids -contains $report.session_id) {
 } else {
   $report.desktop_capture = 'unavailable: no explorer.exe in runner process session; GitHub-hosted service is not a visible interactive taskbar'
 }
+# Clean up only this runner-owned install after stopping the exact process above.
+$uninstaller = Join-Path $installDir 'uninstall.exe'
+if (Test-Path -LiteralPath $uninstaller) {
+  $uninstall = Start-Process -FilePath $uninstaller -ArgumentList '/S' -Wait -PassThru
+  $report.uninstall_exit = $uninstall.ExitCode
+  if ($uninstall.ExitCode -ne 0) { throw "NSIS uninstall failed with exit code $($uninstall.ExitCode)" }
+} else {
+  $report.uninstall_exit = 'missing uninstaller'
+}
+# lint-allow: AV010 writes a JSON report only; installed .exe is hash-verified native PE from NSIS, never replaced with non-PE bytes.
 $report | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $Output 'windows-report.json') -Encoding utf8
 Get-Content -LiteralPath (Join-Path $Output 'windows-report.json')

@@ -1467,6 +1467,7 @@ class TestRemoteAccessCORS:
         exposed = response.headers["access-control-expose-headers"].lower().split(",")
         assert "x-typesafe-request-id" in {header.strip() for header in exposed}
 
+
     TUNNEL = "https://demo-abc.trycloudflare.com"
 
     @staticmethod
