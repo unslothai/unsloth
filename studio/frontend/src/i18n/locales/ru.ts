@@ -96,6 +96,7 @@ export const ru = {
     useModelScope: "Использовать ModelScope",
     useModelScopeHint: "Искать и скачивать через ModelScope. Вернуть можно в настройках.",
     useModelScopeFailed: "Не удалось переключиться на ModelScope.",
+    updateToken: "Обновить токен",
     hfToken: {
       label: "Токен HF",
       saved: "Сохранён",
@@ -2455,6 +2456,8 @@ export const ru = {
       tokenRejectedTitle: "Токен Hugging Face отклонён",
       tokenRejectedBody:
         "Обновите токен в разделе «Настройки» → «Общие», затем повторите попытку.",
+      tokenRejectedAnonymousBody:
+        "Публичные модели показаны без него. Обновите токен в разделе «Настройки» → «Общие», чтобы получить доступ к приватным и закрытым моделям.",
       hubUnreachable: "Не удалось подключиться к Hugging Face",
       cantUseModel: "Модель нельзя использовать для обучения",
       reasonTypeMismatch:
