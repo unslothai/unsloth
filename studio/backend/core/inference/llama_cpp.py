@@ -25627,6 +25627,7 @@ class LlamaCppBackend:
 
                         if (
                             explicit_ctx
+                            and ctx_override is None
                             and intent.max_seq_length_auto_derived
                             and _mtp_reserves_gpu
                             and (_canonicalize_spec_mode(speculative_type) or "auto") != "auto"

@@ -1505,6 +1505,23 @@ def test_a_replayed_context_gets_the_slot_refit_of_a_fresh_drafter_load(tmp_path
     )
 
 
+def test_forcing_the_drafter_keeps_a_ctx_size_passed_through_extra_args(tmp_path):
+    replayed = _replayed_auto_context(tmp_path)
+    backend, gguf = _replayed_context_mtp_backend(tmp_path)
+
+    result = _launch(
+        backend,
+        gguf,
+        n_ctx = replayed,
+        max_seq_length_auto_derived = True,
+        n_parallel = 4,
+        speculative_type = "mtp",
+        extra_args = ["-c", str(replayed)],
+    )
+
+    assert _launched_ctx(result) == replayed
+
+
 def test_forcing_the_drafter_keeps_a_typed_context(tmp_path):
     replayed = _replayed_auto_context(tmp_path)
     backend, gguf = _replayed_context_mtp_backend(tmp_path)
