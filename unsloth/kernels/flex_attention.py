@@ -37,7 +37,7 @@ except:
 if not HAS_FLEX_ATTENTION:
     # Logit softcapping
     @torch.compile(fullgraph = True, dynamic = True, options = torch_compile_options)
-    def slow_attention_softcapping(Q, K, V, causal_mask, self, bsz, q_len):
+    def _compiled_slow_attention_softcapping(Q, K, V, causal_mask, self, bsz, q_len):
         n_heads = self.config.num_attention_heads
         head_dim = self.head_dim
         n_kv_heads = self.config.num_key_value_heads
@@ -66,7 +66,6 @@ if not HAS_FLEX_ATTENTION:
         A = A.reshape(bsz, q_len, n_heads * head_dim)
         return A
 
-    _compiled_slow_attention_softcapping = slow_attention_softcapping
     _SOFTCAP_EAGER = {}
 
     def _softcapping_attention(Q, K, V, causal_mask, self, bsz, q_len):
