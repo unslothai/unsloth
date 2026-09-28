@@ -500,3 +500,17 @@ def test_engine_left_by_a_cancelled_load_is_reaped_once_it_dies():
     backend.loading_models = set()
     backend.reap_dead_managed_engine()
     assert reaped == [True]
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_tool_responses_report_the_public_model_id(native, stream):
+    backend, requests = native
+    # The engine answers as "sf-model"; clients were told the model is "org/public".
+    backend._openai_advertised_id = "org/public"
+    result = run(
+        route_test._request(tools = [route_test.LOOKUP_TOOL], stream = stream, enable_tools = False)
+    )
+    assert requests[0]["model"] == "sf-model"
+    events = result if stream else [result]
+    models = {e["model"] for e in events if "model" in e}
+    assert models == {"org/public"}
