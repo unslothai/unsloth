@@ -142,7 +142,9 @@ class Int4PackedLinear(nn.Linear):
 
     def forward(self, x):
         bias = self.bias
-        if torch.is_grad_enabled() and (x.requires_grad or (bias is not None and bias.requires_grad)):
+        if torch.is_grad_enabled() and (
+            x.requires_grad or (bias is not None and bias.requires_grad)
+        ):
             return _Int4LinearFunction.apply(x, self._parameters["weight_packed"], self, bias)
         # Nothing to differentiate: autograd.Function.apply alone costs ~20 us per call (inference is launch bound).
         from ..kernels.int4_packed import int4_matmul

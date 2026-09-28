@@ -2628,8 +2628,9 @@ class FastLlamaModel:
                 "local_files_only": kwargs.get("local_files_only", False),
             },
         )
-        # Only an explicit bnb 4-bit config keeps the caller's flags; other quantizers clear them.
-        if not _explicit_bnb_4bit:
+        # Only an explicit bnb 4-bit config the check kept keeps the caller's flags: a pre-quantized
+        # checkpoint left unarmed (vLLM reads it itself) must not reach vLLM as a bitsandbytes load.
+        if not (_explicit_bnb_4bit and _checked_4bit):
             load_in_4bit, load_in_8bit = _checked_4bit, _checked_8bit
         from .modelopt_fp8 import (
             keep_fp8_scale_names_on_save,

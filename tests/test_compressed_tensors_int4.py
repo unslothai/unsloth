@@ -152,7 +152,6 @@ def _has_marlin():
     if not has_real_cuda():
         return False
     import unsloth.kernels.int4_packed as ip
-
     return bool(ip._marlin_api())
 
 
@@ -168,7 +167,13 @@ MARLIN_CASES = [
 
 def _qs(ip, packed, shape, bits, gs):
     return ip.Int4QuantState(
-        packed["weight_scale"], packed.get("weight_zero_point"), None, shape, bits, gs, torch.bfloat16
+        packed["weight_scale"],
+        packed.get("weight_zero_point"),
+        None,
+        shape,
+        bits,
+        gs,
+        torch.bfloat16,
     )
 
 
@@ -215,6 +220,69 @@ def test_decode_rows_fall_back_when_marlin_is_unavailable(why, monkeypatch):
     with torch.no_grad():
         y = ip.int4_matmul(x, packed["weight_packed"], qs)
     assert ip._MARLIN_API is False and qs._marlin[1] is None
+    want = x.float() @ ref.float().t()
+    assert ((y.float() - want).norm() / want.norm()) < 5e-3
+
+
+TINYGEMM_CASES = [
+    (128, True, 256),
+    (128, False, 256),
+    (32, False, 200),
+    (256, False, 512),
+]
+
+
+@needs_gpu
+@needs_ct
+@pytest.mark.skipif(
+    not has_real_cuda() or torch.cuda.get_device_capability() < (8, 0),
+    reason = "tinygemm needs sm_80+",
+)
+@pytest.mark.parametrize("group,sym,out_f", TINYGEMM_CASES)
+def test_tinygemm_takes_decode_rows_without_marlin(group, sym, out_f, monkeypatch):
+    import unsloth.kernels.int4_packed as ip
+
+    monkeypatch.setattr(ip, "_MARLIN_API", False)
+    torch.manual_seed(0)
+    packed, ref, gs = _packed_layer(out_f, 1024, 4, group, sym, False, torch.bfloat16)
+    W = packed["weight_packed"]
+    qs = _qs(ip, packed, (out_f, 1024), 4, gs)
+    for rows in (1, 2, ip._tinygemm_max_rows(torch.cuda.current_device())):
+        x = torch.randn(rows, 1024, device = "cuda", dtype = torch.bfloat16)
+        with torch.no_grad():
+            y = ip.int4_matmul(x, W, qs)
+        assert qs._tinygemm[1] is not None
+        want = x.float() @ ref.float().t()
+        assert ((y.float() - want).norm() / want.norm()) < 5e-3
+    out = torch.empty(1, 1, out_f, device = "cuda", dtype = torch.bfloat16)
+    with torch.no_grad():
+        got = ip.int4_matmul(x[:1].view(1, 1, 1024), W, qs, out = out)
+        want = ip.int4_matmul(x[:1], W, qs)
+    assert got.data_ptr() == out.data_ptr() and torch.equal(got.view(1, -1), want)
+    qs = _qs(ip, packed, (out_f, 1024), 4, gs)
+    ip.int4_matmul(x[:1], W, qs)
+    assert qs._tinygemm is None
+
+
+@needs_gpu
+@needs_ct
+@pytest.mark.parametrize("why", ["fp32_scale", "8bit", "kill_switch", "fp16"])
+def test_tinygemm_declines_layers_it_cannot_run_exactly(why, monkeypatch):
+    import unsloth.kernels.int4_packed as ip
+
+    monkeypatch.setattr(ip, "_MARLIN_API", False)
+    if why == "kill_switch":
+        monkeypatch.setenv("UNSLOTH_INT4_TINYGEMM", "0")
+    bits = 8 if why == "8bit" else 4
+    scale_dtype = {"fp32_scale": torch.float32, "fp16": torch.float16}.get(why, torch.bfloat16)
+    dtype = torch.float16 if why == "fp16" else torch.bfloat16
+    torch.manual_seed(0)
+    packed, ref, gs = _packed_layer(256, 512, bits, 128, True, False, scale_dtype)
+    qs = ip.Int4QuantState(packed["weight_scale"], None, None, (256, 512), bits, gs, dtype)
+    x = torch.randn(1, 512, device = "cuda", dtype = dtype)
+    with torch.no_grad():
+        y = ip.int4_matmul(x, packed["weight_packed"], qs)
+    assert qs._tinygemm[1] is None
     want = x.float() @ ref.float().t()
     assert ((y.float() - want).norm() / want.norm()) < 5e-3
 
@@ -378,6 +446,8 @@ def test_adopt_swaps_plain_linears_and_leaves_routers_to_the_decompress_converte
     ct_config = _build_quantization_config(_w4a16())
     swapped, leftover = adopt_int4_packed_linears(model, ct_config, [path], torch.bfloat16)
     assert swapped == ["proj"] and leftover == ["gate"]
+    # The stacked expert is not in the checkpoint's layout any more, so a full save must not claim it is.
+    assert model.__dict__.get("_unsloth_int4_stacked_experts") is True
     assert isinstance(model.proj, Int4PackedLinear)
     assert model.proj.weight_packed.dtype == torch.int32 and model.proj.weight_packed.shape == (
         16,

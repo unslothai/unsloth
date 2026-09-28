@@ -278,6 +278,9 @@ def _packed_tensor_meta(checkpoint_files) -> dict:
     return {m: v for m, v in meta.items() if "weight_packed" in v}
 
 
+_STACKED_PACKED_EXPERTS = "_unsloth_int4_stacked_experts"
+
+
 def adopt_int4_packed_linears(model, ct_config, checkpoint_files, dtype) -> tuple:
     """Swap every packed plain ``nn.Linear`` for an ``Int4PackedLinear`` shell.
 
@@ -297,6 +300,8 @@ def adopt_int4_packed_linears(model, ct_config, checkpoint_files, dtype) -> tupl
             swaps.append((name, None, None, None))
             continue
         if module is None and ".experts." in name:
+            # Stacked by their own converter, so no longer in the checkpoint's per-expert layout.
+            model.__dict__[_STACKED_PACKED_EXPERTS] = True
             continue
         if type(module) is not nn.Linear:
             leftover.append(name)
@@ -1157,8 +1162,12 @@ def install_compressed_tensors_bnb_quantizer() -> bool:
                     save_packed_with_checkpoint_config,
                 )
                 finalize_int4_packed_linears(model, self._unsloth_ct_dtype)
-                # Leftover layers were re-quantized to bitsandbytes, which the checkpoint config cannot describe.
-                if plan is not None and not self._unsloth_int4_leftover:
+                # Leftover layers and stacked experts were converted, which the checkpoint config cannot describe.
+                if (
+                    plan is not None
+                    and not self._unsloth_int4_leftover
+                    and not model.__dict__.get(_STACKED_PACKED_EXPERTS)
+                ):
                     save_packed_with_checkpoint_config(model, plan)
             stacks = finalize_packed_mxfp4_experts(model)
             if stacks or self._unsloth_packed_linears:
