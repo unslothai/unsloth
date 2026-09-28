@@ -449,13 +449,13 @@ test("project cards in the grid leave out the instructions", () => {
   assert.doesNotMatch(card, /instructions/);
 });
 
-test("library menus take the sidebar menu look in dark mode", () => {
+test("library menus take the sidebar menu look, with a shadow, in dark mode", () => {
   const css = readSrc("index.css");
   const menu = css.slice(css.indexOf("/* Library menus in dark"), css.indexOf("/* Library header row"));
   assert.match(menu, /--library-menu-surface: color-mix\(in srgb, var\(--card\), white 7%\)/);
   assert.match(menu, /--accent: color-mix\(in srgb, var\(--library-menu-surface\), white 10%\)/);
   assert.match(menu, /--destructive: #ed716a/);
-  assert.match(menu, /box-shadow: none !important/);
+  assert.match(menu, /box-shadow: 0 4px 14px var\(--background\) !important/);
   assert.match(menu, /\[data-slot="dropdown-menu-separator"\] \{\s*background-color: color-mix\(in srgb, var\(--card\), white 16%\)/);
   const toolbar = readSrc("features/library/components/library-toolbar.tsx");
   assert.equal(toolbar.match(/className="library-menu /g)?.length, 3);
@@ -463,15 +463,15 @@ test("library menus take the sidebar menu look in dark mode", () => {
   assert.equal(page.match(/className="library-menu /g)?.length, 2);
 });
 
-test("the library header row casts the composer shadow once stuck", () => {
+test("the library header row casts a light shadow once stuck", () => {
   const css = readSrc("index.css");
   assert.match(
     css,
-    /\.library-header-row\[data-stuck\] \{\s*box-shadow: 0 2px 8px -2px rgba\(0, 0, 0, 0\.16\);\s*clip-path: inset\(0 0 -40px 0\);/,
+    /\.library-header-row\[data-stuck\] \{\s*box-shadow: 0 2px 6px -3px rgba\(0, 0, 0, 0\.1\);\s*clip-path: inset\(0 0 -40px 0\);/,
   );
   assert.match(
     css,
-    /\.dark \.library-header-row\[data-stuck\] \{\s*box-shadow: 0 4px 20px 4px var\(--background\);/,
+    /\.dark \.library-header-row\[data-stuck\] \{\s*box-shadow: 0 2px 10px -2px var\(--background\);/,
   );
   const header = readSrc("features/library/components/library-header.tsx");
   assert.match(header, /data-stuck=\{stuck \|\| undefined\}/);
