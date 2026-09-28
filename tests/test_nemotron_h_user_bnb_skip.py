@@ -1,11 +1,5 @@
-"""A caller's BitsAndBytesConfig keeps Nemotron-H's mixer.out_proj unquantized.
-
-The fused Mamba-2 training kernel (mamba_ssm mamba_split_conv1d_scan_combined) receives
-mixer.out_proj.weight directly and runs F.linear on it, so a packed Params4bit weight fails with
-"mat1 and mat2 shapes cannot be multiplied (Nx4096 and 1x5505024)" at the first training step.
-Unsloth's own load_in_4bit config already skips out_proj for nemotron_h; a config passed by the
-caller (what the loader tells users to do for a -bf16 repo) did not.
-"""
+"""A caller's BitsAndBytesConfig must keep Nemotron-H's mixer.out_proj unquantized: the fused Mamba-2
+kernel runs F.linear on out_proj.weight, which crashes on a packed Params4bit."""
 
 import ast
 import copy
@@ -28,7 +22,6 @@ def test_user_bnb_config_gets_nemotron_h_skip_modules():
     before = copy.deepcopy(user.llm_int8_skip_modules)
     out = _with_architecture_skip_modules(user, ["nemotron_h"])
     assert "out_proj" in out.llm_int8_skip_modules
-    # None meant transformers' defaults; the merged list starts from Unsloth's own list (lm_head, routers, ...).
     assert set(SKIP_QUANTIZATION_MODULES) <= set(out.llm_int8_skip_modules)
     assert user.llm_int8_skip_modules == before, "the caller's object must not be mutated"
 
@@ -92,7 +85,6 @@ def test_tiny_nemotron_h_trains_with_a_user_bnb_config():
         pytest.skip("needs CUDA")
     modeling = pytest.importorskip("transformers.models.nemotron_h.modeling_nemotron_h")
     if not getattr(modeling.NemotronHPreTrainedModel, "supports_gradient_checkpointing", False):
-        # transformers 5.5.0: FastModel.from_pretrained cannot load Nemotron-H at all there.
         pytest.skip("this transformers' NemotronH does not support gradient checkpointing")
     from unsloth import FastModel
     from transformers import BitsAndBytesConfig

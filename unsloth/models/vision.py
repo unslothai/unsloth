@@ -1290,7 +1290,7 @@ def _architecture_skip_modules(model_types):
 
 
 def _with_architecture_skip_modules(quantization_config, model_types):
-    """A caller's bitsandbytes config with the architecture skip list merged in, on a copy; anything else is returned as is. Unsloth's own 4bit / 8bit config already carries the list, but a config the caller passes (the loader's advice for a -bf16 repo) did not, so Nemotron-H's mixer.out_proj was quantized and the fused Mamba kernel then crashed on the packed weight at the first training step."""
+    """Copy of a caller's bitsandbytes config with the architecture skip list merged in; anything else unchanged."""
     extra = _architecture_skip_modules(model_types)
     if quantization_config is None or not extra:
         return quantization_config
@@ -1307,13 +1307,13 @@ def _with_architecture_skip_modules(quantization_config, model_types):
     if not is_bnb or not (get("load_in_4bit", False) or get("load_in_8bit", False)):
         return quantization_config
     current = get("llm_int8_skip_modules", None)
-    # None means "transformers' defaults"; an explicit list replaces them, so start from the list Unsloth's own config uses.
+    # None = transformers' defaults, which an explicit list replaces: start from Unsloth's own list.
     merged = list(SKIP_QUANTIZATION_MODULES) if current is None else list(current)
     missing = [m for m in extra if m not in merged]
     if current is not None and not missing:
         return quantization_config
     merged += missing
-    # A new object, never the caller's. A pre-quantized bnb checkpoint's own config still wins in transformers, so this only reaches on-the-fly quantization.
+    # A pre-quantized bnb checkpoint's own config still wins in transformers.
     if is_dict:
         return {**quantization_config, "llm_int8_skip_modules": merged}
     runtime_config = copy.deepcopy(quantization_config)
