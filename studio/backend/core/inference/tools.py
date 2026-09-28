@@ -4011,8 +4011,7 @@ def _references_studio_credential_here(
     # One level of indirection, `r=$STUDIO_HOME; sqlite3 "$r/auth/auth.db"`. Same substitution the
     # sensitive-path scan uses, and it only ADDS detections.
     if "$" in text:
-        # Keep quoted bindings as a separate scan for inline shell programs. They must not
-        # overwrite real bindings when assignment-shaped text is only a log message.
+        # Quoted bindings scanned separately: log text shaped like an assignment must not overwrite real ones.
         modes = (
             (False, True)
             if _assign_expand_depth == 0 and ("'" in text or '"' in text)
@@ -4022,8 +4021,7 @@ def _references_studio_credential_here(
             expanded = _expand_shell_assignments(text, _include_quoted = include_quoted)
             if expanded == text:
                 continue
-            # An unfinished expansion can still hide the auth path. Exhausting the scan budget
-            # must refuse the command, not classify its unresolved aliases as ordinary paths.
+            # Exhausted expansion budget fails closed: unresolved aliases may still hide the auth path.
             if _assign_expand_depth >= _MAX_SHELL_ASSIGN_EXPAND_PASSES or (
                 "$" in expanded and len(expanded) > max(_MAX_TERMINAL_SCAN_CHARS, len(text))
             ):
@@ -5099,8 +5097,7 @@ _SHELL_PARAM_OP_RE = re.compile(r"\$\{[A-Za-z_]\w*:?[-=+]([^{}]*)\}")
 # path fails closed rather than spending unbounded time. Ordinary commands are far below these bounds.
 _MAX_PATH_SCAN_CHARS = 2048
 _MAX_TERMINAL_SCAN_CHARS = 4096
-# Each substitution pass doubles the number of resolved alias hops. Allow long finite chains,
-# then fail closed if expansion still has work left; growing unresolved text has a separate bound.
+# Each pass doubles resolved alias hops; leftover work after the cap fails closed.
 _MAX_SHELL_ASSIGN_EXPAND_PASSES = 16
 # A glob needs one of these to expand into anything but itself; used to skip the glob scans outright.
 _GLOB_META_RE = re.compile(r"[?*\[]")
@@ -5340,10 +5337,7 @@ def _expand_shell_assignments(command: str, *, _include_quoted: bool = True) -> 
                 continue
         var, val = match.groups()
         if _shell_assign_value_self_references(var, val):
-            # Keep concrete path pieces without feeding the binding back into itself.
-            # An unset self-reference contributes nothing; an earlier binding can supply it.
-            # A studio home variable stays a reference: the child may inherit it, and
-            # `H=$H; cat "$H/auth/auth.db"` must still name the install.
+            # Studio home vars stay references: `H=$H; cat "$H/auth/auth.db"` must still name the install.
             if var.upper() in _STUDIO_HOME_ENV_VARS:
                 env.setdefault(var, "${" + var + "}")
             val = _SHELL_PARAM_VALUE_OP_RE.sub(repl_default, val)
