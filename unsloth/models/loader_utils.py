@@ -1411,9 +1411,15 @@ def _zoo_peft_forward_keeps_fp8_inputs():
     )
 
 
-def _route_compressed_tensors_fp8_to_unsloth(model, skip = ()):
-    # Opt-in: saves memory, but on-the-fly dequant trains slower than the decompressed bf16 model.
-    if os.environ.get("UNSLOTH_COMPRESSED_TENSORS_FP8_KERNELS", "0") != "1":
+def _route_compressed_tensors_fp8_to_unsloth(
+    model,
+    skip = (),
+    default = "0",
+):
+    # Opt-in for FP8 checkpoints: on-the-fly dequant trains slower than the decompressed bf16 model. Beside NVFP4
+    # layers it is the default: the decompressed FP8 layers keep compressed-tensors' fake-quant forward, which
+    # graph-breaks (Qwen3.8-27B-NVFP4: 489 vs 566 ms/step, 40 vs 51 GB peak).
+    if os.environ.get("UNSLOTH_COMPRESSED_TENSORS_FP8_KERNELS", default) != "1":
         return 0
     if getattr(getattr(model, "config", None), "quantization_config", None) is None:
         return 0
@@ -1591,7 +1597,11 @@ def _route_compressed_tensors_nvfp4_to_unsloth(model):
             "Unsloth: this compressed-tensors has no per-module decompress; decompressing the NVFP4 layers too."
         )
         return 0
-    fp8_routed = _route_compressed_tensors_fp8_to_unsloth(model, skip = set(nvfp4)) if others else 0
+    fp8_routed = (
+        _route_compressed_tensors_fp8_to_unsloth(model, skip = set(nvfp4), default = "1")
+        if others
+        else 0
+    )
     if others and not fp8_routed:
         try:
             with torch.inference_mode(False), torch.no_grad():

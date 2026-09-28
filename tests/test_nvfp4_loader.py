@@ -63,11 +63,12 @@ def test_fixture_decompresses_to_the_packed_weights(ckpt, arch):
 
 
 @pytest.mark.parametrize("arch", ["qwen3", "qwen3_5"])
-def test_nvfp4_layers_stay_packed_and_run_w4a16(ckpt, arch):
+def test_nvfp4_layers_stay_packed_and_run_w4a16(ckpt, arch, monkeypatch):
     from safetensors import safe_open
     from unsloth.kernels.nvfp4 import nvfp4_dequantize
     from unsloth.models import loader_utils
 
+    monkeypatch.setenv("UNSLOTH_COMPRESSED_TENSORS_FP8_KERNELS", "0")
     path, kinds = ckpt[arch]
     model = _load_raw(path, arch)
     loader_utils._prepare_compressed_tensors_model(model)
@@ -120,11 +121,11 @@ def test_full_finetuning_decompresses_everything(ckpt):
     assert all(_module(model, n).weight.dtype == torch.bfloat16 for n in kinds)
 
 
-def test_fp8_group_routes_with_the_fp8_kernels_when_opted_in(ckpt, monkeypatch):
+def test_fp8_group_routes_with_the_fp8_kernels_by_default(ckpt, monkeypatch):
     from unsloth.models import loader_utils
 
     path, kinds = ckpt["qwen3"]
-    monkeypatch.setenv("UNSLOTH_COMPRESSED_TENSORS_FP8_KERNELS", "1")
+    monkeypatch.delenv("UNSLOTH_COMPRESSED_TENSORS_FP8_KERNELS", raising = False)
     monkeypatch.setattr(loader_utils, "_zoo_peft_forward_keeps_fp8_inputs", lambda: True)
     model = _load_raw(path, "qwen3")
     loader_utils._prepare_compressed_tensors_model(model)
