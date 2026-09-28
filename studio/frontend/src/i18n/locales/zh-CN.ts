@@ -2364,6 +2364,8 @@ export const zhCN = {
       noModelsFound: "未找到模型。",
       tokenRejectedTitle: "Hugging Face token 被拒绝",
       tokenRejectedBody: "请在“设置”→“常规”中更新 token，然后重试。",
+      tokenRejectedAnonymousBody:
+        "公开模型已在不使用 token 的情况下显示。请在“设置”→“常规”中更新 token，以访问私有和受限模型。",
       hubUnreachable: "无法连接 Hugging Face",
       cantUseModel: "无法使用此模型进行训练",
       reasonTypeMismatch: "此模型与上一步选择的训练类型不匹配。",

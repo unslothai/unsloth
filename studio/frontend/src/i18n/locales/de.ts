@@ -2469,6 +2469,8 @@ export const de = {
       tokenRejectedTitle: "Hugging Face-Token abgelehnt",
       tokenRejectedBody:
         "Aktualisieren Sie Ihr Token unter Einstellungen → Allgemein und versuchen Sie es erneut.",
+      tokenRejectedAnonymousBody:
+        "Öffentliche Modelle werden ohne das Token angezeigt. Aktualisieren Sie Ihr Token unter Einstellungen → Allgemein, um private und zugangsbeschränkte Modelle zu erreichen.",
       hubUnreachable: "Hugging Face ist nicht erreichbar",
       cantUseModel: "Modell kann nicht für das Training verwendet werden",
       reasonTypeMismatch:

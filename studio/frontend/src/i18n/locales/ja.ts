@@ -2394,6 +2394,8 @@ export const ja = {
       tokenRejectedTitle: "Hugging Face トークンが拒否されました",
       tokenRejectedBody:
         "「設定」→「一般」でトークンを更新してから、再試行してください。",
+      tokenRejectedAnonymousBody:
+        "公開モデルはトークンなしで表示しています。非公開モデルやアクセス制限付きモデルを使うには、「設定」→「一般」でトークンを更新してください。",
       hubUnreachable: "Hugging Face に接続できませんでした",
       cantUseModel: "このモデルはトレーニングに使用できません",
       reasonTypeMismatch:

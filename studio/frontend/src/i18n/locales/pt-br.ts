@@ -2441,6 +2441,8 @@ export const ptBR = {
       tokenRejectedTitle: "Token do Hugging Face rejeitado",
       tokenRejectedBody:
         "Atualize seu token em Configurações → Geral e tente novamente.",
+      tokenRejectedAnonymousBody:
+        "Os modelos públicos são exibidos sem ele. Atualize seu token em Configurações → Geral para acessar modelos privados e restritos.",
       hubUnreachable: "Não foi possível acessar o Hugging Face",
       cantUseModel: "Não é possível usar o modelo para treinamento",
       reasonTypeMismatch:

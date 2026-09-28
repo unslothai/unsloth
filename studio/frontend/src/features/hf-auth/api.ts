@@ -5,6 +5,7 @@ import { authFetch } from "@/features/auth";
 // This header helper is API-layer-only and is not part of the feature's React-facing public barrel.
 // eslint-disable-next-line no-restricted-imports
 import { hubTokenHeader } from "@/features/hub/lib/hub-token-header";
+import { clearHfTokenRejected, isHfTokenRejected } from "@/lib/hf-token-rejection";
 
 export type HfTokenValidationStatus =
   | "missing"
@@ -36,8 +37,11 @@ export async function validateHfToken(
     status?: HfTokenValidationStatus;
     retry_after_seconds?: number | null;
   };
+  const status = body.status ?? "unavailable";
+  // The Hub accepting it again outranks an earlier refusal seen on a read.
+  if (status === "valid" && isHfTokenRejected(normalized)) clearHfTokenRejected();
   return {
-    status: body.status ?? "unavailable",
+    status,
     retryAfterSeconds: body.retry_after_seconds ?? null,
   };
 }

@@ -8,6 +8,7 @@ import {
   isProxiedHubUrl,
   refreshHubSession,
 } from "@/lib/hf-endpoint";
+import { isHfTokenRejected, noteHfTokenRejected } from "@/lib/hf-token-rejection";
 
 // Set by the relay on the endpoint's own answers, whose 401 is about the Hugging Face token.
 const UPSTREAM_HEADER = "X-Hub-Upstream";
@@ -44,11 +45,33 @@ function withHubAuth(
   return { ...init, headers };
 }
 
-export async function fetchHub(
+/** The Hugging Face token this request would send the Hub, or null. ModelScope is excluded:
+ * its relay takes the Unsloth session and drops the HF token. */
+function sentHfToken(url: string, init: RequestInit): string | null {
+  if (isModelScopeHubUrl(url)) return null;
+  const header = new Headers(init.headers).get("Authorization");
+  const token = header?.replace(/^Bearer\s+/i, "").trim();
+  return token || null;
+}
+
+function withoutHfToken(init: RequestInit): RequestInit {
+  const headers = new Headers(init.headers);
+  headers.delete("Authorization");
+  return { ...init, headers };
+}
+
+function isRetryableRead(input: Parameters<typeof fetch>[0], init: RequestInit): boolean {
+  const method = (
+    init.method ?? (typeof input === "object" && "method" in input ? input.method : "GET")
+  ).toUpperCase();
+  return method === "GET" || method === "HEAD";
+}
+
+async function fetchWithSession(
   input: Parameters<typeof fetch>[0],
-  init: RequestInit = {},
+  init: RequestInit,
+  url: string,
 ): Promise<Response> {
-  const url = requestUrl(input);
   let response = await fetch(input, withHubAuth(input, init));
   if (
     response.status === 401 &&
@@ -57,6 +80,37 @@ export async function fetchHub(
     (await refreshHubSession())
   ) {
     response = await fetch(input, withHubAuth(input, init));
+  }
+  return response;
+}
+
+/** A 401 that came from the Hub itself: direct, or the relay passing on the endpoint's answer. */
+function isHubRefusal(response: Response, url: string): boolean {
+  if (response.status !== 401) return false;
+  return isProxiedHubUrl(url) ? response.headers.has(UPSTREAM_HEADER) : !takesSession(url);
+}
+
+export async function fetchHub(
+  input: Parameters<typeof fetch>[0],
+  init: RequestInit = {},
+): Promise<Response> {
+  const url = requestUrl(input);
+  const hfToken = sentHfToken(url, init);
+  const retryable = hfToken !== null && isRetryableRead(input, init);
+  // Already refused this session: every read with it would 401 again, so ask anonymously.
+  const skipToken = retryable && isHfTokenRejected(hfToken);
+  let response = await fetchWithSession(input, skipToken ? withoutHfToken(init) : init, url);
+  if (retryable && !skipToken && isHubRefusal(response, url)) {
+    // A token the Hub accepts gets 404 for a repo it cannot see, so this 401 is the token
+    // being refused. Public data still answers without it; anything else keeps the original.
+    const anonymous = await fetchWithSession(input, withoutHfToken(init), url);
+    if (anonymous.ok) {
+      void response.body?.cancel().catch(() => undefined);
+      noteHfTokenRejected(hfToken);
+      response = anonymous;
+    } else {
+      void anonymous.body?.cancel().catch(() => undefined);
+    }
   }
   // The relay's own 502 means it could not reach the endpoint: fail as a direct fetch would.
   if (response.status === 502 && !response.headers.has(UPSTREAM_HEADER) && isProxiedHubUrl(url)) {
