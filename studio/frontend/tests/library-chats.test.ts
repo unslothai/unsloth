@@ -434,3 +434,11 @@ test("chat, project and section cards are square, dated bottom left", () => {
   // The date is its own left-aligned line, not pushed right beside the counts.
   assert.doesNotMatch(items, /justify-between gap-2 text-ui-12 text-muted-foreground/);
 });
+
+test("a chat tile tints on hover like project and section tiles", () => {
+  const items = readSrc("features/library/chats/chats-items.tsx");
+  const tint = "group-hover/chat:bg-primary/10 group-hover/chat:text-primary";
+  assert.equal(items.split(tint).length - 1, 2, "chat tile and collection tile share the hover tint");
+  // The grid checkbox no longer hides the tile to take its place.
+  assert.doesNotMatch(items, /group-hover\/chat:opacity-0/);
+});

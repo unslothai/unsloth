@@ -589,8 +589,9 @@ function ChatTile({
 }) {
   return (
     <div
+      // Same hover tint as the project and section tiles.
       className={cn(
-        "flex size-9 shrink-0 items-center justify-center text-muted-foreground",
+        "flex size-9 shrink-0 items-center justify-center rounded-[10px] text-muted-foreground transition-colors group-hover/chat:bg-primary/10 group-hover/chat:text-primary",
         className,
       )}
     >
@@ -1189,24 +1190,15 @@ export function ChatCard({
       }
       className={cn(CARD, selected && "ring-2 ring-foreground")}
     >
-      <div className="relative flex items-center gap-2">
-        <ChatTile
-          chat={chat}
-          className={cn(
-            "transition-opacity group-hover/chat:opacity-0",
-            selecting && "opacity-0",
-          )}
-        />
-        <SelectBox
-          chat={chat}
-          visible={selecting}
-          className="absolute start-2.5 top-1/2 flex -translate-y-1/2"
-        />
+      <div className="flex items-center gap-2">
+        <ChatTile chat={chat} />
         <span className="flex min-w-0 items-center gap-1.5">
           <ChatBadges chat={chat} />
         </span>
       </div>
       <ChatMenu chat={chat} archived={archived} variant="card" />
+      {/* Bottom right, as on file cards, so the tile stays put on hover. */}
+      <SelectBox chat={chat} visible={selecting} className="absolute bottom-3.5 end-4 flex" />
       <button
         type="button"
         onClick={(event) => {
