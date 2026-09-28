@@ -96,8 +96,6 @@ class _Config(SimpleNamespace):
         return dict(self.__dict__)
 
 
-
-
 def test_plan_accepts_w4a16_pack_quantized():
     assert compressed_tensors_bnb_plan(_Config(quantization_config = _w4a16())) is not None
 
@@ -167,8 +165,6 @@ def test_plan_declines_mixed_groups_with_a_float_scheme():
     assert compressed_tensors_bnb_plan(_Config(quantization_config = quant)) is None
 
 
-
-
 def test_generalize_widens_numeric_path_components_only():
     rx = _generalize("model.layers.0.mlp.experts.12.gate_proj")
     assert rx == r"model\.layers\.\d+\.mlp\.experts\.\d+\.gate_proj"
@@ -209,8 +205,6 @@ def test_packed_dtype_plan_uses_families_and_exact_names_on_collision():
         "model.layers.0.self_attn.q_proj.weight",
     ]
     assert packed_weight_dtype_plan(["model.embed_tokens.weight"]) == {}
-
-
 
 
 @pytest.mark.skipif(
@@ -584,8 +578,6 @@ def test_quantizer_registration_is_idempotent_and_a_subclass():
     assert install_compressed_tensors_bnb_quantizer()
     assert quantizers_auto.AUTO_QUANTIZER_MAPPING["bitsandbytes_4bit"] is first
     assert issubclass(first, Bnb4BitHfQuantizer)
-
-
 
 
 def _write_tiny_packed_llama(
