@@ -58,7 +58,6 @@ interface SettingsDialogState {
   // for how long it lives unconsumed.
   archivedRequested: ArchivedShelf | null;
   logFamilyRequested: string | null;
-  /** The exact log file the failure named, when its diagnostic carried one. */
   logSourcePathRequested: string | null;
   /** Bumped per View logs click, so a repeated identical request still reads as new. */
   logRequestSeq: number;
@@ -156,7 +155,6 @@ function requestsFor(state: SettingsDialogState, tab: SettingsTab) {
   };
 }
 
-/** One value identifying the log request currently pending, for a subscriber. */
 export const NO_PENDING_LOG_REQUEST = "|";
 
 export function pendingLogRequestKey(state: {

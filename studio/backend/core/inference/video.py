@@ -1752,7 +1752,6 @@ class VideoBackend:
         self._teardown_waiters = 0
         # Generation progress, written by the step callback / phase transitions.
         self._gen: dict[str, Any] = {"active": False}
-        # The resolved shape of the run in flight, for classifying its failure.
         self._last_request_shape: Optional[dict[str, Any]] = None
         # True from begin_generate() until its worker records a terminal state, so a second call is refused while it
         # runs.

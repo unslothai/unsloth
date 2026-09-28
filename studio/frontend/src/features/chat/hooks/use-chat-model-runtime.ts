@@ -3358,7 +3358,6 @@ export function useChatModelRuntime() {
           if (!abortCtrl.signal.aborted) {
             const message =
               err instanceof Error ? err.message : "Failed to load model";
-            // The runner diagnostic is multi-line: summary as the title, the rest below it.
             const [summary, ...rest] = message.split("\n");
             const detail = rest.join("\n").trim();
             const runnerLogPath = failureLogPath(message);

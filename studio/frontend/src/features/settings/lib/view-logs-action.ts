@@ -1,16 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/** The "View logs" affordance a failure offers, in sonner's action shape. */
-
 import { isAccountOwner } from "@/features/auth/account-session";
 import { translate } from "@/i18n";
 import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 
-/** Which log a given failure is explained by. */
 export type FailureLogFamily = "llama-server" | "diffusion-server" | "server";
 
-/** The family a model-load failure is explained by. */
 export function loadFailureLogFamily(
   isGguf: boolean | undefined,
   isDiffusion: boolean | undefined,
@@ -31,7 +27,6 @@ export function failureLogPath(message: string): string | null {
   return path || null;
 }
 
-/** The action, or undefined for an account with nowhere to be sent. */
 export function viewLogsAction(
   family: FailureLogFamily,
   sourcePath?: string | null,
@@ -57,7 +52,6 @@ const LOGGED_GENERATION_FAILURES = [
   "Failed to save the generated video.",
 ];
 
-/** "View logs" for a generation failure the server logged, else undefined. */
 export function generationFailureLogsAction(message: string) {
   return LOGGED_GENERATION_FAILURES.some((prefix) => message.startsWith(prefix))
     ? viewLogsAction("server")
