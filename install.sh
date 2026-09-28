@@ -4359,7 +4359,6 @@ fi
 # Companions bounded to torch's window: torchaudio 2.11 dropped its torch pin, so it can drift.
 TORCHVISION_CONSTRAINT="torchvision>=0.19,<${_TORCHVISION_CEILING}"
 TORCHAUDIO_CONSTRAINT="torchaudio>=2.4,<${_TORCHAUDIO_CEILING}"
-# torchaudio keeps its window: 2.11 is its last release (stable ABI) and pairs with torch 2.13.
 _CU130_TORCH_CEILING="2.15.0"
 _CU130_NEW_INSTALL_TORCH="torch>=2.13.0,<2.14.0"
 
