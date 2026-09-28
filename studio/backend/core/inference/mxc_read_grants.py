@@ -39,8 +39,9 @@ _CONTAINER_INHERIT = 0x2
 _INHERIT_ONLY = 0x8
 _INHERITED = 0x10
 _lock = threading.Lock()
-# Roots whose whole tree passed the credential scan in this process; a new process scans again.
-_scanned: set[str] = set()
+# Root -> folder identity whose whole tree passed the credential scan in this process; a folder
+# replaced at the same path, or a new process, scans again.
+_scanned: dict[str, dict[str, int] | None] = {}
 
 
 class ReadGrantError(RuntimeError):
@@ -346,7 +347,7 @@ def _revoke_recorded_root(record: dict, key: str) -> str:
     ok, output = _revoke(key)
     if ok:
         record.pop(key)
-        _scanned.discard(key)
+        _scanned.pop(key, None)
         return "revoked"
     logger.warning("Could not remove the persistent MXC read grant from %s: %s", key, output)
     return "failed"
@@ -360,8 +361,8 @@ def _ensure_root(record: dict, root: str) -> bool:
     key = os.path.normcase(root)
     entry = record.get(key)
     pending = entry is not None and entry.get("state") == "pending"
+    current = _identity(root)
     if entry is not None:
-        current = _identity(root)
         if current is None:
             if pending:
                 raise ReadGrantError(f"the unfinished MXC read grant on {root} cannot be checked")
@@ -374,9 +375,10 @@ def _ensure_root(record: dict, root: str) -> bool:
             record.pop(key)
             _save_quietly(record)
             entry, pending = None, False
-    reason = ineligible_reason(root, deep = key not in _scanned)
+    deep = key not in _scanned or _scanned[key] != current
+    reason = ineligible_reason(root, deep = deep)
     if reason is not None:
-        _scanned.discard(key)
+        _scanned.pop(key, None)
         if entry is not None:
             # A folder Studio granted gained a credential file or a link: take the grant back.
             outcome = _revoke_recorded_root(record, key)
@@ -385,7 +387,7 @@ def _ensure_root(record: dict, root: str) -> bool:
                 raise ReadGrantError(f"could not revoke the MXC read grant on {root} ({reason})")
         logger.info("Keeping the per-launch MXC grant for %s: %s", root, reason)
         return False
-    _scanned.add(key)
+    _scanned[key] = current
     try:
         covers, explicit = _package_aces(root)
     except OSError as exc:

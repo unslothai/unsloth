@@ -281,6 +281,18 @@ def test_a_replaced_folder_is_not_adopted_through_a_stale_record(host, tmp_path)
     assert _record() == {}
 
 
+def test_a_folder_replaced_at_a_scanned_path_is_scanned_again(host, tmp_path):
+    venv = _runtime(host)
+    assert mxc_read_grants.ensure([venv]) == (venv,)
+    os.replace(venv, tmp_path / "moved-away")
+    _runtime(host)
+    Path(venv, "Lib", "site-packages", "six", ".env").write_text("TOKEN=secret\n")
+    host.granted.discard(os.path.normcase(venv))
+    host.explicit.discard(os.path.normcase(venv))
+    assert mxc_read_grants.ensure([venv]) == ()
+    assert host.calls == [("grant", venv)]
+
+
 @pytest.mark.parametrize("unknown", ["aces", "identity"])
 def test_an_unfinished_grant_that_cannot_be_checked_refuses_the_launch(host, monkeypatch, unknown):
     venv = _runtime(host)
