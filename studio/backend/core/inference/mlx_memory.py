@@ -9,6 +9,7 @@ import glob
 import functools
 import json
 import os
+import posixpath
 import threading
 from collections import OrderedDict
 from dataclasses import dataclass
@@ -100,6 +101,12 @@ def _as_the_loader_reads_it(config: dict) -> dict:
     return patched if isinstance(patched, dict) else config
 
 
+def _escapes_snapshot(shard: str) -> bool:
+    # Lexical, not realpath: hub snapshot files are symlinks into ../../blobs by design.
+    norm = posixpath.normpath(shard.replace("\\", "/"))
+    return norm.startswith("/") or norm.split("/")[0] == ".." or norm[1:2] == ":"
+
+
 def _indexed_shards(model_dir: str) -> list:
     index = os.path.join(model_dir, "model.safetensors.index.json")
     if not os.path.isfile(index):
@@ -113,6 +120,8 @@ def _indexed_shards(model_dir: str) -> list:
         raise ValueError("model.safetensors.index.json has no weight map")
     if any(not isinstance(shard, str) for shard in weight_map.values()):
         raise ValueError("model.safetensors.index.json names a non-string shard")
+    if any(_escapes_snapshot(shard) for shard in weight_map.values()):
+        raise ValueError("model.safetensors.index.json names a shard outside the snapshot")
     named = sorted(set(weight_map.values()))
     return [
         os.path.join(model_dir, shard)

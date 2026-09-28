@@ -4509,6 +4509,38 @@ class TestShardsTheLoaderReads:
             read()
 
     @pytest.mark.parametrize(
+        "shard",
+        [
+            "../secret.safetensors",
+            "a/../../secret.safetensors",
+            "/etc/passwd",
+            "..\\secret.safetensors",
+            "C:/secret.safetensors",
+        ],
+    )
+    def test_an_index_naming_a_shard_outside_the_snapshot_is_refused(self, tmp_path, shard):
+        # A cached repo's index must not steer sizing at files beside or above its snapshot.
+        (tmp_path / "secret.safetensors").write_bytes(b"x" * 100)
+        snapshot = tmp_path / "snap"
+        snapshot.mkdir()
+        (snapshot / "model-00001.safetensors").write_bytes(b"x" * 100)
+        (snapshot / "model.safetensors.index.json").write_text(
+            json.dumps({"weight_map": {"a.weight": "model-00001.safetensors", "b.weight": shard}})
+        )
+        with pytest.raises(ValueError, match = "outside the snapshot"):
+            mm.mlx_shard_files(str(snapshot), self._VISION)
+
+    def test_a_nested_shard_inside_the_snapshot_is_still_read(self, tmp_path):
+        (tmp_path / "sub").mkdir()
+        (tmp_path / "sub" / "model-00001.safetensors").write_bytes(b"x" * 100)
+        (tmp_path / "model.safetensors.index.json").write_text(
+            json.dumps({"weight_map": {"a.weight": "sub/./model-00001.safetensors"}})
+        )
+        assert [os.path.basename(p) for p in mm.mlx_shard_files(str(tmp_path), self._VISION)] == [
+            "model-00001.safetensors"
+        ]
+
+    @pytest.mark.parametrize(
         "weight_map", [["model-00001.safetensors"], "model-00001.safetensors", 7, True, None]
     )
     def test_an_index_whose_weight_map_is_not_a_mapping_is_fatal(self, tmp_path, weight_map):
