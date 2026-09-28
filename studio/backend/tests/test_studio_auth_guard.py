@@ -2388,7 +2388,6 @@ def test_a_return_reopens_the_directory_it_lands_in(studio_home):
 
 
 def test_two_self_referential_assignments_in_one_quoted_string_do_not_hang(studio_home):
-    # Regression: quoted `VAR=$VAR` pairs used to expand forever and wedge the backend.
     workdir = str(studio_home / "sandbox" / _SESSION)
     for ordinary in (
         'echo "hb=$hb fl=$fl"',

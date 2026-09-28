@@ -5344,8 +5344,7 @@ def _expand_shell_assignments(
         return _SHELL_VAR_RE.sub(lambda m: env.get(m.group(1) or m.group(2), m.group(0)), text)
 
     quote_states = None
-    # _positional: each use sees the binding active where it stands, so `x=../..; cat "$x/auth/auth.db"; x=/tmp`
-    # still names the auth path; the default (last binding everywhere) covers loops that bind after the use.
+    # _positional: each use sees the binding active where it stands; the default (last binding) covers loops.
     pieces, pos = [], 0
     for match in _SHELL_ASSIGN_RE.finditer(command):
         if not _include_quoted:
