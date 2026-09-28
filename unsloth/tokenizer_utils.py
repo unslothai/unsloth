@@ -1186,6 +1186,8 @@ def _fix_chat_template(chat_template, is_sharegpt = False):
         and trailing.endswith("}}")
         and trailing.count("{{") == 1
         and trailing.count("}}") == 1
+        # An EOS footer closes the last turn; wrapping it would strip EOS from every training text.
+        and "eos_token" not in trailing
     ):
         wrapped = open_tag("if add_generation_prompt") + after_endfor + open_tag("endif")
         return chat_template[: end["end"]] + wrapped
