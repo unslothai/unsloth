@@ -42705,20 +42705,24 @@ async def _generate_openai_images(
         # Fall back to the resolved base repo so a local-path load still gets the right per-model steps/guidance.
         steps, guidance = default_generation_params(status.get("repo_id"), status.get("base_repo"))
         reset_media_generation_progress("image")
+        execution_serial = next(_diffusion_execution_serial)
         try:
             with account_access.media_generation("diffusion"):
-                result = await asyncio.to_thread(
-                    backend.generate,
-                    prompt = body.prompt,
-                    width = width,
-                    height = height,
-                    steps = steps,
-                    guidance = guidance,
-                    batch_size = body.n,
-                    expected_load = load_identity(
-                        status.get("repo_id"), status.get("base_repo"), status.get("family")
-                    ),
-                )
+                try:
+                    result = await asyncio.to_thread(
+                        backend.generate,
+                        prompt = body.prompt,
+                        width = width,
+                        height = height,
+                        steps = steps,
+                        guidance = guidance,
+                        batch_size = body.n,
+                        expected_load = load_identity(
+                            status.get("repo_id"), status.get("base_repo"), status.get("family")
+                        ),
+                    )
+                finally:
+                    _note_unscoped_slot_serial(execution_serial)
             break
         except DiffusionModelReplacedError:
             if attempt > 0:
@@ -42807,7 +42811,10 @@ async def _generate_openai_images(
             data = await asyncio.to_thread(_persist)
     except Exception as exc:  # noqa: BLE001
         logger.error("openai_images.persist_failed: %s", exc)
-        _note_unscoped_generate_failure(get_active_diffusion_engine(), None, _PERSIST_FAILURE_MSG)
+        # Same ordering guard as /images/generate: a later execution's reason must survive.
+        if not _unscoped_slot_is_newer_than(execution_serial):
+            _note_unscoped_generate_failure(backend, None, _PERSIST_FAILURE_MSG)
+            _note_unscoped_slot_serial(execution_serial)
         raise HTTPException(status_code = 500, detail = _PERSIST_FAILURE_MSG)
     finally:
         _diffusion_persist_active -= 1

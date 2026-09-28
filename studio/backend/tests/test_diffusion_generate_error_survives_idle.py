@@ -1183,3 +1183,14 @@ def test_a_retried_model_replacement_publishes_no_failure():
     assert raise_at < window.index(
         "_clear_unscoped_generate_failure("
     ), "the last attempt's replacement failure is cleared instead of reported"
+
+
+def test_an_openai_persist_failure_respects_a_newer_execution():
+    """The OpenAI route's persist failure must not overwrite a later run's reason."""
+    src = _src("routes/inference.py")
+    at = src.index("async def _generate_openai_images")
+    end = src.index('logger.error("openai_images.persist_failed', at)
+    assert "execution_serial = next(_diffusion_execution_serial)" in src[at:end]
+    persist = src[end : end + 600]
+    assert "if not _unscoped_slot_is_newer_than(execution_serial):" in persist
+    assert "_note_unscoped_generate_failure(backend, None" in persist

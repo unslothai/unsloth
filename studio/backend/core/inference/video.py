@@ -1670,7 +1670,14 @@ def _log_failed_generation(request_shape: Optional[dict[str, Any]], exc: BaseExc
 
 VIDEO_GENERATION_FAILED_MSG = "Video generation failed."
 
-_NATIVE_CRASH_NEEDLES = ("process exited", "ggml_abort", "signal", "connection lost", "worker died")
+_NATIVE_CRASH_NEEDLES = (
+    "sd-cli exited",
+    "process exited",
+    "ggml_abort",
+    "signal",
+    "connection lost",
+    "worker died",
+)
 
 
 def video_failure_detail(exc: BaseException, request_shape: Optional[dict[str, Any]] = None) -> str:
