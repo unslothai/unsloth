@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A token the Hub rejects must not block downloads of repos anyone may read.
-
-An expired or revoked token (an ``hf_oauth_`` one especially) makes huggingface.co answer 401
-to every read, public repos included, and huggingface_hub reports that as "repository not
-found" (#11551). The download path retries such a read once without the token. A private or
-gated repo still refuses the anonymous read, so nothing the token alone could reach is served.
-"""
+"""A token the Hub rejects must not block downloads of repos anyone may read (#11551)."""
 
 from __future__ import annotations
 
@@ -86,15 +80,11 @@ def _fresh_scope():
         yield
 
 
-# The helper
-
-
 def test_rejected_token_retries_once_anonymously_and_is_remembered():
     hub = _Hub()
     assert call_hub_with_anonymous_retry(hub, BAD) == "ok"
     assert hub.tokens == [BAD, False]
     assert saved_token_rejected(BAD)
-    # The next read in the same request skips the doomed attempt.
     assert call_hub_with_anonymous_retry(hub, BAD) == "ok"
     assert hub.tokens == [BAD, False, False]
 
@@ -195,9 +185,6 @@ def test_a_401_rebuilt_from_a_child_process_is_recognised():
     assert is_token_rejection(wrapped)
 
 
-# The shared download entry point
-
-
 def test_xet_fallback_download_retries_anonymously(monkeypatch, tmp_path):
     from utils import hf_xet_fallback
 
@@ -232,9 +219,6 @@ def test_xet_fallback_download_of_a_private_repo_still_fails(monkeypatch, tmp_pa
             REPO, "model.gguf", BAD, cache_dir = str(tmp_path)
         )
     assert seen == [BAD, False]
-
-
-# llama.cpp
 
 
 def _listing(
@@ -313,7 +297,6 @@ def _backend_download(monkeypatch, tmp_path, *, private: bool):
 def test_gguf_download_recovers_from_a_rejected_token(monkeypatch, tmp_path):
     out, downloads = _backend_download(monkeypatch, tmp_path, private = False)
     assert out == str(tmp_path / MAIN)
-    # Main file and shard, both anonymous once the listing saw the token rejected.
     assert downloads == [(MAIN, False), (SHARD, False)]
 
 
@@ -321,9 +304,6 @@ def test_gguf_download_of_a_private_repo_names_the_token(monkeypatch, tmp_path):
     out, _ = _backend_download(monkeypatch, tmp_path, private = True)
     assert isinstance(out, RuntimeError)
     assert "token may have expired or been revoked" in str(out)
-
-
-# Download worker (one job per process)
 
 
 @pytest.fixture()
@@ -353,7 +333,6 @@ def test_worker_metadata_retries_and_the_download_follows(worker):
         info = worker._model_info_with_retry(REPO, BAD)
     assert info.sha == "a" * 40
     assert seen == [BAD, False]
-    # snapshot_download / hf_hub_download in the worker all take this argument.
     assert worker._hf_token_arg(BAD) is False
     assert worker._hf_token_arg("hf_" + "y" * 34) == "hf_" + "y" * 34
 
@@ -373,8 +352,7 @@ def test_worker_private_repo_keeps_the_token(worker):
     with patch("huggingface_hub.model_info", model_info):
         with pytest.raises(RepositoryNotFoundError):
             worker._model_info_with_retry(REPO, BAD)
-    # Two metadata attempts, each asking with the token and without it (the second may ask
-    # anonymously first, having learned the token is refused).
+    # The second attempt may ask anonymously first, having learned the token is refused.
     assert sorted(map(str, seen)) == sorted(map(str, [BAD, False, BAD, False]))
     assert worker._hf_token_arg(BAD) == BAD
 
@@ -399,9 +377,6 @@ def test_worker_dataset_metadata_retries(worker):
     assert info.sha == "b" * 40
     assert seen == [BAD, False]
     assert worker._hf_token_arg(BAD) is False
-
-
-# Inference worker child env
 
 
 def test_inference_worker_drops_a_rejected_token_from_its_env(monkeypatch):

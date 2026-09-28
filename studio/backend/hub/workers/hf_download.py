@@ -160,8 +160,7 @@ def _install_parent_death_watchdog(parent_pid: int | None) -> None:
     ).start()
 
 
-# One job per process, so a module global is the job's own memory: once the Hub has rejected
-# the token while an anonymous read of the same repo worked, every later read skips it.
+# One job per process: once the Hub has refused the token, every later read skips it.
 _REJECTED_TOKEN: str | None = None
 
 

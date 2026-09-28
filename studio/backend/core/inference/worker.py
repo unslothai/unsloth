@@ -510,7 +510,7 @@ def _worker_reclaimable_gpu_gb(config: dict) -> dict[str, float] | None:
         return None
 
 
-# The token environment as it was before a load scrubbed it, so the next load starts from it.
+# The token env before a load scrubbed it; the next load restores it.
 _TOKEN_ENV_BEFORE_ANONYMOUS_LOAD: Optional[dict] = None
 
 
@@ -520,8 +520,7 @@ def _token_env_keys() -> tuple:
 
 
 def _restore_token_environment() -> None:
-    """Undo an earlier load's anonymous scrub: a later load (a replaced token) must not
-    inherit it."""
+    """Undo an earlier load's anonymous scrub (the token may have been replaced since)."""
     global _TOKEN_ENV_BEFORE_ANONYMOUS_LOAD
     saved, _TOKEN_ENV_BEFORE_ANONYMOUS_LOAD = _TOKEN_ENV_BEFORE_ANONYMOUS_LOAD, None
     for key, value in (saved or {}).items():
@@ -532,8 +531,7 @@ def _restore_token_environment() -> None:
 
 
 def _drop_a_rejected_token(config: dict) -> None:
-    """The Hub rejected this load's token while anonymous reads worked (an expired or revoked
-    token 401s even public repos): load the rest anonymously, weights included."""
+    """The Hub refused this load's token while anonymous reads worked: load the rest anonymously."""
     global _TOKEN_ENV_BEFORE_ANONYMOUS_LOAD
     from hub.utils.hf_tokens import saved_token_rejected
 

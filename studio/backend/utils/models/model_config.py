@@ -1211,7 +1211,6 @@ def _hub_model_info(
         # Shared, so whichever probe reads first fixes the bound the rest inherit.
         "timeout": _HUB_MODEL_INFO_TIMEOUT if timeout is None else timeout,
     }
-    # A refused credential retries once anonymously; the scope stays this caller's own.
     info = call_with_anonymous_retry(
         lambda token: hf_model_info(repo_id, **{**kwargs, "token": token}), hf_token
     )

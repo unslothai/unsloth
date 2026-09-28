@@ -1035,10 +1035,8 @@ def _probe_repo_access(
         return _probe_answer_from_exception(exc, response)
 
 
-# A credential Hugging Face no longer accepts (an expired OAuth token, a revoked key) is
-# answered 401 on every read, public repos included, and huggingface_hub reports that as
-# RepositoryNotFoundError. A token it accepts gets 404 for a repo it cannot see, so a 401 on
-# a read that carried one means the credential itself was refused (#11551).
+# A refused credential (expired OAuth token, revoked key) gets 401 on every read, public repos
+# included; an accepted one gets 404 for a repo it cannot see. A 401 blames the credential (#11551).
 HUB_TOKEN_REJECTED_WARNING = (
     "Hugging Face rejected the saved token (it may be expired or revoked), so this public "
     "model was read without it. Update or clear the token in Settings to keep access to "
@@ -1067,9 +1065,7 @@ class HubTokenRejections:
     def __init__(self) -> None:
         # Repos the Hub refused that this request loaded from their downloaded copy instead.
         self.served_from_cache: "list[str]" = []
-        # A read answered anonymously after the credential was refused.
         self.recovered = False
-        # A read refused with the credential that anonymous access could not answer either.
         self.refused = False
         # Digests, never tokens: a traceback or debugger can print this.
         self._rejected: "set[str]" = set()
@@ -1102,8 +1098,7 @@ def collecting_hub_token_rejections():
 
 @contextmanager
 def token_rejection_scope():
-    """A fresh scope that forgets, on exit, what it learned: a long-lived worker thread must not
-    carry one load's verdict into the next, where the user may have replaced the token."""
+    """A fresh scope, forgotten on exit: one load's verdict must not reach the next."""
     sink = HubTokenRejections()
     reset = _hub_token_rejections.set(sink)
     try:
@@ -1131,9 +1126,8 @@ def _sent_credential(hf_token: HfTokenArg) -> Optional[str]:
 
 
 def _wire_hf_token() -> Optional[str]:
-    """The ambient token huggingface_hub itself puts on a ``token=None`` read. Not
-    ``_ambient_hf_token``: that also counts aliases huggingface_hub never sends, which is right
-    for cache bookkeeping and wrong for deciding whether a 401 blamed a sent token."""
+    """The ambient token huggingface_hub sends on a ``token=None`` read (not ``_ambient_hf_token``,
+    which also counts aliases it never sends)."""
     try:
         from huggingface_hub import get_token
         token = get_token()
@@ -1143,8 +1137,7 @@ def _wire_hf_token() -> Optional[str]:
 
 
 def _implicit_token_disabled() -> bool:
-    # huggingface_hub reads its constant, set at import; an env var changed later (the worker
-    # does) does not change what it sends, so only an unimportable client falls back to it.
+    # huggingface_hub reads its import-time constant, not the env the worker changes later.
     try:
         from huggingface_hub import constants
     except Exception:
@@ -1162,8 +1155,8 @@ _HUB_401_TEXT = re.compile(r"^(?:[A-Za-z]\w*: )?401 Client Error\b")
 
 
 def is_token_rejection(exc: BaseException) -> bool:
-    """A 401 anywhere in the chain. Transport code wraps Hub errors, so the head is not enough,
-    and the download ladder rebuilds a child process's Hub error from its text alone."""
+    """A 401 anywhere in the chain: transports wrap Hub errors, and the download ladder rebuilds
+    a child's error from its text."""
     seen: set[int] = set()
     pending: list[Optional[BaseException]] = [exc]
     while pending:
@@ -1175,7 +1168,6 @@ def is_token_rejection(exc: BaseException) -> bool:
         if status == 401:
             return True
         if isinstance(link, urllib.error.HTTPError) and link.code == 401:
-            # The pre-import JSON reader's urllib error.
             return True
         if status is None and _HUB_401_TEXT.match(str(link)):
             return True
@@ -1220,37 +1212,29 @@ def saved_token_rejected(hf_token: HfTokenArg) -> bool:
 
 
 def _is_missing_file(exc: BaseException) -> bool:
-    """The Hub answered that a file is absent from a repo it let us read (not the offline cache
-    lookup, which says nothing about the Hub)."""
+    """The Hub said a file is absent (not ``LocalEntryNotFoundError``, the offline cache miss)."""
     names = {cls.__name__ for cls in type(exc).__mro__}
     return "EntryNotFoundError" in names and "LocalEntryNotFoundError" not in names
 
 
 def call_with_anonymous_retry(read, hf_token: HfTokenArg):
-    """Run ``read(token)``, once more anonymously if Hugging Face refuses the credential.
-
-    Only a 401 on a read that sent a credential retries, and only once: a timeout, 403 or
-    404 answered for the repo, not the credential. The anonymous answer can only be public
-    data, so nothing here widens what a caller may read from the cache. When anonymous
-    fails too, the ORIGINAL error is raised, since it is the one callers classify.
+    """Run ``read(token)``, once more anonymously if the Hub refuses the credential (a 401 on a
+    read that sent one). Anonymous answers are public data only. When anonymous fails too, the
+    ORIGINAL error is raised: it is the one callers classify.
     """
     if _credential_rejected_this_request(hf_token):
-        # Already refused in this request: ask anonymously first, and only a private or
-        # gated repo, which anonymous access cannot answer, goes back to the credential.
+        # Refused earlier in this request: anonymous first, the credential only if that fails.
         try:
             result = read(False)
         except Exception as anonymous_exc:
             if not is_token_rejection(anonymous_exc):
                 raise
         else:
-            # An earlier anonymous attempt may have failed transiently: this one is the
-            # recovery, and later token-sending calls must see it.
             note_saved_token_rejected(hf_token)
             return result
         try:
             return read(hf_token)
         except Exception as exc:
-            # Refused both ways, as below: /load names the token rather than answering 500.
             if is_rejected_credential_error(exc, hf_token):
                 sink = _hub_token_rejections.get()
                 if sink is not None:
@@ -1269,11 +1253,9 @@ def call_with_anonymous_retry(read, hf_token: HfTokenArg):
             result = read(False)
         except Exception as anonymous_exc:
             if _is_cancellation(anonymous_exc):
-                # The user stopped the load mid-retry: that is the answer, not the 401.
                 raise
             if _is_missing_file(anonymous_exc):
-                # Anonymous access reads the repo and says the file is not there: that is the
-                # answer (an optional config), and the token was the one refused.
+                # An optional file's absence is the answer callers need, not the 401.
                 note_saved_token_rejected(hf_token)
                 raise
             logger.info(

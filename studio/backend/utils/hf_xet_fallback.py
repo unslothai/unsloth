@@ -1006,8 +1006,7 @@ def hf_hub_download_with_xet_fallback(
         optional["interval"] = interval
     from hub.utils.hf_tokens import call_with_anonymous_retry
 
-    # A rejected token 401s the metadata HEAD before any byte is written, so the anonymous
-    # retry starts (or resumes) the same file rather than racing a half-written one.
+    # The 401 comes on the metadata HEAD, before any byte is written.
     return call_with_anonymous_retry(
         lambda token: _shared_hf_hub_download_with_xet_fallback(
             repo_id,
