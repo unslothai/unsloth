@@ -110,41 +110,14 @@ test("double-clicking a chat title renames it in place", () => {
   );
 });
 
-// Marking one chat unread was only reachable by selecting it first and using the bulk menu, and
-// the dot could never be taken off again: the item was disabled on the rows that carried one.
-test("a chat row marks itself read or unread from its own menu", () => {
-  assert.match(
-    APP_SIDEBAR,
-    /onSelect=\{\(\) =>\n\s*alreadyUnread\n\s*\? clearThreadsUnread\(threadIds\)\n\s*: markThreadsUnread\(threadIds, rowIdByThreadId\)\n\s*\}/,
-  );
-  assert.ok(
-    !APP_SIDEBAR.includes("disabled={alreadyUnread}"),
-    "the item is still disabled on a row that carries the dot",
-  );
-  // The same strings the bulk menu uses, so the two cannot drift apart.
-  for (const key of ["markUnread", "markRead"]) {
-    assert.equal(
-      (APP_SIDEBAR.match(new RegExp(`t\\("shell\\.selection\\.${key}"\\)`, "g")) ?? [])
-        .length,
-      2,
-      `the row and bulk menus no longer say the same thing for ${key}`,
-    );
-  }
-  // Both go by the dot the row already draws.
-  assert.match(
-    APP_SIDEBAR,
-    /const alreadyUnread = threadIds\.some\(\(threadId\) =>\n\s*unreadThreadIds\.has\(threadId\),\n\s*\);/,
-  );
-  // An eye that is open once the row is read, crossed out while it is not.
-  assert.equal(
-    (
-      APP_SIDEBAR.match(
-        /icon=\{(alreadyUnread|allSelectedUnread) \? ViewIcon : ViewOffSlashIcon\}/g,
-      ) ?? []
-    ).length,
-    2,
-    "a read or unread item stopped naming the state it moves to",
-  );
+// A single chat's menu carries no read or unread item; the bulk menu keeps it.
+test("a chat row menu does not offer mark as read or unread", () => {
+  const start = APP_SIDEBAR.indexOf("function renderChatRowMenuItems(");
+  assert.notEqual(start, -1);
+  const rowMenu = APP_SIDEBAR.slice(start, APP_SIDEBAR.indexOf("\n  }\n", start));
+  assert.ok(!rowMenu.includes("markThreadsUnread"));
+  assert.ok(!rowMenu.includes("shell.selection.markUnread"));
+  assert.ok(!rowMenu.includes("shell.selection.markRead"));
 });
 
 // The bulk menu only ever added dots, so a selection of read rows had no way back.
@@ -236,10 +209,10 @@ test("a chat row forks from its own menu", async () => {
   const ROW_MENU = await readSrcAsync(
     "features/chat/components/chat-row-menu.ts",
   );
-  // Fork follows the rule after Mark as unread, beside Move to.
+  // Fork follows the rule after Pin, beside Move to.
   assert.match(
     APP_SIDEBAR,
-    /t\("shell\.selection\.markUnread"\)\}\n\s*<\/span>\n\s*<\/P\.Item>\n\s*\{\/\*[^]*?\*\/\}\n\s*<P\.Separator \/>/,
+    /<span>\{isPinned \? "Unpin" : "Pin"\}<\/span>\n\s*<\/P\.Item>\n\s*\{\/\*[^]*?\*\/\}\n\s*<P\.Separator \/>\n\s*<P\.Item\n\s*disabled=\{!canForkChatRow\(item\)/,
   );
   assert.match(
     APP_SIDEBAR,

@@ -200,6 +200,7 @@ import {
   providerSupportsFastMode,
 } from "../provider-capabilities";
 import { selectCodeToolNames } from "./code-tool-placement";
+import { skillToolsOffered } from "./skill-tools";
 import { ragScopeContextLength } from "./rag-context-length";
 import {
   type PendingImageEditReference,
@@ -2001,8 +2002,9 @@ export async function buildLocalTokenCountExtras(
   const ragOn = ragEnabled || projectRagEnabled;
 
   await settleSkillsForText("");
-  const hasEnabledSkills = getSkillsSnapshot().skills.some(
-    (skill) => skill.valid && !skill.shadowed && skill.enabled,
+  const hasEnabledSkills = skillToolsOffered(
+    getSkillsSnapshot().skills,
+    codeToolsEnabled,
   );
   if (
     !toolsEnabled &&
@@ -6153,8 +6155,9 @@ export function createOpenAIStreamAdapter(
           if (supportsStudioToolsForThisTurn) {
             await settleSkillsForText(lastUserText(outboundMessages));
           }
-          const hasEnabledSkills = getSkillsSnapshot().skills.some(
-            (skill) => skill.valid && !skill.shadowed && skill.enabled,
+          const hasEnabledSkills = skillToolsOffered(
+            getSkillsSnapshot().skills,
+            codeToolsEnabled,
           );
           if (externalSelection && externalProvider) {
             // Per-thread container reuse; empty falls back to container_auto. Anthropic uses its own key.
