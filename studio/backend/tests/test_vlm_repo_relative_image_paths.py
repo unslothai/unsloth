@@ -1,7 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import huggingface_hub
 from datasets import Dataset
 from PIL import Image
 
@@ -17,10 +16,11 @@ def _fake_hub(monkeypatch, tmp_path, repo_files):
         fetched.append(filename)
         return str(local)
 
+    # String targets resolve the live sys.modules entry, which a sibling test may have replaced.
     monkeypatch.setattr(
-        huggingface_hub.HfApi, "list_repo_files", lambda self, *a, **k: list(repo_files)
+        "huggingface_hub.HfApi.list_repo_files", lambda self, *a, **k: list(repo_files)
     )
-    monkeypatch.setattr(huggingface_hub, "hf_hub_download", _download)
+    monkeypatch.setattr("huggingface_hub.hf_hub_download", _download)
     # The all-failed path asks the helper model for a friendlier message; keep it offline.
     from utils.datasets import llm_assist
 
