@@ -62,7 +62,7 @@ class OpenVinoModel:
     directory: str
     vision: bool
     reasoning: bool = True
-    tools: bool = False
+    tools: bool = True
     max_context_length: Optional[int] = None
 
 

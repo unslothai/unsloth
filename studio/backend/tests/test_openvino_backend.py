@@ -66,6 +66,44 @@ def test_think_splitter_routes_reasoning_even_across_split_tags(monkeypatch):
     assert s.feed("hi") + s.flush() == [("content", "hi")]
 
 
+def test_tool_splitter_turns_tool_call_markup_into_tool_calls(monkeypatch):
+    monkeypatch.setitem(sys.modules, "openvino_genai", types.ModuleType("openvino_genai"))
+    from core.inference.openvino_sidecar import ToolSplitter, history_message
+
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "read",
+                "parameters": {
+                    "properties": {"path": {"type": "string"}, "limit": {"type": "integer"}}
+                },
+            },
+        }
+    ]
+    s = ToolSplitter(active = True)
+    text = "Reading.\n<tool_call>\n<function=read>\n<parameter=path>\n42\n</parameter>\n"
+    text += "<parameter=limit>\n10\n</parameter>\n</function>\n</tool_call>"
+    out = "".join(s.feed(text[i : i + 3]) for i in range(0, len(text), 3))
+    rest, calls = s.finish(tools)
+    assert (out + rest).strip() == "Reading."
+    assert [c["function"] for c in calls] == [
+        {"name": "read", "arguments": '{"path": "42", "limit": 10}'}
+    ]
+
+    s = ToolSplitter(active = True)
+    s.feed('<tool_call>{"name": "read", "arguments": {"path": "a"}}</tool_call>')
+    assert s.finish(tools)[1][0]["function"]["arguments"] == '{"path": "a"}'
+
+    s = ToolSplitter(active = True)
+    assert s.feed("<tool_call>junk") == "" and s.finish(tools) == ("<tool_call>junk", [])
+
+    msg = history_message(
+        {"role": "assistant", "tool_calls": [{"function": {"name": "read", "arguments": '{"a": 1}'}}]}
+    )
+    assert msg["tool_calls"][0]["function"]["arguments"] == {"a": 1} and msg["content"] == ""
+
+
 FAKE_SIDECAR = textwrap.dedent(
     """
     import argparse, http.server

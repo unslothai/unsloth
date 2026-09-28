@@ -5,12 +5,14 @@
 
 Spawned by ``openvino_backend.OpenVinoBackend`` in a Python that has ``openvino_genai``. Kept free
 of Studio imports so it runs in any such interpreter. Reasoning (``<think>...</think>``) is
-returned as ``reasoning_content``, the field Studio's chat already renders.
+returned as ``reasoning_content``, the field Studio's chat already renders. ``tools`` go into the
+chat template and ``<tool_call>`` blocks come back as OpenAI ``tool_calls``.
 """
 
 import argparse
 import json
 import queue
+import re
 import threading
 import time
 import uuid
@@ -24,6 +26,9 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict
 
 THINK_OPEN, THINK_CLOSE = "<think>", "</think>"
+TOOL_OPEN = "<tool_call>"
+_FUNC_RE = re.compile(r"<function=([^>\s]+)>(.*?)(?:</function>|$)", re.DOTALL)
+_PARAM_RE = re.compile(r"<parameter=([^>\s]+)>\n?(.*?)\n?(?:</parameter>|(?=<parameter=)|$)", re.DOTALL)
 
 
 class ChatRequest(BaseModel):
@@ -39,6 +44,8 @@ class ChatRequest(BaseModel):
     stream: bool = False
     enable_thinking: Optional[bool] = None
     chat_template_kwargs: Optional[dict[str, Any]] = None
+    tools: Optional[list[dict[str, Any]]] = None
+    tool_choice: Optional[Any] = None
 
 
 def flatten_content(content: Any) -> str:
@@ -102,6 +109,103 @@ class ThinkSplitter:
         return [("reasoning" if self.in_think else "content", rest)] if rest else []
 
 
+def _param_value(raw: str, schema: dict) -> Any:
+    if schema.get("type") == "string":
+        return raw
+    try:
+        return json.loads(raw)
+    except ValueError:
+        return raw
+
+
+def parse_tool_calls(text: str, tools: list[dict]) -> list[dict]:
+    """``<tool_call>`` blocks (Qwen XML ``<function=..>`` or JSON body) as OpenAI tool_calls."""
+    props = {
+        t["function"]["name"]: (t["function"].get("parameters") or {}).get("properties") or {}
+        for t in tools
+        if isinstance(t, dict) and isinstance(t.get("function"), dict) and "name" in t["function"]
+    }
+    calls = []
+    for block in text.split(TOOL_OPEN)[1:]:
+        body = block.split("</tool_call>")[0].strip()
+        if m := _FUNC_RE.search(body):
+            name, schema = m.group(1), props.get(m.group(1), {})
+            args = {
+                k: _param_value(v, schema.get(k) or {}) for k, v in _PARAM_RE.findall(m.group(2))
+            }
+        else:
+            try:
+                obj = json.loads(body)
+                name, args = obj["name"], obj.get("arguments") or {}
+            except (ValueError, KeyError, TypeError):
+                continue
+        calls.append(
+            {
+                "index": len(calls),
+                "id": f"call_{uuid.uuid4().hex[:24]}",
+                "type": "function",
+                "function": {
+                    "name": name,
+                    "arguments": args if isinstance(args, str) else json.dumps(args),
+                },
+            }
+        )
+    return calls
+
+
+class ToolSplitter:
+    """Passes content through until ``<tool_call>``, then keeps the rest to parse at the end."""
+
+    def __init__(self, active: bool) -> None:
+        self.active = active
+        self.buf = ""
+        self.captured: Optional[str] = None
+
+    def feed(self, text: str) -> str:
+        if not self.active:
+            return text
+        if self.captured is not None:
+            self.captured += text
+            return ""
+        self.buf += text
+        idx = self.buf.find(TOOL_OPEN)
+        if idx >= 0:
+            out, self.captured, self.buf = self.buf[:idx], self.buf[idx:], ""
+            return out.rstrip()
+        keep = next(
+            (k for k in range(len(TOOL_OPEN) - 1, 0, -1) if self.buf.endswith(TOOL_OPEN[:k])), 0
+        )
+        out, self.buf = self.buf[: len(self.buf) - keep], self.buf[len(self.buf) - keep :]
+        return out
+
+    def finish(self, tools: list[dict]) -> tuple[str, list[dict]]:
+        """Leftover content and the parsed calls; unparseable markup is returned as content."""
+        rest, self.buf = self.buf, ""
+        if self.captured is None:
+            return rest, []
+        calls = parse_tool_calls(self.captured, tools)
+        return ("" if calls else self.captured), calls
+
+
+def history_message(m: dict) -> dict:
+    """An OpenAI message as the chat template wants it: text content, tool arguments as a dict."""
+    out = {k: v for k, v in m.items() if k in ("role", "name", "tool_call_id")}
+    out.setdefault("role", "user")
+    out["content"] = flatten_content(m.get("content"))
+    if m.get("tool_calls"):
+        calls = []
+        for c in m["tool_calls"]:
+            fn = dict(c.get("function") or {})
+            if isinstance(fn.get("arguments"), str):
+                try:
+                    fn["arguments"] = json.loads(fn["arguments"] or "{}")
+                except ValueError:
+                    fn["arguments"] = {}
+            calls.append({**c, "function": fn})
+        out["tool_calls"] = calls
+    return out
+
+
 def build_app(pipe, model_id: str) -> FastAPI:
     tok = pipe.get_tokenizer()
     lock = threading.Lock()
@@ -118,13 +222,15 @@ def build_app(pipe, model_id: str) -> FastAPI:
         return cfg
 
     def prompt(req: ChatRequest, thinking: bool) -> str:
-        history = [
-            {"role": m.get("role", "user"), "content": flatten_content(m.get("content"))}
-            for m in req.messages
-        ]
         return tok.apply_chat_template(
-            history, add_generation_prompt = True, extra_context = {"enable_thinking": thinking}
+            [history_message(m) for m in req.messages],
+            add_generation_prompt = True,
+            tools = tools_for(req) or None,
+            extra_context = {"enable_thinking": thinking},
         )
+
+    def tools_for(req: ChatRequest) -> list[dict]:
+        return [] if req.tool_choice == "none" else (req.tools or [])
 
     @app.get("/health")
     def health():
@@ -158,10 +264,12 @@ def build_app(pipe, model_id: str) -> FastAPI:
                 res = pipe.generate(text_prompt, generation_config = cfg)
             splitter = ThinkSplitter(thinking)
             parts = splitter.feed(res.texts[0]) + splitter.flush()
-            message = {
-                "role": "assistant",
-                "content": "".join(t for k, t in parts if k == "content"),
-            }
+            tool_splitter = ToolSplitter(bool(tools_for(req)))
+            content = tool_splitter.feed("".join(t for k, t in parts if k == "content"))
+            rest, calls = tool_splitter.finish(tools_for(req))
+            message = {"role": "assistant", "content": (content + rest) or None}
+            if calls:
+                message["tool_calls"] = [{k: v for k, v in c.items() if k != "index"} for c in calls]
             reasoning = "".join(t for k, t in parts if k == "reasoning")
             if reasoning:
                 message["reasoning_content"] = reasoning
@@ -170,7 +278,13 @@ def build_app(pipe, model_id: str) -> FastAPI:
                 "object": "chat.completion",
                 "created": created,
                 "model": model_id,
-                "choices": [{"index": 0, "message": message, "finish_reason": "stop"}],
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": message,
+                        "finish_reason": "tool_calls" if calls else "stop",
+                    }
+                ],
             }
 
         def events():
@@ -190,12 +304,24 @@ def build_app(pipe, model_id: str) -> FastAPI:
             threading.Thread(target = run, daemon = True).start()
             yield chunk({"role": "assistant"})
             splitter = ThinkSplitter(thinking)
+            tool_splitter = ToolSplitter(bool(tools_for(req)))
+
+            def deltas(parts):
+                for kind, text in parts:
+                    if kind == "reasoning":
+                        yield chunk({"reasoning_content": text})
+                    elif text := tool_splitter.feed(text):
+                        yield chunk({"content": text})
+
             while (piece := pieces.get()) is not None:
-                for kind, text in splitter.feed(piece):
-                    yield chunk({"reasoning_content" if kind == "reasoning" else "content": text})
-            for kind, text in splitter.flush():
-                yield chunk({"reasoning_content" if kind == "reasoning" else "content": text})
-            yield chunk({}, "stop")
+                yield from deltas(splitter.feed(piece))
+            yield from deltas(splitter.flush())
+            rest, calls = tool_splitter.finish(tools_for(req))
+            if rest:
+                yield chunk({"content": rest})
+            if calls:
+                yield chunk({"tool_calls": calls})
+            yield chunk({}, "tool_calls" if calls else "stop")
             yield "data: [DONE]\n\n"
 
         return StreamingResponse(events(), media_type = "text/event-stream")
