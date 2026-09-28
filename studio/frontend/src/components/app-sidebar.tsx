@@ -4308,7 +4308,6 @@ export function AppSidebar() {
     const alreadyUnread = threadIds.some((threadId) =>
       unreadThreadIds.has(threadId),
     );
-    // "Open chat folder" moved to the Library's Chats tab.
     // A compare row's id is the pair id while runningByThreadId is per pane thread; aggregate.
     const isGenerating =
       item.type === "compare"
@@ -4326,7 +4325,6 @@ export function AppSidebar() {
               <HugeiconsIcon icon={isPinned ? PinOffIcon : PinIcon} strokeWidth={1.75} className="size-icon" />
               <span>{isPinned ? "Unpin" : "Pin"}</span>
             </P.Item>
-            {/* The dot a finished reply leaves, put back or taken off by hand. */}
             <P.Item
               onSelect={() =>
                 alreadyUnread
@@ -4341,7 +4339,6 @@ export function AppSidebar() {
                   : t("shell.selection.markUnread")}
               </span>
             </P.Item>
-            {/* Above: edits the row. Below: copies or moves the chat. */}
             <P.Separator />
             <P.Item
               disabled={!canForkChatRow(item) || isGenerating || forkInFlight}
@@ -4410,7 +4407,6 @@ export function AppSidebar() {
                 })}
               </P.SubContent>
             </P.Sub>
-            {/* Export moved to the Library's Chats tab. */}
             <P.Separator />
             <P.Item onSelect={() => void handleArchiveThread(item)}>
               <HugeiconsIcon icon={Archive03Icon} strokeWidth={1.75} className="size-icon" />

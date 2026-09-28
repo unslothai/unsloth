@@ -110,7 +110,6 @@ const ROW_MENU = readFileSync(
   ),
   "utf-8",
 );
-// "Open chat folder", now drawn by the Library's chat menu, not the sidebar.
 const OPEN_CHAT_FOLDER = readFileSync(
   fileURLToPath(
     new URL("../src/features/chat/components/open-chat-folder-item.tsx", import.meta.url),

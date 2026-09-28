@@ -289,7 +289,6 @@ export function Masonry<T>({
   );
 }
 
-/** Grid using the Library's card-size column count. */
 export function CardGrid({ children }: { children: ReactNode }) {
   const container = useRef<HTMLDivElement>(null);
   const columns = useCardColumns(container);

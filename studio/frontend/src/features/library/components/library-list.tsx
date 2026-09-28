@@ -32,7 +32,6 @@ const SIZE_COLUMN = "w-28 shrink-0";
 const ACTIVITY_COLUMNS: [LibrarySortKey, TranslationKey, string][] = [
   ["modified", "library.list.lastActivity", ACTIVITY_COLUMN],
 ];
-/** Modified and Size cells for non-file rows listed among files (starred chats). */
 export const FILE_LIST_COLUMNS = { cell: CELL, modified: MODIFIED_COLUMN, size: SIZE_COLUMN };
 const COLUMNS: [LibrarySortKey, TranslationKey, string][] = [
   ["modified", "library.list.modifiedColumn", MODIFIED_COLUMN],
@@ -193,7 +192,6 @@ export function LibraryList({
   activity: boolean;
   /** Rows listed first, with own menus and no selection (Favorites' starred chats). */
   leading?: ReactNode;
-  /** Off in Favorites, where every item is starred. */
   favoriteMarks?: boolean;
 }) {
   const t = useT();

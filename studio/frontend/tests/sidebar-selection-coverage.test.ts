@@ -223,7 +223,6 @@ test("the shared menu items are written against the injected family", () => {
     );
     assert.match(body, /<P\.Item/);
   }
-  // "Open chat folder" moved from the recents menu to the Library's chat menu.
   assert.doesNotMatch(APP_SIDEBAR, /OpenChatFolder/);
 });
 

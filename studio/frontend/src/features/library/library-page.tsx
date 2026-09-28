@@ -314,7 +314,6 @@ function LibraryView({ search }: { search: LibrarySearch }) {
   }, [items, folders]);
 
   const needle = query.trim().toLowerCase();
-  // Starred chats and projects appear in Favorites only, among its files.
   const favoriteChats = useFavoriteChatMatches(query, tab === "favorites" && !folderId);
 
   const kindFilter = folderId ? undefined : KIND_TABS[tab];
@@ -757,7 +756,6 @@ function LibraryView({ search }: { search: LibrarySearch }) {
     );
   }
 
-  /** Favorites with starred chats or projects listed first, outside the file selection. */
   function renderFavorites() {
     return (
       <ChatsLibrary

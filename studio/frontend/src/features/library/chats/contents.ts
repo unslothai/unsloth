@@ -43,7 +43,6 @@ function combine(counts: number[]): ChatContents {
   return { messages: counts.reduce((best, next) => Math.max(best, next), 0) };
 }
 
-/** Server counts, or counted from messages on an older server. */
 async function readCounts(chats: SidebarItem[]): Promise<(threadId: string) => number> {
   const ids = chats.flatMap(threadIdsOf);
   const counts = await countStoredChatMessages(ids);
@@ -75,7 +74,6 @@ async function readContents(chats: SidebarItem[]): Promise<void> {
   }
 }
 
-/** Contents of the listed chats, read in batches. */
 export function useChatContents(chats: readonly SidebarItem[]): ReadonlyMap<string, ChatContents> {
   const [version, setVersion] = useState(0);
   useEffect(() => {

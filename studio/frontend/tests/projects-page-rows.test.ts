@@ -279,7 +279,6 @@ test("the chat menu carries the sidebar's items, without the move", () => {
     assert.ok(menu.includes(label), `${label} is missing from the chat menu`);
   }
   assert.match(menu, /chatUnread \? "shell\.selection\.markRead" : "shell\.selection\.markUnread"/);
-  // The shared item: desktop opens the folder, the browser says why it cannot.
   assert.match(menu, /<OpenChatFolderItem item=\{chat\} \/>/);
   // The chats listed here are already in this project.
   assert.ok(!menu.includes("<span>Project</span>"));

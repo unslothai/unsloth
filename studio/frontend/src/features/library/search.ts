@@ -25,7 +25,6 @@ export interface LibrarySearch {
   item?: string;
   sort?: LibraryUrlSort;
   filter?: "files";
-  /** Chats tab only. */
   chatView?: ChatsSection;
   /** Section page id. Not `section`: the Hub route already uses that name. */
   chatSection?: string;

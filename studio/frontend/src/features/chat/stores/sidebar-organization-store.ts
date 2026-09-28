@@ -182,7 +182,6 @@ function readTime(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value) && value > 0;
 }
 
-/** Stamps `modifiedAt` on the sections a filing changed; the same array when none. */
 function touchSections(
   sections: SidebarCustomSection[],
   ids: ReadonlySet<string>,

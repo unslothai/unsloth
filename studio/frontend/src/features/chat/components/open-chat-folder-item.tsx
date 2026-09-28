@@ -82,7 +82,6 @@ export function OpenChatFolderItem({
   );
 }
 
-/** "Open project folder": the workspace shared by the project's chats (desktop app only). */
 export function OpenProjectFolderItem({
   projectId,
   Item = DropdownMenuItem,

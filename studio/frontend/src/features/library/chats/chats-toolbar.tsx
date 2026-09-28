@@ -41,7 +41,6 @@ import {
 const ICON = "size-icon";
 const MENU_LABEL = "px-3 pb-1 pt-2 text-muted-foreground font-normal";
 
-// Same icons the chat rows, sidebar and composer use for each kind of chat.
 const FLAG_OPTIONS: { value: ChatFlag; label: TranslationKey; icon: ReactNode }[] = [
   {
     value: "favorite",
@@ -112,10 +111,8 @@ function CheckItem({
 
 export interface FilterFacets {
   projects: { id: string; name: string }[];
-  /** Sidebar sections; the group is hidden while there are none. */
   sections: { id: string; name: string }[];
   models: { model: string; label: string; count: number }[];
-  /** False inside a project, where every chat shares it. */
   showProjects: boolean;
 }
 
@@ -253,7 +250,6 @@ export function SortMenu<K extends string>({
   desc: boolean;
   onChange: (value: K, desc: boolean) => void;
   groupBy?: ChatGroupBy;
-  /** Groupings offered: no project inside a project, no section when none exist. */
   groupOptions?: ChatGroupBy[];
   onGroupByChange?: (groupBy: ChatGroupBy) => void;
   pinnedFirst?: boolean;
@@ -379,7 +375,6 @@ export function ChatsToolbar({
   onNewProject,
   onNewSection,
 }: {
-  /** Omitted where there is nothing to filter, as on Projects. */
   filters?: ChatFilters;
   onFiltersChange: (next: ChatFilters) => void;
   facets: FilterFacets;
