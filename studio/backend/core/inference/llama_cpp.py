@@ -6056,46 +6056,98 @@ def _extra_args_draft_device(extra_args: Optional[Iterable[str]]) -> Optional[st
     return _extra_args_device(extra_args, {"--spec-draft-device", "-devd", "--device-draft"})
 
 
-_CUDA_DEVICE_TOKEN_RE = re.compile(r"CUDA(\d+)$", re.IGNORECASE)
+_GPU_DEVICE_TOKEN_RE = re.compile(r"(CUDA|ROCm)(\d+)$", re.IGNORECASE)
+# One group per companion: llama.cpp is last-wins within a group, so only its last flag counts.
+_COMPANION_DEVICE_FLAG_GROUPS = (
+    frozenset({"--mmproj-device", "-mmdev"}),
+    frozenset({"--spec-draft-device", "-devd", "--device-draft"}),
+)
 
 
 def _widen_pin_ids_for_companion_devices(
-    cmd: List[str], pin_ids: list[int], extra_args: Optional[Iterable[str]]
+    cmd: List[str], pin_ids: list[int], inherited_ids: Optional[list[int]]
 ) -> tuple[list[int], str]:
-    """Grow a pinned CUDA mask to cover the GPUs the user's extra args name (#11810).
+    """Fit a pinned GPU mask to the companion devices the launch argv names (#11810).
 
-    ``--mmproj-device`` / ``--spec-draft-device`` are relative to the GPUs the child
-    can SEE, so a single-GPU pin that hides the card a companion device names makes
-    llama.cpp reject the flag as "invalid device" -- and Studio's retry chain then
-    misreads that as a fit/decoding failure, exhausting every attempt on the same
-    masked environment. The mask is a placement constraint on the MAIN model only,
-    so grow it with whatever extra card the user pointed a companion at, and (when
-    the user named no ``--device`` themselves) emit one so the main model keeps its
-    original GPUs instead of spreading over the widened mask under ``-ngl -1``.
+    ``--mmproj-device`` / ``--spec-draft-device`` name GPUs the way llama.cpp numbers
+    them without Studio's pin: position in the inherited visible set (``inherited_ids``,
+    physical ids in mask order), or the physical index when nothing is masked. The pin
+    re-numbers the child's devices from 0, so a companion on a hidden card, or on a pinned
+    card that is not the child's first, is "invalid device" to llama.cpp, and Studio's
+    retry chain then misreads that as a fit or drafter failure.
 
-    llama.cpp numbers ``CUDA<n>`` by position in the visible set, so the emitted
-    main --device remaps through the FINAL mask. Returns the widened mask and a
-    one-line note for the log; when every requested card is already visible, the
-    mask and command are returned untouched.
+    The pin constrains the MAIN model only, so any card a companion names that the pin
+    hides is appended to the mask, and the ``CUDA<n>`` / ``ROCm<n>`` tokens of the flag
+    that wins for each companion are rewritten to that card's position in the child's mask
+    (an earlier, overridden flag is left as it is). When cards were
+    added and the argv has no main ``--device``, one is appended so the main model keeps
+    the pinned cards instead of spreading over the wider mask under ``-ngl -1``. A token
+    that maps to no card the parent can see is left alone, so the mask never reaches past
+    the parent's. Reads the argv, not the request's extra args, so flags that were
+    stripped (explicit gpu_ids own placement) change nothing. Returns the mask and a log
+    note, empty when nothing changed.
     """
-    if not pin_ids or not extra_args:
+    if not pin_ids:
         return list(pin_ids), ""
-    wanted: set[int] = set()
-    for value in (
-        _extra_args_device(extra_args, {"--mmproj-device", "-mmdev"}),
-        _extra_args_draft_device(extra_args),
-    ):
-        for token in str(value or "").split(","):
-            match = _CUDA_DEVICE_TOKEN_RE.match(token.strip())
+    main_ids = [int(i) for i in pin_ids]
+    # (value index, prefix before "=" or None, [(token, physical id or None)])
+    sites: list[tuple[int, Optional[str], list[tuple[str, Optional[int]]]]] = []
+    prefix_word = None
+    last_of_group: dict[int, int] = {}
+    for i, raw in enumerate(cmd):
+        for group, flags in enumerate(_COMPANION_DEVICE_FLAG_GROUPS):
+            if _flag_name(str(raw)) in flags:
+                last_of_group[group] = i
+    for i in sorted(last_of_group.values()):
+        raw = str(cmd[i])
+        head, eq, inline = raw.partition("=")
+        if eq:
+            at, value, lead = i, inline, head + "="
+        elif i + 1 < len(cmd):
+            at, value, lead = i + 1, str(cmd[i + 1]), None
+        else:
+            continue
+        tokens: list[tuple[str, Optional[int]]] = []
+        for token in value.split(","):
+            match = _GPU_DEVICE_TOKEN_RE.match(token.strip())
+            physical = None
             if match:
-                wanted.add(int(match.group(1)))
-    wanted -= set(pin_ids)
-    if not wanted:
-        return list(pin_ids), ""
-    main_ids = list(pin_ids)
-    widened = list(main_ids) + sorted(wanted)
-    if _extra_args_main_device(extra_args) is None:
-        cmd.extend(["--device", ",".join(f"CUDA{widened.index(i)}" for i in main_ids)])
+                prefix_word = prefix_word or match.group(1)
+                n = int(match.group(2))
+                if inherited_ids is None:
+                    physical = n
+                elif n < len(inherited_ids):
+                    physical = int(inherited_ids[n])
+            tokens.append((token, physical))
+        if any(physical is not None for _, physical in tokens):
+            sites.append((at, lead, tokens))
+    if not sites:
+        return list(main_ids), ""
+    widened = list(main_ids)
+    for _, _, tokens in sites:
+        for _, physical in tokens:
+            if physical is not None and physical not in widened:
+                widened.append(physical)
+    changed = False
+    for at, lead, tokens in sites:
+        rewritten = []
+        for token, physical in tokens:
+            if physical is None:
+                rewritten.append(token)
+                continue
+            match = _GPU_DEVICE_TOKEN_RE.match(token.strip())
+            rewritten.append(f"{match.group(1)}{widened.index(physical)}")
+        value = ",".join(rewritten)
+        new = f"{lead}{value}" if lead is not None else value
+        if new != cmd[at]:
+            cmd[at] = new
+            changed = True
+    if len(widened) > len(main_ids) and _extra_args_main_device(cmd) is None:
+        # Pinned cards lead the mask, so the main model's devices are the first positions.
+        cmd.extend(["--device", ",".join(f"{prefix_word}{k}" for k in range(len(main_ids)))])
+        changed = True
+    if not changed and widened == main_ids:
+        return list(main_ids), ""
     return widened, f"[{main_ids}] -> {widened}"
 
 
@@ -28809,17 +28861,20 @@ class LlamaCppBackend:
                     # Mask on AMD at the ROCr/HSA layer: HIP-only masking still
                     # enumerates every agent first, which segfaults on a deselected
                     # unsupported GPU (e.g. gfx1036 iGPU under a gfx103X prebuilt).
-                    # A share the user's companion-device flags point at but the pin
-                    # hides is "invalid device" to llama.cpp (#11810), so widen the
-                    # mask here -- after the inherited order resolved and rewrote the
-                    # split, before it becomes the child's environment.
-                    _pin_ids, _companion_widen = _widen_pin_ids_for_companion_devices(
-                        cmd, _pin_ids, extra_args
-                    )
+                    # Companion-device flags number GPUs as the unpinned child would see
+                    # them, so the pin can make them "invalid device" (#11810). Fit the
+                    # mask and the flags here, after the inherited order resolved and
+                    # rewrote the split, before the mask becomes the child's environment.
+                    # A uuid/MIG mask cannot say which card CUDA<n> meant: leave it be.
+                    _companion_widen = ""
+                    if not self._visibility_mask_is_unmappable():
+                        _pin_ids, _companion_widen = _widen_pin_ids_for_companion_devices(
+                            cmd, _pin_ids, self._resolve_visible_physical_ids()
+                        )
                     if _companion_widen:
                         logger.info(
-                            "User extra args name a GPU outside the pinned mask; "
-                            "widening for the companion devices: %s",
+                            "Companion device flags name GPUs by their unpinned "
+                            "numbering; fitted the pinned mask to them: %s",
                             _companion_widen,
                         )
                     self._emit_child_gpu_visibility(
