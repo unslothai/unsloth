@@ -3,7 +3,7 @@
 
 """Model and LoRA configuration handling."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace as _dataclass_replace
 from typing import Optional, Dict, Any
 from utils.paths.storage_roots import own_entry, within_account
 from utils.paths import (
@@ -30,6 +30,7 @@ from hub.utils.hf_tokens import (
     call_with_anonymous_retry,
     collecting_hub_token_rejections,
     HUB_TOKEN_REJECTED_ERROR,
+    hf_token_arg,
     is_rejected_credential_error,
     is_anonymous,
     normalize_token,
@@ -3440,6 +3441,61 @@ def _gguf_repo_unreadable_message(
     )
 
 
+def _is_hub_refusal(error: Exception) -> bool:
+    """The Hub answered no (401/403/404, gated), as opposed to not answering at all."""
+    from hub.utils.hf_tokens import _is_probe_timeout
+
+    if _is_probe_timeout(error):
+        return False
+    if type(error).__name__ in ("RepositoryNotFoundError", "GatedRepoError"):
+        return True
+    status = getattr(getattr(error, "response", None), "status_code", None)
+    return status in (401, 403, 404)
+
+
+def _refused_repo_cache_token(hf_token: HfTokenArg, owner_session: bool) -> HfTokenArg:
+    """The credential class ``cache_reads_authorized`` judges a refused repo's cache read by.
+
+    The machine owner's UI session reads its own downloads (``AmbientAuthorizedToken`` or
+    ambient); anyone else is judged as they would be for any cache read, with "no token"
+    meaning anonymous rather than borrowing the installation's."""
+    if is_anonymous(hf_token):
+        return False
+    token = hf_token.strip() if isinstance(hf_token, str) else ""
+    return hf_token_arg(token, allow_ambient_token = owner_session)
+
+
+def _refused_repo_cached_gguf(
+    repo_id: str, gguf_variant: Optional[str], hf_token: HfTokenArg, *, owner_session: bool
+) -> Optional[tuple[str, str]]:
+    """``(main file, variant)`` of a complete downloaded copy this caller may run while the Hub
+    refuses the repo, or None.
+
+    Complete means every shard present and, when the download recorded a manifest, every file
+    it names (a projector or drafter the variant needs included). Authorization is the cache's
+    usual rule: the owner's session may read its own downloads; an explicit token must reach
+    the repo; anonymous callers, API keys without a token and other accounts may not."""
+    if not cache_reads_authorized(
+        _refused_repo_cache_token(hf_token, owner_session), repo_id = repo_id
+    ):
+        return None
+    from core.inference.llama_cpp import cached_gguf_for_load
+
+    variant = gguf_variant
+    if not variant:
+        best = _detect_gguf_from_hf_cache(repo_id)
+        if not best:
+            return None
+        label = _extract_quant_label(best)
+        if not label:
+            return None
+        variant = _qualified_variant_name(best, label)
+    local_file = cached_gguf_for_load(repo_id, variant)
+    if not local_file:
+        return None
+    return local_file, variant
+
+
 def detect_gguf_model_remote(repo_id: str, hf_token: Optional[str] = None) -> Optional[str]:
     """Return the best GGUF filename in a HF repo, or None.
 
@@ -4197,6 +4253,7 @@ class ModelConfig:
         drafter_accept: Optional[Callable[[str, str, str, str], bool]] = None,
         gguf_companion_roots: Optional[Tuple[str, ...]] = None,
         mmproj_accept: Optional[Callable[[str, str], bool]] = None,
+        owner_session: bool = False,
     ) -> Optional["ModelConfig"]:
         """Create ModelConfig from a clean model identifier (HF repo or local
         path), for FastAPI routes that send sanitized paths.
@@ -4222,6 +4279,8 @@ class ModelConfig:
                 compatible mmproj without changing the selected main weights.
             mmproj_accept: ``(candidate, gguf_file) -> bool`` admission rule
                 applied before reading projector metadata for native loads.
+            owner_session: the caller is the machine owner's own UI session, which may
+                run a GGUF it already downloaded when the Hub refuses the repo.
 
         Returns:
             ModelConfig or None if it cannot be created.
@@ -4385,8 +4444,35 @@ class ModelConfig:
                     gguf_filename = detect_gguf_model_remote(identifier, hf_token = hf_token)
             finally:
                 _gguf_remote_detect_failure.reset(failure_token)
-            # A failed listing is not "no GGUF"; a refused repo is never served from cache (#11551).
+            # A failed listing is not "no GGUF" (#11551). A refused repo is served from its
+            # downloaded copy only to a caller who may read that cache, with a warning.
             if not gguf_filename and _looks_like_gguf_repo(identifier, gguf_variant):
+                if detect_failures and _is_hub_refusal(detect_failures[-1]):
+                    cached = _refused_repo_cached_gguf(
+                        identifier, gguf_variant, hf_token, owner_session = owner_session
+                    )
+                    if cached is not None:
+                        local_file, cached_variant = cached
+                        logger.warning(
+                            "Hugging Face refused '%s' (%s); loading the downloaded copy.",
+                            identifier,
+                            type(detect_failures[-1]).__name__,
+                        )
+                        local_config = cls.from_identifier(
+                            model_id = local_file,
+                            hf_token = hf_token,
+                            gguf_variant = cached_variant,
+                            drafter_accept = drafter_accept,
+                            gguf_companion_roots = gguf_companion_roots,
+                            mmproj_accept = mmproj_accept,
+                        )
+                        if local_config is not None and local_config.is_gguf:
+                            token_rejections.served_from_cache.append(identifier)
+                            return _dataclass_replace(
+                                local_config,
+                                identifier = identifier,
+                                display_name = f"{identifier.split('/')[-1]} ({cached_variant})",
+                            )
                 if detect_failures:
                     raise GgufRepoUnreadableError(
                         _gguf_repo_unreadable_message(

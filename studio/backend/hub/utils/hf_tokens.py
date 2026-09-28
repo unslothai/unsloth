@@ -1038,6 +1038,15 @@ HUB_TOKEN_REJECTED_WARNING = (
     "model was read without it. Update or clear the token in Settings to keep access to "
     "gated and private models."
 )
+
+
+def hub_refused_cached_copy_warning(repo_id: str) -> str:
+    return (
+        f"Hugging Face refused {repo_id}, so Studio is running the copy already downloaded on "
+        "this machine. It will not receive updates until access is restored."
+    )
+
+
 HUB_TOKEN_REJECTED_ERROR = (
     "Hugging Face rejected the saved token (HTTP 401); it may be expired or revoked. "
     "Update or clear it in Settings, then try again."
@@ -1047,9 +1056,11 @@ HUB_TOKEN_REJECTED_ERROR = (
 class HubTokenRejections:
     """What one request learned about its credential. Shared by the threads it hands off to."""
 
-    __slots__ = ("recovered", "refused", "_rejected", "_recovered")
+    __slots__ = ("recovered", "refused", "served_from_cache", "_rejected", "_recovered")
 
     def __init__(self) -> None:
+        # Repos the Hub refused that this request loaded from their downloaded copy instead.
+        self.served_from_cache: "list[str]" = []
         # A read answered anonymously after the credential was refused.
         self.recovered = False
         # A read refused with the credential that anonymous access could not answer either.

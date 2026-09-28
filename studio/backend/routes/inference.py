@@ -87,6 +87,7 @@ from hub.utils.hf_tokens import (
     HUB_TOKEN_REJECTED_WARNING,
     HfTokenArg,
     collecting_hub_token_rejections,
+    hub_refused_cached_copy_warning,
 )
 from hub.services.models.ollama import (
     acquire_ollama_model_ref,
@@ -15943,13 +15944,31 @@ def _cancel_scoped_load_attempt(
         return attempt, is_running
 
 
+def _hub_access_warnings(token_rejections) -> list[str]:
+    """What this request's Hub reads tell the user: a refused token, a refused repo's copy."""
+    warnings = [HUB_TOKEN_REJECTED_WARNING] if token_rejections.recovered else []
+    warnings += [
+        hub_refused_cached_copy_warning(repo)
+        for repo in dict.fromkeys(token_rejections.served_from_cache)
+    ]
+    return warnings
+
+
 def _with_token_rejected_warning(response, token_rejections):
-    """Tell the user the model loaded without their token, which Hugging Face refused."""
-    if not token_rejections.recovered or not isinstance(response, LoadResponse):
+    """Tell the user the model loaded without their token, or from a copy the Hub now refuses."""
+    warnings = _hub_access_warnings(token_rejections)
+    if not warnings or not isinstance(response, LoadResponse):
         return response
     existing = response.memory_warning
-    warning = f"{existing} {HUB_TOKEN_REJECTED_WARNING}" if existing else HUB_TOKEN_REJECTED_WARNING
+    warning = " ".join(([existing] if existing else []) + warnings)
     return response.model_copy(update = {"memory_warning": warning})
+
+
+def _owner_session(fastapi_request) -> bool:
+    """The machine owner's own UI session: not a managed account, not an sk-unsloth API key."""
+    if fastapi_request is None or account_access.managed_account():
+        return False
+    return not _request_used_api_key(fastapi_request)
 
 
 async def _run_tracked_load_model_impl(
@@ -16701,17 +16720,21 @@ async def _load_model_impl(
                     chat_template = _chat_template,
                 )
 
+        _caller_is_owner = _owner_session(fastapi_request)
+
         # is_lora auto-detected from adapter_config.json on disk/HF.
         # Probe wrap so offline loads skip 30-60s of soft-failed network checks before
         # the worker starts. Off-loop: the guard can spend seconds on DNS plus a HEAD and
         # its TCP fallback, and this handler is awaited directly by the route, so running
         # it inline would stall every unrelated request. Same shape as /validate.
+
         def _resolve_config():
             with _hf_offline_if_unreachable_for(model_identifier):
                 return ModelConfig.from_identifier(
                     model_id = model_identifier,
                     hf_token = request.hf_token,
                     gguf_variant = request.gguf_variant,
+                    owner_session = _caller_is_owner,
                     # A native grant covers one directory, and this is the first
                     # pass that touches a drafter candidate, so the boundary has
                     # to travel with it rather than being applied afterwards.
@@ -17792,12 +17815,15 @@ async def validate_model(
         # /load; otherwise the stall just moves here and /load is never reached.
         # Off-loop twice over: the guard is a network round trip, and the first
         # from_identifier builds the detection registry (transformers, or the warm's lock).
+        _caller_is_owner = _owner_session(fastapi_request)
+
         def _resolve_config():
             with _hf_offline_if_unreachable_for(model_identifier):
                 return ModelConfig.from_identifier(
                     model_id = model_identifier,
                     hf_token = request.hf_token,
                     gguf_variant = request.gguf_variant,
+                    owner_session = _caller_is_owner,
                     # A native grant covers one directory, and this is the first
                     # pass that touches a drafter candidate, so the boundary has
                     # to travel with it rather than being applied afterwards.
@@ -18113,10 +18139,8 @@ async def validate_model(
         return restore_inventory_handles(
             ValidateModelResponse(
                 valid = True,
-                message = (
-                    f"Model identifier is valid. {HUB_TOKEN_REJECTED_WARNING}"
-                    if token_rejections.recovered
-                    else "Model identifier is valid."
+                message = " ".join(
+                    ["Model identifier is valid."] + _hub_access_warnings(token_rejections)
                 ),
                 identifier = model_log_label if native_grant_backed else config.identifier,
                 resident = await asyncio.to_thread(
