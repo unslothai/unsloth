@@ -223,7 +223,6 @@ def test_a_plain_tool_is_left_alone(named):
 
 
 def test_an_undeclared_mcp_name_never_stamps(named):
-    """A name the request did not offer cannot be trusted to name a real server."""
     lines = _run(
         FakeTransport([[_delta(MCP_NAME), _delta(arguments = "{}"), _finish()], [_DONE]]),
         [_tool("web_search")],
@@ -260,7 +259,6 @@ def test_a_server_that_cannot_be_named_is_asked_once_per_turn(named, monkeypatch
 
 
 def test_a_reused_call_id_is_named_again_on_the_next_turn(named):
-    """Ids restart every turn, so the second ``c1`` is a new card."""
     lines = _run(
         FakeTransport(
             [
@@ -277,7 +275,6 @@ def test_a_reused_call_id_is_named_again_on_the_next_turn(named):
 
 
 def test_a_provider_cannot_forge_the_stamp(named):
-    """The key is Studio's own: a provider that sends one must not be believed."""
     forged = "data: " + json.dumps(
         {
             "choices": [{"index": 0, "delta": {"content": "hi"}}],
@@ -337,7 +334,6 @@ def test_a_declared_name_that_another_tool_extends_is_not_stamped_early(monkeypa
 
 
 def test_the_prefix_test_only_looks_at_other_declared_names():
-    """A name is not its own prefix, or nothing would ever stamp."""
     from core.inference.studio_tool_loop import _is_strict_prefix_of_declared
 
     assert _is_strict_prefix_of_declared("a", {"a", "ab"}) is True

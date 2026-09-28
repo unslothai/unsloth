@@ -1093,7 +1093,6 @@ def _unrun_call_card(
 
 
 def _is_strict_prefix_of_declared(name: str, declared_names: set[str]) -> bool:
-    """True if ``name`` is a strict prefix of another declared name (still streaming)."""
     return any(other != name and other.startswith(name) for other in declared_names)
 
 
