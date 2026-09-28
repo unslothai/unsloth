@@ -272,17 +272,26 @@ def _hf_snapshots_hold_files(repo_dir: Path) -> bool:
     huggingface_hub moves each finished blob into ``snapshots/<rev>/`` and leaves ``blobs/``
     empty, so checking ``blobs/`` alone hid every model downloaded that way. Only the newest
     snapshot is probed, since that is the one ``_scan_hf_cache`` classifies. Stops at the first
-    file and walks at most as many entries as the model-file probe; a dangling link is not a
-    file, Finder metadata is not a download, and an unreadable tree counts as empty."""
+    file and reads at most as many entries as the model-file probe, streamed from ``scandir``
+    (``rglob`` lists a whole directory before yielding, so a huge one on a share would stall
+    it); a dangling link is not a file, Finder metadata is not a download, and an unreadable
+    tree counts as empty."""
     snapshot = hf_cache_scan.latest_snapshot_dir(repo_dir)
     if snapshot is None:
         return False
+    walked = 0
+    pending = [snapshot]
     try:
-        for walked, entry in enumerate(snapshot.rglob("*"), start = 1):
-            if walked > model_common._HF_CACHE_MODEL_FILE_PROBE_LIMIT:
-                return False
-            if entry.is_file() and not is_appledouble_metadata(entry):
-                return True
+        while pending:
+            with os.scandir(pending.pop()) as entries:
+                for entry in entries:
+                    walked += 1
+                    if walked > model_common._HF_CACHE_MODEL_FILE_PROBE_LIMIT:
+                        return False
+                    if entry.is_dir(follow_symlinks = False):
+                        pending.append(Path(entry.path))
+                    elif entry.is_file() and not is_appledouble_metadata(Path(entry.path)):
+                        return True
     except OSError:
         return False
     return False

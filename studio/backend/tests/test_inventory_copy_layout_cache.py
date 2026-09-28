@@ -195,3 +195,57 @@ def test_only_the_snapshot_that_is_classified_is_probed(tmp_path):
     newer.mkdir()
     os.utime(repo / "snapshots" / REV, (1, 1))
     assert _discovered_ids(tmp_path) == []
+
+
+def test_a_huge_snapshot_directory_is_read_only_up_to_the_limit(tmp_path, monkeypatch):
+    # rglob lists a whole directory before yielding its first entry; on a share holding a
+    # million entries that stalls the inventory, so the probe must stop reading at the limit.
+    repo = _repo_dir(tmp_path)
+    snapshot = repo / "snapshots" / REV
+    snapshot.mkdir(parents = True)
+    (repo / "refs").mkdir()
+    (repo / "refs" / "main").write_text(REV)
+    read = {"entries": 0}
+    real_scandir = os.scandir
+
+    class _Empty:
+        def __init__(self, index):
+            self.name = f"d{index}"
+            self.path = str(snapshot / self.name)
+
+        def is_dir(self, follow_symlinks = True):
+            return False
+
+        def is_file(self, follow_symlinks = True):
+            return False
+
+        def is_symlink(self):
+            return False
+
+    class _Huge:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def __iter__(self):
+            for index in range(1_000_000):
+                read["entries"] += 1
+                yield _Empty(index)
+
+        def close(self):
+            pass
+
+    def scandir(path = "."):
+        return _Huge() if Path(path) == snapshot else real_scandir(path)
+
+    monkeypatch.setattr(os, "scandir", scandir)
+    # pathlib's glob binds scandir at import on 3.13+, so the negative control reaches it too.
+    import glob
+
+    if hasattr(glob, "_StringGlobber"):
+        monkeypatch.setattr(glob._StringGlobber, "scandir", staticmethod(scandir))
+    monkeypatch.setattr(local_inventory.model_common, "_HF_CACHE_MODEL_FILE_PROBE_LIMIT", 50)
+    assert local_inventory._hf_snapshots_hold_files(repo) is False
+    assert read["entries"] <= 51
