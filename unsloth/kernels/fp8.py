@@ -46,6 +46,41 @@ def _fp8_triton_device_context(tensor: torch.Tensor, static_device_count = False
     return nullcontext()
 
 
+# Module level: a torch.library.Library deregisters its ops once collected.
+_fp8_library = None
+
+
+def _opaque_under_compile(name, fake):
+    # torch.compile swaps the launcher for one registered op: tracing it breaks the graph (device_count) and recompiles
+    # the Triton kernel under dynamic shapes 40-80x slower. Eager calls still run the plain function, at no cost.
+    # torch.library.Library, not custom_op: compiled graphs dispatch it with ~3 us per call instead of ~23 us.
+    def decorator(fn):
+        global _fp8_library
+        substitute_in_graph = getattr(torch._dynamo, "substitute_in_graph", None)
+        if substitute_in_graph is None or not hasattr(torch.library, "infer_schema"):
+            return fn
+        try:
+            if _fp8_library is None:
+                _fp8_library = torch.library.Library("unsloth", "FRAGMENT")
+            _fp8_library.define(name + torch.library.infer_schema(fn, mutates_args = ()))
+            _fp8_library.impl(name, fn, "CompositeExplicitAutograd")
+            torch.library.register_fake(f"unsloth::{name}", fake, lib = _fp8_library)
+            substitute_in_graph(fn)(
+                functools.wraps(fn)(
+                    lambda *args, **kwargs: getattr(torch.ops.unsloth, name)(*args, **kwargs)
+                )
+            )
+        except (
+            RuntimeError,
+            TypeError,
+            ValueError,
+        ):  # Already registered by an earlier import of this module.
+            pass
+        return fn
+
+    return decorator
+
+
 try:
     from transformers.integrations.finegrained_fp8 import FP8Linear
 except:
@@ -104,11 +139,17 @@ def weight_dequant_kernel(x_ptr, s_ptr, y_ptr, M, N, BLOCK_SIZE: tl.constexpr):
     tl.store(y_ptr + offs, y, mask = mask)
 
 
+@_opaque_under_compile(
+    "fp8_weight_dequant_block",
+    lambda x, s, block_size = 128, dtype = torch.bfloat16: torch.empty_like(
+        x, dtype = dtype, memory_format = torch.contiguous_format
+    ),
+)
 def weight_dequant_block(
     x: torch.Tensor,
     s: torch.Tensor,
     block_size: int = 128,
-    dtype = torch.bfloat16,
+    dtype: torch.dtype = torch.bfloat16,
 ) -> torch.Tensor:
     if not x.is_contiguous():
         x = x.contiguous()
@@ -187,6 +228,13 @@ def act_quant_kernel(x_ptr, y_ptr, s_ptr, BLOCK_SIZE: tl.constexpr):
     tl.store(s_ptr + pid, s)
 
 
+@_opaque_under_compile(
+    "fp8_act_quant",
+    lambda x, block_size = 128: (
+        x.new_empty(x.shape, dtype = torch.float8_e4m3fn),
+        x.new_empty(*x.shape[:-1], x.shape[-1] // block_size, dtype = torch.float32),
+    ),
+)
 def act_quant(x: torch.Tensor, block_size: int = 128) -> tuple[torch.Tensor, torch.Tensor]:
     if not x.is_contiguous():
         x = x.contiguous()
@@ -284,6 +332,12 @@ def _w8a8_block_fp8_matmul(
     tl.store(c_ptrs, c, mask = c_mask)
 
 
+@_opaque_under_compile(
+    "fp8_block_matmul_triton",
+    lambda A, B, As, Bs, block_size, output_dtype = torch.float32: A.new_empty(
+        A.shape[:-1] + (B.shape[0],), dtype = output_dtype
+    ),
+)
 def w8a8_block_fp8_matmul_triton(
     A: torch.Tensor,
     B: torch.Tensor,
@@ -345,18 +399,26 @@ def w8a8_block_fp8_matmul_triton(
             BLOCK_SIZE_N = BLOCK_SIZE_N,
             BLOCK_SIZE_K = BLOCK_SIZE_K,
             GROUP_SIZE_M = 8,
+            # Default 4 warps starve 128x128 tiles (8 is 1.3-2.1x faster from M >= 128); smaller decode tiles gain nothing.
+            num_warps = 8 if BLOCK_SIZE_M == 128 else 4,
         )
     return C
 
 
+@_opaque_under_compile(
+    "fp8_block_matmul_torchao",
+    lambda A, B, As, Bs, block_size, output_dtype = torch.bfloat16: A.new_empty(
+        A.shape[:-1] + (B.shape[0],), dtype = output_dtype
+    ),
+)
 def torchao_block_matmul(
     act_q: torch.Tensor,
     weight_q: torch.Tensor,
     act_scale: torch.Tensor,
     weight_scale: torch.Tensor,
-    block_size: tuple[int, int],
+    block_size: list[int],
     output_dtype: torch.dtype = torch.bfloat16,
-):
+) -> torch.Tensor:
     with _fp8_triton_device_context(act_q):
         out = torchao_blockwise_gemm(
             act_q.contiguous(),
@@ -556,7 +618,8 @@ class FP8BlockQuantLinear(torch.autograd.Function):
             ctx.weight = weight
             ctx.weight_scale = original_weight_scale
             ctx.block_size = block_size
-            return torch_matmul(X, W_deq.T).to(X.dtype)
+            output = torch_matmul(X, W_deq.T)
+            return output if output.dtype == X.dtype else output.to(X.dtype)
 
         qinput, scale = act_quant(X, block_size[1])
         output = fp8_block_matmul(
@@ -570,7 +633,8 @@ class FP8BlockQuantLinear(torch.autograd.Function):
         ctx.weight = weight
         ctx.weight_scale = original_weight_scale
         ctx.block_size = block_size
-        return output.to(X.dtype)
+        # No no-op .to(): torch 2.11's compiled autograd.Function returns zero dX when the output aliases an intermediate.
+        return output if output.dtype == X.dtype else output.to(X.dtype)
 
     @staticmethod
     def backward(ctx, grad_output):
@@ -582,7 +646,8 @@ class FP8BlockQuantLinear(torch.autograd.Function):
         return grad_X, None, None
 
 
-@torch_compile
+# Not torch.compiled: after a model's second weight shape, automatic dynamic shapes recompile the
+# user Triton kernel into a version 40-80x slower than eager (the only work here is that kernel).
 def fp8_torch_block_quant_forward(X, weight, weight_scale):
     return FP8BlockQuantLinear.apply(X, weight, weight_scale)
 
@@ -831,7 +896,7 @@ except:
     pass
 
 
-@torch_compile
+# Not torch.compiled, for the same reason as fp8_torch_block_quant_forward.
 def fp8_linear(
     X,
     weight,
