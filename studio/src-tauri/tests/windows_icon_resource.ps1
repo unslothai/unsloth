@@ -91,13 +91,20 @@ if ($report.explorer_session_ids -contains $report.session_id) {
     $report.app_exited_before_capture = $process.HasExited
     if ($process.HasExited) { $report.app_exit_code = $process.ExitCode }
     if ($visible) {
+      # MainWindowHandle alone does not mean the window is on top: the hosted
+      # runner's own console covered it in the previous capture. Foreground the
+      # verified installed process before taking a real desktop screenshot.
+      Add-Type -AssemblyName Microsoft.VisualBasic
+      [Microsoft.VisualBasic.Interaction]::AppActivate([int]$visible.Id)
+      Start-Sleep -Seconds 2
+      $report.installed_window_process = $visible.Id
       $bounds = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
       $capture = New-Object System.Drawing.Bitmap($bounds.Width, $bounds.Height)
       $graphics = [System.Drawing.Graphics]::FromImage($capture)
       try {
         $graphics.CopyFromScreen($bounds.Location, [System.Drawing.Point]::Empty, $bounds.Size)
         $capture.Save((Join-Path $Output 'desktop.png'), [System.Drawing.Imaging.ImageFormat]::Png)
-        $report.desktop_capture = 'captured real visible installed app on interactive desktop; inspect and sanitize before publication'
+        $report.desktop_capture = 'captured interactive desktop after activating installed app; inspect pixels for actual visible window/taskbar before publication'
       } finally { $graphics.Dispose(); $capture.Dispose() }
     } else {
       $report.desktop_capture = 'interactive Explorer session exists but installed app never exposed a visible window/taskbar in 20 seconds; no taskbar screenshot available'
