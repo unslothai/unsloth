@@ -41729,21 +41729,29 @@ async def list_gallery_images(
 
 @studio_router.get("/images/gallery/{image_id}/file")
 async def get_gallery_image_file(
-    image_id: str, current_subject: str = Depends(get_current_subject)
+    image_id: str,
+    thumb: Optional[int] = None,
+    current_subject: str = Depends(get_current_subject),
 ):
+    """Serve the original PNG or a WebP thumbnail when ``thumb`` is set."""
     from core.inference import image_gallery
 
     # Ownership-gate the serve like delete/clear: resolve only an Unsloth-owned PNG, so a guessed stem cannot stream out a foreign file.
     path = await asyncio.to_thread(image_gallery.owned_image_path, image_id)
     if path is None:
         raise HTTPException(status_code = 404, detail = "Image not found.")
-    data = await asyncio.to_thread(path.read_bytes)
     # Immutable content (id is unique per image), so let the browser cache it.
-    return Response(
-        content = data,
-        media_type = "image/png",
-        headers = {"Cache-Control": "private, max-age=31536000, immutable"},
-    )
+    headers = {"Cache-Control": "private, max-age=31536000, immutable"}
+    if thumb:
+        size = max(32, min(1024, thumb))
+        try:
+            data = await asyncio.to_thread(image_gallery.thumbnail, path, size)
+        except Exception as exc:  # noqa: BLE001 -- fall back to the PNG
+            logger.warning("Gallery thumbnail failed for %s: %s", image_id, exc)
+        else:
+            return Response(content = data, media_type = "image/webp", headers = headers)
+    data = await asyncio.to_thread(path.read_bytes)
+    return Response(content = data, media_type = "image/png", headers = headers)
 
 
 @studio_router.post("/search-images/lookup")

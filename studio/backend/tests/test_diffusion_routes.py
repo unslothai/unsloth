@@ -331,6 +331,38 @@ def test_load_generate_status_unload_roundtrip(client):
 def test_gallery_serve_refuses_unowned_id(client):
     # The serve route resolves through the ownership guard, so a guessed stem is a 404, not a stream of foreign bytes.
     assert client.get("/api/inference/images/gallery/family-photo/file").status_code == 404
+    assert (
+        client.get("/api/inference/images/gallery/family-photo/file?thumb=256").status_code == 404
+    )
+
+
+def test_gallery_serve_thumb_is_a_webp_and_falls_back_to_the_png(client, monkeypatch):
+    _post_load(
+        client,
+        model_path = "unsloth/Z-Image-Turbo-GGUF",
+        gguf_filename = "z-image-turbo-Q4_K_S.gguf",
+        base_repo = "unsloth/Z-Image-base",
+    )
+    url = _post_generate(client, prompt = "a sloth", seed = 7).json()["images"][0]["url"]
+    sizes = []
+
+    def _thumbnail(path, size):
+        sizes.append(size)
+        return b"WEBP"
+
+    monkeypatch.setattr(gallery_module, "thumbnail", _thumbnail)
+    thumb = client.get(f"{url}?thumb=5000")
+    assert thumb.headers["content-type"] == "image/webp" and thumb.content == b"WEBP"
+    assert sizes == [1024]
+    original = client.get(url)
+    assert original.headers["content-type"] == "image/png" and original.content == b"PNG"
+
+    def _undecodable(path, size):
+        raise OSError("truncated PNG")
+
+    monkeypatch.setattr(gallery_module, "thumbnail", _undecodable)
+    fallback = client.get(f"{url}?thumb=256")
+    assert fallback.headers["content-type"] == "image/png" and fallback.content == b"PNG"
 
 
 def test_generate_holds_progress_active_during_persist(client, monkeypatch):
