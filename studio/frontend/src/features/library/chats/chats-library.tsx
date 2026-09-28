@@ -75,7 +75,16 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
-import { type ReactNode, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
+import {
+  type ReactNode,
+  type SetStateAction,
+  useCallback,
+  useDeferredValue,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { NameDialog } from "../components/library-dialogs";
 import { type HeaderTab, LibraryHeader } from "../components/library-header";
 import type { LibrarySearch } from "../search";
@@ -330,8 +339,13 @@ export function ChatsLibrary({
   const query = embedded ? embedded.query : ownQuery;
   const listQuery = useDeferredValue(query);
   const [filters, setFilters] = useState<ChatFilters>(EMPTY_CHAT_FILTERS);
-  const [selection, setSelection] = useState<Set<string>>(new Set());
+  const [selection, setSelectionState] = useState<Set<string>>(new Set());
   const selectionAnchor = useRef<string | null>(null);
+  // Clearing drops the shift-click anchor too, or the next range reaches a row no longer selected.
+  const setSelection = useCallback((next: SetStateAction<Set<string>>) => {
+    if (typeof next !== "function" && next.size === 0) selectionAnchor.current = null;
+    setSelectionState(next);
+  }, []);
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
   const [renaming, setRenaming] = useState<SidebarItem | null>(null);
   const [editing, setEditing] = useState<ProjectRecord | null>(null);

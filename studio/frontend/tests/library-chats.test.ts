@@ -537,3 +537,13 @@ test("filing a project in a section unpins it and shows the section", () => {
   assert.match(hook, /if \(pins\.pinnedIds\.includes\(project\.id\)\) pins\.unpin\(project\.id\);/);
   assert.match(hook, /organization\.setSectionHidden\(sectionId, false\);/);
 });
+
+test("clearing the selection drops the shift-click anchor", () => {
+  const library = readSrc("features/library/chats/chats-library.tsx");
+  assert.match(
+    library,
+    /const setSelection = useCallback\(\(next: SetStateAction<Set<string>>\) => \{\n\s*if \(typeof next !== "function" && next\.size === 0\) selectionAnchor\.current = null;/,
+  );
+  // Every emptying write goes through the wrapper, never the raw state setter.
+  assert.doesNotMatch(library, /setSelectionState\(new Set\(\)\)/);
+});
