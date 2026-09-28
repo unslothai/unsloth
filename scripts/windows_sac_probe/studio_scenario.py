@@ -279,11 +279,8 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 def studio_identity_error(base_url: str, home: Path, timeout: float = 10) -> Optional[str]:
-    """None when `base_url` proves it holds this home's identity secret, else why not.
-
-    /api/liveness is public, so anything bound to the port can claim to be Studio. The HMAC
-    challenge at /api/auth/identity can only be answered with the secret in auth/auth.db,
-    which is what backend/auth/storage.compute_identity_proof signs with."""
+    """None when `base_url` signs our nonce with this home's secret (storage.compute_identity_proof), else why not.
+    /api/liveness is public, so anything holding the port can claim to be Studio."""
     nonce = secrets.token_bytes(32)
     url = f"{base_url}/api/auth/identity?nonce={base64.urlsafe_b64encode(nonce).decode()}"
     start = time.monotonic()
