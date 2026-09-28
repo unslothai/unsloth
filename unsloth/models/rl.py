@@ -1112,6 +1112,19 @@ def _pin_pristine_sft_loss_type(config_cls):
 
 _UNSLOTH_KBIT_PREP_GUARD_FLAG = "_unsloth_skips_kbit_prep_for_peft_models"
 
+# TRL >= 1.7 enables the aux loss whenever output_router_logits is set; dense configs (every expert count 0, e.g.
+# granite-4.0-h-350m) return no router logits and crash on `aux_loss.to`. Real MoE keeps its aux loss.
+_DENSE_ROUTER_AUX_LOSS_OFF = (
+    "if getattr(self, 'aux_loss_enabled', False) and hasattr(getattr(self, 'model', None), 'config'):\n"
+    "    _text_config = self.model.config\n"
+    "    if hasattr(_text_config, 'get_text_config'): _text_config = _text_config.get_text_config()\n"
+    "    _n_experts = [getattr(_text_config, _k) for _k in ('num_local_experts', 'num_experts', 'n_routed_experts', 'moe_num_experts') if isinstance(getattr(_text_config, _k, None), int)]\n"
+    "    if _n_experts and all(_n == 0 for _n in _n_experts):\n"
+    "        self.aux_loss_enabled = False\n"
+    "        _text_config.output_router_logits = False\n"
+    "pass\n"
+)
+
 # The one assignment of `self.aux_loss_enabled` in TRL's GRPOTrainer.__init__, whatever its right-hand
 # side. TRL 1.7.0 wrote `is_moe and args.router_aux_loss_coef != 0.0`; TRL main (#7248) reads the
 # coefficient from the model config when it is None. Anchoring on the exact expression lost the
@@ -1809,15 +1822,15 @@ def _install_grpo_hidden_states_forward_wrapper(model):
     return True
 
 
-def _wrap_grpo_hidden_states_fallback(trainer_cls):
+def _wrap_grpo_hidden_states_fallback(trainer_cls, attributes = ("model", "ref_model")):
     original_init = trainer_cls.__init__
     if getattr(original_init, "_unsloth_grpo_hidden_states_init_wrapped", False):
         return
 
     def wrapped_init(self, *args, **kwargs):
         original_init(self, *args, **kwargs)
-        _install_grpo_hidden_states_forward_wrapper(getattr(self, "model", None))
-        _install_grpo_hidden_states_forward_wrapper(getattr(self, "ref_model", None))
+        for attribute in attributes:
+            _install_grpo_hidden_states_forward_wrapper(getattr(self, attribute, None))
 
     wrapped_init._unsloth_grpo_hidden_states_init_wrapped = True
     trainer_cls.__init__ = wrapped_init
@@ -2691,6 +2704,9 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         )
         RLTrainer_post += vllm_chat_template_sync
 
+    if "model" in call_args:
+        RLTrainer_post += _DENSE_ROUTER_AUX_LOSS_OFF
+
     # TRL >= 1.7 writes router_aux_loss_coef to the config after MoE CausalLMs cached it at init; nll loss reads the stale copy.
     if trainer_file == "sft_trainer":
         RLTrainer_post += (
@@ -3374,6 +3390,16 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         except Exception as e:
             logger.info(
                 f"Unsloth: Could not wrap GRPO hidden-state fallback for {RLTrainer_name}: {e}"
+            )
+    if trainer_file == "gkd_trainer" and "_unsloth_trl_compute_loss" in RLTrainer_source:
+        try:
+            _wrap_grpo_hidden_states_fallback(
+                getattr(created_module, f"Unsloth{RLTrainer_name}"),
+                attributes = ("model", "teacher_model"),
+            )
+        except Exception as e:
+            logger.info(
+                f"Unsloth: Could not wrap GKD hidden-state fallback for {RLTrainer_name}: {e}"
             )
 
 

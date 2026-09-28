@@ -2342,6 +2342,7 @@ def check_and_disable_bitsandbytes_loading(
     model_name = None,
     revision = None,
     hub_kwargs = None,
+    allow_fp8_to_nf4 = True,
 ):
     """Disable bnb flags for non-bnb quantized checkpoints; returns ``(load_in_4bit, load_in_8bit, quant_method)``.
 
@@ -2382,6 +2383,12 @@ def check_and_disable_bitsandbytes_loading(
         if arm_modelopt_fp8_loading(model_config, verbose = verbose) is not None:
             quant_method = "fp8"
 
+    # An explicit 4bit request on a block-fp8 checkpoint: dequantize each fp8 tensor and quantize it to NF4 while loading.
+    if allow_fp8_to_nf4 and str(quant_method).lower() == "fp8":
+        from .fp8_to_nf4 import maybe_arm_fp8_to_nf4
+        if maybe_arm_fp8_to_nf4(model_config, load_in_4bit, load_in_8bit, verbose = verbose):
+            return load_in_4bit, load_in_8bit, None
+
     # A non-bitsandbytes quantization config (compressed-tensors, gptq, awq) means BOTH bitsandbytes loading flags must be disabled to avoid config conflicts.
     if load_in_4bit or load_in_8bit:
         if verbose:
@@ -2389,6 +2396,21 @@ def check_and_disable_bitsandbytes_loading(
                 f"Unsloth: Model already quantized with {quant_method}. "
                 f"Disabling `load_in_4bit` and `load_in_8bit` to avoid quantization config conflict."
             )
+            if load_in_4bit and not load_in_8bit and str(quant_method).lower() == "fp8":
+                from .fp8_to_nf4 import (
+                    explicit_4bit_requested,
+                    fp8_block_quantization_config,
+                    fp8_to_nf4_disabled,
+                )
+                if (
+                    not explicit_4bit_requested()
+                    and not fp8_to_nf4_disabled()
+                    and fp8_block_quantization_config(model_config) is not None
+                ):
+                    print(
+                        "Unsloth: Pass `load_in_4bit = True` explicitly (or set UNSLOTH_FP8_TO_NF4=1) to "
+                        "quantize this fp8 checkpoint to 4bit while it loads."
+                    )
         load_in_4bit = False
         load_in_8bit = False
 

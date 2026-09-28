@@ -1,0 +1,1393 @@
+{
+  "_comment": "Findings that predate scripts/lint_av_shapes.py. New ones fail; an error group needs a reason. See the lint's docstring.",
+  "groups": [
+    {
+      "file": ".github/ci/clean-machine-matrix.yml",
+      "rule": "AV015",
+      "severity": "warn",
+      "reason": "pre-existing warning",
+      "digests": {
+        "e9aec9781db240c7": 1
+      }
+    },
+    {
+      "file": ".github/scripts/Probe-AmsiParse.ps1",
+      "rule": "AV015",
+      "severity": "warn",
+      "reason": "pre-existing warning",
+      "digests": {
+        "6c9562e9b61e642a": 1
+      }
+    },
+    {
+      "file": ".github/scripts/Probe-VirtualTerminal.ps1",
+      "rule": "AV003",
+      "severity": "error",
+      "reason": "CI-only probe run on hosted runners to measure the console-mode path; never shipped or run on a user machine.",
+      "digests": {
+        "2c55dddcfeb76fa0": 1,
+        "2ee6606877b69cfc": 1,
+        "8b6eab4b550f89b0": 1,
+        "b9777fec081d96ad": 1,
+        "c6745ba48257bd2d": 1,
+        "fed2f59e307d0743": 1
+      }
+    },
+    {
+      "file": ".github/scripts/agent-guides-install.sh",
+      "rule": "AV015",
+      "severity": "warn",
+      "reason": "pre-existing warning",
+      "digests": {
+        "26d63a8de8b3d88a": 1,
+        "4d51b090ccb1babf": 1,
+        "7bb5fa16f714a6ca": 1,
+        "aa4e2c2aba0b4d1c": 1,
+        "d00e0be7c48e1114": 1
+      }
+    },
+    {
+      "file": ".github/scripts/compare_installer_evidence.py",
+      "rule": "AV007",
+      "severity": "error",
+      "reason": "A fixture string the evidence comparer classifies; it is data, never executed.",
+      "digests": {
+        "ef0e52af4244dffa": 1
+      }
+    },
+    {
+      "file": ".github/scripts/interrupt-install.ps1",
+      "rule": "AV007",
+      "severity": "error",
+      "reason": "CI-only: interrupts an install on a hosted runner to test recovery; never shipped.",
+      "digests": {
+        "392e83ba05e2da16": 1
+      }
+    },
+    {
+      "file": ".github/workflows/clean-machine-install-ci.yml",
+      "rule": "AV015",
+      "severity": "warn",
+      "reason": "pre-existing warning",
+      "digests": {
+        "4c0553e5acdfe41e": 1,
+        "b3c22279dd142bc1": 1,
+        "f0ecb9345f76d63b": 1
+      }
+    },
+    {
+      "file": ".github/workflows/interrupted-install-ci.yml",
+      "rule": "AV007",
+      "severity": "error",
+      "reason": "CI-only workflow step on a hosted runner; never shipped.",
+      "digests": {
+        "a4c6f56972c67e39": 1
+      }
+    },
+    {
+      "file": ".github/workflows/release-desktop.yml",
+      "rule": "AV006",
+      "severity": "error",
+      "reason": "Release runner re-enables real-time protection and verifies it before signing; it turns protection on, not off.",
+      "digests": {
+        "b71c6cab34cf5f0a": 1
+      }
+    },
+    {
+      "file": ".github/workflows/studio-windows-api-smoke.yml",
+      "rule": "AV006",
+      "severity": "error",
+      "reason": "Hosted runner excludes its own throwaway workspace to keep smoke timings stable; never on a user machine.",
+      "digests": {
+        "f4108753aa3288a5": 1
+      }
+    },
+    {
+      "file": ".github/workflows/studio-windows-inference-smoke.yml",
+      "rule": "AV006",
+      "severity": "error",
+      "reason": "Hosted runner excludes its own throwaway workspace to keep smoke timings stable; never on a user machine.",
+      "digests": {
+        "5bd7fdc61ce28c49": 1,
+        "f4108753aa3288a5": 1
+      }
+    },
+    {
+      "file": ".github/workflows/studio-windows-inference-smoke.yml",
+      "rule": "AV015",
+      "severity": "warn",
+      "reason": "pre-existing warning",
+      "digests": {
+        "5713a6ca35ae670f": 2,
+        "cd9e19e6cca8085a": 1
+      }
+    },
+    {
+      "file": ".github/workflows/studio-windows-ui-smoke.yml",
+      "rule": "AV006",
+      "severity": "error",
+      "reason": "Hosted runner excludes its own throwaway workspace to keep smoke timings stable; never on a user machine.",
+      "digests": {
+        "f4108753aa3288a5": 1
+      }
+    },
+    {
+      "file": ".github/workflows/studio-windows-update-smoke.yml",
+      "rule": "AV006",
+      "severity": "error",
+      "reason": "Hosted runner excludes its own throwaway workspace to keep smoke timings stable; never on a user machine.",
+      "digests": {
+        "f4108753aa3288a5": 1
+      }
+    },
+    {
+      "file": ".github/workflows/windows-amsi-defender-differential-ci.yml",
+      "rule": "AV006",
+      "severity": "error",
+      "reason": "The differential scan job isolates its sample root on a hosted runner so only the files under test are scored.",
+      "digests": {
+        "2cfb74adc1e8a344": 1
+      }
+    },
+    {
+      "file": ".github/workflows/windows-arm64-ci.yml",
+      "rule": "AV009",
+      "severity": "error",
+      "reason": "CI-only: puts Windows PowerShell 5.1 on PATH as pwsh on a hosted runner so the suites exercise 5.1; never on a user machine.",
+      "digests": {
+        "ae2e8afbceeae8ce": 1
+      }
+    },
+    {
+      "file": "docker/install_nvidia_toolkit.sh",
+      "rule": "AV015",
+      "severity": "warn",
+      "reason": "pre-existing warning",
+      "digests": {
+        "42ce92348eda0678": 1,
+        "4a9c6866201ba258": 1
+      }
+    },
+    {
+      "file": "install.ps1",
+      "rule": "AV014",
+      "severity": "warn",
+      "reason": "pre-existing warning",
+      "digests": {
+        "2cfe74bfc3369ef9": 1,
+        "3fafce30b11710c5": 1,
+        "86b03faf3eafc991": 1,
+        "99b67e28a901351d": 1,
+        "ab1f83398d551ed8": 1,
+        "ac64310be7ca18ff": 1,
+        "cb48a385bd96f50a": 1,
+        "d158b0257730cb65": 1,
+        "d88aee1b2f3116ee": 1,
+        "e90000fd628f2cd7": 1
+      }
+    },
+    {
+      "file": "install.sh",
+      "rule": "AV015",
+      "severity": "warn",
+      "reason": "pre-existing warning",
+      "digests": {
+        "396ce5b2636cfb5f": 1,
+        "6a971c611e09c2a9": 1,
+        "76e004ba8cc63324": 1,
+        "f17e48c0b88b0ec5": 1,
+        "f2cacc3d135ebef3": 1,
+        "fddb103187d13f57": 1
+      }
+    },
+    {
+      "file": "scripts/install_rocm_wsl_strixhalo.sh",
+      "rule": "AV015",
+      "severity": "warn",
+      "reason": "pre-existing warning",
+      "digests": {
+        "30848357c5307779": 1,
+        "989d90273bcb2930": 1
+      }
+    },
+    {
+      "file": "scripts/scan_packages.py",
+      "rule": "AV008",
+      "severity": "warn",
+      "reason": "pre-existing warning",
+      "digests": {
+        "30b0c51e124de709": 1
+      }
+    },
+    {
+      "file": "scripts/scan_packages.py",
+      "rule": "AV015",
+      "severity": "warn",
+      "reason": "pre-existing warning",
+      "digests": {
+        "0cd07d247a824a47": 1,
+        "76a8ca599ed2380e": 1
+      }
+    },
+    {
+      "file": "scripts/uninstall.ps1",
+      "rule": "AV005",
+      "severity": "error",
+      "reason": "The documented uninstall one-liner inside the script's comment-based help block, shown to the user; not executed.",
+      "digests": {
+        "ba92af1d59139a71": 1
+      }
+    },
+    {
+      "file": "scripts/uninstall.ps1",
+      "rule": "AV014",
+      "severity": "warn",
+      "reason": "pre-existing warning",
+      "digests": {
+        "041b124f94702bc7": 1,
+        "74f0b99b2aa46317": 1,
+        "9723d267517c008a": 1
+      }
+    },
+    {
+      "file": "scripts/uninstall.sh",
+      "rule": "AV015",
+      "severity": "warn",
+      "reason": "pre-existing warning",
+      "digests": {
+        "28c7167fe2356c83": 1,
+        "73d0e1bb05aa661b": 1,
+        "79c2c02c8710fa44": 1,
+        "f519cf54a936f287": 1
+      }
+    },
+    {
+      "file": "scripts/windows_sac_probe/sac-probe.ps1",
+      "rule": "AV005",
+      "severity": "error",
+      "reason": "Diagnostic probe that deliberately reproduces the documented install command to see whether Smart App Control blocks it; run by hand, never shipped in the installer.",
+      "digests": {
+        "4899e96108dbe376": 1
+      }
+    },
+    {
+      "file": "scripts/windows_sac_probe/sac-probe.ps1",
+      "rule": "AV010",
+      "severity": "warn",
+      "reason": "pre-existing warning",
+      "digests": {
+        "74c84b93d0907f5d": 1,
+        "b4b79630c0d9f326": 1
+      }
+    },
+    {
+      "file": "studio/backend/core/inference/mxc_probe.py",
+      "rule": "AV010",
+      "severity": "warn",
+      "reason": "pre-existing warning",
+      "digests": {
+        "22c445d040520d6e": 1,
+        "c2eabb5e25c9c8eb": 1,
+        "ec86aad4b375881c": 1
+      }
+    },
+    {
+      "file": "studio/backend/core/inference/tools.py",
+      "rule": "AV004",
+      "severity": "error",
+      "reason": "Comments describing the PowerShell flags the terminal tool refuses to run; they document a block, not a use.",
+      "digests": {
+        "1ada29153175670b": 1,
+        "5c66025065883052": 1
+      }
+    },
+    {
+      "file": "studio/backend/run.py",
+      "rule": "AV015",
+      "severity": "warn",
+      "reason": "pre-existing warning",
+      "digests": {
+        "1ffd8eece0ec0c54": 1
+      }
+    },
+    {
+      "file": "studio/backend/tests/test_frontend_resolution.py",
+      "rule": "AV015",
+      "severity": "warn",
+      "reason": "pre-existing warning",
+      "digests": {
+        "1ffd8eece0ec0c54": 1
+      }
+    },
+    {
+      "file": "studio/backend/tests/test_gpu_init_crash_message.py",
+      "rule": "AV010",
+      "severity": "warn",
+      "reason": "pre-existing warning",
+      "digests": {
+        "d3b526bd3b1c119f": 1
+      }
+    },
+    {
+      "file": "studio/backend/tests/test_install_mxc_prebuilt.py",
+      "rule": "AV010",
+      "severity": "warn",
+      "reason": "pre-existing warning",
+      "digests": {
+        "8a6f788a0d401150": 1,
+        "c0bacb854907ad71": 1
+      }
+    },
+    {
+      "file": "studio/backend/tests/test_llama_cpp_vulkan_probe.py",
+      "rule": "AV010",
+      "severity": "warn",
+      "reason": "pre-existing warning",
+      "digests": {
+        "eb1a5e97fdc666e3": 1,
+        "f79d3ff123892677": 1
+      }
+    },
+    {
+      "file": "studio/backend/tests/test_markerless_exec_tool_guard.py",
+      "rule": "AV015",
+      "severity": "warn",
+      "reason": "pre-existing warning",
+      "digests": {
+        "4c853e12b4ab748d": 1,
+        "b76978b306fef98e": 1
+      }
+    },
+    {
+      "file": "studio/backend/tests/test_mxc_runtime_integrity.py",
+      "rule": "AV010",
+      "severity": "warn",
+      "reason": "pre-existing warning",
+      "digests": {
+        "6e2bb4ff667665ed": 1,
+        "98a342f372a9bbea": 1,
+        "b390d350b849b6b4": 1
+      }
+    },
+    {
+      "file": "studio/backend/tests/test_mxc_windows_backend.py",
+      "rule": "AV010",
+      "severity": "warn",
+      "reason": "pre-existing warning",
+      "digests": {
+        "39dad80a9a976c8c": 1
+      }
+    },
+    {
+      "file": "studio/backend/tests/test_permission_mode.py",
+      "rule": "AV004",
+      "severity": "error",
+      "reason": "Test input: the permission gate must refuse an encoded PowerShell command.",
+      "digests": {
+        "e99a0db001ddcde2": 1
+      }
+    },
+    {
+      "file": "studio/backend/tests/test_permission_mode.py",
+      "rule": "AV008",
+      "severity": "error",
+      "reason": "Test inputs: the permission gate must refuse reads of these credential paths.",
+      "digests": {
+        "12a1ee0a4d9ed867": 1,
+        "13493e39774a1a37": 1,
+        "1458e076584582d3": 1,
+        "2a9a0fce108507d3": 1,
+        "2b8d373fb0b62d58": 1,
+        "4017d80d8b2fe223": 1,
+        "460da893022143c4": 1,
+        "4bfa334dd9a3d5c1": 1,
+        "562b5e91248d46ee": 1,
+        "5e67c23e00e624e0": 1,
+        "70a02b742ff95989": 1,
+        "70aa41e89bd8bfb8": 1,
+        "758597c4f8939489": 1,
+        "8117ff265b5dbea6": 1,
+        "8543b57bd3f723d8": 1,
+        "892917d9aa24aa4f": 1,
+        "92a140c809bc8e2d": 1,
+        "9bb1c84927f77d68": 1,
+        "c6037d9fa3542707": 1,
+        "d00223a6653c004c": 1,
+        "e26ec359dad3b91b": 1,
+        "e603acaae30227ca": 1,
+        "ed1a03ed602258f1": 1,
+        "f49d84983562abfd": 1
+      }
+    },
+    {
+      "file": "studio/backend/tests/test_permission_mode.py",
+      "rule": "AV012",
+      "severity": "warn",
+      "reason": "pre-existing warning",
+      "digests": {
+        "1c6c6c7e5558c38a": 1
+      }
+    },
+    {
+      "file": "studio/backend/tests/test_permission_mode.py",
+      "rule": "AV015",
+      "severity": "warn",
+      "reason": "pre-existing warning",
+      "digests": {
+        "2e4390737d2788c0": 1,
+        "9d108a516d44c606": 1,
+        "f2ad34f9d3f0fea3": 1
+      }
+    },
+    {
+      "file": "studio/backend/tests/test_sandbox_linux.py",
+      "rule": "AV008",
+      "severity": "error",
+      "reason": "Test inputs: the Linux sandbox must refuse reads of these credential paths.",
+      "digests": {
+        "026c56f9a7162c34": 1,
+        "3fe813193837f351": 1,
+        "62746b5fb7612c07": 1,
+        "924a42269482702d": 1,
+        "ebb56bbf6fce3dcd": 1,
+        "feb70d0825caf2a6": 2
+      }
+    },
+    {
+      "file": "studio/backend/tests/test_sandbox_tools.py",
+      "rule": "AV008",
+      "severity": "error",
+      "reason": "Test inputs: the sandbox must refuse reads of these credential paths.",
+      "digests": {
+        "02628dd4a975589a": 1,
+        "19295b9ce366ad70": 1,
+        "5edbd494bf856336": 1
+      }
+    },
+    {
+      "file": "studio/backend/tests/test_sandbox_tools.py",
+      "rule": "AV010",
+      "severity": "warn",
+      "reason": "pre-existing warning",
+      "digests": {
+        "6b2e6cca1e96c74d": 1,
+        "cb2a2dc3fbf44c1e": 1
+      }
+    },
+    {
+      "file": "studio/backend/tests/test_stt_ggml_sidecar.py",
+      "rule": "AV010",
+      "severity": "warn",
+      "reason": "pre-existing warning",
+      "digests": {
+        "90a286bc48b86062": 1
+      }
+    },
+    {
+      "file": "studio/backend/tests/test_web_fetch_extraction.py",
+      "rule": "AV015",
+      "severity": "warn",
+      "reason": "pre-existing warning",
+      "digests": {
+        "da617e7ed7d40679": 1
+      }
+    },
+    {
+      "file": "studio/backend/tests/test_windows_gpu_detection_mock.py",
+      "rule": "AV010",
+      "severity": "warn",
+      "reason": "pre-existing warning",
+      "digests": {
+        "a44f22a169c39c0a": 4
+      }
+    },
+    {
+      "file": "studio/frontend/smoke-tool-activity-main.tsx",
+      "rule": "AV015",
+      "severity": "warn",
+      "reason": "pre-existing warning",
+      "digests": {
+        "92ea77c8901aaef1": 1
+      }
+    },
+    {
+      "file": "studio/frontend/src/components/web/update-banner.tsx",
+      "rule": "AV015",
+      "severity": "warn",
+      "reason": "pre-existing warning",
+      "digests": {
+        "713247b6f07ebe9b": 1
+      }
+    },
+    {
+      "file": "studio/frontend/src/features/settings/components/update-studio-instructions.tsx",
+      "rule": "AV015",
+      "severity": "warn",
+      "reason": "pre-existing warning",
+      "digests": {
+        "23b70253baa06ed7": 1
+      }
+    },
+    {
+      "file": "studio/install_llama_prebuilt.py",
+      "rule": "AV008",
+      "severity": "warn",
+      "reason": "pre-existing warning",
+      "digests": {
+        "ef8ebbf5fc756aa9": 1
+      }
+    },
+    {
+      "file": "studio/setup.ps1",
+      "rule": "AV014",
+      "severity": "warn",
+      "reason": "pre-existing warning",
+      "digests": {
+        "2cfe74bfc3369ef9": 1,
+        "3fafce30b11710c5": 1,
+        "99b67e28a901351d": 1,
+        "ac64310be7ca18ff": 1,
+        "d158b0257730cb65": 1,
+        "e90000fd628f2cd7": 1
+      }
+    },
+    {
+      "file": "studio/setup.sh",
+      "rule": "AV014",
+      "severity": "warn",
+      "reason": "pre-existing warning",
+      "digests": {
+        "837acb7afd134a98": 1,
+        "cb928d83f15eb75f": 1
+      }
+    },
+    {
+      "file": "studio/setup.sh",
+      "rule": "AV015",
+      "severity": "warn",
+      "reason": "pre-existing warning",
+      "digests": {
+        "043788cc1883babf": 1
+      }
+    },
+    {
+      "file": "studio/src-tauri/src/install.rs",
+      "rule": "AV007",
+      "severity": "error",
+      "reason": "A comment explaining why the Desktop spawn avoids this pair; the spawn itself uses neither.",
+      "digests": {
+        "a647c25b5c17cdf0": 1
+      }
+    },
+    {
+      "file": "studio/src-tauri/src/main.rs",
+      "rule": "AV012",
+      "severity": "warn",
+      "reason": "pre-existing warning",
+      "digests": {
+        "d27ba6931d668533": 2
+      }
+    },
+    {
+      "file": "tests/python/test_compiler_watch_temp_scan.py",
+      "rule": "AV010",
+      "severity": "warn",
+      "reason": "pre-existing warning",
+      "digests": {
+        "e3208220fb685809": 1
+      }
+    },
+    {
+      "file": "tests/python/test_windows_git_gate.py",
+      "rule": "AV010",
+      "severity": "warn",
+      "reason": "pre-existing warning",
+      "digests": {
+        "cdcb2de2d3ec856d": 1
+      }
+    },
+    {
+      "file": "tests/python/test_windows_installer_resolver_fallback.py",
+      "rule": "AV003",
+      "severity": "error",
+      "reason": "Docstring history of the resolver; names the construct that was removed.",
+      "digests": {
+        "dd96a7d7a070c0b7": 1
+      }
+    },
+    {
+      "file": "tests/python/test_windows_installer_resolver_fallback.py",
+      "rule": "AV010",
+      "severity": "warn",
+      "reason": "pre-existing warning",
+      "digests": {
+        "d6cdab68111547a1": 2,
+        "e0d245bc654b485e": 1
+      }
+    },
+    {
+      "file": "tests/python/test_windows_on_arm_python_arch.py",
+      "rule": "AV010",
+      "severity": "warn",
+      "reason": "pre-existing warning",
+      "digests": {
+        "e2c180f00d23913f": 3
+      }
+    },
+    {
+      "file": "tests/python/test_windows_python_venv_hardening.py",
+      "rule": "AV010",
+      "severity": "warn",
+      "reason": "pre-existing warning",
+      "digests": {
+        "01d96238ffe4852e": 1,
+        "4ad2663cfc4a13d9": 1,
+        "9349aa613af4a31b": 2,
+        "d90707f9b671d740": 1,
+        "de9a5cf7340b47f1": 1,
+        "ef5bcd2c0dda946e": 2,
+        "fd693c3c68e44c76": 1
+      }
+    },
+    {
+      "file": "tests/python/test_windows_setup_output_encoding.py",
+      "rule": "AV001",
+      "severity": "error",
+      "reason": "Console-less probe; the written script only runs on CI or with UNSLOTH_TEST_CONSOLE_LESS=1, since PowerShell 5.1 cannot start detached.",
+      "digests": {
+        "04ec334ebd7ea1c0": 1
+      }
+    },
+    {
+      "file": "tests/python/test_windows_setup_output_encoding.py",
+      "rule": "AV015",
+      "severity": "warn",
+      "reason": "pre-existing warning",
+      "digests": {
+        "cd9e19e6cca8085a": 2
+      }
+    },
+    {
+      "file": "tests/python/test_windows_studio_update_launcher.py",
+      "rule": "AV010",
+      "severity": "warn",
+      "reason": "pre-existing warning",
+      "digests": {
+        "f057a412d500411c": 3
+      }
+    },
+    {
+      "file": "tests/security/test_amsi_parse_probe.py",
+      "rule": "AV006",
+      "severity": "error",
+      "reason": "Asserts the CI differential job's exclusion step; test data only.",
+      "digests": {
+        "2d68e8972d6a1c12": 1
+      }
+    },
+    {
+      "file": "tests/security/test_desktop_updater_pointer.py",
+      "rule": "AV010",
+      "severity": "warn",
+      "reason": "pre-existing warning",
+      "digests": {
+        "c8b5d54dbfd02b32": 1
+      }
+    },
+    {
+      "file": "tests/security/test_release_desktop_integrity.py",
+      "rule": "AV010",
+      "severity": "warn",
+      "reason": "pre-existing warning",
+      "digests": {
+        "0fe0fa4a2b3b18cd": 1,
+        "7218f0bf6a4089e2": 1
+      }
+    },
+    {
+      "file": "tests/security/test_release_desktop_signing_simulation.py",
+      "rule": "AV010",
+      "severity": "warn",
+      "reason": "pre-existing warning",
+      "digests": {
+        "2fdcf628756ba8dc": 1,
+        "3483c7db64536c68": 1,
+        "8b761ec5a78b65c4": 1
+      }
+    },
+    {
+      "file": "tests/security/test_scan_npm_packages.py",
+      "rule": "AV015",
+      "severity": "warn",
+      "reason": "pre-existing warning",
+      "digests": {
+        "69074cc41689fad6": 1,
+        "b2c65e125fb8f1c7": 1
+      }
+    },
+    {
+      "file": "tests/security/test_windows_blocked_issue_form.py",
+      "rule": "AV004",
+      "severity": "warn",
+      "reason": "Asserts the issue form does not ask users to run an encoded command.",
+      "digests": {
+        "6d795255fea81668": 1
+      }
+    },
+    {
+      "file": "tests/sh/test_install_pipe_safety.sh",
+      "rule": "AV015",
+      "severity": "warn",
+      "reason": "pre-existing warning",
+      "digests": {
+        "b1cd33f5796fddd9": 1
+      }
+    },
+    {
+      "file": "tests/sh/test_linux_deps_gate.sh",
+      "rule": "AV015",
+      "severity": "warn",
+      "reason": "pre-existing warning",
+      "digests": {
+        "7a5e13263e2e5f1e": 1
+      }
+    },
+    {
+      "file": "tests/sh/test_strixhalo_wsl_reroute.sh",
+      "rule": "AV015",
+      "severity": "warn",
+      "reason": "pre-existing warning",
+      "digests": {
+        "8d5cc664c0f18ce5": 1,
+        "d007dfe5b95dcee9": 1,
+        "d08d063ea93f28d2": 1
+      }
+    },
+    {
+      "file": "tests/sh/test_wsl_shortcut_script_location.sh",
+      "rule": "AV015",
+      "severity": "warn",
+      "reason": "pre-existing warning",
+      "digests": {
+        "905b2601b38deb2a": 1
+      }
+    },
+    {
+      "file": "tests/studio/install/test_cuda_repair.py",
+      "rule": "AV010",
+      "severity": "warn",
+      "reason": "pre-existing warning",
+      "digests": {
+        "312059bfc2cd7d58": 2,
+        "56526df885e9baa9": 1
+      }
+    },
+    {
+      "file": "tests/studio/install/test_desktop_capability_llama_runtime.py",
+      "rule": "AV010",
+      "severity": "warn",
+      "reason": "pre-existing warning",
+      "digests": {
+        "09f6a19217716f11": 2,
+        "0d724b232d598084": 2,
+        "5e26b59bc82e9b16": 1,
+        "81f82dc441b80317": 1
+      }
+    },
+    {
+      "file": "tests/studio/install/test_install_llama_prebuilt_logic.py",
+      "rule": "AV010",
+      "severity": "warn",
+      "reason": "pre-existing warning",
+      "digests": {
+        "48543cc4ad0b68b2": 1,
+        "4e4236d58f50d0a1": 1,
+        "68b4c793b4fb7030": 1,
+        "82258afe75c44c69": 1,
+        "b8e566baf4bcd83c": 1,
+        "d9f2ec46b3eeaa2e": 1,
+        "dbc6fa846e8ed169": 1,
+        "ffcfb82e6f7ada44": 1
+      }
+    },
+    {
+      "file": "tests/studio/install/test_install_manifest_damage.py",
+      "rule": "AV010",
+      "severity": "warn",
+      "reason": "pre-existing warning",
+      "digests": {
+        "6ef9da5d713a3ab7": 1,
+        "766b6233a1546108": 1
+      }
+    },
+    {
+      "file": "tests/studio/install/test_installed_release_backend_line.py",
+      "rule": "AV015",
+      "severity": "warn",
+      "reason": "pre-existing warning",
+      "digests": {
+        "cd9e19e6cca8085a": 1
+      }
+    },
+    {
+      "file": "tests/studio/install/test_keep_install_backcompat_9979.py",
+      "rule": "AV010",
+      "severity": "warn",
+      "reason": "pre-existing warning",
+      "digests": {
+        "0aba85a2bc216166": 1,
+        "51254a6afd836b71": 1
+      }
+    },
+    {
+      "file": "tests/studio/install/test_missing_torch_fastpath_probe.py",
+      "rule": "AV010",
+      "severity": "warn",
+      "reason": "pre-existing warning",
+      "digests": {
+        "dd58a668360122b7": 1
+      }
+    },
+    {
+      "file": "tests/studio/install/test_pr4562_bugfixes.py",
+      "rule": "AV010",
+      "severity": "warn",
+      "reason": "pre-existing warning",
+      "digests": {
+        "c1efdd71e8d9e7a0": 1
+      }
+    },
+    {
+      "file": "tests/studio/install/test_pr5940_followups.py",
+      "rule": "AV010",
+      "severity": "warn",
+      "reason": "pre-existing warning",
+      "digests": {
+        "0fce1b929928444e": 1,
+        "768e651b3c67f99a": 3,
+        "f4b62d5326d28847": 2,
+        "f6586e496ab29d88": 3
+      }
+    },
+    {
+      "file": "tests/studio/install/test_pr5940_followups.py",
+      "rule": "AV015",
+      "severity": "warn",
+      "reason": "pre-existing warning",
+      "digests": {
+        "52370cfdad7943a2": 1
+      }
+    },
+    {
+      "file": "tests/studio/install/test_rocm_gfx_spoof_7331.py",
+      "rule": "AV015",
+      "severity": "warn",
+      "reason": "pre-existing warning",
+      "digests": {
+        "1fab5f5d9e0673a5": 1,
+        "28293616b6097d3a": 1,
+        "2a4e8d7a77e550f8": 1
+      }
+    },
+    {
+      "file": "tests/studio/test_agent_guides_install_flags.py",
+      "rule": "AV015",
+      "severity": "warn",
+      "reason": "pre-existing warning",
+      "digests": {
+        "33b76e4c72851fa6": 1
+      }
+    },
+    {
+      "file": "tests/studio/test_amd_venv_repair_loop.ps1",
+      "rule": "AV015",
+      "severity": "warn",
+      "reason": "pre-existing warning",
+      "digests": {
+        "13cb166f9e45bfe2": 2
+      }
+    },
+    {
+      "file": "tests/studio/test_application_control_cli_fallback.ps1",
+      "rule": "AV015",
+      "severity": "warn",
+      "reason": "pre-existing warning",
+      "digests": {
+        "13cb166f9e45bfe2": 8,
+        "1baf2810bc578b55": 1,
+        "1f8631d1a06b9a9b": 1
+      }
+    },
+    {
+      "file": "tests/studio/test_early_python_path_resolver.ps1",
+      "rule": "AV010",
+      "severity": "warn",
+      "reason": "pre-existing warning",
+      "digests": {
+        "7cf67afe6c558551": 1
+      }
+    },
+    {
+      "file": "tests/studio/test_early_python_process_image.ps1",
+      "rule": "AV013",
+      "severity": "warn",
+      "reason": "pre-existing warning",
+      "digests": {
+        "ac9a2804eb4be972": 1
+      }
+    },
+    {
+      "file": "tests/studio/test_install_lock_excludes_aliases.ps1",
+      "rule": "AV015",
+      "severity": "warn",
+      "reason": "pre-existing warning",
+      "digests": {
+        "013871ed7b364c35": 1,
+        "59c824c5fab03dd6": 1
+      }
+    },
+    {
+      "file": "tests/studio/test_install_rollback_lifecycle.ps1",
+      "rule": "AV010",
+      "severity": "warn",
+      "reason": "pre-existing warning",
+      "digests": {
+        "a49dbf9acdf60239": 1,
+        "bded8f746784039f": 1
+      }
+    },
+    {
+      "file": "tests/studio/test_installer_av_shapes.py",
+      "rule": "AV002",
+      "severity": "error",
+      "reason": "The installer guard's own list of banned APIs.",
+      "digests": {
+        "2498e7749af546c2": 1,
+        "40d56e7752a69aaf": 1,
+        "550605efeec75c15": 1,
+        "9f9b74b660d97cec": 1
+      }
+    },
+    {
+      "file": "tests/studio/test_installer_av_shapes.py",
+      "rule": "AV003",
+      "severity": "error",
+      "reason": "The installer guard's record and patterns for the removed construct.",
+      "digests": {
+        "06ccb8a45fd2f1e7": 1,
+        "19fc8e8df6102958": 1,
+        "333dcbf6d4bd91aa": 1,
+        "579bdbd62198ffb9": 1,
+        "818a69d9b2d023e5": 1,
+        "8457f1ed887fd375": 1
+      }
+    },
+    {
+      "file": "tests/studio/test_installer_av_shapes.py",
+      "rule": "AV004",
+      "severity": "error",
+      "reason": "The installer guard's own list of banned payload forms.",
+      "digests": {
+        "8a4da199ceb127d6": 1
+      }
+    },
+    {
+      "file": "tests/studio/test_installer_av_shapes.py",
+      "rule": "AV015",
+      "severity": "warn",
+      "reason": "pre-existing warning",
+      "digests": {
+        "83ff2778073159fa": 1,
+        "91af55444ad9df5d": 1,
+        "aeb0c1cc4baf1138": 1
+      }
+    },
+    {
+      "file": "tests/studio/test_intel_registry_fallback.ps1",
+      "rule": "AV015",
+      "severity": "warn",
+      "reason": "pre-existing warning",
+      "digests": {
+        "13cb166f9e45bfe2": 1
+      }
+    },
+    {
+      "file": "tests/studio/test_nvidia_adapter_presence.ps1",
+      "rule": "AV010",
+      "severity": "warn",
+      "reason": "pre-existing warning",
+      "digests": {
+        "a317d533228e9e07": 1,
+        "c3773dfde3ad5a7f": 1,
+        "f2baccb237b39afe": 1,
+        "ff95825f5fb0b723": 1
+      }
+    },
+    {
+      "file": "tests/studio/test_nvidia_adapter_presence.ps1",
+      "rule": "AV013",
+      "severity": "warn",
+      "reason": "pre-existing warning",
+      "digests": {
+        "20676d4d68f5d1df": 1
+      }
+    },
+    {
+      "file": "tests/studio/test_nvidia_adapter_presence.ps1",
+      "rule": "AV015",
+      "severity": "warn",
+      "reason": "pre-existing warning",
+      "digests": {
+        "31fc12bfe4b96d7d": 1,
+        "89d2dd3108581042": 1,
+        "9d7ada0e33e8ac42": 1,
+        "b7dd173111351bca": 1,
+        "c10f4718984c6c27": 1
+      }
+    },
+    {
+      "file": "tests/studio/test_nvidia_library_inventory.ps1",
+      "rule": "AV003",
+      "severity": "error",
+      "reason": "Asserts the NVIDIA inventory emits nothing; a regex of the banned names.",
+      "digests": {
+        "428265cf8f0ea1e5": 1
+      }
+    },
+    {
+      "file": "tests/studio/test_nvidia_presence_xpu_timeout.ps1",
+      "rule": "AV010",
+      "severity": "warn",
+      "reason": "pre-existing warning",
+      "digests": {
+        "c59f499c6bc0d639": 1
+      }
+    },
+    {
+      "file": "tests/studio/test_nvidia_presence_xpu_timeout.ps1",
+      "rule": "AV015",
+      "severity": "warn",
+      "reason": "pre-existing warning",
+      "digests": {
+        "360cf7f95ccb2890": 1,
+        "575e4d7e477697a7": 1,
+        "6e3a00f3c0d82f17": 1,
+        "bbd6f2c63e03af61": 1,
+        "e9299388e9c28374": 1,
+        "eaa34cc2b0ef1cfa": 1
+      }
+    },
+    {
+      "file": "tests/studio/test_nvidia_python_probe_parity.ps1",
+      "rule": "AV003",
+      "severity": "error",
+      "reason": "Asserts the probe emits no type; a regex of the banned names.",
+      "digests": {
+        "588e822b25d4e8d2": 1,
+        "e85ecd18cf105ca4": 1
+      }
+    },
+    {
+      "file": "tests/studio/test_nvidia_python_probe_parity.ps1",
+      "rule": "AV015",
+      "severity": "warn",
+      "reason": "pre-existing warning",
+      "digests": {
+        "4f1375ff0de6ae6a": 1,
+        "e19e079900f6aec3": 1
+      }
+    },
+    {
+      "file": "tests/studio/test_path_probe_access_denied.ps1",
+      "rule": "AV015",
+      "severity": "warn",
+      "reason": "pre-existing warning",
+      "digests": {
+        "4568f98b1ed68c3d": 1,
+        "6a7b4d69f67d8b8a": 1,
+        "f818ff4bb7c8d794": 1
+      }
+    },
+    {
+      "file": "tests/studio/test_playwright_server_lifecycle.py",
+      "rule": "AV010",
+      "severity": "warn",
+      "reason": "pre-existing warning",
+      "digests": {
+        "9ecbacd6e0bc408f": 1
+      }
+    },
+    {
+      "file": "tests/studio/test_pwsh_calls_use_the_shared_runner.py",
+      "rule": "AV010",
+      "severity": "warn",
+      "reason": "pre-existing warning",
+      "digests": {
+        "24e7228ee8e2eabb": 1
+      }
+    },
+    {
+      "file": "tests/studio/test_rdna1_unsupported_message_8529.ps1",
+      "rule": "AV015",
+      "severity": "warn",
+      "reason": "pre-existing warning",
+      "digests": {
+        "d91b6a59134b5ee2": 1
+      }
+    },
+    {
+      "file": "tests/studio/test_setup_xpu_runtime_prereport.ps1",
+      "rule": "AV015",
+      "severity": "warn",
+      "reason": "pre-existing warning",
+      "digests": {
+        "13cb166f9e45bfe2": 3
+      }
+    },
+    {
+      "file": "tests/studio/test_uninstall_arg_guard.ps1",
+      "rule": "AV015",
+      "severity": "warn",
+      "reason": "pre-existing warning",
+      "digests": {
+        "08cf0e7814256026": 1
+      }
+    },
+    {
+      "file": "tests/studio/test_uninstall_dual_install_icon.ps1",
+      "rule": "AV015",
+      "severity": "warn",
+      "reason": "pre-existing warning",
+      "digests": {
+        "ff8193f8bf6e2a38": 1
+      }
+    },
+    {
+      "file": "tests/studio/test_uninstall_legacy_layout_gate.ps1",
+      "rule": "AV010",
+      "severity": "warn",
+      "reason": "pre-existing warning",
+      "digests": {
+        "224718ba7446930b": 1,
+        "28258fa5a98ead49": 1,
+        "6fdef93008e743d9": 1,
+        "7a2a37be40495c64": 1
+      }
+    },
+    {
+      "file": "tests/studio/test_uninstall_legacy_layout_gate.ps1",
+      "rule": "AV015",
+      "severity": "warn",
+      "reason": "pre-existing warning",
+      "digests": {
+        "ad2470208c8a6570": 2
+      }
+    },
+    {
+      "file": "tests/studio/test_uninstall_reparse_stop_roots.ps1",
+      "rule": "AV015",
+      "severity": "warn",
+      "reason": "pre-existing warning",
+      "digests": {
+        "ad2470208c8a6570": 1
+      }
+    },
+    {
+      "file": "tests/studio/test_update_release_notes.py",
+      "rule": "AV015",
+      "severity": "warn",
+      "reason": "pre-existing warning",
+      "digests": {
+        "c98cd551d4483b76": 1
+      }
+    },
+    {
+      "file": "tests/studio/test_windows_sac_probe.py",
+      "rule": "AV010",
+      "severity": "warn",
+      "reason": "pre-existing warning",
+      "digests": {
+        "b1bbb98cc19c59b1": 1
+      }
+    },
+    {
+      "file": "tests/studio/test_windows_sac_probe.py",
+      "rule": "AV015",
+      "severity": "warn",
+      "reason": "pre-existing warning",
+      "digests": {
+        "7d89fa0df467321d": 1,
+        "a4083e2a30bc3f7e": 1
+      }
+    },
+    {
+      "file": "tests/studio/test_xpu_arm64_torchaudio.ps1",
+      "rule": "AV015",
+      "severity": "warn",
+      "reason": "pre-existing warning",
+      "digests": {
+        "6928788ed766447c": 1
+      }
+    },
+    {
+      "file": "tests/studio_setup_ps1/Get-FunctionSource.ps1",
+      "rule": "AV015",
+      "severity": "warn",
+      "reason": "pre-existing warning",
+      "digests": {
+        "82bd0862ed827def": 1
+      }
+    },
+    {
+      "file": "tests/studio_setup_ps1/Studio.Setup.FastWrapperFlags.Tests.ps1",
+      "rule": "AV015",
+      "severity": "warn",
+      "reason": "pre-existing warning",
+      "digests": {
+        "cd9e19e6cca8085a": 1
+      }
+    },
+    {
+      "file": "tests/studio_setup_ps1/Studio.Setup.FindInstalledUv.Tests.ps1",
+      "rule": "AV010",
+      "severity": "warn",
+      "reason": "pre-existing warning",
+      "digests": {
+        "98500b4660a29f95": 1,
+        "e91ee550d6e7c5b7": 1
+      }
+    },
+    {
+      "file": "tests/studio_setup_ps1/Studio.Setup.FindInstalledUv.Tests.ps1",
+      "rule": "AV015",
+      "severity": "warn",
+      "reason": "pre-existing warning",
+      "digests": {
+        "cd9e19e6cca8085a": 1
+      }
+    },
+    {
+      "file": "tests/studio_setup_ps1/Studio.Setup.OfflineFastPath.Tests.ps1",
+      "rule": "AV015",
+      "severity": "warn",
+      "reason": "pre-existing warning",
+      "digests": {
+        "cd9e19e6cca8085a": 1
+      }
+    },
+    {
+      "file": "tests/studio_setup_ps1/Studio.Setup.Output.Tests.ps1",
+      "rule": "AV015",
+      "severity": "warn",
+      "reason": "pre-existing warning",
+      "digests": {
+        "cd9e19e6cca8085a": 1
+      }
+    },
+    {
+      "file": "tests/studio_setup_ps1/Studio.Setup.Vs2026.Tests.ps1",
+      "rule": "AV015",
+      "severity": "warn",
+      "reason": "pre-existing warning",
+      "digests": {
+        "cd9e19e6cca8085a": 1
+      }
+    },
+    {
+      "file": "tests/test_dill_module_by_value_fix.py",
+      "rule": "AV010",
+      "severity": "warn",
+      "reason": "pre-existing warning",
+      "digests": {
+        "1a82610110e43f25": 1
+      }
+    },
+    {
+      "file": "tests/test_installer_interactive_prompts.py",
+      "rule": "AV015",
+      "severity": "warn",
+      "reason": "pre-existing warning",
+      "digests": {
+        "e0088200f374fd8d": 1
+      }
+    },
+    {
+      "file": "tests/test_installer_shortcut_icons.py",
+      "rule": "AV010",
+      "severity": "warn",
+      "reason": "pre-existing warning",
+      "digests": {
+        "c14ad59739e692bd": 1,
+        "e00ae7f2044ea036": 1
+      }
+    },
+    {
+      "file": "tests/test_managed_tools_master_root.py",
+      "rule": "AV010",
+      "severity": "warn",
+      "reason": "pre-existing warning",
+      "digests": {
+        "043b711cf0d27d86": 1
+      }
+    },
+    {
+      "file": "unsloth_cli/commands/start.py",
+      "rule": "AV005",
+      "severity": "error",
+      "reason": "`unsloth start` runs the agent vendor's own documented installer on request, after telling the user; the text is the vendor's command.",
+      "digests": {
+        "4b8d7b4895eacb82": 1,
+        "c709a3f82ed292ba": 1
+      }
+    },
+    {
+      "file": "unsloth_cli/commands/start.py",
+      "rule": "AV015",
+      "severity": "warn",
+      "reason": "pre-existing warning",
+      "digests": {
+        "32dcdde5a81b1349": 1,
+        "36989551217b4940": 1,
+        "71d2cf5b28f85920": 1,
+        "97c95d05eeaf3469": 1,
+        "a04e2c95fe12e205": 1
+      }
+    },
+    {
+      "file": "unsloth_cli/tests/test_start.py",
+      "rule": "AV010",
+      "severity": "warn",
+      "reason": "pre-existing warning",
+      "digests": {
+        "0b44a6052fcbdd54": 1,
+        "1d560fdaad498d85": 1,
+        "228f9118c083eaa2": 1,
+        "5721b6b5e35f3d1c": 1,
+        "6d1f17e260f7df2e": 1,
+        "dd104030c4deb1b9": 3,
+        "f21a0d158613ea49": 4
+      }
+    },
+    {
+      "file": "unsloth_cli/tests/test_start.py",
+      "rule": "AV015",
+      "severity": "warn",
+      "reason": "pre-existing warning",
+      "digests": {
+        "214a9790f7527b2d": 1,
+        "a402cb480fcc420f": 1,
+        "b42889c68eeb9142": 1,
+        "de5f503917b35a1e": 1
+      }
+    },
+    {
+      "file": "unsloth_cli/tests/test_studio_update_verify.py",
+      "rule": "AV015",
+      "severity": "warn",
+      "reason": "pre-existing warning",
+      "digests": {
+        "e24396689ede4f48": 1
+      }
+    }
+  ]
+}
