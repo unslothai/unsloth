@@ -739,6 +739,14 @@ def _compiles_decode(model):
         return False
     if os.environ.get("UNSLOTH_COMPILE_DISABLE", "0") in ("1", "partial"):
         return False
+    # Mirror transformers' own auto-compile exceptions: when it will not compile the step,
+    # leave the eager decode path exactly as it was.
+    quantizer = getattr(model, "hf_quantizer", None)
+    if quantizer is not None and not getattr(quantizer, "is_compileable", False):
+        return False
+    device_map = getattr(model, "hf_device_map", None)
+    if isinstance(device_map, dict) and ({"cpu", "disk"} & set(map(str, device_map.values()))):
+        return False
     config = model.config
     model_types = (
         getattr(config, "model_type", None),

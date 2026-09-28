@@ -51,6 +51,23 @@ def test_opt_outs(monkeypatch, env):
     assert not _compiles_decode(_model("qwen3_5", "qwen3_5_text"))
 
 
+def test_uncompileable_quantizer_keeps_eager_decode():
+    model = _model("qwen3_5", "qwen3_5_text")
+    model.hf_quantizer = types.SimpleNamespace(is_compileable = False)
+    assert not _compiles_decode(model)
+    model.hf_quantizer = types.SimpleNamespace(is_compileable = True)
+    assert _compiles_decode(model)
+
+
+@pytest.mark.parametrize("device", ["cpu", "disk"])
+def test_offloaded_model_keeps_eager_decode(device):
+    model = _model("qwen3_5", "qwen3_5_text")
+    model.hf_device_map = {"model.layers.0": 0, "model.layers.1": device}
+    assert not _compiles_decode(model)
+    model.hf_device_map = {"model.layers.0": 0, "model.layers.1": 1}
+    assert _compiles_decode(model)
+
+
 def test_old_zoo_keeps_eager_decode(monkeypatch):
     monkeypatch.setattr(vision, "UNSLOTH_DECODE_COMPILE", None)
     assert not _compiles_decode(_model("qwen3_5", "qwen3_5_text"))
