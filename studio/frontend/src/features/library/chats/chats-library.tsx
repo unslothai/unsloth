@@ -63,6 +63,7 @@ import {
   Archive03Icon,
   ArchiveRestoreIcon,
   Cancel01Icon,
+  DashboardSquare01Icon,
   Delete02Icon,
   Folder01Icon,
   FolderAddIcon,
@@ -166,6 +167,14 @@ const SECTION_LABELS: Record<ChatsSection, TranslationKey> = {
   projects: "library.chats.sections.projects",
   sections: "shell.sections.sectionsHeading",
   archived: "library.chats.sections.archived",
+};
+
+const SECTION_ICONS: Record<ChatsSection, IconSvgElement> = {
+  all: DashboardSquare01Icon,
+  chats: MessageCircleIcon,
+  projects: Folder01Icon,
+  sections: LayerIcon,
+  archived: Archive03Icon,
 };
 
 const SECTION_SORTS: SortChoice<SectionSortKey>[] = [
@@ -1185,6 +1194,7 @@ export function ChatsLibrary({
               active && "font-medium text-foreground",
             )}
           >
+            <HugeiconsIcon icon={SECTION_ICONS[entry]} strokeWidth={1.75} className="size-4 shrink-0" />
             {t(SECTION_LABELS[entry])}
           </button>
         );
