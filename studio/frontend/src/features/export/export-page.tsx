@@ -213,6 +213,7 @@ export function ExportPage() {
   });
   // GGUF importance matrix (required for the IQ quants) and merged-export precision.
   const [useImatrix, setUseImatrix] = useState(false);
+  const [customImatrix, setCustomImatrix] = useState({ sourceKey: "", path: "" });
   // Merged precision: one or more MERGED_FORMATS values exported in one run; seeded like exportMethod.
   const [selectedFormats, setSelectedFormats] = useState<string[]>(() => {
     const s = useExportRuntimeStore.getState();
@@ -583,6 +584,14 @@ export function ExportPage() {
   const estimatedSize = getEstimatedSize(exportMethod, quantLevels, fp16Bytes);
   const selectedExportSource =
     sourceMode === "checkpoint" ? checkpoint : selectedSourceModel;
+  // Derived, not reset in an effect: an imatrix is calibrated for one model, so another source must not inherit it.
+  const imatrixSourceKey = JSON.stringify([
+    sourceTab,
+    sourceMode === "checkpoint" ? selectedModelIdx : null,
+    selectedExportSource,
+  ]);
+  const imatrixPath =
+    customImatrix.sourceKey === imatrixSourceKey ? customImatrix.path : "";
   const defaultSaveDirectory = useMemo(() => {
     const relative = buildRelativeSaveDirectory(
       exportMethod,
@@ -778,6 +787,7 @@ export function ExportPage() {
       isAdapter: adapterExport,
       quantLevels,
       useImatrix: effectiveImatrix,
+      imatrixPath,
       mergedSelections: selectedFormats.map((v) => ({
         ...mergedFormatPayload(v),
         label: MERGED_FORMATS.find((f) => f.value === v)?.label ?? v,
@@ -812,6 +822,7 @@ export function ExportPage() {
     isAdapter,
     quantLevels,
     effectiveImatrix,
+    imatrixPath,
     selectedFormats,
     hubMultiFormat,
     ggufAsLora,
@@ -1656,16 +1667,50 @@ export function ExportPage() {
                           </div>
                           <div className="text-xs text-muted-foreground">
                             {requiresImatrix
-                              ? "Required for the selected IQ low-bit quant. Auto-downloads the upstream Unsloth imatrix for the base model."
-                              : "Improves quant quality and unlocks the IQ low-bit quants. Auto-downloads the upstream Unsloth imatrix for the base model."}
+                              ? "Required for the selected IQ low-bit quant."
+                              : "Improves quant quality and unlocks the IQ low-bit quants."}
                           </div>
                         </div>
                         <Switch
+                          aria-label="Importance matrix (imatrix)"
                           checked={effectiveImatrix}
                           onCheckedChange={setUseImatrix}
                           disabled={requiresImatrix}
                         />
                       </div>
+                      {effectiveImatrix && (
+                        <div className="space-y-1.5">
+                          <label
+                            htmlFor="export-imatrix-path"
+                            className="text-sm font-medium"
+                          >
+                            Local imatrix file (optional)
+                          </label>
+                          <InputGroup>
+                            <InputGroupInput
+                              id="export-imatrix-path"
+                              aria-describedby="export-imatrix-path-help"
+                              placeholder="/path/to/imatrix.gguf"
+                              value={imatrixPath}
+                              onChange={(e) =>
+                                setCustomImatrix({
+                                  sourceKey: imatrixSourceKey,
+                                  path: e.target.value,
+                                })
+                              }
+                            />
+                          </InputGroup>
+                          <p
+                            id="export-imatrix-path-help"
+                            className="text-xs text-muted-foreground"
+                          >
+                            Absolute path to a .dat or .gguf imatrix file on the
+                            machine running Unsloth. Leave blank to
+                            auto-download the upstream Unsloth imatrix for the
+                            base model, if one exists.
+                          </p>
+                        </div>
+                      )}
                     </>
                   )}
                 </div>

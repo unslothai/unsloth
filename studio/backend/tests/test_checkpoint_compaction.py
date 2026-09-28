@@ -537,23 +537,70 @@ def test_a_restated_instruction_does_not_crowd_out_every_other_rule():
     assert any(item.startswith("Second standing rule") for item in items)
 
 
-def test_a_process_with_tools_disabled_never_resets(monkeypatch):
-    """`supports_tools` is the TEMPLATE's capability, not "this request gets the tool".
-
-    `--disable-tools` sets the process policy to False, so every tool is refused and the
-    checkpoint override is blocked. Resetting anyway would leave the epoch behind a tool
-    that never arrives while the header tells the model to search for what was dropped.
-    """
+def test_a_process_with_tools_disabled_still_resets(monkeypatch):
+    """`--disable-tools` keeps checkpoint resets; a per-context hard-off still refuses them."""
     from core.inference import llama_cpp
+    from state.tool_policy import tools_force_disabled
 
     monkeypatch.setattr("core.rag.conversation_archive.enabled", lambda: True)
     monkeypatch.setattr("core.rag.conversation_archive.can_archive", lambda thread_id: True)
 
-    monkeypatch.setattr("state.tool_policy.get_tool_policy", lambda: None)
+    monkeypatch.setattr("state.tool_policy._tool_policy", None)
     assert llama_cpp._can_reset_epoch("thread-1", True) is True
 
-    monkeypatch.setattr("state.tool_policy.get_tool_policy", lambda: False)
-    assert llama_cpp._can_reset_epoch("thread-1", True) is False
+    monkeypatch.setattr("state.tool_policy._tool_policy", False)
+    assert llama_cpp._can_reset_epoch("thread-1", True) is True
+
+    with tools_force_disabled():
+        assert llama_cpp._can_reset_epoch("thread-1", True) is False
+
+
+def test_disable_tools_reopens_the_loop_for_recall_only(monkeypatch):
+    """The recall loop under `--disable-tools` offers search_conversation alone."""
+    import asyncio
+    import types
+
+    import routes.inference as routes_mod
+    from state.tool_policy import tools_force_disabled
+
+    monkeypatch.setattr("state.tool_policy._tool_policy", False)
+    monkeypatch.setattr(routes_mod, "_thread_has_conversation_archive", lambda _tid: True)
+    monkeypatch.setattr(routes_mod, "_thread_has_checkpoint", lambda *_a: True)
+    monkeypatch.setattr(routes_mod, "_enabled_agent_skills", lambda: [{"name": "hf-cli"}])
+    monkeypatch.setattr("core.inference.checkpoint.enabled", lambda: True)
+    monkeypatch.delenv("UNSLOTH_CONTEXT_OVERFLOW", raising = False)
+
+    payload = types.SimpleNamespace(
+        enabled_tools = ["web_search", "read_skill"],
+        rag_scope = None,
+        thread_id = "t1",
+        messages = [],
+        bypass_permissions = False,
+        context_overflow = "truncate_oldest",
+        context_policy = None,
+        deep_research_armed = True,
+    )
+    assert routes_mod._checkpoint_recall_may_enable_tools(payload) is True
+    with tools_force_disabled():
+        assert routes_mod._checkpoint_recall_may_enable_tools(payload) is False
+
+    tools = asyncio.run(
+        routes_mod._select_request_tools(
+            payload, tools_on = False, mcp_allowed = False, checkpoint_fitted = True
+        )
+    )
+    assert [tool["function"]["name"] for tool in tools] == ["search_conversation"]
+
+    monkeypatch.setattr("state.tool_policy._tool_policy", None)
+    tools = asyncio.run(
+        routes_mod._select_request_tools(
+            payload, tools_on = False, mcp_allowed = False, checkpoint_fitted = True
+        )
+    )
+    assert [tool["function"]["name"] for tool in tools] == [
+        "search_conversation",
+        "deep_research",
+    ]
 
 
 def _memory_tool_branch():

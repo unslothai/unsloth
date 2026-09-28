@@ -32,6 +32,7 @@ from loggers import get_logger
 from utils.process_lifetime import is_signalable_pid
 
 from hub.utils import state_dir
+from hub.utils.hf_errors import modelscope_missing
 from hub.utils.state_dir import RepoType
 
 logger = get_logger(__name__)
@@ -97,7 +98,11 @@ def http_size_ceiling_reason(largest_file_bytes: Optional[int]) -> Optional[str]
 
 
 def humanize_worker_error(text: str, *, largest_file_bytes: Optional[int] = None) -> str:
-    """Replace the hub's misleading >50GB dependency error with the transport limit."""
+    """Name a repo missing on ModelScope, and replace the hub's misleading >50GB dependency
+    error with the transport limit."""
+    missing = modelscope_missing(text)
+    if missing:
+        return missing
     if not text or _HTTP_SIZE_CEILING_MARKER not in text:
         return text
     reason = http_size_ceiling_reason(largest_file_bytes)
