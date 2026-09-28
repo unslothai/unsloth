@@ -1056,6 +1056,8 @@ class TestLoadHubDownloadExclusion:
             "parallel_slots",
             "is_mlx",
             "is_npu",
+            "mlx_kv_quant",
+            "mlx_kv_quant_requested",
             "mlx_kv_bits",
             "mlx_kv_bits_requested",
             "mlx_kv_quant_eligibility",
@@ -1065,6 +1067,7 @@ class TestLoadHubDownloadExclusion:
             "chat_template_override_reason",
             # Constant True: llama.cpp allocates the window it reports.
             "context_length_enforced",
+            "context_length_fitted",
             # Constant False: each slot decodes against its own window.
             "context_unbounded_when_batched",
             # Read from requested_extra_args, which is what the load was invoked
@@ -1081,7 +1084,7 @@ class TestLoadHubDownloadExclusion:
         fields = route._llama_runtime_fields(backend)
         assert fields["engine"] == "auto"
         assert fields["is_mlx"] is False
-        assert fields["mlx_kv_bits_requested"] is None
+        assert fields["mlx_kv_quant_requested"] is None
 
     def test_in_flight_marker_counts_and_normalizes_case(self):
         assert not hf_gguf_load_in_flight(REPO)

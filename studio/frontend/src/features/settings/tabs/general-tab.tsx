@@ -62,6 +62,7 @@ import { loadCloseToTray, updateCloseToTray } from "../api/close-to-tray";
 import { loadLaunchAtLogin, updateLaunchAtLogin } from "../api/launch-at-login";
 import { useIsAccountOwner } from "@/features/auth";
 import {
+  LIBRARY_CHATS_PREFS_STORAGE_KEY,
   LIBRARY_SETTINGS_STORAGE_KEY,
   LIBRARY_VIEW_STORAGE_KEY,
 } from "@/features/library";
@@ -102,6 +103,7 @@ const PREFS_KEYS: string[] = [
   "unsloth_sidebar_navigate_open",
   LIBRARY_SETTINGS_STORAGE_KEY,
   LIBRARY_VIEW_STORAGE_KEY,
+  LIBRARY_CHATS_PREFS_STORAGE_KEY,
   // Grouping, sort and the manual row order.
   SIDEBAR_ORGANIZATION_STORAGE_KEY,
   "unsloth_settings_active_tab",

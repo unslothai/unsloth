@@ -54,7 +54,7 @@ export function loadedConfigSignature(
     config.customContextLength ?? "",
     config.maxSeqLength ?? "",
     config.kvCacheDtype ?? "",
-    config.mlxKvBits ?? "",
+    config.mlxKvQuant ?? "",
     config.speculativeType ?? "",
     config.specDraftNMax ?? "",
     config.specDraftCacheDtype ?? "",
