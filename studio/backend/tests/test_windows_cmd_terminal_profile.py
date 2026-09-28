@@ -303,6 +303,19 @@ def test_approval_reads_a_cmd_command_the_way_cmd_splits_it(windows, monkeypatch
     assert tools._terminal_is_high_risk(command) is False  # bash keeps the whole thing one argument
 
 
+def test_cmd_echo_off_prefix_does_not_hide_the_command(windows, monkeypatch, tmp_path):
+    windows(bash_cap = _cap(False, MSYS), cmd_cap = _cap(True))
+    monkeypatch.setattr(
+        tools, "_BLOCKED_COMMANDS", tools._BLOCKED_COMMANDS_COMMON | tools._BLOCKED_COMMANDS_WIN
+    )
+    for command in ("@rmdir /s /q x", "echo a & @@rmdir x", "(@rmdir x)"):
+        plan, result = _exec(monkeypatch, tmp_path, command)
+        assert plan is None
+        assert result.startswith("Blocked command(s) for safety: rmdir"), result
+    assert tools._terminal_is_high_risk("@del /q victim.txt") is True
+    assert tools._cmd_reading("git log @{u} user@example.com") == "git log {u} user@example.com"
+
+
 def test_host_launches_keep_cmd_quoting(monkeypatch):
     monkeypatch.setattr(mxc_policy, "_system_cmd", lambda: r"C:\Windows\System32\cmd.exe")
     assert mxc_policy.host_spawn_args(["cmd", "/c", 'type "a b.txt"']) == (

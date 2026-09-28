@@ -5719,9 +5719,13 @@ def _command_references_sensitive(command: str) -> bool:
     return any(_glob_hits_sensitive(c) or _references_sensitive_path(c) for c in candidates)
 
 
+_CMD_ECHO_OFF_RE = re.compile(r"(?<![^\s&|()])@+")
+
+
 def _cmd_reading(command: str) -> str:
-    """How cmd splits a command for the POSIX classifiers: ' is an ordinary character and ^ only escapes."""
-    return command.replace("^", "").replace("'", " ")
+    """How cmd splits a command for the POSIX classifiers: ' is an ordinary character, ^ only escapes
+    and a leading @ only turns the echo off."""
+    return _CMD_ECHO_OFF_RE.sub("", command.replace("^", "").replace("'", " "))
 
 
 def _reads_differently_under_cmd(command: str) -> bool:
