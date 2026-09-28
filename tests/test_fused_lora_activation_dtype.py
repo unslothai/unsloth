@@ -88,3 +88,46 @@ def test_autocast_probe_uses_the_torch_device_name():
         assert U.torch_is_autocast_enabled() in (True, False)
     finally:
         U._AUTOCAST_PROBE = saved
+
+
+def _nf4(W):
+    import bitsandbytes as bnb
+    p = bnb.nn.Params4bit(W.cpu(), requires_grad = False, quant_type = "nf4").cuda()
+    return p, p.quant_state
+
+
+@_gpu
+@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs a real accelerator")
+@pytest.mark.parametrize(
+    "x_dtype,w_dtype,quant",
+    [
+        (torch.float32, torch.bfloat16, False),
+        (torch.float32, torch.bfloat16, True),
+        (torch.bfloat16, torch.float16, False),
+        (torch.float32, torch.float32, True),
+    ],
+)
+def test_lora_w_backward_mixed_dtypes(x_dtype, w_dtype, quant):
+    from unsloth.kernels.fast_lora import LoRA_W
+    from unsloth.kernels.utils import fast_dequantize
+
+    X, W, A, B = _operands(x_dtype, w_dtype, torch.float32)
+    W_ref = W.float()
+    W_quant = None
+    if quant:
+        W, W_quant = _nf4(W)
+        # fp32 NF4 used to run the bf16 kernel into an fp32 buffer and return garbage.
+        W_ref = fast_dequantize(W, W_quant).float().clone()
+    X = X.view(2, ROWS // 2, D_IN).requires_grad_()
+    A.requires_grad_()
+    B.requires_grad_()
+    out = LoRA_W.apply(X, W, W_quant, A, B, S)
+    grad = torch.randn_like(out)
+    out.backward(grad)
+    assert X.grad.dtype == x_dtype
+
+    X2, A2, B2 = (t.detach().float().requires_grad_() for t in (X, A, B))
+    ref = _reference(X2, W_ref, A2, B2)
+    ref.backward(grad.float())
+    for got, want in ((out, ref), (X.grad, X2.grad), (A.grad, A2.grad), (B.grad, B2.grad)):
+        torch.testing.assert_close(got.float(), want, rtol = 5e-2, atol = 5e-2)
