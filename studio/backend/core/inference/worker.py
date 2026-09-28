@@ -23,14 +23,119 @@ import time
 import traceback
 from io import BytesIO
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 logger = get_logger(__name__)
 from core.inference.audio_errors import AUDIO_UNSUPPORTED_CODE
+from core.inference.context_refusal import ContextBudgetExceeded
 from utils.hardware import apply_gpu_ids, is_apple_silicon
 
 # Fresh spawned interpreter: re-apply the OS-trust-store injection.
 from utils.native_tls import activate_native_tls
+
+
+_ID_BYTES = 36
+
+_SLOTS = 256
+
+
+class StopLedger:
+    """The request ids the parent has stopped, and whether the worker reads them."""
+
+    def __init__(self, ctx: Any):
+        self._lock = ctx.Lock()
+        self._slots = ctx.Array("c", _SLOTS * _ID_BYTES, lock = False)
+        self._read_by_worker = ctx.Value("b", 0, lock = False)
+        self._written = ctx.Value("l", 0, lock = False)
+
+    def worker_reads_this(self) -> None:
+        """Said once by the worker, as it enters the loop that reads names from here."""
+        self._read_by_worker.value = 1
+
+    def read_by_worker(self) -> bool:
+        return bool(self._read_by_worker.value)
+
+    def stop(self, request_id: str) -> bool:
+        """Record a stop. False for an id no slot could hold."""
+        entry = _entry(request_id)
+        if entry is None:
+            return False
+        with self._lock:
+            if not self._holds(entry):
+                start = (self._written.value % _SLOTS) * _ID_BYTES
+                self._slots[start : start + _ID_BYTES] = entry
+                self._written.value += 1
+        return True
+
+    def snapshot(self, since: int = -1) -> tuple[int, Optional[set]]:
+        written = self._written.value
+        if written == since:
+            return written, None
+        with self._lock:
+            written = self._written.value
+            raw = bytes(self._slots)
+        return written, {
+            raw[start : start + _ID_BYTES].rstrip(b"\0").decode("utf-8", "replace")
+            for start in range(0, min(written, _SLOTS) * _ID_BYTES, _ID_BYTES)
+        }
+
+    def _holds(self, entry: bytes) -> bool:
+        for slot in range(min(self._written.value, _SLOTS)):
+            start = slot * _ID_BYTES
+            if bytes(self._slots[start : start + _ID_BYTES]) == entry:
+                return True
+        return False
+
+
+def _entry(request_id: Optional[str]) -> Optional[bytes]:
+    """One slot's worth of bytes, or None for an id no slot could hold."""
+    if not request_id:
+        return None
+    entry = str(request_id).encode("utf-8", "replace")
+    if len(entry) > _ID_BYTES or b"\0" in entry:
+        return None
+    return entry.ljust(_ID_BYTES, b"\0")
+
+
+class PendingTeardowns:
+    """How many commands that end everything are on their way to the worker."""
+
+    def __init__(self, ctx: Any):
+        self._count = ctx.Value("l", 0)
+
+    def sending(self) -> None:
+        with self._count.get_lock():
+            self._count.value += 1
+
+    def unsent(self) -> None:
+        self._counted_off()
+
+    def taken(self) -> None:
+        self._counted_off()
+
+    def _counted_off(self) -> None:
+        """One fewer on its way, clamped: the two ends are different processes."""
+        with self._count.get_lock():
+            self._count.value = max(0, self._count.value - 1)
+
+    def any_in_flight(self) -> bool:
+        return self._count.value > 0
+
+
+class RowRefused(Exception):
+    """This batch will not take this reply, and is exactly as it was."""
+
+
+def narrow_load_reason(cmd: dict) -> Optional[str]:
+    """Why no batch of either kind may take this command, or None."""
+    width = int(cmd.get("parallel_slots") or 1)
+    if width <= 1:
+        return "this load decodes one reply at a time"
+    rows = len(cmd.get("rows") or [])
+    if rows > width:
+        return f"the load decodes {width} replies at once, and this asks for {rows}"
+    return None
+
 
 activate_native_tls()
 
@@ -207,10 +312,16 @@ def _needs_nemotron_trust(model_name: str, hf_token: str | None = None) -> bool:
 def _resolve_lora_4bit(mc, load_in_4bit: bool) -> bool:
     """Reconcile load_in_4bit with a LoRA adapter's recorded training method.
 
-    lora -> base is full precision (4bit off); qlora -> base is quantized (4bit
-    on); unknown method -> force off only when the base is not a -bnb-4bit repo.
+    A recorded unsloth_load_in_4bit wins; otherwise lora -> base is full precision
+    (4bit off); qlora -> base is quantized (4bit on); unknown method -> force off
+    only when the base is not a -bnb-4bit repo.
     A missing or unreadable adapter_config.json leaves the value unchanged.
     """
+    from utils.models.checkpoints import is_full_finetune_output
+
+    if load_in_4bit and not mc.is_lora and is_full_finetune_output(mc.path):
+        logger.info("Full fine-tune output has no quantization_config — setting load_in_4bit=False")
+        return False
     if not (mc.is_lora and mc.path):
         return load_in_4bit
 
@@ -223,6 +334,15 @@ def _resolve_lora_4bit(mc, load_in_4bit: bool) -> bool:
     try:
         with open(adapter_cfg_path, encoding = "utf-8-sig") as f:
             adapter_cfg = json.load(f)
+        trained_in_4bit = adapter_cfg.get("unsloth_load_in_4bit")
+        if isinstance(trained_in_4bit, bool):
+            if trained_in_4bit != load_in_4bit:
+                logger.info(
+                    "adapter_config.json says unsloth_load_in_4bit=%s — setting load_in_4bit=%s",
+                    trained_in_4bit,
+                    trained_in_4bit,
+                )
+            return trained_in_4bit
         training_method = adapter_cfg.get("unsloth_training_method")
         if training_method == "lora" and load_in_4bit:
             logger.info("adapter_config.json says lora — setting load_in_4bit=False")
@@ -451,12 +571,30 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
         # loads; a no-progress Xet download is reported as a stall so the parent
         # can respawn over HTTP. Watch model + base repos (base is the LoRA
         # download bottleneck).
+        from core.inference.model_ids import mlx_bnb_substitutions
         from utils.hf_xet_fallback import start_watchdog
 
         watch_repos = [mc.identifier]
         base = getattr(mc, "base_model", None)
         if base and str(base) != mc.identifier:
             watch_repos.append(str(base))
+
+        # Watch the repositories Zoo downloads after substitution.
+        if getattr(backend, "device", None) == "mlx":
+            substitutions = mlx_bnb_substitutions(watch_repos)
+            replacements = dict(substitutions)
+            watch_repos = list(dict.fromkeys(replacements.get(repo, repo) for repo in watch_repos))
+            for requested, mlx_base in substitutions:
+                _send_response(
+                    resp_queue,
+                    {
+                        "type": "status",
+                        "message": (
+                            f"MLX cannot read bitsandbytes 4-bit weights; "
+                            f"downloading {mlx_base} instead of {requested}"
+                        ),
+                    },
+                )
 
         heartbeat_stop = start_watchdog(
             repo_ids = watch_repos,
@@ -478,7 +616,7 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
             if getattr(backend, "device", None) == "mlx":
                 load_kwargs["parallel_mode"] = config.get("mlx_parallel_mode")
                 load_kwargs["distributed_group"] = config.get("_mlx_distributed_group")
-                load_kwargs["kv_bits"] = config.get("mlx_kv_bits")
+                load_kwargs["kv_quant"] = config.get("mlx_kv_quant")
                 load_kwargs["chat_template_override"] = config.get("chat_template_override")
             success = backend.load_model(**load_kwargs)
         finally:
@@ -496,6 +634,7 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                 "is_audio": getattr(mc, "is_audio", False),
                 "audio_type": getattr(mc, "audio_type", None),
                 "has_audio_input": getattr(mc, "has_audio_input", False),
+                "can_batch": _load_can_batch(backend),
             }
             _bm = getattr(backend, "models", {}) or {}
             _entry = (
@@ -508,6 +647,7 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                 "native_context_length",
                 "max_context_length",
                 "requested_context_length",
+                "mlx_context_budget",
             ):
                 try:
                     _ctx_value = _entry.get(_ctx_field)
@@ -532,8 +672,11 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                 {
                     k: _entry[k]
                     for k in (
+                        "context_unbounded_when_batched",
                         "mlx_kv_bits",
                         "mlx_kv_bits_requested",
+                        "mlx_kv_quant",
+                        "mlx_kv_quant_requested",
                         "mlx_kv_quant_eligibility",
                         "mlx_kv_quant_reason",
                         "mlx_kv_quant_note",
@@ -624,6 +767,86 @@ def _drain_skip_generate(
     return True
 
 
+def _abandon_held_commands(held: list, resp_queue: Any) -> None:
+    while held:
+        _abandon_one(held.pop(0), resp_queue)
+
+
+class _Stops:
+    def __init__(self, stop_ledger, resp_queue, batch, held: list):
+        self._ledger = stop_ledger
+        self._resp_queue = resp_queue
+        self._batch = batch
+        self._held = held
+        self._written = 0
+        self._stopped: set = set()
+
+    def answer(self) -> None:
+        self._refresh()
+        self._batch.drop_stopped(self)
+        for cmd in [held for held in self._held if held.get("request_id", "") in self]:
+            self._held.remove(cmd)
+            _abandon_one(cmd, self._resp_queue)
+
+    def _refresh(self) -> None:
+        if self._ledger is None:
+            return
+        self._written, stopped = self._ledger.snapshot(self._written)
+        if stopped is not None:
+            self._stopped = stopped
+
+    def __contains__(self, request_id) -> bool:
+        return request_id in self._stopped
+
+
+class _StopWhileItRuns:
+    def __init__(self, cancel_event, stops, request_id: str):
+        self._cancel_event = cancel_event
+        self._stops = stops
+        self._request_id = request_id
+
+    def is_set(self) -> bool:
+        if self._cancel_event is not None and self._cancel_event.is_set():
+            return True
+        self._stops.answer()
+        return self._request_id in self._stops
+
+
+_TEARDOWN_COMMANDS = frozenset({"cancel", "reset", "unload", "shutdown"})
+
+
+def _teardown_skip(cmd: dict, resp_queue: Any, pending_teardowns) -> bool:
+    if pending_teardowns is None or not pending_teardowns.any_in_flight():
+        return False
+    _abandon_one(cmd, resp_queue)
+    return True
+
+
+def _stopped_before_it_ran(cmd: dict, resp_queue: Any, stopped) -> bool:
+    stopped.answer()
+    if cmd.get("request_id", "") not in stopped:
+        return False
+    _abandon_one(cmd, resp_queue)
+    return True
+
+
+def _abandon_one(cmd: dict, resp_queue: Any) -> None:
+    logger.info(
+        "Abandoning held %s for request %s",
+        cmd.get("type", ""),
+        cmd.get("request_id", ""),
+    )
+    _send_response(
+        resp_queue,
+        {
+            "type": "gen_done",
+            "request_id": cmd.get("request_id", ""),
+            "cancelled": True,
+            "stats": None,
+        },
+    )
+
+
 def _prepare_generate_audio(cmd, resp_queue: Any, cancel_event, drain_event) -> bool:
     """Clear stale cancellation and acknowledge when this TTS command owns the worker.
 
@@ -667,67 +890,82 @@ def _backend_declares(
         return False
 
 
+def _dispatch_generate(backend, cmd: dict, resp_queue: Any, cancel_event) -> None:
+    if cmd.get("rows"):
+        _handle_generate_rows(backend, cmd, resp_queue, cancel_event)
+    else:
+        _handle_generate(backend, cmd, resp_queue, cancel_event)
+
+
+def _generation_kwargs(backend, cmd: dict, cancel_event) -> dict:
+    image = None
+    image_b64 = cmd.get("image_base64")
+    if image_b64:
+        image = _resize_image(_decode_image(image_b64))
+    images = [
+        _resize_image(_decode_image(encoded))
+        for encoded in cmd.get("images_base64") or ()
+        if encoded
+    ]
+
+    gen_kwargs = {
+        "messages": cmd["messages"],
+        "system_prompt": cmd.get("system_prompt", ""),
+        "image": image,
+        "images": images,
+        "temperature": cmd.get("temperature", 0.7),
+        "top_p": cmd.get("top_p", 0.9),
+        "top_k": cmd.get("top_k", 40),
+        "min_p": cmd.get("min_p", 0.0),
+        "max_new_tokens": cmd.get("max_new_tokens", 256),
+        "repetition_penalty": cmd.get("repetition_penalty", 1.0),
+        "presence_penalty": cmd.get("presence_penalty", 0.0),
+        "cancel_event": cancel_event,
+    }
+
+    for opt_key in (
+        "tools",
+        "enable_thinking",
+        "reasoning_effort",
+        "preserve_thinking",
+        "continue_final_message",
+    ):
+        if opt_key in cmd:
+            gen_kwargs[opt_key] = cmd[opt_key]
+
+    if cmd.get("image_ordinal") is not None and _backend_declares(backend, "image_ordinal"):
+        gen_kwargs["image_ordinal"] = cmd["image_ordinal"]
+
+    for gated in (
+        "seed",
+        "frequency_penalty",
+        "logit_bias",
+        "stop",
+        "tool_protocol_active",
+        "response_format",
+        "reasoning_is_extracted",
+    ):
+        if gated in cmd and _backend_declares(backend, gated):
+            gen_kwargs[gated] = cmd[gated]
+    if cmd.get("video_base64"):
+        if not _backend_declares(backend, "video"):
+            raise RuntimeError("The loaded backend does not read video.")
+        gen_kwargs["video"] = cmd["video_base64"]
+
+    return gen_kwargs
+
+
 def _handle_generate(backend, cmd: dict, resp_queue: Any, cancel_event) -> None:
     """Handle a generate command: stream tokens back via resp_queue.
 
-    cancel_event is an mp.Event the parent can set anytime (user stop, or new
-    model load mid-generate); generation stops within 1-2 tokens.
+    cancel_event is asked between tokens; what it answers for depends on the caller --
+    the batching loop passes something reading both the record and the shared event, the
+    one-at-a-time loop the shared event alone. Nothing is asked during the prefill.
     """
     request_id = cmd.get("request_id", "")
 
     try:
-        image = None
-        image_b64 = cmd.get("image_base64")
-        if image_b64:
-            image = _resize_image(_decode_image(image_b64))
-        images = [
-            _resize_image(_decode_image(encoded))
-            for encoded in cmd.get("images_base64") or ()
-            if encoded
-        ]
-
-        gen_kwargs = {
-            "messages": cmd["messages"],
-            "system_prompt": cmd.get("system_prompt", ""),
-            "image": image,
-            "images": images,
-            "temperature": cmd.get("temperature", 0.7),
-            "top_p": cmd.get("top_p", 0.9),
-            "top_k": cmd.get("top_k", 40),
-            "min_p": cmd.get("min_p", 0.0),
-            "max_new_tokens": cmd.get("max_new_tokens", 256),
-            "repetition_penalty": cmd.get("repetition_penalty", 1.0),
-            "presence_penalty": cmd.get("presence_penalty", 0.0),
-            "cancel_event": cancel_event,
-        }
-
-        # Forward only present optional keys so the backend signature can evolve.
-        for opt_key in (
-            "tools",
-            "enable_thinking",
-            "reasoning_effort",
-            "preserve_thinking",
-            "continue_final_message",
-        ):
-            if opt_key in cmd:
-                gen_kwargs[opt_key] = cmd[opt_key]
-
-        if cmd.get("image_ordinal") is not None and _backend_declares(backend, "image_ordinal"):
-            gen_kwargs["image_ordinal"] = cmd["image_ordinal"]
-
-        # Not every backend declares these (transformers declares only ``stop``)
-        # and none takes **kwargs, so forwarding unconditionally would turn a
-        # backend's documented "ignores them" behavior into a TypeError.
-        # ``tool_protocol_active`` rides here rather than above: MLX declares no such
-        # parameter and takes no **kwargs, so an unconditional forward would raise.
-        for gated in ("seed", "frequency_penalty", "logit_bias", "stop", "tool_protocol_active"):
-            if gated in cmd and _backend_declares(backend, gated):
-                gen_kwargs[gated] = cmd[gated]
-        # A clip cannot be dropped like an unknown sampling knob: the answer would ignore it.
-        if cmd.get("video_base64"):
-            if not _backend_declares(backend, "video"):
-                raise RuntimeError("The loaded backend does not read video.")
-            gen_kwargs["video"] = cmd["video_base64"]
+        gen_kwargs = _generation_kwargs(backend, cmd, cancel_event)
 
         use_adapter = cmd.get("use_adapter")
         if use_adapter is not None:
@@ -742,7 +980,6 @@ def _handle_generate(backend, cmd: dict, resp_queue: Any, cancel_event) -> None:
 
         try:
             for cumulative_text in generator:
-                # cancel_event is an mp.Event - checked instantly, no queue polling.
                 if cancel_event.is_set():
                     logger.info("Generation cancelled for request %s", request_id)
                     break
@@ -774,15 +1011,7 @@ def _handle_generate(backend, cmd: dict, resp_queue: Any, cancel_event) -> None:
 
     except Exception as exc:
         logger.error("Generation error: %s", exc, exc_info = True)
-        _send_response(
-            resp_queue,
-            {
-                "type": "gen_error",
-                "request_id": request_id,
-                "error": str(exc),
-                "stack": traceback.format_exc(limit = 20),
-            },
-        )
+        _send_response(resp_queue, _generation_error_payload(request_id, exc))
 
 
 def _handle_count_tokens(backend, cmd: dict, resp_queue: Any) -> None:
@@ -819,16 +1048,358 @@ def _handle_count_tokens(backend, cmd: dict, resp_queue: Any) -> None:
     )
 
 
-def _decline_count_tokens(cmd: dict, resp_queue: Any) -> None:
+def _decline_count_tokens(
+    cmd: dict,
+    resp_queue: Any,
+    reason: str = "Counting is not supported on the transformers backend.",
+) -> None:
     """Answer a count this backend cannot serve; dropping it costs the caller its timeout."""
     _send_response(
         resp_queue,
         {
             "type": "count_tokens_response",
             "request_id": cmd.get("request_id"),
-            "error": "Counting is not supported on the transformers backend.",
+            "error": reason,
         },
     )
+
+
+def _load_can_batch(backend) -> bool:
+    """Whether this load serves several replies at once at all."""
+    fixed = getattr(backend, "batch_unavailable_reason", None)
+    resident = getattr(backend, "resident_unavailable_reason", None)
+    return (callable(fixed) and fixed([{}, {}]) is None) or (
+        callable(resident) and resident({}) is None
+    )
+
+
+def _rows_apart(backend, requests, cancel_event, stats: list):
+    """A declined batch served reply by reply, as the batch's own (row, snapshot) events."""
+    for row, request in enumerate(requests):
+        if not cancel_event.is_set():
+            generator = backend.generate_chat_response(
+                **{
+                    name: value
+                    for name, value in request.items()
+                    if _backend_declares(backend, name)
+                },
+                cancel_event = cancel_event,
+            )
+            try:
+                for cumulative_text in generator:
+                    if cancel_event.is_set():
+                        break
+                    yield row, cumulative_text
+            finally:
+                close = getattr(generator, "close", None)
+                if callable(close):
+                    close()
+            stats[row] = getattr(backend, "last_generation_stats", None)
+        yield row, None
+
+
+def _handle_generate_rows(backend, cmd: dict, resp_queue: Any, cancel_event) -> None:
+    request_id = cmd.get("request_id", "")
+    rows = cmd.get("rows") or []
+
+    try:
+        shared = _generation_kwargs(backend, cmd, cancel_event)
+        shared.pop("cancel_event", None)
+        requests = [{**shared, **row} for row in rows]
+
+        reason = narrow_load_reason(cmd)
+        if reason is None:
+            unavailable = getattr(backend, "batch_unavailable_reason", None)
+            reason = unavailable(requests) if callable(unavailable) else "backend cannot batch"
+        if reason is not None:
+            logger.info(
+                "Declining %d replies in one command for request_id=%s: %s",
+                len(requests),
+                request_id,
+                reason,
+            )
+            stats = [None] * len(requests)
+            events = _rows_apart(backend, requests, cancel_event, stats)
+        else:
+            logger.info(
+                "Starting batched generation for request_id=%s rows=%d",
+                request_id,
+                len(requests),
+            )
+            stats = None
+            events = backend.generate_chat_batch(requests, cancel_event = cancel_event)
+        try:
+            for row, snapshot in events:
+                if snapshot is None:
+                    reported = backend.last_batch_generation_stats if stats is None else stats
+                    message = {"type": "row_done", "stats": reported[row]}
+                else:
+                    message = {"type": "token", "text": snapshot}
+                _send_response(resp_queue, {**message, "request_id": request_id, "row": row})
+        finally:
+            close = getattr(events, "close", None)
+            if callable(close):
+                close()
+
+        _send_response(
+            resp_queue,
+            {"type": "gen_done", "request_id": request_id, "stats": None},
+        )
+
+    except Exception as exc:
+        logger.error("Multi-reply generation error: %s", exc, exc_info = True)
+        _send_response(resp_queue, _generation_error_payload(request_id, exc))
+
+
+def _admitted_width(cmd: dict) -> int:
+    return max(1, int(cmd.get("parallel_slots") or 1))
+
+
+def _held_head_leaves_the_hold(batch: "_ResidentBatch", held: list) -> bool:
+    """Whether the head comes off the hold on this pass; the batch can still turn it away."""
+    if not held:
+        return False
+    if not batch.rows_in_flight:
+        return True
+    head = held[0]
+    return head.get("type") == "generate" and batch.unavailable_reason(head) is None
+
+
+class _ResidentBatch:
+    """The replies an MLX worker is decoding at once."""
+
+    def __init__(self, backend, resp_queue: Any):
+        self.backend = backend
+        self.resp_queue = resp_queue
+        self.session = None
+        self.width = None
+        self._owed: dict = {}
+        self._refused: set = set()
+
+    @property
+    def rows_in_flight(self) -> int:
+        return self.session.rows_in_flight if self.session is not None else 0
+
+    def _live(self, request_id: str) -> list:
+        if self.session is None:
+            return []
+        return [handle for handle in self.session.handles if handle[0] == request_id]
+
+    def unavailable_reason(self, cmd: dict) -> Optional[str]:
+        if cmd.get("request_id", "") in self._refused:
+            return "this batch has already refused these replies"
+        if cmd.get("use_adapter") is not None:
+            return "the reply asks for a particular adapter state"
+        reason = narrow_load_reason(cmd)
+        if reason is not None:
+            return reason
+        if self.width is not None and self.width != _admitted_width(cmd):
+            # A command at another width waits for the batch to drain: joining at the old
+            # one would refill the batch, so a narrowed load never reaches its new width.
+            return "the open batch is decoding at a different width"
+        if (
+            self.width is not None
+            and self.rows_in_flight + len(cmd.get("rows") or [None]) > self.width
+        ):
+            return "the open batch is full"
+        probe = getattr(self.backend, "resident_unavailable_reason", None)
+        if not callable(probe):
+            return "this backend has no batch a reply can join"
+        rows = cmd.get("rows") or []
+        for request in [{**cmd, **row} for row in rows] if rows else [cmd]:
+            reason = probe(request)
+            if reason is not None:
+                return reason
+        return None
+
+    def admit(self, cmd: dict, cancel_event) -> bool:
+        request_id = cmd.get("request_id", "")
+        rows = cmd.get("rows") or []
+        shared = _generation_kwargs(self.backend, cmd, cancel_event)
+        shared.pop("cancel_event", None)
+        requests = [{**shared, **row} for row in rows] if rows else [shared]
+
+        if self.session is None:
+            self.width = _admitted_width(cmd)
+            try:
+                self.session = self.backend.open_resident_batch(width = self.width)
+            except Exception as unopened:
+                logger.warning(
+                    "No batch could be opened for request_id=%s, decoding it alone: %s",
+                    request_id,
+                    unopened,
+                )
+                self.width = None
+                return False
+        handles = [(request_id, row if rows else None) for row in range(len(requests))]
+        self._owed[request_id] = None
+        prefixes = []
+        try:
+            for request, handle in zip(requests, handles):
+                prefixes.append((handle, self.session.admit(request, handle)))
+        except RowRefused as refusal:
+            if not self._forget(request_id, withdraw = True):
+                self._fail_all(refusal)
+                raise
+            logger.info("Request_id=%s cannot join this batch: %s", request_id, refusal)
+            self._refused.add(request_id)
+            self._close_if_empty()
+            return False
+        except BaseException as exc:
+            if self._forget(request_id, withdraw = True):
+                self._close_if_empty()
+            else:
+                self._fail_all(exc)
+            raise
+        logger.info(
+            "Admitted request_id=%s (%d replies) to a batch of %d",
+            request_id,
+            len(requests),
+            self.rows_in_flight,
+        )
+        for handle, prefix in prefixes:
+            if prefix:
+                self._send_token(handle, prefix)
+        return True
+
+    def cancel(self, request_id: str) -> bool:
+        if request_id not in self._owed:
+            return False
+        live = self._live(request_id)
+        if not live:
+            return False
+        logger.info("Cancelling request_id=%s in a batch of %d", request_id, self.rows_in_flight)
+        try:
+            for handle, snapshot in self.session.withdraw(sorted(live, key = _handle_order)):
+                self._report(handle, snapshot)
+        except Exception as exc:
+            logger.error("Batched cancellation error: %s", exc, exc_info = True)
+            self._fail_all(exc)
+            return True
+        self._close_if_empty()
+        return True
+
+    def cancel_all(self) -> None:
+        for request_id in list(self._owed):
+            self.cancel(request_id)
+
+    def drop_stopped(self, stopped) -> None:
+        for request_id in list(self._owed):
+            if request_id in stopped:
+                self.cancel(request_id)
+
+    def step(self) -> None:
+        if self.session is None or not self.session.rows_in_flight:
+            return
+        try:
+            for handle, snapshot in self.session.step():
+                self._report(handle, snapshot)
+        except Exception as exc:
+            logger.error("Batched generation error: %s", exc, exc_info = True)
+            self._fail_all(exc)
+            return
+        self._close_if_empty()
+
+    def _fail_all(self, exc: BaseException) -> None:
+        """Give up on the batch: every request in it is owed an error, not silence."""
+        stack = traceback.format_exc(limit = 20)
+        for request_id in list(self._owed):
+            self._fail(request_id, exc, stack)
+        self.close()
+
+    def _close_if_empty(self) -> None:
+        if self.session is not None and not self.session.rows_in_flight:
+            self.close()
+
+    def close(self) -> None:
+        ending = (
+            {handle[0] for handle in self.session.ending} if self.session is not None else set()
+        )
+        for request_id in [r for r in self._owed if r in ending]:
+            self._end(request_id, cancelled = True)
+        session, self.session = self.session, None
+        self.width = None
+        self._owed.clear()
+        self._refused.clear()
+        if session is None:
+            return
+        try:
+            session.close()
+        except Exception:
+            logger.error("Could not close the resident batch", exc_info = True)
+
+    def _report(self, handle, snapshot) -> None:
+        request_id, row = handle
+        if request_id not in self._owed:
+            self._take_stats(handle)
+            return
+        if snapshot is not None:
+            self._send_token(handle, snapshot)
+            return
+        if row is not None:
+            _send_response(
+                self.resp_queue,
+                {
+                    "type": "row_done",
+                    "request_id": request_id,
+                    "row": row,
+                    "stats": self._take_stats(handle),
+                },
+            )
+        if not self._live(request_id):
+            self._end(request_id)
+
+    def _send_token(self, handle, text) -> None:
+        request_id, row = handle
+        event = {"type": "token", "request_id": request_id, "text": text}
+        if row is not None:
+            event["row"] = row
+        _send_response(self.resp_queue, event)
+
+    def _end(
+        self,
+        request_id: str,
+        *,
+        cancelled: bool = False,
+    ) -> None:
+        """Answer a request's gen_done; cancelled when it ends with its batch, not a reply."""
+        stats = self._take_stats((request_id, None))
+        self._forget(request_id, withdraw = False)
+        event = {"type": "gen_done", "request_id": request_id, "stats": stats}
+        if cancelled:
+            event["cancelled"] = True
+        _send_response(self.resp_queue, event)
+        logger.info("Ended request_id=%s (cancelled=%s)", request_id, cancelled)
+
+    def _fail(self, request_id: str, exc: BaseException, stack: str) -> None:
+        self._forget(request_id, withdraw = False)
+        _send_response(
+            self.resp_queue, {**_generation_error_payload(request_id, exc), "stack": stack}
+        )
+
+    def _forget(self, request_id: str, *, withdraw: bool) -> bool:
+        """Stop answering for a request. False where taking its rows back failed."""
+        live = self._live(request_id)
+        self._owed.pop(request_id, None)
+        taken_back = True
+        if withdraw and live:
+            try:
+                for _handle, _snapshot in self.session.withdraw(sorted(live, key = _handle_order)):
+                    pass
+            except Exception:
+                logger.error("Could not withdraw rows for request_id=%s", request_id, exc_info = True)
+                taken_back = False
+        for handle in live:
+            self._take_stats(handle)
+        return taken_back
+
+    def _take_stats(self, handle):
+        return self.session.take_stats(handle) if self.session is not None else None
+
+
+def _handle_order(handle):
+    _request_id, row = handle
+    return -1 if row is None else row
 
 
 def _handle_share_object(backend, cmd: dict, resp_queue: Any) -> None:
@@ -1015,15 +1586,26 @@ def _handle_generate_audio_input(backend, cmd: dict, resp_queue: Any, cancel_eve
 
     except Exception as exc:
         logger.error("Audio input generation error: %s", exc, exc_info = True)
-        _send_response(
-            resp_queue,
-            {
-                "type": "gen_error",
-                "request_id": request_id,
-                "error": str(exc),
-                "stack": traceback.format_exc(limit = 20),
-            },
-        )
+        _send_response(resp_queue, _generation_error_payload(request_id, exc))
+
+
+def _generation_error_payload(request_id, exc) -> dict:
+    """Carries a context refusal's counts so the parent can rebuild the typed error."""
+    payload = {
+        "type": "gen_error",
+        "request_id": request_id,
+        "error": str(exc),
+        # Client-safe refusals would otherwise reach the caller as a generic 500.
+        "public": bool(getattr(exc, "public", False)),
+        "openai_param": getattr(exc, "openai_param", None),
+        "stack": traceback.format_exc(limit = 20),
+    }
+    if isinstance(exc, ContextBudgetExceeded):
+        payload["context_budget"] = {
+            "request_tokens": exc.request_tokens,
+            "context_tokens": exc.context_tokens,
+        }
+    return payload
 
 
 def _handle_unload(backend, cmd: dict, resp_queue: Any) -> None:
@@ -1060,6 +1642,8 @@ def run_inference_process(
     cancel_event,
     config: dict,
     drain_event = None,
+    stop_ledger = None,
+    pending_teardowns = None,
 ) -> None:
     """Subprocess entrypoint. Persistent — runs the command loop until shutdown.
 
@@ -1072,6 +1656,11 @@ def run_inference_process(
             cancel_event (cleared at the start of every generate), it is never cleared
             here, so a generate still queued behind a cancelled one is skipped rather
             than run — the cancel survives the queue handoff.
+        stop_ledger: StopLedger in shared memory naming the requests the parent has
+            stopped. Read rather than received: a reply decoding beside others is stopped
+            by name, and a queue put is not readable the moment it returns.
+        pending_teardowns: counts the commands that end everything on their way here, so a
+            held command is answered rather than run in front of one. Read, for the same reason.
     """
     # Apply request credentials before a Hugging Face import snapshots the environment.
     _apply_worker_hf_token_environment(config)
@@ -1217,22 +1806,66 @@ def run_inference_process(
             )
             return
 
-        # Enter the same command loop as the GPU path.
         logger.info("MLX inference subprocess ready, entering command loop")
+        batch = _ResidentBatch(backend, resp_queue)
+        deferred: list[dict] = []
+        stops = _Stops(stop_ledger, resp_queue, batch, deferred)
+        if stop_ledger is not None:
+            stop_ledger.worker_reads_this()
         while True:
-            try:
-                cmd = cmd_queue.get(timeout = 1.0)
-            except _queue.Empty:
-                continue
-            except (EOFError, OSError):
-                return
+            stops.answer()
+            tearing_down = pending_teardowns is not None and pending_teardowns.any_in_flight()
+            if not tearing_down:
+                batch.step()
+            from_deferred = False
+            if _held_head_leaves_the_hold(batch, deferred):
+                cmd = deferred.pop(0)
+                from_deferred = True
+            else:
+                try:
+                    cmd = cmd_queue.get(
+                        timeout = 0.0
+                        if (batch.rows_in_flight or deferred) and not tearing_down
+                        else 1.0
+                    )
+                except _queue.Empty:
+                    continue
+                except (EOFError, OSError):
+                    batch.close()
+                    return
             if cmd is None:
                 continue
             cmd_type = cmd.get("type", "")
+            if pending_teardowns is not None and cmd_type in _TEARDOWN_COMMANDS:
+                pending_teardowns.taken()
             try:
                 if cmd_type == "generate":
                     if _drain_skip_generate(cmd, resp_queue, drain_event):
                         continue
+                    if deferred and not from_deferred:
+                        deferred.append(cmd)
+                        continue
+                    reason = batch.unavailable_reason(cmd)
+                    if reason is None:
+                        if _teardown_skip(cmd, resp_queue, pending_teardowns):
+                            continue
+                        if _stopped_before_it_ran(cmd, resp_queue, stops):
+                            continue
+                        if batch.admit(cmd, None):
+                            continue
+                        reason = "it does not prepare like the replies in the batch"
+                    if batch.rows_in_flight:
+                        logger.info(
+                            "Holding request_id=%s until the batch takes it or drains: %s",
+                            cmd.get("request_id", ""),
+                            reason,
+                        )
+                        if from_deferred:
+                            deferred.insert(0, cmd)
+                        else:
+                            deferred.append(cmd)
+                        continue
+                    batch.close()
                     cancel_event.clear()
                     # Re-check the drain after clearing: the parent sets drain_event
                     # then cancel_event for an unload, so if that pair landed between
@@ -1241,15 +1874,36 @@ def run_inference_process(
                     # which would stall the switch until the dispatcher idle-timeout.
                     if _drain_skip_generate(cmd, resp_queue, drain_event):
                         continue
-                    _handle_generate(backend, cmd, resp_queue, cancel_event)
+                    if _teardown_skip(cmd, resp_queue, pending_teardowns):
+                        continue
+                    if _stopped_before_it_ran(cmd, resp_queue, stops):
+                        continue
+                    _dispatch_generate(
+                        backend,
+                        cmd,
+                        resp_queue,
+                        _StopWhileItRuns(cancel_event, stops, cmd.get("request_id", "")),
+                    )
                 elif cmd_type == "generate_audio_input":
-                    # Drain discipline as in "generate" (see that branch).
                     if _drain_skip_generate(cmd, resp_queue, drain_event):
                         continue
+                    if batch.rows_in_flight or (deferred and not from_deferred):
+                        deferred.append(cmd)
+                        continue
+                    batch.close()
                     cancel_event.clear()
                     if _drain_skip_generate(cmd, resp_queue, drain_event):
                         continue
-                    _handle_generate_audio_input(backend, cmd, resp_queue, cancel_event)
+                    if _teardown_skip(cmd, resp_queue, pending_teardowns):
+                        continue
+                    if _stopped_before_it_ran(cmd, resp_queue, stops):
+                        continue
+                    _handle_generate_audio_input(
+                        backend,
+                        cmd,
+                        resp_queue,
+                        _StopWhileItRuns(cancel_event, stops, cmd.get("request_id", "")),
+                    )
                 elif cmd_type == "generate_audio":
                     # No TTS here, but codec checkpoints still reach this loop
                     # (dispatch is by device). Answer, or the parent waits 120s.
@@ -1271,19 +1925,33 @@ def run_inference_process(
                         },
                     )
                 elif cmd_type == "count_tokens":
-                    _handle_count_tokens(backend, cmd, resp_queue)
+                    if batch.rows_in_flight:
+                        _decline_count_tokens(cmd, resp_queue, "A generation is in progress.")
+                    else:
+                        _handle_count_tokens(backend, cmd, resp_queue)
                 elif cmd_type == "share_object":
                     _handle_share_object(backend, cmd, resp_queue)
                 elif cmd_type == "load":
+                    batch.cancel_all()
+                    batch.close()
+                    _abandon_held_commands(deferred, resp_queue)
                     if backend.active_model_name:
                         backend.unload_model(backend.active_model_name)
                     _handle_load(backend, cmd, resp_queue)
                 elif cmd_type == "unload":
+                    batch.cancel_all()
+                    batch.close()
+                    _abandon_held_commands(deferred, resp_queue)
                     _handle_unload(backend, cmd, resp_queue)
                 elif cmd_type == "cancel":
+                    batch.cancel_all()
+                    _abandon_held_commands(deferred, resp_queue)
                     cancel_event.set()
                 elif cmd_type == "reset":
+                    batch.cancel_all()
+                    batch.close()
                     cancel_event.set()
+                    _abandon_held_commands(deferred, resp_queue)
                     backend.reset_generation_state()
                     _send_response(resp_queue, {"type": "reset_ack"})
                 elif cmd_type == "gpu_memory":
@@ -1309,6 +1977,7 @@ def run_inference_process(
                         },
                     )
                 elif cmd_type == "shutdown":
+                    batch.close()
                     return
                 else:
                     # As in the GPU loop: dropping a command silently costs the
@@ -1324,15 +1993,10 @@ def run_inference_process(
                     )
             except Exception as exc:
                 logger.error("MLX command error (%s): %s", cmd_type, exc)
-                _send_response(
-                    resp_queue,
-                    {
-                        "type": "gen_error" if cmd_type == "generate" else "error",
-                        "request_id": cmd.get("request_id"),
-                        "error": str(exc),
-                        "stack": traceback.format_exc(limit = 20),
-                    },
-                )
+                _payload = _generation_error_payload(cmd.get("request_id"), exc)
+                if cmd_type != "generate":
+                    _payload["type"] = "error"
+                _send_response(resp_queue, _payload)
         return
 
     # Windows Triton check, ahead of the torchao stub below, matching the training and export workers' gate-then-stub
@@ -1519,7 +2183,7 @@ def run_inference_process(
                 # the switch until the dispatcher idle-timeout tears the subprocess down.
                 if _drain_skip_generate(cmd, resp_queue, drain_event):
                     continue
-                _handle_generate(backend, cmd, resp_queue, cancel_event)
+                _dispatch_generate(backend, cmd, resp_queue, cancel_event)
 
             elif cmd_type == "count_tokens":
                 _decline_count_tokens(cmd, resp_queue)
@@ -1545,7 +2209,6 @@ def run_inference_process(
                 _handle_unload(backend, cmd, resp_queue)
 
             elif cmd_type == "cancel":
-                # Redundant with mp.Event but handle gracefully.
                 cancel_event.set()
                 logger.info("Cancel command received")
 

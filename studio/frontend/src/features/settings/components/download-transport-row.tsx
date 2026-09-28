@@ -148,7 +148,7 @@ export function DownloadTransportRow() {
                 <TooltipContent
                   side="bottom"
                   sideOffset={6}
-                  className="max-w-[260px]"
+                  className="max-w-[calc(260px*var(--ui-space-scale,1))]"
                 >
                   {disabled && !capabilityPending
                     ? xetReason
@@ -163,14 +163,14 @@ export function DownloadTransportRow() {
           })}
         </div>
         {status ? (
-          <span className="max-w-[280px] text-right text-xs text-muted-foreground">
+          <span className="max-w-[calc(280px*var(--ui-space-scale,1))] text-right text-xs text-muted-foreground">
             {status}
           </span>
         ) : null}
         {statusReason ? (
           <span
             lang="en"
-            className="max-w-[280px] text-right text-xs text-muted-foreground/70"
+            className="max-w-[calc(280px*var(--ui-space-scale,1))] text-right text-xs text-muted-foreground/70"
           >
             {statusReason}
           </span>

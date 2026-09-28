@@ -34,6 +34,7 @@ class FakeExternalClient:
 
     def __init__(self, **kwargs):
         FakeExternalClient.last = {"ctor": kwargs, "passthrough": None}
+        self.provider_type = kwargs.get("provider_type")
 
     def stream_chat_completion(self, **kwargs):
         FakeExternalClient.last["passthrough"] = kwargs
@@ -404,6 +405,8 @@ def test_transport_cancellation_is_wired_through_the_loop():
     from core.inference.external_tool_transport import OAICompatTransport
 
     class _Stalling:
+        provider_type = "custom"
+
         def __init__(self):
             self.torn_down = False
             self.released = asyncio.Event()

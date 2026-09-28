@@ -119,6 +119,13 @@ def _load_in_flight(repo_id: str) -> bool:
             return True
     except Exception:
         pass
+    try:
+        from core.systemone.laya_runtime import loading_repo_ids
+        key = download_registry.normalize_repo_key(repo_id)
+        if any(download_registry.normalize_repo_key(r) == key for r in loading_repo_ids()):
+            return True
+    except Exception:
+        pass
     return _diffusion_load_in_flight(repo_id)
 
 
@@ -714,6 +721,7 @@ async def get_download_progress_response(
     repo_id: str,
     expected_bytes: int = 0,
     hf_token: Optional[str] = None,
+    mlx_load: bool = False,
 ) -> dict:
     """Return download progress for any HuggingFace model repo.
 
@@ -727,6 +735,26 @@ async def get_download_progress_response(
     if account_access.managed_account():
         await asyncio.to_thread(account_access.require_download_progress_access, _registry, repo_id)
         hf_token = account_access.account_hf_token(hf_token)
+    if mlx_load:
+
+        def _metadata(repo, token):
+            total, hashes, _files = cache_inventory.get_mlx_load_plan_cached(repo, token)
+            return total, hashes
+
+        def _files(repo, token):
+            return cache_inventory.get_mlx_load_plan_cached(repo, token)[2]
+
+        return await snapshot_progress.snapshot_progress_response(
+            repo_type = "model",
+            repo_id = repo_id,
+            job_key = _download_job_key(repo_id, "@mlx"),
+            expected_bytes = 0,
+            hf_token = hf_token,
+            registry = _registry,
+            metadata_resolver = _metadata,
+            expected_files_resolver = _files,
+            variant = "@mlx",
+        )
     return await snapshot_progress.snapshot_progress_response(
         repo_type = "model",
         repo_id = repo_id,
