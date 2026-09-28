@@ -66,6 +66,48 @@ if not HAS_FLEX_ATTENTION:
         A = A.reshape(bsz, q_len, n_heads * head_dim)
         return A
 
+    _compiled_slow_attention_softcapping = slow_attention_softcapping
+    _SOFTCAP_EAGER = {}
+
+    def _softcapping_attention(Q, K, V, causal_mask, self, bsz, q_len):
+        key = Q.device.type
+        if not _SOFTCAP_EAGER.get(key):
+            try:
+                return _compiled_slow_attention_softcapping(Q, K, V, causal_mask, self, bsz, q_len)
+            except torch.OutOfMemoryError:
+                raise
+            except Exception as error:
+                # ROCm torch 2.11 inductor rejects this graph (inductor::_alloc_from_pool aliasing) on gfx1151.
+                logger.warning_once(
+                    f"Unsloth: compiled Gemma2 softcapping attention failed on {key}, using eager: {error}"
+                )
+                _SOFTCAP_EAGER[key] = True
+        return _compiled_slow_attention_softcapping._torchdynamo_orig_callable(
+            Q, K, V, causal_mask, self, bsz, q_len
+        )
+
+    def slow_attention_softcapping(Q, K, V, causal_mask, self, bsz, q_len):
+        # Inductor indexes the score tensor in int32: past 2**31 elements the last rows wrap and turn NaN
+        # (torch 2.9, gemma-2-9b, 8 rows x 4305 tokens). Split the batch to stay under it.
+        rows = max(1, (2**31 - 1) // (self.config.num_attention_heads * q_len * q_len))
+        if bsz <= rows:
+            return _softcapping_attention(Q, K, V, causal_mask, self, bsz, q_len)
+        per_row_mask = causal_mask.dim() == 4 and causal_mask.shape[0] == bsz
+        return torch.cat(
+            [
+                _softcapping_attention(
+                    Q[i : i + rows],
+                    K[i : i + rows],
+                    V[i : i + rows],
+                    causal_mask[i : i + rows] if per_row_mask else causal_mask,
+                    self,
+                    min(rows, bsz - i),
+                    q_len,
+                )
+                for i in range(0, bsz, rows)
+            ]
+        )
+
     create_flex_attention_causal_mask = None
     create_flex_attention_sliding_window_mask = None
 else:
