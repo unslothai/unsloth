@@ -152,7 +152,6 @@ def _has_marlin():
     if not has_real_cuda():
         return False
     import unsloth.kernels.int4_packed as ip
-
     return bool(ip._marlin_api())
 
 
@@ -168,7 +167,13 @@ MARLIN_CASES = [
 
 def _qs(ip, packed, shape, bits, gs):
     return ip.Int4QuantState(
-        packed["weight_scale"], packed.get("weight_zero_point"), None, shape, bits, gs, torch.bfloat16
+        packed["weight_scale"],
+        packed.get("weight_zero_point"),
+        None,
+        shape,
+        bits,
+        gs,
+        torch.bfloat16,
     )
 
 

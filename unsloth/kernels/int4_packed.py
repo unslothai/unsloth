@@ -382,6 +382,8 @@ MARLIN_DEFAULT_ROWS = 32
 @functools.lru_cache(maxsize = None)
 def _marlin_max_rows(index):
     return MARLIN_MAX_ROWS.get(torch.cuda.get_device_capability(index)[0], MARLIN_DEFAULT_ROWS)
+
+
 _MARLIN_API = None
 _MARLIN_CHECKED = {}
 
@@ -399,7 +401,11 @@ def _marlin_api():
                 if not new and not hasattr(torch.ops._C, "gptq_marlin_gemm"):
                     return _MARLIN_API
                 repack_perm = "perm" in inspect.signature(ops.gptq_marlin_repack).parameters
-                types = {4: scalar_types.uint4b8, 8: scalar_types.uint8b128, "zp": scalar_types.uint4}
+                types = {
+                    4: scalar_types.uint4b8,
+                    8: scalar_types.uint8b128,
+                    "zp": scalar_types.uint4,
+                }
                 _MARLIN_API = (ops, new, repack_perm, types, {})
             except Exception:
                 pass
@@ -424,11 +430,18 @@ def _marlin_bind(api, mq, ms, mz, stype, N, K, device):
     ws = workspaces.get(device)
     if ws is None:
         empty = torch.empty(0, dtype = torch.int32, device = device)
-        ws = workspaces[device] = (torch.zeros(_sm_count(device.index or 0), dtype = torch.int32, device = device), empty)
+        ws = workspaces[device] = (
+            torch.zeros(_sm_count(device.index or 0), dtype = torch.int32, device = device),
+            empty,
+        )
     ws, empty = ws
     mz = empty if mz is None else mz
     if new:
-        return (torch.ops._C.marlin_gemm.default, (None, mq, None, ms, None, None, mz, ws, stype.id), (N, K, False, True, False))
+        return (
+            torch.ops._C.marlin_gemm.default,
+            (None, mq, None, ms, None, None, mz, ws, stype.id),
+            (N, K, False, True, False),
+        )
     return (
         torch.ops._C.gptq_marlin_gemm.default,
         (None, mq, None, ms, None, mz, empty, empty, ws, stype.id),
@@ -441,7 +454,11 @@ def _marlin_zeros(zp, N):
     G = zp.shape[1]
     shifts = torch.arange(0, 32, 4, device = zp.device, dtype = torch.int32)
     z = ((zp.t().unsqueeze(-1) >> shifts) & 15).reshape(G, N)
-    z = z.reshape(-1, 64)[:, _marlin_scale_perm(False)].reshape(-1, 8)[:, [0, 2, 4, 6, 1, 3, 5, 7]].reshape(G, N // 8, 8)
+    z = (
+        z.reshape(-1, 64)[:, _marlin_scale_perm(False)]
+        .reshape(-1, 8)[:, [0, 2, 4, 6, 1, 3, 5, 7]]
+        .reshape(G, N // 8, 8)
+    )
     out = torch.zeros((G, N // 8), dtype = torch.int32, device = zp.device)
     for i in range(8):
         out |= z[:, :, i] << (4 * i)
@@ -462,7 +479,10 @@ def _marlin_weight(x2, packed, qs):
     if (
         not api
         or bits not in api[3]
-        or (qs.zero_point is not None and (bits != 4 or channel or qs.zero_point.shape != (N // 8, K // group)))
+        or (
+            qs.zero_point is not None
+            and (bits != 4 or channel or qs.zero_point.shape != (N // 8, K // group))
+        )
         or qs.g_idx is not None
         or not (channel or group in (32, 64, 128))
         or N % 64
@@ -480,7 +500,9 @@ def _marlin_weight(x2, packed, qs):
             # compressed-tensors packs along K like GPTQ, transposed: [N, K / pf] -> GPTQ [K / pf, N].
             gptq = packed.t().contiguous()
             if repack_perm:
-                mq = ops.gptq_marlin_repack(gptq, torch.empty(0, dtype = torch.int32, device = x2.device), K, N, bits)
+                mq = ops.gptq_marlin_repack(
+                    gptq, torch.empty(0, dtype = torch.int32, device = x2.device), K, N, bits
+                )
             else:
                 mq = ops.gptq_marlin_repack(gptq, K, N, bits)
             del gptq
@@ -488,7 +510,9 @@ def _marlin_weight(x2, packed, qs):
             perm = _marlin_scale_perm(channel)
             ms = s.reshape(-1, len(perm))[:, perm].reshape(-1, N).contiguous()
             mz = None if qs.zero_point is None else _marlin_zeros(qs.zero_point, N)
-            w = _marlin_bind(api, mq, ms, mz, stypes["zp" if mz is not None else bits], N, K, x2.device)
+            w = _marlin_bind(
+                api, mq, ms, mz, stypes["zp" if mz is not None else bits], N, K, x2.device
+            )
             # Self-check once per (device, bits, group kind, dtype) against the exact decode.
             key = (x2.device, bits, channel, x2.dtype, mz is not None)
             ok = _MARLIN_CHECKED.get(key)
@@ -497,7 +521,9 @@ def _marlin_weight(x2, packed, qs):
                 probe = torch.randn(4, K, device = x2.device, dtype = x2.dtype, generator = g)
                 ref = probe.float() @ int4_dequantize(packed, qs, x2.dtype).float().t()
                 got = _marlin_call(w, probe).float()
-                ok = _MARLIN_CHECKED[key] = bool(((got - ref).abs().max() <= 1e-2 * ref.abs().max() + 1e-3).item())
+                ok = _MARLIN_CHECKED[key] = bool(
+                    ((got - ref).abs().max() <= 1e-2 * ref.abs().max() + 1e-3).item()
+                )
     except Exception:
         return None
     if not ok:
