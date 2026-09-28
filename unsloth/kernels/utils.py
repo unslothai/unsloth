@@ -336,6 +336,14 @@ _FP8_WEIGHT_DTYPES = tuple(
 )
 
 
+def _has_multiple_active_adapters(proj):
+    # Adapter activation can change after the single-adapter fast paths are installed.
+    adapters = getattr(proj, "active_adapters", None)
+    if adapters is None:
+        adapters = getattr(proj, "active_adapter", ())
+    return not isinstance(adapters, str) and len(adapters) > 1
+
+
 def get_lora_parameters(proj):
     """Return (weight, weight quant_state, lora A, lora B, lora scale).
     With QAT enabled, also fake-quantizes the base layer and lora weights.
@@ -371,7 +379,10 @@ def get_lora_parameters(proj):
     adapter = getattr(proj, "active_adapters", None)
     if adapter is None:
         adapter = getattr(proj, "active_adapter", ("default"))
-    adapter = adapter[0]
+    if not isinstance(adapter, str):
+        if len(adapter) > 1:
+            raise ValueError("Unsloth: LoRA parameter extraction requires a single active adapter.")
+        adapter = adapter[0]
 
     # Optionally apply fake quantization to lora weights for QAT.
     lora_A_linear = proj.lora_A[adapter]
@@ -422,7 +433,10 @@ def get_lora_parameters_bias(proj):
     adapter = getattr(proj, "active_adapters", None)
     if adapter is None:
         adapter = getattr(proj, "active_adapter", ("default"))
-    adapter = adapter[0]
+    if not isinstance(adapter, str):
+        if len(adapter) > 1:
+            raise ValueError("Unsloth: LoRA parameter extraction requires a single active adapter.")
+        adapter = adapter[0]
 
     return (
         W,
@@ -1043,6 +1057,9 @@ def fast_linear_forward(
     temp_lora = None,
     out = None,
 ):
+    if _has_multiple_active_adapters(proj):
+        result = proj(X)
+        return result if out is None else out.copy_(result)
     W, W_quant, lora_A, lora_B, lora_S, bias = get_lora_parameters_bias(proj)
     bsz, q_len, in_dim = X.shape
     if q_len != 1:
