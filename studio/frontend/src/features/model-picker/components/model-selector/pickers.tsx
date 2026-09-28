@@ -208,6 +208,7 @@ import {
   type CuratedBudget,
   curatedBudget,
   curatedBudgetText,
+  intelIntRecommendations,
 } from "./recommended-fit";
 import {
   ggufVariantsMatchForPicker,
@@ -4342,6 +4343,20 @@ export function HubModelPicker({
   // picker can go blank. A task-scoped picker is exempt: the image backend loads local pipelines.
   const visibleCachedModelRows = chatOnly && !task ? visibleCachedModels.filter(c => c.repo_id.toLowerCase().includes("int4") || c.repo_id.toLowerCase().includes("int8") || c.repo_id.toLowerCase().includes("openvino")) : visibleCachedModels;
 
+  // Intel GPU with a model on disk both raw and OpenVINO-converted: point at the INT variant.
+  const intelIntRecs = useMemo(
+    () => intelIntRecommendations(sortedCachedModels.map((c) => c.repo_id), gpu.backend),
+    [sortedCachedModels, gpu.backend],
+  );
+  const intelIntBanner =
+    !showHfSection && (section === "downloaded" || section === "converted") && intelIntRecs.size > 0 ? (
+      <div className="mx-3 my-2 rounded-md border border-primary/30 bg-primary/5 px-3 py-2 text-xs text-foreground">
+        <span className="font-medium">Recommended for your Intel GPU: </span>
+        {[...intelIntRecs.keys()].join(", ")}
+        <span className="text-muted-foreground"> (faster than the unconverted weights)</span>
+      </div>
+    ) : null;
+
   const visibleAdditionalOnDeviceModels = useMemo(() => {
     const alreadyListed = new Set(
       [...visibleCachedGguf, ...visibleCachedModels].map((model) =>
@@ -6392,6 +6407,7 @@ export function HubModelPicker({
               )
             ) : (
               <>
+                {intelIntBanner}
                 {/* First-load spinner only when nothing cached is shown yet. */}
                 {showDownloaded &&
                 !cachedReady &&
@@ -7251,6 +7267,8 @@ export function HubModelPicker({
                         c.repo_id.toLowerCase().includes("openvino") ||
                         c.repo_id.toLowerCase().includes("-ov")
                       );
+                      // Intel-recommended INT variants first.
+                      convertedModels.sort((a, b) => Number(intelIntRecs.has(b.repo_id)) - Number(intelIntRecs.has(a.repo_id)));
                       if (convertedModels.length === 0) {
                         return (
                           <div className="px-5 py-8 text-center text-sm text-muted-foreground">

@@ -449,3 +449,29 @@ export function curatedBudgetText(est: number, gpuGb: number, budget: CuratedBud
       : `a ${gpuGb}GB GPU`;
   return `Needs ~${needGb}GB for weights (budget: ~${budgetGb}GB, 70% of ${of})`;
 }
+
+// The Convert tool writes "<source>-ov_int4" / "<source>-ov_int8" beside the source model.
+const OV_CONVERTED_RE = /-ov_(int4|int8)$/i;
+
+/** On an Intel GPU (xpu), the OpenVINO INT variant runs far faster than the source weights, so
+ *  when both are on disk recommend the INT one. Maps each converted id to its source id; INT4 wins
+ *  over INT8 for the same source. Empty off xpu. */
+export function intelIntRecommendations(
+  ids: readonly string[],
+  backend: string | null | undefined,
+): Map<string, string> {
+  const out = new Map<string, string>();
+  if ((backend ?? "").trim().toLowerCase() !== "xpu") return out;
+  const present = new Set(ids.map((id) => id.toLowerCase()));
+  const bySource = new Map<string, string>();
+  for (const id of ids) {
+    const m = OV_CONVERTED_RE.exec(id);
+    if (!m) continue;
+    const source = id.slice(0, m.index);
+    if (!present.has(source.toLowerCase())) continue;
+    const prev = bySource.get(source);
+    if (!prev || m[1].toLowerCase() === "int4") bySource.set(source, id);
+  }
+  for (const [source, id] of bySource) out.set(id, source);
+  return out;
+}
