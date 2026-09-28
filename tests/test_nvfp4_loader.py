@@ -133,29 +133,83 @@ def test_dtype_casts_keep_the_nvfp4_storage_dtypes(ckpt, monkeypatch):
         assert module.weight.quant_state.dtype == torch.float16
 
 
-def test_peft_merge_dequantizes_the_packed_base(ckpt, monkeypatch):
+def _fp8_route_available():
+    from unsloth.models import loader_utils
+    return loader_utils._zoo_peft_forward_keeps_fp8_inputs()
+
+
+@pytest.mark.parametrize("kind", ["nvfp4", "fp8"])
+def test_peft_merge_dequantizes_the_routed_base(ckpt, kind, monkeypatch):
     # merge_and_unload / merge_adapter / merged_4bit add the dense delta into base_layer.weight.
     from peft import LoraConfig, get_peft_model
-    from unsloth.kernels.nvfp4 import nvfp4_dequantize
     from unsloth.models import loader_utils
 
-    monkeypatch.setenv("UNSLOTH_COMPRESSED_TENSORS_FP8_KERNELS", "0")
+    if kind == "fp8" and not _fp8_route_available():
+        pytest.skip("installed unsloth_zoo predates the FP8 kernel route")
+    monkeypatch.setenv("UNSLOTH_COMPRESSED_TENSORS_FP8_KERNELS", "1" if kind == "fp8" else "0")
     path, kinds = ckpt["qwen3"]
     model = _load_raw(path, "qwen3")
     loader_utils._prepare_compressed_tensors_model(model)
-    name = next(n for n, k in kinds.items() if k == "nvfp4")
+    name = next(
+        n
+        for n, k in kinds.items()
+        if k == kind and ("layers.0." if kind == "nvfp4" else "layers.1.") in n
+    )
     model = get_peft_model(model, LoraConfig(r = 4, target_modules = [name.split(".")[-1]]))
     lora = _module(model, "base_model.model." + name)
     torch.nn.init.normal_(lora.lora_B["default"].weight, std = 0.02)
-    base = lora.get_base_layer()
-    want = nvfp4_dequantize(
-        base.weight_packed, base.weight_scale, base.weight_global_scale, torch.bfloat16
-    )
+    want = loader_utils._routed_dense_weight(lora.get_base_layer())
     want += lora.get_delta_weight("default")
     merged = model.merge_and_unload()
     layer = _module(merged, name)
-    assert type(layer) is torch.nn.Linear and not hasattr(layer, "weight_packed")
+    assert type(layer) is torch.nn.Linear and layer.weight.dtype == torch.bfloat16
     assert torch.equal(layer.weight, want)
+
+
+# fp8 bases are not covered: PEFT builds DoRA's magnitude from float8 A / B before it upcasts them.
+@pytest.mark.parametrize("kind", ["nvfp4"])
+def test_dora_reads_the_dense_routed_weight(ckpt, kind, monkeypatch):
+    from peft import LoraConfig, get_peft_model
+    from unsloth.models import loader_utils
+
+    if kind == "fp8" and not _fp8_route_available():
+        pytest.skip("installed unsloth_zoo predates the FP8 kernel route")
+    monkeypatch.setenv("UNSLOTH_COMPRESSED_TENSORS_FP8_KERNELS", "1" if kind == "fp8" else "0")
+    path, kinds = ckpt["qwen3"]
+    model = _load_raw(path, "qwen3")
+    loader_utils._prepare_compressed_tensors_model(model)
+    name = next(
+        n
+        for n, k in kinds.items()
+        if k == kind and ("layers.0." if kind == "nvfp4" else "layers.1.") in n
+    )
+    model = get_peft_model(
+        model, LoraConfig(r = 4, target_modules = [name.split(".")[-1]], use_dora = True)
+    )
+    lora = _module(model, "base_model.model." + name)
+    W = loader_utils._routed_dense_weight(lora.get_base_layer()).float()
+    magnitude = lora.lora_magnitude_vector["default"].weight
+    delta = lora.get_delta_weight("default").float()
+    assert torch.allclose(magnitude.float(), (W + delta).norm(dim = 1), rtol = 1e-2)
+    out = model(input_ids = torch.randint(0, 1000, (1, 8), device = "cuda")).logits
+    assert torch.isfinite(out).all()
+
+
+def test_nvfp4_lm_head_is_decompressed(tmp_path, monkeypatch):
+    # Decode and the fused CE loss read lm_head.weight directly, so it cannot stay packed.
+    from unsloth.models import loader_utils
+
+    monkeypatch.setenv("UNSLOTH_COMPRESSED_TENSORS_FP8_KERNELS", "0")
+    kinds = fx.build(str(tmp_path), "qwen3", lm_head_kind = "nvfp4")
+    assert kinds["lm_head"] == "nvfp4"
+    model = _load_raw(str(tmp_path), "qwen3")
+    loader_utils._prepare_compressed_tensors_model(model)
+    head = model.get_output_embeddings()
+    assert head.weight.dtype == torch.bfloat16
+    assert tuple(head.weight.shape) == (model.config.vocab_size, model.config.hidden_size)
+    assert model._unsloth_compressed_tensors_nvfp4 == len(kinds) - 1 - sum(
+        k == "fp8" for k in kinds.values()
+    )
 
 
 def test_opt_out_keeps_the_full_decompress(ckpt, monkeypatch):

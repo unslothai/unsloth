@@ -64,11 +64,18 @@ _FP4 = {
 }
 
 
-def _quant_config(num_layers, lm_head, attn_targets, ignore):
+def _quant_config(
+    num_layers,
+    lm_head,
+    attn_targets,
+    ignore,
+    lm_head_kind = "fp8",
+):
     last = str(num_layers - 1)
     fp8_targets = list(attn_targets) + [r"re:.*layers\.(" + last + r")\.mlp\.(gate|up|down)_proj$"]
+    fp4_targets = [r"re:.*mlp\.(gate|up|down)_proj$"]
     if lm_head:
-        fp8_targets.append("re:.*lm_head")
+        (fp8_targets if lm_head_kind == "fp8" else fp4_targets).append("re:.*lm_head")
     fp4_act = dict(_FP4, dynamic = "local", observer = "static_minmax")
     return {
         "config_groups": {
@@ -83,7 +90,7 @@ def _quant_config(num_layers, lm_head, attn_targets, ignore):
                 "format": "nvfp4-pack-quantized",
                 "input_activations": fp4_act,
                 "output_activations": None,
-                "targets": [r"re:.*mlp\.(gate|up|down)_proj$"],
+                "targets": fp4_targets,
                 "weights": dict(_FP4, actorder = "static"),
             },
         },
@@ -160,6 +167,7 @@ def build(
     out_dir,
     arch = "qwen3",
     seed = 3407,
+    lm_head_kind = "fp8",
 ):
     """Write a tiny mixed NVFP4/FP8 checkpoint to out_dir; returns {name: kind} for every quantized Linear."""
     from safetensors.torch import save_file
@@ -210,7 +218,7 @@ def build(
         raise ValueError(arch)
 
     num_layers = config.get_text_config().num_hidden_layers
-    qcfg = _quant_config(num_layers, lm_head, attn, ignore)
+    qcfg = _quant_config(num_layers, lm_head, attn, ignore, lm_head_kind)
     fp8_targets = qcfg["config_groups"]["group_0"]["targets"]
     fp4_targets = qcfg["config_groups"]["group_1"]["targets"]
 

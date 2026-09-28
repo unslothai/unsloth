@@ -1462,6 +1462,7 @@ def _route_compressed_tensors_fp8_to_unsloth(
         except Exception:
             return 0
     converted = 0
+    compute_dtype = _fp8_dequant_target_dtype(model)
     for module, block in routable:
         scale = module.weight_scale
         scale_shape = tuple(scale.shape)
@@ -1483,9 +1484,11 @@ def _route_compressed_tensors_fp8_to_unsloth(
             module.block_size = block
         module.forward = _unsloth_compressed_tensors_fp8_forward.__get__(module)
         module._unsloth_compressed_tensors_fp8 = True
+        module._unsloth_ct_compute_dtype = compute_dtype
         converted += 1
     if converted:
         _remove_compressed_tensors_decompress_hook(model)
+        _patch_peft_for_routed_compressed_tensors()
         model._unsloth_compressed_tensors_fp8 = converted
     return converted
 
@@ -1615,25 +1618,70 @@ class _UnslothNVFP4Linear(torch.nn.Linear):
         return self
 
 
-def _patch_peft_merge_for_nvfp4():
-    """PEFT merges add the dense LoRA delta into base_layer.weight: dequantize a packed NVFP4 base first."""
+def _routed_dense_weight(module):
+    """Dense weight of an NVFP4- or FP8-routed linear, else None."""
+    if isinstance(module, _UnslothNVFP4Linear):
+        from unsloth.kernels.nvfp4 import nvfp4_dequantize
+        return nvfp4_dequantize(
+            module.weight_packed,
+            module.weight_scale,
+            module.weight_global_scale,
+            getattr(module, "_unsloth_nvfp4_dtype", torch.bfloat16),
+        )
+    if getattr(module, "_unsloth_compressed_tensors_fp8", False):
+        from unsloth.kernels.fp8 import weight_dequant
+        return weight_dequant(
+            module.weight,
+            module.weight_scale,
+            getattr(module, "_unsloth_ct_compute_dtype", torch.bfloat16),
+        )
+    return None
+
+
+def _dequantize_routed_linear_(module):
+    """Turn a routed linear into a plain nn.Linear with its dense weight, for PEFT merges."""
+    if isinstance(module, _UnslothNVFP4Linear):
+        return module.dequantize_()
+    if getattr(module, "_unsloth_compressed_tensors_fp8", False):
+        with torch.no_grad():
+            W = _routed_dense_weight(module)
+        module._parameters.pop("weight_scale", None)
+        module.__dict__.pop("forward", None)
+        module.weight = torch.nn.Parameter(W, requires_grad = False)
+        module._unsloth_compressed_tensors_fp8 = False
+    return module
+
+
+def _patch_peft_for_routed_compressed_tensors():
+    """PEFT merges add a dense delta into base_layer.weight and DoRA reads it: give both the dense weight."""
     try:
         from peft.tuners.lora import layer as lora_layer
     except Exception:
         return
     merge = lora_layer.Linear.merge
-    if getattr(merge, "_unsloth_nvfp4", False):
+    if not getattr(merge, "_unsloth_routed", False):
+
+        @functools.wraps(merge)
+        def patched_merge(self, *args, **kwargs):
+            _dequantize_routed_linear_(self.get_base_layer())
+            return merge(self, *args, **kwargs)
+
+        patched_merge._unsloth_routed = True
+        lora_layer.Linear.merge = patched_merge
+    try:
+        from peft.tuners.lora import dora
+    except Exception:
         return
+    dequantize = getattr(dora, "dequantize_module_weight", None)
+    if dequantize is not None and not getattr(dequantize, "_unsloth_routed", False):
 
-    @functools.wraps(merge)
-    def patched_merge(self, *args, **kwargs):
-        base_layer = self.get_base_layer()
-        if isinstance(base_layer, _UnslothNVFP4Linear):
-            base_layer.dequantize_()
-        return merge(self, *args, **kwargs)
+        @functools.wraps(dequantize)
+        def patched_dequantize(module):
+            W = _routed_dense_weight(module)
+            return dequantize(module) if W is None else W
 
-    patched_merge._unsloth_nvfp4 = True
-    lora_layer.Linear.merge = patched_merge
+        patched_dequantize._unsloth_routed = True
+        dora.dequantize_module_weight = patched_dequantize
 
 
 def _route_compressed_tensors_nvfp4_to_unsloth(model):
@@ -1646,6 +1694,9 @@ def _route_compressed_tensors_nvfp4_to_unsloth(model):
         from compressed_tensors.compressors import decompress_module
     except Exception:
         decompress_module = None
+    # The fused CE loss and decode read lm_head.weight directly, so an NVFP4 lm_head is decompressed too.
+    get_output_embeddings = getattr(model, "get_output_embeddings", None)
+    lm_head = get_output_embeddings() if callable(get_output_embeddings) else None
     nvfp4, others = [], []
     for module in model.modules():
         scheme = getattr(module, "quantization_scheme", None)
@@ -1653,7 +1704,11 @@ def _route_compressed_tensors_nvfp4_to_unsloth(model):
             continue
         if str(getattr(getattr(module, "quantization_status", None), "value", "")) != "compressed":
             continue
-        if _nvfp4_scheme_supported(scheme) and _nvfp4_module_routable(module):
+        if (
+            module is not lm_head
+            and _nvfp4_scheme_supported(scheme)
+            and _nvfp4_module_routable(module)
+        ):
             nvfp4.append(module)
         else:
             others.append(module)
@@ -1692,7 +1747,7 @@ def _route_compressed_tensors_nvfp4_to_unsloth(model):
         module.forward = _unsloth_compressed_tensors_nvfp4_forward.__get__(module)
         module._unsloth_compressed_tensors_nvfp4 = True
     _remove_compressed_tensors_decompress_hook(model)
-    _patch_peft_merge_for_nvfp4()
+    _patch_peft_for_routed_compressed_tensors()
     model._unsloth_compressed_tensors_nvfp4 = len(nvfp4)
     return len(nvfp4)
 
