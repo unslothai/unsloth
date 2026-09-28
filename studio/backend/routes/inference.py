@@ -5916,8 +5916,11 @@ async def _select_request_tools(
     if getattr(payload, "deep_research_armed", None):
         # Appended past every filter above, including the tools_on gate: arming research in the
         # composer is what offers this tool, and it is the only way the model can start a run.
+        # Not under `--disable-tools`, where the loop can open only for search_conversation.
         from core.inference.tools import DEEP_RESEARCH_TOOL
-        tools = tools + [DEEP_RESEARCH_TOOL]
+        from state.tool_policy import get_tool_policy
+        if get_tool_policy() is not False:
+            tools = tools + [DEEP_RESEARCH_TOOL]
     return tools
 
 
@@ -5984,10 +5987,10 @@ def _checkpoint_needs_search(payload = None) -> bool:
 
 
 def _checkpoint_recall_may_enable_tools(payload) -> bool:
-    """Whether checkpoint recovery can force the internal recall tool loop."""
-    from state.tool_policy import get_tool_policy
+    """Whether checkpoint recovery can force the internal recall tool loop (also under --disable-tools)."""
+    from state.tool_policy import conversation_recall_allowed
     return bool(
-        get_tool_policy() is not False
+        conversation_recall_allowed()
         and _rolling_context_policy(payload) is not None
         and _checkpoint_needs_search(payload)
         and _thread_has_conversation_archive(getattr(payload, "thread_id", None))
