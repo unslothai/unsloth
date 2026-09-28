@@ -152,11 +152,50 @@ def test_fma_contraction_would_be_caught():
 
 @pytest.mark.skipif(not nf4_mod._HAS_MUL_RN, reason = "already the no-mul_rn route")
 def test_hip_route_without_mul_rn_is_also_exact(monkeypatch):
-    """The HIP route (no PTX mul.rn, fp fusion disabled at launch) exercised on CUDA."""
+    """The HIP route (plain multiply, fp fusion disabled at launch) exercised on CUDA."""
     monkeypatch.setattr(nf4_mod, "_HAS_MUL_RN", False)
     for dtype in (torch.float32, torch.bfloat16):
         q, s = _quantize((4096, 4096), dtype, seed = 3)
         assert _bytes_equal(dequantize_nf4(*_args(q, s)), bnb_functional.dequantize_4bit(q, s))
+
+
+@pytest.mark.parametrize("fp_fusion", [False, True], ids = ["fusion_off", "fusion_on"])
+def test_exact_with_fp_fusion_on_or_off(fp_fusion):
+    """Eager launches with fp fusion off; torch.compile re-emits the kernel with it on. Both must
+    keep code2 * absmax2 and + offset as two roundings (fp32 output shows a 1 ulp scale error)."""
+    for dtype in (torch.float32, torch.bfloat16):
+        q, s = _quantize((4096, 4096), dtype, seed = 3)
+        out = torch.empty(4096, 4096, dtype = dtype, device = "cuda")
+        nf4_mod._launch(
+            nf4_mod._nf4_dequant_kernel,
+            q,
+            s.absmax,
+            s.state2.code,
+            s.state2.absmax,
+            s.offset,
+            s.code,
+            s.blocksize,
+            s.state2.blocksize,
+            out,
+            fp_fusion = fp_fusion,
+        )
+        assert _bytes_equal(out, bnb_functional.dequantize_4bit(q, s))
+
+
+@pytest.mark.skipif(not nf4_mod._HAS_MUL_RN, reason = "the plain multiply keeps subnormals")
+@pytest.mark.parametrize("nested", [True, False], ids = ["nested", "flat"])
+def test_subnormal_products_flush_like_bitsandbytes(nested):
+    """bitsandbytes' kernels flush subnormal products to zero, in the nested absmax decode and in
+    code * absmax; the Triton kernel must too."""
+    q, s = _quantize((256, 1024), torch.float32, nested = nested, seed = 5)
+    if nested:
+        s.state2.absmax.mul_(1e-36)
+        s.offset.zero_()
+    else:
+        s.absmax.fill_(2e-38)
+    ref = bnb_functional.dequantize_4bit(q, s)
+    assert ref.abs().max() > 0 and (ref == 0).float().mean() > 0.1
+    assert _bytes_equal(dequantize_nf4(*_args(q, s)), ref)
 
 
 @pytest.mark.parametrize("storage", [torch.bfloat16, torch.float16, torch.float32], ids = str)

@@ -9,11 +9,13 @@
 import contextlib
 import functools
 import math
+import os
 from typing import List, Optional
 
 import torch
 import triton
 import triton.language as tl
+from triton.language.extra import libdevice
 from unsloth_zoo.utils import Version
 
 from .triton_launch import launch
@@ -22,9 +24,19 @@ __all__ = [
     "dequantize_nf4",
 ]
 
-# PTX mul.rn.f32 is never contracted into an FMA, so the + offset rounds separately as in
-# bitsandbytes. HIP has no PTX: there the launch disables fp fusion instead.
-_HAS_MUL_RN = torch.version.hip is None
+# CUDA multiplies with libdevice mul_rn: never contracted into an FMA with the following
+# + offset (torch.compile re-emits the kernel with fp fusion on), and it flushes subnormals to
+# zero like bitsandbytes' kernels. HIP has no mul_rn: it multiplies plainly with fp fusion off,
+# through an opaque custom op launched eagerly. TRITON_INTERPRET=1 (no libdevice) takes that route.
+_HAS_MUL_RN = torch.version.hip is None and os.environ.get("TRITON_INTERPRET", "0") != "1"
+
+
+@triton.jit
+def _mul(a, b, USE_MUL_RN: tl.constexpr):
+    if USE_MUL_RN:
+        return libdevice.mul_rn(a, b)
+    else:
+        return a * b
 
 
 @triton.jit
@@ -98,17 +110,7 @@ def _nf4_dequant_kernel(
             other = 0.0,
             eviction_policy = "evict_last",
         )
-        if USE_MUL_RN:
-            scale = tl.inline_asm_elementwise(
-                "mul.rn.f32 $0, $1, $2;",
-                "=r,r,r",
-                [c2, s2],
-                dtype = tl.float32,
-                is_pure = True,
-                pack = 1,
-            )
-        else:
-            scale = c2 * s2
+        scale = _mul(c2, s2, USE_MUL_RN)
         scale = scale + tl.load(offset_ptr)
     else:
         scale = tl.load(absmax_ptr + rows, mask = row_mask, other = 0.0)
@@ -128,13 +130,14 @@ def _nf4_dequant_kernel(
         i = tl.arange(0, 8)
         shifts = (i // 2) * 8 + (1 - (i % 2)) * 4
         nib = (w[:, :, None] >> shifts[None, None, :]) & 15
-        vals = (_nf4_lut(lut_ptr, tl.reshape(nib, [ROWS, 2 * HALF]), LUT_MODE) * scale).to(out_ty)
+        vals = _mul(_nf4_lut(lut_ptr, tl.reshape(nib, [ROWS, 2 * HALF]), LUT_MODE), scale, USE_MUL_RN)
+        vals = vals.to(out_ty)
     else:
         cols = tl.arange(0, HALF)
         byte_offs = rows[:, None] * HALF + cols[None, :]
         q = tl.load(W_ptr + byte_offs, mask = byte_offs < n_bytes, other = 0, eviction_policy = EVICT)
-        v_hi = (_nf4_lut(lut_ptr, (q >> 4).to(tl.int32), LUT_MODE) * scale).to(out_ty)
-        v_lo = (_nf4_lut(lut_ptr, (q & 15).to(tl.int32), LUT_MODE) * scale).to(out_ty)
+        v_hi = _mul(_nf4_lut(lut_ptr, (q >> 4).to(tl.int32), LUT_MODE), scale, USE_MUL_RN).to(out_ty)
+        v_lo = _mul(_nf4_lut(lut_ptr, (q & 15).to(tl.int32), LUT_MODE), scale, USE_MUL_RN).to(out_ty)
         vals = tl.interleave(v_hi, v_lo)  # [ROWS, 2 * HALF], high nibble first
 
     out_offs = rows[:, None] * (2 * HALF) + tl.arange(0, 2 * HALF)[None, :]

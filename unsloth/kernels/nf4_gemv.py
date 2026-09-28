@@ -14,7 +14,7 @@ import torch
 import triton
 import triton.language as tl
 
-from .nf4 import _HAS_MUL_RN
+from .nf4 import _HAS_MUL_RN, _mul
 from .triton_launch import launch
 
 __all__ = [
@@ -75,20 +75,9 @@ def _gemv_nf4_kernel(
             q = tl.load(ABSMAX + blk, mask = bmask, other = 0).to(tl.int32)
             c2 = tl.load(CODE2 + q, mask = bmask, other = 0.0)
             s2 = tl.load(ABSMAX2 + blk // BLOCKSIZE2, mask = bmask, other = 0.0)
-            # Two separate fp32 roundings, as fast_dequantize does. PTX mul.rn is never contracted
-            # into an FMA, so the scale is the same whether or not the compiled graph re-emits
-            # this kernel with fp fusion on.
-            if USE_MUL_RN:
-                a = tl.inline_asm_elementwise(
-                    "mul.rn.f32 $0, $1, $2;",
-                    "=r,r,r",
-                    [c2, s2],
-                    dtype = tl.float32,
-                    is_pure = True,
-                    pack = 1,
-                )
-            else:
-                a = c2 * s2
+            # Two separate fp32 roundings, as fast_dequantize does, whether or not the compiled
+            # graph re-emits this kernel with fp fusion on (see _mul in nf4.py).
+            a = _mul(c2, s2, USE_MUL_RN)
             a = a + offset
         else:
             a = tl.load(ABSMAX + blk, mask = bmask, other = 0.0)
@@ -149,17 +138,7 @@ def _gemv_nf4_words_kernel(
             q = tl.load(ABSMAX + blk, mask = bmask, other = 0).to(tl.int32)
             c2 = tl.load(CODE2 + q, mask = bmask, other = 0.0)
             s2 = tl.load(ABSMAX2 + blk // BLOCKSIZE2, mask = bmask, other = 0.0)
-            if USE_MUL_RN:
-                a = tl.inline_asm_elementwise(
-                    "mul.rn.f32 $0, $1, $2;",
-                    "=r,r,r",
-                    [c2, s2],
-                    dtype = tl.float32,
-                    is_pure = True,
-                    pack = 1,
-                )
-            else:
-                a = c2 * s2
+            a = _mul(c2, s2, USE_MUL_RN)
             a = a + offset
         else:
             a = tl.load(ABSMAX + blk, mask = bmask, other = 0.0)
