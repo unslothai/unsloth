@@ -10,8 +10,11 @@ with a hand-built two-key marker. Platforms are simulated through ``HostInfo``: 
 covers the path decisions and payload tables, not macOS dyld.
 
 Run natively on Windows too (the parity workflow's windows-latest row), where the loader
-answers for real: ``_binary_image_runs`` sees an actual ``ERROR_BAD_EXE_FORMAT`` instead of
-a stubbed ``run_capture``. Two things stay POSIX-only there and are skipped rather than
+answers for real for every genuine image: the healthy rows start a real System32 PE. The one
+file that is not an image is answered with the ``ERROR_BAD_EXE_FORMAT`` the loader gives it,
+without being started (see ``_windows_non_pe_is_refused_not_started``): a .exe that is not a
+PE is taken for a DOS program, and on a Windows desktop that raises the modal "Unsupported
+16-Bit Application" dialog. Two things stay POSIX-only there and are skipped rather than
 weakened: ``os.chmod`` cannot clear an execute bit Windows does not have, and
 ``os.access(X_OK)`` is true for any file that exists.
 """
@@ -83,6 +86,34 @@ sys.modules[SPEC.name] = ILP
 SPEC.loader.exec_module(ILP)
 
 HostInfo = ILP.HostInfo
+
+# ERROR_BAD_EXE_FORMAT, what CreateProcess answers for a file that is not a Windows image.
+_ERROR_BAD_EXE_FORMAT = 193
+
+
+@pytest.fixture(autouse = True)
+def _windows_non_pe_is_refused_not_started(monkeypatch):
+    """Windows only: a non-PE image gets the loader's answer without reaching CreateProcess.
+
+    Genuine images, the runnable stub included, still go through the real ``run_capture``.
+    A test that replaces ``run_capture`` itself replaces this too, as before. POSIX is left
+    alone: execve on a non-ELF raises ENOEXEC with no UI, so the real answer is kept there.
+    """
+    if not WINDOWS_HOST:
+        return
+    real = ILP.run_capture
+
+    def run_capture(command, *args, **kwargs):
+        target = Path(command[0]) if command else None
+        if target is not None and target.is_file():
+            with open(target, "rb") as handle:
+                if handle.read(2) != b"MZ":
+                    raise OSError(
+                        None, "%1 is not a valid Win32 application", str(target), _ERROR_BAD_EXE_FORMAT
+                    )
+        return real(command, *args, **kwargs)
+
+    monkeypatch.setattr(ILP, "run_capture", run_capture)
 
 
 def _host(**kw) -> HostInfo:
@@ -215,7 +246,8 @@ def build_install(
             else (runnable if runnable_root is None else runnable_root)
         )
         # The keep path execs these. The not-ok file has to be a bad image: ENOEXEC on
-        # POSIX, a non-PE on Windows, where an empty file is a valid do-nothing program.
+        # POSIX, a non-PE on Windows, where an empty file is a valid do-nothing program. The
+        # Windows non-PE is answered by _windows_non_pe_is_refused_not_started, never started.
         if WINDOWS_HOST:
             path.write_bytes(RUNNABLE_STUB if ok else b"not a PE image\n")
         else:
