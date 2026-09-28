@@ -408,6 +408,8 @@ def ensure_distro(progress = None, cancel = None) -> None:
         # A half-imported distro from an interrupted run would make --import fail.
         run(["--unregister", distro_name()], timeout = 300)
         target = host_dir() / "distro"
+        # An import interrupted before registration leaves its VHD behind and --import refuses it.
+        shutil.rmtree(target, ignore_errors = True)
         target.mkdir(parents = True, exist_ok = True)
         code, output = run(
             ["--import", distro_name(), str(target), str(rootfs), "--version", "2"], timeout = 1800
@@ -477,7 +479,7 @@ def _uuid_table(output: str) -> dict[int, str]:
 
 def gpu_uuids(gpu_ids: list[int]) -> list[str]:
     result = subprocess.run(
-        ["nvidia-smi", "--query-gpu=index,uuid", "--format=csv,noheader"],
+        [_nvidia_smi(), "--query-gpu=index,uuid", "--format=csv,noheader"],
         capture_output = True,
         text = True,
         encoding = "utf-8",
@@ -527,9 +529,24 @@ def unregister() -> None:
         owner = json.loads(guest(["cat", f"{GUEST_ROOT}/owner.json"]))
         if owner.get("distro") != distro_name():
             raise RuntimeError("The WSL environment belongs to another Studio installation.")
-    run(["--unregister", distro_name()], timeout = 300)
+    code, output = run(["--unregister", distro_name()], timeout = 300)
+    if code and distro_name() in registered_distros():
+        raise RuntimeError("Could not remove the WSL environment. " + output.strip()[-500:])
     shutil.rmtree(host_dir() / "distro", ignore_errors = True)
     write_state(state = "removed")
+
+
+def registered_distros() -> set[str]:
+    code, output = run(["--list", "--quiet"], timeout = 120)
+    if code:
+        raise RuntimeError("Could not list WSL distributions. " + output.strip()[-500:])
+    return {line.strip() for line in output.splitlines() if line.strip()}
+
+
+def _nvidia_smi() -> str:
+    from utils.hardware.nvidia import _nvidia_smi_executable
+
+    return _nvidia_smi_executable()
 
 
 def summary() -> dict:

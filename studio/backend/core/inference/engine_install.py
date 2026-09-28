@@ -386,9 +386,11 @@ def _cached_rows(gpu_id):
 def _probe_rows(gpu_id):
     rows = None
     try:
+        from utils.hardware.nvidia import _nvidia_smi_executable
+
         result = subprocess.run(
             [
-                "nvidia-smi",
+                _nvidia_smi_executable(),
                 "--query-gpu=driver_version,compute_cap",
                 "--format=csv,noheader",
                 *(["--id", str(gpu_id)] if gpu_id is not None else []),
@@ -738,6 +740,8 @@ def _run(
             encoding = "utf-8",
             errors = "replace",
             start_new_session = True,
+            # A windowed Studio has no console; wsl.exe would otherwise open one.
+            creationflags = 0x08000000 if sys.platform == "win32" else 0,
             **child_popen_kwargs(),
         )
     )
@@ -1105,13 +1109,17 @@ def _install_wsl(engine: str, cancel: threading.Event) -> None:
                 else None,
             },
         )
-        keep = [directory, *([prior["directory"]] if prior else [])]
-        wsl_host.guest(
-            ["find", base, "-mindepth", "1", "-maxdepth", "1", "-name", "env-*"]
-            + [arg for name in keep for arg in ("!", "-name", name)]
-            + ["-exec", "rm", "-rf", "{}", "+"]
-        )
+        # Committed: from here a failed cleanup must never delete the environment just activated.
         destination = None
+        keep = [directory, *([prior["directory"]] if prior else [])]
+        try:
+            wsl_host.guest(
+                ["find", base, "-mindepth", "1", "-maxdepth", "1", "-name", "env-*"]
+                + [arg for name in keep for arg in ("!", "-name", name)]
+                + ["-exec", "rm", "-rf", "{}", "+"]
+            )
+        except (OSError, RuntimeError, subprocess.TimeoutExpired):
+            pass
     finally:
         if destination is not None:
             try:

@@ -4,7 +4,8 @@
 
 """A stand-in for wsl.exe on Linux CI: guest commands run on this host, every call is logged.
 
-FAKE_WSL_LOG names a JSON-lines log; FAKE_WSL_STATUS is the ``--status`` exit code.
+FAKE_WSL_LOG names a JSON-lines log; FAKE_WSL_STATUS is the ``--status`` exit code,
+FAKE_WSL_UNREGISTER the ``--unregister`` one, FAKE_WSL_DISTROS the ``--list`` names (comma-separated).
 """
 
 import json
@@ -31,7 +32,12 @@ def main(argv):
         )
     if argv[:1] == ["--status"]:
         return int(os.environ.get("FAKE_WSL_STATUS", "0"))
-    if argv[:1] in (["--import"], ["--unregister"], ["--terminate"]):
+    if argv[:1] == ["--list"]:
+        print(os.environ.get("FAKE_WSL_DISTROS", "").replace(",", "\n"))
+        return 0
+    if argv[:1] == ["--unregister"]:
+        return int(os.environ.get("FAKE_WSL_UNREGISTER", "0"))
+    if argv[:1] in (["--import"], ["--terminate"]):
         return 0
     if "--" not in argv:
         return 2

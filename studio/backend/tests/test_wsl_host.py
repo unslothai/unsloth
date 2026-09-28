@@ -335,6 +335,77 @@ def test_wsl_launch_command(wsl, monkeypatch):
     assert "unsloth/Qwen3-0.6B" in command and "--port" in command
 
 
+def test_offline_mode_reaches_the_guest(wsl, monkeypatch):
+    monkeypatch.setattr(wsl_host, "guest_gpu_indices", lambda ids: [0])
+    monkeypatch.setattr(managed_engine, "gpu_memory_fraction", lambda *_: 0.5)
+    guest = Path(wsl_host.GUEST_ROOT) / "engines" / "vllm" / "env-abc" / "bin"
+    guest.mkdir(parents = True)
+    (guest / "python").write_text("", encoding = "utf-8")
+    (guest / "python").chmod(0o755)
+    engine = managed_engine.ManagedEngine("vllm")
+    engine.context = 2048
+    info = {"path": str(guest.parent), "host": "wsl"}
+    command, _ = engine._wsl_command(info, {}, [0], None, False, "m", None, 8123)
+    assert "HF_HUB_OFFLINE=1" not in command
+    command, _ = engine._wsl_command(
+        info, {"TRANSFORMERS_OFFLINE": "1"}, [0], None, False, "m", None, 8123
+    )
+    assert "HF_HUB_OFFLINE=1" in command
+
+
+def test_a_failed_unregister_keeps_the_distro_recorded(wsl, monkeypatch):
+    monkeypatch.setattr(wsl_host, "distro_ready", lambda: False)
+    monkeypatch.setattr(wsl_host, "host_dir", lambda: Path(wsl_host.GUEST_ROOT).parent / "host")
+    monkeypatch.setenv("FAKE_WSL_UNREGISTER", "1")
+    monkeypatch.setenv("FAKE_WSL_DISTROS", "Ubuntu,Unsloth-Engines-test")
+    with pytest.raises(RuntimeError, match = "Could not remove"):
+        wsl_host.unregister()
+    assert wsl_host.read_state().get("state") != "removed"
+    # Already gone: a failing exit code is not an error.
+    monkeypatch.setenv("FAKE_WSL_DISTROS", "Ubuntu")
+    wsl_host.unregister()
+    assert wsl_host.read_state()["state"] == "removed"
+
+
+def test_an_orphaned_import_directory_is_cleared_before_importing(wsl, monkeypatch, tmp_path):
+    host = tmp_path / "host"
+    (host / "distro").mkdir(parents = True)
+    (host / "distro" / "ext4.vhdx").write_text("half an import")
+    monkeypatch.setattr(wsl_host, "host_dir", lambda: host)
+    monkeypatch.setattr(wsl_host, "distro_ready", lambda: False)
+    monkeypatch.setattr(wsl_host, "download", lambda *a, **k: tmp_path / "rootfs.tar.gz")
+    seen = []
+    real_run = wsl_host.run
+
+    def run(args, **kwargs):
+        if args[:1] == ["--import"]:
+            seen.append(sorted(p.name for p in (host / "distro").iterdir()))
+            raise KeyboardInterrupt
+        return real_run(args, **kwargs)
+
+    monkeypatch.setattr(wsl_host, "run", run)
+    with pytest.raises(KeyboardInterrupt):
+        wsl_host.ensure_distro()
+    assert seen == [[]]
+
+
+def test_host_probes_find_nvidia_smi_off_path(monkeypatch):
+    import utils.hardware.nvidia as nvidia
+
+    monkeypatch.setattr(nvidia, "_nvidia_smi_executable", lambda: r"C:\NVSMI\nvidia-smi.exe")
+    argv = []
+
+    def fake_run(args, *a, **k):
+        argv.append(args[0])
+        return subprocess.CompletedProcess(args, 0, stdout = "0, GPU-aaaa\n", stderr = "")
+
+    monkeypatch.setattr(wsl_host.subprocess, "run", fake_run)
+    wsl_host.gpu_uuids([0])
+    monkeypatch.setattr(install.subprocess, "run", fake_run)
+    install._probe_rows(0)
+    assert argv == [r"C:\NVSMI\nvidia-smi.exe"] * 2
+
+
 def test_sglang_launcher_is_read_through_mnt(wsl, monkeypatch):
     monkeypatch.setattr(wsl_host, "guest_gpu_indices", lambda ids: [0])
     monkeypatch.setattr(managed_engine, "gpu_memory_fraction", lambda *_: 0.5)

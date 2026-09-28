@@ -11,6 +11,7 @@ import os
 import secrets
 import socket
 import subprocess
+import sys
 import threading
 import time
 from collections import deque
@@ -37,6 +38,13 @@ from .engine_adapters import (
     launch_arguments,
     tool_parser_for_template,
 )
+
+
+def _offline(env) -> bool:
+    return any(
+        str(env.get(key, "")).strip().lower() in {"1", "true", "yes", "on"}
+        for key in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE")
+    )
 
 
 def validate_load(engine: str, request) -> list[int]:
@@ -163,9 +171,11 @@ def validate_model(
     }
     if precision == "fp8":
         # Eager TorchAO FP8 on Ampere: Triton cannot compile its casts, SGLang online FP8 is invalid.
+        from utils.hardware.nvidia import _nvidia_smi_executable
+
         result = subprocess.run(
             [
-                "nvidia-smi",
+                _nvidia_smi_executable(),
                 "--id",
                 ",".join(str(i) for i in (gpu_ids or [0])),
                 "--query-gpu=compute_cap",
@@ -367,6 +377,7 @@ class ManagedEngine:
                         encoding = "utf-8",
                         errors = "replace",
                         start_new_session = True,
+                        creationflags = 0x08000000 if sys.platform == "win32" else 0,
                         **child_popen_kwargs(),
                     )
                 )
@@ -448,6 +459,8 @@ class ManagedEngine:
             "TRITON_CACHE_DIR": cache + "/triton",
             "FLASHINFER_WORKSPACE_BASE": environment,
             **({"HF_ENDPOINT": env["HF_ENDPOINT"]} if env.get("HF_ENDPOINT") else {}),
+            # Cache-only mode must hold in the guest too.
+            **({"HF_HUB_OFFLINE": "1"} if _offline(env) else {}),
         }
         from .engine_install import cuda_environment
 
