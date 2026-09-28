@@ -61,7 +61,7 @@ def _parse_online(spec: str) -> list[int]:
 def _mems_allowed() -> set[int] | None:
     """cpuset Mems_allowed_list nodes (numactl interleave only spans these); None if unavailable."""
     try:
-        text = Path("/proc/self/status").read_text()
+        text = Path("/proc/self/status").read_text(encoding = "utf-8")
     except OSError:
         return None
     for line in text.splitlines():
@@ -73,7 +73,7 @@ def _mems_allowed() -> set[int] | None:
 def _node_memfree_mib(node: int) -> int | None:
     """MemFree for one node from /sys/.../nodeN/meminfo, in MiB (kB -> MiB)."""
     try:
-        text = (_NODE_ROOT / f"node{node}" / "meminfo").read_text()
+        text = (_NODE_ROOT / f"node{node}" / "meminfo").read_text(encoding = "utf-8")
     except OSError:
         return None
     for line in text.splitlines():
@@ -90,7 +90,7 @@ def _node_memfree_mib(node: int) -> int | None:
 def read_numa_topology() -> NumaTopology:
     """Per-node free memory from sysfs; empty topology on non-Linux / no sysfs."""
     try:
-        online = (_NODE_ROOT / "online").read_text()
+        online = (_NODE_ROOT / "online").read_text(encoding = "utf-8")
     except OSError:
         return NumaTopology()
     allowed = _mems_allowed()
