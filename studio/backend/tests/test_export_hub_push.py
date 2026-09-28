@@ -375,6 +375,122 @@ def test_merged_export_push_card_does_not_name_a_local_base_model(tmp_path, monk
     assert str(tmp_path) not in seen["card"]
 
 
+_MLX_MERGED_FILES = ["README.md", "model.safetensors", "model.safetensors.index.json"]
+
+
+class _MlxMergeModel(_Model):
+    def __init__(self, hf_api):
+        super().__init__()
+        self.hf_api = hf_api
+
+    def save_pretrained_merged(
+        self,
+        save_directory,
+        tokenizer,
+        save_method = None,
+        token = None,
+    ):
+        self.merges.append(save_method)
+        output = Path(save_directory)
+        output.mkdir(parents = True, exist_ok = True)
+        for name in _MLX_MERGED_FILES:
+            (output / name).write_bytes(b"merged")
+
+    def push_to_hub_merged(
+        self,
+        repo_id,
+        tokenizer,
+        save_directory = None,
+        token = None,
+        private = None,
+    ):
+        api = self.hf_api(token = token)
+        api.create_repo(repo_id, private = private, exist_ok = True)
+        if private is not None:
+            api.update_repo_settings(repo_id = repo_id, private = private, repo_type = "model")
+        api.upload_folder(folder_path = str(save_directory), repo_id = repo_id, repo_type = "model")
+
+
+def _mlx_backend(monkeypatch, name, calls, seen):
+    backend = _non_mlx_backend(monkeypatch, name, calls, seen)
+    export_module = sys.modules[type(backend).__module__]
+    monkeypatch.setattr(export_module, "_IS_MLX", True)
+    monkeypatch.setattr(export_module, "_export_runtime_available", lambda: True)
+    backend.current_model = _MlxMergeModel(export_module.HfApi)
+    backend.is_peft = True
+    return backend
+
+
+def test_mlx_merged_export_push_keeps_the_export_metadata_out_of_the_repo(tmp_path, monkeypatch):
+    calls: list[str] = []
+    seen: dict = {}
+    backend = _mlx_backend(monkeypatch, "test_export_hub_push_mlx_fresh_backend", calls, seen)
+
+    success, message, output_path = backend.export_merged_model(
+        str(tmp_path / "export"),
+        push_to_hub = True,
+        repo_id = "model",
+        hf_token = "hf_fake",
+    )
+
+    assert success is True, message
+    assert seen["uploaded"] == _MLX_MERGED_FILES
+    assert Path(output_path, "export_metadata.json").is_file()
+    assert backend.current_model.merges == ["merged_16bit"]
+    assert seen["folder"] == output_path
+
+
+def test_mlx_merged_export_push_to_a_reused_folder_does_not_upload_its_leftovers(
+    tmp_path, monkeypatch
+):
+    calls: list[str] = []
+    seen: dict = {}
+    backend = _mlx_backend(monkeypatch, "test_export_hub_push_mlx_reused_backend", calls, seen)
+    export_dir = tmp_path / "export"
+    export_dir.mkdir()
+    (export_dir / "adapter_config.json").write_text("{}")
+    (export_dir / "adapters.safetensors").write_bytes(b"lora")
+
+    success, message, output_path = backend.export_merged_model(
+        str(export_dir),
+        push_to_hub = True,
+        repo_id = "model",
+        hf_token = "hf_fake",
+    )
+
+    assert success is True, message
+    assert seen["uploaded"] == _MLX_MERGED_FILES
+    assert output_path == str(export_dir.resolve())
+    assert backend.current_model.merges == ["merged_16bit", "merged_16bit"]
+    assert seen["folder"] != output_path
+    assert not Path(seen["folder"]).exists()
+
+
+@pytest.mark.parametrize("private", [True, False])
+def test_mlx_merged_export_push_never_makes_an_existing_private_repo_public(
+    tmp_path, monkeypatch, private
+):
+    calls: list[str] = []
+    seen: dict = {}
+    backend = _mlx_backend(monkeypatch, "test_export_hub_push_mlx_private_backend", calls, seen)
+
+    success, message, _path = backend.export_merged_model(
+        str(tmp_path / "export"),
+        push_to_hub = True,
+        repo_id = "owner/model",
+        hf_token = "hf_fake",
+        private = private,
+    )
+
+    assert success is True, message
+    visibility = ["update_repo_settings"] if private else []
+    assert calls == ["create_repo", *visibility, "upload_folder"]
+    assert seen.get("visibility") == (
+        {"repo_id": "owner/model", "private": True} if private else None
+    )
+    assert seen["uploaded"] == _MLX_MERGED_FILES
+
+
 def test_base_export_push_keeps_the_export_metadata_out_of_the_repo(tmp_path, monkeypatch):
     calls: list[str] = []
     seen: dict = {}
