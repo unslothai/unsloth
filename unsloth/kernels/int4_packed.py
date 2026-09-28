@@ -370,13 +370,11 @@ def _sm_count(index):
     return torch.cuda.get_device_properties(index).multi_processor_count
 
 
-# The fused GEMV decodes the weight once per row: only one row beats decode + cuBLAS (measured B200, RTX PRO 6000).
+# The fused GEMV decodes the weight once per row: only one row beats decode + cuBLAS.
 GEMV_MAX_ROWS = 1
 
 
-# vLLM's Marlin mixed-input GEMM (optional, no-grad only: training never builds the repacked copy, one more packed
-# weight per layer once generation starts). Rows up to which it beats decode + cuBLAS on Qwen3-8B shapes: 32 on B200
-# (cuBLAS runs tcgen05, Marlin mma.sync), 512 on A100, 1024 on RTX PRO 6000 (up to 21x at decode sizes). Hopper unmeasured.
+# vLLM's Marlin, no-grad only (a repacked copy per layer once generating); rows where it beats decode + cuBLAS, by CC major.
 MARLIN_MAX_ROWS = {8: 512, 10: 32, 11: 32, 12: 1024}
 MARLIN_DEFAULT_ROWS = 32
 
@@ -534,8 +532,7 @@ def _marlin_weight(x2, packed, qs):
     return w
 
 
-# torch's built-in tinygemm (``_weight_int4pack_mm``, bf16, sm_80+) when Marlin is unavailable: 3-14x the GEMV /
-# decode + cuBLAS at 1-2 rows; rows up to which it still wins on Qwen3-8B shapes: A100 16, B200 4, RTX PRO 6000 16.
+# torch's tinygemm (``_weight_int4pack_mm``, bf16, sm_80+) when Marlin is unavailable; rows where it still wins.
 TINYGEMM_MAX_ROWS = {8: 16, 10: 4, 11: 4, 12: 16}
 TINYGEMM_DEFAULT_ROWS = 4
 _TINYGEMM_CHECKED = {}
