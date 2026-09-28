@@ -16,6 +16,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { isLlamaRuntimeReason } from "../src/hooks/backend-preflight-message.ts";
 import { readSrcAsync } from "./helpers/kit.ts";
 
 const src = await readSrcAsync("hooks/use-tauri-backend.ts");
@@ -39,7 +40,12 @@ type Run = {
   recurrenceAfter: string | null;
 };
 
-function runRetry(status: string, forced: boolean, recurrence: string | null = null): Run {
+function runRetry(
+  status: string,
+  forced: boolean,
+  recurrence: string | null = null,
+  repairReason: string | null = null,
+): Run {
   const repairs: boolean[] = [];
   const reasons: (string | null)[] = [];
   const forcedRepairRef = { current: forced };
@@ -50,6 +56,8 @@ function runRetry(status: string, forced: boolean, recurrence: string | null = n
     statusRef: { current: status },
     forcedRepairRef,
     recurrenceReasonRef,
+    repairReasonRef: { current: repairReason },
+    isLlamaRuntimeReason,
     startRepair: (options?: { forceInstaller?: boolean; preflightReason?: string | null }) => {
       // The real one records the flag first; the fake mirrors that so the test can see
       // whether it survived the state reset that now runs ahead of the call.
@@ -135,4 +143,19 @@ test("a held runtime reason does not leak into a retry from another screen", () 
   assert.deepEqual(run.repairs, []);
   assert.equal(run.preflights, 1);
   assert.equal(run.recurrenceAfter, null);
+});
+
+test("retry after a failed runtime repair runs that repair again, not the preflight", () => {
+  // The preflight would find the recent record and hold the repair back a second time,
+  // so the failure message's "then retry" would need two clicks.
+  const run = runRetry("repair-error", false, null, "llama_runtime_binaries_missing");
+  assert.deepEqual(run.repairs, [false]);
+  assert.deepEqual(run.reasons, ["llama_runtime_binaries_missing"]);
+  assert.equal(run.preflights, 0);
+});
+
+test("retry after a failed repair for any other reason still runs the preflight", () => {
+  const run = runRetry("repair-error", false, null, "backend_outdated");
+  assert.deepEqual(run.repairs, []);
+  assert.equal(run.preflights, 1);
 });

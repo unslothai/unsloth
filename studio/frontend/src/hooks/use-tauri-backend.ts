@@ -598,9 +598,15 @@ export function useTauriBackend() {
     const resumeForcedRepair =
       statusRef.current === "repair-error" && forcedRepairRef.current;
     forcedRepairRef.current = false;
-    // Same for a runtime repair preflight held back: the message asked for this click.
+    // Same for a runtime repair preflight held back: the message asked for this click. A
+    // runtime repair that failed keeps its reason too, since the preflight would only hold
+    // the next one back again.
     const recurrenceReason =
-      statusRef.current === "error" ? recurrenceReasonRef.current : null;
+      statusRef.current === "error"
+        ? recurrenceReasonRef.current
+        : statusRef.current === "repair-error" && isLlamaRuntimeReason(repairReasonRef.current)
+          ? repairReasonRef.current
+          : null;
     recurrenceReasonRef.current = null;
     clearAuthFailure();
     clearServerStopIntent();
