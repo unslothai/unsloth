@@ -16647,6 +16647,12 @@ async def _select_load_slot(request: LoadRequest) -> Optional[_ExtraSlot]:
 
 
 async def _pick_load_slot(request: LoadRequest) -> Optional[_ExtraSlot]:
+    from core.inference.npu_backend import is_npu_model_path
+
+    # The NPU backend is one per process and replaces the primary, so it never takes a slot.
+    if is_npu_model_path(request.model_path):
+        routed_slot.set(None)
+        return None
     requested = (
         f"{request.model_path}:{request.gguf_variant}"
         if request.gguf_variant
@@ -31097,7 +31103,8 @@ def _slot_model_objects() -> list[dict]:
     from core.inference.npu_backend import peek_npu_backend
 
     _npu = peek_npu_backend()
-    _npu_resident = _npu.resident() if _npu is not None else None
+    # The NPU holds the primary's seat, so a slot's listing never repeats it.
+    _npu_resident = _npu.resident() if _npu is not None and routed_slot.get() is None else None
     if _npu_resident is not None:
         _npu_model = _npu_resident.model
         _npu_entry = {
