@@ -4064,6 +4064,13 @@ def _unsloth_gkd_chunked_loss(self, model, inputs, num_items_in_batch, layout):
         return _unsloth_gkd_note_fallback(self, "output head is not a dense nn.Linear")
     if student_head.weight.shape[0] != teacher_head.weight.shape[0]:
         return _unsloth_gkd_note_fallback(self, "vocab mismatch")
+    # MiniCPM3 divides hidden states by logits_scaling before lm_head; a wrapped forward's hidden_states[-1] predates it.
+    for unwrapped in (unwrapped_student, unwrapped_teacher):
+        for config in _unsloth_text_configs(_unsloth_get_model_config(unwrapped)):
+            if getattr(config, "model_type", None) == "minicpm3":
+                return _unsloth_gkd_note_fallback(
+                    self, "minicpm3 scales hidden states before the head"
+                )
     # DDP(find_unused_parameters=True) marks a head skipped in forward as unused, then its grad hook fires twice.
     if getattr(model, "find_unused_parameters", False) and any(
         p is not None and p.requires_grad for p in (student_head.weight, student_head.bias)
@@ -4123,6 +4130,9 @@ def _unsloth_gkd_chunked_loss(self, model, inputs, num_items_in_batch, layout):
                     teacher_states, teacher_head, teacher_scale, teacher_softcap
                 )
         _unsloth_gkd_note_fallback(self, "a forward returned logits, not hidden states")
+        # TRL's dense path gets both logits on the input device (accelerate's top-level hook), beside the labels.
+        student_states = student_states.to(shifted_labels.device)
+        teacher_states = teacher_states.to(shifted_labels.device)
         extra = {}
         if layout["num_items_in_batch"]:
             extra["num_items_in_batch"] = num_items_in_batch

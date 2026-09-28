@@ -526,3 +526,41 @@ def test_ddp_find_unused_with_trainable_head_falls_back():
     )
     student.lm_head.weight.requires_grad_(False)
     assert rl._unsloth_gkd_chunked_loss(trainer, ddp, _inputs(97), None, layout) is not None
+
+
+def test_minicpm3_scales_hidden_states_before_the_head_so_falls_back():
+    """MiniCPM3 divides hidden states by logits_scaling before lm_head; hidden_states[-1] predates that."""
+    student, teacher = _TinyLM(97, 16, 0.0, 1), _TinyLM(97, 24, 5.0, 2)
+    teacher.config.model_type = "minicpm3"
+    trainer = _trainer(0.5, student, teacher)
+    layout = {"shift": "shift", "num_items_in_batch": False}
+    assert rl._unsloth_gkd_chunked_loss(trainer, student, _inputs(97), None, layout) is None
+    assert any("minicpm3" in reason for reason in trainer._unsloth_gkd_chunked_fallbacks)
+
+
+@pytest.mark.skipif(
+    not torch.cuda.is_available(),
+    reason = "needs a second device to split hidden states from the head",
+)
+def test_dense_fallback_colocates_with_the_labels():
+    """One forward returns logits on the input device, the other hidden states projected on its head's device."""
+    vocab = 97
+    student, teacher = _TinyLM(vocab, 16, 0.0, 1), _TinyLM(vocab, 24, 5.0, 2)
+    real_forward = teacher.forward
+
+    def logits_only(input_ids, attention_mask):
+        prior = os.environ.get("UNSLOTH_RETURN_HIDDEN_STATES")
+        os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "0"
+        try:
+            return real_forward(input_ids, attention_mask)
+        finally:
+            os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = prior
+
+    teacher.forward = logits_only
+    trainer, inputs = _trainer(0.5, student, teacher), _inputs(vocab)
+    layout = {"shift": "shift", "num_items_in_batch": False}
+    want = rl._unsloth_gkd_chunked_loss(trainer, student, inputs, None, layout)
+    student.lm_head.cuda()
+    got = rl._unsloth_gkd_chunked_loss(trainer, student, inputs, None, layout)
+    assert got.device == inputs["labels"].device
+    torch.testing.assert_close(got, want, rtol = 1e-6, atol = 1e-9)
