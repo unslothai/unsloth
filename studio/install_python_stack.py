@@ -393,6 +393,58 @@ _TORCH_FLAVOR_REPAIR_PKG_SPEC: tuple[str, str, str] = (
     "torchaudio>=2.4,<2.12.0",
 )
 
+# cu130 + Linux x86_64 + CPython 3.13 is the one route with Unsloth-built flash-attn /
+# causal-conv1d / mamba-ssm wheels for torch 2.13 and 2.14 (install.sh _cu130_torch213_route).
+# A repair there keeps the resident 2.4-2.14 release and only falls back to 2.13 when none
+# is readable, so `studio update` never moves a working install to another torch.
+_CU130_PRESERVE_TORCH_CEILING_MINOR = 15
+_CU130_NEW_INSTALL_TORCH_PKG_SPEC: tuple[str, str, str] = (
+    "torch>=2.13.0,<2.14.0",
+    "torchvision>=0.28.0,<0.29.0",
+    "torchaudio>=2.4,<2.12.0",
+)
+
+
+def _is_cu130_torch213_route(index_url: str | None) -> bool:
+    return (
+        bool(index_url)
+        and _torch_index_leaf(index_url) == "cu130"
+        and sys.platform.startswith("linux")
+        and platform.machine().lower() in ("x86_64", "amd64")
+        and sys.version_info[:2] == (3, 13)
+    )
+
+
+def _resident_torch_release() -> str | None:
+    """The installed torch's plain X.Y.Z release from its metadata, never importing it."""
+    try:
+        from importlib.metadata import version as _dist_version
+        release = _dist_version("torch").split("+", 1)[0]
+    except Exception:
+        return None
+    return release if re.fullmatch(r"2\.\d+\.\d+", release) else None
+
+
+def _cuda_repair_torch_specs(
+    index_url: str | None, default: tuple[str, str, str]
+) -> tuple[str, str, str]:
+    """Repair specs for index_url: ``default`` everywhere except the cu130 torch 2.13 route."""
+    if not _is_cu130_torch213_route(index_url):
+        return default
+    release = _resident_torch_release()
+    if release is not None:
+        minor = int(release.split(".")[1])
+        if 4 <= minor < _CU130_PRESERVE_TORCH_CEILING_MINOR:
+            # torchaudio 2.11 is the last release (stable ABI), so newer minors pair with it.
+            audio_minor = min(minor, 11)
+            return (
+                f"torch=={release}",
+                f"torchvision==0.{minor + 15}.*",
+                f"torchaudio==2.{audio_minor}.*",
+            )
+    return _CU130_NEW_INSTALL_TORCH_PKG_SPEC
+
+
 # torchao's cpp is built for ONE torch release AND CUDA major. Either mismatch costs the
 # kernels, never the import: torchao/__init__.py has caught the dlopen failure since 0.12 and
 # import_fixes.py filters that warning. Match torchao to the installed torch (pytorch/ao#2919):
@@ -4193,7 +4245,9 @@ def _ensure_cuda_torch(*, probe_only: bool = False) -> "bool | None":
         if probe_only:
             return True
         index_url = _detect_cuda_torch_index_url()
-        _torch_pkg, _vision_pkg, _audio_pkg = _CUDA_TORCH_PKG_SPEC
+        _torch_pkg, _vision_pkg, _audio_pkg = _cuda_repair_torch_specs(
+            index_url, _CUDA_TORCH_PKG_SPEC
+        )
         _safe_print(
             f"   torch cannot import but an explicit CUDA index is pinned -- reinstalling "
             f"CUDA torch from {_strip_index_url_credentials(index_url)}"
@@ -4282,7 +4336,7 @@ def _ensure_cuda_torch(*, probe_only: bool = False) -> "bool | None":
         return True
     if index_url is None:
         index_url = _detect_cuda_torch_index_url()
-    _torch_pkg, _vision_pkg, _audio_pkg = _CUDA_TORCH_PKG_SPEC
+    _torch_pkg, _vision_pkg, _audio_pkg = _cuda_repair_torch_specs(index_url, _CUDA_TORCH_PKG_SPEC)
     _safe_print(
         f"   {_why} -- reinstalling CUDA torch from {_strip_index_url_credentials(index_url)}\n"
         f"   (set UNSLOTH_TORCH_BACKEND=rocm or cpu to keep a deliberate "
@@ -5367,7 +5421,9 @@ def _ensure_expected_torch_flavor(expected: "str | None" = None) -> bool:
     index_url = _expected_torch_index_url(expected)
     # XPU floor is 2.6, not 2.4: unsloth/models/_utils.py raises at import below it.
     _torch_pkg, _vision_pkg, _audio_pkg = (
-        _XPU_TORCH_PKG_SPEC if expected == "xpu" else _TORCH_FLAVOR_REPAIR_PKG_SPEC
+        _XPU_TORCH_PKG_SPEC
+        if expected == "xpu"
+        else _cuda_repair_torch_specs(index_url, _TORCH_FLAVOR_REPAIR_PKG_SPEC)
     )
     # Keyed on the INTERPRETER, not the machine: an emulated x64 venv installs win_amd64 wheels.
     _trio = [_torch_pkg, _vision_pkg, _audio_pkg]
