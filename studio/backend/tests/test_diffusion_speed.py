@@ -2225,18 +2225,21 @@ def test_automatic_dynamic_compile_arms_the_prompt_length_allowlist(monkeypatch)
 
     armed = []
     monkeypatch.setattr(
-        diffusion_dynamic_text, "install", lambda t, logger = None: armed.append(t) or True
+        diffusion_dynamic_text,
+        "install",
+        lambda t, logger = None, *, dynamic = None: armed.append((t, dynamic)) or True,
     )
     _stub_torch(monkeypatch)
     pipe = _Pipe(with_compile = True, with_fuse = True)
     apply_speed_optims(pipe, _target(), is_gguf = False, family = _family(), speed_mode = SPEED_MAX)
-    assert armed == [pipe.transformer]
+    assert armed == [(pipe.transformer, None)]
 
+    # default compiles dynamic=True; install() gets that value and arms only unbacked sources (dense MiniMax-H3's temb)
     armed.clear()
     _stub_torch(monkeypatch)
     pipe = _Pipe(with_compile = True)
     apply_speed_optims(pipe, _target(), is_gguf = False, family = _family(), speed_mode = SPEED_DEFAULT)
-    assert armed == []
+    assert armed == [(pipe.transformer, True)]
 
 
 @pytest.mark.usefixtures("no_divisibility_proof")
