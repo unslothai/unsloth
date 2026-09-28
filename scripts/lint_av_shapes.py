@@ -662,6 +662,28 @@ RULES = [
             r"(?i)\b(?:curl|wget)\b[^\n|]*\|\s*(?:sudo\s+)?(?:ba|z|da)?sh\b",
         ],
     ),
+    Rule(
+        "AV016",
+        "error",
+        "an inline interpreter one-liner unpacks an archive",
+        "fetching an archive and unpacking it with a `-c` one-liner is the dropper shape; a vendor has scored "
+        "install.sh as a downloader for exactly this line",
+        "use the interpreter's own module entry point (python3 -m zipfile -e ARCHIVE DIR), unzip or tar",
+        applies = lambda p: not p.endswith((".py", ".rs", ".js", ".ts", ".tsx")),
+        needles = tuple(
+            _J(p)
+            for p in (("extract", "all"), ("Zip", "File"), ("tar", "file"), ("unpack_", "archive"))
+        ),
+        line_patterns = [
+            r"(?i)\b(?:python[0-9.]*|py|node|perl|ruby)(?:\.exe)?\s+(?:-\w+\s+)*-[ce]\s+['\"][^\n]*?"
+            + _any(
+                _J(("extract", "all")),
+                _J(("Zip", "File")) + r"\s*\(",
+                _J(("tar", "file")) + r"\.open",
+                _J(("unpack_", "archive")),
+            )
+        ],
+    ),
 ]
 RULES_BY_ID = {rule.id: rule for rule in RULES}
 # PowerShell resolves commands, members and parameters in any case, and so do Windows paths.
@@ -1031,6 +1053,23 @@ def _fixtures() -> list[tuple[str, str, str, bool]]:
         ("AV014", "install.ps1", "# resolves the venv python before the first pip call", False),
         ("AV015", "t.ps1", "$sb = [scriptblock]::Create($text)", True),
         ("AV015", "t.ps1", ". $PSScriptRoot/helpers.ps1", False),
+        (
+            "AV016",
+            "t.sh",
+            "python3 -c 'import sys, zipfile; zipfile."
+            + _J(("Zip", "File"))
+            + "(sys.argv[1])."
+            + _J(("extract", "all"))
+            + '(sys.argv[2])\' "$1" "$2"',
+            True,
+        ),
+        ("AV016", "t.sh", 'python3 -m zipfile -e "$1" "$2"', False),
+        (
+            "AV016",
+            "t.py",
+            "zipfile." + _J(("Zip", "File")) + "(path)." + _J(("extract", "all")) + "(dest)",
+            False,
+        ),
         # Spellings PowerShell accepts that a first cut of these rules missed.
         (
             "AV002",
