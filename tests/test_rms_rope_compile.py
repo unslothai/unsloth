@@ -133,7 +133,6 @@ def _rope_case(
     pure = False,
 ):
     g = torch.Generator(device = "cuda").manual_seed(0)
-    # Q/K as LlamaAttention_fast_forward makes them: projection output viewed and transposed.
     q_lin = torch.randn(bsz, seq, n_heads * head_dim, device = "cuda", generator = g, dtype = dtype)
     k_lin = torch.randn(bsz, seq, n_kv * head_dim, device = "cuda", generator = g, dtype = dtype)
     q_lin.requires_grad_(True)
@@ -153,7 +152,6 @@ def _rope_case(
     Q_out, K_out = fn(Q, K, cos, sin, indices)
     torch.autograd.backward((Q_out, K_out), (dQ, dK))
     if pure:
-        # The compiled ops rotate copies: neither projection may change.
         assert _bytes_equal(q_lin.detach(), q_before), "the q projection was mutated"
         assert _bytes_equal(k_lin.detach(), k_before), "the k projection was mutated"
     elif with_indices:

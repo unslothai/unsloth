@@ -158,7 +158,6 @@ def _gemma_rms_layernorm_forward(
 
 
 def _rms_forward(X, W, eps, gemma, wrap):
-    # X: [n_rows, n_cols] contiguous, W contiguous. Returns Y and the saved 1 / rms per row.
     n_rows, n_cols = X.shape
     BLOCK_SIZE, num_warps = calculate_settings(n_cols)
     Y = torch.empty((n_rows, n_cols), dtype = X.dtype, device = X.device)
