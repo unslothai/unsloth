@@ -3376,8 +3376,7 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                 f"Unsloth: Could not wrap GRPO hidden-state fallback for {RLTrainer_name}: {e}"
             )
     if trainer_file == "gkd_trainer" and "_unsloth_trl_compute_loss" in RLTrainer_source:
-        # The chunked GKD loss asks both forwards for hidden states; models the compiler did not rewrite get the
-        # same forward wrapper GRPO installs, so the teacher never materialises its full logits either.
+        # Uncompiled student/teacher forwards need GRPO's wrapper to honour the hidden-states flag.
         try:
             _wrap_grpo_hidden_states_fallback(
                 getattr(created_module, f"Unsloth{RLTrainer_name}"),

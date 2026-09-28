@@ -1,12 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team.
-"""The generated GKD trainer routes ``compute_loss`` through unsloth_zoo's chunked generalized JSD (#11554).
-
-CPU-only. Pins four things: every TRL layout we claim is recognised and anything else is left to TRL; the rewritten
-``compute_loss`` parses and keeps TRL's body as ``_unsloth_trl_compute_loss``; heads the chunked loss cannot read
-(quantized, adapted) fall back; and the chunked loss equals TRL's own ``compute_loss`` in value and gradient for
-beta 0 / 0.5 / 1, with softcapping, masking and both slicing layouts.
-"""
+"""GKD compute_loss routes through the chunked generalized JSD (#11554) and matches TRL."""
 
 from __future__ import annotations
 
@@ -264,7 +258,6 @@ def test_chunked_loss_matches_trl(beta, shift, monkeypatch):
     trainer, inputs = _trainer(beta, student, teacher), _inputs(vocab)
     layout = {"shift": shift, "num_items_in_batch": shift == "shift"}
 
-    # TRL's own math on real logits
     monkeypatch.setenv("UNSLOTH_RETURN_HIDDEN_STATES", "0")
     s, t = student(**{k: inputs[k] for k in ("input_ids", "attention_mask")}).logits, None
     with torch.no_grad():

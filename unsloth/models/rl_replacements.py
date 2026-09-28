@@ -3802,14 +3802,8 @@ def vllm_generation_init_patch():
 RL_ADDITIONAL_FUNCTIONS["vllm_generation"].append(vllm_generation_init_patch)
 
 
-# GKD: chunked generalized JSD over hidden states (unslothai/unsloth#11554).
-# TRL's GKDTrainer.compute_loss projects the student AND the teacher through their heads in full, holding two
-# (batch, seq, vocab) logits tensors plus TRL's log-softmax / mixture temporaries. At a 262144-wide vocabulary those
-# dominate peak memory. The replacement asks both forwards for hidden states through UNSLOTH_RETURN_HIDDEN_STATES, the
-# way GRPO does, and hands them with the two head weights to unsloth_zoo's distillation_chunked_jsd, which projects a
-# chunk of valid positions at a time and accumulates the student gradient while each chunk is live. Anything the fast
-# path cannot express exactly (Liger, return_outputs, FSDP / DeepSpeed, quantized or adapted heads, a vocabulary
-# mismatch, a generalized_jsd_loss that is not TRL's, an unrecognised TRL layout) returns None and the caller runs TRL's own compute_loss unchanged.
+# GKD chunked JSD over hidden states (#11554): TRL's dense path holds two full (batch, seq, vocab) logits.
+# Anything not reproduced exactly returns None and TRL's own compute_loss runs.
 try:
     from unsloth_zoo.rl_replacements import distillation_chunked_jsd
 except Exception:
@@ -3817,8 +3811,7 @@ except Exception:
 
 
 def _unsloth_gkd_canonical(source):
-    """``source`` re-printed by ``ast.unparse`` without docstrings or comments, so the checks below survive
-    reformatting. ``None`` when it does not parse."""
+    """``ast.unparse`` without docstrings/comments so checks survive reformatting; ``None`` if unparsable."""
     import ast as _ast
     import textwrap as _textwrap
 
@@ -3843,12 +3836,7 @@ def _unsloth_gkd_canonical(source):
 
 def _unsloth_gkd_layout(source):
     """Which TRL ``GKDTrainer.compute_loss`` this is, or ``None`` when it is not one we reproduce exactly.
-
-    Two layouts ship between TRL 0.22.2 and 1.14.0: slicing by the padded prompt width (``prompt``, TRL < 1.7) and a
-    plain causal shift masked by ``labels`` (``shift``, TRL >= 1.7, which also forwards ``num_items_in_batch``). After
-    canonicalisation every piece the chunked path reproduces must be present verbatim: both forwards with exactly
-    ``input_ids`` / ``attention_mask``, one slicing layout, the single ``generalized_jsd_loss`` call with exactly these
-    keywords, and the return. A TRL that adds an input, a loss knob or a second term falls back to its own code.
+    ``prompt`` (TRL < 1.7) or ``shift`` (TRL >= 1.7); any extra input, loss knob or term must fall back.
     """
     source = _unsloth_gkd_canonical(source)
     if source is None:
@@ -3888,10 +3876,7 @@ def _unsloth_gkd_layout(source):
 
 def _unsloth_gkd_dense_head(model):
     """The output head when it is a plain dense ``[vocab, hidden]`` projection the chunked loss can read directly.
-
-    ``None`` for anything else: a bitsandbytes ``Linear4bit`` / ``Linear8bitLt`` head (a subclass of ``nn.Linear`` whose
-    weight is packed integers), a PEFT-adapted or ``modules_to_save`` head (its weight alone misses the adapter), and
-    a DeepSpeed ZeRO-3 partitioned weight (empty until gathered).
+    Rejects bnb heads (``nn.Linear`` subclasses with packed weights), PEFT heads and ZeRO-3 partitioned weights.
     """
     get_output_embeddings = getattr(model, "get_output_embeddings", None)
     if not callable(get_output_embeddings):
@@ -3916,8 +3901,7 @@ def _unsloth_gkd_dense_head(model):
 
 
 def _unsloth_gkd_logit_transforms(model):
-    """``(scale, softcap)`` exactly as the model's own forward applies them to its logits. Same reader and the same
-    fallback arm as the GRPO call sites (tests/python/test_grpo_logit_transform_fallback.py runs all of them)."""
+    """``(scale, softcap)`` exactly as the model's own forward applies them to its logits."""
     model_config = _unsloth_get_model_config(model)
     if detect_logit_transforms is not None:
         _transforms = detect_logit_transforms(model_config)
@@ -3946,9 +3930,7 @@ def _unsloth_gkd_project(hidden_states, head, scale, softcap):
 
 
 def _unsloth_gkd_jsd_supported(trainer_class):
-    """Is ``trainer_class.generalized_jsd_loss`` one of TRL's own generalized JSDs, which ``distillation_chunked_jsd``
-    reproduces? Every canonical line must be one TRL 0.22.2 - 1.14.0 has shipped and every math line must be present,
-    so a user override or a future TRL edit keeps TRL's dense loss. Cached on the class."""
+    """Is ``trainer_class.generalized_jsd_loss`` one of TRL's own generalized JSDs, unchanged? Overrides keep the dense loss."""
     cache = trainer_class.__dict__.get("_unsloth_gkd_jsd_supported_cache", None)
     if cache is not None:
         return cache
@@ -4035,9 +4017,7 @@ def _unsloth_gkd_note_fallback(trainer, reason):
 
 
 def _unsloth_gkd_chunk_size(vocab_size):
-    """Rows per chunk: ``UNSLOTH_GKD_CHUNK_SIZE`` when set, else about 2**26 logits per chunk, bounded to [64, 1024].
-    256 rows at a 262144-wide vocabulary: measured on a B200 against 128 / 512 / 1024 / 2048 it is as fast as the
-    larger chunks while its peak (about 7 fp32 chunk-by-vocab temporaries, 1.8 GiB) is half of 512's."""
+    """Rows per chunk: ``UNSLOTH_GKD_CHUNK_SIZE`` when set, else about 2**26 logits per chunk, bounded to [64, 1024]."""
     requested = os.environ.get("UNSLOTH_GKD_CHUNK_SIZE", "")
     if requested.strip().isdigit() and int(requested) > 0:
         return int(requested)
@@ -4058,7 +4038,6 @@ def _unsloth_gkd_chunked_loss(self, model, inputs, num_items_in_batch, layout):
     if getattr(self, "is_fsdp_enabled", False) or getattr(self, "is_deepspeed_enabled", False):
         return _unsloth_gkd_note_fallback(self, "FSDP / DeepSpeed")
     try:
-        # Any mapping (dict, BatchEncoding) carrying what TRL's forwards and slicing read.
         missing = any(k not in inputs for k in ("input_ids", "attention_mask", "labels"))
     except Exception:
         missing = True
@@ -4125,8 +4104,7 @@ def _unsloth_gkd_chunked_loss(self, model, inputs, num_items_in_batch, layout):
         unwrapped_teacher, teacher_states, teacher_head.weight
     )
     if not (student_hidden and teacher_hidden):
-        # A forward that could not honour UNSLOTH_RETURN_HIDDEN_STATES handed back real logits: finish on TRL's dense
-        # loss for this call rather than run a second forward, projecting whichever side did return hidden states.
+        # A forward ignored UNSLOTH_RETURN_HIDDEN_STATES: go dense for this call instead of re-running a forward.
         if student_hidden:
             student_states = _unsloth_gkd_project(
                 student_states, student_head, student_scale, student_softcap
