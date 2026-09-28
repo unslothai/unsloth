@@ -3,8 +3,12 @@
 
 // eslint-disable-next-line no-restricted-imports -- Avoid the hub barrel's React and download-manager exports.
 import {
+  isHfCacheSnapshotPath,
+  isOllamaLinkPath,
+  isStandaloneGgufPath,
   normalizeGgufVariantIdentity,
   normalizeModelIdentity,
+  publicModelId,
 } from "@/features/hub/lib/model-identity";
 import { looksLikeLocalPath } from "@/lib/local-path";
 
@@ -49,6 +53,31 @@ function parseVersionedModelStorageKey(
   } catch {
     return null;
   }
+}
+
+/** False when an OpenAI API auto-switch can never load this model, so its remembered settings stay
+ *  off the server. local_model_resolver serves GGUF and non-GGUF weights alike but never a bare LoRA
+ *  adapter or a materialized Ollama link; a row for anything else it refuses is inert. */
+export function apiAutoSwitchMayLoad(
+  ids: readonly string[],
+  isLora: boolean,
+): boolean {
+  return !isLora && !ids.some(isOllamaLinkPath);
+}
+
+/** The repo id a cached repo's settings are keyed by when it loads from its snapshot directory with
+ *  no quant, else null. /status reports that path while the picker keys the repo id, and the backend
+ *  folds the two spellings only for a quant, so a bare snapshot-path row would outrank the picker's
+ *  and survive its Forget. */
+export function cachedRepoConfigId(
+  modelId: string,
+  ggufVariant: string | null | undefined,
+): string | null {
+  return !ggufVariant &&
+    !isStandaloneGgufPath(modelId) &&
+    isHfCacheSnapshotPath(modelId)
+    ? publicModelId(modelId)
+    : null;
 }
 
 export function modelStorageKey(

@@ -1415,6 +1415,12 @@ def _put(model_id, **fields):
     )
 
 
+def test_an_older_clients_cache_width_survives_the_override_route(monkeypatch):
+    _mock_override_store(monkeypatch)
+    _put("org/m", mlx_kv_bits = 8)
+    assert settings.get_model_overrides()["org/m"]["mlx_kv_quant"] == "8"
+
+
 def test_model_override_roundtrip(monkeypatch):
     _mock_override_store(monkeypatch)
 
@@ -1993,7 +1999,7 @@ def test_build_index_covers_legacy_default_lmstudio_and_custom_roots(monkeypatch
     monkeypatch.setattr(
         studio_db, "list_scan_folders", lambda: [{"path": str(tmp_path / "custom")}]
     )
-    for sub in ("active", "previous", "legacy", "default", "lmstudio", "custom"):
+    for sub in ("active", "previous", "legacy", "default", "lmstudio", "custom", "custom/hub"):
         (tmp_path / sub).mkdir()
 
     resolver._build_index()
@@ -2004,6 +2010,7 @@ def test_build_index_covers_legacy_default_lmstudio_and_custom_roots(monkeypatch
     assert str((tmp_path / "default").resolve()) in hf
     assert str((tmp_path / "previous").resolve()) in hf
     assert str((tmp_path / "custom").resolve()) in hf
+    assert str((tmp_path / "custom" / "hub").resolve()) in hf
     assert str((tmp_path / "lmstudio").resolve()) in lm
 
 
@@ -2461,6 +2468,48 @@ def test_snapshot_selector_skips_only_the_unreadable_child(tmp_path, monkeypatch
     selected = select_gguf_cache_snapshot_for_repo_dir(repo)
     assert selected is not None
     assert selected[3] == readable
+
+
+def test_path_companion_roots_widen_only_the_snapshot_the_repo_would_hand_out(tmp_path):
+    """#10599: loading by path widens to the sibling revisions of the SAME repo dir,
+    and only when the path is the one a repo-level selection resolves to."""
+    repo, old, newer = _vision_gguf_cache_repo(tmp_path)
+    (newer / "mmproj-vision-model-F16.gguf").write_bytes(b"GGUF companion")
+    os.utime(old, (1_000, 1_000))
+    os.utime(newer, (2_000, 2_000))
+
+    assert tuple(map(Path, resolver.local_path_gguf_companion_roots(str(old)))) == (old, newer)
+    # A revision the selector would not hand out is pinned, so it keeps its own root only.
+    assert resolver.local_path_gguf_companion_roots(str(newer)) == ()
+
+    pinned = repo / "snapshots" / "newer-weights-revision"
+    pinned.mkdir(parents = True)
+    (pinned / "vision-model-Q4_K_M.gguf").write_bytes(b"GGUF weights")
+    os.utime(pinned, (3_000, 3_000))
+    assert resolver.local_path_gguf_companion_roots(str(old)) == ()
+    assert tuple(map(Path, resolver.local_path_gguf_companion_roots(str(pinned)))) == (
+        pinned,
+        newer,
+        old,
+    )
+
+
+@pytest.mark.parametrize("kind", ["plain_dir", "repo_dir", "missing", "file", "repo_id"])
+def test_path_companion_roots_refuse_anything_outside_an_hf_cache_snapshot(tmp_path, kind):
+    """The widening reaches sibling revisions of one ``models--`` dir and nothing else."""
+    repo, old, _newer = _vision_gguf_cache_repo(tmp_path)
+    candidates = {
+        "plain_dir": tmp_path / "loose-model-dir",
+        "repo_dir": repo,
+        "missing": old.parent / "absent-revision",
+        "file": old / "vision-model-Q4_K_M.gguf",
+        "repo_id": Path("org/Vision-GGUF"),
+    }
+    target = candidates[kind]
+    if kind == "plain_dir":
+        target.mkdir()
+        (target / "vision-model-Q4_K_M.gguf").write_bytes(b"GGUF weights")
+    assert resolver.local_path_gguf_companion_roots(str(target)) == ()
 
 
 def test_disjoint_companion_roots_preserve_selected_snapshot_ancestor_walk(tmp_path):
@@ -4360,6 +4409,7 @@ def test_chat_audio_input_guards_target_before_switch(monkeypatch):
         gguf_only = False,
         audio_preflight = None,
         image_preflight = None,
+        tool_images_only = False,
     ):
         captured.update(
             require_vision = require_vision,
@@ -4450,6 +4500,58 @@ def test_completions_rejects_object_prompt_before_switch(monkeypatch):
         )
     assert exc.value.status_code == 400
     assert rec.calls == []  # no switch before rejection
+
+
+def _raise_reached(*_args, **_kwargs):
+    raise _Reached()
+
+
+_IGNORED_COMPLETIONS_PARAMS = [
+    ({"echo": True}, "echo"),
+    ({"suffix": " the end."}, "suffix"),
+    ({"best_of": 3}, "best_of"),
+    ({"best_of": 3, "n": 2}, "best_of"),
+    ({"best_of": 2, "stream": True}, "best_of"),
+]
+
+
+@pytest.mark.parametrize("extra, param", _IGNORED_COMPLETIONS_PARAMS)
+def test_completions_rejects_ignored_params_before_switch(monkeypatch, extra, param):
+    backend, rec = _wired(monkeypatch, _FakeBackend("org/A-GGUF"), ("/p/B", "Q8_0", "org/B-GGUF"))
+    body = {"model": "org/B-GGUF", "prompt": "hi", **extra}
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(inference_route.openai_completions(_json_body_request(body), "tester"))
+    assert exc.value.status_code == 400
+    assert exc.value.detail["error"]["code"] == "unsupported_parameter"
+    assert exc.value.detail["error"]["param"] == param
+    assert rec.calls == []
+
+
+@pytest.mark.parametrize("extra, param", _IGNORED_COMPLETIONS_PARAMS)
+def test_completions_rejects_ignored_params_without_switch(monkeypatch, extra, param):
+    backend, rec = _wired(monkeypatch, _FakeBackend("org/A-GGUF"), None, enabled = False)
+    monkeypatch.setattr(inference_route, "_fill_recommended_sampling_completions", _raise_reached)
+    body = {"prompt": "hi", "max_tokens": 8, **extra}
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(inference_route.openai_completions(_json_body_request(body), "tester"))
+    assert exc.value.status_code == 400
+    assert exc.value.detail["error"]["param"] == param
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {"echo": False, "suffix": "", "best_of": 1},
+        {"echo": None, "suffix": None, "best_of": None},
+        {"best_of": 2, "n": 2},
+    ],
+)
+def test_completions_default_ignored_params_still_proxy(monkeypatch, extra):
+    backend, rec = _wired(monkeypatch, _FakeBackend("org/A-GGUF"), None, enabled = False)
+    monkeypatch.setattr(inference_route, "_fill_recommended_sampling_completions", _raise_reached)
+    body = {"prompt": "hi", "max_tokens": 8, **extra}
+    with pytest.raises(_Reached):
+        asyncio.run(inference_route.openai_completions(_json_body_request(body), "tester"))
 
 
 def test_embeddings_rejects_object_input_before_switch(monkeypatch):
@@ -5665,6 +5767,18 @@ def test_chat_count_tokens_collapses_system_turns(monkeypatch):
             {"enable_thinking": True, "preserve_thinking": True},
             {"enable_thinking": True, "preserve_thinking": True},
             id = "preserve_thinking",
+        ),
+        pytest.param(
+            "reasoning_effort",
+            {"chat_template_kwargs": {"reasoning_effort": "none"}},
+            {"reasoning_effort": "none"},
+            id = "nested_effort",
+        ),
+        pytest.param(
+            "enable_thinking",
+            {"chat_template_kwargs": {"preserve_thinking": True}},
+            {"preserve_thinking": True},
+            id = "nested_preserve_thinking",
         ),
         # Nothing selected: send nothing, so llama-server keeps its load-time defaults.
         pytest.param("enable_thinking", {}, None, id = "template_default"),
@@ -7138,6 +7252,76 @@ def test_a_matching_explicit_ctx_flag_survives_auto_switch(monkeypatch):
     assert request.llama_extra_args == ["--ctx-size", "100352"]
 
 
+def test_a_ctx_flag_saved_from_the_picker_reaches_an_api_load(monkeypatch):
+    """#11511: the picker saves its slider context beside a typed -c. Its own load runs at the
+    -c (llama.cpp takes the last one), so an API auto-switch of the same row must too, instead
+    of stripping the flag as a stale shadow of the slider."""
+    _mock_override_store(monkeypatch)
+    saved = _put(
+        "unsloth/B-GGUF:Q4_K_M",
+        llama_extra_args = ["-c", "300000", "--rope-scaling", "yarn"],
+        custom_context_length = 262144,
+    )
+    entry = saved.overrides["unsloth/B-GGUF:Q4_K_M"]
+    assert entry["custom_context_length"] == 300000
+    assert entry["llama_extra_args"] == ["-c", "300000", "--rope-scaling", "yarn"]
+
+    backend, rec = _wired(
+        monkeypatch, _FakeBackend(None), ("unsloth/B-GGUF", "Q4_K_M", "unsloth/B-GGUF")
+    )
+    _run_hook("unsloth/B-GGUF")
+    request = rec.calls[0]
+    assert request.max_seq_length == 300000
+    assert request.llama_extra_args == ["-c", "300000", "--rope-scaling", "yarn"]
+
+
+@pytest.mark.parametrize(
+    "extra_args, fields, expected",
+    [
+        # llama.cpp's last -c wins, in either spelling.
+        (
+            ["--ctx-size", "8192", "-c", "65536"],
+            {"max_seq_length": 4096, "custom_context_length": 4096},
+            {"max_seq_length": 65536, "custom_context_length": 65536},
+        ),
+        # -c 0 asks llama.cpp for the model's own context: nothing to record.
+        (["-c", "0"], {"custom_context_length": 4096}, {"custom_context_length": 4096}),
+        # No context field sent: none is invented, the flag stays the only control.
+        (["-c", "65536"], {"kv_cache_dtype": "q8_0"}, {}),
+        # No -c: the slider value is stored as sent.
+        (["--top-k", "40"], {"custom_context_length": 4096}, {"custom_context_length": 4096}),
+        # Past the stored ceiling the slider value stays, so the flag is still checked on load.
+        (["-c", "99999999"], {"custom_context_length": 4096}, {"custom_context_length": 4096}),
+    ],
+)
+def test_a_saved_ctx_flag_sets_only_the_context_fields_sent(
+    monkeypatch, extra_args, fields, expected
+):
+    _mock_override_store(monkeypatch)
+    saved = _put("unsloth/B-GGUF:Q4_K_M", llama_extra_args = extra_args, **fields)
+    entry = saved.overrides["unsloth/B-GGUF:Q4_K_M"]
+    stored = {
+        key: entry[key] for key in ("max_seq_length", "custom_context_length") if key in entry
+    }
+    assert stored == expected
+
+
+def test_a_fill_keeps_the_sent_context_when_it_does_not_store_the_flag(monkeypatch):
+    """A fill (the localStorage migration) keeps a stored row's flags, so a -c in its payload is
+    not what any load will run with and must not rewrite the context."""
+    _mock_override_store(monkeypatch)
+    _put("unsloth/B-GGUF:Q4_K_M", llama_extra_args = ["--top-k", "7"])
+    saved = _put(
+        "unsloth/B-GGUF:Q4_K_M",
+        llama_extra_args = ["-c", "65536"],
+        custom_context_length = 4096,
+        fill_absent_fields = True,
+    )
+    entry = saved.overrides["unsloth/B-GGUF:Q4_K_M"]
+    assert entry["llama_extra_args"] == ["--top-k", "7"]
+    assert entry["custom_context_length"] == 4096
+
+
 @pytest.mark.parametrize(
     "stored_max_seq_length",
     ["100352", "not-a-number", 100352.0, True, [100352], {"v": 100352}],
@@ -7232,7 +7416,7 @@ def test_saved_parallel_slots_reach_an_api_load(monkeypatch):
     assert rec.calls[0].n_parallel == 8
 
 
-def test_parallel_slots_are_stored_and_gated_on_gguf():
+def test_parallel_slots_are_stored_and_reach_either_backend():
     override = settings.normalize_model_override({"n_parallel": 8})
     assert override == {"n_parallel": 8}
     # Blank, out of range and non-integer all mean "follow the server-wide default".
@@ -7241,9 +7425,13 @@ def test_parallel_slots_are_stored_and_gated_on_gguf():
 
     gguf = settings.model_override_load_kwargs(override, is_gguf = True)
     assert gguf["n_parallel"] == 8
-    # A safetensors load has no llama-server slots, exactly as the picker gates it.
-    assert "n_parallel" not in settings.model_override_load_kwargs(override, is_gguf = False)
+    safetensors = settings.model_override_load_kwargs(override, is_gguf = False)
+    assert safetensors["n_parallel"] == 8
+    for flag in ("n_batch", "n_ubatch"):
+        stored = settings.normalize_model_override({flag: 512})
+        assert flag not in settings.model_override_load_kwargs(stored, is_gguf = False)
     LoadRequest(model_path = "unsloth/B-GGUF", **gguf)
+    LoadRequest(model_path = "unsloth/B", **safetensors)
 
 
 def test_override_route_persists_parallel_slots(override_store):
@@ -8406,6 +8594,7 @@ def test_fill_absent_fields_carries_the_browser_only_settings_into_a_legacy_entr
         max_seq_length = 8192,
     )
     settings_route.update_openai_auto_switch_override(legacy, "tester")
+    store[settings.MODEL_OVERRIDES_SETTING_KEY]["unsloth/B-GGUF:Q4_K_M"]["mlx_kv_bits"] = 8
 
     backfill = settings_route.ModelOverridePayload(
         model_id = "unsloth/B-GGUF:Q4_K_M",
@@ -8413,6 +8602,7 @@ def test_fill_absent_fields_carries_the_browser_only_settings_into_a_legacy_entr
         max_seq_length = 2048,
         custom_context_length = 32768,
         kv_cache_dtype = "q8_0",
+        mlx_kv_quant = "tq-4",
         speculative_type = "ngram",
         gpu_ids = [0, 1],
         fill_absent_fields = True,
@@ -8427,6 +8617,7 @@ def test_fill_absent_fields_carries_the_browser_only_settings_into_a_legacy_entr
     assert entry["kv_cache_dtype"] == "q8_0"
     assert entry["speculative_type"] == "ngram"
     assert entry["gpu_ids"] == [0, 1]
+    assert settings.model_override_load_kwargs(entry, is_gguf = False)["mlx_kv_quant"] == "8"
     # One entry, not two: the fill resolves onto the key a load reads.
     assert list(store[settings.MODEL_OVERRIDES_SETTING_KEY]) == ["unsloth/B-GGUF:Q4_K_M"]
 
@@ -8509,6 +8700,61 @@ def test_map_entry_fill_reads_and_writes_in_one_transaction(tmp_path, monkeypatc
     db.upsert_app_setting_map_entry(key, "a", {"v": 9})
     db.upsert_app_setting_map_entry(key, "b", None)
     assert db.get_app_setting(key) == {"a": {"v": 9}}
+
+
+def test_a_first_writer_entry_collapses_a_conflicting_claim_inside_the_write(tmp_path, monkeypatch):
+    """The credential-provenance rule, decided where the race is. A caller that reads the map,
+    sees nothing, and then writes loses to a second caller doing the same with a different
+    identity: both see "absent" and the last one stores its own claim over the first. So the
+    comparison belongs inside this transaction."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    monkeypatch.setattr(db, "_schema_ready", set())
+
+    key = "test_map_entry_first_writer"
+    first = {"at": 100.0, "by": "identity-a"}
+    assert db.upsert_app_setting_map_entry(
+        key, "repo", first, keep_first_writer = True, ambiguous_field = "by"
+    ) == {"repo": first}
+
+    # The same identity writing again changes nothing, timestamp included.
+    db.upsert_app_setting_map_entry(
+        key,
+        "repo",
+        {"at": 200.0, "by": "identity-a"},
+        keep_first_writer = True,
+        ambiguous_field = "by",
+    )
+    assert db.get_app_setting(key) == {"repo": first}
+
+    # A different one cannot take it over, and cannot be taken over in turn.
+    db.upsert_app_setting_map_entry(
+        key,
+        "repo",
+        {"at": 300.0, "by": "identity-b"},
+        keep_first_writer = True,
+        ambiguous_field = "by",
+    )
+    assert db.get_app_setting(key) == {"repo": {"at": 100.0, "by": None}}
+    db.upsert_app_setting_map_entry(
+        key,
+        "repo",
+        {"at": 400.0, "by": "identity-a"},
+        keep_first_writer = True,
+        ambiguous_field = "by",
+    )
+    assert db.get_app_setting(key) == {"repo": {"at": 100.0, "by": None}}
+
+    # An absent entry is still created, and the ordinary write still replaces.
+    db.upsert_app_setting_map_entry(
+        key,
+        "other",
+        {"at": 500.0, "by": "identity-b"},
+        keep_first_writer = True,
+        ambiguous_field = "by",
+    )
+    assert db.get_app_setting(key)["other"] == {"at": 500.0, "by": "identity-b"}
+    db.upsert_app_setting_map_entry(key, "other", {"at": 600.0, "by": "identity-c"})
+    assert db.get_app_setting(key)["other"] == {"at": 600.0, "by": "identity-c"}
 
 
 def test_a_fill_never_relabels_a_stored_gpu_pin_with_this_browser_s_index_space(
@@ -8827,22 +9073,44 @@ def test_two_spellings_of_one_cached_quant_do_not_delete_each_others_save(monkey
     assert stored[list(stored)[0]]["max_seq_length"] in (4096, 8192)
 
 
-def test_mlx_kv_bits_survives_the_whole_override_projection():
+def test_mlx_kv_quant_survives_the_whole_override_projection():
     # Dropped here, an API auto-switch would load a remembered MLX model at full
-    # precision while the picker honored the width.
-    for bits in (8, 6, 5, 4, 3, 2):
-        assert settings.normalize_model_override({"mlx_kv_bits": bits}) == {"mlx_kv_bits": bits}
+    # precision while the picker honored the setting.
+    for quant in ("8", "6", "5", "4", "3", "2", "tq-4", "tq-3.5", "tq-3", "tq-2"):
+        assert settings.normalize_model_override({"mlx_kv_quant": quant}) == {"mlx_kv_quant": quant}
 
-    # A discrete set, so an in-range width can still be one mx.quantize rejects.
-    # bool is an int subclass, and a string width would reach LoadRequest untyped.
-    for rejected in (7, 1, 0, 9, True, False, "4", 4.5, None):
-        assert settings.normalize_model_override({"mlx_kv_bits": rejected}) == {}
+    for rejected in ("7", "3.5", "tq-8", "tq-6", "auto", 4, True, None):
+        assert settings.normalize_model_override({"mlx_kv_quant": rejected}) == {}
+    assert settings.normalize_model_override({"mlx_kv_bits": 8}) == {"mlx_kv_quant": "8"}
+    # A hand-edited width drops alone instead of aborting the whole override.
+    for stored in (7, "invalid", "4", True, [4]):
+        assert settings.normalize_model_override({"mlx_kv_bits": stored}) == {}
+        assert settings.model_override_load_kwargs({"mlx_kv_bits": stored}, is_gguf = False) == {}
+    assert settings.model_override_load_kwargs({"mlx_kv_bits": 8}, is_gguf = False) == {
+        "mlx_kv_quant": "8"
+    }
+    assert (
+        settings.model_override_load_kwargs({"mlx_kv_quant": None, "mlx_kv_bits": 8}, is_gguf = False)
+        == {}
+    )
+    both = {"mlx_kv_quant": "auto", "mlx_kv_bits": 4}
+    assert settings.normalize_model_override(both) == {}
+    assert settings.model_override_load_kwargs(both, is_gguf = False) == {}
+    assert LoadRequest(model_path = "unsloth/A", **both).mlx_kv_quant == "auto"
+
+    def _folded(**kw):
+        payload = settings_route.ModelOverridePayload(model_id = "m", **kw)
+        return payload.mlx_kv_quant, payload.mlx_kv_bits
+
+    assert _folded(mlx_kv_bits = 8) == ("8", None)
+    assert _folded(mlx_kv_quant = None, mlx_kv_bits = 8) == (None, None)
+    assert _folded(mlx_kv_quant = "tq-4", mlx_kv_bits = 8) == ("tq-4", None)
 
     # Ungated on is_gguf, matching the picker's own load payload.
     for is_gguf in (True, False):
-        kwargs = settings.model_override_load_kwargs({"mlx_kv_bits": 4}, is_gguf = is_gguf)
-        assert kwargs["mlx_kv_bits"] == 4
-        assert LoadRequest(model_path = "unsloth/A", **kwargs).mlx_kv_bits == 4
+        kwargs = settings.model_override_load_kwargs({"mlx_kv_quant": "tq-4"}, is_gguf = is_gguf)
+        assert kwargs["mlx_kv_quant"] == "tq-4"
+        assert LoadRequest(model_path = "unsloth/A", **kwargs).mlx_kv_quant == "tq-4"
 
 
 def _idle_backend(kw, monkeypatch, *, user_loaded):
@@ -9058,6 +9326,125 @@ def test_an_invalidated_index_rebuilds_on_a_host_that_just_booted(monkeypatch):
         monkeypatch.setattr(resolver, "_build_index", lambda: (built.append(1), {})[1])
         resolver._index()
         assert built == [1], kwargs
+
+
+def _settable_resolver_clock(monkeypatch):
+    """Advance resolver time by assigning ``clock.now``."""
+    clock = types.SimpleNamespace(now = 1000.0)
+    monkeypatch.setattr(resolver, "time", types.SimpleNamespace(monotonic = lambda: clock.now))
+    return clock
+
+
+def _counted_scans(monkeypatch, index = None):
+    scans = []
+    monkeypatch.setattr(resolver, "_build_index", lambda: scans.append(1) or dict(index or {}))
+    monkeypatch.setattr(resolver, "_last_scan_s", 0.0)
+    return scans
+
+
+@pytest.mark.parametrize(
+    "loaded, requested",
+    [
+        ("unsloth/A-GGUF", "claude-haiku-4-5"),
+        ("/elsewhere/unscanned.gguf", "/elsewhere/unscanned.gguf"),
+        ("/elsewhere/unscanned.gguf", "unscanned"),
+    ],
+)
+def test_a_name_that_is_not_on_disk_rescans_once_not_per_request(monkeypatch, loaded, requested):
+    clock = _settable_resolver_clock(monkeypatch)
+    monkeypatch.setattr(resolver, "_scan", (clock.now - 60.0, {}))
+    scans = _counted_scans(monkeypatch)
+    warmed = []
+
+    def _warm_lands():
+        # Simulate a background scan without counting it as blocking.
+        warmed.append(1)
+        resolver._scan = (clock.now, {})
+
+    monkeypatch.setattr(resolver, "warm_index_soon", _warm_lands)
+    real_resolve = resolver.resolve_local_gguf
+    backend, rec = _wired(monkeypatch, _FakeBackend(loaded, "Q4_K_M"), None)
+    monkeypatch.setattr(resolver, "resolve_local_gguf", real_resolve)
+
+    for _ in range(4):
+        clock.now += resolver._CACHE_TTL_S + 1
+        _run_hook(requested)
+
+    assert scans == [1]
+    assert warmed
+    assert rec.calls == []
+    assert backend.model_identifier == loaded
+
+
+def test_a_remembered_miss_still_finds_a_model_that_appears_later(monkeypatch):
+    clock = _settable_resolver_clock(monkeypatch)
+    monkeypatch.setattr(resolver, "_scan", (clock.now - 60.0, {}))
+    scans = _counted_scans(monkeypatch)
+    monkeypatch.setattr(resolver, "warm_index_soon", lambda: None)
+    assert resolver.resolve_local_gguf_for_switch("org/b") is None
+    assert scans == [1]
+
+    # Simulate background discovery without invalidation.
+    added = {"org/b": _entry("org/b", "Q4_K_M")}
+    clock.now += resolver._CACHE_TTL_S + 1
+    monkeypatch.setattr(resolver, "_scan", (clock.now, added))
+    assert resolver.resolve_local_gguf_for_switch("org/b") is not None
+
+    # Stale hits must rescan before switching.
+    clock.now += resolver._CACHE_TTL_S + 1
+    assert resolver.resolve_local_gguf_for_switch("org/b") is None
+    assert scans == [1, 1]
+
+
+def test_an_invalidation_forgets_a_remembered_miss(monkeypatch):
+    # Download completion must make the new model discoverable immediately.
+    clock = _settable_resolver_clock(monkeypatch)
+    monkeypatch.setattr(resolver, "_scan", (clock.now - 60.0, {}))
+    scans = _counted_scans(monkeypatch)
+    monkeypatch.setattr(resolver, "warm_index_soon", lambda: None)
+    assert resolver.resolve_local_gguf_for_switch("org/b") is None
+
+    monkeypatch.setattr(
+        resolver, "_build_index", lambda: scans.append(1) or {"org/b": _entry("org/b")}
+    )
+    resolver.invalidate_index(additions_only = True)
+    assert resolver.resolve_local_gguf_for_switch("org/b") is not None
+    assert scans == [1, 1]
+
+
+def test_a_remembered_miss_expires_and_a_failed_scan_proves_nothing(monkeypatch):
+    clock = _settable_resolver_clock(monkeypatch)
+    monkeypatch.setattr(resolver, "_scan", (clock.now - 60.0, {}))
+    scans = _counted_scans(monkeypatch)
+    monkeypatch.setattr(resolver, "warm_index_soon", lambda: None)
+    assert resolver.resolve_local_gguf_for_switch("org/b") is None
+
+    # Misses expire if background refresh never completes.
+    clock.now += 2 * resolver._duty_window() + 1
+    assert resolver.resolve_local_gguf_for_switch("org/b") is None
+    assert scans == [1, 1]
+
+    def _fail():
+        scans.append(1)
+        raise OSError("scan root vanished")
+
+    monkeypatch.setattr(resolver, "_build_index", _fail)
+    monkeypatch.setattr(resolver, "_misses", {})
+    clock.now += resolver._CACHE_TTL_S + 1
+    assert resolver.resolve_local_gguf_for_switch("org/b") is None
+    clock.now += resolver._CACHE_TTL_S + 1
+    assert resolver.resolve_local_gguf_for_switch("org/b") is None
+    assert scans == [1, 1, 1, 1]
+
+
+def test_an_oversized_name_is_not_remembered(monkeypatch):
+    clock = _settable_resolver_clock(monkeypatch)
+    monkeypatch.setattr(resolver, "_scan", (clock.now - 60.0, {}))
+    _counted_scans(monkeypatch)
+    monkeypatch.setattr(resolver, "warm_index_soon", lambda: None)
+    assert resolver.resolve_local_gguf_for_switch("x" * (resolver._MAX_MISS_NAME + 1)) is None
+    assert resolver.resolve_local_gguf_for_switch("x" * resolver._MAX_MISS_NAME) is None
+    assert [len(name) for _scope, name in resolver._misses] == [resolver._MAX_MISS_NAME]
 
 
 # The resident short circuit is the one path that answers without consulting the
@@ -9326,6 +9713,7 @@ def test_a_video_request_labels_the_switch_refusal_video(monkeypatch):
         require_video = False,
         audio_preflight = None,
         image_preflight = None,
+        tool_images_only = False,
     ):
         captured.update(
             require_vision = require_vision,
@@ -9694,11 +10082,13 @@ def test_auto_switch_loads_an_unloaded_mlx_model(monkeypatch):
         "unsloth/Qwen3-MLX", "/srv/models/Qwen3-MLX", (), is_gguf = False
     )
     monkeypatch.setattr(resolver, "_scan", (time.monotonic(), {"unsloth/qwen3-mlx": entry}))
+    settings.set_model_override("unsloth/Qwen3-MLX", n_parallel = 8)
 
     _run_hook("unsloth/Qwen3-MLX")
 
     assert [c.model_path for c in calls] == ["/srv/models/Qwen3-MLX"]
     assert calls[0].gguf_variant is None
+    assert calls[0].n_parallel == 8
     # The alias lands on the orchestrator, leaving the llama.cpp backend untouched.
     assert orchestrator._openai_advertised_id == "unsloth/Qwen3-MLX"
     assert getattr(llama, "_openai_advertised_id", None) is None
@@ -11365,6 +11755,12 @@ def test_a_stale_idle_reload_stash_diverts_a_refusal_into_a_reload(monkeypatch):
         )(),
     )
     kw._last_unloaded_model = ("unsloth/Idle-GGUF", "Q4_K_M", "unsloth/Idle-GGUF")
+    # Fictional repo, blocked Hub: answer "no GGUF" so resolution still reaches the double (#11551).
+    import utils.models.model_config as model_config
+
+    monkeypatch.setattr(
+        model_config, "detect_gguf_model_remote", lambda identifier, hf_token = None: None
+    )
 
     with pytest.raises(Exception):
         asyncio.run(

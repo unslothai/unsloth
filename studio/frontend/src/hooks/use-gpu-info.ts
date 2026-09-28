@@ -52,6 +52,8 @@ export interface GpuInfo {
   /** The dense quant schemes the backend says this host can run, best first ("fp8", "int8"). Empty
    *  until system info arrives, and on a backend too old to report the field. */
   denseQuantSchemes: readonly string[];
+  /** False until system info arrives, and on backends that do not report it. */
+  nvfp4Diffusion: boolean;
   name: string;
   memoryTotalGb: number;
   memorySharedGb: number;
@@ -89,6 +91,7 @@ const DEFAULT_GPU: GpuInfo = {
   backend: "",
   denseQuantSupported: false,
   denseQuantSchemes: [],
+  nvfp4Diffusion: false,
   name: "Unknown",
   memoryTotalGb: 0,
   memorySharedGb: 0,
@@ -116,6 +119,7 @@ function toGpuInfo(
     backend: data?.device_backend ?? "",
     denseQuantSupported: data?.dense_quant_supported === true,
     denseQuantSchemes: normalizeDenseQuantSchemes(data?.dense_quant_schemes),
+    nvfp4Diffusion: data?.nvfp4_diffusion === true,
     cpuCore: data?.cpu?.physical_count ?? 0,
     cpuThread: data?.cpu?.logical_count ?? 0,
     systemRamAvailableGb: data?.memory?.available_gb ?? 0,
@@ -135,20 +139,12 @@ function toGpuInfo(
   const loadDevice = pickLoadDevice(devices);
   return {
     ...base,
-    // Folded, not raw `shared_memory`: hardware.py sets that flag only on Windows, so a Linux ROCm
-    // APU arrives unified true / shared false and its GTT window was never subtracted here. The
-    // RAM tier then offered the very bytes the window is a view INTO as a second budget.
+    // Raw: `gpuSharedHostMemoryGb` folds the two flags itself. Folding here first also
+    // collapsed a multi-socket unified host's pools into one, so it subtracted one
+    // socket's worth and offered the rest again as a RAM budget.
     systemRamAvailableGb: systemRamAvailableOutsideSharedPoolGb(
       base.systemRamAvailableGb,
-      gpuSharedHostMemoryGb(
-        devices.map((device) => ({
-          ...device,
-          shared_memory: sharesHostMemory({
-            sharedMemory: device.shared_memory === true,
-            unifiedMemory: device.unified_memory === true,
-          }),
-        })),
-      ),
+      gpuSharedHostMemoryGb(devices),
     ),
     sharedMemory: memoryTotals.shared > 0 && memoryTotals.dedicated === 0,
     // Additive, and deliberately some() where sharedMemory above is "no dedicated pool at all": one

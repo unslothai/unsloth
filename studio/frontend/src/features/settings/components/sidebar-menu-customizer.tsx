@@ -9,13 +9,13 @@ import {
   Globe02Icon,
   HelpCircleIcon,
   Logout05Icon,
-  Message01Icon,
   Moon02Icon,
   PaintBrush02Icon,
   PowerIcon,
   Settings02Icon,
   UserCircleIcon,
 } from "@hugeicons/core-free-icons";
+import { MessageCircleIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Reorder, useDragControls } from "motion/react";
 import { Switch } from "@/components/ui/switch";
@@ -35,7 +35,7 @@ const ITEM_META: Record<
   profile: { icon: UserCircleIcon, labelKey: "settings.tabs.profile" },
   appearance: { icon: PaintBrush02Icon, labelKey: "settings.tabs.appearance" },
   resources: { icon: CpuIcon, labelKey: "settings.tabs.resources" },
-  chat: { icon: Message01Icon, labelKey: "settings.tabs.chat" },
+  chat: { icon: MessageCircleIcon, labelKey: "settings.tabs.chat" },
   connections: { icon: CloudIcon, labelKey: "settings.tabs.connections" },
 };
 
