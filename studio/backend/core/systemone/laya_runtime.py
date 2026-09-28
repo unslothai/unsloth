@@ -151,7 +151,42 @@ def _laya():
             for name in [n for n in sys.modules if n == "laya" or n.startswith("laya.")]:
                 del sys.modules[name]
             raise
+        for name in [n for n in sys.modules if n == "laya" or n.startswith("laya.")]:
+            sys.modules[name].open = _utf8_open
         return module
+
+
+def _utf8_open(
+    file,
+    mode = "r",
+    buffering = -1,
+    encoding = None,
+    errors = None,
+    newline = None,
+    closefd = True,
+    opener = None,
+):
+    """``open`` for the vendored laya modules: text mode defaults to UTF-8.
+
+    laya reads ``rl_agent_config.json`` and ``tokenizer_config.json`` with a bare ``open()``,
+    which decodes with the locale's code page (ANSI on Windows, ASCII under a C locale). A
+    checkpoint whose tokenizer config holds non-ASCII special tokens then fails to read, and
+    ``_fix_tokenizer_config`` swallows that and skips the repair the model needs to load.
+    The vendored files stay byte-identical to the wheel (vendor/README.md), so the encoding is
+    supplied here, as each laya module's own ``open``.
+    """
+    if encoding is None and "b" not in mode:
+        encoding = "utf-8"
+    return open(
+        file,
+        mode,
+        buffering,
+        encoding = encoding,
+        errors = errors,
+        newline = newline,
+        closefd = closefd,
+        opener = opener,
+    )
 
 
 def is_cached(checkpoint: Checkpoint) -> bool:
@@ -318,11 +353,11 @@ def _build_model(
         return original(cfg, encoder_dir = encoder_dir)
     config = AutoConfig.from_pretrained(encoder_dir)
     vocab_size, pad_token_id = config.vocab_size, getattr(config, "pad_token_id", None)
-    if vocab_size <= 1:
-        # Nothing to save over laya's own build.
+    # ModernBERT reads pad_token_id only for this embedding; others keep it (RoBERTa's position ids).
+    if config.model_type != "modernbert" or vocab_size <= 1:
         return original(cfg, encoder_dir = encoder_dir)
     # A one-row placeholder, with row 0 standing in for the padding id so the check below can
-    # tell the embedding was sized and padded from the config. ModernBERT-large's pad id is 50283.
+    # tell the embedding was sized and padded from the config.
     placeholder_pad = None if pad_token_id is None else 0
     config.vocab_size, config.pad_token_id = 1, placeholder_pad
     try:

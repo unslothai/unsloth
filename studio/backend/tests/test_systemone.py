@@ -1509,3 +1509,39 @@ def test_cuda_graphs_replay_the_eager_logits(tmp_path, monkeypatch):
     monkeypatch.setenv("UNSLOTH_SYSTEMONE_CUDA_GRAPHS", "0")
     laya_runtime._run_model(agent, batch)
     assert "_unsloth_graphs" not in agent.__dict__
+
+
+def test_encoders_that_keep_the_padding_id_match_laya(tmp_path):
+    torch = pytest.importorskip("torch")
+    from transformers import RobertaConfig
+
+    laya = laya_runtime._laya()
+    # RoBERTa keeps pad_token_id for its position ids, so a build with a stand-in padding id answers differently.
+    config = RobertaConfig(
+        vocab_size = 300,
+        hidden_size = 64,
+        intermediate_size = 96,
+        num_hidden_layers = 2,
+        num_attention_heads = 4,
+        max_position_embeddings = 40,
+        pad_token_id = 1,
+        bos_token_id = 0,
+        eos_token_id = 2,
+    )
+    encoder_dir = tmp_path / "encoder"
+    config.save_pretrained(encoder_dir)
+    cfg = {"encoder": "tiny", "head_layers": 1, "act_costs": {"escalate": 0.5}}
+    reference = laya.common.build_model(cfg, encoder_dir = str(encoder_dir)).eval()
+    fast = laya_runtime._build_model(cfg, str(encoder_dir), laya.common.build_model).eval()
+    fast.load_state_dict(reference.state_dict(), strict = True)
+    ids = torch.randint(5, 300, (2, 20))
+    ids[:, 15:] = 1
+    args = (
+        ids,
+        (ids != 1).long(),
+        torch.tensor([[3, 7]] * 2),
+        torch.ones(2, 2, dtype = torch.bool),
+        torch.zeros(2, dtype = torch.long),
+    )
+    with torch.inference_mode():
+        assert torch.equal(fast(*args)[0], reference(*args)[0])
