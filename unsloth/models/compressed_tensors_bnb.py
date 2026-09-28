@@ -1099,7 +1099,6 @@ def install_compressed_tensors_bnb_quantizer() -> bool:
                 self._unsloth_ct_dtype = dtype
                 keys = _checkpoint_keys(kwargs.get("checkpoint_files"))
                 self._unsloth_dtype_plan = packed_weight_dtype_plan(keys)
-                # Stacks swapped in now; packed Linears after bitsandbytes lays out the 16-bit ones.
                 keep = (
                     plan_mxfp4_keep_packed(model, keys) if keep_mxfp4_experts_packed(plan) else None
                 )

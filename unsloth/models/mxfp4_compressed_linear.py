@@ -164,7 +164,6 @@ class _Mxfp4PackedLinearFunction(torch.autograd.Function):
 
 
 class Mxfp4PackedLinear(nn.Linear):
-    # Read by kernels.utils.has_mxfp4_base without importing this.
     _unsloth_mxfp4_packed_linear = True
     compute_dtype = torch.bfloat16
 
@@ -206,7 +205,6 @@ class Mxfp4PackedLinear(nn.Linear):
         return
 
     def _apply(self, fn, *args, **kwargs):
-        # Casts leave the uint8 bytes alone; the decode follows the dtype.
         try:
             dtype = fn(torch.empty(0, dtype = self.compute_dtype)).dtype
         except Exception:
@@ -255,7 +253,6 @@ class Mxfp4PackedState:
 
 
 def is_mxfp4_scheme(scheme, default_format = None) -> bool:
-    # Weight-only: activation-quantized schemes cannot run here.
     if any(
         getattr(scheme, f, None) is not None for f in ("input_activations", "output_activations")
     ):

@@ -303,7 +303,6 @@ def test_adopting_compressed_tensors_modules_keeps_them_packed_and_matches_its_d
         want = reference(x)
     assert "weight" in reference.a._parameters
 
-    # `latent` is stored unpacked in the checkpoint: it goes back to a dense weight.
     n = adopt_compressed_mxfp4_modules(model, packed_names = {"a", "b"}, dtype = torch.bfloat16)
     assert n == 2
     assert type(model.a) is Mxfp4PackedLinear and type(model.b) is Mxfp4PackedLinear
@@ -887,7 +886,6 @@ def test_full_and_merged_saves_reload_in_plain_transformers(tmp_path, monkeypatc
         keys = list(f.keys())
     assert not any("weight_packed" in k or "weight_scale" in k for k in keys)
     assert "quantization_config" not in json.load(open(os.path.join(full, "config.json")))
-    # The exact decode: the same logits as plain transformers on the bf16-decoded checkpoint.
     assert torch.equal(_plain_logits(full, ids), _plain_logits(bf16_dir, ids))
 
     model = FastLanguageModel.get_peft_model(
@@ -904,7 +902,6 @@ def test_full_and_merged_saves_reload_in_plain_transformers(tmp_path, monkeypatc
     merged_dir = str(tmp_path / "merged")
     model.save_pretrained_merged(merged_dir, tokenizer, save_method = "merged_16bit")
     unloaded = model.merge_and_unload()
-    # Merged layers are dense now; k_proj had no adapter and stays packed.
     assert [n for n, m in unloaded.named_modules() if isinstance(m, Mxfp4PackedLinear)] == [
         f"model.layers.{i}.self_attn.k_proj" for i in range(2)
     ]
@@ -1085,7 +1082,6 @@ def test_initialisers_that_rewrite_the_base_weight_refuse_a_packed_base(init):
         peft.get_peft_model(
             holder, peft.LoraConfig(r = 4, target_modules = ["0"], init_lora_weights = init)
         )
-    # The default initialisation, and the same initialiser on a dense base, are untouched.
     peft.get_peft_model(nn.Sequential(_filled(32, 64)), peft.LoraConfig(r = 4, target_modules = ["0"]))
     dense = nn.Sequential(nn.Linear(64, 32, bias = False))
     peft.get_peft_model(dense, peft.LoraConfig(r = 4, target_modules = ["0"], init_lora_weights = init))

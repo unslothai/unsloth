@@ -355,7 +355,6 @@ def test_expert_lora_stays_opt_in():
     assert packed_expert_target_parameters(model, auto, ["w1"]) == ["experts.gate_up_proj"]
     assert packed_expert_target_parameters(model, None, ["w2", "w3"]) == auto
     assert packed_expert_target_parameters(model, ["mlp.other"], None) == ["mlp.other"]
-    # A regex string names the per-expert Linears by their original module names.
     assert packed_expert_target_parameters(model, auto, r".*experts.*w1") == [
         "experts.gate_up_proj"
     ]
@@ -375,7 +374,6 @@ def test_a_target_list_naming_expert_paths_opts_packed_experts_in():
     _swap_planned_stacks(model, _keys(), torch.bfloat16)
     stack = next(n for n, m in model.named_modules() if type(m).__name__ == "Mxfp4StackedExperts")
     auto = ["experts.gate_up_proj", "experts.down_proj"]
-    # One layer named: only that layer's stack, as PEFT suffix-matches target_parameters.
     assert packed_expert_target_parameters(model, auto, ["q_proj", f"{stack}.1.w1"]) == [
         f"{stack}.gate_up_proj"
     ]
@@ -582,7 +580,6 @@ def test_plan_stacks_the_experts_and_keeps_every_other_packed_linear_all_or_noth
     plan = plan_mxfp4_keep_packed(model, _keys())
     assert [name for name, *_ in plan.blocks] == ["layers.0.mlp", "layers.1.mlp"]
     assert plan.linears == []
-    # A packed Linear outside the experts stays packed on its own.
     extra = ("model.layers.0.proj.weight_packed", "model.layers.0.proj.weight_scale")
     plan = plan_mxfp4_keep_packed(model, _keys(extra = extra))
     assert len(plan.blocks) == 2 and plan.linears == ["layers.0.proj"]
@@ -750,7 +747,6 @@ def test_full_save_writes_the_checkpoints_per_expert_keys(tmp_path):
             plain(input_ids = ids).logits, model(input_ids = ids).logits, atol = 0, rtol = 0
         )
 
-    # A merged adapter leaves a dense stack: written under the same per-expert names.
     experts = model.layers[0].mlp.experts
     dense = experts.gate_up_proj.dequantize(torch.bfloat16) + 0.25
     packed_param = experts.gate_up_proj

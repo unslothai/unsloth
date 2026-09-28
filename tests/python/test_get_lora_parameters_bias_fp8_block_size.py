@@ -2,7 +2,6 @@ import ast
 from pathlib import Path
 
 
-# Module-level helpers the extracted functions call.
 _HELPERS = ("_packed_base", "_is_packed_state")
 
 
