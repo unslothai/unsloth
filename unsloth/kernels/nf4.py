@@ -39,6 +39,23 @@ def _mul(a, b, USE_MUL_RN: tl.constexpr):
         return a * b
 
 
+# Triton's JIT resolves every attribute in a kernel body, even in a dead constexpr branch, so
+# tl.gather (absent on Triton 3.2, torch 2.6) lives in a helper defined only where it exists.
+if hasattr(tl, "gather"):
+
+    @triton.jit
+    def _lut_gather(lut_ptr, n):
+        table = tl.load(lut_ptr + tl.arange(0, 16))
+        flat = tl.reshape(n, [n.numel])
+        return tl.reshape(tl.gather(table, flat, 0), n.shape)
+
+else:
+
+    @triton.jit
+    def _lut_gather(lut_ptr, n):
+        return tl.load(lut_ptr + n, eviction_policy = "evict_last")
+
+
 @triton.jit
 def _nf4_lut(lut_ptr, n, LUT_MODE: tl.constexpr):
     # n: int32 nibbles. Every mode returns the same fp32 table entry, so the choice is speed only.
@@ -68,9 +85,7 @@ def _nf4_lut(lut_ptr, n, LUT_MODE: tl.constexpr):
         return tl.where(b3, d1, d0)
     else:
         # Register-resident table, gathered along its only axis.
-        table = tl.load(lut_ptr + tl.arange(0, 16))
-        flat = tl.reshape(n, [n.numel])
-        return tl.reshape(tl.gather(table, flat, 0), n.shape)
+        return _lut_gather(lut_ptr, n)
 
 
 @triton.jit
