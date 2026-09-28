@@ -1272,16 +1272,15 @@ def test_build_without_an_encoder_dir_is_laya_own(tmp_path):
     assert calls == [None, str(tmp_path / "missing")]
 
 
-def test_fallback_build_releases_the_speculative_encoder(tmp_path):
-    pytest.importorskip("torch")
+def test_fallback_build_releases_the_speculative_encoder(tmp_path, monkeypatch):
+    torch = pytest.importorskip("torch")
     import gc
 
-    from transformers import ModernBertConfig, ModernBertModel
+    from transformers import ModernBertModel
 
     encoder_dir, cfg = _tiny_laya_encoder(tmp_path)
-    config = ModernBertConfig.from_pretrained(encoder_dir)
-    config.mask_token_id = config.vocab_size - 1
-    config.save_pretrained(encoder_dir)
+    # An input embedding that is not a plain nn.Embedding sends the build back to laya's own builder.
+    monkeypatch.setattr(ModernBertModel, "get_input_embeddings", lambda self: torch.nn.Identity())
     gc.collect()
     before = sum(isinstance(o, ModernBertModel) for o in gc.get_objects())
     during = []
@@ -1308,3 +1307,59 @@ def test_build_hook_is_restored_even_when_loading_fails(monkeypatch):
     with pytest.raises(FileNotFoundError):
         laya_runtime._load_laya("missing", device = "cpu")
     assert seen == [True] and laya.agent.build_model is original
+
+
+def test_high_special_token_ids_still_skip_the_embedding_init(tmp_path):
+    torch = pytest.importorskip("torch")
+    from transformers import ModernBertConfig
+
+    laya = laya_runtime._laya()
+    encoder_dir, cfg = _tiny_laya_encoder(tmp_path)
+    # ModernBERT-large puts its special tokens at the end of the vocabulary (pad 50283 of 50368).
+    config = ModernBertConfig.from_pretrained(encoder_dir)
+    config.pad_token_id, config.bos_token_id, config.eos_token_id = 297, 295, 296
+    config.cls_token_id, config.sep_token_id = 295, 296
+    config.save_pretrained(encoder_dir)
+    built = []
+    real_skip_init = torch.nn.utils.skip_init
+
+    def skip_init(*args, **kwargs):
+        built.append(args[1])
+        return real_skip_init(*args, **kwargs)
+
+    from transformers import AutoModel
+
+    real_from_config = AutoModel.from_config
+    placeholder_vocab = []
+
+    def from_config(config, **kwargs):
+        placeholder_vocab.append(config.vocab_size)
+        return real_from_config(config, **kwargs)
+
+    torch.nn.utils.skip_init, AutoModel.from_config = skip_init, from_config
+    try:
+        fast = laya_runtime._build_model(cfg, encoder_dir, laya.common.build_model).eval()
+    finally:
+        torch.nn.utils.skip_init, AutoModel.from_config = real_skip_init, real_from_config
+    # One row, not one past the highest special id: otherwise the embedding is still randomly initialised.
+    assert placeholder_vocab == [1]
+    reference = laya.common.build_model(cfg, encoder_dir = encoder_dir).eval()
+    assert built == [300]
+    assert (
+        fast.encoder.get_input_embeddings().padding_idx
+        == 297
+        == reference.encoder.get_input_embeddings().padding_idx
+    )
+    fast.load_state_dict(reference.state_dict(), strict = True)
+    assert repr(fast) == repr(reference)
+    assert fast.encoder.config.to_dict() == reference.encoder.config.to_dict()
+    ids = torch.randint(5, 300, (2, 20))
+    args = (
+        ids,
+        torch.ones_like(ids),
+        torch.tensor([[3, 7]] * 2),
+        torch.ones(2, 2, dtype = torch.bool),
+        torch.zeros(2, dtype = torch.long),
+    )
+    with torch.inference_mode():
+        assert torch.equal(fast(*args)[0], reference(*args)[0])

@@ -270,15 +270,6 @@ def _load_checkpoint(checkpoint: Checkpoint):
 
 
 _build_lock = threading.Lock()
-# Token ids a config may name; the placeholder vocabulary must still contain all of them.
-_SPECIAL_TOKEN_IDS = (
-    "pad_token_id",
-    "bos_token_id",
-    "eos_token_id",
-    "cls_token_id",
-    "sep_token_id",
-    "mask_token_id",
-)
 
 
 def _load_laya(
@@ -326,17 +317,26 @@ def _build_model(
     if not encoder_dir or not os.path.exists(encoder_dir):
         return original(cfg, encoder_dir = encoder_dir)
     config = AutoConfig.from_pretrained(encoder_dir)
-    vocab_size = config.vocab_size
-    ids = [getattr(config, name, None) for name in _SPECIAL_TOKEN_IDS]
-    placeholder_size = 1 + max([i for i in ids if isinstance(i, int) and i >= 0] + [0])
-    if placeholder_size >= vocab_size:
+    vocab_size, pad_token_id = config.vocab_size, getattr(config, "pad_token_id", None)
+    if vocab_size <= 1:
+        # Nothing to save over laya's own build.
         return original(cfg, encoder_dir = encoder_dir)
-    config.vocab_size = placeholder_size
-    encoder = AutoModel.from_config(config, attn_implementation = "sdpa")
-    config.vocab_size = vocab_size
+    # A one-row placeholder, with row 0 standing in for the padding id so the check below can
+    # tell the embedding was sized and padded from the config. ModernBERT-large's pad id is 50283.
+    placeholder_pad = None if pad_token_id is None else 0
+    config.vocab_size, config.pad_token_id = 1, placeholder_pad
+    try:
+        encoder = AutoModel.from_config(config, attn_implementation = "sdpa")
+    finally:
+        config.vocab_size, config.pad_token_id = vocab_size, pad_token_id
     placeholder = encoder.get_input_embeddings()
-    if type(placeholder) is not torch.nn.Embedding:
-        # An encoder laid out differently from ModernBERT: build it laya's way.
+    if (
+        type(placeholder) is not torch.nn.Embedding
+        or placeholder.num_embeddings != 1
+        or placeholder.padding_idx != placeholder_pad
+        or encoder.config.vocab_size != vocab_size
+    ):
+        # Not laid out like ModernBERT: build it laya's way.
         del encoder, placeholder
         return original(cfg, encoder_dir = encoder_dir)
     encoder.set_input_embeddings(
@@ -344,7 +344,7 @@ def _build_model(
             torch.nn.Embedding,
             vocab_size,
             placeholder.embedding_dim,
-            padding_idx = placeholder.padding_idx,
+            padding_idx = pad_token_id,
             max_norm = placeholder.max_norm,
             norm_type = placeholder.norm_type,
             scale_grad_by_freq = placeholder.scale_grad_by_freq,
