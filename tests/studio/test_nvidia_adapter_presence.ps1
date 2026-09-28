@@ -63,8 +63,15 @@ foreach ($name in $shared) {
 foreach ($v in @("UNSLOTH_ROCM_GFX_ARCH", "_UNSLOTH_ROCM_GFX_ARCH_HANDOFF", "HIP_PATH", "HIP_PATH_57", "ROCM_PATH", "UNSLOTH_ENABLE_AMD_SMI")) {
     [Environment]::SetEnvironmentVariable($v, $null)
 }
+# [IO.Path]::Combine, not Join-Path: Windows PowerShell 5.1's Join-Path throws on an entry whose
+# drive does not exist, which a real PATH can carry.
 $env:PATH = (@("$env:PATH" -split [System.IO.Path]::PathSeparator | Where-Object {
-    $_ -and -not (Test-Path -LiteralPath (Join-Path $_ "hipinfo.exe")) -and -not (Test-Path -LiteralPath (Join-Path $_ "amd-smi.exe"))
+    $dir = $_
+    $keep = [bool]$dir
+    foreach ($tool in @("hipinfo.exe", "amd-smi.exe")) {
+        if ($keep) { try { $keep = -not [System.IO.File]::Exists([System.IO.Path]::Combine($dir, $tool)) } catch { } }
+    }
+    $keep
 }) -join [System.IO.Path]::PathSeparator)
 $script:FakeRegistryNames = @()
 $script:FakeRegistryThrows = $false
