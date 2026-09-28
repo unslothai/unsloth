@@ -1598,17 +1598,17 @@ def _compressed_quantize_pythonpath():
 
 def _llm_compressor_imports_in_subprocess():
     """True only if a fresh interpreter, launched like the export's quantize runner, imports an llm-compressor inside _LLM_COMPRESSOR_SPEC."""
+    # sys.path[0] as `python _compressed_quantize.py` sets it; the caller's cwd is kept so relative PYTHONPATH entries resolve the same way.
     probe = (
+        f"import sys; sys.path[0] = {os.path.dirname(os.path.abspath(__file__))!r}\n"
         "import llmcompressor\n"
         "from llmcompressor import oneshot\n"
         "from llmcompressor.modifiers.quantization import QuantizationModifier\n"
         "print(llmcompressor.__version__)\n"
     )
     try:
-        # cwd = the runner's directory, so `-c`'s sys.path[0] matches `python _compressed_quantize.py`.
         completed = subprocess.run(
             [sys.executable, "-c", probe],
-            cwd = os.path.dirname(os.path.abspath(__file__)),
             stdout = subprocess.PIPE,
             stderr = subprocess.DEVNULL,
             text = True,

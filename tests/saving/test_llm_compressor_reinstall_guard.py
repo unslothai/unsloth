@@ -90,3 +90,12 @@ def test_probe_timeout_is_not_a_yes(monkeypatch):
 
     monkeypatch.setattr(save.subprocess, "run", _timeout)
     assert save._llm_compressor_imports_in_subprocess() is False
+
+
+def test_relative_pythonpath_resolves_against_the_callers_cwd(env, monkeypatch):
+    root, pip_calls = env
+    _write_fake(root / "vendor")
+    monkeypatch.chdir(root)
+    monkeypatch.setenv("PYTHONPATH", "vendor")
+    assert save.install_llm_compressor() == (None, None)
+    assert pip_calls == []
