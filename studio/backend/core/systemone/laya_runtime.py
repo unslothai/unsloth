@@ -328,12 +328,16 @@ def _build_model(
     config = AutoConfig.from_pretrained(encoder_dir)
     vocab_size = config.vocab_size
     ids = [getattr(config, name, None) for name in _SPECIAL_TOKEN_IDS]
-    config.vocab_size = 1 + max([i for i in ids if isinstance(i, int) and i >= 0] + [0])
+    placeholder_size = 1 + max([i for i in ids if isinstance(i, int) and i >= 0] + [0])
+    if placeholder_size >= vocab_size:
+        return original(cfg, encoder_dir = encoder_dir)
+    config.vocab_size = placeholder_size
     encoder = AutoModel.from_config(config, attn_implementation = "sdpa")
     config.vocab_size = vocab_size
     placeholder = encoder.get_input_embeddings()
-    if type(placeholder) is not torch.nn.Embedding or placeholder.num_embeddings >= vocab_size:
+    if type(placeholder) is not torch.nn.Embedding:
         # An encoder laid out differently from ModernBERT: build it laya's way.
+        del encoder, placeholder
         return original(cfg, encoder_dir = encoder_dir)
     encoder.set_input_embeddings(
         torch.nn.utils.skip_init(

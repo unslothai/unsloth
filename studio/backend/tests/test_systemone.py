@@ -1272,6 +1272,28 @@ def test_build_without_an_encoder_dir_is_laya_own(tmp_path):
     assert calls == [None, str(tmp_path / "missing")]
 
 
+def test_fallback_build_releases_the_speculative_encoder(tmp_path):
+    pytest.importorskip("torch")
+    import gc
+
+    from transformers import ModernBertConfig, ModernBertModel
+
+    encoder_dir, cfg = _tiny_laya_encoder(tmp_path)
+    config = ModernBertConfig.from_pretrained(encoder_dir)
+    config.mask_token_id = config.vocab_size - 1
+    config.save_pretrained(encoder_dir)
+    gc.collect()
+    before = sum(isinstance(o, ModernBertModel) for o in gc.get_objects())
+    during = []
+
+    def original(cfg, encoder_dir = None):
+        during.append(sum(isinstance(o, ModernBertModel) for o in gc.get_objects()))
+        return "laya"
+
+    assert laya_runtime._build_model(cfg, encoder_dir, original) == "laya"
+    assert during == [before]
+
+
 def test_build_hook_is_restored_even_when_loading_fails(monkeypatch):
     pytest.importorskip("torch")  # laya imports torch
     laya = laya_runtime._laya()
