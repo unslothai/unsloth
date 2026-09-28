@@ -695,7 +695,22 @@ VLLM_SUPPORTED_VLM = [
     # Qwen3.5 ships as Qwen3_5ForConditionalGeneration with a vision_config, so it
     # reaches this gate even for the text-only checkpoints.
     "qwen3_5",
+    "idefics3",
 ]
+
+
+def _zoo_supports_idefics3_fast_inference():
+    # unsloth_zoo ships separately; older releases crash converting Idefics3's model.text_model layout.
+    try:
+        from unsloth_zoo.empty_model import get_model_layer_config
+        return (
+            "model.text_model.layers.{kk}.self_attn.q_proj"
+            in get_model_layer_config()["standard_layers"]
+        )
+    except Exception:
+        return False
+
+
 VLLM_NON_LORA_VLM = [
     "mllama",
 ]
@@ -2028,8 +2043,13 @@ class FastBaseModel:
         if is_vlm_config and fast_inference:
             if not any(arch in VLLM_SUPPORTED_VLM for arch in model_types):
                 raise RuntimeError(
-                    f"Unsloth: Fast inference is only supported for Language models and Qwen2.5-VL, Qwen3-VL, Gemma3, Mistral3 among vision models. "
+                    f"Unsloth: Fast inference is only supported for Language models and these vision model types: {', '.join(VLLM_SUPPORTED_VLM)}. "
                     f"Found architectures: {', '.join(model_types)}!"
+                )
+            if "idefics3" in model_types and not _zoo_supports_idefics3_fast_inference():
+                raise RuntimeError(
+                    "Unsloth: Idefics3 fast_inference needs a newer unsloth_zoo. "
+                    "Please run `pip install --upgrade unsloth_zoo`."
                 )
 
         if any(arch in VLLM_NON_LORA_VLM for arch in model_types):
