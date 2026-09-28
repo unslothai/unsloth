@@ -17,7 +17,11 @@ import {
 import {
   OPEN_DOCUMENT_SPREADSHEET_MIME,
   OPEN_DOCUMENT_TEXT_MIME,
+  RTF_MIMES,
+  isRtfAttachmentName,
+  isToolOnlyAttachmentName,
 } from "./open-document-accept";
+import { readRtfAttachmentContent } from "./rtf";
 
 export type AttachmentTextLabel =
   | "PDF"
@@ -26,7 +30,8 @@ export type AttachmentTextLabel =
   | "ODS"
   | "ODT"
   | "XLSX"
-  | "PPTX";
+  | "PPTX"
+  | "RTF";
 
 export { TEXT_ATTACHMENT_ACCEPT };
 
@@ -45,7 +50,7 @@ const PDF_ATTACHMENT_RE = /\.pdf$/i;
 const DOCX_ATTACHMENT_RE = /\.docx$/i;
 const HTML_ATTACHMENT_RE = /\.x?html?$/i;
 const OPEN_DOCUMENT_ATTACHMENT_RE = /\.(ods|odt)$/i;
-const LABELLED_ATTACHMENT_TEXT_RE = /^\[(PDF|DOCX|HTML|ODS|ODT|XLSX|PPTX): [^\n]*\]\n/;
+const LABELLED_ATTACHMENT_TEXT_RE = /^\[(PDF|DOCX|HTML|ODS|ODT|XLSX|PPTX|RTF): [^\n]*\]\n/;
 const ATTACHMENT_TAG_OPEN_RE = /^<attachment name=[^\n]*>\n/;
 const ATTACHMENT_TAG_CLOSE = "\n</attachment>";
 // Both wrappers start on the first line, so only a prefix is matched against.
@@ -477,6 +482,16 @@ export function isOpenDocumentAttachment(
     contentType === OPEN_DOCUMENT_SPREADSHEET_MIME ||
     contentType === OPEN_DOCUMENT_TEXT_MIME ||
     OPEN_DOCUMENT_ATTACHMENT_RE.test(name ?? "")
+  );
+}
+
+export function isRtfAttachment(
+  name: string | undefined,
+  contentType: string | undefined,
+): boolean {
+  return (
+    RTF_MIMES.includes(contentType?.toLowerCase() ?? "") ||
+    isRtfAttachmentName(name ?? "")
   );
 }
 
@@ -1010,6 +1025,17 @@ export async function readAttachmentText(
       contentType ?? "",
     );
     return { label, text, truncated: false };
+  }
+  if (isRtfAttachment(name, contentType)) {
+    const { label, text } = await readRtfAttachmentContent(file, name);
+    return { label, text, truncated: false };
+  }
+  if (isToolOnlyAttachmentName(name)) {
+    return {
+      label: null,
+      text: `${name} has no preview: only the python tool can read it.`,
+      truncated: false,
+    };
   }
   return { label: null, ...(await readBoundedText(file)) };
 }

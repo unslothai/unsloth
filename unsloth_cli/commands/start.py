@@ -77,6 +77,7 @@ _HERMES_POSIX_INSTALL_HINT = (
 _HERMES_MIN_CONTEXT = 65536
 _DSH_PROVIDER = "unsloth"
 _DSH_ENV_KEY = "UNSLOTH_API_KEY"
+_DSH_PATCH_FILE = "unsloth.patch.yml"
 _DSH_PACKAGE = "@deepseek-ai/dsh"
 # dsh picks its sandbox+approval preset from DSH_PERMISSION_MODE via ??, so omitting it would inherit a danger-full-access exported in the parent shell, and "" is not unset to ??. Pin the mode in both directions instead of only setting it for --yolo.
 _DSH_SAFE_PERMISSION_MODE = "workspace-write"
@@ -129,6 +130,9 @@ _PI_USER_VERBATIM_SETTINGS = ("npmCommand",)
 _PI_USER_RESOURCES_MANIFEST = ".unsloth-user-resources.json"
 # OpenCode selects a model by "<providerID>/<modelID>". Use a dedicated id to avoid colliding with a user's providers; provider filters are set in the launch-time overlay.
 _OPENCODE_PROVIDER = "unsloth-studio"
+# OpenCode sends min(limit.output, this) as max_tokens unless the env var below raises it.
+_OPENCODE_OUTPUT_TOKEN_MAX = 32_000
+_OPENCODE_OUTPUT_TOKEN_MAX_ENV = "OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX"
 _PROVIDER_HEADER = f"[model_providers.{_CODEX_PROFILE}]"
 _PASSTHROUGH = {"allow_extra_args": True, "ignore_unknown_options": True}
 
@@ -320,6 +324,17 @@ _PRESENCE_PENALTY_OPTION = typer.Option(
     max = 2.0,
     rich_help_panel = _PANEL_SAMPLING,
     help = "Pin the presence penalty. Default: unset (per-model recommendation).",
+)
+_MAX_TOKENS_OPTION = typer.Option(
+    None,
+    "--max-tokens",
+    min = 1,
+    rich_help_panel = _PANEL_SAMPLING,
+    help = (
+        "Most tokens the agent may generate in one response. Default: a quarter of the "
+        "context window, up to 32,000. Capped at half the window so the conversation "
+        "keeps room."
+    ),
 )
 
 # Agent-session knobs.
@@ -569,11 +584,22 @@ _DSH_LAUNCHER_ARGS = frozenset(
 )
 
 
-def _dsh_command(args: list[str]) -> list[str]:
+# Launcher invocations that boot no profile, so they take no --patch overlay.
+_DSH_NO_PROFILE_ARGS = frozenset("-V --version plugin".split())
+
+
+def _dsh_command(args: list[str], patch: Optional[str] = None) -> list[str]:
     head = args[0] if args else ""
     if head in _DSH_LAUNCHER_ARGS or head.startswith(("--profile=", "--patch=")):
-        return ["dsh", *args]
-    return ["dsh", "web", *args]
+        command = ["dsh", *args]
+    else:
+        command = ["dsh", "web", *args]
+    if patch is not None and command[1] not in _DSH_NO_PROFILE_ARGS:
+        # `dsh <name>` only expands to `--profile <name>` when the name comes first, so the
+        # overlay goes after a bare profile name and ahead of a leading launcher option.
+        at = 1 if command[1].startswith("-") else 2
+        command[at:at] = ["--patch", patch]
+    return command
 
 
 class LoadOptions(NamedTuple):
@@ -1777,6 +1803,8 @@ _RESIDENT_RUNTIME_FIELDS = {
     "speculative_type": "speculative_type",
     "spec_draft_n_max": "spec_draft_n_max",
     # The applied value is null when the runtime refused the request.
+    # Scheme and width together; a bare width reads back as mx.quantize, so TurboQuant would reload as it. The width stays for servers without mlx_kv_quant.
+    "mlx_kv_quant_requested": "mlx_kv_quant",
     "mlx_kv_bits_requested": "mlx_kv_bits",
     # LoadRequest defaults this to True, so omitting it would reload a full-precision model in 4-bit. Null on GGUF, which has no such setting.
     "load_in_4bit": "load_in_4bit",
@@ -4513,6 +4541,42 @@ def write_openclaw_config(
         typer.echo(f"Updated {path}")
 
 
+def opencode_output_limit(window: int, max_tokens: Optional[int] = None) -> int:
+    if max_tokens:
+        return max(1, min(int(max_tokens), window // 2))
+    return max(1, min(window // 4, _OPENCODE_OUTPUT_TOKEN_MAX))
+
+
+def opencode_compaction_reserved(window: int, output: int) -> int:
+    return max(1, min(output, max(window // 10, 8192)))
+
+
+def _opencode_output_env(model: dict, max_tokens: Optional[int]) -> dict:
+    """Lift OpenCode's output ceiling when --max-tokens exceeds it; re-emit an inherited one so a --no-launch recipe keeps it."""
+    window = model.get("context_length") or model.get("max_context_length")
+    if not max_tokens:
+        return {}
+    if not window:
+        typer.echo(
+            "Warning: Studio did not report the model's context length, so --max-tokens is ignored.",
+            err = True,
+        )
+        return {}
+    output = opencode_output_limit(int(window), max_tokens)
+    if output < max_tokens:
+        typer.echo(
+            f"Warning: --max-tokens {max_tokens} leaves too little of the {int(window):,}-token "
+            f"context for the conversation; using {output:,}.",
+            err = True,
+        )
+    raw = os.environ.get(_OPENCODE_OUTPUT_TOKEN_MAX_ENV, "")
+    inherited = int(raw) if raw.isdigit() and int(raw) > 0 else None
+    ceiling = inherited or _OPENCODE_OUTPUT_TOKEN_MAX
+    if output <= ceiling and inherited is None:
+        return {}
+    return {_OPENCODE_OUTPUT_TOKEN_MAX_ENV: str(max(output, ceiling))}
+
+
 def write_opencode_config(
     base: str,
     key: str,
@@ -4520,6 +4584,7 @@ def write_opencode_config(
     path: Path,
     yolo: bool = False,
     as_subagent: bool = False,
+    max_tokens: Optional[int] = None,
 ) -> dict:
     config = _read_json_object(path)
     if config is None:
@@ -4534,10 +4599,13 @@ def write_opencode_config(
     # Keep the provider definition in this private session file. The launch path adjusts effective provider filters in the higher-priority inline overlay.
     model_entry = {"name": model["id"]}
     window = model.get("context_length") or model.get("max_context_length")
+    reserved = None
     if window:
         window = int(window)
-        # A custom-provider model with no limit defaults to context 0, which silently disables OpenCode's auto-compaction; declare the real window and a sane output cap so it compacts instead of overflowing the server.
-        model_entry["limit"] = {"context": window, "output": min(window // 4, 8192)}
+        output = opencode_output_limit(window, max_tokens)
+        reserved = opencode_compaction_reserved(window, output)
+        # Without a limit OpenCode assumes context 0 and never compacts. Without input it compacts at context - output and ignores compaction.reserved.
+        model_entry["limit"] = {"context": window, "input": window, "output": output}
     _subdict(config, "provider")[_OPENCODE_PROVIDER] = {
         "npm": "@ai-sdk/openai-compatible",
         "name": "Unsloth Studio",
@@ -4550,8 +4618,15 @@ def write_opencode_config(
         for field in ("model", "small_model"):
             if str(config.get(field) or "").startswith(f"{_OPENCODE_PROVIDER}/"):
                 config.pop(field, None)
-        managed_compaction = {"auto": True, "reserved": max(1, window // 10)} if window else None
-        if managed_compaction and config.get("compaction") == managed_compaction:
+        # Drop a managed compaction block, current or legacy value.
+        managed = {reserved, max(1, window // 10)} if window else set()
+        compaction = config.get("compaction")
+        if (
+            isinstance(compaction, dict)
+            and compaction.keys() == {"auto", "reserved"}
+            and compaction["auto"] is True
+            and compaction["reserved"] in managed
+        ):
             config.pop("compaction", None)
         _subdict(config, "agent")[_SUBAGENT_NAME] = {
             "description": _SUBAGENT_DESCRIPTION,
@@ -4567,10 +4642,10 @@ def write_opencode_config(
             if not agents:
                 config.pop("agent", None)
     if window and not as_subagent:
-        # Compact with ~10% headroom (near 90% full). The fixed 20k-token default buffer over-compacts, or never settles, on a small local context.
+        # The fixed 20k-token default buffer over-compacts, or never settles, on a small local context.
         compaction = _subdict(config, "compaction")
         compaction["auto"] = True
-        compaction["reserved"] = max(1, window // 10)
+        compaction["reserved"] = reserved
     tools = ("edit", "bash", "webfetch", *(("task",) if as_subagent else ()))
     if yolo:
         # Fallback for commands without native --auto and for the append-safe bare --no-launch command, where the subcommand is not known yet. Rides inline (OPENCODE_CONFIG_CONTENT) so it wins over a project config. TUI and `run` launches use --auto and call here with yolo=False, letting OpenCode preserve explicit deny rules.
@@ -4953,37 +5028,47 @@ def write_pi_subagent_config(
     )
 
 
-def write_dsh_config(base: str, model: dict, path: Path) -> None:
+def write_dsh_patch(base: str, model: dict, path: Path) -> None:
+    """Write the dsh loader patch that points the booted profile at Unsloth.
+
+    dsh 0.1.7 dropped `settings.yaml`: it now imports a leftover one into the profile only
+    after the first boot has settled, so that boot still runs on the DeepSeek default. A
+    `--patch` overlay is read at boot on every dsh release this supports, and the file is
+    Unsloth's own, so it is rewritten whole rather than merged.
+    """
     import yaml
 
-    config = _read_yaml_object(path)
-    if config is None:
-        typer.echo(
-            f"Warning: couldn't parse {path} — add an '{_DSH_PROVIDER}' provider "
-            "there yourself, or move the file aside and re-run.",
-            err = True,
-        )
-        return
     model_entry = {"id": model["id"]}
     window = model.get("context_length") or model.get("max_context_length")
     if window:
         window = int(window)
         model_entry["contextWindow"] = window
         model_entry["maxTokens"] = min(window // 4, 8192)
-    _subdict(_subdict(config, "llm-pi-ai"), "providers")[_DSH_PROVIDER] = {
-        "displayName": "Unsloth Studio",
-        "api": "openai-completions",
-        "baseURL": f"{base}/v1",
-        "apiKeyEnv": _DSH_ENV_KEY,
-        # pi-ai reads an unknown base URL as OpenAI itself.
-        "compat": {"supportsDeveloperRole": False, "maxTokensField": "max_tokens"},
-        "models": [model_entry],
-    }
-    _subdict(config, "agent-default-model").update(
-        provider = _DSH_PROVIDER,
-        model = model["id"],
-    )
-    text = yaml.safe_dump(config, sort_keys = False)
+    entries = [
+        {
+            "id": "llm-pi-ai",
+            "name": "@deepseek-ai/dsh-llm-pi-ai",
+            "config": {
+                "providers": {
+                    _DSH_PROVIDER: {
+                        "displayName": "Unsloth Studio",
+                        "api": "openai-completions",
+                        "baseURL": f"{base}/v1",
+                        "apiKeyEnv": _DSH_ENV_KEY,
+                        # pi-ai reads an unknown base URL as OpenAI itself.
+                        "compat": {"supportsDeveloperRole": False, "maxTokensField": "max_tokens"},
+                        "models": [model_entry],
+                    }
+                }
+            },
+        },
+        {
+            "id": "agent-default-model",
+            "name": "@deepseek-ai/dsh-agent-default-model",
+            "config": {"provider": _DSH_PROVIDER, "model": model["id"]},
+        },
+    ]
+    text = yaml.safe_dump(entries, sort_keys = False)
     if not path.exists() or path.read_text(encoding = "utf-8") != text:
         path.parent.mkdir(parents = True, exist_ok = True)
         path.write_text(text, encoding = "utf-8")
@@ -5348,6 +5433,7 @@ def opencode(
     min_p: Optional[float] = _MIN_P_OPTION,
     repetition_penalty: Optional[float] = _REPETITION_PENALTY_OPTION,
     presence_penalty: Optional[float] = _PRESENCE_PENALTY_OPTION,
+    max_tokens: Optional[int] = _MAX_TOKENS_OPTION,
     serve: bool = _SERVE_OPTION,
     yolo: bool = _YOLO_OPTION,
     persist: bool = _PERSIST_OPTION,
@@ -5409,8 +5495,12 @@ def opencode(
                 config_path,
                 yolo = yolo and not native_auto,
                 as_subagent = True,
+                max_tokens = max_tokens,
             )
-            env = {"OPENCODE_CONFIG": str(config_path)}
+            env = {
+                "OPENCODE_CONFIG": str(config_path),
+                **_opencode_output_env(subagent_model, max_tokens),
+            }
             inline_config = _opencode_subagent_inline_config(
                 config_path,
                 session_permission,
@@ -5471,6 +5561,7 @@ def opencode(
             entry,
             config_path,
             yolo = yolo and not native_auto,
+            max_tokens = max_tokens,
         )
         # A project's own opencode.json outranks OPENCODE_CONFIG, so the session model pin would silently lose to a repo config; carry it in OPENCODE_CONFIG_CONTENT, which outranks project config, while the API key stays in the private file. Only the config fallback carries a permission: native --auto omits it (auto-approve asks, keep explicit denies) and a non-yolo session omits it too, honoring project rules. V1 filters are ordinary overlays, so scope that session to our provider; V2 turns filters into security policies where global/project rules intentionally win, so keep those policies intact and tell the user above that they must allow our provider. small_model is opencode's separate model for lightweight tasks; pin it to the session model too, or a user/project small_model on another (now filtered) provider would resolve a not-found error mid-session.
         inline_config: dict = {
@@ -5485,6 +5576,7 @@ def opencode(
         env = {
             "OPENCODE_CONFIG": str(config_path),
             "OPENCODE_CONFIG_CONTENT": json.dumps(inline_config),
+            **_opencode_output_env(entry, max_tokens),
         }
         _run(base, entry, env, command, launch = launch, install_hint = install_hint)
 
@@ -5709,7 +5801,6 @@ def dsh(
     """Point DeepSeek Harness (dsh) at the running Unsloth server and start it."""
     model, ctx.args[:] = _consume_positional_model(model, ctx.args)
     _reject_as_subagent("dsh", ctx.args)
-    command = _dsh_command(ctx.args)
     install_hint = _npm_install_hint(_DSH_PACKAGE)
     _require_agent_for_launch("dsh", install_hint, launch)
     base, key, entry = _connect(
@@ -5735,7 +5826,10 @@ def dsh(
         ),
     )
     with _session_config("dsh", launch, persist = persist) as home:
-        write_dsh_config(base, entry, home / "settings.yaml")
+        patch = home / _DSH_PATCH_FILE
+        write_dsh_patch(base, entry, patch)
+        # A Windows dsh under WSL gets DSH_HOME translated through WSLENV, but not argv.
+        command = _dsh_command(ctx.args, _agent_config_path(patch, ["dsh"]))
         env = {
             _DSH_ENV_KEY: key,
             "DSH_HOME": str(home),

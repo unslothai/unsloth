@@ -496,9 +496,19 @@ def test_rust_windows_spawns_force_utf8(rust_file: str) -> None:
 # the script dies with exit 1 and 2 bytes of stdout, and the user's setup log holds a PowerShell stack trace where the
 # banner should be.
 #
+# DETACHED_PROCESS would reach that state from the spawn, but Windows PowerShell 5.1 started that way exits 0 without
+# running a line (checked on windows-latest and windows-11-arm, whatever stdin, -File or -Command), so the detach has to
+# happen inside the child. The FreeConsole prologue that does it is an Add-Type/DllImport of kernel32, which
+# Bitdefender quarantines on real machines (CMD:Heur.BZC.PZQ.Boxter.542), so these runs are opt-in off CI: they run
+# under GitHub Actions, or locally with UNSLOTH_TEST_CONSOLE_LESS=1.
+#
 # Everything the probe prints is sliced out of the script under test; only the FreeConsole prologue and the stderr
 # diagnostics are harness.
 CREATE_NO_WINDOW = 0x08000000
+
+_CONSOLE_LESS_OPTED_IN = (
+    os.environ.get("GITHUB_ACTIONS") == "true" or os.environ.get("UNSLOTH_TEST_CONSOLE_LESS") == "1"
+)
 
 # studio/src-tauri/src/install.rs::powershell_launch_args, minus the -File the runner appends. Not Bypass:
 # RemoteSigned is what the shipped spawn uses.
@@ -595,16 +605,7 @@ def _console_less_probe(path: Path) -> str:
         r"[ \t]*try \{ \$script:StudioStdoutRedirected = \[Console\]::IsOutputRedirected \} catch \{ \}",
     )
     parts += [redirect_probe or "$script:StudioStdoutRedirected = $false", ""]
-    # Enable-StudioVirtualTerminal's own helpers come first, because it calls them. They were
-    # added when the emitted-type path was extracted, and the reconstruction that this test
-    # builds to represent the predecessor calls them too: without them the probe dies with an
-    # unrecognised command, which reads as "the predecessor disagreed" when in truth it never
-    # ran. Anything the sliced functions call has to be sliced with them.
     for name in (
-        "Test-StudioCanDefineNativeTypes",
-        "Test-StudioEmitInChildProcess",
-        "New-StudioDynamicAssembly",
-        "New-StudioEmittedNativeType",
         "Write-StudioLine",
         "Enable-StudioVirtualTerminal",
         "Get-StudioAnsi",
@@ -645,6 +646,8 @@ def _run_console_less(path: Path, source: str | None = None) -> tuple[int, bytes
     `source` is for the VT parity case, which runs this file's own function beside the one it
     replaced. A str keeps the lru_cache above workable; a dict would not hash.
     """
+    if not _CONSOLE_LESS_OPTED_IN:
+        pytest.skip("the FreeConsole probe trips AV heuristics; set UNSLOTH_TEST_CONSOLE_LESS=1 to run it")
     with tempfile.TemporaryDirectory() as workdir:
         # A file written here has no Zone.Identifier, so RemoteSigned admits it.
         probe = Path(workdir) / f"{path.stem}_console_less_probe.ps1"
