@@ -494,6 +494,31 @@ BENIGN_CONSOLE_ERROR_PATTERNS: tuple[str, ...] = (
 )
 
 
+# The OS can briefly run out of socket buffers on a busy runner (Windows and macOS lanes), and Chromium fails the
+# navigation outright with net::ERR_NO_BUFFER_SPACE. It recovers on its own, so a navigation is retried after 5s,
+# then 15s, as the chat, extra and model-config suites already do for their own requests. Any other error is raised
+# at once: only this one says nothing about the app.
+SOCKET_BUFFER_BACKOFF_S: tuple[float, ...] = (5.0, 15.0)
+
+
+def goto_with_socket_backoff(
+    page: Any,
+    url: str,
+    *,
+    sleep: Callable[[float], None] = time.sleep,
+    **kwargs: Any,
+) -> Any:
+    for backoff_s in (*SOCKET_BUFFER_BACKOFF_S, None):
+        try:
+            return page.goto(url, **kwargs)
+        except Exception as exc:
+            if backoff_s is None or "ERR_NO_BUFFER_SPACE" not in str(exc):
+                raise
+            print(f"[goto] {url}: ERR_NO_BUFFER_SPACE; retrying in {backoff_s:.0f}s", flush = True)
+            sleep(backoff_s)
+    raise AssertionError("unreachable")
+
+
 def wait_for_first(locator: Any, *, timeout_ms: int = 10_000) -> Any | None:
     """The first match once it exists, or None once the wait expires.
 

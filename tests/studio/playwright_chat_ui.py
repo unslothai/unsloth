@@ -314,12 +314,14 @@ def exercise_permission_mode_controls(page, shoot):
     # same reason and with the same note about macOS. This does the same after
     # each reload. It asserts exactly what it asserted before; it just stops
     # asking before the answer can exist.
+    #
+    # The pill wait is the settle, not "networkidle". With this block's page.route on /api/chat/settings
+    # in place, Playwright's networkidle wait after a reload stopped returning at all once /api reads
+    # went out as Cache-Control: no-store (#12148): its own 30s timeout never fired, and the step sat
+    # there until the 180s watchdog killed the job (Chat UI Tests (chat) on main at 1dddc1437). The
+    # pill is the one thing the next assertion needs, and waiting for it is bounded.
     def reload_and_wait_for_pill():
-        page.reload(wait_until = "domcontentloaded")
-        try:
-            page.wait_for_load_state("networkidle", timeout = 30_000)
-        except Exception:
-            pass  # best-effort -- proceed even if network never idles
+        page.reload(wait_until = "load")
         expect(pill).to_be_visible(timeout = 30_000)
 
     # choose() only drives THIS tab.
