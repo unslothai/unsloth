@@ -6847,12 +6847,7 @@ def disable_torchaudio_if_cuda_mismatched():
 
 
 def _torch_distributed_unavailable():
-    """True only when this torch was built without its distributed backend.
-
-    AMD's Windows ROCm wheels (repo.amd.com, torch 2.11) ship no `torch._C._distributed_c10d`, so
-    anything importing `torch.distributed.distributed_c10d` raises ModuleNotFoundError. Asked of
-    torch, not the platform.
-    """
+    """True when torch has no `torch._C._distributed_c10d` (AMD's Windows ROCm wheels, torch 2.11)."""
     try:
         import torch.distributed as dist
         return not dist.is_available()
@@ -6866,13 +6861,9 @@ def _is_missing_torch_distributed(exc):
 
 
 def fix_accelerate_dtensor_check_without_torch_distributed():
-    """Backport huggingface/accelerate#4250 to accelerate releases without it.
-
-    accelerate 1.15.0's `Accelerator.prepare_model` calls `model_has_dtensor`, which imports
-    `torch.distributed.tensor` unconditionally, so every Trainer died at start on a torch without a
-    distributed backend (AMD's Windows ROCm torch; huggingface/accelerate#4249). No DTensor can
-    exist on such a build, so the answer is False. Wraps rather than replaces: releases that
-    already guard the import, and every torch with a distributed backend, run the original.
+    """Backport huggingface/accelerate#4250: accelerate 1.15.0's `prepare_model` calls `model_has_dtensor`,
+    which imports `torch.distributed.tensor` and kills every Trainer on a torch without a distributed
+    backend (huggingface/accelerate#4249). No DTensor can exist there, so the answer is False.
     """
     if not _torch_distributed_unavailable():
         return False

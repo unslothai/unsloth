@@ -1,13 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""torch builds without a distributed backend (AMD's Windows ROCm torch 2.11).
-
-Such a torch ships no ``torch._C._distributed_c10d``, so ``torch.distributed.is_available()`` is
-False and anything importing ``torch.distributed.distributed_c10d`` raises. accelerate 1.15.0's
-``model_has_dtensor`` does that at Trainer start (huggingface/accelerate#4249). Simulated on any
-torch; on one without the backend `import unsloth` has already applied the fix, so it is unwrapped.
-"""
+"""accelerate 1.15.0's `model_has_dtensor` on a torch without `torch._C._distributed_c10d`
+(AMD's Windows ROCm torch, huggingface/accelerate#4249), simulated on any torch."""
 
 from __future__ import annotations
 
