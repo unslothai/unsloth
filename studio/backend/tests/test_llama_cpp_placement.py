@@ -538,30 +538,29 @@ def test_auto_keeps_embedded_hybrid_mtp_without_manual_partial_layers(tmp_path, 
 
 
 def test_auto_keeps_embedded_hybrid_mtp_without_a_gpu(tmp_path):
-    # No GPU is probed, so nothing selects a placement and `--fit on` stays --
-    # the same command a CPU-only box and a Metal Mac emit. There is nothing to
-    # partially offload to there, and the rollback copies cost no VRAM, so the
-    # CPU MTP policy stands.
+    # No GPU is probed, so nothing selects a placement; a CPU-only box launches
+    # --fit off. There is nothing to partially offload to, and the rollback copies
+    # cost no VRAM, so the CPU MTP policy stands.
     backend, gguf = _hybrid_mtp_backend(tmp_path, partial_offload = True, memory = [])
 
     result = _launch_auto_spec(backend, gguf)
 
     cmd = result["cmd"]
-    assert cmd[cmd.index("--fit") + 1] == "on"
+    assert cmd[cmd.index("--fit") + 1] == "off"
     assert "draft-mtp" in cmd[cmd.index("--spec-type") + 1]
     assert backend.spec_fallback_reason is None
 
 
 def test_auto_keeps_embedded_hybrid_mtp_when_the_device_selection_is_cpu(tmp_path):
     # A GPU is probed, but the extras take the model off it. llama.cpp then runs
-    # on the CPU whatever the fitter decides, so nothing is partially offloaded
-    # and the rollback copies cost no VRAM.
+    # on the CPU, so the CPU-only defaults apply (--fit off), nothing is partially
+    # offloaded and the rollback copies cost no VRAM.
     backend, gguf = _hybrid_mtp_backend(tmp_path, partial_offload = True)
 
     result = _launch_auto_spec(backend, gguf, extra_args = ["--device", "none"])
 
     cmd = result["cmd"]
-    assert cmd[cmd.index("--fit") + 1] == "on"
+    assert cmd[cmd.index("--fit") + 1] == "off"
     assert "draft-mtp" in cmd[cmd.index("--spec-type") + 1]
     assert backend.spec_fallback_reason is None
 

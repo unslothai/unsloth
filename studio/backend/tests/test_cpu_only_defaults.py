@@ -229,7 +229,14 @@ class _Crashing:
         binary.write_text("x")
         self.backend = _backend([])
         self.backend._find_llama_server_binary = lambda include_denied = False: str(binary)
-        self.backend._wait_for_health = lambda timeout, **_kw: False
+
+        def crashed(timeout, **_kw):
+            # As the real wait does on exit: let the drain thread collect the tail.
+            if self.backend._stdout_thread is not None:
+                self.backend._stdout_thread.join(timeout = 2)
+            return False
+
+        self.backend._wait_for_health = crashed
         self.gguf = _write_gguf(tmp_path / "model.gguf")
         self.spawns = 0
 

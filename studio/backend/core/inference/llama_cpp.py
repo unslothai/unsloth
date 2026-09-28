@@ -4861,6 +4861,7 @@ def _planned_flash_attn_state(
     tensor_parallel: bool = False,
     architecture: Optional[str] = None,
     env: Optional[Mapping[str, str]] = None,
+    managed_flash_attn: bool = True,
 ) -> bool:
     """One answer for the estimate and for the argv: the estimator floors V at f16 and pads
     it model-wide when flash attention is off, so resolving the two separately prices a
@@ -4877,7 +4878,11 @@ def _planned_flash_attn_state(
         return True
     # Prepended because ``load_model`` appends a managed ``--flash-attn on``: the env loses
     # to it and only the user's own extras beat it (#9697, #10489).
-    effective_args = ["--flash-attn", "on", *(str(arg) for arg in extra_args or ())]
+    effective_args = [
+        "--flash-attn",
+        "on" if managed_flash_attn else "off",
+        *(str(arg) for arg in extra_args or ()),
+    ]
     if _asked_for_auto_flash_attn(effective_args, env = env):
         if _effective_tensor_parallel(extra_args, tensor_parallel, env):
             # Not undecided: llama.cpp upgrades AUTO to ENABLED under SPLIT_MODE_TENSOR.
@@ -7239,7 +7244,6 @@ class LlamaCppBackend:
         Default True, so every existing caller keeps today's behaviour.
         """
         self._process: Optional[subprocess.Popen] = None
-        self._numa_prefix: list[str] = []
         self._port: Optional[int] = None
         # Advisory memory notice from the load in flight, handed back on LoadResponse.
         # Reset by _begin_load_warnings so one load's notice is never reported against
@@ -15605,6 +15609,8 @@ class LlamaCppBackend:
 
     # (binary, mtime, model) that hit the ggml graph-scheduler abort this session; a reload repeats it.
     _sched_reserve_abort_keys: set[tuple] = set()
+    # Spawn argv prefix (numactl --interleave=all); set per load.
+    _numa_prefix: tuple[str, ...] = ()
 
     @classmethod
     def _sched_reserve_aborts(cls, binary: Optional[str], model: Optional[str]) -> bool:
@@ -23970,6 +23976,8 @@ class LlamaCppBackend:
                         if key not in ("LLAMA_ARG_SPLIT_MODE", "LLAMA_ARG_TENSOR_SPLIT")
                     }
 
+                _managed_flash_attn = True  # False once the launch is known CPU-only
+
                 def _replanned_flash_attn(_current_tp: bool) -> bool:
                     """Re-resolve the planned attention after a tensor-mode downgrade: AUTO
                     plans it ON under tensor, so a stale plan budgets a V layer never gets."""
@@ -23982,6 +23990,7 @@ class LlamaCppBackend:
                             tensor_parallel = _current_tp,
                             architecture = self._architecture,
                             env = _env,
+                            managed_flash_attn = _managed_flash_attn,
                         ),
                         extra_args,
                         tensor_parallel = _current_tp,
@@ -24222,6 +24231,7 @@ class LlamaCppBackend:
                 from utils.hardware import is_apple_silicon as _is_apple_silicon
 
                 _cpu_only = False
+                _cpu_fa_off = False
                 _mtp_will_engage_cpu = False
                 _mtp_will_engage = False
                 _separate_draft_launches = False  # a sidecar displaces an embedded head
@@ -24375,10 +24385,33 @@ class LlamaCppBackend:
                     if gpu_ids:
                         _picked = set(gpu_ids)
                         gpus = [g for g in gpus if g[0] in _picked]
-                    if gpus and _extra_args_forces_cpu_offload(extra_args):
-                        logger.info("User set zero GPU offload (-ngl 0): treating as CPU-only.")
-                        gpus, total_by_idx = [], {}
-                    _cpu_only = (not gpus) and not _is_apple_silicon()
+                    # Read the extras and env the child really gets: a gpu_ids pin strips
+                    # device flags, manual mode clears the placement env.
+                    _offload_env = dict(os.environ)
+                    _offload_extras = extra_args
+                    if gpu_memory_mode == "manual":
+                        self._clear_manual_placement_env(_offload_env)
+                    if _gpu_ids_own_device_flags:
+                        _offload_extras = self._strip_device_extra_args(extra_args)
+                        self._clear_device_placement_env(_offload_env)
+                    # A zero offload still runs main's planner (host-RAM advisories);
+                    # it only switches the CPU-only defaults on.
+                    _cpu_only = _extra_args_forces_cpu_offload(_offload_extras, _offload_env) or (
+                        # An empty probe on a Vulkan build is unknown, not CPU-only.
+                        not gpus
+                        and not gpu_ids
+                        and not is_vulkan_backend
+                        and not _is_apple_silicon()
+                        and not self._apple_metal_memory_budget_bytes()
+                    )
+                    # CPU flash attention off, unless a quantized V cache needs it (llama.cpp
+                    # enables FA itself then, and main keeps the user's cache type).
+                    _cpu_fa_off = _cpu_only and (
+                        _planned_cache_pair[1].strip().lower() in self._NON_QUANTIZED_KV_TYPES
+                    )
+                    if _cpu_fa_off:
+                        _managed_flash_attn = False
+                        planned_flash_attn = _replanned_flash_attn(tensor_parallel)
 
                     # GPUs the model will run on -- captured before manual
                     # empty `gpus` to bypass the planner. bool() drives the
@@ -27075,6 +27108,7 @@ class LlamaCppBackend:
                                             _mtp_bytes if _mtp_will_engage_cpu else None
                                         ),
                                         budget_frac = _cpu_budget,
+                                        flash_attn = planned_flash_attn,
                                     )
                                     _cpu_cap = max(4096, min(_ctx_ceiling, _fit))
                         except Exception as _cap_exc:  # best-effort; fall back to ceiling
@@ -27111,16 +27145,14 @@ class LlamaCppBackend:
                 # wrapper that never exposed it), and whether its declaration
                 # takes a value -- older builds take -fa as a bare boolean and
                 # read a following "on" as a stray positional.
-                if _cpu_only:
+                if _cpu_fa_off:
                     # A bare -fa on a value-less build means on, so off is the flag's absence.
                     if _caps.get("supports_flash_attn", True) and _caps.get(
                         "flash_attn_takes_value", True
                     ):
                         cmd.extend(["--flash-attn", "off"])
-                    # Also resets a quantized V cache, which llama.cpp refuses without FA.
-                    _flash_attn_known_off = not _extra_args_set_any_flag(
-                        extra_args, {"-fa", "--flash-attn"}
-                    )
+                    else:
+                        _flash_attn_known_off = True
                 elif _caps.get("supports_flash_attn", True):
                     cmd.append("--flash-attn")
                     if _caps.get("flash_attn_takes_value", True):
@@ -28485,20 +28517,23 @@ class LlamaCppBackend:
                 kv_cache_unified = _kv_unified_from_args(cmd)
 
                 # numactl --interleave=all AND --numa distribute: numactl alone doesn't spread pages evenly (llama.cpp #19102).
-                self._numa_prefix = []
+                self._numa_prefix = ()
                 try:
                     from core.inference.numa import decide_interleave
 
                     # Decide on the full footprint (weights + buffer + KV + MTP), not weights alone.
                     _resident = model_size_fit or model_size
                     _numa_footprint = _resident
-                    if _resident and effective_ctx > 0 and self._can_estimate_kv():
+                    if _cpu_only and _resident and effective_ctx > 0 and self._can_estimate_kv():
                         try:
                             _numa_mtp = _mtp_bytes(effective_ctx) if _mtp_will_engage_cpu else 0
                             _numa_footprint = (
                                 _resident
                                 + self._estimate_kv_cache_bytes(
-                                    effective_ctx, cache_type_kv, n_parallel = n_parallel
+                                    effective_ctx,
+                                    cache_type_kv,
+                                    n_parallel = n_parallel,
+                                    flash_attn = planned_flash_attn,
                                 )
                                 + _numa_mtp
                             )
@@ -28509,7 +28544,7 @@ class LlamaCppBackend:
                         # User --numa wins; skip the numactl prefix too.
                         logger.info("NUMA: user --numa set; leaving auto-interleave off")
                     elif _numa.interleave:
-                        self._numa_prefix = list(_numa.prefix)
+                        self._numa_prefix = tuple(_numa.prefix)
                         cmd.extend(["--numa", "distribute"])
                         logger.info("NUMA: %s", _numa.reason)
                     elif _cpu_only and (
