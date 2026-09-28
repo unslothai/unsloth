@@ -482,7 +482,7 @@ def install_compressed_tensors_keep_packed() -> bool:
                 plan_mxfp4_keep_packed,
             )
 
-            # Skip planning non-MXFP4 checkpoints: key matching cost ~1 s on INT4 Kimi-K2.7.
+            # Skip planning non-MXFP4 checkpoints: key matching is slow on large ones.
             if not keep_mxfp4_experts_packed(config.to_dict()):
                 return result
             keys = _checkpoint_keys(kwargs.get("checkpoint_files"))

@@ -1,17 +1,15 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU Affero General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU Affero General Public License for more details.
+# You should have received a copy of the GNU Affero General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 """compressed-tensors ``mxfp4-pack-quantized`` Linears stay packed and train through."""
 
@@ -838,7 +836,7 @@ def test_mxfp4_checkpoint_stays_packed_and_matches_its_bf16_decode(
     losses_a = _lora_losses(model_a)
     from unsloth.kernels import apply_lora_o, apply_lora_qkv
 
-    # The fused LoRA kernels now take packed bases (weight_packed + a decoder, never a held 16-bit weight).
+    # The fused LoRA kernels take packed bases: weight_packed + a decoder, never a held 16-bit weight.
     for layer in model_a.model.layers:
         assert "_unsloth_forward" in layer.mlp.__dict__ or "forward" in layer.mlp.__dict__
         assert getattr(layer.self_attn, "apply_qkv", None) is apply_lora_qkv
