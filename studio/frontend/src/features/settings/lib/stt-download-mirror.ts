@@ -2,9 +2,11 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import {
+  type SttEngine,
   cancelSttDownload,
   fetchSttStatus,
   loadSttModel,
+  sttEngineFor,
   sttEngineStatusFor,
 } from "@/features/chat";
 import {
@@ -34,14 +36,24 @@ const POLL_MS = 750;
 const START_GRACE_MS = 8_000;
 
 const trackers = new SttDownloadTrackers();
+const warmSelectedVoiceModelOnComplete = new Map<string, boolean>();
 
-function jobKey(model: SttModel): string {
-  return `stt:${model}`;
+function trackerKey(model: SttModel, engine?: SttEngine): string {
+  return engine && engine !== "transformers" ? `${engine}:${model}` : model;
 }
 
-async function loadAndAnnounce(model: SttModel): Promise<void> {
+function jobKey(model: SttModel, engine?: SttEngine): string {
+  return engine && engine !== "transformers"
+    ? `stt:${engine}:${model}`
+    : `stt:${model}`;
+}
+
+async function loadAndAnnounce(
+  model: SttModel,
+  engine?: SttEngine,
+): Promise<void> {
   try {
-    await loadSttModel(model);
+    await loadSttModel(model, engine);
     toast.success(
       translate("settings.voice.dictation.sttModelReady", {
         model: sttModelName(model),
@@ -58,53 +70,67 @@ function settle(
   model: SttModel,
   outcome: "complete" | "cancelled" | "error",
   error?: string | null,
+  engine?: SttEngine,
 ): void {
-  finishExternalJob(jobKey(model), outcome, error);
-  trackers.stop(model);
+  const key = trackerKey(model, engine);
+  finishExternalJob(jobKey(model, engine), outcome, error);
+  trackers.stop(key);
+  const shouldWarmVoiceModel =
+    warmSelectedVoiceModelOnComplete.get(key) ?? true;
+  warmSelectedVoiceModelOnComplete.delete(key);
   // Only warm what the user is still pointed at. Selecting another model, or
   // leaving local dictation, during the download means this one is not wanted
   // and loading it would undo the unload that switch performed.
   const { sttModel, dictationEngine } = useVoiceSettingsStore.getState();
   if (
+    shouldWarmVoiceModel &&
     outcome === "complete" &&
     dictationEngine === "model" &&
     sttModel === model
   ) {
-    void loadAndAnnounce(model);
+    void loadAndAnnounce(model, engine);
   }
 }
 
-async function poll(model: SttModel, startedAt: number): Promise<void> {
+async function poll(
+  model: SttModel,
+  startedAt: number,
+  engine?: SttEngine,
+): Promise<void> {
   let status: Awaited<ReturnType<typeof fetchSttStatus>>;
   try {
-    status = await fetchSttStatus(undefined, model);
+    status = await fetchSttStatus(
+      undefined,
+      engine === undefined || engine === "transformers" ? model : undefined,
+    );
   } catch {
     // A dropped poll is not a failed download; the next one decides.
     return;
   }
-  if (!trackers.has(model)) return;
+  const key = trackerKey(model, engine);
+  if (!trackers.has(key)) return;
 
-  const engine = sttEngineStatusFor(status, model);
-  const download = engine?.download;
+  const engineStatus = sttEngineStatusFor(status, model, engine);
+  const download = engineStatus?.download;
 
   if (download?.downloading && download.model === model) {
-    updateExternalJob(jobKey(model), {
+    updateExternalJob(jobKey(model, engine), {
       downloadedBytes: download.bytes_done ?? 0,
       expectedBytes: download.bytes_total ?? 0,
     });
     return;
   }
 
-  if (engine?.downloaded_models.includes(model)) {
-    settle(model, "complete");
+  if (engineStatus?.downloaded_models.includes(model)) {
+    settle(model, "complete", undefined, engine);
     return;
   }
   if (download?.cancelled) {
-    settle(model, "cancelled");
+    settle(model, "cancelled", undefined, engine);
     return;
   }
   if (download?.error) {
-    settle(model, "error", download.error);
+    settle(model, "error", download.error, engine);
     return;
   }
   if (Date.now() - startedAt > START_GRACE_MS) {
@@ -112,29 +138,53 @@ async function poll(model: SttModel, startedAt: number): Promise<void> {
       model,
       "error",
       translate("settings.voice.dictation.sttDownloadFailed"),
+      engine,
     );
   }
 }
 
 /** Whether a download is already mirrored, so a poller can adopt one that
  * started before this page load without duplicating the row. */
-export function isTrackingSttDownload(model: SttModel): boolean {
-  return trackers.has(model);
+export function isTrackingSttDownload(
+  model: SttModel,
+  engine?: SttEngine,
+): boolean {
+  return trackers.has(trackerKey(model, engine ?? sttEngineFor(model)));
 }
 
 /**
  * Mirror an already-started download of `model` into the panel. Any other
  * model's download keeps its own row: switching models does not stop it.
  */
-export function trackSttDownload(model: SttModel): void {
+export function trackSttDownload(
+  model: SttModel,
+  options: {
+    warmSelectedVoiceModelOnComplete?: boolean;
+    engine?: SttEngine;
+    repoId?: string;
+  } = {},
+): void {
+  const resolvedEngine = options.engine ?? sttEngineFor(model);
+  const key = trackerKey(model, resolvedEngine);
+  // Starting/adopting the same transfer from another surface must not reset
+  // its visible progress or replace its poller/completion policy.
+  if (trackers.has(key)) {
+    if (options.warmSelectedVoiceModelOnComplete !== false)
+      warmSelectedVoiceModelOnComplete.set(key, true);
+    return;
+  }
+  warmSelectedVoiceModelOnComplete.set(
+    key,
+    options.warmSelectedVoiceModelOnComplete ?? true,
+  );
   startExternalJob({
-    key: jobKey(model),
-    repoId: getSttModelRepo(model),
+    key: jobKey(model, resolvedEngine),
+    repoId: options.repoId ?? getSttModelRepo(model),
     variant: sttModelName(model),
     expectedBytes: 0,
     cancel: async () => {
       try {
-        await cancelSttDownload(model);
+        await cancelSttDownload(model, resolvedEngine);
       } catch (error) {
         toast.error(
           translate("settings.voice.dictation.sttCancelDownloadFailed"),
@@ -148,8 +198,8 @@ export function trackSttDownload(model: SttModel): void {
   });
   const startedAt = Date.now();
   const timer = window.setInterval(() => {
-    void poll(model, startedAt);
+    void poll(model, startedAt, resolvedEngine);
   }, POLL_MS);
-  trackers.start(model, () => window.clearInterval(timer));
-  void poll(model, startedAt);
+  trackers.start(key, () => window.clearInterval(timer));
+  void poll(model, startedAt, resolvedEngine);
 }

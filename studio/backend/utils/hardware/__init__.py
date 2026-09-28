@@ -19,12 +19,16 @@ from .hardware import (
     get_gpu_summary,
     get_package_versions,
     get_gpu_utilization,
+    cpu_frequency_mhz,
     get_visible_gpu_utilization,
+    rocm_windows_free_is_untrusted,
+    trusted_mem_get_info,
     get_backend_visible_gpu_info,
     get_vulkan_inference_gpu_info,
     get_physical_gpu_count,
     get_visible_gpu_count,
     get_parent_visible_gpu_ids,
+    gpu_ids_with_torch_kernels,
     resolve_requested_gpu_ids,
     estimate_fp16_model_size_bytes,
     estimate_required_model_memory_gb,
@@ -68,6 +72,11 @@ def export_capability() -> dict:
     return _hardware.export_capability()
 
 
+def video_capability() -> dict:
+    """Return live video-generation capability from the hardware module."""
+    return _hardware.video_capability()
+
+
 def get_torch_device_str() -> str:
     """Return the torch device string ("cuda", "xpu", "cpu") for the detected hardware."""
     return _hardware.get_torch_device_str()
@@ -83,6 +92,7 @@ __all__ = [
     "start_background_detection",
     "get_device",
     "export_capability",
+    "video_capability",
     "is_apple_silicon",
     "clear_gpu_cache",
     "get_gpu_memory_info",
@@ -90,12 +100,16 @@ __all__ = [
     "get_gpu_summary",
     "get_package_versions",
     "get_gpu_utilization",
+    "cpu_frequency_mhz",
     "get_visible_gpu_utilization",
+    "rocm_windows_free_is_untrusted",
+    "trusted_mem_get_info",
     "get_backend_visible_gpu_info",
     "get_vulkan_inference_gpu_info",
     "get_physical_gpu_count",
     "get_visible_gpu_count",
     "get_parent_visible_gpu_ids",
+    "gpu_ids_with_torch_kernels",
     "resolve_requested_gpu_ids",
     "estimate_fp16_model_size_bytes",
     "estimate_required_model_memory_gb",

@@ -1,3 +1,5 @@
+import { chatModelLifecycleGate } from "./model-lifecycle-gate.ts";
+
 export class PromptQueueModelBoundary {
   private generation = 0;
 
@@ -25,13 +27,9 @@ export type LocalPromptQueueStopPlan = {
   retainedItemIndexes: number[];
 };
 
-/**
- * Preserve external-provider work when the singleton local model changes.
- *
- * Only local items depend on the outgoing model. A dispatched local item must
- * be cancelled, but external follow-ups remain valid and can resume once the
- * thread runtime becomes idle.
- */
+/** Preserve external-provider work when the singleton local model changes. Only local items depend
+ *  on the outgoing model. A dispatched local item must be cancelled, but external follow-ups
+ *  remain valid and can resume once the thread runtime becomes idle. */
 export function planLocalPromptQueueStop(
   items: readonly PromptQueueModelStopItem[],
   runIndex: number,
@@ -58,15 +56,14 @@ export function planLocalPromptQueueStop(
 export function shouldAbortPendingQueueForModelBoundary({
   capturedGeneration,
   usesLocalModel,
-  modelLoading,
 }: {
   capturedGeneration: number;
   usesLocalModel: boolean;
-  modelLoading: boolean;
 }): boolean {
+  // Preparation can still clear queues at the final model-switch boundary.
   return (
     usesLocalModel &&
-    (modelLoading ||
+    (!chatModelLifecycleGate.canQueue() ||
       capturedGeneration !== localPromptQueueModelBoundary.capture())
   );
 }

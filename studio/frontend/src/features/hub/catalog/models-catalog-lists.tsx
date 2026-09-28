@@ -9,13 +9,14 @@ import {
 } from "@/features/model-picker";
 import {
   CubeIcon,
-  DownloadCircle02Icon,
+  Download01Icon,
   PinIcon,
   Search01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import type { RefObject } from "react";
-import { useLayoutEffect, useMemo, useState } from "react";
+import type { Ref } from "react";
+import type { HubFailure } from "@/features/hub/lib/network";
+import { useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   inventoryRowMatches,
   scoreInventoryRow,
@@ -26,6 +27,12 @@ import type {
   LocalInventoryRow,
 } from "../types";
 import {
+  compareInventoryItemsByRecent,
+  type InventoryItem,
+  inventoryItemSize,
+  inventoryItemTitle,
+} from "./inventory-sort";
+import {
   DiscoverFetchMoreFooter,
   DiscoverFetchMoreState,
   EmptyState,
@@ -33,7 +40,12 @@ import {
   NetworkErrorState,
   SkeletonList,
 } from "./catalog-states";
-import { InventoryRow, VirtualRows } from "./models-catalog-rows";
+import { useUiSpaceScale } from "@/hooks/use-ui-space-scale";
+import {
+  CATALOG_COLUMN_GAP_PX,
+  InventoryRow,
+  VirtualRows,
+} from "./models-catalog-rows";
 import {
   type AllModelsView,
   type InventorySort,
@@ -47,18 +59,6 @@ import {
   ResultGridRow,
   ResultSplitRow,
 } from "./models-table";
-
-type InventoryItem =
-  | { variant: "cached"; row: CachedInventoryRow }
-  | { variant: "local"; row: LocalInventoryRow };
-
-function inventoryItemTitle(item: InventoryItem): string {
-  return item.variant === "cached" ? item.row.repo : item.row.title;
-}
-
-function inventoryItemSize(item: InventoryItem): number {
-  return item.variant === "cached" ? item.row.bytes : 0;
-}
 
 export function InventoryWarningRow({
   isDataset,
@@ -96,6 +96,7 @@ export function DiscoverList({
   suppressEmptyState = false,
   sentinelRef,
   searchError,
+  searchFailure,
   online,
   isDataset,
   deviceType,
@@ -109,6 +110,7 @@ export function DiscoverList({
   onSwitchDevice,
   view,
   selectedId,
+  showFormatDots = true,
 }: {
   discoverRows: DiscoverRow[];
   onSelect: (id: string) => void;
@@ -118,8 +120,9 @@ export function DiscoverList({
   scrollElement: HTMLDivElement | null;
   scrollMargin?: number;
   suppressEmptyState?: boolean;
-  sentinelRef: RefObject<HTMLDivElement | null>;
+  sentinelRef: Ref<HTMLDivElement>;
   searchError: string | null;
+  searchFailure?: HubFailure | null;
   online: boolean;
   isDataset: boolean;
   deviceType: string | null;
@@ -132,9 +135,9 @@ export function DiscoverList({
   onRetry: () => void;
   onSwitchDevice?: () => void;
   view: AllModelsView;
+  showFormatDots?: boolean;
 }) {
-  // "two" = two cards per row; "grid" = compact table rows; "split" = one card
-  // per row in the master pane alongside an inline detail view.
+  // "two" = two cards per row; "grid" = compact table rows; "split" = one card per row.
   const isSplit = view === "split";
   const isCardLike = view === "two" || view === "split";
   const rowHeight = isSplit
@@ -151,7 +154,8 @@ export function DiscoverList({
 
   return (
     <>
-      {online ? (
+      {/* Keep fetched results on screen when the Hub becomes unreachable. */}
+      {online || discoverRows.length > 0 ? (
         discoverRows.length > 0 ? (
           <>
             <VirtualRows
@@ -169,6 +173,7 @@ export function DiscoverList({
                     deviceType={deviceType}
                     isDataset={isDataset}
                     selected={row.id === selectedId}
+                    showFormatDot={showFormatDots}
                     onSelect={onSelect}
                   />
                 ) : isCardLike ? (
@@ -176,6 +181,7 @@ export function DiscoverList({
                     row={row}
                     deviceType={deviceType}
                     isDataset={isDataset}
+                    showFormatDot={showFormatDots}
                     onSelect={onSelect}
                   />
                 ) : (
@@ -183,16 +189,28 @@ export function DiscoverList({
                     row={row}
                     deviceType={deviceType}
                     isDataset={isDataset}
+                    showFormatDot={showFormatDots}
                     onSelect={onSelect}
                   />
                 )
               }
             />
-            {hasMore && (
+            {/* searchFailure, not `online`: that is the backoff TTL, which
+                lapses on a timer, so the notice and its Retry vanished before
+                anything had proved recovery. The cause clears on success. It
+                covers the avatar and card case too, which marks the same origin
+                without the listing ever failing. */}
+            {(hasMore || searchError || searchFailure) && (
               <DiscoverFetchMoreFooter
                 hasActiveFilters={hasActiveFilters}
                 isLoadingMore={isLoadingMore}
                 onFetchMore={onFetchMore}
+                // searchFailure too: the footer is retained over an outage the
+                // listing never saw, and useHubInfiniteScroll is gated on
+                // reachability, so the button was visible and inert meanwhile.
+                failed={Boolean(searchError || searchFailure)}
+                failureText={searchFailure?.message ?? searchError ?? ""}
+                onRetry={onRetry}
               />
             )}
           </>
@@ -200,6 +218,7 @@ export function DiscoverList({
           <NetworkErrorState
             online={online}
             message={searchError}
+            failure={searchFailure}
             onRetry={onRetry}
             resourceLabel={isDataset ? "datasets" : "models"}
           />
@@ -231,7 +250,10 @@ export function DiscoverList({
       ) : suppressEmptyState ? null : (
         <NetworkErrorState
           online={online}
-          message="Discovery is unavailable while offline."
+          // The classified failure supplies the wording; the raw SDK error
+          // appends the request URL, which carries the query.
+          message={searchFailure ? "" : (searchError ?? "")}
+          failure={searchFailure}
           onRetry={onRetry}
           onSwitchDevice={onSwitchDevice}
           resourceLabel={isDataset ? "datasets" : "models"}
@@ -255,15 +277,13 @@ export function DownloadedList({
   onClearFilters,
   scrollElement,
   columns = 1,
-  activeCheckpoint,
-  activeGgufVariant,
   isDataset,
   inventoryTokens,
   deviceType,
   compact = false,
   sort,
   onInventoryChange,
-  onOpenModelSettings,
+  showFormatDots = true,
 }: {
   cachedRows: CachedInventoryRow[];
   localRows: LocalInventoryRow[];
@@ -276,8 +296,6 @@ export function DownloadedList({
   onClearFilters?: () => void;
   scrollElement: HTMLDivElement | null;
   columns?: number;
-  activeCheckpoint: string | null;
-  activeGgufVariant: string | null;
   isDataset: boolean;
   inventoryTokens: readonly string[];
   deviceType: string | null;
@@ -285,19 +303,26 @@ export function DownloadedList({
   compact?: boolean;
   sort: InventorySort;
   onInventoryChange?: () => void;
-  onOpenModelSettings?: (row: CachedInventoryRow | LocalInventoryRow) => void;
+  showFormatDots?: boolean;
 }) {
-  // Pinned repos surface first regardless of the active sort; the chosen sort
-  // still orders rows within the pinned and unpinned groups.
+  // Pinned repos surface first regardless of the active sort, which still orders within groups.
   const pinnedIds = usePinnedModelsStore((s) => s.pinned);
+  const movePinned = usePinnedModelsStore((s) => s.movePinned);
+  const beginPinnedDrag = usePinnedModelsStore((s) => s.beginPinnedDrag);
+  const endPinnedDrag = usePinnedModelsStore((s) => s.endPinnedDrag);
+  // Ref, not state: dragenter can fire before a dragstart re-render commits.
+  const dragPinKeyRef = useRef<string | null>(null);
+  // Dimming keys off the dragged CELL, not off its pin key: one repo cached in
+  // two formats yields two rows sharing a single pin key, and dimming both
+  // would report the untouched twin as the thing being dragged.
+  const [dragRowKey, setDragRowKey] = useState<string | null>(null);
   const pinnedSet = useMemo(() => new Set(pinnedIds), [pinnedIds]);
   const inventoryItems = useMemo<InventoryItem[]>(() => {
     const merged: InventoryItem[] = [
       ...cachedRows.map((row) => ({ variant: "cached" as const, row })),
       ...localRows.map((row) => ({ variant: "local" as const, row })),
     ];
-    // Pinned rows order by pin recency (newest pin first), not the active
-    // sort, so "Pin to top" puts the row exactly where the user expects.
+    // Pinned rows order by pin recency, not the active sort, so "Pin to top" lands where expected.
     const rank = makePinRank(pinnedIds);
     const pinRank = (item: InventoryItem) =>
       item.row.repoId ? rank(pinKey(item.row.repoId)) : Number.MAX_SAFE_INTEGER;
@@ -319,7 +344,12 @@ export function DownloadedList({
     if (sort === "recent") {
       return merged
         .map((item, index) => ({ item, index }))
-        .sort((a, b) => pinRank(a.item) - pinRank(b.item) || a.index - b.index)
+        .sort(
+          (a, b) =>
+            pinRank(a.item) - pinRank(b.item) ||
+            compareInventoryItemsByRecent(a.item, b.item) ||
+            a.index - b.index,
+        )
         .map((entry) => entry.item);
     }
     return merged
@@ -337,8 +367,7 @@ export function DownloadedList({
       .map((entry) => entry.item);
   }, [cachedRows, localRows, inventoryTokens, sort, pinnedIds]);
   const hasInventoryRows = cachedRows.length > 0 || localRows.length > 0;
-  // Pinned repos get their own labelled section so it's clear why they lead
-  // the list; inventoryItems already sorts them first, so this is a prefix.
+  // Pinned repos get their own labelled section; inventoryItems already sorts them first.
   const pinnedCount = useMemo(
     () =>
       inventoryItems.filter(
@@ -373,25 +402,29 @@ export function DownloadedList({
     ? RESULT_SPLIT_ROW_HEIGHT_PX
     : RESULT_GRID_ROW_HEIGHT_PX;
   const cellHeightPx = compact ? RESULT_SPLIT_HEIGHT_PX : RESULT_GRID_HEIGHT_PX;
+  // VirtualRows scales its own slots with the UI font size. The pinned grid
+  // below lays the same rows out by hand, so it scales here to match.
+  const pinnedScale = useUiSpaceScale();
+  const pinnedRowHeightPx = Math.round(rowHeightPx * pinnedScale);
+  const pinnedCellHeightPx = Math.round(cellHeightPx * pinnedScale);
+  const pinnedColumnGapPx = Math.round(CATALOG_COLUMN_GAP_PX * pinnedScale);
   const renderInventoryRow = (item: InventoryItem) => (
     <InventoryRow
       row={item.row}
       selected={selectedId === item.row.id}
-      activeCheckpoint={activeCheckpoint}
-      activeGgufVariant={activeGgufVariant}
       isDataset={isDataset}
       dimmed={!inventoryRowMatches(item.row, inventoryTokens)}
       deviceType={deviceType}
       compact={compact}
+      showFormatDot={showFormatDots}
       onSelect={onSelect}
       onChange={onInventoryChange}
-      onOpenSettings={onOpenModelSettings}
     />
   );
 
   if (!downloadedReady && !hasInventoryRows) {
     return (
-      <div className="flex min-h-[240px] items-center justify-center gap-3 text-ui-13 text-muted-foreground">
+      <div className="flex min-h-[calc(240px*var(--ui-space-scale,1))] items-center justify-center gap-3 text-ui-13 text-muted-foreground">
         <Spinner className="size-4" />
         Loading local inventory...
       </div>
@@ -419,7 +452,7 @@ export function DownloadedList({
               <button
                 type="button"
                 onClick={onClearFilters}
-                className="inline-flex h-8 items-center gap-1.5 rounded-full bg-transparent px-3 text-ui-12 font-medium text-foreground transition-colors hover:bg-foreground/[0.04] dark:hover:bg-white/[0.05]"
+                className="inline-flex h-8 items-center gap-1.5 rounded-full bg-transparent px-3 text-ui-12 font-medium text-foreground transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)] dark:hover:bg-[rgb(255_255_255_/_calc(0.05*var(--contrast-wash-gain,1)))]"
               >
                 Show all types
               </button>
@@ -430,7 +463,7 @@ export function DownloadedList({
     }
     return (
       <EmptyState
-        icon={query.trim() ? Search01Icon : DownloadCircle02Icon}
+        icon={query.trim() ? Search01Icon : Download01Icon}
         title={query.trim() ? "No matches on device" : "Nothing on device yet"}
         body={
           query.trim()
@@ -461,20 +494,75 @@ export function DownloadedList({
             style={{
               display: "grid",
               gridTemplateColumns: `repeat(${Math.max(1, columns)}, minmax(0, 1fr))`,
-              columnGap: 12,
-              rowGap: rowHeightPx - cellHeightPx,
-              paddingBottom: rowHeightPx - cellHeightPx,
+              columnGap: pinnedColumnGapPx,
+              rowGap: pinnedRowHeightPx - pinnedCellHeightPx,
+              paddingBottom: pinnedRowHeightPx - pinnedCellHeightPx,
             }}
           >
-            {pinnedItems.map((item) => (
-              <div
-                key={`${item.variant}-${item.row.id}`}
-                className="min-w-0"
-                style={{ height: cellHeightPx }}
-              >
-                {renderInventoryRow(item)}
-              </div>
-            ))}
+            {pinnedItems.map((item) => {
+              const rowKey = `${item.variant}-${item.row.id}`;
+              // movePinned can only move a key that is in the pinned list, and pins also exist as
+              // `repoId::quant` (written by the GGUF quant menus). Deriving the key without
+              // checking membership would let a row advertise a drag that every movePinned call
+              // silently found nothing to do. pinnedCount selects this slice on the same predicate
+              // today, so the check holds the two in lockstep rather than trusting them to stay
+              // identical. Datasets are excluded outright: pin keys carry no repo type, so a
+              // dataset whose repoId also names a pinned model reaches this grid, and the row menu
+              // offers datasets no pin action, so a drag here must not reorder the user's model
+              // pins from the dataset list.
+              const itemPinKey =
+                !isDataset &&
+                item.row.repoId &&
+                pinnedSet.has(pinKey(item.row.repoId))
+                  ? pinKey(item.row.repoId)
+                  : null;
+              return (
+                <div
+                  key={rowKey}
+                  className="min-w-0"
+                  style={{
+                    height: pinnedCellHeightPx,
+                    opacity: dragRowKey === rowKey ? 0.4 : undefined,
+                  }}
+                  draggable={itemPinKey != null}
+                  onDragStart={(event) => {
+                    if (!itemPinKey) return;
+                    event.dataTransfer.effectAllowed = "move";
+                    // Firefox will not start a drag without data.
+                    event.dataTransfer.setData("text/plain", itemPinKey);
+                    dragPinKeyRef.current = itemPinKey;
+                    setDragRowKey(rowKey);
+                    // Reordering happens live on dragenter; this snapshot is
+                    // what a cancelled drag rolls back to.
+                    beginPinnedDrag();
+                  }}
+                  onDragEnd={() => {
+                    dragPinKeyRef.current = null;
+                    setDragRowKey(null);
+                    // Escape, or a release outside any cell, reaches dragend without a drop. A drop
+                    // already committed and cleared the session, so this call is then a no-op.
+                    endPinnedDrag(false);
+                  }}
+                  onDragOver={(event) => {
+                    if (dragPinKeyRef.current) event.preventDefault();
+                  }}
+                  onDragEnter={() => {
+                    const dragKey = dragPinKeyRef.current;
+                    if (dragKey && itemPinKey && dragKey !== itemPinKey) {
+                      movePinned(dragKey, itemPinKey);
+                    }
+                  }}
+                  onDrop={(event) => {
+                    event.preventDefault();
+                    dragPinKeyRef.current = null;
+                    setDragRowKey(null);
+                    endPinnedDrag(true);
+                  }}
+                >
+                  {renderInventoryRow(item)}
+                </div>
+              );
+            })}
           </div>
           {unpinnedItems.length > 0 && (
             <div className="px-1 pb-2 pt-2 text-ui-11 font-semibold uppercase tracking-wider text-muted-foreground">

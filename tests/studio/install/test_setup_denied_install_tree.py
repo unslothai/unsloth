@@ -24,6 +24,26 @@ ROOT = Path(__file__).resolve().parents[3]
 SETUP_PS1 = (ROOT / "studio" / "setup.ps1").read_text(encoding = "utf-8")
 
 
+def _denial_reporter() -> str:
+    """The body that owns the denial wording.
+
+    Split out of Exit-PathAccessDenied so install.ps1's preflight, which cannot
+    dot-source this file, can copy it; test_denied_llama_cpp_preflight.py compares
+    the copies.
+    """
+    assert "function Write-PathAccessDenied" in SETUP_PS1
+    return SETUP_PS1.split("function Write-PathAccessDenied", 1)[1].split("\nfunction ", 1)[0]
+
+
+def test_the_denial_exit_delegates_to_the_shared_reporter():
+    """Exit-PathAccessDenied stays the only stop, with no second copy of the wording."""
+    body = SETUP_PS1.split("function Exit-PathAccessDenied", 1)[1].split("\nfunction ", 1)[0]
+    assert "Exit-SetupFailure (Write-PathAccessDenied -Path $Path -Label $Label" in body
+    assert "-UserSupplied:$UserSupplied -OwnershipUnverified:$OwnershipUnverified)" in body
+    assert "takeown" not in body
+    assert "substep" not in body
+
+
 def test_setup_defines_non_throwing_path_probes():
     for name in ("Test-AccessDeniedError", "Get-PathState", "Test-PathQuiet"):
         assert re.search(rf"^function {re.escape(name)} \{{", SETUP_PS1, re.M), name
@@ -34,22 +54,30 @@ def test_setup_defines_non_throwing_path_probes():
 
 
 def test_prebuilt_metadata_probe_cannot_terminate_setup():
+    """The bare probe of this file is what threw. Get-LlamaCppInstallReadState now
+    decides denial one level up, so only presence is left here."""
     assert "if (Test-Path $existingMetaPath)" not in SETUP_PS1
-    assert "$existingMetaState = Get-PathState -Path $existingMetaPath -PathType Leaf" in SETUP_PS1
-    assert '$existingMetaState -eq "Denied"' in SETUP_PS1
-    assert '$existingMetaState -eq "Present"' in SETUP_PS1
+    assert "Test-PathQuiet -Path $existingMetaPath -PathType Leaf" in SETUP_PS1
+    assert "$llamaDirState = Get-LlamaCppInstallReadState -Path $LlamaCppDir" in SETUP_PS1
+    assert '$llamaDirState -eq "Denied"' in SETUP_PS1
+    assert (
+        'Get-PathState -Path (Join-Path $Path "UNSLOTH_PREBUILT_INFO.json") -PathType Leaf'
+        in SETUP_PS1
+    )
 
 
 def test_every_denial_route_reports_instead_of_proceeding():
     """An unreadable parent dir, metadata file, .git checkout, or ownership root
     must all stop. Treating any of them as absent lets the caller replace or
     delete a tree it cannot read."""
-    assert "$llamaDirState = Get-PathState -Path $LlamaCppDir" in SETUP_PS1
+    assert "$llamaDirState = Get-LlamaCppInstallReadState -Path $LlamaCppDir" in SETUP_PS1
     assert '$llamaDirState -eq "Denied"' in SETUP_PS1
     assert '$llamaGitState = Get-PathState -Path (Join-Path $LlamaCppDir ".git")' in SETUP_PS1
     assert '$llamaGitState -eq "Denied"' in SETUP_PS1
     assert "$pathState = Get-PathState -Path $Path -PathType Container" in SETUP_PS1
-    assert '$StudioHomeIsCustom -and $pathState -eq "Denied"' in SETUP_PS1
+    # $isCustomRoot is the parameter form of $StudioHomeIsCustom: the runtime children pass
+    # $RuntimeRootIsCustom, which a master root widens, and it defaults to the other flag.
+    assert '$isCustomRoot -and $pathState -eq "Denied"' in SETUP_PS1
     # The junction path replaces this destination, so it needs its own stop.
     assert "$destState = Get-PathState -Path $LlamaCppDir" in SETUP_PS1
     assert '$destState -eq "Denied"' in SETUP_PS1
@@ -61,21 +89,21 @@ def test_every_denial_route_reports_instead_of_proceeding():
 
 
 def test_denied_install_reports_an_actionable_failure():
-    body = SETUP_PS1.split("function Exit-PathAccessDenied", 1)[1].split("\nfunction ", 1)[0]
+    body = _denial_reporter()
     assert "cannot be read: access is denied" in body
     # The reporter reinstalled to a different drive and hit the same line; the
     # message has to say why that cannot help.
     assert "reinstalling Unsloth Studio, to any drive, reuses it" in body
     assert "delete or rename $Path" in body
     assert "Controlled folder access" in body
-    assert 'Exit-SetupFailure "Access denied reading the existing $Label' in body
+    assert 'return "Access denied reading the existing $Label' in body
     assert "Reinstalling the app does not reset it." in body
 
 
 def test_recovery_commands_are_separately_runnable():
     """On one line "then" is not a PowerShell separator: takeown would take the
     rest as arguments and icacls would never run."""
-    body = SETUP_PS1.split("function Exit-PathAccessDenied", 1)[1].split("\nfunction ", 1)[0]
+    body = _denial_reporter()
     command_lines = [
         line for line in body.splitlines() if "takeown /F" in line or "/reset /T" in line
     ]
@@ -88,6 +116,7 @@ def test_failure_reaches_the_desktop_ui():
     desktop app prefers over its generic exit-code message."""
     body = SETUP_PS1.split("function Exit-SetupFailure", 1)[1].split("\n}", 1)[0]
     assert "UNSLOTH_TAURI_MODE" in body
+    assert "UNSLOTH_TAURI_UPDATE" in body
     assert "[TAURI:ERROR] $singleLine" in body
 
 
@@ -98,11 +127,12 @@ def test_ownership_guard_distinguishes_denied_from_unowned():
         in guard
     )
     assert '$markerState -eq "Denied"' in guard
-    # The old wording blamed ownership, which is unknowable while the tree is
-    # unreadable; it must stay for the genuinely-unowned case only.
+    # The old wording blamed ownership, which is unknowable while the tree is unreadable; it must stay for the
+    # genuinely-unowned case only.
     assert "is not marked as an Unsloth-owned $Label" in guard
     # Both stops stay gated, so default-home installs behave exactly as before.
-    assert guard.count("$StudioHomeIsCustom -and") >= 3
+    assert "$isCustomRoot = $StudioHomeIsCustom" in guard
+    assert guard.count("$isCustomRoot -and") >= 3
 
 
 def test_no_bare_test_path_probes_inside_the_llama_install_tree():
@@ -206,7 +236,7 @@ def test_adoption_markers_keep_their_denial():
 def test_user_supplied_paths_are_never_told_to_delete_themselves():
     """The managed advice ("delete it, Unsloth reinstalls it") is wrong for a tree
     the user pointed us at with UNSLOTH_LOCAL_LLAMA_CPP_DIR."""
-    body = SETUP_PS1.split("function Exit-PathAccessDenied", 1)[1].split("\nfunction ", 1)[0]
+    body = _denial_reporter()
     assert "[switch]$UserSupplied" in body
     user_branch = body.split("if ($UserSupplied) {", 1)[1].split("} else {", 1)[0]
     assert "delete or rename" not in user_branch
@@ -239,7 +269,7 @@ def test_the_ownership_guard_never_advises_deleting_an_unverified_tree():
     assert len(calls) >= 3, calls
     for line in calls:
         assert "-OwnershipUnverified" in line, line
-    body = SETUP_PS1.split("function Exit-PathAccessDenied", 1)[1].split("\nfunction ", 1)[0]
+    body = _denial_reporter()
     assert "[switch]$OwnershipUnverified" in body
     branch = body.split("} elseif ($OwnershipUnverified) {", 1)[1].split("} else {", 1)[0]
     assert "delete" not in branch.lower(), branch
@@ -294,7 +324,7 @@ def test_the_source_build_denial_never_advises_deleting_an_unproven_tree():
     block = _slice("$llamaBinState = ", "$WillBuildLlamaFromSource")
     denials = [ln.strip() for ln in block.splitlines() if "Exit-PathAccessDenied" in ln]
     assert len(denials) >= 2, denials
-    assert all(d.endswith("-OwnershipUnverified:$StudioHomeIsCustom") for d in denials), denials
+    assert all(d.endswith("-OwnershipUnverified:$RuntimeRootIsCustom") for d in denials), denials
     assert all(d.startswith("Exit-PathAccessDenied -Path $LlamaCppDir ") for d in denials), denials
 
 
@@ -335,17 +365,19 @@ def test_the_whisper_phase_survives_an_unreadable_whisper_tree():
         r'if \(\$NonFatal\) \{ return "Denied" \}\n\s*Exit-PathAccessDenied -Path \$Path', guard
     )
     assert len(paired) == guard.count("Exit-PathAccessDenied -Path $Path"), guard
-    # No unpaired return: one above the custom-home gate would call a fresh
-    # install unreadable.
+    # No unpaired return: one above the custom-home gate would call a fresh install unreadable.
     assert len(paired) == guard.count('if ($NonFatal) { return "Denied" }'), guard
     assert len(paired) >= 3, guard
     # Only the denial is handed back; an unowned tree must still stop.
     assert 'Exit-SetupFailure "$Label path is not an Unsloth-owned install' in guard
     whisper = _whisper_phase()
-    assert '-Label "whisper.cpp install" -NonFatal) -eq "Denied"' in whisper, whisper
+    assert (
+        '-Label "whisper.cpp install" -NonFatal -IsCustom $RuntimeRootIsCustom) -eq "Denied"'
+        in whisper
+    ), whisper
     # Scoped to the new branch: both phrases occur elsewhere in the phase, so a
     # phase-wide match proves nothing about this branch.
-    marker = '-NonFatal) -eq "Denied") {'
+    marker = '-NonFatal -IsCustom $RuntimeRootIsCustom) -eq "Denied") {'
     assert marker in whisper, whisper
     denial = whisper.split(marker, 1)[1].split("\n} elseif", 1)[0]
     assert re.search(r'^\s*step "whisper\.cpp" ', denial, re.M), denial
@@ -354,8 +386,7 @@ def test_the_whisper_phase_survives_an_unreadable_whisper_tree():
     # The whole point is that this stays non-fatal.
     assert "Exit-SetupFailure" not in denial, denial
     assert not re.search(r"\bexit \d", denial), denial
-    # The skip must precede the branch whose guard would exit. Anchored on that
-    # branch's body, which survives a hardening of its own probe.
+    # The skip must precede the branch whose guard would exit.
     body = "$whisperArgs = @("
     assert body in whisper, whisper
     assert whisper.index("-NonFatal") < whisper.index(body)
@@ -364,7 +395,7 @@ def test_the_whisper_phase_survives_an_unreadable_whisper_tree():
 def test_the_whisper_skip_stays_behind_the_installer_gate():
     """The guard used to live inside the installer branch, so a tree without the
     installer was a no-op. Hoisting it must not make that case fatal."""
-    marker = "-NonFatal) -eq"
+    marker = "-NonFatal -IsCustom $RuntimeRootIsCustom) -eq"
     whisper = _whisper_phase()
     assert marker in whisper, whisper
     head = whisper.split(marker, 1)[0]

@@ -1,19 +1,16 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Tests for torchao version selection and the Windows-ROCm export gate.
+"""Tests for _select_torchao_spec in install_python_stack.py.
 
-First half: the installer must pin the torchao version matching the installed torch (its cpp
-kernels are built per torch release). Second half: torch.distributed is unsupported on Windows
-ROCm, so torchao is import-stubbed and the portable FP8/INT8 export must be gated off there
-(shared is_win32_rocm() helper) with a clear defensive error.
+torchao's C++ extensions are built against one exact torch release, so the
+installer must pick the torchao version matching the torch installed in the
+venv (otherwise the cpp kernels are skipped). This pins that mapping.
 """
 
 from __future__ import annotations
 
-import ast
 import sys
-import types
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -21,9 +18,7 @@ import pytest
 
 # install_python_stack.py lives at repo_root/studio/install_python_stack.py
 _INSTALL_SCRIPT = Path(__file__).resolve().parents[2] / "install_python_stack.py"
-
-# backend root (studio/backend), for reading/exec-ing backend sources.
-_BACKEND = Path(__file__).resolve().parents[1]
+_EXTRAS_REQUIREMENTS = Path(__file__).resolve().parent.parent / "requirements" / "extras.txt"
 
 
 def _load_module(monkeypatch):
@@ -56,10 +51,21 @@ def _load_module(monkeypatch):
         ("2.10.0.dev20250804+cu130", "torchao==0.17.0"),
         ("2.10.0.dev20250804+cu128", "torchao==0.16.0"),
         ("2.10rc1", "torchao==0.16.0"),
-        # torch 2.11 (reachable via ROCm rocm7.2) and forward -> 0.17.0.
+        # 2.11 -> 0.17.0, whose cpp is built for it.
         ("2.11.0+cu130", "torchao==0.17.0"),
         ("2.11.0", "torchao==0.17.0"),
-        ("2.12.0", "torchao==0.17.0"),
+        ("2.11.1+cu126", "torchao==0.17.0"),
+        # 2.12+ -> 0.18.0, whose release CI is pinned to 2.13. 0.17.0's upstream table stops
+        # at 2.11, so leaving this range there ran it outside its declared window.
+        ("2.12.0", "torchao==0.18.0"),
+        ("2.12.1+cu130", "torchao==0.18.0"),
+        ("2.13.0+cu132", "torchao==0.18.0"),
+        ("2.14.0+cu130", "torchao==0.18.0"),
+        ("2.14.0+xpu", "torchao==0.18.0"),
+        ("2.99.0", "torchao==0.18.0"),
+        # The CUDA-13 branch belongs to 2.10 alone; it must not leak upward.
+        ("2.12.0+cu126", "torchao==0.18.0"),
+        ("2.12.0.dev20260801+cu132", "torchao==0.18.0"),
         # torch <=2.9 keeps today's pin (already a correct match for 2.9.0).
         ("2.9.0+cu128", "torchao==0.14.0"),
         ("2.9.1", "torchao==0.14.0"),
@@ -85,11 +91,240 @@ def test_default_spec_matches_table(monkeypatch):
     assert mod._select_torchao_spec("2.9.0") == mod._TORCHAO_DEFAULT_SPEC
 
 
+def test_matching_torchao_pin_does_not_need_force_reinstall(monkeypatch):
+    mod = _load_module(monkeypatch)
+    monkeypatch.setattr(mod, "_installed_distribution_version", lambda _name: "0.17.0")
+    assert mod._exact_distribution_spec_is_installed("torchao==0.17.0")
+    assert not mod._exact_distribution_spec_is_installed("torchao==0.16.0")
+
+
+@pytest.mark.parametrize(
+    "torch_version, leaf",
+    [
+        ("2.12.0+cu126", "cu126"),
+        ("2.13.0+cu132", "cu132"),
+        ("2.14.0+cu130", "cu130"),
+        ("2.11.0+rocm7.2", "rocm7.2"),  # rocm DOES publish torchao, unlike torchcodec
+        ("2.9.0+rocm6.4", "rocm6.4"),
+        ("2.14.0+xpu", "xpu"),
+        ("2.12.0+cpu", "cpu"),
+        # Untagged torch is PyPI's own build and its counterpart is PyPI's own torchao.
+        ("2.14.0", None),
+        ("2.11.0", None),
+        (None, None),
+        ("", None),
+        ("garbage", None),
+    ],
+)
+def test_the_torchao_index_follows_the_resident_torch_build(monkeypatch, torch_version, leaf):
+    """torchao publishes a wheel per accelerator and PyPI's default is the CUDA-12 one, so
+    an unpinned install puts a CUDA-12 cpp beside a CUDA-13 or ROCm torch. That is the
+    `libcudart.so.12: cannot open shared object file` the 2.10 CUDA-13 row already dodges by
+    picking a build whose cpp gets skipped instead."""
+    mod = _load_module(monkeypatch)
+    monkeypatch.delenv("UNSLOTH_TORCH_INDEX_URL", raising = False)
+    monkeypatch.delenv("UNSLOTH_TORCH_INDEX_FAMILY", raising = False)
+    got = mod._torch_accelerator_index_url(torch_version)
+    assert got == (f"https://download.pytorch.org/whl/{leaf}" if leaf else None)
+
+
+# torchao per leaf, from the live listings. Only leaves that do NOT cover every release this
+# selector can ask for; everything absent serves its whole range.
+_TORCHAO_INDEX_GAPS = {
+    "cu118": ({m: f"0.{m}.0" for m in range(3, 12)}, range(5, 8)),
+    "cu129": (
+        {12: "0.12.0", 13: "0.13.0", 14: "0.14.1", 15: "0.15.0", 16: "0.16.0", 17: "0.17.0"},
+        range(8, 14),
+    ),
+    "rocm7.0": ({16: "0.16.0"}, range(9, 11)),
+}
+
+
+def test_the_index_pin_starves_only_where_the_retry_covers_it(monkeypatch):
+    """A pin that could not be served would fail an install, because this step is fatal.
+
+    Four cells cannot be served, and none of them is predictable from a rule: cu118 stops at
+    torchao 0.11.0, rocm7.0 carries 0.16.0 alone, and cu129 has 0.14.1 where the 2.9 row asks
+    for 0.14.0 exactly -- a hole in the MIDDLE of its range, which no floor could describe.
+    All four resolve from the default index, which is where they came from before this step
+    pinned anything, so the retry makes them identical to today rather than broken. Recording
+    them here means a fifth cannot appear unnoticed.
+    """
+    mod = _load_module(monkeypatch)
+    starved = set()
+    for leaf, (published, torch_minors) in _TORCHAO_INDEX_GAPS.items():
+        for minor in torch_minors:
+            version = f"2.{minor}.0+{leaf}"
+            assert mod._torch_accelerator_index_url(version).endswith("/" + leaf)
+            wanted = mod._select_torchao_spec(version).split("==", 1)[1]
+            if wanted not in published.values():
+                starved.add((leaf, minor, wanted))
+    assert starved == {
+        # cu118 tops out at torchao 0.11.0, so every torch it serves wants more than it has.
+        ("cu118", 5, "0.14.0"),
+        ("cu118", 6, "0.14.0"),
+        ("cu118", 7, "0.14.0"),
+        # cu129 publishes 0.14.1, not 0.14.0, and stops at 0.17.0.
+        ("cu129", 8, "0.14.0"),
+        ("cu129", 9, "0.14.0"),
+        ("cu129", 12, "0.18.0"),
+        ("cu129", 13, "0.18.0"),
+        # rocm7.0 publishes 0.16.0 alone, which is what its torch 2.10 row already wants.
+        ("rocm7.0", 9, "0.14.0"),
+    }, sorted(starved)
+
+
+def _torchao_installer_source():
+    source = _INSTALL_SCRIPT.read_text(encoding = "utf-8")
+    body = source.split("def _install_torchao_for_torch(", 1)[1]
+    return body.split("\ndef ", 1)[0]
+
+
+def test_the_torchao_step_pins_the_index_and_retries_without_it():
+    """cu129 serves torch to 2.13 but stops at torchao 0.17.0, and a leaf added upstream
+    after this ships can lag a release, so the pin must not be able to fail an install.
+    Unlike torchcodec the retry stays FATAL if it also fails: torchao is not optional."""
+    body = _torchao_installer_source()
+    assert "index = _torch_accelerator_index_url(torch_version)" in body
+    assert '"--index-url", index, spec' in body
+    assert "retrying from the default index" in body
+    # The unpinned attempt is pip_install, not pip_install_try: still fatal on failure.
+    retry = body.split("retrying from the default index", 1)[1]
+    assert 'pip_install("Installing dependency overrides", *args, spec)' in retry
+    assert "--index-url" not in retry
+    # And the printed line redacts, since a mirror URL can carry credentials.
+    assert "_strip_index_url_credentials(index)" in body
+
+
+def test_the_fallback_is_never_conditioned_on_the_accelerator(monkeypatch):
+    """A wrong-accelerator torchao costs its kernels, not its import, so the fallback stays
+    unconditional -- guarding it on the CUDA major regressed CUDA-13/ROCm/XPU hosts from a
+    slow torchao to none. torchao/__init__.py has wrapped the cpp load since 0.12.0."""
+    body = _torchao_installer_source()
+    fallback = body.split("retrying from the default index", 1)[1]
+    assert 'pip_install("Installing dependency overrides", *args, spec)' in fallback
+    # No branch between the failed pin and the retry. Comments carry the word; compare code.
+    between = body.split("if pip_install_try(", 1)[1].split("retrying from the default index", 1)[0]
+    code = [l for l in between.split("\n") if not l.strip().startswith("#")]
+    assert not any(l.strip().startswith(("if ", "elif ")) for l in code), between
+    mod = _load_module(monkeypatch)
+    assert not hasattr(mod, "_default_index_torchao_can_load")
+
+
+@pytest.mark.parametrize(
+    "installed, spec, want_tag, expected",
+    [
+        # No index pinned: the wheel comes from the default index, which stamps no tag.
+        ("0.18.0", "torchao==0.18.0", "<none>", False),
+        # A tagged wheel on the unpinned path came from elsewhere, so it is replaced once,
+        # then settles: what lands is bare.
+        ("0.18.0+cu130", "torchao==0.18.0", "<none>", True),
+        ("0.17.0", "torchao==0.18.0", "<none>", True),
+        (None, "torchao==0.18.0", "<none>", True),
+        # Pinned: the release can be right while the BUILD is wrong. 0.18.0+cu126 satisfies
+        # ==0.18.0, so pip fetches nothing and the wrong build stays.
+        ("0.18.0+cu130", "torchao==0.18.0", "cu130", False),
+        ("0.18.0+cu126", "torchao==0.18.0", "cu130", True),
+        ("0.18.0", "torchao==0.18.0", "cu130", True),
+        ("0.18.0+rocm7.2", "torchao==0.18.0", "rocm7.2", False),
+        ("0.17.0+cu130", "torchao==0.18.0", "cu130", True),
+        # An opaque mirror proves nothing, so it is replaced: otherwise an untagged wheel
+        # satisfies the pin and the mirror is never contacted.
+        ("0.18.0", "torchao==0.18.0", None, True),
+        ("0.18.0+cu130", "torchao==0.18.0", None, True),
+    ],
+)
+def test_pin_needs_reinstall(monkeypatch, installed, spec, want_tag, expected):
+    mod = _load_module(monkeypatch)
+    monkeypatch.setattr(mod, "_installed_distribution_version", lambda _name: installed)
+    tag = "" if want_tag == "<none>" else want_tag
+    assert mod._pin_needs_reinstall(spec, tag) is expected
+
+
+def test_the_wanted_tag_follows_the_index_that_will_be_pinned(monkeypatch):
+    """The provenance tag has to come from the leaf the pin resolves to, not from the
+    resident torch. With UNSLOTH_TORCH_INDEX_FAMILY=cu130 over a +cu128 venv the pin goes to
+    cu130 while the old comparison asked for cu128, so an 0.18.0+cu128 wheel looked correct,
+    pip found the requirement satisfied and the cu130 build was never fetched."""
+    mod = _load_module(monkeypatch)
+    monkeypatch.delenv("UNSLOTH_TORCH_INDEX_URL", raising = False)
+    monkeypatch.setenv("UNSLOTH_TORCH_INDEX_FAMILY", "cu130")
+    assert mod._torch_accelerator_index_url("2.13.0+cu128").endswith("/cu130")
+    assert mod._torch_index_tag("2.13.0+cu128") == "cu130"
+
+    monkeypatch.setattr(mod, "_installed_distribution_version", lambda _name: "0.18.0+cu128")
+    assert mod._pin_needs_reinstall("torchao==0.18.0", mod._torch_index_tag("2.13.0+cu128"))
+    monkeypatch.setattr(mod, "_installed_distribution_version", lambda _name: "0.18.0+cu130")
+    assert not mod._pin_needs_reinstall("torchao==0.18.0", mod._torch_index_tag("2.13.0+cu128"))
+
+    # An explicit URL is opaque, so nothing can prove where a wheel came from.
+    monkeypatch.setenv("UNSLOTH_TORCH_INDEX_URL", "https://mirror.corp.example/whl/cu130")
+    assert mod._torch_index_tag("2.13.0+cu128") is None
+
+    # And with no override at all the resident tag is still what is asked for.
+    monkeypatch.delenv("UNSLOTH_TORCH_INDEX_URL")
+    monkeypatch.delenv("UNSLOTH_TORCH_INDEX_FAMILY")
+    assert mod._torch_index_tag("2.13.0+cu128") == "cu128"
+
+
+def test_every_torchao_call_site_asks_for_the_pinned_tag():
+    """Passing the torch version rather than the pinned tag would reintroduce the drift the
+    helper exists to remove, so no call site may spell it any other way."""
+    source = _INSTALL_SCRIPT.read_text(encoding = "utf-8")
+    assert source.count("_pin_needs_reinstall(") == 3  # the def plus both call sites
+    assert '_torch_index_tag(torch_version) if index else ""' in source
+    assert '_torch_index_tag(_label_after) if _ao_index else ""' in source
+
+
+def test_no_torchao_install_can_resolve_a_dependency():
+    """Both call sites pass --no-deps, for the post-repair one: it runs right after step 13
+    fixed the torch build. No torchao release declares a runtime torch dependency today, so
+    this is hardening that must stay if one ever gains a pin."""
+    body = _torchao_installer_source()
+    assert 'args = ["--no-deps", "--no-cache-dir"]' in body
+    # --force-reinstall must not be able to widen the install back out.
+    for call in ("pip_install(", "pip_install_try("):
+        for fragment in body.split(call)[1:]:
+            assert "*args" in fragment.split(")")[0], fragment[:120]
+    source = _INSTALL_SCRIPT.read_text(encoding = "utf-8")
+    resync = source.split("def _resync_torch_coupled_packages", 1)[1]
+    ao = resync.split("_ao_index", 1)[1][:1200]
+    assert "--no-deps" in ao
+
+
+def test_torchao_is_re_selected_after_the_linux_torch_repair():
+    """Step 4 chooses torchao from the torch present BEFORE step 13's repairs, which move
+    torch across families and releases. The explicit XPU pin is the sharp case: its spec is
+    torch>=2.6,<2.11.0, so it necessarily lands below the 2.11 floor torchao 0.18.0 needs,
+    leaving 0.18.0 beside torch 2.10. Only the Windows flavor repair reaches
+    _resync_torch_coupled_packages, so on Linux nothing re-selected it."""
+    source = _INSTALL_SCRIPT.read_text(encoding = "utf-8")
+    step = source.split('_progress(_torch_step_label("final"))', 1)[1]
+    step = step.split("# 13w.", 1)[0]
+    assert '_torch_before_repair = str(_probe_installed_torch_version() or "")' in step
+    assert "_install_torchao_for_torch(_torch_after_repair)" in step
+    # Guarded on an actual move, so an install where nothing shifted pays no second resolve.
+    assert "if _torch_after_repair and _torch_after_repair != _torch_before_repair:" in step
+    # The XPU repair really does land below the 0.18.0 floor.
+    assert '"torch>=2.6,<2.11.0",' in source
+
+
+def test_windows_first_hop_uses_einx_wheel_without_shared_test_tree():
+    requirements = _EXTRAS_REQUIREMENTS.read_text(encoding = "utf-8")
+    assert 'einx<0.4.3; sys_platform == "win32"' in requirements
+    # einx dropped 3.9 in 0.4.0, so the non-Windows side is split by interpreter.
+    assert 'einx==0.4.3; sys_platform != "win32" and python_version >= "3.10"' in requirements
+    assert 'einx==0.3.0; sys_platform != "win32" and python_version < "3.10"' in requirements
+
+
 @pytest.mark.parametrize(
     ("rocm_windows_torch_installed", "installed_torch_is_windows_rocm"),
     [
         (True, False),
         (False, True),
+        # Both signals agree: the ordinary Windows ROCm host, and the case a
+        # two-mixed-only parametrization never covered.
+        (True, True),
     ],
 )
 def test_skips_torchao_on_windows_rocm(
@@ -124,11 +359,31 @@ def test_skips_torchao_on_windows_rocm(
     monkeypatch.setattr(
         mod, "_installed_torch_is_windows_rocm", lambda: installed_torch_is_windows_rocm
     )
+    # #10053 added a require_present gate to install_python_stack: after the core phase
+    # it refuses when a managed distribution is not installed at all, which SKIP_STUDIO_BASE
+    # guarantees here. Unstubbed, this test asks whether unsloth happens to be installed in
+    # whatever environment runs it -- it passes on a developer machine that has it and fails
+    # in CI, which is not what the test is about. Stubbed like every other installer side
+    # effect below.
+    monkeypatch.setattr(mod, "_repair_damaged_core_payload", lambda *a, **k: True)
     monkeypatch.setattr(mod, "_bootstrap_uv", lambda: False)
     monkeypatch.setattr(mod, "_repair_bad_anyio", lambda: None)
+    monkeypatch.setattr(mod, "_repair_bad_accelerate", lambda: None)
     monkeypatch.setattr(mod, "_ensure_rocm_torch", lambda: None)
     monkeypatch.setattr(mod, "_ensure_cuda_torch", lambda: None)
-    monkeypatch.setattr(mod, "_has_usable_nvidia_gpu", lambda: True)
+    # A Windows ROCm box has no usable NVIDIA GPU. Claiming one here described a
+    # machine that cannot exist, and _expected_torch_flavor_tag reads exactly this
+    # flag to decide whether a CUDA expectation exists at all: with it True, the
+    # Windows flavor invariant demanded a cu* build, found the runner's CPU torch,
+    # and failed the whole install long after the torchao branch under test.
+    monkeypatch.setattr(mod, "_has_usable_nvidia_gpu", lambda: False)
+    # The installed torch is ambient, so leaving it unpatched made the verdict depend
+    # on the developer's machine: a CUDA workstation passed and a CPU-only CI runner
+    # failed, on identical code.
+    monkeypatch.setattr(mod, "_RECORDED_TORCH_TAG", "")
+    monkeypatch.setattr(
+        mod, "_probe_torch_runtime", lambda *args, **kwargs: (True, True, "2.9.1+cpu", "", "")
+    )
     monkeypatch.setattr(mod, "run", lambda *args, **kwargs: None)
     monkeypatch.setattr(mod, "pip_install", _record_pip_install)
     monkeypatch.setattr(mod, "_progress", lambda label: progress_labels.append(label))
@@ -136,89 +391,50 @@ def test_skips_torchao_on_windows_rocm(
     monkeypatch.setattr(mod, "LOCAL_DD_GITHUB_PLUGIN", github_plugin)
     monkeypatch.setattr(mod.subprocess, "run", lambda *args, **kwargs: subprocess_result)
 
+    # Checked BEFORE the install so a regression names its cause here rather than as
+    # an opaque `assert 1 == 0` on the line below, which is how this surfaced: the run
+    # returned 1 on a CPU-only runner and 0 on a CUDA workstation, on identical code.
+    assert mod._expected_torch_flavor_tag() == "", (
+        "no CUDA expectation may exist on a Windows ROCm host: a non-empty tag means "
+        "the Windows flavor invariant will demand a cu* build, not find one, and fail "
+        "the install long after the torchao branch this test is about"
+    )
+
     assert mod.install_python_stack() == 0
 
     assert not any(spec.startswith("torchao") for spec in installed_specs)
     assert "dependency overrides (skipped, Windows ROCm)" in progress_labels
 
 
-# -- Windows-ROCm torchao export gate -----------------------------------------------------------
-# torchao is import-stubbed on Windows ROCm (no torch.distributed) and its config classes return
-# None, which made TorchAoConfig(quant_type=None) crash. These prove the shared is_win32_rocm()
-# gate hides the torchao formats and the defensive path raises a clear error instead.
+# Windows-ROCm torchao export gate: the stub's config classes return None, which crashed
+# TorchAoConfig(quant_type=None).
+
+import types
 
 import core._torchao_stub as _stub
 
-
-def _func_src(rel, name):
-    src = (_BACKEND / rel).read_text(encoding = "utf-8")
-    node = next(
-        n for n in ast.walk(ast.parse(src)) if isinstance(n, ast.FunctionDef) and n.name == name
-    )
-    return ast.get_source_segment(src, node)
+_BACKEND = Path(__file__).resolve().parents[1]
+_EXPORT_HELPERS = ("_torchao_export_supported", "_torchao_runtime_unavailable", "_is_torchao_alias")
 
 
-def _exec_func(rel, name):
-    """Exec one backend function in isolation, avoiding export.py's heavy import chain."""
+def _export_helpers():
+    """Exec the gate helpers alone, avoiding export.py's heavy import chain."""
+    import ast
+
+    src = (_BACKEND / "core" / "export" / "export.py").read_text(encoding = "utf-8")
     ns: dict = {}
-    exec(_func_src(rel, name), ns)
-    return ns[name]
-
-
-@pytest.mark.parametrize(
-    ("platform", "hip", "version", "expected"),
-    [
-        ("win32", "6.4.0", "2.10.0+rocm6.4", True),  # ROCm via torch.version.hip
-        ("win32", None, "2.10.0+rocm6.4", True),  # ROCm via __version__ tag only
-        ("win32", None, "2.10.0+cu128", False),  # Windows CUDA -> real torchao
-        ("linux", "6.4.0", "2.10.0+rocm6.4", False),  # Linux ROCm -> real torchao
-        ("darwin", None, "2.10.0", False),  # macOS
-    ],
-)
-def test_is_win32_rocm(monkeypatch, platform, hip, version, expected):
-    fake_torch = types.SimpleNamespace(version = types.SimpleNamespace(hip = hip), __version__ = version)
-    monkeypatch.setattr(sys, "platform", platform)
-    monkeypatch.setitem(sys.modules, "torch", fake_torch)
-    assert _stub.is_win32_rocm() is expected
-
-
-def test_gate_and_stub_share_helper():
-    # The stub installer and the export gate must both route through is_win32_rocm() so they can't
-    # drift (the gate off while the stub is still active, or the reverse).
-    stub_src = (_BACKEND / "core" / "_torchao_stub.py").read_text(encoding = "utf-8")
-    assert "def is_win32_rocm(" in stub_src
-    assert "is_win32_rocm()" in _func_src(
-        "core/_torchao_stub.py", "install_torchao_windows_rocm_stub"
-    )
-    assert "is_win32_rocm()" in _func_src("core/export/export.py", "_torchao_export_supported")
-
-
-def test_installer_noop_off_windows_rocm(monkeypatch):
-    # is_win32_rocm() False -> installer must not register the finder or seed torchao stubs.
-    monkeypatch.setattr(_stub, "is_win32_rocm", lambda: False)
-    before = list(sys.meta_path)
-    _stub.install_torchao_windows_rocm_stub()
-    assert list(sys.meta_path) == before
-
-
-# (a) gate off on Windows ROCm; (b) unchanged elsewhere
-
-
-def test_torchao_gate_false_on_windows_rocm(monkeypatch):
-    # (a) On Windows ROCm the portable torchao formats are not offered, without importing unsloth.
-    monkeypatch.setattr(_stub, "is_win32_rocm", lambda: True)
-    assert _exec_func("core/export/export.py", "_torchao_export_supported")() is False
-
-
-_TORCHAO_ALIASES = {"torchao_fp8", "torchao_int8", "portable_fp8", "portable_int8"}
+    for node in ast.parse(src).body:
+        if isinstance(node, ast.FunctionDef) and node.name in _EXPORT_HELPERS:
+            exec(ast.get_source_segment(src, node), ns)
+    return ns
 
 
 def _fake_normalize_torchao(save_method):
-    # Mirrors unsloth.save._normalize_torchao_method (lower/strip, - and space -> _).
     if not isinstance(save_method, str):
         return None
     key = save_method.lower().strip().replace("-", "_").replace(" ", "_")
-    return ("fp8", "torchao-fp8") if key in _TORCHAO_ALIASES else None
+    ok = key in {"torchao_fp8", "torchao_int8", "portable_fp8", "portable_int8"}
+    return ("fp8", "torchao-fp8") if ok else None
 
 
 def _install_fake_unsloth_save(monkeypatch, *, has_method):
@@ -231,33 +447,33 @@ def _install_fake_unsloth_save(monkeypatch, *, has_method):
     monkeypatch.setitem(sys.modules, "unsloth.save", save)
 
 
-def test_torchao_gate_supported_off_windows_rocm(monkeypatch):
-    # (b) Off Windows ROCm the gate is unchanged: True when the unsloth build has the method.
-    monkeypatch.setattr(_stub, "is_win32_rocm", lambda: False)
+@pytest.mark.parametrize(
+    ("win_rocm", "has_method", "expected"),
+    [(True, True, False), (False, True, True), (False, False, False)],
+)
+def test_torchao_export_gate(monkeypatch, win_rocm, has_method, expected):
+    monkeypatch.setattr(_stub, "_is_windows_rocm", lambda: win_rocm)
+    _install_fake_unsloth_save(monkeypatch, has_method = has_method)
+    assert _export_helpers()["_torchao_export_supported"]() is expected
+
+
+def test_is_torchao_alias_recognizes_all_forms(monkeypatch):
     _install_fake_unsloth_save(monkeypatch, has_method = True)
-    assert _exec_func("core/export/export.py", "_torchao_export_supported")() is True
-
-
-def test_torchao_gate_false_when_build_lacks_method(monkeypatch):
-    # (b) Off Windows ROCm, an older unsloth without the method is still unsupported.
-    monkeypatch.setattr(_stub, "is_win32_rocm", lambda: False)
-    _install_fake_unsloth_save(monkeypatch, has_method = False)
-    assert _exec_func("core/export/export.py", "_torchao_export_supported")() is False
-
-
-# (c) defensive early error when torchao is stubbed / unavailable
+    fn = _export_helpers()["_is_torchao_alias"]
+    for alias in ("torchao_fp8", "portable_int8", "portable-fp8", "Portable FP8"):
+        assert fn(alias) is True
+    for alias in ("fp8", "nvfp4", "w8a8", "", None):
+        assert fn(alias) is False
 
 
 def _load_export_module_no_torch(monkeypatch):
-    """Import core.export.export with torch/unsloth blocked (mirrors test_export_capability), so
-    the defensive path runs on CPU with no GPU and no torchao."""
+    """Import core.export.export with torch/unsloth blocked, so the guard runs without a GPU."""
     import builtins
     import importlib
 
     real_import = builtins.__import__
 
     def blocking_import(name, *args, **kwargs):
-        # Block real torch/unsloth, but honor injected fakes already in sys.modules.
         top = name.split(".")[0]
         if top in {"torch", "unsloth"} and top not in sys.modules:
             raise ImportError(f"blocked: {name}")
@@ -270,95 +486,31 @@ def _load_export_module_no_torch(monkeypatch):
     return importlib.import_module("core.export.export")
 
 
-def _bare_backend(mod):
+@pytest.mark.parametrize("alias", ["torchao_fp8", "portable_fp8"])
+def test_torchao_export_rejected_early_on_windows_rocm(monkeypatch, alias):
+    mod = _load_export_module_no_torch(monkeypatch)
+    monkeypatch.setattr(mod, "_export_runtime_available", lambda: True)
+    monkeypatch.setattr(_stub, "_is_windows_rocm", lambda: True)
+    _install_fake_unsloth_save(monkeypatch, has_method = True)
     be = mod.ExportBackend.__new__(mod.ExportBackend)
     be.current_model = object()
     be.current_tokenizer = object()
     be._audio_type = None
     be.is_peft = True
-    return be
 
-
-def test_torchao_defensive_error_on_windows_rocm(monkeypatch):
-    # (c) A forced torchao request reaches the merged path -> clear error, not the NoneType crash.
-    mod = _load_export_module_no_torch(monkeypatch)
-    monkeypatch.setattr(mod, "_export_runtime_available", lambda: True)
-    monkeypatch.setattr(_stub, "is_win32_rocm", lambda: True)
-
-    ok, message, out = _bare_backend(mod).export_merged_model(
-        "/tmp/x", compressed_method = "torchao_fp8"
-    )
+    ok, message, out = be.export_merged_model("/tmp/x", compressed_method = alias)
     assert ok is False and out is None
     assert "Windows ROCm" in message and "torchao" in message.lower()
 
 
-def test_torchao_defensive_error_alias_form_on_windows_rocm(monkeypatch):
-    # An equivalent alias unsloth accepts (portable_fp8) must hit the same rejection, not fall
-    # through to the misleading NVIDIA compressed-tensors error.
-    mod = _load_export_module_no_torch(monkeypatch)
-    monkeypatch.setattr(mod, "_export_runtime_available", lambda: True)
-    monkeypatch.setattr(_stub, "is_win32_rocm", lambda: True)
-    _install_fake_unsloth_save(monkeypatch, has_method = True)
-
-    ok, message, out = _bare_backend(mod).export_merged_model(
-        "/tmp/x", compressed_method = "portable_fp8"
-    )
-    assert ok is False and out is None
-    assert "Windows ROCm" in message and "torchao" in message.lower()
-
-
-def test_is_torchao_alias_recognizes_all_forms(monkeypatch):
-    _install_fake_unsloth_save(monkeypatch, has_method = True)
-    fn = _exec_func("core/export/export.py", "_is_torchao_alias")
-    for alias in ("torchao_fp8", "portable_int8", "portable-fp8", "Portable FP8"):
-        assert fn(alias) is True
-    for alias in ("fp8", "nvfp4", "w8a8", "", None):
-        assert fn(alias) is False
-
-
-def test_torchao_defensive_error_wired_early():
-    # Guard is in export_merged_model before the merge/quant work; alias is normalized (not just the
-    # torchao_ prefix) so every torchao form is caught.
-    m = _func_src("core/export/export.py", "export_merged_model")
-    assert "_is_torchao_alias(compressed_alias)" in m
-    assert "_torchao_runtime_unavailable()" in m
-    alias_fn = _func_src("core/export/export.py", "_is_torchao_alias")
-    assert "_normalize_torchao_method(alias)" in alias_fn
-    assert 'startswith("torchao")' in alias_fn
-
-
-# (issue 2/4) backend win32_rocm flag + single finder registration
-
-
-def test_export_capability_exposes_win32_rocm(monkeypatch):
+@pytest.mark.parametrize(
+    ("platform", "is_rocm", "expected"),
+    [("win32", True, True), ("win32", False, False), ("linux", True, False)],
+)
+def test_export_capability_exposes_win32_rocm(monkeypatch, platform, is_rocm, expected):
     import utils.hardware.hardware as hw
 
     monkeypatch.setattr(hw, "get_device", lambda: hw.DeviceType.CUDA)
-    monkeypatch.setattr(sys, "platform", "win32")
-    monkeypatch.setattr(hw, "IS_ROCM", True)
-    assert hw.export_capability()["win32_rocm"] is True
-    monkeypatch.setattr(hw, "IS_ROCM", False)
-    assert hw.export_capability()["win32_rocm"] is False
-    monkeypatch.setattr(sys, "platform", "linux")
-    monkeypatch.setattr(hw, "IS_ROCM", True)
-    assert hw.export_capability()["win32_rocm"] is False
-
-
-def test_installer_registers_finder_once(monkeypatch):
-    # Repeated install must not stack duplicate finders. Restore global state after.
-    monkeypatch.setattr(_stub, "is_win32_rocm", lambda: True)
-    meta_before = list(sys.meta_path)
-    tao_before = {k for k in sys.modules if k == "torchao" or k.startswith("torchao.")}
-    try:
-        _stub.install_torchao_windows_rocm_stub()
-        _stub.install_torchao_windows_rocm_stub()
-        finders = [f for f in sys.meta_path if isinstance(f, _stub._StubSubpackageFinder)]
-        assert len(finders) == 1
-    finally:
-        sys.meta_path[:] = meta_before
-        for k in [
-            k
-            for k in sys.modules
-            if (k == "torchao" or k.startswith("torchao.")) and k not in tao_before
-        ]:
-            del sys.modules[k]
+    monkeypatch.setattr(sys, "platform", platform)
+    monkeypatch.setattr(hw, "IS_ROCM", is_rocm)
+    assert hw.export_capability()["win32_rocm"] is expected

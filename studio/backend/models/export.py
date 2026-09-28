@@ -80,9 +80,8 @@ class ExportStatusResponse(BaseModel):
         False,
         description = "True while a load / export / cleanup operation is running",
     )
-    # Recovery fields: when a blocking export POST is cut off by a Cloudflare tunnel
-    # timeout (524 at ~100s), the client polls this endpoint to learn the real
-    # outcome of the operation that kept running on the backend.
+    # Recovery fields: when a blocking export POST is cut off by a Cloudflare tunnel timeout (524 at
+    # ~100s), the client polls this endpoint to learn the real outcome.
     active_op_kind: Optional[str] = Field(
         None,
         description = "Kind of the currently running op (load_checkpoint / export_* / cleanup)",
@@ -182,8 +181,6 @@ class ExportMergedModelRequest(ExportCommonOptions):
 class ExportBaseModelRequest(ExportCommonOptions):
     """Request for exporting a non-PEFT (base) model."""
 
-    # Uses fields from ExportCommonOptions only
-
 
 class ExportGGUFRequest(BaseModel):
     """Request for exporting the current model to GGUF format."""
@@ -223,6 +220,10 @@ class ExportGGUFRequest(BaseModel):
     imatrix_path: Optional[str] = Field(
         None,
         description = "Path to a custom imatrix file; overrides the auto-download when set.",
+    )
+    private: bool = Field(
+        False,
+        description = "If True, create a private Hugging Face Hub repository",
     )
 
 

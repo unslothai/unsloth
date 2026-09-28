@@ -87,8 +87,11 @@ async function fetchUploadLimitSettings(): Promise<UploadLimitSettings> {
   return fromApi(await res.json());
 }
 
-export async function loadUploadLimitSettings() {
-  if (cachedUploadLimit) {
+/** The cached limit, fetching it once if needed. `force` refetches instead of reading the
+ *  cache, for a caller that must agree with the server rather than merely show a number: the
+ *  setting can be changed from another tab or process, which no event here reaches. */
+export async function loadUploadLimitSettings({ force = false } = {}) {
+  if (cachedUploadLimit && !force) {
     return cachedUploadLimit;
   }
   inFlightUploadLimit ??= fetchUploadLimitSettings()
