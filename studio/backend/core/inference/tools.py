@@ -4013,20 +4013,28 @@ def _references_studio_credential_here(
     # sensitive-path scan uses, and it only ADDS detections.
     if "$" in text:
         # Quoted bindings scanned separately: log text shaped like an assignment must not overwrite real ones.
-        quoted_modes = (
-            (False, True)
-            if _assign_expand_depth == 0 and ("'" in text or '"' in text)
-            else (_quoted_assignments,)
-        )
-        positional_modes = (
-            (True, False) if _assign_expand_depth == 0 else (_positional_assignments,)
-        )
+        quoted_modes, quote_states = (_quoted_assignments,), None
+        if _assign_expand_depth == 0 and ("'" in text or '"' in text):
+            quote_states = _shell_quote_states(text)
+            # Both modes only differ when some assignment sits inside quotes.
+            if any(quote_states[m.start(1)] for m in _SHELL_ASSIGN_RE.finditer(text)):
+                quoted_modes = (False, True)
         seen = {text}
         for include_quoted in quoted_modes:
-            for positional in positional_modes:
-                expanded = _expand_shell_assignments(
-                    text, _include_quoted = include_quoted, _positional = positional
+            final, positional_text = _shell_assignment_expansions(
+                text, include_quoted = include_quoted, quote_states = quote_states
+            )
+            variants = (
+                ((True, positional_text), (False, final))
+                if _assign_expand_depth == 0
+                else (
+                    (
+                        _positional_assignments,
+                        positional_text if _positional_assignments else final,
+                    ),
                 )
+            )
+            for positional, expanded in variants:
                 if expanded in seen:
                     continue
                 seen.add(expanded)
@@ -5280,6 +5288,8 @@ def _posix_join(parts) -> str:
 
 def _shell_assign_value_self_references(name: str, value: str) -> bool:
     """True when *value* expands *name* (VAR=$VAR), which must not feed back into itself."""
+    if "$" not in value:
+        return False
     if any((m.group(1) or m.group(2)) == name for m in _SHELL_VAR_RE.finditer(value)):
         return True
     return any(
@@ -5303,6 +5313,17 @@ def _expand_shell_assignments(
     """Best-effort substitution of `NAME=value ... $NAME`, so a sensitive path split across an
     assignment and an argument (p=/etc; cat $p/passwd) is still visible to the scan. Also applies
     pattern replacement. Fail-open: only adds detections."""
+    final, positional = _shell_assignment_expansions(command, include_quoted = _include_quoted)
+    return positional if _positional else final
+
+
+def _shell_assignment_expansions(
+    command: str,
+    *,
+    include_quoted: bool = True,
+    quote_states = None,
+) -> "tuple[str, str]":
+    """(last binding everywhere, binding active at each use) from one walk of the assignments."""
     env = {}
 
     def repl_default(m):
@@ -5338,25 +5359,25 @@ def _expand_shell_assignments(
         return env.get(pointed, m.group(0)) if pointed is not None else m.group(0)
 
     def expand(text):
+        if "$" not in text:
+            return text
         text = _SHELL_PARAM_INDIRECT_RE.sub(repl_indirect, text)
         text = _SHELL_PARAM_REPL_RE.sub(repl_pattern, text)
         text = _SHELL_PARAM_CASE_RE.sub(repl_case, text)
         return _SHELL_VAR_RE.sub(lambda m: env.get(m.group(1) or m.group(2), m.group(0)), text)
 
-    quote_states = None
-    # _positional: each use sees the binding active where it stands; the default (last binding) covers loops.
+    # Positional: each use sees the binding active where it stands; the last binding covers loops.
     pieces, pos = [], 0
     for match in _SHELL_ASSIGN_RE.finditer(command):
-        if not _include_quoted:
+        if not include_quoted and ("'" in command or '"' in command):
             if quote_states is None:
                 quote_states = _shell_quote_states(command)
             if quote_states[match.start(1)]:
                 continue
         var, val = match.groups()
-        if _positional:
-            pieces.append(expand(command[pos : match.start(2)]))
-            pieces.append(expand(val))
-            pos = match.end(2)
+        pieces.append(expand(command[pos : match.start(2)]))
+        pieces.append(expand(val))
+        pos = match.end(2)
         if _shell_assign_value_self_references(var, val):
             # Studio home vars stay references: `H=$H; cat "$H/auth/auth.db"` must still name the install.
             if var.upper() in _STUDIO_HOME_ENV_VARS:
@@ -5372,10 +5393,8 @@ def _expand_shell_assignments(
             continue
         env[var] = val
     if not env:
-        return command
-    if _positional:
-        return "".join(pieces) + expand(command[pos:])
-    return expand(command)
+        return command, command
+    return expand(command), "".join(pieces) + expand(command[pos:])
 
 
 def _expand_param_defaults(command: str) -> str:
