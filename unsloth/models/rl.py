@@ -1780,6 +1780,8 @@ def _install_grpo_hidden_states_forward_wrapper(model):
     original_forward = target_model.forward
     forward_signature = inspect.signature(original_forward)
     model_name = type(target_model).__name__
+    # Once, not per forward: get_text_config() costs ~16 us and the config is fixed after load.
+    divisor = _grpo_pre_head_hidden_divisor(target_model)
 
     def wrapped_forward(*args, **kwargs):
         # accelerate's extract_model_from_parallel(keep_fp32_wrapper = False), called every GRPO step, rebinds the forward as MethodType, so the module arrives as a leading positional argument; original_forward is already bound, so drop it.
@@ -1849,7 +1851,6 @@ def _install_grpo_hidden_states_forward_wrapper(model):
             return original_forward(*args, **forward_kwargs)
 
         hidden_states = hidden_states[-1]
-        divisor = _grpo_pre_head_hidden_divisor(target_model)
         if divisor is not None:
             hidden_states = hidden_states / divisor
         # Once per model: a head input we do not reproduce (another pre-head transform) would silently train a different objective.
