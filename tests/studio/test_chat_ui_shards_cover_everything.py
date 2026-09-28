@@ -3,13 +3,15 @@
 
 """Every Playwright script in Chat UI Tests belongs to exactly one shard.
 
-The job used to run 11 scripts in sequence against four Studios, at 22.1 minutes on
-average, the largest single job in the repo. It is now four shards split on the Studio
-boundaries.
+The job used to run 11 scripts in sequence against four Unsloth instances, at 22.1 minutes on
+average, the largest single job in the repo. It was split into four shards on the Unsloth
+boundaries, and is now two: `banner` folded into `chat` and `picker` into `extra`, because
+four cells of 3 to 9 minutes each queued about two hours for a runner while the account ran
+30 to 35 jobs at once. Two cells of about 12 minutes take half the slots.
 
 The failure mode that matters is not a broken shard, which is loud. It is a step whose
 `if:` names no shard, or names one that does not exist, or is dropped from the matrix: the
-step then runs nowhere, the job is green on all four shards, and a Playwright regression
+step then runs nowhere, the job is green on every shard, and a Playwright regression
 suite has silently stopped existing. Nothing else in CI would notice, because a test that
 does not run cannot fail.
 
@@ -83,7 +85,7 @@ def test_every_playwright_step_runs_on_some_shard(step):
 
 
 def test_the_studio_a_script_depends_on_boots_on_the_same_shard():
-    """A script and the Studio it drives cannot be split across machines.
+    """A script and the Unsloth it drives cannot be split across machines.
 
     Each boot step names its port, and so does every script that talks to it. A shard
     holding the script but not the boot fails on connection refused, which is at least
@@ -104,7 +106,7 @@ def test_the_studio_a_script_depends_on_boots_on_the_same_shard():
         for port in ports & set(booted):
             missing = _named_shards(str(step.get("if", ""))) - booted[port]
             assert not missing, (
-                f"{step.get('name')!r} runs on {sorted(missing)} but the Studio on {port} "
+                f"{step.get('name')!r} runs on {sorted(missing)} but the Unsloth on {port} "
                 f"is only booted on {sorted(booted[port])}. The script would hit a port "
                 f"nothing is listening on."
             )
@@ -155,8 +157,8 @@ def test_each_shard_uploads_under_its_own_artifact_name():
 def test_every_shard_captures_its_own_server_logs():
     """Each cell is a separate machine with its own ~/.unsloth/studio/logs.
 
-    The copy used to live inside the step that stops the last Studio, whose comment said
-    all three Studios share the directory. True when they shared a runner; false now. A
+    The copy used to live inside the step that stops the last Unsloth, whose comment said
+    all three Unsloth instances share the directory. True when they shared a runner; false now. A
     shard-gated copy leaves three artifacts with no server-side traceback, which is
     exactly what anyone debugging a failed shard opens first.
     """

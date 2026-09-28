@@ -12,20 +12,20 @@
 // source, since the node suite has no DOM to mount two panels into.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
 
 import {
   type MonitorFrame,
   useMonitorFrameStore,
 } from "../src/features/settings/stores/monitor-frame-store.ts";
 
-const PANEL_SOURCE = readFileSync(
-  fileURLToPath(
-    new URL("../src/components/floating-monitor.tsx", import.meta.url),
-  ),
-  "utf8",
+import { readSrc } from "./helpers/kit.ts";
+
+const PANEL_SOURCE = readSrc("components/floating-monitor.tsx");
+
+const ROOT_SOURCE = readSrc("app/routes/__root.tsx");
+const SETTINGS_MOUNT_SOURCE = readSrc(
+  "features/settings/settings-dialog-mount.tsx",
 );
 
 /** The Live monitor where it opens by default: bottom-right, w-64, inset-4. */
@@ -160,7 +160,7 @@ test("two publishers are dodged together, not one at a time", () => {
   assert.deepEqual(
     published(),
     [corner(300), { left: 300, top: 780, right: 1100, bottom: 860 }],
-    "both are kept, apart, for stackGeometry to fold one at a time",
+    "both are kept, apart, for panel-placement to dodge one at a time",
   );
 });
 
@@ -178,16 +178,26 @@ test("dropping one publisher leaves the other's box intact", () => {
 // A composer that is hidden measures 0x0, and publishing that would pull the
 // union out to the top-left corner and pin the stack there.
 test("the publish hook drops an unmeasurable box rather than publishing it", () => {
-  const HOOK = readFileSync(
-    fileURLToPath(
-      new URL(
-        "../src/features/settings/hooks/use-published-frame.ts",
-        import.meta.url,
-      ),
-    ),
-    "utf8",
-  );
+  const HOOK = readSrc("features/settings/hooks/use-published-frame.ts");
   assert.match(HOOK, /box\.width === 0 && box\.height === 0/);
   assert.match(HOOK, /observer\?\.disconnect\(\)/, "and it must unsubscribe");
-  assert.match(HOOK, /clearFrame\(publisher\);\s*\n\s*\};/, "and clear on unmount");
+  assert.match(
+    HOOK,
+    /clearFrame\(publisher\);\s*\n\s*\};/,
+    "and clear on unmount",
+  );
+});
+
+test("settings and monitor are eagerly imported and mounted without outer loading UI", () => {
+  assert.match(SETTINGS_MOUNT_SOURCE, /import \{ SettingsDialog \} from "\.\/settings-dialog"/);
+  assert.match(SETTINGS_MOUNT_SOURCE, /import \{ FloatingMonitor \} from "@\/components\/floating-monitor"/);
+  assert.match(SETTINGS_MOUNT_SOURCE, /<SettingsDialog \/>/);
+  assert.match(SETTINGS_MOUNT_SOURCE, /<FloatingMonitor \/>/);
+  assert.doesNotMatch(SETTINGS_MOUNT_SOURCE, /lazy\(|Suspense|LazyImport|settingsMounted|monitorMounted|settingsOpen|monitorOpen|settings-dialog-loading/);
+});
+
+test("eager settings surfaces remain gated on auth and credential readiness", () => {
+  assert.match(ROOT_SOURCE, /<CredentialBootstrapGate active=\{!isAuthFlowRoute\}>/);
+  assert.match(ROOT_SOURCE, /<SettingsDialogMount active=\{active && ready\} \/>/);
+  assert.match(SETTINGS_MOUNT_SOURCE, /if \(!active\) return null;/);
 });

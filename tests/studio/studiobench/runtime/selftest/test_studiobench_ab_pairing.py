@@ -65,6 +65,19 @@ def _keystroke(
     }
 
 
+def _gate(
+    name,
+    passed,
+    *,
+    cell_id = None,
+    session = SESSION,
+):
+    row = {"row_type": "gate", "name": name, "passed": passed, "detail": {}, "session_id": session}
+    if cell_id is not None:
+        row["cell_id"] = cell_id
+    return row
+
+
 def _pairs(records, session_id = SESSION):
     result = compare_arms(
         records,
@@ -89,6 +102,116 @@ def test_a_crashed_treatment_cell_does_not_become_a_win():
     pairs, result = _pairs(records)
     assert pairs == []
     assert result.verdict == "NO READING"
+
+
+def test_a_cell_that_failed_a_per_cell_gate_does_not_become_a_win():
+    """REGRESSION. A completeness gate is advisory where it is emitted, so the cell arrives here
+    `completed=True` with a full set of timings -- and cheaper ones, because a thread that lost its
+    middle renders fewer rows. `excluded_from_rows` reads the same gate row into `excluded_cells`,
+    but nothing filters on that block, and `ab.md` is scored from `readings_by_arm`.
+    """
+
+    records = [
+        _cell("r10K.base.rep0", "base"),
+        _keystroke("r10K.base.rep0", 100.0),
+        _cell("r10K.treatment.rep0", "treatment"),
+        _keystroke("r10K.treatment.rep0", 50.0),
+        _gate("thread_complete", False, cell_id = "r10K.treatment.rep0"),
+    ]
+    assert "treatment" not in readings_by_arm(records)
+    pairs, result = _pairs(records)
+    assert pairs == []
+    assert result.verdict == "NO READING"
+
+
+def test_a_failed_follows_the_stream_gate_disqualifies_its_cell_too():
+    """The streamed reply leaving the viewport is the other way a defect gets cheaper to paint."""
+
+    records = [
+        _cell("r10K.base.rep0", "base"),
+        _keystroke("r10K.base.rep0", 100.0),
+        _cell("r10K.treatment.rep0", "treatment"),
+        _keystroke("r10K.treatment.rep0", 50.0),
+        _gate("follows_the_stream", False, cell_id = "r10K.treatment.rep0"),
+    ]
+    assert "treatment" not in readings_by_arm(records)
+
+
+def test_a_passing_gate_leaves_its_cell_alone():
+    records = [
+        _cell("r10K.base.rep0", "base"),
+        _keystroke("r10K.base.rep0", 100.0),
+        _gate("thread_complete", True, cell_id = "r10K.base.rep0"),
+        _cell("r10K.treatment.rep0", "treatment"),
+        _keystroke("r10K.treatment.rep0", 50.0),
+        _gate("thread_complete", True, cell_id = "r10K.treatment.rep0"),
+    ]
+    pairs, _result = _pairs(records)
+    assert len(pairs) == 1
+    assert pairs[0].ratio == 0.5
+
+
+def test_a_failed_timer_clamp_does_not_throw_away_the_rest_of_the_cell():
+    """A per-cell gate is not automatically fatal, and this one says so itself.
+
+    `timer_clamp` fails whenever idle calibration cannot establish a floor -- an overloaded
+    machine, or the frames instrument simply not being loaded. `session.py` calls that "NOT fatal,
+    and NOT silently zero": blocked time is a subtraction against the floor, so `busy_pct` is null
+    with the reason attached and every other column stands. Excluding the cell would delete
+    keystroke, frame and census readings that were measured correctly, most often on the machines
+    least able to spare a repetition.
+    """
+
+    records = [
+        _cell("r10K.base.rep0", "base"),
+        _keystroke("r10K.base.rep0", 100.0),
+        _gate("timer_clamp", False, cell_id = "r10K.base.rep0"),
+        _cell("r10K.treatment.rep0", "treatment"),
+        _keystroke("r10K.treatment.rep0", 50.0),
+        _gate("timer_clamp", False, cell_id = "r10K.treatment.rep0"),
+    ]
+    assert set(readings_by_arm(records)) == {"base", "treatment"}
+    pairs, _result = _pairs(records)
+    assert len(pairs) == 1
+    assert pairs[0].ratio == 0.5
+
+
+def test_a_failed_run_level_gate_does_not_empty_the_table():
+    """`production_build` and `reportable_tier` carry no cell id. Read as per-cell they would
+    disqualify every cell on both arms and turn a fast-tier A/B into an empty table."""
+
+    records = [
+        _cell("r10K.base.rep0", "base"),
+        _keystroke("r10K.base.rep0", 100.0),
+        _cell("r10K.treatment.rep0", "treatment"),
+        _keystroke("r10K.treatment.rep0", 50.0),
+        _gate("reportable_tier", False),
+        _gate("production_build", False),
+    ]
+    assert set(readings_by_arm(records)) == {"base", "treatment"}
+    pairs, _result = _pairs(records)
+    assert len(pairs) == 1
+
+
+def test_a_retry_that_passed_is_not_disqualified_by_the_dead_attempt_gate():
+    """`latest_attempt_rows` drops a superseded attempt's `cell`, `action` and `window` rows, but
+    NOT its gate row, and `--resume` reuses the cell id. Scoping the gate to the winning attempt is
+    what keeps the retry countable."""
+
+    records = [
+        _cell("r10K.base.rep0", "base"),
+        _keystroke("r10K.base.rep0", 100.0),
+        _cell("r10K.treatment.rep0", "treatment", completed = False, session = OLD_SESSION),
+        _keystroke("r10K.treatment.rep0", 999.0, session = OLD_SESSION),
+        _gate("thread_complete", False, cell_id = "r10K.treatment.rep0", session = OLD_SESSION),
+        _cell("r10K.treatment.rep0", "treatment"),
+        _keystroke("r10K.treatment.rep0", 50.0),
+        _gate("thread_complete", True, cell_id = "r10K.treatment.rep0"),
+    ]
+    assert "treatment" in readings_by_arm(records)
+    pairs, _result = _pairs(records)
+    assert len(pairs) == 1
+    assert pairs[0].ratio == 0.5
 
 
 def test_two_completed_cells_still_pair():

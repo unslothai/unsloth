@@ -1,12 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/**
- * Imports Open WebUI JSON arrays, OpenAI/ShareGPT JSONL, and role/content CSV.
- * JSON records stream individually so large exports never become one JS string.
- */
+/** Imports Studio chat backups, Open WebUI JSON arrays, OpenAI/ShareGPT JSONL, and role/content
+ *  CSV. JSON records stream individually so large exports never become one JS string. */
 
-import { notifyChatHistoryUpdated } from "../api/chat-api";
+import {
+  ChatThreadWriteError,
+  listChatProjects,
+  notifyChatHistoryUpdated,
+  saveChatProject,
+} from "../api/chat-api";
 import type { MessageRecord, ParsedConversation, ThreadRecord } from "../types";
 import {
   deleteStoredChatThreads,
@@ -25,6 +28,15 @@ import {
   isOpenWebUIRecord,
   openWebUIRecordToConversation,
 } from "./openwebui-import";
+import {
+  isOpenAIMessageRecord,
+  messageJsonlConversationRecord,
+} from "./ndjson";
+import {
+  isStudioChatBackup,
+  studioBackupProjects,
+  studioBackupToConversations,
+} from "./studio-backup-import";
 
 /** CSV has no record framing to stream on, so it is still read whole. */
 const CSV_MAX_BYTES = 64 * 1024 * 1024;
@@ -35,12 +47,9 @@ const NATIVE_CHUNK_BYTES = 8 * 1024 * 1024;
 /** Limit concurrent writes for exports that may contain thousands of chats. */
 const WRITE_CONCURRENCY = 6;
 
-/**
- * Report progress at least this often by bytes as well as by conversations. A
- * count-only cadence leaves the toast reading "0 so far (0%)" for the entire
- * read of an export made of a few very large chats, which is the case the
- * progress toast exists for.
- */
+/** Report progress at least this often by bytes as well as by conversations. A count-only
+ *  cadence leaves the toast reading "0 so far (0%)" for the entire read of an export made of
+ *  a few very large chats, which is the case the toast exists for. */
 const PROGRESS_BYTES = 4 * 1024 * 1024;
 
 export interface ImportProgress {
@@ -54,6 +63,8 @@ export interface ImportProgress {
 
 export interface ImportOptions {
   onProgress?: (progress: ImportProgress) => void;
+  /** Each chat saved, by its row id (a comparison's pair id), so a caller can file it. */
+  onSaved?: (rowId: string) => void;
 }
 
 export interface ImportResult {
@@ -74,12 +85,12 @@ async function* nativeBytes(handle: {
     const bytes = await readNativeChatImportChunk(
       handle.token,
       offset,
-      // Never past the size the picker recorded: bytes appended to a file that
-      // is still being written are not part of the export that was chosen.
+      // Never past the size the picker recorded: bytes appended to a file still being written are not
+      // part of the export that was chosen.
       Math.min(NATIVE_CHUNK_BYTES, handle.size - offset),
     );
-    // The picker recorded the size, so a short read means the file shrank since
-    // then. Stopping quietly would pass a partial export off as the whole one.
+    // The picker recorded the size, so a short read means the file shrank since then. Stopping
+    // quietly would pass a partial export off as the whole one.
     if (bytes.byteLength === 0) {
       throw new Error(
         `${handle.name} ended after ${offset} of ${handle.size} bytes; it changed after it was picked.`,
@@ -99,28 +110,49 @@ export function nativeImportSource(handle: {
   return {
     name: handle.name,
     size: handle.size,
-    // Decoding is fatal here because the native reader it replaced rejected
-    // invalid UTF-8 outright rather than saving a chat full of U+FFFD.
+    // Decoding is fatal here because the native reader it replaced rejected invalid UTF-8 outright
+    // rather than saving a chat full of U+FFFD.
     chunks: () => decodeTextChunks(nativeBytes(handle), true),
   };
 }
 
 // Record conversion
 
-// role:"tool" results are absorbed into the preceding assistant tool-call
-// part's `result` field rather than becoming separate records.
+// role:"tool" results are absorbed into the preceding assistant tool-call part's `result` field
+// rather than becoming separate records.
+function oaiContentToParts(raw: unknown): unknown[] {
+  if (!Array.isArray(raw)) {
+    return typeof raw === "string" && raw.trim()
+      ? [{ type: "text", text: raw }]
+      : [];
+  }
+
+  return raw.flatMap((value): unknown[] => {
+    if (typeof value !== "object" || value === null) return [];
+    const part = value as Record<string, unknown>;
+    if (part.type === "text" && typeof part.text === "string") {
+      return [{ type: "text", text: part.text }];
+    }
+    if (part.type === "image_url") {
+      const imageUrl =
+        typeof part.image_url === "object" && part.image_url !== null
+          ? (part.image_url as Record<string, unknown>).url
+          : undefined;
+      return typeof imageUrl === "string" && imageUrl
+        ? [{ type: "image", image: imageUrl }]
+        : [];
+    }
+    return [];
+  });
+}
+
 function oaiMessagesToRecords(
   oaiMsgs: unknown[],
   threadId: string,
   baseTs: number,
 ): MessageRecord[] {
   const toolResults = new Map<string, string>();
-  for (const m of oaiMsgs) {
-    const msg = m as Record<string, unknown>;
-    if (msg.role === "tool" && typeof msg.tool_call_id === "string") {
-      toolResults.set(msg.tool_call_id, typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content ?? ""));
-    }
-  }
+  const pending: Array<{ turn: number; part: { toolCallId: string; result?: string } }> = [];
 
   const records: MessageRecord[] = [];
   let prevId: string | null = null;
@@ -129,17 +161,28 @@ function oaiMessagesToRecords(
   for (const m of oaiMsgs) {
     const msg = m as Record<string, unknown>;
     const role = msg.role as string;
-    if (role === "tool") continue;
+    if (role === "tool") {
+      if (typeof msg.tool_call_id !== "string") continue;
+      const result = typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content ?? "");
+      let at = pending.length - 1;
+      while (at >= 0 && pending[at].part.toolCallId !== msg.tool_call_id) at--;
+      if (at === -1) {
+        toolResults.set(msg.tool_call_id, result);
+      } else {
+        const { turn } = pending[at];
+        at = pending.findIndex((entry) => entry.turn === turn && entry.part.toolCallId === msg.tool_call_id);
+        pending[at].part.result = result;
+        pending.splice(at, 1);
+      }
+      continue;
+    }
 
     const id = crypto.randomUUID();
 
     let content: unknown[];
 
     if (role === "assistant") {
-      const parts: unknown[] = [];
-      if (typeof msg.content === "string" && msg.content.trim()) {
-        parts.push({ type: "text", text: msg.content });
-      }
+      const parts = oaiContentToParts(msg.content);
       if (Array.isArray(msg.tool_calls)) {
         for (const tc of msg.tool_calls) {
           const tcObj = tc as Record<string, unknown>;
@@ -148,38 +191,23 @@ function oaiMessagesToRecords(
           const name = typeof fn.name === "string" ? fn.name : "unknown";
           const argsStr = typeof fn.arguments === "string" ? fn.arguments : "{}";
           let args: unknown = {};
-          // _raw matches what the stream adapter and the backend keep for
-          // arguments the model did not emit as valid JSON.
+          // _raw matches what the stream adapter and the backend keep for arguments the model did not
+          // emit as valid JSON.
           try { args = JSON.parse(argsStr); } catch { args = { _raw: argsStr }; }
-          const result = toolResults.get(tcId);
-          parts.push({
+          const part = {
             type: "tool-call",
             toolCallId: tcId,
             toolName: name,
             args,
             argsText: argsStr,
-            ...(result !== undefined ? { result } : {}),
-          });
+          };
+          parts.push(part);
+          pending.push({ turn: idx, part });
         }
       }
       content = parts;
     } else {
-      const raw = msg.content;
-      if (Array.isArray(raw)) {
-        content = raw.flatMap((p): unknown[] => {
-          const part = p as Record<string, unknown>;
-          if (part.type === "text" && typeof part.text === "string") {
-            return [{ type: "text", text: part.text }];
-          }
-          if (part.type === "image_url") {
-            const iu = (part.image_url as Record<string, unknown>) ?? {};
-            return [{ type: "image", image: typeof iu.url === "string" ? iu.url : "" }];
-          }
-          return [];
-        });
-      } else {
-        content = typeof raw === "string" && raw.trim() ? [{ type: "text", text: raw }] : [];
-      }
+      content = oaiContentToParts(msg.content);
     }
 
     if (content.length === 0) continue;
@@ -188,7 +216,7 @@ function oaiMessagesToRecords(
       id,
       threadId,
       parentId: prevId,
-      role: role as MessageRecord["role"],
+      role: (role === "developer" ? "system" : role) as MessageRecord["role"],
       content: content as MessageRecord["content"],
       createdAt: baseTs + idx,
     });
@@ -196,8 +224,21 @@ function oaiMessagesToRecords(
     idx++;
   }
 
+  for (const { part } of pending) {
+    const result = toolResults.get(part.toolCallId);
+    if (result !== undefined) part.result = result;
+  }
+
   return records;
 }
+
+const SHAREGPT_ROLES = new Map<string, MessageRecord["role"]>([
+  ["human", "user"],
+  ["user", "user"],
+  ["gpt", "assistant"],
+  ["assistant", "assistant"],
+  ["system", "system"],
+]);
 
 function sharegptToRecords(
   conversations: unknown[],
@@ -212,7 +253,7 @@ function sharegptToRecords(
     const from = typeof conv.from === "string" ? conv.from : "";
     const value = typeof conv.value === "string" ? conv.value : "";
     if (!value.trim()) continue;
-    const role: MessageRecord["role"] = from === "human" ? "user" : from === "system" ? "system" : "assistant";
+    const role = SHAREGPT_ROLES.get(from.trim().toLowerCase()) ?? "assistant";
     const id = crypto.randomUUID();
     records.push({
       id,
@@ -229,8 +270,7 @@ function sharegptToRecords(
 }
 
 function csvToRecords(csvText: string, threadId: string, baseTs: number): MessageRecord[] {
-  // parseCsv handles quoted newlines, so multi-line message content
-  // round-trips from the exporter.
+  // parseCsv handles quoted newlines, so multi-line message content round-trips from the exporter.
   const rows = parseCsv(csvText).slice(1);
   const records: MessageRecord[] = [];
   let prevId: string | null = null;
@@ -268,8 +308,7 @@ export function recordToConversation(
   if (typeof record !== "object" || record === null) return null;
   const obj = record as Record<string, unknown>;
 
-  // Fresh ID: reusing the exported thread_id would clobber an existing
-  // thread on import.
+  // Fresh ID: reusing the exported thread_id would clobber an existing thread on import.
   const threadId = crypto.randomUUID();
   const title = typeof obj.title === "string" ? obj.title : fallbackTitle;
   const baseTs = typeof obj.created_at === "number" ? obj.created_at : Date.now();
@@ -298,6 +337,7 @@ export function parseImportText(
   }
 
   const results: ParsedConversation[] = [];
+  const messageRecords: Record<string, unknown>[] = [];
   let index = 0;
   for (const line of text.split(/\r?\n/)) {
     if (!line.trim()) continue;
@@ -307,8 +347,21 @@ export function parseImportText(
     } catch {
       continue;
     }
-    const parsed = recordToConversation(record, `${basename} ${index + 1}`);
     index++;
+    if (isStudioChatBackup(record)) {
+      results.push(...studioBackupToConversations(record, basename));
+      continue;
+    }
+    if (isOpenAIMessageRecord(record)) {
+      messageRecords.push(record);
+      continue;
+    }
+    const parsed = recordToConversation(record, `${basename} ${index}`);
+    if (parsed) results.push(parsed);
+  }
+  const messageConversation = messageJsonlConversationRecord(messageRecords);
+  if (messageConversation) {
+    const parsed = recordToConversation(messageConversation, basename);
     if (parsed) results.push(parsed);
   }
   return results;
@@ -318,31 +371,72 @@ export function parseImportText(
 
 async function writeConversation(
   conversation: ParsedConversation,
-  projectId: string | null,
+  projectId: string | null | undefined,
 ): Promise<void> {
   const { title, threadId, messages } = conversation;
   const thread: ThreadRecord = {
     id: threadId,
     title,
     modelType: "base",
-    projectId: projectId ?? null,
     archived: conversation.archived ?? false,
     createdAt: messages[0]?.createdAt ?? conversation.createdAt ?? Date.now(),
+    ...conversation.thread,
+    // undefined is "the caller did not choose", which is the only case where the backup's own
+    // grouping decides. null is a choice: the projects page offers Recents as a destination and
+    // says so in its toast, so a backup must not quietly file the chats under projects instead.
+    projectId:
+      projectId === undefined
+        ? (conversation.thread?.projectId ?? null)
+        : projectId,
   };
-  await saveStoredChatThread(thread);
+  try {
+    await saveStoredChatThread(thread);
+  } catch (error) {
+    // A settings snapshot is the one field a backup can carry that this build may not accept:
+    // the thread endpoint validates it strictly, so one knob added by a newer Studio fails the
+    // whole write. The chat matters more than its settings, so drop them and try once more.
+    // Only for a rejection, though: a timeout or a 5xx is not the snapshot's fault and dropping
+    // it would lose the user's temperature and seed to an unrelated failure, silently, while
+    // reporting the chat imported.
+    const { settings, ...withoutSettings } = thread;
+    const rejected =
+      error instanceof ChatThreadWriteError && error.status === 422;
+    if (!rejected || settings === undefined || settings === null) throw error;
+    await saveStoredChatThread(withoutSettings);
+  }
   try {
     await syncStoredChatMessages(threadId, messages, { pruneMissing: false });
   } catch (error) {
-    // The thread row is already in the sidebar. Left behind it is a blank chat
-    // the user has to delete by hand, and a retry adds another one.
+    // The thread row is already in the sidebar. Left behind it is a blank chat the user has to
+    // delete by hand, and a retry adds another one.
     await deleteStoredChatThreads([threadId]).catch(() => {});
     throw error;
   }
 }
 
+async function restoreBackupProjects(
+  backup: Record<string, unknown>,
+): Promise<Set<string>> {
+  const projects = studioBackupProjects(backup);
+  if (projects.length === 0) return new Set();
+  const known = new Set(
+    (await listChatProjects({ includeArchived: true })).map(({ id }) => id),
+  );
+  for (const project of projects) {
+    if (known.has(project.id)) continue;
+    try {
+      await saveChatProject(project);
+      known.add(project.id);
+    } catch {
+      // Its chats still import, ungrouped.
+    }
+  }
+  return known;
+}
+
 export async function importConversationsFromSource(
   source: ImportSource,
-  projectId: string | null = null,
+  projectId?: string | null,
   options: ImportOptions = {},
 ): Promise<ImportResult> {
   const basename = source.name.replace(/\.[^.]+$/, "");
@@ -353,12 +447,15 @@ export async function importConversationsFromSource(
     totalBytes: source.size,
   };
   const report = () => options.onProgress?.({ ...progress });
+  const saved = (conversation: { threadId: string; thread?: { pairId?: string } }) =>
+    options.onSaved?.(conversation.thread?.pairId ?? conversation.threadId);
 
   if (/\.csv$/i.test(source.name)) {
     const text = await readAllText(source, CSV_MAX_BYTES, "CSV");
     for (const conversation of parseImportText(text, source.name)) {
       await writeConversation(conversation, projectId);
       progress.imported++;
+      saved(conversation);
     }
     if (progress.imported > 0) notifyChatHistoryUpdated();
     report();
@@ -366,6 +463,7 @@ export async function importConversationsFromSource(
   }
 
   const inFlight = new Set<Promise<void>>();
+  const messageRecords: Record<string, unknown>[] = [];
   let index = 0;
   let failure: unknown;
   let reportedBytes = 0;
@@ -384,33 +482,64 @@ export async function importConversationsFromSource(
         progress.failed++;
       },
     })) {
-      const conversation = recordToConversation(record, `${basename} ${index + 1}`);
       index++;
-      if (!conversation) continue;
+      if (isOpenAIMessageRecord(record)) {
+        messageRecords.push(record);
+        continue;
+      }
+      const conversations = isStudioChatBackup(record)
+        ? studioBackupToConversations(
+            record,
+            basename,
+            projectId === undefined
+              ? await restoreBackupProjects(record).catch(() => new Set<string>())
+              : undefined,
+          )
+        : [recordToConversation(record, `${basename} ${index}`)];
 
-      const task = writeConversation(conversation, projectId)
-        .then(() => {
-          progress.imported++;
-        })
-        .catch(() => {
-          // Keep importing after one conversation fails to save.
-          progress.failed++;
-        })
-        .finally(() => {
-          inFlight.delete(task);
-          if ((progress.imported + progress.failed) % 25 === 0) report();
-        });
-      inFlight.add(task);
-      if (inFlight.size >= WRITE_CONCURRENCY) await Promise.race(inFlight);
+      for (const conversation of conversations) {
+        if (!conversation) continue;
+        const task = writeConversation(conversation, projectId)
+          .then(() => {
+            progress.imported++;
+            saved(conversation);
+          })
+          .catch(() => {
+            // Keep importing after one conversation fails to save.
+            progress.failed++;
+          })
+          .finally(() => {
+            inFlight.delete(task);
+            if ((progress.imported + progress.failed) % 25 === 0) report();
+          });
+        inFlight.add(task);
+        if (inFlight.size >= WRITE_CONCURRENCY) await Promise.race(inFlight);
+      }
     }
   } catch (error) {
     // A read that dies partway still leaves earlier chats saved.
     failure = error;
   }
 
+  if (failure === undefined) {
+    const messageConversation = messageJsonlConversationRecord(messageRecords);
+    const conversation = messageConversation
+      ? recordToConversation(messageConversation, basename)
+      : null;
+    if (conversation) {
+      try {
+        await writeConversation(conversation, projectId);
+        progress.imported++;
+        saved(conversation);
+      } catch {
+        progress.failed++;
+      }
+    }
+  }
+
   await Promise.allSettled(inFlight);
-  // Those chats have to reach the sidebar even when the read failed, or the UI
-  // stays empty until a reload and a retry duplicates every one of them.
+  // Those chats have to reach the sidebar even when the read failed, or the UI stays empty until
+  // a reload and a retry duplicates every one of them.
   if (progress.imported > 0) notifyChatHistoryUpdated();
   report();
 
@@ -427,7 +556,7 @@ export async function importConversationsFromSource(
 
 export async function importConversationsFromFile(
   file: File,
-  projectId: string | null = null,
+  projectId?: string | null,
   options: ImportOptions = {},
 ): Promise<ImportResult> {
   return importConversationsFromSource(

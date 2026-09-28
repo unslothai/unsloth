@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useChatRuntimeStore } from "../stores/chat-runtime-store";
+import type { useChatRuntimeStore } from "../stores/chat-runtime-store";
 
 const QUEUED_SETTING_KEYS = [
+  "activeGgufVariant",
   "supportsTools",
   "supportsReasoning",
   "reasoningAlwaysOn",
@@ -16,6 +17,7 @@ const QUEUED_SETTING_KEYS = [
   "preserveThinking",
   "toolsEnabled",
   "codeToolsEnabled",
+  "codeToolsDeclinedUnderFullAccess",
   "imageToolsEnabled",
   "artifactsEnabled",
   "mcpEnabledForChat",
@@ -32,11 +34,17 @@ const QUEUED_SETTING_KEYS = [
   "ragTopK",
   "ragAutoInject",
   "ragAutoInjectMinScore",
-  "ggufContextLength",
+  "loadedContextLength",
+  // Beside the window it describes: selecting an external model clears the live residency
+  // fields without unloading, and a queued local turn is still served by the model it was
+  // queued against. Without this an Ollama or native-path GGUF, which reports no quant and
+  // no .gguf suffix, reads as non-GGUF and loses its compaction policy.
+  "loadedIsGguf",
   "autoHealToolCalls",
   "nudgeToolCalls",
   "maxToolCallsPerMessage",
   "toolCallTimeout",
+  "autoCompactEnabled",
 ] as const;
 
 type ChatRuntimeState = ReturnType<typeof useChatRuntimeStore.getState>;
@@ -59,6 +67,7 @@ const pendingSettings: PendingSettings[] = [];
 
 export function snapshotQueuedChatRunSettings(
   state: ChatRuntimeState,
+  options?: { deferModelResolution?: boolean },
 ): QueuedChatRunSettings {
   const snapshot = {
     params: { ...state.params },
@@ -66,7 +75,18 @@ export function snapshotQueuedChatRunSettings(
   for (const key of QUEUED_SETTING_KEYS) {
     Object.assign(snapshot, { [key]: state[key] });
   }
+  if (options?.deferModelResolution) {
+    snapshot.params.checkpoint = "";
+    snapshot.activeGgufVariant = null;
+  }
   return snapshot;
+}
+
+/** A queued send may only fill in the model of a row that was written without one. */
+export function shouldPersistResolvedQueuedModel(
+  storedThread: { modelId?: string | null } | null | undefined,
+): boolean {
+  return Boolean(storedThread && !storedThread.modelId);
 }
 
 export function registerQueuedChatRunSettings(
@@ -129,14 +149,13 @@ export function consumeQueuedChatRunSettings(
   const index = threadId
     ? pendingSettings.findIndex((entry) => entry.threadIds.has(threadId))
     : -1;
-  // Never consume another chat's snapshot as a fallback. Multiple queued
-  // chats can start concurrently, so a "sole pending entry" is not proof that
-  // it belongs to this adapter run.
+  // Never consume another chat's snapshot as a fallback. Multiple queued chats can start
+  // concurrently, so a "sole pending entry" is not proof that it belongs to this adapter run.
   if (index < 0) {
     return null;
   }
-  // Tool calls can invoke the adapter multiple times for one assistant run.
-  // Keep the snapshot available until the owning prompt queue observes that
-  // the whole run is idle, then discard it through its registration id.
+  // Tool calls can invoke the adapter multiple times for one assistant run. Keep the snapshot
+  // available until the owning prompt queue observes that the whole run is idle, then discard it
+  // through its registration id.
   return pendingSettings[index].settings;
 }

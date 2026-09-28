@@ -120,8 +120,6 @@ def test_the_fake_output_really_does_reproduce_the_trap():
 
 
 # --------------------------------------------------------------------------
-# dropping the spare layers
-# --------------------------------------------------------------------------
 def test_the_spare_layers_leave_the_mapping_not_just_the_attribute():
     """A consumer that walks the object as a mapping is the one that matters."""
     out = FakeModelOutput(logits = "L", hidden_states = ("a", "b", "c"))

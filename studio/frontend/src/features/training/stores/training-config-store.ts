@@ -81,9 +81,18 @@ let _trainOnCompletionsManuallySet = false;
 
 let _trainingMethodEditGeneration = 0;
 let _modelDefaultsEditGeneration = 0;
+let _targetModulesEditGeneration = 0;
+const LORA_PARAM_KEYS = ["loraRank", "loraAlpha", "loraVariant"] as const;
+type LoraParamKey = (typeof LORA_PARAM_KEYS)[number];
+const _loraParamEditGenerations: Record<LoraParamKey, number> = {
+  loraRank: 0,
+  loraAlpha: 0,
+  loraVariant: 0,
+};
 let _modelDefaultsEditBaseline: {
   modelName: string;
   editGeneration: number;
+  loraParamEditGenerations: Record<LoraParamKey, number>;
 } | null = null;
 
 function canReapplyModelDefaults(modelName: string): boolean {
@@ -152,12 +161,24 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         const requestState = get();
         const requestedModelDefaultsEditGeneration =
           _modelDefaultsEditGeneration;
+        const requestedTargetModulesEditGeneration =
+          _targetModulesEditGeneration;
         if (applyTrainingDefaults) {
           _modelDefaultsEditBaseline = {
             modelName,
             editGeneration: requestedModelDefaultsEditGeneration,
+            loraParamEditGenerations: { ..._loraParamEditGenerations },
           };
         }
+        // A cache restart re-requests the same model, so it must measure against the
+        // original selection's snapshot or it forgets the edits made since. False after
+        // a reload, where the provenance came off disk and nothing here has a claim on it.
+        const requestedSelectionOwnsLoraSnapshot =
+          _modelDefaultsEditBaseline?.modelName === modelName;
+        const requestedLoraParamEditGenerations =
+          requestedSelectionOwnsLoraSnapshot && _modelDefaultsEditBaseline
+            ? { ..._modelDefaultsEditBaseline.loraParamEditGenerations }
+            : { ..._loraParamEditGenerations };
         const requestedKnownCached =
           requestState.selectedModel === modelName &&
           requestState.modelKnownCached;
@@ -199,6 +220,12 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             if (!requestMatchesSelection()) return;
 
             const shouldApplyTrainingDefaults = canApplyTrainingDefaults();
+            const shouldApplyCptTargetDefaults =
+              applyTrainingDefaults &&
+              !shouldApplyTrainingDefaults &&
+              get().trainingMethod === "cpt" &&
+              _targetModulesEditGeneration ===
+                requestedTargetModulesEditGeneration;
             if (shouldApplyTrainingDefaults) {
               _trainOnCompletionsManuallySet = false;
             }
@@ -285,15 +312,27 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
                 : null;
 
             // Preserve CPT hyperparams: YAML adapter defaults are tuned for standard LoRA.
+            const cptTargetModules =
+              modelDefaultsPatch.targetModules ?? get().targetModules;
+            const cptDefaultsPatch = getCptModelDefaultsPatch(cptTargetModules);
             const cptOverrides =
               shouldApplyTrainingDefaults && get().trainingMethod === "cpt"
-                ? getCptModelDefaultsPatch()
+                ? cptDefaultsPatch
                 : {};
+            const cptTargetOverrides = shouldApplyCptTargetDefaults
+              ? { targetModules: cptDefaultsPatch.targetModules }
+              : {};
+            // Only trainOnCompletions: CPT's forced adapter values are not the model's.
+            // Targets are pinned to what cptDefaultsPatch resolved FROM, so the summary's
+            // resolveCptTargetModules(baseline) reproduces the live set even when the model
+            // config carries none and cptTargetModules falls back to live state.
+            const cptBaselineOverride = {
+              trainOnCompletions: cptDefaultsPatch.trainOnCompletions,
+              targetModules: [...cptTargetModules],
+            };
             const modelDefaultsBaseline = {
               ...modelDefaultsPatch,
-              ...(get().trainingMethod === "cpt"
-                ? getCptModelDefaultsPatch()
-                : {}),
+              ...(get().trainingMethod === "cpt" ? cptBaselineOverride : {}),
             };
             const advancedSettingsBaseline =
               get().advancedSettingsBaseline ?? modelDefaultsBaseline;
@@ -314,9 +353,53 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
                   }
                 : {};
 
+            // Per field, so editing the rank does not freeze alpha and variant.
+            const loraParamUnedited = (key: LoraParamKey): boolean =>
+              _loraParamEditGenerations[key] ===
+              requestedLoraParamEditGenerations[key];
+            const inCpt = get().trainingMethod === "cpt";
+            // Gated separately, or a target edit strands the LoRA slots.
+            const cptTargetProvenanceRefresh =
+              inCpt && modelDefaultsPatch.targetModules !== undefined
+                ? {
+                    targetModulesBeforeCpt: [
+                      ...modelDefaultsPatch.targetModules,
+                    ],
+                  }
+                : {};
+            const cptLoraProvenanceRefresh = inCpt
+              ? {
+                  ...(loraParamUnedited("loraRank") &&
+                  modelDefaultsPatch.loraRank !== undefined
+                    ? { loraRankBeforeCpt: modelDefaultsPatch.loraRank }
+                    : {}),
+                  ...(loraParamUnedited("loraAlpha") &&
+                  modelDefaultsPatch.loraAlpha !== undefined
+                    ? { loraAlphaBeforeCpt: modelDefaultsPatch.loraAlpha }
+                    : {}),
+                  ...(loraParamUnedited("loraVariant") &&
+                  modelDefaultsPatch.loraVariant !== undefined
+                    ? { loraVariantBeforeCpt: modelDefaultsPatch.loraVariant }
+                    : {}),
+                }
+              : {};
+            const cptProvenanceRefresh = {
+              ...cptTargetProvenanceRefresh,
+              ...cptLoraProvenanceRefresh,
+            };
+            const cptFallbackProvenanceRefresh = {
+              ...(shouldApplyCptTargetDefaults
+                ? cptTargetProvenanceRefresh
+                : {}),
+              ...(requestedSelectionOwnsLoraSnapshot
+                ? cptLoraProvenanceRefresh
+                : {}),
+            };
+
             set({
               ...patch,
               ...cptOverrides,
+              ...cptTargetOverrides,
               ...deferredCompletionDefault,
               ...(shouldApplyTrainingDefaults
                 ? {
@@ -324,12 +407,25 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
                       ...get().trainingMethodProvenance,
                       learningRateManuallySet: false,
                       modelAdapterLearningRate,
+                      ...cptProvenanceRefresh,
                     },
                   }
-                : {}),
+                : Object.keys(cptFallbackProvenanceRefresh).length > 0
+                  ? {
+                      trainingMethodProvenance: {
+                        ...get().trainingMethodProvenance,
+                        ...cptFallbackProvenanceRefresh,
+                      },
+                    }
+                  : {}),
               advancedSettingsBaseline: shouldApplyTrainingDefaults
                 ? modelDefaultsBaseline
-                : advancedSettingsBaseline,
+                : shouldApplyCptTargetDefaults
+                  ? {
+                      ...advancedSettingsBaseline,
+                      targetModules: [...cptTargetModules],
+                    }
+                  : advancedSettingsBaseline,
               modelType: inferredModelType,
               isVisionModel: modelDetails.is_vision,
               isEmbeddingModel: isEmbedding,
@@ -1202,10 +1298,19 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         setOptimizerType: (optimizerType) => setUserEdit({ optimizerType }),
         setLrSchedulerType: (lrSchedulerType) =>
           setUserEdit({ lrSchedulerType }),
-        setLoraRank: (loraRank) => setUserEdit({ loraRank }),
-        setLoraAlpha: (loraAlpha) => setUserEdit({ loraAlpha }),
+        setLoraRank: (loraRank) => {
+          _loraParamEditGenerations.loraRank += 1;
+          setUserEdit({ loraRank });
+        },
+        setLoraAlpha: (loraAlpha) => {
+          _loraParamEditGenerations.loraAlpha += 1;
+          setUserEdit({ loraAlpha });
+        },
         setLoraDropout: (loraDropout) => setUserEdit({ loraDropout }),
-        setLoraVariant: (loraVariant) => setUserEdit({ loraVariant }),
+        setLoraVariant: (loraVariant) => {
+          _loraParamEditGenerations.loraVariant += 1;
+          setUserEdit({ loraVariant });
+        },
         setBatchSize: (batchSize) => setUserEdit({ batchSize }),
         setGradientAccumulation: (gradientAccumulation) =>
           setUserEdit({ gradientAccumulation }),
@@ -1264,11 +1369,18 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           setUserEdit({ finetuneAttentionModules }),
         setFinetuneMLPModules: (finetuneMLPModules) =>
           setUserEdit({ finetuneMLPModules }),
-        setTargetModules: (targetModules) => setUserEdit({ targetModules }),
+        setTargetModules: (targetModules) => {
+          _targetModulesEditGeneration += 1;
+          setUserEdit({ targetModules });
+        },
         setS3Config: (s3Config) => setUserEdit({ s3Config }),
         reset: () => {
           trainingDatasetCacheRejections.reset();
           _trainOnCompletionsManuallySet = false;
+          _targetModulesEditGeneration += 1;
+          for (const key of LORA_PARAM_KEYS) {
+            _loraParamEditGenerations[key] += 1;
+          }
           _modelDefaultsEditBaseline = null;
           setUserEdit(initialTrainingConfigState);
         },
@@ -1284,6 +1396,12 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         },
         applyConfigPatch: (config: BackendModelConfig) => {
           const patch = mapBackendModelConfigToTrainingPatch(config);
+          if (patch.targetModules !== undefined) {
+            _targetModulesEditGeneration += 1;
+          }
+          for (const key of LORA_PARAM_KEYS) {
+            if (patch[key] !== undefined) _loraParamEditGenerations[key] += 1;
+          }
           setUserEdit((state) => ({
             ...patch,
             ...(patch.trainOnCompletions !== undefined

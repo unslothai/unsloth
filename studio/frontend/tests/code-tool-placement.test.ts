@@ -3,33 +3,37 @@
 
 // Where the Code pill runs code.
 //
-// Before Studio's tool loop reached the general external providers, only
+// Before Unsloth's tool loop reached the general external providers, only
 // openai_codex carried studio_tools, so `codeToolsEnabled` on an OpenAI,
 // Anthropic or Gemini connection fell through to the hosted branch and sent
 // `code_execution` -- the model's code ran in the PROVIDER's sandbox. Now that
-// those providers take the Studio branch, the same stored pill would send
+// those providers take the Unsloth branch, the same stored pill would send
 // ["python", "terminal"] and run the model's code on the USER's machine. The
 // toggle is persisted (unsloth_chat_code_tools_enabled), so nobody re-consents:
 // the trust boundary moves during an update, with nothing in the composer or
 // the stream saying so.
 //
 // The rule this file pins: a connection that has its own sandbox keeps it.
-// Studio's local python/terminal are for connections that have none.
+// Unsloth's local python/terminal are for connections that have none.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 import {
   codeToolCanRun,
   selectCodeToolNames,
 } from "../src/features/chat/api/code-tool-placement.ts";
+import { readSrc, registerBundlerResolver } from "./helpers/kit.ts";
 
-const SOURCE = readFileSync(
-  fileURLToPath(new URL("../src/features/chat/api/chat-adapter.ts", import.meta.url)),
-  "utf8",
-);
+registerBundlerResolver();
+const {
+  providerHostsCodeExecution,
+  providerSupportsBuiltinCodeExecution,
+} = await import("../src/features/chat/provider-capabilities.ts");
+
+const SOURCE = readSrc("features/chat/api/chat-adapter.ts");
+const COMPOSER_SOURCE = readSrc("features/chat/shared-composer.tsx");
+const CHAT_PAGE_SOURCE = readSrc("features/chat/chat-page.tsx");
 
 // ── the rule itself ────────────────────────────────────────────────
 
@@ -58,7 +62,20 @@ test("a provider with a sandbox its MODEL cannot use runs nothing, not local cod
   );
 });
 
-test("a provider with no sandbox uses Studio's own tools", () => {
+test("unsupported models on managed custom Responses never fall back to local code", () => {
+  const baseUrl = "https://api.openai.com/v1";
+  const hosted = providerSupportsBuiltinCodeExecution("custom", "gpt-4.1", baseUrl, "responses");
+  const providerHosted = providerHostsCodeExecution("custom", baseUrl, "responses");
+  assert.equal(codeToolCanRun({ hostedCodeExecutionForThisTurn: hosted,
+    providerHostsCodeExecution: providerHosted, supportsStudioTools: true }), false);
+  assert.deepEqual(selectCodeToolNames({ codeToolsEnabled: true,
+    hostedCodeExecutionForThisTurn: hosted, providerHostsCodeExecution: providerHosted }),
+  { local: [], hosted: [] });
+  assert.match(COMPOSER_SOURCE, /providerHostsCodeExecution\(\s*selectedExternalProvider\?\.providerType,\s*selectedExternalProvider\?\.baseUrl,\s*selectedExternalProvider\?\.apiType,/);
+  assert.match(CHAT_PAGE_SOURCE, /providerHostsCodeExecution\(\s*provider\?\.providerType,\s*provider\?\.baseUrl,\s*provider\?\.apiType,/);
+});
+
+test("a provider with no sandbox uses Unsloth's own tools", () => {
   // llama.cpp / vLLM / Ollama / custom, and the cloud providers that ship no
   // code sandbox. Local execution is the only meaning the pill can have there,
   // it is what openai_codex has always done, and it paints tool cards under the
@@ -107,13 +124,13 @@ test("the pill being off asks for nothing on either side", () => {
 // encryption key, so the structural property is read out of the source.
 function studioToolsBranch(): string {
   const start = SOURCE.indexOf("...(ragEnabled || projectRagEnabled\n");
-  assert.ok(start > 0, "the Studio-tools enabled_tools list moved");
+  assert.ok(start > 0, "the Unsloth-tools enabled_tools list moved");
   const end = SOURCE.indexOf("mcp_enabled:", start);
-  assert.ok(end > start, "the Studio-tools branch moved");
+  assert.ok(end > start, "the Unsloth-tools branch moved");
   return SOURCE.slice(start, end);
 }
 
-test("the Studio branch never hardcodes local code tools", () => {
+test("the Unsloth branch never hardcodes local code tools", () => {
   const branch = studioToolsBranch();
 
   assert.doesNotMatch(
@@ -127,9 +144,9 @@ test("the Studio branch never hardcodes local code tools", () => {
   assert.match(branch, /\.\.\.hostedCodeToolsForThisTurn/);
 });
 
-test("the branch is only taken when a tool Studio itself can run is on", () => {
+test("the branch is only taken when a tool Unsloth itself can run is on", () => {
   // Code alone on a hosted-sandbox provider is a hosted request: it must reach
-  // the hosted branch, which sends no permission_mode. Sending the Studio body
+  // the hosted branch, which sends no permission_mode. Sending the Unsloth body
   // for it would ask the backend to confirm tool calls on a passthrough request,
   // which routes/inference.py answers with a 400.
   const gate = SOURCE.slice(
@@ -137,20 +154,32 @@ test("the branch is only taken when a tool Studio itself can run is on", () => {
     SOURCE.indexOf("enable_tools: true", SOURCE.indexOf("...(supportsStudioToolsForThisTurn &&")),
   );
 
-  assert.ok(gate.length > 0, "the Studio-tools gate moved");
+  assert.ok(gate.length > 0, "the Unsloth-tools gate moved");
   assert.doesNotMatch(
     gate,
     /^\s*codeToolsEnabled \|\|$/m,
-    "a bare codeToolsEnabled sends the Studio body for a hosted-only turn",
+    "a bare codeToolsEnabled sends the Unsloth body for a hosted-only turn",
   );
   assert.match(gate, /studioLocalCodeTools\.length > 0/);
 });
 
+test("response details record Code from the placement, local or hosted", () => {
+  // An external connection with no sandbox (openai_codex, vLLM, ...) sends the local
+  // names, so keying on the hosted flag or a local model reported Code as off.
+  const start = SOURCE.indexOf("const buildResponseDetails = (");
+  const tools = SOURCE.slice(start, SOURCE.indexOf("images:", start));
+  assert.match(tools, /code:\s*hostedCodeToolsForThisTurn\.length > 0 \|\|/);
+  assert.match(
+    tools,
+    /\(supportsStudioToolsForThisTurn &&\s*studioLocalCodeTools\.length > 0\)/,
+  );
+});
+
 // ── Whether the pill is offered at all ─────────────────────────────
 
-// Until Studio's loop reached the general external providers, the composer
+// Until Unsloth's loop reached the general external providers, the composer
 // keyed the Code pill on the hosted flag alone, so a model without the hosted
-// sandbox simply did not offer it. Keying it on the Studio-tools flag instead
+// sandbox simply did not offer it. Keying it on the Unsloth-tools flag instead
 // offered it everywhere, including where the rule above deliberately runs
 // nothing, and the user got a lit toggle that sent enable_tools: false.
 
@@ -176,7 +205,7 @@ test("a model that cannot use its provider's sandbox offers nothing", () => {
   );
 });
 
-test("a connection with no sandbox of its own runs Studio's tools", () => {
+test("a connection with no sandbox of its own runs Unsloth's tools", () => {
   assert.equal(
     codeToolCanRun({
       hostedCodeExecutionForThisTurn: false,

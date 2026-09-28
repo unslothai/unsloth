@@ -230,12 +230,11 @@ function failPreference(
   if (revision !== preferenceRevision || pendingPreference === null) return;
   pendingPreference = null;
   pendingPreferenceShouldPersist = false;
-  // A rejected pick leaves the standing preference untouched, so it is still
-  // serving its own catalog and stays re-pickable; the flag must not move.
-  // A refresh of the preference already in effect is the other case: a
-  // `languagechange` re-resolving `auto` onto a language whose catalog fails
-  // leaves that preference pointing at a locale the app is not showing, which
-  // is exactly the state the retry path needs to see.
+  // A rejected pick leaves the standing preference untouched, so it is still serving its own
+  // catalog and stays re-pickable; the flag must not move. A refresh of the preference already in
+  // effect is the other case: a `languagechange` re-resolving `auto` onto a language whose catalog
+  // fails leaves that preference pointing at a locale the app is not showing, which is exactly the
+  // state the retry path needs to see.
   if (preference === currentPreference && locale !== currentLocale) {
     currentCatalogFailed = true;
   }
@@ -306,12 +305,11 @@ function applyPreference(
   const bounded = new Promise<LocaleChangeResult>((resolve) => {
     const timeout = globalThis.setTimeout(
       () => {
-        // Settle the way a rejection would. The load itself is left alone,
-        // so if it does arrive it still commits over this. Its place in the
-        // in-flight map is not: a load that never settles never clears its own
-        // entry, so leaving it there would hand every later pick of this
-        // language the same dead promise and time out again without ever
-        // asking for the catalog a second time.
+        // Settle the way a rejection would. The load itself is left alone, so if it does arrive it
+        // still commits over this. Its place in the in-flight map is not: a load that never settles
+        // never clears its own entry, so leaving it there would hand every later pick of this
+        // language the same dead promise and time out again without ever asking for the catalog a
+        // second time.
         forgetLocaleLoad(locale, pending);
         if (signal?.aborted) {
           resolve("cancelled");
@@ -355,13 +353,12 @@ function handleStorageEvent(event: StorageEvent): void {
     event.key === null
       ? DEFAULT_LOCALE_PREFERENCE
       : normalizePreference(event.newValue);
-  // Adopted on failure, like hydration and for the same reason: this value is
-  // already the stored truth, written by the tab that made the choice, so a
-  // catalog that will not load here must not leave this tab holding the
-  // preference the user replaced. It would disagree with storage until the next
-  // reload, and the next personalization save would push that stale language
-  // back over the choice. Nothing is written back: storage is where this came
-  // from, and a catalog that failed is not recorded as a choice that worked.
+  // Adopted on failure, like hydration and for the same reason: this value is already the stored
+  // truth, written by the tab that made the choice, so a catalog that will not load here must not
+  // leave this tab holding the preference the user replaced. It would disagree with storage until
+  // the next reload, and the next personalization save would push that stale language back over the
+  // choice. Nothing is written back: storage is where this came from, and a catalog that failed is
+  // not recorded as a choice that worked.
   void applyPreference(
     nextPreference,
     false,
@@ -471,13 +468,12 @@ export function initializeLocale({
     };
     const timeout = globalThis.setTimeout(
       () => {
-        // Same as the selection path: the load itself is left running, so a
-        // late catalog still commits over the fallback, but its place in the
-        // in-flight map goes. A load that never settles never clears its own
-        // entry, and the saved language is exactly the one the user reaches for
-        // next once English appears, so keeping it would hand that pick this
-        // same dead promise and spend the whole selection bound on it without
-        // ever asking for the catalog again.
+        // Same as the selection path: the load itself is left running, so a late catalog still
+        // commits over the fallback, but its place in the in-flight map goes. A load that never
+        // settles never clears its own entry, and the saved language is exactly the one the user
+        // reaches for next once English appears, so keeping it would hand that pick this same dead
+        // promise and spend the whole selection bound on it without ever asking for the catalog
+        // again.
         forgetLocaleLoad(locale, pending);
         commitFallbackLocale(preference, revision);
         finish();

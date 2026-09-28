@@ -42,6 +42,7 @@ const UNSUPPORTED_REASONS: Record<string, TranslationKey> = {
   no_install_dir: "settings.resources.llamaBackend.unsupported.notInstalled",
   custom_path: "settings.resources.llamaBackend.unsupported.customPath",
   unresolved: "settings.resources.llamaBackend.unsupported.unresolved",
+  update_checks_disabled: "settings.resources.llamaBackend.unsupported.updateChecksDisabled",
 };
 
 function LlamaCppPathRow({ onChanged }: { onChanged: () => void }) {
@@ -118,7 +119,7 @@ function LlamaCppPathRow({ onChanged }: { onChanged: () => void }) {
         hint={t("settings.resources.llamaBackend.customPath.hint")}
         className="max-[840px]:flex-col max-[840px]:items-stretch max-[840px]:gap-2"
       >
-        <div className="grid w-[392px] min-w-0 grid-cols-[minmax(0,1fr)_auto_auto] gap-x-2 gap-y-1.5 max-[840px]:w-full">
+        <div className="grid w-[calc(392px*var(--ui-space-scale,1))] min-w-0 grid-cols-[minmax(0,1fr)_auto_auto] gap-x-2 gap-y-1.5 max-[840px]:w-full">
           <Input
             readOnly={!settings?.editable}
             aria-label={t("settings.resources.llamaBackend.customPath.label")}
@@ -231,7 +232,7 @@ export function LlamaBackendSection() {
 
   const job = status?.job;
   const envLocked = status?.envBackend != null;
-  // Null means the marker holds a choice a newer Studio wrote. Show it as
+  // Null means the marker holds a choice a newer Unsloth wrote. Show it as
   // unknown rather than as Automatic, and let it be replaced deliberately.
   const unknownRecorded = status?.backendRequest === null;
   const value = selected ?? status?.backendRequest ?? "unknown";

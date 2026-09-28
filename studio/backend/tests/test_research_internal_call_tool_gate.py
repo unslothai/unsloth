@@ -76,7 +76,11 @@ def _entry_point(monkeypatch, *, policy, opt_out):
     if policy is not None:
         set_tool_policy(policy)
     response = _client(monkeypatch, backend).post(
-        "/chat/completions", json = _research_payload(opt_out)
+        "/chat/completions",
+        json = _research_payload(opt_out),
+        # Unrestricted without the opt-out, so the confirm gate arms and needs a channel.
+        # Research sends enabled_tools: [] and never arms it.
+        headers = {"X-Unsloth-Events": "1"},
     )
     assert response.status_code == 200
     assert "the answer" in response.text
@@ -136,7 +140,7 @@ def test_the_opt_out_changes_nothing_a_default_install_does(monkeypatch, policy)
 def test_json_mode_research_calls_send_llama_server_an_unchanged_body():
     # The JSON-mode phases take the llama-server passthrough, not the loop above, so pin
     # that wire body too: no tools means no tool_choice is forwarded, and Unsloth-only
-    # extensions never leave Studio.
+    # extensions never leave Unsloth.
     from models.inference import ChatCompletionRequest
 
     class _PassthroughBackend:

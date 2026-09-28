@@ -66,9 +66,9 @@ def _working_tensorflow(tmp_path):
     return site
 
 
-# Every variable Transformers reads to pick a backend. `USE_TORCH` belongs here
-# too: `_tf_available` is gated on `USE_TORCH not in ENV_VARS_TRUE_VALUES`, so an
-# inherited `USE_TORCH=1` forces it False whatever is on the path.
+# Every variable Transformers reads to pick a backend.
+# `USE_TORCH` belongs here too: `_tf_available` is gated on `USE_TORCH not in ENV_VARS_TRUE_VALUES`, so an inherited
+# `USE_TORCH=1` forces it False whatever is on the path.
 _BACKEND_ENV = ("USE_TF", "USE_FLAX", "USE_TORCH", "FORCE_TF_AVAILABLE")
 
 
@@ -154,7 +154,7 @@ def _guard_block():
 def test_the_backends_are_opted_out_of_before_transformers_loads():
     block = _guard_block()
     assert block is not None, "the opt-out block is gone"
-    # Run the block rather than grep its source: that tracked the spelling.
+    # Run the block rather than grep its source: grepping only tracked the spelling.
     environ = {}
     _exec_guard({}, environ)
     assert environ.get("USE_TF") == "0"
@@ -254,7 +254,6 @@ def test_the_environment_branch_honours_an_already_imported_backend():
 def test_a_broken_backend_still_loses_when_transformers_came_first(tmp_path):
     """The regression: `_tf_available` was cached True before Unsloth got a say."""
     _needs_unsloth()
-    # `getattr`, because 5.x has no such flag; "TF never loads" still asserts.
     out = _run(
         """
         import transformers
@@ -277,6 +276,7 @@ def test_a_broken_backend_still_loses_when_transformers_came_first(tmp_path):
 
 def test_the_environment_path_still_covers_the_transformers_not_loaded_case(tmp_path):
     _needs_unsloth()
+    # `getattr`, because 5.x has no such flag; "TF never loads" still asserts.
     out = _run(
         """
         import unsloth, os, sys
@@ -322,7 +322,6 @@ def test_an_imported_backend_is_not_opted_out_when_transformers_comes_later(tmp_
     out = _run_env_branch(tmp_path, "import tensorflow", site)
     assert out.returncode == 0, out.stderr[-3000:]
     assert "ENV_USE_TF None" in out.stdout, out.stdout
-    # The backend nobody is using still gets opted out.
     assert "ENV_USE_FLAX 0" in out.stdout, out.stdout
     # Only 4.x has a flag to read, and `_v4_names()` is empty without Transformers.
     if _v4_names().get("_tf_available"):
@@ -342,6 +341,7 @@ def test_a_broken_uninvolved_backend_is_still_opted_out(tmp_path):
     out = _run_env_branch(tmp_path, "", _fake_tensorflow(tmp_path))
     assert out.returncode == 0, out.stderr[-3000:]
     assert "ENV_USE_TF 0" in out.stdout, out.stdout
+    # The backend nobody is using still gets opted out.
     assert "ENV_USE_FLAX 0" in out.stdout, out.stdout
 
 

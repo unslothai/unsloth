@@ -3,7 +3,7 @@
 
 """The action bar is WAITED for, not sampled for once.
 
-WHAT THIS PROTECTS, and it is a liveness property rather than a timing one. Studio mounts the
+WHAT THIS PROTECTS, and it is a liveness property rather than a timing one. Unsloth mounts the
 assistant action bar with `hideWhenRunning` (studio/frontend/src/components/assistant-ui/
 thread.tsx), so while a turn is generating there is no Copy, no Delete and no More anywhere in the
 tree. Four scene actions need one of those controls, and every film schedules them after a
@@ -27,7 +27,7 @@ WHY NODE AND THE REAL SOURCES. `MENU_JS` is the string that ships inside `scene/
 `waitForActionButton` is the function that ships inside `scene/dom.js`; a Python re-implementation
 of either would pass forever while the shipped pair drifted. So node runs both, against a shim of
 the handful of DOM globals they touch, with the ACTION BAR ARRIVING LATE -- which is the one thing
-that cannot be shimmed away, because it is the thing under test. No browser, no Studio, and if
+that cannot be shimmed away, because it is the thing under test. No browser, no Unsloth, and if
 node is missing the test SKIPS rather than passing on a substitute.
 """
 
@@ -49,9 +49,16 @@ from studiobench.scene.actions import ACTION_BAR_WAIT_MS, MENU_JS  # noqa: E402
 DOM_JS = Path(__file__).resolve().parents[1] / "dom.js"
 
 #: The shim mounts the bar this long after the run starts, standing in for a follow-up turn whose
-#: last chunks land just after the slot opens. Comfortably inside `ACTION_BAR_WAIT_MS` and
-#: comfortably outside anything a single sample could catch.
+#: last chunks land just after the slot opens. Comfortably inside `ACTION_BAR_WAIT_MS` and outside
+#: anything a single sample could catch.
 LATE_MOUNT_MS = 400
+
+#: The mount deadline is armed by the action's own first look, so it can only start level with or
+#: after `waitForActionButton`'s clock and `waitedMs` cannot undershoot `LATE_MOUNT_MS` by any
+#: elapsed time. What is left is dom.js rounding `waitedMs` to a tenth: an allowance for clock
+#: granularity, not a tolerance for load.
+# See `HARNESS_JS`.
+MOUNT_CLOCK_SLACK_MS = 1
 
 HARNESS_JS = r"""
 const fs = require("fs");
@@ -86,8 +93,26 @@ const node = (sel, attrs, kids) => {
   return self;
 };
 
-const started = Date.now();
-const mounted = () => Date.now() - started >= mountAfterMs;
+// ── one clock, one origin ──────────────────────────────────────────────────────────────────────
+//
+// The bar mounts `mountAfterMs` after THE ACTION FIRST LOOKS FOR IT, and the deadline is armed by
+// that first look rather than by this script loading. The two instants are not the same: between
+// them sit two readFileSync calls, the dom.js eval, two Function compiles and V8's lazy compile of
+// the action body on its first call, all of it charged to whatever else the machine is doing.
+// Armed at load, the deadline would already be part-spent by the time `waitForActionButton` set
+// its own `started`, and the `waitedMs` measured from THAT origin would come back short by the
+// setup cost -- a number about the runner's load rather than about the wait.
+//
+// Arming here instead puts both clocks on one origin, and puts them there in the only order that
+// is safe. `waitForActionButton` stamps `started`, hovers, and only then reads a control; that
+// read is the first call below, so the mount deadline can start level with the action's clock or
+// a hair after it, never before. `waitedMs` therefore cannot come in under `mountAfterMs`, and a
+// loaded machine can only push the sample that ends the wait LATER.
+let started = null;
+const mounted = () => {
+  if (started === null) started = performance.now();
+  return performance.now() - started >= mountAfterMs;
+};
 
 const state = { menuOpen: false, hovers: 0 };
 
@@ -153,6 +178,11 @@ const getComputedStyle = () => ({ pointerEvents: "auto" });
 const window = {};
 // The real one is frames.js's rAF promise. A timer is the same shape and does not need a compositor.
 window.__sbNextPaint = () => new Promise((r) => setTimeout(r, 16));
+// dom.js's follow sampler survives a navigation by writing itself to sessionStorage on `pagehide`,
+// so installing it REGISTERS a listener. Nothing here ever fires it -- the registration only has to
+// not throw -- and the read side is already inside its own try/catch, which is why sessionStorage
+// itself does not need shimming.
+window.addEventListener = () => {};
 
 (new Function("window", "document", "PointerEvent", domSrc))(window, document, PointerEvent);
 
@@ -206,7 +236,10 @@ def test_a_control_that_arrives_late_is_waited_for_rather_than_reported_missing(
     """
     out = run_menu(LATE_MOUNT_MS)
     assert out["ran"] is True, out
-    assert out["waitedMs"] >= LATE_MOUNT_MS * 0.8, out
+    # Still a liveness assertion, not a timing one: the bar was NOT there when the wait began and the
+    # action stayed until it arrived. The bound is tight because the harness arms the mount deadline
+    # off the same clock and instant, so anything short of `LATE_MOUNT_MS` means the wait ended early.
+    assert out["waitedMs"] >= LATE_MOUNT_MS - MOUNT_CLOCK_SLACK_MS, out
     assert out["waitedMs"] < ACTION_BAR_WAIT_MS, out
     # The menu really opened and closed on the control that was waited for, so the wait produced a
     # measurement rather than merely a truthy `ran`.
@@ -219,8 +252,8 @@ def test_the_wait_is_bounded_and_a_control_that_never_appears_still_reports_not_
     out = run_menu(float("inf"), wait_ms = 300)
     assert out["ran"] is False, out
     assert out["waitedMs"] >= 250, out
-    # The reason has to separate the two cases, because they are different bugs: a reply that had
-    # not settled, and a control that is not there at all.
+    # The reason has to separate the two cases, because they are different bugs: a reply that had not
+    # settled, and a control that is not there at all.
     assert "STILL GENERATING" in out["reason"], out
     assert out["running"] is True, out
 
@@ -230,6 +263,6 @@ def test_a_settled_reply_costs_the_action_nothing():
     out = run_menu(0)
     assert out["ran"] is True, out
     assert out["waitedMs"] < 50, out
-    # Hovered before the control is read: the bar unmounts on every message that is not hovered,
-    # so a read without the hover is a read of a tree the control was never in.
+    # Hovered before the control is read: the bar unmounts on every message that is not hovered, so a
+    # read without the hover is a read of a tree the control was never in.
     assert out["hovers"] >= 1, out

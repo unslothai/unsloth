@@ -1,34 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Malware / unsafe-file gate for model loads.
-
-The ``trust_remote_code`` consent gate covers the ``auto_map`` Python vector; this
-covers the other one -- a malicious pickle inside a weight file, which executes
-during ``from_pretrained`` deserialization even with ``trust_remote_code=False``.
-It reads Hugging Face's OWN scan (picklescan + ClamAV) via
-``model_info(securityStatus=True).security_repo_status``. METADATA-ONLY: it never
-downloads, opens, or unpickles the flagged files.
-
-Policy:
-  * Hard block, non-approvable.
-  * Block whenever ``filesWithIssues`` lists a non-``safe`` level, regardless of
-    ``scansDone`` (often false even for clean repos). Unknown/future levels fail
-    CLOSED (block) so Hub schema drift cannot silently allow a bad verdict; only a
-    small allowlist of clean / not-yet-scanned levels is non-blocking. An unavailable
-    status falls back to local inspection for a pinned cache snapshot and otherwise
-    fails open.
-  * Scope to the load-path RCE vector: a root-level (or load-subdir-level),
-    code-executing file. Inert formats (safetensors / gguf / config / text) and
-    subdirectory pickles that no root weight-index references are NOT loaded, so
-    they do not block; an index-referenced shard does, wherever it lives. This
-    blocks real malware (eicar's root ``*.pkl``/``*.dat``) without false-blocking
-    repos like ``nvidia/Nemotron-H-8B-Base-8K`` (flagged NeMo pickles under
-    ``nemo/`` that no index lists).
-  * No first-party exemption (scoping is by load path/format, not org).
-  * Local paths are skipped (no Hub scan); a remote ``*.gguf``-named repo is still
-    scanned so a repo cannot dodge the gate by suffixing its name.
-"""
+"""Malware / unsafe-file gate for model loads. The ``trust_remote_code`` consent gate covers the ``auto_map`` Python vector; this covers the other one, a malicious pickle inside a weight file, which executes during ``from_pretrained`` deserialization even with ``trust_remote_code=False``. It reads Hugging Face's OWN scan (picklescan + ClamAV) via ``model_info(securityStatus=True).security_repo_status``. METADATA-ONLY: it never downloads, opens, or unpickles the flagged files. Policy: a hard, non-approvable block whenever ``filesWithIssues`` lists a non-``safe`` level, regardless of ``scansDone`` (often false even for clean repos); unknown/future levels fail CLOSED so Hub schema drift cannot silently allow a bad verdict, and only a small allowlist of clean / not-yet-scanned levels is non-blocking, while an unavailable status falls back to local inspection for a pinned cache snapshot and otherwise fails open. Scoped to the load-path RCE vector: a root-level (or load-subdir-level) code-executing file, since inert formats (safetensors / gguf / config / text) and subdirectory pickles that no root weight-index references are not loaded and do not block, while an index-referenced shard does, wherever it lives. That blocks real malware (eicar's root ``*.pkl``/``*.dat``) without false-blocking repos like ``nvidia/Nemotron-H-8B-Base-8K`` (flagged NeMo pickles under ``nemo/`` that no index lists). No first-party exemption (scoping is by load path/format, not org), and local paths are skipped (no Hub scan) while a remote ``*.gguf``-named repo is still scanned so a repo cannot dodge the gate by suffixing its name."""
 
 import re
 from dataclasses import dataclass, field
@@ -39,8 +12,7 @@ from loggers import get_logger
 
 logger = get_logger(__name__)
 
-# Pickle-format weight files (plain or sharded) that execute code on load; safetensors/gguf are
-# inert. Grouped by weight family so an inert safetensors only suppresses the pickle it replaces.
+# Pickle-format weight files (plain or sharded) that execute code on load; safetensors/gguf are inert. Grouped by weight family so an inert safetensors only suppresses the pickle it replaces.
 _PICKLE_WEIGHT_RE = re.compile(
     r"^(model|pytorch_model|adapter_model|consolidated)(-\d+-of-\d+)?"
     r"\.(bin|pt|pth|ckpt|pkl|pickle)$",
@@ -75,14 +47,11 @@ _INERT_SUFFIXES = frozenset(
     }
 )
 
-# Source files are not deserialized by a weight load; executable repo code runs only via
-# auto_map, the consent gate's domain, else a flagged helper/train script would false-block.
+# Source files are not deserialized by a weight load; executable repo code runs only via auto_map, the consent gate's domain, else a flagged helper/train script would false-block.
 _SOURCE_SUFFIXES = frozenset({".py", ".pyc", ".pyx", ".pyi"})
 
 
-# Torch-family weight indexes: from_pretrained feeds each shard they name to load_state_dict,
-# which torch.load()s (pickle) any shard not ending in .safetensors. A pytorch index is
-# superseded by a base safetensors; a safetensors index IS the chosen archive. tf/flax are inert.
+# Torch-family weight indexes: from_pretrained feeds each shard they name to load_state_dict, which torch.load()s (pickle) any shard not ending in .safetensors. A pytorch index is superseded by a base safetensors; a safetensors index IS the chosen archive. tf/flax are inert.
 _TORCH_INDEX_FILES = ("pytorch_model.bin.index.json", "model.safetensors.index.json")
 
 # Root weight-index files: a flagged subdir pickle is a load vector iff a root index names it.
@@ -109,12 +78,7 @@ def _file_suffix(path: str) -> str:
 
 
 def _hf_cache_snapshot_ref(local_path: str) -> Optional[tuple[str, str, Path]]:
-    """Return provenance for an HF-cache snapshot path, else ``None``.
-
-    An inactive Studio cache loads by its snapshot path but keeps the
-    ``models--org--repo/snapshots/<rev>`` layout, so the gate recovers its provenance
-    and scans that exact commit instead of exempting it.
-    """
+    """Return provenance for an HF-cache snapshot path, else ``None``. An inactive Unsloth cache loads by its snapshot path but keeps the ``models--org--repo/snapshots/<rev>`` layout, so the gate recovers its provenance and scans that exact commit instead of exempting it."""
     try:
         path = Path(local_path).resolve(strict = False)
     except (OSError, ValueError):
@@ -134,11 +98,7 @@ def _hf_cache_snapshot_ref(local_path: str) -> Optional[tuple[str, str, Path]]:
 
 
 def _load_relative_path(norm: str, load_subdirs) -> str:
-    """``norm`` relative to a ``from_pretrained`` load root. Some loads read from a
-    snapshot SUBDIRECTORY (Spark-TTS / BiCodec load ``<snapshot>/LLM``), where a file
-    directly under the subdir is root-level, not nested. Strips the matching load-subdir
-    prefix, or returns ``norm`` unchanged when it is not under one.
-    """
+    """``norm`` relative to a ``from_pretrained`` load root. Some loads read from a snapshot SUBDIRECTORY (Spark-TTS / BiCodec load ``<snapshot>/LLM``), where a file directly under the subdir is root-level, not nested. Strips the matching load-subdir prefix, or returns ``norm`` unchanged when it is not under one."""
     for subdir in load_subdirs or ():
         prefix = _normalize_repo_path(subdir).strip("/")
         if prefix and norm.startswith(prefix + "/"):
@@ -162,13 +122,7 @@ def _indexed_shard_paths(
     load_subdirs = (),
     revision: Optional[str] = None,
 ):
-    """Repo-relative weight paths a load could fetch via weight-index files. Returns a
-    set (empty when the repo ships no index files -- a definitive "nothing sharded"), or
-    None when the lookup was inconclusive (transient error) so the caller treats a
-    flagged subdir pickle conservatively. Reads only small JSON indexes, never weights.
-    Indexes are looked up at the root and each ``load_subdirs`` root, with ``weight_map``
-    entries re-prefixed to repo-relative paths. ``revision`` scopes to a cached commit.
-    """
+    """Repo-relative weight paths a load could fetch via weight-index files. Returns a set (empty when the repo ships no index files, a definitive "nothing sharded") or None when the lookup was inconclusive (transient error) so the caller treats a flagged subdir pickle conservatively. Reads only small JSON indexes, never weights. Indexes are looked up at the root and each ``load_subdirs`` root, with ``weight_map`` entries re-prefixed to repo-relative paths; ``revision`` scopes to a cached commit."""
     import json
 
     try:
@@ -176,6 +130,8 @@ def _indexed_shard_paths(
         from huggingface_hub.utils import EntryNotFoundError
         from utils.hf_cache_settings import active_hf_hub_cache
         from utils.hf_probe import hf_file_definitely_absent
+
+        from hub.utils.hf_tokens import call_hub_with_anonymous_retry
     except Exception:
         return None
 
@@ -189,17 +145,18 @@ def _indexed_shard_paths(
             ):
                 continue
             try:
-                index_path = hf_hub_download(
+                index_path = call_hub_with_anonymous_retry(
+                    hf_hub_download,
+                    hf_token or None,
                     model_name,
                     prefix + filename,
                     revision = revision,
-                    token = hf_token or None,
                     cache_dir = active_hf_hub_cache(),
                 )
             except EntryNotFoundError:
-                continue  # definitively absent, not an error
+                continue
             except Exception:
-                inconclusive = True  # transient: an index that might exist could not be read
+                inconclusive = True
                 continue
             try:
                 weight_map = (json.loads(open(index_path, encoding = "utf-8-sig").read()) or {}).get(
@@ -213,8 +170,7 @@ def _indexed_shard_paths(
                     paths.add(shard_norm)
             except Exception:
                 inconclusive = True
-    # Any transient failure -> inconclusive (the shard could be listed only by the index we could
-    # not read), so fail closed. No index files -> empty set, a definitive "nothing sharded".
+    # Any transient failure -> inconclusive (the shard could be listed only by the index we could not read), so fail closed. No index files -> empty set, a definitive "nothing sharded".
     if inconclusive:
         return None
     return paths
@@ -231,7 +187,7 @@ class FileSecurityDecision:
 
     model_name: str
     blocked: bool
-    unsafe_files: list = field(default_factory = list)  # [{"path", "level"}]
+    unsafe_files: list = field(default_factory = list)
     reason: str = ""
 
     def response_payload(self) -> dict:
@@ -248,14 +204,7 @@ def security_load_subdirs(
     hf_token: Optional[str] = None,
     local_files_only: bool = False,
 ) -> tuple:
-    """Snapshot subdirectories a load calls ``from_pretrained`` on, for scoping the scan.
-    Most models load from the root (``()``); Spark-TTS / BiCodec load ``<snapshot>/LLM``,
-    so ``LLM/`` is a load root for them. Metadata-only (tokenizer special tokens), cached.
-
-    ``local_files_only`` skips the remote tokenizer fetch. Callers deciding whether a
-    cache already on disk is usable must pass it: that work is meant to be pure
-    filesystem, and a hung hub would otherwise block local snapshot resolution.
-    """
+    """Snapshot subdirectories a load calls ``from_pretrained`` on, for scoping the scan. Most models load from the root (``()``); Spark-TTS / BiCodec load ``<snapshot>/LLM``, so ``LLM/`` is a load root for them. Metadata-only (tokenizer special tokens), cached. ``local_files_only`` skips the remote tokenizer fetch, and callers deciding whether a cache already on disk is usable must pass it: that work is meant to be pure filesystem, and a hung hub would otherwise block local snapshot resolution."""
     try:
         from utils.models.model_config import detect_audio_type, load_model_defaults
         if (
@@ -263,8 +212,7 @@ def security_load_subdirs(
             == "bicodec"
         ):
             return ("LLM",)
-        # Tokenizer detection can fail (network/gated/unresolved alias); the YAML default also pins the
-        # audio type, so fall back to it, else a flagged LLM/ pickle reads as an ignored subdir artifact.
+        # Tokenizer detection can fail (network/gated/unresolved alias); the YAML default also pins the audio type, so fall back to it, else a flagged LLM/ pickle reads as an ignored subdir artifact.
         if (load_model_defaults(model_name) or {}).get("audio_type") == "bicodec":
             return ("LLM",)
     except Exception:
@@ -273,11 +221,7 @@ def security_load_subdirs(
 
 
 def load_scan_target(model_name: str, load_subdirs: tuple) -> tuple:
-    """Map a load alias to the ``(repo_id, load_subdirs)`` the load actually fetches. The
-    Spark-TTS / BiCodec alias ``<parent>/LLM`` is downloaded by the trainer as
-    ``unsloth/<parent>`` and loaded from ``LLM/``, so scan that repo with ``LLM`` as a
-    load root (the literal alias 404s and fails open). Everything else is unchanged.
-    """
+    """Map a load alias to the ``(repo_id, load_subdirs)`` the load actually fetches. The Spark-TTS / BiCodec alias ``<parent>/LLM`` is downloaded by the trainer as ``unsloth/<parent>`` and loaded from ``LLM/``, so scan that repo with ``LLM`` as a load root (the literal alias 404s and fails open). Everything else is unchanged."""
     try:
         from utils.paths import is_local_path
         if is_local_path(model_name):
@@ -302,26 +246,25 @@ def _fetch_security_status(
     hf_token: Optional[str],
     revision: Optional[str] = None,
 ):
-    """``security_repo_status`` (a dict) or None if unavailable. Hub metadata only;
-    retries once on a transient error, then returns None so the caller can apply its
-    local-fallback policy. ``revision`` scopes the scan to a specific cached commit
-    (else the default branch).
-    """
+    """``security_repo_status`` (a dict) or None if unavailable. Hub metadata only; retries once on a transient error, then returns None so the caller can apply its local-fallback policy. ``revision`` scopes the scan to a specific cached commit (else the default branch)."""
     from huggingface_hub import model_info as hf_model_info
+    from hub.utils.hf_tokens import call_hub_with_anonymous_retry
 
     token_arg = hf_token if hf_token else False
     last_exc = None
     for attempt, timeout in enumerate((_REQUEST_TIMEOUT, _RETRY_TIMEOUT)):
         try:
-            info = hf_model_info(
+            # A refused token still gets the public repo's scan, as the worker's load will.
+            info = call_hub_with_anonymous_retry(
+                hf_model_info,
+                token_arg,
                 model_name,
                 revision = revision,
-                token = token_arg,
                 securityStatus = True,
                 timeout = timeout,
             )
             return getattr(info, "security_repo_status", None)
-        except Exception as exc:  # network/offline/gated/404/unsupported-client
+        except Exception as exc:
             last_exc = exc
             if attempt == 0:
                 continue
@@ -334,10 +277,7 @@ def _fetch_security_status(
 
 
 def _st_load_roots(snapshot: Path, load_subdirs = ()) -> list:
-    """Directories a SentenceTransformer load deserializes weights from: the snapshot root plus
-    each module path in modules.json and each explicit ``from_pretrained`` load subdirectory.
-    Local, no network. Mirrors the online gate (which ignores unreferenced nested pickles the
-    loader never opens) so the offline gate doesn't over-block."""
+    """Directories a SentenceTransformer load deserializes weights from: the snapshot root plus each module path in modules.json and each explicit ``from_pretrained`` load subdirectory. Local, no network. Mirrors the online gate (which ignores unreferenced nested pickles the loader never opens) so the offline gate doesn't over-block."""
     roots = [snapshot]
 
     def _add_repo_root(raw_path: Any) -> None:
@@ -354,7 +294,7 @@ def _st_load_roots(snapshot: Path, load_subdirs = ()) -> list:
         import json
         modules = json.loads((snapshot / "modules.json").read_text(encoding = "utf-8-sig"))
     except (OSError, ValueError):
-        return roots  # no / invalid modules.json -> only declared load roots apply
+        return roots
     for module in modules if isinstance(modules, list) else ():
         if not isinstance(module, dict):
             continue
@@ -380,13 +320,7 @@ def _snapshot_module_subdirs(snapshot: Path) -> tuple[str, ...]:
 
 
 def _indexed_pickle_shards(index_path: Path, root: Path, snapshot: Path) -> list:
-    """Shards a torch weight index points a ``from_pretrained`` load at that load_state_dict would
-    torch.load (pickle): every ``weight_map`` target NOT ending in ``.safetensors``, whatever its
-    stem (an arbitrary name like ``shards/payload`` still deserializes). Resolved relative to the
-    index dir (``root``) like the loader, so a shard in a nested dir is followed (iterdir misses it).
-    Lexical only, never ``Path.resolve()`` (HF snapshot files symlink into ``blobs/``, so resolving
-    escapes the snapshot and false-blocks every shard). Raises OSError -> caller fails CLOSED on an
-    unreadable/invalid index or a target escaping the snapshot."""
+    """Shards a torch weight index points a ``from_pretrained`` load at that load_state_dict would torch.load (pickle): every ``weight_map`` target NOT ending in ``.safetensors``, whatever its stem (an arbitrary name like ``shards/payload`` still deserializes). Resolved relative to the index dir (``root``) like the loader, so a shard in a nested dir is followed (iterdir misses it). Lexical only, never ``Path.resolve()`` (HF snapshot files symlink into ``blobs/``, so resolving escapes the snapshot and false-blocks every shard). Raises OSError -> caller fails CLOSED on an unreadable/invalid index or a target escaping the snapshot."""
     import json
     import os
 
@@ -404,8 +338,7 @@ def _indexed_pickle_shards(index_path: Path, root: Path, snapshot: Path) -> list
         raw = str(shard)
         if not raw:
             continue
-        # Join the RAW weight_map value like from_pretrained's os.path.join: on POSIX a backslash is a
-        # literal filename char, so normalizing it would probe a different path than the loader opens.
+        # Join the RAW weight_map value like from_pretrained's os.path.join: on POSIX a backslash is a literal filename char, so normalizing it would probe a different path than the loader opens.
         joined = os.path.normpath(os.path.join(str(root), raw))
         if joined != snapshot_norm and not joined.startswith(snapshot_norm + os.sep):
             raise OSError(f"weight index escapes the snapshot: {index_path}")
@@ -417,22 +350,12 @@ def _indexed_pickle_shards(index_path: Path, root: Path, snapshot: Path) -> list
 
 
 def _loader_resolves(root: Path, name: str) -> bool:
-    """True iff from_pretrained would open ``name`` under ``root``. ``is_file()`` honors the platform
-    (case-sensitive on Linux, case-insensitive on Windows/macOS), so it mirrors the loader's own
-    lookup: an oddly-cased decoy counts as an alternative only where the loader would truly open it.
-    A name-fold instead would let an uppercase MODEL.SAFETENSORS suppress the scan on Linux while the
-    loader, asking for the canonical lowercase name, silently falls through to a pickle index."""
+    """True iff from_pretrained would open ``name`` under ``root``. ``is_file()`` honors the platform (case-sensitive on Linux, case-insensitive on Windows/macOS), so it mirrors the loader's own lookup: an oddly-cased decoy counts as an alternative only where the loader would truly open it. A name-fold instead would let an uppercase MODEL.SAFETENSORS suppress the scan on Linux while the loader, asking for the canonical lowercase name, silently falls through to a pickle index."""
     return (root / name).is_file()
 
 
 def _cached_pickle_weight_files(snapshot: Path, load_subdirs = ()) -> list:
-    """Pickle weight files a SentenceTransformer/Transformers load deserializes from snapshot's ST
-    load roots, EXCLUDING those whose weight family also ships an inert safetensors in the same dir
-    (the loader prefers it): a base pickle is suppressed only by a base model.safetensors, an adapter
-    pickle only by adapter_model.safetensors -- an unrelated safetensors is no substitute. Covers
-    both direct-child pickles AND pickle shards referenced by a local weight index (which the loader
-    follows into nested dirs, matching the online gate). Raises OSError -- caller fails CLOSED -- if
-    the snapshot root or a weight index is unreadable, or an index reference escapes the snapshot."""
+    """Pickle weight files a SentenceTransformer/Transformers load deserializes from snapshot's ST load roots, EXCLUDING those whose weight family also ships an inert safetensors in the same dir (the loader prefers it): a base pickle is suppressed only by a base model.safetensors, an adapter pickle only by adapter_model.safetensors, and an unrelated safetensors is no substitute. Covers both direct-child pickles AND pickle shards referenced by a local weight index (which the loader follows into nested dirs, matching the online gate). Raises OSError, so the caller fails CLOSED, if the snapshot root or a weight index is unreadable, or an index reference escapes the snapshot."""
     blocked = []
     seen = set()
 
@@ -447,10 +370,9 @@ def _cached_pickle_weight_files(snapshot: Path, load_subdirs = ()) -> list:
             entries = [p for p in root.iterdir() if p.is_file()]
         except OSError:
             if root == snapshot:
-                raise  # top-level unreadable -> fail closed
-            continue  # unreadable module subdir: nothing loadable to attest here
-        # Safetensors alternatives the loader would actually resolve (never a bare name-fold, which fails
-        # OPEN). A base pickle is replaced only by a base safetensors; model.safetensors outranks both indexes.
+                raise
+            continue
+        # Safetensors alternatives the loader would actually resolve, never a bare name-fold, which fails OPEN: a base pickle is replaced only by a base safetensors, and model.safetensors outranks both indexes.
         has_direct_base_safetensors = _loader_resolves(root, "model.safetensors")
         has_base_safetensors = has_direct_base_safetensors or _loader_resolves(
             root, "model.safetensors.index.json"
@@ -463,9 +385,7 @@ def _cached_pickle_weight_files(snapshot: Path, load_subdirs = ()) -> list:
             has_alternative = has_adapter_safetensors if is_adapter else has_base_safetensors
             if not has_alternative:
                 _add(path)
-        # A torch weight index makes from_pretrained load nested shards iterdir never sees, torch.loading
-        # any not ending in .safetensors. Probe the canonical index name with the loader's own lookup so
-        # an oddly-cased artifact it would never open does not block. model.safetensors wins over both.
+        # A torch weight index makes from_pretrained load nested shards iterdir never sees, torch.loading any not ending in .safetensors, so probe the canonical index name with the loader's own lookup (an oddly-cased artifact it would never open must not block). model.safetensors wins over both.
         for index_name in _TORCH_INDEX_FILES:
             if not _loader_resolves(root, index_name):
                 continue
@@ -565,6 +485,70 @@ def _evaluate_local_snapshot(
     )
 
 
+def _modelscope_serves() -> bool:
+    try:
+        from utils.hub_settings import MODELSCOPE, active_source
+    except Exception:
+        return False
+    return active_source() == MODELSCOPE
+
+
+def _evaluate_unscanned_listing(
+    model_name: str,
+    hf_token: Optional[str],
+    load_subdirs = (),
+) -> FileSecurityDecision:
+    """ModelScope publishes no malware scan, so its "unavailable" is permanent, not transient:
+    fail closed on pickle weights, as the offline gate does for a cached snapshot."""
+    context = "ModelScope has no malware scan"
+    try:
+        from huggingface_hub import HfApi
+        files = HfApi().list_repo_files(model_name, token = hf_token or False)
+    except Exception:
+        logger.warning(
+            "Blocking load of '%s': %s and its files could not be listed.", model_name, context
+        )
+        return FileSecurityDecision(
+            model_name, True, reason = f"{context}; could not list the repository"
+        )
+    by_dir: dict[str, set] = {}
+    for path in files:
+        folder, _, name = _normalize_repo_path(str(path)).rpartition("/")
+        by_dir.setdefault(folder, set()).add(name)
+    blocked = []
+    roots = {"", *(_normalize_repo_path(str(d)).strip("/") for d in load_subdirs or ())}
+    for folder, names in sorted(by_dir.items()):
+        if folder not in roots:
+            continue
+        prefix = f"{folder}/" if folder else ""
+        has_base = bool(names & {"model.safetensors", "model.safetensors.index.json"})
+        has_adapter = "adapter_model.safetensors" in names
+        for name in sorted(names):
+            if _PICKLE_WEIGHT_RE.match(name):
+                if not (has_adapter if name.lower().startswith("adapter_model") else has_base):
+                    blocked.append(prefix + name)
+        # Its shards are named freely and torch.loaded unless they end in .safetensors.
+        if "pytorch_model.bin.index.json" in names and not has_base:
+            blocked.append(prefix + "pytorch_model.bin.index.json")
+    if not blocked:
+        return FileSecurityDecision(
+            model_name, False, reason = f"{context}; no pickle weights to load"
+        )
+    listed = ", ".join(blocked)
+    logger.warning(
+        "Blocking load of '%s': %s and it ships pickle weights (%s).", model_name, context, listed
+    )
+    return FileSecurityDecision(
+        model_name,
+        True,
+        unsafe_files = [{"path": path, "level": "unscanned"} for path in blocked],
+        reason = (
+            f"{context}; unscanned pickle weights with no safetensors alternative: {listed}. "
+            "Switch the model source to Hugging Face in Settings to load it."
+        ),
+    )
+
+
 def evaluate_file_security(
     model_name: str,
     hf_token: Optional[str] = None,
@@ -572,24 +556,11 @@ def evaluate_file_security(
     load_subdirs = (),
     local_only_load: bool = False,
 ) -> FileSecurityDecision:
-    """Block a load when HF's security scan flags unsafe serialized files.
-
-    Call UNCONDITIONALLY before any load (independent of trust_remote_code): a malicious
-    pickle deserializes during ``from_pretrained`` regardless. Metadata-only; when the
-    scan is unavailable, exact cached snapshots receive a local fail-closed inspection
-    while unresolved remote refs remain fail-open.
-
-    ``load_subdirs`` names subdirs the load calls ``from_pretrained`` on (e.g. ``("LLM",)``
-    for Spark-TTS / BiCodec, loading ``<snapshot>/LLM``): a flagged file directly under one
-    is root-level there and blocks, and an index inside it is honored when scoping shards.
-
-    ``local_only_load`` marks an offline load and skips the Hub request.
-    """
+    """Block a load when HF's security scan flags unsafe serialized files. Call UNCONDITIONALLY before any load (independent of trust_remote_code): a malicious pickle deserializes during ``from_pretrained`` regardless. Metadata-only; when the scan is unavailable, exact cached snapshots receive a local fail-closed inspection while unresolved remote refs remain fail-open. ``load_subdirs`` names subdirs the load calls ``from_pretrained`` on (e.g. ``("LLM",)`` for Spark-TTS / BiCodec, loading ``<snapshot>/LLM``): a flagged file directly under one is root-level there and blocks, and an index inside it is honored when scoping shards. ``local_only_load`` marks an offline load and skips the Hub request."""
     # Scan the repo the load actually fetches, not the literal alias (which 404s and fails open).
     model_name, load_subdirs = load_scan_target(model_name, tuple(load_subdirs))
 
-    # Local paths have no Hub scan, EXCEPT an HF-cache snapshot whose canonical path encodes a repo
-    # id + commit: scan that exact commit so an inactive-cache load can't dodge the gate.
+    # Local paths have no Hub scan, EXCEPT an HF-cache snapshot whose canonical path encodes a repo id + commit: scan that exact commit so an inactive-cache load can't dodge the gate.
     snapshot_revision = None
     selected_snapshot = None
     try:
@@ -621,6 +592,8 @@ def evaluate_file_security(
                 context = "Hub scan unavailable",
                 load_subdirs = load_subdirs,
             )
+        if _modelscope_serves():
+            return _evaluate_unscanned_listing(model_name, hf_token, load_subdirs)
         return FileSecurityDecision(
             model_name, False, reason = "scan unavailable; allowed (fail-open)"
         )
@@ -637,13 +610,10 @@ def evaluate_file_security(
                 load_subdirs = load_subdirs,
             )
 
-    # Block a non-``safe`` flagged file scoped to the load-path RCE vector (root-level,
-    # code-executing). Not gated on ``scansDone`` (often false even when clean). Unknown levels fail
-    # closed. Subdir pickles and inert formats are not loaded by from_pretrained and do not block; an
-    # unavailable status is fail-open only for an unresolved remote ref.
+    # Block a non-``safe`` flagged file scoped to the load-path RCE vector. Not gated on ``scansDone`` (often false even when clean), and unknown levels fail closed. Subdir pickles and inert formats are not loaded by from_pretrained and do not block; an unavailable status is fail-open only for an unresolved remote ref.
     unsafe = []
-    skipped = []  # flagged, but not a load-path RCE vector (subdir artifact / inert)
-    maybe_shard = []  # flagged subdir pickle: a load vector ONLY if a root index lists it
+    skipped = []
+    maybe_shard = []
     for entry in status.get("filesWithIssues") or []:
         if not isinstance(entry, dict):
             continue
@@ -659,7 +629,7 @@ def evaluate_file_security(
             # Inert formats cannot execute on load; source code is the consent gate's domain (auto_map).
             skipped.append({"path": path, "level": level})
         elif "/" not in load_rel:
-            unsafe.append({"path": path, "level": level})  # root pickle -> load vector
+            unsafe.append({"path": path, "level": level})
         else:
             # Subdir pickle: deserialized only if a weight index references it.
             maybe_shard.append({"path": path, "level": level, "norm": norm})
@@ -669,8 +639,7 @@ def evaluate_file_security(
             model_name, hf_token, load_subdirs, revision = snapshot_revision
         )
         for m in maybe_shard:
-            # Block if a root index lists this shard, or if the lookup was inconclusive. A definitive
-            # "no index / not listed" stays non-blocking (e.g. NeMo nemo/*.distcp).
+            # Block if a root index lists this shard, or if the lookup was inconclusive. A definitive "no index / not listed" stays non-blocking (e.g. NeMo nemo/*.distcp).
             if indexed is None or m["norm"] in indexed:
                 unsafe.append({"path": m["path"], "level": m["level"]})
             else:

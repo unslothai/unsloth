@@ -4,26 +4,25 @@
 import { Switch } from "@/components/ui/switch";
 import { useT } from "@/i18n";
 
-/**
- * The file half of a chat delete, shown wherever one is confirmed.
- *
- * "Always delete files" makes the delete destructive beyond the chat itself, so
- * every confirmation has to say so and let the user turn it off for this one.
- */
+/** The file half of a chat delete, shown wherever one is confirmed. "Always delete files" makes the
+ *  delete destructive beyond the chat itself, so every confirmation has to say so and let the user
+ *  turn it off for this one. */
 export function DeleteChatFilesSwitch({
   id,
   checked,
   onCheckedChange,
   description,
+  label: labelOverride,
 }: {
   id: string;
   checked: boolean;
   onCheckedChange: (next: boolean) => void;
   /** For a delete covering more than one chat, which reads differently. */
   description?: string;
+  label?: string;
 }) {
   const t = useT();
-  const label = t("shell.selection.deleteFilesLabel");
+  const label = labelOverride ?? t("shell.selection.deleteFilesLabel");
   return (
     <div className="flex items-start justify-between gap-4 rounded-md border border-border/60 bg-muted/35 px-3 py-2.5">
       <label htmlFor={id} className="min-w-0 space-y-1">

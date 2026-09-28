@@ -174,7 +174,7 @@ ARCH_TRUTH_TABLE = [
     ("cohere2moe", False),
     ("exaone4", False),
     ("granite-switch", False),  # nextn=1 leaks for a ROUTER layer that needs KV
-    # An arch this Studio has never heard of must fail closed.
+    # An arch this Unsloth has never heard of must fail closed.
     ("some_future_arch", False),
 ]
 

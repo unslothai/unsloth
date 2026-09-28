@@ -54,9 +54,9 @@ class _Verdict:
 
 
 class _Bundle:
-    # WHAT `browser.launch` WOULD HAVE RESOLVED on the machine running this test. `run_meta`
-    # records the engine and `requested_identity` resolves the same way, so a stub that names a
-    # fixed one would make a legitimate resume look like an engine change off Linux and macOS.
+    # WHAT `browser.launch` WOULD HAVE RESOLVED on the machine running this test. `run_meta` records the
+    # engine and `requested_identity` resolves the same way, so a stub naming a fixed one would make a
+    # legitimate resume look like an engine change off Linux and macOS.
     engine = browser_mod.default_engine()[0]
     engine_note = "stubbed for this test"
     browser = context = page = cdp = None
@@ -100,8 +100,8 @@ def studio(monkeypatch, tmp_path):
     def fake_install(ref, home, *args, **kwargs):
         install = StudioInstall(home = Path(home), repo = Path(home).parent / "repo", branch = ref)
         # `setattr` rather than a constructor argument, so this fixture also builds against a
-        # `StudioInstall` that has no commit field and the tests below fail on the subject rather
-        # than on the way in.
+        # `StudioInstall` that has no commit field and the tests fail on the subject rather than the way
+        # in.
         install.commit = state["commits"].get(ref, f"c-{ref}-1")
         return install
 

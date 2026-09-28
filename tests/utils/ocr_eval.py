@@ -112,7 +112,6 @@ class OCRModelEvaluator:
                 print(f"Skipping sample {sample_idx}: No text found in assistant message")
             return None, None, None, []
 
-        # Extract image and question from user message
         image = None
         question = None
         for content_item in user_message["content"]:
@@ -278,7 +277,6 @@ class OCRModelEvaluator:
         """Create and save comparison plot."""
         plt.figure(figsize = (12, 6))
 
-        # Plot WER
         plt.subplot(1, 2, 1)
         plt.bar(comparison_df["Model"], comparison_df["WER"], color = "skyblue")
         plt.title("Word Error Rate Comparison")
@@ -286,7 +284,6 @@ class OCRModelEvaluator:
         plt.ylim(bottom = 0)
         plt.xticks(rotation = 45, ha = "right")
 
-        # Plot CER
         plt.subplot(1, 2, 2)
         plt.bar(comparison_df["Model"], comparison_df["CER"], color = "lightgreen")
         plt.title("Character Error Rate Comparison")
