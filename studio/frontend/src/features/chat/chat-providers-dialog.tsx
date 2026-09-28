@@ -561,7 +561,8 @@ export function ChatProvidersSettings({
   }
 
   function clearModelSelection() {
-    setSelectedModelIds([]);
+    const visible = new Set(filteredAvailableModels);
+    setSelectedModelIds((prev) => prev.filter((id) => !visible.has(id)));
   }
 
   function parseOptionalBaseUrl(
