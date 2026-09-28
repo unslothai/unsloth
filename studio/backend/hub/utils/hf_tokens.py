@@ -8,9 +8,13 @@ from __future__ import annotations
 import hashlib
 import hmac
 import logging
+import os
+import re
 import threading
 import time
+import urllib.error
 from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Iterable, Literal, MutableMapping, Optional, Union
 
 logger = logging.getLogger(__name__)
@@ -62,8 +66,13 @@ def apply_token_to_child_env(env: MutableMapping[str, str], hf_token: HfTokenArg
     """Grant a spawned probe exactly its caller's credential.
 
     A child env is seeded from the parent's, so not *setting* a token is not denying one.
-    Only the sentinel scrubs; ``None`` keeps the inherited env on purpose.
+    Only the sentinel scrubs; ``None`` keeps the inherited env on purpose. A token the Hub
+    refused in this request while anonymous reads worked goes to the child as anonymous too
+    (explicit tokens only: judging the ambient one imports huggingface_hub, which the pre-import
+    tier probe must not).
     """
+    if isinstance(hf_token, str) and hf_token and saved_token_rejected(hf_token):
+        hf_token = False
     if isinstance(hf_token, str) and hf_token:
         # Scrub before granting: setting HF_TOKEN alone leaves an operator credential
         # sitting in HF_HUB_TOKEN or a legacy alias, so the child holds two.
@@ -115,21 +124,21 @@ _REPO_ACCESS_TTL_S = 60.0
 _REPO_ACCESS_UNREACHABLE_TTL_S = 30.0
 _REPO_ACCESS_CACHE_MAX = 1024
 # ``None`` is a THIRD value, not a miss: "the Hub could not be asked", never a denial.
-_repo_access_cache: dict[tuple[str, str, str], tuple[float, Optional[bool]]] = {}
+_repo_access_cache: dict[tuple[str, ...], tuple[float, Optional[bool]]] = {}
 _CACHE_MISS = object()
 _repo_access_lock = threading.Lock()
 # One probe per key: the probe runs outside _repo_access_lock, so a cold key would
 # otherwise open a connection per caller.
-_repo_access_inflight: dict[tuple[str, str, str], threading.Lock] = {}
+_repo_access_inflight: dict[tuple[str, ...], threading.Lock] = {}
 
 # An answered NO never expires and its eviction is remembered, since 429/5xx are "unaskable"
 # yet reachable: a refused caller is otherwise one outage from access.
 _DENIAL_MEMORY_MAX = 8192
-_denied_repo_access: dict[tuple[str, str, str], float] = {}
+_denied_repo_access: dict[tuple[str, ...], float] = {}
 _denial_memory_is_complete = True
 
 
-def _remember_denial(key: tuple[str, str, str], now: float) -> None:
+def _remember_denial(key: tuple[str, ...], now: float) -> None:
     global _denial_memory_is_complete
     with _repo_access_lock:
         _denied_repo_access.pop(key, None)
@@ -144,17 +153,17 @@ def _denial_memory_lost_an_entry() -> bool:
         return not _denial_memory_is_complete
 
 
-def _forget_denial(key: tuple[str, str, str]) -> None:
+def _forget_denial(key: tuple[str, ...]) -> None:
     with _repo_access_lock:
         _denied_repo_access.pop(key, None)
 
 
-def _denial_is_remembered(key: tuple[str, str, str]) -> bool:
+def _denial_is_remembered(key: tuple[str, ...]) -> bool:
     with _repo_access_lock:
         return key in _denied_repo_access
 
 
-def _with_remembered_denial(key: tuple[str, str, str], verdict: Optional[bool]) -> Optional[bool]:
+def _with_remembered_denial(key: tuple[str, ...], verdict: Optional[bool]) -> Optional[bool]:
     """ "Could not ask" reads as the last answer if that was no; once any refusal is evicted, no
     key may claim it was never refused."""
     if verdict is None and (_denial_is_remembered(key) or _denial_memory_lost_an_entry()):
@@ -367,17 +376,15 @@ def _saved_studio_hf_token() -> "tuple[bool, Optional[str]]":
         from storage import credential_secrets
     except Exception:
         return (False, None)
+    # Value and presence from ONE read: `get_secret` answers None for an absent row AND for an
+    # undecryptable one, and conflating them is fail-open, but asking the store twice was two
+    # sqlite connections on a path every read of a cached repo goes through.
     try:
-        token = credential_secrets.get_hf_token()
+        token, stored = credential_secrets.get_hf_token_with_presence()
     except Exception:
         return (False, None)
     if isinstance(token, str) and token.strip():
         return (True, token.strip())
-    # `get_secret` returns None for an absent row AND an undecryptable one; conflating is fail-open.
-    try:
-        stored = credential_secrets.hf_token_row_exists()
-    except Exception:
-        return (False, None)
     if stored:
         return (False, None)
     return (True, None)
@@ -809,7 +816,7 @@ def _hub_offline() -> bool:
         return False
 
 
-def _cached_repo_access(key: tuple[str, str, str], now: float):
+def _cached_repo_access(key: tuple[str, ...], now: float):
     """``None`` is a verdict of its own ("could not be asked"), so a miss needs its own sentinel."""
     cached = _repo_access_cache.get(key)
     if cached is not None and cached[0] > now:
@@ -824,11 +831,13 @@ def _explicit_token_reaches_repo(
     offline: bool = False,
 ) -> Optional[bool]:
     # None asks the public question, under its own key: a public repo answers 200 for every
-    # token, so a shared key would let any string claim that verdict.
+    # token, so a shared key would let any string claim that verdict. The endpoint too: the
+    # same repo id on another Hub is another repo.
     key = (
         repo_id.casefold(),
         repo_type,
         hashlib.sha256(token.encode()).hexdigest()[:16] if token else "anonymous",
+        _probe_endpoint(),
     )
     cached = _cached_repo_access(key, time.monotonic())
     if cached is not _CACHE_MISS:
@@ -842,7 +851,7 @@ def _explicit_token_reaches_repo(
         if cached is not _CACHE_MISS:
             return _with_remembered_denial(key, cached)  # type: ignore[arg-type]
         try:
-            allowed = _probe_repo_access(repo_id, token, repo_type)
+            allowed = _probe_repo_access(repo_id, token, repo_type, endpoint = key[3])
         except _ProbeTimedOut:
             allowed = None
         except Exception:
@@ -879,7 +888,7 @@ def _evict_repo_access_locked() -> None:
         _repo_access_cache.clear()
 
 
-def _inflight_lock(key: tuple[str, str, str]) -> threading.Lock:
+def _inflight_lock(key: tuple[str, ...]) -> threading.Lock:
     with _repo_access_lock:
         lock = _repo_access_inflight.get(key)
         if lock is None:
@@ -897,6 +906,16 @@ def _probe_endpoint() -> str:
     URL both clients reject and every probe on that machine is denied. ``hf_endpoint_url``
     is where the backend already normalises it; falls back since this module sits beneath.
     """
+    try:
+        from utils.hub_settings import MODELSCOPE, active_source, hugging_face_endpoint
+    except Exception:
+        active_source = None
+    # The cache holds Hugging Face snapshots: ModelScope's same-named repo cannot vouch for them.
+    if active_source is not None and active_source() == MODELSCOPE:
+        try:
+            return hugging_face_endpoint()
+        except Exception:
+            return "https://huggingface.co"
     try:
         from utils.utils import hf_endpoint_url
         return hf_endpoint_url().rstrip("/")
@@ -962,7 +981,13 @@ def _has_hf_error_code(response) -> bool:
         return False
 
 
-def _probe_repo_access(repo_id: str, token: Optional[str], repo_type: str) -> Optional[bool]:
+def _probe_repo_access(
+    repo_id: str,
+    token: Optional[str],
+    repo_type: str,
+    *,
+    endpoint: Optional[str] = None,
+) -> Optional[bool]:
     response = None
     try:
         from huggingface_hub import constants
@@ -978,7 +1003,7 @@ def _probe_repo_access(repo_id: str, token: Optional[str], repo_type: str) -> Op
         # than the one memoized.
         if any(segment in {".", ".."} for segment in repo_id.split("/")):
             return False
-        path = f"{_probe_endpoint()}/api/{repo_type}s/{quote(repo_id, safe = '/')}/auth-check"
+        path = f"{endpoint or _probe_endpoint()}/api/{repo_type}s/{quote(repo_id, safe = '/')}/auth-check"
         response = get_session().get(
             path,
             # False, not None: None falls back to the ambient login, asking the public
@@ -1008,3 +1033,277 @@ def _probe_repo_access(repo_id: str, token: Optional[str], repo_type: str) -> Op
         if _is_probe_timeout(exc):
             raise _ProbeTimedOut from exc
         return _probe_answer_from_exception(exc, response)
+
+
+# A refused credential (expired OAuth token, revoked key) gets 401 on every read, public repos
+# included; an accepted one gets 404 for a repo it cannot see. A 401 blames the credential (#11551).
+HUB_TOKEN_REJECTED_WARNING = (
+    "Hugging Face rejected the saved token (it may be expired or revoked), so this public "
+    "model was read without it. Update or clear the token in Settings to keep access to "
+    "gated and private models."
+)
+
+
+def hub_refused_cached_copy_warning(repo_id: str) -> str:
+    return (
+        f"Hugging Face refused {repo_id}, so Studio is running the copy already downloaded on "
+        "this machine. It will not receive updates until access is restored."
+    )
+
+
+HUB_TOKEN_REJECTED_ERROR = (
+    "Hugging Face rejected the saved token (HTTP 401); it may be expired or revoked. "
+    "Update or clear it in Settings, then try again."
+)
+
+
+class HubTokenRejections:
+    """What one request learned about its credential. Shared by the threads it hands off to."""
+
+    __slots__ = ("recovered", "refused", "served_from_cache", "_rejected", "_recovered")
+
+    def __init__(self) -> None:
+        # Repos the Hub refused that this request loaded from their downloaded copy instead.
+        self.served_from_cache: "list[str]" = []
+        self.recovered = False
+        self.refused = False
+        # Digests, never tokens: a traceback or debugger can print this.
+        self._rejected: "set[str]" = set()
+        self._recovered: "set[str]" = set()
+
+    @property
+    def rejected(self) -> bool:
+        return self.recovered or self.refused
+
+
+_hub_token_rejections: ContextVar[Optional[HubTokenRejections]] = ContextVar(
+    "hub_token_rejections", default = None
+)
+
+
+@contextmanager
+def collecting_hub_token_rejections():
+    """Scope one request's rejection notes; nested scopes share the outer one."""
+    existing = _hub_token_rejections.get()
+    if existing is not None:
+        yield existing
+        return
+    sink = HubTokenRejections()
+    reset = _hub_token_rejections.set(sink)
+    try:
+        yield sink
+    finally:
+        _hub_token_rejections.reset(reset)
+
+
+@contextmanager
+def token_rejection_scope():
+    """A fresh scope, forgotten on exit: one load's verdict must not reach the next."""
+    sink = HubTokenRejections()
+    reset = _hub_token_rejections.set(sink)
+    try:
+        yield sink
+    finally:
+        _hub_token_rejections.reset(reset)
+
+
+def hub_token_rejections() -> Optional[HubTokenRejections]:
+    return _hub_token_rejections.get()
+
+
+def _sent_credential(hf_token: HfTokenArg) -> Optional[str]:
+    """The credential a read with *hf_token* puts on the wire, or None when it sends none."""
+    if is_anonymous(hf_token):
+        return None
+    if isinstance(hf_token, str):
+        return hf_token.strip() or None
+    if hf_token is None:
+        if _implicit_token_disabled():
+            # huggingface_hub sends no ambient token then, so a 401 is about the repo.
+            return None
+        return _wire_hf_token()
+    return None
+
+
+def _wire_hf_token() -> Optional[str]:
+    """The ambient token huggingface_hub sends on a ``token=None`` read (not ``_ambient_hf_token``,
+    which also counts aliases it never sends)."""
+    try:
+        from huggingface_hub import get_token
+        token = get_token()
+    except Exception:
+        return None
+    return token.strip() if isinstance(token, str) and token.strip() else None
+
+
+def _implicit_token_disabled() -> bool:
+    # huggingface_hub reads its import-time constant, not the env the worker changes later.
+    try:
+        from huggingface_hub import constants
+    except Exception:
+        return os.environ.get("HF_HUB_DISABLE_IMPLICIT_TOKEN", "").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        )
+    return bool(getattr(constants, "HF_HUB_DISABLE_IMPLICIT_TOKEN", False))
+
+
+# huggingface_hub's own wording (hf_raise_for_status), optionally behind "ClassName: ".
+_HUB_401_TEXT = re.compile(r"^(?:[A-Za-z]\w*: )?401 Client Error\b")
+
+
+def is_token_rejection(exc: BaseException) -> bool:
+    """A 401 anywhere in the chain: transports wrap Hub errors, and the download ladder rebuilds
+    a child's error from its text."""
+    seen: set[int] = set()
+    pending: list[Optional[BaseException]] = [exc]
+    while pending:
+        link = pending.pop()
+        if link is None or id(link) in seen:
+            continue
+        seen.add(id(link))
+        status = getattr(getattr(link, "response", None), "status_code", None)
+        if status == 401:
+            return True
+        if isinstance(link, urllib.error.HTTPError) and link.code == 401:
+            return True
+        if status is None and _HUB_401_TEXT.match(str(link)):
+            return True
+        pending += [link.__cause__, link.__context__]
+    return False
+
+
+def is_rejected_credential_error(exc: BaseException, hf_token: HfTokenArg) -> bool:
+    """Whether *exc* is Hugging Face refusing the credential a read with *hf_token* sent."""
+    if is_anonymous(hf_token) or _is_probe_timeout(exc):
+        return False
+    return is_token_rejection(exc) and _sent_credential(hf_token) is not None
+
+
+def _credential_rejected_this_request(hf_token: HfTokenArg) -> bool:
+    sink = _hub_token_rejections.get()
+    if sink is None or not sink._rejected:
+        return False
+    credential = _sent_credential(hf_token)
+    return credential is not None and _credential_identity(credential) in sink._rejected
+
+
+def note_saved_token_rejected(hf_token: HfTokenArg) -> None:
+    """Record that this request's reads with *hf_token* were refused while anonymous ones worked."""
+    sink = _hub_token_rejections.get()
+    credential = _sent_credential(hf_token)
+    if sink is None or credential is None:
+        return
+    identity = _credential_identity(credential)
+    sink._rejected.add(identity)
+    sink._recovered.add(identity)
+    sink.recovered = True
+
+
+def saved_token_rejected(hf_token: HfTokenArg) -> bool:
+    """Whether this request saw the Hub refuse *hf_token* while an anonymous read worked."""
+    sink = _hub_token_rejections.get()
+    credential = _sent_credential(hf_token)
+    if sink is None or credential is None:
+        return False
+    return _credential_identity(credential) in sink._recovered
+
+
+def _is_missing_file(exc: BaseException) -> bool:
+    """The Hub said a file is absent (not ``LocalEntryNotFoundError``, the offline cache miss)."""
+    names = {cls.__name__ for cls in type(exc).__mro__}
+    return "EntryNotFoundError" in names and "LocalEntryNotFoundError" not in names
+
+
+def call_with_anonymous_retry(read, hf_token: HfTokenArg):
+    """Run ``read(token)``, once more anonymously if the Hub refuses the credential (a 401 on a
+    read that sent one). Anonymous answers are public data only. When anonymous fails too, the
+    ORIGINAL error is raised: it is the one callers classify.
+    """
+    if _credential_rejected_this_request(hf_token):
+        # Refused earlier in this request: anonymous first, the credential only if that fails.
+        try:
+            result = read(False)
+        except Exception as anonymous_exc:
+            if not is_token_rejection(anonymous_exc):
+                raise
+        else:
+            note_saved_token_rejected(hf_token)
+            return result
+        try:
+            return read(hf_token)
+        except Exception as exc:
+            if is_rejected_credential_error(exc, hf_token):
+                sink = _hub_token_rejections.get()
+                if sink is not None:
+                    sink.refused = True
+            raise
+    try:
+        return read(hf_token)
+    except Exception as exc:
+        if not is_rejected_credential_error(exc, hf_token):
+            raise
+        sink = _hub_token_rejections.get()
+        credential = _sent_credential(hf_token)
+        if sink is not None and credential is not None:
+            sink._rejected.add(_credential_identity(credential))
+        try:
+            result = read(False)
+        except Exception as anonymous_exc:
+            if _is_cancellation(anonymous_exc):
+                raise
+            if _is_missing_file(anonymous_exc):
+                # An optional file's absence is the answer callers need, not the 401.
+                note_saved_token_rejected(hf_token)
+                raise
+            logger.info(
+                "Hugging Face refused the credential (401); the anonymous retry failed too: %s",
+                type(anonymous_exc).__name__,
+            )
+            if sink is not None:
+                sink.refused = True
+            raise exc from None
+        logger.warning(
+            "Hugging Face refused the credential (401); read anonymously instead. "
+            "Update or clear the Hugging Face token."
+        )
+        note_saved_token_rejected(hf_token)
+        return result
+
+
+def _is_cancellation(exc: BaseException) -> bool:
+    """A cancelled load or download, however the transport layer spelled it."""
+    if "Cancel" in type(exc).__name__:
+        return True
+    return isinstance(exc, RuntimeError) and str(exc).startswith("Cancelled")
+
+
+def call_hub_with_anonymous_retry(fn, hf_token: HfTokenArg, *args, **kwargs):
+    """``call_with_anonymous_retry`` for a huggingface_hub-style ``fn(*args, token = ..., **kwargs)``."""
+    return call_with_anonymous_retry(lambda token: fn(*args, token = token, **kwargs), hf_token)
+
+
+def anonymous_retrying(fn):
+    """*fn* (a huggingface_hub read taking ``token=``) with the rejected-token retry built in."""
+
+    def read(
+        *args,
+        token: HfTokenArg = None,
+        **kwargs,
+    ):
+        return call_hub_with_anonymous_retry(fn, token, *args, **kwargs)
+
+    return read
+
+
+def hf_token_rejected_hint(exc: BaseException) -> str:
+    """User-facing sentence for a 401 that the anonymous retry could not recover, else ''."""
+    if not is_token_rejection(exc):
+        return ""
+    return (
+        " Hugging Face answered 401: the saved Hugging Face token may have expired or been "
+        "revoked, or the repo is private or gated. Update the token in Settings, or remove it "
+        "to read public repos."
+    )

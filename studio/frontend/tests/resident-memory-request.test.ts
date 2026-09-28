@@ -3,6 +3,7 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
+import { readFileSync } from "node:fs";
 import {
   resolveResidentEstimateRequest,
   selectResidentEstimateSettings,
@@ -133,4 +134,47 @@ test("fixed Manual layers and automatic layers retain their loaded meaning", () 
     assert.equal(settings?.gpuLayers, layers < 0 ? null : layers);
     assert.equal(settings?.nCpuMoe, 4);
   }
+});
+
+test("an MLX resident is priced at its served window and loaded cache width", () => {
+  const pending = {
+    modelPath: "mlx-community/Qwen3-8B-4bit",
+    ggufVariant: null,
+  };
+  const settings = selectResidentEstimateSettings({ ...loaded });
+  const request = resolveResidentEstimateRequest(pending, settings, 8192, {
+    kvQuant: "4",
+  });
+  assert.equal(request?.maxSeqLength, 8192);
+  assert.equal(request?.mlxKvQuant, "4");
+  const auto = resolveResidentEstimateRequest(pending, settings, 8192, {
+    kvQuant: null,
+  });
+  assert.equal(auto?.maxSeqLength, 8192);
+  assert.equal(auto?.mlxKvQuant, null);
+  // A GGUF resident keeps its old shape: nothing MLX reads is added.
+  const gguf = resolveResidentEstimateRequest(pending, settings, 8192);
+  assert.ok(gguf && !("maxSeqLength" in gguf) && !("mlxKvQuant" in gguf));
+});
+
+test("an MLX resident is credited without the llama.cpp settings it never records", () => {
+  const pending = { modelPath: "mlx-community/Qwen3-8B-4bit", ggufVariant: null };
+  const request = resolveResidentEstimateRequest(pending, null, 20736, {
+    kvQuant: null,
+  });
+  assert.equal(request?.maxSeqLength, 20736);
+  assert.equal(resolveResidentEstimateRequest(pending, null, 20736), null);
+  // The page reads an MLX resident's window from loadedContextLength: activeLoadedContext
+  // is GGUF-only, and reading it left the MLX branch unreachable.
+  const page = readFileSync(
+    new URL(
+      "../src/features/model-picker/components/model-config-page.tsx",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.match(
+    page,
+    /targetIsMlx && isActiveModel \? loadedContextLength : activeLoadedContext/,
+  );
 });

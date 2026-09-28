@@ -26,7 +26,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { SparklesGlyph } from "@/lib/sparkles-icon";
-import { Tick02Icon } from "@/lib/tick-icon";
+import { MenuTickIcon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
@@ -138,7 +138,7 @@ export function PermissionModeMenuItems({
           </span>
           {permissionMode === option.value ? (
             <HugeiconsIcon
-              icon={Tick02Icon}
+              icon={MenuTickIcon}
               strokeWidth={2}
               className="ml-auto mt-0.5 size-4 shrink-0"
             />
@@ -231,7 +231,7 @@ export function PermissionModeDropdown({
         <DropdownMenuContent
           side={side}
           align={align}
-          className="w-[300px]"
+          className="w-[calc(300px*var(--ui-space-scale,1))]"
           avoidCollisions={true}
         >
           <DropdownMenuLabel>
@@ -284,13 +284,13 @@ export function PermissionModeComposerPill({
           title={`${active.label}: ${active.description}`}
         >
           <span className="composer-pill-glyph">
-            <ActiveIcon className="size-[15px]" strokeWidth={2} />
+            <ActiveIcon className="size-[calc(15px*var(--ui-space-scale,1))]" strokeWidth={2} />
           </span>
           <span>{active.label}</span>
           <HugeiconsIcon
             icon={ChevronDownStandardIcon}
             strokeWidth={1.5}
-            className="composer-pill-caret size-[15px]"
+            className="composer-pill-caret size-[calc(15px*var(--ui-space-scale,1))]"
           />
         </button>
       </DropdownMenuTrigger>
@@ -299,7 +299,7 @@ export function PermissionModeComposerPill({
         align="start"
         sideOffset={0}
         avoidCollisions={true}
-        className="unsloth-plus-menu w-[300px]"
+        className="unsloth-plus-menu w-[calc(300px*var(--ui-space-scale,1))]"
       >
         <DropdownMenuLabel>
           How should tool calls be approved?

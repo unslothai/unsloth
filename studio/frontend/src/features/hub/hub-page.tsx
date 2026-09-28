@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useAppShellReadySignal } from "@/components/app-readiness";
-import { useHfEndpoint } from "@/lib/hf-endpoint";
+import { useHfEndpoint, useHubSource } from "@/lib/hf-endpoint";
 import { usePlatformStore } from "@/config/env";
 import {
   applyActiveModelStatusToStore,
@@ -114,6 +114,7 @@ import { studioPageForTask } from "./lib/unsloth-support";
 import {
   buildDiscoverRows,
   detectResultFormat,
+  discoveryInventorySignature,
   isUnslothFinetunable,
   matchesCapability,
   matchesFormat,
@@ -234,24 +235,6 @@ function buildFocusedHeading({
   if (trimmed) return `Results for "${trimmed}"`;
   if (channel && channel.id !== DEFAULT_DISCOVER_CHANNEL) return channel.label;
   return isDataset ? "Datasets" : "Models";
-}
-
-function discoveryInventorySignature(
-  cachedRows: readonly CachedInventoryRow[],
-  localRows: readonly LocalInventoryRow[],
-): string {
-  const parts: string[] = [];
-  for (const row of cachedRows) {
-    parts.push(
-      `c:${row.repoId.toLowerCase()}:${row.modelFormat}:${row.partial ? "p" : "c"}`,
-    );
-  }
-  for (const row of localRows) {
-    parts.push(
-      `l:${(row.repoId ?? row.id).toLowerCase()}:${row.modelFormat}:${row.partial ? "p" : "c"}`,
-    );
-  }
-  return parts.sort().join("|");
 }
 
 function readModelsTabPreference(): ModelsTab | null {
@@ -745,6 +728,33 @@ export function ModelsPage() {
     });
   }, [navigate, setModelsTab]);
 
+  // A capability link opens the sorted Discover list with that filter on (the feed ignores it).
+  // The param is consumed so later filter changes stick and a repeat link re-applies.
+  const urlCapability = hubSearch.capability ?? null;
+  useEffect(() => {
+    if (!urlCapability) return;
+    setResourceType("models");
+    setQuery("");
+    setDiscoverFormat("all");
+    setCapabilityFilter(urlCapability);
+    setSortBrowseActive(true);
+    // The media pages run curated Unsloth uploads, so start there.
+    setOwnerScope("unsloth");
+    void navigate({
+      to: "/hub",
+      // Discover models, whatever tab or kind the link carried.
+      search: (prev) => ({
+        ...prev,
+        tab: "discover",
+        kind: undefined,
+        capability: undefined,
+        section: undefined,
+        model: undefined,
+      }),
+      replace: true,
+    });
+  }, [urlCapability, navigate, setOwnerScope]);
+
   const handleSortChange = useCallback(
     (next: HfSortKey) => {
       setSortBy(next);
@@ -795,8 +805,14 @@ export function ModelsPage() {
     return null;
   }, [isChannelListMode, isFeedMode, activeChannel]);
 
-  const effectiveSort: HfSortKey =
+  const hubSource = useHubSource();
+  const requestedSort: HfSortKey =
     isFeedMode && liveListChannel ? liveListChannel.sort : sortBy;
+  // ModelScope has no creation-date sort; its closest is last modified.
+  const effectiveSort: HfSortKey =
+    hubSource === "modelscope" && requestedSort === "createdAt"
+      ? "lastModified"
+      : requestedSort;
   const effectiveDirection: HfSortDirection = isFeedMode ? "desc" : direction;
   // The format dropdown always filters the visible list, including the feed's "Latest" list, so
   // the default (GGUF) hides fp8/safetensors and picking a format actually changes the rows.
@@ -856,6 +872,7 @@ export function ModelsPage() {
     localRows: effectiveLocalRows,
     availableSet,
     partialSet,
+    downloadingSet,
     downloadedReady,
     inventorySettled,
     inventoryError,
@@ -928,11 +945,12 @@ export function ModelsPage() {
         },
         isAvailableOnDevice: availableSet.has(lower),
         isPartialOnDevice: partialSet.has(lower),
+        isDownloadingOnDevice: partialSet.has(lower) && downloadingSet.has(lower),
         summary: summaryParts.join(" · ") || ds.prettyName || "Dataset",
         capabilities: [],
       };
     });
-  }, [isDatasetMode, datasetResults, availableSet, partialSet]);
+  }, [isDatasetMode, datasetResults, availableSet, partialSet, downloadingSet]);
 
   const discoverRows = isDatasetMode ? datasetDiscoverRows : modelDiscoverRows;
 
@@ -1355,14 +1373,15 @@ export function ModelsPage() {
   ]);
 
   useEffect(() => {
-    if (!isModelDiscover || !sectionChannelId) return;
+    // A capability link clears the section itself; applying the preset would reset its filter.
+    if (!isModelDiscover || !sectionChannelId || urlCapability) return;
     const preset = findChannel(sectionChannelId);
     if (!preset) return;
     setDiscoverFormat(preset.format);
     setSortBy(preset.sort);
     setDirection("desc");
     setCapabilityFilter("all");
-  }, [isModelDiscover, sectionChannelId]);
+  }, [isModelDiscover, sectionChannelId, urlCapability]);
   const handleManageLocalFolders = useCallback(
     () => setFoldersDialogOpen(true),
     [],
@@ -1576,6 +1595,8 @@ export function ModelsPage() {
             deferredCapabilityFilter !== "all" ||
             (tab === "downloaded" && typeFilterActive)),
         typeFilterActive,
+        // A single format filter makes every row's format dot the same.
+        showFormatDots: isDatasetMode || deferredFormatFilter === "all",
       };
     },
     [

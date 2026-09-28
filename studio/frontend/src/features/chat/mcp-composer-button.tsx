@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { Tick02Icon } from "@/lib/tick-icon";
+import { MenuTickIcon } from "@/lib/tick-icon";
 import { McpServerIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
@@ -266,7 +266,7 @@ export function McpComposerButton({
     >
       <span className="truncate">{opts.label}</span>
       {opts.enabled ? (
-        <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="ml-auto" />
+        <HugeiconsIcon icon={MenuTickIcon} strokeWidth={2} className="ml-auto" />
       ) : null}
       {opts.hint ? (
         <Tooltip open={hintKey === opts.key}>
@@ -324,13 +324,13 @@ export function McpComposerButton({
             >
               <HugeiconsIcon
                 icon={McpServerIcon}
-                className="size-[15px]"
+                className="size-[calc(15px*var(--ui-space-scale,1))]"
                 strokeWidth={2}
               />
               <XIcon className="composer-pill-x" />
             </span>
             <span>MCP</span>
-            <ChevronDownIcon strokeWidth={1.5} className="composer-pill-caret size-[15px]" />
+            <ChevronDownIcon strokeWidth={1.5} className="composer-pill-caret size-[calc(15px*var(--ui-space-scale,1))]" />
           </button>
         </DropdownMenuTrigger>
         <DropdownMenuContent
@@ -338,7 +338,7 @@ export function McpComposerButton({
           align="start"
           sideOffset={0}
           avoidCollisions={true}
-          className="unsloth-plus-menu mcp-menu w-[232px]"
+          className="unsloth-plus-menu mcp-menu w-[calc(232px*var(--ui-space-scale,1))]"
         >
           <DropdownMenuLabel>MCP Servers</DropdownMenuLabel>
           {usable ? null : (
@@ -368,7 +368,7 @@ export function McpComposerButton({
           >
             <span className="truncate">Blender</span>
             {blenderEnabled ? (
-              <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="ml-auto" />
+              <HugeiconsIcon icon={MenuTickIcon} strokeWidth={2} className="ml-auto" />
             ) : null}
           </DropdownMenuItem>
           {customServers.length > 0 ? <DropdownMenuSeparator /> : null}

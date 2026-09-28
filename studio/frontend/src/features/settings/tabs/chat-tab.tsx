@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { Button } from "@/components/ui/button";
 import {
   Select,
   SelectContent,
@@ -10,7 +11,10 @@ import {
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import {
+  DEFAULT_THINKING_VISIBILITY,
+  DEFAULT_TOOL_VISIBILITY,
   type PlusMenuItemId,
+  normaliseDisplayVisibility,
   refreshModelDisclaimerPreference,
   saveModelDisclaimerPreference,
   useChatPreferencesStore,
@@ -18,26 +22,25 @@ import {
   usePlusMenuPrefsStore,
   useSidebarOrganizationStore,
 } from "@/features/chat";
-import {
-  compactionStyleValue,
-  parseCompactionStyle,
-} from "@/features/chat/utils/auto-compaction";
 import { PASTED_TEXT_THRESHOLD_CHOICES } from "@/features/chat/utils/pasted-text";
 import { refreshContextUsage } from "@/features/chat/utils/refresh-context-usage";
 import { formatBindingLabel, isMacPlatform } from "../lib/keyboard-shortcuts";
 import { useUserProfileStore } from "@/features/profile";
 import { type TranslationKey, useT } from "@/i18n";
 import { toast } from "@/lib/toast";
+import { cn } from "@/lib/utils";
 import {
   Bookmark02Icon,
   Download01Icon,
   FileDatabaseIcon,
   Folder01Icon,
+  LibrariesIcon,
   McpServerIcon,
   PencilRulerIcon,
   Scroll01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { useNavigate } from "@tanstack/react-router";
 import { Columns2Icon } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
@@ -53,7 +56,7 @@ import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 
 // Adjustable "+" menu items shown in settings, in display order. Icons mirror
 // the ones used in the composer + menu itself.
-const PLUS_MENU_ICON_CLASS = "size-[18px]";
+const PLUS_MENU_ICON_CLASS = "size-[calc(18px*var(--ui-space-scale,1))]";
 const PLUS_MENU_SETTINGS: {
   id: PlusMenuItemId;
   labelKey: TranslationKey;
@@ -145,6 +148,7 @@ const PLUS_MENU_SETTINGS: {
 
 export function ChatTab() {
   const t = useT();
+  const navigate = useNavigate();
   const plusPins = usePlusMenuPrefsStore((state) => state.pins);
   const togglePlusPin = usePlusMenuPrefsStore((state) => state.togglePin);
   const autoTitle = useChatRuntimeStore((state) => state.autoTitle);
@@ -166,16 +170,6 @@ export function ChatTab() {
   );
   const setAutoCompactEnabled = useChatRuntimeStore(
     (state) => state.setAutoCompactEnabled,
-  );
-  const contextPolicy = useChatRuntimeStore((state) => state.contextPolicy);
-  const compactionHeadroomRatio = useChatRuntimeStore(
-    (state) => state.compactionHeadroomRatio,
-  );
-  const setContextPolicy = useChatRuntimeStore(
-    (state) => state.setContextPolicy,
-  );
-  const setCompactionHeadroomRatio = useChatRuntimeStore(
-    (state) => state.setCompactionHeadroomRatio,
   );
   const showGreetingSloth = useUserProfileStore((s) => s.showGreetingSloth);
   const setShowGreetingSloth = useUserProfileStore(
@@ -244,14 +238,32 @@ export function ChatTab() {
   const showResponseModel = useChatPreferencesStore(
     (state) => state.showResponseModel,
   );
+  const showInlineReadAloud = useChatPreferencesStore(
+    (state) => state.showInlineReadAloud,
+  );
+  const setShowInlineReadAloud = useChatPreferencesStore(
+    (state) => state.setShowInlineReadAloud,
+  );
+  const showInlineEditResponse = useChatPreferencesStore(
+    (state) => state.showInlineEditResponse,
+  );
+  const setShowInlineEditResponse = useChatPreferencesStore(
+    (state) => state.setShowInlineEditResponse,
+  );
   const setShowResponseModel = useChatPreferencesStore(
     (state) => state.setShowResponseModel,
   );
-  const collapseThinkingByDefault = useChatPreferencesStore(
-    (state) => state.collapseThinkingByDefault,
+  const autoScrollWhileGenerating = useChatPreferencesStore(
+    (state) => state.autoScrollWhileGenerating,
   );
-  const setCollapseThinkingByDefault = useChatPreferencesStore(
-    (state) => state.setCollapseThinkingByDefault,
+  const setAutoScrollWhileGenerating = useChatPreferencesStore(
+    (state) => state.setAutoScrollWhileGenerating,
+  );
+  const thinkingVisibility = useChatPreferencesStore(
+    (state) => state.thinkingVisibility,
+  );
+  const setThinkingVisibility = useChatPreferencesStore(
+    (state) => state.setThinkingVisibility,
   );
   const [currentDatePrompt, setCurrentDatePrompt] =
     useState<CurrentDatePromptSettings | null>(null);
@@ -260,11 +272,11 @@ export function ChatTab() {
   >(null);
   const [isSavingCurrentDatePrompt, setIsSavingCurrentDatePrompt] =
     useState(false);
-  const collapseToolActivityByDefault = useChatPreferencesStore(
-    (state) => state.collapseToolActivityByDefault,
+  const toolVisibility = useChatPreferencesStore(
+    (state) => state.toolVisibility,
   );
-  const setCollapseToolActivityByDefault = useChatPreferencesStore(
-    (state) => state.setCollapseToolActivityByDefault,
+  const setToolVisibility = useChatPreferencesStore(
+    (state) => state.setToolVisibility,
   );
   const foldToolActivityIntoThinking = useChatPreferencesStore(
     (state) => state.foldToolActivityIntoThinking,
@@ -272,6 +284,8 @@ export function ChatTab() {
   const setFoldToolActivityIntoThinking = useChatPreferencesStore(
     (state) => state.setFoldToolActivityIntoThinking,
   );
+  // Cannot coexist with always expanded. The stored preference is left alone so it comes back.
+  const foldBlockedByAlwaysExpanded = toolVisibility === "expanded";
   const pastedTextMinChars = useChatPreferencesStore(
     (state) => state.pastedTextMinChars,
   );
@@ -335,12 +349,31 @@ export function ChatTab() {
   };
 
   return (
-    <div className="flex flex-col gap-6">
+    <div className="settings-page">
       <header className="flex flex-col gap-1">
         <h1 className="text-xl font-semibold font-heading">
           {t("settings.chat.title")}
         </h1>
       </header>
+
+      <SettingsSection title={t("settings.chat.library.label")} hideHeading>
+        <SettingsRow
+          label={t("settings.chat.library.label")}
+          description={t("settings.chat.library.description")}
+        >
+          <Button
+            variant="outline"
+            className="px-3.5"
+            onClick={() => {
+              useSettingsDialogStore.getState().closeDialog();
+              void navigate({ to: "/library", search: { show: "chats" } });
+            }}
+          >
+            <HugeiconsIcon icon={LibrariesIcon} strokeWidth={1.75} className="size-4" />
+            {t("settings.chat.library.action")}
+          </Button>
+        </SettingsRow>
+      </SettingsSection>
 
       <SettingsSection title={t("settings.general.chatDefaults")}>
         <ComposerSettings embedded={true} />
@@ -390,51 +423,35 @@ export function ChatTab() {
           />
         </SettingsRow>
         <SettingsRow
-          label={t("settings.chat.compactionStyle")}
-          description={t(
-            contextPolicy === "inherit"
-              ? "settings.chat.compactionDescriptionInherit"
-              : contextPolicy === "checkpoint"
-                ? "settings.chat.compactionDescriptionCheckpoint"
-                : "settings.chat.compactionDescriptionRolling",
-          )}
+          label={t("settings.chat.autoScroll")}
+          description={t("settings.chat.autoScrollDescription")}
         >
-          <Select
-            value={compactionStyleValue(contextPolicy, compactionHeadroomRatio)}
-            onValueChange={(value) => {
-              const next = parseCompactionStyle(value);
-              setContextPolicy(next.contextPolicy);
-              setCompactionHeadroomRatio(next.compactionHeadroomRatio);
-            }}
-            disabled={!autoCompactEnabled}
+          <div
+            className="hub-tab-toggle inline-flex h-8 items-center rounded-full"
+            role="group"
+            aria-label={t("settings.chat.autoScroll")}
           >
-            <SelectTrigger
-              className="w-64"
-              aria-label={t("settings.chat.compactionStyle")}
-            >
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="inherit">
-                {t("settings.chat.compactionStyleInherit")}
-              </SelectItem>
-              <SelectItem value="checkpoint">
-                {t("settings.chat.compactionStyleCheckpoint")}
-              </SelectItem>
-              <SelectItem value="rolling:0.25">
-                {t("settings.chat.compactionStyleRollingDefault")}
-              </SelectItem>
-              <SelectItem value="rolling:0.1">
-                {t("settings.chat.compactionStyleRolling10")}
-              </SelectItem>
-              <SelectItem value="rolling:0.05">
-                {t("settings.chat.compactionStyleRolling5")}
-              </SelectItem>
-              <SelectItem value="rolling:0">
-                {t("settings.chat.compactionStyleRollingNone")}
-              </SelectItem>
-            </SelectContent>
-          </Select>
+            {([true, false] as const).map((follow) => (
+              <button
+                key={String(follow)}
+                type="button"
+                aria-pressed={autoScrollWhileGenerating === follow}
+                onClick={() => setAutoScrollWhileGenerating(follow)}
+                className={cn(
+                  "inline-flex h-8 cursor-pointer items-center rounded-full px-3.5 text-ui-12 font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+                  autoScrollWhileGenerating === follow
+                    ? "hub-tab-toggle-pill text-foreground"
+                    : "text-muted-foreground hover:text-foreground",
+                )}
+              >
+                {t(
+                  follow
+                    ? "settings.chat.autoScrollAuto"
+                    : "settings.chat.autoScrollManual",
+                )}
+              </button>
+            ))}
+          </div>
         </SettingsRow>
       </SettingsSection>
 
@@ -464,7 +481,7 @@ export function ChatTab() {
             {currentDatePromptError ? (
               <span
                 role="alert"
-                className="max-w-[260px] text-right text-xs text-destructive"
+                className="max-w-[calc(260px*var(--ui-space-scale,1))] text-right text-xs text-destructive"
               >
                 {currentDatePromptError}
               </span>
@@ -504,32 +521,80 @@ export function ChatTab() {
           <Switch checked={searchImages} onCheckedChange={setSearchImages} />
         </SettingsRow>
         <SettingsRow
-          label={t("settings.chat.thinking.collapseByDefault")}
-          description={t("settings.chat.thinking.collapseByDefaultDescription")}
+          label={t("settings.chat.thinking.visibility")}
+          description={t("settings.chat.thinking.visibilityDescription")}
         >
-          <Switch
-            aria-label={t("settings.chat.thinking.collapseByDefault")}
-            checked={collapseThinkingByDefault}
-            onCheckedChange={setCollapseThinkingByDefault}
-          />
+          <Select
+            value={thinkingVisibility}
+            onValueChange={(value) =>
+              setThinkingVisibility(
+                normaliseDisplayVisibility(value, DEFAULT_THINKING_VISIBILITY),
+              )
+            }
+          >
+            <SelectTrigger
+              className="w-64"
+              aria-label={t("settings.chat.thinking.visibility")}
+            >
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="collapsed">
+                {t("settings.chat.visibility.collapsed")}
+              </SelectItem>
+              <SelectItem value="auto">
+                {t("settings.chat.visibility.auto")}
+              </SelectItem>
+              <SelectItem value="expanded">
+                {t("settings.chat.visibility.expanded")}
+              </SelectItem>
+            </SelectContent>
+          </Select>
         </SettingsRow>
         <SettingsRow
-          label={t("settings.chat.tools.collapseByDefault")}
-          description={t("settings.chat.tools.collapseByDefaultDescription")}
+          label={t("settings.chat.tools.visibility")}
+          description={t("settings.chat.tools.visibilityDescription")}
         >
-          <Switch
-            aria-label={t("settings.chat.tools.collapseByDefault")}
-            checked={collapseToolActivityByDefault}
-            onCheckedChange={setCollapseToolActivityByDefault}
-          />
+          <Select
+            value={toolVisibility}
+            onValueChange={(value) =>
+              setToolVisibility(
+                normaliseDisplayVisibility(value, DEFAULT_TOOL_VISIBILITY),
+              )
+            }
+          >
+            <SelectTrigger
+              className="w-64"
+              aria-label={t("settings.chat.tools.visibility")}
+            >
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="collapsed">
+                {t("settings.chat.visibility.collapsed")}
+              </SelectItem>
+              <SelectItem value="auto">
+                {t("settings.chat.visibility.auto")}
+              </SelectItem>
+              <SelectItem value="expanded">
+                {t("settings.chat.visibility.expanded")}
+              </SelectItem>
+            </SelectContent>
+          </Select>
         </SettingsRow>
         <SettingsRow
           label={t("settings.chat.tools.foldIntoThinking")}
-          description={t("settings.chat.tools.foldIntoThinkingDescription")}
+          // Says why the row is off rather than letting a checked switch do nothing.
+          description={t(
+            foldBlockedByAlwaysExpanded
+              ? "settings.chat.tools.foldIntoThinkingBlocked"
+              : "settings.chat.tools.foldIntoThinkingDescription",
+          )}
         >
           <Switch
             aria-label={t("settings.chat.tools.foldIntoThinking")}
-            checked={foldToolActivityIntoThinking}
+            checked={foldToolActivityIntoThinking && !foldBlockedByAlwaysExpanded}
+            disabled={foldBlockedByAlwaysExpanded}
             onCheckedChange={setFoldToolActivityIntoThinking}
           />
         </SettingsRow>
@@ -541,6 +606,26 @@ export function ChatTab() {
             aria-label={t("settings.chat.showResponseModel")}
             checked={showResponseModel}
             onCheckedChange={setShowResponseModel}
+          />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.chat.inlineReadAloud")}
+          description={t("settings.chat.inlineReadAloudDescription")}
+        >
+          <Switch
+            aria-label={t("settings.chat.inlineReadAloud")}
+            checked={showInlineReadAloud}
+            onCheckedChange={setShowInlineReadAloud}
+          />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.chat.inlineEditResponse")}
+          description={t("settings.chat.inlineEditResponseDescription")}
+        >
+          <Switch
+            aria-label={t("settings.chat.inlineEditResponse")}
+            checked={showInlineEditResponse}
+            onCheckedChange={setShowInlineEditResponse}
           />
         </SettingsRow>
         <SettingsRow
