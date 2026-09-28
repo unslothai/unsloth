@@ -15,9 +15,13 @@ import { useUiSpaceScale } from "@/hooks/use-ui-space-scale";
 import { useLayoutEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { useHubAvailability } from "../hooks/use-online-status";
-import { clearRemoteBackoff, type HubFailure } from "../lib/network";
+import {
+  clearRemoteBackoff,
+  hubAuthFailure,
+  type HubFailure,
+} from "../lib/network";
 import { useIsAccountOwner } from "@/features/auth";
-import { updateHubSource } from "@/features/settings";
+import { updateHubSource, useSettingsDialogStore } from "@/features/settings";
 import { useT } from "@/i18n";
 import { useHubName, useHubSource } from "@/lib/hf-endpoint";
 
@@ -28,7 +32,12 @@ function describeFailure(
   online: boolean,
   resourceLabel: "models" | "datasets",
   hub: string,
-): { title: string; body: string; offlineLike: boolean } {
+): {
+  title: string;
+  body: string;
+  offlineLike: boolean;
+  tokenRejected?: boolean;
+} {
   switch (failure?.kind) {
     case "browser-offline":
       return {
@@ -48,6 +57,14 @@ function describeFailure(
         title: `Can't reach ${hub}`,
         body: failure.message,
         offlineLike: false,
+      };
+    // Reached and refused: the fix is the token, not the connection or the hub.
+    case "auth-rejected":
+      return {
+        title: `${hub} rejected your token`,
+        body: failure.message,
+        offlineLike: false,
+        tokenRejected: true,
       };
     default:
       break;
@@ -98,6 +115,20 @@ function UseModelScopeButton() {
   );
 }
 
+function UpdateTokenButton() {
+  const t = useT();
+  const openSettings = useSettingsDialogStore((s) => s.openDialog);
+  return (
+    <Button
+      size="sm"
+      onClick={() => openSettings("general")}
+      className="h-8 rounded-full"
+    >
+      {t("picker.updateToken")}
+    </Button>
+  );
+}
+
 export function NetworkErrorState({
   online,
   message,
@@ -113,8 +144,11 @@ export function NetworkErrorState({
   onSwitchDevice?: () => void;
   resourceLabel?: "models" | "datasets";
 }) {
-  const { title, body, offlineLike } = describeFailure(
-    failure,
+  // An SDK error the network layer never saw (the Hub answered 401) carries only
+  // its text, so the refusal is recovered from it rather than called unreachable.
+  const shown = failure ?? hubAuthFailure({ message });
+  const { title, body, offlineLike, tokenRejected } = describeFailure(
+    shown,
     online,
     resourceLabel,
     useHubName(),
@@ -133,11 +167,14 @@ export function NetworkErrorState({
         <p className="max-w-md text-ui-12p5 leading-5 text-muted-foreground">
           {body}
         </p>
-        <p className="text-ui-11 text-muted-foreground/70">{message}</p>
+        {tokenRejected ? null : (
+          <p className="text-ui-11 text-muted-foreground/70">{message}</p>
+        )}
       </div>
       <div className="flex flex-wrap items-center justify-center gap-2">
+        {tokenRejected ? <UpdateTokenButton /> : null}
         {/* A reachable hub answering an HTTP error is no reason to switch hubs. */}
-        {failure && !offlineLike ? <UseModelScopeButton /> : null}
+        {shown && !offlineLike && !tokenRejected ? <UseModelScopeButton /> : null}
         {onSwitchDevice ? (
           <button
             type="button"
@@ -171,8 +208,9 @@ export function HubFailureHint({
   message: string | null;
   onRetry: () => void;
 }) {
-  const { phase, failure } = useHubAvailability();
-  const { title, body, offlineLike } = describeFailure(
+  const { phase, failure: availabilityFailure } = useHubAvailability();
+  const failure = availabilityFailure ?? hubAuthFailure({ message });
+  const { title, body, offlineLike, tokenRejected } = describeFailure(
     failure,
     phase === "available",
     "models",
@@ -189,7 +227,8 @@ export function HubFailureHint({
         )}
       </div>
       <div className="flex flex-wrap items-center gap-2">
-        {failure && !offlineLike ? <UseModelScopeButton /> : null}
+        {tokenRejected ? <UpdateTokenButton /> : null}
+        {failure && !offlineLike && !tokenRejected ? <UseModelScopeButton /> : null}
         <Button
           variant="ghost"
           size="sm"

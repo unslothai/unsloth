@@ -46,6 +46,41 @@ def _fp8_triton_device_context(tensor: torch.Tensor, static_device_count = False
     return nullcontext()
 
 
+# Module level: a torch.library.Library deregisters its ops once collected.
+_fp8_library = None
+
+
+def _opaque_under_compile(name, fake):
+    # torch.compile swaps the launcher for one registered op: tracing it breaks the graph (device_count) and recompiles
+    # the Triton kernel under dynamic shapes 40-80x slower. Eager calls still run the plain function, at no cost.
+    # torch.library.Library, not custom_op: compiled graphs dispatch it with ~3 us per call instead of ~23 us.
+    def decorator(fn):
+        global _fp8_library
+        substitute_in_graph = getattr(torch._dynamo, "substitute_in_graph", None)
+        if substitute_in_graph is None or not hasattr(torch.library, "infer_schema"):
+            return fn
+        try:
+            if _fp8_library is None:
+                _fp8_library = torch.library.Library("unsloth", "FRAGMENT")
+            _fp8_library.define(name + torch.library.infer_schema(fn, mutates_args = ()))
+            _fp8_library.impl(name, fn, "CompositeExplicitAutograd")
+            torch.library.register_fake(f"unsloth::{name}", fake, lib = _fp8_library)
+            substitute_in_graph(fn)(
+                functools.wraps(fn)(
+                    lambda *args, **kwargs: getattr(torch.ops.unsloth, name)(*args, **kwargs)
+                )
+            )
+        except (
+            RuntimeError,
+            TypeError,
+            ValueError,
+        ):  # Already registered by an earlier import of this module.
+            pass
+        return fn
+
+    return decorator
+
+
 try:
     from transformers.integrations.finegrained_fp8 import FP8Linear
 except:
@@ -104,11 +139,17 @@ def weight_dequant_kernel(x_ptr, s_ptr, y_ptr, M, N, BLOCK_SIZE: tl.constexpr):
     tl.store(y_ptr + offs, y, mask = mask)
 
 
+@_opaque_under_compile(
+    "fp8_weight_dequant_block",
+    lambda x, s, block_size = 128, dtype = torch.bfloat16: torch.empty_like(
+        x, dtype = dtype, memory_format = torch.contiguous_format
+    ),
+)
 def weight_dequant_block(
     x: torch.Tensor,
     s: torch.Tensor,
     block_size: int = 128,
-    dtype = torch.bfloat16,
+    dtype: torch.dtype = torch.bfloat16,
 ) -> torch.Tensor:
     if not x.is_contiguous():
         x = x.contiguous()
@@ -187,6 +228,13 @@ def act_quant_kernel(x_ptr, y_ptr, s_ptr, BLOCK_SIZE: tl.constexpr):
     tl.store(s_ptr + pid, s)
 
 
+@_opaque_under_compile(
+    "fp8_act_quant",
+    lambda x, block_size = 128: (
+        x.new_empty(x.shape, dtype = torch.float8_e4m3fn),
+        x.new_empty(*x.shape[:-1], x.shape[-1] // block_size, dtype = torch.float32),
+    ),
+)
 def act_quant(x: torch.Tensor, block_size: int = 128) -> tuple[torch.Tensor, torch.Tensor]:
     if not x.is_contiguous():
         x = x.contiguous()
@@ -284,6 +332,12 @@ def _w8a8_block_fp8_matmul(
     tl.store(c_ptrs, c, mask = c_mask)
 
 
+@_opaque_under_compile(
+    "fp8_block_matmul_triton",
+    lambda A, B, As, Bs, block_size, output_dtype = torch.float32: A.new_empty(
+        A.shape[:-1] + (B.shape[0],), dtype = output_dtype
+    ),
+)
 def w8a8_block_fp8_matmul_triton(
     A: torch.Tensor,
     B: torch.Tensor,
@@ -345,18 +399,26 @@ def w8a8_block_fp8_matmul_triton(
             BLOCK_SIZE_N = BLOCK_SIZE_N,
             BLOCK_SIZE_K = BLOCK_SIZE_K,
             GROUP_SIZE_M = 8,
+            # Default 4 warps starve 128x128 tiles (8 is 1.3-2.1x faster from M >= 128); smaller decode tiles gain nothing.
+            num_warps = 8 if BLOCK_SIZE_M == 128 else 4,
         )
     return C
 
 
+@_opaque_under_compile(
+    "fp8_block_matmul_torchao",
+    lambda A, B, As, Bs, block_size, output_dtype = torch.bfloat16: A.new_empty(
+        A.shape[:-1] + (B.shape[0],), dtype = output_dtype
+    ),
+)
 def torchao_block_matmul(
     act_q: torch.Tensor,
     weight_q: torch.Tensor,
     act_scale: torch.Tensor,
     weight_scale: torch.Tensor,
-    block_size: tuple[int, int],
+    block_size: list[int],
     output_dtype: torch.dtype = torch.bfloat16,
-):
+) -> torch.Tensor:
     with _fp8_triton_device_context(act_q):
         out = torchao_blockwise_gemm(
             act_q.contiguous(),
@@ -556,7 +618,8 @@ class FP8BlockQuantLinear(torch.autograd.Function):
             ctx.weight = weight
             ctx.weight_scale = original_weight_scale
             ctx.block_size = block_size
-            return torch_matmul(X, W_deq.T).to(X.dtype)
+            output = torch_matmul(X, W_deq.T)
+            return output if output.dtype == X.dtype else output.to(X.dtype)
 
         qinput, scale = act_quant(X, block_size[1])
         output = fp8_block_matmul(
@@ -570,7 +633,8 @@ class FP8BlockQuantLinear(torch.autograd.Function):
         ctx.weight = weight
         ctx.weight_scale = original_weight_scale
         ctx.block_size = block_size
-        return output.to(X.dtype)
+        # No no-op .to(): torch 2.11's compiled autograd.Function returns zero dX when the output aliases an intermediate.
+        return output if output.dtype == X.dtype else output.to(X.dtype)
 
     @staticmethod
     def backward(ctx, grad_output):
@@ -582,9 +646,58 @@ class FP8BlockQuantLinear(torch.autograd.Function):
         return grad_X, None, None
 
 
-@torch_compile
+# Not torch.compiled: after a model's second weight shape, automatic dynamic shapes recompile the
+# user Triton kernel into a version 40-80x slower than eager (the only work here is that kernel).
 def fp8_torch_block_quant_forward(X, weight, weight_scale):
     return FP8BlockQuantLinear.apply(X, weight, weight_scale)
+
+
+def _quantize_fp8_per_row(x, scale_ub = None):
+    # Same as FBGEMM quantize_fp8_per_row: scale = max(min(row absmax, scale_ub) / 448, 1 / (448 * 512)), saturating cast.
+    row_max = x.abs().amax(dim = -1, keepdim = True).float()
+    if scale_ub is not None:
+        row_max = torch.minimum(row_max, scale_ub.float())
+    scale = torch.clamp(row_max / 448.0, min = 1.0 / (448.0 * 512.0))
+    return (x.float() / scale).clamp(-448.0, 448.0).to(torch.float8_e4m3fn), scale
+
+
+def _rowwise_gemm_works(gemm, device):
+    x = torch.ones(128, 128, dtype = torch.float8_e4m3fn, device = device)
+    try:
+        return bool((gemm(x) == 128).all())
+    except Exception:
+        return False
+
+
+@functools.lru_cache(maxsize = None)
+def _probe_fp8_rowwise_backend(device):
+    """Fastest rowwise FP8 GEMM that runs correctly on this device: FBGEMM ships no sm120 kernels ("cutlass
+    cannot initialize" on RTX PRO 6000 / 5090), where torch._scaled_mm keeps FBGEMM's numerics; else dequant."""
+    ones = lambda n: torch.ones(n, dtype = torch.float32, device = device)
+    if _has_fbgemm_rowwise():
+        from unsloth.import_fixes import suppress_cuda_printf
+        with suppress_cuda_printf():
+            if _rowwise_gemm_works(
+                lambda x: torch.ops.fbgemm.f8f8bf16_rowwise(x, x, ones(128), ones(128)), device
+            ):
+                return "fbgemm"
+    if _rowwise_gemm_works(
+        lambda x: torch._scaled_mm(
+            x, x.t(), scale_a = ones((128, 1)), scale_b = ones((1, 128)), out_dtype = torch.bfloat16
+        ),
+        device,
+    ):
+        return "scaled_mm"
+    return "dequant"
+
+
+def _fp8_rowwise_backend(device):
+    return _probe_fp8_rowwise_backend(device)
+
+
+if hasattr(torch._dynamo, "assume_constant_result"):
+    # Compiled callers run the probe once at trace time and bake the answer in; an lru_cache wrapper would be traced.
+    _fp8_rowwise_backend = torch._dynamo.assume_constant_result(_fp8_rowwise_backend)
 
 
 class FbgemmFp8Linear_matmul(torch.autograd.Function):
@@ -595,13 +708,15 @@ class FbgemmFp8Linear_matmul(torch.autograd.Function):
         weight,
         weight_scale,
         bias = None,
+        backend = None,
     ):
+        if backend is None:
+            backend = _fp8_rowwise_backend(x.device)
+        rowwise = weight.shape[0] == weight_scale.shape[0] and not _is_transposed_view(weight)
         if (
-            weight.shape[0] == weight_scale.shape[0]
+            backend == "fbgemm"
+            and rowwise
             and (weight.shape[0] % 8 == 0 and weight.shape[1] % 8 == 0)
-            and not _is_transposed_view(weight)
-            and _has_fbgemm_rowwise()
-            and not _fp8_kernel_unsupported(weight, torch.float8_e4m3fn)
         ):
             # The kernel needs weight dims divisible by 8 (else "cutlass cannot implement"), and padding plus
             # f8f8bf16 is slower than dequant plus bf16 matmul.
@@ -629,11 +744,41 @@ class FbgemmFp8Linear_matmul(torch.autograd.Function):
             output = output.to(x.device, x.dtype)
             output = output.reshape(output_shape)
             del x_quantized, x_scale
+        elif (
+            backend == "scaled_mm"
+            and rowwise
+            and (weight.shape[0] % 16 == 0 and weight.shape[1] % 16 == 0)
+            and x.shape[-1] == weight.shape[1]
+            # Decode-sized calls: compiled dequant + GEMV beats quantizing the activation.
+            and x.numel() > 64 * x.shape[-1]
+        ):
+            output_shape = (*x.shape[:-1], -1)
+            x_quantized, x_scale = _quantize_fp8_per_row(
+                x.reshape(-1, x.shape[-1]), getattr(weight, "input_scale_ub", None)
+            )
+            if not weight.is_contiguous():
+                weight = weight.contiguous()
+            output = torch._scaled_mm(
+                x_quantized,
+                weight.t(),
+                scale_a = x_scale,
+                scale_b = weight_scale.to(torch.float32).view(1, -1),
+                out_dtype = x.dtype,
+                use_fast_accum = True,
+            )
+            output = output + bias if bias is not None else output
+            # FbgemmFp8Linear keeps its bias in float32; only cast when it promoted (a no-op .to() aliases).
+            if output.dtype != x.dtype:
+                output = output.to(x.dtype)
+            output = output.reshape(output_shape)
+            del x_quantized, x_scale
         elif weight_scale.shape[0] in (weight.shape[0], weight.shape[1]):
-            # Transposed, non-divisible-by-8 (Qwen 2.5 VL 7B 3420x1280), no FBGEMM, or pre-sm89: dequant.
+            # Transposed, non-divisible-by-8 (Qwen 2.5 VL 7B 3420x1280), or no working FP8 GEMM here: dequant.
             W_deq = weight_dequant(weight, weight_scale, x.dtype).T
             output = torch_matmul(x, W_deq)
             output = output + bias if bias is not None else output
+            if output.dtype != x.dtype:
+                output = output.to(x.dtype)
             del W_deq
         else:
             raise ValueError(
@@ -659,7 +804,9 @@ def fbgemm_fp8_linear(
     weight_scale,
     bias = None,
 ):
-    return FbgemmFp8Linear_matmul.apply(X, weight, weight_scale, bias)
+    return FbgemmFp8Linear_matmul.apply(
+        X, weight, weight_scale, bias, _fp8_rowwise_backend(X.device)
+    )
 
 
 class FP8_fbgemm_block_linear(torch.autograd.Function):
@@ -831,13 +978,26 @@ except:
     pass
 
 
-@torch_compile
+# Not torch.compiled, for the same reason as fp8_torch_block_quant_forward.
 def fp8_linear(
     X,
     weight,
     weight_scale,
     bias = None,
 ):
+    # Transposed block view (LoRA_MLP backward's downW.t()): the block kernel re-orients rectangular scale grids
+    # from the shapes, but a square grid (or non-square blocks) is ambiguous, so dequantize the stored layout.
+    if (
+        _is_transposed_view(weight)
+        and weight_scale.ndim == 2
+        and weight_scale.shape[1] > 1
+        and (
+            weight_scale.shape[0] == weight_scale.shape[1]
+            or len(set(getattr(weight_scale, "block_size", None) or [128, 128])) > 1
+        )
+    ):
+        out = torch.matmul(X, weight_dequant(weight, weight_scale, X.dtype).t())
+        return out if bias is None else out + bias
     # Per-tensor (scalar scale) or block FP8 (2D scale, multiple columns).
     if weight_scale.numel() == 1 or (weight_scale.ndim == 2 and weight_scale.shape[1] > 1):
         out = fp8_block_quant_linear(X, weight, weight_scale)
@@ -847,9 +1007,23 @@ def fp8_linear(
     return out
 
 
+_FP8_WEIGHT_DTYPES = tuple(
+    getattr(torch, n)
+    for n in ("float8_e4m3fn", "float8_e5m2", "float8_e4m3fnuz", "float8_e5m2fnuz")
+    if hasattr(torch, n)
+)
+
+
 def module_forward_patch(forward_function, scale_attr = "weight_scale"):
     def patched_forward(self, X):
-        out = forward_function(X, self.weight, getattr(self, scale_attr))
+        weight = self.weight
+        if weight.dtype not in _FP8_WEIGHT_DTYPES:
+            # bf16 layer the skip list missed: its scale was never loaded.
+            bias = self._parameters.get("bias")
+            return torch.nn.functional.linear(
+                X, weight.to(X.dtype), None if bias is None else bias.to(X.dtype)
+            )
+        out = forward_function(X, weight, getattr(self, scale_attr))
         # The kernels take no bias, so a biased Linear (Qwen2-style q/k/v) adds it here; fbgemm keeps it fp32.
         bias = self._parameters.get("bias")
         return out if bias is None else out + bias.to(out.dtype)

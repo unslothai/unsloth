@@ -33,6 +33,7 @@ from transformers import AutoConfig
 from transformers import __version__ as transformers_version
 from peft import PeftConfig, PeftModel
 from .grouped_linear_lora import register_grouped_linear_lora_for_adapter
+from .fp8_to_nf4 import track_explicit_4bit_request
 from .mistral_format import (
     MistralFormatRedirect,
     is_mistral_format_view,
@@ -379,6 +380,8 @@ def _has_sequence_classification_architecture(config):
 _OMNI_AUTO_CLASS_NAMES = (
     "AutoModelForImageTextToText",
     "AutoModelForTextToWaveform",
+    # transformers 5 maps speech-to-text models (Voxtral, Qwen2-Audio) only here.
+    "AutoModelForMultimodalLM",
 )
 
 
@@ -555,6 +558,62 @@ FLA_MODEL_TYPE_PREFIXES = ("qwen3_next", "qwen3_5", "kimi_linear", "olmo_hybrid"
 _fla_advised = False
 
 
+def _exaone_moe_windows_need_support(config, windows):
+    layer_types = getattr(config, "layer_types", None) or []
+    single = getattr(config, "sliding_window", None)
+    for layer_type, window in zip(layer_types, windows or []):
+        if layer_type == "sliding_attention" and window and window != single:
+            return True
+    return False
+
+
+# Config fields only modeling code reads; transformers without them silently builds another network (huggingface/transformers#47802).
+_MODELING_ONLY_CONFIG_FIELDS = {
+    "exaone_moe": (
+        ("swiglu_limits", lambda config, v: any(float(x or 0) for x in (v or []))),
+        ("sliding_windows", _exaone_moe_windows_need_support),
+    ),
+}
+
+
+def _raise_if_modeling_ignores_config(config, model_types):
+    """Refuse a checkpoint whose config needs modeling features this transformers lacks."""
+    if config is None:
+        return
+    for model_type in model_types or []:
+        fields = _MODELING_ONLY_CONFIG_FIELDS.get(model_type)
+        if not fields:
+            continue
+        needed = [
+            name
+            for name, needs in fields
+            if getattr(config, name, None) is not None and needs(config, getattr(config, name))
+        ]
+        if not needed:
+            continue
+        try:
+            import importlib, inspect as _inspect
+            source = _inspect.getsource(
+                importlib.import_module(f"transformers.models.{model_type}.modeling_{model_type}")
+            )
+        except Exception:
+            continue
+        missing = [name for name in needed if name not in source]
+        if not missing:
+            continue
+        message = (
+            f"Unsloth: this {model_type} checkpoint sets {', '.join(missing)}, which the installed "
+            f"transformers {transformers_version} ignores, so it would load and train a different "
+            "network than the one released (for K-EXAONE 2.0: no SwiGLU clamp and a 4096 window on "
+            "every sliding layer instead of 128). Install a transformers that supports it "
+            "(huggingface/transformers#47802), or set UNSLOTH_ALLOW_IGNORED_CONFIG=1 to load anyway."
+        )
+        if os.environ.get("UNSLOTH_ALLOW_IGNORED_CONFIG", "0") == "1":
+            logger.warning(message)
+            return
+        raise RuntimeError(message)
+
+
 def _maybe_advise_fla_install(model_types):
     """One-time note when a gated-deltanet model loads without the fast kernels. They ship with Unsloth, so this fires only when they could not be enabled on this platform (no CUDA, torch < 2.7 or triton < 3.3) or when Unsloth deliberately disabled them as known-broken on this GPU / Triton combination, i.e. exactly when transformers uses the slow pure PyTorch path."""
     global _fla_advised
@@ -673,6 +732,7 @@ class FastLanguageModel(FastLlamaModel):
     @staticmethod
     @_offline_aware_load
     @mistral_format_redirect
+    @track_explicit_4bit_request
     def from_pretrained(
         model_name = "unsloth/Llama-3.2-1B-Instruct",
         max_seq_length = 2048,
@@ -1056,6 +1116,7 @@ class FastLanguageModel(FastLlamaModel):
             peft_config if peft_config is not None else model_config,
             trust_remote_code = trust_remote_code,
         )
+        _raise_if_modeling_ignores_config(model_config, model_types)
         if len(model_types) == 1:
             model_type = model_types[0]
         else:
@@ -1132,6 +1193,7 @@ class FastLanguageModel(FastLlamaModel):
                 trust_remote_code = trust_remote_code,
                 local_files_only = local_files_only,
             )
+            _raise_if_modeling_ignores_config(model_config, model_types)
 
         if not was_disabled:
             enable_progress_bars()
@@ -1501,6 +1563,7 @@ class FastModel(FastBaseModel):
     @staticmethod
     @_offline_aware_load
     @mistral_format_redirect
+    @track_explicit_4bit_request
     def from_pretrained(
         model_name = "unsloth/Llama-3.2-11B-Vision-Instruct-bnb-4bit",
         max_seq_length = 2048,
@@ -1900,6 +1963,7 @@ class FastModel(FastBaseModel):
         )
         model_types_all = ",".join(model_types) + ","
         _maybe_advise_fla_install(model_types)
+        _raise_if_modeling_ignores_config(model_config, model_types)
 
         # Text-diffusion models (DiffusionGemma) take a transformers-only slow path: a custom block-diffusion generate over a novel backbone, so Unsloth's autoregressive kernel/compile patching is skipped and the unmodified HF model is loaded, keeping 4bit/8bit and PEFT LoRA.
         if is_diffusion_model_type(model_types):
@@ -2113,6 +2177,7 @@ class FastModel(FastBaseModel):
                     trust_remote_code = trust_remote_code,
                     local_files_only = local_files_only,
                 )
+            _raise_if_modeling_ignores_config(model_config, model_types)
 
         if not was_disabled:
             enable_progress_bars()

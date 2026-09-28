@@ -126,16 +126,29 @@ class LoadRequest(BaseModel):
             "(e.g. 'f16', 'bf16', 'q8_0', 'q4_0', 'q4_1', 'q5_0', 'q5_1', 'iq4_nl', 'f32')"
         ),
     )
-    mlx_kv_bits: Optional[int] = Field(
+    mlx_kv_quant: Optional[str] = Field(
         None,
         description = (
-            "MLX KV cache quantization bit width (8, 6, 5, 4, 3 or 2). MLX takes a bit "
-            "width rather than a llama.cpp dtype name, so this is separate from "
-            "cache_type_kv. Omit for an unquantized cache. Ignored by non-MLX "
-            "backends; a model whose cache layout cannot be quantized reports "
-            "the reason instead of applying it."
+            "MLX KV cache quantization: 'auto' for an unquantized cache, '8'/'6'/'5'/'4'/'3'/'2' "
+            "for an mx.quantize width, or 'tq-4'/'tq-3.5'/'tq-3'/'tq-2' for TurboQuant. MLX names a "
+            "width rather than a llama.cpp dtype, so this is separate from cache_type_kv. Ignored "
+            "by non-MLX backends; a model whose cache layout cannot be quantized reports the reason "
+            "instead of applying it."
         ),
     )
+    mlx_kv_bits: Optional[float] = Field(
+        None, description = "Superseded by mlx_kv_quant; read only when mlx_kv_quant is omitted."
+    )
+
+    @model_validator(mode = "after")
+    def derive_mlx_kv_quant(self):
+        """A bare width only ever meant mx.quantize; null is how a client spells Auto."""
+
+        if "mlx_kv_quant" not in self.model_fields_set and self.mlx_kv_bits is not None:
+            from core.inference.mlx_inference import encode_mlx_kv_quant
+            self.mlx_kv_quant = encode_mlx_kv_quant(self.mlx_kv_bits)
+        return self
+
     gpu_ids: Optional[List[int]] = Field(
         None,
         description = (
@@ -186,11 +199,14 @@ class LoadRequest(BaseModel):
         ge = PARALLEL_MIN,
         le = PARALLEL_MAX,
         description = (
-            "Parallel decode slots for llama-server (--parallel) for this "
-            f"load ({PARALLEL_MIN}..{PARALLEL_MAX}). Omit for the server-wide "
-            "default set at launch (the --parallel CLI flag). The VRAM fitter "
-            "may launch fewer slots to keep the model fully on GPU. Ignored "
-            "for non-GGUF models."
+            f"Replies this load may decode at once ({PARALLEL_MIN}..{PARALLEL_MAX}). "
+            "For GGUF these are llama-server's --parallel slots, and the VRAM "
+            "fitter may launch fewer to keep the model fully on GPU; omit for the "
+            "server-wide default set at launch. Elsewhere it is a ceiling, not a promise: "
+            "a runtime that decodes replies together commits its memory to this width and "
+            "spends it on both the replies to one turn and the concurrent chats joining a "
+            "batch already decoding, while one that does not answers every reply on its "
+            "own whatever this says. The load reply's parallel_slots is what it came to."
         ),
     )
     n_batch: Optional[int] = Field(
@@ -850,7 +866,9 @@ class EstimateMemoryRequest(BaseModel):
     """Settings a Load-Model panel is about to submit, priced before it submits them.
 
     Every field mirrors the load request it previews, so the estimate answers for the
-    command that would actually run. Header-only: nothing is read, touched or loaded.
+    command that would actually run. No model is loaded and no tensor data is read: a
+    GGUF is priced from its header, an MLX repo from safetensors headers and the shapes
+    of a graph that is built and never evaluated.
     """
 
     model_path: str = Field(..., description = "Model identifier or local path")
@@ -867,6 +885,14 @@ class EstimateMemoryRequest(BaseModel):
         ge = 0,
         description = "Context length to price (--ctx-size). 0 or omitted prices the "
         "model's native context, which is what an Auto load asks for.",
+    )
+    load_in_4bit: bool = Field(
+        True,
+        description = "Quantize an unquantized checkpoint to 4 bits on load, as "
+        "/load does by default. Priced because it is the difference between a "
+        "checkpoint's shards and what those shards go resident as. A checkpoint "
+        "carrying its own quantization is priced at its shards, and asking for 4 "
+        "bits on top can make it unsizable, because the real load refuses that.",
     )
     cache_type_kv: Optional[str] = Field(
         None,
@@ -924,8 +950,30 @@ class EstimateMemoryRequest(BaseModel):
         "-nkvo, --swa-full and the cache-type flags all move this estimate.",
     )
 
+    max_seq_length: Optional[int] = Field(
+        None,
+        ge = 0,
+        le = 1048576,
+        description = "Context an MLX load would open at. Separate from n_ctx because "
+        "the two backends take the length from different fields -- /load reads n_ctx "
+        "for GGUF and max_seq_length for everything else -- and pricing one from the "
+        "other quotes a context the load will not use.",
+    )
+    mlx_kv_quant: Optional[str] = Field(
+        None,
+        description = "MLX KV cache quantization in /load's vocabulary ('auto', '8', 'tq-4', ...). "
+        "A TurboQuant choice is priced at full width, as the load fits it.",
+    )
+    mlx_kv_bits: Optional[int] = Field(
+        None,
+        description = "Superseded by mlx_kv_quant; read only when mlx_kv_quant is omitted. Not derived "
+        "from cache_type_kv: that is llama.cpp's setting, it survives in the config of "
+        "a model that never used it, and reading it here would quantize an estimate "
+        "for a load whose cache stays full width.",
+    )
+
     _no_booleans = field_validator(
-        "n_batch", "n_ubatch", "ctx_checkpoints", "n_ctx", mode = "before"
+        "n_batch", "n_ubatch", "ctx_checkpoints", "n_ctx", "max_seq_length", mode = "before"
     )(LoadRequest._no_booleans.__func__)
     # Unresolved, the reference reads as a Hub id and the panel is told the estimate is
     # unavailable for a row it was offered.
@@ -941,7 +989,12 @@ class EstimateMemoryResponse(BaseModel):
         description = "Cause when available is false: 'not_gguf', 'not_downloaded', "
         "'unsupported_source' or 'unsizable'.",
     )
-    weights_bytes: int = Field(0, description = "Resident model files: weights, projector, drafter")
+    weights_bytes: int = Field(
+        0,
+        description = "Resident weights, projector and drafter. The size of the files "
+        "for a GGUF load; for MLX, what those files go resident AS, which is smaller "
+        "wherever the load casts or quantizes them.",
+    )
     kv_bytes: int = Field(0, description = "KV cache at the requested context and slots")
     kv_checkpoint_bytes: int = Field(
         0,
@@ -997,6 +1050,13 @@ class EstimateMemoryResponse(BaseModel):
         True, description = "False under --no-kv-offload, which moves the cache to host RAM"
     )
     n_ctx: int = Field(0, description = "Context length the estimate actually priced")
+    context_fitted: Optional[int] = Field(
+        None,
+        description = "The window MLX would fit to this machine's memory for a load that "
+        "names no Context Length, which is then what n_ctx prices. Null when the load names "
+        "one, when the machine holds the model's own window, or when the footprint of the "
+        "load cannot be described.",
+    )
     cache_type_kv: Optional[str] = Field(
         None, description = "KV dtype the estimate priced, after flags and fallbacks resolve"
     )
@@ -1096,12 +1156,27 @@ class MemoryEstimate(BaseModel):
     native_context: Optional[int] = Field(
         None, description = "The model's own trained context length, when readable"
     )
-    cache_type_kv: Optional[str] = Field(None, description = "KV cache dtype the estimate priced")
+    cache_type_kv: Optional[str] = Field(
+        None,
+        description = (
+            "KV cache width the estimate priced, in the vocabulary of whichever backend "
+            "would load it: llama.cpp spellings such as f16 or q8_0 for a GGUF load, and "
+            "a dtype abbreviation or an N-bit width for an MLX one. An MLX cache whose "
+            "entries do not all end up at one width names each of them, the one carrying "
+            "the most of the cache first, as in bf16/4-bit"
+        ),
+    )
     n_parallel: int = Field(1, description = "Slots the estimate priced, after the launch clamps")
     layer_count: Optional[int] = Field(None, description = "GGUF block_count, when readable")
     gpu_layers: Optional[int] = Field(None, description = "Layers placed on the GPU, when known")
     moe_offload_unmodelled: bool = Field(
         False, description = "--n-cpu-moe is set, so the GPU figure reads high"
+    )
+    context_fitted: Optional[int] = Field(
+        None,
+        description = "The window MLX would fit to this machine's memory for a load that "
+        "names no Context Length, and which n_ctx then prices. Null wherever the served "
+        "window was not chosen for this machine.",
     )
     context_is_pinned: bool = Field(
         True,
@@ -1221,9 +1296,34 @@ class _InferenceRuntimeFields(BaseModel):
     context_length_enforced: Optional[bool] = Field(
         None,
         description = (
-            "Whether context_length actually bounds the runtime's KV cache. True confirmed, "
-            "false confirmed unbounded, null the backend does not answer. MLX builds a cache "
-            "to check, since a model with its own make_cache ignores the requested size."
+            "Whether context_length bounds the runtime's KV cache for a reply decoded on "
+            "its own. True confirmed, false confirmed unbounded, null the backend does not "
+            "answer. MLX builds a cache to check, since a model with its own make_cache "
+            "ignores the requested size. Replies decoded together are answered for by "
+            "context_unbounded_when_batched, not by this."
+        ),
+    )
+    context_unbounded_when_batched: bool = Field(
+        False,
+        description = (
+            "Whether replies this load decodes together escape the window this reports. "
+            "mlx-vlm's batch generator takes no window control, so a vision load able to "
+            "run either batch reports true; everything else, llama.cpp included, reports "
+            "false. Which batch a given reply gets is a per-request question this cannot "
+            "settle, so it errs towards not promising a window. Both fields describe the "
+            "load as it was loaded and neither changes afterwards, so a client combines "
+            "them with parallel_slots to decide what to tell a user: a load reporting true "
+            "and more than one slot cannot promise a window. That is the load's answer, not "
+            "the reply's -- a load whose release keeps no batch open decodes a plain chat "
+            "bounded while still reporting true -- so read it as the weaker claim it is."
+        ),
+    )
+    context_length_fitted: Optional[int] = Field(
+        None,
+        description = (
+            "The window MLX fitted to this machine's memory, where that is shorter than the "
+            "model's own and no Context Length was requested. Null means context_length was not "
+            "chosen for this machine: a pin, or the model's own window."
         ),
     )
     mlx_context_budget: Optional[int] = Field(
@@ -1289,16 +1389,21 @@ class _InferenceRuntimeFields(BaseModel):
         False,
         description = "Whether the active model runs on the AMD Ryzen AI NPU (FastFlowLM through Lemonade)",
     )
-    mlx_kv_bits: Optional[int] = Field(
-        None, description = "MLX KV quantization bit width actually applied, if any"
+    mlx_kv_quant: Optional[str] = Field(
+        None, description = "MLX KV cache quantization actually applied, in mlx_kv_quant's vocabulary"
     )
-    mlx_kv_bits_requested: Optional[int] = Field(
+    mlx_kv_quant_requested: Optional[str] = Field(
         None,
         description = (
-            "MLX KV quantization bit width the load asked for. Differs from "
-            "mlx_kv_bits when the model could not honor it, which is exactly "
-            "when the reason matters."
+            "MLX KV cache quantization the load asked for. Differs from mlx_kv_quant when the model "
+            "could not honor it, which is exactly when the reason matters."
         ),
+    )
+    mlx_kv_bits: Optional[float] = Field(
+        None, description = "mlx_kv_quant as a bare width, kept for clients reading the older field"
+    )
+    mlx_kv_bits_requested: Optional[float] = Field(
+        None, description = "mlx_kv_quant_requested as a bare width, kept for the same reason"
     )
     chat_template_override: Optional[str] = Field(
         None,
@@ -1430,18 +1535,23 @@ class _InferenceRuntimeFields(BaseModel):
     requested_parallel_slots: Optional[int] = Field(
         None,
         description = (
-            "Parallel decode slots the load was invoked with (per-load "
-            "n_parallel, else the server-wide --parallel default). None for "
-            "non-GGUF loads and for the diffusion runner, which ignores "
-            "--parallel."
+            "Replies the load was invoked with (per-load n_parallel, else the "
+            "default; for GGUF, the server-wide --parallel set at launch). None "
+            "for the diffusion runner, which ignores --parallel."
         ),
     )
     parallel_slots: Optional[int] = Field(
         None,
         description = (
-            "Serving slots the active llama-server actually runs (--parallel "
-            "after any fit-time slot reduction). None for non-GGUF loads and "
-            "for the diffusion runner, which ignores --parallel."
+            "Replies the loaded model is configured to decode at once. Not what any "
+            "one reply is running under: a batch already decoding keeps the width it "
+            "opened at until it drains, since resizing it would drop the replies "
+            "inside it, and a request submitted before a change carries the width it "
+            "was submitted with. For "
+            "GGUF these are llama-server's --parallel slots after any fit-time "
+            "reduction; elsewhere it is 1 when the runtime has no batched "
+            "generation, or its settings rule it out. None for the diffusion "
+            "runner, which ignores --parallel, and when the runtime did not say."
         ),
     )
     requested_n_batch: Optional[int] = Field(

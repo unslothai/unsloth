@@ -1159,6 +1159,10 @@ def _build_csp(script_nonce: "str | None" = None, *, docs: bool = False) -> str:
     )
 
 
+# Any of these means the response already says how a browser may cache or revalidate it.
+_CACHE_POLICY_HEADERS = ("cache-control", "expires", "etag", "last-modified")
+
+
 class SecurityHeadersMiddleware:
     """Set baseline security headers; splice per-response inline-script nonces into CSP. Pure ASGI (not
     BaseHTTPMiddleware) so streaming responses are not wrapped in an anyio stream."""
@@ -1197,6 +1201,14 @@ class SecurityHeadersMiddleware:
                     "Permissions-Policy",
                     "camera=(), microphone=(self), geolocation=()",
                 )
+                # An API read with no cache policy and no validators can never be reused, yet Chromium and
+                # WebView2 still write each one to the disk cache. The UI polls several for as long as it is
+                # open, and the API monitor returns its whole history each time: ~200 KB of disk writes every
+                # 2 s from an idle desktop app. Routes with their own policy or validators keep them.
+                if path.startswith("/api/") and not any(
+                    name in headers for name in _CACHE_POLICY_HEADERS
+                ):
+                    headers["Cache-Control"] = "no-store"
                 headers["server"] = "unsloth-studio"
             await send(message)
 
@@ -1613,6 +1625,7 @@ app.add_middleware(
     expose_headers = [
         "X-Unsloth-Conflict-Kind",
         "X-Unsloth-Refusal",
+        "x-typesafe-request-id",
         *_hub_endpoint_proxy.EXPOSED_HEADERS,
     ],
     # is_allowed_origin closes the moment the tunnel URL clears, but a preflight already cached by the browser
