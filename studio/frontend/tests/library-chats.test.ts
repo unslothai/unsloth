@@ -426,3 +426,11 @@ test("sections have created and last modified dates, and Last modified is the de
   assert.match(prefs, /sort: \{ key: "modified", desc: true \},/);
   assert.doesNotMatch(readSrc("features/library/chats/chats-items.tsx"), /field="updated"/);
 });
+
+test("chat, project and section cards are square, dated bottom left", () => {
+  const items = readSrc("features/library/chats/chats-items.tsx");
+  assert.match(items, /const CARD = cn\([\s\S]*?aspect-square[\s\S]*?\);/);
+  assert.doesNotMatch(items, /cn\(CARD, "min-h-/);
+  // The date is its own left-aligned line, not pushed right beside the counts.
+  assert.doesNotMatch(items, /justify-between gap-2 text-ui-12 text-muted-foreground/);
+});

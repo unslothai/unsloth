@@ -75,11 +75,11 @@ import { useLibrarySettingsStore } from "../settings-store";
 import { SortRadio } from "../components/library-toolbar";
 import { CARD_SHADOW, OVERLAY_CONTROL, RAISED_SURFACE } from "../surface";
 
-// Same card style as the file tabs.
+// Same card style as the file tabs: square, date bottom left.
 const CARD = cn(
   RAISED_SURFACE,
   CARD_SHADOW,
-  "group/chat relative flex cursor-pointer flex-col gap-3 rounded-xl px-5 pb-3.5 pt-5 transition hover:bg-neutral-100 hover:shadow-none dark:hover:bg-accent/60",
+  "group/chat relative flex aspect-square cursor-pointer flex-col gap-2.5 overflow-hidden rounded-xl px-5 pb-3.5 pt-5 transition hover:bg-neutral-100 hover:shadow-none dark:hover:bg-accent/60",
 );
 import {
   type ChatContents,
@@ -1187,7 +1187,7 @@ export function ChatCard({
       onClick={(event) =>
         selecting ? actions.toggleSelected(chat.id, event.shiftKey) : actions.open(chat)
       }
-      className={cn(CARD, "min-h-40", selected && "ring-2 ring-foreground")}
+      className={cn(CARD, selected && "ring-2 ring-foreground")}
     >
       <div className="relative flex items-center gap-2">
         <ChatTile
@@ -1217,27 +1217,15 @@ export function ChatCard({
         className="block w-full rounded text-left font-medium text-ui-15 leading-snug text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
       >
         {/* Clamp an inner span: buttons ignore line-clamp. */}
-        <span className="line-clamp-3">{chatTitle(chat, t)}</span>
+        <span className="line-clamp-2">{chatTitle(chat, t)}</span>
       </button>
       <div className="mt-auto flex min-w-0 flex-col gap-1 text-ui-12 text-muted-foreground">
         {model && <span className="truncate">{model}</span>}
-        <span className="flex min-w-0 items-center justify-between gap-2">
-          <span className="min-w-0">
-            <ChatLocation
-              chat={chat}
-              showProject={showProject}
-              showSection={showSection}
-            />
-          </span>
-          <span className="shrink-0">
-            {formatDate(
-              chatTime(chat, actions.dateField),
-              actions.dateField,
-              times,
-              locale,
-              t,
-            )}
-          </span>
+        <span className="min-w-0">
+          <ChatLocation chat={chat} showProject={showProject} showSection={showSection} />
+        </span>
+        <span className="truncate">
+          {formatDate(chatTime(chat, actions.dateField), actions.dateField, times, locale, t)}
         </span>
       </div>
     </div>
@@ -1434,7 +1422,7 @@ export function ProjectCard({
     // biome-ignore lint/a11y/useKeyWithClickEvents: the name button is the keyboard target
     <div
       onClick={() => actions.viewProject(project.id)}
-      className={cn(CARD, "min-h-44")}
+      className={CARD}
     >
       <div className="flex items-center gap-2">
         <CollectionTile icon={Folder02Icon} />
@@ -1460,17 +1448,17 @@ export function ProjectCard({
       >
         {project.name}
       </button>
-      <p className="line-clamp-2 text-ui-13 text-muted-foreground">
+      <p className="line-clamp-1 text-ui-13 text-muted-foreground">
         {project.instructions?.trim() ||
           t("library.chats.project.noInstructions")}
       </p>
-      <div className="mt-auto flex items-center justify-between gap-2 text-ui-12 text-muted-foreground">
-        <span>
+      <div className="mt-auto flex min-w-0 flex-col gap-1 text-ui-12 text-muted-foreground">
+        <span className="truncate">
           {chatCount(stats?.chats ?? 0, t)}
           {(stats?.archived ?? 0) > 0 &&
             ` · ${t("library.chats.project.archivedCount", { count: stats?.archived ?? 0 })}`}
         </span>
-        <span className="shrink-0">
+        <span className="truncate">
           {formatDate(projectTime(project, stats, actions.dateField), actions.dateField, {}, locale, t)}
         </span>
       </div>
@@ -1691,7 +1679,7 @@ export function SectionCard({
     // biome-ignore lint/a11y/useKeyWithClickEvents: the name button is the keyboard target
     <div
       onClick={() => actions.viewSection(section.id)}
-      className={cn(CARD, "min-h-40")}
+      className={CARD}
     >
       <div className="flex items-center gap-2">
         <CollectionTile icon={LayerIcon} />
@@ -1708,9 +1696,9 @@ export function SectionCard({
       >
         {section.name}
       </button>
-      <div className="mt-auto flex items-center justify-between gap-2 text-ui-12 text-muted-foreground">
+      <div className="mt-auto flex min-w-0 flex-col gap-1 text-ui-12 text-muted-foreground">
         <span className="truncate">{sectionCountLabel(stats, t)}</span>
-        <span className="shrink-0">
+        <span className="truncate">
           {formatDate(sectionTime(section, stats, actions.dateField), actions.dateField, {}, locale, t)}
         </span>
       </div>
