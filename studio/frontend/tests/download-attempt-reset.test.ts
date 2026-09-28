@@ -107,6 +107,7 @@ function replayRetry(polls: ProgressLike[], hold: boolean): number[] {
   let current = job();
   let floorHold = hold
     ? {
+        attempt: 2,
         remainingBytes: current.expectedBytes - current.downloadedBytes,
         until: 60_000,
       }
@@ -167,7 +168,7 @@ test("a re-measured completed baseline does not end the hold before the purge", 
 });
 
 test("the floor hold ends when the bytes left grow or at its deadline", () => {
-  const hold = { remainingBytes: 3 * GB, until: 10_000 };
+  const hold = { attempt: 2, remainingBytes: 3 * GB, until: 10_000 };
   assert.equal(floorHoldEnded(hold, 5 * GB, 2 * GB, 0), false);
   assert.equal(floorHoldEnded(hold, 4 * GB, 1 * GB, 0), false);
   assert.equal(floorHoldEnded(hold, 5 * GB, 6 * MB, 0), true);
