@@ -13,6 +13,7 @@ import {
   dateBucket,
   filterChats,
   groupChats,
+  mixEntries,
   modelFacets,
   modelsByChat,
   projectStats,
@@ -252,8 +253,9 @@ test("the Chats tab opens on All, and a project opens its home in Chat", () => {
     readSrc("features/settings/tabs/chat-tab.tsx"),
     /void navigate\(\{ to: "\/library", search: \{ show: "chats" \} \}\)/,
   );
-  // All lists projects and sections among the chats, without headings.
-  assert.match(library, /return chatListing\(true, true\);/);
+  // All is one list of chats, projects and sections, without headings.
+  assert.match(library, /return chatListing\(true\);/);
+  assert.match(library, /mixEntries\(visibleChats, visibleProjects, visibleSections, \{/);
   // One list: no Pinned or date headings in All.
   assert.match(library, /const ungrouped = embedded \|\| section === "all";/);
   assert.match(library, /pinned: pinnedFirst && !ungrouped \? pinned : undefined,/);
@@ -361,4 +363,37 @@ test("a chat exports per pane with Markdown, several chats combined or per chat"
 test("fork is off while the chat generates or another fork runs", () => {
   const items = readSrc("features/library/chats/chats-items.tsx");
   assert.match(items, /disabled=\{!canForkChatRow\(chat\) \|\| generating \|\| forking\}/);
+});
+
+test("All sorts chats, projects and sections together, pinned first", () => {
+  const project = { id: "p1", name: "Research", createdAt: now - 5 * DAY, updatedAt: now - 5 * DAY };
+  const section = { id: "s1", name: "Weekend reading" };
+  const options = {
+    sort: { key: "updated", desc: true } as const,
+    projectStats: new Map([["p1", { chats: 1, archived: 0, lastActive: now - 1.5 * DAY }]]),
+    sectionStats: new Map([["s1", { chats: 2, projects: 0, lastActive: now - 0.5 * DAY }]]),
+    pinned: new Set<string>(),
+    pinnedProjects: new Set<string>(),
+    pinnedFirst: true,
+  };
+  const key = (entries: { kind: string; item: { id: string } }[]) =>
+    entries.map((entry) => `${entry.kind}:${entry.item.id}`);
+  assert.deepEqual(key(mixEntries(chats, [project], [section], options)), [
+    "chat:b",
+    "section:s1",
+    "chat:a",
+    "project:p1",
+    "chat:c",
+    "chat:d",
+  ]);
+  const pinned = mixEntries(chats, [project], [section], {
+    ...options,
+    pinnedProjects: new Set(["p1"]),
+  });
+  assert.equal(key(pinned)[0], "project:p1");
+  const byName = mixEntries(chats, [project], [section], {
+    ...options,
+    sort: { key: "name", desc: false },
+  });
+  assert.deepEqual(key(byName).slice(0, 3), ["chat:d", "chat:b", "chat:a"]);
 });

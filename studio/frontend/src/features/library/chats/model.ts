@@ -225,6 +225,63 @@ export function sortProjects<T extends ProjectEntry>(
   });
 }
 
+/** One row of All: a chat, project or section. */
+export type MixedEntry<C, P, S> =
+  | { kind: "chat"; item: C }
+  | { kind: "project"; item: P }
+  | { kind: "section"; item: S };
+
+/** All: chats, projects and sections as one list on the chat sort. Pinned chats and projects
+ *  lead when `pinnedFirst`. A section's date is its latest chat. */
+export function mixEntries<
+  C extends ChatEntry,
+  P extends ProjectEntry,
+  S extends { id: string; name: string },
+>(
+  chats: readonly C[],
+  projects: readonly P[],
+  sections: readonly S[],
+  options: {
+    sort: ChatSort;
+    projectStats: ReadonlyMap<string, ProjectStats>;
+    sectionStats: ReadonlyMap<string, SectionStats>;
+    pinned: ReadonlySet<string>;
+    pinnedProjects: ReadonlySet<string>;
+    pinnedFirst: boolean;
+    locale?: string;
+  },
+): MixedEntry<C, P, S>[] {
+  const { sort, pinnedFirst } = options;
+  const collate = new Intl.Collator(options.locale, { numeric: true, sensitivity: "base" }).compare;
+  const rows = [
+    ...chats.map((item) => ({
+      entry: { kind: "chat", item } as const,
+      name: item.title,
+      time: sort.key === "name" ? 0 : chatTime(item, sort.key),
+      pin: options.pinned.has(item.id),
+    })),
+    ...projects.map((item) => ({
+      entry: { kind: "project", item } as const,
+      name: item.name,
+      time:
+        sort.key === "name" ? 0 : projectTime(item, options.projectStats.get(item.id), sort.key),
+      pin: options.pinnedProjects.has(item.id),
+    })),
+    ...sections.map((item) => ({
+      entry: { kind: "section", item } as const,
+      name: item.name,
+      time: options.sectionStats.get(item.id)?.lastActive ?? 0,
+      pin: false,
+    })),
+  ];
+  rows.sort((a, b) => {
+    if (pinnedFirst && a.pin !== b.pin) return a.pin ? -1 : 1;
+    const ascending = sort.key === "name" ? collate(a.name, b.name) : a.time - b.time;
+    return (sort.desc ? -ascending : ascending) || collate(a.name, b.name);
+  });
+  return rows.map((row) => row.entry);
+}
+
 export interface SectionStats {
   chats: number;
   projects: number;

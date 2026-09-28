@@ -958,8 +958,8 @@ const ROW_INSET = "pl-4 pr-6";
 const CELL = "truncate text-ui-13 text-muted-foreground";
 // Columns follow the list's width, not the window's; the date column hides last.
 const DATE_COLUMN = "hidden w-32 shrink-0 @xl:block";
-const CONTENTS_COLUMN = "hidden w-64 shrink-0 @3xl:block";
-const LOCATION_COLUMN = "hidden w-48 shrink-0 @4xl:block";
+const CONTENTS_COLUMN = "hidden w-36 shrink-0 @3xl:block";
+const LOCATION_COLUMN = "hidden w-40 shrink-0 @4xl:block";
 
 function SortHeader({
   column,

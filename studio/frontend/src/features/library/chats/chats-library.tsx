@@ -114,6 +114,7 @@ import {
   type ChatGroupBy,
   type ChatSortKey,
   type ChatsSection,
+  type DateBucket,
   DATE_FIELDS,
   type DateField,
   EMPTY_CHAT_FILTERS,
@@ -124,6 +125,7 @@ import {
   filterChats,
   groupChats,
   matchesTerms,
+  mixEntries,
   modelFacets,
   modelsByChat,
   CHATS_SECTIONS,
@@ -412,42 +414,6 @@ export function ChatsLibrary({
     const matched = filterChats(scoped, listQuery, filters, context);
     return sortChats(matched, prefs.sort, pinned, pinnedFirst, locale);
   }, [scoped, listQuery, filters, context, prefs.sort, pinnedFirst, pinned, locale]);
-  // Memoized so the memos below stay stable.
-  const shownChats = useMemo(
-    () => visibleChats.slice(0, visibleCount),
-    [visibleChats, visibleCount],
-  );
-  // Date groups follow the date the list shows.
-  const groupTime = prefs.dateField;
-  const groupingOptions = useMemo(
-    () => ({
-      time: groupTime,
-      oldestFirst: prefs.sort.key !== "name" && !prefs.sort.desc,
-      pinned: pinnedFirst && !ungrouped ? pinned : undefined,
-      sectionOf,
-    }),
-    [groupTime, prefs.sort, pinnedFirst, ungrouped, pinned, sectionOf],
-  );
-  const groups = useMemo(
-    () => groupChats(shownChats, groupBy, groupingOptions),
-    [shownChats, groupBy, groupingOptions],
-  );
-  // Drawn order, for shift-click ranges.
-  const shownOrder = useMemo(
-    () => groups.flatMap((group) => group.items.map((chat) => chat.id)),
-    [groups],
-  );
-  // Headings count all matches, not just the loaded page.
-  const groupTotals = useMemo(
-    () =>
-      groupBy === "none"
-        ? new Map<string, number>()
-        : new Map(
-            groupChats(visibleChats, groupBy, groupingOptions).map((g) => [g.key, g.items.length]),
-          ),
-    [visibleChats, groupBy, groupingOptions],
-  );
-
   const stats = useMemo(
     () => projectStats(projects, items, archivedItems),
     [projects, items, archivedItems],
@@ -487,6 +453,78 @@ export function ChatsLibrary({
     );
     return sortSections(matched, prefs.sectionSort, sectionStatsById, locale);
   }, [sections, query, prefs.sectionSort, sectionStatsById, locale, embedded, favoriteSections]);
+  // All: one list of chats, projects and sections on the chat sort.
+  const mixed = section === "all" && !embedded;
+  const allEntries = useMemo(
+    () =>
+      mixed
+        ? mixEntries(visibleChats, visibleProjects, visibleSections, {
+            sort: prefs.sort,
+            projectStats: stats,
+            sectionStats: sectionStatsById,
+            pinned,
+            pinnedProjects,
+            pinnedFirst,
+            locale,
+          })
+        : null,
+    [
+      mixed,
+      visibleChats,
+      visibleProjects,
+      visibleSections,
+      prefs.sort,
+      stats,
+      sectionStatsById,
+      pinned,
+      pinnedProjects,
+      pinnedFirst,
+      locale,
+    ],
+  );
+  const shownEntries = useMemo(
+    () => allEntries?.slice(0, visibleCount) ?? null,
+    [allEntries, visibleCount],
+  );
+  // Memoized so the memos below stay stable.
+  const shownChats = useMemo(
+    () =>
+      shownEntries
+        ? shownEntries.flatMap((entry) => (entry.kind === "chat" ? [entry.item] : []))
+        : visibleChats.slice(0, visibleCount),
+    [shownEntries, visibleChats, visibleCount],
+  );
+  // Date groups follow the date the list shows.
+  const groupTime = prefs.dateField;
+  const groupingOptions = useMemo(
+    () => ({
+      time: groupTime,
+      oldestFirst: prefs.sort.key !== "name" && !prefs.sort.desc,
+      pinned: pinnedFirst && !ungrouped ? pinned : undefined,
+      sectionOf,
+    }),
+    [groupTime, prefs.sort, pinnedFirst, ungrouped, pinned, sectionOf],
+  );
+  const groups = useMemo(
+    () => groupChats(shownChats, groupBy, groupingOptions),
+    [shownChats, groupBy, groupingOptions],
+  );
+  // Drawn order, for shift-click ranges.
+  const shownOrder = useMemo(
+    () => groups.flatMap((group) => group.items.map((chat) => chat.id)),
+    [groups],
+  );
+  // Headings count all matches, not just the loaded page.
+  const groupTotals = useMemo(
+    () =>
+      groupBy === "none"
+        ? new Map<string, number>()
+        : new Map(
+            groupChats(visibleChats, groupBy, groupingOptions).map((g) => [g.key, g.items.length]),
+          ),
+    [visibleChats, groupBy, groupingOptions],
+  );
+
   const sectionProjects = useMemo(() => {
     if (!openSectionId) return [];
     const terms = searchTerms(query);
@@ -1048,43 +1086,52 @@ export function ChatsLibrary({
     );
   }
 
-  function chatListing(spaced = !embedded, withCollections = false) {
+  function chatListing(spaced = !embedded) {
     const list = view === "list";
-    // All lists projects and sections first, like folders among files.
     const collectionLocation =
-      withCollections && visibleProjects.some((project) => projectSectionOf.has(project.id));
+      shownEntries !== null && visibleProjects.some((project) => projectSectionOf.has(project.id));
     const locationColumn = showProject || showSection || collectionLocation;
     const layout = { showLocation: locationColumn };
-    const leading = !withCollections
-      ? null
-      : list
-        ? [
-            ...visibleProjects.map((project) => (
-              <ProjectRow
-                key={`project:${project.id}`}
-                project={project}
-                stats={stats.get(project.id)}
-                layout={layout}
-              />
-            )),
-            ...visibleSections.map((entry) => (
-              <SectionRow
-                key={`section:${entry.id}`}
-                section={entry}
-                stats={sectionStatsById.get(entry.id)}
-                layout={layout}
-              />
-            )),
-          ]
-        : [
-            ...visibleProjects.map((project) => (
-              <ProjectCard key={`project:${project.id}`} project={project} stats={stats.get(project.id)} />
-            )),
-            ...visibleSections.map((entry) => (
-              <SectionCard key={`section:${entry.id}`} section={entry} stats={sectionStatsById.get(entry.id)} />
-            )),
-          ];
-    const mergeLeading = leading !== null && groupBy === "none" && groups.length > 0;
+    const total = allEntries?.length ?? visibleChats.length;
+    const chatRow = (chat: SidebarItem, bucket?: DateBucket["kind"]) =>
+      list ? (
+        <ChatRow
+          key={chat.id}
+          chat={chat}
+          archived={archived}
+          showProject={showProject}
+          showSection={showSection}
+          locationColumn={locationColumn}
+          times={{ bucket }}
+        />
+      ) : (
+        <ChatCard
+          key={chat.id}
+          chat={chat}
+          archived={archived}
+          showProject={showProject}
+          showSection={showSection}
+          times={{ bucket }}
+        />
+      );
+    const entryRow = (entry: NonNullable<typeof shownEntries>[number]) => {
+      if (entry.kind === "chat") return chatRow(entry.item);
+      if (entry.kind === "project") {
+        const key = `project:${entry.item.id}`;
+        return list ? (
+          <ProjectRow key={key} project={entry.item} stats={stats.get(entry.item.id)} layout={layout} />
+        ) : (
+          <ProjectCard key={key} project={entry.item} stats={stats.get(entry.item.id)} />
+        );
+      }
+      const key = `section:${entry.item.id}`;
+      const sectionStat = sectionStatsById.get(entry.item.id);
+      return list ? (
+        <SectionRow key={key} section={entry.item} stats={sectionStat} layout={layout} />
+      ) : (
+        <SectionCard key={key} section={entry.item} stats={sectionStat} />
+      );
+    };
     return (
       // Container for the column queries in chats-items.
       <div className={cn("@container", spaced && "mt-6")}>
@@ -1108,57 +1155,38 @@ export function ChatsLibrary({
             }
           />
         )}
-        {leading && leading.length > 0 && !mergeLeading &&
-          (list ? (
-            <div className={cn("mt-1 flex flex-col", LIST_ROW_GAP)}>{leading}</div>
+        {shownEntries ? (
+          list ? (
+            <div className={cn("mt-1 flex flex-col", LIST_ROW_GAP)}>{shownEntries.map(entryRow)}</div>
           ) : (
-            <CardGrid>{leading}</CardGrid>
-          ))}
-        {groups.map((group, index) => (
-          <section key={group.key} aria-label={groupBy === "none" ? undefined : groupLabel(group)}>
-            {groupBy !== "none" && (
-              <GroupHeading count={groupTotals.get(group.key) ?? group.items.length}>{groupLabel(group)}</GroupHeading>
-            )}
-            {list ? (
-              <div className={cn("flex flex-col", LIST_ROW_GAP, groupBy === "none" && "mt-1")}>
-                {mergeLeading && index === 0 && leading}
-                {group.items.map((chat) => (
-                  <ChatRow
-                    key={chat.id}
-                    chat={chat}
-                    archived={archived}
-                    showProject={showProject}
-                    showSection={showSection}
-                    locationColumn={locationColumn}
-                    times={{ bucket: group.bucket?.kind }}
-                  />
-                ))}
-              </div>
-            ) : (
-              <CardGrid>
-                {mergeLeading && index === 0 && leading}
-                {group.items.map((chat) => (
-                  <ChatCard
-                    key={chat.id}
-                    chat={chat}
-                    archived={archived}
-                    showProject={showProject}
-                    showSection={showSection}
-                    times={{ bucket: group.bucket?.kind }}
-                  />
-                ))}
-              </CardGrid>
-            )}
-          </section>
-        ))}
-        {visibleChats.length > visibleCount && (
+            <CardGrid>{shownEntries.map(entryRow)}</CardGrid>
+          )
+        ) : (
+          groups.map((group) => (
+            <section key={group.key} aria-label={groupBy === "none" ? undefined : groupLabel(group)}>
+              {groupBy !== "none" && (
+                <GroupHeading count={groupTotals.get(group.key) ?? group.items.length}>
+                  {groupLabel(group)}
+                </GroupHeading>
+              )}
+              {list ? (
+                <div className={cn("flex flex-col", LIST_ROW_GAP, groupBy === "none" && "mt-1")}>
+                  {group.items.map((chat) => chatRow(chat, group.bucket?.kind))}
+                </div>
+              ) : (
+                <CardGrid>{group.items.map((chat) => chatRow(chat, group.bucket?.kind))}</CardGrid>
+              )}
+            </section>
+          ))
+        )}
+        {total > visibleCount && (
           <div className="mt-6 flex justify-center">
             <Button
               variant="muted"
               className="rounded-full px-5"
               onClick={() => setVisibleCount((count) => count + PAGE_SIZE)}
             >
-              {t("library.chats.list.showMore", { count: visibleChats.length - visibleCount })}
+              {t("library.chats.list.showMore", { count: total - visibleCount })}
             </Button>
           </div>
         )}
@@ -1231,7 +1259,7 @@ export function ChatsLibrary({
     const nothing =
       visibleProjects.length === 0 && visibleSections.length === 0 && visibleChats.length === 0;
     if (nothing) return renderChats();
-    return chatListing(true, true);
+    return chatListing(true);
   }
 
   function renderSectionProjects() {
