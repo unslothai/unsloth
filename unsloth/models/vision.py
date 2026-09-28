@@ -415,6 +415,28 @@ def _align_root_hook_with_input_embeddings(model):
     return target
 
 
+def _move_gemma4_token_types_to_input_embeddings(model):
+    inner = getattr(model, "model", None)
+    device_map = getattr(model, "hf_device_map", None)
+    if (
+        getattr(getattr(inner, "config", None), "model_type", None) != "gemma4"
+        or not device_map
+        or len(set(device_map.values())) < 2
+    ):
+        return
+    target = inner.get_input_embeddings().weight.device
+    if target.type in ("cpu", "meta"):
+        return
+
+    # transformers 5.5 builds Gemma 4's vision mask groups on mm_token_type_ids' device (the root hook's) but indexes them from the embedding's.
+    def to_input_embeddings(module, args, kwargs):
+        if kwargs.get("mm_token_type_ids") is not None:
+            kwargs["mm_token_type_ids"] = kwargs["mm_token_type_ids"].to(target)
+        return args, kwargs
+
+    inner.register_forward_pre_hook(to_input_embeddings, with_kwargs = True)
+
+
 def _attach_bnb_multidevice_hooks(
     model, load_in_4bit, load_in_8bit, offload_embedding, fast_inference
 ):
@@ -2601,6 +2623,7 @@ class FastBaseModel:
                         f"Unsloth: inputs now go straight to {_aligned_root_device}, where the input "
                         "embedding lives, instead of through the first device in the map."
                     )
+                _move_gemma4_token_types_to_input_embeddings(model)
                 # Re-apply block-fp8 weight_scale_inv tensors transformers dropped on load (#6200).
                 _restore_dropped_fp8_scales(
                     model,
