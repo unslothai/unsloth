@@ -1773,6 +1773,12 @@ export function useChatModelRuntime() {
         !forceReload &&
         !isExternalModelId(useChatRuntimeStore.getState().params.checkpoint) &&
         useChatRuntimeStore.getState().loadedModels.length > 1;
+      // Replacing or reloading one of several touches only its own slot, so only its chats stop.
+      const touchesOnlySelected =
+        replacesOneOfSeveral ||
+        (forceReload &&
+          !isExternalModelId(useChatRuntimeStore.getState().params.checkpoint) &&
+          useChatRuntimeStore.getState().loadedModels.length > 1);
       try {
         stopDecision =
           keepsOthers
@@ -1787,7 +1793,7 @@ export function useChatModelRuntime() {
                   ? "Applying these settings"
                   : "Loading a different model",
                 "reload",
-                replacesOneOfSeveral
+                touchesOnlySelected
                   ? (useChatRuntimeStore.getState().params.checkpoint ?? undefined)
                   : undefined,
               );
@@ -2400,7 +2406,7 @@ export function useChatModelRuntime() {
               : undefined;
 
             // Chats on the other loaded models keep their server, so only a full swap stops every queue.
-            if (keepsOthers || replacesOneOfSeveral) {
+            if (keepsOthers || touchesOnlySelected) {
               requestPromptQueueStop(stopDecision.promptQueueThreadIds);
             } else {
               cancelPreStreamRunReservations(stopDecision.preStreamRunTokens);
@@ -2557,7 +2563,7 @@ export function useChatModelRuntime() {
             const effectiveChatTemplateOverride =
               loadChatTemplateOverride?.trim() ? loadChatTemplateOverride : null;
             // Invalidate factories started before the final loading boundary.
-            if (!keepsOthers && !replacesOneOfSeveral) {
+            if (!keepsOthers && !touchesOnlySelected) {
               requestLocalPromptQueueStop();
             }
             if (lifecycleLease !== null) {
