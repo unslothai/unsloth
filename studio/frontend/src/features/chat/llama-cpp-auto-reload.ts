@@ -10,7 +10,10 @@ import {
   getExternalProviderApiKey,
   type ExternalProviderConfig,
 } from "./external-providers";
-import { useExternalProvidersStore } from "./stores/external-providers-store";
+import {
+  providerSavesInFlight,
+  useExternalProvidersStore,
+} from "./stores/external-providers-store";
 
 /** Keeps manual IDs and the user's picks, drops IDs the server no longer lists, enables new ones. */
 export function mergeReloadedModels(
@@ -70,14 +73,20 @@ export function startLlamaCppAutoReload(intervalMs = 10_000): () => void {
         ? (saved.available_models ?? [])
         : (latest.availableModels ?? []);
       const models = mergeReloadedModels(previousModels, previousCatalog, catalog);
+      const edited = () => {
+        const row = useExternalProvidersStore.getState().providers.find((p) => p.id === provider.id);
+        return row?.models !== latest.models || row?.availableModels !== latest.availableModels;
+      };
+      // A manual save is in flight or landed since the read: skip, the next probe merges against it.
+      if (providerSavesInFlight.has(provider.id) || edited()) return;
       if (!sameList(models, previousModels) || !sameList(catalog, previousCatalog)) {
         await updateProviderConfig(provider.id, { models, availableModels: catalog });
       }
       if (stopped) return;
+      if (edited()) return;
       const { providers, setProviders } = useExternalProvidersStore.getState();
       const current = providers.find((p) => p.id === provider.id);
-      // A manual save landed meanwhile: leave it, and re-merge on the next probe.
-      if (current?.models !== latest.models) return;
+      if (!current) return;
       if (
         !sameList(models, current.models) ||
         !sameList(catalog, current.availableModels ?? [])

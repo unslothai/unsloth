@@ -80,7 +80,10 @@ import {
   supportsRemoteModelCatalog,
   toExternalBackendProviderType,
 } from "./external-providers";
-import { useExternalProvidersStore } from "./stores/external-providers-store";
+import {
+  providerSavesInFlight,
+  useExternalProvidersStore,
+} from "./stores/external-providers-store";
 import {
   mergeLearnedModelCapabilities,
   pruneProviderModelIds,
@@ -1014,6 +1017,7 @@ export function ChatProvidersSettings({
       ? []
       : pruneProviderModelIds(existing.providerType, availableModels);
     setMutatingProvider(true);
+    providerSavesInFlight.add(editingProviderId);
     try {
       const baseUrl = parseBaseUrlForProvider(
         baseUrlDraft,
@@ -1086,6 +1090,7 @@ export function ChatProvidersSettings({
       const message = error instanceof Error ? error.message : "Unknown error";
       toast.error(`Failed to update connection: ${message}`);
     } finally {
+      providerSavesInFlight.delete(editingProviderId);
       setMutatingProvider(false);
     }
   }
