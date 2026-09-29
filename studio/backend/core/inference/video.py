@@ -6274,6 +6274,14 @@ class VideoBackend:
                         if stream
                         else None
                     )
+                    if stream and placed not in ("stream", "sync"):
+                        # Pinning is the tier the planner already ruled out, so it would OOM or be refused later.
+                        raise RuntimeError(
+                            f"MiniMax-H3's {transformer_quant_engaged} denoiser has to stream block by block "
+                            f"on this GPU ({free_before_placement / 1e9:.1f} GB free, "
+                            f"{sum(pinned_sizes) / 1e9:.1f} GB needed pinned), but group offloading is not "
+                            "available in this install. Free GPU memory or pick the GGUF version."
+                        )
                     if placed in ("stream", "sync"):
                         # offload_policy stays "model": the post-generation host reclaim keys on it.
                         denoiser_streamed = placed
@@ -6285,8 +6293,6 @@ class VideoBackend:
                             sum(pinned_sizes) / 1e9,
                             transformer_quant_engaged,
                         )
-                    elif placed == "pinned":
-                        denoiser_pinned = True
                     else:
                         denoiser_pinned = pin_prequantized_module(
                             manager, denoiser, device, logger = logger

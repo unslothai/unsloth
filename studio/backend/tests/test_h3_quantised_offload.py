@@ -394,3 +394,22 @@ def test_a_streamed_torchao_render_runs_under_no_grad_and_the_rest_keep_inferenc
         "                    else torch.inference_mode()"
     ) in source
     assert "with grad_ctx, protect_ctx, progress_ctx(), sigma_ctx:" in source
+
+
+def test_a_failed_streaming_setup_raises_instead_of_pinning(monkeypatch):
+    """Streaming is only chosen when pinning does not fit, so a failed setup must not fall back to pinning."""
+    pytest.importorskip("diffusers")
+    import diffusers.hooks
+    import core.inference.diffusion_prequant as prequant
+
+    def _boom(*args, **kwargs):
+        raise ValueError("no group offload here")
+
+    monkeypatch.setattr(prequant, "torchao_group_offload_supported", lambda: True)
+    monkeypatch.setattr(diffusers.hooks, "apply_group_offloading", _boom)
+    module = torch.nn.Linear(8, 8)
+    hook = _UserHook(module)
+    manager = types.SimpleNamespace(model_hooks = [hook])
+    with pytest.raises(RuntimeError, match = "group offloading could not be set up"):
+        prequant.stream_prequantized_module(manager, module, "cpu")
+    assert hook.removed and module.weight.device.type == "cpu"

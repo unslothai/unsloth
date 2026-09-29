@@ -1987,8 +1987,9 @@ def stream_prequantized_module(
 ) -> Optional[str]:
     """Stream a torchao module block by block via group offloading, outside the ComponentsManager rotation.
 
-    Returns ``"stream"`` (pinned, async copies), ``"sync"`` (unpinnable weights), ``"pinned"`` (streaming
-    failed after unhooking, placed resident) or None (nothing changed; caller pins)."""
+    Returns ``"stream"`` (pinned, async copies), ``"sync"`` (unpinnable weights) or None (nothing changed).
+    Raises once the module is unhooked: the caller only streams what does not fit pinned, so a resident
+    fallback would OOM or be refused on every render."""
     if not torchao_group_offload_supported():
         return None
     import inspect
@@ -2044,11 +2045,9 @@ def stream_prequantized_module(
         apply_group_offloading(module, **kwargs)
         _move_groups_outside_inference_mode(module)
         module.register_forward_pre_hook(_evict_rotation_hook(manager, onload))
-    except Exception as exc:  # noqa: BLE001 -- still runs, just resident
-        _warn(logger, "stream:group_offload", exc)
+    except Exception as exc:
         _remove_group_offload_hooks(module)
-        module.to(device)
-        return "pinned"
+        raise RuntimeError(f"group offloading could not be set up for the {label}: {exc}") from exc
     mode = "stream" if use_stream else "sync"
     if logger is not None:
         logger.info(
