@@ -690,6 +690,24 @@ def test_a_launch_that_fails_to_build_gives_its_grant_lease_back(monkeypatch, tm
     assert released == ["grants"]
 
 
+def test_a_launch_whose_grant_lease_cannot_be_recorded_is_refused(monkeypatch, tmp_path):
+    from core.inference import sandbox_windows_mxc
+
+    def refuse():
+        raise mxc_read_grants.ReadGrantError("controlled lease failure")
+
+    built = []
+    monkeypatch.setattr(mxc_read_grants, "hold_if_needed", refuse)
+    monkeypatch.setattr(
+        sandbox_windows_mxc.mxc_policy,
+        "build_launch_request",
+        lambda _plan, **_kw: built.append(True) or {"policyHash": "sha256:controlled"},
+    )
+    with pytest.raises(os_sandbox.SandboxBuildError, match = "controlled lease failure"):
+        sandbox_windows_mxc.prepare(_plan(tmp_path), _unavailable())
+    assert built == []
+
+
 def test_launch_failure_is_not_replayed(monkeypatch, tmp_path):
     calls = []
     prepared = os_sandbox.PreparedSandboxLaunch(
