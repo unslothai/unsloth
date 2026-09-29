@@ -5,17 +5,18 @@
 
 import {
   AudioWave01Icon,
-  Doc02Icon,
   File02Icon,
-  Globe02Icon,
+  FileEmpty02Icon,
+  FlimSlateIcon,
   Image02Icon,
-  Pdf02Icon,
+  InternetIcon,
+  Pdf01Icon,
   Presentation01Icon,
   SourceCodeIcon,
-  Video01Icon,
-  Xls02Icon,
   Zip02Icon,
 } from "@hugeicons/core-free-icons";
+// Relative so the node tests can load this file.
+import { SheetIcon } from "../../../lib/hugeicons-derived.ts";
 
 export type AttachmentFileKind =
   | "image"
@@ -81,26 +82,27 @@ export function attachmentFileKind(
   return "file";
 }
 
+// Same icon shapes as the Library (features/library/file-kind.ts).
 export const ATTACHMENT_KIND_ICONS = {
   image: Image02Icon,
-  pdf: Pdf02Icon,
+  pdf: Pdf01Icon,
   audio: AudioWave01Icon,
-  video: Video01Icon,
-  document: Doc02Icon,
-  spreadsheet: Xls02Icon,
+  video: FlimSlateIcon,
+  document: File02Icon,
+  spreadsheet: SheetIcon,
   presentation: Presentation01Icon,
-  web: Globe02Icon,
+  web: InternetIcon,
   code: SourceCodeIcon,
   text: File02Icon,
   archive: Zip02Icon,
-  file: File02Icon,
+  file: FileEmpty02Icon,
 } as const satisfies Record<AttachmentFileKind, unknown>;
 
 export const ATTACHMENT_KIND_ICON_CLASS: Record<AttachmentFileKind, string> = {
   image: "text-sky-500",
   pdf: "text-red-500",
   audio: "text-violet-500",
-  video: "text-pink-500",
+  video: "text-pink-400 scale-90",
   document: "text-blue-500",
   spreadsheet: "text-emerald-500",
   presentation: "text-orange-500",

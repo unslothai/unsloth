@@ -96,6 +96,13 @@ _SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
 _IMPORT_LOCK = threading.RLock()
 
 _DAC_REPOSITORY = "ibm-research/DAC.speech.v1.0"
+SNAC_REPOSITORY = "hubertsiuzdak/snac_24khz"
+SPARK_TTS_REPOSITORY = "unsloth/Spark-TTS-0.5B"
+SPEECH_CODEC_REPOSITORIES = {
+    "snac": (SNAC_REPOSITORY,),
+    "bicodec": (SPARK_TTS_REPOSITORY,),
+    "dac": (_DAC_REPOSITORY,),
+}
 _DAC_REVISION = "1ea7f64cd0678415e2d8c32d67b190722cb9b149"
 _DAC_FILENAME = "weights_24khz_1.5kbps_v1.0.pth"
 _DAC_SIZE = 295731578

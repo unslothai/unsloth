@@ -387,15 +387,28 @@ function loadFallbackNotice(
   baseTitle: string,
   cpuFallbackReason: any,
   mmprojFallbackReason: any,
+  offloadNotice?: any,
 ) {
   const parts: string[] = [];
   if (cpuFallbackReason) parts.push(`cpu:${cpuFallbackReason}`);
+  else if (offloadNotice) parts.push(`offload:${offloadNotice.titleSuffix}`);
   if (mmprojFallbackReason) parts.push(`mmproj:${mmprojFallbackReason}`);
   return {
     title: parts.length > 0 ? `${baseTitle} (${parts.join(", ")})` : baseTitle,
     description: parts.length > 0 ? parts.join(" ") : undefined,
     degraded: parts.length > 0,
   };
+}
+// From ../lib/partial-offload: the auto-load success toast reports a layer split through them.
+// Real semantics are tested in studio/frontend/tests/partial-offload.test.ts.
+function offloadCountsFrom(response: any) {
+  return { offloaded: response?.offloaded_layers, total: response?.offload_total_layers };
+}
+function offloadWarning(counts: any) {
+  const { offloaded, total } = counts ?? {};
+  if (typeof offloaded !== "number" || typeof total !== "number") return null;
+  if (total <= 0 || offloaded >= total) return null;
+  return { titleSuffix: ", partly on CPU", description: `${offloaded} of ${total}` };
 }
 async function prepareHfTokenForUse(token: any) {
   EVENTS.push({ kind: "prepareHfToken" });
