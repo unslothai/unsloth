@@ -91,11 +91,13 @@ class ContextParallelManager:
                 torch.arange(seq_len, device = input_ids.device).expand(bsz, -1).contiguous()
             )
         mask = inputs.get("attention_mask")
-        # The attention hook drops the mask; only right padding (never attended by earlier
-        # tokens under a causal mask) is safe to drop.
-        if isinstance(mask, torch.Tensor) and mask.ndim == 2 and (mask[:, 1:] > mask[:, :-1]).any():
+        # The attention hook drops the mask; only a 2D right-padded one (never attended by earlier
+        # tokens under a causal mask) is safe to drop, and only 2D masks shard along dim 1.
+        if isinstance(mask, torch.Tensor) and (
+            mask.ndim != 2 or (mask[:, 1:] > mask[:, :-1]).any()
+        ):
             raise ValueError(
-                "Unsloth: context parallelism needs right-padded batches without masked holes."
+                "Unsloth: context parallelism needs 2D right-padded attention masks without holes."
             )
         labels = inputs.get("labels")
         if "shift_labels" not in inputs and labels is not None:

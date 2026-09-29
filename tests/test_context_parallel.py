@@ -41,7 +41,7 @@ def test_labels_shift_before_sharding_and_pad_to_load_balancer_chunks():
     assert inputs["input_ids"].shape == (1, 8)
 
 
-@pytest.mark.parametrize("mask", [[[0, 1, 1, 1]], [[1, 0, 1, 1]]])
+@pytest.mark.parametrize("mask", [[[0, 1, 1, 1]], [[1, 0, 1, 1]], [[[1, 1, 1, 1]] * 4]])
 def test_left_padded_or_holed_masks_are_refused(mask):
     inputs = {"input_ids": torch.ones(1, 4, dtype = torch.long), "attention_mask": torch.tensor(mask)}
     with pytest.raises(ValueError, match = "right-padded"):
@@ -286,3 +286,30 @@ def test_old_accelerate_is_refused(monkeypatch):
     Trainer = _patched_trainer(monkeypatch, args = args)
     with pytest.raises(NotImplementedError, match = "accelerate >= 1.10.0"):
         Trainer()
+
+
+def test_fp32_qkv_is_downcast_under_cp(monkeypatch):
+    monkeypatch.setattr(cp, "context_parallel", _fake_context_parallel([]))
+    seen = []
+    monkeypatch.setattr(
+        ad, "scaled_dot_product_attention", lambda Q, K, V, **k: (seen.append(Q.dtype), Q)[1]
+    )
+    config = ad.AttentionConfig(backend = ad.SDPA, n_kv_heads = 4, n_groups = 1)
+    context = ad.AttentionContext(
+        bsz = 1,
+        q_len = 4,
+        kv_seq_len = 4,
+        n_heads = 4,
+        head_dim = 8,
+        requires_grad = True,
+        seq_info = None,
+        attention_mask = None,
+        causal_mask = None,
+    )
+    Q = torch.zeros(1, 4, 4, 8, dtype = torch.float32)
+    ad.run_attention(config = config, context = context, Q = Q, K = Q, V = Q)
+    manager = _manager()
+    manager.mesh = None
+    with manager.apply({"input_ids": torch.ones(1, 4, dtype = torch.long)}):
+        ad.run_attention(config = config, context = context, Q = Q, K = Q, V = Q)
+    assert seen[0] == torch.float32 and seen[1] in (torch.bfloat16, torch.float16)

@@ -389,9 +389,11 @@ def run_attention(
 
     # DoRA promotes q/k/v_proj outputs to fp32, which FlashAttention rejects (as does the xformers
     # flash-2 op on sm_100+), so downcast any fp32 Q/K/V to a supported dtype (#1013).
+    # Ring attention (context parallelism) likewise needs a flash-eligible dtype.
     if (
         backend in (FLASH_DENSE, FLASH_VARLEN)
         or (backend == XFORMERS and _XFORMERS_FP32_UNSUPPORTED)
+        or (backend == SDPA and get_cp_manager() is not None)
     ) and torch.float32 in (
         Q.dtype,
         K.dtype,
