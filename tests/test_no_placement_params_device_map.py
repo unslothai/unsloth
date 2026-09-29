@@ -8,6 +8,7 @@ import torch
 from torch import nn
 
 import unsloth  # noqa: F401
+from real_accelerator import has_real_cuda
 from unsloth.models.loader_utils import exclude_no_placement_params
 
 
@@ -146,7 +147,7 @@ def test_real_qwen4_exp_on_meta(monkeypatch):
     )
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs a CUDA device")
+@pytest.mark.skipif(not has_real_cuda(), reason = "needs a CUDA device")
 def test_bnb_hooks_leave_the_cpu_table_alone():
     """4bit hooks must not offload the CPU table (was copied to GPU every forward, 110 GB peak)."""
     from unsloth.models.vision import _attach_bnb_multidevice_hooks
@@ -161,7 +162,9 @@ def test_bnb_hooks_leave_the_cpu_table_alone():
     assert table.weight.device.type == "cpu"
 
 
-@pytest.mark.skipif(torch.cuda.device_count() < 2, reason = "needs 2 CUDA devices")
+@pytest.mark.skipif(
+    not has_real_cuda() or torch.cuda.device_count() < 2, reason = "needs 2 CUDA devices"
+)
 def test_split_ancestors_get_input_hooks():
     """Split model: the table's ancestors need input hooks, else ids meet buffers on another card."""
     from unsloth.models.vision import _hook_no_placement_ancestors
@@ -239,7 +242,7 @@ def test_split_every_covering_ancestor():
     assert out["lm_head"] == 0
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs a CUDA device")
+@pytest.mark.skipif(not has_real_cuda(), reason = "needs a CUDA device")
 def test_disk_offloaded_ancestors_get_no_meta_hooks():
     from unsloth.models.vision import _hook_no_placement_ancestors
 
