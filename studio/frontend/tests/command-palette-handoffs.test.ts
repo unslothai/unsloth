@@ -8,9 +8,9 @@ import test from "node:test";
 const REGISTRY_SHORTCUT = /useShortcut\("openCommandPalette"/;
 const RAW_KEY_LISTENER = /addEventListener\("keydown"/;
 const SETTINGS_INDEX_IMPORT =
-  /\bSETTINGS_SEARCH_INDEX,\n[^;]*from "@\/features\/settings"/;
+  /\bDIALOG_SETTINGS_SEARCH_INDEX,\n[^;]*from "@\/features\/settings"/;
 const LOCALIZED_SETTINGS_KEYWORDS =
-  /keywords=\{SETTINGS_SEARCH_INDEX\[tab\]\.map\(\(key\) => t\(key\)\)\}/;
+  /keywords=\{DIALOG_SETTINGS_SEARCH_INDEX\[tab\]\.map\(\(key\) =>\s*t\(key\),?\s*\)\}/;
 const HARDCODED_SETTINGS_KEYWORDS = /keywords:\s*\[/;
 const PALETTE_SEARCH_OPENER =
   /useChatSearchStore\.getState\(\)\.open\(\{\s*opener: useCommandPaletteStore\.getState\(\)\.opener/s;

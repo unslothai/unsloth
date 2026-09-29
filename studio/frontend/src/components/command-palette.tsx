@@ -16,7 +16,7 @@ import {
 import { useIsAccountOwner } from "@/features/auth";
 import { useChatSearchStore } from "@/features/chat";
 import {
-  SETTINGS_SEARCH_INDEX,
+  DIALOG_SETTINGS_SEARCH_INDEX,
   SETTINGS_TABS,
   type SettingsTab,
   type ShortcutId,
@@ -143,6 +143,15 @@ export function CommandPalette() {
 
   // Auth routes unmount the palette; close it so it does not come back open.
   useEffect(() => () => useCommandPaletteStore.getState().setOpen(false), []);
+
+  // A chord (⌘, / ⌘K) can open Settings or chat search over the palette; it gives way to them.
+  const settingsOpen = useSettingsDialogStore((s) => s.open);
+  const chatSearchOpen = useChatSearchStore((s) => s.isOpen);
+  useEffect(() => {
+    if (settingsOpen || chatSearchOpen) {
+      useCommandPaletteStore.getState().close();
+    }
+  }, [settingsOpen, chatSearchOpen]);
 
   return (
     <CommandDialog
@@ -291,7 +300,9 @@ function PaletteContent() {
               ).map((tab) => (
                 <CommandItem
                   key={tab}
-                  keywords={SETTINGS_SEARCH_INDEX[tab].map((key) => t(key))}
+                  keywords={DIALOG_SETTINGS_SEARCH_INDEX[tab].map((key) =>
+                    t(key),
+                  )}
                   onSelect={openSettings(tab)}
                 >
                   <HugeiconsIcon icon={Settings02Icon} strokeWidth={1.75} />
