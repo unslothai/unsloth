@@ -172,11 +172,8 @@ _rope_embedding = triton.heuristics(
 
 
 def _rope_rows(Q, cos, sin, seq_len, n_heads, head_dim, backward, wrap):
-    # Rotates Q [batch * seq_len, n_heads * head_dim] in place.
-    # Changing blocksize to head_dim//2 showed concurrency / non-deterministic issues; group_size too
-    # large also hurts performance.
+    # Rotates Q [batch * seq_len, n_heads * head_dim] in place; BLOCK_SIZE = head_dim//2 was racy.
     BLOCK_SIZE, num_warps = calculate_settings(head_dim // 2)
-    # group_size = 4 # 4 or 8, too large group_size can hurt performance.
     n_groups = (
         n_heads + ROPE_GROUP_SIZE - 1
     ) // ROPE_GROUP_SIZE  # also a SymInt under dynamic=True
