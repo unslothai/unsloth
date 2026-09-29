@@ -2,9 +2,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 #
-# A mixed NVIDIA + AMD host installed with CUDA_VISIBLE_DEVICES="" gets ROCm torch, and then
-# the same mask hides the AMD card from HIP at runtime. install.sh must say so, and only there:
-# not on an AMD-only host, not when HIP_VISIBLE_DEVICES overrides it, not for a CUDA or cpu index.
+# install.sh warns only when CUDA_VISIBLE_DEVICES="" hid NVIDIA on a mixed host and ROCm torch was picked.
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -24,9 +22,7 @@ fi
 
 _SH="${BASH:-/bin/bash}"
 ROCM_URL="https://download.pytorch.org/whl/rocm7.1"
-# $1 = physical NVIDIA card (1/0), $2 = index url, $3 = env assignments for the run.
-# The stub honours the mask exactly as the real probe does, so only a check that looks
-# past the mask can see the card.
+# $1 = physical NVIDIA card (1/0), $2 = index url, $3 = env assignments. Stub honours the mask like the real probe.
 _run() {
     env -u CUDA_VISIBLE_DEVICES -u HIP_VISIBLE_DEVICES -u ROCR_VISIBLE_DEVICES \
         $3 "$_SH" -c "

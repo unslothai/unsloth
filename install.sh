@@ -5893,14 +5893,11 @@ _torch_index_url_is_rocm() {
     esac
 }
 
-# CUDA_VISIBLE_DEVICES="" is how a mixed NVIDIA + AMD host usually gets ROCm torch here, but
-# HIP reads that variable too when HIP_VISIBLE_DEVICES is unset, so the same mask hides the AMD
-# card at runtime. Routing is unchanged; this only says so.
+# HIP reads CUDA_VISIBLE_DEVICES when HIP_VISIBLE_DEVICES is unset, so the "" mask that steers a mixed NVIDIA + AMD host to ROCm torch also hides the AMD card at runtime.
 _warn_if_cuda_mask_hides_amd() {
     _cvd_hides_nvidia || return 0
     [ -z "${HIP_VISIBLE_DEVICES+x}" ] || return 0
     _torch_index_url_is_rocm "${1:-}" || return 0
-    # Physical presence: the mask itself is why _has_usable_nvidia_gpu says no.
     ( unset CUDA_VISIBLE_DEVICES; _has_usable_nvidia_gpu ) >/dev/null 2>&1 || return 0
     echo "" >&2
     echo "[WARN] CUDA_VISIBLE_DEVICES=\"$CUDA_VISIBLE_DEVICES\" hid the NVIDIA GPU, so ROCm torch was selected." >&2

@@ -683,7 +683,7 @@ def _masks_hide_every_accelerator(*, block_inventory: bool = False) -> bool:
 
 
 def _emptied_cuda_mask_hides_amd_on_a_mixed_host() -> bool:
-    """True when an emptied CUDA_VISIBLE_DEVICES, the usual way to steer an NVIDIA + AMD host to ROCm torch, is also what hides the AMD card from it. Stays a log line, not a mismatch: on an AMD-only host the same mask is deliberate, and "repair the installation" is the wrong advice for either. Blocks on the inventory, so detection only."""
+    """Emptied CUDA_VISIBLE_DEVICES hides the AMD card from ROCm torch on an NVIDIA + AMD host. A log line, not a mismatch: the mask is deliberate on AMD-only hosts. Blocks on the inventory."""
     if not _mask_is_emptied("CUDA_VISIBLE_DEVICES") or "HIP_VISIBLE_DEVICES" in os.environ:
         return False
     if not _torch_reports_a_hip_runtime():

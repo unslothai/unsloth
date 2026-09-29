@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""An NVIDIA + AMD host launched with CUDA_VISIBLE_DEVICES="" must say why ROCm torch sees nothing.
-
-That mask is how the installer is steered to ROCm torch on a mixed host, and HIP reads it too,
-so the AMD card vanishes at runtime and the log said only "CPU training backend". The mask
-stays deliberate for the System page (#9858): on an AMD-only host it is, and "repair the
-installation" is the wrong advice on either. Inventory and torch are faked; nothing here
-reads the runner's hardware.
-"""
+"""NVIDIA + AMD host launched with CUDA_VISIBLE_DEVICES="": log why ROCm torch sees no GPU."""
 
 from __future__ import annotations
 
@@ -65,7 +58,6 @@ def _pinned_host(monkeypatch, tmp_path):
     monkeypatch.setattr(hw, "TORCH_IMPORT_ERROR", None)
     monkeypatch.setattr(hw, "IS_ROCM", False)
     monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
-    # No install manifest to read a recorded flavor from.
     monkeypatch.setattr(hw.sys, "prefix", str(tmp_path))
     monkeypatch.setattr(hw, "_torch_build_snapshot_cache", None)
     monkeypatch.setattr(hw, "_physical_gpu_inventory_cache", None)
@@ -110,7 +102,6 @@ def test_the_reporters_mixed_host_is_told_why(monkeypatch, mask):
     line = next(entry for entry in recorder.warnings if _HINT in entry)
     assert "HIP_VISIBLE_DEVICES" in line
     assert "UNSLOTH_FORCE_ROCM_TORCH=1" in line
-    # Still a deliberate mask for #9858: no repair offered, no mismatch published.
     assert hw.CHAT_ONLY_REASON == "no_gpu"
     assert hw._torch_gpu_mismatch_report() == {}
 
