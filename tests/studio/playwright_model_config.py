@@ -775,7 +775,8 @@ with sync_playwright() as p:
 
     def primary_button(popover):
         # Anchored: get_by_role matches the accessible name as a substring by default, so
-        # "Load model" would also match "Reload model". The panel shows exactly one of these four.
+        # "Load model" would also match "Reload model". `.first` is the primary: it precedes the
+        # separate Save settings button (#10216).
         #
         # One locator for all four, not the name seen at lookup: the label follows the runtime
         # store, which fills in after a page load, so a resident model can read "Load model" and
