@@ -282,7 +282,7 @@ class _MLXAgent:
 
 def _load_checkpoint(checkpoint: Checkpoint):
     root = _checkpoint_dir(checkpoint)
-    laya = _laya()
+    _laya()
 
     # Evict only once the new checkpoint is on disk, so a long or failed download leaves the resident model serving.
     _evict()
@@ -291,14 +291,105 @@ def _load_checkpoint(checkpoint: Checkpoint):
     if device == "mlx":
         return _MLXAgent(folder), device
     if device not in ("cuda", "cpu"):
-        return laya.load(str(root), subfolder = checkpoint.subfolder, device = device), device
+        return _load_laya(str(root), subfolder = checkpoint.subfolder, device = device), device
     import torch
 
     # Built on CPU and cast before the move, so the device never holds laya's fp32 copy.
-    agent = laya.load(str(root), subfolder = checkpoint.subfolder, device = "cpu")
     fp16_checkpoint = checkpoint.name in CHECKPOINTS or _stored_fp16(folder)
+    weights, _ = _precision(torch.device(device), fp16_checkpoint)
+    agent = _load_laya(
+        str(root), subfolder = checkpoint.subfolder, device = "cpu", embedding_dtype = weights
+    )
     _place(agent, torch.device(device), fp16_checkpoint)
     return agent, str(agent.device.type)
+
+
+_build_lock = threading.Lock()
+
+
+def _load_laya(
+    path: str,
+    *,
+    embedding_dtype = None,
+    **kwargs,
+):
+    """``laya.load`` without randomly initialising the encoder's vocabulary embedding.
+
+    laya builds a randomly initialised fp32 encoder and then loads the checkpoint over it. For mmBERT's
+    256000 x 768 embedding that init alone took ~3.2 GB of scratch RAM and ~8 s, all of it overwritten
+    by laya's strict load. The embedding is created with ``skip_init`` instead, in the dtype it will be
+    served in; the rest of the model, including buffers the checkpoint does not carry, is built as before.
+    """
+    laya = _laya()
+    hook = getattr(laya, "agent", None)
+    if not hasattr(hook, "build_model"):
+        return laya.load(path, **kwargs)
+    with _build_lock:
+        original = hook.build_model
+
+        def build_model(cfg, encoder_dir = None):
+            return _build_model(cfg, encoder_dir, original, embedding_dtype)
+
+        hook.build_model = build_model
+        try:
+            return laya.load(path, **kwargs)
+        finally:
+            hook.build_model = original
+
+
+def _build_model(
+    cfg,
+    encoder_dir,
+    original,
+    embedding_dtype = None,
+):
+    """laya.common.build_model, with the vocabulary embedding allocated but not initialised."""
+    import os
+
+    import torch
+    from transformers import AutoConfig, AutoModel
+
+    if not encoder_dir or not os.path.exists(encoder_dir):
+        return original(cfg, encoder_dir = encoder_dir)
+    config = AutoConfig.from_pretrained(encoder_dir)
+    vocab_size, pad_token_id = config.vocab_size, getattr(config, "pad_token_id", None)
+    # ModernBERT reads pad_token_id only for this embedding; others keep it (RoBERTa's position ids).
+    if config.model_type != "modernbert" or vocab_size <= 1:
+        return original(cfg, encoder_dir = encoder_dir)
+    # A one-row placeholder, with row 0 standing in for the padding id so the check below can
+    # tell the embedding was sized and padded from the config.
+    placeholder_pad = None if pad_token_id is None else 0
+    config.vocab_size, config.pad_token_id = 1, placeholder_pad
+    try:
+        encoder = AutoModel.from_config(config, attn_implementation = "sdpa")
+    finally:
+        config.vocab_size, config.pad_token_id = vocab_size, pad_token_id
+    placeholder = encoder.get_input_embeddings()
+    if (
+        type(placeholder) is not torch.nn.Embedding
+        or placeholder.num_embeddings != 1
+        or placeholder.padding_idx != placeholder_pad
+        or encoder.config.vocab_size != vocab_size
+    ):
+        # Not laid out like ModernBERT: build it laya's way.
+        del encoder, placeholder
+        return original(cfg, encoder_dir = encoder_dir)
+    encoder.set_input_embeddings(
+        torch.nn.utils.skip_init(
+            torch.nn.Embedding,
+            vocab_size,
+            placeholder.embedding_dim,
+            padding_idx = pad_token_id,
+            max_norm = placeholder.max_norm,
+            norm_type = placeholder.norm_type,
+            scale_grad_by_freq = placeholder.scale_grad_by_freq,
+            sparse = placeholder.sparse,
+            dtype = embedding_dtype or placeholder.weight.dtype,
+        )
+    )
+    return _laya().common.DecisionModel(
+        encoder, cfg.get("head_layers", 2), len(cfg.get("act_costs", {})) + 1
+    )
 
 
 def _stored_fp16(folder: Path) -> bool:
@@ -385,6 +476,8 @@ def _place(agent, device, fp16_checkpoint: bool) -> None:
     import torch
 
     agent.__dict__["_unsloth_fp16_checkpoint"] = fp16_checkpoint
+    # Captured graphs point at the current weights; a move or recast replaces them.
+    agent.__dict__.pop("_unsloth_graphs", None)
     weights, compute = _precision(device, fp16_checkpoint)
     # Cast on the CPU side of the move: before moving to an accelerator, after coming back from one.
     if device.type == "cpu":
@@ -607,9 +700,7 @@ def _forward(agent, items: list[dict[str, Any]]):
     global _agent, _loaded, _device_name
     import torch
 
-    collate_items = _laya().common.collate_items
-
-    batch = collate_items([items], agent.tok.pad_token_id)
+    batch = _collate(items, agent.tok.pad_token_id)
     if agent.device == "mlx":
         try:
             return agent.model.logits(batch), int(batch["attention_mask"].sum())
@@ -619,14 +710,17 @@ def _forward(agent, items: list[dict[str, Any]]):
             if "memory" not in reason and "allocate" not in reason:
                 raise
         # Past the handler, so the traceback no longer keeps the MLX arrays alive while the CPU copy loads.
-        laya = _laya()
-
         logger.warning("Laya ran out of GPU memory; moving it to CPU")
         agent.model = None
         _release_memory()
         try:
-            cpu = laya.load(str(agent.folder), device = "cpu")
-            _place(cpu, torch.device("cpu"), _stored_fp16(Path(agent.folder)))
+            cpu_device, fp16_checkpoint = torch.device("cpu"), _stored_fp16(Path(agent.folder))
+            cpu = _load_laya(
+                str(agent.folder),
+                device = "cpu",
+                embedding_dtype = _precision(cpu_device, fp16_checkpoint)[0],
+            )
+            _place(cpu, cpu_device, fp16_checkpoint)
         except Exception:
             # Callers hold _run_lock, so drop the half-moved agent here; the next request loads it again.
             _agent = _loaded = _device_name = None
@@ -648,6 +742,8 @@ def _forward(agent, items: list[dict[str, Any]]):
     if agent.dtype == torch.float16 and not bool(torch.isfinite(logits).all()):
         # fp16 activations overflowed; the fp16 weights widen to fp32 exactly, so rerun at full precision.
         logger.warning("Laya overflowed in float16; continuing in float32")
+        # The graphs read the fp16 weights that .float() is about to replace.
+        agent.__dict__.pop("_unsloth_graphs", None)
         agent.model.float()
         agent.dtype = torch.float32
         logits = _run_model(agent, batch)
@@ -655,25 +751,314 @@ def _forward(agent, items: list[dict[str, Any]]):
 
 
 def _run_model(agent, batch):
+    import os
+
     import torch
 
     device = agent.device
-    with (
-        torch.inference_mode(),
-        torch.autocast(
-            device_type = device.type,
-            dtype = agent.dtype,
-            enabled = device.type in ("cuda", "cpu") and agent.dtype != torch.float32,
-        ),
+    fast = _marker_head(agent.model)
+    if (
+        fast
+        and device.type == "cuda"
+        and os.environ.get("UNSLOTH_SYSTEMONE_CUDA_GRAPHS", "") != "0"
+        # ROCm reports "cuda" too; as in diffusion_cuda_graph.py, graphs are CUDA only.
+        and not torch.version.hip
     ):
-        logits, _ = agent.model(
-            batch["input_ids"].to(device),
-            batch["attention_mask"].to(device),
-            batch["marker_pos"].to(device),
-            batch["marker_mask"].to(device),
-            batch["qtype"].to(device),
-        )
+        graphs = agent.__dict__.get("_unsloth_graphs")
+        if graphs is None:
+            graphs = agent.__dict__["_unsloth_graphs"] = _CUDAGraphs(agent)
+        with torch.inference_mode():
+            logits = graphs.run(batch)
+        if logits is not None:
+            return logits
+    with torch.inference_mode(), _autocast(agent):
+        args = [batch[name].to(device) for name in _INPUTS]
+        if fast:
+            # No padding in the batch: no mask, so SDPA may pick its fastest kernel.
+            return _decision_logits(
+                agent.model, *args, padded = not bool(batch["attention_mask"].all())
+            )
+        logits, _ = agent.model(*args)
     return logits
+
+
+_INPUTS = ("input_ids", "attention_mask", "marker_pos", "marker_mask", "qtype")
+# Padded rows x tokens above which a batch runs eagerly (B200: graphs win up to 8 x 1024, lose at 16 x 512).
+_GRAPH_TOKENS = 8192
+
+
+def _autocast(agent, cache_enabled = True):
+    import torch
+    device = agent.device
+    return torch.autocast(
+        device_type = device.type,
+        dtype = agent.dtype,
+        enabled = device.type in ("cuda", "cpu") and agent.dtype != torch.float32,
+        cache_enabled = cache_enabled,
+    )
+
+
+def _collate(items: list[dict[str, Any]], pad_id: int) -> dict[str, Any]:
+    """laya's ``collate_items`` for one request (same tensors), filled with numpy instead of per-row copies."""
+    import numpy as np
+    import torch
+
+    n = len(items)
+    lengths = np.fromiter((len(it["ids"]) for it in items), dtype = np.int64, count = n)
+    counts = np.fromiter((len(it["markers"]) for it in items), dtype = np.int64, count = n)
+    tokens = np.arange(int(lengths.max()))[None, :] < lengths[:, None]
+    options = np.arange(int(counts.max()))[None, :] < counts[:, None]
+    ids = np.full(tokens.shape, pad_id, dtype = np.int64)
+    ids[tokens] = np.fromiter(
+        (t for it in items for t in it["ids"]), dtype = np.int64, count = int(lengths.sum())
+    )
+    positions = np.zeros(options.shape, dtype = np.int64)
+    positions[options] = np.fromiter(
+        (m for it in items for m in it["markers"]), dtype = np.int64, count = int(counts.sum())
+    )
+    return {
+        "input_ids": torch.from_numpy(ids),
+        "attention_mask": torch.from_numpy(tokens.astype(np.int64)),
+        "marker_pos": torch.from_numpy(positions),
+        "marker_mask": torch.from_numpy(options),
+        "qtype": torch.tensor([it["qtype"] for it in items]),
+    }
+
+
+def _marker_head(model) -> bool:
+    """Whether :func:`_decision_logits` can stand in for ``model(...)``: laya's pre-norm ReLU head and GELU scorer."""
+    import os
+
+    import torch.nn as nn
+
+    if os.environ.get("UNSLOTH_SYSTEMONE_FAST", "") == "0":
+        return False
+    cached = model.__dict__.get("_unsloth_marker_head")
+    if cached is not None:
+        return cached
+    head, scorer = getattr(model, "head", None), getattr(model, "scorer", None)
+    ok = (
+        isinstance(head, nn.TransformerEncoder)
+        and len(head.layers) > 0
+        and head.norm is None
+        and all(
+            type(layer) is nn.TransformerEncoderLayer
+            and layer.norm_first
+            and layer.activation_relu_or_gelu == 1
+            and type(layer.self_attn) is nn.MultiheadAttention
+            and layer.self_attn.batch_first
+            and layer.self_attn._qkv_same_embed_dim
+            and layer.self_attn.in_proj_bias is not None
+            for layer in head.layers
+        )
+        and isinstance(scorer, nn.Sequential)
+        and [type(m) for m in scorer] == [nn.LayerNorm, nn.Linear, nn.GELU, nn.Linear]
+        and scorer[2].approximate == "none"
+    )
+    model.__dict__["_unsloth_marker_head"] = ok
+    return ok
+
+
+def _feed_forward(layer, x):
+    import torch.nn.functional as F
+
+    y = F.layer_norm(x, x.shape[-1:], layer.norm2.weight, layer.norm2.bias, layer.norm2.eps)
+    y = F.relu(F.linear(y, layer.linear1.weight, layer.linear1.bias), inplace = True)
+    return x.add_(F.linear(y, layer.linear2.weight, layer.linear2.bias))
+
+
+def _head_layer(
+    layer,
+    x,
+    mask,
+    markers = None,
+):
+    """One eval-mode pre-norm ``TransformerEncoderLayer``; with ``markers``, only the rows at those positions.
+
+    Keys and values always span every token, so each marker row is exactly what the full layer gives it.
+    """
+    import torch
+    import torch.nn.functional as F
+
+    attn = layer.self_attn
+    batch, length, width = x.shape
+    heads = attn.num_heads
+    y = F.layer_norm(x, (width,), layer.norm1.weight, layer.norm1.bias, layer.norm1.eps)
+    if markers is None:
+        q, k, v = (
+            F.linear(y, attn.in_proj_weight, attn.in_proj_bias)
+            .view(batch, length, 3, heads, width // heads)
+            .permute(2, 0, 3, 1, 4)
+        )
+    else:
+        index = markers[:, :, None].expand(-1, -1, width)
+        k, v = (
+            F.linear(y, attn.in_proj_weight[width:], attn.in_proj_bias[width:])
+            .view(batch, length, 2, heads, width // heads)
+            .permute(2, 0, 3, 1, 4)
+        )
+        q = F.linear(
+            torch.gather(y, 1, index), attn.in_proj_weight[:width], attn.in_proj_bias[:width]
+        )
+        q = q.view(batch, -1, heads, width // heads).transpose(1, 2)
+        x = torch.gather(x, 1, index)
+    # Boolean attn_mask is True where attention is allowed (the inverse of src_key_padding_mask); SDPA
+    # applies dropout_p even in eval, so it is passed as 0.
+    out = F.scaled_dot_product_attention(q, k, v, attn_mask = mask, dropout_p = 0.0)
+    out = out.transpose(1, 2).reshape(batch, -1, width)
+    x = x.add_(F.linear(out, attn.out_proj.weight, attn.out_proj.bias))
+    return _feed_forward(layer, x)
+
+
+def _decision_logits(
+    model,
+    input_ids,
+    attention_mask,
+    marker_pos,
+    marker_mask,
+    qtype,
+    *,
+    padded = True,
+):
+    """The ``logits`` of laya's ``DecisionModel.forward``, computing only what they read.
+
+    The scorer only reads the option markers, so the last head layer runs at the markers alone, and the
+    action head Studio never returns is skipped.
+    """
+    import torch.nn.functional as F
+
+    h = model.encoder(input_ids = input_ids, attention_mask = attention_mask).last_hidden_state
+    h = h + model.type_emb(qtype)[:, None, :]
+    mask = attention_mask.bool()[:, None, None, :] if padded else None
+    layers = model.head.layers
+    for layer in layers[:-1]:
+        h = _head_layer(layer, h, mask)
+    m = _head_layer(layers[-1], h, mask, marker_pos.clamp(min = 0))
+    norm, up, _, down = model.scorer
+    m = F.layer_norm(m, m.shape[-1:], norm.weight, norm.bias, norm.eps)
+    logits = (
+        F.linear(F.gelu(F.linear(m, up.weight, up.bias)), down.weight, down.bias)
+        .squeeze(-1)
+        .float()
+    )
+    return logits.masked_fill(~marker_mask, -1e4)
+
+
+class _CUDAGraphs:
+    """One captured :func:`_decision_logits` per padded (rows, tokens, options) bucket, sharing one memory pool.
+
+    A short request is bound by kernel launches (about 2.5 ms of GPU work in a 12 ms forward); replaying a
+    graph launches it all at once. Past ``_GRAPH_TOKENS`` padded tokens the GPU is the bottleneck and
+    padding up to a bucket costs more than launches save, so those batches run eagerly. Callers hold
+    ``_run_lock``, so one replay runs at a time and each output is read before the next overwrites it.
+    """
+
+    ROWS = (1, 2, 4, 8, 16)
+    TOKENS = (64, 128, 256, 512, 1024)
+    OPTIONS = (2, 4, 8, 16, 32, 64, 128, 256)
+    MAX_GRAPHS = 64
+
+    def __init__(self, agent):
+        import torch
+
+        self.agent = agent
+        # transformers 4.x wraps ModernBERT's embeddings and MLP in torch.compile on CUDA, which cannot run
+        # under capture; 5.x dropped that path, so this is what 5.x runs anyway.
+        config = getattr(getattr(agent.model, "encoder", None), "config", None)
+        if getattr(config, "reference_compile", False) is not False:
+            config.reference_compile = False
+        self.graphs: dict[tuple[int, int, int], tuple[Any, dict[str, Any], Any]] = {}
+        self.broken = False
+        self.pool = torch.cuda.graph_pool_handle()
+        self.pool_bytes = 0
+        # One warm-up stream: the allocator caches blocks per stream, so a new stream per capture would strand them.
+        self.stream = torch.cuda.Stream(agent.device)
+        free, _ = torch.cuda.mem_get_info(agent.device)
+        self.max_pool_bytes = min(1 << 30, free // 10)
+
+    @staticmethod
+    def _fit(n, sizes):
+        return next((size for size in sizes if n <= size), None)
+
+    def _forward(self, static):
+        with _autocast(self.agent, cache_enabled = False):
+            return _decision_logits(self.agent.model, *(static[name] for name in _INPUTS))
+
+    def _capture(self, key):
+        import torch
+
+        rows, tokens, options = key
+        device = self.agent.device
+        static = {
+            "input_ids": torch.zeros((rows, tokens), dtype = torch.long, device = device),
+            "attention_mask": torch.ones((rows, tokens), dtype = torch.long, device = device),
+            "marker_pos": torch.zeros((rows, options), dtype = torch.long, device = device),
+            "marker_mask": torch.ones((rows, options), dtype = torch.bool, device = device),
+            "qtype": torch.zeros((rows,), dtype = torch.long, device = device),
+        }
+        # Warm up off the default stream first, as torch.cuda.graph requires, so lazy init is not captured.
+        self.stream.wait_stream(torch.cuda.current_stream(device))
+        with torch.cuda.stream(self.stream):
+            for _ in range(2):
+                self._forward(static)
+        torch.cuda.current_stream(device).wait_stream(self.stream)
+        graph = torch.cuda.CUDAGraph()
+        # thread_local: CUDA work on other Studio threads cannot break (or be broken by) this capture.
+        with torch.cuda.graph(graph, pool = self.pool, capture_error_mode = "thread_local"):
+            logits = self._forward(static)
+        return graph, static, logits
+
+    def run(self, batch):
+        """Logits for ``batch`` from a graph replay, or None to run it eagerly."""
+        import torch
+
+        rows, tokens = batch["input_ids"].shape
+        options = batch["marker_pos"].shape[1]
+        key = (
+            self._fit(rows, self.ROWS),
+            self._fit(tokens, self.TOKENS),
+            self._fit(options, self.OPTIONS),
+        )
+        if self.broken or None in key or key[0] * key[1] > _GRAPH_TOKENS:
+            return None
+        entry = self.graphs.get(key)
+        if entry is None:
+            if len(self.graphs) >= self.MAX_GRAPHS or self.pool_bytes >= self.max_pool_bytes:
+                return None
+            before = torch.cuda.memory_reserved(self.agent.device)
+            try:
+                entry = self._capture(key)
+            except Exception:
+                # e.g. transformers 4.x builds ModernBERT's sliding-window mask on the CPU every forward.
+                logger.warning(
+                    "Laya cannot run in CUDA graphs here; running it eagerly", exc_info = True
+                )
+                self.broken = True
+                return None
+            self.graphs[key] = entry
+            self.pool_bytes += max(0, torch.cuda.memory_reserved(self.agent.device) - before)
+            if self.pool_bytes > self.max_pool_bytes:
+                # Over budget: the pool is only released with every graph in it, so drop them all and stay eager.
+                logger.warning("Laya CUDA graphs need more memory than allowed; running eagerly")
+                self.graphs.clear()
+                self.broken = True
+                return None
+        graph, static, logits = entry
+        # Padding tokens are masked; padding rows repeat row 0 so every row has a real token to attend to.
+        static["input_ids"].zero_()
+        static["attention_mask"].zero_()
+        static["marker_pos"].zero_()
+        static["marker_mask"].zero_()
+        for name in _INPUTS:
+            source = batch[name]
+            if source.dim() == 1:
+                static[name][:rows].copy_(source)
+            else:
+                static[name][:rows, : source.shape[1]].copy_(source)
+            if rows < key[0]:
+                static[name][rows:] = static[name][:1]
+        graph.replay()
+        return logits[:rows, :options]
 
 
 def _probabilities(agent, row, k: int, qtype: int):
@@ -754,12 +1139,16 @@ def status() -> dict[str, Any]:
         }
 
 
-def unload() -> bool:
-    global _agent, _loaded, _device_name, _failure
+def ensure_can_unload() -> None:
     with _state_lock:
         # _loading: a load claimed but not yet started would otherwise land after this unload.
         if _loading is not None or (_loader is not None and _loader.is_alive()):
             raise Unavailable(409, "model_loading", "Wait for the load to finish before unloading")
+
+
+def unload() -> bool:
+    global _agent, _loaded, _device_name, _failure
+    ensure_can_unload()
     with _run_lock:
         was_loaded = _agent is not None
         _agent = _loaded = _device_name = None

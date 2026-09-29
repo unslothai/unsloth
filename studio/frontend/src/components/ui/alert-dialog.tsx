@@ -52,14 +52,17 @@ function AlertDialogContent({
   className,
   size = "default",
   overlayClassName,
+  onOverlayClick,
   ...props
 }: React.ComponentProps<typeof AlertDialogPrimitive.Content> & {
   size?: "default" | "sm";
   overlayClassName?: string;
+  /** Alert dialogs ignore outside clicks; set this to cancel on backdrop click. */
+  onOverlayClick?: () => void;
 }) {
   return (
     <AlertDialogPortal>
-      <AlertDialogOverlay className={overlayClassName} />
+      <AlertDialogOverlay className={overlayClassName} onClick={onOverlayClick} />
       <AlertDialogPrimitive.Content
         data-slot="alert-dialog-content"
         data-size={size}

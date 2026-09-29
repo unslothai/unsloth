@@ -1362,6 +1362,32 @@ def test_get_enabled_mcp_tools_caches_discovery(tmp_path, monkeypatch):
     assert first == second
 
 
+def test_disabled_decision_api_hides_saved_decisions_tools(tmp_path, monkeypatch):
+    from core.inference import mcp_client
+    from core.inference import tools as tools_mod
+    from utils import systemone_settings
+    import asyncio
+
+    _reset_db(tmp_path, monkeypatch)
+    monkeypatch.setattr(mcp_client, "_tool_cache", {})
+    mcp_servers_db.create_server(
+        id = "decisions",
+        display_name = "Unsloth Decisions",
+        url = "http://127.0.0.1:8888/mcp/decisions/",
+        is_enabled = True,
+    )
+    mcp_client.cache_tools("decisions", _one_tool("decide"))
+    monkeypatch.setattr(systemone_settings, "get_enabled", lambda: False)
+
+    assert tools_mod.cached_mcp_tools() == ([], True)
+    assert asyncio.run(tools_mod.get_enabled_mcp_tools()) == []
+
+    monkeypatch.setattr(systemone_settings, "get_enabled", lambda: True)
+    cached, complete = tools_mod.cached_mcp_tools()
+    assert complete is True
+    assert [tool["function"]["name"] for tool in cached] == ["mcp__decisions__decide"]
+
+
 def test_get_enabled_mcp_tools_does_not_cache_failures(tmp_path, monkeypatch):
     """A failed probe isn't cached: once the cool-off elapses, it's retried."""
     from core.inference import mcp_client
