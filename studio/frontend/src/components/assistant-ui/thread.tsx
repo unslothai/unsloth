@@ -12,6 +12,7 @@ import {
 import { CompactionNotice } from "@/components/assistant-ui/compaction-notice";
 import {
   compactionBoundary,
+  shouldShowCompactionNotice,
   type ContextTruncation,
 } from "@/features/chat/utils/context-truncation";
 import { downloadImagePart } from "@/components/assistant-ui/image";
@@ -25,6 +26,9 @@ import { ComposerDraftPreview } from "@/components/assistant-ui/composer-draft-p
 import { PromptQueueList } from "@/components/assistant-ui/lazy-prompt-queue-list";
 import { QueueResumeIcon } from "@/components/assistant-ui/queue-resume-icon";
 import { ProgressiveMessages } from "@/components/assistant-ui/progressive-messages";
+import { MessageMenuTime } from "@/components/assistant-ui/message-menu-time";
+import { UserMessageActionBar, UserMessageFooter } from "@/components/assistant-ui/user-message-actions";
+import { useActionBarFocusReveal } from "@/components/assistant-ui/use-action-bar-focus-reveal";
 import { MessageTiming } from "@/components/assistant-ui/message-timing";
 import { attachThreadFastCopy } from "@/components/assistant-ui/thread-fast-copy";
 import { threadHasResearchMessage } from "@/components/assistant-ui/thread-research-presence";
@@ -54,10 +58,12 @@ import { TerminalToolUI } from "@/components/assistant-ui/tool-ui-terminal";
 import { WebSearchToolUI } from "@/components/assistant-ui/tool-ui-web-search";
 import { ChatDictationBar } from "@/components/assistant-ui/chat-dictation-bar";
 import {
+  ChatAudioUploadMount,
   ChatSkillsDialog,
   composerSubmitIntent,
   composerFollowUpBehavior,
   composerShortcutLabels,
+  effectiveSendShortcut,
   followUpSubmitIntent,
   steeringInsertionIndex,
   cancelPreStreamRunForThreadIds,
@@ -75,11 +81,13 @@ import {
   pasteLongTextAsFile,
   isPlainPasteChord,
   plainPasteStillCounts,
+  currentDictationEntryMode,
   isStudioDictationAvailable,
   notifyStudioDictationUnavailable,
   YoutubeTranscriptPrompt,
   stripSearchImageTokens,
   useChatActive,
+  useChatAudioUpload,
   useInComparePane,
   refreshSkillsCatalog,
 } from "@/features/chat";
@@ -136,6 +144,10 @@ import {
   useNativeIntentStore,
 } from "@/features/native-intents";
 import { nativeAttachmentIntentToFile } from "@/features/native-intents/native-attachment-file";
+import {
+  attachLibraryChatFiles,
+  useLibraryChatHandoffStore,
+} from "@/features/library/chat-handoff-store";
 import { cancelResearchRun } from "@/features/chat/api/research-api";
 import {
   ingestResearchUpdate,
@@ -179,7 +191,7 @@ import {
   isMacPlatform,
 } from "@/features/settings";
 import { FIND_SKIP_ATTRIBUTE } from "@/features/find-in-page";
-import { useT } from "@/i18n";
+import { translate, useT } from "@/i18n";
 import {
   clampReasoningEffortToLevels,
   getExternalReasoningCapabilities,
@@ -253,6 +265,7 @@ import {
   type PlusMenuItemId,
   usePlusMenuPrefsStore,
   writeComposerDraft,
+  normalizeChatImage,
 } from "@/features/chat";
 import {
   applySentTextGuard,
@@ -321,14 +334,15 @@ import {
   FolderAttachmentIcon,
   Folder01Icon,
   FolderAddIcon,
-  HelpCircleIcon,
   Image03Icon,
   McpServerIcon,
   PencilRulerIcon,
   Scroll01Icon,
   Telescope02Icon,
+  VolumeMute02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { Volume02Icon } from "@/lib/volume-icons";
 import { useNavigate } from "@tanstack/react-router";
 import {
   ArrowDownIcon,
@@ -347,8 +361,6 @@ import {
   RefreshCwIcon,
   SquareIcon,
   TerminalIcon,
-  Volume2Icon,
-  VolumeXIcon,
   XIcon,
 } from "lucide-react";
 import {
@@ -359,7 +371,6 @@ import {
   type FC,
   type KeyboardEvent,
   type DragEvent as ReactDragEvent,
-  type FocusEvent as ReactFocusEvent,
   type ReactNode,
   type RefObject,
   Fragment,
@@ -2517,8 +2528,8 @@ const ThreadWelcome: FC<{
   return (
     <div className="aui-thread-welcome-root mx-auto my-auto flex w-full max-w-(--thread-max-width) grow flex-col">
       <div className="aui-thread-welcome-center flex w-full grow flex-col items-center justify-start pt-[27.5dvh]">
-        {/* Matches the docked composer's gutter; index.css trims both. */}
-        <div className="aui-thread-welcome-message flex w-full flex-col justify-center gap-9 px-[var(--custom-chat-welcome-padding,calc(1rem*var(--ui-space-scale,1)))]">
+        {/* No padding, so the composer here is as wide as once it docks. */}
+        <div className="aui-thread-welcome-message flex w-full flex-col justify-center gap-9">
           {/* Center the greeting (sloth + title) over the composer. */}
           <div className="unsloth-welcome-greeting flex flex-row items-center justify-center gap-[calc(15px*var(--ui-space-scale,1))]">
             {/* Temporary chat keeps the title on its own, no mascot. */}
@@ -2573,9 +2584,9 @@ const ComposerAnimated: FC<{
     // unsloth-composer-shell is the size container the tight (mobile) layout
     // in index.css queries. It sits outside the surface so those rules can
     // trim the surface's own padding.
-    // Its own width variable: every parent here is already capped by the width
-    // setting, so re-reading that one would apply the cap twice.
-    <div className="unsloth-composer-shell relative mx-auto min-w-0 w-full max-w-[var(--custom-chat-shell-max-width,46rem)]">
+    // Same width as the message column. Full chat width sets its own variable, since
+    // its percentage would otherwise resolve against this narrower parent.
+    <div className="unsloth-composer-shell relative mx-auto min-w-0 w-full max-w-[var(--custom-chat-shell-max-width,var(--thread-content-max-width,46rem))]">
       <div className="relative z-10 w-full">
         <Composer
           disabled={disabled}
@@ -2978,6 +2989,59 @@ const Composer: FC<{
   const nativeAttachmentTargetKey = useNativeAttachmentTargetKey();
   const nativeAttachmentTargetKeyRef = useRef(nativeAttachmentTargetKey);
   nativeAttachmentTargetKeyRef.current = nativeAttachmentTargetKey;
+
+  useEffect(() => {
+    if (!nativeAttachmentTargetKey) return;
+    const targetKey = nativeAttachmentTargetKey;
+    let disposed = false;
+    // aui.composer() is whichever chat is open now: a switch mid-batch must not take the rest.
+    const add = async (file: File) => {
+      if (disposed || nativeAttachmentTargetKeyRef.current !== targetKey) {
+        throw new Error("The chat changed before this file was attached.");
+      }
+      await aui.composer().addAttachment(file);
+    };
+    const drain = async () => {
+      const held = await attachLibraryChatFiles(targetKey, add);
+      if (held > 0) toast(translate("library.toast.chatFilesWaiting", { count: held }));
+    };
+    void drain();
+    const offers = useLibraryChatHandoffStore.subscribe((state) => {
+      if (state.pending?.targetKey === targetKey) void drain();
+    });
+    let retrying = false;
+    let again = false;
+    const retry = async () => {
+      if (retrying) {
+        again = true;
+        return;
+      }
+      retrying = true;
+      do {
+        again = false;
+        await attachLibraryChatFiles(targetKey, add, true);
+      } while (again);
+      retrying = false;
+    };
+    const loads = useChatRuntimeStore.subscribe((state, prev) => {
+      if (state.modelLoading) return;
+      if (
+        prev.modelLoading ||
+        state.params.checkpoint !== prev.params.checkpoint ||
+        state.residentCheckpoint !== prev.residentCheckpoint ||
+        state.loadedIsMultimodal !== prev.loadedIsMultimodal ||
+        state.codeToolsEnabled !== prev.codeToolsEnabled ||
+        state.supportsTools !== prev.supportsTools
+      ) {
+        void retry();
+      }
+    });
+    return () => {
+      disposed = true;
+      offers();
+      loads();
+    };
+  }, [nativeAttachmentTargetKey, aui]);
   const hasPendingImageAttachments = useNativeIntentStore((s) =>
     Boolean(
       nativeAttachmentTargetKey &&
@@ -3345,7 +3409,9 @@ const Composer: FC<{
             const intent = intents[index]!;
             let file: File;
             try {
-              file = await nativeAttachmentIntentToFile(intent);
+              file = await normalizeChatImage(
+                await nativeAttachmentIntentToFile(intent),
+              );
             } catch (error) {
               // Report once below rather than one toast per file: a whole batch
               // can go unreadable at once (volume ejected, tokens expired).
@@ -3550,6 +3616,31 @@ const Composer: FC<{
     ({ threadListItem }) => threadListItem.remoteId,
   );
   const referenceThreadId = threadId ?? activeThreadId ?? null;
+  // Not referenceThreadId: it moves null -> remote id on first persist of the same composer.
+  const composerIdentity = threadListItemId ?? "";
+  composerIdentityRef.current = composerIdentity;
+  const chatActive = useChatActive();
+  const readAudioUploadDraft = useCallback(
+    () => aui.composer().getState().text,
+    [aui],
+  );
+  const writeAudioUploadDraft = useCallback(
+    (value: string) => aui.composer().setText(value),
+    [aui],
+  );
+  const focusAudioUploadDraft = useCallback(() => {
+    inputRef.current?.focus({ preventScroll: true });
+  }, []);
+  const dictationEntryDisabled = !chatActive;
+  const audioUpload = useChatAudioUpload({
+    owner: composerIdentity,
+    chatId: referenceThreadId,
+    disabled: dictationEntryDisabled || isDictating,
+    readDraft: readAudioUploadDraft,
+    writeDraft: writeAudioUploadDraft,
+    focusDraft: focusAudioUploadDraft,
+  });
+  const cancelAudioUpload = audioUpload.cancel;
   // Read at Send time, so a send that materializes after a project switch is still filed
   // where it was made.
   const projectScope = useChatProjectScope();
@@ -4240,6 +4331,7 @@ const Composer: FC<{
             promptQueueStartPendingRef.current.get(reservationKey) ===
               reservation
           ) {
+            cancelAudioUpload();
             startPromptQueue(
               items,
               target,
@@ -4273,7 +4365,12 @@ const Composer: FC<{
         });
       return true;
     },
-    [createPromptQueueTarget, pendingQueueStartIsStale, referenceThreadId],
+    [
+      cancelAudioUpload,
+      createPromptQueueTarget,
+      pendingQueueStartIsStale,
+      referenceThreadId,
+    ],
   );
 
   // The queue carries text, and a long paste is text the composer parked in a
@@ -4591,6 +4688,8 @@ const Composer: FC<{
     }
     preStreamRunReservationRef.current = reservationToken;
     try {
+      // Only after reservation succeeds: a refused send keeps the in-flight transcript.
+      cancelAudioUpload();
       const sentText = aui.composer().getState().text;
       // Stamp the send BEFORE send() starts awaiting every incomplete attachment: a document
       // send reaches initialize() seconds later, by which time navigation may have moved the
@@ -4616,7 +4715,14 @@ const Composer: FC<{
           error instanceof Error ? error.message : "Please retry the send.",
       });
     }
-  }, [aui, armJustSent, preStreamThreadIds, projectScope, referenceThreadId]);
+  }, [
+    aui,
+    armJustSent,
+    cancelAudioUpload,
+    preStreamThreadIds,
+    projectScope,
+    referenceThreadId,
+  ]);
 
   // Gate for both form submit and the Send button. Returns true when it handled
   // the event (blocked or queued) so callers stop.
@@ -4787,12 +4893,6 @@ const Composer: FC<{
   usePublishedFrame(composerEl);
   const dictationBaseTextRef = useRef("");
   const dictationComposerRef = useRef("");
-  // Thread switches reuse this composer, so the send has to know where it
-  // started to avoid submitting the destination thread's draft. The list item
-  // id, not referenceThreadId: that one moves from null to the remote id when
-  // a new chat first persists, which is the same composer.
-  const composerIdentity = threadListItemId ?? "";
-  composerIdentityRef.current = composerIdentity;
   useEffect(() => {
     setIsWritingExpanded(false);
   }, [composerIdentity]);
@@ -4817,6 +4917,11 @@ const Composer: FC<{
   // Keep the mic clickable: if the engine can't run here, explain and point to
   // the local model instead of disabling the button.
   const startDictation = useCallback(() => {
+    if (audioUpload.busy || dictationEntryDisabled) return;
+    if (currentDictationEntryMode() === "recording-file") {
+      audioUpload.openDialog();
+      return;
+    }
     if (!isStudioDictationAvailable()) {
       notifyStudioDictationUnavailable();
       return;
@@ -4826,7 +4931,7 @@ const Composer: FC<{
     } catch {
       notifyStudioDictationUnavailable();
     }
-  }, [aui]);
+  }, [aui, audioUpload, dictationEntryDisabled]);
   const sendAfterDictation = useCallback(() => {
     sendAfterDictationRef.current = true;
     dictationComposerRef.current = composerIdentity;
@@ -4852,7 +4957,6 @@ const Composer: FC<{
   // Both chords live here, not with the controls below: the recording bar
   // replaces those while dictation runs, so a chord registered there could
   // start dictation and never stop it.
-  const chatActive = useChatActive();
   useShortcut(
     "startDictation",
     () => {
@@ -5348,6 +5452,7 @@ const Composer: FC<{
                 isComposing ||
                 hasPendingAttachments
               }
+              dictationDisabled={dictationEntryDisabled}
               // disableQueue (project new-chat composer) also blocks the queue
               // button, so a running thread shows Stop instead of Queue.
               queueDisabled={
@@ -5361,6 +5466,7 @@ const Composer: FC<{
               onStopClick={stopQueue}
               onResumeClick={resumeQueue}
               onDictateClick={startDictation}
+              audioUpload={audioUpload}
               pendingSend={pendingSend}
               menuSide={effectiveMenuSide}
               queueThreadIds={promptQueueThreadIds}
@@ -5372,6 +5478,7 @@ const Composer: FC<{
         open={researchWebsiteAccessOpen && effectiveDeepResearchEnabled}
         onOpenChange={setResearchWebsiteAccessOpen}
       />
+      <ChatAudioUploadMount audioUpload={audioUpload} />
     </>
   );
 
@@ -5668,7 +5775,7 @@ function useImeComposerInputHandlers({
         setCompositionState(false);
       }
       if (submitOnEnter && !skipEnterRef?.current) {
-        const intent = composerSubmitIntent(e, sendShortcut);
+        const intent = composerSubmitIntent(e, sendShortcut, e.currentTarget?.value);
         if (intent) {
           e.preventDefault();
           if (onSubmitKey) onSubmitKey(e, intent);
@@ -5779,6 +5886,7 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
               selectedExternalProvider?.isReasoningModel === true,
             // Lets the resolver detect custom Gemini OAI-compat gateways.
             baseUrl: selectedExternalProvider?.baseUrl ?? null,
+            apiType: selectedExternalProvider?.apiType,
           },
         )
       : null;
@@ -5804,7 +5912,8 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
       : reasoningEffort;
   const effectiveReasoningVisualEnabled =
     effectiveReasoningEnabled && displayedEffort !== "none";
-  const disabled = !(modelLoaded && effectiveSupportsReasoning);
+  const disabled =
+    !modelLoaded || !(effectiveSupportsReasoning || supportsPreserveThinking);
   const formatEffortLabel = (level: typeof reasoningEffort): string => {
     if (level !== "xhigh")
       return level.charAt(0).toUpperCase() + level.slice(1);
@@ -5819,8 +5928,8 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
   };
   const effortLabel = formatEffortLabel(displayedEffort);
 
-  // Only rendered for models that can reason.
-  if (!effectiveSupportsReasoning) {
+  // A connection may support history preservation without a generation toggle.
+  if (!effectiveSupportsReasoning && !supportsPreserveThinking) {
     return null;
   }
 
@@ -5831,9 +5940,11 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
     effectiveReasoningStyle === "enable_thinking_effort";
   // Dropdown when there are effort levels or preserve-thinking; else a toggle.
   const useDropdown = isEffort || supportsPreserveThinking;
-  const activeLook = isEffort
-    ? reasoningLockedOn || (effectiveReasoningVisualEnabled && !disabled)
-    : reasoningLockedOn || (effectiveReasoningEnabled && !disabled);
+  const activeLook = !effectiveSupportsReasoning
+    ? preserveThinking && !disabled
+    : isEffort
+      ? reasoningLockedOn || (effectiveReasoningVisualEnabled && !disabled)
+      : reasoningLockedOn || (effectiveReasoningEnabled && !disabled);
 
   if (useDropdown) {
     return (
@@ -5926,6 +6037,7 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
               ))}
           </>
         ) : (
+          effectiveSupportsReasoning &&
           effectiveSupportsReasoningOff &&
           !reasoningLockedOn && (
             <DropdownMenuItem
@@ -5959,8 +6071,8 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
               e.preventDefault();
               const next = !preserveThinking;
               setPreserveThinking(next);
-              // Preserve thinking requires thinking on.
-              if (next) {
+              // Only local models couple this setting to generation controls.
+              if (next && externalSelection === null) {
                 setReasoningEnabled(true);
                 applyQwenThinkingParams(true);
               }
@@ -6336,8 +6448,9 @@ const ComposerToolsMenu: FC<{
   );
   const audioAttachmentsEnabled = useChatRuntimeStore((s) => {
     const activeCheckpoint = s.params.checkpoint;
+    // No model yet: offer audio too, since files attached now wait for the model loaded next.
     if (!activeCheckpoint || s.modelLoading) {
-      return false;
+      return true;
     }
     const activeModel = s.models.find((m) => m.id === activeCheckpoint);
     return Boolean(activeModel?.hasAudioInput);
@@ -6877,23 +6990,27 @@ const PromptQueueStack: FC<{ queueThreadIds: string[] }> = ({
 
 const ComposerRightControls: FC<{
   disabled?: boolean;
+  dictationDisabled?: boolean;
   queueDisabled?: boolean;
   onQueueClick?: () => void;
   onSendClick?: (event: { preventDefault: () => void }) => void;
   onStopClick?: () => void;
   onResumeClick?: () => void;
   onDictateClick?: () => void;
+  audioUpload: ReturnType<typeof useChatAudioUpload>;
   pendingSend?: boolean;
   menuSide?: "top" | "bottom";
   queueThreadIds: string[];
 }> = ({
   disabled,
+  dictationDisabled,
   queueDisabled,
   onQueueClick,
   onSendClick,
   onStopClick,
   onResumeClick,
   onDictateClick,
+  audioUpload,
   pendingSend,
   menuSide,
   queueThreadIds,
@@ -6901,7 +7018,13 @@ const ComposerRightControls: FC<{
   const t = useT();
   const followUpBehavior = useChatPreferencesStore((s) => s.followUpBehavior);
   const sendShortcut = useChatPreferencesStore((s) => s.sendShortcut);
-  const shortcutLabels = composerShortcutLabels(sendShortcut, isMacPlatform());
+  // A boolean, so typing re-renders this only when a line break comes or goes.
+  const multiline = useAuiState(({ composer }) => composer.text.includes("\n"));
+  const shortcutLabels = composerShortcutLabels(
+    sendShortcut,
+    isMacPlatform(),
+    multiline ? "\n" : "",
+  );
   const followUpLabel = t(
     followUpBehavior === "queue"
       ? "promptQueue.queueButton"
@@ -6981,16 +7104,33 @@ const ComposerRightControls: FC<{
       {/* Starts dictation; the recording bar then covers the input row and owns
           the stop and send actions. */}
       <ComposerPrimitive.If dictation={false}>
-        <TooltipIconButton
-          tooltip="Dictate"
-          aria-label="Dictate"
-          type="button"
-          variant="ghost"
-          className="size-9 rounded-full text-foreground"
-          onClick={onDictateClick}
-        >
-          <MicIcon className="unsloth-dictate-icon size-6" />
-        </TooltipIconButton>
+        {audioUpload.busy ? (
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="h-9 gap-1.5 rounded-full px-2.5 text-muted-foreground"
+            aria-label={t("settings.voice.dictation.audioUploadCancel")}
+            title={t("settings.voice.dictation.audioUploadCancel")}
+            onClick={audioUpload.cancel}
+          >
+            <Spinner className="size-4" />
+            <span>{t("settings.voice.dictation.audioUploadTranscribing")}</span>
+            <XIcon className="size-3.5" aria-hidden="true" />
+          </Button>
+        ) : (
+          <TooltipIconButton
+            tooltip="Dictate"
+            aria-label="Dictate"
+            type="button"
+            variant="ghost"
+            className="size-9 rounded-full text-foreground"
+            disabled={dictationDisabled}
+            onClick={onDictateClick}
+          >
+            <MicIcon className="unsloth-dictate-icon size-6" />
+          </TooltipIconButton>
+        )}
       </ComposerPrimitive.If>
       <AuiIf
         condition={({ thread }) =>
@@ -7087,8 +7227,7 @@ const ComposerRightControls: FC<{
         <AuiIf condition={({ thread }) => thread.isRunning}>
           {/* Classed so the narrow-screen rules can treat this like the
               sibling send/stop buttons; it is the flex item, not the button. */}
-          <div className="aui-composer-run-controls ml-1.5 flex items-center">
-            {queueDisabled ? (
+          <div className="aui-composer-run-controls ml-1.5 flex items-center gap-1.5">
             <ComposerPrimitive.Cancel asChild={true}>
               <Button
                 type="button"
@@ -7096,26 +7235,27 @@ const ComposerRightControls: FC<{
                 size="icon"
                 className="aui-composer-cancel size-9 rounded-full"
                 aria-label="Stop generating"
+                // Cancel only ends the reply; handlePromptQueueRunState then
+                // dispatches the next queued prompt. stop() ends the run.
                 onClick={stop}
               >
                 <SquareIcon className="size-3 fill-current" />
               </Button>
             </ComposerPrimitive.Cancel>
-            ) : (
-            <TooltipIconButton
-              tooltip={followUpTooltip}
-              side="bottom"
-              type="button"
-              variant="default"
-              size="icon"
-              disabled={queueDisabled}
-              onClick={onQueueClick}
-              className="aui-composer-send size-9 rounded-full"
-              aria-label={followUpLabel}
-            >
-              <ArrowUpIcon className="unsloth-send-icon aui-composer-send-icon size-[calc(21px*var(--ui-space-scale,1))] stroke-2" />
-            </TooltipIconButton>
-            )}
+            {!queueDisabled ? (
+              <TooltipIconButton
+                tooltip={followUpTooltip}
+                side="bottom"
+                type="button"
+                variant="default"
+                size="icon"
+                onClick={onQueueClick}
+                className="aui-composer-send size-9 rounded-full"
+                aria-label={followUpLabel}
+              >
+                <ArrowUpIcon className="unsloth-send-icon aui-composer-send-icon size-[calc(21px*var(--ui-space-scale,1))] stroke-2" />
+              </TooltipIconButton>
+            ) : null}
           </div>
         </AuiIf>
       )}
@@ -7576,152 +7716,6 @@ const DiffusionCanvas: FC = () => {
   );
 };
 
-/**
- * Mounts an autohidden action bar while focus is inside the message, the way hovering it does.
- *
- * `autohide="not-last"` UNMOUNTS every bar but the newest reply's, so Copy, Edit, Refresh,
- * Delete, Read aloud and More leave the tab order on older messages and a keyboard or screen
- * reader user has no way back: `:focus-within` in CSS cannot help, there is nothing to style.
- * The reveal has to be JS, and it drives `message.setIsHovering`, the same flag the library's
- * own `mouseenter`/`mouseleave` (MessagePrimitive.Root) writes and the only input to
- * `useActionBarFloatStatus` besides the More menu's interaction lock. Reusing it rather than
- * layering a second visibility source is what keeps the two from disagreeing.
- *
- * One flag, two writers, so the two clobber each other unless this hook covers both crossings:
- *   - pointer leaves while focus is inside (a Tab that scrolls the message under a parked
- *     cursor does exactly this): the library clears the flag, which would unmount the element
- *     that currently has focus. `reassert` below sets it back inside the same event.
- *   - focus leaves while the pointer is still over the message: clearing would unmount a bar
- *     the user is pointing at, and no second `mouseenter` is coming. The `:hover` test defers
- *     to the library's own `mouseleave` instead.
- */
-function useActionBarFocusReveal() {
-  const aui = useAui();
-  const rootRef = useRef<HTMLDivElement | null>(null);
-  const focusWithinRef = useRef(false);
-  const clearFrameRef = useRef<number | null>(null);
-
-  // The More menu is portaled OUTSIDE the message, so focus entering it looks like a blur.
-  // Its own interaction lock keeps the bar mounted meanwhile, but the trigger this hook has to
-  // hand focus back to lives in that bar, so a popup this message owns counts as engaged.
-  // Scoped to the action bar, NOT to every expanded descendant. Reasoning and tool cards are
-  // Radix CollapsibleTriggers and render aria-expanded="true" while open, which is the resting
-  // state of a message whose tool output the reader has expanded. An unscoped lookup treated
-  // those as an open popup, so `decide` rescheduled itself every frame for as long as the
-  // disclosure stayed open, held focusWithinRef and the synthetic hover set, and left the bar
-  // mounted: a per-frame DOM query per such message, which is the slowdown this branch removes.
-  const openPopupTrigger = useCallback(
-    () =>
-      rootRef.current?.querySelector(
-        '.aui-assistant-action-bar-root [aria-expanded="true"]',
-      ) ?? null,
-    [],
-  );
-
-  const isEngaged = useCallback(() => {
-    const el = rootRef.current;
-    if (!el) return false;
-    const active = document.activeElement;
-    if (active && el.contains(active)) return true;
-    return openPopupTrigger() !== null;
-  }, [openPopupTrigger]);
-
-  const cancelPendingClear = useCallback(() => {
-    if (clearFrameRef.current !== null) {
-      cancelAnimationFrame(clearFrameRef.current);
-      clearFrameRef.current = null;
-    }
-  }, []);
-
-  /**
-   * Decide, a frame from now, whether focus has really left, and keep asking until it has.
-   *
-   * Deferred rather than read off `relatedTarget`: that is null both for focus going to the
-   * browser chrome and for focus entering a portal, and it says nothing at all when the
-   * focused element is REMOVED, which is how a menu closes and which Chrome reports with no
-   * focusout event whatsoever. Reading `document.activeElement` a frame later answers all of
-   * them. Clearing late costs a frame of a mounted bar; clearing early destroys the element
-   * the user is on, so late is the safe direction.
-   */
-  const scheduleClear = useCallback(
-    (restart: boolean) => {
-      if (clearFrameRef.current !== null) {
-        if (!restart) return;
-        cancelAnimationFrame(clearFrameRef.current);
-      }
-      const decide = () => {
-        clearFrameRef.current = null;
-        const el = rootRef.current;
-        if (!el || !focusWithinRef.current) return;
-        const active = document.activeElement;
-        if (active && el.contains(active)) return;
-        if (openPopupTrigger()) {
-          // Focus is in this message's own portaled menu, whose interaction lock is holding
-          // the bar open anyway. Deciding now would be wrong and deciding never would pin the
-          // bar open for good, so ask again next frame; the loop lasts only as long as the
-          // menu is open on this one message.
-          clearFrameRef.current = requestAnimationFrame(decide);
-          return;
-        }
-        focusWithinRef.current = false;
-        if (!el.matches(":hover")) {
-          aui.message().setIsHovering(false);
-        }
-      };
-      clearFrameRef.current = requestAnimationFrame(decide);
-    },
-    [aui, openPopupTrigger],
-  );
-
-  // onFocus/onBlur on a container are focusin/focusout in React, so they give focus-within.
-  const handleFocus = useCallback(
-    (event: ReactFocusEvent<HTMLDivElement>) => {
-      const el = rootRef.current;
-      const target = event.target as Node | null;
-      if (el && target && !el.contains(target)) {
-        // React bubbles focus events out of PORTALS along the React tree, so this is this
-        // message's own menu, rendered into document.body. Focus is not in the subtree, so do
-        // not cancel the watchdog -- the menu will take focus with it when it unmounts, and
-        // that removal fires no focusout to wake us up again.
-        scheduleClear(false);
-        return;
-      }
-      cancelPendingClear();
-      if (focusWithinRef.current) return;
-      focusWithinRef.current = true;
-      aui.message().setIsHovering(true);
-    },
-    [aui, cancelPendingClear, scheduleClear],
-  );
-
-  const handleBlur = useCallback(() => {
-    if (!focusWithinRef.current) return;
-    scheduleClear(true);
-  }, [scheduleClear]);
-
-  useEffect(() => {
-    const el = rootRef.current;
-    if (!el) return;
-    // From an effect on purpose: MessagePrimitive.Root binds its own mouseleave from a ref
-    // callback, which commits before effects run, so this listener is registered second and
-    // runs second on the same element. Both writes land in one dispatch, the store settles on
-    // `true`, and React never renders the intermediate `false` -- so the bar does not unmount
-    // and the focused control is not destroyed under the user.
-    const reassert = () => {
-      if (focusWithinRef.current && isEngaged()) {
-        aui.message().setIsHovering(true);
-      }
-    };
-    el.addEventListener("mouseleave", reassert);
-    return () => {
-      el.removeEventListener("mouseleave", reassert);
-      cancelPendingClear();
-    };
-  }, [aui, isEngaged, cancelPendingClear]);
-
-  return { ref: rootRef, onFocus: handleFocus, onBlur: handleBlur };
-}
-
 const ResearchMessageRunIdContext = createContext<string | null>(null);
 
 /**
@@ -7764,8 +7758,8 @@ const AssistantMessage: FC = () => {
   // Once a thread outgrows the window every request runs the fit, so "this turn
   // compacted" is true of every later reply and would put a notice on all of them. What
   // matters is when MORE of the conversation fell out of view: the eviction boundary
-  // rising above the last turn that reported one. Between moves the model sees the same
-  // history, so there is nothing new to say.
+  // rising above the last turn that reported one, or a checkpoint starting inside a tool
+  // loop (which evicts without moving the boundary). Sticky replays stay quiet.
   const showsNotice = useAuiState(({ thread }) => {
     let previousDropped = 0;
     for (const message of thread.messages) {
@@ -7776,9 +7770,9 @@ const AssistantMessage: FC = () => {
           | undefined
       )?.custom?.contextTruncation as ContextTruncation | undefined;
       const dropped = compactionBoundary(value);
-      if (dropped > previousDropped) {
+      if (shouldShowCompactionNotice(value, previousDropped)) {
         if (message.id === messageId) return true;
-        previousDropped = dropped;
+        previousDropped = Math.max(previousDropped, dropped);
       } else if (message.id === messageId) {
         return false;
       }
@@ -7865,22 +7859,25 @@ const AssistantMessage: FC = () => {
         )}
         {isEditing ? (
           <div className="flex flex-col gap-2 w-full">
-            <textarea
-              ref={textareaRef}
-              defaultValue={extractTaggedText(messageContent)}
-              className="w-full p-3 rounded-xl bg-muted border border-border text-foreground focus:ring-1 focus:ring-ring outline-none overflow-y-auto resize-none font-mono text-sm max-h-[70dvh]"
-              autoFocus
-              onInput={adjustHeight}
-              onKeyDown={(e) => {
-                e.stopPropagation();
-                if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
-                  handleSave();
-                }
-                if (e.key === 'Escape') {
-                  setEditingId(null); // UX: Close editor on Escape
-                }
-              }}
-            />
+            {/* Borderless textarea, so auto-grow fits with no scrollbar; the wrapper keeps corners round. */}
+            <div className="overflow-hidden rounded-xl border-[0.5px] border-border bg-muted focus-within:border-ring">
+              <textarea
+                ref={textareaRef}
+                defaultValue={extractTaggedText(messageContent)}
+                className="block w-full p-3 bg-transparent text-foreground outline-none overflow-y-auto resize-none font-mono text-sm max-h-[70dvh]"
+                autoFocus
+                onInput={adjustHeight}
+                onKeyDown={(e) => {
+                  e.stopPropagation();
+                  if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+                    handleSave();
+                  }
+                  if (e.key === 'Escape') {
+                    setEditingId(null); // UX: Close editor on Escape
+                  }
+                }}
+              />
+            </div>
             <div className="flex justify-end gap-2">
               <Button size="sm" variant="ghost" onClick={() => setEditingId(null)} className="h-8 text-xs">Cancel</Button>
               <Button size="sm" onClick={handleSave} className="h-8 text-xs">Save</Button>
@@ -8305,6 +8302,28 @@ const EditAssistantMessageButton: FC = () => {
   );
 };
 
+// The More menu's Edit response, shown when the button is not pinned to the bar.
+const EditAssistantMessageMenuItem: FC = () => {
+  const messageId = useAuiState(({ message }) => message.id);
+  const researchRunId = useResearchMessageRunId();
+  const isRunning = useAuiState(({ thread }) => thread.isRunning);
+  const researchActive = useThreadResearchActive();
+  const setEditingId = useChatRuntimeStore((s) => s.setEditingMessageId);
+
+  if (researchRunId) return null;
+
+  return (
+    <ActionBarMorePrimitive.Item
+      disabled={isRunning || researchActive}
+      onSelect={() => setEditingId(messageId)}
+      className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-[12px] px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50"
+    >
+      <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} className="size-icon" />
+      Edit response
+    </ActionBarMorePrimitive.Item>
+  );
+};
+
 async function exportMessageMarkdown(content: string): Promise<void> {
   try {
     await downloadFile(
@@ -8331,6 +8350,9 @@ const AssistantActionBar: FC = () => {
   const activeProjectId = useChatRuntimeStore((s) => s.activeProjectId);
   const [detailsOpen, setDetailsOpen] = useState(false);
   const ttsEnabled = useVoiceSettingsStore((s) => s.ttsEnabled);
+  // Off by default: Read aloud and Edit response live in the More menu.
+  const inlineReadAloud = useChatPreferencesStore((s) => s.showInlineReadAloud);
+  const inlineEdit = useChatPreferencesStore((s) => s.showInlineEditResponse);
   // hideWhenRunning is thread-level, so a new run would hide this bar and its
   // only Stop reading control while read-aloud keeps playing; keep it shown.
   const speaking = useAuiState(({ message }) => message.speech != null);
@@ -8357,7 +8379,7 @@ const AssistantActionBar: FC = () => {
         className="aui-assistant-action-bar-root col-start-3 row-start-2 flex items-center gap-1 text-chat-icon-fg [&_button:not([data-slot=message-timing-trigger])]:size-8 [&_button]:!rounded-full [&_button:hover]:bg-chat-icon-bg-hover [&_button:hover]:text-chat-icon-fg-hover"
       >
         <CopyButton />
-        <EditAssistantMessageButton />
+        {inlineEdit && <EditAssistantMessageButton />}
         {!researchRunId && !researchActive && (
           <ActionBarPrimitive.Reload asChild={true}>
             <TooltipIconButton tooltip="Refresh">
@@ -8367,11 +8389,11 @@ const AssistantActionBar: FC = () => {
         )}
         <ForkCountBadge />
         <DeleteMessageButton />
-        {ttsEnabled && (
+        {inlineReadAloud && ttsEnabled && (
           <MessagePrimitive.If speaking={false}>
             <ActionBarPrimitive.Speak asChild={true}>
               <TooltipIconButton tooltip="Read aloud" aria-label="Read aloud">
-                <Volume2Icon strokeWidth={1.75} className="size-icon" />
+                <HugeiconsIcon icon={Volume02Icon} strokeWidth={1.75} className="size-icon" />
               </TooltipIconButton>
             </ActionBarPrimitive.Speak>
           </MessagePrimitive.If>
@@ -8385,7 +8407,7 @@ const AssistantActionBar: FC = () => {
               aria-label="Stop reading"
               className="text-destructive"
             >
-              <VolumeXIcon strokeWidth={1.75} className="size-icon" />
+              <HugeiconsIcon icon={VolumeMute02Icon} strokeWidth={1.75} className="size-icon" />
             </TooltipIconButton>
           </ActionBarPrimitive.StopSpeaking>
         </MessagePrimitive.If>
@@ -8406,10 +8428,26 @@ const AssistantActionBar: FC = () => {
             side="bottom"
             align="start"
             onCloseAutoFocus={(e) => e.preventDefault()}
-            className="aui-action-bar-more-content z-50 min-w-32 overflow-hidden rounded-[21px] bg-popover px-[calc(9px*var(--ui-space-scale,1))] py-2 text-popover-foreground shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:shadow-none"
+            className="aui-action-bar-more-content z-50 min-w-32 overflow-hidden rounded-[21px] bg-popover px-[calc(9px*var(--ui-space-scale,1))] py-2 text-popover-foreground shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:shadow-[0_8px_28px_-6px_var(--background)]"
           >
             {/* Prevent an outside dismissal from triggering Delete. */}
             <MenuDismissGuard triggerRef={moreMenuTriggerRef} />
+            <MessageMenuTime onShowDetails={() => setDetailsOpen(true)} />
+            {!inlineReadAloud && ttsEnabled && (
+              <MessagePrimitive.If speaking={false}>
+                <ActionBarPrimitive.Speak asChild={true}>
+                  <ActionBarMorePrimitive.Item className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-[12px] px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50">
+                    <HugeiconsIcon
+                      icon={Volume02Icon}
+                      strokeWidth={1.75}
+                      className="size-icon"
+                    />
+                    Read aloud
+                  </ActionBarMorePrimitive.Item>
+                </ActionBarPrimitive.Speak>
+              </MessagePrimitive.If>
+            )}
+            {!inlineEdit && <EditAssistantMessageMenuItem />}
             <ActionBarMorePrimitive.Item
               disabled={forkDisabled}
               onSelect={() => void forkMessage()}
@@ -8484,17 +8522,6 @@ const AssistantActionBar: FC = () => {
                 Save to project sources
               </ActionBarMorePrimitive.Item>
             )}
-            <ActionBarMorePrimitive.Item
-              onSelect={() => setDetailsOpen(true)}
-              className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-[12px] px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground"
-            >
-              <HugeiconsIcon
-                icon={HelpCircleIcon}
-                strokeWidth={1.75}
-                className="size-icon"
-              />
-              See response details
-            </ActionBarMorePrimitive.Item>
           </ActionBarMorePrimitive.Content>
         </ActionBarMorePrimitive.Root>
         <MessageTiming side="top" className="h-8 px-2" />
@@ -8525,28 +8552,39 @@ const UserMessageAudio: FC = () => {
 };
 
 const UserMessage: FC = () => {
+  const focusReveal = useActionBarFocusReveal();
   return (
     <MessagePrimitive.Root
       className="aui-user-message-root fade-in slide-in-from-bottom-1 mx-auto flex w-full max-w-(--thread-content-max-width) animate-in flex-col items-end gap-y-2 pt-6 pb-4 text-ui-15p5 [font-weight:410] tracking-[0.01em] dark:tracking-[0.02em] duration-150"
       data-role="user"
+      tabIndex={0}
+      {...focusReveal}
     >
       <UserMessageAttachments />
       <UserMessageAudio />
 
-      <div className="aui-user-message-content-wrapper flex max-w-[80%] min-w-0 flex-col items-end">
-        <div className="aui-user-message-content wrap-break-word w-fit max-w-full rounded-[24px] bg-[#f5f5f5] px-4 py-2.5 text-[#0d0d0d] dark:text-foreground dark:bg-card">
+      <div className="aui-user-message-content-wrapper flex w-full min-w-0 flex-col items-end">
+        <div className="aui-user-message-content wrap-break-word w-fit max-w-[80%] rounded-[24px] bg-[#f5f5f5] px-4 py-2.5 text-[#0d0d0d] dark:text-foreground dark:bg-card">
           <MessagePrimitive.Parts />
         </div>
-        <div className="mt-1 -mr-[var(--icon-btn-inset)] flex min-h-8 items-center">
+        <UserMessageFooter>
           <UserActionBar />
-          <BranchPicker className="aui-user-branch-picker ml-0.5" />
-        </div>
+          <BranchPicker className="aui-user-branch-picker ml-0.5 shrink-0" />
+        </UserMessageFooter>
       </div>
       {/* The other half of the pair: last is a user message while a reply is
           still to come, or once one has been deleted. */}
       <MessagePrimitive.If last={true}>
         <ForkChatShortcut />
       </MessagePrimitive.If>
+      {/* Reverse traversal reaches a trailing stop before the root. Focusing it
+          mounts the autohidden controls, so the next Shift+Tab enters Delete
+          instead of skipping the action bar and leaving the message. */}
+      <span
+        className="aui-user-reveal-sentinel"
+        tabIndex={0}
+        aria-label="Message actions"
+      />
     </MessagePrimitive.Root>
   );
 };
@@ -8555,10 +8593,7 @@ const UserActionBar: FC = () => {
   const ownsResearchMessage = useOwnsResearchMessage();
   const researchActive = useThreadResearchActive();
   return (
-    <ActionBarPrimitive.Root
-      autohide="always"
-      className="aui-user-action-bar-root flex gap-1 text-chat-icon-fg [&_button]:size-8 [&_button]:!rounded-full [&_button:hover]:bg-chat-icon-bg-hover [&_button:hover]:text-chat-icon-fg-hover"
-    >
+    <UserMessageActionBar>
       <CopyButton />
       {!ownsResearchMessage && !researchActive && (
         <ActionBarPrimitive.Edit asChild={true}>
@@ -8574,13 +8609,14 @@ const UserActionBar: FC = () => {
       <ForkCountBadge />
       <ForkMessageButton />
       <DeleteMessageButton />
-    </ActionBarPrimitive.Root>
+    </UserMessageActionBar>
   );
 };
 
 const EditComposer: FC = () => {
   const aui = useAui();
   const sendShortcut = useChatPreferencesStore((s) => s.sendShortcut);
+  const editMultiline = useAuiState(({ composer }) => composer.text.includes("\n"));
   const { inputProps, isComposingRef } = useImeComposerInputHandlers();
   const resendAfterCancelRef = useRef(false);
   const researchActive = useThreadResearchActive();
@@ -8617,7 +8653,11 @@ const EditComposer: FC = () => {
         }}
       >
         <ComposerPrimitive.Input
-          submitMode={sendShortcut === "mod-enter" ? "ctrlEnter" : "enter"}
+          submitMode={
+            effectiveSendShortcut(sendShortcut, editMultiline ? "\n" : "") === "mod-enter"
+              ? "ctrlEnter"
+              : "enter"
+          }
           className="aui-edit-composer-input min-h-14 w-full resize-none bg-transparent p-4 text-foreground text-sm font-[450] outline-none"
           autoFocus={true}
           // See main composer above for the dir="auto" rationale.

@@ -165,6 +165,8 @@ def saving(monkeypatch, tmp_path):
         _normalize_compressed_method = lambda method: None,
         _normalize_torchao_method = lambda method: None,
         _is_qwen3_5_vlm = lambda model: False,
+        # A Mistral-format view (#12144) refuses merged saves; these fixtures are not one.
+        raise_if_merging_mistral_format_view = lambda model, save_method: None,
         logger = SimpleNamespace(warning_once = lambda *args: None),
         # save_method="lora" leaves this module for the adapter save rather than the merge,
         # so record the handover instead of re-implementing it.
@@ -182,6 +184,8 @@ def saving(monkeypatch, tmp_path):
         "_normalize_safe_serialization",
         "_is_adapter_save_method",
         "_honours_safe_serialization",
+        "_assert_export_target_is_not_base_with_lora_layers",
+        "_refuse_unsaveable_text_core",
     }
     nodes = []
     for node in tree.body:

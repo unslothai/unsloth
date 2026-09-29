@@ -1,0 +1,520 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+
+from __future__ import annotations
+
+import json
+import multiprocessing
+import os
+from pathlib import Path
+import sys
+
+import pytest
+
+from core.inference import mxc_read_grants, mxc_runtime, os_sandbox
+
+
+class _Host:
+    """Stands in for the Windows DACL: which roots already grant, and what icacls was asked to do."""
+
+    def __init__(self):
+        self.granted: set[str] = set()
+        self.explicit: set[str] = set()
+        self.calls: list[tuple[str, str]] = []
+        self.fail_grant = False
+        self.fail_revoke = False
+
+    def aces(self, root):
+        key = os.path.normcase(root)
+        return key in self.granted, key in self.explicit
+
+    def grant(self, root):
+        self.calls.append(("grant", root))
+        if self.fail_grant:
+            return False, "Access is denied."
+        self.granted.add(os.path.normcase(root))
+        self.explicit.add(os.path.normcase(root))
+        return True, "Successfully processed 1 files"
+
+    def revoke(self, root):
+        self.calls.append(("revoke", root))
+        if self.fail_revoke:
+            return False, "Access is denied."
+        self.granted.discard(os.path.normcase(root))
+        self.explicit.discard(os.path.normcase(root))
+        return True, "Successfully processed 1 files"
+
+
+def _isolate(monkeypatch, tmp_path):
+    studio_home = tmp_path / "home" / ".unsloth" / "studio"
+    studio_home.mkdir(parents = True, exist_ok = True)
+    monkeypatch.setattr(mxc_read_grants, "_on_windows", lambda: True)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(studio_home))
+    monkeypatch.setenv("SystemRoot", str(tmp_path / "Windows"))
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.delenv(mxc_read_grants.PERSISTENT_GRANTS_ENV, raising = False)
+    monkeypatch.setattr(os_sandbox, "studio_state_roots", lambda: (str(studio_home),))
+    monkeypatch.setattr(
+        mxc_runtime, "dacl_state_path", lambda: studio_home / "mxc-runtime" / "dacl-restore"
+    )
+    mxc_read_grants._scanned.clear()
+    return studio_home
+
+
+@pytest.fixture
+def host(monkeypatch, tmp_path):
+    fake = _Host()
+    fake.studio_home = _isolate(monkeypatch, tmp_path)
+    monkeypatch.setattr(mxc_read_grants, "_package_aces", fake.aces)
+    monkeypatch.setattr(mxc_read_grants, "_grant", fake.grant)
+    monkeypatch.setattr(mxc_read_grants, "_revoke", fake.revoke)
+    return fake
+
+
+def _runtime(host, name = "unsloth_studio"):
+    root = host.studio_home / name
+    (root / "Lib" / "site-packages" / "six").mkdir(parents = True)
+    (root / "Lib" / "site-packages" / "six" / "__init__.py").write_text("")
+    return str(root)
+
+
+def _record():
+    path = mxc_read_grants.record_path()
+    return json.loads(path.read_text(encoding = "utf-8"))["grants"] if path.exists() else {}
+
+
+def _states():
+    return {key: value["state"] for key, value in _record().items()}
+
+
+def test_eligible_runtime_root_is_granted_once_and_recorded(host):
+    venv = _runtime(host)
+    assert mxc_read_grants.ensure([venv]) == (venv,)
+    assert host.calls == [("grant", venv)]
+    assert _states() == {os.path.normcase(venv): "complete"}
+    assert _record()[os.path.normcase(venv)]["identity"]
+    # The second launch finds the ACE and never walks the tree again.
+    assert mxc_read_grants.ensure([venv]) == (venv,)
+    assert host.calls == [("grant", venv)]
+
+
+def test_a_folder_windows_already_grants_is_left_alone(host, tmp_path):
+    program_files = tmp_path / "Program Files" / "Git" / "usr" / "bin"
+    program_files.mkdir(parents = True)
+    host.granted.add(os.path.normcase(str(program_files)))
+    assert mxc_read_grants.ensure([str(program_files)]) == (str(program_files),)
+    assert host.calls == []
+    assert _record() == {}
+
+
+def test_an_existing_entry_for_the_group_is_never_taken_over(host):
+    # Someone else's partial grant: adding ours and later /remove:g would delete theirs too.
+    venv = _runtime(host)
+    host.explicit.add(os.path.normcase(venv))
+    assert mxc_read_grants.ensure([venv]) == ()
+    assert host.calls == []
+
+
+@pytest.mark.parametrize(
+    "make_root, why",
+    [
+        (lambda host, tmp: str(host.studio_home.parent), "contains"),
+        (lambda host, tmp: str(tmp / "home"), "contains"),
+        (lambda host, tmp: str(tmp / "Windows" / "System32"), "Windows directory"),
+    ],
+)
+def test_roots_above_protected_state_or_under_windows_are_never_granted(
+    host, tmp_path, make_root, why
+):
+    root = make_root(host, tmp_path)
+    os.makedirs(root, exist_ok = True)
+    assert why in mxc_read_grants.ineligible_reason(root)
+    assert mxc_read_grants.ensure([root]) == ()
+    assert host.calls == []
+
+
+@pytest.mark.parametrize("where", [".", "Lib/site-packages/six"])
+@pytest.mark.parametrize("name", ["pip.ini", "PIP.CONF", ".pypirc", ".netrc", ".env"])
+def test_a_credential_file_anywhere_in_the_tree_keeps_the_per_launch_grant(host, where, name):
+    venv = _runtime(host)
+    Path(venv, where, name).write_text(
+        "[global]\nindex-url = https://user:secret@example.invalid/simple\n"
+    )
+    assert "credential file" in mxc_read_grants.ineligible_reason(venv)
+    assert mxc_read_grants.ensure([venv]) == ()
+    assert host.calls == []
+
+
+def test_a_link_out_of_the_tree_keeps_the_per_launch_grant(host, tmp_path):
+    venv = _runtime(host)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    try:
+        os.symlink(elsewhere, Path(venv, "Lib", "linked"), target_is_directory = True)
+    except OSError:
+        pytest.skip("symlinks are not available")
+    assert "reparse point" in mxc_read_grants.ineligible_reason(venv)
+    assert mxc_read_grants.ensure([venv]) == ()
+    assert host.calls == []
+
+
+def test_a_link_to_a_file_in_the_same_tree_is_granted(host):
+    venv = _runtime(host)
+    Path(venv, "python.dat").write_bytes(b"")
+    try:
+        os.symlink(Path(venv, "python.dat"), Path(venv, "python3.dat"))
+    except OSError:
+        pytest.skip("symlinks are not available")
+    assert mxc_read_grants.ineligible_reason(venv) is None
+    assert mxc_read_grants.ensure([venv]) == (venv,)
+
+
+def test_a_credential_named_link_inside_the_tree_is_refused(host):
+    venv = _runtime(host)
+    try:
+        os.symlink(Path(venv, "Lib", "site-packages", "six", "__init__.py"), Path(venv, ".env"))
+    except OSError:
+        pytest.skip("symlinks are not available")
+    assert "credential file" in mxc_read_grants.ineligible_reason(venv)
+    assert mxc_read_grants.ensure([venv]) == ()
+
+
+def test_a_link_that_leaves_the_tree_through_an_inner_link_is_refused(host, tmp_path):
+    venv = _runtime(host)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    try:
+        os.symlink(elsewhere, Path(venv, "Lib", "outer"), target_is_directory = True)
+        os.symlink(Path(venv, "Lib", "outer"), Path(venv, "inner"), target_is_directory = True)
+    except OSError:
+        pytest.skip("symlinks are not available")
+    assert "reparse point" in mxc_read_grants.ineligible_reason(venv)
+
+
+def test_a_credential_file_added_after_the_grant_takes_it_back(host):
+    venv = _runtime(host)
+    mxc_read_grants.ensure([venv])
+    Path(venv, "pip.ini").write_text("[global]\n")
+    assert mxc_read_grants.ensure([venv]) == ()
+    assert host.calls == [("grant", venv), ("revoke", os.path.normcase(venv))]
+    assert _record() == {}
+
+
+def test_a_failed_grant_is_revoked_so_wxc_exec_never_skips_an_unreadable_tree(host):
+    venv = _runtime(host)
+    host.fail_grant = True
+    assert mxc_read_grants.ensure([venv]) == ()
+    assert host.calls == [("grant", venv), ("revoke", venv)]
+    assert _record() == {}
+
+
+def test_a_failed_rollback_refuses_the_launch_and_keeps_the_retry(host):
+    venv = _runtime(host)
+    host.fail_grant = host.fail_revoke = True
+    with pytest.raises(mxc_read_grants.ReadGrantError, match = "could not be rolled back"):
+        mxc_read_grants.ensure([venv])
+    assert _states() == {os.path.normcase(venv): "pending"}
+    host.fail_grant = host.fail_revoke = False
+    assert mxc_read_grants.ensure([venv]) == (venv,)
+    assert _states() == {os.path.normcase(venv): "complete"}
+
+
+def test_a_grant_interrupted_by_a_crash_is_redone(host):
+    venv = _runtime(host)
+    host.granted.add(os.path.normcase(venv))  # the root ACE landed, the propagation may not have
+    host.explicit.add(os.path.normcase(venv))
+    identity = mxc_read_grants._identity(venv)
+    mxc_read_grants._save_record(
+        {os.path.normcase(venv): {"state": "pending", "identity": identity}}
+    )
+    assert mxc_read_grants.ensure([venv]) == (venv,)
+    assert host.calls == [("grant", venv)]
+    assert _states() == {os.path.normcase(venv): "complete"}
+
+
+def test_an_unwritable_record_keeps_the_per_launch_grant(host, monkeypatch):
+    venv = _runtime(host)
+
+    def refuse(_grants):
+        raise PermissionError("read-only")
+
+    monkeypatch.setattr(mxc_read_grants, "_save_record", refuse)
+    assert mxc_read_grants.ensure([venv]) == ()
+    assert host.calls == []
+
+
+def test_opting_out_revokes_every_recorded_grant(host, monkeypatch):
+    venv = _runtime(host)
+    mxc_read_grants.ensure([venv])
+    monkeypatch.setenv(mxc_read_grants.PERSISTENT_GRANTS_ENV, "0")
+    assert not mxc_read_grants.enabled()
+    assert mxc_read_grants.ensure([venv]) == ()
+    assert host.calls == [("grant", venv), ("revoke", os.path.normcase(venv))]
+    assert _record() == {}
+
+
+def test_revocation_never_follows_a_folder_that_was_replaced(host, tmp_path):
+    venv = _runtime(host)
+    mxc_read_grants.ensure([venv])
+    os.replace(venv, tmp_path / "moved-away")
+    other = tmp_path / "another-app"
+    other.mkdir()
+    try:
+        os.symlink(other, venv, target_is_directory = True)
+        linked = True
+    except OSError:
+        os.mkdir(venv)  # no symlinks here: a fresh folder at the same path has another identity
+        linked = False
+    assert mxc_read_grants.revoke_recorded() == ()
+    assert ("revoke", os.path.normcase(venv)) not in host.calls
+    # A link cannot be identified, so the entry waits; a different folder voids it.
+    assert (_record() != {}) is linked
+
+
+def test_an_unreadable_identity_keeps_the_record_for_a_later_revoke(host, monkeypatch):
+    venv = _runtime(host)
+    mxc_read_grants.ensure([venv])
+    monkeypatch.setattr(mxc_read_grants, "_identity", lambda _root: None)
+    assert mxc_read_grants.revoke_recorded() == ()
+    assert _states() == {os.path.normcase(venv): "complete"}
+    assert ("revoke", os.path.normcase(venv)) not in host.calls
+
+
+def test_a_replaced_folder_is_not_adopted_through_a_stale_record(host, tmp_path):
+    venv = _runtime(host)
+    mxc_read_grants.ensure([venv])
+    os.replace(venv, tmp_path / "moved-away")
+    _runtime(host)  # a new folder at the same path, carrying its owner's own entry for the group
+    host.explicit.add(os.path.normcase(venv))
+    host.granted.discard(os.path.normcase(venv))
+    assert mxc_read_grants.ensure([venv]) == ()
+    assert host.calls == [("grant", venv)]
+    assert _record() == {}
+
+
+def test_a_folder_replaced_at_a_scanned_path_is_scanned_again(host, tmp_path):
+    venv = _runtime(host)
+    assert mxc_read_grants.ensure([venv]) == (venv,)
+    os.replace(venv, tmp_path / "moved-away")
+    _runtime(host)
+    Path(venv, "Lib", "site-packages", "six", ".env").write_text("TOKEN=secret\n")
+    host.granted.discard(os.path.normcase(venv))
+    host.explicit.discard(os.path.normcase(venv))
+    assert mxc_read_grants.ensure([venv]) == ()
+    assert host.calls == [("grant", venv)]
+
+
+@pytest.mark.parametrize("unknown", ["aces", "identity"])
+def test_an_unfinished_grant_that_cannot_be_checked_refuses_the_launch(host, monkeypatch, unknown):
+    venv = _runtime(host)
+    identity = mxc_read_grants._identity(venv)
+    mxc_read_grants._save_record(
+        {os.path.normcase(venv): {"state": "pending", "identity": identity}}
+    )
+    if unknown == "aces":
+
+        def unreadable(_root):
+            raise OSError(5, "Access is denied")
+
+        monkeypatch.setattr(mxc_read_grants, "_package_aces", unreadable)
+    else:
+        monkeypatch.setattr(mxc_read_grants, "_identity", lambda _root: None)
+    with pytest.raises(mxc_read_grants.ReadGrantError, match = "cannot be checked"):
+        mxc_read_grants.ensure([venv])
+    assert _states() == {os.path.normcase(venv): "pending"}
+
+
+def test_a_record_write_failure_after_a_clean_rollback_does_not_block_the_launch(host, monkeypatch):
+    venv = _runtime(host)
+    host.fail_grant = True
+    real_save = mxc_read_grants._save_record
+    writes = []
+
+    def save_then_fail(grants):
+        writes.append(dict(grants))
+        if len(writes) > 1:
+            raise PermissionError("disk went read-only")
+        real_save(grants)
+
+    monkeypatch.setattr(mxc_read_grants, "_save_record", save_then_fail)
+    assert mxc_read_grants.ensure([venv]) == ()
+    assert host.calls == [("grant", venv), ("revoke", venv)]
+
+
+def test_another_process_mid_grant_refuses_the_launch_but_not_the_cleanup(host, monkeypatch):
+    from filelock import FileLock
+
+    venv = _runtime(host)
+    mxc_read_grants.ensure([venv])
+    monkeypatch.setattr(mxc_read_grants, "LOCK_TIMEOUT_SECONDS", 0.2)
+    holder = FileLock(str(mxc_read_grants.record_path()) + ".lock")
+    holder.acquire()
+    try:
+        # Held by "another process": this launch cannot know whether that grant finished.
+        mxc_read_grants._scanned.clear()
+        host.granted.discard(os.path.normcase(venv))
+        monkeypatch.setattr(mxc_read_grants, "_lock", __import__("threading").Lock())
+        with pytest.raises(mxc_read_grants.ReadGrantError, match = "another Studio process"):
+            _in_thread(lambda: mxc_read_grants.ensure([venv]))
+        assert _in_thread(mxc_read_grants.revoke_recorded) == ()
+    finally:
+        holder.release()
+
+
+def _in_thread(function):
+    """filelock is reentrant within a thread, so a second holder must run on another thread."""
+    import concurrent.futures
+    with concurrent.futures.ThreadPoolExecutor(1) as pool:
+        return pool.submit(function).result()
+
+
+def test_off_windows_nothing_is_touched(host, monkeypatch):
+    monkeypatch.setattr(mxc_read_grants, "_on_windows", lambda: False)
+    assert mxc_read_grants.ensure([_runtime(host)]) == ()
+    assert mxc_read_grants.revoke_recorded() == ()
+    assert host.calls == []
+
+
+def _grant_in_another_process(tmp_path, name, queue):
+    monkeypatch = pytest.MonkeyPatch()
+    studio_home = _isolate(monkeypatch, Path(tmp_path))
+    monkeypatch.setattr(mxc_read_grants, "_package_aces", lambda _root: (False, False))
+    monkeypatch.setattr(mxc_read_grants, "_grant", lambda _root: (True, "ok"))
+    root = studio_home / name
+    root.mkdir()
+    queue.put(mxc_read_grants.ensure([str(root)]))
+
+
+def test_concurrent_studio_processes_keep_every_record(tmp_path):
+    context = multiprocessing.get_context("spawn")
+    queue = context.Queue()
+    names = [f"runtime-{index}" for index in range(4)]
+    workers = [
+        context.Process(target = _grant_in_another_process, args = (str(tmp_path), name, queue))
+        for name in names
+    ]
+    for worker in workers:
+        worker.start()
+    for worker in workers:
+        worker.join(120)
+    assert [worker.exitcode for worker in workers] == [0] * len(names)
+    assert all(queue.get(timeout = 5) for _ in names)
+    record = (
+        tmp_path / "home" / ".unsloth" / "studio" / "mxc-runtime" / "persistent-read-grants.json"
+    )
+    assert sorted(Path(key).name for key in json.loads(record.read_text())["grants"]) == names
+
+
+def _python_plan(tmp_path):
+    selected = tmp_path / "venv" / "Scripts" / "python.exe"
+    selected.parent.mkdir(parents = True)
+    selected.touch()
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+    return os_sandbox.ToolLaunchPlan(
+        argv = (str(selected), "-c", "pass"),
+        workdir = str(workdir),
+        env = {"PATH": str(selected.parent)},
+        execution_kind = "python",
+    )
+
+
+def _policy_on_linux(monkeypatch):
+    from core.inference import mxc_policy
+
+    outside = Path(os.path.abspath(os.sep)) / "unsloth-test-dacl-journal-never-created"
+    monkeypatch.setattr(mxc_runtime, "dacl_state_path", lambda: outside)
+    monkeypatch.setattr(mxc_policy.sys, "platform", "win32")
+    return mxc_policy
+
+
+@pytest.mark.parametrize("dacl", [True, False])
+def test_launch_policy_grants_runtime_roots_only_on_the_dacl_tier(monkeypatch, tmp_path, dacl):
+    mxc_policy = _policy_on_linux(monkeypatch)
+    model = os.path.abspath(os.path.join(os.sep, "unsloth-test-model-library"))
+    monkeypatch.setattr(mxc_policy, "_model_read_roots", lambda _workdir, _granted: [model])
+    if dacl:
+        monkeypatch.setenv(mxc_policy.DACL_FALLBACK_ENV, "1")
+    else:
+        monkeypatch.delenv(mxc_policy.DACL_FALLBACK_ENV, raising = False)
+    calls = []
+    monkeypatch.setattr(
+        mxc_read_grants, "ensure", lambda roots: calls.append(("ensure", list(roots))) or ()
+    )
+    monkeypatch.setattr(
+        mxc_read_grants, "revoke_recorded", lambda: calls.append(("revoke", None)) or ()
+    )
+
+    request = mxc_policy.build_launch_request(_python_plan(tmp_path))
+    readonly = request["config"]["filesystem"]["readonlyPaths"]
+    assert model in readonly
+    if dacl:
+        [(kind, roots)] = calls
+        assert kind == "ensure"
+        # The model library stays a per-launch grant: it is user data, not Studio's runtime.
+        assert model not in roots
+        assert set(roots) <= set(readonly)
+    else:
+        assert calls == [("revoke", None)]
+
+
+def test_a_grant_left_in_an_unknown_state_refuses_the_launch(monkeypatch, tmp_path):
+    mxc_policy = _policy_on_linux(monkeypatch)
+    monkeypatch.setenv(mxc_policy.DACL_FALLBACK_ENV, "1")
+
+    def unknown(_roots):
+        raise mxc_read_grants.ReadGrantError("rollback failed")
+
+    monkeypatch.setattr(mxc_read_grants, "ensure", unknown)
+    with pytest.raises(mxc_read_grants.ReadGrantError):
+        mxc_policy.build_launch_request(_python_plan(tmp_path))
+
+
+def test_capability_names_the_persistent_grant_and_cleans_up_when_off(monkeypatch):
+    from core.inference import mxc_policy, sandbox_windows_mxc
+
+    monkeypatch.setattr(sandbox_windows_mxc.sys, "platform", "win32")
+    monkeypatch.setattr(
+        sandbox_windows_mxc.mxc_probe, "probe", lambda *_a, **_k: (False, "unavailable")
+    )
+    monkeypatch.setattr(sandbox_windows_mxc.mxc_probe, "host_prep_remediation", lambda: None)
+    monkeypatch.setattr(sandbox_windows_mxc.mxc_runtime, "installation_identity", lambda: "id")
+    revoked = []
+    monkeypatch.setattr(mxc_read_grants, "revoke_recorded", lambda: revoked.append(True) or ())
+    monkeypatch.setenv(mxc_policy.DACL_FALLBACK_ENV, "1")
+    monkeypatch.delenv(mxc_read_grants.PERSISTENT_GRANTS_ENV, raising = False)
+    snapshot = sandbox_windows_mxc.capability_snapshot
+    on = snapshot(execution_kind = "python", selected_executable = sys.executable)
+    assert "mxc_tier3_persistent_runtime_read_grants" in on.limitations
+    assert revoked == []
+    monkeypatch.setenv(mxc_read_grants.PERSISTENT_GRANTS_ENV, "0")
+    off = snapshot(execution_kind = "python", selected_executable = sys.executable)
+    assert "mxc_tier3_persistent_runtime_read_grants" not in off.limitations
+    assert revoked == [True]
+    monkeypatch.delenv(mxc_read_grants.PERSISTENT_GRANTS_ENV)
+    monkeypatch.delenv(mxc_policy.DACL_FALLBACK_ENV)
+    # Leaving the DACL tier on a host with nothing else: the capability is unavailable, no launch is
+    # ever built, and the grants still come back.
+    default = snapshot(execution_kind = "python", selected_executable = sys.executable)
+    assert "mxc_tier3_persistent_runtime_read_grants" not in default.limitations
+    assert mxc_read_grants.PERSISTENT_GRANTS_ENV in default.remediation
+    assert revoked == [True, True]
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason = "reads a real Windows DACL")
+def test_real_dacl_check_sees_a_granted_folder(tmp_path):
+    import subprocess
+
+    folder = tmp_path / "runtime"
+    folder.mkdir()
+    grant = ["icacls", str(folder), "/grant", "*S-1-15-2-1:(OI)(CI)(RX)", "/Q"]
+    assert mxc_read_grants._package_aces(str(folder)) == (False, False)
+    subprocess.run(grant, check = True, capture_output = True)
+    assert mxc_read_grants._package_aces(str(folder)) == (True, True)
+    child = folder / "child"
+    child.mkdir()
+    # Inherited, not explicit: a child of a granted folder is covered but was never set by Studio.
+    assert mxc_read_grants._package_aces(str(child)) == (True, False)
+    subprocess.run(
+        ["icacls", str(folder), "/remove:g", "*S-1-15-2-1", "/Q"], check = True, capture_output = True
+    )
+    assert mxc_read_grants._package_aces(str(folder)) == (False, False)
