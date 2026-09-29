@@ -756,6 +756,9 @@ class ModelMemoryResponse(BaseModel):
     # Whether --mlock is passed on the next load. False when no_ram_reserve
     # vetoes it; the UI surfaces that rather than failing silently.
     mlock_active: bool
+    # False when the running llama.cpp child has no host copy to lock (full offload to a discrete GPU),
+    # so a keep-resident user is told why no lock is taken. True with nothing loaded.
+    mlock_applicable: bool = True
     reload_required: bool
     # Soft RLIMIT_MEMLOCK when finite. mlock cannot exceed it, so the UI warns that residency will not
     # fully pin a larger model. None means unlimited (macOS) or not applicable (Windows).
@@ -1169,6 +1172,13 @@ def _model_memory_mlock_active(want_mlock: bool) -> bool:
     return bool(state and state[0])
 
 
+def _model_memory_mlock_applicable() -> bool:
+    state, _policy_active, applicable, _direct_io, _dio_applicable, _dio_managed, _pending = (
+        _active_launch_placement()
+    )
+    return state is _NO_LAUNCH or bool(applicable)
+
+
 def _model_memory_response() -> ModelMemoryResponse:
     keep_resident, no_ram_reserve = get_model_memory_settings()
     mlock_active = _model_memory_mlock_active(should_mlock())
@@ -1176,6 +1186,7 @@ def _model_memory_response() -> ModelMemoryResponse:
         keep_resident = keep_resident,
         no_ram_reserve = no_ram_reserve,
         mlock_active = mlock_active,
+        mlock_applicable = _model_memory_mlock_applicable(),
         reload_required = _model_memory_reload_required(),
         memlock_limit_bytes = memlock_limit_bytes() if mlock_active else None,
     )

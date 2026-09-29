@@ -1575,6 +1575,7 @@ export const es = {
         noRamReserveDescription: "Reduce la RAM ocupada por los pesos del modelo.",
         noRamReserveHint: "Omite la carga mapeada en memoria en las compilaciones de Windows compatibles cuando el modelo está totalmente descargado en la GPU, de modo que sus páginas no quedan residentes. En caso contrario conserva la carga mapeada en memoria. Los búferes de CPU necesarios pueden seguir usando RAM. Elimina --no-mmap y --mlock.",
         mlockVetoed: "--mlock permanece desactivado: fijar el modelo reservaría RAM para todo él. La descarga automática por inactividad sigue desactivada.",
+        mlockNotApplicable: "Totalmente en la GPU: nada que bloquear en la RAM del sistema. La descarga automática por inactividad sigue desactivada.",
         memlockCapped: "Este sistema limita la memoria bloqueada a {limit}. Un modelo mayor no quedará fijado por completo; aumenta el límite con ulimit -l.",
         reloadRequired: "Vuelve a cargar el modelo para aplicar las nuevas opciones de memoria.",
         loadError: "No se pudieron cargar los ajustes de memoria del modelo",
