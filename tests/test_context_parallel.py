@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
+
 """Context parallelism plumbing that runs without a process group (the ring itself needs >= 2 GPUs)."""
 
 import contextlib
