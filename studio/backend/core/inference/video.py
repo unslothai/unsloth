@@ -1884,7 +1884,9 @@ def _video_offload_vram_floor_mib(
         if policy == OFFLOAD_MODEL:
             if phase == "decode":
                 # whole-module offload onloads one component at a time; the decode runs the decoders alone
-                decoders = [size for name, size in sizes.items() if name not in denoisers | encoders]
+                decoders = [
+                    size for name, size in sizes.items() if name not in denoisers | encoders
+                ]
                 return int(max(decoders, default = 0) // (1024 * 1024))
             return int(max(sizes.values()) // (1024 * 1024))
         if policy == OFFLOAD_GROUP:
@@ -1951,7 +1953,9 @@ def video_offload_shortfall_message(
             estimate_video_runtime_mib(width = width, height = height, num_frames = frames)
             - _VIDEO_DENOISE_ACTIVATION_MIB,
         )
-        decode_floor = int(floor_mib if decode_floor_mib is None else min(decode_floor_mib, floor_mib))
+        decode_floor = int(
+            floor_mib if decode_floor_mib is None else min(decode_floor_mib, floor_mib)
+        )
         if decode_floor + headroom + clip_mib > required:
             floor_mib, headroom = decode_floor, headroom + clip_mib
             required = decode_floor + headroom

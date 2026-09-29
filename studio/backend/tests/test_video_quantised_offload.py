@@ -598,7 +598,10 @@ def test_decoded_clip_share_sits_beside_the_decode_floor_not_the_streamed_dit():
 
     kwargs = dict(family = "f", floor_mib = 20000, placement = "x", width = 1280, height = 720, frames = 121)
     # denoise needs 20000 + 2048; decode needs 3000 + 2048 + the clip share, so 23000 MiB is enough
-    assert V.video_offload_shortfall_message(**kwargs, available_mib = 23000, decode_floor_mib = 3000) is None
+    assert (
+        V.video_offload_shortfall_message(**kwargs, available_mib = 23000, decode_floor_mib = 3000)
+        is None
+    )
     # unknown decode floor keeps the conservative sum
     assert V.video_offload_shortfall_message(**kwargs, available_mib = 23000)
     # a huge clip makes the decode phase the binding one, even with a small decode floor
