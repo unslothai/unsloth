@@ -165,6 +165,8 @@ def active_thread_ids(
 
 def count(account_id: Optional[str] = None, exclude: Collection[threading.Event] = ()) -> int:
     with _LOCK:
+        if account_id is None and not exclude:
+            return len(_ACTIVE)
         return len(_matching(account_id, exclude))
 
 

@@ -3306,18 +3306,11 @@ async def delete_finetuned_model(
 
     try:
         from routes.inference import extra_slot_backends, get_llama_cpp_backend
-        llama_backends = [get_llama_cpp_backend(), *(l for l, _ in extra_slot_backends())]
-    except Exception as e:
-        logger.warning("Could not check llama.cpp loaded model before delete: %s", e)
-        raise HTTPException(
-            status_code = 503,
-            detail = "Could not verify model load status before deleting",
-        ) from e
-    for llama_backend in llama_backends:
-        try:
+
+        kept = extra_slot_backends()
+        for llama_backend in (get_llama_cpp_backend(), *(l for l, _ in kept)):
             if (
-                llama_backend.is_active
-                and not llama_backend.is_loaded
+                (llama_backend.is_active or llama_backend.is_loaded)
                 and llama_backend.model_identifier
                 and _loaded_model_matches_deleted_path(
                     llama_backend.model_identifier,
@@ -3331,51 +3324,21 @@ async def delete_finetuned_model(
                     or _variant_names_same_checkpoint(llama_backend.hf_variant, gguf_variant)
                 )
             ):
+                if llama_backend.is_loaded:
+                    raise HTTPException(
+                        status_code = 400,
+                        detail = "Unload the model before deleting",
+                    )
                 raise HTTPException(
                     status_code = 409,
                     detail = "Cannot delete a model while it is loading",
                 )
-            if (
-                llama_backend.is_loaded
-                and llama_backend.model_identifier
-                and _loaded_model_matches_deleted_path(
-                    llama_backend.model_identifier,
-                    target_path,
-                )
-                and (
-                    not gguf_variant
-                    or not llama_backend.hf_variant
-                    or _variant_names_same_checkpoint(llama_backend.hf_variant, gguf_variant)
-                )
-            ):
-                raise HTTPException(
-                    status_code = 400,
-                    detail = "Unload the model before deleting",
-                )
-        except HTTPException:
-            raise
-        except Exception as e:
-            logger.warning("Could not check llama.cpp loaded model before delete: %s", e)
-            raise HTTPException(
-                status_code = 503,
-                detail = "Could not verify model load status before deleting",
-            ) from e
-
-    try:
         # Peek: building an orchestrator to learn there is none reaches get_device() (a torch import).
         from core.inference.orchestrator import peek_inference_backend
-        from routes.inference import extra_slot_backends
-        orchestrators = [peek_inference_backend(), *(o for _, o in extra_slot_backends())]
-    except Exception as e:
-        logger.warning("Could not check inference backend loaded model before delete: %s", e)
-        raise HTTPException(
-            status_code = 503,
-            detail = "Could not verify model load status before deleting",
-        ) from e
-    for inference_backend in orchestrators:
-        if inference_backend is None:
-            continue
-        try:
+
+        for inference_backend in (peek_inference_backend(), *(o for _, o in kept)):
+            if inference_backend is None:
+                continue
             loading_models = getattr(inference_backend, "loading_models", set())
             if any(
                 _loading_model_matches_deleted_path(loading_model, target_path)
@@ -3385,23 +3348,22 @@ async def delete_finetuned_model(
                     status_code = 409,
                     detail = "Cannot delete a model while it is loading",
                 )
-            if inference_backend.active_model_name:
-                if _loaded_model_matches_deleted_path(
-                    inference_backend.active_model_name,
-                    target_path,
-                ):
-                    raise HTTPException(
-                        status_code = 400,
-                        detail = "Unload the model before deleting",
-                    )
-        except HTTPException:
-            raise
-        except Exception as e:
-            logger.warning("Could not check inference backend loaded model before delete: %s", e)
-            raise HTTPException(
-                status_code = 503,
-                detail = "Could not verify model load status before deleting",
-            ) from e
+            if inference_backend.active_model_name and _loaded_model_matches_deleted_path(
+                inference_backend.active_model_name,
+                target_path,
+            ):
+                raise HTTPException(
+                    status_code = 400,
+                    detail = "Unload the model before deleting",
+                )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.warning("Could not check the loaded models before delete: %s", e)
+        raise HTTPException(
+            status_code = 503,
+            detail = "Could not verify model load status before deleting",
+        ) from e
 
     # Every guard above is chat-only, and Images / Video hold their own pipelines: a local model
     # loads by path, so rmtree would pull weights from under a live engine. Cached matches by id.
