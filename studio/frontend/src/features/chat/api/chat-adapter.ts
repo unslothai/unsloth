@@ -6287,9 +6287,6 @@ export function createOpenAIStreamAdapter(
                 ),
               ),
 
-              ...(externalUsesStudioTools && resolvedThreadId
-                ? { thread_id: resolvedThreadId }
-                : {}),
               ...(externalCapabilities?.topK ? { top_k: params.topK } : {}),
               ...(externalCapabilities?.minP
                 ? minPSamplingPayload(externalProvider?.providerType, params)
