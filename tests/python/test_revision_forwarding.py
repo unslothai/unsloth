@@ -469,6 +469,13 @@ def test_a_remapped_plain_load_drops_the_tokenizer_pin_too():
     assert gate("org/model", "unsloth/model-bnb-4bit", "org/model", "v2", None) is None
 
 
+def test_a_case_only_tokenizer_name_keeps_the_model_ref():
+    # Hub ids are case-insensitive: the tokenizer names the same repo the pinned weights come from.
+    gate = _load_tokenizer_gate()
+    requested, resolved = "unsloth/qwen3-30b-a3b", "unsloth/Qwen3-30B-A3B"
+    assert gate(requested, resolved, requested, "v2", "v2") == "v2"
+
+
 def test_a_plain_load_gives_the_tokenizer_the_model_ref():
     gate = _load_tokenizer_gate()
     assert gate(None, "org/model", "org/model", "v2", "v2") == "v2"

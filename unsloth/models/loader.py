@@ -199,10 +199,10 @@ def _revision_for_tokenizer_repo(
     is_peft = False,
 ):
     """Pick the revision for whichever repo the tokenizer is actually read from. It is not always the base model's: an adapter-hosted tokenizer is a separate repo with its own history, so it keeps the caller's ref even though the base model does not, while an unset tokenizer_name follows the resolved model_name. On a plain load the tokenizer belongs to the same model as the weights, so it follows model_revision even when the caller named its repo directly: a remap has already dropped the pin off the weights, and a pinned tokenizer beside a mirror's default-branch weights is the ref mismatch this gate exists to avoid."""
-    repo = tokenizer_name if tokenizer_name else model_name
-    if is_peft and repo == old_model_name:
+    repo = str(tokenizer_name if tokenizer_name else model_name).lower()
+    if is_peft and repo == str(old_model_name).lower():
         return revision
-    if repo == model_name:
+    if repo == str(model_name).lower():
         return model_revision
     return None
 
