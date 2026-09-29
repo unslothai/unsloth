@@ -19,6 +19,9 @@ sys.modules.setdefault("loggers", _loggers_stub)
 
 import json
 import os
+import signal
+import subprocess
+import textwrap
 import time
 
 import pytest
@@ -529,3 +532,41 @@ def test_a_saved_endpoint_stays_out_of_the_csp_the_operators_does_not(store):
     assert csp_connect_sources() == (OPERATOR_DS,) and csp_asset_sources() == ()
     hub_settings.set_hub_settings("", False)
     assert csp_connect_sources() == ("https://huggingface.co", OPERATOR_DS)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason = "preexec_fn needs fork")
+def test_spawning_a_tool_while_another_thread_holds_the_hub_client_does_not_hang(tmp_path):
+    script = textwrap.dedent(
+        """
+        import subprocess, sys, threading
+        import utils.hub_settings
+        from huggingface_hub.utils import _http
+
+        client = _http.get_session()
+        pool_lock = client._transport._pool._optional_thread_lock._lock
+        inside = threading.Event()
+        release = threading.Event()
+
+        def hold_pool_lock():
+            with pool_lock:
+                inside.set()
+                release.wait()
+
+        worker = threading.Thread(target = hold_pool_lock)
+        worker.start()
+        inside.wait()
+        subprocess.Popen([sys.executable, "-c", "pass"], preexec_fn = lambda: None).wait()
+        release.set()
+        worker.join()
+        _http.close_session()
+        assert client.is_closed
+        """
+    )
+    env = {**os.environ, "UNSLOTH_STUDIO_HOME": str(tmp_path), "PYTHONPATH": _BACKEND_DIR}
+    proc = subprocess.Popen([sys.executable, "-c", script], env = env, start_new_session = True)
+    try:
+        assert proc.wait(timeout = 60) == 0
+    except subprocess.TimeoutExpired:
+        os.killpg(proc.pid, signal.SIGKILL)
+        proc.wait()
+        pytest.fail("the forked child hung closing the hub client another thread was using")
