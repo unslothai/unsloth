@@ -625,11 +625,22 @@ export function ExportPage() {
         return siblingGgufDirectory(localModel.path) ?? relative;
       }
     }
+    // Mac PEFT / GGUF adapters get their own folder: one folder holds one adapter format.
+    if (
+      isMacHost &&
+      exportMethod === "lora" &&
+      (loraAsGguf || adapterFormat === "peft")
+    ) {
+      return `${relative}-peft`;
+    }
     return relative;
   }, [
+    adapterFormat,
     checkpoint,
     exportMethod,
+    isMacHost,
     localMetaById,
+    loraAsGguf,
     modelSource,
     selectedModelIdx,
     selectedSourceModel,
