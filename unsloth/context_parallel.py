@@ -33,6 +33,11 @@ _BUFFER_NAMES = ("input_ids", "attention_mask", "labels", "position_ids", "shift
 _PAD_VALUES = {"labels": -100, "shift_labels": -100, "attention_mask": 0, "input_ids": 0}
 
 
+# AcceleratorState is process-wide: remember the mesh we installed so a later non-CP trainer
+# does not inherit it.
+_INSTALLED_MESH = []
+
+
 def get_cp_manager() -> Optional["ContextParallelManager"]:
     return _ACTIVE_MANAGER.get()
 
@@ -180,6 +185,9 @@ def patch_sft_trainer() -> None:
     def patched_init(self, *args, **kwargs):
         original_init(self, *args, **kwargs)
         self._context_parallel_manager = None
+        state = getattr(getattr(self, "accelerator", None), "state", None)
+        if _INSTALLED_MESH and getattr(state, "device_mesh", None) is _INSTALLED_MESH[0]:
+            state.device_mesh = None
         size = int(getattr(getattr(self, "args", None), "context_parallel_size", 1) or 1)
         if size <= 1:
             return
@@ -231,11 +239,21 @@ def patch_sft_trainer() -> None:
             raise NotImplementedError(
                 f"Unsloth: context parallelism supports DDP only, not {distributed_type}."
             )
+        # accelerate's batch dispatcher (default for iterable / streaming datasets) ignores cp.
+        datasets = (getattr(self, "train_dataset", None), getattr(self, "eval_dataset", None))
+        if getattr(accelerator, "dispatch_batches", None) or any(
+            isinstance(d, torch.utils.data.IterableDataset) or "IterableDataset" in type(d).__name__
+            for d in datasets
+        ):
+            raise NotImplementedError(
+                "Unsloth: context parallelism does not support iterable datasets or dispatch_batches."
+            )
         manager = ContextParallelManager(size)
         self._context_parallel_manager = manager
         manager.attach_attention_hooks(self.model)
         if accelerator is not None:
             accelerator.state.device_mesh = manager.device_mesh
+            _INSTALLED_MESH[:] = [manager.device_mesh]
             # Ring attention's backward collectives must not straddle DDP's no_sync accumulation.
             if hasattr(accelerator, "gradient_state"):
                 accelerator.gradient_state.plugin_kwargs["sync_each_batch"] = True

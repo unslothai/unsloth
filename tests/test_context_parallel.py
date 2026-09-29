@@ -338,3 +338,55 @@ def test_deepspeed_and_fsdp_are_refused(monkeypatch, distributed_type):
     Trainer = _patched_trainer(monkeypatch, args = args, accelerator = accelerator, model = None)
     with pytest.raises(NotImplementedError, match = "DDP only"):
         Trainer()
+
+
+def _cp_env(monkeypatch):
+    monkeypatch.setattr(cp.dist, "is_available", lambda: True)
+    monkeypatch.setattr(cp.dist, "is_initialized", lambda: True)
+    monkeypatch.setattr(cp.dist, "get_world_size", lambda: 2)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    monkeypatch.setattr(cp, "_supports_context_parallel", lambda model: True)
+
+
+@pytest.mark.parametrize("case", ["iterable", "dispatch"])
+def test_dispatched_or_iterable_loaders_are_refused(monkeypatch, case):
+    import types
+
+    _cp_env(monkeypatch)
+
+    class Stream(torch.utils.data.IterableDataset):
+        def __iter__(self):
+            return iter(())
+
+    args = types.SimpleNamespace(context_parallel_size = 2, label_smoothing_factor = 0.0)
+    accelerator = types.SimpleNamespace(
+        distributed_type = types.SimpleNamespace(name = "MULTI_GPU"),
+        dispatch_batches = case == "dispatch",
+    )
+    Trainer = _patched_trainer(
+        monkeypatch,
+        args = args,
+        accelerator = accelerator,
+        model = None,
+        train_dataset = Stream() if case == "iterable" else [1],
+    )
+    with pytest.raises(NotImplementedError, match = "iterable datasets or dispatch_batches"):
+        Trainer()
+
+
+def test_a_later_non_cp_trainer_drops_the_installed_mesh(monkeypatch):
+    import types
+
+    mesh = object()
+    monkeypatch.setattr(cp, "_INSTALLED_MESH", [mesh])
+    state = types.SimpleNamespace(device_mesh = mesh)
+    args = types.SimpleNamespace(context_parallel_size = 1)
+    Trainer = _patched_trainer(
+        monkeypatch, args = args, accelerator = types.SimpleNamespace(state = state)
+    )
+    Trainer()
+    assert state.device_mesh is None
+    other = object()
+    state.device_mesh = other  # someone else's mesh (e.g. accelerate's own) is left alone
+    Trainer()
+    assert state.device_mesh is other
