@@ -222,7 +222,8 @@ class Fast_RoPE_Embedding(torch.autograd.Function):
         n_heads: int
         head_dim: int
         batch, seq_len, n_heads, head_dim = dY.shape
-        dY = dY.reshape(batch * seq_len, n_heads * head_dim)
+        # The kernel writes in place: reshape of an expanded grad (e.g. from .sum()) stays a stride-0 view.
+        dY = dY.contiguous().view(batch * seq_len, n_heads * head_dim)
         n_rows: int
         n_cols: int
         n_rows, n_cols = dY.shape
@@ -286,9 +287,9 @@ class Fast_RoPE_Embedding_QK(torch.autograd.Function):
         batch, n_heads_Q, seq_len, head_dim = Q.shape
         _, n_heads_K, _, _ = K.shape
 
-        # Clone if not contiguous or has zero strides, such as expanded tensors.
-        Q_out = Q.clone() if not Q.is_contiguous() or 0 in Q.stride() else Q
-        K_out = K.clone() if not K.is_contiguous() or 0 in K.stride() else K
+        # Inplace rotary embedding is generally fine.
+        Q_out = Q.clone() if not Q.is_contiguous() else Q
+        K_out = K.clone() if not K.is_contiguous() else K
 
         if has_indices:
             # TRL's rotary indices are always int32, so the cast is only for safety.
@@ -354,9 +355,9 @@ class Fast_RoPE_Embedding_QK(torch.autograd.Function):
 
         rope_ptr = ctx.rope_indices if ctx.has_indices else ctx.cos.new_empty(1, dtype = torch.int32)
 
-        # Clone if not contiguous or has zero strides, such as expanded tensors.
-        dQ_out = dQ.clone() if not dQ.is_contiguous() or 0 in dQ.stride() else dQ
-        dK_out = dK.clone() if not dK.is_contiguous() or 0 in dK.stride() else dK
+        # Inplace rotary embedding is generally fine.
+        dQ_out = dQ.clone() if not dQ.is_contiguous() else dQ
+        dK_out = dK.clone() if not dK.is_contiguous() else dK
 
         Q_batch_stride, Q_head_stride, Q_seq_stride = (
             dQ_out.stride(0),
