@@ -1694,3 +1694,25 @@ def test_a_bad_predicted_ms_is_dropped_rather_than_raising(monkeypatch, predicte
     monitor.finish(entry_id)
 
     assert monitor.snapshot()[0]["decode_ms"] is None
+
+
+def test_perf_callback_reports_decode_phase_once_per_prefill_round(monkeypatch):
+    import routes.inference as inf_mod
+    from core.inference.llama_cpp import _report_live_llama_timings
+
+    seen = []
+    monkeypatch.setattr(
+        inf_mod,
+        "_monitor_usage",
+        lambda *_a, timings, **_k: seen.append(timings.get("running_phase")),
+    )
+    callback = inf_mod._monitor_perf_callback("apireq_x", 4096)
+    progress = {
+        "choices": [{"index": 0, "delta": {"role": "assistant", "content": None}}],
+        "prompt_progress": {"total": 10, "processed": 10, "cache": 0, "time_ms": 1},
+    }
+    token = {"choices": [{"index": 0, "delta": {"content": "a"}}], "timings": {"predicted_n": 1}}
+    for chunk in (progress, token, token, token, progress, token, token):
+        _report_live_llama_timings(callback, chunk)
+
+    assert seen == [None, "token_generation", None, None, None, "token_generation", None]
