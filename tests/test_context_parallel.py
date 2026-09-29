@@ -237,7 +237,11 @@ def test_predictions_are_refused_but_loss_only_eval_runs(monkeypatch):
 
 @pytest.mark.parametrize(
     "attrs",
-    [{"label_smoothing_factor": 0.1}, {"compute_loss_func": lambda *a, **k: 0}],
+    [
+        {"label_smoothing_factor": 0.1},
+        {"compute_loss_func": lambda *a, **k: 0},
+        {"loss_type": "chunked_nll"},
+    ],
 )
 def test_label_dropping_loss_paths_are_refused(monkeypatch, attrs):
     import types
@@ -247,11 +251,12 @@ def test_label_dropping_loss_paths_are_refused(monkeypatch, attrs):
     monkeypatch.setattr(cp.dist, "get_world_size", lambda: 2)
     monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
     args = types.SimpleNamespace(context_parallel_size = 2, label_smoothing_factor = 0.0)
-    if "label_smoothing_factor" in attrs:
-        args.label_smoothing_factor = attrs["label_smoothing_factor"]
+    for key in ("label_smoothing_factor", "loss_type"):
+        if key in attrs:
+            setattr(args, key, attrs[key])
     init = {"args": args}
     if "compute_loss_func" in attrs:
         init["compute_loss_func"] = attrs["compute_loss_func"]
     Trainer = _patched_trainer(monkeypatch, **init)
-    with pytest.raises(NotImplementedError, match = "label_smoothing_factor"):
+    with pytest.raises(NotImplementedError, match = "loss_type = 'nll'"):
         Trainer()

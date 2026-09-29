@@ -190,13 +190,16 @@ def patch_sft_trainer() -> None:
             raise NotImplementedError(
                 "Unsloth: context parallelism needs flash attention (compute capability >= 8.0)."
             )
-        # Both drop labels before the model and recompute loss from the sharded, already
-        # load-balanced labels, losing every cross-shard target.
-        if getattr(self.args, "label_smoothing_factor", 0) or getattr(
-            self, "compute_loss_func", None
+        # These recompute loss outside our forward (TRL chunked_nll calls the backbone directly)
+        # from the sharded, load-balanced labels, losing every cross-shard target.
+        if (
+            getattr(self.args, "label_smoothing_factor", 0)
+            or getattr(self, "compute_loss_func", None)
+            or getattr(self.args, "loss_type", None) not in (None, "nll")
         ):
             raise NotImplementedError(
-                "Unsloth: context parallelism does not support label_smoothing_factor or compute_loss_func."
+                "Unsloth: context parallelism needs loss_type = 'nll' without "
+                "label_smoothing_factor or compute_loss_func."
             )
         if not _supports_context_parallel(self.model):
             raise NotImplementedError(
