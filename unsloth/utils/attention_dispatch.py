@@ -213,7 +213,6 @@ class AttentionContext:
 def select_attention_backend(use_varlen: bool = False) -> str:
     """Return attention backend based on availability / priority order."""
 
-    # Context parallelism is SDPA ring attention, which has no packed / varlen support.
     if get_cp_manager() is not None:
         if use_varlen:
             raise ValueError(

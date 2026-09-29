@@ -1399,7 +1399,6 @@ def _patch_sft_trainer_auto_packing(trl_module):
                 # several classes, so a "yes" from the resolved one is not proof about the
                 # instance. A correct "no" has already turned both flags off, which is the
                 # condition the post-init check skips on, so leaving it armed is free.
-        # Ring attention needs a plain causal mask, so no packed / padding-free batches.
         is_context_parallel = (getattr(config_arg, "context_parallel_size", 1) or 1) > 1
         blocked = (
             (data_collator is not None)

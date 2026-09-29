@@ -1517,7 +1517,7 @@ def CausalLM_fast_forward(fast_forward_inference):
         hidden_states = hidden_states.to(lm_head_device)
         if labels is not None:
             labels = labels.to(lm_head_device)
-        # Pre-shifted labels (context parallelism shards after shifting); already boundary-masked.
+        # Context parallelism shifts before sharding.
         if shift_labels is not None:
             shift_labels = shift_labels.to(lm_head_device)
 

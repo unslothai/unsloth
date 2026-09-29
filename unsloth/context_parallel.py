@@ -27,14 +27,12 @@ _ACTIVE_MANAGER: contextvars.ContextVar[Optional["ContextParallelManager"]] = (
     contextvars.ContextVar("unsloth_active_cp_manager", default = None)
 )
 
-# Sharded along dim 1 by torch's load balancer. shift_labels is built before sharding so the
-# next-token target of each shard's last token survives the split.
+# shift_labels is built before sharding so each shard's last token keeps its next-token target.
 _BUFFER_NAMES = ("input_ids", "attention_mask", "labels", "position_ids", "shift_labels")
 _PAD_VALUES = {"labels": -100, "shift_labels": -100, "attention_mask": 0, "input_ids": 0}
 
 
-# AcceleratorState is process-wide: remember the mesh we installed so a later non-CP trainer
-# does not inherit it.
+# AcceleratorState is process-wide; a later non-CP trainer must not inherit our mesh.
 _INSTALLED_MESH = []
 
 
@@ -43,8 +41,7 @@ def get_cp_manager() -> Optional["ContextParallelManager"]:
 
 
 def _supports_context_parallel(model) -> bool:
-    # Only the Llama attention forward (Llama, Qwen2, Gemma) takes global position ids for RoPE and
-    # reaches SDPA through F.scaled_dot_product_attention, which is what context_parallel patches.
+    # Llama forward (Llama, Qwen2, Gemma): RoPE from global position_ids, SDPA via the patched F.
     from .models.llama import LlamaAttention_fast_forward
 
     # Every attention layer: one without ring attention would attend over its local shard only.
@@ -67,9 +64,7 @@ class ContextParallelManager:
     def __init__(self, size: int):
         self.size = size
         world_size = dist.get_world_size()
-        # DeviceMesh is SPMD: every rank must build the identical global mesh (a per-group mesh
-        # hangs once world_size > size), then take its own "cp" row. accelerate reads the "cp"
-        # dim to give every CP rank the same batch.
+        # DeviceMesh is SPMD (per-group meshes hang); accelerate reads "cp" to feed CP peers one batch.
         self.device_mesh = DeviceMesh(
             DEVICE_TYPE_TORCH,
             torch.arange(world_size).reshape(world_size // size, size),
@@ -100,8 +95,7 @@ class ContextParallelManager:
                 torch.arange(seq_len, device = input_ids.device).expand(bsz, -1).contiguous()
             )
         mask = inputs.get("attention_mask")
-        # The attention hook drops the mask; only a 2D right-padded one (never attended by earlier
-        # tokens under a causal mask) is safe to drop, and only 2D masks shard along dim 1.
+        # The hook drops the mask: only 2D right padding is safe (causal) and shards on dim 1.
         if isinstance(mask, torch.Tensor) and (
             mask.ndim != 2 or (mask[:, 1:] > mask[:, :-1]).any()
         ):
@@ -206,13 +200,11 @@ def patch_sft_trainer() -> None:
                 f"Unsloth: world size {world_size} is not a multiple of context_parallel_size {size}."
             )
         if torch.cuda.is_available() and torch.cuda.get_device_capability()[0] < 8:
-            # Measured on 2x T4 (torch 2.10): torch's own ring attention fails in backward
-            # (mixed Tensor / DTensor add) without a flash kernel, before Unsloth code runs.
+            # Pure torch ring attention fails in backward without flash (2x T4, torch 2.10).
             raise NotImplementedError(
                 "Unsloth: context parallelism needs flash attention (compute capability >= 8.0)."
             )
-        # These recompute loss outside our forward (TRL chunked_nll calls the backbone directly)
-        # from the sharded, load-balanced labels, losing every cross-shard target.
+        # These recompute loss outside our forward from sharded labels, losing cross-shard targets.
         if (
             getattr(self.args, "label_smoothing_factor", 0)
             or getattr(self, "compute_loss_func", None)
@@ -234,8 +226,7 @@ def patch_sft_trainer() -> None:
                 "(Llama, Qwen2, Gemma)."
             )
         accelerator = getattr(self, "accelerator", None)
-        # Only DDP prepares data from state.device_mesh's cp dim; DeepSpeed shards across every
-        # rank and FSDP2 expects a parallelism_config to go with the mesh.
+        # DeepSpeed's loader ignores cp; FSDP2 needs a parallelism_config with the mesh.
         distributed_type = getattr(getattr(accelerator, "distributed_type", None), "name", "NO")
         if distributed_type != "NO" and not distributed_type.startswith("MULTI_"):
             raise NotImplementedError(
@@ -270,7 +261,6 @@ def patch_sft_trainer() -> None:
         manager = getattr(self, "_context_parallel_manager", None)
         prediction_loss_only = args[0] if args else kwargs.get("prediction_loss_only", True)
         if manager is not None and not prediction_loss_only:
-            # Logits come back as per-rank sequence shards, duplicated across the CP group.
             raise NotImplementedError(
                 "Unsloth: context parallelism supports loss-only evaluation; "
                 "compute_metrics / predict() need context_parallel_size = 1."
@@ -282,9 +272,7 @@ def patch_sft_trainer() -> None:
     def patched_training_step(self, model, inputs, *args, **kwargs):
         manager = getattr(self, "_context_parallel_manager", None)
         if manager is not None:
-            # The trainer counted tokens before sharding, so every CP rank holds its group's whole
-            # count (x size once gathered); HF divides the same way for its parallelism_config.
-            # Eval counts after sharding, so prediction_step needs no division.
+            # Counted before sharding (eval counts after); HF divides the same for parallelism_config.
             if args and args[0] is not None:
                 args = (args[0] / manager.size, *args[1:])
             elif kwargs.get("num_items_in_batch") is not None:
