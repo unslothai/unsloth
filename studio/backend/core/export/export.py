@@ -1854,8 +1854,22 @@ class ExportBackend:
             "--outtype",
             outtype,
         ]
-        if os.path.isdir(str(base_model_id)):
-            cmd += ["--base", str(base_model_id)]
+        # The snapshot the model was loaded from carries the adapter's pinned base revision.
+        loaded_base = next(
+            (
+                str(p)
+                for p in (
+                    getattr(self.current_model, "_config_src_path", None),
+                    getattr(self.current_model, "_src_path", None),
+                    base_model_id,
+                )
+                if isinstance(p, (str, os.PathLike))
+                and os.path.isfile(os.path.join(str(p), "config.json"))
+            ),
+            None,
+        )
+        if loaded_base:
+            cmd += ["--base", loaded_base]
         else:
             cmd += ["--base-model-id", str(base_model_id)]
         if getattr(self, "trust_remote_code", False):

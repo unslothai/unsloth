@@ -311,3 +311,15 @@ def test_gguf_converter_honors_scripts_dir(monkeypatch, tmp_path):
     (pinned / "gguf-py").mkdir()
     backend._convert_peft_dir_to_gguf(adapter, "q8_0", None)
     assert [c[0][1] for c in calls] == [str(pinned / "convert_lora_to_gguf.py")]
+
+
+def test_gguf_converter_uses_loaded_snapshot(monkeypatch, tmp_path):
+    backend, adapter, calls = _converter_harness(monkeypatch, tmp_path, True)
+    snap = tmp_path / "snapshot"
+    snap.mkdir()
+    (snap / "config.json").write_text("{}")
+    backend.current_model._config_src_path = None
+    backend.current_model._src_path = str(snap)
+    backend._convert_peft_dir_to_gguf(adapter, "q8_0", None)
+    cmd = calls[-1][0]
+    assert cmd[cmd.index("--base") + 1] == str(snap) and "--base-model-id" not in cmd
