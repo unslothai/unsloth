@@ -1,0 +1,217 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+"""One-click OS sandbox setup from Unsloth: install bubblewrap on Linux, install and prepare MXC on Windows.
+
+Runs the fixed steps of `sandbox_setup_plan` as a background job. Nothing from a request reaches the
+command line: the operation name picks a plan, and the plan is built from constants on this host.
+One setup at a time, shared with the "Prepare this PC" job, and never killed mid-run.
+"""
+
+from __future__ import annotations
+
+from collections import deque
+from dataclasses import asdict, dataclass, field
+import logging
+import shlex
+import subprocess
+import sys
+import threading
+import time
+from typing import Callable
+import uuid
+
+from . import sandbox_setup_plan
+from .mxc_host_prep_job import _DECLINED_MARKER, _steps as _prepared_steps
+
+logger = logging.getLogger(__name__)
+
+OUTPUT_TAIL_LINES = 20
+PKEXEC_DISMISSED = 126
+PKEXEC_NOT_AUTHORIZED = 127
+_SUDO_NEEDS_PASSWORD = "a password is required"
+
+_lock = threading.Lock()
+_current: "SetupJob | None" = None
+_on_finish: list[Callable[[], None]] = []
+
+
+class SetupUnavailable(ValueError):
+    """The requested operation does not apply to this host right now."""
+
+
+@dataclass
+class SetupJob:
+    id: str
+    operation: str
+    state: str = "running"  # running | succeeded | declined | failed
+    started_at: float = field(default_factory = time.time)
+    finished_at: float | None = None
+    exit_code: int | None = None
+    output_tail: list[str] = field(default_factory = list)
+    steps: list[str] = field(default_factory = list)
+    manual_command: str = ""
+    note: str = ""
+
+    def as_dict(self) -> dict:
+        return asdict(self)
+
+
+def current() -> SetupJob | None:
+    with _lock:
+        return _current
+
+
+def add_finish_hook(hook: Callable[[], None]) -> None:
+    if hook not in _on_finish:
+        _on_finish.append(hook)
+
+
+def running() -> bool:
+    job = current()
+    return job is not None and job.state == "running"
+
+
+def _spawn(argv: list[str]) -> subprocess.Popen:
+    from utils.process_lifetime import child_popen_kwargs, spawn_on_lifetime_thread
+
+    kwargs = dict(
+        stdin = subprocess.DEVNULL,
+        stdout = subprocess.PIPE,
+        stderr = subprocess.STDOUT,
+        text = True,
+        encoding = "utf-8",
+        errors = "replace",
+        **child_popen_kwargs(),
+    )
+    if sys.platform == "win32":
+        kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+    return spawn_on_lifetime_thread(lambda: subprocess.Popen(argv, **kwargs))
+
+
+def _invalidate() -> None:
+    from . import mxc_probe, os_sandbox, sandbox_probe, tools
+    resets = (
+        sandbox_probe.reset_probe_cache,
+        os_sandbox._linux_userns_blocked_by_apparmor.cache_clear,
+        mxc_probe.invalidate_cache,
+        tools.reset_terminal_profile_cache,
+        sandbox_setup_plan.invalidate,
+        *_on_finish,
+    )
+    for reset in resets:
+        try:
+            reset()
+        except Exception as exc:  # noqa: BLE001 - a stale cache only delays the new verdict
+            logger.warning("Sandbox setup: cache reset failed: %s", exc)
+
+
+def pkexec_script(steps) -> str:
+    """One shell script for one polkit prompt, built only from the plan's fixed steps."""
+    return "set -e\n" + "\n".join(shlex.join(list(step)) for step in steps) + "\n"
+
+
+def _commands(plan: sandbox_setup_plan.SetupPlan) -> list[list[str]]:
+    """The argv lists the job runs, in order."""
+    if plan.action == sandbox_setup_plan.LINUX_INSTALL:
+        kind, path = sandbox_setup_plan.linux_elevation()
+        if kind == "sudo":
+            # -n: never ask for a password nobody can type here.
+            return [[path, "-n", *step] for step in plan.steps]
+        if kind == "pkexec":
+            return [[path, "/bin/sh", "-c", pkexec_script(plan.steps)]]
+        raise SetupUnavailable(
+            "Neither passwordless sudo nor a desktop password prompt is available."
+        )
+    return [list(step) for step in plan.steps]
+
+
+def _drain(job: SetupJob, proc: subprocess.Popen, tail: deque) -> int | None:
+    try:
+        for line in proc.stdout:
+            tail.append(line.rstrip("\r\n"))
+            job.output_tail = list(tail)
+        # No timeout: a package manager or ACL helper stopped mid-run leaves the host half changed.
+        return proc.wait()
+    except Exception as exc:  # noqa: BLE001 - reported on the job, never raised into a thread
+        tail.append(f"Unsloth lost track of the setup run: {exc}")
+        return None
+
+
+def _outcome(job: SetupJob, argv: list[str], code: int | None, lines: list[str]) -> str:
+    if code == 0:
+        return "succeeded"
+    if job.operation == sandbox_setup_plan.LINUX_INSTALL:
+        if argv and argv[0].endswith("pkexec"):
+            if code == PKEXEC_DISMISSED:
+                job.note = "The password prompt was dismissed."
+                return "declined"
+            if code == PKEXEC_NOT_AUTHORIZED:
+                job.note = "Not authorized, or no authentication agent is running on this desktop."
+                return "failed"
+        if any(_SUDO_NEEDS_PASSWORD in line for line in lines):
+            job.note = "sudo needs a password here; run the command in a terminal instead."
+            return "failed"
+        return "failed"
+    if any(_DECLINED_MARKER in line for line in lines):
+        job.note = "The administrator prompt was declined."
+        return "declined"
+    return "failed"
+
+
+def _run(job: SetupJob, commands: list[list[str]]) -> None:
+    tail: deque[str] = deque(maxlen = OUTPUT_TAIL_LINES)
+    state, code = "succeeded", 0
+    for argv in commands:
+        try:
+            proc = _spawn(argv)
+        except Exception as exc:  # noqa: BLE001 - surfaced as a failed job
+            tail.append(f"Could not start the setup step: {exc}")
+            state, code = "failed", None
+            break
+        code = _drain(job, proc, tail)
+        lines = list(tail)
+        if "--prepare-host" in argv:
+            job.steps = _prepared_steps(lines)
+        state = _outcome(job, argv, code, lines)
+        if state != "succeeded":
+            break
+    job.output_tail = list(tail)
+    job.exit_code = code
+    job.finished_at = time.time()
+    if state != "succeeded" and not job.note and code is not None:
+        job.note = f"The setup step exited with code {code}."
+    logger.info("Sandbox setup finished: operation=%s state=%s exit=%s", job.operation, state, code)
+    # Caches first: a poller that sees the end must not then read the pre-setup verdict.
+    _invalidate()
+    job.state = state
+
+
+def start(operation: str) -> SetupJob:
+    """Start the setup for `operation`, or return the run already in progress (of any operation)."""
+    global _current
+    from . import mxc_host_prep_job
+
+    if operation not in sandbox_setup_plan.OPERATIONS:
+        raise SetupUnavailable(f"Unknown setup operation: {operation}")
+    in_progress = current()
+    if in_progress is not None and in_progress.state == "running":
+        return in_progress
+    # Detection can run the live probe, so it stays outside the lock pollers read under.
+    plan = sandbox_setup_plan.detect(force = True)
+    if plan.action != operation:
+        raise SetupUnavailable(plan.reason or "There is nothing to set up on this computer.")
+    commands = _commands(plan)
+    with _lock:
+        if _current is not None and _current.state == "running":
+            return _current
+        prep = mxc_host_prep_job.current()
+        if prep is not None and prep.state == "running":
+            return SetupJob(
+                id = prep.id,
+                operation = sandbox_setup_plan.WINDOWS_SETUP,
+                started_at = prep.started_at,
+            )
+        job = SetupJob(id = uuid.uuid4().hex, operation = operation, manual_command = plan.manual_command)
+        _current = job
+    threading.Thread(target = _run, args = (job, commands), name = "sandbox-setup", daemon = True).start()
+    return job

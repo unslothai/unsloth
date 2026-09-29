@@ -118,8 +118,12 @@ def _run(job: HostPrepJob, proc: subprocess.Popen) -> None:
 def start() -> HostPrepJob:
     """Start the elevated host preparation, or return the run already in progress."""
     global _current
-    from . import mxc_probe
+    from . import mxc_probe, sandbox_setup_job
 
+    # One host change at a time: a Settings setup run (which may itself prepare) owns the host.
+    setup = sandbox_setup_job.current()
+    if setup is not None and setup.state == "running":
+        return setup
     with _lock:
         if _current is not None and _current.state == "running":
             return _current
