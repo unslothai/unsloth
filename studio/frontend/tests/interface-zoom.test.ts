@@ -191,9 +191,10 @@ test("the popup keeps one on-screen size and does not dismiss a modal", () => {
     /\{isTauri && <ZoomAnnouncer open=\{open\} \/>\}\s*\{open && <ZoomPopup \/>\}/,
   );
   // Canvases that zoom on Ctrl+wheel themselves get the event first; macOS keeps its own.
+  // Ctrl+Alt and Ctrl+Meta are left unprevented, since the accumulator rejects them.
   assert.match(
     zoom,
-    /if \(event\.defaultPrevented \|\| !event\.ctrlKey\) return;/,
+    /event\.defaultPrevented \|\|\s*!event\.ctrlKey \|\|\s*event\.altKey \|\|\s*event\.metaKey\s*\)\s*return;\s*event\.preventDefault\(\);/,
   );
   assert.match(
     zoom,

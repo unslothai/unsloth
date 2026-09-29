@@ -192,7 +192,14 @@ export function InterfaceZoom() {
     // Bubble phase, so canvases with their own Ctrl+wheel zoom keep it.
     const wheelStep = createWheelZoomAccumulator();
     const onWheel = (event: WheelEvent) => {
-      if (event.defaultPrevented || !event.ctrlKey) return;
+      // Ctrl+Alt and Ctrl+Meta keep their default.
+      if (
+        event.defaultPrevented ||
+        !event.ctrlKey ||
+        event.altKey ||
+        event.metaKey
+      )
+        return;
       event.preventDefault();
       const direction = wheelStep(event, getAppliedInterfaceZoom());
       if (direction !== null) zoomInterface(direction);
