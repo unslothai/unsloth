@@ -375,6 +375,9 @@ export function toApiOverride(config: PerModelConfig | null): ApiModelOverride {
   if (!config) {
     return {};
   }
+  // Engine fields are always sent, defaults included: the server keeps a stored engine choice
+  // when the field is absent, so omitting "auto" could never clear an earlier "vllm". It stores
+  // only non-default values, so an all-default save still leaves no row.
   const payload: ApiModelOverride = {
     engine: config.engine ?? "auto",
     engine_precision: config.enginePrecision ?? "auto",

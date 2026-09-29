@@ -347,6 +347,7 @@ class ManagedEngine:
                         gpu_ids or [0], memory_reserve_mib(self.engine, options)
                     )
                     child_env.update(self.adapter.environment(len(gpu_ids or [0])))
+                    child_env.update(self.adapter.key_environment(self.key))
                     if self.engine == "vllm" and _deep_gemm_unloadable(info["path"]):
                         child_env["VLLM_USE_DEEP_GEMM"] = "0"
                     command = self.adapter.command(
@@ -424,8 +425,7 @@ class ManagedEngine:
     def _cache_key(self, info, model, gpu_ids, options) -> str:
         # Compiler caches are keyed per launch config: reuse across dtype/GPU changes breaks.
         policy = Path(__file__).with_name("engine_adapters.py").read_bytes()
-        if self.engine == "sglang":
-            policy += Path(__file__).with_name("sglang_server.py").read_bytes()
+        policy += Path(__file__).with_name(f"{self.engine}_server.py").read_bytes()
         return hashlib.sha256(
             policy
             + json.dumps(
@@ -482,14 +482,16 @@ class ManagedEngine:
             **({"options": options, "trust_remote_code": trust_remote_code} if options else {}),
             **({"served_model_name": model} if model_path and model_path != model else {}),
         )
-        # SGLang's launcher is a Studio source file; the guest reads it through /mnt.
-        server = str(Path(__file__).with_name("sglang_server.py"))
+        # The engine launchers are Studio source files; the guest reads them through /mnt.
+        server = str(Path(__file__).with_name(f"{self.engine}_server.py"))
         command = [wsl_host.to_guest_path(arg) if arg == server else arg for arg in command]
         secrets = {
             key: env[key]
             for key in (*_HF_TOKEN_ENV_KEYS, "HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY")
             if env.get(key)
         }
+        # The engine key goes through WSLENV like the tokens: guest_env lands on /usr/bin/env's argv.
+        secrets.update(self.adapter.key_environment(self.key))
         return wsl_host.guest_command(
             [
                 f"{guest_root}/bin/run-engine",

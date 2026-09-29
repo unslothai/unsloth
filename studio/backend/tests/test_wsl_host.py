@@ -333,11 +333,17 @@ def test_wsl_launch_command(wsl, monkeypatch):
     assert "hf_secret" not in joined and "C:\\" not in joined
     assert env["HF_TOKEN"] == "hf_secret" and "HF_TOKEN/u" in env["WSLENV"]
     assert "unsloth/Qwen3-0.6B" in command and "--port" in command
+    # The engine key rides WSLENV too: on the guest command line any local user could read it.
+    assert engine.key not in joined
+    assert env["VLLM_API_KEY"] == engine.key and "VLLM_API_KEY/u" in env["WSLENV"]
+    # vLLM's route-guarding launcher is a Studio source file the guest reads through /mnt.
+    assert "/mnt/c/vllm_server.py" in command
 
 
 def test_offline_mode_reaches_the_guest(wsl, monkeypatch):
     monkeypatch.setattr(wsl_host, "guest_gpu_indices", lambda ids: [0])
     monkeypatch.setattr(managed_engine, "gpu_memory_fraction", lambda *_: 0.5)
+    monkeypatch.setattr(wsl_host, "to_guest_path", lambda path: "/mnt/c/" + Path(path).name)
     guest = Path(wsl_host.GUEST_ROOT) / "engines" / "vllm" / "env-abc" / "bin"
     guest.mkdir(parents = True)
     (guest / "python").write_text("", encoding = "utf-8")
@@ -434,10 +440,13 @@ def test_sglang_launcher_is_read_through_mnt(wsl, monkeypatch):
     (guest / "python").chmod(0o755)
     engine = managed_engine.ManagedEngine("sglang")
     engine.context = 2048
-    command, _ = engine._wsl_command(
+    command, env = engine._wsl_command(
         {"path": str(guest.parent), "host": "wsl"}, {}, [0], None, False, "m", None, 8123
     )
     assert "/mnt/c/sglang_server.py" in command
+    assert engine.key not in " ".join(command)
+    assert env["UNSLOTH_ENGINE_API_KEY"] == engine.key
+    assert "UNSLOTH_ENGINE_API_KEY/u" in env["WSLENV"]
     assert str(Path(managed_engine.__file__).with_name("sglang_server.py")) not in command
 
 

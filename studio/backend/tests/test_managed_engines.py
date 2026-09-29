@@ -276,6 +276,36 @@ def test_shared_engine_reuses_studio_versions_its_dependencies_accept(
 
 
 @pytest.mark.parametrize("engine", ["vllm", "sglang"])
+@pytest.mark.parametrize("torchao, reused", [("0.18.0", False), ("0.17.0", True)])
+def test_shared_engine_reuses_only_the_torchao_its_adapter_configs_use(
+    isolated, monkeypatch, tmp_path, engine, torchao, reused
+):
+    # Nothing in the lock constrains torchao; Studio's adapter builds 0.17-API configs.
+    site = tmp_path / "studio-site"
+    fake_dist(site, "torchao", torchao)
+    studio_with_engine_torch(monkeypatch, engine, torchao = torchao)
+    monkeypatch.setattr(install, "_studio_site", lambda: [str(site)])
+    monkeypatch.setattr(install, "_compat", lambda engine: {"torchao": []})
+    plan = install.install_plan(engine)
+    assert plan["shared"]
+    assert ("torchao" in plan["provided"]) == reused
+    assert ("torchao==0.17.0" in plan["requirements"]) != reused
+
+
+def test_existing_shared_engine_with_another_torchao_needs_repair(monkeypatch):
+    info = {
+        "shared": True,
+        "python": install.platform.python_version(),
+        "provided": {"torchao": "0.18.0"},
+    }
+    monkeypatch.setattr(install, "_studio_packages", lambda: {"torchao": "0.18.0"})
+    assert install.stale(info)
+    info["provided"] = {"torchao": "0.17.0"}
+    monkeypatch.setattr(install, "_studio_packages", lambda: {"torchao": "0.17.0"})
+    assert not install.stale(info)
+
+
+@pytest.mark.parametrize("engine", ["vllm", "sglang"])
 def test_compat_file_matches_its_lock(engine):
     assert install._compat(engine), "regenerate with requirements/engines/engine_compat.py"
     assert "flashinfer-cubin" not in install._pins(engine)
@@ -464,7 +494,7 @@ def test_argv_owns_network_and_memory_settings(engine):
     argv = launch_arguments(engine, "/env/bin/python", "org/model", 45678, "private", 4096)
     assert argv[0:2] == ["/env/bin/python", "-I"]
     assert argv[argv.index("--host") + 1] == "127.0.0.1"
-    assert argv[argv.index("--api-key") + 1] == "private"
+    assert "private" not in argv  # the key travels in the environment (key_environment)
     assert "4096" in argv
     assert "--trust-remote-code" not in argv
 
@@ -997,7 +1027,10 @@ def test_server_outlives_short_lived_start_thread(isolated, monkeypatch, gpu_ids
         return [sys.executable, "-u", "-c", code]
 
     engine.adapter = SimpleNamespace(
-        command = command, progress = lambda _: None, environment = lambda _: {}
+        command = command,
+        progress = lambda _: None,
+        environment = lambda _: {},
+        key_environment = lambda _: {},
     )
     errors = []
 
@@ -1117,7 +1150,9 @@ def test_shutdown_during_adoption_reaps_child(isolated, monkeypatch, kind):
                 monkeypatch.setattr(managed_engine, "gpu_memory_fraction", lambda *_: 0.8)
                 engine = ManagedEngine("vllm")
                 engine.adapter = SimpleNamespace(
-                    command = lambda *args: command, environment = lambda _: {}
+                    command = lambda *args: command,
+                    environment = lambda _: {},
+                    key_environment = lambda _: {},
                 )
                 engine.start("model", 2048, [0], dict(os.environ))
         assert len(children) == 1
@@ -1810,7 +1845,10 @@ def test_startup_deadline_counts_engine_silence(isolated, monkeypatch, chatty):
         return [sys.executable, "-u", "-c", code]
 
     engine.adapter = SimpleNamespace(
-        command = command, progress = lambda _: None, environment = lambda _: {}
+        command = command,
+        progress = lambda _: None,
+        environment = lambda _: {},
+        key_environment = lambda _: {},
     )
     try:
         if chatty:
@@ -1945,18 +1983,38 @@ def test_managed_load_runs_the_worker_security_gates(monkeypatch, trust_remote_c
 @pytest.mark.parametrize(
     "engine, options, reserve",
     [
-        ("vllm", {"precision": "int8"}, 512 + 6144),
-        ("vllm", {"precision": "fp8"}, 512 + 6144),
-        ("vllm", {"precision": "int4", "parallelism": "pipeline"}, 512 + 6144),
-        ("vllm", {"precision": "int4"}, 512),
-        ("vllm", {"precision": "bf16"}, 512),
-        ("vllm", None, 512),
-        ("sglang", {"precision": "int8"}, 512),
+        ("vllm", {"precision": "int8"}, 3072 + 6144),
+        ("vllm", {"precision": "fp8"}, 3072 + 6144),
+        ("vllm", {"precision": "int4", "parallelism": "pipeline"}, 3072 + 6144),
+        ("vllm", {"precision": "int4"}, 3072),
+        ("vllm", {"precision": "bf16"}, 3072),
+        ("vllm", None, 3072),
+        ("sglang", {"precision": "int8"}, 4096),
+        ("sglang", None, 4096),
     ],
 )
 def test_only_vllm_torchao_loads_keep_extra_headroom(engine, options, reserve):
     from core.inference.engine_adapters import memory_reserve_mib
     assert memory_reserve_mib(engine, options) == reserve
+
+
+@pytest.mark.parametrize(
+    "engine, highest_passing",
+    # The fractions that passed chat, stream and a forced tool call on a Colab L4 (23034 MiB,
+    # 22564 free, Qwen2.5-0.5B); the old 512 MiB reserve gave 0.957, which failed on both.
+    [("vllm", 0.912), ("sglang", 0.890)],
+)
+def test_a_24_gb_card_leaves_the_headroom_measured_on_an_l4(monkeypatch, engine, highest_passing):
+    from types import SimpleNamespace
+    from core.inference import engine_adapters
+    from utils import vram_budget_settings
+
+    monkeypatch.setattr(
+        engine_adapters.subprocess, "run", lambda *a, **kw: SimpleNamespace(stdout = "23034, 22564")
+    )
+    monkeypatch.setattr(vram_budget_settings, "get_vram_budget_fraction", lambda: 0.97)
+    reserve = engine_adapters.memory_reserve_mib(engine, None)
+    assert engine_adapters.gpu_memory_fraction([0], reserve) < highest_passing
 
 
 def test_a_spelled_out_text_response_format_is_not_structured_output():

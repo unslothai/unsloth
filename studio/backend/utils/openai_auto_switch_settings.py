@@ -421,14 +421,19 @@ def _bounded_int(value: Any, *, minimum: int, maximum: int) -> Optional[int]:
     return parsed
 
 
+_ENGINE_DEFAULTS = {"engine_parallelism": "tensor", "engine_precision": "auto"}
+
+
 def normalize_model_override(
     payload: dict[str, Any], *, keep_empty_extra_args: bool = False
 ) -> dict[str, Any]:
     """Validate one per-model launch config, dropping anything unusable. Silently drops rather than raising: an override is a convenience mirror of the UI's config, so one stale field (a KV dtype this llama.cpp build lost, a GPU id from another host) must not block persisting the rest or fail the API load that reads it. ``validate_extra_args`` is the caller's job, since it lives in the llama_server_args allow-list module this one must not import. ``keep_empty_extra_args`` keeps an explicit empty list, the difference between "this model has no launch flags" and "nothing is stored for this model": the same thing everywhere except under a fallback, where a quant whose row is gone reads the bare repository row instead and a cleared box would come back holding whatever that legacy row carries."""
     entry: dict[str, Any] = {}
-    if payload.get("engine_parallelism") in ("tensor", "pipeline", "data"):
+    # The defaults ("tensor", "auto") are not stored: a default-only row would count as an
+    # override, shadow a repository row in auto-switch, and re-tick Remember.
+    if payload.get("engine_parallelism") in ("pipeline", "data"):
         entry["engine_parallelism"] = payload["engine_parallelism"]
-    if payload.get("engine_precision") in ("auto", "bf16", "fp16", "int4", "int8", "fp8"):
+    if payload.get("engine_precision") in ("bf16", "fp16", "int4", "int8", "fp8"):
         entry["engine_precision"] = payload["engine_precision"]
     if payload.get("engine") in ("vllm", "sglang"):
         entry["engine"] = payload["engine"]
@@ -743,7 +748,18 @@ def _fold_posix_path_variant(value: str) -> str:
 def get_model_overrides() -> dict[str, dict]:
     """Per-model launch configs keyed by model id (see normalize_model_override)."""
     raw = _cached_setting(MODEL_OVERRIDES_SETTING_KEY, None)
-    return raw if isinstance(raw, dict) else {}
+    if not isinstance(raw, dict):
+        return {}
+    # Rows saved before engine defaults were dropped (see normalize_model_override) read as
+    # what they mean: those fields unset, and a row holding nothing else absent.
+    cleaned = {}
+    for key, entry in raw.items():
+        if isinstance(entry, dict):
+            entry = {k: v for k, v in entry.items() if _ENGINE_DEFAULTS.get(k, object()) != v}
+            if not entry:
+                continue
+        cleaned[key] = entry
+    return cleaned
 
 
 def get_model_override(model_id: str) -> dict:
