@@ -206,7 +206,11 @@ export function McpComposerButton({
   const blenderEnabled = servers.some(
     (server) => server.builtin_id === "blender" && server.is_enabled,
   );
-  const enabledCount = servers.filter((s) => s.is_enabled).length;
+  const enabledCount = servers.filter(
+    (s) =>
+      s.is_enabled &&
+      (decisionsUrl !== null || normalizeMcpUrl(s.url) !== "studio:decisions"),
+  ).length;
   const active = usable && mcpEnabledForChat && enabledCount > 0;
 
   async function toggleServer(args: {

@@ -836,6 +836,10 @@ test("the Decisions row stays hidden while the Decision API is off", () => {
     MCP_COMPOSER_BUTTON,
     /const customServers = servers\.filter\([\s\S]*normalizeMcpUrl\(s\.url\) !== "studio:decisions"/,
   );
+  assert.match(
+    MCP_COMPOSER_BUTTON,
+    /const enabledCount = servers\.filter\([\s\S]*decisionsUrl !== null \|\| normalizeMcpUrl\(s\.url\) !== "studio:decisions"/,
+  );
 });
 
 test("an older Decision API settings response cannot replace a newer one", () => {
