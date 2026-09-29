@@ -1,11 +1,8 @@
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
-#
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
-#
 #     http://www.apache.org/licenses/LICENSE-2.0
-#
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -36,8 +33,17 @@ elif v  < V('2.8.9'): x = 'cu{}{}-torch280'
 elif v  < V('2.9.1'): x = 'cu{}{}-torch290'
 elif v  < V('2.9.2'): x = 'cu{}{}-torch291'
 elif v  < V('2.10.1'): x = 'cu{}{}-torch2100'
+elif v  < V('2.11.0'): raise RuntimeError(f"Torch = {v} not supported!")
+elif v  < V('2.11.1'): x = 'cu{}{}-torch2110'
+elif v  < V('2.12.0'): raise RuntimeError(f"Torch = {v} not supported!")
+elif v  < V('2.12.1'): x = 'cu{}{}-torch2120'
+elif v  < V('2.12.2'): x = 'cu{}{}-torch2121'
 else: raise RuntimeError(f"Torch = {v} too new!")
 if v > V('2.6.9') and cuda not in ("11.8", "12.6", "12.8", "13.0"): raise RuntimeError(f"CUDA = {cuda} not supported!")
-if v >= V('2.10.0') and cuda not in ("12.6", "12.8", "13.0"): raise RuntimeError(f"Torch 2.10 requires CUDA 12.6, 12.8, or 13.0! Got CUDA = {cuda}")
+if v >= V('2.10.0') and cuda not in ("12.6", "12.8", "13.0"): raise RuntimeError(f"Torch = {v} requires CUDA 12.6, 12.8, or 13.0! Got CUDA = {cuda}")
+# torch 2.12 ships on cu126/cu130 only, and cu126 builds stop at sm_90, so Blackwell needs CUDA 13.
+if v >= V('2.12.0') and cuda not in ("12.6", "13.0"): raise RuntimeError(f"Torch = {v} requires CUDA 12.6 or 13.0! Got CUDA = {cuda}")
 x = x.format(cuda.replace(".", ""), "-ampere" if False else "") # is_ampere is broken due to flash-attn
-print(f'pip install --upgrade pip && pip install --no-deps git+https://github.com/unslothai/unsloth-zoo.git && pip install "unsloth[{x}] @ git+https://github.com/unslothai/unsloth.git" --no-build-isolation')
+# torch2110+ extras pin +cuNNN builds, which resolve only from the matching index.
+extra_index = f' --extra-index-url https://download.pytorch.org/whl/cu{cuda.replace(".", "")}' if (x.endswith(('-torch2110', '-torch2120', '-torch2121')) and cuda in ("12.6", "12.8", "13.0")) else ''
+print(f'pip install --upgrade pip setuptools wheel && pip install --no-deps git+https://github.com/unslothai/unsloth-zoo.git && pip install "unsloth[{x}] @ git+https://github.com/unslothai/unsloth.git" --no-build-isolation{extra_index}')

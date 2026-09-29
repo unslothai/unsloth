@@ -53,20 +53,20 @@ export function ImportDialog({
         position="absolute"
         overlayPosition="absolute"
         overlayClassName="bg-transparent"
-        className="corner-squircle max-h-[650px] overflow-auto sm:max-w-2xl shadow-border"
+        className="corner-squircle max-h-[min(calc(650px*var(--ui-space-scale,1)),calc(100dvh-var(--studio-window-chrome-top,0px)-2rem))] overflow-auto sm:max-w-2xl shadow-border"
       >
         <DialogHeader>
           <DialogTitle>Import recipe</DialogTitle>
         </DialogHeader>
-        <div className="grid gap-2">
+        <div className="grid gap-1.5">
           <FieldLabel
-            label="JSON payload"
+            label="Recipe JSON"
             htmlFor={payloadId}
-            hint="Paste exported recipe payload JSON."
+            hint="Paste JSON exported from Recipe Studio."
           />
           <Textarea
             id={payloadId}
-            className="corner-squircle nodrag min-h-[220px] max-h-[450px]"
+            className="corner-squircle nodrag min-h-[calc(220px*var(--ui-space-scale,1))] max-h-[calc(450px*var(--ui-space-scale,1))]"
             placeholder='{"recipe": { "columns": [] }}'
             value={value}
             onChange={(event) => setValue(event.target.value)}
@@ -79,7 +79,7 @@ export function ImportDialog({
         </div>
         <DialogFooter>
           <Button type="button" variant="outline" onClick={handleImport}>
-            Import
+            Import recipe
           </Button>
         </DialogFooter>
       </DialogContent>

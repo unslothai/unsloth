@@ -1,157 +1,85 @@
-"""
-Unit tests for past_key_values utilities.
-Self-contained — does NOT import unsloth, so runs without a GPU.
+"""CPU checks for user-supplied past_key_values in generate() (issue #497), against unsloth/models/llama.py."""
 
-Run with:
-    python -m pytest tests/test_past_kv_utils.py -v
-"""
-
-import unittest
+import pytest
 import torch
-from transformers.cache_utils import DynamicCache, Cache
+from transformers.cache_utils import Cache, DynamicCache
+
+BS, PAST_LEN, SEQ = 2, 3, 5
 
 
-# ── Inline copies of the functions under test ──────────────────────────
-# These match the implementations of _ensure_cache_is_dynamic and
-# _slice_position_ids in unsloth/models/llama.py.
-# Kept inline so the test suite can run on any machine (no GPU needed).
+class FakeModel:
+    dtype = torch.float32
+    config = None
 
 
-def _ensure_cache_is_dynamic(past_key_values):
-    """Convert list/tuple of (K, V) pairs to DynamicCache for transformers v5 compat."""
-    if past_key_values is None:
-        return None
-    if isinstance(past_key_values, Cache):
-        return past_key_values
-    if isinstance(past_key_values, (tuple, list)) and len(past_key_values) > 0:
-        cache = DynamicCache()
-        for layer_idx, layer_kv in enumerate(past_key_values):
-            cache.update(layer_kv[0], layer_kv[1], layer_idx)
-        return cache
-    return past_key_values
+def _llama():
+    from unsloth.models import llama
+    return llama
 
 
-def _slice_position_ids(position_ids, input_ids):
-    """Slice position_ids to match input_ids length if needed."""
-    if position_ids is None:
-        return None
-    if position_ids.dim() == 2:
-        if position_ids.shape[1] > input_ids.shape[1]:
-            position_ids = position_ids[:, -input_ids.shape[1] :]
-    elif position_ids.dim() == 1:
-        if position_ids.shape[0] > input_ids.shape[1]:
-            position_ids = position_ids[-input_ids.shape[1] :]
-    return position_ids
+def _kv(length, layers = 2):
+    return tuple(
+        (torch.randn(BS, 1, length, 4), torch.randn(BS, 1, length, 4)) for _ in range(layers)
+    )
 
 
-# ── Tests ──────────────────────────────────────────────────────────────
+def _prepare(input_ids, **kwargs):
+    return _llama()._fast_prepare_inputs_for_generation(FakeModel(), input_ids, **kwargs)
 
 
-class TestEnsureCacheIsDynamic(unittest.TestCase):
-    """Tests for _ensure_cache_is_dynamic conversion utility."""
-
-    def test_none_passthrough(self):
-        self.assertIsNone(_ensure_cache_is_dynamic(None))
-
-    def test_dynamic_cache_passthrough(self):
-        cache = DynamicCache()
-        k = torch.randn(1, 4, 8, 16)
-        v = torch.randn(1, 4, 8, 16)
-        cache.update(k, v, 0)
-        result = _ensure_cache_is_dynamic(cache)
-        self.assertIs(result, cache)
-
-    def test_tuple_conversion(self):
-        """Tuple of (K, V) pairs should be converted to DynamicCache."""
-        n_layers = 3
-        layers = []
-        for _ in range(n_layers):
-            k = torch.randn(1, 4, 8, 16)
-            v = torch.randn(1, 4, 8, 16)
-            layers.append((k, v))
-        past_kv = tuple(layers)
-
-        result = _ensure_cache_is_dynamic(past_kv)
-        self.assertIsInstance(result, DynamicCache)
-        for i in range(n_layers):
-            cached_k, cached_v = result[i]
-            self.assertTrue(torch.equal(cached_k, layers[i][0]))
-            self.assertTrue(torch.equal(cached_v, layers[i][1]))
-
-    def test_list_conversion(self):
-        """List of (K, V) pairs should be converted to DynamicCache."""
-        layers = [(torch.randn(1, 4, 8, 16), torch.randn(1, 4, 8, 16))]
-        result = _ensure_cache_is_dynamic(layers)
-        self.assertIsInstance(result, DynamicCache)
-        cached_k, cached_v = result[0]
-        self.assertTrue(torch.equal(cached_k, layers[0][0]))
-
-    def test_empty_tuple_passthrough(self):
-        result = _ensure_cache_is_dynamic(())
-        self.assertEqual(result, ())
-
-    def test_empty_list_passthrough(self):
-        result = _ensure_cache_is_dynamic([])
-        self.assertEqual(result, [])
-
-    def test_seq_length_preserved(self):
-        """Verify DynamicCache reports correct sequence length after conversion."""
-        seq_len = 42
-        layers = [(torch.randn(1, 4, seq_len, 16), torch.randn(1, 4, seq_len, 16))]
-        result = _ensure_cache_is_dynamic(tuple(layers))
-        self.assertEqual(result.get_seq_length(), seq_len)
+def test_tuple_cache_becomes_dynamic_cache_for_generate():
+    legacy = _kv(PAST_LEN)
+    cache = _llama()._ensure_cache_is_dynamic(legacy)
+    assert isinstance(cache, Cache)
+    assert cache.get_seq_length() == PAST_LEN
+    assert _llama()._ensure_cache_is_dynamic(cache) is cache
+    assert _llama()._ensure_cache_is_dynamic(None) is None
 
 
-class TestSlicePositionIds(unittest.TestCase):
-    """Tests for _slice_position_ids utility."""
+@pytest.mark.parametrize("as_dynamic", [False, True])
+def test_prefill_onto_partial_cache_feeds_every_uncached_token(as_dynamic):
+    legacy = _kv(PAST_LEN)
+    past = _llama()._ensure_cache_is_dynamic(legacy) if as_dynamic else legacy
+    input_ids = torch.arange(BS * SEQ).reshape(BS, SEQ)
+    mask = torch.ones(BS, SEQ, dtype = torch.long)
+    result = _prepare(input_ids, attention_mask = mask, past_key_values = past)
 
-    def test_none_passthrough(self):
-        input_ids = torch.zeros(1, 5, dtype = torch.long)
-        self.assertIsNone(_slice_position_ids(None, input_ids))
-
-    def test_2d_no_slice_needed(self):
-        input_ids = torch.zeros(1, 10, dtype = torch.long)
-        position_ids = torch.arange(10).unsqueeze(0)
-        result = _slice_position_ids(position_ids, input_ids)
-        self.assertTrue(torch.equal(result, position_ids))
-
-    def test_2d_slice_needed(self):
-        """position_ids longer than input_ids — should take last N."""
-        input_ids = torch.zeros(1, 3, dtype = torch.long)
-        position_ids = torch.arange(10).unsqueeze(0)  # shape (1, 10)
-        result = _slice_position_ids(position_ids, input_ids)
-        self.assertEqual(result.shape, (1, 3))
-        expected = torch.tensor([[7, 8, 9]])
-        self.assertTrue(torch.equal(result, expected))
-
-    def test_1d_no_slice_needed(self):
-        input_ids = torch.zeros(1, 5, dtype = torch.long)
-        position_ids = torch.arange(5)
-        result = _slice_position_ids(position_ids, input_ids)
-        self.assertTrue(torch.equal(result, position_ids))
-
-    def test_1d_slice_needed(self):
-        input_ids = torch.zeros(1, 3, dtype = torch.long)
-        position_ids = torch.arange(10)  # shape (10,)
-        result = _slice_position_ids(position_ids, input_ids)
-        self.assertEqual(result.shape, (3,))
-        expected = torch.tensor([7, 8, 9])
-        self.assertTrue(torch.equal(result, expected))
-
-    def test_shorter_position_ids_passthrough(self):
-        """position_ids shorter than input_ids — should pass through unchanged."""
-        input_ids = torch.zeros(1, 10, dtype = torch.long)
-        position_ids = torch.arange(5).unsqueeze(0)
-        result = _slice_position_ids(position_ids, input_ids)
-        self.assertTrue(torch.equal(result, position_ids))
-
-    def test_exact_match(self):
-        """Exact same length — no slicing."""
-        input_ids = torch.zeros(2, 7, dtype = torch.long)
-        position_ids = torch.arange(7).unsqueeze(0).expand(2, -1)
-        result = _slice_position_ids(position_ids, input_ids)
-        self.assertEqual(result.shape, (2, 7))
+    assert torch.equal(result["input_ids"], input_ids[:, PAST_LEN:])
+    assert result["position_ids"].tolist() == [[3, 4]] * BS
+    assert result["cache_position"].tolist() == [3, 4]
+    # Unsloth's forwards index past_key_values[layer][0|1].
+    out = result["past_key_values"]
+    assert isinstance(out, tuple) and len(out) == len(legacy)
+    for (k, v), (k0, v0) in zip(out, legacy):
+        assert torch.equal(k, k0) and torch.equal(v, v0)
 
 
-if __name__ == "__main__":
-    unittest.main()
+def test_decode_step_still_feeds_only_the_last_token():
+    input_ids = torch.arange(BS * SEQ).reshape(BS, SEQ)
+    result = _prepare(input_ids, past_key_values = _kv(SEQ - 1))
+    assert torch.equal(result["input_ids"], input_ids[:, [-1]])
+
+
+def test_full_length_user_position_ids_are_sliced_to_the_fed_tokens():
+    input_ids = torch.arange(BS * SEQ).reshape(BS, SEQ)
+    pos = torch.arange(SEQ).expand(BS, -1) + 10
+    result = _prepare(input_ids, past_key_values = _kv(PAST_LEN), position_ids = pos)
+    assert result["position_ids"].tolist() == [[13, 14]] * BS
+
+    result = _prepare(input_ids, position_ids = pos[0])
+    assert torch.equal(result["position_ids"], pos[0])
+
+
+def test_user_position_ids_with_inputs_embeds_and_no_input_ids():
+    embeds = torch.randn(BS, SEQ, 4)
+    pos = torch.arange(SEQ).expand(BS, -1)
+    result = _prepare(None, inputs_embeds = embeds, position_ids = pos)
+    assert torch.equal(result["position_ids"], pos)
+    assert result["inputs_embeds"] is embeds
+
+
+def test_empty_dynamic_cache_is_dropped_before_prefill():
+    input_ids = torch.arange(BS * SEQ).reshape(BS, SEQ)
+    result = _prepare(input_ids, past_key_values = DynamicCache())
+    assert result["past_key_values"] is None
+    assert result["input_ids"].shape == (BS, SEQ)
