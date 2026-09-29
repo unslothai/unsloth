@@ -4,7 +4,8 @@
 """``/api/system.quantised_streaming``: whether group offload can stream torchao weights.
 
 The picker offers MiniMax-H3's streamed 30 GiB tier only when this is true, so an install whose
-diffusers predates torchao-aware group offload routes to the GGUF row instead of a refused load.
+diffusers predates torchao-aware group offload, or a GPU without INT8 cores, routes to the GGUF row
+instead of a refused load.
 """
 
 import ast
@@ -47,9 +48,9 @@ def test_the_polled_reader_answers_from_the_cache_without_importing(monkeypatch,
 
 @pytest.mark.parametrize("supported", [True, False])
 def test_the_refresh_caches_the_prequant_verdict(monkeypatch, supported):
-    fake = types.ModuleType("core.inference.diffusion_prequant")
-    fake.torchao_group_offload_supported = lambda: supported
-    monkeypatch.setitem(sys.modules, "core.inference.diffusion_prequant", fake)
+    fake = types.ModuleType("core.inference.video")
+    fake.h3_streamed_int8_supported = lambda: supported
+    monkeypatch.setitem(sys.modules, "core.inference.video", fake)
     namespace: dict = {"_quantised_streaming_capability": None}
     exec(_src("_refresh_quantised_streaming_capability"), namespace)  # noqa: S102
     exec(_src("_quantised_streaming"), namespace)  # noqa: S102
@@ -92,3 +93,23 @@ def test_the_probe_follows_diffusers_group_offload(monkeypatch, attrs, expected)
     monkeypatch.setitem(sys.modules, "diffusers.hooks", hooks)
     monkeypatch.setitem(sys.modules, "diffusers.hooks.group_offloading", go)
     assert torchao_group_offload_supported() is expected
+
+
+@pytest.mark.parametrize(
+    "device, dtype_name, streaming, expected",
+    [
+        ("cuda", "bfloat16", True, True),
+        # Pre-Ampere NVIDIA resolves to float16, and its INT8 path is not supported.
+        ("cuda", "float16", True, False),
+        ("cuda", "bfloat16", False, False),
+        ("mps", "bfloat16", True, False),
+        ("cpu", "float32", True, False),
+    ],
+)
+def test_the_streamed_tier_needs_an_int8_capable_gpu(monkeypatch, device, dtype_name, streaming, expected):
+    torch = pytest.importorskip("torch")
+    from core.inference import diffusion_prequant, video
+
+    monkeypatch.setattr(diffusion_prequant, "torchao_group_offload_supported", lambda: streaming)
+    target = types.SimpleNamespace(device = device, dtype = getattr(torch, dtype_name))
+    assert video.h3_streamed_int8_supported(target) is expected

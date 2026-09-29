@@ -2402,17 +2402,17 @@ def _dense_quant_supported() -> bool:
     return bool(_dense_quant_capability)
 
 
-# Whether group offload can stream torchao weights (diffusers >= 0.40). None until resolved off the
-# polled path; the picker offers no streamed tier before then.
+# Whether group offload can stream torchao weights (diffusers >= 0.40) on a GPU that can run the INT8
+# denoiser. None until resolved off the polled path; the picker offers no streamed tier before then.
 _quantised_streaming_capability: Optional[bool] = None
 
 
 def _refresh_quantised_streaming_capability() -> bool:
     """Resolve and cache the streaming bit. Imports diffusers; never call from the polled route."""
     global _quantised_streaming_capability
-    from core.inference.diffusion_prequant import torchao_group_offload_supported
+    from core.inference.video import h3_streamed_int8_supported
 
-    _quantised_streaming_capability = bool(torchao_group_offload_supported())
+    _quantised_streaming_capability = bool(h3_streamed_int8_supported())
     return _quantised_streaming_capability
 
 
