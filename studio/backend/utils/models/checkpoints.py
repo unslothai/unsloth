@@ -173,7 +173,6 @@ def parse_adapter_features(
     if not full_state:
         full_state = None
         if probe_weights:
-            from safetensors import safe_open
             for weights, is_adapter_key in (
                 (
                     os.path.join(adapter_path, "adapter_model.safetensors"),
@@ -187,6 +186,7 @@ def parse_adapter_features(
                 if not os.path.exists(weights):
                     continue
                 try:
+                    from safetensors import safe_open
                     with safe_open(weights, framework = "numpy") as f:
                         full_state = any(not is_adapter_key(key) for key in f.keys())
                 except Exception:
