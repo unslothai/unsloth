@@ -26,6 +26,27 @@ DEFAULT_ALPACA_TEMPLATE = """Below is an instruction that describes a task, pair
 ### Response:
 {}"""
 
+# Renders a single-turn conversation byte-identical to a DEFAULT_ALPACA_TEMPLATE row with an empty input.
+STUDIO_ALPACA_CHAT_TEMPLATE = (
+    "{{ bos_token }}"
+    "{% if messages[0]['role'] == 'system' %}"
+    "{{ messages[0]['content'] + '\\n\\n' }}{% set loop_messages = messages[1:] %}"
+    "{% else %}"
+    "{{ '" + DEFAULT_ALPACA_TEMPLATE.split("\n\n", 1)[0] + "\\n\\n' }}{% set loop_messages = messages %}"
+    "{% endif %}"
+    "{% for message in loop_messages %}"
+    "{% if message['role'] == 'user' %}"
+    "{{ '### Instruction:\\n' + message['content'] + '\\n\\n### Input:\\n\\n\\n' }}"
+    "{% elif message['role'] == 'assistant' %}"
+    "{{ '### Response:\\n' + message['content'] + eos_token }}"
+    "{% if not loop.last %}{{ '\\n\\n' }}{% endif %}"
+    "{% else %}"
+    "{{ raise_exception('Only user and assistant roles are supported!') }}"
+    "{% endif %}"
+    "{% endfor %}"
+    "{% if add_generation_prompt %}{{ '### Response:\\n' }}{% endif %}"
+)
+
 _TEMPLATE_ERROR_COLUMN = "__chat_template_error"
 
 # Rows per batch when scanning or filtering the error column, so neither pass
@@ -126,6 +147,8 @@ def get_training_chat_template(tokenizer, model_name, final_format):
             chat_template = "alpaca",
             **_chat_template_kwargs(),
         )
+        # Unsloth's "alpaca" template words the preamble differently and has no Input section.
+        _set_chat_template(tokenizer, STUDIO_ALPACA_CHAT_TEMPLATE)
         logger.info(f"📝 Set alpaca chat template on tokenizer for model saving")
     except Exception as e:
         logger.info(f"⚠️ Could not set alpaca template on tokenizer: {e}")

@@ -15,6 +15,7 @@ import importlib  # noqa: E402
 import types  # noqa: E402
 from unittest.mock import MagicMock  # noqa: E402
 
+import jinja2  # noqa: E402
 import pytest  # noqa: E402
 from datasets import Dataset  # noqa: E402
 
@@ -157,8 +158,16 @@ def test_base_model_trains_and_saves_with_the_alpaca_template_its_rows_used(
 
     dataset_info = _train_with(trainer, rows, tmp_path, monkeypatch)
 
-    assert dataset_info["dataset"]["text"][0].endswith(f"Hello!{BASE_EOS}")
-    assert trainer.tokenizer.chat_template == "alpaca"
+    row = dataset_info["dataset"]["text"][0]
+    assert row.endswith(f"Hello!{BASE_EOS}")
+    template = jinja2.Environment().from_string(trainer.tokenizer.chat_template)
+    render = lambda messages, **kw: template.render(
+        messages = messages, bos_token = "", eos_token = BASE_EOS, **kw
+    )
+    user = {"role": "user", "content": "Say hi"}
+    assert render([user, {"role": "assistant", "content": "Hello!"}]) == row
+    prompt = render([user], add_generation_prompt = True)
+    assert row.startswith(prompt) and row[len(prompt) :] == f"Hello!{BASE_EOS}"
     assert trainer.tokenizer.eos_token == BASE_EOS
 
 
