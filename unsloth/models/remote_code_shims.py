@@ -1,16 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 
-"""Repairs for remote modeling code (vLLM ports such as Step-3.7-Flash) that breaks training:
-
-* `get_input_embeddings(self, input_ids)` returns embedded tokens, not the embedding module.
-* `forward(..., labels=...)` accepts labels but returns no loss, or fails in its loss code.
-
-Only the checkpoint's own classes are patched, and the original behaviour stays reachable.
-"""
+"""Repairs for remote modeling code (vLLM ports such as Step-3.7-Flash) that breaks training."""
 
 import functools
 import inspect
+import re
 
 import torch
 
@@ -24,7 +19,6 @@ _EMBEDDING_ATTRIBUTES = ("embed_tokens", "wte", "word_embeddings", "tok_embeddin
 
 
 def accessor_requires_arguments(function):
-    """True when `function(self)` cannot be called: a required parameter follows self."""
     try:
         parameters = list(inspect.signature(function).parameters.values())
     except (TypeError, ValueError):
@@ -112,7 +106,6 @@ def find_output_head(module):
 
 
 def _repair_output_accessor(cls):
-    """`get_output_embeddings` that returns None while the class owns an `lm_head` (Step-3.7 delegates to a headless inner model)."""
     original = cls.__dict__.get("get_output_embeddings")
     if original is None or "_unsloth_original_get_output_embeddings" in cls.__dict__:
         return False
@@ -142,11 +135,6 @@ def _output_accessor_is_broken(model):
 
 
 def _fill_missing_loss(cls):
-    """Wrap `cls.forward` so a call with labels always yields a loss.
-
-    The first labelled call probes the original; if it gives no loss, labels are withheld
-    from then on and the causal LM loss is computed from its logits.
-    """
     original = cls.__dict__.get("forward")
     # Own dict only: a subclass of an already repaired class has its own unwrapped forward.
     if original is None or "_unsloth_original_forward" in cls.__dict__:
@@ -201,7 +189,6 @@ def _fill_missing_loss(cls):
     self_placeholder = object()
 
     def _bind(args, kwargs):
-        """Move a positional `labels` into kwargs; anything unbindable is left as it came."""
         if not args or signature is None:
             return args, kwargs
         try:
@@ -250,7 +237,7 @@ def _fill_missing_loss(cls):
                 f"Unsloth: `{cls.__name__}.forward` returned neither a loss nor logits, so no loss can be trained on."
             )
         if returns_loss is None:
-            # Cached only once a no-label forward worked: a first call failing for another reason must not pin it.
+            # Cache only after a no-label forward worked, so an unrelated first failure cannot pin it.
             self.__dict__[state_key] = False
             print(
                 f"Unsloth: `{cls.__name__}.forward` accepts `labels` but returns no loss, "
@@ -274,11 +261,90 @@ def _fill_missing_loss(cls):
     return True
 
 
-def _rebind_accelerate_hook(model):
-    """Point an accelerate hook attached during loading at the repaired forward.
+class _LegacyCacheView:
+    """Read-only `view[i] == (keys, values)` of a Cache; transformers 5 removed Cache.__getitem__."""
 
-    `device_map` loading keeps the bound original as `model._old_forward`, bypassing class repairs.
-    """
+    __slots__ = ("cache",)
+
+    def __init__(self, cache):
+        self.cache = cache
+
+    def _layers(self):
+        return getattr(self.cache, "layers", None) or []
+
+    def __len__(self):
+        return len(self._layers())
+
+    def __getitem__(self, index):
+        layer = self._layers()[index]
+        return (layer.keys, layer.values)
+
+    def __iter__(self):
+        for i in range(len(self)):
+            yield self[i]
+
+    def __getattr__(self, name):
+        return getattr(self.cache, name)
+
+
+def _needs_legacy_view(cache):
+    if cache is None or isinstance(cache, (tuple, list)):
+        return False
+    return not hasattr(type(cache), "__getitem__") and hasattr(cache, "layers")
+
+
+def _repair_multimodal_cache_indexing(cls):
+    """Phi-4-reasoning-vision indexes `past_key_values[-1][-1]` here per decode step: pass a tuple view, return the real cache."""
+    name = "prepare_inputs_labels_for_multimodal"
+    original = None
+    for klass in cls.__mro__:
+        if name in klass.__dict__:
+            original = klass.__dict__[name]
+            break
+    if original is None or getattr(original, "_unsloth_cache_view", False):
+        return False
+    try:
+        parameters = list(inspect.signature(original).parameters)
+    except (TypeError, ValueError):
+        return False
+    if "past_key_values" not in parameters:
+        return False
+    try:
+        source = inspect.getsource(original)
+    except (OSError, TypeError):
+        return False
+    # Code already on the Cache API (get_seq_length, isinstance Cache) must keep the real cache.
+    if re.search(r"past_key_values\s*\[", source) is None:
+        return False
+    position = parameters.index("past_key_values") - 1
+
+    @functools.wraps(original)
+    def prepare_inputs_labels_for_multimodal(self, *args, **kwargs):
+        args = list(args)
+        if "past_key_values" in kwargs:
+            cache = kwargs["past_key_values"]
+            if _needs_legacy_view(cache):
+                kwargs["past_key_values"] = _LegacyCacheView(cache)
+        elif len(args) > position:
+            cache = args[position]
+            if _needs_legacy_view(cache):
+                args[position] = _LegacyCacheView(cache)
+        else:
+            cache = None
+        output = original(self, *args, **kwargs)
+        if isinstance(output, tuple):
+            output = tuple(cache if isinstance(x, _LegacyCacheView) else x for x in output)
+        return output
+
+    prepare_inputs_labels_for_multimodal._unsloth_cache_view = True
+    setattr(cls, name, prepare_inputs_labels_for_multimodal)
+    # Static cache: prefill mask arrives as 4D / BlockMask, not the 2D padding mask this prep compacts by.
+    cls._supports_static_cache = False
+    return True
+
+
+def _rebind_accelerate_hook(model):
+    # device_map loading keeps the bound original as `_old_forward`, bypassing class repairs.
     if getattr(type(model), "_unsloth_original_forward", None) is None:
         return
     if "_old_forward" not in vars(model):
@@ -286,6 +352,32 @@ def _rebind_accelerate_hook(model):
     import types
 
     model._old_forward = types.MethodType(type(model).forward, model)
+
+
+_PER_HEAD_PARAMETERS = ("A_log",)
+
+
+def _narrow_zero_padded_head_parameters(model):
+    # Kimi-K3 ships KDA A_log zero-padded ([128] for 96 heads); fla's backward does dA.view_as(A_log). vLLM narrows it too.
+    narrowed = []
+    for name, module in model.named_modules():
+        if not _is_remote_code(type(module)):
+            continue
+        heads = getattr(module, "num_heads", None)
+        if not isinstance(heads, int) or heads <= 0:
+            continue
+        for attr in _PER_HEAD_PARAMETERS:
+            param = module._parameters.get(attr, None)
+            if param is None or param.dim() != 1 or param.shape[0] <= heads:
+                continue
+            tail = param.detach()[heads:]
+            if tail.is_meta or bool(tail.any()):
+                continue
+            module._parameters[attr] = torch.nn.Parameter(
+                param.detach()[:heads].clone(), requires_grad = param.requires_grad
+            )
+            narrowed.append(f"{name}.{attr}")
+    return narrowed
 
 
 def apply_remote_code_shims(model):
@@ -307,6 +399,13 @@ def apply_remote_code_shims(model):
         repaired.append(f"{cls.__name__}.get_output_embeddings")
     if _is_remote_code(cls) and _fill_missing_loss(cls):
         repaired.append(f"{cls.__name__}.forward")
+    if _is_remote_code(cls) and _repair_multimodal_cache_indexing(cls):
+        repaired.append(f"{cls.__name__}.prepare_inputs_labels_for_multimodal")
+    narrowed = _narrow_zero_padded_head_parameters(model)
+    if narrowed:
+        repaired.append(
+            f"{len(narrowed)} zero-padded per-head parameter(s) narrowed ({narrowed[0]}, ...)"
+        )
     _rebind_accelerate_hook(model)
     if repaired:
         print("Unsloth: Repaired remote modeling code so it trains: " + ", ".join(repaired) + ".")

@@ -167,19 +167,26 @@ export function LibraryHeader({
   tabs: { items: HeaderTab[]; active: string; onChange: (key: string) => void } | null;
 }) {
   const controlsRef = useRef<HTMLDivElement>(null);
+  const titleRef = useRef<HTMLDivElement>(null);
   const rowRef = useRef<HTMLDivElement>(null);
   const [controlsWidth, setControlsWidth] = useState(0);
   const [covered, setCovered] = useState(false);
+  const [stuck, setStuck] = useState(false);
 
   useEffect(() => {
     const controlsNode = controlsRef.current;
     const row = rowRef.current;
-    if (!controlsNode || !row) return;
+    const titleNode = titleRef.current;
+    if (!controlsNode || !row || !titleNode) return;
     let frame = 0;
     const update = () => {
       frame = 0;
       setControlsWidth(controlsNode.getBoundingClientRect().width);
-      setCovered(row.getBoundingClientRect().top < controlsNode.getBoundingClientRect().bottom);
+      const top = row.getBoundingClientRect().top;
+      setCovered(top < controlsNode.getBoundingClientRect().bottom);
+      // Stuck once the title scrolls on past the row's margin.
+      const gap = top - titleNode.getBoundingClientRect().bottom;
+      setStuck(gap > Number.parseFloat(getComputedStyle(row).marginTop) + 1);
     };
     const schedule = () => {
       if (!frame) frame = requestAnimationFrame(update);
@@ -207,6 +214,7 @@ export function LibraryHeader({
         </div>
       </div>
       <div
+        ref={titleRef}
         className="flex h-9 min-w-0 items-center"
         style={{ paddingRight: controlsWidth + GAP_PX }}
       >
@@ -214,7 +222,8 @@ export function LibraryHeader({
       </div>
       <div
         ref={rowRef}
-        className="sticky top-0 z-20 -mx-6 mt-2 bg-background px-6 py-4 sm:-mx-10 sm:px-10"
+        data-stuck={stuck || undefined}
+        className="library-header-row sticky top-0 z-20 -mx-6 mt-2 bg-background px-6 py-4 transition-shadow sm:-mx-10 sm:px-10"
       >
         {tabs ? (
           <div className="pl-3">
