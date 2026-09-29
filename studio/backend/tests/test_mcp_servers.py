@@ -2271,14 +2271,39 @@ def test_mcp_listing_stays_full_when_it_fits_the_window(tmp_path, monkeypatch, l
 
     listing_window(1_000_000)
     assert tools_mod.cached_mcp_tools()[0] == unsized
-    assert tools_mod._MCP_COMPACTED_WINDOWS == {1_000_000: False}
+    assert tools_mod._MCP_COMPACTED_WINDOWS == {1_000_000: frozenset()}
 
     listing_window(1_000)
     specs = tools_mod.cached_mcp_tools()[0]
-    assert tools_mod._MCP_COMPACTED_WINDOWS[1_000] is True
+    assert tools_mod._MCP_COMPACTED_WINDOWS[1_000] == {"mcp__srv1__query"}
     assert specs[0] == unsized[0]
     assert specs[1]["function"]["parameters"] != unsized[1]["function"]["parameters"]
     assert specs[2] == tools_mod.MCP_TOOL_SCHEMA_TOOL
+
+
+def test_mcp_listing_compacts_only_the_largest_tools_it_needs_to(
+    tmp_path, monkeypatch, listing_window
+):
+    from core.inference import tools as tools_mod
+
+    huge = dict(_big_mcp_tool(), name = "huge")
+    huge["inputSchema"] = dict(huge["inputSchema"], description = "z" * 20_000)
+    _cache_server_tools(tmp_path, monkeypatch, [_PING, _big_mcp_tool(), huge])
+    full = tools_mod.cached_mcp_tools()[0]
+    full_tokens = tools_mod._text_token_cost(json.dumps(full, separators = (",", ":")), 10_000)
+
+    ctx = listing_window(int(full_tokens * 0.9 / tools_mod._MCP_FULL_LISTING_SHARE))
+    specs = tools_mod.cached_mcp_tools()[0]
+    assert tools_mod._MCP_COMPACTED_WINDOWS[ctx] == {"mcp__srv1__huge"}
+    assert specs[:2] == full[:2]
+    assert specs[2]["function"]["parameters"] != full[2]["function"]["parameters"]
+    assert specs[3] == tools_mod.MCP_TOOL_SCHEMA_TOOL
+    listed = tools_mod._text_token_cost(json.dumps(specs, separators = (",", ":")), ctx)
+    assert listed <= ctx * tools_mod._MCP_FULL_LISTING_SHARE
+
+    monkeypatch.setattr(tools_mod, "_window_context_tokens", lambda: ctx)
+    assert tools_mod._mcp_listing_compacted("mcp__srv1__huge")
+    assert not tools_mod._mcp_listing_compacted("mcp__srv1__query")
 
 
 def test_mcp_listing_compacts_large_schemas(tmp_path, monkeypatch, compacting):

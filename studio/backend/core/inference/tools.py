@@ -13214,8 +13214,8 @@ _MCP_COMPACT_HINT = "Full parameters via mcp_tool_schema."
 _MCP_MIN_SCHEMA_PAGE_CHARS = 64
 _MCP_FULL_LISTING_SHARE = 0.75
 _MCP_LISTING_CONTEXT_TOKENS: ContextVar = ContextVar("mcp_listing_context_tokens", default = None)
-# Window -> whether the last MCP listing built for it was compacted, read back when a call from it runs.
-_MCP_COMPACTED_WINDOWS: dict[int, bool] = {}
+# Window -> the tools the last MCP listing built for it compacted, read back when a call from it runs.
+_MCP_COMPACTED_WINDOWS: dict[int, frozenset] = {}
 
 
 def set_mcp_listing_context_tokens(context_tokens) -> None:
@@ -13372,19 +13372,26 @@ def _mcp_tool_schema(name, offset = None) -> str:
     return _mcp_schema_page("", text, offset)
 
 
-def _mcp_compact_server_specs(server: dict, mcp_tools: list[dict], specs: list[dict]) -> list[dict]:
-    display = server.get("display_name") or server["id"]
-    by_name = {tool.get("name"): tool for tool in mcp_tools if isinstance(tool, dict)}
-    compact: list[dict] = []
-    for spec in specs:
-        function = spec["function"]
-        tool = by_name.get(_mcp_raw_tool_name(function["name"]))
-        if tool is None or not _mcp_spec_compacted(tool):
-            compact.append(spec)
-            continue
-        description = function["description"].removeprefix(f"[{display}]").strip()
-        compact.append(_mcp_compact_spec(function["name"], display, tool, description))
-    return compact
+def _mcp_compact_candidates(listed) -> list[tuple[int, dict]]:
+    """(index in the flat listing, compact spec) for every large tool, largest saving first."""
+    candidates: list[tuple[int, int, dict]] = []
+    index = 0
+    for server, payload, server_specs in listed:
+        display = server.get("display_name") or server["id"]
+        by_name = {tool.get("name"): tool for tool in payload if isinstance(tool, dict)}
+        for spec in server_specs:
+            function = spec["function"]
+            tool = by_name.get(_mcp_raw_tool_name(function["name"]))
+            if tool is not None and _mcp_spec_compacted(tool):
+                description = function["description"].removeprefix(f"[{display}]").strip()
+                compact = _mcp_compact_spec(function["name"], display, tool, description)
+                saving = len(json.dumps(spec, separators = (",", ":"))) - len(
+                    json.dumps(compact, separators = (",", ":"))
+                )
+                candidates.append((saving, index, compact))
+            index += 1
+    candidates.sort(key = lambda item: -item[0])
+    return [(index, compact) for _, index, compact in candidates]
 
 
 def _mcp_listing(listed: list[tuple[dict, list[dict], list[dict]]]) -> list[dict]:
@@ -13392,31 +13399,42 @@ def _mcp_listing(listed: list[tuple[dict, list[dict], list[dict]]]) -> list[dict
     ctx = _MCP_LISTING_CONTEXT_TOKENS.get()
     if not ctx or not specs:
         return specs
-    listing_tokens = _text_token_cost(json.dumps(specs, separators = (",", ":")), ctx)
-    compact = listing_tokens > ctx * _MCP_FULL_LISTING_SHARE
-    _MCP_COMPACTED_WINDOWS[ctx] = compact
-    if not compact:
+    budget = ctx * _MCP_FULL_LISTING_SHARE
+    text = json.dumps(specs, separators = (",", ":"))
+    listing_tokens = _text_token_cost(text, ctx)
+    if listing_tokens <= budget:
+        _MCP_COMPACTED_WINDOWS[ctx] = frozenset()
         return specs
-    compacted = [
-        spec
-        for server, payload, server_specs in listed
-        for spec in _mcp_compact_server_specs(server, payload, server_specs)
-    ]
-    if any(_mcp_any_compacted(payload) for _, payload, _ in listed):
-        compacted.append(MCP_TOOL_SCHEMA_TOOL)
-    return compacted
+    # Compact the largest tools first and stop once the listing fits, so every tool that can keep its nested and
+    # union parameters does: dropping them costs tool-call accuracy (#11046 measurements).
+    tokens_per_char = listing_tokens / max(len(text), 1)
+    budget -= _text_token_cost(json.dumps(MCP_TOOL_SCHEMA_TOOL, separators = (",", ":")), ctx)
+    listing = list(specs)
+    candidates = _mcp_compact_candidates(listed)
+    chars = len(text)
+    compacted: set[str] = set()
+    for position, (index, compact) in enumerate(candidates):
+        chars -= len(json.dumps(listing[index], separators = (",", ":"))) - len(
+            json.dumps(compact, separators = (",", ":"))
+        )
+        listing[index] = compact
+        compacted.add(compact["function"]["name"])
+        if chars * tokens_per_char > budget:
+            continue
+        # The per-character rate is an average; confirm on the real listing before stopping short of the rest.
+        if (
+            position == len(candidates) - 1
+            or _text_token_cost(json.dumps(listing, separators = (",", ":")), ctx) <= budget
+        ):
+            break
+    _MCP_COMPACTED_WINDOWS[ctx] = frozenset(compacted)
+    if compacted:
+        listing.append(MCP_TOOL_SCHEMA_TOOL)
+    return listing
 
 
-def _mcp_listing_compacted() -> bool:
-    return _MCP_COMPACTED_WINDOWS.get(_window_context_tokens() or 0, False)
-
-
-def _mcp_any_compacted(mcp_tools: list[dict]) -> bool:
-    return any(
-        _mcp_tool_model_visible(tool) and _mcp_spec_compacted(tool)
-        for tool in mcp_tools
-        if isinstance(tool, dict)
-    )
+def _mcp_listing_compacted(name: str) -> bool:
+    return name in _MCP_COMPACTED_WINDOWS.get(_window_context_tokens() or 0, frozenset())
 
 
 def _mcp_tool_model_visible(tool: dict) -> bool:
@@ -13827,9 +13845,7 @@ def execute_tool(
             return f"Error: MCP server '{display}' is disabled"
         if is_stdio(server["url"]) and not stdio_mcp_enabled():
             return f"Error: stdio MCP server '{display}' is disabled on this host"
-        tool = _mcp_cached_tool(server, tool_name) if _mcp_listing_compacted() else None
-        if tool is not None and not _mcp_spec_compacted(tool):
-            tool = None
+        tool = _mcp_cached_tool(server, tool_name) if _mcp_listing_compacted(name) else None
         if tool is not None and isinstance(arguments, dict):
             missing = [
                 key for key in _mcp_input_schema(tool).get("required") or [] if key not in arguments
