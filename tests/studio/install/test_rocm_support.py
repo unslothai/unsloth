@@ -998,7 +998,11 @@ class TestEnsureRocmTorch:
         assert "rocm7.1" in str(mock_pip.call_args_list[0])
 
     @staticmethod
-    def _windows_repair(installed_family, gfx = "gfx1200"):
+    def _windows_repair(
+        installed_family,
+        gfx = "gfx1200",
+        dists = (),
+    ):
         """Run the Windows ROCm repair with an already-ROCm torch on disk. Returns the
         pip_install_try mock so callers can assert on the reinstall."""
         probe = MagicMock(returncode = 0, stdout = _MARK + "2.10.0+rocm7.1|7.1|\n")
@@ -1021,6 +1025,7 @@ class TestEnsureRocmTorch:
                 patch.object(stack_mod, "_install_bnb_windows_rocm", return_value = True),
                 patch.object(stack_mod, "pip_install_try", pip_try),
                 patch("subprocess.run", return_value = probe),
+                patch("importlib.metadata.distributions", return_value = list(dists)),
             ):
                 _ensure_rocm_torch()
         return pip_try
@@ -1031,16 +1036,32 @@ class TestEnsureRocmTorch:
         # a ROCm build and stopped. setup.ps1 force-reinstalls, so this is `studio update`.
         pip_try = self._windows_repair("gfx103x-all")
         assert pip_try.call_count == 1
-        assert "gfx120X-all" in str(pip_try.call_args)
+        assert "torch[device-gfx1200]" in str(pip_try.call_args)
+        assert "whl-multi-arch" in str(pip_try.call_args)
 
     def test_matching_wheel_family_is_left_alone(self):
         # Negative control: the right family must not be re-downloaded on every update.
-        assert self._windows_repair("gfx120x-all").call_count == 0
+        assert self._windows_repair("gfx103x-all", gfx = "gfx1033").call_count == 0
 
     def test_unknown_wheel_family_is_left_alone(self):
         # Older wheels predate the split runtime, so the family is unreadable and
         # guessing would force a multi-GB reinstall on every update.
-        assert self._windows_repair(None).call_count == 0
+        assert self._windows_repair(None, gfx = "gfx1033").call_count == 0
+
+    def test_swapped_card_on_a_multiarch_install_gets_its_device_pack(self):
+        dists = self._dists("amd-torch-device-gfx1151", "amd_torchvision_device_gfx1151")
+        pip_try = self._windows_repair(None, gfx = "gfx1200", dists = dists)
+        assert pip_try.call_count == 1
+        assert "torch[device-gfx1200]" in str(pip_try.call_args)
+        assert "torchvision[device-gfx1200]" in str(pip_try.call_args)
+
+    def test_multiarch_install_with_this_cards_packs_is_left_alone(self):
+        dists = self._dists("amd-torch-device-gfx1200", "amd-torchvision-device-gfx1200")
+        assert self._windows_repair(None, gfx = "gfx1200", dists = dists).call_count == 0
+
+    def test_multiarch_install_without_the_torchvision_pack_is_repaired(self):
+        dists = self._dists("amd-torch-device-gfx1200")
+        assert self._windows_repair(None, gfx = "gfx1200", dists = dists).call_count == 1
 
     @staticmethod
     def _dists(*names):
@@ -1087,14 +1108,20 @@ class TestEnsureRocmTorch:
                 assert stack_mod._installed_rocm_wheel_family() is None
 
     def test_switched_host_does_not_reinstall_on_every_update(self):
-        # End to end: after the gfx103X -> gfx120X switch the orphan is still installed
-        # and the next `studio update` must do nothing.
-        reqs = ['rocm-sdk-libraries-gfx120X-all==7.13.0; extra == "libraries"']
-        dists = self._dists("rocm_sdk_libraries_gfx103X-all", "rocm_sdk_libraries_gfx120X-all")
-        with patch("importlib.metadata.requires", return_value = reqs):
-            with patch("importlib.metadata.distributions", return_value = dists):
-                family = stack_mod._installed_rocm_wheel_family()
-        assert self._windows_repair(family).call_count == 0
+        # A venv migrated to the multi-arch packs keeps its orphaned family runtimes; the next
+        # `studio update` must do nothing rather than chase the stale family.
+        dists = self._dists(
+            "rocm_sdk_libraries_gfx103X-all",
+            "rocm_sdk_libraries_gfx120X-all",
+            "amd-torch-device-gfx1200",
+            "amd-torchvision-device-gfx1200",
+        )
+        assert self._windows_repair("gfx103x-all", dists = dists).call_count == 0
+
+    def test_a_per_family_install_on_a_multiarch_arch_migrates_once(self):
+        pip_try = self._windows_repair("gfx120x-all")
+        assert pip_try.call_count == 1
+        assert "torchvision[device-gfx1200]" in str(pip_try.call_args)
 
     def test_torch_already_has_hip_skips(self):
         """If torch already has HIP, should skip ROCm reinstall."""
@@ -4475,30 +4502,36 @@ class TestIsRdnaExpansion:
 class TestWindowsRocmIndexUrl:
     """Verify GPU arch → AMD pip index URL mapping."""
 
-    def test_gfx1200_maps_to_gfx120x_all(self):
-        url = stack_mod._windows_rocm_index_url("gfx1200")
-        assert url is not None
-        assert "gfx120X-all" in url
+    @pytest.fixture(autouse = True)
+    def _no_mirror(self, monkeypatch):
+        monkeypatch.delenv("UNSLOTH_ROCM_WINDOWS_MIRROR", raising = False)
+        monkeypatch.delenv("UNSLOTH_ROCM_WINDOWS_MULTIARCH_MIRROR", raising = False)
+        monkeypatch.setattr(stack_mod, "_ROCM_WINDOWS_INDEX_BASE", "https://repo.amd.com/rocm/whl")
 
-    def test_gfx1201_maps_to_gfx120x_all(self):
-        url = stack_mod._windows_rocm_index_url("gfx1201")
-        assert url is not None
-        assert "gfx120X-all" in url
+    @pytest.mark.parametrize("gfx", ["gfx1200", "gfx1201", "gfx1151", "gfx1150", "gfx1100"])
+    def test_rdna_maps_to_the_multiarch_index(self, gfx):
+        url = stack_mod._windows_rocm_index_url(gfx)
+        assert url == "https://repo.amd.com/rocm/whl-multi-arch/"
 
-    def test_gfx1151_maps_to_gfx1151(self):
-        url = stack_mod._windows_rocm_index_url("gfx1151")
-        assert url is not None
-        assert "gfx1151" in url
+    @pytest.mark.parametrize(
+        "gfx,leaf",
+        [
+            ("gfx1200", "gfx120X-all"),
+            ("gfx1201", "gfx120X-all"),
+            ("gfx1151", "gfx1151"),
+            ("gfx1150", "gfx1150"),
+            ("gfx1100", "gfx110X-all"),
+        ],
+    )
+    def test_family_mirror_keeps_the_family_leaf(self, gfx, leaf, monkeypatch):
+        monkeypatch.setenv("UNSLOTH_ROCM_WINDOWS_MIRROR", "https://mirror.example/whl")
+        monkeypatch.setattr(stack_mod, "_ROCM_WINDOWS_INDEX_BASE", "https://mirror.example/whl")
+        assert stack_mod._windows_rocm_index_url(gfx) == f"https://mirror.example/whl/{leaf}/"
 
-    def test_gfx1150_maps_to_gfx1150(self):
-        url = stack_mod._windows_rocm_index_url("gfx1150")
-        assert url is not None
-        assert "gfx1150" in url
-
-    def test_gfx1100_maps_to_gfx110x_all(self):
-        url = stack_mod._windows_rocm_index_url("gfx1100")
-        assert url is not None
-        assert "gfx110X-all" in url
+    def test_cdna_keeps_its_family(self):
+        assert (
+            stack_mod._windows_rocm_index_url("gfx90a") == "https://repo.amd.com/rocm/whl/gfx90a/"
+        )
 
     def test_unknown_arch_returns_none(self):
         assert stack_mod._windows_rocm_index_url("gfx9999") is None
