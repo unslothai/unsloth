@@ -117,6 +117,34 @@ def _tool_result_event(**overrides):
     }
 
 
+_WEB_SEARCH_RESULT = (
+    "Title: Releases · ggml-org/llama.cpp\n"
+    "URL: https://github.com/ggml-org/llama.cpp/releases\n"
+    "Snippet: b9999 (2026-09-28)"
+    "\n\n---\n\n"
+    "Title: llama.cpp - Wikipedia\n"
+    "URL: https://en.wikipedia.org/wiki/Llama.cpp\n"
+    "Snippet: llama.cpp is an open source library."
+    "\n\n---\n\nIMPORTANT: These are only short snippets."
+)
+_WEB_SEARCH_HITS = [
+    {
+        "type": "web_search_result",
+        "title": "Releases · ggml-org/llama.cpp",
+        "url": "https://github.com/ggml-org/llama.cpp/releases",
+        "encrypted_content": "",
+        "page_age": None,
+    },
+    {
+        "type": "web_search_result",
+        "title": "llama.cpp - Wikipedia",
+        "url": "https://en.wikipedia.org/wiki/Llama.cpp",
+        "encrypted_content": "",
+        "page_age": None,
+    },
+]
+
+
 def _tool_result_turn(
     *,
     role = "user",
@@ -482,7 +510,8 @@ def test_anthropic_emitter_holds_back_partial_think_tag():
     assert _emitter_client_text(events) == "Out"
 
 
-def test_streamed_anthropic_tool_use_records_api_monitor_reply(monkeypatch):
+@pytest.mark.parametrize("block_type", ["tool_use", "server_tool_use"])
+def test_streamed_anthropic_tool_use_records_api_monitor_reply(monkeypatch, block_type):
     import routes.inference as inf_mod
 
     monitor = ApiMonitor(max_entries = 3)
@@ -499,7 +528,7 @@ def test_streamed_anthropic_tool_use_records_api_monitor_reply(monkeypatch):
             "type": "content_block_start",
             "index": 0,
             "content_block": {
-                "type": "tool_use",
+                "type": block_type,
                 "id": "toolu_1",
                 "name": "lookup",
                 "input": {},
@@ -1681,6 +1710,53 @@ class TestAnthropicStreamEmitter:
         parsed = json.loads(events[1].split("data: ")[1])
         assert parsed["delta"]["text"] == "After tool"
 
+    def _web_search_stream(self, result):
+        e = AnthropicStreamEmitter()
+        events = e.start("msg_1", "m")
+        events += e.feed(
+            _tool_event(tool_name = "web_search", arguments = {"query": "llama.cpp latest release"})
+        )
+        events += e.feed(_tool_result_event(tool_name = "web_search", result = result))
+        events += e.feed({"type": "content", "text": "The latest release is b9999."})
+        events += e.finish("end_turn")
+        return events, [json.loads(ev.split("data: ")[1]) for ev in events]
+
+    def test_web_search_streams_as_server_tool_with_source_links(self):
+        events, payloads = self._web_search_stream(_WEB_SEARCH_RESULT)
+        starts = [p for p in payloads if p["type"] == "content_block_start"]
+        stops = [p["index"] for p in payloads if p["type"] == "content_block_stop"]
+        blocks = [p["content_block"] for p in starts]
+
+        assert [b["type"] for b in blocks] == ["server_tool_use", "web_search_tool_result", "text"]
+        assert blocks[0]["id"].startswith("srvtoolu_")
+        assert blocks[0]["name"] == "web_search"
+        assert blocks[1] == {
+            "type": "web_search_tool_result",
+            "tool_use_id": blocks[0]["id"],
+            "content": _WEB_SEARCH_HITS,
+        }
+        assert stops == [p["index"] for p in starts] == [0, 1, 2]
+        assert {
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": {
+                "type": "input_json_delta",
+                "partial_json": json.dumps({"query": "llama.cpp latest release"}),
+            },
+        } in payloads
+        assert not any(ev.startswith("event: tool_result") for ev in events)
+        assert _emitter_client_text(events) == "The latest release is b9999."
+
+    @pytest.mark.parametrize(
+        "result", ["No results found.", "Failed to fetch URL: HTTP 404 Not Found"]
+    )
+    def test_web_search_without_links_streams_an_empty_result(self, result):
+        _, payloads = self._web_search_stream(result)
+        blocks = [p["content_block"] for p in payloads if p["type"] == "content_block_start"]
+
+        assert [b["type"] for b in blocks] == ["server_tool_use", "web_search_tool_result", "text"]
+        assert blocks[1]["content"] == []
+
 
 # =====================================================================
 # Non-streaming tool response tests
@@ -1860,6 +1936,42 @@ class TestAnthropicToolNonStreaming:
         assert tool_blocks[0]["id"].startswith("toolu_")
         assert tool_blocks[0]["name"] == "render_html"
         assert tool_blocks[0]["input"] == {"code": "<!doctype html><html></html>"}
+
+    def test_web_search_returns_server_tool_blocks_with_source_links(self):
+        def _run_gen():
+            yield _tool_event(tool_name = "web_search", arguments = {"query": "llama.cpp release"})
+            yield _tool_result_event(tool_name = "web_search", result = _WEB_SEARCH_RESULT)
+            yield {"type": "content", "text": "The latest release is b9999."}
+
+        response = asyncio.run(
+            _anthropic_tool_non_streaming(_connected_request(), _run_gen, "msg_1", "m")
+        )
+        body = json.loads(response.body)
+        call, result, text = body["content"]
+
+        assert call["type"] == "server_tool_use"
+        assert call["id"].startswith("srvtoolu_")
+        assert call["input"] == {"query": "llama.cpp release"}
+        assert result == {
+            "type": "web_search_tool_result",
+            "tool_use_id": call["id"],
+            "content": _WEB_SEARCH_HITS,
+        }
+        assert text == {"type": "text", "text": "The latest release is b9999."}
+        assert body["stop_reason"] == "end_turn"
+
+    def test_web_search_result_without_its_call_still_answers(self):
+        def _run_gen():
+            yield _tool_result_event(tool_name = "web_search", result = _WEB_SEARCH_RESULT)
+            yield {"type": "content", "text": "The latest release is b9999."}
+
+        response = asyncio.run(
+            _anthropic_tool_non_streaming(_connected_request(), _run_gen, "msg_1", "m")
+        )
+        body = json.loads(response.body)
+
+        assert response.status_code == 200
+        assert body["content"] == [{"type": "text", "text": "The latest release is b9999."}]
 
     def test_display_strip_gates_on_declared_tools(self):
         # A final answer containing NAME[ARGS]{json} is gated on the declared tools: undeclared

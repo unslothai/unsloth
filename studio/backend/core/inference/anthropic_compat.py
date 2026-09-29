@@ -10,6 +10,7 @@ Pure functions plus stateful stream emitters; no FastAPI, no I/O.
 from __future__ import annotations
 
 import json
+import re
 import uuid
 from typing import Any, Optional, Union
 
@@ -31,13 +32,29 @@ def openai_finish_to_anthropic_stop(finish_reason, had_tool_calls = False) -> st
     return "end_turn"
 
 
-def anthropic_tool_use_id(upstream_id = None) -> str:
+def anthropic_tool_use_id(upstream_id = None, prefix = "toolu_") -> str:
     """Return an Anthropic-style tool_use id (prefix 'toolu_'). Reuses an
-    upstream id only if it already starts with 'toolu_'; otherwise mints a fresh
-    'toolu_<24 hex>'."""
-    if upstream_id and isinstance(upstream_id, str) and upstream_id.startswith("toolu_"):
+    upstream id only if it already starts with the prefix; otherwise mints a fresh
+    '<prefix><24 hex>'."""
+    if upstream_id and isinstance(upstream_id, str) and upstream_id.startswith(prefix):
         return upstream_id
-    return f"toolu_{uuid.uuid4().hex[:24]}"
+    return f"{prefix}{uuid.uuid4().hex[:24]}"
+
+
+_WEB_SEARCH_HIT = re.compile(r"^Title: (.*)\nURL: (\S+)", re.MULTILINE)
+
+
+def web_search_tool_result_content(result: str) -> list[dict]:
+    return [
+        {
+            "type": "web_search_result",
+            "title": title.strip(),
+            "url": url,
+            "encrypted_content": "",
+            "page_age": None,
+        }
+        for title, url in _WEB_SEARCH_HIT.findall(result)
+    ]
 
 
 TOOL_RESULT_IMAGE_OMITTED = "[image omitted: this model cannot view images]"
@@ -843,9 +860,12 @@ class AnthropicStreamEmitter:
             self._open_tool_use_id = None
             self._open_tool_args_sent = False
 
+        web_search = event.get("tool_name") == "web_search"
         self._alloc_block_index()
         self._open_tool_call_id = tool_call_id
-        self._open_tool_use_id = anthropic_tool_use_id(tool_call_id)
+        self._open_tool_use_id = anthropic_tool_use_id(
+            tool_call_id, "srvtoolu_" if web_search else "toolu_"
+        )
         self._open_tool_args_sent = False
         events.append(
             build_anthropic_sse_event(
@@ -854,7 +874,7 @@ class AnthropicStreamEmitter:
                     "type": "content_block_start",
                     "index": self.block_index,
                     "content_block": {
-                        "type": "tool_use",
+                        "type": "server_tool_use" if web_search else "tool_use",
                         "id": self._open_tool_use_id,
                         "name": event.get("tool_name", ""),
                         "input": {},
@@ -895,16 +915,34 @@ class AnthropicStreamEmitter:
         self._open_tool_call_id = None
         self._open_tool_use_id = None
         self._open_tool_args_sent = False
-        events.append(
-            build_anthropic_sse_event(
-                "tool_result",
-                {
-                    "type": "tool_result",
-                    "tool_use_id": tool_use_id,
-                    "content": event.get("result", ""),
-                },
+        if event.get("tool_name") == "web_search":
+            self._alloc_block_index()
+            events.append(
+                build_anthropic_sse_event(
+                    "content_block_start",
+                    {
+                        "type": "content_block_start",
+                        "index": self.block_index,
+                        "content_block": {
+                            "type": "web_search_tool_result",
+                            "tool_use_id": tool_use_id,
+                            "content": web_search_tool_result_content(event.get("result", "")),
+                        },
+                    },
+                )
             )
-        )
+            events.append(self._close_block())
+        else:
+            events.append(
+                build_anthropic_sse_event(
+                    "tool_result",
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": tool_use_id,
+                        "content": event.get("result", ""),
+                    },
+                )
+            )
         # Reset text tracking for the next synthesis turn; the next content delta opens a fresh text (or thinking)
         # block lazily, and the new turn may legitimately open with its own leading <think> block.
         self._prev_text = ""

@@ -3600,9 +3600,11 @@ from models.inference import (
     ResponsesResponse,
     AnthropicMessagesRequest,
     AnthropicMessagesResponse,
+    AnthropicResponseServerToolUseBlock,
     AnthropicResponseTextBlock,
     AnthropicResponseThinkingBlock,
     AnthropicResponseToolUseBlock,
+    AnthropicResponseWebSearchToolResultBlock,
     AnthropicUsage,
     CreateOpenAIContainerBody,
     DeleteOpenAIContainerBody,
@@ -3621,6 +3623,7 @@ from core.inference.anthropic_compat import (
     openai_finish_to_anthropic_stop,
     anthropic_tool_use_id,
     build_anthropic_sse_event,
+    web_search_tool_result_content,
     AnthropicStreamEmitter,
     AnthropicPassthroughEmitter,
 )
@@ -7120,7 +7123,10 @@ def _monitor_anthropic_payload(
         return None
     if event_type == "content_block_start":
         content_block = data.get("content_block") or {}
-        if isinstance(content_block, dict) and content_block.get("type") == "tool_use":
+        if isinstance(content_block, dict) and content_block.get("type") in (
+            "tool_use",
+            "server_tool_use",
+        ):
             index = _monitor_anthropic_index(data)
             _ANTHROPIC_MONITOR_TOOL_BLOCKS.setdefault(monitor_id, {})[index] = False
             api_monitor.append_reply(monitor_id, _monitor_call_text(content_block.get("name")))
@@ -7192,7 +7198,7 @@ def _monitor_anthropic_content_blocks(content: Any) -> str:
             continue
         if block.get("type") == "text" and isinstance(block.get("text"), str):
             parts.append(block["text"])
-        elif block.get("type") == "tool_use":
+        elif block.get("type") in ("tool_use", "server_tool_use"):
             parts.append(_monitor_call_text(block.get("name"), block.get("input")))
     return "".join(parts)
 
@@ -37941,11 +37947,18 @@ def _anthropic_tool_response_from_events(
                 if event.get("tool_name") and not existing_tool_block.name:
                     existing_tool_block.name = event["tool_name"]
             else:
-                tool_block = AnthropicResponseToolUseBlock(
-                    id = anthropic_tool_use_id(tool_call_id),
-                    name = event["tool_name"],
-                    input = arguments,
-                )
+                if event["tool_name"] == "web_search":
+                    tool_block = AnthropicResponseServerToolUseBlock(
+                        id = anthropic_tool_use_id(tool_call_id, "srvtoolu_"),
+                        name = event["tool_name"],
+                        input = arguments,
+                    )
+                else:
+                    tool_block = AnthropicResponseToolUseBlock(
+                        id = anthropic_tool_use_id(tool_call_id),
+                        name = event["tool_name"],
+                        input = arguments,
+                    )
                 if tool_call_id:
                     tool_blocks_by_id[tool_call_id] = tool_block
                 content_blocks.append(tool_block)
@@ -37953,6 +37966,25 @@ def _anthropic_tool_response_from_events(
         elif etype == "tool_end":
             prev_text = ""
             _span_guard.tool_end()
+            if event.get("tool_name") == "web_search":
+                search_call = tool_blocks_by_id.get(event.get("tool_call_id")) or next(
+                    (
+                        block
+                        for block in reversed(content_blocks)
+                        if isinstance(
+                            block,
+                            (AnthropicResponseToolUseBlock, AnthropicResponseServerToolUseBlock),
+                        )
+                    ),
+                    None,
+                )
+                if search_call is not None:
+                    content_blocks.append(
+                        AnthropicResponseWebSearchToolResultBlock(
+                            tool_use_id = search_call.id,
+                            content = web_search_tool_result_content(event.get("result", "")),
+                        )
+                    )
             # Server-executed: no longer pending a client action (see above).
             ends_on_tool_use = False
         elif etype == "metadata":
