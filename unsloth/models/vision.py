@@ -675,6 +675,10 @@ def _set_generate_param(
     if caller_generation_config is not None:
         if overwrite or getattr(caller_generation_config, name, None) is None:
             setattr(caller_generation_config, name, value)
+        # Always drop a same-named raw kwarg here, even one the caller supplied
+        # directly alongside generation_config: leaving it is the exact leftover
+        # this helper exists to prevent.
+        kwargs.pop(name, None)
     else:
         kwargs[name] = value
 

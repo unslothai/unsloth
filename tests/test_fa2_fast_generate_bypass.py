@@ -44,6 +44,7 @@ uses_flash_attention = _load_function(
     },
 )
 clear_generation_caches = _load_function("_clear_generation_caches", {})
+set_generate_param = _load_function("_set_generate_param", {})
 
 
 def test_top_level_flash_attention_is_detected():
@@ -219,6 +220,7 @@ def test_wrapper_dispatch_preserves_normalization_and_selects_expected_path():
         "_uses_flash_attention_for_generation": uses_flash_attention,
         "_clear_generation_caches": clear_generation_caches,
         # Qwen3-VL is multimodal, so the real helper answers False for it too.
+        "_set_generate_param": set_generate_param,
         "_is_text_seq2seq_config": lambda config: False,
     }
     fast_generate = _load_function("unsloth_base_fast_generate", namespace)
@@ -306,6 +308,7 @@ def test_flash_attention_fallback_pins_a_dynamic_cache():
         "_uses_flash_attention_for_generation": uses_flash_attention,
         "_clear_generation_caches": clear_generation_caches,
         # Qwen3-VL is multimodal, so the real helper answers False for it too.
+        "_set_generate_param": set_generate_param,
         "_is_text_seq2seq_config": lambda config: False,
     }
     fast_generate = _load_function("unsloth_base_fast_generate", namespace)
@@ -335,10 +338,13 @@ def test_flash_attention_fallback_pins_a_dynamic_cache():
     fast_generate(Model(), input_ids = input_ids)
     assert captured["cache_implementation"] == "dynamic"
 
-    # The kwarg wins over a supplied generation_config, since update() applies it last.
+    # Set on a supplied generation_config directly rather than also left as a raw
+    # kwarg: transformers flags a recognized GenerationConfig field present both ways
+    # as ambiguous (deprecation warning), even though the merged value is the same.
     generation_config = SimpleNamespace(cache_implementation = "static")
     fast_generate(Model(), input_ids = input_ids, generation_config = generation_config)
-    assert captured["cache_implementation"] == "dynamic"
+    assert generation_config.cache_implementation == "dynamic"
+    assert "cache_implementation" not in captured
 
     fast_generate(Model(), input_ids = input_ids, cache_implementation = "static")
     assert captured["cache_implementation"] == "dynamic"
