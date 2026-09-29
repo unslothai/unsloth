@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// How close to an edge starts the scroll, and the per-frame cap in px.
 export const AUTOSCROLL_EDGE = 48;
 export const AUTOSCROLL_MAX_STEP = 14;
 

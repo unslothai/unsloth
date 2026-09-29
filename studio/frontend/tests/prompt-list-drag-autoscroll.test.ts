@@ -10,7 +10,6 @@ import {
   clipSpan,
 } from "../src/features/chat/prompt-storage/autoscroll.ts";
 
-// A pane 400px tall sitting 100px down the viewport.
 const TOP = 100;
 const BOTTOM = 500;
 

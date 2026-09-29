@@ -6616,7 +6616,6 @@ const ComposerToolsMenu: FC<{
     }
   }, []);
 
-  // `fromDialog`: only a dialog-started run reopens the dialog on abort.
   const runPromptList = useCallback(
     (items: string[], fromDialog = false) => {
       // A queue started while recording would swallow the held transcript send.

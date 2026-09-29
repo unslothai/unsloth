@@ -3,7 +3,6 @@
 
 import type { ReactElement } from "react";
 
-// Marks a saved prompt list in the "+" menu: selecting it sends this many prompts, not one.
 export function PromptCountBadge({ count }: { count: number }): ReactElement {
   return (
     <span

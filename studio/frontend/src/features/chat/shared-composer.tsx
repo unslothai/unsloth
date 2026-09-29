@@ -623,8 +623,7 @@ export function SharedComposer({
   );
   // Audio files still being read into base64, which pendingAudio cannot see yet.
   const audioDecodingRef = useRef(0);
-  // Attachments still being classified or converted, invisible to pendingImages/pendingAudio;
-  // a ref so runPromptList reads it synchronously.
+  // Attachments still classifying or converting; a ref so runPromptList reads it synchronously.
   const attachingRef = useRef(0);
   useEffect(() => {
     textRef.current = text;
@@ -1082,7 +1081,6 @@ export function SharedComposer({
             audioSizeError ??= sizeError;
             continue;
           }
-          // Count now: pendingAudio cannot see it until the read resolves.
           audioDecodingRef.current += 1;
           fileToBase64(file)
             .then((base64) => {
