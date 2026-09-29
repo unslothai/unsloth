@@ -110,7 +110,7 @@ from unsloth.models._attn_mask_compat import (
 from ..kernels import *
 from ..kernels.utils import has_mxfp4_base
 from ..tokenizer_utils import *
-from .vision import FastBaseModel
+from .vision import FastBaseModel, _is_text_seq2seq_config
 
 from transformers.models.llama.modeling_llama import (
     LlamaAttention,
@@ -2308,6 +2308,17 @@ def _fused_lora_skip_reason(lora_dropout, bias) -> str:
     )
 
 
+_DEFAULT_TARGET_MODULES = [
+    "q_proj",
+    "k_proj",
+    "v_proj",
+    "o_proj",
+    "gate_proj",
+    "up_proj",
+    "down_proj",
+]
+
+
 class FastLlamaModel:
     @staticmethod
     def _prepare_for_qat(model, qat_scheme):
@@ -3283,6 +3294,11 @@ class FastLlamaModel:
             ):
                 if peft_arg not in kwargs:
                     kwargs[peft_arg] = flag
+            # The causal-LM default list names no T5 leaf (q/k/v/o/wi/wo); let FastBaseModel pick seq2seq targets.
+            if target_modules == _DEFAULT_TARGET_MODULES and _is_text_seq2seq_config(
+                getattr(model, "config", None)
+            ):
+                target_modules = None
             return FastBaseModel.get_peft_model(
                 model = model,
                 r = r,
