@@ -113,7 +113,6 @@ def test_make_jsonl_task_uses_raw_lookup_for_non_identifier_keys(tmp_path):
     evalmod.make_jsonl_task(data, "prompt-text", "expected answer", tmp_path / "t")
 
     spec = yaml.safe_load((tmp_path / "t" / "weird.yaml").read_text())
-    # jinja can't parse these keys; lm-eval resolves raw column names directly
     assert spec["doc_to_text"] == "prompt-text"
     assert spec["doc_to_target"] == "expected answer"
 
@@ -165,7 +164,6 @@ def test_resolve_tasks_custom_yaml_copied_to_include_dir(tmp_path):
     src.mkdir()
     task_file = src / "custom.yaml"
     task_file.write_text(yaml.safe_dump({"task": "my_task", "output_type": "generate_until"}))
-    # a broken sibling must not end up on the include path
     (src / "broken.yaml").write_text("task: [unclosed")
     tmp_dir = tmp_path / "gen"
 
@@ -186,7 +184,6 @@ def test_resolve_tasks_yml_normalised_to_yaml(tmp_path):
     names, _ = evalmod.resolve_tasks(str(task_file), "question", "answer", tmp_dir)
 
     assert names == ["my_task"]
-    # lm-eval only indexes .yaml files
     assert (tmp_dir / "custom" / "my_task.yaml").exists()
 
 
@@ -197,7 +194,6 @@ def test_resolve_tasks_include_yaml_keeps_parent_dir(tmp_path):
     names, includes = evalmod.resolve_tasks(str(task_file), "question", "answer", tmp_path / "gen")
 
     assert names == ["my_task"]
-    # the config references a sibling file, so its directory stays included
     assert includes == [str(tmp_path.resolve())]
 
 
@@ -212,8 +208,6 @@ def test_resolve_tasks_yaml_with_function_tag_keeps_parent_dir(tmp_path):
     names, includes = evalmod.resolve_tasks(str(task_file), "question", "answer", tmp_dir)
 
     assert names == ["fn_task"]
-    # !function imports resolve relative to the yaml, so utils.py must stay
-    # next to it — no copy into the temp dir
     assert includes == [str(tmp_path.resolve())]
     assert not (tmp_dir / "custom" / "fn_task.yaml").exists()
 
@@ -227,8 +221,6 @@ def test_resolve_tasks_task_name_from_included_base(tmp_path):
 
     names, includes = evalmod.resolve_tasks(str(child), "question", "answer", tmp_path / "gen")
 
-    # lm-eval resolves include: during indexing, so the name from the base
-    # config counts
     assert names == ["from_base"]
     assert includes == [str(tmp_path.resolve())]
 
@@ -285,7 +277,6 @@ def test_resolve_tasks_reserves_group_child_names_for_datasets(tmp_path):
         f"{tmp_path / 'suite.yaml'},{tmp_path / 'qa.jsonl'}", "question", "answer", tmp_dir
     )
 
-    # the dataset must not generate a task shadowing the suite's child 'qa'
     assert names == ["suite", "qa_2"]
     assert (tmp_dir / "generated" / "qa_2.yaml").exists()
 
@@ -360,7 +351,6 @@ def test_resolve_tasks_renames_dataset_colliding_with_yaml_name(tmp_path):
         f"{tmp_path / 'foo.yaml'},{tmp_path / 'foo.jsonl'}", "question", "answer", tmp_dir
     )
 
-    # the dataset must not silently shadow (or be shadowed by) the yaml task
     assert names == ["foo", "foo_2"]
     assert (tmp_dir / "generated" / "foo_2.yaml").exists()
 
@@ -389,7 +379,6 @@ def test_hf_device_error_validates_cuda_strings(monkeypatch):
     assert evalmod._hf_device_error("cuda") is None
     assert evalmod._hf_device_error("cuda:0") is None
     assert evalmod._hf_device_error("cuda:1") is None
-    # lm-eval only recognises canonical cuda:<i>; everything else falls back
     for bad in ("cuda0", "cuda:", "cuda:01", "cuda:-1", "cudax"):
         assert evalmod._hf_device_error(bad) is not None, bad
     assert "only 2 CUDA" in evalmod._hf_device_error("cuda:2")
@@ -407,18 +396,15 @@ def test_hf_device_error_validates_mps_strings(monkeypatch):
 def test_hf_device_error_rejects_unknown_literals(monkeypatch):
     _fake_torch(monkeypatch)
     assert evalmod._hf_device_error("cpu") is None
-    # typos would silently fall back to HFLM's default device
     for bad in ("cpuu", "cude", "gpu", "xpu", "npu"):
         assert "invalid --device" in evalmod._hf_device_error(bad), bad
 
 
 def test_hf_device_error_validates_indexed_accelerators(monkeypatch):
-    # an unavailable or out-of-range accelerator would also silently fall back
     _fake_torch(monkeypatch, xpu_available = True, xpu_count = 2)
     assert evalmod._hf_device_error("xpu:0") is None
     assert evalmod._hf_device_error("xpu:1") is None
     assert "only 2 XPU" in evalmod._hf_device_error("xpu:2")
-    # this torch build has no npu/hpu module at all
     assert "NPU is not available" in evalmod._hf_device_error("npu:0")
     assert "HPU is not available" in evalmod._hf_device_error("hpu:0")
     _fake_torch(monkeypatch, xpu_available = False)
@@ -488,7 +474,6 @@ def test_render_results_includes_group_aggregates(capsys):
     )
     out = capsys.readouterr().out
     assert "0.3000" in out
-    # the group aggregate must be shown, not just per-subtask rows
     assert "0.4500" in out
 
 
@@ -545,11 +530,8 @@ def fake_eval_env(monkeypatch):
             self.all_tasks = ["gsm8k", "mmlu", "hellaswag"]
             self.all_groups = ["mmlu"]
             self.all_tags = []
-            # mirror lm-eval: yaml tasks/groups under include paths get
-            # registered under their task or group name
             for directory in include_path or []:
                 for spec_file in sorted(Path(directory).glob("*.yaml")):
-                    # like lm-eval, tolerate !function tags but not broken yaml
                     spec = yaml.load(spec_file.read_text(), Loader = evalmod._TaskYamlLoader)
                     if not isinstance(spec, dict):
                         continue
@@ -590,12 +572,10 @@ def fake_eval_env(monkeypatch):
     unsloth_mod = types.ModuleType("unsloth")
     unsloth_mod.FastLanguageModel = _FakeFLM
 
-    # deterministic device detection, no real torch needed
     torch_mod = types.ModuleType("torch")
     torch_mod.cuda = SimpleNamespace(is_available = lambda: False, device_count = lambda: 0)
     torch_mod.backends = SimpleNamespace(mps = SimpleNamespace(is_available = lambda: False))
 
-    # no adapter_config.json on the fake Hub, and no network access in tests
     hub_mod = types.ModuleType("huggingface_hub")
 
     def _no_hub_download(*args, **kwargs):
@@ -627,7 +607,6 @@ def fake_eval_env(monkeypatch):
     }.items():
         monkeypatch.setitem(sys.modules, name, mod)
 
-    # deterministic regardless of whether bitsandbytes is installed locally
     monkeypatch.setattr(evalmod, "_bitsandbytes_available", lambda: True)
 
     return calls
@@ -835,7 +814,6 @@ def _install_adapter_stubs(monkeypatch, fake_eval_env, tokenizer_len):
 
 def test_eval_unsloth_adapter_prefers_adapter_tokenizer(fake_eval_env, tmp_path, monkeypatch):
     adapter = _make_local_adapter(tmp_path)
-    # same vocab size as the fake base model: no resize expected
     _install_adapter_stubs(monkeypatch, fake_eval_env, tokenizer_len = 32000)
 
     result = CliRunner().invoke(
@@ -852,7 +830,6 @@ def test_eval_unsloth_adapter_prefers_adapter_tokenizer(fake_eval_env, tmp_path,
 
 def test_eval_unsloth_adapter_resizes_embeddings_before_peft(fake_eval_env, tmp_path, monkeypatch):
     adapter = _make_local_adapter(tmp_path)
-    # adapter tokenizer grew past the fake base vocab (32000)
     _install_adapter_stubs(monkeypatch, fake_eval_env, tokenizer_len = 32005)
 
     result = CliRunner().invoke(
@@ -860,7 +837,6 @@ def test_eval_unsloth_adapter_resizes_embeddings_before_peft(fake_eval_env, tmp_
         [str(adapter), "--tasks", "gsm8k", "--output-dir", str(tmp_path / "out")],
     )
     assert result.exit_code == 0, result.output
-    # the resize must land before the adapter weights are applied
     assert fake_eval_env["events"] == [("resize", 32005), ("peft", str(adapter))]
 
 
@@ -906,7 +882,6 @@ def test_eval_cuda_index_keeps_auto_batch_size(fake_eval_env, tmp_path):
         ],
     )
     assert result.exit_code == 0, result.output
-    # 'auto' survives an explicit CUDA index (not downgraded to 1)
     assert fake_eval_env["simple_evaluate_kwargs"]["batch_size"] == "auto"
     assert fake_eval_env["model_args"]["load_in_4bit"] is True
 
@@ -930,7 +905,6 @@ def test_eval_dataset_shadowing_builtin_is_renamed(fake_eval_env, tmp_path):
     )
 
     assert result.exit_code == 0, result.output
-    # the built-in gsm8k benchmark must not shadow the user's dataset
     assert fake_eval_env["tasks"] == ["gsm8k_2"]
     assert "as 'gsm8k_2'" in result.output
 
@@ -972,8 +946,6 @@ def test_eval_fewshot_with_raw_key_dataset_errors(fake_eval_env, tmp_path):
 def test_eval_custom_yaml_survives_broken_sibling(fake_eval_env, tmp_path):
     task_file = tmp_path / "good.yaml"
     task_file.write_text(yaml.safe_dump({"task": "good_task", "output_type": "generate_until"}))
-    # the fake TaskManager (like lm-eval 0.4.4) chokes on unparseable yaml
-    # in an include dir; the broken sibling must never reach it
     (tmp_path / "broken.yaml").write_text("task: [unclosed")
 
     result = CliRunner().invoke(
@@ -1244,7 +1216,6 @@ def test_eval_hf_token_sets_env(fake_eval_env, tmp_path, monkeypatch):
 
 
 def test_resolve_tasks_dataset_before_group_still_avoids_child_names(tmp_path):
-    # argument order must not decide the generated task's name
     (tmp_path / "suite.yaml").write_text(
         yaml.safe_dump({"group": "suite", "task": ["qa", {"task": "qa_inline"}]})
     )
@@ -1273,7 +1244,6 @@ def test_resolve_tasks_rejects_builtin_child_shadowed_by_sibling(tmp_path):
 
 
 def test_resolve_tasks_allows_group_of_builtins_without_siblings(tmp_path):
-    # a suite that aggregates registered tasks is legitimate lm-eval usage
     (tmp_path / "suite.yaml").write_text(
         yaml.safe_dump({"group": "suite", "task": ["gsm8k", "mmlu"]})
     )
@@ -1290,8 +1260,6 @@ def test_resolve_tasks_allows_group_of_builtins_without_siblings(tmp_path):
 
 
 def test_resolve_tasks_rejects_include_order_dependent_name(tmp_path):
-    # lm-eval versions disagree on include precedence, so a name that changes
-    # with the merge order must be rejected
     (tmp_path / "a.yaml").write_text(yaml.safe_dump({"task": "name_a"}))
     (tmp_path / "b.yaml").write_text(yaml.safe_dump({"task": "name_b"}))
     child = tmp_path / "child.yaml"
@@ -1302,7 +1270,6 @@ def test_resolve_tasks_rejects_include_order_dependent_name(tmp_path):
 
 
 def test_resolve_tasks_accepts_local_name_over_include_conflict(tmp_path):
-    # a top-level task: settles the name on every lm-eval version
     (tmp_path / "a.yaml").write_text(yaml.safe_dump({"task": "name_a"}))
     (tmp_path / "b.yaml").write_text(yaml.safe_dump({"task": "name_b"}))
     child = tmp_path / "child.yaml"
@@ -1316,7 +1283,6 @@ def test_resolve_tasks_accepts_local_name_over_include_conflict(tmp_path):
 
 
 def test_load_task_spec_resolves_includes_against_parent_dir(tmp_path, monkeypatch):
-    # lm-eval resolves relative includes against the including file, never cwd
     task_dir = tmp_path / "tasks"
     decoy_dir = tmp_path / "decoy"
     task_dir.mkdir()
@@ -1345,7 +1311,6 @@ def test_json_default_preserves_numeric_scalars():
 
 
 def test_resolve_tasks_rejects_builtin_child_shadowed_in_subdirectory(tmp_path):
-    # lm-eval indexes include paths recursively, so a nested sibling shadows too
     (tmp_path / "suite.yaml").write_text(yaml.safe_dump({"group": "suite", "task": ["gsm8k"]}))
     nested = tmp_path / "sub"
     nested.mkdir()
@@ -1361,36 +1326,26 @@ def test_resolve_tasks_rejects_builtin_child_shadowed_in_subdirectory(tmp_path):
 
 
 def test_hf_device_error_gates_xpu_hpu_on_lm_eval_version(monkeypatch):
-    # HFLM's device_list added xpu:{i} in 0.4.10 but hpu:{i} only in 0.4.12;
-    # a kind it does not list silently falls back to its default device
     _fake_torch(monkeypatch, xpu_available = True, xpu_count = 1)
     monkeypatch.setattr(evalmod, "_lm_eval_version", lambda: (0, 4, 4))
     assert "needs lm-eval >= 0.4.10" in evalmod._hf_device_error("xpu:0")
     assert "needs lm-eval >= 0.4.12" in evalmod._hf_device_error("hpu:0")
-    # npu has been enumerated since 0.4.4
     assert "NPU is not available" in evalmod._hf_device_error("npu:0")
     monkeypatch.setattr(evalmod, "_lm_eval_version", lambda: (0, 4, 10))
     assert evalmod._hf_device_error("xpu:0") is None
 
 
 def test_hf_device_error_gates_hpu_until_lm_eval_0412(monkeypatch):
-    # 0.4.10/0.4.11 list xpu:{i} but not hpu:{i}, so --device hpu:0 used to pass
-    # validation and then land on cuda/cpu without a word
     _fake_torch(monkeypatch, xpu_available = True, xpu_count = 1)
     for release in ((0, 4, 10), (0, 4, 11)):
         monkeypatch.setattr(evalmod, "_lm_eval_version", lambda release = release: release)
         assert "needs lm-eval >= 0.4.12" in evalmod._hf_device_error("hpu:0")
         assert evalmod._hf_device_error("xpu:0") is None
     monkeypatch.setattr(evalmod, "_lm_eval_version", lambda: (0, 4, 12))
-    # gate passes at 0.4.12; this torch build simply has no hpu module
     assert "HPU is not available" in evalmod._hf_device_error("hpu:0")
 
 
 def test_eval_forwards_fractional_limit(fake_eval_env, tmp_path):
-    # lm-eval reads a limit below 1 as a fraction of each task's docs
-    # (simple_evaluate(limit: int | float), get_sample_size:
-    # ceil(len(eval_docs) * limit) if limit < 1.0), and its own CLI declares
-    # --limit as type=float, so a fraction must reach it unchanged
     result = CliRunner().invoke(
         _eval_app(),
         ["fake/model", "--tasks", "gsm8k", "--limit", "0.1", "--output-dir", str(tmp_path / "o")],
@@ -1410,8 +1365,6 @@ def test_eval_forwards_whole_limit_as_int(fake_eval_env, tmp_path):
 
 
 def test_resolve_tasks_rejects_alias_colliding_with_custom_task(tmp_path):
-    # lm-eval indexes tags and tasks under one key: the tag wins and the task
-    # yaml is dropped as a duplicate, so it would silently never run
     (tmp_path / "a.yaml").write_text(
         yaml.safe_dump({"task": "a_task", "tag": "foo", "dataset_path": "json"})
     )
@@ -1424,7 +1377,6 @@ def test_resolve_tasks_rejects_alias_colliding_with_custom_task(tmp_path):
 
 
 def test_resolve_tasks_allows_shared_tag_across_custom_tasks(tmp_path):
-    # a tag shared by several tasks is what tags are for — it must still work
     (tmp_path / "a.yaml").write_text(
         yaml.safe_dump({"task": "t1", "tag": "suite", "dataset_path": "json"})
     )
@@ -1438,7 +1390,6 @@ def test_resolve_tasks_allows_shared_tag_across_custom_tasks(tmp_path):
 
 
 def test_resolve_tasks_reserves_tag_aliases_for_datasets(tmp_path):
-    # a tag: alias registers under that name, so a dataset must not take it
     (tmp_path / "custom.yaml").write_text(
         yaml.safe_dump({"task": "foo", "tag": "qa", "dataset_path": "json"})
     )
@@ -1453,7 +1404,6 @@ def test_resolve_tasks_reserves_tag_aliases_for_datasets(tmp_path):
 
 
 def test_resolve_tasks_reserves_string_group_alias_for_datasets(tmp_path):
-    # legacy string group: on a single task acts as a tag alias
     (tmp_path / "custom.yaml").write_text(
         yaml.safe_dump({"task": "foo", "group": "myalias", "dataset_path": "json"})
     )
@@ -1468,8 +1418,6 @@ def test_resolve_tasks_reserves_string_group_alias_for_datasets(tmp_path):
 
 
 def test_hf_device_error_rejects_leading_zero_indices(monkeypatch):
-    # xpu:00 / npu:01 pass a \d+ regex but HFLM's device_list holds canonical
-    # xpu:0 strings, so they silently fall back to cuda/cpu
     _fake_torch(monkeypatch, xpu_available = True, xpu_count = 2)
     monkeypatch.setattr(evalmod, "_lm_eval_version", lambda: (0, 4, 12))
     assert evalmod._hf_device_error("xpu:0") is None
@@ -1506,15 +1454,12 @@ def test_eval_rejects_unmatched_wildcard_patterns(fake_eval_env, tmp_path):
 
 
 def test_resolve_tasks_rejects_group_child_defined_only_in_yml(tmp_path):
-    # lm-eval indexes **/*.yaml only, so a child defined in a .yml file never
-    # registers and the group blows up while loading
     (tmp_path / "suite.yaml").write_text(yaml.safe_dump({"group": "s", "task": ["qa"]}))
     (tmp_path / "qa.yml").write_text(yaml.safe_dump({"task": "qa", "dataset_path": "json"}))
 
     with pytest.raises(ValueError, match = "qa.yml"):
         evalmod.resolve_tasks(str(tmp_path / "suite.yaml"), "question", "answer", tmp_path / "gen")
 
-    # the same child defined by a .yaml sibling registers normally
     (tmp_path / "qa.yaml").write_text(yaml.safe_dump({"task": "qa", "dataset_path": "json"}))
     names, _ = evalmod.resolve_tasks(
         str(tmp_path / "suite.yaml"), "question", "answer", tmp_path / "gen"
@@ -1523,8 +1468,6 @@ def test_resolve_tasks_rejects_group_child_defined_only_in_yml(tmp_path):
 
 
 def test_resolve_tasks_rejects_alias_shadowing_registered_task(tmp_path):
-    # include paths are indexed after the defaults and overwrite them, so a
-    # tag named after a built-in replaces it and --tasks gsm8k runs this file
     (tmp_path / "custom.yaml").write_text(
         yaml.safe_dump({"task": "my_task", "tag": "gsm8k", "dataset_path": "json"})
     )
@@ -1594,7 +1537,6 @@ def test_eval_skips_unsafe_code_kwarg_on_older_lm_eval(fake_eval_env, tmp_path, 
         ],
     )
 
-    # an unknown kwarg would be a TypeError on older lm-eval releases
     assert result.exit_code == 0, result.output
     assert seen["tasks"] == ["gsm8k"]
     assert "has no effect" in result.output

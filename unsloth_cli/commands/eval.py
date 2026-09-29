@@ -55,7 +55,6 @@ def _silence():
 
 
 def _read_adapter_base(config: Path) -> Optional[str]:
-    # ValueError covers both JSONDecodeError and UnicodeDecodeError
     try:
         data = json.loads(config.read_text(encoding = "utf-8"))
     except (ValueError, OSError):
@@ -89,8 +88,7 @@ def _bitsandbytes_available() -> bool:
 
 
 def _lm_eval_available() -> bool:
-    # probe without importing: on lm-eval 0.4.4 `import lm_eval` pulls in
-    # transformers, which must stay unimported until unsloth has loaded
+    # no `import lm_eval`: on 0.4.4 it imports transformers before unsloth
     if "lm_eval" in sys.modules:
         return sys.modules["lm_eval"] is not None
     from importlib.util import find_spec
@@ -123,16 +121,12 @@ def _accepts_kwarg(func, name: str) -> bool:
     return name in params or any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
 
 
-# HFLM's device_list gained f"xpu:{i}" in 0.4.10 and f"hpu:{i}" only in
-# 0.4.12; npu has been listed since 0.4.4. A kind missing from that list is
-# not an error in HFLM — it drops through to the default-device fallback
+# HFLM device_list: npu since 0.4.4, xpu:{i} since 0.4.10, hpu:{i} since 0.4.12
 _HFLM_DEVICE_MIN_VERSION = {"xpu": (0, 4, 10), "hpu": (0, 4, 12)}
 
 
 def _hf_device_error(device: str) -> Optional[str]:
-    # lm-eval's HFLM only recognises 'cuda', canonical 'cuda:<i>', 'mps' and
-    # 'mps:0'; anything else (cuda0, cuda:, cuda:01, an out-of-range index)
-    # silently falls back to its default device, so reject those up front
+    # HFLM silently falls back to its default device on any non-canonical string
     if device.startswith("cuda"):
         match = re.fullmatch(r"cuda(?::(0|[1-9]\d*))?", device)
         if not match:
@@ -157,19 +151,13 @@ def _hf_device_error(device: str) -> Optional[str]:
     elif device != "cpu":
         match = re.fullmatch(r"(npu|xpu|hpu):(0|[1-9]\d*)", device)
         if not match:
-            # a typo like 'cpuu' or 'cude' would silently fall back to HFLM's
-            # default device
             return (
                 f"invalid --device '{device}' — use 'cpu', 'cuda[:<index>]', 'mps', "
                 "or '<npu|xpu|hpu>:<index>'."
             )
-        # an unavailable or out-of-range accelerator would also silently fall
-        # back, so validate against the installed torch build like cuda above
         kind, index = match.group(1), int(match.group(2))
         minimum = _HFLM_DEVICE_MIN_VERSION.get(kind)
         if minimum is not None and _lm_eval_version() < minimum:
-            # before the release that added this kind to HFLM's device_list the
-            # string fell through to its silent default-device fallback
             wanted = ".".join(str(part) for part in minimum)
             return (
                 f"--device {device} needs lm-eval >= {wanted} — upgrade with "
@@ -212,8 +200,7 @@ def resolve_base_model(model: str) -> Optional[str]:
     if path.is_dir():
         config = path / "adapter_config.json"
         return _read_adapter_base(config) if config.exists() else None
-    # adapter-only Hub repos carry adapter_config.json but no config.json, so
-    # they cannot be passed to lm-eval as `pretrained` — detect them up front
+    # adapter-only repos have no config.json, so lm-eval can't take them as `pretrained`
     if path.exists() or not _HUB_REPO_RE.fullmatch(model):
         return None
     try:
@@ -228,8 +215,6 @@ class _TaskYamlLoader(yaml.SafeLoader):
     """safe_load that tolerates lm-eval's custom tags (!function utils.fn)."""
 
 
-# map local tags to their raw scalar so a valid lm-eval config parses for
-# name extraction; TaskManager loads the original file with its own loader
 _TaskYamlLoader.add_multi_constructor(
     "!", lambda loader, suffix, node: getattr(node, "value", None)
 )
@@ -240,12 +225,7 @@ def _load_task_spec(
     depth: int = 0,
     first_include_wins: bool = False,
 ) -> dict:
-    # the task/group name may live in an included base config, which lm-eval
-    # resolves during indexing — mirror that (child keys override the base);
-    # depth-limited in case of include cycles. Current lm-eval merges include
-    # lists in listed order (later wins); some older releases merged in
-    # reverse, so callers compare both orders and reject specs whose name
-    # depends on it.
+    # lm-eval versions disagree on include merge order; callers reject order-dependent names
     spec = yaml.load(path.read_text(encoding = "utf-8"), Loader = _TaskYamlLoader) or {}
     includes = spec.get("include") if isinstance(spec, dict) else None
     if not includes or depth >= 8:
@@ -255,8 +235,6 @@ def _load_task_spec(
     ordered = list(reversed(includes)) if first_include_wins else list(includes)
     merged: dict = {}
     for include in ordered:
-        # lm-eval resolves relative includes against the including file's
-        # directory, never the current working directory
         include_path = Path(include)
         if not include_path.is_absolute():
             include_path = path.parent / include
@@ -273,8 +251,7 @@ def _load_task_spec(
 def _sibling_task_file(
     directory: Path, group_file: Path, child: str, pattern: str
 ) -> Optional[Path]:
-    # rglob: lm-eval indexes include paths recursively, so a child yaml in a
-    # subdirectory shadows just the same
+    # rglob: lm-eval indexes include paths recursively
     for sibling in sorted(directory.rglob(pattern)):
         if sibling == group_file:
             continue
@@ -292,11 +269,7 @@ def _sibling_defines_task(directory: Path, group_file: Path, child: str) -> bool
 
 
 def _doc_column(key: str) -> str:
-    # a jinja template stringifies the value (needed e.g. for numeric answer
-    # columns in few-shot prompts), but jinja can't parse keys that aren't
-    # plain identifiers ("prompt-text", "expected answer") or that collide
-    # with its keywords/literals — lm-eval treats a raw column name as a
-    # direct lookup, so fall back to that for such keys
+    # jinja can't parse non-identifier/keyword keys; lm-eval treats a raw column name as a lookup
     import keyword
     if key.isidentifier() and not keyword.iskeyword(key) and key not in ("true", "false", "none"):
         return "{{" + key + "}}"
@@ -313,8 +286,6 @@ def make_jsonl_task(
     data_file = Path(data_file).resolve()
     out_dir = Path(out_dir)
     out_dir.mkdir(parents = True, exist_ok = True)
-    # a generated task must not shadow a registered task (gsm8k.jsonl vs the
-    # gsm8k benchmark) or an earlier dataset with the same stem
     base_name = data_file.stem
     task_name = base_name
     counter = 2
@@ -332,16 +303,13 @@ def make_jsonl_task(
         "dataset_path": builder,
         "dataset_kwargs": {"data_files": str(data_file)},
         "test_split": "train",
-        # explicit few-shot source so --num-fewshot works on every lm-eval
-        # version we support (the file has a single split)
+        # explicit few-shot source so --num-fewshot works on every supported lm-eval
         "fewshot_split": "train",
         "output_type": "generate_until",
         "doc_to_text": _doc_column(input_key),
         "doc_to_target": _doc_column(target_key),
         "generation_kwargs": {"until": ["\n"]},
-        # strip surrounding whitespace so " 2" matches gold "2": lm-eval's
-        # regex filter runs re.findall, which with one capture group yields
-        # the group's text; group_select indexes those matches, not groups
+        # strip so " 2" matches gold "2"; group_select indexes re.findall matches
         "filter_list": [
             {
                 "name": "strip",
@@ -372,9 +340,7 @@ def resolve_tasks(
     sibling_names: set = set()
     yaml_names: set = set()
     alias_names: set = set()
-    # (kind, value) in argument order; datasets are generated in a second
-    # pass so every yaml/group/child name is known first — the names a
-    # generated task gets must not depend on argument order
+    # datasets in a second pass so generated names don't depend on argument order
     entries: List[Tuple[str, object]] = []
 
     def _add_include(directory: str) -> None:
@@ -399,9 +365,6 @@ def resolve_tasks(
             if not isinstance(spec, dict):
                 raise ValueError(f"Custom task file '{entry}' must define a YAML mapping.")
             if "include" in spec:
-                # lm-eval versions disagree on include precedence (older ones
-                # merged last-to-first), so a name that changes with the merge
-                # order cannot be trusted on either side
                 alt = _load_task_spec(path, first_include_wins = True) or {}
                 if isinstance(alt, dict) and (spec.get("task"), spec.get("group")) != (
                     alt.get("task"),
@@ -414,9 +377,6 @@ def resolve_tasks(
                     )
             name = spec.get("task")
             if isinstance(name, list):
-                # a group file (group: suite, task: [a, b]) is registered
-                # under its group name; its child task names are taken too,
-                # so later dataset entries must not generate a clashing task
                 group_path = path.resolve()
                 group_dir = group_path.parent
                 for child in name:
@@ -428,10 +388,7 @@ def resolve_tasks(
                     if not child_name:
                         continue
                     sibling_names.add(child_name)
-                    # lm-eval indexes only .yaml, so a child defined solely by a
-                    # .yml file never registers: the group then loads that child
-                    # as an empty inline task (or silently runs a same-named
-                    # registered task instead)
+                    # lm-eval indexes only .yaml: a .yml-only child never registers
                     yml_child = _sibling_task_file(group_dir, group_path, child_name, "*.yml")
                     if yml_child is not None and not _sibling_defines_task(
                         group_dir, group_path, child_name
@@ -442,9 +399,7 @@ def resolve_tasks(
                             "lm-eval only indexes .yaml files, so that child would never "
                             "register. Rename it to .yaml."
                         )
-                    # a string child that names a registered task AND a sibling
-                    # yaml is ambiguous: which one runs depends on the lm-eval
-                    # version's registry precedence
+                    # ambiguous: which one runs depends on lm-eval registry precedence
                     if (
                         isinstance(child, str)
                         and child_name in reserved
@@ -463,8 +418,6 @@ def resolve_tasks(
                     )
             if not name:
                 raise ValueError(f"Custom task file '{entry}' is missing a 'task:' name.")
-            # tag: (and legacy string group:) values register alias names in
-            # lm-eval's index, so generated datasets must avoid them too
             aliases: List[str] = []
             for alias_key in ("tag", "group"):
                 alias_value = spec.get(alias_key)
@@ -481,9 +434,7 @@ def resolve_tasks(
                 )
             if name in yaml_names:
                 raise ValueError(f"Duplicate task name '{name}' in --tasks.")
-            # lm-eval indexes tag/group aliases and task names in one registry:
-            # whichever it reaches first keeps the name and the other is dropped
-            # with no error, so the loser would silently never run
+            # tags and tasks share one registry; the loser is silently dropped
             if name in alias_names:
                 raise ValueError(
                     f"Custom task file '{entry}' defines task '{name}', which another "
@@ -492,9 +443,7 @@ def resolve_tasks(
                     "skipped. Rename one of them."
                 )
             for alias in aliases:
-                # include paths are indexed after the defaults and overwrite
-                # them, so a tag named after a registered task replaces it in
-                # the registry — requesting that task would run this file instead
+                # include paths overwrite defaults, so this tag would replace a registered task
                 if alias in reserved:
                     raise ValueError(
                         f"Custom task file '{entry}' declares '{alias}' as a "
@@ -511,10 +460,7 @@ def resolve_tasks(
                     )
             alias_names.update(aliases)
             if "include" in spec or isinstance(spec.get("task"), list) or "!function" in text:
-                # include-bearing, group and !function configs reference
-                # sibling files (base yaml, subtasks, helper modules), so
-                # their directory must stay on the include path — which
-                # only works for .yaml, the sole extension lm-eval indexes
+                # sibling references need this dir on the include path (only .yaml is indexed)
                 if suffix == ".yml":
                     raise ValueError(
                         f"Custom task file '{entry}' references sibling files "
@@ -524,9 +470,7 @@ def resolve_tasks(
                     )
                 _add_include(str(path.resolve().parent))
             else:
-                # copy just this file into the temp include dir so a broken
-                # sibling yaml can't take down TaskManager's include scan
-                # (this also normalises .yml, which lm-eval doesn't index)
+                # copy alone so a broken sibling yaml can't break TaskManager's include scan
                 custom_dir = Path(tmp_dir) / "custom"
                 custom_dir.mkdir(parents = True, exist_ok = True)
                 shutil.copy2(path, custom_dir / f"{name}.yaml")
@@ -547,7 +491,6 @@ def resolve_tasks(
     for kind, value in entries:
         if kind == "dataset":
             gen_dir = Path(tmp_dir) / "generated"
-            # every yaml task, group child and earlier name counts as taken
             names.append(
                 make_jsonl_task(
                     value,
@@ -589,8 +532,6 @@ def _metric_number(value):
 
 
 def _json_default(value):
-    # numpy/torch scalars and arrays serialise as numbers/lists, not strings,
-    # so results.json agrees numerically with the in-memory results
     tolist = getattr(value, "tolist", None)
     if callable(tolist):
         try:
@@ -611,7 +552,6 @@ def _render_results(results: dict) -> None:
     table.add_column("± stderr", justify = "right")
 
     rows = dict(results.get("results", {}) or {})
-    # group aggregates (mmlu, custom suites) live in a separate section
     for task, metrics in (results.get("groups") or {}).items():
         rows.setdefault(task, metrics)
 
@@ -712,15 +652,11 @@ def evaluate(
         raise typer.Exit(code = 2)
 
     if num_fewshot is not None and num_fewshot < 0:
-        # lm-eval treats a negative count as zero-shot while recording the
-        # bogus value in the results metadata
         typer.echo("Error: --num-fewshot must be >= 0.", err = True)
         raise typer.Exit(code = 2)
 
     if limit is not None:
-        # lm-eval reads a limit below 1 as a fraction of each task's docs and
-        # >= 1 as a count: 0 builds no requests and crashes, negatives take an
-        # unintended slice
+        # lm-eval: limit < 1 is a fraction, >= 1 a count; 0 crashes
         if limit <= 0:
             typer.echo(
                 "Error: --limit must be a positive integer or a fraction between 0 and 1.",
@@ -729,19 +665,16 @@ def evaluate(
             raise typer.Exit(code = 2)
         if limit >= 1:
             if not limit.is_integer():
-                # lm-eval casts counts with int(), which would silently evaluate
-                # fewer examples than results.json records
+                # lm-eval int()s counts, silently evaluating fewer than recorded
                 typer.echo(
                     "Error: --limit must be a whole count or a fraction below 1.",
                     err = True,
                 )
                 raise typer.Exit(code = 2)
-            # forward whole counts as int so results metadata records 100, not 100.0
             limit = int(limit)
 
     if max_seq_length <= 0:
-        # HFLM treats a falsy 0 as unset (silently dropping the cap) and
-        # uses negatives in truncation arithmetic
+        # HFLM treats 0 as unset and uses negatives in truncation
         typer.echo("Error: --max-seq-length must be a positive integer.", err = True)
         raise typer.Exit(code = 2)
 
@@ -753,8 +686,7 @@ def evaluate(
         raise typer.Exit(code = 1)
 
     if backend == "unsloth":
-        # unsloth must be imported before transformers (which lm-eval pulls
-        # in) or its patches don't fully apply
+        # unsloth must import before transformers (pulled in by lm-eval)
         with _silence():
             import unsloth
 
@@ -765,9 +697,7 @@ def evaluate(
             )
             backend = "hf"
 
-    # a pre-loaded model object makes lm-eval single-process (rank 0
-    # everywhere), so under accelerate/torchrun every worker would run
-    # the full task set and write results
+    # a pre-loaded model makes lm-eval single-process: every rank would run all tasks
     if backend == "unsloth" and os.environ.get("WORLD_SIZE", "1") not in ("", "1"):
         typer.echo(
             "Error: multi-process launches (accelerate/torchrun) are not "
@@ -789,17 +719,12 @@ def evaluate(
         raise typer.Exit(code = 1) from e
 
     if hf_token:
-        os.environ["HF_TOKEN"] = hf_token  # both backends read it from the env
+        os.environ["HF_TOKEN"] = hf_token
 
-    # --base-model => treat <model> as an adapter on this base (and skip the
-    # local/Hub adapter_config.json lookup)
     effective_base = base_model or resolve_base_model(model)
 
     tmp_dir = Path(tempfile.mkdtemp(prefix = "unsloth_eval_"))
     try:
-        # a dataset or custom task named after a registered task (gsm8k.jsonl,
-        # task: gsm8k) must not be shadowed by the built-in benchmark, so
-        # collect registry names first
         base_manager = None
         reserved: frozenset = frozenset()
         if any(
@@ -817,7 +742,6 @@ def evaluate(
             typer.echo(f"Error: {e}", err = True)
             raise typer.Exit(code = 2) from e
 
-        # reuse for validation and the eval run
         if include_paths:
             task_manager = TaskManager(include_path = include_paths)
         else:
@@ -826,8 +750,7 @@ def evaluate(
         registered = getattr(task_manager, "all_tasks", None)
         if registered:
             known = _registry_names(task_manager)
-            # lm-eval's own CLI expands glob patterns (mmlu_*) before erroring
-            # on misses; mirror that so standard selections work here too
+            # mirror lm-eval's CLI glob expansion (mmlu_*)
             if hasattr(task_manager, "match_tasks"):
                 expanded = []
                 for name in task_names:
@@ -852,8 +775,6 @@ def evaluate(
         if num_fewshot and any((tmp_dir / "generated" / f"{t}.yaml").exists() for t in task_names):
             raw_keys = [k for k in dict.fromkeys((input_key, target_key)) if _doc_column(k) == k]
             if raw_keys:
-                # raw column lookups feed unstringified values into lm-eval's
-                # few-shot prompt builder, which fails on non-string data
                 typer.echo(
                     "Error: --num-fewshot needs plain-identifier column names for a "
                     f"dataset task; rename column(s) {', '.join(map(repr, raw_keys))} "
@@ -876,8 +797,7 @@ def evaluate(
             log_samples = False,
         )
 
-        # lm-eval refuses tasks marked unsafe unless this is confirmed, but the
-        # kwarg only exists on newer releases — passing it blindly would raise
+        # this kwarg only exists on newer lm-eval releases
         if _accepts_kwarg(lm_eval.simple_evaluate, "confirm_run_unsafe_code"):
             eval_kwargs["confirm_run_unsafe_code"] = confirm_run_unsafe_code
         elif confirm_run_unsafe_code:
@@ -905,11 +825,8 @@ def evaluate(
                     "Note: batch_size 'auto' is slow on CPU/MPS — using 1 (override with --batch-size)."
                 )
                 bs = 1
-            # dict form: a comma in a path can't corrupt key=value parsing
             if effective_base:
                 model_args = {"pretrained": effective_base, "peft": model}
-                # adapters that saved their own tokenizer (added tokens etc.)
-                # must not be scored with the base tokenizer
                 if _has_tokenizer_files(model):
                     model_args["tokenizer"] = model
                 typer.echo(f"Evaluating adapter '{model}' on base '{effective_base}'.")
@@ -944,10 +861,7 @@ def evaluate(
                     lmodel, tokenizer = FastLanguageModel.from_pretrained(
                         model_name = effective_base, **load_kwargs
                     )
-                    # adapters that saved their own tokenizer (added tokens
-                    # etc.) must not be scored with the base tokenizer, and
-                    # the embeddings must match its vocab before the adapter
-                    # weights are applied or PEFT fails on a size mismatch
+                    # resize embeddings to the adapter tokenizer before loading weights, or PEFT size-mismatches
                     if _has_tokenizer_files(model):
                         from transformers import AutoTokenizer
 
@@ -980,8 +894,7 @@ def evaluate(
         shutil.rmtree(tmp_dir, ignore_errors = True)
 
     if results is None:
-        # lm-eval hands results only to rank 0 of a multi-process run
-        # (accelerate/torchrun); worker ranks get None and must exit cleanly
+        # worker ranks get None from lm-eval
         if os.environ.get("RANK", "0") != "0" or os.environ.get("LOCAL_RANK", "0") != "0":
             return
         typer.echo("Error: evaluation returned no results.", err = True)
