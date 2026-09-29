@@ -647,6 +647,21 @@ def test_local_pipeline_completeness_rejects_variant_only_weights(tmp_path):
     assert local_pipeline_components_are_complete(pipeline, "model_index.json") is True
 
 
+def test_local_pipeline_completeness_ignores_an_unused_bin_index(tmp_path):
+    from core.inference.diffusion_families import local_pipeline_components_are_complete
+
+    pipeline = tmp_path / "safetensors-copy"
+    _pipeline_manifest(pipeline)
+    component = pipeline / "transformer"
+    (component / "diffusion_pytorch_model.bin.index.json").write_text(
+        json.dumps({"weight_map": {"layer": "diffusion_pytorch_model-00001-of-00001.bin"}})
+    )
+    assert local_pipeline_components_are_complete(pipeline, "model_index.json") is True
+
+    (component / "diffusion_pytorch_model.safetensors").unlink()
+    assert local_pipeline_components_are_complete(pipeline, "model_index.json") is False
+
+
 def test_local_pipeline_completeness_ignores_list_valued_pipeline_config(tmp_path):
     from core.inference.diffusion_families import local_pipeline_components_are_complete
 

@@ -1370,18 +1370,17 @@ def _is_component_spec(spec: object) -> bool:
 _CALLER_SUPPLIED_COMPONENTS = {"HiDreamImagePipeline": frozenset({"text_encoder_4", "tokenizer_4"})}
 
 
-_LOCAL_PIPELINE_BASE_WEIGHT_INDEXES = (
-    "diffusion_pytorch_model.safetensors.index.json",
-    "model.safetensors.index.json",
-    "diffusion_pytorch_model.bin.index.json",
-    "pytorch_model.bin.index.json",
-)
-# Default variant only: the pipeline loads at variant=None, which cannot open fp16/bf16-suffixed files.
-_LOCAL_PIPELINE_WEIGHT_NAMES = (
-    "diffusion_pytorch_model.safetensors",
-    "model.safetensors",
-    "diffusion_pytorch_model.bin",
-    "pytorch_model.bin",
+# (index, single file) per format, safetensors first as from_pretrained prefers it. Default variant
+# only: the pipeline loads at variant=None, which cannot open fp16/bf16-suffixed files.
+_LOCAL_PIPELINE_WEIGHT_FORMATS = (
+    (
+        ("diffusion_pytorch_model.safetensors.index.json", "model.safetensors.index.json"),
+        ("diffusion_pytorch_model.safetensors", "model.safetensors"),
+    ),
+    (
+        ("diffusion_pytorch_model.bin.index.json", "pytorch_model.bin.index.json"),
+        ("diffusion_pytorch_model.bin", "pytorch_model.bin"),
+    ),
 )
 _MAX_PIPELINE_WEIGHT_INDEX_BYTES = 64 * 1024 * 1024
 _LOCAL_PIPELINE_METADATA_CONFIGS = (
@@ -1443,14 +1442,15 @@ def _local_weight_index_is_complete(component: Path, index: Path) -> bool:
 
 
 def _local_model_component_is_complete(component: Path) -> bool:
-    for index_name in _LOCAL_PIPELINE_BASE_WEIGHT_INDEXES:
-        index = component / index_name
-        if index.exists():
-            return _local_weight_index_is_complete(component, index)
-    return any(
-        (weight := component / name).is_file() and weight.stat().st_size > 0
-        for name in _LOCAL_PIPELINE_WEIGHT_NAMES
-    )
+    # The first format with any weights present decides: a leftover .bin index cannot veto safetensors.
+    for index_names, weight_names in _LOCAL_PIPELINE_WEIGHT_FORMATS:
+        indexes = [component / name for name in index_names if (component / name).exists()]
+        weights = [component / name for name in weight_names if (component / name).is_file()]
+        if indexes:
+            return _local_weight_index_is_complete(component, indexes[0])
+        if weights:
+            return any(weight.stat().st_size > 0 for weight in weights)
+    return False
 
 
 def _local_metadata_component_is_complete(component: Path, class_name: str) -> Optional[bool]:
