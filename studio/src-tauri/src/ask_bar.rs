@@ -188,6 +188,7 @@ mod macos {
                 })
                 .map_err(|error| format!("Failed to register {HOTKEY}: {error}"))?;
         }
+        info!("Ask bar: enabled on {HOTKEY}");
         Ok(())
     }
 
