@@ -269,6 +269,28 @@ def test_local_route_returns_hermes_downloads(monkeypatch, tmp_path):
     assert [(m.source, Path(m.path)) for m in response.models] == [("hermes", weight)]
 
 
+@pytest.mark.parametrize("registered", [("hf_home",), ("hf_home/hub",), ("hf_home", "hf_home/hub")])
+def test_compat_inventory_lists_a_registered_hf_home(tmp_path, registered):
+    repo = tmp_path / "hf_home" / "hub" / "models--Org--Model-GGUF"
+    blob = repo / "blobs" / ("a" * 64)
+    blob.parent.mkdir(parents = True)
+    blob.write_bytes(b"GGUF" + b"\x03\x00\x00\x00" + b"\x00" * 64)
+    snapshot = repo / "snapshots" / ("0" * 40)
+    snapshot.mkdir(parents = True)
+    (snapshot / "Model-Q4_K_M.gguf").symlink_to(blob)
+    (repo / "refs").mkdir()
+    (repo / "refs" / "main").write_text("0" * 40)
+
+    rows = models_route.collect_local_models(
+        tmp_path / "models",
+        custom_folders = [{"path": str(tmp_path / path)} for path in registered],
+        sources = _empty_compat_sources(tmp_path),
+        materialize_ollama_links = False,
+    )
+
+    assert [(row.source, row.model_id) for row in rows] == [("hf_cache", "Org/Model-GGUF")]
+
+
 def test_compat_inventory_preserves_ollama_tags_sharing_a_blob(tmp_path):
     root = tmp_path / "ollama"
     digest = "sha256-model"

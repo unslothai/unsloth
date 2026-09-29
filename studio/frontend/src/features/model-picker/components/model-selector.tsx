@@ -15,6 +15,7 @@ import type { CapabilityKey } from "@/features/hub";
 import type { HfTaskFilter } from "@/features/hub/hooks/use-hub-model-search";
 // eslint-disable-next-line no-restricted-imports -- The settings barrel imports this feature back.
 import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
+import { useNpuStatus } from "@/features/npu";
 import { useT } from "@/i18n";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { cn } from "@/lib/utils";
@@ -226,8 +227,8 @@ function ModelSelectorTrigger({
             {currentModel.icon}
           </span>
         ) : null}
-        {/* A box-centred Hellix label sits above the icon's centre; drop it 0.05em to centre the caps. */}
-        <span className="relative top-[0.05em] flex min-w-0 flex-1 items-baseline">
+        {/* No vertical offset, so the caps line up with the project switcher. */}
+        <span className="flex min-w-0 flex-1 items-baseline">
           {/* Name and quant stay whole; only the description truncates. The suffix sits outside this
               group, so even an over-long name leaves room for it. */}
           <span className="flex min-w-0 items-baseline">
@@ -395,6 +396,11 @@ function ModelSelectorContent({
     [loraModels],
 
   );
+  const [npuStatus, setNpuStatus] = useNpuStatus(open && !task);
+  const npu =
+    !task && npuStatus?.supported === true
+      ? { status: npuStatus, onStatusChange: setNpuStatus }
+      : undefined;
   // Connected sits in the section toggle, shown only with external providers.
   const hubSectionTabs = useMemo(
     () =>
@@ -553,6 +559,8 @@ function ModelSelectorContent({
     <PopoverContent
       align="start"
       alignOffset={10}
+      // Read by the model list, which sets its right inset against the panel's own.
+      data-external={hasExternal || undefined}
       aria-label={
         visibleConfigTarget
           ? `Run settings for ${visibleConfigTarget.displayName}`
@@ -649,6 +657,7 @@ function ModelSelectorContent({
               catalog={catalog}
               communityModelPolicy={communityModelPolicy}
               opaqueKind={opaqueKind}
+              npu={npu}
               section={effectiveHubSection}
               sectionToggle={
                 <PillTabs

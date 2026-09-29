@@ -57,6 +57,7 @@ from backend.utils.wheel_utils import (
     install_wheel,
     probe_torch_wheel_env,
     url_exists,
+    xformers_torch_requirement_unmet,
 )
 from backend.utils.uv_path_safety import uv_safe_path as _uv_safe_path
 
@@ -193,6 +194,13 @@ def _strix_needs_amd_arch_index(ver: tuple[int, int]) -> bool:
     resolves no generic index at all, so the per-arch index is the only route left."""
     key = next((k for k in sorted(_ROCM_TORCH_INDEX, reverse = True) if ver >= k), None)
     return key is None or key < _ROCM_ARCH_INDEX_FLOOR
+
+
+# RDNA 4 below 7.13 reroutes to AMD's per-arch index (TheRock #5284); gfx120X-all is cp310+ only.
+_AMD_ARCH_INDEX_FLOOR_GFX: frozenset[str] = frozenset(
+    {"gfx1151", "gfx1150", "gfx1152"}
+    | ({"gfx1200", "gfx1201"} if sys.version_info >= (3, 10) else set())
+)
 
 
 # MI50 / Radeon VII (gfx906, Vega 20): rocm6.4+/7.x wheels bundle ROCm libraries
@@ -1018,8 +1026,7 @@ def _installed_torch_is_windows_rocm() -> bool:
 
     This is a belt-and-suspenders guard for the torchao override step: if the
     earlier ROCm install path failed to set _rocm_windows_torch_installed but the
-    venv already contains a ROCm torch wheel, still skip torchao because it
-    crashes on import on Windows ROCm.
+    venv already contains a ROCm torch wheel, torchao still comes from PyPI.
     """
     if not IS_WINDOWS:
         return False
@@ -5145,8 +5152,9 @@ def _resident_xformers_build_torch() -> "str | None":
     return recorded.strip() if isinstance(recorded, str) and recorded.strip() else None
 
 
-def _install_torchao_for_torch(torch_version: "str | None") -> None:
-    """Select the torchao matching torch_version and install it from its own index.
+def _install_torchao_for_torch(torch_version: "str | None", default_index: bool = False) -> None:
+    """Select the torchao matching torch_version and install it from its own index (PyPI's with
+    default_index: download.pytorch.org's rocm leaves serve Linux only, so not Windows ROCm).
 
     Called twice: as step 4, and again after the Linux torch repair, which can move torch
     across families and releases underneath the first call.
@@ -5154,7 +5162,7 @@ def _install_torchao_for_torch(torch_version: "str | None") -> None:
     spec = _select_torchao_spec(torch_version)
     # See _TORCHAO_DEFAULT_SPEC. rocm is included here, unlike torchcodec: the rocm leaves
     # really do publish torchao.
-    index = _torch_accelerator_index_url(torch_version)
+    index = None if default_index else _torch_accelerator_index_url(torch_version)
     # --no-deps skips nothing today (no torchao release declares a runtime torch dependency)
     # and guards the second caller, which runs right after the torch repair.
     args = ["--no-deps", "--no-cache-dir"]
@@ -5175,6 +5183,11 @@ def _install_torchao_for_torch(torch_version: "str | None") -> None:
         # Redacted for display only; the installer below still gets the exact URL.
         + (f" from {_strip_index_url_credentials(index)}" if index else "")
     )
+    if default_index:
+        # Optional on Windows ROCm: only export uses it, and hides its formats without it.
+        if not pip_install_try("Installing dependency overrides", *args, spec):
+            _note(f"could not install {spec}; torchao export stays unavailable")
+        return
     if not index:
         pip_install("Installing dependency overrides", *args, spec)
         return
@@ -5583,13 +5596,13 @@ def _rocm_compat_reroute_pending(
     """Whether a compatibility reroute _ensure_rocm_torch performs has not been applied yet.
 
     Neither reroute is about missing kernels, so neither is visible to the wheel-family
-    question: Strix wants AMD's 7.13 build over any generic one below the floor, and gfx906
+    question: Strix / RDNA 4 want AMD's 7.13 build over any generic one below the floor, gfx906
     wants the last tag whose BLAS still carries it. Both compare against what is installed,
     so a host already on the right wheels keeps the fast path.
     """
     if not runtime_gfx:
         return False
-    if runtime_gfx in _HSA_SPOOFABLE_PHYSICAL_GFX and _strix_needs_amd_arch_index(ver):
+    if runtime_gfx in _AMD_ARCH_INDEX_FLOOR_GFX and _strix_needs_amd_arch_index(ver):
         return not _already_on_amd_arch_leaf(_GFX_TO_AMD_INDEX_ARCH.get(runtime_gfx), installed_ver)
     if _runtime_target_is_gfx906() and _gfx906_needs_legacy_index(ver):
         return _GFX906_LEGACY_TAG not in installed_ver
@@ -5952,8 +5965,7 @@ def _ensure_rocm_torch() -> None:
                 f"(studio/ROCM_RDNA2_APU.md) -- not installing ROCm torch for it.\n"
             )
             return
-        _strix_gfx = {"gfx1151", "gfx1150", "gfx1152"}
-        # Only the Strix reroute has a ROCm-version floor.
+        _strix_gfx = _AMD_ARCH_INDEX_FLOOR_GFX
         _detected_strix = (
             _strix_gfx.intersection(gfx_codes) if _strix_needs_amd_arch_index(ver) else set()
         )
@@ -5980,12 +5992,12 @@ def _ensure_rocm_torch() -> None:
                     "torchaudio>=2.11.0,<2.12.0",
                 )
                 _safe_print(
-                    f"   {_selected_gfx} (AMD Strix) is the runtime target with ROCm "
+                    f"   {_selected_gfx} is the runtime target with ROCm "
                     f"{ver[0]}.{ver[1]}.\n"
                     f"   Routing torch install to AMD's arch-specific index\n"
                     f"   ({_strip_index_url_credentials(_arch_index_url)}) which serves torch\n"
-                    f"   2.11.0+rocm7.13.0 with AMD's gfx1150/gfx1151 fixes (more reliable than\n"
-                    f"   the generic pytorch.org rocm7.2 index on ROCm 7.3+ hosts).\n"
+                    f"   2.11.0+rocm7.13.0 with AMD's fixes for this GPU (the generic pytorch.org\n"
+                    f"   wheels below 7.13 lack them).\n"
                 )
                 # Only on this branch: these wheels carry _selected_gfx kernels, so
                 # the runtime must stop reporting the spoofed arch or they have no
@@ -5996,8 +6008,8 @@ def _ensure_rocm_torch() -> None:
             else:
                 _gfx_str = ", ".join(sorted(_detected_strix))
                 _safe_print(
-                    f"   Strix GPU ({_gfx_str}) present but HIP_VISIBLE_DEVICES "
-                    f"selects a non-Strix runtime target ({_runtime_gfx});\n"
+                    f"   AMD per-gfx GPU ({_gfx_str}) present but HIP_VISIBLE_DEVICES "
+                    f"selects another runtime target ({_runtime_gfx});\n"
                     f"   skipping AMD per-gfx index override.\n"
                 )
 
@@ -7204,6 +7216,25 @@ def _evict_xformers_built_for_another_torch() -> bool:
     _note(
         f"windows on arm: the wheelhouse xformers was built for torch "
         f"{built_for}, not {resident} -- removed; attention uses torch SDPA"
+    )
+    return True
+
+
+def _evict_xformers_requiring_another_torch() -> bool:
+    """Remove an xFormers whose torch requirement is unmet, even if torch is unchanged (--overrides, #11545)."""
+    mismatch = xformers_torch_requirement_unmet()
+    if mismatch is None:
+        return False
+    xformers_version, requirement, torch_version = mismatch
+    if not _uninstall_distribution("xformers"):
+        _safe_print(
+            f"   [WARN] xformers {xformers_version} requires torch{requirement}, not "
+            f"{torch_version}, and could not be removed; diffusers cannot import it."
+        )
+        return False
+    _note(
+        f"xformers {xformers_version} requires torch{requirement}, not {torch_version} "
+        "-- removed; attention uses torch SDPA"
     )
     return True
 
@@ -9390,7 +9421,92 @@ def pip_install_try(
     if VERBOSE and result.stdout:
         # pip/uv echo index URLs (credentials included) in failure output.
         _safe_print(_redact_install_output(result.stdout))
-    return False
+    return bool(
+        _mirror_retry(
+            args,
+            result.stdout or b"",
+            lambda *retry: pip_install_try(
+                label, *retry, req = req, constrain = constrain, force_pip = force_pip
+            ),
+        )
+    )
+
+
+_PYTORCH_DEFAULT_WHL = "https://download.pytorch.org/whl"
+_MIRROR_TRANSPORT_ERROR = re.compile(
+    r"error sending request|timed out|network timeout|connection (reset|refused|closed|aborted)|"
+    r"broken pipe|dns error|failed to lookup address|name resolution|nodename nor servname|"
+    r"network is unreachable|error decoding response body|end of file before message length|"
+    r"unexpected eof|tls handshake|sslerror|"
+    r"certificate verify failed|server error|service unavailable|bad gateway|gateway time-?out|"
+    r"too many requests|max retries exceeded|remotedisconnected|incompleteread",
+    re.IGNORECASE,
+)
+_MIRROR_HOST_NAMES = (
+    ("torch", re.compile(r"download(-r2)?\.pytorch\.org")),
+    ("pypi", re.compile(r"pypi\.org|pythonhosted\.org")),
+)
+_MIRROR_NAMES = {"torch": "download.pytorch.org", "pypi": "PyPI", "unsynced": "The PyPI mirror"}
+_MIRROR_UNSYNCED = re.compile(
+    r"only \S+ (.* )?(is|are) available|no versions? of|not found in the package registry|"
+    r"could not find a version that satisfies|no matching distribution found",
+    re.IGNORECASE,
+)
+_failed_install_output = b""
+
+
+def _mirror_retry(args: "tuple[str, ...]", output: bytes, rerun) -> "bool | None":
+    """Reruns a failed install once through the mirror of the host its output shows failing.
+
+    The installer's probe exports ``_UNSLOTH_MIRROR_SPARE`` as ``host|VAR=URL|...`` entries for
+    the hosts it left on their defaults; each gets one rerun, and later installs keep the mirror
+    only when it worked. None when there is no such host.
+    """
+    global _PYTORCH_WHL_BASE
+    if not os.environ.get("_UNSLOTH_MIRROR_SPARE", "").strip():
+        return None
+    text = output.decode("utf-8", "replace")
+    torch = any(_PYTORCH_DEFAULT_WHL in arg for arg in args)
+    if not _MIRROR_TRANSPORT_ERROR.search(text):
+        if _is_pinned_index_cmd(args) or "--no-index" in args or not _MIRROR_UNSYNCED.search(text):
+            return None
+        host = "unsynced"
+    else:
+        pinned = _is_pinned_index_cmd(args) or any(
+            arg in ("--find-links", "--no-index") or "://" in arg for arg in args
+        )
+        host = next((name for name, pattern in _MIRROR_HOST_NAMES if pattern.search(text)), None)
+        if host is None and not re.search(r"https?://", text):
+            host = "torch" if torch else "pypi"
+        if host is None or (host == "torch" and not torch) or (host == "pypi" and pinned):
+            return None
+    spare = os.environ.get("_UNSLOTH_MIRROR_SPARE", "").split()
+    entry = next((e for e in spare if e.split("|", 1)[0] == host), None)
+    if entry is None:
+        return None
+    os.environ["_UNSLOTH_MIRROR_SPARE"] = " ".join(e for e in spare if e != entry)
+    pairs = dict(pair.split("=", 1) for pair in entry.split("|")[1:])
+    _step(
+        "mirror",
+        f"{_MIRROR_NAMES[host]} failed; retrying through {next(iter(pairs.values()))}",
+        _cyan,
+    )
+    saved = ({name: os.environ.get(name) for name in pairs}, _PYTORCH_WHL_BASE)
+    os.environ.update(pairs)
+    if host == "torch" and _PYTORCH_WHL_BASE == _PYTORCH_DEFAULT_WHL:
+        _PYTORCH_WHL_BASE = pairs["UNSLOTH_PYTORCH_MIRROR"].rstrip("/")
+    ok = False
+    try:
+        ok = rerun(*(arg.replace(_PYTORCH_DEFAULT_WHL, _PYTORCH_WHL_BASE) for arg in args))
+    finally:
+        if not ok:
+            for name, value in saved[0].items():
+                if value is None:
+                    os.environ.pop(name, None)
+                else:
+                    os.environ[name] = value
+            _PYTORCH_WHL_BASE = saved[1]
+    return ok
 
 
 def pip_install(
@@ -9400,6 +9516,24 @@ def pip_install(
     constrain: bool = True,
 ) -> None:
     """Build and run a pip install command (uses uv when available, falls back to pip)."""
+    try:
+        _pip_install_once(label, *args, req = req, constrain = constrain)
+    except SystemExit:
+        rerun = (
+            lambda *retry: _pip_install_once(label, *retry, req = req, constrain = constrain) or True
+        )
+        if not _mirror_retry(args, _failed_install_output, rerun):
+            raise
+
+
+def _pip_install_once(
+    label: str,
+    *args: str,
+    req: Path | None = None,
+    constrain: bool = True,
+) -> None:
+    global _failed_install_output
+    _failed_install_output = b""
     # Any pip operation can change which torch is installed, so the memoized
     # classification must not outlive it.
     _invalidate_torch_runtime_probe()
@@ -9447,6 +9581,7 @@ def pip_install(
                 if VERBOSE and result.stdout:
                     _safe_print(_redact_install_output(result.stdout))
                 return
+            _failed_install_output = result.stdout or b""
             if _woa_overrides_are_load_bearing():
                 _step("error", f"{label} failed and pip cannot stand in for it", _red)
                 _safe_print(
@@ -9486,6 +9621,7 @@ def pip_install(
         pip_label = f"{label} (pip)" if USE_UV else label
         result = run(pip_label, pip_cmd, check = False, env = pip_env)
         if result.returncode != 0:
+            _failed_install_output += result.stdout or b""
             # Retry once, and only after clearing something pip named as
             # unremovable: a blind retry of a failing install just doubles the wait.
             cleared = _purge_recordless_distributions(result.stdout)
@@ -9614,6 +9750,8 @@ def _has_working_git() -> bool:
 # _MLX_INSTALL_SPECS.
 _MLX_PINS: tuple[str, ...] = ("mlx==0.32.2", "mlx-metal==0.32.2", "mlx-lm==0.31.3")
 _MLX_VLM_SPEC = "mlx-vlm>=0.4.4,<=0.7.1"
+# Exact: llguidance.mlx / llguidance.hf are the API grammar_constraint.py binds to.
+_LLGUIDANCE_PIN = "llguidance==1.8.0"
 _MLX_NAMES: tuple[str, ...] = tuple(spec.partition("==")[0] for spec in _MLX_PINS) + ("mlx-vlm",)
 
 
@@ -11252,6 +11390,8 @@ def install_python_stack() -> int:
         # declared mlx-vlm range the step above honoured. Same gate, so the slot is spent on
         # every Apple Silicon run with torch, including the no-wheel branch.
         base_total += 1  # MLX stack re-resolve
+    if IS_MAC_ARM:
+        base_total += 1  # MLX grammar engine (step 11d), same gate as the step itself
     if NO_TORCH and not skip_base:
         # no-torch runtime deps, which this build announces on its own slot inside the core
         # step rather than folding into it. Same gate as the step itself.
@@ -11620,13 +11760,13 @@ def install_python_stack() -> int:
 
     # 4. Install the torch-matched torchao override. Reinstall only when the pin
     #    changes, since Windows can remove shared files during replacement.
-    #    Skip when torch is unavailable or Windows ROCm has no working build.
+    #    Skip when torch is unavailable.
     if NO_TORCH:
         _progress("dependency overrides (skipped, no torch)")
     elif _rocm_windows_torch_installed or _installed_torch_is_windows_rocm():
-        # No working Windows ROCm torchao build (crashes on import; stubbed at runtime).
-        _progress("dependency overrides (skipped, Windows ROCm)")
-        _note("Windows ROCm -- skipping torchao (no working build; stubbed at runtime)")
+        # Stock torchao dies on import here; only the export worker loads it (unsloth/_torchao_nodist.py).
+        _progress("dependency overrides (Windows ROCm)")
+        _install_torchao_for_torch(_probe_installed_torch_version(), default_index = True)
     else:
         _progress("dependency overrides")
         _install_torchao_for_torch(_probe_installed_torch_version())
@@ -11772,6 +11912,21 @@ def install_python_stack() -> int:
     #      rather than no install.
     _diffusers_main_step()
 
+    # 11d. Apple Silicon grammar engine, outside skip_base (install.sh always skips base); failure only loses MLX response_format.
+    if IS_MAC_ARM:
+        if not _full_deps_requested() and _exact_distribution_spec_is_installed(_LLGUIDANCE_PIN):
+            _progress("MLX grammar engine (satisfied, skipped)")
+        else:
+            _progress("MLX grammar engine")
+            try:
+                pip_install(
+                    "Installing the MLX grammar engine (llguidance)",
+                    "--no-cache-dir",
+                    _LLGUIDANCE_PIN,
+                )
+            except SystemExit:
+                _note(f"{_LLGUIDANCE_PIN} failed to install; MLX response_format stays unavailable")
+
     # 12. Patch metadata for single-env compatibility
     _finalize_ran = _dd_deps_ran or _dd_ran or _patch_metadata_is_pending()
     _progress("finalizing" if _finalize_ran else "finalizing (satisfied, skipped)")
@@ -11802,6 +11957,7 @@ def install_python_stack() -> int:
                 f"{_torch_after_repair} during the repair -- re-selecting torchao"
             )
             _install_torchao_for_torch(_torch_after_repair)
+        _evict_xformers_requiring_another_torch()
 
     # 13w. Windows torch flavor invariant, separate from step 13's Linux-shaped repair set
     # but in the same position: last, after the with-deps steps re-resolved torch.

@@ -82,7 +82,12 @@ def _job_status(
         repo_id = repo_id,
         variant = variant,
     )
-    return DownloadJobStatus(state = state, error = error, generation = generation)
+    return DownloadJobStatus(
+        state = state,
+        error = error,
+        generation = generation,
+        attempt = _registry.current_attempt(key),
+    )
 
 
 def _diffusion_load_in_flight(repo_id: str) -> bool:
@@ -116,6 +121,13 @@ def _load_in_flight(repo_id: str) -> bool:
     try:
         from core.inference.llama_cpp import hf_gguf_load_in_flight
         if hf_gguf_load_in_flight(repo_id):
+            return True
+    except Exception:
+        pass
+    try:
+        from core.systemone.laya_runtime import loading_repo_ids
+        key = download_registry.normalize_repo_key(repo_id)
+        if any(download_registry.normalize_repo_key(r) == key for r in loading_repo_ids()):
             return True
     except Exception:
         pass

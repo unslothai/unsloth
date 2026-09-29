@@ -1415,6 +1415,12 @@ def _put(model_id, **fields):
     )
 
 
+def test_an_older_clients_cache_width_survives_the_override_route(monkeypatch):
+    _mock_override_store(monkeypatch)
+    _put("org/m", mlx_kv_bits = 8)
+    assert settings.get_model_overrides()["org/m"]["mlx_kv_quant"] == "8"
+
+
 def test_model_override_roundtrip(monkeypatch):
     _mock_override_store(monkeypatch)
 
@@ -1993,7 +1999,7 @@ def test_build_index_covers_legacy_default_lmstudio_and_custom_roots(monkeypatch
     monkeypatch.setattr(
         studio_db, "list_scan_folders", lambda: [{"path": str(tmp_path / "custom")}]
     )
-    for sub in ("active", "previous", "legacy", "default", "lmstudio", "custom"):
+    for sub in ("active", "previous", "legacy", "default", "lmstudio", "custom", "custom/hub"):
         (tmp_path / sub).mkdir()
 
     resolver._build_index()
@@ -2004,6 +2010,7 @@ def test_build_index_covers_legacy_default_lmstudio_and_custom_roots(monkeypatch
     assert str((tmp_path / "default").resolve()) in hf
     assert str((tmp_path / "previous").resolve()) in hf
     assert str((tmp_path / "custom").resolve()) in hf
+    assert str((tmp_path / "custom" / "hub").resolve()) in hf
     assert str((tmp_path / "lmstudio").resolve()) in lm
 
 
@@ -4402,6 +4409,7 @@ def test_chat_audio_input_guards_target_before_switch(monkeypatch):
         gguf_only = False,
         audio_preflight = None,
         image_preflight = None,
+        tool_images_only = False,
     ):
         captured.update(
             require_vision = require_vision,
@@ -4492,6 +4500,58 @@ def test_completions_rejects_object_prompt_before_switch(monkeypatch):
         )
     assert exc.value.status_code == 400
     assert rec.calls == []  # no switch before rejection
+
+
+def _raise_reached(*_args, **_kwargs):
+    raise _Reached()
+
+
+_IGNORED_COMPLETIONS_PARAMS = [
+    ({"echo": True}, "echo"),
+    ({"suffix": " the end."}, "suffix"),
+    ({"best_of": 3}, "best_of"),
+    ({"best_of": 3, "n": 2}, "best_of"),
+    ({"best_of": 2, "stream": True}, "best_of"),
+]
+
+
+@pytest.mark.parametrize("extra, param", _IGNORED_COMPLETIONS_PARAMS)
+def test_completions_rejects_ignored_params_before_switch(monkeypatch, extra, param):
+    backend, rec = _wired(monkeypatch, _FakeBackend("org/A-GGUF"), ("/p/B", "Q8_0", "org/B-GGUF"))
+    body = {"model": "org/B-GGUF", "prompt": "hi", **extra}
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(inference_route.openai_completions(_json_body_request(body), "tester"))
+    assert exc.value.status_code == 400
+    assert exc.value.detail["error"]["code"] == "unsupported_parameter"
+    assert exc.value.detail["error"]["param"] == param
+    assert rec.calls == []
+
+
+@pytest.mark.parametrize("extra, param", _IGNORED_COMPLETIONS_PARAMS)
+def test_completions_rejects_ignored_params_without_switch(monkeypatch, extra, param):
+    backend, rec = _wired(monkeypatch, _FakeBackend("org/A-GGUF"), None, enabled = False)
+    monkeypatch.setattr(inference_route, "_fill_recommended_sampling_completions", _raise_reached)
+    body = {"prompt": "hi", "max_tokens": 8, **extra}
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(inference_route.openai_completions(_json_body_request(body), "tester"))
+    assert exc.value.status_code == 400
+    assert exc.value.detail["error"]["param"] == param
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {"echo": False, "suffix": "", "best_of": 1},
+        {"echo": None, "suffix": None, "best_of": None},
+        {"best_of": 2, "n": 2},
+    ],
+)
+def test_completions_default_ignored_params_still_proxy(monkeypatch, extra):
+    backend, rec = _wired(monkeypatch, _FakeBackend("org/A-GGUF"), None, enabled = False)
+    monkeypatch.setattr(inference_route, "_fill_recommended_sampling_completions", _raise_reached)
+    body = {"prompt": "hi", "max_tokens": 8, **extra}
+    with pytest.raises(_Reached):
+        asyncio.run(inference_route.openai_completions(_json_body_request(body), "tester"))
 
 
 def test_embeddings_rejects_object_input_before_switch(monkeypatch):
@@ -7356,7 +7416,7 @@ def test_saved_parallel_slots_reach_an_api_load(monkeypatch):
     assert rec.calls[0].n_parallel == 8
 
 
-def test_parallel_slots_are_stored_and_gated_on_gguf():
+def test_parallel_slots_are_stored_and_reach_either_backend():
     override = settings.normalize_model_override({"n_parallel": 8})
     assert override == {"n_parallel": 8}
     # Blank, out of range and non-integer all mean "follow the server-wide default".
@@ -7365,9 +7425,13 @@ def test_parallel_slots_are_stored_and_gated_on_gguf():
 
     gguf = settings.model_override_load_kwargs(override, is_gguf = True)
     assert gguf["n_parallel"] == 8
-    # A safetensors load has no llama-server slots, exactly as the picker gates it.
-    assert "n_parallel" not in settings.model_override_load_kwargs(override, is_gguf = False)
+    safetensors = settings.model_override_load_kwargs(override, is_gguf = False)
+    assert safetensors["n_parallel"] == 8
+    for flag in ("n_batch", "n_ubatch"):
+        stored = settings.normalize_model_override({flag: 512})
+        assert flag not in settings.model_override_load_kwargs(stored, is_gguf = False)
     LoadRequest(model_path = "unsloth/B-GGUF", **gguf)
+    LoadRequest(model_path = "unsloth/B", **safetensors)
 
 
 def test_override_route_persists_parallel_slots(override_store):
@@ -8331,6 +8395,18 @@ def test_scan_folder_storage_removals_report_if_a_row_changed(monkeypatch):
             assert connection.closed
 
 
+def test_out_of_range_scan_folder_ids_remove_nothing(monkeypatch):
+    import sqlite3
+
+    from hub.storage import scan_folders
+    for storage in (studio_db, scan_folders):
+        connection = sqlite3.connect(":memory:")
+        connection.execute("CREATE TABLE scan_folders (id INTEGER PRIMARY KEY, path TEXT)")
+        monkeypatch.setattr(storage, "get_connection", lambda connection = connection: connection)
+        for folder_id in (2**63, -(2**63) - 1):
+            assert storage.remove_scan_folder(folder_id) is False
+
+
 def test_noop_scan_folder_removals_do_not_invalidate_the_index(monkeypatch):
     from hub.services.models import local_inventory
 
@@ -8530,6 +8606,7 @@ def test_fill_absent_fields_carries_the_browser_only_settings_into_a_legacy_entr
         max_seq_length = 8192,
     )
     settings_route.update_openai_auto_switch_override(legacy, "tester")
+    store[settings.MODEL_OVERRIDES_SETTING_KEY]["unsloth/B-GGUF:Q4_K_M"]["mlx_kv_bits"] = 8
 
     backfill = settings_route.ModelOverridePayload(
         model_id = "unsloth/B-GGUF:Q4_K_M",
@@ -8537,6 +8614,7 @@ def test_fill_absent_fields_carries_the_browser_only_settings_into_a_legacy_entr
         max_seq_length = 2048,
         custom_context_length = 32768,
         kv_cache_dtype = "q8_0",
+        mlx_kv_quant = "tq-4",
         speculative_type = "ngram",
         gpu_ids = [0, 1],
         fill_absent_fields = True,
@@ -8551,6 +8629,7 @@ def test_fill_absent_fields_carries_the_browser_only_settings_into_a_legacy_entr
     assert entry["kv_cache_dtype"] == "q8_0"
     assert entry["speculative_type"] == "ngram"
     assert entry["gpu_ids"] == [0, 1]
+    assert settings.model_override_load_kwargs(entry, is_gguf = False)["mlx_kv_quant"] == "8"
     # One entry, not two: the fill resolves onto the key a load reads.
     assert list(store[settings.MODEL_OVERRIDES_SETTING_KEY]) == ["unsloth/B-GGUF:Q4_K_M"]
 
@@ -9006,22 +9085,44 @@ def test_two_spellings_of_one_cached_quant_do_not_delete_each_others_save(monkey
     assert stored[list(stored)[0]]["max_seq_length"] in (4096, 8192)
 
 
-def test_mlx_kv_bits_survives_the_whole_override_projection():
+def test_mlx_kv_quant_survives_the_whole_override_projection():
     # Dropped here, an API auto-switch would load a remembered MLX model at full
-    # precision while the picker honored the width.
-    for bits in (8, 6, 5, 4, 3, 2):
-        assert settings.normalize_model_override({"mlx_kv_bits": bits}) == {"mlx_kv_bits": bits}
+    # precision while the picker honored the setting.
+    for quant in ("8", "6", "5", "4", "3", "2", "tq-4", "tq-3.5", "tq-3", "tq-2"):
+        assert settings.normalize_model_override({"mlx_kv_quant": quant}) == {"mlx_kv_quant": quant}
 
-    # A discrete set, so an in-range width can still be one mx.quantize rejects.
-    # bool is an int subclass, and a string width would reach LoadRequest untyped.
-    for rejected in (7, 1, 0, 9, True, False, "4", 4.5, None):
-        assert settings.normalize_model_override({"mlx_kv_bits": rejected}) == {}
+    for rejected in ("7", "3.5", "tq-8", "tq-6", "auto", 4, True, None):
+        assert settings.normalize_model_override({"mlx_kv_quant": rejected}) == {}
+    assert settings.normalize_model_override({"mlx_kv_bits": 8}) == {"mlx_kv_quant": "8"}
+    # A hand-edited width drops alone instead of aborting the whole override.
+    for stored in (7, "invalid", "4", True, [4]):
+        assert settings.normalize_model_override({"mlx_kv_bits": stored}) == {}
+        assert settings.model_override_load_kwargs({"mlx_kv_bits": stored}, is_gguf = False) == {}
+    assert settings.model_override_load_kwargs({"mlx_kv_bits": 8}, is_gguf = False) == {
+        "mlx_kv_quant": "8"
+    }
+    assert (
+        settings.model_override_load_kwargs({"mlx_kv_quant": None, "mlx_kv_bits": 8}, is_gguf = False)
+        == {}
+    )
+    both = {"mlx_kv_quant": "auto", "mlx_kv_bits": 4}
+    assert settings.normalize_model_override(both) == {}
+    assert settings.model_override_load_kwargs(both, is_gguf = False) == {}
+    assert LoadRequest(model_path = "unsloth/A", **both).mlx_kv_quant == "auto"
+
+    def _folded(**kw):
+        payload = settings_route.ModelOverridePayload(model_id = "m", **kw)
+        return payload.mlx_kv_quant, payload.mlx_kv_bits
+
+    assert _folded(mlx_kv_bits = 8) == ("8", None)
+    assert _folded(mlx_kv_quant = None, mlx_kv_bits = 8) == (None, None)
+    assert _folded(mlx_kv_quant = "tq-4", mlx_kv_bits = 8) == ("tq-4", None)
 
     # Ungated on is_gguf, matching the picker's own load payload.
     for is_gguf in (True, False):
-        kwargs = settings.model_override_load_kwargs({"mlx_kv_bits": 4}, is_gguf = is_gguf)
-        assert kwargs["mlx_kv_bits"] == 4
-        assert LoadRequest(model_path = "unsloth/A", **kwargs).mlx_kv_bits == 4
+        kwargs = settings.model_override_load_kwargs({"mlx_kv_quant": "tq-4"}, is_gguf = is_gguf)
+        assert kwargs["mlx_kv_quant"] == "tq-4"
+        assert LoadRequest(model_path = "unsloth/A", **kwargs).mlx_kv_quant == "tq-4"
 
 
 def _idle_backend(kw, monkeypatch, *, user_loaded):
@@ -9624,6 +9725,7 @@ def test_a_video_request_labels_the_switch_refusal_video(monkeypatch):
         require_video = False,
         audio_preflight = None,
         image_preflight = None,
+        tool_images_only = False,
     ):
         captured.update(
             require_vision = require_vision,
@@ -10004,11 +10106,13 @@ def test_auto_switch_loads_an_unloaded_mlx_model(monkeypatch):
         "unsloth/Qwen3-MLX", "/srv/models/Qwen3-MLX", (), is_gguf = False
     )
     monkeypatch.setattr(resolver, "_scan", (time.monotonic(), {"unsloth/qwen3-mlx": entry}))
+    settings.set_model_override("unsloth/Qwen3-MLX", n_parallel = 8)
 
     _run_hook("unsloth/Qwen3-MLX")
 
     assert [c.model_path for c in calls] == ["/srv/models/Qwen3-MLX"]
     assert calls[0].gguf_variant is None
+    assert calls[0].n_parallel == 8
     # The alias lands on the orchestrator, leaving the llama.cpp backend untouched.
     assert orchestrator._openai_advertised_id == "unsloth/Qwen3-MLX"
     assert getattr(llama, "_openai_advertised_id", None) is None
@@ -11675,6 +11779,12 @@ def test_a_stale_idle_reload_stash_diverts_a_refusal_into_a_reload(monkeypatch):
         )(),
     )
     kw._last_unloaded_model = ("unsloth/Idle-GGUF", "Q4_K_M", "unsloth/Idle-GGUF")
+    # Fictional repo, blocked Hub: answer "no GGUF" so resolution still reaches the double (#11551).
+    import utils.models.model_config as model_config
+
+    monkeypatch.setattr(
+        model_config, "detect_gguf_model_remote", lambda identifier, hf_token = None: None
+    )
 
     with pytest.raises(Exception):
         asyncio.run(

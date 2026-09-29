@@ -79,6 +79,7 @@ import {
   useNativeModelDrop,
   useNativePathLeasesSupported,
 } from "@/features/native-intents";
+import { isNpuModelId } from "@/features/npu";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { isTauri } from "@/lib/api-base";
 import { chatModelLoaded } from "./lib/chat-model-loaded";
@@ -176,7 +177,13 @@ import {
   useChatSidebarItems,
 } from "./hooks/use-chat-sidebar-items";
 import { usePinnedChatsStore } from "./stores/pinned-chats-store";
-import { usePinnedProjectsStore } from "./stores/pinned-projects-store";
+import {
+  normalizeSectionName,
+  useSidebarOrganizationStore,
+} from "./stores/sidebar-organization-store";
+import { SectionNameDialog } from "./components/section-name-dialog";
+import { ProjectMenuItems } from "./components/project-menu-items";
+import { useFileProjectInSection } from "./hooks/use-file-project-in-section";
 import {
   clearTrainingCompareHandoff,
   getTrainingCompareHandoff,
@@ -1392,26 +1399,11 @@ function ProjectLanding({
   } | null>(null);
 
   // Project-level options (the header kebab menu).
-  const pinnedProjectIds = usePinnedProjectsStore((s) => s.pinnedIds);
-  const togglePinProject = usePinnedProjectsStore((s) => s.togglePin);
-  const projectPinned = pinnedProjectIds.includes(projectId);
   const [editingProject, setEditingProject] = useState(false);
   const [deletingProject, setDeletingProject] = useState(false);
-
-  async function handleProjectExport(
-    format: ProjectChatExportFormat,
-  ): Promise<void> {
-    try {
-      const threads = await listStoredChatThreads({
-        projectId,
-        includeArchived: false,
-      });
-      const ids = [...new Set(threads.map((t) => t.id))];
-      for (const id of ids) await exportProjectConversation(id, format);
-    } catch (error) {
-      if (!isDownloadCancelled(error)) toast.error("Export failed.");
-    }
-  }
+  const createCustomSection = useSidebarOrganizationStore((s) => s.createCustomSection);
+  const fileProjectInSection = useFileProjectInSection();
+  const [creatingSection, setCreatingSection] = useState(false);
 
   /** A project workspace is a bigger thing to remove than a chat's sandbox, so it asks from
    *  scratch rather than following the chat preference, as the sidebar does it. */
@@ -1761,38 +1753,14 @@ function ProjectLanding({
                   </button>
                 )}
               >
-                <DropdownMenuItem onSelect={() => setEditingProject(true)}>
-                  <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} className="size-icon" />
-                  <span>Edit project</span>
-                </DropdownMenuItem>
-                <DropdownMenuItem onSelect={() => togglePinProject(projectId)}>
-                  <HugeiconsIcon icon={projectPinned ? PinOffIcon : PinIcon} strokeWidth={1.75} className="size-icon" />
-                  <span>{projectPinned ? "Unpin project" : "Pin project"}</span>
-                </DropdownMenuItem>
-                <DropdownMenuSub>
-                  <DropdownMenuSubTrigger>
-                    <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} className="size-icon" />
-                    <span>Export</span>
-                  </DropdownMenuSubTrigger>
-                  <DropdownMenuSubContent className="unsloth-plus-menu w-48">
-                    {PROJECT_CHAT_EXPORT_OPTIONS.map(({ label, format }) => (
-                      <DropdownMenuItem
-                        key={format}
-                        onSelect={() => void handleProjectExport(format)}
-                      >
-                        {label}
-                      </DropdownMenuItem>
-                    ))}
-                  </DropdownMenuSubContent>
-                </DropdownMenuSub>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem
-                  variant="destructive"
-                  onSelect={() => openProjectDelete()}
-                >
-                  <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-icon" />
-                  <span>Delete project</span>
-                </DropdownMenuItem>
+                <ProjectMenuItems
+                  project={{ id: projectId, name: projectName }}
+                  chatCount={items.length}
+                  onEdit={() => setEditingProject(true)}
+                  onDelete={() => openProjectDelete()}
+                  onNewSection={() => setCreatingSection(true)}
+                  subClassName="unsloth-plus-menu"
+                />
               </NonModalDropdownMenu>
             </div>
 
@@ -1842,7 +1810,7 @@ function ProjectLanding({
                     return (
                       <div
                         key={`${item.type}:${item.id}`}
-                        className="flex min-h-[calc(58px*var(--ui-space-scale,1))] w-full items-center rounded-full px-4 py-2"
+                        className="flex min-h-[calc(58px*var(--ui-space-scale,1))] w-full items-center rounded-[14px] px-4 py-2"
                       >
                         <div className="min-w-0 flex-1">
                           <input
@@ -1880,7 +1848,7 @@ function ProjectLanding({
                             onFocus={(event) => event.currentTarget.select()}
                             maxLength={120}
                             aria-label="Rename chat"
-                            className="w-full border-0 bg-transparent text-ui-15 font-semibold leading-5 text-foreground outline-none"
+                            className="w-full border-0 bg-transparent text-ui-15 leading-5 text-foreground outline-none"
                           />
                         </div>
                       </div>
@@ -1889,7 +1857,7 @@ function ProjectLanding({
                   return (
                     <div
                       key={`${item.type}:${item.id}`}
-                      className="group relative flex min-h-[calc(58px*var(--ui-space-scale,1))] w-full items-center rounded-full transition-colors hover:bg-nav-surface-hover has-[[data-state=open]]:bg-nav-surface-hover"
+                      className="group relative flex min-h-[calc(58px*var(--ui-space-scale,1))] w-full items-center rounded-[14px] transition-colors hover:bg-nav-surface-hover has-[[data-state=open]]:bg-nav-surface-hover"
                     >
                       <button
                         type="button"
@@ -1902,10 +1870,10 @@ function ProjectLanding({
                                 : { compare: item.id, project: projectId },
                           });
                         }}
-                        className="flex min-h-[calc(58px*var(--ui-space-scale,1))] min-w-0 flex-1 items-center gap-4 rounded-full px-4 py-2 text-left"
+                        className="flex min-h-[calc(58px*var(--ui-space-scale,1))] min-w-0 flex-1 items-center gap-4 rounded-[14px] px-4 py-2 text-left"
                       >
                         <div className="min-w-0 flex-1">
-                          <div className="truncate text-ui-15 font-semibold leading-5 text-foreground">
+                          <div className="truncate text-ui-15 leading-5 text-foreground">
                             {displayTitle}
                           </div>
                         </div>
@@ -2097,6 +2065,17 @@ function ProjectLanding({
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+      <SectionNameDialog
+        open={active && creatingSection}
+        mode="create"
+        onOpenChange={(open) => !open && setCreatingSection(false)}
+        onSubmit={(name) => {
+          const sectionId = createCustomSection(name);
+          if (sectionId) {
+            fileProjectInSection({ id: projectId, name: projectName }, sectionId, normalizeSectionName(name));
+          }
+        }}
+      />
       {/* The sidebar's dialog, so a project is edited the same way wherever it is opened from.
           Delete hands back here, which owns the confirmation below. */}
       <EditProjectDialog
@@ -2302,6 +2281,15 @@ export function ChatPage({
   );
   const contextUsage = useChatRuntimeStore((state) => state.contextUsage);
   const loadedIsGguf = useChatRuntimeStore((state) => state.loadedIsGguf);
+  const loadedContextUnboundedWhenBatched = useChatRuntimeStore(
+    (state) => state.loadedContextUnboundedWhenBatched,
+  );
+  const loadedParallelSlots = useChatRuntimeStore(
+    (state) => state.loadedParallelSlots,
+  );
+  const loadedContextBudget = useChatRuntimeStore(
+    (state) => state.loadedContextBudget,
+  );
   const loadedContextEnforced = useChatRuntimeStore(
     (state) => state.loadedContextEnforced,
   );
@@ -2397,6 +2385,7 @@ export function ChatPage({
 
     isModelSelectionIntentCurrent,
     selectModel,
+    loadNpuModel,
     ejectModel,
     cancelLoading,
     loadingModel,
@@ -3226,6 +3215,13 @@ export function ChatPage({
           return;
         }
       }
+      if (isNpuModelId(value)) {
+        void loadNpuModel(value, {
+          forceReload: meta?.forceReload,
+          config: meta?.config,
+        });
+        return;
+      }
       if (isExternalSelection) {
         // Any pending local preflight is stale now, even before it has published a loading run.
         const externalIntentId = invalidatePendingModelSelection();
@@ -3470,6 +3466,7 @@ export function ChatPage({
     [
       activeThreadId,
       externalProvidersForChat,
+      loadNpuModel,
       modelsFromStore,
       stageOrLoad,
       view,
@@ -3859,6 +3856,7 @@ export function ChatPage({
       updatedAt: lora.updatedAt,
       source: lora.source,
       exportType: lora.exportType,
+      sizeBytes: lora.sizeBytes,
       audioType: lora.audioType,
     }));
     return [...fromLoras, ...localModels];
@@ -4245,6 +4243,9 @@ export function ChatPage({
                   platformChatOnlyReason,
                 )}
                 contextEnforced={loadedContextEnforced}
+                contextUnboundedWhenBatched={loadedContextUnboundedWhenBatched}
+                parallelSlots={loadedParallelSlots}
+                contextBudget={loadedContextBudget}
                 className="h-[var(--studio-chat-control-height,34px)]"
               />
             ) : null}
@@ -4458,6 +4459,7 @@ export function ChatPage({
               modelId={inferenceParams.checkpoint}
               ggufVariant={activeGgufVariant ?? null}
               isGguf={activeModelIsGguf}
+              isLora={activeModelIsLora}
               isDiffusion={activeModelIsDiffusion}
               nativeContextLength={nativeContextLength}
               loadedContextLength={loadedContextLength}

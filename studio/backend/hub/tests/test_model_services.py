@@ -508,6 +508,12 @@ def test_big_endian_detection_ignores_model_name_be_token():
     )
 
 
+def test_pick_best_gguf_prefers_an_unlisted_quant_only_over_full_precision():
+    assert gguf.pick_best_gguf(["model-bf16.gguf", "model-Q3_K.gguf"]) == "model-Q3_K.gguf"
+    assert gguf.pick_best_gguf(["model-F32.gguf", "model-bf16.gguf"]) == "model-bf16.gguf"
+    assert gguf.pick_best_gguf(["model-APEX.gguf", "model-Q4_0.gguf"]) == "model-APEX.gguf"
+
+
 def test_custom_inventory_filters_mtp_companions_at_registered_root(tmp_path, monkeypatch):
     root = tmp_path / "MTP"
     root.mkdir()
@@ -1455,6 +1461,73 @@ def test_local_inventory_lists_a_hermes_dir_registered_as_a_scan_folder_once(mon
     ]
 
 
+def _hf_home_with_gguf(hf_home: Path) -> None:
+    repo = hf_home / "hub" / "models--Org--Model-GGUF"
+    blob = repo / "blobs" / ("a" * 64)
+    blob.parent.mkdir(parents = True)
+    blob.write_bytes(b"GGUF" + b"\x03\x00\x00\x00" + b"\x00" * 64)
+    snapshot = repo / "snapshots" / ("0" * 40)
+    snapshot.mkdir(parents = True)
+    (snapshot / "Model-Q4_K_M.gguf").symlink_to(blob)
+    (repo / "refs").mkdir()
+    (repo / "refs" / "main").write_text("0" * 40)
+
+
+@pytest.mark.parametrize("registered", [("hf_home",), ("hf_home/hub",), ("hf_home", "hf_home/hub")])
+def test_local_inventory_lists_a_registered_hf_home(monkeypatch, tmp_path, registered):
+    _hf_home_with_gguf(tmp_path / "hf_home")
+    monkeypatch.setattr(local_inventory, "note_scan_folder_scanned", lambda *_a, **_k: None)
+
+    rows = asyncio.run(
+        local_inventory._collect_models_from_default_sources(
+            tmp_path / "models",
+            tmp_path / "hf",
+            tmp_path / "legacy",
+            tmp_path / "default",
+            (),
+            (),
+            (),
+            (),
+            [{"path": str(tmp_path / path)} for path in registered],
+        )
+    )
+    rows = local_inventory._filter_and_dedupe_local_models(rows)
+
+    assert [(row.source, row.model_id) for row in rows] == [("hf_cache", "Org/Model-GGUF")]
+
+
+def test_local_inventory_checks_for_hf_home_hub_off_the_event_loop(monkeypatch, tmp_path):
+    _hf_home_with_gguf(tmp_path / "hf_home")
+    monkeypatch.setattr(local_inventory, "note_scan_folder_scanned", lambda *_a, **_k: None)
+    real = local_inventory.hf_cache_scan.scan_folder_hf_caches
+    on_loop = []
+
+    def _spy(folder):
+        try:
+            asyncio.get_running_loop()
+            on_loop.append(True)
+        except RuntimeError:
+            on_loop.append(False)
+        return real(folder)
+
+    monkeypatch.setattr(local_inventory.hf_cache_scan, "scan_folder_hf_caches", _spy)
+    asyncio.run(
+        local_inventory._collect_models_from_default_sources(
+            tmp_path / "models",
+            tmp_path / "hf",
+            tmp_path / "legacy",
+            tmp_path / "default",
+            (),
+            (),
+            (),
+            (),
+            [{"path": str(tmp_path / "hf_home")}],
+        )
+    )
+
+    assert on_loop and not any(on_loop)
+
+
 def test_list_local_gguf_variants_skips_big_endian_sibling(tmp_path):
     (tmp_path / "model-Q4_K_M-be.gguf").write_bytes(b"x" * 100)
     (tmp_path / "model-Q4_K_M.gguf").write_bytes(b"y" * 10)
@@ -2274,6 +2347,7 @@ def test_cached_models_scan_marks_a_companion_only_pipeline_partial(monkeypatch,
     )
 
     assert row["partial"] is True
+    assert row["companion_prefetch"] is True
     # A companion-only snapshot arrived intact, so it has no Resume / Redownload story.
     assert row["partial_transport"] is None
 
@@ -2296,6 +2370,7 @@ def test_cached_models_scan_keeps_a_complete_pipeline_loadable(monkeypatch, tmp_
     )
 
     assert row["partial"] is False
+    assert row["companion_prefetch"] is False
     assert row["single_file"] is False
     assert row["load_id"] == "Org/Pipeline-Complete"
 
@@ -3999,6 +4074,62 @@ def test_hf_cache_scan_fallback_row_uses_local_model_info_alias(monkeypatch, tmp
     assert rows[0].model_format == "unknown"
 
 
+@pytest.mark.parametrize(
+    "with_denoiser, download_partial, expected",
+    [(False, False, True), (True, False, False), (False, True, False)],
+    ids = ["companion-only", "complete-pipeline", "interrupted-download"],
+)
+def test_hf_cache_scan_flags_a_companion_only_pipeline(
+    monkeypatch, tmp_path, with_denoiser, download_partial, expected
+):
+    """The local listing must carry companion_prefetch like the cached one: the Hub merges both."""
+    cache_dir = tmp_path / "hub"
+    repo_dir = cache_dir / "models--Org--Pipeline"
+    snapshot = repo_dir / "snapshots" / _SNAPSHOT_SHA
+    for rel in ("vae/diffusion_pytorch_model.safetensors", "text_encoder/model.safetensors"):
+        (snapshot / rel).parent.mkdir(parents = True, exist_ok = True)
+        (snapshot / rel).write_bytes(b"weights")
+    (snapshot / "transformer").mkdir(parents = True, exist_ok = True)
+    (snapshot / "transformer" / "config.json").write_text("{}", encoding = "utf-8")
+    if with_denoiser:
+        (snapshot / "transformer" / "diffusion_pytorch_model.safetensors").write_bytes(b"weights")
+    (snapshot / "model_index.json").write_text(
+        json.dumps(
+            {
+                "_class_name": "QwenImagePipeline",
+                "transformer": ["diffusers", "QwenImageTransformer2DModel"],
+                "vae": ["diffusers", "AutoencoderKLQwenImage"],
+                "text_encoder": ["transformers", "Qwen2_5_VLForConditionalGeneration"],
+            }
+        ),
+        encoding = "utf-8",
+    )
+    (repo_dir / "refs").mkdir(parents = True, exist_ok = True)
+    (repo_dir / "refs" / "main").write_text(_SNAPSHOT_SHA)
+    (repo_dir / "blobs").mkdir(parents = True, exist_ok = True)
+    (repo_dir / "blobs" / "blob").write_bytes(b"content")
+    monkeypatch.setattr(
+        local_inventory.hf_cache_scan,
+        "is_snapshot_partial",
+        lambda *_args, **_kwargs: download_partial,
+    )
+    monkeypatch.setattr(
+        local_inventory.hf_cache_scan,
+        "is_gguf_repo_partial",
+        lambda *_args, **_kwargs: False,
+    )
+
+    rows = [
+        row for row in local_inventory._scan_hf_cache(cache_dir) if row.model_id == "Org/Pipeline"
+    ]
+
+    assert rows
+    assert all(row.companion_prefetch is expected for row in rows)
+    if expected:
+        # Still partial, so no picker loads a pipeline without its denoiser.
+        assert all(row.partial for row in rows)
+
+
 def test_hf_cache_scan_uses_gguf_partial_row_for_variant_state(monkeypatch, tmp_path):
     monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
     cache_dir = tmp_path / "hub"
@@ -4083,6 +4214,32 @@ def test_qwen3_asr_gguf_name_hint_is_not_classified_as_chat(monkeypatch, tmp_pat
     assert catalog_classification._gguf_path_task(chat) == "text-generation"
 
 
+def test_a_gguf_with_no_architecture_is_classified_from_its_name(monkeypatch, tmp_path):
+    """``unsloth/Qwen-Image-2.1-GGUF`` files have kv_count 0; a name that says nothing stays None."""
+    from hub.services.models import catalog_classification
+
+    image = tmp_path / "qwen-image-2.1-Q4_K_M.gguf"
+    chat = tmp_path / "Some-Chat-7B-Q4_K_M.gguf"
+    image.write_bytes(b"gguf")
+    chat.write_bytes(b"gguf")
+    monkeypatch.setattr(catalog_classification, "_gguf_architecture", lambda _path: None)
+    monkeypatch.setattr(catalog_classification, "_gguf_family_buildable", lambda _hints: True)
+
+    assert (
+        catalog_classification._gguf_path_task(image, ("unsloth/Qwen-Image-2.1-GGUF",))
+        == "text-to-image"
+    )
+    assert catalog_classification._gguf_path_task(chat) is None
+
+    # H3's conditioner is kv_count 0 too; only the fl2va / ref2va denoisers are video.
+    conditioner = tmp_path / "qwen3vl_32b_minimax_h3-Q4_K_M.gguf"
+    denoiser = tmp_path / "minimax_h3_fl2va_pruned-Q4_K.gguf"
+    conditioner.write_bytes(b"gguf")
+    denoiser.write_bytes(b"gguf")
+    assert catalog_classification._gguf_path_task(conditioner) is None
+    assert catalog_classification._gguf_path_task(denoiser) == "text-to-video"
+
+
 def test_local_inventory_filters_embedder_configured_by_snapshot_path(monkeypatch, tmp_path):
     from core.rag import config as rag_config
 
@@ -4126,6 +4283,23 @@ def test_model_download_job_helpers_preserve_idle_shape():
     assert key == "org/model::"
     assert status.state == "idle"
     assert status.error is None
+    assert status.attempt == 1
+
+
+def test_model_download_status_reports_the_retry_attempt(monkeypatch):
+    registry = download_registry.DownloadRegistry()
+    monkeypatch.setattr(downloads, "_registry", registry)
+    key = downloads._download_job_key("Org/Model", "Q4_K_M")
+    assert registry.claim(key, download_registry.TRANSPORT_XET)[0]
+    generation = registry.current_generation(key)
+    registry.release_active_slot(key)
+    assert registry.claim(
+        key, download_registry.TRANSPORT_XET, generation = generation, replace_active = True
+    )[0]
+
+    status = downloads._job_status(key)
+
+    assert (status.generation, status.attempt) == (generation, 2)
 
 
 def test_gguf_repo_partial_treats_completed_disk_variant_as_clean(monkeypatch, tmp_path):
@@ -6343,6 +6517,9 @@ def test_dataset_status_includes_generation(monkeypatch):
         def current_generation(self, _key):
             return 4
 
+        def current_attempt(self, _key):
+            return 2
+
     monkeypatch.setattr(dataset_downloads, "_registry", _Registry())
     monkeypatch.setattr(
         dataset_downloads,
@@ -6354,6 +6531,7 @@ def test_dataset_status_includes_generation(monkeypatch):
 
     assert result.state == "running"
     assert result.generation == 4
+    assert result.attempt == 2
 
 
 def _write_local_model(
