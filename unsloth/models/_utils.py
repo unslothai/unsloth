@@ -590,8 +590,19 @@ def _flex_kernel_options_for_head_dim(head_dim):
     return dict(_FLEX_LARGE_HEAD_DIM_KERNEL_OPTIONS)
 
 
+def _flex_call_needs_backward(query, key, value):
+    """True when this flex call is recorded for autograd on an accelerator."""
+    try:
+        if not torch.is_grad_enabled() or query.device.type == "cpu":
+            return False
+        return any(getattr(t, "requires_grad", False) for t in (query, key, value))
+    except Exception:
+        return False
+
+
 def _wrap_flex_attention_forward(flex_attention_forward):
-    """Add kernel_options to a registered `flex_attention` function, for large head dims only."""
+    """Add kernel_options to a registered `flex_attention` function: block sizes above head_dim
+    256, and the main flex kernel for calls that need a backward."""
     if getattr(flex_attention_forward, "_unsloth_flex_kernel_options", False):
         return flex_attention_forward
 
@@ -606,6 +617,14 @@ def _wrap_flex_attention_forward(flex_attention_forward):
             )
         except Exception:
             kernel_options = None
+        # Inductor picks flex_decoding for a static query length below 128. Its logsumexp gets a
+        # padded batch stride (comprehensive_padding) that the backward template ignores, so every
+        # batch row after the first reads a shifted LSE and the gradients blow up.
+        if _flex_call_needs_backward(query, key, value) and "BACKEND" not in (
+            kwargs.get("kernel_options") or {}
+        ):
+            kernel_options = kernel_options or {}
+            kernel_options["FORCE_USE_FLEX_ATTENTION"] = True
         if kernel_options is not None:
             # A caller that already asked for something keeps it: only fill the gaps.
             requested = kwargs.get("kernel_options") or {}
@@ -619,7 +638,7 @@ def _wrap_flex_attention_forward(flex_attention_forward):
 
 
 def patch_flex_attention_kernel_options():
-    """Wrap the registered flex_attention to pass kernel_options above head_dim 256.
+    """Wrap the registered flex_attention to pass the kernel_options of _wrap_flex_attention_forward.
 
     Unconditional, since explicit requests and _FLEX_PREFERRED_MODELS reach flex too. Returns True
     when the registered function is wrapped.

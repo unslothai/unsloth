@@ -2293,6 +2293,7 @@ def _vllm_will_load_weights(fast_inference, num_labels = None):
 def _fused_lora_skip_reason(
     lora_dropout,
     bias,
+    float32_base = False,
     fsdp = False,
 ) -> str:
     """Why patch_peft_model skipped the fused LoRA kernels, for the patched layers summary.
@@ -2305,6 +2306,8 @@ def _fused_lora_skip_reason(
         reasons.append(f"lora_dropout = {lora_dropout}")
     if bias != "none":
         reasons.append(f"bias = '{bias}'")
+    if float32_base:
+        reasons.append("the base weights are float32")
     if fsdp:
         reasons.append("FSDP shards the weights they read (UNSLOTH_FORCE_FUSED_LORA=1 overrides)")
     if not reasons:
@@ -2313,6 +2316,12 @@ def _fused_lora_skip_reason(
         f" The fused LoRA kernels were skipped because {' and '.join(reasons)}, "
         "which is why the counts are zero. Training is unaffected."
     )
+
+
+def _base_weight_dtype(proj):
+    weight = getattr(proj, "base_layer", proj).weight
+    quant_state = getattr(weight, "quant_state", None)
+    return quant_state.dtype if quant_state is not None else weight.dtype
 
 
 _FUSED_LORA_MLPS = (apply_lora_mlp_swiglu, apply_lora_mlp_geglu_exact, apply_lora_mlp_geglu_approx)
@@ -3961,9 +3970,19 @@ class FastLlamaModel:
             else apply_lora_mlp
         )
 
+        # The fused kernels assume 16-bit base weights; float32 falls back to PEFT's own forward.
+        float32_base = (
+            _base_weight_dtype(model.model.model.layers[0].self_attn.q_proj) == torch.float32
+        )
         # Fused kernels read `.weight` directly, bypassing FSDP's unshard hook, so under FSDP they see shard views (#409).
         fused_lora_declined_for_fsdp = fsdp_will_wrap()
-        if lora_dropout == 0 and bias == "none" and not fused_lora_declined_for_fsdp:
+
+        if (
+            lora_dropout == 0
+            and bias == "none"
+            and not float32_base
+            and not fused_lora_declined_for_fsdp
+        ):
             for idx, layer in enumerate(model.model.model.layers):
                 if model_type != "falcon_h1":
                     # LoRAMLP.apply has no gate/down multiplier support yet, so falcon h1 is not patched for now.
@@ -4042,7 +4061,9 @@ class FastLlamaModel:
                     )
 
         # A zero count reads as a failure, so say why the fused kernels were skipped.
-        unfused_reason = _fused_lora_skip_reason(lora_dropout, bias, fused_lora_declined_for_fsdp)
+        unfused_reason = _fused_lora_skip_reason(
+            lora_dropout, bias, float32_base, fsdp = fused_lora_declined_for_fsdp
+        )
         logger.warning_once(
             f"Unsloth {__version__} patched {len(model.model.model.layers)} layers with "
             f"{n_qkv} QKV layers, {n_o} O layers and {n_mlp} MLP layers.{unfused_reason}",

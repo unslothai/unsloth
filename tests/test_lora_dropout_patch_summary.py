@@ -64,13 +64,20 @@ def test_reason_appends_cleanly_to_the_summary_sentence():
 
 
 @pytest.mark.parametrize(
-    "lora_dropout,bias,fsdp",
-    list(itertools.product([0, 0.0, 0.1, 0.5], ["none", "all", "lora_only"], [False, True])),
+    "lora_dropout,bias,float32_base,fsdp",
+    list(
+        itertools.product(
+            [0, 0.0, 0.1, 0.5], ["none", "all", "lora_only"], [False, True], [False, True]
+        )
+    ),
 )
-def test_reason_is_non_empty_exactly_when_the_fused_gate_is_closed(lora_dropout, bias, fsdp):
+def test_reason_is_non_empty_exactly_when_the_fused_gate_is_closed(
+    lora_dropout, bias, float32_base, fsdp
+):
     """Parity with the fused-kernel gate in patch_peft_model."""
-    fused_installed = lora_dropout == 0 and bias == "none" and not fsdp
-    assert bool(_fused_lora_skip_reason(lora_dropout, bias, fsdp)) is not fused_installed
+    fused_installed = lora_dropout == 0 and bias == "none" and not float32_base and not fsdp
+    reason = _fused_lora_skip_reason(lora_dropout, bias, float32_base, fsdp = fsdp)
+    assert bool(reason) is not fused_installed
 
 
 def _gate_tests(source: str) -> list[str]:
@@ -91,7 +98,7 @@ def test_patch_peft_model_still_gates_the_fused_kernels_on_the_same_values():
     the summary starts reporting zero counts with no reason again."""
     source = inspect.getsource(llama_module.FastLlamaModel.patch_peft_model)
     assert _gate_tests(source) == [
-        "lora_dropout == 0 and bias == 'none' and (not fused_lora_declined_for_fsdp)"
+        "lora_dropout == 0 and bias == 'none' and (not float32_base) and (not fused_lora_declined_for_fsdp)"
     ]
 
 
@@ -99,7 +106,7 @@ def test_the_summary_call_carries_the_reason():
     source = inspect.getsource(llama_module.FastLlamaModel.patch_peft_model)
     flat = "".join(source.split())
     assert (
-        "unfused_reason=_fused_lora_skip_reason(lora_dropout,bias,fused_lora_declined_for_fsdp)"
+        "unfused_reason=_fused_lora_skip_reason(lora_dropout,bias,float32_base,fsdp=fused_lora_declined_for_fsdp)"
         in flat
     )
     assert "MLP layers.{unfused_reason}" in source
