@@ -6811,7 +6811,6 @@ def _report_live_llama_timings(callback, chunk) -> None:
                 )
         except (TypeError, ValueError, OverflowError):
             pass
-    # needs_phase=False: the sink already holds token_generation for this round.
     if getattr(callback, "needs_phase", True) and _llama_chunk_has_generated_output(chunk):
         sample["running_phase"] = "token_generation"
     if not sample:

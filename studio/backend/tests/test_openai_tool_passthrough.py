@@ -7476,7 +7476,6 @@ class TestApiMonitorProviderAndCompletionStreams:
             body = b"".join([chunk async for chunk in response.body_iterator])
 
             assert upstream_bodies[0]["return_progress"] is True
-            # A dropped progress event must not starve the prefill keepalive.
             assert (b": keep-alive" in body) is not client_progress
             assert upstream_bodies[0]["stream_options"]["include_usage"] is True
             assert b'"usage"' not in body
@@ -8874,7 +8873,6 @@ class TestApiMonitorProviderAndCompletionStreams:
             assert entry["running_phase"] == "token_generation"
             assert entry["prompt_progress"]["processed"] == 1200
             assert entry["prompt_progress"]["percent"] == 60.0
-            # Progress reaches the caller only on its own return_progress opt-in.
             assert ("prompt_progress" in result.body) is client_progress
             assert '"ok"' in result.body
 

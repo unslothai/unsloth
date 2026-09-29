@@ -820,7 +820,6 @@ def _monitor_response_headers(headers: Optional[dict], monitor_id: Optional[str]
 
 
 def _is_prefill_progress_only(data) -> bool:
-    """A llama.cpp ``return_progress`` chunk that carries nothing else for the caller."""
     if not isinstance(data, dict) or not isinstance(data.get("prompt_progress"), dict):
         return False
     if data.get("usage") or _llama_chunk_has_generated_output(data):
@@ -40321,7 +40320,6 @@ async def _openai_passthrough_stream_admitted(
                         if _monitor_openai_error_message(chunk_data):
                             saw_stream_error = True
                             mark_response_failed(getattr(request, "scope", None))
-                    # Progress is requested for the monitor; relay it only on the caller's opt-in.
                     if not client_wants_progress and _is_prefill_progress_only(chunk_data):
                         _monitor_openai_sse_line(monitor_id, raw_line, llama_backend.context_length)
                         if progress_keepalive.due():
