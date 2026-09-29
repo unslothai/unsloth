@@ -572,34 +572,34 @@ const MAC_NATIVE_CHROME_STYLE = {
 // controls, which reserve --studio-window-control-inset on the right.
 const CUSTOM_CHROME_STYLE = {
   "--studio-titlebar-height": "0px",
-  "--studio-custom-titlebar-height": "var(--studio-windows-caption-height,42px)",
-  "--studio-desktop-titlebar-height": "var(--studio-windows-caption-height,42px)",
+  "--studio-custom-titlebar-height": "42px",
+  "--studio-desktop-titlebar-height": "42px",
   "--studio-sidebar-expanded-width": "17.5rem",
   "--studio-sidebar-collapsed-width": "3rem",
-  // Clear the navigation slot plus a scaled 10px gap in the shared header row.
+  // Clears the titlebar navigation (12px in, three 34px buttons, two 4px gaps) plus a 10px gap.
   "--studio-collapsed-chat-controls-inset":
-    "calc(max(134px, 134px * var(--ui-space-scale, 1)) + 10px * var(--ui-space-scale, 1))",
-  "--studio-startup-top-inset": "calc(var(--studio-windows-caption-height,42px) + 8px)",
+    "calc(122px + 10px * var(--ui-space-scale, 1))",
+  "--studio-startup-top-inset": "50px",
   "--studio-content-top-inset": "0px",
-  "--studio-non-chat-content-top-inset": "var(--studio-windows-caption-height,42px)",
-  "--studio-non-chat-scroller-top": "var(--studio-windows-caption-height,42px)",
-  "--studio-hidden-route-top-inset": "var(--studio-windows-caption-height,42px)",
+  "--studio-non-chat-content-top-inset": "42px",
+  "--studio-non-chat-scroller-top": "42px",
+  "--studio-hidden-route-top-inset": "42px",
   // Same split as the native-mac block: chat chrome scales, window chrome does not. Header
-  // controls take the 30px of the navigation buttons and start 2px down, so they centre on
-  // the window controls' line and clear the window edge.
-  "--studio-chat-header-height": "calc(40px * var(--ui-space-scale, 1))",
-  "--studio-chat-header-padding-top": "calc(2px * var(--ui-space-scale, 1))",
+  // controls start 6px down, so the 30px ones centre on the titlebar row's 21px line, and
+  // the header keeps 8px under them.
+  "--studio-chat-header-height": "calc(44px * var(--ui-space-scale, 1))",
+  "--studio-chat-header-padding-top": "calc(6px * var(--ui-space-scale, 1))",
   "--studio-media-header-left-inset": "calc(0.5rem * var(--ui-space-scale, 1))",
   "--studio-chat-control-height": "calc(30px * var(--ui-space-scale, 1))",
-  // The media headers' 34px model picker, Create/Train toggle and Library link take it too.
+  // The media headers' model picker, Create/Train toggle and Library link take it too.
   "--studio-media-control-height": "calc(30px * var(--ui-space-scale, 1))",
-  // The row's buttons end 6.5px above the macOS traffic-light row, so the sidebar's brand
-  // rises with them and keeps the same gap below.
-  "--studio-sidebar-brand-lift": "6.5px",
-  // Center shared-row controls on the window caption band.
-  "--studio-titlebar-row-center": "calc(var(--studio-windows-caption-height,42px) / 2)",
-  // Reserve all three caption targets so page controls cannot overlap them.
-  "--studio-window-control-inset": "var(--studio-windows-control-inset,136px)",
+  // The row's buttons end at 38px, 1px above the macOS navigation, so the sidebar's brand
+  // sits 1px higher than on macOS and keeps the same gap under them. The band is 8px taller
+  // than the macOS one, hence 9px.
+  "--studio-sidebar-brand-lift": "9px",
+  // Min, max and close: three 34px buttons, two 4px gaps and 12px from the edge, which
+  // mirrors the navigation so both corners hold the same margin.
+  "--studio-window-control-inset": "122px",
 } as CSSProperties;
 
 // Mirror the titlebar heights onto <html>: overlays portalled into document.body read the wrapper styles as empty.
@@ -616,17 +616,17 @@ function DesktopChromeVarsEffect({
       value === null
         ? el.style.removeProperty(name)
         : el.style.setProperty(name, value);
-    set("--studio-custom-titlebar-height", usesCustomTitlebar ? "var(--studio-windows-caption-height,42px)" : null);
+    set("--studio-custom-titlebar-height", usesCustomTitlebar ? "42px" : null);
     set(
       "--studio-mac-titlebar-height",
       usesNativeMacTitlebar ? NATIVE_MAC_TITLEBAR_HEIGHT_VAR : null,
     );
-    set("--studio-window-control-inset", usesCustomTitlebar ? "var(--studio-windows-control-inset,136px)" : null);
+    set("--studio-window-control-inset", usesCustomTitlebar ? "122px" : null);
     // How far body-portaled surfaces must stay clear of the top: either titlebar paints over them.
     set(
       "--studio-window-chrome-top",
       usesCustomTitlebar
-        ? "var(--studio-windows-caption-height,42px)"
+        ? "42px"
         : usesNativeMacTitlebar
           ? NATIVE_MAC_TITLEBAR_HEIGHT_VAR
           : null,

@@ -10,7 +10,7 @@ import { Z_LAYER } from "@/lib/z-layers";
 import { LayoutAlignLeftIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { Window as TauriWindow } from "@tauri-apps/api/window";
-import { ArrowLeft, ArrowRight, Copy, Minus, Square, X } from "lucide-react";
+import { ArrowLeft, ArrowRight } from "lucide-react";
 import {
   type MouseEvent,
   type PointerEvent,
@@ -22,9 +22,17 @@ import {
   useState,
 } from "react";
 
-// Electron's Windows overlay uses a 10-DIP symbol with its size and stroke
-// rounded to physical pixels. Keep that geometry at fractional display scales.
-function WindowsCaptionGlyph({ kind }: { kind: "minimize" | "maximize" | "restore" | "close" }): ReactElement {
+const CUSTOM_TITLEBAR_PLATFORMS = ["win", "linux", "x11"] as const;
+
+/**
+ * The Windows caption symbols, on Windows and Linux alike: a 10-DIP glyph whose size and
+ * stroke round to whole device pixels, so it stays crisp at fractional display scales.
+ */
+function CaptionGlyph({
+  kind,
+}: {
+  kind: "minimize" | "maximize" | "restore" | "close";
+}): ReactElement {
   const [scale, setScale] = useState(() => window.devicePixelRatio || 1);
   useEffect(() => {
     const update = () => setScale(window.devicePixelRatio || 1);
@@ -32,17 +40,51 @@ function WindowsCaptionGlyph({ kind }: { kind: "minimize" | "maximize" | "restor
     return () => window.removeEventListener("resize", update);
   }, []);
   const pixels = Math.round(10 * scale);
-  const stroke = Math.max(1, Math.round(scale)) * 10 / pixels;
+  const stroke = (Math.max(1, Math.round(scale)) * 10) / pixels;
   const inset = stroke / 2;
   const edge = 10 - inset;
-  return <svg aria-hidden="true" width={pixels / scale} height={pixels / scale} viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth={stroke} className="shrink-0">
-    {kind === "minimize" && <path d="M0 5h10" />}
-    {kind === "maximize" && <rect x={inset} y={inset} width={10 - stroke} height={10 - stroke} rx="0.7" />}
-    {kind === "restore" && <><path d={`M2.5 2.5V${inset}H${edge}V7.5H7.5`} /><rect x={inset} y="2.5" width={7.5 - inset} height={7.5 - inset} rx="0.7" /></>}
-    {kind === "close" && <path d={`M${inset} ${inset}L${edge} ${edge}M${edge} ${inset}L${inset} ${edge}`} />}
-  </svg>;
+  return (
+    <svg
+      aria-hidden="true"
+      width={pixels / scale}
+      height={pixels / scale}
+      viewBox="0 0 10 10"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={stroke}
+      className="shrink-0"
+    >
+      {kind === "minimize" && <path d="M0 5h10" />}
+      {kind === "maximize" && (
+        <rect
+          x={inset}
+          y={inset}
+          width={10 - stroke}
+          height={10 - stroke}
+          rx="0.7"
+        />
+      )}
+      {/* Windows puts the front window bottom-left. */}
+      {kind === "restore" && (
+        <>
+          <path d={`M2.5 2.5V${inset}H${edge}V7.5H7.5`} />
+          <rect
+            x={inset}
+            y="2.5"
+            width={7.5 - inset}
+            height={7.5 - inset}
+            rx="0.7"
+          />
+        </>
+      )}
+      {kind === "close" && (
+        <path
+          d={`M${inset} ${inset}L${edge} ${edge}M${edge} ${inset}L${inset} ${edge}`}
+        />
+      )}
+    </svg>
+  );
 }
-const CUSTOM_TITLEBAR_PLATFORMS = ["win", "linux", "x11"] as const;
 
 type WindowResizeDirection =
   | "East"
@@ -143,8 +185,10 @@ function WindowControlButton({
       title={label}
       onClick={onClick}
       className={cn(
-        "relative z-[80] inline-flex size-[34px] shrink-0 items-center justify-center rounded-[10px] text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-foreground dark:hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring",
-        getClientPlatform().includes("win") && "h-full w-[46px] rounded-none text-foreground dark:text-foreground hover:bg-foreground/10 active:bg-foreground/20",
+        // The hit area runs up to the window edge, where a pointer thrown at the controls lands.
+        "after:absolute after:inset-x-0 after:bottom-0 after:top-[-4px]",
+        // Hovers like the navigation buttons it mirrors.
+        "relative z-[80] inline-flex size-[34px] shrink-0 items-center justify-center rounded-[10px] text-foreground transition-colors hover:bg-nav-surface-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring",
         className,
       )}
     >
@@ -168,18 +212,22 @@ export function DesktopTitlebarNavigation({
   const stopTitlebarDrag = (event: MouseEvent<HTMLButtonElement>) => {
     event.stopPropagation();
   };
-  // Custom window chrome uses fixed targets; native macOS keeps its existing layout.
+  // Window chrome: the band around these is fixed, so they keep their size while the
+  // page beside them scales.
+  const buttonClass =
+    "inline-flex size-[30px] shrink-0 items-center justify-center rounded-[10px] text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
+  // The custom titlebar's are its window controls' 34px, with 18px glyphs.
   const customTitlebar = shouldUseCustomWindowTitlebar();
-  const buttonClass = cn(
-    customTitlebar ? "size-[min(var(--studio-titlebar-nav-target,34px),var(--studio-custom-titlebar-height,42px))]" : "size-[30px]",
-    "inline-flex shrink-0 items-center justify-center rounded-[10px] text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
-  );
+  const customSize = customTitlebar && "size-[34px]";
+  const iconClass = customTitlebar
+    ? "size-[18px]"
+    : "size-icon !size-[calc(var(--icon-size)+1px)]";
 
   return (
     <div
       className={cn(
         "flex mt-[var(--studio-titlebar-navigation-margin-top,0px)] translate-y-[var(--studio-titlebar-navigation-offset-y,0px)] items-center",
-        customTitlebar ? "gap-[var(--studio-titlebar-nav-gap,4px)]" : "gap-0.5",
+        customTitlebar ? "gap-[4px]" : "gap-0.5",
         className,
       )}
       role="toolbar"
@@ -196,18 +244,21 @@ export function DesktopTitlebarNavigation({
             event.stopPropagation();
             onToggleSidebar();
           }}
-          className={buttonClass}
+          className={cn(buttonClass, customSize)}
         >
           <HugeiconsIcon
             icon={LayoutAlignLeftIcon}
             strokeWidth={1.75}
-            className={customTitlebar ? "size-[var(--studio-titlebar-nav-icon,18px)]" : "size-icon !size-[calc(var(--icon-size)+1px)]"}
+            className={iconClass}
           />
         </button>
       ) : (
         // Holds the slot the navbar's own trigger sits in, so it is the
         // button's fixed size, not a scaled one.
-        <div aria-hidden="true" className={cn("shrink-0", customTitlebar ? "size-[min(var(--studio-titlebar-nav-target,34px),var(--studio-custom-titlebar-height,42px))]" : "size-[30px]")} />
+        <div
+          aria-hidden="true"
+          className={cn("size-[30px] shrink-0", customSize)}
+        />
       )}
       <button
         type="button"
@@ -219,12 +270,12 @@ export function DesktopTitlebarNavigation({
           event.stopPropagation();
           window.history.back();
         }}
-        className={buttonClass}
+        className={cn(buttonClass, customSize)}
       >
         <ArrowLeft
           aria-hidden="true"
           strokeWidth={1.75}
-          className={customTitlebar ? "size-[var(--studio-titlebar-nav-icon,18px)]" : "size-icon !size-[calc(var(--icon-size)+1px)]"}
+          className={iconClass}
         />
       </button>
       <button
@@ -237,12 +288,12 @@ export function DesktopTitlebarNavigation({
           event.stopPropagation();
           window.history.forward();
         }}
-        className={buttonClass}
+        className={cn(buttonClass, customSize)}
       >
         <ArrowRight
           aria-hidden="true"
           strokeWidth={1.75}
-          className={customTitlebar ? "size-[var(--studio-titlebar-nav-icon,18px)]" : "size-icon !size-[calc(var(--icon-size)+1px)]"}
+          className={iconClass}
         />
       </button>
     </div>
@@ -259,22 +310,6 @@ export function WindowTitlebar({
 }): ReactElement | null {
   const [enabled] = useState(shouldUseCustomWindowTitlebar);
   const [maximized, setMaximized] = useState(false);
-  const windowsCaption = getClientPlatform().includes("win");
-  useEffect(() => {
-    if (!enabled || !windowsCaption) return;
-    const root = document.documentElement;
-    const variables = {
-      "--studio-windows-caption-height": "36px",
-      "--studio-windows-control-inset": "138px",
-      "--studio-titlebar-nav-target": "30px",
-      "--studio-titlebar-nav-gap": "4px",
-      "--studio-titlebar-nav-icon": "18px",
-    };
-    for (const [name, value] of Object.entries(variables)) root.style.setProperty(name, value);
-    return () => {
-      for (const name of Object.keys(variables)) root.style.removeProperty(name);
-    };
-  }, [enabled, windowsCaption]);
   const { pinned, togglePinned } = useSidebarPin();
   // Outside SidebarProvider, so read the same media query the provider does.
   const isMobile = useIsMobileShell();
@@ -291,13 +326,11 @@ export function WindowTitlebar({
       : "var(--studio-sidebar-collapsed-width,3rem)"
     : "0px";
 
-  // The buttons in this slot are fixed but their padding and gaps scale, so
-  // the slot grows with them and never shrinks under the three 34px buttons.
-  // The drag region starts where it ends.
+  // Collapsed, the slot is exactly the 12px edge inset and three 34px buttons with their
+  // two 4px gaps, so it never covers the page header that starts beside it. The drag
+  // region starts where it ends.
   const titlebarNavigationWidth =
-    showSidebarSurface && !pinned
-      ? "max(134px, calc(134px * var(--ui-space-scale, 1)))"
-      : sidebarWidth;
+    showSidebarSurface && !pinned ? "122px" : sidebarWidth;
   const unifiedRow = showSidebarSurface && !isMobile && pageHeaderInBand;
 
   const refreshMaximized = useCallback(async () => {
@@ -440,11 +473,9 @@ export function WindowTitlebar({
       >
         {showSidebarSurface && (
           <div
-            className={cn(
-              "pointer-events-auto absolute left-0 top-0 flex h-full min-w-0 items-center",
-              // Optically align the glyph with the logo: 6px button padding + ~2px SVG inset.
-              windowsCaption ? "pl-[calc(var(--studio-sidebar-brand-inset)-8px)]" : "pl-[20px]",
-            )}
+            // 12px from the edge, as the window controls are from theirs. The toggle's glyph
+            // then starts at x=20, in the sidebar's icon column below it.
+            className="pointer-events-auto absolute left-0 top-0 flex h-full min-w-0 items-center pl-[12px]"
             style={{ width: titlebarNavigationWidth }}
             onMouseDown={handleDragMouseDown}
             onDoubleClick={handleDragDoubleClick}
@@ -463,7 +494,7 @@ export function WindowTitlebar({
             className="pointer-events-auto absolute top-0 h-full"
             style={{
               left: showSidebarSurface ? titlebarNavigationWidth : 0,
-              right: "var(--studio-window-control-inset,86px)",
+              right: "var(--studio-window-control-inset,122px)",
             }}
             onMouseDown={handleDragMouseDown}
             onDoubleClick={handleDragDoubleClick}
@@ -471,7 +502,8 @@ export function WindowTitlebar({
           />
         )}
         <div
-          className={cn("pointer-events-auto absolute top-0 flex h-full items-center", windowsCaption ? "right-0 gap-0" : "right-[12px] gap-[4px]")}
+          // Mirrors the navigation: three 34px buttons, 4px apart, 12px from the edge.
+          className="pointer-events-auto absolute right-[12px] top-0 flex h-full items-center gap-[4px]"
           role="toolbar"
           aria-label="Window controls"
         >
@@ -479,12 +511,7 @@ export function WindowTitlebar({
             label="Minimize window"
             onClick={() => runWindowAction((appWindow) => appWindow.minimize())}
           >
-            {windowsCaption ? <WindowsCaptionGlyph kind="minimize" /> : <Minus
-              aria-hidden="true"
-              absoluteStrokeWidth
-              strokeWidth={1.5}
-              size={16}
-            />}
+            <CaptionGlyph kind="minimize" />
           </WindowControlButton>
           <WindowControlButton
             label={maximized ? "Restore window" : "Maximize window"}
@@ -492,22 +519,7 @@ export function WindowTitlebar({
               runWindowAction((appWindow) => appWindow.toggleMaximize())
             }
           >
-            {windowsCaption ? <WindowsCaptionGlyph kind={maximized ? "restore" : "maximize"} /> : maximized ? (
-              <Copy
-                aria-hidden="true"
-                absoluteStrokeWidth
-                strokeWidth={1.5}
-                size={14}
-                className="rotate-180"
-              />
-            ) : (
-              <Square
-                aria-hidden="true"
-                absoluteStrokeWidth
-                strokeWidth={1.5}
-                size={14}
-              />
-            )}
+            <CaptionGlyph kind={maximized ? "restore" : "maximize"} />
           </WindowControlButton>
           <WindowControlButton
             label="Close window"
@@ -518,14 +530,9 @@ export function WindowTitlebar({
             // app-closing arrives well ahead of that.
             onClick={() => runWindowAction((appWindow) => appWindow.close())}
             // Close also owns the corner, as on a native Windows titlebar.
-            className={windowsCaption ? "hover:bg-[#e81123] hover:text-white dark:hover:text-white active:bg-[#e81123]/60" : "hover:bg-destructive/10 hover:text-destructive focus-visible:ring-destructive/70 dark:hover:bg-destructive/20 dark:hover:text-destructive"}
+            className="after:right-[-12px] hover:bg-[#e81123] hover:text-white active:bg-[#e81123]/60 dark:hover:text-white"
           >
-            {windowsCaption ? <WindowsCaptionGlyph kind="close" /> : <X
-              aria-hidden="true"
-              absoluteStrokeWidth
-              strokeWidth={1.5}
-              size={20}
-            />}
+            <CaptionGlyph kind="close" />
           </WindowControlButton>
         </div>
       </header>

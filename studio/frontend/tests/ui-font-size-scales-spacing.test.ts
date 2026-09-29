@@ -29,7 +29,6 @@ const SIDEBAR = readSrc("components/app-sidebar.tsx");
 const PROVIDER = readSrc("app/provider.tsx");
 
 const SCALED = /calc\([\d.]+(?:px|rem)\s*\*\s*var\(--ui-space-scale,\s*1\)\)/;
-const COLLAPSED_NAV_SLOT = /"calc\(90px \+ 8px \* var\(--ui-space-scale, 1\)\)"/;
 
 test("the spacing scale is the font-size preference, normalised at the default", () => {
   // --ui-font-scale is against a 16px base and the default is 15px, so
@@ -167,13 +166,19 @@ test("fixed slots that hold scaled content scale with it", () => {
 
 test("the titlebar reserves room for its controls, which stay in the band", () => {
   const titlebar = readSrc("components/tauri/window-titlebar.tsx");
-  // Custom chrome has 34px targets inside a 42px band. Native macOS
-  // retains its 30px navigation targets.
-  assert.match(titlebar, /customTitlebar \? "size-\[min\(var\(--studio-titlebar-nav-target,34px\),var\(--studio-custom-titlebar-height,42px\)\)\]" : "size-\[30px\]"/);
+  // The band is a fixed 42px and clips nothing, so a grown button would hang
+  // over the page and take its clicks. Native macOS keeps its 30px navigation.
+  assert.match(titlebar, /inline-flex size-\[30px\] shrink-0/);
+  assert.match(titlebar, /const customSize = customTitlebar && "size-\[34px\]";/);
   assert.match(titlebar, /inline-flex size-\[34px\] shrink-0/);
-  // The collapsed navigation slot must hold the three targets, gaps and inset.
-  assert.match(titlebar, /max\(134px, calc\(134px \* var\(--ui-space-scale, 1\)\)\)/);
-
+  // Collapsed, the slot is the 12px inset, three 34px buttons and two 4px gaps,
+  // and both the page header and the window controls reserve the same 122px.
+  assert.match(titlebar, /showSidebarSurface && !pinned \? "122px" : sidebarWidth/);
+  assert.match(
+    PROVIDER,
+    /"--studio-collapsed-chat-controls-inset":\s*"calc\(122px \+ 10px \* var\(--ui-space-scale, 1\)\)"/,
+  );
+  assert.match(PROVIDER, /"--studio-window-control-inset": "122px"/);
 });
 
 test("the composer's one-row clamp is one row at any size", () => {
@@ -255,7 +260,7 @@ test("no hand-set length above a hairline skips the scale", () => {
   ).flatMap((file) =>
     [...readSrc(file).matchAll(LENGTH)]
       // Navbar's custom-desktop trigger shares the fixed titlebar geometry.
-      .filter((m) => !(file === "components/navbar.tsx" && ["pl-[20px]", "size-[34px]"].includes(m[0])))
+      .filter((m) => !(file === "components/navbar.tsx" && ["pl-[12px]", "size-[34px]"].includes(m[0])))
       .filter((m) => Number(m[1]) * (m[2] === "rem" ? 16 : 1) > 3)
       .map((m) => `${file}: ${m[0]}`),
   );

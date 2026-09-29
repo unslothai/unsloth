@@ -609,12 +609,12 @@ def test_first_app_layout_survives_a_stale_setup_window_size():
 def test_titlebar_navigation_slot_holds_its_buttons_and_leaves_the_band_to_pages():
     source = _ui_source(TITLEBAR)
 
-    # Collapsed, the slot is the three fixed 30px buttons plus their scaled left-1 and gaps, so it
-    # never drops under the buttons and never reaches the page header beside it. Pinned, it spans
-    # the sidebar. Matched across whitespace because the formatter wraps the ternary.
+    # Collapsed, the slot is the 12px inset and three fixed 34px buttons with their 4px gaps, so
+    # it never drops under the buttons and never reaches the page header beside it. Pinned, it
+    # spans the sidebar. Matched across whitespace because the formatter wraps the ternary.
     assert re.search(
         r"showSidebarSurface && !pinned\s*\?\s*"
-        r'"calc\(90px \+ 8px \* var\(--ui-space-scale, 1\)\)"'
+        r'"122px"'
         r"\s*:\s*sidebarWidth",
         TITLEBAR.read_text(encoding = "utf-8"),
     ), "the collapsed titlebar navigation slot is no longer its buttons' width"
@@ -770,7 +770,7 @@ def test_fixed_sheets_start_below_the_custom_titlebar():
     sheet = _ui_source(SHEET)
 
     # Portalled sheets read the height off <html>, so the mirror has to stay.
-    assert 'set("--studio-custom-titlebar-height", usesCustomTitlebar ? "34px" : null)' in provider
+    assert 'set("--studio-custom-titlebar-height", usesCustomTitlebar ? "42px" : null)' in provider
 
     # Only viewport-fixed sheets clear the titlebar; the absolute recipe block
     # sheet sits in its own container and keeps a plain top edge.

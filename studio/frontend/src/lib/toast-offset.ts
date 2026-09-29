@@ -4,9 +4,10 @@
 const EDGE_OFFSET = 12;
 const MOBILE_EDGE_OFFSET = 16;
 const HEADER_TOP_OFFSET = 52;
-// The custom titlebar's header controls end at 32px, the macOS ones at 42px.
-const CUSTOM_TITLEBAR_HEADER_TOP_OFFSET = 42;
+// The custom titlebar's header controls end at 36px, the macOS ones at 42px.
+const CUSTOM_TITLEBAR_HEADER_TOP_OFFSET = 46;
 const DESKTOP_TITLEBAR_HEIGHT = 34;
+const CUSTOM_TITLEBAR_HEIGHT = 42;
 
 const HEADER_ROUTES = new Set(["/chat", "/images", "/video", "/audio"]);
 
@@ -32,7 +33,11 @@ export function getToastOffsets(
   // Page headers sit in the titlebar band on every desktop titlebar, so only a page
   // without one has the band to clear.
   const titlebarOffset =
-    isDesktopApp && !hasPageHeader ? DESKTOP_TITLEBAR_HEIGHT : 0;
+    isDesktopApp && !hasPageHeader
+      ? usesCustomTitlebar
+        ? CUSTOM_TITLEBAR_HEIGHT
+        : DESKTOP_TITLEBAR_HEIGHT
+      : 0;
   const headerTopOffset = Math.round(
     (isDesktopApp && usesCustomTitlebar
       ? CUSTOM_TITLEBAR_HEADER_TOP_OFFSET

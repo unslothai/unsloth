@@ -22,9 +22,11 @@ test("mac titlebar navigation shifts buttons with centered glyphs", async () => 
     /mt-\[var\(--studio-titlebar-navigation-margin-top,0px\)\]/,
   );
 
-  const enlargedIconClass =
-    'className={customTitlebar ? "size-[var(--studio-titlebar-nav-icon,18px)]" : "size-icon !size-[calc(var(--icon-size)+1px)]"}';
-  assert.equal(titlebar.split(enlargedIconClass).length - 1, 3);
+  assert.match(
+    titlebar,
+    /const iconClass = customTitlebar\s*\?\s*"size-\[18px\]"\s*:\s*"size-icon !size-\[calc\(var\(--icon-size\)\+1px\)\]";/,
+  );
+  assert.equal(titlebar.split("className={iconClass}").length - 1, 3);
 });
 
 test("mac chat and media headers share the lowered control row", async () => {

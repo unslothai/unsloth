@@ -35,7 +35,7 @@ export function Navbar({
           {/* Under the page header, so its controls take their clicks. Other routes scroll
               below the band, where the titlebar's own strip drags. */}
           {usesCustomTitlebar && pageHeaderInBand && (
-            <WindowDragRegion className="pointer-events-auto absolute inset-x-0 top-0 h-[var(--studio-custom-titlebar-height,34px)] select-none" />
+            <WindowDragRegion className="pointer-events-auto absolute inset-x-0 top-0 h-[var(--studio-custom-titlebar-height,42px)] select-none" />
           )}
         </header>
 
@@ -66,7 +66,7 @@ export function Navbar({
         className={cn(
           "flex h-full",
           usesCustomTitlebar
-            ? "items-center pl-[20px]"
+            ? "items-center pl-[12px]"
             : usesNativeMacTitlebar
               ? "items-start pt-[calc(11px*var(--ui-space-scale,1))] pl-[calc(var(--studio-mac-traffic-light-inset,78px)+calc(6px*var(--ui-space-scale,1)))]"
               : "items-start pt-[calc(11px*var(--ui-space-scale,1))] pl-2",
