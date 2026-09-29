@@ -6,8 +6,8 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { en } from "../src/i18n/locales/en.ts";
 import { SETTINGS_SEARCH_INDEX } from "../src/features/settings/settings-search.ts";
+import { en } from "../src/i18n/locales/en.ts";
 
 function read(path: string): string {
   return readFileSync(fileURLToPath(new URL(path, import.meta.url)), "utf-8");
@@ -50,11 +50,57 @@ test("turning it on or picking a model downloads, the device does not", () => {
   );
 });
 
+test("a download waits for confirmation before changing the setting", () => {
+  const apply = SECTION.slice(
+    SECTION.indexOf("const apply = async"),
+    SECTION.indexOf("const acceptDownload = async"),
+  );
+  assert.doesNotMatch(apply, /startDownload\(/);
+  assert.ok(
+    apply.indexOf("resolveSystemOneDownload(nextModel)") <
+      apply.indexOf("updateSystemOneSettings(settingsPatch)"),
+  );
+  assert.match(apply, /expectedEnabled: settings\.enabled/);
+  assert.match(apply, /expectedModel: settings\.model/);
+  assert.match(
+    apply,
+    /setConfirm\(\{\s*plan: nextPlan,\s*patch: settingsPatch,\s*model: nextModel,?\s*\}\);\s*return;/,
+  );
+  assert.doesNotMatch(
+    apply.slice(0, apply.indexOf("setConfirm")),
+    /setPlanState/,
+  );
+  const accept = SECTION.slice(
+    SECTION.indexOf("const acceptDownload = async"),
+    SECTION.indexOf("const unload = async"),
+  );
+  assert.ok(
+    accept.indexOf("validateSystemOneSettings(accepted.patch)") <
+      accept.indexOf("startDownload(accepted.plan)"),
+  );
+  assert.ok(
+    accept.indexOf("startDownload(accepted.plan)") <
+      accept.indexOf("updateSystemOneSettings(accepted.patch)"),
+  );
+  assert.match(
+    SECTION,
+    /<AlertDialogAction[\s\S]*?acceptDownload\(accepted\)[\s\S]*?<\/AlertDialogAction>/,
+  );
+  assert.doesNotMatch(SECTION, /apply\(confirm\./);
+  assert.match(en.settings.apiKeys.decisionApi.downloadConfirmBody, /\{size\}/);
+});
+
 test("the download goes through the manager with the exact files and one scope", () => {
   assert.match(SECTION, /const DOWNLOAD_SCOPE = "systemone";/);
   assert.match(SECTION, /scopeId: DOWNLOAD_SCOPE,/);
   assert.match(SECTION, /files: next\.files,/);
   assert.match(SECTION, /expectedBytes: next\.sizeBytes,/);
+  assert.match(
+    SECTION,
+    /acceptedState === "running" \|\| acceptedState === "complete"/,
+  );
+  assert.match(SECTION, /resolveSystemOneDownload\(model\)\.then/);
+  assert.match(SECTION, /await resyncSettingsAfterError/);
 });
 
 test("environment overrides lock their control and say why", () => {
@@ -91,7 +137,10 @@ test("the copy stays plain", () => {
 test("the client talks to the settings routes and maps the schema", () => {
   assert.match(API, /const SETTINGS_PATH = "\/api\/settings\/systemone";/);
   assert.match(API, /`\$\{SETTINGS_PATH\}\/unload`/);
-  assert.match(API, /`\$\{SETTINGS_PATH\}\/resolve`/);
+  assert.match(API, /`\$\{SETTINGS_PATH\}\/validate`/);
+  assert.match(API, /`\$\{SETTINGS_PATH\}\/resolve\$\{query\}`/);
+  assert.match(API, /expected_enabled: expectedEnabled/);
+  assert.match(API, /expected_model: expectedModel/);
   for (const [camel, snake] of [
     ["enabledLocked", "enabled_locked"],
     ["gpuAvailable", "gpu_available"],

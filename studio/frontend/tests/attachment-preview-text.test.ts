@@ -26,9 +26,11 @@ const {
   getDocxAttachmentError,
   getPdfAttachmentTextError,
   isAudioAttachment,
+  isTextAttachment,
   parseAttachmentText,
   readAttachmentText,
   repackDocxAttachmentArchive,
+  repackDocxPreviewArchive,
   truncateAttachmentPreviewText,
 } = await import("../src/features/chat/attachment-content.ts");
 const { definePDFJSModule } = await import("unpdf");
@@ -1145,4 +1147,113 @@ test("an RTF reader stays bounded", async () => {
   assert.match(long, /^x+\n\n\[Truncated: [^\n]*\]$/);
   await assert.rejects(readRtf(`{\\rtf1 ${"{".repeat(2000)}`), /nest too deeply/);
   await assert.rejects(readRtf("plain text"), /Not an RTF file/);
+});
+
+test("a thumbnail repack inflates only the images its kept paragraphs use", () => {
+  const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+  const R = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
+  const A = "http://schemas.openxmlformats.org/drawingml/2006/main";
+  const picture = (id: string) => `<w:p><w:r><w:drawing><a:blip r:embed="${id}"/></w:drawing></w:r></w:p>`;
+  const image = (id: string) =>
+    `<Relationship Id="${id}" Type="${R}/image" Target="media/${id}.png"/>`;
+  const bytes = zipSync({
+    "[Content_Types].xml": strToU8(
+      `<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="png" ContentType="image/png"/></Types>`,
+    ),
+    "_rels/.rels": strToU8(
+      `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="d" Type="${R}/officeDocument" Target="word/document.xml"/></Relationships>`,
+    ),
+    "word/document.xml": strToU8(
+      `<w:document xmlns:w="${W}" xmlns:r="${R}" xmlns:a="${A}"><w:body>${picture("rId1")}${picture("rId2")}</w:body></w:document>`,
+    ),
+    "word/_rels/document.xml.rels": strToU8(
+      `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${image("rId1")}${image("rId2")}</Relationships>`,
+    ),
+    "word/media/rId1.png": new Uint8Array([1, 2, 3]),
+    "word/media/rId2.png": new Uint8Array([4, 5, 6]),
+  });
+  const names = (archive: Uint8Array) => Object.keys(unzipSync(archive)).filter((name) => name.endsWith(".png")).sort();
+  assert.deepEqual(names(repackDocxPreviewArchive("a.docx", bytes, 1).archive), ["word/media/rId1.png", "word/media/rId2.png"]);
+  const thumbnail = repackDocxPreviewArchive("a.docx", bytes, 1, { keptImagesOnly: true });
+  assert.equal(thumbnail.truncated, true);
+  assert.deepEqual(names(thumbnail.archive), ["word/media/rId1.png"]);
+  const whole = repackDocxPreviewArchive("a.docx", bytes, 10, { keptImagesOnly: true });
+  assert.deepEqual(names(whole.archive), ["word/media/rId1.png", "word/media/rId2.png"]);
+});
+
+test("a thumbnail repack restores only image parts the kept elements reference", () => {
+  const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+  const R = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
+  const A = "http://schemas.openxmlformats.org/drawingml/2006/main";
+  const rel = (id: string, type: string, target: string) =>
+    `<Relationship Id="${id}" Type="${R}/${type}" Target="${target}"/>`;
+  const body =
+    `<w:p><w:r><w:drawing><a:blip r:embed="rId1"/></w:drawing></w:r></w:p>` +
+    `<!-- <a:blip r:embed="rId2"/> --><w:p><w:r><w:t>r:embed="rId2"</w:t></w:r></w:p>` +
+    `<w:altChunk r:id="rId3"/>`;
+  const bytes = zipSync({
+    "[Content_Types].xml": strToU8(
+      `<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="png" ContentType="image/png"/></Types>`,
+    ),
+    "_rels/.rels": strToU8(
+      `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="d" Type="${R}/officeDocument" Target="word/document.xml"/></Relationships>`,
+    ),
+    "word/document.xml": strToU8(
+      `<w:document xmlns:w="${W}" xmlns:r="${R}" xmlns:a="${A}"><w:body>${body}<w:p/><w:p/></w:body></w:document>`,
+    ),
+    "word/_rels/document.xml.rels": strToU8(
+      `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${rel("rId1", "image", "media/one.png")}${rel("rId2", "image", "media/two.png")}${rel("rId3", "aFChunk", "chunk.mht")}</Relationships>`,
+    ),
+    "word/media/one.png": new Uint8Array([1, 2, 3]),
+    "word/media/two.png": new Uint8Array([4, 5, 6]),
+    // Past the per-part ceiling, so the first pass leaves it out.
+    "word/chunk.mht": new Uint8Array(11 * 1024 * 1024),
+  });
+  const kept = Object.keys(unzipSync(repackDocxPreviewArchive("a.docx", bytes, 3, { keptImagesOnly: true }).archive));
+  assert.ok(kept.includes("word/media/one.png"));
+  assert.ok(!kept.includes("word/media/two.png"));
+  assert.ok(!kept.includes("word/chunk.mht"));
+});
+
+test("the text adapter claims text/plain documents but not real ones", () => {
+  const cases: [string, string, boolean][] = [
+    ["notes.pdf", "text/plain", true],
+    ["notes.docx", "text/plain", true],
+    ["a.pdf", "application/pdf", false],
+    ["a.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", false],
+    ["a.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", false],
+    ["a.pptx", "application/vnd.openxmlformats-officedocument.presentationml.presentation", false],
+    ["a.pdf", "", false],
+  ];
+  for (const [name, type, text] of cases) assert.equal(isTextAttachment(name, type), text, `${name} (${type || "no type"})`);
+});
+
+test("a thumbnail repack restores images in the notes its kept paragraphs refer to", () => {
+  const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+  const R = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
+  const A = "http://schemas.openxmlformats.org/drawingml/2006/main";
+  const PKG = "http://schemas.openxmlformats.org/package/2006/relationships";
+  const ns = `xmlns:w="${W}" xmlns:r="${R}" xmlns:a="${A}"`;
+  const note = (id: string, image: string) =>
+    `<w:footnote w:id="${id}"><w:p><w:r><w:drawing><a:blip r:embed="${image}"/></w:drawing></w:r></w:p></w:footnote>`;
+  const ref = (id: string) => `<w:p><w:r><w:footnoteReference w:id="${id}"/></w:r></w:p>`;
+  const bytes = zipSync({
+    "[Content_Types].xml": strToU8(
+      `<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="png" ContentType="image/png"/></Types>`,
+    ),
+    "_rels/.rels": strToU8(`<Relationships xmlns="${PKG}"><Relationship Id="d" Type="${R}/officeDocument" Target="word/document.xml"/></Relationships>`),
+    "word/document.xml": strToU8(`<w:document ${ns}><w:body>${ref("1")}${ref("2")}</w:body></w:document>`),
+    "word/_rels/document.xml.rels": strToU8(
+      `<Relationships xmlns="${PKG}"><Relationship Id="f" Type="${R}/footnotes" Target="footnotes.xml"/></Relationships>`,
+    ),
+    "word/footnotes.xml": strToU8(`<w:footnotes ${ns}>${note("1", "rIdA")}${note("2", "rIdB")}</w:footnotes>`),
+    "word/_rels/footnotes.xml.rels": strToU8(
+      `<Relationships xmlns="${PKG}"><Relationship Id="rIdA" Type="${R}/image" Target="media/a.png"/><Relationship Id="rIdB" Type="${R}/image" Target="media/b.png"/></Relationships>`,
+    ),
+    "word/media/a.png": new Uint8Array([1]),
+    "word/media/b.png": new Uint8Array([2]),
+  });
+  const kept = Object.keys(unzipSync(repackDocxPreviewArchive("a.docx", bytes, 1, { keptImagesOnly: true }).archive));
+  assert.ok(kept.includes("word/media/a.png"));
+  assert.ok(!kept.includes("word/media/b.png"));
 });
