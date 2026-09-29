@@ -560,8 +560,7 @@ def test_a_cold_health_call_answers_inside_the_launcher_deadline():
     probe_timeout = _desktop_probe_timeout_s()
     result = _probe(_SLOW_DETECT_S)
     if result["cold_elapsed"] >= probe_timeout:
-        # One fresh process more: a shared CI runner stalled a single cold call by ~1s (2.06s vs
-        # ~1.03s idle and on a contended core); a regression in the cold path misses both times.
+        # A one-off runner stall (2.06s vs ~1.03s) passes a retry; a cold-path regression misses both.
         retry = _probe(_SLOW_DETECT_S)
         result = min(result, retry, key = lambda r: r["cold_elapsed"])
 

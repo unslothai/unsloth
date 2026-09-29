@@ -101,10 +101,7 @@ class FakeSmi:
         count: int,
         timeout: float = 30.0,
     ) -> None:
-        """Block until ``count`` children matching ``needle`` have started (each reads its state first).
-
-        A fixed sleep after ``Thread.start()`` raced on loaded CI: a child spawned late read the state the
-        test set for the NEXT reading."""
+        """Wait for ``count`` matching children; each reads its state before logging, unlike a fixed sleep."""
         deadline = time.monotonic() + timeout
         while self.calls(needle) < count:
             assert time.monotonic() < deadline, f"no {needle!r} child started within {timeout}s"
