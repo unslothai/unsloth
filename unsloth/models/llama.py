@@ -260,8 +260,7 @@ def _cache_as_legacy_tuple(past_key_values):
     layers = getattr(past_key_values, "layers", None)
     if layers is None:
         return past_key_values.to_legacy_cache()
-    # Static caches allocate max_cache_len positions; keep only the filled ones. Quantized and
-    # sliding-window layers hold fewer than past_len positions and cannot be flattened.
+    # Static layers allocate max_cache_len; quantized / sliding layers hold fewer than past_len.
     for layer in layers:
         if layer.keys is None or layer.keys.shape[-2] < past_len:
             raise ValueError(
@@ -276,8 +275,7 @@ def _cache_as_legacy_tuple(past_key_values):
 def _cached_prefill_defaults(
     past_key_values, input_ids, inputs_embeds, position_ids, attention_mask
 ):
-    # A multi-token forward onto a cache continues after it, as in transformers. Without these the
-    # tokens restart at position 0, and with no mask xFormers attends without any causal bias.
+    # Continue after the cache as transformers does; else RoPE restarts at 0 and xFormers runs unmasked.
     past_len = past_key_values[0][0].shape[-2]
     ref = input_ids if input_ids is not None else inputs_embeds
     bsz, q_len = ref.shape[:2]
@@ -338,9 +336,7 @@ def _fast_prepare_inputs_for_generation(
             if input_ids is not None and input_ids.numel() > 0:
                 bs = input_ids.shape[0]
                 device = input_ids.device
-                # A user cache (multi-turn history) can cover only a prefix: feed every uncached token.
-                # The 2D mask spans cache + new tokens, so it also covers transformers 5 callers that
-                # pass only the new turn in input_ids.
+                # The 2D mask spans cache + new tokens, so it also counts a suffix-only turn (transformers 5).
                 n_new = 0
                 if original_attention_mask is not None and original_attention_mask.dim() == 2:
                     n_new = original_attention_mask.shape[-1] - past_len
@@ -2318,13 +2314,11 @@ def unsloth_fast_generate(self, *args, **kwargs):
                 "Unsloth: passing past_key_values to generate() is not supported for FalconH1 yet."
             )
         kwargs["past_key_values"] = _ensure_cache_is_dynamic(kwargs["past_key_values"])
-        # The fast decode path only seeds its KV buffers when they are missing, and a single
-        # uncached token goes straight to it: drop the previous generate()'s buffers.
+        # The fast decode path only seeds missing KV buffers; drop the previous generate()'s.
         for module in self.modules():
             if hasattr(module, "paged_attention"):
                 del module.paged_attention_K, module.paged_attention_V, module.paged_attention
-        # A user StaticCache makes transformers auto-compile with CUDA graphs, which overwrite the
-        # decode kernels' reused buffers.
+        # A user StaticCache triggers CUDA-graph auto-compile, which overwrites the decode buffers.
         if hasattr(getattr(self, "generation_config", None), "disable_compile"):
             kwargs.setdefault("disable_compile", True)
     else:

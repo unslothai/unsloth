@@ -72,11 +72,9 @@ def test_generate_from_history_cache_matches_full_prompt(model_and_tokenizer):
     # Chunked vs full prefill differs only by bf16 rounding; tiny random models have 1-ulp logit ties.
     assert (logits - expected_logits).abs().max() <= tolerance
     assert tokens[0] == expected_tokens[0]
-    # Cache object, its tuple form, and a reuse of the same object (not mutated) agree exactly.
     for other_tokens, other_logits in runs[1:]:
         assert torch.equal(other_tokens, tokens) and torch.equal(other_logits, logits)
 
-    # Negative control: a cache of different text moves the logits far past that tolerance.
     other = _ids(tokenizer, OTHER)
     wrong = {k: v[:, :n] for k, v in other.items()}
     assert wrong["input_ids"].shape[1] == n
@@ -98,8 +96,6 @@ def test_direct_forward_onto_cache_continues_after_it(model_and_tokenizer, atten
 
 
 def test_saved_cache_reused_after_another_generate(model_and_tokenizer):
-    # One uncached token goes straight to the fast decode path, which must not reuse the KV
-    # buffers an unrelated generate() left behind.
     model, tokenizer = model_and_tokenizer
     full = _ids(tokenizer, HISTORY + QUESTION)
     cache = _cache(model, {"input_ids": full.input_ids[:, :-1]})

@@ -50,7 +50,6 @@ def test_prefill_onto_partial_cache_feeds_every_uncached_token(as_dynamic):
     assert torch.equal(result["input_ids"], input_ids[:, PAST_LEN:])
     assert result["position_ids"].tolist() == [[3, 4]] * BS
     assert result["cache_position"].tolist() == [3, 4]
-    # Unsloth's forwards index past_key_values[layer][0|1].
     out = result["past_key_values"]
     assert isinstance(out, tuple) and len(out) == len(legacy)
     for (k, v), (k0, v0) in zip(out, legacy):
