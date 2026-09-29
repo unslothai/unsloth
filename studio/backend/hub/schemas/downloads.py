@@ -76,6 +76,10 @@ class DownloadJobStatus(BaseModel):
         0,
         description = "Current run generation; an adopting client stores it so a later cancel is scoped to this exact run.",
     )
+    attempt: int = Field(
+        1,
+        description = "Worker attempt within this generation; a retry that restarts the file bumps it so a client drops the old run's progress.",
+    )
 
 
 class DownloadStartResponse(BaseModel):
@@ -217,6 +221,10 @@ class DatasetDownloadJobStatus(BaseModel):
     generation: int = Field(
         0,
         description = "Current run generation; an adopting client stores it so a later cancel is scoped to this exact run.",
+    )
+    attempt: int = Field(
+        1,
+        description = "Worker attempt within this generation; a retry that restarts the file bumps it so a client drops the old run's progress.",
     )
 
 

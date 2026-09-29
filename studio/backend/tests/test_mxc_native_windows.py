@@ -26,6 +26,12 @@ from core.inference import (
 
 
 @pytest.fixture(autouse = True)
+def _real_drive_aliases(monkeypatch):
+    # The native cmd Terminal runs from a real drive alias of its workdir, as in production.
+    monkeypatch.delenv("UNSLOTH_MXC_DRIVE_ALIAS", raising = False)
+
+
+@pytest.fixture(autouse = True)
 def _stage_installed_native_runtime():
     """Copy an explicitly installed runtime into pytest's isolated Studio home."""
     source_value = os.environ.get("UNSLOTH_MXC_NATIVE_PACKAGE")

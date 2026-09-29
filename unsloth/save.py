@@ -69,6 +69,7 @@ from .models.loader_utils import (
     _tokenizer_wants_local_only,
 )
 from .models._utils import _convert_torchao_model
+from .models.mistral_format import raise_if_merging_mistral_format_view
 from .ollama_template_mappers import OLLAMA_TEMPLATES, MODEL_TO_OLLAMA_TEMPLATE_MAPPER
 from transformers import ProcessorMixin, PreTrainedTokenizerBase
 from huggingface_hub import HfApi
@@ -997,6 +998,7 @@ def unsloth_save_model(
         gc.collect()
 
     save_method = save_method.lower().replace(" ", "_")
+    raise_if_merging_mistral_format_view(model, save_method)
     if save_method != "lora" and save_method != "merged_16bit" and save_method != "merged_4bit":
         raise RuntimeError(
             "Unsloth: You must select one of 3 options when saving models:\n"
@@ -1596,6 +1598,35 @@ def _compressed_quantize_pythonpath():
     return pp or None
 
 
+def _llm_compressor_imports_in_subprocess():
+    """True only if a fresh interpreter, launched like the export's quantize runner, imports an llm-compressor inside _LLM_COMPRESSOR_SPEC."""
+    # sys.path[0] as `python _compressed_quantize.py` sets it; the caller's cwd is kept so relative PYTHONPATH entries resolve the same way.
+    probe = (
+        f"import sys; sys.path[0] = {os.path.dirname(os.path.abspath(__file__))!r}\n"
+        "import llmcompressor\n"
+        "from llmcompressor import oneshot\n"
+        "from llmcompressor.modifiers.quantization import QuantizationModifier\n"
+        "print(llmcompressor.__version__)\n"
+    )
+    try:
+        completed = subprocess.run(
+            [sys.executable, "-c", probe],
+            stdout = subprocess.PIPE,
+            stderr = subprocess.DEVNULL,
+            text = True,
+            encoding = "utf-8",
+            timeout = 600,
+        )
+        if completed.returncode != 0:
+            return False
+        from packaging.requirements import Requirement
+
+        version = completed.stdout.strip().splitlines()[-1].strip()
+        return Requirement(_LLM_COMPRESSOR_SPEC).specifier.contains(version, prereleases = True)
+    except Exception:
+        return False
+
+
 def install_llm_compressor():
     """Import llm-compressor, installing a version-pinned copy on first use for FP8/FP4 export and pinning the current torch + transformers so pip does not upgrade them. UNSLOTH_DISABLE_LLM_COMPRESSOR_AUTOINSTALL=1 forbids the auto-install. Returns (oneshot, QuantizationModifier)."""
     try:
@@ -1604,6 +1635,10 @@ def install_llm_compressor():
         return oneshot, QuantizationModifier
     except Exception:
         pass
+
+    # The in-process import can fail under Unsloth's transformers patches while the unpatched quantize subprocess imports fine. Reinstalling cannot fix that, and pip's pinned re-resolve backtracks destructively (numpy<2 from source), so skip it. The caller discards the return value.
+    if _llm_compressor_imports_in_subprocess():
+        return None, None
 
     # Opt-out for locked-down / air-gapped setups: forbid the auto-install, require a manual one.
     if os.environ.get("UNSLOTH_DISABLE_LLM_COMPRESSOR_AUTOINSTALL", "0").lower() not in (
@@ -1681,6 +1716,8 @@ def install_llm_compressor():
         from llmcompressor import oneshot
         from llmcompressor.modifiers.quantization import QuantizationModifier
     except Exception as e:
+        if _llm_compressor_imports_in_subprocess():
+            return None, None
         raise RuntimeError(
             "Unsloth: llm-compressor was installed but could not be imported. "
             "Please restart your Python session and try again.\n"
@@ -3894,6 +3931,7 @@ def unsloth_save_pretrained_gguf(
     "iq3_xxs" : "3.06 bpw quantization",
     "q3_k_xs" : "3-bit extra small quantization",
     """
+    raise_if_merging_mistral_format_view(self, "gguf")  # the converter would read Mistral names
     _assert_export_target_is_not_base_with_lora_layers(self)
 
     if tokenizer is None:
@@ -4505,6 +4543,7 @@ def unsloth_push_to_hub_gguf(
 
     `quantization_method` may be an alias -- "not_quantized" (fast conversion, big files), "fast_quantized" (fast conversion, OK size), "quantized" (slow conversion, small files) -- or a llama.cpp ftype: f32, f16, q8_0, q4_0, q4_1, q5_0, q5_1, or a k-quant q2_k / q3_k_s / q3_k_m / q3_k_l / q4_k_s / q4_k_m / q5_k_s / q5_k_m / q6_k. The _m and _l k-quants keep the attention and feed_forward.w2 tensors a level or two above the nominal width; q2_k_l is the Unsloth preset adding --output-tensor-type q8_0 --token-embedding-type q8_0.
     """
+    raise_if_merging_mistral_format_view(self, "gguf")  # the converter would read Mistral names
     _assert_export_target_is_not_base_with_lora_layers(self)
     if tokenizer is None:
         raise ValueError("Unsloth: Saving to GGUF must have a tokenizer.")
@@ -5651,8 +5690,10 @@ def unsloth_generic_save(
             datasets = datasets,
         )
     else:
+        raise_if_merging_mistral_format_view(model, save_method)
         _prewarm_base_model_hub_cache(model, save_method = save_method, token = token)
         from unsloth_zoo.saving_utils import merge_and_overwrite_lora
+
         merge_and_overwrite_lora(
             get_model_name,
             model = model,
@@ -6678,7 +6719,11 @@ def _unsloth_save_torchao(
         quant_type = Float8WeightOnlyConfig()
         safe_serialization = True
     elif kind == "int8":
-        quant_type = Int8WeightOnlyConfig()
+        # version 2 (Int8Tensor) is what transformers serializes; torchao 0.16 / 0.17 default to 1.
+        _int8_fields = getattr(Int8WeightOnlyConfig, "__dataclass_fields__", {})
+        quant_type = (
+            Int8WeightOnlyConfig(version = 2) if "version" in _int8_fields else Int8WeightOnlyConfig()
+        )
         safe_serialization = False  # torchao only supports safetensors for float8 configs
     else:
         raise RuntimeError(f"Unsloth: unknown torchao export kind '{kind}' (expected fp8/int8).")
