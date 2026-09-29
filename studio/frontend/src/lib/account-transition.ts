@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { RUNTIME_REPAIR_KEY } from "../hooks/runtime-repair-history.ts";
 import { USER_STOPPED_KEY } from "../hooks/server-stop-intent.ts";
 
 export const BROWSER_ACCOUNT_KEY = "unsloth.browser-account.v1";
@@ -207,6 +208,8 @@ export async function transitionBrowserAccount(
         !key ||
         key === BROWSER_ACCOUNT_KEY ||
         ACCOUNT_CHROME_KEYS.has(key) ||
+        // About this machine's install, not the account signed in to it.
+        key === RUNTIME_REPAIR_KEY ||
         ACCOUNT_CHROME_PREFIXES.some((prefix) => key.startsWith(prefix))
       )
         continue;
