@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
 """PEFT's v4 -> v5 MoE config conversion must not take LoRA away from same-named nn.Linear layers.
 
 DeepSeek-V3 style models keep dense `gate_proj` / `up_proj` / `down_proj` Linears (shared experts and the
@@ -82,6 +85,8 @@ def _deepseek_v3():
         max_position_embeddings = 64,
         use_cache = False,
         attn_implementation = "eager",
+        # A suite that imported Unsloth under a CUDA spoof would route experts to a GPU kernel.
+        experts_implementation = "eager",
     )
     return transformers.DeepseekV3ForCausalLM(config).eval()
 
@@ -101,6 +106,8 @@ def _qwen2_moe():
         num_experts_per_tok = 2,
         max_position_embeddings = 64,
         attn_implementation = "eager",
+        # A suite that imported Unsloth under a CUDA spoof would route experts to a GPU kernel.
+        experts_implementation = "eager",
     )
     return transformers.Qwen2MoeForCausalLM(config).eval()
 
@@ -237,7 +244,8 @@ def test_v4_adapter_reloads_dense_and_expert_weights(tmp_path, make_model):
     with torch.no_grad():
         base_logits = model(input_ids = x).logits
         expected = reference(input_ids = x).logits
-        loaded = PeftModel.from_pretrained(model, str(tmp_path)).eval()
+        # torch_device: suites that spoof CUDA on a CPU runner would send the load to a missing GPU.
+        loaded = PeftModel.from_pretrained(model, str(tmp_path), torch_device = "cpu").eval()
         got = loaded(input_ids = x).logits
 
     assert (expected - base_logits).abs().max() > 1e-2  # the adapter matters
