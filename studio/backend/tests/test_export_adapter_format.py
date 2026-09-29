@@ -231,8 +231,8 @@ def test_parse_adapter_features(tmp_path):
         "non_uniform": False,
     }
     assert parse_adapter_features(_dir({"fine_tune_type": "lora"}))["full_state"] is None
-    import numpy as np
-    from safetensors.numpy import save_file
+    np = pytest.importorskip("numpy")
+    save_file = pytest.importorskip("safetensors.numpy").save_file
 
     d_mlx = _dir({"fine_tune_type": "lora"})
     save_file(
