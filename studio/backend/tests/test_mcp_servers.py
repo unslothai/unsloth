@@ -2271,11 +2271,13 @@ def test_mcp_listing_stays_full_when_it_fits_the_window(tmp_path, monkeypatch, l
 
     listing_window(1_000_000)
     assert tools_mod.cached_mcp_tools()[0] == unsized
-    assert tools_mod._MCP_COMPACTED_WINDOWS == {1_000_000: frozenset()}
+    assert list(tools_mod._MCP_COMPACTED_WINDOWS.values()) == [frozenset()]
 
     listing_window(1_000)
     specs = tools_mod.cached_mcp_tools()[0]
-    assert tools_mod._MCP_COMPACTED_WINDOWS[1_000] == {"mcp__srv1__query"}
+    assert tools_mod._MCP_COMPACTED_WINDOWS[(tools_mod.current_account_id(), 1_000)] == {
+        "mcp__srv1__query"
+    }
     assert specs[0] == unsized[0]
     assert specs[1]["function"]["parameters"] != unsized[1]["function"]["parameters"]
     assert specs[2] == tools_mod.MCP_TOOL_SCHEMA_TOOL
@@ -2294,7 +2296,9 @@ def test_mcp_listing_compacts_only_the_largest_tools_it_needs_to(
 
     ctx = listing_window(int(full_tokens * 0.9 / tools_mod._MCP_FULL_LISTING_SHARE))
     specs = tools_mod.cached_mcp_tools()[0]
-    assert tools_mod._MCP_COMPACTED_WINDOWS[ctx] == {"mcp__srv1__huge"}
+    assert tools_mod._MCP_COMPACTED_WINDOWS[(tools_mod.current_account_id(), ctx)] == {
+        "mcp__srv1__huge"
+    }
     assert specs[:2] == full[:2]
     assert specs[2]["function"]["parameters"] != full[2]["function"]["parameters"]
     assert specs[3] == tools_mod.MCP_TOOL_SCHEMA_TOOL
@@ -2320,6 +2324,25 @@ def test_mcp_listing_never_compacts_a_tool_its_compact_form_would_enlarge(
     specs = tools_mod.cached_mcp_tools()[0]
     assert specs[1]["function"]["parameters"] == loose["inputSchema"]
     assert tools_mod.MCP_TOOL_SCHEMA_TOOL not in specs
+
+
+def test_compacted_tools_are_remembered_per_account(tmp_path, monkeypatch, compacting):
+    from core.inference import tools as tools_mod
+
+    _cache_server_tools(tmp_path, monkeypatch, [_big_mcp_tool()])
+    monkeypatch.setattr(tools_mod, "_window_context_tokens", lambda: compacting)
+    monkeypatch.setattr(tools_mod, "current_account_id", lambda: "alice")
+    tools_mod.cached_mcp_tools()
+    assert tools_mod._mcp_listing_compacted("mcp__srv1__query")
+
+    # Another account whose catalog fits the same window lists in full.
+    monkeypatch.setattr(tools_mod, "current_account_id", lambda: "bob")
+    monkeypatch.setattr(tools_mod, "_MCP_FULL_LISTING_SHARE", 1.0)
+    tools_mod.cached_mcp_tools()
+    assert not tools_mod._mcp_listing_compacted("mcp__srv1__query")
+
+    monkeypatch.setattr(tools_mod, "current_account_id", lambda: "alice")
+    assert tools_mod._mcp_listing_compacted("mcp__srv1__query")
 
 
 def test_mcp_listing_compacts_large_schemas(tmp_path, monkeypatch, compacting):

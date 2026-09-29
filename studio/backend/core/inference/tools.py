@@ -13214,8 +13214,9 @@ _MCP_COMPACT_HINT = "Full parameters via mcp_tool_schema."
 _MCP_MIN_SCHEMA_PAGE_CHARS = 64
 _MCP_FULL_LISTING_SHARE = 0.75
 _MCP_LISTING_CONTEXT_TOKENS: ContextVar = ContextVar("mcp_listing_context_tokens", default = None)
-# Window -> the tools the last MCP listing built for it compacted, read back when a call from it runs.
-_MCP_COMPACTED_WINDOWS: dict[int, frozenset] = {}
+# (account, window) -> the tools the last MCP listing built for it compacted, read back when a call from it runs.
+# Per account because each account has its own MCP servers (account-scoped studio.db).
+_MCP_COMPACTED_WINDOWS: dict[tuple, frozenset] = {}
 
 
 def set_mcp_listing_context_tokens(context_tokens) -> None:
@@ -13406,7 +13407,7 @@ def _mcp_listing(listed: list[tuple[dict, list[dict], list[dict]]]) -> list[dict
     text = json.dumps(specs, separators = (",", ":"))
     listing_tokens = _text_token_cost(text, ctx)
     if listing_tokens <= budget:
-        _MCP_COMPACTED_WINDOWS[ctx] = frozenset()
+        _MCP_COMPACTED_WINDOWS[(current_account_id(), ctx)] = frozenset()
         return specs
     # Compact the largest tools first and stop once the listing fits, so every tool that can keep its nested and
     # union parameters does: dropping them costs tool-call accuracy (#11046 measurements).
@@ -13430,14 +13431,15 @@ def _mcp_listing(listed: list[tuple[dict, list[dict], list[dict]]]) -> list[dict
             or _text_token_cost(json.dumps(listing, separators = (",", ":")), ctx) <= budget
         ):
             break
-    _MCP_COMPACTED_WINDOWS[ctx] = frozenset(compacted)
+    _MCP_COMPACTED_WINDOWS[(current_account_id(), ctx)] = frozenset(compacted)
     if compacted:
         listing.append(MCP_TOOL_SCHEMA_TOOL)
     return listing
 
 
 def _mcp_listing_compacted(name: str) -> bool:
-    return name in _MCP_COMPACTED_WINDOWS.get(_window_context_tokens() or 0, frozenset())
+    key = (current_account_id(), _window_context_tokens() or 0)
+    return name in _MCP_COMPACTED_WINDOWS.get(key, frozenset())
 
 
 def _mcp_tool_model_visible(tool: dict) -> bool:
