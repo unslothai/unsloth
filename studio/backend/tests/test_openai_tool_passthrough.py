@@ -1138,7 +1138,7 @@ class TestChatCompletionRequestToolFields:
         assert monitor.active_count() == 0
 
     def test_an_unreadable_part_alone_is_still_answered(self, monkeypatch):
-        """Control: one remote image and no top-level image is not a multi-image
+        """Control: one payloadless image and no top-level image is not a multi-image
         call, and clients relying on that text answer must keep it."""
         monitor = ApiMonitor(max_entries = 3)
         client, backend = self._standard_vision_client(monkeypatch, monitor)
@@ -1150,7 +1150,7 @@ class TestChatCompletionRequestToolFields:
                         "role": "user",
                         "content": [
                             {"type": "text", "text": "x"},
-                            {"type": "image_url", "image_url": {"url": "https://e.com/a.png"}},
+                            {"type": "image_url", "image_url": {"url": "data:image/png;base64,"}},
                         ],
                     }
                 ]
@@ -1384,9 +1384,10 @@ class TestChatCompletionRequestToolFields:
         assert backend.generated[0]["image"] is not None
         assert monitor.active_count() == 0
 
-    def test_a_single_undecodable_image_is_left_alone(self, monkeypatch):
-        """One remote image is not a multi-image call. Clients that pass a remote
-        URL today get a text answer, and this guard must not turn that into a 400."""
+    def test_an_unfetchable_remote_image_closes_the_monitor_row(self, monkeypatch):
+        import core.inference.external_provider as ep
+
+        monkeypatch.setattr(ep, "safe_fetch_remote_image_sync", lambda *_a, **_k: None)
         monitor = ApiMonitor(max_entries = 3)
         client, backend = self._standard_vision_client(monkeypatch, monitor)
         resp = client.post(
@@ -1407,9 +1408,9 @@ class TestChatCompletionRequestToolFields:
             },
         )
 
-        assert resp.status_code == 200
-        assert len(backend.generated) == 1
-        assert backend.generated[0]["image"] is None
+        assert resp.status_code == 400
+        assert "Could not fetch the remote image URL" in resp.text
+        assert backend.generated == []
         assert monitor.active_count() == 0
 
     def test_a_text_only_model_closes_the_monitor_row(self, monkeypatch):

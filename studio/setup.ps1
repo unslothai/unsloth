@@ -3090,7 +3090,8 @@ function Invoke-NpmMirrorRetry {
     $pairs = @(Pop-MirrorSpare npm)
     if (-not $pairs) { return $false }
     $registry = $pairs[0].Split('=', 2)[1]
-    if ((Invoke-SetupCommand { npm install --registry $registry }) -ne 0) { return $false }
+    $verb = if (Test-Path "package-lock.json") { "ci" } else { "install" }
+    if ((Invoke-SetupCommand { npm $verb --registry $registry }) -ne 0) { return $false }
     Set-MirrorEnv $pairs
     $script:NpmRegistryArgs = @('--registry', $registry)
     return $true
@@ -5709,8 +5710,8 @@ if ($NeedNodeForSetup) {
         Remove-Item Env:NODE_PATH -ErrorAction SilentlyContinue
         step "node" "$(node -v) | npm $(npm -v) (isolated)"
 
-        # bun (optional, faster installs); npm -g stays in the isolated prefix.
-        if (-not (Get-Command bun -ErrorAction SilentlyContinue)) {
+        # bun (optional, unused when package-lock.json means `npm ci`); npm -g stays in the isolated prefix.
+        if (-not (Test-Path (Join-Path $FrontendDir "package-lock.json")) -and -not (Get-Command bun -ErrorAction SilentlyContinue)) {
             substep "installing bun (faster frontend package installs)..."
             $prevEAP_bun = $ErrorActionPreference
             $ErrorActionPreference = "Continue"
@@ -5757,12 +5758,14 @@ if ($NeedFrontendBuild -and -not $IsPipInstall) {
     $ErrorActionPreference = "Continue"
     Push-Location $FrontendDir
 
-    $UseBun = $null -ne (Get-Command bun -ErrorAction SilentlyContinue)
+    # package-lock.json always wins (`npm ci`); bun only without one, since bun.lock is gitignored.
+    $UseBun = -not (Test-Path "package-lock.json") -and (Test-Path "bun.lock") -and ($null -ne (Get-Command bun -ErrorAction SilentlyContinue))
+    $NpmInstallVerb = if (Test-Path "package-lock.json") { "ci" } else { "install" }
 
     # A corrupt bun cache still exits 0, so validate, clear it, retry once, then fall back to npm.
     if ($UseBun) {
         Write-StudioLine "   Using bun for package install (faster)" -ForegroundColor DarkGray
-        $bunExit = Invoke-SetupCommand { bun install @NpmRegistryArgs }
+        $bunExit = Invoke-SetupCommand { bun install --frozen-lockfile @NpmRegistryArgs }
         # .bin/ entries vary by manager (npm: tsc/.cmd/.ps1; bun: .exe/.bunx).
         $hasTsc = (Test-Path "node_modules\.bin\tsc") -or (Test-Path "node_modules\.bin\tsc.cmd") -or (Test-Path "node_modules\.bin\tsc.exe") -or (Test-Path "node_modules\.bin\tsc.bunx")
         $hasVite = (Test-Path "node_modules\.bin\vite") -or (Test-Path "node_modules\.bin\vite.cmd") -or (Test-Path "node_modules\.bin\vite.exe") -or (Test-Path "node_modules\.bin\vite.bunx")
@@ -5773,7 +5776,7 @@ if ($NeedFrontendBuild -and -not $IsPipInstall) {
                 Remove-Item "node_modules" -Recurse -Force -ErrorAction SilentlyContinue
             }
             Invoke-SetupCommand { bun pm cache rm } | Out-Null
-            $bunExit = Invoke-SetupCommand { bun install @NpmRegistryArgs }
+            $bunExit = Invoke-SetupCommand { bun install --frozen-lockfile @NpmRegistryArgs }
             $hasTsc = (Test-Path "node_modules\.bin\tsc") -or (Test-Path "node_modules\.bin\tsc.cmd") -or (Test-Path "node_modules\.bin\tsc.exe") -or (Test-Path "node_modules\.bin\tsc.bunx")
             $hasVite = (Test-Path "node_modules\.bin\vite") -or (Test-Path "node_modules\.bin\vite.cmd") -or (Test-Path "node_modules\.bin\vite.exe") -or (Test-Path "node_modules\.bin\vite.bunx")
             if ($bunExit -ne 0 -or -not $hasTsc -or -not $hasVite) {
@@ -5792,14 +5795,14 @@ if ($NeedFrontendBuild -and -not $IsPipInstall) {
         }
     }
     if (-not $UseBun) {
-        $npmExit = Invoke-SetupCommand { npm install @NpmRegistryArgs }
+        $npmExit = Invoke-SetupCommand { npm $NpmInstallVerb @NpmRegistryArgs }
         if ($npmExit -ne 0 -and (Invoke-NpmMirrorRetry)) { $npmExit = 0 }
         if ($npmExit -ne 0) {
             Pop-Location
             $ErrorActionPreference = $prevEAP_npm
             foreach ($gi in $HiddenGitignores) { Rename-Item -Path "$gi._twbuild" -NewName (Split-Path $gi -Leaf) -Force -ErrorAction SilentlyContinue }
-            Write-StudioLine "[ERROR] npm install failed (exit code $npmExit)" -ForegroundColor Red
-            Write-StudioLine "   Try running 'npm install' manually in frontend/ to see errors" -ForegroundColor Yellow
+            Write-StudioLine "[ERROR] npm $NpmInstallVerb failed (exit code $npmExit)" -ForegroundColor Red
+            Write-StudioLine "   Try running 'npm $NpmInstallVerb' manually in frontend/ to see errors" -ForegroundColor Yellow
             Show-NpmRegistryHint
             Exit-SetupFailure "Frontend dependency installation failed (exit code $npmExit)"
         }
@@ -5836,12 +5839,13 @@ if ((Test-Path $OxcValidatorDir) -and $NodeSource -ne "skip" -and (Get-Command n
     $prevEAP_oxc = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
     Push-Location $OxcValidatorDir
-    $oxcInstallExit = Invoke-SetupCommand { npm install @NpmRegistryArgs }
+    $NpmInstallVerb = if (Test-Path "package-lock.json") { "ci" } else { "install" }
+    $oxcInstallExit = Invoke-SetupCommand { npm $NpmInstallVerb @NpmRegistryArgs }
     if ($oxcInstallExit -ne 0 -and (Invoke-NpmMirrorRetry)) { $oxcInstallExit = 0 }
     if ($oxcInstallExit -ne 0) {
         Pop-Location
         $ErrorActionPreference = $prevEAP_oxc
-        Write-StudioLine "[ERROR] OXC validator npm install failed (exit code $oxcInstallExit)" -ForegroundColor Red
+        Write-StudioLine "[ERROR] OXC validator npm $NpmInstallVerb failed (exit code $oxcInstallExit)" -ForegroundColor Red
         Show-NpmRegistryHint
         Exit-SetupFailure "OXC validator dependency installation failed (exit code $oxcInstallExit)"
     }

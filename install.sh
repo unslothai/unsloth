@@ -5893,6 +5893,22 @@ _torch_index_url_is_rocm() {
     esac
 }
 
+# HIP reads CUDA_VISIBLE_DEVICES when HIP_VISIBLE_DEVICES is unset, so the "" mask that steers a mixed NVIDIA + AMD host to ROCm torch also hides the AMD card at runtime.
+_warn_if_cuda_mask_hides_amd() {
+    _cvd_hides_nvidia || return 0
+    [ -z "${HIP_VISIBLE_DEVICES+x}" ] || return 0
+    _torch_index_url_is_rocm "${1:-}" || return 0
+    _amd_gpu_present_via_pci || return 0
+    ( unset CUDA_VISIBLE_DEVICES; _has_usable_nvidia_gpu ) >/dev/null 2>&1 || return 0
+    echo "" >&2
+    echo "[WARN] CUDA_VISIBLE_DEVICES=\"$CUDA_VISIBLE_DEVICES\" hid the NVIDIA GPU, so ROCm torch was selected." >&2
+    echo "[WARN] ROCm reads CUDA_VISIBLE_DEVICES too: left set, it also hides the AMD GPU and" >&2
+    echo "[WARN] Unsloth Studio / Desktop will run CPU-only. Unset it before launching" >&2
+    echo "[WARN] (HIP_VISIBLE_DEVICES=0 picks the AMD card), and reinstall with" >&2
+    echo "[WARN] UNSLOTH_FORCE_ROCM_TORCH=1 rather than the mask to ask for ROCm torch." >&2
+    echo "" >&2
+}
+
 # True for an EXACT ROCm family leaf; one that merely starts with rocm/gfx is a custom pin.
 _is_pip_rocm_family_leaf() {
     case "$1" in
@@ -6579,6 +6595,9 @@ if [ "$_torch_index_pinned" = false ] && [ "$SKIP_TORCH" = false ] && \
             TORCH_INDEX_URL="$_cuda_fallback_index"
         fi
     fi
+fi
+if [ "$SKIP_TORCH" = false ]; then
+    _warn_if_cuda_mask_hides_amd "$TORCH_INDEX_URL"
 fi
 # Export the resolved torch backend ("cuda", "rocm" or "cpu") so setup.sh and install_python_stack.py know what was chosen here and can skip ROCm-specific repair steps. Classify on the FINAL path segment only: a custom UNSLOTH_PYTORCH_MIRROR whose base path happens to contain "rocm" or "gfx" must not mislabel a cu*/cpu index as ROCm (radeon repo URLs end in rocm-rel-X.Y/, Strix overrides in gfxNNNN/, so the trailing slash is stripped first). Lowercase the leaf so every gfx*/rocm*/cu* arm matches regardless of case (the canonical AMD RDNA4 leaf is gfx120X-all). CUDA is branded only on a real cu[0-9]* leaf, so a mirror leaf (/current) does NOT commit a CUDA backend; an unknown leaf leaves the var unset so the stack probes the GPU. Query and fragment are dropped first, then ALL trailing slashes, in lockstep with the shared _torch_index_url_leaf extractor.
 _torch_index_leaf="${TORCH_INDEX_URL%%\?*}"
