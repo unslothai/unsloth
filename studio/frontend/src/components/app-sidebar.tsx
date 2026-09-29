@@ -799,8 +799,7 @@ function ImagesWorkflowList({
   );
 }
 
-// Hugeicons' three dots with the outer two 1.5 units further out (the middle one stays put)
-// and all three on the vertical centre, where its own sit half a unit low.
+// Hugeicons' three dots, spread 1.5 units and centred vertically (its own sit half a unit low).
 const MORE_DOTS_ICON: IconSvgElement = [
   ["circle", { cx: "4.5", cy: "12", r: "1", stroke: "currentColor", strokeWidth: "1.5", key: "0" }],
   ["circle", { cx: "12", cy: "12", r: "1", stroke: "currentColor", strokeWidth: "1.5", key: "1" }],
@@ -5040,8 +5039,7 @@ export function AppSidebar() {
                         useChatSearchStore.getState().open();
                         closeMobileIfOpen();
                       }}
-                      // Drawn like the rows below it: their 16px glyph in their colour, and a pixel
-                      // lower, level with the logo's top-px.
+                      // Matches the rows below; top-px levels it with the logo.
                       className="relative top-px inline-flex size-[calc(30px*var(--ui-space-scale,1))] cursor-pointer items-center justify-center rounded-[10px] text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                       aria-label={t("shell.navigation.search")}
                     >

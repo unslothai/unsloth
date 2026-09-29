@@ -434,15 +434,14 @@ export function WindowTitlebar({
           aria-hidden="true"
           className="pointer-events-none absolute inset-x-0 top-[var(--studio-custom-titlebar-height)] z-[45] h-[12px]"
         >
-          {/* Window chrome, so a fixed 12px. The sidebar's colour outside the card's corner. */}
+          {/* Window chrome: a fixed 12px, sidebar colour outside the card's corner. */}
           {pinned && (
             <div
               className="absolute top-0 size-[12px] bg-[radial-gradient(circle_at_100%_100%,transparent_11px,var(--color-sidebar)_12px)]"
               style={{ left: cornerLeft }}
             />
           )}
-          {/* One border draws the card's top edge and its corner, so the two cannot part, and a
-              border snaps to device pixels where a 1px box blurs across two rows. */}
+          {/* One border for edge and corner: it snaps to device pixels where a 1px box blurs. */}
           <div
             className={cn(
               "absolute top-0 right-0 h-[12px] border-t border-sidebar-border",
