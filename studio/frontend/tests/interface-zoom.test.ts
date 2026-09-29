@@ -141,10 +141,10 @@ test("one Ctrl+wheel notch is one step, up zooms in, and a pause starts over", (
   assert.ok(WHEEL_ZOOM_STEP_PX <= 50);
 });
 
-test("the popup scales with the page and does not dismiss a modal", () => {
+test("the popup keeps one on-screen size and does not dismiss a modal", () => {
   const zoom = readSrc("features/interface-zoom/components/interface-zoom.tsx");
-  // Scales with the page, as the find bar does: nothing divides the page zoom back out.
-  assert.doesNotMatch(zoom, /zoom: 1 \//);
+  // The page zoom is divided back out.
+  assert.match(zoom, /\{ zoom: 1 \/ pageZoom \}/);
   assert.match(
     zoom,
     /onPointerDown=\{\(event\) => event\.stopPropagation\(\)\}/,
@@ -166,7 +166,7 @@ test("the popup scales with the page and does not dismiss a modal", () => {
   );
 });
 
-test("the zoom popup has two places: the find bar's corner, or under the bar while it shows", () => {
+test("the zoom popup takes the find bar's corner", () => {
   const css = readSrc("index.css");
   const provider = readSrc("app/provider.tsx");
   const findBar = readSrc("features/find-in-page/components/find-bar.tsx");
@@ -187,13 +187,8 @@ test("the zoom popup has two places: the find bar's corner, or under the bar whi
     css,
     /\.interface-zoom-position \{\s*top: calc\(var\(--studio-portal-content-top-inset, 0px\) \+ 3\.5rem\);/,
   );
-  // Under the bar only while it is showing: a bar hidden behind a modal does not count.
-  assert.match(
-    css,
-    /body:has\(> \[data-find-bar-layer\]:not\(\[hidden\]\) \[role="search"\]\) \.interface-zoom-position \{\s*top: calc\(var\(--studio-portal-content-top-inset, 0px\) \+ 3\.5rem \+ var\(--spacing, 0\.25rem\) \* 13 \+ 0\.5rem\);/,
-  );
-  // Those are the only rules that place it.
-  assert.equal(css.match(/\.interface-zoom-position/g)?.length, 2);
+  // One place only: it does not move out from under an open find bar.
+  assert.equal(css.match(/\.interface-zoom-position/g)?.length, 1);
   // A little smaller than the bar.
   assert.match(
     readSrc("features/interface-zoom/components/interface-zoom.tsx"),
@@ -201,15 +196,16 @@ test("the zoom popup has two places: the find bar's corner, or under the bar whi
   );
 });
 
-test("both bars paint over everything, on one named layer at the top of the scale", () => {
+test("both bars paint over everything, the zoom popup in front of the find bar", () => {
   const layers = readSrc("lib/z-layers.ts");
   const layer = (name: string) =>
     Number(new RegExp(`^  ${name}: (\\d+),$`, "m").exec(layers)?.[1]);
   const bars = layer("WINDOW_BARS");
+  assert.ok(layer("ZOOM_POPUP") > bars);
   for (const [, name, value] of /^ {2}([A-Z_]+): (\d+),$/gm[Symbol.matchAll](
     layers,
   )) {
-    if (name !== "WINDOW_BARS")
+    if (name !== "WINDOW_BARS" && name !== "ZOOM_POPUP")
       assert.ok(bars > Number(value), `${name} is not under the bars`);
   }
   // Every literal number in the app (classes, the stylesheet, inline styles) and the toaster's,
@@ -234,7 +230,7 @@ test("both bars paint over everything, on one named layer at the top of the scal
   assert.ok(numbers.includes(999999999), "the toaster's layer was not read");
   for (const value of numbers)
     assert.ok(bars > value, `z-index ${value} is over the bars`);
-  assert.ok(bars < 2147483647);
+  assert.ok(layer("ZOOM_POPUP") < 2147483647);
   // Both are portaled to <body> onto that layer, out of every stacking context in the shell.
   const findInPage = readSrc(
     "features/find-in-page/components/find-in-page.tsx",
@@ -247,7 +243,7 @@ test("both bars paint over everything, on one named layer at the top of the scal
   assert.match(findInPage, /document\.body,\s*\);\s*\}\s*$/);
   assert.match(
     zoom,
-    /interface-zoom-position pointer-events-auto fixed right-4"\s+style=\{\{ zIndex: Z_LAYER\.WINDOW_BARS \}\}/,
+    /interface-zoom-position pointer-events-auto fixed right-4"\s+style=\{\{ zIndex: Z_LAYER\.ZOOM_POPUP \}\}/,
   );
   assert.match(zoom, /createPortal\([\s\S]*document\.body,\s*\);/);
 });

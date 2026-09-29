@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import {
   getAppliedInterfaceZoom,
   isImeComposing,
+  subscribeAppliedInterfaceZoom,
   useInterfaceScaleStore,
 } from "@/features/settings";
 import {
@@ -20,7 +21,7 @@ import { useT } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
 import { Z_LAYER } from "@/lib/z-layers";
 import { MinusIcon, PlusIcon } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import { createPortal } from "react-dom";
 import {
   useZoomPopupStore,
@@ -57,6 +58,11 @@ function ZoomPopup() {
   const scale = useInterfaceScaleStore((s) => s.scale);
   const token = useZoomPopupStore((s) => s.token);
   const hide = useZoomPopupStore((s) => s.hide);
+  // Divided back out below, so the popup keeps one on-screen size at every zoom.
+  const pageZoom = useSyncExternalStore(
+    subscribeAppliedInterfaceZoom,
+    getAppliedInterfaceZoom,
+  );
   const [hovered, setHovered] = useState(false);
   const [focused, setFocused] = useState(false);
   const held = hovered || focused;
@@ -69,10 +75,10 @@ function ZoomPopup() {
   }, [token, held, hide]);
 
   return (
-    // Top layer, like the find bar. pointer-events-auto survives a modal's body lock.
+    // In the find bar's corner, in front of it. pointer-events-auto survives a modal's body lock.
     <div
       className="interface-zoom-position pointer-events-auto fixed right-4"
-      style={{ zIndex: Z_LAYER.WINDOW_BARS }}
+      style={{ zIndex: Z_LAYER.ZOOM_POPUP }}
       // Keeps an open modal from treating this as an outside click.
       onPointerDown={(event) => event.stopPropagation()}
     >
@@ -95,6 +101,7 @@ function ZoomPopup() {
           event.stopPropagation();
           hide();
         }}
+        style={pageZoom === 1 ? undefined : { zoom: 1 / pageZoom }}
         className="find-bar-surface flex h-11 items-center gap-0.5 rounded-full pr-1.5 pl-4 duration-100 animate-in fade-in-0"
       >
         <span className="min-w-[calc(2.875rem*var(--ui-space-scale,1))] pr-1.5 font-medium text-ui-14 tabular-nums">

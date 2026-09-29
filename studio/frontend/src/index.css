@@ -5457,13 +5457,9 @@ html.force-reduced-motion .sidebar-section-drop-line {
 	box-shadow: 0 4px 20px 6px var(--background);
 }
 
-/* Zoom popup: the find bar's corner, or just below the bar while it shows (h-13). */
+/* Zoom popup: the find bar's corner, drawn in front of the bar when both show. */
 .interface-zoom-position {
 	top: calc(var(--studio-portal-content-top-inset, 0px) + 3.5rem);
-}
-
-body:has(> [data-find-bar-layer]:not([hidden]) [role="search"]) .interface-zoom-position {
-	top: calc(var(--studio-portal-content-top-inset, 0px) + 3.5rem + var(--spacing, 0.25rem) * 13 + 0.5rem);
 }
 
 @layer components {
