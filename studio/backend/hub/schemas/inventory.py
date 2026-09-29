@@ -169,11 +169,7 @@ class LocalModelInfo(BaseModel):
     model_format: ModelFormat = Field("unknown", description = "Model file format")
     artifact_kind: LocalArtifactKind = Field(
         "unknown",
-        description = (
-            "Structural artifact contract established by the scanner. Unlike model_format, "
-            "this distinguishes a Diffusers pipeline root from an unrelated safetensors "
-            "component or Transformers model directory."
-        ),
+        description = "Structural contract, e.g. a Diffusers pipeline root vs a Transformers dir",
     )
     runtime: ModelRuntime = Field("unknown", description = "Expected runtime backend")
     format_variant: Optional[str] = Field(

@@ -32,13 +32,13 @@ from hub.services.models.common import (
     _gguf_variant_state_summary,
     _is_adapter_weight_name,
     _is_checkpoint_weight_name,
+    _local_transformers_can_chat,
     _is_training_artefact_name,
     _is_gguf_filename,
     _is_main_gguf_filename,
     _is_mmproj_filename,
     _is_mtp_drafter_path,
     _is_transformers_safetensors_weight_name,
-    _local_transformers_can_chat,
     _local_inventory_id,
     _local_path_can_chat,
     _runtime_for_format,
@@ -1231,11 +1231,7 @@ def _scan_cached_models(
                     )
                 )
                 # Pin the immutable snapshot, not the bare id: refs/main can move after this structural scan.
-                if (
-                    row_task is None
-                    and pipeline_artifact_kind is not None
-                    and load_snapshot is not None
-                ):
+                if row_task is None and pipeline_artifact_kind is not None:
                     row["load_id"] = str(load_snapshot)
                 # Native backend selection reads the load identity itself, so a custom native fork addressed only by repo id is indistinguishable from an ordinary LLM.
                 if native_audio_type and load_snapshot is not None:

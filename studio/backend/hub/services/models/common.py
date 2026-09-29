@@ -103,23 +103,22 @@ def _is_model_directory(d: Path) -> bool:
 
 
 def _diffusers_pipeline_artifact_kind(path: Optional[Path]) -> Optional[LocalArtifactKind]:
-    """Return the root-manifest contract for a Diffusers pipeline directory."""
+    """Return the root-manifest contract for a complete Diffusers pipeline directory."""
     if path is None:
         return None
-    try:
-        from core.inference.diffusion_families import local_pipeline_components_are_complete
+    from core.inference.diffusion_families import local_pipeline_components_are_complete
 
-        conventional = local_pipeline_components_are_complete(path, "model_index.json")
-        modular = local_pipeline_components_are_complete(path, "modular_model_index.json")
-        if conventional and modular:
-            return "diffusers_dual_pipeline"
-        if conventional:
-            return "diffusers_pipeline"
-        if modular:
-            return "diffusers_modular_pipeline"
-    except OSError:
-        pass
-    return None
+    return _PIPELINE_ARTIFACT_KINDS.get(
+        tuple(local_pipeline_components_are_complete(path, name) for name in _PIPELINE_MANIFESTS)
+    )
+
+
+_PIPELINE_MANIFESTS = ("model_index.json", "modular_model_index.json")
+_PIPELINE_ARTIFACT_KINDS = {
+    (True, True): "diffusers_dual_pipeline",
+    (True, False): "diffusers_pipeline",
+    (False, True): "diffusers_modular_pipeline",
+}
 
 
 def _is_diffusers_pipeline_dir(path: Path) -> bool:
@@ -836,17 +835,10 @@ def _local_model_info(
         else str(load_path)
     )
     semantic_id = model_id or str(load_path)
-    if artifact_kind is None:
-        if model_format == "gguf":
-            artifact_kind = "gguf"
-        elif model_format == "adapter":
-            artifact_kind = "adapter"
-        elif model_format in {"safetensors", "checkpoint"}:
-            artifact_kind = (
-                "single_file_checkpoint" if scan_path.is_file() else "transformers_model"
-            )
-        else:
-            artifact_kind = "unknown"
+    if artifact_kind is None and model_format in {"safetensors", "checkpoint"}:
+        artifact_kind = "single_file_checkpoint" if scan_path.is_file() else "transformers_model"
+    elif artifact_kind is None:
+        artifact_kind = model_format if model_format in {"gguf", "adapter"} else "unknown"
     return LocalModelInfo(
         id = load_id,
         inventory_id = _local_inventory_id(
@@ -922,7 +914,6 @@ def _classify_local_path(
                 load_path = load_path,
                 source = source,
                 model_format = "gguf",
-                artifact_kind = "gguf",
                 display_name = display_name,
                 model_id = model_id,
                 updated_at = updated_at,

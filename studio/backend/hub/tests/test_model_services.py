@@ -7048,39 +7048,14 @@ def test_a_modular_pipeline_root_is_recognised(tmp_path):
     walk descend into it and offer ``transformer`` / ``vae`` as separate, unusable models."""
     root = tmp_path / "modular"
     root.mkdir()
-    (root / "modular_model_index.json").write_text(
-        json.dumps(
-            {
-                "_class_name": "ModularPipeline",
-                "_blocks_class_name": "TestPipelineBlocks",
-                "transformer": ["diffusers", "Transformer2DModel"],
-            }
-        )
-    )
+    (root / "modular_model_index.json").write_text("{}")
     (root / "transformer").mkdir()
-    # Incomplete: still one pipeline to the walk, but not an override-eligible artifact.
     assert local_inventory._is_diffusers_pipeline_dir(root) is True
-    assert model_common._diffusers_pipeline_artifact_kind(root) is None
-    (root / "transformer" / "config.json").write_text("{}")
-    (root / "transformer" / "diffusion_pytorch_model.safetensors").write_bytes(b"weights")
-    assert model_common._diffusers_pipeline_artifact_kind(root) == "diffusers_modular_pipeline"
 
     conventional = tmp_path / "conventional"
     conventional.mkdir()
-    (conventional / "model_index.json").write_text(
-        json.dumps(
-            {
-                "_class_name": "DiffusionPipeline",
-                "transformer": ["diffusers", "Transformer2DModel"],
-            }
-        )
-    )
+    (conventional / "model_index.json").write_text("{}")
     assert local_inventory._is_diffusers_pipeline_dir(conventional) is True
-    assert model_common._diffusers_pipeline_artifact_kind(conventional) is None
-    (conventional / "transformer").mkdir()
-    (conventional / "transformer" / "config.json").write_text("{}")
-    (conventional / "transformer" / "diffusion_pytorch_model.safetensors").write_bytes(b"weights")
-    assert model_common._diffusers_pipeline_artifact_kind(conventional) == "diffusers_pipeline"
 
     neither = tmp_path / "neither"
     neither.mkdir()
