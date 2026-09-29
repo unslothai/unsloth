@@ -5710,8 +5710,7 @@ if ($NeedNodeForSetup) {
         Remove-Item Env:NODE_PATH -ErrorAction SilentlyContinue
         step "node" "$(node -v) | npm $(npm -v) (isolated)"
 
-        # bun (optional, faster installs); npm -g stays in the isolated prefix. Unused when
-        # package-lock.json exists (the frontend installs with `npm ci`), so skip it then.
+        # bun (optional, unused when package-lock.json means `npm ci`); npm -g stays in the isolated prefix.
         if (-not (Test-Path (Join-Path $FrontendDir "package-lock.json")) -and -not (Get-Command bun -ErrorAction SilentlyContinue)) {
             substep "installing bun (faster frontend package installs)..."
             $prevEAP_bun = $ErrorActionPreference

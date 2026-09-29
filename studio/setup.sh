@@ -2274,7 +2274,6 @@ else
 if command -v bun &>/dev/null; then
     substep "bun already installed ($(bun --version))"
 elif [ -f "$SCRIPT_DIR/frontend/package-lock.json" ]; then
-    # The frontend installs with `npm ci` whenever package-lock.json exists, so bun would go unused.
     verbose_substep "skipping global bun install (package-lock.json installs with npm ci)"
 elif [ "$NODE_SOURCE" = bundled ]; then
     substep "installing bun..."
