@@ -153,6 +153,7 @@ import {
 import { prepareHfTokenForUse } from "@/features/hf-auth";
 import {
   fetchGgufStagedMetadata,
+  getInferenceStatus,
   loadModel,
   unloadModel,
   validateModel,
@@ -567,6 +568,22 @@ function PillGlyph({ children }: { children: ReactNode }) {
 function isPortaledDrop(event: ReactDragEvent): boolean {
   const target = event.target as Element | null;
   return !target?.closest?.(".chat-composer-surface");
+}
+
+const LOAD_SETTLE_POLL_MS = 1000;
+const LOAD_SETTLE_TIMEOUT_MS = 15 * 60_000;
+
+async function waitForBackendLoadToSettle(modelPath: string): Promise<void> {
+  const deadline = Date.now() + LOAD_SETTLE_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    try {
+      const status = await getInferenceStatus();
+      if (!status.loading.some((id) => modelIdsMatch(id, modelPath))) return;
+    } catch {
+      // Keep polling: an unreachable backend has not proven the load ended.
+    }
+    await new Promise((resolve) => setTimeout(resolve, LOAD_SETTLE_POLL_MS));
+  }
 }
 
 export function SharedComposer({
@@ -2000,6 +2017,11 @@ export function SharedComposer({
             () => null,
             (error: unknown) => error ?? new Error("Model unload failed"),
           );
+          // The load keeps running when its cancel failed; resyncing before it settles would pin the
+          // outgoing model while the replacement becomes resident.
+          if (cleanupError && run.loadingModel) {
+            await waitForBackendLoadToSettle(run.loadingModel.modelPath);
+          }
           // A stopped load may have finished or evicted the previous model: adopt the backend's state.
           await resyncInferenceStatusAfterServerModelChange();
         }

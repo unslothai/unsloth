@@ -53,6 +53,11 @@ def test_cancelled_load_waits_for_unload_then_reconciles_checkpoint():
         "await resyncInferenceStatusAfterServerModelChange()"
     )
     assert 'toast.info("Compare stopped"' in catch
+    assert catch.index("await waitForBackendLoadToSettle(") < catch.index(
+        "await resyncInferenceStatusAfterServerModelChange()"
+    )
+    settle = _between(composer, "async function waitForBackendLoadToSettle(", "\n}\n")
+    assert "LOAD_SETTLE_TIMEOUT_MS" in settle
     finally_ = _between(composer, "      } finally {\n        compareRunsRef", "\n      }\n")
     assert "onComparingChange?.(false);" in finally_
 
