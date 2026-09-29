@@ -3702,7 +3702,7 @@ function VideoGenerator({
               resolveDownloadFootprint={resolveDownloadFootprint}
               onEject={status?.loaded ? handleUnload : undefined}
               variant="ghost"
-              className="!h-[var(--studio-media-control-height,calc(34px*var(--ui-space-scale,1)))] translate-y-[var(--studio-model-picker-offset,0px)]"
+              className="!h-[var(--studio-media-control-height,calc(34px*var(--ui-space-scale,1)))]"
               task={VIDEO_GEN_TASKS}
               catalog={VIDEO_CATALOG}
               hubCapability="diffusion"
