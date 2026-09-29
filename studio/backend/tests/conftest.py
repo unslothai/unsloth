@@ -140,6 +140,12 @@ def _forget_mxc_isolation_settings():
 
 
 @pytest.fixture(autouse = True)
+def _no_restricted_region_defaults(monkeypatch):
+    # A host where Hugging Face is restricted would otherwise default the model source to ModelScope.
+    monkeypatch.setenv("UNSLOTH_MIRROR_FALLBACK", "0")
+
+
+@pytest.fixture(autouse = True)
 def _isolate_agent_skills(_skills_home_root, monkeypatch):
     # A developer's own ~/.agents or ~/.claude skills must not leak into tool-selection tests.
     from core.inference import skills as _skills
