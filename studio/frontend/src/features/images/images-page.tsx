@@ -68,11 +68,12 @@ import { usePersistedChoice } from "@/hooks/use-persisted-choice";
 import { useScrollFades } from "@/hooks/use-scroll-fades";
 import { ModelSelector } from "@/features/model-picker/components/model-selector";
 import {
-  familyOverrideArtifactKind,
-  familyOverrideForPick,
+  explicitFamily,
+  FAMILY_OVERRIDE_HINT,
+  familyOverrideOptions,
   resolvedFamilyOverrideSelection,
-} from "@/features/model-picker/components/model-selector/family-override-local-candidate";
-import { familyOverrideOptions } from "@/features/model-picker/components/model-selector/family-override-options";
+  useFamilyOverride,
+} from "@/features/model-picker/components/model-selector/family-override";
 import { IMAGE_GEN_TASKS } from "@/features/model-picker/components/model-selector/pickers";
 import { PillTabs } from "@/features/model-picker/components/model-selector/pill-tabs";
 import {
@@ -173,11 +174,7 @@ import {
   resolvedSeedKey,
   resolvedSelectValue,
 } from "@/lib/resolved-precision";
-import {
-  diffusionPipelineStagingEntries,
-  diffusionPipelineLoadTarget,
-  diffusionPipelineTargetIsOnDevice,
-} from "@/lib/diffusion-pipeline-load-target";
+import { diffusionPipelineLoadTarget, diffusionStagingEntries } from "@/lib/diffusion-pipeline-load-target";
 import {
   routedGgufFilename,
   routedGgufLabel,
@@ -267,20 +264,15 @@ import {
   type TrainFamilyOption,
 } from "./train/train-base-selector";
 
-/** Whether this pick may receive a transformer precision request. Unknown repos defer to the backend. */
 function withEngagedFamily(
-  model: RememberedImageModel,
+  { repoId, kind, filename }: RememberedImageModel,
   status: Pick<DiffusionStatus, "resolved">,
 ): RememberedImageModel {
-  const family = resolvedFamilyOverrideSelection(status.resolved?.family_override);
-  return {
-    repoId: model.repoId,
-    kind: model.kind,
-    ...(model.filename ? { filename: model.filename } : {}),
-    ...(family && family !== "auto" ? { familyOverride: family } : {}),
-  };
+  const family = explicitFamily(resolvedFamilyOverrideSelection(status.resolved?.family_override));
+  return { repoId, kind, ...(filename ? { filename } : {}), ...(family ? { familyOverride: family } : {}) };
 }
 
+/** Whether this pick may receive a transformer precision request. Unknown repos defer to the backend. */
 function sendsTransformerQuant(kind: string | null | undefined, repoId: string): boolean {
   return (
     isDenseQuantKind(kind) &&
@@ -1269,11 +1261,7 @@ function reportLoadFailure(message: string | null | undefined, fallback: string)
 }
 
 type Busy = "loading" | "unloading" | "generating" | null;
-type ImageLoadOptions = {
-  kind: "gguf" | "single_file" | "pipeline";
-  filename?: string;
-  displayRepoId?: string;
-};
+type ImageLoadOptions = { kind: "gguf" | "single_file" | "pipeline"; filename?: string; displayRepoId?: string };
 
 // What a pick optimistically replaced, so a load that never takes can put it all back. The
 // quant label and the recipe move together at pick time, so they roll back together.
@@ -1474,7 +1462,6 @@ export function ImagesPage({
   const [oversizedRetryQueued, setOversizedRetryQueued] = useState(false);
   // Advanced (load-time) options; "auto"/"off"/"none" map to the backend defaults. Changing one
   // while loaded shows "Reapply".
-  const [familyOverride, setFamilyOverride] = useState("auto");
   const [modelSelectionAction, setModelSelectionAction] = useState<"load" | "download">("load");
   const [speedMode, setSpeedMode] = useState<"auto" | "off" | "eager" | "default" | "max">("auto");
   const [transformerQuant, setTransformerQuant] = useState<
@@ -1501,6 +1488,7 @@ export function ImagesPage({
   const gpuChoices = useDiffusionGpuChoices();
   const [transformerCache, setTransformerCache] = useState<"auto" | "off" | "fbcache" | "static">("auto");
   const [cpuOffload, setCpuOffload] = useState(false);
+  // The last load descriptor, so "Reapply" can reload the same model with new advanced options without re-picking it.
   const lastLoad = useRef<({ repoId: string } & ImageLoadOptions) | null>(null);
   // Render-safe mirror of whether a page-initiated load supplied a complete Reapply target.
   const [canReapply, setCanReapply] = useState(false);
@@ -1517,14 +1505,7 @@ export function ImagesPage({
   // setInterval, so returning fires one immediate poll.
   const genVisibilityListener = useRef<(() => void) | null>(null);
   const [status, setStatus] = useState<DiffusionStatus | null>(null);
-  const overrideArtifactKind = useMemo(
-    () => familyOverrideArtifactKind(familyOverride, "image"),
-    [familyOverride],
-  );
-  const selectorModelId =
-    status?.loaded && status.repo_id
-      ? (status.display_repo_id ?? status.repo_id)
-      : undefined;
+  const { familyOverride, setFamilyOverride, opaqueKind, selectorModelId } = useFamilyOverride(status);
   const conditioning = status?.loaded ? (status.conditioning ?? null) : null;
   const sizeLimits = useMemo(() => sizeLimitsFrom(conditioning), [conditioning]);
   const unifiedEdit = Boolean(conditioning?.unified_edit);
@@ -1602,11 +1583,7 @@ export function ImagesPage({
     }),
     [batchSize, count, guidance, height, negativePrompt, steps, width],
   );
-  const residentDefaults = residentDefaultsKey(
-    status?.repo_id ?? "",
-    status?.base_repo,
-    status?.resolved?.family_override,
-  );
+  const residentDefaults = residentDefaultsKey(status?.repo_id ?? "", status?.base_repo, status?.resolved?.family_override);
   const imageDefaultRecipe = useMemo<ImageGenerationPresetParams>(() => {
     const recommended =
       pendingModelDefaults ??
@@ -2688,12 +2665,11 @@ export function ImagesPage({
     const seedKey = `${repoId}\0${residentDefaults}`;
     if (seededResident.current === seedKey) return;
     seededResident.current = seedKey;
+    // Wire Reapply to the resident model too. Only a full pipeline is reloadable by repo id
+    // alone; a resident GGUF carries no checkpoint filename, so the target stays null and the
+    // button hidden. Set before the recipe decision below, which is a separate question.
     if (status?.model_kind === "pipeline") {
-      lastLoad.current = {
-        repoId,
-        kind: "pipeline",
-        displayRepoId: status.display_repo_id ?? undefined,
-      };
+      lastLoad.current = { repoId, kind: "pipeline", displayRepoId: status.display_repo_id ?? undefined };
     }
     // A stored recipe is the user's own choice, so it outranks the resident model's defaults on the first seed.
     if (!residentSeeded.current) {
@@ -2735,10 +2711,8 @@ export function ImagesPage({
   useEffect(() => {
     const record = status?.loaded ? status.resolved : null;
     if (!record) return;
-    const restoredFamily = resolvedFamilyOverrideSelection(
-      record.family_override,
-    );
-    if (restoredFamily) setFamilyOverride(restoredFamily);
+    const family = resolvedFamilyOverrideSelection(record.family_override);
+    if (family) setFamilyOverride(family);
     const quant = resolvedSelectValue(record.transformer_quant, (v) =>
       // The engaged value spells "no quant" as "off"; the select's option for it is "none".
       (["auto", "none", "int8", "fp8", "nvfp4", "mxfp8"] as const).find(
@@ -2794,10 +2768,7 @@ export function ImagesPage({
         attention_backend: attentionBackend === "auto" ? undefined : attentionBackend,
         memory_mode: memoryMode === "auto" ? undefined : memoryMode,
         transformer_cache: transformerCache === "auto" ? undefined : transformerCache,
-        family_override: familyOverrideForPick(
-          familyOverride,
-          familyOverrideRequired,
-        ),
+        family_override: familyOverrideRequired ? explicitFamily(familyOverride) : undefined,
         loras: baked.length > 0 ? baked : undefined,
         // Dropped when the chosen card is gone, so a stale pick loads automatically instead of 400ing.
         gpu_ids:
@@ -2866,12 +2837,7 @@ export function ImagesPage({
       const bakeLoras = advanced.loras ?? [];
       // Whether THIS load carries the selection into the build, so a quantized load that did not can drop it.
       bakedLorasOnLoad.current = bakeLoras.length > 0;
-      lastLoad.current = {
-        repoId,
-        kind: opts.kind,
-        filename: opts.filename,
-        displayRepoId: opts.displayRepoId,
-      };
+      lastLoad.current = { repoId, kind: opts.kind, filename: opts.filename, displayRepoId: opts.displayRepoId };
       setCanReapply(true);
       // Carry the prior target so the async poll can restore it if the background load fails after starting.
       lastLoadRevert.current = { prev: prevLastLoad };
@@ -3154,13 +3120,11 @@ export function ImagesPage({
         pickToast.dismissAll();
         if (!owns()) return true;
       }
-
-      // Show feedback before the potentially slow Hub metadata request.
       // ONE snapshot for the plan and the load it fires: the download runs for minutes without setting `busy`.
       const advanced = downloadSnapshot ?? currentLoadAdvanced(repoId, familyOverrideRequired);
       if (source !== "hub" && !downloadOnly) return handleLoadRef.current(repoId, opts, advanced);
+      // Show feedback before the potentially slow Hub metadata request.
       const pickToastId = downloadOnly ? undefined : pickToast.show();
-      const planRepoId = opts.displayRepoId ?? repoId;
       // Read before the await: a pick made while the plan resolves replaces quantRevert, and this
       // job must not revert it. A download-only pick claims no slot at all: it never relabels the
       // selector, so there is nothing here it could own, and reverting what it found would restore
@@ -3171,7 +3135,7 @@ export function ImagesPage({
       // load if the refusal itself threw.
       let incompatible: string | null = null;
       try {
-        const plan = await requestDownloadPlan(planRepoId, opts, advanced);
+        const plan = await requestDownloadPlan(opts.displayRepoId ?? repoId, opts, advanced);
         // Only load intents are superseded; accepted downloads keep their own plans.
         if (!downloadOnly && (pick !== pickSeq.current || !owns())) {
           pickToast.dismiss(pickToastId);
@@ -3192,19 +3156,7 @@ export function ImagesPage({
             };
             stagedQuantRevert.current = ownRevert;
           }
-          const stagedEntries = plan.entries.map((e) => ({
-            repoId: e.repo_id,
-            files: e.files,
-            bytes: e.bytes,
-            ggufFilename: e.gguf_filename,
-            // Keep the planner's checkpoint marker, including explicit false for companions.
-            checkpoint:
-              e.checkpoint ??
-              (opts.filename
-                ? e.files.includes(opts.filename)
-                : e.repo_id === planRepoId),
-          }));
-          const entries = diffusionPipelineStagingEntries(repoId, planRepoId, stagedEntries);
+          const entries = diffusionStagingEntries(plan.entries, repoId, opts);
           if (entries.length === 0) {
             pickToast.dismiss(pickToastId);
             if (downloadOnly) return true;
@@ -3399,9 +3351,7 @@ export function ImagesPage({
     );
     // A curated GGUF artifact resolves to kind "gguf" with no filename: the catalog lists the repo, not its files.
     if (pick.opts.kind === "gguf" && !pick.opts.filename) {
-      void Promise.resolve().then(() =>
-        loadGgufRepoPick(pick.repoId, null, "hub", null, "auto"),
-      );
+      void Promise.resolve().then(() => loadGgufRepoPick(pick.repoId, null, "hub", null, "auto"));
       return;
     }
     // Match every direct picker branch: the routed intent owns both the visible build label and
@@ -3471,13 +3421,7 @@ export function ImagesPage({
   // Reload the current model with the current advanced options.
   const handleReapply = useCallback(() => {
     const l = lastLoad.current;
-    if (l) {
-      void handleLoad(l.repoId, {
-        kind: l.kind,
-        filename: l.filename,
-        displayRepoId: l.displayRepoId,
-      });
-    }
+    if (l) void handleLoad(l.repoId, { kind: l.kind, filename: l.filename, displayRepoId: l.displayRepoId });
   }, [handleLoad]);
 
   // Every pick supersedes the one before it, whichever route it takes: a staged download
@@ -3509,13 +3453,10 @@ export function ImagesPage({
       // A download-only pick holds no token, and an absent token owns nothing to hand back.
       const stillOwnsPick = (): boolean => token !== undefined && pickGuard.holds(token);
       const pipelineTarget = diffusionPipelineLoadTarget(id, meta);
+      const { displayRepoId } = pipelineTarget;
       const familyOverrideRequired = meta.familyOverrideRequired === true;
       const nextFamilyOverride = familyOverrideRequired ? familyOverride : "auto";
       if (!downloadOnlyPick && !familyOverrideRequired) setFamilyOverride("auto");
-      const displayRepoId =
-        pipelineTarget.repoId !== pipelineTarget.displayRepoId
-          ? pipelineTarget.displayRepoId
-          : undefined;
       // Curated non-GGUF model: load as a full pipeline or single-file safetensors.
       const spec = loadSpecFor(id, IMAGE_CATALOG);
       if (spec && spec.kind !== "gguf") {
@@ -3655,10 +3596,7 @@ export function ImagesPage({
         return;
       }
       // Otherwise treat it as a full diffusers repo. The backend gates loads to unsloth/* repos or on-device paths.
-      if (
-        !diffusionPipelineTargetIsOnDevice(pipelineTarget) &&
-        !id.toLowerCase().startsWith("unsloth/")
-      ) {
+      if (!pipelineTarget.onDevice && !id.toLowerCase().startsWith("unsloth/")) {
         // A refused Download only pick retires nothing: it never claimed the page, and the rollback
         // slot it would clear belongs to whatever load is still staging.
         toast.error("Only unsloth or on-device image models can be loaded here");
@@ -4423,14 +4361,7 @@ export function ImagesPage({
         (kind === "pipeline" ||
           ((kind === "gguf" || kind === "single_file") && status.gguf_filename))
       ) {
-        const model = withEngagedFamily(
-          {
-            repoId: status.repo_id,
-            kind,
-            filename: status.gguf_filename ?? undefined,
-          },
-          status,
-        );
+        const model = withEngagedFamily({ repoId: status.repo_id, kind, filename: status.gguf_filename ?? undefined }, status);
         rememberImageModel(model);
         setRememberedModel(model);
       }
@@ -4455,13 +4386,8 @@ export function ImagesPage({
     const started = await handleLoad(
       rememberedModel.repoId,
       { kind: rememberedModel.kind, filename: rememberedModel.filename },
-      {
-        // Only the family the remembered load engaged; the live selection belongs to whatever is picked next.
-        ...currentLoadAdvanced(rememberedModel.repoId, false, true),
-        ...(rememberedModel.familyOverride
-          ? { family_override: rememberedModel.familyOverride }
-          : {}),
-      },
+      // Only the family the remembered load engaged; the live selection belongs to whatever is picked next.
+      { ...currentLoadAdvanced(rememberedModel.repoId, false, true), family_override: rememberedModel.familyOverride },
     );
     if (!started) pendingRecalledGeneration.current = null;
   }, [
@@ -4544,7 +4470,7 @@ export function ImagesPage({
     <>
       <AdvancedSelect
         label="Family"
-        hint="Architecture family. Auto detects it from the repository or pipeline metadata. Choose one only for a custom Diffusers pipeline whose metadata does not identify a supported family."
+        hint={FAMILY_OVERRIDE_HINT}
         badge={<ResolvedBadge status={status} controlKey="family_override" />}
         value={familyOverride}
         onValueChange={setFamilyOverride}
@@ -4765,7 +4691,7 @@ export function ImagesPage({
                 triggerLabelClassName="text-ui-14 @[68rem]:text-ui-16"
                 task={IMAGE_GEN_TASKS}
                 catalog={IMAGE_CATALOG}
-                opaqueKind={overrideArtifactKind}
+                opaqueKind={opaqueKind}
                 hubCapability="diffusion"
                 placeholder="Select image model"
                 open={active && selectorOpen}

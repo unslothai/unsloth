@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import ts from "typescript";
-import { familyOverrideForPick } from "../src/features/model-picker/components/model-selector/family-override-local-candidate.ts";
+import { explicitFamily } from "../src/features/model-picker/components/model-selector/family-override.ts";
 import {
   matchesRememberedModel,
   readImageModel,
@@ -41,28 +41,19 @@ test("recalling a quantized model carries the selected adapters into its load", 
       "\nreturn { handleGenerateWithRecall, currentLoadAdvanced };",
     { compilerOptions: { target: ts.ScriptTarget.ES2022 } },
   );
-  for (const quant of ["int8", "fp8"]) {
-    const model = {
-      repoId: "unsloth/model-GGUF",
-      kind: "gguf",
-      filename: "model-Q8_0.gguf",
-    };
+  const recall = (overrides: Record<string, unknown>) => {
     const loads: unknown[][] = [];
     const scope = {
       useCallback: (fn: unknown) => fn,
       lastLoad: { current: null },
       status: { loaded: false, repo_id: null },
-      loras: [
-        { id: " org/style ", weight: 0.7 },
-        { id: "", weight: 1 },
-        { id: "org/off", weight: 0 },
-      ],
-      familyOverride: "qwen-image",
-      familyOverrideForPick,
+      loras: [],
+      familyOverride: "auto",
+      explicitFamily,
       cpuOffload: false,
       speedMode: "auto",
-      transformerQuant: quant,
-      textEncoderQuant: "int8",
+      transformerQuant: "auto",
+      textEncoderQuant: "auto",
       attentionBackend: "auto",
       memoryMode: "auto",
       transformerCache: "auto",
@@ -71,7 +62,6 @@ test("recalling a quantized model carries the selected adapters into its load", 
       busy: null,
       imagePresets: { hydrated: true },
       prompt: "a teapot",
-      rememberedModel: model,
       pendingRecalledGeneration: { current: null },
       oversizedOnce: { current: false },
       loadSeq: { current: 3 },
@@ -83,10 +73,31 @@ test("recalling a quantized model carries the selected adapters into its load", 
         loads.push(args);
         return true;
       },
+      ...overrides,
     };
     const callbacks = new Function(...Object.keys(scope), outputText)(
       ...Object.values(scope),
     );
+    return { scope, loads, callbacks };
+  };
+  for (const quant of ["int8", "fp8"]) {
+    const model = {
+      repoId: "unsloth/model-GGUF",
+      kind: "gguf",
+      filename: "model-Q8_0.gguf",
+    };
+    // The live selection (qwen-image) must not leak into a recalled load.
+    const { scope, loads, callbacks } = recall({
+      loras: [
+        { id: " org/style ", weight: 0.7 },
+        { id: "", weight: 1 },
+        { id: "org/off", weight: 0 },
+      ],
+      familyOverride: "qwen-image",
+      transformerQuant: quant,
+      textEncoderQuant: "int8",
+      rememberedModel: model,
+    });
     await callbacks.handleGenerateWithRecall();
     const pending = scope.pendingRecalledGeneration.current as { allowOversized?: boolean } | null;
     assert.equal(pending?.allowOversized, false);
@@ -101,12 +112,13 @@ test("recalling a quantized model carries the selected adapters into its load", 
           loras?: unknown;
           transformer_quant?: string;
           text_encoder_quant?: string;
+          family_override?: string;
         }
       | undefined;
     assert.deepEqual(advanced?.loras, [{ id: "org/style", weight: 0.7 }]);
     assert.equal(advanced?.transformer_quant, quant);
     assert.equal(advanced?.text_encoder_quant, "int8");
-    assert.equal((advanced as { family_override?: string }).family_override, undefined);
+    assert.equal(advanced?.family_override, undefined);
     assert.equal(
       callbacks.currentLoadAdvanced("org/different-model").loras,
       undefined,
@@ -114,52 +126,11 @@ test("recalling a quantized model carries the selected adapters into its load", 
   }
 
   // An opaque pipeline loaded under an explicit family recalls with it after a restart (UI at Auto).
-  const opaque = {
-    repoId: "/cache/models--org--custom/snapshots/abc",
-    kind: "pipeline",
-    familyOverride: "flux.1",
-  };
-  const loads: unknown[][] = [];
-  const scope = {
-    useCallback: (fn: unknown) => fn,
-    lastLoad: { current: null },
-    status: { loaded: false, repo_id: null },
-    loras: [],
-    familyOverride: "auto",
-    familyOverrideForPick,
-    cpuOffload: false,
-    speedMode: "auto",
-    transformerQuant: "auto",
-    textEncoderQuant: "auto",
-    attentionBackend: "auto",
-    memoryMode: "auto",
-    transformerCache: "auto",
-    selectedGpu: "auto",
-    gpuChoices: [],
-    busy: null,
-    imagePresets: { hydrated: true },
-    prompt: "a teapot",
-    rememberedModel: opaque,
-    pendingRecalledGeneration: { current: null },
-    oversizedOnce: { current: false },
-    loadSeq: { current: 3 },
-    workflow: "txt2img",
-    handleGenerate: () => {
-      throw new Error("generation must wait for the load");
-    },
-    handleLoad: async (...args: unknown[]) => {
-      loads.push(args);
-      return true;
-    },
-  };
-  const callbacks = new Function(...Object.keys(scope), outputText)(
-    ...Object.values(scope),
-  );
+  const { loads, callbacks } = recall({
+    rememberedModel: { repoId: "/cache/models--org--custom/snapshots/abc", kind: "pipeline", familyOverride: "flux.1" },
+  });
   await callbacks.handleGenerateWithRecall();
-  assert.equal(
-    (loads[0][2] as { family_override?: string }).family_override,
-    "flux.1",
-  );
+  assert.equal((loads[0][2] as { family_override?: string }).family_override, "flux.1");
 });
 
 test("recall keeps an explicit family and drops Auto", () => {
