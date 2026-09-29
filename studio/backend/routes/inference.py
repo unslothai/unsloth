@@ -22450,7 +22450,9 @@ def _resample_mono_linear(arr: "np.ndarray", source_rate: int, target_rate: int)
 
 
 def _fit_transcoded_audio_to_wav_cap(
-    arr: "np.ndarray", sample_rate: int, cap: Optional[int] = None
+    arr: "np.ndarray",
+    sample_rate: int,
+    cap: Optional[int] = None,
 ) -> "tuple[np.ndarray, int]":
     """Downsample only when needed so transcoded WAV fits ``cap`` (default: the upload cap)."""
     cap = _MAX_AUDIO_RAW_BYTES if cap is None else cap
@@ -22747,9 +22749,7 @@ def _prepare_audio_clips_for_llama(clips: list[str]) -> list[tuple[str, str]]:
             prepared.append((clip, container))
         else:
             arr, sr = _decode_audio_mono(raw)
-            arr, sr = _fit_transcoded_audio_to_wav_cap(
-                arr, sr, cap = wav_budget // transcodes_left
-            )
+            arr, sr = _fit_transcoded_audio_to_wav_cap(arr, sr, cap = wav_budget // transcodes_left)
             wav = _mono_f32_to_wav_bytes(arr, sr)
             wav_budget -= len(wav)
             transcodes_left -= 1
@@ -26591,9 +26591,7 @@ async def produce_openai_chat_completions(
                 audio_arrays = (
                     _predecoded_audio
                     if _predecoded_audio is not None
-                    else await asyncio.to_thread(
-                        _decode_audio_clips, _request_audio_clips(payload)
-                    )
+                    else await asyncio.to_thread(_decode_audio_clips, _request_audio_clips(payload))
                 )
                 audio_array = audio_arrays[0] if len(audio_arrays) == 1 else audio_arrays
                 system_prompt, chat_messages, _ = await _extract_content_parts_async(

@@ -633,7 +633,11 @@ def test_transcoded_gguf_clips_share_one_wav_budget(monkeypatch):
 
     caps = []
 
-    def _fit(arr, sr, cap = None):
+    def _fit(
+        arr,
+        sr,
+        cap = None,
+    ):
         caps.append(cap)
         return arr, sr
 

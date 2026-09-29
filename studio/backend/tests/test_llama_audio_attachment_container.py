@@ -941,7 +941,9 @@ def test_a_switch_preflight_answers_an_overlong_upload_like_the_serving_path(mon
 
     for target_is_gguf in (True, False):
         try:
-            asyncio.run(inference_route._preflight_audio_for_switch({"clips": ["x"]}, target_is_gguf))
+            asyncio.run(
+                inference_route._preflight_audio_for_switch({"clips": ["x"]}, target_is_gguf)
+            )
         except HTTPException as error:
             assert error.status_code == 413, target_is_gguf
             assert error.detail == inference_route._audio_too_long_detail()
@@ -964,7 +966,9 @@ def test_a_switch_preflight_still_reports_undecodable_audio_as_a_bad_value(monke
 
     for target_is_gguf in (True, False):
         try:
-            asyncio.run(inference_route._preflight_audio_for_switch({"clips": ["x"]}, target_is_gguf))
+            asyncio.run(
+                inference_route._preflight_audio_for_switch({"clips": ["x"]}, target_is_gguf)
+            )
         except HTTPException as error:
             assert error.status_code == 400, target_is_gguf
         else:
