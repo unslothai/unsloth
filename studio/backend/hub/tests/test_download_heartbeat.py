@@ -202,6 +202,23 @@ def test_worker_files_are_removed_once_the_worker_exits(tmp_path):
     assert not (tmp_path / "beat.tmp").exists()
 
 
+def test_an_orphaned_worker_removes_its_own_heartbeat(monkeypatch, tmp_path):
+    beat = tmp_path / "beat"
+    beat.write_text("1")
+    (tmp_path / "beat.tmp").write_text("")
+
+    def _exit(code):
+        raise SystemExit(code)
+
+    monkeypatch.setattr(hf_download.os, "_exit", _exit)
+    try:
+        hf_download._terminate_orphaned_self(str(beat))
+    except SystemExit as exc:
+        assert exc.code == 130
+    assert not beat.exists()
+    assert not (tmp_path / "beat.tmp").exists()
+
+
 def test_only_xet_workers_get_a_heartbeat(monkeypatch, tmp_path):
     spawned = []
     real_popen = download_lifecycle.subprocess.Popen

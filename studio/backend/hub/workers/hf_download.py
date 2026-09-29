@@ -124,7 +124,7 @@ def _parent_is_alive(parent_pid: int) -> bool:
     return True
 
 
-def _terminate_orphaned_self() -> None:
+def _terminate_orphaned_self(heartbeat: str | None = None) -> None:
     # Hard exit from the watchdog thread: a self-SIGTERM would be deferred while the main thread is GIL-blocked in a C socket read, and the partial resumes byte-exact with atomic marker writes.
     try:
         print(
@@ -134,10 +134,16 @@ def _terminate_orphaned_self() -> None:
         sys.stderr.flush()
     except Exception:
         pass
+    # The parent owns heartbeat cleanup and is gone, so nobody else will remove it.
+    try:
+        from hub.utils.download_heartbeat import remove
+        remove(heartbeat)
+    except Exception:
+        pass
     os._exit(130)
 
 
-def _install_parent_death_watchdog(parent_pid: int | None) -> None:
+def _install_parent_death_watchdog(parent_pid: int | None, heartbeat: str | None = None) -> None:
     if not parent_pid or parent_pid <= 0:
         return
     interval = _parent_poll_seconds()
@@ -149,7 +155,7 @@ def _install_parent_death_watchdog(parent_pid: int | None) -> None:
             except Exception:
                 alive = True
             if not alive:
-                _terminate_orphaned_self()
+                _terminate_orphaned_self(heartbeat)
                 return
             time.sleep(interval)
 
@@ -1045,7 +1051,7 @@ def main() -> None:
                 pass
 
     _install_signal_handlers()
-    _install_parent_death_watchdog(args.parent_pid)
+    _install_parent_death_watchdog(args.parent_pid, args.heartbeat)
 
     hf_token = os.environ.get("HF_TOKEN") or None
 
