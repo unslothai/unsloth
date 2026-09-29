@@ -3799,6 +3799,7 @@ function VideoGenerator({
 
           <Field label="Prompt">
             <Textarea
+              data-type-to-activate="prompt"
               rows={4}
               placeholder={exampleDismissed ? undefined : VIDEO_EXAMPLE_PROMPT}
               value={prompt}

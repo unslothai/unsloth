@@ -5162,6 +5162,7 @@ export function ImagesPage({
 
             <Field label={workflow === "edit" ? "Instruction" : "Prompt"}>
               <Textarea
+                data-type-to-activate="prompt"
                 rows={4}
                 className={cn(IMAGE_PROMPT_BOX, "min-h-32")}
                 placeholder={
