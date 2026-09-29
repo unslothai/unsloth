@@ -17,7 +17,6 @@ from contextlib import ExitStack, closing, contextmanager, nullcontext
 from typing import Optional, Generator
 from core.inference.worker import RowRefused
 from core.inference import context_refusal
-from core.inference.message_content import content_to_text
 from core.inference.native_tool_tokens import (
     NativeToolTokenDecoder,
     closes_an_open_envelope,
@@ -33,6 +32,7 @@ from core.inference.runtime_context import (
 )
 from core.inference.chat_template_helpers import (
     # Aliased to this module's historic names; bodies moved to the shared helper (#10092).
+    alternating_turns,
     count_structured_images as _count_vlm_images,
     count_structured_videos as _count_vlm_videos,
     detect_reasoning_channel_markers,
@@ -106,6 +106,12 @@ def _is_opaque_cache(value):
     return not hasattr(value, "__dict__") and hasattr(type(value), "state")
 
 
+def _rebuilt_tuple(original, items):
+    """Rebuild as the tuple's own type: TurboQuant dispatches on its state class."""
+    rebuild = getattr(type(original), "_make", None)
+    return rebuild(items) if rebuild is not None else tuple(items)
+
+
 def _copy_value(value, mx):
     if isinstance(value, mx.array):
         # Safe to share: MLX writes in place only into an unreferenced buffer; slices are copied out.
@@ -113,7 +119,7 @@ def _copy_value(value, mx):
     if isinstance(value, list):
         return [_copy_value(item, mx) for item in value]
     if isinstance(value, tuple):
-        return tuple(_copy_value(item, mx) for item in value)
+        return _rebuilt_tuple(value, (_copy_value(item, mx) for item in value))
     if isinstance(value, dict):
         return {key: _copy_value(item, mx) for key, item in value.items()}
     if _is_cache(value):
@@ -146,7 +152,7 @@ def _release_value(value, mx):
     if isinstance(value, list):
         value[:] = [_release_value(item, mx) for item in value]
     elif isinstance(value, tuple):
-        return tuple(_release_value(item, mx) for item in value)
+        return _rebuilt_tuple(value, (_release_value(item, mx) for item in value))
     elif isinstance(value, dict):
         for key, item in list(value.items()):
             value[key] = _release_value(item, mx)
@@ -1586,13 +1592,141 @@ PROMPT_CACHE_ENTRIES = 6
 
 # Every bit width mx.quantize supports; unrelated to llama.cpp's cache_type_kv names.
 MLX_KV_BITS_CHOICES = (8, 6, 5, 4, 3, 2)
+MLX_TURBOQUANT_BITS_CHOICES = (4, 3.5, 3, 2)
 # Quantization group size; a head dim that is not a multiple makes mx.quantize raise.
 MLX_KV_GROUP_SIZE = 64
+MLX_PREFILL_CHUNK_FALLBACK = 2048
+
+
+def _generation_step(*, vision: bool, drafted: bool):
+    """The function that would run this generation's prefill."""
+    if vision:
+        from mlx_vlm.generate.ar import generate_step as vlm_generate_step
+        return vlm_generate_step
+    if drafted:
+        from mlx_lm.generate import speculative_generate_step
+        return speculative_generate_step
+    from mlx_lm.generate import generate_step
+
+    return generate_step
+
+
+def _generation_default(setting: str, fallback: int, *, vision: bool, drafted: bool) -> int:
+    """A prefill setting as the runtime that would run generation defaults to it."""
+    import inspect
+    try:
+        found = (
+            inspect.signature(_generation_step(vision = vision, drafted = drafted))
+            .parameters[setting]
+            .default
+        )
+        if isinstance(found, bool) or not isinstance(found, int) or found <= 0:
+            raise ValueError(f"the runtime states no usable {setting}")
+        return found
+    except Exception as exc:
+        logger.debug("Cannot read the runtime's %s: %s", setting, exc)
+        return fallback
+
+
+def mlx_vlm_snapshot_store_available() -> bool:
+    """Whether a vision load can build the snapshot store, which decides two things about it."""
+    if _prompt_cache_max_bytes() <= 0:
+        return False
+    try:
+        from mlx_vlm.generate import GenerationResult
+    except Exception as exc:
+        logger.debug("Cannot tell whether mlx-vlm carries the snapshot grid: %s", exc)
+        return False
+    return hasattr(GenerationResult, "cached_tokens")
+
+
+def mlx_vlm_pins_the_prefill_step(config) -> bool:
+    """Whether EVERY request to this vision load prefills on the pinned grid."""
+    if not mlx_vlm_snapshot_store_available():
+        return False
+    return bool(MLXInferenceBackend._vlm_media_token_ids(config))
+
+
+def mlx_prefill_chunk(
+    *,
+    vision: bool = False,
+    drafted: bool = False,
+    config = None,
+) -> int:
+    """Most tokens one prefill step takes; the last step of a prompt may be shorter."""
+    if vision and mlx_vlm_pins_the_prefill_step(config):
+        return vlm_prefill_step()
+    return _generation_default(
+        "prefill_step_size", MLX_PREFILL_CHUNK_FALLBACK, vision = vision, drafted = drafted
+    )
+
+
 # Surfaced with the resolved setting so an API client sees the reuse cost too.
 MLX_KV_QUANT_NO_REUSE = (
     "The installed mlx-lm cannot measure a quantized cache entry, so prompt-cache "
     "reuse across turns is disabled while this is on."
 )
+# The cap _configure_memory_limits installs, so a fitted context names a load MLX would allocate.
+MLX_MEMORY_LIMIT_FRACTION = 0.85
+
+
+MLX_TURBOQUANT_TEXT_LOAD = (
+    "TurboQuant is not available for this model: it could not be loaded through the runtime "
+    "TurboQuant requires. The model is served without it."
+)
+
+
+def _turboquant_refusal(*, is_vision, is_distributed, is_lora):
+    """Why a text model cannot take the mlx-vlm route TurboQuant lives on, else ""."""
+    if is_vision:
+        return ""
+    if is_distributed:
+        return "TurboQuant is not available under distributed inference. Run on one device, or turn it off."
+    if is_lora:
+        return "TurboQuant is not available for a LoRA adapter on a text model. Merge it first, or turn TurboQuant off."
+    return ""
+
+
+MLX_KV_QUANT_AUTO = "auto"
+# TurboQuant's widths repeat mx.quantize's, so the scheme rides in the value: "4" alone is ambiguous.
+MLX_TURBOQUANT_PREFIX = "tq-"
+
+
+def _kv_quant_choice(bits):
+    return str(int(bits)) if float(bits).is_integer() else str(float(bits))
+
+
+MLX_KV_QUANT_CHOICES = (
+    (MLX_KV_QUANT_AUTO,)
+    + tuple(_kv_quant_choice(bits) for bits in MLX_KV_BITS_CHOICES)
+    + tuple(MLX_TURBOQUANT_PREFIX + _kv_quant_choice(bits) for bits in MLX_TURBOQUANT_BITS_CHOICES)
+)
+
+
+def parse_mlx_kv_quant(value):
+    """The (bit width, TurboQuant) pair for a choice. Total: an unknown one reads as auto."""
+
+    if value is None:
+        return None, False
+    text = str(value).strip().lower()
+    if text in ("", MLX_KV_QUANT_AUTO):
+        return None, False
+    if text not in MLX_KV_QUANT_CHOICES:
+        logger.warning(
+            "MLX kv quantization %r unsupported (choose %s); ignoring",
+            value,
+            " or ".join(MLX_KV_QUANT_CHOICES),
+        )
+        return None, False
+    turboquant = text.startswith(MLX_TURBOQUANT_PREFIX)
+    width = float(text.removeprefix(MLX_TURBOQUANT_PREFIX))
+    return (int(width) if width.is_integer() else width), turboquant
+
+
+def encode_mlx_kv_quant(bits, turboquant = False):
+    if bits is None:
+        return MLX_KV_QUANT_AUTO
+    return (MLX_TURBOQUANT_PREFIX if turboquant else "") + _kv_quant_choice(bits)
 
 
 def _kv_entry_nbytes(entry):
@@ -1631,17 +1765,16 @@ def _mlx_rng_key_words():
     what lets the rewind below stay unconditional. A key that reads but is not two words is not
     the same as an unreadable one: the rewind no longer works on the installed mlx, so say so
     before declining."""
-    import mlx.core as mx
-
     try:
+        import mlx.core as mx
         words = mx.random.state[0].tolist()
     except Exception:
         return None
     if len(words) != 2:
         logger.warning(
             "MLX exposes a %d-word random key; Unsloth can only rewind the "
-            "two-word form, so the KV quantization probe will not restore the "
-            "PRNG and sampling after a load may differ from an unprobed run.",
+            "two-word form, so sizing a load will not restore the PRNG and "
+            "sampling after a load may differ from an unsized run.",
             len(words),
         )
         return None
@@ -1651,24 +1784,26 @@ def _mlx_rng_key_words():
 def _as_uint32_pair(high, low):
     """Both words as uint32, or None if either is not a 32-bit word at all.
 
-    mx.random.seed takes a uint64 and raises outside [0, 2**64); that raise would land in the
-    probe's finally and replace the probe's own outcome. So the words are range-checked here rather
-    than passed through, which is what lets the rewind below stay unguarded.
+    mx.random.seed takes a uint64 and raises outside [0, 2**64); that raise would
+    land in the rewind and replace the outcome of whatever it was guarding. So the
+    words are range-checked here rather than passed through, which is what lets the
+    rewind below stay unguarded.
 
-    Range-checked and not simply masked, though. A negative reads as the two's complement of the
-    uint32 mlx stores, so reinterpreting it loses nothing. A value at or above 2**32 is not a 32-bit
-    word under any reading, and masking it would turn a key we cannot represent into a plausible
-    wrong one: (2**32, 0) would restore as (0, 0), the probe would report success, and sampling
-    would silently diverge from an unprobed run. Decline instead, which is the outcome the caller
-    already handles.
+    Range-checked and not simply masked, though. A negative reads as the two's
+    complement of the uint32 mlx stores, so reinterpreting it loses nothing. A
+    value at or above 2**32 is not a 32-bit word under any reading, and masking
+    it would turn a key we cannot represent into a plausible wrong one: (2**32, 0)
+    would restore as (0, 0), the rewind would report success, and sampling would
+    silently diverge from an unsized run. Decline instead, which is the outcome
+    the caller already handles.
     """
     converted = []
     for word in (high, low):
         if not -(2**31) <= word < 2**32:
             logger.warning(
                 "MLX exposed a random key word of %d, which is not a 32-bit "
-                "word; the KV quantization probe will not restore the PRNG and "
-                "sampling after a load may differ from an unprobed run.",
+                "word; sizing a load will not restore the PRNG and sampling "
+                "after a load may differ from an unsized run.",
                 word,
             )
             return None
@@ -1683,14 +1818,24 @@ def _restore_mlx_rng_key(words):
     unsigned 64-bit range. Unguarded on purpose: the range check in _as_uint32_pair removes the
     only way this can raise, so there is no failure to swallow, and a blanket except here would
     be a failure indistinguishable from an intentional no-op."""
-    import mlx.core as mx
-
     if words is None:
         return
+    import mlx.core as mx
+
     pair = _as_uint32_pair(int(words[0]), int(words[1]))
     if pair is None:
         return
     mx.random.seed((pair[0] << 32) | pair[1])
+
+
+@contextmanager
+def mlx_rng_preserved():
+    """Leave the PRNG where it was found around weightless builds."""
+    rng_key = _mlx_rng_key_words()
+    try:
+        yield
+    finally:
+        _restore_mlx_rng_key(rng_key)
 
 
 def _kv_entry_windowed(entry):
@@ -1748,10 +1893,18 @@ def _quantize_kv_entries(entries, bits):
     return entries
 
 
-def _kv_quant_probe(language_model, entries, bits):
+def _kv_quant_probe(
+    language_model,
+    entries,
+    bits,
+    evaluate = True,
+):
     """``(converted, skipped, failure, retainable)``: runs a token through the converted cache,
-    since static proxies (declared head_dim, window spelling) proved wrong both ways."""
+    since static proxies (declared head_dim, window spelling) proved wrong both ways. Unevaluated,
+    the same graph is only built, which is what a weightless tower affords."""
     import mlx.core as mx
+
+    settle = mx.eval if evaluate else (lambda _arrays: None)
 
     targets, held = _kv_quant_targets(entries)
     skipped = len(entries) - len(targets) - held
@@ -1764,21 +1917,21 @@ def _kv_quant_probe(language_model, entries, bits):
     try:
         try:
             language_model(mx.array([[0]]), cache = entries)
-            mx.eval([getattr(entry, "state", None) for entry in entries])
+            settle([getattr(entry, "state", None) for entry in entries])
         except Exception as exc:
             if is_metal_queue_dead(exc):
                 raise
             return 0, 0, f"its cache could not be exercised ({type(exc).__name__})", True
         try:
             _quantize_kv_entries(entries, bits)
-            mx.eval([entries[index].state for index in targets])
+            settle([entries[index].state for index in targets])
         except Exception as exc:
             if is_metal_queue_dead(exc):
                 raise
             return 0, 0, f"MLX cannot quantize it ({type(exc).__name__})", True
         try:
             language_model(mx.array([[0]]), cache = entries)
-            mx.eval([getattr(entry, "state", None) for entry in entries])
+            settle([getattr(entry, "state", None) for entry in entries])
         except Exception as exc:
             if is_metal_queue_dead(exc):
                 raise
@@ -2209,6 +2362,91 @@ def _kv_entry_is_bounded(entry, window):
     return cap > getattr(entry, "keep", 0)
 
 
+def mlx_memory_budget(*, retains_history: bool = True) -> Optional[int]:
+    """Bytes a load's own footprint may occupy here, or None where Metal cannot say."""
+    import mlx.core as mx
+
+    if not mx.metal.is_available():
+        return None
+    recommended = mx.device_info().get("max_recommended_working_set_size")
+    if not recommended or recommended <= 0:
+        return None
+    budget = int(recommended * MLX_MEMORY_LIMIT_FRACTION)
+    if retains_history:
+        budget -= _prompt_cache_max_bytes(recommended / 1e9)
+    return budget if budget > 0 else None
+
+
+def _snapshot_dir(model, model_name: str) -> Optional[str]:
+    """Where the files this load actually opened are, or None if none are local."""
+    resolved = getattr(model, "_src_path", None)
+    if resolved and os.path.isdir(str(resolved)):
+        return str(resolved)
+    if os.path.isdir(model_name):
+        return model_name
+    from utils.utils import hf_cache_snapshot_dir
+
+    snapshot = hf_cache_snapshot_dir(model_name)
+    return str(snapshot) if snapshot is not None else None
+
+
+def mlx_fit_to_memory(
+    model_dir,
+    ceiling,
+    *,
+    load_in_4bit: bool,
+    retains_history: bool,
+    kv_bits = None,
+) -> Optional[int]:
+    """The context a load of *model_dir* is held to, priced at the KV width its cache takes."""
+    budget = mlx_memory_budget(retains_history = retains_history)
+    if budget is None or not ceiling or not model_dir:
+        return None
+    with mlx_rng_preserved():
+        try:
+            from core.inference.mlx_memory import mlx_fit_context
+
+            fitted = mlx_fit_context(
+                model_dir,
+                budget_bytes = budget,
+                max_ctx = int(ceiling),
+                kv_bits = kv_bits,
+                load_in_4bit = load_in_4bit,
+            )
+            logger.debug("MLX fit for %s: %s tokens under %.1f GB", model_dir, fitted, budget / 1e9)
+            return fitted
+        except Exception as exc:
+            logger.debug("MLX context fit unavailable for %s: %s", model_dir, exc)
+            return None
+
+
+def _fitted_context(
+    model,
+    model_name: str,
+    ceiling,
+    *,
+    load_in_4bit: bool,
+    retains_history: bool,
+    kv_bits = None,
+    is_vlm = False,
+):
+    """The fit for a resident model and the eligibility verdict it was priced under."""
+    try:
+        model_dir = _snapshot_dir(model, model_name)
+    except Exception as exc:
+        logger.debug("MLX snapshot unavailable for %s: %s", model_name, exc)
+        return None, None
+    verdict = None if kv_bits is None else _kv_quant_eligibility(model, is_vlm, kv_bits)
+    fitted = mlx_fit_to_memory(
+        model_dir,
+        ceiling,
+        load_in_4bit = load_in_4bit,
+        retains_history = retains_history,
+        kv_bits = kv_bits if verdict is None or verdict[0] in ("full", "partial") else None,
+    )
+    return fitted, verdict
+
+
 def _kv_window_enforced(model, is_vlm, window):
     """Whether a cache built at *window* is bounded in every layer, None where none could be built
     to judge: both runtimes defer to a model's own make_cache and ignore max_kv_size there."""
@@ -2222,7 +2460,166 @@ def _kv_window_enforced(model, is_vlm, window):
         return None
 
 
-def _kv_quant_status(requested_bits, model, is_vlm):
+def _asking_the_architecture(model_dir, question):
+    """Put *question* to the tower the sizing would price, built weightless from the checkpoint."""
+    with mlx_rng_preserved():
+        try:
+            import mlx.core as mx
+
+            from core.inference.mlx_memory import (
+                _PROBE_SHORT,
+                _probe_models,
+                _runtime_dtype,
+                _snapshot_config,
+            )
+
+            config = _snapshot_config(model_dir)
+            if config is None:
+                return None
+            for build, make_prompt_cache, _ in _probe_models(config, _runtime_dtype()):
+                model = build()
+                try:
+                    model(
+                        mx.zeros((1, _PROBE_SHORT), dtype = mx.int32),
+                        cache = make_prompt_cache(model),
+                    )
+                except Exception:
+                    continue
+                return question(model, make_prompt_cache)
+        except Exception as exc:
+            logger.debug("MLX architecture probe unavailable for %s: %s", model_dir, exc)
+        return None
+
+
+# Slider steps resend the width, and each answer is a weightless build.
+_kv_refusal_cache: dict = {}
+_kv_refusal_lock = threading.Lock()
+
+
+def mlx_kv_quant_is_refused(model_dir, bits) -> bool:
+    """Whether a load would keep this checkpoint's cache at full width despite *bits*, by the
+    eligibility probe's own rule (nothing to convert, or a converted cache the model cannot
+    attend over)."""
+
+    def refused(model, make_prompt_cache):
+        converted, _skipped, failure, _retainable = _kv_quant_probe(
+            model, make_prompt_cache(model), bits, evaluate = False
+        )
+        return failure is not None or not converted
+
+    try:
+        from core.inference.mlx_memory import _checkpoint_fingerprint
+        key = (os.path.realpath(model_dir), bits, _checkpoint_fingerprint(model_dir))
+    except Exception:
+        return _asking_the_architecture(model_dir, refused) is True
+    with _kv_refusal_lock:
+        if key in _kv_refusal_cache:
+            return _kv_refusal_cache[key]
+    answer = _asking_the_architecture(model_dir, refused) is True
+    with _kv_refusal_lock:
+        _kv_refusal_cache[key] = answer
+        while len(_kv_refusal_cache) > 32:
+            _kv_refusal_cache.pop(next(iter(_kv_refusal_cache)))
+    return answer
+
+
+def _turboquant_reserved_positions(count, bits):
+    """Entry positions mlx-vlm reserves, learned from a control cache rather than a fixed number."""
+
+    from mlx_vlm.generate.common import maybe_quantize_kv_cache
+    from mlx_vlm.models.cache import KVCache
+    from mlx_vlm.turboquant import TurboQuantKVCache
+
+    control = [KVCache() for _ in range(count)]
+    maybe_quantize_kv_cache(control, 0, MLX_KV_GROUP_SIZE, bits, kv_quant_scheme = "turboquant")
+    return {
+        index for index, entry in enumerate(control) if not isinstance(entry, TurboQuantKVCache)
+    }
+
+
+def _turboquant_status(
+    model,
+    bits,
+    refusal = "",
+):
+    import mlx.core as mx
+
+    status = dict(requested_kv_bits = bits, kv_bits = None, eligibility = "none", reason = "", note = "")
+    if refusal:
+        status["eligibility"] = "refused"
+        status["reason"] = refusal
+        logger.info("MLX TurboQuant not applied: %s", refusal)
+        return status
+
+    try:
+        from mlx_vlm.generate.common import maybe_quantize_kv_cache
+    except ImportError:
+        # TurboQuant predates generate.common (mlx-vlm 0.6.0).
+        status["eligibility"] = "refused"
+        status["reason"] = "TurboQuant requires a newer mlx-vlm. Update the MLX packages and retry."
+        return status
+    from mlx_vlm.models.cache import make_prompt_cache
+    from mlx_vlm.turboquant import TurboQuantKVCache
+
+    language_model = getattr(model, "language_model", model)
+    try:
+        entries = make_prompt_cache(language_model)
+    except Exception as exc:
+        if is_metal_queue_dead(exc):
+            raise
+        logger.warning("MLX TurboQuant eligibility probe failed: %s", exc)
+        status["reason"] = "this model's KV cache layout could not be inspected"
+        return status
+    if not entries:
+        status["reason"] = "this model builds no KV cache to quantize"
+        return status
+
+    rng_key = _mlx_rng_key_words()
+    try:
+        reserved = _turboquant_reserved_positions(len(entries), bits)
+        maybe_quantize_kv_cache(entries, 0, MLX_KV_GROUP_SIZE, bits, kv_quant_scheme = "turboquant")
+        converted = declined = 0
+        for index, entry in enumerate(entries):
+            leaves = list(_flatten_kv_entries([entry]))
+            quantized = sum(isinstance(leaf, TurboQuantKVCache) for leaf in leaves)
+            converted += quantized
+            if index not in reserved:
+                declined += len(leaves) - quantized
+        if not converted:
+            status["reason"] = (
+                "This model's cache keeps its native format; no layers can use TurboQuant."
+            )
+            return status
+        for _ in range(2):
+            result = language_model(mx.array([[0]]), cache = entries)
+            mx.eval(getattr(result, "logits", result), [entry.state for entry in entries])
+        status["kv_bits"] = bits
+        status["eligibility"] = "partial" if declined else "full"
+        if declined:
+            status["note"] = "Some layers keep their native cache format."
+        return status
+    except Exception as exc:
+        if is_metal_queue_dead(exc):
+            raise
+        logger.warning("MLX TurboQuant eligibility probe failed: %s", exc)
+        status["eligibility"] = "refused"
+        status["reason"] = f"this model's KV cache cannot use TurboQuant ({type(exc).__name__})"
+        return status
+    finally:
+        _restore_mlx_rng_key(rng_key)
+        # After the probe's own locals are gone, or the pages stay in the allocator.
+        entries.clear()
+        del entries
+        _drain_generation_streams(mx)
+        mx.clear_cache()
+
+
+def _kv_quant_status(
+    requested_bits,
+    model,
+    is_vlm,
+    eligibility = None,
+):
     """Resolve a requested bit width against this model into a status dict."""
     status = {
         "requested_kv_bits": requested_bits,
@@ -2233,7 +2630,9 @@ def _kv_quant_status(requested_bits, model, is_vlm):
     }
     if requested_bits is None:
         return status
-    verdict, reason, retainable = _kv_quant_eligibility(model, is_vlm, requested_bits)
+    verdict, reason, retainable = eligibility or _kv_quant_eligibility(
+        model, is_vlm, requested_bits
+    )
     status["eligibility"] = verdict
     status["reason"] = reason
     if verdict in ("full", "partial"):
@@ -3383,6 +3782,8 @@ class MLXInferenceBackend:
         self._tokenizer = None
         self._processor = None
         self._is_vlm = False
+        self._reads_vision = None
+        self._turboquant_refusal = ""
         self._multi_image_marker = None
         self._config = {}
         self._distributed_group = None
@@ -3642,11 +4043,21 @@ class MLXInferenceBackend:
 
     def _prepare_kv_entries(self, entries):
         bits = self._kv_quant_bits()
-        return entries if bits is None else _quantize_kv_entries(entries, bits)
+        # TurboQuant converts in mlx-vlm: mx.quantize cannot express its fractional widths.
+        if bits is None or getattr(self, "_turboquant", False):
+            return entries
+        return _quantize_kv_entries(entries, bits)
+
+    def _kv_runtime_quant_kwargs(self):
+        """TurboQuant's width for mlx-vlm's converter; start 0, since its default leaves 5000 tokens unquantized."""
+        bits = self._kv_quant_bits()
+        if bits is None or not getattr(self, "_turboquant", False):
+            return {}
+        return {"kv_bits": bits, "kv_quant_scheme": "turboquant", "quantized_kv_start": 0}
 
     def _kv_quant_generate_kwargs(self):
         """A pre-quantized cache, not kv_bits: both runtimes would convert a rotating entry."""
-        if self._kv_quant_bits() is None:
+        if self._kv_quant_bits() is None or getattr(self, "_turboquant", False):
             return {}
         return {
             "prompt_cache": self._prepare_kv_entries(_make_kv_entries(self._model, self._is_vlm))
@@ -3695,6 +4106,13 @@ class MLXInferenceBackend:
                 prompt, add_special_tokens = bos is None or not prompt.startswith(bos)
             )
         )
+
+    def _reads_vision_input(self):
+        """Whether this model reads images, which mlx-vlm serving it no longer implies."""
+        reads = getattr(self, "_reads_vision", None)
+        if reads is None:
+            return bool(getattr(self, "_is_vlm", False))
+        return bool(reads)
 
     def _count_media_prompt_tokens(
         self,
@@ -3745,7 +4163,7 @@ class MLXInferenceBackend:
         videos = None,
     ):
         """Prompt length as generation tokenizes it; vision models follow mlx_vlm's marker rule."""
-        if not self._is_vlm:
+        if not self._reads_vision_input():
             return len(self._encode_prompt(prompt))
         expanded = self._count_media_prompt_tokens(prompt, images, audio, videos)
         if expanded is not None:
@@ -3767,7 +4185,7 @@ class MLXInferenceBackend:
         if not rec_bytes or rec_bytes <= 0:
             return
         rec_gb = rec_bytes / 1e9
-        memory_limit_gb = rec_gb * 0.85
+        memory_limit_gb = rec_gb * MLX_MEMORY_LIMIT_FRACTION
         wired_limit_gb = min(rec_gb, memory_limit_gb)
         mx.set_memory_limit(int(memory_limit_gb * 1e9))
         mx.set_wired_limit(int(wired_limit_gb * 1e9))
@@ -3823,20 +4241,35 @@ class MLXInferenceBackend:
             )
         return enforced
 
-    def _resolve_kv_policy(self, is_vlm, kv_bits, max_seq_length, served):
+    def _resolve_kv_policy(
+        self,
+        is_vlm,
+        kv_bits,
+        max_seq_length,
+        served,
+        fitted = False,
+        eligibility = None,
+    ):
         """The quantization status, cache window and per-request budget this load will run with.
 
-        A rotating cache cannot be quantized, so with kv_bits an enforceable pin becomes a budget."""
-        pinned = _positive_int(max_seq_length) is not None
+        A rotating cache cannot be quantized, so with kv_bits an enforceable pin or fitted window
+        becomes a budget."""
+        pinned = _positive_int(max_seq_length) is not None or fitted
         # Tri-state: True bounded, False confirmed unbounded, None unjudgeable. Only True installs a bound; the other
         # two stay apart so a client can tell them apart.
         confirmed = self._kv_cache_window_enforceable(served)
         enforceable = confirmed is True
-        quant = _kv_quant_status(
-            _normalize_mlx_kv_bits(kv_bits),
-            self._model,
-            is_vlm,
-        )
+        if getattr(self, "_turboquant", False) and kv_bits is not None:
+            quant = _turboquant_status(
+                self._model, kv_bits, getattr(self, "_turboquant_refusal", "")
+            )
+        else:
+            quant = _kv_quant_status(
+                _normalize_mlx_kv_bits(kv_bits),
+                self._model,
+                is_vlm,
+                eligibility,
+            )
         if quant["kv_bits"] is None and enforceable:
             logger.info("MLX KV cache limited to %d tokens", int(served))
             return quant, int(served), True, None
@@ -3857,7 +4290,7 @@ class MLXInferenceBackend:
         dtype = None,
         parallel_mode = None,
         distributed_group = None,
-        kv_bits = None,
+        kv_quant = None,
         chat_template_override = None,
     ) -> bool:
         import mlx.core as mx
@@ -3866,8 +4299,24 @@ class MLXInferenceBackend:
         self._hf_token = hf_token
         model_name = config.identifier if hasattr(config, "identifier") else str(config)
         is_vision = getattr(config, "is_vision", False)
+        kv_bits, turboquant = parse_mlx_kv_quant(kv_quant)
+        self._turboquant = turboquant
+        if self._turboquant:
+            try:
+                from mlx_vlm.turboquant import TurboQuantKVCache
+            except ImportError as exc:
+                raise RuntimeError(
+                    "TurboQuant requires a newer mlx-vlm. Update the MLX packages and retry."
+                ) from exc
         distributed_rank, distributed_size = _mlx_distributed_rank_size(distributed_group)
         is_distributed = distributed_group is not None and distributed_size > 1
+        is_lora = getattr(config, "is_lora", False)
+        self._turboquant_refusal = (
+            _turboquant_refusal(is_vision = is_vision, is_distributed = is_distributed, is_lora = is_lora)
+            if self._turboquant
+            else ""
+        )
+        use_vlm = is_vision or (self._turboquant and not self._turboquant_refusal)
         self._distributed_group = distributed_group
         self._distributed_rank = distributed_rank
         self._distributed_world_size = distributed_size
@@ -3890,12 +4339,10 @@ class MLXInferenceBackend:
             os.environ["HF_TOKEN"] = hf_token
         self._configure_memory_limits()
 
-        is_lora = getattr(config, "is_lora", False)
-
         logger.info(
             "Loading %s via %s (is_lora=%s, distributed=%s, rank=%s/%s, mode=%s)",
             model_name,
-            "mlx-vlm" if is_vision else "mlx-lm",
+            "mlx-vlm" if use_vlm else "mlx-lm",
             is_lora,
             is_distributed,
             distributed_rank,
@@ -3928,7 +4375,7 @@ class MLXInferenceBackend:
             "load_in_4bit": load_in_4bit,
             "token": hf_token,
             "trust_remote_code": trust_remote_code,
-            "text_only": False if is_vision else True,
+            "text_only": not use_vlm,
         }
         if is_distributed:
             if parallel_mode == "pipeline":
@@ -3939,12 +4386,37 @@ class MLXInferenceBackend:
         # Freed before the replacement weights are allocated, for headroom.
         self._model_fusion.close()
         self._clear_prompt_cache()
-        model, tokenizer_or_processor = FastMLXModel.from_pretrained(
-            model_name,
-            **load_kwargs,
-        )
+        model = None
+        try:
+            model, tokenizer_or_processor = FastMLXModel.from_pretrained(
+                model_name,
+                **load_kwargs,
+            )
+        except Exception as exc:
+            if is_vision or not use_vlm or is_metal_queue_dead(exc):
+                raise
+            logger.warning(
+                "TurboQuant load of %s through mlx-vlm failed (%s); serving through mlx-lm without it",
+                model_name,
+                exc,
+            )
+        if model is None:
+            import gc
 
-        if is_vision:
+            # Outside the except: its traceback keeps the failed load's weights alive.
+            gc.collect()
+            _drain_generation_streams(mx)
+            mx.clear_cache()
+            self._turboquant_refusal = MLX_TURBOQUANT_TEXT_LOAD
+            use_vlm = False
+            load_kwargs["text_only"] = True
+            model, tokenizer_or_processor = FastMLXModel.from_pretrained(
+                model_name,
+                **load_kwargs,
+            )
+
+        self._reads_vision = bool(is_vision)
+        if use_vlm:
             processor = tokenizer_or_processor
             self._model = model
             self._processor = processor
@@ -3966,6 +4438,26 @@ class MLXInferenceBackend:
         _served_ctx, _native_ctx, _max_ctx = self._resolve_context_lengths(
             self._model, max_seq_length
         )
+        _priceable = not (is_distributed or is_lora or dtype is not None)
+        # TurboQuant's layout is not one the planner prices, and a refused one stays full width:
+        # fit either at full width, which only ever under-promises.
+        _requested_bits = None if self._turboquant else _normalize_mlx_kv_bits(kv_bits)
+        _fitted_ctx, _eligibility = (
+            (None, None)
+            if not _priceable or _positive_int(max_seq_length) is not None
+            else _fitted_context(
+                self._model,
+                model_name,
+                _served_ctx,
+                load_in_4bit = load_in_4bit,
+                retains_history = not use_vlm or mlx_vlm_snapshot_store_available(),
+                kv_bits = _requested_bits,
+                is_vlm = use_vlm,
+            )
+        )
+        if _fitted_ctx:
+            logger.info("MLX context fitted to %d tokens from %d", _fitted_ctx, _served_ctx or 0)
+            _served_ctx = _fitted_ctx
         self._served_context = _served_ctx
         # Classified now so a cache the model cannot attend over is refused here, not on a token.
         (
@@ -3973,7 +4465,14 @@ class MLXInferenceBackend:
             self._kv_cache_window,
             _ctx_enforced,
             self._kv_context_budget,
-        ) = self._resolve_kv_policy(is_vision, kv_bits, max_seq_length, _served_ctx)
+        ) = self._resolve_kv_policy(
+            use_vlm,
+            kv_bits,
+            max_seq_length,
+            _served_ctx,
+            fitted = _fitted_ctx is not None,
+            eligibility = _eligibility,
+        )
         if self._kv_quant["kv_bits"] is not None:
             logger.info(
                 "MLX KV cache quantization: %s-bit (%s eligibility)",
@@ -3996,7 +4495,7 @@ class MLXInferenceBackend:
             chat_template_override,
             self._tokenizer,
             self._processor,
-            lambda: self._render_template_probe(is_vision),
+            lambda: self._render_template_probe(use_vlm),
         )
         if native_marks_audio:
             _revoke_override_that_drops_audio(self._template_override, self._processor, self._model)
@@ -4046,17 +4545,21 @@ class MLXInferenceBackend:
             # Parity with llama.cpp's requested_n_ctx: the served window cannot say whether anything was asked for,
             # and that decides reuse and "pinned".
             "requested_context_length": _positive_int(max_seq_length) or 0,
-            # Nothing measures the machine, so window and ceiling coincide.
             "native_context_length": _native_ctx,
             "max_context_length": _max_ctx,
             # Whether the served window actually bounds the cache: True confirmed on a real cache, False confirmed
             # unbounded, None nothing could be built to judge. Without it the API reports a limit a client cannot tell
             # from an enforced one.
             "context_length_enforced": _ctx_enforced,
+            "context_length_fitted": _fitted_ctx,
             "context_unbounded_when_batched": self._vision_batch_is_available(),
             "mlx_context_budget": self._kv_context_budget,
             "mlx_kv_bits": self._kv_quant["kv_bits"],
             "mlx_kv_bits_requested": self._kv_quant["requested_kv_bits"],
+            "mlx_kv_quant": encode_mlx_kv_quant(self._kv_quant["kv_bits"], self._turboquant),
+            "mlx_kv_quant_requested": encode_mlx_kv_quant(
+                self._kv_quant["requested_kv_bits"], self._turboquant
+            ),
             "mlx_kv_quant_eligibility": self._kv_quant["eligibility"],
             "mlx_kv_quant_reason": self._kv_quant["reason"],
             "mlx_kv_quant_note": self._kv_quant["note"],
@@ -4131,7 +4634,7 @@ class MLXInferenceBackend:
         )
         if isinstance(_proc_tpl, (str, dict, list, tuple)) and _proc_tpl:
             info["processor_template"] = _proc_tpl
-        info["renders_image"] = _proc is not None and bool(getattr(self, "_is_vlm", False))
+        info["renders_image"] = _proc is not None and self._reads_vision_input()
         info["accepts_multiple_images"] = info["renders_image"] and bool(
             getattr(self, "_multi_image_marker", None)
         )
@@ -4286,10 +4789,8 @@ class MLXInferenceBackend:
         full_messages = self._with_system_prompt(messages, system_prompt)
 
         if self._is_vlm:
-            # Through the processor, which is what a vision generation renders with; the text renderer would not
-            # recover the template failures it recovers from. images=None: an image anywhere in the conversation makes
-            # the structured-item check raise, and the caller declines rather than pricing a prompt without it.
-            prompt, _ = self._render_vlm_prompt(
+            # images=None: an image anywhere makes the structured-item check raise.
+            prompt, _target, _markers = self._render_vlm_prompt(
                 full_messages,
                 None,
                 tools = tools,
@@ -4346,7 +4847,7 @@ class MLXInferenceBackend:
         if video is not None:
             if not _mlx_vlm_decodes_video():
                 raise RuntimeError("The installed mlx-vlm does not read video.")
-            if not self._is_vlm:
+            if not self._reads_vision_input():
                 raise RuntimeError("The loaded model does not read video.")
 
         # Reset so a failed run cannot surface stale stats.
@@ -4357,7 +4858,7 @@ class MLXInferenceBackend:
         # History first, the attachment last: MLX binds pixels to markers in order.
         attached = list(images or []) + ([image] if image is not None else [])
         # Shared with the transformers vision path so both render the same turns (#10092).
-        if self._is_vlm and (attached or video is not None):
+        if self._reads_vision_input() and (attached or video is not None):
             # Processor templates want part lists, the tokenizer fallback wants strings.
             from core.inference.chat_template_helpers import (
                 chat_render_target as _chat_render_target,
@@ -4405,7 +4906,7 @@ class MLXInferenceBackend:
         if self._is_vlm:
             stream = self._generate_vlm(
                 full_messages,
-                attached,
+                attached if self._reads_vision_input() else None,
                 temperature,
                 top_p,
                 top_k,
@@ -5004,7 +5505,31 @@ class MLXInferenceBackend:
                 raise RuntimeError(
                     f"VLM chat template marked {marked} image(s) for {attached_images} attached."
                 )
-        return prompt, chat_target
+
+        markers = detect_reasoning_channel_markers(chat_target, tools = tools)
+        if not self._reads_vision_input():
+            # No images means no image tokens to place, so skipping this would drop the tool schema.
+            from core.inference.chat_template_helpers import (
+                render_with_native_template_fallback,
+            )
+
+            model_info = self.models.get(self.active_model_name, {})
+            recovered = render_with_native_template_fallback(
+                formatted_prompt = prompt,
+                tokenizer = self._tokenizer,
+                model_info = model_info,
+                active_model_name = self.active_model_name,
+                messages = messages,
+                tools = tools,
+                enable_thinking = enable_thinking,
+                reasoning_effort = reasoning_effort,
+                preserve_thinking = preserve_thinking,
+                continue_final_message = continue_final_message,
+                hf_token = model_info.get("hf_token"),
+                return_metadata = True,
+            )
+            prompt, markers = recovered.prompt, recovered.reasoning_channel_markers
+        return prompt, chat_target, markers
 
     def _plan_vlm_request(self, request) -> "_VLMRowPlan":
         image = request.get("image")
@@ -5037,7 +5562,7 @@ class MLXInferenceBackend:
         stop = None,
     ) -> "_VLMRowPlan":
         images = [image] if image is not None else None
-        prompt, chat_target = self._render_vlm_prompt(
+        prompt, chat_target, markers = self._render_vlm_prompt(
             messages,
             images,
             tools = tools,
@@ -5052,7 +5577,6 @@ class MLXInferenceBackend:
         think_prefix = detect_think_prefill(
             prompt, getattr(chat_target, "all_special_tokens", None)
         )
-        markers = detect_reasoning_channel_markers(chat_target, tools = tools)
         normalizer = (
             make_reasoning_normalizer(
                 markers,
@@ -5149,7 +5673,7 @@ class MLXInferenceBackend:
         from mlx_vlm import stream_generate as vlm_stream
 
         images = list(images) if images else None
-        prompt, chat_target = self._render_vlm_prompt(
+        prompt, chat_target, vlm_reasoning_markers = self._render_vlm_prompt(
             messages,
             images,
             videos = [video] if video is not None else None,
@@ -5163,7 +5687,6 @@ class MLXInferenceBackend:
         from core.inference.chat_template_helpers import detect_think_prefill
 
         # Detected once: the decoder keeps the delimiters the normalizer below consumes.
-        vlm_reasoning_markers = detect_reasoning_channel_markers(chat_target, tools = tools)
         prefill = detect_think_prefill(
             prompt,
             getattr(chat_target, "all_special_tokens", None),
@@ -5299,9 +5822,15 @@ class MLXInferenceBackend:
             else None
         )
 
+        if not self._reads_vision_input():
+            # mlx-vlm adds special tokens by family, doubling a BOS the template already emitted.
+            import mlx.core as mx
+            vlm_kwargs["input_ids"] = mx.array([self._encode_prompt(prompt)])
+
         session = self._vlm_prompt_cache_session(
             _adapter_state, images, prompt, has_video = video is not None
         )
+        vlm_kwargs.update(self._kv_runtime_quant_kwargs())
         if session is not None:
             vlm_kwargs["prompt_cache"] = session.cache
             vlm_kwargs["prompt_cache_state"] = session
@@ -5762,22 +6291,16 @@ class MLXInferenceBackend:
 
         from mlx_vlm import stream_generate as vlm_stream
 
-        # Only the CURRENT user turn may caption the audio; never older history.
-        user_text = ""
-        for msg in reversed(messages or []):
-            if isinstance(msg, dict) and msg.get("role") == "user":
-                user_text = content_to_text(msg.get("content") or "").strip()
-                break
-        if not user_text:
-            user_text = "Please transcribe this audio."
         if not system_prompt:
             system_prompt = "You are an assistant that transcribes speech accurately."
 
-        # No name: mlx-vlm rebuilds non-tool turns from role and text, dropping anything else.
-        audio_messages = [
-            {"role": "system", "content": [{"type": "text", "text": system_prompt}]},
-            {"role": "user", "content": [{"type": "audio"}, {"type": "text", "text": user_text}]},
-        ]
+        audio_messages = messages_with_attached_image(
+            alternating_turns(messages),
+            system_prompt = system_prompt,
+            fallback_user_text = "Please transcribe this audio.",
+            image = 0,
+            audio = audio_array,
+        )
         prompt = _render_registered_vlm_prompt(
             self._processor,
             self._model,
@@ -5830,6 +6353,7 @@ class MLXInferenceBackend:
                             max_tokens = max_new_tokens,
                             # Greedy; the knobs below are load-time state, not caller kwargs.
                             temperature = 0.0,
+                            **self._kv_runtime_quant_kwargs(),
                             **self._kv_quant_generate_kwargs(),
                             **self._kv_window_generate_kwargs(),
                         )

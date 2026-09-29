@@ -101,7 +101,7 @@ _KEY_START = r"(?<![A-Za-z0-9])"
 
 _PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     # Hugging Face
-    (re.compile(r"\bhf_[A-Za-z0-9]{20,}"), "hf_" + REDACTED),
+    (re.compile(r"\bhf_(?:oauth_[A-Za-z0-9._~+/=-]{20,}|[A-Za-z0-9]{20,})"), "hf_" + REDACTED),
     # OpenAI and other sk- keys (project, Anthropic, OpenRouter). Not a word boundary: that also fires after a hyphen, eating checkpoint-sk-9f8a... in a filename.
     (
         re.compile(r"(?<![A-Za-z0-9-])sk-(?:proj-|ant-api\d{2}-|or-v1-)?[A-Za-z0-9_-]{16,}"),

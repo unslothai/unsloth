@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { mlxRuntimeStateFrom } from "./lib/mlx-runtime-state";
+import { offloadCountsFrom, offloadWarning } from "./lib/partial-offload";
 import {
   clearedServerTuningState,
   committedServerTuningState,
@@ -1662,7 +1663,7 @@ export function SharedComposer({
           approved_remote_code_fingerprint: approvedRemoteCodeFingerprint,
           chat_template_override: effectiveChatTemplateOverride,
           cache_type_kv: ownConfig.kvCacheDtype ?? null,
-          mlx_kv_bits: ownConfig.mlxKvBits ?? null,
+          mlx_kv_quant: ownConfig.mlxKvQuant ?? null,
           speculative_type: effectiveSpeculativeType,
           spec_draft_n_max: effectiveSpecDraftNMax,
           reasoning_budget:
@@ -1707,6 +1708,13 @@ export function SharedComposer({
         // Persist the GPU Memory mode on a non-diffusion GGUF compare-load too, so an applied manual
         // choice survives a restart.
         persistGpuMemoryModeOnLoad(resp, effectiveGpuMemoryMode);
+        const compareOffload = offloadWarning(offloadCountsFrom(resp));
+        if (compareOffload) {
+          toast.warning(
+            `${compareModelDisplayName(sel.id)} loaded${compareOffload.titleSuffix}`,
+            { description: compareOffload.description, duration: 8000 },
+          );
+        }
         upgradeUnloadedActive = false;
         const store = useChatRuntimeStore.getState();
         store.setCheckpoint(

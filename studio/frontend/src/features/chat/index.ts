@@ -77,6 +77,7 @@ export {
   GPU_LAYERS_AUTO,
 } from "./stores/chat-runtime-store";
 export { resolveStagedDiffusionClassification } from "./lib/gpu-placement";
+export { offloadCountsFrom, offloadWarning } from "./lib/partial-offload";
 export {
   preferFullToolOutput,
   preferSanitizedFullToolOutput,
@@ -185,6 +186,7 @@ export type {
 } from "./stores/sidebar-organization-store";
 export { useChatPreferencesStore } from "./stores/chat-preferences-store";
 export { SectionNameDialog } from "./components/section-name-dialog";
+export { removeCustomSectionWithUndo } from "./stores/remove-custom-section";
 export {
   usePromptQueueUI,
   type PromptQueueUIEntry,
@@ -326,7 +328,14 @@ export {
   sandboxSessionIdsHolding,
   type ConversationExportFormat,
 } from "./components/chat-row-menu";
-export { OpenChatFolderUnavailableItem } from "./components/open-chat-folder-item";
+export {
+  OpenChatFolderItem,
+  OpenChatFolderUnavailableItem,
+  OpenProjectFolderItem,
+} from "./components/open-chat-folder-item";
+export { BulkExportItems, exportThreads } from "./components/bulk-export-items";
+export { useFileProjectInSection } from "./hooks/use-file-project-in-section";
+export { pickAndImportChats } from "./utils/import-chats";
 export { useForkInFlight } from "./utils/fork-in-flight";
 export { showForkCreatedToast } from "./utils/fork-toast";
 export { clearAllChats, countAllChats } from "./utils/clear-all-chats";
@@ -370,6 +379,8 @@ export {
   getStoredChatThread,
   isThreadIncognito,
   listStoredChatMessages,
+  listStoredChatMessagesMany,
+  countStoredChatMessages,
   listStoredChatProjects,
   listStoredChatThreads,
   markThreadIncognito,
