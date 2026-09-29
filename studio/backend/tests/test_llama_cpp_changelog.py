@@ -389,7 +389,6 @@ def test_an_oversized_release_body_is_rejected(monkeypatch):
     ("retry_after", "body", "low", "high"),
     [
         ({"Retry-After": "90"}, b"", 85, 90),
-        # Only the body names a secondary limit, so the call site has to forward it.
         ({}, b'{"message": "secondary rate limit"}', 60, None),
     ],
 )

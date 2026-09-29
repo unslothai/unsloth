@@ -525,7 +525,6 @@ class TestEnsureFlashAttn:
         assert ("warning", "No published flash-attn prebuilt wheel found") in step_messages
 
     def test_an_unchecked_wheel_is_not_reported_as_unpublished(self):
-        # None means refused, not missing; calling it unpublished hides a spent quota.
         step_messages = []
 
         def fake_step(kind, message, *args, **kwargs):

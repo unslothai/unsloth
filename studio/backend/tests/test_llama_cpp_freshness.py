@@ -778,7 +778,6 @@ def _rate_limited(seconds_out: float):
 
 
 def test_a_rate_limited_api_is_not_asked_again_until_the_window_resets(monkeypatch):
-    """One refusal is enough, and a guard that never lifts would silence the session."""
     import urllib.request
 
     mono = [1000.0]
@@ -812,7 +811,6 @@ def test_a_rate_limited_api_is_not_asked_again_until_the_window_resets(monkeypat
         (403, {"X-RateLimit-Remaining": "4998", "Retry-After": "60"}, b"", True),
         (403, {"X-RateLimit-Remaining": "4998"}, b'{"message": "secondary rate limit"}', True),
         (403, {"X-RateLimit-Remaining": "4998"}, b'{"message": "Resource not accessible"}', False),
-        # The rate limiter always sends X-RateLimit-*, so a 403 without them is not one.
         (403, None, b"", False),
     ],
 )
@@ -886,14 +884,12 @@ def test_what_the_fetch_itself_treats_as_a_rate_limit(
     assert fr._fetch_latest_release_tag("unslothai/llama.cpp") is None
     remaining = fr._flow.github_rate_limit_remaining()
     if locked_out:
-        # The floor is written out, not taken from the constant, which would move with it.
         assert 10 * 60 < remaining <= fr._flow.GITHUB_RATE_LIMITED_DEFAULT_SECONDS
     else:
         assert remaining == 0
 
 
 def test_a_later_shorter_refusal_cannot_shorten_the_lockout():
-    """One deadline for the process: a short Retry-After must not release callers early."""
     fr._flow._api_rate_limited_until = 0.0
     fr._flow.note_github_rate_limited({"Retry-After": "1800"}, status = 429)
     fr._flow.note_github_rate_limited({"Retry-After": "5"}, status = 429)

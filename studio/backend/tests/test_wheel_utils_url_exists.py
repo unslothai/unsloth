@@ -1,7 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""url_exists must tell a missing wheel (404) from a refusal, and callers must reach their slow path either way."""
 
 from __future__ import annotations
 
@@ -62,7 +61,6 @@ def _headers(**values):
 @pytest.mark.parametrize(
     ("status", "headers", "probes"),
     [
-        # Retrying a refusal asks a throttled host twice as often as it asked to be.
         (403, None, 1),
         (429, None, 1),
         (503, _headers(Retry_After = "60"), 1),
@@ -92,7 +90,6 @@ def test_a_refusal_is_reported_and_only_a_server_fault_is_retried(
     ],
 )
 def test_a_dropped_or_garbled_response_is_absorbed_and_retried(monkeypatch, exc):
-    """None is a URLError, so an escape aborts the install instead of taking the slow path."""
     calls = _patch(monkeypatch, lambda _n: (_ for _ in ()).throw(exc))
     assert wheel_utils.url_exists("https://github.com/x/releases/download/v1/w.whl") is None
     assert len(calls) == 2
@@ -121,7 +118,6 @@ def test_a_timeout_is_not_retried(monkeypatch):
 @pytest.mark.parametrize("installer", ["training", "inference"])
 @pytest.mark.parametrize("status", [403, 429, 503, 404])
 def test_a_refused_probe_still_reaches_the_source_build(monkeypatch, installer, status):
-    """PyPI and the source build need no GitHub, so a refusal must not cost the package."""
     from core.training import worker
     from utils import ssm_runtime
 
@@ -166,7 +162,6 @@ def test_a_refused_probe_still_reaches_the_source_build(monkeypatch, installer, 
 
 
 def test_a_refused_probe_does_not_fail_a_mamba_model(monkeypatch):
-    """ensure_ssm_runtime raises when mamba-ssm is missing, so an early return breaks the model."""
     from utils import ssm_runtime
 
     url = "https://github.com/x/releases/download/v1/w.whl"

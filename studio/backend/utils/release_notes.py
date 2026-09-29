@@ -615,7 +615,7 @@ def _fetch_latest_release() -> tuple[ReleaseSource, float]:
         # Or a compressing proxy hands back bytes we would decode as notes.
         "Accept-Encoding": "identity",
     }
-    # Same precedence as the fetches sharing this lockout: a second credential would let one token's exhaustion silence the other's requests. https only, since the override accepts http://.
+    # Same token precedence as the fetches sharing this lockout; https only, since the override accepts http://.
     token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
     parsed = urllib.parse.urlparse(url)
     send_token = bool(token) and parsed.scheme == "https" and parsed.hostname == "api.github.com"

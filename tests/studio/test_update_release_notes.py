@@ -798,7 +798,6 @@ def test_shared_github_backoff_does_not_block_a_release_notes_mirror(notes_modul
 @pytest.mark.parametrize(
     ("url_override", "env", "expected"),
     [
-        # Same precedence as the other fetches sharing this lockout.
         (None, {"GH_TOKEN": "ghp_gh", "GITHUB_TOKEN": "ghp_github"}, "Bearer ghp_github"),
         (None, {"GH_TOKEN": "ghp_gh"}, "Bearer ghp_gh"),
         ("https://mirror.example/releases", {"GH_TOKEN": "ghp_gh"}, None),
@@ -831,7 +830,6 @@ def test_where_the_release_notes_token_may_travel(
 
 
 def test_a_redirect_cannot_carry_the_token_off_the_api_host(notes_module, monkeypatch):
-    """urllib replays a request's headers on a redirect, but not its unredirected ones."""
     import urllib.error
 
     captured = []
@@ -846,7 +844,6 @@ def test_a_redirect_cannot_carry_the_token_off_the_api_host(notes_module, monkey
     notes_module.reset_release_notes_cache()
     notes_module._fetch_latest_release()
 
-    # redirect_request copies req.headers; unredirected_hdrs is what it leaves behind.
     assert captured[0].get_header("Authorization") == "Bearer ghp_secret"
     assert "Authorization" not in captured[0].headers
 

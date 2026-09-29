@@ -4337,7 +4337,6 @@ def test_diffusion_visual_server_uses_approved_checksum_download(monkeypatch, tm
     asset_url = "https://github.com/unslothai/llama.cpp/releases/download/b9334/" + asset_name
     calls: list[tuple[str, Path, str | None, str | None]] = []
 
-    # The asset URL is a function of repo, tag and manifest name; listing spends quota.
     monkeypatch.setattr(
         INSTALL_LLAMA_PREBUILT,
         "github_release_assets",

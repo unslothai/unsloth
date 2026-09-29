@@ -25,7 +25,6 @@ RELEASE_CACHE_TTL_SECONDS = 24 * 60 * 60
 # Briefly memoize failed lookups so recurring status reads do not retry an unreachable GitHub endpoint on every request.
 RELEASE_FAILURE_CACHE_TTL_SECONDS = 60
 GITHUB_RATE_LIMITED_DEFAULT_SECONDS = 15 * 60
-# The primary window is an hour; a skewed reset header is held to that ceiling.
 GITHUB_RATE_LIMIT_MAX_SECONDS = 60 * 60
 GITHUB_RATE_LIMIT_STATUS = (403, 429)
 
@@ -69,7 +68,7 @@ def rate_limit_wait_seconds(headers: Any, *, now: Optional[float] = None) -> Opt
     return None
 
 
-# A secondary limit can answer 403 with the quota untouched and no Retry-After, and only the body names it. Same markers as gh_client.
+# Secondary limits may 403 with no rate headers; only the body names them. Same markers as gh_client.
 _RATE_LIMIT_BODY_MARKERS = (
     "api rate limit exceeded",
     "rate limit exceeded",
@@ -90,7 +89,6 @@ def names_a_rate_limit(body: object) -> bool:
 
 
 def error_body(exc: BaseException, *, limit: int = 2048) -> str:
-    """The refusal's body, cached on the exception since reading an HTTPError consumes it."""
     cached = getattr(exc, "_unsloth_body", None)
     if cached is not None:
         return cached
@@ -112,7 +110,7 @@ def is_rate_limited(
     status: Optional[int] = None,
     body: object = None,
 ) -> bool:
-    """Whether throttling explains this refusal, by gh_client._is_rate_limit_response's rule. A secondary limit leaves X-RateLimit-* untouched, so a 429 or a naming body counts; a 403 without those headers is a permission or policy refusal."""
+    """Same rule as gh_client._is_rate_limit_response."""
     if status == 429:
         return True
     if header_value(headers, "Retry-After"):
@@ -128,7 +126,6 @@ def rate_limit_verdict(
     status: Optional[int] = None,
     body: object = None,
 ) -> Optional[float]:
-    """How long a refusal says to wait, bounded to one window, or None if it was not a rate limit."""
     if not is_rate_limited(headers, status = status, body = body):
         return None
     wait = rate_limit_wait_seconds(headers)
@@ -143,7 +140,7 @@ def note_github_rate_limited(
     status: Optional[int] = None,
     body: object = None,
 ) -> float:
-    """Record the lockout and return its length; 0 if this was not a rate limit. Never shortens one already in place, or a secondary limit's brief Retry-After would release every caller early."""
+    """Never shortens an existing lockout: a brief Retry-After would release callers early."""
     global _api_rate_limited_until
     wait = rate_limit_verdict(headers, status = status, body = body)
     if wait is None:
@@ -249,7 +246,7 @@ def _fetch_newest_published_release(
 def _fetch_newest_published_release_blocking(
     repo: str, timeout: float, *, log_message: str
 ) -> Optional[dict]:
-    """Newest published (non-draft, non-prerelease) release for `repo`, by ``published_at``, the way the installers resolve "latest": ``/releases/latest`` sorts by commit date and can lag the installed build. None on failure or while the lockout holds."""
+    """Newest by ``published_at``, as the installers resolve it: ``/releases/latest`` sorts by commit date."""
     import os
     import urllib.error
     import urllib.request

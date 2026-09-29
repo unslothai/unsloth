@@ -427,7 +427,6 @@ def _timed_out(exc: BaseException) -> bool:
 
 
 def _probe_is_retriable(exc: BaseException) -> bool:
-    """Whether to probe again, which only a transfer failure earns: retrying a refusal asks a throttled host twice as often as it asked."""
     if _timed_out(exc):  # the stall already spent the whole timeout
         return False
     if isinstance(exc, urllib.error.HTTPError):
@@ -439,7 +438,7 @@ def _probe_is_retriable(exc: BaseException) -> bool:
 
 
 def url_exists(url: str, *, attempts: int = 2) -> bool | None:
-    """True if reachable, False for a 404, None when availability cannot be checked. Only a 404 means "not published", so a refusal is never proof that no prebuilt exists. Retries up to ``attempts`` times where ``_probe_is_retriable``."""
+    """True if reachable, False for a 404, None when it cannot be checked."""
     if attempts < 1:
         raise ValueError("attempts must be at least 1")
     for attempt in range(1, attempts + 1):
@@ -453,7 +452,6 @@ def url_exists(url: str, *, attempts: int = 2) -> bool | None:
                 return False
             exc, reason = error, f"HTTP {error.code}"
         except (OSError, http.client.HTTPException) as error:
-            # OSError covers URLError and a reset peer; HTTPException a malformed response.
             exc, reason = error, error
         if attempt < attempts and _probe_is_retriable(exc):
             _logger.debug("url_exists(%s): %s; retrying", url, reason)

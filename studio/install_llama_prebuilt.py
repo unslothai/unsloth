@@ -4443,7 +4443,6 @@ def ensure_diffusion_visual_server(
         return
 
     try:
-        # The URL is a function of repo, tag and name, all named by the manifest.
         match = None
         for asset_name, approved in approved_checksums.artifacts.items():
             low = asset_name.lower()
