@@ -347,6 +347,28 @@ def test_the_audio_input_turns_keep_participant_names(monkeypatch):
     ]
 
 
+def test_the_audio_turn_keeps_its_text_and_ends_the_prompt(monkeypatch):
+    audio = object()
+    rendered = _rendered_audio_messages(
+        monkeypatch,
+        [
+            {"role": "user", "content": "Summarize this"},
+            {"role": "assistant", "content": "partial"},
+        ],
+        audio,
+    )
+
+    assert rendered[1:] == [
+        {
+            "role": "user",
+            "content": [
+                {"type": "audio", "audio": audio},
+                {"type": "text", "text": "Summarize this"},
+            ],
+        }
+    ]
+
+
 def test_the_audio_turn_is_named_for_whoever_recorded_it(monkeypatch):
     assert _audio_turns(
         monkeypatch,
@@ -383,7 +405,7 @@ def test_an_audio_only_turn_keeps_the_conversation_before_it(monkeypatch):
     ]
 
 
-def test_the_reply_to_an_earlier_recording_stays_off_the_question_before_it(monkeypatch):
+def test_an_earlier_audio_turn_keeps_its_reply(monkeypatch):
     audio = object()
     rendered = _rendered_audio_messages(
         monkeypatch,
@@ -400,6 +422,11 @@ def test_the_reply_to_an_earlier_recording_stays_off_the_question_before_it(monk
     assert rendered[1:] == [
         {"role": "user", "content": [{"type": "text", "text": "Write a haiku about the sea"}]},
         {"role": "assistant", "content": [{"type": "text", "text": "Waves fold into foam"}]},
+        {"role": "user", "content": []},
+        {
+            "role": "assistant",
+            "content": [{"type": "text", "text": "Please count from one to five."}],
+        },
         {
             "role": "user",
             "content": [
@@ -414,6 +441,7 @@ def test_the_reply_to_an_earlier_recording_stays_off_the_question_before_it(monk
     "history, roles",
     [
         ([{"role": "user", "content": "My name is Nilay"}], ["system", "user"]),
+        ([{"role": "assistant", "content": "Hi, how can I help?"}], ["system", "user"]),
         (
             [{"role": "user", "content": "My name is Nilay"}, {"role": "assistant", "content": ""}],
             ["system", "user"],

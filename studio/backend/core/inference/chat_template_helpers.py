@@ -2920,24 +2920,24 @@ def messages_have_tool_history(messages) -> bool:
 
 
 def alternating_turns(messages: list) -> list:
+    """User/assistant text turns, alternating and ending on the newest user turn as sent; of two
+    same-role neighbours the later one is kept."""
     from core.inference.message_content import content_to_text, named_turn
 
-    newest_user = next(
-        (m for m in reversed(messages or []) if isinstance(m, dict) and m.get("role") == "user"),
-        None,
+    messages = list(messages or [])
+    newest = max(
+        (i for i, m in enumerate(messages) if isinstance(m, dict) and m.get("role") == "user"),
+        default = -1,
     )
     turns = []
-    unheard = False
-    for message in messages or []:
+    for index, message in enumerate(messages[: newest + 1]):
         turn = message
-        if message is not newest_user:
+        if index != newest:
             if not isinstance(message, dict) or message.get("role") not in ("user", "assistant"):
                 continue
             text = content_to_text(message.get("content")).strip()
-            if message["role"] == "user":
-                unheard = not text
-            # The reply to a dropped recording would otherwise pair with the question before it.
-            if not text or unheard:
+            # Kept even empty: an earlier recording or picture replays as a user turn with no text.
+            if not text and message["role"] == "assistant":
                 continue
             turn = named_turn({"role": message["role"], "content": text}, message)
         if turns and turns[-1]["role"] == turn["role"]:
@@ -2959,7 +2959,8 @@ def messages_with_attached_image(
     """The conversation to render for a turn that carries attached media.
 
     Prepends *system_prompt* as a leading system turn, then injects *image* ``{"type": "image"}``
-    parts, or a ``{"type": "video"}`` part, into the LAST user turn and leaves every other turn --
+    parts, or a ``{"type": "video"}`` part, plus any *audio* waveform as an ``{"type": "audio"}``
+    part, into the LAST user turn and leaves every other turn --
     assistant ``tool_calls`` and ``role="tool"`` results included -- exactly as the caller sent it.
     Rebuilding from the newest user TEXT instead dropped the folded system instruction and the
     tool history an OpenAI tool loop replays (#10092). Nothing the caller owns is mutated: callers
@@ -3021,7 +3022,8 @@ def messages_with_attached_image(
             continue
         content = message.get("content", "")
         if isinstance(content, str):
-            content = [{"type": "text", "text": content or fallback_user_text}]
+            text = content if content.strip() else fallback_user_text or content
+            content = [{"type": "text", "text": text}]
         elif not isinstance(content, list):
             break
         elif fallback_user_text and not last_user_text([message]):
