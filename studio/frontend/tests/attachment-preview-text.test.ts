@@ -307,6 +307,54 @@ test("extractHtmlAttachmentText keeps the line structure of the page", async () 
   );
 });
 
+test("extractHtmlAttachmentText keeps the indentation of preformatted code", async () => {
+  const extracted = await withStubDom(
+    () =>
+      element(
+        "body",
+        element("h1", textNode("Totals")),
+        element(
+          "pre",
+          textNode("def total(items):\n    s = 0\n"),
+          element("span", textNode("    for x in items:\n        s += x\n")),
+          textNode("    return s\n"),
+        ),
+        element("p", textNode("Done  here")),
+      ),
+    () => extractHtmlAttachmentText("<html/>"),
+  );
+
+  assert.equal(
+    extracted,
+    "Totals\n\ndef total(items):\n    s = 0\n    for x in items:\n        s += x\n    return s\n\nDone here",
+  );
+});
+
+test("extractHtmlAttachmentText adds no blank lines for an empty preformatted block", async () => {
+  const between = await withStubDom(
+    () =>
+      element(
+        "body",
+        element("p", textNode("X")),
+        element("pre", textNode("  \n  ")),
+        element("p", textNode("Y")),
+      ),
+    () => extractHtmlAttachmentText("<html/>"),
+  );
+  const last = await withStubDom(
+    () =>
+      element(
+        "body",
+        element("p", textNode("X")),
+        element("pre", textNode("\n")),
+      ),
+    () => extractHtmlAttachmentText("<html/>"),
+  );
+
+  assert.equal(between, "X\n\nY");
+  assert.equal(last, "X");
+});
+
 test("isAudioAttachment matches by MIME and by extension", () => {
   assert.equal(isAudioAttachment("clip.m4a", ""), true);
   assert.equal(isAudioAttachment("clip", "audio/webm"), true);
