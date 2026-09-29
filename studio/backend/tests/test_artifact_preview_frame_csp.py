@@ -193,8 +193,6 @@ def test_the_shell_caps_and_clips_what_it_reports():
 
 
 def test_console_serialization_stops_at_the_report_budget():
-    # JSON.stringify builds the whole value before the clip, so a logged 1M-entry array
-    # cost ~80 ms per call; the shell's own serializer walks only what it will keep.
     shell = inf_mod._ARTIFACT_PREVIEW_FRAME_HTML
     serialize = shell[shell.index("const serialize = (root)") : shell.index("const describe = ")]
     assert "let left = REPORT_MAX_CHARS;" in serialize

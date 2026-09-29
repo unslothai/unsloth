@@ -159,12 +159,10 @@ export function ArtifactSurface({
   const hasArtifactCode = artifact.code.trim().length > 0;
   const isLoadingArtifact = Boolean(artifact.isStreaming);
   const effectiveViewMode = isLoadingArtifact ? "preview" : viewMode;
-  // Mounted from the first finished preview on, so a canvas opened to Code, even mid-stream, never runs.
   const [previewedId, setPreviewedId] = useState<string | null>(null);
-  // requestedView too: viewMode only catches up with a Code open in an effect, a render late.
+  // Only a finished preview mounts the frame: effectiveViewMode reads preview mid-stream, and viewMode lags a Code open by a render.
   const previewing =
     !isLoadingArtifact && viewMode === "preview" && requestedView === "preview";
-  // Held only for the artifact on screen, so switching away and back via Code does not rerun it.
   const nextPreviewedId = previewing
     ? artifact.id
     : previewedId === artifact.id

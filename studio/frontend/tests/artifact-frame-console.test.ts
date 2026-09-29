@@ -134,7 +134,6 @@ test("a burst of reports costs one render, not one per report", () => {
     frameSource,
     /pendingEntries\.current\.length > CANVAS_CONSOLE_ENTRIES_TRACKED/,
   );
-  // The queue evicts like the console: a log line before an error.
   assert.match(frameSource, /pendingEntries\.current\.splice\(oldestLog < 0 \? 0 : oldestLog, 1\)/);
 });
 
@@ -242,9 +241,7 @@ test("opening straight to the source view does not run the page", () => {
     /const previewing =\s*!isLoadingArtifact && viewMode === "preview" && requestedView === "preview";/,
   );
   assert.match(surface, /const frameMounted = previewing \|\| previewedId === artifact\.id;/);
-  // Cleared on a switch to another artifact, so A -> B -> A's Code button does not remount A.
   assert.match(surface, /: previewedId === artifact\.id\s*\? previewedId\s*: null;/);
-  // The badge only counts reports tagged with the artifact on screen.
   assert.match(surface, /outputCounts\.id === artifact\.id \? outputCounts\.errors : 0/);
 });
 
@@ -285,7 +282,6 @@ test("the Fix button stages text in the composer and never sends it", () => {
 });
 
 test("frames outside a chat canvas offer no Fix button", () => {
-  // The Library and attachment previews embed the frame with no composer to route to.
   assert.doesNotMatch(frameSource, /useChatArtifactsStore/);
   assert.match(frameSource, /\{onFixWithModel \? \(/);
   for (const path of [
