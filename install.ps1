@@ -9823,7 +9823,7 @@ main()
         # RDNA 1 and Polaris 10/20/30 (unslothai#8529). Kept apart from $nameArchTable on
         # purpose: it only WORDS a message, never selects a wheel index. AMD's TheRock
         # ships RDNA 1 wheels: those route through $multiArchGfx now (unslothai#11614), so
-    # only Polaris is left here; there are none for
+        # only Polaris is left here; there are none for
         # gfx803. The (?!0) guards stop "RX 570" swallowing an "RX 5700". Names from
         # LLVM's AMDGPU tables plus libdrm amdgpu.ids/pci.ids for the Navi 10/14
         # professional parts LLVM omits; nothing is guessed, so Polaris 11/12 (RX
@@ -9998,16 +9998,8 @@ main()
         "gfx1030" = "gfx103X-all"
         "gfx90a"  = "gfx90a";      "gfx908"  = "gfx908"        # MI200/MI100
     }
-    # AMD's multi-arch index (repo.amd.com/rocm/whl-multi-arch) carries a per-card kernel
-    # pack for every RDNA arch (unslothai#11815; it began as the RDNA 1 route, unslothai#11614):
-    # one URL for every device, the card picked by the torch[device-gfxNNNN] extra; pinned to
-    # one release tag, the newest inside the <2.12.0 window (the index also serves 2.12.0);
-    # torchvision and torchaudio on the same tag; an exact pin, so the kept-release rule has
-    # nothing to keep (unslothai#11814). gfx1033 (Van Gogh, miscomputes) and CDNA stay on the
-    # per-family map, as does every arch with a family when UNSLOTH_ROCM_WINDOWS_MIRROR names
-    # a family-layout mirror and no multi-arch mirror is set. In sync with
-    # _WINDOWS_MULTIARCH_GFX / _ROCM_MULTIARCH_* in studio/install_python_stack.py
-    # (test_rdna1_multiarch_windows_route_11614.py, test_windows_multiarch_all_11815.py).
+    # RDNA arches route to AMD's multi-arch index, one pinned tag (unslothai#11815, #11614, #11814).
+    # gfx1033 (miscomputes) and CDNA stay on the family map. In sync with _WINDOWS_MULTIARCH_GFX in studio/install_python_stack.py.
     $multiArchGfx = @(
         "gfx1010", "gfx1011", "gfx1012",                                        # RDNA 1
         "gfx1030", "gfx1031", "gfx1032", "gfx1034", "gfx1035", "gfx1036",       # RDNA 2, gfx1033 stays per-family
@@ -10671,7 +10663,7 @@ main()
         $_familyMirrorPinned = [bool]($env:UNSLOTH_ROCM_WINDOWS_MIRROR) -and -not [bool]($env:UNSLOTH_ROCM_WINDOWS_MULTIARCH_MIRROR)
         $ROCmMultiArch = [bool]($ROCmGfxArch -and $multiArchGfx -contains $ROCmGfxArch -and -not ($archFamily -and $_familyMirrorPinned))
         if ($ROCmMultiArch) {
-            # AMD's multi-arch index, one exact release tag for the trio. No family leaf, no kept release.
+            # AMD's multi-arch index, one exact release tag for the trio.
             $ROCmIndexUrl = "$MultiArchIndexBase/"
             $ROCmTorchFloor = "torch[device-$ROCmGfxArch]==$MultiArchTorchVersion+$MultiArchTag"
             $PinnedRocmVisionSpec = "torchvision==$MultiArchTorchvisionVersion+$MultiArchTag"

@@ -125,8 +125,6 @@ foreach ($file in @("install.ps1", "studio/setup.ps1")) {
         }
         return $null
     }
-    # #11614: RDNA 1 routes on Windows through the multi-arch index, so the supported
-    # table owns it now.
     Check "RX 5700 XT -> gfx1010 (supported)"      ((Resolve-Supported "AMD Radeon RX 5700 XT") -eq 'gfx1010')
     Check "RX 5600 XT -> gfx1010 (supported)"      ((Resolve-Supported "AMD Radeon RX 5600 XT") -eq 'gfx1010')
     Check "Radeon Pro W5700 -> gfx1010 (supported)" ((Resolve-Supported "AMD Radeon Pro W5700") -eq 'gfx1010')
@@ -414,10 +412,6 @@ Invoke-Expression (Get-AssignmentSource $installPath '$unsupportedNameArchTable'
 # block's own `$ROCmUnsupportedGfxArch = $row.A` land in that function's scope, so every
 # "claims nothing" case would pass without the guard existing at all.
 $guardCases = @(
-    # Since unslothai#11614 the RX 5700 XT ROUTES on Windows (multi-arch index), so the
-    # uncovered card these cases are built on is Polaris (#8458's RX 580, gfx803). RDNA 1 now
-    # plays the covered-peer part where a covered peer is needed.
-    # The reporter's host: one uncovered card, nothing else. The verdict must still be reached.
     @{ N = "lone RX 580 is still named gfx803"
        L = "AMD Radeon RX 580"; A = @("AMD Radeon RX 580"); E = 'gfx803' }
     # The mixed host: adapter 0 is the 580, adapter 1 has wheels. Stay quiet and keep the
@@ -426,10 +420,8 @@ $guardCases = @(
        L = "AMD Radeon RX 580"; A = @("AMD Radeon RX 580", "AMD Radeon RX 7900 XTX"); E = $null }
     @{ N = "RX 580 beside an RX 9070 XT claims nothing"
        L = "AMD Radeon RX 580"; A = @("AMD Radeon RX 580", "AMD Radeon RX 9070 XT"); E = $null }
-    # An RDNA 1 peer is a covered peer now.
     @{ N = "RX 580 beside an RX 5700 XT claims nothing (RDNA 1 routes, #11614)"
        L = "AMD Radeon RX 580"; A = @("AMD Radeon RX 580", "AMD Radeon RX 5700 XT"); E = $null }
-    # And the RX 5700 XT itself never reaches this table any more.
     @{ N = "lone RX 5700 XT is not called unsupported"
        L = "AMD Radeon RX 5700 XT"; A = @("AMD Radeon RX 5700 XT"); E = $null }
     # A peer we cannot map is not a covered peer; it is the unknown the arm already handles.

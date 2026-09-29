@@ -114,7 +114,6 @@ _RDNA1_NAMES = [
     ("AMD Radeon Pro 5700 XT", "gfx1010"),
 ]
 
-# The generation that still has no wheels anywhere: Polaris 10/20/30 (#8458).
 _POLARIS_FIXTURES = [
     ("AMD Radeon RX 580", "gfx803"),
     ("AMD Radeon RX 580 Series", "gfx803"),
@@ -146,8 +145,7 @@ _NOT_RDNA1_NAMES = [
 class TestUnsupportedNameLookup:
     @pytest.mark.parametrize("name,expected", _RDNA1_NAMES)
     def test_rdna1_names_resolve_in_the_supported_table_on_windows(self, name, expected):
-        """The behavioural half, inverted since #11614: RDNA 1 routes on Windows, so the
-        Windows name table owns it and the messaging table must not claim it."""
+        """The behavioural half, inverted since #11614."""
         assert stack_mod._gfx_arch_from_gpu_name(name) == expected
         assert stack_mod._unsupported_gfx_arch_from_gpu_name(name) is None
 
@@ -386,15 +384,13 @@ class TestPythonStackWindowsArm64:
 
 class TestWindowsWmiMessage:
     def test_rdna1_adapter_now_yields_its_arch(self):
-        """Since #11614 the reporter's card routes: the WMI path infers gfx1010 and the
-        multi-arch index takes it from there. No "not covered" message for it."""
+        """Since #11614 the reporter's card routes."""
         arch, out = _wmi_detect(["AMD Radeon RX 5700 XT"])
         assert arch == "gfx1010"
         assert "does not cover" not in out
 
     def test_polaris_adapter_still_yields_no_arch(self):
-        """CPU fallback unchanged where nothing routes. This is the assertion that keeps
-        the wording fix honest."""
+        """CPU fallback unchanged where nothing routes."""
         arch, _out = _wmi_detect(["AMD Radeon RX 580"])
         assert arch is None
 
@@ -549,15 +545,13 @@ class TestUnsupportedTableParity:
 
     @pytest.mark.parametrize("name,expected", _RDNA1_NAMES)
     def test_linux_copies_still_name_rdna1(self, name, expected):
-        """Linux keeps the message: the multi-arch route is Windows-only until it has
-        been run on bare-metal Linux (#11614)."""
+        """Linux keeps the message."""
         answers = {w: fn(name) for w, fn in _all_copies().items() if w in self._LINUX_COPIES}
         assert set(answers.values()) == {expected}, f"{name!r} resolves inconsistently: {answers}"
 
     @pytest.mark.parametrize("name,_expected", _RDNA1_NAMES)
     def test_windows_copies_no_longer_claim_rdna1(self, name, _expected):
-        """The Windows copies route RDNA 1, so a claim here would print "not covered"
-        at a card that is about to get wheels."""
+        """The Windows copies route RDNA 1, so a claim here would print "not covered"."""
         answers = {w: fn(name) for w, fn in _all_copies().items() if w not in self._LINUX_COPIES}
         assert set(answers.values()) == {None}, f"{name!r} is still called unsupported: {answers}"
 

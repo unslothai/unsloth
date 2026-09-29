@@ -1,22 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-"""RDNA 1 on Windows installs from AMD's multi-arch index (unslothai/unsloth#11614).
-
-An RX 5700 XT (gfx1010) has no family on repo.amd.com/rocm/whl, so until now the Windows
-installers put it on CPU torch and said so (#8529). AMD's multi-arch index
-(repo.amd.com/rocm/whl-multi-arch) carries per-card kernel packs; there
-`torch[device-gfx1010]` resolves torch plus amd-torch-device-gfx1010. What this file pins
-down about that route:
-
-* the resolvers send gfx1010 / gfx1011 / gfx1012 to that index, in every spelling hipinfo
-  or a user can produce, and to nothing else;
-* the package specs are PINNED to one release tag (the index serves several, and the
-  newest sits on the Windows torch ceiling), with torchvision and torchaudio on that tag;
-* the Windows GPU name tables resolve the RDNA 1 marketing names to their arch, and the
-  "not covered" table no longer claims them;
-* the PowerShell installers carry the same three arches and the same tag, so a bump in one
-  place cannot leave the other installing a different build.
-"""
+"""RDNA 1 on Windows installs from AMD's multi-arch index (unslothai/unsloth#11614)."""
 
 import importlib.util
 import re
@@ -62,13 +46,11 @@ class TestPackageSpecs:
         assert audio_spec == f"torchaudio=={stack_mod._ROCM_MULTIARCH_TORCHAUDIO_VERSION}+{tag}"
 
     def test_the_pin_is_a_release_tag_not_a_nightly(self):
-        """A nightly tag (rocmX.Y.ZaYYYYMMDD) moves under users; the stable index is dated
-        by release only."""
+        """A nightly tag (rocmX.Y.ZaYYYYMMDD) moves under users."""
         assert re.fullmatch(r"rocm\d+\.\d+\.\d+", stack_mod._ROCM_MULTIARCH_TAG)
 
     def test_the_pin_sits_inside_the_windows_torch_window(self):
-        """install.ps1 applies torch<2.12.0 everywhere else on Windows; the multi-arch index
-        also serves 2.12.0, so the pin must stay the newest release under that ceiling."""
+        """install.ps1 applies torch<2.12.0 everywhere else on Windows."""
         major, minor, _ = (int(x) for x in stack_mod._ROCM_MULTIARCH_TORCH_VERSION.split("."))
         assert (major, minor) < (2, 12)
         assert (
@@ -76,8 +58,7 @@ class TestPackageSpecs:
         )
 
     def test_other_arches_keep_their_specs(self, monkeypatch):
-        """Since #11815 every RDNA arch takes the multi-arch pin by default; the per-arch
-        ABI pin is what a family-layout mirror gets, CDNA / unknown stay bare."""
+        """Since #11815 every RDNA arch takes the multi-arch pin by default."""
         monkeypatch.delenv("UNSLOTH_ROCM_WINDOWS_MIRROR", raising = False)
         monkeypatch.delenv("UNSLOTH_ROCM_WINDOWS_MULTIARCH_MIRROR", raising = False)
         monkeypatch.setattr(stack_mod, "_ROCM_WINDOWS_INDEX_BASE", "https://repo.amd.com/rocm/whl")
@@ -125,8 +106,7 @@ class TestIndexResolution:
         )
 
     def test_rdna2_resolves_to_its_family_only_under_a_family_mirror(self, monkeypatch):
-        """#11815 moved RDNA 2 onto the multi-arch index; the per-family leaf is what a
-        host mirroring the family layout still gets."""
+        """#11815 moved RDNA 2 onto the multi-arch index."""
         monkeypatch.delenv("UNSLOTH_ROCM_WINDOWS_MIRROR", raising = False)
         monkeypatch.delenv("UNSLOTH_ROCM_WINDOWS_MULTIARCH_MIRROR", raising = False)
         monkeypatch.setattr(stack_mod, "_ROCM_WINDOWS_INDEX_BASE", "https://repo.amd.com/rocm/whl")
@@ -140,7 +120,6 @@ class TestIndexResolution:
             stack_mod._windows_rocm_index_url("gfx1034")
             == "https://mirror.example/whl/gfx103X-all/"
         )
-        # RDNA 1 has no family to fall back to: a family mirror changes nothing for it.
         assert (
             stack_mod._windows_rocm_index_url("gfx1010")
             == stack_mod._ROCM_WINDOWS_MULTIARCH_INDEX_BASE + "/"
@@ -151,8 +130,7 @@ class TestIndexResolution:
 
     @pytest.mark.parametrize("arch", _RDNA1)
     def test_the_two_card_picker_counts_rdna1_as_having_wheels(self, arch):
-        """_dedup_pick decides "has wheels" by asking the resolver, so an RX 5700 XT next to
-        an iGPU is no longer deposed to CPU torch."""
+        """_dedup_pick decides "has wheels" by asking the resolver."""
         assert stack_mod._is_windows_multiarch_gfx(arch)
         assert stack_mod._windows_rocm_index_url(arch) is not None
 
@@ -226,8 +204,7 @@ class TestNameTables:
 
 
 class TestPowerShellMirrorsThePin:
-    """install.ps1 and setup.ps1 install torch themselves (the python stack only repairs),
-    so they carry the same route. Read as text: the parity is the point."""
+    """install.ps1 and setup.ps1 install torch themselves ."""
 
     @pytest.mark.parametrize("path", [_INSTALL_PS1, _SETUP_PS1], ids = lambda p: p.name)
     def test_same_arches_and_same_tag(self, path):
@@ -250,10 +227,7 @@ class TestPowerShellMirrorsThePin:
 
 
 class TestTheWindowsRepairSiteRunsForRdna1:
-    """The `studio update` repair in _ensure_rocm_torch reaches the multi-arch trio for a
-    gfx1010 host whose venv holds a CPU torch. Exercised end to end because the message
-    there once called _bare_gfx(), a name the function later rebinds as a local, and no
-    test ran that line."""
+    """The `studio update` repair in _ensure_rocm_torch reaches the multi-arch trio."""
 
     def test_a_gfx1010_host_on_cpu_torch_installs_the_multiarch_trio(self, monkeypatch):
         from unittest.mock import MagicMock, patch
@@ -287,8 +261,7 @@ class TestTheWindowsRepairSiteRunsForRdna1:
 
 
 class TestRdna1CountsAsCoveredEverywhereItIsRouted:
-    """Two gates outside the route itself decided RDNA 1 was uncovered: the backend's
-    repairability check and setup.ps1's pre-Intel "AMD gets GPU wheels" gate."""
+    """Two gates outside the route itself decided RDNA 1 was uncovered."""
 
     @pytest.mark.parametrize("name,expected", _RDNA1_NAMES)
     def test_the_backend_can_repair_an_rdna1_card_on_windows(self, name, expected, monkeypatch):

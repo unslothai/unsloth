@@ -306,26 +306,9 @@ _WINDOWS_ROCM_TORCH_PKG_SPECS: dict[str, tuple[str, str, str]] = {
     "gfx1102": _ROCM_TORCH_PKG_SPECS["rocm7.2"],
     "gfx1103": _ROCM_TORCH_PKG_SPECS["rocm7.2"],
 }
-# AMD's multi-arch index (repo.amd.com/rocm/whl-multi-arch) carries a per-card kernel pack
-# for every RDNA arch: there `torch[device-gfxNNNN]` resolves torch plus
-# amd-torch-device-gfxNNNN, and the same spelling pulls the matching rocm-sdk-device pack.
-# Every Windows RDNA arch routes there (unslothai/unsloth#11815); it started as the RDNA 1
-# route (#11614, #11755), the only family with no per-family index at all. Handled apart
-# from the per-family route because the shape differs:
-#   * one URL for every device, the card picked by the extra, not by the path;
-#   * the build is PINNED to one release tag: the index serves torch 2.9.1 through 2.12.0,
-#     and 2.12.0 sits exactly on the `<2.12.0` window the rest of the Windows install
-#     applies, so the pin is the newest release inside that window (the per-family Windows
-#     indexes stop one ROCm release earlier, at 2.11.0+rocm7.13.0);
-#   * torchvision and torchaudio carry the very same tag (both published there);
-#   * an exact pin has nothing for the kept-release rule to keep, so a venv can no longer
-#     sit on a sub-2.11 build (unslothai/unsloth#11814).
-# The per-family map stays for two callers: a host that mirrors the family layout
-# (UNSLOTH_ROCM_WINDOWS_MIRROR set, no multi-arch mirror) keeps the family route for the
-# arches that have one, and the stale / mismatch classifiers still read families off the
-# installed rocm-sdk-libraries name. Measured on an RX 5700 XT (gfx1010) and an RX 6500 XT
-# (gfx1034); the RDNA 3 / 3.5 / 4 device packs are the same build and the same shape, run
-# on nobody's card yet (#11815 tracks that). Linux hosts keep today's behaviour.
+# Windows RDNA arches install from AMD's multi-arch index (#11815, #11614): one URL, card picked by the
+# torch[device-gfxNNNN] extra, pinned to the newest tag inside <2.12.0 so nothing is kept (#11814).
+# The family map stays for family-layout mirrors and the stale / mismatch classifiers. Linux unchanged.
 _ROCM_WINDOWS_MULTIARCH_INDEX_BASE = (
     os.environ.get("UNSLOTH_ROCM_WINDOWS_MULTIARCH_MIRROR")
     or "https://repo.amd.com/rocm/whl-multi-arch"
@@ -334,11 +317,7 @@ _ROCM_MULTIARCH_TAG = "rocm7.14.1"
 _ROCM_MULTIARCH_TORCH_VERSION = "2.11.0"
 _ROCM_MULTIARCH_TORCHVISION_VERSION = "0.26.0"
 _ROCM_MULTIARCH_TORCHAUDIO_VERSION = "2.11.0"
-# Every RDNA arch with a device pack on the index and Windows wheels. gfx1033 (Van Gogh) is
-# left out on purpose: it is in _ROCM_MISCOMPUTING_GFX and nobody has measured the
-# multi-arch build there, so it keeps its per-family route. gfx908 / gfx90a (CDNA) stay on
-# the family map too, unmeasured. gfx1153 (Krackan Point 2) has no per-family index; it
-# is here because the pack exists, and only routes when hipInfo reports it.
+# gfx1033 excluded: in _ROCM_MISCOMPUTING_GFX, keeps its family route. CDNA stays on the family map.
 _WINDOWS_MULTIARCH_GFX: "frozenset[str]" = frozenset(
     {
         "gfx1010",
@@ -2139,11 +2118,7 @@ _WIN_GPU_NAME_ARCH_TABLE: "list[tuple[str, str]]" = [
         r"RX 6550|RX 6500|RX 6450|RX 6400|RX 6300|PRO W6400|PRO W6500|PRO W6300",
         "gfx1034",
     ),  # Navi 24
-    # RDNA 1 (Navi 10 / Navi 14). Routed to AMD's multi-arch index on Windows, see
-    # _WINDOWS_MULTIARCH_GFX. Names from LLVM's AMDGPU tables plus libdrm amdgpu.ids /
-    # pci.ids for the professional parts LLVM omits. The (?!0) guards on the Polaris rows
-    # of _UNSUPPORTED_GPU_NAME_ARCH_TABLE stop "RX 570" swallowing "RX 5700"; these rows
-    # are checked first anyway.
+    # RDNA 1 (Navi 10 / 14), routed via _WINDOWS_MULTIARCH_GFX; names from LLVM AMDGPU + amdgpu.ids.
     (r"Radeon Pro V520|Radeon Pro 5600M", "gfx1011"),
     (r"RX 5700|RX 5600|Radeon Pro 5600 XT|Radeon Pro 5700|Radeon Pro W5700", "gfx1010"),
     (r"RX 5500|RX 5300|Radeon Pro W5500|Radeon Pro W5300", "gfx1012"),
@@ -2169,8 +2144,6 @@ def _gfx_arch_from_gpu_name(name: str) -> "str | None":
 # for the Navi 10/14 professional parts LLVM omits; nothing is guessed, so Polaris 11/12
 # (RX 460/550/560, a different die) is left out.
 _UNSUPPORTED_GPU_NAME_ARCH_TABLE: "list[tuple[str, str]]" = [
-    # RDNA 1 used to live here (#8529). It routes now, on Windows, through AMD's multi-arch
-    # index (_WINDOWS_MULTIARCH_GFX); its rows moved to _WIN_GPU_NAME_ARCH_TABLE.
     (
         r"RX 4[78]0(?!0)|RX 5[789]0(?!0)|Radeon Pro WX 7100|Radeon Pro WX 5100",
         "gfx803",
@@ -5888,8 +5861,7 @@ def _ensure_rocm_torch() -> None:
             if _is_win_arm64_interpreter():
                 _rocm_trio = [_torch_pkg, _vision_pkg]
             if _index_is_multiarch(index_url):
-                # Not _bare_gfx(): this function binds a local of that name further down,
-                # which makes the module helper unreachable here (UnboundLocalError).
+                # Not _bare_gfx(): a later local of that name shadows it (UnboundLocalError).
                 _safe_print(
                     f"   {(gfx_arch or '').split(':')[0].lower()}: AMD's multi-arch index, pinned to "
                     f"{_ROCM_MULTIARCH_TORCH_VERSION}+{_ROCM_MULTIARCH_TAG} (torch, torchvision, torchaudio)"

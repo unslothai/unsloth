@@ -1031,7 +1031,6 @@ class TestEnsureRocmTorch:
         # a ROCm build and stopped. setup.ps1 force-reinstalls, so this is `studio update`.
         pip_try = self._windows_repair("gfx103x-all")
         assert pip_try.call_count == 1
-        # #11815: the reinstall lands on the multi-arch pin for the dGPU, not its family leaf.
         assert "torch[device-gfx1200]" in str(pip_try.call_args)
         assert "whl-multi-arch" in str(pip_try.call_args)
 
@@ -4475,9 +4474,7 @@ class TestIsRdnaExpansion:
 
 
 class TestWindowsRocmIndexUrl:
-    """Verify GPU arch → AMD pip index URL mapping. Since #11815 every RDNA arch goes to
-    the multi-arch index by default; the per-family leaf is what a family-layout mirror
-    (UNSLOTH_ROCM_WINDOWS_MIRROR, no multi-arch mirror) still selects."""
+    """Verify GPU arch → AMD pip index URL mapping."""
 
     @pytest.fixture(autouse = True)
     def _no_mirror(self, monkeypatch):

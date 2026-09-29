@@ -1007,8 +1007,7 @@ _GPU_NAME_GFX_TABLE: "list[tuple[str, str]]" = [
 ]
 
 
-# RDNA 1 gets ROCm wheels on Windows only, from AMD's multi-arch index (#11755); the Linux
-# installers still decline it, so the platform decides whether a 5700 XT can be repaired.
+# RDNA 1 has ROCm wheels on Windows only (#11755); Linux installers decline it.
 _ROCM_SUPPORTED_GFX_WINDOWS_ONLY = frozenset({"gfx1010", "gfx1011", "gfx1012"})
 
 

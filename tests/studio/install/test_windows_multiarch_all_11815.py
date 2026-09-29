@@ -1,14 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-"""unslothai/unsloth#11815: every Windows RDNA arch installs from AMD's stable multi-arch index.
-
-What this file pins: the arch set is exactly RDNA 1 through 4 minus gfx1033; every one of
-them resolves to the multi-arch index with the pinned trio by default; a family-layout
-mirror keeps the per-family route for arches that have one and changes nothing for RDNA 1;
-a multi-arch mirror wins over a family mirror; gfx1033 and CDNA keep their family; the two
-PowerShell installers carry the same arch set and setup.ps1 counts every arch in it as
-having wheels.
-"""
+"""unslothai/unsloth#11815: every Windows RDNA arch installs from the multi-arch index."""
 
 import importlib.util
 import re
@@ -131,7 +123,6 @@ class TestMirrors:
             stack_mod._windows_rocm_torch_pkg_specs("gfx1201")
             == stack_mod._WINDOWS_ROCM_TORCH_PKG_SPECS["gfx1201"]
         )
-        # No family to fall back to: RDNA 1 and gfx1153 stay on the multi-arch index.
         assert stack_mod._windows_rocm_index_url("gfx1010") == _MULTIARCH
         assert stack_mod._windows_rocm_index_url("gfx1153") == _MULTIARCH
 
@@ -149,8 +140,7 @@ class TestMirrors:
         )
 
     def test_a_patched_family_base_counts_as_a_family_mirror(self, stock):
-        """Tests and callers that set _ROCM_WINDOWS_INDEX_BASE directly expect the family
-        leaf under it (the constant is read once at import from the env)."""
+        """Tests and callers that set _ROCM_WINDOWS_INDEX_BASE directly expect the family route."""
         stock.setattr(stack_mod, "_ROCM_WINDOWS_INDEX_BASE", "https://mirror.example/whl/")
         assert stack_mod._windows_rocm_index_url("gfx1151") == "https://mirror.example/whl/gfx1151/"
 
