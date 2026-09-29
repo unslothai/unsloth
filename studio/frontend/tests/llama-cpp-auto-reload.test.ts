@@ -135,7 +135,6 @@ test("the monitor reloads on first contact and each reconnect only", async () =>
     assert.deepEqual(puts[1].models, ["manual", "alpha", "gamma"]);
     await settle(() => row().models.join() === "manual,alpha,gamma");
 
-    // A server still starting lists nothing: keep the selection, reload once it lists models.
     served = null;
     await idle();
     served = [];

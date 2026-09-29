@@ -283,7 +283,6 @@ export function ChatProvidersSettings({
   );
   const [isReasoningModel, setIsReasoningModel] = useState(false);
   const [autoReloadModels, setAutoReloadModels] = useState(false);
-  // Model fields as the edit form opened them.
   const modelFieldsAtOpenRef = useRef<string | null>(null);
   const reduceMotion = useReducedMotion();
   const connectionsEnabled = useExternalProvidersStore(

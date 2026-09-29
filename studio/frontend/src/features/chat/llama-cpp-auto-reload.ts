@@ -43,8 +43,7 @@ function autoReloadConnections(): ExternalProviderConfig[] {
 }
 
 export function startLlamaCppAutoReload(intervalMs = 10_000): () => void {
-  // Connection id -> endpoint + catalog it was last reloaded with. Absent: offline or not reloaded yet.
-  // Keyed on the catalog too: a restart inside one poll interval is never seen offline.
+  // id -> endpoint + catalog last reloaded (absent: offline); the catalog catches restarts between polls.
   const online = new Map<string, string>();
   const inFlight = new Set<string>();
   let stopped = false;
