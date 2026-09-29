@@ -116,3 +116,26 @@ def test_registered_hook_keeps_tritons_own_launch(monkeypatch):
         knobs.runtime.launch_enter_hook.remove(hook)
     torch.testing.assert_close(out, x * 2)
     assert seen, "a registered launch hook must still be called"
+
+
+def test_relaunch_repeats_the_entry_and_yields_to_hooks(monkeypatch):
+    x = torch.randn(64, device = "cuda")
+    grid = (1,)
+    entry = triton_launch.launch(
+        _axpy,
+        grid,
+        (x, x, torch.empty(64, device = "cuda"), 64, 2),
+        3,
+        dict(BLOCK = 128, ADD = False),
+        x.device.index,
+        num_warps = 4,
+    )
+    if entry is None:
+        pytest.skip("no fast launch entry on this build")
+    y = torch.randn(64, device = "cuda")
+    out = torch.empty(64, device = "cuda")
+    assert triton_launch.relaunch(entry, grid, x.device.index, (y, y, out, 64, 2))
+    torch.testing.assert_close(out, y * 2)
+    # A profiler hook must see every launch, so relaunch hands the call back to Triton's path.
+    monkeypatch.setattr(triton_launch, "_hooks_set", lambda: True)
+    assert not triton_launch.relaunch(entry, grid, x.device.index, (y, y, out, 64, 2))

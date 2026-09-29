@@ -245,3 +245,61 @@ def test_compile_cache_key_covers_the_kernel_source():
         with open(mod.__file__, "rb") as file:
             digest = hashlib.sha256(file.read()).hexdigest()[:16]
         assert f"unsloth/{os.path.basename(mod.__file__)}:{digest}" in tags
+
+
+def _utils_with_kernels():
+    from unsloth.kernels import utils
+    if not utils._USE_NF4_KERNELS:
+        pytest.skip("the fused NF4 kernels are off here (UNSLOTH_BNB_TRITON=0 or no Triton)")
+    return utils
+
+
+@pytest.mark.parametrize("nested", [True, False], ids = ["nested", "flat"])
+def test_decode_plan_reruns_match_bitsandbytes(nested):
+    """Decode dequantizes each weight into the shared scratch buffer through a launch planned on
+    its first call. Every rerun, weights interleaved as in a decoder, stays byte-identical."""
+    from unsloth.kernels import triton_launch
+
+    utils = _utils_with_kernels()
+    shapes = [(512, 256), (256, 1024), (768, 256)]
+    weights = [_quantize(s, torch.bfloat16, nested = nested, seed = i) for i, s in enumerate(shapes)]
+    for _ in range(3):
+        for q, s in weights:
+            got = utils.fast_dequantize(q.t(), s, use_global_buffer = True).t().clone()
+            assert _bytes_equal(got, bnb_functional.dequantize_4bit(q, s))
+    if triton_launch._ENABLED:
+        assert all(getattr(s, "_unsloth_nf4_plan", None) for _, s in weights)
+
+
+def test_decode_plan_is_rebuilt_when_the_quant_state_changes():
+    """QuantState.to() swaps in new tensors and a model cast changes its dtype: the planned launch
+    would read the old absmax or write the old dtype, so it must be rebuilt."""
+    utils = _utils_with_kernels()
+    q, s = _quantize((512, 256), torch.bfloat16, nested = False)
+    for _ in range(2):
+        utils.fast_dequantize(q.t(), s, use_global_buffer = True)
+    s.absmax = s.absmax * 2
+    got = utils.fast_dequantize(q.t(), s, use_global_buffer = True).t().clone()
+    assert _bytes_equal(got, bnb_functional.dequantize_4bit(q, s))
+    s.dtype = torch.float16
+    got = utils.fast_dequantize(q.t(), s, use_global_buffer = True).t().clone()
+    assert got.dtype == torch.float16
+    assert _bytes_equal(got, bnb_functional.dequantize_4bit(q, s))
+
+
+def test_decode_plan_is_not_copied_or_pickled_with_the_model():
+    """The plan holds a closure and the scratch buffer: deepcopy (reference models) and pickling
+    must drop it, and the copy rebuilds its own on first use."""
+    import copy
+    import pickle
+
+    utils = _utils_with_kernels()
+    q, s = _quantize((512, 256), torch.bfloat16)
+    for _ in range(2):
+        utils.fast_dequantize(q.t(), s, use_global_buffer = True)
+    s2 = copy.deepcopy(s)
+    assert getattr(s2, "_unsloth_nf4_plan", None) is None
+    assert getattr(pickle.loads(pickle.dumps(s)), "_unsloth_nf4_plan", None) is None
+    q2 = q.clone()
+    got = utils.fast_dequantize(q2.t(), s2, use_global_buffer = True).t().clone()
+    assert _bytes_equal(got, bnb_functional.dequantize_4bit(q, s))

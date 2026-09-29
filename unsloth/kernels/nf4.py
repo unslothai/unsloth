@@ -18,10 +18,11 @@ import triton.language as tl
 from triton.language.extra import libdevice
 from unsloth_zoo.utils import Version
 
-from .triton_launch import launch, tag_compile_cache
+from .triton_launch import launch, relaunch, tag_compile_cache
 
 __all__ = [
     "dequantize_nf4",
+    "dequantize_nf4_planned",
 ]
 
 # libdevice mul_rn is never contracted into an FMA (Inductor re-emits kernels with fp fusion on) and
@@ -206,7 +207,20 @@ def _is_pow2(x: int) -> bool:
     return x > 0 and (x & (x - 1)) == 0
 
 
-def _launch(kernel, W, absmax, code2, absmax2, offset, code, blocksize, blocksize2, out, fp_fusion):
+def _launch(
+    kernel,
+    W,
+    absmax,
+    code2,
+    absmax2,
+    offset,
+    code,
+    blocksize,
+    blocksize2,
+    out,
+    fp_fusion,
+    plan = False,
+):
     nested = code2 is not None
     n_elements = out.numel()
     n_bytes = (n_elements + 1) // 2
@@ -251,10 +265,24 @@ def _launch(kernel, W, absmax, code2, absmax2, offset, code, blocksize, blocksiz
         else {"num_warps": num_warps, "enable_fp_fusion": False}
     )
     if kernel is _nf4_dequant_kernel:
-        launch(kernel, grid, args, 7, constexprs, W.device.index, **options)
+        entry = launch(kernel, grid, args, 7, constexprs, W.device.index, **options)
+        if plan:
+            return _rerun(entry, grid, args, W.device.index)
     else:
         kernel[grid](*args, **constexprs, **options)
     return out
+
+
+def _rerun(entry, grid, args, device_index):
+    if entry is None:
+        return None
+    before, after = args[:6], args[7:]
+
+    def rerun(out):
+        # out must match the first output in size, dtype and 16 byte alignment.
+        return relaunch(entry, grid, device_index, (*before, out, *after))
+
+    return rerun
 
 
 if _HAS_MUL_RN:
@@ -396,3 +424,23 @@ def dequantize_nf4(
             out,
             fp_fusion = False,
         )
+
+
+def dequantize_nf4_planned(W, absmax, code2, absmax2, offset, code, blocksize, blocksize2, out):
+    """Eager dequantize_nf4 into out on the current device, returning a function that repeats
+    the launch into another buffer like out for this same weight, skipping the per-call argument
+    handling (decode dequantizes every weight once per token). None when that is unavailable."""
+    return _launch(
+        _nf4_dequant_kernel,
+        W,
+        absmax,
+        code2,
+        absmax2,
+        offset,
+        code,
+        blocksize,
+        blocksize2,
+        out,
+        fp_fusion = False,
+        plan = True,
+    )

@@ -512,6 +512,7 @@ def _scratch(kind, device, numel, dtype):
 _USE_NF4_KERNELS = False
 _TRITON_GEMV_EAGER = False
 _is_compiling = torch.compiler.is_compiling
+_current_device = torch.cuda.current_device
 if (
     DEVICE_TYPE in ("cuda", "hip")
     and HAS_CUDA_STREAM
@@ -519,7 +520,7 @@ if (
 ):
     try:
         import triton
-        from .nf4 import dequantize_nf4
+        from .nf4 import dequantize_nf4, dequantize_nf4_planned
         from .nf4_gemv import gemv_nf4, triton_gemv_eager
 
         _USE_NF4_KERNELS = True
@@ -527,6 +528,17 @@ if (
         _TRITON_GEMV_EAGER = triton_gemv_eager()
     except Exception:
         pass
+
+
+def _no_plan():
+    return None
+
+
+class _NF4Plan(list):
+    # One weight's decode launch (see fast_dequantize). It holds a closure and the scratch buffer,
+    # so copies and pickles of the model drop it and rebuild on first use.
+    def __reduce__(self):
+        return (_no_plan, ())
 
 
 def _nf4_kernels_failed(error):
@@ -735,28 +747,81 @@ elif DEVICE_TYPE in ("cuda", "hip") and HAS_CUDA_STREAM:
             return bnb_functional.dequantize_4bit(W, quant_state, out = out)
         if not _USE_NF4_KERNELS:
             return _fast_dequantize_ctypes(W, quant_state, out, use_global_buffer)
+        device = W.device
+        # Decode dequantizes each weight into the scratch buffer once per token: repeat the first
+        # launch for this weight directly (see dequantize_nf4_planned).
+        scratch = (
+            out is None
+            and use_global_buffer
+            and _can_use_scratch(device)
+            and device.index == _current_device()
+        )
+        if scratch and type(quant_state) is not list:
+            plan = getattr(quant_state, "_unsloth_nf4_plan", None)
+            if (
+                plan is not None
+                and plan[0] == W.data_ptr()
+                and plan[1] is quant_state.absmax
+                and plan[2] is quant_state.dtype
+            ):
+                if _SCRATCH.get(("weight", device.index)) is plan[4]:
+                    out = plan[5]
+                else:
+                    shape = quant_state.shape
+                    out = _scratch("weight", device, shape[0] * shape[1], plan[2]).view(shape)
+                    plan[4], plan[5] = _SCRATCH[("weight", device.index)], out
+                try:
+                    done = plan[3](out)
+                except Exception:
+                    done = False
+                if done:
+                    return out.t() if W.shape[0] == 1 else out
+                quant_state._unsloth_nf4_plan = None
+                out = None
         absmax, shape, dtype, blocksize, code, code2, absmax2, offset, blocksize2 = (
             _unpack_quant_state(quant_state)
         )
         if out is not None:
             assert out.shape == shape
             assert out.dtype == dtype
-        elif use_global_buffer and _can_use_scratch(W.device):
-            out = _scratch("weight", W.device, shape[0] * shape[1], dtype).view(shape)
+        elif use_global_buffer and _can_use_scratch(device):
+            out = _scratch("weight", device, shape[0] * shape[1], dtype).view(shape)
         try:
-            out = dequantize_nf4(
-                W,
-                absmax,
-                code2,
-                absmax2,
-                offset,
-                code,
-                blocksize,
-                blocksize2,
-                shape,
-                dtype,
-                out = out,
-            )
+            if (
+                scratch
+                and dtype in (torch_float16, torch_bfloat16, torch_float32)
+                and blocksize & (blocksize - 1) == 0
+                and (code2 is None or blocksize2 & (blocksize2 - 1) == 0)
+            ):
+                # Launches once; the scratch buffer always starts 16 byte aligned, as reruns need.
+                rerun = dequantize_nf4_planned(
+                    W, absmax, code2, absmax2, offset, code, blocksize, blocksize2, out
+                )
+                if rerun is not None and type(quant_state) is not list:
+                    quant_state._unsloth_nf4_plan = _NF4Plan(
+                        [
+                            W.data_ptr(),
+                            absmax,
+                            dtype,
+                            rerun,
+                            _SCRATCH.get(("weight", device.index)),
+                            out,
+                        ]
+                    )
+            else:
+                out = dequantize_nf4(
+                    W,
+                    absmax,
+                    code2,
+                    absmax2,
+                    offset,
+                    code,
+                    blocksize,
+                    blocksize2,
+                    shape,
+                    dtype,
+                    out = out,
+                )
         except Exception as error:
             if not _nf4_kernels_failed(error):
                 raise

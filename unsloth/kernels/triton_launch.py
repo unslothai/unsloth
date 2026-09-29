@@ -13,6 +13,7 @@ import triton
 
 __all__ = [
     "launch",
+    "relaunch",
     "tag_compile_cache",
 ]
 
@@ -43,10 +44,33 @@ def _hooks_set():
     )
 
 
+def relaunch(entry, grid, device_index, args):
+    """Repeat a launch whose cache entry launch() returned, with args matching the original in
+    dtypes, 16 byte alignment and integer specialization, on device_index (the current device).
+    False when the caller must use launch() instead."""
+    if not _ENABLED or _hooks_set():
+        return False
+    compiled, tail = entry
+    compiled.run(
+        grid[0],
+        grid[1] if len(grid) > 1 else 1,
+        grid[2] if len(grid) > 2 else 1,
+        _raw_stream(device_index),
+        compiled.function,
+        compiled.packed_metadata,
+        None,
+        None,
+        None,
+        *args,
+        *tail,
+    )
+    return True
+
+
 def launch(kernel, grid, args, n_tensors, constexprs, device_index, **options):
     """kernel[grid](*args, **constexprs, **options) on the current stream of device_index, which
     must be the current device. args are the runtime arguments in signature order, before every
-    constexpr: n_tensors tensors, then integers."""
+    constexpr: n_tensors tensors, then integers. Returns the cache entry relaunch() takes, or None."""
     global _ENABLED
     if _ENABLED and not _hooks_set():
         key = (
@@ -74,7 +98,7 @@ def launch(kernel, grid, args, n_tensors, constexprs, device_index, **options):
                     *args,
                     *tail,
                 )
-                return
+                return entry
             except Exception:
                 # A Triton build whose launcher takes other arguments: use its own path from now.
                 _ENABLED = False
@@ -84,9 +108,11 @@ def launch(kernel, grid, args, n_tensors, constexprs, device_index, **options):
             names = kernel.arg_names[len(args) :]
             if len(names) == len(constexprs):
                 compiled.run  # loads the module now, so the fast path never does
-                _CACHE[key] = (compiled, tuple(constexprs[name] for name in names))
-        return
+                entry = _CACHE[key] = (compiled, tuple(constexprs[name] for name in names))
+                return entry
+        return None
     kernel[grid](*args, **constexprs, **options)
+    return None
 
 
 def tag_compile_cache(path):
