@@ -1322,6 +1322,16 @@ def _nvfp4_diffusion_enabled_for_nvfp4_tests(request, monkeypatch):
 
 
 @pytest.fixture(autouse = True)
+def pin_installer_torch_vendor(monkeypatch):
+    """Pin the installer's torch-vendor probe so a ROCm-torch dev box answers like CI."""
+    monkeypatch.delenv("UNSLOTH_FORCE_ROCM_TORCH", raising = False)
+    for module in list(sys.modules.values()):
+        # __dict__: hasattr would trip a lazy __getattr__. _torchao_stub has its own probe.
+        if "_rocm_torch_preferred" in (getattr(module, "__dict__", None) or {}):
+            monkeypatch.setattr(module, "_installed_torch_is_rocm", lambda: None)
+
+
+@pytest.fixture(autouse = True)
 def _clear_github_rate_limit_lockout():
     # The lockout is process-wide: a 403 answered here would silence later fetches.
     from utils.prebuilt import freshness_flow
