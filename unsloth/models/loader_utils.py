@@ -1454,10 +1454,9 @@ def _route_compressed_tensors_fp8_to_unsloth(
         return 0
     if decompress:
         try:
-            from compressed_tensors.compressors import decompress_module
             with torch.inference_mode(False), torch.no_grad():
                 for module in decompress:
-                    decompress_module(module)
+                    _decompress_like_a_full_load(module)
                     _remove_same_device_compressed_tensors_offload(module)
         except Exception:
             return 0
@@ -1600,22 +1599,48 @@ class _UnslothNVFP4Linear(torch.nn.Linear):
 
     def dequantize_(self):
         """Turn this layer into a plain nn.Linear holding the dense weight (PEFT merges add into `.weight`)."""
-        from unsloth.kernels.nvfp4 import nvfp4_dequantize
-
-        with torch.no_grad():
-            W = nvfp4_dequantize(
-                self.weight_packed,
-                self.weight_scale,
-                self.weight_global_scale,
-                getattr(self, "_unsloth_nvfp4_dtype", torch.bfloat16),
-            )
-        for name in ("weight_packed", "weight_scale", "weight_global_scale", "input_global_scale"):
-            self._parameters.pop(name, None)
         self.__dict__.pop("forward", None)
         self.__class__ = torch.nn.Linear
-        self.weight = torch.nn.Parameter(W, requires_grad = False)
         self._unsloth_compressed_tensors_nvfp4 = False
+        _decompress_like_a_full_load(self)
         return self
+
+
+_CT_QUANT_PARAMS = (
+    "weight_scale",
+    "weight_global_scale",
+    "weight_zero_point",
+    "input_global_scale",
+    "input_scale",
+)
+
+
+def _decompress_like_a_full_load(module):
+    """compressed-tensors' own per-module decompress, then a plain dense layer. The config still says compressed
+    for the rest, so the layer joins its ignore list: save_pretrained then writes a checkpoint that reloads."""
+    from compressed_tensors.compressors import decompress_module
+
+    with torch.inference_mode(False), torch.no_grad():
+        decompress_module(module)
+    for name in _CT_QUANT_PARAMS:
+        module._parameters.pop(name, None)
+    for attr in ("quantization_scheme", "quantization_status"):
+        module.__dict__.pop(attr, None)
+    for p in module.parameters(recurse = False):
+        p.requires_grad_(False)
+    config = getattr(module, "_unsloth_ct_config", None)
+    ignore = getattr(getattr(config, "quantization_config", None), "ignore", None)
+    name = getattr(module, "_unsloth_ct_name", None)
+    if isinstance(ignore, list) and name is not None and name not in ignore:
+        ignore.append(name)
+
+
+def _tag_compressed_tensors_modules(model):
+    config = getattr(getattr(model, "config", None), "quantization_config", None)
+    for name, module in model.named_modules():
+        if getattr(module, "quantization_scheme", None) is not None:
+            module._unsloth_ct_name = name
+            module._unsloth_ct_config = config
 
 
 def _routed_dense_weight(module):
@@ -1643,12 +1668,9 @@ def _dequantize_routed_linear_(module):
     if isinstance(module, _UnslothNVFP4Linear):
         return module.dequantize_()
     if getattr(module, "_unsloth_compressed_tensors_fp8", False):
-        with torch.no_grad():
-            W = _routed_dense_weight(module)
-        module._parameters.pop("weight_scale", None)
         module.__dict__.pop("forward", None)
-        module.weight = torch.nn.Parameter(W, requires_grad = False)
         module._unsloth_compressed_tensors_fp8 = False
+        _decompress_like_a_full_load(module)
     return module
 
 
@@ -1682,6 +1704,19 @@ def _patch_peft_for_routed_compressed_tensors():
 
         patched_dequantize._unsloth_routed = True
         dora.dequantize_module_weight = patched_dequantize
+    update_layer = dora.DoraLinearLayer.update_layer
+    if not getattr(update_layer, "_unsloth_routed", False):
+
+        @functools.wraps(update_layer)
+        def patched_update_layer(self, *, base_layer, lora_A, lora_B, **kwargs):
+            # PEFT has cast new adapters to an FP8 base's float8 dtype; DoRA multiplies them right away.
+            for p in (lora_A, lora_B):
+                if isinstance(p, torch.Tensor) and p.dtype in _FP8_DTYPES:
+                    p.data = p.data.to(torch.float32)
+            return update_layer(self, base_layer = base_layer, lora_A = lora_A, lora_B = lora_B, **kwargs)
+
+        patched_update_layer._unsloth_routed = True
+        dora.DoraLinearLayer.update_layer = patched_update_layer
 
 
 def _route_compressed_tensors_nvfp4_to_unsloth(model):
@@ -1732,7 +1767,7 @@ def _route_compressed_tensors_nvfp4_to_unsloth(model):
         try:
             with torch.inference_mode(False), torch.no_grad():
                 for module in others:
-                    decompress_module(module)
+                    _decompress_like_a_full_load(module)
                     _remove_same_device_compressed_tensors_offload(module)
         except Exception as e:
             print(f"Unsloth: could not decompress the non-NVFP4 compressed-tensors layers ({e}).")
@@ -2067,6 +2102,7 @@ def _prepare_compressed_tensors_model(model, full_finetuning = False):
     if full_finetuning:
         _decompress_compressed_tensors_model(model)
         return
+    _tag_compressed_tensors_modules(model)
     if _route_compressed_tensors_nvfp4_to_unsloth(model):
         return
     if not _route_compressed_tensors_fp8_to_unsloth(model):

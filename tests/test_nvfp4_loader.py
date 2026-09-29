@@ -88,7 +88,10 @@ def test_nvfp4_layers_stay_packed_and_run_w4a16(ckpt, arch, monkeypatch):
     assert model._unsloth_compressed_tensors_nvfp4 == len(nvfp4)
     assert getattr(model, "ct_decompress_hook", None) is None and not model._forward_pre_hooks
     keys = set(safe_open(os.path.join(path, "model.safetensors"), "pt").keys())
-    # Same keys as the checkpoint (a tied lm_head may add its alias).
+    # Same keys as the checkpoint, except that decompressed layers are dense and drop their scales
+    # (a tied lm_head may add its alias).
+    dense = [n for n, k in kinds.items() if k == "fp8"] + ["lm_head"]
+    keys -= {n + ".weight_scale" for n in dense}
     assert set(model.state_dict()) - {"lm_head.weight"} == keys - {"lm_head.weight"}
     assert not any(
         n.endswith(".weight") and n[: -len(".weight")] in nvfp4 for n, _ in model.named_parameters()
@@ -166,8 +169,7 @@ def test_peft_merge_dequantizes_the_routed_base(ckpt, kind, monkeypatch):
     assert torch.equal(layer.weight, want)
 
 
-# fp8 bases are not covered: PEFT builds DoRA's magnitude from float8 A / B before it upcasts them.
-@pytest.mark.parametrize("kind", ["nvfp4"])
+@pytest.mark.parametrize("kind", ["nvfp4", "fp8"])
 def test_dora_reads_the_dense_routed_weight(ckpt, kind, monkeypatch):
     from peft import LoraConfig, get_peft_model
     from unsloth.models import loader_utils
@@ -193,6 +195,40 @@ def test_dora_reads_the_dense_routed_weight(ckpt, kind, monkeypatch):
     assert torch.allclose(magnitude.float(), (W + delta).norm(dim = 1), rtol = 1e-2)
     out = model(input_ids = torch.randint(0, 1000, (1, 8), device = "cuda")).logits
     assert torch.isfinite(out).all()
+
+
+@pytest.mark.parametrize("merge", [False, True])
+def test_saved_checkpoint_reloads_with_plain_transformers(ckpt, merge, tmp_path, monkeypatch):
+    # save_pretrained (after merge_and_unload or not): per-module decompressed layers such as lm_head and the
+    # merged ones are dense, so they must join the ignore list, or the reload reads them as FP8 / packed.
+    from peft import LoraConfig, get_peft_model
+    from transformers import AutoModelForCausalLM
+    from unsloth.models import loader_utils
+
+    if not _fp8_route_available():
+        pytest.skip("installed unsloth_zoo predates the FP8 kernel route")
+    monkeypatch.setenv("UNSLOTH_COMPRESSED_TENSORS_FP8_KERNELS", "1")
+    path, kinds = ckpt["qwen3"]
+    model = _load_raw(path, "qwen3")
+    loader_utils._prepare_compressed_tensors_model(model)
+    if merge:
+        model = get_peft_model(model, LoraConfig(r = 4, target_modules = ["gate_proj", "q_proj"]))
+        for n, p in model.named_parameters():
+            if "lora_B" in n:
+                torch.nn.init.normal_(p, std = 0.02)
+        model = model.merge_and_unload()
+    ids = torch.randint(0, 1000, (1, 16), device = "cuda")
+    with torch.no_grad():
+        want = model(input_ids = ids).logits.float()
+    model.save_pretrained(str(tmp_path / "out"))
+    reloaded = AutoModelForCausalLM.from_pretrained(
+        str(tmp_path / "out"), device_map = "cuda", dtype = torch.bfloat16
+    )
+    with torch.no_grad():
+        got = reloaded(input_ids = ids).logits.float()
+    # Plain compressed-tensors fake-quantizes activations (W4A4 / W8A8), so only close, not equal;
+    # a layer read in the wrong format gives logits near zero.
+    assert (got - want).abs().max() < 0.1 * want.abs().max()
 
 
 def test_nvfp4_lm_head_is_decompressed(tmp_path, monkeypatch):
