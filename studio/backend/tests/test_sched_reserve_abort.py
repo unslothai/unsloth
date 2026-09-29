@@ -60,6 +60,15 @@ _CUDA_OOM_ABORT = "\n".join(
         "#6  llama_context::sched_reserve() () from libllama.so",
     ]
 )
+# Other aborts inside split_graph (ggml-backend.cpp) share its frame.
+_CONTEXT_INIT_ABORT = (
+    "ggml/src/ggml-backend.cpp:1082: ggml_backend_sched_split_graph: failed to initialize context\n"
+    "#2  ggml_abort ()\n#3  ggml_backend_sched_split_graph ()"
+)
+_SPLITS_ALLOC_ABORT = (
+    "ggml/src/ggml-backend.cpp:1352: GGML_ASSERT(sched->splits != NULL) failed\n"
+    "#2  ggml_abort ()\n#3  ggml_backend_sched_split_graph ()"
+)
 _OOM_OUTPUT = "llama_model_load: error loading model: unable to allocate buffer\nkilled"
 _CLEAN_OUTPUT = "main: server is listening on http://127.0.0.1:8080 - starting the main loop"
 
@@ -74,6 +83,8 @@ def test_matcher_ignores_unrelated_crashes():
     assert not LlamaCppBackend._is_sched_reserve_abort(_SPLIT_AXIS_ABORT)
     assert not LlamaCppBackend._is_sched_reserve_abort(_OOM_OUTPUT)
     assert not LlamaCppBackend._is_sched_reserve_abort(_CUDA_OOM_ABORT)
+    assert not LlamaCppBackend._is_sched_reserve_abort(_CONTEXT_INIT_ABORT)
+    assert not LlamaCppBackend._is_sched_reserve_abort(_SPLITS_ALLOC_ABORT)
     assert not LlamaCppBackend._is_sched_reserve_abort(_CLEAN_OUTPUT)
     assert not LlamaCppBackend._is_sched_reserve_abort("")
 
@@ -188,19 +199,24 @@ class _Crashing:
         self.backend = b
         self.gguf = _write_gguf(tmp_path / "model.gguf")
         self.spawns = 0
+        self.outputs = None  # per-spawn output override, consumed in order
+        self.projector_fails = False  # --mmproj spawns fail without the abort
 
     def load(self, **load_kwargs) -> str:
         def fake_popen(cmd, **kwargs):
             if not cmd or "--port" not in [str(c) for c in cmd]:
                 return _REAL_POPEN(cmd, **kwargs)
             self.spawns += 1
+            lines = self.outputs.pop(0) if self.outputs else _ABORT_OUTPUT
+            if self.projector_fails and "--mmproj" in [str(c) for c in cmd]:
+                lines = ["clip_init: failed to load model\n"]
             return type(
                 "Process",
                 (),
                 {
                     "pid": 123,
                     "returncode": -6,
-                    "stdout": iter(_ABORT_OUTPUT),
+                    "stdout": iter(lines),
                     "poll": lambda self: -6,
                     "terminate": lambda self: None,
                     "wait": lambda self, timeout = None: -6,
@@ -247,3 +263,30 @@ def test_a_changed_setting_is_allowed_to_retry(crashing, change):
     before = crashing.spawns
     crashing.load(**change)
     assert crashing.spawns > before
+
+
+def test_hub_cache_hint_does_not_defeat_the_memo(crashing):
+    crashing.load()
+    before = crashing.spawns
+    hint = (str(crashing.gguf), "unsloth/GLM-5.2-GGUF", "main", ((crashing.gguf.name, 1),))
+    crashing.load(verified_gguf = hint)
+    assert crashing.spawns == before
+
+
+def test_forced_reload_that_does_not_abort_clears_the_memo(crashing):
+    crashing.load()
+    crashing.outputs = [["llama_model_load: error loading model\n"]] * 2
+    crashing.load(force_reload = True)
+    before = crashing.spawns
+    crashing.load()
+    assert crashing.spawns > before
+
+
+def test_text_only_retry_abort_is_memoed(crashing, tmp_path):
+    mmproj = _write_gguf(tmp_path / "mmproj.gguf")
+    crashing.backend._resolve_launch_mmproj_path = lambda **kwargs: str(mmproj)
+    crashing.projector_fails = True
+    crashing.load(mmproj_path = str(mmproj), is_vision = True)
+    before = crashing.spawns
+    crashing.load(mmproj_path = str(mmproj), is_vision = True)
+    assert crashing.spawns == before

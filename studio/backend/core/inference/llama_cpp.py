@@ -15585,6 +15585,12 @@ class LlamaCppBackend:
         if key is not None:
             cls._sched_reserve_abort_keys.add(key)
 
+    @classmethod
+    def _forget_sched_reserve_abort(cls, binary: Optional[str], model: Optional[str]) -> None:
+        key = cls._tensor_split_cache_key(binary, model)
+        if key is not None:
+            cls._sched_reserve_abort_keys.discard(key)
+
     @staticmethod
     def _windows_pip_nvidia_dll_dirs(prefix: str) -> list[str]:
         """Return DLL dirs from pip-installed CUDA wheels under
@@ -21743,9 +21749,15 @@ class LlamaCppBackend:
         # The #6415 split-axis abort shares the frame but has its own latch.
         if "split_axis" in text:
             return False
+        if "cur_backend_id" in text:
+            return True
         # Not sched_reserve / graph_reserve alone: every reserve-time crash (a CUDA OOM
-        # in ggml_gallocr_reserve_n) passes through them; this assert fires inside split_graph.
-        return "cur_backend_id" in text or "ggml_backend_sched_split_graph" in text
+        # in ggml_gallocr_reserve_n) passes through them. split_graph has other aborts
+        # (context init, split allocation), so the bare frame counts only with no other
+        # abort message in view.
+        if "failed to initialize context" in text or "ggml_assert(" in text:
+            return False
+        return "ggml_backend_sched_split_graph" in text
 
     @staticmethod
     def _sched_reserve_abort_message() -> str:
@@ -23398,11 +23410,14 @@ class LlamaCppBackend:
 
             # Fail fast before killing the live server. Keyed on the whole request, so an
             # identical replay is blocked but any changed setting (quant, -c, TP, spec) retries;
-            # an explicit reload also retries (freed memory can make the same load fit).
-            _abort_memo_model = repr(replace(intent, hf_token = None, force_reload = False))
-            if not intent.force_reload and LlamaCppBackend._sched_reserve_aborts(
-                binary, _abort_memo_model
-            ):
+            # an explicit reload also retries (freed memory can make the same load fit) and
+            # clears the entry, so only a repeat abort blocks again.
+            _abort_memo_model = repr(
+                replace(intent, hf_token = None, force_reload = False, verified_gguf = None)
+            )
+            if intent.force_reload:
+                LlamaCppBackend._forget_sched_reserve_abort(binary, _abort_memo_model)
+            elif LlamaCppBackend._sched_reserve_aborts(binary, _abort_memo_model):
                 logger.warning(
                     "Skipping reload of '%s': it already aborted in the llama.cpp graph "
                     "scheduler this session.",
@@ -30869,6 +30884,11 @@ class LlamaCppBackend:
                                 # Snapshot: re-reading races the teardown.
                                 _retry_proc = self._process
                                 _retry_rc = _retry_proc.poll() if _retry_proc is not None else None
+                                # This retry bypasses _spawn_and_wait's abort detection.
+                                if _retry_rc not in (None, 0) and self._is_sched_reserve_abort(
+                                    "\n".join(self._stdout_lines[-200:])
+                                ):
+                                    _sched_abort_seen = True
                                 self._kill_process()
                                 if _finish_cancelled_health_wait(
                                     "Load cancelled during the text-only retry health wait"
