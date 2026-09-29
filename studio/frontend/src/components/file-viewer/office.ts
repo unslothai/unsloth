@@ -16,8 +16,8 @@ export interface SheetLimits {
   sheets: number;
   rows: number;
   columns: number;
-  /** List sheets past the limit by name only, unparsed. */
-  namesPastLimit?: boolean;
+  /** Sheets past the limit listed by name only, unparsed, up to this many. */
+  extraNames?: number;
 }
 
 const FULL_SHEET_LIMITS: SheetLimits = { sheets: MAX_SHEETS, rows: MAX_SHEET_ROWS, columns: MAX_SHEET_COLUMNS };
@@ -1147,7 +1147,8 @@ export function readXlsx(bytes: Uint8Array, limits: SheetLimits = FULL_SHEET_LIM
   const budget = { cells: MAX_WORKBOOK_CELLS };
   for (const sheet of all(workbook, "sheet")) {
     if (sheet.getAttribute("state") === "hidden" || sheet.getAttribute("state") === "veryHidden") continue;
-    if (limits.namesPastLimit && sheets.length >= limits.sheets) {
+    if (limits.extraNames !== undefined && sheets.length >= limits.sheets) {
+      if (sheets.length >= limits.sheets + limits.extraNames) break;
       sheets.push({ name: sheet.getAttribute("name") ?? "Sheet", rows: [], widths: [], truncated: false });
       continue;
     }

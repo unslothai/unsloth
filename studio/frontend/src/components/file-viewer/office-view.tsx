@@ -88,7 +88,7 @@ const MAX_DOCX_PIXELS = 128 * 1024 * 1024;
 // A card shows only the opening of a document.
 const THUMBNAIL_DOCX_PARAGRAPHS = 60;
 const THUMBNAIL_DOCX_ELEMENTS = 2_000;
-const THUMBNAIL_SHEET_LIMITS: SheetLimits = { sheets: 1, rows: 60, columns: 30, namesPastLimit: true };
+const THUMBNAIL_SHEET_LIMITS: SheetLimits = { sheets: 1, rows: 60, columns: 30, extraNames: 8 };
 const THUMBNAIL_TEXT_BYTES = 256 * 1024;
 
 // A thumbnail cut is expected, so it shows no truncation note.

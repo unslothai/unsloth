@@ -252,7 +252,8 @@ test("sheet limits cap rows, columns and parsed sheets", () => {
   });
   const full = readXlsx(zip);
   assert.deepEqual([full.length, full[1]!.rows.length], [2, 10]);
-  const [first, second] = readXlsx(zip, { sheets: 1, rows: 3, columns: 2, namesPastLimit: true });
+  const [first, second] = readXlsx(zip, { sheets: 1, rows: 3, columns: 2, extraNames: 1 });
+  assert.equal(readXlsx(zip, { sheets: 1, rows: 3, columns: 2, extraNames: 0 }).length, 1);
   assert.equal(first!.rows.length, 3);
   assert.ok(first!.rows.every((row) => row.length <= 2));
   assert.equal(first!.truncated, true);
