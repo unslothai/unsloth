@@ -221,19 +221,35 @@ class TestGetModelName(unittest.TestCase):
                 get_model_name("unsloth/Qwen3-30B-A3B", load_in_4bit = True),
                 "unsloth/qwen3-30b-a3b",
             )
-        # The probe checks the requested revision, not main.
+        # A case-only change keeps the revision, so the probe checks it, not main.
         with (
             patch(
                 "huggingface_hub.try_to_load_from_cache",
                 lambda repo_id, filename, cache_dir = None, revision = None: (
-                    "/cache/f" if repo_id == canonical.lower() and revision == "release" else None
+                    "/cache/f"
+                    if repo_id == "unsloth/qwen3-30b-a3b" and revision == "release"
+                    else None
+                ),
+            ),
+            patch.dict("os.environ", {"HF_HUB_OFFLINE": "1"}),
+        ):
+            self.assertEqual(
+                get_model_name("unsloth/qwen3-30b-a3b", load_in_4bit = True, revision = "release"),
+                "unsloth/qwen3-30b-a3b",
+            )
+        # A real remap loads the mirror's main, so its legacy cache is probed there.
+        with (
+            patch(
+                "huggingface_hub.try_to_load_from_cache",
+                lambda repo_id, filename, cache_dir = None, revision = None: (
+                    "/cache/f" if repo_id == canonical.lower() and revision is None else None
                 ),
             ),
             patch.dict("os.environ", {"HF_HUB_OFFLINE": "1"}),
         ):
             self.assertEqual(
                 get_model_name(
-                    "unsloth/Meta-Llama-3.1-8B-Instruct", load_in_4bit = True, revision = "release"
+                    "meta-llama/Meta-Llama-3.1-8B-Instruct", load_in_4bit = True, revision = "abc"
                 ),
                 canonical.lower(),
             )

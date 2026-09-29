@@ -1175,8 +1175,10 @@ def get_model_name(
         new_model_name = model_name
     else:
         # Also when the result equals the input: main returned it lowercased, so that is what is cached.
+        # The loader drops the revision on a real remap (_revision_for_resolved_repo), so probe main then.
+        same_repo = new_model_name.lower() == str(model_name).lower()
         new_model_name = _prefer_legacy_lowercase_cache(
-            new_model_name, local_files_only, cache_dir, revision
+            new_model_name, local_files_only, cache_dir, revision if same_repo else None
         )
 
     return new_model_name
