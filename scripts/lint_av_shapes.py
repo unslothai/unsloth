@@ -662,6 +662,29 @@ RULES = [
             r"(?i)\b(?:curl|wget)\b[^\n|]*\|\s*(?:sudo\s+)?(?:ba|z|da)?sh\b",
         ],
     ),
+    Rule(
+        "AV016",
+        "error",
+        "an inline interpreter one-liner unpacks an archive",
+        "fetching an archive and unpacking it with a `-c` one-liner is the dropper shape; a vendor has scored "
+        "install.sh as a downloader for exactly this line",
+        "use the interpreter's own module entry point (python3 -m zipfile -e ARCHIVE DIR), unzip or tar",
+        applies = lambda p: not p.endswith((".py", ".rs", ".js", ".mjs", ".cjs", ".ts", ".tsx")),
+        needles = tuple(_J(p) for p in (("ext", "ract"), ("unpack_", "archive"))),
+        # Options may take an argument (-W ignore) or be combined with the command flag (-Ic). The
+        # call has to sit inside the quoted program (escaped quotes included, not a later command or
+        # comment) after an archive name, so an HTML node's .extract() is not an archive.
+        line_patterns = [
+            r"(?i)\b(?:python[0-9.]*|py|node|perl|ruby)(?:\.exe)?"
+            r"(?:\s+--?[\w-]+(?:\s+[^\s'\"-][^\s'\"]*)?)*?\s+-[a-z]*[ce]\s*(['\"])(?:\\.|(?!\1)[^\n])*?"
+            + _any(
+                r"(?:zip|tar|archive)(?:\\.|(?!\1)[^\n])*?(?:\.|->)"
+                + _J(("ext", "ract"))
+                + r"(?:all)?\s*\(",
+                _J(("unpack_", "archive")),
+            )
+        ],
+    ),
 ]
 RULES_BY_ID = {rule.id: rule for rule in RULES}
 # PowerShell resolves commands, members and parameters in any case, and so do Windows paths.
@@ -1031,6 +1054,112 @@ def _fixtures() -> list[tuple[str, str, str, bool]]:
         ("AV014", "install.ps1", "# resolves the venv python before the first pip call", False),
         ("AV015", "t.ps1", "$sb = [scriptblock]::Create($text)", True),
         ("AV015", "t.ps1", ". $PSScriptRoot/helpers.ps1", False),
+        (
+            "AV016",
+            "t.sh",
+            "python3 -c 'import sys, zipfile; zipfile."
+            + _J(("Zip", "File"))
+            + "(sys.argv[1])."
+            + _J(("extract", "all"))
+            + '(sys.argv[2])\' "$1" "$2"',
+            True,
+        ),
+        ("AV016", "t.sh", 'python3 -m zipfile -e "$1" "$2"', False),
+        (
+            "AV016",
+            "t.sh",
+            "python3 -c 'import zipfile; zipfile."
+            + _J(("Zip", "File"))
+            + "(a).extract("
+            + '"uv")'
+            + "'",
+            True,
+        ),
+        (
+            "AV016",
+            "t.mjs",
+            "const cmd = "
+            + '"'
+            + "python3 -c 'import zipfile; zipfile."
+            + _J(("Zip", "File"))
+            + "(a)."
+            + _J(("extract", "all"))
+            + "(b)'"
+            + '"',
+            False,
+        ),
+        # Options before the command flag, with an argument or combined with it.
+        (
+            "AV016",
+            "t.sh",
+            "python3 -W ignore -c 'import zipfile; zipfile.ZipFile(a)."
+            + _J(("extract", "all"))
+            + "(b)'",
+            True,
+        ),
+        (
+            "AV016",
+            "t.sh",
+            "python3 -Ic 'import tarfile; tarfile.open(a)." + _J(("extract", "all")) + "(b)'",
+            True,
+        ),
+        (
+            "AV016",
+            "t.sh",
+            "python3 -c 'import shutil; shutil." + _J(("unpack_", "archive")) + "(a, b)'",
+            True,
+        ),
+        (
+            "AV016",
+            "t.sh",
+            'python3 -c "import zipfile; zipfile.ZipFile(\\"a.zip\\").'
+            + _J(("extract", "all"))
+            + '(\\"out\\")"',
+            True,
+        ),
+        (
+            "AV016",
+            "t.sh",
+            'perl -e \'use Archive::Tar; Archive::Tar->new("a.tar")->'
+            + _J(("ext", "ract"))
+            + "()'",
+            True,
+        ),
+        (
+            "AV016",
+            "t.sh",
+            "python3 -c 'from bs4 import BeautifulSoup; BeautifulSoup(x).div."
+            + _J(("ext", "ract"))
+            + "()'",
+            False,
+        ),
+        # Reading or checking an archive unpacks nothing.
+        (
+            "AV016",
+            "t.sh",
+            "python3 -c 'print(1)'  # a later archive."
+            + _J(("ext", "ract"))
+            + "() call is not this one",
+            False,
+        ),
+        (
+            "AV016",
+            "t.sh",
+            "python3 -c 'import sys, zipfile; print(zipfile.is_zipfile(sys.argv[1]))' \"$f\"",
+            False,
+        ),
+        (
+            "AV016",
+            "t.sh",
+            "python3 -c 'import zipfile; print(zipfile.ZipFile(a).namelist())'",
+            False,
+        ),
+        (
+            "AV016",
+            "t.py",
+            "zipfile." + _J(("Zip", "File")) + "(path)." + _J(("extract", "all")) + "(dest)",
+            False,
+        ),
         # Spellings PowerShell accepts that a first cut of these rules missed.
         (
             "AV002",
