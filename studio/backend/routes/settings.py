@@ -4713,7 +4713,7 @@ async def update_sandbox_settings(
 
 @_owner_settings_router.get("/sandbox/prepare", response_model = SandboxPrepareJob)
 def get_sandbox_prepare(current_subject: str = Depends(get_current_subject)) -> SandboxPrepareJob:
-    return _sandbox_job_response(_newest_host_job())
+    return _sandbox_job_response(_newest_host_job(prepares_host = True))
 
 
 @_owner_settings_router.post("/sandbox/prepare", response_model = SandboxPrepareJob)
@@ -4764,10 +4764,13 @@ def get_sandbox_setup(current_subject: str = Depends(get_current_subject)) -> Sa
     return _sandbox_setup_response(_newest_host_job())
 
 
-def _newest_host_job():
-    from core.inference import mxc_host_prep_job, sandbox_setup_job
+def _newest_host_job(prepares_host: bool = False):
+    """``prepares_host``: the prepare row reads this, so a runtime-only install is not its result."""
+    from core.inference import mxc_host_prep_job, sandbox_setup_job, sandbox_setup_plan
 
     job = sandbox_setup_job.current()
+    if prepares_host and job is not None and job.operation != sandbox_setup_plan.WINDOWS_SETUP:
+        job = None
     prep = mxc_host_prep_job.current()
     if prep is not None and (job is None or prep.started_at > job.started_at):
         return prep

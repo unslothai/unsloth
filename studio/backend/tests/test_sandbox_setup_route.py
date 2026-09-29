@@ -387,6 +387,19 @@ def test_a_setup_run_is_reported_by_the_prepare_route(host, windows, monkeypatch
     assert body["id"] == "setup1" and body["state"] == "running"
 
 
+@pytest.mark.parametrize("operation", ["windows-runtime", "linux-install"])
+def test_a_job_that_does_not_prepare_the_host_stays_out_of_the_prepare_route(
+    host, windows, monkeypatch, operation
+):
+    setup = sandbox_setup_job.SetupJob(id = "setup1", operation = operation, state = "succeeded")
+    monkeypatch.setattr(sandbox_setup_job, "current", lambda: setup)
+    monkeypatch.setattr(mxc_host_prep_job, "current", lambda: None)
+    with _client(OWNER) as client:
+        body = client.get("/sandbox/prepare").json()
+        assert client.get("/sandbox/setup").json()["id"] == "setup1"
+    assert body["state"] == "idle" and body.get("id") is None
+
+
 def test_windows_commands_with_host_paths_stay_with_the_owner(host, windows):
     _calls, _saved, plan = host
     plan["value"] = sandbox_setup_plan.SetupPlan(
