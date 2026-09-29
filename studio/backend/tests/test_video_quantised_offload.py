@@ -627,7 +627,9 @@ def test_applied_floor_counts_a_dit_the_fallback_hooked():
     encoder.register_buffer("w", torch.zeros(12 * 1024 * 1024 // 2, dtype = torch.bfloat16))
     vae = torch.nn.Module()
     vae.register_buffer("w", torch.zeros(3 * 1024 * 1024 // 2, dtype = torch.bfloat16))
-    pipe = types.SimpleNamespace(components = {"transformer": dit, "text_encoder": encoder, "vae": vae})
+    pipe = types.SimpleNamespace(
+        components = {"transformer": dit, "text_encoder": encoder, "vae": vae}
+    )
     plan = types.SimpleNamespace(
         offload_policy = "group",
         stream_text_encoders = True,
@@ -642,5 +644,4 @@ def test_a_declined_quant_unstages_before_any_bf16_rollback():
     import inspect
 
     import core.inference.video as V
-
     assert "if staged and (video_offload or scheme is None):" in inspect.getsource(V)
