@@ -24963,6 +24963,26 @@ class LlamaCppBackend:
                     _draft_cpu_no_embedded = _draft_on_cpu and (
                         _separate_draft_launches or not self._nextn_predict_layers
                     )
+                    # A replayed context was fitted without the drafter: once one is forced, size it
+                    # like a fresh MTP load. Before every explicit_ctx reader (projector probe,
+                    # tensor planner, fit), and on the reserve the Auto-only drop probe cannot clear.
+                    if (
+                        explicit_ctx
+                        and ctx_override is None
+                        and intent.max_seq_length_auto_derived
+                        and _mtp_will_engage
+                        and not _draft_cpu_no_embedded
+                        # Forced = anything that bypasses the Auto drop probe, advanced arguments included.
+                        and (
+                            (_canonicalize_spec_mode(speculative_type) or "auto") != "auto"
+                            or _user_mtp_via_extras
+                            or _user_draft_via_extras
+                            or _extra_args_set_spec_type(extra_args)
+                            or _extra_args_mtp_draft_path(extra_args, env = _spec_env)
+                        )
+                    ):
+                        explicit_ctx = False
+                        _replayed_ctx_refit = True
 
                     # The two tensor -> layer downgrades that need nothing the probe
                     # decides run BEFORE it: the probe is gated on `not tensor_parallel`
@@ -25776,23 +25796,6 @@ class LlamaCppBackend:
                                 # on Auto.
                                 max_available_ctx = min(_AUTO_OFFLOAD_CTX, native_ctx_for_cap)
 
-                        if (
-                            explicit_ctx
-                            and ctx_override is None
-                            and intent.max_seq_length_auto_derived
-                            and _mtp_reserves_gpu
-                            # Forced = anything that bypasses the Auto drop probe, advanced arguments included.
-                            and (
-                                (_canonicalize_spec_mode(speculative_type) or "auto") != "auto"
-                                or _user_mtp_via_extras
-                                or _user_draft_via_extras
-                                or _extra_args_set_spec_type(extra_args)
-                                or _extra_args_mtp_draft_path(extra_args, env = _spec_env)
-                            )
-                        ):
-                            # Fitted without the drafter: size it like a fresh MTP load, slot re-fit included.
-                            explicit_ctx = False
-                            _replayed_ctx_refit = True
                         if explicit_ctx:
                             # Honor the requested context verbatim. If it fits,
                             # pin GPUs and skip --fit; else ship -c <ctx> --fit

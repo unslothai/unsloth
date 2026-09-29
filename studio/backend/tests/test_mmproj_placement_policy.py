@@ -1631,3 +1631,27 @@ def test_an_unloadable_drafter_is_not_charged_before_it_is_dropped(tmp_path):
     assert "--model-draft" not in cmd
     assert "--no-mmproj-offload" not in cmd
     assert backend.mtp_draft_suppressed_path == str(tmp_path / "mtp.gguf")
+
+
+def test_a_replayed_context_places_the_projector_like_a_fresh_forced_drafter(tmp_path):
+    # Auto drops the drafter at 65536; forcing it on a replay of that context must be
+    # classified before the projector probe, or the projector is priced at 65536 and
+    # pinned to CPU where a fresh forced-drafter load keeps it on GPU.
+    memory = [(0, 13_500, 24_000)]
+
+    def load(**kwargs):
+        backend, gguf = _backend(tmp_path, memory = memory, drafter_bytes = 2 * GIB, native_ctx = 65536)
+        cmd = _launch(backend, gguf, mtp_draft_path = str(tmp_path / "mtp.gguf"), **kwargs)["cmd"]
+        return backend, cmd, int(cmd[cmd.index("-c") + 1])
+
+    _, auto, replayed = load(speculative_type = "auto", n_ctx = 0)
+    assert "--model-draft" not in auto
+    _, fresh, fresh_ctx = load(speculative_type = "mtp", n_ctx = 0)
+    backend, replay, replay_ctx = load(
+        speculative_type = "mtp", n_ctx = replayed, max_seq_length_auto_derived = True
+    )
+
+    assert "--no-mmproj-offload" not in fresh
+    assert "--no-mmproj-offload" not in replay
+    assert replay_ctx == fresh_ctx < replayed
+    assert backend._requested_n_ctx == replay_ctx
