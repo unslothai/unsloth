@@ -5,6 +5,7 @@
 
 import asyncio
 import json
+import threading
 from types import SimpleNamespace
 
 import httpx
@@ -514,8 +515,15 @@ def test_json_fallback_does_not_refund_transport_retries(monkeypatch, research_c
     sent = []
     delays = []
     real_sleep = asyncio.sleep
+    owner = threading.get_ident()
 
-    async def sleep(delay):
+    # `research_runs.asyncio` is the asyncio module, so this patches every event loop in
+    # the process; a TestClient portal another test left running polls with
+    # asyncio.sleep(0.1) from its own thread. Only this thread's sleeps are the retry
+    # loop's (see _capture_backoff in test_research_runs_hardening.py).
+    async def sleep(delay, *args, **kwargs):
+        if threading.get_ident() != owner:
+            return await real_sleep(delay, *args, **kwargs)
         delays.append(delay)
         await real_sleep(0)
 

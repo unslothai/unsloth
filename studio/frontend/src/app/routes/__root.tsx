@@ -40,6 +40,7 @@ import {
   stepInterfaceScale,
   triggerShortcut,
   useInterfaceScaleStore,
+  useHubSourceNotice,
   useSettingsDialogStore,
   useShortcut,
   useShortcutAvailable,
@@ -183,6 +184,11 @@ function PersonalizationSyncMount() {
 // subscribed across navigation, instead of coming and going with /studio.
 function LowDiskNoticeMount() {
   useLowDiskNotice();
+  return null;
+}
+
+function HubSourceNoticeMount() {
+  useHubSourceNotice();
   return null;
 }
 
@@ -800,6 +806,8 @@ function RootLayout() {
           </SidebarInset>
         </SidebarProvider>
       )}
+      {/* This side-effect-only mount stays last so it cannot shift existing React useId paths. */}
+      {!isAuthFlowRoute && <HubSourceNoticeMount />}
     </>
   );
 

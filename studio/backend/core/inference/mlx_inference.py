@@ -1595,11 +1595,81 @@ MLX_KV_BITS_CHOICES = (8, 6, 5, 4, 3, 2)
 MLX_TURBOQUANT_BITS_CHOICES = (4, 3.5, 3, 2)
 # Quantization group size; a head dim that is not a multiple makes mx.quantize raise.
 MLX_KV_GROUP_SIZE = 64
+MLX_PREFILL_CHUNK_FALLBACK = 2048
+
+
+def _generation_step(*, vision: bool, drafted: bool):
+    """The function that would run this generation's prefill."""
+    if vision:
+        from mlx_vlm.generate.ar import generate_step as vlm_generate_step
+        return vlm_generate_step
+    if drafted:
+        from mlx_lm.generate import speculative_generate_step
+        return speculative_generate_step
+    from mlx_lm.generate import generate_step
+
+    return generate_step
+
+
+def _generation_default(setting: str, fallback: int, *, vision: bool, drafted: bool) -> int:
+    """A prefill setting as the runtime that would run generation defaults to it."""
+    import inspect
+    try:
+        found = (
+            inspect.signature(_generation_step(vision = vision, drafted = drafted))
+            .parameters[setting]
+            .default
+        )
+        if isinstance(found, bool) or not isinstance(found, int) or found <= 0:
+            raise ValueError(f"the runtime states no usable {setting}")
+        return found
+    except Exception as exc:
+        logger.debug("Cannot read the runtime's %s: %s", setting, exc)
+        return fallback
+
+
+def mlx_vlm_snapshot_store_available() -> bool:
+    """Whether a vision load can build the snapshot store, which decides two things about it."""
+    if _prompt_cache_max_bytes() <= 0:
+        return False
+    try:
+        from mlx_vlm.generate import GenerationResult
+    except Exception as exc:
+        logger.debug("Cannot tell whether mlx-vlm carries the snapshot grid: %s", exc)
+        return False
+    return hasattr(GenerationResult, "cached_tokens")
+
+
+def mlx_vlm_pins_the_prefill_step(config) -> bool:
+    """Whether EVERY request to this vision load prefills on the pinned grid."""
+    if not mlx_vlm_snapshot_store_available():
+        return False
+    return bool(MLXInferenceBackend._vlm_media_token_ids(config))
+
+
+def mlx_prefill_chunk(
+    *,
+    vision: bool = False,
+    drafted: bool = False,
+    config = None,
+) -> int:
+    """Most tokens one prefill step takes; the last step of a prompt may be shorter."""
+    if vision and mlx_vlm_pins_the_prefill_step(config):
+        return vlm_prefill_step()
+    return _generation_default(
+        "prefill_step_size", MLX_PREFILL_CHUNK_FALLBACK, vision = vision, drafted = drafted
+    )
+
+
 # Surfaced with the resolved setting so an API client sees the reuse cost too.
 MLX_KV_QUANT_NO_REUSE = (
     "The installed mlx-lm cannot measure a quantized cache entry, so prompt-cache "
     "reuse across turns is disabled while this is on."
 )
+# The cap _configure_memory_limits installs, so a fitted context names a load MLX would allocate.
+MLX_MEMORY_LIMIT_FRACTION = 0.85
+
+
 MLX_TURBOQUANT_TEXT_LOAD = (
     "TurboQuant is not available for this model: it could not be loaded through the runtime "
     "TurboQuant requires. The model is served without it."
@@ -1695,17 +1765,16 @@ def _mlx_rng_key_words():
     what lets the rewind below stay unconditional. A key that reads but is not two words is not
     the same as an unreadable one: the rewind no longer works on the installed mlx, so say so
     before declining."""
-    import mlx.core as mx
-
     try:
+        import mlx.core as mx
         words = mx.random.state[0].tolist()
     except Exception:
         return None
     if len(words) != 2:
         logger.warning(
             "MLX exposes a %d-word random key; Unsloth can only rewind the "
-            "two-word form, so the KV quantization probe will not restore the "
-            "PRNG and sampling after a load may differ from an unprobed run.",
+            "two-word form, so sizing a load will not restore the PRNG and "
+            "sampling after a load may differ from an unsized run.",
             len(words),
         )
         return None
@@ -1715,24 +1784,26 @@ def _mlx_rng_key_words():
 def _as_uint32_pair(high, low):
     """Both words as uint32, or None if either is not a 32-bit word at all.
 
-    mx.random.seed takes a uint64 and raises outside [0, 2**64); that raise would land in the
-    probe's finally and replace the probe's own outcome. So the words are range-checked here rather
-    than passed through, which is what lets the rewind below stay unguarded.
+    mx.random.seed takes a uint64 and raises outside [0, 2**64); that raise would
+    land in the rewind and replace the outcome of whatever it was guarding. So the
+    words are range-checked here rather than passed through, which is what lets the
+    rewind below stay unguarded.
 
-    Range-checked and not simply masked, though. A negative reads as the two's complement of the
-    uint32 mlx stores, so reinterpreting it loses nothing. A value at or above 2**32 is not a 32-bit
-    word under any reading, and masking it would turn a key we cannot represent into a plausible
-    wrong one: (2**32, 0) would restore as (0, 0), the probe would report success, and sampling
-    would silently diverge from an unprobed run. Decline instead, which is the outcome the caller
-    already handles.
+    Range-checked and not simply masked, though. A negative reads as the two's
+    complement of the uint32 mlx stores, so reinterpreting it loses nothing. A
+    value at or above 2**32 is not a 32-bit word under any reading, and masking
+    it would turn a key we cannot represent into a plausible wrong one: (2**32, 0)
+    would restore as (0, 0), the rewind would report success, and sampling would
+    silently diverge from an unsized run. Decline instead, which is the outcome
+    the caller already handles.
     """
     converted = []
     for word in (high, low):
         if not -(2**31) <= word < 2**32:
             logger.warning(
                 "MLX exposed a random key word of %d, which is not a 32-bit "
-                "word; the KV quantization probe will not restore the PRNG and "
-                "sampling after a load may differ from an unprobed run.",
+                "word; sizing a load will not restore the PRNG and sampling "
+                "after a load may differ from an unsized run.",
                 word,
             )
             return None
@@ -1747,14 +1818,24 @@ def _restore_mlx_rng_key(words):
     unsigned 64-bit range. Unguarded on purpose: the range check in _as_uint32_pair removes the
     only way this can raise, so there is no failure to swallow, and a blanket except here would
     be a failure indistinguishable from an intentional no-op."""
-    import mlx.core as mx
-
     if words is None:
         return
+    import mlx.core as mx
+
     pair = _as_uint32_pair(int(words[0]), int(words[1]))
     if pair is None:
         return
     mx.random.seed((pair[0] << 32) | pair[1])
+
+
+@contextmanager
+def mlx_rng_preserved():
+    """Leave the PRNG where it was found around weightless builds."""
+    rng_key = _mlx_rng_key_words()
+    try:
+        yield
+    finally:
+        _restore_mlx_rng_key(rng_key)
 
 
 def _kv_entry_windowed(entry):
@@ -1812,10 +1893,18 @@ def _quantize_kv_entries(entries, bits):
     return entries
 
 
-def _kv_quant_probe(language_model, entries, bits):
+def _kv_quant_probe(
+    language_model,
+    entries,
+    bits,
+    evaluate = True,
+):
     """``(converted, skipped, failure, retainable)``: runs a token through the converted cache,
-    since static proxies (declared head_dim, window spelling) proved wrong both ways."""
+    since static proxies (declared head_dim, window spelling) proved wrong both ways. Unevaluated,
+    the same graph is only built, which is what a weightless tower affords."""
     import mlx.core as mx
+
+    settle = mx.eval if evaluate else (lambda _arrays: None)
 
     targets, held = _kv_quant_targets(entries)
     skipped = len(entries) - len(targets) - held
@@ -1828,21 +1917,21 @@ def _kv_quant_probe(language_model, entries, bits):
     try:
         try:
             language_model(mx.array([[0]]), cache = entries)
-            mx.eval([getattr(entry, "state", None) for entry in entries])
+            settle([getattr(entry, "state", None) for entry in entries])
         except Exception as exc:
             if is_metal_queue_dead(exc):
                 raise
             return 0, 0, f"its cache could not be exercised ({type(exc).__name__})", True
         try:
             _quantize_kv_entries(entries, bits)
-            mx.eval([entries[index].state for index in targets])
+            settle([entries[index].state for index in targets])
         except Exception as exc:
             if is_metal_queue_dead(exc):
                 raise
             return 0, 0, f"MLX cannot quantize it ({type(exc).__name__})", True
         try:
             language_model(mx.array([[0]]), cache = entries)
-            mx.eval([getattr(entry, "state", None) for entry in entries])
+            settle([getattr(entry, "state", None) for entry in entries])
         except Exception as exc:
             if is_metal_queue_dead(exc):
                 raise
@@ -2273,6 +2362,91 @@ def _kv_entry_is_bounded(entry, window):
     return cap > getattr(entry, "keep", 0)
 
 
+def mlx_memory_budget(*, retains_history: bool = True) -> Optional[int]:
+    """Bytes a load's own footprint may occupy here, or None where Metal cannot say."""
+    import mlx.core as mx
+
+    if not mx.metal.is_available():
+        return None
+    recommended = mx.device_info().get("max_recommended_working_set_size")
+    if not recommended or recommended <= 0:
+        return None
+    budget = int(recommended * MLX_MEMORY_LIMIT_FRACTION)
+    if retains_history:
+        budget -= _prompt_cache_max_bytes(recommended / 1e9)
+    return budget if budget > 0 else None
+
+
+def _snapshot_dir(model, model_name: str) -> Optional[str]:
+    """Where the files this load actually opened are, or None if none are local."""
+    resolved = getattr(model, "_src_path", None)
+    if resolved and os.path.isdir(str(resolved)):
+        return str(resolved)
+    if os.path.isdir(model_name):
+        return model_name
+    from utils.utils import hf_cache_snapshot_dir
+
+    snapshot = hf_cache_snapshot_dir(model_name)
+    return str(snapshot) if snapshot is not None else None
+
+
+def mlx_fit_to_memory(
+    model_dir,
+    ceiling,
+    *,
+    load_in_4bit: bool,
+    retains_history: bool,
+    kv_bits = None,
+) -> Optional[int]:
+    """The context a load of *model_dir* is held to, priced at the KV width its cache takes."""
+    budget = mlx_memory_budget(retains_history = retains_history)
+    if budget is None or not ceiling or not model_dir:
+        return None
+    with mlx_rng_preserved():
+        try:
+            from core.inference.mlx_memory import mlx_fit_context
+
+            fitted = mlx_fit_context(
+                model_dir,
+                budget_bytes = budget,
+                max_ctx = int(ceiling),
+                kv_bits = kv_bits,
+                load_in_4bit = load_in_4bit,
+            )
+            logger.debug("MLX fit for %s: %s tokens under %.1f GB", model_dir, fitted, budget / 1e9)
+            return fitted
+        except Exception as exc:
+            logger.debug("MLX context fit unavailable for %s: %s", model_dir, exc)
+            return None
+
+
+def _fitted_context(
+    model,
+    model_name: str,
+    ceiling,
+    *,
+    load_in_4bit: bool,
+    retains_history: bool,
+    kv_bits = None,
+    is_vlm = False,
+):
+    """The fit for a resident model and the eligibility verdict it was priced under."""
+    try:
+        model_dir = _snapshot_dir(model, model_name)
+    except Exception as exc:
+        logger.debug("MLX snapshot unavailable for %s: %s", model_name, exc)
+        return None, None
+    verdict = None if kv_bits is None else _kv_quant_eligibility(model, is_vlm, kv_bits)
+    fitted = mlx_fit_to_memory(
+        model_dir,
+        ceiling,
+        load_in_4bit = load_in_4bit,
+        retains_history = retains_history,
+        kv_bits = kv_bits if verdict is None or verdict[0] in ("full", "partial") else None,
+    )
+    return fitted, verdict
+
+
 def _kv_window_enforced(model, is_vlm, window):
     """Whether a cache built at *window* is bounded in every layer, None where none could be built
     to judge: both runtimes defer to a model's own make_cache and ignore max_kv_size there."""
@@ -2284,6 +2458,69 @@ def _kv_window_enforced(model, is_vlm, window):
     except Exception as exc:
         logger.debug("MLX context limit probe failed: %s", exc)
         return None
+
+
+def _asking_the_architecture(model_dir, question):
+    """Put *question* to the tower the sizing would price, built weightless from the checkpoint."""
+    with mlx_rng_preserved():
+        try:
+            import mlx.core as mx
+
+            from core.inference.mlx_memory import (
+                _PROBE_SHORT,
+                _probe_models,
+                _runtime_dtype,
+                _snapshot_config,
+            )
+
+            config = _snapshot_config(model_dir)
+            if config is None:
+                return None
+            for build, make_prompt_cache, _ in _probe_models(config, _runtime_dtype()):
+                model = build()
+                try:
+                    model(
+                        mx.zeros((1, _PROBE_SHORT), dtype = mx.int32),
+                        cache = make_prompt_cache(model),
+                    )
+                except Exception:
+                    continue
+                return question(model, make_prompt_cache)
+        except Exception as exc:
+            logger.debug("MLX architecture probe unavailable for %s: %s", model_dir, exc)
+        return None
+
+
+# Slider steps resend the width, and each answer is a weightless build.
+_kv_refusal_cache: dict = {}
+_kv_refusal_lock = threading.Lock()
+
+
+def mlx_kv_quant_is_refused(model_dir, bits) -> bool:
+    """Whether a load would keep this checkpoint's cache at full width despite *bits*, by the
+    eligibility probe's own rule (nothing to convert, or a converted cache the model cannot
+    attend over)."""
+
+    def refused(model, make_prompt_cache):
+        converted, _skipped, failure, _retainable = _kv_quant_probe(
+            model, make_prompt_cache(model), bits, evaluate = False
+        )
+        return failure is not None or not converted
+
+    try:
+        from core.inference.mlx_memory import _checkpoint_fingerprint
+        key = (os.path.realpath(model_dir), bits, _checkpoint_fingerprint(model_dir))
+    except Exception:
+        return _asking_the_architecture(model_dir, refused) is True
+    with _kv_refusal_lock:
+        if key in _kv_refusal_cache:
+            return _kv_refusal_cache[key]
+    answer = _asking_the_architecture(model_dir, refused) is True
+    with _kv_refusal_lock:
+        _kv_refusal_cache[key] = answer
+        while len(_kv_refusal_cache) > 32:
+            _kv_refusal_cache.pop(next(iter(_kv_refusal_cache)))
+    return answer
 
 
 def _turboquant_reserved_positions(count, bits):
@@ -2377,7 +2614,12 @@ def _turboquant_status(
         mx.clear_cache()
 
 
-def _kv_quant_status(requested_bits, model, is_vlm):
+def _kv_quant_status(
+    requested_bits,
+    model,
+    is_vlm,
+    eligibility = None,
+):
     """Resolve a requested bit width against this model into a status dict."""
     status = {
         "requested_kv_bits": requested_bits,
@@ -2388,7 +2630,9 @@ def _kv_quant_status(requested_bits, model, is_vlm):
     }
     if requested_bits is None:
         return status
-    verdict, reason, retainable = _kv_quant_eligibility(model, is_vlm, requested_bits)
+    verdict, reason, retainable = eligibility or _kv_quant_eligibility(
+        model, is_vlm, requested_bits
+    )
     status["eligibility"] = verdict
     status["reason"] = reason
     if verdict in ("full", "partial"):
@@ -3941,7 +4185,7 @@ class MLXInferenceBackend:
         if not rec_bytes or rec_bytes <= 0:
             return
         rec_gb = rec_bytes / 1e9
-        memory_limit_gb = rec_gb * 0.85
+        memory_limit_gb = rec_gb * MLX_MEMORY_LIMIT_FRACTION
         wired_limit_gb = min(rec_gb, memory_limit_gb)
         mx.set_memory_limit(int(memory_limit_gb * 1e9))
         mx.set_wired_limit(int(wired_limit_gb * 1e9))
@@ -3997,11 +4241,20 @@ class MLXInferenceBackend:
             )
         return enforced
 
-    def _resolve_kv_policy(self, is_vlm, kv_bits, max_seq_length, served):
+    def _resolve_kv_policy(
+        self,
+        is_vlm,
+        kv_bits,
+        max_seq_length,
+        served,
+        fitted = False,
+        eligibility = None,
+    ):
         """The quantization status, cache window and per-request budget this load will run with.
 
-        A rotating cache cannot be quantized, so with kv_bits an enforceable pin becomes a budget."""
-        pinned = _positive_int(max_seq_length) is not None
+        A rotating cache cannot be quantized, so with kv_bits an enforceable pin or fitted window
+        becomes a budget."""
+        pinned = _positive_int(max_seq_length) is not None or fitted
         # Tri-state: True bounded, False confirmed unbounded, None unjudgeable. Only True installs a bound; the other
         # two stay apart so a client can tell them apart.
         confirmed = self._kv_cache_window_enforceable(served)
@@ -4011,7 +4264,12 @@ class MLXInferenceBackend:
                 self._model, kv_bits, getattr(self, "_turboquant_refusal", "")
             )
         else:
-            quant = _kv_quant_status(_normalize_mlx_kv_bits(kv_bits), self._model, is_vlm)
+            quant = _kv_quant_status(
+                _normalize_mlx_kv_bits(kv_bits),
+                self._model,
+                is_vlm,
+                eligibility,
+            )
         if quant["kv_bits"] is None and enforceable:
             logger.info("MLX KV cache limited to %d tokens", int(served))
             return quant, int(served), True, None
@@ -4180,6 +4438,26 @@ class MLXInferenceBackend:
         _served_ctx, _native_ctx, _max_ctx = self._resolve_context_lengths(
             self._model, max_seq_length
         )
+        _priceable = not (is_distributed or is_lora or dtype is not None)
+        # TurboQuant's layout is not one the planner prices, and a refused one stays full width:
+        # fit either at full width, which only ever under-promises.
+        _requested_bits = None if self._turboquant else _normalize_mlx_kv_bits(kv_bits)
+        _fitted_ctx, _eligibility = (
+            (None, None)
+            if not _priceable or _positive_int(max_seq_length) is not None
+            else _fitted_context(
+                self._model,
+                model_name,
+                _served_ctx,
+                load_in_4bit = load_in_4bit,
+                retains_history = not use_vlm or mlx_vlm_snapshot_store_available(),
+                kv_bits = _requested_bits,
+                is_vlm = use_vlm,
+            )
+        )
+        if _fitted_ctx:
+            logger.info("MLX context fitted to %d tokens from %d", _fitted_ctx, _served_ctx or 0)
+            _served_ctx = _fitted_ctx
         self._served_context = _served_ctx
         # Classified now so a cache the model cannot attend over is refused here, not on a token.
         (
@@ -4187,7 +4465,14 @@ class MLXInferenceBackend:
             self._kv_cache_window,
             _ctx_enforced,
             self._kv_context_budget,
-        ) = self._resolve_kv_policy(use_vlm, kv_bits, max_seq_length, _served_ctx)
+        ) = self._resolve_kv_policy(
+            use_vlm,
+            kv_bits,
+            max_seq_length,
+            _served_ctx,
+            fitted = _fitted_ctx is not None,
+            eligibility = _eligibility,
+        )
         if self._kv_quant["kv_bits"] is not None:
             logger.info(
                 "MLX KV cache quantization: %s-bit (%s eligibility)",
@@ -4260,13 +4545,13 @@ class MLXInferenceBackend:
             # Parity with llama.cpp's requested_n_ctx: the served window cannot say whether anything was asked for,
             # and that decides reuse and "pinned".
             "requested_context_length": _positive_int(max_seq_length) or 0,
-            # Nothing measures the machine, so window and ceiling coincide.
             "native_context_length": _native_ctx,
             "max_context_length": _max_ctx,
             # Whether the served window actually bounds the cache: True confirmed on a real cache, False confirmed
             # unbounded, None nothing could be built to judge. Without it the API reports a limit a client cannot tell
             # from an enforced one.
             "context_length_enforced": _ctx_enforced,
+            "context_length_fitted": _fitted_ctx,
             "context_unbounded_when_batched": self._vision_batch_is_available(),
             "mlx_context_budget": self._kv_context_budget,
             "mlx_kv_bits": self._kv_quant["kv_bits"],

@@ -676,7 +676,7 @@ export function SettingsDialog() {
               <button
                 type="button"
                 onClick={closeDialog}
-                className="absolute top-3 end-3 z-10 flex size-[calc(30px*var(--ui-space-scale,1))] items-center justify-center rounded-[10px] text-[#383835] dark:text-foreground transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                className="absolute top-3 end-3 z-10 flex size-[calc(30px*var(--ui-space-scale,1))] items-center justify-center rounded-full text-[#383835] dark:text-foreground transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                 aria-label={t("settings.dialog.closeAriaLabel")}
               >
                 <HugeiconsIcon icon={Cancel01Icon} className="size-4" />

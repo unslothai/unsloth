@@ -47,6 +47,20 @@ ROOTS = (REPO / "unsloth", REPO / "studio", REPO / "unsloth_cli")
 # The frontend tree is TypeScript;
 # node_modules is vendored third-party code.
 SKIP_DIRS = {"build", "dist", "frontend", "node_modules", "src-tauri", ".venv", "site-packages"}
+# Reviewed call sites in vendored code that is kept byte-identical to its wheel and pinned
+# by per-file sha256 (studio/backend/vendor/laya_manifest.json), so the line numbers cannot
+# drift. Each is a bare `open()` in a function body of a module laya/__init__.py imports
+# eagerly, which laya_runtime._laya() rebinds to a UTF-8 `open` once exec_module returns;
+# studio/backend/tests/test_text_io_encoding.py runs that path under a non-UTF-8 locale.
+# Pinned by exact site rather than by a rule: a vendor update that adds, moves or drops a
+# call reds this scan until someone re-reviews it, and so does removing the loader rebind.
+VENDORED_LOADER = REPO / "studio/backend/core/systemone/laya_runtime.py"
+VENDORED_LOADER_REBIND = ".open = _utf8_open"
+REVIEWED_VENDORED_OFFENDERS = {
+    "studio/backend/vendor/laya/agent.py:31: open()",
+    "studio/backend/vendor/laya/agent.py:47: open()",
+    "studio/backend/vendor/laya/agent.py:156: open()",
+}
 GUARDED_METHODS = {"read_text", "write_text"}
 # Path classes, so an unbound `Path.open(p)` shifts every argument one right.
 PATH_CLASSES = {"Path", "PosixPath", "PurePath", "WindowsPath"}
@@ -327,6 +341,12 @@ def _walked_sources():
     return [p for root in ROOTS if root.is_dir() for p in sorted(root.rglob("*.py"))]
 
 
+def _loader_rebinds_open() -> bool:
+    return VENDORED_LOADER.is_file() and VENDORED_LOADER_REBIND in VENDORED_LOADER.read_text(
+        encoding = "utf-8"
+    )
+
+
 def test_shipping_code_names_an_encoding():
     offenders = []
     sources = _tracked_sources()
@@ -348,6 +368,13 @@ def test_shipping_code_names_an_encoding():
                 name = _offender(node, visible_at.get(id(node), {}), foreign)
                 if name is not None:
                     offenders.append(f"{rel}:{node.lineno}: {name}")
+    if _loader_rebinds_open():
+        stale = sorted(REVIEWED_VENDORED_OFFENDERS.difference(offenders))
+        assert stale == [], (
+            f"Reviewed vendored call sites no longer found, so the vendored code changed: {stale}. "
+            "Re-review the new sites and update REVIEWED_VENDORED_OFFENDERS."
+        )
+        offenders = [o for o in offenders if o not in REVIEWED_VENDORED_OFFENDERS]
     assert offenders == [], (
         f"{len(offenders)} text read/write call sites in shipping code let the "
         "operator's locale decide the encoding, so they crash or silently "

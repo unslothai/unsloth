@@ -12,6 +12,7 @@ mp.Queue, and exits on shutdown or unload. Pattern follows core/training/worker.
 
 from __future__ import annotations
 
+import functools
 import base64
 import inspect
 import json
@@ -509,9 +510,61 @@ def _worker_reclaimable_gpu_gb(config: dict) -> dict[str, float] | None:
         return None
 
 
+# The token env before a load scrubbed it; the next load restores it.
+_TOKEN_ENV_BEFORE_ANONYMOUS_LOAD: Optional[dict] = None
+
+
+def _token_env_keys() -> tuple:
+    from hub.utils.hf_tokens import _HF_TOKEN_ENV_KEYS
+    return (*_HF_TOKEN_ENV_KEYS, "HF_HUB_DISABLE_IMPLICIT_TOKEN")
+
+
+def _restore_token_environment() -> None:
+    """Undo an earlier load's anonymous scrub (the token may have been replaced since)."""
+    global _TOKEN_ENV_BEFORE_ANONYMOUS_LOAD
+    saved, _TOKEN_ENV_BEFORE_ANONYMOUS_LOAD = _TOKEN_ENV_BEFORE_ANONYMOUS_LOAD, None
+    for key, value in (saved or {}).items():
+        if value is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = value
+
+
+def _drop_a_rejected_token(config: dict) -> None:
+    """The Hub refused this load's token while anonymous reads worked: load the rest anonymously."""
+    global _TOKEN_ENV_BEFORE_ANONYMOUS_LOAD
+    from hub.utils.hf_tokens import saved_token_rejected
+
+    token = _config_hf_token(config)
+    if token is not False and saved_token_rejected(token):
+        config["anonymous_hf_access"] = True
+        if _TOKEN_ENV_BEFORE_ANONYMOUS_LOAD is None:
+            _TOKEN_ENV_BEFORE_ANONYMOUS_LOAD = {k: os.environ.get(k) for k in _token_env_keys()}
+        _apply_worker_hf_token_environment(config)
+        logger.warning(
+            "Hugging Face rejected the token for %s; loading it without the token.",
+            config.get("model_name"),
+        )
+
+
+def _in_token_rejection_scope(handler):
+    """Run one load in its own rejected-token scope, so a verdict never outlives it."""
+
+    @functools.wraps(handler)
+    def scoped(*args, **kwargs):
+        from hub.utils.hf_tokens import token_rejection_scope
+        with token_rejection_scope():
+            return handler(*args, **kwargs)
+
+    return scoped
+
+
+@_in_token_rejection_scope
 def _handle_load(backend, config: dict, resp_queue: Any) -> None:
+    _restore_token_environment()
     try:
         mc = _build_model_config(config)
+        _drop_a_rejected_token(config)
 
         hf_token = _config_hf_token(config)
         load_in_4bit = _resolve_lora_4bit(mc, config.get("load_in_4bit", True))
@@ -640,13 +693,12 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
             _entry = (
                 _bm.get(mc.identifier) or _bm.get(getattr(backend, "active_model_name", None)) or {}
             )
-            # The whole group: the parent reports all four and can recompute none of
-            # them once the worker holds the model.
             for _ctx_field in (
                 "context_length",
                 "native_context_length",
                 "max_context_length",
                 "requested_context_length",
+                "context_length_fitted",
                 "mlx_context_budget",
             ):
                 try:
