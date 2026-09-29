@@ -446,33 +446,56 @@ def test_auto_keeps_cuda_when_rocm_torch_finds_no_amd_gpu(monkeypatch):
     assert route.host.has_rocm is False
 
 
-@pytest.mark.parametrize(
-    "forward",
-    [
-        {"override_rocm_gfx": "gfx1201"},
-        {"env": ("UNSLOTH_ROCM_GFX_REMEMBERED", "gfx1201")},
-    ],
-)
-def test_auto_follows_rocm_torch_on_a_forwarded_arch_the_probe_missed(monkeypatch, forward):
-    monkeypatch.delenv("UNSLOTH_ROCM_GFX_ARCH", raising = False)
-    monkeypatch.delenv("UNSLOTH_ROCM_GFX_REMEMBERED", raising = False)
+def _route_auto_with(
+    monkeypatch,
+    *,
+    env = None,
+    override_has_rocm = False,
+    override_rocm_gfx = None,
+):
+    for name in ("UNSLOTH_ROCM_GFX_ARCH", "UNSLOTH_ROCM_GFX_REMEMBERED"):
+        monkeypatch.delenv(name, raising = False)
+    for name, value in (env or {}).items():
+        monkeypatch.setenv(name, value)
     monkeypatch.setattr(ilp, "_installed_torch_is_rocm", lambda: True)
     probes = _stub_amd_probe(monkeypatch, amd_present = False)
-    if "env" in forward:
-        monkeypatch.setenv(*forward["env"])
-
     route = ilp.route_backend_request(
         backend = "auto",
         published_repo = FORK,
         published_release_tag = "",
-        override_rocm_gfx = forward.get("override_rocm_gfx"),
+        override_has_rocm = override_has_rocm,
+        override_rocm_gfx = override_rocm_gfx,
         host = _NVIDIA_ONLY_PROFILE,
     )
-
     assert probes == [True]
-    assert route.host.has_rocm is True
-    assert route.host.has_usable_nvidia is False
-    assert route.host.rocm_gfx_target == "gfx1201"
+    return route.host
+
+
+def test_auto_follows_rocm_torch_on_the_operators_arch_when_the_probe_misses(monkeypatch):
+    # argparse feeds UNSLOTH_ROCM_GFX_ARCH in as the --rocm-gfx default.
+    host = _route_auto_with(
+        monkeypatch, env = {"UNSLOTH_ROCM_GFX_ARCH": "gfx1201"}, override_rocm_gfx = "gfx1201"
+    )
+
+    assert host.has_rocm is True
+    assert host.has_usable_nvidia is False
+    assert host.rocm_gfx_target == "gfx1201"
+
+
+@pytest.mark.parametrize(
+    "stale",
+    [
+        {"override_rocm_gfx": "gfx1201"},
+        {"override_has_rocm": True},
+        {"env": {"UNSLOTH_ROCM_GFX_REMEMBERED": "gfx1201"}},
+    ],
+)
+def test_auto_keeps_cuda_when_only_the_old_marker_names_an_amd_gpu(monkeypatch, stale):
+    """The updater replays the marker's arch; the AMD card may be gone."""
+    host = _route_auto_with(monkeypatch, **stale)
+
+    assert host.has_usable_nvidia is True
+    assert host.has_physical_nvidia is True
 
 
 def test_force_rocm_torch_env_makes_auto_prefer_rocm(monkeypatch):
