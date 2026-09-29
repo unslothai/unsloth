@@ -399,7 +399,8 @@ class TestSafetensorsAndMlxFetchToo:
         assert "Could not fetch the remote image URL" in r.text
         assert backend.calls == []
 
-    def test_only_the_image_a_single_image_model_reads_is_fetched(self, monkeypatch):
+    @pytest.mark.parametrize("later", ["user", "assistant"])
+    def test_only_the_image_a_single_image_model_reads_is_fetched(self, monkeypatch, later):
         fetched = []
 
         def _fetch(url, *_a, **_k):
@@ -413,7 +414,11 @@ class TestSafetensorsAndMlxFetchToo:
         safetensors._install(monkeypatch, backend)
         old = _chat_body("https://images.example/old.webp", model = "sf-model")["messages"][0]
         body = _chat_body("https://images.example/new.webp", model = "sf-model")
-        body["messages"][:0] = [old, {"role": "assistant", "content": "ok"}]
+        if later == "user":
+            body["messages"][:0] = [old, {"role": "assistant", "content": "ok"}]
+        else:
+            # A user's own image outranks a newer assistant one.
+            body["messages"] += [{**old, "role": "assistant"}, {"role": "user", "content": "and?"}]
         r = client.post("/v1/chat/completions", json = body)
 
         assert r.status_code == 200, r.text
