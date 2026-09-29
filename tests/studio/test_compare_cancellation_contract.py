@@ -49,10 +49,10 @@ def test_stopped_compare_never_starts_the_next_step():
 def test_cancelled_load_waits_for_unload_then_reconciles_checkpoint():
     composer = _read("shared-composer.tsx")
     catch = _between(composer, "} catch (err) {\n        compareStepSucceededRef", "} finally {")
-    assert catch.index("await run.cleanup") < catch.index("await clearCheckpointIfNotResident()")
+    assert catch.index("await run.cleanup") < catch.index(
+        "await resyncInferenceStatusAfterServerModelChange()"
+    )
     assert 'toast.info("Compare stopped"' in catch
-    reconcile = _between(composer, "async function clearCheckpointIfNotResident()", "\n}\n")
-    assert "ggufVariantsMatch(status.gguf_variant, store.activeGgufVariant)" in reconcile
     finally_ = _between(composer, "      } finally {\n        compareRunsRef", "\n      }\n")
     assert "onComparingChange?.(false);" in finally_
 

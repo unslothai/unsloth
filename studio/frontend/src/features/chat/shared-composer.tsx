@@ -71,7 +71,7 @@ import {
   isChatImageFile,
   normalizeChatImage,
 } from "./image-normalize";
-import { ggufVariantsMatch, modelIdsMatch } from "@/features/hub/lib/model-identity";
+import { modelIdsMatch } from "@/features/hub/lib/model-identity";
 import { CONVERSATION_MARKDOWN_LABEL } from "./utils/conversation-markdown";
 import { pasteClipboardFiles } from "./utils/clipboard-files";
 import { confirmStopRunningChatsIfNeeded } from "./utils/confirm-stop-running-chats";
@@ -123,10 +123,8 @@ import {
 import { listPromptEntries, type PromptEntry } from "./api/prompts-api";
 import { McpComposerButton } from "./mcp-composer-button";
 import { PermissionModeComposerPill } from "./permission-mode-select";
-import {
-  reasoningCapsFromLoad,
-  resolveInferenceCheckpointId,
-} from "./lib/apply-inference-status-to-store";
+import { reasoningCapsFromLoad } from "./lib/apply-inference-status-to-store";
+import { resyncInferenceStatusAfterServerModelChange } from "./hooks/use-chat-model-runtime";
 import { KnowledgeBaseComposerButton } from "@/features/rag/components/knowledge-base-composer-button";
 import { NewProjectDialog } from "./components/new-project-dialog";
 import { ChatSkillsDialog } from "./components/chat-skills-dialog";
@@ -155,7 +153,6 @@ import {
 import { prepareHfTokenForUse } from "@/features/hf-auth";
 import {
   fetchGgufStagedMetadata,
-  getInferenceStatus,
   loadModel,
   unloadModel,
   validateModel,
@@ -175,7 +172,6 @@ import {
 } from "./presets/preset-policy";
 import { ensureGpuDeviceCache } from "@/hooks/use-gpu-info";
 import {
-  isExternalModelId,
   parseExternalModelId,
   providerModelSupportsVision,
 
@@ -571,24 +567,6 @@ function PillGlyph({ children }: { children: ReactNode }) {
 function isPortaledDrop(event: ReactDragEvent): boolean {
   const target = event.target as Element | null;
   return !target?.closest?.(".chat-composer-surface");
-}
-
-async function clearCheckpointIfNotResident(): Promise<void> {
-  const store = useChatRuntimeStore.getState();
-  const checkpoint = store.params.checkpoint;
-  if (!checkpoint || isExternalModelId(checkpoint)) return;
-  try {
-    const status = await getInferenceStatus();
-    if (
-      modelIdsMatch(resolveInferenceCheckpointId(status), checkpoint) &&
-      ggufVariantsMatch(status.gguf_variant, store.activeGgufVariant)
-    ) {
-      return;
-    }
-  } catch {
-    // Unknown is treated as gone: a stale checkpoint would send the next prompt to nothing.
-  }
-  useChatRuntimeStore.getState().clearCheckpoint();
 }
 
 export function SharedComposer({
@@ -2022,8 +2000,8 @@ export function SharedComposer({
             () => null,
             (error: unknown) => error ?? new Error("Model unload failed"),
           );
-          // A load stopped mid-request may already have evicted the previous model.
-          await clearCheckpointIfNotResident();
+          // A stopped load may have finished or evicted the previous model: adopt the backend's state.
+          await resyncInferenceStatusAfterServerModelChange();
         }
         // The install already unloaded the previously active model; drop the checkpoint so the UI does
         // not keep pointing at it.
