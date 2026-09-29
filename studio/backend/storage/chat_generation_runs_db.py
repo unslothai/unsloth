@@ -480,7 +480,12 @@ def _commit(conn: sqlite3.Connection, *, notify: bool = False) -> None:
             _EVENTS_CHANGED.notify_all()
 
 
-def _sync_assistant_status_locked(conn: sqlite3.Connection, run_id: str, status: str) -> None:
+def _sync_assistant_status_locked(
+    conn: sqlite3.Connection,
+    run_id: str,
+    status: str,
+    quote_cut: bool = False,
+) -> None:
     row = conn.execute(
         """SELECT r.assistant_message_id, r.finish_reason, m.metadata_json
            FROM chat_generation_runs r
@@ -507,6 +512,8 @@ def _sync_assistant_status_locked(conn: sqlite3.Connection, run_id: str, status:
     elif status == "completed":
         if row["finish_reason"] == "length":
             metadata["incomplete"] = {"reason": "length"}
+        elif quote_cut:
+            metadata["incomplete"] = {"reason": "quote_cut"}
         else:
             metadata.pop("incomplete", None)
     conn.execute(
@@ -912,6 +919,7 @@ def finish_run(
     finish_reason: str | None = None,
     error: str | None = None,
     pending_events: Iterable[ChatGenerationEventInput] = (),
+    quote_cut: bool = False,
 ) -> dict[str, Any] | None:
     if status not in TERMINAL_STATUSES:
         raise ValueError(f"Invalid terminal status: {status}")
@@ -947,7 +955,7 @@ def finish_run(
                WHERE id=?""",
             (status, finish_reason, error, completed, completed, run_id),
         )
-        _sync_assistant_status_locked(conn, run_id, status)
+        _sync_assistant_status_locked(conn, run_id, status, quote_cut)
         updated = conn.execute(
             "SELECT * FROM chat_generation_runs WHERE id=?",
             (run_id,),

@@ -454,6 +454,21 @@ test("the recovery scheduler persists later tool events between reasoning groups
   );
 });
 
+test("a recovered turn keeps the reasoning cut the backend reported", async () => {
+  // The producer stamps the cut on the saved turn; a settle without it is refused.
+  const { snapshots } = await recoverRun(
+    [],
+    [
+      { choices: [{ delta: { reasoning_content: "The tokens are `" } }] },
+      { choices: [], quote_cut: true },
+      { choices: [{ delta: {}, finish_reason: "stop" }] },
+    ],
+  );
+  assert.deepEqual(snapshots.at(-1)?.metadata.incomplete, {
+    reason: "quote_cut",
+  });
+});
+
 test("the recovery scheduler completes a saved pending card", async () => {
   const { content } = await recoverRun(
     [

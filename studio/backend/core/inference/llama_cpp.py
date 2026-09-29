@@ -2096,6 +2096,46 @@ def _finalize_reasoning_only_cumulative(
     return cumulative + "</think>" + visible_fallback
 
 
+def _ends_inside_quote(text: str) -> bool:
+    """Detect a trailing quote opener, unmatched on its line and preceded by whitespace.
+
+    This heuristic can also flag a deliberately displayed lone quote or backtick.
+    """
+    stripped = (text or "").rstrip()
+    if not stripped or stripped[-1] not in "`\"'":
+        return False
+    if len(stripped) > 1 and not stripped[-2].isspace():
+        return False
+    last = stripped[-1]
+    line = stripped.rsplit("\n", 1)[-1]
+    # An apostrophe between letters (Qwen2's, don't) is not a quote mark.
+    marks = sum(
+        1
+        for i, ch in enumerate(line)
+        if ch == last
+        and not (
+            ch == "'" and 0 < i < len(line) - 1 and line[i - 1].isalnum() and line[i + 1].isalnum()
+        )
+    )
+    return marks % 2 == 1
+
+
+def _quote_cut_event(
+    reasoning_text: str,
+    answer_text: str,
+    finish_reason: Optional[str],
+    promote_reasoning_only: bool,
+) -> Optional[dict]:
+    """Flag a possible mid-quote stop in the answer or promoted reasoning.
+
+    Excludes length limits and callers that disable reasoning promotion (Anthropic).
+    """
+    if not promote_reasoning_only or finish_reason != "stop":
+        return None
+    shown = answer_text if answer_text.strip() else reasoning_text
+    return {"type": "quote_cut"} if _ends_inside_quote(shown) else None
+
+
 # Only large streamed tool payloads get an early provisional card; render_html
 # is exempt because it needs immediate artifact feedback.
 _PROVISIONAL_ARGS_MIN_CHARS = 256
@@ -35048,6 +35088,8 @@ class LlamaCppBackend:
             ):
                 buffer = ""
                 has_content_tokens = False
+                # Track content separately: a literal `</think>` can appear in the answer.
+                answer_text = ""
                 reasoning_text = ""
                 _prov_entry = None
                 for raw_chunk in self._iter_text_cancellable(
@@ -35145,6 +35187,7 @@ class LlamaCppBackend:
                                 token = delta.get("content", "")
                                 if token:
                                     has_content_tokens = True
+                                    answer_text += token
                                     if in_thinking:
                                         cumulative += "</think>"
                                         in_thinking = False
@@ -35155,6 +35198,14 @@ class LlamaCppBackend:
                             logger.debug(f"Skipping malformed SSE line: {line[:100]}")
                     if _stream_done:
                         break  # exit outer for
+                _cut = _quote_cut_event(
+                    reasoning_text,
+                    answer_text,
+                    _metadata_finish_reason,
+                    promote_reasoning_only,
+                )
+                if _cut is not None:
+                    yield _cut
                 if _metadata_usage or _metadata_timings or _metadata_finish_reason:
                     _metadata_usage = _backfill_usage_from_timings(
                         _metadata_usage, _metadata_timings
@@ -37277,6 +37328,15 @@ class LlamaCppBackend:
 
                         # Content was already streamed.  Yield metadata.
                         yield {"type": "status", "text": ""}
+                        # Check only after any re-prompt has finished.
+                        _cut = _quote_cut_event(
+                            reasoning_accum,
+                            _visible,
+                            _iter_finish_reason,
+                            promote_reasoning_only,
+                        )
+                        if _cut is not None:
+                            yield _cut
                         _meta = _build_metadata_event(
                             _iter_usage, _iter_timings, _iter_finish_reason
                         )
@@ -38850,6 +38910,8 @@ class LlamaCppBackend:
         in_thinking = False
         has_content_tokens = False
         reasoning_text = ""
+        # Track content separately to preserve literal `</think>` in the answer.
+        answer_text = ""
         _prov_entry = None
         _final_reasoning_started_at: Optional[float] = None
         _final_reasoning_summary_emitted = False
@@ -39066,6 +39128,7 @@ class LlamaCppBackend:
                                                 _final_reasoning_started_at
                                             )
                                         has_content_tokens = True
+                                        answer_text += token
                                         if in_thinking:
                                             cumulative += "</think>"
                                             in_thinking = False
@@ -39377,6 +39440,14 @@ class LlamaCppBackend:
                             if _meta is not None:
                                 yield _meta
                     else:
+                        _cut = _quote_cut_event(
+                            reasoning_text,
+                            answer_text,
+                            _metadata_finish_reason,
+                            promote_reasoning_only,
+                        )
+                        if _cut is not None:
+                            yield _cut
                         _meta = _build_metadata_event(
                             _metadata_usage, _metadata_timings, _metadata_finish_reason
                         )

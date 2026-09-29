@@ -7,13 +7,15 @@
 
 /** Why a turn ended before the model was done. `context_window` is a `length` cut the same
  *  request can never fit into, hence its own reason. `empty` is a clean finish that produced
- *  nothing, which is a failure to report rather than an answer. */
+ *  nothing, which is a failure to report rather than an answer. `quote_cut` flags a
+ *  possible mid-quote stop. */
 export type IncompleteReason =
   | "length"
   | "cancelled"
   | "interrupted"
   | "context_window"
-  | "empty";
+  | "empty"
+  | "quote_cut";
 
 /** Metadata stamped on an assistant message that stopped early. */
 export type IncompleteInfo = {
@@ -37,6 +39,7 @@ const INCOMPLETE_REASONS: readonly IncompleteReason[] = [
   "interrupted",
   "context_window",
   "empty",
+  "quote_cut",
 ];
 
 /** Below this a shared boundary is likely coincidence, and trimming would eat output. */
@@ -96,6 +99,7 @@ const STATUS_REASON: Record<
   // reason, losing the explanation on reload. `context_window` maps here for the same
   // reason. Not `error` either, which would paint a red box over the bar.
   empty: "length",
+  quote_cut: "length",
 };
 
 /** Restore assistant-ui's status without losing the product-specific stop reason. */
@@ -115,6 +119,7 @@ const INCOMPLETE_LABELS: Record<IncompleteReason, string> = {
   interrupted: "Response interrupted",
   context_window: "Response filled the model's context window",
   empty: "The model returned an empty response",
+  quote_cut: "This response may have ended early",
 };
 
 /** The user-facing explanation of why a turn stopped. */
@@ -128,6 +133,9 @@ const INCOMPLETE_REMEDIES: Partial<Record<IncompleteReason, string>> = {
   context_window: "Start a new chat, or shorten this one, to keep going",
   // There is no partial to resume from, so the way out is another attempt.
   empty: "Try again, or pick a different model",
+  // Detection is heuristic, and continuation may repeat the cut.
+  quote_cut:
+    "The model may have emitted a special token while quoting it. Try again, or ask it to spell special tokens with spaces, like < |im_end|>",
 };
 
 /** What to do about a turn that stopped early, or `null` when resuming is the answer. */

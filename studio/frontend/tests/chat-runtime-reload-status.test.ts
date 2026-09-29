@@ -239,6 +239,21 @@ test("reload, wake, and stale-tab recovery stays monotonic and truthful", () => 
     ],
   );
 
+  // Recovery must match the producer's reason, with length taking precedence.
+  const recovered = (lengthLimited: boolean, quoteCut: boolean) =>
+    generationRecoveryMetadata({
+      current: { generationRunId: "run-1" },
+      runId: "run-1",
+      status: "completed",
+      cursor: 4,
+      lastEventSeq: 4,
+      lengthLimited,
+      quoteCut,
+    }).incomplete;
+  assert.deepEqual(recovered(false, true), { reason: "quote_cut" });
+  assert.deepEqual(recovered(true, true), { reason: "length" });
+  assert.equal(recovered(false, false), undefined);
+
   const windowTarget = new EventTarget();
   const documentTarget = Object.assign(new EventTarget(), {
     visibilityState: "hidden",

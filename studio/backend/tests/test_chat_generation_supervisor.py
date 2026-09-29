@@ -201,6 +201,45 @@ async def test_background_producer_persists_chunks_and_completes(durable_run, mo
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "finish, cut, expected",
+    [
+        ("stop", True, {"reason": "quote_cut"}),
+        ("stop", False, None),
+        # Length takes precedence over the heuristic.
+        ("length", True, {"reason": "length"}),
+    ],
+    ids = ["cut", "clean-stop", "length-wins"],
+)
+async def test_producer_stamps_a_reported_quote_cut(
+    durable_run, monkeypatch, finish, cut, expected
+):
+    """The producer must persist the reason before the client can settle with it."""
+    chunks = [
+        {"choices": [{"delta": {"reasoning_content": "The tokens are `"}, "finish_reason": None}]},
+        *([{"choices": [], "quote_cut": True}] if cut else []),
+        {"choices": [{"delta": {}, "finish_reason": finish}]},
+    ]
+
+    async def body():
+        for chunk in chunks:
+            yield f"data: {json.dumps(chunk)}\n\n"
+        yield "data: [DONE]\n\n"
+
+    async def fake(_payload, _request, _subject, *, cancel_on_disconnect):
+        return SimpleNamespace(status_code = 200, body_iterator = body())
+
+    monkeypatch.setattr(inference, "produce_openai_chat_completions", fake)
+    supervisor = ChatGenerationSupervisor(SimpleNamespace(state = SimpleNamespace()))
+    await supervisor._produce("run-1")
+
+    run = runs_db.get_run("run-1", "alice")
+    assert (run["status"], run["finishReason"]) == ("completed", finish)
+    message = studio_db.get_chat_message("thread-1", "assistant-1")
+    assert message["metadata"].get("incomplete") == expected
+
+
+@pytest.mark.asyncio
 async def test_producer_dates_the_prompt_in_the_browser_timezone(monkeypatch):
     studio_db.upsert_chat_thread(
         {"id": "thread-1", "title": "Chat", "modelType": "base", "modelId": "local", "createdAt": 1}

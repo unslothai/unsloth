@@ -1214,6 +1214,10 @@ function scheduleGenerationRecovery(
         : undefined;
     let totalChunks = Number(metadata.generationChunkCount ?? 0);
     if (!Number.isSafeInteger(totalChunks) || totalChunks < 0) totalChunks = 0;
+    // The cut arrives on its own chunk, which a resumed cursor may already be past.
+    let quoteCut =
+      (metadata.incomplete as { reason?: unknown } | undefined)?.reason ===
+      "quote_cut";
     let currentMetadata = { ...metadata };
     const serverCancel = () => {
       void cancelChatGenerationRun(runId).catch(() => {});
@@ -1317,6 +1321,7 @@ function scheduleGenerationRecovery(
         cursor,
         lastEventSeq: run.lastEventSeq,
         lengthLimited,
+        quoteCut,
         firstChunkAt,
         totalChunks,
         usage: recoveryUsage,
@@ -1437,6 +1442,7 @@ function scheduleGenerationRecovery(
                   };
                 }>;
                 context_truncated?: OpenAIChatChunk["context_truncated"];
+                quote_cut?: boolean;
               };
               if ("_reasoningDurationMs" in chunk) {
                 currentMetadata = recoveredReasoningSummaryMetadata(
@@ -1462,6 +1468,7 @@ function scheduleGenerationRecovery(
                   ),
                 };
               }
+              if (chunk.quote_cut === true) quoteCut = true;
               if (chunk.usage) recoveryUsage = chunk.usage;
               if (chunk.timings) recoveryTimings = chunk.timings;
               if (typeof chunk.usage?.completion_tokens === "number") {

@@ -564,6 +564,8 @@ export function generationRecoveryMetadata(options: {
   cursor: number;
   lastEventSeq: number;
   lengthLimited: boolean;
+  /** Backend warning for a possible mid-quote stop. */
+  quoteCut?: boolean;
   firstChunkAt?: number;
   totalChunks?: number;
   usage?: unknown;
@@ -576,6 +578,7 @@ export function generationRecoveryMetadata(options: {
     cursor,
     lastEventSeq,
     lengthLimited,
+    quoteCut = false,
     firstChunkAt,
     totalChunks,
     usage,
@@ -593,6 +596,9 @@ export function generationRecoveryMetadata(options: {
   if (status === "completed") {
     if (lengthLimited) {
       next.incomplete = { reason: "length" };
+    } else if (quoteCut) {
+      // Settlement requires the producer's persisted reason.
+      next.incomplete = { reason: "quote_cut" };
     } else {
       next.incomplete = undefined;
     }

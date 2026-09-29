@@ -698,6 +698,8 @@ class ChatGenerationSupervisor:
         last_flush = time.monotonic()
         finish_reason: str | None = None
         error: str | None = None
+        # Sent on its own chunk, since the finish chunk still reads `stop`.
+        quote_cut = False
         saw_done = False
         worker_token: str | None = None
         next_raw_task: asyncio.Task | None = None
@@ -820,6 +822,7 @@ class ChatGenerationSupervisor:
                     pending.append(("chunk", chunk, db.now_ms()))
                     finish_reason = _chunk_finish_reason(chunk) or finish_reason
                     error = _chunk_error(chunk) or error
+                    quote_cut = quote_cut or chunk.get("quote_cut") is True
                     now = time.monotonic()
                     if (
                         len(pending) >= _EVENT_BATCH_SIZE
@@ -865,6 +868,7 @@ class ChatGenerationSupervisor:
                 finish_reason = finish_reason,
                 error = error,
                 pending_events = pending,
+                quote_cut = quote_cut,
             )
             pending = []
         except asyncio.CancelledError:
