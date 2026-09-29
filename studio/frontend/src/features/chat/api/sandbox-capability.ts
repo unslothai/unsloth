@@ -139,6 +139,8 @@ export function capabilityPending(capability: SandboxCapability): boolean {
 
 let cached: { at: number; value: SandboxCapability | null } | null = null;
 let inFlight: Promise<SandboxCapability | null> | null = null;
+// Only the latest request writes the cache: an older one finishing last must not replace it.
+let latestRequest = 0;
 
 export function loadSandboxCapability({
   force = false,
@@ -147,6 +149,7 @@ export function loadSandboxCapability({
     return Promise.resolve(cached.value);
   }
   if (!force && inFlight) return inFlight;
+  const id = ++latestRequest;
   const request = authFetch(
     force ? `${CAPABILITY_ROUTE}?refresh=1` : CAPABILITY_ROUTE,
   )
@@ -156,7 +159,7 @@ export function loadSandboxCapability({
     })
     .catch(() => null)
     .then((value) => {
-      cached = { at: Date.now(), value };
+      if (id === latestRequest) cached = { at: Date.now(), value };
       return value;
     })
     .finally(() => {
@@ -192,6 +195,7 @@ export function cachedSandboxCapability(): SandboxCapability | null {
 export function forgetSandboxCapability(): void {
   cached = null;
   inFlight = null;
+  latestRequest++;
 }
 
 async function checkedSetup(

@@ -23,6 +23,7 @@ type CapabilityApi = {
     force?: boolean;
   }) => Promise<SandboxCapability | null>;
   forgetSandboxCapability: () => void;
+  cachedSandboxCapability: () => SandboxCapability | null;
   capabilityFromApi: (body: Record<string, unknown>) => SandboxCapability;
   sandboxReady: (capability: SandboxCapability) => boolean;
   startSandboxSetup: (
@@ -43,7 +44,9 @@ const json = (body: unknown, status = 200) =>
     headers: { "Content-Type": "application/json" },
   });
 
-function loadCapabilityApi(respond: (call: Call) => Response) {
+function loadCapabilityApi(
+  respond: (call: Call) => Response | Promise<Response>,
+) {
   const calls: Call[] = [];
   const api = loadWithStubs<CapabilityApi>(
     new URL("../src/features/chat/api/sandbox-capability.ts", import.meta.url),
@@ -745,4 +748,31 @@ test("a capability still unknown applies the mode instead of offering an install
     async () => capability({ pythonOsIsolated: true }),
   );
   assert.equal(dialogs, 1);
+});
+
+test("an older capability read that finishes last never replaces a newer one", async () => {
+  const replies: Array<(response: Response) => void> = [];
+  const { api } = loadCapabilityApi(
+    () => new Promise<Response>((resolve) => replies.push(resolve)),
+  );
+  const older = api.loadSandboxCapability();
+  const newer = api.loadSandboxCapability({ force: true });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  replies[1](
+    json({
+      ...LINUX_UNAVAILABLE,
+      python_os_isolated: true,
+      terminal_os_isolated: true,
+    }),
+  );
+  await newer;
+  replies[0](json(LINUX_UNAVAILABLE));
+  await older;
+  assert.equal(api.cachedSandboxCapability()?.pythonOsIsolated, true);
+  const stale = api.loadSandboxCapability({ force: true });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  api.forgetSandboxCapability();
+  replies[2](json(LINUX_UNAVAILABLE));
+  await stale;
+  assert.equal(api.cachedSandboxCapability(), null);
 });
