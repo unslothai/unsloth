@@ -121,6 +121,10 @@ test("the monitor reloads on first contact and each reconnect only", async () =>
     await settle(() => row().models.length === 3);
     await idle();
     assert.equal(puts.length, 1, "no rewrite while the server stays up");
+    // A late settings sync restores older lists in this tab: the next probe repairs them without a write.
+    store.setState({ providers: [{ ...row(), models: ["manual", "alpha"], availableModels: ["alpha"] }] });
+    await settle(() => row().availableModels?.join() === "alpha,beta");
+    assert.equal(puts.length, 1);
 
     // Another tab deselected beta; this tab's copy still has it. The reload must follow the saved row.
     saved.models = ["manual", "alpha"];

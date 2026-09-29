@@ -62,7 +62,10 @@ export function startLlamaCppAutoReload(intervalMs = 10_000): () => void {
       const catalog = [...new Set(listed.map((m) => m.id.trim()).filter(Boolean))];
       const key = `${endpoint(provider)}|${catalog.join("\n")}`;
       // A server still starting can list nothing: keep the last good selection.
-      if (stopped || online.get(provider.id) === key || catalog.length === 0) return;
+      if (stopped || catalog.length === 0) return;
+      // Skip only while this tab still shows the catalog: a late settings sync can restore older lists.
+      const shown = useExternalProvidersStore.getState().providers.find((p) => p.id === provider.id);
+      if (online.get(provider.id) === key && sameList(catalog, shown?.availableModels ?? [])) return;
       // Merge against the saved row, not this tab's copy, so tabs agree on what the user picked.
       const saved = (await listProviderConfigs()).find((c) => c.id === provider.id);
       const latest = autoReloadConnections().find((p) => p.id === provider.id);
