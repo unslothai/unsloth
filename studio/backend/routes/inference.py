@@ -7412,6 +7412,19 @@ def _external_transcript_preview(response: Response) -> str:
         return ""
 
 
+def _refuse_managed_custom_projector(extra_args: Optional[list[str]]) -> None:
+    """A pass-through projector path skips account model access, so only the owner may name one."""
+    from core.inference.llama_cpp import _extra_args_device
+    if (
+        account_access.managed_account()
+        and _extra_args_device(extra_args, {"--mmproj", "-mm"}) is not None
+    ):
+        raise HTTPException(
+            status_code = 403,
+            detail = "A custom --mmproj path is available to this installation's owner only.",
+        )
+
+
 def _validate_native_gguf_companion(
     companion_path: str | None,
     gguf_path: str | None,
@@ -16680,6 +16693,7 @@ async def _load_model_impl(
         extra_llama_args: Optional[list[str]] = (
             None if request.llama_extra_args is None else extra_llama_args
         )
+        _refuse_managed_custom_projector(extra_llama_args)
 
         _reasoning_updates = {}
         _reasoning_budget_override = parse_reasoning_budget_override(extra_llama_args)
@@ -18107,6 +18121,8 @@ async def validate_model(
                 validate_extra_args(effective_extra_args)
             except ValueError as exc:
                 raise HTTPException(status_code = 400, detail = str(exc)) from exc
+            if getattr(request, "llama_extra_args", None) is not None:
+                _refuse_managed_custom_projector(effective_extra_args)
 
         # Manual mode owns the offload flags, and /load translates an explicit -ngl
         # into the first-class field before it strips them. Doing that there and not
