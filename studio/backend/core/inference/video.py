@@ -5296,7 +5296,6 @@ class VideoBackend:
             vae_scale = 1.0 if getattr(fam, "vae_force_fp32", False) else dtype_scale
             scaled_te_gb = text_encoder_gb * dtype_scale
             scaled_vae_gb = vae_gb * vae_scale
-            companions_gb = text_encoder_gb + vae_gb if components is not None else 0.0
             scaled_companions_gb = scaled_te_gb + scaled_vae_gb if components is not None else 0.0
             if log and scale != 1.0 and components is not None:
                 logger.info(
@@ -5394,7 +5393,9 @@ class VideoBackend:
                 )
                 factor = _QUANT_STEADY_FACTOR.get(scheme_preview) if scheme_preview else None
                 if factor is not None:
-                    quant_mib = int((components[0] * factor + companions_gb) * mib_per_gb)
+                    # companions priced exactly as the split below (dtype-scaled), or the planner's DiT share
+                    # (quant total minus the scaled text encoder) drifts under an fp16 to fp32 promotion
+                    quant_mib = int((components[0] * factor + scaled_companions_gb) * mib_per_gb)
                     replanned = _video_prefer_whole_module(
                         plan_diffusion_memory(
                             target = target,

@@ -678,6 +678,17 @@ def test_whole_module_vae_phase_counts_only_the_decoded_clip_share():
     assert out.estimates["whole_module_fits_mib"] == 10000 + V._VIDEO_DENOISE_ACTIVATION_MIB + 2048
 
 
+def test_quantised_replan_prices_companions_like_the_split_it_passes():
+    """The replan hands the planner the dtype-scaled text encoder, so its total must use the same scaled companions."""
+    import inspect
+
+    import core.inference.video as V
+
+    src = inspect.getsource(V)
+    assert "quant_mib = int((components[0] * factor + scaled_companions_gb) * mib_per_gb)" in src
+    assert "quant_mib = int((components[0] * factor + companions_gb) * mib_per_gb)" not in src
+
+
 def test_applied_floor_counts_an_encoder_that_refused_leaf_offload():
     """_apply_group_offload keeps a refusing encoder resident under the same policy; the floor must follow the hooks."""
     torch = pytest.importorskip("torch")
