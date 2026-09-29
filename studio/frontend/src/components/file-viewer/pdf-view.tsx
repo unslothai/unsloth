@@ -7,6 +7,7 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
 import { Document, Page, pdfjs, usePageContext } from "react-pdf";
 import "react-pdf/dist/Page/TextLayer.css";
+import { queueParse } from "./parse-queue";
 import { useWidth } from "./use-width";
 
 pdfjs.GlobalWorkerOptions.workerSrc = new URL(
@@ -198,6 +199,33 @@ function PdfPages({
   );
 }
 
+/** Waits for a shared parse slot and holds it until `release`, so thumbnails load a few at a time. */
+function useParseSlot(enabled: boolean, file: Blob): { ready: boolean; release: () => void } {
+  const [ready, setReady] = useState<Blob | null>(null);
+  const done = useRef<(() => void) | null>(null);
+  const release = useCallback(() => {
+    done.current?.();
+    done.current = null;
+  }, []);
+  useEffect(() => {
+    if (!enabled) return;
+    let cancelled = false;
+    void queueParse(
+      () =>
+        new Promise<void>((resolve) => {
+          done.current = resolve;
+          setReady(file);
+        }),
+      () => cancelled,
+    );
+    return () => {
+      cancelled = true;
+      release();
+    };
+  }, [enabled, file, release]);
+  return { ready: !enabled || ready === file, release };
+}
+
 export default function PdfView({
   file,
   scale,
@@ -215,16 +243,19 @@ export default function PdfView({
   const [aspect, setAspect] = useState(1.294);
   const [failed, setFailed] = useState<Blob | null>(null);
   const width = Math.max(200, Math.min(available, MAX_PAGE_WIDTH)) * scale;
+  const slot = useParseSlot(firstPageOnly, file);
 
   if (failed === file) {
     return <p className="m-auto text-sm text-muted-foreground">{t("library.preview.cannotPreview")}</p>;
   }
+  if (!slot.ready) return <div className="size-full bg-muted/60" />;
   return (
     <div ref={setContainer} className="size-full overflow-auto bg-muted/60">
       <Document
         file={file}
         options={PDF_OPTIONS}
         onLoadSuccess={(document) => {
+          slot.release();
           setPdf(document);
           setPages(document.numPages);
           void document.getPage(1).then((page) => {
@@ -232,7 +263,10 @@ export default function PdfView({
             setAspect(clampAspect(viewport.height / viewport.width));
           });
         }}
-        onLoadError={() => setFailed(file)}
+        onLoadError={() => {
+          slot.release();
+          setFailed(file);
+        }}
         loading={<Spinner className="mx-auto mt-24 size-6" />}
       >
         {available > 0 && pdf && (

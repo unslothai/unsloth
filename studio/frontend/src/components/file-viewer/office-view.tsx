@@ -41,7 +41,9 @@ async function parse(
   const bytes = new Uint8Array(await file.arrayBuffer());
   if (kind === "docx") {
     const { default: mammoth } = await import("mammoth");
-    const repacked = repackDocxPreviewArchive(name, bytes, thumbnail ? THUMBNAIL_DOCX_PARAGRAPHS : MAX_DOCX_PARAGRAPHS);
+    const repacked = thumbnail
+      ? repackDocxPreviewArchive(name, bytes, THUMBNAIL_DOCX_PARAGRAPHS, { keptImagesOnly: true })
+      : repackDocxPreviewArchive(name, bytes, MAX_DOCX_PARAGRAPHS);
     let dropped = false;
     let pixelsLeft = MAX_DOCX_PIXELS;
     const convertImage = mammoth.images.imgElement(async (image) => {

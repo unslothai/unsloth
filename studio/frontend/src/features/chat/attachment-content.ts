@@ -663,7 +663,12 @@ function docxPreviewImages(bytes: Uint8Array): { isImage: (name: string) => bool
   return { isImage, used };
 }
 
-function unpackDocxEntries(filename: string, bytes: Uint8Array, keepLarge = false): DocxArchive {
+function unpackDocxEntries(
+  filename: string,
+  bytes: Uint8Array,
+  keepLarge = false,
+  skipImages = false,
+): DocxArchive {
   const names = new Set<string>();
   const oversized = new Set<string>();
   let count = 0;
@@ -680,7 +685,7 @@ function unpackDocxEntries(filename: string, bytes: Uint8Array, keepLarge = fals
     filter: (entry) => {
       names.add(entry.name);
       const image = images?.isImage(entry.name) ?? false;
-      if (image && !images!.used.has(entry.name)) return false;
+      if (image && (skipImages || !images!.used.has(entry.name))) return false;
       if (entry.originalSize > MAX_OPEN_DOCUMENT_XML_BYTES) {
         oversized.add(entry.name);
         if (!image) return false;
@@ -780,13 +785,49 @@ export function repackDocxPreviewArchive(
   filename: string,
   bytes: Uint8Array,
   maxParagraphs: number,
+  { keptImagesOnly = false } = {},
 ): { archive: Uint8Array; truncated: boolean } {
-  const archive = unpackDocxEntries(filename, bytes, true);
+  const archive = unpackDocxEntries(filename, bytes, true, keptImagesOnly);
   const mainDocument = assertDocxPartSizes(filename, archive);
   const main = archive.entries[mainDocument];
   const cut = main ? cutDocxParagraphs(strFromU8(main), maxParagraphs) : null;
   if (cut !== null) archive.entries[mainDocument] = strToU8(cut);
+  if (keptImagesOnly && main) {
+    addKeptDocxImages(bytes, archive, mainDocument, cut ?? strFromU8(main));
+  }
   return { archive: zipSync(archive.entries, { level: 0 }), truncated: cut !== null };
+}
+
+// Relationship ids the kept body still uses, whatever the attribute's prefix.
+const DOCX_BODY_RELATIONSHIP_ID_RE = /\s[\w.-]+:(?:embed|link|id)\s*=\s*(?:"([^"]*)"|'([^']*)')/g;
+
+/** Inflates only the images the kept body references, so a thumbnail skips the rest. */
+function addKeptDocxImages(bytes: Uint8Array, archive: DocxArchive, mainDocument: string, body: string): void {
+  const ids = new Set<string>();
+  for (const [, double, single] of body.matchAll(DOCX_BODY_RELATIONSHIP_ID_RE)) ids.add(double ?? single ?? "");
+  const rels = archive.entries[docxRelationshipsPath(mainDocument)];
+  if (!rels || ids.size === 0) return;
+  const base = mainDocument.slice(0, Math.max(0, mainDocument.lastIndexOf("/")));
+  const wanted = new Set<string>();
+  const markup = strFromU8(rels).replace(XML_NON_ELEMENT_RE, "");
+  for (const tag of markup.match(DOCX_RELATIONSHIP_TAG_RE) ?? []) {
+    let id: string | undefined;
+    let target: string | undefined;
+    for (const [, name, double, single] of tag.matchAll(XML_ATTRIBUTE_RE)) {
+      if (name === "Id") id = decodeXmlEntities(double ?? single ?? "");
+      else if (name === "Target") target = decodeXmlEntities(double ?? single ?? "");
+    }
+    if (id && target && ids.has(id)) wanted.add(joinDocxPath(base, target));
+  }
+  let unpacked = 0;
+  const images = unzipSync(bytes, {
+    filter: (entry) => {
+      if (!wanted.has(entry.name) || archive.entries[entry.name]) return false;
+      unpacked += entry.originalSize;
+      return unpacked <= MAX_DOCX_UNPACKED_BYTES;
+    },
+  });
+  Object.assign(archive.entries, images);
 }
 
 /** The bytes of a view, as an ArrayBuffer, without copying when it owns one. jszip reads the

@@ -28,6 +28,7 @@ const {
   parseAttachmentText,
   readAttachmentText,
   repackDocxAttachmentArchive,
+  repackDocxPreviewArchive,
   truncateAttachmentPreviewText,
 } = await import("../src/features/chat/attachment-content.ts");
 const { definePDFJSModule } = await import("unpdf");
@@ -1077,4 +1078,36 @@ test("an RTF reader stays bounded", async () => {
   assert.match(long, /^x+\n\n\[Truncated: [^\n]*\]$/);
   await assert.rejects(readRtf(`{\\rtf1 ${"{".repeat(2000)}`), /nest too deeply/);
   await assert.rejects(readRtf("plain text"), /Not an RTF file/);
+});
+
+test("a thumbnail repack inflates only the images its kept paragraphs use", () => {
+  const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+  const R = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
+  const A = "http://schemas.openxmlformats.org/drawingml/2006/main";
+  const picture = (id: string) => `<w:p><w:r><w:drawing><a:blip r:embed="${id}"/></w:drawing></w:r></w:p>`;
+  const image = (id: string) =>
+    `<Relationship Id="${id}" Type="${R}/image" Target="media/${id}.png"/>`;
+  const bytes = zipSync({
+    "[Content_Types].xml": strToU8(
+      `<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="png" ContentType="image/png"/></Types>`,
+    ),
+    "_rels/.rels": strToU8(
+      `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="d" Type="${R}/officeDocument" Target="word/document.xml"/></Relationships>`,
+    ),
+    "word/document.xml": strToU8(
+      `<w:document xmlns:w="${W}" xmlns:r="${R}" xmlns:a="${A}"><w:body>${picture("rId1")}${picture("rId2")}</w:body></w:document>`,
+    ),
+    "word/_rels/document.xml.rels": strToU8(
+      `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${image("rId1")}${image("rId2")}</Relationships>`,
+    ),
+    "word/media/rId1.png": new Uint8Array([1, 2, 3]),
+    "word/media/rId2.png": new Uint8Array([4, 5, 6]),
+  });
+  const names = (archive: Uint8Array) => Object.keys(unzipSync(archive)).filter((name) => name.endsWith(".png")).sort();
+  assert.deepEqual(names(repackDocxPreviewArchive("a.docx", bytes, 1).archive), ["word/media/rId1.png", "word/media/rId2.png"]);
+  const thumbnail = repackDocxPreviewArchive("a.docx", bytes, 1, { keptImagesOnly: true });
+  assert.equal(thumbnail.truncated, true);
+  assert.deepEqual(names(thumbnail.archive), ["word/media/rId1.png"]);
+  const whole = repackDocxPreviewArchive("a.docx", bytes, 10, { keptImagesOnly: true });
+  assert.deepEqual(names(whole.archive), ["word/media/rId1.png", "word/media/rId2.png"]);
 });
