@@ -1391,7 +1391,7 @@ test("carries live form state, except what sensitive fields hide", () => {
   );
   assert.match(
     sharedComposerSource,
-    /data-reload-snapshot-sensitive[\s\S]*?pendingAudio\.name/,
+    /pendingAudio\.map\([\s\S]*?data-reload-snapshot-sensitive[\s\S]*?\{clip\.name\}/,
   );
   // Both carriers: the tooltip on the name, and the accessible name on the
   // remove button, a sibling no ancestor marker would reach.

@@ -47,6 +47,32 @@ export function getAudioSizeError(size: number): string | null {
     : null;
 }
 
+// Keep in sync with _MAX_AUDIO_CLIPS_PER_REQUEST. MAX_AUDIO_SIZE covers all clips together.
+export const MAX_AUDIO_FILES = 8;
+
+/** Max clips per message for a model. MLX takes one. */
+export function maxAudioFilesFor(model: { isMlx?: boolean } | undefined): number {
+  return model?.isMlx ? 1 : MAX_AUDIO_FILES;
+}
+
+/** Why another clip cannot be added, or null. */
+export function getAudioAddError(
+  count: number,
+  totalSize: number,
+  size: number,
+  maxFiles: number = MAX_AUDIO_FILES,
+): string | null {
+  if (count >= maxFiles) {
+    return maxFiles === 1
+      ? "This model takes one audio file per message. Load a GGUF model to send several."
+      : `Up to ${maxFiles} audio files can be attached per message.`;
+  }
+  if (count > 0 && totalSize + size > MAX_AUDIO_SIZE) {
+    return `Audio files together exceed the ${MAX_AUDIO_SIZE_LABEL} per-message limit`;
+  }
+  return getAudioSizeError(size);
+}
+
 export function fileToBase64(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();

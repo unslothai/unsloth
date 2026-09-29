@@ -58,7 +58,7 @@ import {
   AUDIO_PICKER_ACCEPT,
   isAudioAttachmentFile,
   fileToBase64,
-  getAudioSizeError,
+  getAudioAddError,
 } from "@/lib/audio-utils";
 import { isTauri } from "@/lib/api-base";
 import { classifiedAttachmentFiles, isVideoFile } from "@/lib/video-utils";
@@ -597,11 +597,16 @@ export function SharedComposer({
   const [comparing, setComparing] = useState(false);
   const [pendingImages, setPendingImages] = useState<PendingImage[]>([]);
   const [convertingImages, setConvertingImages] = useState(0);
-  const [pendingAudio, setPendingAudio] = useState<{
-    name: string;
-    base64: string;
-    contentType: string;
-  } | null>(null);
+  // In attach order.
+  const [pendingAudio, setPendingAudio] = useState<
+    {
+      id: string;
+      name: string;
+      base64: string;
+      contentType: string;
+      size: number;
+    }[]
+  >([]);
   const textRef = useRef(text);
   const pendingImagesRef = useRef(pendingImages);
   const pendingAudioRef = useRef(pendingAudio);
@@ -922,6 +927,18 @@ export function SharedComposer({
   const clearPendingAudioStore = useChatRuntimeStore(
     (s) => s.clearPendingAudio,
   );
+  // Mirror the first clip into the store's single-clip slot.
+  const mirroredAudioRef = useRef(false);
+  useEffect(() => {
+    const [first] = pendingAudio;
+    if (first) {
+      setPendingAudioStore(first.base64, first.name);
+      mirroredAudioRef.current = true;
+    } else if (mirroredAudioRef.current) {
+      clearPendingAudioStore();
+      mirroredAudioRef.current = false;
+    }
+  }, [pendingAudio, setPendingAudioStore, clearPendingAudioStore]);
 
   const {
     isDictating,
@@ -1043,22 +1060,39 @@ export function SharedComposer({
       const files = await classifiedAttachmentFiles(input);
       const next: PendingImage[] = [];
       let droppedImageForUnavailable = false;
-      let audioSizeError: string | null = null;
+      let audioAddError: string | null = null;
+      // Caps cover already staged clips too.
+      const nextAudio = [...pendingAudioRef.current];
       let videoUnsupported = false;
       let conversionError: string | null = null;
       for (let i = 0; i < files.length; i++) {
         const file = files[i];
         if (!file) continue;
         if (isAudioAttachmentFile(file)) {
-          const sizeError = getAudioSizeError(file.size);
-          if (sizeError) {
-            audioSizeError ??= sizeError;
+          const addError = getAudioAddError(
+            nextAudio.length,
+            nextAudio.reduce((total, clip) => total + clip.size, 0),
+            file.size,
+          );
+          if (addError) {
+            audioAddError ??= addError;
             continue;
           }
-          fileToBase64(file).then((base64) => {
-            setPendingAudio({ name: file.name, base64, contentType: file.type });
-            setPendingAudioStore(base64, file.name);
-          });
+          const clip = {
+            id: crypto.randomUUID(),
+            name: file.name,
+            base64: "",
+            contentType: file.type,
+            size: file.size,
+          };
+          nextAudio.push(clip);
+          try {
+            clip.base64 = await fileToBase64(file);
+          } catch {
+            nextAudio.splice(nextAudio.indexOf(clip), 1);
+            continue;
+          }
+          setPendingAudio((prev) => [...prev, clip]);
           continue;
         }
         // video_base64 targets the single loaded GGUF, so at most one side of a compare could answer. Say
@@ -1089,8 +1123,8 @@ export function SharedComposer({
       if (droppedImageForUnavailable && attachUnavailableReason) {
         toast.error(attachUnavailableReason);
       }
-      if (audioSizeError) {
-        toast.error(audioSizeError);
+      if (audioAddError) {
+        toast.error(audioAddError);
       }
       if (conversionError) {
         toast.error(conversionError);
@@ -1102,7 +1136,7 @@ export function SharedComposer({
       }
       setPendingImages((prev) => [...prev, ...next]);
     },
-    [setPendingAudioStore, attachUnavailableReason],
+    [attachUnavailableReason],
   );
 
   const handleFilePaste = useCallback(
@@ -1178,7 +1212,7 @@ export function SharedComposer({
     const submittedImages = pendingImages;
     const submittedAudio = pendingAudio;
     const msg = submittedText.trim();
-    if (!msg && submittedImages.length === 0 && !submittedAudio) {
+    if (!msg && submittedImages.length === 0 && submittedAudio.length === 0) {
       resetPromptQueue();
       return;
     }
@@ -1231,11 +1265,11 @@ export function SharedComposer({
       } catch {
       }
     }
-    if (submittedAudio) {
+    for (const clip of submittedAudio) {
       content.push({
         type: "audio",
-        name: submittedAudio.name,
-        audio: `data:${submittedAudio.contentType};base64,${submittedAudio.base64}`,
+        name: clip.name,
+        audio: `data:${clip.contentType};base64,${clip.base64}`,
       });
     }
     if (msg) {
@@ -1291,7 +1325,7 @@ export function SharedComposer({
     const clearSubmittedDraft = () => {
       setCurrentText("");
       setPendingImages([]);
-      setPendingAudio(null);
+      setPendingAudio([]);
       clearPendingAudioStore();
       textareaRef.current?.focus();
     };
@@ -2052,7 +2086,7 @@ export function SharedComposer({
   const canSend =
     (text.trim().length > 0 ||
       pendingImages.length > 0 ||
-      pendingAudio !== null) &&
+      pendingAudio.length > 0) &&
     !busy &&
     !isComposing &&
     !isDictating &&
@@ -2367,20 +2401,22 @@ export function SharedComposer({
             onRemove={() => removePendingImage(id)}
           />
         ))}
-        {pendingAudio && (
+        {pendingAudio.map((clip) => (
           <div
+            key={clip.id}
             data-composer-attachment="audio"
             className="flex items-center gap-2 rounded-lg border border-[color-mix(in_oklab,var(--foreground)_calc(20%*var(--contrast-edge-gain,1)),transparent)] bg-muted px-3 py-1.5 text-xs"
           >
             <HeadphonesIcon className="size-3.5 text-muted-foreground" />
             <span data-reload-snapshot-sensitive className="max-w-48 truncate">
-              {pendingAudio.name}
+              {clip.name}
             </span>
             <button
               type="button"
               onClick={() => {
-                setPendingAudio(null);
-                clearPendingAudioStore();
+                setPendingAudio((prev) =>
+                  prev.filter((other) => other.id !== clip.id),
+                );
               }}
               className="flex size-4 items-center justify-center rounded-full hover:bg-destructive hover:text-destructive-foreground"
               aria-label="Remove audio"
@@ -2388,7 +2424,7 @@ export function SharedComposer({
               <XIcon className="size-3" />
             </button>
           </div>
-        )}
+        ))}
       </div>
       {skillMentions.popover}
       <ComposerDraftPreview text={text} />
@@ -2468,6 +2504,7 @@ export function SharedComposer({
             ref={audioInputRef}
             type="file"
             accept={AUDIO_PICKER_ACCEPT}
+            multiple
             className="hidden"
             onChange={(e) => {
               void addFiles(e.target.files);

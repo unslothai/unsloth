@@ -1572,8 +1572,14 @@ def _handle_generate_audio_input(backend, cmd: dict, resp_queue: Any, cancel_eve
     try:
         import numpy as np
 
-        # numpy arrays can't go through mp.Queue, so decode from list.
-        audio_array = np.array(cmd["audio_data"], dtype = np.float32)
+        # "audio_data" is the older single-clip list form.
+        if "audio_clips" in cmd:
+            # Copy: frombuffer views are read-only.
+            clips = [np.frombuffer(clip, dtype = np.float32).copy() for clip in cmd["audio_clips"]]
+        else:
+            clips = [np.array(cmd["audio_data"], dtype = np.float32)]
+        # A single clip stays a bare array, as before.
+        audio_array = clips[0] if len(clips) == 1 else clips
 
         audio_type = cmd.get("audio_type")
 

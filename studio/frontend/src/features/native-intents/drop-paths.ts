@@ -15,6 +15,7 @@ import {
   isTextAttachmentName,
 } from "../chat/text-attachment-accept.ts";
 import { RAG_UPLOAD_ACCEPT } from "../rag/types/rag.ts";
+import { MAX_AUDIO_FILES } from "../../lib/audio-utils.ts";
 
 const DOC_EXTS = RAG_UPLOAD_ACCEPT.split(",").map((ext) =>
   ext.trim().toLowerCase(),
@@ -70,7 +71,7 @@ const VIDEO_EXTS = CHAT_VIDEO_DROP_ACCEPT.split(",").map((ext) =>
 );
 
 /** What the window actually takes, for the rejection toast and the overlay. */
-export const SUPPORTED_DROP_HINT = `Supported files: ${RAG_UPLOAD_ACCEPT}, ${OPEN_DOCUMENT_ATTACHMENT_EXTENSIONS}, ${RTF_ATTACHMENT_EXTENSIONS}, source and text files, ${TOOL_ONLY_ATTACHMENT_EXTENSIONS} with Code on, ${CHAT_IMAGE_DROP_ACCEPT}, one of ${CHAT_AUDIO_DROP_ACCEPT}, one of ${CHAT_VIDEO_DROP_ACCEPT}, or a single .gguf model.`;
+export const SUPPORTED_DROP_HINT = `Supported files: ${RAG_UPLOAD_ACCEPT}, ${OPEN_DOCUMENT_ATTACHMENT_EXTENSIONS}, ${RTF_ATTACHMENT_EXTENSIONS}, source and text files, ${TOOL_ONLY_ATTACHMENT_EXTENSIONS} with Code on, ${CHAT_IMAGE_DROP_ACCEPT}, up to ${MAX_AUDIO_FILES} of ${CHAT_AUDIO_DROP_ACCEPT}, one of ${CHAT_VIDEO_DROP_ACCEPT}, or a single .gguf model.`;
 
 /** Last path segment of a native path, for display and extension checks. */
 export function nativeFileName(path: string): string {
@@ -128,8 +129,8 @@ export function classifyDropPaths(paths: string[]): NativeDropClass {
   ) {
     return { kind: "unsupported" };
   }
-  // The audio adapter takes one clip per message; a larger batch never attaches.
-  if (audio.length > 1) {
+  // Over the per-message cap a batch would only partly attach. The adapter applies per-model limits.
+  if (audio.length > MAX_AUDIO_FILES) {
     return { kind: "unsupported" };
   }
   // Same for video: one clip expands into a run of frames, so a batch would

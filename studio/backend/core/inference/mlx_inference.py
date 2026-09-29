@@ -6289,6 +6289,12 @@ class MLXInferenceBackend:
                 "no verified audio-capable tower/processor was detected at load."
             )
 
+        # mlx-vlm silently drops all but the first clip; the route refuses this earlier.
+        if isinstance(audio_array, list):
+            if len(audio_array) != 1:
+                raise RuntimeError("This MLX model takes one audio file per message.")
+            audio_array = audio_array[0]
+
         from mlx_vlm import stream_generate as vlm_stream
 
         # Only the CURRENT user turn may caption the audio; never older history.

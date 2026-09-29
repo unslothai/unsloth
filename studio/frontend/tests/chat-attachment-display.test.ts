@@ -7,6 +7,12 @@ import test from "node:test";
 
 import { attachedMediaUnavailableReason } from "../src/features/chat/lib/attached-media-gate.ts";
 import {
+  getAudioAddError,
+  MAX_AUDIO_FILES,
+  MAX_AUDIO_SIZE,
+  maxAudioFilesFor,
+} from "../src/lib/audio-utils.ts";
+import {
   ATTACHMENT_KIND_ICON_CLASS,
   attachmentFileKind,
   attachmentKindLabel,
@@ -177,6 +183,44 @@ test("audio or video attached before a model loaded is checked when sent", () =>
       video: false,
     }),
     null,
+  );
+});
+
+test("several clips are sent to GGUF and transformers, but refused on MLX", () => {
+  const base = { checkpoint: "unsloth/gemma-4-E4B-it", modelLabel: "Gemma" };
+  const gguf = { hasAudioInput: true, isMlx: false };
+  const mlx = { hasAudioInput: true, isMlx: true };
+  assert.equal(
+    attachedMediaUnavailableReason({ ...base, activeModel: gguf, audio: true, audioCount: 3, video: false }),
+    null,
+  );
+  assert.equal(
+    attachedMediaUnavailableReason({ ...base, activeModel: mlx, audio: true, audioCount: 1, video: false }),
+    null,
+  );
+  assert.match(
+    attachedMediaUnavailableReason({ ...base, activeModel: mlx, audio: true, audioCount: 2, video: false }) ?? "",
+    /^Gemma takes one audio file per message\./,
+  );
+});
+
+test("audio caps cover a message's clips together", () => {
+  assert.equal(getAudioAddError(0, 0, 1024), null);
+  assert.equal(getAudioAddError(3, 10 * 1024 * 1024, 10 * 1024 * 1024), null);
+  assert.match(
+    getAudioAddError(1, 20 * 1024 * 1024, 10 * 1024 * 1024) ?? "",
+    /together exceed/,
+  );
+  assert.match(getAudioAddError(0, 0, MAX_AUDIO_SIZE + 1) ?? "", /exceeds/);
+  assert.match(
+    getAudioAddError(MAX_AUDIO_FILES, 0, 1) ?? "",
+    new RegExp(`Up to ${MAX_AUDIO_FILES} audio files`),
+  );
+  assert.equal(maxAudioFilesFor({ isMlx: true }), 1);
+  assert.equal(maxAudioFilesFor(undefined), MAX_AUDIO_FILES);
+  assert.match(
+    getAudioAddError(1, 0, 1, maxAudioFilesFor({ isMlx: true })) ?? "",
+    /one audio file per message/,
   );
 });
 

@@ -2371,6 +2371,13 @@ class ChatCompletionRequest(BaseModel):
         None,
         description = "[x-unsloth] Base64-encoded audio (wav/mp3/ogg/flac/m4a) for audio-input models",
     )
+    extra_audio_base64: Optional[List[str]] = Field(
+        None,
+        description = (
+            "[x-unsloth] Further recordings after audio_base64, in order, for models that take "
+            "several clips in one message. Size and duration caps apply to all clips together."
+        ),
+    )
     audio_instructions: Optional[str] = Field(
         None,
         description = (
@@ -2807,6 +2814,19 @@ class ChatCompletionRequest(BaseModel):
                 import secrets as _secrets
                 picked = f"call_{_secrets.token_hex(8)}"
             msg.tool_call_id = picked
+        return self
+
+    @model_validator(mode = "after")
+    def _promote_extra_audio(self) -> "ChatCompletionRequest":
+        """Keep ``audio_base64`` the first clip whenever any clip is attached.
+
+        Every capability, size and routing check keys on that field, so a request carrying
+        only ``extra_audio_base64`` must not slip past them as audio-free.
+        """
+        extra = [clip for clip in self.extra_audio_base64 or [] if clip]
+        if not self.audio_base64 and extra:
+            self.audio_base64 = extra.pop(0)
+        self.extra_audio_base64 = extra or None
         return self
 
     @model_validator(mode = "after")

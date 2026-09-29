@@ -4,7 +4,8 @@
 import {
   AUDIO_ATTACHMENT_ACCEPT,
   fileToBase64,
-  getAudioSizeError,
+  getAudioAddError,
+  maxAudioFilesFor,
 } from "@/lib/audio-utils";
 import type {
   Attachment,
@@ -24,6 +25,8 @@ function newAttachmentId(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
+const AUDIO_ADD_TOAST_ID = "audio-attachment-limit";
+
 // A loaded model without audio rejects at add(); with none loaded, the send path checks it later.
 export class AudioAttachmentAdapter implements AttachmentAdapter {
   // MIME is unreliable for some containers (m4a), so also match by extension. No .webm extension:
@@ -31,7 +34,8 @@ export class AudioAttachmentAdapter implements AttachmentAdapter {
   // MIME. .mp4 and .m4v stay off for the same reason; only .m4a is audio-only. Not the picker list:
   // this decides routing, and .3gp is in that list only so a dialog can offer a recording.
   accept = AUDIO_ATTACHMENT_ACCEPT;
-  private readonly attachmentIds = new Set<string>();
+  // Pending clip sizes by id; caps cover all clips in a message.
+  private readonly attachmentSizes = new Map<string, number>();
 
   async add({ file }: { file: File }): Promise<PendingAttachment> {
     const state = useChatRuntimeStore.getState();
@@ -53,19 +57,29 @@ export class AudioAttachmentAdapter implements AttachmentAdapter {
       toast.error(unavailableReason);
       throw new Error(unavailableReason);
     }
-    const sizeReason = getAudioSizeError(file.size);
-    if (sizeReason) {
-      toast.error(sizeReason);
-      throw new Error(sizeReason);
+    // A staged store clip would be dropped if sent alongside attachments.
+    if (state.pendingAudioBase64) {
+      const stagedReason =
+        "Send or remove the staged audio clip before attaching more audio.";
+      toast.error(stagedReason, { id: AUDIO_ADD_TOAST_ID });
+      throw new Error(stagedReason);
     }
-    if (this.attachmentIds.size > 0 || state.pendingAudioBase64) {
-      const duplicateReason = "Only one audio file can be attached per message.";
-      toast.error(duplicateReason);
-      throw new Error(duplicateReason);
+    let totalSize = 0;
+    for (const size of this.attachmentSizes.values()) totalSize += size;
+    const addReason = getAudioAddError(
+      this.attachmentSizes.size,
+      totalSize,
+      file.size,
+      maxAudioFilesFor(modelLoaded ? activeModel : undefined),
+    );
+    if (addReason) {
+      // Shared id so a large batch toasts once.
+      toast.error(addReason, { id: AUDIO_ADD_TOAST_ID });
+      throw new Error(addReason);
     }
 
     const id = newAttachmentId();
-    this.attachmentIds.add(id);
+    this.attachmentSizes.set(id, file.size);
     return {
       id,
       type: "file",
@@ -90,12 +104,12 @@ export class AudioAttachmentAdapter implements AttachmentAdapter {
         status: { type: "complete" },
       };
     } finally {
-      this.attachmentIds.delete(attachment.id);
+      this.attachmentSizes.delete(attachment.id);
     }
   }
 
   remove(attachment: Attachment): Promise<void> {
-    this.attachmentIds.delete(attachment.id);
+    this.attachmentSizes.delete(attachment.id);
     return Promise.resolve();
   }
 }

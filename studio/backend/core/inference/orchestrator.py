@@ -3369,15 +3369,16 @@ class InferenceOrchestrator:
                 return
             request_id = str(uuid.uuid4())
 
-            # numpy array -> list for mp.Queue serialization
-            audio_data = (
-                audio_array.tolist() if hasattr(audio_array, "tolist") else list(audio_array)
-            )
+            import numpy as np
+
+            # Raw float32 bytes per clip; far cheaper to pickle than tolist().
+            clips = audio_array if isinstance(audio_array, list) else [audio_array]
+            audio_clips = [np.asarray(clip, dtype = np.float32).tobytes() for clip in clips]
 
             cmd = {
                 "type": "generate_audio_input",
                 "request_id": request_id,
-                "audio_data": audio_data,
+                "audio_clips": audio_clips,
                 "audio_type": audio_type,
                 "messages": messages or [],
                 "system_prompt": system_prompt,

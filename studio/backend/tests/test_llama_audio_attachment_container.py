@@ -35,12 +35,12 @@ def test_aac_and_mp2_are_transcoded_instead_of_forwarded_as_mp3(monkeypatch):
     monkeypatch.setattr(
         inference_route,
         "_decode_audio_mono",
-        lambda raw: (decoded.append(raw) or object(), 16_000),
+        lambda raw: (decoded.append(raw) or np.zeros(0, np.float32), 16_000),
     )
     monkeypatch.setattr(
         inference_route,
         "_fit_transcoded_audio_to_wav_cap",
-        lambda array, sample_rate: (array, sample_rate),
+        lambda array, sample_rate, **_: (array, sample_rate),
     )
     monkeypatch.setattr(
         inference_route,
@@ -935,13 +935,13 @@ def test_a_switch_preflight_answers_an_overlong_upload_like_the_serving_path(mon
     def _too_long(_b64):
         raise inference_route._DecodedAudioTooLongError("decoded audio exceeds the limit")
 
-    monkeypatch.setattr(inference_route, "_prepare_audio_for_llama", _too_long)
+    monkeypatch.setattr(inference_route, "_prepare_audio_clips_for_llama", _too_long)
     monkeypatch.setattr(inference_route, "_decode_audio_base64", _too_long)
     monkeypatch.setattr(inference_route, "_audio_decoder_is_available", lambda: True)
 
     for target_is_gguf in (True, False):
         try:
-            asyncio.run(inference_route._preflight_audio_for_switch({"b64": "x"}, target_is_gguf))
+            asyncio.run(inference_route._preflight_audio_for_switch({"clips": ["x"]}, target_is_gguf))
         except HTTPException as error:
             assert error.status_code == 413, target_is_gguf
             assert error.detail == inference_route._audio_too_long_detail()
@@ -958,13 +958,13 @@ def test_a_switch_preflight_still_reports_undecodable_audio_as_a_bad_value(monke
     def _broken(_b64):
         raise ValueError("not audio at all")
 
-    monkeypatch.setattr(inference_route, "_prepare_audio_for_llama", _broken)
+    monkeypatch.setattr(inference_route, "_prepare_audio_clips_for_llama", _broken)
     monkeypatch.setattr(inference_route, "_decode_audio_base64", _broken)
     monkeypatch.setattr(inference_route, "_audio_decoder_is_available", lambda: True)
 
     for target_is_gguf in (True, False):
         try:
-            asyncio.run(inference_route._preflight_audio_for_switch({"b64": "x"}, target_is_gguf))
+            asyncio.run(inference_route._preflight_audio_for_switch({"clips": ["x"]}, target_is_gguf))
         except HTTPException as error:
             assert error.status_code == 400, target_is_gguf
         else:

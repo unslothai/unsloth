@@ -69,17 +69,102 @@ def test_an_explicit_audio_base64_wins():
     assert payload.audio_base64 == AUDIO_B64
 
 
-def test_two_recordings_are_refused_rather_than_reduced_to_one():
-    """``audio_base64`` holds one recording, so a second was silently discarded.
+def _multi_audio_message(*datas, text = "compare these"):
+    return {
+        "role": "user",
+        "content": [
+            {"type": "text", "text": text},
+            *(
+                {"type": "input_audio", "input_audio": {"data": data, "format": "wav"}}
+                for data in datas
+            ),
+        ],
+    }
 
-    A request to compare two clips would have been answered from the last one alone.
-    """
+
+def test_several_recordings_on_the_latest_turn_are_all_lifted_in_order():
+    """Models like Gemma 4 take several clips at once; none may be dropped or reordered."""
+    payload = _request(_multi_audio_message("Zmlyc3Q=", "c2Vjb25k", "dGhpcmQ="))
+
+    _reject_unsupported_content_parts(payload)
+    _normalise_chat_content_parts(payload)
+
+    assert payload.audio_base64 == "Zmlyc3Q="
+    assert payload.extra_audio_base64 == ["c2Vjb25k", "dGhpcmQ="]
+    assert inference_route._request_audio_clips(payload) == ["Zmlyc3Q=", "c2Vjb25k", "dGhpcmQ="]
+    assert [p.type for p in payload.messages[0].content] == ["text"]
+
+
+def test_recordings_split_across_turns_are_refused_rather_than_reduced():
+    """Only the latest turn's clips reach the model, so an older clip would be answered without."""
     payload = _request(_audio_message(data = "Zmlyc3Q="), _audio_message(data = "c2Vjb25k"))
 
     with pytest.raises(HTTPException) as exc:
         _reject_unsupported_content_parts(payload)
     assert exc.value.status_code == 400
-    assert "one audio recording" in str(exc.value.detail)
+    assert "earlier turn" in str(exc.value.detail)
+
+
+def test_more_recordings_than_the_cap_are_refused():
+    datas = ["QUFB"] * (inference_route._MAX_AUDIO_CLIPS_PER_REQUEST + 1)
+    payload = _request(_multi_audio_message(*datas))
+
+    with pytest.raises(HTTPException) as exc:
+        _reject_unsupported_content_parts(payload)
+    assert exc.value.status_code == 400
+    assert f"At most {inference_route._MAX_AUDIO_CLIPS_PER_REQUEST}" in str(exc.value.detail)
+
+
+def test_extra_audio_alone_is_promoted_onto_the_audio_field():
+    """Every capability and size check keys on audio_base64, so extras can never bypass them."""
+    payload = _request(
+        {"role": "user", "content": "hi"}, extra_audio_base64 = ["", "Zmlyc3Q=", "c2Vjb25k"]
+    )
+
+    assert payload.audio_base64 == "Zmlyc3Q="
+    assert payload.extra_audio_base64 == ["c2Vjb25k"]
+
+
+def test_the_size_cap_covers_all_clips_together(monkeypatch):
+    """N clips never cost more upload or decode memory than one maximal clip does."""
+    monkeypatch.setattr(inference_route, "_MAX_AUDIO_B64_CHARS", 10)
+    monkeypatch.setattr(inference_route, "_AUDIO_CLIP_B64_SLACK_CHARS", 2)
+    one = _request({"role": "user", "content": "hi"}, audio_base64 = "A" * 10)
+    assert inference_route._request_audio_rejection(one) is None
+    within_slack = _request(
+        {"role": "user", "content": "hi"}, audio_base64 = "A" * 6, extra_audio_base64 = ["A" * 6]
+    )
+    assert inference_route._request_audio_rejection(within_slack) is None
+
+    two = _request(
+        {"role": "user", "content": "hi"}, audio_base64 = "A" * 7, extra_audio_base64 = ["A" * 6]
+    )
+    status, detail = inference_route._request_audio_rejection(two)
+    assert status == 413
+    assert "all files together" in detail
+
+
+def test_the_count_cap_is_checked_on_the_fields_too():
+    payload = _request(
+        {"role": "user", "content": "hi"},
+        audio_base64 = "QUFB",
+        extra_audio_base64 = ["QUFB"] * inference_route._MAX_AUDIO_CLIPS_PER_REQUEST,
+    )
+    status, detail = inference_route._request_audio_rejection(payload)
+    assert status == 400
+    assert "Too many audio files" in detail
+
+
+def test_the_duration_cap_covers_all_decoded_clips_together(monkeypatch):
+    import numpy as np
+
+    monkeypatch.setattr(inference_route, "_MAX_AUDIO_SECONDS", 1)
+    monkeypatch.setattr(
+        inference_route, "_decode_audio_base64", lambda _b64: np.zeros(12_000, np.float32)
+    )
+    assert len(inference_route._decode_audio_clips(["a"])) == 1
+    with pytest.raises(inference_route._DecodedAudioTooLongError):
+        inference_route._decode_audio_clips(["a", "b"])
 
 
 def test_an_audio_part_on_a_non_user_role_is_refused():
@@ -509,3 +594,69 @@ def test_the_text_only_checkpoint_refusal_precedes_the_branch_that_consumes_audi
     # the refusal has to precede the consuming branch, or it never runs
     assert branch < consume
     assert "cannot read audio input" in source[branch:consume]
+
+
+def _wav_b64(seconds: float, rate: int = 16000) -> str:
+    import base64
+    import io
+    import wave
+
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(rate)
+        wav.writeframes(b"\x00\x00" * int(seconds * rate))
+    return base64.b64encode(buf.getvalue()).decode("ascii")
+
+
+def test_gguf_clips_pass_through_in_order():
+    first, second = _wav_b64(0.5), _wav_b64(0.25)
+    prepared = inference_route._prepare_audio_clips_for_llama(
+        [first, f"data:audio/wav;base64,{second}"]
+    )
+    assert prepared == [(first, "wav"), (second, "wav")]
+
+
+def test_gguf_duration_cap_covers_all_clips_together(monkeypatch):
+    """Each clip alone is under the cap; together they are not, as on the decoded path."""
+    monkeypatch.setattr(inference_route, "_MAX_AUDIO_SECONDS", 1)
+    clip = _wav_b64(0.75)
+    assert len(inference_route._prepare_audio_clips_for_llama([clip])) == 1
+    with pytest.raises(inference_route._DecodedAudioTooLongError):
+        inference_route._prepare_audio_clips_for_llama([clip, clip])
+
+
+def test_transcoded_gguf_clips_share_one_wav_budget(monkeypatch):
+    """Several m4a/ogg clips must not each grow into a cap-sized WAV for llama-server."""
+    import numpy as np
+
+    caps = []
+
+    def _fit(arr, sr, cap = None):
+        caps.append(cap)
+        return arr, sr
+
+    monkeypatch.setattr(inference_route, "_MAX_AUDIO_RAW_BYTES", 1000)
+    monkeypatch.setattr(inference_route, "_sniff_audio_container", lambda _raw: None)
+    monkeypatch.setattr(
+        inference_route, "_decode_audio_mono", lambda _raw: (np.zeros(100, np.float32), 16000)
+    )
+    monkeypatch.setattr(inference_route, "_fit_transcoded_audio_to_wav_cap", _fit)
+
+    inference_route._prepare_audio_for_llama("QUFB")
+    assert caps == [1000]  # one clip keeps the whole cap, exactly as before
+
+    caps.clear()
+    inference_route._prepare_audio_clips_for_llama(["QUFB", "QUFB", "QUFB"])
+    wav = 44 + 100 * 2
+    assert caps == [1000 // 3, (1000 - wav) // 2, 1000 - 2 * wav]
+
+    # Pass-through clips are forwarded at their upload size, so transcodes share what they leave.
+    caps.clear()
+    monkeypatch.setattr(
+        inference_route, "_sniff_audio_container", lambda raw: "wav" if raw == b"WAV!" else None
+    )
+    monkeypatch.setattr(inference_route, "_passthrough_audio_seconds", lambda *_a: 0.1)
+    inference_route._prepare_audio_clips_for_llama(["V0FWIQ==", "QUFB"])
+    assert caps == [1000 - 4]

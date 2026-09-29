@@ -608,6 +608,8 @@ export interface OpenAIChatCompletionsRequest {
   seed?: number;
   image_base64?: string;
   audio_base64?: string;
+  /** Further clips after audio_base64, in attach order. */
+  extra_audio_base64?: string[];
   video_base64?: string;
   use_adapter?: boolean | string | null;
   enable_thinking?: boolean | null;

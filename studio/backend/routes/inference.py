@@ -2226,9 +2226,9 @@ def _openai_llama_admission_media_tokens(
     extra += max(0, message_image_parts) * image_tokens
     if _legacy_image_is_distinct(payload):
         extra += image_tokens
-    audio = getattr(payload, "audio_base64", None)
-    if isinstance(audio, str) and audio:
-        extra += _openai_llama_admission_audio_tokens(audio)
+    for audio in _request_audio_clips(payload):
+        if isinstance(audio, str) and audio:
+            extra += _openai_llama_admission_audio_tokens(audio)
     # _inject_video_part splices the legacy clip into the conversation as input_video before the
     # loop starts, so during a recost the clips below already include it and charging the field
     # too priced it exactly twice.
@@ -8721,15 +8721,17 @@ async def _preflight_audio_for_switch(audio_preflight: dict, target_is_gguf: boo
     Only for a swap that is about to run: these exist so a request the target cannot
     serve fails before the load evicts the resident model, and where no swap happens the
     serving branch decides for itself. A GGUF target is validated through
-    :func:`_prepare_audio_for_llama`, which accepts a ``data:`` URI and the containers
+    :func:`_prepare_audio_clips_for_llama`, which accepts a ``data:`` URI and the containers
     torchaudio cannot open, and supports ``continue_final_message``. A non-GGUF target is served by
     :func:`_decode_audio_base64`, so the upload is validated with that same decoder and
-    the array handed back under ``decoded`` for the audio branch to reuse.
+    the arrays handed back under ``decoded`` for the audio branch to reuse. Every clip is
+    validated, in order, so a bad second recording fails before the load too.
     """
+    clips = audio_preflight["clips"]
     if target_is_gguf:
         try:
             audio_preflight["prepared"] = await asyncio.to_thread(
-                _prepare_audio_for_llama, audio_preflight["b64"]
+                _prepare_audio_clips_for_llama, clips
             )
         except _DecodedAudioTooLongError:
             # A limit the caller can act on. Reading as "could not be decoded"
@@ -8771,9 +8773,7 @@ async def _preflight_audio_for_switch(audio_preflight: dict, target_is_gguf: boo
             ),
         )
     try:
-        audio_preflight["decoded"] = await asyncio.to_thread(
-            _decode_audio_base64, audio_preflight["b64"]
-        )
+        audio_preflight["decoded"] = await asyncio.to_thread(_decode_audio_clips, clips)
     except _DecodedAudioTooLongError:
         raise HTTPException(
             status_code = 413,
@@ -22051,6 +22051,9 @@ _REMOTE_VIDEO_REFUSAL = (
     "Remote video URLs are not supported. Send the clip as a data URI instead.",
 )
 _MAX_AUDIO_SECONDS = 30 * 60
+# Byte and duration caps cover all clips together; the count bounds per-clip decode cost.
+_MAX_AUDIO_CLIPS_PER_REQUEST = 8
+_AUDIO_CLIP_B64_SLACK_CHARS = 64
 # The duration cap alone is rate-relative, so a high-rate container retains far
 # more memory for the same 30 minutes: at 48 kHz that is 86M float32 samples,
 # and np.concatenate doubles it. 48 kHz covers ordinary uploads, so this ceiling
@@ -22069,6 +22072,50 @@ _MIN_TRANSCODE_AUDIO_SAMPLE_RATE = 8000
 
 class _DecodedAudioTooLongError(ValueError):
     """Decoded audio crossed the duration cap before it could be buffered."""
+
+
+def _request_audio_clips(payload) -> list[str]:
+    """Every recording the request carries, ``audio_base64`` first."""
+    first = getattr(payload, "audio_base64", None)
+    if not first:
+        return []
+    return [first, *(getattr(payload, "extra_audio_base64", None) or [])]
+
+
+def _audio_too_large_detail(clip_count: int) -> str:
+    if clip_count > 1:
+        return "Audio files are too large (max ~25 MB per message, all files together)."
+    return "Audio file is too large (max ~25 MB)."
+
+
+def _request_audio_rejection(payload) -> Optional[tuple[int, str]]:
+    """Refuse too many clips or too many combined bytes."""
+    clips = _request_audio_clips(payload)
+    if len(clips) > _MAX_AUDIO_CLIPS_PER_REQUEST:
+        return (
+            400,
+            f"Too many audio files in one message (max {_MAX_AUDIO_CLIPS_PER_REQUEST}).",
+        )
+    # Slack for per-clip base64 padding and data: headers.
+    budget = _MAX_AUDIO_B64_CHARS + _AUDIO_CLIP_B64_SLACK_CHARS * (len(clips) - 1)
+    if sum(len(clip) for clip in clips) > budget:
+        return (413, _audio_too_large_detail(len(clips)))
+    return None
+
+
+def _check_decoded_audio_budget(arrays: list) -> None:
+    """Apply the duration cap to all decoded 16 kHz clips together."""
+    if sum(len(array) for array in arrays) > 16000 * _MAX_AUDIO_SECONDS:
+        raise _DecodedAudioTooLongError("combined audio exceeds the duration cap")
+
+
+def _decode_audio_clips(clips: list[str]) -> list:
+    """Decode clips in order, failing as soon as the combined duration is over the cap."""
+    arrays: list = []
+    for clip in clips:
+        arrays.append(_decode_audio_base64(clip))
+        _check_decoded_audio_budget(arrays)
+    return arrays
 
 
 def _audio_too_long_detail() -> str:
@@ -22403,23 +22450,24 @@ def _resample_mono_linear(arr: "np.ndarray", source_rate: int, target_rate: int)
 
 
 def _fit_transcoded_audio_to_wav_cap(
-    arr: "np.ndarray", sample_rate: int
+    arr: "np.ndarray", sample_rate: int, cap: Optional[int] = None
 ) -> "tuple[np.ndarray, int]":
-    """Downsample only when needed so transcoded WAV stays within the upload cap."""
+    """Downsample only when needed so transcoded WAV fits ``cap`` (default: the upload cap)."""
+    cap = _MAX_AUDIO_RAW_BYTES if cap is None else cap
     if sample_rate <= 0:
         raise ValueError("decoded audio has an invalid sample rate")
     wav_bytes = _WAV_HEADER_BYTES + len(arr) * 2
-    if wav_bytes <= _MAX_AUDIO_RAW_BYTES:
+    if wav_bytes <= cap:
         return arr, sample_rate
 
     duration = len(arr) / float(sample_rate)
-    max_samples = max(1, (_MAX_AUDIO_RAW_BYTES - _WAV_HEADER_BYTES) // 2)
+    max_samples = max(1, (cap - _WAV_HEADER_BYTES) // 2)
     target_rate = int(max_samples // duration)
     if target_rate < _MIN_TRANSCODE_AUDIO_SAMPLE_RATE:
         raise ValueError("decoded audio exceeds the transcoded WAV size limit")
     target_rate = min(sample_rate, target_rate)
     fitted = _resample_mono_linear(arr, sample_rate, target_rate)
-    if _WAV_HEADER_BYTES + len(fitted) * 2 > _MAX_AUDIO_RAW_BYTES:
+    if _WAV_HEADER_BYTES + len(fitted) * 2 > cap:
         raise ValueError("decoded audio exceeds the transcoded WAV size limit")
     return fitted, target_rate
 
@@ -22675,33 +22723,75 @@ def _prepare_audio_for_llama(b64: str) -> tuple[str, str]:
     PCM payload inflation). Other containers (m4a/ogg/webm/flac) are decoded to
     a mono WAV. Blocking; call via a thread from async paths.
     """
-    if b64.startswith("data:"):
-        b64 = b64.split(",", 1)[1] if "," in b64 else ""
-    raw = base64.b64decode(b64)
-    passthrough = _sniff_audio_container(raw)
-    if passthrough is not None:
-        # Forwarding skips every bounded decoder, so the duration cap has to be
-        # applied from the headers instead. A 16 kbps MP3 holds hours inside the
-        # 25 MB upload cap, and llama-server was left to decode all of it. A
-        # 25 MB upload cap, and llama-server was left to decode all of it.
-        seconds = _passthrough_audio_seconds(raw, passthrough, _MAX_AUDIO_SECONDS)
-        if seconds is not None and seconds > _MAX_AUDIO_SECONDS:
+    return _prepare_audio_clips_for_llama([b64])[0]
+
+
+def _prepare_audio_clips_for_llama(clips: list[str]) -> list[tuple[str, str]]:
+    """Prepare clips for llama-server in order, under one shared byte and duration budget.
+
+    wav/mp3 pass through; other formats are transcoded to WAV and share the bytes left over.
+    Blocking; call via a thread from async paths.
+    """
+    stripped = [_strip_audio_data_uri(clip) for clip in clips]
+    raws = [base64.b64decode(clip) for clip in stripped]
+    passthrough = [_llama_passthrough_audio(raw) for raw in raws]
+    wav_budget = _MAX_AUDIO_RAW_BYTES - sum(
+        len(raw) for raw, kept in zip(raws, passthrough) if kept is not None
+    )
+    transcodes_left = passthrough.count(None)
+    total_seconds = 0.0
+    prepared: list[tuple[str, str]] = []
+    for clip, raw, kept in zip(stripped, raws, passthrough):
+        if kept is not None:
+            container, seconds = kept
+            prepared.append((clip, container))
+        else:
+            arr, sr = _decode_audio_mono(raw)
+            arr, sr = _fit_transcoded_audio_to_wav_cap(
+                arr, sr, cap = wav_budget // transcodes_left
+            )
+            wav = _mono_f32_to_wav_bytes(arr, sr)
+            wav_budget -= len(wav)
+            transcodes_left -= 1
+            seconds = len(arr) / float(sr) if sr else 0.0
+            prepared.append((base64.b64encode(wav).decode("ascii"), "wav"))
+        total_seconds += seconds
+        if total_seconds > _MAX_AUDIO_SECONDS:
             raise _DecodedAudioTooLongError(
                 f"audio exceeds the {_MAX_AUDIO_SECONDS // 60}-minute limit"
             )
-        # Headers that cannot state a length do not earn a free pass. Forwarding
-        # them anyway meant the cap held only for containers honest enough to
-        # describe themselves, which is the wrong way round: four junk bytes in
-        # an MPEG stream, or a WAV with no data chunk, ended the header walk and
-        # took the whole recording through with it. Decoding costs a transcode
-        # and nothing else, and puts the file back under both ceilings, so it
-        # still reaches the model.
-        if seconds is not None:
-            return b64, passthrough
+    return prepared
 
-    arr, sr = _decode_audio_mono(raw)
-    arr, sr = _fit_transcoded_audio_to_wav_cap(arr, sr)
-    return base64.b64encode(_mono_f32_to_wav_bytes(arr, sr)).decode("ascii"), "wav"
+
+def _strip_audio_data_uri(b64: str) -> str:
+    if b64.startswith("data:"):
+        return b64.split(",", 1)[1] if "," in b64 else ""
+    return b64
+
+
+def _llama_passthrough_audio(raw: bytes) -> Optional[tuple[str, float]]:
+    """(container, seconds) if the upload can be forwarded as is, else None."""
+    passthrough = _sniff_audio_container(raw)
+    if passthrough is None:
+        return None
+    # Forwarding skips every bounded decoder, so the duration cap has to be
+    # applied from the headers instead. A 16 kbps MP3 holds hours inside the
+    # 25 MB upload cap, and llama-server was left to decode all of it.
+    seconds = _passthrough_audio_seconds(raw, passthrough, _MAX_AUDIO_SECONDS)
+    if seconds is not None and seconds > _MAX_AUDIO_SECONDS:
+        raise _DecodedAudioTooLongError(
+            f"audio exceeds the {_MAX_AUDIO_SECONDS // 60}-minute limit"
+        )
+    # Headers that cannot state a length do not earn a free pass. Forwarding
+    # them anyway meant the cap held only for containers honest enough to
+    # describe themselves, which is the wrong way round: four junk bytes in
+    # an MPEG stream, or a WAV with no data chunk, ended the header walk and
+    # took the whole recording through with it. Decoding costs a transcode
+    # and nothing else, and puts the file back under both ceilings, so it
+    # still reaches the model.
+    if seconds is None:
+        return None
+    return passthrough, seconds
 
 
 _VIDEO_INPUT_REFUSAL = (
@@ -22824,7 +22914,7 @@ def _reject_unsupported_content_parts(payload) -> None:
 
 
 def _reject_misplaced_audio_parts(payload) -> None:
-    """Refuse a recording the single ``audio_base64`` field cannot carry faithfully.
+    """Refuse recordings the ``audio_base64`` / ``extra_audio_base64`` fields cannot carry faithfully.
 
     Placement is decided here rather than in the lift because the lift runs behind routing --
     the preview route reaches it only after taking the preview lock and loading a checkpoint,
@@ -22851,13 +22941,13 @@ def _reject_misplaced_audio_parts(payload) -> None:
         for part in msg.content
         if isinstance(part, InputAudioContentPart)
     ]
-    if len(parts) > 1:
+    if len(parts) > _MAX_AUDIO_CLIPS_PER_REQUEST:
         _raise_unsupported_openai_parameter(
             "messages",
-            "Only one audio recording per request is supported, and this one carries "
-            f"{len(parts)}.",
+            f"At most {_MAX_AUDIO_CLIPS_PER_REQUEST} audio recordings per request are supported, "
+            f"and this one carries {len(parts)}.",
         )
-    if parts and parts[0][0] != last_user:
+    if any(index != last_user for index, _ in parts):
         _raise_unsupported_openai_parameter(
             "messages",
             "Audio input is supported on the latest user message, and this one carries it on an "
@@ -22898,18 +22988,18 @@ def _messages_have_embedded_image(messages) -> bool:
 
 
 def _normalise_chat_content_parts(payload) -> None:
-    """Lift the request's ``input_audio`` part onto ``audio_base64``, in place.
+    """Lift the request's ``input_audio`` parts onto ``audio_base64`` / ``extra_audio_base64``.
 
-    Everything that makes audio safe to serve reads that field: the capability check that keeps
+    Everything that makes audio safe to serve reads those fields: the capability check that keeps
     a text-only target from being loaded for it, the size bound, the decoder, the duration limit,
-    and /chat/count_tokens' refusal. So the part is lifted rather than left standing -- a part the
-    field never sees is a recording none of those checks can act on.
+    and /chat/count_tokens' refusal. So the parts are lifted rather than left standing -- a part
+    the fields never see is a recording none of those checks can act on.
 
-    ``_reject_misplaced_audio_parts`` has already refused every shape the single field cannot
-    carry faithfully, so what reaches here is one recording on the latest user turn. An explicit
-    ``audio_base64`` still wins over a part.
+    ``_reject_misplaced_audio_parts`` has already refused every shape the fields cannot carry
+    faithfully, so what reaches here is up to the clip cap on the latest user turn, in order. An
+    explicit ``audio_base64`` still wins over parts.
     """
-    lifted = None
+    lifted: list[str] = []
     for msg in payload.messages:
         if not isinstance(msg.content, list):
             continue
@@ -22917,13 +23007,14 @@ def _normalise_chat_content_parts(payload) -> None:
         for part in msg.content:
             if isinstance(part, InputAudioContentPart):
                 if msg.role == "user" and part.input_audio.data:
-                    lifted = part.input_audio.data
+                    lifted.append(part.input_audio.data)
                 continue
             kept.append(part)
         if len(kept) != len(msg.content):
             msg.content = kept
     if lifted and not getattr(payload, "audio_base64", None):
-        payload.audio_base64 = lifted
+        payload.audio_base64 = lifted[0]
+        payload.extra_audio_base64 = lifted[1:] or None
 
 
 def _message_video_urls(messages) -> list[str]:
@@ -26152,8 +26243,9 @@ async def produce_openai_chat_completions(
                     ),
                 )
         # target-independent, unlike the format-dependent checks the switch itself runs.
-        if payload.audio_base64 and len(payload.audio_base64) > _MAX_AUDIO_B64_CHARS:
-            raise HTTPException(status_code = 413, detail = "Audio file is too large (max ~25 MB).")
+        _audio_rejection = _request_audio_rejection(payload)
+        if _audio_rejection is not None:
+            raise HTTPException(status_code = _audio_rejection[0], detail = _audio_rejection[1])
         # Reject streaming n>1 before the switch: only the non-streaming GGUF path
         # returns multiple choices, so stream=true + n>1 is invalid on every local
         # serving path (the external path already rejected it before its early
@@ -26202,7 +26294,7 @@ async def produce_openai_chat_completions(
     # the rest of the audio checks depend on the target's format, so the switch runs them.
     _audio_preflight = (
         {
-            "b64": payload.audio_base64,
+            "clips": _request_audio_clips(payload),
             "continue_final": _continue_final_message(payload),
             "has_image": _images_in_last_user_message(payload.messages)
             or _legacy_image_is_distinct(payload),
@@ -26460,6 +26552,19 @@ async def produce_openai_chat_completions(
             )
             api_monitor.fail(monitor_id, _audio_unsupported_detail)
             raise HTTPException(status_code = 400, detail = _audio_unsupported_detail)
+        # mlx-vlm drops or misplaces extra clips, so refuse rather than ignore them.
+        # The pre-switch check may not have run, so bound clips before decoding.
+        _audio_rejection = _request_audio_rejection(payload)
+        if _audio_rejection is not None:
+            api_monitor.fail(monitor_id, _audio_rejection[1])
+            raise HTTPException(status_code = _audio_rejection[0], detail = _audio_rejection[1])
+        if payload.extra_audio_base64 and model_info.get("is_mlx"):
+            _multi_audio_detail = (
+                "This MLX model takes one audio file per message. Send the recordings on "
+                "separate turns, or load the GGUF build of the model to send several at once."
+            )
+            api_monitor.fail(monitor_id, _multi_audio_detail)
+            raise HTTPException(status_code = 400, detail = _multi_audio_detail)
 
         # ── Audio INPUT path: decode WAV and route to audio input generation ──
         if payload.audio_base64 and model_info.get("has_audio_input"):
@@ -26482,11 +26587,15 @@ async def produce_openai_chat_completions(
             try:
                 # Decoded before the switch; only a path that skipped that preflight
                 # (no automatic load could run) still has to do it here.
-                audio_array = (
+                # A single clip stays a bare array, as before.
+                audio_arrays = (
                     _predecoded_audio
                     if _predecoded_audio is not None
-                    else _decode_audio_base64(payload.audio_base64)
+                    else await asyncio.to_thread(
+                        _decode_audio_clips, _request_audio_clips(payload)
+                    )
                 )
+                audio_array = audio_arrays[0] if len(audio_arrays) == 1 else audio_arrays
                 system_prompt, chat_messages, _ = await _extract_content_parts_async(
                     payload.messages
                 )
@@ -26960,21 +27069,24 @@ async def produce_openai_chat_completions(
         # audio encoder); other containers are transcoded to WAV here. The part
         # is injected into the message list below so it rides through both the
         # plain and tool-calling paths, exactly like image_url parts.
-        audio_b64 = None
-        audio_format = "wav"
+        # One input_audio part per clip, in upload order.
+        prepared_audio: list[tuple[str, str]] = []
         if payload.audio_base64:
             if not getattr(llama_backend, "_has_audio_input", False):
                 raise _reject(
                     400,
                     "Audio provided but current GGUF model does not support audio input.",
                 )
-            if len(payload.audio_base64) > _MAX_AUDIO_B64_CHARS:
-                raise _reject(413, "Audio file is too large (max ~25 MB).")
+            audio_rejection = _request_audio_rejection(payload)
+            if audio_rejection is not None:
+                raise _reject(*audio_rejection)
             try:
-                audio_b64, audio_format = (
+                prepared_audio = (
                     _preprepared_audio
                     if _preprepared_audio is not None
-                    else await asyncio.to_thread(_prepare_audio_for_llama, payload.audio_base64)
+                    else await asyncio.to_thread(
+                        _prepare_audio_clips_for_llama, _request_audio_clips(payload)
+                    )
                 )
             except _DecodedAudioTooLongError as e:
                 # A valid file that is simply too long reports the limit, as the
@@ -26984,9 +27096,10 @@ async def produce_openai_chat_completions(
             except Exception as e:
                 logger.warning("Audio decode failed: %s", e, exc_info = True)
                 raise _reject(400, "Could not decode the provided audio file.")
-            # Admission reads the duration from this field's header, which only the forwarded
+            # Admission reads the duration from these fields' headers, which only the forwarded
             # wav/mp3 is sure to state; an m4a, ogg or flac upload would be charged by its bytes.
-            payload.audio_base64 = audio_b64
+            payload.audio_base64 = prepared_audio[0][0]
+            payload.extra_audio_base64 = [clip for clip, _ in prepared_audio[1:]] or None
 
         # llama-server samples frames but encodes each at the clip's resolution.
         video_b64 = None
@@ -27019,7 +27132,7 @@ async def produce_openai_chat_completions(
             gguf_messages, request, thread_id = getattr(payload, "thread_id", None)
         )
         image_b64 = None
-        if audio_b64:
+        for audio_b64, audio_format in prepared_audio:
             _inject_audio_part(gguf_messages, audio_b64, audio_format)
         if video_b64:
             _inject_video_part(gguf_messages, video_b64)
@@ -35879,7 +35992,7 @@ async def chat_count_tokens(
             detail = "Cannot count tokens for messages containing images.",
         )
     # Same for audio: the completion injects the recording, this cannot.
-    if getattr(payload, "audio_base64", None):
+    if getattr(payload, "audio_base64", None) or getattr(payload, "extra_audio_base64", None):
         raise HTTPException(
             status_code = 503,
             detail = "Cannot count tokens for messages containing audio.",

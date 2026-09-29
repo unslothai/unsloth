@@ -10820,11 +10820,11 @@ def test_the_audio_preflight_only_binds_a_non_gguf_target(monkeypatch):
         audio.setframerate(16000)
         audio.writeframes(b"\x00\x00" * 16)
     preflight = {
-        "b64": f"data:audio/wav;base64,{_b64.b64encode(wav.getvalue()).decode()}",
+        "clips": [f"data:audio/wav;base64,{_b64.b64encode(wav.getvalue()).decode()}"],
         "continue_final": True,
     }
     asyncio.run(inference_route._preflight_audio_for_switch(preflight, True))
-    assert preflight["prepared"][1] == "wav"
+    assert preflight["prepared"][0][1] == "wav"
     assert "decoded" not in preflight
 
     # the non-GGUF branch runs _decode_audio_base64, so it refuses the same input, before the load.
@@ -10877,7 +10877,7 @@ def test_a_prior_turn_image_does_not_block_a_non_gguf_audio_switch(monkeypatch):
             require_image = True,
             require_audio_input = True,
             audio_preflight = {
-                "b64": "valid",
+                "clips": ["valid"],
                 "continue_final": False,
                 "has_image": False,
             },
@@ -11246,7 +11246,7 @@ def test_mixed_audio_and_image_is_rejected_before_a_non_gguf_switch(monkeypatch)
                 require_image = True,
                 require_audio_input = True,
                 audio_preflight = {
-                    "b64": "AAAA",
+                    "clips": ["AAAA"],
                     "continue_final": False,
                     "has_image": True,
                 },
@@ -11291,7 +11291,7 @@ def test_audio_beside_a_clip_is_rejected_before_a_non_gguf_switch(monkeypatch):
                 require_audio_input = True,
                 require_video = True,
                 audio_preflight = {
-                    "b64": "AAAA",
+                    "clips": ["AAAA"],
                     "continue_final": True,
                     "has_image": True,
                     "has_video": True,
@@ -11331,7 +11331,7 @@ def test_the_gguf_audio_preflight_takes_the_base64_llama_cpp_takes():
         try:
             asyncio.run(
                 inference_route._preflight_audio_for_switch(
-                    {"b64": encoded, "continue_final": False}, True
+                    {"clips": [encoded], "continue_final": False}, True
                 )
             )
         except HTTPException:
@@ -11341,7 +11341,7 @@ def test_the_gguf_audio_preflight_takes_the_base64_llama_cpp_takes():
         with pytest.raises(HTTPException) as exc:
             asyncio.run(
                 inference_route._preflight_audio_for_switch(
-                    {"b64": bad, "continue_final": False}, True
+                    {"clips": [bad], "continue_final": False}, True
                 )
             )
         assert exc.value.status_code == 400, bad
@@ -11366,7 +11366,7 @@ def test_non_audio_bytes_are_rejected_before_a_gguf_switch(monkeypatch):
                 "tester",
                 require_audio_input = True,
                 audio_preflight = {
-                    "b64": _b64.b64encode(b"not audio").decode(),
+                    "clips": [_b64.b64encode(b"not audio").decode()],
                     "continue_final": False,
                 },
             )
@@ -11385,7 +11385,7 @@ def test_a_non_gguf_audio_target_is_refused_without_a_decoder(monkeypatch):
     with pytest.raises(HTTPException) as exc:
         asyncio.run(
             inference_route._preflight_audio_for_switch(
-                {"b64": "AAAA", "continue_final": False}, False
+                {"clips": ["AAAA"], "continue_final": False}, False
             )
         )
     assert exc.value.status_code == 400
@@ -11406,14 +11406,14 @@ def test_non_audio_bytes_are_rejected_before_a_non_gguf_switch(monkeypatch):
     with pytest.raises(HTTPException) as exc:
         asyncio.run(
             inference_route._preflight_audio_for_switch(
-                {"b64": "AAAA", "continue_final": False}, False
+                {"clips": ["AAAA"], "continue_final": False}, False
             )
         )
     assert exc.value.status_code == 400
 
-    preflight = {"b64": "GOOD", "continue_final": False}
+    preflight = {"clips": ["GOOD"], "continue_final": False}
     asyncio.run(inference_route._preflight_audio_for_switch(preflight, False))
-    assert preflight["decoded"] == "pcm"
+    assert preflight["decoded"] == ["pcm"]
 
 
 def test_a_gguf_only_host_does_not_need_torchaudio_to_accept_audio(monkeypatch):

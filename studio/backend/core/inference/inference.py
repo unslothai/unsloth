@@ -2025,14 +2025,15 @@ class InferenceBackend:
         if not system_prompt:
             system_prompt = "You are an assistant that transcribes speech accurately."
 
-        # Gemma 3n format — audio goes INTO apply_chat_template
+        # Gemma 3n format: one audio item per clip, in upload order, inside apply_chat_template.
+        clips = audio_array if isinstance(audio_array, list) else [audio_array]
         audio_messages = [
             {"role": "system", "content": [{"type": "text", "text": system_prompt}]},
             named_turn(
                 {
                     "role": "user",
                     "content": [
-                        {"type": "audio", "audio": audio_array},
+                        *({"type": "audio", "audio": clip} for clip in clips),
                         {"type": "text", "text": user_text},
                     ],
                 },
@@ -2184,13 +2185,18 @@ class InferenceBackend:
             yield "Error: Whisper pipeline not initialized"
             return
 
+        clips = audio_array if isinstance(audio_array, list) else [audio_array]
         try:
-            with self._generation_lock:
-                result = whisper_pipe({"raw": audio_array, "sampling_rate": 16000})
+            # Transcribe each clip separately, in order.
+            for index, clip in enumerate(clips):
+                if cancel_event is not None and cancel_event.is_set():
+                    return
+                with self._generation_lock:
+                    result = whisper_pipe({"raw": clip, "sampling_rate": 16000})
 
-            text = result.get("text", "") if isinstance(result, dict) else str(result)
-            if text:
-                yield text
+                text = result.get("text", "") if isinstance(result, dict) else str(result)
+                if text:
+                    yield f"\n\n{text}" if index else text
         except Exception as e:
             logger.error(f"Whisper ASR error: {e}")
             yield f"Error: {str(e)}"
