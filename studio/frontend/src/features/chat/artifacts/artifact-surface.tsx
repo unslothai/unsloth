@@ -116,6 +116,14 @@ export function ArtifactSurface({
   const setArtifactView = useChatArtifactsStore(
     (state) => state.setArtifactView,
   );
+  // Keeps the card's open/hide toggle in step with the tab on screen.
+  const showView = useCallback(
+    (mode: ArtifactViewMode) => {
+      setViewMode(mode);
+      setArtifactView(mode);
+    },
+    [setArtifactView],
+  );
   const [copied, setCopied] = useState(false);
   const t = useT();
   const [consoleOpen, setConsoleOpen] = useState(false);
@@ -267,11 +275,7 @@ export function ArtifactSurface({
                 type="button"
                 role="tab"
                 disabled={isLoadingArtifact && !isPreview}
-                onClick={() => {
-                  setViewMode(mode);
-                  // Keeps the card's open/hide toggle in step with the tab on screen.
-                  setArtifactView(mode);
-                }}
+                onClick={() => showView(mode)}
                 className={cn(
                   "flex size-8 items-center justify-center rounded-full text-muted-foreground transition-colors",
                   effectiveViewMode === mode
@@ -306,7 +310,7 @@ export function ArtifactSurface({
           aria-label={reloadLabel}
           title={reloadLabel}
           onClick={() => {
-            if (effectiveViewMode !== "preview") setViewMode("preview");
+            if (effectiveViewMode !== "preview") showView("preview");
             setReloadNonce((nonce) => nonce + 1);
           }}
           className={cn(
@@ -324,7 +328,7 @@ export function ArtifactSurface({
           title={consoleLabel}
           onClick={() => {
             if (effectiveViewMode !== "preview") {
-              setViewMode("preview");
+              showView("preview");
               setConsoleOpen(true);
               return;
             }

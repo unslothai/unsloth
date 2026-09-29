@@ -217,6 +217,17 @@ test("a new load drops reports already batched for the next frame", () => {
   );
 });
 
+test("the Console and Run again buttons switch views through the store too", () => {
+  const surface = readFileSync(
+    fileURLToPath(
+      new URL("../src/features/chat/artifacts/artifact-surface.tsx", import.meta.url),
+    ),
+    "utf8",
+  );
+  assert.doesNotMatch(surface, /setViewMode\("preview"\)/);
+  assert.equal(surface.match(/showView\("preview"\)/g)?.length, 2);
+});
+
 test("opening straight to the source view does not run the page", () => {
   const surface = readFileSync(
     fileURLToPath(
