@@ -157,6 +157,20 @@ def test_first_shape_stays_eager_then_compiles_on_repeat(scopes):
     assert model.allocated == [1024, 1024, 1024, 2048, 1024]
 
 
+def test_batch_dynamic_graph_skips_eager_warm_up(scopes):
+    model = _FakeGenerating()
+    _generate(model, scopes, 1, 100)
+    _generate(model, scopes, 2, 100)
+    assert _generate(model, scopes, 4, 100) == (False, 0)  # one compiled batch: still static
+    _generate(model, scopes, 1, 100)
+    _generate(model, scopes, 2, 100)
+    assert len(scopes) == 2
+    assert _generate(model, scopes, 3, 100) == (True, 3)  # batch now dynamic: no warm-up
+    assert _generate(model, scopes, 5, 1500) == (False, 3)  # other length: its own graphs
+    assert _generate(model, scopes, 1, 100) == (True, 4)
+    assert _generate(model, scopes, 6, 100) == (True, 5)
+
+
 def test_hooks_are_removed_after_the_call(scopes):
     model = _FakeGenerating()
     _generate(model, scopes, 1, 10)

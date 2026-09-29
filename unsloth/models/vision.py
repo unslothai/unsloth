@@ -791,13 +791,21 @@ class _CompileDecodeOnRepeat:
         seen = getattr(self.model, "_unsloth_decoded_shapes", None)
         if seen is None:
             seen = self.model._unsloth_decoded_shapes = set()
-        self.compile = key in seen
+            self.model._unsloth_compiled_batches = {}
+        compiled = self.model._unsloth_compiled_batches.setdefault(key[1], set())
+        # Once two batch sizes compiled at this length, Dynamo has made batch dynamic (sizes >= 2
+        # share that graph), so a new batch size costs no compile: skip its eager warm-up call.
+        self.compile = key in seen or (
+            type(batch_size) is int and batch_size >= 2 and len(compiled) >= 2
+        )
         seen.add(key)
+        self.compiled, self.batch_size = compiled, batch_size
         return cache
 
     def _criteria(self, *args, **kwargs):
         if not self.compile or not self.valid_auto_compile_criteria(*args, **kwargs):
             return False
+        self.compiled.add(self.batch_size)
         self.scopes.enter_context(unsloth_decode_compile())
         return True
 
