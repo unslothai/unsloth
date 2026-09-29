@@ -4931,6 +4931,9 @@ class VideoBackend:
         raise_on_unified_memory_shortfall(plan, family = getattr(fam, "name", None), logger = logger)
 
         # ── build the pipeline.
+        from .ltx2_import_compat import ensure_ltx2_pipelines_importable, is_ltx2_pipeline_class
+        if is_ltx2_pipeline_class(fam.pipeline_class):
+            ensure_ltx2_pipelines_importable(logger)
         pipeline_cls = getattr(diffusers, fam.pipeline_class)
         # cache_dir pins every loader call to the live cache root, so a mid-session change cannot split one model across
         # roots.
