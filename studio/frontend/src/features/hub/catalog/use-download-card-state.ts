@@ -50,6 +50,14 @@ export function downloadStopMode(
   return transport === "http" && partialsResumable ? "pause" : "cancel";
 }
 
+// Snapshot job alone misses scoped ("@scope") jobs writing into the repo, showing "Resume" mid-download.
+export function isRepoDownloadProgress(
+  progress: { variant: string | null } | null | undefined,
+): boolean {
+  if (!progress) return false;
+  return progress.variant === null || progress.variant.startsWith("@");
+}
+
 export function downloadActionAriaLabel(
   downloading: boolean,
   cancelling: boolean,

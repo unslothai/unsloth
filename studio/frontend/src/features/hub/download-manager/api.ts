@@ -44,6 +44,7 @@ export interface DownloadJobStatus {
   state: DownloadJobState;
   error?: string | null;
   generation?: number;
+  attempt?: number;
 }
 
 // "repository_owned": a dictation model download holds this repository's cache.
