@@ -134,6 +134,51 @@ def get_reference_forward_callable(
     return ref_forward
 
 
+_KL_CHUNK_BYTES = 256 * 1024 * 1024
+
+
+class _ChunkedKL(torch.autograd.Function):
+    """Row-chunked KL that saves only d(KL)/d(cur_logits) in the logits dtype.
+
+    Autograd through log_softmax / softmax / kl_div keeps several fp32 (N, V) tensors alive until
+    backward; this keeps one (N, V) tensor and nothing that aliases cur_logits, which
+    Fast_CrossEntropyLoss overwrites in place during its backward.
+    """
+
+    @staticmethod
+    def forward(ctx, cur_logits, ref_logits, reverse, force_fp32):
+        vocab = cur_logits.shape[-1]
+        cur = cur_logits.reshape(-1, vocab)
+        ref = ref_logits.reshape(-1, vocab)
+        kl = torch.empty(cur.shape[0], dtype = torch.float32, device = cur.device)
+        grad = torch.empty_like(cur)
+        step = max(1, _KL_CHUNK_BYTES // (vocab * 4))
+        for s in range(0, cur.shape[0], step):
+            c, r = cur[s : s + step], ref[s : s + step].to(cur.device)
+            if force_fp32:
+                c, r = c.float(), r.float()
+            log_q, log_p = F.log_softmax(c, dim = -1), F.log_softmax(r, dim = -1)
+            if reverse:
+                q = log_q.exp()
+                k = (q * (log_q - log_p)).sum(-1)
+                g = q * (log_q - log_p - k.unsqueeze(-1))
+            else:
+                p = log_p.exp()
+                k = (p * (log_p - log_q)).sum(-1)
+                g = log_q.exp() - p
+            kl[s : s + step] = k
+            grad[s : s + step] = g
+        ctx.save_for_backward(grad)
+        ctx.shape = cur_logits.shape
+        return kl.view(cur_logits.shape[:-1])
+
+    @staticmethod
+    def backward(ctx, grad_kl):
+        (grad,) = ctx.saved_tensors
+        grad.mul_(grad_kl.reshape(-1, 1).to(grad.dtype))
+        return grad.view(ctx.shape), None, None, None
+
+
 def _compute_kl_divergence(
     cur_logits: torch.Tensor,
     ref_logits: torch.Tensor,
@@ -145,18 +190,9 @@ def _compute_kl_divergence(
     The ASFT paper says reverse KL, but its code F.kl_div(log(cur), ref) is forward KL;
     we match the code. kl_direction="reverse" gives KL(p_cur || p_ref).
     """
-    if force_fp32:
-        cur_logits = cur_logits.float()
-        ref_logits = ref_logits.float()
-    if kl_direction == "forward":
-        return F.kl_div(
-            F.log_softmax(cur_logits, dim = -1), F.softmax(ref_logits, dim = -1), reduction = "none"
-        ).sum(dim = -1)
-    if kl_direction == "reverse":
-        return F.kl_div(
-            F.log_softmax(ref_logits, dim = -1), F.softmax(cur_logits, dim = -1), reduction = "none"
-        ).sum(dim = -1)
-    raise ValueError(f"Unknown kl_direction: {kl_direction}")
+    if kl_direction not in ("forward", "reverse"):
+        raise ValueError(f"Unknown kl_direction: {kl_direction}")
+    return _ChunkedKL.apply(cur_logits, ref_logits.detach(), kl_direction == "reverse", force_fp32)
 
 
 def _unwrap_logits(ref_outputs: Any) -> torch.Tensor:

@@ -371,7 +371,9 @@ class TestKLDivergence:
 class TestComputeASFTLoss:
     @pytest.mark.parametrize("mode", ["sft", "dft", "sft+kl", "asft"])
     @pytest.mark.parametrize("kl_direction", ["forward", "reverse"])
-    def test_modes_match_reference_formula(self, mode, kl_direction):
+    def test_modes_match_reference_formula(self, mode, kl_direction, monkeypatch):
+        # Tiny chunks so the KL runs over several row chunks.
+        monkeypatch.setattr("unsloth.losses.asft._KL_CHUNK_BYTES", 16 * 4 * 5)
         torch.manual_seed(0)
         model = SimpleModel()
         ref_model = SimpleModel()
@@ -388,9 +390,13 @@ class TestComputeASFTLoss:
             reference_policy = "frozen_copy",
             original_model = ref_model,
         )
+        loss.backward()
+        grad = model.linear.weight.grad.clone()
+        model.zero_grad()
         expected = _reference_loss(model, ref_model, inputs, mode, 0.5, kl_direction)
-        assert loss.requires_grad
+        expected.backward()
         assert torch.allclose(loss, expected, atol = 1e-4)
+        assert torch.allclose(grad, model.linear.weight.grad, atol = 1e-5)
 
     @pytest.mark.parametrize("softcap,scale", [(3.0, 1.0), (0.0, 0.25), (3.0, 4.0)])
     def test_logit_transforms_not_applied_twice(self, softcap, scale):
