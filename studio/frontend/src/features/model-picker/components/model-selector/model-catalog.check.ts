@@ -1158,16 +1158,17 @@ for (const catalog of [IMAGE_CATALOG, VIDEO_CATALOG, AUDIO_CATALOG]) {
   }
 }
 
-// Z-Image-Turbo needs 42.9 GB of card dense and 34.9 GB pre-quantised under the 70% rule.
+// Z-Image-Turbo needs 27.3 GB of card dense (19.1 GiB bf16-resident, not the 30 GB fp32 download) and 19.3 GB
+// pre-quantised under the 70% rule.
 const zTurboId = "unsloth/Z-Image-Turbo";
 assert.equal(
-  curatedArtifactFitsDevice(zTurboId, IMAGE_CATALOG, { gpuGb: 40, systemRamGb: 128 }),
+  curatedArtifactFitsDevice(zTurboId, IMAGE_CATALOG, { gpuGb: 24, systemRamGb: 128 }),
   false,
 );
 for (const schemes of [["fp8"], ["int8"]]) {
   assert.equal(
     curatedArtifactFitsDevice(zTurboId, IMAGE_CATALOG, {
-      gpuGb: 40,
+      gpuGb: 24,
       systemRamGb: 128,
       denseQuantSchemes: schemes,
     }),
@@ -1177,11 +1178,32 @@ for (const schemes of [["fp8"], ["int8"]]) {
 }
 assert.equal(
   curatedArtifactFitsDevice(zTurboId, IMAGE_CATALOG, {
-    gpuGb: 40,
+    gpuGb: 24,
     systemRamGb: 128,
     denseQuantSchemes: [],
   }),
   false,
+);
+assert.equal(
+  curatedArtifactFitsDevice(zTurboId, IMAGE_CATALOG, { gpuGb: 32, systemRamGb: 128 }),
+  true,
+);
+// Krea 2's bf16 DiT alone is 24.5 GiB, so its int8 build still carries 8.8 GiB of companions: 21.5 GiB resident.
+assert.equal(
+  curatedArtifactFitsDevice("krea/Krea-2-Turbo", IMAGE_CATALOG, {
+    gpuGb: 24,
+    systemRamGb: 128,
+    denseQuantSchemes: ["int8"],
+  }),
+  false,
+);
+assert.equal(
+  curatedArtifactFitsDevice("krea/Krea-2-Turbo", IMAGE_CATALOG, {
+    gpuGb: 32,
+    systemRamGb: 128,
+    denseQuantSchemes: ["int8"],
+  }),
+  true,
 );
 assert.equal(
   curatedArtifactFitsDevice("Qwen/Qwen-Image", IMAGE_CATALOG, {
@@ -1243,18 +1265,18 @@ for (const id of ["black-forest-labs/FLUX.1-dev", "stabilityai/sdxl-turbo"]) {
 }
 
 // The "Fits on device" group filter sizes a row like the badge and the router do: Krea-2-Turbo is
-// 18 GB dense and ~12 GB as its hosted int8 / fp8 artifact, with no GGUF fallback row, so the dense
-// figure hid the whole group on a card the backend loads it on.
+// 33.2 GiB dense and 21.5 GiB with its hosted int8 / fp8 artifact, with no GGUF fallback row, so the dense
+// figure hid the whole group on a card the quantised build fits.
 const kreaTurboGroup = groupForRepoId("krea/Krea-2-Turbo", IMAGE_CATALOG);
 assert.ok(kreaTurboGroup);
 assert.equal(
-  catalogGroupFitsDevice(kreaTurboGroup, { gpuGb: 24, systemRamGb: 0 }, notDownloaded),
+  catalogGroupFitsDevice(kreaTurboGroup, { gpuGb: 32, systemRamGb: 0 }, notDownloaded),
   false,
 );
 assert.equal(
   catalogGroupFitsDevice(
     kreaTurboGroup,
-    { gpuGb: 24, systemRamGb: 0, denseQuantSchemes: ["int8", "fp8"] },
+    { gpuGb: 32, systemRamGb: 0, denseQuantSchemes: ["int8", "fp8"] },
     notDownloaded,
   ),
   true,
@@ -1274,7 +1296,7 @@ const zTurboGroup = groupForRepoId(zTurboId, IMAGE_CATALOG);
 assert.ok(zTurboGroup);
 assert.equal(
   pickDefaultArtifact(zTurboGroup, {
-    gpuGb: 40,
+    gpuGb: 24,
     systemRamGb: 128,
     isDownloaded: notDownloaded,
   }).format,
@@ -1289,9 +1311,19 @@ assert.equal(
   }).repoId,
   zTurboId,
 );
+// 24 GB takes the hosted fp8 pipeline (13.5 GiB); the fp32 download size used to push it to bnb-4bit.
 assert.equal(
   pickDefaultArtifact(zTurboGroup, {
     gpuGb: 24,
+    systemRamGb: 128,
+    denseQuantSchemes: ["fp8"],
+    isDownloaded: notDownloaded,
+  }).repoId,
+  zTurboId,
+);
+assert.equal(
+  pickDefaultArtifact(zTurboGroup, {
+    gpuGb: 16,
     systemRamGb: 128,
     denseQuantSchemes: ["fp8"],
     isDownloaded: notDownloaded,

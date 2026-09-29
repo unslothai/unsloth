@@ -54,6 +54,15 @@ from core.inference.diffusion_families import (
 )
 
 
+@pytest.fixture(autouse = True)
+def _unmeasured_torchao(monkeypatch):
+    """Hermetic: the installed torchao must not decide which offload tiers a stubbed load quantises on. Pinned to
+    "no measured torchao" (the resident rule); tests of the streamed tiers pin a release themselves."""
+    from core.inference import diffusion_memory
+
+    monkeypatch.setattr(diffusion_memory, "_installed_torchao_version", lambda: None)
+
+
 # Pure family helpers
 
 
@@ -12123,14 +12132,20 @@ def test_a_pipeline_pick_quantises_under_whole_module_offload(fake_runtime, tmp_
 
 
 @pytest.mark.parametrize(
-    ("offload_policy", "expected"), [("none", "inference_mode"), ("model", "no_grad")]
+    ("offload_policy", "expected"),
+    [("none", "inference_mode"), ("model", "no_grad"), ("group", "no_grad")],
 )
 def test_an_offloaded_quantised_transformer_renders_outside_inference_mode(
     fake_runtime, tmp_path, monkeypatch, offload_policy, expected
 ):
-    """torchao tensors cannot change device under inference_mode, so offloaded quant renders use no_grad."""
+    """torchao tensors cannot change device under inference_mode, so offloaded quant renders use no_grad, whichever
+    offload hook moves them."""
     import torch
 
+    from core.inference import diffusion_memory
+
+    monkeypatch.setattr(diffusion_memory, "_installed_torchao_version", lambda: (0, 18))
+    monkeypatch.setattr(diffusion_memory, "_torchao_stream_pinnable", lambda plan: True)
     backend = DiffusionBackend()
     _stub_pipeline_dense_quant(backend, monkeypatch)
     monkeypatch.setattr(DiffusionBackend, "_plan_memory", _offload_plan(offload_policy))
@@ -12247,6 +12262,65 @@ def test_a_pipeline_pick_stays_dense_when_the_quantised_transformer_exceeds_the_
     assert calls == []
     assert status["transformer_quant"] is None
     assert "not known to fit" in status["resolved"]["transformer_quant"]["reason"]
+    backend.unload()
+
+
+@pytest.mark.parametrize("torchao_version", [(0, 17), (0, 18)])
+def test_a_pipeline_pick_quantises_under_streamed_group_offload_on_a_measured_torchao(
+    fake_runtime, tmp_path, monkeypatch, torchao_version
+):
+    """fp8 weights survive group offload of a streamed transformer from torchao 0.17 on, so auto keeps the quantised
+    build there instead of streaming the released bf16 weights."""
+    from core.inference import diffusion_memory
+
+    monkeypatch.setattr(diffusion_memory, "_installed_torchao_version", lambda: torchao_version)
+    monkeypatch.setattr(diffusion_memory, "_torchao_stream_pinnable", lambda plan: True)
+    backend = DiffusionBackend()
+    calls = _stub_pipeline_dense_quant(backend, monkeypatch)
+    monkeypatch.setattr(DiffusionBackend, "_plan_memory", _offload_plan("group"))
+    status = backend.load_pipeline(
+        "Qwen/Qwen-Image-2512", model_kind = "pipeline", _base_local_dir = str(tmp_path)
+    )
+    assert len(calls) == 1
+    assert status["transformer_quant"] == "fp8"
+    backend.unload()
+
+
+@pytest.mark.parametrize(
+    ("budget_mib", "runtime_headroom_mib", "companion_mib"),
+    [(1, 0, None), (1_000_000, 1_000_000, None), (1_000_000, 0, 2_000_000)],
+)
+def test_a_quantised_transformer_too_big_to_onload_whole_streams_instead(
+    fake_runtime, tmp_path, monkeypatch, budget_mib, runtime_headroom_mib, companion_mib
+):
+    """Where the quantised transformer or an encoder cannot be onloaded whole, a measured torchao streams it (the
+    placement the bf16 weights would get) rather than dropping to bf16."""
+    from core.inference import diffusion as dmod
+    from core.inference import diffusion_memory
+
+    monkeypatch.setattr(diffusion_memory, "_installed_torchao_version", lambda: (0, 18))
+    monkeypatch.setattr(diffusion_memory, "_torchao_stream_pinnable", lambda plan: True)
+    backend = DiffusionBackend()
+    calls = _stub_pipeline_dense_quant(backend, monkeypatch)
+    monkeypatch.setattr(dmod, "largest_streamable_companion_mib", lambda pipe: companion_mib)
+    placed: list = []
+
+    def _apply(pipe, plan, **_kwargs):
+        placed.append(plan.offload_policy)
+        return plan.offload_policy, plan.vae_tiling
+
+    monkeypatch.setattr(dmod, "apply_memory_plan", _apply)
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_plan_memory",
+        _offload_plan("model", budget_mib = budget_mib, runtime_headroom_mib = runtime_headroom_mib),
+    )
+    status = backend.load_pipeline(
+        "Qwen/Qwen-Image-2512", model_kind = "pipeline", _base_local_dir = str(tmp_path)
+    )
+    assert len(calls) == 1
+    assert status["transformer_quant"] == "fp8"
+    assert placed == ["streaming"] and status["offload_policy"] == "streaming"
     backend.unload()
 
 
@@ -13361,6 +13435,53 @@ def test_the_act_kill_switch_keeps_nvidia_offload_native_but_weight_only(
     )
     assert calls[0]["offload"] is True and calls[0]["act_int8"] is False
     assert status["transformer_quant"] == "int8"
+    backend.unload()
+
+
+def test_an_explicit_fp8_under_group_offload_engages_on_a_measured_torchao(
+    fake_runtime, tmp_path, monkeypatch
+):
+    from core.inference import diffusion_memory
+
+    monkeypatch.setattr(diffusion_memory, "_installed_torchao_version", lambda: (0, 18))
+    monkeypatch.setattr(diffusion_memory, "_torchao_stream_pinnable", lambda plan: True)
+    backend = DiffusionBackend()
+    calls, reasons = _stub_nvidia_offload_host(backend, monkeypatch, engages = "fp8")
+    status = backend.load_pipeline(
+        "Qwen/Qwen-Image-2512",
+        model_kind = "pipeline",
+        transformer_quant = "fp8",
+        memory_mode = "balanced",
+        _base_local_dir = str(tmp_path),
+    )
+    assert len(calls) == 1 and "offload" not in calls[0] and reasons == []
+    assert status["transformer_quant"] == "fp8"
+    backend.unload()
+
+
+@pytest.mark.parametrize(
+    "memory",
+    [{"memory_mode": "balanced"}, {"memory_mode": "low_vram"}, {"cpu_offload": True}],
+)
+def test_an_explicit_int8_under_offload_stays_native_on_a_measured_torchao(
+    fake_runtime, tmp_path, monkeypatch, memory
+):
+    """An explicit int8 keeps its torchao-free offload build; the torchao placement rules are for auto / fp8."""
+    from core.inference import diffusion_memory
+
+    monkeypatch.setattr(diffusion_memory, "_installed_torchao_version", lambda: (0, 18))
+    monkeypatch.setattr(diffusion_memory, "_torchao_stream_pinnable", lambda plan: True)
+    backend = DiffusionBackend()
+    calls, reasons = _stub_nvidia_offload_host(backend, monkeypatch)
+    status = backend.load_pipeline(
+        "Qwen/Qwen-Image-2512",
+        model_kind = "pipeline",
+        transformer_quant = "int8",
+        _base_local_dir = str(tmp_path),
+        **memory,
+    )
+    assert len(calls) == 1 and calls[0]["offload"] is True
+    assert status["transformer_quant"] == "int8" and reasons == ["int8"]
     backend.unload()
 
 

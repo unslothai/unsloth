@@ -178,7 +178,9 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
     description: "Text-to-image",
     scope: "image",
     artifacts: [
-      bf16Mirror("Tongyi-MAI/Z-Image-Turbo", 30, {
+      // Resident bf16 in the GiB totalParams and prequantSizeGb use: the Hub's fp32 DiT (24.6 GB) casts to 11.5, plus
+      // 7.5 Qwen3-4B and 0.2 VAE.
+      bf16Mirror("Tongyi-MAI/Z-Image-Turbo", 19.1, {
         totalParams: 6154908736,
         prequantRepo: "unsloth/Z-Image-Turbo-FP8",
         prequantSizeGb: { fp8: 5.86, int8: 5.86 },
@@ -323,7 +325,9 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
     description: "Text-to-image",
     scope: "image",
     artifacts: [
-      bf16Mirror("krea/Krea-2-Turbo", 18, {
+      // Resident bf16 in GiB, from the Hub's transformer/, text_encoder/ and vae/: 24.5 DiT + 8.3 Qwen3-VL-4B
+      // + 0.5 VAE.
+      bf16Mirror("krea/Krea-2-Turbo", 33.2, {
         totalParams: 12820073036,
         prequantRepo: "unsloth/Krea-2-Turbo-FP8",
         prequantSizeGb: { fp8: 11.95, int8: 12.19 },
