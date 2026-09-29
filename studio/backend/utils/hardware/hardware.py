@@ -5975,9 +5975,8 @@ def _nvidia_inference_devices() -> list[Dict[str, Any]]:
 def get_cross_vendor_inference_gpu_info() -> Optional[Dict[str, Any]]:
     """The NVIDIA cards a CUDA llama.cpp runs on when torch is another backend, else None.
 
-    nvidia-smi only: torch answers for the other vendor, and a CUDA context here would pin VRAM.
-    A ROCm llama.cpp beside CUDA torch is not covered: amd-smi cannot prove the memory scope
-    HIP sees (an APU reports only its carve-out) without opening a HIP context.
+    nvidia-smi only: a CUDA context here would pin VRAM. No ROCm counterpart: amd-smi cannot
+    prove the memory scope HIP sees (an APU reports only its carve-out).
     """
     try:
         llama_backend = _installed_llama_backend()
@@ -5991,8 +5990,7 @@ def get_cross_vendor_inference_gpu_info() -> Optional[Dict[str, Any]]:
     except Exception as e:
         logger.debug("CUDA inference GPU query failed: %s", e)
         return None
-    # Not []: the load estimate reads an empty list as "this host has no GPU". A card
-    # without a capacity (procfs placeholder rows) would read as a known 0 GB budget.
+    # Not []: the load estimate reads that as "no GPU". Capacity-less procfs rows read as 0 GB.
     if not devices or not all((d["memory_total_gb"] or 0) > 0 for d in devices):
         return None
     return {

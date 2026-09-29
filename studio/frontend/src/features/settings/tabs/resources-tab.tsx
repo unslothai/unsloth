@@ -668,7 +668,6 @@ export function ResourcesTab() {
               ) : (
                 ` · ${t("settings.resources.gpu.unavailable")}`
               )}
-              {/* The list below is the training backend's cards, not these. */}
               {separateInferenceGpu.available &&
                 inferenceDisplay.usageDevices.map((device, index) => (
                   <span
