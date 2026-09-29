@@ -205,6 +205,14 @@ export const ptBR = {
       logOut: "Sair",
       shutdown: "Desligar",
     },
+    commandPalette: {
+      placeholder: "Digite um comando ou pesquise...",
+      noResults: "Nenhum resultado encontrado.",
+      navigation: "Navegação",
+      actions: "Ações",
+      chat: "Chat",
+      searchChats: "Buscar chats...",
+    },
     notFound: {
       title: "Página não encontrada",
       description: "{path} não existe.",
@@ -480,6 +488,10 @@ export const ptBR = {
         openKeyboardShortcuts: {
           label: "Atalhos de teclado",
           description: "Abrir esta lista de atalhos",
+        },
+        openCommandPalette: {
+          label: "Paleta de comandos",
+          description: "Abrir a paleta de comandos",
         },
         searchChats: {
           label: "Pesquisar chats",

@@ -113,6 +113,7 @@ from .loader_utils import (
     _prepare_compressed_tensors_model,
     planner_class_mismatch_reason,
     planner_model_class,
+    exclude_no_placement_params,
     planner_quantization_kwargs,
     requested_device_map,
     resolve_unsloth_device_map,
@@ -204,19 +205,34 @@ __all__ = [
 ]
 
 
-def _infer_device_map_from_loaded_model(model):
-    """Build a compact device_map by inspecting actual parameter placements."""
+def _infer_device_map_from_loaded_model(model, skip = ()):
+    """Build a compact device_map from actual parameter placements, leaving `skip` names off."""
     device_map = {}
 
     def _assign(module, prefix):
-        params = list(module.named_parameters(remove_duplicate = False))
+        params = [
+            (n, p)
+            for n, p in module.named_parameters(remove_duplicate = False)
+            if (f"{prefix}.{n}" if prefix else n) not in skip
+        ]
+        if (
+            not params
+            and skip
+            and any(
+                (f"{prefix}.{n}" if prefix else n) in skip
+                for n, _ in module.named_parameters(remove_duplicate = False)
+            )
+        ):
+            return
         if not params:
             bufs = list(module.named_buffers())
             if bufs:
                 device_map[prefix] = bufs[0][1].device
             return
         devices = {p.device for _, p in params}
-        if len(devices) == 1:
+        # A key covering a skipped tensor would make dispatch_model move it too: recurse instead.
+        holds_skipped = bool(skip) and any(not prefix or s.startswith(prefix + ".") for s in skip)
+        if len(devices) == 1 and not holds_skipped:
             device_map[prefix] = next(iter(devices))
         else:
             for child_name, child in module.named_children():
@@ -225,6 +241,8 @@ def _infer_device_map_from_loaded_model(model):
             for pname, param in module.named_parameters(remove_duplicate = False):
                 if "." not in pname:
                     full = f"{prefix}.{pname}" if prefix else pname
+                    if full in skip:
+                        continue
                     if not any(full == k or full.startswith(k + ".") for k in device_map):
                         device_map[full] = param.device
 
@@ -415,6 +433,58 @@ def _align_root_hook_with_input_embeddings(model):
     return target
 
 
+def _hook_no_placement_ancestors(model):
+    """Input-align hooks on single-card ancestors of a CPU-kept no-placement table (split model)."""
+    from .loader_utils import no_placement_tensor_names
+
+    unplaced = no_placement_tensor_names(model)
+    if not unplaced:
+        return 0
+    try:
+        from accelerate.hooks import AlignDevicesHook, add_hook_to_module
+    except ImportError:
+        return 0
+    placed_devices = {
+        p.device
+        for n, p in model.named_parameters()
+        if n not in unplaced and p.device.type not in ("cpu", "meta")
+    }
+    if len(placed_devices) < 2:
+        return 0
+    names = getattr(model, "_no_placement_params", None) or []
+    owners = {
+        n.rsplit(".", 1)[0] for n in unplaced if any(n == x or n.endswith("." + x) for x in names)
+    }
+    skip_keys = getattr(model, "_skip_keys_device_placement", None)
+    hooked = 0
+    for owner in owners:
+        parts = owner.split(".")
+        for depth in range(1, len(parts)):
+            path = ".".join(parts[:depth])
+            module = model.get_submodule(path)
+            if hasattr(module, "_hf_hook"):
+                continue
+            devices = {
+                t.device
+                for n, t in list(module.named_parameters(prefix = path))
+                + list(module.named_buffers(prefix = path))
+                if n not in unplaced
+            }
+            if len(devices) != 1:
+                continue
+            device = next(iter(devices))
+            if device.type in ("cpu", "meta"):  # meta = disk-offloaded, has its own hook
+                continue
+            add_hook_to_module(
+                module,
+                AlignDevicesHook(
+                    execution_device = device, io_same_device = False, skip_keys = skip_keys
+                ),
+            )
+            hooked += 1
+    return hooked
+
+
 def _attach_bnb_multidevice_hooks(
     model, load_in_4bit, load_in_8bit, offload_embedding, fast_inference
 ):
@@ -443,8 +513,14 @@ def _attach_bnb_multidevice_hooks(
     if getattr(model, "hf_device_map", None) is not None:
         return  # already dispatched
 
+    # Unplaceable tables stay on CPU unhooked; hooking copies ~102 GB to the GPU every forward.
     try:
-        all_devs = {p.device for p in model.parameters()}
+        from .loader_utils import no_placement_tensor_names
+        _unplaced = no_placement_tensor_names(model)
+    except Exception:
+        _unplaced = set()
+    try:
+        all_devs = {p.device for n, p in model.named_parameters() if n not in _unplaced}
     except Exception as exc:
         warnings.warn(
             "Unsloth: Failed to determine device placement from model parameters, "
@@ -468,7 +544,7 @@ def _attach_bnb_multidevice_hooks(
         return  # accelerate not available
 
     try:
-        inferred_map = _infer_device_map_from_loaded_model(model)
+        inferred_map = _infer_device_map_from_loaded_model(model, skip = _unplaced)
         if not inferred_map:
             return
 
@@ -494,13 +570,21 @@ def _attach_bnb_multidevice_hooks(
                     (d for d in device_map_int.values() if d not in ("cpu", "disk")),
                     None,
                 )
-            dispatch_model(
-                model,
-                device_map = device_map_int,
-                main_device = main_device,
-                skip_keys = getattr(model, "_skip_keys_device_placement", None),
-                force_hooks = True,
-            )
+            _skip_check = contextlib.nullcontext()
+            if _unplaced:
+                try:
+                    from transformers.integrations.accelerate import skip_device_map_check
+                    _skip_check = skip_device_map_check()
+                except Exception:
+                    pass
+            with _skip_check:
+                dispatch_model(
+                    model,
+                    device_map = device_map_int,
+                    main_device = main_device,
+                    skip_keys = getattr(model, "_skip_keys_device_placement", None),
+                    force_hooks = True,
+                )
             desc = f"{len(inferred_map)} block(s) across {len(cuda_devs)} device(s)"
         finally:
             for param, key, val in _stripped:
@@ -734,6 +818,171 @@ _compile_config = CompileConfig(
     mode = "reduce-overhead",
 )
 _compile_config.disable = True  # Must set manually
+
+# For these model types, eager decode steps skip Unsloth's compiled regions (on by default,
+# UNSLOTH_EAGER_DECODE=0 opts out), and UNSLOTH_COMPILE_DECODE=1 opts into CUDA graphs over the
+# static cache. Off by default: each new shape costs 35-130 s to compile (A100, 2B), so mixed
+# sessions came out ~3x slower overall even though a compiled step is ~5x faster.
+COMPILE_DECODE_MODELS = ("qwen3_5", "qwen3_5_moe")
+_decode_compile_config = CompileConfig(
+    fullgraph = False,
+    dynamic = None,
+    mode = "reduce-overhead",
+)
+try:
+    from unsloth_zoo.temporary_patches.utils import unsloth_decode_compile
+except ImportError:
+    unsloth_decode_compile = None
+try:
+    from unsloth_zoo.temporary_patches.utils import unsloth_eager_decode
+except ImportError:
+    unsloth_eager_decode = None
+
+
+def _is_decode_compile_model(model):
+    config = model.config
+    model_types = (
+        getattr(config, "model_type", None),
+        getattr(getattr(config, "text_config", None), "model_type", None),
+    )
+    return any(
+        isinstance(mt, str) and mt.removesuffix("_text") in COMPILE_DECODE_MODELS
+        for mt in model_types
+    )
+
+
+def _eager_decodes(model):
+    # Eager decode steps skip Unsloth's compiled regions (zoo `unsloth_eager_decode`).
+    if unsloth_eager_decode is None or os.environ.get("UNSLOTH_EAGER_DECODE", "1") == "0":
+        return False
+    return _is_decode_compile_model(model) and "forward" not in model.__dict__
+
+
+class _EagerDecodeSteps:
+    """One generate() call. Each eager decode step (one new token per row) runs inside zoo's
+    `unsloth_eager_decode()`, so compiled regions call their eager originals; prefill and
+    a compiled decode step are unchanged."""
+
+    def __init__(self, model):
+        self.model = model
+        self.forward = model.forward
+
+    def _forward(self, *args, **kwargs):
+        if not torch.compiler.is_compiling():
+            ids = kwargs.get("input_ids")
+            if ids is None:
+                ids = kwargs.get("inputs_embeds")
+            if ids is not None and ids.dim() >= 2 and ids.shape[1] == 1:
+                with unsloth_eager_decode():
+                    return self.forward(*args, **kwargs)
+        return self.forward(*args, **kwargs)
+
+    def __enter__(self):
+        # transformers reads signature(self.forward) (logits_to_keep, attention_mask,
+        # position_ids), so the stand-in has to present the real one.
+        step = self._forward
+
+        @functools.wraps(self.forward)
+        def forward(*args, **kwargs):
+            return step(*args, **kwargs)
+
+        self.model.forward = forward
+        return self
+
+    def __exit__(self, *exc):
+        del self.model.forward
+        return False
+
+
+def _compiles_decode(model):
+    if unsloth_decode_compile is None:
+        return False
+    if os.environ.get("UNSLOTH_COMPILE_DECODE", "0") != "1":
+        return False
+    if os.environ.get("UNSLOTH_COMPILE_DISABLE", "0") in ("1", "partial"):
+        return False
+    # Mirror transformers' own auto-compile exceptions: when it will not compile the step,
+    # leave the eager decode path exactly as it was.
+    quantizer = getattr(model, "hf_quantizer", None)
+    if quantizer is not None and not getattr(quantizer, "is_compileable", False):
+        return False
+    device_map = getattr(model, "hf_device_map", None)
+    if isinstance(device_map, dict) and ({"cpu", "disk"} & set(map(str, device_map.values()))):
+        return False
+    return _is_decode_compile_model(model)
+
+
+def _match_compiled_call(model, compile_decode):
+    # CompileConfig equality ignores the `disable` attribute, so transformers would keep
+    # reusing the callable built for the other mode: drop it when the mode changes.
+    if model.__dict__.get("_unsloth_compile_decode", compile_decode) != compile_decode:
+        model.__dict__.pop("_compiled_call", None)
+        model.__dict__.pop("_last_compile_config", None)
+    model._unsloth_compile_decode = compile_decode
+
+
+def _decode_cache_bucket(length):
+    # A static cache of a new length recompiles the decode step; round it up to a power of
+    # two (>= 1024) so later calls with a different max_new_tokens reuse it.
+    if type(length) is not int or length <= 0:
+        return length
+    return max(1024, 1 << (length - 1).bit_length())
+
+
+class _CompileDecodeOnRepeat:
+    """One generate() call. Buckets the static cache, and compiles the decode step only for a
+    (batch, cache length) this model has decoded before: compiling costs ~30-45 s per new shape,
+    more than a whole eager call, so a one-off shape stays on the eager path exactly as before.
+    Both hooks sit where transformers decides, so its own batch and length are used."""
+
+    def __init__(self, model):
+        self.model = model
+        self.compile = False
+        self.scopes = contextlib.ExitStack()
+        self.prepare_static_cache = model._prepare_static_cache
+        self.valid_auto_compile_criteria = model._valid_auto_compile_criteria
+
+    def _prepare(self, *args, **kwargs):
+        # `max_cache_len` is the third argument on every 5.x release, by keyword since 5.2.
+        if "max_cache_len" in kwargs:
+            kwargs["max_cache_len"] = _decode_cache_bucket(kwargs["max_cache_len"])
+        elif len(args) >= 3:
+            args = (*args[:2], _decode_cache_bucket(args[2]), *args[3:])
+        cache = self.prepare_static_cache(*args, **kwargs)
+        batch_size = kwargs.get("batch_size", args[1] if len(args) > 1 else None)
+        key = (batch_size, getattr(cache, "max_cache_len", None))
+        seen = getattr(self.model, "_unsloth_decoded_shapes", None)
+        if seen is None:
+            seen = self.model._unsloth_decoded_shapes = set()
+            self.model._unsloth_compiled_batches = {}
+        compiled = self.model._unsloth_compiled_batches.setdefault(key[1], set())
+        # Once two batch sizes compiled at this length, Dynamo has made batch dynamic (sizes >= 2
+        # share that graph), so a new batch size costs no compile: skip its eager warm-up call.
+        self.compile = key in seen or (
+            type(batch_size) is int and batch_size >= 2 and len(compiled) >= 2
+        )
+        seen.add(key)
+        self.compiled, self.batch_size = compiled, batch_size
+        return cache
+
+    def _criteria(self, *args, **kwargs):
+        if not self.compile or not self.valid_auto_compile_criteria(*args, **kwargs):
+            return False
+        self.compiled.add(self.batch_size)
+        self.scopes.enter_context(unsloth_decode_compile())
+        return True
+
+    def __enter__(self):
+        self.model._prepare_static_cache = self._prepare
+        self.model._valid_auto_compile_criteria = self._criteria
+        return self
+
+    def __exit__(self, *exc):
+        del self.model._prepare_static_cache
+        del self.model._valid_auto_compile_criteria
+        self.scopes.close()
+        return False
+
 
 try:
     torch_compiler_set_stance = torch.compiler.set_stance
@@ -1103,6 +1352,22 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
         cache_implementation = None
         dynamic_implementation = _dynamic_cache_choice(kwargs)
 
+    generation_config = kwargs.get("generation_config") or getattr(self, "generation_config", None)
+    compile_decode = (
+        cache_implementation == "static"
+        and not force_dynamic_cache
+        and _compiles_decode(self)
+        # transformers compiles only on these devices and without disable_compile; anywhere
+        # else a bucketed cache would only cost memory.
+        and getattr(getattr(self, "device", None), "type", None) == "cuda"
+        and not kwargs.get("disable_compile", getattr(generation_config, "disable_compile", False))
+        and hasattr(self, "_prepare_static_cache")
+        and hasattr(self, "_valid_auto_compile_criteria")
+        and "_prepare_static_cache" not in self.__dict__
+    )
+    compile_config = _decode_compile_config if compile_decode else _compile_config
+    if _is_decode_compile_model(self):
+        _match_compiled_call(self, compile_decode)
     if "generation_config" in kwargs:
         kwargs["generation_config"].cache_implementation = (
             dynamic_implementation if force_dynamic_cache else cache_implementation
@@ -1111,16 +1376,18 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
         if force_dynamic_cache:
             kwargs["cache_implementation"] = dynamic_implementation
         if cache_implementation is not None:
-            kwargs["generation_config"].compile_config = _compile_config
+            kwargs["generation_config"].compile_config = compile_config
     else:
         kwargs["cache_implementation"] = (
             dynamic_implementation if force_dynamic_cache else cache_implementation
         )
         if cache_implementation is not None:
-            kwargs["compile_config"] = _compile_config
+            kwargs["compile_config"] = compile_config
 
+    decode_scope = _CompileDecodeOnRepeat(self) if compile_decode else contextlib.nullcontext()
+    eager_scope = _EagerDecodeSteps(self) if _eager_decodes(self) else contextlib.nullcontext()
     try:
-        with torch.inference_mode(), autocaster:
+        with decode_scope, eager_scope, torch.inference_mode(), autocaster:
             output = self._old_generate(*args, **kwargs)
     finally:
         _clear_generation_caches(self)
@@ -2367,6 +2634,8 @@ class FastBaseModel:
             ),
         )
 
+        device_map = exclude_no_placement_params(device_map, model_class, auto_config)
+
         if int(load_in_4bit) + int(load_in_8bit) + int(load_in_16bit) >= 2:
             raise RuntimeError(
                 "Unsloth: Can only load in 4bit or 8bit or 16bit, not a combination!"
@@ -2610,6 +2879,12 @@ class FastBaseModel:
                     offload_embedding = offload_embedding,
                     fast_inference = fast_inference,
                 )
+                _no_placement_hooked = _hook_no_placement_ancestors(model)
+                if _no_placement_hooked:
+                    logger.info(
+                        f"Unsloth: hooked {_no_placement_hooked} module(s) above the CPU-kept "
+                        "no-placement table so their inputs follow the map."
+                    )
                 _aligned_root_device = _align_root_hook_with_input_embeddings(model)
                 if _aligned_root_device is not None:
                     logger.info(

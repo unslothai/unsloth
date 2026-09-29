@@ -203,6 +203,14 @@ export const ko = {
       logOut: "로그아웃",
       shutdown: "종료",
     },
+    commandPalette: {
+      placeholder: "명령어를 입력하거나 검색하세요...",
+      noResults: "결과를 찾을 수 없습니다.",
+      navigation: "탐색",
+      actions: "작업",
+      chat: "채팅",
+      searchChats: "채팅 검색...",
+    },
     notFound: {
       title: "페이지를 찾을 수 없습니다",
       description: "{path} 경로가 존재하지 않습니다.",
@@ -478,6 +486,10 @@ export const ko = {
         openKeyboardShortcuts: {
           label: "키보드 단축키",
           description: "이 단축키 목록을 엽니다",
+        },
+        openCommandPalette: {
+          label: "명령 팔레트",
+          description: "명령 팔레트 열기",
         },
         searchChats: {
           label: "채팅 검색",

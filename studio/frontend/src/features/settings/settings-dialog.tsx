@@ -3,7 +3,6 @@
 
 import { useIsAccountOwner } from "@/features/auth";
 import { resolveSettingsTab, settingsTabVisible } from "./settings-tab-visibility";
-import { getClientPlatform } from "@/components/tauri/window-titlebar";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -12,7 +11,6 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { type TranslationKey, useT } from "@/i18n";
-import { isTauri } from "@/lib/api-base";
 import { useHubSource } from "@/lib/hf-endpoint";
 import { MicIcon } from "@/lib/mic-icon";
 import { cn } from "@/lib/utils";
@@ -53,11 +51,8 @@ import {
   useState,
   useSyncExternalStore,
 } from "react";
-import {
-  SETTINGS_SEARCH_KEYWORDS,
-  createSettingsSearchIndex,
-  renderedSearchEntries,
-} from "./settings-search";
+import { DIALOG_SETTINGS_SEARCH_INDEX as SETTINGS_SEARCH_INDEX } from "./dialog-search-index";
+import { SETTINGS_SEARCH_KEYWORDS, renderedSearchEntries } from "./settings-search";
 import {
   type SettingsTab,
   useSettingsDialogStore,
@@ -265,15 +260,6 @@ const TABS: TabDef[] = [
   { id: "about", labelKey: "settings.tabs.about", icon: HelpCircleIcon },
 ];
 
-const clientPlatform = getClientPlatform();
-const SETTINGS_SEARCH_INDEX = createSettingsSearchIndex({
-  desktop: isTauri,
-  closeToTray:
-    isTauri &&
-    (clientPlatform.startsWith("win") ||
-      clientPlatform.includes("windows") ||
-      clientPlatform.includes("linux")),
-});
 
 /**
  * Stack the tab rail over the pane when the dialog is narrower than it is at

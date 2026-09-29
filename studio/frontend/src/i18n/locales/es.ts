@@ -205,6 +205,14 @@ export const es = {
       logOut: "Cerrar sesión",
       shutdown: "Apagar",
     },
+    commandPalette: {
+      placeholder: "Escribe un comando o busca...",
+      noResults: "No se encontraron resultados.",
+      navigation: "Navegación",
+      actions: "Acciones",
+      chat: "Chat",
+      searchChats: "Buscar chats...",
+    },
     notFound: {
       title: "Página no encontrada",
       description: "{path} no existe.",
@@ -481,6 +489,10 @@ export const es = {
         openKeyboardShortcuts: {
           label: "Atajos de teclado",
           description: "Abrir esta lista de atajos",
+        },
+        openCommandPalette: {
+          label: "Paleta de comandos",
+          description: "Abrir la paleta de comandos",
         },
         searchChats: {
           label: "Buscar chats",

@@ -80,6 +80,7 @@ import {
 import { WORKFLOW_TABS, type WorkflowId } from "@/features/images/workflows";
 /* eslint-enable no-restricted-imports */
 import { cn } from "@/lib/utils";
+import { createNavigationNonce } from "@/lib/navigation-nonce";
 import { copyToClipboardFrom } from "@/lib/copy-to-clipboard";
 import { isTauri } from "@/lib/api-base";
 import { useWebUpdateCheck } from "@/hooks/use-web-update-check";
@@ -556,13 +557,6 @@ function formatRelativeShort(iso: string): string {
   if (h < 24) return `${h}h`;
   const d = Math.floor(h / 24);
   return `${d}d`;
-}
-
-function createNavigationNonce(): string {
-  if (typeof globalThis.crypto?.randomUUID === "function") {
-    return globalThis.crypto.randomUUID();
-  }
-  return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
 function preloadSilently(request: Promise<unknown>): void {
