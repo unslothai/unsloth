@@ -58,7 +58,7 @@ export function PersonDialog({
           <p className="text-sm text-foreground">Faker</p>
         </div>
         <div className="grid gap-3 sm:grid-cols-2">
-          <div className="grid gap-2">
+          <div className="grid gap-1.5">
             <FieldLabel
               label="Locale"
               htmlFor={localeId}
@@ -73,7 +73,7 @@ export function PersonDialog({
               }
             />
           </div>
-          <div className="grid gap-2">
+          <div className="grid gap-1.5">
             <FieldLabel
               label="Sex"
               htmlFor={sexId}
@@ -95,7 +95,7 @@ export function PersonDialog({
               </SelectContent>
             </Select>
           </div>
-          <div className="grid gap-2">
+          <div className="grid gap-1.5">
             <FieldLabel
               label="Age range"
               htmlFor={ageRangeId}
@@ -111,7 +111,7 @@ export function PersonDialog({
               placeholder="18-70"
             />
           </div>
-          <div className="grid gap-2">
+          <div className="grid gap-1.5">
             <FieldLabel
               label="City"
               htmlFor={cityId}

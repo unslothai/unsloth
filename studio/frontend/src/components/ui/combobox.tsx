@@ -7,7 +7,8 @@
 
 import { Combobox as ComboboxPrimitive } from "@base-ui/react";
 import * as React from "react";
-import { createContext, useContext, useState } from "react";
+import { useWheelScrollRef } from "@/hooks";
+import { createContext, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { useDialogPortalContainer } from "@/components/ui/dialog";
@@ -17,12 +18,11 @@ import {
   InputGroupButton,
   InputGroupInput,
 } from "@/components/ui/input-group";
+import { MenuTickIcon } from "@/lib/tick-icon";
+import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
+import { useSnappedPaddingRef } from "@/lib/snap-padding";
 import { cn } from "@/lib/utils";
-import {
-  ArrowDown01Icon,
-  Cancel01Icon,
-  Tick02Icon,
-} from "@hugeicons/core-free-icons";
+import { Cancel01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 
 const ComboboxOpenContext = createContext(false);
@@ -68,7 +68,7 @@ function ComboboxTrigger({
     >
       {children}
       <HugeiconsIcon
-        icon={ArrowDown01Icon}
+        icon={ChevronDownStandardIcon}
         strokeWidth={2}
         className="text-muted-foreground size-4 pointer-events-none"
       />
@@ -102,23 +102,19 @@ function ComboboxInput({
   disabled = false,
   showTrigger = true,
   showClear = false,
+  startAddon,
   ...props
 }: ComboboxPrimitive.Input.Props & {
   showTrigger?: boolean;
   showClear?: boolean;
+  /** Optional leading content (e.g. a search icon) rendered before the input. */
+  startAddon?: React.ReactNode;
 }): React.ReactElement {
-  const isOpen = useContext(ComboboxOpenContext);
-
   return (
-    <InputGroup
-      className={cn("w-auto", className)}
-      style={{
-        borderRadius: isOpen ? "12px" : undefined,
-        transition: isOpen
-          ? "border-radius 0ms"
-          : "border-radius 150ms cubic-bezier(0.645, 0.045, 0.355, 1)",
-      }}
-    >
+    <InputGroup className={cn("w-auto", className)}>
+      {startAddon && (
+        <InputGroupAddon align="inline-start">{startAddon}</InputGroupAddon>
+      )}
       <ComboboxPrimitive.Input
         render={<InputGroupInput disabled={disabled} />}
         {...props}
@@ -130,7 +126,7 @@ function ComboboxInput({
             variant="ghost"
             asChild
             data-slot="input-group-button"
-            className="group-has-data-[slot=combobox-clear]/input-group:hidden data-pressed:bg-transparent"
+            className="group-has-data-[slot=combobox-clear]/input-group:hidden bg-transparent hover:bg-transparent data-pressed:bg-transparent aria-expanded:bg-transparent dark:hover:bg-transparent"
             disabled={disabled}
           >
             <ComboboxTrigger />
@@ -146,11 +142,12 @@ function ComboboxInput({
 function ComboboxContent({
   className,
   side = "bottom",
-  sideOffset = 6,
+  sideOffset = 0,
   align = "start",
   alignOffset = 0,
   anchor,
   container,
+  onWheel,
   ...props
 }: ComboboxPrimitive.Popup.Props &
   Pick<
@@ -160,6 +157,7 @@ function ComboboxContent({
     container?: HTMLElement | null;
   }): React.ReactElement {
   const dialogContainer = useDialogPortalContainer();
+  const snappedRef = useSnappedPaddingRef<HTMLDivElement>(undefined);
   return (
     <ComboboxPrimitive.Portal container={container ?? dialogContainer ?? undefined}>
       <ComboboxPrimitive.Positioner
@@ -171,10 +169,28 @@ function ComboboxContent({
         className="isolate z-[120] pointer-events-auto"
       >
         <ComboboxPrimitive.Popup
+          ref={snappedRef}
           data-slot="combobox-content"
           data-chips={!!anchor}
+          onWheel={(event) => {
+            onWheel?.(event);
+            // Dialog scroll locks cancel native wheel scrolling on this body-portaled popup, so
+            // scroll the list by hand while one is active.
+            if (!document.body.hasAttribute("data-scroll-locked")) return;
+            const list = event.currentTarget.querySelector<HTMLElement>(
+              '[data-slot="combobox-list"]',
+            );
+            if (!list) return;
+            const step =
+              event.deltaMode === 1
+                ? event.deltaY * 24
+                : event.deltaMode === 2
+                  ? event.deltaY * list.clientHeight
+                  : event.deltaY;
+            list.scrollTop += step;
+          }}
           className={cn(
-            "bg-popover text-popover-foreground data-open:animate-in data-closed:animate-out data-closed:fade-out-0 data-open:fade-in-0 data-closed:zoom-out-95 data-open:zoom-in-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 shadow-border ring-1 ring-border *:data-[slot=input-group]:bg-input/30 max-h-72 min-w-36 overflow-hidden rounded-xl corner-squircle duration-100 *:data-[slot=input-group]:m-1 *:data-[slot=input-group]:mb-0 *:data-[slot=input-group]:h-9 *:data-[slot=input-group]:border-none *:data-[slot=input-group]:shadow-none group/combobox-content relative pointer-events-auto max-h-(--available-height) w-(--anchor-width) max-w-(--available-width) min-w-[calc(var(--anchor-width)+--spacing(7))] origin-(--transform-origin) data-[chips=true]:min-w-(--anchor-width)",
+            "bg-popover text-popover-foreground data-open:animate-in data-closed:animate-out data-closed:fade-out-0 data-open:fade-in-0 data-closed:zoom-out-95 data-open:zoom-in-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 *:data-[slot=input-group]:bg-input/30 max-h-72 min-w-36 overflow-hidden rounded-xl corner-squircle duration-100 *:data-[slot=input-group]:m-1 *:data-[slot=input-group]:mb-0 *:data-[slot=input-group]:h-9 *:data-[slot=input-group]:border-none *:data-[slot=input-group]:shadow-none group/combobox-content relative pointer-events-auto max-h-(--available-height) w-(--anchor-width) max-w-(--available-width) min-w-[calc(var(--anchor-width)+--spacing(7))] origin-(--transform-origin) data-[chips=true]:min-w-(--anchor-width)",
             className,
           )}
           {...props}
@@ -188,8 +204,11 @@ function ComboboxList({
   className,
   ...props
 }: ComboboxPrimitive.List.Props): React.ReactElement {
+  const listRef = useWheelScrollRef<HTMLDivElement>();
+
   return (
     <ComboboxPrimitive.List
+      ref={listRef}
       data-slot="combobox-list"
       className={cn(
         "no-scrollbar max-h-[min(calc(--spacing(72)---spacing(9)),calc(var(--available-height)---spacing(9)))] scroll-py-1 overflow-y-auto p-1 data-empty:p-0 overflow-y-auto overscroll-contain",
@@ -209,7 +228,7 @@ function ComboboxItem({
     <ComboboxPrimitive.Item
       data-slot="combobox-item"
       className={cn(
-        "data-highlighted:bg-accent data-highlighted:text-accent-foreground not-data-[variant=destructive]:data-highlighted:**:text-accent-foreground gap-2 rounded-xl corner-squircle py-2 pr-2 pl-3 text-sm [&[aria-selected=true]]:pr-7 [&_svg:not([class*='size-'])]:size-4 relative flex w-full cursor-pointer items-center outline-hidden select-none data-[disabled]:pointer-events-none data-[disabled]:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0",
+        "data-highlighted:bg-accent data-highlighted:text-accent-foreground not-data-[variant=destructive]:data-highlighted:**:text-accent-foreground gap-2 rounded-[10px] py-2 pr-2 pl-3 text-sm [&[aria-selected=true]]:pr-9 [&_svg:not([class*='size-'])]:size-4 relative flex w-full cursor-pointer items-center outline-hidden select-none data-[disabled]:pointer-events-none data-[disabled]:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0",
         className,
       )}
       {...props}
@@ -217,11 +236,11 @@ function ComboboxItem({
       {children}
       <ComboboxPrimitive.ItemIndicator
         render={
-          <span className="pointer-events-none absolute right-2 flex size-4 items-center justify-center" />
+          <span className="pointer-events-none absolute right-3 flex size-4 items-center justify-center" />
         }
       >
         <HugeiconsIcon
-          icon={Tick02Icon}
+          icon={MenuTickIcon}
           strokeWidth={2}
           className="pointer-events-none"
         />
@@ -302,7 +321,7 @@ function ComboboxChips({
     <ComboboxPrimitive.Chips
       data-slot="combobox-chips"
       className={cn(
-        "bg-input/30 border-input focus-within:border-ring focus-within:ring-ring/50 has-aria-invalid:ring-destructive/20 dark:has-aria-invalid:ring-destructive/40 has-aria-invalid:border-destructive dark:has-aria-invalid:border-destructive/50 flex min-h-9 flex-wrap items-center gap-1.5 rounded-4xl border bg-clip-padding px-2.5 py-1.5 text-sm transition-colors focus-within:ring-[3px] has-aria-invalid:ring-[3px] has-data-[slot=combobox-chip]:px-1.5",
+        "bg-input/30 border-input dark:border-transparent focus-within:border-ring dark:focus-within:border-transparent dark:focus-within:bg-[rgb(255_255_255_/_calc(0.09*var(--contrast-wash-gain,1)))] has-aria-invalid:ring-destructive/20 dark:has-aria-invalid:ring-destructive/40 has-aria-invalid:border-destructive dark:has-aria-invalid:border-destructive/50 flex min-h-9 flex-wrap items-center gap-1.5 rounded-4xl border bg-clip-padding px-2.5 py-1.5 text-sm transition-colors has-aria-invalid:ring-[3px] has-data-[slot=combobox-chip]:px-1.5",
         className,
       )}
       {...props}

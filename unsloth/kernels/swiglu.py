@@ -1,11 +1,8 @@
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
-#
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
-#
 #     http://www.apache.org/licenses/LICENSE-2.0
-#
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -17,7 +14,7 @@ import triton.language as tl
 import torch
 from .utils import calculate_settings, torch_gpu_device
 
-# signed int32 max is 2**31-1 so num_elements cannot exceed 2**31
+# signed int32 max is 2**31-1, so num_elements cannot exceed 2**31.
 NUM_INT32_ELEMENTS = 2**31
 SAFE_INT32_BUFFER_MULTIPLIER = 4
 BLOCK_SIZE = 1024
@@ -25,34 +22,24 @@ INT32_SAFETY_BUFFER = NUM_INT32_ELEMENTS - BLOCK_SIZE * SAFE_INT32_BUFFER_MULTIP
 
 
 @triton.jit
-def _fg_kernel(
-    e,
-    g,
-    h,
-    n_elements,
-    BLOCK_SIZE: tl.constexpr,
-    LONG_INDEXING: tl.constexpr,
-):
+def _fg_kernel(e, g, h, n_elements, BLOCK_SIZE: tl.constexpr, LONG_INDEXING: tl.constexpr):
     block_idx = tl.program_id(0)
     if LONG_INDEXING:
-        offsets = block_idx.to(tl.int64) * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE).to(
-            tl.int64
-        )
+        offsets = block_idx.to(tl.int64) * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE).to(tl.int64)
         n_elements = tl.cast(n_elements, tl.int64)
     else:
         offsets = block_idx * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
     mask = offsets < n_elements
 
     e_row = tl.load(e + offsets, mask = mask, other = 0).to(tl.float32)
-    g_row = tl.load(g + offsets, mask = mask, other = 0)  # .to(tl.float32)
+    g_row = tl.load(g + offsets, mask = mask, other = 0)
 
-    # f = e * sigmoid(e)
-    f_row = e_row * tl.sigmoid(e_row)  # e_row / (1 + tl.exp(-e_row))
+    # f = e * sigmoid(e), h = f * g.
+    f_row = e_row * tl.sigmoid(e_row)
     f_row = f_row.to(g_row.dtype)  # Exact copy from HF
     # h = f * g
     h_row = f_row * g_row
 
-    # Store h
     tl.store(h + offsets, h_row, mask = mask)
 
 
@@ -74,14 +61,7 @@ def swiglu_fg_kernel(e, g):
 
 
 @triton.jit
-def _DWf_DW_dfg_kernel(
-    DW,
-    e,
-    g,
-    n_elements,
-    BLOCK_SIZE: tl.constexpr,
-    LONG_INDEXING: tl.constexpr,
-):
+def _DWf_DW_dfg_kernel(DW, e, g, n_elements, BLOCK_SIZE: tl.constexpr, LONG_INDEXING: tl.constexpr):
     """
     e = e.float()
     se = 1.0 / (1.0 + torch.exp(-e))
@@ -93,21 +73,18 @@ def _DWf_DW_dfg_kernel(
     """
     block_idx = tl.program_id(0)
     if LONG_INDEXING:
-        offsets = block_idx.to(tl.int64) * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE).to(
-            tl.int64
-        )
+        offsets = block_idx.to(tl.int64) * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE).to(tl.int64)
         n_elements = tl.cast(n_elements, tl.int64)
     else:
         offsets = block_idx * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
     mask = offsets < n_elements
 
-    DW_row = tl.load(DW + offsets, mask = mask, other = 0)  # .to(tl.float32)
+    DW_row = tl.load(DW + offsets, mask = mask, other = 0)
     e_row = tl.load(e + offsets, mask = mask, other = 0).to(tl.float32)
-    g_row = tl.load(g + offsets, mask = mask, other = 0)  # .to(tl.float32)
+    g_row = tl.load(g + offsets, mask = mask, other = 0)
 
-    # e = e.float()
-    # se = 1.0 / (1.0 + torch.exp(-e))
-    se_row = tl.sigmoid(e_row)  # 1.0 / (1.0 + tl.exp(-e_row))
+    # se = sigmoid(e), f = se * e, df = DW * f, dg = DW * g, de = dg * se * (1 + e * (1 - se)).
+    se_row = tl.sigmoid(e_row)
     # f = (se * e).to(dtype)
     f_row = se_row * e_row
     f_row = f_row.to(DW_row.dtype)
@@ -121,10 +98,9 @@ def _DWf_DW_dfg_kernel(
     de_row = dg_row.to(tl.float32) * se_row * (1.0 + e_row * (1.0 - se_row))
     de_row = de_row.to(DW_row.dtype)
 
-    # Store derivatives in buffers
-    tl.store(DW + offsets, h_row, mask = mask)  # h  = f * g
-    tl.store(e + offsets, df_row, mask = mask)  # df = DW * f
-    tl.store(g + offsets, de_row, mask = mask)  # de
+    tl.store(DW + offsets, h_row, mask = mask)
+    tl.store(e + offsets, df_row, mask = mask)
+    tl.store(g + offsets, de_row, mask = mask)
 
 
 def swiglu_DWf_DW_dfg_kernel(DW, e, g):

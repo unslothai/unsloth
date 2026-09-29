@@ -37,6 +37,7 @@ type UseRecipeStudioActionsParams = {
 };
 
 type UseRecipeStudioActionsResult = {
+  initialRecipeReady: boolean;
   workflowName: string;
   setWorkflowName: (value: string) => void;
   saveLoading: boolean;
@@ -111,11 +112,16 @@ export function useRecipeStudioActions({
     recipeId,
     currentSignature: persistence.currentSignature,
     payloadResult,
+    initialRunRows:
+      typeof initialPayload?.run?.rows === "number"
+        ? initialPayload.run.rows
+        : null,
     onExecutionStart,
     onPreviewSuccess,
   });
 
   return {
+    initialRecipeReady: persistence.initialRecipeReady,
     workflowName: persistence.workflowName,
     setWorkflowName: persistence.setWorkflowName,
     saveLoading: persistence.saveLoading,
