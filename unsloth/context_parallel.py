@@ -240,7 +240,11 @@ def patch_sft_trainer() -> None:
                 f"Unsloth: context parallelism supports DDP only, not {distributed_type}."
             )
         # accelerate's batch dispatcher (default for iterable / streaming datasets) ignores cp.
-        datasets = (getattr(self, "train_dataset", None), getattr(self, "eval_dataset", None))
+        eval_dataset = getattr(self, "eval_dataset", None)
+        datasets = [getattr(self, "train_dataset", None)]
+        datasets += (
+            list(eval_dataset.values()) if isinstance(eval_dataset, dict) else [eval_dataset]
+        )
         if getattr(accelerator, "dispatch_batches", None) or any(
             isinstance(d, torch.utils.data.IterableDataset) or "IterableDataset" in type(d).__name__
             for d in datasets

@@ -348,7 +348,7 @@ def _cp_env(monkeypatch):
     monkeypatch.setattr(cp, "_supports_context_parallel", lambda model: True)
 
 
-@pytest.mark.parametrize("case", ["iterable", "dispatch"])
+@pytest.mark.parametrize("case", ["iterable", "dispatch", "eval_dict"])
 def test_dispatched_or_iterable_loaders_are_refused(monkeypatch, case):
     import types
 
@@ -369,6 +369,7 @@ def test_dispatched_or_iterable_loaders_are_refused(monkeypatch, case):
         accelerator = accelerator,
         model = None,
         train_dataset = Stream() if case == "iterable" else [1],
+        eval_dataset = {"a": [1], "b": Stream()} if case == "eval_dict" else None,
     )
     with pytest.raises(NotImplementedError, match = "iterable datasets or dispatch_batches"):
         Trainer()
