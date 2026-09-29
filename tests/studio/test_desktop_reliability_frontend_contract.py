@@ -2391,7 +2391,7 @@ def test_audio_page_matches_the_image_rail_header_and_action_footer():
     )
     assert 'triggerLabelClassName="text-ui-14 @[68rem]:text-ui-16"' in header
     assert "grid h-full min-w-0 grid-cols-[1fr_auto_auto] gap-2" in header
-    assert "@[50rem]:grid-cols-[1fr_auto_1fr]" in header
+    assert "@[50rem]:grid-cols-[1fr_auto_minmax(max-content,1fr)]" in header
     assert "col-start-2 justify-self-end pt-" in header
     assert "@[50rem]:justify-self-center" in header
     assert "col-start-3" in header and "<LibraryPageLink" in header
@@ -2550,7 +2550,7 @@ def test_images_header_tracks_preview_and_preserves_titlebar_controls():
     )
     assert 'triggerLabelClassName="text-ui-14 @[68rem]:text-ui-16"' in header
     assert "grid h-full min-w-0 grid-cols-[1fr_auto_auto] gap-2" in header
-    assert "@[50rem]:grid-cols-[1fr_auto_1fr] @[50rem]:gap-0" in header
+    assert "@[50rem]:grid-cols-[1fr_auto_minmax(max-content,1fr)] @[50rem]:gap-0" in header
     assert "col-start-2" in header
     assert "col-start-3" in header
     assert 'labelClassName="hidden @[50rem]:inline"' in header

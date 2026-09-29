@@ -4625,7 +4625,9 @@ export function ImagesPage({
             )}
           </div>
         </div>
-        <div className="grid h-full min-w-0 grid-cols-[1fr_auto_auto] gap-2 @[50rem]:grid-cols-[1fr_auto_1fr] @[50rem]:gap-0">
+        {/* The toggle centres while it can; past the window controls' reserve the Library link
+            keeps its label and the toggle gives way first. */}
+        <div className="grid h-full min-w-0 grid-cols-[1fr_auto_auto] gap-2 @[50rem]:grid-cols-[1fr_auto_minmax(max-content,1fr)] @[50rem]:gap-0">
           <div className="pointer-events-auto col-start-2 justify-self-center pt-[var(--studio-chat-header-padding-top,11px)]">
             <PillTabs
               dataTour="images-mode"
