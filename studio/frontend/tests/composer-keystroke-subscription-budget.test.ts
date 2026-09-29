@@ -57,13 +57,18 @@ test("a markdown block reads the render_html presence from context, not the stor
 
 test("the render_html scan happens once per message part, above the blocks", () => {
   const impl = body(markdown, "const MarkdownTextImpl = () => {", "\n};");
+  const renderer = body(
+    markdown,
+    "function MarkdownTextRenderer({",
+    "\nconst MarkdownTextImpl",
+  );
   assert.match(
     impl,
     /useAuiState\(\(\{ message \}\) =>\s*message\.parts\.some\(isRenderableRenderHtmlToolPart\),?\s*\)/,
   );
   // The value has to reach the blocks, or the context read above answers with its default.
   assert.match(
-    impl,
+    renderer,
     /<RenderHtmlToolPresenceContext\.Provider\s+value=\{messageHasRenderableRenderHtmlTool\}/,
   );
 });

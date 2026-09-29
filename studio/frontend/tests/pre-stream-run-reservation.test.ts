@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   adoptPreStreamRunReservation,
   cancelPreStreamRunReservations,
+  cancelPreStreamRunForThreadIds,
   claimPreStreamRunReservation,
   findPreStreamRunReservation,
   hasPreStreamRunReservation,
@@ -104,10 +105,7 @@ test("local reservations can be snapshotted and cancelled before streaming", () 
   });
   assert.ok(local);
   assert.ok(external);
-  assert.equal(
-    adoptPreStreamRunReservation(local, ["remote-thread"]),
-    true,
-  );
+  assert.equal(adoptPreStreamRunReservation(local, ["remote-thread"]), true);
   assert.deepEqual(listLocalPreStreamRunReservations(), [
     { token: local, threadIds: ["local-thread", "remote-thread"] },
   ]);
@@ -134,3 +132,31 @@ test("cancelling an unclaimed reservation releases it immediately", () => {
   assert.equal(isPreStreamRunReservationCancelled(token), false);
   assert.equal(releasePreStreamRunReservation(token), false);
 });
+
+for (const usesLocalModel of [true, false]) {
+  test(`steering cancels only its own ${usesLocalModel ? "local" : "external"} pre-stream reservation`, () => {
+    let cancels = 0;
+    const own = reservePreStreamRun(["steer-local", "steer-remote"], {
+      usesLocalModel,
+      cancel: () => {
+        cancels += 1;
+      },
+    })!;
+    const sibling = reservePreStreamRun(["steer-sibling"])!;
+    const unresolved = reservePreStreamRun([])!;
+    claimPreStreamRunReservation(own);
+    if (!usesLocalModel) assert.equal(cancelPreStreamRunReservations([own]), 0);
+    assert.equal(cancelPreStreamRunForThreadIds([]), false);
+    assert.equal(cancelPreStreamRunForThreadIds(["steer-remote"]), true);
+    assert.equal(cancels, 1);
+    assert.equal(isPreStreamRunReservationCancelled(own), true);
+    assert.equal(hasPreStreamRunReservation(["steer-local"]), false);
+    assert.equal(hasPreStreamRunReservation(["steer-sibling"]), true);
+    assert.equal(hasPreStreamRunReservation([]), true);
+    const replacement = reservePreStreamRun(["steer-local"])!;
+    releasePreStreamRunReservation(own);
+    assert.equal(findPreStreamRunReservation(["steer-local"]), replacement);
+    for (const token of [sibling, unresolved, replacement])
+      releasePreStreamRunReservation(token);
+  });
+}

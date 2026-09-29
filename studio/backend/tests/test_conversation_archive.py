@@ -635,6 +635,12 @@ def test_a_folded_retrieval_result_is_still_kept_out_of_the_archive():
     assert "ASKEDAFTERWARDS?" in rendered
     assert "ZQXVARA123" in rendered
 
+    recalled[2]["content"] = [{"type": "text", "text": "<chunk>RETRIEVEDPASSAGE</chunk>"}]
+    listed = _coalesce_consecutive_user_turns(fold_tool_results_into_user(recalled))
+    rendered = archive.render_turn(archive._archivable(listed))
+    assert "RETRIEVEDPASSAGE" not in rendered
+    assert "ASKEDAFTERWARDS?" in rendered
+
     # An image on the next question makes the coalesce produce a part list, not a string, and
     # reading only strings archived the passage on exactly the turns that carry an image.
     with_image = [
@@ -1429,13 +1435,13 @@ def test_the_late_archive_cleanup_spares_a_recreated_thread(conn):
     _save_thread(thread_id, turns, append = True)
     assert conversation_archive.archive_turns(thread_id, turns) == 1
 
-    chat_history._remove_conversation_archives([thread_id])
+    chat_history._remove_thread_rag_data([thread_id])
 
     assert conversation_archive.has_archive(thread_id) is True
 
     # And a thread that really is gone still has its archive dropped.
     studio_db.delete_chat_threads([thread_id])
-    chat_history._remove_conversation_archives([thread_id])
+    chat_history._remove_thread_rag_data([thread_id])
     assert conversation_archive.has_archive(thread_id) is False
 
 
@@ -3511,7 +3517,7 @@ def test_the_deleted_conversation_goes_even_when_its_id_comes_back(conn):
     _save_thread(thread_id, old_turns + fresh, append = True)
     assert conversation_archive.archive_turns(thread_id, fresh) == 1
 
-    chat_history._remove_conversation_archives([thread_id], cutoff = cutoff)
+    chat_history._remove_thread_rag_data([thread_id], cutoff = cutoff)
 
     scope = store.conversation_archive_scope(thread_id)
     remaining = " ".join(

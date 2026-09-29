@@ -50,7 +50,7 @@ SETTINGS = {
 def _reset_studio_db(tmp_path, monkeypatch):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
     monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "Projects"))
-    monkeypatch.setattr(studio_db, "_schema_ready", False)
+    monkeypatch.setattr(studio_db, "_schema_ready", set())
 
 
 def _thread(thread_id: str = "thread-1", **extra) -> dict:
@@ -148,7 +148,6 @@ def test_fork_inherits_the_snapshot(tmp_path, monkeypatch):
         source_thread_id = "thread-1",
         branch_message_id = "message-1",
         new_thread_id = "thread-2",
-        new_title = "Fork",
         created_at = 1_700_000_000_002,
         id_factory = lambda: "message-2",
     )
@@ -475,7 +474,7 @@ def test_the_watermark_column_is_added_to_an_existing_database(tmp_path, monkeyp
         conn.commit()
     finally:
         conn.close()
-    monkeypatch.setattr(studio_db, "_schema_ready", False)
+    monkeypatch.setattr(studio_db, "_schema_ready", set())
 
     studio_db.write_chat_thread_settings(
         "thread-1", replace = {"toolsEnabled": True}, seq = 1, writer = "tab-a"

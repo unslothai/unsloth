@@ -14,7 +14,11 @@ from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
+from fastapi.testclient import TestClient
 from starlette.requests import Request
+from starlette.responses import PlainTextResponse
+from starlette.routing import Mount
+from starlette.applications import Starlette
 
 from auth import storage
 from auth.authentication import (
@@ -130,6 +134,99 @@ def test_exact_route_matrix_matches_registered_topology():
     intended = {("POST", path.removeprefix("/v1")) for path in INFERENCE_POST_PATHS} | {
         ("GET", "/models"), ("GET", "/models/{model_id:path}")}
     assert intended <= registered
+
+
+def test_the_allowlisted_studio_paths_name_routes_that_exist():
+    # The matrix above pins the /v1 router. This one covers the studio router, whose
+    # paths carry a mount prefix, so a rename there cannot silently strand an entry.
+    from routes.inference import studio_router
+    from utils.keyless_api_access import _INFERENCE_ROUTES
+
+    registered = {("/api/inference" + route.path, method)
+                  for route in studio_router.routes
+                  for method in getattr(route, "methods", set())}
+    for method, path in _INFERENCE_ROUTES:
+        if path.startswith("/api/inference/"):
+            assert (path, method) in registered, path
+
+
+@pytest.mark.parametrize("token", [None, "not-needed"])
+def test_resident_model_discovery_preserves_keyless_inference_access(token):
+    seed_user()
+    set_keyless_api_access("inference", tools = False)
+
+    def discovery_request(method = "GET", path = "/api/inference/loaded-models"):
+        if token is None:
+            return request_for(path = path, method = method)
+        return bearer_request(token, path = path, method = method)
+
+    assert subject_of(discovery_request()) == storage.DEFAULT_ADMIN_USERNAME
+    for method, path in (
+        ("POST", "/api/inference/loaded-models"),
+        ("POST", "/api/inference/load"),
+        ("GET", "/api/inference/status"),
+    ):
+        with pytest.raises(HTTPException):
+            subject_of(discovery_request(method, path))
+
+    set_keyless_api_access("off")
+    with pytest.raises(HTTPException):
+        subject_of(discovery_request())
+
+
+@pytest.mark.parametrize("token", [None, "not-needed"])
+def test_decisions_mcp_preserves_keyless_inference_access(token):
+    seed_user()
+    set_keyless_api_access("inference", tools = False)
+
+    def decisions_request():
+        if token is None:
+            return request_for(path = "/mcp/decisions/", method = "POST")
+        return bearer_request(token, path = "/mcp/decisions/", method = "POST")
+
+    assert subject_of(decisions_request()) == storage.DEFAULT_ADMIN_USERNAME
+    assert not scope_covers("inference", "GET", "/mcp/decisions/")
+
+    set_keyless_api_access("off")
+    with pytest.raises(HTTPException):
+        subject_of(decisions_request())
+
+
+def test_mounted_decisions_mcp_preserves_keyless_inference_access(monkeypatch):
+    from routes import systemone
+
+    seen = []
+    real_security = systemone.security
+
+    async def capture_security(request):
+        seen.append(
+            (
+                request.scope["path"],
+                request.scope["root_path"],
+                keyless_request_allowed(request),
+            )
+        )
+        return await real_security(request)
+
+    monkeypatch.setattr(systemone, "security", capture_security)
+
+    async def endpoint(scope, receive, send):
+        await PlainTextResponse("ok")(scope, receive, send)
+
+    app = Starlette(
+        routes = [Mount(systemone.MCP_PATH, app = systemone.RequireStudioAuth(endpoint))]
+    )
+    for name, value in vars(app_state()).items():
+        setattr(app.state, name, value)
+
+    seed_user()
+    set_keyless_api_access("inference", tools = False)
+    with TestClient(
+        app, base_url = "http://127.0.0.1", client = ("127.0.0.1", 50000)
+    ) as client:
+        response = client.post(f"{systemone.MCP_PATH}/")
+    assert response.status_code == 200, (response.text, seen)
+    assert seen == [(systemone.MCP_PATH, "", True)]
 
 
 def test_settings_are_immediate_and_fail_closed(monkeypatch):
@@ -988,8 +1085,9 @@ def test_protected_side_effect_guards_remain_wired():
     assert "_require_a_credential_of_its_own" in inspect.getsource(auth.change_password)
     assert all(
         "request_admitted_without_credential" in inspect.getsource(handler)
-        for handler in (inference._maybe_auto_switch_model, inference.openai_chat_completions)
+        for handler in (inference._keyless_caller_held_back, inference.openai_chat_completions)
     )
+    assert "_keyless_caller_held_back" in inspect.getsource(inference._maybe_auto_switch_model)
     assert all(
         "authenticated_without_credential" in inspect.getsource(handler)
         and "not no_credential" in inspect.getsource(handler)
@@ -1016,14 +1114,96 @@ def test_protected_side_effect_guards_remain_wired():
     assert security.scheme_name == "HTTPBearer"
 
 
-def test_keyless_idle_restore_requires_the_requested_model(monkeypatch):
-    from core.inference import llama_keepwarm as kw; import auth.authentication as authentication
+def _keyless_switch_hook(scope):
+    from studio.backend.tests import test_openai_auto_switch as auto
+    seed_user(); set_keyless_api_access(scope)
+    request = request_for(headers = {"Host": "localhost:8888", "Authorization": "Bearer no-key-required"})
+    assert admitted_without_session(request)
+    return lambda model: asyncio.run(auto.inference_route._maybe_auto_switch_model(model, request, "unsloth"))
+
+
+@pytest.mark.parametrize("scope", ["inference", "full"])
+def test_keyless_idle_restore_requires_the_requested_model_unless_the_scope_could_load(monkeypatch, scope):
+    from core.inference import llama_keepwarm as kw
     from studio.backend.tests import test_openai_auto_switch as auto
     backend = auto._FakeBackend(None); rec = auto._LoadRecorder(backend)
     auto._wire(monkeypatch, enabled = False, resolves_to = None, backend = backend, recorder = rec)
     monkeypatch.setattr(auto.settings, "idle_unload_is_configured", lambda: True)
     monkeypatch.setattr(kw, "_last_unloaded_model", ("/cache/snap/A", "Q4_K_M", "org/A-GGUF"))
-    monkeypatch.setattr(authentication, "request_admitted_without_credential", lambda _r: True)
-    auto._run_hook("org/B-GGUF"); assert rec.calls == []
-    auto._run_hook("org/A-GGUF:Q4_K_M"); assert len(rec.calls) == 1
+    hook = _keyless_switch_hook(scope)
+    hook("gpt-4o-mini")
+    if scope == "full":
+        assert len(rec.calls) == 1; return
+    assert rec.calls == []
+    hook("org/A-GGUF:Q4_K_M"); assert len(rec.calls) == 1
+
+
+@pytest.mark.parametrize(("scope", "loads"), [("full", 1), ("inference", 0)])
+def test_keyless_auto_switch_loads_under_the_full_scope_only(monkeypatch, scope, loads):
+    from studio.backend.tests import test_openai_auto_switch as auto
+    backend, rec = auto._wired(monkeypatch, auto._FakeBackend(None), ("/cache/snap/A", "Q4_K_M", "org/A-GGUF"))
+    monkeypatch.setattr(auto.settings, "idle_unload_is_configured", lambda: False)
+    _keyless_switch_hook(scope)("org/A-GGUF")
+    assert len(rec.calls) == loads
+
+
+@pytest.mark.parametrize(("loaded", "status"), [(None, 400), ("org/Other-GGUF", 404)])
+def test_a_held_back_keyless_caller_is_told_it_cannot_switch(monkeypatch, loaded, status):
+    from studio.backend.tests import test_openai_auto_switch as auto
+    backend, rec = auto._wired(monkeypatch, auto._FakeBackend(loaded), ("/cache/snap/A", "Q4_K_M", "org/A-GGUF"))
+    monkeypatch.setattr(auto.settings, "idle_unload_is_configured", lambda: False)
+    monkeypatch.setattr(auto.inference_route, "get_inference_backend", lambda: SimpleNamespace(active_model_name = None, models = {}))
+    seed_user(); set_keyless_api_access("inference")
+    request = request_for(headers = {"Host": "localhost:8888"})
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(auto.inference_route.openai_chat_completions(auto._chat_request(model = "org/A-GGUF"), request, "unsloth"))
+    assert (excinfo.value.status_code, rec.calls) == (status, [])
+    assert "keyless api access" in str(excinfo.value.detail).lower() and not excinfo.value.headers
+    set_keyless_api_access("full")
+    assert asyncio.run(auto.inference_route._no_model_loaded_error("No model loaded.", "org/A-GGUF", request, status = 400)) == (400, "No model loaded.")
+
+
+def test_the_keyless_load_probe_runs_off_the_event_loop(monkeypatch):
+    """A slow bind-host resolver on the loop would stall every in-flight generation."""
+    from routes import inference
+    from utils import keyless_api_access as keyless
+    seed_user(); set_keyless_api_access("full")
+    request = request_for(headers = {"Host": "localhost:8888"})
+    assert admitted_without_session(request)
+    # as the middleware leaves it, so the admission fallback skips the predicate
+    keyless.mark_keyless_admission(request, True)
+    threads: list[int] = []
+    real = keyless._keyless_request_allowed_for_scope
+    def _spy(*args, **kwargs):
+        threads.append(threading.get_ident()); return real(*args, **kwargs)
+    monkeypatch.setattr(keyless, "_keyless_request_allowed_for_scope", _spy)
+    async def _drive():
+        return await inference._keyless_caller_held_back(request), threading.get_ident()
+    held_back, loop_thread = asyncio.run(_drive())
+    assert held_back is False
+    assert threads and all(thread != loop_thread for thread in threads)
+
+
+def test_the_keyless_load_probe_waits_out_a_settings_refresh(monkeypatch):
+    """The sync settings read fails closed to "off" during a concurrent refresh, dropping the full-scope switch."""
+    from routes import inference
+    from utils import keyless_api_access as keyless
+    seed_user(); set_keyless_api_access("full")
+    request = request_for(headers = {"Host": "localhost:8888"})
+    assert admitted_without_session(request)
+    keyless.mark_keyless_admission(request, True)
+    real = keyless._read_settings_from_db
+    started = threading.Event()
+    def _slow():
+        started.set(); time.sleep(0.05); return real()
+    monkeypatch.setattr(keyless, "_read_settings_from_db", _slow)
+    with keyless._cache_lock:
+        keyless._cached_settings = None
+    refresher = threading.Thread(target = keyless.get_keyless_api_access_scope)
+    refresher.start(); assert started.wait(2)
+    try:
+        held_back = asyncio.run(inference._keyless_caller_held_back(request))
+    finally:
+        refresher.join()
+    assert held_back is False
 # fmt: on

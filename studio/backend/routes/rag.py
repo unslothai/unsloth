@@ -12,6 +12,7 @@ Nothing logs a traceback for it: the condition is fixed for the session and rag_
 
 from __future__ import annotations
 
+from core.training.account_jobs import account_path
 import hashlib
 import hmac
 import json
@@ -33,6 +34,13 @@ from pydantic import BaseModel, Field
 from auth.authentication import get_current_subject, request_admitted_without_credential
 from core.rag import config, folder_sync, ingestion, retrieval, store
 from storage import rag_db
+from utils.account_context import (
+    OWNER,
+    AccountContext,
+    bind_account,
+    current_account,
+    reset_account,
+)
 from utils.paths import ensure_dir, rag_uploads_root
 
 logger = logging.getLogger(__name__)
@@ -190,6 +198,7 @@ def _save_native_path_upload(lease: str) -> tuple[str, str, str]:
     except NativePathLeaseError as exc:
         raise HTTPException(status_code = 400, detail = str(exc)) from exc
 
+    account_path(grant.canonical_path)
     # Path.name is one component, so a "\" in it is part of the name, as in "AC\DC.pdf".
     filename = _document_label(grant.canonical_path.name)
     try:
@@ -991,29 +1000,43 @@ _CONTENT_TYPES = {
 }
 
 
+# The signed token carries the account it was minted for; empty means the owner.
+_DOCUMENT_TOKEN_VERSION = "v2"
+
+
+def _document_mac(document_id: str, exp: str, account_id: str) -> str:
+    payload = f"rag:{_DOCUMENT_TOKEN_VERSION}:{account_id}:{document_id}.{exp}"
+    return hmac.new(_PREVIEW_SECRET, payload.encode(), hashlib.sha256).hexdigest()
+
+
 def _sign_document(document_id: str) -> str:
-    exp = int(time.time()) + _PREVIEW_TTL
-    payload = f"{document_id}.{exp}"
-    sig = hmac.new(_PREVIEW_SECRET, payload.encode(), hashlib.sha256).hexdigest()
-    return f"{payload}.{sig}"
+    account = current_account()
+    account_id = "" if account.is_owner else account.account_id
+    exp = str(int(time.time()) + _PREVIEW_TTL)
+    return f"{exp}.{account_id}.{_document_mac(document_id, exp, account_id)}"
 
 
-def _verify_document_token(token: str) -> str | None:
+def _verify_document_token(document_id: str, token: str) -> AccountContext | None:
+    """The account whose uploads ``token`` opens for ``document_id``, or None once deactivated."""
     try:
-        document_id, exp_s, sig = token.rsplit(".", 2)
+        exp_s, account_id, sig = token.split(".", 2)
     except ValueError:
         return None
-    expected = hmac.new(
-        _PREVIEW_SECRET, f"{document_id}.{exp_s}".encode(), hashlib.sha256
-    ).hexdigest()
-    if not hmac.compare_digest(sig, expected):
+    if "." in sig:
+        return None
+    if not hmac.compare_digest(sig, _document_mac(document_id, exp_s, account_id)):
         return None
     try:
         if int(exp_s) < int(time.time()):
             return None
     except ValueError:
         return None
-    return document_id
+    if not account_id:
+        return OWNER
+    from auth.storage import get_account_by_id
+
+    account = get_account_by_id(account_id)
+    return None if account is None or account.is_owner else account
 
 
 @router.get("/documents/{document_id}/preview-target")
@@ -1089,23 +1112,27 @@ def document_file_signed(document_id: str, token: str = Query(...)) -> FileRespo
     requests work."""
     # Token first: this is the one endpoint with no bearer, and _require_rag() now opens
     # a connection on its first call, which is not work an unverified token should buy.
-    signed_id = _verify_document_token(token)
-    if signed_id != document_id:
+    account = _verify_document_token(document_id, token)
+    if account is None:
         raise HTTPException(status_code = 401, detail = "Invalid or expired token")
-    _require_rag()
-    conn = _rag_connection()
+    # No auth dependency on this route, so without this bind every read hits the owner's store.
+    marker = bind_account(account)
     try:
-        doc = store.get_visible_document(conn, document_id)
-        if doc is not None:
-            _require_document_owner(conn, doc)
+        _require_rag()
+        conn = _rag_connection()
+        try:
+            doc = store.get_visible_document(conn, document_id)
+            if doc is not None:
+                _require_document_owner(conn, doc)
+        finally:
+            conn.close()
+        stored_path = (doc or {}).get("stored_path")
+        if not doc or not stored_path or not os.path.isfile(stored_path):
+            raise HTTPException(status_code = 404, detail = "Document file not found")
+        if not _is_managed_preview_path(stored_path):
+            raise HTTPException(status_code = 403, detail = "Forbidden")
     finally:
-        conn.close()
-    stored_path = (doc or {}).get("stored_path")
-    if not doc or not stored_path or not os.path.isfile(stored_path):
-        raise HTTPException(status_code = 404, detail = "Document file not found")
-    # Confine to the uploads root (defense in depth).
-    if not _is_managed_preview_path(stored_path):
-        raise HTTPException(status_code = 403, detail = "Forbidden")
+        reset_account(marker)
     ext = os.path.splitext(doc["filename"])[1].lower()
     return FileResponse(
         stored_path,

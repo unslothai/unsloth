@@ -72,11 +72,20 @@ on:
       # This is the only lane that executes it, and the Windows smoke workflow it moved
       # from deliberately skips it, so without this line a PR editing only the test
       # would never run it.
-      - 'tests/studio/test_native_path_resolver_degrades.ps1'
+      - 'tests/studio/test_path_resolver_degrades.ps1'
       - 'tests/python/test_windows_python_venv_hardening.py'
       - 'tests/python/test_windows_setup_output_encoding.py'
-      - 'tests/python/test_windows_installer_native_type_fallback.py'
+      - 'tests/python/test_windows_installer_resolver_fallback.py'
+      - 'tests/python/test_installer_helper_declaration_order.py'
+      - 'tests/python/test_installer_embedded_nvidia_probe.py'
       - 'tests/python/test_pwsh_runner_encoding.py'
+      # The deliberate unreadable-directory and traversal-limit cases for the
+      # no-compiler detector's temp scan live in this job, and only here. The
+      # no-compiler workflow runs the scanner's positive control but never creates
+      # those conditions, so without both lines a PR touching only the scanner
+      # could regress the error handling with nothing red.
+      - '.github/scripts/Watch-ForCompiler.ps1'
+      - 'tests/python/test_compiler_watch_temp_scan.py'
       # Every PowerShell test in this job shells out through it, so a change here can break
       # all of them. It was in no path filter, so it triggered nothing.
       - 'tests/_shared/unsloth_pwsh_runner.py'
@@ -85,6 +94,7 @@ on:
       # above is only the entrypoint; these two are the rest of what it loads.
       - 'tests/studio/install/test_keep_install_backcompat_9979.py'
       - 'studio/prebuilt_core.py'
+      - 'studio/nvidia_probe.py'
       - 'studio/backend/utils/prebuilt/llama_backend.py'
       - 'tests/sh/test_install_rollback_lifecycle.sh'
       - 'tests/studio/test_install_rollback_lifecycle.ps1'
@@ -92,8 +102,18 @@ on:
       - 'studio/setup.ps1'
       - 'tests/studio/test_setup_xpu_runtime_prereport.ps1'
       - 'tests/studio/test_xpu_arm64_torchaudio.ps1'
+      - 'tests/studio/test_torch_overrides_merge.ps1'
       - 'tests/studio/test_amd_venv_repair_loop.ps1'
       - 'tests/studio/test_amd_name_arch_r9700.ps1'
+      - 'tests/studio/test_nvidia_library_inventory.ps1'
+      - 'tests/studio/test_nvidia_smi_discovery.ps1'
+      - 'tests/studio/test_nvidia_python_probe_parity.ps1'
+      - 'tests/studio/test_install_lock_excludes_aliases.ps1'
+      - 'tests/studio/test_early_python_path_resolver.ps1'
+      - 'tests/studio/test_early_python_process_image.ps1'
+      - 'tests/studio/test_early_python_icon_refresh.ps1'
+      - 'tests/studio/test_nvidia_adapter_presence.ps1'
+      - 'tests/studio/test_nvidia_presence_xpu_timeout.ps1'
       - 'tests/studio/test_application_control_cli_fallback.ps1'
       # test_application_control_cli_fallback.ps1 pins install.ps1's trampoline against
       # process.rs's, so a change to either spelling has to run here.
@@ -103,6 +123,30 @@ on:
       - 'tests/sh/test_setup_xpu_posix_summary.sh'
       - 'studio/setup.sh'
       - '.github/workflows/cross-platform-parity-ci.yml'
+      # Read or executed by the parity tests above but not matched by any entry:
+      # test_install_rollback_lifecycle.sh sources _harness.sh and _ps1_source.sh;
+      # test_windows_setup_output_encoding.py dot-sources Get-FunctionSource.ps1 and
+      # asserts on install.rs and update.rs next to process.rs;
+      # test_installer_skip_autostart.py asserts on README.md;
+      # test_installer_profile_hardening.py imports unsloth_cli.commands, which imports
+      # every command module; prebuilt_core.py imports auth_safe.py and llama_backend.py
+      # needs its package init. The pytest step runs from the repo root, so the root
+      # conftest, tests/_shared and the pytest config in pyproject.toml apply on all
+      # three operating systems.
+      - 'tests/sh/_harness.sh'
+      - 'tests/sh/_ps1_source.sh'
+      - 'tests/studio_setup_ps1/Get-FunctionSource.ps1'
+      - 'studio/src-tauri/src/install.rs'
+      - 'studio/src-tauri/src/update.rs'
+      - 'README.md'
+      - 'unsloth_cli/*.py'
+      - 'unsloth_cli/commands/*.py'
+      - 'studio/backend/utils/auth_safe.py'
+      - 'studio/backend/utils/prebuilt/__init__.py'
+      - 'tests/conftest.py'
+      - 'tests/__init__.py'
+      - 'tests/_shared/**'
+      - 'pyproject.toml'
   push:
     branches: [main]
     paths:
@@ -148,11 +192,20 @@ on:
       # This is the only lane that executes it, and the Windows smoke workflow it moved
       # from deliberately skips it, so without this line a PR editing only the test
       # would never run it.
-      - 'tests/studio/test_native_path_resolver_degrades.ps1'
+      - 'tests/studio/test_path_resolver_degrades.ps1'
       - 'tests/python/test_windows_python_venv_hardening.py'
       - 'tests/python/test_windows_setup_output_encoding.py'
-      - 'tests/python/test_windows_installer_native_type_fallback.py'
+      - 'tests/python/test_windows_installer_resolver_fallback.py'
+      - 'tests/python/test_installer_helper_declaration_order.py'
+      - 'tests/python/test_installer_embedded_nvidia_probe.py'
       - 'tests/python/test_pwsh_runner_encoding.py'
+      # The deliberate unreadable-directory and traversal-limit cases for the
+      # no-compiler detector's temp scan live in this job, and only here. The
+      # no-compiler workflow runs the scanner's positive control but never creates
+      # those conditions, so without both lines a PR touching only the scanner
+      # could regress the error handling with nothing red.
+      - '.github/scripts/Watch-ForCompiler.ps1'
+      - 'tests/python/test_compiler_watch_temp_scan.py'
       # Every PowerShell test in this job shells out through it, so a change here can break
       # all of them. It was in no path filter, so it triggered nothing.
       - 'tests/_shared/unsloth_pwsh_runner.py'
@@ -161,6 +214,7 @@ on:
       # above is only the entrypoint; these two are the rest of what it loads.
       - 'tests/studio/install/test_keep_install_backcompat_9979.py'
       - 'studio/prebuilt_core.py'
+      - 'studio/nvidia_probe.py'
       - 'studio/backend/utils/prebuilt/llama_backend.py'
       - 'tests/sh/test_install_rollback_lifecycle.sh'
       - 'tests/studio/test_install_rollback_lifecycle.ps1'
@@ -168,8 +222,18 @@ on:
       - 'studio/setup.ps1'
       - 'tests/studio/test_setup_xpu_runtime_prereport.ps1'
       - 'tests/studio/test_xpu_arm64_torchaudio.ps1'
+      - 'tests/studio/test_torch_overrides_merge.ps1'
       - 'tests/studio/test_amd_venv_repair_loop.ps1'
       - 'tests/studio/test_amd_name_arch_r9700.ps1'
+      - 'tests/studio/test_nvidia_library_inventory.ps1'
+      - 'tests/studio/test_nvidia_smi_discovery.ps1'
+      - 'tests/studio/test_nvidia_python_probe_parity.ps1'
+      - 'tests/studio/test_install_lock_excludes_aliases.ps1'
+      - 'tests/studio/test_early_python_path_resolver.ps1'
+      - 'tests/studio/test_early_python_process_image.ps1'
+      - 'tests/studio/test_early_python_icon_refresh.ps1'
+      - 'tests/studio/test_nvidia_adapter_presence.ps1'
+      - 'tests/studio/test_nvidia_presence_xpu_timeout.ps1'
       - 'tests/studio/test_application_control_cli_fallback.ps1'
       # test_application_control_cli_fallback.ps1 pins install.ps1's trampoline against
       # process.rs's, so a change to either spelling has to run here.
@@ -179,6 +243,30 @@ on:
       - 'tests/sh/test_setup_xpu_posix_summary.sh'
       - 'studio/setup.sh'
       - '.github/workflows/cross-platform-parity-ci.yml'
+      # Read or executed by the parity tests above but not matched by any entry:
+      # test_install_rollback_lifecycle.sh sources _harness.sh and _ps1_source.sh;
+      # test_windows_setup_output_encoding.py dot-sources Get-FunctionSource.ps1 and
+      # asserts on install.rs and update.rs next to process.rs;
+      # test_installer_skip_autostart.py asserts on README.md;
+      # test_installer_profile_hardening.py imports unsloth_cli.commands, which imports
+      # every command module; prebuilt_core.py imports auth_safe.py and llama_backend.py
+      # needs its package init. The pytest step runs from the repo root, so the root
+      # conftest, tests/_shared and the pytest config in pyproject.toml apply on all
+      # three operating systems.
+      - 'tests/sh/_harness.sh'
+      - 'tests/sh/_ps1_source.sh'
+      - 'tests/studio_setup_ps1/Get-FunctionSource.ps1'
+      - 'studio/src-tauri/src/install.rs'
+      - 'studio/src-tauri/src/update.rs'
+      - 'README.md'
+      - 'unsloth_cli/*.py'
+      - 'unsloth_cli/commands/*.py'
+      - 'studio/backend/utils/auth_safe.py'
+      - 'studio/backend/utils/prebuilt/__init__.py'
+      - 'tests/conftest.py'
+      - 'tests/__init__.py'
+      - 'tests/_shared/**'
+      - 'pyproject.toml'
   workflow_dispatch:
 
 concurrency:
@@ -187,7 +275,7 @@ concurrency:
   # a RUNNING main job being killed, but GitHub cancels any PENDING run in the group
   # the moment a newer one is queued, so a merge burst still leaves only the tip.
   # See studio-backend-ci.yml, which is grouped per commit on main for that reason.
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -246,8 +334,11 @@ jobs:
           tests/python/test_cross_platform_parity.py
           tests/python/test_windows_python_venv_hardening.py
           tests/python/test_windows_setup_output_encoding.py
-          tests/python/test_windows_installer_native_type_fallback.py
+          tests/python/test_windows_installer_resolver_fallback.py
+          tests/python/test_installer_helper_declaration_order.py
           tests/python/test_pwsh_runner_encoding.py
+          tests/python/test_compiler_watch_temp_scan.py
+          tests/python/test_installer_embedded_nvidia_probe.py
           tests/test_installer_skip_autostart.py
           tests/test_installer_system32_guard.py
           tests/test_installer_interactive_prompts.py
@@ -270,6 +361,10 @@ jobs:
       - name: XPU arm64 torchaudio tests
         shell: pwsh
         run: pwsh -NoProfile -File tests/studio/test_xpu_arm64_torchaudio.ps1
+      # Same extraction; the spaced-path checks run only on Windows (#10722).
+      - name: Torch overrides merge tests
+        shell: pwsh
+        run: pwsh -NoProfile -File tests/studio/test_torch_overrides_merge.ps1
       # Same again: mocked filesystem reads and one `python -c` child, so no venv, no AMD GPU and
       # no Windows needed. Read the file header before adding cases -- pwsh 7 cannot reproduce the
       # 5.1 half of #8335, so the checks covering it are deliberately source shapes.
@@ -288,6 +383,83 @@ jobs:
       - name: AMD GPU-name arch table tests
         shell: pwsh
         run: pwsh -NoProfile -File tests/studio/test_amd_name_arch_r9700.ps1
+      # AST-extracted selectors over a stubbed nvidia-smi and inventory; the real-inventory
+      # checks skip on a runner without an NVIDIA driver library. The 5.1 leg compiles the
+      # P/Invoke helper with the .NET Framework compiler the CLI's setup.ps1 launch uses.
+      - name: NVIDIA driver-library inventory tests
+        shell: pwsh
+        run: pwsh -NoProfile -File tests/studio/test_nvidia_library_inventory.ps1
+      - name: NVIDIA driver-library inventory tests (Windows PowerShell 5.1)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: powershell -NoProfile -File tests\studio\test_nvidia_library_inventory.ps1
+      # Both legs, and both matter: the candidate list is what decides whether a real GPU is
+      # seen at all, and 5.1 is the host the Desktop app launches the installer in.
+      - name: nvidia-smi discovery tests
+        shell: pwsh
+        run: pwsh -NoProfile -File tests/studio/test_nvidia_smi_discovery.ps1
+      - name: nvidia-smi discovery tests (Windows PowerShell 5.1)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: powershell -NoProfile -File tests\studio\test_nvidia_smi_discovery.ps1
+      # The inventory's Python rung, which recovers the CUDA version and the per-device compute
+      # capabilities on hosts that cannot emit a P/Invoke type. Pins the embedded probe against
+      # studio/nvidia_probe.py and against the other copy; the 5.1 leg matters because
+      # Constrained Language Mode is one of the policies that make the emitted rung decline.
+      - name: NVIDIA Python probe parity tests
+        shell: pwsh
+        run: pwsh -NoProfile -File tests/studio/test_nvidia_python_probe_parity.ps1
+      - name: NVIDIA Python probe parity tests (Windows PowerShell 5.1)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: powershell -NoProfile -File tests\studio\test_nvidia_python_probe_parity.ps1
+      # Spawns a real holder process and takes the lock through a junction (Windows) or a
+      # symbolic link (Linux), so it needs both legs: the alias mechanisms differ per OS and
+      # .NET enforces FileShare.None through a different mechanism on each.
+      - name: Install lock alias-exclusion tests
+        shell: pwsh
+        run: pwsh -NoProfile -File tests/studio/test_install_lock_excludes_aliases.ps1
+      # Both legs: the lexical fallback differs between Windows PowerShell 5.1 and pwsh 7.
+      - name: Early Python path resolver tests
+        shell: pwsh
+        run: pwsh -NoProfile -File tests/studio/test_early_python_path_resolver.ps1
+      - name: Early Python path resolver tests (Windows PowerShell 5.1)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: powershell -NoProfile -File tests\studio\test_early_python_path_resolver.ps1
+      # 5.1 too: the runner builds the command line by hand there (no ArgumentList).
+      - name: Early Python process image tests
+        shell: pwsh
+        run: pwsh -NoProfile -File tests/studio/test_early_python_process_image.ps1
+      - name: Early Python process image tests (Windows PowerShell 5.1)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: powershell -NoProfile -File tests\studio\test_early_python_process_image.ps1
+      - name: Early Python icon refresh tests
+        shell: pwsh
+        run: pwsh -NoProfile -File tests/studio/test_early_python_icon_refresh.ps1
+      - name: Early Python icon refresh tests (Windows PowerShell 5.1)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: powershell -NoProfile -File tests\studio\test_early_python_icon_refresh.ps1
+      - name: Install lock alias-exclusion tests (Windows PowerShell 5.1)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: powershell -NoProfile -File tests\studio\test_install_lock_excludes_aliases.ps1
+      - name: NVIDIA adapter presence tests
+        shell: pwsh
+        run: pwsh -NoProfile -File tests/studio/test_nvidia_adapter_presence.ps1
+      - name: NVIDIA presence XPU update route tests
+        shell: pwsh
+        run: pwsh -NoProfile -File tests/studio/test_nvidia_presence_xpu_timeout.ps1
+      - name: NVIDIA adapter presence tests (Windows PowerShell 5.1)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: powershell -NoProfile -File tests\studio\test_nvidia_adapter_presence.ps1
+      - name: NVIDIA presence XPU update route tests (Windows PowerShell 5.1)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: powershell -NoProfile -File tests\studio\test_nvidia_presence_xpu_timeout.ps1
       # AST-extracted helpers plus a real .cmd written to a temp dir, so no venv and no
       # Windows needed. The 1260 classification is exercised against crafted exceptions:
       # a hosted runner has no Application Control policy to be denied by. The enforced
@@ -306,14 +478,9 @@ jobs:
       - name: Uninstaller ownership gate tests
         shell: pwsh
         run: pwsh -NoProfile -File tests/studio/test_uninstall_legacy_layout_gate.ps1
-      # Linux on purpose, and the only lane that can run it. Reflection emit succeeds on
-      # this engine so the types build exactly as they do on 5.1, while kernel32 and
-      # shell32 do not resolve, so every call through them fails the way it does on a
-      # Windows host whose antivirus took the helper away. That is the build side and the
-      # call side in one run, and it is not reproducible on a healthy Windows runner.
-      - name: Native path resolver degradation tests
+      - name: Path resolver degradation tests
         if: runner.os == 'Linux'
-        run: pwsh -NoProfile -File tests/studio/test_native_path_resolver_degrades.ps1
+        run: pwsh -NoProfile -File tests/studio/test_path_resolver_degrades.ps1
       - name: POSIX rollback lifecycle tests
         if: runner.os == 'Linux'
         run: sh tests/sh/test_install_rollback_lifecycle.sh

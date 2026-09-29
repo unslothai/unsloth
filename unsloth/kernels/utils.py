@@ -27,7 +27,7 @@ from ..device_type import (
     ALLOW_PREQUANTIZED_MODELS,
 )
 from ..bnb_availability import native_kernels_ready
-from .fp8 import weight_dequant, fp8_linear
+from .fp8 import weight_dequant, fp8_linear, can_use_fp8_rowwise_gemv, fp8_rowwise_gemv
 import functools
 
 # torch.cuda.amp.custom_fwd is deprecated from 2.4.
@@ -38,6 +38,10 @@ from unsloth_zoo.utils import Version
 
 if DEVICE_TYPE == "xpu" and Version(torch.__version__) < Version("2.6.0"):
     raise RuntimeError("Intel xpu currently supports unsloth with torch.version >= 2.6.0")
+
+# torch.amp.custom_fwd(device_type=) is 2.4+; say so here, not as an AttributeError mid-import.
+if DEVICE_TYPE == "npu" and Version(torch.__version__) < Version("2.4.0"):
+    raise RuntimeError("NPUs currently support unsloth with torch.version >= 2.4.0")
 
 if Version(torch.__version__) < Version("2.4.0"):
     torch_amp_custom_fwd = torch.cuda.amp.custom_fwd
@@ -52,6 +56,10 @@ else:
 if DEVICE_TYPE == "xpu":
     torch_amp_custom_fwd = torch.amp.custom_fwd(device_type = "xpu")
     torch_amp_custom_bwd = torch.amp.custom_bwd(device_type = "xpu")
+elif DEVICE_TYPE == "npu":
+    # A mismatched device_type makes these inert, not loud (pytorch#165730): "cuda" drops autocast.
+    torch_amp_custom_fwd = torch.amp.custom_fwd(device_type = "npu")
+    torch_amp_custom_bwd = torch.amp.custom_bwd(device_type = "npu")
 
 
 # tl.math.tanh is now libdevice.tanh.
@@ -171,6 +179,9 @@ if DEVICE_COUNT > 1:
         torch_gpu_device = torch.cuda.device
     elif DEVICE_TYPE == "xpu":
         torch_gpu_device = torch.xpu.device
+    elif DEVICE_TYPE == "npu":
+        # Unbound without this, and rope_embedding imports it at module scope: ImportError.
+        torch_gpu_device = torch.npu.device
 else:
     from contextlib import nullcontext
     def torch_gpu_device(device):
@@ -224,7 +235,8 @@ if DEVICE_TYPE == "xpu":
         XPU_STREAMS = ()
         WEIGHT_BUFFERS = []
         ABSMAX_BUFFERS = []
-elif DEVICE_TYPE == "mlx":
+elif DEVICE_TYPE in ("mlx", "npu"):
+    # npu joins mlx: the else arm reads CUDA raw streams a NPU build has no runtime for.
     CUDA_STREAMS = ()
     XPU_STREAMS = ()
     WEIGHT_BUFFERS = []
@@ -258,12 +270,14 @@ if bnb is None or not native_kernels_ready(bnb, DEVICE_TYPE):
     cdequantize_blockwise_fp32 = _bnb_required
     cdequantize_blockwise_fp16_nf4 = _bnb_required
     cdequantize_blockwise_bf16_nf4 = _bnb_required
+    cdequantize_blockwise_fp32_nf4 = _bnb_required
     cgemm_4bit_inference_naive_fp16 = _bnb_required
     cgemm_4bit_inference_naive_bf16 = _bnb_required
 else:
     cdequantize_blockwise_fp32 = bnb_functional.lib.cdequantize_blockwise_fp32
     cdequantize_blockwise_fp16_nf4 = bnb_functional.lib.cdequantize_blockwise_fp16_nf4
     cdequantize_blockwise_bf16_nf4 = bnb_functional.lib.cdequantize_blockwise_bf16_nf4
+    cdequantize_blockwise_fp32_nf4 = bnb_functional.lib.cdequantize_blockwise_fp32_nf4
 
     if DEVICE_TYPE == "xpu":
         # xpu inference gemv, per bitsandbytes backends/xpu/ops.py#L115.
@@ -274,9 +288,13 @@ else:
         cgemm_4bit_inference_naive_bf16 = bnb_functional.lib.cgemm_4bit_inference_naive_bf16
 
 
-torch_device_stream = (
-    torch.xpu.current_stream if DEVICE_TYPE == "xpu" else torch.cuda.current_stream
-)
+if DEVICE_TYPE == "xpu":
+    torch_device_stream = torch.xpu.current_stream
+elif DEVICE_TYPE == "npu":
+    # RoPE synchronizes on this in its first forward, which would otherwise reach CUDA.
+    torch_device_stream = torch.npu.current_stream
+else:
+    torch_device_stream = torch.cuda.current_stream
 
 torch_mm = torch.mm
 torch_mv = torch.mv
@@ -320,13 +338,41 @@ _FP8_WEIGHT_DTYPES = tuple(
 )
 
 
+def has_mxfp4_base(*projs):
+    """A packed MXFP4 base that cannot hand its bytes to the fused LoRA kernels (they would then hold a 16-bit
+    weight until backward): use PEFT. Bases with ``mxfp4_quant_state`` pass ``weight_packed`` + that state instead."""
+    return any(
+        getattr(type(base), "_unsloth_mxfp4_packed_linear", False)
+        and getattr(type(base), "mxfp4_quant_state", None) is None
+        for base in (getattr(p, "base_layer", p) for p in projs)
+    )
+
+
+def _packed_base(base_layer):
+    """(weight_packed, quant state) of a packed MXFP4 base, else None; QAT fake-quantizes the decoded weight instead."""
+    cls = type(base_layer)
+    if (
+        not getattr(cls, "_unsloth_mxfp4_packed_linear", False)
+        or getattr(cls, "mxfp4_quant_state", None) is None
+    ):
+        return None
+    if getattr(base_layer, "weight_fake_quantizer", None) is not None:
+        return None
+    return base_layer.weight_packed, base_layer.mxfp4_quant_state()
+
+
+def _is_packed_state(quant_state):
+    return getattr(type(quant_state), "_unsloth_packed_weight_state", False)
+
+
 def get_lora_parameters(proj):
     """Return (weight, weight quant_state, lora A, lora B, lora scale).
     With QAT enabled, also fake-quantizes the base layer and lora weights.
     """
     # For DPO or disabled adapters.
     base_layer = getattr(proj, "base_layer", proj)
-    W = base_layer.weight
+    packed = _packed_base(base_layer)
+    W = base_layer.weight if packed is None else packed[0]
 
     # Optionally apply fake quantization to base layer weights for QAT.
     if hasattr(base_layer, "weight_fake_quantizer"):
@@ -348,6 +394,9 @@ def get_lora_parameters(proj):
         # bf16, so it has no quant state to carry the block size.
         if W_quant is not None:
             W_quant.block_size = W.block_size
+
+    if packed is not None:
+        W_quant = packed[1]
 
     if getattr(proj, "disable_adapters", True) or proj.merged:
         return W, W_quant, None, None, None
@@ -383,7 +432,8 @@ def get_lora_parameters(proj):
 def get_lora_parameters_bias(proj):
     # For DPO or disabled adapters.
     base_layer = getattr(proj, "base_layer", proj)
-    W = base_layer.weight
+    packed = _packed_base(base_layer)
+    W = base_layer.weight if packed is None else packed[0]
 
     # Only fall back to a weight_scale(_inv) when the weight is still fp8; a bf16 weight (a decompressed
     # compressed-tensors layer) must not carry a scale as its quant state or fast_gemv crashes.
@@ -399,6 +449,9 @@ def get_lora_parameters_bias(proj):
         # bf16, so it has no quant state to carry the block size.
         if W_quant is not None:
             W_quant.block_size = W.block_size
+
+    if packed is not None:
+        W_quant = packed[1]
 
     if getattr(proj, "disable_adapters", True) or proj.merged:
         return W, W_quant, None, None, None, base_layer.bias
@@ -518,9 +571,12 @@ if DEVICE_TYPE == "xpu" and HAS_XPU_STREAM:
             )
             out_absmax += offset
 
+            # Kernel must match `out`'s dtype: bf16 bits in an fp32 buffer corrupt silently.
             fx = (
                 cdequantize_blockwise_fp16_nf4
                 if dtype == torch_float16
+                else cdequantize_blockwise_fp32_nf4
+                if dtype == torch_float32
                 else cdequantize_blockwise_bf16_nf4
             )
             fx(
@@ -629,6 +685,8 @@ elif DEVICE_TYPE in ("cuda", "hip") and HAS_CUDA_STREAM:
             fx = (
                 cdequantize_blockwise_fp16_nf4
                 if dtype == torch_float16
+                else cdequantize_blockwise_fp32_nf4
+                if dtype == torch_float32
                 else cdequantize_blockwise_bf16_nf4
             )
             fx(
@@ -705,6 +763,8 @@ else:
         fx = (
             cdequantize_blockwise_fp16_nf4
             if dtype == torch_float16
+            else cdequantize_blockwise_fp32_nf4
+            if dtype == torch_float32
             else cdequantize_blockwise_bf16_nf4
         )
         fx(
@@ -1021,6 +1081,48 @@ else:
     pass
 
 
+from .int4_packed import (
+    Int4QuantState,
+    int4_dequantize_weight as _int4_dequantize_weight,
+    int4_matmul as _int4_matmul,
+)
+
+_fast_dequantize_bnb = fast_dequantize
+_fast_gemv_bnb = fast_gemv
+
+
+def fast_dequantize(
+    W,
+    quant_state = None,
+    out = None,
+    use_global_buffer = False,
+):
+    quant_type = type(quant_state)
+    if quant_type is Int4QuantState:
+        return _int4_dequantize_weight(W, quant_state)
+    # A packed MXFP4 base hands in weight_packed (or its .t()) with a decoder as the quant state.
+    if getattr(quant_type, "_unsloth_packed_weight_state", False):
+        return quant_state.dequantize(W)
+    return _fast_dequantize_bnb(W, quant_state, out = out, use_global_buffer = use_global_buffer)
+
+
+def fast_gemv(
+    X,
+    W,
+    quant_state,
+    out = None,
+):
+    if type(quant_state) is Int4QuantState:
+        return _int4_matmul(X, W, quant_state, out = out)
+    return _fast_gemv_bnb(X, W, quant_state, out = out)
+
+
+def _quant_state_dtype(quant_state):
+    if type(quant_state) is list:
+        return quant_state[2]
+    return getattr(quant_state, "dtype", None)
+
+
 def fast_linear_forward(
     proj,
     X,
@@ -1034,9 +1136,18 @@ def fast_linear_forward(
 
     if W_quant is None:
         out = torch_matmul(X, W.t(), out = out)
+    elif _is_packed_state(W_quant):
+        out = W_quant.matmul(X, W, out = out)
     elif W.dtype == torch.float8_e4m3fn:
-        out = fp8_linear(X, W, W_quant, bias)
-    elif bsz == 1 and q_len == 1:
+        # The bias is added once below; the per-channel fp8_linear path would add it a second time.
+        if can_use_fp8_rowwise_gemv(X, W, W_quant):
+            out = fp8_rowwise_gemv(X, W, W_quant)
+        else:
+            out = fp8_linear(X, W, W_quant)
+    elif type(W_quant) is Int4QuantState:
+        out = _int4_matmul(X, W, W_quant, out = out)
+    elif bsz == 1 and q_len == 1 and _quant_state_dtype(W_quant) != torch_float32:
+        # The 4bit gemv kernels are fp16/bf16 only.
         out = fast_gemv(X, W, W_quant, out = out)
     else:
         W = fast_dequantize(W.t(), W_quant, use_global_buffer = True)
@@ -1094,6 +1205,11 @@ def matmul_lora(
         out = torch_matmul(X, W.t(), out = out)
     elif W.dtype == torch.float8_e4m3fn:
         out = fp8_linear(X, W, W_quant)
+    elif type(W_quant) is Int4QuantState and W.stride(-1) == 1:
+        # Forward orientation: few rows use the fused kernel, the rest decode once + cuBLAS.
+        out = _int4_matmul(X, W, W_quant, out = out)
+    elif _is_packed_state(W_quant):
+        out = W_quant.matmul(X, W, out = out)
     else:
         W = fast_dequantize(W, W_quant, use_global_buffer = True)
         out = torch_matmul(X, W.t(), out = out)

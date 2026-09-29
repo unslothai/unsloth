@@ -4,12 +4,14 @@
 """Store tests: incremental writes, dedupe, delete, scope, dense + lexical."""
 
 import math
+import re
 import sqlite3
 
 import pytest
 
 from core.rag import store
 from core.rag.chunking import Chunk
+from growth import assert_linear  # tests/_shared, on sys.path via tests/conftest.py
 
 VOCAB = ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf", "hotel"]
 
@@ -71,6 +73,28 @@ def test_dense_ranks_by_cosine(rag_conn):
     _add_doc(rag_conn, "kb_a", "d2", "f", "h2", ["hotel golf"])
     ranked = store.search_dense(rag_conn, "kb_a", embed("alpha"), 10)
     assert ranked[0][0] == "d1:0" and ranked[0][1] > 0.99
+
+
+def test_dense_knn_binds_k_rather_than_limit(rag_conn):
+    """vec0's KNN bound must arrive as ``k = ?``, not a bare ``LIMIT ?``, which SQLite forwards
+    to a virtual table's planner only from 3.41 on. CI's SQLite accepts both and returns the
+    same rows, so nothing else here catches a revert and only the executed statement can say."""
+    _add_doc(rag_conn, "kb_a", "d1", "f", "h1", ["alpha alpha"])
+    seen = []
+    rag_conn.set_trace_callback(seen.append)
+    try:
+        store.search_dense(rag_conn, "kb_a", embed("alpha"), 5)
+    finally:
+        rag_conn.set_trace_callback(None)
+
+    knn = [sql for sql in seen if "chunks_vec" in sql and "MATCH" in sql.upper()]
+    assert knn, f"search_dense issued no vec0 MATCH query; statements were {seen}"
+    for sql in knn:
+        flat = " ".join(sql.split())
+        assert re.search(r"\bk\s*=", flat), f"vec0 KNN query has no k constraint: {flat}"
+        assert not re.search(
+            r"\bLIMIT\b", flat, re.IGNORECASE
+        ), f"vec0 KNN query still leans on LIMIT, which pre-3.41 SQLite never forwards: {flat}"
 
 
 def test_dense_empty_before_any_ingest(rag_conn):
@@ -385,14 +409,13 @@ def test_query_shaping_stays_cheap_on_a_pasted_log():
     takes about 4.6s of CPU; linear it takes about 6ms. A 1.0s ceiling is unreachable by
     a linear implementation on any machine that can run this suite at all.
     """
-    import time
-
-    question = f"what is the current value of ZQXVARA123\n{_pasted_prose(6000)}"
-    started = time.perf_counter()
-    expressions = store.conversation_match_queries(question)
-    elapsed = time.perf_counter() - started
+    expressions = assert_linear(
+        store.conversation_match_queries,
+        lambda n: f"what is the current value of ZQXVARA123\n{_pasted_prose(n)}",
+        "paste shaping",
+        1_500,
+    )
     assert expressions and expressions[0] == '"zqxvara123"'
-    assert elapsed < 1.0, f"shaping a 6000-word paste took {elapsed:.2f}s"
 
 
 def test_a_quoted_function_word_survives_the_stopword_filter():

@@ -1,6 +1,6 @@
 # Scanned PDF uploads
 
-Studio can extract text from scanned PDFs in Chat, project sources, and Data Recipes.
+Unsloth Studio can extract text from scanned PDFs in Chat, project sources, and Data Recipes.
 Existing selectable text is preserved. OCR runs on image-only pages, including scans
 with a selectable header or footer. Small logos do not require OCR when selectable
 text is present. Large images with little selectable body text are treated as
@@ -16,8 +16,8 @@ other requests.
 ## Local OCR setup
 
 PyMuPDF includes the OCR integration. Install Tesseract language data on the machine
-running the Studio backend, and set TESSDATA_PREFIX to the folder containing the
-.traineddata files before starting Studio. No data is downloaded automatically.
+running the Unsloth Studio backend, and set TESSDATA_PREFIX to the folder containing the
+.traineddata files before starting Unsloth Studio. No data is downloaded automatically.
 
 For example, install your operating system's Tesseract package and English language
 data, then point TESSDATA_PREFIX to its tessdata directory. You can also obtain
@@ -35,7 +35,7 @@ setting overrides this for chat/project uploads. Data Recipes follows the backen
 default.
 
 RAG_OCR_MAX_PAGES defaults to 20 scanned pages per PDF. Raise it before starting
-Studio when longer scans are expected. Local OCR uses RAG_OCR_DPI (default 150).
+Unsloth Studio when longer scans are expected. Local OCR uses RAG_OCR_DPI (default 150).
 
 If scanned pages remain unreadable, the upload fails with their page numbers rather
 than silently accepting an incomplete document. Configure the OCR language data,

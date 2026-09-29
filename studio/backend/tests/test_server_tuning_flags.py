@@ -433,8 +433,9 @@ def test_the_coexistence_estimate_charges_the_requested_checkpoints():
         inference_routes._estimate_gguf_kv_gb
     )
     kv_source = inspect.getsource(inference_routes._gguf_runtime_bytes)
-    # priced on what the launch runs, so a typed --ctx-checkpoints wins here too
-    assert "resolve_ctx_checkpoints(llama_extra_args, ctx_checkpoints)" in kv_source
+    # Pricing uses the same effective count as the launch.
+    assert "effective_ctx_checkpoints_for_caps(" in kv_source
+    assert "llama_extra_args," in kv_source
 
 
 # ------------------------------------------------------------------- override storage
