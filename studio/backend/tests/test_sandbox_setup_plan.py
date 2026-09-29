@@ -36,6 +36,14 @@ def linux(monkeypatch, tmp_path):
     monkeypatch.setattr(plan_mod, "_APPARMOR_PROFILE", str(tmp_path / "bwrap-userns-restrict"))
     monkeypatch.setattr(plan_mod, "_is_wsl", lambda: state["wsl"])
     monkeypatch.setattr(plan_mod, "_running_as_root", lambda: state["root"])
+    state["bwrap"] = None  # None: follow PATH, as a trusted copy would
+
+    def bwrap_state():
+        if state["bwrap"] is not None:
+            return state["bwrap"]
+        return "trusted" if plan_mod.shutil.which("bwrap") else "missing"
+
+    monkeypatch.setattr(plan_mod, "_bwrap_state", bwrap_state)
     state["root"] = False
     state["sudo_checks"] = 0
 
@@ -128,6 +136,41 @@ def test_a_profile_that_is_there_but_not_in_force_is_only_loaded(linux):
     plan = plan_mod.detect(False)
     assert plan.action == plan_mod.LINUX_INSTALL
     assert plan.steps == (("apparmor_parser", "-r", str(linux["profile"])),)
+
+
+def test_an_untrusted_bwrap_on_path_still_gets_the_install(linux):
+    linux["tool"]("apt-get", "bwrap")
+    linux["bwrap"] = "missing"  # e.g. ~/.local/bin/bwrap and no system copy
+    plan = plan_mod.detect(False)
+    assert plan.action == plan_mod.LINUX_INSTALL
+    assert "bubblewrap" in plan.manual_command
+
+
+def test_a_system_bwrap_shadowed_on_path_is_named_not_reinstalled(linux, monkeypatch):
+    linux["tool"]("apt-get", "bwrap")
+    linux["bwrap"] = "shadowed"
+    monkeypatch.setattr(plan_mod, "trusted_system_binary", lambda name: f"/usr/bin/{name}")
+    plan = plan_mod.detect(False)
+    assert plan.action is None and plan.manual_command == ""
+    assert plan_mod.shutil.which("bwrap") in plan.reason and "/usr/bin" in plan.reason
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "POSIX ownership")
+def test_bwrap_state_follows_the_launchers_trust_check(monkeypatch, tmp_path):
+    from core.inference import sandbox_linux
+
+    fake = tmp_path / "bwrap"
+    fake.write_text("#!/bin/sh\n")
+    fake.chmod(0o755)
+    monkeypatch.setenv("PATH", str(tmp_path))
+    monkeypatch.setattr(plan_mod, "trusted_system_binary", lambda name: None)
+    if os.geteuid() != 0:
+        with pytest.raises(Exception):
+            sandbox_linux._trusted_bwrap_path()
+        assert plan_mod._bwrap_state() == "missing"
+    monkeypatch.setattr(plan_mod, "trusted_system_binary", lambda name: "/usr/bin/bwrap")
+    if os.geteuid() != 0:
+        assert plan_mod._bwrap_state() == "shadowed"
 
 
 def test_an_unblocked_host_with_bwrap_needs_nothing(linux):

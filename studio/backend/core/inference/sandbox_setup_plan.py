@@ -268,12 +268,37 @@ def _linux_elevation() -> tuple[str | None, str | None]:
     return None, None
 
 
+def _bwrap_state() -> str:
+    """As the launcher sees it: "trusted", "missing", or "shadowed" (PATH finds an untrusted copy first)."""
+    from . import sandbox_linux
+
+    try:
+        sandbox_linux._trusted_bwrap_path()
+        return "trusted"
+    except Exception:  # noqa: BLE001 - any refusal means the launcher will not run it
+        pass
+    if shutil.which("bwrap") is None or trusted_system_binary("bwrap") is None:
+        return "missing"
+    return "shadowed"
+
+
 def _linux_plan() -> SetupPlan:
     from . import os_sandbox
 
     reason = os_sandbox.linux_unavailable_remediation()
     manager = _package_manager()
-    bwrap_missing = shutil.which("bwrap") is None
+    state = _bwrap_state()
+    if state == "shadowed":
+        # Installing changes nothing: the system copy is there, PATH just finds another one first.
+        return SetupPlan(
+            platform = sys.platform,
+            reason = (
+                f"{shutil.which('bwrap')} comes first on PATH but is not a root-owned system copy, "
+                f"so Unsloth will not run it. Remove it, or put {os.path.dirname(trusted_system_binary('bwrap'))} "
+                "ahead of it on PATH; nothing needs installing."
+            ),
+        )
+    bwrap_missing = state == "missing"
     if bwrap_missing and manager is None:
         return SetupPlan(platform = sys.platform, reason = reason)
     steps: list[tuple[str, ...]] = []
