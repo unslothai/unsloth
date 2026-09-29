@@ -82,8 +82,13 @@ def _route_request(supervisor):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("scope", ["off", "inference", "full"])
 @pytest.mark.parametrize("tools", [False, True])
-@pytest.mark.parametrize("caller,expected", [("session", False), ("keyless", True), ("api-key", True), ("workflow", False)])
-async def test_durable_producer_preserves_monitor_origin(monkeypatch, scope, tools, caller, expected):
+@pytest.mark.parametrize(
+    "caller,expected",
+    [("session", False), ("keyless", True), ("api-key", True), ("workflow", False)],
+)
+async def test_durable_producer_preserves_monitor_origin(
+    monkeypatch, scope, tools, caller, expected
+):
     from auth import policy, storage
     from utils import keyless_api_access as keyless
 
@@ -94,13 +99,27 @@ async def test_durable_producer_preserves_monitor_origin(monkeypatch, scope, too
         {"id": "user-1", "threadId": "thread-1", "role": "user", "content": [], "createdAt": 2}
     )
     app = SimpleNamespace(state = SimpleNamespace(bind_host = "127.0.0.1"))
-    headers = [] if caller == "keyless" else [
-        (b"authorization", b"Bearer session-jwt" if caller == "session" else b"Bearer sk-unsloth-test")
-    ]
-    request = Request({
-        "type": "http", "method": "POST", "path": "/api/inference/chat-runs",
-        "headers": headers, "app": app, "client": ("127.0.0.1", 5000), "server": ("127.0.0.1", 8000),
-    })
+    headers = (
+        []
+        if caller == "keyless"
+        else [
+            (
+                b"authorization",
+                b"Bearer session-jwt" if caller == "session" else b"Bearer sk-unsloth-test",
+            )
+        ]
+    )
+    request = Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/api/inference/chat-runs",
+            "headers": headers,
+            "app": app,
+            "client": ("127.0.0.1", 5000),
+            "server": ("127.0.0.1", 8000),
+        }
+    )
     # Model the completed authentication dependency, then change settings before
     # the worker starts. Attribution belongs to admission, not current settings.
     keyless.mark_keyless_admission(request, caller == "keyless")
