@@ -5930,12 +5930,16 @@ def _smi_inference_device(
 
 
 def _nvidia_inference_devices() -> list[Dict[str, Any]]:
+    from core.inference.llama_cpp import LlamaCppBackend
+
     from . import nvidia
 
+    # The mask llama.cpp's own nvidia-smi probe applies: hidden cards are not llama-server's.
+    allowed = LlamaCppBackend._visible_devices_mask("CUDA_VISIBLE_DEVICES")
     rows = [
         row
         for row in (nvidia.get_physical_gpu_inventory().get("devices") or [])
-        if isinstance(row.get("index"), int)
+        if isinstance(row.get("index"), int) and (allowed is None or row["index"] in allowed)
     ]
     if not rows:
         return []
@@ -5989,8 +5993,9 @@ def get_cross_vendor_inference_gpu_info() -> Optional[Dict[str, Any]]:
     except Exception as e:
         logger.debug("%s inference GPU query failed: %s", llama_backend, e)
         return None
-    # Not []: the load estimate reads an empty list as "this host has no GPU".
-    if not devices:
+    # Not []: the load estimate reads an empty list as "this host has no GPU". A card
+    # without a capacity (procfs placeholder rows) would read as a known 0 GB budget.
+    if not devices or not all((d["memory_total_gb"] or 0) > 0 for d in devices):
         return None
     return {
         "available": True,

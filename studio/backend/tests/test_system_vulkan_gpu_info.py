@@ -438,6 +438,7 @@ def _mixed_host(monkeypatch, *, torch_rocm, llama_backend):
         LlamaCppBackend, "_backend_lacks_gpu_lib", staticmethod(lambda binary = None: False)
     )
     monkeypatch.setattr(main, "_system_gpu_cache", None)
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
 
 
 def test_rocm_torch_with_a_cuda_llama_cpp_reports_the_nvidia_card(monkeypatch):
@@ -560,3 +561,50 @@ def test_a_vulkan_llama_cpp_never_asks_the_cross_vendor_probe(monkeypatch):
     assert inference_gpu["backend"] == "vulkan"
     assert inference_gpu["devices"] == vulkan_info["devices"]
     assert inference_gpu["gguf_gpu_ids_supported"] is True
+
+
+def _two_nvidia_cards(monkeypatch, names_and_totals):
+    import utils.hardware.amd as amd
+    import utils.hardware.nvidia as nvidia
+
+    monkeypatch.setattr(
+        nvidia,
+        "get_physical_gpu_inventory",
+        lambda: {
+            "available": True,
+            "devices": [
+                {"vendor": "nvidia", "index": i, "name": name, "memory_total_gb": total}
+                for i, (name, total) in enumerate(names_and_totals)
+            ],
+        },
+    )
+    asked = []
+
+    def _usage(parent_visible_ids, parent_cuda_visible_devices = None):
+        asked.append(parent_visible_ids)
+        return {"devices": [{"index": i, "vram_used_gb": 1.0} for i in parent_visible_ids]}
+
+    monkeypatch.setattr(nvidia, "get_visible_gpu_utilization", _usage)
+    monkeypatch.setattr(amd, "get_gpu_vram_report", _refuse)
+    return asked
+
+
+def test_cross_vendor_nvidia_cards_follow_cuda_visible_devices(monkeypatch):
+    _mixed_host(monkeypatch, torch_rocm = True, llama_backend = "cuda")
+    asked = _two_nvidia_cards(monkeypatch, [("RTX 3080", 10.0), ("RTX 4090", 24.0)])
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "1")
+
+    _, inference_gpu = main._get_cached_system_gpu_info(SimpleNamespace(debug = lambda *args: None))
+
+    assert [d["name"] for d in inference_gpu["devices"]] == ["RTX 4090"]
+    assert asked == [[1]]
+
+
+def test_capacity_less_nvidia_rows_fall_back_to_the_training_inventory(monkeypatch):
+    """procfs placeholder rows (nvidia-smi failed, driver loaded) carry no capacity."""
+    _mixed_host(monkeypatch, torch_rocm = True, llama_backend = "cuda")
+    _two_nvidia_cards(monkeypatch, [(None, None), (None, None)])
+
+    gpu, inference_gpu = main._get_cached_system_gpu_info(SimpleNamespace(debug = lambda *args: None))
+
+    assert inference_gpu is gpu
