@@ -186,12 +186,10 @@ def test_non_linear_namesake_does_not_veto_the_linears():
     assert "model.layers.0.mlp.gate_proj" in lora_linears
 
 
-def test_qwen2_moe_lone_gate_proj_still_trains_the_shared_expert():
-    # PEFT refuses to convert gate_proj without up_proj; before qwen2_moe was mapped it simply was not converted.
-    model = _qwen2_moe()
-    peft_model = get_peft_model(model, LoraConfig(r = 4, lora_alpha = 8, target_modules = ["gate_proj"]))
-    assert "model.layers.0.mlp.shared_expert.gate_proj" in _lora_linears(peft_model)
-    assert not isinstance(peft_model.base_model.model.model.layers[0].mlp.experts, ParamWrapper)
+def test_qwen2_moe_converts_like_transformers_5_5():
+    # transformers <= 5.5 mapped qwen2_moe onto itself, so PEFT's fused-pair check applies on every release.
+    with pytest.raises(ValueError, match = "without also targeting up_proj"):
+        get_peft_model(_qwen2_moe(), LoraConfig(r = 4, lora_alpha = 8, target_modules = ["gate_proj"]))
 
 
 def test_explicit_target_parameters_are_left_alone():

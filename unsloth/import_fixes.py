@@ -8231,26 +8231,6 @@ def _patch_peft_moe_target_conversion(twc):
     if original_convert_moe is None:
         return
 
-    self_mapped = set()
-
-    def _convert(peft_config, model_type):
-        # peft >= 0.20 passes the model, 0.19 the model type.
-        name = getattr(getattr(model_type, "config", None), "model_type", model_type)
-        if name not in self_mapped:
-            return original_convert_moe(peft_config, model_type)
-        import copy
-
-        saved = {
-            key: copy.copy(getattr(peft_config, key, None))
-            for key in ("target_modules", "target_parameters", "rank_pattern", "alpha_pattern")
-        }
-        try:
-            return original_convert_moe(peft_config, model_type)
-        except ValueError:
-            # A lone gate_proj / up_proj worked before we mapped this type; keep it working unconverted.
-            for key, value in saved.items():
-                setattr(peft_config, key, value)
-
     @functools.wraps(original_convert_moe)
     def _convert_peft_config_moe_unsloth(peft_config, model_type: str) -> None:
         if getattr(peft_config, "target_parameters", None):
@@ -8261,34 +8241,33 @@ def _patch_peft_moe_target_conversion(twc):
             # peft 0.19 turns the string into a set of characters and then fails to find any target.
             if "." in target_modules or not hasattr(twc, "_resolve_string_target_modules"):
                 return
-            return _convert(peft_config, model_type)
+            return original_convert_moe(peft_config, model_type)
 
         if not target_modules:
-            return _convert(peft_config, model_type)
+            return original_convert_moe(peft_config, model_type)
 
         explicit_targets = {
             target for target in target_modules if isinstance(target, str) and "." in target
         }
         if not explicit_targets:
-            return _convert(peft_config, model_type)
+            return original_convert_moe(peft_config, model_type)
 
         bare_targets = set(target_modules) - explicit_targets
         if not bare_targets:
             return
 
         peft_config.target_modules = bare_targets
-        _convert(peft_config, model_type)
+        original_convert_moe(peft_config, model_type)
         peft_config.target_modules = set(peft_config.target_modules or ()) | explicit_targets
 
     twc._convert_peft_config_moe = _convert_peft_config_moe_unsloth
-    # transformers maps other families onto a base pattern but not the base onto itself; peft adds
-    # only "mixtral", so a qwen2_moe v4 adapter loaded with its experts silently unconverted.
+    # transformers <= 5.5 mapped qwen2_moe onto itself, later releases dropped it and peft adds only
+    # "mixtral", so a qwen2_moe v4 adapter loaded with its experts silently unconverted.
     pattern_map = getattr(twc, "_MODEL_TO_CONVERSION_PATTERN", None)
     if isinstance(pattern_map, dict):
         for base_model_type in getattr(twc, "_MOE_TARGET_MODULE_MAPPING", {}):
             if not dict.__contains__(pattern_map, base_model_type):
                 pattern_map[base_model_type] = base_model_type
-                self_mapped.add(base_model_type)
     _patch_peft_moe_keep_linear_targets(twc)
     twc._unsloth_moe_target_conversion_patch = True
 
