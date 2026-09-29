@@ -222,6 +222,7 @@ export function McpAppFrame(props: McpAppFrameProps) {
             hostCapabilities: {
               openLinks: {},
               serverTools: { listChanged: false },
+              serverResources: { listChanged: false },
               logging: {},
             },
             hostContext: {

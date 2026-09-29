@@ -80,3 +80,13 @@ test("the bridge token survives a non-secure Studio origin", () => {
   });
   withCrypto(undefined, () => assert.equal(newBridgeToken(), null));
 });
+
+test("the host advertises each server method the bridge proxies", () => {
+  for (const [method, capability] of [
+    ["tools/call", "serverTools"],
+    ["resources/read", "serverResources"],
+  ]) {
+    assert.match(frame, new RegExp(`case "${method}"`));
+    assert.match(frame, new RegExp(`${capability}: \\{ listChanged: false \\}`));
+  }
+});
