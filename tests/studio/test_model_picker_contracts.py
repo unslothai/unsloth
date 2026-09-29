@@ -2066,19 +2066,20 @@ def test_staged_plans_label_the_checkpoint_without_guessing_from_the_extension()
     alone is not enough -- a checkpoint sharing its repo with the companions, and already
     cached, leaves an entry of companion files that would still claim to be the model."""
     for page in ("images/images-page.tsx", "video/video-page.tsx"):
-        src = _read(f"features/{page}")
-        entries = re.search(r"plan\.entries\.map\(\(e\) => \(\{.*?\}\)\)", src, re.S)
-        assert entries, f"{page} does not map the plan entries into staged downloads"
-        assert "e.files.includes(opts.filename)" in entries.group(
-            0
-        ), f"{page} does not mark the picked repo's entry as the checkpoint"
-        # The plan's own answer wins over both local guesses. A gated pipeline is staged from an
-        # ungated MIRROR, so its entry no longer carries the id we picked and the repo-id test
-        # reads the whole selected model as "Required assets". Only the planner knows about the
-        # swap. `??`, not `||`: a planner that answers false must not fall through to a guess.
-        assert "e.checkpoint ??" in entries.group(
-            0
-        ), f"{page} ignores the checkpoint flag the plan carried"
+        assert "diffusionStagingEntries(plan.entries" in _read(
+            f"features/{page}"
+        ), f"{page} does not map the plan entries into staged downloads"
+    page = "lib/diffusion-pipeline-load-target.ts"
+    entries = re.search(r"entries\s*\.map\(\(e\) => \(\{.*?\}\)\)", _read(page), re.S)
+    assert entries, f"{page} does not map the plan entries into staged downloads"
+    assert "e.files.includes(opts.filename)" in entries.group(
+        0
+    ), f"{page} does not mark the picked repo's entry as the checkpoint"
+    # The plan's own answer wins over both local guesses: a gated pipeline is staged from an ungated
+    # mirror, so only the planner knows the swap. `??`, not `||`: a planner answering false is final.
+    assert "e.checkpoint ??" in entries.group(
+        0
+    ), f"{page} ignores the checkpoint flag the plan carried"
 
     staged = _read("features/hub/download-manager/use-staged-download.ts")
     assert "checkpoint?: boolean;" in staged

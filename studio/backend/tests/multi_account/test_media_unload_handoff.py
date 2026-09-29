@@ -52,6 +52,16 @@ def client_for(account):
     return TestClient(app)
 
 
+def _write_local_pipeline(root: Path) -> None:
+    # The load preflight admits only a manifest whose declared components are on disk.
+    (root / "model_index.json").write_text(
+        '{"_class_name": "ZImagePipeline", "scheduler": ["diffusers", "FlowMatchEulerDiscreteScheduler"]}',
+        encoding = "utf-8",
+    )
+    (root / "scheduler").mkdir()
+    (root / "scheduler" / "scheduler_config.json").write_text("{}", encoding = "utf-8")
+
+
 @pytest.mark.parametrize("unloader", ["alice", "bob", "unsloth"])
 @pytest.mark.parametrize(
     "load_method,phase",
@@ -71,7 +81,7 @@ def test_cpu_load_cancellation_requires_its_owner(
     backend = DiffusionBackend()
     entered, release, response_ready = (threading.Event() for _ in range(3))
     threads, errors, responses = [], [], []
-    (tmp_path / "model_index.json").write_text("{}", encoding = "utf-8")
+    _write_local_pipeline(tmp_path)
     monkeypatch.setattr(gpu_arbiter, "_owner", None)
     monkeypatch.setattr(gpu_arbiter, "_owner_account", None)
     for name in ("_resident_accounts", "_prior_resident_accounts", "_resident_sharers"):
@@ -166,7 +176,7 @@ def test_pending_caller_cannot_block_load_owner_eject(
     backend = DiffusionBackend()
     entered, pending, release, response_ready = (threading.Event() for _ in range(4))
     threads, errors, responses = [], [], {}
-    (tmp_path / "model_index.json").write_text("{}", encoding = "utf-8")
+    _write_local_pipeline(tmp_path)
     monkeypatch.setattr(gpu_arbiter, "_owner", None)
     monkeypatch.setattr(gpu_arbiter, "_owner_account", None)
     for name in ("_resident_accounts", "_prior_resident_accounts", "_resident_sharers"):
