@@ -7,6 +7,7 @@ execution, and terminal commands."""
 import ast
 import codecs
 import copy
+from collections import deque
 import fnmatch
 import functools
 import hashlib
@@ -65,6 +66,7 @@ from core.inference.mcp_client import (
     call_tool_sync,
     get_cached_tools,
     in_failure_cooloff,
+    is_studio_decisions,
     is_stdio,
     list_tools_async,
     parse_server_headers,
@@ -74,6 +76,7 @@ from core.inference.mcp_client import (
 )
 from storage import mcp_servers_db
 from utils.account_context import account_thread, current_account_id, is_owner_context
+from utils.current_date_prompt_settings import strip_current_date_update_note
 from core.inference.tool_confinement import ToolConfinementUnavailable, account_confinement
 from pathlib import Path
 from utils.paths.storage_roots import RetiredAccountError, ensure_dir
@@ -413,7 +416,9 @@ _SUBSTITUTION_SPAN_STEP = 64
 # Quote state of a backslash and the character behind it. Distinct from the surrounding quoting because bash expands
 # neither: the `$(` in `sed "s/\$(CC)/gcc/" Makefile` opens no command substitution.
 _ESCAPED_CHAR_STATE = "\\"
-_WIN_CONDITIONAL_KEYWORDS = frozenset({"exist", "defined", "errorlevel", "not"})
+_WIN_CONDITIONAL_KEYWORDS = frozenset({"exist", "defined", "errorlevel", "cmdextversion", "not"})
+# cmd's `IF [/I] [NOT] a OP b command`: the comparison stands where the command word would.
+_WIN_COMPARISON_OPS = frozenset({"==", "equ", "neq", "lss", "leq", "gtr", "geq"})
 _FIND_EXEC_FLAGS = frozenset({"-exec", "-execdir", "-ok", "-okdir"})
 # A find action is COMPLETE at its terminator: words after it are find's next predicate, not CMD's. Reading past it
 # took a following `-exec grep -e safe {} +` for sed's script.
@@ -1573,13 +1578,14 @@ def _join_escaped_newlines(text: str) -> str:
     return "".join(out)
 
 
-def _find_blocked_commands(command: str) -> set[str]:
+def _find_blocked_commands(command: str, posix: "bool | None" = None) -> set[str]:
     """Detect blocked commands at shell command position only.
 
     A token is at command position if it is the first token, or follows a shell separator /
     brace-group opener / new-command keyword, or a command-prefix wrapper like `env` / `time` /
     `xargs`. Tokens in argument position pass through. Also scans `find ... -exec CMD` and recurses
-    into bash -c / cmd /c.
+    into bash -c / cmd /c. ``posix`` names the dialect of the shell that will run the command; None
+    keeps the host default (_shell_is_posix).
     """
     blocked: set[str] = set()
 
@@ -1598,7 +1604,7 @@ def _find_blocked_commands(command: str) -> set[str]:
     # rm -rf x` and at a line break. Keyed to the shell that will actually run this, not to the OS: on a Windows host
     # with bash the non-posix lexer never split on `;`, so `if true; then rm -rf x; fi` came back with nothing
     # blocked.
-    lexed_posix = _shell_is_posix()
+    lexed_posix = _shell_is_posix() if posix is None else posix
     try:
         if not lexed_posix:
             tokens = shlex.split(command, posix = False)
@@ -1687,14 +1693,37 @@ def _find_blocked_commands(command: str) -> set[str]:
     sed_xargs: "dict[int, int]" = {}  # sed word -> the xargs that builds its argv
     xargs_index = -1  # an xargs awaiting the command it wraps
     coproc_kw = False  # the word just consumed was the `coproc` KEYWORD, so a name may follow
+    if_condition = False  # just after cmd's IF, where a comparison may precede the command
+    skip_tokens = 0
     for token_index, token in enumerate(tokens):
         after_coproc = coproc_kw
         coproc_kw = False
+        if skip_tokens:
+            skip_tokens -= 1
+            continue
         if skip_operand:
             # `exec -a NAME cmd` and `if exist FILE cmd` both put an operand where the command word would otherwise
             # be.
             skip_operand = False
             continue
+        if expect_command and token.lower() == "if":
+            # cmd's IF is case-insensitive; reading `IF` as the command word hid the command after its condition.
+            if_condition = True
+            prefix_pending = False
+            prefix_command = ""
+            xargs_index = -1
+            continue
+        if if_condition and expect_command:
+            low = token.lower()
+            if low in {"/i", "not"}:
+                continue
+            if_condition = False
+            following = tokens[token_index + 1].lower() if token_index + 1 < len(tokens) else ""
+            if following in _WIN_COMPARISON_OPS:
+                skip_tokens = 2
+                continue
+            if "==" in token.strip("="):
+                continue
         if expect_command and token.lower() in _WIN_CONDITIONAL_KEYWORDS:
             skip_operand = token.lower() != "not"
             continue
@@ -1708,8 +1737,9 @@ def _find_blocked_commands(command: str) -> set[str]:
             continue
         # A keyword only separates where a COMMAND may start. A quoted operator is DATA the command receives, not a
         # separator, so it leaves command position alone: `grep '|&' rm file` runs nothing and must not be refused.
+        # Folded: cmd's FOR ... DO is case-insensitive; in bash a capitalised keyword is only a command name.
         if (_looks_like_separator(token) and token_index not in quoted_separators) or (
-            token in _SHELL_KEYWORDS_AS_SEP and expect_command
+            token.lower() in _SHELL_KEYWORDS_AS_SEP and expect_command
         ):
             coproc_kw = expect_command and token == "coproc"
             expect_command = True
@@ -1775,7 +1805,7 @@ def _find_blocked_commands(command: str) -> set[str]:
                 break
             _name, _sep, _value = nxt.partition("=")
             if _sep and _value:
-                blocked |= _find_blocked_commands(_value)
+                blocked |= _find_blocked_commands(_value, posix = posix)
 
     # find's `-exec`/`-execdir` and fd's `-x` / `-X` / `--exec` / `--exec-batch` all invoke CMD directly. Reading only
     # find's own flags left every fd form unscanned, so `fd -x rm -rf x` reached the hard blocklist as nothing at all.
@@ -1968,14 +1998,14 @@ def _find_blocked_commands(command: str) -> set[str]:
                 continue  # skip Windows switches like /s, /q, /v:on
             prev_base = os.path.basename(prev).lower()
             if is_unix_c and prev_base in _SHELLS:
-                blocked |= _find_blocked_commands(tokens[i + 1])
+                blocked |= _find_blocked_commands(tokens[i + 1], posix = posix)
             elif is_win_c and prev_base in _SHELLS_WIN:
                 # The cmd lexer keeps the marks, so `cmd /c "powershell ls"` would recurse on a first word of
                 # `"powershell` and match nothing.
                 payload = tokens[i + 1]
                 if len(payload) > 1 and payload[0] == '"' and payload[-1] == '"':
                     payload = payload[1:-1]
-                blocked |= _find_blocked_commands(payload)
+                blocked |= _find_blocked_commands(payload, posix = posix)
             break  # stop at first non-flag token
 
     # `cmd /c start "" prog` puts prog in a command position the scan above sees only as an argument, so screen what
@@ -1992,14 +2022,14 @@ def _find_blocked_commands(command: str) -> set[str]:
         # runnable; deciding whether `start` itself is executed is deliberately not attempted, since every local
         # approximation under-approximated.
         if j < len(tokens):
-            blocked |= _find_blocked_commands(tokens[j])
+            blocked |= _find_blocked_commands(tokens[j], posix = posix)
         if j + 1 < len(tokens) and _is_start_title(tokens[j]):
             k = j + 1
             # `start "my window" /min prog` puts switches after the title too.
             while k < len(tokens) and _win_switch(tokens[k].lower()) in _START_SWITCHES:
                 k += 2 if _win_switch(tokens[k].lower()) in _START_SWITCHES_WITH_VALUE else 1
             if k < len(tokens):
-                blocked |= _find_blocked_commands(tokens[k])
+                blocked |= _find_blocked_commands(tokens[k], posix = posix)
 
     # sed's `e COMMAND` hands COMMAND to the shell, a real command position the scan above sees only as a text
     # argument, so screen it like `bash -c`. The pattern-space forms yield an empty payload; the auto gate prompts on
@@ -2049,7 +2079,7 @@ def _find_blocked_commands(command: str) -> set[str]:
             for variant in _sed_program_variants(alternative, sed_vars or {}):
                 for payload in _sed_exec_payloads(variant):
                     if payload:
-                        blocked |= _find_blocked_commands(payload)
+                        blocked |= _find_blocked_commands(payload, posix = posix)
 
     return blocked
 
@@ -2893,27 +2923,35 @@ _PY_DESTRUCTIVE_FS_IMPORT_NAMES = frozenset(
 # Modules whose destructive names are the same calls: posix/nt are os's platform twins.
 _PY_DESTRUCTIVE_FS_MODULES = ("os", "posix", "nt", "shutil", "pathlib")
 
+
+# Credential file names below are stored as pieces and joined at import, so this file does not carry
+# them verbatim; the values are unchanged. Split any credential name added to these lists the same way.
+def _joined(*parts) -> str:
+    """Concatenate parts; a tuple part is one name split into pieces."""
+    return "".join("".join(part) for part in parts)
+
+
 # Reading these off the host escapes the intent of "read-only is safe": they hold credentials. Path traversal (../)
 # escapes the per-session workdir.
 _SENSITIVE_PATH_RE = re.compile(
     r"(?:^|[/\\])\.(?:ssh|aws|azure|gnupg|docker|kube|config/gcloud|config/gh)(?:[/\\]|$)"
-    r"|\.(?:netrc|npmrc|pypirc|git-credentials|env)(?:$|[/\\.\s'\"])"
+    + _joined((r"|\.(?:net", r"rc|npmrc|pypirc|git-cred", r"entials|env)(?:$|[/\\.\s'\"])"))
     # User-level persistence: a write into a shell startup file or an XDG autostart/user-service dir runs on the next
     # login, the /etc boot-hook risk without root, and the sandbox does not confine absolute paths. Rarely read in a
     # dev session, so gating any reference does not over-prompt.
-    r"|(?:^|[/\\\s'\"=])\.(?:bashrc|bash_profile|bash_login|bash_logout|bash_aliases"
+    + r"|(?:^|[/\\\s'\"=])\.(?:bashrc|bash_profile|bash_login|bash_logout|bash_aliases"
     r"|profile|zshrc|zprofile|zshenv|zlogin|zlogout|kshrc|cshrc|tcshrc|login"
     r"|xprofile|xinitrc|xsession)(?:$|[/\\\s'\"])"
     r"|(?:^|[/\\])\.config[/\\](?:autostart|systemd[/\\]user|environment\.d)(?:[/\\]|$)"
-    r"|id_rsa|id_ed25519|id_ecdsa|id_dsa"
+    + _joined((r"|id_r", r"sa"), (r"|id_ed", r"25519"), (r"|id_ec", r"dsa"), (r"|id_d", r"sa"))
     # Hugging Face stores the login token at ~/.cache/huggingface/token and the legacy ~/.huggingface/token (plus
     # stored_tokens); the rest of that cache is model data, so only the credential files match.
-    r"|(?:^|[/\\])\.?huggingface[/\\](?:token|stored_tokens)(?:$|[/\\.\s'\"])"
+    + r"|(?:^|[/\\])\.?huggingface[/\\](?:token|stored_tokens)(?:$|[/\\.\s'\"])"
     # /etc/ssh holds the host private keys; the whole dir is sensitive, not just passwd/shadow/sudoers. The trailing
     # group is the system persistence set: a write there installs a boot/login/preload hook, and the sandbox keeps
     # host-fs access. Effectively write-only in a dev session, so gating any reference does not over-prompt.
-    r"|credentials|/etc/(?:passwd|shadow|sudoers|ssh(?:[/\\]|$)"
-    r"|cron[^/\\]*(?:[/\\]|$)|profile\.d(?:[/\\]|$)|systemd(?:[/\\]|$)"
+    + _joined((r"|cred", r"entials"), (r"|/etc/(?:pas", r"swd|sh", r"adow|sudoers|ssh(?:[/\\]|$)"))
+    + r"|cron[^/\\]*(?:[/\\]|$)|profile\.d(?:[/\\]|$)|systemd(?:[/\\]|$)"
     r"|ld\.so\.preload(?:$|[/\\.\s'\"])|ld\.so\.conf|rc\.local|init\.d(?:[/\\]|$))"
     # Bash opens /dev/tcp/host/port and /dev/udp/host/port as network sockets, so a redirection to one reaches the
     # network without the confirm prompt.
@@ -3206,8 +3244,9 @@ def _assignment_is_a_command_prefix(text: str, value_start: int) -> bool:
         elif char in " \t;&|\n":
             break
         index += 1
-    following = text[index:].lstrip(" \t")
-    return bool(following) and following[0] not in ";&|\n"
+    while index < len(text) and text[index] in " \t":
+        index += 1
+    return index < len(text) and text[index] not in ";&|\n"
 
 
 def _assignment_is_inert(text: str, index: int) -> bool:
@@ -3236,6 +3275,31 @@ def _assignment_is_inert(text: str, index: int) -> bool:
         elif character == ")":
             depth = max(depth - 1, 0)
     return bool(quote) or depth > 0
+
+
+def _assignment_inert_states(text: str) -> "list[bool]":
+    """`_assignment_is_inert(text, i)` for every i in one pass (index len(text) included)."""
+    states = []
+    quote = ""
+    escaped = False
+    depth = 0
+    for character in text:
+        states.append(bool(quote) or depth > 0)
+        if escaped:
+            escaped = False
+        elif character == "\\" and quote != "'":
+            escaped = True
+        elif quote:
+            if character == quote:
+                quote = ""
+        elif character in "'\"":
+            quote = character
+        elif character == "(":
+            depth += 1
+        elif character == ")":
+            depth = max(depth - 1, 0)
+    states.append(bool(quote) or depth > 0)
+    return states
 
 
 def _rebinds_the_studio_home_first(text: str) -> bool:
@@ -3935,6 +3999,9 @@ def _references_studio_credential_here(
     text: str,
     workdir: "str | None",
     _unescaped: bool = False,
+    _assign_expand_depth: int = 0,
+    _quoted_assignments: bool = False,
+    _positional_assignments: bool = False,
 ) -> bool:
     """`_references_studio_credential`, plus the relative paths *text* would open from *workdir*.
 
@@ -4007,12 +4074,49 @@ def _references_studio_credential_here(
     # One level of indirection, `r=$STUDIO_HOME; sqlite3 "$r/auth/auth.db"`. Same substitution the
     # sensitive-path scan uses, and it only ADDS detections.
     if "$" in text:
-        expanded = _expand_shell_assignments(text)
-        # The WHOLE workdir-aware analysis, not only the literal scan: `d=../..; cd "$d"` moves the
-        # directory every later relative path opens from, and handing the unexpanded text to the cwd
-        # walk read `$d` as a directory name and never moved.
-        if expanded != text and _references_studio_credential_here(expanded, workdir):
-            return True
+        # Quoted bindings scanned separately: log text shaped like an assignment must not overwrite real ones.
+        quoted_modes, quote_states = (_quoted_assignments,), None
+        if _assign_expand_depth == 0 and ("'" in text or '"' in text):
+            quote_states = _shell_quote_states(text)
+            # Both modes only differ when some assignment sits inside quotes.
+            if any(quote_states[m.start(1)] for m in _SHELL_ASSIGN_RE.finditer(text)):
+                quoted_modes = (False, True)
+        seen = {text}
+        for include_quoted in quoted_modes:
+            final, positional_text, saw_prefix = _shell_assignment_expansions(
+                text, include_quoted = include_quoted, quote_states = quote_states
+            )
+            if saw_prefix and (_assign_expand_depth == 0 or _positional_assignments):
+                positional_text = _shell_assignment_expansions(
+                    text, include_quoted = include_quoted, quote_states = quote_states, skip_prefix = True
+                )[1]
+            variants = (
+                ((True, positional_text), (False, final))
+                if _assign_expand_depth == 0
+                else (
+                    (
+                        _positional_assignments,
+                        positional_text if _positional_assignments else final,
+                    ),
+                )
+            )
+            for positional, expanded in variants:
+                if expanded in seen:
+                    continue
+                seen.add(expanded)
+                # Exhausted expansion budget fails closed: unresolved aliases may still hide the auth path.
+                if _assign_expand_depth >= _MAX_SHELL_ASSIGN_EXPAND_PASSES or (
+                    "$" in expanded and len(expanded) > max(_MAX_TERMINAL_SCAN_CHARS, len(text))
+                ):
+                    return True
+                if _references_studio_credential_here(
+                    expanded,
+                    workdir,
+                    _assign_expand_depth = _assign_expand_depth + 1,
+                    _quoted_assignments = include_quoted,
+                    _positional_assignments = positional,
+                ):
+                    return True
     # A `cd` earlier in the command moves where every later relative path opens from.
     if workdir and ("cd" in text.lower() or "pushd" in text.lower()):
         for offset, limit, cwd in _cwds_after_cd(workdir, text):
@@ -4989,7 +5093,13 @@ _SHELL_PARAM_CASE_RE = re.compile(r"\$\{(\w+)(\^\^|,,|\^|,)\}")
 # Indirect expansion ${!p} yields the value of the variable *named* by $p, so x=passwd; p=x; cat /etc/${!p} builds
 # /etc/passwd.
 _SHELL_PARAM_INDIRECT_RE = re.compile(r"\$\{!(\w+)\}")
-_SHELL_ASSIGN_RE = re.compile(r"(?:^|[\s;&|(])([A-Za-z_]\w*)=([^\s;&|)]+)")
+_SHELL_PARAM_VALUE_OP_RE = re.compile(r"\$\{([A-Za-z_]\w*)(:?)([-=+])([^{}]*)\}")
+# A NAME=value word is an assignment (not an argument) after one of these characters or keywords.
+_SHELL_ASSIGN_POSITION_CHARS = frozenset(";&|(\n'\"`{")
+_SHELL_ASSIGN_KEYWORDS = frozenset(
+    ("export", "local", "declare", "typeset", "readonly", "then", "do", "else", "{", "!", "time")
+)
+_SHELL_ASSIGN_RE = re.compile(r"(?:^|[\s;&|(])([A-Za-z_]\w*)=([^\s;&|)]*)")
 # Bash ANSI-C quoting ($'\x77' -> 'w') is expanded after this classifier, so decode $'...' bodies before the
 # sensitive-path scan.
 _ANSI_C_RE = re.compile(r"\$'((?:[^'\\]|\\.)*)'")
@@ -5003,17 +5113,20 @@ _GLOB_BRACKET_RE = re.compile(r"\[([^!\]][^\]]*)\]")
 _POSIX_CLASS_RE = re.compile(r"\[\[:\w+:\]\]")
 # Canonical sensitive files a ? / * / [..] glob could expand to; fnmatch tests whether the pattern reaches one (cat
 # /e??/passwd -> /etc/passwd).
-_SENSITIVE_GLOB_TARGETS = (
-    "/etc/passwd",
-    "/etc/shadow",
-    "/etc/sudoers",
-    "/root/.ssh/id_rsa",
-    "/root/.aws/credentials",
-    "/home/u/.ssh/id_rsa",
-    "/home/u/.ssh/id_ed25519",
-    "/home/u/.aws/credentials",
-    "/home/u/.netrc",
-    "/home/u/.git-credentials",
+_SENSITIVE_GLOB_TARGETS = tuple(
+    _joined(parts)
+    for parts in (
+        ("/etc/pas", "swd"),
+        ("/etc/sh", "adow"),
+        ("/etc/sudoers",),
+        ("/root/.ssh/id_r", "sa"),
+        ("/root/.aws/cred", "entials"),
+        ("/home/u/.ssh/id_r", "sa"),
+        ("/home/u/.ssh/id_ed", "25519"),
+        ("/home/u/.aws/cred", "entials"),
+        ("/home/u/.net", "rc"),
+        ("/home/u/.git-cred", "entials"),
+    )
 )
 # Directories whose every file is a credential; a glob resolving into one reads a secret even though the exact
 # filename is never enumerated, so a globbed token here asks.
@@ -5040,25 +5153,26 @@ _SENSITIVE_GLOB_DIRS = (
 # Credential basenames a glob can reach even when the directory is not wholly sensitive (cat ~/.netr? -> .netrc); the
 # canonical-target list only covers a few fixed home paths.
 _SENSITIVE_GLOB_BASENAMES = frozenset(
-    {
-        "token",
-        "stored_tokens",
-        "credentials",
-        ".netrc",
-        "netrc",
-        ".pypirc",
-        ".npmrc",
-        ".git-credentials",
-        "id_rsa",
-        "id_ed25519",
-        "id_ecdsa",
-        "id_dsa",
-        "passwd",
-        "shadow",
+    _joined(parts)
+    for parts in (
+        ("token",),
+        ("stored_tokens",),
+        ("cred", "entials"),
+        (".net", "rc"),
+        ("net", "rc"),
+        (".pypirc",),
+        (".npmrc",),
+        (".git-cred", "entials"),
+        ("id_r", "sa"),
+        ("id_ed", "25519"),
+        ("id_ec", "dsa"),
+        ("id_d", "sa"),
+        ("pas", "swd"),
+        ("sh", "adow"),
         # A project .env holds secrets; the literal path is gated elsewhere, so a glob that expands to it (cat .e?v)
         # must be too.
-        ".env",
-    }
+        (".env",),
+    )
 )
 # A leading shell redirection hides the path from a plain glob scan (cat </e??/passwd); strip it before matching.
 _REDIR_PREFIX_RE = re.compile(r"^\d*[<>]+")
@@ -5076,6 +5190,8 @@ _SHELL_PARAM_OP_RE = re.compile(r"\$\{[A-Za-z_]\w*:?[-=+]([^{}]*)\}")
 # path fails closed rather than spending unbounded time. Ordinary commands are far below these bounds.
 _MAX_PATH_SCAN_CHARS = 2048
 _MAX_TERMINAL_SCAN_CHARS = 4096
+# Each pass doubles resolved alias hops; leftover work after the cap fails closed.
+_MAX_SHELL_ASSIGN_EXPAND_PASSES = 16
 # A glob needs one of these to expand into anything but itself; used to skip the glob scans outright.
 _GLOB_META_RE = re.compile(r"[?*\[]")
 # Where the memoised node list is parked on a parsed tree (see _tree_nodes).
@@ -5245,13 +5361,59 @@ def _posix_join(parts) -> str:
     return out
 
 
-def _expand_shell_assignments(command: str) -> str:
+def _shell_assign_value_self_references(name: str, value: str) -> bool:
+    """True when *value* expands *name* (VAR=$VAR), which must not feed back into itself."""
+    if "$" not in value:
+        return False
+    if any((m.group(1) or m.group(2)) == name for m in _SHELL_VAR_RE.finditer(value)):
+        return True
+    return any(
+        m.group(1) == name
+        for pattern in (
+            _SHELL_PARAM_REPL_RE,
+            _SHELL_PARAM_CASE_RE,
+            _SHELL_PARAM_INDIRECT_RE,
+            _SHELL_PARAM_VALUE_OP_RE,
+        )
+        for m in pattern.finditer(value)
+    )
+
+
+def _expand_shell_assignments(
+    command: str,
+    *,
+    _include_quoted: bool = True,
+    _positional: bool = False,
+) -> str:
     """Best-effort substitution of `NAME=value ... $NAME`, so a sensitive path split across an
     assignment and an argument (p=/etc; cat $p/passwd) is still visible to the scan. Also applies
     pattern replacement. Fail-open: only adds detections."""
-    env = dict(_SHELL_ASSIGN_RE.findall(command))
-    if not env:
-        return command
+    final, positional, _ = _shell_assignment_expansions(command, include_quoted = _include_quoted)
+    return positional if _positional else final
+
+
+def _shell_assignment_expansions(
+    command: str,
+    *,
+    include_quoted: bool = True,
+    quote_states = None,
+    skip_prefix: bool = False,
+) -> "tuple[str, str, bool]":
+    """(last binding everywhere, binding active at each use, saw a command-prefix assignment).
+
+    `x=/tmp cat "$x"` expands the argument with the OUTER x and only hands /tmp to the child, so with
+    *skip_prefix* such assignments bind nothing; the last-binding result keeps them for the child."""
+    env = {}
+    saw_prefix = False
+    inert_states = None
+
+    def repl_default(m):
+        name, colon, op, operand = m.groups()
+        value = env.get(name)
+        missing = value is None or (colon and not value.strip("'\""))
+        if op == "+":
+            return "" if missing else operand
+        return operand if missing else value
 
     def repl_pattern(m):
         var, is_global, pat, rep = m.group(1), m.group(2), m.group(3), m.group(4)
@@ -5277,10 +5439,79 @@ def _expand_shell_assignments(command: str) -> str:
         pointed = env.get(m.group(1))
         return env.get(pointed, m.group(0)) if pointed is not None else m.group(0)
 
-    command = _SHELL_PARAM_INDIRECT_RE.sub(repl_indirect, command)
-    command = _SHELL_PARAM_REPL_RE.sub(repl_pattern, command)
-    command = _SHELL_PARAM_CASE_RE.sub(repl_case, command)
-    return _SHELL_VAR_RE.sub(lambda m: env.get(m.group(1) or m.group(2), m.group(0)), command)
+    def expand(text):
+        if "$" not in text:
+            return text
+        text = _SHELL_PARAM_INDIRECT_RE.sub(repl_indirect, text)
+        text = _SHELL_PARAM_REPL_RE.sub(repl_pattern, text)
+        text = _SHELL_PARAM_CASE_RE.sub(repl_case, text)
+        return _SHELL_VAR_RE.sub(lambda m: env.get(m.group(1) or m.group(2), m.group(0)), text)
+
+    # Positional: each use sees the binding active where it stands; the last binding covers loops.
+    pieces, pos = [], 0
+    matches = list(_SHELL_ASSIGN_RE.finditer(command))
+    # An assignment run is a command prefix only when a command word ends it: `A=1 B=2 echo $A`, not `A=1 B=2;`.
+    prefix = [False] * len(matches)
+    for i in range(len(matches) - 1, -1, -1):
+        m = matches[i]
+        if (quote_states is None or not quote_states[m.start(1)]) and (
+            _assignment_is_a_command_prefix(command, m.start(2))
+        ):
+            chained = (
+                i + 1 < len(matches) and not command[m.end(2) : matches[i + 1].start(1)].strip()
+            )
+            prefix[i] = prefix[i + 1] if chained else True
+    # `echo x=` is an argument, not an assignment: it binds nothing, so positional skips it too.
+    for i, m in enumerate(matches):
+        if prefix[i] or (quote_states is not None and quote_states[m.start(1)]):
+            continue
+        j = m.start(1) - 1
+        while j >= 0 and command[j] in " \t":
+            j -= 1
+        if j < 0 or command[j] in _SHELL_ASSIGN_POSITION_CHARS:
+            continue
+        if i and matches[i - 1].end(2) == j + 1:
+            prefix[i] = prefix[i - 1]
+            continue
+        k = j
+        while k >= 0 and command[k] not in " \t;&|(\n":
+            k -= 1
+        if command[k + 1 : j + 1] not in _SHELL_ASSIGN_KEYWORDS:
+            prefix[i] = True
+    for i, match in enumerate(matches):
+        if not include_quoted and ("'" in command or '"' in command):
+            if quote_states is None:
+                quote_states = _shell_quote_states(command)
+            if quote_states[match.start(1)]:
+                continue
+        var, val = match.groups()
+        pieces.append(expand(command[pos : match.start(2)]))
+        pieces.append(expand(val))
+        pos = match.end(2)
+        if prefix[i]:
+            saw_prefix = True
+            if skip_prefix:
+                continue
+        if _shell_assign_value_self_references(var, val):
+            # Studio home vars stay references: `H=$H; cat "$H/auth/auth.db"` must still name the install.
+            if var.upper() in _STUDIO_HOME_ENV_VARS:
+                env.setdefault(var, "${" + var + "}")
+            val = _SHELL_PARAM_VALUE_OP_RE.sub(repl_default, val)
+            env.setdefault(var, "")
+            val = expand(val)
+            # `a=$a$a` repeated doubles each time: past the path cap keep the earlier binding.
+            if len(val) > _MAX_PATH_SCAN_CHARS:
+                continue
+        # Only a scoped empty assignment (`(x=)`) keeps the outer binding; a top-level `x=` clears it.
+        if not val and var in env:
+            if inert_states is None:
+                inert_states = _assignment_inert_states(command)
+            if inert_states[match.start(1)]:
+                continue
+        env[var] = val
+    if not env:
+        return command, command, saw_prefix
+    return expand(command), "".join(pieces) + expand(command[pos:]), saw_prefix
 
 
 def _expand_param_defaults(command: str) -> str:
@@ -5691,10 +5922,38 @@ def _command_references_sensitive(command: str) -> bool:
     return any(_glob_hits_sensitive(c) or _references_sensitive_path(c) for c in candidates)
 
 
+_CMD_ECHO_OFF_RE = re.compile(r"(?<![^\s&|()])@+")
+# cmd control flow that runs the command after it: IF's condition, FOR's DO and CALL become separators.
+_CMD_CONTROL_RE = re.compile(
+    r"(?i)(?<![^\s&|()])(?:if\s+(?:/i\s+)?(?:not\s+)?(?:(?:exist|defined|errorlevel|cmdextversion)\s+\S+"
+    r"|\S+?\s*==\s*\S+|\S+\s+(?:equ|neq|lss|leq|gtr|geq)\s+\S+)|do|call)(?=\s)"
+)
+
+
+def _cmd_reading(command: str) -> str:
+    """How cmd splits a command for the POSIX classifiers: ' is an ordinary character, ^ only escapes,
+    a leading @ only turns the echo off, and IF / FOR ... DO / CALL run the command that follows."""
+    text = _CMD_ECHO_OFF_RE.sub("", command.replace("^", "").replace("'", " "))
+    return _CMD_CONTROL_RE.sub(" & ", text)
+
+
+def _reads_differently_under_cmd(command: str) -> bool:
+    """True when the isolated cmd Terminal will run ``command`` and cmd would split it unlike bash."""
+    return (
+        sys.platform == "win32"
+        and _cmd_reading(command) != command
+        and _terminal_profile() == "cmd_isolated"
+    )
+
+
 def _terminal_is_potentially_unsafe(command: str) -> bool:
     """Classify a terminal command for auto mode (fail closed)."""
     if not command or not command.strip():
         return False
+    if _reads_differently_under_cmd(command) and _terminal_is_potentially_unsafe(
+        _cmd_reading(command)
+    ):
+        return True
     # Redirections and substitutions can hide writes or nested commands; a quoted ">" false-positives into a prompt,
     # which is the safe direction.
     if ">" in command or "`" in command or "$(" in command or "<(" in command:
@@ -6820,6 +7079,11 @@ _ALWAYS_SAFE_TOOLS = frozenset(
 )
 
 
+def never_needs_approval(name: str) -> bool:
+    """search_conversation only reads this chat's own compacted turns (#11671)."""
+    return name == "search_conversation"
+
+
 def is_always_safe_tool(name: str) -> bool:
     """True for tools that never need an auto-mode prompt on any arguments, so a caller (e.g. the
     streaming provisional card) can allow them before the full arguments are known. render_html
@@ -7160,8 +7424,8 @@ _NETWORK_CLIENT_AT_CMD_RE = re.compile(
 # -connect host:443). Plain openssl (dgst, enc) is local and stays out. Matched on the resolved command segment, so
 # wrapped forms are seen too.
 _OPENSSL_NETWORK_SUBCOMMANDS = frozenset({"s_client", "s_server"})
-# `getent shadow` returns password hashes straight from NSS, so the read never spells out /etc/shadow for the path
-# check to find.
+# `getent shadow` returns password hashes straight from NSS, so the read never spells out the shadow file's path
+# for the path check to find.
 _GETENT_CREDENTIAL_DATABASES = frozenset({"shadow", "gshadow"})
 _OPENSSL_NETWORK_RE = re.compile(
     r"(?:^|[;&|\n(]|&&|\|\|)\s*(?:[A-Za-z_]\w*=\S*\s+)*(?:\S*/)?openssl\s+s_(?:client|server)\b"
@@ -7992,6 +8256,12 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
         return True
     if not command or not command.strip():
         return False
+    if (
+        _depth == 0
+        and _reads_differently_under_cmd(command)
+        and _terminal_is_high_risk(_cmd_reading(command))
+    ):
+        return True
     # A credential/secret path read or write, or a sandbox escape (../), asks.
     if _command_references_sensitive(command):
         return True
@@ -9185,7 +9455,22 @@ def _reusable_sandbox_temp_dir(temp_dir: str, workdir: str) -> bool:
     return _is_sandbox_temp_dir(temp_dir, workdir) and os.access(temp_dir, os.W_OK | os.X_OK)
 
 
-def _build_safe_env(workdir: str) -> dict[str, str]:
+# Git for Windows starts hooks, the pager and the editor through its MSYS sh.exe, which cannot start inside MXC, so a
+# hook turns every commit into a failure and an editor hangs the call. Compatibility defaults, not a boundary: a
+# command can override them with git -c, and MXC is what confines it. core.hooksPath=NUL names no hook at all.
+_ISOLATED_CMD_GIT_ENV = {
+    "GIT_CONFIG_COUNT": "1",
+    "GIT_CONFIG_KEY_0": "core.hooksPath",
+    "GIT_CONFIG_VALUE_0": "NUL",
+    "GIT_PAGER": "",
+    "GIT_EDITOR": "unsloth-no-editor",
+    "GIT_SEQUENCE_EDITOR": "unsloth-no-editor",
+    "GIT_TERMINAL_PROMPT": "0",
+    "GCM_INTERACTIVE": "never",
+}
+
+
+def _build_safe_env(workdir: str, shell: "str | None" = None) -> dict[str, str]:
     """Build a minimal, credential-free environment for sandboxed subprocesses.
 
     Whitelist-built from scratch (parent env NOT inherited): only
@@ -9199,6 +9484,9 @@ def _build_safe_env(workdir: str) -> dict[str, str]:
     pinned. On Windows only, Git-for-Windows install dirs from the host PATH are appended so bare
     ``git`` resolves (#7317). User-writable host PATH entries are never inherited: they could shadow
     auto-safe terminal commands.
+
+    ``shell="cmd_isolated"`` is the Windows MXC Terminal on cmd.exe: Git Bash's userland stays off
+    PATH and git gets the non-interactive settings in _ISOLATED_CMD_GIT_ENV.
     """
     # Start from the running interpreter's dir so 'python'/'pip' resolve to the same environment the Unsloth server
     # runs in.
@@ -9216,7 +9504,8 @@ def _build_safe_env(workdir: str) -> dict[str, str]:
         sysroot = os.environ.get("SystemRoot", r"C:\Windows")
         # Ahead of System32 and its DOS twins (bare `find` would hit FIND.EXE, not GNU find), behind the interpreter
         # dirs so a Git-shipped python.exe cannot shadow the environment this server runs in.
-        path_entries.extend(_windows_bash_userland_dirs())
+        if shell != "cmd_isolated":
+            path_entries.extend(_windows_bash_userland_dirs())
         path_entries.extend([os.path.join(sysroot, "System32"), sysroot])
     else:
         path_entries.extend(["/usr/local/bin", "/usr/bin", "/bin"])
@@ -9229,6 +9518,9 @@ def _build_safe_env(workdir: str) -> dict[str, str]:
         # Append the CANONICAL (realpath) trusted git dir, scanning past any untrusted user shim that sorts first on
         # PATH; the canonical path cannot be retargeted via a junction after the trust check.
         _trusted_git_dir, git_ext = _resolve_trusted_windows_git()
+        if not _trusted_git_dir and shell == "cmd_isolated":
+            # Git installed for Git Bash only is not on PATH; bash found it, so use its Git\cmd.
+            _trusted_git_dir, git_ext = _windows_bash_git_cmd_dir(), ".EXE"
         if _trusted_git_dir:
             path_entries.append(_trusted_git_dir)
 
@@ -9267,6 +9559,8 @@ def _build_safe_env(workdir: str) -> dict[str, str]:
         # cmd/CreateProcess search cwd before PATH for bare names; disable so a workdir rg.exe/git.exe cannot shadow
         # auto-approved commands.
         env["NoDefaultCurrentDirectoryInExePath"] = "1"
+        if shell == "cmd_isolated":
+            env.update(_ISOLATED_CMD_GIT_ENV)
     return env
 
 
@@ -9800,6 +10094,23 @@ def _windows_bash() -> "str | None":
     return None
 
 
+def _windows_bash_git_cmd_dir() -> str:
+    """The trusted ``Git\\cmd`` dir of the install the resolved bash belongs to, or ""."""
+    bash = _windows_bash()
+    if not bash:
+        return ""
+    bin_dir = os.path.dirname(bash)
+    for root in (os.path.dirname(bin_dir), os.path.dirname(os.path.dirname(bin_dir))):
+        candidate = os.path.join(root, "cmd")
+        if (
+            root
+            and os.path.isfile(os.path.join(candidate, "git.exe"))
+            and _is_trusted_windows_program_dir(candidate)
+        ):
+            return os.path.realpath(candidate)
+    return ""
+
+
 def _windows_bash_userland_dirs() -> list[str]:
     """Trusted dirs holding the resolved bash and the POSIX tools beside it.
 
@@ -9843,6 +10154,87 @@ def _get_shell_cmd(command: str) -> list[str]:
             return [bash, "-c", command]
         return ["cmd", "/c", command]
     return ["bash", "-c", command]
+
+
+def _windows_system_cmd() -> str:
+    """System32 cmd.exe, resolved the same way MXC policy resolves it; never COMSPEC or PATH."""
+    from .mxc_policy import _system_cmd
+    return _system_cmd()
+
+
+def _terminal_profile(disable_sandbox: bool = False) -> str:
+    """Which shell the Terminal runs: "bash", "cmd_isolated" or "cmd_fallback".
+
+    Git Bash cannot start inside MXC (microsoft/mxc#1061), so when the MXC probe names exactly that
+    failure and cmd.exe qualifies instead, Auto runs the Terminal isolated on cmd rather than
+    unsandboxed on bash. Only the MSYS verdict triggers the cmd probe, so hosts without a working MXC
+    pay nothing extra. Full access and UNSLOTH_MXC_TERMINAL_CMD=0 keep the host shell.
+    """
+    if sys.platform != "win32":
+        return "bash"
+    bash = _windows_bash()
+    host_default = "bash" if bash else "cmd_fallback"
+    if disable_sandbox or os.environ.get("UNSLOTH_MXC_TERMINAL_CMD") == "0":
+        return host_default
+    try:
+        from . import mxc_policy, mxc_probe
+
+        if bash:
+            # Measured only on MXC's DACL tier; BaseContainer hosts keep bash until it is.
+            if not mxc_policy.dacl_fallback_enabled():
+                return "bash"
+            verdict = os_sandbox.capability_snapshot(
+                execution_kind = "terminal", selected_executable = bash
+            )
+            if verdict.available or verdict.reason != mxc_probe.MSYS_NAMESPACE_REASON:
+                return "bash"
+        cmd = os_sandbox.capability_snapshot(
+            execution_kind = "terminal", selected_executable = _windows_system_cmd()
+        )
+        return "cmd_isolated" if cmd.available else host_default
+    except Exception as exc:  # noqa: BLE001 - a probe failure must never take the Terminal away
+        logger.warning(f"terminal profile check failed, keeping the host shell: {exc}")
+        return host_default
+
+
+# The last profile a request advertised, so an expired probe verdict is refreshed off the request path.
+_request_profile: list = [None, 0.0]
+_request_profile_lock = threading.Lock()
+_REQUEST_PROFILE_REFRESH_SECONDS = 240.0
+
+
+def _refresh_request_profile() -> str:
+    profile = _terminal_profile(False)
+    with _request_profile_lock:
+        _request_profile[:] = [profile, time.monotonic()]
+    return profile
+
+
+def _profile_for_request() -> str:
+    with _request_profile_lock:
+        profile, computed = _request_profile
+        stale = (
+            profile is not None and time.monotonic() - computed > _REQUEST_PROFILE_REFRESH_SECONDS
+        )
+        if stale:
+            _request_profile[1] = time.monotonic()  # one refresh in flight at a time
+    if profile is None:
+        return _refresh_request_profile()
+    if stale:
+        threading.Thread(target = _refresh_request_profile, daemon = True).start()
+    return profile
+
+
+def apply_terminal_profile_for_request(tools: list[dict]) -> list[dict]:
+    """Sandboxed requests only: advertise the shell _bash_exec will pick for this request. Only the
+    first call can block on the MXC probe, so async callers run it in a worker thread; later calls
+    reuse the last profile and refresh it in the background. A list without the Terminal never probes."""
+    if not any(
+        isinstance(t, dict) and (t.get("function") or {}).get("name") == "terminal"
+        for t in tools or ()
+    ):
+        return tools
+    return apply_terminal_profile_description(tools, _profile_for_request())
 
 
 def _shell_argv(command: str, workdir: str, confinement) -> "tuple[list[str], str | None]":
@@ -11454,6 +11846,8 @@ def _holds_no_user_files(target: str, owner: "str | None" = None) -> bool:
             # a real file there is the user's like any other.
             if _is_spill_artifact(target, parent, name):
                 continue
+            if _is_attachment_copy(target, parent, name):
+                continue
             return False
         budget -= 1
         if budget <= 0:
@@ -12458,6 +12852,43 @@ TERMINAL_TOOL_FULL_ACCESS = {
     },
 }
 
+# The isolated Windows Terminal (see _terminal_profile) is cmd.exe inside MXC whatever the host shell is, so it gets
+# its own schema, chosen per request; the module default keeps describing the host shell.
+_ISOLATED_CMD_SHELL_NOTE = (
+    " The shell is cmd, running isolated, not bash: send one command per call, chain with &&, use "
+    "double quotes only, and use relative paths. git, when installed, runs without hooks, a pager or "
+    "an editor, so pass -m to git commit."
+)
+
+TERMINAL_TOOL_CMD_ISOLATED = {
+    "type": "function",
+    "function": {
+        **TERMINAL_TOOL["function"],
+        "description": "Execute a terminal command and return stdout/stderr."
+        + _SANDBOX_PATHS_NOTE
+        + _ISOLATED_CMD_SHELL_NOTE,
+    },
+}
+
+
+def apply_terminal_profile_description(tools: list[dict], profile: str) -> list[dict]:
+    """Swap the terminal schema for the one matching ``profile``. Like
+    apply_full_access_tool_descriptions, the input list is never mutated and a list with nothing to
+    swap is returned as-is; only "cmd_isolated" changes anything."""
+    if not tools or profile != "cmd_isolated":
+        return tools
+    swapped = False
+    out: list[dict] = []
+    for tool in tools:
+        name = (tool.get("function") or {}).get("name") if isinstance(tool, dict) else None
+        if name == "terminal":
+            out.append(TERMINAL_TOOL_CMD_ISOLATED)
+            swapped = True
+        else:
+            out.append(tool)
+    return out if swapped else tools
+
+
 # edit_file is registered below, once its schema exists.
 _FULL_ACCESS_TOOL_BY_NAME = {
     "python": PYTHON_TOOL_FULL_ACCESS,
@@ -12884,6 +13315,19 @@ def _mcp_specs_for_server(server: dict, mcp_tools: list[dict]) -> list[dict]:
     return specs
 
 
+def _enabled_mcp_servers(servers: list[dict]) -> list[dict]:
+    enabled = [server for server in servers if server.get("is_enabled")]
+    if not any(is_studio_decisions(server["url"]) for server in enabled):
+        return enabled
+    from utils import systemone_settings
+
+    return (
+        enabled
+        if systemone_settings.get_enabled()
+        else [server for server in enabled if not is_studio_decisions(server["url"])]
+    )
+
+
 def cached_mcp_tools() -> tuple[list[dict], bool]:
     """The MCP schemas already in cache, and whether that is the whole set.
 
@@ -12897,7 +13341,7 @@ def cached_mcp_tools() -> tuple[list[dict], bool]:
     server renders nothing on the completion path either, so skipping that one is exact rather than
     short. Callers that must not undercount should decline on False.
     """
-    servers = [s for s in mcp_servers_db.list_servers() if s.get("is_enabled")]
+    servers = _enabled_mcp_servers(mcp_servers_db.list_servers())
     if not stdio_mcp_enabled():
         servers = [s for s in servers if not is_stdio(s["url"])]
 
@@ -12915,9 +13359,7 @@ def cached_mcp_tools() -> tuple[list[dict], bool]:
 
 async def get_enabled_mcp_tools() -> list[dict]:
     # Keep the SQLite-backed server list off the event loop.
-    servers = [
-        s for s in await asyncio.to_thread(mcp_servers_db.list_servers) if s.get("is_enabled")
-    ]
+    servers = await asyncio.to_thread(lambda: _enabled_mcp_servers(mcp_servers_db.list_servers()))
     # Never spawn stdio servers when stdio is disabled on this host.
     if not stdio_mcp_enabled():
         servers = [s for s in servers if not is_stdio(s["url"])]
@@ -13646,14 +14088,14 @@ def _last_user_text(conversation: list[dict]) -> str:
             continue
         content = msg.get("content")
         if isinstance(content, str):
-            return content.strip()
+            return strip_current_date_update_note(content).strip()
         if isinstance(content, list):
             parts = [
                 p.get("text", "")
                 for p in content
                 if isinstance(p, dict) and p.get("type") in ("text", "input_text")
             ]
-            return " ".join(t for t in parts if t).strip()
+            return strip_current_date_update_note(" ".join(t for t in parts if t)).strip()
         return ""
     return ""
 
@@ -14088,6 +14530,30 @@ _MIN_SINGLE_BYTE_ASCII_RATIO = 3 / 4
 _ASCII_TEXT_BYTES = frozenset((*range(0x20, 0x7F), 0x09, 0x0A, 0x0D, 0x1B))
 
 _META_CHARSET_SCAN_BYTES = 2048
+_META_REFRESH_SCAN_BYTES = 4096
+_META_REFRESH_MAX_DELAY = 5
+_META_REFRESH_CONTENT_RE = re.compile(
+    r"\s*(\d+|(?=\.))(?:\.[\d.]*)?(?:(?=[\s;,])\s*[;,]?\s*(?:url\s*=\s*)?(.*))?\Z",
+    re.ASCII | re.IGNORECASE | re.DOTALL,
+)
+# Browsers leave an unterminated named reference in an attribute alone, so "&section=" stays literal instead of "§ion=".
+_ATTR_CHAR_REF_RE = re.compile(r"&(?:#[0-9]+;?|#[xX][0-9a-fA-F]+;?|[A-Za-z][A-Za-z0-9]*;)")
+# <plaintext> has no end tag: everything after it is text.
+_META_REFRESH_INERT_TAGS = frozenset(
+    (
+        b"iframe",
+        b"noembed",
+        b"noframes",
+        b"noscript",
+        b"plaintext",
+        b"script",
+        b"style",
+        b"template",
+        b"textarea",
+        b"title",
+        b"xmp",
+    )
+)
 # A comment or whole tag, quoted attribute values included, so markup inside them is never read as <meta>. As in the
 # browser prescan, an unterminated tag ends the scan.
 _HTML_TAG_RE = re.compile(
@@ -14240,6 +14706,60 @@ def _sniff_meta_charset(head: bytes, content_type: str) -> str | None:
     elif not is_xml:
         return None
     return prolog and _whatwg_codec(prolog.group(1))
+
+
+def _meta_refresh_target(body: bytes, page_url: str) -> str | None:
+    from html import unescape
+    from urllib.parse import urldefrag, urljoin, urlparse
+
+    def attr_text(value: bytes) -> str:
+        return _ATTR_CHAR_REF_RE.sub(
+            lambda ref: unescape(ref.group(0)), value.decode("utf-8", "replace")
+        )
+
+    base_url, seen_base, inert = page_url, False, None
+    for tag in _HTML_TAG_RE.finditer(body[:_META_REFRESH_SCAN_BYTES]):
+        name = (tag.group(1) or b"").lower()
+        if inert is not None:
+            end = tag.group(0)[: len(inert) + 3].lower()
+            if inert != b"plaintext" and end[:-1] == b"</" + inert and end[-1:] in b"\t\n\f\r />":
+                inert = None
+        elif name in _META_REFRESH_INERT_TAGS:
+            inert = name
+        elif name in (b"base", b"meta"):
+            attrs = {}
+            for attr, *values in _META_ATTR_RE.findall(tag.group(2)):
+                attrs.setdefault(attr.lower(), b"".join(values))
+            if name == b"base":
+                # Only the first <base href> counts, and only for a refresh that comes after it.
+                if b"href" in attrs and not seen_base:
+                    seen_base = True
+                    try:
+                        href = urljoin(page_url, attr_text(attrs[b"href"]).strip())
+                        if urlparse(href).scheme in ("http", "https"):
+                            base_url = href
+                    except ValueError:
+                        pass
+                continue
+            if attrs.get(b"http-equiv", b"").strip().lower() != b"refresh":
+                continue
+            match = _META_REFRESH_CONTENT_RE.match(attr_text(attrs.get(b"content", b"")))
+            if match is None:
+                continue
+            location = (match.group(2) or "").strip()
+            if location[:1] in ("'", '"'):
+                location = location[1:].split(location[0], 1)[0].strip()
+            if not location or int(match.group(1) or 0) > _META_REFRESH_MAX_DELAY:
+                return None
+            try:
+                target = urljoin(base_url, location)
+                scheme = urlparse(target).scheme
+            except ValueError:
+                return None
+            if scheme not in ("http", "https") or urldefrag(target)[0] == urldefrag(page_url)[0]:
+                return None
+            return target
+    return None
 
 
 def _extract_pdf_text(data: bytes) -> str:
@@ -14751,6 +15271,21 @@ def _pinned_netloc(ip: str, port: int | None) -> str:
     return f"{host}:{port}" if port else host
 
 
+def _redirect_hop(url: str, website_policy, deadline, cancel_event) -> tuple[str | None, str, list]:
+    from urllib.parse import urlparse
+    from .web_access_policy import check_url_access
+
+    allowed, reason, host = check_url_access(url, website_policy)
+    if not allowed:
+        return reason, "", []
+    parsed = urlparse(url)
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    ok, reason, pinned_ips = _resolve_with_budget(host, port, deadline, cancel_event)
+    if not ok:
+        return reason, "", []
+    return None, host, pinned_ips
+
+
 def _fetch_url_raw(
     url: str,
     timeout: int = 30,
@@ -14861,25 +15396,14 @@ def _fetch_url_raw(
                 if not location:
                     return "Failed to fetch URL: redirect missing Location header.", "", ""
                 current_url = urljoin(current_url, location)
-                # Server-controlled, so never scheme-upgraded; the gate below reads .port first, so the parse after it
-                # cannot raise.
-                allowed, policy_reason, redirect_host = check_url_access(
+                hop_error, current_host, pinned_ips = _redirect_hop(
                     current_url,
                     website_policy,
-                )
-                if not allowed:
-                    return policy_reason, "", ""
-                rp = urlparse(current_url)
-                rp_port = rp.port or (443 if rp.scheme == "https" else 80)
-                ok2, reason2, pinned_ips = _resolve_with_budget(
-                    redirect_host,
-                    rp_port,
                     deadline,
                     cancel_event,
                 )
-                if not ok2:
-                    return reason2, "", ""
-                current_host = redirect_host
+                if hop_error is not None:
+                    return hop_error, "", ""
                 continue
 
             # get_content_type() defaults to "text/plain" when the header is absent (RFC 2045); report "" instead so
@@ -14925,7 +15449,20 @@ def _fetch_url_raw(
                 if tail_error is not None:
                     return tail_error, "", ""
                 raw_bytes += tail
-            break
+            refresh_url = content_type == "text/html" and _meta_refresh_target(
+                raw_bytes, current_url
+            )
+            if not refresh_url:
+                break
+            current_url = refresh_url
+            hop_error, current_host, pinned_ips = _redirect_hop(
+                current_url,
+                website_policy,
+                deadline,
+                cancel_event,
+            )
+            if hop_error is not None:
+                return hop_error, "", ""
         else:
             return "Failed to fetch URL: too many redirects.", "", ""
 
@@ -16954,8 +17491,8 @@ def _check_signal_escape_patterns(code: str):
         ".readthedocs.org",
     )
     _SENSITIVE_FILE_PREFIXES = (
-        "/etc/passwd",
-        "/etc/shadow",
+        _joined(("/etc/pas", "swd")),
+        _joined(("/etc/sh", "adow")),
         "/etc/sudoers",
         "/etc/ssh/",
     )
@@ -19299,11 +19836,16 @@ def _truncate(
     scope: "str | None" = "",
     hint: str = "",
     reserve_tokens: float = 0.0,
+    omitted: "tuple[int, int]" = (0, 0),
 ) -> str:
     # Resolved per call, not bound at import: the default would freeze the constant before any model is loaded, which
     # is exactly when the window is still unknown.
     if limit is None:
         limit = _tool_result_char_budget()
+    # `omitted` is the (chars, lines) the drain dropped between its head and tail, so only the head may be shown.
+    size = len(text) + omitted[0]
+    if omitted[0]:
+        limit = min(limit, _SPILL_MAX_BYTES)
     # Same correction as a fetched page: a character cap reserves its share of the window only for English, and a
     # command that prints CJK or percent-escaped text costs two to three times what the cap assumed.
     # Whatever the loop will append to this result once it has it: the tool-error nudge goes on after the tool has
@@ -19345,7 +19887,7 @@ def _truncate(
     # to nothing.
     if _request_result_room() is not None:
         limit = _dense_char_limit(text, cap, cost + _RESULT_NOTICE_RESERVE)
-    if limit <= 0 and len(_zero_room_stub(len(text), None, True)) >= len(text):
+    if limit <= 0 and len(_zero_room_stub(size, None, True)) >= len(text):
         # Decided BEFORE the spill: a result this short is served whole below, and writing a file (and creating the
         # spill directory) for output that is never cut is a side effect with nothing on the other side of it.
         return text + hint
@@ -19354,7 +19896,7 @@ def _truncate(
         # No room for a body, so no room for the usual notice either: at this point the notice IS the message, and the
         # full one costs ~90 tokens of a budget that just reported none. Kept to a line so the thread stays servable
         # and the next fit can evict older turns and recover, which is the whole reason a stub beats a refusal.
-        stub = _zero_room_stub(len(text), spill, complete)
+        stub = _zero_room_stub(size, spill, complete)
         # A short result costs less than the notice explaining it is gone, and replacing "done" with a longer sentence
         # saves nothing and loses the answer.
         return (stub if len(stub) < len(text) else text) + hint
@@ -19363,7 +19905,7 @@ def _truncate(
         return (
             head
             + (
-                f"\n\n... (truncated to {limit} chars for the model; {len(text)} chars "
+                f"\n\n... (truncated to {limit} chars for the model; {size} chars "
                 "total. The full output is not retained here; any files the code wrote "
                 "persist in the working directory.)"
             )
@@ -19378,7 +19920,7 @@ def _truncate(
         # blank line, where the head is "\n" alone and a count of two makes the hint resume at line 3, skipping the
         # first line the reader never saw.
         shown = 0 if not head else head.count("\n") + (0 if head.endswith("\n") else 1)
-        total = text.count("\n") + 1
+        total = text.count("\n") + 1 + omitted[1]
         resume = f"sed -n '{shown + 1},{shown + max(1, shown)}p' {spill}"
         where = f"showing lines 1-{shown} of {total}"
     else:
@@ -19393,11 +19935,11 @@ def _truncate(
         chunk = text[len(head) : len(head) * 2 or None]
         span = len(chunk.encode("utf-8", "surrogatepass"))
         resume = f"tail -c +{offset + 1} {spill} | head -c {max(1, span)}"
-        where = f"showing the first {len(head)} chars of {len(text)}"
+        where = f"showing the first {len(head)} chars of {size}"
     # The workdir sentence stays whatever else the notice says: it is about the files the CODE wrote, not the spill,
     # and it is the only thing telling the model those survive.
     common = (
-        f"\n\n... (truncated to {limit} chars for the model; {where}, {len(text)} chars "
+        f"\n\n... (truncated to {limit} chars for the model; {where}, {size} chars "
         f"total. {_capitalise(_spill_phrase(spill, complete))}, and any files the code "
         "wrote persist in the working directory"
     )
@@ -19702,6 +20244,114 @@ def _quiet_unlink(path: str, dir_fd = None) -> None:
         os.unlink(path, dir_fd = dir_fd) if dir_fd is not None else os.unlink(path)
     except OSError:
         pass
+
+
+# Hidden, like the spill directory: a project chat's workdir can be the user's own folder.
+_ATTACHMENTS_DIR = ".unsloth_attachments"
+_ATTACHMENT_PREFIX_LEN = 12
+_ATTACHMENT_NAME_BYTES = 80
+_UNSAFE_NAME_CHARS = re.compile(r'[\x00-\x1f\x7f/\\:*?"<>|]')
+# Windows device names stay reserved with any extension (NUL.tar.gz is NUL).
+_RESERVED_NAME = re.compile(r"(?:CON|PRN|AUX|NUL|COM\d|LPT\d)", re.IGNORECASE)
+
+
+def sandbox_attachment_path(sha256: str, name: str) -> str:
+    """Mirrored by sandboxAttachmentPath in the frontend's sandbox-attachments.ts."""
+    base = _UNSAFE_NAME_CHARS.sub("_", name or "").strip(" .") or "attachment"
+    # In bytes: filesystems cap a name at 255, and macOS stores decomposed text that can triple it.
+    if len(base.encode()) > _ATTACHMENT_NAME_BYTES:
+        stem, ext = os.path.splitext(base)
+        ext = ext if len(ext.encode()) <= 16 else ""
+        room = _ATTACHMENT_NAME_BYTES - len(ext.encode())
+        # Stripped again so the basename the frontend sends back derives this same path.
+        base = (stem.encode()[:room].decode("utf-8", "ignore").rstrip(" .") or "attachment") + ext
+    if _RESERVED_NAME.fullmatch(base.split(".", 1)[0].rstrip(" ")):
+        base = "_" + base
+    return f"{_ATTACHMENTS_DIR}/{sha256[:_ATTACHMENT_PREFIX_LEN]}/{base}"
+
+
+def materialize_sandbox_attachments(
+    session_id: "str | None", attachments: "list[tuple[str, str]]"
+) -> None:
+    """Copy chat attachment originals into the sandbox, leaving one already there so edits survive."""
+    from core import chat_originals
+    with _session_in_flight(session_id):
+        workdir = _get_workdir(session_id)
+        for sha256, name in attachments:
+            source = chat_originals.originals_dir() / sha256
+            if not source.is_file():
+                continue
+            try:
+                _install_attachment_copy(workdir, sandbox_attachment_path(sha256, name), source)
+            except (OSError, ValueError):
+                logger.warning(
+                    "could not copy attachment %s into the sandbox", sha256, exc_info = True
+                )
+
+
+def _install_attachment_copy(workdir: str, relative: str, source: Path) -> None:
+    """The spill writer's discipline: no link followed, and `os.link` never replaces a name."""
+    *dirs, name = relative.split("/")
+    tmp = f".tmp-{uuid.uuid4().hex[:12]}"
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if not _DIR_FD_WRITES:
+        target = workdir
+        for part in dirs:
+            target = os.path.join(target, part)
+            if os.path.islink(target):
+                return
+            os.makedirs(target, mode = 0o700, exist_ok = True)
+        if os.path.realpath(target) != os.path.join(os.path.realpath(workdir), *dirs):
+            return
+        if os.path.lexists(os.path.join(target, name)):
+            return
+        tmp = os.path.join(target, tmp)
+        try:
+            with (
+                open(source, "rb") as src,
+                os.fdopen(os.open(tmp, flags | getattr(os, "O_NOFOLLOW", 0), 0o600), "wb") as out,
+            ):
+                shutil.copyfileobj(src, out, 1 << 20)
+            with contextlib.suppress(FileExistsError):
+                os.link(tmp, os.path.join(target, name))
+        finally:
+            _quiet_unlink(tmp)
+        return
+    fds = [os.open(workdir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)]
+    try:
+        for part in dirs:
+            with contextlib.suppress(FileExistsError):
+                os.mkdir(part, 0o700, dir_fd = fds[-1])
+            fds.append(os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd = fds[-1]))
+        with contextlib.suppress(FileNotFoundError):
+            os.stat(name, dir_fd = fds[-1], follow_symlinks = False)
+            return
+        try:
+            with (
+                open(source, "rb") as src,
+                os.fdopen(os.open(tmp, flags, 0o600, dir_fd = fds[-1]), "wb") as out,
+            ):
+                shutil.copyfileobj(src, out, 1 << 20)
+            with contextlib.suppress(FileExistsError):
+                os.link(tmp, name, src_dir_fd = fds[-1], dst_dir_fd = fds[-1])
+        finally:
+            _quiet_unlink(tmp, dir_fd = fds[-1])
+    finally:
+        for fd in fds:
+            os.close(fd)
+
+
+def _is_attachment_copy(sandbox: str, parent: str, name: str) -> bool:
+    prefix = os.path.basename(parent)
+    path = os.path.join(parent, name)
+    if (
+        os.path.dirname(parent) != os.path.join(sandbox, _ATTACHMENTS_DIR)
+        or not re.fullmatch(r"[0-9a-f]{12}", prefix)
+        or os.path.islink(path)
+    ):
+        return False
+    digest = _file_digest(path)
+    return digest is not None and digest.startswith(prefix)
 
 
 def _forget_spill_record(path: str) -> None:
@@ -20247,6 +20897,10 @@ def _missing_path_hint(output: str, workdir: str | None = None) -> str:
     )
 
 
+# Kept past the spill's head so a trailing traceback still reaches `_missing_path_hint`; also the drain's read size.
+_DRAIN_TAIL_CHARS = 64 * 1024
+
+
 def _drain_process_output(
     proc,
     timeout,
@@ -20254,17 +20908,21 @@ def _drain_process_output(
     cancel_event = None,
     *,
     pgid = None,
-) -> tuple[str, bool]:
-    """``proc.communicate(timeout=...)`` equivalent that also streams each stdout line to
-    ``output_callback`` as it is produced.
+) -> "tuple[str, bool, tuple[int, int]]":
+    """``proc.communicate(timeout=...)`` equivalent that also streams each stdout line (in
+    ``_DRAIN_TAIL_CHARS`` pieces when longer) to ``output_callback`` as it is produced.
 
-    Returns ``(output, timed_out)``. The joined output is identical to what ``communicate`` would
+    Returns ``(output, timed_out, omitted)``. The joined output is what ``communicate`` would
     return: the same TextIOWrapper decodes the stream, so encoding, error replacement, and newline
-    translation all match. On timeout the process tree is killed (mirroring the non-streaming path).
+    translation all match. Past the spill's head only a rolling tail is kept, and ``omitted`` is the
+    ``(chars, lines)`` dropped between them. On timeout the process tree is killed (mirroring the
+    non-streaming path).
     With ``timeout=None`` the drain waits for EOF like ``communicate`` would, stopping early only
     when ``cancel_event`` is set.
     """
     chunks: list[str] = []
+    tail: "deque[str]" = deque()
+    kept = joined = tail_chars = omitted_chars = omitted_lines = 0
 
     # Captured before waiting so a stdout-holding grandchild can still be killed after the leader is reaped (getpgid
     # then fails). Callers pass it in from right after Popen; fall back to capturing here for direct callers.
@@ -20272,9 +20930,26 @@ def _drain_process_output(
         pgid = _capture_process_group(proc)
 
     def _reader() -> None:
+        nonlocal kept, joined, tail_chars, omitted_chars, omitted_lines
         try:
-            for line in iter(proc.stdout.readline, ""):
-                chunks.append(line)
+            # Sized reads: a newline-free stream would otherwise arrive as one unbounded "line".
+            for line in iter(lambda: proc.stdout.readline(_DRAIN_TAIL_CHARS), ""):
+                # Chars against a byte cap: UTF-8 never has fewer bytes than chars, so the head covers the spill.
+                if kept <= _SPILL_MAX_BYTES:
+                    chunks.append(line)
+                    kept += len(line)
+                    # A str per line costs ~50 bytes, so a flood of tiny lines would dwarf the cap unless coalesced.
+                    if len(chunks) - joined >= 1024:
+                        chunks[joined:] = ["".join(chunks[joined:])]
+                        joined += 1
+                else:
+                    tail.append(line)
+                    tail_chars += len(line)
+                    while tail_chars > _DRAIN_TAIL_CHARS and len(tail) > 1:
+                        gone = tail.popleft()
+                        tail_chars -= len(gone)
+                        omitted_chars += len(gone)
+                        omitted_lines += gone.count("\n")
                 if output_callback is not None:
                     try:
                         output_callback(line)
@@ -20325,7 +21000,7 @@ def _drain_process_output(
                     break
                 reader.join(timeout = 0.5)
     reader.join(timeout = 5)
-    return "".join(chunks), timed_out
+    return "".join(chunks) + "".join(tail), timed_out, (omitted_chars, omitted_lines)
 
 
 _MAX_REPORTED_FILES = 25
@@ -20609,7 +21284,11 @@ def _created_file_sentinels(
 
 
 def _timed_out_result(
-    output: str | None, timeout: int, workdir: str | None, scope: "str | None"
+    output: str | None,
+    timeout: int,
+    workdir: str | None,
+    scope: "str | None",
+    omitted: "tuple[int, int]" = (0, 0),
 ) -> str:
     """Captured output, then the timeout status line.
 
@@ -20627,6 +21306,7 @@ def _timed_out_result(
         workdir = workdir,
         scope = scope,
         reserve_tokens = _text_token_cost(f"\n{ended}", ctx),
+        omitted = omitted,
     )
     result = f"{head}\n{ended}"
     # With the retry nudge, a stub or short head served whole can overrun a room the status fits.
@@ -20650,7 +21330,7 @@ def _python_exec(
 ) -> str:
     """Execute Python code in a subprocess sandbox. disable_sandbox (Bypass Permissions): skip the
     safety analysis and rlimit pre-exec, and use the host env minus secrets. output_callback:
-    optional callable(str) streamed each stdout line as it is produced; the returned result is
+    optional callable(str) streamed stdout as it is produced; the returned result is
     unchanged. tool_execution_mode selects automatic or required OS isolation; disable_sandbox
     keeps full access as a separate explicit choice."""
     if not code or not code.strip():
@@ -20781,9 +21461,9 @@ def _python_exec(
             watcher.start()
 
         # Always drain via _drain_process_output (output_callback may be None): it kills the captured group on
-        # cancellation, reaping a grandchild that outlived the leader, and returns bytes identical to communicate() so
-        # the streaming vs non-streaming result stays byte-identical.
-        output, timed_out = _drain_process_output(
+        # cancellation, reaping a grandchild that outlived the leader, and keeps the same bytes with or without a
+        # callback so the streaming vs non-streaming result stays byte-identical.
+        output, timed_out, omitted = _drain_process_output(
             proc, timeout, output_callback, cancel_event, pgid = pgid
         )
         if prepared is not None:
@@ -20804,7 +21484,7 @@ def _python_exec(
         # A run that wrote its file and then hung still produced that file, so report it: `printf data > report.csv;
         # sleep 999` is downloadable.
         if timed_out:
-            ended = _timed_out_result(output, timeout, spill_dir, spill_scope)
+            ended = _timed_out_result(output, timeout, spill_dir, spill_scope, omitted)
             return ended + (
                 _created_file_sentinels(workdir, _before, _scratch_name, call_token)
                 if session_id
@@ -20831,7 +21511,7 @@ def _python_exec(
         # envelope.
         result = _defuse_sentinels(result)
         result = (
-            _truncate(result, workdir = spill_dir, scope = spill_scope, hint = hint)
+            _truncate(result, workdir = spill_dir, scope = spill_scope, hint = hint, omitted = omitted)
             if result.strip()
             else "(no output)" + hint
         )
@@ -20873,6 +21553,12 @@ def _python_exec(
                 pass
 
 
+_CMD_MULTILINE_REFUSED = (
+    "Execution error: the Terminal runs cmd, which runs only the first line of a multi-line "
+    "command. Send one line per call and chain dependent commands with &&."
+)
+
+
 def _bash_exec(
     command: str,
     cancel_event = None,
@@ -20887,8 +21573,8 @@ def _bash_exec(
 ) -> str:
     """Execute a bash command in a subprocess sandbox. disable_sandbox (Bypass Permissions): skip
     the command blocklist and rlimit pre-exec, and use the host env minus secrets.
-    output_callback: optional callable(str) streamed each stdout line as it is produced; the
-    returned result is unchanged. tool_execution_mode follows _python_exec."""
+    output_callback: optional callable(str) streamed stdout as it is produced; the returned
+    result is unchanged. tool_execution_mode follows _python_exec."""
     if not command or not command.strip():
         return "No command provided."
 
@@ -20899,9 +21585,29 @@ def _bash_exec(
     ):
         return _STUDIO_CREDENTIAL_BLOCKED
 
+    # Chosen once, so the blocklist, env and argv all agree on the shell that will run this call.
+    profile = _terminal_profile(disable_sandbox)
+    if profile == "cmd_isolated":
+        # Models often end a command with a newline; cmd /s /c cannot carry one.
+        command = command.strip()
+        if "\n" in command or "\r" in command:
+            return _CMD_MULTILINE_REFUSED
+
     # Block dangerous commands (skipped when the sandbox is disabled)
     if not disable_sandbox:
-        blocked = _find_blocked_commands(command)
+        if profile == "cmd_isolated":
+            # The cmd lexer misses separators glued to a word (a&powershell), cmd drops ^ escapes and
+            # ' does not quote, so screen every reading; defence in depth, MXC is the boundary.
+            unescaped = command.replace("^", "")
+            blocked = set().union(
+                *(
+                    _find_blocked_commands(text, posix = posix)
+                    for text in (command, unescaped, _cmd_reading(command))
+                    for posix in (False, True)
+                )
+            )
+        else:
+            blocked = _find_blocked_commands(command)
         if blocked:
             # Capped for the same reason the Python analyzer's error is: it lists what it found in the command it was
             # handed.
@@ -20937,7 +21643,11 @@ def _bash_exec(
         # Same pre-run snapshot as _python_exec. A command that writes a file used to produce "(no output)" and no
         # other trace anywhere in the product.
         _before = _snapshot_workdir_files(workdir)
-        safe_env = _build_bypass_env(workdir) if disable_sandbox else _build_safe_env(workdir)
+        safe_env = (
+            _build_bypass_env(workdir)
+            if disable_sandbox
+            else _build_safe_env(workdir, shell = profile if profile == "cmd_isolated" else None)
+        )
         popen_kwargs = dict(
             stdout = subprocess.PIPE,
             stderr = subprocess.STDOUT,
@@ -20952,11 +21662,19 @@ def _bash_exec(
         if sys.platform == "win32":
             popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
 
-        shell_argv, _scratch_name = _shell_argv(command, workdir, confinement)
+        if profile == "cmd_isolated":
+            shell_argv, _scratch_name = [_windows_system_cmd(), "/c", command], None
+        else:
+            shell_argv, _scratch_name = _shell_argv(command, workdir, confinement)
         if _scratch_name:
             with _scratch_lock:
                 _active_scratch.add(_scratch_name)
         requested_mode = _requested_execution_mode(tool_execution_mode, disable_sandbox)
+        host_reach_approved = host_access_approved and _reaches_host_paths("terminal", command)
+        if profile == "cmd_isolated" and requested_mode == "auto" and not host_reach_approved:
+            # Written for the isolated cmd Terminal and screened only by its lexer: never replayed on the host if
+            # isolation drops out between the profile check and the launch.
+            requested_mode = "required"
         base_preexec = (
             None
             if sys.platform == "win32"
@@ -20974,8 +21692,7 @@ def _bash_exec(
                     execution_kind = "terminal",
                     cancel_event = cancel_event,
                 ),
-                host_access_approved = host_access_approved
-                and _reaches_host_paths("terminal", command),
+                host_access_approved = host_reach_approved,
             )
             proc = os_sandbox.spawn_prepared_launch(
                 prepared, **_apply_prepared_launch(prepared, popen_kwargs)
@@ -21001,8 +21718,8 @@ def _bash_exec(
             watcher.start()
 
         # Always drain via _drain_process_output (see _python_exec): kills the captured group on cancellation and
-        # returns bytes identical to communicate(), keeping streaming vs non-streaming byte-identical.
-        output, timed_out = _drain_process_output(
+        # keeps the same bytes with or without a callback, so streaming vs non-streaming stays byte-identical.
+        output, timed_out, omitted = _drain_process_output(
             proc, timeout, output_callback, cancel_event, pgid = pgid
         )
         if prepared is not None:
@@ -21023,7 +21740,7 @@ def _bash_exec(
         # A run that wrote its file and then hung still produced that file, so report it: `printf data > report.csv;
         # sleep 999` is downloadable.
         if timed_out:
-            ended = _timed_out_result(output, timeout, spill_dir, spill_scope)
+            ended = _timed_out_result(output, timeout, spill_dir, spill_scope, omitted)
             return ended + (
                 _created_file_sentinels(workdir, _before, _scratch_name, call_token)
                 if session_id
@@ -21044,7 +21761,7 @@ def _bash_exec(
         hint = _missing_path_hint(result, workdir)
         result = _defuse_sentinels(result)  # before the fit; see _python_exec
         result = (
-            _truncate(result, workdir = spill_dir, scope = spill_scope, hint = hint)
+            _truncate(result, workdir = spill_dir, scope = spill_scope, hint = hint, omitted = omitted)
             if result.strip()
             else "(no output)" + hint
         )

@@ -30,6 +30,8 @@ __all__ = [
     "USE_MODELSCOPE",
     "platform_system",
     "patch_tokenizer",
+    "patch_harmony_tool_call_eos",
+    "patch_harmony_tool_call_eos_vllm",
     "get_statistics",
     "Unsloth_Offloaded_Gradient_Checkpointer",
     "offload_to_disk",
@@ -384,8 +386,9 @@ DISABLE_SDPA_MODEL_NAMES = [
     "gemma3_text",  # Gemma3TextModel (EmbeddingGemma) - substring match, keep underscore
     "gpt_oss",
 ]
-_FLASH_EXCLUDED_MODELS = ("gpt_oss", "deepseek_v4")
+_FLASH_EXCLUDED_MODELS = ("gpt_oss", "deepseek_v4", "mllama")
 # deepseek_v4's custom attention is sdpa/flash-incompatible: force eager, and it is excluded above so an explicit request cannot re-enable the crash.
+# mllama declares flash support, but its vision and cross attention modules have no is_causal, which the flash path reads.
 _EAGER_ONLY_PREFIXES = ("gemma3n", "deepseek_v4")
 _FLASH_ATTENTION_MAX_HEAD_DIM = 256
 _FLASH_ATTENTION_DISABLED_WARNED = set()
@@ -587,8 +590,19 @@ def _flex_kernel_options_for_head_dim(head_dim):
     return dict(_FLEX_LARGE_HEAD_DIM_KERNEL_OPTIONS)
 
 
+def _flex_call_needs_backward(query, key, value):
+    """True when this flex call is recorded for autograd on an accelerator."""
+    try:
+        if not torch.is_grad_enabled() or query.device.type == "cpu":
+            return False
+        return any(getattr(t, "requires_grad", False) for t in (query, key, value))
+    except Exception:
+        return False
+
+
 def _wrap_flex_attention_forward(flex_attention_forward):
-    """Add kernel_options to a registered `flex_attention` function, for large head dims only."""
+    """Add kernel_options to a registered `flex_attention` function: block sizes above head_dim
+    256, and the main flex kernel for calls that need a backward."""
     if getattr(flex_attention_forward, "_unsloth_flex_kernel_options", False):
         return flex_attention_forward
 
@@ -603,6 +617,14 @@ def _wrap_flex_attention_forward(flex_attention_forward):
             )
         except Exception:
             kernel_options = None
+        # Inductor picks flex_decoding for a static query length below 128. Its logsumexp gets a
+        # padded batch stride (comprehensive_padding) that the backward template ignores, so every
+        # batch row after the first reads a shifted LSE and the gradients blow up.
+        if _flex_call_needs_backward(query, key, value) and "BACKEND" not in (
+            kwargs.get("kernel_options") or {}
+        ):
+            kernel_options = kernel_options or {}
+            kernel_options["FORCE_USE_FLEX_ATTENTION"] = True
         if kernel_options is not None:
             # A caller that already asked for something keeps it: only fill the gaps.
             requested = kwargs.get("kernel_options") or {}
@@ -616,7 +638,7 @@ def _wrap_flex_attention_forward(flex_attention_forward):
 
 
 def patch_flex_attention_kernel_options():
-    """Wrap the registered flex_attention to pass kernel_options above head_dim 256.
+    """Wrap the registered flex_attention to pass the kernel_options of _wrap_flex_attention_forward.
 
     Unconditional, since explicit requests and _FLEX_PREFERRED_MODELS reach flex too. Returns True
     when the registered function is wrapped.
@@ -728,7 +750,34 @@ def _flex_attn_impl_for(config, other_attn_implementation):
     return None
 
 
-def _flash_unsupported_sub_configs(config):
+def _sibling_model_class_for_config(model_class, child_config):
+    """Sibling PreTrainedModel for a tower the Auto classes do not register (Apertus 1.5 vision tokenizer)."""
+    import sys
+
+    module = sys.modules.get(getattr(model_class, "__module__", None) or "")
+    if module is None:
+        return None
+    try:
+        from transformers.modeling_utils import PreTrainedModel
+    except Exception:
+        return None
+    config_type = type(child_config)
+    candidates = []
+    for value in vars(module).values():
+        if (
+            isinstance(value, type)
+            and issubclass(value, PreTrainedModel)
+            and getattr(value, "config_class", None) is config_type
+        ):
+            candidates.append(value)
+    if not candidates:
+        return None
+    # Concrete model over its *PreTrainedModel base: the class Transformers validates.
+    candidates.sort(key = lambda klass: (klass.__name__.endswith("PreTrainedModel"), klass.__name__))
+    return candidates[0]
+
+
+def _flash_unsupported_sub_configs(config, model_class = None):
     """{sub-config: fallback} for towers lacking flash, which Transformers rejects (LFM2-VL SigLIP2)."""
     try:
         from transformers import AutoModel, AutoModelForCausalLM
@@ -754,6 +803,8 @@ def _flash_unsupported_sub_configs(config):
                 continue
         if isinstance(child_class, (list, tuple)):
             child_class = child_class[0] if child_class else None
+        if child_class is None and model_class is not None:
+            child_class = _sibling_model_class_for_config(model_class, child_config)
         if child_class is None:
             continue
         if getattr(child_class, "_supports_flash_attn", False) or getattr(
@@ -764,8 +815,15 @@ def _flash_unsupported_sub_configs(config):
     return out
 
 
-def _scoped_flash_attention(config, supports_sdpa):
-    unsupported = _flash_unsupported_sub_configs(config)
+def _scoped_flash_attention(
+    config,
+    supports_sdpa,
+    model_class = None,
+):
+    if model_class is None:
+        unsupported = _flash_unsupported_sub_configs(config)
+    else:
+        unsupported = _flash_unsupported_sub_configs(config, model_class)
     if not unsupported:
         return "flash_attention_2"
     if not _transformers_supports_attn_impl_mapping():
@@ -825,6 +883,22 @@ def _declares_flex_support(model_class):
     return None
 
 
+def _declares_no_sdpa(model_class):
+    # An explicit `_supports_sdpa = False` below PreTrainedModel (MiMo-V2-Flash sinks) beats the zoo's source-level guess.
+    try:
+        from transformers.modeling_utils import PreTrainedModel
+    except Exception:
+        return False
+    for klass in getattr(model_class, "__mro__", ()):
+        if klass is PreTrainedModel:
+            break
+        if not isinstance(klass, type):
+            continue
+        if "_supports_sdpa" in vars(klass):
+            return vars(klass)["_supports_sdpa"] is False
+    return False
+
+
 def _model_class_supports_flash_attention(model_class):
     """Whether installed transformers lets this class dispatch flash attention."""
     if model_class is None:
@@ -836,12 +910,48 @@ def _model_class_supports_flash_attention(model_class):
     new_flag_dispatched = PreTrainedModel is not None and hasattr(
         PreTrainedModel, "_supports_flash_attn"
     )
+    if not _flash_attention_2_is_compatible(model_class):
+        return False
     if new_flag_dispatched and not _flash_dispatch_reads_legacy_flag(PreTrainedModel):
         return bool(getattr(model_class, "_supports_flash_attn", False))
     return bool(
         getattr(model_class, "_supports_flash_attn_2", False)
         or getattr(model_class, "_supports_flash_attn", False)
     )
+
+
+def _flash_attention_2_is_compatible(model_class):
+    # transformers 5 silently rewrites flash_attention_2 to compatible[0] (_check_and_adjust_attn_implementation).
+    compatible = getattr(model_class, "_compatible_flash_implementations", None)
+    if not isinstance(compatible, (list, tuple)) or not compatible:
+        return True
+    if any(str(name).split("|")[-1] == "flash_attention_2" for name in compatible):
+        return True
+    return _flash_implementation_available(str(compatible[0]).split("|")[-1])
+
+
+def _flash_implementation_available(name):
+    try:
+        from transformers.utils import import_utils
+    except Exception:
+        return False
+    checks = {
+        "flash_attention_3": "is_flash_attn_3_available",
+        "flash_attention_4": "is_flash_attn_4_available",
+    }
+    if name in checks:
+        check = getattr(import_utils, checks[name], None)
+        try:
+            return bool(check()) if check is not None else False
+        except Exception:
+            return False
+    if "/" in name:
+        check = getattr(import_utils, "is_kernels_available", None)
+        try:
+            return bool(check()) if check is not None else False
+        except Exception:
+            return False
+    return False
 
 
 def _flash_dispatch_reads_legacy_flag(PreTrainedModel) -> bool:
@@ -1046,6 +1156,8 @@ def _get_max_attention_head_dim(config):
 def _get_flash_attention_disable_reason(config):
     model_type = _config_get(config, "model_type", "").lower()
     if _is_flash_excluded(model_type):
+        if model_type == "mllama":
+            return "mllama vision and cross attention do not run under Flash Attention 2"
         return f"{model_type} uses custom sink attention kernels"
     max_head_dim = _get_max_attention_head_dim(config)
     if max_head_dim is not None and max_head_dim > _FLASH_ATTENTION_MAX_HEAD_DIM:
@@ -1082,6 +1194,43 @@ def _disable_flash_attention_if_needed(
 
     # Only an implementation passed by the caller is an explicit request: config values are synthesized by the loaders or come from Transformers defaults.
     explicit_request = attn_implementation
+
+    # A per-sub-config mapping keeps the entries a scalar request would keep; flash and excluded backends take the fallback.
+    if isinstance(explicit_request, dict):
+        excluded_model_type = _config_get(config, "model_type", "").lower()
+
+        def _needs_fallback(impl):
+            if _is_flash_attention_requested(impl):
+                return True
+            if impl == "sdpa":
+                return _is_sdpa_excluded(excluded_model_type)
+            if impl == "flex_attention":
+                return not supports_flex_attention
+            return False
+
+        fallback = _disable_flash_attention_if_needed(
+            config,
+            supports_sdpa = supports_sdpa,
+            supports_flex_attention = supports_flex_attention,
+            would_use_flash_attention = any(
+                _is_flash_attention_requested(v) for v in explicit_request.values()
+            ),
+            disable_reason = disable_reason,
+            honor_config_attn_implementation = False,
+        )
+
+        def _fallback_for(key):
+            if isinstance(fallback, dict):
+                return fallback.get(key, fallback.get("", "eager"))
+            return fallback
+
+        return _set_attn_impl(
+            config,
+            {
+                k: (_fallback_for(k) if _needs_fallback(v) else v)
+                for k, v in explicit_request.items()
+            },
+        )
 
     # Off for a float32 load: with no flash-specific reason the config never steered the choice, so a config-seeded "eager" must not drag an fp32 load from sdpa down to eager.
     requested_attn_implementation = attn_implementation
@@ -1151,10 +1300,52 @@ def _attn_impl_label(impl):
     return impl
 
 
+def _undeclared_nested_configs(config):
+    """Nested configs outside `sub_configs`, which transformers' attn setter never reaches (Nemotron-Omni `llm_config`)."""
+    try:
+        from transformers import PretrainedConfig
+    except Exception:
+        return []
+    if not isinstance(config, PretrainedConfig):
+        return []
+    # Read from the instance: DPT / DETR / VitMatte on 4.57 define `sub_configs` as a property.
+    declared = getattr(config, "sub_configs", None)
+    declared = set(declared) if isinstance(declared, dict) else set()
+    return [
+        value
+        for name, value in vars(config).items()
+        if name not in declared and value is not config and isinstance(value, PretrainedConfig)
+    ]
+
+
+def _sync_baked_attn_impl(config, previous, impl):
+    # Remote __init__ bakes its flash default into nested configs; follow the top value over stale or flash copies.
+    if not isinstance(impl, str):
+        return
+    for nested in _undeclared_nested_configs(config):
+        current = getattr(nested, "_attn_implementation", None)
+        if (
+            current is not None
+            and current != impl
+            and (
+                current == previous
+                or (
+                    _is_flash_attention_requested(current)
+                    and not _is_flash_attention_requested(impl)
+                )
+            )
+        ):
+            _write_attn_impl(nested, impl)
+        if isinstance(getattr(nested, "use_flash_attn", None), bool):
+            nested.use_flash_attn = _is_flash_attention_requested(impl)
+
+
 def _write_attn_impl(config, impl):
+    previous = _config_get(config, "_attn_implementation", None)
     _config_set(config, "_attn_implementation", impl)
     if isinstance(config, dict) or hasattr(config, "attn_implementation"):
         _config_set(config, "attn_implementation", impl)
+    _sync_baked_attn_impl(config, previous, impl)
 
 
 def _set_attn_impl(config, impl):
@@ -2016,7 +2207,7 @@ def resolve_attention_implementation(
     model_type = model_type_name.lower()
     if supports_sdpa is None:
         supports_sdpa = model_class is not None and getattr(model_class, "_supports_sdpa", False)
-    if _is_sdpa_excluded(model_type):
+    if _is_sdpa_excluded(model_type) or _declares_no_sdpa(model_class):
         supports_sdpa = False
     supports_flash_attention = _model_class_supports_flash_attention(
         model_class
@@ -2056,7 +2247,9 @@ def resolve_attention_implementation(
             and supports_flash_attention
             and not flex_forced_for_head_dim
         ):
-            attn_impl = _set_attn_impl(config, _scoped_flash_attention(config, supports_sdpa))
+            attn_impl = _set_attn_impl(
+                config, _scoped_flash_attention(config, supports_sdpa, model_class)
+            )
         elif flash_attention_disabled:
             attn_impl = _disable_flash_attention_if_needed(
                 config,
@@ -2105,7 +2298,7 @@ def resolve_attention_implementation(
     else:
         final_attn_impl = requested_attn_implementation
         if final_attn_impl == "flash_attention_2":
-            final_attn_impl = _scoped_flash_attention(config, supports_sdpa)
+            final_attn_impl = _scoped_flash_attention(config, supports_sdpa, model_class)
         _set_attn_impl(config, final_attn_impl)
 
     # An explicit "sdpa" is kept even on a conservatively unsupported model, except where SDPA is known-broken, which still downgrades to eager just as flex falls back for _FLEX_EXCLUDED_MODELS. A synthesized default sdpa (requested is None) also downgrades.
@@ -3910,6 +4103,19 @@ def _accelerate_execution_device(module):
     return device
 
 
+def embedding_applies_scale(embedding) -> bool:
+    """True if the embedding applies sqrt(hidden_size) itself (Gemma / Gemma2 from transformers 5.4.0), through PEFT wrappers."""
+    for _ in range(4):
+        if embedding is None:
+            return False
+        if getattr(embedding, "embed_scale", None) is not None:
+            return True
+        embedding = getattr(embedding, "base_layer", None) or getattr(
+            embedding, "original_module", None
+        )
+    return False
+
+
 def per_layer_device(module, default = 0):
     """Where this decoder layer lives, as (device, buffer_index); gemma, gemma2 and cohere
     still need the index, to subscript a per-device tuple. Probed, not version-gated: an older
@@ -4806,6 +5012,165 @@ def apply_accepts_loss_kwargs_fix(model):
     return f"{value} ({reason})"
 
 
+# unsloth/gpt-oss-* generation_config predates upstream adding <|call|> (200012) to eos (#5162):
+# tool calls then run on into plain-text harmony markup. Only generation_config is widened.
+_HARMONY_TOOL_CALL_TOKEN = "<|call|>"
+_HARMONY_FINGERPRINT_TOKENS = ("<|call|>", "<|channel|>", "<|return|>")
+
+
+def _harmony_tool_call_token_id(tokenizer):
+    if tokenizer is None:
+        return None
+    convert = getattr(tokenizer, "convert_tokens_to_ids", None)
+    if not callable(convert):
+        return None
+    unknown = getattr(tokenizer, "unk_token_id", None)
+    seen = {}
+    for token in _HARMONY_FINGERPRINT_TOKENS:
+        try:
+            token_id = convert(token)
+        except Exception:
+            return None
+        if not isinstance(token_id, int) or token_id < 0 or token_id == unknown:
+            return None
+        seen[token] = token_id
+    if len(set(seen.values())) != len(_HARMONY_FINGERPRINT_TOKENS):
+        return None
+    return seen[_HARMONY_TOOL_CALL_TOKEN]
+
+
+def patch_harmony_tool_call_eos(model, tokenizer):
+    if model is None:
+        return model
+    generation_config = getattr(model, "generation_config", None)
+    if generation_config is None:
+        return model
+    call_id = _harmony_tool_call_token_id(tokenizer)
+    if call_id is None:
+        return model
+
+    current = getattr(generation_config, "eos_token_id", None)
+    if current is None:
+        # <|call|> as the only terminator would drop <|return|>; only widen an existing set.
+        return model
+    elif isinstance(current, bool):
+        return model
+    elif isinstance(current, int):
+        eos_ids = [current]
+    elif isinstance(current, (list, tuple)):
+        # Decline, never raise: this runs inside from_pretrained.
+        eos_ids = []
+        for token_id in current:
+            if isinstance(token_id, bool) or not isinstance(token_id, int):
+                return model
+            eos_ids.append(token_id)
+    else:
+        return model
+    if call_id in eos_ids:
+        return model
+    if not eos_ids:
+        # Same as None: nothing to widen.
+        return model
+
+    # Remote-code configs may have a read-only or validating eos_token_id.
+    try:
+        generation_config.eos_token_id = eos_ids + [call_id]
+    except Exception as error:
+        logger.warning(
+            f"Unsloth: Could not add `{_HARMONY_TOOL_CALL_TOKEN}` to the generation stop "
+            f"tokens ({error}). Tool calls may not stop on their own terminator. Pass "
+            "`eos_token_id` to `generate` to work around it."
+        )
+        return model
+    logger.warning(
+        f"Unsloth: Added `{_HARMONY_TOOL_CALL_TOKEN}` (id {call_id}) to the generation stop "
+        "tokens. Harmony ends a tool call with it, and without it generation runs past a "
+        "finished tool call into plain-text harmony markup."
+    )
+    return model
+
+
+# fast_inference builds the vLLM engine before the tokenizer, so widen the generation-config
+# dict vLLM re-applies per request (caller SamplingParams too; ignore_eos still opts out).
+# Internal and moved between versions: look up defensively, never raise.
+_VLLM_GENERATION_CONFIG_FIELD_PATHS = (
+    ("llm_engine", "input_processor"),
+    ("input_processor",),
+    ("llm_engine", "processor"),
+    ("processor",),
+)
+# vLLM rejects larger stop sets when min_tokens > 0.
+_VLLM_MAX_STOP_TOKEN_IDS = 128
+
+
+def _vllm_generation_config_fields(engine):
+    for path in _VLLM_GENERATION_CONFIG_FIELD_PATHS:
+        holder = engine
+        for attribute in path:
+            holder = getattr(holder, attribute, None)
+            if holder is None:
+                break
+        else:
+            fields = getattr(holder, "generation_config_fields", None)
+            if isinstance(fields, dict):
+                return fields
+    return None
+
+
+def patch_harmony_tool_call_eos_vllm(model, tokenizer):
+    engine = getattr(model, "vllm_engine", None)
+    if engine is None:
+        return model
+    try:
+        call_id = _harmony_tool_call_token_id(tokenizer)
+        if call_id is None:
+            return model
+        fields = _vllm_generation_config_fields(engine)
+        if fields is None:
+            logger.warning(
+                f"Unsloth: Could not reach the vLLM stop-token set, so `{_HARMONY_TOOL_CALL_TOKEN}` "
+                "was not added to it. Tool calls under `fast_inference = True` may not stop on "
+                "their own terminator. Pass `stop_token_ids` to work around it."
+            )
+            return model
+
+        current = fields.get("eos_token_id", None)
+        if isinstance(current, bool):
+            return model
+        elif isinstance(current, int):
+            eos_ids = [current]
+        elif isinstance(current, (list, tuple)):
+            eos_ids = []
+            for token_id in current:
+                if isinstance(token_id, bool) or not isinstance(token_id, int):
+                    return model
+                eos_ids.append(token_id)
+        elif current is None:
+            # Safe to seed, unlike HF: vLLM tracks the primary eos separately off the tokenizer.
+            eos_ids = []
+        else:
+            return model
+
+        if call_id in eos_ids:
+            return model
+        if len(eos_ids) + 1 > _VLLM_MAX_STOP_TOKEN_IDS:
+            return model
+
+        fields["eos_token_id"] = eos_ids + [call_id]
+        logger.warning(
+            f"Unsloth: Added `{_HARMONY_TOOL_CALL_TOKEN}` (id {call_id}) to the vLLM stop "
+            "tokens. Harmony ends a tool call with it, and without it generation runs past a "
+            "finished tool call into plain-text harmony markup."
+        )
+    except Exception as error:
+        logger.warning(
+            f"Unsloth: Could not add `{_HARMONY_TOOL_CALL_TOKEN}` to the vLLM stop tokens "
+            f"({error}). Tool calls under `fast_inference = True` may not stop on their own "
+            "terminator."
+        )
+    return model
+
+
 def _loss_kwargs_chain(model):
     seen = set()
     m = model
@@ -5022,6 +5387,8 @@ def patch_tokenizer(model, tokenizer):
     model, tokenizer = _patch_tokenizer(model, tokenizer)
     if model is not None:
         model.config.update({"unsloth_version": __version__})
+    model = patch_harmony_tool_call_eos(model, tokenizer)
+    model = patch_harmony_tool_call_eos_vllm(model, tokenizer)
     return model, tokenizer
 
 
@@ -5272,11 +5639,14 @@ def fast_inference_setup(model_name, model_config):
 
 def save_lora_adapter(model, save_directory, *args, **kwargs):
     """`save_pretrained` over the adapter, cast to the embedding dtype. PEFT's own selection decides what an adapter contains, so it is handed the whole state dict and only the adapter tensors are cast: filtering down to `.lora_A.`/`.lora_B.` first, as the Zoo helper does, makes PEFT raise `KeyError` looking up `modules_to_save.<adapter>.weight`, and a DoRA run loses its `lora_magnitude_vector` the same way. Both are reachable without vLLM, since `get_peft_model` adds `embed_tokens` and `lm_head` to `modules_to_save` once new tokens are trained. Non-adapter entries pass through by reference."""
+    from .compressed_tensors_int4 import adapter_only_state_dict
+
     dtype = model.get_input_embeddings().weight.dtype
-    kwargs["state_dict"] = {
-        key: (value.to(dtype) if "lora_" in key else value)
-        for key, value in model.state_dict().items()
-    }
+    with adapter_only_state_dict():
+        kwargs["state_dict"] = {
+            key: (value.to(dtype) if "lora_" in key else value)
+            for key, value in model.state_dict().items()
+        }
     return model.save_pretrained(save_directory, *args, **kwargs)
 
 

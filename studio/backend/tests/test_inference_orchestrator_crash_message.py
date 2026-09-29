@@ -21,6 +21,7 @@ def test_subprocess_crash_message_includes_signal_and_oom_hint():
     spec.loader.exec_module(module)
 
     orchestrator = module.InferenceOrchestrator.__new__(module.InferenceOrchestrator)
+    orchestrator._stop_ledger = None
     orchestrator._proc = SimpleNamespace(pid = 1234, exitcode = -9)
 
     msg = orchestrator._subprocess_crash_message("wait")

@@ -508,6 +508,12 @@ def test_big_endian_detection_ignores_model_name_be_token():
     )
 
 
+def test_pick_best_gguf_prefers_an_unlisted_quant_only_over_full_precision():
+    assert gguf.pick_best_gguf(["model-bf16.gguf", "model-Q3_K.gguf"]) == "model-Q3_K.gguf"
+    assert gguf.pick_best_gguf(["model-F32.gguf", "model-bf16.gguf"]) == "model-bf16.gguf"
+    assert gguf.pick_best_gguf(["model-APEX.gguf", "model-Q4_0.gguf"]) == "model-APEX.gguf"
+
+
 def test_custom_inventory_filters_mtp_companions_at_registered_root(tmp_path, monkeypatch):
     root = tmp_path / "MTP"
     root.mkdir()
@@ -1453,6 +1459,73 @@ def test_local_inventory_lists_a_hermes_dir_registered_as_a_scan_folder_once(mon
         ("custom", str(extra.parent)),
         ("hermes", str(weight)),
     ]
+
+
+def _hf_home_with_gguf(hf_home: Path) -> None:
+    repo = hf_home / "hub" / "models--Org--Model-GGUF"
+    blob = repo / "blobs" / ("a" * 64)
+    blob.parent.mkdir(parents = True)
+    blob.write_bytes(b"GGUF" + b"\x03\x00\x00\x00" + b"\x00" * 64)
+    snapshot = repo / "snapshots" / ("0" * 40)
+    snapshot.mkdir(parents = True)
+    (snapshot / "Model-Q4_K_M.gguf").symlink_to(blob)
+    (repo / "refs").mkdir()
+    (repo / "refs" / "main").write_text("0" * 40)
+
+
+@pytest.mark.parametrize("registered", [("hf_home",), ("hf_home/hub",), ("hf_home", "hf_home/hub")])
+def test_local_inventory_lists_a_registered_hf_home(monkeypatch, tmp_path, registered):
+    _hf_home_with_gguf(tmp_path / "hf_home")
+    monkeypatch.setattr(local_inventory, "note_scan_folder_scanned", lambda *_a, **_k: None)
+
+    rows = asyncio.run(
+        local_inventory._collect_models_from_default_sources(
+            tmp_path / "models",
+            tmp_path / "hf",
+            tmp_path / "legacy",
+            tmp_path / "default",
+            (),
+            (),
+            (),
+            (),
+            [{"path": str(tmp_path / path)} for path in registered],
+        )
+    )
+    rows = local_inventory._filter_and_dedupe_local_models(rows)
+
+    assert [(row.source, row.model_id) for row in rows] == [("hf_cache", "Org/Model-GGUF")]
+
+
+def test_local_inventory_checks_for_hf_home_hub_off_the_event_loop(monkeypatch, tmp_path):
+    _hf_home_with_gguf(tmp_path / "hf_home")
+    monkeypatch.setattr(local_inventory, "note_scan_folder_scanned", lambda *_a, **_k: None)
+    real = local_inventory.hf_cache_scan.scan_folder_hf_caches
+    on_loop = []
+
+    def _spy(folder):
+        try:
+            asyncio.get_running_loop()
+            on_loop.append(True)
+        except RuntimeError:
+            on_loop.append(False)
+        return real(folder)
+
+    monkeypatch.setattr(local_inventory.hf_cache_scan, "scan_folder_hf_caches", _spy)
+    asyncio.run(
+        local_inventory._collect_models_from_default_sources(
+            tmp_path / "models",
+            tmp_path / "hf",
+            tmp_path / "legacy",
+            tmp_path / "default",
+            (),
+            (),
+            (),
+            (),
+            [{"path": str(tmp_path / "hf_home")}],
+        )
+    )
+
+    assert on_loop and not any(on_loop)
 
 
 def test_list_local_gguf_variants_skips_big_endian_sibling(tmp_path):
@@ -4197,6 +4270,23 @@ def test_model_download_job_helpers_preserve_idle_shape():
     assert key == "org/model::"
     assert status.state == "idle"
     assert status.error is None
+    assert status.attempt == 1
+
+
+def test_model_download_status_reports_the_retry_attempt(monkeypatch):
+    registry = download_registry.DownloadRegistry()
+    monkeypatch.setattr(downloads, "_registry", registry)
+    key = downloads._download_job_key("Org/Model", "Q4_K_M")
+    assert registry.claim(key, download_registry.TRANSPORT_XET)[0]
+    generation = registry.current_generation(key)
+    registry.release_active_slot(key)
+    assert registry.claim(
+        key, download_registry.TRANSPORT_XET, generation = generation, replace_active = True
+    )[0]
+
+    status = downloads._job_status(key)
+
+    assert (status.generation, status.attempt) == (generation, 2)
 
 
 def test_gguf_repo_partial_treats_completed_disk_variant_as_clean(monkeypatch, tmp_path):
@@ -6414,6 +6504,9 @@ def test_dataset_status_includes_generation(monkeypatch):
         def current_generation(self, _key):
             return 4
 
+        def current_attempt(self, _key):
+            return 2
+
     monkeypatch.setattr(dataset_downloads, "_registry", _Registry())
     monkeypatch.setattr(
         dataset_downloads,
@@ -6425,6 +6518,7 @@ def test_dataset_status_includes_generation(monkeypatch):
 
     assert result.state == "running"
     assert result.generation == 4
+    assert result.attempt == 2
 
 
 def _write_local_model(

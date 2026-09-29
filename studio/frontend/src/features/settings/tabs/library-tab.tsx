@@ -70,6 +70,7 @@ const TAB_LABELS: Record<LibraryTabId, TranslationKey> = {
   audio: STORAGE_LABELS.audio,
   models: STORAGE_LABELS.fineTunes,
   all: "settings.library.all",
+  chats: "library.tabs.chats",
 };
 
 const CHOICES: {
@@ -86,7 +87,7 @@ const CHOICES: {
   ],
   startTab: [
     ["last", "settings.library.lastVisited"],
-    ...(["suggested", "favorites", "folders", "all"] as const).map((tab): [typeof tab, TranslationKey] => [tab, TAB_LABELS[tab]]),
+    ...(["suggested", "favorites", "folders", "chats", "all"] as const).map((tab): [typeof tab, TranslationKey] => [tab, TAB_LABELS[tab]]),
   ],
   sort: [
     ["recent", "settings.library.recent"],
@@ -416,7 +417,7 @@ export function LibraryTab() {
   );
 
   return (
-    <div className="flex flex-col gap-6">
+    <div className="settings-page">
       <header className="flex flex-col gap-1">
         <h1 className="text-xl font-semibold font-heading">{t("shell.navigation.library")}</h1>
       </header>

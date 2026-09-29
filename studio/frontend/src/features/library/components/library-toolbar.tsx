@@ -28,17 +28,18 @@ import {
   Upload01Icon,
 } from "@hugeicons/core-free-icons";
 import { type TranslationKey, useT } from "@/i18n";
+import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { SheetIcon, TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
 import { cn } from "@/lib/utils";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
-import { ArrowDownUpIcon, ChevronDownIcon } from "lucide-react";
+import { ArrowDownUpIcon } from "lucide-react";
 import type { LibrarySource } from "../api";
 import type { LibraryTypeFilter } from "../file-kind";
 import { EMPTY_FILTERS, type LibraryFilters, filtersActive } from "../filters";
 import type { LibrarySortKey, LibraryView } from "../settings-store";
 
 const ICON = "size-icon";
-const ROUND_BUTTON =
+export const ROUND_BUTTON =
   "flex size-9 shrink-0 items-center justify-center rounded-full text-foreground outline-none transition-colors hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring data-[active=true]:bg-white data-[active=true]:shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:data-[active=true]:bg-card dark:data-[active=true]:shadow-none data-open:bg-muted";
 
 interface MenuOption<T extends string> {
@@ -62,7 +63,7 @@ const TYPE_OPTIONS: MenuOption<LibraryTypeFilter>[] = [
   { value: "pdfs", label: "library.toolbar.pdfs", icon: Pdf01Icon },
 ];
 
-const VIEW_OPTIONS = [
+export const VIEW_OPTIONS = [
   { value: "grid", label: "library.toolbar.gridView", icon: GridViewIcon },
   { value: "list", label: "library.toolbar.listView", icon: LeftToRightListBulletIcon },
 ] satisfies MenuOption<LibraryView>[];
@@ -76,6 +77,8 @@ export interface LibrarySortMenuProps {
   activity?: boolean;
   /** False where only folders show, which have no size. */
   showSize?: boolean;
+  desc?: boolean;
+  onDirectionChange?: (desc: boolean) => void;
 }
 
 const SORT_OPTIONS: { value: LibrarySortChoice; label: TranslationKey }[] = [
@@ -137,7 +140,7 @@ function FilterMenu({
           <HugeiconsIcon icon={FilterMailIcon} strokeWidth={1.75} className="size-5" />
         </button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" sideOffset={4} className="w-max min-w-36">
+      <DropdownMenuContent align="end" sideOffset={4} className="library-menu w-max min-w-36">
         {showTypes && (
           <>
             <DropdownMenuLabel className="px-3 pb-1 pt-2 text-muted-foreground font-normal">
@@ -174,11 +177,38 @@ function FilterMenu({
   );
 }
 
+export function SortRadio({
+  label,
+  checked,
+  onSelect,
+}: {
+  label: string;
+  checked: boolean;
+  onSelect: () => void;
+}) {
+  return (
+    <DropdownMenuItem role="menuitemradio" aria-checked={checked} onSelect={onSelect}>
+      <span className="flex-1">{label}</span>
+      <span
+        aria-hidden="true"
+        className={cn(
+          "ml-2 flex size-3.5 shrink-0 items-center justify-center rounded-full border-[1.5px]",
+          checked ? "border-foreground bg-foreground" : "border-muted-foreground/60",
+        )}
+      >
+        {checked && <span className="size-1.25 rounded-full bg-background" />}
+      </span>
+    </DropdownMenuItem>
+  );
+}
+
 function SortMenu({
   value,
   onChange,
   activity = false,
   showSize = true,
+  desc = true,
+  onDirectionChange,
 }: LibrarySortMenuProps) {
   const t = useT();
   // Suggested orders "Modified" by last activity, as its list view header says.
@@ -200,29 +230,30 @@ function SortMenu({
           {value === "default" || !current ? t("library.toolbar.sort") : t(current.label)}
         </button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="start" sideOffset={4} className="w-max min-w-36">
-        {options.map(({ value: option, label }) => {
-          const checked = option === value;
-          return (
-            <DropdownMenuItem
-              key={option}
-              role="menuitemradio"
-              aria-checked={checked}
-              onSelect={() => onChange(option)}
-            >
-              <span className="flex-1">{t(label)}</span>
-              <span
-                aria-hidden="true"
-                className={cn(
-                  "ml-2 flex size-4 shrink-0 items-center justify-center rounded-full border-[1.5px]",
-                  checked ? "border-foreground bg-foreground" : "border-muted-foreground/60",
-                )}
-              >
-                {checked && <span className="size-1.5 rounded-full bg-background" />}
-              </span>
-            </DropdownMenuItem>
-          );
-        })}
+      <DropdownMenuContent align="start" sideOffset={4} className="library-menu w-max min-w-36">
+        {options.map(({ value: option, label }) => (
+          <SortRadio
+            key={option}
+            label={t(label)}
+            checked={option === value}
+            onSelect={() => onChange(option)}
+          />
+        ))}
+        {value === "modified" && onDirectionChange && (
+          <>
+            <DropdownMenuSeparator className="mx-3" />
+            <SortRadio
+              label={t("library.toolbar.sortAscending")}
+              checked={!desc}
+              onSelect={() => onDirectionChange(false)}
+            />
+            <SortRadio
+              label={t("library.toolbar.sortDescending")}
+              checked={desc}
+              onSelect={() => onDirectionChange(true)}
+            />
+          </>
+        )}
       </DropdownMenuContent>
     </DropdownMenu>
   );
@@ -256,10 +287,10 @@ function NewMenu({ onSelect }: { onSelect: (action: NewAction) => void }) {
           className="flex h-9 shrink-0 items-center gap-1.5 rounded-full bg-foreground pl-4 pr-3 font-medium text-ui-14 text-background outline-none transition-opacity hover:opacity-90 focus-visible:ring-2 focus-visible:ring-ring"
         >
           {t("common.new")}
-          <ChevronDownIcon className="size-4" strokeWidth={2} />
+          <HugeiconsIcon icon={ChevronDownStandardIcon} strokeWidth={2} className="size-4" />
         </button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" className="w-44">
+      <DropdownMenuContent align="end" className="library-menu w-44">
         {NEW_OPTIONS.map(({ value, label, icon }) => (
           <DropdownMenuItem key={value} onSelect={() => onSelect(value)}>
             <HugeiconsIcon icon={icon} strokeWidth={1.75} className={ICON} />
@@ -327,7 +358,7 @@ export function LibraryToolbar({
           </button>
         ))}
         {/* Outlined on light; a lighter fill than the page on dark, where an outline reads as a hole. */}
-        <label className="relative ml-2 flex h-9 w-[min(18rem,28vw)] min-w-40 items-center rounded-full border border-border px-4 focus-within:border-ring dark:border-transparent dark:bg-card dark:focus-within:border-ring">
+        <label className="relative ml-2 flex h-9 w-[min(15rem,24vw)] min-w-40 items-center rounded-full border border-border px-4 focus-within:border-ring dark:border-transparent dark:bg-card dark:focus-within:border-ring">
           <HugeiconsIcon
             icon={Search01Icon}
             strokeWidth={1.75}

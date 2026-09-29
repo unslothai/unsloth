@@ -41,6 +41,7 @@ from playwright.sync_api import sync_playwright
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _playwright_robust import (  # noqa: E402
     chromium_launch_args,
+    goto_with_socket_backoff,
     install_wall_clock_watchdog,
     report_failing_step,
     step_budget_s,
@@ -923,7 +924,7 @@ def settle_cards(page, timeout_ms: int = SETTLED_MS) -> None:
 
 
 def boot(page, path: str) -> None:
-    page.goto(f"{BASE}{path}", wait_until = "domcontentloaded")
+    goto_with_socket_backoff(page, f"{BASE}{path}", wait_until = "domcontentloaded")
     # Both cards are on a timer, so wait for them rather than for the worst case: this step runs 24 times and the job it
     # shares has minutes, not tens of minutes, to spare. The app card's 5s is shortened to E2E_DELAY_MS by the seed
     # script, llama.cpp keeps its 1s, and both still mount after first paint.
@@ -966,6 +967,43 @@ LLAMA_CHANGELOG_GEOMETRY = """
 """
 
 
+# How many change rows sit wholly inside the list's scrollport, the part of it that is on screen.
+LLAMA_CHANGELOG_ROWS_IN_VIEW = """
+() => {
+  const list = document.querySelector('[data-testid="llama-update-changelog-list"]');
+  if (!list) return null;
+  const box = list.getBoundingClientRect();
+  const style = getComputedStyle(list);
+  const top = box.top + list.clientTop + parseFloat(style.paddingTop);
+  const bottom = box.top + list.clientTop + list.clientHeight - parseFloat(style.paddingBottom);
+  const items = [...list.children];
+  const whole = items.filter((item) => {
+    const r = item.getBoundingClientRect();
+    return r.height > 0 && r.top >= top - 0.5 && r.bottom <= bottom + 0.5;
+  }).length;
+  return {whole, items: items.length, viewport: Math.round(bottom - top), list: Math.round(box.height)};
+}
+"""
+
+
+def settle_llama_changelog(page, timeout_s: float = 3.0) -> None:
+    """Return once the open changelog's height has held for three frames in a row."""
+    deadline = time.monotonic() + timeout_s
+    last, steady = None, 0
+    while time.monotonic() < deadline:
+        height = page.evaluate(
+            """() => new Promise((resolve) => requestAnimationFrame(() => {
+              const list = document.querySelector('[data-testid="llama-update-changelog-list"]');
+              resolve(list ? list.getBoundingClientRect().height : null);
+            }))"""
+        )
+        steady = steady + 1 if height == last else 0
+        if steady >= 3:
+            return
+        last = height
+    info(f"WARN the open llama.cpp changelog never held one height for 3 frames (last={last})")
+
+
 def exercise_llama_changelog(page, label: str) -> None:
     toggle = page.locator('[data-testid="llama-update-changelog-toggle"]')
     check(
@@ -978,7 +1016,15 @@ def exercise_llama_changelog(page, label: str) -> None:
         toggle.click()
     listing = page.locator('[data-testid="llama-update-changelog-list"]')
     listing.wait_for(state = "visible", timeout = 10_000)
-    text = listing.inner_text()
+    # The open card first lays out at its full height, then shrinks to its floor in the capped stack
+    # a frame or two later. Read the settled card: straight after "visible" most runs caught the
+    # first layout, which is why WebKit failed this only some of the time.
+    settle_llama_changelog(page)
+    # textContent, not innerText: this check is about WHICH changes are listed, and WebKit's
+    # innerText drops text clipped out of its scroller while Chromium's and Firefox's keep it, so
+    # the same settled list read "" on WebKit and in full elsewhere (Chat UI Tests (chat), WebKit
+    # pass, 768x500, twice on 09-28/29). How much of it is in view is reported just below.
+    text = listing.text_content() or ""
     check(
         f"{label}: expansion shows only the new carried changes",
         "GLM-5-Next" in text
@@ -986,6 +1032,12 @@ def exercise_llama_changelog(page, label: str) -> None:
         and "Add TML Inkling" not in text,
         f"list={text!r}",
     )
+    # Reported, not gated: at 768x500 with both update cards up the settled list shows no whole
+    # change on any engine (its floor, 117px + 93px of type, leaves the list its padding alone).
+    # Room for a row has to come from the other card's preview or from the stack scrolling the
+    # actions off screen, which is a layout decision rather than something this read can settle.
+    rows = page.evaluate(LLAMA_CHANGELOG_ROWS_IN_VIEW)
+    info(f"{label}: open llama.cpp changelog shows {rows}")
     check(
         f"{label}: expansion exposes its state to assistive technology",
         toggle.get_attribute("aria-expanded") == "true",
