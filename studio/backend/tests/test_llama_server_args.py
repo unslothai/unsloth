@@ -27,8 +27,15 @@ parse_cache_override = _lsa.parse_cache_override
 parse_cache_override_per_axis = _lsa.parse_cache_override_per_axis
 parse_ctx_override = _lsa.parse_ctx_override
 parse_gpu_layers_override = _lsa.parse_gpu_layers_override
+parse_reasoning_budget_message_override = _lsa.parse_reasoning_budget_message_override
+parse_reasoning_budget_override = _lsa.parse_reasoning_budget_override
 parse_split_mode_override = _lsa.parse_split_mode_override
+parse_tensor_split_override = _lsa.parse_tensor_split_override
 resolve_cache_type_kv = _lsa.resolve_cache_type_kv
+resolve_reasoning_budget = _lsa.resolve_reasoning_budget
+resolve_reasoning_budget_message = _lsa.resolve_reasoning_budget_message
+resolve_reasoning_budget_message_with_env = _lsa.resolve_reasoning_budget_message_with_env
+resolve_reasoning_budget_with_env = _lsa.resolve_reasoning_budget_with_env
 resolve_tensor_parallel = _lsa.resolve_tensor_parallel
 strip_shadowing_flags = _lsa.strip_shadowing_flags
 strip_split_mode_only = _lsa.strip_split_mode_only
@@ -236,7 +243,7 @@ def test_a_bare_positional_is_rejected():
         # Startup output is how a bad GGUF is told from an OOM from a rejected flag.
         "--log-file",
         "--log-disable",
-        # Slot-state dir: Studio owns it for KV persistence across idle unload.
+        # Slot-state dir: Unsloth owns it for KV persistence across idle unload.
         "--slot-save-path",
         # These print and exit instead of serving.
         "-h",
@@ -585,6 +592,262 @@ def test_parse_gpu_layers_override_rejects_malformed_values(args):
 def test_validate_extra_args_rejects_malformed_gpu_layers_override():
     with pytest.raises(ValueError, match = "GPU layers"):
         validate_extra_args(["-ngl", "abc"])
+
+
+# ── parse_tensor_split_override ──────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "args,expected",
+    [
+        (None, None),
+        ([], None),
+        (["--top-k", "20"], None),
+        (["--tensor-split", "2.2,1"], [2.2, 1.0]),
+        (["-ts", "3,1"], [3.0, 1.0]),
+        (["-ts", "3/1"], [3.0, 1.0]),
+        (["--tensor-split=1,1"], [1.0, 1.0]),
+        (["-ts", "1,1", "--tensor-split", "2.2,1"], [2.2, 1.0]),
+    ],
+)
+def test_parse_tensor_split_override(args, expected):
+    assert parse_tensor_split_override(args) == expected
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["--tensor-split"],
+        ["--tensor-split", "--top-k"],
+        ["--tensor-split", "abc"],
+        ["--tensor-split", "1,-1"],
+        ["--tensor-split", "0,0"],
+        ["--tensor-split", "nan,1"],
+        ["--tensor-split", "inf,1"],
+    ],
+)
+def test_parse_tensor_split_override_rejects_malformed_values(args):
+    with pytest.raises(ValueError, match = "tensor-split"):
+        parse_tensor_split_override(args)
+
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [
+        # PEP 515 grouping is float()'s, so the editor mirror must not refuse it either.
+        ("1_0,1", [10.0, 1.0]),
+        ("1_000.5,1", [1000.5, 1.0]),
+        ("1e1_0,1", [1e10, 1.0]),
+        ("1.,1", [1.0, 1.0]),
+        (".5,1", [0.5, 1.0]),
+        ("+1.5,1", [1.5, 1.0]),
+    ],
+)
+def test_parse_tensor_split_override_reads_python_float_syntax(value, expected):
+    assert parse_tensor_split_override(["-ts", value]) == expected
+
+
+@pytest.mark.parametrize("value", ["0x10,1", "0b10,1", "0o17,1", "1__0,1", "_1,1", "1_,1", "1e,1"])
+def test_parse_tensor_split_override_rejects_non_float_syntax(value):
+    # JavaScript's Number() reads the 0x/0b/0o forms, so a mirror built on it would call these
+    # loadable and the load would answer 400.
+    with pytest.raises(ValueError, match = "tensor-split"):
+        parse_tensor_split_override(["-ts", value])
+
+
+def test_parse_tensor_split_override_rejects_a_share_float32_cannot_hold():
+    # std::stof throws std::out_of_range above FLT_MAX (measured: stof("1e+39") raises), and the
+    # manual emitter would have written --tensor-split 1e+39,1, so llama-server died at startup
+    # where base had simply discarded the flag.
+    with pytest.raises(ValueError, match = "32-bit float"):
+        parse_tensor_split_override(["-ts", "1e39,1"])
+    assert parse_tensor_split_override(["-ts", "3.4e38,1"]) == [3.4e38, 1.0]
+
+
+@pytest.mark.parametrize("value", ["1e-50,1", "1e-45,1", "1e-40,1", "1e-38,1"])
+def test_parse_tensor_split_override_rejects_a_share_that_underflows_stof(value):
+    # libstdc++ reports every subnormal result as ERANGE, so std::stof throws out_of_range on the
+    # way DOWN as well: measured here, stof("1e-38") and stof("1e-45") both raise, stof("0") does
+    # not. Rejecting only what rounds to zero would still have let 1e-40 kill the server.
+    with pytest.raises(ValueError, match = "at least"):
+        parse_tensor_split_override(["-ts", value])
+
+
+@pytest.mark.parametrize("value", ["0,1", "1.2e-38,1", "1e-30,1"])
+def test_parse_tensor_split_override_keeps_what_stof_accepts(value):
+    # An exact zero share is a device the user is deliberately emptying, and everything from
+    # FLT_MIN up survives the emit round trip. 1.1754943508222874e-38 does NOT, even though it
+    # rounds up to FLT_MIN as a float: the six-significant-digit emission loses it, which
+    # test_parse_tensor_split_override_judges_the_share_it_will_emit pins.
+    assert parse_tensor_split_override(["-ts", value]) is not None
+
+
+def test_parse_tensor_split_override_only_rounds_what_gets_reserialized():
+    # Under pass-through llama-server reads the user's OWN text, and std::stof takes
+    # "1.1754943508222874e-38" (measured). Judging the six-digit rendering there would refuse a
+    # split that runs exactly as typed, so the rounding is scoped to the manual promotion that
+    # actually rewrites the ratio.
+    assert parse_tensor_split_override(["-ts", "1.1754943508222874e-38,1"]) is not None
+    with pytest.raises(ValueError, match = "at least"):
+        parse_tensor_split_override(["-ts", "1.1754943508222874e-38,1"], reserialized = True)
+
+
+def test_parse_tensor_split_override_rounds_each_share_before_adding():
+    # llama.cpp does `sum += std::stof(token)`, so each share is a float BEFORE it joins the
+    # total. Compiled and run here, "3.17817e38,1.54601e37,7.00525e36" reaches inf that way while
+    # accumulating the doubles and rounding afterwards lands on FLT_MAX and looked fine.
+    for reserialized in (False, True):
+        with pytest.raises(ValueError, match = "adds up past"):
+            parse_tensor_split_override(
+                ["-ts", "3.17817e38,1.54601e37,7.00525e36"], reserialized = reserialized
+            )
+
+
+def test_parse_tensor_split_override_judges_the_share_it_will_emit():
+    # The manual launcher writes f"{x:g}", six significant digits. 1.1754943508222874e-38 rounds
+    # UP to FLT_MIN as a float and so passed a full-precision check, but it is emitted as
+    # "1.17549e-38" and std::stof refuses THAT as subnormal (measured on this host), so /validate
+    # approved a command the server then died on.
+    with pytest.raises(ValueError, match = "at least"):
+        parse_tensor_split_override(["-ts", "1.1754943508222874e-38,1"], reserialized = True)
+    assert parse_tensor_split_override(["-ts", "1.2e-38,1"], reserialized = True) == [1.2e-38, 1.0]
+
+
+def test_parse_tensor_split_override_totals_the_emitted_shares():
+    # llama.cpp prefix-sums what it PARSED, so the total is accumulated over the emitted values.
+    # Summing the raw doubles instead refused this split, while a real float32 accumulation of
+    # the emitted text ("2.08296e+38,7.17058e+37,6.02804e+37") reaches 3.40282e+38 and fits.
+    assert (
+        parse_tensor_split_override(
+            ["-ts", "2.0829609943909916e38,7.170581961838338e37,6.028042758104631e37"],
+            reserialized = True,
+        )
+        is not None
+    )
+    with pytest.raises(ValueError, match = "adds up past"):
+        parse_tensor_split_override(["-ts", "3e38,3e38"])
+
+
+def test_parse_tensor_split_override_rejects_a_total_float32_cannot_hold():
+    # llama.cpp prefix-sums the shares into the same float array (llama-model.cpp).
+    with pytest.raises(ValueError, match = "adds up past"):
+        parse_tensor_split_override(["-ts", "3e38,3e38"])
+
+
+def test_validate_extra_args_rejects_malformed_tensor_split_override():
+    with pytest.raises(ValueError, match = "tensor-split"):
+        validate_extra_args(["-ts", "abc"])
+
+
+# ── reasoning budget first-class shadows ─────────────────────────────
+
+
+def test_reasoning_budget_overrides_are_last_wins():
+    args = [
+        "--reasoning-budget",
+        "32",
+        "--reasoning-budget=64",
+        "--reasoning-budget-message",
+        "first",
+        "--reasoning-budget-message=limit reached",
+    ]
+    assert parse_reasoning_budget_override(args) == 64
+    assert parse_reasoning_budget_message_override(args) == "limit reached"
+    assert resolve_reasoning_budget(args, -1) == 64
+    assert resolve_reasoning_budget_message(args, "") == "limit reached"
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["--reasoning-budget-message", "  PAD  "],
+        ["--reasoning-budget-message=  PAD  "],
+    ],
+)
+def test_reasoning_budget_message_preserves_verbatim_whitespace(args):
+    assert parse_reasoning_budget_message_override(args) == "  PAD  "
+    assert resolve_reasoning_budget_message(args, "fallback") == "  PAD  "
+
+
+def test_reasoning_budget_defaults_inherit_env_but_passthrough_still_wins():
+    env = {
+        "LLAMA_ARG_THINK_BUDGET": "512",
+        "LLAMA_ARG_THINK_BUDGET_MESSAGE": "from env",
+    }
+    assert resolve_reasoning_budget_with_env(None, -1, env) == 512
+    assert resolve_reasoning_budget_message_with_env(None, "", env) == "from env"
+    assert resolve_reasoning_budget_with_env(["--reasoning-budget", "-1"], -1, env) == -1
+    assert (
+        resolve_reasoning_budget_message_with_env(
+            ["--reasoning-budget-message", "  CLI  "], "", env
+        )
+        == "  CLI  "
+    )
+
+
+# A NUL trips the generic control-character check on the whole list first, so the
+# flag-specific message is only reachable for the oversize case.
+@pytest.mark.parametrize(
+    "unsafe, message",
+    [("😀" * 2_049, "reasoning-budget-message"), ("bad\0message", "control characters")],
+)
+def test_reasoning_budget_message_validates_every_occurrence(unsafe, message):
+    with pytest.raises(ValueError, match = message):
+        validate_extra_args(
+            [
+                "--reasoning-budget-message",
+                unsafe,
+                "--reasoning-budget-message",
+                "safe final value",
+            ]
+        )
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["--reasoning-budget"],
+        ["--reasoning-budget", "nope"],
+        ["--reasoning-budget=-2"],
+        ["--reasoning-budget=2147483648"],
+        ["--reasoning-budget-message"],
+        ["--reasoning-budget-message", "😀" * 2_049],
+        ["--reasoning-budget-message", "bad\0message"],
+    ],
+)
+def test_validate_extra_args_rejects_malformed_reasoning_overrides(args):
+    # A NUL is caught by the list-wide control-character check before the flag parser runs.
+    with pytest.raises(ValueError, match = "reasoning-budget|control characters"):
+        validate_extra_args(args)
+
+
+def test_strip_reasoning_shadows_is_granular():
+    args = [
+        "--reasoning-budget",
+        "64",
+        "--reasoning-budget-message",
+        "limit reached",
+        "--top-k",
+        "20",
+    ]
+    assert strip_shadowing_flags(
+        args,
+        strip_context = False,
+        strip_cache = False,
+        strip_spec = False,
+        strip_template = False,
+        strip_split_mode = False,
+        strip_reasoning_budget = True,
+    ) == ["--reasoning-budget-message", "limit reached", "--top-k", "20"]
+    assert strip_shadowing_flags(
+        args,
+        strip_context = False,
+        strip_cache = False,
+        strip_spec = False,
+        strip_template = False,
+        strip_split_mode = False,
+        strip_reasoning_budget_message = True,
+    ) == ["--reasoning-budget", "64", "--top-k", "20"]
 
 
 # ── parse_cache_override ─────────────────────────────────────────────
@@ -1128,7 +1391,7 @@ def test_every_denied_flag_with_a_twin_in_the_help_is_scrubbed():
     # pairs that mattered, so a name dropped from the denylist, or a twin dropped
     # from the scrub, is a red test rather than a back door found later.
     #
-    # llama.cpp applies the environment BEFORE argv, so the ones Studio always emits
+    # llama.cpp applies the environment BEFORE argv, so the ones Unsloth always emits
     # are overridden anyway; the rest are the reason this exists.
     for env_var, flag in (
         ("LLAMA_ARG_UI_MCP_PROXY", "--ui-mcp-proxy"),
@@ -1159,7 +1422,7 @@ def test_every_denied_flag_with_a_twin_in_the_help_is_scrubbed():
     for kept in ("LLAMA_ARG_MMPROJ", "LLAMA_ARG_MMPROJ_URL"):
         assert kept not in _lsa.DENIED_ENV_VARS, kept
     # HF_TOKEN is deliberately not here: it is the standard Hugging Face credential
-    # Studio's own downloads use, not a llama-server behaviour switch, and the child
+    # Unsloth's own downloads use, not a llama-server behaviour switch, and the child
     # is always given a local -m path rather than a repo to fetch.
     assert "HF_TOKEN" not in _lsa.DENIED_ENV_VARS
     _lsa.scrub_denied_env(env)
@@ -1187,3 +1450,228 @@ def test_the_projector_env_twins_survive_the_scrub():
     # the corrupt path it is undoing, and it does that itself.
     assert "LLAMA_ARG_MMPROJ" not in _lsa.DENIED_ENV_VARS
     assert "LLAMA_ARG_MMPROJ_URL" not in _lsa.DENIED_ENV_VARS
+
+
+# ------------------------------------- an inherited loader mode is a real choice
+
+
+@pytest.mark.parametrize(
+    "env,expected",
+    [
+        ({}, False),
+        (None, False),
+        # The enum itself is handler_string, so any value assigns the mode.
+        ({"LLAMA_ARG_LOAD_MODE": "mmap"}, True),
+        ({"LLAMA_ARG_LOAD_MODE": "dio"}, True),
+        # Set but empty selects nothing; upstream would reject it, not default.
+        ({"LLAMA_ARG_LOAD_MODE": "  "}, False),
+        # --mlock is handler_void: only a truthy value assigns anything.
+        ({"LLAMA_ARG_MLOCK": "1"}, True),
+        ({"LLAMA_ARG_MLOCK": "0"}, False),
+        # The deprecated boolean twins assign the whole mode either way.
+        ({"LLAMA_ARG_MMAP": "on"}, True),
+        ({"LLAMA_ARG_MMAP": "off"}, True),
+        ({"LLAMA_ARG_DIO": "1"}, True),
+        # Negative aliases count by PRESENCE: get_value_from_env forces "0".
+        ({"LLAMA_ARG_NO_MMAP": "0"}, True),
+        ({"LLAMA_ARG_NO_DIO": ""}, True),
+        ({"LLAMA_ARG_FIT": "off", "LLAMA_ARG_DEVICE": "none"}, False),
+    ],
+)
+def test_memory_env_selects_load_mode(env, expected):
+    assert _lsa.memory_env_selects_load_mode(env) is expected
+
+
+# --- the shared "is this ctx flag the user's opt-in?" test ----------------------
+# Both stripping paths (model_override_load_kwargs on the API auto-switch, and
+# _resolve_inherited_extra_args on /load) ask this one function, so a value that
+# survives one reload survives the other.
+
+
+def test_matching_ctx_override_confirms_only_an_exact_positive_int():
+    assert _lsa.matches_explicit_ctx_override(["--ctx-size", "100352"], 100352)
+    assert _lsa.matches_explicit_ctx_override(["-c", "100352"], 100352)
+    # llama.cpp folds the underscore spelling, and so does the matcher.
+    assert _lsa.matches_explicit_ctx_override(["--ctx_size", "100352"], 100352)
+    # Last-wins, exactly as the launch parses it.
+    assert _lsa.matches_explicit_ctx_override(
+        ["--ctx-size", "8192", "--ctx-size", "100352"], 100352
+    )
+    assert not _lsa.matches_explicit_ctx_override(
+        ["--ctx-size", "100352", "--ctx-size", "8192"], 100352
+    )
+    # A different value is a stale shadow, not an opt-in.
+    assert not _lsa.matches_explicit_ctx_override(["--ctx-size", "8192"], 100352)
+    assert not _lsa.matches_explicit_ctx_override(["--top-k", "40"], 100352)
+    assert not _lsa.matches_explicit_ctx_override(None, 100352)
+
+
+def test_matching_ctx_override_is_total_over_stored_junk():
+    # Override rows are coerced on write but returned verbatim on read, so this is
+    # reached with whatever JSON an older build, the API or a hand edit left behind.
+    # None of it may raise inside a load, and none of it counts as confirmed.
+    for n_ctx in (None, 0, -1, "100352", "", "x", 100352.0, True, False, [100352], {"v": 1}):
+        assert not _lsa.matches_explicit_ctx_override(["--ctx-size", "100352"], n_ctx), n_ctx
+    # A malformed flag raises in parse_ctx_override; the matcher answers False.
+    assert not _lsa.matches_explicit_ctx_override(["--ctx-size", "--top-k"], 100352)
+
+
+# ── The pageable override never resurrects a shadowed lock ──────────────────
+# force_pageable_load rewrites an oversized non-mmap launch so the weights page in
+# from disk instead of being allocated whole in host RAM. llama.cpp resolves these
+# options last-wins, so `--mlock --no-mmap` runs UNLOCKED and unmapped: the strip has
+# to read the EFFECTIVE state, not the tokens. Dropping only the selector and leaving
+# the earlier --mlock standing hands the child mmap+mlock and page-locks the whole
+# oversized mapping into the RAM the override exists to keep pageable.
+
+
+def _rewritten_state(argv, env = None):
+    """``((mlock, reserves_ram), argv, env)`` after the pageable rewrite."""
+    env = dict(env or {})
+    out, overridden = _lsa.force_pageable_load(list(argv), env)
+    return _lsa.resolve_effective_memory_state(out, env), out, env, overridden
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["--mlock", "--no-mmap"],
+        ["--mlock", "--no-direct-io"],
+        ["--mlock", "--load-mode", "none"],
+        ["--load-mode", "mlock", "--no-mmap"],
+        ["--load-mode=mlock", "--no-mmap"],
+        # The mapped spelling of the lock. It holds no unmapped copy of its own, so
+        # the rewrite has no reason to touch it -- until a later reserving selector
+        # shadows it, where leaving it standing is what re-locks the mapping.
+        ["--load-mode", "mmap+mlock", "--no-mmap"],
+        ["--load-mode=mmap+mlock", "--no-mmap"],
+        ["--load-mode", "mmap+mlock", "--no-direct-io"],
+    ],
+    ids = [
+        "no-mmap",
+        "no-dio",
+        "load-mode-none",
+        "load-mode-mlock",
+        "load-mode-mlock-equals",
+        "load-mode-mmap-mlock",
+        "load-mode-mmap-mlock-equals",
+        "load-mode-mmap-mlock-no-dio",
+    ],
+)
+def test_a_shadowed_lock_is_not_resurrected_by_the_pageable_rewrite(argv):
+    # The pre-rewrite child is already unlocked, so there is no lock to carry.
+    assert _lsa.resolve_effective_memory_state(argv) == (False, True)
+
+    (mlock, reserves), out, _env, overridden = _rewritten_state(argv)
+
+    assert overridden, f"the unmapped launch was not rewritten at all: {out}"
+    assert not reserves, f"the child still holds a full unmapped copy: {out}"
+    assert not mlock, f"the rewrite page-locked the oversized mapping: {out}"
+
+
+@pytest.mark.parametrize(
+    "argv, expect_tokens",
+    [
+        (["--no-mmap", "--mlock"], ["--mlock"]),
+        (["--load-mode", "mlock"], ["--load-mode", "mmap+mlock"]),
+        (["--load-mode=mlock"], ["--load-mode", "mmap+mlock"]),
+    ],
+    ids = ["no-mmap-then-mlock", "load-mode-mlock", "load-mode-mlock-equals"],
+)
+def test_an_effective_lock_survives_the_pageable_rewrite(argv, expect_tokens):
+    """The control. "Keep this in RAM" is a real request when nothing shadowed it, so
+    it is carried onto a mapping (mmap+mlock) rather than discarded."""
+    assert _lsa.resolve_effective_memory_state(argv) == (True, True)
+
+    (mlock, reserves), out, _env, overridden = _rewritten_state(argv)
+
+    assert overridden, f"the unmapped launch was not rewritten at all: {out}"
+    assert (mlock, reserves) == (True, False), f"the lock was dropped or kept unmapped: {out}"
+    assert out == expect_tokens, out
+
+
+def test_the_env_twin_of_a_shadowed_lock_goes_too():
+    """llama.cpp reads LLAMA_ARG_* before argv and the negative alias after the
+    affirmative one, so LLAMA_ARG_MLOCK=1 beside LLAMA_ARG_NO_MMAP is shadowed exactly
+    as the argv pair is. Leaving the var behind locks the child through the environment
+    with nothing in the argv to show it."""
+    env = {"LLAMA_ARG_MLOCK": "1", "LLAMA_ARG_NO_MMAP": "1"}
+    assert _lsa.resolve_effective_memory_state([], env) == (False, True)
+
+    (mlock, reserves), _out, out_env, overridden = _rewritten_state([], env)
+
+    assert "LLAMA_ARG_NO_MMAP" not in out_env
+    assert "LLAMA_ARG_MLOCK" not in out_env, out_env
+    assert "LLAMA_ARG_MLOCK" in overridden, overridden
+    assert (mlock, reserves) == (False, False)
+
+
+def test_the_env_mapped_lock_mode_shadowed_by_an_argv_selector_goes_too():
+    """The env half of the mapped spelling. llama.cpp reads LLAMA_ARG_* before argv,
+    so an inherited LLAMA_ARG_LOAD_MODE=mmap+mlock followed by --no-mmap on the command
+    line is shadowed exactly as the all-argv pair is, and leaving the var behind locks
+    the restored mapping through the environment with nothing in the argv to show it."""
+    env = {"LLAMA_ARG_LOAD_MODE": "mmap+mlock"}
+    assert _lsa.resolve_effective_memory_state(["--no-mmap"], env) == (False, True)
+
+    (mlock, reserves), _out, out_env, overridden = _rewritten_state(["--no-mmap"], env)
+
+    assert "LLAMA_ARG_LOAD_MODE" not in out_env, out_env
+    assert overridden, "the unmapped launch was not rewritten at all"
+    assert (mlock, reserves) == (
+        False,
+        False,
+    ), f"the rewrite page-locked the oversized mapping: {out_env}"
+
+
+def test_an_unshadowed_mapped_lock_is_left_entirely_alone():
+    """The control that keeps the strip above scoped. ``mmap+mlock`` on its own already
+    maps, so it holds no full unmapped copy and is not this override's business: it must
+    come back untouched and, with nothing rewritten, report no override at all. Without
+    that, a launch that was always pageable would be reported as having been remapped."""
+    argv = ["--load-mode", "mmap+mlock"]
+    assert _lsa.resolve_effective_memory_state(argv) == (True, False)
+
+    (mlock, reserves), out, _env, overridden = _rewritten_state(argv)
+
+    assert out == argv, out
+    assert not overridden, f"an already-mapped launch was reported as overridden: {overridden}"
+    assert (mlock, reserves) == (True, False)
+
+
+def test_the_env_mlock_mode_that_is_not_shadowed_keeps_its_lock():
+    """The control for the env half: LLAMA_ARG_LOAD_MODE=mlock with nothing after it
+    really is locked, so it becomes the mapped twin instead of being dropped."""
+    env = {"LLAMA_ARG_LOAD_MODE": "mlock"}
+    assert _lsa.resolve_effective_memory_state([], env) == (True, True)
+
+    (mlock, reserves), _out, out_env, _overridden = _rewritten_state([], env)
+
+    assert out_env["LLAMA_ARG_LOAD_MODE"] == "mmap+mlock"
+    assert (mlock, reserves) == (True, False)
+
+
+def test_an_argv_lock_that_overrides_an_inherited_selector_survives():
+    """The cross case, and the reason the rewrite cannot read either side alone: argv
+    is resolved after the environment, so --mlock beats an inherited LLAMA_ARG_NO_MMAP
+    and the lock is the user's live request."""
+    env = {"LLAMA_ARG_NO_MMAP": "1"}
+    argv = ["--mlock"]
+    assert _lsa.resolve_effective_memory_state(argv, env) == (True, True)
+
+    (mlock, reserves), out, out_env, _overridden = _rewritten_state(argv, env)
+
+    assert "LLAMA_ARG_NO_MMAP" not in out_env
+    assert out == ["--mlock"], out
+    assert (mlock, reserves) == (True, False)
+
+
+def test_a_pageable_launch_keeps_every_token_including_its_lock():
+    """Nothing here reserves RAM, so the override does not apply and the launch comes
+    back byte for byte -- the mlock strip is scoped to a rewrite, not to any --mlock."""
+    argv = ["--mlock", "--load-mode", "dio"]
+    assert _lsa.resolve_effective_memory_state(argv) == (False, False)
+
+    out, overridden = _lsa.force_pageable_load(list(argv), {})
+
+    assert out == argv and overridden == []

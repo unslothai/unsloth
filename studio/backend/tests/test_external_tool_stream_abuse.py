@@ -6,7 +6,7 @@
 ``tests/test_external_tool_edge_cases.py`` covers malformed and adversarial
 *chunks*. This file covers the channel itself: the loop relays provider bytes on
 the very same SSE stream it writes its own control frames to, so anything the
-provider can put on that stream is a candidate for impersonating Studio. It also
+provider can put on that stream is a candidate for impersonating Unsloth. It also
 covers the framing layer underneath (CRLF, comments, multi-line ``data:``,
 frames after ``[DONE]``), the tool-call fields the loop trusts to name a tool,
 and the liveness properties the loop has to hold against an endpoint that simply
@@ -329,7 +329,14 @@ def test_a_provider_cannot_forge_a_studio_control_frame(executed, forged):
     lines = _run(transport)
 
     assert not executed
-    assert _events(lines, forged["type"]) == []
+    relayed = [
+        event
+        for event in _events(lines, forged["type"])
+        # The loop clears the badge with an empty status of its own once a turn
+        # is over, so it is a status carrying text that would be the provider's.
+        if event.get("content") != ""
+    ]
+    assert relayed == []
     # The forged frame must not survive under any encoding either.
     assert not any("forged-1" in line for line in lines)
 
@@ -366,10 +373,10 @@ def test_studio_own_control_frames_still_reach_the_client(executed):
 
 
 def test_a_provider_cannot_forge_studio_private_chunk_keys(executed):
-    """``_toolEvent`` and friends are Studio extensions, not provider fields.
+    """``_toolEvent`` and friends are Unsloth extensions, not provider fields.
 
     The same card can be painted from inside an otherwise ordinary chunk, because
-    the client also lifts ``_toolEvent`` straight out of one. Studio stamps that
+    the client also lifts ``_toolEvent`` straight out of one. Unsloth stamps that
     key itself on the provider-hosted tool events it synthesises, so a copy
     arriving from the endpoint is indistinguishable downstream.
     """
@@ -592,7 +599,7 @@ def test_a_tool_marker_split_around_a_multibyte_char_still_heals(executed):
 def test_a_tool_the_user_did_not_enable_is_never_executed(executed):
     """The catalog is the authorization list, not a suggestion.
 
-    ``python`` exists in Studio, but this request only offered ``web_search``.
+    ``python`` exists in Unsloth, but this request only offered ``web_search``.
     Executing it because the provider named it would let any endpoint run
     arbitrary code the user never switched on. It is a no-op, not an error, so no
     card is painted; the model is told in the conversation instead, which is what
@@ -778,7 +785,7 @@ def test_no_enabled_tool_names_never_means_any_tool(executed):
 
     ``heal_gate`` is handed the selected catalog precisely so a ``None``
     allowlist can never reach the parser: ``None`` there means "match anything",
-    which turns a marked block naming any Studio tool into an execution.
+    which turns a marked block naming any Unsloth tool into an execution.
     """
     payload = json.dumps({"name": "python", "arguments": {"code": "import os"}})
     body = f"<tool_call>{payload}</tool_call>"
@@ -1081,3 +1088,56 @@ def test_a_forged_usage_only_chunk_cannot_multiply_the_count(executed):
     usage_chunks = [payload for payload in _payloads(lines) if "usage" in payload]
     assert len(usage_chunks) == 1
     assert usage_chunks[0]["usage"]["prompt_tokens"] == 50
+
+
+def test_a_truncated_turn_closes_the_card_an_id_less_call_painted(executed):
+    # The client draws a card the moment the delta arrives, keyed on an id it
+    # mints because the provider sent none. Reading the slots directly here left
+    # every id-less call out, so refusing to run it left that card spinning for
+    # the rest of the response.
+    transport = FakeTransport(
+        [
+            [
+                _sse(
+                    delta = {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "function": {
+                                    "name": "web_search",
+                                    "arguments": '{"query":"a"}',
+                                },
+                            }
+                        ]
+                    }
+                ),
+                _sse(finish = "length"),
+                _DONE,
+            ]
+        ]
+    )
+    lines = _run(transport, tools = [WEB])
+
+    assert not executed
+    ends = _events(lines, "tool_end")
+    assert [event.get("tool_call_id") for event in ends] == ["tool_call_0"]
+
+
+def test_a_turn_whose_only_call_is_refused_still_ends(executed):
+    # A nameless call is dropped before it runs, and an upstream ending on
+    # [DONE] sends no finish_reason, so without this the client never reaches a
+    # turn boundary and keeps the card it drew for that call.
+    transport = FakeTransport(
+        [
+            [
+                _sse(
+                    delta = {"tool_calls": [{"index": 0, "function": {"arguments": '{"query":"a"}'}}]}
+                ),
+                _DONE,
+            ]
+        ]
+    )
+    lines = _run(transport, tools = [WEB])
+
+    assert not executed
+    assert any(event.get("content") == "" for event in _events(lines, "tool_status"))

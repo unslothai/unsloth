@@ -6,7 +6,7 @@
 The probe checks 17 optional flags with _is_real before emitting them, but
 --flash-attn, --no-context-shift and --jinja were emitted unconditionally. That
 is fine for the pinned prebuilt, which has all three. It is not fine for a stale
-or user-supplied LLAMA_SERVER_PATH, which Studio explicitly supports: an unknown
+or user-supplied LLAMA_SERVER_PATH, which Unsloth explicitly supports: an unknown
 argument makes llama-server exit immediately rather than start degraded, and the
 user sees a generic startup failure.
 
@@ -327,7 +327,7 @@ class TestAFlaglessBuildIgnoresTheFlashAttentionEnv:
     """A build with no --flash-attn never reads LLAMA_ARG_FLASH_ATTN either.
 
     llama.cpp resolves each LLAMA_ARG_* variable through the common_arg that
-    declares it, so a binary predating the flag registers neither. Studio still
+    declares it, so a binary predating the flag registers neither. Unsloth still
     reads the inherited env when it records what the child is running, and a
     recorded-on flash attention under-sizes the padded V cache the resume-slot
     estimate is capped on.
@@ -359,7 +359,44 @@ class TestAFlaglessBuildIgnoresTheFlashAttentionEnv:
         assert env["LLAMA_ARG_FLASH_ATTN"] == "1"
 
 
-def _flagless_v_cache_fixup(*, known_off: bool, cmd: list, env: dict) -> tuple:
+class _SelfShim:
+    """Stand-in for the backend instance the fixup block runs against.
+
+    The block reads instance state (``_kv_lora_rank``, ``_architecture``,
+    ``_mtp_draft_path``) as well as class methods, and binding the class itself
+    meant any new ``self.<attr>`` in that block raised AttributeError here rather
+    than failing on its merits. Anything not set on the shim falls through to the
+    class, and a plain function found there is bound to the shim so the block can
+    call ``self.<method>()`` the way the real backend does.
+    """
+
+    def __init__(
+        self,
+        kv_lora_rank = None,
+        architecture = None,
+        mtp_draft_path = None,
+    ):
+        self._kv_lora_rank = kv_lora_rank
+        self._architecture = architecture
+        self._mtp_draft_path = mtp_draft_path
+
+    def __getattr__(self, name):
+        attr = getattr(LlamaCppBackend, name)
+        # A staticmethod reached through the class is a plain function too, but it
+        # takes no self, so only genuine instance methods get bound.
+        declared = inspect.getattr_static(LlamaCppBackend, name, None)
+        if inspect.isfunction(attr) and not isinstance(declared, staticmethod):
+            return _types.MethodType(attr, self)
+        return attr
+
+
+def _flagless_v_cache_fixup(
+    *,
+    known_off: bool,
+    cmd: list,
+    env: dict,
+    mla: bool = False,
+) -> tuple:
     """Run load_model's real flagless-build V-cache fixup over cmd and env."""
     source = textwrap.dedent(inspect.getsource(LlamaCppBackend.load_model))
     blocks = [
@@ -373,7 +410,7 @@ def _flagless_v_cache_fixup(*, known_off: bool, cmd: list, env: dict) -> tuple:
     ]
     assert len(blocks) == 2, f"expected two V-cache fixup blocks, found {len(blocks)}"
     scope = {
-        "self": LlamaCppBackend,
+        "self": _SelfShim(kv_lora_rank = 512 if mla else None),
         "logger": logging.getLogger(__name__),
         "_flash_attn_known_off": known_off,
         "cmd": list(cmd),
@@ -439,3 +476,166 @@ class TestAFlaglessBuildCannotRunAQuantizedVCache:
         never runs, and the log is the only record of what was launched."""
         src = inspect.getsource(LlamaCppBackend.load_model)
         assert src.index("_reset_quantized_v_cache") < src.index("Starting llama-server")
+
+
+class TestTheFlaglessFixupKeepsMlaKAndVEqual:
+    """An MLA model rejects K != V outright, above the V-quantization check.
+
+    So the launch-site reset, which normally leaves K quantized on purpose,
+    has to bring K down with V there or it trades one abort for another.
+    """
+
+    CMD = [
+        "llama-server",
+        "-m",
+        "ds.gguf",
+        "--cache-type-k",
+        "q8_0",
+        "--cache-type-v",
+        "q8_0",
+    ]
+
+    def test_mla_brings_k_down_with_v(self):
+        cmd, _ = _flagless_v_cache_fixup(known_off = True, cmd = self.CMD, env = {}, mla = True)
+        assert cmd[cmd.index("--cache-type-k") + 1] == "f16"
+        assert cmd[cmd.index("--cache-type-v") + 1] == "f16"
+
+    def test_a_non_mla_model_still_keeps_its_quantized_k(self):
+        cmd, _ = _flagless_v_cache_fixup(known_off = True, cmd = self.CMD, env = {}, mla = False)
+        assert cmd[cmd.index("--cache-type-k") + 1] == "q8_0"
+        assert cmd[cmd.index("--cache-type-v") + 1] == "f16"
+
+
+# The -lv block of b11160 and later (llama.cpp "logs : reduce", #23021).
+TRACE_HELP = NEW_HELP + (
+    "-lv,   --verbosity, --log-verbosity N   Set the verbosity threshold. Messages with a higher verbosity will be\n"
+    "                                        ignored. Values:\n"
+    "                                         - 0: generic output\n"
+    "                                         - 1: error\n"
+    "                                         - 2: warning\n"
+    "                                         - 3: info\n"
+    "                                         - 4: trace (more info)\n"
+    "                                         - 5: debug\n"
+    "                                        (default: 3)\n"
+)
+PRE_TRACE_HELP = NEW_HELP + (
+    "-lv,   --verbosity, --log-verbosity N   Set the verbosity threshold. Messages with a higher verbosity will be\n"
+    "                                        ignored.\n"
+)
+
+
+class TestTraceVerbosityRestoresTheLoadLog:
+    """Load lines the offload report and classifiers read are trace-level on current builds."""
+
+    def test_a_trace_build_is_detected(self, tmp_path, monkeypatch):
+        assert probe(tmp_path, monkeypatch, TRACE_HELP)["supports_trace_verbosity"] is True
+
+    @pytest.mark.parametrize(
+        "help_text,returncode",
+        [(PRE_TRACE_HELP, 0), (NEW_HELP, 0), (TRACE_HELP, 1), ("", 0)],
+    )
+    def test_anything_else_fails_closed(self, tmp_path, monkeypatch, help_text, returncode):
+        caps = probe(tmp_path, monkeypatch, help_text, returncode)
+        assert caps["supports_trace_verbosity"] is False
+
+    def test_an_unprobeable_binary_fails_closed(self, tmp_path):
+        caps = LlamaCppBackend.probe_server_capabilities(str(tmp_path / "absent"))
+        assert caps["supports_trace_verbosity"] is False
+
+    def test_a_trace_build_gets_level_4(self):
+        args = llama_cpp_module._trace_verbosity_args({"supports_trace_verbosity": True}, [], {})
+        assert args == ["--verbosity", "4"]
+
+    @pytest.mark.parametrize(
+        "extra_args",
+        [["-lv", "2"], ["--verbosity=5"], ["--log-verbosity", "1"], ["-v"], ["--log-disable"]],
+    )
+    def test_the_users_own_logging_choice_wins(self, extra_args):
+        caps = {"supports_trace_verbosity": True}
+        assert llama_cpp_module._trace_verbosity_args(caps, extra_args, {}) == []
+
+    def test_the_env_form_wins_too(self):
+        caps = {"supports_trace_verbosity": True}
+        env = {"LLAMA_ARG_LOG_VERBOSITY": "3"}
+        assert llama_cpp_module._trace_verbosity_args(caps, None, env) == []
+
+    def test_other_builds_get_nothing(self):
+        assert llama_cpp_module._trace_verbosity_args({}, None, {}) == []
+
+    def test_the_launch_emits_it(self):
+        src = inspect.getsource(LlamaCppBackend.load_model)
+        assert "cmd.extend(_trace_verbosity_args(_caps, extra_args, os.environ))" in src
+
+
+class TestTheStdoutBufferIsBounded:
+    """Level 4 adds about 30 lines a request; the buffer lives as long as the server."""
+
+    def _drain(self, lines):
+        backend = LlamaCppBackend.__new__(LlamaCppBackend)
+        backend._stdout_lines = []
+        backend._process = _types.SimpleNamespace(stdout = iter(f"{l}\n" for l in lines))
+        backend._drain_stdout()
+        return backend._stdout_lines
+
+    def test_the_startup_head_and_the_tail_survive(self):
+        startup = [f"load {i}" for i in range(200)] + ["main: server is listening on 127.0.0.1"]
+        requests = [f"request {i}" for i in range(60000)]
+        kept = self._drain(startup + requests)
+        assert len(kept) <= llama_cpp_module._STDOUT_TRIM_AT
+        assert kept[: len(startup)] == startup
+        assert kept[-1] == "request 59999"
+        assert len(kept) >= len(startup) + llama_cpp_module._STDOUT_TAIL_KEEP
+
+    def test_a_short_log_is_untouched(self):
+        lines = [f"line {i}" for i in range(500)]
+        assert self._drain(lines) == lines
+
+
+def test_a_flood_before_readiness_keeps_the_startup_head():
+    backend = LlamaCppBackend.__new__(LlamaCppBackend)
+    backend._stdout_lines = []
+    lines = ["load_tensors: offloaded 13/37 layers to GPU"] + [f"trace {i}" for i in range(30000)]
+    backend._process = _types.SimpleNamespace(stdout = iter(f"{l}\n" for l in lines))
+    backend._drain_stdout()
+    assert backend._stdout_lines[0] == lines[0]
+    assert len(backend._stdout_lines) <= llama_cpp_module._STDOUT_TRIM_AT
+
+
+def test_the_offload_report_covers_metal_and_env_pinned_layers():
+    src = inspect.getsource(LlamaCppBackend.load_model)
+    assert "(_detected_gpus or _metal_capable_host())" in src
+    assert "_offload_counts[0] <= 0" in src
+    start = src.index("self._offload_overridden = ")
+    assignment = src[start : src.index("\n                if ", start)]
+    # A --device the gpu_ids pin stripped never reached the child, so it pins nothing.
+    assert "self._strip_device_extra_args(extra_args)" in assignment
+    assert "if _gpu_ids_own_device_flags" in assignment
+    assert "_env_fixes_gpu_layers(env)" in assignment
+
+
+def test_the_active_log_file_stops_growing_past_its_cap(tmp_path, monkeypatch):
+    monkeypatch.setattr(llama_cpp_module, "_LLAMA_LOG_FULL_BYTES", 4096)
+    backend = LlamaCppBackend.__new__(LlamaCppBackend)
+    backend._stdout_lines = []
+    log = tmp_path / "llama.log"
+    backend._llama_log_fh = open(log, "w", encoding = "utf-8")
+    lines = [f"0.00.{i:06d} I slot launch: id 0 | task {i} | padding padding" for i in range(2000)]
+    lines += ["0.09.000000 W srv  a warning after the cap", "\trepeat_last_n = 64", "error: boom"]
+    backend._process = _types.SimpleNamespace(stdout = iter(f"{l}\n" for l in lines))
+    backend._drain_stdout()
+    backend._llama_log_fh.close()
+    text = log.read_text(encoding = "utf-8")
+    assert len(text) < 4096 + 512
+    assert "keeping warnings and errors only" in text
+    assert "a warning after the cap" in text and "error: boom" in text
+    assert "repeat_last_n" not in text
+
+
+def test_metal_device_rows_count_as_gpu():
+    rows = [
+        "device_info:",
+        "  - MTL0    : Apple M3 Max (98304 MiB, 98303 MiB free)",
+        "  - CPU     : Apple M3 Max",
+    ]
+    assert llama_cpp_module.llama_saw_gpu_device(rows) is True
+    assert llama_cpp_module.llama_saw_gpu_device([rows[0], rows[2]]) is False

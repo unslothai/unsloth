@@ -12,6 +12,11 @@ import { localPathCacheKey } from "@/features/hub/lib/local-path";
 import { isHuggingFaceOffline } from "@/features/hub/lib/network";
 import { fingerprintToken } from "@/features/hub/lib/token-fingerprint";
 import { bumpInventoryVersion } from "@/features/hub/stores/inventory-events";
+import {
+  discardDeletedInventoryHints,
+  discardDeletedModelInventoryHints,
+} from "../download-manager/download-manager-state";
+import type { ScanFolderStatus } from "../lib/scan-folder-status";
 import type { LocalSource } from "./constants";
 import { bumpGgufVariantsCacheVersion } from "./gguf-variants-cache-events";
 
@@ -48,11 +53,15 @@ export interface CachedGgufRepo {
   capabilities?: BackendModelCapabilities | null;
   size_bytes: number;
   cache_path?: string;
+  /** epoch seconds; inventory view models normalize this to milliseconds. */
   last_modified?: number | null;
   partial?: boolean;
   partial_transport?: string | null;
+  /** This partial can be continued byte for byte. */
+  partial_resumable?: boolean;
   pipeline_tag?: string | null;
   task?: string | null;
+  audio_type?: string | null;
   tags?: string[];
   library_name?: string | null;
 }
@@ -67,14 +76,23 @@ export interface CachedModelRepo {
   capabilities?: BackendModelCapabilities | null;
   size_bytes: number;
   cache_path?: string;
+  /** epoch seconds; inventory view models normalize this to milliseconds. */
   last_modified?: number | null;
   partial?: boolean;
   partial_transport?: string | null;
+  /** This partial can be continued byte for byte. */
+  partial_resumable?: boolean;
   pipeline_tag?: string | null;
   task?: string | null;
+  audio_type?: string | null;
   tags?: string[];
   library_name?: string | null;
   quant_method?: string | null;
+}
+
+export interface CachedInventoryResponse<Repo> {
+  cached: Repo[];
+  scan_confirmed?: boolean;
 }
 
 export interface LocalModelInfo {
@@ -98,8 +116,13 @@ export interface LocalModelInfo {
   updated_at?: number | null;
   partial?: boolean;
   partial_transport?: string | null;
+  /** This partial can be continued byte for byte. */
+  partial_resumable?: boolean;
+  /** Pipeline repo holding only a GGUF load's VAE / text encoder: not a download to continue. */
+  companion_prefetch?: boolean;
   pipeline_tag?: string | null;
   task?: string | null;
+  audio_type?: string | null;
   tags?: string[];
   library_name?: string | null;
   quant_method?: string | null;
@@ -110,16 +133,21 @@ export interface LocalModelListResponse {
   hf_cache_dir?: string | null;
   lmstudio_dirs: string[];
   ollama_dirs?: string[];
+  hermes_dirs?: string[];
   models: LocalModelInfo[];
 }
 
 export interface CachedDatasetRepo {
   repo_id: string;
   size_bytes: number;
+  /** epoch seconds; absent when no cache path has a readable mtime. */
+  last_modified?: number | null;
   cache_path?: string;
   load_cache_path?: string;
   partial?: boolean;
   partial_transport?: string | null;
+  /** This partial can be continued byte for byte. */
+  partial_resumable?: boolean;
 }
 
 export type LocalDatasetInfo = {
@@ -146,18 +174,32 @@ export interface ScanFolderInfo {
   id: number;
   path: string;
   created_at: string;
+  /** Result of the last scan. Absent on older backends, which means "ok". */
+  status?: ScanFolderStatus;
 }
 
 export interface GgufVariantDetail {
+  context_length?: number | null;
+  cache_path?: string | null;
+  /** Opaque stand-in for `cache_path` under host-path redaction; the only name an
+   *  API-key caller has for one specific copy. */
+  cache_ref?: string | null;
   filename: string;
   quant: string;
   display_label?: string | null;
   size_bytes: number;
   download_size_bytes?: number;
+  /** The only missing artifact when the main GGUF is already cached. */
+  pending_drafter_filename?: string | null;
+  pending_drafter_size_bytes?: number;
+  /** Bytes a resume still has to fetch. Set only on a partial variant. */
+  download_remaining_bytes?: number | null;
   downloaded?: boolean;
   update_available?: boolean;
   partial?: boolean;
   partial_transport?: string | null;
+  /** This partial can be continued byte for byte. */
+  partial_resumable?: boolean;
   /** Variants sharing this key share one companion download footprint, so a
    *  footprint resolved for one of them is correct for all of them. */
   dependency_key?: string | null;
@@ -168,6 +210,8 @@ export interface GgufVariantsResponse {
   variants: GgufVariantDetail[];
   has_vision: boolean;
   default_variant: string | null;
+  /** True only when Hub metadata resolved every required companion. */
+  dependencies_resolved?: boolean;
 }
 
 async function parseJsonOrThrow<T>(
@@ -210,30 +254,44 @@ export async function listLocalModels(): Promise<LocalModelListResponse> {
   return parseJsonOrThrow<LocalModelListResponse>(response);
 }
 
-export async function listCachedGguf(
+export async function fetchCachedGgufInventory(
   hfToken?: string | null,
-): Promise<CachedGgufRepo[]> {
+): Promise<CachedInventoryResponse<CachedGgufRepo>> {
   const response = await withHubTimeout(INVENTORY_TIMEOUT_MS, (signal) =>
     authFetch("/api/hub/cached-gguf", {
       headers: hubTokenHeader(hfToken),
       signal,
     }),
   );
-  const data = await parseJsonOrThrow<{ cached: CachedGgufRepo[] }>(response);
-  return data.cached;
+  return await parseJsonOrThrow<CachedInventoryResponse<CachedGgufRepo>>(
+    response,
+  );
 }
 
-export async function listCachedModels(
+export async function listCachedGguf(
   hfToken?: string | null,
-): Promise<CachedModelRepo[]> {
+): Promise<CachedGgufRepo[]> {
+  return (await fetchCachedGgufInventory(hfToken)).cached;
+}
+
+export async function fetchCachedModelsInventory(
+  hfToken?: string | null,
+): Promise<CachedInventoryResponse<CachedModelRepo>> {
   const response = await withHubTimeout(INVENTORY_TIMEOUT_MS, (signal) =>
     authFetch("/api/hub/cached-models", {
       headers: hubTokenHeader(hfToken),
       signal,
     }),
   );
-  const data = await parseJsonOrThrow<{ cached: CachedModelRepo[] }>(response);
-  return data.cached;
+  return await parseJsonOrThrow<CachedInventoryResponse<CachedModelRepo>>(
+    response,
+  );
+}
+
+export async function listCachedModels(
+  hfToken?: string | null,
+): Promise<CachedModelRepo[]> {
+  return (await fetchCachedModelsInventory(hfToken)).cached;
 }
 
 export async function listLocalDatasets(): Promise<LocalDatasetsResponse> {
@@ -265,6 +323,7 @@ export async function deleteCachedDataset(
     body: JSON.stringify(payload),
   });
   await throwIfNotOk(response, `Failed to delete dataset (${response.status})`);
+  discardDeletedInventoryHints(repoId, ["dataset"]);
   bumpInventoryVersion();
 }
 
@@ -275,6 +334,7 @@ export interface CompanionAssetInfo {
 }
 
 export interface DeleteImpact {
+  cache_path?: string | null;
   repo_id: string;
   variant?: string | null;
   reclaimed_bytes: number;
@@ -288,13 +348,16 @@ export interface DeleteImpact {
 export async function fetchDeleteImpact(
   repoId: string,
   variant?: string | null,
+  cachePath?: string | null,
 ): Promise<DeleteImpact | null> {
   try {
     const response = await authFetch("/api/hub/delete-impact", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(
-        variant ? { repo_id: repoId, variant } : { repo_id: repoId },
+        variant
+          ? { repo_id: repoId, variant, ...(cachePath ? { cache_path: cachePath } : {}) }
+          : { repo_id: repoId, ...(cachePath ? { cache_path: cachePath } : {}) },
       ),
     });
     if (!response.ok) return null;
@@ -348,6 +411,7 @@ export async function deleteCachedModel(
   });
   try {
     await throwIfNotOk(response);
+    discardDeletedModelInventoryHints(repoId, variant);
     bumpInventoryVersion();
   } finally {
     invalidateGgufVariantsCache(repoId);
@@ -424,6 +488,7 @@ export async function listGgufVariants(
   hfToken?: string,
   options?: {
     preferLocalCache?: boolean;
+    includeCacheLocations?: boolean;
     localPath?: string | null;
     signal?: AbortSignal;
   },
@@ -434,7 +499,7 @@ export async function listGgufVariants(
   const signal = options?.signal;
   const key = `${repoId}::${fingerprintToken(hfToken)}::${
     preferLocalCache ? "local" : "remote"
-  }::${localPathCacheKey(localPath)}`;
+  }::${localPathCacheKey(localPath)}::${!!options?.includeCacheLocations}`;
   const now = Date.now();
   const hit = ggufVariantsCache.get(key);
   if (hit && now < hit.expiresAt) {
@@ -446,6 +511,9 @@ export async function listGgufVariants(
     ggufVariantsCache.delete(key);
   }
   const params = new URLSearchParams({ repo_id: repoId });
+  if (options?.includeCacheLocations) {
+    params.set("include_cache_locations", "true");
+  }
   if (preferLocalCache) {
     params.set("prefer_local_cache", "true");
   }

@@ -10,22 +10,97 @@ the frontend a way to ask which of those CLIs are actually installed so it can
 default to one the user can run immediately.
 """
 
+import os
 import shutil
+import subprocess
+from typing import Optional
+
+
+_DEEPSEEK_HARNESS_HELP_MARKER = "DeepSeek Harness"
+_DEEPSEEK_HARNESS_FILE_MARKERS = (
+    b"deepseek harness",
+    b"@deepseek-ai/dsh",
+    b"@deepseek-ai+dsh",
+)
 
 # Keep in sync with the `unsloth start <agent>` subcommands defined in
 # unsloth_cli/commands/start.py. Each entry is the exact executable name that
 # subcommand launches, so a hit here means `unsloth start <agent>` can find the
 # binary on PATH without the user installing anything first.
-CODING_AGENTS: tuple[str, ...] = ("claude", "codex", "openclaw", "opencode", "hermes", "pi")
+CODING_AGENTS: tuple[str, ...] = ("claude", "codex", "openclaw", "opencode", "hermes", "pi", "dsh")
+
+
+def is_deepseek_harness_executable(executable: str, *, allow_execution: bool = True) -> bool:
+    """Return whether ``executable`` identifies itself as DeepSeek Harness."""
+    try:
+        with open(executable, "rb") as launcher:
+            contents = launcher.read(256 * 1024).lower()
+    except OSError:
+        contents = b""
+    if any(marker in contents for marker in _DEEPSEEK_HARNESS_FILE_MARKERS):
+        return True
+    if not allow_execution:
+        return False
+    try:
+        result = subprocess.run(
+            [executable, "--help"],
+            check = False,
+            capture_output = True,
+            text = True,
+            encoding = "utf-8",
+            errors = "replace",
+            timeout = 5,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    output = (result.stdout or "") + (result.stderr or "")
+    return result.returncode == 0 and _DEEPSEEK_HARNESS_HELP_MARKER in output
+
+
+def deepseek_harness_executables_on_path(path: Optional[str] = None) -> list[str]:
+    """Return every distinct ``dsh`` executable in PATH order."""
+    if path is None:
+        path = os.environ.get("PATH")
+    if path is None:
+        path = os.defpath
+    executables = []
+    seen = set()
+    for directory in path.split(os.pathsep):
+        try:
+            executable = shutil.which("dsh", path = directory)
+        except OSError:
+            continue
+        if executable is None:
+            continue
+        key = os.path.normcase(os.path.abspath(executable))
+        if key in seen:
+            continue
+        seen.add(key)
+        executables.append(executable)
+    return executables
 
 
 def _is_on_path(agent: str) -> bool:
-    # shutil.which is documented to return None on a miss, but PATH lookups can
-    # still raise (e.g. a permission error while probing a directory entry);
-    # this is an advisory check, so a lookup failure should read as "not
-    # installed" instead of breaking the settings endpoint.
+    # shutil.which returns None on a miss but PATH lookups can still raise, and this is advisory, so a lookup failure
+    # reads as "not installed" rather than breaking the endpoint.
     try:
-        return shutil.which(agent) is not None
+        executable = shutil.which(agent)
+        if executable is None:
+            return False
+        if agent == "dsh":
+            # Detection runs when the settings panel opens, so it must not execute an
+            # arbitrary same-named program. Official npm/pnpm launchers contain one of
+            # the package or product markers above; explicit launches may additionally
+            # use the bounded --help probe for custom wrappers.
+            if is_deepseek_harness_executable(executable, allow_execution = False):
+                return True
+            return any(
+                is_deepseek_harness_executable(candidate, allow_execution = False)
+                for candidate in deepseek_harness_executables_on_path()
+                if os.path.normcase(os.path.abspath(candidate))
+                != os.path.normcase(os.path.abspath(executable))
+            )
+        return True
     except OSError:
         return False
 

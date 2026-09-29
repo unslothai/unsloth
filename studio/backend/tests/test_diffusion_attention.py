@@ -8,6 +8,7 @@ transformer that records / raises on ``set_attention_backend``.
 
 from __future__ import annotations
 
+import sys
 import types
 
 import pytest
@@ -370,6 +371,42 @@ def test_xformers_installs_the_cuda_matched_wheel_not_the_package_name(monkeypat
     assert "xformers" not in [arg for arg in run.calls[0] if arg != _XFORMERS_WHEEL]
 
 
+def test_a_hidden_xformers_is_not_reinstalled_in_the_same_process(monkeypatch):
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_ATTENTION_INSTALL", "auto")
+    monkeypatch.setitem(sys.modules, "xformers", None)
+
+    def _no_resolve():
+        raise AssertionError("resolved a wheel for a hidden xformers")
+
+    monkeypatch.setattr(att, "_xformers_wheel_target", _no_resolve)
+    run = _Recorder()
+    _stub_subprocess(monkeypatch, run)
+    logger = _CapturingLogger()
+
+    reason = att._ensure_attention_backend_installed("xformers", logger)
+
+    assert reason and "requires a different torch" in reason
+    assert run.calls == []
+    assert any("restart Studio" in line for line in logger.lines)
+
+
+def test_the_hidden_xformers_refusal_records_no_attempt(monkeypatch):
+    """Policy, not a failed attempt: once the entry is gone the same process may still install."""
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_ATTENTION_INSTALL", "auto")
+    monkeypatch.setitem(sys.modules, "xformers", None)
+    att._ensure_attention_backend_installed("xformers")
+    monkeypatch.delitem(sys.modules, "xformers")
+
+    import importlib.util
+
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name: None)
+    _stub_xformers_wheel(monkeypatch)
+    run = _Recorder()
+    _stub_subprocess(monkeypatch, run)
+    att._ensure_attention_backend_installed("xformers")
+    assert len(run.calls) == 1
+
+
 _CREDENTIALED_WHEEL = (
     "https://svc:s3cr3t@mirror.internal/whl/cu130/xformers-0.0.34-cp39-abi3-win_amd64.whl"
 )
@@ -704,7 +741,7 @@ def test_kernels_hub_compatible_reads_hub_version(monkeypatch):
 
 def test_transient_resolution_failure_is_not_memoised(monkeypatch):
     """A probe that times out on a loaded box is transient. Caching it would turn one
-    hiccup into "no xFormers for the rest of this Studio session", so only DETERMINISTIC
+    hiccup into "no xFormers for the rest of this Unsloth session", so only DETERMINISTIC
     answers (a URL, or a refusal that depends purely on the resident torch) are cached."""
     import utils.wheel_utils as wu
 

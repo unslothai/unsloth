@@ -72,14 +72,13 @@ export async function ejectChatModel(
   if (unloadedAliases.length > 0) {
     return { unloadedAliases, stillResident, replacedBy: null };
   }
-  // A row that was already cached, or an active one that has become cached
-  // since the card last polled. A model replaced inside the five-second poll
-  // window is not gone: the Transformers backend only moves
-  // `active_model_name` and leaves the previous model in `backend.models`
-  // (core/inference/inference.py:620), which /status still reports under
-  // `loaded` (routes/inference.py:8112), still holding its weights. Either way
-  // the scoped read above cannot match it, so ask what the runtime is really
-  // holding before reporting the row as somebody else's.
+  // A row that was already cached, or an active one that has become cached since the card last
+  // polled. A model replaced inside the five-second poll window is not gone: the Transformers
+  // backend only moves `active_model_name` and leaves the previous model in `backend.models`
+  // (core/inference/inference.py:620), which /status still reports under `loaded`
+  // (routes/inference.py:8112), still holding its weights. Either way the scoped read above cannot
+  // match it, so ask what the runtime is really holding before reporting the row as somebody
+  // else's.
   const holdsTarget = (names: string[] | undefined) =>
     names?.some((name) => deps.matches(target, name)) ?? false;
   if (deps.cachedRow || holdsTarget(await deps.readCached?.())) {

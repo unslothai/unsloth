@@ -326,6 +326,27 @@ assert_contains "non-tauri child fail -> CPU fallback"            "$_out" "__NOR
 assert_contains "non-tauri child fail -> skip ROCm bootstrap"     "$_out" "SKIP_ROCM=1"
 rm -rf "$_d"
 
+# 29) UV_CACHE_DIR: only a CALLER's override is portable. The installer's own default is a
+#     path in the ORIGIN distro, and forwarding it pins the child to `custom`, which skips
+#     its adaptive cache selection and outranks its --isolated-uv-cache.
+_d=$(make_fixture 1 strix 0 26.04 1)
+_out=$(run_func "$_d" UV_CACHE_DIR=/home/someone/.unsloth/studio/cache/uv \
+        _UV_CACHE_DIR_INSTALLER_DEFAULT=true)
+assert_contains "installer default is not forwarded"             "$_out" "unset UV_CACHE_DIR"
+assert_absent   "installer default is not exported"              "$_out" "export UV_CACHE_DIR="
+rm -rf "$_d"
+
+_d=$(make_fixture 1 strix 0 26.04 1)
+_out=$(run_func "$_d" UV_CACHE_DIR=/mnt/shared/uv \
+        _UV_CACHE_DIR_INSTALLER_DEFAULT=false)
+assert_contains "a caller's override is forwarded"               "$_out" "export UV_CACHE_DIR='/mnt/shared/uv'"
+rm -rf "$_d"
+
+_d=$(make_fixture 1 strix 0 26.04 1)
+_out=$(run_func "$_d" UV_CACHE_DIR=)
+assert_contains "an unset cache stays unset"                     "$_out" "unset UV_CACHE_DIR"
+rm -rf "$_d"
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ] || exit 1

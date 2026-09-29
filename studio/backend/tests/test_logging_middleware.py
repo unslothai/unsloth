@@ -2,6 +2,9 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import asyncio
+import os
+import re
+from pathlib import Path
 
 import pytest
 from fastapi import FastAPI
@@ -10,6 +13,15 @@ from starlette.staticfiles import StaticFiles
 
 from loggers import handlers as hmod
 from loggers.handlers import LoggingMiddleware
+
+
+async def app(scope, receive, send):
+    await send({"type": "http.response.start", "status": 200, "headers": []})
+    await send({"type": "http.response.body", "body": b"ok"})
+
+
+async def send(message):
+    pass
 
 
 class _LogCapture:
@@ -65,13 +77,6 @@ def test_success_logs_status_and_forwards_chunks(logs):
 
 
 def test_excluded_asset_success_skips_log(logs):
-    async def app(scope, receive, send):
-        await send({"type": "http.response.start", "status": 200, "headers": []})
-        await send({"type": "http.response.body", "body": b"ok"})
-
-    async def send(message):
-        pass
-
     for path in ("/assets/index.css", "/icon.svg", "/font.woff2"):
         _run(LoggingMiddleware(app)(_http_scope(path), _noop_receive, send))
 
@@ -82,9 +87,6 @@ def test_exception_logs_real_status_and_reraises(logs):
     async def app(scope, receive, send):
         await send({"type": "http.response.start", "status": 418, "headers": []})
         raise RuntimeError("stream failed")
-
-    async def send(message):
-        pass
 
     with pytest.raises(RuntimeError, match = "stream failed"):
         _run(LoggingMiddleware(app)(_http_scope("/api/health"), _noop_receive, send))
@@ -99,9 +101,6 @@ def test_cancelled_error_propagates_without_error_log(logs):
     async def app(scope, receive, send):
         raise asyncio.CancelledError()
 
-    async def send(message):
-        pass
-
     with pytest.raises(asyncio.CancelledError):
         _run(LoggingMiddleware(app)(_http_scope("/api/health"), _noop_receive, send))
 
@@ -114,9 +113,6 @@ def test_non_http_scope_passes_through(logs):
     async def app(scope, receive, send):
         seen.append(scope["type"])
 
-    async def send(message):
-        pass
-
     _run(LoggingMiddleware(app)({"type": "websocket", "path": "/ws"}, _noop_receive, send))
 
     assert seen == ["websocket"]
@@ -125,13 +121,6 @@ def test_non_http_scope_passes_through(logs):
 
 def test_duplicate_get_within_window_deduped(logs, monkeypatch):
     monkeypatch.setattr(hmod, "_ACCESS_LOG_DEDUP_MS", 1000)
-
-    async def app(scope, receive, send):
-        await send({"type": "http.response.start", "status": 200, "headers": []})
-        await send({"type": "http.response.body", "body": b"ok"})
-
-    async def send(message):
-        pass
 
     mw = LoggingMiddleware(app)
     for _ in range(3):
@@ -153,9 +142,6 @@ def test_mutations_and_errors_are_never_deduped(logs, monkeypatch):
         await send({"type": "http.response.start", "status": 404, "headers": []})
         await send({"type": "http.response.body", "body": b""})
 
-    async def send(message):
-        pass
-
     mw = LoggingMiddleware(post_ok)
     for _ in range(2):
         _run(mw(_http_scope("/api/chat/threads", method = "POST"), _noop_receive, send))
@@ -172,13 +158,6 @@ def test_quiet_poll_paths_use_longer_heartbeat_window(logs, monkeypatch):
     monkeypatch.setattr(hmod, "_ACCESS_LOG_DEDUP_MS", 0)
     monkeypatch.setattr(hmod, "_QUIET_POLL_DEDUP_MS", 1000)
 
-    async def app(scope, receive, send):
-        await send({"type": "http.response.start", "status": 200, "headers": []})
-        await send({"type": "http.response.body", "body": b"ok"})
-
-    async def send(message):
-        pass
-
     mw = LoggingMiddleware(app)
     for _ in range(3):
         _run(mw(_http_scope("/api/inference/monitor"), _noop_receive, send))  # quiet
@@ -190,15 +169,90 @@ def test_quiet_poll_paths_use_longer_heartbeat_window(logs, monkeypatch):
     assert paths.count("/api/models/browse-folders") == 3  # base dedup off -> all logged
 
 
-def test_distinct_query_strings_are_not_deduped(logs, monkeypatch):
-    monkeypatch.setattr(hmod, "_ACCESS_LOG_DEDUP_MS", 1000)
+def test_liveness_probe_heartbeats(logs, monkeypatch):
+    # The desktop watchdog's own probe. Its sibling /api/health was already quiet, so a
+    # steady poll of this one was a line per request.
+    monkeypatch.setattr(hmod, "_ACCESS_LOG_DEDUP_MS", 0)
+    monkeypatch.setattr(hmod, "_QUIET_POLL_DEDUP_MS", 1000)
+    monkeypatch.setattr(hmod, "_WATCHDOG_POLL_DEDUP_MS", 1000)
+
+    mw = LoggingMiddleware(app)
+    for _ in range(4):
+        _run(mw(_http_scope("/api/liveness"), _noop_receive, send))
+
+    paths = [e[2]["path"] for e in logs.events]
+    assert paths.count("/api/liveness") == 1
+
+
+def test_watchdog_window_outlasts_the_probe_interval():
+    """The window has to be wider than the poll, or the heartbeat is a no-op.
+
+    ``_QUIET_POLL_DEDUP_MS`` stamps only on emit, so a 10s window against a probe that
+    arrives every ~19s never sees two inside one window and every probe logs anyway --
+    which is what putting this path in ``_QUIET_POLL_PATHS`` would have done. The desktop
+    watchdog runs ``HEALTH_WATCHDOG_INTERVAL`` (15s) between rounds plus up to
+    ``HEALTH_PROBE_TIMEOUT`` (10s) inside one, so pin the floor at a full round.
+    """
+    commands_rs = (
+        Path(__file__).resolve().parents[2] / "src-tauri" / "src" / "commands.rs"
+    ).read_text(encoding = "utf-8")
+
+    def _secs(name):
+        match = re.search(rf"{name}: Duration = Duration::from_secs\((\d+)\)", commands_rs)
+        assert match is not None, (
+            f"{name} is no longer a Duration::from_secs literal in commands.rs; this test "
+            f"reads it to pin the heartbeat window and needs updating alongside it"
+        )
+        return int(match.group(1))
+
+    interval_s = _secs("HEALTH_WATCHDOG_INTERVAL")
+    probe_s = _secs("HEALTH_PROBE_TIMEOUT")
+
+    # The default, not whatever this shell exports: reading the module global would fail
+    # the test for anyone with the override set.
+    window_ms = hmod._env_int("UNSLOTH_STUDIO_ACCESS_LOG_WATCHDOG_DEDUP_MS", 60000)
+    if os.environ.get("UNSLOTH_STUDIO_ACCESS_LOG_WATCHDOG_DEDUP_MS"):
+        window_ms = 60000
+    assert window_ms > (interval_s + probe_s) * 1000, (
+        f"the watchdog heartbeat window ({window_ms}ms) is not wider "
+        f"than one probe round ({interval_s}s + {probe_s}s), so it would collapse nothing"
+    )
+
+
+def test_liveness_probe_errors_still_log(logs, monkeypatch):
+    # A watchdog probe that starts failing is the whole signal; heartbeating is 2xx-only.
+    monkeypatch.setattr(hmod, "_ACCESS_LOG_DEDUP_MS", 0)
+    monkeypatch.setattr(hmod, "_QUIET_POLL_DEDUP_MS", 1000)
+    monkeypatch.setattr(hmod, "_WATCHDOG_POLL_DEDUP_MS", 1000)
 
     async def app(scope, receive, send):
-        await send({"type": "http.response.start", "status": 200, "headers": []})
-        await send({"type": "http.response.body", "body": b"ok"})
+        await send({"type": "http.response.start", "status": 503, "headers": []})
+        await send({"type": "http.response.body", "body": b"down"})
 
-    async def send(message):
-        pass
+    mw = LoggingMiddleware(app)
+    for _ in range(3):
+        _run(mw(_http_scope("/api/liveness"), _noop_receive, send))
+
+    paths = [e[2]["path"] for e in logs.events]
+    assert paths.count("/api/liveness") == 3
+
+
+def test_verbose_keeps_every_watchdog_probe(logs, monkeypatch):
+    # --verbose zeroes the poll window; the watchdog's own window must go with it.
+    monkeypatch.setattr(hmod, "_ACCESS_LOG_DEDUP_MS", 0)
+    monkeypatch.setattr(hmod, "_QUIET_POLL_DEDUP_MS", 0)
+    monkeypatch.setattr(hmod, "_WATCHDOG_POLL_DEDUP_MS", 60000)
+
+    mw = LoggingMiddleware(app)
+    for _ in range(3):
+        _run(mw(_http_scope("/api/liveness"), _noop_receive, send))
+
+    paths = [e[2]["path"] for e in logs.events]
+    assert paths.count("/api/liveness") == 3
+
+
+def test_distinct_query_strings_are_not_deduped(logs, monkeypatch):
+    monkeypatch.setattr(hmod, "_ACCESS_LOG_DEDUP_MS", 1000)
 
     def scope(query):
         return {
@@ -359,46 +413,48 @@ def test_legacy_download_progress_heartbeats_not_suppressed(logs, monkeypatch):
     assert _paths_logged(logs) == ["/api/models/download-progress"]
 
 
-def test_generation_progress_polls_heartbeat(logs, monkeypatch):
-    # The 300ms poll timer always landed just outside the 300ms base dedup window.
+def test_media_progress_success_polls_are_suppressed(logs, monkeypatch):
+    # Their route handlers emit phase and 10% milestone events instead.
     monkeypatch.setattr(hmod, "_ACCESS_LOG_DEDUP_MS", 0)
     monkeypatch.setattr(hmod, "_QUIET_POLL_DEDUP_MS", 1000)
     for path in (
+        "/api/inference/images/load-progress",
+        "/api/inference/video/load-progress",
         "/api/inference/images/generate-progress",
         "/api/inference/video/generate-progress",
-        "/api/train/diffusion/status",
     ):
         mw = LoggingMiddleware(_status_app(200))
         for _ in range(5):
             _run(mw(_http_scope(path), _noop_receive, _drop))
-        assert _paths_logged(logs) == [path]
+        assert _paths_logged(logs) == []
         logs.events.clear()
 
 
-def test_generation_progress_errors_still_log(logs, monkeypatch):
-    # Heartbeat dedup is GET/2xx only, so a failing poll stays visible.
+def test_diffusion_training_progress_still_heartbeats(logs, monkeypatch):
     monkeypatch.setattr(hmod, "_ACCESS_LOG_DEDUP_MS", 0)
     monkeypatch.setattr(hmod, "_QUIET_POLL_DEDUP_MS", 1000)
-    mw = LoggingMiddleware(_status_app(500))
-    for _ in range(3):
-        _run(mw(_http_scope("/api/inference/images/generate-progress"), _noop_receive, _drop))
-    assert _paths_logged(logs) == ["/api/inference/images/generate-progress"] * 3
+    path = "/api/train/diffusion/status"
+    mw = LoggingMiddleware(_status_app(200))
+    for _ in range(5):
+        _run(mw(_http_scope(path), _noop_receive, _drop))
+    assert _paths_logged(logs) == [path]
 
 
-def test_image_video_load_progress_heartbeats(logs, monkeypatch):
-    # These handlers log nothing themselves, so keep a pulse for a multi-minute load.
+def test_media_progress_errors_still_log(logs, monkeypatch):
+    # Success suppression is GET/2xx only, so a failing poll stays visible.
     monkeypatch.setattr(hmod, "_ACCESS_LOG_DEDUP_MS", 0)
     monkeypatch.setattr(hmod, "_QUIET_POLL_DEDUP_MS", 1000)
-    for path in ("/api/inference/images/load-progress", "/api/inference/video/load-progress"):
-        mw = LoggingMiddleware(_status_app(200))
-        for _ in range(5):
+    for path in (
+        "/api/inference/images/load-progress",
+        "/api/inference/video/load-progress",
+        "/api/inference/images/generate-progress",
+        "/api/inference/video/generate-progress",
+    ):
+        mw = LoggingMiddleware(_status_app(500))
+        for _ in range(3):
             _run(mw(_http_scope(path), _noop_receive, _drop))
-        assert _paths_logged(logs) == [path]
+        assert _paths_logged(logs) == [path] * 3
         logs.events.clear()
-    mw = LoggingMiddleware(_status_app(503))
-    for _ in range(3):
-        _run(mw(_http_scope("/api/inference/images/load-progress"), _noop_receive, _drop))
-    assert _paths_logged(logs) == ["/api/inference/images/load-progress"] * 3
 
 
 def test_unrelated_image_routes_still_log(logs, monkeypatch):
@@ -570,6 +626,10 @@ def test_verbose_restores_the_dropped_success_polls(logs, monkeypatch):
     monkeypatch.setattr(hmod, "_VERBOSE_ACCESS_LOG", True)
     for path in (
         "/api/inference/load-progress",
+        "/api/inference/images/load-progress",
+        "/api/inference/video/load-progress",
+        "/api/inference/images/generate-progress",
+        "/api/inference/video/generate-progress",
         "/api/hub/download-progress",
         "/api/export/status",
         "/api/chat/threads",
@@ -639,3 +699,93 @@ def test_verbose_off_by_default_keeps_the_polls_quiet(logs):
     for path in ("/api/inference/load-progress", "/api/hub/download-progress"):
         _run(LoggingMiddleware(_status_app(200))(_http_scope(path), _noop_receive, _drop))
     assert logs.events == []
+
+
+# ── templated chat detail polls ──
+def test_chat_thread_detail_polls_heartbeat_instead_of_one_line_each(logs, monkeypatch):
+    """Streaming drives these on a loop: 25 thread and 21 fork reads in 20s over one
+    four-tab session, 34% of the access log."""
+    monkeypatch.setattr(hmod, "_ACCESS_LOG_DEDUP_MS", 0)
+    monkeypatch.setattr(hmod, "_QUIET_POLL_DEDUP_MS", 60000)
+
+    mw = LoggingMiddleware(_status_app(200))
+    for _ in range(12):
+        _run(mw(_http_scope("/api/chat/threads/abc123"), _noop_receive, _drop))
+        _run(mw(_http_scope("/api/chat/threads/abc123/forks"), _noop_receive, _drop))
+
+    paths = _paths_logged(logs)
+    assert paths == ["/api/chat/threads/abc123", "/api/chat/threads/abc123/forks"], paths
+
+
+def test_four_tabs_share_one_bucket_per_template(logs, monkeypatch):
+    """Four tabs polling four different threads ask one question. Keying the bucket on the
+    real path would emit four lines per window."""
+    monkeypatch.setattr(hmod, "_ACCESS_LOG_DEDUP_MS", 0)
+    monkeypatch.setattr(hmod, "_QUIET_POLL_DEDUP_MS", 60000)
+
+    mw = LoggingMiddleware(_status_app(200))
+    for tab in ("t1", "t2", "t3", "t4"):
+        for _ in range(5):
+            _run(mw(_http_scope(f"/api/chat/threads/{tab}"), _noop_receive, _drop))
+
+    # One line, and it names a real thread rather than the template.
+    assert _paths_logged(logs) == ["/api/chat/threads/t1"], _paths_logged(logs)
+
+
+def test_message_reads_are_not_collapsed_into_the_detail_bucket(logs, monkeypatch):
+    """A message read is a different question from "is it still streaming", so the
+    normaliser must not reach it (#7087)."""
+    monkeypatch.setattr(hmod, "_ACCESS_LOG_DEDUP_MS", 0)
+    monkeypatch.setattr(hmod, "_QUIET_POLL_DEDUP_MS", 60000)
+
+    deeper = (
+        "/api/chat/threads/abc/messages",
+        "/api/chat/threads/abc/messages/m1",
+        "/api/chat/threads/abc/messages/m1/forks",
+    )
+    mw = LoggingMiddleware(_status_app(200))
+    for path in deeper:
+        for _ in range(3):
+            _run(mw(_http_scope(path), _noop_receive, _drop))
+
+    for path in deeper:
+        assert hmod.normalize_poll_path(path) == path
+        assert _paths_logged(logs).count(path) == 3, _paths_logged(logs)
+
+
+def test_the_thread_list_is_untouched_by_the_normaliser():
+    """The list path is handled by _CHAT_LIST_PATHS and must not be dragged into the
+    heartbeat class by a trailing-segment rule."""
+    assert hmod.normalize_poll_path("/api/chat/threads") == "/api/chat/threads"
+    assert hmod.normalize_poll_path("/api/chat/threads/") == "/api/chat/threads/"
+
+
+def test_a_failing_thread_poll_still_logs(logs, monkeypatch):
+    monkeypatch.setattr(hmod, "_ACCESS_LOG_DEDUP_MS", 0)
+    monkeypatch.setattr(hmod, "_QUIET_POLL_DEDUP_MS", 60000)
+
+    bad = LoggingMiddleware(_status_app(404))
+    for _ in range(3):
+        _run(bad(_http_scope("/api/chat/threads/gone"), _noop_receive, _drop))
+    assert len(_paths_logged(logs)) == 3
+
+
+def test_thread_mutations_still_log(logs, monkeypatch):
+    monkeypatch.setattr(hmod, "_ACCESS_LOG_DEDUP_MS", 0)
+    monkeypatch.setattr(hmod, "_QUIET_POLL_DEDUP_MS", 60000)
+
+    mw = LoggingMiddleware(_status_app(200))
+    for _ in range(3):
+        _run(mw(_http_scope("/api/chat/threads/abc", method = "PATCH"), _noop_receive, _drop))
+    assert len(_paths_logged(logs)) == 3
+
+
+def test_verbose_restores_every_thread_poll_line(logs, monkeypatch):
+    monkeypatch.setattr(hmod, "_ACCESS_LOG_DEDUP_MS", 0)
+    monkeypatch.setattr(hmod, "_QUIET_POLL_DEDUP_MS", 0)
+    monkeypatch.setattr(hmod, "_VERBOSE_ACCESS_LOG", True)
+
+    mw = LoggingMiddleware(_status_app(200))
+    for _ in range(3):
+        _run(mw(_http_scope("/api/chat/threads/abc"), _noop_receive, _drop))
+    assert len(_paths_logged(logs)) == 3

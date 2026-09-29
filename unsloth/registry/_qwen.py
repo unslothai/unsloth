@@ -3,6 +3,7 @@ from unsloth.registry.registry import ModelInfo, ModelMeta, QuantType, _register
 _IS_QWEN_2_5_REGISTERED = False
 _IS_QWEN_2_5_VL_REGISTERED = False
 _IS_QWEN_QWQ_REGISTERED = False
+_IS_QWEN_2_5_CODER_REGISTERED = False
 
 
 class QwenModelInfo(ModelInfo):
@@ -33,7 +34,13 @@ class QwenQVQPreviewModelInfo(ModelInfo):
         return super().construct_model_name(base_name, version, size, quant_type, instruct_tag, key)
 
 
-# Qwen2.5 Model Meta
+class Qwen2_5CoderModelInfo(ModelInfo):
+    @classmethod
+    def construct_model_name(cls, base_name, version, size, quant_type, instruct_tag):
+        key = f"{base_name}{version}-Coder-{size}B"
+        return super().construct_model_name(base_name, version, size, quant_type, instruct_tag, key)
+
+
 Qwen_2_5_Meta = ModelMeta(
     org = "Qwen",
     base_name = "Qwen",
@@ -45,7 +52,6 @@ Qwen_2_5_Meta = ModelMeta(
     quant_types = [QuantType.NONE, QuantType.BNB, QuantType.UNSLOTH],
 )
 
-# Qwen2.5 VL Model Meta
 Qwen_2_5_VLMeta = ModelMeta(
     org = "Qwen",
     base_name = "Qwen",
@@ -57,7 +63,6 @@ Qwen_2_5_VLMeta = ModelMeta(
     quant_types = [QuantType.NONE, QuantType.BNB, QuantType.UNSLOTH],
 )
 
-# Qwen QwQ Model Meta
 QwenQwQMeta = ModelMeta(
     org = "Qwen",
     base_name = "QwQ",
@@ -69,10 +74,8 @@ QwenQwQMeta = ModelMeta(
     quant_types = [QuantType.NONE, QuantType.BNB, QuantType.UNSLOTH, QuantType.GGUF],
 )
 
-# Qwen QVQ Preview Model Meta
-# No QuantType.NONE: the unquantized mirror unsloth/QVQ-72B-Preview was removed
-# from the Hub (only unsloth/QVQ-72B-Preview-bnb-4bit remains). The upstream
-# Qwen/QVQ-72B-Preview is still registered via include_original_model.
+# No QuantType.NONE: the unquantized mirror unsloth/QVQ-72B-Preview was removed from the Hub,
+# leaving only the bnb-4bit build; upstream Qwen/QVQ-72B-Preview is still registered.
 QwenQVQPreviewMeta = ModelMeta(
     org = "Qwen",
     base_name = "QVQ",
@@ -82,6 +85,16 @@ QwenQVQPreviewMeta = ModelMeta(
     model_info_cls = QwenQVQPreviewModelInfo,
     is_multimodal = True,
     quant_types = [QuantType.BNB],
+)
+Qwen_2_5_CoderMeta = ModelMeta(
+    org = "Qwen",
+    base_name = "Qwen",
+    instruct_tags = [None, "Instruct"],
+    model_version = "2.5",
+    model_sizes = ["0.5", "1.5", "3", "7", "14", "32"],
+    model_info_cls = Qwen2_5CoderModelInfo,
+    is_multimodal = False,
+    quant_types = [QuantType.NONE, QuantType.BNB],  # no *-unsloth-bnb-4bit Coder uploads exist
 )
 
 
@@ -110,10 +123,19 @@ def register_qwen_qwq_models(include_original_model: bool = False):
     _IS_QWEN_QWQ_REGISTERED = True
 
 
+def register_qwen_2_5_coder_models(include_original_model: bool = False):
+    global _IS_QWEN_2_5_CODER_REGISTERED
+    if _IS_QWEN_2_5_CODER_REGISTERED:
+        return
+    _register_models(Qwen_2_5_CoderMeta, include_original_model = include_original_model)
+    _IS_QWEN_2_5_CODER_REGISTERED = True
+
+
 def register_qwen_models(include_original_model: bool = False):
     register_qwen_2_5_models(include_original_model = include_original_model)
     register_qwen_2_5_vl_models(include_original_model = include_original_model)
     register_qwen_qwq_models(include_original_model = include_original_model)
+    register_qwen_2_5_coder_models(include_original_model = include_original_model)
 
 
 if __name__ == "__main__":

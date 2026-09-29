@@ -49,6 +49,7 @@ test("every status the worker sends reaches a row", () => {
     "Formatting VLM dataset...",
     "Dataset ready (1,000 samples, chatml format)",
     "Sliced dataset to 500 rows (indices 0-500)",
+    "Using 1024 of 192523 rows (max_steps run)",
     "Loaded 1000 samples from local files",
     "Encoding audio with SNAC...",
     'Tokenizing ["text"] (num_proc=4) 15% (32,000/207,865)',

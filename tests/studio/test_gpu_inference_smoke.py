@@ -15,27 +15,30 @@ check, not a benchmark. Select/deselect it by name, e.g. `-k gpu_generation`.
 from __future__ import annotations
 
 import pytest
+from real_accelerator import (
+    has_real_cuda,
+)  # tests/_shared, on sys.path via tests/conftest.py
 
 torch = pytest.importorskip("torch")
 
-# Smallest instruct model in the CI fixture family; ~270M params loads and
-# generates a few tokens in seconds on any GPU.
+# Smallest instruct model in the CI fixture family; ~270M params loads and generates a few tokens
+# in seconds on any GPU.
 MODEL_ID = "unsloth/gemma-3-270m-it"
-# A handful of forced real tokens: enough to prove GPU decode produced content,
-# short enough to stay a few seconds.
+# A handful of forced real tokens: enough to prove GPU decode produced content, short enough to
+# stay a few seconds.
 MIN_NEW_TOKENS = 4
 MAX_NEW_TOKENS = 16
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "requires a CUDA GPU")
+@pytest.mark.skipif(not has_real_cuda(), reason = "requires a CUDA GPU")
 def test_gpu_generation_smoke():
     try:
         from transformers import AutoModelForCausalLM, AutoTokenizer
     except Exception as exc:  # pragma: no cover - env without transformers
         pytest.skip(f"transformers unavailable: {exc}")
 
-    # Gemma is numerically unstable in fp16 (it emits only <pad>); use bf16 where
-    # supported, else fp32. The model is tiny, so fp32 is still fast.
+    # Gemma is numerically unstable in fp16 (it emits only <pad>); use bf16 where supported, else fp32. The model is
+    # tiny, so fp32 is still fast.
     dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float32
     try:
         tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)

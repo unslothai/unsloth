@@ -337,7 +337,8 @@ def test_has_local_tokenizer_model(tmp_path):
 
 
 def test_has_local_tokenizer_bpe_needs_merges(tmp_path):
-    # vocab.json alone is not loadable BPE; it needs merges.txt.
+    # vocab.json alone is not loadable BPE;
+    # it needs merges.txt.
     _touch(tmp_path, "vocab.json")
     assert L._has_local_tokenizer_files(str(tmp_path)) is False
     _touch(tmp_path, "merges.txt")
@@ -445,8 +446,8 @@ def test_offline_error_when_already_offline_propagates(monkeypatch):
 
 
 def test_kwargs_preserved_across_retry(monkeypatch):
-    # Callee popping config/tokenizer_name must not change what the retry sees:
-    # fn(*args, **kwargs) re-packs a fresh **kwargs per call.
+    # Callee popping config/tokenizer_name must not change what the retry sees: fn(*args, **kwargs) re-packs a fresh
+    # **kwargs per call.
     monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
     monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
     seen = []
@@ -465,8 +466,8 @@ def test_kwargs_preserved_across_retry(monkeypatch):
 
 
 def test_retry_runs_gc_collect_between_attempts(monkeypatch):
-    # The retry lives OUTSIDE the except so the failed attempt's traceback (a
-    # partial model) is freed by gc.collect() before the second load reallocates.
+    # The retry lives OUTSIDE the except so the failed attempt's traceback (a partial model) is freed by gc.collect()
+    # before the second load reallocates.
     monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
     monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
     gc_calls = []
@@ -494,8 +495,8 @@ def test_retry_runs_gc_collect_between_attempts(monkeypatch):
 
 
 def test_force_offline_restores_freshly_imported_constant(monkeypatch):
-    # If huggingface_hub.constants is first imported inside the window, the saved value must
-    # be the pre-window state, not the just-forced "1"; otherwise the process pins offline.
+    # If huggingface_hub.constants is first imported inside the window, the saved value must be the pre-window state,
+    # not the just-forced "1"; otherwise the process pins offline.
     import sys
 
     monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
@@ -524,8 +525,8 @@ def test_force_offline_restores_freshly_imported_constant(monkeypatch):
 
 
 def test_resolve_tokenizer_vlm_without_processor_falls_back(tmp_path):
-    # VLM checkpoint with tokenizer files but no processor config -> base repo (None), so its
-    # cached processor still loads instead of AutoProcessor failing on the local dir.
+    # VLM checkpoint with tokenizer files but no processor config -> base repo (None), so its cached processor still
+    # loads instead of AutoProcessor failing on the local dir.
     _touch(tmp_path, "tokenizer_config.json")
     _touch(tmp_path, "tokenizer.json")
     assert L._resolve_checkpoint_tokenizer_name(str(tmp_path), {}, require_processor = True) is None
@@ -672,13 +673,13 @@ def test_the_failed_attempt_is_not_pinned_by_the_error_it_raised(monkeypatch):
     def fake(*args, **kwargs):
         calls.append(1)
         if len(calls) == 1:
-            partial = _PartialModel()  # what the failed load already built
+            partial = _PartialModel()
             witness["ref"] = weakref.ref(partial)
             raise ConnectionError("connection reset while downloading model.safetensors")
         witness["alive_during_retry"] = witness["ref"]() is not None
         return "loaded"
 
-    monkeypatch.setattr(gc, "collect", lambda *a, **k: 0)  # only refcounts, no cycles
+    monkeypatch.setattr(gc, "collect", lambda *a, **k: 0)
     assert fake("model") == "loaded"
     assert (
         witness["alive_during_retry"] is False
@@ -775,7 +776,7 @@ def test_a_wrapped_online_error_does_not_pin_the_failed_attempt(monkeypatch):
     def fake(*args, **kwargs):
         calls.append(1)
         if len(calls) == 1:
-            partial = _PartialModel()  # what the failed load already built
+            partial = _PartialModel()
             witness["ref"] = weakref.ref(partial)
             try:
                 _download()
@@ -784,7 +785,7 @@ def test_a_wrapped_online_error_does_not_pin_the_failed_attempt(monkeypatch):
         witness["alive_during_retry"] = witness["ref"]() is not None
         return "loaded"
 
-    monkeypatch.setattr(gc, "collect", lambda *a, **k: 0)  # only refcounts, no cycles
+    monkeypatch.setattr(gc, "collect", lambda *a, **k: 0)
     assert fake("model") == "loaded"
     assert (
         witness["alive_during_retry"] is False
@@ -815,8 +816,8 @@ def test_an_implicitly_chained_network_error_stays_recognisable(monkeypatch):
     assert L._is_offline_related_error(
         caught.value
     ), "the retry replaced the implicitly chained connection error that made this classifiable"
-    # The connection error keeps the slot the traceback prints, and the retry is
-    # reported alongside it rather than in place of it.
+    # The connection error keeps the slot the traceback prints, and the retry is reported alongside it rather than in
+    # place of it.
     assert isinstance(caught.value.__context__, ConnectionError)
     assert isinstance(caught.value._unsloth_offline_retry_error, AttributeError)
 
@@ -879,8 +880,8 @@ def test_a_context_the_loader_suppressed_is_not_promoted_to_a_cause(monkeypatch)
 @pytest.mark.parametrize(
     "artifact",
     [
-        # A missing vocabulary resolves to None and is then dereferenced, opened or
-        # stat'd, so the family spans four exception types (#7845).
+        # A missing vocabulary resolves to None and is then dereferenced, opened or stat'd, so the family spans four
+        # exception types (#7845).
         AttributeError("'NoneType' object has no attribute 'readlines'"),
         TypeError(
             "argument should be a str or an os.PathLike object where __fspath__ "
@@ -964,7 +965,7 @@ def test_the_vlm_tokenizer_fallback_does_not_pin_the_built_model(monkeypatch):
         witness["alive_during_retry"] = witness["ref"]() is not None
         return "loaded"
 
-    monkeypatch.setattr(gc, "collect", lambda *a, **k: 0)  # only refcounts, no cycles
+    monkeypatch.setattr(gc, "collect", lambda *a, **k: 0)
     assert fake("model") == "loaded"
     assert (
         witness["alive_during_retry"] is False
@@ -1024,7 +1025,7 @@ def test_the_retrys_own_frames_do_not_pin_the_cached_model(monkeypatch):
         witness["ref"] = weakref.ref(model)
         raise AttributeError("'NoneType' object has no attribute 'endswith'")
 
-    monkeypatch.setattr(gc, "collect", lambda *a, **k: 0)  # only refcounts, no cycles
+    monkeypatch.setattr(gc, "collect", lambda *a, **k: 0)
     with pytest.raises(ConnectionError) as caught:
         fake("model")
     assert caught.value.__cause__ is not None

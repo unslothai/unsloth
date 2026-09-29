@@ -50,6 +50,9 @@ def test_te_flags_by_family():
     assert text_encoder_flags_for_family("qwen-image") == ("--qwen2vl",)
     assert text_encoder_flags_for_family("flux.1") == ("--clip_l", "--t5xxl")
     assert text_encoder_flags_for_family("flux.2-klein") == ("--llm",)
+    # Not --qwen2vl, even though the family name starts with the same three words: 2.1 conditions
+    # on Qwen3-VL and the qwen2vl door additionally enables Qwen2-VL's vision preprocessing.
+    assert text_encoder_flags_for_family("qwen-image-2.1") == ("--llm",)
     assert text_encoder_flags_for_family("unknown") == ()
 
 
@@ -248,7 +251,7 @@ def test_build_appends_offload_and_extra_args_last():
     assert "--offload-to-cpu" in cmd
     assert _pair(cmd, "--threads") == "8"
     assert "-v" in cmd
-    # extra args come after everything Studio set (last-wins for power users)
+    # extra args come after everything Unsloth set (last-wins for power users)
     assert cmd[-2:] == ["--rng", "cuda"]
 
 
@@ -658,7 +661,7 @@ def test_video_build_appends_extra_args_verbatim_and_last():
     )
     assert cmd[-2:] == ["--rng", "cuda"]
     assert cmd[-1] != "cuda" or cmd[-2] == "--rng"
-    # Studio's own value is still there, earlier, so sd.cpp's last-wins parser takes the override.
+    # Unsloth's own value is still there, earlier, so sd.cpp's last-wins parser takes the override.
     assert cmd.count("--rng") == 2
 
 

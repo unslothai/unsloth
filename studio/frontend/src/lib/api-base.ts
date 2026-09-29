@@ -59,6 +59,8 @@ if (isTauri && !tauriDevProxy) {
 
 const initialApiBase = apiBase
 
+const LOOPBACK_BASE_PORT = /^https?:\/\/127\.0\.0\.1:(\d+)$/
+
 export function resetApiBase() {
   apiBase = initialApiBase
 }
@@ -92,6 +94,19 @@ export function getApiBase(): string {
 
 // The placeholder base a caller may have baked in before the port arrived.
 const PLACEHOLDER_BASE = 'http://127.0.0.1:0'
+
+/**
+ * The port the backend is currently expected on, or null when none is known yet. The
+ * placeholder base above is port 0, which reads as "no port yet".
+ */
+export function getApiPort(): number | null {
+  const match = LOOPBACK_BASE_PORT.exec(apiBase)
+  if (!match) {
+    return null
+  }
+  const port = Number(match[1])
+  return Number.isInteger(port) && port > 0 && port <= 65535 ? port : null
+}
 
 export function apiUrl(path: string): string {
   // A URL built before the real port is known would otherwise pass straight

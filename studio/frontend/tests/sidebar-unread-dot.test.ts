@@ -5,13 +5,11 @@
 // node suite has no DOM to mount the sidebar in.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
-const SIDEBAR = readFileSync(
-  new URL("../src/components/app-sidebar.tsx", import.meta.url),
-  "utf8",
-);
+import { readSrc } from "./helpers/kit.ts";
+
+const SIDEBAR = readSrc("components/app-sidebar.tsx");
 
 test("the unread dot is grey", () => {
   assert.match(SIDEBAR, /size-2 rounded-full bg-muted-foreground\/60/);

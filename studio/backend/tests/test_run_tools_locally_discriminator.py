@@ -98,7 +98,7 @@ def test_a_hosted_only_name_with_no_local_stand_in_stays_hosted(provider_type):
     from core.inference.tools import ALL_TOOLS
     from routes.inference import _selects_only_provider_hosted_tools
 
-    # The premise: Studio has nothing to substitute.
+    # The premise: Unsloth has nothing to substitute.
     assert "image_generation" not in {tool["function"]["name"] for tool in ALL_TOOLS}
 
     payload = _payload(enabled_tools = ["image_generation"])
@@ -127,7 +127,7 @@ def test_the_flag_cannot_route_a_hosted_only_selection_into_the_loop(provider_ty
 def test_code_execution_alone_stays_hosted_because_its_stand_ins_are_unselected(provider_type):
     """code_execution has a stand-in mapping, but this request selects neither half.
 
-    Studio ships no code_execution, so the loop has nothing to execute. Reading
+    Unsloth ships no code_execution, so the loop has nothing to execute. Reading
     the flag off the mere existence of the mapping enters the loop, finds an
     empty catalog, falls back to the same passthrough, and skips the
     confirmation rejection on the way.
@@ -137,7 +137,7 @@ def test_code_execution_alone_stays_hosted_because_its_stand_ins_are_unselected(
     from routes.inference import _select_request_tools, _selects_only_provider_hosted_tools
 
     # The premise, derived rather than asserted: a mapping exists, nothing it
-    # points at was selected, and Studio has no code_execution of its own.
+    # points at was selected, and Unsloth has no code_execution of its own.
     assert LOCAL_STANDINS_FOR_HOSTED_TOOLS["code_execution"] == frozenset({"python", "terminal"})
     assert "code_execution" not in {tool["function"]["name"] for tool in ALL_TOOLS}
 
@@ -153,7 +153,7 @@ def test_code_execution_alone_stays_hosted_because_its_stand_ins_are_unselected(
 
 @pytest.mark.parametrize("provider_type", HOSTED_PROVIDERS)
 def test_code_execution_beside_a_selected_stand_in_still_takes_the_loop(provider_type):
-    """The other half of the rule: web_search is Studio's to run and
+    """The other half of the rule: web_search is Unsloth's to run and
     code_execution rides along, so the check above must not sweep this up."""
     from routes.inference import _selects_only_provider_hosted_tools
 
@@ -166,7 +166,7 @@ def test_code_execution_beside_a_selected_stand_in_still_takes_the_loop(provider
 
 @pytest.mark.parametrize("provider_type", HOSTED_PROVIDERS)
 def test_a_mixed_selection_with_the_flag_still_takes_the_loop(provider_type):
-    """One name Studio can run is enough; the hosted one rides along as a flag."""
+    """One name Unsloth can run is enough; the hosted one rides along as a flag."""
     from routes.inference import _selects_only_provider_hosted_tools
 
     payload = _payload(
@@ -190,3 +190,45 @@ def test_the_field_defaults_to_absent_not_false():
     payload = _payload(enabled_tools = ["web_search"])
     dumped = payload.model_dump(exclude_unset = True)
     assert "run_tools_locally" not in dumped
+
+
+@pytest.mark.parametrize("provider_type", HOSTED_PROVIDERS)
+def test_armed_research_is_never_a_purely_hosted_selection(provider_type):
+    """deep_research is Unsloth's own and rides past enabled_tools, so it is not in the names.
+
+    Read by name alone, an armed turn with only hosted pills lit looks like a hosted request,
+    the turn proxies through, the tool is never offered and arming Deep Research does nothing.
+    """
+    from routes.inference import _selects_only_provider_hosted_tools
+
+    payload = _payload(enabled_tools = ["web_search"], deep_research_armed = True)
+    assert _selects_only_provider_hosted_tools(payload, provider_type) is False
+
+
+@pytest.mark.parametrize("provider_type", HOSTED_PROVIDERS)
+def test_an_unarmed_hosted_selection_is_unchanged(provider_type):
+    from routes.inference import _selects_only_provider_hosted_tools
+    payload = _payload(enabled_tools = ["web_search"], deep_research_armed = False)
+    assert _selects_only_provider_hosted_tools(payload, provider_type) is True
+
+
+def test_local_gguf_search_only_is_not_a_hosted_request():
+    """#9730: a loaded GGUF has no provider_type; web_search is Unsloth's tool."""
+    from models.inference import ChatCompletionRequest
+    from routes.inference import _select_request_tools, _selects_only_provider_hosted_tools
+
+    payload = ChatCompletionRequest(
+        messages = [{"role": "user", "content": "Search the web for the Linux kernel version."}],
+        enable_tools = True,
+        enabled_tools = ["web_search"],
+        permission_mode = "off",
+        tool_choice = {"type": "function", "function": {"name": "web_search"}},
+    )
+    assert payload.provider_type is None
+    assert payload.provider_id is None
+    assert _selects_only_provider_hosted_tools(payload, None) is False
+    names = [
+        t["function"]["name"]
+        for t in _drive(_select_request_tools(payload, tools_on = True, mcp_allowed = False))
+    ]
+    assert names == ["web_search"]

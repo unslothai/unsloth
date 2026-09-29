@@ -18,6 +18,17 @@ from pathlib import Path
 
 import pytest
 
+
+def _shared_setup_1(b, monkeypatch, proc):
+    b._last_hf_cache_env = {"HF_HOME": "/tmp/hf-cache"}
+    b._handle_event({"type": "stall", "message": "x"})
+    assert proc.is_alive() is False
+
+    fake_ctx = _FakeCtx()
+    monkeypatch.setattr(training_mod, "_CTX", fake_ctx)
+    return fake_ctx
+
+
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
@@ -181,12 +192,7 @@ def test_cancel_wins_pending_respawn_and_pump_finalizes(monkeypatch):
     b._db_config = {"model_name": "org/model"}
     b._event_queue = _FakeQueue()
     b._progress.is_training = True
-    b._last_hf_cache_env = {"HF_HOME": "/tmp/hf-cache"}
-    b._handle_event({"type": "stall", "message": "x"})
-    assert proc.is_alive() is False
-
-    fake_ctx = _FakeCtx()
-    monkeypatch.setattr(training_mod, "_CTX", fake_ctx)
+    fake_ctx = _shared_setup_1(b, monkeypatch, proc)
     finalized: list[dict] = []
     monkeypatch.setattr(b, "_ensure_db_run_created", lambda: None)
     monkeypatch.setattr(b, "_finalize_run_in_db", lambda **kwargs: finalized.append(kwargs))
@@ -229,12 +235,7 @@ def test_cancel_interrupts_sidecar_wait_before_respawn(monkeypatch):
 
     b, proc = _backend_mid_load()
     b.current_job_id = "job_old"
-    b._last_hf_cache_env = {"HF_HOME": "/tmp/hf-cache"}
-    b._handle_event({"type": "stall", "message": "x"})
-    assert proc.is_alive() is False
-
-    fake_ctx = _FakeCtx()
-    monkeypatch.setattr(training_mod, "_CTX", fake_ctx)
+    fake_ctx = _shared_setup_1(b, monkeypatch, proc)
     sidecar_checked = threading.Event()
 
     def sidecar_swap_in_progress():
@@ -274,12 +275,7 @@ def test_reset_waits_for_cancelled_respawn_finalization(monkeypatch):
     b._db_config = {"model_name": "org/model"}
     b._event_queue = _FakeQueue()
     b._progress.is_training = True
-    b._last_hf_cache_env = {"HF_HOME": "/tmp/hf-cache"}
-    b._handle_event({"type": "stall", "message": "x"})
-    assert proc.is_alive() is False
-
-    fake_ctx = _FakeCtx()
-    monkeypatch.setattr(training_mod, "_CTX", fake_ctx)
+    fake_ctx = _shared_setup_1(b, monkeypatch, proc)
     finalized: list[dict] = []
     monkeypatch.setattr(b, "_ensure_db_run_created", lambda: None)
     monkeypatch.setattr(b, "_finalize_run_in_db", lambda **kwargs: finalized.append(kwargs))
