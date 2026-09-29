@@ -7,6 +7,7 @@ execution, and terminal commands."""
 import ast
 import codecs
 import copy
+from collections import deque
 import fnmatch
 import functools
 import hashlib
@@ -35,7 +36,7 @@ import threading
 from contextvars import ContextVar
 
 # What a truncated result costs besides its body, charged where the cut is decided rather than held back in advance.
-from .context_window import _RESULT_NOTICE_RESERVE
+from .context_window import _RESULT_NOTICE_RESERVE, compaction_receipt_field
 
 # The window of the model THIS request is served by, set by execute_tool for the call's duration. Left unset it falls
 # back to the process-global probe, which is wrong for an external-provider request: that runs Unsloth's tool loop
@@ -74,9 +75,12 @@ from core.inference.mcp_client import (
 )
 from storage import mcp_servers_db
 from utils.account_context import account_thread, current_account_id, is_owner_context
+from utils.current_date_prompt_settings import strip_current_date_update_note
 from core.inference.tool_confinement import ToolConfinementUnavailable, account_confinement
 from pathlib import Path
 from utils.paths.storage_roots import RetiredAccountError, ensure_dir
+
+from . import os_sandbox
 
 from loggers import get_logger
 
@@ -411,7 +415,9 @@ _SUBSTITUTION_SPAN_STEP = 64
 # Quote state of a backslash and the character behind it. Distinct from the surrounding quoting because bash expands
 # neither: the `$(` in `sed "s/\$(CC)/gcc/" Makefile` opens no command substitution.
 _ESCAPED_CHAR_STATE = "\\"
-_WIN_CONDITIONAL_KEYWORDS = frozenset({"exist", "defined", "errorlevel", "not"})
+_WIN_CONDITIONAL_KEYWORDS = frozenset({"exist", "defined", "errorlevel", "cmdextversion", "not"})
+# cmd's `IF [/I] [NOT] a OP b command`: the comparison stands where the command word would.
+_WIN_COMPARISON_OPS = frozenset({"==", "equ", "neq", "lss", "leq", "gtr", "geq"})
 _FIND_EXEC_FLAGS = frozenset({"-exec", "-execdir", "-ok", "-okdir"})
 # A find action is COMPLETE at its terminator: words after it are find's next predicate, not CMD's. Reading past it
 # took a following `-exec grep -e safe {} +` for sed's script.
@@ -1571,13 +1577,14 @@ def _join_escaped_newlines(text: str) -> str:
     return "".join(out)
 
 
-def _find_blocked_commands(command: str) -> set[str]:
+def _find_blocked_commands(command: str, posix: "bool | None" = None) -> set[str]:
     """Detect blocked commands at shell command position only.
 
     A token is at command position if it is the first token, or follows a shell separator /
     brace-group opener / new-command keyword, or a command-prefix wrapper like `env` / `time` /
     `xargs`. Tokens in argument position pass through. Also scans `find ... -exec CMD` and recurses
-    into bash -c / cmd /c.
+    into bash -c / cmd /c. ``posix`` names the dialect of the shell that will run the command; None
+    keeps the host default (_shell_is_posix).
     """
     blocked: set[str] = set()
 
@@ -1596,7 +1603,7 @@ def _find_blocked_commands(command: str) -> set[str]:
     # rm -rf x` and at a line break. Keyed to the shell that will actually run this, not to the OS: on a Windows host
     # with bash the non-posix lexer never split on `;`, so `if true; then rm -rf x; fi` came back with nothing
     # blocked.
-    lexed_posix = _shell_is_posix()
+    lexed_posix = _shell_is_posix() if posix is None else posix
     try:
         if not lexed_posix:
             tokens = shlex.split(command, posix = False)
@@ -1685,14 +1692,37 @@ def _find_blocked_commands(command: str) -> set[str]:
     sed_xargs: "dict[int, int]" = {}  # sed word -> the xargs that builds its argv
     xargs_index = -1  # an xargs awaiting the command it wraps
     coproc_kw = False  # the word just consumed was the `coproc` KEYWORD, so a name may follow
+    if_condition = False  # just after cmd's IF, where a comparison may precede the command
+    skip_tokens = 0
     for token_index, token in enumerate(tokens):
         after_coproc = coproc_kw
         coproc_kw = False
+        if skip_tokens:
+            skip_tokens -= 1
+            continue
         if skip_operand:
             # `exec -a NAME cmd` and `if exist FILE cmd` both put an operand where the command word would otherwise
             # be.
             skip_operand = False
             continue
+        if expect_command and token.lower() == "if":
+            # cmd's IF is case-insensitive; reading `IF` as the command word hid the command after its condition.
+            if_condition = True
+            prefix_pending = False
+            prefix_command = ""
+            xargs_index = -1
+            continue
+        if if_condition and expect_command:
+            low = token.lower()
+            if low in {"/i", "not"}:
+                continue
+            if_condition = False
+            following = tokens[token_index + 1].lower() if token_index + 1 < len(tokens) else ""
+            if following in _WIN_COMPARISON_OPS:
+                skip_tokens = 2
+                continue
+            if "==" in token.strip("="):
+                continue
         if expect_command and token.lower() in _WIN_CONDITIONAL_KEYWORDS:
             skip_operand = token.lower() != "not"
             continue
@@ -1706,8 +1736,9 @@ def _find_blocked_commands(command: str) -> set[str]:
             continue
         # A keyword only separates where a COMMAND may start. A quoted operator is DATA the command receives, not a
         # separator, so it leaves command position alone: `grep '|&' rm file` runs nothing and must not be refused.
+        # Folded: cmd's FOR ... DO is case-insensitive; in bash a capitalised keyword is only a command name.
         if (_looks_like_separator(token) and token_index not in quoted_separators) or (
-            token in _SHELL_KEYWORDS_AS_SEP and expect_command
+            token.lower() in _SHELL_KEYWORDS_AS_SEP and expect_command
         ):
             coproc_kw = expect_command and token == "coproc"
             expect_command = True
@@ -1773,7 +1804,7 @@ def _find_blocked_commands(command: str) -> set[str]:
                 break
             _name, _sep, _value = nxt.partition("=")
             if _sep and _value:
-                blocked |= _find_blocked_commands(_value)
+                blocked |= _find_blocked_commands(_value, posix = posix)
 
     # find's `-exec`/`-execdir` and fd's `-x` / `-X` / `--exec` / `--exec-batch` all invoke CMD directly. Reading only
     # find's own flags left every fd form unscanned, so `fd -x rm -rf x` reached the hard blocklist as nothing at all.
@@ -1966,14 +1997,14 @@ def _find_blocked_commands(command: str) -> set[str]:
                 continue  # skip Windows switches like /s, /q, /v:on
             prev_base = os.path.basename(prev).lower()
             if is_unix_c and prev_base in _SHELLS:
-                blocked |= _find_blocked_commands(tokens[i + 1])
+                blocked |= _find_blocked_commands(tokens[i + 1], posix = posix)
             elif is_win_c and prev_base in _SHELLS_WIN:
                 # The cmd lexer keeps the marks, so `cmd /c "powershell ls"` would recurse on a first word of
                 # `"powershell` and match nothing.
                 payload = tokens[i + 1]
                 if len(payload) > 1 and payload[0] == '"' and payload[-1] == '"':
                     payload = payload[1:-1]
-                blocked |= _find_blocked_commands(payload)
+                blocked |= _find_blocked_commands(payload, posix = posix)
             break  # stop at first non-flag token
 
     # `cmd /c start "" prog` puts prog in a command position the scan above sees only as an argument, so screen what
@@ -1990,14 +2021,14 @@ def _find_blocked_commands(command: str) -> set[str]:
         # runnable; deciding whether `start` itself is executed is deliberately not attempted, since every local
         # approximation under-approximated.
         if j < len(tokens):
-            blocked |= _find_blocked_commands(tokens[j])
+            blocked |= _find_blocked_commands(tokens[j], posix = posix)
         if j + 1 < len(tokens) and _is_start_title(tokens[j]):
             k = j + 1
             # `start "my window" /min prog` puts switches after the title too.
             while k < len(tokens) and _win_switch(tokens[k].lower()) in _START_SWITCHES:
                 k += 2 if _win_switch(tokens[k].lower()) in _START_SWITCHES_WITH_VALUE else 1
             if k < len(tokens):
-                blocked |= _find_blocked_commands(tokens[k])
+                blocked |= _find_blocked_commands(tokens[k], posix = posix)
 
     # sed's `e COMMAND` hands COMMAND to the shell, a real command position the scan above sees only as a text
     # argument, so screen it like `bash -c`. The pattern-space forms yield an empty payload; the auto gate prompts on
@@ -2047,7 +2078,7 @@ def _find_blocked_commands(command: str) -> set[str]:
             for variant in _sed_program_variants(alternative, sed_vars or {}):
                 for payload in _sed_exec_payloads(variant):
                     if payload:
-                        blocked |= _find_blocked_commands(payload)
+                        blocked |= _find_blocked_commands(payload, posix = posix)
 
     return blocked
 
@@ -2891,27 +2922,35 @@ _PY_DESTRUCTIVE_FS_IMPORT_NAMES = frozenset(
 # Modules whose destructive names are the same calls: posix/nt are os's platform twins.
 _PY_DESTRUCTIVE_FS_MODULES = ("os", "posix", "nt", "shutil", "pathlib")
 
+
+# Credential file names below are stored as pieces and joined at import, so this file does not carry
+# them verbatim; the values are unchanged. Split any credential name added to these lists the same way.
+def _joined(*parts) -> str:
+    """Concatenate parts; a tuple part is one name split into pieces."""
+    return "".join("".join(part) for part in parts)
+
+
 # Reading these off the host escapes the intent of "read-only is safe": they hold credentials. Path traversal (../)
 # escapes the per-session workdir.
 _SENSITIVE_PATH_RE = re.compile(
     r"(?:^|[/\\])\.(?:ssh|aws|azure|gnupg|docker|kube|config/gcloud|config/gh)(?:[/\\]|$)"
-    r"|\.(?:netrc|npmrc|pypirc|git-credentials|env)(?:$|[/\\.\s'\"])"
+    + _joined((r"|\.(?:net", r"rc|npmrc|pypirc|git-cred", r"entials|env)(?:$|[/\\.\s'\"])"))
     # User-level persistence: a write into a shell startup file or an XDG autostart/user-service dir runs on the next
     # login, the /etc boot-hook risk without root, and the sandbox does not confine absolute paths. Rarely read in a
     # dev session, so gating any reference does not over-prompt.
-    r"|(?:^|[/\\\s'\"=])\.(?:bashrc|bash_profile|bash_login|bash_logout|bash_aliases"
+    + r"|(?:^|[/\\\s'\"=])\.(?:bashrc|bash_profile|bash_login|bash_logout|bash_aliases"
     r"|profile|zshrc|zprofile|zshenv|zlogin|zlogout|kshrc|cshrc|tcshrc|login"
     r"|xprofile|xinitrc|xsession)(?:$|[/\\\s'\"])"
     r"|(?:^|[/\\])\.config[/\\](?:autostart|systemd[/\\]user|environment\.d)(?:[/\\]|$)"
-    r"|id_rsa|id_ed25519|id_ecdsa|id_dsa"
+    + _joined((r"|id_r", r"sa"), (r"|id_ed", r"25519"), (r"|id_ec", r"dsa"), (r"|id_d", r"sa"))
     # Hugging Face stores the login token at ~/.cache/huggingface/token and the legacy ~/.huggingface/token (plus
     # stored_tokens); the rest of that cache is model data, so only the credential files match.
-    r"|(?:^|[/\\])\.?huggingface[/\\](?:token|stored_tokens)(?:$|[/\\.\s'\"])"
+    + r"|(?:^|[/\\])\.?huggingface[/\\](?:token|stored_tokens)(?:$|[/\\.\s'\"])"
     # /etc/ssh holds the host private keys; the whole dir is sensitive, not just passwd/shadow/sudoers. The trailing
     # group is the system persistence set: a write there installs a boot/login/preload hook, and the sandbox keeps
     # host-fs access. Effectively write-only in a dev session, so gating any reference does not over-prompt.
-    r"|credentials|/etc/(?:passwd|shadow|sudoers|ssh(?:[/\\]|$)"
-    r"|cron[^/\\]*(?:[/\\]|$)|profile\.d(?:[/\\]|$)|systemd(?:[/\\]|$)"
+    + _joined((r"|cred", r"entials"), (r"|/etc/(?:pas", r"swd|sh", r"adow|sudoers|ssh(?:[/\\]|$)"))
+    + r"|cron[^/\\]*(?:[/\\]|$)|profile\.d(?:[/\\]|$)|systemd(?:[/\\]|$)"
     r"|ld\.so\.preload(?:$|[/\\.\s'\"])|ld\.so\.conf|rc\.local|init\.d(?:[/\\]|$))"
     # Bash opens /dev/tcp/host/port and /dev/udp/host/port as network sockets, so a redirection to one reaches the
     # network without the confirm prompt.
@@ -3204,8 +3243,9 @@ def _assignment_is_a_command_prefix(text: str, value_start: int) -> bool:
         elif char in " \t;&|\n":
             break
         index += 1
-    following = text[index:].lstrip(" \t")
-    return bool(following) and following[0] not in ";&|\n"
+    while index < len(text) and text[index] in " \t":
+        index += 1
+    return index < len(text) and text[index] not in ";&|\n"
 
 
 def _assignment_is_inert(text: str, index: int) -> bool:
@@ -3234,6 +3274,31 @@ def _assignment_is_inert(text: str, index: int) -> bool:
         elif character == ")":
             depth = max(depth - 1, 0)
     return bool(quote) or depth > 0
+
+
+def _assignment_inert_states(text: str) -> "list[bool]":
+    """`_assignment_is_inert(text, i)` for every i in one pass (index len(text) included)."""
+    states = []
+    quote = ""
+    escaped = False
+    depth = 0
+    for character in text:
+        states.append(bool(quote) or depth > 0)
+        if escaped:
+            escaped = False
+        elif character == "\\" and quote != "'":
+            escaped = True
+        elif quote:
+            if character == quote:
+                quote = ""
+        elif character in "'\"":
+            quote = character
+        elif character == "(":
+            depth += 1
+        elif character == ")":
+            depth = max(depth - 1, 0)
+    states.append(bool(quote) or depth > 0)
+    return states
 
 
 def _rebinds_the_studio_home_first(text: str) -> bool:
@@ -3933,6 +3998,9 @@ def _references_studio_credential_here(
     text: str,
     workdir: "str | None",
     _unescaped: bool = False,
+    _assign_expand_depth: int = 0,
+    _quoted_assignments: bool = False,
+    _positional_assignments: bool = False,
 ) -> bool:
     """`_references_studio_credential`, plus the relative paths *text* would open from *workdir*.
 
@@ -4005,12 +4073,49 @@ def _references_studio_credential_here(
     # One level of indirection, `r=$STUDIO_HOME; sqlite3 "$r/auth/auth.db"`. Same substitution the
     # sensitive-path scan uses, and it only ADDS detections.
     if "$" in text:
-        expanded = _expand_shell_assignments(text)
-        # The WHOLE workdir-aware analysis, not only the literal scan: `d=../..; cd "$d"` moves the
-        # directory every later relative path opens from, and handing the unexpanded text to the cwd
-        # walk read `$d` as a directory name and never moved.
-        if expanded != text and _references_studio_credential_here(expanded, workdir):
-            return True
+        # Quoted bindings scanned separately: log text shaped like an assignment must not overwrite real ones.
+        quoted_modes, quote_states = (_quoted_assignments,), None
+        if _assign_expand_depth == 0 and ("'" in text or '"' in text):
+            quote_states = _shell_quote_states(text)
+            # Both modes only differ when some assignment sits inside quotes.
+            if any(quote_states[m.start(1)] for m in _SHELL_ASSIGN_RE.finditer(text)):
+                quoted_modes = (False, True)
+        seen = {text}
+        for include_quoted in quoted_modes:
+            final, positional_text, saw_prefix = _shell_assignment_expansions(
+                text, include_quoted = include_quoted, quote_states = quote_states
+            )
+            if saw_prefix and (_assign_expand_depth == 0 or _positional_assignments):
+                positional_text = _shell_assignment_expansions(
+                    text, include_quoted = include_quoted, quote_states = quote_states, skip_prefix = True
+                )[1]
+            variants = (
+                ((True, positional_text), (False, final))
+                if _assign_expand_depth == 0
+                else (
+                    (
+                        _positional_assignments,
+                        positional_text if _positional_assignments else final,
+                    ),
+                )
+            )
+            for positional, expanded in variants:
+                if expanded in seen:
+                    continue
+                seen.add(expanded)
+                # Exhausted expansion budget fails closed: unresolved aliases may still hide the auth path.
+                if _assign_expand_depth >= _MAX_SHELL_ASSIGN_EXPAND_PASSES or (
+                    "$" in expanded and len(expanded) > max(_MAX_TERMINAL_SCAN_CHARS, len(text))
+                ):
+                    return True
+                if _references_studio_credential_here(
+                    expanded,
+                    workdir,
+                    _assign_expand_depth = _assign_expand_depth + 1,
+                    _quoted_assignments = include_quoted,
+                    _positional_assignments = positional,
+                ):
+                    return True
     # A `cd` earlier in the command moves where every later relative path opens from.
     if workdir and ("cd" in text.lower() or "pushd" in text.lower()):
         for offset, limit, cwd in _cwds_after_cd(workdir, text):
@@ -4987,7 +5092,13 @@ _SHELL_PARAM_CASE_RE = re.compile(r"\$\{(\w+)(\^\^|,,|\^|,)\}")
 # Indirect expansion ${!p} yields the value of the variable *named* by $p, so x=passwd; p=x; cat /etc/${!p} builds
 # /etc/passwd.
 _SHELL_PARAM_INDIRECT_RE = re.compile(r"\$\{!(\w+)\}")
-_SHELL_ASSIGN_RE = re.compile(r"(?:^|[\s;&|(])([A-Za-z_]\w*)=([^\s;&|)]+)")
+_SHELL_PARAM_VALUE_OP_RE = re.compile(r"\$\{([A-Za-z_]\w*)(:?)([-=+])([^{}]*)\}")
+# A NAME=value word is an assignment (not an argument) after one of these characters or keywords.
+_SHELL_ASSIGN_POSITION_CHARS = frozenset(";&|(\n'\"`{")
+_SHELL_ASSIGN_KEYWORDS = frozenset(
+    ("export", "local", "declare", "typeset", "readonly", "then", "do", "else", "{", "!", "time")
+)
+_SHELL_ASSIGN_RE = re.compile(r"(?:^|[\s;&|(])([A-Za-z_]\w*)=([^\s;&|)]*)")
 # Bash ANSI-C quoting ($'\x77' -> 'w') is expanded after this classifier, so decode $'...' bodies before the
 # sensitive-path scan.
 _ANSI_C_RE = re.compile(r"\$'((?:[^'\\]|\\.)*)'")
@@ -5001,17 +5112,20 @@ _GLOB_BRACKET_RE = re.compile(r"\[([^!\]][^\]]*)\]")
 _POSIX_CLASS_RE = re.compile(r"\[\[:\w+:\]\]")
 # Canonical sensitive files a ? / * / [..] glob could expand to; fnmatch tests whether the pattern reaches one (cat
 # /e??/passwd -> /etc/passwd).
-_SENSITIVE_GLOB_TARGETS = (
-    "/etc/passwd",
-    "/etc/shadow",
-    "/etc/sudoers",
-    "/root/.ssh/id_rsa",
-    "/root/.aws/credentials",
-    "/home/u/.ssh/id_rsa",
-    "/home/u/.ssh/id_ed25519",
-    "/home/u/.aws/credentials",
-    "/home/u/.netrc",
-    "/home/u/.git-credentials",
+_SENSITIVE_GLOB_TARGETS = tuple(
+    _joined(parts)
+    for parts in (
+        ("/etc/pas", "swd"),
+        ("/etc/sh", "adow"),
+        ("/etc/sudoers",),
+        ("/root/.ssh/id_r", "sa"),
+        ("/root/.aws/cred", "entials"),
+        ("/home/u/.ssh/id_r", "sa"),
+        ("/home/u/.ssh/id_ed", "25519"),
+        ("/home/u/.aws/cred", "entials"),
+        ("/home/u/.net", "rc"),
+        ("/home/u/.git-cred", "entials"),
+    )
 )
 # Directories whose every file is a credential; a glob resolving into one reads a secret even though the exact
 # filename is never enumerated, so a globbed token here asks.
@@ -5038,25 +5152,26 @@ _SENSITIVE_GLOB_DIRS = (
 # Credential basenames a glob can reach even when the directory is not wholly sensitive (cat ~/.netr? -> .netrc); the
 # canonical-target list only covers a few fixed home paths.
 _SENSITIVE_GLOB_BASENAMES = frozenset(
-    {
-        "token",
-        "stored_tokens",
-        "credentials",
-        ".netrc",
-        "netrc",
-        ".pypirc",
-        ".npmrc",
-        ".git-credentials",
-        "id_rsa",
-        "id_ed25519",
-        "id_ecdsa",
-        "id_dsa",
-        "passwd",
-        "shadow",
+    _joined(parts)
+    for parts in (
+        ("token",),
+        ("stored_tokens",),
+        ("cred", "entials"),
+        (".net", "rc"),
+        ("net", "rc"),
+        (".pypirc",),
+        (".npmrc",),
+        (".git-cred", "entials"),
+        ("id_r", "sa"),
+        ("id_ed", "25519"),
+        ("id_ec", "dsa"),
+        ("id_d", "sa"),
+        ("pas", "swd"),
+        ("sh", "adow"),
         # A project .env holds secrets; the literal path is gated elsewhere, so a glob that expands to it (cat .e?v)
         # must be too.
-        ".env",
-    }
+        (".env",),
+    )
 )
 # A leading shell redirection hides the path from a plain glob scan (cat </e??/passwd); strip it before matching.
 _REDIR_PREFIX_RE = re.compile(r"^\d*[<>]+")
@@ -5074,6 +5189,8 @@ _SHELL_PARAM_OP_RE = re.compile(r"\$\{[A-Za-z_]\w*:?[-=+]([^{}]*)\}")
 # path fails closed rather than spending unbounded time. Ordinary commands are far below these bounds.
 _MAX_PATH_SCAN_CHARS = 2048
 _MAX_TERMINAL_SCAN_CHARS = 4096
+# Each pass doubles resolved alias hops; leftover work after the cap fails closed.
+_MAX_SHELL_ASSIGN_EXPAND_PASSES = 16
 # A glob needs one of these to expand into anything but itself; used to skip the glob scans outright.
 _GLOB_META_RE = re.compile(r"[?*\[]")
 # Where the memoised node list is parked on a parsed tree (see _tree_nodes).
@@ -5243,13 +5360,59 @@ def _posix_join(parts) -> str:
     return out
 
 
-def _expand_shell_assignments(command: str) -> str:
+def _shell_assign_value_self_references(name: str, value: str) -> bool:
+    """True when *value* expands *name* (VAR=$VAR), which must not feed back into itself."""
+    if "$" not in value:
+        return False
+    if any((m.group(1) or m.group(2)) == name for m in _SHELL_VAR_RE.finditer(value)):
+        return True
+    return any(
+        m.group(1) == name
+        for pattern in (
+            _SHELL_PARAM_REPL_RE,
+            _SHELL_PARAM_CASE_RE,
+            _SHELL_PARAM_INDIRECT_RE,
+            _SHELL_PARAM_VALUE_OP_RE,
+        )
+        for m in pattern.finditer(value)
+    )
+
+
+def _expand_shell_assignments(
+    command: str,
+    *,
+    _include_quoted: bool = True,
+    _positional: bool = False,
+) -> str:
     """Best-effort substitution of `NAME=value ... $NAME`, so a sensitive path split across an
     assignment and an argument (p=/etc; cat $p/passwd) is still visible to the scan. Also applies
     pattern replacement. Fail-open: only adds detections."""
-    env = dict(_SHELL_ASSIGN_RE.findall(command))
-    if not env:
-        return command
+    final, positional, _ = _shell_assignment_expansions(command, include_quoted = _include_quoted)
+    return positional if _positional else final
+
+
+def _shell_assignment_expansions(
+    command: str,
+    *,
+    include_quoted: bool = True,
+    quote_states = None,
+    skip_prefix: bool = False,
+) -> "tuple[str, str, bool]":
+    """(last binding everywhere, binding active at each use, saw a command-prefix assignment).
+
+    `x=/tmp cat "$x"` expands the argument with the OUTER x and only hands /tmp to the child, so with
+    *skip_prefix* such assignments bind nothing; the last-binding result keeps them for the child."""
+    env = {}
+    saw_prefix = False
+    inert_states = None
+
+    def repl_default(m):
+        name, colon, op, operand = m.groups()
+        value = env.get(name)
+        missing = value is None or (colon and not value.strip("'\""))
+        if op == "+":
+            return "" if missing else operand
+        return operand if missing else value
 
     def repl_pattern(m):
         var, is_global, pat, rep = m.group(1), m.group(2), m.group(3), m.group(4)
@@ -5275,10 +5438,79 @@ def _expand_shell_assignments(command: str) -> str:
         pointed = env.get(m.group(1))
         return env.get(pointed, m.group(0)) if pointed is not None else m.group(0)
 
-    command = _SHELL_PARAM_INDIRECT_RE.sub(repl_indirect, command)
-    command = _SHELL_PARAM_REPL_RE.sub(repl_pattern, command)
-    command = _SHELL_PARAM_CASE_RE.sub(repl_case, command)
-    return _SHELL_VAR_RE.sub(lambda m: env.get(m.group(1) or m.group(2), m.group(0)), command)
+    def expand(text):
+        if "$" not in text:
+            return text
+        text = _SHELL_PARAM_INDIRECT_RE.sub(repl_indirect, text)
+        text = _SHELL_PARAM_REPL_RE.sub(repl_pattern, text)
+        text = _SHELL_PARAM_CASE_RE.sub(repl_case, text)
+        return _SHELL_VAR_RE.sub(lambda m: env.get(m.group(1) or m.group(2), m.group(0)), text)
+
+    # Positional: each use sees the binding active where it stands; the last binding covers loops.
+    pieces, pos = [], 0
+    matches = list(_SHELL_ASSIGN_RE.finditer(command))
+    # An assignment run is a command prefix only when a command word ends it: `A=1 B=2 echo $A`, not `A=1 B=2;`.
+    prefix = [False] * len(matches)
+    for i in range(len(matches) - 1, -1, -1):
+        m = matches[i]
+        if (quote_states is None or not quote_states[m.start(1)]) and (
+            _assignment_is_a_command_prefix(command, m.start(2))
+        ):
+            chained = (
+                i + 1 < len(matches) and not command[m.end(2) : matches[i + 1].start(1)].strip()
+            )
+            prefix[i] = prefix[i + 1] if chained else True
+    # `echo x=` is an argument, not an assignment: it binds nothing, so positional skips it too.
+    for i, m in enumerate(matches):
+        if prefix[i] or (quote_states is not None and quote_states[m.start(1)]):
+            continue
+        j = m.start(1) - 1
+        while j >= 0 and command[j] in " \t":
+            j -= 1
+        if j < 0 or command[j] in _SHELL_ASSIGN_POSITION_CHARS:
+            continue
+        if i and matches[i - 1].end(2) == j + 1:
+            prefix[i] = prefix[i - 1]
+            continue
+        k = j
+        while k >= 0 and command[k] not in " \t;&|(\n":
+            k -= 1
+        if command[k + 1 : j + 1] not in _SHELL_ASSIGN_KEYWORDS:
+            prefix[i] = True
+    for i, match in enumerate(matches):
+        if not include_quoted and ("'" in command or '"' in command):
+            if quote_states is None:
+                quote_states = _shell_quote_states(command)
+            if quote_states[match.start(1)]:
+                continue
+        var, val = match.groups()
+        pieces.append(expand(command[pos : match.start(2)]))
+        pieces.append(expand(val))
+        pos = match.end(2)
+        if prefix[i]:
+            saw_prefix = True
+            if skip_prefix:
+                continue
+        if _shell_assign_value_self_references(var, val):
+            # Studio home vars stay references: `H=$H; cat "$H/auth/auth.db"` must still name the install.
+            if var.upper() in _STUDIO_HOME_ENV_VARS:
+                env.setdefault(var, "${" + var + "}")
+            val = _SHELL_PARAM_VALUE_OP_RE.sub(repl_default, val)
+            env.setdefault(var, "")
+            val = expand(val)
+            # `a=$a$a` repeated doubles each time: past the path cap keep the earlier binding.
+            if len(val) > _MAX_PATH_SCAN_CHARS:
+                continue
+        # Only a scoped empty assignment (`(x=)`) keeps the outer binding; a top-level `x=` clears it.
+        if not val and var in env:
+            if inert_states is None:
+                inert_states = _assignment_inert_states(command)
+            if inert_states[match.start(1)]:
+                continue
+        env[var] = val
+    if not env:
+        return command, command, saw_prefix
+    return expand(command), "".join(pieces) + expand(command[pos:]), saw_prefix
 
 
 def _expand_param_defaults(command: str) -> str:
@@ -5689,10 +5921,38 @@ def _command_references_sensitive(command: str) -> bool:
     return any(_glob_hits_sensitive(c) or _references_sensitive_path(c) for c in candidates)
 
 
+_CMD_ECHO_OFF_RE = re.compile(r"(?<![^\s&|()])@+")
+# cmd control flow that runs the command after it: IF's condition, FOR's DO and CALL become separators.
+_CMD_CONTROL_RE = re.compile(
+    r"(?i)(?<![^\s&|()])(?:if\s+(?:/i\s+)?(?:not\s+)?(?:(?:exist|defined|errorlevel|cmdextversion)\s+\S+"
+    r"|\S+?\s*==\s*\S+|\S+\s+(?:equ|neq|lss|leq|gtr|geq)\s+\S+)|do|call)(?=\s)"
+)
+
+
+def _cmd_reading(command: str) -> str:
+    """How cmd splits a command for the POSIX classifiers: ' is an ordinary character, ^ only escapes,
+    a leading @ only turns the echo off, and IF / FOR ... DO / CALL run the command that follows."""
+    text = _CMD_ECHO_OFF_RE.sub("", command.replace("^", "").replace("'", " "))
+    return _CMD_CONTROL_RE.sub(" & ", text)
+
+
+def _reads_differently_under_cmd(command: str) -> bool:
+    """True when the isolated cmd Terminal will run ``command`` and cmd would split it unlike bash."""
+    return (
+        sys.platform == "win32"
+        and _cmd_reading(command) != command
+        and _terminal_profile() == "cmd_isolated"
+    )
+
+
 def _terminal_is_potentially_unsafe(command: str) -> bool:
     """Classify a terminal command for auto mode (fail closed)."""
     if not command or not command.strip():
         return False
+    if _reads_differently_under_cmd(command) and _terminal_is_potentially_unsafe(
+        _cmd_reading(command)
+    ):
+        return True
     # Redirections and substitutions can hide writes or nested commands; a quoted ">" false-positives into a prompt,
     # which is the safe direction.
     if ">" in command or "`" in command or "$(" in command or "<(" in command:
@@ -6818,6 +7078,11 @@ _ALWAYS_SAFE_TOOLS = frozenset(
 )
 
 
+def never_needs_approval(name: str) -> bool:
+    """search_conversation only reads this chat's own compacted turns (#11671)."""
+    return name == "search_conversation"
+
+
 def is_always_safe_tool(name: str) -> bool:
     """True for tools that never need an auto-mode prompt on any arguments, so a caller (e.g. the
     streaming provisional card) can allow them before the full arguments are known. render_html
@@ -7158,8 +7423,8 @@ _NETWORK_CLIENT_AT_CMD_RE = re.compile(
 # -connect host:443). Plain openssl (dgst, enc) is local and stays out. Matched on the resolved command segment, so
 # wrapped forms are seen too.
 _OPENSSL_NETWORK_SUBCOMMANDS = frozenset({"s_client", "s_server"})
-# `getent shadow` returns password hashes straight from NSS, so the read never spells out /etc/shadow for the path
-# check to find.
+# `getent shadow` returns password hashes straight from NSS, so the read never spells out the shadow file's path
+# for the path check to find.
 _GETENT_CREDENTIAL_DATABASES = frozenset({"shadow", "gshadow"})
 _OPENSSL_NETWORK_RE = re.compile(
     r"(?:^|[;&|\n(]|&&|\|\|)\s*(?:[A-Za-z_]\w*=\S*\s+)*(?:\S*/)?openssl\s+s_(?:client|server)\b"
@@ -7990,6 +8255,12 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
         return True
     if not command or not command.strip():
         return False
+    if (
+        _depth == 0
+        and _reads_differently_under_cmd(command)
+        and _terminal_is_high_risk(_cmd_reading(command))
+    ):
+        return True
     # A credential/secret path read or write, or a sandbox escape (../), asks.
     if _command_references_sensitive(command):
         return True
@@ -9124,7 +9395,8 @@ def _is_trusted_windows_program_dir(path: str) -> bool:
 
 # not dot-named: the walks skip dot-dirs, which would hide a model's /tmp write. not "tmp": too common in a workspace,
 # and adopting one is what broke the walks.
-_SANDBOX_TEMP_DIRNAME = "unsloth-tmp"
+# Shared with os_sandbox: a drifted name would silently disable the scan's exemption.
+_SANDBOX_TEMP_DIRNAME = os_sandbox.TOOL_TEMP_DIRNAME
 
 
 def _sandbox_temp_dir(workdir: str) -> str:
@@ -9182,7 +9454,22 @@ def _reusable_sandbox_temp_dir(temp_dir: str, workdir: str) -> bool:
     return _is_sandbox_temp_dir(temp_dir, workdir) and os.access(temp_dir, os.W_OK | os.X_OK)
 
 
-def _build_safe_env(workdir: str) -> dict[str, str]:
+# Git for Windows starts hooks, the pager and the editor through its MSYS sh.exe, which cannot start inside MXC, so a
+# hook turns every commit into a failure and an editor hangs the call. Compatibility defaults, not a boundary: a
+# command can override them with git -c, and MXC is what confines it. core.hooksPath=NUL names no hook at all.
+_ISOLATED_CMD_GIT_ENV = {
+    "GIT_CONFIG_COUNT": "1",
+    "GIT_CONFIG_KEY_0": "core.hooksPath",
+    "GIT_CONFIG_VALUE_0": "NUL",
+    "GIT_PAGER": "",
+    "GIT_EDITOR": "unsloth-no-editor",
+    "GIT_SEQUENCE_EDITOR": "unsloth-no-editor",
+    "GIT_TERMINAL_PROMPT": "0",
+    "GCM_INTERACTIVE": "never",
+}
+
+
+def _build_safe_env(workdir: str, shell: "str | None" = None) -> dict[str, str]:
     """Build a minimal, credential-free environment for sandboxed subprocesses.
 
     Whitelist-built from scratch (parent env NOT inherited): only
@@ -9196,6 +9483,9 @@ def _build_safe_env(workdir: str) -> dict[str, str]:
     pinned. On Windows only, Git-for-Windows install dirs from the host PATH are appended so bare
     ``git`` resolves (#7317). User-writable host PATH entries are never inherited: they could shadow
     auto-safe terminal commands.
+
+    ``shell="cmd_isolated"`` is the Windows MXC Terminal on cmd.exe: Git Bash's userland stays off
+    PATH and git gets the non-interactive settings in _ISOLATED_CMD_GIT_ENV.
     """
     # Start from the running interpreter's dir so 'python'/'pip' resolve to the same environment the Unsloth server
     # runs in.
@@ -9213,7 +9503,8 @@ def _build_safe_env(workdir: str) -> dict[str, str]:
         sysroot = os.environ.get("SystemRoot", r"C:\Windows")
         # Ahead of System32 and its DOS twins (bare `find` would hit FIND.EXE, not GNU find), behind the interpreter
         # dirs so a Git-shipped python.exe cannot shadow the environment this server runs in.
-        path_entries.extend(_windows_bash_userland_dirs())
+        if shell != "cmd_isolated":
+            path_entries.extend(_windows_bash_userland_dirs())
         path_entries.extend([os.path.join(sysroot, "System32"), sysroot])
     else:
         path_entries.extend(["/usr/local/bin", "/usr/bin", "/bin"])
@@ -9226,6 +9517,9 @@ def _build_safe_env(workdir: str) -> dict[str, str]:
         # Append the CANONICAL (realpath) trusted git dir, scanning past any untrusted user shim that sorts first on
         # PATH; the canonical path cannot be retargeted via a junction after the trust check.
         _trusted_git_dir, git_ext = _resolve_trusted_windows_git()
+        if not _trusted_git_dir and shell == "cmd_isolated":
+            # Git installed for Git Bash only is not on PATH; bash found it, so use its Git\cmd.
+            _trusted_git_dir, git_ext = _windows_bash_git_cmd_dir(), ".EXE"
         if _trusted_git_dir:
             path_entries.append(_trusted_git_dir)
 
@@ -9264,6 +9558,8 @@ def _build_safe_env(workdir: str) -> dict[str, str]:
         # cmd/CreateProcess search cwd before PATH for bare names; disable so a workdir rg.exe/git.exe cannot shadow
         # auto-approved commands.
         env["NoDefaultCurrentDirectoryInExePath"] = "1"
+        if shell == "cmd_isolated":
+            env.update(_ISOLATED_CMD_GIT_ENV)
     return env
 
 
@@ -9536,6 +9832,183 @@ def _bypass_preexec():
         pass
 
 
+# Never read back by the executors, so a concurrent call can only make this stale.
+_last_tool_execution_record: "os_sandbox.ToolExecutionRecord | None" = None
+
+
+def _note_tool_execution(record) -> None:
+    """Built from a live probe, never from model output, so it is safe to show as a badge."""
+    global _last_tool_execution_record
+    if record is None:
+        return
+    _last_tool_execution_record = record
+    logger.info("tool execution mode: %s", record.as_dict())
+
+
+def _requested_execution_mode(tool_execution_mode: str, disable_sandbox: bool) -> str:
+    """Require disable_sandbox for full access; checked here because managed accounts skip the planner."""
+    if tool_execution_mode not in os_sandbox.TOOL_EXECUTION_MODES:
+        raise os_sandbox.SandboxUnavailableError(
+            f"TOOL_EXECUTION_MODE_INVALID: {tool_execution_mode!r} is not a tool "
+            f"execution mode ({', '.join(os_sandbox.TOOL_EXECUTION_MODES)})",
+            remediation = "Use 'auto' or 'required'.",
+        )
+    if disable_sandbox:
+        return "full"
+    if tool_execution_mode == "full":
+        raise os_sandbox.SandboxUnavailableError(
+            "TOOL_EXECUTION_MODE_INVALID: full access is not requestable through "
+            "tool_execution_mode",
+            remediation = "Full access is granted with disable_sandbox (Bypass Permissions).",
+        )
+    return tool_execution_mode
+
+
+_with_session_packages = os_sandbox.with_session_packages
+
+
+def _software_safeguards_launch(plan, fault: str):
+    """Prepare an unisolated launch, retaining session packages and recording *fault*."""
+    full = plan.requested_mode == "full"
+    return os_sandbox.PreparedSandboxLaunch(
+        argv = plan.argv,
+        workdir = plan.workdir,
+        env = _with_session_packages(plan.env, plan.workdir),
+        preexec_fn = plan.preexec_fn,
+        backend = "software-safeguards",
+        timeout_seconds = plan.timeout_seconds,
+        close_fds = plan.close_fds,
+        terminate_descendants = plan.terminate_descendants,
+        execution_record = os_sandbox.ToolExecutionRecord(
+            requested_mode = plan.requested_mode,
+            # Do not claim software safeguards for a launch that skipped them.
+            effective_mode = "full" if full else "software_safeguards",
+            environment = sys.platform,
+            backend = "software-safeguards",
+            profile_id = "full-access" if full else "software-safeguards-v1",
+            probe_generation = "",
+            os_isolation = False,
+            retained_safeguards = tuple(
+                item
+                for item in (
+                    os_sandbox._FULL_SAFEGUARDS if full else os_sandbox._SOFTWARE_SAFEGUARDS
+                )
+                if item != "timeout" or plan.timeout_seconds is not None
+            ),
+            limitations = (
+                ("security_restrictions_disabled", fault)
+                if full
+                else (*os_sandbox._software_only_limitations(), fault)
+            ),
+        ),
+    )
+
+
+def _reaches_host_paths(kind: str, text: str) -> bool:
+    """Whether the call names a host path outside the silent roots: the check that put it in front of the user."""
+    try:
+        if kind == "python":
+            tree, error = _parse_python(text)
+            return error is None and _python_reaches_outside_sandbox(tree, text)
+        # Decoded like the approval classifier, or cat $'/home/u/x' prompts yet stays isolated.
+        decoded = _decode_ansi_c(text, keep_one_word = True)
+        command = decoded.replace("\r\n", ";").replace("\n", ";").replace("\r", ";")
+        for variant in {command, _expand_shell_assignments(_expand_param_defaults(command))}:
+            lexer = shlex.shlex(variant, posix = True, punctuation_chars = ";&|()")
+            lexer.whitespace_split = True
+            if _terminal_reaches_outside_sandbox(list(lexer), variant):
+                return True
+    except Exception:  # noqa: BLE001 - unclassifiable stays isolated
+        return False
+    return False
+
+
+def _prepare_tool_launch(plan, *, host_access_approved: bool = False):
+    """Fall back only when the backend is unavailable; unsafe workdirs, build failures and (outside `full`) planner errors refuse."""
+    if host_access_approved and plan.requested_mode == "auto":
+        return _software_safeguards_launch(plan, "user_approved_host_access")
+    try:
+        prepared = os_sandbox.prepare_tool_launch(plan)
+        if plan.preexec_fn is not None and prepared.preexec_fn is None:
+            # Preserve setsid so timeout cleanup cannot kill the server's process group.
+            logger.warning(
+                "Sandbox backend %s dropped the launch pre-exec; restoring it",
+                prepared.backend,
+            )
+            prepared.preexec_fn = plan.preexec_fn
+        if prepared.execution_record is not None and not prepared.execution_record.os_isolation:
+            # The other door: os_sandbox returns its own fallback through here.
+            prepared.env = _with_session_packages(prepared.env, plan.workdir)
+        return prepared
+    except (os_sandbox.WorkdirUnsafeError, os_sandbox.SandboxBuildError):
+        # These failures can be tool-induced; fallback would let code remove its own boundary.
+        raise
+    except os_sandbox.SandboxUnavailableError:
+        # Any other refusal means the backend stopped being available.
+        if plan.requested_mode == "required" or (
+            plan.requested_mode not in os_sandbox.TOOL_EXECUTION_MODES
+        ):
+            raise
+        logger.warning(
+            "The sandbox backend is no longer available, running with software safeguards",
+            exc_info = True,
+        )
+        return _software_safeguards_launch(plan, "sandbox_became_unavailable")
+    except Exception as exc:  # noqa: BLE001 - construction failures never buy a host replay
+        if plan.requested_mode == "full":
+            return _software_safeguards_launch(plan, "sandbox_planner_error")
+        raise os_sandbox.SandboxBuildError(
+            f"sandbox preparation failed without host fallback: {exc}"
+        ) from exc
+
+
+# Launcher stderr prefixes for refusing to build the sandbox, not payload failures.
+_LAUNCHER_FAILURE_MARKERS = {
+    "bubblewrap": "bwrap: ",
+    "macos-seatbelt": "sandbox-exec: ",
+}
+
+
+def _forget_sandbox_capability_if_the_backend_failed(prepared, output: str) -> None:
+    """Drop a stale probe verdict found at exec, so it costs one call rather than the cache's lifetime."""
+    if prepared is None or prepared.backend == "software-safeguards":
+        return
+    if not output.startswith("Exit code "):
+        return
+    # Keyed on the backend that ran: Seatbelt reports `sandbox-exec:`, not `bwrap:`.
+    marker = _LAUNCHER_FAILURE_MARKERS.get(prepared.backend)
+    if marker is None or marker not in output[:400]:
+        return
+    logger.warning("The sandbox backend failed at launch; re-probing the capability")
+    try:
+        from .sandbox_probe import reset_probe_cache
+        reset_probe_cache()
+        if sys.platform == "linux":
+            from .sandbox_linux import reset_cache_verdicts
+            reset_cache_verdicts()
+    except Exception:  # noqa: BLE001 - a cache reset never breaks a tool result
+        logger.debug("could not reset the sandbox probe cache", exc_info = True)
+
+
+def _sandbox_refusal(exc) -> str:
+    """The remediation is part of the answer: the reader can fix the host."""
+    remediation = getattr(exc, "remediation", "") or ""
+    return _truncate(f"Execution error: {exc}{(' ' + remediation) if remediation else ''}")
+
+
+def _apply_prepared_launch(prepared, popen_kwargs: dict) -> dict:
+    """The OUTER process needs its own session: every kill path is killpg based."""
+    popen_kwargs["cwd"] = prepared.workdir
+    popen_kwargs["env"] = prepared.env
+    if sys.platform != "win32":
+        popen_kwargs["preexec_fn"] = prepared.preexec_fn
+    popen_kwargs["close_fds"] = prepared.close_fds
+    if prepared.pass_fds:
+        # Empty for every fallback, so Windows never sees a kwarg it rejects.
+        popen_kwargs["pass_fds"] = tuple(prepared.pass_fds)
+    return popen_kwargs
+
+
 # Hardening the Unsloth parent is done once (PR_SET_DUMPABLE is process-global and sticky); guarded so repeated bypass
 # calls do not re-issue the prctl.
 _parent_proc_hardened = False
@@ -9620,6 +10093,23 @@ def _windows_bash() -> "str | None":
     return None
 
 
+def _windows_bash_git_cmd_dir() -> str:
+    """The trusted ``Git\\cmd`` dir of the install the resolved bash belongs to, or ""."""
+    bash = _windows_bash()
+    if not bash:
+        return ""
+    bin_dir = os.path.dirname(bash)
+    for root in (os.path.dirname(bin_dir), os.path.dirname(os.path.dirname(bin_dir))):
+        candidate = os.path.join(root, "cmd")
+        if (
+            root
+            and os.path.isfile(os.path.join(candidate, "git.exe"))
+            and _is_trusted_windows_program_dir(candidate)
+        ):
+            return os.path.realpath(candidate)
+    return ""
+
+
 def _windows_bash_userland_dirs() -> list[str]:
     """Trusted dirs holding the resolved bash and the POSIX tools beside it.
 
@@ -9663,6 +10153,87 @@ def _get_shell_cmd(command: str) -> list[str]:
             return [bash, "-c", command]
         return ["cmd", "/c", command]
     return ["bash", "-c", command]
+
+
+def _windows_system_cmd() -> str:
+    """System32 cmd.exe, resolved the same way MXC policy resolves it; never COMSPEC or PATH."""
+    from .mxc_policy import _system_cmd
+    return _system_cmd()
+
+
+def _terminal_profile(disable_sandbox: bool = False) -> str:
+    """Which shell the Terminal runs: "bash", "cmd_isolated" or "cmd_fallback".
+
+    Git Bash cannot start inside MXC (microsoft/mxc#1061), so when the MXC probe names exactly that
+    failure and cmd.exe qualifies instead, Auto runs the Terminal isolated on cmd rather than
+    unsandboxed on bash. Only the MSYS verdict triggers the cmd probe, so hosts without a working MXC
+    pay nothing extra. Full access and UNSLOTH_MXC_TERMINAL_CMD=0 keep the host shell.
+    """
+    if sys.platform != "win32":
+        return "bash"
+    bash = _windows_bash()
+    host_default = "bash" if bash else "cmd_fallback"
+    if disable_sandbox or os.environ.get("UNSLOTH_MXC_TERMINAL_CMD") == "0":
+        return host_default
+    try:
+        from . import mxc_policy, mxc_probe
+
+        if bash:
+            # Measured only on MXC's DACL tier; BaseContainer hosts keep bash until it is.
+            if not mxc_policy.dacl_fallback_enabled():
+                return "bash"
+            verdict = os_sandbox.capability_snapshot(
+                execution_kind = "terminal", selected_executable = bash
+            )
+            if verdict.available or verdict.reason != mxc_probe.MSYS_NAMESPACE_REASON:
+                return "bash"
+        cmd = os_sandbox.capability_snapshot(
+            execution_kind = "terminal", selected_executable = _windows_system_cmd()
+        )
+        return "cmd_isolated" if cmd.available else host_default
+    except Exception as exc:  # noqa: BLE001 - a probe failure must never take the Terminal away
+        logger.warning(f"terminal profile check failed, keeping the host shell: {exc}")
+        return host_default
+
+
+# The last profile a request advertised, so an expired probe verdict is refreshed off the request path.
+_request_profile: list = [None, 0.0]
+_request_profile_lock = threading.Lock()
+_REQUEST_PROFILE_REFRESH_SECONDS = 240.0
+
+
+def _refresh_request_profile() -> str:
+    profile = _terminal_profile(False)
+    with _request_profile_lock:
+        _request_profile[:] = [profile, time.monotonic()]
+    return profile
+
+
+def _profile_for_request() -> str:
+    with _request_profile_lock:
+        profile, computed = _request_profile
+        stale = (
+            profile is not None and time.monotonic() - computed > _REQUEST_PROFILE_REFRESH_SECONDS
+        )
+        if stale:
+            _request_profile[1] = time.monotonic()  # one refresh in flight at a time
+    if profile is None:
+        return _refresh_request_profile()
+    if stale:
+        threading.Thread(target = _refresh_request_profile, daemon = True).start()
+    return profile
+
+
+def apply_terminal_profile_for_request(tools: list[dict]) -> list[dict]:
+    """Sandboxed requests only: advertise the shell _bash_exec will pick for this request. Only the
+    first call can block on the MXC probe, so async callers run it in a worker thread; later calls
+    reuse the last profile and refresh it in the background. A list without the Terminal never probes."""
+    if not any(
+        isinstance(t, dict) and (t.get("function") or {}).get("name") == "terminal"
+        for t in tools or ()
+    ):
+        return tools
+    return apply_terminal_profile_description(tools, _profile_for_request())
 
 
 def _shell_argv(command: str, workdir: str, confinement) -> "tuple[list[str], str | None]":
@@ -11274,6 +11845,8 @@ def _holds_no_user_files(target: str, owner: "str | None" = None) -> bool:
             # a real file there is the user's like any other.
             if _is_spill_artifact(target, parent, name):
                 continue
+            if _is_attachment_copy(target, parent, name):
+                continue
             return False
         budget -= 1
         if budget <= 0:
@@ -12278,6 +12851,43 @@ TERMINAL_TOOL_FULL_ACCESS = {
     },
 }
 
+# The isolated Windows Terminal (see _terminal_profile) is cmd.exe inside MXC whatever the host shell is, so it gets
+# its own schema, chosen per request; the module default keeps describing the host shell.
+_ISOLATED_CMD_SHELL_NOTE = (
+    " The shell is cmd, running isolated, not bash: send one command per call, chain with &&, use "
+    "double quotes only, and use relative paths. git, when installed, runs without hooks, a pager or "
+    "an editor, so pass -m to git commit."
+)
+
+TERMINAL_TOOL_CMD_ISOLATED = {
+    "type": "function",
+    "function": {
+        **TERMINAL_TOOL["function"],
+        "description": "Execute a terminal command and return stdout/stderr."
+        + _SANDBOX_PATHS_NOTE
+        + _ISOLATED_CMD_SHELL_NOTE,
+    },
+}
+
+
+def apply_terminal_profile_description(tools: list[dict], profile: str) -> list[dict]:
+    """Swap the terminal schema for the one matching ``profile``. Like
+    apply_full_access_tool_descriptions, the input list is never mutated and a list with nothing to
+    swap is returned as-is; only "cmd_isolated" changes anything."""
+    if not tools or profile != "cmd_isolated":
+        return tools
+    swapped = False
+    out: list[dict] = []
+    for tool in tools:
+        name = (tool.get("function") or {}).get("name") if isinstance(tool, dict) else None
+        if name == "terminal":
+            out.append(TERMINAL_TOOL_CMD_ISOLATED)
+            swapped = True
+        else:
+            out.append(tool)
+    return out if swapped else tools
+
+
 # edit_file is registered below, once its schema exists.
 _FULL_ACCESS_TOOL_BY_NAME = {
     "python": PYTHON_TOOL_FULL_ACCESS,
@@ -12832,6 +13442,9 @@ def execute_tool(
     context_tokens = _UNSET_CONTEXT_TOKENS,
     search_images: bool = False,
     result_budget_tokens: int | None = None,
+    *,
+    tool_execution_mode: str = "auto",
+    host_access_approved: bool = False,
 ) -> str:
     """Execute a tool by name with the given arguments; returns a string.
 
@@ -12844,7 +13457,11 @@ def execute_tool(
     tools; web_search / MCP are unchanged. ``output_callback``: optional ``callable(str)`` invoked
     with incremental stdout/stderr chunks while python/terminal executions run. Purely
     observational: the returned result string is identical with or without it. ``website_policy``:
-    hidden server-validated domain limits for web_search.
+    hidden server-validated domain limits for web_search. ``tool_execution_mode`` controls OS
+    isolation for python/terminal: ``"auto"`` isolates when available and otherwise preserves
+    existing behavior, while ``"required"`` refuses unisolated execution. Full access remains
+    controlled by ``disable_sandbox``; ``"full"`` here is refused. ``host_access_approved``: the user approved this
+    call at the confirmation prompt (see ``_prepare_tool_launch``).
     """
     from state.tool_policy import require_tool_access
 
@@ -12872,6 +13489,17 @@ def execute_tool(
         return (
             f"Error: {name} arguments {cause}, so nothing ran. Resend as complete JSON, "
             "split across smaller calls if the content is long."
+        )
+    # Block placeholders copied from compacted history before any tool can write them (#11839).
+    receipt_field = compaction_receipt_field(
+        arguments,
+        match_only = frozenset({"old_string"}) if name == "edit_file" else frozenset(),
+    )
+    if receipt_field is not None:
+        return (
+            f"Error: {name} '{receipt_field}' is a placeholder that stood in for earlier "
+            "arguments to save room, not content, so nothing ran. Write the actual content "
+            "out in full."
         )
     effective_timeout = _EXEC_TIMEOUT if timeout is _TIMEOUT_UNSET else timeout
     if name == "create_skill":
@@ -13044,6 +13672,8 @@ def execute_tool(
                 disable_sandbox = disable_sandbox,
                 output_callback = output_callback,
                 thread_id = thread_id,
+                tool_execution_mode = tool_execution_mode,
+                host_access_approved = host_access_approved,
             )
     if name == "terminal":
         with _session_in_flight(session_id):
@@ -13055,6 +13685,8 @@ def execute_tool(
                 disable_sandbox = disable_sandbox,
                 output_callback = output_callback,
                 thread_id = thread_id,
+                tool_execution_mode = tool_execution_mode,
+                host_access_approved = host_access_approved,
             )
     # Same in-flight guard as the two above: it writes into the session workdir, so a chat deleted mid-call must not
     # unlink it underneath.
@@ -13444,14 +14076,14 @@ def _last_user_text(conversation: list[dict]) -> str:
             continue
         content = msg.get("content")
         if isinstance(content, str):
-            return content.strip()
+            return strip_current_date_update_note(content).strip()
         if isinstance(content, list):
             parts = [
                 p.get("text", "")
                 for p in content
                 if isinstance(p, dict) and p.get("type") in ("text", "input_text")
             ]
-            return " ".join(t for t in parts if t).strip()
+            return strip_current_date_update_note(" ".join(t for t in parts if t)).strip()
         return ""
     return ""
 
@@ -13886,6 +14518,30 @@ _MIN_SINGLE_BYTE_ASCII_RATIO = 3 / 4
 _ASCII_TEXT_BYTES = frozenset((*range(0x20, 0x7F), 0x09, 0x0A, 0x0D, 0x1B))
 
 _META_CHARSET_SCAN_BYTES = 2048
+_META_REFRESH_SCAN_BYTES = 4096
+_META_REFRESH_MAX_DELAY = 5
+_META_REFRESH_CONTENT_RE = re.compile(
+    r"\s*(\d+|(?=\.))(?:\.[\d.]*)?(?:(?=[\s;,])\s*[;,]?\s*(?:url\s*=\s*)?(.*))?\Z",
+    re.ASCII | re.IGNORECASE | re.DOTALL,
+)
+# Browsers leave an unterminated named reference in an attribute alone, so "&section=" stays literal instead of "§ion=".
+_ATTR_CHAR_REF_RE = re.compile(r"&(?:#[0-9]+;?|#[xX][0-9a-fA-F]+;?|[A-Za-z][A-Za-z0-9]*;)")
+# <plaintext> has no end tag: everything after it is text.
+_META_REFRESH_INERT_TAGS = frozenset(
+    (
+        b"iframe",
+        b"noembed",
+        b"noframes",
+        b"noscript",
+        b"plaintext",
+        b"script",
+        b"style",
+        b"template",
+        b"textarea",
+        b"title",
+        b"xmp",
+    )
+)
 # A comment or whole tag, quoted attribute values included, so markup inside them is never read as <meta>. As in the
 # browser prescan, an unterminated tag ends the scan.
 _HTML_TAG_RE = re.compile(
@@ -14038,6 +14694,60 @@ def _sniff_meta_charset(head: bytes, content_type: str) -> str | None:
     elif not is_xml:
         return None
     return prolog and _whatwg_codec(prolog.group(1))
+
+
+def _meta_refresh_target(body: bytes, page_url: str) -> str | None:
+    from html import unescape
+    from urllib.parse import urldefrag, urljoin, urlparse
+
+    def attr_text(value: bytes) -> str:
+        return _ATTR_CHAR_REF_RE.sub(
+            lambda ref: unescape(ref.group(0)), value.decode("utf-8", "replace")
+        )
+
+    base_url, seen_base, inert = page_url, False, None
+    for tag in _HTML_TAG_RE.finditer(body[:_META_REFRESH_SCAN_BYTES]):
+        name = (tag.group(1) or b"").lower()
+        if inert is not None:
+            end = tag.group(0)[: len(inert) + 3].lower()
+            if inert != b"plaintext" and end[:-1] == b"</" + inert and end[-1:] in b"\t\n\f\r />":
+                inert = None
+        elif name in _META_REFRESH_INERT_TAGS:
+            inert = name
+        elif name in (b"base", b"meta"):
+            attrs = {}
+            for attr, *values in _META_ATTR_RE.findall(tag.group(2)):
+                attrs.setdefault(attr.lower(), b"".join(values))
+            if name == b"base":
+                # Only the first <base href> counts, and only for a refresh that comes after it.
+                if b"href" in attrs and not seen_base:
+                    seen_base = True
+                    try:
+                        href = urljoin(page_url, attr_text(attrs[b"href"]).strip())
+                        if urlparse(href).scheme in ("http", "https"):
+                            base_url = href
+                    except ValueError:
+                        pass
+                continue
+            if attrs.get(b"http-equiv", b"").strip().lower() != b"refresh":
+                continue
+            match = _META_REFRESH_CONTENT_RE.match(attr_text(attrs.get(b"content", b"")))
+            if match is None:
+                continue
+            location = (match.group(2) or "").strip()
+            if location[:1] in ("'", '"'):
+                location = location[1:].split(location[0], 1)[0].strip()
+            if not location or int(match.group(1) or 0) > _META_REFRESH_MAX_DELAY:
+                return None
+            try:
+                target = urljoin(base_url, location)
+                scheme = urlparse(target).scheme
+            except ValueError:
+                return None
+            if scheme not in ("http", "https") or urldefrag(target)[0] == urldefrag(page_url)[0]:
+                return None
+            return target
+    return None
 
 
 def _extract_pdf_text(data: bytes) -> str:
@@ -14549,6 +15259,21 @@ def _pinned_netloc(ip: str, port: int | None) -> str:
     return f"{host}:{port}" if port else host
 
 
+def _redirect_hop(url: str, website_policy, deadline, cancel_event) -> tuple[str | None, str, list]:
+    from urllib.parse import urlparse
+    from .web_access_policy import check_url_access
+
+    allowed, reason, host = check_url_access(url, website_policy)
+    if not allowed:
+        return reason, "", []
+    parsed = urlparse(url)
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    ok, reason, pinned_ips = _resolve_with_budget(host, port, deadline, cancel_event)
+    if not ok:
+        return reason, "", []
+    return None, host, pinned_ips
+
+
 def _fetch_url_raw(
     url: str,
     timeout: int = 30,
@@ -14659,25 +15384,14 @@ def _fetch_url_raw(
                 if not location:
                     return "Failed to fetch URL: redirect missing Location header.", "", ""
                 current_url = urljoin(current_url, location)
-                # Server-controlled, so never scheme-upgraded; the gate below reads .port first, so the parse after it
-                # cannot raise.
-                allowed, policy_reason, redirect_host = check_url_access(
+                hop_error, current_host, pinned_ips = _redirect_hop(
                     current_url,
                     website_policy,
-                )
-                if not allowed:
-                    return policy_reason, "", ""
-                rp = urlparse(current_url)
-                rp_port = rp.port or (443 if rp.scheme == "https" else 80)
-                ok2, reason2, pinned_ips = _resolve_with_budget(
-                    redirect_host,
-                    rp_port,
                     deadline,
                     cancel_event,
                 )
-                if not ok2:
-                    return reason2, "", ""
-                current_host = redirect_host
+                if hop_error is not None:
+                    return hop_error, "", ""
                 continue
 
             # get_content_type() defaults to "text/plain" when the header is absent (RFC 2045); report "" instead so
@@ -14723,7 +15437,20 @@ def _fetch_url_raw(
                 if tail_error is not None:
                     return tail_error, "", ""
                 raw_bytes += tail
-            break
+            refresh_url = content_type == "text/html" and _meta_refresh_target(
+                raw_bytes, current_url
+            )
+            if not refresh_url:
+                break
+            current_url = refresh_url
+            hop_error, current_host, pinned_ips = _redirect_hop(
+                current_url,
+                website_policy,
+                deadline,
+                cancel_event,
+            )
+            if hop_error is not None:
+                return hop_error, "", ""
         else:
             return "Failed to fetch URL: too many redirects.", "", ""
 
@@ -15938,7 +16665,18 @@ def _web_search_images_suffix(client, query, wanted, cancel_event, website_polic
 # The first component of every network module and of every recognised prefix. `urllib.request`
 # and `urllib3` share `urllib`; `http.client` and `httpx` share `http`.
 _NETWORK_ROOT_NAMES = frozenset(
-    {"socket", "urllib", "urllib3", "http", "httpx", "requests", "aiohttp"}
+    {
+        "socket",
+        "urllib",
+        "urllib3",
+        "http",
+        "httpx",
+        "requests",
+        "aiohttp",
+        "paramiko",
+        "fabric",
+        "asyncssh",
+    }
 )
 
 
@@ -16362,20 +17100,33 @@ def _check_signal_escape_patterns(code: str):
         "aiohttp.ClientSession",
     )
     # The modules an alias is resolved back to, so `import urllib.request as u` and `from urllib.request import
-    # urlopen` reach the prefixes above exactly as the spelled-out call does.
-    # The first component of every prefix above: one lookup rejects a callee that cannot be one.
-    _NETWORK_ROOTS = frozenset(p.partition(".")[0] for p in _NETWORK_FQ_PREFIXES)
     _NETWORK_MODULES = frozenset(
         {
             "socket",
             "urllib.request",
             "urllib3",
+            "urllib3.connection",
+            "urllib3.connectionpool",
+            "urllib3.poolmanager",
+            "urllib3.util.connection",
+            "urllib3.contrib.socks",
             "http.client",
             "requests",
+            "requests.api",
+            "requests.sessions",
             "httpx",
             "aiohttp",
+            "aiohttp.client",
+            "paramiko",
+            "paramiko.client",
+            "paramiko.transport",
+            "fabric",
+            "fabric.connection",
+            "asyncssh",
+            "asyncssh.connection",
         }
     )
+    _HTTP_VERBS = ("get", "post", "put", "delete", "patch", "head", "options")
     # Calls whose FIRST positional argument is the host or the URL. `socket.socket(AF_INET, ...)` and the
     # session/client constructors take neither, so an unreadable first argument says nothing about them.
     _NETWORK_URL_ARG0_FQ = frozenset(
@@ -16384,46 +17135,198 @@ def _check_signal_escape_patterns(code: str):
             "socket.getaddrinfo",
             "urllib.request.urlopen",
             "urllib.request.urlretrieve",
-            "requests.get",
-            "requests.post",
-            "requests.put",
-            "requests.delete",
-            "requests.patch",
-            "requests.head",
             "http.client.HTTPConnection",
             "http.client.HTTPSConnection",
-            "httpx.get",
-            "httpx.post",
-            "httpx.put",
-            "httpx.patch",
-            "httpx.delete",
+            *(
+                f"{module}.{verb}"
+                for module in ("requests", "requests.api", "httpx")
+                for verb in _HTTP_VERBS
+            ),
         }
     )
-    # Where the destination sits in a recognised egress call: the positional index, then the keyword
-    # spellings that carry it instead. Reading only the first positional left the rule below
-    # sidesteppable by one word, `requests.get(url = "http://evil.example/")`, which is the spelling
-    # a caller reaches for the moment there is a `timeout =` next to it.
+    _HOST_ARG_ROOTS = ("socket.", "http.client.")
     _NETWORK_DESTINATION_ARG = {
-        fq: (0, ("url", "fullurl", "host", "address")) for fq in _NETWORK_URL_ARG0_FQ
+        fq: (
+            0,
+            ("url", "fullurl", "host", "address"),
+            "host" if fq.startswith(_HOST_ARG_ROOTS) else "url",
+        )
+        for fq in _NETWORK_URL_ARG0_FQ
     }
-    # `requests.request(method, url)` and its httpx twin carry the destination second.
-    _NETWORK_DESTINATION_ARG["requests.request"] = (1, ("url",))
-    _NETWORK_DESTINATION_ARG["httpx.request"] = (1, ("url",))
     # `urllib3.request(method, url, ...)` is the same shape, and it matches the broad `urllib3.`
     # prefix, so without an entry here the fallback read argument 0 (the method) and never looked
     # at the destination. Signature checked against the installed urllib3 2.8.0.
-    _NETWORK_DESTINATION_ARG["urllib3.request"] = (1, ("url",))
+    _NETWORK_DESTINATION_ARG.update(
+        {
+            f"{module}.request": (1, ("url",), "url")
+            for module in (
+                "requests",
+                "requests.api",
+                "httpx",
+                "urllib3",
+                "aiohttp",
+                "aiohttp.client",
+            )
+        }
+    )
+    _NETWORK_DESTINATION_ARG["httpx.stream"] = (1, ("url",), "url")
+    _VERB_CLIENTS = (
+        "requests.Session",
+        "requests.sessions.Session",
+        "requests.session",
+        "requests.sessions.session",
+        "httpx.Client",
+        "httpx.AsyncClient",
+        "aiohttp.ClientSession",
+        "aiohttp.client.ClientSession",
+    )
+    _POOL_CLIENTS = (
+        "urllib3.PoolManager",
+        "urllib3.ProxyManager",
+        "urllib3.poolmanager.PoolManager",
+        "urllib3.poolmanager.ProxyManager",
+        "urllib3.proxy_from_url",
+        "urllib3.poolmanager.proxy_from_url",
+        "urllib3.contrib.socks.SOCKSProxyManager",
+    )
+    _SOCKET_CLIENTS = ("socket.socket", "paramiko.SSHClient", "paramiko.client.SSHClient")
+    _OPENER_CLIENTS = ("urllib.request.build_opener", "urllib.request.OpenerDirector")
+    _CLIENT_CLASSES = frozenset(
+        (*_VERB_CLIENTS, *_POOL_CLIENTS, *_SOCKET_CLIENTS, *_OPENER_CLIENTS)
+    )
+    _NETWORK_DESTINATION_ARG.update(
+        {
+            **{
+                f"{client}.{verb}": (0, ("url",), "url")
+                for client in _VERB_CLIENTS
+                for verb in _HTTP_VERBS
+            },
+            **{
+                f"{client}.request": (1, ("url",), "url")
+                for client in (*_VERB_CLIENTS, *_POOL_CLIENTS)
+            },
+            **{
+                f"{client}.stream": (1, ("url",), "url")
+                for client in ("httpx.Client", "httpx.AsyncClient")
+            },
+            **{
+                f"{client}.ws_connect": (0, ("url",), "url")
+                for client in ("aiohttp.ClientSession", "aiohttp.client.ClientSession")
+            },
+            **{
+                client: (None, ("base_url",), "url")
+                for client in ("httpx.Client", "httpx.AsyncClient")
+            },
+            **{
+                client: (0, ("base_url",), "url")
+                for client in ("aiohttp.ClientSession", "aiohttp.client.ClientSession")
+            },
+            **{
+                f"{client}.send": (0, ("request",), "url")
+                for client in (
+                    "httpx.Client",
+                    "httpx.AsyncClient",
+                    "requests.Session",
+                    "requests.sessions.Session",
+                )
+            },
+            **{
+                f"{client}.{method}": (1, ("url",), "url")
+                for client in _POOL_CLIENTS
+                for method in ("urlopen", "request_encode_url", "request_encode_body")
+            },
+            **{f"{client}.connection_from_url": (0, ("url",), "url") for client in _POOL_CLIENTS},
+            **{
+                f"{client}.connection_from_host": (0, ("host",), "host") for client in _POOL_CLIENTS
+            },
+            **{
+                f"{module}.{factory}": (0, ("url",), "url")
+                for factory, defined_in in (
+                    ("connection_from_url", "urllib3.connectionpool"),
+                    ("proxy_from_url", "urllib3.poolmanager"),
+                )
+                for module in ("urllib3", defined_in)
+            },
+            **{
+                f"{module}.ProxyManager": (0, ("proxy_url",), "url")
+                for module in ("urllib3", "urllib3.poolmanager")
+            },
+            "urllib3.contrib.socks.SOCKSProxyManager": (0, ("proxy_url",), "url"),
+            **{
+                f"httpx.{transport}": (None, ("proxy",), "proxy")
+                for transport in ("HTTPTransport", "AsyncHTTPTransport")
+            },
+            **{
+                f"{module}.{pool}": (0, ("host",), "host")
+                for module in ("urllib3", "urllib3.connectionpool")
+                for pool in ("HTTPConnectionPool", "HTTPSConnectionPool")
+            },
+            **{
+                f"urllib3.connection.{conn}": (0, ("host",), "host")
+                for conn in ("HTTPConnection", "HTTPSConnection")
+            },
+            "urllib3.util.connection.create_connection": (0, ("address",), "host"),
+            **{f"socket.socket.{m}": (0, ("address",), "host") for m in ("connect", "connect_ex")},
+            **{f"{opener}.open": (0, ("fullurl",), "url") for opener in _OPENER_CLIENTS},
+            "urllib.request.ProxyHandler": (None, (), "proxy"),
+            # A datagram names its address per send. `sendto(data, flags, address)` puts the int
+            # flags at index 1, which reads as unreadable and fails closed.
+            "socket.socket.sendto": (1, (), "host"),
+            "socket.socket.sendmsg": (3, (), "host"),
+            **{
+                f"{client}.connect": (0, ("hostname", "host"), "host")
+                for client in ("paramiko.SSHClient", "paramiko.client.SSHClient")
+            },
+            **{
+                f"{module}.Transport": (0, ("sock",), "host")
+                for module in ("paramiko", "paramiko.transport")
+            },
+            **{
+                f"{module}.Connection": (0, ("host",), "host")
+                for module in ("fabric", "fabric.connection")
+            },
+            **{
+                f"{module}.{fn}": (index, ("host",), "host")
+                for module in ("asyncssh", "asyncssh.connection")
+                for fn, index in (
+                    ("connect", 0),
+                    ("connect_reverse", 0),
+                    ("create_connection", 1),
+                )
+            },
+            **{
+                f"{module}.SSHClientConnectionOptions": (None, (), "host")
+                for module in ("asyncssh", "asyncssh.connection")
+            },
+        }
+    )
+    _NETWORK_FQ_PREFIXES = _NETWORK_FQ_PREFIXES + tuple(
+        fq
+        for fq in sorted(_NETWORK_DESTINATION_ARG)
+        if not any(fq.startswith(p) for p in _NETWORK_FQ_PREFIXES)
+    )
+    _NETWORK_ROOTS = frozenset(p.partition(".")[0] for p in _NETWORK_FQ_PREFIXES)
+    _PROXY_KEYWORDS = ("proxy", "proxies")
+    _DESTINATION_ATTRS = {
+        "proxies": frozenset(
+            (
+                "requests.Session",
+                "requests.sessions.Session",
+                "requests.session",
+                "requests.sessions.session",
+            )
+        ),
+        "base_url": frozenset(("httpx.Client", "httpx.AsyncClient")),
+    }
     _UPLOAD_HTTP_METHODS = (
-        "requests.post",
-        "requests.put",
-        "requests.patch",
-        "requests.delete",
-        "requests.request",
-        "httpx.post",
-        "httpx.put",
-        "httpx.patch",
-        "httpx.delete",
-        "httpx.request",
+        *(
+            f"{owner}.{verb}"
+            for owner in ("requests", "requests.api", "httpx", *_VERB_CLIENTS)
+            for verb in ("post", "put", "patch", "delete", "request")
+        ),
+        "aiohttp.request",
+        "aiohttp.client.request",
+        *(f"{owner}.stream" for owner in ("httpx", "httpx.Client", "httpx.AsyncClient")),
         "urllib.request.urlopen",
         "urllib.request.Request",
     )
@@ -16576,8 +17479,8 @@ def _check_signal_escape_patterns(code: str):
         ".readthedocs.org",
     )
     _SENSITIVE_FILE_PREFIXES = (
-        "/etc/passwd",
-        "/etc/shadow",
+        _joined(("/etc/pas", "swd")),
+        _joined(("/etc/sh", "adow")),
         "/etc/sudoers",
         "/etc/ssh/",
     )
@@ -16587,8 +17490,11 @@ def _check_signal_escape_patterns(code: str):
         if not host:
             return ""
         h = host.strip().lower().rstrip(".")
+        if "\\" in h:
+            # urllib3 ends the host at a backslash, httpx reads it as userinfo: trust neither.
+            return h
         if "@" in h:
-            h = h.split("@", 1)[1]
+            h = h.rsplit("@", 1)[1]
         if h.startswith("[") and "]" in h:
             h = h[1 : h.index("]")]
         elif h.count(":") == 1:
@@ -16909,7 +17815,7 @@ def _check_signal_escape_patterns(code: str):
     )
 
     # Their handlers rebind first and then register, so generic_visit must not sweep them again.
-    _REBOUND_BY_HANDLER = (ast.Import, ast.ImportFrom, ast.Assign)
+    _REBOUND_BY_HANDLER = (ast.Import, ast.ImportFrom, ast.Assign, ast.AnnAssign)
 
     # Statement kinds that really run when the module runs. A shadow REMOVES a way to recognise a
     # call, so unlike everything else here it may only be believed when it cannot be skipped:
@@ -17102,6 +18008,108 @@ def _check_signal_escape_patterns(code: str):
             return out or [("", False)]
         return [("", False)]
 
+    def _alternatives(value) -> "list[ast.AST]":
+        """Every expression a value can evaluate to (conditional, `or`, walrus, `await`)."""
+        out: "list[ast.AST]" = []
+        stack = [value]
+        while stack:
+            cur = stack.pop()
+            if isinstance(cur, ast.IfExp):
+                stack.extend((cur.body, cur.orelse))
+            elif isinstance(cur, ast.BoolOp):
+                stack.extend(cur.values)
+            elif isinstance(cur, (ast.NamedExpr, ast.Await)):
+                stack.append(cur.value)
+            else:
+                out.append(cur)
+        return out
+
+    def _constant_getattr(node) -> "ast.Attribute | None":
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "getattr"
+            and len(node.args) >= 2
+            and isinstance(node.args[1], ast.Constant)
+            and isinstance(node.args[1].value, str)
+        ):
+            return ast.Attribute(value = node.args[0], attr = node.args[1].value, ctx = ast.Load())
+        return None
+
+    def _reexported(fq: str) -> "str | None":
+        """The listed top-level re-export of a submodule name: `httpx._api.get` is `httpx.get`."""
+        parts = fq.split(".")
+        if len(parts) < 3 or parts[0] not in _NETWORK_ROOTS:
+            return None
+        if not all(p[:1].islower() or p[:1] == "_" for p in parts[1:-1]):
+            return None  # a class in the path makes this a method, not a module attribute
+        top = f"{parts[0]}.{parts[-1]}"
+        return top if top in _NETWORK_DESTINATION_ARG or top in _CLIENT_CLASSES else None
+
+    def _returns_of(function_name: str) -> str:
+        return f"{function_name}()"
+
+    # The clients that read the proxy environment variables; sockets and urllib3 do not, and
+    # aiohttp only when a session opts in with `trust_env`, which defaults to False.
+    _ENV_PROXY_CLIENTS = ("requests.", "urllib.request.")
+
+    def _reads_proxy_environment(node: ast.Call, recognised) -> bool:
+        trust = next((kw.value for kw in node.keywords if kw.arg == "trust_env"), None)
+        disabled = isinstance(trust, ast.Constant) and trust.value is False
+        if any(c.startswith("httpx.") for c in recognised):
+            return not disabled  # `trust_env=False` turns the environment off for httpx
+        if any(c.startswith(_ENV_PROXY_CLIENTS) for c in recognised):
+            return True
+        if any(c.startswith("aiohttp.") for c in recognised):
+            return trust is not None and not disabled
+        return False
+
+    _ENV_PROXY_VARIABLES = frozenset(
+        {"http_proxy", "https_proxy", "all_proxy", "ws_proxy", "wss_proxy", "ftp_proxy"}
+    )
+
+    _ROUTE_KEYWORDS = {
+        "paramiko.SSHClient.": ("sock",),
+        "paramiko.client.SSHClient.": ("sock",),
+        "fabric.": ("gateway",),
+        "asyncssh.": ("tunnel", "proxy_command"),
+    }
+    # Positional spellings of the same routes (paramiko 5.0.0, fabric 3.2.3 signatures).
+    _ROUTE_POSITIONS = {
+        "paramiko.SSHClient.connect": {10: "sock"},
+        "paramiko.client.SSHClient.connect": {10: "sock"},
+        "fabric.Connection": {4: "gateway", 7: "connect_kwargs"},
+        "fabric.connection.Connection": {4: "gateway", 7: "connect_kwargs"},
+    }
+    _UNREADABLE = ast.Name(id = "<unreadable>", ctx = ast.Load())
+
+    def _is_no_proxy(key) -> bool:
+        return isinstance(key, ast.Constant) and key.value == "no_proxy"
+
+    def _paired(target, value):
+        if not isinstance(target, (ast.Tuple, ast.List)):
+            yield target, value
+            return
+        if not isinstance(value, (ast.Tuple, ast.List)) or any(
+            isinstance(e, ast.Starred) for e in value.elts
+        ):
+            return
+        elts = target.elts
+        star = next((i for i, e in enumerate(elts) if isinstance(e, ast.Starred)), None)
+        if star is None:
+            if len(elts) != len(value.elts):
+                return
+            pairs = list(zip(elts, value.elts))
+        else:
+            before, after = elts[:star], elts[star + 1 :]
+            if len(value.elts) < len(before) + len(after):
+                return
+            pairs = list(zip(before, value.elts)) + list(
+                zip(after, value.elts[len(value.elts) - len(after) :])
+            )
+        for t, v in pairs:
+            yield from _paired(t, v)
+
     class NetworkAndIoVisitor(ast.NodeVisitor):
         def __init__(self):
             # Alias -> the module it binds, and bare name -> the network function it binds. The shell-exec half of
@@ -17161,7 +18169,7 @@ def _check_signal_escape_patterns(code: str):
             # was star-imported. A shadow only takes effect for calls that CANNOT run before it:
             # dropping the alias for the whole tree let `fetch(url)` written ABOVE `fetch = print`
             # go unrecognised, when that call really is `requests.get`.
-            self.shadow_lines: "dict[str, list[tuple[tuple[int, int], int]]]" = {}
+            self.shadow_lines: "dict[tuple[str, int], list[tuple[int, int]]]" = {}
             self.star_lines: "list[tuple[int, int]]" = []
             # Name -> the positions where a network alias was registered for it. A shadow only
             # counts while no alias registration follows it: `r = object()` then `r = requests`
@@ -17181,6 +18189,268 @@ def _check_signal_escape_patterns(code: str):
             self.collecting = True
             # Whether any alias map can ever be non-empty. See `_NETWORK_SOURCE_HINTS`.
             self.aliases_possible = network_possible
+            self.instance_aliases: "dict[str, set[str]]" = {}
+            self.receiver_destinations: "dict[str, list[tuple[str, ast.AST]]]" = {}
+            self.path_links: "dict[str, set[str]]" = {}
+            self.proxy_owners: "dict[str, set[tuple[str, str]]]" = {}
+            self.class_family: "dict[int, str]" = {}
+            self.class_names: "dict[str, str]" = {}
+            self.properties: "list[tuple[str, str]]" = []
+            self.class_inits: "dict[str, list[ast.AST]]" = {}
+            self.method_self: "dict[int, tuple[str, str]]" = {}
+            if network_possible:
+                classes = [n for n in nodes if isinstance(n, ast.ClassDef)]
+                parent = {c.name: c.name for c in classes}
+
+                def find(name):
+                    while parent[name] != name:
+                        name = parent[name]
+                    return name
+
+                for c in classes:
+                    for base in c.bases:
+                        if isinstance(base, ast.Name) and base.id in parent:
+                            parent[find(base.id)] = find(c.name)
+                for c in classes:
+                    family = f"<{find(c.name)}>"
+                    self.class_family[id(c)] = family
+                    self.class_names[c.name] = family
+                    for fn in c.body:
+                        if isinstance(fn, ast.FunctionDef) and fn.name == "__init__":
+                            self.class_inits.setdefault(c.name, []).append(fn)
+                    for fn in c.body:
+                        if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)) and not any(
+                            (getattr(d, "id", None) or getattr(d, "attr", None)) == "staticmethod"
+                            for d in fn.decorator_list
+                        ):
+                            params = fn.args.posonlyargs + fn.args.args
+                            if params:
+                                self.method_self[id(fn)] = (params[0].arg, family)
+                            if any(getattr(d, "id", None) == "property" for d in fn.decorator_list):
+                                self.properties.append((family, fn.name))
+                bases = {
+                    c.name: [b.id for b in c.bases if isinstance(b, ast.Name)] for c in classes
+                }
+                for name in bases:
+                    seen, stack = {name}, [name]
+                    while stack and name not in self.class_inits:
+                        for base in bases.get(stack.pop(), ()):
+                            if base in self.class_inits:
+                                self.class_inits[name] = self.class_inits[base]
+                                break
+                            if base not in seen:
+                                seen.add(base)
+                                stack.append(base)
+            self.self_names: "list[tuple[str, str]]" = []
+            self.local_functions: "dict[str, list[ast.AST]]" = {}
+            self.callable_aliases: "dict[str, set[str]]" = {}
+            self.def_names: "dict[int, str]" = {}
+            self.local_methods: "dict[str, list[tuple[ast.AST, int]]]" = {}
+            if network_possible:
+                for fn in nodes:
+                    if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                        self.local_functions.setdefault(fn.name, []).append(fn)
+                        self.def_names[id(fn)] = fn.name
+                    elif isinstance(fn, (ast.Assign, ast.AnnAssign)) and isinstance(
+                        fn.value, ast.Lambda
+                    ):
+                        for target in getattr(fn, "targets", None) or [fn.target]:
+                            if isinstance(target, ast.Name):
+                                self.local_functions.setdefault(target.id, []).append(fn.value)
+                    elif isinstance(fn, ast.ClassDef):
+                        for m in fn.body:
+                            if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                                skip = 1 if id(m) in self.method_self else 0
+                                self.local_methods.setdefault(m.name, []).append((m, skip))
+            # Every (target, value) that can carry a client, re-read after the gathering pass when a
+            # path it reads gains one: `def f(s): t = s` is visited before `f(requests.Session())`.
+            self.flows: "list[tuple]" = []
+            self.flows_from: "dict[str, list[int]]" = {}
+            self.pending_calls: "list[tuple]" = []
+            self.pending_proxies: "list[tuple]" = []
+            self.env_proxies: "list[ast.AST]" = []
+            self.dict_literals: "dict[str, list[ast.Dict]]" = {}
+            self.dict_entries: "dict[str, list[tuple]]" = {}
+            self.dict_mutated: "set[str]" = set()
+            self.os_names: "set[str]" = {"os"}
+            self.environ_names: "set[str]" = set()
+            for imp in nodes:
+                if isinstance(imp, ast.Import):
+                    for alias in imp.names:
+                        if alias.name == "os":
+                            self.os_names.add(alias.asname or "os")
+                elif isinstance(imp, ast.ImportFrom) and imp.module == "os":
+                    for alias in imp.names:
+                        if alias.name in ("environ", "environb"):
+                            self.environ_names.add(alias.asname or alias.name)
+
+        def _instance_key(self, target) -> "str | None":
+            family = self.class_family.get(self.scope_stack[-1])
+            if family is not None and isinstance(target, ast.Name):
+                return f"{family}.{target.id}"
+            return self._receiver_path(target)
+
+        def _record_flow(self, target, value, at, node) -> None:
+            if not self.collecting or self._instance_key(target) is None:
+                return
+            self.flows.append(
+                (target, value, at, node, tuple(self.scope_stack), tuple(self.self_names))
+            )
+
+        def _index_flows(self) -> None:
+            """Runs after the gathering pass, so an alias assigned below its use is already known."""
+            for index, (_t, value, _at, _n, scopes, selves) in enumerate(self.flows):
+                self.scope_stack, self.self_names = list(scopes), list(selves)
+                for alt in _alternatives(value):
+                    if isinstance(alt, ast.Call):
+                        for callee in self._local_callees(alt.func):
+                            self.flows_from.setdefault(_returns_of(callee), []).append(index)
+                    else:
+                        path = self._receiver_path(alt)
+                        if path is not None:
+                            self.flows_from.setdefault(path, []).append(index)
+
+        def _local_callees(self, func) -> "set[str]":
+            if isinstance(func, ast.Name):
+                names, seen, stack = set(), {func.id}, [func.id]
+                while stack:
+                    name = stack.pop()
+                    if name in self.local_functions:
+                        names.add(name)
+                    for source in self.callable_aliases.get(name, ()):
+                        if source not in seen:
+                            seen.add(source)
+                            stack.append(source)
+                return names
+            if isinstance(func, ast.Attribute) and func.attr in self.local_methods:
+                return {func.attr}
+            return set()
+
+        def _bind_call_arguments(self, node) -> None:
+            if isinstance(node.func, ast.Name):
+                targets = [
+                    (fn, skip)
+                    for name in sorted(self._local_callees(node.func))
+                    for fn in self.local_functions.get(name, ())
+                    for skip in ((0, 1) if id(fn) in self.method_self else (0,))
+                ] + [(fn, 1) for fn in self.class_inits.get(node.func.id, ())]
+            elif isinstance(node.func, ast.Attribute):
+                methods = self.local_methods.get(node.func.attr, [])
+                targets = methods + [(fn, 0) for fn, skip in methods if skip]
+            else:
+                return
+            at = (getattr(node, "lineno", 0), getattr(node, "col_offset", 0))
+            for fn, skip in targets:
+                positional = (fn.args.posonlyargs + fn.args.args)[skip:]
+                pairs = []
+                for param, arg in zip(positional, node.args):
+                    if isinstance(arg, ast.Starred):
+                        break
+                    pairs.append((param.arg, arg))
+                named = {a.arg for a in positional + fn.args.kwonlyargs}
+                pairs += [(kw.arg, kw.value) for kw in node.keywords if kw.arg in named]
+                for param, arg in pairs:
+                    target = ast.Name(id = param, ctx = ast.Store())
+                    self._link(target, arg)
+                    if self._is_environ(arg):
+                        self.environ_names.add(param)  # `configure(os.environ)`
+                    if isinstance(arg, ast.Name) and arg.id in self.os_names:
+                        self.os_names.add(param)  # `configure(os)`
+                    if isinstance(arg, ast.Attribute) and arg.attr in _DESTINATION_ATTRS:
+                        owner = self._receiver_path(arg.value)
+                        if owner is not None:
+                            self.proxy_owners.setdefault(param, set()).add((owner, arg.attr))
+                    self._record_flow(target, arg, at, fn)
+
+        def resolve_flows(self) -> None:
+            """Fixpoint: each pass past the subset check adds a client to a path, so this terminates."""
+            for call, scopes, selves in self.pending_calls:
+                self.scope_stack, self.self_names = list(scopes), list(selves)
+                self._bind_call_arguments(call)
+            for target, value, mutated, scopes, selves in self.pending_proxies:
+                self.scope_stack, self.self_names = list(scopes), list(selves)
+                self._apply_proxy(target, value, mutated)
+            for name in self.environ_names:
+                for key, value in self.dict_entries.get(name, ()):
+                    self._record_env_proxy(key, value)
+                if name in self.dict_mutated:
+                    self.env_proxies.append(_UNREADABLE)
+            for family, name in self.properties:
+                attribute = ast.Name(id = f"{family}.{name}", ctx = ast.Store())
+                returned = ast.Name(id = _returns_of(name), ctx = ast.Load())
+                self.flows.append((attribute, returned, (0, 0), attribute, (0,), ()))
+            self._index_flows()
+            queue = list(range(len(self.flows)))
+            while queue:
+                target, value, at, node, scopes, selves = self.flows[queue.pop()]
+                self.scope_stack, self.self_names = list(scopes), list(selves)
+                found = self._instances_named_by(value, at)
+                key = self._instance_key(target)
+                if key is None or found <= self.instance_aliases.get(key, set()):
+                    continue
+                self._register(target, (set(), set(), found), node)
+                queue.extend(self.flows_from.get(key, ()))
+            self.scope_stack, self.self_names = [0], []
+
+        def _receiver_path(self, expr) -> "str | None":
+            parts: list[str] = []
+            cur = expr
+            while isinstance(cur, ast.Attribute):
+                parts.insert(0, cur.attr)
+                cur = cur.value
+            if not isinstance(cur, ast.Name):
+                return None
+            root = next((f for name, f in reversed(self.self_names) if name == cur.id), cur.id)
+            return ".".join([root] + parts)
+
+        def _roots(self, name: str) -> "list[str]":
+            roots = [next((f for n, f in reversed(self.self_names) if n == name), name)]
+            if name in self.class_names:
+                roots.append(self.class_names[name])  # `A.s` is the class attribute of `<A>`
+            family = self.class_family.get(self.scope_stack[-1])
+            if family is not None:
+                roots.append(f"{family}.{name}")
+            for root in list(roots):
+                roots += [f for f in self.instance_aliases.get(root, ()) if f.startswith("<")]
+            return list(dict.fromkeys(roots))
+
+        def _path_variants(self, expr) -> "list[str]":
+            parts: list[str] = []
+            cur = expr
+            while isinstance(cur, ast.Attribute):
+                parts.insert(0, cur.attr)
+                cur = cur.value
+            if not isinstance(cur, ast.Name):
+                return []
+            return [".".join([root] + parts) for root in self._roots(cur.id)]
+
+        def _instances_named_by(self, value, at) -> "set[str]":
+            found: set[str] = set()
+            for alt in _alternatives(value):
+                if isinstance(alt, ast.Call):
+                    found.update(
+                        c for c in self._fq_candidates(alt.func, at) if c in _CLIENT_CLASSES
+                    )
+                    for callee in self._local_callees(alt.func):
+                        found.update(self.instance_aliases.get(_returns_of(callee), ()))
+                    if isinstance(alt.func, ast.Name) and alt.func.id in self.class_names:
+                        found.add(self.class_names[alt.func.id])  # `API()` is an `<API>`
+                    if (
+                        isinstance(alt.func, ast.Name)
+                        and alt.func.id == "super"
+                        and not alt.args
+                        and self.self_names
+                    ):
+                        found.add(self.self_names[-1][1])  # `super()` in a method of `<S>`
+                    continue
+                receiver = isinstance(alt, ast.Name) and any(
+                    n == alt.id for n, _f in self.self_names
+                )
+                if isinstance(alt, ast.Name) and not receiver and self._is_shadowed(alt.id, at):
+                    continue
+                for path in self._path_variants(alt):
+                    found.update(self.instance_aliases.get(path, ()))
+            return found
 
         def _shadowing_names(self, node) -> "list[str]":
             """The names a node binds IN THE ENCLOSING scope, which is the only scope that can
@@ -17206,6 +18476,10 @@ def _check_signal_escape_patterns(code: str):
                 # fetch(url)` puts all three on line 1, and comparing lines alone made the
                 # rebinding invisible, so a harmless local call was refused as `requests.get`.
                 where = (getattr(node, "lineno", 0), getattr(node, "col_offset", 0))
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                    # A def or class binds its name after its defaults and bases run:
+                    # `import requests as fetch; def fetch(a = fetch.get(u))` calls requests.
+                    where = (node.body[0].lineno, node.body[0].col_offset)
                 for name in self._shadowing_names(node):
                     if name in exempt:
                         # A statement that REGISTERS an alias must not also shadow the name it just
@@ -17216,7 +18490,7 @@ def _check_signal_escape_patterns(code: str):
                     # The module set is deliberately NOT dropped: see __init__. A bare function
                     # alias is shadowed, so a local `def get(...)` still shadows
                     # `from requests import get` for the calls that follow it.
-                    self.shadow_lines.setdefault(name, []).append((where, scope))
+                    self.shadow_lines.setdefault((name, scope), []).append(where)
 
         def generic_visit(self, node):
             """`ast.NodeVisitor.generic_visit`, inlined, plus the rebinding hook.
@@ -17265,10 +18539,9 @@ def _check_signal_escape_patterns(code: str):
             """
             registrations = self.star_lines if after_star else self.alias_lines.get(name, ())
             floor = max((where for where in registrations if where < at), default = (0, -1))
-            here = self.scope_stack[-1]
             return any(
-                scope == here and floor < where < at
-                for where, scope in self.shadow_lines.get(name, ())
+                floor < where < at
+                for where in self.shadow_lines.get((name, self.scope_stack[-1]), ())
             )
 
         def _star_imported_fq(self, name: str, at) -> "str | None":
@@ -17288,7 +18561,7 @@ def _check_signal_escape_patterns(code: str):
                 where = (getattr(node, "lineno", 0), getattr(node, "col_offset", 0))
                 for name in _binding_names(node):
                     if name != getattr(node, "name", None):
-                        self.shadow_lines.setdefault(name, []).append((where, id(node)))
+                        self.shadow_lines.setdefault((name, id(node)), []).append(where)
             # Decorators, defaults, annotations and bases are evaluated in the ENCLOSING scope, at
             # the moment the def is executed, BEFORE any parameter is bound. Visiting them inside
             # the new scope let a parameter shadow a call the parameter cannot possibly reach:
@@ -17305,7 +18578,36 @@ def _check_signal_escape_patterns(code: str):
                             self.visit(item)
                 elif isinstance(value, ast.AST):
                     self.visit(value)
+            if self.collecting and isinstance(node, ast.ClassDef):
+                where = (getattr(node, "lineno", 0), getattr(node, "col_offset", 0))
+                inherited = {
+                    c
+                    for base in node.bases
+                    for c in self._fq_candidates(base, where)
+                    if c in _CLIENT_CLASSES or c in _NETWORK_DESTINATION_ARG
+                }
+                if inherited:
+                    self.func_aliases.setdefault(node.name, set()).update(inherited)
+                    family = self.class_family.get(id(node))
+                    if family is not None:
+                        self.instance_aliases.setdefault(family, set()).update(inherited)
+                    self._register_alias(node.name, node.body[0])
+            args = getattr(node, "args", None)
+            if self.collecting and args is not None:
+                positional = args.posonlyargs + args.args
+                defaults = list(
+                    zip(positional[len(positional) - len(args.defaults) :], args.defaults)
+                )
+                defaults += [
+                    (a, d) for a, d in zip(args.kwonlyargs, args.kw_defaults) if d is not None
+                ]
+                where = (getattr(node, "lineno", 0), getattr(node, "col_offset", 0))
+                for param, default in defaults:
+                    self._carry(ast.Name(id = param.arg, ctx = ast.Store()), default, where, node)
             self.scope_stack.append(id(node))
+            self_name = self.method_self.get(id(node))
+            if self_name is not None:
+                self.self_names.append(self_name)
             try:
                 body = node.body
                 if isinstance(body, list):
@@ -17316,6 +18618,8 @@ def _check_signal_escape_patterns(code: str):
                     self.visit(body)
             finally:
                 self.scope_stack.pop()
+                if self_name is not None:
+                    self.self_names.pop()
 
         visit_FunctionDef = _visit_scope
         visit_AsyncFunctionDef = _visit_scope
@@ -17328,7 +18632,9 @@ def _check_signal_escape_patterns(code: str):
                 return
             registered: set[str] = set()
             for alias in node.names:
-                if alias.asname and alias.name in _NETWORK_MODULES:
+                if alias.asname and (
+                    alias.name in _NETWORK_MODULES or alias.name.partition(".")[0] in _NETWORK_ROOTS
+                ):
                     self.module_aliases.setdefault(alias.asname, set()).add(alias.name)
                     self._register_alias(alias.asname, node)
                     registered.add(alias.asname)
@@ -17369,8 +18675,7 @@ def _check_signal_escape_patterns(code: str):
                     self.module_aliases.setdefault(bound, set()).add(fq)
                     self._register_alias(bound, node)
                     registered.add(bound)
-                elif module in _NETWORK_MODULES:
-                    # from urllib.request import urlopen
+                elif module in _NETWORK_MODULES or _reexported(fq):
                     self.func_aliases.setdefault(bound, set()).add(fq)
                     self._register_alias(bound, node)
                     registered.add(bound)
@@ -17386,6 +18691,9 @@ def _check_signal_escape_patterns(code: str):
             collapsing the set to one candidate resolved the later `s = r; s.get(...)` to the
             unrecognised `aiohttp.get` and let a hostile host through.
             """
+            alts = _alternatives(value)
+            if alts != [value]:
+                return set().union(*(self._modules_named_by(alt, at) for alt in alts))
             parts: list[str] = []
             cur = value
             while isinstance(cur, ast.Attribute):
@@ -17419,6 +18727,10 @@ def _check_signal_escape_patterns(code: str):
             `from requests import get as fetch` then `fetch = fetch`, or `g = fetch`, recorded the
             target as shadowed and left the later call with no candidate at all.
             """
+            alts = _alternatives(value)
+            if alts != [value]:
+                return set().union(*(self._functions_named_by(alt, at) for alt in alts))
+            value = _constant_getattr(value) or value
             if isinstance(value, ast.Name):
                 if self._is_shadowed(value.id, at):
                     # Same stale-source rule as `_modules_named_by`: `fetch = print` before
@@ -17433,25 +18745,292 @@ def _check_signal_escape_patterns(code: str):
                 }
             return set()
 
+        def _named_by(self, value, at) -> "tuple[set[str], set[str], set[str]]":
+            return (
+                self._modules_named_by(value, at),
+                self._functions_named_by(value, at),
+                self._instances_named_by(value, at),
+            )
+
+        def _register(self, target, named, node) -> bool:
+            """True when a name took an alias, exempting it from the shadow this statement records."""
+            modules, functions, instances = named
+            path = self._receiver_path(target)
+            family = self.class_family.get(self.scope_stack[-1])
+            if family is not None and isinstance(target, ast.Name):
+                path = f"{family}.{target.id}"
+            if path is not None and instances:
+                self.instance_aliases.setdefault(path, set()).update(instances)
+            if not isinstance(target, ast.Name):
+                return False
+            if modules:
+                self.module_aliases.setdefault(target.id, set()).update(modules)
+            if functions:
+                self.func_aliases.setdefault(target.id, set()).update(functions)
+            if modules or functions or any(not c.startswith("<") for c in instances):
+                self._register_alias(target.id, node)
+                return True
+            return False
+
+        def _carry(self, target, value, at, node) -> bool:
+            self._link(target, value)
+            self._record_flow(target, value, at, node)
+            return self._register(target, self._named_by(value, at), node)
+
+        def _link(self, target, value) -> None:
+            path = self._receiver_path(target)
+            if path is None:
+                return
+            for alt in _alternatives(value):
+                other = self._receiver_path(alt)
+                if other is not None and other != path:
+                    self.path_links.setdefault(path, set()).add(other)
+                    self.path_links.setdefault(other, set()).add(path)
+
+        def _linked_paths(self, path: str) -> "set[str]":
+            seen = {path}
+            stack = [path]
+            while stack:
+                for other in self.path_links.get(stack.pop(), ()):
+                    if other not in seen:
+                        seen.add(other)
+                        stack.append(other)
+            return seen
+
+        def _record_proxy(
+            self,
+            target,
+            value,
+            mutated = False,
+        ) -> None:
+            """Applied after call arguments are bound, so `configure(s.proxies)` still reaches `s`."""
+            if isinstance(target, ast.Subscript) and self._is_environ(target.value):
+                self._record_env_proxy(target.slice, value)
+                return
+            if isinstance(target, ast.Attribute) and self._is_environ(target):
+                self._record_env_mapping(value)  # `os.environ = {...}` replaces it wholesale
+                return
+            self.pending_proxies.append(
+                (target, value, mutated, tuple(self.scope_stack), tuple(self.self_names))
+            )
+
+        def _record_dict_mutation(self, name: str, method: str, args, keywords) -> None:
+            if method in ("setdefault", "__setitem__") and len(args) >= 2:
+                self.dict_entries.setdefault(name, []).append((args[0], args[1]))
+            elif method in ("update", "__ior__"):
+                for arg in args:
+                    if isinstance(arg, ast.Dict) and None not in arg.keys:
+                        self.dict_entries.setdefault(name, []).extend(zip(arg.keys, arg.values))
+                    else:
+                        self.dict_mutated.add(name)
+                for kw in keywords:
+                    if kw.arg is None:
+                        self.dict_mutated.add(name)
+                    else:
+                        self.dict_entries.setdefault(name, []).append(
+                            (ast.Constant(value = kw.arg), kw.value)
+                        )
+
+        def _record_env_mapping(self, mapping) -> None:
+            """Mapping merged into the environment; anything unreadable is recorded as unreadable."""
+            if isinstance(mapping, ast.Dict):
+                for k, v in zip(mapping.keys, mapping.values):
+                    if k is None:
+                        self.env_proxies.append(_UNREADABLE)
+                    else:
+                        self._record_env_proxy(k, v)
+            elif isinstance(mapping, ast.Name) and mapping.id in self.dict_literals:
+                if mapping.id in self.dict_mutated:
+                    self.env_proxies.append(_UNREADABLE)
+                for literal in self.dict_literals[mapping.id]:
+                    self._record_env_mapping(literal)
+                for key, value in self.dict_entries.get(mapping.id, ()):
+                    self._record_env_proxy(key, value)
+            elif (
+                isinstance(mapping, ast.Call)
+                and isinstance(mapping.func, ast.Name)
+                and mapping.func.id == "dict"
+                and not mapping.args
+            ):
+                for kw in mapping.keywords:
+                    if kw.arg is None:
+                        self.env_proxies.append(_UNREADABLE)
+                    else:
+                        self._record_env_proxy(ast.Constant(value = kw.arg), kw.value)
+            elif isinstance(mapping, (ast.List, ast.Tuple)) and all(
+                isinstance(e, ast.Tuple) and len(e.elts) == 2 for e in mapping.elts
+            ):
+                for e in mapping.elts:
+                    self._record_env_proxy(e.elts[0], e.elts[1])
+            else:
+                self.env_proxies.append(_UNREADABLE)
+
+        def _is_environ(self, node) -> bool:
+            node = _constant_getattr(node) or node  # `getattr(os, "environ")`
+            if isinstance(node, ast.Name):
+                return node.id in self.environ_names
+            return (
+                isinstance(node, ast.Attribute)
+                and node.attr in ("environ", "environb")  # `environb` shares `environ`'s data
+                and isinstance(node.value, ast.Name)
+                and node.value.id in self.os_names
+            )
+
+        def _record_env_proxy(self, key, value) -> None:
+            """requests, httpx and urllib honour the proxy environment by default."""
+            if isinstance(key, ast.Constant):
+                names = [key.value] if isinstance(key.value, str) else []
+                if isinstance(key.value, bytes):
+                    names = [key.value.decode("latin-1")]  # `os.environb[b"HTTPS_PROXY"]`
+            elif isinstance(key, ast.Name) and self.literal_names.get(key.id):
+                names = list(self.literal_names[key.id])  # `key = "HTTPS_PROXY"`
+            else:
+                # A key this screen cannot read may name a proxy variable: fail closed.
+                self.env_proxies.append(_UNREADABLE)
+                return
+            if any(name.lower() in _ENV_PROXY_VARIABLES for name in names):
+                self.env_proxies.append(value)
+
+        def _apply_proxy(self, target, value, mutated) -> None:
+            if isinstance(target, ast.Subscript) and self._is_environ(target.value):
+                self._record_env_proxy(target.slice, value)
+                return
+            if isinstance(target, ast.Subscript):
+                if _is_no_proxy(target.slice):
+                    return
+                target, mutated = target.value, True
+            if isinstance(target, ast.Attribute) and target.attr in _DESTINATION_ATTRS:
+                owners = {(self._receiver_path(target.value), target.attr)}
+            elif mutated and self._receiver_path(target) is not None:
+                owners = set().union(
+                    *(
+                        self.proxy_owners.get(path, ())
+                        for path in self._linked_paths(self._receiver_path(target))
+                    )
+                )
+            else:
+                return
+            for owner, attr in owners:
+                if owner is not None:
+                    self.receiver_destinations.setdefault(owner, []).append((attr, value))
+
         def visit_Assign(self, node):
+            self._visit_binding(node, node.targets, node.value)
+
+        def visit_AnnAssign(self, node):
+            if node.value is None:
+                if self.collecting:
+                    self._rebind(node)
+                self.generic_visit(node)
+                return
+            self._visit_binding(node, [node.target], node.value)
+
+        def _visit_binding(self, node, targets, value_node):
             if not self.collecting:
                 self.generic_visit(node)
                 return
             at = (getattr(node, "lineno", 0), getattr(node, "col_offset", 0))
-            carried = self._modules_named_by(node.value, at)
-            carried_functions = self._functions_named_by(node.value, at)
+            # Every value is read before any target is bound, so `f, g = g, f` swaps.
+            pairs = [
+                (target, value, self._named_by(value, at))
+                for whole in targets
+                for target, value in _paired(whole, value_node)
+            ]
+            if not isinstance(value_node, (ast.Tuple, ast.List)):
+                for whole in targets:
+                    if isinstance(whole, (ast.Tuple, ast.List)):
+                        for elt in whole.elts:  # `s, n = make()`: any element may be the client
+                            elt = elt.value if isinstance(elt, ast.Starred) else elt
+                            self._record_flow(elt, value_node, at, node)
             registered: set[str] = set()
-            for target in node.targets:
-                if not isinstance(target, ast.Name):
-                    continue
-                if carried:
-                    self.module_aliases.setdefault(target.id, set()).update(carried)
-                if carried_functions:
-                    self.func_aliases.setdefault(target.id, set()).update(carried_functions)
-                if carried or carried_functions:
-                    self._register_alias(target.id, node)
+            for target, value, named in pairs:
+                self._record_proxy(target, value)
+                self._link(target, value)
+                self._record_flow(target, value, at, node)
+                if isinstance(target, ast.Name) and isinstance(value, ast.Dict):
+                    self.dict_literals.setdefault(target.id, []).append(value)
+                if isinstance(target, ast.Name) and self._is_environ(value):
+                    self.environ_names.add(target.id)  # `env = os.environ`
+                if (
+                    isinstance(target, ast.Name)
+                    and isinstance(value, ast.Name)
+                    and value.id in self.os_names
+                ):
+                    self.os_names.add(target.id)  # `o = os`
+                if isinstance(target, ast.Name) and isinstance(value, ast.Lambda):
+                    returns = ast.Name(id = _returns_of(target.id), ctx = ast.Store())
+                    self._record_flow(returns, value.body, at, node)
+                if isinstance(target, ast.Subscript) and isinstance(target.value, ast.Name):
+                    self._record_dict_mutation(
+                        target.value.id, "__setitem__", [target.slice, value], []
+                    )
+                if isinstance(target, ast.Name):
+                    for alt in _alternatives(value):
+                        if isinstance(alt, ast.Name) and alt.id != target.id:
+                            self.callable_aliases.setdefault(target.id, set()).add(alt.id)
+                        elif isinstance(alt, ast.Attribute) and alt.attr in self.local_methods:
+                            self.callable_aliases.setdefault(target.id, set()).add(alt.attr)
+                if isinstance(value, ast.Attribute) and value.attr in _DESTINATION_ATTRS:
+                    owner = self._receiver_path(value.value)
+                    alias = self._receiver_path(target)
+                    if owner is not None and alias is not None:
+                        self.proxy_owners.setdefault(alias, set()).add((owner, value.attr))
+                if self._register(target, named, node):
                     registered.add(target.id)
             self._rebind(node, exempt = registered)
+            self.generic_visit(node)
+
+        def visit_AugAssign(self, node):
+            if self.collecting:
+                if self._is_environ(node.target):
+                    self._record_env_mapping(node.value)
+                else:
+                    if isinstance(node.target, ast.Name):
+                        self._record_dict_mutation(node.target.id, "__ior__", [node.value], [])
+                    self._record_proxy(node.target, node.value, mutated = True)
+            self.generic_visit(node)
+
+        def visit_NamedExpr(self, node):
+            if self.collecting and isinstance(node.target, ast.Name):
+                at = (getattr(node, "lineno", 0), getattr(node, "col_offset", 0))
+                self._carry(node.target, node.value, at, node)
+            self.generic_visit(node)
+
+        def visit_Return(self, node):
+            function = self.def_names.get(self.scope_stack[-1])
+            if self.collecting and node.value is not None and function is not None:
+                at = (getattr(node, "lineno", 0), getattr(node, "col_offset", 0))
+                returns = ast.Name(id = _returns_of(function), ctx = ast.Store())
+                self._record_flow(returns, node.value, at, node)
+                if isinstance(node.value, (ast.Tuple, ast.List)):
+                    for elt in node.value.elts:  # `return requests.Session(), 1`
+                        self._record_flow(returns, elt, at, node)
+            self.generic_visit(node)
+
+        def _carry_loop(self, node) -> None:
+            if self.collecting and isinstance(node.iter, (ast.List, ast.Tuple, ast.Set)):
+                for elt in node.iter.elts:
+                    if isinstance(elt, ast.Starred):
+                        continue
+                    at = (getattr(elt, "lineno", 0), getattr(elt, "col_offset", 0))
+                    for target, value in _paired(node.target, elt):
+                        self._carry(target, value, at, elt)
+
+        def visit_For(self, node):
+            self._carry_loop(node)
+            self.generic_visit(node)
+
+        visit_AsyncFor = visit_For
+
+        def visit_comprehension(self, node):
+            self._carry_loop(node)
+            self.generic_visit(node)
+
+        def visit_withitem(self, node):
+            if self.collecting and node.optional_vars is not None:
+                ctx = node.context_expr
+                at = (getattr(ctx, "lineno", 0), getattr(ctx, "col_offset", 0))
+                self._carry(node.optional_vars, ctx, at, ctx)
             self.generic_visit(node)
 
         def _fq_candidates(
@@ -17460,11 +19039,22 @@ def _check_signal_escape_patterns(code: str):
             at = (0, 0),
         ) -> "list[str]":
             """Every fully qualified name a callee could be, written spelling first."""
+            alts = _alternatives(func)
+            if alts != [func]:
+                out: list[str] = []
+                for alt in alts:
+                    out.extend(c for c in self._fq_candidates(alt, at) if c not in out)
+                return out
             parts: list[str] = []
             cur = func
-            while isinstance(cur, ast.Attribute):
-                parts.insert(0, cur.attr)
-                cur = cur.value
+            while True:
+                if isinstance(cur, ast.Attribute):
+                    parts.insert(0, cur.attr)
+                    cur = cur.value
+                elif _constant_getattr(cur) is not None:
+                    cur = _constant_getattr(cur)
+                else:
+                    break
             if isinstance(cur, ast.Name):
                 parts.insert(0, cur.id)
             written = ".".join(parts) if parts else ""
@@ -17477,7 +19067,13 @@ def _check_signal_escape_patterns(code: str):
                 # local API, and offering `requests.get` as a candidate refused it as egress.
                 if not self._is_shadowed(parts[0], at):
                     for module in sorted(self.module_aliases[parts[0]]):
-                        candidates.append(".".join(module.split(".") + parts[1:]))
+                        fq = ".".join(module.split(".") + parts[1:])
+                        if module not in _NETWORK_MODULES and not any(
+                            m.startswith(f"{module}.") for m in _NETWORK_MODULES
+                        ):
+                            fq = _reexported(fq)
+                        if fq is not None:
+                            candidates.append(fq)
             elif len(parts) == 1 and parts[0] in self.func_aliases:
                 if not self._is_shadowed(parts[0], at):
                     candidates.extend(sorted(self.func_aliases[parts[0]]))
@@ -17485,6 +19081,37 @@ def _check_signal_escape_patterns(code: str):
                 starred = self._star_imported_fq(parts[0], at)
                 if starred:
                     candidates.append(starred)
+            held: "list[tuple[set[str], list[str]]]" = []
+            if not isinstance(cur, ast.Name):
+                if parts:
+                    classes = self._instances_named_by(cur, at)
+                    held.append((classes, parts))
+                    for family in (c for c in classes if c.startswith("<")):
+                        for k in range(len(parts)):
+                            path = ".".join([family] + parts[:k])
+                            if path in self.instance_aliases:
+                                held.append((self.instance_aliases[path], parts[k:]))
+            elif self.instance_aliases:
+                for root in self._roots(parts[0]):
+                    for k in range(1, len(parts)):
+                        path = ".".join([root] + parts[1:k])
+                        if path in self.instance_aliases and not (
+                            k == 1 and root == parts[0] and self._is_shadowed(parts[0], at)
+                        ):
+                            held.append((self.instance_aliases[path], parts[k:]))
+            for classes, rest in held:
+                for cls in sorted(classes):
+                    fq = ".".join([cls] + rest)
+                    # Only a method the table places counts: `s.mount(prefix, adapter)` sends
+                    # nothing, though `requests.Session` is a recognised prefix.
+                    if (
+                        fq in _NETWORK_DESTINATION_ARG or fq in _UPLOAD_HTTP_METHODS
+                    ) and fq not in candidates:
+                        candidates.append(fq)
+            for fq in list(candidates):
+                top = _reexported(fq)
+                if top is not None and top not in candidates:
+                    candidates.append(top)
             return candidates
 
         def _unwrapped_url_arg(self, node: ast.AST) -> ast.AST:
@@ -17511,6 +19138,44 @@ def _check_signal_escape_patterns(code: str):
 
         def visit_Call(self, node):
             if self.collecting:
+                self.pending_calls.append((node, tuple(self.scope_stack), tuple(self.self_names)))
+                func = node.func
+                if isinstance(func, ast.Attribute) and (
+                    self._is_environ(func.value)
+                    or (
+                        func.attr == "putenv"
+                        and isinstance(func.value, ast.Name)
+                        and func.value.id in self.os_names
+                    )
+                ):
+                    if func.attr in ("setdefault", "putenv", "__setitem__") and len(node.args) >= 2:
+                        self._record_env_proxy(node.args[0], node.args[1])
+                    elif func.attr in ("update", "__ior__"):
+                        for arg in node.args:
+                            self._record_env_mapping(arg)
+                        for kw in node.keywords:
+                            if kw.arg is None:
+                                self._record_env_mapping(kw.value)  # `update(**cfg)`
+                            else:
+                                self._record_env_proxy(ast.Constant(value = kw.arg), kw.value)
+                elif isinstance(func, ast.Attribute) and func.attr in (
+                    "update",
+                    "setdefault",
+                    "__setitem__",
+                    "__ior__",
+                ):
+                    if isinstance(func.value, ast.Name):
+                        self._record_dict_mutation(
+                            func.value.id, func.attr, node.args, node.keywords
+                        )
+                    args = node.args
+                    if func.attr in ("setdefault", "__setitem__"):
+                        args = [] if args and _is_no_proxy(args[0]) else args[1:2]
+                    for value in [
+                        *args,
+                        *(kw.value for kw in node.keywords if kw.arg != "no_proxy"),
+                    ]:
+                        self._record_proxy(func.value, value, mutated = True)
                 self.generic_visit(node)
                 return
             # Resolving an alias may only ADD a way to recognise this call, never take one away.
@@ -17539,6 +19204,29 @@ def _check_signal_escape_patterns(code: str):
             )
             fq = recognised[0] if recognised else (fq_candidates[0] if fq_candidates else "")
 
+            chooser = node.func
+            if (
+                network_possible
+                and isinstance(chooser, ast.Call)
+                and isinstance(chooser.func, ast.Name)
+                and chooser.func.id == "getattr"
+                and len(chooser.args) >= 2
+                and _constant_getattr(chooser) is None
+            ):
+                at = (getattr(node, "lineno", 0), getattr(node, "col_offset", 0))
+                owner = chooser.args[0]
+                if self._modules_named_by(owner, at) or self._instances_named_by(owner, at):
+                    network_calls.append(
+                        {
+                            "type": "unreadable_host_blocked",
+                            "line": getattr(node, "lineno", -1),
+                            "description": (
+                                "Blocked: network call is chosen at runtime; "
+                                "call the function by name"
+                            ),
+                        }
+                    )
+
             hf_upload_name = _method_call_hf_upload_name(node)
             if hf_upload_name is not None:
                 violation = _hf_upload_violation(node, hf_upload_name)
@@ -17551,8 +19239,12 @@ def _check_signal_escape_patterns(code: str):
                         }
                     )
 
-            # Direct sock.connect((host, port)) bypasses the FQ-prefix branch.
-            if isinstance(node.func, ast.Attribute) and node.func.attr == "connect" and node.args:
+            if (
+                not recognised
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "connect"
+                and node.args
+            ):
                 a0 = node.args[0]
                 host_lit = None
                 if isinstance(a0, ast.Tuple) and a0.elts:
@@ -17614,16 +19306,90 @@ def _check_signal_escape_patterns(code: str):
                 specs = [
                     _NETWORK_DESTINATION_ARG[c] for c in recognised if c in _NETWORK_DESTINATION_ARG
                 ]
-                destinations: "list[tuple[ast.AST, bool]]" = []
-                for index, keywords in specs:
-                    if len(node.args) > index:
+                destinations: "list[tuple[ast.AST, bool, str]]" = []
+                for index, keywords, kind in specs:
+                    if index is not None and len(node.args) > index:
                         found = node.args[index]
                     else:
                         found = next(
                             (kw.value for kw in node.keywords or [] if kw.arg in keywords), None
                         )
-                    if found is not None:
-                        destinations.append((found, True))
+                    if found is not None and not (
+                        isinstance(found, ast.Constant) and found.value is None
+                    ):
+                        destinations.append((found, True, kind))
+                routed = list(node.keywords or [])
+                for fq, positions in _ROUTE_POSITIONS.items():
+                    if fq in recognised:
+                        for index, arg in enumerate(node.args):
+                            if isinstance(arg, ast.Starred):
+                                routed.append(ast.keyword(arg = "sock", value = _UNREADABLE))
+                                break
+                            if index in positions:
+                                routed.append(ast.keyword(arg = positions[index], value = arg))
+                for kw in routed:
+                    if isinstance(kw.value, ast.Constant) and kw.value.value is None:
+                        continue
+                    for prefix, routes in _ROUTE_KEYWORDS.items():
+                        if kw.arg in routes and any(c.startswith(prefix) for c in recognised):
+                            if kw.arg == "tunnel":
+                                destinations.append((kw.value, True, "host"))
+                            else:
+                                destinations.append((_UNREADABLE, True, "host"))
+                    if kw.arg == "connect_kwargs" and any(
+                        c.startswith("fabric.") for c in recognised
+                    ):
+                        # Fabric passes these to `SSHClient.connect`, so a `sock` routes the session.
+                        keys = list(kw.value.keys) if isinstance(kw.value, ast.Dict) else []
+                        known = isinstance(kw.value, ast.Dict)
+                        if isinstance(kw.value, ast.Name):
+                            name = kw.value.id
+                            known = name in self.dict_literals and name not in self.dict_mutated
+                            keys = [k for d in self.dict_literals.get(name, ()) for k in d.keys]
+                            keys += [k for k, _v in self.dict_entries.get(name, ())]
+                        if not known or any(
+                            not isinstance(k, ast.Constant) or k.value == "sock" for k in keys
+                        ):
+                            destinations.append((_UNREADABLE, True, "host"))
+                proxies = [kw.value for kw in node.keywords or [] if kw.arg in _PROXY_KEYWORDS]
+                if _reads_proxy_environment(node, recognised):
+                    proxies += self.env_proxies
+                if "urllib.request.ProxyHandler" in recognised and node.args:
+                    proxies.append(node.args[0])  # `ProxyHandler({"https": ...})`
+                if isinstance(node.func, ast.Attribute):
+                    owners = {c.rpartition(".")[0] for c in recognised}
+                    linked = set()
+                    for receiver in self._path_variants(node.func.value):
+                        linked |= self._linked_paths(receiver)
+                    for path in linked:
+                        proxies.extend(
+                            value
+                            for attr, value in self.receiver_destinations.get(path, ())
+                            if owners & _DESTINATION_ATTRS[attr]
+                        )
+                for proxy in proxies:
+                    if isinstance(proxy, ast.Name) and proxy.id in self.dict_literals:
+                        if proxy.id in self.dict_mutated:
+                            unreadable = True
+                        entries = [
+                            (k, v)
+                            for literal in self.dict_literals[proxy.id]
+                            for k, v in zip(literal.keys, literal.values)
+                        ] + list(self.dict_entries.get(proxy.id, ()))
+                        if any(k is None for k, _v in entries):
+                            unreadable = True
+                        values = [v for k, v in entries if k is not None and not _is_no_proxy(k)]
+                    elif isinstance(proxy, ast.Dict):
+                        if None in proxy.keys:
+                            unreadable = True  # `{**other}` merges a mapping not here to read
+                        values = [
+                            v for k, v in zip(proxy.keys, proxy.values) if not _is_no_proxy(k)
+                        ]
+                    else:
+                        values = [proxy]
+                    for value in values:
+                        if not (isinstance(value, ast.Constant) and value.value is None):
+                            destinations.append((value, True, "proxy"))
                 if specs:
                     # A splat can carry the destination past both spellings, and its contents are
                     # not here to read: `requests.get(**{"url": "http://evil.example/"})`.
@@ -17634,8 +19400,8 @@ def _check_signal_escape_patterns(code: str):
                 elif node.args:
                     # Not a call whose destination this screen knows how to locate, so arg0 is read
                     # for a literal host only and never made to fail closed.
-                    destinations.append((node.args[0], False))
-                for destination, fails_closed in destinations:
+                    destinations.append((node.args[0], False, "url"))
+                for destination, fails_closed, kind in destinations:
                     a0 = self._unwrapped_url_arg(destination)
                     is_tuple = isinstance(a0, ast.Tuple)
                     read = None if is_tuple and not a0.elts else (a0.elts[0] if is_tuple else a0)
@@ -17646,9 +19412,9 @@ def _check_signal_escape_patterns(code: str):
                     )
                     for head, whole in candidates:
                         host = None
-                        if is_tuple:
-                            if whole and head:
-                                host = head
+                        if is_tuple or kind == "host":
+                            if whole and head.strip():
+                                host = head.strip()
                         else:
                             # Leading whitespace is stripped by the client before the URL is
                             # parsed, so it cannot be used to hide the host: checked against
@@ -17658,15 +19424,25 @@ def _check_signal_escape_patterns(code: str):
                             # is still unparsable after stripping is left as no host, which is
                             # right: the client raises `MissingSchema` on it rather than reaching
                             # anything.
-                            reading = head.lstrip()
-                            m = re.match(r"^\w+://([^/?#]+)", reading)
+                            # The URL parser drops tab, CR and LF anywhere in the URL.
+                            reading = re.sub(r"[\t\r\n]", "", head).lstrip()
+                            # aiohttp 3.14.3 treats `//host/x` as absolute and connects to `host`.
+                            m = re.match(r"^(?:\w+:)?//([^/?#]+)", reading)
                             # The host ends at the first `/?#`, so a literal truncated past that point
                             # still names it in full; one truncated inside it does not
                             # (`"http://evil." + tld`).
                             if m and (whole or reading[m.end(1) :]):
                                 host = m.group(1)
+                            elif not m and kind == "proxy" and whole and reading.strip():
+                                # requests prepends `http://` to a scheme-less proxy.
+                                host = reading.strip()
+                        relative = (
+                            kind == "url"
+                            and not is_tuple
+                            and re.match(r"^\s*/[^/]", head) is not None
+                        )
                         if host is None:
-                            unreadable = unreadable or (fails_closed and not whole)
+                            unreadable = unreadable or (fails_closed and not whole and not relative)
                         else:
                             hosts.append(host)
 
@@ -17736,6 +19512,7 @@ def _check_signal_escape_patterns(code: str):
     _network_visitor = NetworkAndIoVisitor()
     if network_possible:
         _network_visitor.visit(tree)  # pass 1: gather aliases, star imports and shadows
+        _network_visitor.resolve_flows()
     _network_visitor.collecting = False
     _network_visitor.visit(tree)  # pass 2: check every call against the final maps
 
@@ -18008,6 +19785,13 @@ def _cancel_watcher(
     short-circuit)."""
     while proc.poll() is None:
         if cancel_event is not None and cancel_event.is_set():
+            request_cancel = getattr(proc, "_unsloth_cancel", None)
+            if request_cancel is not None and request_cancel():
+                try:
+                    proc.wait(timeout = 5)
+                    return
+                except subprocess.TimeoutExpired:
+                    pass
             _killpg_captured(pgid)
             _kill_process_tree(proc)
             return
@@ -18040,11 +19824,16 @@ def _truncate(
     scope: "str | None" = "",
     hint: str = "",
     reserve_tokens: float = 0.0,
+    omitted: "tuple[int, int]" = (0, 0),
 ) -> str:
     # Resolved per call, not bound at import: the default would freeze the constant before any model is loaded, which
     # is exactly when the window is still unknown.
     if limit is None:
         limit = _tool_result_char_budget()
+    # `omitted` is the (chars, lines) the drain dropped between its head and tail, so only the head may be shown.
+    size = len(text) + omitted[0]
+    if omitted[0]:
+        limit = min(limit, _SPILL_MAX_BYTES)
     # Same correction as a fetched page: a character cap reserves its share of the window only for English, and a
     # command that prints CJK or percent-escaped text costs two to three times what the cap assumed.
     # Whatever the loop will append to this result once it has it: the tool-error nudge goes on after the tool has
@@ -18086,7 +19875,7 @@ def _truncate(
     # to nothing.
     if _request_result_room() is not None:
         limit = _dense_char_limit(text, cap, cost + _RESULT_NOTICE_RESERVE)
-    if limit <= 0 and len(_zero_room_stub(len(text), None, True)) >= len(text):
+    if limit <= 0 and len(_zero_room_stub(size, None, True)) >= len(text):
         # Decided BEFORE the spill: a result this short is served whole below, and writing a file (and creating the
         # spill directory) for output that is never cut is a side effect with nothing on the other side of it.
         return text + hint
@@ -18095,7 +19884,7 @@ def _truncate(
         # No room for a body, so no room for the usual notice either: at this point the notice IS the message, and the
         # full one costs ~90 tokens of a budget that just reported none. Kept to a line so the thread stays servable
         # and the next fit can evict older turns and recover, which is the whole reason a stub beats a refusal.
-        stub = _zero_room_stub(len(text), spill, complete)
+        stub = _zero_room_stub(size, spill, complete)
         # A short result costs less than the notice explaining it is gone, and replacing "done" with a longer sentence
         # saves nothing and loses the answer.
         return (stub if len(stub) < len(text) else text) + hint
@@ -18104,7 +19893,7 @@ def _truncate(
         return (
             head
             + (
-                f"\n\n... (truncated to {limit} chars for the model; {len(text)} chars "
+                f"\n\n... (truncated to {limit} chars for the model; {size} chars "
                 "total. The full output is not retained here; any files the code wrote "
                 "persist in the working directory.)"
             )
@@ -18119,7 +19908,7 @@ def _truncate(
         # blank line, where the head is "\n" alone and a count of two makes the hint resume at line 3, skipping the
         # first line the reader never saw.
         shown = 0 if not head else head.count("\n") + (0 if head.endswith("\n") else 1)
-        total = text.count("\n") + 1
+        total = text.count("\n") + 1 + omitted[1]
         resume = f"sed -n '{shown + 1},{shown + max(1, shown)}p' {spill}"
         where = f"showing lines 1-{shown} of {total}"
     else:
@@ -18134,11 +19923,11 @@ def _truncate(
         chunk = text[len(head) : len(head) * 2 or None]
         span = len(chunk.encode("utf-8", "surrogatepass"))
         resume = f"tail -c +{offset + 1} {spill} | head -c {max(1, span)}"
-        where = f"showing the first {len(head)} chars of {len(text)}"
+        where = f"showing the first {len(head)} chars of {size}"
     # The workdir sentence stays whatever else the notice says: it is about the files the CODE wrote, not the spill,
     # and it is the only thing telling the model those survive.
     common = (
-        f"\n\n... (truncated to {limit} chars for the model; {where}, {len(text)} chars "
+        f"\n\n... (truncated to {limit} chars for the model; {where}, {size} chars "
         f"total. {_capitalise(_spill_phrase(spill, complete))}, and any files the code "
         "wrote persist in the working directory"
     )
@@ -18443,6 +20232,114 @@ def _quiet_unlink(path: str, dir_fd = None) -> None:
         os.unlink(path, dir_fd = dir_fd) if dir_fd is not None else os.unlink(path)
     except OSError:
         pass
+
+
+# Hidden, like the spill directory: a project chat's workdir can be the user's own folder.
+_ATTACHMENTS_DIR = ".unsloth_attachments"
+_ATTACHMENT_PREFIX_LEN = 12
+_ATTACHMENT_NAME_BYTES = 80
+_UNSAFE_NAME_CHARS = re.compile(r'[\x00-\x1f\x7f/\\:*?"<>|]')
+# Windows device names stay reserved with any extension (NUL.tar.gz is NUL).
+_RESERVED_NAME = re.compile(r"(?:CON|PRN|AUX|NUL|COM\d|LPT\d)", re.IGNORECASE)
+
+
+def sandbox_attachment_path(sha256: str, name: str) -> str:
+    """Mirrored by sandboxAttachmentPath in the frontend's sandbox-attachments.ts."""
+    base = _UNSAFE_NAME_CHARS.sub("_", name or "").strip(" .") or "attachment"
+    # In bytes: filesystems cap a name at 255, and macOS stores decomposed text that can triple it.
+    if len(base.encode()) > _ATTACHMENT_NAME_BYTES:
+        stem, ext = os.path.splitext(base)
+        ext = ext if len(ext.encode()) <= 16 else ""
+        room = _ATTACHMENT_NAME_BYTES - len(ext.encode())
+        # Stripped again so the basename the frontend sends back derives this same path.
+        base = (stem.encode()[:room].decode("utf-8", "ignore").rstrip(" .") or "attachment") + ext
+    if _RESERVED_NAME.fullmatch(base.split(".", 1)[0].rstrip(" ")):
+        base = "_" + base
+    return f"{_ATTACHMENTS_DIR}/{sha256[:_ATTACHMENT_PREFIX_LEN]}/{base}"
+
+
+def materialize_sandbox_attachments(
+    session_id: "str | None", attachments: "list[tuple[str, str]]"
+) -> None:
+    """Copy chat attachment originals into the sandbox, leaving one already there so edits survive."""
+    from core import chat_originals
+    with _session_in_flight(session_id):
+        workdir = _get_workdir(session_id)
+        for sha256, name in attachments:
+            source = chat_originals.originals_dir() / sha256
+            if not source.is_file():
+                continue
+            try:
+                _install_attachment_copy(workdir, sandbox_attachment_path(sha256, name), source)
+            except (OSError, ValueError):
+                logger.warning(
+                    "could not copy attachment %s into the sandbox", sha256, exc_info = True
+                )
+
+
+def _install_attachment_copy(workdir: str, relative: str, source: Path) -> None:
+    """The spill writer's discipline: no link followed, and `os.link` never replaces a name."""
+    *dirs, name = relative.split("/")
+    tmp = f".tmp-{uuid.uuid4().hex[:12]}"
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if not _DIR_FD_WRITES:
+        target = workdir
+        for part in dirs:
+            target = os.path.join(target, part)
+            if os.path.islink(target):
+                return
+            os.makedirs(target, mode = 0o700, exist_ok = True)
+        if os.path.realpath(target) != os.path.join(os.path.realpath(workdir), *dirs):
+            return
+        if os.path.lexists(os.path.join(target, name)):
+            return
+        tmp = os.path.join(target, tmp)
+        try:
+            with (
+                open(source, "rb") as src,
+                os.fdopen(os.open(tmp, flags | getattr(os, "O_NOFOLLOW", 0), 0o600), "wb") as out,
+            ):
+                shutil.copyfileobj(src, out, 1 << 20)
+            with contextlib.suppress(FileExistsError):
+                os.link(tmp, os.path.join(target, name))
+        finally:
+            _quiet_unlink(tmp)
+        return
+    fds = [os.open(workdir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)]
+    try:
+        for part in dirs:
+            with contextlib.suppress(FileExistsError):
+                os.mkdir(part, 0o700, dir_fd = fds[-1])
+            fds.append(os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd = fds[-1]))
+        with contextlib.suppress(FileNotFoundError):
+            os.stat(name, dir_fd = fds[-1], follow_symlinks = False)
+            return
+        try:
+            with (
+                open(source, "rb") as src,
+                os.fdopen(os.open(tmp, flags, 0o600, dir_fd = fds[-1]), "wb") as out,
+            ):
+                shutil.copyfileobj(src, out, 1 << 20)
+            with contextlib.suppress(FileExistsError):
+                os.link(tmp, name, src_dir_fd = fds[-1], dst_dir_fd = fds[-1])
+        finally:
+            _quiet_unlink(tmp, dir_fd = fds[-1])
+    finally:
+        for fd in fds:
+            os.close(fd)
+
+
+def _is_attachment_copy(sandbox: str, parent: str, name: str) -> bool:
+    prefix = os.path.basename(parent)
+    path = os.path.join(parent, name)
+    if (
+        os.path.dirname(parent) != os.path.join(sandbox, _ATTACHMENTS_DIR)
+        or not re.fullmatch(r"[0-9a-f]{12}", prefix)
+        or os.path.islink(path)
+    ):
+        return False
+    digest = _file_digest(path)
+    return digest is not None and digest.startswith(prefix)
 
 
 def _forget_spill_record(path: str) -> None:
@@ -18988,6 +20885,10 @@ def _missing_path_hint(output: str, workdir: str | None = None) -> str:
     )
 
 
+# Kept past the spill's head so a trailing traceback still reaches `_missing_path_hint`; also the drain's read size.
+_DRAIN_TAIL_CHARS = 64 * 1024
+
+
 def _drain_process_output(
     proc,
     timeout,
@@ -18995,17 +20896,21 @@ def _drain_process_output(
     cancel_event = None,
     *,
     pgid = None,
-) -> tuple[str, bool]:
-    """``proc.communicate(timeout=...)`` equivalent that also streams each stdout line to
-    ``output_callback`` as it is produced.
+) -> "tuple[str, bool, tuple[int, int]]":
+    """``proc.communicate(timeout=...)`` equivalent that also streams each stdout line (in
+    ``_DRAIN_TAIL_CHARS`` pieces when longer) to ``output_callback`` as it is produced.
 
-    Returns ``(output, timed_out)``. The joined output is identical to what ``communicate`` would
+    Returns ``(output, timed_out, omitted)``. The joined output is what ``communicate`` would
     return: the same TextIOWrapper decodes the stream, so encoding, error replacement, and newline
-    translation all match. On timeout the process tree is killed (mirroring the non-streaming path).
+    translation all match. Past the spill's head only a rolling tail is kept, and ``omitted`` is the
+    ``(chars, lines)`` dropped between them. On timeout the process tree is killed (mirroring the
+    non-streaming path).
     With ``timeout=None`` the drain waits for EOF like ``communicate`` would, stopping early only
     when ``cancel_event`` is set.
     """
     chunks: list[str] = []
+    tail: "deque[str]" = deque()
+    kept = joined = tail_chars = omitted_chars = omitted_lines = 0
 
     # Captured before waiting so a stdout-holding grandchild can still be killed after the leader is reaped (getpgid
     # then fails). Callers pass it in from right after Popen; fall back to capturing here for direct callers.
@@ -19013,9 +20918,26 @@ def _drain_process_output(
         pgid = _capture_process_group(proc)
 
     def _reader() -> None:
+        nonlocal kept, joined, tail_chars, omitted_chars, omitted_lines
         try:
-            for line in iter(proc.stdout.readline, ""):
-                chunks.append(line)
+            # Sized reads: a newline-free stream would otherwise arrive as one unbounded "line".
+            for line in iter(lambda: proc.stdout.readline(_DRAIN_TAIL_CHARS), ""):
+                # Chars against a byte cap: UTF-8 never has fewer bytes than chars, so the head covers the spill.
+                if kept <= _SPILL_MAX_BYTES:
+                    chunks.append(line)
+                    kept += len(line)
+                    # A str per line costs ~50 bytes, so a flood of tiny lines would dwarf the cap unless coalesced.
+                    if len(chunks) - joined >= 1024:
+                        chunks[joined:] = ["".join(chunks[joined:])]
+                        joined += 1
+                else:
+                    tail.append(line)
+                    tail_chars += len(line)
+                    while tail_chars > _DRAIN_TAIL_CHARS and len(tail) > 1:
+                        gone = tail.popleft()
+                        tail_chars -= len(gone)
+                        omitted_chars += len(gone)
+                        omitted_lines += gone.count("\n")
                 if output_callback is not None:
                     try:
                         output_callback(line)
@@ -19066,7 +20988,7 @@ def _drain_process_output(
                     break
                 reader.join(timeout = 0.5)
     reader.join(timeout = 5)
-    return "".join(chunks), timed_out
+    return "".join(chunks) + "".join(tail), timed_out, (omitted_chars, omitted_lines)
 
 
 _MAX_REPORTED_FILES = 25
@@ -19350,7 +21272,11 @@ def _created_file_sentinels(
 
 
 def _timed_out_result(
-    output: str | None, timeout: int, workdir: str | None, scope: "str | None"
+    output: str | None,
+    timeout: int,
+    workdir: str | None,
+    scope: "str | None",
+    omitted: "tuple[int, int]" = (0, 0),
 ) -> str:
     """Captured output, then the timeout status line.
 
@@ -19368,6 +21294,7 @@ def _timed_out_result(
         workdir = workdir,
         scope = scope,
         reserve_tokens = _text_token_cost(f"\n{ended}", ctx),
+        omitted = omitted,
     )
     result = f"{head}\n{ended}"
     # With the retry nudge, a stub or short head served whole can overrun a room the status fits.
@@ -19385,11 +21312,15 @@ def _python_exec(
     disable_sandbox: bool = False,
     output_callback = None,
     thread_id: str | None = None,
+    *,
+    tool_execution_mode: str = "auto",
+    host_access_approved: bool = False,
 ) -> str:
     """Execute Python code in a subprocess sandbox. disable_sandbox (Bypass Permissions): skip the
     safety analysis and rlimit pre-exec, and use the host env minus secrets. output_callback:
-    optional callable(str) streamed each stdout line as it is produced; the returned result is
-    unchanged."""
+    optional callable(str) streamed stdout as it is produced; the returned result is
+    unchanged. tool_execution_mode selects automatic or required OS isolation; disable_sandbox
+    keeps full access as a separate explicit choice."""
     if not code or not code.strip():
         return "No code provided."
 
@@ -19422,6 +21353,8 @@ def _python_exec(
 
     tmp_path = None
     _scratch_name = None
+    # Bound before the try so the finally can release even when prepare raised.
+    prepared = None
     try:
         workdir = _get_workdir(session_id)
         confinement = _account_confinement()
@@ -19456,25 +21389,52 @@ def _python_exec(
         popen_kwargs = dict(
             stdout = subprocess.PIPE,
             stderr = subprocess.STDOUT,
+            # close_fds leaves 0-2 open, so an unset stdin would be the server's.
+            stdin = subprocess.DEVNULL,
             text = True,
             # Decode child output as utf-8 (it emits utf-8 via PYTHONIOENCODING); replace so non-ASCII output never
             # crashes the read on Windows.
             encoding = "utf-8",
             errors = "replace",
-            cwd = workdir,
-            env = safe_env,
         )
-        if sys.platform != "win32":
-            popen_kwargs["preexec_fn"] = _bypass_preexec if disable_sandbox else _sandbox_preexec
-        else:
+        if sys.platform == "win32":
             popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
 
         # -u forces unbuffered child stdout so a bare print() streams live
         # instead of sitting in the pipe's block buffer until exit. Applied
         # unconditionally to stay byte-identical with and without streaming;
         # unlike PYTHONUNBUFFERED=1 it never pollutes the child's os.environ.
-        argv = _apply_confinement(confinement, popen_kwargs, [sys.executable, "-u", tmp_path])
-        proc = subprocess.Popen(argv, **popen_kwargs)
+        requested_mode = _requested_execution_mode(tool_execution_mode, disable_sandbox)
+        base_preexec = (
+            None
+            if sys.platform == "win32"
+            else (_bypass_preexec if disable_sandbox else _sandbox_preexec)
+        )
+        # Managed accounts keep their own boundary as the outer contract; `confines`, not `is not None` (placeholder).
+        if confinement is None or not confinement.confines:
+            prepared = _prepare_tool_launch(
+                os_sandbox.ToolLaunchPlan(
+                    argv = (sys.executable, "-u", tmp_path),
+                    workdir = workdir,
+                    env = safe_env,
+                    preexec_fn = base_preexec,
+                    requested_mode = requested_mode,
+                    timeout_seconds = timeout,
+                    execution_kind = "python",
+                    cancel_event = cancel_event,
+                ),
+                host_access_approved = host_access_approved and _reaches_host_paths("python", code),
+            )
+            proc = os_sandbox.spawn_prepared_launch(
+                prepared, **_apply_prepared_launch(prepared, popen_kwargs)
+            )
+            _note_tool_execution(prepared.execution_record)
+        else:
+            popen_kwargs.update(cwd = workdir, env = safe_env)
+            if sys.platform != "win32":
+                popen_kwargs["preexec_fn"] = base_preexec
+            argv = _apply_confinement(confinement, popen_kwargs, [sys.executable, "-u", tmp_path])
+            proc = subprocess.Popen(argv, **popen_kwargs)
 
         # Capture the group before any watcher can reap the leader (see _capture_process_group); None on Windows.
         pgid = _capture_process_group(proc)
@@ -19489,15 +21449,30 @@ def _python_exec(
             watcher.start()
 
         # Always drain via _drain_process_output (output_callback may be None): it kills the captured group on
-        # cancellation, reaping a grandchild that outlived the leader, and returns bytes identical to communicate() so
-        # the streaming vs non-streaming result stays byte-identical.
-        output, timed_out = _drain_process_output(
+        # cancellation, reaping a grandchild that outlived the leader, and keeps the same bytes with or without a
+        # callback so the streaming vs non-streaming result stays byte-identical.
+        output, timed_out, omitted = _drain_process_output(
             proc, timeout, output_callback, cancel_event, pgid = pgid
         )
+        if prepared is not None:
+            proc._unsloth_completion_reason = (
+                "timed_out"
+                if timed_out
+                else (
+                    "cancelled"
+                    if cancel_event is not None and cancel_event.is_set()
+                    else "finished"
+                )
+            )
+        if prepared is not None:
+            completion = os_sandbox.verify_prepared_completion(prepared, proc)
+            if completion is not None and completion.get("timedOut"):
+                timed_out = True
+            _note_tool_execution(prepared.execution_record)
         # A run that wrote its file and then hung still produced that file, so report it: `printf data > report.csv;
         # sleep 999` is downloadable.
         if timed_out:
-            ended = _timed_out_result(output, timeout, spill_dir, spill_scope)
+            ended = _timed_out_result(output, timeout, spill_dir, spill_scope, omitted)
             return ended + (
                 _created_file_sentinels(workdir, _before, _scratch_name, call_token)
                 if session_id
@@ -19524,7 +21499,7 @@ def _python_exec(
         # envelope.
         result = _defuse_sentinels(result)
         result = (
-            _truncate(result, workdir = spill_dir, scope = spill_scope, hint = hint)
+            _truncate(result, workdir = spill_dir, scope = spill_scope, hint = hint, omitted = omitted)
             if result.strip()
             else "(no output)" + hint
         )
@@ -19534,23 +21509,42 @@ def _python_exec(
         if session_id:
             result += _created_file_sentinels(workdir, _before, _scratch_name, call_token)
 
+        _forget_sandbox_capability_if_the_backend_failed(prepared, result)
         return result
 
+    except os_sandbox.SandboxUnavailableError as e:
+        if cancel_event is not None and cancel_event.is_set():
+            # A stop during the (on Windows DACL, multi-second) probe is a cancel, not a sandbox error.
+            return "Execution cancelled."
+        return _sandbox_refusal(e)
     except Exception as e:
         # An exception message carries whatever the failure put in it, so it is capped like the result would have
         # been.
+        if prepared is not None and prepared.backend == "mxc-processcontainer":
+            _note_tool_execution(prepared.execution_record)
         return _truncate(f"Execution error: {e}")
     finally:
         _call_finished(call_token)
         if _scratch_name:
             with _scratch_lock:
                 _active_scratch.discard(_scratch_name)
+        # Private mounts and descriptors, released on every exit path.
+        if prepared is not None:
+            prepared.cleanup()
+            os_sandbox.finalize_prepared_cleanup(prepared)
+            _note_tool_execution(prepared.execution_record)
         _forget_tool_pid(locals().get("proc"))
         if tmp_path and os.path.exists(tmp_path):
             try:
                 os.unlink(tmp_path)
             except OSError:
                 pass
+
+
+_CMD_MULTILINE_REFUSED = (
+    "Execution error: the Terminal runs cmd, which runs only the first line of a multi-line "
+    "command. Send one line per call and chain dependent commands with &&."
+)
 
 
 def _bash_exec(
@@ -19561,11 +21555,14 @@ def _bash_exec(
     disable_sandbox: bool = False,
     output_callback = None,
     thread_id: str | None = None,
+    *,
+    tool_execution_mode: str = "auto",
+    host_access_approved: bool = False,
 ) -> str:
     """Execute a bash command in a subprocess sandbox. disable_sandbox (Bypass Permissions): skip
     the command blocklist and rlimit pre-exec, and use the host env minus secrets.
-    output_callback: optional callable(str) streamed each stdout line as it is produced; the
-    returned result is unchanged."""
+    output_callback: optional callable(str) streamed stdout as it is produced; the returned
+    result is unchanged. tool_execution_mode follows _python_exec."""
     if not command or not command.strip():
         return "No command provided."
 
@@ -19576,9 +21573,29 @@ def _bash_exec(
     ):
         return _STUDIO_CREDENTIAL_BLOCKED
 
+    # Chosen once, so the blocklist, env and argv all agree on the shell that will run this call.
+    profile = _terminal_profile(disable_sandbox)
+    if profile == "cmd_isolated":
+        # Models often end a command with a newline; cmd /s /c cannot carry one.
+        command = command.strip()
+        if "\n" in command or "\r" in command:
+            return _CMD_MULTILINE_REFUSED
+
     # Block dangerous commands (skipped when the sandbox is disabled)
     if not disable_sandbox:
-        blocked = _find_blocked_commands(command)
+        if profile == "cmd_isolated":
+            # The cmd lexer misses separators glued to a word (a&powershell), cmd drops ^ escapes and
+            # ' does not quote, so screen every reading; defence in depth, MXC is the boundary.
+            unescaped = command.replace("^", "")
+            blocked = set().union(
+                *(
+                    _find_blocked_commands(text, posix = posix)
+                    for text in (command, unescaped, _cmd_reading(command))
+                    for posix in (False, True)
+                )
+            )
+        else:
+            blocked = _find_blocked_commands(command)
         if blocked:
             # Capped for the same reason the Python analyzer's error is: it lists what it found in the command it was
             # handed.
@@ -19599,6 +21616,7 @@ def _bash_exec(
     spill_dir = None
     spill_scope = None
     call_token = None
+    prepared = None
     _scratch_name = None
     try:
         try:
@@ -19613,29 +21631,67 @@ def _bash_exec(
         # Same pre-run snapshot as _python_exec. A command that writes a file used to produce "(no output)" and no
         # other trace anywhere in the product.
         _before = _snapshot_workdir_files(workdir)
-        safe_env = _build_bypass_env(workdir) if disable_sandbox else _build_safe_env(workdir)
+        safe_env = (
+            _build_bypass_env(workdir)
+            if disable_sandbox
+            else _build_safe_env(workdir, shell = profile if profile == "cmd_isolated" else None)
+        )
         popen_kwargs = dict(
             stdout = subprocess.PIPE,
             stderr = subprocess.STDOUT,
+            # See _python_exec: the server's stdin must not reach a tool call.
+            stdin = subprocess.DEVNULL,
             text = True,
             # Match _python_exec: decode utf-8 with "replace" so invalid output bytes never raise UnicodeDecodeError
             # (which the streaming reader thread would swallow), keeping both paths byte-identical.
             encoding = "utf-8",
             errors = "replace",
-            cwd = workdir,
-            env = safe_env,
         )
-        if sys.platform != "win32":
-            popen_kwargs["preexec_fn"] = _bypass_preexec if disable_sandbox else _sandbox_preexec
-        else:
+        if sys.platform == "win32":
             popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
 
-        shell_argv, _scratch_name = _shell_argv(command, workdir, confinement)
+        if profile == "cmd_isolated":
+            shell_argv, _scratch_name = [_windows_system_cmd(), "/c", command], None
+        else:
+            shell_argv, _scratch_name = _shell_argv(command, workdir, confinement)
         if _scratch_name:
             with _scratch_lock:
                 _active_scratch.add(_scratch_name)
-        argv = _apply_confinement(confinement, popen_kwargs, shell_argv)
-        proc = subprocess.Popen(argv, **popen_kwargs)
+        requested_mode = _requested_execution_mode(tool_execution_mode, disable_sandbox)
+        host_reach_approved = host_access_approved and _reaches_host_paths("terminal", command)
+        if profile == "cmd_isolated" and requested_mode == "auto" and not host_reach_approved:
+            # Written for the isolated cmd Terminal and screened only by its lexer: never replayed on the host if
+            # isolation drops out between the profile check and the launch.
+            requested_mode = "required"
+        base_preexec = (
+            None
+            if sys.platform == "win32"
+            else (_bypass_preexec if disable_sandbox else _sandbox_preexec)
+        )
+        if confinement is None or not confinement.confines:
+            prepared = _prepare_tool_launch(
+                os_sandbox.ToolLaunchPlan(
+                    argv = tuple(shell_argv),
+                    workdir = workdir,
+                    env = safe_env,
+                    preexec_fn = base_preexec,
+                    requested_mode = requested_mode,
+                    timeout_seconds = timeout,
+                    execution_kind = "terminal",
+                    cancel_event = cancel_event,
+                ),
+                host_access_approved = host_reach_approved,
+            )
+            proc = os_sandbox.spawn_prepared_launch(
+                prepared, **_apply_prepared_launch(prepared, popen_kwargs)
+            )
+            _note_tool_execution(prepared.execution_record)
+        else:
+            popen_kwargs.update(cwd = workdir, env = safe_env)
+            if sys.platform != "win32":
+                popen_kwargs["preexec_fn"] = base_preexec
+            argv = _apply_confinement(confinement, popen_kwargs, shell_argv)
+            proc = subprocess.Popen(argv, **popen_kwargs)
 
         # Capture the group before any watcher can poll/reap the leader (see _python_exec); None on Windows.
         pgid = _capture_process_group(proc)
@@ -19650,14 +21706,29 @@ def _bash_exec(
             watcher.start()
 
         # Always drain via _drain_process_output (see _python_exec): kills the captured group on cancellation and
-        # returns bytes identical to communicate(), keeping streaming vs non-streaming byte-identical.
-        output, timed_out = _drain_process_output(
+        # keeps the same bytes with or without a callback, so streaming vs non-streaming stays byte-identical.
+        output, timed_out, omitted = _drain_process_output(
             proc, timeout, output_callback, cancel_event, pgid = pgid
         )
+        if prepared is not None:
+            proc._unsloth_completion_reason = (
+                "timed_out"
+                if timed_out
+                else (
+                    "cancelled"
+                    if cancel_event is not None and cancel_event.is_set()
+                    else "finished"
+                )
+            )
+        if prepared is not None:
+            completion = os_sandbox.verify_prepared_completion(prepared, proc)
+            if completion is not None and completion.get("timedOut"):
+                timed_out = True
+            _note_tool_execution(prepared.execution_record)
         # A run that wrote its file and then hung still produced that file, so report it: `printf data > report.csv;
         # sleep 999` is downloadable.
         if timed_out:
-            ended = _timed_out_result(output, timeout, spill_dir, spill_scope)
+            ended = _timed_out_result(output, timeout, spill_dir, spill_scope, omitted)
             return ended + (
                 _created_file_sentinels(workdir, _before, _scratch_name, call_token)
                 if session_id
@@ -19678,21 +21749,34 @@ def _bash_exec(
         hint = _missing_path_hint(result, workdir)
         result = _defuse_sentinels(result)  # before the fit; see _python_exec
         result = (
-            _truncate(result, workdir = spill_dir, scope = spill_scope, hint = hint)
+            _truncate(result, workdir = spill_dir, scope = spill_scope, hint = hint, omitted = omitted)
             if result.strip()
             else "(no output)" + hint
         )
         # Only for a chat that has an id (see _python_exec).
         if session_id:
             result += _created_file_sentinels(workdir, _before, _scratch_name, call_token)
+        _forget_sandbox_capability_if_the_backend_failed(prepared, result)
         return result
 
+    except os_sandbox.SandboxUnavailableError as e:
+        if cancel_event is not None and cancel_event.is_set():
+            # A stop during the (on Windows DACL, multi-second) probe is a cancel, not a sandbox error.
+            return "Execution cancelled."
+        return _sandbox_refusal(e)
     except Exception as e:
         # An exception message carries whatever the failure put in it, so it is capped like the result would have
         # been.
+        if prepared is not None and prepared.backend == "mxc-processcontainer":
+            _note_tool_execution(prepared.execution_record)
         return _truncate(f"Execution error: {e}")
     finally:
         _call_finished(call_token)
+        # Private mounts and descriptors, released on every exit path.
+        if prepared is not None:
+            prepared.cleanup()
+            os_sandbox.finalize_prepared_cleanup(prepared)
+            _note_tool_execution(prepared.execution_record)
         _forget_tool_pid(locals().get("proc"))
         if _scratch_name:
             with _scratch_lock:

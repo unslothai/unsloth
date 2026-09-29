@@ -860,6 +860,8 @@ def test_a_named_processor_template_is_classified_without_tool_use():
     it advertised a catalog the prompt never shows (#10092)."""
     import asyncio
 
+    from fastapi import HTTPException
+
     _pytest = _shared_setup_1(__file__)
     import routes.inference as inf
 
@@ -901,12 +903,14 @@ def test_a_named_processor_template_is_classified_without_tool_use():
                 payload, request = passthrough._Request(), current_subject = "u"
             )
 
-        asyncio.run(_run())
+        with _pytest.raises(HTTPException) as exc:
+            asyncio.run(_run())
     finally:
         monkeypatch.undo()
 
-    assert backend.calls, "generation never ran"
-    assert not backend.calls[0]["tools"]
+    assert exc.value.status_code == 400
+    assert exc.value.detail["error"]["param"] == "tools"
+    assert backend.calls == []
 
 
 def test_a_historical_image_stays_on_the_turn_that_sent_it():

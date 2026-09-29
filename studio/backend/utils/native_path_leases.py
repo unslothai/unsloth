@@ -195,7 +195,10 @@ def verify_native_path_lease(
     expected_kind: str | None = None,
     expected_path_type: str | None = None,
     allowed_suffixes: Iterable[str] | None = None,
+    consume: bool = True,
 ) -> NativePathGrant:
+    """Check a grant and use it up. ``consume = False`` only checks it, for a caller that verifies
+    a whole batch before reading any of it, and verifies each again (consuming) when it reads."""
     if not lease:
         raise NativePathLeaseError("Native path grant is required.")
 
@@ -254,9 +257,19 @@ def verify_native_path_lease(
     current_identity = _validate_current_stat(grant, identity_options)
     if current_identity is not None:
         grant = replace(grant, device_id = current_identity[0], file_id = current_identity[1])
-    _consume_nonce(str(payload["nonce"]), grant.expires_at_ms)
+    if consume:
+        _consume_nonce(str(payload["nonce"]), grant.expires_at_ms)
     _remember_native_path_for_redaction(str(resolved), grant.display_label)
     return grant
+
+
+def release_native_path_lease(lease: str) -> None:
+    """Make a grant this caller consumed usable again, once it has undone everything it read with
+    it: a batch that failed part way and kept nothing, so its retry is not refused as a replay.
+    Only for a lease the caller verified itself; the grant still expires as signed."""
+    payload = _decode_payload(_split_lease(lease)[0])
+    with _REPLAY_LOCK:
+        _USED_NONCES.pop(str(payload.get("nonce")), None)
 
 
 def display_label_for_native_path(value: str | None) -> str | None:

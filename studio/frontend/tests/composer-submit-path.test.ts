@@ -43,6 +43,12 @@ const releaseCallback = lift(
       .getText(source)
       .includes("const behavior = pendingFollowUpBehaviorRef.current;"),
 );
+const reservedSendCallback = lift(
+  (n) =>
+    ts.isArrowFunction(n) &&
+    n.getText(source).startsWith("(...alsoGuard: string[]) =>") &&
+    n.getText(source).includes("reservePreStreamRun"),
+);
 function createCallback(
   code: string,
   deps: Record<string, unknown>,
@@ -145,17 +151,64 @@ for (const active of ["runtime", "pre-stream", "queue", "idle"]) {
     release(); // An old render cannot release a cancelled/consumed send twice.
     assert.deepEqual(
       calls,
-      active === "idle" ? ["clear", "send"] : [[active !== "queue", "steer"]],
+      active === "idle"
+        ? ["clear", "send"]
+        : [[active !== "queue", "steer"]],
     );
     assert.equal(pendingSendRef.current, false);
   });
 }
 
+test("main cancels an audio upload only after a normal send reservation succeeds", () => {
+  const run = (reservationToken: symbol | null) => {
+    const calls: string[] = [];
+    const deps = {
+      aui: {
+        threads: () => ({ __internal_getAssistantRuntime: () => undefined }),
+        composer: () => ({
+          getState: () => ({ text: "Draft" }),
+          send: () => calls.push("send"),
+        }),
+      },
+      reservePreStreamRun: () => reservationToken,
+      preStreamThreadIds: ["chat"],
+      parseExternalModelId: () => null,
+      useChatRuntimeStore: {
+        getState: () => ({
+          params: { checkpoint: "local/model" },
+          incognito: false,
+          activeGgufVariant: null,
+        }),
+      },
+      preStreamRunReservationRef: { current: null },
+      toast: { error: () => calls.push("refused") },
+      cancelAudioUpload: () => calls.push("cancel-upload"),
+      claimThreadCreation: () => calls.push("claim"),
+      projectScope: null,
+      armJustSent: () => calls.push("arm"),
+      releasePreStreamRunReservation: () => true,
+      notifyPromptQueueRunFailed: () => undefined,
+      referenceThreadId: "chat",
+    };
+    const send = createCallback(reservedSendCallback, deps);
+    send();
+    return calls;
+  };
+
+  assert.deepEqual(run(null), ["refused"]);
+  assert.deepEqual(run(Symbol("reservation")), [
+    "cancel-upload",
+    "claim",
+    "send",
+    "arm",
+  ]);
+});
+
 test("main, edit and comparison composers use the setting and expose settings access", () => {
   assert.match(text, /submitMode="none"/);
   assert.match(
     text,
-    /submitMode=\{sendShortcut === "mod-enter" \? "ctrlEnter" : "enter"\}/,
+    /effectiveSendShortcut\(sendShortcut, editMultiline \? "\\n" : ""\) === "mod-enter"\s*\? "ctrlEnter"\s*: "enter"/,
   );
   assert.match(
     text,
@@ -163,7 +216,7 @@ test("main, edit and comparison composers use the setting and expose settings ac
   );
   assert.match(text, /scrollTarget: "chat-composer"/);
   const compare = readSrc("features/chat/shared-composer.tsx");
-  assert.match(compare, /composerSubmitIntent\(e, sendShortcut\)/);
+  assert.match(compare, /composerSubmitIntent\(e, sendShortcut, text\)/);
   assert.match(compare, /scrollTarget: "chat-composer"/);
   const page = readSrc("features/chat/chat-page.tsx");
   assert.match(page, /showContextWindowUsage &&\s*view.mode === "single"/);

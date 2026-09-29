@@ -3,6 +3,7 @@
 
 import { useChatArtifactsStore } from "./artifacts/store";
 import { mlxRuntimeStateFrom } from "./lib/mlx-runtime-state";
+import { offloadCountsFrom, offloadWarning } from "./lib/partial-offload";
 import {
   clearedServerTuningState,
   committedServerTuningState,
@@ -20,11 +21,11 @@ import {
   composerSubmitIntent,
   composerShortcutLabels,
 } from "./utils/composer-preferences";
-import { useT } from "@/i18n";
 import { Button } from "@/components/ui/button";
+import { Spinner } from "@/components/ui/spinner";
 import { BulbIcon } from "@/lib/bulb-icon";
 import { MicIcon } from "@/lib/mic-icon";
-import { Tick02Icon } from "@/lib/tick-icon";
+import { MenuTickIcon, Tick02Icon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
 import {
   DropdownMenu,
@@ -66,6 +67,11 @@ import { classifiedAttachmentFiles, isVideoFile } from "@/lib/video-utils";
 import { isDownloadCancelled } from "@/lib/native-files";
 import { isMultimodalResponse } from "./types/api";
 import { getImageInputUnavailableReason } from "./utils/image-input-support";
+import {
+  CHAT_IMAGE_ACCEPT,
+  isChatImageFile,
+  normalizeChatImage,
+} from "./image-normalize";
 import { modelIdsMatch } from "@/features/hub/lib/model-identity";
 import { CONVERSATION_MARKDOWN_LABEL } from "./utils/conversation-markdown";
 import { pasteClipboardFiles } from "./utils/clipboard-files";
@@ -122,7 +128,10 @@ import { reasoningCapsFromLoad } from "./lib/apply-inference-status-to-store";
 import { KnowledgeBaseComposerButton } from "@/features/rag/components/knowledge-base-composer-button";
 import { NewProjectDialog } from "./components/new-project-dialog";
 import { ChatSkillsDialog } from "./components/chat-skills-dialog";
+import { ChatAudioUploadMount } from "./components/chat-audio-upload-mount";
 import { useChatProjects } from "./hooks/use-chat-projects";
+import { useChatAudioUpload } from "./hooks/use-chat-audio-upload";
+import { currentDictationEntryMode } from "./utils/dictation-entry";
 import { confirmRemoteCodeIfNeeded } from "@/features/security";
 import {
   DEFAULT_MAX_SEQ_LENGTH,
@@ -166,6 +175,7 @@ import { compareModelDisplayName } from "./lib/external-model-label";
 import { useExternalProvidersStore } from "./stores/external-providers-store";
 import { useComposerPillFit } from "@/hooks/use-composer-pill-fit";
 import { useIsMobile } from "@/hooks/use-mobile";
+import { useT } from "@/i18n";
 import {
   PLUS_MENU_ORDER,
   type PlusMenuItemId,
@@ -210,6 +220,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useId,
   useRef,
   useState,
   useSyncExternalStore,
@@ -233,7 +244,6 @@ export interface CompareHandle {
   waitForRunEnd: () => Promise<void>;
 }
 
-const IMAGE_ACCEPT = "image/jpeg,image/png,image/webp,image/gif";
 const MAX_IMAGE_SIZE = 20 * 1024 * 1024;
 
 // Inlined to avoid a new icon dep. Kept in sync with the main composer.
@@ -574,7 +584,6 @@ export function SharedComposer({
 }): ReactElement {
   const t = useT();
   const sendShortcut = useChatPreferencesStore((s) => s.sendShortcut);
-  const shortcutLabels = composerShortcutLabels(sendShortcut, isMacPlatform());
   const navigate = useNavigate();
   // Exit compare: parent's restore handler, or fresh chat if opened by URL.
   const handleExitCompare = useCallback(() => {
@@ -585,17 +594,41 @@ export function SharedComposer({
     navigate({ to: "/chat" });
   }, [navigate, onExitCompare]);
   const [text, setText] = useState("");
-  // This is the composer on screen in compare mode, and it keeps its draft here rather than
-  // in the chat runtime, so a canvas's Fix button cannot reach it the way it reaches a single
-  // chat's. It leaves the text in the artifacts store instead and this picks it up. Staged
-  // only: nothing is sent until the user presses send.
+  const shortcutLabels = composerShortcutLabels(sendShortcut, isMacPlatform(), text);
+  const [running, setRunning] = useState(false);
+  const [comparing, setComparing] = useState(false);
+  const [pendingImages, setPendingImages] = useState<PendingImage[]>([]);
+  const [convertingImages, setConvertingImages] = useState(0);
+  const [pendingAudio, setPendingAudio] = useState<{
+    name: string;
+    base64: string;
+    contentType: string;
+  } | null>(null);
+  const textRef = useRef(text);
+  const pendingImagesRef = useRef(pendingImages);
+  const pendingAudioRef = useRef(pendingAudio);
+  const setCurrentText = useCallback(
+    (value: string | ((previous: string) => string)) => {
+      const next =
+        typeof value === "function" ? value(textRef.current) : value;
+      textRef.current = next;
+      setText(next);
+    },
+    [],
+  );
+  useEffect(() => {
+    textRef.current = text;
+    pendingImagesRef.current = pendingImages;
+    pendingAudioRef.current = pendingAudio;
+  }, [text, pendingImages, pendingAudio]);
+  // Compare keeps its draft here, not in a chat runtime, so a canvas Fix is staged via the store.
   const pendingFixPrompt = useChatArtifactsStore(
     (state) => state.pendingFixPrompt,
   );
   useEffect(() => {
     if (!pendingFixPrompt) return;
     useChatArtifactsStore.getState().clearFixPrompt();
-    setText((current) =>
+    setCurrentText((current) =>
       current.trim().length > 0
         ? `${current}\n\n${pendingFixPrompt}`
         : pendingFixPrompt,
@@ -605,23 +638,7 @@ export function SharedComposer({
         .querySelector<HTMLTextAreaElement>(COMPOSER_INPUT_SELECTOR)
         ?.focus();
     }, 0);
-  }, [pendingFixPrompt]);
-  const [running, setRunning] = useState(false);
-  const [comparing, setComparing] = useState(false);
-  const [pendingImages, setPendingImages] = useState<PendingImage[]>([]);
-  const [pendingAudio, setPendingAudio] = useState<{
-    name: string;
-    base64: string;
-    contentType: string;
-  } | null>(null);
-  const textRef = useRef(text);
-  const pendingImagesRef = useRef(pendingImages);
-  const pendingAudioRef = useRef(pendingAudio);
-  useEffect(() => {
-    textRef.current = text;
-    pendingImagesRef.current = pendingImages;
-    pendingAudioRef.current = pendingAudio;
-  }, [text, pendingImages, pendingAudio]);
+  }, [pendingFixPrompt, setCurrentText]);
   const [dragging, setDragging] = useState(false);
   const [isComposing, setIsComposing] = useState(false);
   const [newProjectOpen, setNewProjectOpen] = useState(false);
@@ -698,7 +715,7 @@ export function SharedComposer({
 
   const skillMentions = useTextareaSkillMentions({
     text,
-    setText,
+    setText: setCurrentText,
     inputRef: textareaRef,
     composingRef,
     enabled: supportsTools,
@@ -929,9 +946,36 @@ export function SharedComposer({
   const {
     isDictating,
     isFinalizing: isDictationFinalizing,
-    start: startDictation,
+    start: startDictationSession,
     stop: stopDictation,
-  } = useDictation(setText);
+  } = useDictation(setCurrentText);
+  const chatActive = useChatActive();
+  const compareUploadInstanceId = useId();
+  const audioUploadOwner = `${compareUploadInstanceId}:${model1?.id ?? ""}:${model2?.id ?? ""}`;
+  const readAudioUploadDraft = useCallback(() => textRef.current, []);
+  const writeAudioUploadDraft = useCallback(
+    (value: string) => setCurrentText(value),
+    [setCurrentText],
+  );
+  const focusAudioUploadDraft = useCallback(() => {
+    textareaRef.current?.focus({ preventScroll: true });
+  }, []);
+  const audioUpload = useChatAudioUpload({
+    owner: audioUploadOwner,
+    chatId: null,
+    disabled: isDictating || !chatActive,
+    readDraft: readAudioUploadDraft,
+    writeDraft: writeAudioUploadDraft,
+    focusDraft: focusAudioUploadDraft,
+  });
+  const startDictation = useCallback(() => {
+    if (audioUpload.busy || !chatActive) return;
+    if (currentDictationEntryMode() === "recording-file") {
+      audioUpload.openDialog();
+      return;
+    }
+    startDictationSession();
+  }, [audioUpload, chatActive, startDictationSession]);
 
   useEffect(() => {
     const id = setInterval(() => {
@@ -966,7 +1010,7 @@ export function SharedComposer({
     toast(`Prompt ${nextIndex + 1} / ${queueRef.current.length}`, {
       description: next.length > 80 ? next.slice(0, 80) + "…" : next,
     });
-    setText(next);
+    setCurrentText(next);
     setTimeout(() => { sendRef.current?.(); }, 100);
   }
 
@@ -1021,6 +1065,7 @@ export function SharedComposer({
       let droppedImageForUnavailable = false;
       let audioSizeError: string | null = null;
       let videoUnsupported = false;
+      let conversionError: string | null = null;
       for (let i = 0; i < files.length; i++) {
         const file = files[i];
         if (!file) continue;
@@ -1042,19 +1087,33 @@ export function SharedComposer({
           videoUnsupported = true;
           continue;
         }
-        if (!file.type.match(/^image\/(jpeg|png|webp|gif)$/i)) continue;
+        if (!isChatImageFile(file)) continue;
         if (file.size > MAX_IMAGE_SIZE) continue;
         if (attachUnavailableReason) {
           droppedImageForUnavailable = true;
           continue;
         }
-        next.push({ id: crypto.randomUUID(), file });
+        let image: File;
+        setConvertingImages((count) => count + 1);
+        try {
+          image = await normalizeChatImage(file);
+        } catch (error) {
+          conversionError ??=
+            error instanceof Error ? error.message : String(error);
+          continue;
+        } finally {
+          setConvertingImages((count) => count - 1);
+        }
+        next.push({ id: crypto.randomUUID(), file: image });
       }
       if (droppedImageForUnavailable && attachUnavailableReason) {
         toast.error(attachUnavailableReason);
       }
       if (audioSizeError) {
         toast.error(audioSizeError);
+      }
+      if (conversionError) {
+        toast.error(conversionError);
       }
       if (videoUnsupported) {
         toast.error("Video can't be attached in compare mode", {
@@ -1078,8 +1137,7 @@ export function SharedComposer({
           const supported = files.some(
             (file) =>
               isAudioAttachmentFile(file) ||
-              (file.type.match(/^image\/(jpeg|png|webp|gif)$/i) &&
-                file.size <= MAX_IMAGE_SIZE),
+              (isChatImageFile(file) && file.size <= MAX_IMAGE_SIZE),
           );
           if (!supported) throw new Error("Unsupported compare attachment");
           await addFiles(files);
@@ -1132,7 +1190,7 @@ export function SharedComposer({
   useEffect(() => () => clearStuckImeTimer(), []);
 
   async function send() {
-    if (composingRef.current) {
+    if (composingRef.current || convertingImages > 0) {
       resetPromptQueue();
       return;
     }
@@ -1251,7 +1309,7 @@ export function SharedComposer({
       });
     };
     const clearSubmittedDraft = () => {
-      setText("");
+      setCurrentText("");
       setPendingImages([]);
       setPendingAudio(null);
       clearPendingAudioStore();
@@ -1325,6 +1383,7 @@ export function SharedComposer({
         keepChangedDraft();
         return;
       }
+      audioUpload.cancel();
       clearSubmittedDraft();
       // Set when an accepted transformers install unloaded the active model server-side; a later
       // failure must then clear the stale checkpoint.
@@ -1623,7 +1682,7 @@ export function SharedComposer({
           approved_remote_code_fingerprint: approvedRemoteCodeFingerprint,
           chat_template_override: effectiveChatTemplateOverride,
           cache_type_kv: ownConfig.kvCacheDtype ?? null,
-          mlx_kv_bits: ownConfig.mlxKvBits ?? null,
+          mlx_kv_quant: ownConfig.mlxKvQuant ?? null,
           speculative_type: effectiveSpeculativeType,
           spec_draft_n_max: effectiveSpecDraftNMax,
           reasoning_budget:
@@ -1636,6 +1695,7 @@ export function SharedComposer({
               : "",
           tensor_parallel: effectiveTensorParallel,
           disable_vision: effectiveDisableVision,
+          n_parallel: ownConfig.nParallel ?? null,
           force_cancel_active:
             compareStopDecision?.forceCancelActive ?? false,
           ...(targetIsGguf
@@ -1645,9 +1705,6 @@ export function SharedComposer({
                 n_cpu_moe: effectiveNCpuMoe,
                 tensor_split: compareLoadKnobs.splitRatio ?? undefined,
                 gpu_ids: effectiveSelectedGpuIds ?? undefined,
-                n_parallel: ownConfig.nParallel ?? null,
-                // Only when this panel has read the stored value: omitted, the load inherits it, which keeps
-                // CLI-set flags working.
                 ...(ownConfig.llamaExtraArgs !== undefined
                   ? // biome-ignore lint/style/useNamingConvention: API schema
                     { llama_extra_args: ownConfig.llamaExtraArgs ?? [] }
@@ -1670,6 +1727,13 @@ export function SharedComposer({
         // Persist the GPU Memory mode on a non-diffusion GGUF compare-load too, so an applied manual
         // choice survives a restart.
         persistGpuMemoryModeOnLoad(resp, effectiveGpuMemoryMode);
+        const compareOffload = offloadWarning(offloadCountsFrom(resp));
+        if (compareOffload) {
+          toast.warning(
+            `${compareModelDisplayName(sel.id)} loaded${compareOffload.titleSuffix}`,
+            { description: compareOffload.description, duration: 8000 },
+          );
+        }
         upgradeUnloadedActive = false;
         const store = useChatRuntimeStore.getState();
         store.setCheckpoint(
@@ -1708,7 +1772,7 @@ export function SharedComposer({
         // Slots this compare load committed. Diffusion ignores --parallel, so a
         // count there would mint a phantom override a preset carries onto a GGUF.
         const committedSlots =
-          targetIsGguf && !(resp.is_diffusion ?? false)
+          ((resp.is_gguf ?? false) && !(resp.is_diffusion ?? false)) || (resp.is_mlx ?? false)
             ? (ownConfig.nParallel ?? null)
             : null;
         // same rule for the batch sizes
@@ -1964,6 +2028,7 @@ export function SharedComposer({
           reservations.push(token);
         }
       }
+      audioUpload.cancel();
       clearSubmittedDraft();
       for (const handle of handles) {
         handle.append(content);
@@ -2003,7 +2068,7 @@ export function SharedComposer({
       }
       setCompositionState(false);
     }
-    if (composerSubmitIntent(e, sendShortcut)) {
+    if (composerSubmitIntent(e, sendShortcut, text)) {
       e.preventDefault();
       if (!busy && !isDictating) {
         send();
@@ -2018,11 +2083,11 @@ export function SharedComposer({
     !busy &&
     !isComposing &&
     !isDictating &&
+    convertingImages === 0 &&
     !sendUnavailableReason;
 
   // Compare mode swaps this composer in for the single-chat one and only one is ever on screen, so the
   // chords register in both. Both gate on the chat tab being visible: off-route the pane is hidden.
-  const chatActive = useChatActive();
   useShortcut(
     "startDictation",
     () => {
@@ -2092,7 +2157,7 @@ export function SharedComposer({
         <HugeiconsIcon icon={FileDatabaseIcon} strokeWidth={2} />
         Chat with files
         {ragEnabled && !ragDisabled ? (
-          <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="ml-auto" />
+          <HugeiconsIcon icon={MenuTickIcon} strokeWidth={2} className="ml-auto" />
         ) : null}
       </DropdownMenuItem>
     ),
@@ -2105,7 +2170,7 @@ export function SharedComposer({
         <HugeiconsIcon icon={McpServerIcon} strokeWidth={2} />
         MCP
         {mcpEnabledForChat ? (
-          <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="ml-auto" />
+          <HugeiconsIcon icon={MenuTickIcon} strokeWidth={2} className="ml-auto" />
         ) : null}
       </DropdownMenuItem>
     ),
@@ -2129,7 +2194,7 @@ export function SharedComposer({
             <DropdownMenuItem
               key={p.id}
               onSelect={() => {
-                setText(p.text);
+                setCurrentText(p.text);
                 requestAnimationFrame(() => textareaRef.current?.focus());
               }}
             >
@@ -2151,7 +2216,7 @@ export function SharedComposer({
       >
         <Columns2Icon />
         Compare chat
-        <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="ml-auto" />
+        <HugeiconsIcon icon={MenuTickIcon} strokeWidth={2} className="ml-auto" />
       </DropdownMenuItem>
     ),
     exportChat: (
@@ -2206,7 +2271,7 @@ export function SharedComposer({
         <HugeiconsIcon icon={PencilRulerIcon} strokeWidth={2} />
         Canvas
         {artifactsEnabled ? (
-          <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="ml-auto" />
+          <HugeiconsIcon icon={MenuTickIcon} strokeWidth={2} className="ml-auto" />
         ) : null}
       </DropdownMenuItem>
     ) : null,
@@ -2266,12 +2331,13 @@ export function SharedComposer({
       }}
     >
       <ChatSkillsDialog open={skillsOpen} onOpenChange={setSkillsOpen} />
+      <ChatAudioUploadMount audioUpload={audioUpload} />
 
       <PromptStorageDialog
         open={promptStorageOpen}
         onOpenChange={setPromptStorageOpen}
         onUse={(t) => {
-          setText(t);
+          setCurrentText(t);
           requestAnimationFrame(() => textareaRef.current?.focus());
         }}
         onRunList={(items) => {
@@ -2298,7 +2364,7 @@ export function SharedComposer({
           toast(`Prompt 1 / ${filtered.length}`, {
             description: filtered[0].length > 80 ? filtered[0].slice(0, 80) + "…" : filtered[0],
           });
-          setText(filtered[0]);
+          setCurrentText(filtered[0]);
           setTimeout(() => { sendRef.current?.(); }, 100);
         }}
       />
@@ -2363,7 +2429,7 @@ export function SharedComposer({
           // must match the DOM at all times, else an unrelated parent re-render reconciles the textarea back
           // to the stored value mid-composition, wiping the preedit (#5318).
           setCompositionState(isNativeComposing(e.nativeEvent));
-          setText(e.target.value);
+          setCurrentText(e.target.value);
           skillMentions.update(
             e.target.value,
             e.target.selectionStart ?? e.target.value.length,
@@ -2385,7 +2451,7 @@ export function SharedComposer({
         }}
         onCompositionEnd={(e: CompositionEvent<HTMLTextAreaElement>) => {
           setCompositionState(false);
-          setText(e.currentTarget.value);
+          setCurrentText(e.currentTarget.value);
         }}
         onKeyDown={(event) => {
           if (!skillMentions.onKeyDown(event)) onKeyDown(event);
@@ -2417,7 +2483,7 @@ export function SharedComposer({
           <input
             ref={fileInputRef}
             type="file"
-            accept={IMAGE_ACCEPT}
+            accept={CHAT_IMAGE_ACCEPT}
             multiple
             className="hidden"
             onChange={(e) => {
@@ -2496,7 +2562,7 @@ export function SharedComposer({
                 Web search
                 {toolsEnabled && !searchDisabled ? (
                   <HugeiconsIcon
-                    icon={Tick02Icon}
+                    icon={MenuTickIcon}
                     strokeWidth={2}
                     className="ml-auto"
                   />
@@ -2520,7 +2586,7 @@ export function SharedComposer({
                 Code
                 {codeToolsEnabled && !codeDisabled ? (
                   <HugeiconsIcon
-                    icon={Tick02Icon}
+                    icon={MenuTickIcon}
                     strokeWidth={2}
                     className="ml-auto"
                   />
@@ -2540,7 +2606,7 @@ export function SharedComposer({
                   Images
                   {imageToolsEnabled && !imageDisabled ? (
                     <HugeiconsIcon
-                      icon={Tick02Icon}
+                      icon={MenuTickIcon}
                       strokeWidth={2}
                       className="ml-auto"
                     />
@@ -2902,17 +2968,34 @@ export function SharedComposer({
           {
             <>
               {!isDictating ? (
-                <TooltipIconButton
-                  tooltip="Dictate"
-                  side="bottom"
-                  variant="ghost"
-                  size="icon"
-                  className="size-8 rounded-full text-muted-foreground"
-                  onClick={startDictation}
-                  aria-label="Dictate"
-                >
-                  <MicIcon className="unsloth-dictate-icon size-4" />
-                </TooltipIconButton>
+                audioUpload.busy ? (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-8 gap-1.5 rounded-full px-2 text-muted-foreground"
+                    aria-label={t("settings.voice.dictation.audioUploadCancel")}
+                    title={t("settings.voice.dictation.audioUploadCancel")}
+                    onClick={audioUpload.cancel}
+                  >
+                    <Spinner className="size-3.5" />
+                    <span>{t("settings.voice.dictation.audioUploadTranscribing")}</span>
+                    <XIcon className="size-3" aria-hidden="true" />
+                  </Button>
+                ) : (
+                  <TooltipIconButton
+                    tooltip="Dictate"
+                    side="bottom"
+                    variant="ghost"
+                    size="icon"
+                    className="size-8 rounded-full text-muted-foreground"
+                    disabled={!chatActive}
+                    onClick={startDictation}
+                    aria-label="Dictate"
+                  >
+                    <MicIcon className="unsloth-dictate-icon size-4" />
+                  </TooltipIconButton>
+                )
               ) : (
                 <TooltipIconButton
                   tooltip={

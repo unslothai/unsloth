@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { generationFailureLogsAction } from "@/features/settings/lib/view-logs-action";
 import { readImageModel, rememberImageModel, matchesRememberedModel, type RememberedImageModel } from "./image-model-recall";
 import {
   type ReactNode,
@@ -12,19 +13,21 @@ import {
   useState,
 } from "react";
 import {
+  ArrowExpand01Icon,
   ArrowLeftRightIcon,
   ArrowUpDownIcon,
   ArrowReloadHorizontalIcon,
   Delete02Icon,
   Download01Icon,
-  FlimSlateIcon,
   Image03Icon,
   ImageAdd02Icon,
   InformationCircleIcon,
   SparklesIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
-import { TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
+import { MessageCircleIcon, TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
+import { MediaViewer } from "@/components/media-viewer";
+import { shortPrompt } from "@/lib/prompt-text";
 
 import { ImageDropzone } from "@/components/image-dropzone";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
@@ -76,7 +79,13 @@ import {
   curatedArtifactTakesDenseQuant,
   loadSpecFor,
 } from "@/features/model-picker/components/model-selector/model-catalog";
-import { useDenseQuantSchemes, useHostClass } from "@/hooks/use-host-class";
+import {
+  useDenseQuantSchemes,
+  useHostClass,
+  useNvfp4Diffusion,
+  useNvfp4DiffusionKnown,
+} from "@/hooks/use-host-class";
+import { nvfp4SelectionFallback, withNvfp4Option } from "@/lib/nvfp4-options";
 import type {
   ModelOption,
   ModelSelectorChangeMeta,
@@ -87,7 +96,14 @@ import { MediaRailResizeHandle } from "@/components/media-rail-resize-handle";
 import { MEDIA_RAIL_ROOT_ATTR, useMediaRailWidth } from "@/hooks/use-media-rail-width";
 import { StripDropLine } from "@/components/gallery-strip-reorder";
 import { useStripReorder } from "@/hooks/use-strip-reorder";
-import { MediaPageLink } from "@/components/media-page-link";
+import { LibraryPageLink } from "@/components/media-page-link";
+import { translate, useT } from "@/i18n";
+import {
+  chatAboutMedia,
+  revealInFolder,
+  useLibraryFavorites,
+  useRevealLabel,
+} from "@/features/library";
 import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
 import {
   type NewRecordProbeBaseline,
@@ -106,7 +122,12 @@ import {
   sortGalleryItems,
   subscribeGalleryChanged,
 } from "@/lib/gallery-flags";
-import { readLastPrompt, saveLastPrompt } from "@/lib/last-prompt";
+import {
+  dismissExample,
+  isExampleDismissed,
+  readLastPrompt,
+  saveLastPrompt,
+} from "@/lib/last-prompt";
 import { usePersistedToggle } from "@/hooks/use-persisted-toggle";
 import { useImageWorkflowStore } from "./stores/image-workflow-store";
 import { WORKFLOW_EXAMPLE_PROMPTS, WORKFLOW_TABS, type WorkflowId } from "./workflows";
@@ -151,6 +172,7 @@ import {
   routedGgufLabel,
 } from "@/lib/diffusion-route-search";
 import { toast } from "@/lib/toast";
+import { loadGalleryUntil } from "@/lib/gallery-deep-link";
 import { subscribeModelEjected } from "@/lib/model-lifecycle-events";
 import { DEFAULT_GEN, defaultsFor, resolutionFor } from "./image-generation-defaults";
 import {
@@ -195,7 +217,9 @@ import {
   cancelDiffusionGeneration,
   deleteGalleryImage,
   fetchGalleryBlob,
+  fetchGalleryResponse,
   fetchGalleryObjectUrl,
+  galleryThumbnailUrl,
   generateDiffusionImage,
   getDiffusionLoadProgress,
   getDiffusionStatus,
@@ -213,7 +237,17 @@ import {
 import {
   shouldContinueGenerating,
   shouldReportGenerateError,
+  stopButtonLabel,
 } from "./lib/generation-stop";
+import {
+  ALLOW_OVERSIZED_HINT,
+  ALLOW_OVERSIZED_LABEL,
+  allowOversizedField,
+  GENERATE_ANYWAY_LABEL,
+  MEMORY_REFUSAL_TITLE,
+  shouldOfferGenerateAnyway,
+  shouldRunQueuedOversizedRetry,
+} from "./lib/memory-refusal";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { useStagedDownload, type StagedDownloadEntry } from "@/features/hub/download-manager";
 import { DiffusionTrainPanel } from "./train/diffusion-train-panel";
@@ -395,6 +429,9 @@ const galleryCache: {
   srcById: BlobUrlCache;
   // Ids with a fetch in flight, so concurrent ensureSrc calls do not double-fetch and leak a duplicate object URL.
   inflight: Set<string>;
+  // Keep thumbnails separate from originals used for viewing and downloads.
+  thumbById: BlobUrlCache;
+  thumbInflight: Set<string>;
   // Ids deleted while their PNG was still downloading: a fetch landing afterwards must throw its blob away.
   deleted: Set<string>;
 } = {
@@ -404,6 +441,8 @@ const galleryCache: {
   quant: null,
   srcById: new BlobUrlCache(IMAGE_BLOB_BUDGET_BYTES),
   inflight: new Set(),
+  thumbById: new BlobUrlCache(32 * 1024 * 1024),
+  thumbInflight: new Set(),
   deleted: new Set(),
 };
 
@@ -515,6 +554,7 @@ function formatTimestamp(epochSeconds: number): string {
 function genStepLabel(p: DiffusionGenerateProgress): string {
   // Text encoding happens before the first scheduler tick, so step 0 means "working, not denoising yet".
   if (p.step === 0) return "Preparing (text encoding + warmup)…";
+  if (p.phase === "decode") return "Decoding…";
   const base = `Step ${p.step}/${p.total_steps}`;
   const eta = p.eta_seconds != null ? formatEta(p.eta_seconds) : "";
   return eta ? `${base} · ~${eta}` : base;
@@ -673,6 +713,9 @@ function SliderField({
 }
 
 // Matches the field-label style used across Unsloth.
+// Prompt boxes: smaller radius, scrollbar inset from the corners.
+const IMAGE_PROMPT_BOX = "image-prompt-box rounded-lg";
+
 function Field({
   label,
   hint,
@@ -1231,6 +1274,11 @@ type LoadAdvanced = Pick<
   | "gpu_ids"
 >;
 
+function openImageLabel(t: ReturnType<typeof useT>, prompt: string): string {
+  const text = shortPrompt(prompt);
+  return text ? t("library.viewer.openImageNamed", { prompt: text }) : t("library.viewer.openImage");
+}
+
 export function ImagesPage({
   active = true,
   onInitialReady,
@@ -1238,23 +1286,29 @@ export function ImagesPage({
   active?: boolean;
   onInitialReady?: () => void;
 }) {
+  const t = useT();
   const initialReadySent = useRef(false);
   const [rememberedModel, setRememberedModel] = useState(readImageModel);
-  const pendingRecalledGeneration = useRef<{ model: RememberedImageModel; load: number; workflow: WorkflowId } | null>(null);
+  const pendingRecalledGeneration = useRef<{ model: RememberedImageModel; load: number; workflow: WorkflowId; allowOversized?: boolean } | null>(null);
   const { isMobile, pinned } = useSidebar();
   const hostClass = useHostClass();
   const denseQuantSchemes = useDenseQuantSchemes();
+  const nvfp4Diffusion = useNvfp4Diffusion();
+  const nvfp4DiffusionKnown = useNvfp4DiffusionKnown();
   const imageModels = useImageModels(hostClass, denseQuantSchemes);
   const { rootStyle: railRootStyle } = useMediaRailWidth("images");
   const [quant, setQuant] = useState<string | null>(galleryCache.quant);
-  // One prompt per workflow: each starts from its example, then the last one generated with.
+  // One prompt per workflow, starting from the last one generated with.
   const [prompts, setPrompts] = useState<Record<WorkflowId, string>>(() =>
     Object.fromEntries(
-      WORKFLOW_TABS.map(({ id }) => [
-        id,
-        readLastPrompt(`images:${id}`, WORKFLOW_EXAMPLE_PROMPTS[id]),
-      ]),
+      WORKFLOW_TABS.map(({ id }) => [id, readLastPrompt(`images:${id}`)]),
     ) as Record<WorkflowId, string>,
+  );
+  // Workflows whose example hint is gone: it shows as a placeholder until the box is first focused.
+  const [examplesDismissed, setExamplesDismissed] = useState<Record<WorkflowId, boolean>>(() =>
+    Object.fromEntries(
+      WORKFLOW_TABS.map(({ id }) => [id, isExampleDismissed(`images:${id}`)]),
+    ) as Record<WorkflowId, boolean>,
   );
   const setPromptFor = useCallback((id: WorkflowId, next: SetStateAction<string>) => {
     setPrompts((prev) => ({
@@ -1382,6 +1436,12 @@ export function ImagesPage({
   const [advancedOpen, setAdvancedOpen] = usePersistedToggle(
     "unsloth_images_advanced_open",
   );
+  const [allowOversized, setAllowOversized] = usePersistedToggle(
+    "unsloth_images_allow_oversized",
+  );
+  const oversizedOnce = useRef(false);
+  // Queued: "Generate anyway" is clickable before the refused run releases busy.
+  const [oversizedRetryQueued, setOversizedRetryQueued] = useState(false);
   // Advanced (load-time) options; "auto"/"off"/"none" map to the backend defaults. Changing one
   // while loaded shows "Reapply".
   const [modelSelectionAction, setModelSelectionAction] = useState<"load" | "download">("load");
@@ -1395,6 +1455,10 @@ export function ImagesPage({
   const [attentionBackend, setAttentionBackend] = useState<"auto" | "native" | "cudnn" | "flash3" | "sage">(
     "auto",
   );
+  useEffect(() => {
+    setTransformerQuant((v) => nvfp4SelectionFallback(v, nvfp4DiffusionKnown, nvfp4Diffusion));
+    setTextEncoderQuant((v) => nvfp4SelectionFallback(v, nvfp4DiffusionKnown, nvfp4Diffusion));
+  }, [nvfp4Diffusion, nvfp4DiffusionKnown, transformerQuant, textEncoderQuant]);
   const [memoryMode, setMemoryMode] = useState<"auto" | "fast" | "balanced" | "low_vram">("auto");
   // "auto", or the physical index to pin this load to; offered only on a multi-card CUDA/ROCm
   // host. Persisted, unlike the selects around it: status carries the device a pipeline is on
@@ -1404,7 +1468,7 @@ export function ImagesPage({
     "auto",
   );
   const gpuChoices = useDiffusionGpuChoices();
-  const [transformerCache, setTransformerCache] = useState<"auto" | "off" | "fbcache">("auto");
+  const [transformerCache, setTransformerCache] = useState<"auto" | "off" | "fbcache" | "static">("auto");
   const [cpuOffload, setCpuOffload] = useState(false);
   // The last load descriptor, so "Reapply" can reload the same model with new advanced options without re-picking it.
   const lastLoad = useRef<{ repoId: string; kind: "gguf" | "single_file" | "pipeline"; filename?: string } | null>(
@@ -1418,6 +1482,7 @@ export function ImagesPage({
 
   const [busy, setBusy] = useState<Busy>(null);
   const [genDone, setGenDone] = useState<number | null>(null);
+  const [stopping, setStopping] = useState(false);
   const [genStep, setGenStep] = useState<DiffusionGenerateProgress | null>(null);
   const genPollTimer = useRef<ReturnType<typeof setInterval> | null>(null);
   // visibilitychange handler active while a generation poll runs: background tabs clamp
@@ -1439,9 +1504,12 @@ export function ImagesPage({
   const [srcById, setSrcById] = useState<Record<string, string>>(() =>
     galleryCache.srcById.toRecord(),
   );
+  const [thumbById, setThumbById] = useState<Record<string, string>>(() =>
+    galleryCache.thumbById.toRecord(),
+  );
   // Guards a "load more" so a fast scroll cannot fire several at once.
   const loadingMore = useRef(false);
-  // The gallery strip, used as the IntersectionObserver root so a tile PNG is fetched as it nears view.
+  // Observer root for loading thumbnails near the visible strip.
   const stripRef = useRef<HTMLDivElement | null>(null);
   // Ids currently intersecting the strip; the blob cache never evicts these.
   const visibleIds = useRef<Set<string>>(new Set());
@@ -1748,6 +1816,19 @@ export function ImagesPage({
     [images, selectedId],
   );
   const selectedSrc = selected ? srcById[selected.id] : undefined;
+  const selectedThumb = selected ? thumbById[selected.id] : undefined;
+  const [viewerId, setViewerId] = useState<string | null>(null);
+  const viewerImage = viewerId ? (images.find((image) => image.id === viewerId) ?? null) : null;
+  const viewerSrc = viewerImage ? srcById[viewerImage.id] : undefined;
+  if (viewerId && (!active || !viewerImage)) setViewerId(null);
+  // Pruning below must not revoke the image on screen.
+  const viewerIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    viewerIdRef.current = viewerId;
+  }, [viewerId]);
+  const openViewer = () => selected && selectedSrc && setViewerId(selected.id);
+  const navigateToChat = useNavigate();
+  const revealLabel = useRevealLabel();
 
   // Fetch (once) the object URL for a record's PNG; cached across remounts.
   const ensureSrc = useCallback(async (image: GalleryImage) => {
@@ -1762,7 +1843,12 @@ export function ImagesPage({
       galleryCache.srcById.set(image.id, url, bytes);
       // Evict the coldest off-screen images this one pushed over budget; on-screen and open tiles are protected.
       const evicted = galleryCache.srcById.prune(
-        new Set([image.id, ...visibleIds.current, galleryCache.selectedId ?? ""]),
+        new Set([
+          image.id,
+          ...visibleIds.current,
+          galleryCache.selectedId ?? "",
+          viewerIdRef.current ?? "",
+        ]),
       );
       setSrcById((prev) => {
         const next = { ...prev, [image.id]: url };
@@ -1773,6 +1859,37 @@ export function ImagesPage({
       // Leave it without a src; the tile shows a placeholder.
     } finally {
       galleryCache.inflight.delete(image.id);
+    }
+  }, []);
+
+  // Fetch a thumbnail unless the tile already has a cached image or pending request.
+  const ensureThumb = useCallback(async (image: GalleryImage) => {
+    if (
+      galleryCache.thumbById.has(image.id) ||
+      galleryCache.srcById.has(image.id) ||
+      galleryCache.thumbInflight.has(image.id)
+    )
+      return;
+    galleryCache.thumbInflight.add(image.id);
+    try {
+      const { url, bytes } = await fetchGalleryObjectUrl(galleryThumbnailUrl(image.url));
+      if (galleryCache.deleted.has(image.id)) {
+        URL.revokeObjectURL(url);
+        return;
+      }
+      galleryCache.thumbById.set(image.id, url, bytes);
+      const evicted = galleryCache.thumbById.prune(
+        new Set([image.id, ...visibleIds.current, galleryCache.selectedId ?? ""]),
+      );
+      setThumbById((prev) => {
+        const next = { ...prev, [image.id]: url };
+        for (const id of evicted) delete next[id];
+        return next;
+      });
+    } catch {
+      // Leave it without a src; the tile shows a placeholder.
+    } finally {
+      galleryCache.thumbInflight.delete(image.id);
     }
   }, []);
 
@@ -1804,12 +1921,12 @@ export function ImagesPage({
       setHasMore(page.has_more);
       // No visibility signal without IntersectionObserver (jsdom / old webview), so keep the eager fetch there.
       if (typeof IntersectionObserver === "undefined") {
-        page.images.forEach((image) => void ensureSrc(image));
+        page.images.forEach((image) => void ensureThumb(image));
       }
     } catch {
       // Best-effort: a failed gallery load should not block the page.
     }
-  }, [ensureSrc]);
+  }, [ensureThumb]);
 
   // Load the next older page. offset = how many are loaded so far; a new image sorts to the front on the backend too.
   const loadMore = useCallback(async () => {
@@ -1836,17 +1953,16 @@ export function ImagesPage({
       galleryCache.hasMore = page.has_more;
       setHasMore(page.has_more);
       if (typeof IntersectionObserver === "undefined") {
-        page.images.forEach((image) => void ensureSrc(image));
+        page.images.forEach((image) => void ensureThumb(image));
       }
     } catch {
       // transient; the user can scroll again to retry
     } finally {
       loadingMore.current = false;
     }
-  }, [ensureSrc]);
+  }, [ensureThumb]);
 
-  // A gallery page holds PAGE_SIZE multi-megabyte PNGs and an object URL lives until the page
-  // closes, so fetch a tile as it nears the strip edge instead. Mirrors Video.
+  // Load thumbnails as tiles approach the visible strip.
   useEffect(() => {
     const root = stripRef.current;
     if (!root || typeof IntersectionObserver === "undefined") return;
@@ -1862,8 +1978,9 @@ export function ImagesPage({
           }
           visibleIds.current.add(id);
           galleryCache.srcById.touch(id);
+          galleryCache.thumbById.touch(id);
           const image = images.find((i) => i.id === id);
-          if (image) void ensureSrc(image);
+          if (image) void ensureThumb(image);
         }
       },
       // rootMargin applies to the ROOT box only, so the root must be the scrolling strip; the
@@ -1872,7 +1989,7 @@ export function ImagesPage({
     );
     for (const tile of root.querySelectorAll("[data-image-id]")) io.observe(tile);
     return () => io.disconnect();
-  }, [images, ensureSrc]);
+  }, [images, ensureThumb]);
 
   // The preview is what the user looks at, so the selected image is fetched whether or not its tile is on screen.
   useEffect(() => {
@@ -1887,8 +2004,14 @@ export function ImagesPage({
   const dropFromStrip = useCallback((id: string, discardBlob: boolean) => {
     if (discardBlob) {
       galleryCache.srcById.delete(id); // revokes the URL with the entry
+      galleryCache.thumbById.delete(id);
       galleryCache.deleted.add(id);
       setSrcById((prev) => {
+        const next = { ...prev };
+        delete next[id];
+        return next;
+      });
+      setThumbById((prev) => {
         const next = { ...prev };
         delete next[id];
         return next;
@@ -1959,12 +2082,12 @@ export function ImagesPage({
         setImages(collected);
         setHasMore(more);
         if (typeof IntersectionObserver === "undefined") {
-          collected.forEach((image) => void ensureSrc(image));
+          collected.forEach((image) => void ensureThumb(image));
         }
         return;
       }
     },
-    [ensureSrc],
+    [ensureThumb],
   );
 
   // This page stays mounted across route changes, so an archive restore would not reach the
@@ -1988,6 +2111,7 @@ export function ImagesPage({
 
   // The pin state each id was last CLICKED into, so a failing request can tell whether it is
   // still the current intent; without it a slow failure rolls back a later success.
+  const { isFavorite, toggleFavorite } = useLibraryFavorites();
   const pinAttempt = useRef(new Map<string, number>());
   const pinSeq = useRef(0);
 
@@ -2455,7 +2579,7 @@ export function ImagesPage({
           return;
         }
         setGenStep((prev) => {
-          if (prev && prev.step === p.step && prev.eta_seconds === p.eta_seconds) return prev;
+          if (prev && prev.step === p.step && prev.eta_seconds === p.eta_seconds && prev.phase === p.phase) return prev;
           return p;
         });
       } catch {
@@ -3240,6 +3364,37 @@ export function ImagesPage({
     revertPick,
   ]);
 
+  // A Library "View in" link arrives as ?item=: select that image, paging back until it loads. A
+  // counter, not effect cleanup, retires a lookup: clearing the query must not cancel its own.
+  const routedItem = active ? routeSearch?.item : undefined;
+  const routedLookup = useRef(0);
+  useEffect(() => {
+    if (!active) routedLookup.current += 1;
+  }, [active]);
+  useEffect(() => {
+    if (!routedItem) return;
+    const lookup = ++routedLookup.current;
+    void navigateSelf({ to: "/images", search: {}, replace: true });
+    void loadGalleryUntil({
+      has: () => galleryCache.images.some((entry) => entry.id === routedItem),
+      count: () => galleryCache.images.length,
+      hasMore: () => galleryCache.hasMore,
+      refresh: loadGallery,
+      loadMore,
+      busy: () => loadingMore.current,
+      cancelled: () => lookup !== routedLookup.current,
+    }).then((found) => {
+      if (lookup !== routedLookup.current) return;
+      if (found) {
+        setSelectedId(routedItem);
+      } else {
+        toast(translate("library.toast.imageNotFound"), {
+          description: translate("library.toast.notFoundDescription"),
+        });
+      }
+    });
+  }, [routedItem, navigateSelf, loadGallery, loadMore]);
+
   // Reload the current model with the current advanced options.
   const handleReapply = useCallback(() => {
     const l = lastLoad.current;
@@ -3822,6 +3977,9 @@ export function ImagesPage({
   );
 
   const handleGenerate = useCallback(async () => {
+    // Consume before any early return so it never leaks into a later run.
+    const allowOversizedSent = allowOversizedField(allowOversized, oversizedOnce.current) === true;
+    oversizedOnce.current = false;
     if (!prompt.trim()) {
       toast.error("Prompt is empty");
       return;
@@ -3964,6 +4122,7 @@ export function ImagesPage({
     setGenStep(null);
     // Fresh run: a Stop from the PREVIOUS run must not cancel this one.
     cancelRequested.current = false;
+    setStopping(false);
     cancelAcked.current = false;
     // Per-run, like the two above: a cancel POST still outstanding from the PREVIOUS run would
     // leave the guard set and swallow this run's own Stop.
@@ -3983,7 +4142,7 @@ export function ImagesPage({
         // Skip the state update (and re-render) when nothing the bar shows moved.
         setGenStep((prev) => {
           if (!p.active) return null;
-          if (prev && prev.step === p.step && prev.eta_seconds === p.eta_seconds) return prev;
+          if (prev && prev.step === p.step && prev.eta_seconds === p.eta_seconds && prev.phase === p.phase) return prev;
           return p;
         });
       } catch {
@@ -4041,6 +4200,7 @@ export function ImagesPage({
             mask_image: condMask,
             strength: condStrength,
             upscale: condUpscale,
+            allow_oversized: allowOversizedSent ? true : undefined,
             ...condFields,
             // Drop empty and zero-weight rows and trim hand-typed repo ids, so the recipe records only
             // adapters that applied. Gated on loraCapable, since a restore can leave adapters in state.
@@ -4094,13 +4254,21 @@ export function ImagesPage({
       // The user's own Stop comes back as the backend's cancelled sentinel (409), so it is not
       // toasted. Only a Stop the backend confirmed explains an error away: a POST that never
       // landed, or {cancelled: false}, means whatever it raised is a real failure.
-      if (
-        shouldReportGenerateError({
-          message: msg,
-          stopRequested: cancelRequested.current && cancelAcked.current,
-        })
-      )
-        toast.error(msg);
+      const report = shouldReportGenerateError({
+        message: msg,
+        stopRequested: cancelRequested.current && cancelAcked.current,
+      });
+      if (report && shouldOfferGenerateAnyway({ error: err, allowOversizedSent })) {
+        toast.error(MEMORY_REFUSAL_TITLE, {
+          description: msg,
+          duration: 20_000,
+          action: {
+            label: GENERATE_ANYWAY_LABEL,
+            onClick: () => setOversizedRetryQueued(true),
+          },
+        });
+      } else if (report)
+        toast.error(msg, { action: generationFailureLogsAction(msg) });
     } finally {
       if (genPollTimer.current) clearInterval(genPollTimer.current);
       genPollTimer.current = null;
@@ -4117,13 +4285,15 @@ export function ImagesPage({
       setBusy(null);
       setGenDone(null);
       setGenStep(null);
+      setStopping(false);
     }
-  }, [prompt, negativePrompt, width, height, steps, guidance, seed, batchSize, count, workflow, initImage, maskImage, strength, extendPct, extendSides, upscaleFactor, upscaleStrength, referenceImages, loras, loraCapable, controlnetCapable, controlnetId, controlImage, controlType, controlStrength, ensureSrc, loadGallery, refreshStatus, unifiedEdit, localizedMode, localizedLayer, maxExtras, referenceResolution, conditioning, editSize, editSizing, sizeLimits]);
+  }, [allowOversized, prompt, negativePrompt, width, height, steps, guidance, seed, batchSize, count, workflow, initImage, maskImage, strength, extendPct, extendSides, upscaleFactor, upscaleStrength, referenceImages, loras, loraCapable, controlnetCapable, controlnetId, controlImage, controlType, controlStrength, ensureSrc, loadGallery, refreshStatus, unifiedEdit, localizedMode, localizedLayer, maxExtras, referenceResolution, conditioning, editSize, editSizing, sizeLimits]);
 
   // Stop the in-flight generation. Latch FIRST, so a multi-run request stops even if the POST
   // races the run that is already finishing.
   const handleCancelGenerate = useCallback(async () => {
     cancelRequested.current = true;
+    setStopping(true);
     // One Stop on the wire at a time. The button stays enabled so the click still latches, but a
     // second POST would target whatever is active when IT arrives.
     const token = runToken.current;
@@ -4134,11 +4304,13 @@ export function ImagesPage({
     try {
       const { cancelled } = await cancelDiffusionGeneration(abort.signal);
       cancelAcked.current = Boolean(cancelled);
+      if (!cancelled) setStopping(false);
     } catch {
       // An abort means the next run dropped this one on purpose, so there is nothing to report.
       // Otherwise the request never landed and the denoise runs on, so the click is not handled.
       if (!abort.signal.aborted) {
         cancelAcked.current = false;
+        setStopping(false);
         toast.error("Could not reach the server to stop this generation; it is still running");
       }
     } finally {
@@ -4180,6 +4352,8 @@ export function ImagesPage({
       model: rememberedModel,
       load: loadSeq.current + 1,
       workflow,
+      // "Generate anyway" on an unloaded model: the retry's finally clears the one-shot before this runs.
+      allowOversized: oversizedOnce.current,
     };
     const started = await handleLoad(
       rememberedModel.repoId,
@@ -4198,6 +4372,14 @@ export function ImagesPage({
     status,
     workflow,
   ]);
+  useEffect(() => {
+    if (!shouldRunQueuedOversizedRetry({ queued: oversizedRetryQueued, busy })) return;
+    setOversizedRetryQueued(false);
+    oversizedOnce.current = true;
+    void handleGenerateWithRecall().finally(() => {
+      oversizedOnce.current = false;
+    });
+  }, [oversizedRetryQueued, busy, handleGenerateWithRecall]);
 
   useEffect(() => {
     const pending = pendingRecalledGeneration.current;
@@ -4221,7 +4403,11 @@ export function ImagesPage({
       );
       return;
     }
-    if (matchesRememberedModel(pending.model, status)) void handleGenerate();
+    if (!matchesRememberedModel(pending.model, status)) return;
+    oversizedOnce.current = pending.allowOversized === true;
+    void handleGenerate().finally(() => {
+      oversizedOnce.current = false;
+    });
   }, [active, busy, handleGenerate, status, workflow]);
 
   // Publish what the loaded model can do, so the sidebar submenu dims the rest. null while
@@ -4265,7 +4451,7 @@ export function ImagesPage({
       />
       <AdvancedSelect
         label="Speed"
-        hint="Auto picks per model: GGUF compiles at load; a dense model keeps the first two images exact and eager, then compiles from the 3rd (~2x from there). eager = fused kernels, no compile. default/max add torch.compile (max also TF32 + fused QKV)."
+        hint="Auto picks per model: GGUF compiles at load; a dense model keeps the first two images exact and eager, then compiles from the 3rd (~2x from there). eager = fused kernels, no compile. default/max add torch.compile (max also TF32 + fused QKV, plus the step cache on 20+ step models)."
         badge={<ResolvedBadge status={status} controlKey="speed_mode" />}
         value={speedMode}
         onValueChange={(v) => setSpeedMode(v as typeof speedMode)}
@@ -4295,12 +4481,15 @@ export function ImagesPage({
             // The explicit low-precision schemes need the dense tensor-core path, which a Mac or
             // CPU-only host cannot run, so the picker does not list what the loader would refuse.
             ...(hostOffersDensePrecision(hostClass)
-              ? ([
-                  ["fp8", "FP8"],
-                  ["int8", "INT8"],
-                  ["nvfp4", "NVFP4 (Blackwell)"],
-                  ["mxfp8", "MXFP8 (Blackwell)"],
-                ] as [string, string][])
+              ? withNvfp4Option(
+                  [
+                    ["fp8", "FP8"],
+                    ["int8", "INT8"],
+                    ["nvfp4", "NVFP4 (Blackwell)"],
+                    ["mxfp8", "MXFP8 (Blackwell)"],
+                  ] as [string, string][],
+                  nvfp4Diffusion,
+                )
               : []),
           ]}
         />
@@ -4320,16 +4509,18 @@ export function ImagesPage({
         badge={<ResolvedBadge status={status} controlKey="text_encoder_quant" />}
         value={textEncoderQuant}
         onValueChange={(v) => setTextEncoderQuant(v as typeof textEncoderQuant)}
-        options={[
-          ["auto", "Default"],
-          // The opt-out. Reachable only since a family default can pick a scheme on its own: with
-          // "Default" meaning bf16 everywhere, omitting the field WAS the dense request.
-          ["none", "Dense (bf16)"],
-          ["fp8", "FP8 (storage)"],
-          ["fp8_dynamic", "FP8 (compute)"],
-          ["int8", "INT8"],
-          ["nvfp4", "NVFP4 (Blackwell)"],
-        ]}
+        options={withNvfp4Option(
+          [
+            ["auto", "Default"],
+            // Opt-out: now that a family default can pick a scheme, omitting the field is no longer the dense request.
+            ["none", "Dense (bf16)"],
+            ["fp8", "FP8 (storage)"],
+            ["fp8_dynamic", "FP8 (compute)"],
+            ["int8", "INT8"],
+            ["nvfp4", "NVFP4 (Blackwell)"],
+          ] as [string, string][],
+          nvfp4Diffusion,
+        )}
       />
       <AdvancedSelect
         label="Attention"
@@ -4378,7 +4569,7 @@ export function ImagesPage({
       )}
       <AdvancedSelect
         label="Step cache"
-        hint="First-Block-Cache reuses the transformer tail across steps for many-step models (~1.4x). Auto turns it on at 20+ steps and off for few-step distilled models, re-checked per image."
+        hint="First-Block-Cache reuses the transformer tail across steps for many-step models (~1.4x, small quality cost). Auto turns it on only on the Max speed tier at 20+ steps, re-checked per image. Static skip extrapolates every other middle step on a fixed schedule (12+ steps) and keeps the CUDA graph; never picked by Auto."
         badge={<ResolvedBadge status={status} controlKey="transformer_cache" />}
         value={transformerCache}
         onValueChange={(v) => setTransformerCache(v as typeof transformerCache)}
@@ -4386,6 +4577,7 @@ export function ImagesPage({
           ["auto", "Auto"],
           ["off", "Off"],
           ["fbcache", "First-Block-Cache"],
+          ["static", "Static skip"],
         ]}
       />
       <div className="flex items-center justify-between">
@@ -4396,25 +4588,18 @@ export function ImagesPage({
         </span>
         <Switch checked={cpuOffload} onCheckedChange={setCpuOffload} />
       </div>
+      <div className="flex items-center justify-between">
+        <span className="flex items-center gap-1 text-xs font-medium text-muted-foreground">
+          {ALLOW_OVERSIZED_LABEL}
+          <InfoHint>{ALLOW_OVERSIZED_HINT}</InfoHint>
+        </span>
+        <Switch
+          checked={allowOversized}
+          onCheckedChange={setAllowOversized}
+          aria-label={ALLOW_OVERSIZED_LABEL}
+        />
+      </div>
       <LoadedBuildSummary status={status} />
-      {/* A resident full pipeline is reloadable by repo id alone, so it keeps Reapply even before a
-          user-initiated load; GGUF/single_file residents hide the button. */}
-      {status?.loaded && (canReapply || status?.model_kind === "pipeline") && (
-        <Tooltip>
-          <TooltipTrigger asChild={true}>
-            <Button
-              variant="secondary"
-              size="sm"
-              disabled={busy !== null}
-              onClick={handleReapply}
-            >
-              <HugeiconsIcon icon={ArrowReloadHorizontalIcon} className="mr-2 size-3.5" />
-              Reapply to loaded model
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent>Reload the current model with these advanced options</TooltipContent>
-        </Tooltip>
-      )}
     </>
   );
 
@@ -4435,7 +4620,7 @@ export function ImagesPage({
       <div className="pointer-events-none relative z-40 grid h-[calc(48px*var(--ui-space-scale,1))] shrink-0 grid-cols-[minmax(0,var(--media-rail-width,calc(408px*var(--ui-space-scale,1))))_minmax(13rem,1fr)] @max-[30rem]:grid-cols-[minmax(0,1fr)_auto]">
         <div
           className={cn(
-            "pointer-events-none flex h-full min-w-0 items-start overflow-hidden @[50rem]:border-r @[50rem]:border-border/60",
+            "pointer-events-none flex h-full min-w-0 items-start overflow-hidden pr-3 @[50rem]:border-r @[50rem]:border-border/60",
             isMobile
               ? "pl-12"
               : !pinned && isTauri
@@ -4482,7 +4667,7 @@ export function ImagesPage({
                     variant="outline"
                     size="sm"
                     aria-label="Cancel load"
-                    className="!h-[calc(34px*var(--ui-space-scale,1))] rounded-full text-xs"
+                    className="!h-[calc(34px*var(--ui-space-scale,1))] shrink-0 rounded-full text-xs"
                     onClick={() => void handleCancelLoad()}
                   >
                     Cancel load
@@ -4510,10 +4695,8 @@ export function ImagesPage({
           </div>
           <div className="pointer-events-none col-start-3 flex min-w-0 items-start justify-end pr-2 pt-[var(--studio-chat-header-padding-top,11px)]">
             <div className="pointer-events-auto flex min-w-0 items-center gap-2">
-              <MediaPageLink
-                to="/video"
-                label="Video"
-                icon={FlimSlateIcon}
+              <LibraryPageLink
+                tab="images"
                 labelClassName="hidden @[50rem]:inline"
                 arrowClassName="hidden @[50rem]:block"
               />
@@ -4980,10 +5163,16 @@ export function ImagesPage({
             <Field label={workflow === "edit" ? "Instruction" : "Prompt"}>
               <Textarea
                 rows={4}
+                className={cn(IMAGE_PROMPT_BOX, "min-h-32")}
                 placeholder={
-                  workflow === "edit" ? "Describe the edit, e.g. make the sky sunset orange" : undefined
+                  examplesDismissed[workflow] ? undefined : WORKFLOW_EXAMPLE_PROMPTS[workflow]
                 }
                 value={prompt}
+                onFocus={() => {
+                  if (examplesDismissed[workflow]) return;
+                  dismissExample(`images:${workflow}`);
+                  setExamplesDismissed((prev) => ({ ...prev, [workflow]: true }));
+                }}
                 onChange={(e) => setPrompt(e.target.value)}
               />
             </Field>
@@ -4993,6 +5182,7 @@ export function ImagesPage({
               open={negativeOpen}
               onOpenChange={setNegativeOpen}
               hint="What to steer the image away from. Only used when guidance is above 0."
+              textareaClassName={IMAGE_PROMPT_BOX}
             />
             {/* LoRA adapters: shown whenever the loaded model + quant can apply them. Each carries a 0-2 weight. */}
             {loraCapable && (
@@ -5190,7 +5380,7 @@ export function ImagesPage({
 
           </div>
           {/* The scroll mask provides the fade; leave the footer unpainted to avoid dark-mode banding. */}
-          <div className="relative z-10 flex shrink-0 justify-center px-10 pt-0.5 pb-4">
+          <div className="relative z-10 flex shrink-0 flex-wrap justify-center gap-2 px-4 pt-0.5 pb-4">
             {busy === "generating" ? (
               /* Replaces Generate while a run is in flight. Every workflow funnels through the same
                  handler, so one control stops all of them. */
@@ -5200,16 +5390,34 @@ export function ImagesPage({
                 onClick={handleCancelGenerate}
               >
                 <Spinner className="mr-2 size-4" />
-                {genDone != null && count > 1 ? `Stop (${genDone}/${count})` : "Stop"}
+                {stopButtonLabel({ stopping, done: genDone, count })}
               </Button>
             ) : (
-              <Button
-                className="relative z-10 h-11 px-8 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
-                onClick={handleGenerateWithRecall}
-                disabled={busy !== null || !imagePresets.hydrated || (!status?.loaded && !rememberedModel)}
-              >
-                Generate
-              </Button>
+              <>
+                <Button
+                  className="relative z-10 h-11 px-8 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
+                  onClick={handleGenerateWithRecall}
+                  disabled={busy !== null || !imagePresets.hydrated || (!status?.loaded && !rememberedModel)}
+                >
+                  Generate
+                </Button>
+                {status?.loaded && (canReapply || status?.model_kind === "pipeline") && (
+                  <Tooltip>
+                    <TooltipTrigger asChild={true}>
+                      <Button
+                        className="relative z-10 h-11 px-5"
+                        variant="secondary"
+                        disabled={busy !== null}
+                        onClick={handleReapply}
+                      >
+                        <HugeiconsIcon icon={ArrowReloadHorizontalIcon} className="mr-2 size-4" />
+                        Reapply
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent>Reload the current model with the advanced options</TooltipContent>
+                  </Tooltip>
+                )}
+              </>
             )}
           </div>
         </div>
@@ -5218,6 +5426,43 @@ export function ImagesPage({
           data-tour="images-preview"
           className="relative flex min-h-[60dvh] min-w-0 flex-1 flex-col overflow-hidden @[50rem]:min-h-0"
         >
+          {viewerImage && viewerSrc && (
+            <MediaViewer
+              open={true}
+              onOpenChange={(open) => !open && setViewerId(null)}
+              title={viewerImage.prompt || t("library.viewer.untitledImage")}
+              meta={`Generated · ${viewerImage.width} × ${viewerImage.height}`}
+              media={true}
+              noun="image"
+              actions={{
+                primary: {
+                  label: t("library.menu.chatAboutThis"),
+                  icon: MessageCircleIcon,
+                  onClick: () =>
+                    void chatAboutMedia(
+                      navigateToChat,
+                      // The authenticated original: WebKit shows the object URL but cannot refetch it.
+                      () => fetchGalleryResponse(viewerImage.url),
+                      viewerImage.prompt,
+                      "image",
+                    ),
+                },
+                onDownload: () => void handleQuickDownload(viewerImage),
+                reveal: revealLabel
+                  ? { label: revealLabel, onClick: () => revealInFolder(`image:${viewerImage.id}`) }
+                  : undefined,
+                favorite: isFavorite(`image:${viewerImage.id}`),
+                onToggleFavorite: () => toggleFavorite(`image:${viewerImage.id}`),
+                onAddToProject: (projectId) => addGalleryImageToProject(viewerImage.id, projectId),
+                onDelete: () => {
+                  setViewerId(null);
+                  void handleDelete(viewerImage.id);
+                },
+              }}
+            >
+              <img src={viewerSrc} alt={viewerImage.prompt} className="size-full object-contain" />
+            </MediaViewer>
+          )}
           <div className="hover-scrollbar relative flex flex-1 items-center justify-center overflow-auto p-6 px-10 @[50rem]:pt-[calc(60px*var(--ui-space-scale,1))]">
             {selected && selectedSrc ? (
               <>
@@ -5225,12 +5470,35 @@ export function ImagesPage({
                   src={selectedSrc}
                   alt={selected.prompt}
                   style={TRANSPARENCY_CHECKER}
-                  className="max-h-full max-w-full object-contain shadow-sm"
+                  role="button"
+                  tabIndex={0}
+                  aria-label={openImageLabel(t, selected.prompt)}
+                  onClick={openViewer}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      openViewer();
+                    }
+                  }}
+                  className="max-h-full max-w-full cursor-zoom-in object-contain shadow-sm"
                 />
                 {/* Actions grouped in one glass toolbar so they stay legible over any image. Size and seed
                     live in the Recipe popover. */}
                 {/* No button borders: focus returning from a menu would draw one. Keyboard focus tints instead. */}
                 <div className="absolute bottom-4 right-4 flex items-center gap-0.5 rounded-xl bg-background/80 p-1 shadow-lg ring-1 ring-border backdrop-blur [&_[data-slot=button]]:border-0 [&_[data-slot=button]:focus-visible]:bg-muted">
+                  <Button
+                    size="icon-sm"
+                    variant="ghost"
+                    aria-label={t("library.viewer.openImage")}
+                    title={t("library.viewer.openImage")}
+                    onClick={(event) => {
+                      // Safari does not focus a clicked button, and the viewer returns focus to what had it.
+                      event.currentTarget.focus();
+                      openViewer();
+                    }}
+                  >
+                    <HugeiconsIcon icon={ArrowExpand01Icon} className="size-4" />
+                  </Button>
                   <RecipePopover image={selected} onRestore={restoreSettings} active={active} />
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild={true}>
@@ -5262,6 +5530,8 @@ export function ImagesPage({
                     active={active}
                     pinned={Boolean(selected.pinned)}
                     archived={Boolean(selected.archived)}
+                    favorite={isFavorite(`image:${selected.id}`)}
+                    onToggleFavorite={() => toggleFavorite(`image:${selected.id}`)}
                     onTogglePin={() =>
                       void handleTogglePin(selected.id, !selected.pinned)
                     }
@@ -5271,6 +5541,18 @@ export function ImagesPage({
                     onAddToProject={(projectId) => addGalleryImageToProject(selected.id, projectId)}
                   />
                 </div>
+              </>
+            ) : selected && selectedThumb ? (
+              // Match the original's display size while loading; actions require the original.
+              // Leave the box unpainted because object-contain can leave empty space.
+              <>
+                <img
+                  src={selectedThumb}
+                  alt={selected.prompt}
+                  style={{ maxWidth: selected.width, maxHeight: selected.height }}
+                  className="size-full object-contain"
+                />
+                <Spinner className="absolute size-8 text-muted-foreground" />
               </>
             ) : selected ? (
               // The selected record's blob is still loading; spin in place.
@@ -5354,16 +5636,12 @@ export function ImagesPage({
                   )}
                   <button
                     type="button"
-                    onClick={() => {
-                      setSelectedId(image.id);
-                      // Show the prompt this image was made with.
-                      setPrompt(image.prompt);
-                    }}
+                    onClick={() => setSelectedId(image.id)}
                     className="relative size-full overflow-hidden rounded-[10px] bg-muted/40 outline-none ring-1 ring-transparent transition-shadow hover:ring-border focus-visible:ring-2 focus-visible:ring-ring"
                   >
-                    {srcById[image.id] ? (
+                    {(thumbById[image.id] ?? srcById[image.id]) ? (
                       <img
-                        src={srcById[image.id]}
+                        src={thumbById[image.id] ?? srcById[image.id]}
                         alt={image.prompt}
                         draggable={false}
                         className="size-full object-cover"
@@ -5393,6 +5671,8 @@ export function ImagesPage({
                       active={active}
                       pinned={Boolean(image.pinned)}
                       archived={Boolean(image.archived)}
+                      favorite={isFavorite(`image:${image.id}`)}
+                      onToggleFavorite={() => toggleFavorite(`image:${image.id}`)}
                       onTogglePin={() => void handleTogglePin(image.id, !image.pinned)}
                       onToggleArchive={() => void handleArchive(image.id)}
                       onDelete={() => void handleDelete(image.id)}

@@ -613,6 +613,24 @@ def test_sandbox_stays_on_by_default(executed):
     _run(transport, tools = [PY])
 
     assert executed[0]["disable_sandbox"] is False
+    # Nobody approved it, so the executor keeps the jail even for a host path.
+    assert "host_access_approved" not in executed[0]
+
+
+@pytest.mark.parametrize("verdict", ["allow", "deny"])
+def test_only_an_approved_call_is_marked_approved(executed, monkeypatch, verdict):
+    monkeypatch.setattr(loop_mod, "begin_tool_decision", lambda session, approval: object())
+    monkeypatch.setattr(
+        loop_mod, "wait_tool_decision", lambda slot, approval, cancel_event = None: verdict
+    )
+    monkeypatch.setattr(loop_mod, "abort_tool_decision", lambda slot, approval: None)
+    monkeypatch.setattr(loop_mod, "new_approval_id", lambda: "ap1")
+    _run(_shared_setup_1(), tools = [PY], permission_mode = "auto", confirm_calls = True)
+
+    if verdict == "allow":
+        assert executed[0]["host_access_approved"] is True
+    else:
+        assert executed == []
 
 
 # ── Forced tool choice ────────────────────────────────────────────
