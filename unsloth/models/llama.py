@@ -40,6 +40,8 @@ from .loader_utils import (
     planner_class_mismatch_reason,
     planner_model_class,
     planner_config_overrides,
+    compressed_tensors_planner_quantization,
+    compressed_tensors_prepared_config,
     planner_hub_kwargs,
     planner_kwargs_with_max_memory,
     planner_quantization_kwargs,
@@ -106,6 +108,7 @@ from unsloth.models._attn_mask_compat import (
     _prepare_4d_causal_attention_mask_for_sdpa,
 )
 from ..kernels import *
+from ..kernels.utils import has_mxfp4_base
 from ..tokenizer_utils import *
 from .vision import FastBaseModel
 
@@ -2286,7 +2289,11 @@ def _vllm_will_load_weights(fast_inference, num_labels = None):
     return True
 
 
-def _fused_lora_skip_reason(lora_dropout, bias) -> str:
+def _fused_lora_skip_reason(
+    lora_dropout,
+    bias,
+    float32_base = False,
+) -> str:
     """Why patch_peft_model skipped the fused LoRA kernels, for the patched layers summary.
 
     Returns "" when nothing disabled them, so the common summary line is unchanged. The
@@ -2297,12 +2304,20 @@ def _fused_lora_skip_reason(lora_dropout, bias) -> str:
         reasons.append(f"lora_dropout = {lora_dropout}")
     if bias != "none":
         reasons.append(f"bias = '{bias}'")
+    if float32_base:
+        reasons.append("the base weights are float32")
     if not reasons:
         return ""
     return (
         f" The fused LoRA kernels were skipped because {' and '.join(reasons)}, "
         "which is why the counts are zero. Training is unaffected."
     )
+
+
+def _base_weight_dtype(proj):
+    weight = getattr(proj, "base_layer", proj).weight
+    quant_state = getattr(weight, "quant_state", None)
+    return quant_state.dtype if quant_state is not None else weight.dtype
 
 
 class FastLlamaModel:
@@ -2610,6 +2625,7 @@ class FastLlamaModel:
 
         from .loader_utils import (
             check_and_disable_bitsandbytes_loading,
+            quantization_config_selects_bnb_4bit,
             sync_unsloth_model_name_bnb_flags,
         )
         from unsloth_zoo.utils import get_quant_type
@@ -2617,10 +2633,19 @@ class FastLlamaModel:
         load_in_8bit = kwargs.get("load_in_8bit", False)
 
         # Disable bitsandbytes loading if the model has non-bitsandbytes quantization.
-        load_in_4bit, load_in_8bit, _ckpt_quant_method = check_and_disable_bitsandbytes_loading(
+        # The loader passes load_in_4bit=False with an explicit config, so a bnb 4-bit config is the request.
+        _user_quantization_config = kwargs.get("quantization_config", None)
+        _explicit_bnb_4bit = _user_quantization_config is not None and (
+            quantization_config_selects_bnb_4bit(_user_quantization_config)
+        )
+        _checked_4bit, _checked_8bit, _ckpt_quant_method = check_and_disable_bitsandbytes_loading(
             model_config,
-            load_in_4bit = load_in_4bit,
+            load_in_4bit = load_in_4bit or _explicit_bnb_4bit,
             load_in_8bit = load_in_8bit,
+            # vLLM reads packed checkpoints itself; a num_labels load stays in-process even with fast_inference.
+            requantize_packed = not _vllm_will_load_weights(fast_inference, num_labels)
+            # A caller's own quantizer must stay authoritative: only a bitsandbytes 4-bit one consumes the plan.
+            and quantization_config_selects_bnb_4bit(_user_quantization_config),
             rewrite_modelopt = not _vllm_will_load_weights(fast_inference, num_labels),
             token = token,
             model_name = model_name,
@@ -2633,6 +2658,10 @@ class FastLlamaModel:
                 "local_files_only": kwargs.get("local_files_only", False),
             },
         )
+        # Only an explicit bnb 4-bit config the check kept keeps the caller's flags: a pre-quantized
+        # checkpoint left unarmed (vLLM reads it itself) must not reach vLLM as a bitsandbytes load.
+        if not (_explicit_bnb_4bit and _checked_4bit):
+            load_in_4bit, load_in_8bit = _checked_4bit, _checked_8bit
         from .modelopt_fp8 import (
             keep_fp8_scale_names_on_save,
             move_config_overrides_onto_config,
@@ -2708,6 +2737,9 @@ class FastLlamaModel:
             fast_inference = fast_inference,
             planner_kwargs = planner_kwargs_with_max_memory(device_map_planner_kwargs, kwargs),
             skip_reason = _planner_skip_reason,
+            # Re-quantized packed checkpoint: config.json would size it as compressed-tensors and refuse bnb flags.
+            planner_config = compressed_tensors_prepared_config(model_config),
+            planner_config_reason = "this unsloth_zoo cannot plan from the prepared config of a re-quantized checkpoint",
             **planner_config_overrides(kwargs),
             token = token,
             trust_remote_code = trust_remote_code,
@@ -2719,9 +2751,12 @@ class FastLlamaModel:
             # The caller's own config, still untouched in kwargs here, overrides the flags: loader.py clears
             # them whenever it forwards one.
             **planner_quantization_kwargs(
-                load_in_4bit = load_in_4bit,
-                load_in_8bit = load_in_8bit,
-                quantization_config = kwargs.get("quantization_config", None),
+                **compressed_tensors_planner_quantization(
+                    model_config,
+                    load_in_4bit,
+                    load_in_8bit,
+                    kwargs.get("quantization_config", None),
+                ),
                 rewritten_quantization_config = modelopt_planner_quantization_config(model_config)
                 if _modelopt_rewritten
                 else fp8_to_nf4_planner_quantization_config(
@@ -2773,7 +2808,8 @@ class FastLlamaModel:
         kwargs.pop("attn_implementation", None)  # No need since we auto call it
 
         # Cannot be None, since HF now checks for the config.
-        if load_in_4bit:
+        # A caller's own BitsAndBytesConfig stays authoritative (fast_inference forwards load_in_4bit=True).
+        if load_in_4bit and not _explicit_bnb_4bit:
             kwargs["quantization_config"] = bnb_config
 
         kwargs = add_dtype_kwargs(dtype, kwargs)
@@ -2852,7 +2888,13 @@ class FastLlamaModel:
                 )
                 _prepare_compressed_tensors_model(model)
             elif not fast_inference:
-                if user_config is not None or _modelopt_rewritten or _fp8_to_nf4:
+                # Re-quantized packed checkpoint: use model_config (quant config dropped), not config.json.
+                from .compressed_tensors_bnb import UNSLOTH_COMPRESSED_TENSORS_ATTR
+
+                _ct_requant = (
+                    getattr(model_config, UNSLOTH_COMPRESSED_TENSORS_ATTR, None) is not None
+                )
+                if user_config is not None or _modelopt_rewritten or _ct_requant or _fp8_to_nf4:
                     # Transformers 5.x @strict model init rejects extra kwargs next to config=, so set the override
                     # on the config and pass the single config object through.
                     if max_position_embeddings is not None:
@@ -3605,6 +3647,12 @@ class FastLlamaModel:
                 target_modules,
                 moe_module_targets = _moe_module_targets,
             )
+            from .remote_moe_shims import packed_expert_target_parameters
+            target_parameters = packed_expert_target_parameters(
+                model,
+                target_parameters,
+                target_modules if isinstance(target_modules, (list, tuple, str)) else None,
+            )
 
         if _moe_module_targets:
             _added = [t for t in _moe_module_targets if t not in final_modules]
@@ -3882,7 +3930,12 @@ class FastLlamaModel:
             else apply_lora_mlp
         )
 
-        if lora_dropout == 0 and bias == "none":
+        # The fused kernels assume 16-bit base weights; float32 falls back to PEFT's own forward.
+        float32_base = (
+            _base_weight_dtype(model.model.model.layers[0].self_attn.q_proj) == torch.float32
+        )
+
+        if lora_dropout == 0 and bias == "none" and not float32_base:
             for idx, layer in enumerate(model.model.model.layers):
                 if model_type != "falcon_h1":
                     # LoRAMLP.apply has no gate/down multiplier support yet, so falcon h1 is not patched for now.
@@ -3902,6 +3955,7 @@ class FastLlamaModel:
                         and (len(getattr(gate_proj, "lora_magnitude_vector", []) or []) == 0)
                         and (len(getattr(up_proj, "lora_magnitude_vector", []) or []) == 0)
                         and (len(getattr(down_proj, "lora_magnitude_vector", []) or []) == 0)
+                        and not has_mxfp4_base(gate_proj, up_proj, down_proj)
                     ):
                         # See stackoverflow.com/questions/50599045 on replacing a function within a class of a module.
                         if hasattr(mlp_module, "_unsloth_forward"):
@@ -3931,6 +3985,7 @@ class FastLlamaModel:
                     and (len(getattr(q_proj, "lora_magnitude_vector", []) or []) == 0)
                     and (len(getattr(k_proj, "lora_magnitude_vector", []) or []) == 0)
                     and (len(getattr(v_proj, "lora_magnitude_vector", []) or []) == 0)
+                    and not has_mxfp4_base(q_proj, k_proj, v_proj)
                 ):
                     layer.self_attn.apply_qkv = apply_lora_qkv
                     n_qkv += 1
@@ -3948,6 +4003,7 @@ class FastLlamaModel:
                     hasattr(o_proj, "lora_A")
                     and (getattr(o_proj, "base_layer", o_proj).bias is None)
                     and (len(getattr(o_proj, "lora_magnitude_vector", []) or []) == 0)
+                    and not has_mxfp4_base(o_proj)
                 ):
                     layer.self_attn.apply_o = apply_lora_o
                     n_o += 1
@@ -3958,7 +4014,7 @@ class FastLlamaModel:
                     )
 
         # A zero count reads as a failure, so say why the fused kernels were skipped.
-        unfused_reason = _fused_lora_skip_reason(lora_dropout, bias)
+        unfused_reason = _fused_lora_skip_reason(lora_dropout, bias, float32_base)
         logger.warning_once(
             f"Unsloth {__version__} patched {len(model.model.model.layers)} layers with "
             f"{n_qkv} QKV layers, {n_o} O layers and {n_mlp} MLP layers.{unfused_reason}",

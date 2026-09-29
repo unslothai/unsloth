@@ -10,6 +10,7 @@ import os
 import re
 
 import pytest
+from real_accelerator import has_real_cuda
 
 torch = pytest.importorskip("torch")
 transformers = pytest.importorskip("transformers")
@@ -485,7 +486,7 @@ def _fp8_blocks(weight):
     return q.reshape(rows, cols).contiguous(), scale.contiguous(), dequant
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "FP8 loading needs a GPU")
+@pytest.mark.skipif(not has_real_cuda(), reason = "FP8 loading needs a GPU")
 def test_fp8_checkpoint_dequantizes_exactly_and_loads_natively(tmp_path, hub_cache):
     from transformers import FineGrainedFP8Config
 
@@ -641,7 +642,7 @@ with torch.no_grad():
 """
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "FastModel needs a GPU")
+@pytest.mark.skipif(not has_real_cuda(), reason = "FastModel needs a GPU")
 def test_lora_adapter_trained_on_a_view_reloads_in_a_fresh_process(tmp_path):
     # The adapter's base is the view, whose index still names Mistral's tensors.
     import subprocess
