@@ -186,6 +186,23 @@ def test_non_linear_namesake_does_not_veto_the_linears():
     assert "model.layers.0.mlp.gate_proj" in lora_linears
 
 
+def test_quantized_linear_that_is_not_nn_linear_is_restored():
+    class QuantLinear(nn.Module):  # GPTQ / AWQ style: PEFT reads in/out features, no nn.Linear base
+        def __init__(self, inner):
+            super().__init__()
+            self.in_features, self.out_features = inner.in_features, inner.out_features
+            self.qweight = nn.Parameter(inner.weight.detach().clone(), requires_grad = False)
+
+    model = _deepseek_v3()
+    shared = model.model.layers[1].mlp.shared_experts
+    for leaf in ("gate_proj", "up_proj", "down_proj"):
+        setattr(shared, leaf, QuantLinear(getattr(shared, leaf)))
+    config = LoraConfig(r = 4, lora_alpha = 8, target_modules = ["gate_proj", "up_proj", "down_proj"])
+    twc.convert_peft_config_for_transformers(config, model, None)
+    assert {"gate_proj", "up_proj", "down_proj"} <= set(config.target_modules)
+    assert "gate" not in set(config.target_modules)  # the router stays a parameter target
+
+
 def test_qwen2_moe_converts_like_transformers_5_5():
     # transformers <= 5.5 mapped qwen2_moe onto itself, so PEFT's fused-pair check applies on every release.
     with pytest.raises(ValueError, match = "without also targeting up_proj"):

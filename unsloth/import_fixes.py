@@ -8272,11 +8272,28 @@ def _patch_peft_moe_target_conversion(twc):
     twc._unsloth_moe_target_conversion_patch = True
 
 
-def _moe_linear_targets_to_restore(twc, model, before, peft_config):
-    """Converted-away targets that name nn.Linear layers (shared experts, first_k_dense layers), which PEFT
-    otherwise leaves without LoRA and whose v4 adapter weights it drops."""
+def _is_lora_linear_target(module):
     from torch import nn
 
+    # The linear shapes PEFT's LoRA layer reads (tuners_utils._get_in_out_features): nn.Linear and bnb,
+    # GPTQ QuantLinear (infeatures), HQQ / AWQ (in_features), Megatron (input_size).
+    if isinstance(module, nn.Linear):
+        return True
+    if isinstance(module, (nn.Embedding, nn.modules.conv._ConvNd)):
+        return False
+    return any(
+        hasattr(module, a) and hasattr(module, b)
+        for a, b in (
+            ("in_features", "out_features"),
+            ("infeatures", "outfeatures"),
+            ("input_size", "output_size"),
+        )
+    )
+
+
+def _moe_linear_targets_to_restore(twc, model, before, peft_config):
+    """Converted-away targets that name linear layers (shared experts, first_k_dense layers), which PEFT
+    otherwise leaves without LoRA and whose v4 adapter weights it drops."""
     after = peft_config.target_modules
     if after is None or isinstance(after, str):
         return set()
@@ -8293,7 +8310,7 @@ def _moe_linear_targets_to_restore(twc, model, before, peft_config):
         candidates = set()
         for name, module in modules:
             leaf = name.rpartition(".")[-1]
-            if leaf not in old_names or leaf in after or not isinstance(module, nn.Linear):
+            if leaf not in old_names or leaf in after or not _is_lora_linear_target(module):
                 continue
             if module is output:
                 continue
@@ -8317,7 +8334,7 @@ def _moe_linear_targets_to_restore(twc, model, before, peft_config):
         linear = [
             name
             for name, module in matched
-            if isinstance(module, nn.Linear)
+            if _is_lora_linear_target(module)
             and not any(
                 f"{name}.weight" == parameter or f"{name}.weight".endswith("." + parameter)
                 for parameter in target_parameters
