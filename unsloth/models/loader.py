@@ -389,22 +389,24 @@ _OMNI_AUTO_CLASS_NAMES = (
 )
 
 
-def _adapter_file_keys(path):
+def _adapter_file_shapes(path):
     if path.endswith(".safetensors"):
         from safetensors import safe_open
         with safe_open(path, framework = "pt") as handle:
-            return list(handle.keys())
-    return list(torch.load(path, map_location = "meta", weights_only = True).keys())
+            return {key: tuple(handle.get_slice(key).get_shape()) for key in handle.keys()}
+    state_dict = torch.load(path, map_location = "meta", weights_only = True)
+    return {key: tuple(value.shape) for key, value in state_dict.items()}
 
 
-def _adapter_weight_keys(
+def _adapter_weight_shapes(
     adapter_name,
     token = None,
     revision = None,
     local_files_only = False,
     cache_dir = None,
+    header_only = False,
 ):
-    """Tensor names of a saved adapter without loading weights, or None."""
+    """{tensor name: shape} of a saved adapter without loading weights, or None. header_only range-reads an uncached hub header."""
     filenames = ("adapter_model.safetensors", "adapter_model.bin")
     try:
         local = os.path.expanduser(adapter_name)
@@ -412,7 +414,7 @@ def _adapter_weight_keys(
             for filename in filenames:
                 path = os.path.join(local, filename)
                 if os.path.exists(path):
-                    return _adapter_file_keys(path)
+                    return _adapter_file_shapes(path)
             return None
         from huggingface_hub import hf_hub_download
 
@@ -424,14 +426,97 @@ def _adapter_weight_keys(
                     revision = revision,
                     token = token,
                     cache_dir = cache_dir,
-                    local_files_only = local_files_only,
+                    local_files_only = local_files_only or header_only,
                 )
             except Exception:
                 continue
-            return _adapter_file_keys(path)
+            return _adapter_file_shapes(path)
+        if header_only and not local_files_only:
+            from huggingface_hub import parse_safetensors_file_metadata
+            metadata = parse_safetensors_file_metadata(
+                adapter_name, "adapter_model.safetensors", revision = revision, token = token
+            )
+            return {key: tuple(info.shape) for key, info in metadata.tensors.items()}
     except Exception:
         pass
     return None
+
+
+def _adapter_weight_keys(
+    adapter_name,
+    token = None,
+    revision = None,
+    local_files_only = False,
+    cache_dir = None,
+):
+    """Tensor names of a saved adapter without loading weights, or None."""
+    shapes = _adapter_weight_shapes(
+        adapter_name,
+        token = token,
+        revision = revision,
+        local_files_only = local_files_only,
+        cache_dir = cache_dir,
+    )
+    return None if shapes is None else list(shapes)
+
+
+_ADAPTER_VOCAB_SUFFIXES = (
+    "embed_tokens.weight",
+    "lm_head.weight",
+    "wte.weight",
+    "word_embeddings.weight",
+    "embed_in.weight",
+    "embed_out.weight",
+)
+
+
+def _adapter_vocab_rows(adapter_name, **hub_kwargs):
+    rows = []
+    for key, shape in (_adapter_weight_shapes(adapter_name, **hub_kwargs) or {}).items():
+        if len(shape) != 2:
+            continue
+        key = key.replace(".base_layer.", ".").replace(".lora_B.", ".")
+        if key.endswith(_ADAPTER_VOCAB_SUFFIXES):
+            rows.append(shape[0])
+        elif key.endswith("lora_embedding_A") or ".lora_embedding_A." in key:
+            rows.append(shape[1])
+    return max(rows, default = None)
+
+
+def _resize_vocab(model, new_size):
+    model.resize_token_embeddings(new_size)
+    # resize_token_embeddings rebuilds the embedding and drops _hf_hook, so this is the last module swap of all, after every repair above.
+    try:
+        from unsloth.models.vision import _repair_dispatch_hooks
+        _repaired = _repair_dispatch_hooks(model)
+        if _repaired:
+            logger.info(
+                f"Unsloth: re-attached dispatch hooks to {_repaired} module(s) "
+                "left unhooked by the vocabulary resize."
+            )
+    except Exception as _exc:
+        logger.warning(
+            f"Unsloth: could not check the dispatch hooks after resizing "
+            f"the vocabulary ({type(_exc).__name__}: {_exc})."
+        )
+
+
+def _grow_vocab_for_adapter(model, adapter_name, **hub_kwargs):
+    """An adapter trained after adding tokens saves more embedding rows than its base, which PeftModel refuses to load (#1215)."""
+    rows = _adapter_vocab_rows(adapter_name, **hub_kwargs)
+    try:
+        current = model.get_input_embeddings().weight.shape[0]
+        # patch_model_and_tokenizer grows only the input embedding to len(tokenizer), so lm_head can still be short.
+        output = model.get_output_embeddings()
+        if output is not None:
+            current = min(current, output.weight.shape[0])
+    except Exception:
+        return False
+    if rows is None or rows <= current:
+        return False
+    print(f"Unsloth: the adapter adds tokens, so the vocabulary grows from {current} to {rows}.")
+    _resize_vocab(model, rows)
+    return True
 
 
 def _composition_children(model_config):
@@ -1411,21 +1496,7 @@ class FastLanguageModel(FastLlamaModel):
         )
 
         if resize_model_vocab is not None:
-            model.resize_token_embeddings(resize_model_vocab)
-            # resize_token_embeddings rebuilds the embedding and drops _hf_hook, so this is the last module swap of all, after every repair above.
-            try:
-                from unsloth.models.vision import _repair_dispatch_hooks
-                _repaired = _repair_dispatch_hooks(model)
-                if _repaired:
-                    logger.info(
-                        f"Unsloth: re-attached dispatch hooks to {_repaired} module(s) "
-                        "left unhooked by the vocabulary resize."
-                    )
-            except Exception as _exc:
-                logger.warning(
-                    f"Unsloth: could not check the dispatch hooks after resizing "
-                    f"the vocabulary ({type(_exc).__name__}: {_exc})."
-                )
+            _resize_vocab(model, resize_model_vocab)
 
         if hasattr(model, "add_model_tags"):
             model.add_model_tags(
@@ -1504,6 +1575,15 @@ class FastLanguageModel(FastLlamaModel):
             )
             if _grouped_config is not None:
                 peft_load_kwargs["config"] = _grouped_config
+            if not fast_inference:
+                _grow_vocab_for_adapter(
+                    model,
+                    old_model_name,
+                    token = token,
+                    revision = revision,
+                    local_files_only = local_files_only,
+                    cache_dir = kwargs.get("cache_dir"),
+                )
             model = PeftModel.from_pretrained(
                 model,
                 old_model_name,
@@ -2526,6 +2606,29 @@ class FastModel(FastBaseModel):
         # A PEFT load resolved model_name to the base, which the caller's ref is not for.
         model_revision = base_revision if not is_peft else None
 
+        # _grow_vocab_for_adapter resizes the embedding after the load, which the offload hooks do not survive.
+        _adapter_grows_vocab = False
+        if is_peft and not fast_inference and offload_embedding == OFFLOAD_EMBEDDING_AUTO:
+            _adapter_rows = _adapter_vocab_rows(
+                old_model_name,
+                token = token,
+                revision = adapter_revision,
+                local_files_only = local_files_only,
+                cache_dir = kwargs.get("cache_dir"),
+                header_only = True,
+            )
+            _text_config = (
+                model_config.get_text_config()
+                if hasattr(model_config, "get_text_config")
+                else model_config
+            )
+            _base_vocab = _config_get(_text_config, "vocab_size")
+            _adapter_grows_vocab = (
+                _adapter_rows is not None
+                and _base_vocab is not None
+                and _adapter_rows > _base_vocab
+            )
+
         model, tokenizer = FastBaseModel.from_pretrained(
             model_name = model_name,
             max_seq_length = max_seq_length,
@@ -2555,7 +2658,8 @@ class FastModel(FastBaseModel):
             # resize_token_embeddings below replaces the embedding module and hooks do not follow, so an offload installed during the load would leave a CPU embedding feeding a GPU decoder. An explicit request is left alone.
             offload_embedding = (
                 False
-                if resize_model_vocab is not None and offload_embedding == OFFLOAD_EMBEDDING_AUTO
+                if (resize_model_vocab is not None or _adapter_grows_vocab)
+                and offload_embedding == OFFLOAD_EMBEDDING_AUTO
                 else offload_embedding
             ),
             float32_mixed_precision = float32_mixed_precision,
@@ -2575,21 +2679,7 @@ class FastModel(FastBaseModel):
         _drop_text_only_key_mapping(model, _text_key_mapping)
 
         if resize_model_vocab is not None:
-            model.resize_token_embeddings(resize_model_vocab)
-            # resize_token_embeddings rebuilds the embedding and drops _hf_hook, so this is the last module swap of all, after every repair above.
-            try:
-                from unsloth.models.vision import _repair_dispatch_hooks
-                _repaired = _repair_dispatch_hooks(model)
-                if _repaired:
-                    logger.info(
-                        f"Unsloth: re-attached dispatch hooks to {_repaired} module(s) "
-                        "left unhooked by the vocabulary resize."
-                    )
-            except Exception as _exc:
-                logger.warning(
-                    f"Unsloth: could not check the dispatch hooks after resizing "
-                    f"the vocabulary ({type(_exc).__name__}: {_exc})."
-                )
+            _resize_vocab(model, resize_model_vocab)
 
         if hasattr(model, "add_model_tags"):
             model.add_model_tags(
@@ -2716,6 +2806,15 @@ class FastModel(FastBaseModel):
             )
             if _grouped_config is not None:
                 peft_load_kwargs["config"] = _grouped_config
+            if not fast_inference:
+                _grow_vocab_for_adapter(
+                    model,
+                    old_model_name,
+                    token = token,
+                    revision = revision,
+                    local_files_only = local_files_only,
+                    cache_dir = kwargs.get("cache_dir"),
+                )
             try:
                 model = PeftModel.from_pretrained(
                     model,
