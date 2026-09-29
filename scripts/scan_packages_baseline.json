@@ -2102,7 +2102,8 @@
       "check": "Writes to /tmp and executes (staged dropper)",
       "severity": "CRITICAL",
       "evidence": "L1768:     r\"/tmp/\\S+.*(?:subprocess|os\\.system|os\\.popen|Popen|chmod.*\\+x)\", | L1768:     r\"/tmp/\\S+.*(?:subprocess|os\\.system|os\\.popen|Popen|chmod.*\\+x)\", sha256:8f6aa9a429370960eeaa339f9cbbc6069dfda34e6a9dc8e7c64689a74a42cf1a",
-      "evidence_hash": "2e35147c040613a5f7e8bdf6b4595b5a5ff1c7530425963f18f9b3f79a78d5f4"
+      "evidence_hash": "2e35147c040613a5f7e8bdf6b4595b5a5ff1c7530425963f18f9b3f79a78d5f4",
+      "file_sha256": "84e812b81fa72db5231c15ba96ad4ee2f714bfa5a8e32772faeb94340672ffb5"
     },
     {
       "package": "unsloth-zoo",
@@ -2119,7 +2120,8 @@
       "check": "Enumerates filesystem AND makes network calls",
       "severity": "CRITICAL",
       "evidence": "FS: L1579:     r\"|/etc/shadow|/etc/passwd\" | L1717:     r\"|\\b\\.bash_history\\b\" | L1718:     r\"|\\b\\.zsh_history\\b\" | L1719:     r\"|/etc/shadow\" | L1720:     r\"|/etc/passwd\",\nNetwork: L293:     \"socket\", \"http.client\", \"http.server\", \"urllib.request\",",
-      "evidence_hash": "0fdf64299d5f20fcbf674e369e9a9c66a6d8618fde6ac93c64ec66ffe76a8aff"
+      "evidence_hash": "0fdf64299d5f20fcbf674e369e9a9c66a6d8618fde6ac93c64ec66ffe76a8aff",
+      "file_sha256": "84e812b81fa72db5231c15ba96ad4ee2f714bfa5a8e32772faeb94340672ffb5"
     },
     {
       "package": "unsloth-zoo",
@@ -2127,7 +2129,8 @@
       "check": "Accesses cloud metadata/IMDS AND makes network calls",
       "severity": "CRITICAL",
       "evidence": "IMDS: L1618:     r\"|/latest/meta-data\" | L1619:     r\"|/metadata/instance\" | L1620:     r\"|/metadata/identity\"\nNetwork: L293:     \"socket\", \"http.client\", \"http.server\", \"urllib.request\",",
-      "evidence_hash": "05d185bd26aef977ac79dd0248a6ebf8c621c3e7f769c23dcee5f6ccfc72f317"
+      "evidence_hash": "05d185bd26aef977ac79dd0248a6ebf8c621c3e7f769c23dcee5f6ccfc72f317",
+      "file_sha256": "84e812b81fa72db5231c15ba96ad4ee2f714bfa5a8e32772faeb94340672ffb5"
     },
     {
       "package": "unsloth-zoo",
@@ -2135,7 +2138,8 @@
       "check": "Targets cryptocurrency wallets AND makes network calls",
       "severity": "CRITICAL",
       "evidence": "Crypto: L1757:     r\"|\\b(?:xprv|xpub|bc1|0x[a-fA-F0-9]{40})\\b\",\nNetwork: L293:     \"socket\", \"http.client\", \"http.server\", \"urllib.request\",",
-      "evidence_hash": "e97eb692e16a2a8a41097e62fec4db501b9d9617f45ecf69d61c95b28f21d061"
+      "evidence_hash": "e97eb692e16a2a8a41097e62fec4db501b9d9617f45ecf69d61c95b28f21d061",
+      "file_sha256": "84e812b81fa72db5231c15ba96ad4ee2f714bfa5a8e32772faeb94340672ffb5"
     },
     {
       "package": "unsloth-zoo",
@@ -2143,7 +2147,8 @@
       "check": "Installs persistence AND makes network calls (backdoor pattern)",
       "severity": "CRITICAL",
       "evidence": "Persist: L1626:     r\"/etc/systemd/\" | L1629:     r\"|/etc/cron\" | L1632:     r\"|/Library/LaunchDaemons\" | L1633:     r\"|/Library/LaunchAgents\" | L1635:     r\"|~/.local/share/systemd\" | L1637:     r\"|HKEY_LOCAL_MACHINE.*\\\\\\\\Run\" | L1638:     r\"|HKEY_CURRENT_USER.*\\\\\\\\Run\"\nNetwork: L293:     \"socket\", \"http.client\", \"http.server\", \"urllib.request\",",
-      "evidence_hash": "c68642625a026459571a7c7e5609254c64fd2f5625ff02d0556ef444d223462f"
+      "evidence_hash": "c68642625a026459571a7c7e5609254c64fd2f5625ff02d0556ef444d223462f",
+      "file_sha256": "84e812b81fa72db5231c15ba96ad4ee2f714bfa5a8e32772faeb94340672ffb5"
     },
     {
       "package": "unsloth-zoo",
@@ -2196,7 +2201,8 @@
       "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
       "severity": "HIGH",
       "evidence": "Obfusc: L73:     exec(compile(source, f\"<unsloth granitemoehybrid float16 {module.__name__}>\", \"exec\"), namespace)\nExec: L73:     exec(compile(source, f\"<unsloth granitemoehybrid float16 {module.__name__}>\", \"exec\"), namespace)",
-      "evidence_hash": "5daea207e575087c8cefc30b8d2d947a88640b3be52de1de592d365ab74e978f"
+      "evidence_hash": "5daea207e575087c8cefc30b8d2d947a88640b3be52de1de592d365ab74e978f",
+      "file_sha256": "d53b1826588c19a5146dcc66046b8787c7d882259bdc8617de8d3fbce6b37c9e"
     },
     {
       "package": "unsloth-zoo",
