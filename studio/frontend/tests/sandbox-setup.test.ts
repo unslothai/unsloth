@@ -277,6 +277,39 @@ test("a slow capability read does not undo a mode picked while it was in flight"
   assert.equal(dialogs, 0);
 });
 
+test("a mode change that ends back on the same mode still cancels a pending pick", async () => {
+  // auto -> (pick off, read pending) -> ask -> auto: the old read must not act.
+  let mode: string = "auto";
+  const applied: string[] = [];
+  let dialogs = 0;
+  const listeners = new Set<() => void>();
+  const setMode = (next: string) => {
+    mode = next;
+    for (const listener of listeners) listener();
+  };
+  const read = deferred<SandboxCapability | null>();
+  const pending = pickModule.pickSandboxedMode(
+    (next) => {
+      applied.push(next);
+      mode = next;
+    },
+    () => dialogs++,
+    () => mode as never,
+    () => read.promise,
+    (onChange) => {
+      listeners.add(onChange);
+      return () => listeners.delete(onChange);
+    },
+  );
+  setMode("ask");
+  setMode("auto");
+  read.resolve(capability({ pythonOsIsolated: false }));
+  await pending;
+  assert.deepEqual(applied, []);
+  assert.equal(dialogs, 0);
+  assert.equal(listeners.size, 0);
+});
+
 test("only the latest pick acts; a missing sandbox opens the setup instead of applying", async () => {
   let mode: string = "auto";
   const applied: string[] = [];

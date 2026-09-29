@@ -131,6 +131,11 @@ export function pickSandboxedMode(
     setPermissionMode,
     onRequestSandboxSetup,
     () => useChatRuntimeStore.getState().permissionMode,
+    undefined,
+    (onChange) =>
+      useChatRuntimeStore.subscribe((state, previous) => {
+        if (state.permissionMode !== previous.permissionMode) onChange();
+      }),
   );
 }
 

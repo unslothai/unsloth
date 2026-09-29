@@ -84,7 +84,7 @@ function permissionUi(
       "./stores/chat-runtime-store": {
         useChatRuntimeStore: Object.assign(
           (selector: (state: unknown) => unknown) => selector(state),
-          { getState: () => state },
+          { getState: () => state, subscribe: () => () => {} },
         ),
       },
     },
