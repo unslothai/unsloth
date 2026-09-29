@@ -1160,6 +1160,14 @@ def prepare_tool_launch(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
                 "and `required` cannot promise a boundary it did not verify. "
                 "Start a new chat, or use `auto` to run with software safeguards."
             )
+    except (WorkdirUnsafeError, SandboxBuildError):
+        raise  # can be tool-induced; says nothing about the backend itself
+    except SandboxUnavailableError:
+        # The cached pass is stale (bwrap removed or no longer trusted): the next call checks again,
+        # so "off" asks instead of skipping the prompt and failing until the cache expires.
+        from .sandbox_probe import reset_probe_cache
+        reset_probe_cache()
+        raise
     except OSError as exc:
         # Must be typed: raw, tools.py's general except would fall back to software safeguards.
         raise SandboxBuildError(f"the sandbox could not be built on this host: {exc}") from exc

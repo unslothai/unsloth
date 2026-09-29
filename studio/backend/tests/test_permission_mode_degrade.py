@@ -678,3 +678,47 @@ def test_a_launch_does_not_republish_an_answer_a_reset_cleared(monkeypatch, tmp_
     except Exception:  # noqa: BLE001 - only the cached answer matters here
         pass
     assert not os_sandbox.has_tool_isolation_answer("python")
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason = "the Windows backend prepares through MXC")
+@pytest.mark.parametrize(
+    "error,forgotten",
+    [
+        (os_sandbox.SandboxUnavailableError("bubblewrap (bwrap) is not installed"), True),
+        (os_sandbox.WorkdirUnsafeError("a host channel in the workdir"), False),
+    ],
+)
+def test_a_backend_that_refuses_at_preparation_drops_the_cached_pass(
+    monkeypatch, tmp_path, error, forgotten
+):
+    import importlib
+
+    backend = importlib.import_module(
+        "core.inference.sandbox_linux"
+        if sys.platform == "linux"
+        else "core.inference.sandbox_macos"
+    )
+    monkeypatch.setenv(os_sandbox.WARMUP_DISABLE_ENV, "1")
+    monkeypatch.setattr(
+        os_sandbox,
+        "capability_snapshot",
+        lambda **_kw: os_sandbox.SandboxCapability(
+            backend = backend.BACKEND_NAME, available = True, reason = "cached pass"
+        ),
+    )
+
+    def refuse(_plan, *_args):
+        raise error
+
+    monkeypatch.setattr(backend, "prepare", refuse)
+    plan = os_sandbox.ToolLaunchPlan(
+        argv = (sys.executable, "-c", "pass"),
+        workdir = str(tmp_path),
+        env = {},
+        requested_mode = "required",
+        timeout_seconds = 10,
+        execution_kind = "python",
+    )
+    with pytest.raises(type(error)):
+        os_sandbox.prepare_tool_launch(plan)
+    assert (os_sandbox.cached_tool_capability("python") is None) is forgotten
