@@ -2143,7 +2143,7 @@ html[data-chat-font] .aui-root {
 		outline-offset: -1px;
 	}
 
-	/* The backward-traversal reveal sentinel in thread.tsx is a real tab stop, so it needs a
+	/* The backward-traversal reveal sentinels in thread.tsx are real tab stops, so they need a
 	   real focus indicator. The rule above is scoped to :where(div, main, ...) and never
 	   matched a span, so focus visibly disappeared for one stop before the next Shift+Tab
 	   reached the action bar, which is a focus-visible failure rather than a cosmetic one.
@@ -2152,14 +2152,16 @@ html[data-chat-font] .aui-root {
 	   in layout, so the indicator appears without shifting the message the way giving the span
 	   dimensions on focus would. Nothing is drawn at rest, and :focus-visible means a mouse
 	   click never draws it either. */
-	.aui-assistant-reveal-sentinel {
+	.aui-assistant-reveal-sentinel,
+	.aui-user-reveal-sentinel {
 		display: inline-block;
 		width: 0;
 		height: 0;
 		vertical-align: middle;
 	}
 
-	.aui-assistant-reveal-sentinel:focus-visible {
+	.aui-assistant-reveal-sentinel:focus-visible,
+	.aui-user-reveal-sentinel:focus-visible {
 		outline: 1px solid var(--ring-soft);
 		outline-offset: 6px;
 		border-radius: 2px;
@@ -4511,6 +4513,14 @@ html[data-chat-font] .aui-root {
 	min-width: 0;
 }
 
+/* A load failure carries a real diagnostic: a summary line, the runner's output, and the
+   path of the log it came from. Default `white-space: normal` collapsed every newline to
+   a space, so the structure the backend built was destroyed on the way to the reader. */
+[data-sonner-toast][data-styled='true'] [data-title],
+[data-sonner-toast][data-styled='true'] [data-description] {
+	white-space: pre-wrap;
+}
+
 [data-sonner-toast][data-styled='true']:has([data-button]) {
 	display: grid !important;
 	grid-template-columns: minmax(0, 1fr);
@@ -4800,6 +4810,30 @@ html.force-reduced-motion .sidebar-section-drop-line {
 			font-size: max(16px, 1rem * var(--ui-font-scale, 1)) !important;
 		}
 	}
+}
+
+/* Images prompt boxes: inset the scroll track so the thumb stays inside the
+   rounded corners. Chromium ignores ::-webkit-scrollbar while scrollbar-width
+   or scrollbar-color is set, so reset them. */
+@supports selector(::-webkit-scrollbar) {
+	.image-prompt-box,
+	.dark .image-prompt-box {
+		scrollbar-width: auto;
+		scrollbar-color: auto;
+	}
+}
+
+.image-prompt-box::-webkit-scrollbar {
+	width: 12px;
+}
+
+.image-prompt-box::-webkit-scrollbar-track {
+	margin-block: 12px;
+}
+
+.image-prompt-box::-webkit-scrollbar-thumb {
+	border: 4px solid transparent;
+	background-clip: padding-box;
 }
 
 /* Composer textarea: keep the scroll thumb faint until the user hovers or

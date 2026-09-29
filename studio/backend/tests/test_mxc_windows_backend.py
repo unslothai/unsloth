@@ -14,7 +14,7 @@ from dataclasses import replace
 
 import pytest
 
-from core.inference import mxc_runtime, os_sandbox, tools
+from core.inference import mxc_read_grants, mxc_runtime, os_sandbox, tools
 
 
 @pytest.fixture(autouse = True)
@@ -23,6 +23,9 @@ def _dacl_journal_outside_grants(monkeypatch, tmp_path):
     outside = Path(os.path.abspath(os.sep)) / "unsloth-test-dacl-journal-never-created"
     monkeypatch.setattr(mxc_runtime, "dacl_state_path", lambda: outside)
     monkeypatch.setattr(mxc_runtime, "dacl_state_dir", lambda: tmp_path)
+    # Unit tests never touch real ACLs; test_mxc_read_grants.py covers the grant itself.
+    monkeypatch.setattr(mxc_read_grants, "ensure", lambda _roots: ())
+    monkeypatch.setattr(mxc_read_grants, "revoke_recorded", lambda: ())
 
 
 def _plan(tmp_path, mode = "auto"):

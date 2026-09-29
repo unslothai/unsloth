@@ -1668,6 +1668,43 @@ def _log_failed_generation(request_shape: Optional[dict[str, Any]], exc: BaseExc
         pass
 
 
+VIDEO_GENERATION_FAILED_MSG = "Video generation failed."
+
+_NATIVE_CRASH_NEEDLES = (
+    "sd-cli exited",
+    "process exited",
+    "ggml_abort",
+    "signal",
+    "connection lost",
+    "worker died",
+)
+
+
+def video_failure_detail(exc: BaseException, request_shape: Optional[dict[str, Any]] = None) -> str:
+    """A user-facing reason for a failed generation, built only from fixed text."""
+    try:
+        if _is_out_of_memory(exc):
+            if (
+                request_shape is not None
+                and request_shape.get("attention_backend") is None
+                and sdpa_math_only(_probe_target(request_shape))
+            ):
+                return f"{VIDEO_GENERATION_FAILED_MSG} {SDPA_MATH_ONLY_MESSAGE}"
+            return (
+                f"{VIDEO_GENERATION_FAILED_MSG} The device ran out of memory. Try a smaller "
+                "resolution, fewer frames, or fewer steps."
+            )
+        text = str(exc).lower()
+        if any(needle in text for needle in _NATIVE_CRASH_NEEDLES):
+            return (
+                f"{VIDEO_GENERATION_FAILED_MSG} The renderer stopped unexpectedly. See the "
+                "server log in Settings > Logs for its output."
+            )
+    except Exception:  # noqa: BLE001 -- diagnostics never mask the real failure
+        pass
+    return VIDEO_GENERATION_FAILED_MSG
+
+
 def _is_out_of_memory(exc: BaseException) -> bool:
     """Whether ``exc`` is an allocator failure, by name and text rather than by class: torch
     raises ``torch.OutOfMemoryError`` on CUDA and a plain RuntimeError on some backends."""
@@ -1715,6 +1752,7 @@ class VideoBackend:
         self._teardown_waiters = 0
         # Generation progress, written by the step callback / phase transitions.
         self._gen: dict[str, Any] = {"active": False}
+        self._last_request_shape: Optional[dict[str, Any]] = None
         # True from begin_generate() until its worker records a terminal state, so a second call is refused while it
         # runs.
         self._generate_job_active = False
@@ -5438,6 +5476,11 @@ class VideoBackend:
         # Sets a flag the pipelines read when they first build their frequency tables, so it need only happen before
         # generation, not before placement.
         force_float32_rope(pipe, target, logger = logger)
+        # HunyuanVideo-1.5 VAE only: same mask values, so bit-identical, but held off on SPEED_OFF like the trim above.
+        hv15_mask_engaged = False
+        if effective_speed != SPEED_OFF:
+            from .video_hv15_vae import install_vectorised_causal_mask
+            hv15_mask_engaged = install_vectorised_causal_mask(pipe, logger = logger) > 0
         speed_optims: tuple = ()
         for view in views:
             # Both helpers act on ``view.transformer``; call once per view (engaged values match, so record the first).
@@ -5488,6 +5531,8 @@ class VideoBackend:
                 speed_optims = tuple(k for k, v in applied.items() if v)
                 if attention_trim_engaged:
                     speed_optims += ("hunyuan_attn_trim",)
+                if hv15_mask_engaged:
+                    speed_optims += ("hv15_vae_vector_mask",)
         with self._generate_lock:
             # A cancelled/superseded load must not place weights on a GPU the arbiter may have reassigned; recheck
             # before placement.
@@ -6121,12 +6166,10 @@ class VideoBackend:
         effective_speed = resolve_speed_mode(speed_mode, is_gguf = False, dense_default = SPEED_DEFAULT)
         h3_vae_speed = effective_speed
         if effective_speed == SPEED_MAX:
-            # SPEED_MAX compiles static until a dimension changes. H3's packed sequence length carries the caption's
-            # token rows, so a static graph recompiles on new prompts: measured 0.957-1.000 s/step static against
-            # 1.000-1.040 dynamic, and two recompiles paid for it.
+            # max-autotune: 2.41 vs 2.45 s/step but 110 vs 48 s first render (~45 renders to break even).
             logger.info(
                 "video.speed_mode: MiniMax-H3 runs the 'default' regional profile under max "
-                "(a static graph retraces on the caption's contribution to the packed length)"
+                "(max-autotune's first-render cost is not repaid by its 2% faster step)"
             )
             effective_speed = SPEED_DEFAULT
         if device != "cpu":
@@ -6258,6 +6301,13 @@ class VideoBackend:
         # denoises with would keep native attention and stay uncompiled while the resolved record below still reported
         # the requested profile -- and the pin above is what removes the eager downgrade that used to hide it.
         speed_view = _denoiser_view(pipe, denoiser_component)
+        try:
+            from .video_minimax_h3_vae import reserve_h3_fast_decoder
+            reserve_h3_fast_decoder(
+                getattr(pipe, "vae", None), speed_mode = h3_vae_speed, workflow = workflow
+            )
+        except Exception:  # noqa: BLE001 -- optimisation only, never fail a load
+            pass
         try:
             attention_engaged = apply_attention_backend(
                 speed_view,
@@ -6643,6 +6693,7 @@ class VideoBackend:
                     "total": 0,
                     "eta_seconds": None,
                 }
+                self._last_request_shape = None
                 break
         worker = account_thread(
             # The token and the /v1/videos job id ride on the target rather than in kwargs: those kwargs are also a
@@ -6773,17 +6824,18 @@ class VideoBackend:
             msg = str(exc)
             if msg not in (VIDEO_NOT_LOADED_MSG, VIDEO_CANCELLED_MSG):
                 logger.error("video.generate_failed: %s", exc, exc_info = True)
-                msg = "Video generation failed."
+                msg = video_failure_detail(exc, self._last_request_shape)
             _record_outcome(msg)
             self._finish_generate_job(job_token = job_token, cancel_event = cancel_event, error = msg)
             return
         except Exception as exc:  # noqa: BLE001 -- worker thread: never propagate
             logger.error("video.generate_failed: %s", exc, exc_info = True)
-            _record_outcome("Video generation failed.")
+            detail = video_failure_detail(exc, self._last_request_shape)
+            _record_outcome(detail)
             self._finish_generate_job(
                 job_token = job_token,
                 cancel_event = cancel_event,
-                error = "Video generation failed.",
+                error = detail,
             )
             return
 
@@ -7131,6 +7183,7 @@ class VideoBackend:
                     "offload": state.offload_policy,
                     "attention_backend": state.attention_backend,
                 }
+                self._last_request_shape = request_shape
 
                 pipe = state.pipe
                 call_params = inspect.signature(pipe.__call__).parameters

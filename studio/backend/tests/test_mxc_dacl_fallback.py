@@ -12,7 +12,14 @@ from types import SimpleNamespace
 
 import pytest
 
-from core.inference import mxc_adapter, mxc_policy, mxc_probe, mxc_runtime, os_sandbox
+from core.inference import (
+    mxc_adapter,
+    mxc_policy,
+    mxc_probe,
+    mxc_read_grants,
+    mxc_runtime,
+    os_sandbox,
+)
 from core.inference import sandbox_windows_mxc
 
 OPT_IN = mxc_policy.DACL_FALLBACK_ENV
@@ -23,6 +30,9 @@ def _studio_home(monkeypatch, tmp_path):
     home = tmp_path / "studio-home"
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(home))
     monkeypatch.delenv(OPT_IN, raising = False)
+    # Unit tests never touch real ACLs; test_mxc_read_grants.py covers the grant itself.
+    monkeypatch.setattr(mxc_read_grants, "ensure", lambda _roots: ())
+    monkeypatch.setattr(mxc_read_grants, "revoke_recorded", lambda: ())
     mxc_probe.invalidate_cache()
     yield home
     mxc_probe.invalidate_cache()

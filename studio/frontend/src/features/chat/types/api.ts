@@ -291,6 +291,10 @@ export interface LoadModelResponse {
   gpu_memory_mode?: "auto" | "manual";
   gpu_layers?: number;
   /** Set when an automatic Vulkan startup crash was recovered by loading on CPU. */
+  offloaded_layers?: number | null;
+  offload_total_layers?: number | null;
+  offload_overridden?: boolean | null;
+  gpu_backend_unavailable?: boolean | null;
   cpu_fallback_reason?: CpuFallbackReason | null;
   /** How Unsloth recovered after a multimodal projector failed at startup. */
   mmproj_fallback_reason?: MmprojFallbackReason | null;
@@ -406,6 +410,10 @@ export interface InferenceStatusResponse {
   gpu_memory_mode?: "auto" | "manual";
   gpu_layers?: number;
   /** Set while the active model is a recovered CPU-only Vulkan load. */
+  offloaded_layers?: number | null;
+  offload_total_layers?: number | null;
+  offload_overridden?: boolean | null;
+  gpu_backend_unavailable?: boolean | null;
   cpu_fallback_reason?: CpuFallbackReason | null;
   /** How the active GGUF recovered after a multimodal projector startup failure. */
   mmproj_fallback_reason?: MmprojFallbackReason | null;
