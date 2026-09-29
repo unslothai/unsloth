@@ -610,6 +610,8 @@ export function SharedComposer({
   const textRef = useRef(text);
   const pendingImagesRef = useRef(pendingImages);
   const pendingAudioRef = useRef(pendingAudio);
+  // Sizes of clips still being read, by id.
+  const readingAudioRef = useRef(new Map<string, number>());
   const setCurrentText = useCallback(
     (value: string | ((previous: string) => string)) => {
       const next =
@@ -1061,17 +1063,20 @@ export function SharedComposer({
       const next: PendingImage[] = [];
       let droppedImageForUnavailable = false;
       let audioAddError: string | null = null;
-      // Caps cover already staged clips too.
-      const nextAudio = [...pendingAudioRef.current];
       let videoUnsupported = false;
       let conversionError: string | null = null;
       for (let i = 0; i < files.length; i++) {
         const file = files[i];
         if (!file) continue;
         if (isAudioAttachmentFile(file)) {
+          // Caps count staged clips and ones still being read by any batch.
+          const counted = [
+            ...pendingAudioRef.current.map((clip) => clip.size),
+            ...readingAudioRef.current.values(),
+          ];
           const addError = getAudioAddError(
-            nextAudio.length,
-            nextAudio.reduce((total, clip) => total + clip.size, 0),
+            counted.length,
+            counted.reduce((total, size) => total + size, 0),
             file.size,
           );
           if (addError) {
@@ -1085,13 +1090,16 @@ export function SharedComposer({
             contentType: file.type,
             size: file.size,
           };
-          nextAudio.push(clip);
+          readingAudioRef.current.set(clip.id, clip.size);
           try {
             clip.base64 = await fileToBase64(file);
           } catch {
-            nextAudio.splice(nextAudio.indexOf(clip), 1);
             continue;
+          } finally {
+            readingAudioRef.current.delete(clip.id);
           }
+          // Updated now, not on commit, so the next check already counts it.
+          pendingAudioRef.current = [...pendingAudioRef.current, clip];
           setPendingAudio((prev) => [...prev, clip]);
           continue;
         }

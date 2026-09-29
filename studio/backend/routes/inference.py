@@ -8713,6 +8713,10 @@ _AUDIO_IMAGE_INPUT_DETAIL = (
     "This model takes audio or an image in one message, not both. Send the image on its own turn."
 )
 _AUDIO_VIDEO_INPUT_DETAIL = "This model takes audio or a video in one message, not both."
+_MLX_MULTI_AUDIO_DETAIL = (
+    "This MLX model takes one audio file per message. Send the recordings on separate turns, "
+    "or load the GGUF build of the model to send several at once."
+)
 
 
 async def _preflight_audio_for_switch(audio_preflight: dict, target_is_gguf: bool) -> None:
@@ -8761,6 +8765,11 @@ async def _preflight_audio_for_switch(audio_preflight: dict, target_is_gguf: boo
         )
     if audio_preflight.get("has_image"):
         raise HTTPException(status_code = 400, detail = _AUDIO_IMAGE_INPUT_DETAIL)
+    from core.inference.local_model_resolver import _host_serves_mlx
+
+    # A non-GGUF target on an MLX host loads on MLX, which takes one clip.
+    if len(clips) > 1 and _host_serves_mlx():
+        raise HTTPException(status_code = 400, detail = _MLX_MULTI_AUDIO_DETAIL)
     if not _audio_decoder_is_available():
         raise HTTPException(
             status_code = 400,
@@ -21963,7 +21972,7 @@ def _decode_audio_base64(b64: str) -> "np.ndarray":
             channels = max(1, int(getattr(probe, "num_channels", 1) or 1))
         except Exception:  # noqa: BLE001 - a container info cannot read is still loadable
             rate, frames, channels = 0, 0, 1
-        limit = rate * _MAX_AUDIO_SECONDS
+        limit = rate * _audio_seconds_cap()
         if limit and frames > limit:
             raise _DecodedAudioTooLongError(
                 f"decoded audio exceeds the {_MAX_AUDIO_SECONDS // 60}-minute limit"
@@ -21974,14 +21983,14 @@ def _decode_audio_base64(b64: str) -> "np.ndarray":
         # multichannel file -- goes to the bounded reader, which downmixes as it
         # goes and holds mono frames only. Streaming beats refusing: the file is
         # inside the clock, it is just too wide to hold at once.
-        if limit and frames and frames * channels <= _MAX_DECODED_SAMPLES:
+        if limit and frames and frames * channels <= _decoded_samples_cap():
             # One frame past the cap, so a container that misreports its length
             # is still never fully read. Both caps apply: info() is the value
             # being distrusted here, so an understated num_frames must not let
             # the read run to the rate-relative limit, which at 192 kHz is four
             # times the sample ceiling. A file that fits is unaffected: its
             # length is under both.
-            read_frames = min(limit, _MAX_DECODED_SAMPLES // channels)
+            read_frames = min(limit, _decoded_samples_cap() // channels)
             waveform, sr = torchaudio.load(tmp_path, num_frames = read_frames + 1)
         else:
             import torch
@@ -22009,8 +22018,8 @@ def _decode_audio_base64(b64: str) -> "np.ndarray":
         os.unlink(tmp_path)
 
     # Backstop for a container that reported neither rate nor length.
-    if (sr > 0 and waveform.shape[-1] > sr * _MAX_AUDIO_SECONDS) or (
-        waveform.shape[-1] * waveform.shape[0] > _MAX_DECODED_SAMPLES
+    if (sr > 0 and waveform.shape[-1] > sr * _audio_seconds_cap()) or (
+        waveform.shape[-1] * waveform.shape[0] > _decoded_samples_cap()
     ):
         raise _DecodedAudioTooLongError(
             f"decoded audio exceeds the {_MAX_AUDIO_SECONDS // 60}-minute limit"
@@ -22074,6 +22083,35 @@ class _DecodedAudioTooLongError(ValueError):
     """Decoded audio crossed the duration cap before it could be buffered."""
 
 
+# Seconds the current decode may use: what earlier clips in the request left over.
+_AUDIO_SECONDS_LEFT: "contextvars.ContextVar[Optional[int]]" = contextvars.ContextVar(
+    "_AUDIO_SECONDS_LEFT", default = None
+)
+
+
+def _audio_seconds_cap() -> int:
+    left = _AUDIO_SECONDS_LEFT.get()
+    return _MAX_AUDIO_SECONDS if left is None else min(left, _MAX_AUDIO_SECONDS)
+
+
+def _decoded_samples_cap() -> int:
+    if _AUDIO_SECONDS_LEFT.get() is None or _MAX_AUDIO_SECONDS <= 0:
+        return _MAX_DECODED_SAMPLES
+    return _MAX_DECODED_SAMPLES * _audio_seconds_cap() // _MAX_AUDIO_SECONDS
+
+
+def _decode_within(seconds_used: float, decode, *args):
+    """Run ``decode`` capped to the duration the earlier clips left."""
+    left = math.ceil(_MAX_AUDIO_SECONDS - seconds_used)
+    if left <= 0:
+        raise _DecodedAudioTooLongError("combined audio exceeds the duration cap")
+    token = _AUDIO_SECONDS_LEFT.set(left)
+    try:
+        return decode(*args)
+    finally:
+        _AUDIO_SECONDS_LEFT.reset(token)
+
+
 def _request_audio_clips(payload) -> list[str]:
     """Every recording the request carries, ``audio_base64`` first."""
     first = getattr(payload, "audio_base64", None)
@@ -22110,10 +22148,11 @@ def _check_decoded_audio_budget(arrays: list) -> None:
 
 
 def _decode_audio_clips(clips: list[str]) -> list:
-    """Decode clips in order, failing as soon as the combined duration is over the cap."""
+    """Decode clips in order, each capped to the duration the earlier ones left."""
     arrays: list = []
     for clip in clips:
-        arrays.append(_decode_audio_base64(clip))
+        used = sum(len(array) for array in arrays) / 16000
+        arrays.append(_decode_within(used, _decode_audio_base64, clip))
         _check_decoded_audio_budget(arrays)
     return arrays
 
@@ -22205,14 +22244,14 @@ def _decode_audio_with_torchcodec(path: str) -> "tuple[Any, int]":
             "decoded within the size limit; convert it to wav or mp3"
         )
     duration = float(getattr(metadata, "duration_seconds", 0.0) or 0.0)
-    if duration > _MAX_AUDIO_SECONDS:
+    if duration > _audio_seconds_cap():
         raise _DecodedAudioTooLongError(
             f"decoded audio exceeds the {_MAX_AUDIO_SECONDS // 60}-minute limit"
         )
     # Both ceilings, and a second past the clock so a container understating its
     # own duration is still cut rather than believed.
     channels = max(1, int(getattr(metadata, "num_channels", 1) or 1))
-    seconds = min(_MAX_AUDIO_SECONDS + 1, _MAX_DECODED_SAMPLES / (rate * channels) + 1)
+    seconds = min(_audio_seconds_cap() + 1, _decoded_samples_cap() / (rate * channels) + 1)
     samples = decoder.get_samples_played_in_range(0.0, seconds)
     return samples.data, rate
 
@@ -22555,7 +22594,7 @@ def _decoded_sample_ceiling(sample_rate: int) -> int:
     thirty minutes' worth of memory. Nothing may allocate past the smaller of
     them, because that is the point at which the decode refuses anyway.
     """
-    return min(sample_rate * _MAX_AUDIO_SECONDS, _MAX_DECODED_SAMPLES)
+    return min(sample_rate * _audio_seconds_cap(), _decoded_samples_cap())
 
 
 def _av_expected_samples(container, sample_rate: int, ceiling: int) -> int:
@@ -22704,13 +22743,15 @@ def _decode_audio_mono(raw: bytes) -> "tuple[np.ndarray, int]":
                         "this audio file does not report a sample rate, so it cannot "
                         "be decoded within the size limit; convert it to wav or mp3"
                     )
-                window = min(float(_MAX_AUDIO_SECONDS + 1), _MAX_DECODED_SAMPLES / probe_rate + 1)
+                window = min(
+                    float(_audio_seconds_cap() + 1), _decoded_samples_cap() / probe_rate + 1
+                )
                 arr, sr = librosa.load(tmp_path, sr = None, mono = True, duration = window)
             finally:
                 os.unlink(tmp_path)
     if arr.ndim > 1:
         arr = arr.mean(axis = 1)
-    if (sr > 0 and len(arr) > sr * _MAX_AUDIO_SECONDS) or len(arr) > _MAX_DECODED_SAMPLES:
+    if (sr > 0 and len(arr) > sr * _audio_seconds_cap()) or len(arr) > _decoded_samples_cap():
         raise _DecodedAudioTooLongError(
             f"decoded audio exceeds the {_MAX_AUDIO_SECONDS // 60}-minute limit"
         )
@@ -22748,7 +22789,7 @@ def _prepare_audio_clips_for_llama(clips: list[str]) -> list[tuple[str, str]]:
             container, seconds = kept
             prepared.append((clip, container))
         else:
-            arr, sr = _decode_audio_mono(raw)
+            arr, sr = _decode_within(total_seconds, _decode_audio_mono, raw)
             arr, sr = _fit_transcoded_audio_to_wav_cap(arr, sr, cap = wav_budget // transcodes_left)
             wav = _mono_f32_to_wav_bytes(arr, sr)
             wav_budget -= len(wav)
@@ -26559,12 +26600,8 @@ async def produce_openai_chat_completions(
             api_monitor.fail(monitor_id, _audio_rejection[1])
             raise HTTPException(status_code = _audio_rejection[0], detail = _audio_rejection[1])
         if payload.extra_audio_base64 and model_info.get("is_mlx"):
-            _multi_audio_detail = (
-                "This MLX model takes one audio file per message. Send the recordings on "
-                "separate turns, or load the GGUF build of the model to send several at once."
-            )
-            api_monitor.fail(monitor_id, _multi_audio_detail)
-            raise HTTPException(status_code = 400, detail = _multi_audio_detail)
+            api_monitor.fail(monitor_id, _MLX_MULTI_AUDIO_DETAIL)
+            raise HTTPException(status_code = 400, detail = _MLX_MULTI_AUDIO_DETAIL)
 
         # ── Audio INPUT path: decode WAV and route to audio input generation ──
         if payload.audio_base64 and model_info.get("has_audio_input"):

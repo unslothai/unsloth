@@ -664,3 +664,49 @@ def test_transcoded_gguf_clips_share_one_wav_budget(monkeypatch):
     monkeypatch.setattr(inference_route, "_passthrough_audio_seconds", lambda *_a: 0.1)
     inference_route._prepare_audio_clips_for_llama(["V0FWIQ==", "QUFB"])
     assert caps == [1000 - 4]
+
+
+def test_each_clip_decodes_within_what_the_earlier_ones_left(monkeypatch):
+    """A later clip may not decode a full cap's worth while earlier clips are held."""
+    import numpy as np
+
+    monkeypatch.setattr(inference_route, "_MAX_AUDIO_SECONDS", 10)
+    caps = []
+
+    def _decode(_b64):
+        caps.append(inference_route._audio_seconds_cap())
+        return np.zeros(4 * 16000, np.float32)
+
+    monkeypatch.setattr(inference_route, "_decode_audio_base64", _decode)
+    inference_route._decode_audio_clips(["a", "b"])
+    assert caps == [10, 6]
+    assert inference_route._audio_seconds_cap() == 10  # reset after the decode
+
+    caps.clear()
+    with pytest.raises(inference_route._DecodedAudioTooLongError):
+        inference_route._decode_audio_clips(["a", "b", "c"])
+    assert caps == [10, 6, 2]
+
+
+def test_multi_clip_mlx_target_is_refused_before_the_switch(monkeypatch):
+    import core.inference.local_model_resolver as resolver
+
+    monkeypatch.setattr(inference_route, "_audio_decoder_is_available", lambda: True)
+    monkeypatch.setattr(
+        inference_route,
+        "_decode_audio_base64",
+        lambda _b64: pytest.fail("decoded clips for a target that cannot take them"),
+    )
+    monkeypatch.setattr(resolver, "_host_serves_mlx", lambda: True)
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(inference_route._preflight_audio_for_switch({"clips": ["a", "b"]}, False))
+    assert exc.value.status_code == 400
+    assert exc.value.detail == inference_route._MLX_MULTI_AUDIO_DETAIL
+
+    # GGUF on the same host still takes several clips.
+    monkeypatch.setattr(
+        inference_route, "_prepare_audio_clips_for_llama", lambda clips: [("x", "wav")] * len(clips)
+    )
+    preflight = {"clips": ["a", "b"]}
+    asyncio.run(inference_route._preflight_audio_for_switch(preflight, True))
+    assert len(preflight["prepared"]) == 2
