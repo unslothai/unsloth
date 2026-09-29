@@ -651,6 +651,33 @@ def test_applied_floor_is_recorded_even_when_lower_than_planned():
     )
 
 
+def test_whole_module_vae_phase_counts_only_the_decoded_clip_share():
+    """The VAE phase holds the decoded clip, not the denoise-side base the DiT phase already carries."""
+    import dataclasses as dc
+
+    import core.inference.video as V
+    from core.inference.diffusion_memory import MEMORY_MODE_AUTO, OFFLOAD_GROUP, OFFLOAD_MODEL
+
+    @dc.dataclass
+    class _Plan:
+        offload_policy: str = OFFLOAD_GROUP
+        stream_transformer: bool = True
+        stream_text_encoders: bool = False
+        requested_mode: str = MEMORY_MODE_AUTO
+        vae_tiling: bool = False
+        vae_slicing: bool = False
+        reasons: tuple = ()
+        estimates: dict = dc.field(default_factory = lambda: {"safe_device_budget_mib": 17000})
+
+    runtime = V.estimate_video_runtime_mib(width = 1280, height = 704, num_frames = 121)
+    # DiT phase 10000 + 4096 + 2048 = 16144; VAE phase 8000 + clip share + 2048 ~ 13.8 GiB, not 8000 + runtime + 2048
+    out = V._video_prefer_whole_module(
+        _Plan(), denoiser_mib = 10000, text_encoder_mib = 6000, vae_mib = 8000, runtime_mib = runtime
+    )
+    assert out.offload_policy == OFFLOAD_MODEL
+    assert out.estimates["whole_module_fits_mib"] == 10000 + V._VIDEO_DENOISE_ACTIVATION_MIB + 2048
+
+
 def test_applied_floor_counts_an_encoder_that_refused_leaf_offload():
     """_apply_group_offload keeps a refusing encoder resident under the same policy; the floor must follow the hooks."""
     torch = pytest.importorskip("torch")

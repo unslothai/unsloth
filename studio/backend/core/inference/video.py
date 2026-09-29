@@ -1709,7 +1709,10 @@ def _video_prefer_whole_module(
         int(denoiser_mib)
         + min(int(runtime_mib), _VIDEO_DENOISE_ACTIVATION_MIB)
         + DEFAULT_BASE_OVERHEAD_MIB,
-        int(vae_mib) + int(runtime_mib) + DEFAULT_BASE_OVERHEAD_MIB,
+        # the decode holds only the decoded-clip share; the denoise base is already in the DiT phase
+        int(vae_mib)
+        + max(0, int(runtime_mib) - _VIDEO_DENOISE_ACTIVATION_MIB)
+        + DEFAULT_BASE_OVERHEAD_MIB,
     )
     if max(phases) > int(budget):
         return plan
