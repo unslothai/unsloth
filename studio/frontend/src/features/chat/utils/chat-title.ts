@@ -1,7 +1,32 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import {
+  buildExternalModelId,
+  parseExternalModelId,
+} from "../external-providers";
+import { encryptProviderApiKey } from "../api/providers-api";
+import {
+  type ExternalProviderConfig,
+  getExternalProviderApiKey,
+  isCustomProviderType,
+  loadExternalProviders,
+  toExternalBackendProviderType,
+} from "../external-providers";
+import {
+  clampReasoningEffortToLevels,
+  getExternalMinOutputTokens,
+  getExternalReasoningCapabilities,
+  getProviderCapabilities,
+  isGeminiCustomOpenAICompatBase,
+} from "../provider-capabilities";
+import { useExternalProvidersStore } from "../stores/external-providers-store";
 import type { MessageRecord, ThreadRecord } from "../types";
+import type {
+  OpenAIChatChunk,
+  OpenAIChatCompletionsRequest,
+} from "../types/api";
+import { extractDeltaText } from "./parse-assistant-content";
 
 /** Store the whole first line and let the sidebar clip it with CSS, so a wider one shows more.
  *  Matches the rename input's maxLength: UTF-16 units, ellipsis included. */
@@ -175,4 +200,254 @@ export function planLegacyTitleRepairs(
     });
   }
   return repairs;
+}
+
+// Routing lives here, not in the adapter, so node --test can load it (the provider is JSX).
+
+/** The backend dispatches on provider_id / provider_type, never parsing the external:: model id. */
+export interface ExternalRoutingFields {
+  provider_id: string;
+  provider_type: string;
+  external_model: string;
+  provider_base_url: string | null;
+  provider_api_type: "chat_completions" | "responses";
+  encrypted_api_key?: string;
+}
+
+export type ExternalRoutingUnavailableReason =
+  | "connections-disabled"
+  | "connection-missing"
+  | "missing-api-key";
+
+export interface ResolvedExternalConnection {
+  provider: ExternalProviderConfig;
+  modelId: string;
+  /** Browser-held key, or "" when the backend holds one or none is needed. */
+  apiKey: string;
+}
+
+export type ExternalRoutingTarget =
+  | { kind: "local" }
+  | { kind: "unavailable"; reason: ExternalRoutingUnavailableReason }
+  | ({ kind: "external" } & ResolvedExternalConnection);
+
+/** A request answering only some of these is served by the local model instead (#9045). */
+export function resolveExternalRouting(
+  checkpoint: string | null | undefined,
+): ExternalRoutingTarget {
+  const selection = parseExternalModelId(checkpoint);
+  if (selection === null) return { kind: "local" };
+
+  if (!useExternalProvidersStore.getState().connectionsEnabled) {
+    return { kind: "unavailable", reason: "connections-disabled" };
+  }
+
+  const provider = loadExternalProviders().find(
+    (c) => c.id === selection.providerId,
+  );
+  if (!provider) return { kind: "unavailable", reason: "connection-missing" };
+
+  // Installation-saved key wins: the browser copy may be stale.
+  const apiKey = provider.hasApiKey
+    ? ""
+    : getExternalProviderApiKey(provider.id).trim();
+  const keyOptional =
+    Boolean(provider.hasApiKey) ||
+    provider.authKind === "chatgpt_oauth" ||
+    isCustomProviderType(provider.providerType) ||
+    (provider.providerType === "gemini" &&
+      isGeminiCustomOpenAICompatBase(provider.baseUrl));
+  if (!apiKey && !keyOptional)
+    return { kind: "unavailable", reason: "missing-api-key" };
+
+  return { kind: "external", provider, modelId: selection.modelId, apiKey };
+}
+
+/** Encrypted per attempt so a rotated-key retry can rebuild with forceRefreshPublicKey. */
+export async function buildExternalRoutingFields(
+  connection: ResolvedExternalConnection,
+  options: { forceRefreshPublicKey?: boolean } = {},
+): Promise<ExternalRoutingFields> {
+  const { provider, modelId, apiKey } = connection;
+  return {
+    provider_id: provider.id,
+    provider_type: toExternalBackendProviderType(provider.providerType),
+    external_model: modelId,
+    provider_base_url: provider.baseUrl || null,
+    provider_api_type: provider.apiType ?? "chat_completions",
+    ...(apiKey
+      ? {
+          encrypted_api_key: await encryptProviderApiKey(
+            apiKey,
+            options.forceRefreshPublicKey ?? false,
+          ),
+        }
+      : {}),
+  };
+}
+
+/** A deep research run's config is evidence only once it completed. */
+export function answeringCheckpoint(custom: unknown): string {
+  const meta = (custom ?? {}) as {
+    responseDetails?: { modelId?: unknown };
+    researchRun?: {
+      status?: unknown;
+      config?: { inferenceRequest?: Record<string, unknown> };
+    };
+  };
+  const stamped = meta.responseDetails?.modelId;
+  if (typeof stamped === "string" && stamped) return stamped;
+
+  const run = meta.researchRun;
+  if (run?.status !== "completed") return "";
+
+  const inference = run.config?.inferenceRequest ?? {};
+  const { providerId, providerType, externalModel } = inference;
+  const routed = [providerId, providerType, externalModel].every(
+    (field) => typeof field === "string" && field !== "",
+  );
+  if (routed)
+    return buildExternalModelId(providerId as string, externalModel as string);
+  const model = typeof inference.model === "string" ? inference.model : "";
+  return parseExternalModelId(model) === null ? model : "";
+}
+
+/** Follows the connection that answered, not the live selection, so the excerpt never reaches an unused connection; local models follow the selection so an evicted one is not reloaded. */
+export function titleCheckpoint(
+  answeredWith: string,
+  activeCheckpoint: string,
+): string {
+  if (parseExternalModelId(answeredWith) !== null) return answeredWith;
+  return parseExternalModelId(activeCheckpoint) === null
+    ? activeCheckpoint
+    : "";
+}
+
+const VERBATIM_EFFORT_PROVIDER_TYPES = new Set(["openai", "openai_codex"]);
+
+type TitleReasoningFields = Pick<
+  OpenAIChatCompletionsRequest,
+  "enable_thinking" | "reasoning_effort"
+>;
+
+function titleReasoningCaps(connection: ResolvedExternalConnection) {
+  const { provider, modelId } = connection;
+  return getExternalReasoningCapabilities(provider.providerType, modelId, {
+    isReasoningProvider: provider.isReasoningModel === true,
+    baseUrl: provider.baseUrl ?? null,
+    apiType: provider.apiType,
+  });
+}
+
+/** Responses route: either field becomes reasoning.effort (400 on non-reasoning models), sent verbatim, so omit or clamp. */
+function titleReasoningFields(
+  connection: ResolvedExternalConnection,
+): TitleReasoningFields {
+  const { provider } = connection;
+  const caps = titleReasoningCaps(connection);
+  const responsesRoute =
+    VERBATIM_EFFORT_PROVIDER_TYPES.has(provider.providerType) ||
+    provider.apiType === "responses";
+  if (responsesRoute && !caps.supportsReasoning) return {};
+  const clamp = responsesRoute && caps.reasoningStyle === "reasoning_effort";
+  return {
+    enable_thinking: false,
+    reasoning_effort: clamp
+      ? clampReasoningEffortToLevels("none", caps.reasoningEffortLevels)
+      : "none",
+  };
+}
+
+/** Reasoning that cannot be turned off counts toward the cap (Gemini 2.5 Pro forces 128), so it gets headroom. */
+function titleMaxTokens(connection: ResolvedExternalConnection): number {
+  const floor = getExternalMinOutputTokens(connection.provider.providerType);
+  const caps = titleReasoningCaps(connection);
+  const forcedReasoning = caps.supportsReasoning && !caps.supportsReasoningOff;
+  return Math.max(24, floor, forcedReasoning ? 1024 : 0);
+}
+
+const TITLE_SYSTEM_PROMPT =
+  "Write 1 concise chat title summarizing the conversation topic, not the user's exact wording. Use the assistant reply as context when provided. Rules: 2-6 words, no quotes, no punctuation, ASCII only, do not echo input. Output title only.";
+
+export async function buildTitleRequest(
+  checkpoint: string,
+  prompt: string,
+): Promise<OpenAIChatCompletionsRequest | null> {
+  const routing = resolveExternalRouting(checkpoint);
+  if (routing.kind === "unavailable") return null;
+
+  // The backend forwards sampling fields verbatim, so gate them as the chat request does.
+  const caps =
+    routing.kind === "external"
+      ? getProviderCapabilities(
+          routing.provider.providerType,
+          routing.provider.apiType,
+          routing.modelId,
+          routing.provider.baseUrl,
+        )
+      : null;
+  const local = routing.kind === "local";
+
+  return {
+    model: checkpoint,
+    // Required: the proxy answers SSE, so stream:false has no readable body.
+    stream: true,
+    ...(local || caps?.temperature !== false ? { temperature: 0.2 } : {}),
+    ...(local || caps?.topP !== false ? { top_p: 0.9 } : {}),
+    max_tokens: routing.kind === "external" ? titleMaxTokens(routing) : 24,
+    ...(local || caps?.topK ? { top_k: 20 } : {}),
+    ...(local || caps?.repetitionPenalty ? { repetition_penalty: 1.0 } : {}),
+    ...(routing.kind === "external"
+      ? titleReasoningFields(routing)
+      : { enable_thinking: false, reasoning_effort: "none" as const }),
+    // Else the server's tools-on default adds tool schemas.
+    enable_tools: false,
+    messages: [
+      { role: "system", content: TITLE_SYSTEM_PROMPT },
+      { role: "user", content: prompt },
+    ],
+    ...(routing.kind === "external"
+      ? await buildExternalRoutingFields(routing)
+      : {}),
+  };
+}
+
+/** Truncated answers are discarded: hitting the token cap means it wrote something else. */
+export async function titleFromStream(
+  chunks: AsyncIterable<OpenAIChatChunk>,
+): Promise<string | null> {
+  let content = "";
+  let finishReason: string | null = null;
+  for await (const chunk of chunks) {
+    const choice = chunk.choices?.[0];
+    content += extractDeltaText(choice?.delta?.content).text;
+    // A later usage chunk has no finish reason; it must not erase this one.
+    finishReason = choice?.finish_reason ?? finishReason;
+  }
+
+  if (finishReason === "length") return null;
+  // A model that cannot turn reasoning off streams its summary as a closed think block first.
+  const visible = content.replace(/<think>[\s\S]*?<\/think>/gi, "");
+  if (!visible || /<\/?think>/i.test(visible)) return null;
+  return normalizeTitle(visible);
+}
+
+export function normalizeTitle(raw: string): string | null {
+  let title = raw.split(/\r?\n/, 1)[0] ?? "";
+  title = title.replace(/^\s*title\s*:\s*/i, "");
+  title = title.replace(/[^\x20-\x7E]+/g, " ");
+  title = title.replace(/["'`]+/g, "");
+
+  // Echo fail-safe: reject leading role labels before punctuation strips the ":".
+  if (/^\s*(user|assistant|base|lora)\s*:/i.test(title)) {
+    return null;
+  }
+
+  title = title.replace(/[.!?:;,]+/g, " ");
+  title = title.replace(/\s+/g, " ").trim();
+
+  const words = title.split(" ").filter(Boolean).slice(0, 6);
+  const joined = words.join(" ").trim();
+  if (!joined) return null;
+  return joined.length > 60 ? joined.slice(0, 60).trimEnd() : joined;
 }

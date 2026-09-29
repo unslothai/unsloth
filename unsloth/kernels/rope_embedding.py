@@ -222,7 +222,8 @@ class Fast_RoPE_Embedding(torch.autograd.Function):
         n_heads: int
         head_dim: int
         batch, seq_len, n_heads, head_dim = dY.shape
-        dY = dY.reshape(batch * seq_len, n_heads * head_dim)
+        # The kernel writes in place: reshape of an expanded grad (e.g. from .sum()) stays a stride-0 view.
+        dY = dY.contiguous().view(batch * seq_len, n_heads * head_dim)
         n_rows: int
         n_cols: int
         n_rows, n_cols = dY.shape

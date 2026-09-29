@@ -127,6 +127,12 @@ def _no_real_mxc_drive_aliases(monkeypatch):
 
 
 @pytest.fixture(autouse = True)
+def _no_restricted_region_defaults(monkeypatch):
+    # A host where Hugging Face is restricted would otherwise default the model source to ModelScope.
+    monkeypatch.setenv("UNSLOTH_MIRROR_FALLBACK", "0")
+
+
+@pytest.fixture(autouse = True)
 def _isolate_agent_skills(_skills_home_root, monkeypatch):
     # A developer's own ~/.agents or ~/.claude skills must not leak into tool-selection tests.
     from core.inference import skills as _skills
@@ -1313,3 +1319,13 @@ def _nvfp4_diffusion_enabled_for_nvfp4_tests(request, monkeypatch):
     else:
         monkeypatch.delenv("UNSLOTH_NVFP4_DIFFUSION", raising = False)
     yield
+
+
+@pytest.fixture(autouse = True)
+def pin_installer_torch_vendor(monkeypatch):
+    """Pin the installer's torch-vendor probe so a ROCm-torch dev box answers like CI."""
+    monkeypatch.delenv("UNSLOTH_FORCE_ROCM_TORCH", raising = False)
+    for module in list(sys.modules.values()):
+        # __dict__: hasattr would trip a lazy __getattr__. _torchao_stub has its own probe.
+        if "_rocm_torch_preferred" in (getattr(module, "__dict__", None) or {}):
+            monkeypatch.setattr(module, "_installed_torch_is_rocm", lambda: None)
