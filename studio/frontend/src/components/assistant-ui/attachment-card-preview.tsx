@@ -3,13 +3,13 @@
 
 import { type DocumentKind, DocumentView, documentKind, isMarkdown } from "@/components/file-viewer";
 import { MarkdownPreview } from "@/components/markdown/markdown-preview";
-import type { AttachmentFileKind } from "@/features/chat";
+import { type AttachmentFileKind, readAttachmentText } from "@/features/chat";
 import { cn } from "@/lib/utils";
 import { type FC, type ReactNode, useEffect, useLayoutEffect, useState } from "react";
 
-// Larger files keep the icon: every card parses its file on mount.
+// Larger files keep the icon: a visible card parses its whole file.
 const MAX_PREVIEW_BYTES = 10 * 1024 * 1024;
-const TEXT_PREVIEW_BYTES = 8 * 1024;
+const TEXT_PREVIEW_CHARS = 8 * 1024;
 // Width the first page lays out at before it is scaled to the card.
 const PAGE_WIDTH: Record<DocumentKind, number> = { pdf: 400, docx: 816, sheet: 640, slides: 640 };
 const TEXT_WIDTH = 480;
@@ -24,11 +24,33 @@ export function attachmentPreview(
   kind: AttachmentFileKind,
 ): AttachmentPreview | null {
   if (!file || file.size === 0 || file.size > MAX_PREVIEW_BYTES) return null;
+  // The resolved kind is MIME first; only preview when the extension agrees with it.
   const document = documentKind(file.name, file.type);
-  if (document) return { kind: "document", document };
-  if (isMarkdown(file.name, file.type)) return { kind: "markdown" };
+  if (document) return DOCUMENT_KINDS[document] === kind ? { kind: "document", document } : null;
+  if (kind === "text" && isMarkdown(file.name, file.type)) return { kind: "markdown" };
   if (kind === "text" || kind === "code" || kind === "web") return { kind: "text" };
   return null;
+}
+
+const DOCUMENT_KINDS: Record<DocumentKind, AttachmentFileKind> = {
+  pdf: "pdf",
+  docx: "document",
+  sheet: "spreadsheet",
+  slides: "presentation",
+};
+
+/** True once the element has been on screen; offscreen strip cards stay unparsed. */
+function useSeen(element: HTMLElement | null): boolean {
+  const [seen, setSeen] = useState(false);
+  useEffect(() => {
+    if (!element || seen) return;
+    const observer = new IntersectionObserver((entries) => {
+      if (entries.some((entry) => entry.isIntersecting)) setSeen(true);
+    });
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [element, seen]);
+  return seen;
 }
 
 function useSize(element: HTMLElement | null): { width: number; height: number } {
@@ -44,62 +66,60 @@ function useSize(element: HTMLElement | null): { width: number; height: number }
   return size;
 }
 
-function useLeadingText(file: File, enabled: boolean): string | null {
-  const [state, setState] = useState<{ file: File; text: string } | null>(null);
+// Same decoder as the attachment itself, so a declared charset reads correctly.
+function useLeadingText(file: File, enabled: boolean): { text: string } | "failed" | null {
+  const [state, setState] = useState<{ file: File; text: string | null } | null>(null);
   useEffect(() => {
     if (!enabled) return;
     let cancelled = false;
-    void file
-      .slice(0, TEXT_PREVIEW_BYTES)
-      .arrayBuffer()
-      .then((buffer) => {
-        const bytes = new Uint8Array(buffer);
-        const encoding =
-          bytes[0] === 0xff && bytes[1] === 0xfe
-            ? "utf-16le"
-            : bytes[0] === 0xfe && bytes[1] === 0xff
-              ? "utf-16be"
-              : "utf-8";
-        const text = new TextDecoder(encoding).decode(bytes);
-        if (!cancelled) setState({ file, text });
-      })
-      .catch(() => {});
+    readAttachmentText(file, file.name, file.type).then(
+      ({ text }) => !cancelled && setState({ file, text: text.slice(0, TEXT_PREVIEW_CHARS) }),
+      () => !cancelled && setState({ file, text: null }),
+    );
     return () => {
       cancelled = true;
     };
   }, [file, enabled]);
-  return state?.file === file ? state.text : null;
+  if (state?.file !== file) return null;
+  return state.text === null ? "failed" : { text: state.text };
 }
 
 /** First page of the file, scaled to fill the card. Display only: never focused or clicked. */
-export const AttachmentCardPreview: FC<{ file: File; preview: AttachmentPreview }> = ({
-  file,
-  preview,
-}) => {
+export const AttachmentCardPreview: FC<{
+  file: File;
+  preview: AttachmentPreview;
+  /** Shown when the text cannot be decoded. */
+  fallback: ReactNode;
+}> = ({ file, preview, fallback }) => {
   const [frame, setFrame] = useState<HTMLDivElement | null>(null);
   const size = useSize(frame);
-  const text = useLeadingText(file, preview.kind !== "document");
+  const seen = useSeen(frame);
+  const text = useLeadingText(file, seen && preview.kind !== "document");
   const pageWidth = preview.kind === "document" ? PAGE_WIDTH[preview.document] : TEXT_WIDTH;
   const scale = size.width / pageWidth;
   // PDF, Word and slide pages are white paper; sheets and text follow the theme.
   const paper = preview.kind === "document" && preview.document !== "sheet";
 
+  if (text === "failed") return fallback;
+
   let body: ReactNode = null;
-  if (preview.kind === "document") {
+  if (!seen) {
+    body = null;
+  } else if (preview.kind === "document") {
     body = (
       <DocumentView file={file} kind={preview.document} name={file.name} contentType={file.type} />
     );
   } else if (text !== null && preview.kind === "markdown") {
     body = (
       <MarkdownPreview
-        markdown={text}
+        markdown={text.text}
         className="max-h-none overflow-visible border-0 bg-transparent px-6 py-5 text-ui-15p5"
       />
     );
   } else if (text !== null) {
     body = (
       <pre className="whitespace-pre-wrap break-words px-6 py-5 font-mono text-[13px] leading-snug text-foreground">
-        {text}
+        {text.text}
       </pre>
     );
   }

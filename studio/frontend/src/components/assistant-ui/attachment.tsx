@@ -157,6 +157,12 @@ const AttachmentKindIcon: FC<{ kind: AttachmentFileKind; className?: string }> =
   />
 );
 
+const CardCenter: FC<{ children?: ReactNode }> = ({ children }) => (
+  <span className="flex h-full min-h-0 flex-1 items-center justify-center px-3 text-muted-foreground">
+    {children ?? <HugeiconsIcon icon={FileEmpty02Icon} strokeWidth={1.5} className="size-6" />}
+  </span>
+);
+
 const FileCardBody: FC<{
   name: string;
   kind: AttachmentFileKind;
@@ -168,11 +174,7 @@ const FileCardBody: FC<{
     {preview ? (
       <span className="min-h-0 flex-1 overflow-hidden">{preview}</span>
     ) : (
-      <span className="flex min-h-0 flex-1 items-center justify-center px-3 text-muted-foreground">
-        {center ?? (
-          <HugeiconsIcon icon={FileEmpty02Icon} strokeWidth={1.5} className="size-6" />
-        )}
-      </span>
+      <CardCenter>{center}</CardCenter>
     )}
     <span className={cn("flex min-w-0 items-center gap-1.5 px-2.25 pb-1.75", preview && "pt-1.25")}>
       {icon ?? <AttachmentKindIcon kind={kind} className="size-3.25" />}
@@ -203,7 +205,11 @@ const CardImageOrBody: FC<{ name: string; kind: AttachmentFileKind; src: string 
     <FileCardBody
       name={name}
       kind={kind}
-      preview={file && preview ? <AttachmentCardPreview file={file} preview={preview} /> : undefined}
+      preview={
+        file && preview ? (
+          <AttachmentCardPreview file={file} preview={preview} fallback={<CardCenter />} />
+        ) : undefined
+      }
     />
   );
 };
