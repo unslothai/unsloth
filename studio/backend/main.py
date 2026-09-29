@@ -2290,7 +2290,6 @@ def _get_cached_system_gpu_info(
             inference_gpu_info = gpu_info
         else:
             vulkan_info = get_vulkan_inference_gpu_info()
-            # A CUDA llama.cpp beside ROCm torch (or the reverse) runs on cards gpu_info never lists.
             cross_vendor_info = (
                 get_cross_vendor_inference_gpu_info() if vulkan_info is None else None
             )

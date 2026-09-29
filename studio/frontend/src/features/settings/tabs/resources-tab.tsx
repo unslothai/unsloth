@@ -668,8 +668,7 @@ export function ResourcesTab() {
               ) : (
                 ` · ${t("settings.resources.gpu.unavailable")}`
               )}
-              {/* Names the card a GGUF load lands on when the list below is
-                  the training backend's, e.g. CUDA llama.cpp beside ROCm torch. */}
+              {/* The list below is the training backend's cards, not these. */}
               {separateInferenceGpu.available &&
                 inferenceDisplay.usageDevices.map((device, index) => (
                   <span

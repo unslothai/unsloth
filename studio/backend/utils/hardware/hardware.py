@@ -5898,7 +5898,7 @@ def get_vulkan_inference_gpu_info() -> Optional[Dict[str, Any]]:
 
 
 def _installed_llama_backend() -> Optional[str]:
-    """What the installed llama.cpp prebuilt records it runs on, the same answer Settings shows."""
+    """The backend the installed llama.cpp prebuilt records, as Settings shows it."""
     from core.inference.llama_cpp import LlamaCppBackend
     from utils.llama_cpp_freshness import read_install_marker
     from utils.prebuilt.llama_backend import marker_backend
@@ -5973,9 +5973,7 @@ def _amd_inference_devices() -> list[Dict[str, Any]]:
 def get_cross_vendor_inference_gpu_info() -> Optional[Dict[str, Any]]:
     """llama.cpp's GPUs when its CUDA or ROCm build is the other vendor from torch, else None.
 
-    A ROCm torch with a CUDA llama.cpp (or the reverse) runs chat on cards the training
-    inventory never lists. Read from nvidia-smi / amd-smi only: torch answers for the
-    other vendor, and a CUDA or HIP context opened here would pin VRAM in this process.
+    SMI only: torch answers for the other vendor, and a CUDA/HIP context here would pin VRAM.
     """
     try:
         llama_backend = _installed_llama_backend()
@@ -5991,8 +5989,7 @@ def get_cross_vendor_inference_gpu_info() -> Optional[Dict[str, Any]]:
     except Exception as e:
         logger.debug("%s inference GPU query failed: %s", llama_backend, e)
         return None
-    # No answer keeps the old fallback to the training inventory: an empty list would
-    # tell the load estimate this host has no GPU at all.
+    # Not []: the load estimate reads an empty list as "this host has no GPU".
     if not devices:
         return None
     return {

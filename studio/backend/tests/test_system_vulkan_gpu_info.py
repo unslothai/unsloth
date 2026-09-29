@@ -441,8 +441,7 @@ def _mixed_host(monkeypatch, *, torch_rocm, llama_backend):
 
 
 def test_rocm_torch_with_a_cuda_llama_cpp_reports_the_nvidia_card(monkeypatch):
-    """The Discord report: an RTX 3080 beside an R9700, ROCm torch, llama.cpp switched to
-    CUDA. The chat model sat on the 3080 while the System tab listed only the AMD card."""
+    """RTX 3080 beside an R9700, ROCm torch, CUDA llama.cpp: only the AMD card was listed."""
     import utils.hardware.amd as amd
     import utils.hardware.nvidia as nvidia
 
@@ -491,7 +490,6 @@ def test_rocm_torch_with_a_cuda_llama_cpp_reports_the_nvidia_card(monkeypatch):
 
 
 def test_rocm_torch_with_a_rocm_llama_cpp_keeps_the_training_inventory(monkeypatch):
-    """Control for the test above: same vendor, so there is nothing separate to report."""
     import utils.hardware.amd as amd
     import utils.hardware.nvidia as nvidia
 
