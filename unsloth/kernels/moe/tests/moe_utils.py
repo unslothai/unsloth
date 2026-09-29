@@ -23,32 +23,24 @@ from grouped_gemm.reference.layers.qwen3_moe import (
 from grouped_gemm.reference.moe_ops import permute, unpermute
 
 
-def rebind_experts_to_shared_buffer(
-    moe_block: Qwen3MoeSparseMoeBlock, config: Qwen3MoeConfig
-):
+def rebind_experts_to_shared_buffer(moe_block: Qwen3MoeSparseMoeBlock, config: Qwen3MoeConfig):
     num_experts = config.num_experts
     hidden_size = config.hidden_size
     interm_size = config.moe_intermediate_size
     device = moe_block.experts[0].down_proj.weight.device
     dtype = moe_block.experts[0].down_proj.weight.dtype
 
-    buffer_up = torch.empty(
-        num_experts, interm_size, hidden_size, device = device, dtype = dtype
-    )
-    buffer_gate = torch.empty(
-        num_experts, interm_size, hidden_size, device = device, dtype = dtype
-    )
-    buffer_down = torch.empty(
-        num_experts, hidden_size, interm_size, device = device, dtype = dtype
-    )
+    buffer_up = torch.empty(num_experts, interm_size, hidden_size, device = device, dtype = dtype)
+    buffer_gate = torch.empty(num_experts, interm_size, hidden_size, device = device, dtype = dtype)
+    buffer_down = torch.empty(num_experts, hidden_size, interm_size, device = device, dtype = dtype)
 
-    # Step 2: Copy existing expert weights into buffers
+    # Rebind expert weights to views in the shared buffer
     for i, expert in enumerate(moe_block.experts):
         buffer_up[i].copy_(expert.up_proj.weight.data)
         buffer_gate[i].copy_(expert.gate_proj.weight.data)
         buffer_down[i].copy_(expert.down_proj.weight.data)
 
-    # Step 3: Rebind expert weights to views in shared buffer
+    # Rebind expert weights to views in the shared buffer.
     for i, expert in enumerate(moe_block.experts):
         expert.up_proj.weight = torch.nn.Parameter(buffer_up[i])
         expert.gate_proj.weight = torch.nn.Parameter(buffer_gate[i])
@@ -59,24 +51,18 @@ def rebind_experts_to_shared_buffer(
 
 def get_expert_metadata(model_id: str):
     api = HfApi()
-    metadata: _safetensors.SafetensorsRepoMetadata = api.get_safetensors_metadata(
-        model_id
-    )
+    metadata: _safetensors.SafetensorsRepoMetadata = api.get_safetensors_metadata(model_id)
     return metadata.files_metadata
 
 
 def clone_experts(
-    moe_block: Qwen3MoeSparseMoeBlock, config: Qwen3MoeConfig, copy: bool = True
+    moe_block: Qwen3MoeSparseMoeBlock,
+    config: Qwen3MoeConfig,
+    copy: bool = True,
 ):
-    down_projs = torch.empty(
-        config.num_experts, config.hidden_size, config.moe_intermediate_size
-    )
-    up_projs = torch.empty(
-        config.num_experts, config.moe_intermediate_size, config.hidden_size
-    )
-    gate_projs = torch.empty(
-        config.num_experts, config.moe_intermediate_size, config.hidden_size
-    )
+    down_projs = torch.empty(config.num_experts, config.hidden_size, config.moe_intermediate_size)
+    up_projs = torch.empty(config.num_experts, config.moe_intermediate_size, config.hidden_size)
+    gate_projs = torch.empty(config.num_experts, config.moe_intermediate_size, config.hidden_size)
     for expert_idx, expert in enumerate(moe_block.experts):
         down_projs[expert_idx].copy_(expert.down_proj.weight.data)
         up_projs[expert_idx].copy_(expert.up_proj.weight.data)
@@ -131,17 +117,11 @@ def check_gate_up_proj_grad(
         assert ref_gate_proj_grad is not None
         assert ref_up_proj_grad is not None
 
-        # Extract gradients
-        test_gate_proj_grad = grouped_gemm_block.gate_up_proj.grad[
-            i, :moe_intermediate_size
-        ]
-        test_up_proj_grad = grouped_gemm_block.gate_up_proj.grad[
-            i, moe_intermediate_size:
-        ]
+        test_gate_proj_grad = grouped_gemm_block.gate_up_proj.grad[i, :moe_intermediate_size]
+        test_up_proj_grad = grouped_gemm_block.gate_up_proj.grad[i, moe_intermediate_size:]
         assert test_gate_proj_grad is not None
         assert test_up_proj_grad is not None
 
-        # Sanity check shapes
         assert (
             ref_gate_proj_grad.shape == test_gate_proj_grad.shape
         ), f"{ref_gate_proj_grad.shape} != {test_gate_proj_grad.shape}"
@@ -149,16 +129,11 @@ def check_gate_up_proj_grad(
             ref_up_proj_grad.shape == test_up_proj_grad.shape
         ), f"{ref_up_proj_grad.shape} != {test_up_proj_grad.shape}"
 
-        # Check gradients
         diff = (ref_gate_proj_grad - test_gate_proj_grad).abs().max()
-        if not torch.allclose(
-            ref_gate_proj_grad, test_gate_proj_grad, atol = atol, rtol = rtol
-        ):
+        if not torch.allclose(ref_gate_proj_grad, test_gate_proj_grad, atol = atol, rtol = rtol):
             print(f"expert {i} gate_proj_grad_diff: {diff.detach().cpu().item():.6f}")
         diff = (ref_up_proj_grad - test_up_proj_grad).abs().max()
-        if not torch.allclose(
-            ref_up_proj_grad, test_up_proj_grad, atol = atol, rtol = rtol
-        ):
+        if not torch.allclose(ref_up_proj_grad, test_up_proj_grad, atol = atol, rtol = rtol):
             print(f"expert {i} up_proj_grad_diff: {diff.detach().cpu().item():.6f}")
 
 
@@ -221,7 +196,6 @@ def check_expert_grads(
             ref_grads.shape == test_grads.shape
         ), f"{field}: {ref_grads.shape} != {test_grads.shape}"
 
-        # Test each expert
         for i in range(ref_grads.shape[0]):
             ref_grad = ref_grads[i]
             test_grad = test_grads[i]
@@ -230,7 +204,6 @@ def check_expert_grads(
                 ref_grad, test_grad, atol = atol, rtol = rtol
             ), f"{field}[{i}] diff: {diff.detach().cpu().item():.6f}"
 
-        # Test all experts
         diff = (ref_grads - test_grads).abs().max()
         if verbose:
             print(f"{field} diff: {diff.detach().cpu().item():.6f}")
@@ -246,9 +219,7 @@ def check_grads(
     rtol: float,
     verbose: bool = False,
 ):
-    check_tensor_allclose(
-        ref_result.X_grad, test_result.X_grad, atol, rtol, "X.grad", verbose
-    )
+    check_tensor_allclose(ref_result.X_grad, test_result.X_grad, atol, rtol, "X.grad", verbose)
     check_tensor_allclose(
         ref_result.gate_grad, test_result.gate_grad, atol, rtol, "gate.grad", verbose
     )
@@ -262,7 +233,6 @@ def check_fwd(
     rtol: float,
     verbose: bool = False,
 ):
-    # First check hidden states (output)
     ref_output = ref_result.output
     test_output = test_result.output
     diff = (ref_output - test_output).abs().max()
@@ -272,7 +242,6 @@ def check_fwd(
         ref_output, test_output, atol = atol, rtol = rtol
     ), f"output diff: {diff.detach().cpu().item():.6f}"
 
-    # Check router logits
     ref_router_logits = ref_result.router_logits
     test_router_logits = test_result.router_logits
     diff = (ref_router_logits - test_router_logits).abs().max()
@@ -296,8 +265,8 @@ def check_grouped_gemm_results(
         test_value = getattr(fused_result, field.name)
         diff = (ref_value - test_value).abs().max()
 
-        # second_gemm in torch grouped gemm is not yet unpermuted so comparing the fused unpermuted second_gemm will result in error
-        # instead the hidden_states_unpermute should match since hidden_states_unpermute for the fused result is the same as second_gemm
+        # The torch grouped gemm's second_gemm is not yet unpermuted, so compare hidden_states_unpermute
+        # instead, which matches the fused result's second_gemm.
         if field.name == "second_gemm" and permute_y:
             continue
 
@@ -309,7 +278,11 @@ def check_grouped_gemm_results(
         ), f"{field.name} diff: {diff.detach().cpu().item():.6f}"
 
 
-def run_forward(model: nn.Module, X: torch.Tensor, is_grouped_gemm: bool = False):
+def run_forward(
+    model: nn.Module,
+    X: torch.Tensor,
+    is_grouped_gemm: bool = False,
+):
     X = X.detach().clone().requires_grad_(True)
     output, router_logits = model(X)
     if is_grouped_gemm:
@@ -333,15 +306,9 @@ def run_backward(
         assert param.grad is not None, f"{name} grad is None"
     if isinstance(model, Qwen3MoeSparseMoeBlock):
         gate_grad = model.gate.weight.grad
-        gate_proj_grad = torch.stack(
-            [expert.gate_proj.weight.grad for expert in model.experts]
-        )
-        up_proj_grad = torch.stack(
-            [expert.up_proj.weight.grad for expert in model.experts]
-        )
-        down_proj_grad = torch.stack(
-            [expert.down_proj.weight.grad for expert in model.experts]
-        )
+        gate_proj_grad = torch.stack([expert.gate_proj.weight.grad for expert in model.experts])
+        up_proj_grad = torch.stack([expert.up_proj.weight.grad for expert in model.experts])
+        down_proj_grad = torch.stack([expert.down_proj.weight.grad for expert in model.experts])
     elif isinstance(model, Qwen3MoeGroupedGEMMBlock):
         gate_grad = model.gate.grad
         gate_proj_grad, up_proj_grad = model.gate_up_proj.grad.chunk(2, dim = 1)
@@ -358,13 +325,11 @@ def run_backward(
 
 
 class Qwen3MoeFusedGroupedGEMMBlock(Qwen3MoeGroupedGEMMBlock):
-    """
-    Reference implementation of MoE block using grouped gemm.
+    """Reference MoE block using triton grouped gemm.
 
-    This is the same as the Qwen3MoeGroupedGEMMBlock but with triton grouped gemm in place of torch-native grouped gemm implementation.
-
-    NOTE: This is NOT to be used for production as it contains many extra checks and saves all intermediate results for debugging.
-    See grouped_gemm/reference/moe_block.py for a cleaner implementation.
+    Like Qwen3MoeGroupedGEMMBlock but with triton (not torch-native) grouped gemm.
+    NOT for production: it saves intermediate results and runs extra checks for
+    debugging. See grouped_gemm/reference/moe_block.py for a cleaner version.
     """
 
     def __init__(
@@ -406,9 +371,7 @@ class Qwen3MoeFusedGroupedGEMMBlock(Qwen3MoeGroupedGEMMBlock):
         kernel_config_bwd_dX: KernelConfigBackward_dX = None,
     ):
         config: Qwen3MoeConfig = moe_block.experts[0].config
-        gate, gate_up_proj, down_proj = Qwen3MoeGroupedGEMMBlock.extract_hf_weights(
-            moe_block
-        )
+        gate, gate_up_proj, down_proj = Qwen3MoeGroupedGEMMBlock.extract_hf_weights(moe_block)
         return cls(
             config,
             gate,
@@ -422,29 +385,29 @@ class Qwen3MoeFusedGroupedGEMMBlock(Qwen3MoeGroupedGEMMBlock):
             kernel_config_bwd_dX = kernel_config_bwd_dX,
         )
 
-    def forward(self, hidden_states: torch.Tensor, debug: bool = False) -> torch.Tensor:
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        debug: bool = False,
+    ) -> torch.Tensor:
         batch_size, sequence_length, hidden_dim = hidden_states.shape
         num_tokens = batch_size * sequence_length
         total_tokens = num_tokens * self.top_k
 
         hidden_states = hidden_states.view(-1, hidden_dim)
 
-        router_logits, routing_weights, selected_experts = self.run_router(
-            hidden_states
-        )
-        # Pre-processing
-        # 1. Compute tokens per expert and indices for gathering tokes from token order to expert order
-        # NOTE: these are auxiliary data structs which don't need to be recorded in autograd graph
-        token_counts_by_expert, gather_indices = (
-            self.get_token_counts_and_gather_indices(selected_experts)
+        router_logits, routing_weights, selected_experts = self.run_router(hidden_states)
+        # Token counts per expert plus token-order to expert-order gather indices: auxiliary, not recorded
+        # in the autograd graph.
+        token_counts_by_expert, gather_indices = self.get_token_counts_and_gather_indices(
+            selected_experts
         )
 
-        # 2. permute_x -> permutation will be fused in prologue of first grouped gemm
+        # permute_x fuses the permutation into the first grouped gemm's prologue.
         if not self.permute_x:
             hidden_states = permute(hidden_states, gather_indices, self.top_k)
             assert hidden_states.shape == (total_tokens, hidden_dim)
 
-        # Start expert computation
         first_gemm = grouped_gemm(
             X = hidden_states,
             W = self.gate_up_proj,
@@ -478,15 +441,14 @@ class Qwen3MoeFusedGroupedGEMMBlock(Qwen3MoeGroupedGEMMBlock):
         )
         assert second_gemm.shape == (total_tokens, hidden_dim)
 
-        # Post-processing
-        # 1. Unpermute from expert order to token order
+        # Post-processing: unpermute expert order -> token order
         if not self.permute_y:
             hidden_states_unpermute = unpermute(second_gemm, gather_indices)
             assert hidden_states_unpermute.shape == (total_tokens, hidden_dim)
         else:
             hidden_states_unpermute = second_gemm
 
-        # 2. Merge topk weights
+        # Merge topk weights
         hidden_states = (
             hidden_states_unpermute.view(num_tokens, self.top_k, hidden_dim)
             * routing_weights[..., None]

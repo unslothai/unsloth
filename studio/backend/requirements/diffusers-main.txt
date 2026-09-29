@@ -1,0 +1,41 @@
+# INSTALLED BY DEFAULT, on top of diffusers-pin.txt. Set UNSLOTH_DIFFUSERS_MAIN=0 to opt out.
+#
+# A pinned commit of Diffusers main, for models whose support has merged upstream but has not
+# reached a release yet. Today that is Qwen-Image-2.1: it merged on 2026-09-18, four weeks after
+# 0.40.0 was cut, so 0.41.0 is the first release that can carry it and there is nothing on PyPI
+# that works. Without this file the only way to run it is to break the release pin by hand.
+#
+# Why this is a SEPARATE file rather than an edit to diffusers-pin.txt, even though both now run on
+# every install. That file is the single source of truth for the release everything is built
+# against, and it deliberately refuses a source build. Keeping them apart is what makes this one
+# survivable: the release lands first and stays resident, so a host with no git, no route to
+# github.com, or an upstream that is down for the afternoon keeps a working Studio and loses one
+# model, instead of failing the install outright. Folding the commit into the pin would make a
+# reachable github.com a hard requirement of installing Unsloth at all.
+#
+# Why a COMMIT and not a branch. Nothing in Unsloth can tell two builds of main apart: a git
+# checkout reports 0.41.0.dev0 whatever it was built from, and ``_version_tuple`` truncates that to
+# (0, 41, 0), so the family version gate reads any main build as satisfying 0.41.0. The commit is
+# therefore the only thing actually pinning behaviour, and with this on by default that matters
+# more, not less: everyone gets the same tree. It is also cheaper to check: for a full SHA
+# ``_direct_reference_is_installed`` compares what is recorded in direct_url.json and needs no
+# network, while a branch ref costs a git ls-remote on every pass.
+#
+# This exact commit is the tree the Qwen-Image-2.1 FP8 and INT8 artifacts were built and measured
+# against, so what a user gets is what was tested, not "whatever main was that day".
+#
+# Why the URL still says git+ when most hosts have no git. It is the requirement, not the transport:
+# a host with no working git installs the same commit from
+# https://github.com/huggingface/diffusers/archive/<commit>.zip, which needs nothing but https, and
+# _github_archive_url derives that URL from this line so there is still one commit written down in
+# one place. That fallback is why the commit below must stay a full 40-character SHA: an archive
+# records no ref, so only a SHA in the URL makes the resident build identifiable afterwards.
+#
+# Unlike a clone, an archive's bytes are not checked against the commit, so pip and uv verify this
+# SHA-256 before building; no digest line means no zip route. Bump it with the commit:
+#   curl -sL https://github.com/huggingface/diffusers/archive/<commit>.zip | sha256sum
+# archive-sha256: 7b0d00b5b44f5ca1745d477ae4a0c2da125d58b89cff8470c422d3181a797a09
+#
+# Retiring this file: once 0.41.0 ships, bump diffusers-pin.txt to it and delete this. The family
+# entry already records 0.41.0 as QwenImage21Pipeline's minimum, so nothing else has to move.
+diffusers @ git+https://github.com/huggingface/diffusers.git@80c7ed262aeffbeb43ef13ae04baeb9b84515a69
