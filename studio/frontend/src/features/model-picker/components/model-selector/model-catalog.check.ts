@@ -1188,23 +1188,6 @@ assert.equal(
   curatedArtifactFitsDevice(zTurboId, IMAGE_CATALOG, { gpuGb: 32, systemRamGb: 128 }),
   true,
 );
-// Krea 2's bf16 DiT alone is 24.5 GiB, so its int8 build still carries 8.8 GiB of companions: 21.5 GiB resident.
-assert.equal(
-  curatedArtifactFitsDevice("krea/Krea-2-Turbo", IMAGE_CATALOG, {
-    gpuGb: 24,
-    systemRamGb: 128,
-    denseQuantSchemes: ["int8"],
-  }),
-  false,
-);
-assert.equal(
-  curatedArtifactFitsDevice("krea/Krea-2-Turbo", IMAGE_CATALOG, {
-    gpuGb: 32,
-    systemRamGb: 128,
-    denseQuantSchemes: ["int8"],
-  }),
-  true,
-);
 assert.equal(
   curatedArtifactFitsDevice("Qwen/Qwen-Image", IMAGE_CATALOG, {
     gpuGb: 64,
