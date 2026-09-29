@@ -8294,12 +8294,8 @@ def _patch_peft_moe_target_conversion(twc):
 
 
 def _moe_linear_targets_to_restore(twc, model, before, peft_config):
-    """Targets the MoE conversion took out of target_modules although they still name nn.Linear layers.
-
-    PEFT maps every gate_proj / up_proj / down_proj target onto the fused expert parameters, so the
-    same-named dense layers (DeepSeek-V3 / GLM-4.7-Flash / Ernie 4.5 shared experts and first_k_dense
-    layers) silently lose their LoRA, and a v4 adapter's weights for them are dropped on load.
-    """
+    """Converted-away targets that name nn.Linear layers (shared experts, first_k_dense layers), which PEFT
+    otherwise leaves without LoRA and whose v4 adapter weights it drops."""
     from torch import nn
 
     after = peft_config.target_modules
@@ -8309,7 +8305,6 @@ def _moe_linear_targets_to_restore(twc, model, before, peft_config):
     modules = list(model.named_modules())
 
     if isinstance(before, str):
-        # peft 0.19 turns a string into a set of characters: nothing sound to restore.
         if not hasattr(twc, "_resolve_string_target_modules"):
             return set()
         old_names = set()
