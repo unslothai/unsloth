@@ -75,10 +75,7 @@ async function getAppWindow(): Promise<TauriWindow> {
   return getCurrentWindow();
 }
 
-/**
- * The Windows caption symbols, on Windows and Linux alike: a 10-DIP glyph whose size and
- * stroke round to whole device pixels, so it stays crisp at fractional display scales.
- */
+/** Windows' 10-DIP caption glyph, snapped to device pixels to stay crisp at fractional scales. */
 function CaptionGlyph({
   kind,
 }: {
@@ -155,8 +152,6 @@ function WindowControlButton({
       title={label}
       onClick={onClick}
       className={cn(
-        // A Windows 11 caption button: 46px wide and the strip's full height, so the three meet
-        // the window's top and right edges, where a pointer thrown at them lands.
         "relative z-[80] inline-flex h-full w-[46px] shrink-0 items-center justify-center transition-colors hover:bg-nav-surface-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring",
         className,
       )}
@@ -185,7 +180,6 @@ export function DesktopTitlebarNavigation({
   // size while the slot holding them scales.
   const buttonClass =
     "inline-flex size-[30px] shrink-0 items-center justify-center rounded-[10px] text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
-  // Beside the Windows caption buttons the glyphs are 18px, 4px apart.
   const customTitlebar = shouldUseCustomWindowTitlebar();
   const iconClass = customTitlebar
     ? "size-[18px]"
@@ -272,7 +266,6 @@ export function WindowTitlebar({
 }): ReactElement | null {
   const [enabled] = useState(shouldUseCustomWindowTitlebar);
   const [maximized, setMaximized] = useState(false);
-  // Windows dims the caption glyphs while the window is in the background.
   const [focused, setFocused] = useState(true);
   const { pinned, togglePinned } = useSidebarPin();
   // Outside SidebarProvider, so read the same media query the provider does.
@@ -468,8 +461,7 @@ export function WindowTitlebar({
       >
         {showSidebarSurface && (
           <div
-            // The sidebar toggle's glyph starts over the sidebar logo's left edge: the logo's
-            // pl-4, less the button's 6px padding and the glyph's ~2px inset.
+            // Glyph over the logo's left edge: pl-4 less 6px button padding and ~2px glyph inset.
             className="pointer-events-auto absolute left-0 top-0 flex h-full min-w-0 items-center pl-[calc(4*var(--spacing)-8px)]"
             style={{ width: titlebarNavigationWidth }}
             onMouseDown={handleDragMouseDown}
@@ -522,14 +514,14 @@ export function WindowTitlebar({
             // answer it before the user does. The wait this covers is the reap, and Rust's
             // app-closing arrives well ahead of that.
             onClick={() => runWindowAction((appWindow) => appWindow.close())}
-            // Windows 11's caption red, with the glyph in white.
+            // Windows 11 caption red.
             className="hover:bg-[#c42b1c] hover:text-white active:bg-[#c42b1c]/90"
           >
             <CaptionGlyph kind="close" />
           </WindowControlButton>
         </div>
       </header>
-      {/* A maximized window has no edges to resize, and the corner belongs to Close. */}
+      {/* Maximized: no edges to resize, and the corner belongs to Close. */}
       {!maximized && (
         <>
           <div

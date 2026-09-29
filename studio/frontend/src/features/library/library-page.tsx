@@ -658,8 +658,7 @@ function LibraryView({ search }: { search: LibrarySearch }) {
       ))}
     </nav>
   ) : (
-    // truncate clips at the padding box, which the y's arm and tail overhang; the padding makes
-    // room for them and the margins give it back to the row.
+    // truncate clips at the padding box, which the y overhangs; the margins give the padding back.
     <h1 className="-my-[0.15em] min-w-0 truncate py-[0.15em] pr-[0.08em] text-[calc(1.6875rem*var(--ui-font-scale,1))] font-semibold leading-[1.04] tracking-[-0.028em] text-foreground">
       {t("shell.navigation.library")}
     </h1>

@@ -357,7 +357,7 @@ export function LibraryToolbar({
           </button>
         ))}
         {/* Outlined on light; a lighter fill than the page on dark, where an outline reads as a hole.
-            Narrows with the header row, not the window, so the toolbar never reaches the title. */}
+            Sized by the header row (cqw), not the window, so it never reaches the title. */}
         <label className="relative ml-2 flex h-9 w-[clamp(10rem,calc(100cqw-30rem),min(15rem,24vw))] min-w-40 items-center rounded-full border border-border px-4 focus-within:border-ring dark:border-transparent dark:bg-card dark:focus-within:border-ring">
           <HugeiconsIcon
             icon={Search01Icon}

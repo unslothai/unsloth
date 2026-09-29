@@ -138,9 +138,8 @@
 
 
 
-/* Regular and Medium put their line gap into usWinAscent without USE_TYPO_METRICS, so
-   DirectWrite set every line 0.1em lower on Windows than hhea does on macOS and Linux.
-   The overrides are the hhea values (ascender, descender, lineGap / 2048 units). */
+/* usWinAscent carries the line gap (no USE_TYPO_METRICS), so DirectWrite set text 0.1em low;
+   the overrides are the hhea values (units / 2048). */
 @font-face {
 	font-family: "Hellix";
 	src: url("/fonts/Hellix-Regular.woff") format("woff");
@@ -4220,9 +4219,7 @@ html[data-chat-font] .aui-root {
 	}
 
 	/* Streamdown's table controls, drawn like the code block's (ACTION_BUTTON_CLASS in
-	   markdown-text.tsx) so the two toolbars in one answer agree. Copy and download sit in
-	   dropdown wrappers, which flex keeps on the fullscreen button's line. Without controls
-	   the table box is the only child, hence :not(:last-child). */
+	   markdown-text.tsx). Without controls the table box is the only child. */
 	.aui-thread-root [data-streamdown="table-wrapper"] > div:first-child:not(:last-child) {
 		margin-right: calc(var(--spacing) * 1);
 	}
@@ -4904,10 +4901,9 @@ html.force-reduced-motion .sidebar-section-drop-line {
 	background: oklch(0.72 0 0 / 0.4);
 }
 
-/* Chromium ignores ::-webkit-scrollbar styling while scrollbar-width/color are set, and
-   its standard Windows scrollbar draws arrow buttons. Reset both everywhere on Windows
-   (:hover too, or the reveal rules flip it back); scrollbar-width stays overridable, so
-   the !important and inline hides still win. */
+/* Chromium ignores ::-webkit-scrollbar while scrollbar-width/color are set, and its standard
+   Windows scrollbar draws arrows. :hover too, or the reveal rules flip it back; the width
+   stays overridable so !important and inline hides still win. */
 @supports selector(::-webkit-scrollbar) {
 	:root.client-windows *,
 	:root.client-windows *:hover {
@@ -4925,14 +4921,12 @@ html.force-reduced-motion .sidebar-section-drop-line {
 		display: block;
 	}
 
-	/* The ::-webkit-scrollbar width, which the reset lets through. */
 	:root.client-windows {
 		--thread-scrollbar-gutter: 8px;
 	}
 }
 
-/* The chat header overlays the thread, and the window controls share its row: start
-   the classic Windows scrollbar below it. */
+/* Start the classic scrollbar below the chat header, which overlays the thread. */
 :root.client-windows .aui-thread-viewport::-webkit-scrollbar-track {
 	margin-top: var(--thread-header-offset, 0px);
 }
@@ -4948,8 +4942,7 @@ html.force-reduced-motion .sidebar-section-drop-line {
 	padding-right: var(--overlay-scrollbar-gutter, 0px);
 }
 
-/* The thread's gutter, which the header, fades, model notice and composer dock stop at:
-   Chromium's thin scrollbar. Scrollbars ignore the UI scale, so this does too. */
+/* Chromium's thin scrollbar width; scrollbars ignore the UI scale. */
 :root {
 	--thread-scrollbar-gutter: 10px;
 }
@@ -5454,8 +5447,7 @@ html.force-reduced-motion .sidebar-section-drop-line {
 	box-shadow: 0 4px 20px 6px var(--background);
 }
 
-/* The find bar holds the top-right corner the toasts use, so while it is open they stack under it:
-   its top-[content inset + 3.5rem] and h-13, then an 8px gap. */
+/* Toasts stack under the open find bar: its top, its h-13, then 8px. */
 :root:has(.find-bar-surface) [data-sonner-toaster][data-y-position="top"] {
 	--offset-top: calc(var(--studio-content-top-inset, 0px) + 3.5rem + 3.25rem * var(--ui-space-scale, 1) + 0.5rem) !important;
 	--mobile-offset-top: calc(var(--studio-content-top-inset, 0px) + 3.5rem + 3.25rem * var(--ui-space-scale, 1) + 0.5rem) !important;

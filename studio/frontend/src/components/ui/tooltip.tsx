@@ -268,7 +268,6 @@ function TooltipContent({
   variant = "default",
   className,
   sideOffset = 0,
-  // Clear of the window edges, where a flush pill reads as clipped.
   collisionPadding = 8,
   children,
   ref,

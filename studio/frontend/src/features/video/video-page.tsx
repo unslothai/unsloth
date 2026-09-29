@@ -3677,15 +3677,14 @@ function VideoGenerator({
           </div>
         </DialogContent>
       </Dialog>
-      {/* Top: the model selector over the rail and the Library link over the preview, the divider in line
-          with the rail's as on Images and Audio. Load progress shows in a toast. */}
+      {/* Header: selector over the rail, Library link over the preview, as on Images and Audio. */}
       <div className="pointer-events-none relative z-40 grid h-[calc(48px*var(--ui-space-scale,1))] shrink-0 grid-cols-[minmax(0,var(--media-rail-width,calc(408px*var(--ui-space-scale,1))))_minmax(13rem,1fr)] @max-[30rem]:grid-cols-[minmax(0,1fr)_auto]">
         <div
           className={cn(
             "pointer-events-none flex h-full min-w-0 items-start overflow-hidden @[50rem]:border-r @[50rem]:border-border/60",
             isMobileShell
               ? "pl-12"
-              : // Collapsed in the desktop app, start where Chat and Images do, clear of the titlebar buttons.
+              : // Collapsed desktop sidebar: clear the titlebar buttons, as Chat does.
                 !pinned && isTauri
                 ? "pl-[var(--studio-collapsed-chat-controls-inset,0.75rem)]"
                 : "pl-[var(--studio-media-header-left-inset,1.5rem)]",
@@ -3732,11 +3731,8 @@ function VideoGenerator({
             )}
           </div>
         </div>
-        {/* No centred mode pill here, unlike Images and Audio, so the status line takes the free width. */}
         <div className="grid h-full min-w-0 grid-cols-[minmax(0,1fr)_auto] gap-2">
-          {/* Loaded-model status line: family / kind / offload / speed, over the preview once a model is
-              resident. One control-height line: chips that do not fit wrap onto a clipped second line,
-              so none is shown cut off. */}
+          {/* Loaded-model status line; chips that do not fit wrap onto a clipped second line. */}
           {status?.loaded && (
             <div className="pointer-events-auto col-start-1 mt-[var(--studio-chat-header-padding-top,11px)] flex h-[var(--studio-chat-control-height,34px)] min-w-0 flex-wrap content-start gap-x-3 overflow-hidden pl-4 text-ui-11 leading-[var(--studio-chat-control-height,34px)]">
               {status.family && <StatusChip label="Family" value={status.family} />}
@@ -3760,9 +3756,8 @@ function VideoGenerator({
         </div>
       </div>
 
-      {/* Controls rail and preview canvas, laid out as on Images and Audio: below 50rem the panes stack
-          and the page scrolls as one column. overflow-x-hidden: an unset overflow-x computes to auto
-          beside overflow-y-auto, letting a wide row pan the page sideways on a phone. */}
+      {/* overflow-x-hidden: an unset overflow-x computes to auto beside overflow-y-auto, letting a
+          wide row pan the page sideways on a phone. */}
       <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-y-auto overflow-x-hidden @[50rem]:flex-row @[50rem]:overflow-hidden">
         <div
           data-tour="video-settings"

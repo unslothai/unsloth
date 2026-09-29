@@ -2671,7 +2671,7 @@ export function AudioPage({
             "pointer-events-none flex h-full min-w-0 items-start overflow-hidden @[50rem]:border-r @[50rem]:border-border/60",
             isMobileShell
             ? "pl-12"
-            : // Collapsed in the desktop app, start where Chat and Images do, clear of the titlebar buttons.
+            : // Collapsed desktop sidebar: clear the titlebar buttons, as Chat does.
               !pinned && isTauri
               ? "pl-[var(--studio-collapsed-chat-controls-inset,0.75rem)]"
               : "pl-[var(--studio-media-header-left-inset,1.5rem)]",
