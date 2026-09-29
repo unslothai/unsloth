@@ -123,7 +123,7 @@ export function AskApp(): ReactElement {
       setTurns((all) => [...all.slice(0, -1), change(all[all.length - 1])]);
 
     try {
-      if (!adoptBackendPort()) throw new AskError("failed");
+      if (!(await adoptBackendPort())) throw new AskError("failed");
       const used = await resolveModel(abort.signal, (loading) => {
         if (!current()) return;
         setModel(shortName(loading));

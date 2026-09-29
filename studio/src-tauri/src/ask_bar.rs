@@ -80,6 +80,19 @@ pub fn ask_hide(window: tauri::WebviewWindow) -> Result<(), String> {
     Ok(())
 }
 
+/// The backend this app owns, never a remembered port another process may now hold.
+#[tauri::command]
+pub fn ask_backend_port(
+    window: tauri::WebviewWindow,
+    backend: tauri::State<'_, crate::process::BackendState>,
+) -> Result<Option<u16>, String> {
+    ensure_ask_window(&window)?;
+    backend
+        .lock()
+        .map(|process| process.owned_backend_port())
+        .map_err(|error| error.to_string())
+}
+
 #[tauri::command]
 pub fn ask_resize(window: tauri::WebviewWindow, width: f64, height: f64) -> Result<(), String> {
     ensure_ask_window(&window)?;

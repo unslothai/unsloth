@@ -26,18 +26,8 @@ export function resetApiBase() {
   apiBase = initialApiBase
 }
 
-// The macOS Ask bar window shares this origin's storage and reads the port from it.
-export const BACKEND_PORT_STORAGE_KEY = 'unsloth_backend_port'
-
 export function setApiBase(port: number) {
   apiBase = `http://127.0.0.1:${port}`
-  if (isTauri) {
-    try {
-      localStorage.setItem(BACKEND_PORT_STORAGE_KEY, String(port))
-    } catch {
-      // Storage unavailable: only the Ask bar loses the port.
-    }
-  }
 }
 
 export function getApiBase(): string {

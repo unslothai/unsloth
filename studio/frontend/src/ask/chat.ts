@@ -8,7 +8,8 @@ import { authFetch } from "@/features/auth/api";
 import { assertCompletedPaddedBody } from "@/features/chat/api/padded-response";
 // eslint-disable-next-line no-restricted-imports
 import { isSpeechOnlyStatus } from "@/features/chat/lib/speech-only-status";
-import { BACKEND_PORT_STORAGE_KEY, setApiBase } from "@/lib/api-base";
+import { invoke } from "@tauri-apps/api/core";
+import { setApiBase } from "@/lib/api-base";
 
 export type ChatMessage = { role: "user" | "assistant"; content: string };
 
@@ -21,15 +22,10 @@ export class AskError extends Error {
   }
 }
 
-/** Points this window at the backend the main window found. False when none is known yet. */
-export function adoptBackendPort(): boolean {
-  let port = 0;
-  try {
-    port = Number(localStorage.getItem(BACKEND_PORT_STORAGE_KEY));
-  } catch {
-    return false;
-  }
-  if (!Number.isInteger(port) || port <= 0 || port > 65535) return false;
+/** Points this window at the backend the desktop app owns. False when there is none yet. */
+export async function adoptBackendPort(): Promise<boolean> {
+  const port = await invoke<number | null>("ask_backend_port").catch(() => null);
+  if (!port) return false;
   setApiBase(port);
   return true;
 }

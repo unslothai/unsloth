@@ -2201,6 +2201,7 @@ fn main() {
             ask_bar::get_ask_bar,
             ask_bar::set_ask_bar,
             ask_bar::ask_hide,
+            ask_bar::ask_backend_port,
             ask_bar::ask_resize,
             webview_permissions::reset_microphone_permission,
             has_saved_window_state,

@@ -14,7 +14,7 @@ const speechOnly = await import("../src/features/chat/lib/speech-only-status.ts"
 
 type Chat = {
   AskError: new (kind: string) => Error & { kind: string };
-  adoptBackendPort: () => boolean;
+  adoptBackendPort: () => Promise<boolean>;
   resolveModel: (signal: AbortSignal, onLoading: (model: string) => void) => Promise<string>;
   streamAnswer: (
     model: string,
@@ -38,10 +38,6 @@ async function withServer(handler: Handler, run: (chat: Chat, seen: string[]) =>
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const address = server.address();
   if (address === null || typeof address === "string") throw new Error("no port");
-  const storage = new Map<string, string>([["unsloth_backend_port", String(address.port)]]);
-  (globalThis as { localStorage?: unknown }).localStorage = {
-    getItem: (key: string) => storage.get(key) ?? null,
-  };
   let base = "";
   const chat = loadWithStubs<Chat>(new URL("../src/ask/chat.ts", import.meta.url), {
     "@/features/auth/api": {
@@ -49,15 +45,20 @@ async function withServer(handler: Handler, run: (chat: Chat, seen: string[]) =>
     },
     "@/features/chat/api/padded-response": paddedResponse,
     "@/features/chat/lib/speech-only-status": speechOnly,
+    "@tauri-apps/api/core": {
+      invoke: async (command: string) => {
+        assert.equal(command, "ask_backend_port");
+        return address.port;
+      },
+    },
     "@/lib/api-base": {
-      BACKEND_PORT_STORAGE_KEY: "unsloth_backend_port",
       setApiBase: (port: number) => {
         base = `http://127.0.0.1:${port}`;
       },
     },
   });
   try {
-    assert.equal(chat.adoptBackendPort(), true);
+    assert.equal(await chat.adoptBackendPort(), true);
     await run(chat, seen);
   } finally {
     server.closeAllConnections();
