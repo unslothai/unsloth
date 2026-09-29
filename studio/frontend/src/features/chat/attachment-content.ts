@@ -1061,7 +1061,7 @@ export async function extractDocxAttachmentText(file: File): Promise<string> {
 }
 
 const HTML_PRESCAN_BYTES = 1024;
-// A comment or whole tag, quoted values included; an unterminated tag ends the scan, as in browsers.
+// Comment or whole tag, quotes included; an unterminated tag ends the scan, as in browsers.
 const HTML_PRESCAN_TAG_RE =
   /<!--[\s\S]*?(?:-->|$)|<([a-z][^\s/>]*)((?:[\s/](?:[^>"']|"[^"]*"|'[^']*')*)?)>|<[!/?][^>]*>|<[a-z!/?][\s\S]*/gi;
 const HTML_META_ATTR_RE =
@@ -1099,7 +1099,7 @@ function declaredHtmlEncoding(bytes: Uint8Array): string | null {
     } catch {
       continue;
     }
-    // HTML reads a <meta> claiming UTF-16 as UTF-8: the tag itself was readable as ASCII.
+    // WHATWG prescan: a <meta> claiming UTF-16 means UTF-8.
     if (encoding.startsWith("utf-16")) {
       return "utf-8";
     }
@@ -1124,9 +1124,7 @@ export function decodeHtmlAttachmentBytes(
     return new TextDecoder(bom).decode(bytes);
   }
   const declared = declaredHtmlEncoding(bytes);
-  // A meta often outlives a re-save as UTF-8. Non-ASCII that is valid UTF-8 is almost never
-  // single-byte text, but a short CJK page can be valid in both, so its charset must fail too.
-  // ASCII alone proves nothing: ISO-2022-JP is 7-bit.
+  // Stale meta after a UTF-8 re-save; short CJK can be valid in both, and ISO-2022-JP is 7-bit.
   if (declared && declared !== "utf-8") {
     const utf8 = strictDecode("utf-8", bytes, truncated);
     if (
