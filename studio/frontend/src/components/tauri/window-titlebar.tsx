@@ -290,7 +290,8 @@ export function WindowTitlebar({
     showSidebarSurface && !pinned
       ? "max(7rem, calc(7rem * var(--ui-space-scale, 1)))"
       : sidebarWidth;
-  const contentBorderLeft = pinned ? `calc(${sidebarWidth} + 12px)` : "0px";
+  // The card's corner starts on the sidebar's last column, so its left edge meets the sidebar's.
+  const cornerLeft = `calc(${sidebarWidth} - 1px)`;
 
   const refreshMaximized = useCallback(async () => {
     if (!enabled) {
@@ -431,24 +432,24 @@ export function WindowTitlebar({
           // document element, where it would restyle the whole document once per drag frame.
           data-titlebar-live-width-scope=""
           aria-hidden="true"
-          className="pointer-events-none absolute inset-x-0 top-[var(--studio-custom-titlebar-height)] z-[45] h-3"
+          className="pointer-events-none absolute inset-x-0 top-[var(--studio-custom-titlebar-height)] z-[45] h-[12px]"
         >
+          {/* Window chrome, so a fixed 12px. The sidebar's colour outside the card's corner. */}
           {pinned && (
             <div
-              className="absolute top-0 size-3 -translate-x-px bg-sidebar"
-              style={{ left: sidebarWidth }}
+              className="absolute top-0 size-[12px] bg-[radial-gradient(circle_at_100%_100%,transparent_11px,var(--color-sidebar)_12px)]"
+              style={{ left: cornerLeft }}
             />
           )}
+          {/* One border draws the card's top edge and its corner, so the two cannot part, and a
+              border snaps to device pixels where a 1px box blurs across two rows. */}
           <div
-            className="absolute top-0 h-px bg-sidebar-border"
-            style={{ left: contentBorderLeft, right: 0 }}
+            className={cn(
+              "absolute top-0 right-0 h-[12px] border-t border-sidebar-border",
+              pinned && "rounded-tl-[12px] border-l",
+            )}
+            style={{ left: pinned ? cornerLeft : 0 }}
           />
-          {pinned && (
-            <div
-              className="absolute top-0 size-3 -translate-x-px rounded-tl-[12px] border-l border-t border-sidebar-border bg-background"
-              style={{ left: sidebarWidth }}
-            />
-          )}
         </div>
       )}
       <header
@@ -461,8 +462,8 @@ export function WindowTitlebar({
       >
         {showSidebarSurface && (
           <div
-            // Glyph over the logo's left edge: pl-4 less 6px button padding and ~2px glyph inset.
-            className="pointer-events-auto absolute left-0 top-0 flex h-full min-w-0 items-center pl-[calc(4*var(--spacing)-8px)]"
+            // Glyph in the sidebar's icon column, over New chat's pencil: 19px in, less 6px padding.
+            className="pointer-events-auto absolute left-0 top-0 flex h-full min-w-0 items-center pl-[calc(4.75*var(--spacing)-6px)]"
             style={{ width: titlebarNavigationWidth }}
             onMouseDown={handleDragMouseDown}
             onDoubleClick={handleDragDoubleClick}
