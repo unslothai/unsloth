@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { type DocumentKind, DocumentView, documentKind, isMarkdown } from "@/components/file-viewer";
+import { queueParse } from "@/components/file-viewer/parse-queue";
 import { MarkdownPreview } from "@/components/markdown/markdown-preview";
 import { type AttachmentFileKind, readAttachmentText } from "@/features/chat";
 import { cn } from "@/lib/utils";
@@ -68,19 +69,21 @@ function useSize(element: HTMLElement | null): { width: number; height: number }
 }
 
 // Same decoder as the attachment itself, so a declared charset reads correctly.
+// Queued like Office parses: a charset-declaring file is read whole.
 function useLeadingText(file: File, enabled: boolean): { text: string } | "failed" | null {
   const [state, setState] = useState<{ file: File; text: string | null } | null>(null);
+  const done = state?.file === file;
   useEffect(() => {
-    if (!enabled) return;
+    if (!enabled || done) return;
     let cancelled = false;
-    readAttachmentText(file, file.name, file.type).then(
-      ({ text }) => !cancelled && setState({ file, text: text.slice(0, TEXT_PREVIEW_CHARS) }),
+    queueParse(() => readAttachmentText(file, file.name, file.type), () => cancelled).then(
+      (read) => !cancelled && read && setState({ file, text: read.text.slice(0, TEXT_PREVIEW_CHARS) }),
       () => !cancelled && setState({ file, text: null }),
     );
     return () => {
       cancelled = true;
     };
-  }, [file, enabled]);
+  }, [file, enabled, done]);
   if (state?.file !== file) return null;
   return state.text === null ? "failed" : { text: state.text };
 }
@@ -94,12 +97,9 @@ export const AttachmentCardPreview: FC<{
 }> = ({ file, preview, fallback }) => {
   const [frame, setFrame] = useState<HTMLDivElement | null>(null);
   const size = useSize(frame);
-  // Documents mount only while visible, so offscreen cards release their parse.
-  // Text is capped and cheap, so it stays once read.
+  // Reads start only while visible. Documents unmount offscreen; read text stays.
   const visible = useVisible(frame);
-  const [seen, setSeen] = useState(false);
-  if (visible && !seen) setSeen(true);
-  const text = useLeadingText(file, seen && preview.kind !== "document");
+  const text = useLeadingText(file, visible && preview.kind !== "document");
   const pageWidth = preview.kind === "document" ? PAGE_WIDTH[preview.document] : TEXT_WIDTH;
   const scale = size.width / pageWidth;
   // PDF, Word and slide pages are white paper; sheets and text follow the theme.
@@ -115,7 +115,7 @@ export const AttachmentCardPreview: FC<{
         kind={preview.document}
         name={file.name}
         contentType={file.type}
-        queued={true}
+        thumbnail={true}
       />
     ) : null;
   } else if (text !== null && preview.kind === "markdown") {

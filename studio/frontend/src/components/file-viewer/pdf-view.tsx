@@ -198,7 +198,15 @@ function PdfPages({
   );
 }
 
-export default function PdfView({ file, scale }: { file: Blob; scale: number }) {
+export default function PdfView({
+  file,
+  scale,
+  firstPageOnly = false,
+}: {
+  file: Blob;
+  scale: number;
+  firstPageOnly?: boolean;
+}) {
   const t = useT();
   const [container, setContainer] = useState<HTMLDivElement | null>(null);
   const available = useWidth(container);
@@ -231,13 +239,13 @@ export default function PdfView({ file, scale }: { file: Blob; scale: number }) 
           <PdfPages
             key={`${width}:${aspect}`}
             pdf={pdf}
-            pages={Math.min(pages, MAX_PDF_PAGES)}
+            pages={firstPageOnly ? Math.min(pages, 1) : Math.min(pages, MAX_PDF_PAGES)}
             width={width}
             aspect={aspect}
             scrollElement={container}
           />
         )}
-        {available > 0 && pdf && pages > MAX_PDF_PAGES && (
+        {available > 0 && pdf && !firstPageOnly && pages > MAX_PDF_PAGES && (
           <p className="pb-6 text-center text-ui-12 text-muted-foreground">{t("library.preview.documentTruncated")}</p>
         )}
       </Document>
