@@ -1,0 +1,3149 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+# .github/workflows/security-audit.yml's pip-scan-packages job depends
+# on this file existing at scripts/scan_packages.py.
+"""
+scan_packages.py -- Standalone pre-install package scanner.
+
+Downloads PyPI packages WITHOUT installing them and inspects archive
+contents for malicious patterns: weaponized .pth files, credential
+stealers, obfuscated payloads, install-time droppers.
+
+Motivated by the litellm 1.82.7/1.82.8 supply chain attack (March 2026).
+Single file, stdlib only, Python 3.10+.
+
+Examples:
+    # Scan specific packages
+    python scan_packages.py requests==2.32.5
+    python scan_packages.py fastapi uvicorn pydantic
+
+    # Scan requirements files
+    python scan_packages.py -r requirements.txt
+    python scan_packages.py -r base.txt -r extras.txt
+
+    # Auto-discover requirements files in a project
+    python scan_packages.py -d ./my-project/
+
+    # Scan with full transitive dependency tree
+    python scan_packages.py --with-deps unsloth unsloth-zoo
+
+    # Scan + auto-fix CRITICAL findings in requirements files
+    python scan_packages.py --fix -r requirements.txt
+    python scan_packages.py --fix --max-search 20 -r requirements.txt
+
+    # Triage to a baseline once, then gate on anything NEW
+    python scan_packages.py -r requirements.txt --write-baseline scripts/scan_packages_baseline.json
+    python scan_packages.py -r requirements.txt   # auto-loads the baseline, exits 0 if only baselined findings remain
+
+False positives:
+    .py files are scanned code-only: comments and bare docstrings/doctests are
+    blanked before pattern matching (line numbers preserved), so prose, usage
+    examples and `>>>` doctests cannot trip a finding. Residual findings that
+    are genuine library behavior (a HTTP client reading HF_TOKEN, a vendored
+    test fixture) are suppressed via a reviewed baseline allowlist, matched on
+    (package, package-relative file, check, evidence hash). A new check, or
+    changed flagged code under the same check, reopens the finding; version
+    bumps and line shifts do not. This mirrors the Hugging Face Hub approach
+    (ClamAV/picklescan: low-FP, signature/structural, surface status).
+
+Exit codes:
+    0 -- no non-baselined CRITICAL or HIGH findings (or --write-baseline)
+    1 -- non-baselined CRITICAL or HIGH findings detected
+    2 -- no packages specified, or scan incomplete (pip download failure)
+"""
+
+import argparse
+import atexit
+import bisect
+import collections
+import contextlib
+import hashlib
+import io
+import json
+import multiprocessing
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tarfile
+import tempfile
+import tokenize
+import urllib.parse
+import urllib.request
+import zipfile
+from dataclasses import dataclass, field
+from pathlib import Path
+
+
+CRITICAL = "CRITICAL"
+HIGH = "HIGH"
+MEDIUM = "MEDIUM"
+
+SEVERITY_ORDER = {CRITICAL: 0, HIGH: 1, MEDIUM: 2}
+
+# Hard pin-blocks for confirmed malicious PyPI versions (Socket.dev 2026-05-12 Mini Shai-Hulud wave; earlier
+# Semgrep/Endor reports for `lightning`).
+BLOCKED_PYPI_VERSIONS: dict[str, set[str]] = {
+    "guardrails-ai": {"0.10.1"},
+    "mistralai": {"2.4.6"},
+    "lightning": {"2.6.2", "2.6.3"},
+}
+
+
+RE_SUBPROCESS = re.compile(
+    r"\bsubprocess\s*\.\s*(Popen|call|run|check_call|check_output)\b"
+    r"|\bos\s*\.\s*(system|popen|exec[lv]p?e?)\b",
+)
+
+RE_BASE64 = re.compile(
+    r"\bbase64\s*\.\s*(b64decode|decodebytes|b32decode|b16decode)\b|\bcodecs\s*\.\s*decode\b",
+)
+
+RE_EXEC_EVAL = re.compile(r"\b(exec|eval)\s*\(")
+
+# Network APIs (excludes urllib.parse, pure string manipulation). ``httpx2`` is the pydantic-maintained successor and a separate import name: openai 3.0.0 requires it and routes every call through it, which made the SDK's own HTTP invisible to each combined check needing a network half.
+RE_NETWORK = re.compile(
+    r"\burllib\.request\b"
+    r"|\burlopen\s*\("
+    r"|\brequests\s*\.\s*(get|post|put|patch|delete|head|Session)\b"
+    r"|\b(?:httpx|httpx2)\s*\.\s*(get|post|put|patch|delete|Client|AsyncClient)\b"
+    r"|\bsocket\s*\.\s*(socket|create_connection)\b"
+    r"|\bhttp\.client\b"
+    r"|\bhttp\.server\b",
+)
+
+RE_LARGE_BLOB = re.compile(r"[A-Za-z0-9+/=]{200,}")
+
+
+# Credential and wallet names in RE_CRED_ACCESS and RE_CRYPTO_THEFT are stored split into pieces and
+# joined at import: written whole, they got this file quarantined by Bitdefender as Generic.PY.STEALER.
+# Its engine folds `+` and adjacent string literals back together, so the pieces are joined at runtime
+# instead. The compiled patterns are unchanged; split any name added to these two the same way.
+def _joined(*parts) -> str:
+    """Concatenate pattern parts; a tuple part is one name split into pieces."""
+    return "".join("".join(part) for part in parts)
+
+
+RE_CRED_ACCESS = re.compile(
+    _joined(
+        r"(?:open|Path|read_text|read_bytes)\s*\([^)]*?",
+        (r"(?:\.s", r"sh[/\\]"),
+        (r"|\.a", r"ws[/\\]"),
+        (r"|\.k", r"ube[/\\]"),
+        (r"|\.g", r"nupg[/\\]"),
+        (r"|\.d", r"ocker[/\\]"),
+        (r"|\.a", r"zure[/\\]"),
+        (r"|\.g", r"cp[/\\]"),
+        (r"|cred", r"entials\.json"),
+        (r"|\.git-cred", r"entials"),
+        (r"|\.n", r"pmrc"),
+        (r"|\.p", r"ypirc"),
+        (r"|wal", r"let\.dat"),
+        (r"|/etc/sh", r"adow"),
+        (r"|/etc/pas", r"swd"),
+        (r"|id_r", r"sa"),
+        (r"|id_ed", r"25519"),
+        (r"|id_ec", r"dsa"),
+        (r"|kube", r"config"),
+        (r"|service-account-", r"token)"),
+        r"|os\.path\.(?:join|expanduser)\([^)]*?",
+        (r"(?:\.s", r"sh"),
+        (r"|\.a", r"ws"),
+        (r"|\.k", r"ube"),
+        (r"|\.g", r"nupg"),
+        (r"|\.d", r"ocker"),
+        (r"|\.a", r"zure"),
+        (r"|\.g", r"cp"),
+        (r"|cred", r"entials)"),
+        r"|(?:open|Path)\(\s*['\"]\.env['\"]\s*[,)]",
+    ),
+    re.DOTALL,
+)
+
+RE_OBFUSCATION = re.compile(
+    r"\bmarshal\s*\.\s*(loads|load)\b"
+    r"|\bcompile\s*\([^)]*['\"]exec['\"]\s*\)"
+    r"|\bzlib\s*\.\s*decompress\b"
+    r"|\blzma\s*\.\s*decompress\b"
+    r"|\bbz2\s*\.\s*decompress\b"
+    r"|\bbytearray\s*\(\s*\[.*?\]\s*\)"  # bytearray([104,101,...])
+    r"|\bchr\s*\(\s*\d+\s*\).*chr\s*\(\s*\d+\s*\)"  # chr() obfuscation chains
+    r"|\b__import__\s*\("  # dynamic import
+    r"|\bgetattr\s*\(\s*__builtins__"  # getattr(__builtins__, ...)
+    r"|\brotate\s*=.*\blambda\b.*\bchr\b"  # rotation ciphers
+    r"|\b(?:b64decode|decodebytes)\s*\(.*(?:b64decode|decodebytes)\s*\(",  # double base64
+    re.DOTALL,
+)
+
+RE_EMBEDDED_KEYS = re.compile(
+    r"-----BEGIN\s+(?:RSA\s+)?(?:PUBLIC|PRIVATE|ENCRYPTED|EC|DSA|OPENSSH)\s+KEY-----"
+    r"|\bRSA\s+PUBLIC\s+KEY\b.*[A-Za-z0-9+/=]{64,}"
+    r"|\bMII[A-Za-z0-9+/]{20,}",  # DER-encoded key prefix (base64)
+    re.DOTALL,
+)
+
+RE_PEM_BLOCK = re.compile(r"-----BEGIN[^\n]*KEY-----.*?-----END[^\n]*KEY-----", re.DOTALL)
+
+RE_CLOUD_METADATA = re.compile(
+    r"169\.254\.169\.254"  # AWS/Azure/GCP IMDS
+    r"|metadata\.google\.internal"  # GCP metadata
+    r"|169\.254\.170\.2"  # AWS ECS task metadata
+    r"|100\.100\.100\.200"  # Alibaba Cloud metadata
+    r"|/latest/meta-data"  # AWS IMDS path
+    r"|/metadata/instance"  # GCP metadata path
+    r"|/metadata/identity"  # Azure managed identity
+    r"|\bIMDSv[12]\b",
+)
+
+RE_PERSISTENCE = re.compile(
+    r"/etc/systemd/"
+    r"|systemctl\s+(enable|start|daemon-reload)"
+    r"|\.service\b.*\[Service\]"  # systemd unit content
+    r"|/etc/cron"
+    r"|crontab\s"
+    r"|/etc/init\.d/"
+    r"|/Library/LaunchDaemons"
+    r"|/Library/LaunchAgents"
+    r"|~/\.config/autostart"
+    r"|~/.local/share/systemd"
+    r"|~/\.config/systemd/user/"  # user-level systemd
+    r"|HKEY_LOCAL_MACHINE.*\\\\Run"  # Windows registry autorun
+    r"|HKEY_CURRENT_USER.*\\\\Run"
+    r"|\\\\Start Menu\\\\Programs\\\\Startup"
+    r"|schtasks\s",  # Windows scheduled tasks
+    re.IGNORECASE,
+)
+
+RE_CONTAINER_ABUSE = re.compile(
+    r"/var/run/docker\.sock"
+    r"|\bdocker\s+(run|exec|cp|build)\b"
+    r"|\bkubectl\s+(apply|create|exec|run|cp)\b"
+    r"|\bkubernetes\.client\b"
+    r"|\bfrom_incluster_config\b"
+    r"|\blist_namespaced_secret\b"
+    r"|\bcreate_namespaced_pod\b"
+    r"|\bcreate_namespaced_daemon_set\b"
+    r"|\bcreate_namespaced_secret\b"
+    r"|\bkube-system\b"
+    r"|\bhostPID\s*:\s*true"
+    r"|\bprivileged\s*:\s*true"
+    r"|\bhostNetwork\s*:\s*true"
+    r"|\bhostPath\b.*\bpath\s*:\s*/",  # k8s hostPath mounts
+    re.IGNORECASE,
+)
+
+RE_ENV_HARVEST = re.compile(
+    r"\bos\.environ\s*\.\s*copy\s*\("  # full env copy
+    r"|\bdict\s*\(\s*os\.environ\s*\)"
+    r"|\bjson\.dumps\s*\(\s*(?:dict\s*\(\s*)?os\.environ"
+    r"|\bfor\s+\w+\s*,\s*\w+\s+in\s+os\.environ\.items\(\)"  # iterating all env vars
+    r"|\bos\.environ\b.*(?:SECRET|TOKEN|KEY|PASSWORD|CREDENTIAL|API_KEY|PRIVATE)"
+    r"|\b(?:SECRET|TOKEN|PASSWORD|API_KEY|PRIVATE_KEY)\b.*os\.environ",
+    re.IGNORECASE,
+)
+
+RE_ARCHIVE_STAGING = re.compile(
+    r"\btarfile\s*\.\s*open\s*\("
+    r"|\bzipfile\s*\.\s*ZipFile\s*\([^)]*['\"]w['\"]\s*\)"
+    r"|\bshutil\s*\.\s*make_archive\b"
+    r"|\b\.add\s*\([^)]*(?:\.ssh|\.aws|\.env|\.kube|credentials|\.gnupg|\.docker)"
+    r"|\b\.write\s*\([^)]*(?:\.ssh|\.aws|\.env|\.kube|credentials|\.gnupg|\.docker)",
+    re.DOTALL,
+)
+
+# Anti-analysis / sandbox evasion / debugger detection. Deliberately NO bare ``platform.system() ... Linux/Windows/Darwin`` branch: under re.DOTALL it matched across the whole file, so any cross-platform library tripped it. OS detection alone is not an anti-analysis signal; the debugger/VM/long-sleep signals below are.
+RE_ANTI_ANALYSIS = re.compile(
+    r"\bptrace\b"
+    r"|\bsys\s*\.\s*gettrace\s*\("
+    r"|\bsys\s*\.\s*settrace\b"
+    r"|\bTracerPid\b"
+    # /proc/self/status is read to scrape TracerPid for anti-debug. A leading \b is unsatisfiable there, so the old pattern was dead; a lookbehind forbidding only a preceding word char or path separator matches open("/proc/self/status") and `cat /proc/self/status` while avoiding mid-path partials.
+    r"|(?<![\w/])/proc/self/status\b"
+    r"|\bIsDebuggerPresent\b"
+    r"|\bvirtualbox\b.*\bhardware\b"
+    r"|\bvmware\b.*\bdetect\b"
+    r"|\btime\.sleep\s*\(\s*(?:[3-9]\d{2,}|[1-9]\d{3,})\s*\)",  # long sleep (anti-sandbox)
+    re.IGNORECASE | re.DOTALL,
+)
+
+RE_DNS_EXFIL = re.compile(
+    r"\bdns\.resolver\b"
+    r"|\bsocket\.getaddrinfo\s*\([^)]*\+[^)]*\)"  # dynamic hostname construction
+    r"|\bdnspython\b"
+    r"|\bTXT\b.*\bresolver\b"
+    r"|\bresolver\b.*\bTXT\b"
+    r"|\bnslookup\b"
+    r"|\bdig\s+",
+)
+
+RE_FS_ENUM = re.compile(
+    r"\bos\.walk\s*\(\s*['\"](?:/|~|/home|/root|/Users|C:\\\\)"
+    r"|\bglob\s*\.\s*glob\s*\([^)]*(?:\*\*|\*\.pem|\*\.key|\*\.cer|\*\.pfx|\*\.p12)"
+    r"|\bos\.listdir\s*\(\s*['\"](?:/home|/root|/Users|/etc)"
+    r"|\bPath\s*\(\s*['\"]~['\"]\s*\)\s*\.\s*glob\b"
+    # Shell / REPL history FILES. Replaces `\bhistory\b.*\bread\b`, whose re.DOTALL `.*` spanned the whole file and produced 9 of the 11 baselined CRITICALs here, each allowlisted, which suppressed this check for the whole file.
+    r"|\.(?:bash|zsh|ksh|sh|python|node_repl|psql|mysql|rediscli|irb|sqlite)_history\b"
+    # Undotted history files, with a boundary that finds them however the path was built (fish_history, PSReadLine/ConsoleHost_history.txt). A quote counts as a boundary alongside a separator, so a basename assembled by Path.home() / "fish" / "fish_history" still matches.
+    r"|(?:^|[/\\'\"])(?i:fish_history|ConsoleHost_history\.txt)\b"
+    r"|['\"~/]\.history\b"
+    r"|\bHISTFILE\b"
+    r"|/etc/shadow"
+    r"|/etc/passwd",
+    re.DOTALL,
+)
+
+# Reverse shell / bind shell patterns. LEFT EXACTLY AS IT WAS, dup2 included, because this pattern is what the evidence is extracted with: it is re.DOTALL, so a match spans from the first signal to the last and editing the alternation moves the span, moves the digest, and silently reopens every reviewed baseline entry taken against it (removing the dup2 branch un-suppressed 11 entries). Whether dup2 alone is enough is decided below instead.
+RE_REVERSE_SHELL = re.compile(
+    r"\bsocket\b.*\bconnect\b.*\bsubprocess\b"
+    r"|\bsocket\b.*\bconnect\b.*\b(?:sh|bash|cmd)\b"
+    r"|\b/bin/(?:sh|bash)\b.*\bsocket\b"
+    r"|\bpty\s*\.\s*spawn\b"
+    r"|\bos\s*\.\s*dup2\s*\("
+    r"|\bwebbrowser\s*\.\s*open\b.*\bdata:\b",
+    re.DOTALL,
+)
+
+# The same thing without the dup2 branch, used only to answer "would this file still be a reverse shell if dup2 did not count?". dup2 is the ordinary way to point a file descriptor at a file and was the only single-token alternative above, so it fired on capture helpers and redirect plumbing: ten of the nineteen reverse-shell baseline entries are dup2 with no socket anywhere in the file, and not one is a true positive. A reverse shell dup2s onto a SOCKET, so the socket is the half carrying the meaning.
+RE_REVERSE_SHELL_WITHOUT_DUP = re.compile(
+    r"\bsocket\b.*\bconnect\b.*\bsubprocess\b"
+    r"|\bsocket\b.*\bconnect\b.*\b(?:sh|bash|cmd)\b"
+    r"|\b/bin/(?:sh|bash)\b.*\bsocket\b"
+    r"|\bpty\s*\.\s*spawn\b"
+    r"|\bwebbrowser\s*\.\s*open\b.*\bdata:\b",
+    re.DOTALL,
+)
+RE_SOCKET_USE = re.compile(r"\bsocket\b")
+
+RE_REMOTE_CODE = re.compile(
+    r"\bexec\s*\(\s*(?:urllib|requests|httpx|urlopen)"  # exec(requests.get(...))
+    r"|\bexec\s*\([^)]*\.(?:text|content|read)\s*\("
+    r"|\beval\s*\([^)]*\.(?:text|content|read)\s*\("
+    r"|\bimportlib\s*\.\s*import_module\s*\([^)]*\+"  # dynamic import with concatenation
+    r"|\b__import__\s*\([^)]*\+",  # __import__ with concatenation
+    re.DOTALL,
+)
+
+# Split names, see the note above _joined.
+RE_CRYPTO_THEFT = re.compile(
+    _joined(
+        (r"\bwal", r"let\.dat\b"),
+        (r"|\b\.bit", r"coin[/\\]"),
+        (r"|\b\.ether", r"eum[/\\]"),
+        (r"|\b\.sol", r"ana[/\\]"),
+        (r"|\b\.mon", r"ero[/\\]"),
+        (r"|\b\.lite", r"coin[/\\]"),
+        (r"|\b\.config/sol", r"ana[/\\]"),
+        (r"|\bkey", r"store[/\\]UTC--"),
+        (r"|\bseed\s*", r"phrase\b"),
+        (r"|\bmnem", r"onic\b.*\b(?:word|phrase|recover|restore)\b"),
+        (r"|\b(?:xp", r"rv|xp", r"ub|bc1|0x[a-fA-F0-9]{40})\b"),
+    ),
+    re.IGNORECASE,
+)
+
+RE_PTH_IMPORT = re.compile(r"^\s*import\s+", re.MULTILINE)
+
+RE_OPENSSL_CLI = re.compile(r"\bopenssl\s+(enc|rand|rsautl|pkeyutl|genrsa|dgst|s_client)\b")
+
+RE_TEMP_EXEC = re.compile(
+    r"/tmp/\S+.*(?:subprocess|os\.system|os\.popen|Popen|chmod.*\+x)",
+    re.DOTALL,
+)
+
+RE_C2_POLLING = re.compile(
+    r"while\s+True.*(?:time\.sleep|sleep)\s*\(.*(?:urlopen|requests\.|httpx\.)",
+    re.DOTALL,
+)
+
+# Developer-tool persistence hooks. Lightning 2.6.x planted SessionStart hooks into Claude Code / VS Code / Cursor so the payload re-attached on editor open.
+RE_DEV_TOOL_HIJACK = re.compile(
+    r"\.claude/settings\.json"
+    r"|\.cursor/.*hooks"
+    r"|\.vscode/(?:tasks|settings|launch)\.json"
+    r"|SessionStart|folderOpen|onCommand:.*runTask"
+    r"|/etc/profile\.d/"
+    r"|\b\.bashrc\b|\b\.zshrc\b|\b\.profile\b"
+    r"|\bautomator\b.*\.workflow\b",
+)
+
+# Hard-coded credential / API-token regexes embedded in source: packages that ship regexes for OTHER people's secrets are nearly always stealers.
+RE_TOKEN_REGEX = re.compile(
+    r"\bgh[psoru]_[A-Za-z0-9_]{20,}"  # GitHub PAT/OAuth/etc.
+    r"|\bgithub_pat_[A-Za-z0-9_]{20,}"
+    r"|\bnpm_[A-Za-z0-9]{30,}"  # npm token
+    r"|\bsk-[A-Za-z0-9]{20,}"  # OpenAI / Anthropic
+    r"|\bxox[bpaesr]-"  # Slack
+    r"|\bAIza[0-9A-Za-z_-]{20,}"  # Google API key
+    r"|\bAKIA[0-9A-Z]{16}"  # AWS access key id
+    r"|\bASIA[0-9A-Z]{16}"  # AWS STS
+    r"|\bgithub.com/login/oauth/access_token"
+    r"|\bglpat-[0-9A-Za-z_-]{20,}",  # GitLab PAT
+)
+
+# Mini Shai-Hulud May-12 2026 wave indicators. `transformers.pyz` dropper name is high-confidence; the host + slogans are CRITICAL.
+RE_MAY12_IOC = re.compile(
+    r"(git-tanstack\.com|/tmp/transformers\.pyz|transformers\.pyz"
+    r"|With Love TeamPCP|We've been online over 2 hours)",
+    re.IGNORECASE,
+)
+
+RE_JS_OBFUSCATION = re.compile(
+    r"_0x[a-f0-9]{4,6}\s*=\s*function"
+    r"|var\s+_0x[a-f0-9]{4,6}\b"
+    r"|(?:\\x[0-9a-f]{2}){10,}"  # \x-escape strings
+    r"|String\.fromCharCode\s*\(\s*\d+\s*(?:,\s*\d+\s*){10,}\)",
+)
+
+# Web3 / wallet-hijack pattern. The Qix npm phish overrode fetch/XMLHttpRequest and swapped recipient addresses via a `window.ethereum` listener.
+RE_WEB3_HIJACK = re.compile(
+    r"\bwindow\.ethereum\b"
+    r"|\bweb3\.eth\.\w+\s*\("
+    r"|XMLHttpRequest\.prototype\.(?:open|send)\s*="
+    r"|(?:^|\s)fetch\s*=\s*\(?\s*async"
+    r"|TronWeb|solanaWeb3",
+)
+
+# Self-propagating worms (Shai-Hulud, ForceMemo) plant their own GitHub workflow in every repo they reach and use trufflehog/gitleaks for credential discovery.
+RE_WORKFLOW_INJECT = re.compile(
+    r"\.github/workflows/[^\"\']*\.ya?ml"
+    r"|\btrufflehog\b|\bgitleaks\b"
+    r"|/user/repos\?affiliation=.*owner.*collaborator"
+    r"|\bshai-hulud\b|EveryBoiWeBuildIsAWormyBoi"
+    r"|\bgit\s+push\s+--force\b.*--no-verify",
+    re.IGNORECASE | re.DOTALL,
+)
+
+RE_SHELL_DROPPER = re.compile(
+    r"\bcurl\b[^\n|]*\|\s*(?:sh|bash|zsh)\b"
+    r"|\bwget\b[^\n|]*-O-\s*\|\s*(?:sh|bash|zsh)\b"
+    r"|\bnpx\b\s+-y\s+[^\s]+@latest\s*\|"
+    r"|\beval\s+\$\(\s*curl\b"
+    r"|\bbash\s+<\(\s*curl\b",
+)
+
+
+@dataclass
+class Finding:
+    severity: str
+    package: str
+    filename: str
+    check: str
+    evidence: str = ""
+    file_sha256: str = ""
+
+
+def check_pth_file(content: str, filename: str, package: str) -> list[Finding]:
+    """Run all .pth-specific checks. Executable .pth files run on every Python startup, so any suspicious pattern in a .pth is CRITICAL."""
+    findings = []
+
+    import_lines = [line for line in content.splitlines() if RE_PTH_IMPORT.match(line)]
+    if not import_lines:
+        return findings  # Pure path entries, inert
+
+    _pth_checks = [
+        (RE_SUBPROCESS, ".pth has subprocess/os exec calls"),
+        (RE_BASE64, ".pth has base64/encoding obfuscation"),
+        (RE_EXEC_EVAL, ".pth has exec()/eval()"),
+        (RE_NETWORK, ".pth has network API calls"),
+        (
+            RE_OBFUSCATION,
+            ".pth has advanced obfuscation (marshal/compile/zlib/__import__)",
+        ),
+        (RE_EMBEDDED_KEYS, ".pth has embedded cryptographic key material"),
+        (RE_CLOUD_METADATA, ".pth accesses cloud metadata / IMDS endpoints"),
+        (RE_PERSISTENCE, ".pth installs persistence (systemd/cron/launchd/registry)"),
+        (RE_CONTAINER_ABUSE, ".pth interacts with container/orchestration runtime"),
+        (RE_ENV_HARVEST, ".pth harvests environment variables / secrets"),
+        (RE_ARCHIVE_STAGING, ".pth stages archive for exfiltration"),
+        (RE_ANTI_ANALYSIS, ".pth has anti-analysis / sandbox evasion"),
+        (RE_DNS_EXFIL, ".pth has DNS exfiltration / tunneling patterns"),
+        (RE_FS_ENUM, ".pth enumerates filesystem / steals files"),
+        (RE_REVERSE_SHELL, ".pth has reverse/bind shell patterns"),
+        (RE_REMOTE_CODE, ".pth loads and executes remote code"),
+        (RE_CRYPTO_THEFT, ".pth targets cryptocurrency wallets / keys"),
+        (RE_CRED_ACCESS, ".pth accesses credential files"),
+        (RE_OPENSSL_CLI, ".pth invokes openssl CLI (encrypted exfil pattern)"),
+        (RE_TEMP_EXEC, ".pth writes to /tmp and executes (staged dropper)"),
+        (RE_C2_POLLING, ".pth has C2 polling/beaconing loop"),
+    ]
+
+    for pattern, description in _pth_checks:
+        if pattern.search(content):
+            findings.append(
+                Finding(
+                    CRITICAL,
+                    package,
+                    filename,
+                    description,
+                    _extract_evidence(content, pattern),
+                )
+            )
+
+    if RE_LARGE_BLOB.search(content):
+        # Digest every blob (not just the first 120 chars, and not just the first blob), so a later payload that keeps the prefix or appends a second encoded blob reopens.
+        blob, digest = _blob_digest(content)
+        findings.append(
+            Finding(
+                CRITICAL,
+                package,
+                filename,
+                f".pth has large base64-like blob ({len(blob)} chars)",
+                f"{blob[:120]}... sha256:{digest}",
+            )
+        )
+
+    # Catch-all: any import line in .pth if nothing else triggered. Bind every line through a digest so an appended/swapped import reopens the key, but cap the displayed text so a large .pth cannot dump the archive member cap into the logs or baseline JSON.
+    if not findings and import_lines:
+        evidence = _cap_line("\n".join(import_lines))
+        findings.append(
+            Finding(
+                HIGH,
+                package,
+                filename,
+                f".pth has {len(import_lines)} executable import line(s)",
+                evidence,
+            )
+        )
+
+    # Unusually large executable .pth (litellm's was 34 KB; legit ones are <100 bytes)
+    size = len(content)
+    if size > 500 and import_lines:
+        digest = hashlib.sha256(content.encode("utf-8", "replace")).hexdigest()
+        findings.append(
+            Finding(
+                HIGH,
+                package,
+                filename,
+                f"Unusually large executable .pth ({size} bytes)",
+                f"{len(import_lines)} import line(s) in {size}-byte .pth file sha256:{digest}",
+            )
+        )
+
+    return findings
+
+
+# A STRING after one of these tokens (and before a NEWLINE) is a bare docstring/doctest/prose statement, the dominant FP source, so blank it. A string after `=` or `(` is real code and is never blanked.
+_LINE_START_TOKENS = frozenset({tokenize.NEWLINE, tokenize.NL, tokenize.INDENT, tokenize.DEDENT})
+
+
+def _is_fstring(tok_string: str) -> bool:
+    """True if a STRING token is an f-string (3.10/3.11 emit one STRING token). A bare f-string statement evaluates its expressions at import, so unlike an inert docstring it must never be blanked."""
+    q = min((tok_string.find(c) for c in "'\"" if c in tok_string), default = -1)
+    return q > 0 and "f" in tok_string[:q].lower()
+
+
+def _strip_noncode(content: str, blank_comments: bool = True) -> str:
+    """Blank comments and bare docstrings so IOC patterns see code only. Removed regions become spaces (newlines kept) so line numbers stay exact for _extract_evidence. Fails open on tokenizer errors, since the raw text is still fully scanned. ``blank_comments=False`` keeps comments to isolate the span that exec() could actually run."""
+    try:
+        toks = list(tokenize.generate_tokens(io.StringIO(content).readline))
+    except (tokenize.TokenError, IndentationError, SyntaxError, ValueError):
+        return content
+
+    spans: list[tuple[int, int, int, int]] = []  # (srow, scol, erow, ecol)
+    prev_significant = tokenize.NEWLINE  # start-of-file behaves like a new line
+    n = len(toks)
+    for i, tok in enumerate(toks):
+        ttype = tok.type
+        if ttype == tokenize.COMMENT:
+            if blank_comments:
+                spans.append((*tok.start, *tok.end))
+            continue  # transparent; never advances prev_significant
+        if (
+            ttype == tokenize.STRING
+            and prev_significant in _LINE_START_TOKENS
+            and not _is_fstring(tok.string)  # f-strings execute; never blank them
+        ):
+            # Bare string only if it is the whole statement: the next significant token must close the logical line.
+            j = i + 1
+            while j < n and toks[j].type in (tokenize.COMMENT, tokenize.NL):
+                j += 1
+            if j < n and toks[j].type == tokenize.NEWLINE:
+                spans.append((*tok.start, *tok.end))
+                prev_significant = ttype
+                continue
+        if ttype in (
+            tokenize.NL,
+            tokenize.NEWLINE,
+            tokenize.INDENT,
+            tokenize.DEDENT,
+            tokenize.ENCODING,
+        ):
+            prev_significant = ttype
+            continue
+        prev_significant = ttype
+
+    if not spans:
+        return content
+
+    buf = content.splitlines(keepends = True)
+    for srow, scol, erow, ecol in spans:
+        for row in range(srow, erow + 1):
+            line = buf[row - 1]
+            if line.endswith("\n"):
+                body, nl = line[:-1], "\n"
+            elif line.endswith("\r"):
+                body, nl = line[:-1], "\r"
+            else:
+                body, nl = line, ""
+            start = scol if row == srow else 0
+            end = ecol if row == erow else len(body)
+            end = min(end, len(body))
+            if start < end:
+                body = body[:start] + (" " * (end - start)) + body[end:]
+            buf[row - 1] = body + nl
+    return "".join(buf)
+
+
+# Payload carriers that are suspicious when hidden in a blanked region (a docstring/string) of a file that can dynamically execute strings.
+_HIDDEN_PAYLOAD_PATTERNS = (
+    (RE_LARGE_BLOB, "large base64 blob"),
+    (RE_EMBEDDED_KEYS, "embedded key material"),
+    (RE_MAY12_IOC, "Shai-Hulud IOC string"),
+    (RE_OBFUSCATION, "marshal/compile/obfuscation"),
+)
+
+
+def _hidden_payload_findings(
+    original: str, stripped: str, filename: str, package: str
+) -> list[Finding]:
+    """Flag payloads that live only in the blanked (docstring/string) region of a file containing exec/eval: such a string is invisible to code-only scanning yet ``exec(__doc__)`` could still run it."""
+    if not RE_EXEC_EVAL.search(stripped):
+        return []
+    # Only docstrings/strings run via exec(__doc__)/exec(<str>); comments cannot. Isolate that span: keep comments as real code, take what string-blanking removed (length-preserved, so offsets stay exact).
+    code = _strip_noncode(original, blank_comments = False)
+    removed = "".join(o if o != s else " " for o, s in zip(original, code))
+    out = []
+
+    # The visible exec/eval line is what makes the hidden string executable, so bind it into every finding's evidence: otherwise a reviewed false positive that keeps the same hidden text but flips a harmless `eval("1+1")` to `exec(__doc__)` keeps the same key and stays suppressed.
+    trigger = _extract_evidence(stripped, RE_EXEC_EVAL)
+
+    def _hidden(pat):
+        return bool(pat.search(removed)) and not pat.search(stripped)
+
+    for pat, label in _HIDDEN_PAYLOAD_PATTERNS:
+        if _hidden(pat):
+            out.append(
+                Finding(
+                    HIGH,
+                    package,
+                    filename,
+                    "exec/eval with payload hidden in a docstring/string",
+                    f"exec: {trigger}\n{label}: {_extract_evidence(removed, pat)}",
+                )
+            )
+    # Fetch-then-run dropper: a network call AND an os/subprocess exec that both live in the blanked region. Search the removed span directly (not "absent from real code") so a benign visible network/subprocess call cannot mask the docstring payload.
+    if RE_NETWORK.search(removed) and RE_SUBPROCESS.search(removed):
+        out.append(
+            Finding(
+                HIGH,
+                package,
+                filename,
+                "exec/eval with hidden network+exec payload",
+                f"exec: {trigger}\n"
+                f"network+exec: {_extract_evidence(removed, RE_NETWORK)} | "
+                f"{_extract_evidence(removed, RE_SUBPROCESS)}",
+            )
+        )
+    return out
+
+
+def check_py_file(content: str, filename: str, package: str) -> list[Finding]:
+    """Run all .py-specific checks."""
+    # Code-only scanning: strip comments/docstrings up front so prose, doctests and usage examples cannot manufacture false positives. Aligns with the Hugging Face Hub model.
+    original = content
+    content = _strip_noncode(content)
+    findings = _hidden_payload_findings(original, content, filename, package)
+    basename = os.path.basename(filename)
+    is_setup = basename in ("setup.py", "setup.cfg")
+    is_init = basename == "__init__.py"
+
+    has_network = bool(RE_NETWORK.search(content))
+    has_subprocess = bool(RE_SUBPROCESS.search(content))
+    has_base64 = bool(RE_BASE64.search(content))
+    has_exec_eval = bool(RE_EXEC_EVAL.search(content))
+    has_creds = bool(RE_CRED_ACCESS.search(content))
+    has_blob = bool(RE_LARGE_BLOB.search(content))
+    has_obfuscation = bool(RE_OBFUSCATION.search(content))
+    has_keys = bool(RE_EMBEDDED_KEYS.search(content))
+    has_cloud_meta = bool(RE_CLOUD_METADATA.search(content))
+    has_persistence = bool(RE_PERSISTENCE.search(content))
+    has_container = bool(RE_CONTAINER_ABUSE.search(content))
+    has_env_harvest = bool(RE_ENV_HARVEST.search(content))
+    has_archive = bool(RE_ARCHIVE_STAGING.search(content))
+    has_anti = bool(RE_ANTI_ANALYSIS.search(content))
+    has_dns_exfil = bool(RE_DNS_EXFIL.search(content))
+    has_fs_enum = bool(RE_FS_ENUM.search(content))
+    # dup2 counts only alongside a socket; see RE_REVERSE_SHELL_WITHOUT_DUP.
+    has_rev_shell = bool(RE_REVERSE_SHELL.search(content)) and (
+        bool(RE_SOCKET_USE.search(content)) or bool(RE_REVERSE_SHELL_WITHOUT_DUP.search(content))
+    )
+    has_remote_code = bool(RE_REMOTE_CODE.search(content))
+    has_crypto_theft = bool(RE_CRYPTO_THEFT.search(content))
+    has_openssl_cli = bool(RE_OPENSSL_CLI.search(content))
+    has_temp_exec = bool(RE_TEMP_EXEC.search(content))
+    has_c2_polling = bool(RE_C2_POLLING.search(content))
+    has_may12_ioc = bool(RE_MAY12_IOC.search(content))
+
+    if has_base64 and has_subprocess:
+        findings.append(
+            Finding(
+                CRITICAL,
+                package,
+                filename,
+                "base64 decode + subprocess execution (staged payload)",
+                f"Base64: {_extract_evidence(content, RE_BASE64)}\n"
+                f"Subprocess: {_extract_evidence(content, RE_SUBPROCESS)}",
+            )
+        )
+
+    if has_openssl_cli and (has_network or has_keys):
+        # Bind whichever side(s) co-occur so a changed endpoint or key reopens.
+        evidence = [f"OpenSSL: {_extract_evidence(content, RE_OPENSSL_CLI)}"]
+        if has_network:
+            evidence.append(f"Network: {_extract_evidence(content, RE_NETWORK)}")
+        if has_keys:
+            evidence.append(f"Key: {_embedded_key_evidence(content)}")
+        findings.append(
+            Finding(
+                CRITICAL,
+                package,
+                filename,
+                "openssl encryption + network/key material (encrypted exfiltration)",
+                "\n".join(evidence),
+            )
+        )
+
+    if has_temp_exec:
+        findings.append(
+            Finding(
+                CRITICAL,
+                package,
+                filename,
+                "Writes to /tmp and executes (staged dropper)",
+                _extract_evidence(content, RE_TEMP_EXEC),
+            )
+        )
+
+    if has_may12_ioc:
+        findings.append(
+            Finding(
+                CRITICAL,
+                package,
+                filename,
+                "May-12 Shai-Hulud IOC string present in Python file",
+                _extract_evidence(content, RE_MAY12_IOC),
+            )
+        )
+
+    if has_c2_polling:
+        findings.append(
+            Finding(
+                CRITICAL,
+                package,
+                filename,
+                "C2 polling/beaconing loop detected",
+                _extract_evidence(content, RE_C2_POLLING),
+            )
+        )
+
+    if has_creds and has_network:
+        findings.append(
+            Finding(
+                CRITICAL,
+                package,
+                filename,
+                "Reads credential paths AND makes network calls",
+                f"Creds: {_extract_evidence(content, RE_CRED_ACCESS)}\n"
+                f"Network: {_extract_evidence(content, RE_NETWORK)}",
+            )
+        )
+
+    if has_rev_shell:
+        findings.append(
+            Finding(
+                CRITICAL,
+                package,
+                filename,
+                "Reverse shell / bind shell pattern",
+                # Still RE_REVERSE_SHELL, so every finding that survives the gate renders byte-identical evidence to before this change.
+                _extract_evidence(content, RE_REVERSE_SHELL),
+            )
+        )
+
+    if has_remote_code:
+        findings.append(
+            Finding(
+                CRITICAL,
+                package,
+                filename,
+                "Downloads and executes remote code",
+                _extract_evidence(content, RE_REMOTE_CODE),
+            )
+        )
+
+    if has_env_harvest and has_network:
+        findings.append(
+            Finding(
+                CRITICAL,
+                package,
+                filename,
+                "Harvests environment variables/secrets AND makes network calls",
+                f"Env: {_extract_evidence(content, RE_ENV_HARVEST)}\n"
+                f"Network: {_extract_evidence(content, RE_NETWORK)}",
+            )
+        )
+
+    if has_fs_enum and has_network:
+        findings.append(
+            Finding(
+                CRITICAL,
+                package,
+                filename,
+                "Enumerates filesystem AND makes network calls",
+                f"FS: {_extract_evidence(content, RE_FS_ENUM)}\n"
+                f"Network: {_extract_evidence(content, RE_NETWORK)}",
+            )
+        )
+
+    if has_cloud_meta and has_network:
+        findings.append(
+            Finding(
+                CRITICAL,
+                package,
+                filename,
+                "Accesses cloud metadata/IMDS AND makes network calls",
+                f"IMDS: {_extract_evidence(content, RE_CLOUD_METADATA)}\n"
+                f"Network: {_extract_evidence(content, RE_NETWORK)}",
+            )
+        )
+
+    if has_crypto_theft and has_network:
+        findings.append(
+            Finding(
+                CRITICAL,
+                package,
+                filename,
+                "Targets cryptocurrency wallets AND makes network calls",
+                f"Crypto: {_extract_evidence(content, RE_CRYPTO_THEFT)}\n"
+                f"Network: {_extract_evidence(content, RE_NETWORK)}",
+            )
+        )
+
+    if has_archive and has_network:
+        findings.append(
+            Finding(
+                CRITICAL,
+                package,
+                filename,
+                "Creates archive with sensitive data AND makes network calls",
+                f"Archive: {_extract_evidence(content, RE_ARCHIVE_STAGING)}\n"
+                f"Network: {_extract_evidence(content, RE_NETWORK)}",
+            )
+        )
+
+    if has_persistence and has_network:
+        findings.append(
+            Finding(
+                CRITICAL,
+                package,
+                filename,
+                "Installs persistence AND makes network calls (backdoor pattern)",
+                f"Persist: {_extract_evidence(content, RE_PERSISTENCE)}\n"
+                f"Network: {_extract_evidence(content, RE_NETWORK)}",
+            )
+        )
+
+    if has_container and has_network:
+        findings.append(
+            Finding(
+                CRITICAL,
+                package,
+                filename,
+                "Container/orchestration abuse AND makes network calls",
+                f"Container: {_extract_evidence(content, RE_CONTAINER_ABUSE)}\n"
+                f"Network: {_extract_evidence(content, RE_NETWORK)}",
+            )
+        )
+
+    if has_base64 and has_exec_eval and has_blob:
+        # Digest every blob too: a payload may sit on a separate line from the decode call, and a second encoded blob may be appended later.
+        _, blob_digest = _blob_digest(content)
+        findings.append(
+            Finding(
+                HIGH,
+                package,
+                filename,
+                "base64 decode + exec/eval + large encoded blob",
+                f"Base64: {_extract_evidence(content, RE_BASE64)}\n"
+                f"Exec: {_extract_evidence(content, RE_EXEC_EVAL)}\n"
+                f"Blob: sha256:{blob_digest}",
+            )
+        )
+
+    if has_obfuscation and has_exec_eval:
+        findings.append(
+            Finding(
+                HIGH,
+                package,
+                filename,
+                "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
+                f"Obfusc: {_extract_evidence(content, RE_OBFUSCATION)}\n"
+                f"Exec: {_extract_evidence(content, RE_EXEC_EVAL)}",
+            )
+        )
+
+    if has_keys and has_network:
+        findings.append(
+            Finding(
+                HIGH,
+                package,
+                filename,
+                "Embedded cryptographic key + network calls (encrypted exfil pattern)",
+                f"Key: {_embedded_key_evidence(content)}\n"
+                f"Network: {_extract_evidence(content, RE_NETWORK)}",
+            )
+        )
+
+    if has_anti and (has_network or has_subprocess or has_exec_eval):
+        evidence = [f"Anti: {_extract_evidence(content, RE_ANTI_ANALYSIS)}"]
+        if has_network:
+            evidence.append(f"Network: {_extract_evidence(content, RE_NETWORK)}")
+        if has_subprocess:
+            evidence.append(f"Subprocess: {_extract_evidence(content, RE_SUBPROCESS)}")
+        if has_exec_eval:
+            evidence.append(f"Exec: {_extract_evidence(content, RE_EXEC_EVAL)}")
+        findings.append(
+            Finding(
+                HIGH,
+                package,
+                filename,
+                "Anti-analysis/sandbox evasion + suspicious behavior",
+                "\n".join(evidence),
+            )
+        )
+
+    if has_dns_exfil and (has_base64 or has_network or has_creds):
+        evidence = [f"DNS: {_extract_evidence(content, RE_DNS_EXFIL)}"]
+        if has_base64:
+            evidence.append(f"Base64: {_extract_evidence(content, RE_BASE64)}")
+        if has_network:
+            evidence.append(f"Network: {_extract_evidence(content, RE_NETWORK)}")
+        if has_creds:
+            evidence.append(f"Creds: {_extract_evidence(content, RE_CRED_ACCESS)}")
+        findings.append(
+            Finding(
+                HIGH,
+                package,
+                filename,
+                "DNS exfiltration / tunneling patterns",
+                "\n".join(evidence),
+            )
+        )
+
+    if has_cloud_meta and not findings:
+        findings.append(
+            Finding(
+                HIGH,
+                package,
+                filename,
+                "Accesses cloud metadata / IMDS endpoints",
+                _extract_evidence(content, RE_CLOUD_METADATA),
+            )
+        )
+
+    if has_persistence and not has_network:
+        findings.append(
+            Finding(
+                HIGH,
+                package,
+                filename,
+                "Installs persistence mechanism (systemd/cron/launchd/registry)",
+                _extract_evidence(content, RE_PERSISTENCE),
+            )
+        )
+
+    if has_container and not has_network:
+        findings.append(
+            Finding(
+                HIGH,
+                package,
+                filename,
+                "Interacts with container/orchestration runtime",
+                _extract_evidence(content, RE_CONTAINER_ABUSE),
+            )
+        )
+
+    if has_openssl_cli and not (has_network or has_keys):
+        findings.append(
+            Finding(
+                HIGH,
+                package,
+                filename,
+                "Invokes openssl CLI (uncommon in PyPI packages)",
+                _extract_evidence(content, RE_OPENSSL_CLI),
+            )
+        )
+
+    if is_setup:
+        if has_network and has_subprocess:
+            findings.append(
+                Finding(
+                    HIGH,
+                    package,
+                    filename,
+                    "setup.py has network calls + subprocess (dropper pattern)",
+                    f"Network: {_extract_evidence(content, RE_NETWORK)}\n"
+                    f"Subprocess: {_extract_evidence(content, RE_SUBPROCESS)}",
+                )
+            )
+        elif has_network:
+            findings.append(
+                Finding(
+                    MEDIUM,
+                    package,
+                    filename,
+                    "setup.py makes network calls at install time",
+                    _extract_evidence(content, RE_NETWORK),
+                )
+            )
+
+    if has_base64 and has_exec_eval and not has_blob:
+        findings.append(
+            Finding(
+                MEDIUM,
+                package,
+                filename,
+                "base64 decode + exec/eval (no large blob)",
+                f"Base64: {_extract_evidence(content, RE_BASE64)}\n"
+                f"Exec: {_extract_evidence(content, RE_EXEC_EVAL)}",
+            )
+        )
+
+    if has_obfuscation and not has_exec_eval:
+        findings.append(
+            Finding(
+                MEDIUM,
+                package,
+                filename,
+                "Advanced obfuscation patterns (marshal/compile/zlib/__import__)",
+                _extract_evidence(content, RE_OBFUSCATION),
+            )
+        )
+
+    if has_keys and not has_network:
+        findings.append(
+            Finding(
+                MEDIUM,
+                package,
+                filename,
+                "Embedded cryptographic key material",
+                _embedded_key_evidence(content),
+            )
+        )
+
+    if has_env_harvest and not has_network:
+        findings.append(
+            Finding(
+                MEDIUM,
+                package,
+                filename,
+                "Harvests environment variables / secrets",
+                _extract_evidence(content, RE_ENV_HARVEST),
+            )
+        )
+
+    if has_fs_enum and not has_network:
+        findings.append(
+            Finding(
+                MEDIUM,
+                package,
+                filename,
+                "Enumerates filesystem / reads sensitive file paths",
+                _extract_evidence(content, RE_FS_ENUM),
+            )
+        )
+
+    if has_crypto_theft and not has_network:
+        findings.append(
+            Finding(
+                MEDIUM,
+                package,
+                filename,
+                "References cryptocurrency wallets / keys",
+                _extract_evidence(content, RE_CRYPTO_THEFT),
+            )
+        )
+
+    digest = hashlib.sha256(original.encode("utf-8", "replace")).hexdigest()
+    for f in findings:
+        f.file_sha256 = digest
+    return findings
+
+
+_MAX_MULTILINE_LINES = 12
+_MAX_CALL_LINES = 40  # soft cap: how far a NEVER-closing opener is followed
+_MAX_CALL_HARD_LINES = 200  # hard cap: how far a closing call is followed to bind it
+
+# Cap a single rendered line: a short line is shown verbatim, a long (minified) one as a bounded prefix plus a sha256 of the full line, so a packed payload cannot dump unbounded content into the evidence while a change past the cutoff still changes the digest.
+_MAX_LINE_CHARS = 200
+# Cap on recorded spans in one evidence string; beyond it the remaining spans fold into a digest so a file with thousands of matching lines cannot build a multi-megabyte evidence blob, while an added/removed span past the cap still changes the key.
+_MAX_EVIDENCE_SPANS = 96
+
+
+def _cap_line(code: str) -> str:
+    """Bound a single line's displayed code: verbatim when short, else a ``_MAX_LINE_CHARS`` prefix plus a digest of the whole line so the tail is still pinned."""
+    if len(code) <= _MAX_LINE_CHARS:
+        return code
+    digest = hashlib.sha256(code.encode("utf-8", "replace")).hexdigest()
+    return f"{code[:_MAX_LINE_CHARS]} sha256:{digest}"
+
+
+_PY_TRIPLE = ("'''", '"""')
+
+
+def _ends_with_odd_backslash(s: str) -> bool:
+    """True if ``s`` ends with an odd run of backslashes, i.e. a trailing backslash escaping the newline rather than a literal pair."""
+    return (len(s) - len(s.rstrip("\\"))) % 2 == 1
+
+
+# Single-line quoted string literal; blanks complete one-line strings (the legacy view) so the single-line and multi-line blanked spans can be unioned below.
+_RE_STR_LITERAL = re.compile(r"'(?:[^'\\]|\\.)*'|\"(?:[^\"\\]|\\.)*\"")
+
+
+def _blank_code_strings(lines: list[str]) -> list[str]:
+    """Replace string contents (single- and triple-quoted, escapes honoured) with spaces across ``lines``, keeping the line count and every bracket OUTSIDE a string intact, so bracket counting never miscounts a ``)`` inside a string, including a triple-quoted one a per-line regex cannot blank."""
+    out: list[str] = []
+    in_triple: str | None = None  # active ''' or \"\"\" delimiter, or None
+    in_string: str | None = None  # active ' or " continued via a trailing backslash
+    for line in lines:
+        buf: list[str] = []
+        i, n = 0, len(line)
+        while i < n:
+            if in_triple is not None:
+                end = line.find(in_triple, i)
+                if end == -1:
+                    buf.append(" " * (n - i))
+                    i = n
+                else:
+                    buf.append(" " * (end - i + 3))
+                    i = end + 3
+                    in_triple = None
+                continue
+            if in_string is not None:
+                # A single-/double-quoted string continued onto this line by a backslash-escaped newline. Resume blanking until its closing quote; a per-line regex blanker cannot see this, so a `)` on the continuation line would be counted as code and close the call early, dropping the URL/body lines that follow.
+                j, closed = i, False
+                while j < n:
+                    if line[j] == "\\":
+                        j += 2
+                        continue
+                    if line[j] == in_string:
+                        j += 1
+                        closed = True
+                        break
+                    j += 1
+                buf.append(" " * (min(j, n) - i))
+                if closed:
+                    in_string = None
+                    i = j
+                else:
+                    i = n
+                    if not _ends_with_odd_backslash(line):
+                        in_string = None  # unterminated without continuation; stop
+                continue
+            ch = line[i]
+            if ch in "'\"":
+                if line[i : i + 3] in _PY_TRIPLE:
+                    delim = line[i : i + 3]
+                    end = line.find(delim, i + 3)
+                    if end == -1:  # opens a triple string that runs past this line
+                        buf.append(" " * (n - i))
+                        in_triple = delim
+                        i = n
+                    else:
+                        buf.append(" " * (end - i + 3))
+                        i = end + 3
+                    continue
+                j = i + 1  # single-line string; skip to its closing quote
+                closed = False
+                while j < n:
+                    if line[j] == "\\":
+                        j += 2
+                        continue
+                    if line[j] == ch:
+                        j += 1
+                        closed = True
+                        break
+                    j += 1
+                buf.append(" " * (min(j, n) - i))
+                if closed:
+                    i = j
+                else:
+                    # Ran off the line without closing: an odd trailing backslash escapes the newline and continues the string onto the next line, so remember the quote; otherwise it is just unterminated.
+                    i = n
+                    if _ends_with_odd_backslash(line):
+                        in_string = ch
+                continue
+            buf.append(ch)
+            i += 1
+        out.append("".join(buf))
+    return out
+
+
+_RE_BRACKETS = re.compile(r"[()\[\]{}]")
+_OPENERS = frozenset("([{")
+
+
+def _bracket_lr(line: str) -> tuple[int, int]:
+    """Order-aware bracket reduction of one already-string-blanked line: ``(L, R)`` where ``L`` counts closers with no opener earlier on the line and ``R`` counts openers with no closer later. A plain net count collapses order and masks a trailing opener that follows leading closers (``]; requests.post(`` nets to 0), so tracking the running minimum keeps that opener visible. Only bracket characters are walked so a long minified line stays cheap."""
+    depth = 0
+    low = 0
+    for ch in _RE_BRACKETS.findall(line):
+        if ch in _OPENERS:
+            depth += 1
+        else:
+            depth -= 1
+            if depth < low:
+                low = depth
+    return -low, depth - low
+
+
+def _scan_line_end(view: list[str], start: int) -> int:
+    """1-based line where the statement at ``start`` closes its brackets in ``view``. A call that closes is followed to its real close up to ``_MAX_CALL_HARD_LINES`` so its whole argument list binds; one that never closes within that limit is bound only to the ``_MAX_CALL_LINES`` soft cap so it cannot swallow the file. Brackets are applied in order via ``_bracket_lr`` so a closer preceding the opener on the same line does not cancel it."""
+    depth = 0
+    hard = min(len(view), start + _MAX_CALL_HARD_LINES - 1)
+    for j in range(start, hard + 1):
+        ln = view[j - 1]
+        left, right = _bracket_lr(ln)
+        depth = max(0, depth - left) + right
+        if ln.rstrip().endswith("\\"):
+            continue  # explicit backslash continuation: the call (e.g. its `(` and URL/body) is on the next
+            # physical line, so do not close here
+        if depth <= 0:
+            return j
+    # Never closed within the hard limit: bind only the soft cap so a stray opener cannot bind a giant unrelated span.
+    return min(len(view), start + _MAX_CALL_LINES - 1)
+
+
+def _logical_line_end(sl_blanked: list[str], ml_blanked: list[str], start: int) -> int:
+    """1-based line where the statement opened at ``start`` closes, so a multi-line call binds its argument lines. Returns the LARGER of the spans found in the single-line-blanked view (a payload embedded inside a string still counts) and the multi-line-blanked view (a bracket inside a triple-quoted argument no longer closes the call early), so neither blanking strategy can drop a continuation line."""
+    return max(_scan_line_end(sl_blanked, start), _scan_line_end(ml_blanked, start))
+
+
+def _extract_evidence(
+    content: str,
+    pattern: re.Pattern,
+    max_matches: int = 0,
+) -> str:
+    """Pull matching lines as evidence snippets (``max_matches=0`` means all). Records every matching line in full so an extra match appended to an already-flagged file changes the baseline key instead of riding the first few, and keeps leading whitespace so a flagged line moved out of a guarded block reads as changed. Each single-line match is extended over bracket continuations; cross-line matches the per-line scan cannot see are recorded afterwards. A pathological greedy span is bounded to its head line plus a digest of the rest."""
+    lines = content.splitlines()
+    sl_blanked = [_RE_STR_LITERAL.sub("", ln) for ln in lines]
+    ml_blanked = _blank_code_strings(lines)
+    out = []
+    seen: set[tuple[int, int]] = set()
+    # Overflow is streamed, not buffered: past _MAX_EVIDENCE_SPANS every further span folds straight into a running digest, so memory stays bounded to the display cap while the digest still covers every overflow span. The fold reproduces _canon_evidence(" | ".join(overflow)) exactly.
+    overflow_count = 0
+    overflow_hash = hashlib.sha256()
+    overflow_started = False
+
+    def _emit(rendered: str) -> None:
+        nonlocal overflow_count, overflow_started
+        if len(out) < _MAX_EVIDENCE_SPANS:
+            out.append(rendered)
+            return
+        overflow_count += 1
+        for piece in _RE_EVIDENCE_SPLIT.split(rendered):
+            piece = _RE_EVIDENCE_PREFIX.sub("", piece, count = 1).rstrip()
+            if not piece:
+                continue
+            if overflow_started:
+                overflow_hash.update(b"\n")
+            overflow_hash.update(piece.encode("utf-8", "replace"))
+            overflow_started = True
+
+    def _render(start: int, end: int) -> str:
+        span = lines[start - 1 : end] or ["<multiline match>"]
+        if len(span) > _MAX_MULTILINE_LINES:
+            # Digest the code without the L<NN>: markers so a pure line shift of the same span stays stable while a code change still reopens. The head is truncated for display only.
+            code = "\n".join(ln.rstrip() for ln in span)
+            digest = hashlib.sha256(code.encode("utf-8", "replace")).hexdigest()
+            head = span[0].rstrip()
+            if len(head) > _MAX_LINE_CHARS:
+                head = head[:_MAX_LINE_CHARS] + "..."
+            return f"L{start}: {head} sha256:{digest}"
+        return "\n".join(f"L{start + i}: {_cap_line(ln.rstrip())}" for i, ln in enumerate(span))
+
+    for i, line in enumerate(lines, 1):
+        if pattern.search(line):
+            span = (i, _logical_line_end(sl_blanked, ml_blanked, i))
+            if span in seen:
+                continue
+            # Only track spans while still filling the display list: past the cap every span folds into the overflow digest, so growing `seen` with all of them would keep memory proportional to the match count. The per-line spans are unique by line number, so dropping them past the cap cannot cause a missed dedup.
+            if len(out) < _MAX_EVIDENCE_SPANS:
+                seen.add(span)
+            _emit(_render(*span))
+            if max_matches and len(out) >= max_matches:
+                return " | ".join(out)
+
+    # Precompute newline offsets once so mapping a match offset to its 1-based line is O(log n) rather than O(n) per match; the latter made this fallback quadratic on a minified file.
+    nl = [p for p, ch in enumerate(content) if ch == "\n"]
+    for m in pattern.finditer(content):
+        start = bisect.bisect_left(nl, m.start()) + 1
+        end = bisect.bisect_left(nl, m.end()) + 1
+        if end <= start or (start, end) in seen:
+            continue  # single-line matches are already covered by the pass above
+        # A giant greedy DOTALL span is bound by the full digest of its content: binding only the anchors leaves the bridged interior unhashed, so a new cross-line payload could be inserted between unchanged outer anchors and keep the same key.
+        if len(out) < _MAX_EVIDENCE_SPANS:
+            seen.add((start, end))
+        _emit(_render(start, end))
+        if max_matches and len(out) >= max_matches:
+            break
+    if overflow_count:
+        # The overflow digest was accumulated from the canonicalized spans as they were emitted, so a pure line shift above the overflow region does not reopen an otherwise-unchanged finding.
+        out.append(f"(+{overflow_count} more) sha256:{overflow_hash.hexdigest()}")
+    return " | ".join(out)
+
+
+def _embedded_key_evidence(content: str) -> str:
+    """Key evidence that also pins the full PEM block(s) via a digest, so a key body swapped under the same BEGIN marker reopens the finding (single-line and DER keys are already bound by their full matched line)."""
+    ev = _extract_evidence(content, RE_EMBEDDED_KEYS)
+    blocks = RE_PEM_BLOCK.findall(content)
+    if blocks:
+        digest = hashlib.sha256("\n".join(blocks).encode("utf-8", "replace")).hexdigest()
+        ev = f"{ev} sha256:{digest}" if ev else f"sha256:{digest}"
+    return ev
+
+
+def _blob_digest(content: str) -> tuple[str, str]:
+    """First large blob (for display) plus a digest binding EVERY large blob, so an appended or swapped encoded payload reopens rather than riding an unchanged first blob. Single-blob files keep the prior single-blob digest, so the baseline does not drift."""
+    blobs = RE_LARGE_BLOB.findall(content)
+    digest = hashlib.sha256("\n".join(blobs).encode("utf-8", "replace")).hexdigest()
+    return blobs[0], digest
+
+
+# Non-Python checkers. Recent PyPI compromises (Lightning 2.6.x, ForceMemo) carried the payload in a bundled .js / .sh / workflow yaml so the Python imports looked clean.
+def check_js_file(content: str, filename: str, package: str) -> list[Finding]:
+    """Run JS-side checks. Triggered by .js / .mjs / .cjs / .ts."""
+    findings = []
+
+    # A >100 KB JS file inside a Python wheel is anomalous: CRITICAL combined with any other JS heuristic, HIGH standalone.
+    is_large = len(content) > 100 * 1024
+    has_obf = bool(RE_JS_OBFUSCATION.search(content))
+    has_web3 = bool(RE_WEB3_HIJACK.search(content))
+    has_token_regex = bool(RE_TOKEN_REGEX.search(content))
+    has_workflow_inj = bool(RE_WORKFLOW_INJECT.search(content))
+    has_network = bool(RE_NETWORK.search(content))
+
+    if has_obf:
+        sev = CRITICAL if (is_large or has_web3 or has_token_regex) else HIGH
+        findings.append(
+            Finding(
+                sev,
+                package,
+                filename,
+                "JS minifier-style hex-var obfuscation (npm-payload signature)",
+                _extract_evidence(content, RE_JS_OBFUSCATION),
+            )
+        )
+    if has_web3:
+        findings.append(
+            Finding(
+                CRITICAL,
+                package,
+                filename,
+                "JS Web3 / wallet hijack (window.ethereum or fetch override)",
+                _extract_evidence(content, RE_WEB3_HIJACK),
+            )
+        )
+    if has_token_regex and has_network:
+        findings.append(
+            Finding(
+                CRITICAL,
+                package,
+                filename,
+                "JS embeds credential regexes AND makes network calls (stealer)",
+                f"Token: {_extract_evidence(content, RE_TOKEN_REGEX)}\n"
+                f"Network: {_extract_evidence(content, RE_NETWORK)}",
+            )
+        )
+    if has_workflow_inj:
+        findings.append(
+            Finding(
+                CRITICAL,
+                package,
+                filename,
+                "JS self-propagation: workflow injection / repo takeover signature",
+                _extract_evidence(content, RE_WORKFLOW_INJECT),
+            )
+        )
+    # Pin the whole file's content digest to EVERY JS finding: _extract_evidence blanks only Python string forms before counting brackets, so a JS backtick template literal containing `)` can close a call's span early and omit the lines that follow, and binding the full content means a change to those still reopens.
+    if findings or is_large:
+        digest = hashlib.sha256(content.encode("utf-8", "replace")).hexdigest()
+        if findings:
+            for f in findings:
+                f.evidence = f"{f.evidence} bundle-sha256:{digest}"
+        else:
+            findings.append(
+                Finding(
+                    HIGH,
+                    package,
+                    filename,
+                    # Size stays out of the check label so the baseline key does not drift when a benign bundle grows; the full-content digest still binds the bytes.
+                    "Python wheel ships large JS bundle (uncommon; manually review)",
+                    f"sha256: {digest}",
+                )
+            )
+    return findings
+
+
+def check_shell_file(content: str, filename: str, package: str) -> list[Finding]:
+    """Run shell-side checks. Triggered by .sh / .bash / install scripts."""
+    findings = []
+    if RE_SHELL_DROPPER.search(content):
+        findings.append(
+            Finding(
+                CRITICAL,
+                package,
+                filename,
+                "Shell pipes remote code into an interpreter (curl|sh dropper)",
+                _extract_evidence(content, RE_SHELL_DROPPER),
+            )
+        )
+    if RE_DEV_TOOL_HIJACK.search(content) and (
+        RE_NETWORK.search(content) or RE_SUBPROCESS.search(content)
+    ):
+        evidence = [f"Hook: {_extract_evidence(content, RE_DEV_TOOL_HIJACK)}"]
+        if RE_NETWORK.search(content):
+            evidence.append(f"Network: {_extract_evidence(content, RE_NETWORK)}")
+        if RE_SUBPROCESS.search(content):
+            evidence.append(f"Exec: {_extract_evidence(content, RE_SUBPROCESS)}")
+        findings.append(
+            Finding(
+                CRITICAL,
+                package,
+                filename,
+                "Shell installs developer-tool persistence hook (.bashrc / "
+                "profile.d / vscode tasks) AND has network or exec",
+                "\n".join(evidence),
+            )
+        )
+    if RE_TOKEN_REGEX.search(content) and RE_NETWORK.search(content):
+        findings.append(
+            Finding(
+                CRITICAL,
+                package,
+                filename,
+                "Shell embeds credential regexes AND makes network calls",
+                f"Token: {_extract_evidence(content, RE_TOKEN_REGEX)}\n"
+                f"Network: {_extract_evidence(content, RE_NETWORK)}",
+            )
+        )
+    if RE_WORKFLOW_INJECT.search(content):
+        findings.append(
+            Finding(
+                CRITICAL,
+                package,
+                filename,
+                "Shell self-propagation: workflow injection / repo takeover signature",
+                _extract_evidence(content, RE_WORKFLOW_INJECT),
+            )
+        )
+    if RE_MAY12_IOC.search(content):
+        findings.append(
+            Finding(
+                CRITICAL,
+                package,
+                filename,
+                "May-12 Shai-Hulud IOC string present in shell script",
+                _extract_evidence(content, RE_MAY12_IOC),
+            )
+        )
+    return findings
+
+
+def check_workflow_file(content: str, filename: str, package: str) -> list[Finding]:
+    """Run GitHub-Actions workflow checks. Triggered by .github/workflows/*.yml."""
+    findings = []
+    # A workflow file inside a PyPI package is suspicious (Shai-Hulud plants `shai-hulud.yml` everywhere); injection-signature matches are CRITICAL.
+    if RE_WORKFLOW_INJECT.search(content):
+        findings.append(
+            Finding(
+                CRITICAL,
+                package,
+                filename,
+                "Workflow file inside PyPI package matches self-propagation signature",
+                _extract_evidence(content, RE_WORKFLOW_INJECT),
+            )
+        )
+    if RE_TOKEN_REGEX.search(content):
+        findings.append(
+            Finding(
+                HIGH,
+                package,
+                filename,
+                "Workflow file embeds credential regexes (token harvesting?)",
+                _extract_evidence(content, RE_TOKEN_REGEX),
+            )
+        )
+    if RE_SHELL_DROPPER.search(content):
+        findings.append(
+            Finding(
+                CRITICAL,
+                package,
+                filename,
+                "Workflow pipes remote code into a shell (curl|sh dropper)",
+                _extract_evidence(content, RE_SHELL_DROPPER),
+            )
+        )
+    if RE_MAY12_IOC.search(content):
+        findings.append(
+            Finding(
+                CRITICAL,
+                package,
+                filename,
+                "May-12 Shai-Hulud IOC string present in workflow file",
+                _extract_evidence(content, RE_MAY12_IOC),
+            )
+        )
+    return findings
+
+
+# Tarbomb caps mirrored from scripts/scan_npm_packages.py::safe_extract; duplicated to stay standalone, so keep in sync.
+HARD_MAX_FILE_BYTES = 64 * 1024 * 1024  # 64 MiB per member
+HARD_MAX_TOTAL_BYTES = 512 * 1024 * 1024  # 512 MiB cumulative
+HARD_MAX_MEMBERS = 50_000  # entries per archive
+
+
+def _refuse_unsafe_member_name(name: str) -> str | None:
+    """Refusal reason for a member name, or None if safe. Mirrors `safe_extract`: no absolute paths, no `..` traversal. We never write to disk, so the name-shape check plus the in-memory size cap is sufficient."""
+    if name.startswith("/") or ".." in Path(name).parts:
+        return f"unsafe member name {name!r}"
+    return None
+
+
+def iter_archive_files(archive_path: str):
+    """Yield (filename, text_content) for every file in a wheel/sdist. Streams members with per-member size + count caps so a tarbomb/zipbomb cannot blow the memory budget; on cap breach, emits a `[WARN]` and short-circuits."""
+    path = Path(archive_path)
+
+    if path.suffix == ".whl" or path.suffix == ".zip":
+        total = 0
+        count = 0
+        with zipfile.ZipFile(path) as zf:
+            for info in zf.infolist():
+                if info.is_dir():
+                    continue
+                count += 1
+                if count > HARD_MAX_MEMBERS:
+                    print(
+                        f"  [WARN] {path.name}: refused; member count "
+                        f"{count} exceeds cap {HARD_MAX_MEMBERS}",
+                        file = sys.stderr,
+                    )
+                    return
+                reason = _refuse_unsafe_member_name(info.filename)
+                if reason is not None:
+                    print(
+                        f"  [WARN] {path.name}: refused member ({reason})",
+                        file = sys.stderr,
+                    )
+                    continue
+                if info.file_size > HARD_MAX_FILE_BYTES:
+                    print(
+                        f"  [WARN] {path.name}: skipped {info.filename!r} "
+                        f"(declared {info.file_size} > cap {HARD_MAX_FILE_BYTES})",
+                        file = sys.stderr,
+                    )
+                    continue
+                if total + info.file_size > HARD_MAX_TOTAL_BYTES:
+                    print(
+                        f"  [WARN] {path.name}: cumulative bytes cap "
+                        f"{HARD_MAX_TOTAL_BYTES} hit at {info.filename!r}",
+                        file = sys.stderr,
+                    )
+                    return
+                try:
+                    data = zf.read(info.filename)
+                    total += len(data)
+                    text = data.decode("utf-8", errors = "replace")
+                    yield info.filename, text
+                except Exception:
+                    continue
+
+    elif path.name.endswith((".tar.gz", ".tgz", ".tar.bz2", ".tar.xz", ".tar")):
+        total = 0
+        count = 0
+        with tarfile.open(path, mode = "r|*") as tf:
+            for member in tf:
+                count += 1
+                if count > HARD_MAX_MEMBERS:
+                    print(
+                        f"  [WARN] {path.name}: refused; member count "
+                        f"{count} exceeds cap {HARD_MAX_MEMBERS}",
+                        file = sys.stderr,
+                    )
+                    return
+                # Refuse symlinks/hardlinks/devices: tar parsers have historically dereferenced them on extract.
+                if member.issym() or member.islnk():
+                    print(
+                        f"  [WARN] {path.name}: refused link member " f"{member.name!r}",
+                        file = sys.stderr,
+                    )
+                    continue
+                if member.isdev() or member.isfifo():
+                    print(
+                        f"  [WARN] {path.name}: refused special member " f"{member.name!r}",
+                        file = sys.stderr,
+                    )
+                    continue
+                if not member.isfile():
+                    continue
+                reason = _refuse_unsafe_member_name(member.name)
+                if reason is not None:
+                    print(
+                        f"  [WARN] {path.name}: refused member ({reason})",
+                        file = sys.stderr,
+                    )
+                    continue
+                declared = max(member.size, 0)
+                if declared > HARD_MAX_FILE_BYTES:
+                    print(
+                        f"  [WARN] {path.name}: skipped {member.name!r} "
+                        f"(declared {declared} > cap {HARD_MAX_FILE_BYTES})",
+                        file = sys.stderr,
+                    )
+                    continue
+                if total + declared > HARD_MAX_TOTAL_BYTES:
+                    print(
+                        f"  [WARN] {path.name}: cumulative bytes cap "
+                        f"{HARD_MAX_TOTAL_BYTES} hit at {member.name!r}",
+                        file = sys.stderr,
+                    )
+                    return
+                try:
+                    f = tf.extractfile(member)
+                    if f is None:
+                        continue
+                    # Bound the read: a tar header may lie about size
+                    data = f.read(HARD_MAX_FILE_BYTES + 1)
+                    if len(data) > HARD_MAX_FILE_BYTES:
+                        print(
+                            f"  [WARN] {path.name}: body of "
+                            f"{member.name!r} exceeded declared cap",
+                            file = sys.stderr,
+                        )
+                        continue
+                    total += len(data)
+                    text = data.decode("utf-8", errors = "replace")
+                    yield member.name, text
+                except Exception:
+                    continue
+    else:
+        print(f"  [WARN] Unknown archive format: {path.name}", file = sys.stderr)
+
+
+def scan_archive(archive_path: str, package: str) -> list[Finding]:
+    """Scan all files in an archive for malicious patterns. A corrupted archive container emits a CRITICAL ``archive_corrupted`` finding rather than being silently skipped and reported as "0 findings"."""
+    findings: list[Finding] = []
+    try:
+        for filename, content in iter_archive_files(archive_path):
+            lower = filename.lower()
+            if lower.endswith(".pth"):
+                findings.extend(check_pth_file(content, filename, package))
+            elif lower.endswith(".py"):
+                findings.extend(check_py_file(content, filename, package))
+            elif lower.endswith((".js", ".mjs", ".cjs", ".ts")):
+                # Lightning 2.6.x hid its payload in a 14.8 MB router_runtime.js; without this branch we would only see the small Python loader.
+                findings.extend(check_js_file(content, filename, package))
+            elif lower.endswith((".sh", ".bash")):
+                findings.extend(check_shell_file(content, filename, package))
+            elif "/.github/workflows/" in lower and lower.endswith((".yml", ".yaml")):
+                findings.extend(check_workflow_file(content, filename, package))
+    except (zipfile.BadZipFile, tarfile.TarError, EOFError, OSError) as exc:
+        # Archive cannot be opened or is structurally broken: either transport corruption or a deliberate attempt to bypass error-swallowing scanners.
+        findings.append(
+            Finding(
+                CRITICAL,
+                package,
+                os.path.basename(archive_path),
+                "archive_corrupted",
+                f"{type(exc).__name__}: {exc}"[:240],
+            )
+        )
+    return findings
+
+
+def _scan_one(task: tuple[str, str]) -> tuple[str, list[Finding]]:
+    """Pool worker: ``scan_archive`` over one (archive_path, package) pair. Module-level and pickle-clean on purpose, so the pool can use the "spawn" start method. The archive-limit ``[WARN]`` lines are returned rather than written to stderr from deep inside ``iter_archive_files``, and the caller prints them in task order, which keeps the whole report reproducible."""
+    archive_path, package = task
+    buf = io.StringIO()
+    with contextlib.redirect_stderr(buf):
+        findings = scan_archive(archive_path, package)
+    return buf.getvalue(), findings
+
+
+_RE_PYPI_SPEC_VERSION = re.compile(r"==\s*([A-Za-z0-9_.\-+!]+)")
+
+
+def _check_blocked_pypi_versions(specs: list[str]) -> tuple[list[str], list[Finding]]:
+    """Filter ``specs`` against ``BLOCKED_PYPI_VERSIONS``, returning ``(safe_specs, findings)``. Each blocked spec emits a CRITICAL ``Finding`` and is dropped so the malicious tarball is never fetched. Specs without an ``==X.Y.Z`` pin pass through; the IOC regexes catch them later."""
+    safe: list[str] = []
+    findings: list[Finding] = []
+    for spec in specs:
+        name = _extract_pkg_name(spec).lower()
+        blocked = BLOCKED_PYPI_VERSIONS.get(name, set())
+        if not blocked:
+            safe.append(spec)
+            continue
+        m = _RE_PYPI_SPEC_VERSION.search(spec)
+        version = m.group(1) if m else None
+        if version is not None and version in blocked:
+            findings.append(
+                Finding(
+                    CRITICAL,
+                    f"{name}=={version}",
+                    "<spec>",
+                    "blocked-known-malicious",
+                    f"{name}=={version} is on the BLOCKED_PYPI_VERSIONS list",
+                )
+            )
+            continue
+        safe.append(spec)
+    return safe, findings
+
+
+def _pip_download_env() -> dict[str, str]:
+    """A scrubbed environment for invoking `pip download`: strips every PIP_* override and forces the resolver at PyPI, with PIP_CONFIG_FILE at /dev/null so a stray pip.conf extra-index-url cannot bypass the pin."""
+    env = {**os.environ}
+    for key in [k for k in env if k.startswith("PIP_")]:
+        env.pop(key, None)
+    env["PIP_INDEX_URL"] = "https://pypi.org/simple"
+    env["PIP_EXTRA_INDEX_URL"] = ""
+    env["PIP_CONFIG_FILE"] = "/dev/null"
+    env["PIP_DISABLE_PIP_VERSION_CHECK"] = "1"
+    return env
+
+
+# Pip resolver flags shared by both download branches. The CLI index-URL pin is belt and braces with the env scrub; `--only-binary :all:` avoids running setup.py.
+_PIP_DOWNLOAD_PIN_FLAGS = [
+    "--index-url",
+    "https://pypi.org/simple",
+    "--only-binary",
+    ":all:",
+]
+
+
+# Strip characters that could escape `dest` via `os.path.join`, so a spec like `../../etc/foo==1.0` cannot land outside the temp tree.
+_RE_PKG_NAME_SANITIZE = re.compile(r"[^A-Za-z0-9._-]")
+
+
+# sdist fallback. `--only-binary :all:` never builds an sdist, but a wheel-less project then cannot be fetched at all and one such package fails the whole --with-deps resolve. So on resolve failure we drop to per-spec and fetch any sdist-only package's raw tarball from the PyPI JSON API for scan_archive() to read statically: no pip, no build, same no-exec guarantee. Transport failures are still exit 2; only "no wheel" is downgraded.
+
+# How many levels of indirect-dep recovery to chase. Bounded with dedup so recovery always terminates.
+_MAX_DEP_FOLLOWUP_DEPTH = 2
+_SDIST_DOWNLOAD_TIMEOUT = 180
+# Never fetch an archive larger than we would be willing to scan (iter_archive_files cap).
+_MAX_SDIST_BYTES = HARD_MAX_TOTAL_BYTES
+# Direct sdist bytes only ever come from PyPI's own CDN; refuse anything else.
+_TRUSTED_PYPI_HOSTS = frozenset({"files.pythonhosted.org", "pypi.org", "pypi.python.org"})
+
+
+def _spec_pin_version(spec: str) -> str | None:
+    """Return the ``==X.Y.Z`` pin from a spec, or None if unpinned."""
+    m = _RE_PYPI_SPEC_VERSION.search(spec)
+    return m.group(1) if m else None
+
+
+def _pypi_json(name: str, version: str | None = None) -> dict | None:
+    """Fetch PyPI metadata JSON (read-only HTTPS GET, no exec); None on error. With ``version`` it fetches that release's document, whose ``requires_dist`` is accurate for the pin (the project-level doc describes only the latest)."""
+    url = "https://pypi.org/pypi/" + urllib.parse.quote(name, safe = "")
+    if version:
+        url += "/" + urllib.parse.quote(version, safe = "")
+    url += "/json"
+    try:
+        req = urllib.request.Request(url, headers = {"Accept": "application/json"})
+        with urllib.request.urlopen(req, timeout = 30) as resp:
+            if getattr(resp, "status", 200) != 200:
+                return None
+            data = resp.read(16 * 1024 * 1024)  # metadata is small; cap regardless
+        return json.loads(data.decode("utf-8", errors = "replace"))
+    except Exception:
+        return None
+
+
+def _release_files(meta: dict, version: str | None) -> list[dict]:
+    """Files for a pinned version, else the latest release's. A pin that is absent or empty returns [] (never the latest) so a yanked or bad pin fails closed instead of a different artifact being scanned in its place."""
+    if version is not None:
+        return meta.get("releases", {}).get(version) or []
+    return meta.get("urls", []) or []
+
+
+def _release_has_wheel(meta: dict, version: str | None) -> bool:
+    """True if the (pinned or latest) release publishes any bdist_wheel."""
+    return any(f.get("packagetype") == "bdist_wheel" for f in _release_files(meta, version))
+
+
+def _is_trusted_pypi_url(url: str) -> bool:
+    """Only download sdist bytes from PyPI's own hosts, over HTTPS."""
+    try:
+        parsed = urllib.parse.urlparse(url)
+    except Exception:
+        return False
+    return parsed.scheme == "https" and parsed.hostname in _TRUSTED_PYPI_HOSTS
+
+
+_MARKER_ENV_VARS = (
+    "sys_platform",
+    "platform_system",
+    "platform_machine",
+    "platform_release",
+    "platform_version",
+    "platform_python_implementation",
+    "os_name",
+    "python_version",
+    "python_full_version",
+    "implementation_name",
+    "implementation_version",
+)
+
+
+def _marker_can_hold_without_extras(parsed) -> bool:
+    """Can a parsed PEP 508 marker be true on SOME target with no extra requested?
+
+    Markers have no negation, only ``and``/``or`` over comparisons, so the formula is monotone in
+    its atoms: it can be true somewhere iff it is true with every non-``extra`` comparison set to
+    True and every ``extra`` comparison evaluated against the empty extra. That keeps
+    ``sys_platform == 'win32'`` and ``python_version >= '3.8' or extra == 'dev'`` (true on some
+    target) and drops ``extra == 'dev' and python_version >= '3.9'``, which no target installs
+    without the extra. Raises on a shape it does not know, so the caller keeps the dep.
+    """
+    groups: list[list[bool]] = [[]]
+    for item in parsed:
+        if isinstance(item, list):
+            groups[-1].append(_marker_can_hold_without_extras(item))
+        elif isinstance(item, tuple) and len(item) == 3:
+            lhs, op, rhs = item
+            names = {type(lhs).__name__, type(rhs).__name__}
+            if names != {"Variable", "Value"}:
+                raise ValueError(f"unexpected marker atom {item!r}")
+            variable = lhs if type(lhs).__name__ == "Variable" else rhs
+            if variable.value != "extra":
+                groups[-1].append(True)
+                continue
+            from packaging.markers import Marker
+
+            env = {"extra": ""}
+            text = f"{lhs.serialize()} {op.serialize()} {rhs.serialize()}"
+            groups[-1].append(bool(Marker(text).evaluate(env)))
+        elif item == "or":
+            groups.append([])
+        elif item == "and":
+            continue
+        else:
+            raise ValueError(f"unexpected marker token {item!r}")
+    return any(all(group) for group in groups)
+
+
+def _marker_holds_by_default(marker: str) -> bool:
+    """Keep (scan) a dep unless no install reaches it without an extra. The scanner runs on one OS/Python but a package may be installed on another, so a marker that can be true on a different target is always kept; a marker false on every target once no extra is requested (``extra == 'dev'``, ``extra == 'dev' and python_version >= '3.9'``) is dropped. Conservative: on any uncertainty, keep."""
+    m = marker.strip()
+    if not m or "extra" not in m:
+        return True  # no extra gate: installed by default on some target -> scan
+    if any(v in m for v in _MARKER_ENV_VARS):
+        # Also platform/python gated. Those atoms can each be true on some target, but an extra
+        # still has to be requested when it is AND-ed with them.
+        try:
+            from packaging.markers import Marker
+            return _marker_can_hold_without_extras(Marker(m)._markers)
+        except Exception:
+            return True  # an unknown shape: keep, and scan it
+    # Pure extra marker: decide by evaluating with no extra requested.
+    try:
+        from packaging.markers import Marker, default_environment
+
+        env = default_environment()
+        env["extra"] = ""
+        return bool(Marker(m).evaluate(env))
+    except Exception:
+        # packaging missing/unparseable: drop only a pure positive extra-equality.
+        return re.fullmatch(r"\s*extra\s*==\s*['\"][^'\"]+['\"]\s*", m) is None
+
+
+def _requires_dist_names(meta: dict) -> list[str]:
+    """Transitive dep specs (name + version specifier) from metadata, to recover a sdist-only package's tree. The specifier is kept so a pinned malicious version is fetched, not latest. Drops deps whose marker cannot hold for a default install."""
+    info = meta.get("info", {}) or {}
+    reqs = info.get("requires_dist") or []
+    specs: list[str] = []
+    for r in reqs:
+        if not isinstance(r, str):
+            continue
+        head = r
+        if ";" in r:
+            head, marker = r.split(";", 1)
+            if not _marker_holds_by_default(marker):
+                continue
+        if not _RE_NAME.match(head.strip()):
+            continue
+        # "torch (>=1.10)" / "torch >=1.10" -> "torch>=1.10" (pip-friendly).
+        specs.append(re.sub(r"\s+", "", head).replace("(", "").replace(")", ""))
+    return specs
+
+
+def _requires_dist_for(
+    name: str,
+    version: str | None,
+    project_meta: dict,
+    errors: list[str] | None = None,
+) -> list[str]:
+    """Declared deps for the pinned version, read from that release's metadata (its ``requires_dist`` can differ from latest); unpinned uses the project-level document. A pinned version whose own metadata cannot be fetched returns [] and, when ``errors`` is given, records an incomplete-scan error so a partial tree is not read as "no deps"."""
+    if not version:
+        return _requires_dist_names(project_meta)
+    vmeta = _pypi_json(name, version)
+    if vmeta is None:
+        msg = f"metadata fetch failed for pinned {name}=={version}; dependency scan incomplete"
+        if errors is None:
+            print(f"  [WARN] {msg}", file = sys.stderr)
+        else:
+            errors.append(msg)
+        return []
+    return _requires_dist_names(vmeta)
+
+
+def _download_sdist_direct(
+    name: str,
+    version: str | None,
+    dest: str,
+    *,
+    meta: dict | None = None,
+) -> tuple[str | None, str | None]:
+    """Fetch a project's sdist tarball directly from PyPI (no pip, no build). Returns ``(filepath, error)``, one non-None. Suffix preserved for the archive reader; bounded by ``_MAX_SDIST_BYTES`` and restricted to PyPI's CDN."""
+    if meta is None:
+        meta = _pypi_json(name)
+    if meta is None:
+        return None, f"PyPI metadata fetch failed for {name}"
+    picked: tuple[str, str] | None = None
+    for f in _release_files(meta, version):
+        if f.get("packagetype") == "sdist" and f.get("url") and f.get("filename"):
+            picked = (f["filename"], f["url"])
+            break
+    if picked is None:
+        return None, f"no sdist published for {name} (version={version or 'latest'})"
+    fname, url = picked
+    if not _is_trusted_pypi_url(url):
+        return None, f"refusing non-PyPI sdist URL for {name}: {url[:80]}"
+    # basename + sanitize keeps the path inside dest; the char class preserves the real `.tar.gz` / `.zip` suffix so the archive reader picks the format.
+    safe_fname = _RE_PKG_NAME_SANITIZE.sub("_", os.path.basename(fname)) or "sdist.tar.gz"
+    out = os.path.join(dest, safe_fname)
+    try:
+        req = urllib.request.Request(url, headers = {"Accept": "application/octet-stream"})
+        with urllib.request.urlopen(req, timeout = _SDIST_DOWNLOAD_TIMEOUT) as resp:
+            if getattr(resp, "status", 200) != 200:
+                return None, f"sdist HTTP {getattr(resp, 'status', '?')} for {name}"
+            data = resp.read(_MAX_SDIST_BYTES + 1)
+        if len(data) > _MAX_SDIST_BYTES:
+            return None, f"sdist for {name} exceeds {_MAX_SDIST_BYTES} byte cap"
+        with open(out, "wb") as fh:
+            fh.write(data)
+        print(
+            f"  [INFO] fetched sdist directly (no build) for {name}: {safe_fname}",
+            file = sys.stderr,
+        )
+        return out, None
+    except Exception as exc:
+        return None, f"sdist download failed for {name}: {type(exc).__name__}: {str(exc)[:120]}"
+
+
+def _pip_download_with_deps(
+    specs: list[str],
+    dest: str,
+    env: dict,
+    *,
+    timeout: int = 600,
+) -> tuple[int, str]:
+    """One `pip download --with-deps --only-binary :all:` call. Returns (rc, stderr)."""
+    cmd = [
+        sys.executable,
+        "-m",
+        "pip",
+        "download",
+        *_PIP_DOWNLOAD_PIN_FLAGS,
+        "--dest",
+        dest,
+    ] + list(specs)
+    try:
+        proc = subprocess.run(cmd, capture_output = True, text = True, timeout = timeout, env = env)
+        return proc.returncode, proc.stderr or ""
+    except subprocess.TimeoutExpired:
+        return 124, "pip download (with deps) timed out"
+
+
+def _collect_flat_dir(dest: str, results: list[tuple[str, str]]) -> None:
+    """Append every archive in a flat dest dir as (pkg_name, path)."""
+    for fname in sorted(os.listdir(dest)):
+        fpath = os.path.join(dest, fname)
+        if os.path.isfile(fpath):
+            pkg_name = fname.split("-")[0].replace("_", "-").lower()
+            results.append((pkg_name, fpath))
+
+
+def _resolve_per_spec_with_deps(
+    specs: list[str], dest: str, env: dict, download_errors: list[str]
+) -> None:
+    """Fallback when the bulk --with-deps resolve fails: resolve each spec alone. A still-failing spec is probed against PyPI, so sdist-only goes to a direct fetch (deps recovered one level) and wheel-present-but-unresolvable to a --no-deps fetch. Only a genuine fetch failure errors (caller exits 2); unfetchable indirect deps are warned, since the named package is still scanned."""
+    sdist_dep_followups: list[str] = []
+    for spec in specs:
+        name = _extract_pkg_name(spec)
+        version = _spec_pin_version(spec)
+        cmd = [
+            sys.executable,
+            "-m",
+            "pip",
+            "download",
+            *_PIP_DOWNLOAD_PIN_FLAGS,
+            "--dest",
+            dest,
+            spec,
+        ]
+        try:
+            proc = subprocess.run(cmd, capture_output = True, text = True, timeout = 300, env = env)
+        except subprocess.TimeoutExpired:
+            download_errors.append(f"per-spec --with-deps timed out for {spec}")
+            continue
+        if proc.returncode == 0:
+            continue  # archives landed in dest; collected by the caller
+        meta = _pypi_json(name)
+        if meta is not None and not _release_has_wheel(meta, version):
+            fpath, serr = _download_sdist_direct(name, version, dest, meta = meta)
+            if fpath is None:
+                download_errors.append(serr or f"sdist fetch failed for {name}")
+                continue
+            sdist_dep_followups.extend(_requires_dist_for(name, version, meta, download_errors))
+            continue
+        # Has a wheel but the full transitive tree will not co-resolve (ResolutionImpossible), typically a package the requirement file installs with --no-deps by design. Fetch just the package itself with --no-deps so it is still scanned; its conflicting deps are out of scope here.
+        nd_cmd = [
+            sys.executable,
+            "-m",
+            "pip",
+            "download",
+            "--no-deps",
+            *_PIP_DOWNLOAD_PIN_FLAGS,
+            "--dest",
+            dest,
+            spec,
+        ]
+        try:
+            nd = subprocess.run(nd_cmd, capture_output = True, text = True, timeout = 180, env = env)
+        except subprocess.TimeoutExpired:
+            download_errors.append(f"per-spec --no-deps timed out for {spec}")
+            continue
+        if nd.returncode == 0:
+            print(
+                f"  [INFO] {name}: full tree unresolvable; scanned the package "
+                f"alone (--no-deps), recovering deps individually.",
+                file = sys.stderr,
+            )
+            # The --with-deps failure may have been a sdist-only TRANSITIVE dep, which --no-deps skips. Recover the declared deps so that class is still scanned.
+            if meta is not None:
+                sdist_dep_followups.extend(_requires_dist_for(name, version, meta, download_errors))
+            continue
+        if meta is not None:
+            fpath, _serr = _download_sdist_direct(name, version, dest, meta = meta)
+            if fpath is not None:
+                continue
+        download_errors.append(
+            f"per-spec failed for {spec} (with-deps and --no-deps): " f"{nd.stderr.strip()[:240]}"
+        )
+
+    # Recover the transitive deps of sdist-only packages: a depth-bounded, deduped worklist so a wheel dep whose own child is sdist-only is itself fetched (--no-deps) and scanned, and that child recovered in turn. `dep` carries the version specifier so a pinned version is fetched.
+    seen: set[str] = set()
+    worklist: list[tuple[str, int]] = [(d, 0) for d in sdist_dep_followups]
+    while worklist:
+        dep, depth = worklist.pop()
+        dep_name = _extract_pkg_name(dep)
+        key = _norm_pkg(dep_name)
+        if key in seen:
+            continue
+        seen.add(key)
+        dep_ver = _spec_pin_version(dep)
+        cmd = [
+            sys.executable,
+            "-m",
+            "pip",
+            "download",
+            *_PIP_DOWNLOAD_PIN_FLAGS,
+            "--dest",
+            dest,
+            dep,
+        ]
+        try:
+            proc = subprocess.run(cmd, capture_output = True, text = True, timeout = 300, env = env)
+        except subprocess.TimeoutExpired:
+            print(f"  [WARN] dep download timed out for {dep}", file = sys.stderr)
+            continue
+        if proc.returncode == 0:
+            continue
+        meta = _pypi_json(dep_name)
+        if meta is None:
+            print(f"  [WARN] could not resolve indirect dep {dep}; skipping", file = sys.stderr)
+            continue
+        if not _release_has_wheel(meta, dep_ver):
+            fpath, serr = _download_sdist_direct(dep_name, dep_ver, dest, meta = meta)
+            if fpath is None:
+                print(f"  [WARN] could not fetch sdist dep {dep}: {serr}", file = sys.stderr)
+            elif depth < _MAX_DEP_FOLLOWUP_DEPTH:
+                worklist.extend((d, depth + 1) for d in _requires_dist_for(dep_name, dep_ver, meta))
+            continue
+        nd_cmd = [
+            sys.executable,
+            "-m",
+            "pip",
+            "download",
+            "--no-deps",
+            *_PIP_DOWNLOAD_PIN_FLAGS,
+            "--dest",
+            dest,
+            dep,
+        ]
+        try:
+            nd = subprocess.run(nd_cmd, capture_output = True, text = True, timeout = 180, env = env)
+        except subprocess.TimeoutExpired:
+            print(f"  [WARN] dep --no-deps timed out for {dep}", file = sys.stderr)
+            continue
+        if nd.returncode == 0:
+            if depth < _MAX_DEP_FOLLOWUP_DEPTH:
+                worklist.extend((d, depth + 1) for d in _requires_dist_for(dep_name, dep_ver, meta))
+            continue
+        fpath, _serr = _download_sdist_direct(dep_name, dep_ver, dest, meta = meta)
+        if fpath is None:
+            print(f"  [WARN] could not resolve indirect dep {dep}; skipping", file = sys.stderr)
+        elif depth < _MAX_DEP_FOLLOWUP_DEPTH:
+            worklist.extend((d, depth + 1) for d in _requires_dist_for(dep_name, dep_ver, meta))
+
+
+def download_packages(
+    specs: list[str],
+    dest: str,
+    *,
+    with_deps: bool = False,
+) -> tuple[list[tuple[str, str]], list[str]]:
+    """Download packages to dest using pip download. NEVER installs.
+
+    Returns ``(results, download_errors)``; a non-empty ``download_errors`` MUST make the caller exit non-zero so a partial scan cannot masquerade as "0 findings, all clean".
+
+    with_deps=True downloads the full transitive tree (flat dir), degrading on a bulk resolve failure to per-spec resolution plus a direct sdist fetch rather than blanking the shard. with_deps=False downloads each spec individually with --no-deps, also falling back to a direct sdist fetch when no wheel exists.
+    """
+    results: list[tuple[str, str]] = []
+    download_errors: list[str] = []
+    env = _pip_download_env()
+
+    if with_deps:
+        os.makedirs(dest, exist_ok = True)
+        # Fast path: resolve and download the whole transitive tree in one call. `--only-binary :all:` refuses sdists so we never build for metadata.
+        rc, stderr = _pip_download_with_deps(specs, dest, env)
+        if rc != 0:
+            # Atomic resolve failed (a sdist-only package, or a cross-package version conflict). Degrade to per-spec resolution so one bad spec cannot blank the shard, then direct-fetch any sdist-only holdouts. Genuine failures still record an error so the caller exits 2.
+            print(
+                f"  [INFO] bulk --with-deps resolve failed "
+                f"({stderr.strip()[:160]}); falling back to per-spec resolution "
+                f"for {len(specs)} spec(s).",
+                file = sys.stderr,
+            )
+            _resolve_per_spec_with_deps(specs, dest, env, download_errors)
+        _collect_flat_dir(dest, results)
+    else:
+        for spec in specs:
+            raw_name = _extract_pkg_name(spec)
+            # Sanitize before joining into `dest` to prevent path traversal
+            safe_name = _RE_PKG_NAME_SANITIZE.sub("_", raw_name) or "_pkg"
+            pkg_dir = os.path.join(dest, safe_name)
+            os.makedirs(pkg_dir, exist_ok = True)
+            cmd = [
+                sys.executable,
+                "-m",
+                "pip",
+                "download",
+                "--no-deps",
+                *_PIP_DOWNLOAD_PIN_FLAGS,
+                "--dest",
+                pkg_dir,
+                spec,
+            ]
+            try:
+                proc = subprocess.run(cmd, capture_output = True, text = True, timeout = 120, env = env)
+            except subprocess.TimeoutExpired:
+                download_errors.append(f"pip download timed out for {spec}")
+                continue
+            if proc.returncode != 0:
+                name = _extract_pkg_name(spec)
+                version = _spec_pin_version(spec)
+                meta = _pypi_json(name)
+                if meta is not None and not _release_has_wheel(meta, version):
+                    fpath, serr = _download_sdist_direct(name, version, pkg_dir, meta = meta)
+                    if fpath is not None:
+                        results.append((spec, fpath))
+                        continue
+                    download_errors.append(serr or f"sdist fetch failed for {name}")
+                    continue
+                download_errors.append(
+                    f"pip download failed for {spec}: {proc.stderr.strip()[:300]}"
+                )
+                continue
+
+            for fname in os.listdir(pkg_dir):
+                fpath = os.path.join(pkg_dir, fname)
+                if os.path.isfile(fpath):
+                    results.append((spec, fpath))
+    return results, download_errors
+
+
+_RE_NAME = re.compile(r"^([A-Za-z0-9]([A-Za-z0-9._-]*[A-Za-z0-9])?)")
+
+
+def _extract_pkg_name(spec: str) -> str:
+    """Extract the package name from a pip spec string."""
+    m = _RE_NAME.match(spec)
+    return (
+        m.group(1) if m else spec.split("==")[0].split(">=")[0].split("<=")[0].split("[")[0].strip()
+    )
+
+
+def parse_requirements(req_files: list[str]) -> list[dict]:
+    """Parse requirements files into dicts with keys: spec, name, source_file, line_num, raw_line, is_git."""
+    results = []
+    for req_file in req_files:
+        abs_path = os.path.abspath(req_file)
+        try:
+            with open(req_file) as f:
+                for line_num, raw_line in enumerate(f, 1):
+                    line = raw_line.strip()
+                    if not line or line.startswith("#") or line.startswith("-"):
+                        continue
+                    is_git = line.startswith("git+") or "git+" in line.split("#")[0]
+                    spec = line.split("#")[0].strip()
+                    spec = spec.split(";")[0].strip()
+                    if not spec:
+                        continue
+                    name = _extract_pkg_name(spec) if not is_git else spec
+                    results.append(
+                        {
+                            "spec": spec,
+                            "name": name,
+                            "source_file": abs_path,
+                            "line_num": line_num,
+                            "raw_line": raw_line.rstrip("\n"),
+                            "is_git": is_git,
+                        }
+                    )
+        except FileNotFoundError:
+            print(f"  [ERROR] Requirements file not found: {req_file}", file = sys.stderr)
+    return results
+
+
+def get_downloaded_version(archive_path: str) -> str | None:
+    """Extract version from a wheel ({name}-{version}(-...).whl) or sdist ({name}-{version}.tar.gz / .zip) filename."""
+    basename = os.path.basename(archive_path)
+    if basename.endswith(".whl"):
+        parts = basename[:-4].split("-")
+        if len(parts) >= 2:
+            return parts[1]
+    for ext in (".tar.gz", ".tar.bz2", ".tar.xz", ".tar", ".zip"):
+        if basename.endswith(ext):
+            stem = basename[: -len(ext)]
+            parts = stem.rsplit("-", 1)
+            if len(parts) == 2:
+                return parts[1]
+    return None
+
+
+def severity_color(sev: str) -> str:
+    colors = {CRITICAL: "\033[91m", HIGH: "\033[93m", MEDIUM: "\033[33m"}
+    return colors.get(sev, "")
+
+
+RESET = "\033[0m"
+
+
+def print_findings(findings: list[Finding]) -> None:
+    if not findings:
+        print("\n  All clean. No suspicious patterns found.")
+        return
+
+    findings.sort(key = lambda f: SEVERITY_ORDER.get(f.severity, 99))
+
+    print(f"\n  {'=' * 72}")
+    print(f"  SCAN RESULTS: {len(findings)} finding(s)")
+    print(f"  {'=' * 72}")
+
+    for i, f in enumerate(findings, 1):
+        color = severity_color(f.severity)
+        print(f"\n  [{i}] {color}{f.severity}{RESET}  {f.check}")
+        print(f"      Package:  {f.package}")
+        print(f"      File:     {f.filename}")
+        if f.evidence:
+            for eline in f.evidence.split("\n"):
+                print(f"      Evidence: {eline}")
+
+    print(f"\n  {'=' * 72}")
+    crits = sum(1 for f in findings if f.severity == CRITICAL)
+    highs = sum(1 for f in findings if f.severity == HIGH)
+    meds = sum(1 for f in findings if f.severity == MEDIUM)
+    parts = []
+    if crits:
+        parts.append(f"{crits} CRITICAL")
+    if highs:
+        parts.append(f"{highs} HIGH")
+    if meds:
+        parts.append(f"{meds} MEDIUM")
+    print(f"  Summary: {', '.join(parts)}")
+
+
+def version_sort_key(v: str) -> tuple:
+    """PEP 440-ish sort key using stdlib only: handles epoch!, major.minor.patch and pre/post/dev suffixes, returning a tuple that sorts ascending."""
+    epoch = 0
+    if "!" in v:
+        epoch_str, v = v.split("!", 1)
+        try:
+            epoch = int(epoch_str)
+        except ValueError:
+            pass
+
+    v_clean = re.split(
+        r"[-_.]?(a|alpha|b|beta|rc|c|pre|preview|dev|post)", v, maxsplit = 1, flags = re.I
+    )
+    base = v_clean[0]
+    suffix = v[len(base) :]
+
+    parts = []
+    for seg in base.split("."):
+        try:
+            parts.append(int(seg))
+        except ValueError:
+            parts.append(0)
+    while len(parts) < 3:  # pad to at least 3 parts
+        parts.append(0)
+
+    suffix_lower = suffix.lower().lstrip(".-_")
+    if suffix_lower.startswith("dev"):
+        suffix_rank = -4
+    elif suffix_lower.startswith(("a", "alpha")):
+        suffix_rank = -3
+    elif suffix_lower.startswith(("b", "beta")):
+        suffix_rank = -2
+    elif suffix_lower.startswith(("rc", "c", "pre", "preview")):
+        suffix_rank = -1
+    elif suffix_lower.startswith("post"):
+        suffix_rank = 1
+    else:
+        suffix_rank = 0  # stable
+
+    return (epoch, tuple(parts), suffix_rank, suffix)
+
+
+def fetch_pypi_versions(name: str) -> list[str]:
+    """Fetch all available versions for a package from PyPI JSON API.
+
+    Returns versions sorted ascending by version_sort_key.
+    """
+    url = f"https://pypi.org/pypi/{name}/json"
+    try:
+        req = urllib.request.Request(url, headers = {"Accept": "application/json"})
+        with urllib.request.urlopen(req, timeout = 30) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except Exception as e:
+        print(f"  [ERROR] Failed to query PyPI for {name}: {e}", file = sys.stderr)
+        return []
+
+    versions = list(data.get("releases", {}).keys())
+    versions.sort(key = version_sort_key)
+    return versions
+
+
+def find_safe_version(
+    name: str,
+    bad_ver: str,
+    tmpdir: str,
+    max_search: int = 10,
+) -> str | None:
+    """Search backward from bad_ver for a clean version, downloading and scanning up to max_search older versions. Returns the first clean version found, or None."""
+    versions = fetch_pypi_versions(name)
+    if not versions:
+        print(f"  [WARN] No versions found on PyPI for {name}", file = sys.stderr)
+        return None
+
+    try:
+        bad_idx = versions.index(bad_ver)
+    except ValueError:
+        # bad_ver may resolve to a different string; search by sort key
+        bad_key = version_sort_key(bad_ver)
+        bad_idx = None
+        for i, v in enumerate(versions):
+            if version_sort_key(v) >= bad_key:
+                bad_idx = i
+                break
+        if bad_idx is None:
+            bad_idx = len(versions) - 1
+
+    candidates = versions[:bad_idx]
+    candidates.reverse()  # newest-first among older versions
+    candidates = candidates[:max_search]
+
+    if not candidates:
+        print(f"  [WARN] No older versions to scan for {name}", file = sys.stderr)
+        return None
+
+    print(f"  Searching {len(candidates)} older version(s) of {name}...")
+
+    for ver in candidates:
+        spec = f"{name}=={ver}"
+        scan_dir = os.path.join(tmpdir, f"{name}_{ver}")
+        os.makedirs(scan_dir, exist_ok = True)
+
+        downloaded, download_errors = download_packages([spec], scan_dir)
+        if not downloaded:
+            for err in download_errors:
+                print(f"    [WARN] {err}", file = sys.stderr)
+            continue
+
+        clean = True
+        for _, archive_path in downloaded:
+            findings = scan_archive(archive_path, name)
+            try:
+                os.remove(archive_path)
+            except OSError:
+                pass
+            crit_findings = [f for f in findings if f.severity == CRITICAL]
+            if crit_findings:
+                clean = False
+                print(f"    {ver} -- CRITICAL finding(s), skipping")
+                break
+
+        shutil.rmtree(scan_dir, ignore_errors = True)
+
+        if clean:
+            print(f"    {ver} -- clean!")
+            return ver
+
+    return None
+
+
+def update_req_line(raw_line: str, safe_ver: str, old_ver: str | None) -> str:
+    """Rewrite a single requirements line to pin to safe_ver.
+
+    Preserves env markers, inline comments, and line format.
+    Appends a comment noting the pin.
+    """
+    comment = ""
+    if " #" in raw_line:
+        code_part, comment = raw_line.split(" #", 1)
+        comment = " #" + comment
+    else:
+        code_part = raw_line
+
+    marker = ""
+    if ";" in code_part:
+        code_part, marker = code_part.split(";", 1)
+        marker = ";" + marker
+
+    rewritten = re.sub(
+        r"([A-Za-z0-9._-]+)\s*(?:[><=!~]=?[^;#,\s]*(?:\s*,\s*[><=!~]=?[^;#,\s]*)*)?",
+        lambda m: f"{m.group(1)}=={safe_ver}",
+        code_part.strip(),
+        count = 1,
+    )
+
+    was_note = f" (was {old_ver})" if old_ver else ""
+    pin_comment = f"  # pinned by pth_scanner{was_note}"
+
+    return f"{rewritten}{marker}{pin_comment}"
+
+
+def update_req_file(filepath: str, updates: dict[int, str]) -> None:
+    """Apply line-level updates ({1-indexed line_num: new_line_text}) to a requirements file. Writes atomically (sibling tmp file, fsync, os.replace) so a crash mid-write never leaves a half-written file that re-introduces a malicious pin."""
+    # encoding is explicit on both halves: open() without it takes the locale codec, so the same
+    # requirements file round-trips differently on a runner with LANG=C than on one with a UTF-8
+    # locale, and a non-ASCII comment is mangled or raises. studio/backend has a guard for exactly
+    # this (tests/test_text_io_encoding.py) but it scans BACKEND_ROOT only, so scripts/ was never
+    # covered by it.
+    with open(filepath, encoding = "utf-8") as f:
+        lines = f.readlines()
+
+    for line_num, new_text in updates.items():
+        idx = line_num - 1
+        if 0 <= idx < len(lines):
+            ending = "\n" if lines[idx].endswith("\n") else ""  # preserve line ending
+            lines[idx] = new_text + ending
+
+    dirpath = os.path.dirname(os.path.abspath(filepath)) or "."
+    fd, tmp_path = tempfile.mkstemp(
+        prefix = ".req_fix.",
+        dir = dirpath,
+    )
+    try:
+        # newline = "\n" so the line endings the loop above went to the trouble of preserving
+        # survive the write. readlines() above is universal-newline, so a CRLF file arrives as LF
+        # in memory, and the default newline then translates it back to os.linesep -- which on
+        # Windows rewrites every line of a tracked requirements file and makes the "preserve line
+        # ending" above a no-op.
+        with os.fdopen(fd, "w", encoding = "utf-8", newline = "\n") as f:
+            f.writelines(lines)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, filepath)
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
+def _run_fix(critical_pkgs: set[str], entries: list[dict], max_search: int) -> None:
+    """Run the --fix flow: find safe versions, update requirements files."""
+    pkg_entries: dict[str, list[dict]] = {}
+    for e in entries:
+        norm = e["name"].lower().replace("-", "_").replace(".", "_")
+        pkg_entries.setdefault(norm, []).append(e)
+
+    changes_summary: list[str] = []
+
+    with tempfile.TemporaryDirectory(prefix = "pth_fix_") as tmpdir:
+        for pkg_name in sorted(critical_pkgs):
+            norm = pkg_name.lower().replace("-", "_").replace(".", "_")
+            related = pkg_entries.get(norm, [])
+
+            git_entries = [e for e in related if e["is_git"]]
+            if git_entries:
+                for e in git_entries:
+                    src = e["source_file"] or "CLI"
+                    print(f"  [SKIP] {pkg_name} is a git URL dep in {src}, cannot auto-update")
+                    changes_summary.append(f"  SKIP  {pkg_name} (git URL)")
+                continue
+
+            current_ver = None
+            for e in related:
+                spec = e["spec"]
+                if "==" in spec:
+                    current_ver = spec.split("==", 1)[1].split(";")[0].strip()
+                    break
+
+            if not current_ver:
+                dl_dir = os.path.join(tmpdir, f"resolve_{pkg_name}")
+                os.makedirs(dl_dir, exist_ok = True)
+                downloaded, download_errors = download_packages([pkg_name], dl_dir)
+                if downloaded:
+                    current_ver = get_downloaded_version(downloaded[0][1])
+                else:
+                    for err in download_errors:
+                        print(f"  [WARN] {err}", file = sys.stderr)
+                shutil.rmtree(dl_dir, ignore_errors = True)
+
+            if not current_ver:
+                print(f"  [WARN] Cannot determine current version of {pkg_name}, skipping fix")
+                changes_summary.append(f"  SKIP  {pkg_name} (version unknown)")
+                continue
+
+            print(f"\n  Fixing {pkg_name} (current: {current_ver})...")
+            safe_ver = find_safe_version(pkg_name, current_ver, tmpdir, max_search)
+
+            if not safe_ver:
+                print(
+                    f"  [FAIL] No safe version found for {pkg_name} within {max_search} older versions"
+                )
+                changes_summary.append(
+                    f"  FAIL  {pkg_name}=={current_ver} -> no safe version found"
+                )
+                continue
+
+            print(f"  [OK]   {pkg_name}: {current_ver} -> {safe_ver}")
+            changes_summary.append(f"  FIX   {pkg_name}=={current_ver} -> {pkg_name}=={safe_ver}")
+
+            file_updates: dict[str, dict[int, str]] = {}
+            for e in related:
+                if e["source_file"] is None:
+                    print(f"         (CLI arg, no file to update)")
+                    continue
+                new_line = update_req_line(e["raw_line"], safe_ver, current_ver)
+                file_updates.setdefault(e["source_file"], {})[e["line_num"]] = new_line
+                print(f"         {e['source_file']}:{e['line_num']}")
+                print(f"           - {e['raw_line']}")
+                print(f"           + {new_line}")
+
+            for filepath, updates in file_updates.items():
+                update_req_file(filepath, updates)
+
+    print(f"\n  {'=' * 72}")
+    print(f"  FIX SUMMARY")
+    print(f"  {'=' * 72}")
+    for line in changes_summary:
+        print(line)
+    print(f"\n  Re-run without --fix to verify the scan is clean.")
+
+
+def _find_requirements_files(root: str) -> list[str]:
+    """Recursively find pip requirements files under root: requirements*.txt, and *.txt inside directories named 'requirements'. Skips .egg-info dirs, venvs, hidden dirs, __pycache__ and node_modules."""
+    import fnmatch
+
+    skip_dirs = {"__pycache__", "node_modules", "venv", ".venv", "site-packages"}
+    results = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [
+            d
+            for d in dirnames
+            if not d.startswith(".") and d not in skip_dirs and not d.endswith(".egg-info")
+        ]
+        dirname = os.path.basename(dirpath)
+        for fname in sorted(filenames):
+            if not fname.endswith(".txt"):
+                continue
+            if fnmatch.fnmatch(fname.lower(), "requirements*.txt"):
+                results.append(os.path.join(dirpath, fname))
+            elif dirname == "requirements":
+                results.append(os.path.join(dirpath, fname))
+    return sorted(results)
+
+
+# Baseline allowlist: triaged known-good CRITICAL/HIGH findings so the gate can enforce without drowning in legitimate-library noise. Matched on (package, package-relative file, check, evidence hash); the hash strips ``L<NN>:`` markers so version bumps and line shifts do not reopen an entry, but changed flagged code does. Regenerate with ``--write-baseline``.
+_DEFAULT_BASELINE_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "scan_packages_baseline.json"
+)
+
+
+def _norm_pkg(name: str) -> str:
+    """PEP 503-style normalization so requests/Requests/req_uests collapse."""
+    return re.sub(r"[-_.]+", "-", (name or "").strip().lower())
+
+
+# Leading "<name>-<version>/" archive root of an sdist member, which carries the version. Stripping it while keeping the rest of the path gives a key stable across version bumps that still distinguishes same-named files.
+_RE_SDIST_ROOT = re.compile(r"^[^/]+-\d[^/]*/")
+
+
+def _relpath_in_package(filename: str) -> str:
+    """Package-relative path: drop an sdist's version-carrying archive root. Wheel members are already package-relative; sdist members sit under ``numba-0.60.0/...``."""
+    return _RE_SDIST_ROOT.sub("", filename, count = 1)
+
+
+# Evidence joins matched spans with " | " and a newline between labelled groups, each span tagged "L<NN>: ". Split only on those real delimiters, never on a bare "|", since matched code may contain a bitwise-or or union type. The prefix strips only a genuine leading marker, so a marker-like "L<NN>:" inside raw code is left intact.
+_RE_EVIDENCE_SPLIT = re.compile(r" \| (?=L\d+:)|\n")
+_RE_EVIDENCE_PREFIX = re.compile(r"^(?:[A-Za-z][A-Za-z0-9 _/+.-]*:\s*)?L\d+:\s?")
+
+
+def _canon_evidence(evidence: str) -> str:
+    """Matched code lines in discovery order (markers removed), duplicates kept. Line shifts are absorbed by stripping the L<NN>: markers, not by sorting, so order stays significant and reordering matched lines reopens the finding; keeping duplicates means an appended identical occurrence still changes the key."""
+    spans = []
+    for s in _RE_EVIDENCE_SPLIT.split(evidence or ""):
+        s = _RE_EVIDENCE_PREFIX.sub("", s, count = 1).rstrip()
+        if s:
+            spans.append(s)
+    return "\n".join(spans)
+
+
+def _evidence_hash(evidence: str) -> str:
+    """Stable digest of the canonical matched evidence."""
+    return hashlib.sha256(_canon_evidence(evidence).encode("utf-8", "replace")).hexdigest()
+
+
+def _finding_key(f: Finding) -> tuple[str, str, str, str]:
+    """Allowlist key: package, package-relative path, check, evidence hash. The evidence hash is over the set of matched code, so the key survives version bumps, line shifts and reordering but reopens when the flagged code changes."""
+    return (
+        _norm_pkg(f.package),
+        _relpath_in_package(f.filename),
+        f.check,
+        _evidence_hash(f.evidence),
+    )
+
+
+def _load_baseline(path: str) -> "dict[tuple[str, str, str, str], set[str] | None]":
+    """Load an allowlist JSON into {match key: pinned file digests}. None means unpinned: the key alone suppresses. A set of digests covers only those exact file contents, so any other edit to the file reopens the finding, which matters for files whose danger sits outside the matched lines."""
+    try:
+        with open(path, "r", encoding = "utf-8") as fh:
+            data = json.load(fh)
+    except FileNotFoundError:
+        return {}
+    except (OSError, json.JSONDecodeError) as exc:
+        print(f"  [WARN] could not read baseline {path}: {exc}", file = sys.stderr)
+        return {}
+    if not isinstance(data, dict):
+        print(f"  [WARN] baseline {path} is not a JSON object", file = sys.stderr)
+        return {}
+    entries = data.get("entries", [])
+    if not isinstance(entries, list):
+        print(f"  [WARN] baseline {path} entries is not a list", file = sys.stderr)
+        return {}
+    keys: dict[tuple[str, str, str, str], "set[str] | None"] = {}
+    legacy = 0
+    for e in entries:
+        if not isinstance(e, dict):
+            continue
+        try:
+            evidence_hash = e.get("evidence_hash") or _evidence_hash(e.get("evidence") or "")
+            if not e.get("evidence_hash"):
+                legacy += 1
+            key = (
+                _norm_pkg(e["package"]),
+                _relpath_in_package(e["file"]),
+                e["check"],
+                evidence_hash,
+            )
+        except (KeyError, TypeError):
+            continue
+        # None = unpinned (key alone suppresses). A set = only those file digests. An unpinned entry wins, since it already suppresses the key on its own.
+        pin = e.get("file_sha256")
+        if key not in keys:
+            keys[key] = {pin} if pin else None
+        elif not pin:
+            keys[key] = None
+        elif keys[key] is not None:
+            keys[key].add(pin)
+    if legacy:
+        print(
+            f"  [WARN] baseline {path}: {legacy} entries lack evidence_hash and may "
+            f"not suppress until regenerated with --write-baseline (findings reopen "
+            f"rather than risk hiding changed code under a coarse key)",
+            file = sys.stderr,
+        )
+    return keys
+
+
+def _evidence_spans(evidence: str) -> list[str]:
+    """Canonical matched lines of one finding, in discovery order."""
+    canon = _canon_evidence(evidence)
+    return canon.split("\n") if canon else []
+
+
+def _load_baseline_evidence(
+    path: "str | None",
+) -> "dict[tuple[str, str, str], list[tuple[str, list[str]]]]":
+    """Load the baseline's own evidence, grouped by site, as {(package, relpath, check): [(evidence_hash, spans)]}.
+
+    `_load_baseline` deliberately reduces every entry to a key and its pins, which is all
+    the gate needs. Saying *why* a reviewed site reopened needs the entry's matched lines
+    as well, so this reads them separately rather than widening the suppression loader.
+    """
+    if not path:
+        return {}
+    try:
+        with open(path, "r", encoding = "utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(data, dict) or not isinstance(data.get("entries"), list):
+        return {}
+    sites: dict[tuple[str, str, str], list[tuple[str, list[str]]]] = {}
+    for e in data["entries"]:
+        if not isinstance(e, dict):
+            continue
+        try:
+            site = (_norm_pkg(e["package"]), _relpath_in_package(e["file"]), e["check"])
+        except (KeyError, TypeError):
+            continue
+        evidence = e.get("evidence") or ""
+        digest = e.get("evidence_hash") or _evidence_hash(evidence)
+        sites.setdefault(site, []).append((digest, _evidence_spans(evidence)))
+    return sites
+
+
+def _span_delta(active_spans: list[str], baseline_spans: list[str]) -> tuple[int, int]:
+    """(added, removed) matched lines, as a multiset difference against one baseline entry."""
+    added = collections.Counter(active_spans)
+    removed = collections.Counter(baseline_spans)
+    shared = added & removed
+    added -= shared
+    removed -= shared
+    return sum(added.values()), sum(removed.values())
+
+
+def _classify_reviewed_site(f: Finding, entries: list[tuple[str, list[str]]]) -> tuple[str, str]:
+    """Say what actually differs between a reopened finding and the baseline entries at its site.
+
+    Three cases reach the report identically and want different reviews:
+
+    * the same matched code under a pin that no longer matches -- nothing flagged changed,
+      something else in that file did, and the pin is doing exactly its job;
+    * new matched lines inside a reviewed file -- a genuinely new occurrence, which wants
+      the same read a brand new site would get, not a glance at a diff;
+    * matched lines edited, removed or reordered -- the narrow "did known metaprogramming
+      move" question.
+
+    Membership of `(package, file, check)` alone cannot tell them apart, because a file's
+    matches are aggregated into one finding: an added `exec` reopens the same key an edited
+    one does.
+    """
+    spans = _evidence_spans(f.evidence)
+    digest = _evidence_hash(f.evidence)
+    if any(digest == h for h, _ in entries):
+        return ("pin", "same matched code, file digest outside the pin")
+    best = min((_span_delta(spans, b) for _, b in entries), key = lambda d: (d[0] + d[1], d[0]))
+    added, removed = best
+    if added and not removed:
+        return ("unread", f"{added} matched line(s) appended to a reviewed file, none gone")
+    if added:
+        # A multiset diff cannot tell "this line was rewritten" from "one went, an unrelated
+        # one arrived", and it does not need to: both leave matched code that was never read
+        # in its current form, which is the same position a new occurrence puts you in.
+        # Narrowing the full read to strict additions would route exec(compile(src, path,
+        # "exec")) -> exec(payload) -- an edit, by the diff -- to the "did it just move" path.
+        return (
+            "unread",
+            f"{added} matched line(s) added and {removed} gone: the flagged code was rewritten",
+        )
+    if removed:
+        return ("edited", f"{removed} matched line(s) gone, none added")
+    return ("edited", "matched lines reordered")
+
+
+def _report_reviewed_sites(
+    active: list[Finding],
+    baseline: "dict[tuple[str, str, str, str], set[str] | None]",
+    baseline_path: "str | None",
+) -> None:
+    """Separate "this reviewed site changed" from "this site is new", and say which kind of change.
+
+    Both reach the report as an identical CRITICAL/HIGH line, and they need different
+    reviews: the first asks whether known metaprogramming moved, the second asks whether
+    something dangerous just appeared. A file's matches are aggregated into a single
+    finding, though, so a reviewed site also reopens when a *new* occurrence is appended to
+    it -- that one wants the full read, not a diff -- and a pinned entry reopens on an edit
+    elsewhere in the file with its matched code untouched. Each line below says which it
+    is. The gate is unchanged: every finding above still fails the run.
+    """
+    if not baseline or not active:
+        return
+    site_evidence = _load_baseline_evidence(baseline_path)
+    reviewed_sites = {(pkg, path, check) for pkg, path, check, _ in baseline}
+    moved = [
+        f
+        for f in active
+        if (_norm_pkg(f.package), _relpath_in_package(f.filename), f.check) in reviewed_sites
+    ]
+    if not moved:
+        return
+    print(
+        f"\n  {len(moved)} of the {len(active)} finding(s) above are at a site already "
+        f"reviewed in {baseline_path}. What differs from the reviewed entry:"
+    )
+    verdicts = []
+    for f in sorted(moved, key = lambda f: (f.package, _relpath_in_package(f.filename))):
+        rel = _relpath_in_package(f.filename)
+        entries = site_evidence.get((_norm_pkg(f.package), rel, f.check), [])
+        kind, why = (
+            _classify_reviewed_site(f, entries)
+            if entries
+            else ("unknown", "baseline entry carries no evidence")
+        )
+        verdicts.append(kind)
+        print(f"    {f.severity}  {f.package}  {rel}  ({f.check})\n        {why}")
+    if "unread" in verdicts:
+        print(
+            "  A site reporting added or rewritten matched lines carries flagged code that "
+            "was never reviewed in its current form: read it as you would a new site."
+        )
+    print(
+        "  Re-review, then regenerate with --write-baseline. A finding with no line here "
+        "is at a site that was never reviewed and wants a full read of the file."
+    )
+
+
+def _write_baseline(
+    path: str,
+    findings: list[Finding],
+    source: "str | None" = None,
+) -> None:
+    """Persist CRITICAL/HIGH findings as an allowlist for human triage. Pins are carried over from `source`, the baseline in effect for this run, so regenerating cannot silently widen a reviewed entry; reading them from `path` instead would drop every pin whenever the output goes somewhere new."""
+    pinned = {k for k, v in _load_baseline(source or path).items() if v is not None}
+    entries = []
+    seen: set[tuple[str, str, str, str]] = set()
+    for f in sorted(findings, key = lambda f: SEVERITY_ORDER.get(f.severity, 99)):
+        if f.severity not in (CRITICAL, HIGH):
+            continue
+        key = _finding_key(f)
+        if key in seen:
+            continue
+        seen.add(key)
+        entry = {
+            "package": f.package,
+            "file": _relpath_in_package(f.filename),
+            "check": f.check,
+            "severity": f.severity,
+            "evidence": f.evidence,
+            "evidence_hash": _evidence_hash(f.evidence),
+        }
+        if key in pinned and f.file_sha256:
+            entry["file_sha256"] = f.file_sha256
+        entries.append(entry)
+    doc = {
+        "_comment": (
+            "scan_packages.py allowlist. Each entry is a CRITICAL/HIGH finding "
+            "manually judged benign. Matched on (package, package-relative file, "
+            "check, evidence_hash); evidence_hash is over the matched code with "
+            "L<NN>: markers stripped, so version bumps and line shifts do not "
+            "reopen an entry but changed code does. An optional file_sha256 pins an "
+            "entry to that exact file, for danger sitting outside the matched lines "
+            "(a credential send records the urlopen call, not its destination). "
+            "severity and evidence are for review only. Regenerate with "
+            "--write-baseline AFTER reviewing every line."
+        ),
+        "version": 1,
+        "entries": entries,
+    }
+    # newline = "\n" for the same reason as update_req_file above: the default translates every
+    # "\n" json.dump emits to os.linesep, and --write-baseline rewrites the tracked
+    # scripts/scan_packages_baseline.json in place, so on Windows a one-entry review turned into a
+    # whole-file CRLF diff over several thousand lines.
+    with open(path, "w", encoding = "utf-8", newline = "\n") as fh:
+        json.dump(doc, fh, indent = 2, sort_keys = False)
+        fh.write("\n")
+    print(f"  Wrote {len(entries)} baseline entr(y/ies) to {path}")
+
+
+def _partition_baseline(
+    findings: list[Finding], baseline: "dict[tuple[str, str, str, str], set[str] | None]"
+) -> tuple[list[Finding], list[Finding]]:
+    """Split findings into (active, suppressed) by allowlist membership."""
+    if not baseline:
+        return list(findings), []
+    active, suppressed = [], []
+    for f in findings:
+        key = _finding_key(f)
+        hit = key in baseline
+        if hit:
+            pins = baseline[key]
+            # A pinned entry only covers the file it was reviewed against.
+            hit = pins is None or f.file_sha256 in pins
+        (suppressed if hit else active).append(f)
+    return active, suppressed
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description = __doc__,
+        formatter_class = argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument(
+        "packages",
+        nargs = "*",
+        help = "Package specs (e.g. requests==2.32.5 fastapi)",
+    )
+    parser.add_argument(
+        "-r",
+        "--requirements",
+        action = "append",
+        default = [],
+        metavar = "FILE",
+        help = "Requirements file(s) to scan",
+    )
+    parser.add_argument(
+        "-d",
+        "--scan-dir",
+        action = "append",
+        default = [],
+        metavar = "DIR",
+        help = "Recursively find requirements*.txt files in DIR",
+    )
+    parser.add_argument(
+        "--with-deps",
+        action = "store_true",
+        help = "Also download and scan transitive dependencies (full dependency tree)",
+    )
+    parser.add_argument(
+        "--jobs",
+        type = int,
+        default = 0,
+        help = "Archive-scanning worker processes (default: min(4, cpu count); 1 = serial)",
+    )
+    parser.add_argument(
+        "--fix",
+        action = "store_true",
+        help = "Auto-search for safe versions and update requirements files",
+    )
+    parser.add_argument(
+        "--max-search",
+        type = int,
+        default = 10,
+        metavar = "N",
+        help = "Max older versions to scan when searching for safe version (default: 10)",
+    )
+    parser.add_argument(
+        "--baseline",
+        metavar = "FILE",
+        default = None,
+        help = (
+            "Allowlist JSON of triaged known-good findings to suppress. "
+            f"Defaults to {os.path.basename(_DEFAULT_BASELINE_PATH)} next to this "
+            "script if present."
+        ),
+    )
+    parser.add_argument(
+        "--no-baseline",
+        action = "store_true",
+        help = "Ignore the auto-discovered baseline allowlist.",
+    )
+    parser.add_argument(
+        "--write-baseline",
+        metavar = "FILE",
+        default = None,
+        help = (
+            "Write the current CRITICAL/HIGH findings to FILE as an allowlist, "
+            "then exit 0. Review every entry before committing it."
+        ),
+    )
+    args = parser.parse_args()
+
+    req_files = list(args.requirements)
+    for scan_dir in args.scan_dir:
+        found = _find_requirements_files(scan_dir)
+        if found:
+            print(f"  Found {len(found)} requirements file(s) in {scan_dir}/")
+            for f in found:
+                print(f"    {f}")
+            req_files.extend(found)
+        else:
+            print(f"  [WARN] No requirements files found in {scan_dir}/", file = sys.stderr)
+
+    entries: list[dict] = []
+
+    for pkg in args.packages or []:
+        entries.append(
+            {
+                "spec": pkg,
+                "name": _extract_pkg_name(pkg),
+                "source_file": None,
+                "line_num": None,
+                "raw_line": pkg,
+                "is_git": pkg.startswith("git+") or "git+" in pkg,
+            }
+        )
+
+    if req_files:
+        entries.extend(parse_requirements(req_files))
+
+    if not entries:
+        parser.print_help()
+        return 2
+
+    seen: set[str] = set()
+    unique_entries: list[dict] = []
+    for e in entries:
+        key = e["name"].lower().replace("-", "_").replace(".", "_")
+        if key not in seen:
+            seen.add(key)
+            unique_entries.append(e)
+
+    specs = [e["spec"] for e in unique_entries]
+    mode_label = " (with transitive deps)" if args.with_deps else ""
+    print(f"  Scanning {len(specs)} package(s){mode_label}...")
+
+    all_findings: list[Finding] = []
+
+    specs, blocked_findings = _check_blocked_pypi_versions(specs)
+    all_findings.extend(blocked_findings)
+
+    tmpdir = tempfile.mkdtemp(prefix = "pth_scan_")
+    atexit.register(lambda d = tmpdir: shutil.rmtree(d, ignore_errors = True))
+    download_errors: list[str] = []
+    # Scan-side failures, kept beside the download ones so both reach the SCAN INCOMPLETE block below. A stall has to exit 2 like any other partial scan: exit 1 is reserved for "non-baselined CRITICAL or HIGH findings detected".
+    scan_errors: list[str] = []
+    try:
+        downloaded, download_errors = download_packages(
+            specs,
+            tmpdir,
+            with_deps = args.with_deps,
+        )
+        print(f"  Downloaded {len(downloaded)} archive(s).")
+
+        # Scanning, not downloading, is the cost: on the hf-stack shard `pip download` takes 9.7s and the pass below took 306s of a 316s total. `imap` with chunksize=1 yields in submission order, so the findings list matches the serial loop's; chunksize=1 is also what makes `next(timeout=)` available at all, since above 1 CPython's Pool.imap returns a bare generator with no timeout support.
+        tasks = [(archive_path, _extract_pkg_name(spec)) for spec, archive_path in downloaded]
+        jobs = args.jobs if args.jobs else max(1, min(4, os.cpu_count() or 1))
+        if jobs > 1 and len(tasks) > 1:
+            print(f"  Scanning {len(tasks)} archive(s) across {jobs} workers...")
+            ctx = multiprocessing.get_context("spawn")
+            with ctx.Pool(processes = jobs) as pool:
+                results = pool.imap(_scan_one, tasks, chunksize = 1)
+                for i, (archive_path, _pkg) in enumerate(tasks):
+                    try:
+                        captured, findings = results.next(timeout = 900)
+                    except multiprocessing.TimeoutError:
+                        # A worker died (OOM or segfault on a hostile archive). Without this the iterator blocks forever and the job only ends at the workflow timeout with no reason given. Recorded rather than raised, since `raise SystemExit(<str>)` exits 1 and 1 already means "CRITICAL or HIGH findings detected"; routing it here gets SCAN INCOMPLETE and exit 2.
+                        scan_errors.append(
+                            f"scan stalled after {i}/{len(tasks)} archive(s) with no "
+                            f"result for 900s; a pool worker most likely died"
+                        )
+                        break
+                    if captured:
+                        sys.stderr.write(captured)
+                    all_findings.extend(findings)
+                    try:
+                        os.remove(archive_path)
+                    except OSError:
+                        pass
+        else:
+            for archive_path, pkg_name in tasks:
+                all_findings.extend(scan_archive(archive_path, pkg_name))
+                try:
+                    os.remove(archive_path)
+                except OSError:
+                    pass
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors = True)
+
+    if args.no_baseline:
+        baseline_path = None
+    elif args.baseline:
+        baseline_path = args.baseline
+    elif os.path.isfile(_DEFAULT_BASELINE_PATH):
+        baseline_path = _DEFAULT_BASELINE_PATH
+    else:
+        baseline_path = None
+    baseline = _load_baseline(baseline_path) if baseline_path else {}
+
+    active, suppressed = _partition_baseline(all_findings, baseline)
+
+    print_findings(active)
+    _report_reviewed_sites(active, baseline, baseline_path)
+    if suppressed:
+        crit_s = sum(1 for f in suppressed if f.severity == CRITICAL)
+        high_s = sum(1 for f in suppressed if f.severity == HIGH)
+        med_s = sum(1 for f in suppressed if f.severity == MEDIUM)
+        print(
+            f"\n  {len(suppressed)} finding(s) suppressed by baseline "
+            f"{baseline_path} "
+            f"({crit_s} CRITICAL, {high_s} HIGH, {med_s} MEDIUM)."
+        )
+
+    if args.fix and active:
+        critical_pkgs = {f.package for f in active if f.severity == CRITICAL}
+        if critical_pkgs:
+            print(
+                f"\n  --fix: Searching for safe versions of {len(critical_pkgs)} CRITICAL package(s)..."
+            )
+            _run_fix(critical_pkgs, entries, args.max_search)
+
+    # Surface pip-download failures BEFORE the exit code so a partial download cannot masquerade as "0 findings, all clean", and so a baseline is never written from an incomplete scan.
+    incomplete_errors = download_errors + scan_errors
+    if incomplete_errors:
+        print(
+            f"\n  {'=' * 72}\n"
+            f"  SCAN INCOMPLETE: {len(incomplete_errors)} failure(s):\n"
+            f"  {'=' * 72}",
+            file = sys.stderr,
+        )
+        for err in incomplete_errors:
+            print(f"  [ERROR] {err}", file = sys.stderr)
+        print(
+            "  Refusing to report 'all clean' on a partial scan; exiting 2.",
+            file = sys.stderr,
+        )
+        return 2
+
+    # --write-baseline: persist the full current CRITICAL/HIGH set as the new allowlist (ignoring any loaded baseline), then exit 0. Only reached once the scan is known complete.
+    if args.write_baseline:
+        _write_baseline(args.write_baseline, all_findings, source = baseline_path)
+        return 0
+
+    # Exit 1 only if a NON-baselined CRITICAL or HIGH remains. This is the signal CI gates on once the baseline reaches a clean run.
+    if any(f.severity in (CRITICAL, HIGH) for f in active):
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
