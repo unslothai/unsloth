@@ -266,13 +266,34 @@ test("the source view hides the frame instead of unmounting it", () => {
 });
 
 test("the Fix button stages text in the composer and never sends it", () => {
-  assert.match(frameSource, /stageFixPrompt\(buildCanvasFixPrompt\(title, errors\)\)/);
+  assert.match(frameSource, /onFixWithModel\(buildCanvasFixPrompt\(title, errors\)\)/);
   assert.doesNotMatch(frameSource, /\.send\(/);
+  const surface = readFileSync(
+    fileURLToPath(
+      new URL("../src/features/chat/artifacts/artifact-surface.tsx", import.meta.url),
+    ),
+    "utf8",
+  );
+  assert.match(surface, /stageFixPrompt\(prompt\);/);
   const pageSource = readFileSync(
     fileURLToPath(new URL("../src/features/chat/chat-page.tsx", import.meta.url)),
     "utf8",
   );
   assert.match(pageSource, /composer\.setText\(/);
+});
+
+test("frames outside a chat canvas offer no Fix button", () => {
+  // The Library and attachment previews embed the frame with no composer to route to.
+  assert.doesNotMatch(frameSource, /useChatArtifactsStore/);
+  assert.match(frameSource, /\{onFixWithModel \? \(/);
+  for (const path of [
+    "../src/features/library/components/library-preview.tsx",
+    "../src/components/assistant-ui/attachment-preview.tsx",
+  ]) {
+    const source = readFileSync(fileURLToPath(new URL(path, import.meta.url)), "utf8");
+    assert.match(source, /<ArtifactHtmlFrame /);
+    assert.doesNotMatch(source, /onFixWithModel/);
+  }
 });
 
 test("the staged prompt goes to the composer on screen, in either mode", () => {

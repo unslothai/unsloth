@@ -116,6 +116,15 @@ export function ArtifactSurface({
   const setArtifactView = useChatArtifactsStore(
     (state) => state.setArtifactView,
   );
+  const stageFixPrompt = useChatArtifactsStore((state) => state.stageFixPrompt);
+  // Staged for the thread's composer, never sent; the overlay closes so that composer is reachable.
+  const fixWithModel = useCallback(
+    (prompt: string) => {
+      stageFixPrompt(prompt);
+      if (variant === "overlay") onClose();
+    },
+    [stageFixPrompt, variant, onClose],
+  );
   // Keeps the card's open/hide toggle in step with the tab on screen.
   const showView = useCallback(
     (mode: ArtifactViewMode) => {
@@ -451,7 +460,7 @@ export function ArtifactSurface({
                 reloadNonce={reloadNonce}
                 onConsoleOpenChange={setConsoleOpen}
                 onOutputCountChange={reportOutputCounts}
-                onFixWithModel={variant === "overlay" ? onClose : undefined}
+                onFixWithModel={fixWithModel}
               />
             </div>
             )}

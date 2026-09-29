@@ -41,7 +41,6 @@ import {
   emptyCanvasConsole,
   parseCanvasReport,
 } from "./canvas-console";
-import { useChatArtifactsStore } from "./store";
 import { hashArtifactCode } from "./types";
 
 const HTML_FRAME_DEFAULT_HEIGHT = 400;
@@ -139,13 +138,11 @@ export function ArtifactHtmlFrame({
   reloadNonce?: number;
   onConsoleOpenChange?: (open: boolean) => void;
   onOutputCountChange?: (counts: { errors: number; total: number }) => void;
-  onFixWithModel?: () => void;
+  // Only surfaces that can route the text to a composer pass this; without it there is no Fix button.
+  onFixWithModel?: (prompt: string) => void;
 }) {
   const t = useT();
   const locale = useLocale();
-  const stageFixPrompt = useChatArtifactsStore(
-    (state) => state.stageFixPrompt,
-  );
   const iframeRef = useRef<HTMLIFrameElement>(null);
   // Every canvas honors this, fence or tool. Off by default; the standing half of the gate,
   // alongside the per-canvas grant below.
@@ -356,11 +353,6 @@ export function ArtifactHtmlFrame({
         })
       : t("settings.chat.artifacts.errorLine", { line: entry.line });
   };
-  // The fullscreen overlay renders outside the chat runtime, so staging is left to the thread.
-  const fixWithModel = () => {
-    stageFixPrompt(buildCanvasFixPrompt(title, errors));
-    onFixWithModel?.();
-  };
 
   return (
     <div
@@ -482,13 +474,15 @@ export function ArtifactHtmlFrame({
                 {locationLabel(firstError) ? ` (${locationLabel(firstError)})` : ""}
               </p>
               <div className="flex flex-wrap items-center gap-2">
-                <Button
-                  size="sm"
-                  onClick={fixWithModel}
-                  title={t("settings.chat.artifacts.errorHint")}
-                >
-                  {t("settings.chat.artifacts.errorBannerAction")}
-                </Button>
+                {onFixWithModel ? (
+                  <Button
+                    size="sm"
+                    onClick={() => onFixWithModel(buildCanvasFixPrompt(title, errors))}
+                    title={t("settings.chat.artifacts.errorHint")}
+                  >
+                    {t("settings.chat.artifacts.errorBannerAction")}
+                  </Button>
+                ) : null}
                 {onConsoleOpenChange ? (
                   <Button
                     size="sm"
