@@ -1,10 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
-"""fast_rope_embedding backward must be exact when the incoming grad is expanded (#3781).
-
-`(q.sum() + k.sum()).backward()` hands the kernel an all-zero-stride grad; the in-place
-Triton kernel then rotated one shared element instead of every position.
-"""
+"""RoPE backward must be exact for expanded (stride-0) grads, e.g. from .sum() (#3781)."""
 
 import pytest
 import torch
