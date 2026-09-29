@@ -237,3 +237,19 @@ def test_split_every_covering_ancestor():
     assert not covered(out, "model.layers.1.ple.ple_embedding.ngram_embedding.weight")
     assert out["model.layers.1.mlp"] == 1 and out["model.layers.1.ple.key_proj"] == 1
     assert out["lm_head"] == 0
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs a CUDA device")
+def test_disk_offloaded_ancestors_get_no_meta_hooks():
+    from unsloth.models.vision import _hook_no_placement_ancestors
+
+    model = Model().to("cuda:0")
+    layer = model.model.layers[1]
+    layer.mlp.to("meta")
+    layer.ple.key_proj.to("meta")
+    layer.norm_weight = nn.Parameter(torch.empty(8, device = "meta"))
+    layer.ple.ple_embedding.to("cpu")
+    layer.ple.ple_embedding.offsets = torch.zeros(4, dtype = torch.long, device = "meta")
+    _hook_no_placement_ancestors(model)
+    hooked = [m for m in model.modules() if hasattr(m, "_hf_hook")]
+    assert not any(m._hf_hook.execution_device == torch.device("meta") for m in hooked)

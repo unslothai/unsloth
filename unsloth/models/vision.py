@@ -447,7 +447,7 @@ def _hook_no_placement_ancestors(model):
     placed_devices = {
         p.device
         for n, p in model.named_parameters()
-        if n not in unplaced and p.device.type != "cpu"
+        if n not in unplaced and p.device.type not in ("cpu", "meta")
     }
     if len(placed_devices) < 2:
         return 0
@@ -473,7 +473,7 @@ def _hook_no_placement_ancestors(model):
             if len(devices) != 1:
                 continue
             device = next(iter(devices))
-            if device.type == "cpu":
+            if device.type in ("cpu", "meta"):  # meta = disk-offloaded, has its own hook
                 continue
             add_hook_to_module(
                 module,
