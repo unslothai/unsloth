@@ -5938,11 +5938,17 @@ def _nvidia_inference_devices() -> list[Dict[str, Any]]:
     allowed = LlamaCppBackend._visible_devices_mask("CUDA_VISIBLE_DEVICES")
     if allowed is None and os.environ.get("CUDA_VISIBLE_DEVICES") is not None:
         return []  # a UUID / MIG mask names cards nvidia-smi rows cannot be matched to
-    rows = [
+    physical = [
         row
         for row in (nvidia.get_physical_gpu_inventory().get("devices") or [])
-        if isinstance(row.get("index"), int) and (allowed is None or row["index"] in allowed)
+        if isinstance(row.get("index"), int)
     ]
+    # nvidia-smi rows are PCI order; CUDA ordinals (and numeric masks) only match them under PCI_BUS_ID.
+    if os.environ.get("CUDA_DEVICE_ORDER") != "PCI_BUS_ID" and (
+        allowed is not None or len(physical) > 1
+    ):
+        return []
+    rows = [row for row in physical if allowed is None or row["index"] in allowed]
     if not rows:
         return []
     if allowed is not None:
@@ -5972,28 +5978,32 @@ def _amd_inference_devices() -> list[Dict[str, Any]]:
     from . import amd
 
     vram_mib, gpu_ids = amd.get_gpu_vram_report()
+    if LlamaCppBackend._gpu_device_ordinal_active():
+        return []  # renumbers after the HIP masks; llama.cpp's own amd-smi probe declines it too
     masks = [
         name
         for name in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES")
         if os.environ.get(name) is not None
     ]
-    if LlamaCppBackend._gpu_device_ordinal_active():
-        return []  # renumbers after the HIP masks; llama.cpp's own amd-smi probe declines it too
+    # amd-smi ids are not HIP's: ordinals (and any HIP mask) need the published mapping.
+    hip_ids = amd.get_hip_id_by_gpu_index()
+    if hip_ids is None and len(gpu_ids) == 1 and not masks:
+        hip_ids = {gpu_ids[0]: 0}
+    if (
+        hip_ids is None
+        or any(g not in hip_ids for g in gpu_ids)
+        or len(masks) > 1
+        or masks == ["ROCR_VISIBLE_DEVICES"]
+    ):
+        return []
+    gpu_ids = sorted(gpu_ids, key = lambda g: hip_ids[g])
     if masks:
-        # HIP masks name HIP ids, not amd-smi's; ROCR renumbers what a stacked HIP mask sees.
         allowed = LlamaCppBackend._visible_devices_mask(masks[0])
-        hip_ids = amd.get_hip_id_by_gpu_index()
-        if (
-            len(masks) > 1
-            or masks[0] == "ROCR_VISIBLE_DEVICES"
-            or allowed is None
-            or hip_ids is None
-        ):
+        if allowed is None:
             return []
         order = [int(x) for x in os.environ[masks[0]].split(",") if x.strip()]
         gpu_ids = sorted(
-            (gpu_id for gpu_id in gpu_ids if hip_ids.get(gpu_id) in allowed),
-            key = lambda gpu_id: order.index(hip_ids[gpu_id]),
+            (g for g in gpu_ids if hip_ids[g] in allowed), key = lambda g: order.index(hip_ids[g])
         )
     devices = []
     for ordinal, gpu_id in enumerate(gpu_ids):

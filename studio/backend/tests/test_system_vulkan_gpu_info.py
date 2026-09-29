@@ -681,3 +681,34 @@ def test_visible_ordinals_follow_the_mask_order(monkeypatch):
         ("RTX 4090", 0),
         ("RTX 3080", 1),
     ]
+
+
+def test_amd_ordinals_follow_hip_order_without_a_mask(monkeypatch):
+    _mixed_host(monkeypatch, torch_rocm = False, llama_backend = "rocm")
+    _two_amd_cards(monkeypatch, {0: 1, 1: 0})
+
+    _, inference_gpu = main._get_cached_system_gpu_info(SimpleNamespace(debug = lambda *args: None))
+
+    assert [(d["index"], d["visible_ordinal"]) for d in inference_gpu["devices"]] == [
+        (1, 0),
+        (0, 1),
+    ]
+
+
+def test_multi_amd_without_a_hip_mapping_declines(monkeypatch):
+    _mixed_host(monkeypatch, torch_rocm = False, llama_backend = "rocm")
+    _two_amd_cards(monkeypatch, None)
+
+    gpu, inference_gpu = main._get_cached_system_gpu_info(SimpleNamespace(debug = lambda *args: None))
+
+    assert inference_gpu is gpu
+
+
+def test_a_non_pci_cuda_order_declines_multi_nvidia(monkeypatch):
+    _mixed_host(monkeypatch, torch_rocm = True, llama_backend = "cuda")
+    _two_nvidia_cards(monkeypatch, [("RTX 3080", 10.0), ("RTX 4090", 24.0)])
+    monkeypatch.setenv("CUDA_DEVICE_ORDER", "FASTEST_FIRST")
+
+    gpu, inference_gpu = main._get_cached_system_gpu_info(SimpleNamespace(debug = lambda *args: None))
+
+    assert inference_gpu is gpu
