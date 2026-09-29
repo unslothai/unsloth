@@ -339,9 +339,7 @@ function titleReasoningCaps(connection: ResolvedExternalConnection) {
   });
 }
 
-/** The Responses translator (OpenAI line, or apiType "responses") turns either field into
- *  reasoning.effort, which a model without reasoning 400s on, and forwards reasoning_effort
- *  verbatim, so it is omitted or clamped there. Elsewhere the backend translates "none". */
+/** Responses route: either field becomes reasoning.effort (400 on non-reasoning models), sent verbatim, so omit or clamp. */
 function titleReasoningFields(
   connection: ResolvedExternalConnection,
 ): TitleReasoningFields {
@@ -360,8 +358,7 @@ function titleReasoningFields(
   };
 }
 
-/** Reasoning that cannot be turned off (Gemini 2.5 Pro / 3, o3, gpt-5, Kimi thinking) counts toward the
- *  output cap, so it gets headroom; otherwise floored at the provider minimum as the chat request is. */
+/** Reasoning that cannot be turned off counts toward the cap (Gemini 2.5 Pro forces 128), so it gets headroom. */
 function titleMaxTokens(connection: ResolvedExternalConnection): number {
   const floor = getExternalMinOutputTokens(connection.provider.providerType);
   const caps = titleReasoningCaps(connection);
