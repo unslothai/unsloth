@@ -35,6 +35,7 @@ import {
   HOST_PREP_POLL_MS,
   type HostPrepStatus,
   canInstallWindowsRuntime,
+  isOlderJob,
   jobOutputLines,
   jobResult,
   setupRowView,
@@ -151,12 +152,14 @@ export function SandboxTab() {
     // A job started from another window, or before this tab was reopened, keeps reporting here.
     void loadHostPreparation(t("settings.sandbox.prepareError"))
       .then((current) => {
-        if (mounted.current && current.state !== "idle") setJob(current);
+        if (!mounted.current || current.state === "idle") return;
+        setJob((shown) => (isOlderJob(current, shown) ? shown : current));
       })
       .catch(() => undefined);
     void loadSandboxSetup(t("sandboxSetup.startError"))
       .then((current) => {
-        if (mounted.current && current.state !== "idle") setSetupJob(current);
+        if (!mounted.current || current.state === "idle") return;
+        setSetupJob((shown) => (isOlderJob(current, shown) ? shown : current));
       })
       .catch(() => undefined);
   }, [refresh, t]);

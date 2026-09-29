@@ -444,6 +444,8 @@ def build_launch_request(
     readonly = _without_nested(runtime_roots + _model_read_roots(workdir, runtime_roots))
     _reject_grants_over_dacl_journal([workdir, *readonly])
     # Tier 3 walks every readonly tree per launch; a one-time grant on the runtime folders skips it.
+    # Read fresh: a grant made on a stale cached "on" would outlive another process's opt-out.
+    mxc_read_grants.refresh_saved_switches()
     if dacl_fallback_enabled():
         mxc_read_grants.ensure(runtime_roots)
     else:

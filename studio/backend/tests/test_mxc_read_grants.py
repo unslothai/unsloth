@@ -333,6 +333,28 @@ def test_a_lease_waits_for_a_revocation_already_in_progress(host):
     leases[0].release()
 
 
+def test_release_reads_the_switches_fresh_after_another_process_opts_out(host, monkeypatch):
+    from core.inference import mxc_policy
+    from storage import studio_db
+    from utils import account_context, mxc_isolation_settings as saved
+
+    store = {saved.DACL_SETTING_KEY: True, saved.GRANTS_SETTING_KEY: True}
+    monkeypatch.delenv(mxc_policy.DACL_FALLBACK_ENV, raising = False)
+    monkeypatch.setattr(studio_db, "get_app_settings", lambda keys: {k: store[k] for k in keys})
+    monkeypatch.setattr(account_context, "run_as", lambda _who, fn, *a, **k: fn(*a, **k))
+    monkeypatch.setattr(mxc_read_grants, "_lease_is_live", lambda path: path.exists())
+    saved.forget_cached_setting()
+    venv = _runtime(host)
+    lease = mxc_read_grants.hold_if_needed()
+    assert lease is not None and mxc_read_grants.ensure([venv]) == (venv,)
+    assert saved.persistent_grants_setting()  # cached "on" in this process
+    store[saved.GRANTS_SETTING_KEY] = False  # another Studio process turns it off, no local write
+    lease.release()
+    assert host.calls[-1] == ("revoke", os.path.normcase(venv))
+    assert _record() == {}
+    saved.forget_cached_setting()
+
+
 def test_a_lease_that_cannot_be_recorded_refuses_instead_of_running_unguarded(host):
     blocker = mxc_read_grants._leases_dir()
     blocker.parent.mkdir(parents = True, exist_ok = True)

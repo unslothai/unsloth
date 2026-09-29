@@ -122,6 +122,17 @@ export function shouldPollJob(job: HostPrepJob | null): boolean {
   return job?.state === "running";
 }
 
+// A read that returns after this tab started a newer job must not replace it.
+type JobStamp = Pick<HostPrepJob, "id" | "startedAt">;
+
+export function isOlderJob(
+  loaded: JobStamp,
+  current: JobStamp | null,
+): boolean {
+  if (!current || current.id === null || loaded.id === current.id) return false;
+  return (loaded.startedAt ?? 0) <= (current.startedAt ?? 0);
+}
+
 // Only a failure shows the helper's output; the last few lines are the ones that name the cause.
 export function jobOutputLines(job: HostPrepJob | null, max = 6): string[] {
   if (!job || job.state !== "failed") return [];
