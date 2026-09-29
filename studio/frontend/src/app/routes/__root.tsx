@@ -53,7 +53,6 @@ import { useIsMobileShell } from "@/hooks/use-mobile";
 import { useSidebarPin } from "@/hooks/use-sidebar-pin";
 import { type TranslationKey, useT } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
-import { isChatLikeRoute } from "@/lib/chat-like-routes";
 import {
   Outlet,
   createRootRoute,
@@ -419,14 +418,14 @@ function RootLayout() {
   const shouldMountAudio = isAudioRoute || audioMounted;
   // Chat, Images, Video and Audio each render their own full-height shell, so all four want the chat-style layout: no outer pt-14 inset, no outer
   // scroll. Keying off isChatRoute alone pushed the picker down and clipped the gallery. Container padding/overflow only; keep-alive stays per route.
-  const isChatLike = isChatLikeRoute(pathname);
+  const isChatLike = isChatRoute || isImagesRoute || isVideoRoute || isAudioRoute;
   // Reserves the navbar the shell actually rendered. Read off the same hook
   // Navbar uses, not the `md` breakpoint: a narrowed desktop window keeps the
   // desktop navbar, and a CSS rule would reserve the mobile one's 56px and
   // leave --studio-titlebar-height at 0 for the pages sized off it.
   const nonChatTopInset = useIsMobileShell()
     ? "pt-14"
-    : "pt-[calc(var(--studio-non-chat-content-top-inset,var(--studio-content-top-inset,0px))-var(--studio-non-chat-scroller-top,0px))] [--studio-titlebar-height:var(--studio-non-chat-content-top-inset,var(--studio-content-top-inset,0px))]";
+    : "pt-[var(--studio-non-chat-content-top-inset,var(--studio-content-top-inset,0px))] [--studio-titlebar-height:var(--studio-non-chat-content-top-inset,var(--studio-content-top-inset,0px))]";
 
   useTrainingUnloadGuard();
   // Global export driver: streams worker logs and tracks status from any route
@@ -688,15 +687,13 @@ function RootLayout() {
             className={
               isChatLike
                 ? "overflow-hidden"
-                : // Below a custom titlebar the scroller starts under the band, so neither
-                  // pinned toolbars nor its scrollbar pass beneath the window controls.
-                  // Reserve the scrollbar so the Library does not shift when it appears.
+                : // Reserve the scrollbar so the Library does not shift when it appears.
                   isLibraryRoute
-                  ? "mt-[var(--studio-non-chat-scroller-top,0px)] overflow-y-auto [scrollbar-gutter:stable]"
-                  : "mt-[var(--studio-non-chat-scroller-top,0px)] overflow-y-auto"
+                  ? "overflow-y-auto [scrollbar-gutter:stable]"
+                  : "overflow-y-auto"
             }
           >
-            <Navbar pageHeaderInBand={isChatLike} />
+            <Navbar />
             <div
               {...{ [FIND_SCOPE_ATTRIBUTE]: "" }}
               className={`relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col ${isChatLike ? "overflow-hidden" : "overflow-visible"} ${isChatLike ? "" : nonChatTopInset}`}

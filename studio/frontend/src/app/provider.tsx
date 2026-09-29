@@ -46,7 +46,6 @@ import { type BackendStatus, useTauriBackend } from "@/hooks/use-tauri-backend";
 import { useTauriUpdate } from "@/hooks/use-tauri-update";
 import { useUiSpaceScale } from "@/hooks/use-ui-space-scale";
 import { isTauri } from "@/lib/api-base";
-import { isChatLikeRoute } from "@/lib/chat-like-routes";
 import { followDesktopUpdateScreen } from "@/lib/desktop-update-activity";
 import { getToastOffsets } from "@/lib/toast-offset";
 import { Z_LAYER } from "@/lib/z-layers";
@@ -568,38 +567,24 @@ const MAC_NATIVE_CHROME_STYLE = {
   "--studio-chat-header-right-inset": "0px",
 } as CSSProperties;
 
-// One top row, as on macOS: page headers sit in the titlebar band beside the window
-// controls, which reserve --studio-window-control-inset on the right.
 const CUSTOM_CHROME_STYLE = {
   "--studio-titlebar-height": "0px",
-  "--studio-custom-titlebar-height": "42px",
-  "--studio-desktop-titlebar-height": "42px",
+  "--studio-custom-titlebar-height": "34px",
+  "--studio-desktop-titlebar-height": "34px",
   "--studio-sidebar-expanded-width": "17.5rem",
   "--studio-sidebar-collapsed-width": "3rem",
-  // Clears the titlebar navigation (12px in, three 34px buttons, two 4px gaps) plus a 10px gap.
-  "--studio-collapsed-chat-controls-inset":
-    "calc(122px + 10px * var(--ui-space-scale, 1))",
-  "--studio-startup-top-inset": "50px",
-  "--studio-content-top-inset": "0px",
-  "--studio-non-chat-content-top-inset": "42px",
-  "--studio-non-chat-scroller-top": "42px",
-  "--studio-hidden-route-top-inset": "42px",
-  // Same split as the native-mac block: chat chrome scales, window chrome does not. Header
-  // controls start 6px down, so the 30px ones centre on the titlebar row's 21px line, and
-  // the header keeps 8px under them.
-  "--studio-chat-header-height": "calc(44px * var(--ui-space-scale, 1))",
-  "--studio-chat-header-padding-top": "calc(6px * var(--ui-space-scale, 1))",
+  "--studio-collapsed-chat-controls-inset": "12px",
+  "--studio-startup-top-inset": "42px",
+  "--studio-content-top-inset": "34px",
+  "--studio-hidden-route-top-inset": "34px",
+  // Same split as the native-mac block: chat chrome scales, window chrome does not.
+  "--studio-chat-header-height": "calc(48px * var(--ui-space-scale, 1))",
+  "--studio-chat-header-padding-top": "calc(9px * var(--ui-space-scale, 1))",
   "--studio-media-header-left-inset": "calc(0.5rem * var(--ui-space-scale, 1))",
-  "--studio-chat-control-height": "calc(30px * var(--ui-space-scale, 1))",
-  // The media headers' model picker, Create/Train toggle and Library link take it too.
-  "--studio-media-control-height": "calc(30px * var(--ui-space-scale, 1))",
-  // The row's buttons end at 38px, 1px above the macOS navigation, so the sidebar's brand
-  // sits 1px higher than on macOS and keeps the same gap under them. The band is 8px taller
-  // than the macOS one, hence 9px.
-  "--studio-sidebar-brand-lift": "9px",
-  // Min, max and close: three 34px buttons, two 4px gaps and 12px from the edge, which
-  // mirrors the navigation so both corners hold the same margin.
-  "--studio-window-control-inset": "122px",
+  "--studio-chat-control-height": "calc(33px * var(--ui-space-scale, 1))",
+  "--studio-chat-header-right-inset": "0px",
+  // Min, max and close: three 46px Windows caption buttons in the corner.
+  "--studio-window-control-inset": "138px",
 } as CSSProperties;
 
 // Mirror the titlebar heights onto <html>: overlays portalled into document.body read the wrapper styles as empty.
@@ -616,17 +601,17 @@ function DesktopChromeVarsEffect({
       value === null
         ? el.style.removeProperty(name)
         : el.style.setProperty(name, value);
-    set("--studio-custom-titlebar-height", usesCustomTitlebar ? "42px" : null);
+    set("--studio-custom-titlebar-height", usesCustomTitlebar ? "34px" : null);
     set(
       "--studio-mac-titlebar-height",
       usesNativeMacTitlebar ? NATIVE_MAC_TITLEBAR_HEIGHT_VAR : null,
     );
-    set("--studio-window-control-inset", usesCustomTitlebar ? "122px" : null);
+    set("--studio-window-control-inset", usesCustomTitlebar ? "138px" : null);
     // How far body-portaled surfaces must stay clear of the top: either titlebar paints over them.
     set(
       "--studio-window-chrome-top",
       usesCustomTitlebar
-        ? "42px"
+        ? "34px"
         : usesNativeMacTitlebar
           ? NATIVE_MAC_TITLEBAR_HEIGHT_VAR
           : null,
@@ -1020,10 +1005,7 @@ function TauriWrapper({ children }: { children: ReactNode }) {
       style={CUSTOM_CHROME_STYLE}
     >
       {chromeVars}
-      <WindowTitlebar
-        showSidebarSurface={showSidebarSurface}
-        pageHeaderInBand={isChatLikeRoute(pathname)}
-      />
+      <WindowTitlebar showSidebarSurface={showSidebarSurface} />
       {/* Sign-in forms can outgrow a small window, so they scroll here, under the titlebar. */}
       <div
         className={
@@ -1073,8 +1055,8 @@ export function AppProvider({ children }: AppProviderProps) {
   const toastOffsets = getToastOffsets(
     pathname,
     isTauri,
-    uiSpaceScale,
     shouldUseCustomWindowTitlebar(),
+    uiSpaceScale,
   );
   const reduceMotion = useAppearanceCustomStore(
     (s) => s.customization.reduceMotion,

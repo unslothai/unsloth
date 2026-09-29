@@ -24,6 +24,57 @@ import {
 
 const CUSTOM_TITLEBAR_PLATFORMS = ["win", "linux", "x11"] as const;
 
+type WindowResizeDirection =
+  | "East"
+  | "North"
+  | "NorthEast"
+  | "NorthWest"
+  | "South"
+  | "SouthEast"
+  | "SouthWest"
+  | "West";
+
+type NavigatorWithUserAgentData = Navigator & {
+  userAgentData?: {
+    platform?: string;
+  };
+};
+
+export function getClientPlatform(): string {
+  if (typeof navigator === "undefined") {
+    return "";
+  }
+  const nav = navigator as NavigatorWithUserAgentData;
+  return (
+    nav.userAgentData?.platform ??
+    navigator.platform ??
+    navigator.userAgent
+  ).toLowerCase();
+}
+
+export function shouldUseCustomWindowTitlebar(): boolean {
+  if (!isTauri) {
+    return false;
+  }
+  const platform = getClientPlatform();
+  if (!platform || platform.includes("mac")) {
+    return false;
+  }
+  return CUSTOM_TITLEBAR_PLATFORMS.some((token) => platform.includes(token));
+}
+
+export function shouldUseNativeMacWindowTitlebar(): boolean {
+  if (!isTauri) {
+    return false;
+  }
+  return getClientPlatform().includes("mac");
+}
+
+async function getAppWindow(): Promise<TauriWindow> {
+  const { getCurrentWindow } = await import("@tauri-apps/api/window");
+  return getCurrentWindow();
+}
+
 /**
  * The Windows caption symbols, on Windows and Linux alike: a 10-DIP glyph whose size and
  * stroke round to whole device pixels, so it stays crisp at fractional display scales.
@@ -86,87 +137,6 @@ function CaptionGlyph({
   );
 }
 
-type WindowResizeDirection =
-  | "East"
-  | "North"
-  | "NorthEast"
-  | "NorthWest"
-  | "South"
-  | "SouthEast"
-  | "SouthWest"
-  | "West";
-
-type NavigatorWithUserAgentData = Navigator & {
-  userAgentData?: {
-    platform?: string;
-  };
-};
-
-export function getClientPlatform(): string {
-  if (typeof navigator === "undefined") {
-    return "";
-  }
-  const nav = navigator as NavigatorWithUserAgentData;
-  return (
-    nav.userAgentData?.platform ??
-    navigator.platform ??
-    navigator.userAgent
-  ).toLowerCase();
-}
-
-export function shouldUseCustomWindowTitlebar(): boolean {
-  if (!isTauri) {
-    return false;
-  }
-  const platform = getClientPlatform();
-  if (!platform || platform.includes("mac")) {
-    return false;
-  }
-  return CUSTOM_TITLEBAR_PLATFORMS.some((token) => platform.includes(token));
-}
-
-export function shouldUseNativeMacWindowTitlebar(): boolean {
-  if (!isTauri) {
-    return false;
-  }
-  return getClientPlatform().includes("mac");
-}
-
-async function getAppWindow(): Promise<TauriWindow> {
-  const { getCurrentWindow } = await import("@tauri-apps/api/window");
-  return getCurrentWindow();
-}
-
-/** Drags the window on press and maximizes on double click, like a native titlebar. */
-export function WindowDragRegion({
-  className,
-}: {
-  className?: string;
-}): ReactElement {
-  return (
-    <div
-      aria-hidden="true"
-      className={className}
-      onMouseDown={(event) => {
-        if (event.button !== 0 || event.detail > 1) {
-          return;
-        }
-        getAppWindow()
-          .then((appWindow) => appWindow.startDragging())
-          .catch(() => undefined);
-      }}
-      onDoubleClick={(event) => {
-        if (event.button !== 0) {
-          return;
-        }
-        getAppWindow()
-          .then((appWindow) => appWindow.toggleMaximize())
-          .catch(() => undefined);
-      }}
-    />
-  );
-}
-
 function WindowControlButton({
   label,
   className,
@@ -185,10 +155,9 @@ function WindowControlButton({
       title={label}
       onClick={onClick}
       className={cn(
-        // The hit area runs up to the window edge, where a pointer thrown at the controls lands.
-        "after:absolute after:inset-x-0 after:bottom-0 after:top-[-4px]",
-        // Hovers like the navigation buttons it mirrors.
-        "relative z-[80] inline-flex size-[34px] shrink-0 items-center justify-center rounded-[10px] text-foreground transition-colors hover:bg-nav-surface-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring",
+        // A Windows 11 caption button: 46px wide and the strip's full height, so the three meet
+        // the window's top and right edges, where a pointer thrown at them lands.
+        "relative z-[80] inline-flex h-full w-[46px] shrink-0 items-center justify-center transition-colors hover:bg-nav-surface-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring",
         className,
       )}
     >
@@ -212,13 +181,12 @@ export function DesktopTitlebarNavigation({
   const stopTitlebarDrag = (event: MouseEvent<HTMLButtonElement>) => {
     event.stopPropagation();
   };
-  // Window chrome: the band around these is fixed, so they keep their size while the
-  // page beside them scales.
+  // Window chrome: the band around these is a fixed 34px, so they keep their
+  // size while the slot holding them scales.
   const buttonClass =
     "inline-flex size-[30px] shrink-0 items-center justify-center rounded-[10px] text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
-  // The custom titlebar's are its window controls' 34px, with 18px glyphs.
+  // Beside the Windows caption buttons the glyphs are 18px, 4px apart.
   const customTitlebar = shouldUseCustomWindowTitlebar();
-  const customSize = customTitlebar && "size-[34px]";
   const iconClass = customTitlebar
     ? "size-[18px]"
     : "size-icon !size-[calc(var(--icon-size)+1px)]";
@@ -244,7 +212,7 @@ export function DesktopTitlebarNavigation({
             event.stopPropagation();
             onToggleSidebar();
           }}
-          className={cn(buttonClass, customSize)}
+          className={buttonClass}
         >
           <HugeiconsIcon
             icon={LayoutAlignLeftIcon}
@@ -255,10 +223,7 @@ export function DesktopTitlebarNavigation({
       ) : (
         // Holds the slot the navbar's own trigger sits in, so it is the
         // button's fixed size, not a scaled one.
-        <div
-          aria-hidden="true"
-          className={cn("size-[30px] shrink-0", customSize)}
-        />
+        <div aria-hidden="true" className="size-[30px] shrink-0" />
       )}
       <button
         type="button"
@@ -270,7 +235,7 @@ export function DesktopTitlebarNavigation({
           event.stopPropagation();
           window.history.back();
         }}
-        className={cn(buttonClass, customSize)}
+        className={buttonClass}
       >
         <ArrowLeft
           aria-hidden="true"
@@ -288,7 +253,7 @@ export function DesktopTitlebarNavigation({
           event.stopPropagation();
           window.history.forward();
         }}
-        className={cn(buttonClass, customSize)}
+        className={buttonClass}
       >
         <ArrowRight
           aria-hidden="true"
@@ -302,14 +267,13 @@ export function DesktopTitlebarNavigation({
 
 export function WindowTitlebar({
   showSidebarSurface = false,
-  pageHeaderInBand = false,
 }: {
   showSidebarSurface?: boolean;
-  /** A chat-like route, whose header shares the band and drags from under it. */
-  pageHeaderInBand?: boolean;
 }): ReactElement | null {
   const [enabled] = useState(shouldUseCustomWindowTitlebar);
   const [maximized, setMaximized] = useState(false);
+  // Windows dims the caption glyphs while the window is in the background.
+  const [focused, setFocused] = useState(true);
   const { pinned, togglePinned } = useSidebarPin();
   // Outside SidebarProvider, so read the same media query the provider does.
   const isMobile = useIsMobileShell();
@@ -326,12 +290,14 @@ export function WindowTitlebar({
       : "var(--studio-sidebar-collapsed-width,3rem)"
     : "0px";
 
-  // Collapsed, the slot is exactly the 12px edge inset and three 34px buttons with their
-  // two 4px gaps, so it never covers the page header that starts beside it. The drag
-  // region starts where it ends.
+  // The buttons in this slot are fixed but their padding and gaps scale, so
+  // the slot grows with them and never shrinks under the three 30px buttons.
+  // The drag region starts where it ends.
   const titlebarNavigationWidth =
-    showSidebarSurface && !pinned ? "122px" : sidebarWidth;
-  const unifiedRow = showSidebarSurface && !isMobile && pageHeaderInBand;
+    showSidebarSurface && !pinned
+      ? "max(7rem, calc(7rem * var(--ui-space-scale, 1)))"
+      : sidebarWidth;
+  const contentBorderLeft = pinned ? `calc(${sidebarWidth} + 12px)` : "0px";
 
   const refreshMaximized = useCallback(async () => {
     if (!enabled) {
@@ -377,7 +343,8 @@ export function WindowTitlebar({
         unlistenResize = await appWindow.onResized(() => {
           scheduleMaximizedRefresh();
         });
-        unlistenFocus = await appWindow.onFocusChanged(() => {
+        unlistenFocus = await appWindow.onFocusChanged(({ payload }) => {
+          setFocused(payload);
           scheduleMaximizedRefresh();
         });
       } catch {
@@ -463,19 +430,47 @@ export function WindowTitlebar({
 
   return (
     <>
+      {showSidebarSurface && (
+        <div
+          data-slot="window-titlebar-decoration"
+          // Marks a consumer of --studio-sidebar-live-width. Only this and the header below read
+          // it, so PANEL_RESIZE_SCOPED_VARS_ENABLED writes the live width here instead of on the
+          // document element, where it would restyle the whole document once per drag frame.
+          data-titlebar-live-width-scope=""
+          aria-hidden="true"
+          className="pointer-events-none absolute inset-x-0 top-[var(--studio-custom-titlebar-height)] z-[45] h-3"
+        >
+          {pinned && (
+            <div
+              className="absolute top-0 size-3 -translate-x-px bg-sidebar"
+              style={{ left: sidebarWidth }}
+            />
+          )}
+          <div
+            className="absolute top-0 h-px bg-sidebar-border"
+            style={{ left: contentBorderLeft, right: 0 }}
+          />
+          {pinned && (
+            <div
+              className="absolute top-0 size-3 -translate-x-px rounded-tl-[12px] border-l border-t border-sidebar-border bg-background"
+              style={{ left: sidebarWidth }}
+            />
+          )}
+        </div>
+      )}
       <header
-        data-slot="window-titlebar"
-        className="pointer-events-none absolute inset-x-0 top-0 z-[70] h-[var(--studio-custom-titlebar-height)] select-none text-foreground"
-        // Marks a consumer of --studio-sidebar-live-width, so PANEL_RESIZE_SCOPED_VARS_ENABLED
-        // writes the live width here instead of restyling the whole document per drag frame.
+        className={cn(
+          "pointer-events-none absolute inset-x-0 top-0 z-[70] h-[var(--studio-custom-titlebar-height)] select-none text-foreground",
+          showSidebarSurface && "bg-sidebar text-sidebar-foreground",
+        )}
         data-titlebar-live-width-scope=""
         aria-label="Window titlebar"
       >
         {showSidebarSurface && (
           <div
-            // 12px from the edge, as the window controls are from theirs. The toggle's glyph
-            // then starts at x=20, in the sidebar's icon column below it.
-            className="pointer-events-auto absolute left-0 top-0 flex h-full min-w-0 items-center pl-[12px]"
+            // The sidebar toggle's glyph starts over the sidebar logo's left edge: the logo's
+            // pl-4, less the button's 6px padding and the glyph's ~2px inset.
+            className="pointer-events-auto absolute left-0 top-0 flex h-full min-w-0 items-center pl-[calc(4*var(--spacing)-8px)]"
             style={{ width: titlebarNavigationWidth }}
             onMouseDown={handleDragMouseDown}
             onDoubleClick={handleDragDoubleClick}
@@ -487,23 +482,21 @@ export function WindowTitlebar({
             />
           </div>
         )}
-        {/* A chat-like page's header shares the band and Navbar drags from under it; every
-            other screen leaves the band empty and drags from here. */}
-        {!unifiedRow && (
-          <div
-            className="pointer-events-auto absolute top-0 h-full"
-            style={{
-              left: showSidebarSurface ? titlebarNavigationWidth : 0,
-              right: "var(--studio-window-control-inset,122px)",
-            }}
-            onMouseDown={handleDragMouseDown}
-            onDoubleClick={handleDragDoubleClick}
-            aria-hidden="true"
-          />
-        )}
         <div
-          // Mirrors the navigation: three 34px buttons, 4px apart, 12px from the edge.
-          className="pointer-events-auto absolute right-[12px] top-0 flex h-full items-center gap-[4px]"
+          className="pointer-events-auto absolute top-0 h-full"
+          style={{
+            left: titlebarNavigationWidth,
+            right: "var(--studio-window-control-inset,138px)",
+          }}
+          onMouseDown={handleDragMouseDown}
+          onDoubleClick={handleDragDoubleClick}
+          aria-hidden="true"
+        />
+        <div
+          className={cn(
+            "pointer-events-auto absolute right-0 top-0 flex h-full",
+            focused ? "text-foreground" : "text-muted-foreground",
+          )}
           role="toolbar"
           aria-label="Window controls"
         >
@@ -529,8 +522,8 @@ export function WindowTitlebar({
             // answer it before the user does. The wait this covers is the reap, and Rust's
             // app-closing arrives well ahead of that.
             onClick={() => runWindowAction((appWindow) => appWindow.close())}
-            // Close also owns the corner, as on a native Windows titlebar.
-            className="after:right-[-12px] hover:bg-[#e81123] hover:text-white active:bg-[#e81123]/60 dark:hover:text-white"
+            // Windows 11's caption red, with the glyph in white.
+            className="hover:bg-[#c42b1c] hover:text-white active:bg-[#c42b1c]/90"
           >
             <CaptionGlyph kind="close" />
           </WindowControlButton>

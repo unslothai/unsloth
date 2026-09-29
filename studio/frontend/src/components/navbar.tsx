@@ -3,7 +3,6 @@
 
 import {
   DesktopTitlebarNavigation,
-  WindowDragRegion,
   shouldUseCustomWindowTitlebar,
   shouldUseNativeMacWindowTitlebar,
 } from "@/components/tauri/window-titlebar";
@@ -11,12 +10,7 @@ import { SidebarTrigger, useSidebar } from "@/components/ui/sidebar";
 import { cn } from "@/lib/utils";
 import { useState } from "react";
 
-export function Navbar({
-  pageHeaderInBand = false,
-}: {
-  /** The route's own header sits in the titlebar band, so the window drags from under it. */
-  pageHeaderInBand?: boolean;
-}) {
+export function Navbar() {
   const { isMobile, pinned, peeking, togglePinned } = useSidebar();
   const [usesNativeMacTitlebar] = useState(shouldUseNativeMacWindowTitlebar);
   const [usesCustomTitlebar] = useState(shouldUseCustomWindowTitlebar);
@@ -31,11 +25,6 @@ export function Navbar({
               aria-hidden="true"
               className="pointer-events-auto absolute inset-x-0 top-0 h-[var(--studio-mac-titlebar-height,34px)] select-none"
             />
-          )}
-          {/* Under the page header, so its controls take their clicks. Other routes scroll
-              below the band, where the titlebar's own strip drags. */}
-          {usesCustomTitlebar && pageHeaderInBand && (
-            <WindowDragRegion className="pointer-events-auto absolute inset-x-0 top-0 h-[var(--studio-custom-titlebar-height,42px)] select-none" />
           )}
         </header>
 
@@ -58,7 +47,7 @@ export function Navbar({
       className={cn(
         "absolute top-0 inset-x-0 pointer-events-none",
         usesCustomTitlebar
-          ? "z-[80] h-[var(--studio-custom-titlebar-height,42px)]"
+          ? "z-[80] h-[var(--studio-custom-titlebar-height,34px)]"
           : "z-[45] h-[calc(48px*var(--ui-space-scale,1))]",
       )}
     >
@@ -66,7 +55,7 @@ export function Navbar({
         className={cn(
           "flex h-full",
           usesCustomTitlebar
-            ? "items-center pl-[12px]"
+            ? "items-center pl-3"
             : usesNativeMacTitlebar
               ? "items-start pt-[calc(11px*var(--ui-space-scale,1))] pl-[calc(var(--studio-mac-traffic-light-inset,78px)+calc(6px*var(--ui-space-scale,1)))]"
               : "items-start pt-[calc(11px*var(--ui-space-scale,1))] pl-2",
@@ -77,7 +66,7 @@ export function Navbar({
           className={cn(
             "pointer-events-auto",
             usesCustomTitlebar
-              ? "!size-[34px]"
+              ? "!size-[calc(34px*var(--ui-space-scale,1))]"
               : "!size-[calc(34px*var(--ui-space-scale,1))]",
           )}
         />

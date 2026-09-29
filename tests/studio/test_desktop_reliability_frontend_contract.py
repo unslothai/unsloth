@@ -606,27 +606,43 @@ def test_first_app_layout_survives_a_stale_setup_window_size():
     assert "requestedSize," in bounds_call
 
 
-def test_titlebar_navigation_slot_holds_its_buttons_and_leaves_the_band_to_pages():
+def test_expanded_titlebar_button_and_corner_match_sidebar_edge():
     source = _ui_source(TITLEBAR)
 
-    # Collapsed, the slot is the 12px inset and three fixed 34px buttons with their 4px gaps, so
-    # it never drops under the buttons and never reaches the page header beside it. Pinned, it
-    # spans the sidebar. Matched across whitespace because the formatter wraps the ternary.
+    # Read raw, and matched across whitespace because prettier wrapped the ternary over three
+    # lines. #11458 made the slot `max(7rem, calc(7rem * var(--ui-space-scale, 1)))` so it
+    # grows with the UI font and never drops under the three 30px buttons. A bare `7rem` is
+    # not the same guarantee: the buttons' own padding and gaps still scale, so at a larger
+    # setting a fixed slot is overrun and the drag region starts inside the navigation. Both
+    # terms are pinned, since either one drifting is a slot that no longer says 7rem.
     assert re.search(
-        r"showSidebarSurface && !pinned\s*\?\s*" r'"122px"' r"\s*:\s*sidebarWidth",
+        r"showSidebarSurface && !pinned\s*\?\s*"
+        r'"max\(\s*7rem\s*,\s*calc\(\s*7rem\s*\*\s*var\(\s*--ui-space-scale\s*,\s*1\s*\)\s*\)\s*\)"'
+        r"\s*:\s*sidebarWidth",
         TITLEBAR.read_text(encoding = "utf-8"),
-    ), "the collapsed titlebar navigation slot is no longer its buttons' width"
+    ), "the unpinned sidebar surface no longer sizes the titlebar navigation slot from 7rem"
     assert "style={{ width: titlebarNavigationWidth }}" in source
-    assert "left: showSidebarSurface ? titlebarNavigationWidth : 0" in source
+    assert "left: titlebarNavigationWidth" in source
     assert "<DesktopTitlebarNavigation" in source
+    assert "const contentBorderLeft = pinned" in source
     assert ': "0px";' in source
 
-    # The band belongs to the page row: no strip background and no card corner under it, and the
-    # titlebar's own drag strip only where no chat-like header shares the band.
-    assert 'data-slot="window-titlebar-decoration"' not in source
-    assert "bg-sidebar text-sidebar-foreground" not in source
-    assert "const unifiedRow = showSidebarSurface && !isMobile && pageHeaderInBand;" in source
-    assert "{!unifiedRow && (" in source
+    # Keep the decoration below z-50 modals and outside the z-[70] header.
+    assert 'data-slot="window-titlebar-decoration"' in source
+    decoration = source.split('data-slot="window-titlebar-decoration"', 1)[1].split("<header", 1)[0]
+    assert (
+        'className="pointer-events-none absolute inset-x-0 '
+        'top-[var(--studio-custom-titlebar-height)] z-[45] h-3"' in decoration
+    )
+    # The border is always visible.
+    assert 'className="absolute top-0 h-px bg-sidebar-border"' in decoration
+    # The backing and corner only appear when pinned.
+    assert decoration.count("{pinned && (") == 2
+    assert 'className="absolute top-0 size-3 -translate-x-px bg-sidebar"' in decoration
+    assert (
+        'className="absolute top-0 size-3 -translate-x-px rounded-tl-[12px] border-l border-t border-sidebar-border bg-background"'
+        in decoration
+    )
 
 
 def test_desktop_titlebar_separates_navigation_from_sidebar_brand():
@@ -768,7 +784,7 @@ def test_fixed_sheets_start_below_the_custom_titlebar():
     sheet = _ui_source(SHEET)
 
     # Portalled sheets read the height off <html>, so the mirror has to stay.
-    assert 'set("--studio-custom-titlebar-height", usesCustomTitlebar ? "42px" : null)' in provider
+    assert 'set("--studio-custom-titlebar-height", usesCustomTitlebar ? "34px" : null)' in provider
 
     # Only viewport-fixed sheets clear the titlebar; the absolute recipe block
     # sheet sits in its own container and keeps a plain top edge.
@@ -2339,9 +2355,10 @@ def test_media_pages_clear_the_custom_titlebar():
     """The chat-style layout gives the media pages no outer inset, so each applies its own."""
     root = _ui_source(ROOT_ROUTE)
 
-    assert "const isChatLike = isChatLikeRoute(pathname);" in root
-    routes = _ui_source(FRONTEND / "lib/chat-like-routes.ts")
-    assert 'new Set(["/chat", "/images", "/video", "/audio"])' in routes
+    assert re.search(
+        r"const isChatLike =\s*isChatRoute \|\| isImagesRoute \|\| isVideoRoute \|\| isAudioRoute;",
+        root,
+    )
     for page in (IMAGES_PAGE, VIDEO_PAGE):
         shell = _ui_source(page).split('"diffusion-surface', 1)[1].split(">", 1)[0]
         assert "pt-[var(--studio-content-top-inset,0px)]" in shell, page.name
@@ -2384,12 +2401,12 @@ def test_audio_page_matches_the_image_rail_header_and_action_footer():
     assert "z-40" in header_opening
     assert "@[50rem]:border-r" in header
     assert (
-        'className="!h-[var(--studio-media-control-height,34px)] max-w-full gap-1 overflow-hidden pl-3 pr-1 '
+        'className="!h-[34px] max-w-full gap-1 overflow-hidden pl-3 pr-1 '
         '@[68rem]:gap-2 @[68rem]:pl-4 @[68rem]:pr-2"' in header
     )
     assert 'triggerLabelClassName="text-ui-14 @[68rem]:text-ui-16"' in header
     assert "grid h-full min-w-0 grid-cols-[1fr_auto_auto] gap-2" in header
-    assert "@[50rem]:grid-cols-[1fr_auto_minmax(max-content,1fr)]" in header
+    assert "@[50rem]:grid-cols-[1fr_auto_1fr]" in header
     assert "col-start-2 justify-self-end pt-" in header
     assert "@[50rem]:justify-self-center" in header
     assert "col-start-3" in header and "<LibraryPageLink" in header
@@ -2543,12 +2560,12 @@ def test_images_header_tracks_preview_and_preserves_titlebar_controls():
     assert "!pinned && isTauri" in header
     assert "pl-[var(--studio-collapsed-chat-controls-inset,0.75rem)]" in header
     assert (
-        'className="!h-[var(--studio-media-control-height,34px)] max-w-full gap-1 overflow-hidden pl-3 pr-1 '
+        'className="!h-[34px] max-w-full gap-1 overflow-hidden pl-3 pr-1 '
         '@[68rem]:gap-2 @[68rem]:pl-4 @[68rem]:pr-2"' in header
     )
     assert 'triggerLabelClassName="text-ui-14 @[68rem]:text-ui-16"' in header
     assert "grid h-full min-w-0 grid-cols-[1fr_auto_auto] gap-2" in header
-    assert "@[50rem]:grid-cols-[1fr_auto_minmax(max-content,1fr)] @[50rem]:gap-0" in header
+    assert "@[50rem]:grid-cols-[1fr_auto_1fr] @[50rem]:gap-0" in header
     assert "col-start-2" in header
     assert "col-start-3" in header
     assert 'labelClassName="hidden @[50rem]:inline"' in header
@@ -2721,12 +2738,8 @@ def test_the_lengths_these_contracts_measure_still_follow_the_ui_scale():
         named = f"{variant}{utility}-{length}"
         scaled = len(
             re.findall(
-                # A chrome may route it through its own variable, the scaled length as fallback.
                 _CLASS_STARTS
-                + re.escape(f"{variant}{utility}-[")
-                + r"(?:var\(--[\w-]+,)?"
-                + re.escape(f"calc({length}*var(--ui-space-scale,1))")
-                + r"\)?\]"
+                + re.escape(f"{variant}{utility}-[calc({length}*var(--ui-space-scale,1))]")
                 + _CLASS_ENDS,
                 source,
             )

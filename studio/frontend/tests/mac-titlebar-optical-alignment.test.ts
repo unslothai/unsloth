@@ -22,6 +22,7 @@ test("mac titlebar navigation shifts buttons with centered glyphs", async () => 
     /mt-\[var\(--studio-titlebar-navigation-margin-top,0px\)\]/,
   );
 
+  // macOS keeps the one-step-up icon; the custom titlebar's are a fixed 18px.
   assert.match(
     titlebar,
     /const iconClass = customTitlebar\s*\?\s*"size-\[18px\]"\s*:\s*"size-icon !size-\[calc\(var\(--icon-size\)\+1px\)\]";/,

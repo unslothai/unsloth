@@ -47,7 +47,7 @@ test("desktop branding clears the titlebar actions", async () => {
   const source = APP_SIDEBAR;
   assert.match(
     source,
-    /shrink-0 p-0 pt-\[calc\(var\(--studio-desktop-titlebar-height,34px\)\+17px-var\(--studio-sidebar-brand-lift,0px\)\)\]/,
+    /shrink-0 p-0 pt-\[calc\(var\(--studio-desktop-titlebar-height,34px\)\+17px\)\]/,
   );
 });
 

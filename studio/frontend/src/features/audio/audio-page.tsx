@@ -2695,7 +2695,7 @@ export function AudioPage({
               onValueChange={handleModelSelect}
               onEject={busy === null && selectorValue ? handleEject : undefined}
               variant="ghost"
-              className="!h-[var(--studio-media-control-height,calc(34px*var(--ui-space-scale,1)))] max-w-full gap-1 overflow-hidden pl-3 pr-1 @[68rem]:gap-2 @[68rem]:pl-4 @[68rem]:pr-2"
+              className="!h-[calc(34px*var(--ui-space-scale,1))] max-w-full gap-1 overflow-hidden pl-3 pr-1 @[68rem]:gap-2 @[68rem]:pl-4 @[68rem]:pr-2"
               triggerLabelClassName="text-ui-14 @[68rem]:text-ui-16"
               task={HUB_TASKS_BY_MODE[mode]}
               catalog={AUDIO_CATALOG}
@@ -2709,9 +2709,7 @@ export function AudioPage({
             />
           </div>
         </div>
-        {/* The toggle centres while it can; past the window controls' reserve the Library link
-            keeps its label and the toggle gives way first. */}
-        <div className="grid h-full min-w-0 grid-cols-[1fr_auto_auto] gap-2 @[50rem]:grid-cols-[1fr_auto_minmax(max-content,1fr)] @[50rem]:gap-0">
+        <div className="grid h-full min-w-0 grid-cols-[1fr_auto_auto] gap-2 @[50rem]:grid-cols-[1fr_auto_1fr] @[50rem]:gap-0">
           <div className="pointer-events-auto col-start-2 justify-self-end pt-[var(--studio-chat-header-padding-top,11px)] @[50rem]:justify-self-center">
             <PillTabs
               ariaLabel="Page mode"
@@ -2726,7 +2724,7 @@ export function AudioPage({
                 void navigateSelf({ to: "/studio" });
               }}
               fit={true}
-              className="h-[var(--studio-media-control-height,calc(34px*var(--ui-space-scale,1)))] [&>button]:h-[var(--studio-media-control-height,calc(34px*var(--ui-space-scale,1)))] [&>button]:px-3 @[68rem]:[&>button]:px-11 @max-[30rem]:[&>button]:px-2.5 @max-[30rem]:[&>button>span]:sr-only"
+              className="h-[calc(34px*var(--ui-space-scale,1))] [&>button]:h-[calc(34px*var(--ui-space-scale,1))] [&>button]:px-3 @[68rem]:[&>button]:px-11 @max-[30rem]:[&>button]:px-2.5 @max-[30rem]:[&>button>span]:sr-only"
               tabs={[
                 {
                   value: "create",
@@ -2748,7 +2746,7 @@ export function AudioPage({
               ]}
             />
           </div>
-          <div className="pointer-events-none col-start-3 flex min-w-0 items-start justify-end pr-[calc(0.5rem*var(--ui-space-scale,1)+var(--studio-window-control-inset,0px))] pt-[var(--studio-chat-header-padding-top,11px)]">
+          <div className="pointer-events-none col-start-3 flex min-w-0 items-start justify-end pr-2 pt-[var(--studio-chat-header-padding-top,11px)]">
             <div className="pointer-events-auto flex min-w-0 items-center gap-2">
               <LibraryPageLink
                 tab="audio"

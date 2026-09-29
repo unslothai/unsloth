@@ -2144,18 +2144,6 @@ html[data-chat-font] .aui-root {
 		margin-right: 0 !important;
 	}
 
-	/* Page headers share the custom titlebar band, so a modal backdrop dims it too. Paint the
-	   band as chrome while one is up, so the window controls above the backdrop read as live.
-	   A clear backdrop dims nothing, and painting over it would only hide the page header. */
-	:root:has(
-			[data-slot="dialog-overlay"]:not(.bg-transparent),
-			[data-slot="alert-dialog-overlay"]:not(.bg-transparent),
-			[data-slot="sheet-overlay"]:not(.bg-transparent)
-		)
-		[data-slot="window-titlebar"] {
-		background-color: var(--sidebar);
-	}
-
 	/* Firefox makes scrollable containers keyboard focusable; swap the 3px
 	   UA outline for the app's soft 1px indicator. :where keeps specificity
 	   at zero so interactive components keep their own focus styles. */

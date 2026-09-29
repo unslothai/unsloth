@@ -1098,9 +1098,7 @@ export function ChatSettingsPanel({
                 <button
                   type="button"
                   onClick={() => onOpenChange?.(false)}
-                  // Where the chat header's open button sits: centred on the control line, and
-                  // clear of the window controls that share the docked panel's top row.
-                  className="mt-[calc((var(--studio-chat-control-height,34px)-30px*var(--ui-space-scale,1))/2)] mr-[var(--studio-window-control-inset,0px)] flex size-[calc(30px*var(--ui-space-scale,1))] cursor-pointer items-center justify-center rounded-[10px] text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                  className="flex size-[calc(30px*var(--ui-space-scale,1))] cursor-pointer items-center justify-center rounded-[10px] text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                   aria-label="Close run settings"
                 >
                   <HugeiconsIcon
@@ -1860,6 +1858,8 @@ export function ChatSettingsPanel({
       style={
         {
           "--chat-settings-width": `${settingsWidth * settingsScale}px`,
+          height: "calc(100% - var(--studio-custom-titlebar-height, 0px))",
+          marginTop: "var(--studio-custom-titlebar-height, 0px)",
         } as CSSProperties
       }
     >

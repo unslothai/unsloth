@@ -3702,7 +3702,7 @@ function VideoGenerator({
               resolveDownloadFootprint={resolveDownloadFootprint}
               onEject={status?.loaded ? handleUnload : undefined}
               variant="ghost"
-              className="!h-[var(--studio-media-control-height,calc(34px*var(--ui-space-scale,1)))]"
+              className="!h-[calc(34px*var(--ui-space-scale,1))]"
               task={VIDEO_GEN_TASKS}
               catalog={VIDEO_CATALOG}
               hubCapability="diffusion"
@@ -3721,7 +3721,7 @@ function VideoGenerator({
                     variant="outline"
                     size="sm"
                     aria-label="Cancel load"
-                    className="!h-[var(--studio-media-control-height,calc(34px*var(--ui-space-scale,1)))] rounded-full text-xs"
+                    className="!h-[calc(34px*var(--ui-space-scale,1))] rounded-full text-xs"
                     onClick={() => void handleCancelLoad()}
                   >
                     Cancel load
@@ -3748,7 +3748,7 @@ function VideoGenerator({
               {status.speed_mode && <StatusChip label="Speed" value={status.speed_mode} />}
             </div>
           )}
-          <div className="pointer-events-none col-start-2 flex min-w-0 items-start justify-end pr-[calc(0.5rem*var(--ui-space-scale,1)+var(--studio-window-control-inset,0px))] pt-[var(--studio-chat-header-padding-top,11px)]">
+          <div className="pointer-events-none col-start-2 flex min-w-0 items-start justify-end pr-2 pt-[var(--studio-chat-header-padding-top,11px)]">
             <div className="pointer-events-auto flex min-w-0 items-center gap-2">
               <LibraryPageLink
                 tab="videos"
