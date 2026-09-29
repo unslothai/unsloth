@@ -333,6 +333,24 @@ def test_a_lease_waits_for_a_revocation_already_in_progress(host):
     leases[0].release()
 
 
+def test_a_lease_that_cannot_be_recorded_refuses_instead_of_running_unguarded(host):
+    blocker = mxc_read_grants._leases_dir()
+    blocker.parent.mkdir(parents = True, exist_ok = True)
+    blocker.write_text("")  # a file where the lease folder belongs
+    with pytest.raises(mxc_read_grants.ReadGrantError, match = "could not record"):
+        mxc_read_grants.hold()
+
+
+@pytest.mark.parametrize("dacl, grants", [(False, True), (True, False)])
+def test_no_lease_is_needed_while_either_switch_is_off(host, monkeypatch, dacl, grants):
+    from core.inference import mxc_policy
+
+    monkeypatch.setattr(mxc_policy, "dacl_fallback_enabled", lambda: dacl)
+    monkeypatch.setattr(mxc_read_grants, "enabled", lambda: grants)
+    monkeypatch.setattr(mxc_read_grants, "hold", lambda: pytest.fail("no lease needed"))
+    assert mxc_read_grants.hold_if_needed() is None
+
+
 @pytest.mark.skipif(sys.platform != "win32", reason = "Windows refuses to delete a file held open")
 def test_an_open_lease_is_live_until_released(host):
     lease = mxc_read_grants.hold()

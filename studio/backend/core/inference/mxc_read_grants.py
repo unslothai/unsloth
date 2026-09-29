@@ -519,7 +519,11 @@ class WorkloadLease:
 
 
 def hold() -> WorkloadLease | None:
-    """Mark a launch as relying on the grants from spawn to exit, across Studio processes."""
+    """Mark a launch as relying on the grants from spawn to exit, across Studio processes.
+
+    Raises ReadGrantError when the lease cannot be recorded: a launch that may skip wxc-exec's own
+    grant must not run with nothing stopping a revocation under it.
+    """
     if not _on_windows():
         return None
     path = _leases_dir() / f"{os.getpid()}-{uuid.uuid4().hex}"
@@ -528,13 +532,20 @@ def hold() -> WorkloadLease | None:
         with _transaction():
             path.parent.mkdir(parents = True, exist_ok = True)
             handle = open(path, "w", encoding = "utf-8")
-    except ReadGrantError as exc:
-        logger.warning("Could not record an MXC workload for the read grants: %s", exc)
-        return None
     except OSError as exc:
-        logger.warning("Could not record an MXC workload for the read grants: %s", exc)
-        return None
+        raise ReadGrantError(
+            f"could not record this MXC workload for the read grants: {exc}"
+        ) from exc
     return WorkloadLease(path, handle)
+
+
+def hold_if_needed() -> WorkloadLease | None:
+    """A lease for a DACL-tier launch or probe while the persistent grants are on, else None."""
+    from . import mxc_policy
+
+    if not (mxc_policy.dacl_fallback_enabled() and enabled()):
+        return None
+    return hold()
 
 
 def _revoke_if_turned_off() -> None:

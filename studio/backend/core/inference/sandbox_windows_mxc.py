@@ -150,13 +150,10 @@ def capability_snapshot(
 
 def prepare(plan, capability):
     lease, alias_limitations = _workdir_alias(plan)
-    # Before the request is built, so a revocation racing this launch either finishes first or waits.
-    grant_lease = (
-        mxc_read_grants.hold()
-        if mxc_policy.dacl_fallback_enabled() and mxc_read_grants.enabled()
-        else None
-    )
+    grant_lease = None
     try:
+        # Before the request is built, so a revocation racing this launch either finishes first or waits.
+        grant_lease = mxc_read_grants.hold_if_needed()
         request = (
             mxc_policy.build_launch_request(plan, cwd_alias = lease.root)
             if lease

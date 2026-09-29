@@ -15,7 +15,7 @@ import threading
 import time
 from types import SimpleNamespace
 
-from . import mxc_adapter, mxc_drive_alias, mxc_policy, mxc_runtime
+from . import mxc_adapter, mxc_drive_alias, mxc_policy, mxc_read_grants, mxc_runtime
 
 _lock = threading.Lock()
 _cache: dict[tuple, tuple[float, bool, str]] = {}
@@ -244,7 +244,10 @@ def _probe(
                 )
             except Exception:
                 lease = None
+        grant_lease = None
         try:
+            # The probe reads Python through the same grants, so a revocation waits for it too.
+            grant_lease = mxc_read_grants.hold_if_needed()
             request = (
                 mxc_policy.build_launch_request(probe_plan, cwd_alias = lease.root)
                 if lease
@@ -288,6 +291,8 @@ def _probe(
                 mxc_adapter.release_runtime(proc)
             if lease is not None:
                 lease.release()
+            if grant_lease is not None:
+                grant_lease.release()
         if (
             proc.returncode != 0
             or result.get("exitCode") != 0
