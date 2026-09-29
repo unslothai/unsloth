@@ -131,7 +131,7 @@ export const AttachmentCardPreview: FC<{
     );
   } else if (text !== null) {
     body = (
-      <pre className="whitespace-pre-wrap break-words px-6 py-5 font-mono text-[13px] leading-snug text-foreground">
+      <pre className="whitespace-pre-wrap break-words px-6 py-5 font-mono text-ui-13 leading-snug text-foreground">
         {text.text}
       </pre>
     );
