@@ -563,16 +563,7 @@ def load_cached_hf_dataset(
         )
     dataset = load_dataset(**kwargs)
     if app_cache is not None:
-        # Best effort on purpose. The completion flag is advisory -- nothing reads it
-        # back to gate a load -- so a cache purge racing this load, a read-only studio
-        # home, or a full disk must not discard a dataset that already loaded. Letting
-        # it propagate costs a full Hub re-download of a perfectly good cached dataset,
-        # and fails the run outright when offline or resuming with exact resources.
-        #
-        # UnsafeDatasetCachePathError is deliberately not best effort. Marking is the
-        # only check that runs after the load, so it is what catches the entry being
-        # swapped for a symlink or an escape between prepare and here. Swallowing that
-        # would hand back a dataset read from outside the trusted cache root.
+        # Advisory flag: a purged entry, read-only home or full disk must not discard a loaded dataset.
         try:
             mark_app_processed_dataset_cache_complete(app_cache)
         except UnsafeDatasetCachePathError:
