@@ -4235,8 +4235,11 @@ def patch_enable_input_require_grads():
         output.requires_grad_(True)
 
     # Older transformers hooks a single embedding (huggingface/transformers#41993 added the loop).
+    # wraps keeps inspect.getsource on transformers' source for later source checks.
+    original = PreTrainedModel.enable_input_require_grads
     if "for module in self.modules()" not in original_source:
 
+        @functools.wraps(original)
         def _patched_single_enable_input_require_grads(self):
             self._require_grads_hook = self.get_input_embeddings().register_forward_hook(
                 make_inputs_require_grads
@@ -4245,6 +4248,7 @@ def patch_enable_input_require_grads():
         PreTrainedModel.enable_input_require_grads = _patched_single_enable_input_require_grads
         return
 
+    @functools.wraps(original)
     def _patched_enable_input_require_grads(self):
         hooks = []
         seen_modules = set()
