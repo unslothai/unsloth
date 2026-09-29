@@ -81,7 +81,7 @@ def _credentials(token):
     return authentication.HTTPAuthorizationCredentials(scheme = "Bearer", credentials = token)
 
 
-_FULL_ACCESS = "Full access is unavailable while more than one account exists."
+_FULL_ACCESS = "Bypass permissions is unavailable while more than one account exists."
 
 _REQUESTS = {
     "/v1/chat/completions": {"model": "m", "messages": [{"role": "user", "content": "hi"}]},

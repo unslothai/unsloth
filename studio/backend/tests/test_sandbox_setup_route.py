@@ -137,6 +137,49 @@ def test_status_names_the_setup_for_this_host(host, linux):
     assert setup["manual_command"] == "sudo apt-get install -y bubblewrap"
 
 
+def test_status_offers_the_button_only_to_this_computer(host, linux, monkeypatch):
+    with _client(OWNER) as client:
+        assert client.get("/sandbox").json()["setup"]["can_run"] is True
+        monkeypatch.setattr(client_ip, "is_direct_local_request", lambda _request: False)
+        setup = client.get("/sandbox").json()["setup"]
+    # The command still shows; only the button is local.
+    assert setup["can_run"] is False and setup["manual_command"]
+
+
+def _capability_client(account):
+    from routes.sandbox_capability import router as capability_router
+
+    app = FastAPI()
+    app.include_router(capability_router, prefix = "/api/sandbox")
+
+    async def subject():
+        token = bind_account(account)
+        try:
+            yield account.username
+        finally:
+            reset_account(token)
+
+    app.dependency_overrides[settings.get_current_subject] = subject
+    return TestClient(app, raise_server_exceptions = False)
+
+
+def test_capability_offers_setup_to_the_local_owner(host, linux):
+    body = _capability_client(OWNER).get("/api/sandbox/capability").json()
+    assert body["setup_action"] == "linux-install" and body["can_run_setup"] is True
+    assert body["manual_command"] == "sudo apt-get install -y bubblewrap"
+
+
+@pytest.mark.parametrize("who", ["other_account", "remote_owner"])
+def test_capability_gives_everyone_else_only_the_command(host, linux, monkeypatch, who):
+    account = ALICE
+    if who == "remote_owner":
+        account = OWNER
+        monkeypatch.setattr(client_ip, "is_direct_local_request", lambda _request: False)
+    body = _capability_client(account).get("/api/sandbox/capability").json()
+    assert body["setup_action"] is None and body["can_run_setup"] is False
+    assert body["manual_command"] == "sudo apt-get install -y bubblewrap"
+
+
 def test_a_remote_browser_is_refused(host, linux, monkeypatch):
     monkeypatch.setattr(client_ip, "is_direct_local_request", lambda _request: False)
     calls, _saved, _plan = host

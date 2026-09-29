@@ -10,6 +10,7 @@ the startup warm-up, and GET /api/sandbox/capability.
 """
 
 import itertools
+import sys
 import threading
 import time
 
@@ -398,6 +399,17 @@ def test_a_reset_during_a_reprobe_keeps_its_result_out(probe_env):
 # --- GET /api/sandbox/capability -----------------------------------------------------------
 
 
+@pytest.fixture(autouse = True)
+def _no_host_setup_probe(monkeypatch):
+    # The setup plan would run `sudo -n true` on this host; the capability tests only need its shape.
+    from core.inference import sandbox_setup_plan
+    monkeypatch.setattr(
+        sandbox_setup_plan,
+        "detect",
+        lambda *a, **k: sandbox_setup_plan.SetupPlan(platform = sys.platform, reason = "test"),
+    )
+
+
 def _capability_client(authenticated = True):
     from routes.sandbox_capability import router
 
@@ -418,7 +430,7 @@ def test_capability_before_the_first_answer():
     assert body["python_os_isolated"] is False
     assert body["terminal_os_isolated"] is False
     assert body["backend"] == "unknown"
-    assert body["setup_action"] == "" and body["manual_command"] == ""
+    assert body["setup_action"] is None and body["can_run_setup"] is False
 
 
 def test_capability_reports_the_cached_answers():

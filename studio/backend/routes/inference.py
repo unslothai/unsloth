@@ -4662,7 +4662,7 @@ def _confirm_gate_needs_stream(payload, selected_names = None) -> bool:
     """Whether Unsloth's local tool-loop confirm gate still requires stream=true.
 
     The gate can only prompt while streaming, so a non-streaming request that will
-    prompt must 400 up front. auto ("Approve for me") only prompts for a call the
+    prompt must 400 up front. auto ("Auto-approve") only prompts for a call the
     classifier flags, so an auto request whose confirm is derived from the mode
     (not an explicit confirm_tool_calls=true) and whose selectable tools are all
     always-safe (web_search / RAG) never prompts and needs no stream. ask,

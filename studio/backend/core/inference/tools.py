@@ -2087,7 +2087,7 @@ def _find_blocked_commands(command: str, posix: "bool | None" = None) -> set[str
 # child's PYTHONPATH in _build_safe_env.
 _SANDBOX_SITE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sandbox_site")
 
-# "Approve for me" (permission_mode="auto") safety detection. Auto mode pauses only calls classified here as
+# "Auto-approve" (permission_mode="auto") safety detection. Auto mode pauses only calls classified here as
 # potentially unsafe. The sandbox and hard blocks still apply at run time; this gate only decides prompting, and fails
 # closed: anything not provably read-only asks.
 
@@ -7113,7 +7113,7 @@ def _web_search_fetches_url(name: str, arguments: dict) -> bool:
 def is_potentially_unsafe_tool_call(name: str, arguments: dict) -> bool:
     """Whether a tool call must still pause for approval in auto mode.
 
-    Used by permission_mode="auto" ("Approve for me"): read-only calls
+    Used by permission_mode="auto" ("Auto-approve"): read-only calls
     auto-run, anything that can mutate state, execute arbitrary code, or is
     simply unrecognized asks first. Unknown tools fail closed.
     """
@@ -7161,7 +7161,7 @@ def is_potentially_unsafe_tool_call(name: str, arguments: dict) -> bool:
 
 
 # Terminal commands that are high risk regardless of their arguments, so auto
-# ("Approve for me") pauses them while ordinary dev commands (pip install, mkdir,
+# ("Auto-approve") pauses them while ordinary dev commands (pip install, mkdir,
 # cp, make, git, ...) run. The hard-block command set, rlimits, secret-env
 # stripping and the per-session scratch workdir stay on beneath this prompt.
 _HIGH_RISK_COMMANDS = frozenset(
@@ -9233,7 +9233,7 @@ def _python_is_high_risk(code: str) -> bool:
 
 
 def is_high_risk_tool_call(name: str, arguments: dict) -> bool:
-    """Whether a tool call is sensitive enough to pause for approval in auto (Approve for me) mode.
+    """Whether a tool call is sensitive enough to pause for approval in auto (Auto-approve) mode.
 
     Unlike is_potentially_unsafe_tool_call (which prompts on anything not read-only), this prompts
     only on genuinely sensitive actions - credential access, privilege escalation,
@@ -9859,7 +9859,7 @@ def _requested_execution_mode(tool_execution_mode: str, disable_sandbox: bool) -
         raise os_sandbox.SandboxUnavailableError(
             "TOOL_EXECUTION_MODE_INVALID: full access is not requestable through "
             "tool_execution_mode",
-            remediation = "Full access is granted with disable_sandbox (Bypass Permissions).",
+            remediation = "Bypass permissions (disable_sandbox) turns the sandbox off.",
         )
     return tool_execution_mode
 

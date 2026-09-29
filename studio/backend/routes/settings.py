@@ -4412,6 +4412,8 @@ class SandboxSetupStatus(BaseModel):
     manual_command: str = ""
     reason: str = ""
     needs_consent: bool = False
+    # Whether this caller can start the setup: the prompt appears on the computer running Unsloth.
+    can_run: bool = False
 
 
 class SandboxStatusResponse(BaseModel):
@@ -4572,6 +4574,16 @@ def _sandbox_setup_status(available: bool) -> Optional[SandboxSetupStatus]:
     )
 
 
+def _for_request(status: SandboxStatusResponse, request: Request) -> SandboxStatusResponse:
+    """The cached status is shared; only a direct local request may be offered the setup button."""
+    from utils.client_ip import is_direct_local_request
+
+    if status.setup is None:
+        return status
+    can_run = bool(status.setup.action) and is_direct_local_request(request)
+    return status.model_copy(update = {"setup": status.setup.model_copy(update = {"can_run": can_run})})
+
+
 def _sandbox_status(refresh: bool = False) -> SandboxStatusResponse:
     global _sandbox_status_cache
     with _sandbox_status_lock:
@@ -4617,11 +4629,13 @@ def _sandbox_job_response(job) -> SandboxPrepareJob:
 
 @_owner_settings_router.get("/sandbox", response_model = SandboxStatusResponse)
 async def get_sandbox_status(
-    refresh: bool = False, current_subject: str = Depends(get_current_subject)
+    request: Request,
+    refresh: bool = False,
+    current_subject: str = Depends(get_current_subject),
 ) -> SandboxStatusResponse:
     """What Python and the Terminal get from the OS sandbox on this machine, plus the Windows opt-in."""
     try:
-        return await asyncio.to_thread(_sandbox_status, refresh)
+        return _for_request(await asyncio.to_thread(_sandbox_status, refresh), request)
     except Exception as exc:
         raise log_and_http_error(
             exc,
@@ -4635,6 +4649,7 @@ async def get_sandbox_status(
 @_owner_settings_router.put("/sandbox", response_model = SandboxStatusResponse)
 async def update_sandbox_settings(
     payload: SandboxSettingsPayload,
+    request: Request,
     current_subject: str = Depends(get_current_subject),
     # Host policy: changed at the console, never by an API key the owner happens to hold.
     _ui_session: None = Depends(_require_ui_session),
@@ -4674,7 +4689,7 @@ async def update_sandbox_settings(
         payload.allow_dacl_fallback,
         payload.persistent_read_grants,
     )
-    return status.model_copy(update = {"grants_restored": restored})
+    return _for_request(status, request).model_copy(update = {"grants_restored": restored})
 
 
 @_owner_settings_router.get("/sandbox/prepare", response_model = SandboxPrepareJob)

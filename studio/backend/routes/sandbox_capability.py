@@ -8,7 +8,9 @@ sandbox behind it. It answers from the cached capability and never waits on a pr
 the first answer both tools read as not isolated, which is what the "off" gate assumes too.
 """
 
+import asyncio
 import sys
+from typing import Optional
 
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel
@@ -25,14 +27,24 @@ class SandboxCapabilityResponse(BaseModel):
     # "unknown" until the first check has answered.
     backend: str
     reason: str
-    # Filled by the setup flow for the owner on a direct local request; empty otherwise.
-    setup_action: str = ""
+    # linux-install | windows-setup, only for the owner on a direct local request; None otherwise.
+    setup_action: Optional[str] = None
+    # The copyable command, for everyone; empty when there is nothing to set up.
     manual_command: str = ""
+    can_run_setup: bool = False
+    needs_consent: bool = False
 
 
-def _setup_fields_for(request: Request) -> dict:
-    """Setup fields (setup_action, manual_command) this caller may be offered; none yet."""
-    return {}
+def _setup_fields_for(request: Request, isolated: bool) -> dict:
+    """Blocking (reads the setup plan). Nothing to offer once both tools are isolated."""
+    from core.inference import sandbox_setup_plan
+
+    try:
+        fields = sandbox_setup_plan.setup_fields_for(request, available = isolated)
+    except Exception:  # noqa: BLE001 - the capability stays useful without the setup hint
+        return {}
+    fields.pop("reason", None)
+    return fields
 
 
 def _capability() -> dict:
@@ -60,4 +72,7 @@ def _capability() -> dict:
 async def sandbox_capability(
     request: Request, current_subject: str = Depends(get_current_subject)
 ) -> SandboxCapabilityResponse:
-    return SandboxCapabilityResponse(**_capability(), **_setup_fields_for(request))
+    capability = _capability()
+    isolated = capability["python_os_isolated"] and capability["terminal_os_isolated"]
+    setup = await asyncio.to_thread(_setup_fields_for, request, isolated)
+    return SandboxCapabilityResponse(**capability, **setup)

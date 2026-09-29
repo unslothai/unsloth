@@ -54,7 +54,7 @@ def require_tool_access(
     if not full_access_permitted():
         raise HTTPException(
             status_code = 400,
-            detail = "Full access is unavailable while more than one account exists.",
+            detail = "Bypass permissions is unavailable while more than one account exists.",
         )
 
 
