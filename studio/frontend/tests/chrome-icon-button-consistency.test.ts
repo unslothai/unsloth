@@ -1,9 +1,7 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-const source = (path: string) =>
-  readFile(new URL(`../src/${path}`, import.meta.url), "utf8");
+import { atDefaultUiScale, readSrc } from "./helpers/kit.ts";
 
 const BUTTON_CLASS = /className="([^"]+)"/;
 const WHITESPACE = /\s+/;
@@ -43,8 +41,8 @@ function buttonClasses(button: string): Set<string> {
 
 test("run settings uses one aligned toggle in both states", async () => {
   const [page, panel] = await Promise.all([
-    source("features/chat/chat-page.tsx"),
-    source("features/chat/chat-settings-sheet.tsx"),
+    atDefaultUiScale(readSrc("features/chat/chat-page.tsx")),
+    atDefaultUiScale(readSrc("features/chat/chat-settings-sheet.tsx")),
   ]);
 
   const toggles = [
@@ -66,10 +64,10 @@ test("run settings uses one aligned toggle in both states", async () => {
   assert.ok(headerClasses.has("pr-[18px]"));
 });
 
-test("settings chrome uses the titlebar rounded-square hover shape", async () => {
+test("settings chrome hover shapes: round dialog close, rounded-square cog", async () => {
   const [dialog, sidebar] = await Promise.all([
-    source("features/settings/settings-dialog.tsx"),
-    source("components/app-sidebar.tsx"),
+    atDefaultUiScale(readSrc("features/settings/settings-dialog.tsx")),
+    atDefaultUiScale(readSrc("components/app-sidebar.tsx")),
   ]);
 
   const dialogMain = dialog.slice(dialog.indexOf("<main"));
@@ -80,8 +78,8 @@ test("settings chrome uses the titlebar rounded-square hover shape", async () =>
     ),
   );
   assert.ok(dialogClose.has("size-[30px]"));
-  assert.ok(dialogClose.has("rounded-[10px]"));
-  assert.ok(!dialogClose.has("rounded-full"));
+  assert.ok(dialogClose.has("rounded-full"));
+  assert.ok(!dialogClose.has("rounded-[10px]"));
 
   const settingsCog = sidebar.slice(sidebar.indexOf("settings cog; sibling"));
   const settingsCogClasses = buttonClasses(

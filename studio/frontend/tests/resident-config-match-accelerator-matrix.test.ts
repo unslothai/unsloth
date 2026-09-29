@@ -20,12 +20,10 @@
  */
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
 
 import type { PerModelConfig } from "../src/features/model-picker/model-config/per-model-config.ts";
-import { registerBundlerResolver } from "./helpers/kit.ts";
+import { readSrc, registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
 const { residentRuntimeMatchesConfig: matchesWithStanding } = await import(
@@ -65,12 +63,14 @@ const BLANK = {
   customContextLength: null,
   maxSeqLength: null,
   kvCacheDtype: null,
-  mlxKvBits: null,
+  mlxKvQuant: null,
   speculativeType: null,
   specDraftNMax: null,
   nParallel: null,
   nBatch: null,
   nUbatch: null,
+  reasoningBudget: -1,
+  reasoningBudgetMessage: "",
   tensorParallel: false,
   disableVision: false,
   chatTemplateOverride: null,
@@ -113,7 +113,7 @@ const ACCELERATORS: Record<string, Record<string, unknown>> = {
   // default load leaves the width unrequested; a pinned width is swept below like any other
   // field, and is not part of the base for the same reason placement is not.
   "apple-mlx": {
-    mlx_kv_bits_requested: null,
+    mlx_kv_quant_requested: null,
   },
 };
 
@@ -150,10 +150,10 @@ const FIELDS: FieldCase[] = [
     different: "f16",
   },
   {
-    key: "mlxKvBits",
-    statusKey: "mlx_kv_bits_requested",
-    same: 8,
-    different: 4,
+    key: "mlxKvQuant",
+    statusKey: "mlx_kv_quant_requested",
+    same: "8",
+    different: "tq-4",
   },
   {
     key: "speculativeType",
@@ -208,6 +208,18 @@ const FIELDS: FieldCase[] = [
     statusKey: "requested_cache_ram",
     same: 4096,
     different: 8192,
+  },
+  {
+    key: "reasoningBudget",
+    statusKey: "reasoning_budget",
+    same: 1024,
+    different: 512,
+  },
+  {
+    key: "reasoningBudgetMessage",
+    statusKey: "reasoning_budget_message",
+    same: "Wrap up.",
+    different: "Stop here.",
   },
   {
     key: "chatTemplateOverride",
@@ -312,12 +324,20 @@ for (const [accelerator, base] of Object.entries(ACCELERATORS)) {
   }
 }
 
-test("placement compares as a set on a multi-GPU host, not as an order", () => {
-  // The backend narrows and reorders the pool at fit time, so only membership counts.
+test("placement compares as an order on a multi-GPU host, not as a set", () => {
+  // The picker's order is the order the backend pins, so the same cards in a
+  // different order are a different placement and the runner has to restart.
   assert.equal(
     residentRuntimeMatchesConfig(
       { ...ACCELERATORS["amd-rocm"], requested_gpu_ids: [0, 1] },
       { ...BLANK, selectedGpuIds: [1, 0] },
+    ),
+    false,
+  );
+  assert.equal(
+    residentRuntimeMatchesConfig(
+      { ...ACCELERATORS["amd-rocm"], requested_gpu_ids: [0, 1] },
+      { ...BLANK, selectedGpuIds: [0, 1] },
     ),
     true,
   );
@@ -436,15 +456,7 @@ test("an empty pinned pool is Automatic, not a demand for no GPUs", () => {
 
 test("every PerModelConfig field is either compared or deliberately excluded", () => {
   // A new setting not classified here is one an adopted pick would drop silently.
-  const source = readFileSync(
-    fileURLToPath(
-      new URL(
-        "../src/features/model-picker/model-config/per-model-config.ts",
-        import.meta.url,
-      ),
-    ),
-    "utf8",
-  );
+  const source = readSrc("features/model-picker/model-config/per-model-config.ts");
   const body = source.slice(
     source.indexOf("export interface PerModelConfig {"),
     source.indexOf("export const DEFAULT_PER_MODEL_CONFIG"),
@@ -461,6 +473,8 @@ test("every PerModelConfig field is either compared or deliberately excluded", (
     // Qualifies selectedGpuIds rather than adding a dimension of its own: it is read, as
     // the reconciler's namespace argument, but /status has no field to compare it against.
     "selectedGpuIndexKind",
+    // Compared through standing.splitRatio, which the caller seeds from it.
+    "tensorSplit",
   ]);
   const unclassified = [...declared].filter(
     (field) => !compared.has(field) && !excluded.has(field),

@@ -5,43 +5,8 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+. "$SCRIPT_DIR/_harness.sh"
 INSTALL_SH="$SCRIPT_DIR/../../install.sh"
-PASS=0
-FAIL=0
-
-assert_eq() {
-    _label="$1"; _expected="$2"; _actual="$3"
-    if [ "$_actual" = "$_expected" ]; then
-        echo "  PASS: $_label"
-        PASS=$((PASS + 1))
-    else
-        echo "  FAIL: $_label (expected '$_expected', got '$_actual')"
-        FAIL=$((FAIL + 1))
-    fi
-}
-
-assert_contains() {
-    _label="$1"; _haystack="$2"; _needle="$3"
-    if echo "$_haystack" | grep -qF "$_needle"; then
-        echo "  PASS: $_label"
-        PASS=$((PASS + 1))
-    else
-        echo "  FAIL: $_label (expected to find '$_needle')"
-        FAIL=$((FAIL + 1))
-    fi
-}
-
-assert_not_contains() {
-    _label="$1"; _haystack="$2"; _needle="$3"
-    if echo "$_haystack" | grep -qF "$_needle"; then
-        echo "  FAIL: $_label (found '$_needle' but should not)"
-        FAIL=$((FAIL + 1))
-    else
-        echo "  PASS: $_label"
-        PASS=$((PASS + 1))
-    fi
-}
-
 _FN=$(mktemp)
 {
     sed -n '/^PYTHON_SKIP=/p' "$INSTALL_SH"
@@ -158,7 +123,8 @@ _STREAM=$(mktemp)
     printf 'PYTHON_SKIP="3.13.8"; SKIP_TORCH=false\n'
     printf 'step() { :; }\ntauri_log() { :; }\n'
     for _f in _is_verbose tauri_stream_log tauri_clear_install_error _redact_install_output \
-              _uv_download_markers run_install_cmd _macos_has_selected_install_name_tool \
+              _uv_download_markers run_install_cmd _ric_tee _ric_run _run_install_cmd_once _mirror_retry_install _mirror_failed_host \
+              _macos_has_selected_install_name_tool \
               _run_uv_venv _python_skip_applies _python_request _uv_venv_requested; do
         sed -n "/^$_f()/,/^}/p" "$INSTALL_SH"
     done

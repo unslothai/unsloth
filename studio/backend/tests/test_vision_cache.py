@@ -21,6 +21,16 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
+
+def _shared_setup_1(monkeypatch):
+    import utils.models.model_config as mc
+
+    mc._audio_detection_cache.clear()
+    monkeypatch.setattr(mc, "is_local_path", lambda *_a, **_k: False)
+    monkeypatch.setattr(mc, "resolve_cached_repo_id_case", lambda n, *_a, **_k: n)
+    return mc
+
+
 # sys.path + logger stub — same pattern as the rest of the test suite
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
@@ -865,11 +875,7 @@ class TestAudioDetectionCacheTokenAware:
     def test_transient_none_is_not_cached_but_definitive_none_is(self, monkeypatch):
         """A transient probe failure (definitive=False) must retry; a clean
         'not audio' read (definitive=True) caches so we don't re-probe."""
-        import utils.models.model_config as mc
-
-        mc._audio_detection_cache.clear()
-        monkeypatch.setattr(mc, "is_local_path", lambda *_a, **_k: False)
-        monkeypatch.setattr(mc, "resolve_cached_repo_id_case", lambda n, *_a, **_k: n)
+        mc = _shared_setup_1(monkeypatch)
 
         transient_calls = []
 
@@ -907,11 +913,7 @@ class TestAudioDetectionCacheTokenAware:
     def test_local_only_negative_does_not_poison_online(self, monkeypatch):
         """An offline negative must not be reused by a later online probe (else an audio
         model is routed through the text loader until restart)."""
-        import utils.models.model_config as mc
-
-        mc._audio_detection_cache.clear()
-        monkeypatch.setattr(mc, "is_local_path", lambda *_a, **_k: False)
-        monkeypatch.setattr(mc, "resolve_cached_repo_id_case", lambda n, *_a, **_k: n)
+        mc = _shared_setup_1(monkeypatch)
         # Pin env-offline off so the key tracks the kwarg.
         monkeypatch.setattr(mc, "_env_offline", lambda: False)
 
@@ -941,11 +943,7 @@ class TestAudioDetectionCacheTokenAware:
     def test_env_offline_negative_does_not_poison_online(self, monkeypatch):
         """An env-offline probe (default local_files_only=False) must cache under the
         effective-offline key, so clearing the env var later doesn't leak a stale negative."""
-        import utils.models.model_config as mc
-
-        mc._audio_detection_cache.clear()
-        monkeypatch.setattr(mc, "is_local_path", lambda *_a, **_k: False)
-        monkeypatch.setattr(mc, "resolve_cached_repo_id_case", lambda n, *_a, **_k: n)
+        mc = _shared_setup_1(monkeypatch)
 
         env_offline = {"v": True}
         monkeypatch.setattr(mc, "_env_offline", lambda: env_offline["v"])

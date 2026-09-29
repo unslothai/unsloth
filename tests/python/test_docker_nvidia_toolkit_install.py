@@ -88,6 +88,9 @@ def _setup(
     rootless: bool | str = False,
     chunked: bool = False,
     gpus: int = 1,
+    desktop_os: str = "Docker Desktop",
+    desktop_kernel: str = "5.15.167.4-microsoft-standard-WSL2",
+    desktop_info_fails: bool = False,
 ) -> tuple[Path, Path, dict]:
     bindir = tmp_path / "bin"
     bindir.mkdir()
@@ -127,6 +130,11 @@ def _setup(
         rec
         + 'if [ "$1" = context ]; then case "${DOCKER_CONTEXT:-}" in remote*) echo "tcp://gpu-box:2376" ;; missing*) echo "context not found" >&2; exit 1 ;; *) echo "unix:///var/run/docker.sock" ;; esac; exit 0; fi\n'
         + 'if [ "$1" = info ]; then\n'
+        + (
+            '  case "$3" in *OperatingSystem*) echo "cannot connect to the Docker daemon" >&2; exit 1 ;; esac\n'
+            if desktop_info_fails
+            else f'  case "$3" in *OperatingSystem*) echo "{desktop_os}|{desktop_kernel}"; exit 0 ;; esac\n'
+        )
         + ('  echo " Operating System: Docker Desktop"\n' if desktop else "")
         # A real daemon does not hand `docker info` over in one write. Pausing here puts the
         # rest of the output after the point where a `grep -q` consumer has already matched.
@@ -543,6 +551,168 @@ def test_docker_desktop_on_macos_says_cpu_only(tmp_path: Path):
     assert res.returncode == 0, res.stdout + res.stderr
     assert "no NVIDIA GPU" in res.stdout and "UNSLOTH_ALLOW_CPU=1" in res.stdout
     assert "GPU support comes with it" not in res.stdout
+
+
+def test_macos_says_cpu_only_whatever_runs_the_daemon(tmp_path: Path):
+    """colima and Rancher Desktop keep their socket outside /var/run, which took a Mac
+    to the endpoint check: it told the user to configure that daemon by hand, for a
+    toolkit no Mac can use."""
+    _, _, env = _setup(tmp_path, driver = False, uid = 1000)
+    _stub(tmp_path / "bin" / "uname", 'if [ "$1" = -s ]; then echo Darwin; else echo arm64; fi\n')
+    res = _run(env, extra_env = {"DOCKER_HOST": "unix:///Users/u/.colima/default/docker.sock"})
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert "no NVIDIA GPU" in res.stdout and "UNSLOTH_ALLOW_CPU=1" in res.stdout
+    assert "by hand" not in res.stderr, res.stderr
+
+
+def test_a_mac_driving_a_remote_daemon_is_sent_to_that_host(tmp_path: Path):
+    """The one Mac the toolkit concerns: a CLI pointed at a Linux box over tcp:// or
+    ssh://. "Nothing to install" there is wrong; the box needs it."""
+    _, _, env = _setup(tmp_path, driver = False, uid = 1000)
+    _stub(tmp_path / "bin" / "uname", 'if [ "$1" = -s ]; then echo Darwin; else echo arm64; fi\n')
+    res = _run(env, extra_env = {"DOCKER_HOST": "tcp://gpu-box:2376"})
+    assert res.returncode == 2, res.stdout + res.stderr
+    assert "remote daemon (tcp://gpu-box:2376)" in res.stderr
+    assert "nothing to install" not in res.stdout
+    # DOCKER_CONTEXT wins over DOCKER_HOST, as in the endpoint check further down
+    res = _run(
+        env,
+        extra_env = {"DOCKER_HOST": "unix:///var/run/docker.sock", "DOCKER_CONTEXT": "remote-gpu"},
+    )
+    assert res.returncode == 2, res.stdout + res.stderr
+    assert "remote daemon (tcp://gpu-box:2376)" in res.stderr
+    # a bare host:port is tcp to Docker, so it is remote here too
+    res = _run(env, extra_env = {"DOCKER_HOST": "gpu-box:2376"})
+    assert res.returncode == 2, res.stdout + res.stderr
+    assert "remote daemon (gpu-box:2376)" in res.stderr
+
+
+@pytest.mark.parametrize(
+    "endpoint",
+    ["tcp://localhost:2375", "tcp://127.0.0.1:2375", "tcp://[::1]:2375", "localhost:2375"],
+)
+def test_a_loopback_tcp_endpoint_is_this_machine(tmp_path: Path, endpoint: str):
+    """Docker Desktop can expose its daemon on tcp://localhost:2375, and a socket can be
+    proxied through localhost; both are the local daemon, not a box to run this on."""
+    _, _, env = _setup(tmp_path, driver = False, uid = 1000)
+    _stub(tmp_path / "bin" / "uname", 'if [ "$1" = -s ]; then echo Darwin; else echo arm64; fi\n')
+    res = _run(env, extra_env = {"DOCKER_HOST": endpoint})
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert "remote daemon" not in res.stderr
+    assert "nothing to install" in res.stdout
+
+
+@pytest.mark.parametrize(
+    "kernel", ["MINGW64_NT-10.0-22631", "MSYS_NT-10.0-22631", "CYGWIN_NT-10.0"]
+)
+def test_a_windows_shell_is_sent_to_docker_desktops_wsl2_backend(tmp_path: Path, kernel: str):
+    """Git Bash / MSYS2 / Cygwin drive Docker Desktop, whose WSL 2 backend has the GPU
+    support built in. The Linux path read Desktop as "Docker Desktop for Linux" (exit 2)
+    and, with a plain daemon, tried apt on Windows."""
+    _, log, env = _setup(tmp_path, desktop = True, driver = False)
+    _stub(
+        tmp_path / "bin" / "uname", f'if [ "$1" = -s ]; then echo {kernel}; else echo x86_64; fi\n'
+    )
+    res = _run(env)
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert "WSL 2 backend" in res.stdout
+    assert "Docker Desktop for Linux" not in res.stderr
+    assert not any(c.startswith(("apt-get", "dnf", "nvidia-ctk", "systemctl")) for c in _calls(log))
+
+
+@pytest.mark.parametrize("kernel", ["MINGW64_NT-10.0-22631", "MSYS_NT-10.0"])
+def test_a_windows_shell_driving_a_remote_daemon_is_sent_to_that_host(tmp_path: Path, kernel: str):
+    """Same rule as on a Mac: DOCKER_HOST or a context pointing at a Linux box means that
+    box may need the toolkit, so the Desktop shortcut must not answer for it."""
+    _, log, env = _setup(tmp_path, desktop = True, driver = False)
+    _stub(
+        tmp_path / "bin" / "uname", f'if [ "$1" = -s ]; then echo {kernel}; else echo x86_64; fi\n'
+    )
+    res = _run(env, extra_env = {"DOCKER_HOST": "tcp://gpu-box:2376"})
+    assert res.returncode == 2, res.stdout + res.stderr
+    assert "remote daemon (tcp://gpu-box:2376)" in res.stderr
+    assert "WSL 2 backend" not in res.stdout
+    res = _run(env, extra_env = {"DOCKER_CONTEXT": "remote-gpu"})
+    assert res.returncode == 2, res.stdout + res.stderr
+    assert "remote daemon (tcp://gpu-box:2376)" in res.stderr
+    res = _run(env, extra_env = {"DOCKER_CONTEXT": "missing-in-root-config"})
+    assert res.returncode == 2
+    assert "cannot inspect the Docker context" in res.stderr
+    assert not any(c.startswith(("apt-get", "dnf", "nvidia-ctk", "systemctl")) for c in _calls(log))
+
+
+def test_a_windows_shell_on_the_hyper_v_backend_is_told_to_switch(tmp_path: Path):
+    """Docker Desktop's GPU support is the WSL 2 backend only; the Hyper-V backend runs a
+    LinuxKit VM no GPU reaches, so "nothing to install" there leaves --gpus failing at the
+    daemon. The backends are told apart by the kernel `docker info` reports."""
+    _, log, env = _setup(tmp_path, desktop = True, driver = False, desktop_kernel = "6.6.87.2-linuxkit")
+    _stub(
+        tmp_path / "bin" / "uname",
+        'if [ "$1" = -s ]; then echo MINGW64_NT-10.0-22631; else echo x86_64; fi\n',
+    )
+    res = _run(env)
+    assert res.returncode == 2, res.stdout + res.stderr
+    assert "Use the WSL 2 based engine" in res.stderr
+    assert "6.6.87.2-linuxkit" in res.stderr
+    assert "nothing to install" not in res.stdout
+    assert not any(c.startswith(("apt-get", "dnf", "nvidia-ctk", "systemctl")) for c in _calls(log))
+
+
+def test_a_windows_shell_that_cannot_reach_docker_desktop_says_so(tmp_path: Path):
+    """With Desktop stopped the backend is unknowable, so neither answer can be given."""
+    _, log, env = _setup(tmp_path, driver = False, desktop_info_fails = True)
+    _stub(
+        tmp_path / "bin" / "uname",
+        'if [ "$1" = -s ]; then echo MINGW64_NT-10.0-22631; else echo x86_64; fi\n',
+    )
+    res = _run(env)
+    assert res.returncode == 2, res.stdout + res.stderr
+    assert "Docker Desktop is not running" in res.stderr
+    assert "WSL 2 backend" not in res.stdout
+    assert not any(c.startswith(("apt-get", "dnf", "nvidia-ctk", "systemctl")) for c in _calls(log))
+
+
+def test_a_windows_shell_on_a_non_desktop_daemon_is_sent_into_the_distro(tmp_path: Path):
+    """A Docker Engine inside a WSL distro, reached through its pipe or socket, and Rancher
+    Desktop both answer `docker info` with something other than Docker Desktop. Neither can
+    be configured from a Windows shell, and neither is an error."""
+    _, log, env = _setup(
+        tmp_path,
+        driver = False,
+        desktop_os = "Ubuntu 24.04.1 LTS",
+        desktop_kernel = "5.15.167.4-microsoft-standard-WSL2",
+    )
+    _stub(
+        tmp_path / "bin" / "uname",
+        'if [ "$1" = -s ]; then echo MINGW64_NT-10.0-22631; else echo x86_64; fi\n',
+    )
+    res = _run(env)
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert "run it inside that distro" in res.stdout
+    assert "Ubuntu 24.04.1 LTS" in res.stdout
+    assert not any(c.startswith(("apt-get", "dnf", "nvidia-ctk", "systemctl")) for c in _calls(log))
+
+
+def test_a_mac_never_asks_the_daemon_which_backend_it_is(tmp_path: Path):
+    """No Mac takes an NVIDIA GPU whatever the daemon is, so the backend probe added for
+    Windows must not make macOS depend on a reachable daemon."""
+    _, log, env = _setup(tmp_path, driver = False, desktop_info_fails = True)
+    _stub(tmp_path / "bin" / "uname", 'if [ "$1" = -s ]; then echo Darwin; else echo arm64; fi\n')
+    res = _run(env)
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert "no NVIDIA GPU" in res.stdout and "UNSLOTH_ALLOW_CPU=1" in res.stdout
+    assert not any(c.startswith("docker info") for c in _calls(log))
+
+
+def test_a_mac_with_an_uninspectable_context_gets_the_error_not_nothing_to_install(tmp_path: Path):
+    """Same rule as the endpoint check further down: a context lookup failure is an
+    error, not a local daemon."""
+    _, _, env = _setup(tmp_path, driver = False, uid = 1000)
+    _stub(tmp_path / "bin" / "uname", 'if [ "$1" = -s ]; then echo Darwin; else echo arm64; fi\n')
+    res = _run(env, extra_env = {"DOCKER_CONTEXT": "missing-in-root-config"})
+    assert res.returncode == 2, res.stdout + res.stderr
+    assert "cannot inspect the Docker context 'missing-in-root-config'" in res.stderr
+    assert "nothing to install" not in res.stdout
 
 
 def test_the_old_driver_message_names_the_host_platform_even_without_verification(tmp_path: Path):

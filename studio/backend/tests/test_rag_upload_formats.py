@@ -5,6 +5,7 @@
 
 import base64
 import codecs
+import hashlib
 from pathlib import Path
 
 import pytest
@@ -84,8 +85,9 @@ def test_formats_finish_and_remain_searchable(
 ):
     assert set(EXTENSIONS) == config.UPLOAD_EXTS
     source = write_document(tmp_path / f"report{extension}", large = True)
-    stored, filename = persist_document(source, transport)
+    stored, filename, content_hash = persist_document(source, transport)
     assert Path(stored).read_bytes() == source.read_bytes()
+    assert content_hash == hashlib.sha256(source.read_bytes()).hexdigest()
     vision_calls = []
     monkeypatch.setattr(captioner, "vision_endpoint", lambda: ("http://local", "local"))
     monkeypatch.setattr(captioner, "_caption_one", lambda *args: vision_calls.append("caption"))
@@ -110,7 +112,8 @@ def test_formats_finish_and_remain_searchable(
         assert not store.search_lexical(conn, scope, "hiddenscriptmarker", 5)
     finally:
         conn.close()
-    duplicate_path, filename = persist_document(source, transport)
+    duplicate_path, filename, duplicate_hash = persist_document(source, transport)
+    assert duplicate_hash == content_hash
     duplicate_id, duplicate_job = ingestion.start_ingestion(
         scope, None, "formats", filename, duplicate_path, background = False
     )

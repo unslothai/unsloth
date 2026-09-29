@@ -2,16 +2,11 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
-const source = readFileSync(
-  new URL(
-    "../src/features/chat/components/research-activity-panel.tsx",
-    import.meta.url,
-  ),
-  "utf8",
-);
+import { readSrc } from "./helpers/kit.ts";
+
+const source = readSrc("features/chat/components/research-activity-panel.tsx");
 
 function between(start: string, end: string): string {
   const startIndex = source.indexOf(start);
@@ -46,7 +41,7 @@ test("timeline labels, icons, times, and disclosure controls share one center", 
   assert.match(trigger, /relative flex min-h-10 w-full items-center/);
   assert.match(
     trigger,
-    /absolute -left-7 top-1\/2 flex size-\[15px\] -translate-y-1\/2/,
+    /absolute -left-7 top-1\/2 flex size-\[calc\(15px\*var\(--ui-space-scale,1\)\)\] -translate-y-1\/2/,
   );
   assert.doesNotMatch(trigger, /items-start|className="mt-0\.5 shrink-0/);
 });

@@ -85,7 +85,7 @@ export function LogDetails({
           icon={ChevronDownIcon}
           aria-hidden="true"
           strokeWidth={1.5}
-          className="size-[13px] shrink-0 transition-transform group-open:rotate-180"
+          className="size-[calc(13px*var(--ui-space-scale,1))] shrink-0 transition-transform group-open:rotate-180"
         />
       </summary>
       <pre

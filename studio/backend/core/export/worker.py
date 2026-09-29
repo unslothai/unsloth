@@ -13,6 +13,7 @@ Pattern follows core/inference/worker.py and core/training/worker.py.
 
 from __future__ import annotations
 
+from utils.account_context import account_thread
 import contextlib
 import errno
 import structlog
@@ -31,6 +32,8 @@ logger = get_logger(__name__)
 from utils.native_tls import activate_native_tls
 
 activate_native_tls()
+
+from utils.hardware import apply_gpu_ids
 
 
 # Gate controlling whether captured stdout/stderr lines are forwarded to the
@@ -83,7 +86,6 @@ def _setup_log_capture(resp_queue: Any) -> None:
     os.close(w_out)
     os.close(w_err)
 
-    # Replace sys.stdout/sys.stderr with line-buffered writers on fds 1 and 2.
     try:
         sys.stdout = os.fdopen(1, "w", buffering = 1, encoding = "utf-8", errors = "replace")
         sys.stderr = os.fdopen(2, "w", buffering = 1, encoding = "utf-8", errors = "replace")
@@ -149,13 +151,13 @@ def _setup_log_capture(resp_queue: Any) -> None:
             except Exception:
                 pass
 
-    t_out = threading.Thread(
+    t_out = account_thread(
         target = _reader,
         args = (r_out, "stdout", saved_out_fd),
         daemon = True,
         name = "export-log-stdout",
     )
-    t_err = threading.Thread(
+    t_err = account_thread(
         target = _reader,
         args = (r_err, "stderr", saved_err_fd),
         daemon = True,
@@ -179,12 +181,12 @@ def _activate_transformers_version(model_name: str, hf_token: str | None = None)
 
 @contextlib.contextmanager
 def _offline_window_if_unreachable(step = "loading"):
-    """Force HF offline for a network-touching step (transformers version activation, or the
-    load preflights that hit the Hub) when the endpoint is unreachable, then restore the prior
-    env. Keeps a no-network export from hanging on Hub calls that run before load_checkpoint's
-    own probe, while letting this persistent worker re-decide per operation once back online.
+    """Force HF offline for a network-touching step (transformers version activation, the load
+    preflights that hit the Hub, or a local export) when the endpoint is unreachable, then
+    restore the prior env. Keeps a no-network export from hanging or failing on Hub calls, while
+    letting this persistent worker re-decide per operation once back online.
 
-    Post-ML-import (the load preflights), huggingface_hub has already read its in-process
+    Post-ML-import (load preflights, exports), huggingface_hub has already read its in-process
     offline constant and cached sessions, so env alone is too late: defer to the loader's
     _force_hf_offline (env + in-process flags + session reset). Pre-import (activation),
     huggingface_hub is not loaded yet, so setting the env vars suffices for its urllib probes."""
@@ -229,7 +231,6 @@ def _offline_window_if_unreachable(step = "loading"):
 
 
 def _send_response(resp_queue: Any, response: dict) -> None:
-    """Send a response to the parent process."""
     try:
         resp_queue.put(response)
     except (OSError, ValueError) as exc:
@@ -237,7 +238,6 @@ def _send_response(resp_queue: Any, response: dict) -> None:
 
 
 def _handle_load(backend, cmd: dict, resp_queue: Any) -> None:
-    """Handle a load_checkpoint command."""
     from hub.utils.hf_tokens import hf_token_arg
 
     checkpoint_path = cmd["checkpoint_path"]
@@ -260,6 +260,7 @@ def _handle_load(backend, cmd: dict, resp_queue: Any) -> None:
                 checkpoint_path,
             )
     trust_remote_code = cmd.get("trust_remote_code", False)
+    base_model = cmd.get("base_model") or None
 
     # Auto-enable trust_remote_code for NemotronH/Nano models.
     if not trust_remote_code:
@@ -291,7 +292,7 @@ def _handle_load(backend, cmd: dict, resp_queue: Any) -> None:
         from utils.models.model_config import get_base_model_from_lora_identifier
 
         # Resolve a LOCAL or REMOTE adapter's base so a remote LoRA base is gated too.
-        _base = get_base_model_from_lora_identifier(checkpoint_path, hf_token)
+        _base = base_model or get_base_model_from_lora_identifier(checkpoint_path, hf_token)
         if _base:
             requested_security_targets.append(_base)
     except Exception as exc:
@@ -376,6 +377,7 @@ def _handle_load(backend, cmd: dict, resp_queue: Any) -> None:
             load_in_4bit = load_in_4bit,
             trust_remote_code = trust_remote_code,
             hf_token = hf_token,
+            base_model = base_model,
         )
 
         _send_response(
@@ -405,7 +407,6 @@ def _handle_load(backend, cmd: dict, resp_queue: Any) -> None:
 
 
 def _handle_export(backend, cmd: dict, resp_queue: Any) -> None:
-    """Handle any export command (merged, base, gguf, lora)."""
     export_type = cmd["export_type"]  # "merged", "base", "gguf", "lora"
     response_type = f"export_{export_type}_done"
 
@@ -457,7 +458,6 @@ def _handle_export(backend, cmd: dict, resp_queue: Any) -> None:
                 hf_token = cmd.get("hf_token"),
                 imatrix_file = cmd.get("imatrix_file"),
                 private = cmd.get("private", False),
-                gguf_shard_size = cmd.get("gguf_shard_size"),
             )
         elif export_type == "lora":
             success, message, output_path = backend.export_lora_adapter(
@@ -498,7 +498,6 @@ def _handle_export(backend, cmd: dict, resp_queue: Any) -> None:
 
 
 def _handle_cleanup(backend, resp_queue: Any) -> None:
-    """Handle a cleanup command."""
     try:
         success = backend.cleanup_memory()
         _send_response(
@@ -561,6 +560,8 @@ def run_export_process(*, cmd_queue: Any, resp_queue: Any, config: dict) -> None
         quiet_progress_bars = False,
     )
 
+    apply_gpu_ids(config.get("resolved_gpu_ids"), backend = config.get("device_backend"))
+
     checkpoint_path = config["checkpoint_path"]
 
     # Before the huggingface_hub import: it latches HF_HUB_DISABLE_IMPLICIT_TOKEN into a
@@ -572,7 +573,6 @@ def run_export_process(*, cmd_queue: Any, resp_queue: Any, config: dict) -> None
         # whoever exports next. The caller's own travels as an argument instead.
         apply_token_to_child_env(os.environ, False)
 
-    # ── 1. Activate correct transformers version BEFORE any ML imports ──
     with _offline_window_if_unreachable(step = "activating transformers"):
         try:
             # Plain token: _load_config_json refuses the hub cache for the sentinel, so
@@ -591,20 +591,16 @@ def run_export_process(*, cmd_queue: Any, resp_queue: Any, config: dict) -> None
             )
             return
 
-    # ── 1b. Check Triton on Windows (must precede import torch) ──
     # Importable Triton isn't enough on AMD: its clang-cl JIT also needs the MSVC CRT headers (#7595).
     if sys.platform == "win32":
         from core._msvc_env import gate_torch_compile_on_windows
         gate_torch_compile_on_windows(logger)
 
-    # ── 1c. Stub torchao on Windows ROCm ──
-    # See core/_torchao_stub.py: torchao crashes on Windows ROCm (RCCL absent).
-    # No-op off Windows ROCm. Must run before importing transformers / unsloth_zoo.
-    from core._torchao_stub import install_torchao_windows_rocm_stub
+    # Before transformers / unsloth_zoo: real torchao via unsloth's shim on Windows ROCm, else the stub.
+    from core._torchao_stub import install_torchao_windows_rocm_real_or_stub
 
-    install_torchao_windows_rocm_stub()
+    install_torchao_windows_rocm_real_or_stub()
 
-    # ── 2. Import ML libraries (fresh in this clean process) ──
     try:
         _send_response(
             resp_queue,
@@ -642,7 +638,6 @@ def run_export_process(*, cmd_queue: Any, resp_queue: Any, config: dict) -> None
         )
         return
 
-    # ── 3. Create export backend and load initial checkpoint ──
     try:
         backend = ExportBackend()
 
@@ -663,8 +658,6 @@ def run_export_process(*, cmd_queue: Any, resp_queue: Any, config: dict) -> None
         )
         return
 
-    # ── 4. Command loop - process commands until shutdown ──
-    # ── 4. Command loop — process commands until shutdown ──
     logger.info("Export subprocess ready, entering command loop")
 
     while True:
@@ -691,7 +684,15 @@ def run_export_process(*, cmd_queue: Any, resp_queue: Any, config: dict) -> None
                     _handle_load(backend, cmd, resp_queue)
 
             elif cmd_type == "export":
-                _handle_export(backend, cmd, resp_queue)
+                # Re-probed per export: connectivity may change after loading. A push needs the Hub,
+                # so pinning it offline for the whole export would only make the push fail.
+                export_window = (
+                    contextlib.nullcontext()
+                    if cmd.get("push_to_hub")
+                    else _offline_window_if_unreachable(step = "exporting")
+                )
+                with export_window:
+                    _handle_export(backend, cmd, resp_queue)
 
             elif cmd_type == "cleanup":
                 _handle_cleanup(backend, resp_queue)

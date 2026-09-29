@@ -140,9 +140,8 @@ const DOC_LINKS = [
   },
 ];
 
-// Fallback until the backend's installed-CLI check resolves. Mirrors
-// CODING_AGENTS in studio/backend/utils/coding_agents.py, minus HIDDEN_AGENTS
-// (see ../api/coding-agents.ts).
+// Fallback until the backend's installed-CLI check resolves. Mirrors CODING_AGENTS in
+// studio/backend/utils/coding_agents.py, minus HIDDEN_AGENTS (see ../api/coding-agents.ts).
 const DEFAULT_AGENTS = ["claude", "codex", "openclaw", "opencode", "hermes", "dsh"];
 // The agent selection resets to this whenever an auto-pick is no longer
 // trustworthy (leaving loopback, or the only compatible detected agent
@@ -174,9 +173,8 @@ function bodyExtraLines(variant: Variant, indent: string): string[] {
   if (variant !== "plain") {
     lines.push(`${indent}"enable_tools": true,`);
     lines.push(`${indent}"enabled_tools": [${toolsJson}],`);
-    // The gate only asks over the X-Unsloth-Events frames these snippets deliberately do
-    // not take, so say the tools run unprompted rather than hand out a request the server
-    // refuses.
+    // The gate only asks over the X-Unsloth-Events frames these snippets deliberately do not take,
+    // so say the tools run unprompted rather than hand out a request the server refuses.
     lines.push(`${indent}"permission_mode": "off",`);
   }
   return lines;
@@ -648,7 +646,10 @@ export function UsageExamples({
   const keylessBase =
     !(useTunnel && cloudflareUrl) &&
     keylessBaseEligible(base, keylessScope, keylessExposure);
-  const model = useExampleModelName(keylessBase && !apiKey);
+  // Only the inference scope keeps a keyless caller on the loaded model; full can switch.
+  const model = useExampleModelName(
+    keylessBase && !apiKey && keylessScope === "inference",
+  );
 
   const [statusAnswer, setStatusAnswer] = useState<{
     key: string;
@@ -714,19 +715,17 @@ export function UsageExamples({
     void fetchDeviceType({ force: true });
   }, []);
 
-  // Fetching is the only job of this effect: populate availableAgents/
-  // detectedAgents (or clear them). Which agent gets auto-picked from that
-  // list is derived separately below, so it can react to the loaded model
-  // changing too, not just a fresh fetch.
+  // Fetching is the only job of this effect: populate availableAgents/ detectedAgents (or clear
+  // them). Which agent gets auto-picked from that list is derived separately below, so it can react
+  // to the loaded model changing too, not just a fresh fetch.
   useEffect(() => {
     // Browser loopback URLs can be SSH/local forwards, so only the desktop app
     // may use backend PATH checks to mark or auto-pick local agents.
     if (!localAgentDetection) {
       setDetectedAgents([]);
-      // A previously auto-picked agent was only ever verified against the
-      // Unsloth backend's PATH, which is meaningless now that this panel no
-      // longer targets a loopback base -- don't leave it selected, but
-      // never touch a choice the user made by hand.
+      // A previously auto-picked agent was only ever verified against the Unsloth backend's PATH,
+      // which is meaningless now that this panel no longer targets a loopback base -- don't leave
+      // it selected, but never touch a choice the user made by hand.
       if (!agentPickedByUserRef.current) {
         // The effect below corrects this; isGguf read here would be a stale closure.
         setAgent(DEFAULT_AGENT);
@@ -862,7 +861,7 @@ export function UsageExamples({
 
   return (
     <section className="flex min-w-0 max-w-full flex-col">
-      <h2 className="mb-2 text-sm font-semibold text-foreground">
+      <h2 className="settings-heading mb-2 text-sm font-semibold">
         {t("settings.apiKeys.usageExamples")}
       </h2>
       <div className="min-w-0 max-w-full overflow-hidden rounded-lg border border-border bg-muted/20">
@@ -889,13 +888,15 @@ export function UsageExamples({
                       className="flex items-center rounded text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                       aria-label={t("settings.apiKeys.secureHttpsHint")}
                     >
+                      {/* Follows the UI font size, like the SettingsRow hint
+                          this matches. */}
                       <HugeiconsIcon
                         icon={InformationCircleIcon}
-                        className="size-3.5"
+                        className="size-[var(--ui-icon-size-sm)]"
                       />
                     </button>
                   </TooltipTrigger>
-                  <TooltipContent className="max-w-[260px] text-ui-11 leading-snug">
+                  <TooltipContent className="max-w-[calc(260px*var(--ui-space-scale,1))] text-ui-11 leading-snug">
                     {t("settings.apiKeys.secureHttpsHint")}
                   </TooltipContent>
                 </Tooltip>

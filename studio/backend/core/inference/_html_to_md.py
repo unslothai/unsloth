@@ -157,10 +157,9 @@ _IMPLICIT_CLOSERS: dict = {
 }
 
 
-# a nested container makes an inner item a descendant
 # Item tag -> container tags that re-scope it: a nested container makes an inner item a descendant, not an
-# optional-close sibling, so recovery must stop there rather than close (and un-hide) the outer item and leak its nested
-# content.
+# optional-close sibling, so recovery must stop there rather than close (and un-hide) the outer item and leak its
+# nested content.
 _CLOSE_BARRIERS: dict = {
     "li": frozenset({"ul", "ol", "menu"}),
     "dt": frozenset({"dl"}),
@@ -314,9 +313,8 @@ class _MarkdownRenderer(HTMLParser):
         self._dropped_chars: int = 0
         self._seg_dropped_start: int = 0
         self.scope_dropped: list[int] = []
-        # role="heading", hgroup and linked h1 render as prose
-        # Heading text per segment: role="heading", hgroup and linked h1 render as prose, so ATX reparsing alone cannot
-        # keep them out of the gate.
+        # Heading text per segment: role="heading", hgroup and linked h1 render as prose, so ATX reparsing alone
+        # cannot keep them out of the gate.
         self._seg_heading_texts: list[str] = []
         self.scope_heading_prose: list[int] = []
         # Open-tag indices of headings, unwound with _hidden_marks.
@@ -354,7 +352,6 @@ class _MarkdownRenderer(HTMLParser):
         # Blockquote state: stack of buffers so nested blockquotes get the right ">" depth.
         self._bq_stack: list[list[str]] = []
 
-    # ------------------------------------------------------------------
     def _nested_buffer_open(self, frame: _HeaderFrame) -> bool:
         """True when a side buffer opened *inside* *frame* still holds content.
 
@@ -407,7 +404,6 @@ class _MarkdownRenderer(HTMLParser):
         else:
             self._out.append(text)
 
-    # ------------------------------------------------------------------
     def _seg_heading_prose(self) -> int:
         """Heading characters in this segment that the gate would otherwise read as
         body prose. ATX headings carry their own ``#`` here and so score zero."""
@@ -501,10 +497,7 @@ class _MarkdownRenderer(HTMLParser):
             # Preserved by hand, so tell the gate too or a title-only card reads as body prose.
             self._seg_heading_texts.append(heading_text)
 
-    # ------------------------------------------------------------------ Tag handlers
-    # ------------------------------------------------------------------ Structural bookkeeping shared by every start
-    # tag (skip/hidden/scope).
-    # ------------------------------------------------------------------
+    # Tag handlers. Structural bookkeeping shared by every start tag (skip/hidden/scope).
     def _truncate_open_tags(self, index: int) -> None:
         """Drop the open-tag stack above *index*, keeping the closable count."""
         for name in self._open_tags[index:]:
@@ -857,7 +850,6 @@ class _MarkdownRenderer(HTMLParser):
             self._in_table = False
             self._emit("\n")
 
-    # ------------------------------------------------------------------
     def _text_suppressed(self) -> bool:
         if self._skip_depth or self._hidden_marks:
             return True
@@ -899,7 +891,6 @@ class _MarkdownRenderer(HTMLParser):
         self._count_header_text(text)
         self._emit(text)
 
-    # Flush pending buffers (handles truncated HTML from capped fetches)
     def flush_pending(self) -> None:
         """Flush open side-buffers into ``_out`` after close(), recovering truncated HTML."""
         # Headers first: a frame finalizes its inner buffers, then emits into the enclosing link or cell, which must
@@ -972,9 +963,8 @@ def _cleanup(text: str) -> str:
     return "\n".join(out).strip()
 
 
-# known boilerplate stripped from main-content conversions, matched only against short lines
-# Known boilerplate fragments stripped from main-content conversions, matched only against short lines. Sources: GitHub
-# page furniture / client-side error placeholders, skip-links, cookie banners.
+# Known boilerplate fragments stripped from main-content conversions, matched only against short lines. Sources:
+# GitHub page furniture / client-side error placeholders, skip-links, cookie banners.
 _BOILERPLATE_FRAGMENTS = (
     "skip to content",
     "skip to main content",
@@ -993,7 +983,6 @@ _BOILERPLATE_FRAGMENTS = (
     "accept all cookies",
     "manage cookie preferences",
 )
-# only shorter lines are eligible: real content sentences quoting a fragment run longer
 # Only shorter lines are eligible for boilerplate dropping; real content sentences quoting a fragment run longer.
 _BOILERPLATE_MAX_LINE_CHARS = 300
 

@@ -1,11 +1,8 @@
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
-#
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
-#
 #     http://www.apache.org/licenses/LICENSE-2.0
-#
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -168,24 +165,27 @@ class LoRA_MLP(torch.autograd.Function):
         d_downA.addmm_(h.t(), dY @ downB.t(), alpha = downS, beta = 0)
         d_downB.addmm_(downA.t() @ h.t(), dY, alpha = downS, beta = 0)
 
+        up_dB = df @ upB.t()
+        gate_dB = de @ gateB.t()
+
         # d_upA = X.t() @ (df @ upB.t()), d_upB = (upA.t() @ X.t()) @ df, both scaled by upS.
-        d_upA.addmm_(X.t(), df @ upB.t(), alpha = upS, beta = 0)
+        d_upA.addmm_(X.t(), up_dB, alpha = upS, beta = 0)
         d_upB.addmm_(upA.t() @ X.t(), df, alpha = upS, beta = 0)
 
         # d_gateA = X.t() @ (de @ gateB.t()), d_gateB = (gateA.t() @ X.t()) @ de, both scaled by gateS.
-        d_gateA.addmm_(X.t(), de @ gateB.t(), alpha = gateS, beta = 0)
+        d_gateA.addmm_(X.t(), gate_dB, alpha = gateS, beta = 0)
         d_gateB.addmm_(gateA.t() @ X.t(), de, alpha = gateS, beta = 0)
 
         # dX = matmul_lora(df, upW.t(), ...) + matmul_lora(de, gateW.t(), ...), expanded below.
         upW = fast_dequantize(upW.t(), upW_quant)
         dX = torch.matmul(df, upW.t(), out = X if ctx.inplace else None)
         del upW
-        dX.addmm_(df @ upB.t(), upA.t(), alpha = upS)
+        dX.addmm_(up_dB, upA.t(), alpha = upS)
 
         gateW = fast_dequantize(gateW.t(), gateW_quant)
         dX.addmm_(de, gateW.t())
         del gateW
-        dX.addmm_(de @ gateB.t(), gateA.t(), alpha = gateS)
+        dX.addmm_(gate_dB, gateA.t(), alpha = gateS)
 
         return (
             dX.view(batch, seq_len, hd),
@@ -447,32 +447,36 @@ class LoRA_QKV(torch.autograd.Function):
         d_VA = torch.empty_like(VA)
         d_VB = torch.empty_like(VB)
 
+        q_dB = dQ @ QB.t()
+        k_dB = dK @ KB.t()
+        v_dB = dV @ VB.t()
+
         # d_QA = X.t() @ (dQ @ QB.t()), d_QB = (QA.t() @ X.t()) @ dQ, both scaled by QS; K and V below are
         # identical with their own scales.
-        d_QA.addmm_(X.t(), dQ @ QB.t(), alpha = QS, beta = 0)
+        d_QA.addmm_(X.t(), q_dB, alpha = QS, beta = 0)
         d_QB.addmm_(QA.t() @ X.t(), dQ, alpha = QS, beta = 0)
 
-        d_KA.addmm_(X.t(), dK @ KB.t(), alpha = KS, beta = 0)
+        d_KA.addmm_(X.t(), k_dB, alpha = KS, beta = 0)
         d_KB.addmm_(KA.t() @ X.t(), dK, alpha = KS, beta = 0)
 
-        d_VA.addmm_(X.t(), dV @ VB.t(), alpha = VS, beta = 0)
+        d_VA.addmm_(X.t(), v_dB, alpha = VS, beta = 0)
         d_VB.addmm_(VA.t() @ X.t(), dV, alpha = VS, beta = 0)
 
         # Combine the per-projection derivatives into dX.
         QW = fast_dequantize(QW.t(), QW_quant)
         dX = torch.matmul(dQ, QW.t(), out = X if ctx.inplace else None)
         del QW
-        dX.addmm_(dQ @ QB.t(), QA.t(), alpha = QS)
+        dX.addmm_(q_dB, QA.t(), alpha = QS)
 
         KW = fast_dequantize(KW.t(), KW_quant)
         dX.addmm_(dK, KW.t())
         del KW
-        dX.addmm_(dK @ KB.t(), KA.t(), alpha = KS)
+        dX.addmm_(k_dB, KA.t(), alpha = KS)
 
         VW = fast_dequantize(VW.t(), VW_quant)
         dX.addmm_(dV, VW.t())
         del VW
-        dX.addmm_(dV @ VB.t(), VA.t(), alpha = VS)
+        dX.addmm_(v_dB, VA.t(), alpha = VS)
 
         return (
             dX.view(batch, seq_len, hd),
@@ -585,15 +589,17 @@ class LoRA_W(torch.autograd.Function):
         d_A = torch.empty_like(A)
         d_B = torch.empty_like(B)
 
+        y_dB = dY @ B.t()
+
         # d_A = X.t() @ (dY @ B.t()), d_B = (A.t() @ X.t()) @ dY, both scaled by S.
-        d_A.addmm_(X.t(), dY @ B.t(), alpha = S, beta = 0)
+        d_A.addmm_(X.t(), y_dB, alpha = S, beta = 0)
         d_B.addmm_(A.t() @ X.t(), dY, alpha = S, beta = 0)
 
         # Get derivative for dX
         W = fast_dequantize(W.t(), W_quant)
         dX = dY @ W.t()
         del W
-        dX.addmm_(dY @ B.t(), A.t(), alpha = S)
+        dX.addmm_(y_dB, A.t(), alpha = S)
 
         return dX.view(batch, seq_len, hd), None, None, d_A.t(), d_B.t(), None
 

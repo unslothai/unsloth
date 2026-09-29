@@ -113,10 +113,9 @@ export async function withRequestTimeout<T>(
   running.catch(() => {});
   const deadline = new Promise<never>((_, reject) => {
     timer = setTimeout(() => {
-      // Reject BEFORE aborting. `local.abort()` settles an abort-aware task
-      // synchronously, and that rejection would then win the race and arrive
-      // as an ordinary AbortError, which the poll loop drops in silence: the
-      // deadline would announce itself only for work that ignores the signal.
+      // Reject BEFORE aborting. `local.abort()` settles an abort-aware task synchronously, and that
+      // rejection would then win the race and arrive as an ordinary AbortError, which the poll loop
+      // drops in silence: the deadline would announce itself only for work that ignores the signal.
       reject(new DebugLogTimeoutError(timeoutMs));
       local.abort();
     }, timeoutMs);
@@ -124,10 +123,9 @@ export async function withRequestTimeout<T>(
   try {
     return await Promise.race([running, deadline]);
   } catch (error) {
-    // The caller's own abort wins the tie: an unmount or a source switch is
-    // silent by design, and it can race the timer on a request that was
-    // already doomed. Only a backstop with no caller abort behind it is a
-    // fault the user needs told about.
+    // The caller's own abort wins the tie: an unmount or a source switch is silent by design, and
+    // it can race the timer on a request that was already doomed. Only a backstop with no caller
+    // abort behind it is a fault the user needs told about.
     if (signal?.aborted && isRequestTimeout(error)) throw abortError();
     throw error;
   } finally {
@@ -151,8 +149,7 @@ export function isPageStale(page: {
   pageSourceId: string | null;
 }): boolean {
   if (page.requestSelection !== page.currentSelection) return true;
-  // The server answers an unset source with its default, so only disagree when
-  // both ends named one.
+  // The server answers an unset source with its default, so only disagree when both ends named one.
   return Boolean(
     page.requestSourceId &&
       page.pageSourceId &&

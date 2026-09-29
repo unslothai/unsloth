@@ -66,7 +66,7 @@ def test_legacy_scanner_tags_rows_ollama(tmp_path):
     assert found[0].model_id == "ollama/llama3:latest"
 
 
-@pytest.mark.parametrize("source", ["hf_cache", "ollama"])
+@pytest.mark.parametrize("source", ["hf_cache", "ollama", "hermes"])
 def test_custom_folder_merge_keeps_real_sources(source):
     # The merge step mirrors _promote_to_custom_source() in
     # hub/services/models/local_inventory.py: only unattributed rows become
@@ -74,7 +74,7 @@ def test_custom_folder_merge_keeps_real_sources(source):
     src = (Path(__file__).resolve().parent.parent / "routes" / "models.py").read_text(
         encoding = "utf-8"
     )
-    assert 'm if m.source in ("hf_cache", "ollama") else' in src
+    assert 'if m.source in ("hf_cache", "ollama", "hermes")' in src
     row = LocalModelInfo(
         id = "/x",
         display_name = "x",
@@ -82,6 +82,8 @@ def test_custom_folder_merge_keeps_real_sources(source):
         source = source,
     )
     kept = (
-        row if row.source in ("hf_cache", "ollama") else row.model_copy(update = {"source": "custom"})
+        row
+        if row.source in ("hf_cache", "ollama", "hermes")
+        else row.model_copy(update = {"source": "custom"})
     )
     assert kept.source == source

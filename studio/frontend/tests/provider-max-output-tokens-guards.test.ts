@@ -2,11 +2,11 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
   installLocalStorageFake,
+  readSrc,
   registerBundlerResolver,
 } from "./helpers/kit.ts";
 
@@ -245,19 +245,13 @@ test("an entry saved by an older install loads without gaining a cap", () => {
 // applied while the provider is unresolved would lower the value permanently. Source-level
 // assertions, since neither call site is reachable without a DOM.
 test("every clamp site waits for a resolved provider", () => {
-  const settings = readFileSync(
-    new URL("../src/features/chat/chat-settings-sheet.tsx", import.meta.url),
-    "utf8",
-  );
+  const settings = readSrc("features/chat/chat-settings-sheet.tsx");
   assert.match(
     settings,
     /function applyPresetParamsWithinCurrentLimits\([\s\S]*?if \(!isExternalModel \|\| activeExternalProvider == null\) return nextParams;/,
   );
 
-  const store = readFileSync(
-    new URL("../src/features/chat/stores/chat-runtime-store.ts", import.meta.url),
-    "utf8",
-  );
+  const store = readSrc("features/chat/stores/chat-runtime-store.ts");
   assert.match(
     store,
     /if \(provider\) \{\s*const cap = getExternalMaxOutputTokens\(\s*provider\.providerType/,

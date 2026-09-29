@@ -1,11 +1,8 @@
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
-#
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
-#
 #     http://www.apache.org/licenses/LICENSE-2.0
-#
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -40,7 +37,7 @@ except:
 if not HAS_FLEX_ATTENTION:
     # Logit softcapping
     @torch.compile(fullgraph = True, dynamic = True, options = torch_compile_options)
-    def slow_attention_softcapping(Q, K, V, causal_mask, self, bsz, q_len):
+    def _compiled_slow_attention_softcapping(Q, K, V, causal_mask, self, bsz, q_len):
         n_heads = self.config.num_attention_heads
         head_dim = self.head_dim
         n_kv_heads = self.config.num_key_value_heads
@@ -61,13 +58,53 @@ if not HAS_FLEX_ATTENTION:
         Q = Q * torch.tensor(s**-0.5, dtype = Q.dtype)
         A = torch.matmul(Q, K.transpose(2, 3))
         A = t * torch.tanh(A / t)
-        A += causal_mask[:q_len, :q_len]
+        A += causal_mask[..., :q_len, :q_len]
         # Much slower under torch compile than the masked_fill_ it replaces.
         A = torch.nn.functional.softmax(A, dim = -1, dtype = torch.float32).to(Q.dtype)
         A = torch.matmul(A, V)
         A = A.transpose(1, 2).contiguous()
         A = A.reshape(bsz, q_len, n_heads * head_dim)
         return A
+
+    _SOFTCAP_EAGER = {}
+
+    def _softcapping_attention(Q, K, V, causal_mask, self, bsz, q_len):
+        key = Q.device.type
+        if not _SOFTCAP_EAGER.get(key):
+            try:
+                return _compiled_slow_attention_softcapping(Q, K, V, causal_mask, self, bsz, q_len)
+            except torch.OutOfMemoryError:
+                raise
+            except Exception as error:
+                # ROCm torch 2.11 inductor rejects this graph (inductor::_alloc_from_pool aliasing) on gfx1151.
+                logger.warning_once(
+                    f"Unsloth: compiled Gemma2 softcapping attention failed on {key}, using eager: {error}"
+                )
+                _SOFTCAP_EAGER[key] = True
+        return _compiled_slow_attention_softcapping._torchdynamo_orig_callable(
+            Q, K, V, causal_mask, self, bsz, q_len
+        )
+
+    def slow_attention_softcapping(Q, K, V, causal_mask, self, bsz, q_len):
+        # Inductor indexes the scores in int32; past 2**31 elements the last rows come back NaN.
+        rows = max(1, (2**31 - 1) // (self.config.num_attention_heads * q_len * q_len))
+        if bsz <= rows:
+            return _softcapping_attention(Q, K, V, causal_mask, self, bsz, q_len)
+        per_row_mask = causal_mask.dim() == 4 and causal_mask.shape[0] == bsz
+        return torch.cat(
+            [
+                _softcapping_attention(
+                    Q[i : i + rows],
+                    K[i : i + rows],
+                    V[i : i + rows],
+                    causal_mask[i : i + rows] if per_row_mask else causal_mask,
+                    self,
+                    min(rows, bsz - i),
+                    q_len,
+                )
+                for i in range(0, bsz, rows)
+            ]
+        )
 
     create_flex_attention_causal_mask = None
     create_flex_attention_sliding_window_mask = None
@@ -166,7 +203,7 @@ def slow_inference_attention_softcapping(Q, K, V, causal_mask, self, bsz, q_len)
     A /= t
     torch_tanh(A, out = A)
     A *= t
-    A += causal_mask[:q_len, :q_len]
+    A += causal_mask[..., :q_len, :q_len]
     # Much slower under torch compile than the masked_fill_ it replaces.
     A = torch_nn_functional_softmax(A, dim = -1, dtype = torch.float32).to(Q.dtype)
     A = torch_matmul(A, V)

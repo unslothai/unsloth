@@ -47,6 +47,31 @@ def _create_cli_trainer(model_name: str, hf_token: Optional[str]):
     return UnslothTrainer()
 
 
+def _optimizer_for_host(requested: Optional[str] = None) -> str:
+    """The CLI exposes no --optim, so trainer.py would fall back to its own `adamw_8bit`
+    literal, which cannot complete a step on Intel XPU. Resolve the same device policy the
+    Studio route and worker config use, so `unsloth train` lands on the same optimizer a
+    Studio run on this host would. Non-XPU hosts keep `adamw_8bit` exactly as before.
+
+    Takes `requested` rather than only filling a default, so a future --optim carrying a
+    bitsandbytes name is normalized too instead of reaching the trainer unchanged.
+    """
+    ensure_studio_backend_path()
+    with studio_backend_imports("unsloth train"):
+        from studio.backend.core.training.training import (
+            DEFAULT_TRAINING_OPTIMIZER,
+            normalize_training_optimizer_for_device,
+        )
+        from studio.backend.utils.hardware import get_device
+
+    optimizer = requested or DEFAULT_TRAINING_OPTIMIZER
+    try:
+        device_backend = get_device().value
+    except Exception:  # noqa: BLE001 -- an undetectable host keeps the historical default
+        return optimizer
+    return normalize_training_optimizer_for_device(optimizer, device_backend = device_backend)
+
+
 @add_options_from_config(Config)
 def train(
     config: Optional[Path] = typer.Option(
@@ -93,6 +118,11 @@ def train(
 
         data = cfg.model_dump()
         data["training"]["output_dir"] = str(data["training"]["output_dir"])
+        # model_dump carries the config file's tokens verbatim, and this goes to stdout: CI logs,
+        # notebook output, scrollback. Mask only what is set, so an unset token still reads as null.
+        for name in ("hf_token", "wandb_token"):
+            if data["logging"].get(name) is not None:
+                data["logging"][name] = "[redacted]"
         typer.echo(yaml.dump(data, default_flow_style = False, sort_keys = False))
         raise typer.Exit(code = 0)
 
@@ -124,7 +154,9 @@ def train(
         model_name = cfg.model,
         max_seq_length = cfg.training.max_seq_length,
         load_in_4bit = cfg.training.load_in_4bit if use_lora else False,
+        full_finetuning = not use_lora,
         hf_token = hf_token,
+        use_gradient_checkpointing = cfg.training.gradient_checkpointing,
     ):
         typer.echo("Model load failed", err = True)
         raise typer.Exit(code = 1)
@@ -149,12 +181,14 @@ def train(
 
     training_kwargs = cfg.training_kwargs()
     training_kwargs["wandb_token"] = wandb_token
+    training_kwargs["optim"] = _optimizer_for_host(training_kwargs.get("optim"))
     started = trainer.start_training(dataset = ds, eval_dataset = eval_ds, **training_kwargs)
 
     if not started:
         typer.echo("Training failed to start", err = True)
         raise typer.Exit(code = 1)
 
+    interrupted = False
     try:
         while trainer.training_thread and trainer.training_thread.is_alive():
             progress = trainer.get_training_progress()
@@ -162,6 +196,7 @@ def train(
                 break
             time.sleep(1)
     except KeyboardInterrupt:
+        interrupted = True
         typer.echo("Stopping training (Ctrl+C detected)...")
         trainer.stop_training()
     finally:
@@ -176,3 +211,5 @@ def train(
     if getattr(final, "error", None):
         typer.echo(f"Training error: {final.error}", err = True)
         raise typer.Exit(code = 1)
+    if interrupted and not getattr(final, "is_completed", False):
+        raise typer.Exit(code = 130)
