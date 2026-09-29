@@ -12,6 +12,16 @@ export const MAX_SHEET_COLUMNS = 200;
 const MAX_WORKBOOK_CELLS = MAX_SHEET_ROWS * (MAX_SHEET_COLUMNS + 1);
 const MAX_SHEETS = 100;
 
+export interface SheetLimits {
+  sheets: number;
+  rows: number;
+  columns: number;
+  /** List sheets past the limit by name only, unparsed. */
+  namesPastLimit?: boolean;
+}
+
+const FULL_SHEET_LIMITS: SheetLimits = { sheets: MAX_SHEETS, rows: MAX_SHEET_ROWS, columns: MAX_SHEET_COLUMNS };
+
 export interface SheetCell {
   text: string;
   numeric?: boolean;
@@ -860,6 +870,7 @@ function readSheet(
   style: (index: number) => CellStyle | undefined,
   date1904: boolean,
   budget: { cells: number },
+  limits: SheetLimits,
 ): Sheet {
   const rows: (SheetCell | undefined)[][] = [];
   const widths: (number | undefined)[] = [];
@@ -869,7 +880,7 @@ function readSheet(
   const head = dataAt === -1 ? text : text.slice(0, dataAt);
   for (const [attrs] of elements(head, COL_OPEN, COL_CLOSE)) {
     const min = Number(attribute(attrs, "min") ?? 1);
-    const max = Math.min(Number(attribute(attrs, "max") ?? min), MAX_SHEET_COLUMNS);
+    const max = Math.min(Number(attribute(attrs, "max") ?? min), limits.columns);
     const width = Number(attribute(attrs, "width"));
     const hide = isTrue(attribute(attrs, "hidden"));
     for (let i = min; i <= max; i++) {
@@ -886,7 +897,7 @@ function readSheet(
   for (const [rowAttrs, rowBody] of elements(data, ROW_OPEN, ROW_CLOSE)) {
     const r = Number(attribute(rowAttrs, "r") ?? nextRow + 1) - 1;
     nextRow = r + 1;
-    if (r >= MAX_SHEET_ROWS || budget.cells <= 0) {
+    if (r >= limits.rows || budget.cells <= 0) {
       truncated = true;
       break;
     }
@@ -900,7 +911,7 @@ function readSheet(
       const ref = attribute(attrs, "r");
       const col = ref ? columnIndex(ref) : nextColumn;
       nextColumn = col + 1;
-      if (col >= MAX_SHEET_COLUMNS) {
+      if (col >= limits.columns) {
         truncated ||= !rowHidden;
         continue;
       }
@@ -1100,7 +1111,7 @@ function styleSections(bytes: Uint8Array | undefined): { doc: Document | null; c
   return { doc: parseXml(`${open}${parts.join("")}</${prefix}styleSheet>`), cut };
 }
 
-export function readXlsx(bytes: Uint8Array): Sheet[] {
+export function readXlsx(bytes: Uint8Array, limits: SheetLimits = FULL_SHEET_LIMITS): Sheet[] {
   const read = archive(bytes);
   const main = mainPart(read, "xl/workbook.xml");
   if ((read.size(main) ?? 0) > MAX_XML_PART_BYTES) throw new Error("File is too large to preview.");
@@ -1136,7 +1147,11 @@ export function readXlsx(bytes: Uint8Array): Sheet[] {
   const budget = { cells: MAX_WORKBOOK_CELLS };
   for (const sheet of all(workbook, "sheet")) {
     if (sheet.getAttribute("state") === "hidden" || sheet.getAttribute("state") === "veryHidden") continue;
-    if (budget.cells <= 0 || sheets.length >= MAX_SHEETS) {
+    if (limits.namesPastLimit && sheets.length >= limits.sheets) {
+      sheets.push({ name: sheet.getAttribute("name") ?? "Sheet", rows: [], widths: [], truncated: false });
+      continue;
+    }
+    if (budget.cells <= 0 || sheets.length >= limits.sheets) {
       const last = sheets.at(-1);
       if (last) last.truncated = true;
       break;
@@ -1145,23 +1160,28 @@ export function readXlsx(bytes: Uint8Array): Sheet[] {
     const part = path ? read.head(path, MAX_SHEET_XML_BYTES + 1) : undefined;
     if (!part) continue;
     const whole = part.length <= MAX_SHEET_XML_BYTES;
-    const { text, cut } = sheetText(part, Math.min(MAX_SHEET_ROWS, budget.cells), whole);
+    const { text, cut } = sheetText(part, Math.min(limits.rows, budget.cells), whole);
     missed = false;
-    const parsed = readSheet(text, sheet.getAttribute("name") ?? "Sheet", string, style, date1904, budget);
+    const parsed = readSheet(text, sheet.getAttribute("name") ?? "Sheet", string, style, date1904, budget, limits);
     if (cut || missed) parsed.truncated = true;
     sheets.push(parsed);
   }
   return sheets;
 }
 
-export function readDelimited(text: string, delimiter: string, name: string): Sheet {
+export function readDelimited(
+  text: string,
+  delimiter: string,
+  name: string,
+  limits: SheetLimits = FULL_SHEET_LIMITS,
+): Sheet {
   const rows: (SheetCell | undefined)[][] = [];
   let row: (SheetCell | undefined)[] = [];
   let field = "";
   let quoted = false;
   let truncated = false;
   const push = () => {
-    if (row.length < MAX_SHEET_COLUMNS) {
+    if (row.length < limits.columns) {
       const numeric = field.trim() !== "" && Number.isFinite(Number(field.replace(/[$,%]/g, "")));
       row.push(field === "" ? undefined : { text: field, numeric });
     } else truncated = true;
@@ -1186,7 +1206,7 @@ export function readDelimited(text: string, delimiter: string, name: string): Sh
       push();
       rows.push(row);
       row = [];
-      if (rows.length >= MAX_SHEET_ROWS) {
+      if (rows.length >= limits.rows) {
         truncated = i < text.length - 1;
         break;
       }

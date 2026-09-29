@@ -7,7 +7,7 @@ import test from "node:test";
 import { DOMParser } from "@xmldom/xmldom";
 import { strToU8, zipSync } from "fflate";
 
-import { formatNumber, readPptx, readXlsx } from "../src/components/file-viewer/office.ts";
+import { formatNumber, readDelimited, readPptx, readXlsx } from "../src/components/file-viewer/office.ts";
 
 {
   const proto = Object.getPrototypeOf(new DOMParser().parseFromString("<a/>", "application/xml").documentElement);
@@ -234,4 +234,30 @@ test("pptx: maxSlides stops reading after that many slides", () => {
   assert.equal(first.slides.length, 1);
   assert.equal(first.truncated, true);
   assert.equal(first.slides[0]!.boxes[0]?.paragraphs?.[0]?.text, "one");
+});
+
+test("sheet limits cap rows, columns and parsed sheets", () => {
+  const cells = (r: number) => Array.from({ length: 5 }, (_, c) => `<c r="${"ABCDE"[c]}${r}"><v>${r}</v></c>`).join("");
+  const rows = Array.from({ length: 10 }, (_, i) => `<row r="${i + 1}">${cells(i + 1)}</row>`).join("");
+  const sheet = strToU8(`<worksheet xmlns="${MAIN}"><sheetData>${rows}</sheetData></worksheet>`);
+  const zip = zipSync({
+    "xl/workbook.xml": strToU8(
+      `<workbook xmlns="${MAIN}" xmlns:r="${REL}"><sheets><sheet name="One" sheetId="1" r:id="rId1"/><sheet name="Two" sheetId="2" r:id="rId2"/></sheets></workbook>`,
+    ),
+    "xl/_rels/workbook.xml.rels": rels(
+      `<Relationship Id="rId1" Type="${REL}/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="${REL}/worksheet" Target="worksheets/sheet2.xml"/>`,
+    ),
+    "xl/worksheets/sheet1.xml": sheet,
+    "xl/worksheets/sheet2.xml": sheet,
+  });
+  const full = readXlsx(zip);
+  assert.deepEqual([full.length, full[1]!.rows.length], [2, 10]);
+  const [first, second] = readXlsx(zip, { sheets: 1, rows: 3, columns: 2, namesPastLimit: true });
+  assert.equal(first!.rows.length, 3);
+  assert.ok(first!.rows.every((row) => row.length <= 2));
+  assert.equal(first!.truncated, true);
+  assert.deepEqual([second!.name, second!.rows.length], ["Two", 0]);
+
+  const csv = readDelimited("a,b,c\n1,2,3\n4,5,6\n7,8,9\n", ",", "x.csv", { sheets: 1, rows: 2, columns: 2 });
+  assert.deepEqual(csv.rows.map((row) => row.map((cell) => cell?.text)), [["a", "b"], ["1", "2"]]);
 });

@@ -16,6 +16,7 @@ import {
   type Deck,
   type Sheet,
   type SheetCell,
+  type SheetLimits,
   type Slide,
   type SlideBox,
   columnName,
@@ -60,6 +61,8 @@ async function parse(
     if (!thumbnail) return { kind, deck: readPptx(bytes) };
     return { kind, deck: { ...readPptx(bytes, { maxSlides: 1 }), truncated: false } };
   }
+  // A card shows the top-left of the first sheet; later tabs keep their names only.
+  const limits = thumbnail ? THUMBNAIL_SHEET_LIMITS : undefined;
   const delimiter = sheetDelimiter(name, contentType);
   if (delimiter) {
     const encoding =
@@ -68,10 +71,10 @@ async function parse(
         : bytes[0] === 0xfe && bytes[1] === 0xff
           ? "utf-16be"
           : "utf-8";
-    const text = new TextDecoder(encoding).decode(bytes);
-    return { kind: "sheet", sheets: [readDelimited(text, delimiter, name)] };
+    const text = new TextDecoder(encoding).decode(thumbnail ? bytes.subarray(0, THUMBNAIL_TEXT_BYTES) : bytes);
+    return { kind: "sheet", sheets: [untruncated(readDelimited(text, delimiter, name, limits), thumbnail)] };
   }
-  return { kind: "sheet", sheets: readXlsx(bytes) };
+  return { kind: "sheet", sheets: readXlsx(bytes, limits).map((sheet) => untruncated(sheet, thumbnail)) };
 }
 
 const DOCX_TAGS = new Set(
@@ -85,6 +88,13 @@ const MAX_DOCX_PIXELS = 128 * 1024 * 1024;
 // A card shows only the opening of a document.
 const THUMBNAIL_DOCX_PARAGRAPHS = 60;
 const THUMBNAIL_DOCX_ELEMENTS = 2_000;
+const THUMBNAIL_SHEET_LIMITS: SheetLimits = { sheets: 1, rows: 60, columns: 30, namesPastLimit: true };
+const THUMBNAIL_TEXT_BYTES = 256 * 1024;
+
+// A thumbnail cut is expected, so it shows no truncation note.
+function untruncated(sheet: Sheet, thumbnail: boolean): Sheet {
+  return thumbnail ? { ...sheet, truncated: false } : sheet;
+}
 
 function sanitizeDocxHtml(html: string, maxElements: number): { html: string; truncated: boolean } {
   // Cut before parsing: mammoth escapes each < in text, so every one left is a tag.
