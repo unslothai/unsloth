@@ -328,8 +328,6 @@ def test_windows_opt_in_locked_off_by_the_environment_is_not_offered(windows):
 
 
 def test_windows_arm64_is_not_offered_a_runtime_it_cannot_run(windows, monkeypatch):
-    import platform
-
     windows["installed"] = False
     monkeypatch.setattr(platform, "machine", lambda: "ARM64")
     plan = plan_mod.detect(False)
@@ -338,9 +336,6 @@ def test_windows_arm64_is_not_offered_a_runtime_it_cannot_run(windows, monkeypat
 
 
 def test_windows_runtime_only_installs_the_runtime(windows, monkeypatch):
-    import platform
-
-    monkeypatch.setattr(platform, "machine", lambda: "AMD64")
     windows["installed"] = False
     plan = plan_mod.windows_runtime_plan()
     assert plan.action == plan_mod.WINDOWS_RUNTIME and plan.elevation is None
