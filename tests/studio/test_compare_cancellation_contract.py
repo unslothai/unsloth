@@ -58,6 +58,7 @@ def test_cancelled_load_waits_for_unload_then_reconciles_checkpoint():
     )
     settle = _between(composer, "async function waitForBackendLoadToSettle(", "\n}\n")
     assert "LOAD_SETTLE_TIMEOUT_MS" in settle
+    assert "status.loading.length === 0" in settle
     finally_ = _between(composer, "      } finally {\n        compareRunsRef", "\n      }\n")
     assert "onComparingChange?.(false);" in finally_
 

@@ -573,12 +573,13 @@ function isPortaledDrop(event: ReactDragEvent): boolean {
 const LOAD_SETTLE_POLL_MS = 1000;
 const LOAD_SETTLE_TIMEOUT_MS = 15 * 60_000;
 
-async function waitForBackendLoadToSettle(modelPath: string): Promise<void> {
+/** Waits for every load, not the target by name: the backend tracks a local GGUF under a path-free id. */
+async function waitForBackendLoadToSettle(): Promise<void> {
   const deadline = Date.now() + LOAD_SETTLE_TIMEOUT_MS;
   while (Date.now() < deadline) {
     try {
       const status = await getInferenceStatus();
-      if (!status.loading.some((id) => modelIdsMatch(id, modelPath))) return;
+      if (status.loading.length === 0) return;
     } catch {
       // Keep polling: an unreachable backend has not proven the load ended.
     }
@@ -2019,8 +2020,8 @@ export function SharedComposer({
           );
           // The load keeps running when its cancel failed; resyncing before it settles would pin the
           // outgoing model while the replacement becomes resident.
-          if (cleanupError && run.loadingModel) {
-            await waitForBackendLoadToSettle(run.loadingModel.modelPath);
+          if (cleanupError) {
+            await waitForBackendLoadToSettle();
           }
           // A stopped load may have finished or evicted the previous model: adopt the backend's state.
           await resyncInferenceStatusAfterServerModelChange();
