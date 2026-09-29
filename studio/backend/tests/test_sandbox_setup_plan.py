@@ -4,6 +4,7 @@
 """The OS sandbox setup plan: which fixed steps a host needs, and who may run them from Settings."""
 
 import os
+import platform
 import sys
 
 import pytest
@@ -255,6 +256,8 @@ def windows(monkeypatch):
     from utils import mxc_isolation_settings
 
     monkeypatch.setattr(sys, "platform", "win32")
+    # An x64 Windows host whatever this test runs on (an Apple Silicon Mac reads as arm64).
+    monkeypatch.setattr(platform, "machine", lambda: "AMD64")
     state = {
         "installed": True,
         "missing": ("prepare-null-device",),
