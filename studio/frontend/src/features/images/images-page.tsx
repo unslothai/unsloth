@@ -219,6 +219,7 @@ import {
   fetchGalleryBlob,
   fetchGalleryResponse,
   fetchGalleryObjectUrl,
+  galleryThumbnailUrl,
   generateDiffusionImage,
   getDiffusionLoadProgress,
   getDiffusionStatus,
@@ -428,6 +429,9 @@ const galleryCache: {
   srcById: BlobUrlCache;
   // Ids with a fetch in flight, so concurrent ensureSrc calls do not double-fetch and leak a duplicate object URL.
   inflight: Set<string>;
+  // Keep thumbnails separate from originals used for viewing and downloads.
+  thumbById: BlobUrlCache;
+  thumbInflight: Set<string>;
   // Ids deleted while their PNG was still downloading: a fetch landing afterwards must throw its blob away.
   deleted: Set<string>;
 } = {
@@ -437,6 +441,8 @@ const galleryCache: {
   quant: null,
   srcById: new BlobUrlCache(IMAGE_BLOB_BUDGET_BYTES),
   inflight: new Set(),
+  thumbById: new BlobUrlCache(32 * 1024 * 1024),
+  thumbInflight: new Set(),
   deleted: new Set(),
 };
 
@@ -707,6 +713,9 @@ function SliderField({
 }
 
 // Matches the field-label style used across Unsloth.
+// Prompt boxes: smaller radius, scrollbar inset from the corners.
+const IMAGE_PROMPT_BOX = "image-prompt-box rounded-lg";
+
 function Field({
   label,
   hint,
@@ -1495,9 +1504,12 @@ export function ImagesPage({
   const [srcById, setSrcById] = useState<Record<string, string>>(() =>
     galleryCache.srcById.toRecord(),
   );
+  const [thumbById, setThumbById] = useState<Record<string, string>>(() =>
+    galleryCache.thumbById.toRecord(),
+  );
   // Guards a "load more" so a fast scroll cannot fire several at once.
   const loadingMore = useRef(false);
-  // The gallery strip, used as the IntersectionObserver root so a tile PNG is fetched as it nears view.
+  // Observer root for loading thumbnails near the visible strip.
   const stripRef = useRef<HTMLDivElement | null>(null);
   // Ids currently intersecting the strip; the blob cache never evicts these.
   const visibleIds = useRef<Set<string>>(new Set());
@@ -1804,6 +1816,7 @@ export function ImagesPage({
     [images, selectedId],
   );
   const selectedSrc = selected ? srcById[selected.id] : undefined;
+  const selectedThumb = selected ? thumbById[selected.id] : undefined;
   const [viewerId, setViewerId] = useState<string | null>(null);
   const viewerImage = viewerId ? (images.find((image) => image.id === viewerId) ?? null) : null;
   const viewerSrc = viewerImage ? srcById[viewerImage.id] : undefined;
@@ -1849,6 +1862,37 @@ export function ImagesPage({
     }
   }, []);
 
+  // Fetch a thumbnail unless the tile already has a cached image or pending request.
+  const ensureThumb = useCallback(async (image: GalleryImage) => {
+    if (
+      galleryCache.thumbById.has(image.id) ||
+      galleryCache.srcById.has(image.id) ||
+      galleryCache.thumbInflight.has(image.id)
+    )
+      return;
+    galleryCache.thumbInflight.add(image.id);
+    try {
+      const { url, bytes } = await fetchGalleryObjectUrl(galleryThumbnailUrl(image.url));
+      if (galleryCache.deleted.has(image.id)) {
+        URL.revokeObjectURL(url);
+        return;
+      }
+      galleryCache.thumbById.set(image.id, url, bytes);
+      const evicted = galleryCache.thumbById.prune(
+        new Set([image.id, ...visibleIds.current, galleryCache.selectedId ?? ""]),
+      );
+      setThumbById((prev) => {
+        const next = { ...prev, [image.id]: url };
+        for (const id of evicted) delete next[id];
+        return next;
+      });
+    } catch {
+      // Leave it without a src; the tile shows a placeholder.
+    } finally {
+      galleryCache.thumbInflight.delete(image.id);
+    }
+  }, []);
+
   // Bumped by every LOCAL change to the strip. A resync started before one holds a snapshot the
   // listing cannot reconcile with what the user just did.
   const stripEpoch = useRef(0);
@@ -1877,12 +1921,12 @@ export function ImagesPage({
       setHasMore(page.has_more);
       // No visibility signal without IntersectionObserver (jsdom / old webview), so keep the eager fetch there.
       if (typeof IntersectionObserver === "undefined") {
-        page.images.forEach((image) => void ensureSrc(image));
+        page.images.forEach((image) => void ensureThumb(image));
       }
     } catch {
       // Best-effort: a failed gallery load should not block the page.
     }
-  }, [ensureSrc]);
+  }, [ensureThumb]);
 
   // Load the next older page. offset = how many are loaded so far; a new image sorts to the front on the backend too.
   const loadMore = useCallback(async () => {
@@ -1909,17 +1953,16 @@ export function ImagesPage({
       galleryCache.hasMore = page.has_more;
       setHasMore(page.has_more);
       if (typeof IntersectionObserver === "undefined") {
-        page.images.forEach((image) => void ensureSrc(image));
+        page.images.forEach((image) => void ensureThumb(image));
       }
     } catch {
       // transient; the user can scroll again to retry
     } finally {
       loadingMore.current = false;
     }
-  }, [ensureSrc]);
+  }, [ensureThumb]);
 
-  // A gallery page holds PAGE_SIZE multi-megabyte PNGs and an object URL lives until the page
-  // closes, so fetch a tile as it nears the strip edge instead. Mirrors Video.
+  // Load thumbnails as tiles approach the visible strip.
   useEffect(() => {
     const root = stripRef.current;
     if (!root || typeof IntersectionObserver === "undefined") return;
@@ -1935,8 +1978,9 @@ export function ImagesPage({
           }
           visibleIds.current.add(id);
           galleryCache.srcById.touch(id);
+          galleryCache.thumbById.touch(id);
           const image = images.find((i) => i.id === id);
-          if (image) void ensureSrc(image);
+          if (image) void ensureThumb(image);
         }
       },
       // rootMargin applies to the ROOT box only, so the root must be the scrolling strip; the
@@ -1945,7 +1989,7 @@ export function ImagesPage({
     );
     for (const tile of root.querySelectorAll("[data-image-id]")) io.observe(tile);
     return () => io.disconnect();
-  }, [images, ensureSrc]);
+  }, [images, ensureThumb]);
 
   // The preview is what the user looks at, so the selected image is fetched whether or not its tile is on screen.
   useEffect(() => {
@@ -1960,8 +2004,14 @@ export function ImagesPage({
   const dropFromStrip = useCallback((id: string, discardBlob: boolean) => {
     if (discardBlob) {
       galleryCache.srcById.delete(id); // revokes the URL with the entry
+      galleryCache.thumbById.delete(id);
       galleryCache.deleted.add(id);
       setSrcById((prev) => {
+        const next = { ...prev };
+        delete next[id];
+        return next;
+      });
+      setThumbById((prev) => {
         const next = { ...prev };
         delete next[id];
         return next;
@@ -2032,12 +2082,12 @@ export function ImagesPage({
         setImages(collected);
         setHasMore(more);
         if (typeof IntersectionObserver === "undefined") {
-          collected.forEach((image) => void ensureSrc(image));
+          collected.forEach((image) => void ensureThumb(image));
         }
         return;
       }
     },
-    [ensureSrc],
+    [ensureThumb],
   );
 
   // This page stays mounted across route changes, so an archive restore would not reach the
@@ -5113,6 +5163,7 @@ export function ImagesPage({
             <Field label={workflow === "edit" ? "Instruction" : "Prompt"}>
               <Textarea
                 rows={4}
+                className={cn(IMAGE_PROMPT_BOX, "min-h-32")}
                 placeholder={
                   examplesDismissed[workflow] ? undefined : WORKFLOW_EXAMPLE_PROMPTS[workflow]
                 }
@@ -5131,6 +5182,7 @@ export function ImagesPage({
               open={negativeOpen}
               onOpenChange={setNegativeOpen}
               hint="What to steer the image away from. Only used when guidance is above 0."
+              textareaClassName={IMAGE_PROMPT_BOX}
             />
             {/* LoRA adapters: shown whenever the loaded model + quant can apply them. Each carries a 0-2 weight. */}
             {loraCapable && (
@@ -5490,6 +5542,18 @@ export function ImagesPage({
                   />
                 </div>
               </>
+            ) : selected && selectedThumb ? (
+              // Match the original's display size while loading; actions require the original.
+              // Leave the box unpainted because object-contain can leave empty space.
+              <>
+                <img
+                  src={selectedThumb}
+                  alt={selected.prompt}
+                  style={{ maxWidth: selected.width, maxHeight: selected.height }}
+                  className="size-full object-contain"
+                />
+                <Spinner className="absolute size-8 text-muted-foreground" />
+              </>
             ) : selected ? (
               // The selected record's blob is still loading; spin in place.
               <div className="flex flex-col items-center gap-3 text-muted-foreground">
@@ -5575,9 +5639,9 @@ export function ImagesPage({
                     onClick={() => setSelectedId(image.id)}
                     className="relative size-full overflow-hidden rounded-[10px] bg-muted/40 outline-none ring-1 ring-transparent transition-shadow hover:ring-border focus-visible:ring-2 focus-visible:ring-ring"
                   >
-                    {srcById[image.id] ? (
+                    {(thumbById[image.id] ?? srcById[image.id]) ? (
                       <img
-                        src={srcById[image.id]}
+                        src={thumbById[image.id] ?? srcById[image.id]}
                         alt={image.prompt}
                         draggable={false}
                         className="size-full object-cover"
