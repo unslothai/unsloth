@@ -1461,7 +1461,6 @@ def test_forcing_the_drafter_refits_a_context_replayed_from_auto(tmp_path):
     assert _launched_ctx(result) == _launched_ctx(fresh)
     assert result["env"]["CUDA_VISIBLE_DEVICES"] == "0"
     assert result["cmd"][result["cmd"].index("--spec-type") + 1] == "draft-mtp"
-    # The client replays what launched; a duplicate-load check against the replay must match.
     assert backend._requested_n_ctx == _launched_ctx(result)
 
 

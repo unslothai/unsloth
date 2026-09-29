@@ -24963,14 +24963,12 @@ class LlamaCppBackend:
                     _draft_cpu_no_embedded = _draft_on_cpu and (
                         _separate_draft_launches or not self._nextn_predict_layers
                     )
-                    # A replayed context was fitted without the drafter: once one is forced, size it
-                    # like a fresh MTP load. Before every explicit_ctx reader (projector probe,
-                    # tensor planner, fit), and on the reserve the Auto-only drop probe cannot clear.
+                    # A replay was fitted without the drafter: re-fit it like a fresh MTP load, before any explicit_ctx reader.
                     if (
                         explicit_ctx
                         and ctx_override is None
                         and intent.max_seq_length_auto_derived
-                        # A CPU-pinned drafter still adds target-side state, so it re-fits too.
+                        # CPU-pinned drafters too: the target still pays rollback state for them.
                         and _mtp_will_engage
                         # Forced = anything that bypasses the Auto drop probe, advanced arguments included.
                         and (
@@ -31163,8 +31161,7 @@ class LlamaCppBackend:
                         else list(_pv_requested)
                     )
                     self._extra_args_source = (model_identifier, hf_variant)
-                # A re-fit replay records what launched: the client replays that next, and the
-                # duplicate-load check compares against this.
+                # A re-fit replay records what launched, which is what the client replays next.
                 self._requested_n_ctx = int(effective_ctx if _replayed_ctx_refit else n_ctx)
                 # Local n_parallel may have been reduced above; the snapshot has the ask.
                 self._requested_n_parallel = max(1, int(intent.n_parallel))

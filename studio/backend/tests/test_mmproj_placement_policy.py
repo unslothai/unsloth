@@ -1634,9 +1634,7 @@ def test_an_unloadable_drafter_is_not_charged_before_it_is_dropped(tmp_path):
 
 
 def test_a_replayed_context_places_the_projector_like_a_fresh_forced_drafter(tmp_path):
-    # Auto drops the drafter at 65536; forcing it on a replay of that context must be
-    # classified before the projector probe, or the projector is priced at 65536 and
-    # pinned to CPU where a fresh forced-drafter load keeps it on GPU.
+    # Classified after the projector probe, the replay priced it at 65536 and pinned it to CPU.
     memory = [(0, 13_500, 24_000)]
 
     def load(**kwargs):
@@ -1658,8 +1656,7 @@ def test_a_replayed_context_places_the_projector_like_a_fresh_forced_drafter(tmp
 
 
 def test_a_replayed_context_refits_for_a_cpu_pinned_drafter_too(tmp_path):
-    # --spec-draft-ngl 0 keeps the drafter off the GPU, but a hybrid target still pays
-    # rollback state for it, so a replay fitted with speculation off must shrink too.
+    # --spec-draft-ngl 0 keeps the drafter off the GPU; the hybrid target still pays rollback state.
     memory = [(0, 10_000, 24_000)]
     extras = ["--spec-draft-ngl", "0"]
 
