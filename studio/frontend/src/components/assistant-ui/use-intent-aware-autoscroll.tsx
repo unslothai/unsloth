@@ -3,7 +3,8 @@
 
 "use client";
 
-import { useAuiEvent } from "@assistant-ui/react";
+import { useChatPreferencesStore } from "@/features/chat/stores/chat-preferences-store";
+import { useAui, useAuiEvent } from "@assistant-ui/react";
 import {
   type ReactNode,
   type RefCallback,
@@ -125,6 +126,12 @@ export function useAdjustForContentInsertedAbove(): (deltaPx: number) => void {
   return useContext(AutoScrollContext).adjustForContentInsertedAbove;
 }
 
+/** See AutoScrollContextValue.detachFromBottom. Opening a collapsible by hand near the bottom
+ *  must grow it downward, not pin the bottom and shove the header up. */
+export function useDetachThreadFromBottom(): () => void {
+  return useContext(AutoScrollContext).detachFromBottom;
+}
+
 export function useIsThreadAtBottom(): boolean {
   const ctx = useContext(AutoScrollContext);
   return useSyncExternalStore(ctx.subscribe, ctx.getIsAtBottom, () => true);
@@ -134,10 +141,14 @@ export function useIntentAwareAutoScroll(): {
   ref: RefCallback<HTMLElement>;
   context: AutoScrollContextValue;
 } {
+  const aui = useAui();
   const cleanupRef = useRef<(() => void) | null>(null);
 
   const userDetachedRef = useRef(false);
   const followUntilRef = useRef(0);
+  const runStartedHereRef = useRef(false);
+  // runEnd fires before the last chunk commits, so the hold outlives it briefly.
+  const runEndAtRef = useRef(Number.NEGATIVE_INFINITY);
 
   const isAtBottomRef = useRef(true);
   const listenersRef = useRef<Set<() => void>>(new Set());
@@ -172,6 +183,7 @@ export function useIntentAwareAutoScroll(): {
   }, []);
 
   const scrollToBottom = useCallback<ScrollToBottom>((behavior) => {
+    runStartedHereRef.current = false;
     scrollImplRef.current(behavior);
   }, []);
 
@@ -257,6 +269,37 @@ export function useIntentAwareAutoScroll(): {
         followUntilRef.current = performance.now() + FOLLOW_SETTLE_MS;
       };
 
+      const holdStill = (): boolean =>
+        runStartedHereRef.current &&
+        !useChatPreferencesStore.getState().autoScrollWhileGenerating &&
+        (aui.thread().getState().isRunning ||
+          performance.now() - runEndAtRef.current < FOLLOW_SETTLE_MS);
+
+      const holdCeiling = (): number | null => {
+        const rows = el.querySelectorAll<HTMLElement>("[data-role]");
+        let reply: HTMLElement | null = null;
+        let user: HTMLElement | null = null;
+        for (let i = rows.length - 1; i >= 0 && !user; i--) {
+          if (rows[i].dataset.role === "user") {
+            user = rows[i];
+          } else if (rows[i].dataset.role === "assistant") {
+            reply = rows[i];
+          }
+        }
+        if (!user || !reply) {
+          return null;
+        }
+        const origin =
+          el.getBoundingClientRect().top -
+          el.scrollTop +
+          (Number.parseFloat(getComputedStyle(el).paddingTop) || 0);
+        return Math.max(
+          0,
+          user.getBoundingClientRect().top - origin,
+          reply.getBoundingClientRect().top - origin - el.clientHeight / 2,
+        );
+      };
+
       const clearSettleCheck = (): void => {
         if (settleTimer !== null) {
           clearTimeout(settleTimer);
@@ -265,7 +308,10 @@ export function useIntentAwareAutoScroll(): {
         settleCheckDue = false;
       };
 
+      let parked = false;
+
       const detach = (): void => {
+        parked = false;
         userDetachedRef.current = true;
         followUntilRef.current = 0;
         // Hygiene, not correctness: `following` checks userDetached before `settling`, so a
@@ -276,6 +322,20 @@ export function useIntentAwareAutoScroll(): {
         // can't cap their scrollTop.
         releaseStabilizer();
         maxContentHeight = el.scrollHeight;
+      };
+
+      const parkIfHeld = (): boolean => {
+        if (userDetachedRef.current || !holdStill()) {
+          return false;
+        }
+        const ceiling = holdCeiling();
+        if (ceiling === null || el.scrollHeight - el.clientHeight < ceiling) {
+          return false;
+        }
+        el.scrollTo({ top: ceiling, behavior: "instant" });
+        detach();
+        parked = true;
+        return true;
       };
 
       const requestTick = (): void => {
@@ -313,6 +373,8 @@ export function useIntentAwareAutoScroll(): {
         rafId = null;
         const settling = settleCheckDue;
         settleCheckDue = false;
+        // Park first so a frame without an observer record can't overshoot.
+        parkIfHeld();
         const following =
           !userDetachedRef.current &&
           (settling || performance.now() < followUntilRef.current);
@@ -336,6 +398,7 @@ export function useIntentAwareAutoScroll(): {
       };
 
       scrollImplRef.current = (behavior = "auto") => {
+        parked = false;
         userDetachedRef.current = false;
         followUntilRef.current = performance.now() + FOLLOW_SETTLE_MS;
         if (el.scrollHeight > el.clientHeight) {
@@ -434,7 +497,8 @@ export function useIntentAwareAutoScroll(): {
           upwardAccumulator = 0;
           if (
             userDetachedRef.current &&
-            distanceNow <= RE_ATTACH_THRESHOLD_PX
+            distanceNow <= RE_ATTACH_THRESHOLD_PX &&
+            !holdStill()
           ) {
             userDetachedRef.current = false;
             extendFollow();
@@ -530,7 +594,9 @@ export function useIntentAwareAutoScroll(): {
       // pinning so we scroll to the post-adjustment scrollHeight.
       const onLayoutChange = (): void => {
         layoutChanged = true;
-        extendFollow();
+        if (!parkIfHeld()) {
+          extendFollow();
+        }
         const scrollHeight = stabilize();
         pinIfFollowing(scrollHeight);
         requestTick();
@@ -586,7 +652,25 @@ export function useIntentAwareAutoScroll(): {
       // viewport shrinks without the element's clientHeight changing.
       window.visualViewport?.addEventListener("resize", onViewportResize);
 
+      const unsubscribePreferences = useChatPreferencesStore.subscribe(
+        (state, prev) => {
+          if (
+            !parked ||
+            !state.autoScrollWhileGenerating ||
+            prev.autoScrollWhileGenerating ||
+            !aui.thread().getState().isRunning
+          ) {
+            return;
+          }
+          parked = false;
+          userDetachedRef.current = false;
+          extendFollow();
+          requestTick();
+        },
+      );
+
       return () => {
+        unsubscribePreferences();
         if (rafId !== null) {
           cancelAnimationFrame(rafId);
           rafId = null;
@@ -610,7 +694,7 @@ export function useIntentAwareAutoScroll(): {
         };
       };
     },
-    [setIsAtBottom],
+    [aui, setIsAtBottom],
   );
 
   // Thread lifecycle moments that always pin, regardless of detach state.
@@ -621,9 +705,22 @@ export function useIntentAwareAutoScroll(): {
     scrollImplRef.current(behavior);
   }, []);
 
-  useAuiEvent("thread.runStart", () => pinToBottom("auto"));
-  useAuiEvent("thread.initialize", () => pinToBottom("instant"));
-  useAuiEvent("threadListItem.switchedTo", () => pinToBottom("instant"));
+  useAuiEvent("thread.runStart", () => {
+    runStartedHereRef.current = true;
+    runEndAtRef.current = Number.NEGATIVE_INFINITY;
+    pinToBottom("auto");
+  });
+  useAuiEvent("thread.runEnd", () => {
+    runEndAtRef.current = performance.now();
+  });
+  useAuiEvent("thread.initialize", () => {
+    runStartedHereRef.current = false;
+    pinToBottom("instant");
+  });
+  useAuiEvent("threadListItem.switchedTo", () => {
+    runStartedHereRef.current = false;
+    pinToBottom("instant");
+  });
 
   const lastElRef = useRef<HTMLElement | null>(null);
   const ref = useCallback<RefCallback<HTMLElement>>(
