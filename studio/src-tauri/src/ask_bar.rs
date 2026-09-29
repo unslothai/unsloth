@@ -133,7 +133,7 @@ mod macos {
     };
     use objc2_foundation::NSNotification;
     use std::ptr::NonNull;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
     use tauri::{AppHandle, Emitter, LogicalPosition, Manager, WebviewUrl, WebviewWindow};
     use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 
@@ -144,6 +144,7 @@ mod macos {
 
     // Read by the system-wide click monitor on every click, so it avoids a window lookup.
     static VISIBLE: AtomicBool = AtomicBool::new(false);
+    static PANEL_NUMBER: AtomicIsize = AtomicIsize::new(0);
 
     define_class!(
         // A non-activating panel that can still become key, so typing works without
@@ -242,6 +243,7 @@ mod macos {
                 AskPanel::class() as *const _ as *mut _,
             );
             let panel = &*(ns_window as *mut NSPanel);
+            PANEL_NUMBER.store(panel.windowNumber(), Ordering::SeqCst);
             panel.setStyleMask(panel.styleMask() | NSWindowStyleMask::NonactivatingPanel);
             panel.setLevel(PANEL_LEVEL);
             panel.setCollectionBehavior(
@@ -318,16 +320,29 @@ mod macos {
         }
     }
 
-    // Global monitors never see our own panel's events and need no Accessibility grant.
-    // They live as long as the app, so their tokens are leaked.
+    // The global monitor sees other apps' clicks and needs no Accessibility grant; the local
+    // one covers Unsloth's own windows, which the global one never sees. Both live as long as
+    // the app, so their tokens are leaked.
     fn install_dismiss_monitors(app: AppHandle) {
-        let click_app = app.clone();
-        let on_click = RcBlock::new(move |_event: NonNull<NSEvent>| dismiss(&click_app));
         let mask = NSEventMask::LeftMouseDown
             | NSEventMask::RightMouseDown
             | NSEventMask::OtherMouseDown
             | NSEventMask::ScrollWheel;
+        let click_app = app.clone();
+        let on_click = RcBlock::new(move |_event: NonNull<NSEvent>| dismiss(&click_app));
         if let Some(token) = NSEvent::addGlobalMonitorForEventsMatchingMask_handler(mask, &on_click)
+        {
+            std::mem::forget(token);
+        }
+        let local_app = app.clone();
+        let on_local = RcBlock::new(move |event: NonNull<NSEvent>| -> *mut NSEvent {
+            if unsafe { event.as_ref() }.windowNumber() != PANEL_NUMBER.load(Ordering::SeqCst) {
+                dismiss(&local_app);
+            }
+            event.as_ptr()
+        });
+        if let Some(token) =
+            unsafe { NSEvent::addLocalMonitorForEventsMatchingMask_handler(mask, &on_local) }
         {
             std::mem::forget(token);
         }
