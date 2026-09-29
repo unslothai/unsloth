@@ -271,7 +271,8 @@ with sync_playwright() as p:
     # Settings-committing requests (the load POST, the per-model override mirror PUT, the VRAM
     # budget PUT), so a click that commits settings is waited out rather than slept on. On the
     # context, so a replacement page is covered too.
-    _commits = {"started": 0, "inflight": set(), "loads_started": 0, "loads_ended": 0}
+    # loads: every /load request in send order; loads_ended: the ones that have finished or failed.
+    _commits = {"started": 0, "inflight": set(), "loads": [], "loads_ended": set()}
 
     # validate and unload are the Load/Reload flow's own preliminaries: after the override PUT
     # answers, the flow POSTs /validate (~0.4 s on CI), then /unload, and only then /load. Left
@@ -297,7 +298,7 @@ with sync_playwright() as p:
                 _commits["started"] += 1
                 _commits["inflight"].add(req)
                 if _is_load(req):
-                    _commits["loads_started"] += 1
+                    _commits["loads"].append(req)
         except Exception:
             pass
 
@@ -307,7 +308,7 @@ with sync_playwright() as p:
         _commits["inflight"].discard(req)
         try:
             if _is_load(req):
-                _commits["loads_ended"] += 1
+                _commits["loads_ended"].add(req)
         except Exception:
             pass
 
@@ -326,8 +327,9 @@ with sync_playwright() as p:
         it decide, as they did after the fixed pause.
         """
         started = _commits["started"]
-        loads_started_before = _commits["loads_started"]
-        loads_ended_before = _commits["loads_ended"]
+        # Only a /load sent after this click answers it: a page-restore load already in flight can
+        # end while the clicked flow is still in /validate, and counting that one reopens the race.
+        loads_before = len(_commits["loads"])
         # A Load/Reload click is not answered until its /load is: quiet polls alone cannot see a
         # request the flow has not sent yet. Save/Forget send no load, so they keep the quiet rule.
         # A flow can also stop short of /load (validation refused, consent declined); with
@@ -346,11 +348,13 @@ with sync_playwright() as p:
                 quiet[0] = 0
                 return None
             quiet[0] += 1
-            if expects_load and _commits["loads_ended"] == loads_ended_before:
-                if _commits["loads_started"] > loads_started_before:
-                    quiet[0] = 0
-                    return None
-                return "stopped before load" if quiet[0] >= 12 else None
+            if expects_load:
+                ours = _commits["loads"][loads_before:]
+                if not any(req in _commits["loads_ended"] for req in ours):
+                    if ours:
+                        quiet[0] = 0
+                        return None
+                    return "stopped before load" if quiet[0] >= 12 else None
             return "answered" if quiet[0] >= 3 else None
 
         try:
