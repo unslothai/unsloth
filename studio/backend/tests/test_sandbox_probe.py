@@ -409,7 +409,12 @@ def test_this_host_reports_unavailable_with_something_actionable():
         != 0
     )
     if blocked and os.path.exists("/proc/sys/kernel/apparmor_restrict_unprivileged_userns"):
-        assert "apparmor_restrict_unprivileged_userns" in capability.remediation
+        if shutil.which("bwrap") is None:
+            # Not installed yet: the one copy-paste installs it and loads Ubuntu's profile.
+            if "apt-get" in (os_sandbox.bwrap_install_command() or ""):
+                assert os_sandbox._BWRAP_APPARMOR_FIX in capability.remediation
+        else:
+            assert "apparmor_restrict_unprivileged_userns" in capability.remediation
 
 
 def test_the_abstract_socket_control_is_paired_like_every_other(monkeypatch):
