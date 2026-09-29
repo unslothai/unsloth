@@ -271,12 +271,25 @@ with sync_playwright() as p:
     # Settings-committing requests (the load POST, the per-model override mirror PUT, the VRAM
     # budget PUT), so a click that commits settings is waited out rather than slept on. On the
     # context, so a replacement page is covered too.
-    _commits = {"started": 0, "inflight": set()}
+    _commits = {"started": 0, "inflight": set(), "loads_finished": 0}
 
+    # validate and unload are the Load/Reload flow's own preliminaries: after the override PUT
+    # answers, the flow POSTs /validate (~0.4 s on CI), then /unload, and only then /load. Left
+    # out, those ~0.5 s read as quiet and the wait below returned before /load was even sent, so
+    # the test's next page.reload() aborted it (Chat UI Tests (extra) on main at 52b822c79: validate
+    # and unload logged, no load, then GET /chat). The model came back from the page's own restore a
+    # few seconds later, mid-way through the Reset step, and flipped "Load model" to "Reload model"
+    # under a click that then waited out its 60 s on a button that no longer existed.
     def _is_commit(req) -> bool:
         return req.method != "GET" and (
-            "/api/inference/load" in req.url or "/api/settings/" in req.url
+            "/api/inference/load" in req.url
+            or "/api/inference/validate" in req.url
+            or "/api/inference/unload" in req.url
+            or "/api/settings/" in req.url
         )
+
+    def _is_load(req) -> bool:
+        return req.method == "POST" and "/api/inference/load" in req.url
 
     def _commit_started(req):
         try:
@@ -289,8 +302,16 @@ with sync_playwright() as p:
     def _commit_ended(req):
         _commits["inflight"].discard(req)
 
+    def _commit_finished(req):
+        _commits["inflight"].discard(req)
+        try:
+            if _is_load(req):
+                _commits["loads_finished"] += 1
+        except Exception:
+            pass
+
     ctx.on("request", _commit_started)
-    ctx.on("requestfinished", _commit_ended)
+    ctx.on("requestfinished", _commit_finished)
     ctx.on("requestfailed", _commit_ended)
 
     def click_and_wait_for_commit(btn, what: str) -> None:
@@ -304,6 +325,11 @@ with sync_playwright() as p:
         it decide, as they did after the fixed pause.
         """
         started = _commits["started"]
+        loads_before = _commits["loads_finished"]
+        # A Load/Reload click is not answered until its /load is: quiet polls alone cannot see a
+        # request the flow has not sent yet. Save/Forget send no load, so they keep the quiet rule.
+        label = " ".join((btn.text_content() or "").split())
+        expects_load = label in ("Load model", "Reload model")
         clicked_at = time.monotonic()
         btn.click()
         quiet = [0]
@@ -312,6 +338,9 @@ with sync_playwright() as p:
             if _commits["started"] == started:
                 return "nothing sent" if time.monotonic() - clicked_at > 10 else None
             if _commits["inflight"]:
+                quiet[0] = 0
+                return None
+            if expects_load and _commits["loads_finished"] == loads_before:
                 quiet[0] = 0
                 return None
             quiet[0] += 1
@@ -726,16 +755,18 @@ with sync_playwright() as p:
         loc = popover.locator('input[aria-label="Context Length"]').first
         return loc if _count(loc) else None
 
+    PRIMARY_BUTTON_NAMES = re.compile(r"^(Load model|Reload model|Save settings|Forget settings)$")
+
     def primary_button(popover):
-        # exact: get_by_role matches the accessible name as a substring by default, so
-        # "Load model" also matches "Reload model" -- and it is swept first, so the
-        # reload case would be found under the wrong name. The panel shows exactly one
-        # of these four.
-        for name in ("Load model", "Reload model", "Save settings", "Forget settings"):
-            b = popover.get_by_role("button", name = name, exact = True).first
-            if _count(b):
-                return b
-        return None
+        # Anchored: get_by_role matches the accessible name as a substring by default, so
+        # "Load model" would also match "Reload model". The panel shows exactly one of these four.
+        #
+        # One locator for all four, not the name seen at lookup: the label follows the runtime
+        # store, which fills in after a page load, so a resident model can read "Load model" and
+        # then "Reload model" a moment later. A locator pinned to the first name then resolves to
+        # nothing and its click waits out the whole timeout.
+        b = popover.get_by_role("button", name = PRIMARY_BUTTON_NAMES).first
+        return b if _count(b) else None
 
     # ─────────────────────────────────────────────────────
     # 1. Hidden infra models absent from the picker (HARD).
