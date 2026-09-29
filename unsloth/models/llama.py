@@ -1303,6 +1303,9 @@ def _LlamaModel_fast_forward_inference(
         for idx, decoder_layer in enumerate(self.model.layers):
             layer_device, device_index = per_layer_device(decoder_layer)
             X, residual, position_ids = move_to_device(layer_device, X, residual, position_ids)
+            # self_attn is called directly, so no accelerate hook moves the mask to a split layer's device.
+            if attention_mask is not None:
+                attention_mask = move_to_device(layer_device, attention_mask)
             residual.copy_(X)
             X = fast_rms_layernorm_inference(
                 decoder_layer.input_layernorm,
