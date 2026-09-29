@@ -111,6 +111,9 @@ export function ArtifactSurface({
   const [viewMode, setViewMode] = useState<ArtifactViewMode>("preview");
   // Follow the view the opener asked for (Preview vs Code button), per artifact.
   const requestedView = useChatArtifactsStore((state) => state.requestedView);
+  const setArtifactView = useChatArtifactsStore(
+    (state) => state.setArtifactView,
+  );
   const [copied, setCopied] = useState(false);
   const copyResetRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const surfaceRef = useRef<HTMLElement>(null);
@@ -242,7 +245,11 @@ export function ArtifactSurface({
                 type="button"
                 role="tab"
                 disabled={isLoadingArtifact && !isPreview}
-                onClick={() => setViewMode(mode)}
+                onClick={() => {
+                  setViewMode(mode);
+                  // Keeps the card's open/hide toggle in step with the tab on screen.
+                  setArtifactView(mode);
+                }}
                 className={cn(
                   "flex size-8 items-center justify-center rounded-full text-muted-foreground transition-colors",
                   effectiveViewMode === mode

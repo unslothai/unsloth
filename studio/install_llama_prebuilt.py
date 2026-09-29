@@ -12,6 +12,7 @@ import errno
 import fnmatch
 import glob
 import hashlib
+import importlib.util
 import json
 import os
 import platform
@@ -10861,6 +10862,61 @@ class BackendRoute:
     rocm_fallback_host: HostInfo | None = None
 
 
+# Quoted values only: non-ROCm builds write `hip: Optional[str] = None`. Mirrors install_python_stack.
+_TORCH_VERSION_PY_HIP_RE = re.compile(r"""^hip\s*(?::[^=]*)?=\s*['"]([^'"]*)['"]""", re.MULTILINE)
+# AMD's Radeon SDK wheels leave hip None and carry the tag here (2.9.0+rocmsdk20251116).
+_TORCH_VERSION_PY_VERSION_RE = re.compile(
+    r"""^__version__\s*(?::[^=]*)?=\s*['"]([^'"]*)['"]""", re.MULTILINE
+)
+
+
+def _torch_version_py_is_rocm(version_py: Path) -> bool | None:
+    try:
+        text = version_py.read_text(encoding = "utf-8", errors = "replace")
+    except OSError:
+        return None
+    hip = _TORCH_VERSION_PY_HIP_RE.search(text)
+    version = _TORCH_VERSION_PY_VERSION_RE.search(text)
+    return bool((hip and hip.group(1)) or (version and "rocm" in version.group(1).lower()))
+
+
+def _installed_torch_is_rocm() -> bool | None:
+    """Read off disk: importing torch here is slow and can fail."""
+    try:
+        spec = importlib.util.find_spec("torch")
+        if spec is None or not spec.origin:
+            return None
+        return _torch_version_py_is_rocm(Path(spec.origin).with_name("version.py"))
+    except Exception:
+        return None
+
+
+def _rocm_torch_preferred() -> bool:
+    if (os.environ.get("UNSLOTH_FORCE_ROCM_TORCH") or "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    ):
+        return True
+    return _installed_torch_is_rocm() is True
+
+
+def _auto_host_following_rocm_torch(host: HostInfo) -> HostInfo:
+    """Only moves off CUDA on live AMD evidence (stale ROCm torch keeps CUDA)."""
+    if not host.has_usable_nvidia:
+        return host
+    probed = host if host.has_rocm else detect_host(probe_rocm_with_nvidia = True)
+    # Marker-replayed arches outlive a removed card; setup.sh forwards none while NVIDIA is usable.
+    if not (probed.has_rocm or _normalize_forwarded_gfx(os.environ.get("UNSLOTH_ROCM_GFX_ARCH"))):
+        return host
+    log(
+        "ROCm torch is installed or requested; Automatic prefers the ROCm llama.cpp build "
+        "over CUDA on this mixed NVIDIA+AMD host"
+    )
+    return dataclasses_replace(probed, has_physical_nvidia = False, has_usable_nvidia = False)
+
+
 def route_backend_request(
     *,
     backend: str | None,
@@ -10890,6 +10946,8 @@ def route_backend_request(
             has_physical_nvidia = False,
             has_usable_nvidia = False,
         )
+    elif backend in (None, "auto") and _rocm_torch_preferred():
+        detected_host = _auto_host_following_rocm_torch(detected_host)
     force_cpu = cpu_mechanism or backend == "cpu"
     resolved_host = _apply_host_overrides(
         detected_host,
