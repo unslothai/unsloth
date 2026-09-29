@@ -509,7 +509,7 @@ const TurnRail: FC<{ viewportRef: RefObject<HTMLElement | null> }> = ({
     <div
       ref={anchorRef}
       {...{ [FIND_SKIP_ATTRIBUTE]: "" }}
-      className="aui-turn-navigator-anchor pointer-events-none sticky top-1/2 z-10 h-0 w-full shrink-0"
+      className="aui-turn-navigator-anchor pointer-events-none select-none sticky top-1/2 z-10 h-0 w-full shrink-0"
     >
       {/* gutter beside the message column: the rail hides when it would overlap messages */}
       <div
