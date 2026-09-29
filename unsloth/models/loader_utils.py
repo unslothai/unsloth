@@ -360,27 +360,26 @@ def exclude_no_placement_params(device_map, model_class, config):
         return best
 
     out = dict(base)
+    # Split from the most specific covering key outwards until none covers the table.
     for path in excluded_modules:
-        key = owner(path)
-        if key is None:
-            continue
-        device = out.pop(key)
-        if key == path:
-            continue
-        module = meta.get_submodule(key) if key else meta
-        prefix = key
-        parts = path[len(key) + 1 :].split(".") if key else path.split(".")
-        for part in parts:
-            for child_name, _ in module.named_children():
-                if child_name != part:
-                    out.setdefault(f"{prefix}.{child_name}" if prefix else child_name, device)
-            for tensor_name, _ in list(module.named_parameters(recurse = False)) + list(
-                module.named_buffers(recurse = False)
-            ):
-                if tensor_name != part:
-                    out.setdefault(f"{prefix}.{tensor_name}" if prefix else tensor_name, device)
-            module = getattr(module, part)
-            prefix = f"{prefix}.{part}" if prefix else part
+        while (key := owner(path)) is not None:
+            device = out.pop(key)
+            if key == path:
+                continue
+            module = meta.get_submodule(key) if key else meta
+            prefix = key
+            parts = path[len(key) + 1 :].split(".") if key else path.split(".")
+            for part in parts:
+                for child_name, _ in module.named_children():
+                    if child_name != part:
+                        out.setdefault(f"{prefix}.{child_name}" if prefix else child_name, device)
+                for tensor_name, _ in list(module.named_parameters(recurse = False)) + list(
+                    module.named_buffers(recurse = False)
+                ):
+                    if tensor_name != part:
+                        out.setdefault(f"{prefix}.{tensor_name}" if prefix else tensor_name, device)
+                module = getattr(module, part)
+                prefix = f"{prefix}.{part}" if prefix else part
     billions = (
         sum(
             t.numel()

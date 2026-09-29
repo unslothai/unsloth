@@ -230,3 +230,10 @@ def test_split_keeps_more_specific_entries():
     assert out["lm_head"] == 1
     assert out["model.embed_tokens"] == 0
     assert not covered(out, "model.layers.1.ple.ple_embedding.ngram_embedding.weight")
+
+
+def test_split_every_covering_ancestor():
+    out = exclude_no_placement_params({"": 0, "model.layers.1": 1}, Model, None)
+    assert not covered(out, "model.layers.1.ple.ple_embedding.ngram_embedding.weight")
+    assert out["model.layers.1.mlp"] == 1 and out["model.layers.1.ple.key_proj"] == 1
+    assert out["lm_head"] == 0
