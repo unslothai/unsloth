@@ -31,7 +31,6 @@ def test_compiled_classes_are_swapped_back_for_the_fast_patcher(monkeypatch):
     _restore_uncompiled_transformers_classes(patcher)
     assert modeling.FakeAttention is original
     assert modeling.CLASSES == {"eager": original, "mlp": other}
-    # Classes that were not rebound by the compiler are left alone.
     assert modeling.FakeMLP is other
 
 

@@ -2306,7 +2306,6 @@ def _fused_lora_skip_reason(lora_dropout, bias) -> str:
 
 
 def _patched_transformers_modules(model_patcher):
-    """The transformers modeling modules whose classes ``model_patcher``'s module imported (and pre_patch edits)."""
     patcher_module = sys.modules.get(getattr(model_patcher, "__module__", ""))
     if patcher_module is None:
         return {}
@@ -2320,9 +2319,7 @@ def _patched_transformers_modules(model_patcher):
 
 
 def _restore_uncompiled_transformers_classes(model_patcher):
-    """FastModel's compiler rebinds a family's transformers classes (e.g. ``modeling_llama.LlamaAttention``) to its
-    compiled copies; FastLanguageModel patches the classes it imported, so point the modeling module back at those
-    before loading, else a later FastLanguageModel load builds compiled layers under the fast forwards and crashes."""
+    """FastModel rebinds the modeling module's classes to compiled copies, but pre_patch patches the originals."""
     for modeling, originals in _patched_transformers_modules(model_patcher).items():
         for original in originals:
             current = getattr(modeling, original.__name__, None)
