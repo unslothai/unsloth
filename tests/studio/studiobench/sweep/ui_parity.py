@@ -1139,7 +1139,14 @@ def compare_all(
                 )
             )
             continue
-        results.append((action, shard, cell, P.compare_rows(sides["base"], sides["treatment"])))
+        out = P.compare_rows(sides["base"], sides["treatment"])
+        # WHAT EACH ARM RENDERED, kept beside the verdict so `swapped_between_arms` can ask whether
+        # another repetition saw the same two renderings on the opposite arms.
+        out["outcomes"] = (
+            rendering_of(sides["base"].get("parity")),
+            rendering_of(sides["treatment"].get("parity")),
+        )
+        results.append((action, shard, cell, out))
     return results, got
 
 
@@ -1221,7 +1228,12 @@ def actions_needing_an_excuse(paths: list[Path], min_reps: int) -> set[tuple[str
     the verdict already declines to count is a question nobody is going to ask.
     """
     results, _ = compare_all(paths)
-    differing = [e for e in results if e[3]["verdict"] == P.DIFFER]
+    # AND THE SWAP, for the same reason: `report` never counts a pair whose repetitions swapped two
+    # renderings between the arms, so no excuse can move it either.
+    swapped = swapped_between_arms(results, min_reps)
+    differing = [
+        e for i, e in enumerate(results) if e[3]["verdict"] == P.DIFFER and i not in swapped
+    ]
     one_sided = [
         (e[0], e[1], e[2], e[3], e[3].get("one_sided") or None)
         for e in results
@@ -1568,8 +1580,9 @@ def corroborated(entries: list[tuple], min_reps: int) -> tuple[list[tuple], list
     opposite arms. Keyed on the direction they separate, and each side is then a single
     repetition, so both print as UNCORROBORATED and the verdict does not rest on them.
 
-    A four-element entry has no direction and groups exactly as before, which is right for a
-    digest difference: `stable_bad` is a statement about a PAIR of arms and has no failing side.
+    A four-element entry has no direction and groups exactly as before. A digest difference has
+    no failing side, but it can still have a direction: two repetitions holding the same two
+    renderings on opposite arms. `swapped_between_arms` takes those out before this runs.
     """
     by_action: dict[tuple, list[tuple]] = collections.defaultdict(list)
     for entry in entries:
@@ -1585,6 +1598,115 @@ def corroborated(entries: list[tuple], min_reps: int) -> tuple[list[tuple], list
         reps = {e[2] for e in group}
         (firm if len(reps) >= min_reps else weak).extend(group)
     return firm, weak
+
+
+#: The capture fields that together are one arm's rendering of one action, for `rendering_of`.
+#: Deliberately wider than what `compare` decides on: a field left out can only make two renderings
+#: look equal, which is the direction that excuses, so everything the capture carries about the
+#: thread root, the overlays and the style probe is in. `shot` and `shot_scroll_top` are not: the
+#: first names the arm, so no rendering could ever equal the other arm's.
+RENDERING_FIELDS: tuple[str, ...] = (
+    "root_kind",
+    "digest",
+    "chars",
+    "digest_scaffold",
+    "chars_scaffold",
+    "messages",
+    "overlays",
+    "styles",
+    "mounted_messages",
+    "thread_total",
+    "in_flight",
+    "streaming",
+    "in_flight_unplaced",
+    "queued_idle",
+    "composer_control",
+)
+
+
+def rendering_of(capture: Optional[dict]) -> Optional[str]:
+    """One arm's capture reduced to an exact, comparable identity, or `None` when it has none.
+
+    `None` for a capture with no `digest` -- a failed probe, or a payload recorded before the
+    digest existed -- and `swapped_between_arms` then has nothing to match, so the pair is scored
+    exactly as it was before that function existed.
+    """
+    if not isinstance(capture, dict) or not capture.get("digest"):
+        return None
+    fields = {k: capture.get(k) for k in RENDERING_FIELDS}
+    return json.dumps(fields, sort_keys = True, default = str)
+
+
+def swapped_between_arms(results: list[tuple], min_reps: int) -> frozenset[int]:
+    """Indices into `results` of differing pairs another repetition saw with the ARMS SWAPPED.
+
+    A DIGEST DIFFERENCE CAN HAVE A DIRECTION TOO. `corroborated` separates two one-arm failures
+    that blame opposite arms, and treats a digest difference as having no side. Measured on #11756
+    (run 35949769378) that is not so: `thread_reopen` and `delete_message` differed in both
+    repetitions at r100K, rep0 as (base R1, head R2) and rep1 as (base R2, head R1), byte for byte
+    the same two renderings. The action just before them, `image_upload`, has an 800ms slot, and
+    in the cells where it ran its attachment chip was still in the composer, which is inside the
+    thread root, two actions later (+2012 and +2022 characters of scaffold). Which cells reached
+    that slot was a race: base missed, head ran, head missed, base ran. Each build rendered BOTH
+    states, so the difference is not a property of either, and two repetitions of it are one race
+    seen from each side rather than one finding seen twice.
+
+    EXACT, NOT A SIGN. A pair is excused only when another repetition of the same action at the
+    same rung holds its two renderings, entire, on the opposite arms (`rendering_of`). A treatment
+    that changes anything else in the thread moves at least one of the four renderings, so the
+    swap no longer lines up and the pair is scored as before. A size-sign heuristic would excuse
+    that too, and is not used.
+
+    WHAT IT COSTS: a change that makes EACH build render the other's state in some repetition is
+    indistinguishable from this race at this repetition count and is demoted to UNCORROBORATED,
+    printed rather than dropped, exactly like a difference seen in one repetition.
+
+    Off at `min_reps <= 1`, where every difference counts by request. A repetition is its cell
+    label, as in `corroborated`, so a pair cannot excuse itself and one repetition recorded in two
+    shards cannot supply its own partner. Pairs are matched ONE-TO-ONE: a reversal excuses exactly
+    one observation in the other direction, and whatever is left is scored as before.
+    """
+    if min_reps <= 1:
+        return frozenset()
+    groups: dict[tuple[str, str], list[tuple[int, str, str, str]]] = collections.defaultdict(list)
+    for i, (action, _shard, cell, r) in enumerate(results):
+        if r.get("verdict") != P.DIFFER:
+            continue
+        base, treat = r.get("outcomes") or (None, None)
+        if base is None or treat is None or base == treat:
+            continue
+        groups[(action, rung_of_cell(cell))].append((i, cell, base, treat))
+    # ONE-TO-ONE, BY REPETITION. `corroborated` counts a repetition (cell) once, so a repetition is
+    # the unit here too: all its rows are excused together or not at all, and it takes part in at
+    # most one swap. A repetition recorded with BOTH directions of the same pair (two shards that
+    # disagree) is ambiguous and is never excused, since it cannot say which side it saw. Each
+    # reversed repetition then excuses exactly one repetition in the other direction, so three
+    # repetitions of (R1, R2) against one (R2, R1) leave two (R1, R2) for `corroborated` to count.
+    out: set[int] = set()
+    for group in groups.values():
+        by_cell: dict[str, dict[tuple[str, str], list[int]]] = collections.defaultdict(
+            lambda: collections.defaultdict(list)
+        )
+        for i, cell, base, treat in group:
+            by_cell[cell][(base, treat)].append(i)
+        # One direction per repetition and pair; a repetition holding both is set aside whole.
+        seen: dict[str, tuple[str, str]] = {}
+        for cell, directions in by_cell.items():
+            if len(directions) == 1:
+                seen[cell] = next(iter(directions))
+        used: set[str] = set()
+        for cell in sorted(seen):
+            if cell in used:
+                continue
+            base, treat = seen[cell]
+            for other in sorted(seen):
+                if other not in used and other != cell and seen[other] == (treat, base):
+                    used.update((cell, other))
+                    break
+        for cell in used:
+            for rows in by_cell[cell].values():
+                out.update(rows)
+    return frozenset(out)
 
 
 def report(
@@ -1621,7 +1743,9 @@ def report(
     expect_bad = []
     compared: set[tuple[str, str, str]] = set()
     matched = 0
-    for action, shard, cell, r in results:
+    swapped = swapped_between_arms(results, min_reps)
+    swapped_bad: list[tuple] = []
+    for i, (action, shard, cell, r) in enumerate(results):
         # COLLECTED BEFORE THE VERDICT BRANCHES AND OUTSIDE THE EXEMPTION, because it is not a digest: an
         # action can produce two digests the instability exemption excuses and still have failed its own
         # assertion on one arm only, which is the one shape `ran` cannot see. `stop_generation` is the
@@ -1670,7 +1794,13 @@ def report(
             continue
         entry = (action, shard, cell, r["moved"])
         compared.add((action, shard, cell))
-        (unstable_bad if is_unstable(unstable, action, cell) else stable_bad).append(entry)
+        if is_unstable(unstable, action, cell):
+            unstable_bad.append(entry)
+        elif i in swapped:
+            # Each build rendered both states; see `swapped_between_arms`. Never corroborates.
+            swapped_bad.append(entry)
+        else:
+            stable_bad.append(entry)
 
     # SPLIT BEFORE THE COUNTS ARE PRINTED: "stable actions differing: 1" above a verdict of 0 is how
     # a reader concludes the tool is lying, so the headline number must be the one the exit code
@@ -1699,6 +1829,16 @@ def report(
             f"cell rows, so completion could not be checked"
         )
     print(f"  matched:                    {matched}")
+    # SAID, not silent: a pair that matched only once fence latch state was set aside is a weaker
+    # match than one whose every byte agreed, and a reader should be able to count them.
+    latch_normalised = sum(
+        1 for _a, _s, _c, r in results if r.get("verdict") == P.MATCH and r.get("fence_latch")
+    )
+    if latch_normalised:
+        print(
+            f"    of which fence-latch only: {latch_normalised}  (the only difference was which code "
+            f"fences each arm had scrolled past; those fences were compared on their text)"
+        )
     print(
         f"  stable actions differing:   {len(stable_bad)}"
         + (f"  (in >= {min_reps} repetitions)" if min_reps > 1 else "")
@@ -1707,6 +1847,11 @@ def report(
         print(
             f"  uncorroborated:             {len(uncorroborated)}  (a stable action that differed "
             f"in fewer than {min_reps} repetitions; reported, not counted)"
+        )
+    if swapped_bad:
+        print(
+            f"  swapped between arms:       {len(swapped_bad)}  (a stable action whose repetitions "
+            f"held the same two renderings on opposite arms; reported, not counted)"
         )
     print(
         f"  ran on ONE arm only:        {len(one_sided)}"
@@ -1733,7 +1878,7 @@ def report(
 
     # THE SAME SET, COUNTED TWICE, checked rather than assumed, so a later edit to either branch
     # cannot make the coverage floor answer about a different set than the summary does.
-    scored = matched + len(stable_bad) + len(uncorroborated) + len(unstable_bad)
+    scored = matched + len(stable_bad) + len(uncorroborated) + len(swapped_bad) + len(unstable_bad)
     assert len(compared) == scored, (len(compared), scored)
     shortfall = coverage_shortfall(scored, len(results), min_compared)
     if shortfall:
@@ -1784,7 +1929,7 @@ def report(
     # A DEMOTED DIFFERENCE IS STILL A COMPARISON: `corroborated` moves a sub-`min_reps` difference out
     # of `stable_bad`, and reading `matched` alone a payload whose every difference was uncorroborated
     # exited 2 "NOTHING WAS COMPARED" over a run that compared everything it had.
-    decided = matched + len(uncorroborated) + len(one_sided_weak)
+    decided = matched + len(uncorroborated) + len(swapped_bad) + len(one_sided_weak)
     if stable_bad:
         print("\n  UI PARITY DIFFERENCES ON STABLE ACTIONS -- these need explaining:")
         for action, shard, cell, moved in stable_bad:
@@ -1819,6 +1964,15 @@ def report(
             f"regression:"
         )
         for action, shard, cell, moved in uncorroborated[:8]:
+            print(f"    {action:<26} {shard} {cell}: {', '.join(moved[:3])}")
+
+    if swapped_bad:
+        # Printed for the same reason: a race is still a reading, and it names the surface.
+        print(
+            "\n  UNCORROBORATED -- the repetitions SWAPPED the same two renderings between the"
+            "\n  arms, so each build produced both and the difference is not a property of either:"
+        )
+        for action, shard, cell, moved in swapped_bad[:8]:
             print(f"    {action:<26} {shard} {cell}: {', '.join(moved[:3])}")
 
     if blind:

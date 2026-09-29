@@ -109,7 +109,7 @@ const RenderHtmlToolUIImpl: ToolCallMessagePartComponent = ({
   }
 
   return (
-    <div className="relative my-2 flex min-h-[52px] w-full max-w-md items-center overflow-hidden rounded-lg border border-border/70 bg-muted/15 px-3 py-2 text-left dark:bg-muted/10">
+    <div className="relative my-2 flex min-h-[calc(52px*var(--ui-space-scale,1))] w-full max-w-md items-center overflow-hidden rounded-lg border border-border/70 bg-muted/15 px-3 py-2 text-left dark:bg-muted/10">
       <div className="relative z-10 flex min-w-0 flex-1 items-center gap-2.5">
         <HugeiconsIcon
           icon={BrowserIcon}
