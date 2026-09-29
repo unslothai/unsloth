@@ -8,6 +8,8 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+import os
+
 import pytest
 
 from core.inference import engine_install as install
@@ -474,6 +476,27 @@ def test_installer_does_not_inherit_base_python_or_secrets(monkeypatch):
         )
     )
     assert env["UV_LINK_MODE"] == "copy"
+
+
+def test_only_driver_directories_survive_the_library_path(tmp_path):
+    driver, runtime = tmp_path / "lib64-nvidia", tmp_path / "cuda" / "lib64"
+    for folder, library in ((driver, "libcuda.so.1"), (runtime, "libcudart.so.13")):
+        folder.mkdir(parents = True)
+        (folder / library).write_bytes(b"")
+    joined = os.pathsep.join([str(runtime), "", "lib64-nvidia", str(driver)])
+    assert install.driver_library_path({"LD_LIBRARY_PATH": joined}) == str(driver)
+    assert install.driver_library_path({"LD_LIBRARY_PATH": str(runtime)}) is None
+    assert install.driver_library_path({}) is None
+
+
+def test_installer_keeps_the_driver_its_checks_import(monkeypatch, tmp_path):
+    driver = tmp_path / "lib64-nvidia"
+    driver.mkdir()
+    (driver / "libcuda.so.1").write_bytes(b"")
+    monkeypatch.setenv("LD_LIBRARY_PATH", os.pathsep.join(["/opt/cuda-12/lib64", str(driver)]))
+    assert install.install_environment()["LD_LIBRARY_PATH"] == str(driver)
+    monkeypatch.setenv("LD_LIBRARY_PATH", "/opt/cuda-12/lib64")
+    assert "LD_LIBRARY_PATH" not in install.install_environment()
 
 
 def test_installer_reuses_recorded_cache(monkeypatch, tmp_path):
@@ -1001,7 +1024,7 @@ def test_memory_budget_uses_selected_gpu_and_reserves_headroom(monkeypatch):
 
 
 @pytest.mark.parametrize("gpu_ids", [[1], [1, 0]])
-def test_server_outlives_short_lived_start_thread(isolated, monkeypatch, gpu_ids):
+def test_server_outlives_short_lived_start_thread(isolated, monkeypatch, gpu_ids, tmp_path):
     import os
     import sys
     import time
@@ -1020,7 +1043,7 @@ def test_server_outlives_short_lived_start_thread(isolated, monkeypatch, gpu_ids
             "class Handler(BaseHTTPRequestHandler):\n"
             " def do_GET(self):\n"
             "  self.send_response(200); self.end_headers()\n"
-            "  self.wfile.write('|'.join(os.environ[k] for k in ('CUDA_VISIBLE_DEVICES', 'TRITON_CACHE_DIR', 'FLASHINFER_WORKSPACE_BASE')).encode())\n"
+            "  self.wfile.write('|'.join(os.environ.get(k, '') for k in ('CUDA_VISIBLE_DEVICES', 'TRITON_CACHE_DIR', 'FLASHINFER_WORKSPACE_BASE', 'LD_LIBRARY_PATH')).encode())\n"
             " def log_message(self, *args): pass\n"
             f"HTTPServer(('127.0.0.1', {port}), Handler).serve_forever()\n"
         )
@@ -1033,6 +1056,11 @@ def test_server_outlives_short_lived_start_thread(isolated, monkeypatch, gpu_ids
         key_environment = lambda _: {},
     )
     errors = []
+    # Colab reaches libcuda only through LD_LIBRARY_PATH; a CUDA runtime there must not follow.
+    driver, runtime = tmp_path / "lib64-nvidia", tmp_path / "cuda-12" / "lib64"
+    for folder, library in ((driver, "libcuda.so.1"), (runtime, "libcudart.so.12")):
+        folder.mkdir(parents = True)
+        (folder / library).write_bytes(b"")
 
     def start():
         try:
@@ -1041,7 +1069,10 @@ def test_server_outlives_short_lived_start_thread(isolated, monkeypatch, gpu_ids
                 2048,
                 gpu_ids,
                 dict(
-                    os.environ, TRITON_CACHE_DIR = "/shared-cache", FLASHINFER_WORKSPACE_BASE = "/home"
+                    os.environ,
+                    TRITON_CACHE_DIR = "/shared-cache",
+                    FLASHINFER_WORKSPACE_BASE = "/home",
+                    LD_LIBRARY_PATH = os.pathsep.join(map(str, (runtime, driver))),
                 ),
             )
         except Exception as exc:
@@ -1056,9 +1087,10 @@ def test_server_outlives_short_lived_start_thread(isolated, monkeypatch, gpu_ids
         assert engine.alive()
         import httpx
 
-        visible, cache_path, flashinfer_base = httpx.get(
+        visible, cache_path, flashinfer_base, library_path = httpx.get(
             engine.base_url, trust_env = False
         ).text.split("|")
+        assert library_path == str(driver)
         assert flashinfer_base == install.installed("vllm")["path"]
         assert visible == ",".join(map(str, gpu_ids))
         assert Path(cache_path).parent.parent == isolated / "vllm" / "cache"
