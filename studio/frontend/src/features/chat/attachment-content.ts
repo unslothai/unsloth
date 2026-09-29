@@ -819,12 +819,14 @@ function addKeptDocxImages(bytes: Uint8Array, archive: DocxArchive, mainDocument
     }
     if (id && target && ids.has(id)) wanted.add(joinDocxPath(base, target));
   }
-  let unpacked = 0;
+  // One budget with the parts already unpacked.
+  let unpacked = Object.values(archive.entries).reduce((total, entry) => total + entry.length, 0);
   const images = unzipSync(bytes, {
     filter: (entry) => {
       if (!wanted.has(entry.name) || archive.entries[entry.name]) return false;
+      if (unpacked + entry.originalSize > MAX_DOCX_UNPACKED_BYTES) return false;
       unpacked += entry.originalSize;
-      return unpacked <= MAX_DOCX_UNPACKED_BYTES;
+      return true;
     },
   });
   Object.assign(archive.entries, images);
