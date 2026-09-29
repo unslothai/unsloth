@@ -87,6 +87,25 @@ def test_flux1_krea_dev_generation_defaults():
     assert default_generation_params("krea/Krea-2-Raw") == (52, 3.5)
 
 
+def test_flux_dev_and_krea_do_not_inherit_the_schnell_nvfp4_checkpoint():
+    # The NVFP4 artifact is schnell-only: dev and Krea-dev inheriting it failed validation with no dense fallback.
+    from core.inference.diffusion_families import family_prequant_repo
+
+    fam = detect_family("black-forest-labs/FLUX.1-schnell")
+    assert fam is not None and fam.name == "flux.1"
+    assert (
+        family_prequant_repo(fam, "nvfp4", base_repo = "black-forest-labs/FLUX.1-schnell")
+        == "unsloth/FLUX.1-schnell-NVFP4"
+    )
+    for base, fp8_repo in (
+        ("black-forest-labs/FLUX.1-dev", "unsloth/FLUX.1-dev-FP8"),
+        ("black-forest-labs/FLUX.1-Krea-dev", "unsloth/FLUX.1-Krea-dev-FP8"),
+    ):
+        assert family_prequant_repo(fam, "nvfp4", base_repo = base) is None
+        assert family_prequant_repo(fam, "fp8", base_repo = base) == fp8_repo
+        assert family_prequant_repo(fam, "int8", base_repo = base) == fp8_repo
+
+
 def test_flux2_klein_generation_defaults_distinguish_base_from_distilled():
     for size in ("4B", "9B"):
         assert default_generation_params(f"unsloth/FLUX.2-klein-base-{size}") == (50, 4.0)
@@ -689,7 +708,9 @@ def test_qwen_image_21_gguf_reaches_sd_cpp_with_its_own_vae_and_a_qwen3vl_encode
     assert "2.1" in fam.sd_cpp_vae[1]
 
     encoders = sd_cpp_text_encoders_for(fam, "unsloth/Qwen-Image-2.1-GGUF", None)
-    assert len(encoders) == 1
+    # The encoder, then the vision projector native editing reads through --llm_vision.
+    assert len(encoders) == 2
+    assert encoders[1] == ("unsloth/Qwen3-VL-8B-Instruct-GGUF", "mmproj-F16.gguf", "llm_vision")
     repo, filename, kind = encoders[0]
     assert repo == "unsloth/Qwen3-VL-8B-Instruct-GGUF"
     # Which rung is the family's call, pinned by exact name in

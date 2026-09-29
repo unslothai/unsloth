@@ -16,6 +16,7 @@ the process holding it lives and the backend must not be the process that takes 
 
 from __future__ import annotations
 
+from hub.utils.hf_errors import modelscope_missing
 from hub.utils.hf_tokens import normalize_token
 
 import gc
@@ -886,7 +887,7 @@ class _SnapshotDownloadState:
             with self._lock:
                 if not self._cancelled:
                     logger.warning("STT snapshot download failed for %s: %s", repo, exc)
-                    self._error = f"Download failed for '{repo}'."
+                    self._error = modelscope_missing(exc) or f"Download failed for '{repo}'."
         finally:
             if registry is not None and owner is not None:
                 registry.release_repository_owner(repo, owner)

@@ -86,5 +86,15 @@ export default defineConfig({
     commonjsOptions: {
       include: [/node_modules/, /@dagrejs\/dagre/, /@dagrejs\/graphlib/],
     },
+    rolldownOptions: {
+      // import() of a module the app already imports statically defers nothing, and it splits
+      // that module's graph into extra startup chunks (#11588). Fail the build rather than warn.
+      onLog(level, log, handler) {
+        if (log.code === "INEFFECTIVE_DYNAMIC_IMPORT") {
+          throw new Error(log.message);
+        }
+        handler(level, log);
+      },
+    },
   },
 });

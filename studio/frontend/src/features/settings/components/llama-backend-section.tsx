@@ -119,7 +119,7 @@ function LlamaCppPathRow({ onChanged }: { onChanged: () => void }) {
         hint={t("settings.resources.llamaBackend.customPath.hint")}
         className="max-[840px]:flex-col max-[840px]:items-stretch max-[840px]:gap-2"
       >
-        <div className="grid w-[392px] min-w-0 grid-cols-[minmax(0,1fr)_auto_auto] gap-x-2 gap-y-1.5 max-[840px]:w-full">
+        <div className="grid w-[calc(392px*var(--ui-space-scale,1))] min-w-0 grid-cols-[minmax(0,1fr)_auto_auto] gap-x-2 gap-y-1.5 max-[840px]:w-full">
           <Input
             readOnly={!settings?.editable}
             aria-label={t("settings.resources.llamaBackend.customPath.label")}

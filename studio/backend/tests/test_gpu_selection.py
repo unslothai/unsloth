@@ -901,6 +901,68 @@ class TestGpuAutoSelection(_GpuCacheResetMixin, unittest.TestCase):
         self.assertIsNone(metadata["selected_gpu_ids"])
 
 
+class TestExplicitPickWithoutTorchKernels(unittest.TestCase):
+    def test_an_uncovered_card_is_rejected_with_the_arch_list(self):
+        with (
+            patch("utils.hardware.hardware.get_device", return_value = DeviceType.CUDA),
+            patch("utils.hardware.hardware.resolve_requested_gpu_ids", return_value = [1]),
+            patch("utils.hardware.hardware.rocm_gpu_ids_without_torch_kernels", return_value = {1}),
+            patch(
+                "utils.hardware.hardware._describe_rocm_gpus",
+                return_value = ["GPU 1 (AMD Radeon RX 5700 XT, gfx1010)"],
+            ),
+            patch(
+                "utils.hardware.hardware._torch_kernel_arch_tokens",
+                return_value = ["gfx1030", "gfx1034"],
+            ),
+            patch("utils.hardware.hardware.auto_select_gpu_ids") as mock_auto_select,
+        ):
+            with self.assertRaisesRegex(
+                ValueError,
+                r"GPU 1 \(AMD Radeon RX 5700 XT, gfx1010\) cannot run the PyTorch build this Unsloth Studio installed, "
+                r"which has kernels for gfx1030, gfx1034 only",
+            ):
+                prepare_gpu_selection([1], model_name = "unsloth/test")
+        mock_auto_select.assert_not_called()
+
+    def test_a_covered_card_beside_an_uncovered_one_is_accepted(self):
+        with (
+            patch("utils.hardware.hardware.get_device", return_value = DeviceType.CUDA),
+            patch("utils.hardware.hardware.resolve_requested_gpu_ids", return_value = [0]),
+            patch("utils.hardware.hardware.rocm_gpu_ids_without_torch_kernels", return_value = {1}),
+            patch("utils.hardware.hardware.auto_select_gpu_ids") as mock_auto_select,
+        ):
+            selected, metadata = prepare_gpu_selection([0], model_name = "unsloth/test")
+        self.assertEqual(selected, [0])
+        self.assertEqual(metadata["selection_mode"], "explicit")
+        mock_auto_select.assert_not_called()
+
+    def test_the_refusal_names_the_arch_on_wheels_without_gcnArchName(self):
+        props = SimpleNamespace(
+            name = "AMD Radeon RX 5700 XT", gcnArchName = "", gfx_arch_name = "gfx1010:xnack-"
+        )
+        with (
+            patch("torch.cuda.device_count", return_value = 2),
+            patch("torch.cuda.get_device_properties", return_value = props),
+            patch(
+                "utils.hardware.hardware._get_parent_visible_gpu_spec",
+                return_value = {"numeric_ids": [0, 1], "raw": None},
+            ),
+        ):
+            self.assertEqual(
+                _hw_module._describe_rocm_gpus([1]), ["GPU 1 (AMD Radeon RX 5700 XT, gfx1010)"]
+            )
+
+    def test_a_host_where_every_card_is_covered_is_untouched(self):
+        with (
+            patch("utils.hardware.hardware.get_device", return_value = DeviceType.CUDA),
+            patch("utils.hardware.hardware.resolve_requested_gpu_ids", return_value = [1]),
+            patch("utils.hardware.hardware.rocm_gpu_ids_without_torch_kernels", return_value = set()),
+        ):
+            selected, _ = prepare_gpu_selection([1], model_name = "unsloth/test")
+        self.assertEqual(selected, [1])
+
+
 class TestPreSpawnGpuResolution(_GpuCacheResetMixin, unittest.TestCase):
     def test_training_backend_resolves_explicit_gpu_ids_before_spawn(self):
         backend = TrainingBackend()

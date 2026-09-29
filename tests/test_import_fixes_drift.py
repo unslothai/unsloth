@@ -1714,6 +1714,100 @@ def test_a_per_layer_snapshot_never_becomes_a_scalar_rope_theta():
         assert not isinstance(getattr(config, "rope_theta", None), dict)
 
 
+def test_the_torchvision_backend_still_breaks_the_4x_numpy_contract():
+    """DRIFT DETECTOR for the method shim: `normalize` refuses ndarray and
+    `rescale` silently returns float64 where 4.x returned float32. Both halves
+    are asserted; if upstream restores either, drop that entry from
+    `_LEGACY_NUMPY_IMAGE_METHODS` rather than wrap a method with itself.
+    """
+    transformers = pytest.importorskip("transformers")
+    np = pytest.importorskip("numpy")
+    from packaging.version import Version
+
+    if Version(transformers.__version__) < Version("5.0.0"):
+        pytest.skip("the torchvision backend does not exist before transformers 5")
+    # transformers' own probe, not `import torchvision`: an unusable wheel still
+    # imports while `tvF` goes unbound, and the backend then raises NameError.
+    backends = pytest.importorskip("transformers.image_processing_backends")
+    from transformers.utils import is_torchvision_available
+
+    if not is_torchvision_available() or not hasattr(backends, "tvF"):
+        pytest.skip("torchvision is not usable here, so the backend cannot run")
+    siglip2 = pytest.importorskip("transformers.models.siglip2.image_processing_siglip2")
+
+    processor = siglip2.Siglip2ImageProcessor()
+    image = np.arange(4 * 4 * 3, dtype = np.uint8).reshape(4, 4, 3)
+
+    rescaled = processor.rescale(
+        image = image,
+        scale = 1 / 255.0,
+        input_data_format = "channels_last",
+    )
+    assert rescaled.dtype == np.float64, (
+        "DRIFT DETECTED: BaseImageProcessor.rescale no longer returns float64 on numpy, so "
+        "the 4.x dtype contract may be back. Re-verify before keeping `rescale` in "
+        "`_LEGACY_NUMPY_IMAGE_METHODS`."
+    )
+
+    with pytest.raises(TypeError):
+        processor.normalize(
+            image = rescaled,
+            mean = [0.5, 0.5, 0.5],
+            std = [0.5, 0.5, 0.5],
+            input_data_format = "channels_last",
+        )
+
+
+def test_the_4x_numpy_helpers_the_method_shim_forwards_to_still_exist():
+    """DRIFT DETECTOR: the shim forwards to transformers' own 4.x functions.
+
+    Drop them upstream and there is no verified implementation left to restore,
+    so the shim must be reconsidered rather than reimplemented.
+    """
+    pytest.importorskip("transformers")
+    np = pytest.importorskip("numpy")
+    from transformers import image_transforms
+
+    image = np.arange(4 * 4 * 3, dtype = np.uint8).reshape(4, 4, 3)
+    for name in ("rescale", "normalize"):
+        assert callable(getattr(image_transforms, name, None)), (
+            f"DRIFT DETECTED: transformers.image_transforms.{name} is gone, so the numpy "
+            "image method shim has nothing to forward to."
+        )
+
+    rescaled = image_transforms.rescale(
+        image,
+        scale = 1 / 255.0,
+        input_data_format = "channels_last",
+    )
+    assert rescaled.dtype == np.float32, (
+        "DRIFT DETECTED: image_transforms.rescale stopped defaulting to float32, which is "
+        "the dtype the shim exists to restore."
+    )
+    normalized = image_transforms.normalize(
+        rescaled,
+        mean = [0.5, 0.5, 0.5],
+        std = [0.5, 0.5, 0.5],
+        input_data_format = "channels_last",
+    )
+    assert normalized.dtype == np.float32
+    assert normalized.shape == image.shape
+
+
+def test_the_numpy_image_method_shim_is_wired_into_the_remote_code_hook():
+    """The installer must be reachable from the hook, or real loads never see it."""
+    source = Path(__file__).resolve().parent.parent / "unsloth" / "import_fixes.py"
+    source = source.read_text(encoding = "utf-8")
+    assert "_install_legacy_numpy_image_methods_now(loaded)" in source, (
+        "DRIFT DETECTED: the numpy image method shim is defined but never called from the "
+        "get_class_in_module wrapper, so a checkpoint's own image processor is never patched."
+    )
+    assert "_install_remote_image_processor_finder()" in source, (
+        "DRIFT DETECTED: the meta path finder is never installed, so a spawn-started worker "
+        "rebuilds an unpatched class when it unpickles a processor."
+    )
+
+
 # ===========================================================================
 # transformers -- a submodule's prefix renaming leaks into the composite model
 # ===========================================================================

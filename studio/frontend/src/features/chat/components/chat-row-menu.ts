@@ -13,7 +13,16 @@ import {
 } from "../utils/conversation-markdown";
 import { allRecordedSandboxSessionIds } from "../utils/recorded-sandbox-session";
 import { liveThreadBranch } from "../utils/live-thread-head";
+import { forkChatThread } from "../api/chat-api";
+import { settleThreadScopedSettingsForCopy } from "../stores/chat-runtime-store";
 import type { SidebarItem } from "../hooks/use-chat-sidebar-items";
+import {
+  exportConversationCsv,
+  exportConversationMarkdown,
+  exportConversationMessagesJsonl,
+  exportConversationRawJsonl,
+  exportConversationShareGPT,
+} from "../prompt-storage/prompt-storage-dialog";
 import { listStoredChatMessages } from "../utils/chat-history-storage";
 
 export type ConversationExportFormat =
@@ -42,18 +51,17 @@ export async function exportConversationByFormat(
   threadId: string,
   format: ConversationExportFormat,
 ): Promise<void> {
-  const exports = await import("../prompt-storage/prompt-storage-dialog");
   switch (format) {
     case "raw-jsonl":
-      return exports.exportConversationRawJsonl(threadId);
+      return exportConversationRawJsonl(threadId);
     case "messages-jsonl":
-      return exports.exportConversationMessagesJsonl(threadId);
+      return exportConversationMessagesJsonl(threadId);
     case "csv":
-      return exports.exportConversationCsv(threadId);
+      return exportConversationCsv(threadId);
     case "sharegpt-jsonl":
-      return exports.exportConversationShareGPT(threadId);
+      return exportConversationShareGPT(threadId);
     case CONVERSATION_MARKDOWN_FORMAT:
-      return exports.exportConversationMarkdown(threadId);
+      return exportConversationMarkdown(threadId);
     default: {
       // Exhaustive: a new format is a build error, not a menu item that does nothing.
       const unhandled: never = format;
@@ -79,10 +87,6 @@ export function canForkChatRow(item: SidebarItem): boolean {
  */
 export async function forkChatRow(item: SidebarItem) {
   const messageId = liveThreadBranch(item.id)?.at(-1);
-  const { forkChatThread } = await import("../api/chat-api");
-  const { settleThreadScopedSettingsForCopy } = await import(
-    "../stores/chat-runtime-store"
-  );
   await settleThreadScopedSettingsForCopy(item.id);
   try {
     // closed chats use the transaction-selected tip; open chats keep the branch visible at invocation.

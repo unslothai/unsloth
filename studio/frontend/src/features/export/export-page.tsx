@@ -213,6 +213,7 @@ export function ExportPage() {
   });
   // GGUF importance matrix (required for the IQ quants) and merged-export precision.
   const [useImatrix, setUseImatrix] = useState(false);
+  const [customImatrix, setCustomImatrix] = useState({ sourceKey: "", path: "" });
   // Merged precision: one or more MERGED_FORMATS values exported in one run; seeded like exportMethod.
   const [selectedFormats, setSelectedFormats] = useState<string[]>(() => {
     const s = useExportRuntimeStore.getState();
@@ -231,6 +232,7 @@ export function ExportPage() {
   const hardware = useHardwareInfo();
   // GGUF LoRA conversion is rejected on the macOS / MLX path, so gate it out on a Mac host.
   const isMacHost = usePlatformStore((s) => s.deviceType) === "mac";
+  const torchaoUnavailable = !hardware.torchaoExportSupported;
   // Real CUDA (not ROCm); gates the NVIDIA-only compressed-tensors formats.
   const hasNvidia = hardware.cuda != null && hardware.rocm == null;
   // Only gray out on an authoritative unsupported response; the backend supplies the reason.
@@ -245,19 +247,27 @@ export function ExportPage() {
         // compressed-tensors (llm-compressor) is the NVIDIA path; shown only on an NVIDIA GPU.
         if (f.backend === "compressed") return hasNvidia;
         // Portable torchao is the fallback for hosts without the NVIDIA compressed path. Hidden on
-        // NVIDIA (use compressed-tensors) and on macOS/MLX (the backend rejects quantized export).
-        if (f.backend === "torchao") return !hasNvidia && !isMacHost;
+        // NVIDIA (use compressed-tensors), macOS/MLX (rejected) and where torchao cannot load.
+        if (f.backend === "torchao") return !hasNvidia && !isMacHost && !torchaoUnavailable;
         // Plain 16-bit is available everywhere.
         return true;
       }),
-    [hasNvidia, isMacHost],
+    [hasNvidia, isMacHost, torchaoUnavailable],
   );
   const toggleFormat = useCallback((value: string) => {
     setSelectedFormats((prev) =>
       prev.includes(value) ? prev.filter((v) => v !== value) : [...prev, value],
     );
   }, []);
-  // availableFormats already drops NVIDIA-only formats on other hardware, so no pruning needed.
+  // Drop picks the gate removed, only once hardware is loaded: before that hasNvidia reads false.
+  useEffect(() => {
+    if (!hardware.loaded) return;
+    const allowed = new Set(availableFormats.map((f) => f.value));
+    setSelectedFormats((prev) => {
+      const next = prev.filter((v) => allowed.has(v));
+      return next.length === prev.length ? prev : next;
+    });
+  }, [availableFormats, hardware.loaded]);
   // IQ quants are imatrix-only: force imatrix on when one is selected, else llama.cpp rejects it.
   const requiresImatrix = quantLevels.some(
     (q) => QUANT_OPTIONS.find((o) => o.value === q)?.imatrix,
@@ -583,6 +593,14 @@ export function ExportPage() {
   const estimatedSize = getEstimatedSize(exportMethod, quantLevels, fp16Bytes);
   const selectedExportSource =
     sourceMode === "checkpoint" ? checkpoint : selectedSourceModel;
+  // Derived, not reset in an effect: an imatrix is calibrated for one model, so another source must not inherit it.
+  const imatrixSourceKey = JSON.stringify([
+    sourceTab,
+    sourceMode === "checkpoint" ? selectedModelIdx : null,
+    selectedExportSource,
+  ]);
+  const imatrixPath =
+    customImatrix.sourceKey === imatrixSourceKey ? customImatrix.path : "";
   const defaultSaveDirectory = useMemo(() => {
     const relative = buildRelativeSaveDirectory(
       exportMethod,
@@ -778,6 +796,7 @@ export function ExportPage() {
       isAdapter: adapterExport,
       quantLevels,
       useImatrix: effectiveImatrix,
+      imatrixPath,
       mergedSelections: selectedFormats.map((v) => ({
         ...mergedFormatPayload(v),
         label: MERGED_FORMATS.find((f) => f.value === v)?.label ?? v,
@@ -812,6 +831,7 @@ export function ExportPage() {
     isAdapter,
     quantLevels,
     effectiveImatrix,
+    imatrixPath,
     selectedFormats,
     hubMultiFormat,
     ggufAsLora,
@@ -871,7 +891,7 @@ export function ExportPage() {
 
   return (
     <div className="min-h-[calc(100dvh-var(--studio-titlebar-height,0px))] bg-background">
-      <main className="mx-auto max-w-7xl px-5 py-8 sm:px-9">
+      <main className="mx-auto max-w-7xl 3xl:max-w-[calc(1440px*var(--ui-space-scale,1))] 4xl:max-w-[calc(1760px*var(--ui-space-scale,1))] px-5 py-8 max-sm:px-4 sm:px-9">
         <GuidedTour {...tour.tourProps} />
 
         <div className="mb-8 flex flex-col gap-0.5">
@@ -1512,11 +1532,19 @@ export function ExportPage() {
                       </div>
                     )}
 
-                    {!hasNvidia && (
+                    {!hasNvidia && !torchaoUnavailable && (
                       <div className="text-ui-11 text-muted-foreground">
                         No NVIDIA GPU detected: compressed-tensors formats are
                         hidden. 16-bit and portable FP8/INT8 (torchao) still
                         work here and load in vLLM.
+                      </div>
+                    )}
+
+                    {torchaoUnavailable && (
+                      <div className="text-ui-11 text-muted-foreground">
+                        Portable FP8/INT8 (torchao) export needs torchao, which
+                        is not installed here. Update Unsloth, or use
+                        16-bit or GGUF.
                       </div>
                     )}
                   </div>
@@ -1656,16 +1684,50 @@ export function ExportPage() {
                           </div>
                           <div className="text-xs text-muted-foreground">
                             {requiresImatrix
-                              ? "Required for the selected IQ low-bit quant. Auto-downloads the upstream Unsloth imatrix for the base model."
-                              : "Improves quant quality and unlocks the IQ low-bit quants. Auto-downloads the upstream Unsloth imatrix for the base model."}
+                              ? "Required for the selected IQ low-bit quant."
+                              : "Improves quant quality and unlocks the IQ low-bit quants."}
                           </div>
                         </div>
                         <Switch
+                          aria-label="Importance matrix (imatrix)"
                           checked={effectiveImatrix}
                           onCheckedChange={setUseImatrix}
                           disabled={requiresImatrix}
                         />
                       </div>
+                      {effectiveImatrix && (
+                        <div className="space-y-1.5">
+                          <label
+                            htmlFor="export-imatrix-path"
+                            className="text-sm font-medium"
+                          >
+                            Local imatrix file (optional)
+                          </label>
+                          <InputGroup>
+                            <InputGroupInput
+                              id="export-imatrix-path"
+                              aria-describedby="export-imatrix-path-help"
+                              placeholder="/path/to/imatrix.gguf"
+                              value={imatrixPath}
+                              onChange={(e) =>
+                                setCustomImatrix({
+                                  sourceKey: imatrixSourceKey,
+                                  path: e.target.value,
+                                })
+                              }
+                            />
+                          </InputGroup>
+                          <p
+                            id="export-imatrix-path-help"
+                            className="text-xs text-muted-foreground"
+                          >
+                            Absolute path to a .dat or .gguf imatrix file on the
+                            machine running Unsloth. Leave blank to
+                            auto-download the upstream Unsloth imatrix for the
+                            base model, if one exists.
+                          </p>
+                        </div>
+                      )}
                     </>
                   )}
                 </div>

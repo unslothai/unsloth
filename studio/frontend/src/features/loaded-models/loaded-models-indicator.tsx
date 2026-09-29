@@ -28,8 +28,8 @@ import {
   Mic01Icon,
   RemoveCircleIcon,
   Video01Icon,
-  VolumeHighIcon,
 } from "@hugeicons/core-free-icons";
+import { Volume02Icon } from "@/lib/volume-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
 import { useCallback, useEffect, useRef } from "react";
@@ -55,7 +55,7 @@ const COLLAPSED_KEY = LOADED_MODELS_PREFERENCE_KEYS.collapsed;
 
 const KIND_ICONS: Record<LoadedModelKind, typeof SparkleIcon> = {
   text: Message01Icon,
-  tts: VolumeHighIcon,
+  tts: Volume02Icon,
   image: Image01Icon,
   video: Video01Icon,
   stt: Mic01Icon,
@@ -104,7 +104,7 @@ function LoadedModelRow({
               <HugeiconsIcon
                 icon={KIND_ICONS[entry.kind]}
                 strokeWidth={1.75}
-                className="size-[15px]"
+                className="size-[calc(15px*var(--ui-space-scale,1))]"
               />
             </span>
             <span className="min-w-0 flex-1">
@@ -278,7 +278,7 @@ export function LoadedModelsIndicator({
               <HugeiconsIcon
                 icon={SparkleIcon}
                 strokeWidth={1.75}
-                className="size-[15px]"
+                className="size-[calc(15px*var(--ui-space-scale,1))]"
               />
               <span className="text-ui-12p5 font-medium tabular-nums">
                 {entries.length}
@@ -290,12 +290,12 @@ export function LoadedModelsIndicator({
           </TooltipContent>
         </Tooltip>
       ) : (
-        <div className="menu-soft-surface menu-soft-edgeless pointer-events-auto flex min-h-0 w-[268px] max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-[20px] p-1.5 font-heading">
+        <div className="menu-soft-surface menu-soft-edgeless pointer-events-auto flex min-h-0 w-[calc(268px*var(--ui-space-scale,1))] max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-[20px] p-1.5 font-heading">
           <div className="flex items-center gap-1.5 px-1.5 pb-2.5 pt-0.5">
             <HugeiconsIcon
               icon={SparkleIcon}
               strokeWidth={1.75}
-              className="size-[15px] shrink-0 text-muted-foreground"
+              className="size-[calc(15px*var(--ui-space-scale,1))] shrink-0 text-muted-foreground"
             />
             <span className="min-w-0 flex-1 truncate text-ui-12p5 font-semibold text-foreground">
               Loaded models

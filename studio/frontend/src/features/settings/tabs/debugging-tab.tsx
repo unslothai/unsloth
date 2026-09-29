@@ -70,6 +70,11 @@ import {
   withRequestTimeout,
 } from "../lib/debug-log-buffer";
 import { isAbort, isLogSourceGone } from "../lib/debug-log-error";
+import {
+  NO_PENDING_LOG_REQUEST,
+  pendingLogRequestKey,
+  useSettingsDialogStore,
+} from "../stores/settings-dialog-store";
 
 const MODES: RefreshMode[] = ["live", "3s", "manual"];
 
@@ -141,8 +146,7 @@ export function DebuggingTab() {
   const [mode, setMode] = useState<RefreshMode>(readStoredMode);
   const [buffer, setBuffer] = useState<LogBufferState>(EMPTY_BUFFER);
   const [realpath, setRealpath] = useState<string | null>(null);
-  // Where the backend says the logs live, for the folder button when no source
-  // is selected yet, which is exactly the custom-home case that has no log.
+  // the logs directory the backend resolved, opened by the folder button
   const [logRoot, setLogRoot] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [dropped, setDropped] = useState(false);
@@ -184,22 +188,54 @@ export function DebuggingTab() {
     }
   }, [mode]);
 
+  // Selection order: a response older than the last one that selected never overrides it.
+  const sourceFetchSeqRef = useRef(0);
+  const appliedSourceFetchRef = useRef(0);
+
   const refreshSources = useCallback(
     async (options: { signal?: AbortSignal; reselect?: boolean } = {}) => {
+      const seq = ++sourceFetchSeqRef.current;
       try {
         // Bounded like the tail read: the poll loop and its failure recovery
         // both await this, so an unanswered /sources would freeze both.
+        const requestedFor = pendingLogRequestKey(
+          useSettingsDialogStore.getState(),
+        );
+        const pendingPath =
+          useSettingsDialogStore.getState().logSourcePathRequested;
         const result = await withRequestTimeout(
-          (signal) => loadDebugLogSources(signal),
+          (signal) => loadDebugLogSources(signal, pendingPath),
           REQUEST_TIMEOUT_MS,
           options.signal,
         );
+        if (seq < appliedSourceFetchRef.current) return;
         setSources(result.sources);
         setLogRoot(result.logRoot);
+        const dialog = useSettingsDialogStore.getState();
+        const requested = dialog.logFamilyRequested;
+        const byPath = result.matchedSourceId
+          ? result.sources.find(
+              (source) => source.id === result.matchedSourceId,
+            )
+          : undefined;
+        const fromFailure =
+          byPath ??
+          (requested
+            ? result.sources.find((source) => source.family === requested)
+            : undefined);
+        // Only the request this fetch was made for.
+        const stillTheSameRequest =
+          pendingLogRequestKey(dialog) === requestedFor;
+        if (fromFailure && stillTheSameRequest)
+          useSettingsDialogStore.getState().consumeLogFamilyRequest();
+        if (fromFailure && !stillTheSameRequest) return;
+        appliedSourceFetchRef.current = seq;
         setSourceId((current) =>
-          options.reselect
-            ? result.defaultSourceId
-            : (current ?? result.defaultSourceId),
+          fromFailure
+            ? fromFailure.id
+            : options.reselect
+              ? result.defaultSourceId
+              : (current ?? result.defaultSourceId),
         );
       } catch {
         // The log read reports the real reason; this just leaves the picker empty.
@@ -213,6 +249,15 @@ export function DebuggingTab() {
     void refreshSources({ signal: controller.signal });
     return () => controller.abort();
   }, [refreshSources]);
+
+  // A request that arrives while this panel is ALREADY mounted.
+  const pendingLogRequest = useSettingsDialogStore(pendingLogRequestKey);
+  useEffect(() => {
+    if (pendingLogRequest === NO_PENDING_LOG_REQUEST) return;
+    const controller = new AbortController();
+    void refreshSources({ signal: controller.signal });
+    return () => controller.abort();
+  }, [pendingLogRequest, refreshSources]);
 
   const onPollFailed = useCallback(
     async (error: unknown, signal?: AbortSignal) => {
@@ -396,10 +441,7 @@ export function DebuggingTab() {
   const revealLogsFolder = useCallback(async () => {
     setRevealing(true);
     try {
-      // The selected log's own path, else the root the backend reported. Either
-      // resolves a custom UNSLOTH_STUDIO_HOME; open_logs_dir hard-codes
-      // ~/.unsloth/studio and cannot.
-      await openLogsFolder(realpath, logRoot);
+      await openLogsFolder(logRoot, realpath);
     } catch (error) {
       toast.error(t("settings.debugging.openLogsFolderFailed"), {
         description: (error as Error).message,
@@ -407,7 +449,7 @@ export function DebuggingTab() {
     } finally {
       setRevealing(false);
     }
-  }, [t, realpath, logRoot]);
+  }, [t, logRoot, realpath]);
 
   const downloadAllLogs = useCallback(async () => {
     setExporting(true);
@@ -465,7 +507,7 @@ export function DebuggingTab() {
     );
 
   return (
-    <div className="flex flex-col gap-6">
+    <div className="settings-page">
       <SettingsSection
         title={t("settings.debugging.logSection")}
         description={t("settings.debugging.sourceHint")}
@@ -480,7 +522,7 @@ export function DebuggingTab() {
               size="sm"
               data-testid="debug-log-source"
               aria-label={t("settings.debugging.source")}
-              className="max-w-[22rem] font-mono text-ui-12"
+              className="max-w-[calc(22rem*var(--ui-space-scale,1))] font-mono text-ui-12"
             >
               <SelectValue placeholder={t("settings.debugging.missing")} />
             </SelectTrigger>
@@ -496,14 +538,14 @@ export function DebuggingTab() {
                       value={source.id}
                       className="font-mono text-ui-12"
                     >
-                      <span className="flex items-center gap-2">
-                        <span>{source.label}</span>
+                      <span className="flex min-w-0 items-center gap-2">
+                        <span className="min-w-0 truncate">{source.label}</span>
                         {source.isCurrent ? (
-                          <span className="rounded-full bg-primary/10 px-1.5 py-px font-sans text-ui-10 font-medium text-primary">
+                          <span className="shrink-0 rounded-full bg-primary/10 px-1.5 py-px font-sans text-ui-10 font-medium text-primary">
                             {t("settings.debugging.currentSession")}
                           </span>
                         ) : null}
-                        <span className="font-sans text-ui-10 text-muted-foreground tabular-nums">
+                        <span className="shrink-0 font-sans text-ui-10 text-muted-foreground tabular-nums">
                           {formatBytes(source.sizeBytes)}
                         </span>
                       </span>
@@ -733,7 +775,7 @@ export function DebuggingTab() {
               </TooltipContent>
             </Tooltip>
           </div>
-          <div className="flex shrink-0 flex-wrap items-center justify-end gap-1">
+          <div className="flex max-w-full shrink-0 flex-wrap items-center justify-end gap-1">
             <Button
               size="sm"
               variant="ghost"
@@ -774,7 +816,7 @@ export function DebuggingTab() {
                   />
                 </button>
               </TooltipTrigger>
-              <TooltipContent className="max-w-[300px] text-ui-11 leading-snug">
+              <TooltipContent className="max-w-[calc(300px*var(--ui-space-scale,1))] text-ui-11 leading-snug">
                 {t("settings.debugging.exportMaskedNote")}
               </TooltipContent>
             </Tooltip>

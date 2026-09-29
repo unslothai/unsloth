@@ -22,7 +22,7 @@ export function SettingsSection({
     <section ref={ref} data-settings-label={title} className="flex flex-col">
       {hideHeading ? null : (
         <div className="mb-1 flex flex-col gap-0.5">
-          <h2 className="text-base font-semibold font-heading text-foreground">
+          <h2 className="settings-heading text-base font-semibold font-heading">
             {title}
           </h2>
           {description ? (
