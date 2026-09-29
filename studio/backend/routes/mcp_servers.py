@@ -40,7 +40,6 @@ from core.inference.mcp_client import (
     serialize_mcp_server_mutation,
     stdio_mcp_disabled_reason,
     stdio_mcp_enabled,
-    tool_ui_resource_uri,
     tool_visible_to,
 )
 from core.inference.mcp_config_import import parse_mcp_config
@@ -619,8 +618,8 @@ def _row_still_matches(server_id: str, server: dict) -> bool:
 _discovery_locks: dict = {}
 
 
-async def _declared_ui_resources(server: dict) -> set:
-    """Only server-declared templates are fetchable (the uri comes from the browser); rediscovers once on a cold cache."""
+async def _warm_tool_cache(server: dict) -> None:
+    """Rediscover once on a cold cache: a chat reopened after a restart never ran the chat path, and widget calls read the cache."""
     server_id = server["id"]
     async with _discovery_locks.setdefault(server_id, asyncio.Lock()):
         tools = get_cached_tools(server_id)
@@ -643,9 +642,6 @@ async def _declared_ui_resources(server: dict) -> set:
                 record_probe_failure(server_id, use_oauth)
             else:
                 cache_tools(server_id, tools)
-    return {
-        tool_ui_resource_uri(t) for t in tools or [] if isinstance(t, dict) and t.get("name")
-    } - {None}
 
 
 def _ui_call_kwargs(server_id: str, server: dict, thread_id, session_id) -> dict:
@@ -672,12 +668,18 @@ async def read_mcp_ui_resource(
 ):
     server = _ui_server_or_404(server_id, via_api_key)
     uri = (uri or "").strip()
+    # Any ui:// resource of this server, not only tool templates: widgets read their own assets through
+    # resources/read. Other schemes stay refused, since a filesystem server maps file:// onto the host.
     if not uri.startswith(UI_RESOURCE_SCHEME):
         raise HTTPException(status_code = 400, detail = "uri must be a ui:// resource")
-    if uri not in await _declared_ui_resources(server):
-        raise HTTPException(
-            status_code = 404, detail = "No tool on this MCP server declares that UI resource"
-        )
+    from core.inference.tools import (
+        _STUDIO_CREDENTIAL_BLOCKED,
+        _mcp_arguments_reference_studio_credential,
+    )
+
+    if _mcp_arguments_reference_studio_credential({"uri": uri}):
+        raise HTTPException(status_code = 403, detail = _STUDIO_CREDENTIAL_BLOCKED)
+    await _warm_tool_cache(server)
     try:
         contents = await asyncio.to_thread(
             read_resource_sync, uri = uri, **_ui_call_kwargs(server_id, server, thread_id, session_id)

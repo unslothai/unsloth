@@ -314,7 +314,7 @@ def _status(fn, *args, **kwargs) -> int:
     return exc.value.status_code
 
 
-def test_a_declared_template_is_fetched_and_cold_reads_share_one_discovery(routes, monkeypatch):
+def test_cold_reads_share_one_discovery_that_warms_the_call_cache(routes, monkeypatch):
     probes = []
 
     async def slow_list_tools(url, headers, timeout, use_oauth):
@@ -329,16 +329,16 @@ def test_a_declared_template_is_fetched_and_cold_reads_share_one_discovery(route
     server = mcp_servers_db.get_server("s1")
 
     async def race():
-        return await asyncio.gather(*(routes._declared_ui_resources(server) for _ in range(6)))
+        await asyncio.gather(*(routes._warm_tool_cache(server) for _ in range(6)))
 
-    assert asyncio.run(race()) == [{UI}] * 6
-    assert len(probes) == 1
+    asyncio.run(race())
+    assert len(probes) == 1 and routes.get_cached_tools("s1") == [_DASH]
     res = _read(routes)
     assert res.uri == UI and res.text == "<p/>" and len(probes) == 1
 
 
 @pytest.mark.parametrize("edited", [True, False])
-def test_a_rediscovery_that_fails_or_races_an_edit_authorizes_nothing(routes, monkeypatch, edited):
+def test_a_rediscovery_that_fails_or_races_an_edit_caches_nothing(routes, monkeypatch, edited):
     async def probe(url, headers, timeout, use_oauth):
         if not edited:
             raise RuntimeError("unreachable")
@@ -346,17 +346,33 @@ def test_a_rediscovery_that_fails_or_races_an_edit_authorizes_nothing(routes, mo
         return [_DASH]
 
     monkeypatch.setattr(routes, "list_tools_async", probe)
-    assert _status(_read, routes) == 404
+    asyncio.run(routes._warm_tool_cache(mcp_servers_db.get_server("s1")))
     assert routes.get_cached_tools("s1") is None
 
 
+def test_any_ui_resource_of_the_server_is_readable(routes, monkeypatch):
+    routes.warm([_DASH])
+    monkeypatch.setattr(
+        routes, "read_resource_sync", lambda url, headers, uri, **kw: {**_HTML, "uri": uri}
+    )
+    assert _read(routes, "ui://weather-server/asset.css").uri == "ui://weather-server/asset.css"
+
+
 @pytest.mark.parametrize(
-    "uri", ["ui://weather-server/other", "file:///etc/passwd", "https://evil.example/x", ""]
+    "uri, status",
+    [
+        ("file:///etc/passwd", 400),
+        ("https://evil.example/x", 400),
+        ("", 400),
+        ("ui://fs/home/u/.unsloth/studio/auth/auth.db", 403),
+    ],
 )
-def test_only_a_declared_ui_resource_is_readable(routes, monkeypatch, uri):
+def test_only_a_ui_resource_outside_the_auth_directory_is_readable(
+    routes, monkeypatch, uri, status
+):
     routes.warm([_DASH])
     monkeypatch.setattr(routes, "read_resource_sync", lambda *a, **k: pytest.fail("reached server"))
-    assert _status(_read, routes, uri) in (400, 404)
+    assert _status(_read, routes, uri) == status
 
 
 def test_a_disabled_server_serves_no_widget_and_takes_no_calls(routes, monkeypatch):
