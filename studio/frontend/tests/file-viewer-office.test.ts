@@ -262,3 +262,12 @@ test("sheet limits cap rows, columns and parsed sheets", () => {
   const csv = readDelimited("a,b,c\n1,2,3\n4,5,6\n7,8,9\n", ",", "x.csv", { sheets: 1, rows: 2, columns: 2 });
   assert.deepEqual(csv.rows.map((row) => row.map((cell) => cell?.text)), [["a", "b"], ["1", "2"]]);
 });
+
+test("thumbnails render no nested controls: sheet tabs as labels, Word links without href", async () => {
+  const { readFileSync } = await import("node:fs");
+  const view = readFileSync(new URL("../src/components/file-viewer/office-view.tsx", import.meta.url), "utf8");
+  assert.match(view, /return thumbnail \? \(\n\s*<span key=\{index\} className=\{className\}>/);
+  assert.match(view, /sanitizeDocxHtml\(value, THUMBNAIL_DOCX_ELEMENTS, \{ links: false \}\)/);
+  assert.match(view, /attr\.name === "href" && \(!links \|\|/);
+  assert.match(view, /thumbnail=\{thumbnail\}\n\s*\/>/);
+});

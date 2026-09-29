@@ -56,7 +56,9 @@ async function parse(
       return { src: "" };
     });
     const { value } = await mammoth.convertToHtml({ arrayBuffer: repacked.archive.buffer as ArrayBuffer }, { convertImage, idPrefix: "docx-" });
-    const { html, truncated } = sanitizeDocxHtml(value, thumbnail ? THUMBNAIL_DOCX_ELEMENTS : MAX_DOCX_ELEMENTS);
+    const { html, truncated } = thumbnail
+      ? sanitizeDocxHtml(value, THUMBNAIL_DOCX_ELEMENTS, { links: false })
+      : sanitizeDocxHtml(value, MAX_DOCX_ELEMENTS);
     return { kind, html, truncated: truncated || repacked.truncated || dropped };
   }
   if (kind === "slides") {
@@ -98,7 +100,12 @@ function untruncated(sheet: Sheet, thumbnail: boolean): Sheet {
   return thumbnail ? { ...sheet, truncated: false } : sheet;
 }
 
-function sanitizeDocxHtml(html: string, maxElements: number): { html: string; truncated: boolean } {
+// A thumbnail sits inside a button, so it drops links: interactive content cannot nest there.
+function sanitizeDocxHtml(
+  html: string,
+  maxElements: number,
+  { links = true } = {},
+): { html: string; truncated: boolean } {
   // Cut before parsing: mammoth escapes each < in text, so every one left is a tag.
   const opening = /<[a-z]/gi;
   let cut = -1;
@@ -119,7 +126,7 @@ function sanitizeDocxHtml(html: string, maxElements: number): { html: string; tr
       const value = attr.value.trim().toLowerCase();
       const unsafe =
         !DOCX_ATTRIBUTES.has(attr.name) ||
-        (attr.name === "href" && !/^(https?:|mailto:|#)/.test(value)) ||
+        (attr.name === "href" && (!links || !/^(https?:|mailto:|#)/.test(value))) ||
         (attr.name === "src" && !value.startsWith("data:image/"));
       if (unsafe) element.removeAttribute(attr.name);
     }
@@ -315,7 +322,18 @@ function SheetGrid({
   );
 }
 
-function SheetView({ sheets, tabs, scale }: { sheets: Sheet[]; tabs: boolean; scale: number }) {
+function SheetView({
+  sheets,
+  tabs,
+  scale,
+  thumbnail = false,
+}: {
+  sheets: Sheet[];
+  tabs: boolean;
+  scale: number;
+  /** Tabs as labels: a thumbnail sits inside a button. */
+  thumbnail?: boolean;
+}) {
   const t = useT();
   const uiScale = useUiSpaceScale();
   const [active, setActive] = useState(0);
@@ -327,19 +345,21 @@ function SheetView({ sheets, tabs, scale }: { sheets: Sheet[]; tabs: boolean; sc
       {(tabs || sheet.truncated) && (
         <div className="flex shrink-0 items-center gap-1 overflow-x-auto border-t border-border px-2 py-1.5">
           {tabs &&
-            sheets.map((item, index) => (
-              <button
-                key={index}
-                type="button"
-                onClick={() => setActive(index)}
-                className={cn(
-                  "shrink-0 rounded-md px-3 py-1 text-ui-13 transition-colors hover:bg-muted",
-                  index === active ? "bg-muted font-medium text-foreground" : "text-muted-foreground",
-                )}
-              >
-                {item.name}
-              </button>
-            ))}
+            sheets.map((item, index) => {
+              const className = cn(
+                "shrink-0 rounded-md px-3 py-1 text-ui-13 transition-colors hover:bg-muted",
+                index === active ? "bg-muted font-medium text-foreground" : "text-muted-foreground",
+              );
+              return thumbnail ? (
+                <span key={index} className={className}>
+                  {item.name}
+                </span>
+              ) : (
+                <button key={index} type="button" onClick={() => setActive(index)} className={className}>
+                  {item.name}
+                </button>
+              );
+            })}
           {sheet.truncated && (
             <span className="ml-auto shrink-0 px-2 text-ui-12 text-muted-foreground">
               {t("library.preview.sheetTruncated")}
@@ -567,5 +587,12 @@ export default function OfficeView({
   if (!parsed) return <Spinner className="m-auto size-6" />;
   if (parsed.kind === "docx") return <DocxView html={parsed.html} truncated={parsed.truncated} scale={scale} />;
   if (parsed.kind === "slides") return <SlidesView deck={parsed.deck} scale={scale} />;
-  return <SheetView sheets={parsed.sheets} tabs={!sheetDelimiter(name, contentType)} scale={scale} />;
+  return (
+    <SheetView
+      sheets={parsed.sheets}
+      tabs={!sheetDelimiter(name, contentType)}
+      scale={scale}
+      thumbnail={thumbnail}
+    />
+  );
 }
