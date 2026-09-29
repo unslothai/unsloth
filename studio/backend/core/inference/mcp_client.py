@@ -35,6 +35,8 @@ from utils.account_context import (
     is_owner_context,
 )
 
+from core.inference import mcp_images
+
 logger = get_logger(__name__)
 
 MCP_TOOL_PREFIX = "mcp__"
@@ -88,7 +90,8 @@ def _public_mcp_address(url: str) -> str:
 
 
 def validate_mcp_address(url: str) -> None:
-    if not _managed_mcp_restricted():
+    # Studio's own Decisions server is answered in process, so no request leaves this machine.
+    if not _managed_mcp_restricted() or is_studio_decisions(url):
         return
     if is_stdio(url):
         from fastapi import HTTPException
@@ -553,6 +556,18 @@ def _stdio_argv(parts: list, env: Optional[dict]) -> list:
     return [executable, *parts[1:]]
 
 
+def is_studio_decisions(url: str) -> bool:
+    from routes.systemone import MCP_PATH
+    from utils.host_policy import is_loopback_host
+
+    parts = urlsplit(url)
+    return (
+        parts.scheme == "http"
+        and is_loopback_host(parts.hostname or "")
+        and parts.path.rstrip("/") == MCP_PATH
+    )
+
+
 def _client(
     url: str,
     headers: Optional[dict],
@@ -560,6 +575,10 @@ def _client(
 ):
     validate_mcp_address(url)
     from fastmcp import Client
+
+    if is_studio_decisions(url):
+        from routes.systemone import decisions_mcp
+        return Client(decisions_mcp)
 
     if is_stdio(url):
         # Belt-and-suspenders: never spawn unless stdio is enabled on this host.
@@ -1518,7 +1537,7 @@ def invalidate_tool_cache(server_id: Optional[str] = None) -> None:
         _probe_cooloff_until.pop(_account_key(server_id), None)
 
 
-MCP_IMAGES_SENTINEL = "__MCP_IMAGES__:"
+MCP_IMAGES_SENTINEL = mcp_images.SENTINEL
 MAX_IMAGE_PAYLOAD_CHARS = 12_000_000
 
 
@@ -1739,7 +1758,7 @@ def _flatten_result(result: Any) -> str:
         notes = []
         if images:
             n = len(images)
-            notes.append(f"{n} image{'s' if n > 1 else ''} attached; displayed to the user")
+            notes.append(f"{n} image{'s' if n > 1 else ''} returned")
         if omitted:
             notes.append(f"{omitted} image{'s' if omitted > 1 else ''} omitted (too large)")
         notes.extend(unshown)

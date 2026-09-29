@@ -63,6 +63,7 @@ claim this branch makes; a diff reported against `run1-settle` is not that claim
 
 from __future__ import annotations
 
+import collections
 import hashlib
 import json
 import os
@@ -143,6 +144,12 @@ ICON_FETCH_CEILING = 64 * 1024
 # What the installers print when they decline to do work (setup.sh consumes the prebuilt installers'
 # "already matches" and prints its own line).
 NO_WORK_MARKERS = ("dependencies up to date", "prebuilt up to date", "sidecar current")
+
+# whisper.cpp installs only when its release is paired with the llama.cpp release the install
+# picked. Between the two publishes (llama.cpp out, whisper.cpp not yet) a fresh install has no
+# whisper.cpp at all, and every run says so on this line (setup.sh / setup.ps1). That is the
+# pairing gate working, not a prebuilt being re-validated.
+WHISPER_UNPAIRED = re.compile(r"whisper\.cpp\s+no compatible prebuilt \(")
 # setup.sh's column-padded frontend line: a rebuild on a warm npm cache talks to no forbidden host,
 # so the log line is the only witness.
 FRONTEND_CURRENT_MARKER = re.compile(r"frontend\s+up to date")
@@ -181,6 +188,25 @@ DIST_RECORDS = (
     "    except (OSError, TypeError):\n"
     "        out.append([(d.metadata['Name'] or '').lower(), d.version, None, None])\n"
     "print(json.dumps(sorted(out)))"
+)
+
+
+# The digest the installer stamps into the manifest as known_unmet_index, computed the same way:
+# its own installed_dependency_index(), hashed as _installed_index_digest hashes it. The record is
+# only evidence about the installed set it was written against, which is how the installer reads it.
+INSTALLER_DIR = pathlib.Path(__file__).resolve().parents[3] / "studio"
+INDEX_DIGEST = (
+    "import hashlib, sys\n"
+    f"sys.path.insert(0, {str(INSTALLER_DIR)!r})\n"
+    "import install_manifest\n"
+    "index = install_manifest.installed_dependency_index()\n"
+    "if index is None:\n"
+    "    print('')\n"
+    "else:\n"
+    "    digest = hashlib.sha256()\n"
+    "    for name in sorted(index):\n"
+    "        digest.update(f'{name}=={index[name][0]}\\n'.encode('utf-8'))\n"
+    "    print(digest.hexdigest())\n"
 )
 
 
@@ -583,6 +609,14 @@ def snapshot(venv_python: pathlib.Path) -> dict:
         for name, version, mtime, size in json.loads(records.stdout or "[]")
     ]
 
+    index_digest = subprocess.run(
+        [str(venv_python), "-I", "-c", INDEX_DIGEST],
+        capture_output = True,
+        text = True,
+        timeout = 300,
+    )
+    state["installed_index_digest"] = (index_digest.stdout or "").strip() or None
+
     manifest_path = venv / "unsloth_install_manifest.json"
     manifest = None
     if manifest_path.is_file():
@@ -625,6 +659,15 @@ def snapshot(venv_python: pathlib.Path) -> dict:
 
 def diff(before: dict, after: dict) -> list[str]:
     return [key for key in sorted(set(before) | set(after)) if before.get(key) != after.get(key)]
+
+
+def expected_prebuilt_answers(log: str) -> int:
+    """How many prebuilts must answer "prebuilt up to date": llama.cpp always, and whisper.cpp
+    unless this run reported its release unpaired. Read from the run, not the disk: an install
+    that had a paired whisper.cpp keeps its binary when llama.cpp moves ahead, and the pairing
+    gate rejects it all the same. Without the unpaired line a whisper.cpp that re-validated or
+    silently went missing leaves one answer short of two, and the count fails."""
+    return 1 if WHISPER_UNPAIRED.search(log) else 2
 
 
 # ── run 1 and run 2 ──
@@ -696,7 +739,7 @@ def test_a_second_local_update_reuses_everything_it_can(install, settled):
         "a settled transformers sidecar was rebuilt:\n" + run.log[-8000:]
     )
     # One line each from llama.cpp and whisper.cpp: a single match would let one re-validate.
-    assert run.log.count("prebuilt up to date") >= 2, (
+    assert run.log.count("prebuilt up to date") >= expected_prebuilt_answers(run.log), (
         "a prebuilt was re-validated instead of answered from its marker:\n" + run.log[-8000:]
     )
     assert "falling back to source build" not in run.log
@@ -732,12 +775,24 @@ def test_the_desktop_update_path_keeps_a_verified_install_offline(install, settl
         "an update with nothing to do failed offline. That is the state a user on a "
         f"plane, or behind a corporate proxy, is in:\n{run.log[-8000:]}"
     )
-    # Either the offline rule or the ordinary fast path: Invoke-RestMethod ignores HTTPS_PROXY, so
-    # on Windows the version check can still answer "up to date". Either way nothing got through the
-    # proxy and nothing on disk moved.
-    assert "keeping the verified install" in run.log or UPTODATE_MARKER.search(run.log), run.log[
-        -8000:
-    ]
+    # Three outcomes are all correct here, because the version check is not behind the proxy:
+    # Invoke-RestMethod ignores HTTPS_PROXY, so on Windows it reaches PyPI and answers for real.
+    #
+    #   - the offline rule fired, which is the case this test exists for;
+    #   - PyPI said the installed version is the latest, the ordinary fast path;
+    #   - PyPI said a NEWER release exists, so the offline rule's precondition ("PyPI is
+    #     unreachable") never held and the pass is supposed to start.
+    #
+    # The third is not a weakening. It is what happens to every branch in the repo for the hours
+    # between a release landing on PyPI and the pin here moving, and asserting it away would mean
+    # this row goes red on a schedule that has nothing to do with the code. The teeth are the two
+    # assertions below, which hold in all three: nothing got through the proxy, and nothing on
+    # disk moved.
+    assert (
+        "keeping the verified install" in run.log
+        or UPTODATE_MARKER.search(run.log)
+        or UPGRADE_MARKER in run.log
+    ), run.log[-8000:]
     assert run.connections == run.refused, run.report()
     assert diff(before, snapshot(install)) == []
 
@@ -913,6 +968,56 @@ def test_the_manifest_records_the_evidence_the_next_run_needs(install, settled):
     assert manifest.get("installer_python_tag"), manifest.keys()
 
 
+def _known_unmet_names(state: dict) -> set[str]:
+    """Distributions the manifest records as unmet in some audited step's closure.
+
+    closure_unmet_requirements reports a missing distribution by name and a version outside its
+    specifier as "name version"; a "<...>" entry means the audit could not run and names nothing.
+    Only a record whose known_unmet_index matches the installed set it is read against counts.
+    """
+    manifest = state.get("manifest") or {}
+    # Stale evidence names nothing: a record written against a different installed set says
+    # nothing about this one, and trusting it would let a later step's change hide under it.
+    digest = state.get("installed_index_digest")
+    if not digest or manifest.get("known_unmet_index") != digest:
+        return set()
+    record = manifest.get("known_unmet") or {}
+    names: set[str] = set()
+    for entries in record.values() if isinstance(record, dict) else ():
+        for entry in entries or ():
+            text = str(entry).strip()
+            if text and not text.startswith("<"):
+                names.add(_dist_name(text.split()[0]))
+    return names
+
+
+def _dist_name(name: str) -> str:
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def _assert_same_distributions(before: dict, after: dict, message: str) -> None:
+    """Every distribution installed on both sides, and every version equal, except one that BOTH
+    manifests record as known_unmet.
+
+    Such a distribution is caught between two pins no version meets (click: sqlfluff<4 wants
+    <=8.3.0, huggingface-hub 1.23+ wants >=8.4.2), so which side it lands on is decided by the last
+    step that resolved it, not by whether a skip was equivalent. A full pass reinstalls Diffusers
+    main from a direct reference after the data-designer deps, re-resolving hub's closure, and a
+    pass that skips that step leaves the data-designer answer. Nothing else is set aside.
+    """
+    torn = _known_unmet_names(before) & _known_unmet_names(after)
+    # Per name, with multiplicity: a set collapses a second metadata record for an exempted name
+    # (a pip backup, a duplicate dist-info), and the version filter below would then hide it.
+    before_names = collections.Counter(_dist_name(n) for n, _ in before["distributions"])
+    after_names = collections.Counter(_dist_name(n) for n, _ in after["distributions"])
+    assert (
+        before_names == after_names
+    ), f"{message}: a distribution record was added or removed: {(before_names - after_names) + (after_names - before_names)}"
+    assert [d for d in after["distributions"] if _dist_name(d[0]) not in torn] == [
+        d for d in before["distributions"] if _dist_name(d[0]) not in torn
+    ], f"{message} (known_unmet on both sides, not compared: {sorted(torn)})"
+
+
 def test_full_deps_forces_every_step_and_still_changes_nothing(install, settled):
     """The escape hatch. It must do the work -- no "(satisfied, skipped)" anywhere --
     and arrive at the same venv, which is what makes the skips safe."""
@@ -931,9 +1036,11 @@ def test_full_deps_forces_every_step_and_still_changes_nothing(install, settled)
         "UNSLOTH_STUDIO_FULL_DEPS still skipped a step:\n" + run.log[-8000:]
     )
     after = snapshot(install)
-    assert after["distributions"] == before["distributions"], (
+    _assert_same_distributions(
+        before,
+        after,
         "doing every step produced a different venv from skipping the settled ones, so "
-        "at least one skip was not equivalent to the work it replaced"
+        "at least one skip was not equivalent to the work it replaced",
     )
 
 
@@ -961,7 +1068,7 @@ def _assert_install_working(
     *before*."""
     after = snapshot(install)
     if same_distributions:
-        assert after["distributions"] == before["distributions"]
+        _assert_same_distributions(before, after, "the install's packages changed")
     else:
         core = lambda dists: sorted(d for d in dists if d[0] in LOCAL_CORE)  # noqa: E731
         assert core(after["distributions"]) == core(before["distributions"])
@@ -1119,7 +1226,9 @@ def test_the_desktop_update_path_does_no_network_work(install, settled):
     for marker in NO_WORK_MARKERS:
         assert marker in run.log, f"{marker!r} missing from a no-op update:\n{run.log[-8000:]}"
     # Each component, not the generic line once.
-    assert run.log.count("prebuilt up to date") >= 2, run.log[-8000:]
+    assert run.log.count("prebuilt up to date") >= expected_prebuilt_answers(run.log), run.log[
+        -8000:
+    ]
     assert run.log.count("sidecar current") == 3, run.log[-8000:]
     # One version check per run; the bounds stop a full listing or a payload returning.
     assert run.connections_to("pypi.org") <= 2, run.report()
@@ -1129,3 +1238,29 @@ def test_the_desktop_update_path_does_no_network_work(install, settled):
     assert run.connections_to("api.github.com") <= MAX_API_GITHUB_DESKTOP, run.report()
     assert_read_metadata_but_no_payload(run)
     assert diff(before, snapshot(install)) == []
+
+
+# ── the whisper.cpp pairing gate (no install needed) ──
+
+# Verbatim from the Update CI log on 2026-09-24, run between the two publishes.
+UNPAIRED_SH = (
+    "  whisper.cpp    no compatible prebuilt (installed llama.cpp b11139-mix-a6922cc; whisper "
+    "requires b11115-mix-a6922cc); curated whisper.cpp dictation is unavailable"
+)
+
+
+def test_an_unpaired_whisper_release_lowers_the_count_to_llama_alone():
+    assert expected_prebuilt_answers(UNPAIRED_SH) == 1
+
+
+def test_without_the_unpaired_line_both_prebuilts_must_answer():
+    # A run with no unpaired line and one "prebuilt up to date" is a whisper.cpp that
+    # re-validated or went missing: the count of two is what catches it.
+    assert expected_prebuilt_answers("  llama.cpp      prebuilt up to date") == 2
+
+
+def test_the_unpaired_pattern_matches_both_installers():
+    root = pathlib.Path(__file__).resolve().parents[3]
+    for script in ("studio/setup.sh", "studio/setup.ps1"):
+        text = (root / script).read_text(encoding = "utf-8")
+        assert re.search(r'step "whisper\.cpp" "no compatible prebuilt \(', text), script

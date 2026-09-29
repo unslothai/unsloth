@@ -16,6 +16,7 @@ from __future__ import annotations
 import contextlib
 import ctypes
 import dataclasses
+import hashlib
 import importlib
 import json
 import ntpath
@@ -394,11 +395,21 @@ def test_sm103_host_drops_cuda128_windows_build():
     assert [a.name for a in kept_b200] == [cuda128.name, cuda129.name]
 
 
+def _fixture_digest(name: str) -> str:
+    """Stand-in for the digest GitHub publishes; a fixture without one selects nothing."""
+    return hashlib.sha256(name.encode()).hexdigest()
+
+
 def _upstream_release(tag, asset_names):
     return {
         "tag_name": tag,
         "assets": [
-            {"name": n, "browser_download_url": f"https://example/{n}"} for n in asset_names
+            {
+                "name": n,
+                "browser_download_url": f"https://example/{n}",
+                "digest": f"sha256:{_fixture_digest(n)}",
+            }
+            for n in asset_names
         ],
     }
 
@@ -2199,9 +2210,16 @@ def test_a_manifest_the_loader_filters_out_does_not_answer_for_the_driver(monkey
 
     monkeypatch.setenv("VK_LOADER_DRIVERS_DISABLE", "*radeon*")
     assert ilp._amd_vulkan_icd_present() is False
-    # Disable is read first so a select list names drivers back in, which is the loader's order.
+    # Disable is read first and WINS: "the values from the disable environment variable will
+    # be considered before the enable or select environment variable" (Vulkan-Loader,
+    # LoaderInterfaceArchitecture.md), and drivers have no VK_LOADER_LAYERS_ALLOW counterpart
+    # to name one back in. This asserted the opposite, which is the misreading that counted a
+    # disabled Radeon as usable.
     monkeypatch.setenv("VK_LOADER_DRIVERS_SELECT", "RADEON_ICD.X86_64.JSON")
+    assert ilp._amd_vulkan_icd_present() is False
+    monkeypatch.delenv("VK_LOADER_DRIVERS_DISABLE")
     assert ilp._amd_vulkan_icd_present() is True
+    monkeypatch.setenv("VK_LOADER_DRIVERS_DISABLE", "*radeon*")
     # And a select list naming someone else's driver excludes this one on its own.
     monkeypatch.setenv("VK_LOADER_DRIVERS_SELECT", "intel_*")
     assert ilp._amd_vulkan_icd_present() is False

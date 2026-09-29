@@ -22,9 +22,9 @@ import itertools
 import textwrap
 
 import pytest
-import torch
 import unsloth  # noqa: F401
 
+from real_accelerator import has_real_accelerator
 from unsloth.models import llama as llama_module
 from unsloth.models.llama import _fused_lora_skip_reason
 
@@ -86,22 +86,27 @@ def _gate_tests(source: str) -> list[str]:
     return out
 
 
-def test_patch_peft_model_still_gates_the_fused_kernels_on_the_same_two_values():
+def test_patch_peft_model_still_gates_the_fused_kernels_on_the_same_values():
     """If the gate grows a third condition, _fused_lora_skip_reason has to grow with it or
     the summary starts reporting zero counts with no reason again."""
     source = inspect.getsource(llama_module.FastLlamaModel.patch_peft_model)
-    assert _gate_tests(source) == ["lora_dropout == 0 and bias == 'none'"]
+    assert _gate_tests(source) == ["lora_dropout == 0 and bias == 'none' and (not float32_base)"]
 
 
 def test_the_summary_call_carries_the_reason():
     source = inspect.getsource(llama_module.FastLlamaModel.patch_peft_model)
-    assert "unfused_reason = _fused_lora_skip_reason(lora_dropout, bias)" in source
+    assert "unfused_reason = _fused_lora_skip_reason(lora_dropout, bias, float32_base)" in source
     assert "MLP layers.{unfused_reason}" in source
 
 
+# has_real_accelerator(), not torch.cuda.is_available(): tests/_zoo_aggressive_cuda_spoof.py
+# patches the latter True process-wide and never puts it back, and a skipif is evaluated at
+# import, so sharing a session with tests/version_compat or tests/vllm_compat would un-skip
+# this on a CPU-only box. tests/_shared/real_accelerator.py records the answer before any
+# spoof can run. Enforced by tests/python/test_accelerator_skip_guards.py.
 @pytest.mark.gpu
 @pytest.mark.skipif(
-    not torch.cuda.is_available(),
+    not has_real_accelerator(),
     reason = "loads a real checkpoint through FastLanguageModel; needs an accelerator",
 )
 def test_summary_reason_is_logged_for_a_real_model():

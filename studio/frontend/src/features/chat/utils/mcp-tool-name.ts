@@ -3,6 +3,11 @@
 
 const MCP_TOOL_PREFIX = "mcp__";
 
+/** Whether a tool call came from an MCP server, by the id the backend stamps. */
+export function isMcpToolName(toolName: string | undefined): boolean {
+  return typeof toolName === "string" && toolName.startsWith(MCP_TOOL_PREFIX);
+}
+
 function provenanceString(
   provenance: unknown,
   key: "mcp_server" | "mcp_tool",

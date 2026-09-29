@@ -36,6 +36,7 @@ import pytest
 import torch
 import unsloth  # noqa: F401
 
+from real_accelerator import has_real_cuda
 from unsloth.models import llama as llama_module
 
 # Every model file whose patched attention forward calls apply_qkv / apply_o. gemma.py,
@@ -230,9 +231,16 @@ def _plain_model_dtype() -> "torch.dtype":
         return torch.float16
 
 
+# has_real_cuda(), not torch.cuda.is_available(): tests/_zoo_aggressive_cuda_spoof.py patches
+# the latter True process-wide and never puts it back, and a skipif is evaluated at import, so
+# sharing a session with tests/version_compat or tests/vllm_compat would un-skip this on a
+# CPU-only box. tests/_shared/real_accelerator.py records the answer before any spoof can run.
+# The narrow probe rather than has_real_accelerator() because the body allocates on "cuda"
+# by name, and the broad one is also true on an XPU-only or Ascend NPU-only host.
+# Both halves are enforced by tests/python/test_accelerator_skip_guards.py.
 @pytest.mark.gpu
 @pytest.mark.skipif(
-    not torch.cuda.is_available(),
+    not has_real_cuda(),
     reason = "loads a real checkpoint through FastLanguageModel; needs an accelerator",
 )
 def test_apply_qkv_fallback_end_to_end():
