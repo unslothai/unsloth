@@ -2264,6 +2264,8 @@ class FastModel(FastBaseModel):
         _ckpt_is_vlm = any(x.endswith("ForConditionalGeneration") for x in _ckpt_arch) or hasattr(
             model_config, "vision_config"
         )
+        # T5 / BART end in ForConditionalGeneration too but ship a tokenizer, not a processor.
+        _ckpt_is_vlm = _ckpt_is_vlm and not _is_text_seq2seq_config(model_config)
         tokenizer_name = _resolve_checkpoint_tokenizer_name(
             old_model_name, kwargs, require_processor = _ckpt_is_vlm
         )

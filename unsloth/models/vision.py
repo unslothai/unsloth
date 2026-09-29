@@ -3187,18 +3187,28 @@ class FastBaseModel:
                 task_type = TaskType.SEQ_2_SEQ_LM
             # No vision tower: FastLanguageModel's finetune_vision_layers=False must not filter the encoder out.
             finetune_vision_layers = True
-            # get_peft_regex misses T5's q/k/v/o/wi/wo and BART's fc1/fc2, so list every Linear leaf except the LM head.
-            if (target_modules is None or target_modules == "all-linear") and (
-                finetune_language_layers and finetune_attention_modules and finetune_mlp_modules
-            ):
+            # get_peft_regex misses T5's q/k/v/o/wi/wo and BART's fc1/fc2, so list the Linear leaves (minus the LM head) ourselves.
+            if (
+                target_modules is None or target_modules == "all-linear"
+            ) and finetune_language_layers:
                 _output = model.get_output_embeddings()
-                target_modules = sorted(
-                    {
-                        name.rsplit(".", 1)[-1]
-                        for name, module in model.named_modules()
-                        if isinstance(module, torch.nn.Linear) and module is not _output
-                    }
-                )
+                _linears = [
+                    name
+                    for name, module in model.named_modules()
+                    if isinstance(module, torch.nn.Linear) and module is not _output
+                ]
+                if finetune_attention_modules and finetune_mlp_modules:
+                    target_modules = sorted({name.rsplit(".", 1)[-1] for name in _linears})
+                elif finetune_attention_modules or finetune_mlp_modules:
+                    # Full paths: a leaf name alone cannot say which family it sits in.
+                    target_modules = [
+                        name
+                        for name in _linears
+                        if bool(re.search(r"attention|attn", name.lower()))
+                        == finetune_attention_modules
+                    ]
+                    # The list already encodes the family choice; get_peft_regex would reject full paths.
+                    finetune_attention_modules = finetune_mlp_modules = True
 
         # Remember whether the CALLER explicitly opted into audio: "all-linear" turns the flag on implicitly below, but an old unsloth_zoo without audio must not fail a plain all-linear run.
         _audio_explicitly_requested = bool(finetune_audio_layers)
