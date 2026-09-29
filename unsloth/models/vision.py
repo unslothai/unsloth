@@ -657,6 +657,23 @@ global NUM_LOGITS_TO_KEEP
 NUM_LOGITS_TO_KEEP = dict()
 
 
+def _set_generate_param(kwargs, name, value, overwrite = True):
+    # Sets a generate() parameter that is also a recognized GenerationConfig field
+    # (e.g. pad_token_id, cache_implementation, compile_config). Setting such a field
+    # as a raw kwarg *alongside* an explicit generation_config (as TRL passes at
+    # rollout time) is ambiguous to transformers and triggers its
+    # generation_config-vs-kwargs deprecation warning (GenerationMixin.
+    # _prepare_generation_config), even though the merged result is unaffected either
+    # way. Set it on that config object instead when one was passed in.
+    # overwrite=False preserves an already-set (non-None) value on the caller's config.
+    caller_generation_config = kwargs.get("generation_config")
+    if caller_generation_config is not None:
+        if overwrite or getattr(caller_generation_config, name, None) is None:
+            setattr(caller_generation_config, name, value)
+    else:
+        kwargs[name] = value
+
+
 def _unsloth_generate_accepts_kwarg(model, key):
     # True if the top level accepts this generate kwarg; some models expose it on an inner forward only.
     try:
@@ -1327,20 +1344,7 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
     ):
         default_pad_token_id = self.config.pad_token_id
 
-    # When the caller already passes an explicit `generation_config` (e.g. TRL's
-    # GRPOTrainer at rollout time), also setting pad_token_id as a separate kwarg
-    # triggers transformers' "Passing `generation_config` together with
-    # generation-related arguments" deprecation warning (see
-    # transformers/generation/utils.py: GenerationMixin._prepare_generation_config).
-    # Set it on the config object instead in that case, so no stray kwarg is left.
-    caller_generation_config = kwargs.get("generation_config")
-    if caller_generation_config is not None:
-        if getattr(caller_generation_config, "pad_token_id", None) is None:
-            caller_generation_config.pad_token_id = kwargs.pop("pad_token_id", default_pad_token_id)
-        else:
-            kwargs.pop("pad_token_id", None)
-    else:
-        kwargs["pad_token_id"] = kwargs.pop("pad_token_id", default_pad_token_id)
+    _set_generate_param(kwargs, "pad_token_id", kwargs.pop("pad_token_id", default_pad_token_id), overwrite = False)
 
     try:
         kwargs["pixel_values"] = kwargs["pixel_values"].to(dtype)
@@ -1372,15 +1376,8 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
     _clear_generation_caches(self)
     if _uses_flash_attention_for_generation(self.config):
         # Pin the literal "dynamic": None is merged back to the model default, and a static cache still arrives via kwargs or the caller's generation_config (TRL); skip it when the caller passed a cache.
-        # Set directly on an explicit generation_config when present (verified equivalent to a raw kwarg
-        # under transformers' merge order) instead of also adding a raw kwarg, to avoid the same
-        # generation_config-vs-kwargs deprecation warning fixed above for pad_token_id.
         if kwargs.get("past_key_values") is None:
-            caller_generation_config = kwargs.get("generation_config")
-            if caller_generation_config is not None:
-                caller_generation_config.cache_implementation = "dynamic"
-            else:
-                kwargs["cache_implementation"] = "dynamic"
+            _set_generate_param(kwargs, "cache_implementation", "dynamic")
         try:
             with torch.inference_mode(), autocaster:
                 return self._old_generate(*args, **kwargs)
@@ -1445,21 +1442,12 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
     compile_config = _decode_compile_config if compile_decode else _compile_config
     if _is_decode_compile_model(self):
         _match_compiled_call(self, compile_decode)
-    if "generation_config" in kwargs:
-        # Setting directly on the config object is sufficient (verified equivalent to also
-        # adding a raw kwarg under transformers' merge order); a separate raw kwarg here would
-        # retrigger the same generation_config-vs-kwargs deprecation warning fixed above.
-        kwargs["generation_config"].cache_implementation = (
-            dynamic_implementation if force_dynamic_cache else cache_implementation
-        )
-        if cache_implementation is not None:
-            kwargs["generation_config"].compile_config = compile_config
-    else:
-        kwargs["cache_implementation"] = (
-            dynamic_implementation if force_dynamic_cache else cache_implementation
-        )
-        if cache_implementation is not None:
-            kwargs["compile_config"] = compile_config
+    _set_generate_param(
+        kwargs, "cache_implementation",
+        dynamic_implementation if force_dynamic_cache else cache_implementation,
+    )
+    if cache_implementation is not None:
+        _set_generate_param(kwargs, "compile_config", compile_config)
 
     decode_scope = _CompileDecodeOnRepeat(self) if compile_decode else contextlib.nullcontext()
     eager_scope = _EagerDecodeSteps(self) if _eager_decodes(self) else contextlib.nullcontext()
