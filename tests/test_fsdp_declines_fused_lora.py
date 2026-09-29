@@ -109,3 +109,52 @@ def test_the_declined_message_names_the_override():
 
     assert _fused_lora_skip_reason(0, "none") == ""
     assert "UNSLOTH_FORCE_FUSED_LORA" in _fused_lora_skip_reason(0, "none", fsdp = True)
+
+
+def _fused_model(llama):
+    import types
+
+    import torch
+
+    attn = torch.nn.Module()
+    attn.apply_qkv = llama.apply_lora_qkv
+    attn.apply_o = llama.apply_lora_o
+    mlp = torch.nn.Linear(2, 2)
+    mlp.forward = types.MethodType(llama.apply_lora_mlp_swiglu, mlp)
+    tiled = torch.nn.Linear(2, 2)
+    tiled._unsloth_forward = types.MethodType(llama.apply_lora_mlp_geglu_approx, tiled)
+    root = torch.nn.Module()
+    root.attn, root.mlp, root.tiled = attn, mlp, tiled
+    return root
+
+
+def test_a_trainer_side_fsdp_gets_peft_forwards_back():
+    """`SFTConfig(fsdp=...)` exports no env: the Trainer undoes the fused installs once it knows."""
+    import torch
+    from unsloth.models import llama
+
+    root = _fused_model(llama)
+    assert llama._decline_fused_lora_for_fsdp(root) == 4
+    assert root.attn.apply_qkv is llama.original_apply_qkv
+    assert root.attn.apply_o is llama.original_apply_o
+    assert "forward" not in root.mlp.__dict__
+    assert root.tiled._unsloth_forward is torch.nn.Linear.forward
+    assert llama._decline_fused_lora_for_fsdp(root) == 0
+
+
+def test_the_trainer_side_decline_honours_the_override(monkeypatch):
+    from unsloth.models import llama
+
+    monkeypatch.setenv("UNSLOTH_FORCE_FUSED_LORA", "1")
+    root = _fused_model(llama)
+    assert llama._decline_fused_lora_for_fsdp(root) == 0
+    assert root.attn.apply_qkv is llama.apply_lora_qkv
+
+
+def test_the_trainer_init_wrapper_calls_the_decline():
+    import inspect
+
+    from unsloth.models import _utils
+
+    source = inspect.getsource(_utils.patch_gradient_accumulation_fix)
+    assert "is_fsdp_enabled" in source and "_decline_fused_lora_for_fsdp" in source

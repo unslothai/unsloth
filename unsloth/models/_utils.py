@@ -4863,6 +4863,9 @@ def patch_gradient_accumulation_fix(Trainer):
                             pass
             except Exception:
                 pass
+            if getattr(self, "is_fsdp_enabled", False):
+                from .llama import _decline_fused_lora_for_fsdp
+                _decline_fused_lora_for_fsdp(getattr(self, "model", None))
 
         _unsloth_trainer_init.__wrapped__ = _original_trainer_init
         Trainer.__init__ = _unsloth_trainer_init

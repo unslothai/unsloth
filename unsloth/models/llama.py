@@ -2315,6 +2315,42 @@ def _fused_lora_skip_reason(
     )
 
 
+_FUSED_LORA_MLPS = (apply_lora_mlp_swiglu, apply_lora_mlp_geglu_exact, apply_lora_mlp_geglu_approx)
+
+
+def _decline_fused_lora_for_fsdp(model) -> int:
+    """Put peft's forwards back on layers patch_peft_model gave a fused LoRA kernel.
+
+    `TrainingArguments(fsdp=...)` only reaches the Accelerator inside `Trainer.__init__`, after
+    patch_peft_model ran with no launcher env to see, so the Trainer calls this once it knows.
+    """
+    if model is None or os.environ.get("UNSLOTH_FORCE_FUSED_LORA", "0") == "1":
+        return 0
+    n = 0
+    for module in model.modules():
+        if getattr(module, "apply_qkv", None) is apply_lora_qkv:
+            module.apply_qkv = original_apply_qkv
+            n += 1
+        if getattr(module, "apply_o", None) is apply_lora_o:
+            module.apply_o = original_apply_o
+            n += 1
+        for name in ("forward", "_unsloth_forward"):
+            func = getattr(module.__dict__.get(name), "__func__", None)
+            if getattr(func, "func", func) not in _FUSED_LORA_MLPS:
+                continue
+            if name == "forward":
+                delattr(module, "forward")
+            else:
+                module._unsloth_forward = module.__class__.forward
+            n += 1
+    if n:
+        logger.warning_once(
+            f"Unsloth: the Trainer enabled FSDP, so {n} fused LoRA projections were switched back "
+            "to peft's forward, which FSDP can unshard. Set UNSLOTH_FORCE_FUSED_LORA=1 to keep them."
+        )
+    return n
+
+
 class FastLlamaModel:
     @staticmethod
     def _prepare_for_qat(model, qat_scheme):
