@@ -777,7 +777,15 @@ class _EagerDecodeSteps:
         return self.forward(*args, **kwargs)
 
     def __enter__(self):
-        self.model.forward = self._forward
+        # transformers reads signature(self.forward) (logits_to_keep, attention_mask,
+        # position_ids), so the stand-in has to present the real one.
+        step = self._forward
+
+        @functools.wraps(self.forward)
+        def forward(*args, **kwargs):
+            return step(*args, **kwargs)
+
+        self.model.forward = forward
         return self
 
     def __exit__(self, *exc):

@@ -3,6 +3,7 @@
 
 """Which models compile their decode step, and the static cache length they get."""
 
+import inspect
 import types
 
 import pytest
@@ -230,7 +231,7 @@ class _Forwarding:
     def __init__(self):
         self.seen = []
 
-    def forward(self, input_ids = None, inputs_embeds = None):
+    def forward(self, input_ids = None, inputs_embeds = None, logits_to_keep = 0):
         self.seen.append((input_ids if input_ids is not None else inputs_embeds).shape)
         return "out"
 
@@ -239,6 +240,8 @@ def test_only_one_token_steps_run_in_eager_decode(eager_scope):
     import torch
     model = _Forwarding()
     with _EagerDecodeSteps(model):
+        # transformers picks logits_to_keep, attention_mask, ... from this signature
+        assert list(inspect.signature(model.forward).parameters) == ["input_ids", "inputs_embeds", "logits_to_keep"]
         assert model.forward(input_ids = torch.zeros(2, 7, dtype = torch.long)) == "out"
         assert eager_scope == []  # prefill keeps its compiled regions
         model.forward(input_ids = torch.zeros(2, 1, dtype = torch.long))
