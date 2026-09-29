@@ -6,7 +6,6 @@ export type TurnMessage = { readonly id: string; readonly role: string };
 export interface ThreadTurns {
   // openerIds[n - 1] is the user message that opens turn n
   readonly openerIds: readonly string[];
-  // compared by value so the navigator skips renders while a reply streams
   readonly signature: string;
   // turn per message index, 0 before the first user message
   readonly turnAt: Int32Array;
