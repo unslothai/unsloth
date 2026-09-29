@@ -482,6 +482,13 @@ test("library menus take the sidebar menu look, with a shadow, in dark mode", ()
   assert.equal(page.match(/className="library-menu /g)?.length, 2);
 });
 
+test("every library toolbar's search narrows with the header row, so it never reaches the title", () => {
+  for (const file of ["features/library/components/library-toolbar.tsx", "features/library/chats/chats-toolbar.tsx"]) {
+    assert.match(readSrc(file), /w-\[clamp\(10rem,calc\(100cqw-30rem\),min\(15rem,24vw\)\)\]/, file);
+  }
+  assert.match(readSrc("features/library/components/library-header.tsx"), /className="@container /);
+});
+
 test("the library header row casts a light shadow once stuck", () => {
   const css = readSrc("index.css");
   assert.match(
