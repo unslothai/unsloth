@@ -122,6 +122,7 @@ export const AttachmentCardPreview: FC<{
     body = (
       <MarkdownPreview
         markdown={text.text}
+        inert={true}
         className="max-h-none overflow-visible border-0 bg-transparent px-6 py-5 text-ui-15p5"
       />
     );
