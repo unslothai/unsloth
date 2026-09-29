@@ -105,6 +105,7 @@ from core.inference.context_window import (
     estimate_message_tokens as _estimate_message_tokens,
     estimate_messages_tokens as _estimate_messages_tokens,
     estimate_messages_tokens_dense,
+    messages_without_unpriced_media,
     truncate_oldest_messages as _truncate_oldest_messages,
 )
 from core.inference.llama_tool_schema import llama_grammar_tools
@@ -2472,7 +2473,7 @@ def _count_gguf_admission_prompt(
             messages, vision = bool(getattr(llama_backend, "is_vision", False))
         )
         count = llama_backend.count_chat_tokens(
-            text_messages,
+            messages_without_unpriced_media(text_messages),
             tools = tools,
             strict = True,
             prefer_native = images == 0,
