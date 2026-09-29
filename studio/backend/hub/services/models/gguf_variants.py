@@ -26,6 +26,7 @@ from hub.utils import download_registry
 from hub.utils import inventory_scan as hf_cache_scan
 from hub.utils.hf_errors import hf_error_status, modelscope_missing
 from hub.utils.hf_tokens import cached_read_refused as hub_cached_read_refused
+from hub.utils.hf_tokens import call_with_anonymous_retry
 from hub.utils.hf_cache_state import (
     incomplete_blob_hash,
     iter_destructive_repo_cache_dirs,
@@ -176,14 +177,41 @@ def _variant_requirement_cache_get(key: tuple[str, str, str]) -> Optional[_GgufV
 def _variant_requirement_cache_set_many(
     repo_id: str, hf_token: Optional[str], requirements: dict[str, _GgufVariantRequirement]
 ) -> None:
+    global _VARIANT_REQUIREMENT_FORGOTTEN
     with _VARIANT_HASH_LOCK:
         now = time.monotonic()
         for quant, requirement in requirements.items():
             key = _variant_hash_cache_key(repo_id, quant, hf_token)
             _VARIANT_REQUIREMENT_CACHE[key] = (requirement, now)
             _VARIANT_REQUIREMENT_CACHE.move_to_end(key)
+            known = key[:2]
+            _VARIANT_REQUIREMENT_LAST_KNOWN[known] = requirement
+            _VARIANT_REQUIREMENT_LAST_KNOWN.move_to_end(known)
         while len(_VARIANT_REQUIREMENT_CACHE) > _VARIANT_HASH_MAX:
             _VARIANT_REQUIREMENT_CACHE.popitem(last = False)
+        while len(_VARIANT_REQUIREMENT_LAST_KNOWN) > _VARIANT_REQUIREMENT_LAST_KNOWN_MAX:
+            _VARIANT_REQUIREMENT_LAST_KNOWN.popitem(last = False)
+            _VARIANT_REQUIREMENT_FORGOTTEN = True
+
+
+# Newest requirement per (repo, variant), kept past the TTL so an expired entry never reads as
+# "nothing required". Not keyed by credential: it describes the repo's files.
+_VARIANT_REQUIREMENT_LAST_KNOWN: "OrderedDict[tuple[str, str], _GgufVariantRequirement]" = (
+    OrderedDict()
+)
+# After any eviction an absent entry may be a forgotten companion.
+_VARIANT_REQUIREMENT_LAST_KNOWN_MAX = 65536
+_VARIANT_REQUIREMENT_FORGOTTEN = False
+
+
+def _variant_requirement_last_known(key: tuple[str, ...]) -> Optional[_GgufVariantRequirement]:
+    with _VARIANT_HASH_LOCK:
+        return _VARIANT_REQUIREMENT_LAST_KNOWN.get(key[:2])
+
+
+def _variant_requirement_may_be_forgotten() -> bool:
+    with _VARIANT_HASH_LOCK:
+        return _VARIANT_REQUIREMENT_FORGOTTEN
 
 
 def _build_gguf_variant_requirements(siblings: list) -> dict[str, _GgufVariantRequirement]:
@@ -215,10 +243,13 @@ def _fetch_gguf_variant_requirements(
             return {}
         try:
             from huggingface_hub import HfApi
-            info = HfApi(token = hf_token).model_info(
-                repo_id,
-                files_metadata = True,
-                timeout = _GGUF_METADATA_TIMEOUT_SECONDS,
+            info = call_with_anonymous_retry(
+                lambda token: HfApi(token = token).model_info(
+                    repo_id,
+                    files_metadata = True,
+                    timeout = _GGUF_METADATA_TIMEOUT_SECONDS,
+                ),
+                hf_token,
             )
         except Exception as e:
             logger.warning(
@@ -1069,6 +1100,8 @@ async def get_gguf_variants_answer(
     cache_authorized = [True]
     variant_context_sources: dict[str, str] = {}
     hub_listing = None
+    # The downloaded rows a Hub-less answer proved complete from disk, see _locally_resolved.
+    locally_proven: list[Optional[frozenset]] = [None]
 
     def _compute(local_path: Optional[str] = local_path) -> GgufVariantsResponse:
         nonlocal hub_listing
@@ -1397,6 +1430,57 @@ async def get_gguf_variants_answer(
             hf_token, repo_id = repo_id, is_cached = lambda: True, offline = bool(offline)
         )
 
+        def _locally_resolved(
+            response: GgufVariantsResponse, snapshot: Optional[Path]
+        ) -> GgufVariantsResponse:
+            """*response* marked ``dependencies_resolved`` when the disk alone proves every
+            downloaded row loadable. Only for answers given because the Hub could not be read
+            (offline, or the listing failed): with the Hub up, a companion the current revision
+            added is only visible in its listing, which is why a local-first answer never
+            carries this. The proof, per downloaded quant: its main file is in *snapshot*, the
+            snapshot's own manifest, cancel marker and blobs do not make it partial, the
+            download's recorded plan (main shards and companions) is all on disk, and so is
+            every companion a Hub answer earlier in this process named. A drafter that is still
+            missing only turns speculative decoding off at load, so a quant downloaded before
+            manifests existed is judged on its shards alone."""
+            if snapshot is None or response.dependencies_resolved:
+                return response
+            from hub.utils.gguf_sources import (
+                cached_gguf_manifest_complete,
+                cached_gguf_source_partial,
+            )
+
+            downloaded = [v for v in response.variants if v.downloaded]
+            if not downloaded or any(v.partial for v in downloaded):
+                return response
+            proven = set()
+            for v in downloaded:
+                if not v.quant or not v.filename:
+                    return response
+                try:
+                    if not (snapshot / v.filename).is_file():
+                        return response
+                    if cached_gguf_source_partial(response.repo_id, v.quant, snapshot):
+                        return response
+                    if not cached_gguf_manifest_complete(response.repo_id, v.quant, snapshot):
+                        return response
+                    requirement = _variant_requirement_last_known(
+                        _variant_hash_cache_key(response.repo_id, v.quant, hf_token)
+                    )
+                    if requirement is None and _variant_requirement_may_be_forgotten():
+                        return response
+                    for expected in requirement.expected_files if requirement is not None else ():
+                        target = snapshot / expected.path
+                        if not target.is_file() or (
+                            expected.size and target.stat().st_size != expected.size
+                        ):
+                            return response
+                except (OSError, RuntimeError, ValueError):
+                    return response
+                proven.add((v.quant.lower(), v.filename))
+            locally_proven[0] = frozenset(proven)
+            return response.model_copy(update = {"dependencies_resolved": True})
+
         def _scoped_local_response():
             """The pinned snapshot's own answer, or None when it holds nothing."""
             if snapshot_scope is None or not cache_reads_authorized:
@@ -1416,7 +1500,11 @@ async def get_gguf_variants_answer(
         if local_only:
             scoped_response = _scoped_local_response()
             if scoped_response is not None:
-                return scoped_response
+                return (
+                    _locally_resolved(scoped_response, snapshot_scope)
+                    if offline
+                    else scoped_response
+                )
             cached = (
                 select_gguf_cache_snapshot(repo_id, root = hub_cache)
                 if cache_reads_authorized
@@ -1430,10 +1518,11 @@ async def get_gguf_variants_answer(
                 # repo-dir walk a sibling revision's.
                 answered_from[0] = str(snapshot)
                 # The lister leaves torn quants in: they stay listed for management, but not ready.
-                return _with_state_partials(
+                response = _with_state_partials(
                     _local_response(repo_id, variants, has_vision, complete),
                     snapshot,
                 )
+                return _locally_resolved(response, snapshot) if offline else response
             if local_path and is_local_path(local_path):
                 variants, has_vision = list_local_gguf_variants(local_path)
                 if variants or has_vision:
@@ -1471,7 +1560,7 @@ async def get_gguf_variants_answer(
                 return None
             scoped_response = _scoped_local_response()
             if scoped_response is not None:
-                return scoped_response
+                return _locally_resolved(scoped_response, snapshot_scope)
             cached = select_gguf_cache_snapshot(repo_id, root = hub_cache)
             if cached is not None:
                 variants, has_vision, complete, snapshot = _merge_when_the_repo_id_loads(
@@ -1480,8 +1569,11 @@ async def get_gguf_variants_answer(
                 answered_from[0] = str(snapshot)
                 # Same reason as the local_only branch above: an unreachable Hub is exactly when a resume has
                 # nowhere else to surface, so state partials are included.
-                return _with_state_partials(
-                    _local_response(repo_id, variants, has_vision, complete),
+                return _locally_resolved(
+                    _with_state_partials(
+                        _local_response(repo_id, variants, has_vision, complete),
+                        snapshot,
+                    ),
                     snapshot,
                 )
             partial = _quants_from_state(repo_id, hub_cache)
@@ -1930,9 +2022,11 @@ async def get_gguf_variants_answer(
             if cached is None:
                 original_source = answered_from[0]
                 original_local = answered_locally[0]
+                original_proven = locally_proven[0]
                 try:
                     scoped = _compute(str(snapshot))
                 finally:
+                    locally_proven[0] = original_proven
                     answered_from[0] = original_source
                     # Restored too: this is a nested lookup, not the outer answer, and
                     # leaving it set would suppress the merge that reads it.
@@ -2073,6 +2167,16 @@ async def get_gguf_variants_answer(
                 ready = [v for v in response.variants if v.downloaded and not v.partial]
                 best = pick_best_gguf(_default_variant_candidates(ready or response.variants))
                 response.default_variant = gguf_variant_key(best) if best else None
+        if response.dependencies_resolved and locally_proven[0] is not None:
+            rows = frozenset(
+                (v.quant.lower(), v.filename)
+                for v in response.variants
+                if v.downloaded and v.quant and v.filename
+            )
+            if rows != locally_proven[0] or any(
+                v.partial for v in response.variants if v.downloaded
+            ):
+                response = response.model_copy(update = {"dependencies_resolved": False})
         if skip or answered_locally[0]:
             return response
         return _mark_empty_dir_cleanables(

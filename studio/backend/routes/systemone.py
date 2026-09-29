@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import math
 from typing import Any, Optional, Union
+from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
@@ -64,13 +65,13 @@ def _error(
 def _validate(name: str, question: QuestionIn) -> None:
     if len(name) + len(json.dumps(question.model_dump(), ensure_ascii = False)) > MAX_QUESTION_CHARS:
         raise _error(
-            400,
+            422,
             "invalid_request_error",
             f"Question is longer than {MAX_QUESTION_CHARS} characters",
         )
     if question.type not in _TYPES:
         raise _error(
-            400, "api_usage_error", f'Question "{name}" has unknown type "{question.type}"'
+            422, "api_usage_error", f'Question "{name}" has unknown type "{question.type}"'
         )
     criteria = question.criteria
     if question.type == "noul":
@@ -78,25 +79,34 @@ def _validate(name: str, question: QuestionIn) -> None:
             not isinstance(criteria, dict) or set(criteria) - {"true", "false"}
         ):
             raise _error(
-                400,
+                422,
                 "invalid_request_error",
                 f'Noul "{name}" criteria may only have "true" and "false"',
             )
     elif question.type == "choice":
         if not isinstance(criteria, dict) or not criteria:
             raise _error(
-                400, "invalid_request_error", f'Choice "{name}" needs criteria naming its options'
+                422, "invalid_request_error", f'Choice "{name}" needs criteria naming its options'
             )
         if len(criteria) > MAX_CHOICES:
             raise _error(
-                400, "invalid_request_error", f'Choice "{name}" has more than {MAX_CHOICES} options'
+                422, "invalid_request_error", f'Choice "{name}" has more than {MAX_CHOICES} options'
             )
     elif not isinstance(criteria, list) or not 1 <= len(criteria) <= MAX_SCORE_LEVELS:
         raise _error(
-            400,
+            422,
             "invalid_request_error",
             f'Score "{name}" needs 1 to {MAX_SCORE_LEVELS} criteria levels',
         )
+    if criteria is not None:
+        entries = criteria.items() if isinstance(criteria, dict) else enumerate(criteria)
+        for key, value in entries:
+            if value is not None and not isinstance(value, (str, dict, list)):
+                raise _error(
+                    422,
+                    "invalid_request_error",
+                    f'Question "{name}" criteria[{key!r}] must be text, an object, an array or null',
+                )
 
 
 @router.post("/systemone")
@@ -136,10 +146,10 @@ def system_one(
     )
     if state_chars > MAX_STATE_CHARS:
         raise _error(
-            400, "invalid_request_error", f"State is longer than {MAX_STATE_CHARS} characters"
+            422, "invalid_request_error", f"State is longer than {MAX_STATE_CHARS} characters"
         )
     if len(payload.questions) > MAX_QUESTIONS:
-        raise _error(400, "invalid_request_error", f"At most {MAX_QUESTIONS} questions per request")
+        raise _error(422, "invalid_request_error", f"At most {MAX_QUESTIONS} questions per request")
     for name, question in payload.questions.items():
         _validate(name, question)
 
@@ -149,5 +159,10 @@ def system_one(
     except laya_runtime.Unavailable as exc:
         raise _error(exc.status, exc.error_type, exc.message, exc.retry_after) from None
     if result.pop("truncated"):
-        raise _error(422, "invalid_request_error", "State exceeds the Laya context window")
-    return JSONResponse(result)
+        raise _error(
+            422,
+            "invalid_request_error",
+            "State and questions exceed the Laya context window. "
+            "Shorten the state or use fewer/shorter criteria.",
+        )
+    return JSONResponse(result, headers = {"x-typesafe-request-id": str(uuid4())})
