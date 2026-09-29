@@ -9,7 +9,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from ..device_type import DEVICE_TYPE_TORCH
+from ..device_type import DEVICE_TYPE_TORCH, clean_gpu_cache
 import hashlib
 import importlib
 import os
@@ -1204,7 +1204,7 @@ def _offline_quantize_to_fp8(
         model.save_pretrained(new_model_name, safe_serialization = False)
         del model
         for _ in range(2):
-            torch.cuda.empty_cache()
+            clean_gpu_cache()
             gc.collect()
         tokenizer.save_pretrained(new_model_name)
     return new_model_name
@@ -2933,10 +2933,7 @@ def _offline_aware_load(fn):
         # Retry OUTSIDE the except so the failed attempt's traceback (a partial model) is freed before reallocating, else a large VLM can OOM on the second load.
         try:
             gc.collect()
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-            if hasattr(torch, "xpu") and torch.xpu.is_available():
-                torch.xpu.empty_cache()
+            clean_gpu_cache()
         except Exception:
             pass
         # A failed attempt may have left HF progress bars disabled; restore before retry.

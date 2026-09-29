@@ -187,6 +187,8 @@ def test_model_call_sites_use_shared_cache_dispatch():
     gemma_source = (REPO_ROOT / "unsloth" / "models" / "gemma.py").read_text(encoding = "utf-8")
     gemma2_source = (REPO_ROOT / "unsloth" / "models" / "gemma2.py").read_text(encoding = "utf-8")
     granite_source = (REPO_ROOT / "unsloth" / "models" / "granite.py").read_text(encoding = "utf-8")
+    loader_utils_source = (REPO_ROOT / "unsloth" / "models" / "loader_utils.py").read_text(encoding = "utf-8")
+    q_galore_source = (REPO_ROOT / "unsloth" / "optimizers" / "q_galore_adamw.py").read_text(encoding = "utf-8")
 
     assert "torch.xpu.empty_cache()" not in llama_source
     assert "torch.xpu.empty_cache()" not in vision_source
@@ -202,6 +204,14 @@ def test_model_call_sites_use_shared_cache_dispatch():
     assert "clean_gpu_cache()" in gemma2_source
     assert "torch.cuda.empty_cache()" not in granite_source
     assert "clean_gpu_cache()" in granite_source
+    # The retry after a failed load flushes before reallocating, else the half-built model and its
+    # replacement are resident at once; keying that flush off cuda alone made it a no-op on XPU and NPU.
+    assert "torch.cuda.empty_cache()" not in loader_utils_source
+    assert "torch.xpu.empty_cache()" not in loader_utils_source
+    assert "clean_gpu_cache()" in loader_utils_source
+    # Same shape in the optimizer's step: the fence after the update is skipped when only cuda is asked.
+    assert "torch.cuda.synchronize()" not in q_galore_source
+    assert "device_synchronize()" in q_galore_source
 
 
 NPU_PROPERTIES = types.SimpleNamespace(
