@@ -94,6 +94,8 @@ def test_slot_pidfiles_do_not_overwrite_or_remove_each_other(monkeypatch, tmp_pa
     assert base.exists()
     assert not (tmp_path / "llama-voice.pid").exists()
     visited = []
-    monkeypatch.setattr(LlamaCppBackend, "_reap_pidfile", classmethod(lambda cls, path: visited.append(path) or 0))
+    monkeypatch.setattr(
+        LlamaCppBackend, "_reap_pidfile", classmethod(lambda cls, path: visited.append(path) or 0)
+    )
     LlamaCppBackend._reap_recorded_pid()
     assert visited == [base]

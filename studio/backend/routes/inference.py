@@ -19584,7 +19584,6 @@ async def voice_load_model(
     request: _VoiceLoadRequest, current_subject: str = Depends(get_current_subject)
 ):
     from core.inference.llama_keepwarm import inference_lifecycle_gate
-
     async with inference_lifecycle_gate():
         _raise_if_sidecar_swap_in_progress()
         account_access.require_live_account()
@@ -19782,7 +19781,6 @@ async def _voice_load_model_impl(request: _VoiceLoadRequest, current_subject: st
 async def voice_unload_model(current_subject: str = Depends(get_current_subject)):
     """Unload only a voice the caller controls, after earlier mutations settle."""
     from core.inference.llama_keepwarm import inference_lifecycle_gate
-
     async with inference_lifecycle_gate():
         backend = get_voice_llama_backend()
         account_access.require_resident_control(

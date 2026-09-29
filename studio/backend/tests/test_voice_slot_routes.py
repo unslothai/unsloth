@@ -48,7 +48,9 @@ def test_voice_unload_waits_for_load_and_clears_its_residency(monkeypatch, voice
             return {"status": "loaded"}
 
         monkeypatch.setattr(routes, "_voice_load_model_impl", load)
-        loading = asyncio.create_task(routes.voice_load_model(routes._VoiceLoadRequest(model_path = "org/voice"), "owner"))
+        loading = asyncio.create_task(
+            routes.voice_load_model(routes._VoiceLoadRequest(model_path = "org/voice"), "owner")
+        )
         await started.wait()
         unloading = asyncio.create_task(routes.voice_unload_model("owner"))
         await asyncio.sleep(0.04)
@@ -77,7 +79,9 @@ def test_cancelled_voice_load_drains_worker_before_freeing_the_slot(monkeypatch,
             return {"status": "loaded"}
 
         monkeypatch.setattr(routes, "_voice_load_model_impl", load)
-        loading = asyncio.create_task(routes.voice_load_model(routes._VoiceLoadRequest(model_path = "org/voice"), "owner"))
+        loading = asyncio.create_task(
+            routes.voice_load_model(routes._VoiceLoadRequest(model_path = "org/voice"), "owner")
+        )
         await started.wait()
         loading.cancel()
         await asyncio.sleep(0.02)
@@ -105,7 +109,11 @@ def test_foreign_resident_cannot_be_replaced_or_unloaded(monkeypatch, voice, ope
     monkeypatch.setattr(routes.account_access, "require_resident_control", deny)
     request = routes._VoiceLoadRequest(model_path = "public/other")
     with pytest.raises(HTTPException) as error:
-        asyncio.run(routes.voice_load_model(request, "other") if operation == "load" else routes.voice_unload_model("other"))
+        asyncio.run(
+            routes.voice_load_model(request, "other")
+            if operation == "load"
+            else routes.voice_unload_model("other")
+        )
     assert error.value.status_code == 404
     assert events == []
     assert backend.is_loaded
@@ -132,6 +140,10 @@ def test_stream_refuses_foreign_voice_before_opening_a_monitor_row(monkeypatch, 
 
     monkeypatch.setattr(routes.account_access, "require_resident_control", deny)
     with pytest.raises(HTTPException) as error:
-        asyncio.run(routes.openai_audio_speech_stream(routes.AudioSpeechRequest(input = "hello"), None, "other"))
+        asyncio.run(
+            routes.openai_audio_speech_stream(
+                routes.AudioSpeechRequest(input = "hello"), None, "other"
+            )
+        )
     assert error.value.status_code == 404
     assert events == []

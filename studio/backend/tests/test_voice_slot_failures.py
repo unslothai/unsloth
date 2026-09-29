@@ -16,10 +16,15 @@ import core.inference.llama_cpp as llama
 from utils.models import ModelConfig
 
 
-@pytest.mark.parametrize("failure,status", [("exception", 500), ("false", 500), ("wrong_type", 400)])
+@pytest.mark.parametrize(
+    "failure,status", [("exception", 500), ("false", 500), ("wrong_type", 400)]
+)
 def test_failed_voice_initialization_unloads_process(monkeypatch, failure, status):
     backend = SimpleNamespace(
-        is_loaded = False, model_identifier = None, _is_audio = False, _audio_type = None,
+        is_loaded = False,
+        model_identifier = None,
+        _is_audio = False,
+        _audio_type = None,
         unload_model = Mock(),
     )
 
@@ -30,8 +35,12 @@ def test_failed_voice_initialization_unloads_process(monkeypatch, failure, statu
 
     backend.load_model = load
     config = SimpleNamespace(
-        is_gguf = True, identifier = "org/voice", gguf_variant = "Q4_K_M",
-        gguf_hf_repo = "org/voice", gguf_file = None, base_model = None,
+        is_gguf = True,
+        identifier = "org/voice",
+        gguf_variant = "Q4_K_M",
+        gguf_hf_repo = "org/voice",
+        gguf_file = None,
+        base_model = None,
     )
 
     async def placement(*args):
@@ -44,6 +53,8 @@ def test_failed_voice_initialization_unloads_process(monkeypatch, failure, statu
     monkeypatch.setattr(routes, "_prepare_load_placement", placement)
     monkeypatch.setattr(routes, "_offline_guarded", lambda *a, **kw: None)
     with pytest.raises(HTTPException) as error:
-        asyncio.run(routes._voice_load_model_impl(routes._VoiceLoadRequest(model_path = "org/voice"), "owner"))
+        asyncio.run(
+            routes._voice_load_model_impl(routes._VoiceLoadRequest(model_path = "org/voice"), "owner")
+        )
     assert error.value.status_code == status
     backend.unload_model.assert_called_once_with()

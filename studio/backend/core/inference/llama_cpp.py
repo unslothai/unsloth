@@ -39898,7 +39898,9 @@ class LlamaCppBackend:
         with LlamaCppBackend._codec_owner_lock:
             if LlamaCppBackend._codec_mgr is None:
                 LlamaCppBackend._codec_mgr = AudioCodecManager()
-            LlamaCppBackend._codec_mgr.load_codec(audio_type, device, model_repo_path = model_repo_path)
+            LlamaCppBackend._codec_mgr.load_codec(
+                audio_type, device, model_repo_path = model_repo_path
+            )
             self._claim_audio_codec()
         logger.info(f"Loaded audio codec for GGUF TTS: {audio_type}")
 
