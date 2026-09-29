@@ -635,3 +635,12 @@ def test_balanced_placement_caps_earlier_cards_like_get_balanced_memory(zoo, siz
 def test_an_explicit_map_offloading_only_non_expert_modules_keeps_packed(zoo, sizes, key, packed):
     device_map = {"": 0, key: "cpu"} if key else {"": "cpu"}
     assert _helper()("mxfp4", False, device_map, "openai/gpt-oss-20b") is packed
+
+
+def test_a_previous_load_offload_flag_does_not_decide_this_load(zoo, sizes):
+    # zoo only clears _LOAD_OFFLOADS once the next load validates, after this pre-load decision.
+    module = sys.modules[ZOO_MXFP4]
+    module._LOAD_OFFLOADS = [True]
+    module.keep_mxfp4_experts_packed = lambda: not module._LOAD_OFFLOADS[0]
+    sizes["checkpoint"], sizes["free"] = 13, [80]
+    assert _helper()("mxfp4", False, "auto", "openai/gpt-oss-20b") is True

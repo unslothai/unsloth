@@ -1418,9 +1418,16 @@ def _mxfp4_lora_keeps_experts_packed(
     if isinstance(device_map, str) and device_map.split(":")[0] in ("cpu", "disk"):
         return False
     try:
+        import sys
         from unsloth_zoo.temporary_patches.mxfp4 import keep_mxfp4_experts_packed
+        zoo_mxfp4 = sys.modules["unsloth_zoo.temporary_patches.mxfp4"]
     except Exception:
         return False
+    # zoo's offload flag belongs to the previous load (it clears it only once this load validates);
+    # this load's offload is judged above and below.
+    offloads = getattr(zoo_mxfp4, "_LOAD_OFFLOADS", None)
+    if isinstance(offloads, list) and offloads:
+        offloads[0] = False
     try:
         if not keep_mxfp4_experts_packed():
             return False
