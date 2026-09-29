@@ -4,24 +4,24 @@
 import { Progress } from "@/components/ui/progress";
 import { Spinner } from "@/components/ui/spinner";
 import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 
 type ModelLoadDescriptionProps = {
   title?: string | null;
   message?: string | null;
   progressPercent?: number | null;
   progressLabel?: string | null;
+  // Extra classes for the root row (e.g. a titleless caller dropping min-h-12).
+  className?: string;
 };
 
 function clampProgress(value: number): number {
   return Math.max(0, Math.min(100, value));
 }
 
-/**
- * Split a composed progress label like "22.8 of 122.3 GB • 330.1 MB/s • 5m 9s
- * left" into a primary chunk (next to the percent) and a secondary chunk (its
- * own row), so neither line wraps raggedly once rate/ETA appears mid-download.
- * Labels without " • " return primary-only, so the secondary row doesn't render.
- */
+/** Split a composed progress label into a primary chunk, next to the percent, and a secondary chunk
+ *  on its own row, so neither line wraps raggedly once rate and ETA appear mid-download. Labels
+ *  without the separator return primary-only, so the secondary row does not render. */
 function splitProgressLabel(
   label: string | null | undefined,
 ): { primary: string; secondary: string } {
@@ -39,6 +39,7 @@ export function ModelLoadDescription({
   message,
   progressPercent,
   progressLabel,
+  className,
 }: ModelLoadDescriptionProps) {
   const hasProgress = typeof progressPercent === "number";
   // Split once at the top so the JSX below stays flat (no IIFE).
@@ -46,8 +47,10 @@ export function ModelLoadDescription({
     splitProgressLabel(progressLabel);
 
   return (
-    <div className="relative flex w-full items-center gap-3">
-      <Spinner className="size-3.5 shrink-0 text-muted-foreground" />
+    <div className={cn("relative flex min-h-12 w-full items-stretch gap-2", className)}>
+      <div className="flex h-full shrink-0 items-center self-center">
+        <Spinner className="size-3.5 text-muted-foreground" />
+      </div>
       <div className="flex min-w-0 flex-1 flex-col justify-center">
         {title ? <p className="text-foreground leading-tight font-semibold">{title}</p> : null}
         {hasProgress ? (
@@ -65,7 +68,7 @@ export function ModelLoadDescription({
             ) : null}
             <Progress
               value={clampProgress(progressPercent)}
-              className="mt-1 h-1 bg-foreground/[0.08]"
+              className="mt-1 h-1 bg-[color-mix(in_oklab,var(--foreground)_calc(8%*var(--contrast-wash-gain,1)),transparent)]"
             />
           </div>
         ) : message ? (
@@ -94,15 +97,15 @@ export function ModelLoadInlineStatus({
   const hasProgress = typeof progressPercent === "number";
 
   return (
-    <div className="flex min-w-[20rem] items-center gap-2.5 text-muted-foreground" title={title}>
+    <div className="flex min-w-[min(calc(20rem*var(--ui-space-scale,1)),100%)] max-sm:min-w-0 max-sm:flex-1 items-center gap-2.5 text-muted-foreground" title={title}>
       <div className="flex items-center gap-1.5 shrink-0">
         <Spinner className="size-3.5 shrink-0" />
         <span className="text-xs">{label}</span>
       </div>
       {hasProgress ? (
         <div className="flex min-w-0 flex-[1.35] items-center gap-2.5">
-          <div className="min-w-[7rem] flex-1">
-            <Progress value={clampProgress(progressPercent)} className="h-1 bg-foreground/[0.08]" />
+          <div className="min-w-[calc(7rem*var(--ui-space-scale,1))] max-sm:min-w-[calc(3rem*var(--ui-space-scale,1))] flex-1">
+            <Progress value={clampProgress(progressPercent)} className="h-1 bg-[color-mix(in_oklab,var(--foreground)_calc(8%*var(--contrast-wash-gain,1)),transparent)]" />
           </div>
           <div
             className="flex shrink-0 items-center gap-1 text-ui-10 font-medium tracking-[0.08em] text-muted-foreground/80"

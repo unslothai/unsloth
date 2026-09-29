@@ -14,7 +14,7 @@ and already-clean names untouched.
 from __future__ import annotations
 
 import os
-from typing import Optional
+from typing import Iterable, Optional
 
 _GGUF_SUFFIX = ".gguf"
 
@@ -32,7 +32,7 @@ def _looks_like_path(identifier: str) -> bool:
         return True
     if identifier.startswith(("/", "\\", "./", "../", ".\\", "..\\", "~")):
         return True
-    if len(identifier) >= 2 and identifier[1] == ":":  # Windows drive, e.g. C:\
+    if len(identifier) >= 2 and identifier[1] == ":":
         return True
     if identifier.count("/") >= 2 or "\\" in identifier:
         return True
@@ -79,6 +79,34 @@ def public_model_id(identifier: Optional[str]) -> Optional[str]:
     return name or identifier
 
 
+def _is_hub_repo_id(identifier: str) -> bool:
+    """``org/name``, including Hub repos named ``org/name.gguf``. A file reference
+    carries a repo id plus a filename, so two or more slashes."""
+    if identifier.count("/") != 1:
+        return False
+    stem = (
+        identifier[: -len(_GGUF_SUFFIX)]
+        if identifier.lower().endswith(_GGUF_SUFFIX)
+        else identifier
+    )
+    return not _looks_like_path(stem)
+
+
+def display_model_name(identifier: Optional[str]) -> Optional[str]:
+    """The short label a UI should show for *identifier*.
+
+    Trailing segment of the public id, so a HF cache snapshot reads as ``X-GGUF`` and
+    not its commit sha. Splitting the raw identifier instead leaks the host layout on
+    Windows, where ``C:\\Users\\...`` has no ``/`` to split on.
+    """
+    if not identifier:
+        return identifier
+    if _is_hub_repo_id(identifier):
+        return identifier.split("/")[1]
+    clean = public_model_id(identifier)
+    return clean.rsplit("/", 1)[-1] or clean
+
+
 def model_id_matches(requested: Optional[str], internal: Optional[str]) -> bool:
     """Whether a client-supplied *requested* id refers to *internal*.
 
@@ -91,3 +119,40 @@ def model_id_matches(requested: Optional[str], internal: Optional[str]) -> bool:
     if requested == internal:
         return True
     return public_model_id(internal) == requested
+
+
+# Mirror Zoo’s MLX repository substitution without importing the ML stack.
+_BNB_SUFFIXES = ("-unsloth-bnb-4bit", "-bnb-4bit")
+
+
+def mlx_bnb_base_repo(model_name: Optional[str]) -> Optional[str]:
+    """Return the replacement base repository, or None."""
+    if not isinstance(model_name, str) or not model_name.startswith("unsloth/"):
+        return None
+    if os.path.exists(model_name):
+        return None
+    for suffix in _BNB_SUFFIXES:
+        if model_name.endswith(suffix):
+            return model_name[: -len(suffix)]
+    return None
+
+
+def mlx_host_bnb_base_repo(model_name: Optional[str]) -> Optional[str]:
+    """Return the MLX replacement, excluding diffusion models."""
+    import utils.hardware.hardware as hw
+    from core.inference.diffusion_families import detect_family
+
+    if hw.get_device() != hw.DeviceType.MLX:
+        return None
+    if not isinstance(model_name, str) or detect_family(model_name) is not None:
+        return None
+    return mlx_bnb_base_repo(model_name)
+
+
+def mlx_bnb_substitutions(repos: Iterable[str]) -> list[tuple[str, str]]:
+    swaps = []
+    for repo in repos:
+        base = mlx_bnb_base_repo(repo)
+        if base:
+            swaps.append((repo, base))
+    return swaps

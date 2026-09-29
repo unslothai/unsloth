@@ -22,7 +22,13 @@ from routes.inference import _validate_native_mtp_drafter
 from routes.inference import _loaded_is_local_model
 from routes.inference import _mtp_draft_for_path
 from routes.inference import _native_gguf_companion_usable
-from utils.models.model_config import _local_gguf_companion_search_root, detect_mtp_file
+from routes.inference import _native_mmproj_accept
+from utils.models.model_config import (
+    _local_gguf_companion_search_root,
+    detect_dflash_file,
+    detect_dspark_file,
+    detect_mtp_file,
+)
 from core.inference.llama_cpp import LlamaCppBackend
 from models.inference import LoadRequest
 
@@ -43,6 +49,8 @@ def _request_matches_loaded_settings(
         gguf_file = model_path,
         gguf_mmproj_file = None,
         gguf_mtp_file = draft,
+        gguf_dspark_file = detect_dspark_file(model_path, search_root = root),
+        gguf_dflash_file = detect_dflash_file(model_path, search_root = root),
         is_vision = False,
     )
     intent = _resolve_gguf_load_intent(
@@ -76,11 +84,96 @@ def test_native_companion_allows_model_directory(tmp_path):
     _validate_native_gguf_companion(str(companion), str(weight), "vision companion")
 
 
+@pytest.mark.parametrize("native", [False, True])
+@pytest.mark.parametrize("root_projector", [False, True])
+def test_projector_discovery_admits_before_reading(tmp_path, monkeypatch, native, root_projector):
+    from utils.models import model_config as mc
+
+    weight = tmp_path / "Qwen3.8-27B-Q4_K_M.gguf"
+    weight.write_bytes(b"\0" * 32)
+    assets = tmp_path / "assets"
+    assets.mkdir()
+    outside = assets / "mmproj-Qwen3.8-27B-BF16.gguf"
+    outside.write_bytes(b"\0" * 32)
+    sibling = tmp_path / "mmproj-F16.gguf"
+    if root_projector:
+        sibling.write_bytes(b"\0" * 32)
+
+    reads = []
+    original = mc.read_gguf_general_metadata
+
+    def read(path):
+        reads.append(Path(path).resolve())
+        if native:
+            assert Path(path).resolve() != outside.resolve()
+        return original(path)
+
+    monkeypatch.setattr(mc, "read_gguf_general_metadata", read)
+    config = mc.ModelConfig.from_identifier(
+        str(weight),
+        mmproj_accept = _native_mmproj_accept if native else None,
+    )
+    expected = sibling if native and root_projector else None if native else outside
+    assert config.gguf_mmproj_file == (str(expected.resolve()) if expected else None)
+    assert config.is_vision is (expected is not None)
+    if native:
+        assert outside.resolve() not in reads
+        intent = _resolve_gguf_load_intent(
+            config,
+            LoadRequest(model_path = str(weight)),
+            native_grant_backed = True,
+            chat_template_override = None,
+            extra_args = None,
+            placement = SimpleNamespace(resolved_gpu_ids = None, gpu_ids_are_vulkan_ordinals = False),
+            n_parallel = 1,
+        )
+        assert intent.mmproj_path == config.gguf_mmproj_file
+    else:
+        assert outside.resolve() in reads
+
+
+@pytest.mark.parametrize("directory_link", [False, True])
+def test_native_projector_symlink_rejected_before_header_read(
+    tmp_path, monkeypatch, directory_link
+):
+    from utils.models import model_config as mc
+
+    model_dir = tmp_path / "model"
+    model_dir.mkdir()
+    weight = model_dir / "model.gguf"
+    weight.write_bytes(b"\0" * 32)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    projector = outside / "mmproj-F16.gguf"
+    projector.write_bytes(b"\0" * 32)
+    try:
+        if directory_link:
+            (model_dir / "assets").symlink_to(outside, target_is_directory = True)
+        else:
+            (model_dir / projector.name).symlink_to(projector)
+    except OSError as exc:
+        pytest.skip(f"symlinks unavailable: {exc}")
+
+    original = mc.read_gguf_general_metadata
+
+    def read(path):
+        assert Path(path).resolve() != projector.resolve()
+        return original(path)
+
+    monkeypatch.setattr(mc, "read_gguf_general_metadata", read)
+    assert (
+        mc.detect_mmproj_file(
+            str(weight), accept = lambda candidate: _native_mmproj_accept(candidate, str(weight))
+        )
+        is None
+    )
+
+
 @pytest.mark.parametrize("folder", ["MTP", "mtp", "MtP"])
 def test_native_mtp_companion_allows_mtp_directory(tmp_path, folder):
     weight, companion = _write_pair(tmp_path, folder)
     _validate_native_gguf_companion(
-        str(companion), str(weight), "MTP drafter", allow_mtp_subdir = True
+        str(companion), str(weight), "MTP drafter", allowed_subdirs = ("mtp",)
     )
 
 
@@ -96,7 +189,24 @@ def test_native_mtp_companion_allows_repo_root_mtp_directory(tmp_path):
         str(companion),
         str(weight),
         "MTP drafter",
-        allow_mtp_subdir = True,
+        allowed_subdirs = ("mtp",),
+        mtp_search_root = str(tmp_path),
+    )
+
+
+def test_native_dspark_companion_allows_repo_dspark_directory(tmp_path):
+    quant_dir = tmp_path / "Q4_0"
+    weight, _ = _write_pair(quant_dir)
+    companion_dir = tmp_path / "dspark"
+    companion_dir.mkdir()
+    companion = companion_dir / "dspark-model-Q8_0.gguf"
+    companion.write_bytes(b"draft")
+
+    _validate_native_gguf_companion(
+        str(companion),
+        str(weight),
+        "DSpark drafter",
+        allowed_subdirs = ("dspark",),
         mtp_search_root = str(tmp_path),
     )
 
@@ -114,7 +224,7 @@ def test_native_mtp_companion_rejects_unrelated_search_root(tmp_path):
             str(companion),
             str(weight),
             "MTP drafter",
-            allow_mtp_subdir = True,
+            allowed_subdirs = ("mtp",),
             mtp_search_root = str(tmp_path),
         )
 
@@ -168,7 +278,7 @@ def test_native_companion_rejects_arbitrary_nesting(tmp_path, folder):
     weight, companion = _write_pair(tmp_path, folder)
     with pytest.raises(HTTPException, match = "must live beside") as error:
         _validate_native_gguf_companion(
-            str(companion), str(weight), "MTP drafter", allow_mtp_subdir = True
+            str(companion), str(weight), "MTP drafter", allowed_subdirs = ("mtp",)
         )
     assert error.value.status_code == 400
 
@@ -202,7 +312,7 @@ def test_native_companion_rejects_directory_symlink_escape(tmp_path):
             str(model_dir / "MTP" / companion.name),
             str(weight),
             "MTP drafter",
-            allow_mtp_subdir = True,
+            allowed_subdirs = ("mtp",),
         )
 
 
@@ -374,8 +484,8 @@ def test_status_provenance_survives_deleted_model_directory(tmp_path, monkeypatc
 
 
 def test_native_load_skips_rejected_mtp_candidate_for_next_one(tmp_path):
-    """MTP/ can hold several compatible copies. If the size-preferred one is
-    out of the grant, the next must be tried instead of disabling MTP."""
+    """MTP/ can hold several copies: a preferred one out of the grant must not disable
+    MTP. Both are Q8_0 here, since precision now outranks size."""
     quant_dir = tmp_path / "Q4_0"
     quant_dir.mkdir()
     weight = quant_dir / "model.gguf"
@@ -385,10 +495,10 @@ def test_native_load_skips_rejected_mtp_candidate_for_next_one(tmp_path):
     companion_dir = tmp_path / "MTP"
     companion_dir.mkdir()
     try:
-        (companion_dir / "mtp-model-Q4_0.gguf").symlink_to(outside)
+        (companion_dir / "mtp-model-Q8_0.gguf").symlink_to(outside)
     except OSError as exc:
         pytest.skip(f"symlinks unavailable: {exc}")
-    larger = companion_dir / "mtp-model-Q8_0.gguf"
+    larger = companion_dir / "mtp-model-Q8_0-00001-of-00001.gguf"
     larger.write_bytes(b"d" * 5000)
 
     def _usable(candidate: str) -> bool:

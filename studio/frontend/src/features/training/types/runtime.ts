@@ -9,17 +9,22 @@ export type TrainingPhase =
   | "loading_dataset"
   | "configuring"
   | "training"
+  // Steps done, worker still saving. Non-terminal: 100% is not success.
+  | "finalizing"
   | "completed"
   | "error"
   | "stopped";
 
 export interface TrainingStatusResponse {
   job_id: string;
+  start_request_id?: string | null;
+  start_request_state?: "pending" | "accepted" | "rejected" | null;
   phase: TrainingPhase;
   is_training_running: boolean;
   eval_enabled: boolean;
   message: string;
   error: string | null;
+  warnings?: string[];
   details?: {
     epoch?: number;
     step?: number;
@@ -28,6 +33,7 @@ export interface TrainingStatusResponse {
     learning_rate?: number;
     // null = explicit clear (run stopped without saving); absent = unchanged.
     output_dir?: string | null;
+    model_download_repo_id?: string | null;
   } | null;
   metric_history?: {
     steps?: number[];
@@ -41,6 +47,7 @@ export interface TrainingStatusResponse {
 }
 
 export interface TrainingMetricsResponse {
+  job_id: string;
   loss_history: number[];
   lr_history: number[];
   step_history: number[];
@@ -61,6 +68,7 @@ export interface TrainingProgressPayload {
   epoch: number | null;
   elapsed_seconds: number | null;
   eta_seconds: number | null;
+  session_start_step?: number | null;
   grad_norm: number | null;
   num_tokens: number | null;
   eval_loss: number | null;
@@ -78,12 +86,16 @@ export interface TrainingRuntimeState {
   evalEnabled: boolean;
   message: string;
   error: string | null;
+  warnings: string[];
   isHydrating: boolean;
   hasHydrated: boolean;
   isStarting: boolean;
+  startRequestId: string | null;
   startError: string | null;
   startModelName: string | null;
+  modelDownloadRepoId: string | null;
   startDatasetName: string | null;
+  startHfToken: string | null;
   startProjectName: string | null;
   startFromResume: boolean;
   sseConnected: boolean;
@@ -98,6 +110,7 @@ export interface TrainingRuntimeState {
   progressPercent: number;
   elapsedSeconds: number | null;
   etaSeconds: number | null;
+  sessionStartStep: number;
   currentGradNorm: number | null;
   currentNumTokens: number | null;
   outputDir: string | null;
@@ -108,8 +121,7 @@ export interface TrainingRuntimeState {
   resetGeneration: number;
   stopRequested: boolean;
   selectedHistoryRunId: string | null;
-  // True while the studio "Current Run" tab is the active view, so the sidebar
-  // can highlight which run row the current run refers to (the active job).
+  // True while the studio "Current Run" tab is the active view, so the sidebar can highlight it.
   currentRunViewActive: boolean;
 }
 
@@ -117,6 +129,7 @@ export interface TrainingRuntimeActions {
   setStopRequested: (value: boolean) => void;
   setHydrating: (value: boolean) => void;
   setHasHydrated: (value: boolean) => void;
+  tryBeginStarting: (startRequestId: string) => boolean;
   setStarting: (value: boolean) => void;
   setStartError: (value: string | null) => void;
   setStartResources: (
@@ -124,6 +137,7 @@ export interface TrainingRuntimeActions {
     datasetName: string | null,
     fromResume?: boolean,
     projectName?: string | null,
+    hfToken?: string | null,
   ) => void;
   setSseConnected: (value: boolean) => void;
   setLastEventId: (value: number | null) => void;
@@ -131,16 +145,20 @@ export interface TrainingRuntimeActions {
   applyStatus: (payload: TrainingStatusResponse) => void;
   applyMetrics: (payload: TrainingMetricsResponse) => void;
   applyProgress: (payload: TrainingProgressPayload, eventId?: number) => void;
-  setStartQueued: (jobId: string, message: string) => void;
+  setStartPending: (
+    jobId: string | null,
+    message: string,
+    startRequestId?: string | null,
+  ) => void;
   setRuntimeError: (message: string) => void;
   setSelectedHistoryRunId: (id: string | null) => void;
   setCurrentRunViewActive: (value: boolean) => void;
 }
 
-export type TrainingRuntimeStore = TrainingRuntimeState & TrainingRuntimeActions;
+export type TrainingRuntimeStore = TrainingRuntimeState &
+  TrainingRuntimeActions;
 
 export interface TrainingViewData {
-  // Current metrics (for ProgressSection)
   phase: TrainingPhase;
   currentStep: number;
   totalSteps: number;
@@ -150,23 +168,22 @@ export interface TrainingViewData {
   currentEpoch: number | null;
   currentNumTokens: number | null;
   outputDir: string | null;
-  // True when a newer run reused this run's output_dir (resume), so its
-  // on-disk contents no longer match this (older) run's metrics.
+  // True when a newer run reused this run's output_dir (resume), so its on-disk contents differ.
   resumedLater?: boolean;
   progressPercent: number;
   elapsedSeconds: number | null;
   etaSeconds: number | null;
+  sessionStartStep?: number;
   evalEnabled: boolean;
   message: string;
   error: string | null;
+  warnings: string[];
   isTrainingRunning: boolean;
 
-  // Config summary
   modelName: string;
   projectName: string | null;
   trainingMethod: string;
 
-  // Time-series (for ChartsSection)
   lossHistory: TrainingSeriesPoint[];
   lrHistory: TrainingSeriesPoint[];
   gradNormHistory: TrainingSeriesPoint[];

@@ -7,6 +7,9 @@
 ; Local patches:
 ; - UNSLOTH_PATCH_START: non-WiX newer/unknown upgrades install in place.
 ; - UNSLOTH_PATCH_START: guard non-WiX upgrade leave routing.
+; - Signed plugin directory, via both the pinned bundler's NSISPLUGINS env var
+;   and 2.9.3's signed_plugins_path. Drop the env var form once the CLI is
+;   upgraded past tauri-apps/tauri#15422.
 
 Unicode true
 ManifestDPIAware true
@@ -22,6 +25,17 @@ ManifestDPIAwareness PerMonitorV2
   ; Set the compression algorithm. We default to LZMA.
   SetCompressor /SOLID "{{compression}}"
 !endif
+
+; Signed NSIS plugins, or NSISdl/System/StartMenu/nsDialogs run unsigned from
+; $PLUGINSDIR and trip AV. Must precede any plugin use; a missing directory is a
+; silent no-op. Both forms are here on purpose: the pinned bundler (2.8.1) only
+; exports the NSISPLUGINS env var, and tauri-apps/tauri#15422 replaced it with
+; signed_plugins_path in 2.9.3. Whichever is absent expands to nothing, so this
+; keeps working across that upgrade instead of silently shipping unsigned DLLs.
+!addplugindir "$%NSISPLUGINS%\x86-unicode"
+{{#if signed_plugins_path}}
+!addplugindir "{{signed_plugins_path}}"
+{{/if}}
 
 !include MUI2.nsh
 !include FileFunc.nsh
@@ -94,6 +108,11 @@ InstallDir "${PLACEHOLDER_INSTALL_DIR}"
 VIProductVersion "${VERSIONWITHBUILD}"
 VIAddVersionKey "ProductName" "${PRODUCTNAME}"
 VIAddVersionKey "FileDescription" "${PRODUCTNAME}"
+; Not in upstream's template. ${MANUFACTURER} is bundle.publisher, already written
+; as the Add/Remove Programs Publisher, so these cannot be empty or disagree with
+; it. An installer with no CompanyName reads as unattributed to reputation checks.
+VIAddVersionKey "CompanyName" "${MANUFACTURER}"
+VIAddVersionKey "InternalName" "${INSTALLIDENTITY}"
 VIAddVersionKey "LegalCopyright" "${COPYRIGHT}"
 VIAddVersionKey "FileVersion" "${VERSION}"
 VIAddVersionKey "ProductVersion" "${VERSION}"

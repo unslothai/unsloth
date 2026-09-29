@@ -15,9 +15,9 @@ if _BACKEND_DIR not in sys.path:
 
 from core.inference import llama_cpp
 from core.inference.llama_cpp import GgufLoadIntent
+from hub.schemas.datasets import AiAssistMappingRequest
+from hub.services.datasets import formatting as dataset_formatting
 from hub.utils import llm_assist as hub_assist
-from models.datasets import AiAssistMappingRequest
-from routes import datasets as datasets_route
 from routes import settings as settings_route
 from utils import helper_precache_settings
 from utils.datasets import llm_assist as dataset_assist
@@ -86,9 +86,9 @@ def test_main_startup_uses_helper_precache_gate_instead_of_unconditional_precach
     assert "threading.Thread(target = _precache" not in startup_section
 
 
-def test_ai_assist_route_still_calls_on_demand_advisor(monkeypatch):
+def test_ai_assist_service_still_calls_on_demand_advisor(monkeypatch):
     calls: list[dict] = []
-    llm_assist = types.ModuleType("utils.datasets.llm_assist")
+    llm_assist = types.ModuleType("hub.utils.llm_assist")
 
     def fake_llm_conversion_advisor(**kwargs):
         calls.append(kwargs)
@@ -102,18 +102,17 @@ def test_ai_assist_route_still_calls_on_demand_advisor(monkeypatch):
         }
 
     llm_assist.llm_conversion_advisor = fake_llm_conversion_advisor
-    monkeypatch.setitem(sys.modules, "utils.datasets.llm_assist", llm_assist)
+    monkeypatch.setitem(sys.modules, "hub.utils.llm_assist", llm_assist)
 
-    response = datasets_route.ai_assist_mapping(
+    response = dataset_formatting.ai_assist_mapping_response(
         AiAssistMappingRequest(
             columns = ["prompt", "answer"],
             samples = [{"prompt": "x" * 250, "answer": "ok", "extra": "ignored"}],
             dataset_name = "owner/dataset",
-            hf_token = "hf_test",
             model_name = "unsloth/test",
             model_type = "text",
         ),
-        current_subject = "test-user",
+        hf_token = "hf_test",
     )
 
     assert response.success is True

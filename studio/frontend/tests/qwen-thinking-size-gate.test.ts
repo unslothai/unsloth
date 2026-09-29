@@ -89,7 +89,7 @@ test("all four copies of the gate pattern stay in sync", () => {
       /const sizeRe = \/(.+?)\/;/,
     ),
     read("../../backend/core/inference/llama_cpp.py").match(
-      /size_re = r"(.+?)"\n/,
+      /size_re = r"(.+?)"\r?\n/,
     ),
   ];
   for (const found of patterns) assert.ok(found, "size gate pattern not found");

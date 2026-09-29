@@ -20,11 +20,15 @@ from picker.service import (
 def test_iter_ggufs_skips_gguf_companions(tmp_path):
     mtp_dir = tmp_path / "MTP"
     mtp_dir.mkdir()
+    dspark_dir = tmp_path / "dspark"
+    dspark_dir.mkdir()
     main = tmp_path / "model-Q8_0.gguf"
     main.write_bytes(b"")
     (tmp_path / "mmproj-F16.gguf").write_bytes(b"")
     (tmp_path / "mtp-model-Q8_0.gguf").write_bytes(b"")
     (mtp_dir / "model-Q8_0-MTP.gguf").write_bytes(b"")
+    # A DSpark drafter has its own chat template; probing it reads the wrong one.
+    (dspark_dir / "dspark-model-Q8_0.gguf").write_bytes(b"")
     (tmp_path / "model-Q8_0-be.gguf").write_bytes(b"")
 
     assert _iter_ggufs(tmp_path) == [main]
