@@ -184,6 +184,8 @@ def test_hf_device_error(monkeypatch, device, ok):
 
 
 def test_hflm_4bit_passes_a_quantization_config_not_load_in_4bit():
+    # transformers without torch cannot build BitsAndBytesConfig (macOS runners)
+    pytest.importorskip("torch")
     pytest.importorskip("transformers")
     from transformers import BitsAndBytesConfig
 
