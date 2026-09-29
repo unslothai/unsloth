@@ -294,6 +294,38 @@ def test_lora_ga_preprocess_sees_the_dense_base(ckpt, monkeypatch):
     assert torch.isfinite(out).all()
 
 
+def test_corda_preprocess_sees_the_dense_base(ckpt, monkeypatch):
+    # preprocess_corda multiplies each target weight by its input covariance before get_peft_model runs.
+    corda = pytest.importorskip("peft.tuners.lora.corda")
+    from peft import LoraConfig, get_peft_model
+    from peft.tuners.lora.config import CordaConfig
+    from unsloth.models import loader_utils
+
+    monkeypatch.setenv("UNSLOTH_COMPRESSED_TENSORS_FP8_KERNELS", "0")
+    path, kinds = ckpt["qwen3"]
+    model = _load_raw(path, "qwen3")
+    loader_utils._prepare_compressed_tensors_model(model)
+    name = next(n for n, k in kinds.items() if k == "nvfp4")
+    config = LoraConfig(
+        r = 4,
+        target_modules = [name.split(".")[-1]],
+        init_lora_weights = "corda",
+        corda_config = CordaConfig(),
+    )
+    ids = torch.randint(0, 1000, (1, 64), device = "cuda")
+
+    def run_model():
+        # CorDA's covariance hook squeezes a batch of one.
+        for _ in range(4):
+            model(input_ids = torch.randint(0, 1000, (1, 64), device = "cuda"))
+
+    corda.preprocess_corda(model, config, run_model = run_model)
+    assert _module(model, name).weight.dtype == torch.bfloat16
+    model = get_peft_model(model, config)
+    out = model(input_ids = ids).logits
+    assert torch.isfinite(out).all()
+
+
 def test_decompressed_layers_join_a_missing_ignore_list(ckpt, monkeypatch):
     from unsloth.models import loader_utils
 

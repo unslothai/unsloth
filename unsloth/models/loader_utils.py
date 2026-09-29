@@ -1785,21 +1785,23 @@ def _patch_peft_for_routed_compressed_tensors():
         patched_init = functools.wraps(original)(patched_init)
         patched_init._unsloth_routed = True
         setattr(lora_layer.LoraLayer, init, patched_init)
-    try:
-        from peft.tuners.lora import loraga
-    except Exception:
-        loraga = None
-    targets = getattr(loraga, "get_target_modules", None)
-    if targets is not None and not getattr(targets, "_unsloth_routed", False):
+    # LoRA-GA / CorDA preprocessing reads each target's weight (or enables its grad) before get_peft_model.
+    for module_name, attr in (("loraga", "get_target_modules"), ("corda", "target_modules")):
+        try:
+            owner = importlib.import_module("peft.tuners.lora." + module_name)
+        except Exception:
+            continue
+        targets = getattr(owner, attr, None)
+        if targets is None or getattr(targets, "_unsloth_routed", False):
+            continue
 
-        @functools.wraps(targets)
-        def patched_targets(*args, **kwargs):
-            # preprocess_loraga turns on requires_grad for each target's weight before the adapter exists.
-            for name, module in targets(*args, **kwargs):
+        def patched_targets(*args, _targets = targets, **kwargs):
+            for name, module in _targets(*args, **kwargs):
                 yield name, _dequantize_routed_linear_(module)
 
+        patched_targets = functools.wraps(targets)(patched_targets)
         patched_targets._unsloth_routed = True
-        loraga.get_target_modules = patched_targets
+        setattr(owner, attr, patched_targets)
     try:
         from peft.tuners.lora import dora
     except Exception:
