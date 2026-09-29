@@ -1834,7 +1834,12 @@ def _video_group_hooked(module: Any) -> bool:
     return False
 
 
-def _video_offload_vram_floor_mib(pipe: Any, plan: Any, *, applied: bool = False) -> Optional[int]:
+def _video_offload_vram_floor_mib(
+    pipe: Any,
+    plan: Any,
+    *,
+    applied: bool = False,
+) -> Optional[int]:
     """MiB of weights co-resident on the device under ``plan``'s tier, from the loaded modules; None if not offloaded.
     ``applied`` reads which modules the hooks actually stream: an encoder that refused leaf offload stays resident."""
     policy = getattr(plan, "offload_policy", OFFLOAD_NONE)
@@ -6067,7 +6072,11 @@ class VideoBackend:
                 placement_device = target.torch_device,
                 logger = logger,
             )
-            if offload_policy == plan.offload_policy and vram_floor_mib is not None and free_mib is not None:
+            if (
+                offload_policy == plan.offload_policy
+                and vram_floor_mib is not None
+                and free_mib is not None
+            ):
                 # An encoder that refused leaf offload is kept resident under the same policy: re-check what landed.
                 applied_floor = _video_offload_vram_floor_mib(pipe, plan, applied = True)
                 if applied_floor is not None and applied_floor > vram_floor_mib:

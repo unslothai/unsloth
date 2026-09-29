@@ -572,7 +572,9 @@ def test_applied_floor_counts_an_encoder_that_refused_leaf_offload():
 
     dit, encoder = _module(10), _module(12)
     dit._diffusers_hook = types.SimpleNamespace(hooks = {"group_offloading": object()})
-    pipe = types.SimpleNamespace(components = {"transformer": dit, "text_encoder": encoder, "vae": _module(3)})
+    pipe = types.SimpleNamespace(
+        components = {"transformer": dit, "text_encoder": encoder, "vae": _module(3)}
+    )
     plan = types.SimpleNamespace(
         offload_policy = "group",
         stream_text_encoders = True,
