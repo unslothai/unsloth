@@ -524,8 +524,13 @@ def hold() -> WorkloadLease | None:
         return None
     path = _leases_dir() / f"{os.getpid()}-{uuid.uuid4().hex}"
     try:
-        path.parent.mkdir(parents = True, exist_ok = True)
-        handle = open(path, "w", encoding = "utf-8")
+        # Under the record lock: a revocation either finished before this or sees the lease.
+        with _transaction():
+            path.parent.mkdir(parents = True, exist_ok = True)
+            handle = open(path, "w", encoding = "utf-8")
+    except ReadGrantError as exc:
+        logger.warning("Could not record an MXC workload for the read grants: %s", exc)
+        return None
     except OSError as exc:
         logger.warning("Could not record an MXC workload for the read grants: %s", exc)
         return None

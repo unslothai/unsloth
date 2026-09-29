@@ -652,12 +652,13 @@ def test_a_launch_holds_the_read_grants_until_its_last_cleanup(
     lease = type("Lease", (), {"release": lambda self: released.append("grants")})()
     monkeypatch.setattr(sandbox_windows_mxc.mxc_policy, "dacl_fallback_enabled", lambda: dacl)
     monkeypatch.setattr(mxc_read_grants, "enabled", lambda: grants)
-    monkeypatch.setattr(mxc_read_grants, "hold", lambda: lease)
-    monkeypatch.setattr(
-        sandbox_windows_mxc.mxc_policy,
-        "build_launch_request",
-        lambda _plan, **_kw: {"policyHash": "sha256:controlled"},
-    )
+    monkeypatch.setattr(mxc_read_grants, "hold", lambda: released.append("hold") or lease)
+
+    def build(_plan, **_kw):
+        released.append("build")
+        return {"policyHash": "sha256:controlled"}
+
+    monkeypatch.setattr(sandbox_windows_mxc.mxc_policy, "build_launch_request", build)
     capability = os_sandbox.SandboxCapability(
         backend = "mxc-processcontainer",
         available = True,
@@ -668,7 +669,25 @@ def test_a_launch_holds_the_read_grants_until_its_last_cleanup(
     prepared = sandbox_windows_mxc.prepare(_plan(tmp_path), capability)
     prepared.cleanup_callbacks.append(lambda: released.append("workload"))
     prepared.cleanup()
-    assert released == (["workload", "grants"] if held else ["workload"])
+    assert released == (["hold", "build", "workload", "grants"] if held else ["build", "workload"])
+
+
+def test_a_launch_that_fails_to_build_gives_its_grant_lease_back(monkeypatch, tmp_path):
+    from core.inference import sandbox_windows_mxc
+
+    released = []
+    lease = type("Lease", (), {"release": lambda self: released.append("grants")})()
+    monkeypatch.setattr(sandbox_windows_mxc.mxc_policy, "dacl_fallback_enabled", lambda: True)
+    monkeypatch.setattr(mxc_read_grants, "enabled", lambda: True)
+    monkeypatch.setattr(mxc_read_grants, "hold", lambda: lease)
+
+    def refuse(_plan, **_kw):
+        raise sandbox_windows_mxc.mxc_policy.MxcPolicyError("controlled refusal")
+
+    monkeypatch.setattr(sandbox_windows_mxc.mxc_policy, "build_launch_request", refuse)
+    with pytest.raises(os_sandbox.SandboxBuildError, match = "controlled refusal"):
+        sandbox_windows_mxc.prepare(_plan(tmp_path), _unavailable())
+    assert released == ["grants"]
 
 
 def test_launch_failure_is_not_replayed(monkeypatch, tmp_path):

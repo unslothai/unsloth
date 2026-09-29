@@ -319,6 +319,20 @@ def test_a_lease_left_by_a_crashed_process_never_blocks_revocation(host, monkeyp
     assert not stale.exists()
 
 
+def test_a_lease_waits_for_a_revocation_already_in_progress(host):
+    import threading
+
+    leases = []
+    with mxc_read_grants._transaction():
+        worker = threading.Thread(target = lambda: leases.append(mxc_read_grants.hold()))
+        worker.start()
+        worker.join(0.5)
+        assert worker.is_alive() and not leases
+    worker.join(10)
+    assert leases and leases[0] is not None
+    leases[0].release()
+
+
 @pytest.mark.skipif(sys.platform != "win32", reason = "Windows refuses to delete a file held open")
 def test_an_open_lease_is_live_until_released(host):
     lease = mxc_read_grants.hold()

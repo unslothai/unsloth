@@ -150,6 +150,12 @@ def capability_snapshot(
 
 def prepare(plan, capability):
     lease, alias_limitations = _workdir_alias(plan)
+    # Before the request is built, so a revocation racing this launch either finishes first or waits.
+    grant_lease = (
+        mxc_read_grants.hold()
+        if mxc_policy.dacl_fallback_enabled() and mxc_read_grants.enabled()
+        else None
+    )
     try:
         request = (
             mxc_policy.build_launch_request(plan, cwd_alias = lease.root)
@@ -159,6 +165,8 @@ def prepare(plan, capability):
     except Exception as exc:
         if lease is not None:
             lease.release()
+        if grant_lease is not None:
+            grant_lease.release()
         raise SandboxBuildError(f"Windows MXC policy construction failed: {exc}") from exc
     launch_limitations = tuple(request.get("launchLimitations", ())) + alias_limitations
     record = _record(
@@ -192,11 +200,9 @@ def prepare(plan, capability):
         execution_record = record,
         launch_limitations = launch_limitations,
     )
-    if mxc_policy.dacl_fallback_enabled() and mxc_read_grants.enabled():
+    if grant_lease is not None:
         # Appended first so it runs last (LIFO): the grants outlive the workload that may use them.
-        grant_lease = mxc_read_grants.hold()
-        if grant_lease is not None:
-            prepared.cleanup_callbacks.append(grant_lease.release)
+        prepared.cleanup_callbacks.append(grant_lease.release)
     if lease is not None:
         # Runs on every exit path, spawned or not; release_runtime drops it first once the workload is gone.
         prepared.cleanup_callbacks.append(lease.release)
