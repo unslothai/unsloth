@@ -2563,8 +2563,7 @@ class TestAnthropicReasoningArgs:
         assert payload.resolved_enable_thinking() is True
 
     def test_budget_tokens_accepted_not_rejected(self):
-        """Claude Code always sends budget_tokens; llama-server has no budget,
-        so it must be ignored rather than 400'd."""
+        """Claude Code always sends budget_tokens; it must parse rather than 400."""
         payload = self._payload(thinking = {"type": "enabled", "budget_tokens": 4096})
         assert payload.thinking.budget_tokens == 4096
         assert payload.resolved_enable_thinking() is True
@@ -2952,6 +2951,105 @@ class TestAnthropicMessagesToolRouting:
         _drive(anthropic_messages(payload, request = self._Request(), current_subject = "t"))
 
         assert captured["seed"] == 3407
+
+    _BUDGET_CASES = [
+        ({"thinking": {"type": "enabled", "budget_tokens": 128}}, 128),
+        ({"thinking": {"type": "adaptive", "budget_tokens": 128}}, 128),
+        ({"thinking": {"type": "enabled"}}, None),
+        ({"thinking": {"type": "enabled", "budget_tokens": 0}}, None),
+        ({"thinking": {"type": "disabled", "budget_tokens": 128}}, None),
+        ({"thinking": {"type": "enabled", "budget_tokens": 128}, "enable_thinking": False}, None),
+        ({"thinking": {"type": "enabled", "budget_tokens": 128}, "reasoning_effort": "none"}, None),
+        ({}, None),
+    ]
+
+    @pytest.mark.parametrize(("fields", "expected"), _BUDGET_CASES)
+    @pytest.mark.parametrize(
+        ("extra", "expected_path"),
+        [
+            ({}, "plain"),
+            ({"enable_tools": True, "permission_mode": "off"}, "tools"),
+        ],
+        ids = ["plain", "server-tools"],
+    )
+    def test_thinking_budget_reaches_internal_anthropic_generation(
+        self, monkeypatch, extra, expected_path, fields, expected
+    ):
+        backend = _mock_backend(monkeypatch)
+
+        _drive(
+            anthropic_messages(
+                _basic_payload(**fields, **extra),
+                request = self._Request(),
+                current_subject = "t",
+            )
+        )
+
+        [(path, kwargs)] = backend.calls
+        assert path == expected_path
+        assert kwargs.get("thinking_budget_tokens") == expected
+
+    @pytest.mark.parametrize(("fields", "expected"), _BUDGET_CASES)
+    @pytest.mark.parametrize("stream", [False, True])
+    def test_thinking_budget_reaches_anthropic_client_tool_passthrough(
+        self, monkeypatch, stream, fields, expected
+    ):
+        import routes.inference as inf_mod
+        from fastapi.responses import JSONResponse
+
+        _mock_backend(monkeypatch)
+        captured = {}
+
+        async def _passthrough(*args, **kwargs):
+            captured.update(kwargs)
+            return JSONResponse({"type": "message", "content": []})
+
+        helper = (
+            "_anthropic_passthrough_stream" if stream else "_anthropic_passthrough_non_streaming"
+        )
+        monkeypatch.setattr(inf_mod, helper, _passthrough)
+        payload = _basic_payload(
+            stream = stream,
+            tools = [{"name": "lookup", "input_schema": {"type": "object"}}],
+            **fields,
+        )
+
+        _drive(anthropic_messages(payload, request = self._Request(), current_subject = "t"))
+
+        assert captured.get("thinking_budget_tokens") == expected
+
+    @pytest.mark.parametrize("budget", [None, 128])
+    @pytest.mark.parametrize("stream", [False, True])
+    def test_passthrough_puts_thinking_budget_on_the_llama_server_body(
+        self, monkeypatch, stream, budget
+    ):
+        import routes.inference as inf_mod
+
+        real_builder = inf_mod._build_passthrough_payload
+        bodies = []
+
+        def _builder(*args, **kwargs):
+            bodies.append(real_builder(*args, **kwargs))
+            raise RuntimeError("body built")
+
+        monkeypatch.setattr(inf_mod, "_build_passthrough_payload", _builder)
+        backend = SimpleNamespace(base_url = "http://llama.test", context_length = 4096)
+        messages = [{"role": "user", "content": "hi"}]
+        common = (messages, [], 0.7, 0.95, 20, 16, "msg_1", "test-model")
+        if stream:
+            coro = inf_mod._anthropic_passthrough_stream(
+                self._Request(), threading.Event(), backend, *common, thinking_budget_tokens = budget
+            )
+        else:
+            coro = inf_mod._anthropic_passthrough_non_streaming(
+                backend, *common, thinking_budget_tokens = budget
+            )
+
+        with pytest.raises(RuntimeError, match = "body built"):
+            _drive(coro)
+
+        [body] = bodies
+        assert body.get("thinking_budget_tokens") == budget
 
     def test_client_tool_catalog_without_passthrough_is_rejected(self, monkeypatch):
         # /v1/chat/completions 400s this; /v1/messages answered in prose instead.
