@@ -127,6 +127,7 @@ from .diffusion_memory import (
     refine_memory_plan_for_components,
     settled_snapshot_device_memory,
     snapshot_device_memory,
+    _torchao_stream_pinnable,
     torchao_offload_plan,
     torchao_scheme_streams,
     torchao_streaming_plan,
@@ -1651,7 +1652,7 @@ def _inplace_torchao_placement(
             and (largest_companion_mib() or 0) <= budget
         ):
             return plan, None
-        if torchao_scheme_streams(scheme):
+        if torchao_scheme_streams(scheme) and _torchao_stream_pinnable(plan):
             return torchao_streaming_plan(plan), None
         return plan, (
             "whole-module offload onloads each component whole, and the quantised transformer or a text "

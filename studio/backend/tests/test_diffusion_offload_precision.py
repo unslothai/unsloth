@@ -289,6 +289,18 @@ def test_inplace_quant_placement(
     assert (why is not None) is declined
 
 
+@pytest.mark.parametrize("estimate_mib, largest_te_mib", [(60_000, 4_000), (6_000, 60_000)])
+def test_inplace_quant_declines_streaming_it_cannot_pin(monkeypatch, estimate_mib, largest_te_mib):
+    """Unpinnable (Windows, capped host RAM) streaming runs without a copy stream, ~35x slower: decline it."""
+    monkeypatch.setattr(mem, "_installed_torchao_version", lambda: T018)
+    monkeypatch.setattr(mem, "_pin_budget_mib", lambda: 0)
+    plan, why = dmod._inplace_torchao_placement(
+        PLACEMENTS["model_fits"], "int8", _estimate(estimate_mib), lambda: largest_te_mib
+    )
+    assert plan.offload_policy == OFFLOAD_MODEL
+    assert why is not None
+
+
 def test_inplace_quant_no_longer_calls_group_offload_wrong():
     import inspect
 
