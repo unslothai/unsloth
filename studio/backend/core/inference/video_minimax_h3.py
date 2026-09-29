@@ -56,6 +56,9 @@ H3_TRANSFORMER_BF16_GB = 66.3
 # Video + audio VAE, from the family's bf16_components_gb. Only a floor for the offloaded term: it stops a very small
 # conditioner from claiming a base no component rotation could actually fit in.
 H3_VAE_RESIDENT_GB = 11.1
+# What a STREAMED denoiser holds on the device at once: the block group running, the one being prefetched and the
+# top-level modules outside the block lists. Below the VAE term it is folded into, so it only matters if that changes.
+H3_TRANSFORMER_STREAMED_GB = 3.0
 
 
 # Resident decimal GB of each hosted pre-quantized denoiser, from the artifact sizes in unsloth/MiniMax-H3-FP8
@@ -100,13 +103,29 @@ def estimate_h3_diffusers_vram_gb(
     text_encoder_gb: Optional[float] = None,
     transformer_gb: Optional[float] = None,
     transformer_pinned: bool = False,
+    transformer_streamed: bool = False,
 ) -> float:
     """Measured available-VRAM floor for an H3 Diffusers generation.
 
     ``text_encoder_gb`` / ``transformer_gb`` are the RESIDENT sizes this load actually holds and
     ``transformer_pinned`` whether the denoiser was taken out of the offload rotation; all unset
-    keeps the released-bfloat16 floor this shipped with."""
+    keeps the released-bfloat16 floor this shipped with.
+
+    ``transformer_streamed`` is the third shape: the denoiser streams block groups through group
+    offloading and the rotating components are sent back to the host before it runs, so no two
+    large components are ever resident together. The conditioner phase holds only the conditioner
+    (a prompt's activations are inside the overhead); the video volume is paid in the denoise and
+    decode phases, beside the streamed blocks or the VAEs."""
     volume_mpixel_frames = width * height * num_frames / 1_000_000
+    if transformer_streamed:
+        text_encoder = H3_TEXT_ENCODER_BF16_GB if text_encoder_gb is None else float(text_encoder_gb)
+        activations = H3_DIFFUSERS_VRAM_GB_PER_MPIXEL_FRAME * volume_mpixel_frames
+        return max(
+            text_encoder + H3_DIFFUSERS_VRAM_OVERHEAD_GB,
+            max(H3_TRANSFORMER_STREAMED_GB, H3_VAE_RESIDENT_GB)
+            + H3_DIFFUSERS_VRAM_OVERHEAD_GB
+            + activations,
+        )
     base = h3_diffusers_vram_base_gb(
         text_encoder_gb = text_encoder_gb,
         transformer_gb = transformer_gb,
@@ -131,6 +150,7 @@ def estimate_h3_diffusers_host_ram_gb(
     *,
     text_encoder_gb: Optional[float] = None,
     transformer_gb: Optional[float] = None,
+    transformer_streamed: bool = False,
 ) -> float:
     """Host-RAM floor for the offload tier selected at the available VRAM.
 
@@ -145,11 +165,17 @@ def estimate_h3_diffusers_host_ram_gb(
 
     A pinned denoiser is still counted here. It lives on the device during the generation, but it
     was built on the host to get there, and keeping it in the sum errs toward refusing a load that
-    would have fitted rather than admitting one that will not."""
+    would have fitted rather than admitting one that will not.
+
+    A STREAMED denoiser is counted twice: group offloading stages it in pinned host memory beside
+    the copy it was built as. Measured 80.2 GB peak / 72.5 GB steady host RSS for the int8 pair on
+    a 32 GiB card at 960x544x124, against the 64.5 GB the single count gives."""
     if available_vram_gb >= H3_DIFFUSERS_HOST_RAM_TIER_VRAM_GB:
         return H3_DIFFUSERS_HOST_RAM_HIGH_VRAM_GB
     text_encoder = H3_TEXT_ENCODER_BF16_GB if text_encoder_gb is None else float(text_encoder_gb)
     transformer = H3_TRANSFORMER_BF16_GB if transformer_gb is None else float(transformer_gb)
+    if transformer_streamed:
+        transformer *= 2
     return text_encoder + transformer + H3_VAE_RESIDENT_GB + H3_DIFFUSERS_HOST_RAM_HEADROOM_GB
 
 

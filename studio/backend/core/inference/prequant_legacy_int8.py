@@ -250,3 +250,31 @@ def _rebuild_standins(ckpt: Any, standins: dict, api: tuple) -> Any:
         elif isinstance(value, stray):
             raise ValueError(f"legacy int8 weight {key!r} is not wrapped for activation quant")
     return ckpt
+
+
+def convert_legacy_int8_weights(module: Any) -> int:
+    """Rebuild every v1 int8 weight of a LOADED module as ``Int8Tensor``, in place; the count converted.
+
+    For torchao <= 0.17, which still ships the v1 classes: the v1 weight cannot be pinned, so group offloading can only
+    move it synchronously. The rebuild is the one a >= 0.18 load already applies (same int8 data and scales, shared
+    rather than copied), so the result is what those installs run everywhere. All or nothing: any weight that fails
+    validation leaves the module as it was and returns 0."""
+    import torch
+
+    api = _int8_tensor_api()
+    classes = {name: _resolve(name) for name in (*LEGACY_INT8_CLASS_NAMES, _ACT_QUANT)}
+    if api is None or any(value is None for value in classes.values()):
+        return 0
+    rebuilt = []
+    try:
+        for name, submodule in module.named_modules():
+            # Registered parameters only: a wrapper that forwards ``weight`` to its inner Linear (PadToMinM) is reached
+            # through that Linear instead.
+            weight = getattr(submodule, "_parameters", {}).get("weight")
+            if isinstance(weight, classes[_LAQT]):
+                rebuilt.append((submodule, _rebuild_weight(name, weight, classes, api)))
+    except Exception:  # noqa: BLE001 -- an unrecognised weight keeps the v1 class everywhere
+        return 0
+    for submodule, weight in rebuilt:
+        submodule.weight = torch.nn.Parameter(weight, requires_grad = False)
+    return len(rebuilt)

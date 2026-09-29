@@ -980,6 +980,9 @@ class _VideoLoadState:
     # is resident alongside whatever component is running. The memory preflight has to know, because that turns its
     # floor from a max into a sum.
     denoiser_pinned: bool = False
+    # MiniMax-H3 only: the pre-quantized denoiser streams block by block through group offloading and the rotating
+    # components are sent to the host before it runs, so the floor is the largest single phase, not a sum.
+    denoiser_streamed: bool = False
     resolved: Optional[dict] = None
 
 
@@ -1108,49 +1111,70 @@ def _h3_auto_precision_ok(target: Any = None) -> bool:
         return False
 
 
+def _h3_others_bytes(
+    fam: Any, components: Any, *, te_scheme: Optional[str], dtype: Any, rotating: bool
+) -> int:
+    """Everything beside the denoiser: conditioner at ``te_scheme``, VAEs, activation headroom.
+
+    ``rotating`` is the pinned-denoiser shape: the conditioner and the VAEs stay in the offload
+    rotation, and the rotation's 40 GB reserve margin evicts one before the other is placed, so only
+    the larger of the two is ever resident beside the denoiser. Without it every component is
+    resident at once and they add up."""
+    import torch
+
+    scale = 2.0 if dtype is torch.float32 else 1.0
+    text_encoder_gb = h3_te_resident_gb(te_scheme, bf16_gb = components[1])
+    headroom_bytes = (
+        estimate_video_runtime_mib(
+            width = fam.resolution_presets[0][0],
+            height = fam.resolution_presets[0][1],
+            num_frames = fam.default_num_frames,
+        )
+        * 1024
+        * 1024
+    )
+    beside = (
+        max(text_encoder_gb, components[2]) if rotating else text_encoder_gb + components[2]
+    )
+    return int(beside * scale * 1000.0**3) + headroom_bytes
+
+
 def _h3_dense_denoiser_resident_bytes(
-    fam: Any, *, denoiser: Any, te_scheme: Optional[str], dtype: Any
+    fam: Any, *, denoiser: Any, te_scheme: Optional[str], dtype: Any, rotating: bool = False
 ) -> Optional[tuple[int, int]]:
     """``(denoiser_bytes, everything_else_bytes)`` for a MiniMax-H3 modular pipeline, or None.
 
     ``everything_else`` is the conditioner at the precision this load ENGAGED, plus the VAEs, plus
     a frames-aware activation headroom: what must still fit alongside a denoiser taken out of the
-    rotation. The denoiser is measured off the built module, not the family table, because the
-    table holds the released dense size and the module in hand may not be it."""
+    rotation (``rotating``: only the larger of conditioner and VAEs, see ``_h3_others_bytes``). The
+    denoiser is measured off the built module, not the family table, because the table holds the
+    released dense size and the module in hand may not be it."""
     components = getattr(fam, "bf16_components_gb", None)
     if not components or denoiser is None:
         return None
     try:
         from itertools import chain
 
-        import torch
+        from .diffusion_prequant import tensor_payload_bytes
 
+        # The payload, not the logical shape: a torchao weight reports its bf16 numel, twice its int8 bytes.
         denoiser_bytes = sum(
-            t.numel() * t.element_size()
+            tensor_payload_bytes(t)
             for t in chain(denoiser.parameters(), denoiser.buffers())
             if not getattr(t, "is_meta", False)
         )
         if denoiser_bytes <= 0:
             return None
-        scale = 2.0 if dtype is torch.float32 else 1.0
-        text_encoder_gb = h3_te_resident_gb(te_scheme, bf16_gb = components[1])
-        headroom_bytes = (
-            estimate_video_runtime_mib(
-                width = fam.resolution_presets[0][0],
-                height = fam.resolution_presets[0][1],
-                num_frames = fam.default_num_frames,
-            )
-            * 1024
-            * 1024
+        others = _h3_others_bytes(
+            fam, components, te_scheme = te_scheme, dtype = dtype, rotating = rotating
         )
-        others = int((text_encoder_gb + components[2]) * scale * 1000.0**3) + headroom_bytes
         return int(denoiser_bytes), others
     except Exception:  # noqa: BLE001 -- an unanswerable estimate keeps the rotation as it is
         return None
 
 
 def _h3_planned_denoiser_bytes(
-    fam: Any, *, te_scheme: Optional[str], dtype: Any
+    fam: Any, *, te_scheme: Optional[str], dtype: Any, rotating: bool = False
 ) -> Optional[tuple[int, int]]:
     """The same ``(denoiser_bytes, everything_else_bytes)`` split, PREDICTED from the family table.
 
@@ -1168,17 +1192,9 @@ def _h3_planned_denoiser_bytes(
 
         scale = 2.0 if dtype is torch.float32 else 1.0
         denoiser_bytes = int(components[0] * scale * 1000.0**3)
-        text_encoder_gb = h3_te_resident_gb(te_scheme, bf16_gb = components[1])
-        headroom_bytes = (
-            estimate_video_runtime_mib(
-                width = fam.resolution_presets[0][0],
-                height = fam.resolution_presets[0][1],
-                num_frames = fam.default_num_frames,
-            )
-            * 1024
-            * 1024
+        others = _h3_others_bytes(
+            fam, components, te_scheme = te_scheme, dtype = dtype, rotating = rotating
         )
-        others = int((text_encoder_gb + components[2]) * scale * 1000.0**3) + headroom_bytes
         return denoiser_bytes, others
     except Exception:  # noqa: BLE001 -- an unanswerable estimate keeps the released denoiser
         return None
@@ -1228,9 +1244,37 @@ def _h3_dense_denoiser_fits(sizes: Optional[tuple[int, int]], free_bytes: Option
     return int(free_bytes) >= int(denoiser_bytes) + int(others_bytes)
 
 
-# The scheme an UNSET transformer_quant falls back to when the released denoiser cannot stay resident. int8 rather than
-# fp8: the two are the same 20.3 GB resident and neither is a faster GEMM, but int8 scored closer to the released
-# denoiser (SSIM 0.49 against 0.43) and, unlike fp8, needs no per-row scale support from the card.
+def _h3_placement_tier(
+    *,
+    quantised: bool,
+    whole_set_sizes: Optional[tuple[int, int]],
+    pinned_sizes: Optional[tuple[int, int]],
+    free_bytes: Optional[int],
+    speed_off: bool,
+) -> str:
+    """Where an H3 denoiser goes, fastest first: ``resident`` (every component, no rotation),
+    ``pinned`` (denoiser resident beside the rotating conditioner / VAEs), ``stream`` (a quantised
+    denoiser streamed block by block through group offloading) or ``rotation`` (the released
+    denoiser in the ComponentsManager rotation).
+
+    ``whole_set_sizes`` sums every component; ``pinned_sizes`` counts only the larger rotating one
+    beside the denoiser. A quantised denoiser never rotates (a torchao module does not survive the
+    mid-block move), so where it cannot be pinned it streams, and an unreadable card keeps the pin
+    it always had. speed_mode="off" declines both optional placements for the released denoiser."""
+    if not speed_off and _h3_dense_denoiser_fits(whole_set_sizes, free_bytes):
+        return "resident"
+    if quantised:
+        if pinned_sizes is None or free_bytes is None:
+            return "pinned"
+        return "pinned" if _h3_dense_denoiser_fits(pinned_sizes, free_bytes) else "stream"
+    if not speed_off and _h3_dense_denoiser_fits(pinned_sizes, free_bytes):
+        return "pinned"
+    return "rotation"
+
+
+# The scheme an UNSET transformer_quant resolves to. int8 rather than fp8: the two are the same 20.3 GB resident and
+# neither is a faster GEMM, but int8 scored closer to the released denoiser (SSIM 0.49 against 0.43) and, unlike fp8,
+# needs no per-row scale support from the card.
 H3_AUTO_FALLBACK_SCHEME = "int8"
 
 
@@ -1249,8 +1293,8 @@ def _h3_auto_denoiser_scheme(
 ) -> Optional[str]:
     """The hosted scheme an UNSET ``transformer_quant`` resolves to, or None to keep bfloat16.
 
-    int8 wherever the hosted checkpoint exists for this partition and fits, which is now the
-    DEFAULT rather than a fallback. Measured on an H200 (141 GB) and a B200 (183 GB), 960x544,
+    int8 wherever the hosted checkpoint exists for this partition, which is the DEFAULT rather
+    than a fallback. Measured on an H200 (141 GB) and a B200 (183 GB), 960x544,
     124 frames, 8 steps, every component resident in both rows:
 
         released bf16   20.06 / 12.76 / 12.77 s    102.8 GB steady
@@ -1267,8 +1311,12 @@ def _h3_auto_denoiser_scheme(
     schedule, but the same seed and prompt render a different video. ``transformer_quant='none'``
     keeps the released weights, and speed_mode="off" declines this on its own below.
 
-    ``free_reader`` is how the device is measured: live free memory by default, and CAPACITY for
-    the pre-download decision, which runs while the previous pipeline is still resident.
+    The fit decides where the denoiser is PLACED, not its precision: resident with everything, pinned
+    beside the rotation, or streamed block by block through group offloading on a card that cannot
+    hold it at all (a 32 GB card). A smaller card is where bf16 costs the most, so it is never
+    chosen for being small. Only a diffusers without torchao-aware group offloading still needs the
+    pinned fit, measured by ``free_reader``: live free memory by default, and CAPACITY for the
+    pre-download decision, which runs while the previous pipeline is still resident.
 
     Never raises, and every unanswerable question keeps the released denoiser."""
     # An explicit speed_mode="off" is a bit-exact contract, and a re-rolled sample is not bit-exact. The conventional
@@ -1289,27 +1337,28 @@ def _h3_auto_denoiser_scheme(
         return None
     if _h3_te_canonical(base_repo) != _h3_te_canonical(canonical):
         return None
-    sizes = _h3_planned_denoiser_bytes(fam, te_scheme = te_scheme, dtype = dtype)
-    free_bytes = (free_reader or _h3_free_device_bytes)(device)
-    if sizes is None or free_bytes is None:
-        # No reading is not evidence of a shortfall, and guessing wrong here changes the picture a user gets. Keep the
-        # released denoiser, which is what happens today.
-        return None
     if not video_family_prequant_available(
         fam, H3_AUTO_FALLBACK_SCHEME, task = task, base_repo = base_repo
     ):
         # Asked per (scheme, PARTITION): a partition with no hosted checkpoint has no fallback, and serving the other
         # partition's would generate the wrong thing.
         return None
-    # And the replacement has to fit BEFORE it is chosen. A torchao denoiser cannot ride the offload rotation at all (it
-    # does not survive the mid-block move), so taking it means pinning it, which turns the memory floor from a max into
-    # a sum: 20.3 GB resident PLUS whatever runs beside it. Under text_encoder_quant="none" that sum is larger than the
-    # dense rotation it replaces, so a card that renders today would refuse every generation afterwards. Where the
-    # replacement does not fit either, the released denoiser in the rotation is the configuration that still runs.
-    hosted_bytes = int(h3_transformer_resident_gb(H3_AUTO_FALLBACK_SCHEME) * 1000.0**3)
-    if not _h3_dense_denoiser_fits((hosted_bytes, sizes[1]), free_bytes):
-        return None
-    from .diffusion_prequant import restricted_prequant_load_supported
+    from .diffusion_prequant import (
+        restricted_prequant_load_supported,
+        torchao_group_offload_supported,
+    )
+
+    if not torchao_group_offload_supported():
+        # A torchao denoiser cannot ride the ComponentsManager rotation (it does not survive the mid-block move), so
+        # without group offloading to stream it the only placement left is PINNED: 20.3 GB resident PLUS the larger
+        # rotating component. Where that does not fit, the released denoiser in the rotation is the one that runs.
+        sizes = _h3_planned_denoiser_bytes(
+            fam, te_scheme = te_scheme, dtype = dtype, rotating = True
+        )
+        free_bytes = (free_reader or _h3_free_device_bytes)(device)
+        hosted_bytes = int(h3_transformer_resident_gb(H3_AUTO_FALLBACK_SCHEME) * 1000.0**3)
+        if sizes is None or not _h3_dense_denoiser_fits((hosted_bytes, sizes[1]), free_bytes):
+            return None
 
     if not restricted_prequant_load_supported(H3_AUTO_FALLBACK_SCHEME):
         # Runs BEFORE the download plan, so never pick an artifact the loader will refuse. Asked last so
@@ -5810,15 +5859,11 @@ class VideoBackend:
         transformer_quant_reason = "released bfloat16 components"
         # "auto" asks the backend to choose. The auto LADDER is still not it -- that quantises a dense module on device,
         # which this workflow never materialises -- so the choice is between the released denoiser and a hosted
-        # checkpoint, and it turns on whether the released one can stay resident. Where it fits, auto keeps it: same
-        # weights, same picture, and the pin plus regional compile below make it fast without touching a single value.
-        # Where it does not, keeping it is not a smaller win but a cliff -- it rides the CPU-offload rotation, a module
-        # that moves cannot be compiled, and the same 8-step job goes 23.7 s to 194 s. The hosted checkpoint is 20.3 GB
-        # resident, so it pins, so the compile comes back. The trade is that the hosted denoisers RE-ROLL the sample:
-        # mean SSIM 0.49 (int8) / 0.43 (fp8) against the released weights, where that config against itself scores 0.99.
-        # No NaN, no black frames, no visible degradation at the model's own 30-step schedule, but not the same picture.
-        # Which is why this is a fallback and not a blanket default: it is taken only against a configuration nobody
-        # would choose.
+        # checkpoint, and auto takes the hosted int8 one wherever it exists (see _h3_auto_denoiser_scheme): faster and
+        # 45 GB smaller resident, and on a card that cannot hold the released one the difference between 23.7 s and
+        # 194 s for the same 8-step job. Memory decides the PLACEMENT below, never the precision. The trade is that the
+        # hosted denoisers RE-ROLL the sample: mean SSIM 0.49 (int8) / 0.43 (fp8) against the released weights, where
+        # that config against itself scores 0.99. transformer_quant='none' keeps the released weights.
         scheme = (
             None if transformer_quant_is_auto else normalize_transformer_quant(transformer_quant)
         )
@@ -5857,10 +5902,8 @@ class VideoBackend:
             if auto_fallback_scheme is not None:
                 scheme = auto_fallback_scheme
                 logger.info(
-                    "video.transformer_quant: the released bfloat16 denoiser does not fit beside "
-                    "the other components on this device, where it would stay in the CPU-offload "
-                    "rotation and lose the regional compile with it, so auto is taking the hosted "
-                    "%s checkpoint (ask for transformer_quant='none' to keep the released weights)",
+                    "video.transformer_quant: auto is taking the hosted %s denoiser checkpoint "
+                    "(ask for transformer_quant='none' to keep the released weights)",
                     auto_fallback_scheme,
                 )
         # Per (scheme, PARTITION), not per scheme: each workflow denoises against its own checkpoint partition and they
@@ -5965,9 +6008,8 @@ class VideoBackend:
                         f"hosted pre-quantized {scheme} denoiser checkpoint ({source.location})"
                         if auto_fallback_scheme is None
                         else (
-                            f"the released bfloat16 denoiser does not fit resident on this device, "
-                            f"so auto took the hosted {scheme} checkpoint ({source.location}); "
-                            f"transformer_quant='none' keeps the released weights"
+                            f"auto: hosted pre-quantized {scheme} denoiser checkpoint "
+                            f"({source.location}); transformer_quant='none' keeps the released weights"
                         )
                     )
                     logger.info(
@@ -6152,6 +6194,8 @@ class VideoBackend:
                 )
         offload_policy = "none"
         denoiser_pinned = False
+        # "stream" / "sync" when the quantised denoiser rides group offloading block by block, else None.
+        denoiser_streamed: Optional[str] = None
         # load_components just spent minutes building ~145 GB of components, and everything below this line either moves
         # weights onto the card or mutates process-wide backend flags. The conventional placement path fences on the
         # token for exactly that reason; without the same fence here a cancelled or superseded worker resumes into a GPU
@@ -6228,12 +6272,57 @@ class VideoBackend:
                 if transformer_quant_engaged:
                     # enable_auto_cpu_offload just parked every component on the CPU and will move each one back inside
                     # its own pre_forward. A torchao pre-quantized denoiser does not survive that mid-block move (see
-                    # pin_prequantized_module), so place it now and take it out of the rotation. Nothing else changes:
-                    # the encoder and the VAEs keep their hooks and still offload around it.
-                    from .diffusion_prequant import pin_prequantized_module
-                    denoiser_pinned = pin_prequantized_module(
-                        manager, denoiser, device, logger = logger
+                    # pin_prequantized_module), so it never stays in the rotation. Where it fits beside the LARGER
+                    # rotating component it is pinned; where it does not (a 32 GB card holding a 20.3 GB denoiser and a
+                    # 27.2 GB conditioner) it streams block by block through group offloading, which swaps the torchao
+                    # tensor internals instead of moving the module, and the rotating components are sent back to the
+                    # host before it runs. Either way it keeps its precision: the card size decides the placement only.
+                    from .diffusion_prequant import (
+                        pin_prequantized_module,
+                        stream_prequantized_module,
                     )
+                    pinned_sizes = _h3_dense_denoiser_resident_bytes(
+                        fam,
+                        denoiser = denoiser,
+                        te_scheme = text_encoder_quant_engaged,
+                        dtype = dtype,
+                        rotating = True,
+                    )
+                    stream = (
+                        denoiser is not None
+                        and _h3_placement_tier(
+                            quantised = True,
+                            whole_set_sizes = None,
+                            pinned_sizes = pinned_sizes,
+                            free_bytes = free_before_placement,
+                            # Not a speed trade: pinned or streamed, it has to leave the rotation.
+                            speed_off = False,
+                        )
+                        == "stream"
+                    )
+                    placed = (
+                        stream_prequantized_module(manager, denoiser, device, logger = logger)
+                        if stream
+                        else None
+                    )
+                    if placed in ("stream", "sync"):
+                        # offload_policy stays "model": the conditioner and the VAEs still rotate, and that is what the
+                        # host-memory reclaim after a generation keys on.
+                        denoiser_streamed = placed
+                        logger.info(
+                            "video.h3_placement: %.1f GB free is under the %.1f GB a pinned %s "
+                            "denoiser plus the larger rotating component need, so it streams "
+                            "block by block",
+                            free_before_placement / 1e9,
+                            sum(pinned_sizes) / 1e9,
+                            transformer_quant_engaged,
+                        )
+                    elif placed == "pinned":
+                        denoiser_pinned = True
+                    else:
+                        denoiser_pinned = pin_prequantized_module(
+                            manager, denoiser, device, logger = logger
+                        )
                 elif denoiser is not None and effective_speed != SPEED_OFF:
                     # The RELEASED bfloat16 denoiser, for a different reason: not correctness, speed. Which is why
                     # speed=off skips this branch and keeps the rotation: taking a module out of the offload rotation is
@@ -6246,7 +6335,11 @@ class VideoBackend:
                     # against LIVE free memory, after every component is built and parked: the only reading that
                     # describes the card this load got.
                     sizes = _h3_dense_denoiser_resident_bytes(
-                        fam, denoiser = denoiser, te_scheme = text_encoder_quant_engaged, dtype = dtype
+                        fam,
+                        denoiser = denoiser,
+                        te_scheme = text_encoder_quant_engaged,
+                        dtype = dtype,
+                        rotating = True,
                     )
                     free_bytes = None
                     if sizes is not None:
@@ -6280,10 +6373,11 @@ class VideoBackend:
         # needs ``denoiser_pinned``, which only exists after the offload. ``effective_speed`` itself was resolved above
         # the offload, because the pin reads it.
         # ── the speed layer this workflow used to skip entirely.
-        if effective_speed in (SPEED_DEFAULT, SPEED_MAX) and not denoiser_pinned:
-            # Compile ONLY over a resident denoiser: inside the rotation the compiled graph fights the onload hooks,
-            # measured 69-85 s against 30-115 s eager on the same job at a 135.7 GB peak. The rest of the tier
-            # (channels_last VAE, cudnn.benchmark, attention backend) is kept.
+        if effective_speed in (SPEED_DEFAULT, SPEED_MAX) and not (denoiser_pinned or denoiser_streamed):
+            # Compile ONLY over a resident or streamed denoiser: inside the ComponentsManager rotation the compiled graph
+            # fights the onload hooks, measured 69-85 s against 30-115 s eager on the same job at a 135.7 GB peak. Group
+            # offloading's hooks are compiler-disabled and sit outside the compiled block bodies, so a streamed denoiser
+            # keeps it. The rest of the tier (channels_last VAE, cudnn.benchmark, attention backend) is kept either way.
             logger.info(
                 "video.speed_mode: MiniMax-H3 denoiser is in the CPU-offload rotation, so the "
                 "regional compile is held off (measured slower than eager there); keeping the "
@@ -6368,12 +6462,21 @@ class VideoBackend:
                     memory_mode,
                     offload_policy,
                     "MiniMax-H3 ComponentsManager auto CPU offload"
-                    + ("; the pre-quantized denoiser stays resident" if denoiser_pinned else ""),
+                    + ("; the pre-quantized denoiser stays resident" if denoiser_pinned else "")
+                    + (
+                        "; the pre-quantized denoiser streams block by block (group offload)"
+                        if denoiser_streamed
+                        else ""
+                    ),
                 ),
                 "speed_mode": (
                     speed_mode,
                     effective_speed,
-                    "regional compile over the resident pre-quantized denoiser"
+                    (
+                        "regional compile over the streamed pre-quantized denoiser"
+                        if denoiser_streamed
+                        else "regional compile over the resident pre-quantized denoiser"
+                    )
                     if "compiled" in speed_optims
                     else "lossless optimisations only; the denoiser is in the CPU-offload rotation",
                 ),
@@ -6465,6 +6568,7 @@ class VideoBackend:
                 # start.
                 text_encoder_quant = text_encoder_quant_engaged,
                 denoiser_pinned = denoiser_pinned,
+                denoiser_streamed = bool(denoiser_streamed),
                 resolved = resolved,
             )
             self._precommit_globals = None
@@ -7117,6 +7221,7 @@ class VideoBackend:
                             ),
                             transformer_gb = h3_transformer_resident_gb(state.transformer_quant),
                             transformer_pinned = bool(getattr(state, "denoiser_pinned", False)),
+                            transformer_streamed = bool(getattr(state, "denoiser_streamed", False)),
                         )
                         if available_vram_gb + 0.25 < required_vram_gb:
                             raise RuntimeError(
@@ -7141,6 +7246,7 @@ class VideoBackend:
                                 state.text_encoder_quant, bf16_gb = H3_TEXT_ENCODER_BF16_GB
                             ),
                             transformer_gb = h3_transformer_resident_gb(state.transformer_quant),
+                            transformer_streamed = bool(getattr(state, "denoiser_streamed", False)),
                         )
                         if host_capacity_gb + 0.5 < required_host_gb:
                             raise RuntimeError(
@@ -7426,8 +7532,16 @@ class VideoBackend:
                     )
                 elif state.transformer_cache:
                     self._reset_step_cache(pipe)
+                # A torchao denoiser streamed by group offloading moves weights inside the render, and torchao's aliasing
+                # check fails such a move under inference_mode (the image loader makes the same switch for the same
+                # reason). Resident and bf16 loads keep inference_mode.
+                grad_ctx = (
+                    torch.no_grad()
+                    if state.transformer_quant and getattr(state, "denoiser_streamed", False)
+                    else torch.inference_mode()
+                )
                 try:
-                    with torch.inference_mode(), protect_ctx, progress_ctx(), sigma_ctx:
+                    with grad_ctx, protect_ctx, progress_ctx(), sigma_ctx:
                         output = render_thread.run("video", lambda: pipe(**kwargs))
                 except _VideoGenerationCancelled:
                     # Unwinding by exception skips maybe_free_model_hooks(); under offload the onloaded modules would
