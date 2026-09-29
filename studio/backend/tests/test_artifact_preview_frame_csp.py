@@ -184,6 +184,9 @@ def test_only_the_embedder_can_drive_render():
 
 def test_the_shell_caps_and_clips_what_it_reports():
     shell = inf_mod._ARTIFACT_PREVIEW_FRAME_HTML
-    assert "const REPORTS_MAX = 1000;" in shell
-    assert "if (reportsLeft <= 0) return;" in shell
+    assert (
+        'const REPORTS_MAX = { "unsloth:artifact-error": 100, "unsloth:artifact-console": 1000 };'
+        in shell
+    )
+    assert "if (!(reportsLeft[fields.type] > 0)) return;" in shell
     assert "const REPORT_MAX_CHARS = 2048;" in shell

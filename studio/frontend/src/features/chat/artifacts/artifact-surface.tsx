@@ -142,6 +142,13 @@ export function ArtifactSurface({
   const hasArtifactCode = artifact.code.trim().length > 0;
   const isLoadingArtifact = Boolean(artifact.isStreaming);
   const effectiveViewMode = isLoadingArtifact ? "preview" : viewMode;
+  // Mounted from the first preview on, so opening straight to Code never runs the page.
+  const [previewedId, setPreviewedId] = useState<string | null>(null);
+  if (effectiveViewMode === "preview" && previewedId !== artifact.id) {
+    setPreviewedId(artifact.id);
+  }
+  const frameMounted =
+    effectiveViewMode === "preview" || previewedId === artifact.id;
 
   useEffect(() => {
     return () => {
@@ -413,9 +420,8 @@ export function ArtifactSurface({
           <ArtifactGeneratingPanel />
         ) : (
           <>
-            {/* Hidden rather than unmounted behind the source view: unmounting reloads the
-                canvas from scratch and takes every error and console line it had collected
-                with it, so a look at the HTML would cost the output you opened it to read. */}
+            {/* Hidden, not unmounted, behind the source view: unmounting reruns the page and drops its console. */}
+            {frameMounted && (
             <div
               className={cn(
                 "h-full",
@@ -438,6 +444,7 @@ export function ArtifactSurface({
                 onFixWithModel={variant === "overlay" ? onClose : undefined}
               />
             </div>
+            )}
             {effectiveViewMode === "preview" ? null : (
               <div className="h-full overflow-auto px-3.5 pb-5 pt-3 text-xs leading-relaxed [&_[data-streamdown=code-block]]:!my-0 [&_[data-streamdown=code-block]]:!gap-0 [&_[data-streamdown=code-block]]:!rounded-none [&_[data-streamdown=code-block]]:!border-0 [&_[data-streamdown=code-block]]:!bg-transparent [&_[data-streamdown=code-block]]:!p-0 [&_[data-streamdown=code-block-body]]:!border-0 [&_[data-streamdown=code-block-body]]:!bg-transparent [&_[data-streamdown=code-block-body]]:!p-0 [&_pre]:!m-0 [&_pre]:!bg-transparent [&_pre]:!p-0 [&_pre]:text-xs [&_pre]:leading-relaxed [&_code]:text-xs">
                 <Streamdown

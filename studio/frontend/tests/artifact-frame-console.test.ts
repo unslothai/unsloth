@@ -110,6 +110,23 @@ test("past the cap the oldest entries go, not the newest", () => {
   );
 });
 
+test("logs past the cap evict older logs before an error", () => {
+  let state = appendCanvasEntry(
+    emptyCanvasConsole("a"),
+    "a",
+    parseCanvasReport(thrown("boom"))!,
+  );
+  for (let i = 0; i < CANVAS_CONSOLE_ENTRIES_TRACKED * 2; i += 1) {
+    state = appendCanvasEntry(
+      state,
+      "a",
+      parseCanvasReport({ type: "unsloth:artifact-console", text: `tick ${i}` })!,
+    );
+  }
+  assert.equal(state.entries.length, CANVAS_CONSOLE_ENTRIES_TRACKED);
+  assert.equal(canvasErrors(state).length, 1);
+});
+
 test("a burst of reports costs one render, not one per report", () => {
   assert.match(frameSource, /requestAnimationFrame/);
   assert.match(frameSource, /pendingEntries\.current\.push\(entry\)/);
@@ -196,6 +213,17 @@ test("a new load drops reports already batched for the next frame", () => {
     frameSource.indexOf("dropPendingEntries();", clearButton) <
       frameSource.indexOf("setOutput(emptyCanvasConsole(code));", clearButton),
   );
+});
+
+test("opening straight to the source view does not run the page", () => {
+  const surface = readFileSync(
+    fileURLToPath(
+      new URL("../src/features/chat/artifacts/artifact-surface.tsx", import.meta.url),
+    ),
+    "utf8",
+  );
+  assert.match(surface, /\{frameMounted && \(\s*<div/);
+  assert.match(surface, /effectiveViewMode === "preview" \|\| previewedId === artifact\.id/);
 });
 
 test("the source view hides the frame instead of unmounting it", () => {

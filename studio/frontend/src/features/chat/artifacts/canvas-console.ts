@@ -87,8 +87,12 @@ export function appendCanvasEntry(
 ): CanvasConsoleState {
   const mine = current.code === code ? current : emptyCanvasConsole(code);
   const kept = [...mine.entries, entry];
-  const over = kept.length - CANVAS_CONSOLE_ENTRIES_TRACKED;
-  if (over > 0) return { code, entries: kept.slice(over), capped: true };
+  if (kept.length > CANVAS_CONSOLE_ENTRIES_TRACKED) {
+    // Logs go before errors, so a page that keeps logging after a crash keeps its banner.
+    const oldestLog = kept.findIndex((queued) => queued.kind === "console");
+    kept.splice(oldestLog < 0 ? 0 : oldestLog, 1);
+    return { code, entries: kept, capped: true };
+  }
   return { code, entries: kept, capped: mine.capped };
 }
 

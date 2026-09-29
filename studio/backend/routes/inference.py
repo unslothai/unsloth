@@ -3923,8 +3923,9 @@ _ARTIFACT_PREVIEW_FRAME_HTML = """<!doctype html>
         // Runtime errors and console output cross to the parent as plain strings.
         // The parent clips, counts and escapes them; nothing here is trusted.
         const REPORT_MAX_CHARS = 2048;
-        const REPORTS_MAX = 1000;
-        let reportsLeft = REPORTS_MAX;
+        // Separate budgets, so a page logging every frame cannot spend the one its crash needs.
+        const REPORTS_MAX = { "unsloth:artifact-error": 100, "unsloth:artifact-console": 1000 };
+        const reportsLeft = { ...REPORTS_MAX };
         const clip = (value) => String(value).slice(0, REPORT_MAX_CHARS);
         const describe = (value) => {
           if (value instanceof Error) return value.stack || `${value.name}: ${value.message}`;
@@ -3936,9 +3937,8 @@ _ARTIFACT_PREVIEW_FRAME_HTML = """<!doctype html>
           }
         };
         const report = (fields) => {
-          // A page looping on console.log would otherwise spam the parent's thread.
-          if (reportsLeft <= 0) return;
-          reportsLeft -= 1;
+          if (!(reportsLeft[fields.type] > 0)) return;
+          reportsLeft[fields.type] -= 1;
           parent.postMessage({ ...fields, v: loadVersion }, "*");
         };
         const reportError = (event) => {
@@ -3970,7 +3970,7 @@ _ARTIFACT_PREVIEW_FRAME_HTML = """<!doctype html>
             const original = console[level];
             console[level] = (...args) => {
               try {
-                report({
+                if (reportsLeft["unsloth:artifact-console"] > 0) report({
                   type: "unsloth:artifact-console",
                   level,
                   text: clip(args.map(describe).join(" ")),
