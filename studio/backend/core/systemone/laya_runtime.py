@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import gc
+import importlib.util
 import logging
 import sys
 import threading
@@ -13,7 +14,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from .catalog import LOCAL_NAME, Checkpoint
+from .catalog import CHECKPOINTS, LOCAL_NAME, Checkpoint
 
 logger = logging.getLogger(__name__)
 
@@ -23,8 +24,8 @@ RUN_WAIT_S = 30.0
 MAX_PENDING = 8
 FAILURE_BACKOFF_S = 60.0
 _REQUIRED_DIRS = ("encoder", "tokenizer")
-LAYA_REQUIREMENT = "laya==0.3.5"
-INSTALL_TIMEOUT_S = 300
+# laya 0.3.5 ships inside Studio (see vendor/README.md), so the Decision API never installs anything.
+_VENDORED_LAYA = Path(__file__).resolve().parent.parent.parent / "vendor" / "laya"
 
 _state_lock = threading.Lock()
 _run_lock = threading.Lock()
@@ -35,9 +36,7 @@ _device_name: str | None = None
 _loader: threading.Thread | None = None
 _loading: Checkpoint | None = None
 _failure: tuple[Checkpoint, str, float] | None = None
-_install_lock = threading.Lock()
-_installer: threading.Thread | None = None
-_install_failure: tuple[str, float] | None = None
+_import_lock = threading.Lock()
 
 
 class Unavailable(Exception):
@@ -129,95 +128,65 @@ def _checkpoint_dir(checkpoint: Checkpoint, *, local_only: bool = False) -> Path
     return root
 
 
-def package_available() -> bool:
-    import importlib.util
-    return importlib.util.find_spec("laya") is not None
+def _laya():
+    """The vendored laya package, registered as top-level ``laya`` (its modules import each other relatively).
 
-
-def _install_command() -> list[str]:
-    import sys
-
-    from utils.mlx_repair import _uv_executable
-
-    # No deps: laya's deps are all Studio pins, so the install can never move them.
-    uv = _uv_executable()
-    if uv:
-        return [uv, "pip", "install", "--python", sys.executable, "--no-deps", LAYA_REQUIREMENT]
-    return [sys.executable, "-m", "pip", "install", "--no-deps", LAYA_REQUIREMENT]
-
-
-def ensure_package() -> None:
-    global _install_failure
-    if package_available():
-        _install_failure = None
-        return
-    with _install_lock:
-        if package_available():
-            return
-        if _install_failure and time.monotonic() < _install_failure[1]:
-            raise RuntimeError(_install_failure[0])
-        import importlib
-        import os
-        import subprocess
-
-        from utils.mlx_repair import _MLX_ENV_ALLOWLIST, _venv_root
-
-        # Same allowlisted env as the MLX self-heal: secrets/package-source vars cannot steer the install.
-        env = {key: os.environ[key] for key in _MLX_ENV_ALLOWLIST if key in os.environ}
-        if (venv_root := _venv_root()) is not None:
-            env["VIRTUAL_ENV"] = venv_root
-        logger.info("Installing %s for the Decision API", LAYA_REQUIREMENT)
+    Loaded by file path, not from ``sys.path``: a laya installed in the venv (Studio pinned one before
+    vendoring it) must not replace this copy, since this module drives laya internals.
+    """
+    if (module := sys.modules.get("laya")) is not None:
+        return module
+    with _import_lock:
+        if (module := sys.modules.get("laya")) is not None:
+            return module
+        init = _VENDORED_LAYA / "__init__.py"
+        spec = importlib.util.spec_from_file_location(
+            "laya", init, submodule_search_locations = [str(_VENDORED_LAYA)]
+        )
+        module = importlib.util.module_from_spec(spec)
+        sys.modules["laya"] = module
         try:
-            result = subprocess.run(
-                _install_command(),
-                env = env,
-                capture_output = True,
-                text = True,
-                encoding = "utf-8",
-                errors = "replace",
-                timeout = INSTALL_TIMEOUT_S,
-            )
-            detail = ((result.stderr or result.stdout).strip().splitlines() or [""])[-1]
-            ok = result.returncode == 0
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            detail, ok = type(exc).__name__, False
-        importlib.invalidate_caches()
-        if ok and package_available():
-            _install_failure = None
-            return
-        message = (
-            f"Could not install {LAYA_REQUIREMENT}. Check the internet connection. {detail}".strip()
-        )
-        logger.warning("Decision API install failed: %s", message)
-        _install_failure = (message, time.monotonic() + FAILURE_BACKOFF_S)
-        raise RuntimeError(message)
+            spec.loader.exec_module(module)
+        except BaseException:
+            for name in [n for n in sys.modules if n == "laya" or n.startswith("laya.")]:
+                del sys.modules[name]
+            raise
+        for name in [n for n in sys.modules if n == "laya" or n.startswith("laya.")]:
+            sys.modules[name].open = _utf8_open
+        return module
 
 
-def install_in_background() -> None:
-    global _installer, _install_failure
-    if package_available():
-        _install_failure = None
-        return
-    with _state_lock:
-        if _installer is not None and _installer.is_alive():
-            return
-        if _install_failure and time.monotonic() < _install_failure[1]:
-            return
-        _installer = threading.Thread(
-            target = _install_quietly, name = "systemone-install", daemon = True
-        )
-        _installer.start()
+def _utf8_open(
+    file,
+    mode = "r",
+    buffering = -1,
+    encoding = None,
+    errors = None,
+    newline = None,
+    closefd = True,
+    opener = None,
+):
+    """``open`` for the vendored laya modules: text mode defaults to UTF-8.
 
-
-def _install_quietly() -> None:
-    try:
-        ensure_package()
-    except RuntimeError:
-        pass
-
-
-def installing() -> bool:
-    return _install_lock.locked() or (_installer is not None and _installer.is_alive())
+    laya reads ``rl_agent_config.json`` and ``tokenizer_config.json`` with a bare ``open()``,
+    which decodes with the locale's code page (ANSI on Windows, ASCII under a C locale). A
+    checkpoint whose tokenizer config holds non-ASCII special tokens then fails to read, and
+    ``_fix_tokenizer_config`` swallows that and skips the repair the model needs to load.
+    The vendored files stay byte-identical to the wheel (vendor/README.md), so the encoding is
+    supplied here, as each laya module's own ``open``.
+    """
+    if encoding is None and "b" not in mode:
+        encoding = "utf-8"
+    return open(
+        file,
+        mode,
+        buffering,
+        encoding = encoding,
+        errors = errors,
+        newline = newline,
+        closefd = closefd,
+        opener = opener,
+    )
 
 
 def is_cached(checkpoint: Checkpoint) -> bool:
@@ -293,11 +262,11 @@ class _MLXAgent:
     def __init__(self, folder: Path):
         import json
 
-        from laya.agent import Agent
-        from laya.common import clamp_temperature
         from transformers import AutoTokenizer
         from unsloth_zoo.mlx.decision import load_decision_model
 
+        laya = _laya()
+        clamp_temperature = laya.common.clamp_temperature
         self.folder = folder
         self.cfg = json.loads((folder / "rl_agent_config.json").read_text(encoding = "utf-8"))
         self.tok = AutoTokenizer.from_pretrained(str(folder / "tokenizer"))
@@ -307,21 +276,226 @@ class _MLXAgent:
         self.temperature_by_options = {
             k: clamp_temperature(v) for k, v in self.cfg.get("temperature_by_options", {}).items()
         }
-        self._to_internal = Agent._to_internal
+        self._to_internal = laya.agent.Agent._to_internal
         self.model = load_decision_model(folder)
 
 
 def _load_checkpoint(checkpoint: Checkpoint):
     root = _checkpoint_dir(checkpoint)
-    import laya
+    _laya()
 
     # Evict only once the new checkpoint is on disk, so a long or failed download leaves the resident model serving.
     _evict()
     device = _device()
+    folder = root / checkpoint.subfolder if checkpoint.subfolder else root
     if device == "mlx":
-        folder = root / checkpoint.subfolder if checkpoint.subfolder else root
         return _MLXAgent(folder), device
-    return laya.load(str(root), subfolder = checkpoint.subfolder, device = device), device
+    if device not in ("cuda", "cpu"):
+        return _load_laya(str(root), subfolder = checkpoint.subfolder, device = device), device
+    import torch
+
+    # Built on CPU and cast before the move, so the device never holds laya's fp32 copy.
+    fp16_checkpoint = checkpoint.name in CHECKPOINTS or _stored_fp16(folder)
+    weights, _ = _precision(torch.device(device), fp16_checkpoint)
+    agent = _load_laya(
+        str(root), subfolder = checkpoint.subfolder, device = "cpu", embedding_dtype = weights
+    )
+    _place(agent, torch.device(device), fp16_checkpoint)
+    return agent, str(agent.device.type)
+
+
+_build_lock = threading.Lock()
+
+
+def _load_laya(
+    path: str,
+    *,
+    embedding_dtype = None,
+    **kwargs,
+):
+    """``laya.load`` without randomly initialising the encoder's vocabulary embedding.
+
+    laya builds a randomly initialised fp32 encoder and then loads the checkpoint over it. For mmBERT's
+    256000 x 768 embedding that init alone took ~3.2 GB of scratch RAM and ~8 s, all of it overwritten
+    by laya's strict load. The embedding is created with ``skip_init`` instead, in the dtype it will be
+    served in; the rest of the model, including buffers the checkpoint does not carry, is built as before.
+    """
+    laya = _laya()
+    hook = getattr(laya, "agent", None)
+    if not hasattr(hook, "build_model"):
+        return laya.load(path, **kwargs)
+    with _build_lock:
+        original = hook.build_model
+
+        def build_model(cfg, encoder_dir = None):
+            return _build_model(cfg, encoder_dir, original, embedding_dtype)
+
+        hook.build_model = build_model
+        try:
+            return laya.load(path, **kwargs)
+        finally:
+            hook.build_model = original
+
+
+def _build_model(
+    cfg,
+    encoder_dir,
+    original,
+    embedding_dtype = None,
+):
+    """laya.common.build_model, with the vocabulary embedding allocated but not initialised."""
+    import os
+
+    import torch
+    from transformers import AutoConfig, AutoModel
+
+    if not encoder_dir or not os.path.exists(encoder_dir):
+        return original(cfg, encoder_dir = encoder_dir)
+    config = AutoConfig.from_pretrained(encoder_dir)
+    vocab_size, pad_token_id = config.vocab_size, getattr(config, "pad_token_id", None)
+    # ModernBERT reads pad_token_id only for this embedding; others keep it (RoBERTa's position ids).
+    if config.model_type != "modernbert" or vocab_size <= 1:
+        return original(cfg, encoder_dir = encoder_dir)
+    # A one-row placeholder, with row 0 standing in for the padding id so the check below can
+    # tell the embedding was sized and padded from the config.
+    placeholder_pad = None if pad_token_id is None else 0
+    config.vocab_size, config.pad_token_id = 1, placeholder_pad
+    try:
+        encoder = AutoModel.from_config(config, attn_implementation = "sdpa")
+    finally:
+        config.vocab_size, config.pad_token_id = vocab_size, pad_token_id
+    placeholder = encoder.get_input_embeddings()
+    if (
+        type(placeholder) is not torch.nn.Embedding
+        or placeholder.num_embeddings != 1
+        or placeholder.padding_idx != placeholder_pad
+        or encoder.config.vocab_size != vocab_size
+    ):
+        # Not laid out like ModernBERT: build it laya's way.
+        del encoder, placeholder
+        return original(cfg, encoder_dir = encoder_dir)
+    encoder.set_input_embeddings(
+        torch.nn.utils.skip_init(
+            torch.nn.Embedding,
+            vocab_size,
+            placeholder.embedding_dim,
+            padding_idx = pad_token_id,
+            max_norm = placeholder.max_norm,
+            norm_type = placeholder.norm_type,
+            scale_grad_by_freq = placeholder.scale_grad_by_freq,
+            sparse = placeholder.sparse,
+            dtype = embedding_dtype or placeholder.weight.dtype,
+        )
+    )
+    return _laya().common.DecisionModel(
+        encoder, cfg.get("head_layers", 2), len(cfg.get("act_costs", {})) + 1
+    )
+
+
+def _stored_fp16(folder: Path) -> bool:
+    """Whether the checkpoint's weights are saved as float16, as all three published Laya checkpoints are."""
+    import json
+    import math
+    import struct
+
+    try:
+        with open(folder / "model.safetensors", "rb") as f:
+            header = json.loads(f.read(struct.unpack("<Q", f.read(8))[0]))
+    except (OSError, ValueError, struct.error):
+        return False
+    sizes: dict[str, int] = {}
+    for name, meta in header.items():
+        if name != "__metadata__" and isinstance(meta, dict):
+            sizes[meta["dtype"]] = sizes.get(meta["dtype"], 0) + math.prod(meta["shape"])
+    return bool(sizes) and max(sizes, key = sizes.get) == "F16"
+
+
+def _precision(device, fp16_checkpoint: bool):
+    """(weight dtype, compute dtype) for ``device``; ``(None, None)`` keeps laya's fp32 weights and compute.
+
+    An fp16 checkpoint held in fp16 is exact (fp16 -> fp32 is lossless), and fp16 compute tracked fp32 about
+    10x closer than bf16 on both GPU and CPU. Anything else follows the device: bf16 where it is native, else fp16.
+    """
+    import os
+    import platform
+
+    import torch
+
+    if os.environ.get("UNSLOTH_SYSTEMONE_FP32", "") == "1":
+        return None, None
+    if device.type == "cuda":
+        if fp16_checkpoint:
+            return torch.float16, torch.float16
+        if torch.version.hip:
+            bf16 = torch.cuda.is_bf16_supported()
+        else:
+            # By capability: pre-Ampere NVIDIA reports is_bf16_supported() through slow emulation.
+            bf16 = torch.cuda.get_device_capability(device)[0] >= 8
+        dtype = torch.bfloat16 if bf16 else torch.float16
+        return dtype, dtype
+    # CPU only where the ISA has the format natively (AVX512-FP16 / AMX); emulated fp16 or bf16 is slower than fp32.
+    # Measured on x86 only, so other CPUs keep fp32.
+    if device.type == "cpu" and platform.machine().lower() in ("x86_64", "amd64"):
+        mkldnn = getattr(torch.ops, "mkldnn", None)
+        try:
+            if fp16_checkpoint and mkldnn._is_mkldnn_fp16_supported():
+                return torch.float16, torch.float16
+            if not fp16_checkpoint and mkldnn._is_mkldnn_bf16_supported():
+                return torch.bfloat16, torch.bfloat16
+        except (AttributeError, RuntimeError):
+            pass
+    return None, None
+
+
+def _fp32_output(module, args, output):
+    return output.float()
+
+
+def _cast_matmul_weights(model, dtype) -> None:
+    """Cast the matmul and lookup weights only.
+
+    Norms stay fp32 (CPU layer_norm rejects low-precision parameters) and embedding outputs return to fp32,
+    so the residual stream keeps laya's precision. With bf16 compute this is bit-identical to fp32 weights,
+    since autocast rounds each weight to the same bf16 either way.
+    """
+    import torch.nn as nn
+    for module in model.modules():
+        if isinstance(module, (nn.Linear, nn.Embedding)):
+            module.to(dtype)
+        elif isinstance(module, nn.MultiheadAttention):
+            module.in_proj_weight.data = module.in_proj_weight.data.to(dtype)
+            if module.in_proj_bias is not None:
+                module.in_proj_bias.data = module.in_proj_bias.data.to(dtype)
+        if isinstance(module, nn.Embedding) and not getattr(module, "_unsloth_fp32_output", False):
+            module.register_forward_hook(_fp32_output)
+            module._unsloth_fp32_output = True
+
+
+def _place(agent, device, fp16_checkpoint: bool) -> None:
+    """Move a CPU-built laya agent to ``device`` in the precision :func:`_precision` picks for it."""
+    import torch
+
+    agent.__dict__["_unsloth_fp16_checkpoint"] = fp16_checkpoint
+    # Captured graphs point at the current weights; a move or recast replaces them.
+    agent.__dict__.pop("_unsloth_graphs", None)
+    weights, compute = _precision(device, fp16_checkpoint)
+    # Cast on the CPU side of the move: before moving to an accelerator, after coming back from one.
+    if device.type == "cpu":
+        agent.model.to(device)
+    if weights is None:
+        agent.model.float()
+    else:
+        _cast_matmul_weights(agent.model, weights)
+    if device.type != "cpu":
+        try:
+            agent.model.to(device)
+        except (RuntimeError, torch.cuda.OutOfMemoryError):
+            # Same fallback as laya's own loader: a device that cannot hold the model leaves it on CPU.
+            logger.warning("Laya could not be placed on %s; running it on CPU", device)
+            _place(agent, torch.device("cpu"), fp16_checkpoint)
+            _release_memory()
+            return
+    agent.device, agent.dtype = device, compute or torch.float32
 
 
 def _hub_download_active(checkpoint: Checkpoint) -> bool:
@@ -348,14 +522,9 @@ def _load(checkpoint: Checkpoint) -> None:
     global _agent, _loaded, _device_name, _loading, _failure
     started = time.monotonic()
     try:
-        ensure_package()
         agent, device = _load_checkpoint(checkpoint)
     except Exception as exc:
-        message = (
-            str(exc)
-            if isinstance(exc, RuntimeError) and _install_failure
-            else f"Could not load {checkpoint.name}: {type(exc).__name__}: {exc}"
-        )
+        message = f"Could not load {checkpoint.name}: {type(exc).__name__}: {exc}"
         logger.warning("System One load failed: %s", message)
         with _state_lock:
             _failure = (checkpoint, message, time.monotonic() + FAILURE_BACKOFF_S)
@@ -431,7 +600,7 @@ _HEAD_CACHE_SIZE = 1024
 
 
 def _state_ids(tok, state, room: int) -> tuple[list[int], bool]:
-    from laya.common import serialize_state
+    serialize_state = _laya().common.serialize_state
 
     text = serialize_state(state).replace(tok.mask_token, " ")
     chars = max(4096, room * 16)
@@ -447,7 +616,9 @@ def _state_ids(tok, state, room: int) -> tuple[list[int], bool]:
 def _head(agent, question: dict[str, Any], max_len: int, head_max_len: int):
     import json
 
-    from laya.common import build_sequence, render_options
+    common = _laya().common
+    build_sequence = common.build_sequence
+    render_options = common.render_options
 
     cache = agent.__dict__.setdefault("_unsloth_heads", {})
     key = json.dumps(question, ensure_ascii = False)
@@ -464,7 +635,10 @@ def _head(agent, question: dict[str, Any], max_len: int, head_max_len: int):
 
 def _predict(agent, state, questions: dict[str, dict[str, Any]]) -> tuple[dict[str, Any], bool]:
     import numpy as np
-    from laya.common import QTYPES, confidence_from_probs
+
+    common = _laya().common
+    QTYPES = common.QTYPES
+    confidence_from_probs = common.confidence_from_probs
 
     max_len = int(agent.cfg.get("max_len", 512))
     head_max_len = int(agent.cfg.get("head_max_len", 192))
@@ -525,9 +699,8 @@ def _predict(agent, state, questions: dict[str, dict[str, Any]]) -> tuple[dict[s
 def _forward(agent, items: list[dict[str, Any]]):
     global _agent, _loaded, _device_name
     import torch
-    from laya.common import collate_items
 
-    batch = collate_items([items], agent.tok.pad_token_id)
+    batch = _collate(items, agent.tok.pad_token_id)
     if agent.device == "mlx":
         try:
             return agent.model.logits(batch), int(batch["attention_mask"].sum())
@@ -537,13 +710,17 @@ def _forward(agent, items: list[dict[str, Any]]):
             if "memory" not in reason and "allocate" not in reason:
                 raise
         # Past the handler, so the traceback no longer keeps the MLX arrays alive while the CPU copy loads.
-        import laya
-
         logger.warning("Laya ran out of GPU memory; moving it to CPU")
         agent.model = None
         _release_memory()
         try:
-            cpu = laya.load(str(agent.folder), device = "cpu")
+            cpu_device, fp16_checkpoint = torch.device("cpu"), _stored_fp16(Path(agent.folder))
+            cpu = _load_laya(
+                str(agent.folder),
+                device = "cpu",
+                embedding_dtype = _precision(cpu_device, fp16_checkpoint)[0],
+            )
+            _place(cpu, cpu_device, fp16_checkpoint)
         except Exception:
             # Callers hold _run_lock, so drop the half-moved agent here; the next request loads it again.
             _agent = _loaded = _device_name = None
@@ -558,35 +735,336 @@ def _forward(agent, items: list[dict[str, Any]]):
         if agent.device.type == "cpu" or ("memory" not in reason and "cuda" not in reason):
             raise
         logger.warning("Laya ran out of GPU memory; moving it to CPU")
-        agent.device, agent.dtype = torch.device("cpu"), torch.float32
-        agent.model.to(agent.device)
+        _place(agent, torch.device("cpu"), agent.__dict__.get("_unsloth_fp16_checkpoint", False))
         _device_name = "cpu"
         _release_memory()
+        logits = _run_model(agent, batch)
+    if agent.dtype == torch.float16 and not bool(torch.isfinite(logits).all()):
+        # fp16 activations overflowed; the fp16 weights widen to fp32 exactly, so rerun at full precision.
+        logger.warning("Laya overflowed in float16; continuing in float32")
+        # The graphs read the fp16 weights that .float() is about to replace.
+        agent.__dict__.pop("_unsloth_graphs", None)
+        agent.model.float()
+        agent.dtype = torch.float32
         logits = _run_model(agent, batch)
     return logits.float().cpu().numpy(), int(batch["attention_mask"].sum())
 
 
 def _run_model(agent, batch):
+    import os
+
     import torch
 
     device = agent.device
-    with (
-        torch.inference_mode(),
-        torch.autocast(device_type = device.type, dtype = agent.dtype, enabled = device.type == "cuda"),
+    fast = _marker_head(agent.model)
+    if (
+        fast
+        and device.type == "cuda"
+        and os.environ.get("UNSLOTH_SYSTEMONE_CUDA_GRAPHS", "") != "0"
+        # ROCm reports "cuda" too; as in diffusion_cuda_graph.py, graphs are CUDA only.
+        and not torch.version.hip
     ):
-        logits, _ = agent.model(
-            batch["input_ids"].to(device),
-            batch["attention_mask"].to(device),
-            batch["marker_pos"].to(device),
-            batch["marker_mask"].to(device),
-            batch["qtype"].to(device),
-        )
+        graphs = agent.__dict__.get("_unsloth_graphs")
+        if graphs is None:
+            graphs = agent.__dict__["_unsloth_graphs"] = _CUDAGraphs(agent)
+        with torch.inference_mode():
+            logits = graphs.run(batch)
+        if logits is not None:
+            return logits
+    with torch.inference_mode(), _autocast(agent):
+        args = [batch[name].to(device) for name in _INPUTS]
+        if fast:
+            # No padding in the batch: no mask, so SDPA may pick its fastest kernel.
+            return _decision_logits(
+                agent.model, *args, padded = not bool(batch["attention_mask"].all())
+            )
+        logits, _ = agent.model(*args)
     return logits
+
+
+_INPUTS = ("input_ids", "attention_mask", "marker_pos", "marker_mask", "qtype")
+# Padded rows x tokens above which a batch runs eagerly (B200: graphs win up to 8 x 1024, lose at 16 x 512).
+_GRAPH_TOKENS = 8192
+
+
+def _autocast(agent, cache_enabled = True):
+    import torch
+    device = agent.device
+    return torch.autocast(
+        device_type = device.type,
+        dtype = agent.dtype,
+        enabled = device.type in ("cuda", "cpu") and agent.dtype != torch.float32,
+        cache_enabled = cache_enabled,
+    )
+
+
+def _collate(items: list[dict[str, Any]], pad_id: int) -> dict[str, Any]:
+    """laya's ``collate_items`` for one request (same tensors), filled with numpy instead of per-row copies."""
+    import numpy as np
+    import torch
+
+    n = len(items)
+    lengths = np.fromiter((len(it["ids"]) for it in items), dtype = np.int64, count = n)
+    counts = np.fromiter((len(it["markers"]) for it in items), dtype = np.int64, count = n)
+    tokens = np.arange(int(lengths.max()))[None, :] < lengths[:, None]
+    options = np.arange(int(counts.max()))[None, :] < counts[:, None]
+    ids = np.full(tokens.shape, pad_id, dtype = np.int64)
+    ids[tokens] = np.fromiter(
+        (t for it in items for t in it["ids"]), dtype = np.int64, count = int(lengths.sum())
+    )
+    positions = np.zeros(options.shape, dtype = np.int64)
+    positions[options] = np.fromiter(
+        (m for it in items for m in it["markers"]), dtype = np.int64, count = int(counts.sum())
+    )
+    return {
+        "input_ids": torch.from_numpy(ids),
+        "attention_mask": torch.from_numpy(tokens.astype(np.int64)),
+        "marker_pos": torch.from_numpy(positions),
+        "marker_mask": torch.from_numpy(options),
+        "qtype": torch.tensor([it["qtype"] for it in items]),
+    }
+
+
+def _marker_head(model) -> bool:
+    """Whether :func:`_decision_logits` can stand in for ``model(...)``: laya's pre-norm ReLU head and GELU scorer."""
+    import os
+
+    import torch.nn as nn
+
+    if os.environ.get("UNSLOTH_SYSTEMONE_FAST", "") == "0":
+        return False
+    cached = model.__dict__.get("_unsloth_marker_head")
+    if cached is not None:
+        return cached
+    head, scorer = getattr(model, "head", None), getattr(model, "scorer", None)
+    ok = (
+        isinstance(head, nn.TransformerEncoder)
+        and len(head.layers) > 0
+        and head.norm is None
+        and all(
+            type(layer) is nn.TransformerEncoderLayer
+            and layer.norm_first
+            and layer.activation_relu_or_gelu == 1
+            and type(layer.self_attn) is nn.MultiheadAttention
+            and layer.self_attn.batch_first
+            and layer.self_attn._qkv_same_embed_dim
+            and layer.self_attn.in_proj_bias is not None
+            for layer in head.layers
+        )
+        and isinstance(scorer, nn.Sequential)
+        and [type(m) for m in scorer] == [nn.LayerNorm, nn.Linear, nn.GELU, nn.Linear]
+        and scorer[2].approximate == "none"
+    )
+    model.__dict__["_unsloth_marker_head"] = ok
+    return ok
+
+
+def _feed_forward(layer, x):
+    import torch.nn.functional as F
+
+    y = F.layer_norm(x, x.shape[-1:], layer.norm2.weight, layer.norm2.bias, layer.norm2.eps)
+    y = F.relu(F.linear(y, layer.linear1.weight, layer.linear1.bias), inplace = True)
+    return x.add_(F.linear(y, layer.linear2.weight, layer.linear2.bias))
+
+
+def _head_layer(
+    layer,
+    x,
+    mask,
+    markers = None,
+):
+    """One eval-mode pre-norm ``TransformerEncoderLayer``; with ``markers``, only the rows at those positions.
+
+    Keys and values always span every token, so each marker row is exactly what the full layer gives it.
+    """
+    import torch
+    import torch.nn.functional as F
+
+    attn = layer.self_attn
+    batch, length, width = x.shape
+    heads = attn.num_heads
+    y = F.layer_norm(x, (width,), layer.norm1.weight, layer.norm1.bias, layer.norm1.eps)
+    if markers is None:
+        q, k, v = (
+            F.linear(y, attn.in_proj_weight, attn.in_proj_bias)
+            .view(batch, length, 3, heads, width // heads)
+            .permute(2, 0, 3, 1, 4)
+        )
+    else:
+        index = markers[:, :, None].expand(-1, -1, width)
+        k, v = (
+            F.linear(y, attn.in_proj_weight[width:], attn.in_proj_bias[width:])
+            .view(batch, length, 2, heads, width // heads)
+            .permute(2, 0, 3, 1, 4)
+        )
+        q = F.linear(
+            torch.gather(y, 1, index), attn.in_proj_weight[:width], attn.in_proj_bias[:width]
+        )
+        q = q.view(batch, -1, heads, width // heads).transpose(1, 2)
+        x = torch.gather(x, 1, index)
+    # Boolean attn_mask is True where attention is allowed (the inverse of src_key_padding_mask); SDPA
+    # applies dropout_p even in eval, so it is passed as 0.
+    out = F.scaled_dot_product_attention(q, k, v, attn_mask = mask, dropout_p = 0.0)
+    out = out.transpose(1, 2).reshape(batch, -1, width)
+    x = x.add_(F.linear(out, attn.out_proj.weight, attn.out_proj.bias))
+    return _feed_forward(layer, x)
+
+
+def _decision_logits(
+    model,
+    input_ids,
+    attention_mask,
+    marker_pos,
+    marker_mask,
+    qtype,
+    *,
+    padded = True,
+):
+    """The ``logits`` of laya's ``DecisionModel.forward``, computing only what they read.
+
+    The scorer only reads the option markers, so the last head layer runs at the markers alone, and the
+    action head Studio never returns is skipped.
+    """
+    import torch.nn.functional as F
+
+    h = model.encoder(input_ids = input_ids, attention_mask = attention_mask).last_hidden_state
+    h = h + model.type_emb(qtype)[:, None, :]
+    mask = attention_mask.bool()[:, None, None, :] if padded else None
+    layers = model.head.layers
+    for layer in layers[:-1]:
+        h = _head_layer(layer, h, mask)
+    m = _head_layer(layers[-1], h, mask, marker_pos.clamp(min = 0))
+    norm, up, _, down = model.scorer
+    m = F.layer_norm(m, m.shape[-1:], norm.weight, norm.bias, norm.eps)
+    logits = (
+        F.linear(F.gelu(F.linear(m, up.weight, up.bias)), down.weight, down.bias)
+        .squeeze(-1)
+        .float()
+    )
+    return logits.masked_fill(~marker_mask, -1e4)
+
+
+class _CUDAGraphs:
+    """One captured :func:`_decision_logits` per padded (rows, tokens, options) bucket, sharing one memory pool.
+
+    A short request is bound by kernel launches (about 2.5 ms of GPU work in a 12 ms forward); replaying a
+    graph launches it all at once. Past ``_GRAPH_TOKENS`` padded tokens the GPU is the bottleneck and
+    padding up to a bucket costs more than launches save, so those batches run eagerly. Callers hold
+    ``_run_lock``, so one replay runs at a time and each output is read before the next overwrites it.
+    """
+
+    ROWS = (1, 2, 4, 8, 16)
+    TOKENS = (64, 128, 256, 512, 1024)
+    OPTIONS = (2, 4, 8, 16, 32, 64, 128, 256)
+    MAX_GRAPHS = 64
+
+    def __init__(self, agent):
+        import torch
+
+        self.agent = agent
+        # transformers 4.x wraps ModernBERT's embeddings and MLP in torch.compile on CUDA, which cannot run
+        # under capture; 5.x dropped that path, so this is what 5.x runs anyway.
+        config = getattr(getattr(agent.model, "encoder", None), "config", None)
+        if getattr(config, "reference_compile", False) is not False:
+            config.reference_compile = False
+        self.graphs: dict[tuple[int, int, int], tuple[Any, dict[str, Any], Any]] = {}
+        self.broken = False
+        self.pool = torch.cuda.graph_pool_handle()
+        self.pool_bytes = 0
+        # One warm-up stream: the allocator caches blocks per stream, so a new stream per capture would strand them.
+        self.stream = torch.cuda.Stream(agent.device)
+        free, _ = torch.cuda.mem_get_info(agent.device)
+        self.max_pool_bytes = min(1 << 30, free // 10)
+
+    @staticmethod
+    def _fit(n, sizes):
+        return next((size for size in sizes if n <= size), None)
+
+    def _forward(self, static):
+        with _autocast(self.agent, cache_enabled = False):
+            return _decision_logits(self.agent.model, *(static[name] for name in _INPUTS))
+
+    def _capture(self, key):
+        import torch
+
+        rows, tokens, options = key
+        device = self.agent.device
+        static = {
+            "input_ids": torch.zeros((rows, tokens), dtype = torch.long, device = device),
+            "attention_mask": torch.ones((rows, tokens), dtype = torch.long, device = device),
+            "marker_pos": torch.zeros((rows, options), dtype = torch.long, device = device),
+            "marker_mask": torch.ones((rows, options), dtype = torch.bool, device = device),
+            "qtype": torch.zeros((rows,), dtype = torch.long, device = device),
+        }
+        # Warm up off the default stream first, as torch.cuda.graph requires, so lazy init is not captured.
+        self.stream.wait_stream(torch.cuda.current_stream(device))
+        with torch.cuda.stream(self.stream):
+            for _ in range(2):
+                self._forward(static)
+        torch.cuda.current_stream(device).wait_stream(self.stream)
+        graph = torch.cuda.CUDAGraph()
+        # thread_local: CUDA work on other Studio threads cannot break (or be broken by) this capture.
+        with torch.cuda.graph(graph, pool = self.pool, capture_error_mode = "thread_local"):
+            logits = self._forward(static)
+        return graph, static, logits
+
+    def run(self, batch):
+        """Logits for ``batch`` from a graph replay, or None to run it eagerly."""
+        import torch
+
+        rows, tokens = batch["input_ids"].shape
+        options = batch["marker_pos"].shape[1]
+        key = (
+            self._fit(rows, self.ROWS),
+            self._fit(tokens, self.TOKENS),
+            self._fit(options, self.OPTIONS),
+        )
+        if self.broken or None in key or key[0] * key[1] > _GRAPH_TOKENS:
+            return None
+        entry = self.graphs.get(key)
+        if entry is None:
+            if len(self.graphs) >= self.MAX_GRAPHS or self.pool_bytes >= self.max_pool_bytes:
+                return None
+            before = torch.cuda.memory_reserved(self.agent.device)
+            try:
+                entry = self._capture(key)
+            except Exception:
+                # e.g. transformers 4.x builds ModernBERT's sliding-window mask on the CPU every forward.
+                logger.warning(
+                    "Laya cannot run in CUDA graphs here; running it eagerly", exc_info = True
+                )
+                self.broken = True
+                return None
+            self.graphs[key] = entry
+            self.pool_bytes += max(0, torch.cuda.memory_reserved(self.agent.device) - before)
+            if self.pool_bytes > self.max_pool_bytes:
+                # Over budget: the pool is only released with every graph in it, so drop them all and stay eager.
+                logger.warning("Laya CUDA graphs need more memory than allowed; running eagerly")
+                self.graphs.clear()
+                self.broken = True
+                return None
+        graph, static, logits = entry
+        # Padding tokens are masked; padding rows repeat row 0 so every row has a real token to attend to.
+        static["input_ids"].zero_()
+        static["attention_mask"].zero_()
+        static["marker_pos"].zero_()
+        static["marker_mask"].zero_()
+        for name in _INPUTS:
+            source = batch[name]
+            if source.dim() == 1:
+                static[name][:rows].copy_(source)
+            else:
+                static[name][:rows, : source.shape[1]].copy_(source)
+            if rows < key[0]:
+                static[name][rows:] = static[name][:1]
+        graph.replay()
+        return logits[:rows, :options]
 
 
 def _probabilities(agent, row, k: int, qtype: int):
     import numpy as np
-    from laya.common import temp_bucket
+
+    temp_bucket = _laya().common.temp_bucket
 
     scale = agent.temperature_by_options.get(temp_bucket(qtype, k), agent.temperature[qtype])
     z = row[:k] / scale
@@ -654,21 +1132,26 @@ def status() -> dict[str, Any]:
             "loaded_model": _loaded.name if _loaded else None,
             "device": _device_name,
             "loading_model": _loading.name if _loading else None,
-            "installing": installing(),
-            "error": failure[1] if failure else (_install_failure[0] if _install_failure else None),
+            # Kept for the settings API: laya is vendored, so there is never an install in flight.
+            "installing": False,
+            "error": failure[1] if failure else None,
             "error_model": failure[0].name if failure else None,
         }
 
 
-def unload() -> bool:
-    global _agent, _loaded, _device_name, _failure, _install_failure
+def ensure_can_unload() -> None:
     with _state_lock:
         # _loading: a load claimed but not yet started would otherwise land after this unload.
         if _loading is not None or (_loader is not None and _loader.is_alive()):
             raise Unavailable(409, "model_loading", "Wait for the load to finish before unloading")
+
+
+def unload() -> bool:
+    global _agent, _loaded, _device_name, _failure
+    ensure_can_unload()
     with _run_lock:
         was_loaded = _agent is not None
         _agent = _loaded = _device_name = None
-        _failure = _install_failure = None
+        _failure = None
     _release_memory()
     return was_loaded

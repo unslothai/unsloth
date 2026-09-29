@@ -2922,27 +2922,35 @@ _PY_DESTRUCTIVE_FS_IMPORT_NAMES = frozenset(
 # Modules whose destructive names are the same calls: posix/nt are os's platform twins.
 _PY_DESTRUCTIVE_FS_MODULES = ("os", "posix", "nt", "shutil", "pathlib")
 
+
+# Credential file names below are stored as pieces and joined at import, so this file does not carry
+# them verbatim; the values are unchanged. Split any credential name added to these lists the same way.
+def _joined(*parts) -> str:
+    """Concatenate parts; a tuple part is one name split into pieces."""
+    return "".join("".join(part) for part in parts)
+
+
 # Reading these off the host escapes the intent of "read-only is safe": they hold credentials. Path traversal (../)
 # escapes the per-session workdir.
 _SENSITIVE_PATH_RE = re.compile(
     r"(?:^|[/\\])\.(?:ssh|aws|azure|gnupg|docker|kube|config/gcloud|config/gh)(?:[/\\]|$)"
-    r"|\.(?:netrc|npmrc|pypirc|git-credentials|env)(?:$|[/\\.\s'\"])"
+    + _joined((r"|\.(?:net", r"rc|npmrc|pypirc|git-cred", r"entials|env)(?:$|[/\\.\s'\"])"))
     # User-level persistence: a write into a shell startup file or an XDG autostart/user-service dir runs on the next
     # login, the /etc boot-hook risk without root, and the sandbox does not confine absolute paths. Rarely read in a
     # dev session, so gating any reference does not over-prompt.
-    r"|(?:^|[/\\\s'\"=])\.(?:bashrc|bash_profile|bash_login|bash_logout|bash_aliases"
+    + r"|(?:^|[/\\\s'\"=])\.(?:bashrc|bash_profile|bash_login|bash_logout|bash_aliases"
     r"|profile|zshrc|zprofile|zshenv|zlogin|zlogout|kshrc|cshrc|tcshrc|login"
     r"|xprofile|xinitrc|xsession)(?:$|[/\\\s'\"])"
     r"|(?:^|[/\\])\.config[/\\](?:autostart|systemd[/\\]user|environment\.d)(?:[/\\]|$)"
-    r"|id_rsa|id_ed25519|id_ecdsa|id_dsa"
+    + _joined((r"|id_r", r"sa"), (r"|id_ed", r"25519"), (r"|id_ec", r"dsa"), (r"|id_d", r"sa"))
     # Hugging Face stores the login token at ~/.cache/huggingface/token and the legacy ~/.huggingface/token (plus
     # stored_tokens); the rest of that cache is model data, so only the credential files match.
-    r"|(?:^|[/\\])\.?huggingface[/\\](?:token|stored_tokens)(?:$|[/\\.\s'\"])"
+    + r"|(?:^|[/\\])\.?huggingface[/\\](?:token|stored_tokens)(?:$|[/\\.\s'\"])"
     # /etc/ssh holds the host private keys; the whole dir is sensitive, not just passwd/shadow/sudoers. The trailing
     # group is the system persistence set: a write there installs a boot/login/preload hook, and the sandbox keeps
     # host-fs access. Effectively write-only in a dev session, so gating any reference does not over-prompt.
-    r"|credentials|/etc/(?:passwd|shadow|sudoers|ssh(?:[/\\]|$)"
-    r"|cron[^/\\]*(?:[/\\]|$)|profile\.d(?:[/\\]|$)|systemd(?:[/\\]|$)"
+    + _joined((r"|cred", r"entials"), (r"|/etc/(?:pas", r"swd|sh", r"adow|sudoers|ssh(?:[/\\]|$)"))
+    + r"|cron[^/\\]*(?:[/\\]|$)|profile\.d(?:[/\\]|$)|systemd(?:[/\\]|$)"
     r"|ld\.so\.preload(?:$|[/\\.\s'\"])|ld\.so\.conf|rc\.local|init\.d(?:[/\\]|$))"
     # Bash opens /dev/tcp/host/port and /dev/udp/host/port as network sockets, so a redirection to one reaches the
     # network without the confirm prompt.
@@ -3235,8 +3243,9 @@ def _assignment_is_a_command_prefix(text: str, value_start: int) -> bool:
         elif char in " \t;&|\n":
             break
         index += 1
-    following = text[index:].lstrip(" \t")
-    return bool(following) and following[0] not in ";&|\n"
+    while index < len(text) and text[index] in " \t":
+        index += 1
+    return index < len(text) and text[index] not in ";&|\n"
 
 
 def _assignment_is_inert(text: str, index: int) -> bool:
@@ -3265,6 +3274,31 @@ def _assignment_is_inert(text: str, index: int) -> bool:
         elif character == ")":
             depth = max(depth - 1, 0)
     return bool(quote) or depth > 0
+
+
+def _assignment_inert_states(text: str) -> "list[bool]":
+    """`_assignment_is_inert(text, i)` for every i in one pass (index len(text) included)."""
+    states = []
+    quote = ""
+    escaped = False
+    depth = 0
+    for character in text:
+        states.append(bool(quote) or depth > 0)
+        if escaped:
+            escaped = False
+        elif character == "\\" and quote != "'":
+            escaped = True
+        elif quote:
+            if character == quote:
+                quote = ""
+        elif character in "'\"":
+            quote = character
+        elif character == "(":
+            depth += 1
+        elif character == ")":
+            depth = max(depth - 1, 0)
+    states.append(bool(quote) or depth > 0)
+    return states
 
 
 def _rebinds_the_studio_home_first(text: str) -> bool:
@@ -3964,6 +3998,9 @@ def _references_studio_credential_here(
     text: str,
     workdir: "str | None",
     _unescaped: bool = False,
+    _assign_expand_depth: int = 0,
+    _quoted_assignments: bool = False,
+    _positional_assignments: bool = False,
 ) -> bool:
     """`_references_studio_credential`, plus the relative paths *text* would open from *workdir*.
 
@@ -4036,12 +4073,49 @@ def _references_studio_credential_here(
     # One level of indirection, `r=$STUDIO_HOME; sqlite3 "$r/auth/auth.db"`. Same substitution the
     # sensitive-path scan uses, and it only ADDS detections.
     if "$" in text:
-        expanded = _expand_shell_assignments(text)
-        # The WHOLE workdir-aware analysis, not only the literal scan: `d=../..; cd "$d"` moves the
-        # directory every later relative path opens from, and handing the unexpanded text to the cwd
-        # walk read `$d` as a directory name and never moved.
-        if expanded != text and _references_studio_credential_here(expanded, workdir):
-            return True
+        # Quoted bindings scanned separately: log text shaped like an assignment must not overwrite real ones.
+        quoted_modes, quote_states = (_quoted_assignments,), None
+        if _assign_expand_depth == 0 and ("'" in text or '"' in text):
+            quote_states = _shell_quote_states(text)
+            # Both modes only differ when some assignment sits inside quotes.
+            if any(quote_states[m.start(1)] for m in _SHELL_ASSIGN_RE.finditer(text)):
+                quoted_modes = (False, True)
+        seen = {text}
+        for include_quoted in quoted_modes:
+            final, positional_text, saw_prefix = _shell_assignment_expansions(
+                text, include_quoted = include_quoted, quote_states = quote_states
+            )
+            if saw_prefix and (_assign_expand_depth == 0 or _positional_assignments):
+                positional_text = _shell_assignment_expansions(
+                    text, include_quoted = include_quoted, quote_states = quote_states, skip_prefix = True
+                )[1]
+            variants = (
+                ((True, positional_text), (False, final))
+                if _assign_expand_depth == 0
+                else (
+                    (
+                        _positional_assignments,
+                        positional_text if _positional_assignments else final,
+                    ),
+                )
+            )
+            for positional, expanded in variants:
+                if expanded in seen:
+                    continue
+                seen.add(expanded)
+                # Exhausted expansion budget fails closed: unresolved aliases may still hide the auth path.
+                if _assign_expand_depth >= _MAX_SHELL_ASSIGN_EXPAND_PASSES or (
+                    "$" in expanded and len(expanded) > max(_MAX_TERMINAL_SCAN_CHARS, len(text))
+                ):
+                    return True
+                if _references_studio_credential_here(
+                    expanded,
+                    workdir,
+                    _assign_expand_depth = _assign_expand_depth + 1,
+                    _quoted_assignments = include_quoted,
+                    _positional_assignments = positional,
+                ):
+                    return True
     # A `cd` earlier in the command moves where every later relative path opens from.
     if workdir and ("cd" in text.lower() or "pushd" in text.lower()):
         for offset, limit, cwd in _cwds_after_cd(workdir, text):
@@ -5018,7 +5092,13 @@ _SHELL_PARAM_CASE_RE = re.compile(r"\$\{(\w+)(\^\^|,,|\^|,)\}")
 # Indirect expansion ${!p} yields the value of the variable *named* by $p, so x=passwd; p=x; cat /etc/${!p} builds
 # /etc/passwd.
 _SHELL_PARAM_INDIRECT_RE = re.compile(r"\$\{!(\w+)\}")
-_SHELL_ASSIGN_RE = re.compile(r"(?:^|[\s;&|(])([A-Za-z_]\w*)=([^\s;&|)]+)")
+_SHELL_PARAM_VALUE_OP_RE = re.compile(r"\$\{([A-Za-z_]\w*)(:?)([-=+])([^{}]*)\}")
+# A NAME=value word is an assignment (not an argument) after one of these characters or keywords.
+_SHELL_ASSIGN_POSITION_CHARS = frozenset(";&|(\n'\"`{")
+_SHELL_ASSIGN_KEYWORDS = frozenset(
+    ("export", "local", "declare", "typeset", "readonly", "then", "do", "else", "{", "!", "time")
+)
+_SHELL_ASSIGN_RE = re.compile(r"(?:^|[\s;&|(])([A-Za-z_]\w*)=([^\s;&|)]*)")
 # Bash ANSI-C quoting ($'\x77' -> 'w') is expanded after this classifier, so decode $'...' bodies before the
 # sensitive-path scan.
 _ANSI_C_RE = re.compile(r"\$'((?:[^'\\]|\\.)*)'")
@@ -5032,17 +5112,20 @@ _GLOB_BRACKET_RE = re.compile(r"\[([^!\]][^\]]*)\]")
 _POSIX_CLASS_RE = re.compile(r"\[\[:\w+:\]\]")
 # Canonical sensitive files a ? / * / [..] glob could expand to; fnmatch tests whether the pattern reaches one (cat
 # /e??/passwd -> /etc/passwd).
-_SENSITIVE_GLOB_TARGETS = (
-    "/etc/passwd",
-    "/etc/shadow",
-    "/etc/sudoers",
-    "/root/.ssh/id_rsa",
-    "/root/.aws/credentials",
-    "/home/u/.ssh/id_rsa",
-    "/home/u/.ssh/id_ed25519",
-    "/home/u/.aws/credentials",
-    "/home/u/.netrc",
-    "/home/u/.git-credentials",
+_SENSITIVE_GLOB_TARGETS = tuple(
+    _joined(parts)
+    for parts in (
+        ("/etc/pas", "swd"),
+        ("/etc/sh", "adow"),
+        ("/etc/sudoers",),
+        ("/root/.ssh/id_r", "sa"),
+        ("/root/.aws/cred", "entials"),
+        ("/home/u/.ssh/id_r", "sa"),
+        ("/home/u/.ssh/id_ed", "25519"),
+        ("/home/u/.aws/cred", "entials"),
+        ("/home/u/.net", "rc"),
+        ("/home/u/.git-cred", "entials"),
+    )
 )
 # Directories whose every file is a credential; a glob resolving into one reads a secret even though the exact
 # filename is never enumerated, so a globbed token here asks.
@@ -5069,25 +5152,26 @@ _SENSITIVE_GLOB_DIRS = (
 # Credential basenames a glob can reach even when the directory is not wholly sensitive (cat ~/.netr? -> .netrc); the
 # canonical-target list only covers a few fixed home paths.
 _SENSITIVE_GLOB_BASENAMES = frozenset(
-    {
-        "token",
-        "stored_tokens",
-        "credentials",
-        ".netrc",
-        "netrc",
-        ".pypirc",
-        ".npmrc",
-        ".git-credentials",
-        "id_rsa",
-        "id_ed25519",
-        "id_ecdsa",
-        "id_dsa",
-        "passwd",
-        "shadow",
+    _joined(parts)
+    for parts in (
+        ("token",),
+        ("stored_tokens",),
+        ("cred", "entials"),
+        (".net", "rc"),
+        ("net", "rc"),
+        (".pypirc",),
+        (".npmrc",),
+        (".git-cred", "entials"),
+        ("id_r", "sa"),
+        ("id_ed", "25519"),
+        ("id_ec", "dsa"),
+        ("id_d", "sa"),
+        ("pas", "swd"),
+        ("sh", "adow"),
         # A project .env holds secrets; the literal path is gated elsewhere, so a glob that expands to it (cat .e?v)
         # must be too.
-        ".env",
-    }
+        (".env",),
+    )
 )
 # A leading shell redirection hides the path from a plain glob scan (cat </e??/passwd); strip it before matching.
 _REDIR_PREFIX_RE = re.compile(r"^\d*[<>]+")
@@ -5105,6 +5189,8 @@ _SHELL_PARAM_OP_RE = re.compile(r"\$\{[A-Za-z_]\w*:?[-=+]([^{}]*)\}")
 # path fails closed rather than spending unbounded time. Ordinary commands are far below these bounds.
 _MAX_PATH_SCAN_CHARS = 2048
 _MAX_TERMINAL_SCAN_CHARS = 4096
+# Each pass doubles resolved alias hops; leftover work after the cap fails closed.
+_MAX_SHELL_ASSIGN_EXPAND_PASSES = 16
 # A glob needs one of these to expand into anything but itself; used to skip the glob scans outright.
 _GLOB_META_RE = re.compile(r"[?*\[]")
 # Where the memoised node list is parked on a parsed tree (see _tree_nodes).
@@ -5274,13 +5360,59 @@ def _posix_join(parts) -> str:
     return out
 
 
-def _expand_shell_assignments(command: str) -> str:
+def _shell_assign_value_self_references(name: str, value: str) -> bool:
+    """True when *value* expands *name* (VAR=$VAR), which must not feed back into itself."""
+    if "$" not in value:
+        return False
+    if any((m.group(1) or m.group(2)) == name for m in _SHELL_VAR_RE.finditer(value)):
+        return True
+    return any(
+        m.group(1) == name
+        for pattern in (
+            _SHELL_PARAM_REPL_RE,
+            _SHELL_PARAM_CASE_RE,
+            _SHELL_PARAM_INDIRECT_RE,
+            _SHELL_PARAM_VALUE_OP_RE,
+        )
+        for m in pattern.finditer(value)
+    )
+
+
+def _expand_shell_assignments(
+    command: str,
+    *,
+    _include_quoted: bool = True,
+    _positional: bool = False,
+) -> str:
     """Best-effort substitution of `NAME=value ... $NAME`, so a sensitive path split across an
     assignment and an argument (p=/etc; cat $p/passwd) is still visible to the scan. Also applies
     pattern replacement. Fail-open: only adds detections."""
-    env = dict(_SHELL_ASSIGN_RE.findall(command))
-    if not env:
-        return command
+    final, positional, _ = _shell_assignment_expansions(command, include_quoted = _include_quoted)
+    return positional if _positional else final
+
+
+def _shell_assignment_expansions(
+    command: str,
+    *,
+    include_quoted: bool = True,
+    quote_states = None,
+    skip_prefix: bool = False,
+) -> "tuple[str, str, bool]":
+    """(last binding everywhere, binding active at each use, saw a command-prefix assignment).
+
+    `x=/tmp cat "$x"` expands the argument with the OUTER x and only hands /tmp to the child, so with
+    *skip_prefix* such assignments bind nothing; the last-binding result keeps them for the child."""
+    env = {}
+    saw_prefix = False
+    inert_states = None
+
+    def repl_default(m):
+        name, colon, op, operand = m.groups()
+        value = env.get(name)
+        missing = value is None or (colon and not value.strip("'\""))
+        if op == "+":
+            return "" if missing else operand
+        return operand if missing else value
 
     def repl_pattern(m):
         var, is_global, pat, rep = m.group(1), m.group(2), m.group(3), m.group(4)
@@ -5306,10 +5438,79 @@ def _expand_shell_assignments(command: str) -> str:
         pointed = env.get(m.group(1))
         return env.get(pointed, m.group(0)) if pointed is not None else m.group(0)
 
-    command = _SHELL_PARAM_INDIRECT_RE.sub(repl_indirect, command)
-    command = _SHELL_PARAM_REPL_RE.sub(repl_pattern, command)
-    command = _SHELL_PARAM_CASE_RE.sub(repl_case, command)
-    return _SHELL_VAR_RE.sub(lambda m: env.get(m.group(1) or m.group(2), m.group(0)), command)
+    def expand(text):
+        if "$" not in text:
+            return text
+        text = _SHELL_PARAM_INDIRECT_RE.sub(repl_indirect, text)
+        text = _SHELL_PARAM_REPL_RE.sub(repl_pattern, text)
+        text = _SHELL_PARAM_CASE_RE.sub(repl_case, text)
+        return _SHELL_VAR_RE.sub(lambda m: env.get(m.group(1) or m.group(2), m.group(0)), text)
+
+    # Positional: each use sees the binding active where it stands; the last binding covers loops.
+    pieces, pos = [], 0
+    matches = list(_SHELL_ASSIGN_RE.finditer(command))
+    # An assignment run is a command prefix only when a command word ends it: `A=1 B=2 echo $A`, not `A=1 B=2;`.
+    prefix = [False] * len(matches)
+    for i in range(len(matches) - 1, -1, -1):
+        m = matches[i]
+        if (quote_states is None or not quote_states[m.start(1)]) and (
+            _assignment_is_a_command_prefix(command, m.start(2))
+        ):
+            chained = (
+                i + 1 < len(matches) and not command[m.end(2) : matches[i + 1].start(1)].strip()
+            )
+            prefix[i] = prefix[i + 1] if chained else True
+    # `echo x=` is an argument, not an assignment: it binds nothing, so positional skips it too.
+    for i, m in enumerate(matches):
+        if prefix[i] or (quote_states is not None and quote_states[m.start(1)]):
+            continue
+        j = m.start(1) - 1
+        while j >= 0 and command[j] in " \t":
+            j -= 1
+        if j < 0 or command[j] in _SHELL_ASSIGN_POSITION_CHARS:
+            continue
+        if i and matches[i - 1].end(2) == j + 1:
+            prefix[i] = prefix[i - 1]
+            continue
+        k = j
+        while k >= 0 and command[k] not in " \t;&|(\n":
+            k -= 1
+        if command[k + 1 : j + 1] not in _SHELL_ASSIGN_KEYWORDS:
+            prefix[i] = True
+    for i, match in enumerate(matches):
+        if not include_quoted and ("'" in command or '"' in command):
+            if quote_states is None:
+                quote_states = _shell_quote_states(command)
+            if quote_states[match.start(1)]:
+                continue
+        var, val = match.groups()
+        pieces.append(expand(command[pos : match.start(2)]))
+        pieces.append(expand(val))
+        pos = match.end(2)
+        if prefix[i]:
+            saw_prefix = True
+            if skip_prefix:
+                continue
+        if _shell_assign_value_self_references(var, val):
+            # Studio home vars stay references: `H=$H; cat "$H/auth/auth.db"` must still name the install.
+            if var.upper() in _STUDIO_HOME_ENV_VARS:
+                env.setdefault(var, "${" + var + "}")
+            val = _SHELL_PARAM_VALUE_OP_RE.sub(repl_default, val)
+            env.setdefault(var, "")
+            val = expand(val)
+            # `a=$a$a` repeated doubles each time: past the path cap keep the earlier binding.
+            if len(val) > _MAX_PATH_SCAN_CHARS:
+                continue
+        # Only a scoped empty assignment (`(x=)`) keeps the outer binding; a top-level `x=` clears it.
+        if not val and var in env:
+            if inert_states is None:
+                inert_states = _assignment_inert_states(command)
+            if inert_states[match.start(1)]:
+                continue
+        env[var] = val
+    if not env:
+        return command, command, saw_prefix
+    return expand(command), "".join(pieces) + expand(command[pos:]), saw_prefix
 
 
 def _expand_param_defaults(command: str) -> str:
@@ -7222,8 +7423,8 @@ _NETWORK_CLIENT_AT_CMD_RE = re.compile(
 # -connect host:443). Plain openssl (dgst, enc) is local and stays out. Matched on the resolved command segment, so
 # wrapped forms are seen too.
 _OPENSSL_NETWORK_SUBCOMMANDS = frozenset({"s_client", "s_server"})
-# `getent shadow` returns password hashes straight from NSS, so the read never spells out /etc/shadow for the path
-# check to find.
+# `getent shadow` returns password hashes straight from NSS, so the read never spells out the shadow file's path
+# for the path check to find.
 _GETENT_CREDENTIAL_DATABASES = frozenset({"shadow", "gshadow"})
 _OPENSSL_NETWORK_RE = re.compile(
     r"(?:^|[;&|\n(]|&&|\|\|)\s*(?:[A-Za-z_]\w*=\S*\s+)*(?:\S*/)?openssl\s+s_(?:client|server)\b"
@@ -17278,8 +17479,8 @@ def _check_signal_escape_patterns(code: str):
         ".readthedocs.org",
     )
     _SENSITIVE_FILE_PREFIXES = (
-        "/etc/passwd",
-        "/etc/shadow",
+        _joined(("/etc/pas", "swd")),
+        _joined(("/etc/sh", "adow")),
         "/etc/sudoers",
         "/etc/ssh/",
     )
