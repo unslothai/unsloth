@@ -187,6 +187,24 @@ def _hf_device_error(device: str) -> Optional[str]:
     return None
 
 
+def _hflm_4bit(HFLM):
+    # transformers 5 removed from_pretrained(load_in_4bit=...), which HFLM forwards verbatim
+    class _HFLM4bit(HFLM):
+        def _create_model(
+            self,
+            *args,
+            quantization_config = None,
+            load_in_4bit = False,
+            **kwargs,
+        ):
+            if load_in_4bit and quantization_config is None:
+                from transformers import BitsAndBytesConfig
+                quantization_config = BitsAndBytesConfig(load_in_4bit = True)
+            return super()._create_model(*args, quantization_config = quantization_config, **kwargs)
+
+    return _HFLM4bit
+
+
 def _registry_names(manager) -> set:
     return (
         set(getattr(manager, "all_tasks", []) or [])
@@ -841,12 +859,18 @@ def evaluate(
                         "Note: bitsandbytes is not installed — loading in full "
                         "precision (`pip install bitsandbytes` to enable 4-bit)."
                     )
-            eval_kwargs.update(
-                model = "hf",
-                model_args = model_args,
-                batch_size = bs,
-                device = device,
-            )
+            if model_args.get("load_in_4bit"):
+                with _silence():
+                    eval_kwargs["model"] = _hflm_4bit(HFLM)(
+                        **model_args, batch_size = bs, device = device
+                    )
+            else:
+                eval_kwargs.update(
+                    model = "hf",
+                    model_args = model_args,
+                    batch_size = bs,
+                    device = device,
+                )
         else:
             from unsloth import FastLanguageModel
 

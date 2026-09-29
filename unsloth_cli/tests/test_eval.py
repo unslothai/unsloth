@@ -519,7 +519,9 @@ def fake_eval_env(monkeypatch):
             tokenizer = None,
             batch_size = None,
             max_length = None,
+            **kwargs,
         ):
+            calls["hflm_kwargs"] = kwargs
             calls["batch_size"] = batch_size
             calls["hflm_tokenizer"] = tokenizer
             calls["hflm_max_length"] = max_length
@@ -882,8 +884,9 @@ def test_eval_cuda_index_keeps_auto_batch_size(fake_eval_env, tmp_path):
         ],
     )
     assert result.exit_code == 0, result.output
-    assert fake_eval_env["simple_evaluate_kwargs"]["batch_size"] == "auto"
-    assert fake_eval_env["model_args"]["load_in_4bit"] is True
+    assert fake_eval_env["batch_size"] == "auto"
+    assert fake_eval_env["hflm_kwargs"]["load_in_4bit"] is True
+    assert fake_eval_env["hflm_kwargs"]["device"] == "cuda:0"
 
 
 def test_eval_unknown_task_errors(fake_eval_env, tmp_path):
@@ -1540,3 +1543,27 @@ def test_eval_skips_unsafe_code_kwarg_on_older_lm_eval(fake_eval_env, tmp_path, 
     assert result.exit_code == 0, result.output
     assert seen["tasks"] == ["gsm8k"]
     assert "has no effect" in result.output
+
+
+def test_hflm_4bit_passes_a_quantization_config_not_load_in_4bit():
+    pytest.importorskip("transformers")
+    from transformers import BitsAndBytesConfig
+
+    class _Base:
+        def _create_model(
+            self,
+            pretrained,
+            quantization_config = None,
+            **kwargs,
+        ):
+            self.seen = dict(kwargs, quantization_config = quantization_config)
+
+    lm = evalmod._hflm_4bit(_Base)()
+    lm._create_model(pretrained = "x", load_in_4bit = True, quantization_config = None)
+    assert "load_in_4bit" not in lm.seen
+    assert isinstance(lm.seen["quantization_config"], BitsAndBytesConfig)
+    assert lm.seen["quantization_config"].load_in_4bit is True
+
+    prequantized = object()
+    lm._create_model(pretrained = "x", load_in_4bit = True, quantization_config = prequantized)
+    assert lm.seen["quantization_config"] is prequantized
