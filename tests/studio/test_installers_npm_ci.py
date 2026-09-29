@@ -58,6 +58,19 @@ def test_bun_only_runs_against_a_committed_bun_lock():
     assert "{ bun install @NpmRegistryArgs }" not in _read("studio/setup.ps1")
 
 
+def test_bun_is_not_provisioned_when_npm_ci_will_run():
+    sh = _read("studio/setup.sh")
+    skip = sh.index('elif [ -f "$SCRIPT_DIR/frontend/package-lock.json" ]; then')
+    assert (
+        skip
+        < sh.index('elif [ "$NODE_SOURCE" = bundled ]; then', skip)
+        < sh.index("npm install -g bun", skip)
+    )
+    ps1 = _read("studio/setup.ps1")
+    gate = 'if (-not (Test-Path (Join-Path $FrontendDir "package-lock.json")) -and -not (Get-Command bun'
+    assert ps1.index(gate) < ps1.index("npm install -g bun")
+
+
 def test_workflows_install_lockfiled_dirs_with_npm_ci():
     for name in (
         "release-desktop.yml",
