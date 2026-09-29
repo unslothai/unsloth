@@ -113,6 +113,115 @@ _remove_agent_instruction_files() {
     done
 }
 
+# ── Bounded `--version` probe for binaries setup does not own (uv candidates, the system Node) ──
+_SETUP_PROBE_TARGET=""
+_SETUP_PROBE_PID=""
+_SETUP_PROBE_PREV_TRAP=""
+
+# Bash needs `--` before a negative process-group ID.
+# Omit it for positive PIDs to support dash, which rejects `--`.
+_setup_probe_signal_target() {
+    case "$2" in
+        -*) kill "-$1" -- "$2" 2>/dev/null || : ;;
+        *)  kill "-$1" "$2" 2>/dev/null || : ;;
+    esac
+}
+
+# Send TERM, then KILL after $3 seconds. $1 is the target PID/group; $2 is the PID to watch.
+_setup_probe_terminate() {
+    _supt_grace=0
+    _setup_probe_signal_target TERM "$1"
+    while [ "$_supt_grace" -lt "$3" ] && kill -0 "$2" 2>/dev/null; do
+        sleep 1
+        _supt_grace=$((_supt_grace + 1))
+    done
+    # Recheck before KILL to reduce the risk of signalling a reused PID.
+    if kill -0 "$2" 2>/dev/null; then _setup_probe_signal_target KILL "$1"; fi
+    unset _supt_grace
+}
+
+# Preserve the caller's signal handlers while the watchdog owns probe cleanup.
+_setup_probe_restore_trap() {
+    _SETUP_PROBE_TARGET=""
+    _SETUP_PROBE_PID=""
+    if [ -n "${_SETUP_PROBE_PREV_TRAP:-}" ]; then
+        eval "$_SETUP_PROBE_PREV_TRAP"
+    else
+        trap - HUP INT TERM
+    fi
+    _SETUP_PROBE_PREV_TRAP=""
+}
+
+_setup_probe_on_signal() {
+    # Stop the probe on cancellation, with a shorter grace period.
+    if [ -n "${_SETUP_PROBE_TARGET:-}" ] && [ -n "${_SETUP_PROBE_PID:-}" ]; then
+        _setup_probe_terminate "$_SETUP_PROBE_TARGET" "$_SETUP_PROBE_PID" 2
+        wait "$_SETUP_PROBE_PID" 2>/dev/null || :
+    fi
+    _setup_probe_restore_trap
+    # Re-deliver the signal to the restored handler or default action.
+    kill -s "$1" "$$" 2>/dev/null || :
+}
+
+# Probe $1 with stdin closed and a 20 s timeout, plus 5 s to terminate.
+# Save stdout to $2 (default /dev/null) to avoid re-probing for the version.
+# Use a file so lingering children cannot hold an output pipe open.
+_setup_probe_version() {
+    _supe_secs="${_SETUP_PROBE_SECONDS:-20}"
+    _supe_out="${2:-/dev/null}"
+    # Use GNU timeout when available, otherwise the watchdog below.
+    if command -v timeout >/dev/null 2>&1 && timeout -k 1 5 true >/dev/null 2>&1; then
+        timeout -k 5 "$_supe_secs" "$1" --version >"$_supe_out" 2>/dev/null </dev/null
+        _supe_rc=$?
+        # Normalize SIGKILL after the grace period to the watchdog's timeout status.
+        if [ "$_supe_rc" -eq 137 ]; then _supe_rc=124; fi
+        return $_supe_rc
+    fi
+    # Temporarily enable monitor mode to signal the probe and its children as a group.
+    _supe_monitor=off
+    case "$-" in *m*) _supe_monitor=on ;; esac
+    [ "$_supe_monitor" = on ] || set -m 2>/dev/null || :
+    "$1" --version >"$_supe_out" 2>/dev/null </dev/null &
+    _supe_pid=$!
+    [ "$_supe_monitor" = on ] || set +m 2>/dev/null || :
+    # Signal a group only if it differs from setup's own group; otherwise use the PID.
+    # Strip spaces without external tools so this works on a minimal PATH.
+    _supe_target="$_supe_pid"
+    if command -v ps >/dev/null 2>&1; then
+        _supe_pgid=$(ps -o pgid= -p "$_supe_pid" 2>/dev/null)
+        _supe_self=$(ps -o pgid= -p $$ 2>/dev/null)
+        _supe_pgid=${_supe_pgid##* }
+        _supe_self=${_supe_self##* }
+        case "$_supe_pgid$_supe_self" in
+            ''|*[!0-9]*) : ;;
+            *) [ "$_supe_pgid" = "$_supe_self" ] || _supe_target="-$_supe_pgid" ;;
+        esac
+    fi
+    _SETUP_PROBE_TARGET="$_supe_target"
+    _SETUP_PROBE_PID="$_supe_pid"
+    _SETUP_PROBE_PREV_TRAP=$(trap -p HUP INT TERM 2>/dev/null) || _SETUP_PROBE_PREV_TRAP=""
+    trap '_setup_probe_on_signal HUP' HUP
+    trap '_setup_probe_on_signal INT' INT
+    trap '_setup_probe_on_signal TERM' TERM
+    _supe_waited=0
+    while kill -0 "$_supe_pid" 2>/dev/null; do
+        if [ "$_supe_waited" -ge "$_supe_secs" ]; then
+            _setup_probe_terminate "$_supe_target" "$_supe_pid" 5
+            wait "$_supe_pid" 2>/dev/null
+            _setup_probe_restore_trap
+            unset _supe_pid _supe_waited _supe_target _supe_pgid _supe_self
+            return 124
+        fi
+        sleep 1
+        _supe_waited=$((_supe_waited + 1))
+    done
+    wait "$_supe_pid"
+    _supe_rc=$?
+    _setup_probe_restore_trap
+    unset _supe_pid _supe_waited _supe_target _supe_pgid _supe_self
+    return $_supe_rc
+}
+
 # ── BEGIN mirror fallback (kept identical in install.sh and studio/setup.sh) ──
 # Only in mainland China (or UNSLOTH_MIRROR_FALLBACK=1): swaps a default host below 1 MiB/s or unreachable for its mirror when faster; user-set sources untouched; UNSLOTH_MIRROR_FALLBACK=0 disables.
 _MIRROR_CERNET="https://tuna.mirrors.cernet.edu.cn"
@@ -2059,13 +2168,34 @@ else
 fi
 NODE_DIR="$_NODE_PARENT/node"
 
-_SYS_NODE_VER="$(node -v 2>/dev/null || true)"
-_SYS_NPM_VER="$(npm -v 2>/dev/null || true)"
+# Bound system node/npm probes so a broken binary on PATH cannot stall setup (#11709).
+# Sets _PROBED_VER, or leaves it empty if the tool is missing, fails or times out.
+_probe_system_node_tool() {
+    _PROBED_VER=""
+    command -v "$1" >/dev/null 2>&1 || return 0
+    _pnt_out="$(mktemp)"
+    _pnt_rc=0
+    _setup_probe_version "$1" "$_pnt_out" || _pnt_rc=$?
+    if [ "$_pnt_rc" -eq 0 ]; then
+        _PROBED_VER="$(head -n 1 "$_pnt_out")"
+    elif [ "$_pnt_rc" -eq 124 ]; then
+        substep "system $1 ($(command -v "$1")) did not answer --version within ${_SETUP_PROBE_SECONDS:-20}s; not using it" "$C_WARN"
+    fi
+    rm -f "$_pnt_out"
+}
+_probe_system_node_tool node
+_SYS_NODE_VER="$_PROBED_VER"
+_SYS_NPM_VER=""
+# npm requires Node, so skip its probe if Node failed.
+if [ -n "$_SYS_NODE_VER" ]; then
+    _probe_system_node_tool npm
+    _SYS_NPM_VER="$_PROBED_VER"
+fi
 NODE_SOURCE="$(decide_node_source "$_SYS_NODE_VER" "$_SYS_NPM_VER" "${UNSLOTH_SKIP_NODE_INSTALL:-0}")"
 _FRONTEND_SKIP=false
 
 if [ "$NODE_SOURCE" = system ]; then
-    step "node" "$(node -v) | npm $(npm -v) (system)"
+    step "node" "$_SYS_NODE_VER | npm $_SYS_NPM_VER (system)"
 elif [ "$NODE_SOURCE" = bundled ]; then
     mkdir -p "$_NODE_PARENT"
     # install_node_prebuilt.py uses os.replace(); guard a custom-home dir so we
@@ -2471,7 +2601,7 @@ _setup_uv_unzip() {
         *bsdtar*) tar -xf "$1" -C "$2" 2>/dev/null && return 0 ;;
     esac
     command -v python3 >/dev/null 2>&1 &&
-        python3 -c 'import sys, zipfile; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])' "$1" "$2" 2>/dev/null
+        python3 -m zipfile -e "$1" "$2" >/dev/null 2>&1
 }
 
 _setup_uv_sha256() {
@@ -2480,123 +2610,6 @@ _setup_uv_sha256() {
     elif command -v shasum >/dev/null 2>&1; then
         shasum -a 256 "$1" 2>/dev/null | awk '{print $1}'
     fi
-}
-
-_SETUP_UV_PROBE_TARGET=""
-_SETUP_UV_PROBE_PID=""
-_SETUP_UV_PROBE_PREV_TRAP=""
-
-# A process group is signalled as a negative pid, and the two shells that get here disagree about
-# how to write one: bash reads a bare `-123` as a signal spec and refuses it, dash refuses the
-# `--` that fixes bash. Only a shell that made a group can produce a negative target, so the sign
-# picks the spelling. Measured both ways: the wrong one fails silently under 2>/dev/null and the
-# group survives the ceiling.
-_setup_uv_signal_target() {
-    case "$2" in
-        -*) kill "-$1" -- "$2" 2>/dev/null || : ;;
-        *)  kill "-$1" "$2" 2>/dev/null || : ;;
-    esac
-}
-
-# TERM, then KILL what ignored it, exactly as `timeout -k` does on the hosts that have it.
-# $1 target (a group when one was made, else the pid), $2 pid to watch, $3 seconds of grace.
-_setup_uv_probe_terminate() {
-    _supt_grace=0
-    _setup_uv_signal_target TERM "$1"
-    while [ "$_supt_grace" -lt "$3" ] && kill -0 "$2" 2>/dev/null; do
-        sleep 1
-        _supt_grace=$((_supt_grace + 1))
-    done
-    # Only if it is still there: the loop also ends when TERM worked, and an unconditional KILL
-    # then goes to a number this shell no longer owns. Narrows the window, not closes it.
-    if kill -0 "$2" 2>/dev/null; then _setup_uv_signal_target KILL "$1"; fi
-    unset _supt_grace
-}
-
-# The watchdog's ceiling lives in the calling shell, so a cancel during the wait would leave the
-# candidate, and under monitor mode its whole group, running with nobody left to stop it. These
-# two chain rather than replace: the pinned installer's own handlers still have to run.
-_setup_uv_probe_restore_trap() {
-    _SETUP_UV_PROBE_TARGET=""
-    _SETUP_UV_PROBE_PID=""
-    if [ -n "${_SETUP_UV_PROBE_PREV_TRAP:-}" ]; then
-        eval "$_SETUP_UV_PROBE_PREV_TRAP"
-    else
-        trap - HUP INT TERM
-    fi
-    _SETUP_UV_PROBE_PREV_TRAP=""
-}
-
-_setup_uv_probe_on_signal() {
-    # The same TERM/KILL the ceiling uses, on a shorter leash: a cancel that waited the full five
-    # seconds for a binary ignoring TERM would read as a setup that ignored the cancel.
-    if [ -n "${_SETUP_UV_PROBE_TARGET:-}" ] && [ -n "${_SETUP_UV_PROBE_PID:-}" ]; then
-        _setup_uv_probe_terminate "$_SETUP_UV_PROBE_TARGET" "$_SETUP_UV_PROBE_PID" 2
-        wait "$_SETUP_UV_PROBE_PID" 2>/dev/null || :
-    fi
-    _setup_uv_probe_restore_trap
-    # Hand the signal back to whoever had it: the installer's handler, or the default action.
-    kill -s "$1" "$$" 2>/dev/null || :
-}
-
-# Bounded liveness probe: no stdin (a prompting build reads EOF), 20 s ceiling held by GNU
-# timeout or, without it (stock macOS), a background job killed when the ceiling passes.
-# $2 takes the binary's stdout, /dev/null by default: reuse needs the version line, and running
-# the binary again to read it would be a second chance to hang.
-_setup_uv_probe_exec() {
-    _supe_secs="${_SETUP_UV_PROBE_SECONDS:-20}"
-    _supe_out="${2:-/dev/null}"
-    # KILL after TERM (TERM can be ignored): `timeout -k` where supported, else the watchdog below.
-    if command -v timeout >/dev/null 2>&1 && timeout -k 1 5 true >/dev/null 2>&1; then
-        timeout -k 5 "$_supe_secs" "$1" --version >"$_supe_out" 2>/dev/null </dev/null
-        return $?
-    fi
-    # Monitor mode gives the probe a process group of its own, so the signals below reach what IT
-    # started, as `timeout`'s setpgid does. Off again at once: it changes how later jobs report.
-    _supe_monitor=off
-    case "$-" in *m*) _supe_monitor=on ;; esac
-    [ "$_supe_monitor" = on ] || set -m 2>/dev/null || :
-    "$1" --version >"$_supe_out" 2>/dev/null </dev/null &
-    _supe_pid=$!
-    [ "$_supe_monitor" = on ] || set +m 2>/dev/null || :
-    # The group only where it is provably not this shell's own (zsh shares them, and a group TERM
-    # there kills setup); otherwise the single pid, as before. Parameter expansion, not `tr`: this
-    # branch has to hold on a PATH as bare as the shell and sleep.
-    _supe_target="$_supe_pid"
-    if command -v ps >/dev/null 2>&1; then
-        _supe_pgid=$(ps -o pgid= -p "$_supe_pid" 2>/dev/null)
-        _supe_self=$(ps -o pgid= -p $$ 2>/dev/null)
-        _supe_pgid=${_supe_pgid##* }
-        _supe_self=${_supe_self##* }
-        case "$_supe_pgid$_supe_self" in
-            ''|*[!0-9]*) : ;;
-            *) [ "$_supe_pgid" = "$_supe_self" ] || _supe_target="-$_supe_pgid" ;;
-        esac
-    fi
-    _SETUP_UV_PROBE_TARGET="$_supe_target"
-    _SETUP_UV_PROBE_PID="$_supe_pid"
-    _SETUP_UV_PROBE_PREV_TRAP=$(trap -p HUP INT TERM 2>/dev/null) || _SETUP_UV_PROBE_PREV_TRAP=""
-    trap '_setup_uv_probe_on_signal HUP' HUP
-    trap '_setup_uv_probe_on_signal INT' INT
-    trap '_setup_uv_probe_on_signal TERM' TERM
-    _supe_waited=0
-    while kill -0 "$_supe_pid" 2>/dev/null; do
-        if [ "$_supe_waited" -ge "$_supe_secs" ]; then
-            # Escalate as timeout -k does: a binary ignoring TERM would hold the wait.
-            _setup_uv_probe_terminate "$_supe_target" "$_supe_pid" 5
-            wait "$_supe_pid" 2>/dev/null
-            _setup_uv_probe_restore_trap
-            unset _supe_pid _supe_waited _supe_target _supe_pgid _supe_self
-            return 124
-        fi
-        sleep 1
-        _supe_waited=$((_supe_waited + 1))
-    done
-    wait "$_supe_pid"
-    _supe_rc=$?
-    _setup_uv_probe_restore_trap
-    unset _supe_pid _supe_waited _supe_target _supe_pgid _supe_self
-    return $_supe_rc
 }
 
 # The function's own cleanup only runs when it returns, so an interrupt left the unpacked
@@ -2700,7 +2713,7 @@ https://github.com/astral-sh/uv/releases/download/$_SETUP_UV_PINNED_VERSION"
             chmod 0755 "$_siup_stage" 2>/dev/null || true
             # Validate before publishing: the rename destroys the incumbent, so a binary that
             # cannot run here must never replace one that could.
-            if [ "$_siup_exe" = "uv" ] && ! _setup_uv_probe_exec "$_siup_stage"; then _siup_ready=0; break; fi
+            if [ "$_siup_exe" = "uv" ] && ! _setup_probe_version "$_siup_stage"; then _siup_ready=0; break; fi
         done
         if [ "$_siup_ready" = "1" ] &&
            mv -f "$_SIUP_STAGE" "$_siup_dest/uv" 2>/dev/null &&
@@ -3008,8 +3021,8 @@ _setup_find_installed_uv() {
         # Bounded, like the pinned installer's probe. Asked twice: one miss (an antivirus scan
         # holding a fresh binary) sent setup to the pinned download, which put an OLDER uv
         # over this one and moved the manifest's uv_version on the next pass.
-        if _setup_uv_probe_exec "$_sfu_dir/uv" "${_sfu_ver_file:-/dev/null}" ||
-           { sleep 2; _setup_uv_probe_exec "$_sfu_dir/uv" "${_sfu_ver_file:-/dev/null}"; }; then
+        if _setup_probe_version "$_sfu_dir/uv" "${_sfu_ver_file:-/dev/null}" ||
+           { sleep 2; _setup_probe_version "$_sfu_dir/uv" "${_sfu_ver_file:-/dev/null}"; }; then
             # `read`, not `cat`: this branch has to hold on a bare PATH, and an empty file
             # returning non-zero is not a reason for `set -e` to end setup.
             _sfu_ver=""
@@ -3736,6 +3749,8 @@ _setup_nvidia_physical=false
 _setup_gfx_all=""
 _setup_gfx=""
 _setup_hip_map_missing=0
+_setup_amd_probe=""
+_setup_rocr_uuid_declined=0
 _setup_mkt=""
 _setup_amd_records=""
 
@@ -3967,6 +3982,7 @@ if [ "$_setup_nvidia_usable" != true ]; then
     fi
     if [ -n "$_setup_gfx_all" ]; then
         _setup_amd_detected=true
+        _setup_amd_probe=rocminfo
     elif command -v amd-smi >/dev/null 2>&1 && \
          _setup_run_smi amd-smi list 2>/dev/null | awk '/^GPU[[:space:]]*[:\[][[:space:]]*[0-9]/{ found=1 } END{ exit !found }'; then
         _setup_amd_detected=true
@@ -3975,7 +3991,8 @@ if [ "$_setup_nvidia_usable" != true ]; then
         if [ -n "$_setup_amd_records" ]; then
             _setup_amd_smi_out=$(_setup_run_smi amd-smi list -e 2>/dev/null \
                 | _setup_amd_smi_hip_order "$_setup_amd_records" || true)
-            _setup_amd_space=$(printf '%s\n' "$_setup_amd_smi_out" | head -n 1)
+            # Expansion, not `| head -n 1`: head exiting early SIGPIPEs printf under pipefail.
+            _setup_amd_space=${_setup_amd_smi_out%%$'\n'*}
             _setup_amd_records=$(printf '%s\n' "$_setup_amd_smi_out" | tail -n +2)
             # No map, and the adapters are not interchangeable: the mask indexes HIP order
             # while these records are in discovery order, so any ordinal is a guess. Decline
@@ -4023,7 +4040,31 @@ if [ "$_setup_nvidia_usable" = true ]; then
     # behind on the common path where there is no driver string to print.
     if [ -n "$_setup_nv_driver" ]; then substep "Driver: $_setup_nv_driver"; fi
 elif [ "$_setup_amd_detected" = true ]; then
-    _setup_vis="${HIP_VISIBLE_DEVICES:-${ROCR_VISIBLE_DEVICES:-}}"
+    # As install.sh: ROCr picks survivors (rocminfo is already filtered, amd-smi is not), then the
+    # first SET HIP-layer mask (HIP, then CUDA; empty still shadows) indexes them.
+    if [ "$_setup_amd_probe" != rocminfo ] && [ -n "${ROCR_VISIBLE_DEVICES:-}" ] && [ "$ROCR_VISIBLE_DEVICES" != "-1" ]; then
+        _setup_rocr_keep() {
+            _setup_kept=$(printf '%s\n' "$1" | awk -v m="$ROCR_VISIBLE_DEVICES" '
+                NF { v[n++] = $0 }
+                END { k = split(m, t, ","); for (i = 1; i <= k; i++) { gsub(/[[:space:]]/, "", t[i]); if (t[i] !~ /^[0-9]+$/) continue; x = t[i] + 0; if (x >= n || (x in s)) break; s[x] = 1; print v[x] } }')
+            if [ -n "$_setup_kept" ]; then printf '%s\n' "$_setup_kept"; else printf '%s\n' "$1"; fi
+        }
+        # A UUID has no position in amd-smi's list: with unlike adapters, decline as install.sh does.
+        if [ -n "$(printf '%s' "$ROCR_VISIBLE_DEVICES" | tr -d '0-9, \t')" ] && \
+           [ "$(printf '%s\n' "${_setup_amd_records:-$_setup_gfx_all}" | awk -F'|' \
+                'NF { k = ($1 != "" ? $1 : "name:" $2); if (!(k in seen)) { seen[k]; n++ } } END { print n + 0 }')" -gt 1 ]; then
+            _setup_amd_records=""
+            _setup_gfx_all=""
+            _setup_rocr_uuid_declined=1
+        fi
+        [ -n "$_setup_amd_records" ] && _setup_amd_records=$(_setup_rocr_keep "$_setup_amd_records")
+        [ -n "$_setup_gfx_all" ] && _setup_gfx_all=$(_setup_rocr_keep "$_setup_gfx_all")
+    fi
+    if [ -n "${HIP_VISIBLE_DEVICES+x}" ]; then
+        _setup_vis="$HIP_VISIBLE_DEVICES"
+    else
+        _setup_vis="${CUDA_VISIBLE_DEVICES:-}"
+    fi
     _setup_vis_idx=0
     if [ -n "$_setup_vis" ] && [ "$_setup_vis" != "-1" ]; then
         _setup_first="${_setup_vis%%,*}"
@@ -4078,6 +4119,10 @@ elif [ "$_setup_amd_detected" = true ]; then
     if [ -z "$_setup_gfx" ] && [ "$_setup_hip_map_missing" = 1 ]; then
         substep "Unlike AMD adapters and no HIP id map (amd-smi list -e needs ROCm 6.4+):"
         substep "cannot tell which one this session selects. Set UNSLOTH_ROCM_GFX_ARCH to pick."
+    fi
+    if [ -z "$_setup_gfx" ] && [ "$_setup_rocr_uuid_declined" = 1 ]; then
+        substep "ROCR_VISIBLE_DEVICES names a GPU by UUID, which amd-smi cannot place, and the"
+        substep "adapters differ. Set UNSLOTH_ROCM_GFX_ARCH to pick."
     fi
     # ROCm version via hipconfig, then amd-smi
     _setup_rocm_ver=""

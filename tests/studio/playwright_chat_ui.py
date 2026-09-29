@@ -244,6 +244,29 @@ def exercise_permission_mode_controls(page, shoot):
         expect(item).to_be_visible()
         item.click()
 
+    # Every caller reloads straight after this, and the page being left can still write the level
+    # back in between: a hydrating GET of its own lands after the clear and caches the installation's
+    # level locally. On WebKit that page stayed alive about a second after the clear and its GET came
+    # back 200 (Unsloth UI CI on main at 2c1830830 and 6c19cf007: the fresh profile opened on "Run
+    # automatically", the level the previous engine's run left on the install). So the storage is
+    # set again by an init script at the start of the next document, after the old page is gone
+    # and before the app reads it. sessionStorage carries the instruction across the reload and
+    # the script consumes it, so later navigations are untouched.
+    page.add_init_script(
+        """(() => {
+            const pending = sessionStorage.getItem("__pw_permission_storage");
+            if (pending === null) return;
+            sessionStorage.removeItem("__pw_permission_storage");
+            const legacyValue = JSON.parse(pending);
+            localStorage.removeItem("unsloth_chat_permission_mode");
+            if (legacyValue === null) {
+                localStorage.removeItem("unsloth_chat_confirm_tool_calls");
+            } else {
+                localStorage.setItem("unsloth_chat_confirm_tool_calls", legacyValue);
+            }
+        })();"""
+    )
+
     def set_legacy_confirm(legacy_value):
         page.evaluate(
             """(legacyValue) => {
@@ -256,6 +279,10 @@ def exercise_permission_mode_controls(page, shoot):
                         legacyValue,
                     );
                 }
+                sessionStorage.setItem(
+                    "__pw_permission_storage",
+                    JSON.stringify(legacyValue),
+                );
             }""",
             legacy_value,
         )
@@ -287,12 +314,14 @@ def exercise_permission_mode_controls(page, shoot):
     # same reason and with the same note about macOS. This does the same after
     # each reload. It asserts exactly what it asserted before; it just stops
     # asking before the answer can exist.
+    #
+    # The pill wait is the settle, not "networkidle". With this block's page.route on /api/chat/settings
+    # in place, Playwright's networkidle wait after a reload stopped returning at all once /api reads
+    # went out as Cache-Control: no-store (#12148): its own 30s timeout never fired, and the step sat
+    # there until the 180s watchdog killed the job (Chat UI Tests (chat) on main at 1dddc1437). The
+    # pill is the one thing the next assertion needs, and waiting for it is bounded.
     def reload_and_wait_for_pill():
-        page.reload(wait_until = "domcontentloaded")
-        try:
-            page.wait_for_load_state("networkidle", timeout = 30_000)
-        except Exception:
-            pass  # best-effort -- proceed even if network never idles
+        page.reload(wait_until = "load")
         expect(pill).to_be_visible(timeout = 30_000)
 
     # choose() only drives THIS tab.

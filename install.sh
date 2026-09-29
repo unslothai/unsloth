@@ -1677,6 +1677,37 @@ if [ -z "${UNSLOTH_EXE:-}" ] || [ ! -x "${UNSLOTH_EXE:-}" ]; then
     exit 1
 fi
 
+# A missing or malformed id makes /api/health report "", which the baked id never matches: restore ours no-clobber (the desktop app mints it too), leaving a different valid id or an unreadable file alone.
+_repair_studio_install_id() (
+    LC_ALL=C
+    export LC_ALL
+    _rid_file=${STUDIO_INSTALL_ID_FILE:-}
+    [ -n "$_rid_file" ] && [ -n "$_EXPECTED_STUDIO_ROOT_ID" ] || return 0
+    _rid_has_valid() {
+        [ -e "$_rid_file" ] || return 1
+        [ -f "$_rid_file" ] || return 0
+        _rid_cur=$({ cat "$_rid_file"; } 2>/dev/null) || return 0
+        _rid_cur=${_rid_cur#"${_rid_cur%%[![:space:]]*}"}
+        _rid_cur=${_rid_cur%"${_rid_cur##*[![:space:]]}"}
+        case "$_rid_cur" in
+            "" | *[!0123456789abcdef]*) return 1 ;;
+        esac
+        [ "${#_rid_cur}" -eq 64 ]
+    }
+    _rid_has_valid && return 0
+    mkdir -p "$(dirname "$_rid_file")" 2>/dev/null || return 0
+    _rid_tmp=$(mktemp "$_rid_file.XXXXXX" 2>/dev/null) || return 0
+    if printf '%s' "$_EXPECTED_STUDIO_ROOT_ID" > "$_rid_tmp" 2>/dev/null; then
+        if ! ln "$_rid_tmp" "$_rid_file" 2>/dev/null && ! _rid_has_valid; then
+            mv -f "$_rid_tmp" "$_rid_file" 2>/dev/null || true
+        fi
+        chmod 600 "$_rid_file" 2>/dev/null || true
+    fi
+    rm -f "$_rid_tmp" 2>/dev/null
+    return 0
+)
+_repair_studio_install_id
+
 BASE_PORT=8888
 MAX_PORT_OFFSET=20
 TIMEOUT_SEC=60
@@ -2039,6 +2070,8 @@ LAUNCHER_EOF
     _css_quoted_exe=$(printf '%s' "$_css_exe" | sed "s/'/'\\\\''/g")
     {
         printf '%s\n' "UNSLOTH_EXE='$_css_quoted_exe'"
+        _css_quoted_id_file=$(printf '%s' "$_css_id_file" | sed "s/'/'\\\\''/g")
+        printf '%s\n' "STUDIO_INSTALL_ID_FILE='$_css_quoted_id_file'"
         if [ "$_STUDIO_HOME_REDIRECT" = "env" ]; then
             # An override resolving to the legacy default shares ~/.unsloth/llama.cpp.
             _css_legacy_studio="$HOME/.unsloth/studio"
@@ -2483,56 +2516,60 @@ if (\$hasIcon) {
 } elseif (\$preIconHash) {
     \$iconChanged = \$true
 }
-# Per-item refresh always (cheap, non-disruptive) so the rewritten .lnk renders
-# immediately instead of a stale/blank (generic) icon. The reliable fix (no
-# explorer restart) is a PER-ITEM SHChangeNotify(SHCNE_UPDATEITEM, SHCNF_PATHW,
-# <lnk>) -- the global SHCNE_ASSOCCHANGED alone does not recover a stale item.
-#
-# Emitted, not compiled. Add-Type -MemberDefinition writes C# to %TEMP% and runs
-# csc.exe on Windows PowerShell 5.1, and security software blocks the DLL that comes
-# out. install.ps1 carries the same reflection-emit form for the same reason; this
-# copy was missed when that one changed. Reflection emit builds the identical stub in
-# memory: no compiler process, no source on disk, no DLL.
-# Which product blocked what: tests/studio/test_installer_av_shapes.py (AV_SHAPES_RECORD)
-try {
-    \$refreshType = 'UnslothShellIconRefresh' -as [type]
-    if (-not \$refreshType) {
-        \$asmName = New-Object System.Reflection.AssemblyName 'UnslothShellIconRefreshAsm'
-        # Both spellings, matching New-StudioDynamicAssembly in install.ps1. The static
-        # AssemblyBuilder::DefineDynamicAssembly is documented for .NET Framework 4.5 through
-        # 4.8.1, so the 5.1 host this script is launched under should take the first branch; it
-        # is tried rather than assumed because the outer catch here is empty, so guessing wrong
-        # costs the icon refresh with nothing printed. AppDomain.CurrentDomain is the .NET
-        # Framework spelling and is absent on .NET Core, so it is the fallback and not the lead.
-        \$access = [System.Reflection.Emit.AssemblyBuilderAccess]::Run
-        try {
-            \$asm = [System.Reflection.Emit.AssemblyBuilder]::DefineDynamicAssembly(\$asmName, \$access)
-        } catch [System.Management.Automation.MethodException] {
-            \$asm = [AppDomain]::CurrentDomain.DefineDynamicAssembly(\$asmName, \$access)
-        } catch [System.Management.Automation.RuntimeException] {
-            # Some hosts surface a missing static as RuntimeException rather than
-            # MethodException. Both mean "no such method here", and a real emit failure throws
-            # from the AppDomain call too, so a genuine refusal still reaches the outer catch.
-            \$asm = [AppDomain]::CurrentDomain.DefineDynamicAssembly(\$asmName, \$access)
+# Per-item SHCNE_UPDATEITEM so a rewritten same-name .lnk re-reads its icon; the global broadcast
+# alone does not. Called through a Windows Python's ctypes, as install.ps1 does, so this script
+# defines no native types. Without one the shortcut still works, and the heavier refresh below
+# still runs on a first install or an icon change.
+if (\$created.Count -gt 0) {
+    \$isAdmin = \$true
+    try {
+        \$isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+    } catch {}
+    # Never launch a user-writable interpreter from an elevated shell.
+    \$pyCandidates = @()
+    if (-not \$isAdmin) {
+        \$pyCandidates += Join-Path \$env:USERPROFILE '.unsloth\studio\unsloth_studio\Scripts\python.exe'
+        foreach (\$name in @('python3', 'python')) {
+            try {
+                foreach (\$cmd in @(Get-Command \$name -All -CommandType Application -ErrorAction SilentlyContinue)) {
+                    if (\$cmd -and \$cmd.Source) { \$pyCandidates += \$cmd.Source }
+                }
+            } catch {}
         }
-        \$module = \$asm.DefineDynamicModule('UnslothShellIconRefreshMod')
-        \$typeBuilder = \$module.DefineType('UnslothShellIconRefresh',
-            'Public, Class, AutoClass, AnsiClass, BeforeFieldInit')
-        \$method = \$typeBuilder.DefinePInvokeMethod(
-            'SHChangeNotify', 'shell32.dll', 'SHChangeNotify',
-            'Public, Static, PinvokeImpl',
-            [System.Reflection.CallingConventions]::Standard,
-            [System.Void],
-            @([int], [uint32], [string], [IntPtr]),
-            [System.Runtime.InteropServices.CallingConvention]::Winapi,
-            [System.Runtime.InteropServices.CharSet]::Unicode)
-        \$method.SetImplementationFlags(
-            \$method.GetMethodImplementationFlags() -bor [System.Reflection.MethodImplAttributes]::PreserveSig)
-        \$refreshType = \$typeBuilder.CreateType()
     }
-    foreach (\$p in \$created) { try { \$refreshType::SHChangeNotify(0x00002000, 0x0005, \$p, [System.IntPtr]::Zero) } catch {} }
-    \$refreshType::SHChangeNotify(0x08000000, 0, \$null, [System.IntPtr]::Zero)
-} catch {}
+    # SHCNF_FLUSH (0x1000): the child exits at once and a queued notification would be lost.
+    \$refreshCode = "import ctypes,os;from ctypes import wintypes as w;f=ctypes.WinDLL('shell32').SHChangeNotify;f.restype=None;f.argtypes=[w.LONG,w.UINT,w.LPCWSTR,w.LPCWSTR];[f(0x2000,0x1005,p,None) for p in os.environ['UNSLOTH_SHORTCUT_PATHS'].split('|') if p];f(0x8000000,0x1000,None,None);print('ok')"
+    foreach (\$py in \$pyCandidates) {
+        # The WindowsApps alias opens the Store instead of running anything.
+        if (-not \$py -or \$py -like '*\Microsoft\WindowsApps\*') { continue }
+        if (-not (Test-Path -LiteralPath \$py -PathType Leaf)) { continue }
+        \$proc = \$null
+        try {
+            \$psi = New-Object System.Diagnostics.ProcessStartInfo
+            \$psi.FileName = \$py
+            # -I -S: no user site, no PYTHON* variables, no sitecustomize. -B: write no .pyc.
+            \$psi.Arguments = '-I -S -B -c "' + \$refreshCode + '"'
+            # '|' cannot appear in a Windows path, so it separates them safely.
+            \$psi.EnvironmentVariables['UNSLOTH_SHORTCUT_PATHS'] = (\$created -join '|')
+            \$psi.WorkingDirectory = Split-Path -Parent \$py
+            \$psi.UseShellExecute = \$false
+            \$psi.RedirectStandardOutput = \$true
+            \$psi.RedirectStandardError = \$true
+            \$psi.CreateNoWindow = \$true
+            \$proc = [System.Diagnostics.Process]::Start(\$psi)
+            \$out = \$proc.StandardOutput.ReadToEndAsync()
+            \$null = \$proc.StandardError.ReadToEndAsync()
+            if (-not \$proc.WaitForExit(10000)) {
+                try { \$proc.Kill() } catch {}
+                continue
+            }
+            if (\$proc.ExitCode -eq 0 -and \$out.Wait(2000) -and "\$(\$out.Result)".Trim() -eq 'ok') { break }
+        } catch {
+        } finally {
+            if (\$proc) { try { \$proc.Dispose() } catch {} }
+        }
+    }
+}
 # Heavier on-disk icon-cache clear + StartMenuExperienceHost tile rebuild
 # (preserve start2.bin) only on first install or a real icon change, so a no-op
 # WSL reinstall does not purge caches and kill a shell process for nothing.
@@ -3812,7 +3849,7 @@ _uv_unzip() {
         *bsdtar*) tar -xf "$1" -C "$2" 2>/dev/null && return 0 ;;
     esac
     command -v python3 >/dev/null 2>&1 &&
-        python3 -c 'import sys, zipfile; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])' "$1" "$2" 2>/dev/null
+        python3 -m zipfile -e "$1" "$2" >/dev/null 2>&1
 }
 
 # Echoes the SHA-256 of "$1", or nothing when the host has no digest tool.
@@ -5723,20 +5760,27 @@ get_torch_index_url() {
                     echo "$_base/cpu"; return ;;
             esac
             # Normalise to major.minor; 6.5+ clips to rocm6.4, 7.3+ caps to rocm7.2.
-            case "$_rocm_tag" in
-                rocm6.0|rocm6.0.*) echo "$_base/rocm6.0" ;;
-                rocm6.1|rocm6.1.*) echo "$_base/rocm6.1" ;;
-                rocm6.2|rocm6.2.*) echo "$_base/rocm6.2" ;;
-                rocm6.3|rocm6.3.*) echo "$_base/rocm6.3" ;;
-                rocm6.4|rocm6.4.*) echo "$_base/rocm6.4" ;;
-                rocm7.0|rocm7.0.*) echo "$_base/rocm7.0" ;;
-                rocm7.1|rocm7.1.*) echo "$_base/rocm7.1" ;;
-                rocm7.2|rocm7.2.*) echo "$_base/rocm7.2" ;;
-                rocm6.*)
+            # Leading ( on every arm: bash 3.2 (macOS /bin/sh) ends $(...) at a bare pattern) and aborts the script.
+            _rocm_index=$(case "$_rocm_tag" in
+                (rocm6.0|rocm6.0.*) echo "$_base/rocm6.0" ;;
+                (rocm6.1|rocm6.1.*) echo "$_base/rocm6.1" ;;
+                (rocm6.2|rocm6.2.*) echo "$_base/rocm6.2" ;;
+                (rocm6.3|rocm6.3.*) echo "$_base/rocm6.3" ;;
+                (rocm6.4|rocm6.4.*) echo "$_base/rocm6.4" ;;
+                (rocm7.0|rocm7.0.*) echo "$_base/rocm7.0" ;;
+                (rocm7.1|rocm7.1.*) echo "$_base/rocm7.1" ;;
+                (rocm7.2|rocm7.2.*) echo "$_base/rocm7.2" ;;
+                (rocm6.*)
                     echo "$_base/rocm6.4" ;;
-                *)
+                (*)
                     echo "$_base/rocm7.2" ;;
-            esac
+            esac)
+            # No UNSLOTH_TORCH_INDEX_FAMILY hint: newer leaves have nothing inside _TORCH_CEILING (#10657).
+            _rocm_leaf=${_rocm_index##*/}
+            if [ "$_rocm_tag" != "$_rocm_leaf" ]; then
+                echo "[INFO] No validated PyTorch for ROCm ${_rocm_tag#rocm}; capping to the $_rocm_leaf index (its wheels bundle their own runtime, so this is expected)." >&2
+            fi
+            echo "$_rocm_index"
             return
         fi
         # AMD GPU confirmed (rocminfo/amd-smi or the KFD topology fallback) but no ROCm/HIP install was found to read the version from. This is the common fresh-install case: the GPU is real, but with no ROCm userspace the correct PyTorch build cannot be selected, so warn with an actionable fix rather than silently installing CPU PyTorch. The version only picks between the generic rocmX.Y leaves, so an arch with its own repo.amd.com/rocm/whl/gfx* index does not need one (#8731).
@@ -6103,6 +6147,8 @@ get_radeon_wheel_url() {
 _RADEON_LISTING=""
 _RADEON_PYTAG=""
 _RADEON_BASE_URL=""
+# true only while every attempt (X.Y.Z, then X.Y) returned 404/410; any transient failure pins "inconclusive".
+_RADEON_HOST_ANSWERED=false
 
 _radeon_fetch_listing() {
     _RADEON_BASE_URL="$1"
@@ -6110,11 +6156,26 @@ _radeon_fetch_listing() {
 import sys
 print('cp{}{}'.format(sys.version_info.major, sys.version_info.minor))
 " 2>/dev/null) || return 1
+    _radeon_http=""
+    _radeon_rc=0
     if command -v curl >/dev/null 2>&1; then
-        _RADEON_LISTING=$(curl -fsSL --max-time 20 "$_RADEON_BASE_URL" 2>/dev/null)
+        _RADEON_LISTING=$(curl -fsSL --max-time 20 -w '\n%{http_code}' "$_RADEON_BASE_URL" 2>/dev/null) || _radeon_rc=$?
+        _radeon_nl='
+'
+        _radeon_http=${_RADEON_LISTING##*"$_radeon_nl"}
+        _RADEON_LISTING=${_RADEON_LISTING%"$_radeon_nl"*}
+        # Re-strip trailing newlines as a plain $(curl) did, so a newline-only body still fails over to X.Y.
+        _RADEON_LISTING=$(printf '%s' "$_RADEON_LISTING")
     elif command -v wget >/dev/null 2>&1; then
-        _RADEON_LISTING=$(wget -qO- --timeout=20 "$_RADEON_BASE_URL" 2>/dev/null)
+        _RADEON_LISTING=$(wget -qO- --timeout=20 "$_RADEON_BASE_URL" 2>/dev/null) || _radeon_rc=$?
     fi
+    # A timeout or reset mid-body leaves a truncated listing that would pick an older wheel set.
+    [ "$_radeon_rc" -eq 0 ] || _RADEON_LISTING=""
+    # Only 404/410 mean "no such release": curl -f exits 22 on 429/5xx too, and wget's 8 is any error.
+    case "$_radeon_http" in
+        404|410) [ "$_RADEON_HOST_ANSWERED" = inconclusive ] || _RADEON_HOST_ANSWERED=true ;;
+        *) [ -n "$_RADEON_LISTING" ] || _RADEON_HOST_ANSWERED=inconclusive ;;
+    esac
     [ -n "$_RADEON_LISTING" ] || return 1
 }
 
@@ -6579,6 +6640,8 @@ _amd_gpu_radeon=false
 _gfx_rocm64_target=false
 _gfx_rocm64_floor_maj=""
 _gfx_rocm64_floor_min=""
+_amd_arch_index_routed=false
+_amd_arch_index_family=""
 if [ "$_torch_index_pinned" = false ]; then
 # On the LEAF, like every other index classifier here: the AMD per-arch mirror is https://repo.amd.com/ROCM/whl/gfx120X-all/, so a whole-URL */rocm* glob brands every per-arch reroute as Radeon and the summary then reports repo.radeon.com wheels that were never fetched. The two older per-arch reroutes each clear the flag by hand afterwards; matching the leaf is what stops the next one from having to.
 case "$_torch_index_leaf" in
@@ -6599,6 +6662,21 @@ _rocm_leaf_below() {
     return 1
 }
 # 0 when the venv's torch has no identifiable rocm family at $2.$3 or newer, mirroring _installed_rocm_wheel_is_below in studio/install_python_stack.py
+# Venv torch's AMD per-arch family from the `rocm` meta-package (as install_python_stack.py); empty if unknown.
+_venv_torch_amd_family() {
+    "$1" -c 'import re
+from importlib import metadata
+try:
+    reqs = metadata.requires("rocm") or []
+except Exception:
+    reqs = []
+for r in reqs:
+    m = re.search(r"rocm[-_]sdk[-_]libraries[-_]([A-Za-z0-9][A-Za-z0-9._-]*)", r, re.I)
+    if m:
+        print(re.split(r"[=<>!~;,\[\]()\s]", m.group(1))[0].lower().replace("_", "-"))
+        break' 2>/dev/null || true
+}
+
 _venv_torch_rocm_below() {
     _vtr_leaf=$("$1" -c 'import re, torch; m = re.search(r"rocm([0-9]+)\.([0-9]+)", getattr(torch, "__version__", "") or ""); print("rocm%s.%s" % m.groups() if m else "")' 2>/dev/null || true)
     [ -n "$_vtr_leaf" ] || return 0
@@ -6613,6 +6691,8 @@ case "$_torch_index_leaf" in
         _gfx_rocm64_target=false
         _gfx_rocm64_floor_maj=""
         _gfx_rocm64_floor_min=""
+        _amd_arch_index_routed=false
+        _amd_arch_index_family=""
         # One record per adapter in probe enumeration order, indexed by HIP_VISIBLE_DEVICES / ROCR_VISIBLE_DEVICES so the mask selects a CARD. A deduplicated arch list could not: gfx1100 + gfx1100 + gfx1200 ran off the end of a two-entry list, and a Strix iGPU + dGPU box rerouted the selected dGPU to the Strix per-gfx index. `|| true` on each probe so one that finds nothing does not abort the installer under set -euo pipefail before the next fallback. UNSLOTH_ROCM_GFX_ARCH overrides probing, mirroring setup.sh and the display block.
         _gfx_all=$(printf '%s' "${UNSLOTH_ROCM_GFX_ARCH:-}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
         # strip a copied hip gcnArchName suffix, matching _gfx906_env below and the python helper
@@ -6636,7 +6716,7 @@ case "$_torch_index_leaf" in
             if [ -n "$_gfx_records" ]; then
                 # HIP_ID from `amd-smi list -e` maps discovery order onto the order HIP numbers, as the GPU summary below does. The first output line reports which space came back.
                 _gfx_smi_out=$(amd-smi list -e 2>/dev/null | _amd_smi_hip_order "$_gfx_records" || true)
-                _gfx_space=$(printf '%s\n' "$_gfx_smi_out" | head -n 1)
+                _gfx_space=$(printf '%s\n' "$_gfx_smi_out" | sed -n 1p)
                 _gfx_records=$(printf '%s\n' "$_gfx_smi_out" | tail -n +2)
                 _gfx_all=$(printf '%s\n' "$_gfx_records" | _gfx_arch_slots || true)
                 [ -n "$_gfx_all" ] && _gfx_probe=amd-smi
@@ -6671,10 +6751,10 @@ case "$_torch_index_leaf" in
             # indexing by ROCR again shadows CUDA, its HIP alias: ROCR=2,1 + CUDA=1 is survivor 2.
             _vis_masks="HIP_VISIBLE_DEVICES CUDA_VISIBLE_DEVICES"
             if [ "$_gfx_probe" != rocminfo ] && [ -n "${ROCR_VISIBLE_DEVICES:-}" ] && [ "$ROCR_VISIBLE_DEVICES" != "-1" ]; then
-                # amd-smi is not ROCr-filtered: ROCr decides which devices exist, then HIP indexes the survivors (_rocr_visible_subset). Ordinals in mask order; none in range keeps the whole list, as _pick_visible_index does.
+                # amd-smi is not ROCr-filtered: keep ROCr's survivors (prefix up to the first out-of-range or repeated ordinal, as _rocr_visible_subset; none keeps all), then HIP indexes them.
                 _rocr_kept=$(printf '%s\n' "$_gfx_all" | awk -v m="$ROCR_VISIBLE_DEVICES" '
                     NF { v[n++] = $0 }
-                    END { k = split(m, t, ","); for (i = 1; i <= k; i++) { gsub(/[[:space:]]/, "", t[i]); if (t[i] ~ /^[0-9]+$/ && t[i] + 0 < n) print v[t[i] + 0] } }')
+                    END { k = split(m, t, ","); for (i = 1; i <= k; i++) { gsub(/[[:space:]]/, "", t[i]); if (t[i] !~ /^[0-9]+$/) continue; x = t[i] + 0; if (x >= n || (x in s)) break; s[x] = 1; print v[x] } }')
                 [ -n "$_rocr_kept" ] && _gfx_all="$_rocr_kept"
                 # A UUID token names a device but no position here, so with unlike adapters no survivor is known to be the one selected: decline, as _rocr_visible_subset does.
                 _rocr_unresolved=$(printf '%s' "$ROCR_VISIBLE_DEVICES" | tr -d '0-9, \t')
@@ -6747,6 +6827,8 @@ case "$_torch_index_leaf" in
                 _amd_strix_base="${_amd_strix_base%/}"
             done
             TORCH_INDEX_URL="${_amd_strix_base}/${_strix_gfx}/"
+            _amd_arch_index_routed=true
+            _amd_arch_index_family="$_strix_gfx"
             TORCH_CONSTRAINT="torch>=2.11.0,<2.12.0"
             # Pin companions to 2.11 (per-gfx index publishes them independently).
             TORCHVISION_CONSTRAINT="torchvision>=0.26.0,<0.27.0"
@@ -6760,6 +6842,37 @@ case "$_torch_index_leaf" in
                 echo "  [WARN] to report the real arch. Remove the export from your shell profile" >&2
                 echo "  [WARN] (~/.bashrc, ~/.profile) as well, or the next terminal restores it." >&2
             fi
+        fi
+        # RDNA 4 generic wheels below 7.13 have a null HIP _grouped_mm (TheRock #5284); leaf rewritten so the rocm6.4 floor cannot undo it.
+        _rdna4_gfx=""
+        if [ "$_gfx906_env" != "gfx906" ]; then
+            case "$_runtime_gfx" in
+                gfx1200|gfx1201) _rdna4_gfx="$_runtime_gfx" ;;
+            esac
+        fi
+        # gfx120X-all publishes cp310+ only, so a 3.9 venv keeps the generic wheels.
+        if [ -n "$_rdna4_gfx" ] && [ "$("${VENV_DIR:-}/bin/python" -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/null || true)" = "3.9" ]; then
+            _rdna4_gfx=""
+        fi
+        if [ -n "$_rdna4_gfx" ] && _rocm_leaf_below "$_torch_index_leaf" 7 13; then
+            echo "" >&2
+            echo "  [WARN] $_rdna4_gfx (RDNA 4) detected -- routing to the AMD arch-specific index" >&2
+            echo "  [WARN] torch 2.11+rocm7.13 fixes the RDNA 4 _grouped_mm kernel that the" >&2
+            echo "  [WARN] $_torch_index_leaf wheels lack, so training does not fall back to a slow path." >&2
+            echo "" >&2
+            _amd_rdna4_base="${UNSLOTH_AMD_ROCM_MIRROR:-https://repo.amd.com/rocm/whl}"
+            while [ "${_amd_rdna4_base%/}" != "$_amd_rdna4_base" ]; do
+                _amd_rdna4_base="${_amd_rdna4_base%/}"
+            done
+            # Literal, not _amd_arch_index_family_for_gfx: tests lift this arm out whole.
+            TORCH_INDEX_URL="${_amd_rdna4_base}/gfx120X-all/"
+            _amd_arch_index_routed=true
+            _amd_arch_index_family="gfx120x-all"
+            TORCH_CONSTRAINT="torch>=2.11.0,<2.12.0"
+            TORCHVISION_CONSTRAINT="torchvision>=0.26.0,<0.27.0"
+            TORCHAUDIO_CONSTRAINT="torchaudio>=2.11.0,<2.12.0"
+            _amd_gpu_radeon=false
+            _torch_index_leaf="gfx120x-all"
         fi
         # Navi 33 (gfx1102) and RDNA 4 (gfx1200/gfx1201) have no kernels in the
         # older generic wheel families. The floor is per arch, read from the
@@ -6897,7 +7010,7 @@ elif _torch_index_url_is_rocm "$TORCH_INDEX_URL"; then
         if [ -n "$_gpu_disp_smi_records" ]; then
             _gpu_disp_smi_out=$(amd-smi list -e 2>/dev/null \
                 | _amd_smi_hip_order "$_gpu_disp_smi_records" || true)
-            _gpu_disp_smi_space=$(printf '%s\n' "$_gpu_disp_smi_out" | head -n 1)
+            _gpu_disp_smi_space=$(printf '%s\n' "$_gpu_disp_smi_out" | sed -n 1p)
             _gpu_disp_smi_records=$(printf '%s\n' "$_gpu_disp_smi_out" | tail -n +2)
             # No map, and the adapters are not interchangeable: the mask indexes HIP order while these records are in discovery order, so any ordinal is a guess. Report nothing rather than name one card while the mask selects another. amd-smi 6.1.1 reports no TARGET_GRAPHICS_VERSION at all and the arch is then inferred from the name, so an archless record is compared on its name instead. Interchangeable adapters are unaffected: every ordinal gives the same answer.
             if [ "$_gpu_disp_smi_space" != hip ] && \
@@ -7555,7 +7668,7 @@ _unsloth_desktop_install_spec=""
 if [ -n "${UNSLOTH_DESKTOP_BACKEND_VERSION:-}" ]; then
     _unsloth_desktop_install_spec="unsloth>=${UNSLOTH_DESKTOP_BACKEND_VERSION}"
 fi
-_unsloth_release_install_spec="${_unsloth_desktop_install_spec:-unsloth>=2026.9.11}"
+_unsloth_release_install_spec="${_unsloth_desktop_install_spec:-unsloth>=2026.9.12}"
 
 if [ "$_MIGRATED" = true ]; then
     # Migrated env: force-reinstall unsloth+unsloth-zoo, keeping torch unless the ROCm repair fires.
@@ -7568,7 +7681,7 @@ if [ "$_MIGRATED" = true ]; then
         # (tests/test_installer_zoo_floor_parity.py enforces that).
         run_install_cmd_retry "install unsloth (migrated no-torch)" uv pip install --python "$_VENV_PY" --no-deps \
             --reinstall-package unsloth --reinstall-package unsloth-zoo \
-            "$_unsloth_release_install_spec" "unsloth-zoo>=2026.9.7"
+            "$_unsloth_release_install_spec" "unsloth-zoo>=2026.9.8"
         # Resolve pydantic WITH deps so pip pins pydantic-core to the
         # matching version (no-torch-runtime.txt below is --no-deps).
         # All transitive deps are torch-free.
@@ -7583,7 +7696,7 @@ if [ "$_MIGRATED" = true ]; then
         run_install_cmd_retry "install unsloth (migrated)" uv pip install --python "$_VENV_PY" \
             ${_UNSLOTH_TORCH_OVERRIDES:+--overrides "$_UNSLOTH_TORCH_OVERRIDES"} \
             --reinstall-package unsloth --reinstall-package unsloth-zoo \
-            "$_unsloth_release_install_spec" "unsloth-zoo>=2026.9.7"
+            "$_unsloth_release_install_spec" "unsloth-zoo>=2026.9.8"
         [ -n "$_UNSLOTH_TORCH_OVERRIDES" ] && rm -f "$_UNSLOTH_TORCH_OVERRIDES"
         _UNSLOTH_TORCH_OVERRIDES=""
     fi
@@ -7611,6 +7724,13 @@ if [ "$_MIGRATED" = true ]; then
             # A migrated venv keeps its hip torch, but a wheel below this arch's floor has no
             # kernels for it. The SAME floor the reroute used, so an adequate wheel is left alone.
             substep "reinstalling torch from $_torch_index_leaf (the migrated wheels have no kernels for this GPU)..."
+            _install_torch_default_index --force-reinstall
+        elif [ "${_amd_arch_index_routed:-false}" = true ] && {
+                 _venv_torch_rocm_below "$_VENV_PY" 7 13 ||
+                 { _vfam=$(_venv_torch_amd_family "$_VENV_PY")
+                   [ -n "$_vfam" ] && [ "$_vfam" != "${_amd_arch_index_family:-}" ]; }; }; then
+            # Below 7.13 or another family's wheel lacks kernels; an unreadable family is left alone.
+            substep "reinstalling torch from the AMD per-arch index (the migrated wheels do not match it)..."
             _install_torch_default_index --force-reinstall
         fi
         _gfx906_bnb_prune
@@ -7763,8 +7883,13 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
                             "$_torch_whl" "$_tv_whl" "$_ta_whl"
                     fi
                 fi
+            elif [ "$_RADEON_HOST_ANSWERED" = true ]; then
+                _radeon_rel=${_radeon_url%/}
+                _radeon_rel=${_radeon_rel##*/}
+                substep "repo.radeon.com has no $_radeon_rel wheels; using $(_strip_index_url_credentials "$TORCH_INDEX_URL")"
+                _install_torch_default_index
             else
-                substep "[WARN] Radeon repo unavailable; falling back to ROCm index ($(_strip_index_url_credentials "$TORCH_INDEX_URL"))" "$C_WARN"
+                substep "[WARN] Radeon repo unreachable; falling back to ROCm index ($(_strip_index_url_credentials "$TORCH_INDEX_URL"))" "$C_WARN"
                 _install_torch_default_index
             fi
         else
@@ -7791,7 +7916,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
         # --no-deps: this spec IS the zoo floor here. Kept equal to pyproject.toml's.
         run_install_cmd_retry "install unsloth (no-torch)" uv pip install --python "$_VENV_PY" --no-deps \
             --upgrade-package unsloth --upgrade-package unsloth-zoo \
-            "$_unsloth_release_install_spec" "unsloth-zoo>=2026.9.7"
+            "$_unsloth_release_install_spec" "unsloth-zoo>=2026.9.8"
         # Same pydantic-with-deps trick as the migrated branch.
         run_install_cmd_retry "install pydantic (with deps for compatible core)" \
             uv pip install --python "$_VENV_PY" pydantic
@@ -7810,7 +7935,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
     elif [ "$STUDIO_LOCAL_INSTALL" = true ]; then
         run_install_cmd_retry "install unsloth (local)" uv pip install --python "$_VENV_PY" \
             ${_UNSLOTH_TORCH_OVERRIDES:+--overrides "$_UNSLOTH_TORCH_OVERRIDES"} \
-            --upgrade-package unsloth "$_unsloth_release_install_spec" "unsloth-zoo>=2026.9.7"
+            --upgrade-package unsloth "$_unsloth_release_install_spec" "unsloth-zoo>=2026.9.8"
         substep "overlaying local repo (editable)..."
         run_install_cmd "overlay local repo" uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
         substep "overlaying unsloth-zoo from git ${_ZOO_REF}..."
@@ -7841,7 +7966,7 @@ else
     tauri_log "STEP" "Installing Unsloth"
     substep "installing unsloth (this may take a few minutes)..."
     if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
-        run_install_cmd_retry "install unsloth (auto torch backend)" uv pip install --python "$_VENV_PY" "unsloth-zoo>=2026.9.7" "$_unsloth_release_install_spec" --torch-backend=auto
+        run_install_cmd_retry "install unsloth (auto torch backend)" uv pip install --python "$_VENV_PY" "unsloth-zoo>=2026.9.8" "$_unsloth_release_install_spec" --torch-backend=auto
         substep "overlaying local repo (editable)..."
         run_install_cmd "overlay local repo" uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
         substep "overlaying unsloth-zoo from git ${_ZOO_REF}..."

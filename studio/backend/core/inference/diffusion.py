@@ -38,6 +38,7 @@ from core._torchao_stub import (
 )
 from hub.utils.hf_errors import modelscope_missing
 from loggers import get_logger
+from utils.gpu_memory_events import invalidates_gpu_memory as _invalidates_gpu_memory
 from utils.account_context import account_thread, current_account_id
 from utils.hardware import clear_gpu_cache
 
@@ -59,6 +60,8 @@ from .diffusion_families import (
     detect_family_for_pick,
     excluded_model_reason,
     prefer_ungated_mirror,
+    prequant_only_repo_ids,
+    prequant_repo_role,
     resolve_base_repo,
     resolve_local_gguf_child,
     supported_family_names,
@@ -101,6 +104,7 @@ from .diffusion_memory import (
     MEMORY_MODE_LOW_VRAM,
     ACTIVATION_TILE,
     DeviceMemory,
+    OFFLOAD_MODEL,
     OFFLOAD_NONE,
     OFFLOAD_STREAMING,
     apply_memory_plan,
@@ -109,6 +113,7 @@ from .diffusion_memory import (
     estimate_image_runtime_mib,
     estimate_safetensors_dense_mib,
     file_size_mib,
+    largest_streamable_companion_mib,
     normalize_memory_mode,
     plan_diffusion_memory,
     plan_fits_total_capacity,
@@ -128,6 +133,8 @@ from .diffusion_memory import (
     vae_is_sliced,
 )
 from .diffusion_torchao_patches import install_torchao_int_mm_patch
+from .image_orientation import exif_upright
+from .media_decode_phase import decode_phase
 from .diffusion_speed import (
     SPEED_DEFAULT,
     SPEED_EAGER,
@@ -149,6 +156,7 @@ from .diffusion_speed import (
     snapshot_backend_flags,
     vae_decode_compile_allowed,
 )
+from .diffusion_vae_fp16 import enable_fp16_vae_decode
 from .diffusion_attention import (
     apply_attention_backend,
     normalize_attention_backend,
@@ -161,6 +169,7 @@ from . import diffusion_cond_cache as cond_cache
 from . import diffusion_prompt_cache as prompt_cache
 from . import diffusion_gguf_compile as gguf_compile
 from . import diffusion_cuda_graph as cuda_graph
+from . import diffusion_render_thread as render_thread
 from .diffusion_batched import (
     chunk_jobs,
     is_oom_error,
@@ -226,6 +235,8 @@ from .diffusion_auto_policy import (
     base_repo_bf16_components_gb,
     build_resolved_record,
     estimate_dense_quant,
+    format_generation_for_log,
+    format_resolved_for_log,
     family_bf16_components_gb,
     precision_fallback_allowed,
     precision_refusal_message,
@@ -236,6 +247,7 @@ from .diffusion_nvfp4_flag import nvfp4_diffusion_enabled
 from .diffusion_nvfp4_install import nvfp4_backend_fields as _nvfp4_backend_fields
 from .diffusion_transformer_quant import (
     TQ_AUTO,
+    auto_bf16_when_resident_reason,
     TQ_NVFP4,
     TQ_INT8,
     DEFAULT_MIN_LINEAR_FEATURES,
@@ -527,32 +539,7 @@ def decode_b64_image(
             )
         img.load()
         # Below the size guard because the transpose needs the pixels the guard exists to not read.
-        # Read the EXIF block directly, not via getexif(), which also recovers orientation from XMP
-        # and ImageMagick profiles that Chromium ignores, and may have cached one during open().
-        exif = Image.Exif()
-        try:
-            if img.info.get("exif"):
-                exif.load(img.info["exif"])
-        except Exception:  # noqa: BLE001 - a malformed block leaves it unrotated, as the preview
-            pass
-        # Chromium does not apply orientation to WebP but WebKit does, so macOS desktop keeps a
-        # known divergence: Studio ships on Tauri against three engines and no rule fits them all.
-        # TIFF needs no branch: its plugin applies the IFD orientation during load().
-        orientation = None if img.format == "WEBP" else exif.get(0x0112)
-        method = {
-            2: Image.Transpose.FLIP_LEFT_RIGHT,
-            3: Image.Transpose.ROTATE_180,
-            4: Image.Transpose.FLIP_TOP_BOTTOM,
-            5: Image.Transpose.TRANSPOSE,
-            6: Image.Transpose.ROTATE_270,
-            7: Image.Transpose.TRANSVERSE,
-            8: Image.Transpose.ROTATE_90,
-        }.get(orientation)
-        if method is not None:
-            img = img.transpose(method)
-            # Drop the sources it could be read from again, so a re-save cannot re-apply it.
-            for consumed in ("exif", "XML:com.adobe.xmp", "xmp", "Raw profile type exif"):
-                img.info.pop(consumed, None)
+        img = exif_upright(img)
     except ValueError:
         raise  # the size guard's own message; don't wrap it as a decode error
     except Exception as exc:  # noqa: BLE001 - surfaced as a 400 to the client
@@ -1111,6 +1098,8 @@ class _GenState:
     first_step_at: float = 0.0
     # Computed once per step (in the callback) so it's stable between polls.
     eta_seconds: Optional[float] = None
+    # "decode" once pipe() enters its decoder, which runs after the last step callback.
+    phase: str = "denoise"
 
 
 def _estimate_eta(total_steps: int, step: int, first_step_at: float, now: float) -> Optional[float]:
@@ -1132,6 +1121,48 @@ def _resolve_diffusion_compute_dtype(fam: Optional[DiffusionFamily], dtype: Any)
     import torch
 
     return torch.float32 if dtype == torch.float16 else dtype
+
+
+def _float_load_itemsize(dtype: Any) -> Optional[int]:
+    try:
+        import torch
+        if isinstance(dtype, torch.dtype) and dtype.is_floating_point:
+            return int(dtype.itemsize)
+    except Exception:  # noqa: BLE001 - no torch: keep on-disk sizing
+        pass
+    return None
+
+
+def _class_pins_fp32(class_name: str, load_dtype: Any) -> tuple[str, ...]:
+    """Diffusers pins at both halves; Transformers pins ``_keep_in_fp32_modules`` only at fp16."""
+    for lib in ("diffusers", "transformers"):
+        module = sys.modules.get(lib)
+        try:
+            cls = getattr(module, class_name, None) if module is not None else None
+        except Exception:  # noqa: BLE001 - an unimportable class tells us nothing
+            cls = None
+        if cls is None:
+            continue
+        pinned = list(getattr(cls, "_keep_in_fp32_modules_strict", None) or ())
+        if lib == "diffusers" or str(load_dtype) == "torch.float16":
+            pinned += list(getattr(cls, "_keep_in_fp32_modules", None) or ())
+        # Diffusers tests each pin against single name segments, so a dotted pin never matches there.
+        return tuple(str(name) for name in pinned if lib != "diffusers" or "." not in str(name))
+    return ()
+
+
+def _component_pins_fp32(folder: Path, load_dtype: Any) -> tuple[str, ...]:
+    try:
+        config = json.loads((folder / "config.json").read_text(encoding = "utf-8"))
+        names = [config.get("_class_name"), *(config.get("architectures") or ())]
+    except Exception:  # noqa: BLE001 - no readable config: nothing is pinned by name
+        return ()
+    return tuple(
+        pin
+        for name in names
+        if isinstance(name, str) and name
+        for pin in _class_pins_fp32(name, load_dtype)
+    )
 
 
 def _install_gguf_prefix_strip(transformer_cls: Any, logger: Any) -> None:
@@ -1648,21 +1679,51 @@ def _plan_proves_resident(plan: Any) -> bool:
     )
 
 
+def _auto_keeps_bf16_reason(fam: Any, kind: Optional[str] = "pipeline") -> Optional[str]:
+    """Why AUTO keeps bf16 when it fits (measured rule: pipeline loads only), or None; both deciders read this."""
+    if not family_compiles_regionally(fam):
+        return (
+            f"'{getattr(fam, 'name', None)}' cannot be regionally compiled (its transformer declares no "
+            "repeated blocks), and an uncompiled quantised transformer runs far slower than the weights "
+            "it replaces; they fit on this GPU as they are"
+        )
+    if kind != "pipeline":
+        return None
+    measured = auto_bf16_when_resident_reason(getattr(fam, "name", None))
+    if measured is None:
+        return None
+    return (
+        f"'{getattr(fam, 'name', None)}': {measured}; the bf16 weights fit on this GPU as they are"
+    )
+
+
 def _auto_quant_eager_reason(
     fam: Any,
     plan: Any,
     prequant_path: Optional[str] = None,
+    kind: Optional[str] = "pipeline",
 ) -> Optional[str]:
-    """Why AUTO keeps bf16 for an uncompilable family, or None; an operator's own checkpoint wins."""
-    if not _plan_proves_resident(plan) or family_compiles_regionally(fam):
+    """Why AUTO keeps bf16 for this load, or None; an operator's own checkpoint wins."""
+    if not _plan_proves_resident(plan):
+        return None
+    reason = _auto_keeps_bf16_reason(fam, kind)
+    if reason is None:
         return None
     if prequant_path and local_prequant_path_ready(prequant_path):
         return None
-    return (
-        f"'{getattr(fam, 'name', None)}' cannot be regionally compiled (its transformer declares no "
-        "repeated blocks), and an uncompiled quantised transformer runs far slower than the weights "
-        "it replaces; they fit on this GPU as they are"
-    )
+    return reason
+
+
+def _uninstall_fused_dit_patches() -> None:
+    """Restore the process-global fused DiT patches so the next load honours its own kill switches."""
+    try:
+        from .diffusion_qwenimage_rope import uninstall as uninstall_qwen_real_rope
+        from .diffusion_zimage_fused import uninstall as uninstall_zimage_fused
+
+        uninstall_qwen_real_rope()
+        uninstall_zimage_fused()
+    except Exception:  # noqa: BLE001 - teardown is best effort
+        pass
 
 
 def _clear_exception_frames(exc: BaseException) -> None:
@@ -2005,16 +2066,19 @@ class DiffusionBackend:
                     is None
                 ):
                     reason = explain_unusable_scheme(getattr(fam, "name", None), pinned)
-            elif _memory_request_forces_offload(memory_mode, cpu_offload):
+            elif _memory_request_forces_offload(memory_mode, cpu_offload) and (
+                model_kind != "pipeline"
+                or normalize_memory_mode(memory_mode) == MEMORY_MODE_BALANCED
+            ):
                 # Not a measurement: balanced and low_vram name their policy outright, and the legacy flag forces
-                # model offload. Offload hooks move modules with Module.to(), which torchao tensors do not survive, so
-                # the loader skips the dense build for any of them, and the strict refusal then landed after the
-                # resident model was already gone. The two requests are incompatible on their face.
+                # model offload; refusing late would land after the resident model was already evicted.
                 requested_memory = normalize_memory_mode(memory_mode) or "cpu_offload"
                 reason = (
-                    f"'{requested_memory}' memory places the transformer under CPU offload, and "
-                    "torchao quantised tensors cannot be moved by the offload hooks, so the dense "
-                    "quant is skipped"
+                    f"'{requested_memory}' memory places the transformer under CPU offload, and a "
+                    "GGUF pick only swaps in the quantised dense transformer when it fits resident"
+                    if model_kind != "pipeline"
+                    else "'balanced' memory streams the transformer through group-offload hooks "
+                    "torchao weights do not survive; use low_vram to combine the two"
                 )
             elif not dense_transformer_supported(target):
                 reason = dense_transformer_unsupported_reason(target)
@@ -2567,6 +2631,24 @@ class DiffusionBackend:
                 f"{', '.join(supported_family_names())}. If this is a variant of one of them, "
                 f"pass family_override with that family name. (Video models and image models "
                 f"whose diffusers transformer has no single-file loader are not supported.)"
+            )
+        # Prequant repos have no model_index.json (a pipeline pick staged GBs, then 404d); a same-named local dir is a real pipeline.
+        if (
+            kind == "pipeline"
+            and repo_id.strip().lower() in prequant_only_repo_ids()
+            and not _is_local_path(repo_id)
+        ):
+            bases, schemes, te_schemes = prequant_repo_role(fam, repo_id)
+            shown = " or ".join(bases) or fam.base_repo
+            knobs = []
+            if schemes:
+                knobs.append(f"the transformer precision to {' or '.join(schemes)}")
+            if te_schemes:
+                knobs.append(f"the text encoder precision to {' or '.join(te_schemes)}")
+            raise ValueError(
+                f"'{repo_id}' hosts pre-quantised checkpoints for {shown} and is not a diffusers pipeline "
+                f"(it has no model_index.json). Pick {shown} and set {' and '.join(knobs) or 'a precision'} "
+                f"instead."
             )
         # Refuse a too-old diffusers here, not deep in the load, but only when this load builds the diffusers
         # pipeline: a GGUF this host routes to native sd.cpp never instantiates the class. The picker gate reads the
@@ -3260,7 +3342,7 @@ class DiffusionBackend:
                     is not None
                 ):
                     return None
-                if auto and not family_compiles_regionally(fam):
+                if auto and _auto_keeps_bf16_reason(fam) is not None:
                     bf16_memory = snapshot_device_memory(target)
                     bf16_plan = self._bf16_table_plan(
                         target,
@@ -4456,10 +4538,17 @@ class DiffusionBackend:
         return sum(sizes.values())
 
     @staticmethod
-    def _local_dir_weight_sizes(path: Path, *, exclude_transformer: bool) -> dict[str, int]:
+    def _local_dir_weight_sizes(
+        path: Path,
+        *,
+        exclude_transformer: bool,
+        load_dtype: Any = None,
+    ) -> dict[str, int]:
         """``{relative path: on-disk bytes}`` for the weight files under a diffusers directory. Per
         file, not a total, so callers merging several trees can dedupe by path. See
-        ``_local_dir_weight_bytes`` for what the filter is for."""
+        ``_local_dir_weight_bytes`` for what the filter is for. ``load_dtype`` prices what
+        ``from_pretrained`` holds instead (default variant, safetensors over ``.bin``, cast floats)."""
+        load_itemsize = _float_load_itemsize(load_dtype)
         sizes: dict[str, int] = {}
         for f in path.rglob("*"):
             if f.suffix.lower() not in (".safetensors", ".bin", ".pt", ".ckpt"):
@@ -4470,14 +4559,147 @@ class DiffusionBackend:
                 continue
             if exclude_transformer and rel.parts and rel.parts[0] == "transformer":
                 continue
+            if load_itemsize is not None and (
+                len(rel.parts) < 2 or not _pipeline_default_variant_file(rel.as_posix())
+            ):
+                continue
             try:
                 sizes[rel.as_posix()] = f.stat().st_size
             except OSError:
                 continue
+        if load_itemsize is None:
+            return sizes
+        # A .bin only loses to a safetensors checkpoint the loader can select: unsharded, or shards with their index.
+        st_dirs = {
+            rel.rsplit("/", 1)[0]
+            for rel in sizes
+            if _SELECTABLE_SAFETENSORS_RE.match(rel.rsplit("/", 1)[-1])
+        } | {
+            index.parent.relative_to(path).as_posix()
+            for index in path.glob("*/*.safetensors.index.json")
+            if _DEFAULT_PIPELINE_WEIGHT_INDEX_RE.match(index.name)
+        }
+        for rel in list(sizes):
+            if rel.endswith(".bin") and rel.rsplit("/", 1)[0] in st_dirs:
+                del sizes[rel]
+            elif rel.endswith((".safetensors", ".bin")):
+                pinned = (
+                    _component_pins_fp32((path / rel).parent, load_dtype)
+                    if load_itemsize < 4
+                    else ()
+                )
+                reader = (
+                    DiffusionBackend._safetensors_cast_bytes
+                    if rel.endswith(".safetensors")
+                    else DiffusionBackend._bin_cast_bytes
+                )
+                cast = reader(path / rel, load_itemsize, pinned)
+                if cast is not None:
+                    sizes[rel] = cast
         return sizes
 
     @staticmethod
-    def _local_dir_weight_bytes(path: Path, *, exclude_transformer: bool) -> int:
+    def _safetensors_cast_bytes(
+        path: Path,
+        itemsize: int,
+        pinned: tuple[str, ...] = (),
+    ) -> Optional[int]:
+        """A half load narrows only a file stored wider throughout (a mixed file pins its fp32 norms)."""
+        try:
+            with open(path, "rb") as fh:
+                length = int.from_bytes(fh.read(8), "little")
+                if length > 100_000_000:
+                    return None
+                header = json.loads(fh.read(length))
+            tensors = []
+            for name, meta in header.items():
+                if name == "__metadata__" or not isinstance(meta, dict):
+                    continue
+                dtype = str(meta.get("dtype", ""))
+                if dtype not in _SAFETENSORS_FLOAT_WIDTH and dtype not in ("I64", "I32", "BOOL"):
+                    return None
+                begin, end = meta["data_offsets"]
+                numel = 1
+                for dim in meta.get("shape", []):
+                    numel *= int(dim)
+                tensors.append(
+                    (name, _SAFETENSORS_FLOAT_WIDTH.get(dtype), numel, int(end) - int(begin))
+                )
+            return DiffusionBackend._cast_tensor_bytes(tensors, itemsize, pinned)
+        except Exception:  # noqa: BLE001 - corrupt/crafted header keeps the on-disk size
+            return None
+
+    @staticmethod
+    def _bin_cast_bytes(
+        path: Path,
+        itemsize: int,
+        pinned: tuple[str, ...] = (),
+    ) -> Optional[int]:
+        try:
+            import torch
+
+            state = torch.load(path, map_location = "cpu", mmap = True, weights_only = True)
+            if not isinstance(state, dict):
+                return None
+            tensors = []
+            seen: set = set()
+            for name, tensor in state.items():
+                if not isinstance(tensor, torch.Tensor):
+                    return None
+                # Tied weights are saved once and load as one tensor: count an exact alias once.
+                alias = (
+                    tensor.untyped_storage().data_ptr(),
+                    tensor.storage_offset(),
+                    tuple(tensor.shape),
+                    tuple(tensor.stride()),
+                    tensor.dtype,
+                )
+                if alias in seen:
+                    continue
+                seen.add(alias)
+                width = int(tensor.element_size()) if tensor.is_floating_point() else None
+                numel = int(tensor.numel())
+                tensors.append((str(name), width, numel, numel * int(tensor.element_size())))
+            del state
+            return DiffusionBackend._cast_tensor_bytes(tensors, itemsize, pinned)
+        except Exception:  # noqa: BLE001 - unreadable pickle keeps the on-disk size
+            return None
+
+    @staticmethod
+    def _cast_tensor_bytes(
+        tensors: list[tuple[str, Optional[int], int, int]],
+        itemsize: int,
+        pinned: tuple[str, ...] = (),
+    ) -> Optional[int]:
+        widths = [width for _, width, _, _ in tensors if width is not None]
+        if not widths:
+            return None
+        narrows = min(widths) > itemsize
+        # The loaders' own match: a pin names whole dot-separated segments, dotted pins included.
+        pin_match = (
+            re.compile("|".join(rf"(^|\.){re.escape(pin)}($|\.)" for pin in pinned)).search
+            if pinned
+            else None
+        )
+        total = 0
+        for name, width, numel, stored in tensors:
+            if width is None:
+                total += stored
+            elif itemsize >= 4 or (pin_match is not None and pin_match(name)):
+                total += numel * 4
+            elif narrows:
+                total += numel * itemsize
+            else:
+                total += stored
+        return total
+
+    @staticmethod
+    def _local_dir_weight_bytes(
+        path: Path,
+        *,
+        exclude_transformer: bool,
+        load_dtype: Any = None,
+    ) -> int:
         """Sum the on-disk weight files under a local diffusers directory. The HF blob cache is
         empty for a local path, so this is the only size signal for auto memory planning; without
         it a large local model folds to zero and the planner skips offload and OOMs.
@@ -4485,7 +4707,7 @@ class DiffusionBackend:
         a full pipeline load keeps it."""
         return sum(
             DiffusionBackend._local_dir_weight_sizes(
-                path, exclude_transformer = exclude_transformer
+                path, exclude_transformer = exclude_transformer, load_dtype = load_dtype
             ).values()
         )
 
@@ -4531,7 +4753,11 @@ class DiffusionBackend:
         return sum(merged.values())
 
     @staticmethod
-    def _companion_cache_bytes(base: str, staged_dir: Optional[str] = None) -> int:
+    def _companion_cache_bytes(
+        base: str,
+        staged_dir: Optional[str] = None,
+        load_dtype: Any = None,
+    ) -> int:
         """Resident companion (VAE + text-encoder) size for the memory plan. Excludes
         ``transformer/`` (supplied by the GGUF/single file, not resident here), otherwise the
         dense-quant prefetch's cached transformer shards would inflate this and wrongly force
@@ -4539,12 +4765,14 @@ class DiffusionBackend:
         preserves the subfolder split needed to exclude it."""
         return DiffusionBackend._union_over_cached_revs(
             base,
-            lambda d: DiffusionBackend._local_dir_weight_sizes(d, exclude_transformer = True),
+            lambda d: DiffusionBackend._local_dir_weight_sizes(
+                d, exclude_transformer = True, load_dtype = load_dtype
+            ),
             staged_dir,
         )
 
     @staticmethod
-    def _local_dir_text_encoder_sizes(path: Path) -> dict[str, int]:
+    def _local_dir_text_encoder_sizes(path: Path, load_dtype: Any = None) -> dict[str, int]:
         """``{relative path: on-disk bytes}`` for the TEXT-ENCODER weight files under a diffusers
         directory: the ``text_encoder*`` subfolders of what ``_local_dir_weight_sizes`` returns.
         Derived from that same walk rather than a second one, so the text-encoder term is a
@@ -4552,21 +4780,25 @@ class DiffusionBackend:
         return {
             rel: size
             for rel, size in DiffusionBackend._local_dir_weight_sizes(
-                path, exclude_transformer = True
+                path, exclude_transformer = True, load_dtype = load_dtype
             ).items()
             # Prefix, not equality: families ship text_encoder, text_encoder_2, text_encoder_3.
             if rel.split("/", 1)[0].startswith("text_encoder")
         }
 
     @staticmethod
-    def _text_encoder_cache_bytes(base: str, staged_dir: Optional[str] = None) -> int:
+    def _text_encoder_cache_bytes(
+        base: str,
+        staged_dir: Optional[str] = None,
+        load_dtype: Any = None,
+    ) -> int:
         """Text-encoder size for the memory plan: the share of ``_companion_cache_bytes`` the
         planner can move off the resident floor by streaming the encoders. Same
         union-over-cache-roots merge as the companion total, keyed on the same relative paths, so
         a repo split across two roots is counted once in BOTH terms."""
         return DiffusionBackend._union_over_cached_revs(
             base,
-            DiffusionBackend._local_dir_text_encoder_sizes,
+            lambda d: DiffusionBackend._local_dir_text_encoder_sizes(d, load_dtype),
             staged_dir,
         )
 
@@ -4686,6 +4918,7 @@ class DiffusionBackend:
 
         return DiffusionBackend._union_over_cached_revs(base, _params, staged_dir) * 2
 
+    @_invalidates_gpu_memory("diffusion load")
     @_account_owned_load
     def load_pipeline(
         self,
@@ -4984,7 +5217,7 @@ class DiffusionBackend:
                     and dense_quant_supported_kind(kind)
                     and dense_transformer_supported(target)
                     and not (kind == "gguf" and _has_active_lora(loras))
-                    and not family_compiles_regionally(fam)
+                    and _auto_keeps_bf16_reason(fam, kind) is not None
                     and (
                         eager_reason := _auto_quant_eager_reason(
                             fam,
@@ -5004,6 +5237,7 @@ class DiffusionBackend:
                                 else None,
                             ),
                             transformer_prequant_path,
+                            kind,
                         )
                     )
                     is not None
@@ -6002,11 +6236,7 @@ class DiffusionBackend:
                     )
 
                     # Quantise dense bf16 pipeline denoisers in place. The blocker excludes UNet and pre-quantised
-                    # pipelines; offloaded plans stay dense because torchao tensors cannot move. The pipeline is still
-                    # on the CPU here, unlike the GGUF path, which quantises after _assemble_pipe places it. Both
-                    # orders give bit-identical output: apply_memory_plan's one-shot `pipe.to(placement)` is survived
-                    # by the subclasses (measured on sm_89, fp8 and int8, max|diff| 0.0); only the per-forward offload
-                    # hooks are not.
+                    # pipelines; offloaded plans stay dense unless whole-module.
                     if (
                         pipe is not None
                         and kind == "pipeline"
@@ -6093,16 +6323,37 @@ class DiffusionBackend:
                                     native_scheme,
                                     plan.offload_policy,
                                 )
-                            if not keeps_resident and native_scheme is None:
-                                logger.info(
-                                    "diffusion.transformer_quant: skipped (the memory plan picked '%s' "
-                                    "offload, which moves the transformer via Module.to())",
-                                    plan.offload_policy,
+                            # Group offload is WRONG for torchao: its stream cache aliases weights and swap_tensors fails when compiled.
+                            quant_budget = int(plan.estimates.get("safe_device_budget_mib") or 0)
+                            quant_overhead = int(
+                                plan.estimates.get("runtime_headroom_mib") or 0
+                            ) + int(plan.estimates.get("base_overhead_mib") or 0)
+                            if (
+                                not keeps_resident
+                                and native_scheme is None
+                                and (
+                                    plan.offload_policy != OFFLOAD_MODEL
+                                    or estimate is None
+                                    or estimate.steady_transformer_mib + quant_overhead
+                                    > quant_budget
+                                    or (largest_streamable_companion_mib(pipe) or 0) > quant_budget
                                 )
-                                transformer_quant_decline = (
-                                    f"the memory plan picked '{plan.offload_policy}' offload, which moves "
-                                    "the transformer via Module.to(); torchao quantised tensors reject "
-                                    "that. Pin a resident memory mode to combine the two"
+                            ):
+                                if plan.offload_policy == OFFLOAD_MODEL:
+                                    transformer_quant_decline = (
+                                        "whole-module offload onloads each component whole, and the "
+                                        "quantised transformer or a text encoder is not known to fit "
+                                        "the device budget"
+                                    )
+                                else:
+                                    transformer_quant_decline = (
+                                        f"'{plan.offload_policy}' offload streams the transformer through "
+                                        "hooks torchao weights do not survive. Pin low_vram or a resident "
+                                        "memory mode to combine the two"
+                                    )
+                                logger.info(
+                                    "diffusion.transformer_quant: skipped (%s)",
+                                    transformer_quant_decline,
                                 )
                             elif native_scheme is None and pipeline_quant_uncompilable is not None:
                                 # Resident plan: torchao still needs the compile check skipped above.
@@ -6371,6 +6622,12 @@ class DiffusionBackend:
                         )
 
                     self._raise_if_load_cancelled(_load_token)
+                    # Before the speed optims so their decode compile lands inside the non-finite check; `off` keeps fp32.
+                    vae_fp16 = str(
+                        speed_mode or ""
+                    ).strip().lower() != SPEED_OFF and enable_fp16_vae_decode(
+                        pipe, target, logger = logger
+                    )
                     speed_applied = apply_speed_optims(
                         pipe,
                         target,
@@ -6382,6 +6639,8 @@ class DiffusionBackend:
                         offload_active = plan.offload_policy != OFFLOAD_NONE,
                         logger = logger,
                     )
+                    if vae_fp16:
+                        speed_applied["vae_fp16_decode"] = True
                     self._raise_if_load_cancelled(_load_token)
                     if (
                         transformer_quant_engaged is not None
@@ -6660,6 +6919,7 @@ class DiffusionBackend:
                             reset_nvfp4_state()
                         except Exception:  # noqa: BLE001 - teardown is best effort
                             pass
+                        _uninstall_fused_dit_patches()
                         if eager_patched:
                             uninstall_patches()
                             uninstall_arch_patches()
@@ -6670,12 +6930,14 @@ class DiffusionBackend:
         logger.info(
             # The estimates too: the verdict alone cannot be checked from a user's log, and a None among these terms
             # is itself the explanation for a tier the planner skipped.
-            "diffusion.loaded: repo=%s base=%s device=%s offload=%s tiling=%s reasons=%s estimates=%s",
+            "diffusion.loaded: repo=%s base=%s device=%s offload=%s tiling=%s resolved=[%s] reasons=%s "
+            "estimates=%s",
             repo_id,
             base,
             device,
             effective_policy,
             effective_tiling,
+            format_resolved_for_log(state.resolved),
             "; ".join(plan.reasons),
             plan.estimates,
         )
@@ -7420,6 +7682,9 @@ class DiffusionBackend:
             if device_memory_override is not None
             else settled_snapshot_device_memory(target)
         )
+        load_dtype = getattr(target, "dtype", None)
+        if _float_load_itemsize(load_dtype) is None:
+            load_dtype = None
         companions_from_cache = False
         if kind == "pipeline" and transformer_resident_override_mib is not None:
             # Re-planning an assembled pipeline against its dense-quant candidate. The family estimate already
@@ -7448,6 +7713,30 @@ class DiffusionBackend:
                 else 0,
                 self._cache_bytes(cache_repo) if cache_repo else 0,
             )
+            if load_dtype is not None:
+                # Cached bytes are what the repo STORES, not what the load holds at this dtype.
+                loaded = max(
+                    self._local_dir_weight_bytes(
+                        local_repo, exclude_transformer = False, load_dtype = load_dtype
+                    )
+                    if local_repo is not None and local_repo.is_dir()
+                    else 0,
+                    self._local_dir_weight_bytes(
+                        staged_repo, exclude_transformer = False, load_dtype = load_dtype
+                    )
+                    if staged_repo is not None and staged_repo.is_dir()
+                    else 0,
+                    self._union_over_cached_revs(
+                        cache_repo,
+                        lambda d: self._local_dir_weight_sizes(
+                            d, exclude_transformer = False, load_dtype = load_dtype
+                        ),
+                    )
+                    if cache_repo
+                    else 0,
+                )
+                if loaded:
+                    cached = loaded
             cached_mib = int(cached // (1024 * 1024)) if cached else None
             model_dense_mib = estimate_safetensors_dense_mib(cached_mib)
             # A repo can store weights NARROWER than the loaded dtype (ideogram-4 ships raw float8), so cached bytes
@@ -7475,9 +7764,11 @@ class DiffusionBackend:
             # The whole repo is the model, but its companions still sit in their own subfolders, so the same walk the
             # GGUF/single-file branch uses splits them out here too. Without the split both group tiers fail on None
             # and a pipeline that does not fit resident can only ever reach whole-module offload.
-            companion = self._companion_cache_bytes(fetch_base or base, base_local_dir)
+            companion = self._companion_cache_bytes(fetch_base or base, base_local_dir, load_dtype)
             companion_mib = int(companion // (1024 * 1024)) if companion else None
-            text_encoder = self._text_encoder_cache_bytes(fetch_base or base, base_local_dir)
+            text_encoder = self._text_encoder_cache_bytes(
+                fetch_base or base, base_local_dir, load_dtype
+            )
             text_encoder_mib = int(text_encoder // (1024 * 1024)) if text_encoder else None
             companions_from_cache = True
             if is_narrow_base and table is not None:
@@ -7521,12 +7812,16 @@ class DiffusionBackend:
                 # Scan the repo the bytes were staged from, and hand over the staged snapshot too: a base served from
                 # the import-time root is invisible to a hub-id scan of the live one, so the VAE + text encoders would
                 # load unbudgeted.
-                companion = self._companion_cache_bytes(fetch_base or base, base_local_dir)
+                companion = self._companion_cache_bytes(
+                    fetch_base or base, base_local_dir, load_dtype
+                )
                 companion_mib = int(companion // (1024 * 1024)) if companion else None
                 # The text-encoder share of that companion total, from the SAME walk over the same trees, so the
                 # subtraction the planner does is exact rather than two estimates meeting in the middle. 0 bytes reads
                 # as nothing cached, i.e. no split.
-                text_encoder = self._text_encoder_cache_bytes(fetch_base or base, base_local_dir)
+                text_encoder = self._text_encoder_cache_bytes(
+                    fetch_base or base, base_local_dir, load_dtype
+                )
                 text_encoder_mib = int(text_encoder // (1024 * 1024)) if text_encoder else None
                 companions_from_cache = True
             model_dense_mib = None
@@ -7544,7 +7839,9 @@ class DiffusionBackend:
                         fetch_base or base,
                         lambda d: {
                             rel: size
-                            for rel, size in self._local_dir_text_encoder_sizes(d).items()
+                            for rel, size in self._local_dir_text_encoder_sizes(
+                                d, load_dtype
+                            ).items()
                             if rel.split("/", 1)[0] in covered
                         },
                         base_local_dir,
@@ -8039,6 +8336,8 @@ class DiffusionBackend:
             offload_active = state.offload_policy != OFFLOAD_NONE,
             logger = logger,
         )
+        if getattr(getattr(state.pipe, "vae", None), "_unsloth_fp16_decode", False):
+            speed_applied["vae_fp16_decode"] = True
         object.__setattr__(state, "speed_mode", SPEED_DEFAULT)
         object.__setattr__(state, "speed_optims", tuple(k for k, v in speed_applied.items() if v))
         object.__setattr__(
@@ -8256,6 +8555,9 @@ class DiffusionBackend:
                             f"Use a smaller source image."
                         )
                     init_pil = init_pil.resize((tw, th), Image.LANCZOS)
+                    upscale = round(
+                        max(tw / iw, th / ih), 2
+                    )  # the factor after both caps, for the log
                     if strength is None:
                         strength = 0.35  # hires-fix default: preserve content, add detail
                 elif getattr(fam, "reference", False) and init_image is not None:
@@ -8611,10 +8913,28 @@ class DiffusionBackend:
                             # diffusers resets FBCache only after a SUCCESSFUL __call__; a raised call leaves a stale residual.
                             self._reset_step_cache(state.pipe)
                         protect_ctx = protect_generation(pipe, denoise_steps, logger = logger)
+                        # Per chunk: a later chunk denoises again after an earlier one decoded.
+                        gen.phase = "denoise"
+
+                        def _enter_decode_phase(gen = gen) -> None:
+                            gen.phase = "decode"
+                            gen.eta_seconds = None
+
                         try:
-                            # inference_mode is faster than no_grad and numerically identical here.
-                            with torch.inference_mode(), protect_ctx:
-                                out = pipe(**chunk_kwargs).images
+                            # torchao aten.to fails torch's aliasing check under inference_mode; model offload moves weights.
+                            with (
+                                (
+                                    torch.no_grad()
+                                    if state.transformer_quant
+                                    and state.offload_policy == OFFLOAD_MODEL
+                                    else torch.inference_mode()
+                                ),
+                                protect_ctx,
+                                decode_phase(pipe, _enter_decode_phase),
+                            ):
+                                out = render_thread.run(
+                                    "diffusion", lambda: pipe(**chunk_kwargs).images
+                                )
                         except Exception as exc:  # noqa: BLE001 - reraised unless a splittable OOM
                             oom = is_oom_error(exc)
                             if oom:
@@ -8709,7 +9029,7 @@ class DiffusionBackend:
                 reclaim_offload_host_memory(state.offload_policy, logger = logger)
                 # Count the finished generation (drives deferred speed); a batch is one generation.
                 object.__setattr__(state, "generation_count", state.generation_count + 1)
-                return {
+                result = {
                     "images": list(images),
                     "seed": int(seed),
                     "seeds": [int(s) for s in per_image_seeds],
@@ -8735,6 +9055,17 @@ class DiffusionBackend:
                     "reference_resolution": ref_resolution,
                     "localized_edit": localized_edit.mode if localized_edit is not None else None,
                 }
+                logger.info(
+                    "diffusion.generated: %s",
+                    format_generation_for_log(
+                        result,
+                        engine = "diffusers",
+                        steps = steps,
+                        strength = strength_applied,
+                        upscale = upscale if workflow == "upscale" else None,
+                    ),
+                )
+                return result
             finally:
                 if static_skip_pipe is not None:
                     try:
@@ -8762,6 +9093,7 @@ class DiffusionBackend:
                 "total_steps": 0,
                 "fraction": 0.0,
                 "eta_seconds": None,
+                "phase": "denoise",
             }
         return {
             "active": True,
@@ -8769,6 +9101,7 @@ class DiffusionBackend:
             "total_steps": gen.total_steps,
             "fraction": gen.step / gen.total_steps,  # step is 1..total, never over 1.0
             "eta_seconds": gen.eta_seconds,
+            "phase": gen.phase,
         }
 
     def cancel_generate(self, expected_account: Optional[str] = None) -> bool:
@@ -8808,6 +9141,7 @@ class DiffusionBackend:
                 cancel.set()
             return True
 
+    @_invalidates_gpu_memory("diffusion unload")
     def unload(self, *, expected_account: Optional[str] = None) -> dict[str, Any]:
         # fenced, and the try that owns it, start BEFORE the counter moves: a leaked _unload_waiters
         # would make _wait_for_pending_unloads block every later load for the life of the process,
@@ -8904,6 +9238,7 @@ class DiffusionBackend:
             reset_nvfp4_state()
         except Exception:  # noqa: BLE001 - teardown is best effort
             pass
+        _uninstall_fused_dit_patches()
         if state.eager_patched:
             # Lazy import to keep diffusion.py torch-free to import.
             from .diffusion_eager_patches import uninstall_patches
@@ -9221,6 +9556,10 @@ _DEFAULT_PIPELINE_WEIGHT_RE = re.compile(
 _DEFAULT_PIPELINE_WEIGHT_INDEX_RE = re.compile(
     r"^(?:diffusion_pytorch_model|pytorch_model|model)\.(?:bin|safetensors)\.index\.json$"
 )
+_SELECTABLE_SAFETENSORS_RE = re.compile(
+    r"^(?:diffusion_pytorch_model|pytorch_model|model)\.safetensors$"
+)
+_SAFETENSORS_FLOAT_WIDTH = {"F64": 8, "F32": 4, "F16": 2, "BF16": 2}
 _PIPELINE_WEIGHT_PREFIX_RE = re.compile(
     r"^(?:diffusion_pytorch_model|pytorch_model|model)[.-].*"
     r"(?:bin|safetensors)(?:\.index.*\.json)?$"

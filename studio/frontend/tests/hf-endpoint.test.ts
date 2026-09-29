@@ -235,5 +235,8 @@ test("a relay to a custom endpoint gets the session, and the Hugging Face token 
   assert.equal(refreshes, 1);
   const both = ["Bearer session", "Bearer hf_x"];
   const fresh = ["Bearer fresh1", "Bearer hf_x"];
-  assert.deepEqual(sent, [both, ["Bearer session", null], both, both, fresh, fresh, ["Bearer hf_x", null]]);
+  // The gated 401 came from the endpoint with a token, so it is asked once more without it,
+  // still carrying the session; that also 401s and the original answer is returned.
+  const anonymous = ["Bearer session", null];
+  assert.deepEqual(sent, [both, anonymous, both, anonymous, both, fresh, fresh, ["Bearer hf_x", null]]);
 });
