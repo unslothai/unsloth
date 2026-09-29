@@ -76,6 +76,7 @@ from utils.models.model_identity import restore_hf_cache_repo_identity
 from utils.models.unsloth_mirror import unsloth_public_mirror
 from utils.models.model_config import _env_offline
 from utils.datasets import format_and_template_dataset
+from utils.datasets.chat_templates import get_training_chat_template
 from utils.datasets.completion_masking import apply_completion_masking
 from utils.datasets.iterable import is_streaming_dataset as detect_streaming_dataset
 from utils.datasets.raw_text import prepare_raw_text_dataset, resolve_column_names
@@ -4032,6 +4033,9 @@ class UnslothTrainer:
                 str(dataset.get("final_format", "")).lower() if isinstance(dataset, dict) else ""
             )
             raw_text_mode = dataset_final_format == "raw_text"
+            self.tokenizer = get_training_chat_template(
+                self.tokenizer, self.model_name, dataset_final_format
+            )
 
             data_collator = None
             if is_deepseek_ocr:
