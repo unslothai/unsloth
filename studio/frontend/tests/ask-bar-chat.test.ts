@@ -177,6 +177,21 @@ test("a speech model left loaded by Audio is passed over for the last Chat model
   );
 });
 
+test("a Whisper model left loaded by Audio is passed over too", async () => {
+  await withServer(
+    (req, _body, res) => {
+      if (req.url === "/api/inference/status") {
+        return res.end(JSON.stringify({ active_model: "org/whisper", is_audio: true, audio_type: "whisper" }));
+      }
+      if (req.url === "/api/settings/last-local-model") return res.end(JSON.stringify({ id: "org/chat" }));
+      res.end(JSON.stringify({ status: "loaded" }));
+    },
+    async (chat) => {
+      assert.equal(await chat.resolveModel(new AbortController().signal, () => {}), "org/chat");
+    },
+  );
+});
+
 test("the chat request refuses a spoken reply", async () => {
   let header: string | undefined;
   await withServer(

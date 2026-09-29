@@ -59,8 +59,9 @@ export async function resolveModel(
     if (signal.aborted) throw new DOMException("Aborted", "AbortError");
     status = await readStatus();
   }
-  // A speech model left resident by Audio would synthesize the question instead of answering it.
-  if (status.active_model && !isSpeechOnlyStatus(status)) return status.active_model;
+  // Audio can leave a speech model resident: TTS would speak the question, Whisper needs audio in.
+  const textModel = !isSpeechOnlyStatus(status) && status.audio_type !== "whisper";
+  if (status.active_model && textModel) return status.active_model;
   const last = await getJson<{ id?: string | null; gguf_variant?: string | null }>(
     "/api/settings/last-local-model",
     signal,
