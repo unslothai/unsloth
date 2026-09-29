@@ -27,7 +27,7 @@ except Exception as _unsloth_exc:
     _UNSLOTH_IMPORT_ERROR = _unsloth_exc
 
 from huggingface_hub import HfApi, ModelCard
-from hub.utils.hf_tokens import HfTokenArg, is_anonymous, normalize_token
+from hub.utils.hf_tokens import HfTokenArg, apply_token_to_child_env, is_anonymous, normalize_token
 from utils.hardware import clear_gpu_cache
 
 from utils.models import is_vision_model, get_base_model_from_lora
@@ -1756,7 +1756,16 @@ class ExportBackend:
         from unsloth_zoo import llama_cpp as _zoo_llama_cpp
 
         default_dir = os.path.normpath(_zoo_llama_cpp.LLAMA_CPP_DEFAULT_DIR)
-        source_dir = os.path.join(os.path.dirname(default_dir), "llama.cpp-source")
+        # The revision the installed binaries came from (or the latest release), so the clone is
+        # as pinned as the converter the merged-model GGUF path uses.
+        try:
+            _repo, tag = _zoo_llama_cpp._resolve_converter_revision(default_dir)
+        except Exception:
+            tag = None
+        tag = tag.split("-mix-")[0] if tag else None
+        source_dir = os.path.join(
+            os.path.dirname(default_dir), f"llama.cpp-source-{tag}" if tag else "llama.cpp-source"
+        )
         converter = next(
             (
                 path
@@ -1784,6 +1793,7 @@ class ExportBackend:
                         "clone",
                         "--depth",
                         "1",
+                        *(["--branch", tag] if tag else []),
                         "https://github.com/ggml-org/llama.cpp",
                         clone,
                     ],
@@ -1832,15 +1842,7 @@ class ExportBackend:
         if getattr(self, "trust_remote_code", False):
             cmd.append("--trust-remote-code")
         env = os.environ.copy()
-        token = normalize_token(hf_token)
-        if is_anonymous(token):
-            # A caller denied the host token must not reach it through the subprocess either.
-            env.pop("HF_TOKEN", None)
-            env.pop("HUGGING_FACE_HUB_TOKEN", None)
-            env["HF_HUB_DISABLE_IMPLICIT_TOKEN"] = "1"
-        elif token:
-            env["HF_TOKEN"] = token
-            env["HUGGING_FACE_HUB_TOKEN"] = token
+        apply_token_to_child_env(env, normalize_token(hf_token))
         logger.info(f"Converting adapter at '{save_directory}' to GGUF -> '{out_gguf}'")
         result = subprocess.run(cmd, env = env, capture_output = True, text = True)
         if result.returncode != 0:

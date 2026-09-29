@@ -162,7 +162,10 @@ def _converter_harness(monkeypatch, tmp_path, with_converter):
         (llama / "gguf-py").mkdir()
         (llama / "convert_lora_to_gguf.py").write_text("")
     zoo = types.ModuleType("unsloth_zoo")
-    zoo.llama_cpp = types.SimpleNamespace(LLAMA_CPP_DEFAULT_DIR = str(llama))
+    zoo.llama_cpp = types.SimpleNamespace(
+        LLAMA_CPP_DEFAULT_DIR = str(llama),
+        _resolve_converter_revision = lambda d: ("ggml-org/llama.cpp", "b9000-mix-abc"),
+    )
     monkeypatch.setitem(sys.modules, "unsloth_zoo", zoo)
     monkeypatch.setitem(sys.modules, "unsloth_zoo.llama_cpp", zoo.llama_cpp)
     calls = []
@@ -200,18 +203,18 @@ def test_gguf_converter_token_env(monkeypatch, tmp_path, token, expect):
     backend._convert_peft_dir_to_gguf(adapter, "q8_0", token)
     env = calls[-1][1]
     assert env.get("HF_TOKEN") == expect
-    assert (env.get("HF_HUB_DISABLE_IMPLICIT_TOKEN") == "1") is (token is False)
+    assert env.get("HF_HUB_DISABLE_IMPLICIT_TOKEN") == ("1" if token is False else "0")
 
 
 def test_gguf_converter_cloned_without_package_manager(monkeypatch, tmp_path):
     backend, adapter, calls = _converter_harness(monkeypatch, tmp_path, False)
     backend._convert_peft_dir_to_gguf(adapter, "q8_0", None)
-    assert calls[0][0][:2] == ["git", "clone"]
-    source = tmp_path / "home" / "llama.cpp-source"
+    assert calls[0][0][:6] == ["git", "clone", "--depth", "1", "--branch", "b9000"]
+    source = tmp_path / "home" / "llama.cpp-source-b9000"
     assert calls[-1][0][1] == str(source / "convert_lora_to_gguf.py")
     assert sorted(p.name for p in (tmp_path / "home").iterdir()) == [
         "llama.cpp",
-        "llama.cpp-source",
+        "llama.cpp-source-b9000",
     ]
 
 
