@@ -1007,8 +1007,8 @@ _GPU_NAME_GFX_TABLE: "list[tuple[str, str]]" = [
 ]
 
 
-# RDNA 1 has ROCm wheels on Windows only (#11755); Linux installers decline it.
-_ROCM_SUPPORTED_GFX_WINDOWS_ONLY = frozenset({"gfx1010", "gfx1011", "gfx1012"})
+# Only the Windows multi-arch route ships these (#11755, #11815); Linux installers decline them.
+_ROCM_SUPPORTED_GFX_WINDOWS_ONLY = frozenset({"gfx1010", "gfx1011", "gfx1012", "gfx1153"})
 
 
 def _rocm_supported_gfx_here() -> "frozenset[str]":

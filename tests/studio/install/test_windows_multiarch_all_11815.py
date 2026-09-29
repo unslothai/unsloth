@@ -2,6 +2,7 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 """unslothai/unsloth#11815: every Windows RDNA arch installs from the multi-arch index."""
 
+import ast
 import importlib.util
 import re
 import sys
@@ -13,6 +14,7 @@ PACKAGE_ROOT = Path(__file__).resolve().parents[3]
 _STACK_PY = PACKAGE_ROOT / "studio" / "install_python_stack.py"
 _INSTALL_PS1 = PACKAGE_ROOT / "install.ps1"
 _SETUP_PS1 = PACKAGE_ROOT / "studio" / "setup.ps1"
+_HARDWARE_PY = PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "hardware.py"
 
 
 def _load_stack_module():
@@ -183,3 +185,21 @@ class TestPowerShellAgrees:
         listed = set(re.findall(r'"(gfx[0-9a-z]+)"', block))
         missing = (_EXPECTED - {"gfx1010", "gfx1011", "gfx1012"}) - listed
         assert not missing, f"setup.ps1 $_rocmWheelArches lacks {sorted(missing)}"
+
+
+def _frozenset_literal(path, name):
+    for node in ast.parse(path.read_text(encoding = "utf-8")).body:
+        if isinstance(node, (ast.Assign, ast.AnnAssign)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            if any(isinstance(t, ast.Name) and t.id == name for t in targets):
+                return {e.value for e in node.value.args[0].elts}
+    raise AssertionError(f"{name} not found in {path.name}")
+
+
+def test_backend_counts_every_routed_arch_as_supported_on_windows():
+    # A routed arch the backend calls unsupported suppresses its CPU-torch mismatch repair.
+    supported = _frozenset_literal(_HARDWARE_PY, "_ROCM_SUPPORTED_GFX") | _frozenset_literal(
+        _HARDWARE_PY, "_ROCM_SUPPORTED_GFX_WINDOWS_ONLY"
+    )
+    missing = set(stack_mod._WINDOWS_MULTIARCH_GFX) - supported
+    assert not missing, f"hardware.py does not count {sorted(missing)} as supported on Windows"

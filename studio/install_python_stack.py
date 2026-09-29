@@ -386,8 +386,8 @@ def _windows_multiarch_torch_pkg_specs(gfx_arch: str) -> tuple[str, str, str]:
 
 
 def _index_is_multiarch(index_url: "str | None") -> bool:
-    """The multi-arch index, by identity with the configured base or by its leaf: an
-    explicit UNSLOTH_TORCH_INDEX_URL pin naming it must get the multi-arch trio too."""
+    """The multi-arch index, by identity with the configured base or by its leaf. An explicit
+    UNSLOTH_TORCH_INDEX_URL pin never gets here: unknown-family pins install verbatim."""
     if not index_url:
         return False
     _u = index_url.rstrip("/")
