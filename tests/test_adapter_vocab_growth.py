@@ -87,3 +87,30 @@ def test_never_shrinks_or_touches_matching_base(tmp_path):
     assert not _grow_vocab_for_adapter(model, _save_adapter(tmp_path / "small", 35))
     assert not _grow_vocab_for_adapter(model, _save_adapter(tmp_path / "same", 40))
     assert model.get_input_embeddings().weight is weight
+
+
+def test_uncached_hub_adapter_is_read_from_its_header(monkeypatch):
+    # FastModel decides the embedding offload before the adapter is downloaded.
+    huggingface_hub = pytest.importorskip("huggingface_hub")
+    from types import SimpleNamespace
+    from unsloth.models.loader import _adapter_vocab_rows
+
+    downloads, headers = [], []
+
+    def fake_download(repo_id, filename, **kwargs):
+        downloads.append(kwargs.get("local_files_only"))
+        raise FileNotFoundError(filename)
+
+    def fake_header(repo_id, filename, **kwargs):
+        headers.append((repo_id, filename, kwargs.get("revision")))
+        return SimpleNamespace(
+            tensors = {"base_model.model.lm_head.weight": SimpleNamespace(shape = [35, 8])}
+        )
+
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", fake_download)
+    monkeypatch.setattr(huggingface_hub, "parse_safetensors_file_metadata", fake_header)
+    assert _adapter_vocab_rows("someone/adapter", revision = "r", header_only = True) == 35
+    assert downloads and all(downloads)
+    assert headers == [("someone/adapter", "adapter_model.safetensors", "r")]
+    assert _adapter_vocab_rows("someone/adapter", local_files_only = True, header_only = True) is None
+    assert len(headers) == 1

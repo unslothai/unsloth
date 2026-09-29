@@ -400,8 +400,9 @@ def _adapter_weight_shapes(
     revision = None,
     local_files_only = False,
     cache_dir = None,
+    header_only = False,
 ):
-    """{tensor name: shape} of a saved adapter without loading weights, or None."""
+    """{tensor name: shape} of a saved adapter without loading weights, or None. header_only reads an uncached hub safetensors header instead of downloading the adapter."""
     filenames = ("adapter_model.safetensors", "adapter_model.bin")
     try:
         local = os.path.expanduser(adapter_name)
@@ -421,11 +422,17 @@ def _adapter_weight_shapes(
                     revision = revision,
                     token = token,
                     cache_dir = cache_dir,
-                    local_files_only = local_files_only,
+                    local_files_only = local_files_only or header_only,
                 )
             except Exception:
                 continue
             return _adapter_file_shapes(path)
+        if header_only and not local_files_only:
+            from huggingface_hub import parse_safetensors_file_metadata
+            metadata = parse_safetensors_file_metadata(
+                adapter_name, "adapter_model.safetensors", revision = revision, token = token
+            )
+            return {key: tuple(info.shape) for key, info in metadata.tensors.items()}
     except Exception:
         pass
     return None
@@ -2531,15 +2538,16 @@ class FastModel(FastBaseModel):
         # A PEFT load resolved model_name to the base, which the caller's ref is not for.
         model_revision = base_revision if not is_peft else None
 
-        # An adapter with added tokens resizes the embedding after the load (_grow_vocab_for_adapter), so it gates the offload like resize_model_vocab. Local or cached only: the adapter is fetched later.
+        # An adapter with added tokens resizes the embedding after the load (_grow_vocab_for_adapter), so it gates the offload like resize_model_vocab. The adapter is fetched later, so an uncached one is read from its hub header.
         _adapter_grows_vocab = False
         if is_peft and not fast_inference and offload_embedding == OFFLOAD_EMBEDDING_AUTO:
             _adapter_rows = _adapter_vocab_rows(
                 old_model_name,
                 token = token,
                 revision = adapter_revision,
-                local_files_only = True,
+                local_files_only = local_files_only,
                 cache_dir = kwargs.get("cache_dir"),
+                header_only = True,
             )
             _text_config = (
                 model_config.get_text_config()
