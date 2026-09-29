@@ -3755,7 +3755,6 @@ class AnthropicMessagesRequest(BaseModel):
     )
     enable_tools: Optional[bool] = None
     enabled_tools: Optional[list[str]] = None
-    # `type` switches thinking; a positive `budget_tokens` caps it on llama-server.
     thinking: Optional[AnthropicThinkingConfig] = None
     # [x-unsloth] reasoning controls mirroring the OpenAI endpoint. These win
     # over `thinking` when both are present, matching enable_tools precedence.
