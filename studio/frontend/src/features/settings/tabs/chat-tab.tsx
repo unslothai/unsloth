@@ -447,23 +447,23 @@ export function ChatTab() {
         <SettingsRow
           label={t("settings.chat.currentDate.label")}
           description={t("settings.chat.currentDate.description")}
-        >
-          <div className="flex flex-col items-end gap-1">
-            <Switch
-              aria-label={t("settings.chat.currentDate.label")}
-              checked={currentDatePrompt?.enabled ?? false}
-              disabled={!currentDatePrompt || isSavingCurrentDatePrompt}
-              onCheckedChange={(enabled) => void saveCurrentDatePrompt(enabled)}
-            />
-            {currentDatePromptError ? (
+          below={
+            currentDatePromptError ? (
               <span
                 role="alert"
                 className="max-w-[calc(260px*var(--ui-space-scale,1))] text-right text-xs text-destructive"
               >
                 {currentDatePromptError}
               </span>
-            ) : null}
-          </div>
+            ) : null
+          }
+        >
+          <Switch
+            aria-label={t("settings.chat.currentDate.label")}
+            checked={currentDatePrompt?.enabled ?? false}
+            disabled={!currentDatePrompt || isSavingCurrentDatePrompt}
+            onCheckedChange={(enabled) => void saveCurrentDatePrompt(enabled)}
+          />
         </SettingsRow>
         <SettingsRow
           label={t("settings.chat.projectAttachments")}

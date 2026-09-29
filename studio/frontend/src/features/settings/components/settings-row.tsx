@@ -19,7 +19,7 @@ export function SettingsRow({
   children,
   destructive,
   className,
-  alignTop,
+  below,
 }: {
   label: string;
   description?: ReactNode;
@@ -32,8 +32,11 @@ export function SettingsRow({
   children?: ReactNode;
   destructive?: boolean;
   className?: string;
-  /** Top-align the control instead of centering it, for tall descriptions. */
-  alignTop?: boolean;
+  /**
+   * Hangs under the control, right-aligned: a status line, a note, a follow-up button. Kept out
+   * of the control's box so the control itself stays centred on the label and description.
+   */
+  below?: ReactNode;
 }) {
   return (
     <div
@@ -41,18 +44,14 @@ export function SettingsRow({
       className={cn(
         // Controls are fixed-width and shrink-0, so an unwrapped row starves the label. justify-end
         // right-aligns a wrapped control without breaking items-stretch for flex-col callers.
-        "flex flex-wrap justify-end gap-x-6 gap-y-2 py-3",
-        alignTop ? "items-start" : "items-center",
+        "flex flex-wrap items-center justify-end gap-x-6 gap-y-2 py-3",
         destructive && "border-t border-border/60 mt-2 pt-4",
         className,
       )}
     >
       <div
-        className={cn(
-          // Widest floor that leaves already-fitting rows unchanged.
-          "flex min-w-[calc(11rem*var(--ui-space-scale,1))] flex-1 basis-0 gap-2.5",
-          alignTop ? "items-start" : "items-center",
-        )}
+        // Widest floor that leaves already-fitting rows unchanged.
+        className="flex min-w-[calc(11rem*var(--ui-space-scale,1))] flex-1 basis-0 items-center gap-2.5"
       >
         {icon ? (
           <span className="flex shrink-0 items-center text-foreground">
@@ -103,16 +102,10 @@ export function SettingsRow({
         </div>
       </div>
       {children ? (
-        <div
-          className={cn(
-            "flex max-w-full shrink-0",
-            // Line the control up with the first description line, not the label.
-            alignTop ? "items-start pt-[calc(21px*var(--ui-space-scale,1))]" : "items-center",
-          )}
-        >
-          {children}
-        </div>
+        <div className="flex max-w-full shrink-0 items-center">{children}</div>
       ) : null}
+      {/* A line of its own, so it wraps under the control without moving it. */}
+      {below ? <div className="flex basis-full justify-end">{below}</div> : null}
     </div>
   );
 }
