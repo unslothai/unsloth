@@ -1559,7 +1559,7 @@ def test_the_run_settings_footer_does_not_reflow_under_the_pointer():
     before = src.split("<Checkbox id={rememberId}", 1)[0]
     footer = before.rsplit("<div", 2)[1]
     assert "flex-wrap" not in footer, footer[:200]
-    assert "flex flex-col" in footer, footer[:200]
+    assert "variant ===" not in footer and "flex flex-col" in footer, footer[:200]
 
 
 def test_save_settings_is_not_rendered_when_it_could_do_nothing():
