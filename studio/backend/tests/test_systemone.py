@@ -1754,3 +1754,80 @@ def test_rocm_never_builds_cuda_graphs(tmp_path, monkeypatch):
     batch = dict(zip(laya_runtime._INPUTS, _tiny_decision_batch(torch, rows = 3, tokens = 40)))
     laya_runtime._run_model(agent, batch)
     assert "_unsloth_graphs" not in agent.__dict__
+
+
+def test_chunks_split_rows_and_trim_padding():
+    torch = pytest.importorskip("torch")
+    lengths = [10, 3, 7, 2, 9]
+    batch = laya_runtime._collate(
+        [{"ids": list(range(2, 2 + n)), "markers": [1], "qtype": 0} for n in lengths], 0
+    )
+    parts = list(laya_runtime._chunks(batch, 20))
+    # 20 // 10 tokens = 2 rows per forward, each trimmed to its own longest row.
+    assert [tuple(p["input_ids"].shape) for p in parts] == [(2, 10), (2, 7), (1, 9)]
+    for name in laya_runtime._INPUTS:
+        if name in ("input_ids", "attention_mask"):
+            continue
+        assert torch.equal(torch.cat([p[name] for p in parts]), batch[name])
+    assert list(laya_runtime._chunks(batch, 10**6)) == [batch]
+    # A row longer than the budget still runs, one row at a time.
+    assert [p["input_ids"].shape[0] for p in laya_runtime._chunks(batch, 4)] == [1] * 5
+
+
+def test_chunked_forward_matches_one_forward(tmp_path, monkeypatch):
+    torch = pytest.importorskip("torch")
+    laya = laya_runtime._laya()
+    encoder_dir, cfg = _tiny_laya_encoder(tmp_path)
+    torch.manual_seed(0)
+    model = laya.common.build_model({**cfg, "head_layers": 2}, encoder_dir = encoder_dir).eval()
+    agent = SimpleNamespace(model = model, device = torch.device("cpu"), dtype = torch.float32)
+    batch = dict(zip(laya_runtime._INPUTS, _tiny_decision_batch(torch)))
+    with torch.inference_mode():
+        want = model(*batch.values())[0]
+    monkeypatch.setitem(laya_runtime._CHUNK_TOKENS, "cpu", 40)
+    got = laya_runtime._run_model(agent, batch)
+    torch.testing.assert_close(got, want, atol = 1e-5, rtol = 1e-4)
+    calls = []
+    monkeypatch.setattr(
+        laya_runtime,
+        "_run_chunk",
+        lambda agent, part: calls.append(part)
+        or torch.zeros(part["input_ids"].shape[0], part["marker_pos"].shape[1]),
+    )
+    assert laya_runtime._run_model(agent, batch).shape == want.shape and len(calls) == 4
+    # The kill switch keeps laya's single forward.
+    calls.clear()
+    monkeypatch.setenv("UNSLOTH_SYSTEMONE_FAST", "0")
+    laya_runtime._run_model(agent, batch)
+    assert len(calls) == 1
+
+
+def test_mlx_requests_run_in_chunks(monkeypatch):
+    np = pytest.importorskip("numpy")
+    pytest.importorskip("torch")
+    seen = []
+
+    class Model:
+        def logits(self, batch):
+            seen.append(tuple(batch["input_ids"].shape))
+            return np.full(
+                (batch["input_ids"].shape[0], batch["marker_pos"].shape[1]), float(len(seen))
+            )
+
+    agent = SimpleNamespace(device = "mlx", model = Model(), tok = SimpleNamespace(pad_token_id = 0))
+    monkeypatch.setitem(laya_runtime._CHUNK_TOKENS, "mlx", 8)
+    items = [{"ids": [2, 5, 6, 1], "markers": [1, 2], "qtype": 0} for _ in range(5)]
+    logits, usage = laya_runtime._forward(agent, items)
+    assert seen == [(2, 4), (2, 4), (1, 4)] and usage == 20
+    assert logits[:, 0].tolist() == [1, 1, 2, 2, 3]
+
+
+def test_cuda_graph_results_survive_the_next_replay(tmp_path, monkeypatch):
+    torch = pytest.importorskip("torch")
+    agent = _cuda_tiny_agent(tmp_path, monkeypatch, torch)
+    first = dict(zip(laya_runtime._INPUTS, _tiny_decision_batch(torch, rows = 3, tokens = 40)))
+    second = {**first, "input_ids": torch.randint(5, 300, first["input_ids"].shape)}
+    a = laya_runtime._run_model(agent, first)
+    kept = a.clone()
+    laya_runtime._run_model(agent, second)
+    assert torch.equal(a, kept)

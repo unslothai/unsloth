@@ -703,7 +703,9 @@ def _forward(agent, items: list[dict[str, Any]]):
     batch = _collate(items, agent.tok.pad_token_id)
     if agent.device == "mlx":
         try:
-            return agent.model.logits(batch), int(batch["attention_mask"].sum())
+            import numpy as np
+            logits = [agent.model.logits(part) for part in _chunks(batch, _CHUNK_TOKENS["mlx"])]
+            return np.concatenate(logits), int(batch["attention_mask"].sum())
         except RuntimeError as exc:
             # MLX reports exhausted memory as "[malloc] Unable to allocate ..." or "Insufficient Memory".
             reason = str(exc).lower()
@@ -750,7 +752,34 @@ def _forward(agent, items: list[dict[str, Any]]):
     return logits.float().cpu().numpy(), int(batch["attention_mask"].sum())
 
 
+def _chunks(batch, budget: int):
+    """``batch`` as consecutive row slices of at most ``budget`` padded tokens, each trimmed to its longest row."""
+    rows, tokens = batch["input_ids"].shape
+    step = max(1, budget // tokens)
+    if rows <= step:
+        yield batch
+        return
+    for start in range(0, rows, step):
+        part = {name: batch[name][start : start + step] for name in _INPUTS}
+        keep = int(part["attention_mask"].sum(1).max())
+        part["input_ids"] = part["input_ids"][:, :keep]
+        part["attention_mask"] = part["attention_mask"][:, :keep]
+        yield part
+
+
 def _run_model(agent, batch):
+    import torch
+
+    if not _marker_head(agent.model):
+        return _run_chunk(agent, batch)
+    # Activations grow with rows x tokens (64 full-context questions peaked at 3.4 GiB in one forward); past
+    # the budget the device is saturated, so smaller forwards cost little speed and bound the peak.
+    budget = _CHUNK_TOKENS.get(agent.device.type, _CHUNK_TOKENS["cpu"])
+    # cat copies, so no result is a view into a CUDA graph's output buffer, which its next replay overwrites.
+    return torch.cat([_run_chunk(agent, part) for part in _chunks(batch, budget)])
+
+
+def _run_chunk(agent, batch):
     import os
 
     import torch
@@ -783,6 +812,8 @@ def _run_model(agent, batch):
 
 
 _INPUTS = ("input_ids", "attention_mask", "marker_pos", "marker_mask", "qtype")
+# Padded rows x tokens per forward; a larger request runs as several. CPU caches favour small forwards.
+_CHUNK_TOKENS = {"cuda": 16384, "mlx": 8192, "cpu": 4096}
 # Padded rows x tokens above which a batch runs eagerly (B200: graphs win up to 8 x 1024, lose at 16 x 512).
 _GRAPH_TOKENS = 8192
 
