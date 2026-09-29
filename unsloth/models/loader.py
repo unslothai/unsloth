@@ -431,9 +431,21 @@ def _adapter_weight_shapes(
     return None
 
 
-def _adapter_weight_keys(*args, **kwargs):
+def _adapter_weight_keys(
+    adapter_name,
+    token = None,
+    revision = None,
+    local_files_only = False,
+    cache_dir = None,
+):
     """Tensor names of a saved adapter without loading weights, or None."""
-    shapes = _adapter_weight_shapes(*args, **kwargs)
+    shapes = _adapter_weight_shapes(
+        adapter_name,
+        token = token,
+        revision = revision,
+        local_files_only = local_files_only,
+        cache_dir = cache_dir,
+    )
     return None if shapes is None else list(shapes)
 
 
