@@ -9,9 +9,8 @@ __all__ = ["patch_tiled_mlp_for_ddp"]
 
 
 class _TiledMLPWithParams(torch.autograd.Function):
-    # TiledMLP runs a nested .backward() per chunk, so DDP's grad hooks fire once per chunk ("marked ready twice", or a
-    # partial grad all-reduced), and its params are invisible to find_unused_parameters. Taking them as inputs and
-    # returning their summed grads lets autograd accumulate each exactly once.
+    # Stock TiledMLP's per-chunk .backward() fires DDP's grad hooks once per chunk (wrong grads / "marked ready twice");
+    # taking the params as inputs and returning summed grads accumulates each exactly once.
     @staticmethod
     def forward(
         ctx, mlp_forward, mlp_module, x, preserve_rng_state, num_shards, max_flat_qlen, *params
