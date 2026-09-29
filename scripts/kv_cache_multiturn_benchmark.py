@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
+
 """Multi-turn generate(): re-encode the whole conversation vs continue from a KV cache of the history.
 
 python scripts/kv_cache_multiturn_benchmark.py --model unsloth/Llama-3.2-1B-Instruct --turns 4 8 16 32

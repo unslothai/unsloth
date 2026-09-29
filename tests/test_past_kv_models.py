@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
+
 """GPU check: generate() continuing from a user KV cache of the conversation history (issue #497)
 must emit the same greedy tokens as re-encoding the whole conversation."""
 

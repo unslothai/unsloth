@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
+
 """CPU checks for user-supplied past_key_values in generate() (issue #497), against unsloth/models/llama.py."""
 
 import pytest
