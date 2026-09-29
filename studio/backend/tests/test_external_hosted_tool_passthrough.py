@@ -572,7 +572,9 @@ def test_b_the_external_and_codex_paths_derive_the_gate_identically():
         if node.arg == "confirm_calls":
             confirms.add(ast.unparse(node.value))
     assert modes == {"payload.permission_mode or 'auto'"}
-    assert confirms == {"_permission_mode_confirm(payload)"}
+    assert confirms == {
+        "_permission_mode_confirm(payload) or _off_mode_sandbox_gate(payload, _ui_events)"
+    }
 
     nudge_values = []
     for node in ast.walk(tree):

@@ -874,6 +874,144 @@ def capability_snapshot(
     )
 
 
+# The last answer per tool, for callers that must not wait on a probe: the "off" permission gate
+# reads it on every call. Refreshed off the caller's thread, and by every real launch.
+_TOOL_ISOLATION_TTL_SECONDS = 60.0
+ISOLATED_TOOLS = ("python", "terminal")
+_tool_isolation_lock = threading.Lock()
+# tool -> (noted at, available, backend, reason)
+_tool_isolation: dict[str, tuple[float, bool, str, str]] = {}
+_tool_isolation_refreshing: set[str] = set()
+# Bumped by forget_tool_isolation: a refresh that started before it must not republish.
+_tool_isolation_generation = 0
+
+
+# Set to 1: no probe at startup and none in the background; the answer then comes only from real
+# tool launches (tests set it so nothing probes behind their back).
+WARMUP_DISABLE_ENV = "UNSLOTH_DISABLE_SANDBOX_WARMUP"
+
+
+def _background_probes_disabled() -> bool:
+    return os.environ.get(WARMUP_DISABLE_ENV, "").strip() == "1"
+
+
+def tool_isolation_target(tool: str) -> str | None:
+    """The executable a tool is qualified with, as its launch will see it (Settings > Sandbox too)."""
+    if tool == "python":
+        return sys.executable
+    if sys.platform != "win32":
+        return shutil.which("bash") or "bash"
+    from . import tools
+
+    if tools._terminal_profile(False) == "cmd_isolated":
+        return tools._windows_system_cmd()
+    return tools._windows_bash() or tools._windows_system_cmd()
+
+
+def note_tool_isolation(
+    tool: str | None,
+    available: bool,
+    *,
+    backend: str = "",
+    reason: str = "",
+    generation: int | None = None,
+) -> None:
+    if tool not in ISOLATED_TOOLS:
+        return
+    with _tool_isolation_lock:
+        if generation is not None and generation != _tool_isolation_generation:
+            return
+        _tool_isolation[tool] = (time.monotonic(), bool(available), backend, reason)
+
+
+def forget_tool_isolation() -> None:
+    global _tool_isolation_generation
+    with _tool_isolation_lock:
+        _tool_isolation.clear()
+        _tool_isolation_generation += 1
+
+
+def refresh_tool_isolation(tool: str, *, force: bool = False) -> bool:
+    """Blocking: the capability for one tool, remembered for cached_tool_isolation."""
+    with _tool_isolation_lock:
+        generation = _tool_isolation_generation
+    try:
+        capability = capability_snapshot(
+            force = force,
+            execution_kind = tool,
+            selected_executable = tool_isolation_target(tool),
+        )
+        available, backend, reason = (
+            bool(capability.available),
+            capability.backend,
+            capability.reason,
+        )
+    except Exception as exc:  # noqa: BLE001 - an unknown answer reads as not isolated
+        logger.debug("tool isolation refresh for %s failed: %s", tool, exc)
+        available, backend, reason = False, "none", f"the capability check failed: {exc}"
+    note_tool_isolation(tool, available, backend = backend, reason = reason, generation = generation)
+    return available
+
+
+def _refresh_tool_isolation_in_background(tool: str) -> None:
+    try:
+        refresh_tool_isolation(tool)
+    finally:
+        with _tool_isolation_lock:
+            _tool_isolation_refreshing.discard(tool)
+
+
+def cached_tool_isolation(tool: str) -> bool | None:
+    """Never blocks: whether ``tool`` last qualified for OS isolation (None before the first answer)."""
+    cached = cached_tool_capability(tool)
+    return None if cached is None else cached[0]
+
+
+def cached_tool_capability(tool: str) -> tuple[bool, str, str] | None:
+    """Never blocks: the last known (available, backend, reason), None before the first one; a
+    stale or missing answer starts a single background refresh."""
+    now = time.monotonic()
+    with _tool_isolation_lock:
+        entry = _tool_isolation.get(tool)
+        start = (
+            tool in ISOLATED_TOOLS
+            and not _background_probes_disabled()
+            and (entry is None or now - entry[0] >= _TOOL_ISOLATION_TTL_SECONDS)
+            and tool not in _tool_isolation_refreshing
+        )
+        if start:
+            _tool_isolation_refreshing.add(tool)
+    if start:
+        try:
+            threading.Thread(
+                target = _refresh_tool_isolation_in_background,
+                args = (tool,),
+                name = f"unsloth-tool-isolation-{tool}",
+                daemon = True,
+            ).start()
+        except RuntimeError:
+            with _tool_isolation_lock:
+                _tool_isolation_refreshing.discard(tool)
+    return None if entry is None else (entry[1], entry[2], entry[3])
+
+
+def warm_tool_isolation() -> None:
+    """Blocking: probe both tools once so the first tool call does not wait on it."""
+    for tool in ISOLATED_TOOLS:
+        refresh_tool_isolation(tool)
+
+
+def start_tool_isolation_warmup() -> threading.Thread | None:
+    """Server start: warm_tool_isolation on a daemon thread. Off when UNSLOTH_DISABLE_SANDBOX_WARMUP=1."""
+    if _background_probes_disabled():
+        return None
+    thread = threading.Thread(
+        target = warm_tool_isolation, name = "unsloth-sandbox-warmup", daemon = True
+    )
+    thread.start()
+    return thread
+
+
 def _record(
     plan: ToolLaunchPlan,
     capability: SandboxCapability,
@@ -945,6 +1083,13 @@ def prepare_tool_launch(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
         execution_kind = plan.execution_kind,
         selected_executable = plan.argv[0] if plan.argv else None,
         cancel_event = plan.cancel_event,
+    )
+
+    note_tool_isolation(
+        plan.execution_kind,
+        capability.available,
+        backend = capability.backend,
+        reason = capability.reason,
     )
 
     if plan.cancel_event is not None and plan.cancel_event.is_set():

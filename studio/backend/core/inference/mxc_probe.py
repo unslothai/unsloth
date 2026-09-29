@@ -37,6 +37,10 @@ def invalidate_cache() -> None:
     with _lock:
         _cache.clear()
         _host_prep_cache.clear()
+    # Only when already loaded: the MXC child paths import this module without the tool stack.
+    os_sandbox = sys.modules.get(f"{__package__}.os_sandbox")
+    if os_sandbox is not None:
+        os_sandbox.forget_tool_isolation()
 
 
 def host_prep_command() -> list[str]:
