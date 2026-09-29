@@ -34,6 +34,7 @@ import {
   updateMcpServer,
 } from "./api/mcp-servers-api";
 import { ChatMcpServersDialog } from "./chat-mcp-servers-dialog";
+import { normalizeMcpUrl } from "./mcp-server-url";
 import { useChatActive } from "./runtime-provider";
 import { useChatRuntimeStore } from "./stores/chat-runtime-store";
 import { useMcpServersDialogStore } from "./stores/mcp-servers-dialog-store";
@@ -68,16 +69,6 @@ const MCP_PRESETS: readonly McpPreset[] = [
     url: "https://huggingface.co/mcp",
   },
 ] as const;
-
-const STUDIO_DECISIONS_URL =
-  /^http:\/\/(localhost|127\.\d+\.\d+\.\d+|\[::1\])(:\d+)?\/mcp\/decisions$/;
-
-// mcp_servers has no UNIQUE(url); dedupe by normalized URL so a preset toggle reuses its row instead of duplicating.
-function normalizeMcpUrl(url: string): string {
-  const norm = (url || "").trim().toLowerCase().replace(/\/+$/, "");
-  // Studio's own Decisions server runs in process, so a row saved under an older port is the same server.
-  return STUDIO_DECISIONS_URL.test(norm) ? "studio:decisions" : norm;
-}
 
 export function McpComposerButton({
   side = "bottom",

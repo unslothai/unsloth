@@ -11,6 +11,7 @@ import {
   createMcpStdioSnapshot,
   resolveMcpStdioUrl,
 } from "../src/features/chat/mcp-server-form.ts";
+import { normalizeMcpUrl } from "../src/features/chat/mcp-server-url.ts";
 import {
   readAfterPendingMcpServerMutations,
   readMcpServerMutationSnapshot,
@@ -811,23 +812,28 @@ test("every list consumer uses the shared pending-mutation read barrier", () => 
 });
 
 test("the Decisions preset matches a row saved under another port", () => {
-  const literal = MCP_COMPOSER_BUTTON.match(/const STUDIO_DECISIONS_URL =\s*(\/.+\/);/)?.[1];
-  assert.ok(literal);
-  const decisions = new Function(`return ${literal}`)() as RegExp;
   for (const url of [
     "http://127.0.0.1:8888/mcp/decisions",
     "http://127.0.0.1:8889/mcp/decisions",
     "http://localhost:8888/mcp/decisions",
+    "http://[::1]:8888/mcp/decisions",
+    "http://[0:0:0:0:0:0:0:1]:8888/mcp/decisions",
+    "http://[::1%25lo0]:8888/mcp/decisions",
+    "http://[::ffff:127.0.0.1]:8888/mcp/decisions",
+    "http://[::1]:8888/mcp/decisions/?scope=chat",
   ]) {
-    assert.ok(decisions.test(url), url);
+    assert.equal(normalizeMcpUrl(url), "studio:decisions", url);
   }
   for (const url of [
     "https://127.0.0.1:8888/mcp/decisions",
     "http://example.com/mcp/decisions",
+    "http://128.0.0.1:8888/mcp/decisions",
+    "http://127.0.0.01:8888/mcp/decisions",
+    "http://[::2]:8888/mcp/decisions",
     "http://127.0.0.1:8888/mcp",
     "http://127.0.0.1:8888/mcp/decisions/extra",
   ]) {
-    assert.ok(!decisions.test(url), url);
+    assert.notEqual(normalizeMcpUrl(url), "studio:decisions", url);
   }
 });
 
