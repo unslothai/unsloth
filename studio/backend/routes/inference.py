@@ -8225,8 +8225,10 @@ def _slot_serving(requested: str, slots: list[_ExtraSlot]) -> Optional[_ExtraSlo
 async def _route_to_extra_slot(requested: Optional[str]) -> Optional[_ExtraSlot]:
     """Route this request to the extra slot serving *requested*, if any. The primary wins a tie."""
     routed_slot.set(None)
+    if not (_extra_slots and isinstance(requested, str) and requested):
+        return None
     slots = _visible_extra_slots()
-    if not slots or not isinstance(requested, str) or not requested:
+    if not slots:
         return None
     slot = await asyncio.to_thread(_slot_serving, requested, slots)
     if slot is not None:
@@ -8311,7 +8313,7 @@ def _evicted_visible(key: str) -> bool:
 def _evicted_request(requested) -> Optional[LoadRequest]:
     from core.inference.openai_auto_download import looks_like_quant, split_model_ref
 
-    if not isinstance(requested, str) or not requested:
+    if not _evicted or not isinstance(requested, str) or not requested:
         return None
     base, variant = split_model_ref(requested)
     for key, request in list(_evicted.items()):
@@ -8425,20 +8427,8 @@ def _raise_or_cancel_slot_generations(
     if not events:
         return 0
     if not force:
-        running = len(events)
-        raise HTTPException(
-            status_code = 409,
-            detail = {
-                "error": "active_generations",
-                "message": (
-                    f"{action} would stop {running} chat"
-                    f"{'s' if running != 1 else ''} that "
-                    f"{'are' if running != 1 else 'is'} still generating. "
-                    "Stop them first, or retry with force_cancel_active."
-                ),
-                "running": running,
-                "thread_ids": active_generations.thread_ids_for(events),
-            },
+        raise _active_generations_conflict(
+            action, len(events), active_generations.thread_ids_for(events)
         )
     if not cancel:
         return 0
@@ -11282,10 +11272,7 @@ def release_chat_gpu_claim() -> bool:
     from core.inference.llama_cpp import chat_load_active
 
     def chat_idle() -> bool:
-        if _loading_slot is not None or any(
-            _slot_in_use(slot) or tuple(getattr(slot.orchestrator, "loading_models", ()) or ())
-            for slot in _extra_slots
-        ):
+        if extra_slot_loading() or any(_slot_in_use(slot) for slot in _extra_slots):
             return False
         llama = get_llama_cpp_backend()
         # is_active, not is_loaded: a starting model holds VRAM, and an HF load has no process yet.
@@ -16043,6 +16030,23 @@ def _raise_if_sidecar_swap_in_progress() -> None:
         )
 
 
+def _active_generations_conflict(action: str, running: int, thread_ids) -> HTTPException:
+    return HTTPException(
+        status_code = 409,
+        detail = {
+            "error": "active_generations",
+            "message": (
+                f"{action} would stop {running} chat"
+                f"{'s' if running != 1 else ''} that "
+                f"{'are' if running != 1 else 'is'} still generating. "
+                "Stop them first, or retry with force_cancel_active."
+            ),
+            "running": running,
+            "thread_ids": thread_ids,
+        },
+    )
+
+
 def _raise_or_cancel_active_generations(
     *,
     force: bool,
@@ -16075,21 +16079,10 @@ def _raise_or_cancel_active_generations(
     if not active_generations.count(scope, elsewhere):
         return 0
     if not force:
-        thread_ids = active_generations.active_thread_ids(scope, elsewhere)
-        running = active_generations.count(scope, elsewhere)
-        raise HTTPException(
-            status_code = 409,
-            detail = {
-                "error": "active_generations",
-                "message": (
-                    f"{action} would stop {running} chat"
-                    f"{'s' if running != 1 else ''} that "
-                    f"{'are' if running != 1 else 'is'} still generating. "
-                    "Stop them first, or retry with force_cancel_active."
-                ),
-                "running": running,
-                "thread_ids": thread_ids,
-            },
+        raise _active_generations_conflict(
+            action,
+            active_generations.count(scope, elsewhere),
+            active_generations.active_thread_ids(scope, elsewhere),
         )
     if not cancel:
         # Refusal-only pass: the caller cancels later, once nothing can still reject the load.
@@ -16931,11 +16924,7 @@ async def _pick_load_slot(request: LoadRequest) -> Optional[_ExtraSlot]:
     if is_npu_model_path(request.model_path):
         routed_slot.set(None)
         return None
-    requested = (
-        f"{request.model_path}:{request.gguf_variant}"
-        if request.gguf_variant
-        else request.model_path
-    )
+    requested = _stash_key(request)
     slot = await _route_to_extra_slot(requested)
     if slot is None and request.gguf_variant:
         # Another quant of a loaded repo replaces it where it is: requests name the repo, so a
@@ -33182,10 +33171,13 @@ def _embeddings_input_present(body: dict) -> bool:
 async def openai_embeddings(request: Request, current_subject: str = Depends(get_current_subject)):
     """OpenAI-compatible embeddings: the resident embedding GGUF when one is loaded,
     else Studio's configured embedding model."""
-    try:
-        await _route_to_extra_slot(_raw_body_model(await request.json()))
-    except (json.JSONDecodeError, ValueError):
-        pass
+    if _extra_slots:
+        try:
+            await _route_to_extra_slot(_raw_body_model(await request.json()))
+        except (json.JSONDecodeError, ValueError):
+            pass
+    else:
+        routed_slot.set(None)
     llama_backend = get_llama_cpp_backend()
     # Reject a request with no input before any automatic load so an invalid request never
     # swaps or reloads the resident model (as chat/responses/messages already validate before
