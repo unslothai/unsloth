@@ -13390,7 +13390,8 @@ def _mcp_compact_candidates(listed) -> list[tuple[int, dict]]:
                 saving = len(json.dumps(spec, separators = (",", ":"))) - len(
                     json.dumps(compact, separators = (",", ":"))
                 )
-                candidates.append((saving, index, compact))
+                if saving > 0:
+                    candidates.append((saving, index, compact))
             index += 1
     candidates.sort(key = lambda item: -item[0])
     return [(index, compact) for _, index, compact in candidates]

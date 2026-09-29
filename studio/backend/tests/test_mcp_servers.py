@@ -2306,6 +2306,22 @@ def test_mcp_listing_compacts_only_the_largest_tools_it_needs_to(
     assert not tools_mod._mcp_listing_compacted("mcp__srv1__query")
 
 
+def test_mcp_listing_never_compacts_a_tool_its_compact_form_would_enlarge(
+    tmp_path, monkeypatch, compacting
+):
+    from core.inference import tools as tools_mod
+
+    loose = {
+        "name": "loose",
+        "description": "Takes anything.",
+        "inputSchema": {"type": "object", "properties": {f"p{i}": {} for i in range(200)}},
+    }
+    _cache_server_tools(tmp_path, monkeypatch, [_PING, loose])
+    specs = tools_mod.cached_mcp_tools()[0]
+    assert specs[1]["function"]["parameters"] == loose["inputSchema"]
+    assert tools_mod.MCP_TOOL_SCHEMA_TOOL not in specs
+
+
 def test_mcp_listing_compacts_large_schemas(tmp_path, monkeypatch, compacting):
     from core.inference import tools as tools_mod
 
