@@ -8,13 +8,8 @@ export type CompareRun<Model> = {
   cleanup: Promise<void> | null;
 };
 
-/**
- * Owns the mutable lifecycle of one generalized compare submission.
- *
- * A stopped submission can unwind after a newer one starts. Keeping ownership
- * in one object gives every late callback the same identity check before it
- * clears shared loading/busy state.
- */
+/** One generalized compare send; a stopped send can unwind after a newer one begins, so late
+ *  callbacks check ownership before touching shared state. */
 export class CompareRunOwnership<Model> {
   private nextId = 1;
   private activeRun: CompareRun<Model> | null = null;
