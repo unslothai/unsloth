@@ -86,3 +86,31 @@ def test_empty_dynamic_cache_is_dropped_before_prefill():
     result = _prepare(input_ids, past_key_values = DynamicCache())
     assert result["past_key_values"] is None
     assert result["input_ids"].shape == (BS, SEQ)
+
+
+def test_suffix_only_input_with_full_mask_feeds_the_whole_new_turn():
+    # transformers 5 generate() accepts only the new tokens when attention_mask spans cache + new.
+    new = torch.arange(BS * 2).reshape(BS, 2)
+    mask = torch.ones(BS, PAST_LEN + 2, dtype = torch.long)
+    result = _prepare(new, attention_mask = mask, past_key_values = _kv(PAST_LEN))
+    assert torch.equal(result["input_ids"], new)
+    assert result["position_ids"].tolist() == [[3, 4]] * BS
+
+
+def test_static_cache_is_flattened_to_its_filled_length():
+    from transformers import LlamaConfig
+    from transformers.cache_utils import StaticCache
+
+    config = LlamaConfig(
+        num_hidden_layers = 2, num_attention_heads = 1, num_key_value_heads = 1, hidden_size = 4
+    )
+    try:
+        cache = StaticCache(config = config, max_cache_len = 8)
+    except TypeError:
+        pytest.skip("StaticCache signature differs on this transformers")
+    legacy = _kv(PAST_LEN)
+    for i, (k, v) in enumerate(legacy):
+        cache.update(k, v, i, {"cache_position": torch.arange(PAST_LEN)})
+    out = _llama()._cache_as_legacy_tuple(cache)
+    for (k, v), (k0, v0) in zip(out, legacy):
+        assert torch.equal(k, k0) and torch.equal(v, v0)

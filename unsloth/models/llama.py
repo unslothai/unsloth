@@ -254,12 +254,16 @@ def _cache_as_legacy_tuple(past_key_values):
     # Unsloth's forwards index past_key_values[layer][0|1]; transformers 5 caches are not subscriptable.
     if not isinstance(past_key_values, Cache):
         return past_key_values
-    if past_key_values.get_seq_length() == 0:
+    past_len = past_key_values.get_seq_length()
+    if past_len == 0:
         return None
     layers = getattr(past_key_values, "layers", None)
-    if layers is not None:
-        return tuple((layer.keys, layer.values) for layer in layers)
-    return past_key_values.to_legacy_cache()
+    if layers is None:
+        return past_key_values.to_legacy_cache()
+    # Static caches allocate max_cache_len positions; keep only the filled ones.
+    return tuple(
+        (layer.keys[..., :past_len, :], layer.values[..., :past_len, :]) for layer in layers
+    )
 
 
 def _cached_prefill_defaults(
@@ -328,10 +332,14 @@ def _fast_prepare_inputs_for_generation(
                 bs = input_ids.shape[0]
                 device = input_ids.device
                 # A user cache (multi-turn history) can cover only a prefix: feed every uncached token.
-                if input_ids.shape[1] > 1 and past_len < input_ids.shape[1]:
-                    input_ids = input_ids[:, past_len:]
-                else:
-                    input_ids = input_ids[:, [-1]]
+                # The 2D mask spans cache + new tokens, so it also covers transformers 5 callers that
+                # pass only the new turn in input_ids.
+                n_new = 0
+                if original_attention_mask is not None and original_attention_mask.dim() == 2:
+                    n_new = original_attention_mask.shape[-1] - past_len
+                if not 0 < n_new <= input_ids.shape[1]:
+                    n_new = max(input_ids.shape[1] - past_len, 1)
+                input_ids = input_ids[:, -n_new:]
                 seq_length = input_ids.shape[1]
             elif inputs_embeds is not None:
                 bs, seq_length, _ = inputs_embeds.shape
@@ -2295,6 +2303,10 @@ def unsloth_fast_generate(self, *args, **kwargs):
     # transformers raises if cache_implementation is set beside a user-supplied cache.
     if kwargs.get("past_key_values", None) is not None:
         kwargs["past_key_values"] = _ensure_cache_is_dynamic(kwargs["past_key_values"])
+        # A user StaticCache makes transformers auto-compile with CUDA graphs, which overwrite the
+        # decode kernels' reused buffers.
+        if hasattr(getattr(self, "generation_config", None), "disable_compile"):
+            kwargs.setdefault("disable_compile", True)
     else:
         kwargs["cache_implementation"] = "dynamic"
     # transformers 4.50 renamed num_logits_to_keep to logits_to_keep; pop both and re-emit under the
