@@ -798,13 +798,21 @@ export function repackDocxPreviewArchive(
   return { archive: zipSync(archive.entries, { level: 0 }), truncated: cut !== null };
 }
 
-// Relationship ids the kept body still uses, whatever the attribute's prefix.
-const DOCX_BODY_RELATIONSHIP_ID_RE = /\s[\w.-]+:(?:embed|link|id)\s*=\s*(?:"([^"]*)"|'([^']*)')/g;
+// Element tags only, skipping any ">" inside an attribute value.
+const XML_ELEMENT_TAG_RE = /<[^\s/>!?](?:"[^"]*"|'[^']*'|[^"'>])*>/g;
+// Relationship id attributes, whatever their prefix.
+const DOCX_RELATIONSHIP_ID_ATTRIBUTE_RE = /^[\w.-]+:(?:embed|link|id)$/;
+const DOCX_IMAGE_RELATIONSHIP_TYPE_RE = /\/image$/;
 
 /** Inflates only the images the kept body references, so a thumbnail skips the rest. */
 function addKeptDocxImages(bytes: Uint8Array, archive: DocxArchive, mainDocument: string, body: string): void {
+  // Attributes of real elements only: not comments, CDATA or paragraph text.
   const ids = new Set<string>();
-  for (const [, double, single] of body.matchAll(DOCX_BODY_RELATIONSHIP_ID_RE)) ids.add(double ?? single ?? "");
+  for (const tag of body.replace(XML_NON_ELEMENT_RE, "").match(XML_ELEMENT_TAG_RE) ?? []) {
+    for (const [, name, double, single] of tag.matchAll(XML_ATTRIBUTE_RE)) {
+      if (DOCX_RELATIONSHIP_ID_ATTRIBUTE_RE.test(name!)) ids.add(decodeXmlEntities(double ?? single ?? ""));
+    }
+  }
   const rels = archive.entries[docxRelationshipsPath(mainDocument)];
   if (!rels || ids.size === 0) return;
   const base = mainDocument.slice(0, Math.max(0, mainDocument.lastIndexOf("/")));
@@ -813,11 +821,17 @@ function addKeptDocxImages(bytes: Uint8Array, archive: DocxArchive, mainDocument
   for (const tag of markup.match(DOCX_RELATIONSHIP_TAG_RE) ?? []) {
     let id: string | undefined;
     let target: string | undefined;
+    let type = "";
     for (const [, name, double, single] of tag.matchAll(XML_ATTRIBUTE_RE)) {
-      if (name === "Id") id = decodeXmlEntities(double ?? single ?? "");
-      else if (name === "Target") target = decodeXmlEntities(double ?? single ?? "");
+      const value = decodeXmlEntities(double ?? single ?? "");
+      if (name === "Id") id = value;
+      else if (name === "Target") target = value;
+      else if (name === "Type") type = value;
     }
-    if (id && target && ids.has(id)) wanted.add(joinDocxPath(base, target));
+    // Images only: an oversized altChunk or OLE part the first pass left out stays out.
+    if (id && target && ids.has(id) && DOCX_IMAGE_RELATIONSHIP_TYPE_RE.test(type)) {
+      wanted.add(joinDocxPath(base, target));
+    }
   }
   // One budget with the parts already unpacked.
   let unpacked = Object.values(archive.entries).reduce((total, entry) => total + entry.length, 0);

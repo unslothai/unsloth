@@ -1111,3 +1111,37 @@ test("a thumbnail repack inflates only the images its kept paragraphs use", () =
   const whole = repackDocxPreviewArchive("a.docx", bytes, 10, { keptImagesOnly: true });
   assert.deepEqual(names(whole.archive), ["word/media/rId1.png", "word/media/rId2.png"]);
 });
+
+test("a thumbnail repack restores only image parts the kept elements reference", () => {
+  const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+  const R = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
+  const A = "http://schemas.openxmlformats.org/drawingml/2006/main";
+  const rel = (id: string, type: string, target: string) =>
+    `<Relationship Id="${id}" Type="${R}/${type}" Target="${target}"/>`;
+  const body =
+    `<w:p><w:r><w:drawing><a:blip r:embed="rId1"/></w:drawing></w:r></w:p>` +
+    `<!-- <a:blip r:embed="rId2"/> --><w:p><w:r><w:t>r:embed="rId2"</w:t></w:r></w:p>` +
+    `<w:altChunk r:id="rId3"/>`;
+  const bytes = zipSync({
+    "[Content_Types].xml": strToU8(
+      `<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="png" ContentType="image/png"/></Types>`,
+    ),
+    "_rels/.rels": strToU8(
+      `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="d" Type="${R}/officeDocument" Target="word/document.xml"/></Relationships>`,
+    ),
+    "word/document.xml": strToU8(
+      `<w:document xmlns:w="${W}" xmlns:r="${R}" xmlns:a="${A}"><w:body>${body}<w:p/><w:p/></w:body></w:document>`,
+    ),
+    "word/_rels/document.xml.rels": strToU8(
+      `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${rel("rId1", "image", "media/one.png")}${rel("rId2", "image", "media/two.png")}${rel("rId3", "aFChunk", "chunk.mht")}</Relationships>`,
+    ),
+    "word/media/one.png": new Uint8Array([1, 2, 3]),
+    "word/media/two.png": new Uint8Array([4, 5, 6]),
+    // Past the per-part ceiling, so the first pass leaves it out.
+    "word/chunk.mht": new Uint8Array(11 * 1024 * 1024),
+  });
+  const kept = Object.keys(unzipSync(repackDocxPreviewArchive("a.docx", bytes, 3, { keptImagesOnly: true }).archive));
+  assert.ok(kept.includes("word/media/one.png"));
+  assert.ok(!kept.includes("word/media/two.png"));
+  assert.ok(!kept.includes("word/chunk.mht"));
+});
