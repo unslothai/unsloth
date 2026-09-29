@@ -438,7 +438,12 @@ def _mixed_host(monkeypatch, *, torch_rocm, llama_backend):
         LlamaCppBackend, "_backend_lacks_gpu_lib", staticmethod(lambda binary = None: False)
     )
     monkeypatch.setattr(main, "_system_gpu_cache", None)
-    for name in ("CUDA_VISIBLE_DEVICES", "HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES"):
+    for name in (
+        "CUDA_VISIBLE_DEVICES",
+        "HIP_VISIBLE_DEVICES",
+        "ROCR_VISIBLE_DEVICES",
+        "GPU_DEVICE_ORDINAL",
+    ):
         monkeypatch.delenv(name, raising = False)
 
 
@@ -652,4 +657,14 @@ def test_stacked_or_unmappable_amd_masks_decline_the_inventory(monkeypatch):
     monkeypatch.setenv("ROCR_VISIBLE_DEVICES", "0")
     monkeypatch.setattr(main, "_system_gpu_cache", None)
     gpu, inference_gpu = main._get_cached_system_gpu_info(SimpleNamespace(debug = lambda *args: None))
+    assert inference_gpu is gpu
+
+
+def test_gpu_device_ordinal_declines_the_amd_inventory(monkeypatch):
+    _mixed_host(monkeypatch, torch_rocm = False, llama_backend = "rocm")
+    _two_amd_cards(monkeypatch, {0: 0, 1: 1})
+    monkeypatch.setenv("GPU_DEVICE_ORDINAL", "1")
+
+    gpu, inference_gpu = main._get_cached_system_gpu_info(SimpleNamespace(debug = lambda *args: None))
+
     assert inference_gpu is gpu

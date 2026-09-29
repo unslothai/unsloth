@@ -5973,6 +5973,8 @@ def _amd_inference_devices() -> list[Dict[str, Any]]:
         for name in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES")
         if os.environ.get(name) is not None
     ]
+    if LlamaCppBackend._gpu_device_ordinal_active():
+        return []  # renumbers after the HIP masks; llama.cpp's own amd-smi probe declines it too
     if masks:
         # HIP masks name HIP ids, not amd-smi's; ROCR renumbers what a stacked HIP mask sees.
         allowed = LlamaCppBackend._visible_devices_mask(masks[0])
