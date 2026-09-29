@@ -3951,7 +3951,9 @@ _ARTIFACT_PREVIEW_FRAME_HTML = """<!doctype html>
                 parts.push("…");
                 break;
               }
-              const item = walk(indexed ? value[i] : value[keys[i]]);
+              // Accessors are shown, not called: a getter may have side effects, and consoles do not run them.
+              const field = indexed ? null : Object.getOwnPropertyDescriptor(value, keys[i]);
+              const item = indexed ? walk(value[i]) : field && "value" in field ? walk(field.value) : leaf("[Getter]");
               parts.push(indexed ? item : `${JSON.stringify(keys[i])}:${item}`);
               left -= indexed ? 1 : keys[i].length + 4;
             }
@@ -3963,7 +3965,7 @@ _ARTIFACT_PREVIEW_FRAME_HTML = """<!doctype html>
         };
         const describe = (value) => {
           if (value instanceof Error) return value.stack || `${value.name}: ${value.message}`;
-          if (typeof value === "string") return value;
+          if (typeof value === "string") return value.slice(0, REPORT_MAX_CHARS);
           try {
             return serialize(value);
           } catch {
