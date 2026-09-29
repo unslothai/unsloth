@@ -1371,9 +1371,16 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
     # FlashAttention breaks on the forced static cache below (unfilled slots stay unmasked while decoding), so delegate after normalization but before it.
     _clear_generation_caches(self)
     if _uses_flash_attention_for_generation(self.config):
-        # Pin the literal "dynamic": None is merged back to the model default, and a static cache still arrives via kwargs or the caller's generation_config (TRL). The kwarg wins, since update runs last; skip it when the caller passed a cache.
+        # Pin the literal "dynamic": None is merged back to the model default, and a static cache still arrives via kwargs or the caller's generation_config (TRL); skip it when the caller passed a cache.
+        # Set directly on an explicit generation_config when present (verified equivalent to a raw kwarg
+        # under transformers' merge order) instead of also adding a raw kwarg, to avoid the same
+        # generation_config-vs-kwargs deprecation warning fixed above for pad_token_id.
         if kwargs.get("past_key_values") is None:
-            kwargs["cache_implementation"] = "dynamic"
+            caller_generation_config = kwargs.get("generation_config")
+            if caller_generation_config is not None:
+                caller_generation_config.cache_implementation = "dynamic"
+            else:
+                kwargs["cache_implementation"] = "dynamic"
         try:
             with torch.inference_mode(), autocaster:
                 return self._old_generate(*args, **kwargs)
@@ -1439,12 +1446,12 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
     if _is_decode_compile_model(self):
         _match_compiled_call(self, compile_decode)
     if "generation_config" in kwargs:
+        # Setting directly on the config object is sufficient (verified equivalent to also
+        # adding a raw kwarg under transformers' merge order); a separate raw kwarg here would
+        # retrigger the same generation_config-vs-kwargs deprecation warning fixed above.
         kwargs["generation_config"].cache_implementation = (
             dynamic_implementation if force_dynamic_cache else cache_implementation
         )
-        # kwargs are applied after the config merge, so an explicit value survives.
-        if force_dynamic_cache:
-            kwargs["cache_implementation"] = dynamic_implementation
         if cache_implementation is not None:
             kwargs["generation_config"].compile_config = compile_config
     else:
