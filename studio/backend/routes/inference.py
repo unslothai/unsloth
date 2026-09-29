@@ -3736,6 +3736,7 @@ from state.tool_approvals import resolve_tool_decision, tool_decision_is_pending
 
 from core.inference.model_ids import display_model_name, model_id_matches, public_model_id
 from core.inference.api_monitor import api_monitor
+from core.inference.image_orientation import exif_upright
 from core.inference.llama_http import nonstreaming_client
 from core.inference.mcp_images import (
     MAX_MODEL_IMAGES as _MCP_MAX_MODEL_IMAGES,
@@ -19695,6 +19696,7 @@ def _decode_and_resize_image(backend, encoded: str):
     image_data = base64.b64decode(encoded)
     image = Image.open(BytesIO(image_data))
     image.load()
+    image = exif_upright(image)
     # After the resize: converting first resamples interpolated RGB, a different picture.
     image = _scaled_from_16_bit(backend.resize_image(image))
     if image.mode not in ("RGB", "RGBA"):
@@ -35413,13 +35415,30 @@ def _stb_reads_png(raw: bytes) -> bool:
 def _llama_image_data_url(raw: bytes) -> str:
     """Preserve PNG and JPEG bytes stb_image reads; convert other images to PNG.
 
+    An image whose EXIF orientation turns it is re-encoded upright: a JPEG stays JPEG with its
+    source quantization tables and subsampling, anything else becomes PNG.
+
     Avoid inflating photos while still rejecting corrupt images with Pillow:
     stb_image silently accepts some truncated JPEGs. Callers map failures to HTTP 400.
     """
-    from PIL import Image
+    from PIL import Image, JpegImagePlugin
 
     with Image.open(io.BytesIO(raw)) as img:
         img.load()
+        upright = exif_upright(img)
+    if upright is not img:
+        buf = io.BytesIO()
+        if raw.startswith(b"\xff\xd8") and _stb_reads_jpeg(raw):
+            upright.save(
+                buf,
+                format = "JPEG",
+                # A list: Pillow keeps only dict keys 0..n-1, and some encoders number tables from 1.
+                qtables = [img.quantization[key] for key in sorted(img.quantization)],
+                subsampling = JpegImagePlugin.get_sampling(img),
+            )
+            return f"data:image/jpeg;base64,{base64.b64encode(buf.getvalue()).decode('ascii')}"
+        _scaled_from_16_bit(upright).convert("RGB").save(buf, format = "PNG")
+        return f"data:image/png;base64,{base64.b64encode(buf.getvalue()).decode('ascii')}"
     if raw.startswith(_PNG_SIGNATURE) and _stb_reads_png(raw):
         return f"data:image/png;base64,{base64.b64encode(raw).decode('ascii')}"
     if raw.startswith(b"\xff\xd8") and _stb_reads_jpeg(raw):

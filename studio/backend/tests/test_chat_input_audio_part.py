@@ -777,3 +777,27 @@ def test_extra_clips_reach_the_backend_in_order():
         pytest.approx([0.2, 0.2]),
         pytest.approx([0.3]),
     ]
+
+
+def test_extra_clips_join_the_latest_user_turn_in_order():
+    from core.inference.chat_template_helpers import messages_with_attached_image
+
+    history = [
+        {"role": "user", "content": "earlier"},
+        {"role": "assistant", "content": "reply"},
+        {"role": "user", "content": "compare these"},
+    ]
+    rendered = messages_with_attached_image(
+        history, structured_content = True, image = 0, audio = "a", extra_audio = ["b", "c"]
+    )
+    assert rendered[0]["content"] == [{"type": "text", "text": "earlier"}]
+    assert rendered[-1]["content"] == [
+        {"type": "audio", "audio": "a"},
+        {"type": "audio", "audio": "b"},
+        {"type": "audio", "audio": "c"},
+        {"type": "text", "text": "compare these"},
+    ]
+    # No extras: exactly the single-clip render.
+    single = messages_with_attached_image(history, structured_content = True, image = 0, audio = "a")
+    assert single[-1]["content"][0] == {"type": "audio", "audio": "a"}
+    assert len(single[-1]["content"]) == 2

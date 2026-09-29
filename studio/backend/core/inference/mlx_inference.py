@@ -17,7 +17,6 @@ from contextlib import ExitStack, closing, contextmanager, nullcontext
 from typing import Optional, Generator
 from core.inference.worker import RowRefused
 from core.inference import context_refusal
-from core.inference.message_content import content_to_text
 from core.inference.native_tool_tokens import (
     NativeToolTokenDecoder,
     closes_an_open_envelope,
@@ -33,6 +32,7 @@ from core.inference.runtime_context import (
 )
 from core.inference.chat_template_helpers import (
     # Aliased to this module's historic names; bodies moved to the shared helper (#10092).
+    alternating_turns,
     count_structured_images as _count_vlm_images,
     count_structured_videos as _count_vlm_videos,
     detect_reasoning_channel_markers,
@@ -6296,22 +6296,16 @@ class MLXInferenceBackend:
 
         from mlx_vlm import stream_generate as vlm_stream
 
-        # Only the CURRENT user turn may caption the audio; never older history.
-        user_text = ""
-        for msg in reversed(messages or []):
-            if isinstance(msg, dict) and msg.get("role") == "user":
-                user_text = content_to_text(msg.get("content") or "").strip()
-                break
-        if not user_text:
-            user_text = "Please transcribe this audio."
         if not system_prompt:
             system_prompt = "You are an assistant that transcribes speech accurately."
 
-        # No name: mlx-vlm rebuilds non-tool turns from role and text, dropping anything else.
-        audio_messages = [
-            {"role": "system", "content": [{"type": "text", "text": system_prompt}]},
-            {"role": "user", "content": [{"type": "audio"}, {"type": "text", "text": user_text}]},
-        ]
+        audio_messages = messages_with_attached_image(
+            alternating_turns(messages),
+            system_prompt = system_prompt,
+            fallback_user_text = "Please transcribe this audio.",
+            image = 0,
+            audio = audio_array,
+        )
         prompt = _render_registered_vlm_prompt(
             self._processor,
             self._model,
