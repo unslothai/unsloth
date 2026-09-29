@@ -142,6 +142,12 @@ def _hflm_4bit(HFLM):
     return _HFLM4bit
 
 
+def _base_vocab_size(model: str) -> int:
+    from transformers import AutoConfig
+    config = AutoConfig.from_pretrained(model)
+    return getattr(getattr(config, "text_config", None) or config, "vocab_size", 0) or 0
+
+
 class _TaskYamlLoader(yaml.SafeLoader):
     """safe_load that tolerates lm-eval's custom tags (!function utils.fn)."""
 
@@ -510,27 +516,41 @@ def evaluate(
         else:
             from unsloth import FastLanguageModel
 
+            if load_in_4bit and find_spec("bitsandbytes") is None:
+                typer.echo("Note: bitsandbytes is not installed, loading in full precision.")
+                load_in_4bit = False
             load_kwargs = dict(
                 max_seq_length = max_seq_length, load_in_4bit = load_in_4bit, token = hf_token or None
             )
+            adapter_vocab = None
+            if effective_base and _has_tokenizer_files(model):
+                from transformers import AutoTokenizer
+                adapter_vocab = len(AutoTokenizer.from_pretrained(model))
             typer.echo(
                 f"Loading base model '{effective_base}' with adapter '{model}'..."
                 if effective_base
                 else f"Loading model: {model}"
             )
             with _silence():
-                lmodel, tokenizer = FastLanguageModel.from_pretrained(
-                    model_name = effective_base or model, **load_kwargs
-                )
-                if effective_base:
-                    # resize to the adapter's tokenizer before loading weights, or PEFT size-mismatches
-                    if _has_tokenizer_files(model):
+                if effective_base and not base_model:
+                    # Unsloth's own adapter path applies its PEFT hooks (grouped-linear LoRA, Gemma 4)
+                    if adapter_vocab and adapter_vocab > _base_vocab_size(effective_base):
+                        load_kwargs["resize_model_vocab"] = adapter_vocab
+                    lmodel, tokenizer = FastLanguageModel.from_pretrained(
+                        model_name = model, **load_kwargs
+                    )
+                else:
+                    lmodel, tokenizer = FastLanguageModel.from_pretrained(
+                        model_name = effective_base or model, **load_kwargs
+                    )
+                if effective_base and base_model:
+                    # --base-model overrides adapter_config.json, which Unsloth's adapter path always reads
+                    if adapter_vocab:
                         from transformers import AutoTokenizer
-
                         tokenizer = AutoTokenizer.from_pretrained(model)
-                        embeddings = lmodel.get_input_embeddings()
-                        if embeddings is not None and embeddings.weight.shape[0] != len(tokenizer):
-                            lmodel.resize_token_embeddings(len(tokenizer))
+                        # grow only: padded vocabularies (Qwen3) have more rows than tokens
+                        if adapter_vocab > lmodel.get_input_embeddings().weight.shape[0]:
+                            lmodel.resize_token_embeddings(adapter_vocab)
                     from peft import PeftModel
                     lmodel = PeftModel.from_pretrained(lmodel, model)
                 FastLanguageModel.for_inference(lmodel)

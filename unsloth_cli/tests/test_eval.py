@@ -336,16 +336,69 @@ def test_unsloth_backend_writes_results(env, tmp_path):
     assert saved["results"]["gsm8k"]["exact_match,strict"] == 0.42
 
 
-def test_unsloth_backend_loads_adapter_on_its_base(env, tmp_path):
+def _adapter(tmp_path, tokenizer = False):
     adapter = tmp_path / "lora"
     adapter.mkdir()
     (adapter / "adapter_config.json").write_text(
         json.dumps({"base_model_name_or_path": "org/base"})
     )
+    if tokenizer:
+        (adapter / "tokenizer.json").write_text("{}")
+    return adapter
+
+
+def test_unsloth_backend_loads_adapter_through_unsloth(env, tmp_path):
+    adapter = _adapter(tmp_path)
     result = _run(str(adapter), "--tasks", "gsm8k", "-o", str(tmp_path / "out"))
     assert result.exit_code == 0, result.output
-    assert env["model_name"] == "org/base"
-    assert env["peft"] == str(adapter)
+    assert env["model_name"] == str(adapter)
+    assert "peft" not in env and "resize_model_vocab" not in env["load_kwargs"]
+
+
+def test_unsloth_backend_grows_vocab_for_added_tokens(env, tmp_path, monkeypatch):
+    adapter = _adapter(tmp_path, tokenizer = True)
+    tok = types.ModuleType("transformers")
+    tok.AutoTokenizer = SimpleNamespace(from_pretrained = lambda path: [0] * 12)
+    monkeypatch.setitem(sys.modules, "transformers", tok)
+    monkeypatch.setattr(evalmod, "_base_vocab_size", lambda model: 10)
+    assert _run(str(adapter), "--tasks", "gsm8k", "-o", str(tmp_path / "out")).exit_code == 0
+    assert env["load_kwargs"]["resize_model_vocab"] == 12
+    monkeypatch.setattr(evalmod, "_base_vocab_size", lambda model: 16)
+    assert _run(str(adapter), "--tasks", "gsm8k", "-o", str(tmp_path / "out")).exit_code == 0
+    assert "resize_model_vocab" not in env["load_kwargs"]
+
+
+def test_base_model_override_attaches_adapter_manually(env, tmp_path, monkeypatch):
+    adapter = _adapter(tmp_path, tokenizer = True)
+    tok = types.ModuleType("transformers")
+    tok.AutoTokenizer = SimpleNamespace(from_pretrained = lambda path: [0] * 8)
+    monkeypatch.setitem(sys.modules, "transformers", tok)
+    args = (
+        str(adapter),
+        "--tasks",
+        "gsm8k",
+        "--base-model",
+        "org/other",
+        "-o",
+        str(tmp_path / "o"),
+    )
+    result = _run(*args)
+    assert result.exit_code == 0, result.output
+    assert env["model_name"] == "org/other" and env["peft"] == str(adapter)
+    assert "resized" not in env
+    tok.AutoTokenizer = SimpleNamespace(from_pretrained = lambda path: [0] * 11)
+    assert _run(*args).exit_code == 0
+    assert env["resized"] == 11
+
+
+def test_unsloth_backend_reports_missing_bitsandbytes(env, tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        evalmod, "find_spec", lambda name: None if name == "bitsandbytes" else object()
+    )
+    result = _run("fake/model", "--tasks", "gsm8k", "-o", str(tmp_path))
+    assert result.exit_code == 0, result.output
+    assert "bitsandbytes is not installed" in result.output
+    assert env["load_kwargs"]["load_in_4bit"] is False
 
 
 def test_custom_dataset_builds_one_task_manager(env, tmp_path):
