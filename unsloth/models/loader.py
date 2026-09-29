@@ -472,6 +472,8 @@ def _adapter_vocab_rows(adapter_name, **hub_kwargs):
     for key, shape in (_adapter_weight_shapes(adapter_name, **hub_kwargs) or {}).items():
         if len(shape) != 2:
             continue
+        # A LoRA-wrapped head saves base_layer.weight and a vocab-sized lora_B.
+        key = key.replace(".base_layer.", ".").replace(".lora_B.", ".")
         if key.endswith(_ADAPTER_VOCAB_SUFFIXES):
             rows.append(shape[0])
         elif key.endswith("lora_embedding_A") or ".lora_embedding_A." in key:

@@ -114,3 +114,24 @@ def test_uncached_hub_adapter_is_read_from_its_header(monkeypatch):
     assert headers == [("someone/adapter", "adapter_model.safetensors", "r")]
     assert _adapter_vocab_rows("someone/adapter", local_files_only = True, header_only = True) is None
     assert len(headers) == 1
+
+
+def test_lora_wrapped_head_rows(tmp_path):
+    # PEFT keys when lm_head itself is a LoRA target after the vocab grew.
+    from unsloth.models.loader import _adapter_vocab_rows
+
+    path = tmp_path / "a"
+    path.mkdir()
+    safetensors_torch.save_file(
+        {
+            "base_model.model.lm_head.lora_A.weight": torch.zeros(4, 8),
+            "base_model.model.lm_head.lora_B.weight": torch.zeros(35, 4),
+        },
+        str(path / "adapter_model.safetensors"),
+    )
+    assert _adapter_vocab_rows(str(path)) == 35
+    safetensors_torch.save_file(
+        {"base_model.model.lm_head.base_layer.weight": torch.zeros(36, 8)},
+        str(path / "adapter_model.safetensors"),
+    )
+    assert _adapter_vocab_rows(str(path)) == 36
