@@ -75,8 +75,6 @@ export interface PersistedChatSettings {
   fitOnDeviceOnly?: boolean;
   /** Local GGUF chats: drop oldest turns instead of erroring at the window. */
   autoCompactEnabled?: boolean;
-  contextPolicy?: "inherit" | "checkpoint" | "rolling";
-  compactionHeadroomRatio?: number;
 }
 
 interface ChatSettingsResponse {

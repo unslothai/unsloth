@@ -20,8 +20,10 @@ Neither is noticeable otherwise: a leg over `timeout-minutes` is scored
 from __future__ import annotations
 
 import json
+import os
 import re
 import sys
+import textwrap
 from pathlib import Path
 
 import pytest
@@ -212,6 +214,156 @@ def test_the_known_unbuildable_pins_are_skipped():
     )
 
 
+def _seed_script() -> str:
+    """The seed step's own Python, lifted out of the workflow.
+
+    Re-implementing the transform in the test was the defect in the first cut of this guard:
+    deleting the rewrite from the workflow left both tests green, so the regression they exist
+    to catch was not actually guarded. Run the production code instead.
+    """
+    shell = None
+    for step in _job()["steps"]:
+        if str(step.get("name", "")).startswith("Seed Colab-shaped venv"):
+            shell = step["run"]
+            break
+    assert shell, "the seed step is gone from the smoke job; this guard checks nothing"
+    body = re.search(r"<<'PY'\n(.*?)\n\s*PY\n", shell, re.S)
+    assert body, "could not find the seed heredoc; the step's shape changed"
+    return textwrap.dedent(body.group(1))
+
+
+def _run_seed(tmp_path, freeze_text = None) -> list[str]:
+    """Execute the workflow's seed script and return the pins it hands pip.
+
+    Laid out the way the job lays it out: the script reads `unsloth/scripts/data/...` relative
+    to its cwd. The mapping's `python_version` is rewritten to whatever interpreter is running
+    this test -- that guard is about the snapshot matching the runner and is checked by
+    test_the_smoke_job_runs_the_interpreter_the_snapshot_names, not here, so leaving it would
+    make this test fail for an unrelated reason on any other interpreter.
+    """
+    import subprocess
+
+    data = tmp_path / "unsloth" / "scripts" / "data"
+    data.mkdir(parents = True)
+    mapping = _mapping()
+    mapping["python_version"] = "%d.%d" % sys.version_info[:2]
+    (data / "colab_to_cpu_pin.json").write_text(json.dumps(mapping), encoding = "utf-8")
+    (data / "colab_pip_freeze.gpu.txt").write_text(
+        freeze_text if freeze_text is not None else FREEZE.read_text(encoding = "utf-8"),
+        encoding = "utf-8",
+    )
+    # The script writes its output to fixed paths; give it a private TMPDIR-shaped home by
+    # rewriting those two literals, which is the only edit made to the production text.
+    script = _seed_script()
+    script = script.replace("/tmp/seed_torch.txt", str(tmp_path / "seed_torch.txt"))
+    script = script.replace("/tmp/seed_pins.txt", str(tmp_path / "seed_pins.txt"))
+    script = script.replace("/tmp/seed_no_binary.txt", str(tmp_path / "seed_no_binary.txt"))
+    run = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd = str(tmp_path),
+        capture_output = True,
+        text = True,
+    )
+    assert run.returncode == 0, f"the seed script failed: {run.stdout}\n{run.stderr}"
+    pins = (tmp_path / "seed_pins.txt").read_text(encoding = "utf-8").split()
+    torch_pins = (tmp_path / "seed_torch.txt").read_text(encoding = "utf-8").split()
+    return pins + torch_pins
+
+
+def test_no_declared_distro_marker_survives_the_seed(tmp_path):
+    """The freeze is a snapshot of an image, so it carries versions as the image labels them,
+    and a distro build can label itself `.devN`. PyPI has no such release, and one unresolvable
+    pin fails the whole bulk resolve: the Ubuntu 24.04 rotation brought in `Mako==1.3.2.dev0`
+    and every leg of the matrix died on
+
+        ERROR: No matching distribution found for mako==1.3.2.dev0
+
+    Scoped to the versions declared in `distro_dev_version`, not to `.devN` as a shape. A
+    published prerelease is a legitimate pin that the seed deliberately passes through -- see
+    test_an_undeclared_dev_pin_is_left_alone_rather_than_guessed_at -- so failing on every
+    `.devN` would contradict that and push a valid pin towards being rewritten or suppressed.
+
+    Local versions are different and stay a blanket check: the seed strips `+cu128` from every
+    pin whatever the package, so any survivor is a defect.
+    """
+    seeded = _run_seed(tmp_path)
+    declared = {
+        name: rule["from"] for name, rule in _mapping().get("distro_dev_version", {}).items()
+    }
+    stale = [
+        pin
+        for pin in seeded
+        if pin.split("==", 1)[0] in declared
+        and pin.split("==", 1)[1] == declared[pin.split("==", 1)[0]]
+    ]
+    assert not stale, (
+        "these pins kept a version only the Colab image uses, and one of them fails the "
+        f"resolve for all of them: {stale}"
+    )
+
+    local = [pin for pin in seeded if "+" in pin]
+    assert not local, f"the seed left a local version on: {local}"
+
+
+def test_every_dev_pin_in_the_freeze_has_been_judged():
+    """Read from the FREEZE, not from the mapping, so deleting the mapping fails here.
+
+    Scoping the other checks to what `distro_dev_version` declares left a hole: delete or
+    misspell that key and the declared set is empty, so the marker test passes vacuously and
+    the rewrite test skips, while the seed hands pip the unresolvable `Mako==1.3.2.dev0` and
+    every leg of the matrix dies exactly as it did.
+
+    The freeze is what the image actually has, so it decides. Each `.devN` entry must be
+    judged one way or the other: a distro label to rewrite, or a prerelease upstream really
+    published and the seed must leave alone. A new one fails this until someone says which,
+    which is the point -- neither answer is guessable from the version string.
+    """
+    mapping = _mapping()
+    rewrites = mapping.get("distro_dev_version", {})
+    allowed = {entry.lower() for entry in mapping.get("published_prerelease", [])}
+
+    unjudged = []
+    for line in FREEZE.read_text(encoding = "utf-8").splitlines():
+        m = re.match(r"^([A-Za-z0-9._-]+)\s*==\s*(.+)$", line.strip())
+        if not m or ".dev" not in m.group(2):
+            continue
+        name, ver = m.group(1).lower(), m.group(2)
+        declared = rewrites.get(name, {}).get("from") == ver
+        if not declared and f"{name}=={ver}" not in allowed:
+            unjudged.append(f"{name}=={ver}")
+
+    assert not unjudged, (
+        "these pins carry a .devN version that nothing has judged. Add a distro_dev_version "
+        "entry if the image is labelling a distro build, or list it under "
+        f"published_prerelease if PyPI really publishes it: {unjudged}"
+    )
+
+
+def test_a_rewritten_pin_is_still_installed_at_the_published_version(tmp_path):
+    """The rewrite must not become a skip: the image carries Mako, so the venv this job builds
+    has to carry it too, at the version PyPI publishes."""
+    rewrites = _mapping().get("distro_dev_version", {})
+    if not rewrites:
+        pytest.skip("no distro .devN rewrites are declared")
+    seeded = dict(pin.split("==", 1) for pin in _run_seed(tmp_path) if "==" in pin)
+    for name, rule in rewrites.items():
+        assert name in seeded, f"{name} was dropped rather than rewritten"
+        assert seeded[name] == rule["to"], f"{name} seeded as {seeded[name]}, expected {rule['to']}"
+
+
+def test_an_undeclared_dev_pin_is_left_alone_rather_than_guessed_at(tmp_path):
+    """`.devN` is also a genuine PEP 440 prerelease. Stripping it by pattern would turn a real
+    `pkg==2.0.dev3` into `pkg==2.0`, a different release that may not exist and is not what the
+    image had. Anything not named in the mapping passes through untouched, so the resolve fails
+    where a human can see it rather than installing something else quietly.
+    """
+    freeze = FREEZE.read_text(encoding = "utf-8") + "\nunsloth-not-a-real-pin==2.0.dev3\n"
+    seeded = dict(pin.split("==", 1) for pin in _run_seed(tmp_path, freeze) if "==" in pin)
+    assert (
+        seeded.get("unsloth-not-a-real-pin") == "2.0.dev3"
+    ), "an undeclared .devN pin was rewritten; only the mapping may decide that"
+
+
 # --- the cache key has to represent what the job installs ----------------------------
 
 
@@ -369,3 +521,208 @@ def test_the_skip_list_is_closed_under_the_freezes_dependencies():
         f"each of these is skipped while a retained pin still requires it, so pip "
         f"downloads it anyway and the skip saves nothing: {leaks}"
     )
+
+
+# --- the torchcodec placeholder --------------------------------------------------------
+
+
+def _probe_in_a_venv_without_torchcodec(mode: str) -> str:
+    """Run the two things transformers does at import time, in a subprocess whose sys.path has
+    no real torchcodec, and return what it printed.
+
+    A subprocess because the question is about interpreter state (sys.modules, sys.path,
+    distribution metadata) that a stub cannot be un-installed from cleanly, and because this
+    repo's own venv HAS torchcodec, which would answer both probes for the wrong reason.
+    """
+    import subprocess
+    import textwrap
+
+    script = textwrap.dedent(
+        """
+        import importlib.metadata, importlib.util, sys
+        mode, tests_dir = sys.argv[1], sys.argv[2]
+        sys.path.insert(0, tests_dir)
+        if mode == "bare":
+            import types
+            sys.modules["torchcodec"] = types.ModuleType("torchcodec")
+        elif mode == "spec":
+            import importlib.machinery, types
+            m = types.ModuleType("torchcodec")
+            m.__spec__ = importlib.machinery.ModuleSpec("torchcodec", None)
+            sys.modules["torchcodec"] = m
+        elif mode == "dist":
+            import _torchcodec_stub as t
+            t.install()
+        # is_torchcodec_available() -> _is_package_available(name)[0]; transformers 5.16.1
+        # passes no return_version, so presence is decided by the spec alone.
+        try:
+            available = importlib.util.find_spec("torchcodec") is not None
+        except Exception as e:
+            print("AVAILABLE_RAISED", type(e).__name__); raise SystemExit(0)
+        print("AVAILABLE", available)
+        if available:
+            # audio_utils.py:61, at import time.
+            try:
+                print("VERSION", importlib.metadata.version("torchcodec"))
+            except Exception as e:
+                print("VERSION_RAISED", type(e).__name__)
+        """
+    )
+    # -S skips site-packages, so a real torchcodec on THIS interpreter cannot answer the
+    # probes for the wrong reason. That is what the runner looks like, and it lets the test
+    # run everywhere instead of skipping wherever the wheel happens to be installed.
+    out = subprocess.run(
+        [sys.executable, "-S", "-c", script, mode, str(REPO / "tests")],
+        capture_output = True,
+        text = True,
+        env = {"PATH": os.environ.get("PATH", ""), "PYTHONNOUSERSITE": "1"},
+        cwd = str(REPO),
+    )
+    return out.stdout
+
+
+@pytest.mark.parametrize(
+    "mode, expected",
+    [
+        # The shape on main: __spec__ is None and find_spec raises rather than returning None.
+        ("bare", "AVAILABLE_RAISED ValueError"),
+        # A hand-made ModuleSpec gets past find_spec and straight into the metadata lookup
+        # that audio_utils does at import time, which is the second failure and the reason
+        # the placeholder is a distribution rather than a sys.modules entry.
+        ("spec", "VERSION_RAISED PackageNotFoundError"),
+        # The placeholder: both probes answer.
+        ("dist", "VERSION 0.0.0"),
+    ],
+    ids = ["bare ModuleType", "ModuleType with a spec", "the placeholder distribution"],
+)
+def test_the_placeholder_survives_both_probes_transformers_makes(mode, expected):
+    """transformers asks two questions while importing audio_utils, and a stub has to answer
+    both. is_torchcodec_available() reads find_spec, and line 61 then reads the distribution
+    version. Answering only the first turns ValueError into PackageNotFoundError.
+    """
+    printed = _probe_in_a_venv_without_torchcodec(mode)
+    assert (
+        "AVAILABLE_RAISED ValueError" in printed or "AVAILABLE" in printed
+    ), f"the probe subprocess produced nothing usable for {mode!r}: {printed!r}"
+    assert expected in printed, printed
+
+
+def _load_stub_helper():
+    """Load tests/_torchcodec_stub.py by path, without touching sys.path.
+
+    `sys.path.insert(0, REPO / "tests")` is process-wide and permanent, and `tests/` holds a
+    `utils/` package that then shadows studio/backend's `utils` for every test that runs
+    afterwards in the same worker. That is how this file turned
+    tests/test_studio_root_resilience.py red with
+    `ModuleNotFoundError: No module named 'utils.native_path_leases'` while being green itself.
+    """
+    import importlib.util
+
+    path = REPO / "tests" / "_torchcodec_stub.py"
+    spec = importlib.util.spec_from_file_location("_unsloth_torchcodec_stub_under_test", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_the_placeholder_version_stays_under_the_backend_floor():
+    """load_audio resolves "auto" to torchcodec only at >= 0.3.0, so a placeholder claiming a
+    newer version would be chosen as the decoder and then fail on the first real call. Below
+    the floor it is visible, importable and never selected."""
+    _torchcodec_stub = _load_stub_helper()
+
+    floor = (0, 3, 0)
+    actual = tuple(int(part) for part in _torchcodec_stub.VERSION.split("."))
+    assert actual < floor, (
+        f"the placeholder claims {_torchcodec_stub.VERSION}, at or above transformers' "
+        "0.3.0 torchcodec floor, so load_audio(backend='auto') would select it"
+    )
+
+
+def test_the_placeholder_never_displaces_a_real_torchcodec():
+    """A machine that does have the wheel must keep it: the placeholder is for the CPU runner,
+    and shadowing a genuine install would be the opposite of what it is for."""
+    import types
+
+    _torchcodec_stub = _load_stub_helper()
+
+    real = types.ModuleType(_torchcodec_stub.NAME)
+    saved = sys.modules.get(_torchcodec_stub.NAME)
+    sys.modules[_torchcodec_stub.NAME] = real
+    try:
+        assert _torchcodec_stub.install() is None, "it wrote a placeholder over a live module"
+        assert sys.modules[_torchcodec_stub.NAME] is real
+    finally:
+        if saved is None:
+            sys.modules.pop(_torchcodec_stub.NAME, None)
+        else:
+            sys.modules[_torchcodec_stub.NAME] = saved
+
+
+def test_both_smoke_steps_stub_torchcodec_through_the_shared_helper():
+    """Two steps stub it, and they used to carry their own copy of the bare-ModuleType form.
+    One fixed copy is how this comes back."""
+    shell = _shell(_job())
+    assert "_torchcodec_stub" in shell, "the smoke job no longer uses the shared placeholder"
+    assert shell.count("import _torchcodec_stub") == 2, (
+        "both the install-cell step and the import-verification step must install the "
+        f"placeholder; found {shell.count('import _torchcodec_stub')} site(s)"
+    )
+    assert 'types.ModuleType("torchcodec")' not in shell, (
+        "a hand-rolled torchcodec stub is back in the workflow; its __spec__ is None and "
+        "importlib.util.find_spec raises on it"
+    )
+
+
+def test_every_helper_the_smoke_steps_import_is_a_path_trigger():
+    """A helper the job executes is part of the job. `tests/_torchcodec_stub.py` was added as a
+    shared stub and imported by both smoke steps while the workflow's `pull_request.paths`
+    still listed only its sibling, so a PR touching nothing else would have merged a broken
+    helper without the smoke matrix or this file ever running.
+
+    Derived from the steps rather than hand-listed, so the next shared helper is caught by
+    this test instead of by a silent green run.
+    """
+    shell = _shell(_job())
+    imported = set(re.findall(r"import\s+(_\w+)", shell))
+    assert imported, "no helper imports found in the smoke steps; this guard checks nothing"
+
+    doc = yaml.safe_load(WORKFLOW.read_text(encoding = "utf-8"))
+    # `on` is the YAML 1.1 boolean True once parsed, which is why this is not doc["on"].
+    triggers = doc[True] if True in doc else doc["on"]
+    paths = set(triggers["pull_request"]["paths"])
+
+    for helper in sorted(imported):
+        candidate = REPO / "tests" / f"{helper}.py"
+        if not candidate.is_file():
+            continue  # a stdlib or third-party name that merely starts with an underscore
+        entry = f"tests/{helper}.py"
+        assert entry in paths, (
+            f"{entry} is imported by a smoke step but is not in the workflow's "
+            f"pull_request.paths, so a PR changing only that file would not run this job"
+        )
+
+
+def test_loading_the_stub_helper_leaves_sys_path_alone():
+    """`tests/` holds a `utils/` package, so a module that puts that directory at the FRONT of
+    sys.path shadows studio/backend's `utils` for every test after it in the same worker. This
+    file did exactly that to reach the helper, and the casualty was another file entirely:
+    tests/test_studio_root_resilience.py, red with
+    `ModuleNotFoundError: No module named 'utils.native_path_leases'`.
+
+    The claim is that loading the helper changes nothing, not that `tests/` is absent from
+    sys.path: pytest's own prepend import mode puts the basedir of every collected test module
+    there, so absence was never true to begin with and asserting it failed in CI for a reason
+    that had nothing to do with this file.
+    """
+    before = list(sys.path)
+    _load_stub_helper()
+    assert sys.path == before, (
+        "loading the helper mutated sys.path: "
+        f"added {[p for p in sys.path if p not in before]!r}"
+    )
+
+    # Assembled rather than written out, so the needle does not match this line itself.
+    needle = "sys.path" + ".insert(0, str(REPO / " + chr(34) + "tests" + chr(34) + "))"
+    source = Path(__file__).read_text(encoding = "utf-8")
+    assert needle not in source, "a sys.path insert of the tests dir is back in this file"

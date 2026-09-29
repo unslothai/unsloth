@@ -20,6 +20,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from .thread_drain import join_when_started
+
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
@@ -982,7 +984,7 @@ def test_the_queue_of_pending_closes_is_bounded(monkeypatch, clients):
         release.set()
         for t in threading.enumerate():
             if t.name.startswith("mcp-") and t is not threading.current_thread():
-                t.join(5)
+                join_when_started(t, timeout = 5)
 
 
 def test_closing_many_sessions_does_not_spawn_a_thread_each(monkeypatch, clients):

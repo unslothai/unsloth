@@ -17,6 +17,7 @@ from typing import Optional
 
 import structlog
 
+from utils.auth_safe import auth_safe_open
 from utils.prebuilt.freshness_flow import (
     RELEASE_CACHE_TTL_SECONDS,
     RELEASE_FAILURE_CACHE_TTL_SECONDS,
@@ -92,7 +93,7 @@ def _fetch_release_blocking(repo: str, tag: str, timeout: float) -> Optional[dic
         headers = headers,
     )
     try:
-        with urllib.request.urlopen(request, timeout = timeout) as response:
+        with auth_safe_open(request, timeout = timeout) as response:
             # One byte past the cap: reject an oversized body without buffering it.
             raw = response.read(MAX_RELEASE_BYTES + 1)
         if len(raw) > MAX_RELEASE_BYTES:

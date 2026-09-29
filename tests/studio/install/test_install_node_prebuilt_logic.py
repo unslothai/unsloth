@@ -28,6 +28,11 @@ HostInfo = M.HostInfo
 PrebuiltFallback = M.PrebuiltFallback
 
 
+@pytest.fixture(autouse = True)
+def _no_ambient_node_mirror(monkeypatch):
+    monkeypatch.delenv(M.NODE_MIRROR_ENV, raising = False)
+
+
 @pytest.mark.parametrize("content_length", ["2097152", None])
 def test_download_file_reports_progress(tmp_path, monkeypatch, capsys, content_length):
     from io import BytesIO
@@ -110,6 +115,27 @@ def test_asset_windows_is_zip():
 
 def test_shasums_url():
     assert M.node_shasums_url("24.17.0") == "https://nodejs.org/dist/v24.17.0/SHASUMS256.txt"
+
+
+@pytest.mark.parametrize("value", ["https://mirror.example/node/", " https://mirror.example/node "])
+def test_node_mirror_env_rebases_every_url(monkeypatch, value):
+    monkeypatch.setenv(M.NODE_MIRROR_ENV, value)
+    assert M.node_dist_index_url() == "https://mirror.example/node/index.json"
+    assert M.node_shasums_url("24.17.0") == "https://mirror.example/node/v24.17.0/SHASUMS256.txt"
+    assert (
+        M.node_download_url("24.17.0", "node-v24.17.0-linux-x64.tar.gz")
+        == "https://mirror.example/node/v24.17.0/node-v24.17.0-linux-x64.tar.gz"
+    )
+
+
+def test_blank_node_mirror_env_keeps_nodejs_org(monkeypatch):
+    monkeypatch.setenv(M.NODE_MIRROR_ENV, "  ")
+    assert M.node_dist_index_url() == "https://nodejs.org/dist/index.json"
+    assert M.node_shasums_url("24.17.0") == "https://nodejs.org/dist/v24.17.0/SHASUMS256.txt"
+    assert (
+        M.node_download_url("24.17.0", "node-v24.17.0-linux-x64.tar.gz")
+        == "https://nodejs.org/dist/v24.17.0/node-v24.17.0-linux-x64.tar.gz"
+    )
 
 
 def test_binary_layout_is_host_aware():
