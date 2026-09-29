@@ -198,6 +198,7 @@ def _run_branch(
         "kwargs": {},
         "_revision": None,
         "token": None,
+        "auto_config": types.SimpleNamespace(num_hidden_layers = 24),
     }
     node = _dequantize_branch()
     code = ast.Module(body = [node], type_ignores = [])
@@ -615,6 +616,15 @@ def test_balanced_placement_caps_earlier_cards_like_get_balanced_memory(zoo, siz
     assert _helper()("mxfp4", False, "auto", "openai/gpt-oss-120b") is True
     sizes["free"] = [80, 4]
     assert _helper()("mxfp4", False, "sequential", "openai/gpt-oss-120b") is True
+
+
+def test_multi_card_budget_leaves_room_for_a_whole_layer_per_card(zoo, sizes):
+    # 0.9 x (35 + 25) = 54 GiB sums past 50, but 4 whole layers of 12.5 GiB strand card 0's tail.
+    sizes["checkpoint"], sizes["free"] = 50, [35, 25]
+    helper = _helper()
+    assert helper("mxfp4", False, "sequential", "openai/gpt-oss-120b") is True
+    assert helper("mxfp4", False, "sequential", "openai/gpt-oss-120b", num_layers = 4) is False
+    assert helper("mxfp4", False, "sequential", "openai/gpt-oss-120b", num_layers = 36) is True
 
 
 @pytest.mark.parametrize(

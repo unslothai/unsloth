@@ -1384,6 +1384,7 @@ def _mxfp4_lora_keeps_experts_packed(
     local_files_only = False,
     token = None,
     use_safetensors = None,
+    num_layers = None,
 ):
     """Use unsloth_zoo's packed MXFP4 experts for LoRA: native matmul_ogs has no backward.
 
@@ -1588,6 +1589,10 @@ def _mxfp4_lora_keeps_experts_packed(
                     free if low_zero and i == 0 else min(free, per_card)
                     for i, free in enumerate(frees[:-1])
                 ] + frees[-1:]
+            if len(frees) > 1 and checkpoint_bytes and num_layers:
+                # Decoder layers are placed whole, so each card but the last can strand up to one layer.
+                layer = checkpoint_bytes / num_layers
+                frees = [max(0, free - layer) for free in frees[:-1]] + frees[-1:]
             limit = sum(frees)
             if checkpoint_bytes and probed and checkpoint_bytes > limit:
                 return False
@@ -2738,6 +2743,7 @@ class FastBaseModel:
                             kwargs.get("local_files_only", False),
                             token,
                             kwargs.get("use_safetensors", None),
+                            getattr(auto_config, "num_hidden_layers", None),
                         )
                     ) and "dequantize" in inspect.signature(quantizer).parameters:
                         quantizer_kwargs["dequantize"] = True
