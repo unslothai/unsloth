@@ -36,7 +36,11 @@ def test_installers_pick_npm_ci_when_a_lockfile_exists():
     assert ps1.count('if (Test-Path "package-lock.json") { "ci" } else { "install" }') == 3
     for rel, text in (("studio/setup.sh", sh), ("build.sh", build), ("studio/setup.ps1", ps1)):
         code = "\n".join(l for l in text.splitlines() if not l.lstrip().startswith("#"))
-        bare = [l.strip() for l in code.splitlines() if _BARE_INSTALL.search(l) and "Write-StudioLine" not in l]
+        bare = [
+            l.strip()
+            for l in code.splitlines()
+            if _BARE_INSTALL.search(l) and "Write-StudioLine" not in l
+        ]
         assert bare == [], f"{rel}: {bare}"
 
 
@@ -49,12 +53,21 @@ def test_bun_only_runs_against_a_committed_bun_lock():
         assert 'bun install --frozen-lockfile "${_NPM_REGISTRY_ARGS' in _read(rel), rel
     assert "{ bun install @NpmRegistryArgs }" not in _read("studio/setup.ps1")
 
+
 def test_workflows_install_lockfiled_dirs_with_npm_ci():
-    for name in ("release-desktop.yml", "studio-tauri-smoke.yml", "desktop-app-clean-machine-ci.yml"):
+    for name in (
+        "release-desktop.yml",
+        "studio-tauri-smoke.yml",
+        "desktop-app-clean-machine-ci.yml",
+    ):
         doc = yaml.safe_load(_read(f".github/workflows/{name}"))
         for job_id, job in doc["jobs"].items():
             for step in job.get("steps") or []:
                 run = step.get("run") if isinstance(step, dict) else None
                 if isinstance(run, str):
-                    bare = [l.strip() for l in run.splitlines() if _BARE_INSTALL.search(l) and not l.lstrip().startswith("#")]
+                    bare = [
+                        l.strip()
+                        for l in run.splitlines()
+                        if _BARE_INSTALL.search(l) and not l.lstrip().startswith("#")
+                    ]
                     assert bare == [], f"{name}:{job_id}: {bare}"
