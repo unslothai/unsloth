@@ -373,6 +373,20 @@ def _windows_routes_multiarch(gfx_arch: "str | None") -> bool:
     return True
 
 
+def _multiarch_device_pack_installed(gfx_arch: "str | None") -> bool:
+    """Whether the venv carries AMD's torch and torchvision kernel packs for this card."""
+    try:
+        from importlib import metadata
+        names = {
+            (d.metadata["Name"] or "").strip().lower().replace("_", "-")
+            for d in metadata.distributions()
+        }
+    except Exception:
+        return False
+    gfx = _bare_gfx(gfx_arch)
+    return {f"amd-torch-device-{gfx}", f"amd-torchvision-device-{gfx}"} <= names
+
+
 def _windows_multiarch_torch_pkg_specs(gfx_arch: str) -> tuple[str, str, str]:
     gfx = _bare_gfx(gfx_arch)
     return (
@@ -391,23 +405,6 @@ def _index_is_multiarch(index_url: "str | None") -> bool:
     return _u == _ROCM_WINDOWS_MULTIARCH_INDEX_BASE.rstrip("/") or _u.split("?")[0].endswith(
         "/whl-multi-arch"
     )
-
-
-def _multiarch_device_pack_missing(gfx_arch: "str | None") -> bool:
-    """A multi-arch torch is installed (some amd-torch-device-* pack) but not this arch's torch or
-    torchvision pack: the family read-back is None on this build, so a swapped card needs this."""
-    try:
-        from importlib import metadata
-        names = {
-            (d.metadata["Name"] or "").strip().lower().replace("_", "-")
-            for d in metadata.distributions()
-        }
-    except Exception:
-        return False
-    if not any(n.startswith("amd-torch-device-") for n in names):
-        return False
-    gfx = _bare_gfx(gfx_arch)
-    return not {f"amd-torch-device-{gfx}", f"amd-torchvision-device-{gfx}"} <= names
 
 
 def _windows_rocm_torch_pkg_specs_for(
@@ -1882,8 +1879,8 @@ def _detect_windows_gfx_arch() -> str | None:
         # put the APU first and the user may still want a different device.
         if _pick in _SHADOWING_INTEGRATED_GFX:
             _others = [t for t in tokens if t not in _SHADOWING_INTEGRATED_GFX]
-            # Deposing the pick for a card with no Windows wheels (gfx1036 + an older
-            # gfx1010) resolves to no index and drops the host to CPU, so prefer a
+            # Deposing the pick for a card with no Windows wheels (gfx1036 + a gfx803)
+            # resolves to no index and drops the host to CPU, so prefer a
             # wheel-backed candidate; fall back only when the pick has no wheels either.
             _withWheels = [t for t in _others if _windows_rocm_index_url(t) is not None]
             _candidates = _withWheels or (
@@ -1891,8 +1888,8 @@ def _detect_windows_gfx_arch() -> str | None:
             )
             if _candidates:
                 _other = _candidates[0]
-                # Not always device 1: on gfx1036,gfx1010,gfx1200 it is device 2, and
-                # saying "mask 1" would expose the gfx1010 the wheels do not target.
+                # Not always device 1: on gfx1036,gfx803,gfx1200 it is device 2, and
+                # saying "mask 1" would expose the gfx803 the wheels do not target.
                 _other_idx = tokens.index(_other)
                 _safe_print(
                     f"   multiple AMD GPUs detected ({', '.join(_distinct)}); "
@@ -2052,7 +2049,7 @@ def _detect_windows_gfx_arch() -> str | None:
                 return _pick
             if _names and not _pick:
                 # No arch means CPU-only torch; name the adapter instead of failing silently.
-                # RDNA 1 / Polaris is not an unknown card: naming an override there
+                # Polaris is not an unknown card: naming an override there
                 # sends the user after a fix that does not exist (#8529, #8458).
                 _unsupported = _unsupported_gfx_arch_from_gpu_name(_names[_sel])
                 if _unsupported:
@@ -2147,14 +2144,10 @@ def _gfx_arch_from_gpu_name(name: str) -> "str | None":
     return None
 
 
-# GPU name -> gfx arch for AMD generations Unsloth's ROCm wheels do NOT cover: RDNA 1
-# and Polaris 10/20/30 (unslothai#8529, #8458). Deliberately SEPARATE from
-# _WIN_GPU_NAME_ARCH_TABLE: nothing here may ever route to a wheel index. AMD's TheRock
-# ships RDNA 1 wheels, but not on the repo.amd.com indexes routed here, and never gfx803.
-# Every (?!0) guard stops "RX 570" swallowing "RX 5700", so each row is correct on its
-# own regardless of order. Names from LLVM's AMDGPU tables plus libdrm amdgpu.ids/pci.ids
-# for the Navi 10/14 professional parts LLVM omits; nothing is guessed, so Polaris 11/12
-# (RX 460/550/560, a different die) is left out.
+# GPU name -> gfx arch for AMD generations no ROCm wheel covers: Polaris 10/20/30
+# (unslothai#8529, #8458). Deliberately SEPARATE from _WIN_GPU_NAME_ARCH_TABLE: nothing
+# here may ever route to a wheel index. The (?!0) guards stop "RX 570" swallowing
+# "RX 5700"; Polaris 11/12 (RX 460/550/560, a different die) is left out.
 _UNSUPPORTED_GPU_NAME_ARCH_TABLE: "list[tuple[str, str]]" = [
     (
         r"RX 4[78]0(?!0)|RX 5[789]0(?!0)|Radeon Pro WX 7100|Radeon Pro WX 5100",
@@ -5848,19 +5841,30 @@ def _ensure_rocm_torch() -> None:
         # now resolves elsewhere (dGPU added, or the #7776 repick) would keep the old family
         # forever. setup.ps1 force-reinstalls every run, so this only bites standalone
         # `studio update`. Act only on a family read back positively, never on a guess.
-        if _torch_already_rocm and _win_rocm_pin is None:
+        # A per-family build has no kernels for a multi-arch card: its device pack decides.
+        if (
+            _torch_already_rocm
+            and _win_rocm_pin is None
+            and _windows_routes_multiarch(gfx_arch)
+            and not _multiarch_device_pack_installed(gfx_arch)
+        ):
+            _safe_print(
+                f"   installed ROCm torch has no {gfx_arch} device pack -- reinstalling from "
+                "AMD's multi-arch index"
+            )
+            _torch_already_rocm = False
+        # A multi-arch route is judged by its packs alone: a migrated venv keeps the orphaned family runtime.
+        if (
+            _torch_already_rocm
+            and _win_rocm_pin is None
+            and not _windows_routes_multiarch(gfx_arch)
+        ):
             _want = (_GFX_TO_AMD_INDEX_ARCH.get(gfx_arch or "") or "").lower()
             _have = _installed_rocm_wheel_family()
             if _want and _have and _have != _want:
                 _safe_print(
                     f"   installed ROCm torch is the {_have} build but {gfx_arch} needs "
                     f"{_want} -- reinstalling for this GPU"
-                )
-                _torch_already_rocm = False
-            elif _windows_routes_multiarch(gfx_arch) and _multiarch_device_pack_missing(gfx_arch):
-                _safe_print(
-                    f"   installed multi-arch ROCm torch has no device pack for {gfx_arch} "
-                    "-- reinstalling for this GPU"
                 )
                 _torch_already_rocm = False
         if not _torch_already_rocm:

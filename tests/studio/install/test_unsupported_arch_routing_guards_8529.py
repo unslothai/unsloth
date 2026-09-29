@@ -66,7 +66,9 @@ def _load_stack_module():
 stack_mod = _load_stack_module()
 
 
+# The arch the messaging table owns on every platform. Nothing here may produce an index.
 _UNSUPPORTED_ARCHES = ["gfx803"]
+# RDNA 1 (#11614): routed on Windows, still unrouted on Linux.
 _RDNA1_ARCHES = ["gfx1010", "gfx1011", "gfx1012"]
 _RDNA1_ARCH_INPUTS = (
     _RDNA1_ARCHES + [a.upper() for a in _RDNA1_ARCHES] + [f"{a}:xnack-" for a in _RDNA1_ARCHES]
@@ -81,6 +83,7 @@ _UNSUPPORTED_ARCH_INPUTS = (
     + [a.upper() for a in _UNSUPPORTED_ARCHES]
     + [f"{a}:xnack-" for a in _UNSUPPORTED_ARCHES]
 )
+# What Linux must still leave on the CPU index: Polaris and RDNA 1 alike.
 _LINUX_UNROUTED_ARCH_INPUTS = _UNSUPPORTED_ARCH_INPUTS + _RDNA1_ARCH_INPUTS
 
 # Arches that MUST route, so that "no index" cannot pass for the right answer when the table has been renamed, emptied
@@ -160,7 +163,10 @@ _MULTIARCH_HOST = "repo.amd.com/rocm/whl-multi-arch"
 
 
 class TestRdna1RoutesOnWindowsOnly:
-    """#11614: RDNA 1 reaches the multi-arch index from the Windows resolver only."""
+    """#11614: the RDNA 1 arches reach AMD's multi-arch index, and only from
+    the Windows resolver. They are deliberately NOT keys of the per-family map: that map
+    is one URL leaf per family on repo.amd.com, and the multi-arch index selects the
+    device through the `torch[device-gfxNNNN]` extra instead."""
 
     @pytest.mark.parametrize("arch", _RDNA1_ARCH_INPUTS)
     def test_windows_resolver_names_the_multiarch_index(self, arch):
@@ -1041,6 +1047,7 @@ def test_the_five_unsupported_tables_agree_on_every_name():
     for source, got in answers.items():
         assert len(got) == len(names), f"{source}: {len(got)} answers for {len(names)} names"
 
+    # Since #11755 only RDNA 1 names may disagree (Windows routes, Linux declines).
     _windows_sources = {"install_python_stack.py", "install.ps1", "setup.ps1"}
     _rdna1 = stack_mod._WINDOWS_MULTIARCH_GFX
     disagreements = []

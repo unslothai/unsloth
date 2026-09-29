@@ -506,6 +506,7 @@ class TestGpuNameArchParity:
         """Every arch a name table can produce must be routable to an AMD wheel
         index, else detection succeeds and the install still lands on CPU torch."""
         families = stack_mod._GFX_TO_AMD_INDEX_ARCH
+        # RDNA 1 is Windows-only (multi-arch index, #11614); Linux tables must not produce it.
         multiarch = stack_mod._WINDOWS_MULTIARCH_GFX
         linux_copies = ("install.sh", "studio/setup.sh")
         for where, rows in _name_tables().items():

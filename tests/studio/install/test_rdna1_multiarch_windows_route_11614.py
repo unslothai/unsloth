@@ -1,6 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-"""RDNA 1 on Windows installs from AMD's multi-arch index (unslothai/unsloth#11614)."""
+"""RDNA 1 on Windows installs from AMD's multi-arch index (unslothai/unsloth#11614).
+
+gfx1010/1011/1012 route there in every spelling and nothing else does; the trio is pinned
+to one release tag below the Windows torch ceiling; the name tables claim RDNA 1 as
+supported; the PowerShell installers carry the same arches and tag.
+"""
 
 import importlib.util
 import re
@@ -133,7 +138,8 @@ class TestIndexResolution:
 
     @pytest.mark.parametrize("arch", _RDNA1)
     def test_the_two_card_picker_counts_rdna1_as_having_wheels(self, arch):
-        """_dedup_pick decides "has wheels" by asking the resolver."""
+        """_dedup_pick decides "has wheels" by asking the resolver, so an RX 5700 XT next to
+        an iGPU is no longer deposed to CPU torch."""
         assert stack_mod._is_windows_multiarch_gfx(arch)
         assert stack_mod._windows_rocm_index_url(arch) is not None
 
@@ -207,7 +213,8 @@ class TestNameTables:
 
 
 class TestPowerShellMirrorsThePin:
-    """install.ps1 and setup.ps1 install torch themselves ."""
+    """install.ps1 and setup.ps1 install torch themselves (the python stack only repairs),
+    so they carry the same route. Read as text: the parity is the point."""
 
     @pytest.mark.parametrize("path", [_INSTALL_PS1, _SETUP_PS1], ids = lambda p: p.name)
     def test_same_arches_and_same_tag(self, path):
@@ -230,7 +237,10 @@ class TestPowerShellMirrorsThePin:
 
 
 class TestTheWindowsRepairSiteRunsForRdna1:
-    """The `studio update` repair in _ensure_rocm_torch reaches the multi-arch trio."""
+    """The `studio update` repair in _ensure_rocm_torch reaches the multi-arch trio for a
+    gfx1010 host whose venv holds a CPU torch. Exercised end to end because the message
+    there once called _bare_gfx(), a name the function later rebinds as a local, and no
+    test ran that line."""
 
     def test_a_gfx1010_host_on_cpu_torch_installs_the_multiarch_trio(self, monkeypatch):
         from unittest.mock import MagicMock, patch
@@ -262,9 +272,62 @@ class TestTheWindowsRepairSiteRunsForRdna1:
             in args
         )
 
+    @pytest.mark.parametrize("pack_missing,installs", [(True, 1), (False, 0)])
+    def test_a_per_family_rocm_torch_without_the_device_pack_is_replaced(
+        self, pack_missing, installs, monkeypatch
+    ):
+        # Standalone `studio update` after the GPU became RDNA 1: a gfx103X ROCm build is
+        # importable but has no gfx1010 kernels, and the per-family check has no RDNA 1 key.
+        from unittest.mock import MagicMock, patch
+
+        _mark = stack_mod._TORCH_PROBE_MARKER
+        probe = MagicMock(returncode = 0, stdout = _mark + "2.10.0+rocm7.2|7.2.0|" + chr(10))
+        pip_try = MagicMock(return_value = True)
+        monkeypatch.setattr(stack_mod, "_TORCH_RUNTIME_PROBE", None)
+        monkeypatch.delenv("UNSLOTH_ROCM_TORCH_INSTALLED", raising = False)
+        monkeypatch.delenv("UNSLOTH_ROCM_WINDOWS_MULTIARCH_MIRROR", raising = False)
+        with (
+            patch.object(stack_mod, "IS_WINDOWS", True),
+            patch.object(stack_mod, "IS_MACOS", False),
+            patch.object(stack_mod, "_TORCH_BACKEND", ""),
+            patch.object(stack_mod, "_explicit_rocm_torch_index_url", return_value = None),
+            patch.object(stack_mod, "_explicit_unknown_family_torch_index_url", return_value = None),
+            patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = False),
+            patch.object(stack_mod, "_detect_windows_gfx_arch", return_value = "gfx1010"),
+            patch.object(stack_mod, "_installed_rocm_wheel_family", return_value = "gfx103x-all"),
+            patch.object(
+                stack_mod, "_multiarch_device_pack_installed", return_value = not pack_missing
+            ),
+            patch.object(stack_mod, "_install_bnb_windows_rocm", return_value = True),
+            patch.object(stack_mod, "pip_install_try", pip_try),
+            patch("subprocess.run", return_value = probe),
+        ):
+            stack_mod._ensure_rocm_torch()
+        assert pip_try.call_count == installs
+        if installs:
+            assert "torch[device-gfx1010]" in " ".join(str(a) for a in pip_try.call_args.args)
+
+    def test_the_device_pack_check_needs_torch_and_torchvision_packs(self, monkeypatch):
+        from importlib import metadata
+
+        def dists(*names):
+            return lambda: [type("D", (), {"metadata": {"Name": n}})() for n in names]
+
+        monkeypatch.setattr(metadata, "distributions", dists("torch"))
+        assert stack_mod._multiarch_device_pack_installed("GFX1010:xnack-") is False
+        monkeypatch.setattr(metadata, "distributions", dists("amd_torch_device_gfx1010"))
+        assert stack_mod._multiarch_device_pack_installed("GFX1010:xnack-") is False
+        monkeypatch.setattr(
+            metadata,
+            "distributions",
+            dists("amd-torch-device-gfx1010", "amd-torchvision-device-gfx1010"),
+        )
+        assert stack_mod._multiarch_device_pack_installed("GFX1010:xnack-") is True
+
 
 class TestRdna1CountsAsCoveredEverywhereItIsRouted:
-    """Two gates outside the route itself decided RDNA 1 was uncovered."""
+    """Two gates outside the route itself decided RDNA 1 was uncovered: the backend's
+    repairability check and setup.ps1's pre-Intel "AMD gets GPU wheels" gate."""
 
     @pytest.mark.parametrize("name,expected", _RDNA1_NAMES)
     def test_the_backend_can_repair_an_rdna1_card_on_windows(self, name, expected, monkeypatch):
@@ -289,3 +352,11 @@ class TestRdna1CountsAsCoveredEverywhereItIsRouted:
         assert set(stack_mod._WINDOWS_MULTIARCH_GFX) <= listed, sorted(
             set(stack_mod._WINDOWS_MULTIARCH_GFX) - listed
         )
+
+
+@pytest.mark.parametrize("ps1", [_INSTALL_PS1, _SETUP_PS1], ids = lambda p: p.name)
+def test_the_gfx_override_drops_hipinfo_feature_suffixes(ps1):
+    # hipinfo prints gfx1010:xnack-; copied into UNSLOTH_ROCM_GFX_ARCH it must still route.
+    src = ps1.read_text(encoding = "utf-8")
+    reads = re.findall(r"=\s*\(?\$env:UNSLOTH_ROCM_GFX_ARCH\.Trim\(\)\.ToLower\(\)[^\n]*", src)
+    assert reads and all("-split ':'" in r for r in reads), reads

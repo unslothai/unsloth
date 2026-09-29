@@ -123,6 +123,19 @@ function Write-StudioLine {
     }
 }
 
+function Show-DownloadProgress {
+    param([Parameter(ValueFromPipeline = $true)][object]$InputObject)
+    process {
+        $line = [string]$InputObject
+        if ((@("1", "true") -contains $env:UNSLOTH_TAURI_UPDATE) -and
+            ($line -like 'Downloading *: *% (*) at */s' -or
+             $line -like 'Downloading *: * downloaded at */s')) {
+            Write-StudioLine $line
+        }
+        $InputObject
+    }
+}
+
 # --------------------------------------------------------------------------
 #  Maintainer-editable defaults
 #  Change these in the GitHub-hosted script so users get updated defaults.
@@ -3090,7 +3103,8 @@ function Invoke-NpmMirrorRetry {
     $pairs = @(Pop-MirrorSpare npm)
     if (-not $pairs) { return $false }
     $registry = $pairs[0].Split('=', 2)[1]
-    if ((Invoke-SetupCommand { npm install --registry $registry }) -ne 0) { return $false }
+    $verb = if (Test-Path "package-lock.json") { "ci" } else { "install" }
+    if ((Invoke-SetupCommand { npm $verb --registry $registry }) -ne 0) { return $false }
     Set-MirrorEnv $pairs
     $script:NpmRegistryArgs = @('--registry', $registry)
     return $true
@@ -4240,11 +4254,11 @@ function Resolve-ShadowingGfxPick {
     if ($script:ShadowingIntegratedGfx -notcontains $Picked) { return $Picked }
     $distinctArches = @($AllArches | Select-Object -Unique)
     if ($distinctArches.Count -lt 2) { return $Picked }
-    # Deposing a supported APU for a discrete card with no Windows wheels (gfx1036 + an
-    # older gfx1010) resolves to no index and drops the host to CPU, worse than the
+    # Deposing a supported APU for a discrete card with no Windows wheels (gfx1036 + a
+    # gfx803) resolves to no index and drops the host to CPU, worse than the
     # shadowing itself. So prefer a wheel-backed discrete card, and fall back to an
     # unsupported one only when the pick has no wheels either: taking the first
-    # non-integrated arch instead sent gfx90c,gfx1010,gfx1200 to CPU torch despite the
+    # non-integrated arch instead sent gfx90c,gfx803,gfx1200 to CPU torch despite the
     # supported gfx1200. Mirrors _dedup_pick()'s `_withWheels or (...)`.
     $pickedHasWheels = Test-GfxHasWheels $Picked
     $others = @($AllArches | Where-Object { $script:ShadowingIntegratedGfx -notcontains $_ })
@@ -4254,8 +4268,8 @@ function Resolve-ShadowingGfxPick {
                   else { @() }
     $discreteArch = $candidates | Select-Object -First 1
     if (-not $discreteArch) { return $Picked }
-    # Not always device 1: on gfx1036,gfx1010,gfx1200 the pick is device 2, and
-    # naming 1 would expose the gfx1010 the wheels do not target.
+    # Not always device 1: on gfx1036,gfx803,gfx1200 the pick is device 2, and
+    # naming 1 would expose the gfx803 the wheels do not target.
     $discreteIdx = [array]::IndexOf(@($AllArches), $discreteArch)
     if ($discreteIdx -lt 0) { $discreteIdx = 1 }
     substep "multiple AMD GPUs detected ($($distinctArches -join ', ')); installing for the discrete $discreteArch instead of the integrated $Picked" "Cyan"
@@ -4482,14 +4496,10 @@ if (-not $HasNvidiaSmi) {
         } catch {}
     }
 
-    # GPU name -> gfx arch for AMD generations Unsloth's ROCm wheels do NOT cover: RDNA 1
-    # and Polaris 10/20/30 (unslothai#8529). Kept apart from $nameArchTable on purpose: it
-    # only WORDS a message, never selects a wheel index or a prebuilt. AMD's TheRock ships
-    # RDNA 1 wheels, but not on the repo.amd.com indexes routed here, and never gfx803.
-    # The (?!0) guards stop "RX 570" swallowing an "RX 5700". Names from LLVM's AMDGPU
-    # tables plus libdrm amdgpu.ids/pci.ids for the Navi 10/14 professional parts LLVM
-    # omits; nothing is guessed, so Polaris 11/12 (RX 460/550/560, a different die) is
-    # left out.
+    # GPU name -> gfx arch for AMD generations no ROCm wheel covers: Polaris 10/20/30
+    # (unslothai#8529). Kept apart from $nameArchTable on purpose: it only WORDS a message,
+    # never selects a wheel index or a prebuilt. The (?!0) guards stop "RX 570" swallowing
+    # an "RX 5700"; Polaris 11/12 (RX 460/550/560, a different die) is left out.
     $unsupportedNameArchTable = @(
         @{ P = "RX 4[78]0(?!0)|RX 5[789]0(?!0)|Radeon Pro WX 7100|Radeon Pro WX 5100"; A = "gfx803"  }  # Polaris 10/20/30
     )
@@ -4504,7 +4514,7 @@ if (-not $HasNvidiaSmi) {
     if (-not $script:ROCmGfxArch) {
         # 1. Manual override: set UNSLOTH_ROCM_GFX_ARCH=gfx1151 before running.
         if ($env:UNSLOTH_ROCM_GFX_ARCH) {
-            $script:ROCmGfxArch = $env:UNSLOTH_ROCM_GFX_ARCH.Trim().ToLower()
+            $script:ROCmGfxArch = ($env:UNSLOTH_ROCM_GFX_ARCH.Trim().ToLower() -split ':')[0]  # drop HIP feature suffixes (gfx1010:xnack-)
             $ROCmGpuLabel = "AMD ROCm ($script:ROCmGfxArch)"
             substep "gfx arch from UNSLOTH_ROCM_GFX_ARCH env override: $script:ROCmGfxArch" "Cyan"
         }
@@ -4719,7 +4729,7 @@ $_rocmWheelArches = @(
     "gfx90a", "gfx908"              # MI200 / MI100
 )
 # "AMD gets GPU wheels here", NOT "an AMD GPU is present": $HasROCm / $ROCmGfxArch are true on
-# unmapped arches (Vega, Polaris) too, and those install CPU torch. In sync with $multiArchGfx.
+# unmapped arches (Vega, Polaris) too, and those install CPU torch. Must include $multiArchGfx.
 $AmdHasGpuWheels = [bool]($script:ROCmGfxArch -and ($_rocmWheelArches -contains $script:ROCmGfxArch))
 
 # Mirrors the Intel scan in install.ps1 so setup does not report "none (chat-only)" right after
@@ -5678,11 +5688,11 @@ if ($NeedNodeForSetup) {
         substep "installing isolated Node (system Node/npm left untouched)..."
         # Prefer the validated handed-off/venv Python: bare `python` may be a Store stub here.
         $NodeInstallPython = if ($ValidatedSetupPython) { $ValidatedSetupPython } else { "python" }
-        $nodeOut = & $NodeInstallPython "$PSScriptRoot\install_node_prebuilt.py" --install-dir $NodeDir 2>&1 | Out-String
+        $nodeOut = & $NodeInstallPython "$PSScriptRoot\install_node_prebuilt.py" --install-dir $NodeDir 2>&1 | Show-DownloadProgress | Out-String
         $nodeExit = $LASTEXITCODE
         # A failed download gets one retry through the mirror; 3 is another install holding the lock and 4 an unwritable directory, which no mirror fixes.
         if ($nodeExit -notin 0, 3, 4 -and (Use-MirrorSpare node)) {
-            $nodeOut += & $NodeInstallPython "$PSScriptRoot\install_node_prebuilt.py" --install-dir $NodeDir 2>&1 | Out-String
+            $nodeOut += & $NodeInstallPython "$PSScriptRoot\install_node_prebuilt.py" --install-dir $NodeDir 2>&1 | Show-DownloadProgress | Out-String
             $nodeExit = $LASTEXITCODE
         }
         if ($nodeExit -eq 3) {
@@ -5724,8 +5734,8 @@ if ($NeedNodeForSetup) {
         Remove-Item Env:NODE_PATH -ErrorAction SilentlyContinue
         step "node" "$(node -v) | npm $(npm -v) (isolated)"
 
-        # bun (optional, faster installs); npm -g stays in the isolated prefix.
-        if (-not (Get-Command bun -ErrorAction SilentlyContinue)) {
+        # bun (optional, unused when package-lock.json means `npm ci`); npm -g stays in the isolated prefix.
+        if (-not (Test-Path (Join-Path $FrontendDir "package-lock.json")) -and -not (Get-Command bun -ErrorAction SilentlyContinue)) {
             substep "installing bun (faster frontend package installs)..."
             $prevEAP_bun = $ErrorActionPreference
             $ErrorActionPreference = "Continue"
@@ -5772,12 +5782,14 @@ if ($NeedFrontendBuild -and -not $IsPipInstall) {
     $ErrorActionPreference = "Continue"
     Push-Location $FrontendDir
 
-    $UseBun = $null -ne (Get-Command bun -ErrorAction SilentlyContinue)
+    # package-lock.json always wins (`npm ci`); bun only without one, since bun.lock is gitignored.
+    $UseBun = -not (Test-Path "package-lock.json") -and (Test-Path "bun.lock") -and ($null -ne (Get-Command bun -ErrorAction SilentlyContinue))
+    $NpmInstallVerb = if (Test-Path "package-lock.json") { "ci" } else { "install" }
 
     # A corrupt bun cache still exits 0, so validate, clear it, retry once, then fall back to npm.
     if ($UseBun) {
         Write-StudioLine "   Using bun for package install (faster)" -ForegroundColor DarkGray
-        $bunExit = Invoke-SetupCommand { bun install @NpmRegistryArgs }
+        $bunExit = Invoke-SetupCommand { bun install --frozen-lockfile @NpmRegistryArgs }
         # .bin/ entries vary by manager (npm: tsc/.cmd/.ps1; bun: .exe/.bunx).
         $hasTsc = (Test-Path "node_modules\.bin\tsc") -or (Test-Path "node_modules\.bin\tsc.cmd") -or (Test-Path "node_modules\.bin\tsc.exe") -or (Test-Path "node_modules\.bin\tsc.bunx")
         $hasVite = (Test-Path "node_modules\.bin\vite") -or (Test-Path "node_modules\.bin\vite.cmd") -or (Test-Path "node_modules\.bin\vite.exe") -or (Test-Path "node_modules\.bin\vite.bunx")
@@ -5788,7 +5800,7 @@ if ($NeedFrontendBuild -and -not $IsPipInstall) {
                 Remove-Item "node_modules" -Recurse -Force -ErrorAction SilentlyContinue
             }
             Invoke-SetupCommand { bun pm cache rm } | Out-Null
-            $bunExit = Invoke-SetupCommand { bun install @NpmRegistryArgs }
+            $bunExit = Invoke-SetupCommand { bun install --frozen-lockfile @NpmRegistryArgs }
             $hasTsc = (Test-Path "node_modules\.bin\tsc") -or (Test-Path "node_modules\.bin\tsc.cmd") -or (Test-Path "node_modules\.bin\tsc.exe") -or (Test-Path "node_modules\.bin\tsc.bunx")
             $hasVite = (Test-Path "node_modules\.bin\vite") -or (Test-Path "node_modules\.bin\vite.cmd") -or (Test-Path "node_modules\.bin\vite.exe") -or (Test-Path "node_modules\.bin\vite.bunx")
             if ($bunExit -ne 0 -or -not $hasTsc -or -not $hasVite) {
@@ -5807,14 +5819,14 @@ if ($NeedFrontendBuild -and -not $IsPipInstall) {
         }
     }
     if (-not $UseBun) {
-        $npmExit = Invoke-SetupCommand { npm install @NpmRegistryArgs }
+        $npmExit = Invoke-SetupCommand { npm $NpmInstallVerb @NpmRegistryArgs }
         if ($npmExit -ne 0 -and (Invoke-NpmMirrorRetry)) { $npmExit = 0 }
         if ($npmExit -ne 0) {
             Pop-Location
             $ErrorActionPreference = $prevEAP_npm
             foreach ($gi in $HiddenGitignores) { Rename-Item -Path "$gi._twbuild" -NewName (Split-Path $gi -Leaf) -Force -ErrorAction SilentlyContinue }
-            Write-StudioLine "[ERROR] npm install failed (exit code $npmExit)" -ForegroundColor Red
-            Write-StudioLine "   Try running 'npm install' manually in frontend/ to see errors" -ForegroundColor Yellow
+            Write-StudioLine "[ERROR] npm $NpmInstallVerb failed (exit code $npmExit)" -ForegroundColor Red
+            Write-StudioLine "   Try running 'npm $NpmInstallVerb' manually in frontend/ to see errors" -ForegroundColor Yellow
             Show-NpmRegistryHint
             Exit-SetupFailure "Frontend dependency installation failed (exit code $npmExit)"
         }
@@ -5851,12 +5863,13 @@ if ((Test-Path $OxcValidatorDir) -and $NodeSource -ne "skip" -and (Get-Command n
     $prevEAP_oxc = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
     Push-Location $OxcValidatorDir
-    $oxcInstallExit = Invoke-SetupCommand { npm install @NpmRegistryArgs }
+    $NpmInstallVerb = if (Test-Path "package-lock.json") { "ci" } else { "install" }
+    $oxcInstallExit = Invoke-SetupCommand { npm $NpmInstallVerb @NpmRegistryArgs }
     if ($oxcInstallExit -ne 0 -and (Invoke-NpmMirrorRetry)) { $oxcInstallExit = 0 }
     if ($oxcInstallExit -ne 0) {
         Pop-Location
         $ErrorActionPreference = $prevEAP_oxc
-        Write-StudioLine "[ERROR] OXC validator npm install failed (exit code $oxcInstallExit)" -ForegroundColor Red
+        Write-StudioLine "[ERROR] OXC validator npm $NpmInstallVerb failed (exit code $oxcInstallExit)" -ForegroundColor Red
         Show-NpmRegistryHint
         Exit-SetupFailure "OXC validator dependency installation failed (exit code $oxcInstallExit)"
     }
@@ -8630,7 +8643,6 @@ if ($ROCmIndexUrl) {
     # Release preservation: keep UNSLOTH_KEPT_TORCH unless it conflicts with a >=2.11 floor.
     $_rocmKeptActive = $false
     $_rocmOrigTorch = $ROCmTorchSpec; $_rocmOrigVision = $ROCmVisionSpec; $_rocmOrigAudio = $ROCmAudioSpec
-    # The multi-arch route is an exact pin: nothing to keep.
     if (-not $script:ROCmMultiArch -and $env:UNSLOTH_KEPT_TORCH -match '^\d+\.\d+(\.\d+)?$') {
         $_keptMinor = [int](($env:UNSLOTH_KEPT_TORCH -split '\.')[1])
         if (-not ($ROCmTorchSpec -match 'torch>=2\.11' -and $_keptMinor -lt 11)) {
@@ -9898,7 +9910,7 @@ if ($LocalLlamaCppLinked) {
                 $prebuiltOutput = if (Test-Path $prebuiltLog) { Get-Content $prebuiltLog -Raw } else { "" }
                 Remove-Item $prebuiltLog -ErrorAction SilentlyContinue
             } else {
-                $prebuiltOutput = & python @prebuiltArgs 2>&1 | Out-String
+                $prebuiltOutput = & python @prebuiltArgs 2>&1 | Show-DownloadProgress | Out-String
                 $prebuiltExit = $LASTEXITCODE
             }
         } finally {
@@ -10037,7 +10049,7 @@ if ($env:WHISPER_SERVER_PATH -or $env:UNSLOTH_WHISPER_CPP_PATH) {
         $restoreNativeErrorPreferenceW = $true
     }
     try {
-        $whisperOutput = & python @whisperArgs 2>&1 | Out-String
+        $whisperOutput = & python @whisperArgs 2>&1 | Show-DownloadProgress | Out-String
         $whisperExit = $LASTEXITCODE
     } finally {
         if ($restoreNativeErrorPreferenceW) {

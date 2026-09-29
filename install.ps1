@@ -9819,15 +9819,10 @@ main()
                 $wmiAmdNames = @($usePeers | ForEach-Object { $_.Name })
             } catch {}
         }
-        # GPU name -> gfx arch for AMD generations Unsloth's ROCm wheels do NOT cover:
-        # RDNA 1 and Polaris 10/20/30 (unslothai#8529). Kept apart from $nameArchTable on
-        # purpose: it only WORDS a message, never selects a wheel index. AMD's TheRock
-        # ships RDNA 1 wheels: those route through $multiArchGfx now (unslothai#11614), so
-        # only Polaris is left here; there are none for
-        # gfx803. The (?!0) guards stop "RX 570" swallowing an "RX 5700". Names from
-        # LLVM's AMDGPU tables plus libdrm amdgpu.ids/pci.ids for the Navi 10/14
-        # professional parts LLVM omits; nothing is guessed, so Polaris 11/12 (RX
-        # 460/550/560, a different die) is left out.
+        # GPU name -> gfx arch for AMD generations no ROCm wheel covers: Polaris 10/20/30
+        # (unslothai#8529). Kept apart from $nameArchTable on purpose: it only WORDS a
+        # message, never selects a wheel index. The (?!0) guards stop "RX 570" swallowing
+        # an "RX 5700"; Polaris 11/12 (RX 460/550/560, a different die) is left out.
         $unsupportedNameArchTable = @(
             @{ P = "RX 4[78]0(?!0)|RX 5[789]0(?!0)|Radeon Pro WX 7100|Radeon Pro WX 5100"; A = "gfx803"  }  # Polaris 10/20/30
         )
@@ -9839,7 +9834,7 @@ main()
         if (-not $ROCmGfxArch) {
             # 1. Manual override: set UNSLOTH_ROCM_GFX_ARCH=gfx1151 before running.
             if ($env:UNSLOTH_ROCM_GFX_ARCH) {
-                $ROCmGfxArch = $env:UNSLOTH_ROCM_GFX_ARCH.Trim().ToLower()
+                $ROCmGfxArch = ($env:UNSLOTH_ROCM_GFX_ARCH.Trim().ToLower() -split ':')[0]  # drop HIP feature suffixes (gfx1010:xnack-)
                 $ROCmGpuLabel = "AMD ROCm ($ROCmGfxArch)"
                 substep "gfx arch from UNSLOTH_ROCM_GFX_ARCH env override: $ROCmGfxArch" "Cyan"
             }

@@ -1369,6 +1369,7 @@ def test_route_to_vulkan_prebuilt_auto_fallback_when_no_amd_gpu_reaches_floor():
 
 
 def test_a_lone_rdna1_card_takes_the_vulkan_route(monkeypatch):
+    # RDNA 1 has ROCm torch (#11614) but no HIP llama.cpp prebuilt: route to Vulkan.
     for var in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
         monkeypatch.delenv(var, raising = False)
     host = _windows_amd_host(rocm_gfx_target = "gfx1010", rocm_gfx_targets = ["gfx1010"])
@@ -1380,6 +1381,7 @@ def test_a_lone_rdna1_card_takes_the_vulkan_route(monkeypatch):
 
 
 def test_rdna1_beside_a_hip_capable_card_keeps_the_hip_bundle(monkeypatch):
+    # Mixed host keeps the HIP prebuilt: Vulkan would enumerate both cards.
     for var in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
         monkeypatch.delenv(var, raising = False)
     host = _windows_amd_host(rocm_gfx_target = "gfx1010", rocm_gfx_targets = ["gfx1010", "gfx1034"])

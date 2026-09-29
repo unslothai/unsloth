@@ -1041,12 +1041,12 @@ class TestEnsureRocmTorch:
 
     def test_matching_wheel_family_is_left_alone(self):
         # Negative control: the right family must not be re-downloaded on every update.
-        assert self._windows_repair("gfx120x-all").call_count == 0
+        assert self._windows_repair("gfx103x-all", gfx = "gfx1033").call_count == 0
 
     def test_unknown_wheel_family_is_left_alone(self):
         # Older wheels predate the split runtime, so the family is unreadable and
         # guessing would force a multi-GB reinstall on every update.
-        assert self._windows_repair(None).call_count == 0
+        assert self._windows_repair(None, gfx = "gfx1033").call_count == 0
 
     def test_swapped_card_on_a_multiarch_install_gets_its_device_pack(self):
         dists = self._dists("amd-torch-device-gfx1151", "amd_torchvision_device_gfx1151")
@@ -1108,14 +1108,20 @@ class TestEnsureRocmTorch:
                 assert stack_mod._installed_rocm_wheel_family() is None
 
     def test_switched_host_does_not_reinstall_on_every_update(self):
-        # End to end: after the gfx103X -> gfx120X switch the orphan is still installed
-        # and the next `studio update` must do nothing.
-        reqs = ['rocm-sdk-libraries-gfx120X-all==7.13.0; extra == "libraries"']
-        dists = self._dists("rocm_sdk_libraries_gfx103X-all", "rocm_sdk_libraries_gfx120X-all")
-        with patch("importlib.metadata.requires", return_value = reqs):
-            with patch("importlib.metadata.distributions", return_value = dists):
-                family = stack_mod._installed_rocm_wheel_family()
-        assert self._windows_repair(family).call_count == 0
+        # A venv migrated to the multi-arch packs keeps its orphaned family runtimes; the next
+        # `studio update` must do nothing rather than chase the stale family.
+        dists = self._dists(
+            "rocm_sdk_libraries_gfx103X-all",
+            "rocm_sdk_libraries_gfx120X-all",
+            "amd-torch-device-gfx1200",
+            "amd-torchvision-device-gfx1200",
+        )
+        assert self._windows_repair("gfx103x-all", dists = dists).call_count == 0
+
+    def test_a_per_family_install_on_a_multiarch_arch_migrates_once(self):
+        pip_try = self._windows_repair("gfx120x-all")
+        assert pip_try.call_count == 1
+        assert "torchvision[device-gfx1200]" in str(pip_try.call_args)
 
     def test_torch_already_has_hip_skips(self):
         """If torch already has HIP, should skip ROCm reinstall."""
