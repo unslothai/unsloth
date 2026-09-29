@@ -16,6 +16,7 @@ import {
   resetFullAccessForMultiUser,
   transitionBrowserAccount,
 } from "../src/lib/account-transition.ts";
+import { RUNTIME_REPAIR_KEY } from "../src/hooks/runtime-repair-history.ts";
 
 function browserWith(
   values: Record<string, string> = {},
@@ -169,6 +170,13 @@ test("switch removes every content prefix and preserves only listed chrome and u
   assert.equal(b.data.get("unsloth_auth_token"), "alice-token");
   assert.equal(b.data.get(BROWSER_ACCOUNT_KEY), "alice");
   assert.deepEqual(b.replaced, ["/change-password"]);
+});
+
+test("a switch keeps the machine's llama.cpp runtime repair record", async () => {
+  const b = browserWith({ [RUNTIME_REPAIR_KEY]: "repaired", unsloth_auth_token: "owner" });
+  assert.equal(await transitionBrowserAccount("alice", "/chat", () => {}, b.browser), true);
+  assert.equal(b.data.get(RUNTIME_REPAIR_KEY), "repaired");
+  assert.equal(b.data.has("unsloth_auth_token"), false);
 });
 
 test("a first managed login clears legacy owner data even without a marker", async () => {
