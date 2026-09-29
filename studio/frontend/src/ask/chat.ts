@@ -6,6 +6,8 @@
 import { authFetch } from "@/features/auth/api";
 // eslint-disable-next-line no-restricted-imports
 import { assertCompletedPaddedBody } from "@/features/chat/api/padded-response";
+// eslint-disable-next-line no-restricted-imports
+import { isSpeechOnlyStatus } from "@/features/chat/lib/speech-only-status";
 import { BACKEND_PORT_STORAGE_KEY, setApiBase } from "@/lib/api-base";
 
 export type ChatMessage = { role: "user" | "assistant"; content: string };
@@ -44,7 +46,12 @@ export async function resolveModel(
   onLoading: (model: string) => void,
 ): Promise<string> {
   const readStatus = () =>
-    getJson<{ active_model: string | null; loading?: string[] }>("/api/inference/status", signal);
+    getJson<{
+      active_model: string | null;
+      loading?: string[];
+      is_audio?: boolean;
+      audio_type?: string | null;
+    }>("/api/inference/status", signal);
   let status = await readStatus();
   // A load Chat already started decides the model: picking now could switch it straight back.
   while (status.loading?.length) {
@@ -52,7 +59,8 @@ export async function resolveModel(
     if (signal.aborted) throw new DOMException("Aborted", "AbortError");
     status = await readStatus();
   }
-  if (status.active_model) return status.active_model;
+  // A speech model left resident by Audio would synthesize the question instead of answering it.
+  if (status.active_model && !isSpeechOnlyStatus(status)) return status.active_model;
   const last = await getJson<{ id?: string | null; gguf_variant?: string | null }>(
     "/api/settings/last-local-model",
     signal,
@@ -82,7 +90,8 @@ export async function* streamAnswer(
 ): AsyncGenerator<string> {
   const response = await authFetch("/v1/chat/completions", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    // Refuse a spoken reply even if a speech model is swapped in after the model was picked.
+    headers: { "Content-Type": "application/json", "X-Unsloth-Require-Text": "1" },
     body: JSON.stringify({ model, messages, stream: true }),
     signal,
   });

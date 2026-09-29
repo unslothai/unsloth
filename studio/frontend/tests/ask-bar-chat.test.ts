@@ -10,6 +10,7 @@ import test from "node:test";
 import { loadWithStubs } from "./helpers/module-stubs.ts";
 
 const paddedResponse = await import("../src/features/chat/api/padded-response.ts");
+const speechOnly = await import("../src/features/chat/lib/speech-only-status.ts");
 
 type Chat = {
   AskError: new (kind: string) => Error & { kind: string };
@@ -47,6 +48,7 @@ async function withServer(handler: Handler, run: (chat: Chat, seen: string[]) =>
       authFetch: (path: string, init?: RequestInit) => fetch(`${base}${path}`, init),
     },
     "@/features/chat/api/padded-response": paddedResponse,
+    "@/features/chat/lib/speech-only-status": speechOnly,
     "@/lib/api-base": {
       BACKEND_PORT_STORAGE_KEY: "unsloth_backend_port",
       setApiBase: (port: number) => {
@@ -156,6 +158,35 @@ test("a load Chat already started is waited out, then used", async () => {
     async (chat, seen) => {
       assert.equal(await chat.resolveModel(new AbortController().signal, () => assert.fail()), "org/b");
       assert.ok(seen.every((line) => line.includes("/api/inference/status")), "nothing else was requested");
+    },
+  );
+});
+
+test("a speech model left loaded by Audio is passed over for the last Chat model", async () => {
+  await withServer(
+    (req, _body, res) => {
+      if (req.url === "/api/inference/status") {
+        return res.end(JSON.stringify({ active_model: "org/tts", is_audio: true, audio_type: "snac" }));
+      }
+      if (req.url === "/api/settings/last-local-model") return res.end(JSON.stringify({ id: "org/chat" }));
+      res.end(JSON.stringify({ status: "loaded" }));
+    },
+    async (chat) => {
+      assert.equal(await chat.resolveModel(new AbortController().signal, () => {}), "org/chat");
+    },
+  );
+});
+
+test("the chat request refuses a spoken reply", async () => {
+  let header: string | undefined;
+  await withServer(
+    (req, _body, res) => {
+      header = req.headers["x-unsloth-require-text"] as string | undefined;
+      sse(res, [delta("ok", "stop")]);
+    },
+    async (chat) => {
+      await collect(chat);
+      assert.equal(header, "1");
     },
   );
 });
