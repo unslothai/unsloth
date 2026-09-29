@@ -87,6 +87,11 @@ def _is_text_seq2seq_config(config):
     return not any(mapped(auto_class) for auto_class in _multimodal_auto_classes())
 
 
+def _generation_padding_side(config):
+    # BART / Marian encoder positions are absolute, so left padding would shift every real token.
+    return "right" if _is_text_seq2seq_config(config) else "left"
+
+
 from ..kernels import (
     post_patch_loss_function,
 )
@@ -3346,9 +3351,10 @@ class FastBaseModel:
         apply_accepts_loss_kwargs_fix(model)
         patch_gradient_accumulation_fix(Trainer)
 
-        tokenizer.padding_side = "left"
+        _padding_side = _generation_padding_side(getattr(model, "config", None))
+        tokenizer.padding_side = _padding_side
         if hasattr(tokenizer, "tokenizer"):
-            tokenizer.tokenizer.padding_side = "left"
+            tokenizer.tokenizer.padding_side = _padding_side
         # Audio feature extractors must stay right padded: left (a text setting, forwarded by from_pretrained) shifts Whisper mels and desyncs Gemma 4 audio token counts, crashing on transformers < 5.10.
         feature_extractor = getattr(tokenizer, "feature_extractor", None)
         if (
@@ -3986,7 +3992,9 @@ class FastBaseModel:
             if hasattr(m, "training"):
                 m.training = False
             if hasattr(m, "_saved_temp_tokenizer"):
-                m._saved_temp_tokenizer.padding_side = "left"
+                m._saved_temp_tokenizer.padding_side = _generation_padding_side(
+                    getattr(m, "config", None)
+                )
             m._flag_for_generation = True
 
         m = model
