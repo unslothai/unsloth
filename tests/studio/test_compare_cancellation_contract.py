@@ -62,6 +62,9 @@ def test_generalized_compare_does_not_relist_threads_mid_send():
     general = _between(page, "const GeneralCompareContent = memo(", "return (")
     assert "(anyRunning || comparing) && listedPairRef.current === pairId" in general
     assert "onComparingChange={setComparing}" in page
+    body = _between(page, "const GeneralCompareContent = memo(", "\n});")
+    composer = _between(body, "<SharedComposer", "/>")
+    assert 'threadsSettled ? undefined : "Loading comparison history."' in composer
 
 
 def test_auth_layer_carries_no_compare_lifecycle():

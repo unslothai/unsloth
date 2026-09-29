@@ -1209,6 +1209,9 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
             onComparingChange={setComparing}
             model1ThreadId={model1ThreadId}
             model2ThreadId={model2ThreadId}
+            sendUnavailableReason={
+              threadsSettled ? undefined : "Loading comparison history."
+            }
           />
         ) : (
           <></>
