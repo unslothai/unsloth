@@ -140,6 +140,7 @@ test("recalling a quantized model carries the selected adapters into its load", 
     prompt: "a teapot",
     rememberedModel: opaque,
     pendingRecalledGeneration: { current: null },
+    oversizedOnce: { current: false },
     loadSeq: { current: 3 },
     workflow: "txt2img",
     handleGenerate: () => {
