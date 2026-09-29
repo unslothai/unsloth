@@ -10,8 +10,6 @@ import sys
 import time
 from pathlib import Path
 
-import pytest
-
 _BACKEND = Path(__file__).resolve().parents[1]
 if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
@@ -385,46 +383,24 @@ def test_an_oversized_release_body_is_rejected(monkeypatch):
     assert changes._fetch_release_blocking("unslothai/llama.cpp", "b1", 5.0) is None
 
 
-@pytest.mark.parametrize(
-    ("retry_after", "body", "low", "high"),
-    [
-        ({"Retry-After": "90"}, b"", 85, 90),
-        ({}, b'{"message": "secondary rate limit"}', 60, None),
-    ],
-)
-def test_a_403_records_the_shared_lockout(monkeypatch, retry_after, body, low, high):
+def test_a_rate_limit_holds_the_changelog_even_for_a_forced_refresh(monkeypatch):
     import email.message
-    import io
     import urllib.error
 
     from utils.prebuilt import freshness_flow
 
+    for name in ("_release_memo", "_release_failed_at", "_release_forced_at"):
+        monkeypatch.setattr(changes, name, {})
     headers = email.message.Message()
-    for key, value in retry_after.items():
-        headers[key] = value
+    headers["Retry-After"] = "90"
+    calls = []
 
     def refused(*_args, **_kwargs):
-        raise urllib.error.HTTPError("url", 403, "rate limited", headers, io.BytesIO(body))
+        calls.append(1)
+        raise urllib.error.HTTPError("url", 403, "rate limited", headers, None)
 
     monkeypatch.setattr(changes, "auth_safe_open", refused)
     assert changes._fetch_release_blocking("unslothai/llama.cpp", "b1", 5.0) is None
-    ceiling = high if high is not None else freshness_flow.GITHUB_RATE_LIMITED_DEFAULT_SECONDS
-    assert low < freshness_flow.github_rate_limit_remaining() <= ceiling
-
-
-def test_the_lockout_holds_even_for_a_forced_refresh(monkeypatch):
-    from utils.prebuilt import freshness_flow
-
-    monkeypatch.setattr(changes, "_release_memo", {})
-    monkeypatch.setattr(changes, "_release_failed_at", {})
-    monkeypatch.setattr(changes, "_release_forced_at", {})
-    monkeypatch.setattr(
-        changes,
-        "_fetch_release",
-        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("fetched into a rate limit")),
-    )
-    freshness_flow.note_github_rate_limited({"Retry-After": "600"}, status = 429)
-    assert changes._release_for_tag("unslothai/llama.cpp", "b1", force_refresh = True) is None
-    key = ("unslothai/llama.cpp", "b2")
-    monkeypatch.setattr(changes, "_release_memo", {key: (time.monotonic(), {"body": "- x"})})
-    assert changes._release_for_tag(*key, force_refresh = True) == {"body": "- x"}
+    assert 85 < freshness_flow.github_rate_limit_remaining() <= 90
+    assert changes._release_for_tag("unslothai/llama.cpp", "b2", force_refresh = True) is None
+    assert calls == [1]

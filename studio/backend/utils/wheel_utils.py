@@ -12,7 +12,6 @@ import re
 import shutil
 import subprocess
 import sys
-import time
 import urllib.error
 import urllib.request
 from typing import Callable
@@ -422,43 +421,17 @@ def install_wheel(
     return attempts
 
 
-def _timed_out(exc: BaseException) -> bool:
-    return isinstance(exc, TimeoutError) or isinstance(getattr(exc, "reason", None), TimeoutError)
-
-
-def _probe_is_retriable(exc: BaseException) -> bool:
-    if _timed_out(exc):  # the stall already spent the whole timeout
-        return False
-    if isinstance(exc, urllib.error.HTTPError):
-        headers = getattr(exc, "headers", None)
-        if headers is not None and str(headers.get("Retry-After") or "").strip():
+def url_exists(url: str) -> bool | None:
+    """True if reachable, False on a 404, None when it cannot be checked: a refusal is no proof the wheel is unpublished."""
+    try:
+        request = urllib.request.Request(url, method = "HEAD")
+        with urllib.request.urlopen(request, timeout = 10):
+            return True
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
             return False
-        return exc.code == 408 or exc.code >= 500
-    return True
-
-
-def url_exists(url: str, *, attempts: int = 2) -> bool | None:
-    """True if reachable, False for a 404, None when it cannot be checked."""
-    if attempts < 1:
-        raise ValueError("attempts must be at least 1")
-    for attempt in range(1, attempts + 1):
-        try:
-            request = urllib.request.Request(url, method = "HEAD")
-            with urllib.request.urlopen(request, timeout = 10):
-                return True
-        except urllib.error.HTTPError as error:
-            if error.code == 404:
-                _logger.debug("url_exists(%s): HTTP 404", url)
-                return False
-            exc, reason = error, f"HTTP {error.code}"
-        except (OSError, http.client.HTTPException) as error:
-            exc, reason = error, error
-        if attempt < attempts and _probe_is_retriable(exc):
-            _logger.debug("url_exists(%s): %s; retrying", url, reason)
-            time.sleep(1.5 * attempt)
-            continue
-        break
-    _logger.warning(
-        "url_exists(%s): %s; could not determine prebuilt wheel availability", url, reason
-    )
+        reason = f"HTTP {exc.code}"
+    except (OSError, http.client.HTTPException) as exc:
+        reason = str(exc)
+    _logger.warning("url_exists(%s): %s; could not check prebuilt wheel availability", url, reason)
     return None

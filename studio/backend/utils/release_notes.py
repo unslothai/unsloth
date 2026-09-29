@@ -15,12 +15,9 @@ import urllib.parse
 import urllib.request
 
 from utils.prebuilt.freshness_flow import (
-    GITHUB_RATE_LIMIT_MAX_SECONDS,
-    GITHUB_RATE_LIMITED_DEFAULT_SECONDS,
-    error_body,
     github_rate_limit_remaining,
-    note_github_rate_limited,
-    rate_limit_verdict,
+    hold_github_api,
+    rate_limit_wait,
 )
 from dataclasses import dataclass
 from typing import Any
@@ -38,9 +35,10 @@ _RELEASES_CHUNK_BYTES = 64 * 1024
 _RELEASES_MIN_READ_SECONDS = 0.05
 RELEASES_SUCCESS_TTL_SECONDS = 30 * 60
 RELEASES_FAILURE_TTL_SECONDS = 5 * 60
-RELEASES_RATE_LIMITED_TTL_SECONDS = GITHUB_RATE_LIMITED_DEFAULT_SECONDS
+# Unauthenticated callers get 60 requests an hour per IP, so a spent address backs off instead of retrying every 5 minutes. Used when the response carries no reset to wait for.
+RELEASES_RATE_LIMITED_TTL_SECONDS = 15 * 60
 # GitHub's X-RateLimit-Reset wins over the back-off above, but the window is an hour, so a skewed or proxied header is held to that ceiling rather than trusted outright.
-RELEASES_RATE_LIMIT_MAX_SECONDS = GITHUB_RATE_LIMIT_MAX_SECONDS
+RELEASES_RATE_LIMIT_MAX_SECONDS = 60 * 60
 RELEASE_NOTES_MAX_CHARS = 20_000
 
 # The repo also publishes llama.cpp prebuilts (`b8475`), legacy month tags (`February-2026`) and desktop drafts; only an Unsloth version tag is an announcement the popup should show.
@@ -615,16 +613,14 @@ def _fetch_latest_release() -> tuple[ReleaseSource, float]:
         # Or a compressing proxy hands back bytes we would decode as notes.
         "Accept-Encoding": "identity",
     }
-    # Same token precedence as the fetches sharing this lockout; https only, since the override accepts http://.
-    token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
-    parsed = urllib.parse.urlparse(url)
-    send_token = bool(token) and parsed.scheme == "https" and parsed.hostname == "api.github.com"
     if _remote_etag:
         headers["If-None-Match"] = _remote_etag
 
     request = urllib.request.Request(url, headers = headers)
-    if send_token:
-        # urllib does not replay unredirected headers, so a redirect off the API host cannot carry the token.
+    token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+    parsed = urllib.parse.urlparse(url)
+    # https only (the override accepts http://); unredirected, so a redirect off the API host drops it.
+    if token and parsed.scheme == "https" and parsed.hostname == "api.github.com":
         request.add_unredirected_header("Authorization", f"Bearer {token}")
     deadline = time.monotonic() + RELEASES_TIMEOUT_SECONDS
     try:
@@ -708,26 +704,18 @@ def _http_error_source(
         # Nothing changed, so the release already held still stands.
         return _remote_last_good, RELEASES_SUCCESS_TTL_SECONDS
 
-    if error.code in (403, 429):
-        body = error_body(error)
-        wait = rate_limit_verdict(error.headers, status = error.code, body = body)
-        if wait is None:
-            return (
-                ReleaseSource(release = None, source = None, error = "Could not fetch release notes."),
-                RELEASES_FAILURE_TTL_SECONDS,
-            )
-        now = time.time()
-        _rate_limited_until = now + wait
-        ttl = wait
+    wait = rate_limit_wait(error)
+    if wait is not None:
+        _rate_limited_until = time.time() + wait
         if urllib.parse.urlparse(url).hostname == "api.github.com":
-            note_github_rate_limited(error.headers, status = error.code, body = body)
+            hold_github_api(wait)
         return (
             ReleaseSource(
                 release = None,
                 source = None,
                 error = "GitHub is rate limiting release note requests.",
             ),
-            ttl,
+            wait,
         )
 
     return (

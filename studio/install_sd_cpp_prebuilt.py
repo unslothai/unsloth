@@ -14,10 +14,10 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import http.client
 import os
 import platform
 import re
+import shutil
 import stat
 import sys
 import urllib.error
@@ -277,61 +277,23 @@ class GitHubRateLimited(RuntimeError):
 
 
 def _is_rate_limited(exc: BaseException) -> bool:
-    if not isinstance(exc, urllib.error.HTTPError) or exc.code not in (403, 429):
-        return False
-    if exc.code == 429:
+    """Same rule as freshness_flow.rate_limit_wait, which this stdlib-only installer cannot import."""
+    code = getattr(exc, "code", None)
+    if code == 429:
         return True
-    headers = getattr(exc, "headers", None)
-    return bool(
-        _header(headers, "Retry-After")
-        or _header(headers, "X-RateLimit-Remaining") == "0"
-        or _names_a_rate_limit(_error_body(exc))
-    )
-
-
-# Kept identical to freshness_flow._RATE_LIMIT_BODY_MARKERS; a test guards the drift.
-_RATE_LIMIT_BODY_MARKERS = (
-    "api rate limit exceeded",
-    "rate limit exceeded",
-    "secondary rate limit",
-    "secondary limit",
-    "abuse detection mechanism",
-    "abuse detection",
-)
-
-
-def _names_a_rate_limit(body: str) -> bool:
-    text = (body or "").lower()
-    return any(marker in text for marker in _RATE_LIMIT_BODY_MARKERS)
-
-
-def _error_body(exc: BaseException, *, limit: int = 2048) -> str:
-    cached = getattr(exc, "_unsloth_body", None)
-    if cached is not None:
-        return cached
+    if code != 403:
+        return False
+    headers = getattr(exc, "headers", None) or {}
+    if (
+        str(headers.get("Retry-After") or "").strip()
+        or str(headers.get("X-RateLimit-Remaining") or "").strip() == "0"
+    ):
+        return True
     try:
-        raw = exc.read(limit)  # type: ignore[attr-defined]
-        text = raw.decode("utf-8", errors = "replace") if isinstance(raw, bytes) else str(raw)
-    except Exception:  # noqa: BLE001 - a body we cannot read names nothing
-        text = ""
-    try:
-        exc._unsloth_body = text  # type: ignore[attr-defined]
-    except Exception:  # noqa: BLE001 - exotic exception types
-        pass
-    return text
-
-
-def _header(headers: object, name: str) -> str:
-    if headers is None:
-        return ""
-    try:
-        return str(getattr(headers, "get")(name) or "").strip()
-    except (AttributeError, TypeError):
-        return ""
-
-
-def _timed_out(exc: BaseException) -> bool:
-    return isinstance(exc, TimeoutError) or isinstance(getattr(exc, "reason", None), TimeoutError)
+        body = exc.read(2048).decode("utf-8", errors = "replace").lower()  # type: ignore[attr-defined]
+    except Exception:  # noqa: BLE001 - an unreadable body names nothing
+        return False
+    return "rate limit" in body or "abuse detection" in body
 
 
 def _rate_limit_message() -> str:
@@ -456,87 +418,18 @@ def _locate_sd_server(root: Path) -> Optional[Path]:
     return None
 
 
-def _from_destination(exc: OSError) -> OSError:
-    try:
-        exc._unsloth_destination = True  # type: ignore[attr-defined]
-    except Exception:  # noqa: BLE001 - exotic OSError subclasses
-        pass
-    return exc
-
-
-def _declared_length(response: object) -> Optional[int]:
-    try:
-        raw = response.getheader("Content-Length")  # type: ignore[attr-defined]
-        return None if raw is None else int(str(raw).strip())
-    except (AttributeError, TypeError, ValueError):
-        return None
-
-
-def _stream_to(response: object, dest: Path) -> None:
-    expected = _declared_length(response)
-    written = 0
-    try:
-        handle = open(dest, "wb")
-    except OSError as exc:
-        raise _from_destination(exc)
-    try:
-        while True:
-            chunk = response.read(1 << 16)  # type: ignore[attr-defined]
-            if not chunk:
-                break
-            try:
-                handle.write(chunk)
-            except OSError as exc:
-                raise _from_destination(exc)
-            written += len(chunk)
-        # A short body reads empty rather than raising; check the declared length.
-        if expected is not None and written < expected:
-            raise http.client.IncompleteRead(b"", expected - written)
-    except BaseException:
-        try:
-            handle.close()
-        except OSError as close_exc:
-            raise _from_destination(close_exc)
-        raise
-    try:
-        handle.close()
-    except OSError as exc:
-        raise _from_destination(exc)
-
-
-def _download_is_retriable(exc: BaseException) -> bool:
-    if getattr(exc, "_unsloth_destination", False) or _timed_out(exc):
-        return False
-    if isinstance(exc, urllib.error.HTTPError):
-        if _header(getattr(exc, "headers", None), "Retry-After"):
-            return False
-        return exc.code == 408 or exc.code >= 500
-    return isinstance(exc, (urllib.error.URLError, OSError, http.client.HTTPException))
-
-
 def _download(
     url: str,
     dest: Path,
     *,
     timeout: float = 300.0,
-    attempts: int = 3,
 ) -> None:
-    """User-Agent set because the asset CDN can reject header-less requests."""
-    import time
+    """Stream ``url`` to ``dest`` with an explicit timeout: ``urlretrieve`` takes no timeout and can hang forever on a stalled socket. A User-Agent is set because the GitHub asset CDN can reject header-less requests; the API fetch carries any token."""
+    import shutil
 
-    if attempts < 1:
-        raise ValueError("attempts must be at least 1")
-    for attempt in range(1, attempts + 1):
-        req = urllib.request.Request(url, headers = {"User-Agent": "unsloth-sd-cpp-installer"})
-        try:
-            with urllib.request.urlopen(req, timeout = timeout) as resp:  # noqa: S310
-                _stream_to(resp, dest)
-            return
-        except (urllib.error.URLError, OSError, http.client.HTTPException) as exc:
-            if attempt >= attempts or not _download_is_retriable(exc):
-                raise
-            print(f"sd-cli: download failed ({exc}); retrying {attempt}/{attempts - 1}", flush = True)
-            time.sleep(2.0 * attempt)
+    req = urllib.request.Request(url, headers = {"User-Agent": "unsloth-sd-cpp-installer"})
+    with urllib.request.urlopen(req, timeout = timeout) as resp, open(dest, "wb") as f:  # noqa: S310
+        shutil.copyfileobj(resp, f)
 
 
 # PATH_MAX: a link payload is a pathname and ``zf.read`` holds it in memory, so anything larger is a decompression bomb rather than a library name.
@@ -767,7 +660,7 @@ def _resolve_repo_asset(
     *,
     allow_latest: bool = True,
 ) -> tuple[Optional[dict], Optional[str]]:
-    """Raises ``GitHubRateLimited`` on a quota refusal: the other rungs share that quota."""
+    """Fetch ``repo``'s release and pick the asset for this host. Returns ``(release, asset_name)`` or ``(None, None)`` when the repo has no usable release (fetch failed, or the pinned tag is missing and ``allow_latest`` is False) or no asset for this host, so the caller can fall back. A quota refusal raises ``GitHubRateLimited`` instead: every rung shares that quota."""
     try:
         release = _fetch_release(tag, repo = repo, token = token, allow_latest = allow_latest)
     except Exception as exc:  # noqa: BLE001 - network -> fall back
@@ -790,7 +683,7 @@ def _resolve_repo_asset(
 def _resolve_with_fallback(
     accelerator: str, token: Optional[str]
 ) -> tuple[str, Optional[dict], Optional[str]]:
-    """A pinned tag is tried on every candidate repo before any unpinned latest."""
+    """Resolve ``(used_repo, release, asset_name)`` for this host across the primary repo and, only when the built-in default is in use and the user did not pin a repo, the upstream fallback. Ordering guarantees reproducibility: a pinned tag is tried EXACTLY on every candidate repo before any repo's unpinned latest, so a mirror missing the pinned release prefers the pinned upstream build over an unpinned mirror-latest. Returns ``(primary, None, None)`` when nothing serves this host. Shared by ``install`` and ``--print-asset`` so both honour the same fallback."""
     tag = _pinned_tag()
     primary = _repo()
     # Only substitute upstream when no UNSLOTH_SD_CPP_REPO is pinned: an explicit repo gets exactly that repo.
@@ -847,6 +740,7 @@ def install(
     accelerator: str = "auto",
     token: Optional[str] = None,
 ) -> Path:
+    """Download and extract the prebuilt for this host, returning the sd-cli path. Resolves against the Unsloth mirror (``DEFAULT_REPO``) first; if the mirror cannot serve this host AND the default repo is in use, falls back to leejet upstream so native install still works. Raises ``RuntimeError`` only when neither source has an asset for the host, or the archive has no ``sd-cli``."""
     target = install_dir or default_install_dir()
     # Claim ownership of `target` only if we created it, it was empty, or it is already marked: adopting a user's non-empty dir would let a later uninstall wipe it.
     marker = target / OWNERSHIP_MARKER
