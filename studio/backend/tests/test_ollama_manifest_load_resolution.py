@@ -78,7 +78,7 @@ def test_custom_folder_scan_preserves_ollama_rows(tmp_path):
     _write_ollama_store(root)
 
     rows = [
-        local_inventory._promote_to_custom_source(row)
+        local_inventory._promote_to_custom_source(row, ())
         for row in local_inventory._scan_custom_folder(root)
     ]
 

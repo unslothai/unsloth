@@ -708,6 +708,27 @@ def test_local_picker_rows_require_chat_capability():
     assert "row.capabilities.canChat" in memo.group(0)
 
 
+def test_chat_picker_reads_hub_local_rows_and_accepts_custom_sources():
+    """The visible picker uses the Hub inventory, not the legacy models route."""
+    picker_inventory = _code_only(
+        _read("features/model-picker/inventory/use-chat-picker-inventory.ts")
+    )
+    sources = re.search(
+        r"const PICKER_LOCAL_SOURCES:.*?new Set\(\[(.*?)\]\);",
+        picker_inventory,
+        re.S,
+    )
+
+    assert "useHubInventory({" in picker_inventory
+    assert "includeLocal: true" in picker_inventory
+    assert sources, "picker local-source set not found"
+    assert '"custom"' in sources.group(1)
+    assert '"hf_cache"' not in sources.group(1)
+
+    hub_api = _code_only(_read("features/hub/inventory/api.ts"))
+    assert 'authFetch("/api/hub/local", { signal })' in hub_api
+
+
 def test_a_pinned_cached_row_loads_from_the_id_the_backend_pinned():
     """The cached listing pins a snapshot when the repo's default ref reaches no copy
     that loads, and it is the load that has to follow the pin. The id stays the repo
