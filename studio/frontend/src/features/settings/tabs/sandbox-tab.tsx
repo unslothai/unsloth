@@ -617,7 +617,7 @@ export function SandboxTab() {
                           </span>
                         ) : null}
                         {outputLines.length > 0 ? (
-                          <pre className="max-w-[calc(360px*var(--ui-space-scale,1))] whitespace-pre-wrap break-words text-right font-mono text-[11px] text-muted-foreground">
+                          <pre className="max-w-[calc(360px*var(--ui-space-scale,1))] whitespace-pre-wrap break-words text-right font-mono text-ui-11 text-muted-foreground">
                             {outputLines.join("\n")}
                           </pre>
                         ) : null}
