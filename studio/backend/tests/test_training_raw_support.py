@@ -527,13 +527,16 @@ class TestTrainingRawSupport(unittest.TestCase):
         self.assertEqual(result.dataset[0]["text"], "hello<eos>")
         self.assertEqual(result.dataset[1]["text"], "world<eos>")
         self.assertTrue(
-            any("null or non-string 'text' values" in notice.message for notice in result.notices)
+            any(
+                "null, non-string or blank 'text' values" in notice.message
+                for notice in result.notices
+            )
         )
 
     def test_prepare_raw_text_dataset_rejects_all_blank_rows_before_appending_eos(self):
         dataset = Dataset.from_dict({"text": ["", "   "]})
 
-        with self.assertRaisesRegex(ValueError, "at least one non-empty string"):
+        with self.assertRaisesRegex(ValueError, "at least one non-blank string"):
             prepare_raw_text_dataset(
                 dataset,
                 mode_label = "CPT",

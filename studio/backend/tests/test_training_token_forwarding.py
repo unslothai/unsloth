@@ -17,6 +17,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
+from datasets import Dataset
 
 torch = pytest.importorskip("torch")
 
@@ -68,11 +69,6 @@ class _Dataset:
     """The minimum a loaded dataset must look like on the paths under test."""
 
     column_names = ["text"]
-
-    def __getitem__(self, index):
-        if not 0 <= index < len(self):
-            raise IndexError(index)
-        return {"text": "A valid training example."}
 
     def __len__(self):
         # >= MIN_EVAL_ROWS (16) so an auto-detected candidate split is accepted.
@@ -213,3 +209,37 @@ def test_token_stays_absent_when_not_provided(monkeypatch):
     assert len(load_calls) == 1
     assert "token" not in load_calls[0]
     assert probe_calls == []
+
+
+def _load_texts(monkeypatch, train_texts):
+    errors: list[str] = []
+    monkeypatch.setattr(
+        trainer_mod,
+        "load_dataset",
+        lambda **kwargs: Dataset.from_dict({"text": list(train_texts)}),
+    )
+    monkeypatch.setattr(
+        trainer_mod,
+        "format_and_template_dataset",
+        lambda dataset, **kwargs: {"dataset": dataset, "detected_format": "test", "success": True},
+    )
+    monkeypatch.setattr(
+        sys.modules["datasets"], "get_dataset_split_names", lambda **kwargs: ["train"]
+    )
+    trainer = _trainer()
+    trainer._update_progress = lambda **kwargs: errors.append(kwargs.get("error"))
+    return trainer.load_and_format_dataset("org/data", dataset_streaming = False), errors
+
+
+def test_empty_train_split_fails_with_a_clear_message(monkeypatch):
+    result, errors = _load_texts(monkeypatch, [])
+    assert result is None
+    assert any("has no rows after formatting" in (e or "") for e in errors)
+
+
+@pytest.mark.parametrize("texts", [["hello"], ["", "hello"], ["   ", "\n"]])
+def test_non_empty_train_split_is_left_to_the_trainer(monkeypatch, texts):
+    result, errors = _load_texts(monkeypatch, texts)
+    assert result is not None
+    assert result[0]["dataset"]["text"] == texts
+    assert not any(errors)
