@@ -1655,3 +1655,31 @@ def test_a_replayed_context_places_the_projector_like_a_fresh_forced_drafter(tmp
     assert "--no-mmproj-offload" not in replay
     assert replay_ctx == fresh_ctx < replayed
     assert backend._requested_n_ctx == replay_ctx
+
+
+def test_a_replayed_context_refits_for_a_cpu_pinned_drafter_too(tmp_path):
+    # --spec-draft-ngl 0 keeps the drafter off the GPU, but a hybrid target still pays
+    # rollback state for it, so a replay fitted with speculation off must shrink too.
+    memory = [(0, 10_000, 24_000)]
+    extras = ["--spec-draft-ngl", "0"]
+
+    def load(**kwargs):
+        backend, gguf = _backend(tmp_path, memory = memory, drafter_bytes = 2 * GIB, native_ctx = 65536)
+        backend._rollback_state_bytes = lambda n_parallel = 1, *_a, **_kw: n_parallel * 256 * MIB
+        cmd = _launch(
+            backend,
+            gguf,
+            mtp_draft_path = str(tmp_path / "mtp.gguf"),
+            extra_args = extras,
+            **kwargs,
+        )["cmd"]
+        return cmd, int(cmd[cmd.index("-c") + 1])
+
+    _, replayed = load(speculative_type = "off", n_ctx = 0)
+    fresh, fresh_ctx = load(speculative_type = "mtp", n_ctx = 0)
+    replay, replay_ctx = load(
+        speculative_type = "mtp", n_ctx = replayed, max_seq_length_auto_derived = True
+    )
+
+    assert replay_ctx == fresh_ctx < replayed
+    assert ("--no-mmproj-offload" in replay) == ("--no-mmproj-offload" in fresh)

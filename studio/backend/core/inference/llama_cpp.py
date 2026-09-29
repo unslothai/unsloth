@@ -24970,8 +24970,8 @@ class LlamaCppBackend:
                         explicit_ctx
                         and ctx_override is None
                         and intent.max_seq_length_auto_derived
+                        # A CPU-pinned drafter still adds target-side state, so it re-fits too.
                         and _mtp_will_engage
-                        and not _draft_cpu_no_embedded
                         # Forced = anything that bypasses the Auto drop probe, advanced arguments included.
                         and (
                             (_canonicalize_spec_mode(speculative_type) or "auto") != "auto"
