@@ -4569,7 +4569,6 @@ def _build_sandbox_status(force: bool) -> SandboxStatusResponse:
 
 def _sandbox_setup_status(available: bool) -> Optional[SandboxSetupStatus]:
     from core.inference import sandbox_setup_plan
-
     try:
         plan = sandbox_setup_plan.detect(available)
     except Exception as exc:  # noqa: BLE001 - the status stays useful without the setup hint
