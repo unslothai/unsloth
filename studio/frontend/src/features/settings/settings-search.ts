@@ -137,6 +137,7 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.chat.modelDisclaimer",
     "settings.chat.inlineReadAloud",
     "settings.chat.inlineEditResponse",
+    "settings.chat.turnNavigation",
     "settings.chat.projectsSection",
     "settings.chat.groups.menu.title",
   ],
