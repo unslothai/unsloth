@@ -1812,6 +1812,7 @@ def test_decisions_mcp_endpoint_needs_studio_auth(monkeypatch):
         "method": "tools/call",
         "params": {"name": "decide", "arguments": {"state": "x", "questions": QUESTIONS}},
     }
+    listing = {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}
     headers = {"Accept": "application/json, text/event-stream"}
     assert (
         TestClient(app).post(f"{systemone.MCP_PATH}/", json = call, headers = headers).status_code
@@ -1828,11 +1829,24 @@ def test_decisions_mcp_endpoint_needs_studio_auth(monkeypatch):
         lifespan = mcp_app.lifespan,
     )
     with TestClient(served) as http:
+        listed = http.post(
+            f"{systemone.MCP_PATH}/",
+            json = listing,
+            headers = {**headers, "Authorization": "Bearer t"},
+        )
         answered = http.post(
             f"{systemone.MCP_PATH}/", json = call, headers = {**headers, "Authorization": "Bearer t"}
         )
+        monkeypatch.setattr(systemone_settings, "_owner_setting", {}.get)
+        hidden = http.post(
+            f"{systemone.MCP_PATH}/",
+            json = listing,
+            headers = {**headers, "Authorization": "Bearer t"},
+        )
     assert answered.status_code == 200, answered.text
     assert answered.json()["result"]["structuredContent"]["answers"]["urgent"]["noul"] == 0.9
+    assert [tool["name"] for tool in listed.json()["result"]["tools"]] == ["decide"]
+    assert hidden.json()["result"]["tools"] == []
 
 
 def test_managed_accounts_can_add_studio_decisions_but_not_other_loopback():

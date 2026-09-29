@@ -14,6 +14,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
+from fastmcp.server.middleware import Middleware
 from pydantic import BaseModel, ConfigDict, Field
 
 from auth.authentication import get_current_subject, security
@@ -183,7 +184,15 @@ def _decide(
     return result
 
 
+class DecisionsAvailability(Middleware):
+    async def on_list_tools(self, context, call_next):
+        if not systemone_settings.get_enabled():
+            return []
+        return await call_next(context)
+
+
 decisions_mcp = FastMCP("Unsloth Decisions")
+decisions_mcp.add_middleware(DecisionsAvailability())
 
 
 @decisions_mcp.tool
