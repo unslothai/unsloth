@@ -330,22 +330,23 @@ type TitleReasoningFields = Pick<
   "enable_thinking" | "reasoning_effort"
 >;
 
+function titleReasoningCaps(connection: ResolvedExternalConnection) {
+  const { provider, modelId } = connection;
+  return getExternalReasoningCapabilities(provider.providerType, modelId, {
+    isReasoningProvider: provider.isReasoningModel === true,
+    baseUrl: provider.baseUrl ?? null,
+    apiType: provider.apiType,
+  });
+}
+
 /** The Responses translator (OpenAI line, or apiType "responses") turns either field into
  *  reasoning.effort, which a model without reasoning 400s on, and forwards reasoning_effort
  *  verbatim, so it is omitted or clamped there. Elsewhere the backend translates "none". */
 function titleReasoningFields(
   connection: ResolvedExternalConnection,
 ): TitleReasoningFields {
-  const { provider, modelId } = connection;
-  const caps = getExternalReasoningCapabilities(
-    provider.providerType,
-    modelId,
-    {
-      isReasoningProvider: provider.isReasoningModel === true,
-      baseUrl: provider.baseUrl ?? null,
-      apiType: provider.apiType,
-    },
-  );
+  const { provider } = connection;
+  const caps = titleReasoningCaps(connection);
   const responsesRoute =
     VERBATIM_EFFORT_PROVIDER_TYPES.has(provider.providerType) ||
     provider.apiType === "responses";
@@ -357,6 +358,15 @@ function titleReasoningFields(
       ? clampReasoningEffortToLevels("none", caps.reasoningEffortLevels)
       : "none",
   };
+}
+
+/** Reasoning that cannot be turned off (Gemini 2.5 Pro / 3, o3, gpt-5, Kimi thinking) counts toward the
+ *  output cap, so it gets headroom; otherwise floored at the provider minimum as the chat request is. */
+function titleMaxTokens(connection: ResolvedExternalConnection): number {
+  const floor = getExternalMinOutputTokens(connection.provider.providerType);
+  const caps = titleReasoningCaps(connection);
+  const forcedReasoning = caps.supportsReasoning && !caps.supportsReasoningOff;
+  return Math.max(24, floor, forcedReasoning ? 1024 : 0);
 }
 
 const TITLE_SYSTEM_PROMPT =
@@ -387,14 +397,7 @@ export async function buildTitleRequest(
     stream: true,
     ...(local || caps?.temperature !== false ? { temperature: 0.2 } : {}),
     ...(local || caps?.topP !== false ? { top_p: 0.9 } : {}),
-    // Floored like the chat request: always-thinking models (Kimi) need room before the title.
-    max_tokens:
-      routing.kind === "external"
-        ? Math.max(
-            24,
-            getExternalMinOutputTokens(routing.provider.providerType),
-          )
-        : 24,
+    max_tokens: routing.kind === "external" ? titleMaxTokens(routing) : 24,
     ...(local || caps?.topK ? { top_k: 20 } : {}),
     ...(local || caps?.repetitionPenalty ? { repetition_penalty: 1.0 } : {}),
     ...(routing.kind === "external"

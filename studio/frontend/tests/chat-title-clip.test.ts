@@ -753,4 +753,15 @@ test("the title budget is floored at the provider's minimum output", async () =>
   stageConnection({ providerType: "kimi", hasApiKey: true });
   const kimi = await buildTitleRequest("external::conn-1::kimi-k2-thinking", "x");
   assert.equal(kimi?.max_tokens, 16000);
+  // Thinking that cannot be turned off counts toward the cap, so it gets headroom.
+  for (const [providerType, model, expected] of [
+    ["gemini", "gemini-2.5-pro", 1024],
+    ["gemini", "gemini-2.5-flash", 64],
+    ["openai", "o3", 1024],
+    ["openai", "gpt-5.4", 64],
+  ] as const) {
+    stageConnection({ providerType, baseUrl: "", hasApiKey: true, models: [model] });
+    const request = await buildTitleRequest(`external::conn-1::${model}`, "x");
+    assert.equal(request?.max_tokens, expected, model);
+  }
 });
