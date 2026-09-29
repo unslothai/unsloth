@@ -645,7 +645,10 @@ def test_applied_floor_is_recorded_even_when_lower_than_planned():
 
     src = inspect.getsource(V)
     assert "raised = applied_floor is not None and applied_floor > vram_floor_mib" in src
-    assert "if applied_floor is not None:\n                    # record what landed even when lower" in src
+    assert (
+        "if applied_floor is not None:\n                    # record what landed even when lower"
+        in src
+    )
 
 
 def test_applied_floor_counts_an_encoder_that_refused_leaf_offload():
