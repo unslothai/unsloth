@@ -230,7 +230,9 @@ def _infer_device_map_from_loaded_model(model, skip = ()):
                 device_map[prefix] = bufs[0][1].device
             return
         devices = {p.device for _, p in params}
-        if len(devices) == 1:
+        # A key covering a skipped tensor would make dispatch_model move it too: recurse instead.
+        holds_skipped = bool(skip) and any(not prefix or s.startswith(prefix + ".") for s in skip)
+        if len(devices) == 1 and not holds_skipped:
             device_map[prefix] = next(iter(devices))
         else:
             for child_name, child in module.named_children():

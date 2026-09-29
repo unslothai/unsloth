@@ -197,3 +197,18 @@ def test_unindexed_torch_device_uses_current_device(monkeypatch):
     assert _single_device_index(torch.device("cuda")) == 1
     assert _single_device_index(torch.device("cuda", 0)) == 0
     assert _single_device_index(torch.device("cpu")) is None
+
+
+def test_inferred_map_never_covers_the_skipped_table():
+    """One device for the rest must not yield `{"": dev}` / a layer key that dispatch_model would push the table under."""
+    from unsloth.models.loader_utils import no_placement_tensor_names
+    from unsloth.models.vision import _infer_device_map_from_loaded_model
+
+    model = Model()
+    skip = no_placement_tensor_names(model)
+    inferred = _infer_device_map_from_loaded_model(model, skip = skip)
+    assert inferred
+    for key in inferred:
+        assert not any(key == "" or s == key or s.startswith(key + ".") for s in skip), key
+    assert any(k.startswith("model.layers.1.") for k in inferred)
+    assert "model.layers.0" in inferred and "lm_head" in inferred
