@@ -2439,7 +2439,10 @@ def _windows_rocm_index_url(gfx_arch: str | None) -> str | None:
     family-only mirror is pinned and the arch has a family; CDNA and gfx1033 go to their
     repo.amd.com family."""
     if _windows_routes_multiarch(gfx_arch):
-        return _ROCM_WINDOWS_MULTIARCH_INDEX_BASE.rstrip("/") + "/"
+        # Slash on the path, not after a ?token= query (as _index_url_join splits).
+        _base = _ROCM_WINDOWS_MULTIARCH_INDEX_BASE
+        _cut = min([_base.index(_c) for _c in "?#" if _c in _base] or [len(_base)])
+        return f"{_base[:_cut].rstrip('/')}/{_base[_cut:]}"
     arch_family = _GFX_TO_AMD_INDEX_ARCH.get(_bare_gfx(gfx_arch))
     if arch_family is None:
         return None

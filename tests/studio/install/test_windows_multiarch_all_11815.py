@@ -146,6 +146,17 @@ class TestMirrors:
         stock.setattr(stack_mod, "_ROCM_WINDOWS_INDEX_BASE", "https://mirror.example/whl/")
         assert stack_mod._windows_rocm_index_url("gfx1151") == "https://mirror.example/whl/gfx1151/"
 
+    def test_a_query_token_mirror_keeps_its_token(self, stock):
+        stock.setattr(
+            stack_mod,
+            "_ROCM_WINDOWS_MULTIARCH_INDEX_BASE",
+            "https://m.example/whl-multi-arch?token=abc",
+        )
+        assert (
+            stack_mod._windows_rocm_index_url("gfx1151")
+            == "https://m.example/whl-multi-arch/?token=abc"
+        )
+
 
 class TestPowerShellAgrees:
     @staticmethod
