@@ -4872,11 +4872,28 @@ html.force-reduced-motion .sidebar-section-drop-line {
 	background-clip: padding-box;
 }
 
+/* Attachment card page previews: drop the viewer's gray backdrop, padding and
+   scrollbars so the first page fills the card. */
+.attachment-card-preview-page > * {
+	background: transparent;
+	padding-block: 0;
+}
+
+.attachment-card-preview * {
+	scrollbar-width: none;
+}
+
+.attachment-card-preview *::-webkit-scrollbar {
+	display: none;
+}
+
 /* Composer textarea: keep the scroll thumb faint until the user hovers or
    drags the thumb itself, so a tall draft never shows a heavy dark rail. */
 .composer-input,
 .unsloth-composer-input {
 	scrollbar-color: oklch(0.5 0 0 / 0.16) transparent;
+	/* Text wraps; at fractional zoom a 1px overflow otherwise shows a stray scrollbar. */
+	overflow-x: hidden;
 }
 
 .composer-input::-webkit-scrollbar-thumb,

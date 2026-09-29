@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { parseBackendDownloadProgress } from "@/components/tauri/backend-download-progress";
 import { DiagnosticsCopyActions } from "@/components/tauri/diagnostics-copy-actions";
 import { LogDetails } from "@/components/tauri/log-details";
 import { Button } from "@/components/ui/button";
@@ -81,6 +82,12 @@ export function UpdateScreen({
   onCopyDiagnostics,
 }: UpdateScreenProps) {
   const isError = status === "error";
+  const backendDownload =
+    status === "updating-backend"
+      ? parseBackendDownloadProgress(logs.at(-1) ?? "")
+      : null;
+  const downloadProgress =
+    status === "downloading" ? progress : backendDownload?.percent;
 
   return (
     <div className="box-border flex h-full w-full flex-col items-center overflow-y-auto bg-background pb-6 pt-[var(--studio-startup-top-inset,0px)]">
@@ -110,12 +117,31 @@ export function UpdateScreen({
               {statusSubtext(status, progress)}
             </p>
 
-            {status === "downloading" && (
+            {backendDownload && (
+              <div className="mt-2 w-full max-w-sm text-xs text-muted-foreground">
+                <p className="break-words">
+                  Downloading {backendDownload.file}
+                </p>
+                <p>{backendDownload.detail}</p>
+              </div>
+            )}
+
+            {downloadProgress != null && (
               <div className="mt-2 h-1.5 w-full max-w-xs overflow-hidden rounded-full bg-muted">
+                <progress
+                  aria-label={
+                    backendDownload
+                      ? `Downloading ${backendDownload.file}`
+                      : "Downloading app update"
+                  }
+                  max={100}
+                  value={downloadProgress}
+                  className="sr-only"
+                />
                 <motion.div
                   className="h-full rounded-full bg-primary"
                   initial={{ width: 0 }}
-                  animate={{ width: `${progress}%` }}
+                  animate={{ width: `${downloadProgress}%` }}
                   transition={{ duration: 0.3 }}
                 />
               </div>

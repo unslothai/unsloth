@@ -4,7 +4,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { getToastOffsets } from "../src/lib/toast-offset.ts";
+import {
+  getToastOffsets,
+  insetPastChatSettings,
+  watchChatSettingsInset,
+} from "../src/lib/toast-offset.ts";
 
 test("web chat toasts clear the header and stay against the right edge", () => {
   assert.deepEqual(getToastOffsets("/chat", false, false), {
@@ -120,4 +124,92 @@ test("the header offset follows the UI font size, the titlebar does not", () => 
     default: { top: 12, right: 12 },
     mobile: { top: 16, right: 16 },
   });
+});
+
+test("desktop toasts shift left by the open Run settings panel", () => {
+  assert.deepEqual(insetPastChatSettings({ top: 52, right: 12 }), {
+    top: 52,
+    right: "calc(12px + var(--studio-chat-settings-inset, 0px))",
+  });
+});
+
+function fakeInsetDom(rowWidth: number, panelWidth: number) {
+  const vars = new Map<string, string>();
+  const root = {
+    style: {
+      setProperty: (name: string, value: string) => void vars.set(name, value),
+      removeProperty: (name: string) => {
+        vars.delete(name);
+        return "";
+      },
+    },
+  };
+  const row = { clientWidth: rowWidth };
+  const panel = { offsetWidth: panelWidth, parentElement: row };
+  const observed = new Set<object>();
+  let notify = () => {};
+  class Observer {
+    constructor(callback: () => void) {
+      notify = callback;
+    }
+    observe(target: object) {
+      observed.add(target);
+    }
+    disconnect() {
+      observed.clear();
+    }
+  }
+  const resize = (target: object) => {
+    if (observed.has(target)) notify();
+  };
+  return { vars, root, row, panel, Observer, resize };
+}
+
+test("the inset follows the panel while it is dragged wider", () => {
+  const dom = fakeInsetDom(1400, 320);
+  watchChatSettingsInset(dom.root, dom.panel, 320, 1, dom.Observer);
+  assert.equal(dom.vars.get("--studio-chat-settings-inset"), "320px");
+
+  dom.panel.offsetWidth = 520;
+  dom.resize(dom.panel);
+  assert.equal(dom.vars.get("--studio-chat-settings-inset"), "520px");
+});
+
+test("the inset is dropped when the chat column cannot hold a corner card", () => {
+  const dom = fakeInsetDom(1400, 320);
+  const stop = watchChatSettingsInset(
+    dom.root,
+    dom.panel,
+    320,
+    1,
+    dom.Observer,
+  );
+  dom.row.clientWidth = 700;
+  dom.resize(dom.row);
+  assert.equal(dom.vars.has("--studio-chat-settings-inset"), false);
+
+  dom.row.clientWidth = 1400;
+  dom.resize(dom.row);
+  assert.equal(dom.vars.get("--studio-chat-settings-inset"), "320px");
+
+  stop();
+  assert.equal(dom.vars.has("--studio-chat-settings-inset"), false);
+});
+
+test("a larger UI scale needs a wider chat column before the inset applies", () => {
+  // 1100 - 320 = 780 holds a 448px card at scale 1 but not a 1.8x one (850px).
+  const plain = fakeInsetDom(1100, 320);
+  watchChatSettingsInset(plain.root, plain.panel, 320, 1, plain.Observer);
+  assert.equal(plain.vars.get("--studio-chat-settings-inset"), "320px");
+
+  const scaled = fakeInsetDom(1100, 320);
+  watchChatSettingsInset(scaled.root, scaled.panel, 320, 1.8, scaled.Observer);
+  assert.equal(scaled.vars.has("--studio-chat-settings-inset"), false);
+});
+
+test("a smaller UI scale still leaves room for the fixed-width download panel", () => {
+  // 1024 - 280 sidebar = 744 row; 744 - 340 = 404 < 400 + 44, though 448 * 0.8 + 44 = 402.4 fits.
+  const dom = fakeInsetDom(744, 340);
+  watchChatSettingsInset(dom.root, dom.panel, 340, 0.8, dom.Observer);
+  assert.equal(dom.vars.has("--studio-chat-settings-inset"), false);
 });

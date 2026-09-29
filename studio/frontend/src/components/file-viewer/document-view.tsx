@@ -14,19 +14,22 @@ export function DocumentView({
   name,
   contentType = "",
   scale = 1,
+  thumbnail = false,
 }: {
   file: Blob;
   kind: DocumentKind;
   name: string;
   contentType?: string;
   scale?: number;
+  /** Card thumbnail: first PDF page or slide only, Office parses queued. */
+  thumbnail?: boolean;
 }) {
   return (
     <Suspense fallback={<Spinner className="m-auto size-6" />}>
       {kind === "pdf" ? (
-        <PdfView file={file} scale={scale} />
+        <PdfView file={file} scale={scale} firstPageOnly={thumbnail} />
       ) : (
-        <OfficeView file={file} kind={kind} name={name} contentType={contentType} scale={scale} />
+        <OfficeView file={file} kind={kind} name={name} contentType={contentType} scale={scale} thumbnail={thumbnail} />
       )}
     </Suspense>
   );
