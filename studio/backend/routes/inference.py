@@ -22149,8 +22149,8 @@ def _check_decoded_audio_budget(arrays: list) -> None:
 
 def _decode_audio_clips(clips: list[str]) -> list:
     """Decode clips in order, each capped to the duration the earlier ones left."""
-    arrays: list = []
-    for clip in clips:
+    arrays: list = [_decode_audio_base64(clips[0])]
+    for clip in clips[1:]:
         used = sum(len(array) for array in arrays) / 16000
         arrays.append(_decode_within(used, _decode_audio_base64, clip))
         _check_decoded_audio_budget(arrays)
@@ -22789,7 +22789,11 @@ def _prepare_audio_clips_for_llama(clips: list[str]) -> list[tuple[str, str]]:
             container, seconds = kept
             prepared.append((clip, container))
         else:
-            arr, sr = _decode_within(total_seconds, _decode_audio_mono, raw)
+            arr, sr = (
+                _decode_within(total_seconds, _decode_audio_mono, raw)
+                if prepared
+                else _decode_audio_mono(raw)
+            )
             arr, sr = _fit_transcoded_audio_to_wav_cap(arr, sr, cap = wav_budget // transcodes_left)
             wav = _mono_f32_to_wav_bytes(arr, sr)
             wav_budget -= len(wav)
@@ -26624,13 +26628,16 @@ async def produce_openai_chat_completions(
             try:
                 # Decoded before the switch; only a path that skipped that preflight
                 # (no automatic load could run) still has to do it here.
-                # A single clip stays a bare array, as before.
                 audio_arrays = (
                     _predecoded_audio
                     if _predecoded_audio is not None
                     else await asyncio.to_thread(_decode_audio_clips, _request_audio_clips(payload))
                 )
-                audio_array = audio_arrays[0] if len(audio_arrays) == 1 else audio_arrays
+                audio_array = audio_arrays[0]
+                # Passed only when present, so single-clip calls are unchanged.
+                extra_audio_kwargs = (
+                    {"extra_audio_arrays": audio_arrays[1:]} if len(audio_arrays) > 1 else {}
+                )
                 system_prompt, chat_messages, _ = await _extract_content_parts_async(
                     payload.messages
                 )
@@ -26670,6 +26677,7 @@ async def produce_openai_chat_completions(
                         audio_array = audio_array,
                         cancel_event = cancel_event,
                         stats_holder = _audio_stats_holder,
+                        **extra_audio_kwargs,
                     )
                 return backend.generate_audio_input_response(
                     messages = chat_messages,
@@ -26686,6 +26694,7 @@ async def produce_openai_chat_completions(
                     cancel_event = cancel_event,
                     stats_holder = _audio_stats_holder,
                     stop = normalized_stop,
+                    **extra_audio_kwargs,
                 )
 
             if payload.stream:

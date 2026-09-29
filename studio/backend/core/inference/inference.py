@@ -1993,6 +1993,7 @@ class InferenceBackend:
         repetition_penalty,
         use_adapter: Optional[Union[bool, str]] = None,
         cancel_event = None,
+        extra_audio_arrays: Optional[list] = None,
     ) -> Generator[str, None, None]:
         """Audio-input (ASR) generation: takes an audio numpy array, streams text.
 
@@ -2026,7 +2027,7 @@ class InferenceBackend:
             system_prompt = "You are an assistant that transcribes speech accurately."
 
         # Gemma 3n format: one audio item per clip, in upload order, inside apply_chat_template.
-        clips = audio_array if isinstance(audio_array, list) else [audio_array]
+        clips = [audio_array, *(extra_audio_arrays or [])]
         audio_messages = [
             {"role": "system", "content": [{"type": "text", "text": system_prompt}]},
             named_turn(
@@ -2172,6 +2173,7 @@ class InferenceBackend:
         self,
         audio_array,
         cancel_event = None,
+        extra_audio_arrays: Optional[list] = None,
     ) -> Generator[str, None, None]:
         """Whisper ASR: takes an audio numpy array, yields transcribed text through the pipeline
         built at model load."""
@@ -2185,7 +2187,7 @@ class InferenceBackend:
             yield "Error: Whisper pipeline not initialized"
             return
 
-        clips = audio_array if isinstance(audio_array, list) else [audio_array]
+        clips = [audio_array, *(extra_audio_arrays or [])]
         try:
             # Transcribe each clip separately, in order.
             for index, clip in enumerate(clips):

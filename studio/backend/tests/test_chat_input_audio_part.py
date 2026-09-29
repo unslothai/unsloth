@@ -710,3 +710,49 @@ def test_multi_clip_mlx_target_is_refused_before_the_switch(monkeypatch):
     preflight = {"clips": ["a", "b"]}
     asyncio.run(inference_route._preflight_audio_for_switch(preflight, True))
     assert len(preflight["prepared"]) == 2
+
+
+class _CapturingAudioBackend:
+    def __init__(self):
+        self.calls = []
+
+    def generate_audio_input_response(self, **kwargs):
+        self.calls.append(kwargs)
+        return iter(())
+
+
+def _run_worker_audio(clips):
+    import numpy as np
+    from types import SimpleNamespace
+
+    from core.inference import worker
+
+    backend = _CapturingAudioBackend()
+    sent = []
+    worker._handle_generate_audio_input(
+        backend,
+        {
+            "request_id": "r",
+            "audio_clips": [np.asarray(c, dtype = np.float32).tobytes() for c in clips],
+        },
+        SimpleNamespace(put = lambda item, *a, **k: sent.append(item)),
+        SimpleNamespace(is_set = lambda: False),
+    )
+    assert not [m for m in sent if m.get("type") == "gen_error"], sent
+    return backend.calls[0]
+
+
+def test_a_single_clip_reaches_the_backend_as_before():
+    """A plain list of samples is ONE waveform, never a list of one-sample clips."""
+    call = _run_worker_audio([[0.0, 0.1, -0.1]])
+    assert list(call["audio_array"]) == pytest.approx([0.0, 0.1, -0.1])
+    assert "extra_audio_arrays" not in call
+
+
+def test_extra_clips_reach_the_backend_in_order():
+    call = _run_worker_audio([[0.1], [0.2, 0.2], [0.3]])
+    assert list(call["audio_array"]) == pytest.approx([0.1])
+    assert [list(c) for c in call["extra_audio_arrays"]] == [
+        pytest.approx([0.2, 0.2]),
+        pytest.approx([0.3]),
+    ]

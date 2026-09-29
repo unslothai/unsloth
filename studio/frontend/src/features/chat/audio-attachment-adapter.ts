@@ -18,7 +18,7 @@ import { externalModelLabel } from "./lib/external-model-label";
 import { useChatRuntimeStore } from "./stores/chat-runtime-store";
 
 // crypto.randomUUID is undefined in non-secure contexts (HTTP over a LAN IP).
-function newAttachmentId(): string {
+export function newAttachmentId(): string {
   if (typeof globalThis.crypto?.randomUUID === "function") {
     return globalThis.crypto.randomUUID();
   }
@@ -54,7 +54,7 @@ export class AudioAttachmentAdapter implements AttachmentAdapter {
       unavailableReason = `${label} cannot accept audio. Load an audio-input model before attaching audio files.`;
     }
     if (unavailableReason) {
-      toast.error(unavailableReason);
+      toast.error(unavailableReason, { id: AUDIO_ADD_TOAST_ID });
       throw new Error(unavailableReason);
     }
     // A staged store clip would be dropped if sent alongside attachments.

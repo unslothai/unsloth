@@ -62,6 +62,7 @@ import {
 } from "@/lib/audio-utils";
 import { isTauri } from "@/lib/api-base";
 import { classifiedAttachmentFiles, isVideoFile } from "@/lib/video-utils";
+import { newAttachmentId } from "./audio-attachment-adapter";
 import { isDownloadCancelled } from "@/lib/native-files";
 import { isMultimodalResponse } from "./types/api";
 import { getImageInputUnavailableReason } from "./utils/image-input-support";
@@ -1084,7 +1085,7 @@ export function SharedComposer({
             continue;
           }
           const clip = {
-            id: crypto.randomUUID(),
+            id: newAttachmentId(),
             name: file.name,
             base64: "",
             contentType: file.type,
