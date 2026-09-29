@@ -174,6 +174,11 @@ def test_revision_survives_when_the_repo_is_unchanged():
     assert gate("my-branch", "myorg/my-ft", "myorg/my-ft") == "my-branch"
 
 
+def test_revision_survives_a_spelling_only_change():
+    # Hub ids are case-insensitive: unsloth/qwen3-30b-a3b resolving to unsloth/Qwen3-30B-A3B is the same repo.
+    assert _load_gate()("release", "unsloth/Qwen3-30B-A3B", "unsloth/qwen3-30b-a3b") == "release"
+
+
 @pytest.mark.parametrize(
     "model_name, old_model_name",
     [

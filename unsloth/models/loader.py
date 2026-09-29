@@ -174,7 +174,8 @@ def _revision_for_resolved_repo(
     mapper_moved_name = False,
 ):
     """Drop `revision` once the requested repo has been remapped to another one. A revision names a branch/tag/SHA on the repo the caller asked for, but from_pretrained may resolve model_name to a different repo (a pre-quantized mirror, an fp8 temp dir, a ModelScope snapshot, a -bnb-4bit strip), where that ref does not exist. Only the mapper substitution answers to use_exact_model_name, so only suggest it when it would help."""
-    if revision is None or model_name == old_model_name:
+    # Hub repo ids are case-insensitive, so a spelling-only change is still the same repo.
+    if revision is None or str(model_name).lower() == str(old_model_name).lower():
         return revision
     remedy = (
         " Pass `use_exact_model_name = True` to load your repo as-is." if mapper_moved_name else ""

@@ -1078,10 +1078,29 @@ def _prefer_legacy_lowercase_cache(
         return repo_id
     try:
         from huggingface_hub import try_to_load_from_cache
-        if isinstance(try_to_load_from_cache(repo_id, "config.json", cache_dir = cache_dir), str):
-            return repo_id
-        if isinstance(try_to_load_from_cache(legacy, "config.json", cache_dir = cache_dir), str):
-            return legacy
+
+        if cache_dir is None:
+            # transformers 4.x still honours TRANSFORMERS_CACHE, which can differ from HF_HUB_CACHE.
+            from transformers.utils import hub as _tf_hub
+            cache_dir = getattr(_tf_hub, "TRANSFORMERS_CACHE", None)
+
+        def cached(repo, files):
+            return any(
+                isinstance(try_to_load_from_cache(repo, f, cache_dir = cache_dir), str) for f in files
+            )
+
+        # A config-only canonical snapshot must not hide a legacy one that also has weights.
+        weights = (
+            "model.safetensors",
+            "model.safetensors.index.json",
+            "pytorch_model.bin",
+            "pytorch_model.bin.index.json",
+        )
+        for files in (weights, ("config.json",)):
+            if cached(repo_id, files):
+                return repo_id
+            if cached(legacy, files) and cached(legacy, ("config.json",)):
+                return legacy
     except Exception:
         pass
     return repo_id
@@ -1149,7 +1168,8 @@ def get_model_name(
 
     if new_model_name is None:
         new_model_name = model_name
-    elif new_model_name != model_name:
+    else:
+        # Also when the result equals the input: main returned it lowercased, so that is what is cached.
         new_model_name = _prefer_legacy_lowercase_cache(new_model_name, local_files_only, cache_dir)
 
     return new_model_name

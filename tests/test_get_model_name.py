@@ -186,6 +186,31 @@ class TestGetModelName(unittest.TestCase):
                         ),
                         expected,
                     )
+        # A config-only canonical snapshot does not hide a legacy one with weights.
+        files = {
+            (canonical, "config.json"),
+            (canonical.lower(), "config.json"),
+            (canonical.lower(), "model.safetensors"),
+        }
+        with (
+            patch(
+                "huggingface_hub.try_to_load_from_cache",
+                lambda repo_id, filename, cache_dir = None: (
+                    "/cache/f" if (repo_id, filename) in files else None
+                ),
+            ),
+            patch.dict("os.environ", {"HF_HUB_OFFLINE": "1"}),
+        ):
+            self.assertEqual(
+                get_model_name("unsloth/Meta-Llama-3.1-8B-Instruct", load_in_4bit = True),
+                canonical.lower(),
+            )
+            # A mapping that resolves back to the input was also cached lowercased before.
+            files = {("unsloth/qwen3-30b-a3b", "config.json")}
+            self.assertEqual(
+                get_model_name("unsloth/Qwen3-30B-A3B", load_in_4bit = True),
+                "unsloth/qwen3-30b-a3b",
+            )
         # Online never consults the cache: the canonical id is always returned.
         with (
             patch("huggingface_hub.try_to_load_from_cache", side_effect = AssertionError),
