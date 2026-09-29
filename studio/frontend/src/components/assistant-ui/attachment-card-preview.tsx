@@ -39,18 +39,19 @@ const DOCUMENT_KINDS: Record<DocumentKind, AttachmentFileKind> = {
   slides: "presentation",
 };
 
-/** True once the element has been on screen; offscreen strip cards stay unparsed. */
-function useSeen(element: HTMLElement | null): boolean {
-  const [seen, setSeen] = useState(false);
+/** Whether the element is on screen now; the strip clips offscreen cards. */
+function useVisible(element: HTMLElement | null): boolean {
+  const [visible, setVisible] = useState(false);
   useEffect(() => {
-    if (!element || seen) return;
+    if (!element) return;
     const observer = new IntersectionObserver((entries) => {
-      if (entries.some((entry) => entry.isIntersecting)) setSeen(true);
+      const entry = entries[entries.length - 1];
+      if (entry) setVisible(entry.isIntersecting);
     });
     observer.observe(element);
     return () => observer.disconnect();
-  }, [element, seen]);
-  return seen;
+  }, [element]);
+  return visible;
 }
 
 function useSize(element: HTMLElement | null): { width: number; height: number } {
@@ -93,7 +94,11 @@ export const AttachmentCardPreview: FC<{
 }> = ({ file, preview, fallback }) => {
   const [frame, setFrame] = useState<HTMLDivElement | null>(null);
   const size = useSize(frame);
-  const seen = useSeen(frame);
+  // Documents mount only while visible, so offscreen cards release their parse.
+  // Text is capped and cheap, so it stays once read.
+  const visible = useVisible(frame);
+  const [seen, setSeen] = useState(false);
+  if (visible && !seen) setSeen(true);
   const text = useLeadingText(file, seen && preview.kind !== "document");
   const pageWidth = preview.kind === "document" ? PAGE_WIDTH[preview.document] : TEXT_WIDTH;
   const scale = size.width / pageWidth;
@@ -103,12 +108,10 @@ export const AttachmentCardPreview: FC<{
   if (text === "failed") return fallback;
 
   let body: ReactNode = null;
-  if (!seen) {
-    body = null;
-  } else if (preview.kind === "document") {
-    body = (
+  if (preview.kind === "document") {
+    body = visible ? (
       <DocumentView file={file} kind={preview.document} name={file.name} contentType={file.type} />
-    );
+    ) : null;
   } else if (text !== null && preview.kind === "markdown") {
     body = (
       <MarkdownPreview
