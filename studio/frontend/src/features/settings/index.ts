@@ -10,6 +10,7 @@ export {
   updateDownloadTransportSettings,
 } from "./api/download-transport";
 export { loadEmbeddingModelSettings } from "./api/embedding-model";
+export { updateHubSource } from "./api/hub-settings";
 export { loadOpenAIAutoSwitchSettings } from "./api/openai-auto-switch";
 export {
   loadHuggingFaceCacheSettings,
@@ -86,6 +87,7 @@ export {
   useShortcutLabels,
   useShortcutAvailable,
 } from "./hooks/use-shortcut";
+export { useHubSourceNotice } from "./hooks/use-hub-source-notice";
 export { Shortcut } from "./components/shortcut";
 export {
   currentBinding,
@@ -93,7 +95,8 @@ export {
   useKeyboardShortcutsStore,
 } from "./stores/keyboard-shortcuts-store";
 export type { ShortcutId } from "./lib/keyboard-shortcuts";
-export { useSettingsDialogStore } from "./stores/settings-dialog-store";
+export { SETTINGS_TABS, useSettingsDialogStore } from "./stores/settings-dialog-store";
+export { settingsTabVisible } from "./settings-tab-visibility";
 export type { SettingsTab } from "./stores/settings-dialog-store";
 export { requestSttDownload } from "./stores/stt-download-prompt-store";
 export {

@@ -236,11 +236,17 @@ def planner_quantization_kwargs(
     load_in_8bit = False,
     quantization_config = None,
     extra_skip_modules = None,
+    rewritten_quantization_config = None,
 ):
     """The quantization the planner must size for, as the load will really apply it. The config or the flags, never both, since transformers refuses both and loader.py clears the flags whenever it forwards a config; bare flags would describe a full-precision load and raise `DeviceMapInfeasible` on one that would have fit. The skip list travels with the flags: SKIP_QUANTIZATION_MODULES stays in compute dtype as `modules_to_not_convert`, and sizing it at 4bit understates the head device by GiBs on a large-vocab VLM. A pre-quantized checkpoint carries its own list in config.json."""
+    rewritten = (
+        {}
+        if rewritten_quantization_config is None
+        else {"rewritten_quantization_config": rewritten_quantization_config}
+    )
     if quantization_config is not None:
-        return {"quantization_config": quantization_config}
-    kwargs = {"load_in_4bit": load_in_4bit, "load_in_8bit": load_in_8bit}
+        return {"quantization_config": quantization_config, **rewritten}
+    kwargs = {"load_in_4bit": load_in_4bit, "load_in_8bit": load_in_8bit, **rewritten}
     if load_in_4bit or load_in_8bit:
         try:
             from unsloth_zoo.peft_utils import SKIP_QUANTIZATION_MODULES
@@ -251,6 +257,58 @@ def planner_quantization_kwargs(
     return kwargs
 
 
+def compressed_tensors_planner_bits(model_config, load_in_4bit, load_in_8bit):
+    """(load_in_4bit, load_in_8bit) to size an armed compressed-tensors load at: the packed route keeps INT8 at 8 bits."""
+    if not load_in_4bit or compressed_tensors_prepared_config(model_config) is None:
+        return load_in_4bit, load_in_8bit
+    try:
+        from .compressed_tensors_bnb import UNSLOTH_COMPRESSED_TENSORS_ATTR
+        from .compressed_tensors_int4 import int4_packed_route_enabled, int4_packed_supported_plan
+
+        plan = getattr(model_config, UNSLOTH_COMPRESSED_TENSORS_ATTR)
+        if int4_packed_route_enabled() and int4_packed_supported_plan(plan):
+            if max(int(g["weights"]["num_bits"]) for g in plan["config_groups"].values()) > 4:
+                return False, True
+    except Exception:
+        pass
+    return load_in_4bit, load_in_8bit
+
+
+def compressed_tensors_planner_quantization(
+    model_config, load_in_4bit, load_in_8bit, quantization_config
+):
+    """Planner flags + config: a packed INT8 load is sized at 8 bits even under an explicit bnb 4-bit config."""
+    wants_4bit = bool(load_in_4bit) or (
+        quantization_config is not None
+        and quantization_config_selects_bnb_4bit(quantization_config)
+    )
+    if (
+        compressed_tensors_planner_bits(model_config, wants_4bit, load_in_8bit) == (False, True)
+        and wants_4bit
+    ):
+        return dict(load_in_4bit = False, load_in_8bit = True, quantization_config = None)
+    return dict(
+        load_in_4bit = load_in_4bit,
+        load_in_8bit = load_in_8bit,
+        quantization_config = quantization_config,
+    )
+
+
+def compressed_tensors_prepared_config(model_config):
+    """`model_config` if armed for packed compressed-tensors re-quantization (plan must size from it), else None."""
+    if model_config is None:
+        return None
+    try:
+        from .compressed_tensors_bnb import UNSLOTH_COMPRESSED_TENSORS_ATTR
+    except Exception:
+        return None
+    return (
+        model_config
+        if getattr(model_config, UNSLOTH_COMPRESSED_TENSORS_ATTR, None) is not None
+        else None
+    )
+
+
 def planner_model_class(config, trust_remote_code = False):
     """The model class the planner's own rules pick for `config`, or None if unknown. The planner never sees the auto class the load chose: `config` is whatever the caller passed, while the planner rebuilds the repo's from `model_name`, and the two can disagree."""
     try:
@@ -258,7 +316,7 @@ def planner_model_class(config, trust_remote_code = False):
         from ._utils import resolve_model_class
 
         auto_class = _auto_class_for(config, trust_remote_code = trust_remote_code)
-        return resolve_model_class(auto_class, config)
+        return resolve_model_class(auto_class, config, trust_remote_code = trust_remote_code)
     except Exception:
         # Unknown, not mismatched: an unsloth_zoo without this has no planner to feed.
         return None
@@ -1205,8 +1263,9 @@ def _load_fp8_weight_map(
     revision = None,
     subfolder = None,
     cache_dir = None,
+    variant = None,
 ):
-    """The checkpoint's tensor->file map, using the same snapshot the load used. Prefers the sharded `model.safetensors.index.json`, falling back to a single `model.safetensors` so unsharded checkpoints are covered too."""
+    """Tensor->file map from the load's snapshot; sharded index, else single `model.safetensors`."""
 
     def _local_path(filename):
         return (
@@ -1227,8 +1286,10 @@ def _load_fp8_weight_map(
             token = token,
         )
 
-    index_file = "model.safetensors.index.json"
-    single_file = "model.safetensors"
+    index_file = (
+        f"model.safetensors.index.{variant}.json" if variant else "model.safetensors.index.json"
+    )
+    single_file = f"model.{variant}.safetensors" if variant else "model.safetensors"
     is_local = os.path.isdir(model_name)
 
     if is_local and os.path.exists(_local_path(index_file)):
@@ -1304,6 +1365,163 @@ def _match_fp8_module(module_by_name, base):
         if candidate in module_by_name:
             return module_by_name[candidate]
     return None
+
+
+_CT_FP8_STRATEGIES = ("tensor", "channel", "block")
+
+
+def _compressed_tensors_fp8_block_size(module, weights):
+    """(out, in) block of a routable compressed-tensors FP8 weight, else None."""
+    if getattr(weights, "type", None) != "float" or getattr(weights, "num_bits", None) != 8:
+        return None
+    strategy = getattr(weights, "strategy", None)
+    strategy = str(getattr(strategy, "value", strategy))
+    # Block FP8 is opt-in: fp8_block_quant_linear is far slower than the decompressed bf16 model.
+    if (
+        strategy == "block"
+        and os.environ.get("UNSLOTH_COMPRESSED_TENSORS_FP8_BLOCK_KERNELS", "0") != "1"
+    ):
+        return None
+    if (
+        strategy not in _CT_FP8_STRATEGIES
+        or getattr(weights, "dynamic", False)
+        or getattr(weights, "actorder", None)
+    ):
+        return None
+    weight = getattr(module, "weight", None)
+    scale = getattr(module, "weight_scale", None)
+    if weight is None or scale is None or weight.dtype != torch.float8_e4m3fn or weight.dim() != 2:
+        return None
+    zero_point = getattr(module, "weight_zero_point", None)
+    if zero_point is not None and bool(torch.any(zero_point != 0)):
+        return None
+    out_features, in_features = weight.shape
+    if strategy == "tensor":
+        # Routed as per-channel (scale broadcast per row): the rowwise paths beat the block kernel.
+        return [1, in_features] if scale.numel() == 1 else None
+    if strategy == "channel":
+        return (
+            [1, in_features] if tuple(scale.shape) in ((out_features, 1), (out_features,)) else None
+        )
+    block = list(getattr(weights, "block_structure", None) or ())
+    if len(block) != 2 or scale.dim() != 2:
+        return None
+    if tuple(scale.shape) != (-(-out_features // block[0]), -(-in_features // block[1])):
+        return None
+    return block
+
+
+def _save_compressed_tensors_scale_shape(module, state_dict, prefix, local_metadata):
+    # Saved checkpoints keep the config's scale shape; a per-tensor scale was broadcast per row.
+    key = prefix + "weight_scale"
+    shape = getattr(module, "_unsloth_ct_scale_shape", None)
+    scale = state_dict.get(key)
+    if shape is None or scale is None or tuple(scale.shape) == shape:
+        return state_dict
+    numel = 1
+    for n in shape:
+        numel *= n
+    state_dict[key] = scale.reshape(-1)[:1].reshape(shape) if numel == 1 else scale.reshape(shape)
+    return state_dict
+
+
+def _load_compressed_tensors_scale_shape(module, state_dict, prefix, *args):
+    key = prefix + "weight_scale"
+    scale = state_dict.get(key)
+    current = getattr(module, "weight_scale", None)
+    if scale is None or current is None or scale.shape == current.shape:
+        return
+    if scale.numel() == 1:
+        state_dict[key] = scale.reshape(1, 1).expand(current.shape).contiguous()
+    elif scale.numel() == current.numel():
+        state_dict[key] = scale.reshape(current.shape)
+
+
+def _unsloth_compressed_tensors_fp8_forward(self, input):
+    from unsloth.kernels.fp8 import can_use_fp8_rowwise_gemv, fp8_linear, fp8_rowwise_gemv
+
+    if can_use_fp8_rowwise_gemv(input, self.weight, self.weight_scale):
+        out = fp8_rowwise_gemv(input, self.weight, self.weight_scale)
+    else:
+        out = fp8_linear(input, self.weight, self.weight_scale)
+    if self.bias is not None:
+        out = out + self.bias.to(out.dtype)
+    return out
+
+
+@functools.lru_cache(maxsize = 1)
+def _zoo_peft_forward_keeps_fp8_inputs():
+    """Older zoo compiled LoRA forwards cast `x` to the FP8 weight dtype; route only when it does not."""
+    try:
+        import inspect
+        from unsloth_zoo import compiler
+        source = inspect.getsource(compiler.patch_lora_forwards)
+    except Exception:
+        return False
+    return "x = x.to(self.base_layer.weight.dtype)" not in source or (
+        "self.base_layer.weight.dtype in (torch.float16, torch.bfloat16, torch.float32)" in source
+    )
+
+
+def _route_compressed_tensors_fp8_to_unsloth(model):
+    # Opt-in: saves memory, but on-the-fly dequant trains slower than the decompressed bf16 model.
+    if os.environ.get("UNSLOTH_COMPRESSED_TENSORS_FP8_KERNELS", "0") != "1":
+        return 0
+    if getattr(getattr(model, "config", None), "quantization_config", None) is None:
+        return 0
+    if not _zoo_peft_forward_keeps_fp8_inputs():
+        return 0
+    routable = []
+    for module in model.modules():
+        scheme = getattr(module, "quantization_scheme", None)
+        if scheme is None or getattr(scheme, "weights", None) is None:
+            continue
+        block = None
+        weight = getattr(module, "weight", None)
+        on_gpu = isinstance(weight, torch.Tensor) and weight.device.type in ("cuda", "xpu")
+        if (
+            on_gpu
+            and isinstance(module, torch.nn.Linear)
+            and getattr(scheme, "output_activations", None) is None
+        ):
+            block = _compressed_tensors_fp8_block_size(module, scheme.weights)
+        if block is None:
+            return 0
+        routable.append((module, block))
+    converted = 0
+    for module, block in routable:
+        scale = module.weight_scale
+        scale_shape = tuple(scale.shape)
+        if scale.numel() == 1:
+            scale.data = scale.data.reshape(1, 1).expand(module.weight.shape[0], 1).contiguous()
+        elif scale.dim() == 1:
+            scale.data = scale.data.view(-1, 1)
+        if tuple(scale.shape) != scale_shape:
+            module._unsloth_ct_scale_shape = scale_shape
+            module._register_state_dict_hook(_save_compressed_tensors_scale_shape)
+            module._register_load_state_dict_pre_hook(
+                _load_compressed_tensors_scale_shape, with_module = True
+            )
+        module.weight.requires_grad_(False)
+        scale.requires_grad_(False)
+        if block != [1, module.weight.shape[1]]:
+            module.weight.block_size = block
+            scale.block_size = block
+            module.block_size = block
+        module.forward = _unsloth_compressed_tensors_fp8_forward.__get__(module)
+        module._unsloth_compressed_tensors_fp8 = True
+        converted += 1
+    if converted:
+        for owner in (model, getattr(model, "model", None), getattr(model, "base_model", None)):
+            hook = getattr(owner, "ct_decompress_hook", None)
+            if hook is not None:
+                hook.remove()
+                try:
+                    delattr(owner, "ct_decompress_hook")
+                except AttributeError:
+                    pass
+        model._unsloth_compressed_tensors_fp8 = converted
+    return converted
 
 
 _FP8_DEQUANT_DTYPES = (torch.bfloat16, torch.float16, torch.float32)
@@ -1547,6 +1765,542 @@ def _restore_dropped_fp8_scales(
         return (0, 0)
 
 
+def _forward_calls_checkpointing(cls):
+    """True when a backbone's own `forward` hands its layers to a checkpoint function."""
+    import inspect
+
+    try:
+        source = inspect.getsource(cls.forward)
+    except Exception:
+        return True  # cannot read it: assume it does and change nothing
+    return "_gradient_checkpointing_func" in source or "checkpoint(" in source
+
+
+def _checkpointed_layer_forward(original):
+    @functools.wraps(original)
+    def forward(self, *args, **kwargs):
+        holder = self.__dict__.get("_unsloth_gradient_checkpointing_holder")
+        holder = holder() if holder is not None else None
+        if (
+            not self.training
+            or holder is None
+            or not getattr(holder, "gradient_checkpointing", False)
+            or not torch.is_grad_enabled()
+            # A cache would be written a second time by the recompute.
+            or kwargs.get("past_key_value") is not None
+            or kwargs.get("past_key_values") is not None
+        ):
+            return original(self, *args, **kwargs)
+        if not args and "hidden_states" in kwargs:
+            # A reentrant checkpoint only tracks gradients through positional tensors.
+            args = (kwargs.pop("hidden_states"),)
+        # Grad-requiring kwargs (Kimi-K3 block_residual) go positional: a closure ties recompute to earlier layers.
+        grad_keys = [k for k, v in kwargs.items() if torch.is_tensor(v) and v.requires_grad]
+        n_args = len(args)
+        grad_values = tuple(kwargs.pop(k) for k in grad_keys)
+
+        def run(*inputs):
+            return original(
+                self, *inputs[:n_args], **kwargs, **dict(zip(grad_keys, inputs[n_args:]))
+            )
+
+        # gradient_checkpointing_enable()'s function: keeps offloading and the caller's use_reentrant.
+        checkpoint = getattr(holder, "_gradient_checkpointing_func", None)
+        if checkpoint is None:
+            return torch.utils.checkpoint.checkpoint(run, *args, *grad_values, use_reentrant = False)
+        return checkpoint(run, *args, *grad_values)
+
+    forward._unsloth_manual_checkpoint = True
+    return forward
+
+
+def install_remote_gradient_checkpointing(model, verbose = True):
+    """Wrap decoder layers of remote-code backbones whose loop ignores `self.gradient_checkpointing`."""
+    import types
+    import weakref
+
+    try:
+        from transformers.modeling_layers import GradientCheckpointingLayer
+    except Exception:
+        GradientCheckpointingLayer = ()
+    wrapped = []
+    for _, holder in model.named_modules():
+        holder_cls = type(holder)
+        if "transformers_modules" not in (getattr(holder_cls, "__module__", "") or ""):
+            continue
+        if not hasattr(holder, "gradient_checkpointing"):
+            continue
+        layers = getattr(holder, "layers", None)
+        if not isinstance(layers, torch.nn.ModuleList) or len(layers) == 0:
+            continue
+        if _forward_calls_checkpointing(holder_cls):
+            continue
+        for layer in layers:
+            cls = type(layer)
+            if GradientCheckpointingLayer and isinstance(layer, GradientCheckpointingLayer):
+                continue
+            layer.__dict__["_unsloth_gradient_checkpointing_holder"] = weakref.ref(holder)
+            if not getattr(cls.__dict__.get("forward"), "_unsloth_manual_checkpoint", False):
+                cls.forward = _checkpointed_layer_forward(cls.forward)
+                wrapped.append(cls.__name__)
+            # device_map hooks keep the bound original in `_old_forward`.
+            if "_old_forward" in vars(layer):
+                layer._old_forward = types.MethodType(cls.forward, layer)
+    wrapped = sorted(set(wrapped))
+    if wrapped and verbose:
+        print(
+            "Unsloth: the remote modeling code never calls a checkpoint function; wrapping "
+            + ", ".join(wrapped)
+            + " so gradient checkpointing actually saves activations."
+        )
+    return wrapped
+
+
+def enable_composite_gradient_checkpointing(model, verbose = True):
+    """Mark a remote-code outer class checkpointable when an inner PreTrainedModel is (Kimi-K2.7)."""
+    try:
+        from transformers import PreTrainedModel
+    except Exception:
+        return False
+    if not isinstance(model, PreTrainedModel):
+        return False
+    # Always install: the flag is what transformers checks, the wrapper makes it act.
+    install_remote_gradient_checkpointing(model, verbose = verbose)
+    if getattr(type(model), "supports_gradient_checkpointing", False):
+        return False
+    inner = [
+        type(m).__name__
+        for name, m in model.named_modules()
+        if name
+        and isinstance(m, PreTrainedModel)
+        and getattr(type(m), "supports_gradient_checkpointing", False)
+    ]
+    if not inner:
+        return False
+    type(model).supports_gradient_checkpointing = True
+    if verbose:
+        print(
+            f"Unsloth: {type(model).__name__} did not declare gradient checkpointing support but its "
+            f"{inner[0]} does; enabling it on the outer model."
+        )
+    return True
+
+
+def _remove_same_device_compressed_tensors_offload(model):
+    """Unwrap compressed-tensors >= 0.19 non-offloading OffloadCaches, which torch.compile cannot trace."""
+    try:
+        from compressed_tensors.offload.cache import OffloadCache
+        from compressed_tensors.offload.module import remove_module_offload
+    except Exception:
+        return 0
+    removed = 0
+    for module in model.modules():
+        cache = module._parameters
+        if not isinstance(cache, OffloadCache):
+            continue
+        onload = getattr(cache, "onload_device", None)
+        offload = getattr(cache, "offload_device", None)
+        if onload is None or offload is None or torch.device(onload) != torch.device(offload):
+            continue
+        remove_module_offload(module)
+        removed += 1
+    return removed
+
+
+def _decompress_compressed_tensors_model(model):
+    """Decompress at load: PEFT skips the first-forward hook, and in `generate` it yields inference tensors."""
+    if getattr(model, "_unsloth_compressed_tensors_fp8", 0):
+        return False
+    quant_config = getattr(getattr(model, "config", None), "quantization_config", None)
+    if isinstance(quant_config, dict):
+        method = quant_config.get("quant_method", None)
+    else:
+        method = getattr(quant_config, "quant_method", None)
+    if getattr(method, "value", method) != "compressed-tensors":
+        return False
+    # MXFP4 kept packed on purpose (all-or-nothing plan): decompress_model would drop weight_packed.
+    if any(getattr(module, "_unsloth_mxfp4_packed_linear", False) for module in model.modules()):
+        return False
+    if not any(
+        str(getattr(getattr(module, "quantization_status", None), "value", "")) == "compressed"
+        for module in model.modules()
+    ):
+        return False
+    compressor = getattr(getattr(model, "hf_quantizer", None), "compressor", None)
+    if compressor is None or not hasattr(compressor, "decompress_model"):
+        return False
+
+    def _decompress(module, *args):
+        with torch.inference_mode(False), torch.no_grad():
+            compressor.decompress_model(module)
+        _remove_same_device_compressed_tensors_offload(module)
+        # Some compressed-tensors releases (0.19.0) leave the hook in place: drop it, also after a retry.
+        hook = getattr(model, "ct_decompress_hook", None)
+        if hook is not None:
+            hook.remove()
+            try:
+                delattr(model, "ct_decompress_hook")
+            except AttributeError:
+                pass
+
+    # Swap the hook first: decompress_model removes it by name.
+    hook = getattr(model, "ct_decompress_hook", None)
+    if hook is not None:
+        hook.remove()
+        model.ct_decompress_hook = model.register_forward_pre_hook(_decompress)
+    try:
+        _decompress(model)
+    except Exception as e:
+        print(f"Unsloth: could not decompress the compressed-tensors checkpoint after load: {e}")
+        return False
+    return True
+
+
+def _prepare_compressed_tensors_model(model, full_finetuning = False):
+    # Routed FP8 weights are frozen, so full finetuning always takes the decompressed bf16 weights.
+    if full_finetuning or not _route_compressed_tensors_fp8_to_unsloth(model):
+        _decompress_compressed_tensors_model(model)
+
+
+_FP8_SCALE_SUFFIXES = (".weight_scale_inv", "_scale_inv", ".weight_scale", "_scale")
+_FP8_LEFTOVER_MAX_CHUNK = 1 << 26
+
+
+def _empty_device_cache(device):
+    try:
+        backend = getattr(torch, getattr(device, "type", "cuda"), None)
+        empty = getattr(backend, "empty_cache", None)
+        if callable(empty):
+            empty()
+    except Exception:
+        pass
+
+
+def _orient_block_scale(scale, rows, cols, block_size):
+    """Fix a grid stored `(in_blocks, out_blocks)`; block size decides when both orientations tile."""
+    if block_size is None or scale.ndim < 2:
+        return scale
+    try:
+        bm, bn = int(block_size[0]), int(block_size[1])
+    except Exception:
+        return scale
+    if bm <= 0 or bn <= 0 or rows % bm or cols % bn:
+        return scale
+    canonical = (rows // bm, cols // bn)
+    grid = tuple(scale.shape[-2:])
+    if grid == canonical:
+        return scale
+    if grid == canonical[::-1] and canonical[0] != canonical[1]:
+        return scale.transpose(-1, -2).contiguous()
+    return scale
+
+
+def _fp8_scale_grid_dequant(
+    quantized,
+    scale,
+    out_dtype,
+    block_size = None,
+):
+    """Returns None when the scale grid does not tile the weight."""
+    # MXFP8 stores E8M0 exponents as uint8: the scale is 2 ** (byte - 127).
+    if scale.dtype == torch.uint8:
+        scale = (scale.to(torch.float32) - 127.0).exp2()
+    else:
+        scale = scale.to(torch.float32)
+    q_shape = tuple(quantized.shape)
+    if scale.numel() == 1:
+        if quantized.ndim == 3:
+            scale = scale.reshape(()).expand(q_shape[0], 1, 1)
+        else:
+            return (quantized.to(torch.float32) * scale.reshape(())).to(out_dtype)
+    if quantized.ndim == 2:
+        if scale.ndim != 2:
+            if scale.ndim == 1 and scale.numel() == q_shape[0]:
+                scale = scale.view(-1, 1)
+            else:
+                return None
+        rows, cols = q_shape
+        scale = _orient_block_scale(scale, rows, cols, block_size)
+        p, q = scale.shape
+        if rows % p or cols % q:
+            return None
+        bm, bn = rows // p, cols // q
+        out = quantized.to(torch.float32).view(p, bm, q, bn) * scale[:, None, :, None]
+        return out.reshape(rows, cols).to(out_dtype)
+    if quantized.ndim == 3:
+        E, rows, cols = q_shape
+        if scale.ndim == 1 and scale.numel() == E:
+            scale = scale.view(E, 1, 1)
+        elif scale.ndim == 2 and scale.shape[0] == E and scale.shape[1] == 1:
+            scale = scale.view(E, 1, 1)
+        if scale.ndim != 3 or scale.shape[0] != E:
+            return None
+        scale = _orient_block_scale(scale, rows, cols, block_size)
+        p, q = scale.shape[1], scale.shape[2]
+        if rows % p or cols % q:
+            return None
+        bm, bn = rows // p, cols // q
+        out = torch.empty((E, rows, cols), dtype = out_dtype, device = quantized.device)
+        step = max(1, _FP8_LEFTOVER_MAX_CHUNK // max(1, rows * cols))
+        for start in range(0, E, step):
+            stop = min(E, start + step)
+            chunk = quantized[start:stop].to(torch.float32).view(stop - start, p, bm, q, bn)
+            out[start:stop] = (
+                (chunk * scale[start:stop, :, None, :, None])
+                .reshape(stop - start, rows, cols)
+                .to(out_dtype)
+            )
+        return out
+    return None
+
+
+class FP8LeftoverOffloadedError(RuntimeError):
+    """A leftover fp8 tensor is disk-offloaded, so the 16bit load cannot be finished in place."""
+
+
+def _restore_parked_fp8(module, attr, device):
+    try:
+        stranded = module._parameters.get(attr)
+        if (
+            isinstance(stranded, torch.Tensor)
+            and stranded.device != device
+            and stranded.device.type == "cpu"
+        ):
+            module._parameters[attr] = torch.nn.Parameter(
+                stranded.data.to(device), requires_grad = bool(stranded.requires_grad)
+            )
+    except Exception:
+        pass
+
+
+def _dequantize_leftover_fp8_params(
+    model,
+    model_name,
+    dtype,
+    *,
+    local_files_only = False,
+    token = None,
+    revision = None,
+    subfolder = None,
+    cache_dir = None,
+    variant = None,
+):
+    """Dequantize fp8 params transformers left on a 16bit load. Returns (dequantized, skipped)."""
+    try:
+        if not _FP8_DTYPES:
+            return (0, 0)
+        leftover = [
+            name
+            for name, param in model.named_parameters()
+            if param.dtype in _FP8_DTYPES and param.ndim in (2, 3)
+        ]
+        block_size = None
+        try:
+            _qc = getattr(getattr(model, "config", None), "quantization_config", None)
+            _bs = (
+                _qc.get("weight_block_size")
+                if isinstance(_qc, dict)
+                else getattr(_qc, "weight_block_size", None)
+            )
+            if _bs is not None and len(_bs) == 2:
+                block_size = (int(_bs[0]), int(_bs[1]))
+        except Exception:
+            block_size = None
+        _grid_kwargs = {"block_size": block_size} if block_size is not None else {}
+        if not leftover:
+            return (0, 0)
+        weight_map = _load_fp8_weight_map(
+            model_name,
+            local_files_only,
+            token,
+            revision,
+            subfolder,
+            cache_dir,
+            variant = variant,
+        )
+        if not weight_map:
+            return (0, 0)
+        scale_by_weight_key = {}
+        for key, shard in weight_map.items():
+            for suffix in _FP8_SCALE_SUFFIXES:
+                if key.endswith(suffix):
+                    weight_key = key[: -len(suffix)]
+                    # `layer.weight_scale_inv` belongs to `layer.weight`, not to `layer`.
+                    if suffix.startswith(".weight"):
+                        weight_key += ".weight"
+                    scale_by_weight_key[weight_key] = (key, shard)
+                    break
+        if not scale_by_weight_key:
+            return (0, 0)
+        module_by_name = dict(model.named_modules())
+        # Names only: holding the fp8 Parameter would defeat the OOM fallback.
+        params_by_module = {}
+        for name in leftover:
+            module_name, _, attr = name.rpartition(".")
+            params_by_module.setdefault(module_name, []).append(attr)
+
+        target_of_ckpt = {}
+        for weight_key in scale_by_weight_key:
+            module_part, _, attr = weight_key.rpartition(".")
+            if attr == "weight":
+                ckpt_module, ckpt_attr = module_part, "weight"
+            else:
+                ckpt_module, ckpt_attr = module_part, attr
+            module = _match_fp8_module(module_by_name, ckpt_module)
+            if module is None:
+                continue
+            live_name = None
+            for candidate, mod in module_by_name.items():
+                if mod is module:
+                    live_name = candidate
+                    break
+            if live_name is None or live_name not in params_by_module:
+                continue
+            target_of_ckpt[weight_key] = (module, live_name, ckpt_attr)
+
+        dequantized = 0
+        skipped = 0
+        failed = 0
+        last_error = None
+        shard_cache = {}
+
+        def _scale_for(weight_key, device):
+            scale_key, shard = scale_by_weight_key[weight_key]
+            if shard not in shard_cache:
+                from safetensors import safe_open
+                shard_path = _resolve_fp8_shard(
+                    model_name, shard, local_files_only, token, revision, subfolder, cache_dir
+                )
+                shard_cache[shard] = safe_open(shard_path, framework = "pt")
+            return shard_cache[shard].get_tensor(scale_key).to(device)
+
+        def _is_oom(error):
+            # Some backends raise a plain RuntimeError for OOM.
+            return (
+                hasattr(torch, "OutOfMemoryError") and isinstance(error, torch.OutOfMemoryError)
+            ) or (isinstance(error, RuntimeError) and "out of memory" in str(error).lower())
+
+        deferred = []
+        converted = set()
+        for weight_key, (module, live_name, attr) in target_of_ckpt.items():
+            param = getattr(module, attr, None)
+            if not isinstance(param, torch.Tensor) or param.dtype not in _FP8_DTYPES:
+                continue
+            trainable = bool(getattr(param, "requires_grad", False))
+            # A module with its own scale runs the fp8 forward.
+            if any(
+                isinstance(getattr(module, s, None), torch.Tensor)
+                for s in (attr + "_scale_inv", attr + "_scale", "weight_scale_inv", "weight_scale")
+            ):
+                skipped += 1
+                continue
+            if param.device.type == "meta":
+                # Disk-offloaded: the hook would restore raw fp8 bytes at forward time.
+                raise FP8LeftoverOffloadedError(
+                    f"Unsloth: `{weight_key}` is an fp8 tensor transformers left quantized on a 16bit "
+                    "load, and it is offloaded to disk, so it cannot be dequantized in place. Load with "
+                    "enough GPU or CPU memory to keep the model resident (no disk offload), or use "
+                    "`load_in_4bit = True`."
+                )
+            try:
+                scale = _scale_for(weight_key, param.device)
+                with torch.no_grad():
+                    out = _fp8_scale_grid_dequant(param.data, scale, dtype, **_grid_kwargs)
+                if out is None:
+                    failed += 1
+                    last_error = f"{weight_key}: scale {tuple(scale.shape)} does not tile {tuple(param.shape)}"
+                    continue
+                module._parameters[attr] = torch.nn.Parameter(out, requires_grad = trainable)
+                converted.add((module, attr))
+                dequantized += 1
+            except Exception as e:
+                if _is_oom(e):
+                    device = param.device
+                    quantized = param.data.to("cpu")
+                    module._parameters[attr] = torch.nn.Parameter(
+                        quantized, requires_grad = trainable
+                    )
+                    del param
+                    deferred.append((weight_key, module, attr, device))
+                    _empty_device_cache(device)
+                    continue
+                failed += 1
+                last_error = f"{weight_key}: {type(e).__name__}: {e}"
+                continue
+
+        for weight_key, module, attr, device in deferred:
+            try:
+                param = getattr(module, attr)
+                trainable = bool(getattr(param, "requires_grad", False))
+                scale = _scale_for(weight_key, "cpu")
+                with torch.no_grad():
+                    out = _fp8_scale_grid_dequant(param.data, scale, dtype, **_grid_kwargs)
+                if out is None:
+                    failed += 1
+                    last_error = f"{weight_key}: scale {tuple(scale.shape)} does not tile {tuple(param.shape)}"
+                    _restore_parked_fp8(module, attr, device)
+                    continue
+                _empty_device_cache(device)
+                module._parameters[attr] = torch.nn.Parameter(
+                    out.to(device), requires_grad = trainable
+                )
+                del param, out
+                converted.add((module, attr))
+                dequantized += 1
+            except Exception as e:
+                failed += 1
+                last_error = f"{weight_key}: {type(e).__name__}: {e}"
+                _restore_parked_fp8(module, attr, device)
+                continue
+        for shard_file in shard_cache.values():
+            close = getattr(shard_file, "__exit__", None)
+            if close is not None:
+                try:
+                    close(None, None, None)
+                except Exception:
+                    pass
+
+        if dequantized > 0:
+            by_module = {}
+            for module, attr in converted:
+                by_module.setdefault(module, set()).add(attr)
+            for module, attrs in by_module.items():
+                still_fp8 = [
+                    n
+                    for n, p in module._parameters.items()
+                    if isinstance(p, torch.Tensor) and p.dtype in _FP8_DTYPES
+                ]
+                for stale in [
+                    n
+                    for n in list(module._parameters) + list(module._buffers)
+                    if n.endswith("activation_scale")
+                ]:
+                    owner = next(
+                        (a for a in list(attrs) + still_fp8 if stale.startswith(a + "_")), None
+                    )
+                    if owner is None and still_fp8:
+                        continue
+                    if owner is not None and owner not in attrs:
+                        continue
+                    if stale in module._parameters:
+                        del module._parameters[stale]
+                    else:
+                        del module._buffers[stale]
+            print(
+                f"Unsloth: Dequantized {dequantized} FP8 tensor(s) transformers left quantized on a 16bit load."
+            )
+        if failed > 0:
+            print(
+                f"Unsloth: {failed} FP8 tensor(s) could not be dequantized on the 16bit load and stay fp8 "
+                f"(last: {last_error})."
+            )
+        return (dequantized, skipped)
+    except FP8LeftoverOffloadedError:
+        raise
+    except Exception:
+        return (0, 0)
+
+
 _BNB_QUANTIZED_TYPES = ("Params4bit", "Int8Params", "Linear4bit", "Linear8bitLt")
 
 
@@ -1585,6 +2339,9 @@ def warn_if_bitsandbytes_quantized_nothing(
         for module in model.modules():
             if type(module).__name__ in _BNB_QUANTIZED_TYPES:
                 return False
+            # compressed-tensors INT4 kept packed (compressed_tensors_int4.py) is 4-bit too.
+            if getattr(module, "_unsloth_int4_packed_linear", False):
+                return False
             for param in module.parameters(recurse = False):
                 if type(param).__name__ in _BNB_QUANTIZED_TYPES:
                     return False
@@ -1602,12 +2359,62 @@ def check_and_disable_bitsandbytes_loading(
     load_in_4bit = True,
     load_in_8bit = False,
     verbose = True,
+    requantize_packed = True,
+    rewrite_modelopt = True,
+    token = None,
+    model_name = None,
+    revision = None,
+    hub_kwargs = None,
+    allow_fp8_to_nf4 = True,
 ):
-    """Disable bitsandbytes loading (load_in_4bit/load_in_8bit) when the model already carries a non-bitsandbytes quantization config. Returns ``(load_in_4bit, load_in_8bit, quant_method)``, with both flags False if they were disabled and quant_method the detected method or None."""
+    """Disable bnb flags for non-bnb quantized checkpoints; returns ``(load_in_4bit, load_in_8bit, quant_method)``.
+
+    ``requantize_packed = False`` under fast_inference / full_finetuning: nothing would consume the plan."""
     quant_method = get_quant_type(model_config)
+    if quant_method is None:
+        # Also under vLLM: it reads the file itself, but the bitsandbytes flags must still drop.
+        from .modelopt_fp8 import attach_hf_quant_config
+        if attach_hf_quant_config(
+            model_config,
+            token = token,
+            model_name = model_name,
+            revision = revision,
+            hub_kwargs = hub_kwargs,
+        ):
+            quant_method = get_quant_type(model_config)
 
     if quant_method is None or quant_method == "bitsandbytes":
         return load_in_4bit, load_in_8bit, quant_method
+
+    if str(quant_method).lower() in ("compressed-tensors", "compressed_tensors", "sparseml"):
+        from .mxfp4_compressed_linear import install_compressed_tensors_keep_packed
+        install_compressed_tensors_keep_packed()
+
+    # Packed compressed-tensors: drop its quant config here and keep load_in_4bit for on-the-fly bnb re-quantization.
+    if (
+        requantize_packed
+        and load_in_4bit
+        and not load_in_8bit
+        and str(quant_method).lower() in ("compressed-tensors", "compressed_tensors", "sparseml")
+    ):
+        from .compressed_tensors_bnb import arm_compressed_tensors_bnb_loading
+        if arm_compressed_tensors_bnb_loading(model_config, verbose = verbose) is not None:
+            return True, False, None
+
+    if str(quant_method).lower() == "modelopt":
+        # Whoever loads the weights (vLLM included), a merged_16bit save must dequantize them.
+        from .modelopt_fp8 import enable_modelopt_merged_save
+        enable_modelopt_merged_save(model_config)
+    if rewrite_modelopt and str(quant_method).lower() == "modelopt":
+        from .modelopt_fp8 import arm_modelopt_fp8_loading
+        if arm_modelopt_fp8_loading(model_config, verbose = verbose) is not None:
+            quant_method = "fp8"
+
+    # An explicit 4bit request on a block-fp8 checkpoint: dequantize each fp8 tensor and quantize it to NF4 while loading.
+    if allow_fp8_to_nf4 and str(quant_method).lower() == "fp8":
+        from .fp8_to_nf4 import maybe_arm_fp8_to_nf4
+        if maybe_arm_fp8_to_nf4(model_config, load_in_4bit, load_in_8bit, verbose = verbose):
+            return load_in_4bit, load_in_8bit, None
 
     # A non-bitsandbytes quantization config (compressed-tensors, gptq, awq) means BOTH bitsandbytes loading flags must be disabled to avoid config conflicts.
     if load_in_4bit or load_in_8bit:
@@ -1616,10 +2423,44 @@ def check_and_disable_bitsandbytes_loading(
                 f"Unsloth: Model already quantized with {quant_method}. "
                 f"Disabling `load_in_4bit` and `load_in_8bit` to avoid quantization config conflict."
             )
+            if load_in_4bit and not load_in_8bit and str(quant_method).lower() == "fp8":
+                from .fp8_to_nf4 import (
+                    explicit_4bit_requested,
+                    fp8_block_quantization_config,
+                    fp8_to_nf4_disabled,
+                )
+                if (
+                    not explicit_4bit_requested()
+                    and not fp8_to_nf4_disabled()
+                    and fp8_block_quantization_config(model_config) is not None
+                ):
+                    print(
+                        "Unsloth: Pass `load_in_4bit = True` explicitly (or set UNSLOTH_FP8_TO_NF4=1) to "
+                        "quantize this fp8 checkpoint to 4bit while it loads."
+                    )
         load_in_4bit = False
         load_in_8bit = False
 
     return load_in_4bit, load_in_8bit, quant_method
+
+
+def quantization_config_selects_bnb_4bit(quantization_config):
+    """True when ``quantization_config`` keeps the load on bnb 4-bit; other quantizers must keep the checkpoint config."""
+    if quantization_config is None:
+        return True
+    if isinstance(quantization_config, dict):
+        get = quantization_config.get
+    else:
+        get = lambda key, default = None: getattr(quantization_config, key, default)
+    method = get("quant_method", "") or ""
+    # BitsAndBytesConfig stores a QuantizationMethod enum, whose str() is the member name on some Pythons.
+    method = str(getattr(method, "value", method)).lower()
+    # The dict shorthand {"load_in_4bit": True} has no quant_method; transformers reads it as bitsandbytes.
+    if not method and isinstance(quantization_config, dict):
+        method = "bitsandbytes"
+    if "bitsandbytes" not in method:
+        return False
+    return bool(get("load_in_4bit", False)) and not bool(get("load_in_8bit", False))
 
 
 def sync_unsloth_model_name_bnb_flags(load_in_4bit, load_in_8bit):

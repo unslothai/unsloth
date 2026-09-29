@@ -216,7 +216,11 @@ def _fix_gemma4_base_bos_token(tokenizer, config = None):
 
 # v5 loads byte-level BPE repos declaring LlamaTokenizerFast with Metaspace, dropping spaces (transformers#45488, #48206).
 _BACKEND_ROUNDTRIP_PROBE = "Hello world, this is a test."
-_BACKEND_IDS_PROBE = "Hello world! def f(x): return x**2  # code\n你好 éè Αβγ 12345.678"
+_BACKEND_IDS_PROBE = (
+    "Hello world! def f(x): return x**2  # code\n你好 éè Αβγ 12345.678 नमस्ते दुनिया open(path):\n"
+)
+# v5 __init__ overwrites tokenizer.json's pre-tokenizer: text round-trips but ids differ (tiny-aya).
+_V5_REBUILT_PRETOKENIZER_CLASSES = frozenset(("CohereTokenizer",))
 
 
 def _backend_roundtrip(backend, text):
@@ -264,7 +268,7 @@ def _repair_one_tokenizer_backend(
     if backend is None or not hasattr(backend, "pre_tokenizer"):
         return False
     ok, _ = _backend_roundtrip(backend, _BACKEND_ROUNDTRIP_PROBE)
-    if ok is not False:
+    if ok is None or (ok and type(tokenizer).__name__ not in _V5_REBUILT_PRETOKENIZER_CLASSES):
         return False
     path = _resolve_tokenizer_json(tokenizer, cache_dir = cache_dir, revision = revision)
     if path is None:
@@ -285,6 +289,8 @@ def _repair_one_tokenizer_backend(
     except Exception:
         return False
     _, ref_ids = _backend_roundtrip(reference, _BACKEND_IDS_PROBE)
+    if ok and _backend_roundtrip(backend, _BACKEND_IDS_PROBE)[1] == ref_ids:
+        return False
     saved = (backend.model, backend.normalizer, backend.pre_tokenizer, backend.decoder)
     try:
         # Keep the loaded post_processor, padding, truncation and added tokens.
@@ -317,8 +323,8 @@ def _repair_tokenizer_backend_from_json(
             obj._unsloth_tokenizer_json_repaired = True
             getattr(logger, "warning_once", logger.warning)(
                 f"Unsloth: {type(obj).__name__} for {getattr(obj, 'name_or_path', '')} did not "
-                "round-trip text (transformers v5 replaced the byte-level pre-tokenizer from "
-                "tokenizer.json), so it was rebuilt from tokenizer.json."
+                "match tokenizer.json (transformers v5 replaced its pre-tokenizer), so it was "
+                "rebuilt from tokenizer.json."
             )
     return tokenizer
 
@@ -336,7 +342,32 @@ def _apply_post_load_tokenizer_fixes(
     )
     if not fix_tokenizer:
         return tokenizer
-    return _fix_gemma4_base_bos_token(tokenizer, config = config)
+    tokenizer = _fix_gemma4_base_bos_token(tokenizer, config = config)
+    return _fix_post_load_chat_template(tokenizer)
+
+
+def _fix_post_load_chat_template(tokenizer):
+    # FastModel twin of load_correct_tokenizer's template repair, same exclusions.
+    text_tokenizer = getattr(tokenizer, "tokenizer", tokenizer)
+    old = getattr(text_tokenizer, "chat_template", None)
+    if not isinstance(old, str) or not old:
+        return tokenizer
+    name = str(getattr(text_tokenizer, "name_or_path", "")).lower()
+    if any(s in name for s in ("mistral", "qwen3guard")):
+        return tokenizer
+    if "[/INST]" in old and "[INST]" in old and "bos_token" in old and "eos_token" in old:
+        return tokenizer
+    try:
+        new = _fix_chat_template_for_tokenizer(text_tokenizer, old)
+    except RuntimeError:
+        raise  # UNSLOTH_STRICT_CHAT_TEMPLATE=1
+    except Exception:
+        return tokenizer
+    if isinstance(new, str) and new != old:
+        text_tokenizer.chat_template = new
+        if tokenizer is not text_tokenizer and getattr(tokenizer, "chat_template", None) == old:
+            tokenizer.chat_template = new
+    return tokenizer
 
 
 # A KAGGLE_* variable is not a Kaggle kernel: the Kaggle CLI reads KAGGLE_USERNAME / KAGGLE_KEY on ordinary machines, and redirecting their tokenizer cache to /tmp because of it was wrong.
@@ -1152,13 +1183,17 @@ def _fix_chat_template(chat_template, is_sharegpt = False):
     open_tag = lambda body: "{%" + dash_l + " " + body + " " + dash_r + "%}"
 
     # Case 1: the template ends with a single trailing {{ expr }} that is the generation prefix, so wrap it in an {% if add_generation_prompt %} block.
+    # Surrounding whitespace allowed (ERNIE-4.5: `{%- endfor %}\n {{- "..." }}`); it moves inside the block.
+    trailing = after_endfor.strip()
     if (
         "{%" + dash_l + " if" not in after_endfor
         and "{%" + dash_l + " set " not in after_endfor
-        and after_endfor.startswith("{{")
-        and after_endfor.endswith("}}")
-        and after_endfor.count("{{") == 1
-        and after_endfor.count("}}") == 1
+        and trailing.startswith("{{")
+        and trailing.endswith("}}")
+        and trailing.count("{{") == 1
+        and trailing.count("}}") == 1
+        # An EOS footer closes the last turn; wrapping it would strip EOS from every training text.
+        and "eos_token" not in trailing
     ):
         wrapped = open_tag("if add_generation_prompt") + after_endfor + open_tag("endif")
         return chat_template[: end["end"]] + wrapped

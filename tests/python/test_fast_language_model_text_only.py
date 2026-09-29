@@ -79,6 +79,7 @@ def _load_text_only_namespace():
         if isinstance(node, ast.FunctionDef)
     }
     for name in (
+        "_resolve_remote_model_class",
         "resolve_model_class",
         "_is_family_text_decoder",
         "_remap_text_only_skip_modules",

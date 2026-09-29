@@ -59,6 +59,8 @@ export interface SystemInfoResponse {
   /** The dense quant schemes this host can run, best first. Absent on older backends, where readers
    * default to [] and name no precision. */
   dense_quant_schemes?: string[];
+  /** Absent on older backends, where readers treat it as off. */
+  nvfp4_diffusion?: boolean;
   uptime_seconds: number | null;
   cpu: {
     logical_count: number;

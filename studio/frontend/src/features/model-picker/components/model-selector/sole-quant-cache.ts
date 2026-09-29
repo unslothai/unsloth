@@ -10,6 +10,7 @@
 export interface SoleQuantTarget {
   repoId: string;
   localSource: string | null;
+  includeCacheLocations?: boolean;
   fingerprint: string;
   key: string;
 }

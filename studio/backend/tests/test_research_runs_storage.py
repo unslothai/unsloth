@@ -3067,6 +3067,123 @@ def test_create_run_rejects_a_completed_answer_even_beside_the_handoff(research_
     assert research_db.get_run("run-1") is None
 
 
+def _hand_off_from_generation(generation_status, settled = None):
+    # The chat generation that called the deep_research tool owns the assistant message first.
+    conn = studio_db.get_connection()
+    try:
+        conn.execute(
+            """INSERT INTO chat_generation_runs
+               (id, owner_subject, thread_id, user_message_id, assistant_message_id,
+                request_hash, request_json, worker_token, status, last_event_seq,
+                created_at, updated_at)
+               VALUES ('gen-1', 'alice', 'thread-1', 'user-1', 'assistant-1',
+                       'hash', '{}', 'token', ?, 3, 4, 4)""",
+            (generation_status,),
+        )
+        conn.execute(
+            "UPDATE chat_messages SET metadata_json = ? WHERE id = 'assistant-1'",
+            (
+                json.dumps(
+                    {
+                        "serverManaged": True,
+                        "generationRunId": "gen-1",
+                        "generationStatus": generation_status,
+                        "generationSeq": 3 if settled is not False else 2,
+                        "generationSettled": (
+                            generation_status == "completed" if settled is None else settled
+                        ),
+                    }
+                ),
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return _create()
+
+
+def test_update_assistant_writes_the_report_after_a_settled_generation_handoff(research_home):
+    from core.research_runs import _update_assistant
+
+    run = _hand_off_from_generation("completed")
+
+    _update_assistant(run, "final report", "completed")
+
+    message = studio_db.get_chat_message("thread-1", "assistant-1")
+    assert [part["text"] for part in message["content"] if part["type"] == "text"] == [
+        "final report"
+    ]
+    assert message["metadata"]["researchRunId"] == "run-1"
+    assert message["metadata"]["researchStatus"] == "completed"
+    # Only the research run is exempted: a plain client edit is still refused.
+    with pytest.raises(studio_db.ChatMessageProtectedError):
+        studio_db.upsert_chat_message({**message, "content": [{"type": "text", "text": "edit"}]})
+
+
+def test_research_report_survives_recovery_of_an_unsettled_handoff(research_home):
+    from core.research_runs import _update_assistant
+
+    # The live tab starts research straight after the stream, leaving its checkpoint unsettled.
+    run = _hand_off_from_generation("completed", settled = False)
+
+    _update_assistant(run, "final report", "completed")
+
+    message = studio_db.get_chat_message("thread-1", "assistant-1")
+    # A recovery follower replays the generation tail and settles at the run's last event.
+    recovered = {
+        **message,
+        "content": [{"type": "text", "text": "final report into it."}],
+        "metadata": {
+            **message["metadata"],
+            "generationSeq": 3,
+            "generationStatus": "completed",
+            "generationSettled": True,
+        },
+    }
+    with pytest.raises(studio_db.ChatMessageProtectedError):
+        studio_db.upsert_chat_message(recovered)
+    stored = studio_db.get_chat_message("thread-1", "assistant-1")
+    assert [part["text"] for part in stored["content"] if part["type"] == "text"] == [
+        "final report"
+    ]
+    assert stored["metadata"]["generationSettled"] is True
+    assert stored["metadata"]["researchStatus"] == "completed"
+
+
+def test_research_report_drops_the_acknowledgement_incomplete_mark(research_home):
+    from core.research_runs import _update_assistant
+
+    run = _hand_off_from_generation("completed", settled = False)
+    # The acknowledgement after the tool call hit Max Tokens, and finish_run stamped the message.
+    conn = studio_db.get_connection()
+    try:
+        row = conn.execute(
+            "SELECT metadata_json FROM chat_messages WHERE id = 'assistant-1'"
+        ).fetchone()
+        metadata = {**json.loads(row[0]), "incomplete": {"reason": "length"}}
+        conn.execute(
+            "UPDATE chat_messages SET metadata_json = ? WHERE id = 'assistant-1'",
+            (json.dumps(metadata),),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    _update_assistant(run, "final report", "completed")
+
+    message = studio_db.get_chat_message("thread-1", "assistant-1")
+    assert "incomplete" not in message["metadata"]
+    assert message["metadata"]["researchStatus"] == "completed"
+
+
+def test_update_assistant_still_waits_for_an_active_generation(research_home):
+    from core.research_runs import _update_assistant
+    run = _hand_off_from_generation("running")
+
+    with pytest.raises(studio_db.ChatMessageProtectedError):
+        _update_assistant(run, "final report", "completed")
+
+
 def test_update_assistant_replaces_report_parts_without_duplication(research_home):
     from core.research_runs import _update_assistant
 

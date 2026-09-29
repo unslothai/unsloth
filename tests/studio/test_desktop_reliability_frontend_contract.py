@@ -308,7 +308,6 @@ def test_media_galleries_save_natively_with_feedback():
 
 
 def test_chat_exports_await_native_saves_and_markdown_uses_shared_helper():
-    app_sidebar = _ui_source(APP_SIDEBAR)
     prompt_storage = _ui_source(PROMPT_STORAGE)
     thread = _ui_source(THREAD)
     thread_sidebar = _ui_source(THREAD_SIDEBAR)
@@ -322,12 +321,21 @@ def test_chat_exports_await_native_saves_and_markdown_uses_shared_helper():
     assert "catch (error)" not in download_blob
     assert "isDownloadCancelled(error)" in prompt_storage
 
-    for source in (app_sidebar, thread, thread_sidebar, shared_composer, data_tab, projects):
+    # #12122 moved chat export out of the sidebar into the Library and the project menu.
+    chats_library = _ui_source(FRONTEND / "features/library/chats/chats-library.tsx")
+    project_menu = _ui_source(FRONTEND / "features/chat/components/project-menu-items.tsx")
+    for source in (thread, thread_sidebar, shared_composer, data_tab, projects):
         assert "isDownloadCancelled(error)" in source
+    assert "if (!isDownloadCancelled(err)) toast.error(" in chats_library
+    assert "if (!isDownloadCancelled(error)) toast.error(" in project_menu
     assert "const handleExport = useCallback(async () =>" in prompt_storage
     assert prompt_storage.count("await export") >= 12
-    assert "await Promise.all(" not in app_sidebar
-    assert "for (const id of ids)" in app_sidebar
+    # One native save at a time: the Library exports selected chats in a sequential loop.
+    assert "for (const id of threadIds) await exportConversationByFormat(" in chats_library
+    assert "await exportThreads(" in chats_library
+    # Promise.all / allSettled / any over exports would open the dialogs together.
+    assert not re.search(r"Promise\.\w+\((?:(?!;).)*?\bexport\w*\(", chats_library, re.S)
+    assert "await exportThreads(" in project_menu
     assert prompt_storage.count("await downloadBlob(") >= 5
 
     assert "await downloadBlob(zipped," in prompt_storage
@@ -2405,10 +2413,11 @@ def test_audio_page_matches_the_image_rail_header_and_action_footer():
         '@[68rem]:gap-2 @[68rem]:pl-4 @[68rem]:pr-2"' in header
     )
     assert 'triggerLabelClassName="text-ui-14 @[68rem]:text-ui-16"' in header
-    assert "grid h-full min-w-0 grid-cols-[1fr_auto]" in header
+    assert "grid h-full min-w-0 grid-cols-[1fr_auto_auto] gap-2" in header
     assert "@[50rem]:grid-cols-[1fr_auto_1fr]" in header
-    assert "col-start-2 justify-self-end pr-3" in header
-    assert "@[50rem]:justify-self-center @[50rem]:pr-0" in header
+    assert "col-start-2 justify-self-end pt-" in header
+    assert "@[50rem]:justify-self-center" in header
+    assert "col-start-3" in header and "<LibraryPageLink" in header
     assert "absolute" not in header.split("<PillTabs", 1)[0]
 
     assert "@[50rem]:flex-row @[50rem]:overflow-hidden" in layout
@@ -2608,8 +2617,9 @@ _LENGTHS_THAT_MUST_KEEP_THE_SCALE = (
     # The sidebar row: its height, the gap it sets when pinned, and the indent a project row
     # takes. These are hand-set one-off lengths, which is exactly the spacing that used to
     # stay put while the labels grew, so the row clips its own text at a larger setting.
-    # Six rows: #11589 added the drop-cue row, scaled like the rest.
-    (APP_SIDEBAR, "", "h", "30px", 6),
+    # Seven rows: #11589 added the drop-cue row, and #12016 a second section header for the
+    # custom sidebar sections, both scaled like the rest.
+    (APP_SIDEBAR, "", "h", "30px", 7),
     (APP_SIDEBAR, "", "gap", "8.5px", 6),
     (APP_SIDEBAR, "", "pl", "39px", 2),
     # The 34px pill controls in the media headers, in all three spellings the pages use. The

@@ -333,7 +333,11 @@ def fix_xformers_performance_issue():
     spec = importlib.util.find_spec("xformers")
     if spec is None:
         return
-    xformers_version = importlib_version("xformers")
+    try:
+        xformers_version = importlib_version("xformers")
+    except Exception:
+        # Studio's Windows ROCm xformers stub: in sys.modules, not installed.
+        return
     if Version(xformers_version) < Version("0.0.29"):
         xformers_location = spec.origin
         if xformers_location is None:
@@ -685,6 +689,240 @@ def fix_transformers5_bare_annotation_configs():
         )
     except Exception as e:
         logger.info(f"Unsloth: Failed patching PretrainedConfig ({e})")
+
+
+# 4.51 defaulted attn_temperature_tuning to 4, only ever read for truthiness; 4.52 made it True.
+_LEGACY_TRUTHY_BOOL_FIELDS = {
+    "attn_temperature_tuning": frozenset({"llama4_text"}),
+}
+# Identity, not a marker attribute: functools.wraps copies attributes onto whatever wraps us.
+_legacy_config_wrappers = set()
+_legacy_config_ready = set()
+_LEGACY_CONFIG_NOT_COERCED = object()
+_legacy_config_field_types = {}
+_legacy_config_coercions_logged = set()
+
+
+def _legacy_config_accepted_types(annotation):
+    import typing
+    import types as _types
+
+    if annotation is typing.Any or isinstance(annotation, (str, typing.ForwardRef)):
+        return None
+    origin = typing.get_origin(annotation)
+    if origin is typing.Union or (
+        hasattr(_types, "UnionType") and origin is getattr(_types, "UnionType")
+    ):
+        accepted = set()
+        for argument in typing.get_args(annotation):
+            inner = _legacy_config_accepted_types(argument)
+            if inner is None:
+                return None
+            accepted |= inner
+        return frozenset(accepted)
+    if annotation is None or annotation is type(None):
+        return frozenset({type(None)})
+    if origin is typing.Literal:
+        return frozenset({typing.Literal})
+    if origin is not None:
+        return frozenset({origin})
+    if isinstance(annotation, type):
+        return frozenset({annotation})
+    return None
+
+
+def _legacy_config_fields(cls):
+    # Read from the class owning __validators__: non-strict dataclass subclasses validate nothing.
+    cached = _legacy_config_field_types.get(cls)
+    if cached is not None:
+        return cached
+    import dataclasses
+
+    table = {}
+    owner = next(
+        (
+            k
+            for k in getattr(cls, "__mro__", ())
+            if isinstance(k.__dict__.get("__validators__"), dict)
+        ),
+        None,
+    )
+    try:
+        if owner is not None:
+            validated = owner.__dict__["__validators__"]
+            for field in dataclasses.fields(owner):
+                if field.name not in validated:
+                    continue
+                accepted = _legacy_config_accepted_types(field.type)
+                if accepted is not None:
+                    table[field.name] = (field.type, accepted)
+    except TypeError:
+        pass
+    _legacy_config_field_types[cls] = table
+    return table
+
+
+def _legacy_truthy_bool_field(cls, name):
+    model_types = _LEGACY_TRUTHY_BOOL_FIELDS.get(name)
+    if not model_types:
+        return False
+    return any(
+        klass.__dict__.get("model_type") in model_types for klass in getattr(cls, "__mro__", ())
+    )
+
+
+def _legacy_config_coerced_value(cls, name, value, accepted):
+    import math
+
+    wants_bool = bool in accepted
+    wants_int = int in accepted
+    wants_float = float in accepted
+    kind = type(value)
+    if kind is int:
+        if wants_bool and not wants_int and not wants_float:
+            if value in (0, 1) or _legacy_truthy_bool_field(cls, name):
+                return bool(value)
+            return _LEGACY_CONFIG_NOT_COERCED
+        if wants_float and not wants_int:
+            converted = float(value)
+            if math.isfinite(converted) and converted == value:
+                return converted
+        return _LEGACY_CONFIG_NOT_COERCED
+    if kind is float:
+        if wants_bool and not wants_int and not wants_float and value in (0.0, 1.0):
+            return bool(value)
+        if wants_int and not wants_float and math.isfinite(value) and value.is_integer():
+            return int(value)
+        return _LEGACY_CONFIG_NOT_COERCED
+    if kind is list and tuple in accepted and list not in accepted:
+        return tuple(value)
+    return _LEGACY_CONFIG_NOT_COERCED
+
+
+def _coerce_legacy_config_kwargs(cls, kwargs):
+    """Convert only values the real validator rejects and accepts once converted."""
+    fields = _legacy_config_fields(cls)
+    if not fields:
+        return kwargs
+    try:
+        from huggingface_hub.dataclasses import type_validator
+    except Exception:
+        type_validator = None
+
+    def valid(name, value, annotation):
+        if type_validator is None:
+            return False
+        try:
+            type_validator(name, value, annotation)
+            return True
+        except TypeError:
+            return False
+        except Exception:
+            return True
+
+    updated = None
+    for name, value in kwargs.items():
+        entry = fields.get(name)
+        if entry is None or isinstance(value, (str, dict)) or value is None:
+            continue
+        annotation, accepted = entry
+        converted = _legacy_config_coerced_value(cls, name, value, accepted)
+        if converted is _LEGACY_CONFIG_NOT_COERCED:
+            continue
+        if valid(name, value, annotation):
+            continue
+        if type_validator is not None and not valid(name, converted, annotation):
+            continue
+        if updated is None:
+            updated = dict(kwargs)
+        updated[name] = converted
+        key = (cls.__name__, name, type(value).__name__)
+        if key not in _legacy_config_coercions_logged:
+            _legacy_config_coercions_logged.add(key)
+            logger.warning(
+                f"Unsloth: `{cls.__name__}.{name}` is {value!r} ({type(value).__name__}), written by "
+                f"an older transformers; using {converted!r} since transformers 5 expects "
+                f"`{getattr(annotation, '__name__', None) or annotation}`."
+            )
+    return kwargs if updated is None else updated
+
+
+def _legacy_config_init_is_generated(init):
+    # dataclass writes __init__ via exec ("<string>"); a hand-written one normalises its own
+    # arguments before forwarding, so only the generated init it reaches coerces them.
+    depth = 0
+    while hasattr(init, "__wrapped__") and depth < 32:
+        init, depth = init.__wrapped__, depth + 1
+    code = getattr(init, "__code__", None)
+    return code is not None and code.co_filename == "<string>"
+
+
+def _patch_config_init_for_legacy_types(cls):
+    init = cls.__dict__.get("__init__")
+    if (
+        init is None
+        or init in _legacy_config_wrappers
+        or not _legacy_config_init_is_generated(init)
+    ):
+        return
+
+    @functools.wraps(init)
+    def __init__(self, *args, **kwargs):
+        if kwargs:
+            try:
+                kwargs = _coerce_legacy_config_kwargs(type(self), kwargs)
+            except Exception as e:
+                logger.info(f"Unsloth: legacy config type coercion skipped ({e})")
+        return init(self, *args, **kwargs)
+
+    _legacy_config_wrappers.add(__init__)
+    try:
+        cls.__init__ = __init__
+    except Exception:
+        pass
+
+
+def fix_transformers5_legacy_config_types():
+    """Coerce 4.x-era config values (e.g. Llama 4 attn_temperature_tuning: 4) that 5.x @strict rejects."""
+    try:
+        import transformers
+        if Version(transformers.__version__) < Version("5.0.0"):
+            return
+        from transformers.configuration_utils import PretrainedConfig as _BaseConfig
+    except Exception as e:
+        logger.info(f"Unsloth: Skipping legacy config type fix ({e})")
+        return
+    if not isinstance(getattr(_BaseConfig, "__validators__", None), dict):
+        return
+    previous = _BaseConfig.__dict__.get("__new__")
+    previous = getattr(previous, "__func__", previous)
+    if previous in _legacy_config_wrappers:
+        return
+
+    # Patch lazily on first instantiation, once every class decorator has run:
+    # @strict(accept_kwargs=True) swaps in an __init__ that never calls the one it replaced.
+    def __new__(cls, *args, **kwargs):
+        if cls not in _legacy_config_ready:
+            for klass in cls.__mro__:
+                if isinstance(klass, type) and issubclass(klass, _BaseConfig):
+                    try:
+                        _patch_config_init_for_legacy_types(klass)
+                    except Exception as e:
+                        logger.info(
+                            f"Unsloth: legacy config type patch skipped for {klass.__name__} ({e})"
+                        )
+            _legacy_config_ready.add(cls)
+        if previous is not None:
+            return previous(cls, *args, **kwargs)
+        return object.__new__(cls)
+
+    _legacy_config_wrappers.add(__new__)
+    try:
+        _BaseConfig.__new__ = staticmethod(__new__)
+    except Exception as e:
+        logger.info(f"Unsloth: Failed patching PretrainedConfig.__new__ ({e})")
+        return
+    logger.info("Unsloth: Patched transformers config classes to accept legacy 4.x value types.")
 
 
 # Where the image helpers that `modeling_*.py` files reach for actually live.
@@ -2457,6 +2695,496 @@ def _transformers_rope_scaling_assignment_drops_theta():
         return not bool(torch.allclose(replaced.float().cpu(), reference.float().cpu()))
     except Exception:
         return False
+
+
+_REMOTE_MODEL_API_FLAG = "_unsloth_remote_model_api"
+
+
+def _tie_weights_accepting_new_keywords(own, accepted):
+    @functools.wraps(own)
+    def tie_weights(self, *args, **kwargs):
+        return own(self, *args, **{k: v for k, v in kwargs.items() if k in accepted})
+
+    setattr(tie_weights, _REMOTE_MODEL_API_FLAG, True)
+    return tie_weights
+
+
+def _patch_remote_model_class(cls, new_keywords):
+    if "transformers_modules" not in (getattr(cls, "__module__", "") or ""):
+        return
+    own = cls.__dict__.get("tie_weights")
+    if own is None or getattr(own, _REMOTE_MODEL_API_FLAG, False):
+        return
+    try:
+        params = inspect.signature(own).parameters
+    except (TypeError, ValueError):
+        return
+    if any(p.kind == p.VAR_KEYWORD for p in params.values()):
+        return
+    if all(k in params for k in new_keywords):
+        return
+    cls.tie_weights = _tie_weights_accepting_new_keywords(own, set(params))
+
+
+def _legacy_tied_weights_mapping(model, keys):
+    """4.x list -> 5.x {target: source}; only the output embedding is tied (the one tie 4.x made), other keys get no source rather than a wrong one."""
+    try:
+        embedding = model.get_input_embeddings()
+        output = model.get_output_embeddings()
+    except Exception:
+        return {}
+    weight = getattr(embedding, "weight", None)
+    output_weight = getattr(output, "weight", None)
+    if weight is None or output_weight is None:
+        return {}
+    names = {}
+    for name, param in model.named_parameters(remove_duplicate = False):
+        names.setdefault(id(param), name)
+    source = names.get(id(weight))
+    if source is None:
+        return {}
+    output_names = {
+        name
+        for name, param in model.named_parameters(remove_duplicate = False)
+        if param is output_weight
+    }
+    return {key: source for key in keys if key in output_names and key != source}
+
+
+def fix_transformers5_remote_code_model_api():
+    """Transformers 5 shims for 4.x remote code (Kimi-K3): OutputRecorder alias (before remote import),
+    tie_weights dropping new keywords, list _tied_weights_keys -> mapping. Only transformers_modules
+    classes; no-op on 4.57."""
+    try:
+        import transformers.utils.generic as generic
+    except Exception:
+        return
+    if not hasattr(generic, "OutputRecorder"):
+        try:
+            from transformers.utils.output_capturing import OutputRecorder
+            generic.OutputRecorder = OutputRecorder
+        except Exception:
+            pass
+    try:
+        from transformers import PreTrainedModel
+    except Exception:
+        return
+    if getattr(PreTrainedModel, _REMOTE_MODEL_API_FLAG, False):
+        return
+    try:
+        params = inspect.signature(PreTrainedModel.tie_weights).parameters
+    except (TypeError, ValueError):
+        params = {}
+    new_keywords = tuple(k for k in ("missing_keys", "recompute_mapping") if k in params)
+    original_post_init = PreTrainedModel.post_init
+
+    @functools.wraps(original_post_init)
+    def post_init(self, *args, **kwargs):
+        keys = getattr(self, "_tied_weights_keys", None)
+        if (
+            new_keywords
+            and isinstance(keys, (list, tuple))
+            and "transformers_modules" in (type(self).__module__ or "")
+        ):
+            self._tied_weights_keys = _legacy_tied_weights_mapping(self, keys)
+        if new_keywords:
+            for klass in type(self).__mro__:
+                _patch_remote_model_class(klass, new_keywords)
+        return original_post_init(self, *args, **kwargs)
+
+    PreTrainedModel.post_init = post_init
+    setattr(PreTrainedModel, _REMOTE_MODEL_API_FLAG, True)
+    if UNSLOTH_ENABLE_LOGGING:
+        logger.info(
+            "Unsloth: Remote modeling code written for transformers 4.x gets the 5.x model API shims."
+        )
+
+
+def _fp8_replace_swaps_named_experts(fn) -> bool:
+    try:
+        return 'endswith(".experts")' in inspect.getsource(fn)
+    except Exception:
+        return False
+
+
+def _wrap_fp8_replace_for_modulelist_experts(original):
+    if getattr(original, "_unsloth_modulelist_experts", False):
+        return original
+    try:
+        from transformers.quantizers.quantizers_utils import should_convert_module
+        signature = inspect.signature(original)
+    except Exception:
+        return original
+
+    @functools.wraps(original)
+    def replace_with_fp8_linear(model, *args, **kwargs):
+        import torch.nn as nn
+
+        try:
+            bound = signature.bind(model, *args, **kwargs)
+        except TypeError:
+            return original(model, *args, **kwargs)
+        patterns = bound.arguments.get("modules_to_not_convert", None)
+        hidden = [
+            (name, module)
+            for name, module in model.named_modules()
+            if name.endswith(".experts") and isinstance(module, nn.ModuleList)
+        ]
+        if not hidden:
+            return original(model, *args, **kwargs)
+
+        # Rename off `.experts` so children take the FP8Linear branch; keep exclusions under the new name.
+        parked_suffix = "_unsloth_modulelist"
+        extra_patterns = []
+        renames = []
+        for name, module in hidden:
+            parent_name, _, child = name.rpartition(".")
+            parent = model.get_submodule(parent_name)
+            parked = child + parked_suffix
+            if parked in parent._modules:
+                return original(model, *args, **kwargs)
+            for sub_name, _ in module.named_modules():
+                if sub_name and not should_convert_module(f"{name}.{sub_name}", patterns):
+                    extra_patterns.append(re.escape(f"{parent_name}.{parked}.{sub_name}") + "$")
+            renames.append((parent, child, parked))
+
+        def _rename(parent, old, new):
+            items = list(parent._modules.items())
+            parent._modules.clear()
+            for key, value in items:
+                parent._modules[new if key == old else key] = value
+
+        for parent, child, parked in renames:
+            _rename(parent, child, parked)
+        try:
+            if extra_patterns:
+                bound.arguments["modules_to_not_convert"] = list(patterns or []) + extra_patterns
+            return original(*bound.args, **bound.kwargs)
+        finally:
+            for parent, child, parked in renames:
+                _rename(parent, parked, child)
+
+    replace_with_fp8_linear._unsloth_modulelist_experts = True
+    return replace_with_fp8_linear
+
+
+def fix_transformers_fp8_modulelist_experts():
+    """transformers 5.x swaps any `*.experts` for FP8Experts, breaking remote-code ModuleList experts (sarvam)."""
+    try:
+        from transformers.quantizers import quantizer_finegrained_fp8
+    except Exception:
+        return
+    quantizer_cls = getattr(quantizer_finegrained_fp8, "FineGrainedFP8HfQuantizer", None)
+    method = getattr(quantizer_cls, "_process_model_before_weight_loading", None)
+    if method is None or getattr(method, "_unsloth_modulelist_experts", False):
+        return
+
+    @functools.wraps(method)
+    def _process_model_before_weight_loading(self, model, *args, **kwargs):
+        try:
+            import transformers.integrations.finegrained_fp8 as fp8_integration
+            current = getattr(fp8_integration, "replace_with_fp8_linear", None)
+            if current is not None and _fp8_replace_swaps_named_experts(current):
+                fp8_integration.replace_with_fp8_linear = _wrap_fp8_replace_for_modulelist_experts(
+                    current
+                )
+        except Exception:
+            pass
+        try:
+            import transformers.integrations.finegrained_fp8 as fp8_integration
+            _cast_fp8_dequantize_to_model_dtype(getattr(fp8_integration, "Fp8Dequantize", None))
+        except Exception:
+            pass
+        try:
+            import transformers.integrations.finegrained_fp8 as fp8_integration
+            _pad_fp8_dequantize_ragged_blocks(getattr(fp8_integration, "Fp8Dequantize", None))
+        except Exception:
+            pass
+        return method(self, model, *args, **kwargs)
+
+    _process_model_before_weight_loading._unsloth_modulelist_experts = True
+    quantizer_cls._process_model_before_weight_loading = _process_model_before_weight_loading
+
+
+_FP8_SCALE_SUFFIXES = (".weight_scale_inv", ".weight_scale")
+
+
+def _safetensors_header_dtypes(path):
+    import json
+    with open(path, "rb") as f:
+        n = int.from_bytes(f.read(8), "little")
+        header = json.loads(f.read(n))
+    return {
+        k: v.get("dtype") for k, v in header.items() if k != "__metadata__" and isinstance(v, dict)
+    }
+
+
+def _fp8_checkpoint_files(checkpoint_files, config):
+    files = [str(f) for f in (checkpoint_files or []) if f]
+    if files:
+        return files
+    # transformers 4.x does not pass checkpoint_files to the quantizer.
+    import glob
+
+    name = getattr(config, "_name_or_path", None) or getattr(config, "name_or_path", None)
+    if not name:
+        return []
+    directory = str(name) if os.path.isdir(str(name)) else None
+    if directory is None:
+        try:
+            from huggingface_hub import try_to_load_from_cache
+            for filename in ("model.safetensors.index.json", "model.safetensors"):
+                hit = try_to_load_from_cache(
+                    name, filename, revision = getattr(config, "_commit_hash", None)
+                )
+                if isinstance(hit, str):
+                    directory = os.path.dirname(hit)
+                    break
+        except Exception:
+            return []
+    if directory is None:
+        return []
+    return sorted(glob.glob(os.path.join(directory, "*.safetensors")))
+
+
+def _fp8_checkpoint_tensor_dtypes(checkpoint_files, config):
+    # Shard headers, not the index: Step-3.7-Flash-FP8's index omits weight_scale_inv.
+    import json
+
+    files = _fp8_checkpoint_files(checkpoint_files, config)
+    dtypes = {}
+    for path in files:
+        if path.endswith(".safetensors") and os.path.isfile(path):
+            try:
+                dtypes.update(_safetensors_header_dtypes(path))
+            except Exception:
+                pass
+    if dtypes:
+        return dtypes
+    for directory in {os.path.dirname(f) for f in files}:
+        index = os.path.join(directory, "model.safetensors.index.json")
+        if os.path.isfile(index):
+            try:
+                with open(index, "r", encoding = "utf-8") as f:
+                    dtypes.update(dict.fromkeys(json.load(f).get("weight_map", {})))
+            except Exception:
+                pass
+    return dtypes
+
+
+def _fp8_unscaled_linear_patterns(model, tensor_dtypes):
+    import torch.nn as nn
+
+    if not tensor_dtypes:
+        return []
+    known = {k: v for k, v in tensor_dtypes.items() if v is not None}
+    if known:
+        if not any(str(v).upper().startswith("F8") for v in known.values()):
+            return []
+        unscaled = [
+            k[: -len(".weight")]
+            for k, v in known.items()
+            if k.endswith(".weight") and not str(v).upper().startswith("F8")
+        ]
+    else:
+        names = set(tensor_dtypes)
+        if not any(n.endswith(_FP8_SCALE_SUFFIXES) for n in names):
+            return []
+        unscaled = [
+            n[: -len(".weight")]
+            for n in names
+            if n.endswith(".weight")
+            and not any(n[: -len(".weight")] + s in names for s in _FP8_SCALE_SUFFIXES)
+        ]
+    if not unscaled:
+        return []
+    linears = {n for n, m in model.named_modules() if isinstance(m, nn.Linear)}
+    try:
+        from transformers.conversion_mapping import get_model_conversion_mapping
+        renamings = get_model_conversion_mapping(model) or []
+    except Exception:
+        renamings = []
+    try:
+        # transformers 5 matches skip entries as regexes; 4.x as substrings.
+        from transformers.quantizers.quantizers_utils import should_convert_module  # noqa: F401
+        exact = lambda n: re.escape(n) + "$"
+    except Exception:
+        exact = lambda n: n
+    patterns = []
+    for name in unscaled:
+        # Rename the key, not the module name: renames need the trailing dot (`^vit_large_projector\.`).
+        renamed = name + ".weight"
+        for rename in renamings:
+            try:
+                renamed, _ = rename.rename_source_key(renamed)
+            except Exception:
+                pass
+        renamed = renamed[: -len(".weight")] if renamed.endswith(".weight") else renamed
+        for candidate in (renamed, name):
+            if candidate in linears:
+                pattern = exact(candidate)
+                if pattern not in patterns:
+                    patterns.append(pattern)
+                break
+    return patterns
+
+
+def fix_transformers_fp8_unscaled_checkpoint_linears():
+    """Keep Linear layers an FP8 checkpoint stores unscaled in bf16 unconverted; modules_to_not_convert misses renamed ones."""
+    try:
+        from transformers.quantizers import quantizer_finegrained_fp8
+    except Exception:
+        return
+    quantizer_cls = getattr(quantizer_finegrained_fp8, "FineGrainedFP8HfQuantizer", None)
+    method = getattr(quantizer_cls, "_process_model_before_weight_loading", None)
+    if method is None or getattr(method, "_unsloth_unscaled_linears", False):
+        return
+
+    @functools.wraps(method)
+    def _process_model_before_weight_loading(self, model, *args, **kwargs):
+        extra = []
+        qconfig = getattr(self, "quantization_config", None)
+        if getattr(self, "pre_quantized", False) and qconfig is not None:
+            try:
+                dtypes = _fp8_checkpoint_tensor_dtypes(
+                    kwargs.get("checkpoint_files"), getattr(model, "config", None)
+                )
+                extra = _fp8_unscaled_linear_patterns(model, dtypes)
+            except Exception:
+                extra = []
+        saved = getattr(qconfig, "modules_to_not_convert", None) if extra else None
+        original = list(saved or [])
+        added = [p for p in extra if p not in original]
+        if not added:
+            return method(self, model, *args, **kwargs)
+        qconfig.modules_to_not_convert = original + added
+        try:
+            return method(self, model, *args, **kwargs)
+        finally:
+            # Strip only what was added: the checkpoint may list the same pattern itself.
+            current = list(getattr(qconfig, "modules_to_not_convert", None) or [])
+            restored = [p for p in current if p not in added]
+            qconfig.modules_to_not_convert = restored if restored or saved is not None else None
+
+    _process_model_before_weight_loading._unsloth_unscaled_linears = True
+    quantizer_cls._process_model_before_weight_loading = _process_model_before_weight_loading
+
+
+def _cast_fp8_dequantize_to_model_dtype(op_cls):
+    # transformers 5.4 dequantizes to the scale's fp32; cast to the replaced parameter's dtype.
+    convert = getattr(op_cls, "convert", None)
+    if convert is None or getattr(convert, "_unsloth_model_dtype", False):
+        return
+
+    @functools.wraps(convert)
+    def cast_convert(self, input_dict, *args, **kwargs):
+        import torch
+
+        out = convert(self, input_dict, *args, **kwargs)
+        model = kwargs.get("model")
+        if model is None or not isinstance(out, dict):
+            return out
+        for name, value in out.items():
+            tensor = value[0] if isinstance(value, list) and value else value
+            if not isinstance(tensor, torch.Tensor) or not tensor.is_floating_point():
+                continue
+            try:
+                target = model.get_parameter(name).dtype
+            except Exception:
+                continue
+            if target.is_floating_point and target != tensor.dtype:
+                tensor = tensor.to(target)
+                out[name] = [tensor] if isinstance(value, list) else tensor
+        return out
+
+    cast_convert._unsloth_model_dtype = True
+    op_cls.convert = cast_convert
+
+
+def _fp8_pad_ragged_block(quantized, scales, block):
+    """Zero-pad a block-FP8 weight with a ragged last block to its ceil scale grid, else None."""
+    import torch
+
+    try:
+        rows, cols = quantized.shape[-2:]
+        scale_rows, scale_cols = scales.shape[-2:]
+        block_m, block_n = int(block[0]), int(block[1])
+    except Exception:
+        return None
+    # Packed FP4 doubles its columns inside transformers; FP8 may arrive already cast, so exclude only packed.
+    packed = (torch.int8, torch.uint8, getattr(torch, "float4_e2m1fn_x2", torch.int8))
+    if quantized.dtype in packed or (rows % block_m == 0 and cols % block_n == 0):
+        return None
+    if -(-rows // block_m) != scale_rows or -(-cols // block_n) != scale_cols:
+        return None
+    padded = quantized.new_zeros(
+        (*quantized.shape[:-2], scale_rows * block_m, scale_cols * block_n)
+    )
+    padded[..., :rows, :cols] = quantized
+    return padded
+
+
+def _pad_fp8_dequantize_ragged_blocks(op_cls):
+    """16-bit loads of block-FP8 weights with a ragged last block (GLM-5.3 kv_a_proj_with_mqa: 576 rows) raise: pad, dequantize, slice."""
+    if op_cls is None:
+        return
+
+    def _block(self):
+        config = getattr(getattr(self, "hf_quantizer", None), "quantization_config", None)
+        return getattr(config, "weight_block_size", None)
+
+    original = getattr(op_cls, "_dequantize_one", None)
+    if original is not None:
+        # rows // scale_rows: raises on a ragged grid, or silently picks the wrong block when it divides (200 / 2).
+        if getattr(original, "_unsloth_ragged_blocks", False):
+            return
+
+        @functools.wraps(original)
+        def _dequantize_one(self, quantized, scales, *args, **kwargs):
+            block = _block(self)
+            padded = None if block is None else _fp8_pad_ragged_block(quantized, scales, block)
+            if padded is None:
+                return original(self, quantized, scales, *args, **kwargs)
+            rows, cols = quantized.shape[-2:]
+            out = original(self, padded, scales, *args, **kwargs)
+            return out[..., :rows, :cols].contiguous()
+
+        _dequantize_one._unsloth_ragged_blocks = True
+        op_cls._dequantize_one = _dequantize_one
+        return
+
+    convert = getattr(op_cls, "convert", None)
+    if convert is None or getattr(convert, "_unsloth_ragged_blocks", False):
+        return
+
+    @functools.wraps(convert)
+    def ragged_convert(self, input_dict, *args, **kwargs):
+        try:
+            weight = input_dict["weight$"]
+            scale = input_dict["weight_scale_inv"]
+            quantized = weight[0] if isinstance(weight, list) else weight
+            scales = scale[0] if isinstance(scale, list) else scale
+            block = _block(self)
+            padded = None if block is None else _fp8_pad_ragged_block(quantized, scales, block)
+        except Exception:
+            padded = None
+        if padded is None:
+            return convert(self, input_dict, *args, **kwargs)
+        rows, cols = quantized.shape[-2:]
+        input_dict = dict(input_dict)
+        input_dict["weight$"] = [padded] if isinstance(weight, list) else padded
+        out = convert(self, input_dict, *args, **kwargs)
+        for name, value in out.items():
+            tensor = value[0] if isinstance(value, list) and value else value
+            if getattr(tensor, "shape", None) is not None and tuple(tensor.shape[-2:]) == tuple(
+                padded.shape[-2:]
+            ):
+                tensor = tensor[..., :rows, :cols].contiguous()
+                out[name] = [tensor] if isinstance(value, list) else tensor
+        return out
+
+    ragged_convert._unsloth_ragged_blocks = True
+    op_cls.convert = ragged_convert
 
 
 def fix_transformers_is_torch_fx_available():
@@ -6480,6 +7208,58 @@ def disable_torchaudio_if_cuda_mismatched():
         sys.modules["torchaudio"] = None
 
 
+def _torch_distributed_unavailable():
+    """True when torch has no `torch._C._distributed_c10d` (AMD's Windows ROCm wheels, torch 2.11)."""
+    try:
+        import torch.distributed as dist
+        return not dist.is_available()
+    except Exception:
+        return False
+
+
+def _is_missing_torch_distributed(exc):
+    name = getattr(exc, "name", None) or ""
+    return name.startswith("torch._C._distributed") or "torch._C._distributed" in str(exc)
+
+
+def fix_accelerate_dtensor_check_without_torch_distributed():
+    """Backport huggingface/accelerate#4250: accelerate 1.15.0's `prepare_model` calls `model_has_dtensor`,
+    which imports `torch.distributed.tensor` and kills every Trainer on a torch without a distributed
+    backend (huggingface/accelerate#4249). No DTensor can exist there, so the answer is False.
+    """
+    if not _torch_distributed_unavailable():
+        return False
+    if importlib.util.find_spec("accelerate") is None:
+        return False
+    try:
+        import accelerate.utils.other as acc_other
+    except Exception:
+        return False
+    original = getattr(acc_other, "model_has_dtensor", None)
+    if original is None:
+        return False
+    if getattr(original, "__unsloth_patched__", False):
+        return True
+
+    @functools.wraps(original)
+    def model_has_dtensor(model):
+        try:
+            return original(model)
+        except ImportError as exc:
+            if _is_missing_torch_distributed(exc):
+                return False
+            raise
+
+    model_has_dtensor.__unsloth_patched__ = True
+    acc_other.model_has_dtensor = model_has_dtensor
+    # Both re-export the function by name at import time.
+    for module_name in ("accelerate.utils", "accelerate.accelerator"):
+        module = sys.modules.get(module_name)
+        if getattr(module, "model_has_dtensor", None) is original:
+            module.model_has_dtensor = model_has_dtensor
+    return True
+
+
 def disable_broken_wandb():
     """Disable wandb if it's installed but cannot actually import.
 
@@ -7124,6 +7904,10 @@ _PEFT_MOE_CONVERSION_PATTERNS = {
     "glm_moe_dsa": "qwen2_moe",
     "hunyuan_v1_moe": "qwen2_moe",
     "longcat_flash": "qwen2_moe",
+    # Not a transformers type: unsloth/models/longcat_lsa.py registers it into transformers' and
+    # peft's tables with longcat_flash's family, so once that has run in a process the live map
+    # carries it and the snapshot has to agree.
+    "longcat_flash_lsa": "qwen2_moe",
     "mellum": "qwen2_moe",
     "olmoe": "qwen2_moe",
     "qwen3_moe": "qwen2_moe",
@@ -7287,14 +8071,7 @@ def _backfill_conversion_symbols_once(builders, added):
             continue
         # Build the stub off to the side rather than installing it, so the real module keeps its
         # identity and everything else it exports.
-        saved = sys.modules.pop(name, None)
-        try:
-            donor = builders[name]()
-        finally:
-            if saved is not None:
-                sys.modules[name] = saved
-            else:
-                sys.modules.pop(name, None)
+        donor = builders[name]()
         for symbol in missing:
             qualified = f"{name}.{symbol}"
             if symbol == "_MODEL_TO_CONVERSION_PATTERN":
@@ -7341,9 +8118,12 @@ def _backfill_missing_conversion_symbols():
     Never replaces a module and never overwrites a name transformers defines,
     so this is a no-op on every release that still exports them.
     """
+    # The _build_ variants, not _install_: installing also attaches the stub to the transformers
+    # package, where `import transformers.conversion_mapping as m` would keep finding it after the
+    # real module is back in sys.modules.
     builders = {
-        "transformers.conversion_mapping": _install_transformers_conversion_mapping_stub,
-        "transformers.core_model_loading": _install_transformers_core_model_loading_stub,
+        "transformers.conversion_mapping": _build_transformers_conversion_mapping_stub,
+        "transformers.core_model_loading": _build_transformers_core_model_loading_stub,
     }
     added = []
     # One pass is not enough when the drifts coincide: conversion_mapping imports names from
@@ -8697,6 +9477,13 @@ def fix_peft_stale_torchao_import_error():
             return False
 
     is_torchao_available.__unsloth_patched__ = True
+    # peft's is an lru_cache; functools.wraps copies its name and __dict__ but not cache_clear or
+    # cache_info, which are methods of the cache object. Forward them so the patch stays a drop-in
+    # for anything that resets the probe after installing or removing torchao.
+    for name in ("cache_clear", "cache_info"):
+        method = getattr(original, name, None)
+        if method is not None:
+            setattr(is_torchao_available, name, method)
 
     patched = False
     try:
@@ -10186,3 +10973,194 @@ def disable_sentencepiece_on_windows():
             f"{DISABLE_SENTENCEPIECE_VARIABLE}=0 to import it again."
         )
     return True
+
+
+# compressed-tensors fake-quantizes W8A8 activations under no_grad; STE so LoRA gets input gradients.
+_CT_FORWARD_MODULE = "compressed_tensors.quantization.lifecycle.forward"
+_CT_BY_NAME_MODULES = (
+    "compressed_tensors.modeling.kvcache",
+    "compressed_tensors.modeling.attention",
+)
+_CT_STE_SENTINEL = "_unsloth_activation_ste"
+_CT_FINDER_SENTINEL = "__unsloth_compressed_tensors_ste_finder__"
+
+
+def _compressed_tensors_ste_forward_quantize(original):
+    import torch
+
+    class _StraightThrough(torch.autograd.Function):
+        # Not `value + (out - value).detach()`: that rounds where a static scale saturates.
+        @staticmethod
+        def forward(ctx, value, quantized):
+            ctx.value_dtype = value.dtype
+            return quantized.to(value.dtype).view_as(quantized)
+
+        @staticmethod
+        def backward(ctx, grad_output):
+            return grad_output.to(ctx.value_dtype), None
+
+    @functools.wraps(original)
+    def forward_quantize(*args, **kwargs):
+        out = original(*args, **kwargs)
+        if not torch.is_grad_enabled():
+            return out
+        value = args[1] if len(args) > 1 else kwargs.get("value")
+        base_name = args[2] if len(args) > 2 else kwargs.get("base_name")
+        if (
+            base_name != "weight"
+            and isinstance(value, torch.Tensor)
+            and isinstance(out, torch.Tensor)
+            and value.requires_grad
+            and not out.requires_grad
+            and out.shape == value.shape
+        ):
+            return _StraightThrough.apply(value, out)
+        return out
+
+    setattr(forward_quantize, _CT_STE_SENTINEL, True)
+    return forward_quantize
+
+
+def _patch_compressed_tensors_forward_module(module):
+    original = getattr(module, "forward_quantize", None)
+    if not callable(original):
+        return False
+    if getattr(original, _CT_STE_SENTINEL, False):
+        return True
+    patched = _compressed_tensors_ste_forward_quantize(original)
+    module.forward_quantize = patched
+    # Modules that imported the function by name before this ran hold the original.
+    for name in _CT_BY_NAME_MODULES:
+        other = sys.modules.get(name)
+        if other is not None and getattr(other, "forward_quantize", None) is original:
+            other.forward_quantize = patched
+    return True
+
+
+class _CompressedTensorsSTELoader(importlib.abc.Loader):
+    __slots__ = ("_loader",)
+
+    def __init__(self, loader):
+        self._loader = loader
+
+    def create_module(self, spec):
+        create_module = getattr(self._loader, "create_module", None)
+        if create_module is None:
+            return None
+        return create_module(spec)
+
+    def exec_module(self, module):
+        self._loader.exec_module(module)
+        try:
+            _patch_compressed_tensors_forward_module(module)
+        except Exception as e:
+            logger.info(f"Unsloth: compressed-tensors activation gradient patch skipped: {e}")
+
+    def __getattr__(self, name):
+        return getattr(self._loader, name)
+
+
+class _CompressedTensorsSTEFinder(importlib.abc.MetaPathFinder):
+    __slots__ = (_CT_FINDER_SENTINEL,)
+
+    def __init__(self):
+        setattr(self, _CT_FINDER_SENTINEL, True)
+
+    def find_spec(
+        self,
+        fullname,
+        path = None,
+        target = None,
+    ):
+        if fullname != _CT_FORWARD_MODULE:
+            return None
+        spec = None
+        for finder in sys.meta_path:
+            if finder is self or getattr(finder, _CT_FINDER_SENTINEL, False):
+                continue
+            finder_find_spec = getattr(finder, "find_spec", None)
+            if finder_find_spec is None:
+                continue
+            try:
+                spec = finder_find_spec(fullname, path, target)
+            except Exception:
+                spec = None
+            if spec is not None:
+                break
+        if spec is None or spec.loader is None or not hasattr(spec.loader, "exec_module"):
+            return None
+        spec.loader = _CompressedTensorsSTELoader(spec.loader)
+        return spec
+
+
+def fix_compressed_tensors_activation_quant_gradient():
+    if importlib.util.find_spec("compressed_tensors") is None:
+        return
+    module = sys.modules.get(_CT_FORWARD_MODULE)
+    if module is not None:
+        _patch_compressed_tensors_forward_module(module)
+        return
+    for finder in sys.meta_path:
+        if getattr(finder, _CT_FINDER_SENTINEL, False):
+            return
+    sys.meta_path.insert(0, _CompressedTensorsSTEFinder())
+
+
+def fix_transformers_longcat_lsa_config():
+    """Answer AutoConfig's "Unrecognized model" on a LongcatCausalLM config (no model_type,
+    auto_map or modeling code) with ``models/longcat_lsa.py``; all other loads are untouched."""
+    try:
+        from transformers import AutoConfig
+        from transformers.configuration_utils import PretrainedConfig
+    except Exception:
+        return
+    current = AutoConfig.__dict__.get("from_pretrained")
+    original = getattr(current, "__func__", None)
+    if original is None or getattr(original, "_unsloth_longcat_lsa", False):
+        return
+    try:
+        import transformers.models.longcat_flash  # noqa: F401
+    except Exception:
+        return
+
+    def from_pretrained(cls, pretrained_model_name_or_path, *args, **kwargs):
+        try:
+            return original(cls, pretrained_model_name_or_path, *args, **kwargs)
+        except ValueError as error:
+            message = str(error)
+            if "Unrecognized model" not in message and "longcat_flash_lsa" not in message:
+                raise
+            from .models.longcat_lsa import (
+                is_longcat_lsa_config_dict,
+                load_longcat_lsa_config,
+            )
+
+            hub_kwargs = {
+                key: kwargs[key]
+                for key in (
+                    "cache_dir",
+                    "force_download",
+                    "local_files_only",
+                    "token",
+                    "revision",
+                    "subfolder",
+                )
+                if key in kwargs
+            }
+            try:
+                config_dict, _ = PretrainedConfig.get_config_dict(
+                    pretrained_model_name_or_path, **hub_kwargs
+                )
+            except Exception:
+                raise error
+            if not is_longcat_lsa_config_dict(config_dict):
+                raise
+            return load_longcat_lsa_config(pretrained_model_name_or_path, *args, **kwargs)
+
+    from_pretrained._unsloth_longcat_lsa = True
+    from_pretrained.__wrapped__ = original
+    AutoConfig.from_pretrained = classmethod(from_pretrained)
+    if UNSLOTH_ENABLE_LOGGING:
+        logger.info(
+            "Unsloth: LongcatCausalLM configs without a model_type load on transformers' longcat_flash."
+        )
