@@ -271,7 +271,7 @@ with sync_playwright() as p:
     # Settings-committing requests (the load POST, the per-model override mirror PUT, the VRAM
     # budget PUT), so a click that commits settings is waited out rather than slept on. On the
     # context, so a replacement page is covered too.
-    _commits = {"started": 0, "inflight": set(), "loads_finished": 0}
+    _commits = {"started": 0, "inflight": set(), "loads_started": 0, "loads_ended": 0}
 
     # validate and unload are the Load/Reload flow's own preliminaries: after the override PUT
     # answers, the flow POSTs /validate (~0.4 s on CI), then /unload, and only then /load. Left
@@ -296,22 +296,23 @@ with sync_playwright() as p:
             if _is_commit(req):
                 _commits["started"] += 1
                 _commits["inflight"].add(req)
+                if _is_load(req):
+                    _commits["loads_started"] += 1
         except Exception:
             pass
 
+    # Finished or failed alike: either way that /load is over, and a failed one is for the
+    # assertions after the wait to report, not for the wait to sit out.
     def _commit_ended(req):
-        _commits["inflight"].discard(req)
-
-    def _commit_finished(req):
         _commits["inflight"].discard(req)
         try:
             if _is_load(req):
-                _commits["loads_finished"] += 1
+                _commits["loads_ended"] += 1
         except Exception:
             pass
 
     ctx.on("request", _commit_started)
-    ctx.on("requestfinished", _commit_finished)
+    ctx.on("requestfinished", _commit_ended)
     ctx.on("requestfailed", _commit_ended)
 
     def click_and_wait_for_commit(btn, what: str) -> None:
@@ -325,9 +326,13 @@ with sync_playwright() as p:
         it decide, as they did after the fixed pause.
         """
         started = _commits["started"]
-        loads_before = _commits["loads_finished"]
+        loads_started_before = _commits["loads_started"]
+        loads_ended_before = _commits["loads_ended"]
         # A Load/Reload click is not answered until its /load is: quiet polls alone cannot see a
         # request the flow has not sent yet. Save/Forget send no load, so they keep the quiet rule.
+        # A flow can also stop short of /load (validation refused, consent declined); with
+        # validate and unload tracked, its steps sit tens of ms apart, so 3 s with nothing in
+        # flight and no /load started means it ended there.
         label = " ".join((btn.text_content() or "").split())
         expects_load = label in ("Load model", "Reload model")
         clicked_at = time.monotonic()
@@ -340,10 +345,12 @@ with sync_playwright() as p:
             if _commits["inflight"]:
                 quiet[0] = 0
                 return None
-            if expects_load and _commits["loads_finished"] == loads_before:
-                quiet[0] = 0
-                return None
             quiet[0] += 1
+            if expects_load and _commits["loads_ended"] == loads_ended_before:
+                if _commits["loads_started"] > loads_started_before:
+                    quiet[0] = 0
+                    return None
+                return "stopped before load" if quiet[0] >= 12 else None
             return "answered" if quiet[0] >= 3 else None
 
         try:
@@ -356,6 +363,8 @@ with sync_playwright() as p:
             )
             if outcome == "nothing sent":
                 info(f"WARN {what}: the click sent no load or settings request within 10s")
+            elif outcome == "stopped before load":
+                info(f"WARN {what}: the load flow ended without sending /api/inference/load")
         except TimeoutError as exc:
             info(f"WARN {exc}")
 
