@@ -188,8 +188,6 @@ def test_parse_adapter_features(tmp_path):
         return str(d)
 
     assert parse_adapter_features(str(tmp_path)) is None  # no config
-    # A PEFT config without markers and no readable weights is UNVERIFIED,
-    # never a false "verified plain".
     base = parse_adapter_features(_dir({"r": 8}))
     assert base == {
         "dora": False,
@@ -197,9 +195,6 @@ def test_parse_adapter_features(tmp_path):
         "moe_target_parameters": False,
         "non_uniform": False,
     }
-    # MLX artifacts verify through their weight header too: pure LoRA is a
-    # verified negative, extra trainable state is positive, and no readable
-    # file stays unverified (trainer checkpoints may carry unmarked state).
     assert parse_adapter_features(_dir({"fine_tune_type": "lora"}))["full_state"] is None
     import numpy as np
     from safetensors.numpy import save_file
@@ -246,13 +241,11 @@ def test_local_dir_never_format_mixed(monkeypatch, tmp_path):
     ok, message, _ = backend.export_lora_adapter(str(out))
     assert not ok and "mix" in message
     backend.current_model.save_lora_adapters.assert_not_called()
-    # Nested layouts (peft named adapters) refuse too.
     (out / "adapter_model.safetensors").unlink()
     (out / "named").mkdir()
     (out / "named" / "adapter_model.safetensors").write_bytes(b"x")
     ok, message, _ = backend.export_lora_adapter(str(out))
     assert not ok and "mix" in message
-    # The legacy PEFT weight spelling counts as PEFT too.
     (out / "named" / "adapter_model.safetensors").unlink()
     (out / "adapter_model.bin").write_bytes(b"x")
     ok, message, _ = backend.export_lora_adapter(str(out))

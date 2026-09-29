@@ -147,21 +147,10 @@ def _read_checkpoint_loss(checkpoint_path: Path) -> Optional[float]:
 def parse_adapter_features(
     adapter_path: str, probe_weights: bool = True
 ) -> Optional[Dict[str, Optional[bool]]]:
-    """Parse a compact feature summary from an adapter directory's config.
+    """Adapter feature flags (PEFT or MLX config) for the export UI; None without a config.
 
-    Reads adapter_config.json (either the PEFT or the MLX layout) and reports
-    flags the export UI keys compatibility copy off: dora, full_state
-    (modules_to_save / replaced embeddings), moe_target_parameters, and
-    non_uniform (per-module rank/alpha). Returns None when no adapter config
-    exists (merged or GGUF artifacts).
-
-    ``full_state`` is TRI-STATE in BOTH formats: a config marker is a
-    verified positive, but its absence proves nothing (PEFT auto-saves
-    embedding/base state only as weight keys, and native MLX trainer
-    checkpoints may carry unmarked non-LoRA trainable tensors), so a
-    negative is verified only by reading the weight header — when that
-    probe is skipped (``probe_weights=False``, bulk listings) or fails,
-    the value is None ("unverified"), never a false "verified plain".
+    ``full_state`` is tri-state: no config marker proves absence (PEFT saves embedding state only
+    as weight keys), so a negative needs the weight-header probe and stays None without it.
     """
     cfg_path = os.path.join(adapter_path, "adapter_config.json")
     try:
@@ -182,10 +171,6 @@ def parse_adapter_features(
         cfg.get("modules_to_save")
     )
     if not full_state:
-        # No config marker proves absence in EITHER format: PEFT auto-saves
-        # embedding/base state only as weight keys, and MLX trainer checkpoints
-        # may carry unmarked non-LoRA tensors. Only a weight-header read
-        # verifies a negative; a skipped or failed probe stays None.
         full_state = None
         if probe_weights:
             from safetensors import safe_open
@@ -290,7 +275,6 @@ def scan_checkpoints(
                     metadata["base_model"] = cfg.get("base_model_name_or_path")
                     metadata["peft_type"] = cfg.get("peft_type")
                     metadata["lora_rank"] = cfg.get("r")
-                    # Bulk listing skips the weight-header probe; config markers still classify.
                     metadata["adapter_features"] = parse_adapter_features(
                         str(meta_dir), probe_weights = False
                     )

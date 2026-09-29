@@ -345,8 +345,7 @@ export const GUIDE_STEPS = [
 ];
 
 
-/** Compact adapter capabilities from the backend checkpoint listing.
- * A null value means unverified (e.g. full_state without a weight probe). */
+/** A null value means unverified (e.g. full_state without a weight probe). */
 export interface AdapterFeatures {
   dora?: boolean | null;
   full_state?: boolean | null;
@@ -356,12 +355,7 @@ export interface AdapterFeatures {
 
 export type AdapterFormat = "mlx" | "peft";
 
-/**
- * Compatibility copy per adapter format, conditioned on the REAL adapter
- * features: the vLLM claim renders only for VERIFIED uniform plain-LoRA
- * adapters (vLLM rejects DoRA and modules_to_save and discards per-module
- * rank/alpha patterns). Missing metadata gets neutral copy, never the claim.
- */
+/** The vLLM claim needs VERIFIED plain LoRA: vLLM rejects DoRA / modules_to_save and ignores per-module rank/alpha. */
 export function adapterCompatibilityTip(
   format: AdapterFormat,
   features: AdapterFeatures | null | undefined,
@@ -400,7 +394,6 @@ export function adapterCompatibilityTip(
     features.moe_target_parameters === false &&
     features.non_uniform === false;
   if (!verifiedPlain) {
-    // An unverified field (null/undefined) never earns the vLLM claim.
     return base + "loads in transformers and PEFT.";
   }
   return (

@@ -226,15 +226,13 @@ export function ExportPage() {
   });
   // LoRA-only export: optionally also emit a GGUF LoRA adapter, and its output float type.
   const [loraAsGguf, setLoraAsGguf] = useState(false);
-  // Mac-only safetensors adapter format; MLX is the training-native format.
   const [adapterFormat, setAdapterFormat] = useState<AdapterFormat>("mlx");
   const [loraGgufOuttype, setLoraGgufOuttype] = useState<string>("q8_0");
   // GGUF method: export the full model as GGUF quants, or (for an adapter checkpoint) a GGUF LoRA.
   const [ggufTarget, setGgufTarget] = useState<"model" | "lora">("model");
 
   const hardware = useHardwareInfo();
-  // The GGUF method's LoRA-adapter target is not offered on Mac; GGUF LoRA
-  // adapters ship through the LoRA method's toggle. Controls below key off this.
+  // On Mac, GGUF LoRA adapters ship through the LoRA method's toggle, not the GGUF method.
   const isMacHost = usePlatformStore((s) => s.deviceType) === "mac";
   const torchaoUnavailable = !hardware.torchaoExportSupported;
   // Real CUDA (not ROCm); gates the NVIDIA-only compressed-tensors formats.
@@ -544,8 +542,7 @@ export function ExportPage() {
     if (!effectiveIsAdapter && effectiveIsQuantized && exportMethod !== null) {
       setExportMethod(null);
     }
-    // The GGUF LoRA target applies only to an adapter checkpoint, and the GGUF
-    // method stays full-model on Mac, where the LoRA method owns GGUF adapters.
+    // The GGUF LoRA target only applies to an adapter checkpoint on a non-Mac host.
     if ((!effectiveIsAdapter || isMacHost) && ggufTarget !== "model") {
       setGgufTarget("model");
     }

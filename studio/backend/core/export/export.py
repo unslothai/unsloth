@@ -916,8 +916,7 @@ class ExportBackend:
                     f"Restored Hub model identity for legacy adapter export: {restored_repo_id}"
                 )
 
-            # Kept for tooling that must honor the approved load decision
-            # (the GGUF converter's --trust-remote-code).
+            # The MLX GGUF LoRA converter honors the approved load decision.
             self.trust_remote_code = bool(trust_remote_code)
             self.current_model = model
             self.current_tokenizer = tokenizer
@@ -1701,8 +1700,7 @@ class ExportBackend:
         saver = getattr(self.current_model, "save_lora_adapters", None)
         if not _supports_kwarg(saver, "adapter_format"):
             raise RuntimeError(_ZOO_UPGRADE_MESSAGE)
-        # The zoo converter only writes a path that does not exist yet, so a repeat export into the
-        # same folder builds in a fresh sibling and moves the files over, as the native save overwrites.
+        # The zoo converter refuses an existing path; stage fresh so a repeat export overwrites.
         parent = Path(destination).parent
         ensure_dir(parent)
         with tempfile.TemporaryDirectory(prefix = _STAGING_PREFIX, dir = parent) as tmp_dir:
@@ -1760,7 +1758,6 @@ class ExportBackend:
         install_llama_cpp(just_clone_repo = True)
         converter = os.path.join(LLAMA_CPP_DEFAULT_DIR, "convert_lora_to_gguf.py")
         if not os.path.exists(converter):
-            # A prebuilt install ships binaries without the converter.
             source_dir = os.path.join(
                 os.path.dirname(os.path.normpath(LLAMA_CPP_DEFAULT_DIR)),
                 "llama.cpp-source",
@@ -1922,8 +1919,7 @@ class ExportBackend:
                 save_directory = str(resolve_export_write_dir(save_directory))
                 logger.info(f"Saving LoRA adapter locally to: {save_directory}")
                 save_dir_was_empty = _dir_is_fresh(save_directory)
-                # One folder holds one format (recursive: peft nests named adapters); loaders would
-                # otherwise disagree about which adapter they read.
+                # One folder, one format (recursive: peft nests named adapters).
                 if _IS_MLX and Path(save_directory).is_dir():
                     other = _other_adapter_weight_names(resolved_format)
                     if any(

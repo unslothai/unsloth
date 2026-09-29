@@ -83,8 +83,7 @@ def export(
         "--adapter-format",
         help = "LoRA adapter on-disk format (mlx or peft); omitted writes the "
         "platform's native format. Apple-silicon hosts only.",
-        # Registered everywhere so explicit off-Mac use gets a clear error,
-        # but only advertised where it applies.
+        # Registered everywhere so off-Mac use gets a clear error.
         hidden = not _is_apple_silicon(),
     ),
 ):
