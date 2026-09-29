@@ -107,3 +107,13 @@ test("server-bound bridge requests are capped per frame", () => {
   );
   assert.match(frame, /\.finally\(\(\) => \{\n\s*inFlight -= 1;/);
 });
+
+test("a widget's session pairs its thread with the provider's project, as the adapter does", () => {
+  const card = readFileSync(
+    new URL("../src/components/assistant-ui/tool-fallback.tsx", import.meta.url),
+    "utf8",
+  );
+  const widget = card.slice(card.indexOf("function ToolFallbackMcpApp"));
+  assert.match(widget, /const projectId = useChatProjectScope\(\);/);
+  assert.doesNotMatch(widget, /activeProjectId/);
+});

@@ -25,7 +25,7 @@ import {
   isMcpUiToolResult,
 } from "@/features/chat/mcp-apps/mcp-ui";
 import { sandboxSessionIdFor } from "@/components/assistant-ui/sandbox-files";
-import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
+import { useChatProjectScope } from "@/features/chat/chat-project-scope";
 import { stripAnsi, stringifyToolResult } from "@/lib/strip-ansi";
 import { cn } from "@/lib/utils";
 import {
@@ -361,7 +361,8 @@ function ToolFallbackMcpApp({
   argsText?: string;
 }) {
   const threadId = useAuiState(({ threadListItem }) => threadListItem.remoteId);
-  const projectId = useChatRuntimeStore((state) => state.activeProjectId);
+  // The provider's project (the store's lags a thread switch): the adapter keys the run's session on it.
+  const projectId = useChatProjectScope();
   const parts = splitMcpToolName(toolName);
   if (!parts) return null;
   return (
