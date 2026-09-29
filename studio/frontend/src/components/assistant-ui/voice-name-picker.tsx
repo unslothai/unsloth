@@ -38,7 +38,7 @@ export function VoiceNamePicker({ className }: { className?: string }) {
           type="button"
           aria-label="Voice speaker"
           className={cn(
-            "flex h-[34px] shrink-0 items-center gap-1 rounded-lg pl-2.5 pr-1.5",
+            "flex h-8.5 shrink-0 items-center gap-1 rounded-lg pl-2.5 pr-1.5",
             "text-[13.5px] text-foreground transition-colors hover:bg-accent/60",
             "focus-visible:outline-none",
             className,
@@ -48,7 +48,7 @@ export function VoiceNamePicker({ className }: { className?: string }) {
           <ChevronDownIcon className="size-3.5 text-muted-foreground" />
         </button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="start" className="min-w-[150px]">
+      <DropdownMenuContent align="start" className="min-w-37.5">
         <DropdownMenuLabel className="text-[11px] font-normal text-muted-foreground">
           Orpheus voice
         </DropdownMenuLabel>

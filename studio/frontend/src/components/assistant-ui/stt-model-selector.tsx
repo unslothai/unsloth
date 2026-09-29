@@ -114,7 +114,7 @@ export const SttModelSelector: FC<SttModelSelectorProps> = ({
       <PopoverContent
         align="start"
         sideOffset={6}
-        className="unsloth-model-selector-menu menu-soft-surface w-[340px] gap-0 rounded-lg border-0 p-1.5 ring-0"
+        className="unsloth-model-selector-menu menu-soft-surface w-85 gap-0 rounded-lg border-0 p-1.5 ring-0"
       >
         <div className="px-2 pb-1 pt-0.5 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
           Listen with
@@ -143,16 +143,16 @@ export const SttModelSelector: FC<SttModelSelectorProps> = ({
                   <DotTag
                     tone={model.isGguf ? "gguf" : "checkpoint"}
                     label={model.isGguf ? "GGUF" : "Safetensors"}
-                    className="h-[18px] gap-1 rounded-md px-1.5"
-                    dotClassName="size-[5px]"
+                    className="h-4.5 gap-1 rounded-md px-1.5"
+                    dotClassName="size-1.25"
                   />
                 )}
                 {value === model.id && (
                   <DotTag
                     tone="success"
                     label="Active"
-                    className="h-[18px] gap-1 rounded-md px-1.5"
-                    dotClassName="size-[5px]"
+                    className="h-4.5 gap-1 rounded-md px-1.5"
+                    dotClassName="size-1.25"
                   />
                 )}
               </span>

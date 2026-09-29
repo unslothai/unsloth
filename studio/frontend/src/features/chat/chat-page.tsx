@@ -4677,7 +4677,7 @@ export function ChatPage({
                 onValueChange={setSelectedSttModelId}
                 disabled={!hasActiveModel}
                 ready={true}
-                className="!h-[34px]"
+                className="!h-8.5"
               />
             )}
             {view.mode !== "compare" && voiceMode !== "off" && (
@@ -4689,7 +4689,7 @@ export function ChatPage({
                 disabled={!hasActiveModel}
                 voiceOwnedByModel={chatModelIsSpeechLLM}
                 loaded={voiceSlotLoaded}
-                className="!h-[34px]"
+                className="!h-8.5"
               />
             )}
             {view.mode !== "compare" && voiceMode !== "off" && <VoiceNamePicker />}
