@@ -144,6 +144,29 @@ test("active runs are read before messages so a concurrent create is visible", a
   );
 });
 
+test("terminal recovery reads cache writes from either provider's usage shape", () => {
+  const writesFor = (usage: Record<string, unknown>) =>
+    (
+      recoveredGenerationFinalMetadata({
+        current: {},
+        run: {
+          id: "run-1",
+          requestPayload: { model: "m" },
+          createdAt: 100,
+          startedAt: 120,
+          completedAt: 1120,
+        },
+        usage: { prompt_tokens: 8, completion_tokens: 2, total_tokens: 10, ...usage },
+        totalChunks: 1,
+      }).contextUsage as { cacheWriteTokens: number }
+    ).cacheWriteTokens;
+  assert.equal(writesFor({ prompt_tokens_details: { cache_write_tokens: 5 } }), 5);
+  assert.equal(
+    writesFor({ cache_creation_input_tokens: 7, prompt_tokens_details: { cache_write_tokens: 5 } }),
+    7,
+  );
+});
+
 test("terminal recovery restores final local usage and timing metadata", () => {
   const metadata = recoveredGenerationFinalMetadata({
     current: { generationSettled: true },

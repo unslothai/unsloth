@@ -49,12 +49,13 @@ export interface ExternalProviderConfig {
   updatedAt: number;
 }
 
-// Gemini supports prompt caching, but the wire flow needs a separate POST to
+// Providers whose caching setting is kept and sent; `promptCachingAppliesToModel` decides where
+// the switch shows. Gemini supports prompt caching, but the wire flow needs a separate POST to
 // /v1beta/cachedContents before generateContent can reference the cache. Until that two-step
-// flow ships, keep the picker off so the toggle does not silently no-op for Gemini. See
+// flow ships, keep it out so the toggle does not silently no-op for Gemini. See
 // https://ai.google.dev/gemini-api/docs/caching.
 // The enable_prompt_caching boolean alone is not enough.
-const PROMPT_CACHING_PROVIDER_TYPES = new Set(["openai", "anthropic"]);
+const PROMPT_CACHING_PROVIDER_TYPES = new Set(["openai", "anthropic", "openrouter"]);
 
 export function supportsProviderPromptCaching(
   providerType: string | null | undefined,
@@ -63,15 +64,43 @@ export function supportsProviderPromptCaching(
 }
 
 /** Whether the provider lets the user choose between a short and long prompt-cache pool.
- *  Anthropic exposes 5m and 1h ephemeral pools via `cache_control.ttl`; OpenAI's automatic
- *  cache has no equivalent knob. */
-const PROMPT_CACHE_TTL_PROVIDER_TYPES = new Set(["anthropic"]);
+ *  Anthropic exposes 5m and 1h ephemeral pools via `cache_control.ttl` (OpenRouter forwards it
+ *  for Claude models); OpenAI's automatic cache has no equivalent knob. */
+const PROMPT_CACHE_TTL_PROVIDER_TYPES = new Set(["anthropic", "openrouter"]);
 
 export function supportsProviderPromptCacheTtl(
   providerType: string | null | undefined,
 ): boolean {
   return (
     providerType != null && PROMPT_CACHE_TTL_PROVIDER_TYPES.has(providerType)
+  );
+}
+
+// OpenRouter acts on the cache settings only for Claude; its other models cache automatically.
+function cacheSettingsApplyToModel(
+  providerType: string | null | undefined,
+  modelId: string | null | undefined,
+): boolean {
+  return providerType !== "openrouter" || /^~?anthropic\//i.test(modelId ?? "");
+}
+
+export function promptCachingAppliesToModel(
+  providerType: string | null | undefined,
+  modelId: string | null | undefined,
+): boolean {
+  return (
+    supportsProviderPromptCaching(providerType) &&
+    cacheSettingsApplyToModel(providerType, modelId)
+  );
+}
+
+export function promptCacheTtlAppliesToModel(
+  providerType: string | null | undefined,
+  modelId: string | null | undefined,
+): boolean {
+  return (
+    supportsProviderPromptCacheTtl(providerType) &&
+    cacheSettingsApplyToModel(providerType, modelId)
   );
 }
 
