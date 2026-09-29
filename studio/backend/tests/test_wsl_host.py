@@ -422,7 +422,7 @@ def test_host_probes_find_nvidia_smi_off_path(monkeypatch):
 def test_removing_a_wsl_engine_also_drops_its_compile_cache(wsl):
     guest = Path(wsl_host.GUEST_ROOT)
     guest.mkdir(parents = True)
-    (guest / "owner.json").write_text("{}")
+    (guest / "owner.json").write_text("{}", encoding = "utf-8")
     for folder in ("engines/vllm/env-abc", "cache/vllm/k", "engines/sglang", "cache/sglang/k"):
         (guest / folder).mkdir(parents = True)
     install.remove("vllm")
