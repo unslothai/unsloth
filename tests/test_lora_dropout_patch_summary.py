@@ -94,8 +94,7 @@ def _gate_tests(source: str) -> list[str]:
 
 
 def test_patch_peft_model_still_gates_the_fused_kernels_on_the_same_values():
-    """If the gate grows another condition, _fused_lora_skip_reason has to grow with it or
-    the summary starts reporting zero counts with no reason again."""
+    """Every gate condition needs a matching _fused_lora_skip_reason clause."""
     source = inspect.getsource(llama_module.FastLlamaModel.patch_peft_model)
     assert _gate_tests(source) == [
         "lora_dropout == 0 and bias == 'none' and (not float32_base) and (not fused_lora_declined_for_fsdp)"

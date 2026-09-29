@@ -32,8 +32,7 @@ def _clean_env(monkeypatch):
 
 
 def test_a_plain_launch_keeps_the_fused_kernels(monkeypatch):
-    """`accelerate launch` without an FSDP config exports neither variable, and a
-    single-GPU run exports nothing at all. Both must keep the fast path."""
+    """DDP and single-GPU launches export neither variable and keep the fast path."""
     assert fsdp_will_wrap() is False
     monkeypatch.setenv("ACCELERATE_MIXED_PRECISION", "bf16")
     assert fsdp_will_wrap() is False
@@ -41,8 +40,7 @@ def test_a_plain_launch_keeps_the_fused_kernels(monkeypatch):
 
 @pytest.mark.parametrize("value", ["true", "True", "1", "yes", "ON"])
 def test_accelerate_use_fsdp_declines(monkeypatch, value):
-    """What `accelerate launch --config_file <fsdp.yaml>` really exports; measured
-    as the literal string "true"."""
+    """`accelerate launch` with an FSDP config exports the literal "true"."""
     monkeypatch.setenv("ACCELERATE_USE_FSDP", value)
     assert fsdp_will_wrap() is True
 
@@ -55,14 +53,12 @@ def test_a_falsy_accelerate_use_fsdp_keeps_the_fused_kernels(monkeypatch, value)
 
 @pytest.mark.parametrize("value,expected", [("1", True), ("2", True), ("0", False), ("", False)])
 def test_fsdp_version_alone_is_enough(monkeypatch, value, expected):
-    """A torchrun user who sets the FSDP_* contract by hand, and the "0" a config
-    writes to say it is not FSDP."""
+    """torchrun users set it by hand; "0" is how a config says "not FSDP"."""
     monkeypatch.setenv("FSDP_VERSION", value)
     assert fsdp_will_wrap() is expected
 
 
 def test_the_override_wins_over_every_signal(monkeypatch):
-    """`UNSLOTH_FORCE_FUSED_LORA=1` is how you measure what the fallback costs."""
     monkeypatch.setenv("ACCELERATE_USE_FSDP", "true")
     monkeypatch.setenv("FSDP_VERSION", "2")
     monkeypatch.setenv("UNSLOTH_FORCE_FUSED_LORA", "1")
@@ -70,9 +66,7 @@ def test_the_override_wins_over_every_signal(monkeypatch):
 
 
 def test_a_live_accelerator_state_is_consulted_first(monkeypatch):
-    """patch_peft_model usually runs before the Trainer builds its Accelerator, so
-    the env is the normal signal. A caller who built one themselves must still be
-    read: the env carries nothing in that case."""
+    """A caller-built Accelerator carries no env, so its live state must be read."""
     accelerate_state = pytest.importorskip("accelerate.state")
     shared = accelerate_state.AcceleratorState._shared_state
     monkeypatch.setitem(shared, "distributed_type", "DistributedType.FSDP")
@@ -80,8 +74,7 @@ def test_a_live_accelerator_state_is_consulted_first(monkeypatch):
 
 
 def test_the_fused_lora_install_is_gated_on_the_probe():
-    """The three fused installs share one `if`, so gating that one `if` is the
-    whole fix. Re-splitting them without carrying the gate turns this red."""
+    """The three fused installs share one `if`; splitting them must carry the gate."""
     source = _LLAMA.read_text(encoding = "utf-8")
     assert "fsdp_will_wrap" in source, "llama.py no longer probes for FSDP"
 
@@ -104,9 +97,7 @@ def test_the_fused_lora_install_is_gated_on_the_probe():
 
 
 def test_the_declined_message_names_the_override():
-    """A user who sees the slowdown has to be able to find the way back."""
     from unsloth.models.llama import _fused_lora_skip_reason
-
     assert _fused_lora_skip_reason(0, "none") == ""
     assert "UNSLOTH_FORCE_FUSED_LORA" in _fused_lora_skip_reason(0, "none", fsdp = True)
 
