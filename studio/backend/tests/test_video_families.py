@@ -195,7 +195,6 @@ def test_supported_names():
 def test_pipeline_available_families_filter_the_override_selector(
     monkeypatch, device, blocked, hidden
 ):
-    # Unselectable families drop out, and MPS additionally hides modular workflows.
     monkeypatch.setattr(
         "core.inference.diffusion_families.family_selectable", lambda fam: fam.name not in blocked
     )

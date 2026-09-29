@@ -794,7 +794,6 @@ def test_local_pipeline_completeness_honors_modular_external_component_sources(t
     assert manifest(str(source)) is True
     assert manifest(str(source), "../outside") is False
 
-    # A custom-library source is judged by its own layout.
     (source / "custom_weights.safetensors").write_bytes(b"weights")
     assert manifest(str(source), None, "local_extensions", "CustomModel") is True
 

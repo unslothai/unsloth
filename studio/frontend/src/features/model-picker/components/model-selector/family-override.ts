@@ -37,7 +37,6 @@ export function familyOverrideOptions(supported: readonly string[] | null | unde
   return [["auto", "Auto (detect)"], ...names.map((n): [string, string] => [n, LABELS[n] ?? n])];
 }
 
-/** The trimmed family when one is explicitly chosen; undefined for blank or Auto. */
 export function explicitFamily(value: unknown): string | undefined {
   const family = typeof value === "string" ? value.trim() : "";
   return family && family.toLowerCase() !== "auto" ? family : undefined;

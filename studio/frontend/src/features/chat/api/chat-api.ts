@@ -624,7 +624,6 @@ export interface LocalModelInfo {
   model_id?: string | null;
   // Backend-detected weights format ("gguf" when known), for folders whose name lacks -GGUF.
   model_format?: string | null;
-  /** This task picker admitted the row using its structural artifact contract. */
   opaque?: boolean;
   // Set when a cached snapshot holds an incomplete download, so consumers skip unloadable weights.
   partial?: boolean;
@@ -663,7 +662,6 @@ export interface CachedModelRepo {
   size_bytes: number;
   /** Weights format; "adapter" is a LoRA with no base weights of its own. Optional for older-backend compatibility. */
   model_format?: string | null;
-  /** This task picker admitted the row using its structural artifact contract. */
   opaque?: boolean;
   /** epoch seconds of the newest downloaded weight; optional for older backends. */
   last_modified?: number;
