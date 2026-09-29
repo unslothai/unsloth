@@ -431,6 +431,7 @@ class TestExtractQuantToken:
         assert gguf.extract_quant_token("Ternary-Bonsai-1.7B-PQ2_0.gguf") == "PQ2_0"
         assert gguf.extract_quant_token("Ternary-Bonsai-1.7B-Q2_0.gguf") == "Q2_0"
         assert gguf.extract_quant_token("Ternary-Bonsai-1.7B-Q2_0_g64.gguf") == "Q2_0_g64"
+        assert gguf.extract_quant_token("Ternary-Bonsai-2-27B-PTQ1_0.gguf") == "PTQ1_0"
 
     def test_precision_infix_variants_do_not_collapse(self):
         labels = {
