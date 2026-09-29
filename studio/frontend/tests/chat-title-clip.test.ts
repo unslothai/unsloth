@@ -706,3 +706,25 @@ test("the title is wired to what answered, and built inside the fallback boundar
     assert.match(provider, rule);
   }
 });
+
+// The backend forwards these verbatim, so a strict chat-completions endpoint 400s on
+// any the provider does not take, and the title is lost.
+test("title sampling fields follow the provider's capabilities", async () => {
+  const fields = (r: Awaited<ReturnType<typeof buildTitleRequest>>) =>
+    ["temperature", "top_p", "top_k", "repetition_penalty"].filter(
+      (k) => r !== null && k in r,
+    );
+  const local = await buildTitleRequest("unsloth/gemma-4-E2B-it-GGUF", "x");
+  assert.deepEqual(fields(local), [
+    "temperature",
+    "top_p",
+    "top_k",
+    "repetition_penalty",
+  ]);
+  stageConnection({ providerType: "mistral", hasApiKey: true });
+  const mistral = await buildTitleRequest("external::conn-1::mistral-small", "x");
+  assert.deepEqual(fields(mistral), ["temperature", "top_p"]);
+  stageConnection({ providerType: "openai", hasApiKey: true });
+  const openai = await buildTitleRequest("external::conn-1::gpt-5.4", "x");
+  assert.deepEqual(fields(openai), []);
+});

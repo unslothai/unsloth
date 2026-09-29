@@ -16,6 +16,7 @@ import {
 import {
   clampReasoningEffortToLevels,
   getExternalReasoningCapabilities,
+  getProviderCapabilities,
   isGeminiCustomOpenAICompatBase,
 } from "../provider-capabilities";
 import { useExternalProvidersStore } from "../stores/external-providers-store";
@@ -351,15 +352,27 @@ export async function buildTitleRequest(
   const routing = resolveExternalRouting(checkpoint);
   if (routing.kind === "unavailable") return null;
 
+  // The backend forwards sampling fields verbatim, so gate them as the chat request does.
+  const caps =
+    routing.kind === "external"
+      ? getProviderCapabilities(
+          routing.provider.providerType,
+          routing.provider.apiType,
+          routing.modelId,
+          routing.provider.baseUrl,
+        )
+      : null;
+  const local = routing.kind === "local";
+
   return {
     model: checkpoint,
     // Required: the proxy answers SSE, so stream:false has no readable body.
     stream: true,
-    temperature: 0.2,
-    top_p: 0.9,
+    ...(local || caps?.temperature !== false ? { temperature: 0.2 } : {}),
+    ...(local || caps?.topP !== false ? { top_p: 0.9 } : {}),
     max_tokens: 24,
-    top_k: 20,
-    repetition_penalty: 1.0,
+    ...(local || caps?.topK ? { top_k: 20 } : {}),
+    ...(local || caps?.repetitionPenalty ? { repetition_penalty: 1.0 } : {}),
     enable_thinking: false,
     reasoning_effort:
       routing.kind === "external" ? titleReasoningEffort(routing) : "none",
