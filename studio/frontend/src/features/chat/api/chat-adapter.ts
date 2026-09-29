@@ -6419,7 +6419,7 @@ export function createOpenAIStreamAdapter(
                 },
                 { forceRefreshPublicKey },
               )),
-              // On every external request: it pins the thread's prompt date and OpenRouter's cache routing.
+              // On every external request: OpenRouter's cache routing, and the prompt date unless Claude caches.
               ...(resolvedThreadId ? { thread_id: resolvedThreadId } : {}),
               ...(openaiCodeExecContainerId
                 ? {
