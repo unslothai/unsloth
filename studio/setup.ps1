@@ -5758,8 +5758,8 @@ if ($NeedFrontendBuild -and -not $IsPipInstall) {
     $ErrorActionPreference = "Continue"
     Push-Location $FrontendDir
 
-    # bun only with a committed bun.lock (none today); else `npm ci` installs exactly package-lock.json.
-    $UseBun = (Test-Path "bun.lock") -and ($null -ne (Get-Command bun -ErrorAction SilentlyContinue))
+    # package-lock.json always wins (`npm ci`); bun only without one, since bun.lock is gitignored.
+    $UseBun = -not (Test-Path "package-lock.json") -and (Test-Path "bun.lock") -and ($null -ne (Get-Command bun -ErrorAction SilentlyContinue))
     $NpmInstallVerb = if (Test-Path "package-lock.json") { "ci" } else { "install" }
 
     # A corrupt bun cache still exits 0, so validate, clear it, retry once, then fall back to npm.

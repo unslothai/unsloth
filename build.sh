@@ -44,9 +44,9 @@ if [ -n "${UNSLOTH_NPM_REGISTRY:-}" ]; then
     _NPM_REGISTRY_ARGS=(--registry "$UNSLOTH_NPM_REGISTRY")
 fi
 
-# bun only when a bun.lock is committed; otherwise `npm ci` installs exactly package-lock.json.
+# package-lock.json always wins (`npm ci`); bun only without one, since bun.lock is gitignored.
 _install_ok=false
-if [ -f bun.lock ] && command -v bun &>/dev/null; then
+if [ ! -f package-lock.json ] && [ -f bun.lock ] && command -v bun &>/dev/null; then
     if bun install --frozen-lockfile "${_NPM_REGISTRY_ARGS[@]+"${_NPM_REGISTRY_ARGS[@]}"}"; then
         _install_ok=true
     else

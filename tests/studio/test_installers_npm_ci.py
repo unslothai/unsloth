@@ -45,9 +45,14 @@ def test_installers_pick_npm_ci_when_a_lockfile_exists():
 
 
 def test_bun_only_runs_against_a_committed_bun_lock():
-    assert "if [ -f bun.lock ] && command -v bun &>/dev/null; then" in _read("studio/setup.sh")
-    assert "if [ -f bun.lock ] && command -v bun &>/dev/null; then" in _read("build.sh")
-    assert '$UseBun = (Test-Path "bun.lock") -and' in _read("studio/setup.ps1")
+    # bun.lock is gitignored, so a leftover one from an earlier bun install must not outrank package-lock.json.
+    gate = "if [ ! -f package-lock.json ] && [ -f bun.lock ] && command -v bun &>/dev/null; then"
+    assert gate in _read("studio/setup.sh")
+    assert gate in _read("build.sh")
+    assert (
+        '$UseBun = -not (Test-Path "package-lock.json") -and (Test-Path "bun.lock") -and'
+        in _read("studio/setup.ps1")
+    )
     for rel in ("studio/setup.sh", "build.sh"):
         assert 'bun install "${_NPM_REGISTRY_ARGS' not in _read(rel), rel
         assert 'bun install --frozen-lockfile "${_NPM_REGISTRY_ARGS' in _read(rel), rel

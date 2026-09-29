@@ -2306,8 +2306,8 @@ _restore_gitignores() {
 }
 trap _restore_gitignores EXIT
 
-# bun only when a bun.lock is committed (none today); otherwise `npm ci`, which installs
-# exactly the committed package-lock.json and fails instead of rewriting it.
+# A package-lock.json always wins: `npm ci` installs exactly it and fails instead of rewriting
+# it. bun only without one (bun.lock is gitignored, so a stale one from an old bun run must not win).
 # Build always uses npm (Node runtime -- avoids bun runtime issues on some platforms).
 # NOTE: We intentionally avoid run_quiet for the bun install attempt because
 # run_quiet calls exit on failure, which would kill the script before the npm
@@ -2350,7 +2350,7 @@ _CAPTURE_LOG="$_FRONTEND_INSTALL_LOG"
 _bun_install_ok=false
 _NPM_INSTALL=install
 [ -f package-lock.json ] && _NPM_INSTALL=ci
-if [ -f bun.lock ] && command -v bun &>/dev/null; then
+if [ ! -f package-lock.json ] && [ -f bun.lock ] && command -v bun &>/dev/null; then
     substep "using bun for package install (faster)"
     if _try_bun_install; then
         _bun_install_ok=true
