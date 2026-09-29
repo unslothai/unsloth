@@ -231,7 +231,7 @@ def test_saved_checkpoint_reloads_with_plain_transformers(ckpt, merge, tmp_path,
     assert (got - want).abs().max() < 0.1 * want.abs().max()
 
 
-@pytest.mark.parametrize("init", ["pissa_niter_2", "olora"])
+@pytest.mark.parametrize("init", ["pissa_niter_2", "olora", "loftq"])
 def test_svd_style_lora_inits_see_the_dense_base(ckpt, init, monkeypatch):
     # PiSSA / OLoRA rewrite base_layer.weight from its SVD / QR, so the packed base goes dense first.
     from peft import LoraConfig, get_peft_model
@@ -242,8 +242,14 @@ def test_svd_style_lora_inits_see_the_dense_base(ckpt, init, monkeypatch):
     model = _load_raw(path, "qwen3")
     loader_utils._prepare_compressed_tensors_model(model)
     name = next(n for n, k in kinds.items() if k == "nvfp4")
+    extra = {}
+    if init == "loftq":
+        pytest.importorskip("scipy")
+        from peft import LoftQConfig
+        extra["loftq_config"] = LoftQConfig(loftq_bits = 4, loftq_iter = 1)
     model = get_peft_model(
-        model, LoraConfig(r = 4, target_modules = [name.split(".")[-1]], init_lora_weights = init)
+        model,
+        LoraConfig(r = 4, target_modules = [name.split(".")[-1]], init_lora_weights = init, **extra),
     )
     base = _module(model, "base_model.model." + name).get_base_layer()
     assert type(base) is torch.nn.Linear and base.weight.dtype == torch.bfloat16
