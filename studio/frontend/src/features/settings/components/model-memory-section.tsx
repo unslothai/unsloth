@@ -5,7 +5,7 @@ import { Switch } from "@/components/ui/switch";
 import { formatBytes } from "@/features/hub/lib/format";
 import { useT } from "@/i18n";
 import { subscribeModelLifecycle } from "@/lib/model-lifecycle-events";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   type ModelMemorySettings,
   loadModelMemorySettings,
@@ -59,15 +59,15 @@ export function ModelMemorySection() {
   const [settings, setSettings] = useState<ModelMemorySettings | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
+  // Bumped by every refresh and save: a read that resolves after either no longer describes the panel.
+  const latestRef = useRef(0);
 
   useEffect(() => {
     let cancelled = false;
-    let latest = 0;
     const refresh = () => {
-      const id = ++latest;
-      // An overlapping older read can resolve last; only the newest may set state.
+      const id = ++latestRef.current;
       refreshModelMemory(
-        () => cancelled || id !== latest,
+        () => cancelled || id !== latestRef.current,
         setSettings,
         setError,
         t("settings.resources.modelMemory.loadError"),
@@ -90,6 +90,7 @@ export function ModelMemorySection() {
   ) => {
     setIsSaving(true);
     setError(null);
+    latestRef.current += 1;
     try {
       setSettings(await updateModelMemorySettings(patch));
     } catch (saveError) {
