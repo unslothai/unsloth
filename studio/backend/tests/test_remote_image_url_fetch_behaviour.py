@@ -448,7 +448,8 @@ class TestSafetensorsAndMlxFetchToo:
         assert fetched == ["https://images.example/a.webp", "https://images.example/b.webp"]
         assert len(backend.calls[0]["images"]) == 2
 
-    def test_two_images_on_a_single_image_model_refuse_before_any_fetch(self, monkeypatch):
+    @pytest.mark.parametrize("legacy", [False, True], ids = ["two_parts", "part_and_legacy"])
+    def test_two_images_on_a_single_image_model_refuse_before_any_fetch(self, monkeypatch, legacy):
         def _never(*_a, **_k):
             raise AssertionError("an invalid request must not wait on a fetch")
 
@@ -457,12 +458,11 @@ class TestSafetensorsAndMlxFetchToo:
         backend.models["sf-model"]["is_vision"] = True
         client = _client(monkeypatch, safetensors._llama_stub())
         safetensors._install(monkeypatch, backend)
-        r = client.post(
-            "/v1/chat/completions",
-            json = _chat_body(
-                "https://images.example/a.webp", "https://images.example/b.webp", model = "sf-model"
-            ),
-        )
+        urls = ["https://images.example/a.webp", "https://images.example/b.webp"]
+        body = _chat_body(*urls[: 1 if legacy else 2], model = "sf-model")
+        if legacy:
+            body["image_base64"] = _webp_b64()
+        r = client.post("/v1/chat/completions", json = body)
 
         assert r.status_code == 400, r.text
         assert "one image per message" in r.text
