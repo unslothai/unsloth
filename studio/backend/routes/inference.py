@@ -24082,8 +24082,12 @@ async def _stop_on_cancel(agen, cancel_event: threading.Event):
         for task in (step, waiter):
             if task is not None and not task.done():
                 # Cancelling the pending read closes the upstream response inside ``agen``.
+                # asyncio.wait, not gather: when this task is itself being cancelled (the
+                # client left), a cancelled gather cancels the read again mid-close, httpcore
+                # marks the stream closed without closing the socket, and the runtime keeps
+                # generating an unread reply that holds the model.
                 task.cancel()
-                await asyncio.gather(task, return_exceptions = True)
+                await asyncio.wait({task})
         try:
             await agen.aclose()
         except RuntimeError:
