@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { mlxRuntimeStateFrom } from "./lib/mlx-runtime-state";
+import { offloadCountsFrom, offloadWarning } from "./lib/partial-offload";
 import {
   clearedServerTuningState,
   committedServerTuningState,
@@ -1662,7 +1663,7 @@ export function SharedComposer({
           approved_remote_code_fingerprint: approvedRemoteCodeFingerprint,
           chat_template_override: effectiveChatTemplateOverride,
           cache_type_kv: ownConfig.kvCacheDtype ?? null,
-          mlx_kv_bits: ownConfig.mlxKvBits ?? null,
+          mlx_kv_quant: ownConfig.mlxKvQuant ?? null,
           speculative_type: effectiveSpeculativeType,
           spec_draft_n_max: effectiveSpecDraftNMax,
           reasoning_budget:
@@ -1675,6 +1676,7 @@ export function SharedComposer({
               : "",
           tensor_parallel: effectiveTensorParallel,
           disable_vision: effectiveDisableVision,
+          n_parallel: ownConfig.nParallel ?? null,
           force_cancel_active:
             compareStopDecision?.forceCancelActive ?? false,
           ...(targetIsGguf
@@ -1684,9 +1686,6 @@ export function SharedComposer({
                 n_cpu_moe: effectiveNCpuMoe,
                 tensor_split: compareLoadKnobs.splitRatio ?? undefined,
                 gpu_ids: effectiveSelectedGpuIds ?? undefined,
-                n_parallel: ownConfig.nParallel ?? null,
-                // Only when this panel has read the stored value: omitted, the load inherits it, which keeps
-                // CLI-set flags working.
                 ...(ownConfig.llamaExtraArgs !== undefined
                   ? // biome-ignore lint/style/useNamingConvention: API schema
                     { llama_extra_args: ownConfig.llamaExtraArgs ?? [] }
@@ -1709,6 +1708,13 @@ export function SharedComposer({
         // Persist the GPU Memory mode on a non-diffusion GGUF compare-load too, so an applied manual
         // choice survives a restart.
         persistGpuMemoryModeOnLoad(resp, effectiveGpuMemoryMode);
+        const compareOffload = offloadWarning(offloadCountsFrom(resp));
+        if (compareOffload) {
+          toast.warning(
+            `${compareModelDisplayName(sel.id)} loaded${compareOffload.titleSuffix}`,
+            { description: compareOffload.description, duration: 8000 },
+          );
+        }
         upgradeUnloadedActive = false;
         const store = useChatRuntimeStore.getState();
         store.setCheckpoint(
@@ -1747,7 +1753,7 @@ export function SharedComposer({
         // Slots this compare load committed. Diffusion ignores --parallel, so a
         // count there would mint a phantom override a preset carries onto a GGUF.
         const committedSlots =
-          targetIsGguf && !(resp.is_diffusion ?? false)
+          ((resp.is_gguf ?? false) && !(resp.is_diffusion ?? false)) || (resp.is_mlx ?? false)
             ? (ownConfig.nParallel ?? null)
             : null;
         // same rule for the batch sizes

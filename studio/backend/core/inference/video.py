@@ -127,6 +127,7 @@ from .diffusion_nvfp4_flag import nvfp4_diffusion_enabled
 from .diffusion_nvfp4_install import nvfp4_backend_fields as _nvfp4_backend_fields
 from .diffusion_transformer_quant import (
     TQ_AUTO,
+    TQ_FP8,
     TQ_INT8,
     dense_transformer_supported,
     dense_transformer_unsupported_reason,
@@ -140,6 +141,7 @@ from .diffusion_transformer_quant import (
     normalize_transformer_quant,
     quantize_transformer,
     mark_source_precision,
+    explicit_scheme_cached_ok,
     select_transformer_quant_scheme,
     stored_denoiser_precision,
     transformer_is_quantised,
@@ -256,6 +258,8 @@ def assert_video_precision_available(
     text_encoder_quant: Optional[str] = None,
     memory_mode: Optional[str] = None,
     gpu_ordinal: Optional[int] = None,
+    checkpoint_filename: Optional[str] = None,
+    checkpoint_repo: Optional[str] = None,
 ) -> None:
     """Raise ``RuntimeError`` (the route's 409) when an EXPLICIT precision cannot run here.
 
@@ -298,7 +302,127 @@ def assert_video_precision_available(
             transformer_quant = transformer_quant,
             text_encoder_quant = text_encoder_quant,
             memory_mode = memory_mode,
+            checkpoint_filename = checkpoint_filename,
+            checkpoint_repo = checkpoint_repo,
         )
+
+
+def _ltx23_prequant_pick(
+    fam: Any,
+    model_kind: str,
+    checkpoint_filename: Optional[str],
+    pinned: Optional[str],
+    checkpoint_repo: Optional[str] = None,
+) -> bool:
+    """An explicit fp8 on the OFFICIAL bf16 LTX-2.3 distilled single file (``checkpoint_repo`` is the pick's repo id or
+    local path): served by the hosted pre-quantized DiT. A same-named file of other provenance keeps its own DiT."""
+    if (
+        getattr(fam, "name", None) != "ltx-2"
+        or model_kind != "single_file"
+        or not checkpoint_filename
+    ):
+        return False
+    if pinned != TQ_FP8:
+        return False
+    from .video_ltx2 import ltx23_prequant_eligible
+
+    return ltx23_prequant_eligible(checkpoint_filename, checkpoint_repo)
+
+
+def _ltx23_prequant_serves(
+    fam: Any,
+    model_kind: str,
+    checkpoint_filename: Optional[str],
+    pinned: Optional[str],
+    *,
+    target: Any,
+    memory_mode: Optional[str],
+    checkpoint_repo: Optional[str] = None,
+    probe: bool = True,
+) -> bool:
+    """``_ltx23_prequant_pick`` on a load that can seed the hosted DiT: a torchao-capable target and a memory request
+    that keeps the DiT resident (torchao tensors do not survive the offload hooks). The staging, the download plan, the
+    pricing and the injection all read this, so the ~19 GB artifact is never fetched for a load that falls back to bf16
+    (UNSLOTH_DIFFUSION_ALLOW_PRECISION_FALLBACK). A measured offload is only known inside the load."""
+    return (
+        _ltx23_prequant_pick(fam, model_kind, checkpoint_filename, pinned, checkpoint_repo)
+        and not _memory_request_forces_offload(memory_mode, False)
+        and bool(dense_transformer_supported(target))
+        and (
+            _ltx23_prequant_scheme_supported(fam, target, pinned)
+            if probe
+            # Training owns the GPU: cached verdict only, never the smoke probe.
+            else explicit_scheme_cached_ok(target, pinned, family = getattr(fam, "name", None))
+        )
+    )
+
+
+def _ltx23_prequant_scheme_supported(fam: Any, target: Any, pinned: Optional[str]) -> bool:
+    """Whether ``target`` runs ``pinned`` at all, by the check an explicit scheme gets on the normal precision path. The
+    hosted DiT is a torchao fp8 checkpoint, so a card with the dense torchao path but no fp8 kernels (Ampere: int8 only)
+    must not stage, claim, price or seed it. ``unproven_ok`` as at the pre-eviction gate: an out-of-memory smoke probe
+    is the resident model, not the scheme."""
+    try:
+        return (
+            select_transformer_quant_scheme(
+                target, pinned, family = getattr(fam, "name", None), unproven_ok = True
+            )
+            == pinned
+        )
+    except Exception:  # noqa: BLE001 -- unanswerable reads as unsupported, which keeps the refusal
+        return False
+
+
+def _ltx23_prequant_serves_on_card(
+    fam: Any,
+    model_kind: str,
+    checkpoint_filename: Optional[str],
+    transformer_quant: Optional[str],
+    *,
+    memory_mode: Optional[str],
+    gpu_ordinal: Optional[int],
+    checkpoint_repo: Optional[str] = None,
+    probe: bool = True,
+    hash_source: bool = True,
+) -> bool:
+    """``_ltx23_prequant_serves`` before the load, asked of the card it will use. An unanswerable probe keeps the pick.
+    ``hash_source=False`` (planning) never hashes a local source file; see ``ltx23_identity_without_hashing``."""
+    if not hash_source:
+        from .video_ltx2 import ltx23_identity_without_hashing
+        with ltx23_identity_without_hashing():
+            return _ltx23_prequant_serves_on_card(
+                fam,
+                model_kind,
+                checkpoint_filename,
+                transformer_quant,
+                memory_mode = memory_mode,
+                gpu_ordinal = gpu_ordinal,
+                checkpoint_repo = checkpoint_repo,
+                probe = probe,
+            )
+    pinned = normalize_transformer_quant(transformer_quant)
+    if not _ltx23_prequant_pick(fam, model_kind, checkpoint_filename, pinned, checkpoint_repo):
+        return False
+    try:
+        # Scoped, not pinned: a pooled worker thread must not keep this request's card.
+        with diffusion_device_scope(gpu_ordinal):
+            target = (
+                resolve_diffusion_device_target()
+                if gpu_ordinal is None
+                else resolve_diffusion_device_target(ordinal = gpu_ordinal)
+            )
+            return _ltx23_prequant_serves(
+                fam,
+                model_kind,
+                checkpoint_filename,
+                pinned,
+                target = target,
+                memory_mode = memory_mode,
+                checkpoint_repo = checkpoint_repo,
+                probe = probe,
+            )
+    except Exception:  # noqa: BLE001
+        return True
 
 
 def _assert_video_precision_for_target(
@@ -309,6 +433,8 @@ def _assert_video_precision_for_target(
     transformer_quant: Optional[str] = None,
     text_encoder_quant: Optional[str] = None,
     memory_mode: Optional[str] = None,
+    checkpoint_filename: Optional[str] = None,
+    checkpoint_repo: Optional[str] = None,
 ) -> None:
     """The body of ``assert_video_precision_available``, run with the selected card current."""
     pinned = normalize_transformer_quant(transformer_quant)
@@ -322,11 +448,32 @@ def _assert_video_precision_for_target(
     )
     if pinned is not None and pinned != TQ_AUTO:
         reason = None
-        if model_kind != "pipeline":
+        if _ltx23_prequant_pick(fam, model_kind, checkpoint_filename, pinned, checkpoint_repo):
+            if not dense_transformer_supported(target):
+                reason = dense_transformer_unsupported_reason(target)
+            elif forces_offload:
+                reason = (
+                    f"'{normalize_memory_mode(memory_mode)}' memory places the DiT under CPU "
+                    "offload, and torchao quantised tensors cannot be moved by the offload hooks"
+                )
+            elif not _ltx23_prequant_scheme_supported(fam, target, pinned):
+                # Check the hosted DiT's scheme now, else it fails only after the eviction and the 19 GB pull.
+                reason = explain_unusable_scheme(getattr(fam, "name", None), pinned)
+        elif model_kind != "pipeline":
             reason = (
                 f"the dense DiT quant applies to full-pipeline loads only, and this is a "
                 f"'{model_kind}' load, which runs the precision its checkpoint carries"
             )
+            from .video_ltx2 import LTX23_PREQUANT_BASE, LTX23_PREQUANT_SOURCE_FILES
+            if (
+                pinned == TQ_FP8
+                and getattr(fam, "name", None) == "ltx-2"
+                and Path(str(checkpoint_filename or "")).name.lower() in LTX23_PREQUANT_SOURCE_FILES
+            ):
+                reason += (
+                    f"; the hosted fp8 DiT replaces only the official {LTX23_PREQUANT_BASE} file, and this "
+                    "one could not be verified as it"
+                )
         elif (
             pinned in NATIVE_QUANT_SCHEMES
             and not getattr(fam, "modular_workflow", None)
@@ -1200,11 +1347,16 @@ def _video_auto_denoiser_scheme(
     try:
         if getattr(fam, "modular_workflow", None):
             return None
-        # Registry before the smoke probe: a scheme with no hosted row can never seed, so it must not spawn probes.
-        hosted = video_family_prequant_schemes(fam)
+        # Registry first: a scheme with no hosted row for THIS base never seeds, so it must not spawn probes.
+        from .video_denoiser_prequant import denoiser_prequant_sources
+
+        hosted = tuple(
+            s
+            for s in video_family_prequant_schemes(fam)
+            if denoiser_prequant_sources(fam, s, base_repo) is not None
+        )
         if not hosted or (not auto and normalize_transformer_quant(requested) not in hosted):
             return None
-        from .video_denoiser_prequant import denoiser_prequant_sources
 
         scheme = select_transformer_quant_scheme(
             target,
@@ -1516,6 +1668,43 @@ def _log_failed_generation(request_shape: Optional[dict[str, Any]], exc: BaseExc
         pass
 
 
+VIDEO_GENERATION_FAILED_MSG = "Video generation failed."
+
+_NATIVE_CRASH_NEEDLES = (
+    "sd-cli exited",
+    "process exited",
+    "ggml_abort",
+    "signal",
+    "connection lost",
+    "worker died",
+)
+
+
+def video_failure_detail(exc: BaseException, request_shape: Optional[dict[str, Any]] = None) -> str:
+    """A user-facing reason for a failed generation, built only from fixed text."""
+    try:
+        if _is_out_of_memory(exc):
+            if (
+                request_shape is not None
+                and request_shape.get("attention_backend") is None
+                and sdpa_math_only(_probe_target(request_shape))
+            ):
+                return f"{VIDEO_GENERATION_FAILED_MSG} {SDPA_MATH_ONLY_MESSAGE}"
+            return (
+                f"{VIDEO_GENERATION_FAILED_MSG} The device ran out of memory. Try a smaller "
+                "resolution, fewer frames, or fewer steps."
+            )
+        text = str(exc).lower()
+        if any(needle in text for needle in _NATIVE_CRASH_NEEDLES):
+            return (
+                f"{VIDEO_GENERATION_FAILED_MSG} The renderer stopped unexpectedly. See the "
+                "server log in Settings > Logs for its output."
+            )
+    except Exception:  # noqa: BLE001 -- diagnostics never mask the real failure
+        pass
+    return VIDEO_GENERATION_FAILED_MSG
+
+
 def _is_out_of_memory(exc: BaseException) -> bool:
     """Whether ``exc`` is an allocator failure, by name and text rather than by class: torch
     raises ``torch.OutOfMemoryError`` on CUDA and a plain RuntimeError on some backends."""
@@ -1563,6 +1752,7 @@ class VideoBackend:
         self._teardown_waiters = 0
         # Generation progress, written by the step callback / phase transitions.
         self._gen: dict[str, Any] = {"active": False}
+        self._last_request_shape: Optional[dict[str, Any]] = None
         # True from begin_generate() until its worker records a terminal state, so a second call is refused while it
         # runs.
         self._generate_job_active = False
@@ -1876,6 +2066,8 @@ class VideoBackend:
             text_encoder_quant = text_encoder_quant,
             memory_mode = memory_mode,
             gpu_ordinal = gpu_ordinal,
+            checkpoint_filename = gguf_filename,
+            checkpoint_repo = repo_id,
         )
         # Resolved out here so the companion claim is published in the SAME locked section as _loading. begin_load
         # returns as soon as the thread is scheduled, and a delete arriving in that gap sees only repo_id and base_repo,
@@ -1894,6 +2086,20 @@ class VideoBackend:
         claimed_assets = (
             (H3_GGUF_REPO, H3_COMPONENT_REPO, H3_LEGACY_COMPONENT_REPO) if h3_native else ()
         )
+        # Claim the hosted LTX-2.3 FP8 DiT repo with _loading.
+        if _ltx23_prequant_serves_on_card(
+            fam,
+            resolve_video_model_kind(gguf_filename, model_kind),
+            gguf_filename,
+            transformer_quant,
+            memory_mode = memory_mode,
+            gpu_ordinal = gpu_ordinal,
+            checkpoint_repo = repo_id,
+        ):
+            from .video_ltx2 import LTX23_PREQUANT_BASE
+            claimed_assets = claimed_assets + self._denoiser_prequant_repo_ids(
+                fam, TQ_FP8, LTX23_PREQUANT_BASE
+            )
 
         with self._lock:
             if self._loading is not None and self._loading.error is None:
@@ -2170,6 +2376,35 @@ class VideoBackend:
                 cancel_event = cancel_event,
                 local_files_only = local_files_only,
             )
+            # Fetch the hosted DiT here, under this load's cancel event, and claim it against a mid-load delete.
+            if _ltx23_prequant_serves_on_card(
+                fam,
+                kind,
+                kwargs.get("gguf_filename"),
+                kwargs.get("transformer_quant"),
+                memory_mode = kwargs.get("memory_mode"),
+                gpu_ordinal = kwargs.get("gpu_ordinal"),
+                checkpoint_repo = kwargs["repo_id"],
+            ):
+                from .video_ltx2 import LTX23_PREQUANT_BASE
+
+                ltx23_sources = self._denoiser_prequant_source_list(
+                    fam, TQ_FP8, LTX23_PREQUANT_BASE
+                )
+                with self._lock:
+                    if self._load_token == token and self._loading is not None:
+                        self._loading.asset_repos = tuple(
+                            dict.fromkeys(
+                                self._loading.asset_repos
+                                + tuple(src.location for src in ltx23_sources)
+                            )
+                        )
+                self._fetch_denoiser_prequant(
+                    ltx23_sources,
+                    kwargs.get("hf_token"),
+                    cancel_event = cancel_event,
+                    local_files_only = local_files_only,
+                )
             # The denoiser artifact too: the injection that would fetch it has no cancel event.
             if skip_transformer_weights:
                 self._fetch_denoiser_prequant(
@@ -3618,6 +3853,7 @@ class VideoBackend:
         transformer_quant: Optional[str] = None,
         text_encoder_quant: Optional[str] = None,
         h3_task: Optional[str] = None,
+        allow_device_probe: bool = True,
         **load_kwargs: Any,
     ) -> dict[str, Any]:
         """The repos + exact files this pick needs, for staging through the Hub download
@@ -3799,6 +4035,23 @@ class VideoBackend:
             )
             if dq_repo:
                 total += add(dq_repo, dq_files)
+            elif _ltx23_prequant_serves_on_card(
+                fam,
+                kind,
+                gguf_filename,
+                transformer_quant,
+                memory_mode = load_kwargs.get("memory_mode"),
+                gpu_ordinal = load_kwargs.get("gpu_ordinal"),
+                checkpoint_repo = repo_id,
+                probe = allow_device_probe,
+                hash_source = False,
+            ):
+                from .video_ltx2 import LTX23_PREQUANT_BASE
+                lq_repo, lq_files = self._denoiser_prequant_hub_files(
+                    fam, TQ_FP8, LTX23_PREQUANT_BASE, api
+                )
+                if lq_repo:
+                    total += add(lq_repo, lq_files)
             # And H3's quantized conditioner, which replaces the base repo's dense text_encoder/. VERIFIED, like the
             # load: this entry both ADDS 27 GB and REMOVES the dense encoder from the base entry below, so a name match
             # that the load will decline gets the plan and the disk preflight wrong in both directions at once -- 27 GB
@@ -4523,6 +4776,21 @@ class VideoBackend:
                 transformer_mib = estimate_safetensors_dense_mib(size_mib)
                 if transformer_mib is not None:
                     transformer_mib = int(transformer_mib * dtype_scale)
+        # Price the plan at the hosted fp8 DiT: the bf16 file size would plan an offload and skip the seed.
+        ltx23_prequant_pick = transformer_mib is not None and _ltx23_prequant_serves(
+            fam,
+            kind,
+            gguf_filename,
+            normalize_transformer_quant(transformer_quant),
+            target = target,
+            memory_mode = memory_mode,
+            checkpoint_repo = repo_id,
+        )
+        ltx23_dense_transformer_mib = transformer_mib
+        if ltx23_prequant_pick:
+            # The hosted artifact size, not 0.55 x file: the file also carries companions (over-stated ~6 GB).
+            from .video_ltx2 import LTX23_PREQUANT_RESIDENT_GB
+            transformer_mib = int(LTX23_PREQUANT_RESIDENT_GB * mib_per_gb)
         runtime_mib = estimate_video_runtime_mib(
             width = fam.resolution_presets[0][0],
             height = fam.resolution_presets[0][1],
@@ -4795,6 +5063,56 @@ class VideoBackend:
             from .video_ltx2 import is_ltx23_checkpoint, load_ltx23_pipeline
 
             if fam.name == "ltx-2" and is_ltx23_checkpoint(checkpoint_path):
+                # Explicit fp8 takes the hosted DiT, resident only: offload hooks' Module.to() rejects torchao tensors.
+                ltx23_override = None
+                ltx23_scheme = normalize_transformer_quant(transformer_quant)
+                seeded = None
+                if ltx23_prequant_pick and plan.offload_policy == "none":
+                    from .video_ltx2 import load_ltx23_prequant_transformer
+                    seeded = load_ltx23_prequant_transformer(
+                        fam,
+                        ltx23_scheme,
+                        checkpoint_path,
+                        config_repo = base,
+                        device = device,
+                        dtype = dtype,
+                        hf_token = hf_token,
+                        cache_dir = hub_cache_dir(),
+                        local_files_only = local_files_only,
+                        logger = logger,
+                    )
+                if seeded is not None:
+                    ltx23_override, ltx23_source = seeded
+                    denoiser_injected = {"transformer": ltx23_override}
+                    denoiser_seed_scheme = ltx23_scheme
+                    denoiser_seed_sources = {"transformer": ltx23_source}
+                elif ltx23_prequant_pick:
+                    # Decline before the dense assembly loads the 44 GB bf16 DiT only to refuse it.
+                    ltx23_reason = (
+                        f"this GPU's '{plan.offload_policy}' memory plan offloads the DiT even at fp8 size, and "
+                        "torchao quantised tensors cannot be moved by the offload hooks"
+                        if plan.offload_policy != "none"
+                        else "the hosted fp8 DiT (unsloth/LTX-2.3-FP8) could not be loaded"
+                        + (" from the local cache" if local_files_only else "")
+                    )
+                    if not precision_fallback_allowed():
+                        clear_gpu_cache()
+                        raise RuntimeError(
+                            precision_refusal_message(
+                                "transformer_quant",
+                                ltx23_scheme,
+                                ltx23_reason,
+                                off_label = "Off to run the DiT at bf16",
+                            )
+                        )
+                    logger.warning("video.ltx23_prequant: %s; loading the bf16 DiT", ltx23_reason)
+                    transformer_mib = ltx23_dense_transformer_mib
+                    plan, bf16_plan, quant_replanned = _plan_for_te_scale(
+                        settled_te_scale, log = False
+                    )
+                    raise_on_unified_memory_shortfall(
+                        plan, family = getattr(fam, "name", None), logger = logger
+                    )
                 # 2.3 checkpoints need the full assembly: new config flags, key renames the stock converter lacks, and
                 # the 2.3 connectors/VAEs/vocoder.
                 pipe = load_ltx23_pipeline(
@@ -4810,6 +5128,7 @@ class VideoBackend:
                     # the one path that does not read them. There is no staged snapshot to fall back on either --
                     # _base_local_dir is None for 2.3 by design -- so every component below resolves the hub id.
                     local_files_only = local_files_only,
+                    transformer_override = ltx23_override,
                 )
             else:
                 transformer = transformer_cls.from_single_file(str(checkpoint_path), **sf_kwargs)
@@ -4885,7 +5204,7 @@ class VideoBackend:
             transformer_quant_decline = (
                 "auto: the bf16 DiT fits resident, where int8 costs accuracy for little or no speed"
             )
-        if transformer_quant_pinned is not None and kind != "pipeline":
+        if transformer_quant_pinned is not None and kind != "pipeline" and not denoiser_injected:
             transformer_quant_decline = (
                 f"the dense DiT quant applies to full-pipeline loads only, and this is a "
                 f"'{kind}' load, which runs the precision its checkpoint carries"
@@ -5157,6 +5476,11 @@ class VideoBackend:
         # Sets a flag the pipelines read when they first build their frequency tables, so it need only happen before
         # generation, not before placement.
         force_float32_rope(pipe, target, logger = logger)
+        # HunyuanVideo-1.5 VAE only: same mask values, so bit-identical, but held off on SPEED_OFF like the trim above.
+        hv15_mask_engaged = False
+        if effective_speed != SPEED_OFF:
+            from .video_hv15_vae import install_vectorised_causal_mask
+            hv15_mask_engaged = install_vectorised_causal_mask(pipe, logger = logger) > 0
         speed_optims: tuple = ()
         for view in views:
             # Both helpers act on ``view.transformer``; call once per view (engaged values match, so record the first).
@@ -5174,6 +5498,14 @@ class VideoBackend:
                 # quadratic math backend.
                 target = types.SimpleNamespace(device = target.device, dtype = dtype),
             )
+            if fam.name == "ltx-2":
+                # Token counts depend only on (w, h, frames), so static compile: one recompile per shape, ~1.3x faster.
+                ltx_dit = getattr(view, fam.denoiser_attr, None)
+                if ltx_dit is not None:
+                    try:
+                        ltx_dit._unsloth_compile_static = True
+                    except Exception:  # noqa: BLE001 -- not a settable module (tests/fakes)
+                        pass
             applied = apply_speed_optims(
                 view,
                 target,
@@ -5186,11 +5518,21 @@ class VideoBackend:
                 offload_active = plan.offload_policy != "none",
                 cuda_graph_default = False,
             )
+            if fam.name == "ltx-2" and applied.get("compiled"):
+                from .video_ltx2 import install_stg_compile_adapter
+                install_stg_compile_adapter(getattr(view, fam.denoiser_attr, None))
+            if fam.name == "ltx-2" and applied.get("cudnn_benchmark"):
+                # cudnn.benchmark: no steady gain on LTX's VAE / vocoder convs, but a per-shape re-tune (first render 26 s vs 10 s).
+                from .video_ltx2 import disable_cudnn_benchmark
+                if disable_cudnn_benchmark():
+                    applied = {**applied, "cudnn_benchmark": False}
             if view is pipe:
                 attention_engaged = engaged
                 speed_optims = tuple(k for k, v in applied.items() if v)
                 if attention_trim_engaged:
                     speed_optims += ("hunyuan_attn_trim",)
+                if hv15_mask_engaged:
+                    speed_optims += ("hv15_vae_vector_mask",)
         with self._generate_lock:
             # A cancelled/superseded load must not place weights on a GPU the arbiter may have reassigned; recheck
             # before placement.
@@ -5824,12 +6166,10 @@ class VideoBackend:
         effective_speed = resolve_speed_mode(speed_mode, is_gguf = False, dense_default = SPEED_DEFAULT)
         h3_vae_speed = effective_speed
         if effective_speed == SPEED_MAX:
-            # SPEED_MAX compiles static until a dimension changes. H3's packed sequence length carries the caption's
-            # token rows, so a static graph recompiles on new prompts: measured 0.957-1.000 s/step static against
-            # 1.000-1.040 dynamic, and two recompiles paid for it.
+            # max-autotune: 2.41 vs 2.45 s/step but 110 vs 48 s first render (~45 renders to break even).
             logger.info(
                 "video.speed_mode: MiniMax-H3 runs the 'default' regional profile under max "
-                "(a static graph retraces on the caption's contribution to the packed length)"
+                "(max-autotune's first-render cost is not repaid by its 2% faster step)"
             )
             effective_speed = SPEED_DEFAULT
         if device != "cpu":
@@ -5961,6 +6301,13 @@ class VideoBackend:
         # denoises with would keep native attention and stay uncompiled while the resolved record below still reported
         # the requested profile -- and the pin above is what removes the eager downgrade that used to hide it.
         speed_view = _denoiser_view(pipe, denoiser_component)
+        try:
+            from .video_minimax_h3_vae import reserve_h3_fast_decoder
+            reserve_h3_fast_decoder(
+                getattr(pipe, "vae", None), speed_mode = h3_vae_speed, workflow = workflow
+            )
+        except Exception:  # noqa: BLE001 -- optimisation only, never fail a load
+            pass
         try:
             attention_engaged = apply_attention_backend(
                 speed_view,
@@ -6346,6 +6693,7 @@ class VideoBackend:
                     "total": 0,
                     "eta_seconds": None,
                 }
+                self._last_request_shape = None
                 break
         worker = account_thread(
             # The token and the /v1/videos job id ride on the target rather than in kwargs: those kwargs are also a
@@ -6476,17 +6824,18 @@ class VideoBackend:
             msg = str(exc)
             if msg not in (VIDEO_NOT_LOADED_MSG, VIDEO_CANCELLED_MSG):
                 logger.error("video.generate_failed: %s", exc, exc_info = True)
-                msg = "Video generation failed."
+                msg = video_failure_detail(exc, self._last_request_shape)
             _record_outcome(msg)
             self._finish_generate_job(job_token = job_token, cancel_event = cancel_event, error = msg)
             return
         except Exception as exc:  # noqa: BLE001 -- worker thread: never propagate
             logger.error("video.generate_failed: %s", exc, exc_info = True)
-            _record_outcome("Video generation failed.")
+            detail = video_failure_detail(exc, self._last_request_shape)
+            _record_outcome(detail)
             self._finish_generate_job(
                 job_token = job_token,
                 cancel_event = cancel_event,
-                error = "Video generation failed.",
+                error = detail,
             )
             return
 
@@ -6834,6 +7183,7 @@ class VideoBackend:
                     "offload": state.offload_policy,
                     "attention_backend": state.attention_backend,
                 }
+                self._last_request_shape = request_shape
 
                 pipe = state.pipe
                 call_params = inspect.signature(pipe.__call__).parameters
@@ -6860,6 +7210,18 @@ class VideoBackend:
                     ):
                         kwargs["sigmas"] = list(LTX23_DISTILLED_SIGMAS)
                         sigma_ctx = ltx23_verbatim_sigmas(pipe)
+                if fam.name == "ltx-2":
+                    from .video_ltx2 import (
+                        ensure_recompile_limit,
+                        ltx2_distilled_guidance_kwargs,
+                        ltx2_distilled_ids,
+                    )
+
+                    # Distilled DiT is sampled unguided; newer diffusers defaults would add STG + modality passes.
+                    if ltx2_distilled_ids(state.gguf_filename, state.repo_id, state.base_repo):
+                        kwargs.update(ltx2_distilled_guidance_kwargs(call_params, guidance))
+                    # The render thread copies this thread's context, so raise the recompile limit here.
+                    ensure_recompile_limit()
                 if not fam.supports_cfg:
                     pass
                 elif fam.guidance_via_guider:

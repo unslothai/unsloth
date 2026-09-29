@@ -58,6 +58,7 @@ def _multimodal_auto_classes():
     for name in (
         "AutoModelForImageTextToText",
         "AutoModelForTextToWaveform",
+        "AutoModelForMultimodalLM",
     ):
         extra = getattr(transformers, name, None)
         if extra is not None and extra not in classes:
@@ -97,15 +98,19 @@ from ._custom_dtype import resolve_dtype, trusted_custom_dtype
 from .remote_code_shims import apply_remote_code_shims
 from .grouped_linear_lora import register_grouped_linear_lora
 from .loader_utils import (
+    _bnb_bits_requested,
     DEFAULT_DEVICE_MAP,
     OFFLOAD_EMBEDDING_AUTO,
     planner_config_overrides,
+    compressed_tensors_planner_quantization,
+    compressed_tensors_prepared_config,
     planner_hub_kwargs,
     planner_kwargs_with_max_memory,
     _exclude_rope_inv_freq_from_ddp,
     _get_fp8_mode_and_check_settings,
     _dequantize_leftover_fp8_params,
     _restore_dropped_fp8_scales,
+    _prepare_compressed_tensors_model,
     planner_class_mismatch_reason,
     planner_model_class,
     exclude_no_placement_params,
@@ -776,7 +781,22 @@ VLLM_SUPPORTED_VLM = [
     # Qwen3.5 ships as Qwen3_5ForConditionalGeneration with a vision_config, so it
     # reaches this gate even for the text-only checkpoints.
     "qwen3_5",
+    "idefics3",
 ]
+
+
+def _zoo_supports_idefics3_fast_inference():
+    # unsloth_zoo ships separately; older releases crash converting Idefics3's model.text_model layout.
+    try:
+        from unsloth_zoo.empty_model import get_model_layer_config
+        return (
+            "model.text_model.layers.{kk}.self_attn.q_proj"
+            in get_model_layer_config()["standard_layers"]
+        )
+    except Exception:
+        return False
+
+
 VLLM_NON_LORA_VLM = [
     "mllama",
 ]
@@ -1219,6 +1239,84 @@ def _missing_torchvision_error(error = None):
     return False
 
 
+# Only where class defaults are the checkpoint's settings (Step-3.7 hardcodes them remotely).
+_NATIVE_DEFAULT_IMAGE_PROCESSOR_TYPES = frozenset({"step3p7"})
+
+
+def _preprocessor_config_exists(
+    load_path,
+    token = None,
+    cache_dir = None,
+    local_files_only = False,
+    revision = None,
+):
+    from transformers.utils import cached_file
+    return (
+        cached_file(
+            load_path,
+            "preprocessor_config.json",
+            token = token,
+            cache_dir = cache_dir,
+            local_files_only = local_files_only,
+            revision = revision,
+            _raise_exceptions_for_missing_entries = False,
+        )
+        is not None
+    )
+
+
+def _native_default_image_processor(
+    load_path,
+    model_type,
+    token = None,
+    cache_dir = None,
+    local_files_only = False,
+    revision = None,
+):
+    """Image processor transformers registers for the checkpoint's model_type, at class defaults; else None."""
+    import transformers
+    from transformers import AutoConfig
+
+    try:
+        from transformers.models.auto.image_processing_auto import IMAGE_PROCESSOR_MAPPING_NAMES
+    except Exception:
+        return None
+    model_types = [model_type]
+    try:
+        config = AutoConfig.from_pretrained(
+            load_path,
+            token = token,
+            trust_remote_code = False,
+            cache_dir = cache_dir,
+            local_files_only = local_files_only,
+            revision = revision,
+        )
+        model_types.insert(0, config.model_type)
+    except Exception:
+        pass
+    for mt in model_types:
+        if mt not in _NATIVE_DEFAULT_IMAGE_PROCESSOR_TYPES:
+            continue
+        names = IMAGE_PROCESSOR_MAPPING_NAMES.get(mt)
+        if not names:
+            continue
+        if isinstance(names, dict):  # transformers 5: {"torchvision": ..., "pil": ...}
+            names = [names.get("torchvision"), names.get("pil"), *names.values()]
+        elif isinstance(names, str):
+            names = [names]
+        else:  # transformers 4: (slow, fast)
+            names = list(reversed(names))
+        for name in names:
+            cls = getattr(transformers, name, None) if name else None
+            if cls is None:
+                continue
+            try:
+                return cls()
+            except Exception:
+                continue
+    return None
+
+
 def _construct_vlm_processor_fallback(
     tokenizer_name,
     model_type,
@@ -1242,14 +1340,39 @@ def _construct_vlm_processor_fallback(
             local_files_only = local_files_only,
             revision = revision,
         )
-        image_processor = AutoImageProcessor.from_pretrained(
-            load_path,
-            token = token,
-            trust_remote_code = trust_remote_code,
-            cache_dir = cache_dir,
-            local_files_only = local_files_only,
-            revision = revision,
-        )
+        try:
+            image_processor = AutoImageProcessor.from_pretrained(
+                load_path,
+                token = token,
+                trust_remote_code = trust_remote_code,
+                cache_dir = cache_dir,
+                local_files_only = local_files_only,
+                revision = revision,
+            )
+        except Exception as _ip_err:
+            # Only a missing preprocessor_config.json (local or Hub); a present-but-broken one keeps its error.
+            if (
+                _is_offline_related_error(_ip_err)
+                or _missing_torchvision_error(_ip_err)
+                or _preprocessor_config_exists(
+                    load_path,
+                    token = token,
+                    cache_dir = cache_dir,
+                    local_files_only = local_files_only,
+                    revision = revision,
+                )
+            ):
+                raise
+            image_processor = _native_default_image_processor(
+                load_path,
+                model_type,
+                token = token,
+                cache_dir = cache_dir,
+                local_files_only = local_files_only,
+                revision = revision,
+            )
+            if image_processor is None:
+                raise
         # Load the tokenizer via PreTrainedTokenizerFast, bypassing the tokenizer_class check and resolving the cached snapshot first so transformers does not call model_info (#7481).
         tok = _load_pretrained_tokenizer_fast(
             tokenizer_name,
@@ -1372,7 +1495,36 @@ def _architecture_skip_modules(model_types):
     # LongCat-Flash MLA: NF4 on q_b_proj / kv_b_proj badly hurts loss; both are small.
     if any(mt in ("longcat_flash", "longcat_flash_lsa") for mt in model_types):
         skip.extend(("q_b_proj", "kv_b_proj"))
+    # Kimi-K3's attention residuals read the Linear(hidden, 1) projections' .weight as a score vector, which a packed Params4bit cannot be.
+    if any(mt in ("kimi_k3", "kimi_linear") for mt in model_types):
+        skip.extend(("self_attention_res_proj", "mlp_res_proj", "output_attn_res_proj"))
     return skip
+
+
+def _with_architecture_skip_modules(quantization_config, model_types):
+    """Copy of a caller's bitsandbytes config with the architecture skip list merged in; anything else unchanged."""
+    extra = _architecture_skip_modules(model_types)
+    if quantization_config is None or not extra:
+        return quantization_config
+    if _bnb_bits_requested(quantization_config) is None:
+        return quantization_config
+    is_dict = isinstance(quantization_config, dict)
+    if is_dict:
+        current = quantization_config.get("llm_int8_skip_modules", None)
+    else:
+        current = getattr(quantization_config, "llm_int8_skip_modules", None)
+    # None = transformers' defaults, which an explicit list replaces: start from Unsloth's own list.
+    merged = list(SKIP_QUANTIZATION_MODULES) if current is None else list(current)
+    missing = [m for m in extra if m not in merged]
+    if current is not None and not missing:
+        return quantization_config
+    merged += missing
+    # A pre-quantized bnb checkpoint's own config still wins in transformers.
+    if is_dict:
+        return {**quantization_config, "llm_int8_skip_modules": merged}
+    runtime_config = copy.deepcopy(quantization_config)
+    runtime_config.llm_int8_skip_modules = merged
+    return runtime_config
 
 
 def _cast_unquantized_floats(model, dtype):
@@ -1977,8 +2129,13 @@ class FastBaseModel:
         if is_vlm_config and fast_inference:
             if not any(arch in VLLM_SUPPORTED_VLM for arch in model_types):
                 raise RuntimeError(
-                    f"Unsloth: Fast inference is only supported for Language models and Qwen2.5-VL, Qwen3-VL, Gemma3, Mistral3 among vision models. "
+                    f"Unsloth: Fast inference is only supported for Language models and these vision model types: {', '.join(VLLM_SUPPORTED_VLM)}. "
                     f"Found architectures: {', '.join(model_types)}!"
+                )
+            if "idefics3" in model_types and not _zoo_supports_idefics3_fast_inference():
+                raise RuntimeError(
+                    "Unsloth: Idefics3 fast_inference needs a newer unsloth_zoo. "
+                    "Please run `pip install --upgrade unsloth_zoo`."
                 )
 
         if any(arch in VLLM_NON_LORA_VLM for arch in model_types):
@@ -2146,27 +2303,47 @@ class FastBaseModel:
         kwargs["attn_implementation"] = attn_impl
 
         bnb_config = None
-        user_quantization_config = kwargs.get("quantization_config", None)
+        user_quantization_config = _with_architecture_skip_modules(
+            kwargs.get("quantization_config", None), model_types
+        )
+        if user_quantization_config is not None:
+            kwargs["quantization_config"] = user_quantization_config
 
         from .loader_utils import (
             check_and_disable_bitsandbytes_loading,
+            quantization_config_selects_bnb_4bit,
             sync_unsloth_model_name_bnb_flags,
         )
+        from .fp8_to_nf4 import fp8_to_nf4_planner_quantization_config
 
-        load_in_4bit, load_in_8bit, _ = check_and_disable_bitsandbytes_loading(
+        # The loader passes load_in_4bit=False with an explicit config, so a bnb 4-bit config is the request.
+        _explicit_bnb_4bit = user_quantization_config is not None and (
+            quantization_config_selects_bnb_4bit(user_quantization_config)
+        )
+        _checked_4bit, _checked_8bit, _ = check_and_disable_bitsandbytes_loading(
             auto_config,
-            load_in_4bit = load_in_4bit,
+            load_in_4bit = load_in_4bit or _explicit_bnb_4bit,
             load_in_8bit = load_in_8bit,
+            # Re-quantize needs the transformers 4-bit load: not vLLM, not full finetuning; explicit config must be bnb 4-bit.
+            requantize_packed = not fast_inference
+            and not full_finetuning
+            and quantization_config_selects_bnb_4bit(user_quantization_config),
             rewrite_modelopt = not (fast_inference and is_vLLM_available()),
             token = token,
             model_name = model_name,
             revision = _revision,
+            # vLLM reads the checkpoint itself, so it cannot take the in-process fp8 -> 4bit route.
+            allow_fp8_to_nf4 = not (fast_inference and is_vLLM_available()),
             hub_kwargs = {
                 "cache_dir": kwargs.get("cache_dir"),
                 "subfolder": kwargs.get("subfolder"),
                 "local_files_only": local_files_only,
             },
         )
+        # Only an explicit bnb 4-bit config the check kept keeps the caller's flags: a pre-quantized
+        # checkpoint left unarmed (vLLM reads it itself) must not reach vLLM as a bitsandbytes load.
+        if not (_explicit_bnb_4bit and _checked_4bit):
+            load_in_4bit, load_in_8bit = _checked_4bit, _checked_8bit
         from .modelopt_fp8 import (
             keep_fp8_scale_names_on_save,
             keep_task_heads_unquantized,
@@ -2189,10 +2366,24 @@ class FastBaseModel:
             load_in_4bit = False
             load_in_8bit = False
             load_in_16bit = False
+        from .fp8_to_nf4 import disarm_fp8_to_nf4, requests_bnb_4bit
+
+        if not load_in_4bit or (
+            user_quantization_config is not None and not requests_bnb_4bit(user_quantization_config)
+        ):
+            # An fp8 -> 4bit load parked the checkpoint's fp8 config; give it back.
+            disarm_fp8_to_nf4(auto_config)
 
         # text_only builds the bare decoder; from model_name the planner would plan the whole VLM.
         _planner_skip_reason = None
         _planner_config = auto_config if text_only_decoder else None
+        _planner_config_reason = "text_only loads a decoder the repo config does not describe"
+        # Re-quantized packed checkpoint: config.json would size it as compressed-tensors and refuse bnb flags.
+        if _planner_config is None and compressed_tensors_prepared_config(auto_config) is not None:
+            _planner_config = auto_config
+            _planner_config_reason = (
+                "this unsloth_zoo cannot plan from the prepared config of a re-quantized checkpoint"
+            )
         # Same failure from the other direction: num_labels (or an explicit auto_model) loads a task head whose `score` replaces the planned lm_head, and dispatch refuses a map with no score.weight.
         if _planner_skip_reason is None:
             _planner_skip_reason = planner_class_mismatch_reason(
@@ -2224,7 +2415,7 @@ class FastBaseModel:
             planner_kwargs = planner_kwargs_with_max_memory(device_map_planner_kwargs, kwargs),
             skip_reason = _planner_skip_reason,
             planner_config = _planner_config,
-            planner_config_reason = "text_only loads a decoder the repo config does not describe",
+            planner_config_reason = _planner_config_reason,
             **planner_config_overrides(kwargs),
             token = token,
             trust_remote_code = trust_remote_code,
@@ -2235,14 +2426,17 @@ class FastBaseModel:
             **add_dtype_kwargs(torch_dtype),
             # A caller-supplied config overrides the flags: loader.py clears them when it forwards one, so the flags alone would size a 4bit load at full precision.
             **planner_quantization_kwargs(
-                load_in_4bit = load_in_4bit,
-                load_in_8bit = load_in_8bit,
-                quantization_config = user_quantization_config,
+                **compressed_tensors_planner_quantization(
+                    auto_config, load_in_4bit, load_in_8bit, user_quantization_config
+                ),
                 rewritten_quantization_config = modelopt_planner_quantization_config(
                     auto_config, dequantize = load_in_16bit
                 )
                 if _modelopt_rewritten
-                else None,
+                else fp8_to_nf4_planner_quantization_config(
+                    auto_config,
+                    SKIP_QUANTIZATION_MODULES + _architecture_skip_modules(model_types),
+                ),
                 extra_skip_modules = _architecture_skip_modules(model_types) or None,
             ),
         )
@@ -2452,14 +2646,18 @@ class FastBaseModel:
                         or kwargs.get("quantization_config") is not None
                     )
                 ):
-                    model = auto_model.from_pretrained(
-                        model_name,
-                        config = model_config,
-                        device_map = device_map,
-                        token = token,
-                        trust_remote_code = trust_remote_code,
-                        **kwargs,
-                    )
+                    try:
+                        model = auto_model.from_pretrained(
+                            model_name,
+                            config = model_config,
+                            device_map = device_map,
+                            token = token,
+                            trust_remote_code = trust_remote_code,
+                            **kwargs,
+                        )
+                    finally:
+                        # The load deep-copied the config; give the caller's object its fp8 block back.
+                        disarm_fp8_to_nf4(model_config)
                 model = _text_trainable_core(
                     model, text_intent = bool(text_only) if text_intent is None else bool(text_intent)
                 )
@@ -2513,6 +2711,7 @@ class FastBaseModel:
                     variant = kwargs.get("variant"),
                     dtype = torch_dtype,
                 )
+                _prepare_compressed_tensors_model(model, full_finetuning = full_finetuning)
                 if load_in_16bit and not load_in_4bit and not load_in_8bit:
                     _dequantize_leftover_fp8_params(
                         model,
@@ -2818,6 +3017,14 @@ class FastBaseModel:
             if hasattr(__tokenizer, "pad_token"):
                 tokenizer.pad_token = __tokenizer.pad_token
                 tokenizer.pad_token_id = __tokenizer.pad_token_id
+        # Kimi K2.5 / K2.7 processors only take medias=; let processor(text=..., images=...) work too.
+        if hasattr(tokenizer, "image_processor"):
+            try:
+                from unsloth_zoo.vision_utils import patch_medias_processor
+            except ImportError:
+                patch_medias_processor = None
+            if patch_medias_processor is not None:
+                patch_medias_processor(tokenizer)
         model, tokenizer = patch_model_and_tokenizer(
             model,
             tokenizer,
@@ -3076,6 +3283,8 @@ class FastBaseModel:
                 ]
         # Remember the caller's ORIGINAL explicit leaf list for MoE expert detection: routing it through get_peft_regex adds the full "mlp|feed_forward|ffn|dense" block even for attention-only leaves, so keying on that regex would train the experts. Only the auto path relies on the regex.
         _moe_detect_target = target_modules if type(target_modules) in (list, tuple) else None
+        # Auto regex is built after MXFP4 expert stacking, so it no longer names per-expert Linears.
+        _auto_targets = target_modules is None or target_modules == "all-linear"
 
         # get_peft_regex drops these (no attention/MLP ancestor) and LoRA on them never trains, so redirect before scoping, matching FastLanguageModel.
         target_modules, modules_to_save, _moved = _redirect_embedding_targets(
@@ -3225,6 +3434,17 @@ class FastBaseModel:
                         for name, _ in _core.named_parameters()
                         if any(name == t or name.endswith("." + t) for t in _core_parameters)
                     ] or None
+            from .remote_moe_shims import packed_expert_target_parameters
+
+            if _auto_targets and finetune_mlp_modules and finetune_language_layers:
+                _packed_leaves = ("w1", "w2", "w3")
+            elif isinstance(_moe_module_detect, (list, tuple, str)):
+                _packed_leaves = _moe_module_detect
+            else:
+                _packed_leaves = None
+            target_parameters = packed_expert_target_parameters(
+                model, target_parameters, _packed_leaves
+            )
 
         if _moe_module_targets:
             if isinstance(target_modules, (list, tuple)):
@@ -3264,6 +3484,12 @@ class FastBaseModel:
         lora_config = LoraConfig(
             **{k: v for k, v in local_variables.items() if k in allowed_parameters},
         )
+        from .loader_utils import enable_composite_gradient_checkpointing
+        from .remote_moe_shims import prepare_remote_moe_for_training
+
+        enable_composite_gradient_checkpointing(model)
+        prepare_remote_moe_for_training(model)
+        # Block-diagonal grouped linears (DeepSeek-V4's o_a_proj) need a LoRA forward that is grouped too.
         _grouped_classes = register_grouped_linear_lora(lora_config, model)
         if _grouped_classes:
             print(
@@ -3401,6 +3627,11 @@ class FastBaseModel:
             torch_checkpoint.checkpoint = _nonre_checkpoint
             hf_modeling_utils.checkpoint = _nonre_checkpoint
 
+        from .loader_utils import enable_composite_gradient_checkpointing
+        from .remote_moe_shims import prepare_remote_moe_for_training
+
+        enable_composite_gradient_checkpointing(model)
+        prepare_remote_moe_for_training(model)
         model = prepare_model_for_training(
             model,
             use_gradient_checkpointing = use_gradient_checkpointing,
