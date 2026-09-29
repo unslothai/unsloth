@@ -218,13 +218,13 @@ test("files handed to a new chat wait until it is on screen", async () => {
   assert.match(fn, /\.then\(\(\) => \{\n\s*requestAnimationFrame\(/);
 });
 
-test("an image card in the composer has no border or fill; file cards keep both", () => {
+test("an image card in the composer shares the file card border but has no fill", () => {
   const card = ATTACHMENT.slice(
     ATTACHMENT.indexOf("const ComposerAttachmentCard: FC"),
     ATTACHMENT.indexOf("const SentAttachmentLayoutContext"),
   );
   assert.match(card, /const src = useAttachmentImageSrc\(\);/);
-  assert.match(card, /!src && CARD_EDGE,\n\s*!src && CARD_SURFACE,/);
+  assert.match(card, /CARD_EDGE,\n\s*!src && CARD_SURFACE,/);
   assert.match(card, /<CardImageOrBody name=\{name\} kind=\{kind\} src=\{src\} \/>/);
 });
 
@@ -248,7 +248,7 @@ test("a sent text file downloads whole, not the capped preview", async () => {
 
 test("a composer clip reads as a video, not by its .mp4 name as audio", () => {
   assert.match(ATTACHMENT, /if \(isVideoAttachment\(attachment\)\) return "Video";\n\s*return isAudioAttachment\(/);
-  assert.match(ATTACHMENT, /isVideo\n\s*\? Video01Icon\n\s*: isAudioAttachment\(name, contentType\)/);
+  assert.match(ATTACHMENT, /isVideo\n\s*\? FlimSlateIcon\n\s*: isAudioAttachment\(name, contentType\)/);
 });
 
 test("a sent document shown from its stored text downloads and chats as a .txt", async () => {
