@@ -556,3 +556,54 @@ def test_quantise_stages_what_fits_on_the_card_and_unstages_it(monkeypatch):
     assert all(not p.is_cuda for p in dit.parameters())
     # nothing staged off CUDA, or for a DiT already on the card
     assert V._stage_denoiser_for_quant(dit, types.SimpleNamespace(device = "mps")) == []
+
+
+def test_applied_floor_counts_an_encoder_that_refused_leaf_offload():
+    """_apply_group_offload keeps a refusing encoder resident under the same policy; the floor must follow the hooks."""
+    torch = pytest.importorskip("torch")
+    import inspect
+
+    import core.inference.video as V
+
+    def _module(mib):
+        module = torch.nn.Module()
+        module.register_buffer("w", torch.zeros(mib * 1024 * 1024 // 2, dtype = torch.bfloat16))
+        return module
+
+    dit, encoder = _module(10), _module(12)
+    dit._diffusers_hook = types.SimpleNamespace(hooks = {"group_offloading": object()})
+    pipe = types.SimpleNamespace(components = {"transformer": dit, "text_encoder": encoder, "vae": _module(3)})
+    plan = types.SimpleNamespace(
+        offload_policy = "group",
+        stream_text_encoders = True,
+        stream_transformer = True,
+        device_memory = types.SimpleNamespace(backend = "cuda"),
+    )
+    # as planned: VAE 3 plus the larger streamed unit (TE 12)
+    assert V._video_offload_vram_floor_mib(pipe, plan) == 15
+    # as applied: the unhooked encoder is resident, so VAE 3 + TE 12 plus the streamed DiT 10
+    assert V._video_offload_vram_floor_mib(pipe, plan, applied = True) == 25
+    assert "_video_offload_vram_floor_mib(pipe, plan, applied = True)" in inspect.getsource(V)
+
+
+def test_failed_staging_leaves_nothing_on_the_card(monkeypatch):
+    torch = pytest.importorskip("torch")
+    if not torch.cuda.is_available():
+        pytest.skip("needs a CUDA device")
+    import core.inference.video as V
+
+    class _Refuses(torch.nn.Linear):
+        def to(self, *args, **kwargs):
+            raise RuntimeError("CUDA out of memory")
+
+    dit = torch.nn.Module()
+    dit.blocks = torch.nn.ModuleList(
+        [torch.nn.Linear(256, 256, bias = False).to(torch.bfloat16) for _ in range(2)]
+        + [_Refuses(256, 256, bias = False)]
+    )
+    monkeypatch.setattr(
+        "utils.hardware.trusted_mem_get_info", lambda d, module = None: (80 * 1024**3, 80 * 1024**3)
+    )
+    target = types.SimpleNamespace(device = "cuda", torch_device = "cuda")
+    assert V._stage_denoiser_for_quant(dit, target) == []
+    assert all(not p.is_cuda for p in dit.parameters())

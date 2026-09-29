@@ -1635,13 +1635,19 @@ def _stage_denoiser_for_quant(
         )
         staged: list = []
         moved_bytes = 0
-        for unit in _stage_units(transformer):
-            size = _module_dense_bytes(unit)
-            if size == 0 or moved_bytes + size > budget:
-                continue
-            unit.to(device)
-            staged.append(unit)
-            moved_bytes += size
+        try:
+            for unit in _stage_units(transformer):
+                size = _module_dense_bytes(unit)
+                if size == 0 or moved_bytes + size > budget:
+                    continue
+                unit.to(device)
+                staged.append(unit)
+                moved_bytes += size
+        except Exception:
+            # The DiT started on the host: put every moved unit, and a half-moved one, back before the CPU fallback.
+            transformer.to("cpu")
+            clear_gpu_cache()
+            raise
         if staged and logger is not None:
             logger.info(
                 "video.transformer_quant: quantising on %s with %.1f of %.1f GB of the DiT staged there",
@@ -1816,8 +1822,21 @@ def _video_streamed_peak_bytes(module: Any, offload_type: str, *, prefetch: bool
     return fixed + sum(units[: 2 if prefetch else 1])
 
 
-def _video_offload_vram_floor_mib(pipe: Any, plan: Any) -> Optional[int]:
-    """MiB of weights co-resident on the device under ``plan``'s tier, from the loaded modules; None if not offloaded."""
+def _video_group_hooked(module: Any) -> bool:
+    """Whether group offloading actually hooked ``module`` (leaf level hooks its leaves). Unreadable counts as hooked."""
+    try:
+        for sub in module.modules():
+            hooks = getattr(getattr(sub, "_diffusers_hook", None), "hooks", None) or {}
+            if any("group_offloading" in str(key) for key in hooks):
+                return True
+    except Exception:  # noqa: BLE001 -- trust the plan
+        return True
+    return False
+
+
+def _video_offload_vram_floor_mib(pipe: Any, plan: Any, *, applied: bool = False) -> Optional[int]:
+    """MiB of weights co-resident on the device under ``plan``'s tier, from the loaded modules; None if not offloaded.
+    ``applied`` reads which modules the hooks actually stream: an encoder that refused leaf offload stays resident."""
     policy = getattr(plan, "offload_policy", OFFLOAD_NONE)
     if policy == OFFLOAD_NONE:
         return None
@@ -1861,6 +1880,8 @@ def _video_offload_vram_floor_mib(pipe: Any, plan: Any) -> Optional[int]:
             streamed = denoisers | encoders
         else:
             return None
+        if applied:
+            streamed = {name for name in streamed if _video_group_hooked(modules[name])}
         held = sum(size for name, size in sizes.items() if name not in streamed)
         backend = getattr(getattr(plan, "device_memory", None), "backend", None)
         prefetch = backend not in ("mps", "cpu")
@@ -6046,6 +6067,21 @@ class VideoBackend:
                 placement_device = target.torch_device,
                 logger = logger,
             )
+            if offload_policy == plan.offload_policy and vram_floor_mib is not None and free_mib is not None:
+                # An encoder that refused leaf offload is kept resident under the same policy: re-check what landed.
+                applied_floor = _video_offload_vram_floor_mib(pipe, plan, applied = True)
+                if applied_floor is not None and applied_floor > vram_floor_mib:
+                    vram_floor_mib = applied_floor
+                    shortfall = video_offload_shortfall_message(
+                        family = fam.name,
+                        floor_mib = applied_floor,
+                        available_mib = int(free_mib),
+                        placement = _video_plan_label(plan),
+                    )
+                    if shortfall is not None:
+                        del pipe
+                        clear_gpu_cache()
+                        raise RuntimeError(shortfall)
             # A dual-DiT MoE needs no extra per-expert pass: apply_memory_plan covers every DiT; a second pass would
             # duplicate-hook.
             if not vae_tiling:
