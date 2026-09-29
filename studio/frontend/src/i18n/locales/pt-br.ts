@@ -1563,7 +1563,7 @@ export const ptBR = {
         noRamReserveDescription: "Reduz a RAM ocupada pelos pesos do modelo.",
         noRamReserveHint: "Ignora o carregamento mapeado em memória nas versões compatíveis do Windows quando o modelo está totalmente descarregado na GPU, para que suas páginas não fiquem residentes. Caso contrário, mantém o carregamento mapeado em memória. Buffers de CPU necessários ainda podem usar RAM. Remove --no-mmap e --mlock.",
         mlockVetoed: "--mlock continua desativado: fixar o modelo reservaria RAM para todo ele. A descarga automática por inatividade continua desativada.",
-        mlockNotApplicable: "O modelo carregado está inteiramente na GPU, portanto não há cópia na RAM para fixar e --mlock é ignorado. “Manter o modelo na memória da GPU” continua valendo: a descarga automática por inatividade está desativada.",
+        mlockNotApplicable: "Totalmente na GPU: nada para bloquear na RAM do sistema. A descarga automática por inatividade continua desativada.",
         memlockCapped: "Este sistema limita a memória bloqueada a {limit}. Um modelo maior não será totalmente fixado; aumente o limite com ulimit -l.",
         reloadRequired: "Recarregue o modelo para aplicar as novas opções de memória.",
         loadError: "Falha ao carregar as configurações de memória do modelo",

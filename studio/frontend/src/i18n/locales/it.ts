@@ -1541,7 +1541,7 @@ export const it = {
         noRamReserveDescription: "Riduce la RAM occupata dai pesi del modello.",
         noRamReserveHint: "Salta il caricamento mappato in memoria sulle build Windows supportate quando il modello è interamente scaricato sulla GPU, così le sue pagine non restano residenti. Altrimenti mantiene il caricamento mappato in memoria. I buffer CPU necessari possono comunque occupare RAM. Rimuove --no-mmap e --mlock.",
         mlockVetoed: "--mlock resta disattivato: bloccare il modello riserverebbe RAM per l'intero modello. Lo scaricamento automatico in inattività resta disattivato.",
-        mlockNotApplicable: "Il modello caricato è interamente sulla GPU, quindi non c'è alcuna copia in RAM da bloccare e --mlock viene saltato. «Mantieni il modello nella memoria della GPU» si applica comunque: lo scaricamento automatico in inattività è disattivato.",
+        mlockNotApplicable: "Interamente sulla GPU: nulla da bloccare nella RAM di sistema. Lo scaricamento automatico in inattività resta disattivato.",
         memlockCapped: "Questo sistema limita la memoria bloccata a {limit}. Un modello più grande non verrà bloccato del tutto; aumenta il limite con ulimit -l.",
         reloadRequired: "Ricarica il modello per applicare le nuove opzioni di memoria.",
         loadError: "Impossibile caricare le impostazioni di memoria del modello",

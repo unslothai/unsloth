@@ -1522,7 +1522,7 @@ export const zhCN = {
         noRamReserveDescription: "减少模型权重占用的内存。",
         noRamReserveHint: "当模型完全卸载到 GPU 时，在受支持的 Windows 版本上跳过内存映射加载，使其页面不再常驻；否则保持内存映射加载。必要的 CPU 缓冲区仍可能占用内存。移除 --no-mmap 和 --mlock。",
         mlockVetoed: "--mlock 保持关闭：锁定模型会为其全部内容预留内存。空闲自动卸载仍处于禁用状态。",
-        mlockNotApplicable: "已加载的模型完全位于 GPU 上，系统内存中没有可锁定的副本，因此跳过 --mlock。“将模型保留在 GPU 内存中”仍然生效：空闲自动卸载已关闭。",
+        mlockNotApplicable: "已完全位于 GPU 上：系统内存中没有需要锁定的内容。空闲自动卸载保持关闭。",
         memlockCapped: "本系统将锁定内存限制为 {limit}。更大的模型无法被完全锁定；请使用 ulimit -l 提高上限。",
         reloadRequired: "重新加载模型以应用新的内存选项。",
         loadError: "加载模型内存设置失败",
