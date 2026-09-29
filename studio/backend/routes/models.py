@@ -3319,8 +3319,7 @@ async def delete_finetuned_model(
                 and (
                     not gguf_variant
                     or not llama_backend.hf_variant
-                    # Alias-aware: the delete below accepts a bare quant for a qualified key, so a
-                    # literal comparison here would wave through the very spelling it then deletes.
+                    # Alias-aware: a literal compare would pass the bare-quant spelling the delete accepts.
                     or _variant_names_same_checkpoint(llama_backend.hf_variant, gguf_variant)
                 )
             ):

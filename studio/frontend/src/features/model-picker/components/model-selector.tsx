@@ -174,7 +174,6 @@ function ModelSelectorTrigger({
   const triggerTitle = severalLoaded
     ? `${loadedCount} models loaded`
     : (currentModel?.name ?? placeholder);
-  // With several loaded the title is the count, so the subtitle names the one chat is sending to.
   const subtitle = severalLoaded ? currentModel?.name : currentModel?.description;
   return (
     <PopoverTrigger asChild={true}>

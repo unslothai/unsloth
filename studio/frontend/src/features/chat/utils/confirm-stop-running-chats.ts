@@ -40,8 +40,7 @@ export function getLocalPromptQueueThreadIds(): string[] {
 export async function confirmStopRunningChatsIfNeeded(
   action = "Loading a different model",
   effect: StopRunningChatsEffect = "reload",
-  /** Only the chats on this one of several loaded models: this tab cannot tell which model a
-   *  local run is on, so the backend's per-model list is the whole answer. */
+  /** Only this model's chats, from the backend: a tab cannot tell which model a local run is on. */
   model?: string,
 ): Promise<StopRunningChatsDecision> {
   // Local runs only: an external-provider chat is not stopped by the swap, so counting it would

@@ -5811,7 +5811,6 @@ export function HubModelPicker({
   };
 
 
-  // Row-level eject only once several are loaded; with one, the footer button ejects it.
   const ejectsKept = Boolean(onEject) && loadedModels.length > 1;
   const ejectMenuItems = (modelId: string) =>
     ejectsKept && isKeptLoaded(modelId)

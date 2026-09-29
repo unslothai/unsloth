@@ -83,8 +83,7 @@ def summarize_resident_chat() -> Dict[str, Any]:
             )
             if name:
                 gguf_name = gguf_name or name
-                # Like the primary: only a slot still loading cannot be sized; a loaded one is
-                # counted in the free VRAM can_keep measures.
+                # Only a still-loading slot is unsizable; a loaded one is in the free VRAM can_keep reads.
                 if pending or filling or (slot.llama.is_active and not slot.llama.is_loaded):
                     loading = True
     except Exception as e:

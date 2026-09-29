@@ -16673,8 +16673,7 @@ async def load_model_gated(
                 _loading_slot = (extra, request.model_path)
             async with nullcontext() if new_slot else inference_lifecycle_gate():
                 _raise_if_sidecar_swap_in_progress()
-                # The active-generation gate runs inside _load_model_impl, once it knows this is a real
-                # reload, and still under the lifecycle gate so the check stays atomic with the teardown.
+                # The 409 gate runs inside _load_model_impl, under the lifecycle gate, atomic with teardown.
                 if new_slot:
                     reload_gate = None
                 elif extra is not None:
@@ -16707,8 +16706,7 @@ async def load_model_gated(
                         )
                         break
                     except GpuMemoryShortError as exc:
-                        # A new slot's load does not hold the inference gate, so take it here: no
-                        # chat may start on a victim between the pick and its teardown.
+                        # No chat may start on a victim between its pick and teardown.
                         async with inference_lifecycle_gate() if new_slot else nullcontext():
                             dropped = 0
                             for victim in _eviction_victims(
@@ -16778,8 +16776,7 @@ async def _pick_load_slot(request: LoadRequest) -> Optional[_ExtraSlot]:
     requested = _model_key(request)
     slot = await _route_to_extra_slot(requested)
     if slot is None and request.gguf_variant:
-        # Another quant of a loaded repo replaces it where it is: requests name the repo, so a
-        # second copy beside it could never be reached.
+        # Another quant replaces its repo in place: requests name the repo, so a copy beside it is unreachable.
         slot = await _route_to_extra_slot(request.model_path)
         if slot is not None or await asyncio.to_thread(_loaded_satisfies, request.model_path):
             return slot

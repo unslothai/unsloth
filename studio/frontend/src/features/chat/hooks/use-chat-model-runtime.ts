@@ -2405,15 +2405,13 @@ export function useChatModelRuntime() {
               ? (await consumeNativePathToken(nativePathToken, "load-model")).nativePathLease
               : undefined;
 
-            // Chats on the other loaded models keep their server, so only a full swap stops every queue.
             if (keepsOthers || touchesOnlySelected) {
               requestPromptQueueStop(stopDecision.promptQueueThreadIds);
             } else {
               cancelPreStreamRunReservations(stopDecision.preStreamRunTokens);
               requestLocalPromptQueueStop(stopDecision.promptQueueThreadIds);
             }
-            // Applying settings reloads the model in place, so a failed reload must roll back even when
-            // the other models are kept.
+            // A settings reload is in place, so a failed one must roll back even with others kept.
             if (currentCheckpoint && !keepsOthers) {
               // With chats generating, skip this preliminary unload: it cancels them ahead of /load's
               // preflight, so a rejected target truncates replies for a model that never loads. Idle,
@@ -3797,7 +3795,6 @@ export function useChatModelRuntime() {
       .filter((id) => id !== params.checkpoint);
     const selectedLocal =
       Boolean(params.checkpoint) && !isExternalModelId(params.checkpoint);
-    // One prompt for every model's chats, before anything unloads.
     const decision = await confirmStopRunningChatsIfNeeded(
       "Unloading every model",
       "unload",
