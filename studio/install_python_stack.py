@@ -306,9 +306,8 @@ _WINDOWS_ROCM_TORCH_PKG_SPECS: dict[str, tuple[str, str, str]] = {
     "gfx1102": _ROCM_TORCH_PKG_SPECS["rocm7.2"],
     "gfx1103": _ROCM_TORCH_PKG_SPECS["rocm7.2"],
 }
-# RDNA 1 has no repo.amd.com/rocm/whl family; AMD's multi-arch index picks the card by the
-# torch[device-gfxNNNN] extra. Pinned to the newest tag inside the Windows <2.12.0 window.
-# Windows only (measured on RX 5700 XT, #11614); Linux untested, WSL2 refuses RDNA 1.
+# RDNA 1 has no repo.amd.com/rocm/whl family; the multi-arch index picks the card by the
+# torch[device-gfxNNNN] extra. Exact pin: its next tag (2.12.0) sits on the Windows ceiling. #11614
 _ROCM_WINDOWS_MULTIARCH_INDEX_BASE = (
     os.environ.get("UNSLOTH_ROCM_WINDOWS_MULTIARCH_MIRROR")
     or "https://repo.amd.com/rocm/whl-multi-arch"
@@ -317,7 +316,7 @@ _ROCM_MULTIARCH_TAG = "rocm7.14.1"
 _ROCM_MULTIARCH_TORCH_VERSION = "2.11.0"
 _ROCM_MULTIARCH_TORCHVISION_VERSION = "0.26.0"
 _ROCM_MULTIARCH_TORCHAUDIO_VERSION = "2.11.0"
-# Only gfx1010 tested; gfx1011/gfx1012 included since the Triton and zoo fixes key on gfx101x.
+# Only gfx1010 measured; gfx1011/gfx1012 ride along since the Triton and zoo fixes key on gfx101x.
 _WINDOWS_MULTIARCH_GFX: "frozenset[str]" = frozenset({"gfx1010", "gfx1011", "gfx1012"})
 
 
@@ -2060,7 +2059,7 @@ _WIN_GPU_NAME_ARCH_TABLE: "list[tuple[str, str]]" = [
         r"RX 6550|RX 6500|RX 6450|RX 6400|RX 6300|PRO W6400|PRO W6500|PRO W6300",
         "gfx1034",
     ),  # Navi 24
-    # RDNA 1 (Navi 10 / 14), multi-arch index on Windows. Names from LLVM + libdrm amdgpu.ids.
+    # RDNA 1, multi-arch index. Names from LLVM + libdrm amdgpu.ids.
     (r"Radeon Pro V520|Radeon Pro 5600M", "gfx1011"),
     (r"RX 5700|RX 5600|Radeon Pro 5600 XT|Radeon Pro 5700|Radeon Pro W5700", "gfx1010"),
     (r"RX 5500|RX 5300|Radeon Pro W5500|Radeon Pro W5300", "gfx1012"),

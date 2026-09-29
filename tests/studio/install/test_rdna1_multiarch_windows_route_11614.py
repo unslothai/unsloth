@@ -2,20 +2,9 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 """RDNA 1 on Windows installs from AMD's multi-arch index (unslothai/unsloth#11614).
 
-An RX 5700 XT (gfx1010) has no family on repo.amd.com/rocm/whl, so until now the Windows
-installers put it on CPU torch and said so (#8529). AMD's multi-arch index
-(repo.amd.com/rocm/whl-multi-arch) carries per-card kernel packs; there
-`torch[device-gfx1010]` resolves torch plus amd-torch-device-gfx1010. What this file pins
-down about that route:
-
-* the resolvers send gfx1010 / gfx1011 / gfx1012 to that index, in every spelling hipinfo
-  or a user can produce, and to nothing else;
-* the package specs are PINNED to one release tag (the index serves several, and the
-  newest sits on the Windows torch ceiling), with torchvision and torchaudio on that tag;
-* the Windows GPU name tables resolve the RDNA 1 marketing names to their arch, and the
-  "not covered" table no longer claims them;
-* the PowerShell installers carry the same three arches and the same tag, so a bump in one
-  place cannot leave the other installing a different build.
+gfx1010/1011/1012 route there in every spelling and nothing else does; the trio is pinned
+to one release tag below the Windows torch ceiling; the name tables claim RDNA 1 as
+supported; the PowerShell installers carry the same arches and tag.
 """
 
 import importlib.util
