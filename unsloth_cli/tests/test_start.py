@@ -5800,7 +5800,7 @@ def test_write_pi_config_fresh(tmp_path):
     # Pin the loaded window (and a sane output cap) so Pi compacts instead of
     # overflowing; without it Pi assumes its 128000 default.
     assert provider["models"] == [
-        {"id": MODEL["id"], "contextWindow": MODEL["context_length"], "maxTokens": 8192}
+        {"id": MODEL["id"], "contextWindow": MODEL["context_length"], "maxTokens": 32000}
     ]
 
 
@@ -5845,7 +5845,7 @@ def test_connect_pi_no_launch(fake_studio, tmp_path, monkeypatch):
     config = json.loads((home / ".pi" / "agent" / "models.json").read_text())
     assert config["providers"]["unsloth"]["apiKey"] == "sk-unsloth-feedfacefeedface"
     assert config["providers"]["unsloth"]["models"] == [
-        {"id": MODEL["id"], "contextWindow": MODEL["context_length"], "maxTokens": 8192}
+        {"id": MODEL["id"], "contextWindow": MODEL["context_length"], "maxTokens": 32000}
     ]
     assert not any(c[1].endswith("/api/inference/status") for c in fake_studio)
     assert (home / ".pi" / "agent" / "extensions" / "mine.ts").is_file()
@@ -6350,9 +6350,22 @@ def test_write_dsh_patch_fresh(dsh_patch):
     assert "sk-unsloth" not in dsh_patch.read_text()
     assert provider["compat"] == {"supportsDeveloperRole": False, "maxTokensField": "max_tokens"}
     assert provider["models"] == [
-        {"id": MODEL["id"], "contextWindow": MODEL["context_length"], "maxTokens": 8192}
+        {"id": MODEL["id"], "contextWindow": MODEL["context_length"], "maxTokens": 32000}
     ]
     assert entries["agent-default-model"]["config"] == {"provider": "unsloth", "model": MODEL["id"]}
+
+
+@pytest.mark.parametrize("window, expected", [(32_768, 8_192), (143_616, 32_000)])
+def test_pi_and_dsh_output_limit_follows_the_context(tmp_path, window, expected):
+    model = {**MODEL, "context_length": window}
+    start.write_pi_config(BASE, "sk-unsloth-abc", model, tmp_path / "models.json")
+    start.write_pi_subagent_config(BASE, "sk-unsloth-abc", model, tmp_path / "subagent.json")
+    start.write_dsh_patch(BASE, model, tmp_path / "unsloth.patch.yml")
+    pi = json.loads((tmp_path / "models.json").read_text())["providers"]["unsloth"]["models"][0]
+    subagent = json.loads((tmp_path / "subagent.json").read_text())
+    patch = _dsh_entries(tmp_path / "unsloth.patch.yml")
+    dsh = patch["llm-pi-ai"]["config"]["providers"]["unsloth"]["models"][0]
+    assert pi["maxTokens"] == subagent["maxTokens"] == dsh["maxTokens"] == expected
 
 
 def test_write_dsh_patch_without_window_omits_limits(dsh_patch):
