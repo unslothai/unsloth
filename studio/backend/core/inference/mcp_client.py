@@ -2259,7 +2259,7 @@ def _resource_contents(blocks: Any, uri: str) -> dict:
     # _meta.ui on the contents, not the tool: the template's CSP declaration.
     metas = (getattr(chosen, "meta", None), getattr(chosen, "_meta", None))
     ui = next((m["ui"] for m in metas if isinstance(m, dict) and isinstance(m.get("ui"), dict)), {})
-    mime = str(getattr(chosen, "mimeType", None) or "")
+    mime = str(_resource_mime(chosen) or "")
     return {"uri": uri, "mime_type": mime, "text": text, "ui": ui}
 
 

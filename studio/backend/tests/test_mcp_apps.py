@@ -452,3 +452,19 @@ def test_a_widget_call_rides_the_conversation_stdio_session(routes, monkeypatch)
     _call(routes, tool_name = "get_stats", thread_id = "t:1", session_id = "p/q", permission_mode = "off")
     tools_mod.execute_tool("mcp__s1__get_stats", {}, session_id = "p/q", thread_id = "t:1")
     assert scopes[0] == scopes[1] is not None
+
+
+def test_resource_contents_reads_the_sdk_s_own_resource_objects():
+    import mcp.types as mcp_types
+
+    real = mcp_types.TextResourceContents.model_validate(
+        {
+            "uri": UI,
+            "mimeType": "text/html;profile=mcp-app",
+            "text": "<p/>",
+            "_meta": {"ui": {"csp": {"connectDomains": ["api.example.com"]}}},
+        }
+    )
+    out = _resource_contents([real], UI)
+    assert out["mime_type"] == "text/html;profile=mcp-app"
+    assert out["ui"] == {"csp": {"connectDomains": ["api.example.com"]}}
