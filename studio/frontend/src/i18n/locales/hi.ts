@@ -145,6 +145,13 @@ export const hi = {
       close: "खोज बंद करें",
       truncated: "यह पेज पूरी तरह खोजने के लिए बहुत लंबा है।",
     },
+    zoom: {
+      label: "ज़ूम",
+      zoomOut: "ज़ूम आउट",
+      zoomIn: "ज़ूम इन",
+      reset: "रीसेट करें",
+      announce: "ज़ूम {percent}%",
+    },
     beta: "BETA",
     brand: "unsloth",
     product: "Unsloth",

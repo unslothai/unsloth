@@ -605,6 +605,11 @@ function DesktopChromeVarsEffect({
       usesNativeMacTitlebar ? NATIVE_MAC_TITLEBAR_HEIGHT_VAR : null,
     );
     set("--studio-window-control-inset", usesCustomTitlebar ? "112px" : null);
+    // --studio-content-top-inset for the body-portaled find bar and zoom popup.
+    set(
+      "--studio-portal-content-top-inset",
+      usesCustomTitlebar ? "34px" : null,
+    );
     // How far body-portaled surfaces must stay clear of the top: either titlebar paints over them.
     set(
       "--studio-window-chrome-top",
@@ -618,6 +623,7 @@ function DesktopChromeVarsEffect({
       set("--studio-custom-titlebar-height", null);
       set("--studio-mac-titlebar-height", null);
       set("--studio-window-control-inset", null);
+      set("--studio-portal-content-top-inset", null);
       set("--studio-window-chrome-top", null);
     };
   }, [usesCustomTitlebar, usesNativeMacTitlebar]);

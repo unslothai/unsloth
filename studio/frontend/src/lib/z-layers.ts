@@ -18,6 +18,7 @@
  *   STARTUP_SCREEN       blocks the app while the backend comes up or quits
  *   TOOLTIP              transient, must be readable above whatever spawned it
  *   DRAG_CURSOR_OVERLAY  owns the cursor and the hit test during a panel drag
+ *   WINDOW_BARS          find bar and zoom popup, above everything
  *
  * In-page surfaces -- dropdowns, popovers, dialogs, sheets, the sidebar, the
  * Tauri titlebar -- all sit in the 1..120 band on Tailwind's own `z-*` scale
@@ -76,6 +77,8 @@ export const Z_LAYER = {
    * between pointerdown and pointerup, so nothing it covers is hidden.
    */
   DRAG_CURSOR_OVERLAY: 1000000,
+  /** Find bar and zoom popup. Above toasts (999999999), below only the reload snapshot. */
+  WINDOW_BARS: 2147483000,
 } as const;
 
 export type ZLayer = (typeof Z_LAYER)[keyof typeof Z_LAYER];

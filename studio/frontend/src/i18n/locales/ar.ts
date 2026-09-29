@@ -142,6 +142,13 @@ export const ar = {
       close: "إغلاق البحث",
       truncated: "هذه الصفحة أطول من أن يتم البحث فيها بالكامل.",
     },
+    zoom: {
+      label: "التكبير",
+      zoomOut: "تصغير",
+      zoomIn: "تكبير",
+      reset: "إعادة تعيين",
+      announce: "التكبير {percent}%",
+    },
     beta: "BETA",
     brand: "unsloth",
     product: "Unsloth",

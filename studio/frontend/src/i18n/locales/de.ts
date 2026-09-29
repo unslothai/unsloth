@@ -145,6 +145,13 @@ export const de = {
       close: "Suche schließen",
       truncated: "Diese Seite ist zu lang, um vollständig durchsucht zu werden.",
     },
+    zoom: {
+      label: "Zoom",
+      zoomOut: "Verkleinern",
+      zoomIn: "Vergrößern",
+      reset: "Zurücksetzen",
+      announce: "Zoom {percent} %",
+    },
     beta: "BETA",
     brand: "unsloth",
     product: "Unsloth",

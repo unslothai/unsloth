@@ -5452,10 +5452,18 @@ html.force-reduced-motion .sidebar-section-drop-line {
 }
 
 .dark .find-bar-surface {
-	/* #2c2c2c, on the same curve as --card: the bar has to stay above the
-	   cards it floats over at every contrast, not just the default. */
-	background-color: color-mix(in oklab, #2c2c2c, var(--contrast-panel-target, var(--contrast-target, transparent)) var(--contrast-surface-mix, 0%));
+	/* Sidebar menu surface (7%) a step lighter; 8% stays under --border. */
+	background-color: color-mix(in srgb, var(--card), white 8%);
 	box-shadow: 0 4px 20px 6px var(--background);
+}
+
+/* Zoom popup: the find bar's corner, or just below the bar while it shows (h-13). */
+.interface-zoom-position {
+	top: calc(var(--studio-portal-content-top-inset, 0px) + 3.5rem);
+}
+
+body:has(> [data-find-bar-layer]:not([hidden]) [role="search"]) .interface-zoom-position {
+	top: calc(var(--studio-portal-content-top-inset, 0px) + 3.5rem + var(--spacing, 0.25rem) * 13 + 0.5rem);
 }
 
 @layer components {

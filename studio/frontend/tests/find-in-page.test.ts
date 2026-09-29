@@ -1462,20 +1462,46 @@ test("dark mode sits above the cards it floats over", async () => {
     assert.ok(hex, `no colour in ${declaration}`);
     return Number.parseInt(hex[0].slice(1, 3), 16);
   };
-  // A bar at `--card` dissolves into what scrolls under it; past `--border` it reads as an edge.
+  // The bar is `--card` lifted toward white, as the dark sidebar menu is: read how far.
+  const whiteMix = (declaration: string) => {
+    const hit =
+      /color-mix\(in srgb, var\(--card\), white (\d+(?:\.\d+)?)%\)/.exec(
+        declaration,
+      );
+    assert.ok(hit, `not --card mixed toward white: ${declaration}`);
+    return Number(hit[1]) / 100;
+  };
   const barDeclaration = value(".dark .find-bar-surface", "background-color");
-  const bar = grey(barDeclaration);
+  // The menu's selector heads two rules (its shadow, then its surface), so find the surface.
+  const menuSurface =
+    /\.dark :is\(\.unsloth-plus-menu, \.app-user-menu\)\.sidebar-menu\[data-slot\] \{\s*background-color:\s*([^;]+);/.exec(
+      INDEX,
+    );
+  assert.ok(menuSurface, "the dark sidebar menu has no surface colour");
+  const menuDeclaration = menuSurface[1];
   const card = grey(value(".dark", "--card-base"));
   const border = grey(value(".dark", "--border-base"));
+  const lift = (mix: number) => card + (255 - card) * mix;
+  const bar = lift(whiteMix(barDeclaration));
+  const menu = lift(whiteMix(menuDeclaration));
+  // A bar at `--card` dissolves into what scrolls under it; past `--border` it reads as an edge.
   assert.ok(bar > card, `bar ${bar} is not lighter than --card ${card}`);
   assert.ok(bar < border, `bar ${bar} is not darker than --border ${border}`);
+  // The sidebar menu's surface, a hair lighter: the same family, not a copy.
+  assert.ok(
+    bar > menu,
+    `bar ${bar} is not lighter than the sidebar menu ${menu}`,
+  );
+  assert.ok(
+    bar - menu <= 4,
+    `bar ${bar} is more than slightly lighter than ${menu}`,
+  );
   assert.match(
     value(".dark .find-bar-surface", "box-shadow"),
     /var\(--background\)/,
   );
-  // Both take the same step at the same time, so the order above survives the
-  // contrast slider instead of holding only at the default.
-  assert.match(barDeclaration, /var\(--contrast-surface-mix, 0%\)/);
+  // Built on --card, which takes the contrast step itself, so the order above
+  // survives the contrast slider instead of holding only at the default.
   assert.match(
     value("html[data-contrast-adjust]", "--card"),
     /var\(--contrast-surface-mix\)/,
@@ -1483,10 +1509,19 @@ test("dark mode sits above the cards it floats over", async () => {
 });
 
 test("the bar stays out of a backgrounded scope, and off the document origin", async () => {
-  // Every modal, not just Settings: Radix marks the shell aria-hidden for as long as one is up,
-  // and `enabled` is read at render, which a dialog opening need not cause.
+  // Every modal, not just Settings: `enabled` is read at render, which a dialog opening need not
+  // cause. Read from the backdrop, not aria-hidden alone, which Radix never puts on the searched
+  // region because it holds live regions (see find-backgrounded.ts).
+  assert.match(FIND_BAR, /if \(isFindScopeBackgrounded\(\)\) return;/);
+  const backgrounded = await readSrcAsync(
+    "features/find-in-page/lib/find-backgrounded.ts",
+  );
+  for (const slot of ["dialog-overlay", "alert-dialog-overlay", "sheet-overlay"]) {
+    assert.ok(backgrounded.includes(`"${slot}"`), `${slot} is not read as a modal`);
+  }
+  assert.match(backgrounded, /:not\(\[data-state="closed"\]\)/);
   assert.match(
-    FIND_BAR,
+    backgrounded,
     /isSurfaceBackgrounded\(`\[\$\{FIND_SCOPE_ATTRIBUTE\}\]`\)/,
   );
   // Fixed, not absolute: on a route whose outer container scrolls, an absolute bar scrolls away.
@@ -2614,7 +2649,7 @@ test("Escape closes the bar from the walk buttons, not just the field", async ()
     /window\.removeEventListener\("keydown", onEscape, true\)/,
   );
   // A modal above the bar owns Escape, and an open popover is dismissed by its own first.
-  assert.match(body, /isSurfaceBackgrounded\(/);
+  assert.match(body, /isFindScopeBackgrounded\(\)/);
   assert.match(body, /resolveDismissiblePortalSurfaces\(/);
   // And nothing left on the landmark, which would take the inside presses before the window does.
   const landmark = FIND_BAR.slice(FIND_BAR.indexOf('role="search"'));
@@ -2643,7 +2678,7 @@ test("only threads this search can read are forced to finish mounting", async ()
 test("the chord is left to the browser when the scope is behind a modal", async () => {
   // `useShortcut` prevents the event BEFORE the handler, so declining inside it kills the chord.
   const controller = await readComponentSource();
-  assert.match(controller, /claims: \(\) => !isSurfaceBackgrounded\(/);
+  assert.match(controller, /claims: \(\) => !isFindScopeBackgrounded\(\)/);
   const consume = USE_SHORTCUT.indexOf("event.preventDefault();");
   assert.ok(consume > 0);
   assert.ok(

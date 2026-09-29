@@ -144,6 +144,13 @@ export const ptBR = {
       close: "Fechar busca",
       truncated: "Esta página é longa demais para ser pesquisada por completo.",
     },
+    zoom: {
+      label: "Zoom",
+      zoomOut: "Diminuir zoom",
+      zoomIn: "Aumentar zoom",
+      reset: "Redefinir",
+      announce: "Zoom {percent}%",
+    },
     beta: "BETA",
     brand: "unsloth",
     product: "Unsloth",

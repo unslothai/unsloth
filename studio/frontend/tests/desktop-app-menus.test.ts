@@ -324,9 +324,9 @@ test("menu items for web shortcuts follow a mounted handler, and honour claims",
 test("Back and Forward follow page history, and zoom steps the interface scale", () => {
   assert.match(ROOT, /"back": routeShortcutEnabled \? \(\) => window\.history\.back\(\) : null/);
   assert.match(ROOT, /"forward": routeShortcutEnabled \? \(\) => window\.history\.forward\(\) : null/);
-  assert.match(ROOT, /"zoom-in": zoomBy\(1\)/);
-  assert.match(ROOT, /"zoom-out": zoomBy\(-1\)/);
-  assert.match(ROOT, /"actual-size": \(\) => useInterfaceScaleStore\.getState\(\)\.reset\(\)/);
+  assert.match(ROOT, /"zoom-in": \(\) => zoomInterfaceFromMenu\(1\)/);
+  assert.match(ROOT, /"zoom-out": \(\) => zoomInterfaceFromMenu\(-1\)/);
+  assert.match(ROOT, /"actual-size": \(\) => zoomInterfaceFromMenu\(0\)/);
 });
 
 test("Help items reuse the icon of the Settings tab they open", () => {

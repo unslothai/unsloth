@@ -289,11 +289,9 @@ test("raising lifts palette fills away from their surfaces under any foreground"
   );
   assert.match(STORE, /setVar\(CONTRAST_PANEL_TARGET_VAR, null\);/);
   assert.ok(SNAPSHOT.includes('"--contrast-panel-target"'));
-  // The dark find bar stands in for --card, so it follows the same target.
+  // The dark find bar is built on --card, so it follows the same target.
   assert.ok(
-    CSS.includes(
-      "background-color: color-mix(in oklab, #2c2c2c, var(--contrast-panel-target, var(--contrast-target, transparent)) var(--contrast-surface-mix, 0%));",
-    ),
+    CSS.includes("background-color: color-mix(in srgb, var(--card), white 8%);"),
   );
 });
 
