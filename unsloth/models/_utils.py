@@ -6108,7 +6108,6 @@ def _checkpoint_tensors(
     import json
 
     def _named(filename):
-        # transformers' _add_variant: model.safetensors -> model.<variant>.safetensors.
         if variant is None:
             return filename
         stem, ext = filename.rsplit(".", 1)

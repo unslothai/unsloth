@@ -2845,7 +2845,6 @@ class FastLlamaModel:
 
             # Trim a copy: HF deep-copies config= anyway, so a trimmed caller config would stay short.
             model_config = _copy.deepcopy(model_config)
-        # Swapped tail is built in host RAM afterwards so models larger than the card load.
         _block_swap_saved = trim_config_for_block_swap(model_config, block_swap_layers)
         _undo_block_swap_keys = skip_swapped_checkpoint_keys(
             _block_swap_saved, model_config.num_hidden_layers
