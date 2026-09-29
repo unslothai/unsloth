@@ -53,7 +53,6 @@ export type SandboxStatus = {
   // null: a server older than the setup flow.
   setup: SandboxSetupPlan | null;
   checkedAt: number;
-  // Grants taken back by a save that turned the Windows opt-in off.
   restored?: number;
 };
 
@@ -221,8 +220,7 @@ export function jobFromApi(job: ApiHostPrepJob): HostPrepJob {
   };
 }
 
-// A backend older than this bundle does not serve these routes; told apart from a failed
-// request so the tab can say so instead of showing an error the owner cannot act on.
+// Older backends lack these routes: reported apart from a failure so the tab can say so.
 async function checked(
   res: Response,
   route: string,

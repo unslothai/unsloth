@@ -25,7 +25,6 @@ _lock = threading.Lock()
 # Held while either this job or the Settings setup job decides to start: never two elevated helpers.
 HOST_CHANGE_LOCK = threading.Lock()
 _current: "HostPrepJob | None" = None
-# Extra resets run once a job ends (the settings route drops its status cache through this).
 _on_finish: list[Callable[[], None]] = []
 
 
@@ -118,7 +117,6 @@ def _run(job: HostPrepJob, proc: subprocess.Popen) -> None:
 
 
 def start() -> HostPrepJob:
-    """Start the elevated host preparation, or return the run already in progress."""
     global _current
     from . import mxc_probe, sandbox_setup_job
 
