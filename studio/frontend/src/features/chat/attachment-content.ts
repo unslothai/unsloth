@@ -942,6 +942,16 @@ export async function getDocxAttachmentError(
   return null;
 }
 
+export function getPdfAttachmentTextError(
+  fileName: string,
+  text: string,
+  pythonToolOpensFile: boolean,
+): string | null {
+  return text || pythonToolOpensFile
+    ? null
+    : `PDF has no readable text: ${fileName}. Scanned pages can't be read.`;
+}
+
 export async function extractPdfAttachmentText(file: File): Promise<string> {
   assertDocumentAttachmentSize(file, "PDF");
   const [{ extractText, getDocumentProxy }, buffer] = await Promise.all([

@@ -24,6 +24,7 @@ const {
   extractHtmlAttachmentText,
   extractPdfAttachmentText,
   getDocxAttachmentError,
+  getPdfAttachmentTextError,
   isAudioAttachment,
   isTextAttachment,
   parseAttachmentText,
@@ -461,6 +462,73 @@ test("extractPdfAttachmentText destroys the PDF proxy after success and failure"
   } finally {
     await definePDFJSModule(() => import("unpdf/pdfjs"));
   }
+});
+
+function singlePagePdf(content: string, resources: string, extra: string[]) {
+  const objects = [
+    "<< /Type /Catalog /Pages 2 0 R >>",
+    "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+    `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Resources ${resources} /Contents 4 0 R >>`,
+    `<< /Length ${content.length} >>\nstream\n${content}\nendstream`,
+    ...extra,
+  ];
+  let body = "%PDF-1.4\n";
+  const offsets = objects.map((object, index) => {
+    const offset = body.length;
+    body += `${index + 1} 0 obj\n${object}\nendobj\n`;
+    return offset;
+  });
+  const xref = body.length;
+  body += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`;
+  body += offsets
+    .map((offset) => `${String(offset).padStart(10, "0")} 00000 n \n`)
+    .join("");
+  body += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
+  return Uint8Array.from(body, (char) => char.charCodeAt(0));
+}
+
+test("a scanned pdf is refused unless the python tool can open it", async () => {
+  const pixels = "\x80".repeat(4);
+  const scan = new File(
+    [
+      singlePagePdf(
+        "q 200 0 0 200 0 0 cm /Im1 Do Q",
+        "<< /XObject << /Im1 5 0 R >> >>",
+        [
+          `<< /Type /XObject /Subtype /Image /Width 2 /Height 2 /ColorSpace /DeviceGray /BitsPerComponent 8 /Length ${pixels.length} >>\nstream\n${pixels}\nendstream`,
+        ],
+      ),
+    ],
+    "scan.pdf",
+    { type: "application/pdf" },
+  );
+  const typed = new File(
+    [
+      singlePagePdf(
+        "BT /F1 12 Tf 20 100 Td (quokka invoice) Tj ET",
+        "<< /Font << /F1 5 0 R >> >>",
+        ["<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"],
+      ),
+    ],
+    "typed.pdf",
+    { type: "application/pdf" },
+  );
+
+  const scanText = await extractPdfAttachmentText(scan);
+  const typedText = await extractPdfAttachmentText(typed);
+  assert.equal(scanText, "");
+  assert.equal(typedText, "quokka invoice");
+  assert.equal(
+    (await readAttachmentText(scan, scan.name, scan.type)).text,
+    "",
+  );
+
+  assert.match(
+    getPdfAttachmentTextError(scan.name, scanText, false) ?? "",
+    /^PDF has no readable text: scan\.pdf\./,
+  );
+  assert.equal(getPdfAttachmentTextError(scan.name, scanText, true), null);
+  assert.equal(getPdfAttachmentTextError(typed.name, typedText, false), null);
 });
 
 // The bytes are requested synchronously, so the extractor is reached without
