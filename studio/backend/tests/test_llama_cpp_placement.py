@@ -1461,6 +1461,8 @@ def test_forcing_the_drafter_refits_a_context_replayed_from_auto(tmp_path):
     assert _launched_ctx(result) == _launched_ctx(fresh)
     assert result["env"]["CUDA_VISIBLE_DEVICES"] == "0"
     assert result["cmd"][result["cmd"].index("--spec-type") + 1] == "draft-mtp"
+    # The client replays what launched; a duplicate-load check against the replay must match.
+    assert backend._requested_n_ctx == _launched_ctx(result)
 
 
 def test_a_replayed_context_gets_the_slot_refit_of_a_fresh_drafter_load(tmp_path):
@@ -1549,6 +1551,7 @@ def test_forcing_the_drafter_keeps_a_typed_context(tmp_path):
     result = _launch(backend, gguf, n_ctx = replayed, n_parallel = 4, speculative_type = "mtp")
 
     assert _launched_ctx(result) == replayed
+    assert backend._requested_n_ctx == replayed
 
 
 def test_a_cpu_offloaded_sidecar_is_not_probed_because_a_head_also_exists(tmp_path):
