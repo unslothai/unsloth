@@ -309,8 +309,7 @@ def _dataset_has_audio_column(dataset) -> Optional[bool]:
 
 
 def _raise_if_empty_train_split(dataset, stage: str) -> None:
-    # Format detection and SFTTrainer both call next(iter(dataset)), which dies with a bare
-    # StopIteration on an empty split; an empty eval split only warns later.
+    # Format detection and SFTTrainer die with a bare StopIteration on an empty split.
     if hasattr(dataset, "__len__") and len(dataset) == 0:
         where = f" {stage}" if stage else ""
         raise ValueError(

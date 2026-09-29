@@ -65,7 +65,6 @@ def test_all_blank_raw_train_split_still_fails():
 
 
 def test_shared_formatter_passes_the_eval_split_to_raw_prep():
-    # The MLX worker formats its eval split through this shared entry point.
     from utils.datasets import format_and_template_dataset
 
     blank = Dataset.from_dict({"text": ["", "  "]})
