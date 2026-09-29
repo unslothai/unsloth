@@ -101,10 +101,9 @@ class TestDefaultRoute:
         assert (
             stack_mod._windows_rocm_index_url("gfx90a") == "https://repo.amd.com/rocm/whl/gfx90a/"
         )
-        assert stack_mod._windows_rocm_torch_pkg_specs("gfx1033") == (
-            "torch",
-            "torchvision",
-            "torchaudio",
+        assert (
+            stack_mod._windows_rocm_torch_pkg_specs("gfx1033")
+            == stack_mod._WINDOWS_ROCM_TORCH_PKG_SPECS["gfx1033"]
         )
 
     def test_unknown_stays_none(self, stock):
@@ -120,10 +119,9 @@ class TestMirrors:
             stack_mod._windows_rocm_index_url("gfx1034")
             == "https://mirror.example/whl/gfx103X-all/"
         )
-        assert stack_mod._windows_rocm_torch_pkg_specs("gfx1034") == (
-            "torch",
-            "torchvision",
-            "torchaudio",
+        assert (
+            stack_mod._windows_rocm_torch_pkg_specs("gfx1034")
+            == stack_mod._WINDOWS_ROCM_TORCH_PKG_SPECS["gfx1034"]
         )
         assert (
             stack_mod._windows_rocm_index_url("gfx1201")

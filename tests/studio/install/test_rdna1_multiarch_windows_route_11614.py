@@ -92,10 +92,9 @@ class TestPackageSpecs:
             stack_mod._windows_rocm_torch_pkg_specs("gfx1201")
             == stack_mod._WINDOWS_ROCM_TORCH_PKG_SPECS["gfx1201"]
         )
-        assert stack_mod._windows_rocm_torch_pkg_specs("gfx1034") == (
-            "torch",
-            "torchvision",
-            "torchaudio",
+        assert (
+            stack_mod._windows_rocm_torch_pkg_specs("gfx1034")
+            == stack_mod._WINDOWS_ROCM_TORCH_PKG_SPECS["gfx1034"]
         )
         monkeypatch.delenv("UNSLOTH_ROCM_WINDOWS_MIRROR", raising = False)
         assert stack_mod._windows_rocm_torch_pkg_specs("gfx908") == (
