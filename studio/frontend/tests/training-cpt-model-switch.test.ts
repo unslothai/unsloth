@@ -86,6 +86,7 @@ test("leaving CPT after a model switch restores the new model targets", async ()
       loraRankBeforeCpt: null,
       loraAlphaBeforeCpt: null,
       loraVariantBeforeCpt: null,
+      trainOnCompletionsBeforeCpt: null,
     },
   });
 
@@ -798,6 +799,7 @@ test("a reload inside CPT keeps the pre-CPT LoRA params the session saved", asyn
       loraRankBeforeCpt: 64,
       loraAlphaBeforeCpt: 64,
       loraVariantBeforeCpt: "dora",
+      trainOnCompletionsBeforeCpt: null,
     },
   });
 
@@ -823,4 +825,141 @@ test("a reload inside CPT keeps the pre-CPT LoRA params the session saved", asyn
   assert.equal(state.loraRank, 64);
   assert.equal(state.loraAlpha, 64);
   assert.equal(state.loraVariant, "dora");
+});
+
+test("leaving CPT after a model switch does not restore the old model's train on completions", async () => {
+  useTrainingConfigStore.getState().reset();
+  const defaultsWith = (id: string, trainOnCompletions: boolean) => () =>
+    Promise.resolve(
+      Response.json({
+        id,
+        config: { training: { train_on_completions: trainOnCompletions } },
+        is_vision: false,
+        is_embedding: false,
+        is_audio: false,
+        audio_type_known: true,
+        is_lora: false,
+        model_type: "text",
+        model_size_bytes: null,
+        max_position_embeddings: 32768,
+      }),
+    );
+  setAuthFetchHandler(defaultsWith("old/llama", true));
+  useTrainingConfigStore.getState().selectTrainingModel("old/llama", "text");
+  await waitForModelDefaults("old/llama");
+  assert.equal(useTrainingConfigStore.getState().trainOnCompletions, true);
+
+  useTrainingConfigStore.getState().setTrainingMethod("cpt");
+  setAuthFetchHandler(defaultsWith("new/model", false));
+  useTrainingConfigStore.getState().selectTrainingModel("new/model", "text");
+  await waitForModelDefaults("new/model");
+
+  useTrainingConfigStore.getState().setTrainingMethod("qlora");
+  assert.equal(useTrainingConfigStore.getState().trainOnCompletions, false);
+});
+
+test("leaving CPT after switching to a model whose default is on turns train on completions back on", async () => {
+  const defaultsWith = (id: string, trainOnCompletions: boolean) => () =>
+    Promise.resolve(
+      Response.json({
+        id,
+        config: { training: { train_on_completions: trainOnCompletions } },
+        is_vision: false,
+        is_embedding: false,
+        is_audio: false,
+        audio_type_known: true,
+        is_lora: false,
+        model_type: "text",
+        model_size_bytes: null,
+        max_position_embeddings: 32768,
+      }),
+    );
+  for (const oldDefault of [false, true]) {
+    useTrainingConfigStore.getState().reset();
+    setAuthFetchHandler(defaultsWith("old/llama", oldDefault));
+    useTrainingConfigStore.getState().selectTrainingModel("old/llama", "text");
+    await waitForModelDefaults("old/llama");
+
+    useTrainingConfigStore.getState().setTrainingMethod("cpt");
+    setAuthFetchHandler(defaultsWith("new/model", true));
+    useTrainingConfigStore.getState().selectTrainingModel("new/model", "text");
+    await waitForModelDefaults("new/model");
+
+    useTrainingConfigStore.getState().setTrainingMethod("qlora");
+    assert.equal(useTrainingConfigStore.getState().trainOnCompletions, true);
+  }
+});
+
+test("leaving CPT while the new model's defaults are loading does not restore the old model's train on completions", async () => {
+  useTrainingConfigStore.getState().reset();
+  setAuthFetchHandler(() =>
+    Response.json({
+      id: "old/llama",
+      config: { training: { train_on_completions: true } },
+      is_vision: false,
+      is_embedding: false,
+      is_audio: false,
+      audio_type_known: true,
+      is_lora: false,
+      model_type: "text",
+      model_size_bytes: null,
+      max_position_embeddings: 32768,
+    }),
+  );
+  useTrainingConfigStore.getState().selectTrainingModel("old/llama", "text");
+  await waitForModelDefaults("old/llama");
+
+  useTrainingConfigStore.getState().setTrainingMethod("cpt");
+  setAuthFetchHandler(() => new Promise<Response>(() => {}));
+  useTrainingConfigStore.getState().selectTrainingModel("new/audio", "audio");
+  useTrainingConfigStore.getState().setTrainingMethod("qlora");
+  assert.equal(useTrainingConfigStore.getState().trainOnCompletions, false);
+});
+
+test("an image dataset picked inside CPT keeps train on completions off for a vision model", async () => {
+  useTrainingConfigStore.getState().reset();
+  setAuthFetchHandler((input, init) => {
+    if (input === "/api/hub/datasets/check-format") {
+      const { dataset_name } = JSON.parse(String(init?.body));
+      return Response.json({
+        columns: ["messages"],
+        detected_format: "chatml",
+        is_audio: false,
+        is_image: dataset_name === "org/images",
+        requires_manual_mapping: false,
+      });
+    }
+    return Response.json({
+      id: "org/vision",
+      config: { training: { train_on_completions: true } },
+      is_vision: true,
+      is_embedding: false,
+      is_audio: false,
+      audio_type_known: true,
+      is_lora: false,
+      model_type: "vision",
+      model_size_bytes: null,
+      max_position_embeddings: 32768,
+    });
+  });
+  const datasetChecked = async (): Promise<void> => {
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      if (!useTrainingConfigStore.getState().isCheckingDataset) return;
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    throw new Error("dataset check did not settle");
+  };
+  useTrainingConfigStore.getState().selectTrainingModel("org/vision", "vision");
+  await waitForModelDefaults("org/vision");
+  useTrainingConfigStore.getState().setDataset("org/text");
+  await datasetChecked();
+  assert.equal(useTrainingConfigStore.getState().trainOnCompletions, true);
+
+  useTrainingConfigStore.getState().setTrainingMethod("cpt");
+  useTrainingConfigStore.getState().setDataset("org/images");
+  await datasetChecked();
+  assert.equal(useTrainingConfigStore.getState().isDatasetImage, true);
+
+  useTrainingConfigStore.getState().setTrainingMethod("qlora");
+  assert.equal(useTrainingConfigStore.getState().trainOnCompletions, false);
 });
