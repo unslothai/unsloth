@@ -156,6 +156,9 @@ class TestMirrors:
             stack_mod._windows_rocm_index_url("gfx1151")
             == "https://m.example/whl-multi-arch/?token=abc"
         )
+        assert stack_mod._windows_rocm_torch_pkg_specs("gfx1151")[0].startswith(
+            "torch[device-gfx1151]=="
+        )
 
 
 class TestPowerShellAgrees:

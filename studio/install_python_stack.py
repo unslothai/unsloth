@@ -401,10 +401,12 @@ def _index_is_multiarch(index_url: "str | None") -> bool:
     UNSLOTH_TORCH_INDEX_URL pin never gets here: unknown-family pins install verbatim."""
     if not index_url:
         return False
-    _u = index_url.rstrip("/")
-    return _u == _ROCM_WINDOWS_MULTIARCH_INDEX_BASE.rstrip("/") or _u.split("?")[0].endswith(
-        "/whl-multi-arch"
-    )
+
+    def _path(u: str) -> str:
+        return re.split(r"[?#]", u, maxsplit = 1)[0].rstrip("/")
+
+    _p = _path(index_url)
+    return _p == _path(_ROCM_WINDOWS_MULTIARCH_INDEX_BASE) or _p.endswith("/whl-multi-arch")
 
 
 def _windows_rocm_torch_pkg_specs_for(
