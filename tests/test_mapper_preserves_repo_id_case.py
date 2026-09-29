@@ -1,19 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Lowercased mapper keys must resolve to correctly-cased repo ids.
-
-``__get_model_name`` only ever looks up ``model_name.lower()``, and returns the
-mapper's value verbatim as the repo id to download. If the value is lowercased
-too, every resolution returns an id that only huggingface.co can resolve, since
-it matches repo ids case-insensitively. An ``HF_ENDPOINT`` mirror, an offline
-snapshot, or a case-sensitive filesystem does not (unslothai/unsloth#2506).
-
-``mapper.py`` is loaded by path: importing ``unsloth.models.mapper`` pulls in
-``unsloth/__init__.py``, which requires an accelerator, and this invariant is
-pure dict construction. Same reason ``test_mapper_no_duplicate_keys.py``
-inspects the source instead of importing the package.
-"""
+"""Lowercased mapper keys must resolve to exact-case repo ids (#2506). mapper.py is loaded by
+path because importing the unsloth package needs an accelerator."""
 
 import importlib.util
 import os
@@ -29,7 +18,6 @@ def _load_mapper():
 
 
 def _case_mismatches(mapping):
-    """Lowered keys whose value differs from the exact-case key's value."""
     exact_by_lower = {}
     for key in mapping:
         if key != key.lower():
@@ -62,16 +50,13 @@ def test_float_to_int_mapper_preserves_case():
 
 
 def test_lowercase_lookup_returns_upstream_casing():
-    # gemma-4-E2B is the clearest case: the repo carries capitals the lowered
-    # lookup used to destroy, so the resolved id 404s off huggingface.co.
     mapper = _load_mapper()
     resolved = mapper.INT_TO_FLOAT_MAPPER.get("unsloth/gemma-4-e2b-unsloth-bnb-4bit")
     assert resolved == "unsloth/gemma-4-E2B", resolved
 
 
 def test_case_insensitive_lookup_still_works():
-    # The fix must not remove the lowered keys: __get_model_name only looks up
-    # model_name.lower(), so dropping them would break every resolution.
+    # __get_model_name only looks up model_name.lower(), so the lowered keys must stay.
     mapper = _load_mapper()
     for mapping in (mapper.INT_TO_FLOAT_MAPPER, mapper.FLOAT_TO_INT_MAPPER):
         lowered = [key for key in mapping if key == key.lower()]
@@ -80,11 +65,6 @@ def test_case_insensitive_lookup_still_works():
 
 
 def _declared_repo_ids(mapper):
-    """Every repo id written out in the ``__INT_TO_FLOAT_MAPPER`` registry.
-
-    Name mangling only applies inside class bodies, so the module-level private
-    registry is reachable by ``getattr``.
-    """
     registry = getattr(mapper, "__INT_TO_FLOAT_MAPPER")
     declared = set()
     for key, values in registry.items():
@@ -96,9 +76,7 @@ def _declared_repo_ids(mapper):
 
 
 def test_every_resolved_value_is_a_declared_repo_id():
-    # Guards the construction convention itself. A `.lower()` applied to a value
-    # produces a string that appears nowhere in the registry, so this fails for
-    # any future edit that reintroduces one.
+    # A .lower() on any value yields an id written nowhere in the registry.
     mapper = _load_mapper()
     declared = _declared_repo_ids(mapper)
     for name in ("INT_TO_FLOAT_MAPPER", "FLOAT_TO_INT_MAPPER"):
