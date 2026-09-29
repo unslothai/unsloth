@@ -18,14 +18,17 @@ import { formatCardTime, formatItemCount } from "../format";
 import { useColumnCount, useLibraryThumbnail, useSeen } from "../hooks";
 import { useLibraryActions } from "../actions-context";
 import { CARD_COLUMNS, useLibrarySettingsStore } from "../settings-store";
-import { GLASS_CONTROL, GLASS_SURFACE, OVERLAY_CONTROL, RAISED_SURFACE } from "../surface";
+import {
+  CARD_SHADOW,
+  GLASS_CONTROL,
+  GLASS_SURFACE,
+  OVERLAY_CONTROL,
+  RAISED_SURFACE,
+} from "../surface";
 import { CardSelectionContext } from "./card-selection";
 import { LibraryActionsMenu } from "./library-actions";
 
-const CARD_SHADOW =
-  "shadow-[0_1px_2px_rgba(0,0,0,0.04),0_4px_16px_rgba(0,0,0,0.06)] dark:shadow-none";
-
-const CARD_SURFACE = cn(
+export const CARD_SURFACE = cn(
   RAISED_SURFACE,
   CARD_SHADOW,
   "group-hover/library-card:bg-neutral-100 group-hover/library-card:shadow-none dark:group-hover/library-card:bg-accent/60",
@@ -40,6 +43,15 @@ export function KindIcon({ item, className }: { item: LibraryItem; className?: s
       className={cn(KIND_ICON_CLASS[kind], className, kind === "model" && "scale-95")}
     />
   );
+}
+
+// Audio and code glyphs are thin line art, so they get a larger size.
+export const CARD_ICON_CLASS = "size-7";
+const LARGE_CARD_ICON_CLASS = "size-8.5";
+
+function cardIconClass(item: LibraryItem): string {
+  const kind = fileKind(item);
+  return kind === "audio" || kind === "code" ? LARGE_CARD_ICON_CLASS : CARD_ICON_CLASS;
 }
 
 const MIN_THUMB_RATIO = 2 / 3;
@@ -62,7 +74,7 @@ function ImageThumb({
   if (failed || (url !== null && url === brokenUrl)) {
     return (
       <div className={cn("flex aspect-square items-center justify-center", className)}>
-        <KindIcon item={item} className="h-auto w-1/4 max-w-9" />
+        <KindIcon item={item} className="h-auto w-1/5 max-w-7" />
       </div>
     );
   }
@@ -133,7 +145,7 @@ function CardFrame({
         onClick={select && selecting ? () => select.toggle(selectKey) : onOpen}
         className={cn(
           "block w-full overflow-hidden rounded-xl text-left outline-none transition focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
-          selected && "ring-3 ring-foreground",
+          selected && "ring-2 ring-foreground",
           className,
         )}
       >
@@ -198,7 +210,7 @@ export function ItemCard({ item }: { item: LibraryItem }) {
             {item.name}
           </p>
           <div className="flex flex-1 items-center justify-center">
-            <KindIcon item={item} className="size-9" />
+            <KindIcon item={item} className={cardIconClass(item)} />
           </div>
           <p className="truncate pr-6 text-ui-13 text-muted-foreground">
             {showTime && formatCardTime(item.updatedAt, locale)}
@@ -228,7 +240,7 @@ function FolderCard({
         className={CARD_SURFACE}
       >
         <div className="flex aspect-square items-center justify-center">
-          <HugeiconsIcon icon={Folder01Icon} strokeWidth={1.5} className="size-9" />
+          <HugeiconsIcon icon={Folder01Icon} strokeWidth={1.5} className={CARD_ICON_CLASS} />
         </div>
       </CardFrame>
       <button
@@ -242,6 +254,9 @@ function FolderCard({
     </div>
   );
 }
+
+// Extra row spacing only; card width is unchanged.
+const CARD_ROW_GAP = "gap-y-6";
 
 function useCardColumns(container: RefObject<HTMLDivElement | null>): number {
   const { minWidth, max } = CARD_COLUMNS[useLibrarySettingsStore((s) => s.cardSize)];
@@ -264,12 +279,36 @@ export function Masonry<T>({
   return (
     <div ref={container} className="flex items-start gap-5">
       {buckets.map((bucket, column) => (
-        <div key={column} className="flex min-w-0 flex-1 flex-col gap-5">
+        <div key={column} className={cn("flex min-w-0 flex-1 flex-col", CARD_ROW_GAP)}>
           {bucket.map((item) => (
             <div key={getKey(item)}>{render(item)}</div>
           ))}
         </div>
       ))}
+    </div>
+  );
+}
+
+export function CardGrid({
+  children,
+  equalRows = false,
+}: {
+  children: ReactNode;
+  /** Size every row to the tallest card, so all cards match. */
+  equalRows?: boolean;
+}) {
+  const container = useRef<HTMLDivElement>(null);
+  const columns = useCardColumns(container);
+  return (
+    <div
+      ref={container}
+      className={cn("grid gap-x-5", CARD_ROW_GAP)}
+      style={{
+        gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))`,
+        gridAutoRows: equalRows ? "1fr" : undefined,
+      }}
+    >
+      {children}
     </div>
   );
 }
@@ -281,18 +320,12 @@ export function FolderGrid({
   folders: LibraryFolder[];
   counts: Map<string, number>;
 }) {
-  const container = useRef<HTMLDivElement>(null);
-  const columns = useCardColumns(container);
   return (
-    <div
-      ref={container}
-      className="grid gap-5"
-      style={{ gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))` }}
-    >
+    <CardGrid>
       {folders.map((folder) => (
         <FolderCard key={folder.id} folder={folder} itemCount={counts.get(folder.id) ?? 0} />
       ))}
-    </div>
+    </CardGrid>
   );
 }
 

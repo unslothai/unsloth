@@ -86,16 +86,16 @@ def _gate_tests(source: str) -> list[str]:
     return out
 
 
-def test_patch_peft_model_still_gates_the_fused_kernels_on_the_same_two_values():
+def test_patch_peft_model_still_gates_the_fused_kernels_on_the_same_values():
     """If the gate grows a third condition, _fused_lora_skip_reason has to grow with it or
     the summary starts reporting zero counts with no reason again."""
     source = inspect.getsource(llama_module.FastLlamaModel.patch_peft_model)
-    assert _gate_tests(source) == ["lora_dropout == 0 and bias == 'none'"]
+    assert _gate_tests(source) == ["lora_dropout == 0 and bias == 'none' and (not float32_base)"]
 
 
 def test_the_summary_call_carries_the_reason():
     source = inspect.getsource(llama_module.FastLlamaModel.patch_peft_model)
-    assert "unfused_reason = _fused_lora_skip_reason(lora_dropout, bias)" in source
+    assert "unfused_reason = _fused_lora_skip_reason(lora_dropout, bias, float32_base)" in source
     assert "MLP layers.{unfused_reason}" in source
 
 

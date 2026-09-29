@@ -27,6 +27,19 @@ logger = logging.getLogger(__name__)
 PARALLEL_MIN = 1
 PARALLEL_MAX = 64
 
+PARALLEL_DEFAULT = 4
+
+
+def clamp_parallel_slots(n_parallel) -> int:
+    if n_parallel is None:
+        return PARALLEL_DEFAULT
+    try:
+        asked = int(n_parallel)
+    except (TypeError, ValueError):
+        return PARALLEL_DEFAULT
+    return max(PARALLEL_MIN, min(PARALLEL_MAX, asked))
+
+
 # --batch-size / --ubatch-size range, mirrored by N_BATCH_MIN/MAX in per-model-config.ts
 BATCH_MIN = 1
 BATCH_MAX = 65536
@@ -39,7 +52,7 @@ CACHE_RAM_MAX_MIB = 1024 * 1024
 # llama.cpp allocates this default even when Studio emits no flag.
 LLAMA_CTX_CHECKPOINTS_DEFAULT = 32
 
-# Recurrent checkpoints live in host RAM and can be much larger than SWA snapshots.
+# Checkpoints live in host RAM: a hybrid's whole recurrent state, or an SWA model's window.
 CTX_CHECKPOINT_HOST_BUDGET_FRACTION = 0.05
 CTX_CHECKPOINT_HOST_BUDGET_FLOOR_BYTES = 1024**3
 # Keep rollback available; zero forces a full prompt re-ingest after divergence.

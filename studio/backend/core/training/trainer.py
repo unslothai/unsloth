@@ -1019,7 +1019,9 @@ class UnslothTrainer:
                         RepositoryNotFoundError,
                     )
                     if isinstance(gate_err, (GatedRepoError, RepositoryNotFoundError)):
-                        friendly = (
+                        from hub.utils.hf_errors import modelscope_missing
+
+                        friendly = modelscope_missing(gate_err) or (
                             f"Access denied for '{model_name}'. This model is gated or private. "
                             f"Please add a Hugging Face token with access and try again."
                         )

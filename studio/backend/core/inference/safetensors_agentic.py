@@ -1437,8 +1437,13 @@ def run_safetensors_tool_loop(
             # Bypass wins here too, so a direct internal caller with both flags
             # never prompts. "auto" pauses only high-risk calls; "off" never
             # prompts (sandbox stays on).
+            from core.inference.tools import never_needs_approval
+
             needs_confirm = (
-                bool(confirm_tool_calls) and not bypass_permissions and permission_mode != "off"
+                bool(confirm_tool_calls)
+                and not bypass_permissions
+                and permission_mode != "off"
+                and not never_needs_approval(decision.tool_name)
             )
             if needs_confirm and permission_mode == "auto":
                 from core.inference.tools import is_high_risk_tool_call

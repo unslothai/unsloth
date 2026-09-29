@@ -828,14 +828,23 @@ def test_image_gate_admits_int8_under_offload_on_nvidia(nvidia, monkeypatch, mem
 
 
 @pytest.mark.parametrize("pinned", ["fp8", "nvfp4", "mxfp8"])
-@pytest.mark.parametrize("memory", [{"memory_mode": "balanced"}, {"cpu_offload": True}])
-def test_image_gate_still_refuses_other_schemes_under_offload_on_nvidia(
+def test_image_gate_still_refuses_other_schemes_under_balanced_on_nvidia(
+    nvidia, monkeypatch, pinned
+):
+    import core.inference.diffusion as d
+    _torchao_gate_answers(monkeypatch, d)
+    with pytest.raises(RuntimeError, match = "hooks torchao weights do not survive"):
+        _image_gate(monkeypatch, _image_family("qwen-image-2.1"), pinned, memory_mode = "balanced")
+
+
+@pytest.mark.parametrize("pinned", ["fp8", "nvfp4", "mxfp8"])
+@pytest.mark.parametrize("memory", [{"memory_mode": "low_vram"}, {"cpu_offload": True}])
+def test_image_gate_admits_other_schemes_under_whole_module_offload_on_nvidia(
     nvidia, monkeypatch, pinned, memory
 ):
     import core.inference.diffusion as d
     _torchao_gate_answers(monkeypatch, d)
-    with pytest.raises(RuntimeError, match = "cannot be moved by the offload hooks"):
-        _image_gate(monkeypatch, _image_family("qwen-image-2.1"), pinned, **memory)
+    _image_gate(monkeypatch, _image_family("qwen-image-2.1"), pinned, **memory)
 
 
 @pytest.mark.parametrize("kind", ["gguf", "single_file"])

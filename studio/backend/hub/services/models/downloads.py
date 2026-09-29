@@ -82,7 +82,12 @@ def _job_status(
         repo_id = repo_id,
         variant = variant,
     )
-    return DownloadJobStatus(state = state, error = error, generation = generation)
+    return DownloadJobStatus(
+        state = state,
+        error = error,
+        generation = generation,
+        attempt = _registry.current_attempt(key),
+    )
 
 
 def _diffusion_load_in_flight(repo_id: str) -> bool:

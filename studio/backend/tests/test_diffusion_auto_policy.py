@@ -152,6 +152,40 @@ def test_estimate_nvfp4_is_smaller_than_int8():
     assert nvfp4.steady_transformer_mib < int8.steady_transformer_mib
 
 
+def test_an_nvfp4_policy_base_is_sized_by_the_policy_not_by_whole_model_nvfp4():
+    from core.inference.diffusion_auto_policy import (
+        _MIB_PER_GB,
+        _POLICY_STEADY_FACTOR,
+        _QUANT_STEADY_FACTOR,
+        policy_steady_factor,
+    )
+
+    transformer_gb = ap._FAMILY_BF16_GB["z-image"][0]
+    policy = estimate_dense_quant(_fam("z-image"), "nvfp4", base_repo = "Tongyi-MAI/Z-Image-Turbo")
+    assert policy is not None
+    assert policy.steady_transformer_mib == int(
+        transformer_gb * _POLICY_STEADY_FACTOR["zimg_rg76_v1"] * _MIB_PER_GB
+    )
+    whole_model = int(transformer_gb * _QUANT_STEADY_FACTOR["nvfp4"] * _MIB_PER_GB)
+    assert policy.steady_transformer_mib > whole_model
+    for base in (None, "some-org/Z-Image-Fork"):
+        plain = estimate_dense_quant(_fam("z-image"), "nvfp4", base_repo = base)
+        assert plain is not None and plain.steady_transformer_mib == whole_model, base
+    kontext = estimate_dense_quant(
+        _fam("flux.1-kontext"), "nvfp4", base_repo = "black-forest-labs/FLUX.1-Kontext-dev"
+    )
+    assert kontext is not None
+    assert kontext.steady_transformer_mib == int(
+        ap._FAMILY_BF16_GB["flux.1-kontext"][0] * _QUANT_STEADY_FACTOR["nvfp4"] * _MIB_PER_GB
+    )
+    assert policy_steady_factor("flux.1-kontext", "black-forest-labs/FLUX.1-Kontext-dev") is None
+    fp8 = estimate_dense_quant(_fam("z-image"), "fp8", base_repo = "Tongyi-MAI/Z-Image-Turbo")
+    assert fp8 is not None
+    assert fp8.steady_transformer_mib == int(
+        transformer_gb * _QUANT_STEADY_FACTOR["fp8"] * _MIB_PER_GB
+    )
+
+
 def test_estimate_unknown_family_or_scheme_returns_none():
     assert estimate_dense_quant(_fam("not-a-family"), "int8") is None
     assert estimate_dense_quant(_fam("z-image"), "q4_k") is None
@@ -169,7 +203,9 @@ def _patch_selector(
 
     monkeypatch.setattr(tq, "dense_transformer_supported", lambda target: supported)
     monkeypatch.setattr(
-        tq, "select_transformer_quant_scheme", lambda target, req, family = None: scheme
+        tq,
+        "select_transformer_quant_scheme",
+        lambda target, req, family = None, **_kw: scheme,
     )
     import core.inference.diffusion_prequant as pq
 
@@ -565,3 +601,49 @@ def test_qwen_image_21_sizes_a_dense_quant_candidate():
     est = estimate_dense_quant(fam, "fp8", base_repo = fam.base_repo, prequant_available = True)
     assert est is not None, "no estimate means the pipeline seed is never chosen"
     assert est.prequant and est.steady_transformer_mib > 0
+
+
+def test_resolved_log_line_shows_engaged_values_and_their_source():
+    record = build_resolved_record(
+        {
+            "transformer_quant": (None, "int8", "per-kind default"),
+            "text_encoder_quant": ("nvfp4", "nvfp4", "applied"),
+            "memory_mode": ("fast", "none", "fits"),
+        }
+    )
+    line = ap.format_resolved_for_log(record)
+    assert "transformer_quant=int8(auto)" in line
+    assert "text_encoder_quant=nvfp4(requested nvfp4)" in line
+    assert "memory_mode=none(requested fast)" in line
+
+
+def test_resolved_log_line_flags_a_declined_request():
+    record = build_resolved_record({"text_encoder_quant": ("nvfp4", "off", "no fp8 dtype")})
+    assert ap.format_resolved_for_log(record) == (
+        f"text_encoder_quant=off(requested nvfp4, {ap.RESOLVED_FELL_BACK})"
+    )
+    assert ap.format_resolved_for_log(None) == ""
+
+
+def test_generation_log_line_reads_the_recipe_fields():
+    result = {
+        "images": [SimpleNamespace(size = (1024, 768)), SimpleNamespace(size = (1024, 768))],
+        "seed": 7,
+        "seeds": [7, 8],
+        "workflow": "inpaint",
+        "active_loras": [["style", 0.8]],
+        "reference_resolution": None,
+        "localized_edit": None,
+    }
+    line = ap.format_generation_for_log(result, engine = "diffusers", steps = 30, strength = 0.6)
+    assert line == (
+        "engine=diffusers workflow=inpaint images=2 size=1024x768 seeds=[7, 8] steps=30 "
+        "strength=0.6 loras=[['style', 0.8]]"
+    )
+    assert "size" not in ap.format_generation_for_log({"images": []}, engine = "sd_cpp")
+
+
+def test_generation_log_line_prefers_the_engine_supplied_loras():
+    result = {"images": [], "seeds": [3], "workflow": "txt2img"}
+    line = ap.format_generation_for_log(result, engine = "sd_cpp", loras = [("style", 0.8)])
+    assert line == "engine=sd_cpp workflow=txt2img images=0 seeds=[3] loras=[('style', 0.8)]"

@@ -33,6 +33,11 @@ on:
       - 'studio/package-lock.json'
       # Run as a step of the Linux job.
       - 'scripts/lockfile_supply_chain_audit.py'
+      # The Rust unit test every_shared_case_agrees_with_the_desktop_filter
+      # (src-tauri/src/process.rs) reads this backend fixture, and cargo test runs it in
+      # all three jobs. Nothing else runs that test, so an edit to the fixture has to
+      # run this workflow.
+      - 'studio/backend/tests/fixtures/access_log_records.json'
   push:
     branches: [main]
     # Same list as the PR filter. Without it this workflow ran on EVERY commit to
@@ -56,6 +61,11 @@ on:
       - 'studio/package-lock.json'
       # Run as a step of the Linux job.
       - 'scripts/lockfile_supply_chain_audit.py'
+      # The Rust unit test every_shared_case_agrees_with_the_desktop_filter
+      # (src-tauri/src/process.rs) reads this backend fixture, and cargo test runs it in
+      # all three jobs. Nothing else runs that test, so an edit to the fixture has to
+      # run this workflow.
+      - 'studio/backend/tests/fixtures/access_log_records.json'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}-${{ github.ref == 'refs/heads/main' && github.sha || '' }}

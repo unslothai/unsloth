@@ -257,6 +257,58 @@ def planner_quantization_kwargs(
     return kwargs
 
 
+def compressed_tensors_planner_bits(model_config, load_in_4bit, load_in_8bit):
+    """(load_in_4bit, load_in_8bit) to size an armed compressed-tensors load at: the packed route keeps INT8 at 8 bits."""
+    if not load_in_4bit or compressed_tensors_prepared_config(model_config) is None:
+        return load_in_4bit, load_in_8bit
+    try:
+        from .compressed_tensors_bnb import UNSLOTH_COMPRESSED_TENSORS_ATTR
+        from .compressed_tensors_int4 import int4_packed_route_enabled, int4_packed_supported_plan
+
+        plan = getattr(model_config, UNSLOTH_COMPRESSED_TENSORS_ATTR)
+        if int4_packed_route_enabled() and int4_packed_supported_plan(plan):
+            if max(int(g["weights"]["num_bits"]) for g in plan["config_groups"].values()) > 4:
+                return False, True
+    except Exception:
+        pass
+    return load_in_4bit, load_in_8bit
+
+
+def compressed_tensors_planner_quantization(
+    model_config, load_in_4bit, load_in_8bit, quantization_config
+):
+    """Planner flags + config: a packed INT8 load is sized at 8 bits even under an explicit bnb 4-bit config."""
+    wants_4bit = bool(load_in_4bit) or (
+        quantization_config is not None
+        and quantization_config_selects_bnb_4bit(quantization_config)
+    )
+    if (
+        compressed_tensors_planner_bits(model_config, wants_4bit, load_in_8bit) == (False, True)
+        and wants_4bit
+    ):
+        return dict(load_in_4bit = False, load_in_8bit = True, quantization_config = None)
+    return dict(
+        load_in_4bit = load_in_4bit,
+        load_in_8bit = load_in_8bit,
+        quantization_config = quantization_config,
+    )
+
+
+def compressed_tensors_prepared_config(model_config):
+    """`model_config` if armed for packed compressed-tensors re-quantization (plan must size from it), else None."""
+    if model_config is None:
+        return None
+    try:
+        from .compressed_tensors_bnb import UNSLOTH_COMPRESSED_TENSORS_ATTR
+    except Exception:
+        return None
+    return (
+        model_config
+        if getattr(model_config, UNSLOTH_COMPRESSED_TENSORS_ATTR, None) is not None
+        else None
+    )
+
+
 def planner_model_class(config, trust_remote_code = False):
     """The model class the planner's own rules pick for `config`, or None if unknown. The planner never sees the auto class the load chose: `config` is whatever the caller passed, while the planner rebuilds the repo's from `model_name`, and the two can disagree."""
     try:
@@ -1315,6 +1367,163 @@ def _match_fp8_module(module_by_name, base):
     return None
 
 
+_CT_FP8_STRATEGIES = ("tensor", "channel", "block")
+
+
+def _compressed_tensors_fp8_block_size(module, weights):
+    """(out, in) block of a routable compressed-tensors FP8 weight, else None."""
+    if getattr(weights, "type", None) != "float" or getattr(weights, "num_bits", None) != 8:
+        return None
+    strategy = getattr(weights, "strategy", None)
+    strategy = str(getattr(strategy, "value", strategy))
+    # Block FP8 is opt-in: fp8_block_quant_linear is far slower than the decompressed bf16 model.
+    if (
+        strategy == "block"
+        and os.environ.get("UNSLOTH_COMPRESSED_TENSORS_FP8_BLOCK_KERNELS", "0") != "1"
+    ):
+        return None
+    if (
+        strategy not in _CT_FP8_STRATEGIES
+        or getattr(weights, "dynamic", False)
+        or getattr(weights, "actorder", None)
+    ):
+        return None
+    weight = getattr(module, "weight", None)
+    scale = getattr(module, "weight_scale", None)
+    if weight is None or scale is None or weight.dtype != torch.float8_e4m3fn or weight.dim() != 2:
+        return None
+    zero_point = getattr(module, "weight_zero_point", None)
+    if zero_point is not None and bool(torch.any(zero_point != 0)):
+        return None
+    out_features, in_features = weight.shape
+    if strategy == "tensor":
+        # Routed as per-channel (scale broadcast per row): the rowwise paths beat the block kernel.
+        return [1, in_features] if scale.numel() == 1 else None
+    if strategy == "channel":
+        return (
+            [1, in_features] if tuple(scale.shape) in ((out_features, 1), (out_features,)) else None
+        )
+    block = list(getattr(weights, "block_structure", None) or ())
+    if len(block) != 2 or scale.dim() != 2:
+        return None
+    if tuple(scale.shape) != (-(-out_features // block[0]), -(-in_features // block[1])):
+        return None
+    return block
+
+
+def _save_compressed_tensors_scale_shape(module, state_dict, prefix, local_metadata):
+    # Saved checkpoints keep the config's scale shape; a per-tensor scale was broadcast per row.
+    key = prefix + "weight_scale"
+    shape = getattr(module, "_unsloth_ct_scale_shape", None)
+    scale = state_dict.get(key)
+    if shape is None or scale is None or tuple(scale.shape) == shape:
+        return state_dict
+    numel = 1
+    for n in shape:
+        numel *= n
+    state_dict[key] = scale.reshape(-1)[:1].reshape(shape) if numel == 1 else scale.reshape(shape)
+    return state_dict
+
+
+def _load_compressed_tensors_scale_shape(module, state_dict, prefix, *args):
+    key = prefix + "weight_scale"
+    scale = state_dict.get(key)
+    current = getattr(module, "weight_scale", None)
+    if scale is None or current is None or scale.shape == current.shape:
+        return
+    if scale.numel() == 1:
+        state_dict[key] = scale.reshape(1, 1).expand(current.shape).contiguous()
+    elif scale.numel() == current.numel():
+        state_dict[key] = scale.reshape(current.shape)
+
+
+def _unsloth_compressed_tensors_fp8_forward(self, input):
+    from unsloth.kernels.fp8 import can_use_fp8_rowwise_gemv, fp8_linear, fp8_rowwise_gemv
+
+    if can_use_fp8_rowwise_gemv(input, self.weight, self.weight_scale):
+        out = fp8_rowwise_gemv(input, self.weight, self.weight_scale)
+    else:
+        out = fp8_linear(input, self.weight, self.weight_scale)
+    if self.bias is not None:
+        out = out + self.bias.to(out.dtype)
+    return out
+
+
+@functools.lru_cache(maxsize = 1)
+def _zoo_peft_forward_keeps_fp8_inputs():
+    """Older zoo compiled LoRA forwards cast `x` to the FP8 weight dtype; route only when it does not."""
+    try:
+        import inspect
+        from unsloth_zoo import compiler
+        source = inspect.getsource(compiler.patch_lora_forwards)
+    except Exception:
+        return False
+    return "x = x.to(self.base_layer.weight.dtype)" not in source or (
+        "self.base_layer.weight.dtype in (torch.float16, torch.bfloat16, torch.float32)" in source
+    )
+
+
+def _route_compressed_tensors_fp8_to_unsloth(model):
+    # Opt-in: saves memory, but on-the-fly dequant trains slower than the decompressed bf16 model.
+    if os.environ.get("UNSLOTH_COMPRESSED_TENSORS_FP8_KERNELS", "0") != "1":
+        return 0
+    if getattr(getattr(model, "config", None), "quantization_config", None) is None:
+        return 0
+    if not _zoo_peft_forward_keeps_fp8_inputs():
+        return 0
+    routable = []
+    for module in model.modules():
+        scheme = getattr(module, "quantization_scheme", None)
+        if scheme is None or getattr(scheme, "weights", None) is None:
+            continue
+        block = None
+        weight = getattr(module, "weight", None)
+        on_gpu = isinstance(weight, torch.Tensor) and weight.device.type in ("cuda", "xpu")
+        if (
+            on_gpu
+            and isinstance(module, torch.nn.Linear)
+            and getattr(scheme, "output_activations", None) is None
+        ):
+            block = _compressed_tensors_fp8_block_size(module, scheme.weights)
+        if block is None:
+            return 0
+        routable.append((module, block))
+    converted = 0
+    for module, block in routable:
+        scale = module.weight_scale
+        scale_shape = tuple(scale.shape)
+        if scale.numel() == 1:
+            scale.data = scale.data.reshape(1, 1).expand(module.weight.shape[0], 1).contiguous()
+        elif scale.dim() == 1:
+            scale.data = scale.data.view(-1, 1)
+        if tuple(scale.shape) != scale_shape:
+            module._unsloth_ct_scale_shape = scale_shape
+            module._register_state_dict_hook(_save_compressed_tensors_scale_shape)
+            module._register_load_state_dict_pre_hook(
+                _load_compressed_tensors_scale_shape, with_module = True
+            )
+        module.weight.requires_grad_(False)
+        scale.requires_grad_(False)
+        if block != [1, module.weight.shape[1]]:
+            module.weight.block_size = block
+            scale.block_size = block
+            module.block_size = block
+        module.forward = _unsloth_compressed_tensors_fp8_forward.__get__(module)
+        module._unsloth_compressed_tensors_fp8 = True
+        converted += 1
+    if converted:
+        for owner in (model, getattr(model, "model", None), getattr(model, "base_model", None)):
+            hook = getattr(owner, "ct_decompress_hook", None)
+            if hook is not None:
+                hook.remove()
+                try:
+                    delattr(owner, "ct_decompress_hook")
+                except AttributeError:
+                    pass
+        model._unsloth_compressed_tensors_fp8 = converted
+    return converted
+
+
 _FP8_DEQUANT_DTYPES = (torch.bfloat16, torch.float16, torch.float32)
 
 
@@ -1554,6 +1763,203 @@ def _restore_dropped_fp8_scales(
         return (restored, skipped)
     except Exception:
         return (0, 0)
+
+
+def _forward_calls_checkpointing(cls):
+    """True when a backbone's own `forward` hands its layers to a checkpoint function."""
+    import inspect
+
+    try:
+        source = inspect.getsource(cls.forward)
+    except Exception:
+        return True  # cannot read it: assume it does and change nothing
+    return "_gradient_checkpointing_func" in source or "checkpoint(" in source
+
+
+def _checkpointed_layer_forward(original):
+    @functools.wraps(original)
+    def forward(self, *args, **kwargs):
+        holder = self.__dict__.get("_unsloth_gradient_checkpointing_holder")
+        holder = holder() if holder is not None else None
+        if (
+            not self.training
+            or holder is None
+            or not getattr(holder, "gradient_checkpointing", False)
+            or not torch.is_grad_enabled()
+            # A cache would be written a second time by the recompute.
+            or kwargs.get("past_key_value") is not None
+            or kwargs.get("past_key_values") is not None
+        ):
+            return original(self, *args, **kwargs)
+        if not args and "hidden_states" in kwargs:
+            # A reentrant checkpoint only tracks gradients through positional tensors.
+            args = (kwargs.pop("hidden_states"),)
+        # Grad-requiring kwargs (Kimi-K3 block_residual) go positional: a closure ties recompute to earlier layers.
+        grad_keys = [k for k, v in kwargs.items() if torch.is_tensor(v) and v.requires_grad]
+        n_args = len(args)
+        grad_values = tuple(kwargs.pop(k) for k in grad_keys)
+
+        def run(*inputs):
+            return original(
+                self, *inputs[:n_args], **kwargs, **dict(zip(grad_keys, inputs[n_args:]))
+            )
+
+        # gradient_checkpointing_enable()'s function: keeps offloading and the caller's use_reentrant.
+        checkpoint = getattr(holder, "_gradient_checkpointing_func", None)
+        if checkpoint is None:
+            return torch.utils.checkpoint.checkpoint(run, *args, *grad_values, use_reentrant = False)
+        return checkpoint(run, *args, *grad_values)
+
+    forward._unsloth_manual_checkpoint = True
+    return forward
+
+
+def install_remote_gradient_checkpointing(model, verbose = True):
+    """Wrap decoder layers of remote-code backbones whose loop ignores `self.gradient_checkpointing`."""
+    import types
+    import weakref
+
+    try:
+        from transformers.modeling_layers import GradientCheckpointingLayer
+    except Exception:
+        GradientCheckpointingLayer = ()
+    wrapped = []
+    for _, holder in model.named_modules():
+        holder_cls = type(holder)
+        if "transformers_modules" not in (getattr(holder_cls, "__module__", "") or ""):
+            continue
+        if not hasattr(holder, "gradient_checkpointing"):
+            continue
+        layers = getattr(holder, "layers", None)
+        if not isinstance(layers, torch.nn.ModuleList) or len(layers) == 0:
+            continue
+        if _forward_calls_checkpointing(holder_cls):
+            continue
+        for layer in layers:
+            cls = type(layer)
+            if GradientCheckpointingLayer and isinstance(layer, GradientCheckpointingLayer):
+                continue
+            layer.__dict__["_unsloth_gradient_checkpointing_holder"] = weakref.ref(holder)
+            if not getattr(cls.__dict__.get("forward"), "_unsloth_manual_checkpoint", False):
+                cls.forward = _checkpointed_layer_forward(cls.forward)
+                wrapped.append(cls.__name__)
+            # device_map hooks keep the bound original in `_old_forward`.
+            if "_old_forward" in vars(layer):
+                layer._old_forward = types.MethodType(cls.forward, layer)
+    wrapped = sorted(set(wrapped))
+    if wrapped and verbose:
+        print(
+            "Unsloth: the remote modeling code never calls a checkpoint function; wrapping "
+            + ", ".join(wrapped)
+            + " so gradient checkpointing actually saves activations."
+        )
+    return wrapped
+
+
+def enable_composite_gradient_checkpointing(model, verbose = True):
+    """Mark a remote-code outer class checkpointable when an inner PreTrainedModel is (Kimi-K2.7)."""
+    try:
+        from transformers import PreTrainedModel
+    except Exception:
+        return False
+    if not isinstance(model, PreTrainedModel):
+        return False
+    # Always install: the flag is what transformers checks, the wrapper makes it act.
+    install_remote_gradient_checkpointing(model, verbose = verbose)
+    if getattr(type(model), "supports_gradient_checkpointing", False):
+        return False
+    inner = [
+        type(m).__name__
+        for name, m in model.named_modules()
+        if name
+        and isinstance(m, PreTrainedModel)
+        and getattr(type(m), "supports_gradient_checkpointing", False)
+    ]
+    if not inner:
+        return False
+    type(model).supports_gradient_checkpointing = True
+    if verbose:
+        print(
+            f"Unsloth: {type(model).__name__} did not declare gradient checkpointing support but its "
+            f"{inner[0]} does; enabling it on the outer model."
+        )
+    return True
+
+
+def _remove_same_device_compressed_tensors_offload(model):
+    """Unwrap compressed-tensors >= 0.19 non-offloading OffloadCaches, which torch.compile cannot trace."""
+    try:
+        from compressed_tensors.offload.cache import OffloadCache
+        from compressed_tensors.offload.module import remove_module_offload
+    except Exception:
+        return 0
+    removed = 0
+    for module in model.modules():
+        cache = module._parameters
+        if not isinstance(cache, OffloadCache):
+            continue
+        onload = getattr(cache, "onload_device", None)
+        offload = getattr(cache, "offload_device", None)
+        if onload is None or offload is None or torch.device(onload) != torch.device(offload):
+            continue
+        remove_module_offload(module)
+        removed += 1
+    return removed
+
+
+def _decompress_compressed_tensors_model(model):
+    """Decompress at load: PEFT skips the first-forward hook, and in `generate` it yields inference tensors."""
+    if getattr(model, "_unsloth_compressed_tensors_fp8", 0):
+        return False
+    quant_config = getattr(getattr(model, "config", None), "quantization_config", None)
+    if isinstance(quant_config, dict):
+        method = quant_config.get("quant_method", None)
+    else:
+        method = getattr(quant_config, "quant_method", None)
+    if getattr(method, "value", method) != "compressed-tensors":
+        return False
+    # MXFP4 kept packed on purpose (all-or-nothing plan): decompress_model would drop weight_packed.
+    if any(getattr(module, "_unsloth_mxfp4_packed_linear", False) for module in model.modules()):
+        return False
+    if not any(
+        str(getattr(getattr(module, "quantization_status", None), "value", "")) == "compressed"
+        for module in model.modules()
+    ):
+        return False
+    compressor = getattr(getattr(model, "hf_quantizer", None), "compressor", None)
+    if compressor is None or not hasattr(compressor, "decompress_model"):
+        return False
+
+    def _decompress(module, *args):
+        with torch.inference_mode(False), torch.no_grad():
+            compressor.decompress_model(module)
+        _remove_same_device_compressed_tensors_offload(module)
+        # Some compressed-tensors releases (0.19.0) leave the hook in place: drop it, also after a retry.
+        hook = getattr(model, "ct_decompress_hook", None)
+        if hook is not None:
+            hook.remove()
+            try:
+                delattr(model, "ct_decompress_hook")
+            except AttributeError:
+                pass
+
+    # Swap the hook first: decompress_model removes it by name.
+    hook = getattr(model, "ct_decompress_hook", None)
+    if hook is not None:
+        hook.remove()
+        model.ct_decompress_hook = model.register_forward_pre_hook(_decompress)
+    try:
+        _decompress(model)
+    except Exception as e:
+        print(f"Unsloth: could not decompress the compressed-tensors checkpoint after load: {e}")
+        return False
+    return True
+
+
+def _prepare_compressed_tensors_model(model, full_finetuning = False):
+    # Routed FP8 weights are frozen, so full finetuning always takes the decompressed bf16 weights.
+    if full_finetuning or not _route_compressed_tensors_fp8_to_unsloth(model):
+        _decompress_compressed_tensors_model(model)
 
 
 _FP8_SCALE_SUFFIXES = (".weight_scale_inv", "_scale_inv", ".weight_scale", "_scale")
@@ -1933,6 +2339,9 @@ def warn_if_bitsandbytes_quantized_nothing(
         for module in model.modules():
             if type(module).__name__ in _BNB_QUANTIZED_TYPES:
                 return False
+            # compressed-tensors INT4 kept packed (compressed_tensors_int4.py) is 4-bit too.
+            if getattr(module, "_unsloth_int4_packed_linear", False):
+                return False
             for param in module.parameters(recurse = False):
                 if type(param).__name__ in _BNB_QUANTIZED_TYPES:
                     return False
@@ -1950,13 +2359,17 @@ def check_and_disable_bitsandbytes_loading(
     load_in_4bit = True,
     load_in_8bit = False,
     verbose = True,
+    requantize_packed = True,
     rewrite_modelopt = True,
     token = None,
     model_name = None,
     revision = None,
     hub_kwargs = None,
+    allow_fp8_to_nf4 = True,
 ):
-    """Disable bitsandbytes loading (load_in_4bit/load_in_8bit) when the model already carries a non-bitsandbytes quantization config. Returns ``(load_in_4bit, load_in_8bit, quant_method)``, with both flags False if they were disabled and quant_method the detected method or None. ``rewrite_modelopt`` converts ModelOpt FP8 to fp8; pass False when vLLM loads it natively."""
+    """Disable bnb flags for non-bnb quantized checkpoints; returns ``(load_in_4bit, load_in_8bit, quant_method)``.
+
+    ``requantize_packed = False`` under fast_inference / full_finetuning: nothing would consume the plan."""
     quant_method = get_quant_type(model_config)
     if quant_method is None:
         # Also under vLLM: it reads the file itself, but the bitsandbytes flags must still drop.
@@ -1973,6 +2386,21 @@ def check_and_disable_bitsandbytes_loading(
     if quant_method is None or quant_method == "bitsandbytes":
         return load_in_4bit, load_in_8bit, quant_method
 
+    if str(quant_method).lower() in ("compressed-tensors", "compressed_tensors", "sparseml"):
+        from .mxfp4_compressed_linear import install_compressed_tensors_keep_packed
+        install_compressed_tensors_keep_packed()
+
+    # Packed compressed-tensors: drop its quant config here and keep load_in_4bit for on-the-fly bnb re-quantization.
+    if (
+        requantize_packed
+        and load_in_4bit
+        and not load_in_8bit
+        and str(quant_method).lower() in ("compressed-tensors", "compressed_tensors", "sparseml")
+    ):
+        from .compressed_tensors_bnb import arm_compressed_tensors_bnb_loading
+        if arm_compressed_tensors_bnb_loading(model_config, verbose = verbose) is not None:
+            return True, False, None
+
     if str(quant_method).lower() == "modelopt":
         # Whoever loads the weights (vLLM included), a merged_16bit save must dequantize them.
         from .modelopt_fp8 import enable_modelopt_merged_save
@@ -1982,6 +2410,12 @@ def check_and_disable_bitsandbytes_loading(
         if arm_modelopt_fp8_loading(model_config, verbose = verbose) is not None:
             quant_method = "fp8"
 
+    # An explicit 4bit request on a block-fp8 checkpoint: dequantize each fp8 tensor and quantize it to NF4 while loading.
+    if allow_fp8_to_nf4 and str(quant_method).lower() == "fp8":
+        from .fp8_to_nf4 import maybe_arm_fp8_to_nf4
+        if maybe_arm_fp8_to_nf4(model_config, load_in_4bit, load_in_8bit, verbose = verbose):
+            return load_in_4bit, load_in_8bit, None
+
     # A non-bitsandbytes quantization config (compressed-tensors, gptq, awq) means BOTH bitsandbytes loading flags must be disabled to avoid config conflicts.
     if load_in_4bit or load_in_8bit:
         if verbose:
@@ -1989,10 +2423,44 @@ def check_and_disable_bitsandbytes_loading(
                 f"Unsloth: Model already quantized with {quant_method}. "
                 f"Disabling `load_in_4bit` and `load_in_8bit` to avoid quantization config conflict."
             )
+            if load_in_4bit and not load_in_8bit and str(quant_method).lower() == "fp8":
+                from .fp8_to_nf4 import (
+                    explicit_4bit_requested,
+                    fp8_block_quantization_config,
+                    fp8_to_nf4_disabled,
+                )
+                if (
+                    not explicit_4bit_requested()
+                    and not fp8_to_nf4_disabled()
+                    and fp8_block_quantization_config(model_config) is not None
+                ):
+                    print(
+                        "Unsloth: Pass `load_in_4bit = True` explicitly (or set UNSLOTH_FP8_TO_NF4=1) to "
+                        "quantize this fp8 checkpoint to 4bit while it loads."
+                    )
         load_in_4bit = False
         load_in_8bit = False
 
     return load_in_4bit, load_in_8bit, quant_method
+
+
+def quantization_config_selects_bnb_4bit(quantization_config):
+    """True when ``quantization_config`` keeps the load on bnb 4-bit; other quantizers must keep the checkpoint config."""
+    if quantization_config is None:
+        return True
+    if isinstance(quantization_config, dict):
+        get = quantization_config.get
+    else:
+        get = lambda key, default = None: getattr(quantization_config, key, default)
+    method = get("quant_method", "") or ""
+    # BitsAndBytesConfig stores a QuantizationMethod enum, whose str() is the member name on some Pythons.
+    method = str(getattr(method, "value", method)).lower()
+    # The dict shorthand {"load_in_4bit": True} has no quant_method; transformers reads it as bitsandbytes.
+    if not method and isinstance(quantization_config, dict):
+        method = "bitsandbytes"
+    if "bitsandbytes" not in method:
+        return False
+    return bool(get("load_in_4bit", False)) and not bool(get("load_in_8bit", False))
 
 
 def sync_unsloth_model_name_bnb_flags(load_in_4bit, load_in_8bit):

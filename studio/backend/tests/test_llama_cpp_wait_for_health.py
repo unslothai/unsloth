@@ -1679,8 +1679,17 @@ class TestHealthWaitMeasuresStalls:
             b._process.wait()
         return b, ok, elapsed
 
+    # These two measure work against the stall window, and at the 0.6s default a loaded runner
+    # can spend the whole first window starting the worker's interpreter: CI gave up at 1.0s with
+    # "no startup progress for 0.6s" before the worker had done anything. 1.5s leaves that room
+    # (as test_work_done_by_a_descendant_counts does) and still sits under healthy_after, so a wait
+    # that ignored the worker's progress would still fail both.
+    _WORKING_TIMEOUT = 1.5
+
     def test_a_load_that_keeps_working_outlives_the_timeout(self, monkeypatch):
-        b, ok, elapsed = self._wait_on_child(monkeypatch, [self._WORKER, "3.0"], healthy_after = 2.5)
+        b, ok, elapsed = self._wait_on_child(
+            monkeypatch, [self._WORKER, "3.0"], healthy_after = 2.5, timeout = self._WORKING_TIMEOUT
+        )
         assert ok is True
         assert elapsed >= 2.5
         assert not any("health check timed out" in ln for ln in b._stdout_lines)
@@ -1692,9 +1701,11 @@ class TestHealthWaitMeasuresStalls:
         assert any("no startup progress for 0.6s" in ln for ln in b._stdout_lines)
 
     def test_a_load_that_stalls_times_out_one_timeout_after_its_last_work(self, monkeypatch):
-        b, ok, elapsed = self._wait_on_child(monkeypatch, [self._WORKER, "1.5"])
+        timeout = self._WORKING_TIMEOUT
+        b, ok, elapsed = self._wait_on_child(monkeypatch, [self._WORKER, "1.5"], timeout = timeout)
         assert ok is False
-        assert 1.5 + 0.6 - 0.2 <= elapsed < 1.5 + 3.0
+        # One window after the last work, not one window after the start (which would be ~1.5s).
+        assert 1.5 + timeout - 0.2 <= elapsed < 1.5 + timeout + 3.0
         assert any("health check timed out" in ln for ln in b._stdout_lines)
 
     def test_work_done_by_a_descendant_counts(self, monkeypatch):

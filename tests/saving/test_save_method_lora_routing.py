@@ -54,7 +54,9 @@ def _function_source(name: str) -> str:
 
 def _load(*names, **env):
     """Exec the named top-level functions against `env` and return the namespace."""
-    namespace = dict(env)
+    # save.py imports this from models.mistral_format (#12144) and calls it on every merge and
+    # GGUF path; none of these fixtures is a Mistral-format view, so it never refuses here.
+    namespace = {"raise_if_merging_mistral_format_view": lambda model, save_method: None, **env}
     for name in names:
         exec(compile(_function_source(name), str(_SAVE_PY), "exec"), namespace)
     return namespace
@@ -210,6 +212,32 @@ class _FullModel:
         self.saved.append((directory, kwargs))
 
 
+# Run as real code under the routing harness: each decides how a save is routed or refused, which is
+# what these tests assert on. Every other save.py helper unsloth_generic_save calls is stubbed below;
+# test_every_helper_the_generic_save_calls_is_loaded_or_stubbed keeps the two lists complete.
+_GENERIC_SAVE_REAL_HELPERS = (
+    "_normalize_safe_serialization",
+    "_is_adapter_save_method",
+    "_honours_safe_serialization",
+    "_refuse_unsaveable_text_core",
+)
+_GENERIC_SAVE_STUBBED_HELPERS = frozenset(
+    {
+        "patch_saving_functions",
+        "_push_merged_to_hub_revision",
+        "_prewarm_base_model_hub_cache",
+        "_is_qwen3_5_vlm",
+        "_qwen3_5_vlm_state_dict_for_save",
+        "_determine_username",
+        "unsloth_save_model",
+    }
+)
+
+
+def _not_reached(*args, **kwargs):
+    raise AssertionError("the routing harness does not reach this helper")
+
+
 def _routing_environment(monkeypatch, model):
     calls = {"merge": [], "adapter": [], "prewarm": []}
 
@@ -218,8 +246,7 @@ def _routing_environment(monkeypatch, model):
     monkeypatch.setitem(sys.modules, "unsloth_zoo.saving_utils", zoo)
 
     namespace = _load(
-        "_normalize_safe_serialization",
-        "_is_adapter_save_method",
+        *_GENERIC_SAVE_REAL_HELPERS,
         "unsloth_generic_save",
         PeftModel = _PeftModel,
         PreTrainedTokenizerBase = type("Tokenizer", (), {}),
@@ -230,6 +257,7 @@ def _routing_environment(monkeypatch, model):
         _push_merged_to_hub_revision = lambda kwargs: calls.setdefault("revision", []).append(kwargs),
         _prewarm_base_model_hub_cache = lambda *args, **kwargs: calls["prewarm"].append(kwargs),
         _is_qwen3_5_vlm = lambda model: False,
+        _qwen3_5_vlm_state_dict_for_save = _not_reached,
         _determine_username = lambda repo, old, token: (repo, "owner"),
         unsloth_save_model = lambda *args, **kwargs: calls["adapter"].append(kwargs),
         logger = types.SimpleNamespace(warning_once = lambda *a, **k: None),
@@ -854,3 +882,29 @@ def test_an_unreadable_signature_forwards_the_call_unchanged():
 
     _wrapped_model_save_pretrained(_NoSignature())("out_dir", None)
     assert seen["args"] == ("out_dir", None)
+
+
+def test_every_helper_the_generic_save_calls_is_loaded_or_stubbed():
+    """A helper added to unsloth_generic_save and missing here surfaces as a NameError in every
+    routing test at once (#11526's _refuse_unsaveable_text_core did). Name it instead."""
+    top_level = {node.name for node in _TREE.body if isinstance(node, ast.FunctionDef)}
+    generic_save = next(
+        node
+        for node in _TREE.body
+        if isinstance(node, ast.FunctionDef) and node.name == "unsloth_generic_save"
+    )
+    called = {
+        node.func.id
+        for node in ast.walk(generic_save)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id in top_level
+    }
+    covered = set(_GENERIC_SAVE_REAL_HELPERS) | _GENERIC_SAVE_STUBBED_HELPERS
+    assert called <= covered, (
+        f"unsloth_generic_save calls {sorted(called - covered)} from save.py, which the routing "
+        "harness neither loads nor stubs"
+    )
+    assert (
+        covered <= called
+    ), f"{sorted(covered - called)} are no longer called by unsloth_generic_save"

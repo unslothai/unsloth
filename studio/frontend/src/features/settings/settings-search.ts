@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { TranslationKey } from "@/i18n";
+import type { HubSource } from "@/lib/hf-endpoint";
 import type { SettingsTab } from "./stores/settings-dialog-store";
 
 /**
@@ -10,7 +11,12 @@ import type { SettingsTab } from "./stores/settings-dialog-store";
  * (profile, connections) are still reachable from search.
  */
 export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
-  accounts: ["settings.accounts.title", "settings.accounts.create"],
+  accounts: [
+    "settings.accounts.title",
+    "settings.accounts.create",
+    "settings.general.managedProviderUrls.sectionTitle",
+    "settings.general.managedProviderUrls.enableLabel",
+  ],
   general: [
     "settings.general.account",
     "settings.general.password",
@@ -23,12 +29,14 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.general.previewSharing.sectionTitle",
     "settings.general.previewSharing.enableLabel",
     "settings.general.previewSharing.revokeLabel",
-    "settings.general.managedProviderUrls.sectionTitle",
-    "settings.general.managedProviderUrls.enableLabel",
     "settings.general.rag.sectionTitle",
     "settings.general.rag.embeddingModel",
     "settings.general.helperLlm.sectionTitle",
     "settings.general.helperLlm.preloadOnStartup",
+    "settings.general.hub.sectionTitle",
+    "settings.general.hub.source",
+    "settings.general.hub.endpoint",
+    "settings.general.hub.datasetsServer",
     "settings.general.downloads.sectionTitle",
     "settings.general.downloads.transport",
     "settings.general.downloads.https",
@@ -64,6 +72,8 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.appearance.custom.headingFont.label",
     "settings.appearance.custom.chatFont.label",
     "settings.appearance.custom.chatWidth.label",
+    "settings.appearance.custom.composerAttachments.label",
+    "settings.appearance.custom.sentAttachments.label",
     "settings.appearance.custom.codeFont.label",
     "settings.appearance.custom.contrast.label",
     "settings.appearance.custom.pointerCursors.label",
@@ -107,6 +117,7 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "composerSettings.showContext",
     "settings.chat.pastedTextThreshold",
     "settings.chat.groups.conversations.title",
+    "settings.chat.library.label",
     "settings.chat.groups.display.title",
     "settings.chat.modelSelection.title",
     "settings.chat.currentDate.label",
@@ -114,6 +125,7 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.chat.projectAttachments",
     "settings.chat.rememberParamsPerModel",
     "settings.chat.autoCompact",
+    "settings.chat.autoScroll",
     "settings.profile.greetingSloth",
     "settings.chat.thinking.visibility",
     "settings.chat.tools.visibility",
@@ -316,6 +328,21 @@ export function createSettingsSearchIndex({
   };
 }
 
+const HUGGING_FACE_ONLY_ENTRIES: ReadonlySet<TranslationKey> = new Set([
+  "settings.general.hub.endpoint",
+  "settings.general.hub.datasetsServer",
+]);
+
+export function renderedSearchEntries(
+  index: Record<SettingsTab, TranslationKey[]>,
+  tab: SettingsTab,
+  hubSource: HubSource,
+): TranslationKey[] {
+  return hubSource === "modelscope"
+    ? index[tab].filter((key) => !HUGGING_FACE_ONLY_ENTRIES.has(key))
+    : index[tab];
+}
+
 /**
  * Extra terms a row matches on, beyond its own label. The value is a
  * translation key holding space-separated synonyms; it is never rendered.
@@ -343,4 +370,5 @@ export const SETTINGS_SEARCH_KEYWORDS: Partial<
   "settings.chat.thinking.visibility": "settings.chat.visibilityKeywords",
   "settings.chat.tools.visibility": "settings.chat.visibilityKeywords",
   "settings.chat.tools.foldIntoThinking": "settings.chat.visibilityKeywords",
+  "settings.chat.autoScroll": "settings.chat.autoScrollKeywords",
 };

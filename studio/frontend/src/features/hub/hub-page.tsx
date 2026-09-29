@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useAppShellReadySignal } from "@/components/app-readiness";
-import { useHfEndpoint } from "@/lib/hf-endpoint";
+import { useHfEndpoint, useHubSource } from "@/lib/hf-endpoint";
 import { usePlatformStore } from "@/config/env";
 import {
   applyActiveModelStatusToStore,
@@ -114,6 +114,7 @@ import { studioPageForTask } from "./lib/unsloth-support";
 import {
   buildDiscoverRows,
   detectResultFormat,
+  discoveryInventorySignature,
   isUnslothFinetunable,
   matchesCapability,
   matchesFormat,
@@ -234,24 +235,6 @@ function buildFocusedHeading({
   if (trimmed) return `Results for "${trimmed}"`;
   if (channel && channel.id !== DEFAULT_DISCOVER_CHANNEL) return channel.label;
   return isDataset ? "Datasets" : "Models";
-}
-
-function discoveryInventorySignature(
-  cachedRows: readonly CachedInventoryRow[],
-  localRows: readonly LocalInventoryRow[],
-): string {
-  const parts: string[] = [];
-  for (const row of cachedRows) {
-    parts.push(
-      `c:${row.repoId.toLowerCase()}:${row.modelFormat}:${row.partial ? (row.downloading ? "d" : "p") : "c"}`,
-    );
-  }
-  for (const row of localRows) {
-    parts.push(
-      `l:${(row.repoId ?? row.id).toLowerCase()}:${row.modelFormat}:${row.partial ? (row.downloading ? "d" : "p") : "c"}`,
-    );
-  }
-  return parts.sort().join("|");
 }
 
 function readModelsTabPreference(): ModelsTab | null {
@@ -822,8 +805,14 @@ export function ModelsPage() {
     return null;
   }, [isChannelListMode, isFeedMode, activeChannel]);
 
-  const effectiveSort: HfSortKey =
+  const hubSource = useHubSource();
+  const requestedSort: HfSortKey =
     isFeedMode && liveListChannel ? liveListChannel.sort : sortBy;
+  // ModelScope has no creation-date sort; its closest is last modified.
+  const effectiveSort: HfSortKey =
+    hubSource === "modelscope" && requestedSort === "createdAt"
+      ? "lastModified"
+      : requestedSort;
   const effectiveDirection: HfSortDirection = isFeedMode ? "desc" : direction;
   // The format dropdown always filters the visible list, including the feed's "Latest" list, so
   // the default (GGUF) hides fp8/safetensors and picking a format actually changes the rows.

@@ -793,6 +793,48 @@ def test_refine_model_offload_streams_only_when_a_component_exceeds_budget(monke
     assert any("text_encoder" in reason for reason in refined.reasons)
 
 
+def test_largest_streamable_companion_mib_measures_only_the_text_encoders(monkeypatch):
+    from core.inference.diffusion_memory import largest_streamable_companion_mib
+
+    Module = _install_sized_torch(monkeypatch)
+    transformer = Module(9000)
+    pipe = types.SimpleNamespace(
+        transformer = transformer,
+        components = {
+            "transformer": transformer,
+            "text_encoder": Module(1200),
+            "text_encoder_2": Module(4800),
+            "vae": Module(9500),
+        },
+    )
+    assert largest_streamable_companion_mib(pipe) == 4800
+    only_dit = types.SimpleNamespace(
+        transformer = transformer, components = {"transformer": transformer}
+    )
+    assert largest_streamable_companion_mib(only_dit) is None
+
+
+def test_refine_keeps_model_offload_for_a_torchao_transformer(monkeypatch):
+    """A torchao transformer's bf16-shaped size must not force streaming."""
+    Module = _install_sized_torch(monkeypatch)
+    plan = MemoryPlan(
+        requested_mode = "low_vram",
+        offload_policy = OFFLOAD_MODEL,
+        vae_tiling = True,
+        vae_slicing = True,
+        device_memory = _discrete(8000),
+        estimates = {"safe_device_budget_mib": 6000},
+    )
+    transformer = Module(7500)
+    pipe = types.SimpleNamespace(
+        transformer = transformer,
+        components = {"transformer": transformer, "text_encoder": Module(1200)},
+    )
+    assert refine_memory_plan_for_components(pipe, plan).offload_policy == OFFLOAD_STREAMING
+    monkeypatch.setattr(diffusion_memory, "_pipe_denoisers_hold_torchao", lambda pipe: True)
+    assert refine_memory_plan_for_components(pipe, plan) is plan
+
+
 def test_refine_keeps_model_offload_when_streaming_cannot_help(monkeypatch):
     """Only a component streaming can actually hook justifies leaving whole-module offload."""
     Module = _install_sized_torch(monkeypatch)

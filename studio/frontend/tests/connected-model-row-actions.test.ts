@@ -103,7 +103,11 @@ test("modality comes from the resolvers the app already has", () => {
     audioAdapter,
     /const activeModel = state\.models\.find\(\(m\) => m\.id === checkpoint\);/,
   );
-  assert.match(audioAdapter, /\} else if \(!activeModel\?\.hasAudioInput\) \{/);
+  assert.match(audioAdapter, /if \(modelLoaded && !activeModel\?\.hasAudioInput\) \{/);
+  assert.match(
+    readSrc("features/chat/lib/attached-media-gate.ts"),
+    /if \(audio && !activeModel\?\.hasAudioInput\) \{/,
+  );
   // So the filter drops its Audio option rather than offering one that matches nothing.
   assert.match(
     pickers,

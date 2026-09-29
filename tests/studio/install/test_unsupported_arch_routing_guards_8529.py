@@ -564,14 +564,15 @@ class TestPowerShellMapEvaluated:
 # a routing site the assertions above cannot see. Reachability is narrow, but "narrow" is
 # not the property this file defends, and the literal is one line per source.
 _STRIX_SITES = [
-    (_INSTALL_SH, r"^\s*(gfx[0-9a-z|]+)\)\s+_strix_gfx="),
-    (_STACK_PY, r"^\s*_strix_gfx\s*=\s*\{([^}]*)\}"),
+    (_INSTALL_SH, r"^\s*(gfx[0-9a-z|]+)\)\s+_strix_gfx=", "gfx1151"),
+    (_INSTALL_SH, r"^\s*(gfx[0-9a-z|]+)\)\s+_rdna4_gfx=", "gfx1201"),
+    (_STACK_PY, r"^_AMD_ARCH_INDEX_FLOOR_GFX\b[^=]*=\s*frozenset\(\s*\{([^}]*)\}", "gfx1151"),
 ]
-_STRIX_IDS = [p.name for p, _r in _STRIX_SITES]
+_STRIX_IDS = ["install.sh", "install.sh-rdna4", "install_python_stack.py"]
 
 
-@pytest.mark.parametrize("source_path,pattern", _STRIX_SITES, ids = _STRIX_IDS)
-def test_the_strix_reroute_names_no_unsupported_arch(source_path, pattern):
+@pytest.mark.parametrize("source_path,pattern,routed", _STRIX_SITES, ids = _STRIX_IDS)
+def test_the_strix_reroute_names_no_unsupported_arch(source_path, pattern, routed):
     src = source_path.read_text(encoding = "utf-8")
     hits = re.findall(pattern, src, re.MULTILINE)
     assert hits, f"{source_path.name}: the Strix reroute arm was not found; was it renamed?"
@@ -582,7 +583,7 @@ def test_the_strix_reroute_names_no_unsupported_arch(source_path, pattern):
             f"builds a repo.amd.com URL without going through the family map"
         )
     # Positive control: the arm really does name the arches it is supposed to route.
-    assert "gfx1151" in named, f"{source_path.name}: extraction matched nothing useful"
+    assert routed in named, f"{source_path.name}: extraction matched nothing useful"
 
 
 # ── The CPU summary must blame the card the fallback is actually about ───────

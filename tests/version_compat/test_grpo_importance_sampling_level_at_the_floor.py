@@ -80,7 +80,7 @@ def _captured_level(
 ) -> str:
     """Compile the real rewritten compute_loss and read the level it hands the loss."""
     torch = pytest.importorskip("torch")
-    source = grpo_trainer_compute_loss("compute_loss", None)
+    source = grpo_trainer_compute_loss("compute_loss", "")
     captured = {}
 
     def _loss_stub(*args, **kwargs):

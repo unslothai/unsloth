@@ -36,6 +36,7 @@ import {
   subscribeAppliedInterfaceZoom,
   useAppearanceCustomStore,
   useInterfaceScaleStore,
+  usePalette,
   useTheme,
 } from "@/features/settings";
 import { SttDownloadPrompt } from "@/features/settings/components/stt-download-prompt";
@@ -1011,11 +1012,12 @@ function TauriWrapper({ children }: { children: ReactNode }) {
 /** Mirrors the appearance customization store onto <html>; colors are per resolved light/dark mode. */
 function AppearanceCustomizationEffect() {
   const { theme, resolved } = useTheme();
+  const { palette } = usePalette();
   const customization = useAppearanceCustomStore((s) => s.customization);
   const interfaceScale = useInterfaceScaleStore((s) => s.scale);
   useEffect(() => {
-    applyCustomizationToDocument(customization, resolved);
-  }, [customization, resolved]);
+    applyCustomizationToDocument(customization, resolved, palette);
+  }, [customization, resolved, palette]);
   useEffect(() => {
     if (!isTauri) return;
     void import("@tauri-apps/api/window")

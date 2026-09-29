@@ -395,6 +395,8 @@ _ADMISSION_WAIT_MARKER = ": admission-wait"
 # Leaving the queue. Renewed unconditionally: wait renewals are rate limited, and the lease equals the first-token
 # timeout, so any age carried in is negative margin.
 _ADMISSION_DONE_MARKER = ": admission-done"
+# A server-side tool still running. Rate limited like the wait marker.
+_TOOL_HEARTBEAT_MARKER = ": tool-heartbeat"
 
 
 def _minimum_lease_seconds() -> float:
@@ -800,7 +802,7 @@ class ChatGenerationSupervisor:
                 if _ADMISSION_DONE_MARKER in text:
                     last_keepalive = time.monotonic()
                     await self._try_touch_progress(run_id)
-                elif _ADMISSION_WAIT_MARKER in text:
+                elif _ADMISSION_WAIT_MARKER in text or _TOOL_HEARTBEAT_MARKER in text:
                     now_s = time.monotonic()
                     if now_s - last_keepalive >= _renew_interval_seconds():
                         last_keepalive = now_s

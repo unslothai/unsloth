@@ -555,11 +555,14 @@ export function ChatProvidersSettings({
   }
 
   function selectAllModels() {
-    setSelectedModelIds([...availableModels]);
+    setSelectedModelIds((prev) => [
+      ...new Set([...prev, ...filteredAvailableModels]),
+    ]);
   }
 
   function clearModelSelection() {
-    setSelectedModelIds([]);
+    const visible = new Set(filteredAvailableModels);
+    setSelectedModelIds((prev) => prev.filter((id) => !visible.has(id)));
   }
 
   function parseOptionalBaseUrl(
@@ -1849,7 +1852,7 @@ export function ChatProvidersSettings({
                               className="h-8 px-2 text-xs font-medium text-foreground/80 hover:bg-muted/45"
                               onClick={() => {
                                 clearModelSelection();
-                                setManualModelIds("");
+                                if (!modelSearchQuery.trim()) setManualModelIds("");
                               }}
                             >
                               Clear
@@ -2042,7 +2045,7 @@ export function ChatProvidersSettings({
   }
 
   return (
-    <div className="flex min-h-0 flex-col gap-6">
+    <div className="settings-page min-h-0">
       {/* Same title/description metrics as every other settings page. */}
       <header className="flex min-w-0 flex-col gap-1 pr-8">
         <h1 className="text-xl font-semibold font-heading">Connections</h1>

@@ -50,6 +50,8 @@ import {
   listGgufVariants,
   listLoras,
   loadModel,
+  offloadCountsFrom,
+  offloadWarning,
   requestLocalPromptQueueStop,
   unloadModel,
   useChatRuntimeStore,
@@ -1069,9 +1071,16 @@ export function AudioPage({
         );
         if (!isCurrent()) return;
         if (res.is_audio && isTtsAudioType(res.audio_type)) {
-          toast.success(`Model loaded (${res.audio_type ?? "audio"})`, {
-            id: toastId,
-          });
+          const offloadNotice = offloadWarning(offloadCountsFrom(res));
+          const showToast = offloadNotice ? toast.warning : toast.success;
+          showToast(
+            `Model loaded (${res.audio_type ?? "audio"})${offloadNotice?.titleSuffix ?? ""}`,
+            {
+              id: toastId,
+              description: offloadNotice?.description,
+              duration: offloadNotice ? 8000 : undefined,
+            },
+          );
           // Only the native runtime and GGUF can be held in RAM.
           if (
             wantsCpu &&

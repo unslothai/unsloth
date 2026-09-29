@@ -19,8 +19,6 @@ import {
 import { cn } from "@/lib/utils";
 import { toast } from "@/lib/toast";
 
-// All registerNativeAttachmentPath takes. The picker itself accepts image/*,
-// so name the droppable formats instead of surfacing the backend's refusal.
 const NATIVE_IMAGE_EXTS = ["jpg", "jpeg", "png", "webp", "gif"];
 
 /** Shared image picker that returns a data URL. */

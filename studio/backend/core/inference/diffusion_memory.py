@@ -1257,6 +1257,31 @@ def _streamable_components(pipe: Any, torch: Any) -> dict[str, tuple[Any, str]]:
     return streamed
 
 
+def _module_storage_bytes(module: Any, seen: set[int]) -> int:
+    storage_bytes = 0
+    for tensor in list(module.parameters(recurse = True)) + list(module.buffers(recurse = True)):
+        if id(tensor) in seen:
+            continue
+        seen.add(id(tensor))
+        storage_bytes += int(tensor.numel()) * int(tensor.element_size())
+    return storage_bytes
+
+
+def largest_streamable_companion_mib(pipe: Any) -> Optional[int]:
+    """MiB of the largest text encoder refinement could stream, as loaded, or None."""
+    try:
+        import torch
+        mib = 1024 * 1024
+        sizes = [
+            (_module_storage_bytes(module, set()) + mib - 1) // mib
+            for name, (module, offload_type) in _streamable_components(pipe, torch).items()
+            if offload_type == "leaf_level"
+        ]
+    except Exception:  # noqa: BLE001 - a sizing aid; the caller treats unknown as unmeasured
+        return None
+    return max(sizes) if sizes else None
+
+
 def refine_memory_plan_for_components(pipe: Any, plan: MemoryPlan) -> MemoryPlan:
     """Replace whole-module offload when a loaded component cannot fit on the device.
 
@@ -1282,6 +1307,9 @@ def refine_memory_plan_for_components(pipe: Any, plan: MemoryPlan) -> MemoryPlan
         transformer = getattr(pipe, "transformer", None)
         if not isinstance(components, dict) or not isinstance(transformer, torch.nn.Module):
             return plan
+        # Streaming cannot move torchao weights; the loader already checked fit (torchao numel reads bf16-sized here).
+        if _pipe_denoisers_hold_torchao(pipe):
+            return plan
         streamable = _streamable_components(pipe, torch)
 
         sizes: dict[str, int] = {}
@@ -1289,18 +1317,7 @@ def refine_memory_plan_for_components(pipe: Any, plan: MemoryPlan) -> MemoryPlan
         for name, component in components.items():
             if not isinstance(component, torch.nn.Module):
                 continue
-            seen: set[int] = set()
-            storage_bytes = 0
-            tensors = list(component.parameters(recurse = True)) + list(
-                component.buffers(recurse = True)
-            )
-            for tensor in tensors:
-                marker = id(tensor)
-                if marker in seen:
-                    continue
-                seen.add(marker)
-                storage_bytes += int(tensor.numel()) * int(tensor.element_size())
-            sizes[str(name)] = (storage_bytes + mib - 1) // mib
+            sizes[str(name)] = (_module_storage_bytes(component, set()) + mib - 1) // mib
     except Exception:  # noqa: BLE001 - runtime measurement is an optional refinement
         return plan
 

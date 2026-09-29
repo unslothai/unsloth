@@ -32,6 +32,7 @@ from loggers import get_logger
 from utils.process_lifetime import is_signalable_pid
 
 from hub.utils import state_dir
+from hub.utils.hf_errors import modelscope_missing
 from hub.utils.state_dir import RepoType
 
 logger = get_logger(__name__)
@@ -97,7 +98,11 @@ def http_size_ceiling_reason(largest_file_bytes: Optional[int]) -> Optional[str]
 
 
 def humanize_worker_error(text: str, *, largest_file_bytes: Optional[int] = None) -> str:
-    """Replace the hub's misleading >50GB dependency error with the transport limit."""
+    """Name a repo missing on ModelScope, and replace the hub's misleading >50GB dependency
+    error with the transport limit."""
+    missing = modelscope_missing(text)
+    if missing:
+        return missing
     if not text or _HTTP_SIZE_CEILING_MARKER not in text:
         return text
     reason = http_size_ceiling_reason(largest_file_bytes)
@@ -796,7 +801,7 @@ def prepare_cache_for_transport(
     return total_purged
 
 
-_HF_TOKEN_RE = re.compile(r"hf_[A-Za-z0-9]{20,}")
+_HF_TOKEN_RE = re.compile(r"hf_(?:oauth_[A-Za-z0-9._~+/=-]{20,}|[A-Za-z0-9]{20,})")
 _BEARER_RE = re.compile(r"(?i)bearer\s+[A-Za-z0-9._\-]+")
 
 
@@ -1217,6 +1222,7 @@ class DownloadRegistry:
         self._cancel_marker_transports: dict[str, str] = {}
         self._pending_cancel: dict[str, Optional[int]] = {}
         self._generations: dict[str, int] = {}
+        self._attempts: dict[str, int] = {}
         # Monotonic across keys so an evicted then re-claimed key never reuses a prior generation, which would let a stale cancel match a new run.
         self._generation_seq = 0
         self._deleting: dict[str, set[Optional[str]]] = {}
@@ -1243,6 +1249,7 @@ class DownloadRegistry:
                     self._jobs.pop(stale_key, None)
                     self._metadata.pop(stale_key, None)
                     self._generations.pop(stale_key, None)
+                    self._attempts.pop(stale_key, None)
                     if len(self._jobs) <= self._max_terminal:
                         break
 
@@ -1341,6 +1348,11 @@ class DownloadRegistry:
         key = normalize_job_key(key)
         with self._lock:
             return self._generations.get(key, 0)
+
+    def current_attempt(self, key: str) -> int:
+        key = normalize_job_key(key)
+        with self._lock:
+            return self._attempts.get(key, 1)
 
     def get_job_metadata(self, key: str) -> Optional[DownloadMetadata]:
         key = normalize_job_key(key)
@@ -1517,8 +1529,10 @@ class DownloadRegistry:
             if generation is None:
                 self._generation_seq += 1
                 self._generations[key] = self._generation_seq
+                self._attempts[key] = 1
             else:
                 self._generations[key] = generation
+                self._attempts[key] = self._attempts.get(key, 1) + 1
             self._jobs[key] = DownloadState("running")
             self._repo_active.setdefault(repo, active).add(key)
             if repo_type and repo_id:
