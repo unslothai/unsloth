@@ -118,12 +118,12 @@ import {
   resolveProjectId,
   sentAudioNames,
 } from "@/features/chat/api/chat-adapter";
-import { requestVoiceToggle } from "@/features/chat/voice/voice-loop-bridge";
+import { requestVoiceToggle } from "@/features/chat";
 import {
   useVoiceAvailable,
   VoiceControlButton,
   VoiceEngine,
-} from "@/features/chat/voice/voice-engine";
+} from "@/features/chat";
 import { VoiceOrb } from "@/components/assistant-ui/voice-orb";
 import {
   PromptStorageDialog,
@@ -6969,7 +6969,7 @@ const ComposerToolsMenu: FC<{
             className={voiceMode !== "off" ? "text-primary font-medium" : undefined}
             onSelect={() => requestVoiceToggle()}
           >
-            <MicIcon className="size-[18px]" />
+            <MicIcon className="size-[calc(18px*var(--ui-space-scale,1))]" />
             Voice
             {voiceMode === "active" ? (
               <HugeiconsIcon
@@ -8383,7 +8383,7 @@ const EditAssistantMessageMenuItem: FC = () => {
     <ActionBarMorePrimitive.Item
       disabled={isRunning || researchActive}
       onSelect={() => setEditingId(messageId)}
-      className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-[12px] px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50"
+      className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-[calc(12px*var(--ui-space-scale,1))] px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50"
     >
       <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} className="size-icon" />
       Edit response
@@ -8495,7 +8495,7 @@ const AssistantActionBar: FC = () => {
             side="bottom"
             align="start"
             onCloseAutoFocus={(e) => e.preventDefault()}
-            className="aui-action-bar-more-content z-50 min-w-32 overflow-hidden rounded-[21px] bg-popover px-[calc(9px*var(--ui-space-scale,1))] py-2 text-popover-foreground shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:shadow-[0_8px_28px_-6px_var(--background)]"
+            className="aui-action-bar-more-content z-50 min-w-32 overflow-hidden rounded-[calc(21px*var(--ui-space-scale,1))] bg-popover px-[calc(9px*var(--ui-space-scale,1))] py-2 text-popover-foreground shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:shadow-[0_8px_28px_-6px_var(--background)]"
           >
             {/* Prevent an outside dismissal from triggering Delete. */}
             <MenuDismissGuard triggerRef={moreMenuTriggerRef} />
@@ -8503,7 +8503,7 @@ const AssistantActionBar: FC = () => {
             {!inlineReadAloud && ttsEnabled && (
               <MessagePrimitive.If speaking={false}>
                 <ActionBarPrimitive.Speak asChild={true}>
-                  <ActionBarMorePrimitive.Item className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-[12px] px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50">
+                  <ActionBarMorePrimitive.Item className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-[calc(12px*var(--ui-space-scale,1))] px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50">
                     <HugeiconsIcon
                       icon={Volume02Icon}
                       strokeWidth={1.75}
@@ -8518,7 +8518,7 @@ const AssistantActionBar: FC = () => {
             <ActionBarMorePrimitive.Item
               disabled={forkDisabled}
               onSelect={() => void forkMessage()}
-              className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-[12px] px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50"
+              className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-[calc(12px*var(--ui-space-scale,1))] px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50"
             >
               <GitBranchIcon strokeWidth={1.75} className="size-icon" />
               Fork in new chat
@@ -8527,7 +8527,7 @@ const AssistantActionBar: FC = () => {
               asChild={true}
               onExport={exportMessageMarkdown}
             >
-              <ActionBarMorePrimitive.Item className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-[12px] px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground">
+              <ActionBarMorePrimitive.Item className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-[calc(12px*var(--ui-space-scale,1))] px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground">
                 <HugeiconsIcon
                   icon={Download01Icon}
                   strokeWidth={1.75}
@@ -8579,7 +8579,7 @@ const AssistantActionBar: FC = () => {
                     );
                   })();
                 }}
-                className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-[12px] px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground"
+                className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-[calc(12px*var(--ui-space-scale,1))] px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground"
               >
                 <HugeiconsIcon
                   icon={FolderAttachmentIcon}
@@ -8631,7 +8631,7 @@ const UserMessage: FC = () => {
       <UserMessageAudio />
 
       <div className="aui-user-message-content-wrapper flex w-full min-w-0 flex-col items-end">
-        <div className="aui-user-message-content wrap-break-word w-fit max-w-[80%] rounded-[24px] bg-[#f5f5f5] px-4 py-2.5 text-[#0d0d0d] dark:text-foreground dark:bg-card">
+        <div className="aui-user-message-content wrap-break-word w-fit max-w-[80%] rounded-[calc(24px*var(--ui-space-scale,1))] bg-[#f5f5f5] px-4 py-2.5 text-[#0d0d0d] dark:text-foreground dark:bg-card">
           <MessagePrimitive.Parts />
         </div>
         <UserMessageFooter>

@@ -5,12 +5,12 @@ import {
   requestVoiceBargeIn,
   requestVoiceResume,
   requestVoiceSubmit,
-} from "@/features/chat/voice/voice-loop-bridge";
+} from "../voice/voice-loop-bridge";
 // The store directly, not the feature barrel: the barrel pulls in the runtime
 // provider, which reaches back here through the dictation dispatcher.
-import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
-import { useVoiceSettingsStore } from "@/features/settings/stores/voice-settings-store";
-import { requestSttDownload } from "@/features/settings/stores/stt-download-prompt-store";
+import { useChatRuntimeStore } from "../stores/chat-runtime-store";
+import { useVoiceSettingsStore } from "@/features/settings";
+import { requestSttDownload } from "@/features/settings";
 import { SttModelNotDownloadedError } from "./stt-errors";
 import { isMissingDeviceError } from "./studio-web-speech-dictation-adapter";
 import {

@@ -39837,12 +39837,12 @@ class LlamaCppBackend:
     # then dereference a None _codec_mgr. Count the slots holding it and free on the
     # last release. Guarded because loads and unloads run on different threads.
     _codec_owners: int = 0
-    _codec_owner_lock = _threading.Lock()
+    _codec_owner_lock = _threading.RLock()
 
     def _claim_audio_codec(self) -> None:
         """Register this slot as a holder of the shared codec. Idempotent per slot."""
         with LlamaCppBackend._codec_owner_lock:
-            if self._owns_codec:
+            if getattr(self, "_owns_codec", False):
                 return
             self._owns_codec = True
             LlamaCppBackend._codec_owners += 1
@@ -39850,7 +39850,7 @@ class LlamaCppBackend:
     def _unload_audio_codec(self) -> None:
         """Release this slot's claim; free the shared codec once nobody holds it."""
         with LlamaCppBackend._codec_owner_lock:
-            if self._owns_codec:
+            if getattr(self, "_owns_codec", False):
                 self._owns_codec = False
                 LlamaCppBackend._codec_owners = max(0, LlamaCppBackend._codec_owners - 1)
             if LlamaCppBackend._codec_owners > 0:
@@ -39880,9 +39880,6 @@ class LlamaCppBackend:
         import torch
         from core.inference.audio_codecs import AudioCodecManager
 
-        if LlamaCppBackend._codec_mgr is None:
-            LlamaCppBackend._codec_mgr = AudioCodecManager()
-
         # A second allocation: on CUDA for a zero-offload server it would hold VRAM the
         # load is classified as not holding, which is what lets the route skip
         # arbitration and survive training.
@@ -39895,8 +39892,14 @@ class LlamaCppBackend:
             from utils.utils import hf_env_offline
             model_repo_path = resolve_bicodec_repo_path(local_files_only = hf_env_offline())
 
-        LlamaCppBackend._codec_mgr.load_codec(audio_type, device, model_repo_path = model_repo_path)
-        self._claim_audio_codec()
+        # Publish and claim atomically against either slot's teardown. Without
+        # this lock, unloading the chat slot can clear the manager while the
+        # voice slot is still loading its codec and has not claimed it yet.
+        with LlamaCppBackend._codec_owner_lock:
+            if LlamaCppBackend._codec_mgr is None:
+                LlamaCppBackend._codec_mgr = AudioCodecManager()
+            LlamaCppBackend._codec_mgr.load_codec(audio_type, device, model_repo_path = model_repo_path)
+            self._claim_audio_codec()
         logger.info(f"Loaded audio codec for GGUF TTS: {audio_type}")
 
     def _orpheus_voice_prefix_ok(self) -> bool:

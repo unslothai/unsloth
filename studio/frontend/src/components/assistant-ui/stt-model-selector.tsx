@@ -14,10 +14,10 @@ import { useState, type FC } from "react";
 import {
   sttModelName,
   useVoiceSettingsStore,
-} from "@/features/settings/stores/voice-settings-store";
-import { DotTag } from "@/features/hub/catalog/dot-tag";
-import { formatBytes } from "@/features/hub/lib/format";
-import type { LoraModelOption } from "@/features/model-picker/components/model-selector/types";
+} from "@/features/settings";
+import { DotTag } from "@/features/hub";
+import { formatBytes } from "@/features/hub";
+import type { LoraModelOption } from "@/features/model-picker";
 
 interface SttModelSelectorProps {
   /** On-device transcription models available to pick. */
@@ -80,7 +80,7 @@ export const SttModelSelector: FC<SttModelSelectorProps> = ({
           type="button"
           disabled={disabled}
           className={cn(
-            "flex min-w-0 items-center gap-2 rounded-[10px] transition-colors",
+            "flex min-w-0 items-center gap-2 rounded-[calc(10px*var(--ui-space-scale,1))] transition-colors",
             disabled
               ? "cursor-not-allowed opacity-50"
               : "hover:bg-[#ececec] dark:hover:bg-[#2d2e32]",
@@ -99,7 +99,7 @@ export const SttModelSelector: FC<SttModelSelectorProps> = ({
                   : "text-muted-foreground",
             )}
           />
-          <span className="min-w-0 truncate font-heading text-[16px] font-medium leading-tight text-black dark:text-white">
+          <span className="min-w-0 truncate font-heading text-[calc(16px*var(--ui-space-scale,1))] font-medium leading-tight text-black dark:text-white">
             {disabled ? "Select model first" : displayName}
           </span>
           <span className="flex size-4 shrink-0 items-center justify-center">
@@ -114,9 +114,9 @@ export const SttModelSelector: FC<SttModelSelectorProps> = ({
       <PopoverContent
         align="start"
         sideOffset={6}
-        className="unsloth-model-selector-menu menu-soft-surface w-[340px] gap-0 rounded-lg border-0 p-1.5 ring-0"
+        className="unsloth-model-selector-menu menu-soft-surface w-[calc(340px*var(--ui-space-scale,1))] gap-0 rounded-lg border-0 p-1.5 ring-0"
       >
-        <div className="px-2 pb-1 pt-0.5 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+        <div className="px-2 pb-1 pt-0.5 text-[calc(11px*var(--ui-space-scale,1))] font-semibold uppercase tracking-wide text-muted-foreground">
           Listen with
         </div>
 
@@ -135,7 +135,7 @@ export const SttModelSelector: FC<SttModelSelectorProps> = ({
               <span className="min-w-0 flex-1 truncate">{name}</span>
               <span className="ml-auto flex shrink-0 items-center gap-1.5">
                 {model.deviceSizeBytes != null && (
-                  <span className="shrink-0 text-[11px] text-muted-foreground">
+                  <span className="shrink-0 text-[calc(11px*var(--ui-space-scale,1))] text-muted-foreground">
                     {formatBytes(model.deviceSizeBytes)}
                   </span>
                 )}
@@ -143,16 +143,16 @@ export const SttModelSelector: FC<SttModelSelectorProps> = ({
                   <DotTag
                     tone={model.isGguf ? "gguf" : "checkpoint"}
                     label={model.isGguf ? "GGUF" : "Safetensors"}
-                    className="h-[18px] gap-1 rounded-md px-1.5"
-                    dotClassName="size-[5px]"
+                    className="h-[calc(18px*var(--ui-space-scale,1))] gap-1 rounded-md px-1.5"
+                    dotClassName="size-[calc(5px*var(--ui-space-scale,1))]"
                   />
                 )}
                 {value === model.id && (
                   <DotTag
                     tone="success"
                     label="Active"
-                    className="h-[18px] gap-1 rounded-md px-1.5"
-                    dotClassName="size-[5px]"
+                    className="h-[calc(18px*var(--ui-space-scale,1))] gap-1 rounded-md px-1.5"
+                    dotClassName="size-[calc(5px*var(--ui-space-scale,1))]"
                   />
                 )}
               </span>
@@ -161,7 +161,7 @@ export const SttModelSelector: FC<SttModelSelectorProps> = ({
         })}
 
         {models.length === 0 && (
-          <p className="px-3 py-2 text-[12px] text-muted-foreground">
+          <p className="px-3 py-2 text-[calc(12px*var(--ui-space-scale,1))] text-muted-foreground">
             No transcription models on device. Download one from the model
             dropdown.
           </p>

@@ -28,16 +28,17 @@ import { ProjectComposer, Thread } from "@/components/assistant-ui/thread";
 import {
   getVoiceMode,
   requestVoiceThreadReset,
-} from "@/features/chat/voice/voice-loop-bridge";
+} from "./voice/voice-loop-bridge";
+import { queueVoiceSlotMutation } from "./voice/voice-slot-queue";
 import { VoiceModelSelector } from "@/components/assistant-ui/voice-model-selector";
 import { VoiceNamePicker } from "@/components/assistant-ui/voice-name-picker";
 import { SttModelSelector } from "@/components/assistant-ui/stt-model-selector";
 import {
   STT_MODELS,
   sttModelName,
-} from "@/features/settings/stores/stt-model-catalog";
+} from "@/features/settings";
 import { authFetch } from "@/features/auth";
-import { VOICE_SLOT_AUDIO_TYPES } from "@/features/chat/hooks/use-tts-player";
+import { VOICE_SLOT_AUDIO_TYPES } from "./hooks/use-tts-player";
 import { chatModelOwnsItsVoice } from "./voice/speech-llm.ts";
 import { usePlatformStore } from "@/config/env";
 import { CopyableErrorChip } from "@/components/ui/copyable-error-chip";
@@ -308,6 +309,26 @@ const EXTERNAL_PROVIDER_DROPDOWN_ORDER: Record<string, number> = {
   anthropic: 1,
 };
 
+function loadVoiceSlot(id: string, body: string): Promise<Response> {
+  return queueVoiceSlotMutation(() => {
+    const state = useChatRuntimeStore.getState();
+    if (state.voiceMode === "off" || state.selectedVoiceModelId !== id || chatModelOwnsItsVoice(state)) {
+      throw new Error("Voice load superseded");
+    }
+    return authFetch("/api/inference/voice/load", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body,
+    });
+  });
+}
+
+function unloadVoiceSlot(): Promise<Response> {
+  return queueVoiceSlotMutation(() =>
+    authFetch("/api/inference/voice/unload", { method: "POST" }),
+  );
+}
+
 function getExternalProviderDropdownRank(providerType: string): number {
   return EXTERNAL_PROVIDER_DROPDOWN_ORDER[providerType] ?? 2;
 }
@@ -483,8 +504,7 @@ const SingleContent = memo(function SingleContent({
   // We drive the module-level bridge, gated on getVoiceMode() so a plain thread
   // switch while voice is OFF can't wake the loop up.
   //
-  // The reset carries voice mode over rather than ending it: starting a new chat
-  // keeps the conversation mode the same way it keeps the loaded model.
+  // A real switch stops voice mode; the first-send remount is not a switch.
   const prevVoiceThreadIdRef = useRef(activeThreadId);
   useEffect(() => {
     const current = activeThreadId;
@@ -498,12 +518,13 @@ const SingleContent = memo(function SingleContent({
     // the reset but still advance the ref, so the later New Chat (__LOCALID_xxx → null)
     // is still detected as a genuine switch. Real switches — non-null → null (New Chat)
     // and non-null → different non-null (sidebar) — fall through below.
-    if (prev === null && current !== null) {
+    if (prev === null && isAssistantLocalThreadId(current)) {
       prevVoiceThreadIdRef.current = current;
       return;
     }
     if (getVoiceMode() !== "off") {
       requestVoiceThreadReset();
+      useChatRuntimeStore.getState().setVoiceMode("off");
     }
     prevVoiceThreadIdRef.current = current;
   }, [activeThreadId]);
@@ -1774,7 +1795,7 @@ function ProjectLanding({
           {/* Slightly narrower than the composer max; every block shares this. */}
           <div className="mx-auto flex w-full max-w-[calc(44rem*var(--ui-space-scale,1))] flex-col pt-[calc(120px*var(--ui-space-scale,1))] pb-14">
             <div className="mb-12 flex items-center gap-4">
-              <span className="flex size-13 shrink-0 items-center justify-center rounded-[18px] bg-muted text-foreground/80">
+              <span className="flex size-13 shrink-0 items-center justify-center rounded-[calc(18px*var(--ui-space-scale,1))] bg-muted text-foreground/80">
                 <HugeiconsIcon
                   icon={Folder02Icon}
                   strokeWidth={1.75}
@@ -1838,7 +1859,7 @@ function ProjectLanding({
             {projectTab === "sources" ? (
               <Suspense
                 fallback={
-                  <div className="mt-8 rounded-[26px] bg-muted/30 px-6 py-10 text-center text-sm text-muted-foreground">
+                  <div className="mt-8 rounded-[calc(26px*var(--ui-space-scale,1))] bg-muted/30 px-6 py-10 text-center text-sm text-muted-foreground">
                     Loading sources…
                   </div>
                 }
@@ -1857,7 +1878,7 @@ function ProjectLanding({
                     return (
                       <div
                         key={`${item.type}:${item.id}`}
-                        className="flex min-h-[calc(58px*var(--ui-space-scale,1))] w-full items-center rounded-[14px] px-4 py-2"
+                        className="flex min-h-[calc(58px*var(--ui-space-scale,1))] w-full items-center rounded-[calc(14px*var(--ui-space-scale,1))] px-4 py-2"
                       >
                         <div className="min-w-0 flex-1">
                           <input
@@ -1904,7 +1925,7 @@ function ProjectLanding({
                   return (
                     <div
                       key={`${item.type}:${item.id}`}
-                      className="group relative flex min-h-[calc(58px*var(--ui-space-scale,1))] w-full items-center rounded-[14px] transition-colors hover:bg-nav-surface-hover has-[[data-state=open]]:bg-nav-surface-hover"
+                      className="group relative flex min-h-[calc(58px*var(--ui-space-scale,1))] w-full items-center rounded-[calc(14px*var(--ui-space-scale,1))] transition-colors hover:bg-nav-surface-hover has-[[data-state=open]]:bg-nav-surface-hover"
                     >
                       <button
                         type="button"
@@ -1917,7 +1938,7 @@ function ProjectLanding({
                                 : { compare: item.id, project: projectId },
                           });
                         }}
-                        className="flex min-h-[calc(58px*var(--ui-space-scale,1))] min-w-0 flex-1 items-center gap-4 rounded-[14px] px-4 py-2 text-left"
+                        className="flex min-h-[calc(58px*var(--ui-space-scale,1))] min-w-0 flex-1 items-center gap-4 rounded-[calc(14px*var(--ui-space-scale,1))] px-4 py-2 text-left"
                       >
                         <div className="min-w-0 flex-1">
                           <div className="truncate text-ui-15 leading-5 text-foreground">
@@ -2471,7 +2492,7 @@ export function ChatPage({
       // download can roll back to whatever voice was active.
       const previousId = useChatRuntimeStore.getState().selectedVoiceModelId;
       const attempt = ++voiceLoadAttemptRef.current;
-      const current = () => voiceLoadAttemptRef.current === attempt;
+      const current = () => voiceLoadAttemptRef.current === attempt && useChatRuntimeStore.getState().voiceMode !== "off";
       setSelectedVoiceModelId(id);
       if (!id) {
         // Browser voice — just unload any loaded TTS voice slot. Selecting a
@@ -2485,7 +2506,7 @@ export function ChatPage({
         const inflight = voiceLoadInflightRef.current;
         void (inflight ? inflight.catch(() => {}) : Promise.resolve()).then(() => {
           if (!current()) return;
-          return authFetch("/api/inference/voice/unload", { method: "POST" });
+          return unloadVoiceSlot();
         });
         return;
       }
@@ -2594,15 +2615,11 @@ export function ChatPage({
       if (!current()) return;
       setVoiceSlotLoading(true);
       try {
-        const load = authFetch("/api/inference/voice/load", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
+        const load = loadVoiceSlot(id, JSON.stringify({
             model_path: id,
             parallel: useChatRuntimeStore.getState().voiceParallelN,
             gguf_variant: useChatRuntimeStore.getState().selectedVoiceVariant,
-          }),
-        });
+          }));
         voiceLoadInflightRef.current = load;
         const res = await load;
         if (!current()) return;
@@ -2638,7 +2655,7 @@ export function ChatPage({
     const store = useChatRuntimeStore.getState();
     const id = store.selectedVoiceModelId;
     // Browser voice / nothing selected: there's no separate slot to load.
-    if (!id) return false;
+    if (!id || store.voiceMode !== "active") return false;
     // Speech-LLM chat models speak with their own voice; no separate slot.
     if (chatModelOwnsItsVoice(store)) return false;
     if (voiceReloadInflightRef.current) return voiceReloadInflightRef.current;
@@ -2652,15 +2669,11 @@ export function ChatPage({
         const loaded = data?.loaded ? (data.model ?? null) : null;
         if (loaded && loaded.toLowerCase() === id.toLowerCase()) return true;
         setVoiceSlotLoading(true);
-        const res = await authFetch("/api/inference/voice/load", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
+        const res = await loadVoiceSlot(id, JSON.stringify({
             model_path: id,
             parallel: useChatRuntimeStore.getState().voiceParallelN,
             gguf_variant: useChatRuntimeStore.getState().selectedVoiceVariant,
-          }),
-        });
+          }));
         return res.ok;
       } catch {
         return false;
@@ -2683,68 +2696,19 @@ export function ChatPage({
 
   // Unload the voice slot whenever voice mode turns off.
   useEffect(() => {
-    if (voiceMode === "off" && selectedVoiceModelId) {
-      void authFetch("/api/inference/voice/unload", { method: "POST" });
+    if (voiceMode === "off") {
+      ++voiceLoadAttemptRef.current;
+      setVoiceSlotLoading(false);
+      void unloadVoiceSlot().catch(() => toast.error("Voice model failed to unload"));
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [voiceMode]);
 
-  // Ensure the backend voice slot matches the selected voice once voice mode is
-  // actually STARTED (active), not merely being configured -- otherwise just
-  // opening the voice picker would kick off the (slow) TTS load. selectedVoiceModelId
-  // is persisted and shows "Active", but the backend slot is empty after a restart
-  // (and the unload effect above clears it on mount), so without this /api/inference/audio/speech
-  // has no TTS slot loaded and 400s. Keyed on voiceMode (not the selection) so it
-  // fires on entering the ball, not on every pick (handleVoiceModelChange already
-  // loads on pick); the /voice/status check makes a redundant load a no-op.
+  // Activation and playback recovery share one fenced load path.
   useEffect(() => {
     if (voiceMode !== "active") return;
-    // Speech-LLM chat models (Orpheus etc.) speak with their own voice, so the
-    // separate TTS slot is greyed out and must not be auto-loaded -- doing so
-    // wastes VRAM/time loading a voice that never gets used.
-    if (chatModelOwnsItsVoice(useChatRuntimeStore.getState())) {
-      return;
-    }
-    const id = useChatRuntimeStore.getState().selectedVoiceModelId;
-    if (!id) return;
-    let cancelled = false;
-    void (async () => {
-      try {
-        const st = await authFetch("/api/inference/voice/status");
-        const data = st.ok
-          ? ((await st.json()) as { loaded?: boolean; model?: string | null })
-          : null;
-        const loadedModel = data?.loaded ? (data.model ?? null) : null;
-        if (loadedModel && loadedModel.toLowerCase() === id.toLowerCase()) return;
-        if (cancelled) return;
-        setVoiceSlotLoading(true);
-        const res = await authFetch("/api/inference/voice/load", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            model_path: id,
-            parallel: useChatRuntimeStore.getState().voiceParallelN,
-            gguf_variant: useChatRuntimeStore.getState().selectedVoiceVariant,
-          }),
-        });
-        if (!res.ok && !cancelled) {
-          const body = await res.json().catch(() => ({}));
-          toast.error("Voice model failed to load", {
-            description: (body as { detail?: string }).detail ?? undefined,
-          });
-        }
-      } catch {
-        // status/load unavailable -- leave the slot as-is.
-      } finally {
-        if (!cancelled) setVoiceSlotLoading(false);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [voiceMode]);
-
+    void ensureVoiceSlotLoaded();
+  }, [voiceMode, ensureVoiceSlotLoaded]);
 
   // Keep the top-bar speak icon honest: green only when the backend voice slot
   // is actually loaded with the selected voice. A selection persists across
@@ -2782,9 +2746,11 @@ export function ChatPage({
   // stale closure over selectedVoiceModelId.
   useEffect(() => {
     return () => {
-      if (useChatRuntimeStore.getState().selectedVoiceModelId) {
-        void authFetch("/api/inference/voice/unload", { method: "POST" });
-      }
+      ++voiceLoadAttemptRef.current;
+      requestVoiceThreadReset();
+      useChatRuntimeStore.getState().setVoiceMode("off");
+      useChatRuntimeStore.getState().setVoiceSlotLoaded(false);
+      void unloadVoiceSlot().catch(() => toast.error("Voice model failed to unload"));
     };
   }, []);
 
@@ -2802,7 +2768,7 @@ export function ChatPage({
     if (!useChatRuntimeStore.getState().selectedVoiceModelId) return;
     setSelectedVoiceModelId(null);
     useChatRuntimeStore.getState().setVoiceSlotLoaded(false);
-    void authFetch("/api/inference/voice/unload", { method: "POST" });
+    void unloadVoiceSlot();
   }, [checkpointOwnsItsVoice, setSelectedVoiceModelId]);
 
   // Fetch cached GGUFs + cached safetensors once when voice mode is first
@@ -4621,7 +4587,7 @@ export function ChatPage({
                 title="New chat"
                 aria-label="New chat"
                 onClick={handleDesktopNewChat}
-                className="!size-[calc(30px*var(--ui-space-scale,1))] rounded-[10px] text-muted-foreground"
+                className="!size-[calc(30px*var(--ui-space-scale,1))] rounded-[calc(10px*var(--ui-space-scale,1))] text-muted-foreground"
               >
                 <HugeiconsIcon
                   icon={PencilEdit02Icon}
@@ -4677,7 +4643,7 @@ export function ChatPage({
                 onValueChange={setSelectedSttModelId}
                 disabled={!hasActiveModel}
                 ready={true}
-                className="!h-[34px]"
+                className="!h-[calc(34px*var(--ui-space-scale,1))]"
               />
             )}
             {view.mode !== "compare" && voiceMode !== "off" && (
@@ -4689,7 +4655,7 @@ export function ChatPage({
                 disabled={!hasActiveModel}
                 voiceOwnedByModel={chatModelIsSpeechLLM}
                 loaded={voiceSlotLoaded}
-                className="!h-[34px]"
+                className="!h-[calc(34px*var(--ui-space-scale,1))]"
               />
             )}
             {view.mode !== "compare" && voiceMode !== "off" && <VoiceNamePicker />}
@@ -4787,7 +4753,7 @@ export function ChatPage({
               />
             ) : null}
             {view.mode === "single" && incognito ? (
-              <SaveTemporaryChatButton className="mr-[calc(6px*var(--ui-space-scale,1))] flex size-[calc(30px*var(--ui-space-scale,1))] cursor-pointer items-center justify-center rounded-[10px] text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring dark:hover:text-white" />
+              <SaveTemporaryChatButton className="mr-[calc(6px*var(--ui-space-scale,1))] flex size-[calc(30px*var(--ui-space-scale,1))] cursor-pointer items-center justify-center rounded-[calc(10px*var(--ui-space-scale,1))] text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring dark:hover:text-white" />
             ) : null}
             {view.mode === "single" && (
               <Tooltip>
@@ -4796,7 +4762,7 @@ export function ChatPage({
                     type="button"
                     onClick={toggleIncognito}
                     className={cn(
-                      "flex size-[calc(30px*var(--ui-space-scale,1))] cursor-pointer items-center justify-center rounded-[10px] transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+                      "flex size-[calc(30px*var(--ui-space-scale,1))] cursor-pointer items-center justify-center rounded-[calc(10px*var(--ui-space-scale,1))] transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
                       incognito
                         ? "bg-primary/10 text-primary hover:bg-primary/15"
                         : "text-nav-fg hover:bg-nav-surface-hover hover:text-black dark:hover:text-white",
@@ -4836,7 +4802,7 @@ export function ChatPage({
                       closeArtifactSurface();
                       openResearchPanel(latestResearchRunId);
                     }}
-                    className="relative flex size-[calc(30px*var(--ui-space-scale,1))] cursor-pointer items-center justify-center rounded-[10px] text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring dark:hover:text-white"
+                    className="relative flex size-[calc(30px*var(--ui-space-scale,1))] cursor-pointer items-center justify-center rounded-[calc(10px*var(--ui-space-scale,1))] text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring dark:hover:text-white"
                     aria-label="Open research activity"
                     aria-pressed={openResearchRunId === latestResearchRunId}
                   >
@@ -4864,7 +4830,7 @@ export function ChatPage({
                       useResearchRunStore.getState().closePanel();
                       setSettingsOpen(true);
                     }}
-                    className="flex size-[calc(30px*var(--ui-space-scale,1))] cursor-pointer items-center justify-center rounded-[10px] text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                    className="flex size-[calc(30px*var(--ui-space-scale,1))] cursor-pointer items-center justify-center rounded-[calc(10px*var(--ui-space-scale,1))] text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                     aria-label="Open run settings"
                   >
                     <HugeiconsIcon

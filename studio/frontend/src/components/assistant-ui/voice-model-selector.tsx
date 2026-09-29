@@ -13,13 +13,13 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { SettingsIcon, Speech } from "lucide-react";
 import { useState, type FC } from "react";
 import { useChatRuntimeStore } from "@/features/chat";
-import { DotTag } from "@/features/hub/catalog/dot-tag";
-import { GgufVariantExpander } from "@/features/model-picker/components/model-selector/pickers";
+import { DotTag } from "@/features/hub";
+import { GgufVariantExpander } from "@/features/model-picker";
 import {
   loraOptionLabel,
   splitRepoLabel,
-} from "@/features/model-picker/components/model-selector/row-meta";
-import type { LoraModelOption } from "@/features/model-picker/components/model-selector/types";
+} from "@/features/model-picker";
+import type { LoraModelOption } from "@/features/model-picker";
 
 interface VoiceModelSelectorProps {
   models: LoraModelOption[];
@@ -60,7 +60,7 @@ const ParallelVoicesPicker: FC<{
   const setValue = useChatRuntimeStore((s) => s.setVoiceParallelN);
   return (
     <div className="flex items-center justify-between gap-2 px-2 py-1">
-      <span className="text-[13px] text-foreground">Parallel synthesis</span>
+      <span className="text-[calc(13px*var(--ui-space-scale,1))] text-foreground">Parallel synthesis</span>
       <div className="flex items-center gap-1">
         {[1, 2, 3, 4].map((n) => (
           <button
@@ -73,7 +73,7 @@ const ParallelVoicesPicker: FC<{
               if (reloadVoiceId) onReload(reloadVoiceId);
             }}
             className={cn(
-              "flex size-6 items-center justify-center rounded-md text-[13px] transition-colors",
+              "flex size-6 items-center justify-center rounded-md text-[calc(13px*var(--ui-space-scale,1))] transition-colors",
               value === n
                 ? "bg-[#ececec] text-foreground dark:bg-[var(--sidebar-accent)]"
                 : "text-muted-foreground hover:bg-[#ececec] dark:hover:bg-[var(--sidebar-accent)]",
@@ -153,7 +153,7 @@ export const VoiceModelSelector: FC<VoiceModelSelectorProps> = ({
               : undefined
           }
           className={cn(
-            "flex min-w-0 items-center gap-2 rounded-[10px] transition-colors",
+            "flex min-w-0 items-center gap-2 rounded-[calc(10px*var(--ui-space-scale,1))] transition-colors",
             inactive
               ? "cursor-not-allowed opacity-50"
               : "hover:bg-[#ececec] dark:hover:bg-[#2d2e32]",
@@ -179,7 +179,7 @@ export const VoiceModelSelector: FC<VoiceModelSelectorProps> = ({
             />
           )}
           <span className="flex min-w-0 items-baseline">
-            <span className="min-w-0 truncate font-heading text-[16px] font-medium leading-tight text-black dark:text-white">
+            <span className="min-w-0 truncate font-heading text-[calc(16px*var(--ui-space-scale,1))] font-medium leading-tight text-black dark:text-white">
               {nameText}
             </span>
             {metaText && (
@@ -203,13 +203,13 @@ export const VoiceModelSelector: FC<VoiceModelSelectorProps> = ({
       <PopoverContent
         align="start"
         sideOffset={6}
-        className="unsloth-model-selector-menu menu-soft-surface w-[340px] gap-0 rounded-lg border-0 p-1.5 ring-0"
+        className="unsloth-model-selector-menu menu-soft-surface w-[calc(340px*var(--ui-space-scale,1))] gap-0 rounded-lg border-0 p-1.5 ring-0"
       >
         {/* Every voice here is a local model on the voice slot. The browser's own
             speechSynthesis used to sit at the top of this list; it is gone, so a
             reply is either spoken by a voice you loaded or not spoken at all. */}
         <div className="flex items-center justify-between gap-2 px-2 pb-1 pt-0.5">
-          <span className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+          <span className="text-[calc(11px*var(--ui-space-scale,1))] font-semibold uppercase tracking-wide text-muted-foreground">
             Speak with
           </span>
           <button
@@ -234,7 +234,7 @@ export const VoiceModelSelector: FC<VoiceModelSelectorProps> = ({
               reloadVoiceId={value && selectedModel?.isGguf ? value : null}
               onReload={(id) => onValueChange(id)}
             />
-            <p className="px-2 pb-1 text-[10px] leading-tight text-muted-foreground/70">
+            <p className="px-2 pb-1 text-[calc(10px*var(--ui-space-scale,1))] leading-tight text-muted-foreground/70">
               GGUF voices only.
             </p>
             <div className="my-1.5 h-px bg-[rgb(0_0_0_/_calc(0.08*var(--contrast-wash-gain,1)))] dark:bg-[rgb(255_255_255_/_calc(0.08*var(--contrast-wash-gain,1)))]" />
@@ -269,16 +269,16 @@ export const VoiceModelSelector: FC<VoiceModelSelectorProps> = ({
                     <DotTag
                       tone={model.isGguf ? "gguf" : "checkpoint"}
                       label={model.isGguf ? "GGUF" : "Safetensors"}
-                      className="h-[18px] gap-1 rounded-md px-1.5"
-                      dotClassName="size-[5px]"
+                      className="h-[calc(18px*var(--ui-space-scale,1))] gap-1 rounded-md px-1.5"
+                      dotClassName="size-[calc(5px*var(--ui-space-scale,1))]"
                     />
                   )}
                   {value === model.id && (
                     <DotTag
                       tone="success"
                       label="Active"
-                      className="h-[18px] gap-1 rounded-md px-1.5"
-                      dotClassName="size-[5px]"
+                      className="h-[calc(18px*var(--ui-space-scale,1))] gap-1 rounded-md px-1.5"
+                      dotClassName="size-[calc(5px*var(--ui-space-scale,1))]"
                     />
                   )}
                   {model.isGguf && (
@@ -294,7 +294,7 @@ export const VoiceModelSelector: FC<VoiceModelSelectorProps> = ({
                 </span>
               </button>
               {model.isGguf && isExpanded && (
-                <div className="max-h-[240px] overflow-y-auto pl-2">
+                <div className="max-h-[calc(240px*var(--ui-space-scale,1))] overflow-y-auto pl-2">
                   {/* A browse listing, not an On Device one: onDevice honors the
                       global "Show all quantizations" setting (off by default) and
                       lists only quants already on disk, so the uncached default
@@ -314,7 +314,7 @@ export const VoiceModelSelector: FC<VoiceModelSelectorProps> = ({
         })}
 
         {models.length === 0 && (
-          <p className="px-3 py-2 text-[12px] text-muted-foreground">
+          <p className="px-3 py-2 text-[calc(12px*var(--ui-space-scale,1))] text-muted-foreground">
             No TTS models found. Train or export a voice model first.
           </p>
         )}

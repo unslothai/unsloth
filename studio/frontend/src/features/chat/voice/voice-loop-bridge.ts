@@ -59,16 +59,9 @@ export function registerVoiceThreadReset(fn: (() => void) | null): void {
   voiceThreadReset = fn;
 }
 
-/**
- * Carry the loop across a thread switch: cut whatever the last thread had in
- * flight (playing reply, open mic, pending timers) and re-arm on the new one.
- *
- * Voice mode itself survives, the same way a loaded chat model does. This used to
- * call the plain toggle, which turned voice OFF -- so starting a new chat silently
- * ended the conversation mode and the controls vanished from the header.
- * A no-op while the loop is unmounted or off.
- */
+/** Stop voice mode on a real thread switch, including while the loop is unmounted. */
 export function requestVoiceThreadReset(): void {
+  voiceMode = "off";
   voiceThreadReset?.();
 }
 

@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
-import { voiceOutputLevel } from "@/features/chat/hooks/use-tts-player";
+import { useChatRuntimeStore } from "@/features/chat";
+import { voiceOutputLevel } from "@/features/chat";
 import { cn } from "@/lib/utils";
 import {
   AudioLinesIcon,

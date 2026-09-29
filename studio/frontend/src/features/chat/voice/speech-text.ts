@@ -7,7 +7,7 @@
 // the player hook they used to live in drags in React, auth and asset imports.
 
 const SPEECH_STRIP_RE =
-  /[\p{Extended_Pictographic}\u{1F1E6}-\u{1F1FF}\u{20E3}\u{FE00}-\u{FE0F}\u{200D}]/gu;
+  /\p{Extended_Pictographic}|[\u{1F1E6}-\u{1F1FF}]|\u{20E3}|[\u{FE00}-\u{FE0F}]|\u{200D}/gu;
 
 // Normalize text for TTS: some characters derail Orpheus (like the colon it reads
 // as a speaker tag) or get voiced literally by any TTS model. Em/en dashes and the

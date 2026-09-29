@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch } from "@/features/auth";
-import type { VoiceOrbState } from "@/features/chat/voice/orb-state";
+import type { VoiceOrbState } from "../voice/orb-state";
 import {
   mirrorHfTokenInto,
   useHfTokenStore,
@@ -162,7 +162,6 @@ export const CHAT_WEB_FETCH_TOOLS_ENABLED_KEY =
   "unsloth_chat_web_fetch_tools_enabled";
 const CHAT_VOICE_MODEL_ID_KEY = "unsloth_chat_voice_model_id";
 const CHAT_STT_MODEL_ID_KEY = "unsloth_chat_stt_model_id";
-const CHAT_MIC_DEVICE_ID_KEY = "unsloth_chat_mic_device_id";
 const CHAT_VOICE_PARALLEL_KEY = "unsloth_chat_voice_parallel";
 const CHAT_VOICE_VARIANT_KEY = "unsloth_chat_voice_variant";
 const CHAT_VOICE_NAME_KEY = "unsloth_chat_voice_name";

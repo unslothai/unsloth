@@ -8,7 +8,7 @@ import {
   DropdownMenuLabel,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
+import { useChatRuntimeStore } from "@/features/chat";
 import { cn } from "@/lib/utils";
 import { CheckIcon, ChevronDownIcon } from "lucide-react";
 
@@ -38,8 +38,8 @@ export function VoiceNamePicker({ className }: { className?: string }) {
           type="button"
           aria-label="Voice speaker"
           className={cn(
-            "flex h-[34px] shrink-0 items-center gap-1 rounded-lg pl-2.5 pr-1.5",
-            "text-[13.5px] text-foreground transition-colors hover:bg-accent/60",
+            "flex h-[calc(34px*var(--ui-space-scale,1))] shrink-0 items-center gap-1 rounded-lg pl-2.5 pr-1.5",
+            "text-[calc(13.5px*var(--ui-space-scale,1))] text-foreground transition-colors hover:bg-accent/60",
             "focus-visible:outline-none",
             className,
           )}
@@ -48,8 +48,8 @@ export function VoiceNamePicker({ className }: { className?: string }) {
           <ChevronDownIcon className="size-3.5 text-muted-foreground" />
         </button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="start" className="min-w-[150px]">
-        <DropdownMenuLabel className="text-[11px] font-normal text-muted-foreground">
+      <DropdownMenuContent align="start" className="min-w-[calc(150px*var(--ui-space-scale,1))]">
+        <DropdownMenuLabel className="text-[calc(11px*var(--ui-space-scale,1))] font-normal text-muted-foreground">
           Orpheus voice
         </DropdownMenuLabel>
         {ORPHEUS_VOICES.map((v) => (

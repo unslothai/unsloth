@@ -534,3 +534,7 @@ export {
   type ComposerSubmitIntent,
 } from "./utils/composer-preferences";
 export { isTextAttachmentName } from "./text-attachment-accept";
+
+export { getVoiceMode, requestVoiceToggle } from "./voice/voice-loop-bridge";
+export { VoiceEngine, VoiceControlButton, useVoiceAvailable } from "./voice/voice-engine";
+export { voiceOutputLevel } from "./hooks/use-tts-player";

@@ -108,3 +108,5 @@ export {
 export type { Palette, ResolvedTheme, Theme } from "./stores/theme-store";
 
 export { isMacPlatform } from "./lib/keyboard-shortcuts";
+
+export { STT_MODELS } from "./stores/stt-model-catalog";

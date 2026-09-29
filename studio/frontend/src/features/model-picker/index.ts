@@ -82,3 +82,6 @@ export {
   resolveInitialConfig,
   resolveResidentInitialConfig,
 } from "./model-config/per-model-config";
+
+export { GgufVariantExpander } from "./components/model-selector/pickers";
+export { loraOptionLabel, splitRepoLabel } from "./components/model-selector/row-meta";

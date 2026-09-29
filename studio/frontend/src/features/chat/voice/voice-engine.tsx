@@ -18,11 +18,11 @@
 import { resetPromptQueuesForThread } from "@/components/assistant-ui/thread";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import { ORB_IDLE_GRADIENT, orbConfig } from "@/components/assistant-ui/voice-orb";
-import { subscribeDictationLevel } from "@/features/chat/adapters/dictation-level";
-import { StudioModelDictationAdapter } from "@/features/chat/adapters/studio-model-dictation-adapter";
-import { useTtsPlayer } from "@/features/chat/hooks/use-tts-player";
-import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
-import { deriveOrbState } from "@/features/chat/voice/orb-state";
+import { subscribeDictationLevel } from "../adapters/dictation-level";
+import { StudioModelDictationAdapter } from "../adapters/studio-model-dictation-adapter";
+import { useTtsPlayer } from "../hooks/use-tts-player";
+import { useChatRuntimeStore } from "../stores/chat-runtime-store";
+import { deriveOrbState } from "./orb-state";
 import {
   getVoiceMode,
   registerVoiceBargeIn,
@@ -31,11 +31,11 @@ import {
   registerVoiceThreadReset,
   registerVoiceToggle,
   setVoiceMode as setLoopVoiceMode,
-} from "@/features/chat/voice/voice-loop-bridge";
+} from "./voice-loop-bridge";
 import { cn } from "@/lib/utils";
 import { useAui, useAuiState } from "@assistant-ui/react";
 import { MessageSquareIcon } from "lucide-react";
-import { useCallback, useEffect, useRef, useState, type FC } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type FC } from "react";
 
 // Tracks the previous thread-running state across the first-send remount, so the
 // run-lifecycle effect doesn't lose the first turn's true->false transition. The
@@ -149,8 +149,13 @@ export const VoiceEngine: FC = () => {
   // Debounce timer for the speaking -> synthesizing (lilac) transition, so a brief
   // inter-sentence playback gap doesn't flicker the orb to lilac.
   const synthGapTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
   const auiRef = useRef(aui);
-  auiRef.current = aui;
+  useLayoutEffect(() => { auiRef.current = aui; }, [aui]);
 
   // Read from the store keyed by activeThreadId, not useAuiState(thread.isRunning):
   // the store value survives the composer remount on first send, so the first
@@ -175,7 +180,7 @@ export const VoiceEngine: FC = () => {
   // end. The ref is what the async re-arm retries read.
   const hasChatModel = useChatRuntimeStore((s) => Boolean(s.params.checkpoint));
   const hasChatModelRef = useRef(hasChatModel);
-  hasChatModelRef.current = hasChatModel;
+  useLayoutEffect(() => { hasChatModelRef.current = hasChatModel; }, [hasChatModel]);
   // Which listening engine is configured. "browser" streams a transcript that
   // grows during the utterance; "model" and "custom" return one transcript when
   // the session ends. Two different turn-taking paths, below.
@@ -186,7 +191,6 @@ export const VoiceEngine: FC = () => {
   // not because of which engine happens to be configured.
   const batchDictation = true;
   const batchDictationRef = useRef(batchDictation);
-  batchDictationRef.current = batchDictation;
   // Supersedes an in-flight re-arm poll, so a later resumeListen can't leave two
   // of them racing to open the mic.
   const rearmSeqRef = useRef(0);
@@ -230,7 +234,7 @@ export const VoiceEngine: FC = () => {
 
     const attempt = (n: number) => {
       // Voice turned off while we were waiting — abort the re-arm.
-      if (voiceModeRef.current !== "active") return;
+      if (!mountedRef.current || getVoiceMode() !== "active" || voiceModeRef.current !== "active") return;
       // No chat model: don't open the mic. Not a retry — waiting here would spin
       // for as long as the orb is up. Picking a model re-arms through its own
       // effect below.
@@ -272,17 +276,17 @@ export const VoiceEngine: FC = () => {
 
   const { isSpeaking, isPlaying, speak, beginStream, feedText, endStream, stop, primeAudio } =
     useTtsPlayer(activeAudioType, resumeListen, voiceSlotLoaded);
-  isSpeakingRef.current = isSpeaking;
-  isPlayingRef.current = isPlaying;
+  useLayoutEffect(() => { isSpeakingRef.current = isSpeaking; }, [isSpeaking]);
+  useLayoutEffect(() => { isPlayingRef.current = isPlaying; }, [isPlaying]);
   // Streaming TTS handles (refs so the run-lifecycle effect never goes stale).
   const beginStreamRef = useRef(beginStream);
-  beginStreamRef.current = beginStream;
+  useLayoutEffect(() => { beginStreamRef.current = beginStream; }, [beginStream]);
   const feedTextRef = useRef(feedText);
-  feedTextRef.current = feedText;
+  useLayoutEffect(() => { feedTextRef.current = feedText; }, [feedText]);
   const endStreamRef = useRef(endStream);
-  endStreamRef.current = endStream;
+  useLayoutEffect(() => { endStreamRef.current = endStream; }, [endStream]);
   const speakRef = useRef(speak);
-  speakRef.current = speak;
+  useLayoutEffect(() => { speakRef.current = speak; }, [speak]);
   // Whether the run-start branch opened a TTS session for the run in flight. It
   // only does so while voice mode is already active, so a run that started before
   // the user switched voice mode on has no session for endStream to flush.
@@ -348,7 +352,7 @@ export const VoiceEngine: FC = () => {
     if (activeThreadId) resetPromptQueuesForThread(activeThreadId);
     const DEFERRED_CLEAR_MS = 50;
     const deferredClear = (n: number) => {
-      if (voiceModeRef.current !== "active") return;
+      if (!mountedRef.current || getVoiceMode() !== "active" || voiceModeRef.current !== "active") return;
       const fresh = auiRef.current.composer();
       if (!fresh.getState().text) return;
       fresh.setText("");
@@ -394,7 +398,7 @@ export const VoiceEngine: FC = () => {
     resumeListen();
     const fireCoalescedRun = (attempt: number) => {
       voiceCoalesceTimerRef.current = null;
-      if (voiceModeRef.current !== "active") return;
+      if (!mountedRef.current || getVoiceMode() !== "active" || voiceModeRef.current !== "active") return;
       const t = auiRef.current.thread();
       if (t.getState().isRunning) {
         // The barge-in's cancelRun() has not settled yet. Wait for the running
@@ -607,7 +611,7 @@ export const VoiceEngine: FC = () => {
     // cancellation on the capture stream and is deliberately absent here; the
     // batch loop is listen, transcribe, generate, speak, then listen again.
     const armDuringTts = (n: number) => {
-      if (voiceModeRef.current !== "active") return;
+      if (!mountedRef.current || getVoiceMode() !== "active" || voiceModeRef.current !== "active") return;
       if (batchDictation) return;
       if (auiRef.current.composer().getState().dictation) {
         if (n < 6) setTimeout(() => armDuringTts(n + 1), 60);
@@ -652,7 +656,7 @@ export const VoiceEngine: FC = () => {
     if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
     silenceTimerRef.current = setTimeout(() => {
       silenceTimerRef.current = null;
-      if (voiceModeRef.current !== "active") return;
+      if (!mountedRef.current || getVoiceMode() !== "active" || voiceModeRef.current !== "active") return;
       const composer = auiRef.current.composer();
       composer.stopDictation();
       // Still audible? Then whatever the mic picked up is the model's own voice
@@ -680,7 +684,7 @@ export const VoiceEngine: FC = () => {
         const DEFERRED_CLEAR_MAX = 5;
         const DEFERRED_CLEAR_MS = 50;
         const deferredClear = (n: number) => {
-          if (voiceModeRef.current !== "active") return;
+          if (!mountedRef.current || getVoiceMode() !== "active" || voiceModeRef.current !== "active") return;
           const fresh = auiRef.current.composer();
           if (!fresh.getState().text) {
             return;
@@ -895,10 +899,7 @@ export const VoiceEngine: FC = () => {
     // "configuring": dropdown appears via store; mic stays off.
   }, [stop, primeAudio]);
 
-  // Switching threads carries the loop over instead of ending it: cut the old
-  // thread's reply and mic, drop its pending timers, then re-arm on the new one.
-  // Voice mode, the picked voice and the loaded slot all survive, the same as the
-  // chat model does.
+  // A real thread switch stops the loop, its playback, and its microphone.
   const threadReset = useCallback(() => {
     if (voiceModeRef.current === "off") return;
     if (silenceTimerRef.current) {
@@ -922,10 +923,12 @@ export const VoiceEngine: FC = () => {
     stop();
     const composer = auiRef.current.composer();
     if (composer.getState().dictation) composer.stopDictation();
-    // Only "active" re-arms. In "configuring" the mic was never open, and the
-    // re-arm would start a loop the user has not started yet.
-    if (voiceModeRef.current === "active") resumeListen();
-  }, [stop, resumeListen]);
+    ++rearmSeqRef.current;
+    setLoopVoiceMode("off");
+    voiceModeRef.current = "off";
+    setVoiceModeState("off");
+    useChatRuntimeStore.getState().setVoiceMode("off");
+  }, [stop]);
 
   useEffect(() => {
     registerVoiceThreadReset(threadReset);
@@ -984,7 +987,7 @@ export const VoiceEngine: FC = () => {
   // and send what it just committed to the composer.
   useEffect(() => {
     registerVoiceBargeIn(() => {
-      if (voiceModeRef.current !== "active") return;
+      if (!mountedRef.current || getVoiceMode() !== "active" || voiceModeRef.current !== "active") return;
       // The adapter raises this off raw mic energy, which on a batch engine
       // cannot tell the user apart from the model coming back through the
       // speakers -- and that is the only thing a mic can hear here, since the

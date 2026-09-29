@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch } from "@/features/auth";
-import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
+import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import { toast } from "@/lib/toast";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { TTS_AUDIO_TYPES, VOICE_SLOT_AUDIO_TYPES } from "../voice/tts-audio-types";
@@ -768,7 +768,6 @@ export function useTtsPlayer(
             }
           } else {
             pumpSynth(); // ensure the current sentence (and window) is launched
-            const sentence = stripForSpeech(st.sentences[st.playIndex] ?? "");
             const blob = await st.jobs[st.playIndex];
             if (requestIdRef.current !== reqId) return;
             st.playIndex++;
@@ -843,7 +842,7 @@ export function useTtsPlayer(
         onPlaybackEndRef.current?.();
       }
     },
-    [isTtsModel, pumpSynth, speak],
+    [isTtsModel, pumpSynth],
   );
 
   useEffect(() => {
