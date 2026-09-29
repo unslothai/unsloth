@@ -825,6 +825,7 @@ test("the Decisions preset matches a row saved under another port", () => {
     "HTTP://LOCALHOST:8888/mcp/decisions",
     "http://user@127.0.0.1:8888/mcp/decisions",
     "http://user:pass@[::1]:8888/mcp/decisions",
+    "http://127.0.0.1:/mcp/decisions",
   ]) {
     assert.equal(normalizeMcpUrl(url), "studio:decisions", url);
   }

@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 const HTTP_AUTHORITY =
-  /^[hH][tT][tT][pP]:\/\/(?:[^/?#]*@)?(\[[^\]]+\]|[^/:?#]+)(?::\d+)?(?=\/|[?#]|$)/;
+  /^[hH][tT][tT][pP]:\/\/(?:[^/?#]*@)?(\[[^\]]+\]|[^/:?#]+)(?::\d*)?(?=\/|[?#]|$)/;
 
 function isStudioLoopbackHost(host: string): boolean {
   const lower = host.toLowerCase();
