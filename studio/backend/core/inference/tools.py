@@ -13349,9 +13349,11 @@ def _mcp_schema_page(prefix: str, text: str, offset: int) -> str:
         if _fit_result_to_room(page, "mcp_tool_schema") == page:
             return page
         if page_chars < _MCP_MIN_SCHEMA_PAGE_CHARS:
-            return (prefix or "Error: ") + (
-                "Not enough context room to read this MCP tool schema. "
-                "Reduce the conversation context and retry."
+            # The prefix may be a server's own unbounded error text.
+            return _fit_result_to_room(
+                (prefix or "Error: ") + "Not enough context room to read this MCP tool schema. "
+                "Reduce the conversation context and retry.",
+                "mcp_tool_schema",
             )
         page_chars //= 2
 

@@ -2401,6 +2401,18 @@ def test_execute_tool_returns_the_schema_with_a_rejected_compacted_call(
     assert schema in out
 
 
+def test_a_rejected_compacted_call_stays_within_the_room_left(tmp_path, monkeypatch, compacting):
+    from core.inference import tools as tools_mod
+
+    _cache_server_tools(tmp_path, monkeypatch, [_big_mcp_tool()])
+    rejected = "Error: " + "invalid value " * 2_000
+    monkeypatch.setattr(tools_mod, "call_tool_sync", lambda **kwargs: rejected)
+    monkeypatch.setattr(tools_mod, "_fit_result_to_room", lambda text, name = None: text[:200])
+    tools_mod.cached_mcp_tools()
+    out = tools_mod.execute_tool("mcp__srv1__query", {"data": {}}, context_tokens = compacting)
+    assert out == rejected[:200]
+
+
 def test_execute_tool_mcp_tool_schema(tmp_path, monkeypatch):
     from core.inference import tools as tools_mod
 
