@@ -4856,6 +4856,8 @@ html.force-reduced-motion .sidebar-section-drop-line {
 .composer-input,
 .unsloth-composer-input {
 	scrollbar-color: oklch(0.5 0 0 / 0.16) transparent;
+	/* Text wraps; at fractional zoom a 1px overflow otherwise shows a stray scrollbar. */
+	overflow-x: hidden;
 }
 
 .composer-input::-webkit-scrollbar-thumb,
