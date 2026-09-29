@@ -1670,10 +1670,15 @@ _CT_QUANT_PARAMS = (
 def _decompress_like_a_full_load(module):
     """compressed-tensors' own per-module decompress, then a plain dense layer. The config still says compressed
     for the rest, so the layer joins its ignore list: save_pretrained then writes a checkpoint that reloads."""
-    from compressed_tensors.compressors import decompress_module
-
+    try:
+        from compressed_tensors.compressors import decompress_module
+    except ImportError:
+        decompress_module = None  # compressed-tensors < 0.13
     with torch.inference_mode(False), torch.no_grad():
-        decompress_module(module)
+        if decompress_module is not None:
+            decompress_module(module)
+        else:
+            _dequantize_in_place_without_compressed_tensors(module)
     for name in _CT_QUANT_PARAMS:
         module._parameters.pop(name, None)
     for attr in ("quantization_scheme", "quantization_status"):
@@ -1688,6 +1693,23 @@ def _decompress_like_a_full_load(module):
         ct_config.ignore = []
     if name not in ct_config.ignore:
         ct_config.ignore.append(name)
+
+
+def _dequantize_in_place_without_compressed_tensors(module):
+    """Same dense weight from Unsloth's kernels (bit-identical to compressed-tensors for NVFP4)."""
+    dtype = getattr(module, "_unsloth_nvfp4_dtype", None) or getattr(
+        module, "_unsloth_ct_compute_dtype", torch.bfloat16
+    )
+    if isinstance(getattr(module, "weight_packed", None), torch.Tensor):
+        from unsloth.kernels.nvfp4 import nvfp4_dequantize
+        W = nvfp4_dequantize(
+            module.weight_packed, module.weight_scale, module.weight_global_scale, dtype
+        )
+        module._parameters.pop("weight_packed", None)
+    else:
+        from unsloth.kernels.fp8 import weight_dequant
+        W = weight_dequant(module.weight, module.weight_scale, dtype)
+    module.weight = torch.nn.Parameter(W, requires_grad = False)
 
 
 def _tag_compressed_tensors_modules(model):

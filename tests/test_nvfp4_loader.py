@@ -141,8 +141,9 @@ def _fp8_route_available():
     return loader_utils._zoo_peft_forward_keeps_fp8_inputs()
 
 
+@pytest.mark.parametrize("ct_helper", [True, False])
 @pytest.mark.parametrize("kind", ["nvfp4", "fp8"])
-def test_peft_merge_dequantizes_the_routed_base(ckpt, kind, monkeypatch):
+def test_peft_merge_dequantizes_the_routed_base(ckpt, kind, ct_helper, monkeypatch):
     # merge_and_unload / merge_adapter / merged_4bit add the dense delta into base_layer.weight.
     from peft import LoraConfig, get_peft_model
     from unsloth.models import loader_utils
@@ -163,6 +164,10 @@ def test_peft_merge_dequantizes_the_routed_base(ckpt, kind, monkeypatch):
     torch.nn.init.normal_(lora.lora_B["default"].weight, std = 0.02)
     want = loader_utils._routed_dense_weight(lora.get_base_layer())
     want += lora.get_delta_weight("default")
+    if not ct_helper:
+        # compressed-tensors < 0.13 has no module-level decompress_module.
+        import compressed_tensors.compressors as ct_compressors
+        monkeypatch.delattr(ct_compressors, "decompress_module")
     merged = model.merge_and_unload()
     layer = _module(merged, name)
     assert type(layer) is torch.nn.Linear and layer.weight.dtype == torch.bfloat16
