@@ -10,8 +10,7 @@ import {
   registerBundlerResolver,
 } from "./helpers/kit.ts";
 
-// The title hop reaches the providers store and the credential encryptor, whose
-// specifiers the runner cannot resolve on its own.
+// The runner cannot resolve the providers store / encryptor specifiers alone.
 registerBundlerResolver();
 const { store } = installLocalStorageFake();
 Object.assign((globalThis.window as { location: object }).location, {
@@ -367,10 +366,6 @@ test.beforeEach(() => {
   useExternalProvidersStore.getState().setConnectionsEnabled(true);
 });
 
-// The backend dispatches on provider_id / provider_type and never parses the
-// external::<providerId>::<modelId> id the UI holds, so a title request carrying only
-// `model` is served off the local model instead (#9045). `stream: true` is likewise
-// no preference: the proxy answers every request as SSE, streamed or not.
 test("a title on a saved connection is routed to it, and streamed", async () => {
   stageConnection();
   const request = await buildTitleRequest(
@@ -401,8 +396,6 @@ test("a title on a saved connection is routed to it, and streamed", async () => 
   stageConnection({ apiType: "responses" });
   const responses = await buildTitleRequest("external::conn-1::m", "x");
   assert.equal(responses?.provider_api_type, "responses");
-  // No base url leaves the backend's default in charge, and an installation key
-  // outranks a stale browser copy.
   stageConnection({ baseUrl: "", hasApiKey: true });
   store.set(
     "unsloth_chat_external_provider_keys",
@@ -439,7 +432,6 @@ test("a title on a saved connection is routed to it, and streamed", async () => 
     ["system", "user"],
   );
   assert.equal(local?.messages?.[1]?.content, "User: hi");
-  // A 24-token budget must not inherit the server's tools-on default, nor reason.
   assert.deepEqual(
     [
       local?.enable_tools,
@@ -449,20 +441,16 @@ test("a title on a saved connection is routed to it, and streamed", async () => 
     ],
     [false, false, "none", 24],
   );
-  // The model is told the rules; only some are enforced downstream.
   assert.match(
     String(local?.messages?.[0]?.content),
     /2-6 words, no quotes, no punctuation, ASCII only, do not echo input/,
   );
 });
 
-// Null, not an error: the caller keeps its message-text fallback. And never local --
-// a request with no routing fields is answered by the local model.
 test("a connection that cannot serve the title yields no request at all", async () => {
   stageConnection({ providerType: "openai", hasApiKey: false });
   assert.equal(await buildTitleRequest("external::conn-1::gpt-5.4", "x"), null);
   assert.equal(await buildTitleRequest("external::gone::m", "x"), null);
-  // A blank browser key is no key; OAuth and a custom Gemini base need none.
   stageConnection({ providerType: "openai", hasApiKey: false });
   store.set(
     "unsloth_chat_external_provider_keys",
@@ -492,9 +480,6 @@ test("a connection that cannot serve the title yields no request at all", async 
   assert.ok(await buildTitleRequest("unsloth/gemma-4-E2B-it-GGUF", "x"));
 });
 
-// The OpenAI line forwards "none" without checking the model takes it, so one with
-// no off switch answers 400. The rest translate it, or forward it only where the
-// model lists it, so clamping them could only buy thinking on a 24-token budget.
 test("reasoning is asked off only where the connection's model allows it", async () => {
   async function effortFor(providerType: string, model: string) {
     stageConnection({ providerType, hasApiKey: true, models: [model] });
@@ -509,8 +494,7 @@ test("reasoning is asked off only where the connection's model allows it", async
     ["openai", "gpt-4o", "none"],
     ["gemini", "gemini-2.5-pro", "none"],
     ["llama_cpp", "qwen3-30b", "none"],
-    // The discriminating case: reasoning_effort style, and its own levels would
-    // floor "none" at "medium" if this connection were clamped like OpenAI.
+    // Its own levels would floor "none" at "medium" if clamped like OpenAI.
     ["mistral", "magistral-medium-latest", "none"],
   ] as const) {
     assert.equal(
@@ -521,9 +505,6 @@ test("reasoning is asked off only where the connection's model allows it", async
   }
 });
 
-// An ordinary turn stamps the model it used; a deep research turn carries the run
-// instead, and only a completed one is evidence of an answer. A stamp is the answer,
-// so it outranks the run.
 test("what answered is read from the reply, whichever kind of turn it was", () => {
   const external = {
     providerId: "conn-a",
@@ -557,8 +538,6 @@ test("what answered is read from the reply, whichever kind of turn it was", () =
     research({ model: "unsloth/gemma-4-E2B-it-GGUF" }),
     "unsloth/gemma-4-E2B-it-GGUF",
   );
-  // Stored as posted, so an external-looking model can arrive with nothing routing
-  // it, and may not address a connection on its shape alone.
   assert.equal(research({ model: "external::conn-a::m" }), "");
   for (const missing of [
     "providerId",
@@ -598,9 +577,6 @@ test("what answered is read from the reply, whichever kind of turn it was", () =
   );
 });
 
-// Titling runs unattended, so the excerpt must not follow a moved selection onto a
-// connection the chat never used, under that connection's credential. A local answer
-// still follows the selection, so a title cannot pull an evicted model back in.
 test("a title is asked of the connection that answered, or of no connection", () => {
   const A = "external::conn-a::m";
   const B = "external::conn-b::m";
@@ -624,9 +600,6 @@ test("a title is asked of the connection that answered, or of no connection", ()
   }
 });
 
-// A usage chunk arrives after the one that finished, with no reason of its own, and
-// letting it erase the reason un-truncates the title. Magistral streams structured
-// parts, which concatenating would title "[object Object]".
 test("the title is assembled from the deltas, unless it was cut short or reasoned", async () => {
   const part = (text: string): Chunk => ({
     choices: [{ delta: { content: [{ type: "text", text }] } }],
@@ -658,7 +631,6 @@ test("the title is assembled from the deltas, unless it was cut short or reasone
     ]),
     null,
   );
-  // Either tag alone, in any case: a 24-token cap makes a half-emitted block likely.
   for (const raw of [
     "<think>hmm</think> Ok",
     "<THINK>hmm Ok",
@@ -686,7 +658,6 @@ test("the answer is reduced to a short, plain, ASCII line", () => {
     ["Base: what is this", null],
     ["Café — Résumé Matrix", "Caf R sum Matrix"],
     ["x".repeat(80), "x".repeat(60)],
-    // Both rules are anchored: only a leading label is a prefix or an echo.
     ["Inverting Title: A Matrix", "Inverting Title A Matrix"],
     ["Title : Matrix Steps", "Matrix Steps"],
     ["Asking User: what is", "Asking User what is"],
@@ -698,8 +669,6 @@ test("the answer is reduced to a short, plain, ASCII line", () => {
   }
 });
 
-// The chat retry path rebuilds with forceRefreshPublicKey after the backend rotates
-// its key, so reusing the cached key would fail the retry the same way.
 test("a forced refresh re-fetches the public key instead of reusing the cached one", async () => {
   let fetched = 0;
   globalThis.fetch = (async () => {
@@ -722,10 +691,7 @@ test("a forced refresh re-fetches the public key instead of reusing the cached o
   assert.equal(fetched, cached + 1, "a forced one refetches");
 });
 
-// runtime-provider.tsx is JSX and cannot be imported here, so its wiring is pinned as
-// source text; the gaps exclude braces so they cannot match across the block under
-// test. Building the request belongs inside the boundary because encrypting the key
-// reaches the network too.
+// Pinned as source text (JSX); gaps exclude braces so they cannot match past the block.
 test("the title is wired to what answered, and built inside the fallback boundary", () => {
   const provider = readFileSync(
     new URL("../src/features/chat/runtime-provider.tsx", import.meta.url),

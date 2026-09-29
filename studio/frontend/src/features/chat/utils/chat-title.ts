@@ -200,14 +200,9 @@ export function planLegacyTitleRepairs(
   return repairs;
 }
 
-// The connection routing lives here rather than beside the chat request that also
-// uses it: this is the one chat module both the title hop and the frontend's test
-// runner can load. The provider is JSX; the adapter reaches it through its imports.
+// Routing lives here, not in the adapter, so node --test can load it (the provider is JSX).
 
-/** The fields that route a chat request to a saved connection. The request's `model`
- *  stays the `external::<providerId>::<modelId>` id the UI holds: the backend never
- *  parses that id, dispatching on `provider_id` / `provider_type` and sending
- *  `external_model` upstream as the real model name. */
+/** The backend dispatches on provider_id / provider_type, never parsing the external:: model id. */
 export interface ExternalRoutingFields {
   provider_id: string;
   provider_type: string;
@@ -234,9 +229,7 @@ export type ExternalRoutingTarget =
   | { kind: "unavailable"; reason: ExternalRoutingUnavailableReason }
   | ({ kind: "external" } & ResolvedExternalConnection);
 
-/** How `checkpoint` reaches a model, for any caller that posts to
- *  `/v1/chat/completions`. One that answers only some of these decisions sends a
- *  request the backend serves off the local model instead (#9045). */
+/** A request answering only some of these is served by the local model instead (#9045). */
 export function resolveExternalRouting(
   checkpoint: string | null | undefined,
 ): ExternalRoutingTarget {
@@ -252,8 +245,7 @@ export function resolveExternalRouting(
   );
   if (!provider) return { kind: "unavailable", reason: "connection-missing" };
 
-  // An installation-saved key wins: the browser copy may be stale, left behind by
-  // an earlier migration.
+  // Installation-saved key wins: the browser copy may be stale.
   const apiKey = provider.hasApiKey
     ? ""
     : getExternalProviderApiKey(provider.id).trim();
@@ -269,9 +261,7 @@ export function resolveExternalRouting(
   return { kind: "external", provider, modelId: selection.modelId, apiKey };
 }
 
-/** Separate from the resolve above because the key is encrypted per attempt: a
- *  request that fails on a rotated public key is rebuilt with
- *  `forceRefreshPublicKey`, decisions already settled. */
+/** Encrypted per attempt so a rotated-key retry can rebuild with forceRefreshPublicKey. */
 export async function buildExternalRoutingFields(
   connection: ResolvedExternalConnection,
   options: { forceRefreshPublicKey?: boolean } = {},
@@ -294,10 +284,7 @@ export async function buildExternalRoutingFields(
   };
 }
 
-/** The model that produced a reply, as the reply itself recorded it, or "". An
- *  ordinary turn stamps `responseDetails`; a deep research turn never reaches that
- *  point and carries the run instead, whose config is evidence only once it
- *  completed: one cancelled early carries it having reached nothing. */
+/** A deep research run's config is evidence only once it completed. */
 export function answeringCheckpoint(custom: unknown): string {
   const meta = (custom ?? {}) as {
     responseDetails?: { modelId?: unknown };
@@ -314,25 +301,16 @@ export function answeringCheckpoint(custom: unknown): string {
 
   const inference = run.config?.inferenceRequest ?? {};
   const { providerId, providerType, externalModel } = inference;
-  // The config is stored as posted, not as the composer builds it, so only the
-  // whole tuple names a connection.
   const routed = [providerId, providerType, externalModel].every(
     (field) => typeof field === "string" && field !== "",
   );
   if (routed)
     return buildExternalModelId(providerId as string, externalModel as string);
   const model = typeof inference.model === "string" ? inference.model : "";
-  // The tuple was incomplete, so an external-looking model here has no connection
-  // behind it and must not address one.
   return parseExternalModelId(model) === null ? model : "";
 }
 
-/** The model a thread's title may be asked of, or "" for none. Titling is unattended,
- *  so the selection can move between the turn finishing and the request going out,
- *  and the excerpt must not follow it onto a connection this chat never used, under
- *  that connection's credential; only the model that answered proves which that was.
- *  A local model still comes from the live selection, because asking for the one that
- *  answered would pull an evicted model back in. */
+/** Follows the connection that answered, not the live selection, so the excerpt never reaches an unused connection; local models follow the selection so an evicted one is not reloaded. */
 export function titleCheckpoint(
   answeredWith: string,
   activeCheckpoint: string,
@@ -345,11 +323,7 @@ export function titleCheckpoint(
 
 const VERBATIM_EFFORT_PROVIDER_TYPES = new Set(["openai", "openai_codex"]);
 
-/** The least reasoning this connection's model will accept. Almost every connection
- *  is sent `"none"` and the backend translates it, Gemini 2.5 into the smallest
- *  thinking budget it takes where `"low"` would be 2048 tokens. Only the OpenAI line
- *  forwards it without checking the model accepts it, so a model with no off switch
- *  answers 400 and the title is lost. */
+/** Only the OpenAI line forwards reasoning_effort verbatim, so it must be clamped (else 400). */
 function titleReasoningEffort(
   connection: ResolvedExternalConnection,
 ): NonNullable<OpenAIChatCompletionsRequest["reasoning_effort"]> {
@@ -370,8 +344,6 @@ function titleReasoningEffort(
 const TITLE_SYSTEM_PROMPT =
   "Write 1 concise chat title summarizing the conversation topic, not the user's exact wording. Use the assistant reply as context when provided. Rules: 2-6 words, no quotes, no punctuation, ASCII only, do not echo input. Output title only.";
 
-/** Null when the connection cannot serve a title, rather than an error: titling is
- *  background work and the caller falls back to the message text. */
 export async function buildTitleRequest(
   checkpoint: string,
   prompt: string,
@@ -381,8 +353,7 @@ export async function buildTitleRequest(
 
   return {
     model: checkpoint,
-    // The proxy answers every request as SSE, so a stream:false title would have no
-    // readable body anywhere.
+    // Required: the proxy answers SSE, so stream:false has no readable body.
     stream: true,
     temperature: 0.2,
     top_p: 0.9,
@@ -392,8 +363,7 @@ export async function buildTitleRequest(
     enable_thinking: false,
     reasoning_effort:
       routing.kind === "external" ? titleReasoningEffort(routing) : "none",
-    // Omitting this inherits the server's tools-on default, putting python/terminal
-    // schemas in a 24-token prompt.
+    // Else the server's tools-on default adds tool schemas.
     enable_tools: false,
     messages: [
       { role: "system", content: TITLE_SYSTEM_PROMPT },
@@ -405,9 +375,7 @@ export async function buildTitleRequest(
   };
 }
 
-/** The title a stream earned, or null when it earned none. A truncated answer is
- *  discarded: 24 tokens is enough for the title asked for, so hitting the cap means
- *  the model wrote something else. Reasoning text goes for the same reason. */
+/** Truncated answers are discarded: hitting the 24-token cap means it wrote something else. */
 export async function titleFromStream(
   chunks: AsyncIterable<OpenAIChatChunk>,
 ): Promise<string | null> {
@@ -415,10 +383,8 @@ export async function titleFromStream(
   let finishReason: string | null = null;
   for await (const chunk of chunks) {
     const choice = chunk.choices?.[0];
-    // Through the shared extractor, so structured content parts read the way the
-    // transcript reads them; reasoning arrives as think tags, rejected below.
     content += extractDeltaText(choice?.delta?.content).text;
-    // Kept: a usage chunk arrives after the one that finished, with no reason.
+    // A later usage chunk has no finish reason; it must not erase this one.
     finishReason = choice?.finish_reason ?? finishReason;
   }
 

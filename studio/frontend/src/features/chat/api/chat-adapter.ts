@@ -375,7 +375,6 @@ import {
 // Small models (<=9B) answer from memory, so "auto" forces retrieval for them.
 const AUTOINJECT_AUTO_MAX_SIZE_B = 9;
 
-// A user-pressed send reports every reason a connection cannot serve it.
 const EXTERNAL_ROUTING_REFUSALS: Record<
   ExternalRoutingUnavailableReason,
   { title: string; description: string; error: string }

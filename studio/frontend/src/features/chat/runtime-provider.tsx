@@ -999,8 +999,7 @@ async function generateTitleWithModel(payload: {
   }
 
   try {
-    // Inside the boundary: building this encrypts a browser-held key, which
-    // reaches the network too.
+    // Inside the try: building this encrypts a browser key over the network.
     const request = await buildTitleRequest(
       payload.checkpoint,
       parts.join("\n"),
@@ -1010,7 +1009,6 @@ async function generateTitleWithModel(payload: {
       streamChatCompletions(request, new AbortController().signal),
     );
   } catch {
-    // Background work: every failure leaves the caller its message-text fallback.
     return null;
   }
 }
