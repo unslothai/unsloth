@@ -689,6 +689,26 @@ def test_quantised_replan_prices_companions_like_the_split_it_passes():
     assert "quant_mib = int((components[0] * factor + companions_gb) * mib_per_gb)" not in src
 
 
+def test_leaf_streaming_peak_counts_a_large_parent_group_once():
+    """A parent's loose params are held once under its leaves; they are not also a second prefetch candidate."""
+    torch = pytest.importorskip("torch")
+    from core.inference.video import _video_streamed_peak_bytes
+
+    mib = 1 << 20
+    root = torch.nn.Module()
+    root.parent = torch.nn.Module()
+    root.parent.table = torch.nn.Parameter(torch.zeros(2 * mib, dtype = torch.bfloat16))
+    root.parent.a = torch.nn.Linear(1024, 512, bias = False).to(torch.bfloat16)
+    root.parent.b = torch.nn.Linear(1024, 512, bias = False).to(torch.bfloat16)
+
+    def size(t):
+        return t.numel() * t.element_size()
+
+    # the 4 MiB table plus leaf a and the prefetched leaf b, not 4 + 4 + 1
+    assert _video_streamed_peak_bytes(root, "leaf_level", prefetch = True, size = size) == 6 * mib
+    assert _video_streamed_peak_bytes(root, "leaf_level", prefetch = False, size = size) == 5 * mib
+
+
 def test_applied_floor_counts_an_encoder_that_refused_leaf_offload():
     """_apply_group_offload keeps a refusing encoder resident under the same policy; the floor must follow the hooks."""
     torch = pytest.importorskip("torch")

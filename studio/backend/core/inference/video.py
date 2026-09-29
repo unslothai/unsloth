@@ -1811,33 +1811,41 @@ def _video_streamed_peak_bytes(module: Any, offload_type: str, *, prefetch: bool
         )
         units, fixed = windows, unmatched
     else:
-        units = []
-        paths: list[int] = [0]
+        # (size, enclosing ancestors' loose bytes, ids of this group and its ancestors) per onload group
+        groups: list[tuple[int, int, frozenset]] = []
         visited: set[int] = set()
 
-        def _walk(mod: Any, enclosing: int) -> None:
+        def _walk(mod: Any, enclosing: int, chain: frozenset) -> None:
             if id(mod) in visited:
                 return
             visited.add(id(mod))
             if isinstance(mod, leaf_types):
-                units.append(_own(mod, True))
-                paths.append(enclosing)
+                groups.append((_own(mod, True), enclosing, chain | {id(mod)}))
             elif next(mod.children(), None) is not None:
                 # a parent's loose params onload in its pre-forward and stay until its post-forward, under every
                 # descendant; a sibling branch has offloaded its own by then, so only the enclosing chain stacks
                 loose = _own(mod, False)
-                held_here = enclosing + loose
-                paths.append(held_here)
-                units.append(loose)  # the copy stream may prefetch a parent group, not only a leaf
+                here = chain | {id(mod)}
+                groups.append((loose, enclosing, here))
                 for child in mod.children():
-                    _walk(child, held_here)
+                    _walk(child, enclosing + loose, here)
             else:
                 # loose params of a childless non-leaf (a norm) form their own group
-                units.append(_own(mod, False))
-                paths.append(enclosing)
+                groups.append((_own(mod, False), enclosing, chain | {id(mod)}))
 
-        _walk(module, 0)
-        fixed = max(paths)
+        _walk(module, 0, frozenset())
+        ranked = sorted(range(len(groups)), key = lambda i: groups[i][0], reverse = True)
+        peak = 0
+        for size, enclosing, here in groups:
+            # a copy stream prefetches the next group while this one computes: any group not already held
+            other = 0
+            if prefetch:
+                for i in ranked:
+                    if not (groups[i][2] <= here):
+                        other = groups[i][0]
+                        break
+            peak = max(peak, enclosing + size + other)
+        return peak
     units = sorted(units, reverse = True)
     # a copy stream prefetches the next group while the current one computes
     return fixed + sum(units[: 2 if prefetch else 1])
