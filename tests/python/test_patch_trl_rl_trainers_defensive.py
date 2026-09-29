@@ -1,12 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Regression tests: _patch_trl_rl_trainers must never raise.
-
-The wrapper in unsloth/models/rl.py ring-fences the impl so direct
-callers (CI shims, downstream tools) don't have to. Lock that
-contract here.
-"""
+"""Regression: _patch_trl_rl_trainers (the ring-fencing wrapper in
+unsloth/models/rl.py) must never raise."""
 
 from __future__ import annotations
 
@@ -39,7 +35,7 @@ def test_patch_trl_rl_trainers_swallows_garbage_input():
 
 
 def test_impl_is_separately_exposed():
-    # Power users can still call the impl directly for the raising path.
+    # The impl stays directly callable for the raising path.
     _wrapper, impl = _import_helpers()
     assert callable(impl)
 
@@ -67,3 +63,19 @@ def test_wrapper_swallows_impl_exception(monkeypatch):
 
     monkeypatch.setattr(_rl, "_patch_trl_rl_trainers_impl", _boom)
     assert _rl._patch_trl_rl_trainers("sft_trainer") is None
+
+
+def test_grpo_config_sibling_module_import_is_patched(tmp_path):
+    import unsloth  # noqa: F401
+    from trl import GRPOConfig as top_config
+    from trl.trainer import GRPOConfig as trainer_config
+    from trl.trainer.grpo_config import GRPOConfig as config_module_config
+    from trl.trainer.grpo_trainer import GRPOConfig as trainer_module_config
+
+    assert top_config is trainer_config
+    assert top_config is trainer_module_config
+    assert top_config is config_module_config
+
+    args = config_module_config(output_dir = str(tmp_path))
+    assert hasattr(args, "unsloth_grpo_mini_batch")
+    assert args.unsloth_grpo_mini_batch is None

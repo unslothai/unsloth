@@ -4,24 +4,15 @@
 """
 Regression tests for the export log ring-buffer cursor semantics.
 
-Context: the live export log SSE stream has a race where the frontend
-opens the SSE connection AFTER the POST that starts the export. Any
-lines the worker subprocess emits during the gap between POST and SSE
-connect get buffered with seqs 1..k, and then the SSE default cursor
-`get_current_log_seq()` returns k -- so lines 1..k are forever
-unreachable to that client.
+Race: the frontend opens the SSE connection AFTER the POST that starts the
+export, so lines emitted in the gap (seqs 1..k) are unreachable when the SSE
+default cursor `get_current_log_seq()` returns k.
 
-Fix: `clear_logs()` snapshots the pre-run seq into `_run_start_seq`
-(exposed via `get_run_start_seq()`), and `routes/export.py` defaults
-the SSE cursor to that snapshot instead of the current seq. Every line
-appended during the current run has seq strictly greater than the
-snapshot, so the client sees the full run regardless of when it
-connects.
+Fix: `clear_logs()` snapshots the pre-run seq into `_run_start_seq` (via
+`get_run_start_seq()`), and the SSE cursor defaults to that snapshot, so the
+client sees the full run regardless of connect time.
 
-These tests exercise the orchestrator-side contract only (no
-subprocess, no FastAPI, no frontend). The routes-level integration
-with get_run_start_seq() is a one-line edit covered by manual testing
-and the frontend build.
+These tests exercise the orchestrator contract only (no subprocess/FastAPI).
 """
 
 from __future__ import annotations
@@ -33,27 +24,20 @@ from pathlib import Path
 import pytest
 
 
-# Backend root on sys.path so `from core.export.orchestrator import ...`
-# and friends resolve without the studio app bootstrap.
+# Backend root on sys.path so core.export.orchestrator resolves without bootstrap.
 _BACKEND_DIR = Path(__file__).resolve().parent.parent
 if str(_BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(_BACKEND_DIR))
 
-# ExportOrchestrator imports structlog and a few heavy modules at the
-# top of orchestrator.py. Stub the ones we don't need in these unit
-# tests so the import succeeds on machines without the full studio
-# venv.
+# Stub orchestrator.py's heavy top-level imports so it loads without the venv.
 _loggers_stub = types.ModuleType("loggers")
 _loggers_stub.get_logger = lambda name: __import__("logging").getLogger(name)
 sys.modules.setdefault("loggers", _loggers_stub)
 
-# structlog is only used for a module-level import; a bare stub is
-# enough because we never call into it in these tests.
+# structlog is only a module-level import here; a bare stub suffices.
 sys.modules.setdefault("structlog", types.ModuleType("structlog"))
 
-# utils.paths.outputs_root is only called inside scan_checkpoints which
-# we don't hit in these tests. Provide a stub module so the top-level
-# import in orchestrator.py resolves.
+# Stub utils.paths so orchestrator.py's top-level import resolves.
 _utils_pkg = types.ModuleType("utils")
 _utils_pkg.__path__ = []  # mark as package
 _utils_paths_stub = types.ModuleType("utils.paths")
@@ -66,11 +50,14 @@ sys.modules.setdefault("utils.paths", _utils_paths_stub)
 def orchestrator():
     """Fresh ExportOrchestrator with only the log-buffer state exercised."""
     from core.export.orchestrator import ExportOrchestrator
-
     return ExportOrchestrator()
 
 
-def _append(orch, line: str, stream: str = "stdout") -> None:
+def _append(
+    orch,
+    line: str,
+    stream: str = "stdout",
+) -> None:
     """Shortcut for simulating a worker log message."""
     orch._append_log({"type": "log", "stream": stream, "line": line, "ts": 0.0})
 
@@ -81,14 +68,14 @@ def _append(orch, line: str, stream: str = "stdout") -> None:
 
 
 def test_run_start_seq_is_zero_before_any_logs(orchestrator) -> None:
-    """A brand-new orchestrator must report run_start_seq == 0 so a
-    first SSE connection picks up every line from seq 1 onward."""
+    """run_start_seq == 0 on a new orchestrator, so the first SSE picks up
+    every line from seq 1 onward."""
     assert orchestrator.get_run_start_seq() == 0
 
 
 def test_clear_logs_snapshots_current_seq(orchestrator) -> None:
-    """clear_logs() must capture _log_seq BEFORE clearing the buffer,
-    so subsequent runs can anchor their SSE cursor at the snapshot."""
+    """clear_logs() captures _log_seq BEFORE clearing, so the next run can
+    anchor its SSE cursor at the snapshot."""
     _append(orchestrator, "old run line 1")
     _append(orchestrator, "old run line 2")
     _append(orchestrator, "old run line 3")
@@ -106,14 +93,9 @@ def test_clear_logs_snapshots_current_seq(orchestrator) -> None:
 
 
 def test_sse_default_cursor_catches_all_current_run_lines(orchestrator) -> None:
-    """Simulate the POST-then-SSE race: worker starts emitting lines
-    immediately after clear_logs(), SSE connects several lines later.
-    Using get_run_start_seq() as the default cursor MUST return every
-    line emitted since clear_logs() ran.
-
-    Pre-fix, the SSE defaulted to get_current_log_seq() at connect
-    time, which would return the last-seen seq and miss lines N+1..M.
-    """
+    """POST-then-SSE race: worker emits lines right after clear_logs(), SSE
+    connects later. get_run_start_seq() as the default cursor returns every
+    line since clear_logs() (pre-fix it missed them)."""
     # Previous run leaves some buffered lines.
     _append(orchestrator, "previous run line A")
     _append(orchestrator, "previous run line B")
@@ -127,8 +109,7 @@ def test_sse_default_cursor_catches_all_current_run_lines(orchestrator) -> None:
     _append(orchestrator, "Loading checkpoint: /foo/bar")
     _append(orchestrator, "Starting export...")
 
-    # SSE connects now and asks "give me everything after the run
-    # start cursor".
+    # SSE connects and asks for everything after the run start cursor.
     entries, new_cursor = orchestrator.get_logs_since(run_start)
 
     # All three early lines must be present. Pre-fix this was [].
@@ -142,10 +123,8 @@ def test_sse_default_cursor_catches_all_current_run_lines(orchestrator) -> None:
 
 
 def test_sse_default_cursor_excludes_previous_run(orchestrator) -> None:
-    """After clear_logs(), lines from the PREVIOUS run must not leak
-    into the new run's SSE stream. Pre-fix this worked correctly
-    (clear_logs cleared the deque); the fix must preserve it.
-    """
+    """After clear_logs(), previous-run lines must not leak into the new
+    run's SSE stream (the fix must preserve this)."""
     _append(orchestrator, "previous run line 1")
     _append(orchestrator, "previous run line 2")
     _append(orchestrator, "previous run line 3")
@@ -161,10 +140,8 @@ def test_sse_default_cursor_excludes_previous_run(orchestrator) -> None:
 
 
 def test_clear_logs_twice_advances_run_start(orchestrator) -> None:
-    """Back-to-back clear_logs() calls (e.g. cleanup -> load ->
-    export in the same dialog session) must each re-anchor run_start
-    at the current seq, so successive runs each start with a fresh
-    low-water mark."""
+    """Back-to-back clear_logs() calls each re-anchor run_start at the current
+    seq, giving successive runs a fresh low-water mark."""
     _append(orchestrator, "run 1 line a")
     _append(orchestrator, "run 1 line b")
 

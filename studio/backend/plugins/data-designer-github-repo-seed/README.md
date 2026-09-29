@@ -4,7 +4,7 @@ A Data Designer seed-reader plugin for **Unsloth Studio** that scrapes real
 GitHub data (issues, pull requests, commits) from one or more repositories
 and hands it to the recipe pipeline as a seed dataset.
 
-Designed to ship with Studio as a default seed source so any user with a
+Designed to ship with Unsloth as a default seed source so any user with a
 GitHub token can build training datasets straight from live repos.
 
 ## What it does
@@ -64,7 +64,7 @@ sleeps until reset when the budget drops below a safety threshold.
 
 ## Install
 
-Shipped as a default Studio plugin. For development:
+Shipped as a default Unsloth plugin. For development:
 
 ```bash
 pip install -e .

@@ -1,10 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Pydantic models for authentication tokens.
+"""Pydantic models for authentication tokens."""
 
-This module defines the Token response model used by auth routes.
-"""
+from typing import Optional
 
 from pydantic import BaseModel, Field
 
@@ -24,4 +23,12 @@ class Token(BaseModel):
     )
     must_change_password: bool = Field(
         ..., description = "True when the user must change the seeded default password"
+    )
+    account_id: Optional[str] = Field(
+        None,
+        description = (
+            "Immutable id of the signed-in account, the same key storage is partitioned by. "
+            "Usernames are reusable, so a client that keeps per-account state must compare this "
+            "instead. Null only when an older server issued the credential."
+        ),
     )

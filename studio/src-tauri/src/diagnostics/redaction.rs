@@ -16,6 +16,8 @@ pub(crate) fn redact_text(text: &str, report: &mut RedactionReport) -> String {
     }
     out = replace_regex(private_key_re(), &out, "<redacted private key>", report);
     out = replace_regex(url_credentials_re(), &out, "$1<redacted>@", report);
+    out = replace_regex(url_query_value_re(), &out, "$1=<redacted>", report);
+    out = replace_regex(url_fragment_re(), &out, "$1#<redacted>", report);
     out = replace_regex(auth_header_re(), &out, "$1: <redacted>", report);
     out = replace_regex(cookie_re(), &out, "$1: <redacted>", report);
     out = replace_regex(token_re(), &out, "<redacted token>", report);
@@ -110,6 +112,16 @@ fn url_credentials_re() -> &'static Regex {
     RE.get_or_init(|| Regex::new(r"(?i)\b([a-z][a-z0-9+.-]*://)[^/\s:@]+(:[^/\s@]*)?@").unwrap())
 }
 
+fn url_query_value_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"([?&][^=\s&`]+)=[^&#\s`]+").unwrap())
+}
+
+fn url_fragment_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"(?i)(https?://[^\s`#]+)#[^\s`]+").unwrap())
+}
+
 fn auth_header_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| Regex::new(r"(?i)\b(authorization|proxy-authorization)\s*[:=]\s*(bearer|basic)?\s*[A-Za-z0-9._~+/=-]+").unwrap())
@@ -122,7 +134,7 @@ fn cookie_re() -> &'static Regex {
 
 fn token_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"(?i)\b(hf_[A-Za-z0-9]{16,}|github_pat_[A-Za-z0-9_]{20,}|ghp_[A-Za-z0-9]{20,}|sk-[A-Za-z0-9]{20,})\b").unwrap())
+    RE.get_or_init(|| Regex::new(r"(?i)\b(hf_(?:oauth_)?[A-Za-z0-9]{16,}|github_pat_[A-Za-z0-9_]{20,}|ghp_[A-Za-z0-9]{20,}|sk-[A-Za-z0-9]{20,})\b").unwrap())
 }
 
 fn env_secret_re() -> &'static Regex {
@@ -145,13 +157,13 @@ fn native_path_lease_re() -> &'static Regex {
 fn windows_studio_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
-        Regex::new(r"(?i)\b[A-Z]:[\\/]Users[\\/][^\\/\r\n\s]+[\\/]\.unsloth[\\/]studio").unwrap()
+        Regex::new(r"(?i)\b[A-Z]:[\\/]Users[\\/][^\\/:\r\n\s]+[\\/]\.unsloth[\\/]studio").unwrap()
     })
 }
 
 fn windows_home_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"(?i)\b[A-Z]:[\\/]Users[\\/][^\\/\r\n\s]+").unwrap())
+    RE.get_or_init(|| Regex::new(r"(?i)\b[A-Z]:[\\/]Users[\\/][^\\/:\r\n\s]+").unwrap())
 }
 
 fn unix_studio_re() -> &'static Regex {
@@ -174,6 +186,16 @@ mod tests {
     use super::*;
 
     #[test]
+    fn redacts_hugging_face_oauth_tokens_whole() {
+        let token = "hf_oauth_A1b2C3d4E5A1b2C3d4E5A1b2C3d4E5A1b2C3d4E5";
+        let input = format!("download failed while using {token} for org/model\n");
+        let mut report = RedactionReport::default();
+        let redacted = redact_text(&input, &mut report);
+        assert!(!redacted.contains("A1b2C3d4E5"));
+        assert!(redacted.contains("for org/model"));
+    }
+
+    #[test]
     fn redacts_common_secret_and_path_patterns() {
         let input = concat!(
             "\u{1b}[31mred\u{1b}[0m\n",
@@ -183,6 +205,7 @@ mod tests {
             "API_KEY=secret123\n",
             "native_path_lease=abc.DEF_123\n",
             "url=https://user:pass@example.com/path\n",
+            "signed=https://example.com/object?X-Amz-Signature=presignedvalue987&version=1#fragmentsecret\n",
             "email=alex@example.com\n",
             "path=/Users/alex/.unsloth/studio/logs/install.log\n",
             "win=C:\\Users\\Alex\\.unsloth\\studio\\logs\\install.log\n",
@@ -198,9 +221,46 @@ mod tests {
         assert!(!redacted.contains("abc.DEF_123"));
         assert!(redacted.contains("native_path_lease=<redacted native path lease>"));
         assert!(redacted.contains("https://<redacted>@example.com/path"));
+        assert!(!redacted.contains("presignedvalue987"));
+        assert!(!redacted.contains("fragmentsecret"));
+        assert!(redacted.contains("?X-Amz-Signature=<redacted>&version=<redacted>#<redacted>"));
         assert!(!redacted.contains("alex@example.com"));
         assert!(redacted.contains("<studio_home>"));
         assert!(!redacted.contains("PRIVATE KEY-----\nabc"));
+    }
+
+    #[test]
+    fn windows_home_redaction_keeps_the_line_and_column_suffix() {
+        // A colon cannot appear inside a Windows path segment, but the Windows classes used to
+        // allow one, so a single-segment path swallowed whatever followed it. uv reports a bad
+        // requirements path as `<path>:<line>:<col>`, and issue #11012 arrived with the position
+        // and the file name already eaten, which is most of what made it expensive to diagnose.
+        // The Unix rules never had this because their class is [A-Za-z0-9._-].
+        let mut report = RedactionReport::default();
+        let redacted = redact_text(
+            "error: Unexpected '[' at C:\\Users\\Alex:1:1\n",
+            &mut report,
+        );
+        assert!(
+            !redacted.contains("Alex"),
+            "user name still present: {redacted}"
+        );
+        assert!(
+            redacted.contains("%USERPROFILE%:1:1"),
+            "line and column were redacted away: {redacted}"
+        );
+
+        // A deeper path was never affected, and must stay that way.
+        let mut report = RedactionReport::default();
+        let deep = redact_text(
+            "at C:\\Users\\Alex\\AppData\\Local\\Temp\\tmp1.tmp:1:1\n",
+            &mut report,
+        );
+        assert!(!deep.contains("Alex"), "user name still present: {deep}");
+        assert!(
+            deep.contains("\\AppData\\Local\\Temp\\tmp1.tmp:1:1"),
+            "{deep}"
+        );
     }
 
     #[test]

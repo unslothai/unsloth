@@ -1,33 +1,58 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team.
-"""Pinned-symbol compat check across bitsandbytes PyPI minor versions
-unsloth + unsloth-zoo target. Catches API drift like:
-
-  - bnb 0.46.0 release was broken (in pyproject.toml as `!=0.46.0`).
-    Don't test against it.
-  - bnb 0.48.0 release was broken (also `!=0.48.0`). Same.
-  - bnb 0.45 series introduced fp4 + nf4 paged optimisers; unsloth-zoo
-    expects bnb.functional.dequantize_4bit + bnb.nn.Linear4bit /
-    Params4bit to remain stable from this point onward.
-  - vLLM bitsandbytes-loader patches in unsloth_zoo/vllm_utils.py:
-    apply_bnb_4bit (line 237), is_layer_skipped_bnb (line 281),
-    BitsAndBytesLinearMethod._apply_4bit_weight (line 282) — these
-    live in vllm.* but they call into bnb's public surface.
-
-Strategy: GitHub raw fetch + symbol grep. CPU-only, no install.
-"""
+"""Pinned-symbol compat check across bitsandbytes minor versions via GitHub raw fetch + symbol grep."""
 
 from __future__ import annotations
 
+import ast
 import re
+from pathlib import Path
 
 import pytest
 
 from tests.version_compat._fetch import fetch_text, first_match, has_def
 
 
-# pyproject pin: bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0
-# Test floor + each safe minor since.
+def _super_init_call(source: str, class_name: str) -> ast.Call | None:
+    """The ``super().__init__(...)`` Call node inside ``class_name``'s __init__.
+
+    Parsed rather than grepped: a substring search over the class body also sees the
+    names quoted in the legacy_kwargs table, so it passes whether or not the real call
+    uses keywords.
+    """
+    for node in ast.walk(ast.parse(source)):
+        if not (isinstance(node, ast.ClassDef) and node.name == class_name):
+            continue
+        for sub in ast.walk(node):
+            if (
+                isinstance(sub, ast.Call)
+                and isinstance(sub.func, ast.Attribute)
+                and sub.func.attr == "__init__"
+            ):
+                return sub
+    return None
+
+
+def first_match_signature(src: str, class_name: str) -> str | None:
+    """The text of ``class_name``'s __init__ parameter list, or None."""
+    at = src.find(f"class {class_name}")
+    if at == -1:
+        return None
+    at = src.find("def __init__", at)
+    if at == -1:
+        return None
+    depth = 0
+    for i in range(src.index("(", at), len(src)):
+        if src[i] == "(":
+            depth += 1
+        elif src[i] == ")":
+            depth -= 1
+            if depth == 0:
+                return src[src.index("(", at) : i + 1]
+    return None
+
+
+# pyproject pin: bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0 Test floor + each safe minor since.
 BNB_TAGS = [
     "0.45.5",
     "0.47.0",  # skip 0.46.0 (broken)
@@ -35,40 +60,27 @@ BNB_TAGS = [
     "main",
 ]
 
-
-# -------------------------------------------------------------------------
-# bnb.functional: dequantize_4bit / quantize_4bit are the public 4-bit
-# surface unsloth's compiled kernels and unsloth-zoo's vllm_utils
-# bnb-loader patches all call into.
-# -------------------------------------------------------------------------
+# Every check runs once per tag; one that cannot skips from inside so the tag stays in the report.
+pytestmark = pytest.mark.parametrize("tag", BNB_TAGS)
 
 
-@pytest.mark.parametrize("tag", BNB_TAGS)
+# bnb.functional dequantize_4bit / quantize_4bit: the public 4-bit surface unsloth kernels call into.
 def test_bnb_functional_4bit(tag: str):
     candidates = [
         "bitsandbytes/functional.py",
         "bitsandbytes/functional/__init__.py",
     ]
     hit = first_match("bitsandbytes-foundation/bitsandbytes", tag, candidates)
-    assert (
-        hit is not None
-    ), f"{tag}: bitsandbytes/functional[.py|/__init__.py] both missing"
+    assert hit is not None, f"{tag}: bitsandbytes/functional[.py|/__init__.py] both missing"
     _, src = hit
     needed = ("dequantize_4bit", "quantize_4bit")
     missing = [n for n in needed if not has_def(src, n, "func") and n not in src]
     assert not missing, (
-        f"{tag}: bnb.functional missing {missing}; "
-        f"unsloth-zoo dequant kernels rely on these"
+        f"{tag}: bnb.functional missing {missing}; " f"unsloth-zoo dequant kernels rely on these"
     )
 
 
-# -------------------------------------------------------------------------
-# bnb.nn.Linear4bit / Params4bit: the two classes peft and unsloth
-# isinstance-check against. Renaming either silently breaks 4-bit LoRA.
-# -------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize("tag", BNB_TAGS)
+# bnb.nn.Linear4bit / Params4bit: peft + unsloth isinstance-check these; renaming breaks 4-bit LoRA.
 def test_bnb_nn_linear4bit_classes(tag: str):
     candidates = [
         "bitsandbytes/nn/modules.py",
@@ -92,23 +104,10 @@ def test_bnb_nn_linear4bit_classes(tag: str):
     )
 
 
-# =========================================================================
-# Coverage extension (added 2026-05): every bnb symbol unsloth +
-# unsloth-zoo touch, derived from a full grep of both repos.
-# =========================================================================
-
-
-# -------------------------------------------------------------------------
-# Top-level convenience export. unsloth/kernels/utils.py + unsloth-zoo
-# vllm_utils.py call `bnb.matmul_4bit(x, w, bias=, quant_state=)`.
-# -------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize("tag", BNB_TAGS)
+# Coverage extension (2026-05):
+# Top-level export: unsloth/kernels/utils.py + zoo vllm_utils.py call bnb.matmul_4bit(...).
 def test_bnb_matmul_4bit_top_level(tag: str):
-    src = fetch_text(
-        "bitsandbytes-foundation/bitsandbytes", tag, "bitsandbytes/__init__.py"
-    )
+    src = fetch_text("bitsandbytes-foundation/bitsandbytes", tag, "bitsandbytes/__init__.py")
     if src is None:
         pytest.skip(f"{tag}: bitsandbytes/__init__.py missing")
     assert "matmul_4bit" in src, (
@@ -117,19 +116,8 @@ def test_bnb_matmul_4bit_top_level(tag: str):
     )
 
 
-@pytest.mark.parametrize("tag", BNB_TAGS)
 def test_bnb_functional_4bit_kernel_path(tag: str):
-    """unsloth/kernels/utils.py module-top binds the 4-bit dequantize
-    and gemm primitives via one of two paths:
-      - LEGACY (bnb <= 0.48.x): `bnb.functional.lib.cdequantize_blockwise_*`
-        and `bnb.functional.lib.cgemm_4bit_inference_naive_*` — C
-        symbols listed in functional.py source.
-      - NEW (bnb >= 0.49.0): `torch.ops.bitsandbytes.dequantize_blockwise`
-        and `torch.ops.bitsandbytes.dequantize_4bit` Python wrappers;
-        the C symbols still live in libbitsandbytes_*.so but the
-        Python source no longer references them by name.
-    Either path lets unsloth resolve the kernels at runtime — we only
-    fail if NEITHER signal is present."""
+    """bnb.functional must expose either the legacy `lib.c*` kernels or the new `torch.ops.bitsandbytes.*` path."""
     candidates = [
         "bitsandbytes/functional.py",
         "bitsandbytes/functional/__init__.py",
@@ -151,7 +139,6 @@ def test_bnb_functional_4bit_kernel_path(tag: str):
     )
 
 
-@pytest.mark.parametrize("tag", BNB_TAGS)
 def test_bnb_functional_get_ptr(tag: str):
     """unsloth/kernels/utils.py top-level: `get_ptr = bnb.functional.get_ptr`."""
     candidates = [
@@ -168,11 +155,8 @@ def test_bnb_functional_get_ptr(tag: str):
     )
 
 
-@pytest.mark.parametrize("tag", BNB_TAGS)
 def test_bnb_quantstate_from_dict(tag: str):
-    """unsloth-zoo monkey-patches `QuantState.from_dict = ...`. Both
-    the class AND the classmethod must be present for the rebinding
-    to take effect."""
+    """unsloth-zoo rebinds QuantState.from_dict; both class and classmethod must be present."""
     candidates = [
         "bitsandbytes/functional.py",
         "bitsandbytes/functional/__init__.py",
@@ -181,29 +165,21 @@ def test_bnb_quantstate_from_dict(tag: str):
     if hit is None:
         pytest.skip(f"{tag}: functional missing")
     _, src = hit
-    assert has_def(
-        src, "QuantState", "class"
-    ), f"{tag}: bnb.functional.QuantState missing"
+    assert has_def(src, "QuantState", "class"), f"{tag}: bnb.functional.QuantState missing"
     assert "from_dict" in src, (
-        f"{tag}: QuantState.from_dict missing; "
-        f"unsloth-zoo monkey-patch silently no-ops"
+        f"{tag}: QuantState.from_dict missing; " f"unsloth-zoo monkey-patch silently no-ops"
     )
 
 
-@pytest.mark.parametrize("tag", BNB_TAGS)
 def test_bnb_nn_modules_fix_4bit_weight_optional(tag: str):
-    """fix_4bit_weight_quant_state_from_module added in newer bnb;
-    unsloth uses getattr() with a fallback so older versions are OK."""
-    src = fetch_text(
-        "bitsandbytes-foundation/bitsandbytes", tag, "bitsandbytes/nn/modules.py"
-    )
+    """fix_4bit_weight_quant_state_from_module is optional; unsloth getattr-fallbacks on older bnb."""
+    src = fetch_text("bitsandbytes-foundation/bitsandbytes", tag, "bitsandbytes/nn/modules.py")
     if src is None:
         pytest.skip(f"{tag}: bitsandbytes/nn/modules.py missing")
     if "fix_4bit_weight_quant_state_from_module" not in src:
         pytest.skip(f"{tag}: helper not yet added (OK; getattr fallback)")
 
 
-@pytest.mark.parametrize("tag", BNB_TAGS)
 def test_bnb_nn_linear8bitlt(tag: str):
     """unsloth/__init__ probes both Linear4bit AND Linear8bitLt."""
     candidates = [
@@ -215,12 +191,10 @@ def test_bnb_nn_linear8bitlt(tag: str):
         if src and (has_def(src, "Linear8bitLt", "class") or "Linear8bitLt" in src):
             return
     pytest.fail(
-        f"{tag}: bnb.nn.Linear8bitLt missing in {candidates}; "
-        f"legacy load_in_8bit path breaks"
+        f"{tag}: bnb.nn.Linear8bitLt missing in {candidates}; " f"legacy load_in_8bit path breaks"
     )
 
 
-@pytest.mark.parametrize("tag", BNB_TAGS)
 def test_bnb_optim_optimizer2state(tag: str):
     """PagedAdamW32bit + 8bit optimisers subclass Optimizer2State."""
     src = fetch_text(
@@ -235,38 +209,26 @@ def test_bnb_optim_optimizer2state(tag: str):
     ), f"{tag}: bnb.optim.optimizer.Optimizer2State missing"
 
 
-@pytest.mark.parametrize("tag", BNB_TAGS)
 def test_bnb_utils_pack_unpack(tag: str):
     """4bit state-dict save/load uses these two helpers."""
-    src = fetch_text(
-        "bitsandbytes-foundation/bitsandbytes", tag, "bitsandbytes/utils.py"
-    )
+    src = fetch_text("bitsandbytes-foundation/bitsandbytes", tag, "bitsandbytes/utils.py")
     if src is None:
         pytest.skip(f"{tag}: bitsandbytes/utils.py missing")
     for name in ("pack_dict_to_tensor", "unpack_tensor_to_dict"):
-        assert (
-            has_def(src, name, "func") or name in src
-        ), f"{tag}: bnb.utils.{name} missing"
+        assert has_def(src, name, "func") or name in src, f"{tag}: bnb.utils.{name} missing"
 
 
-@pytest.mark.parametrize("tag", BNB_TAGS)
 def test_bnb_cextension_rocm_warp_size_optional(tag: str):
-    """ROCM_WARP_SIZE_64 added with AMD ROCm support; pre-ROCm bnb
-    builds don't have it. unsloth probes via try/except — informational."""
-    src = fetch_text(
-        "bitsandbytes-foundation/bitsandbytes", tag, "bitsandbytes/cextension.py"
-    )
+    """ROCM_WARP_SIZE_64 is optional (pre-ROCm bnb lacks it); unsloth probes via try/except."""
+    src = fetch_text("bitsandbytes-foundation/bitsandbytes", tag, "bitsandbytes/cextension.py")
     if src is None:
         pytest.skip(f"{tag}: cextension.py missing")
     if "ROCM_WARP_SIZE_64" not in src:
         pytest.skip(f"{tag}: ROCM_WARP_SIZE_64 not yet defined (pre-ROCm bnb)")
 
 
-@pytest.mark.parametrize("tag", BNB_TAGS)
 def test_bnb_autograd_functions_matmul_4bit(tag: str):
-    """unsloth-zoo has a dynamo-disable patch site for
-    bnb.autograd._functions.matmul_4bit. Symbol must remain so the
-    probe + decision logic works."""
+    """bnb.autograd._functions.matmul_4bit must remain (unsloth-zoo has a dynamo-disable patch site)."""
     src = fetch_text(
         "bitsandbytes-foundation/bitsandbytes",
         tag,
@@ -277,20 +239,13 @@ def test_bnb_autograd_functions_matmul_4bit(tag: str):
     assert "matmul_4bit" in src, f"{tag}: bnb.autograd._functions.matmul_4bit missing"
 
 
-@pytest.mark.parametrize("tag", BNB_TAGS)
 def test_bnb_version_parseable(tag: str):
-    """Multiple unsloth code paths read Version(bnb.__version__) for
-    feature gating (floors 0.43.3, 0.46.0, 0.48.2.dev0, 0.49.0,
-    0.49.2). At least one export mechanism must work."""
-    src = fetch_text(
-        "bitsandbytes-foundation/bitsandbytes", tag, "bitsandbytes/__init__.py"
-    )
+    """bnb.__version__ must be exported via at least one mechanism (unsloth feature-gates on it)."""
+    src = fetch_text("bitsandbytes-foundation/bitsandbytes", tag, "bitsandbytes/__init__.py")
     if src is None:
         pytest.skip(f"{tag}: bitsandbytes/__init__.py missing")
     has_literal = bool(re.search(r'^__version__\s*=\s*["\']', src, re.MULTILINE))
-    has_subimport = bool(
-        re.search(r"^from\s+\.version\s+import\s+__version__", src, re.MULTILINE)
-    )
+    has_subimport = bool(re.search(r"^from\s+\.version\s+import\s+__version__", src, re.MULTILINE))
     has_metadata = bool(
         re.search(
             r"^from\s+importlib\.metadata\s+import\s+(?:[\w,\s]+,\s*)?version",
@@ -303,3 +258,54 @@ def test_bnb_version_parseable(tag: str):
     assert (
         has_literal or has_subimport or has_metadata or has_version_attr
     ), f"{tag}: bnb.__version__ not exported"
+
+
+def test_bnb_optimizer2state_options_are_not_passed_positionally(tag: str):
+    """QGaLoreAdamW8bit must not pass percentile_clipping / block_wise by position.
+
+    bitsandbytes 0.50.0 removed both from Optimizer2State.__init__ (PR #1871), so positions
+    10 and 11 became max_unorm and skip_zeros. Arity still matched, nothing raised, and the
+    optimiser silently received max_unorm=100 / skip_zeros=True. Since Q-GaLore zeroes
+    p.data before the update, param_norm was 0, the unorm clip scaled every update to 0 and
+    projected parameters stopped moving entirely.
+
+    Checked here rather than at runtime because the failure is invisible on the installed
+    version alone: it needs the signature from a version the test environment does not have.
+    """
+    src = fetch_text(
+        "bitsandbytes-foundation/bitsandbytes",
+        tag,
+        "bitsandbytes/optim/optimizer.py",
+    )
+    if src is None:
+        pytest.skip(f"{tag}: bitsandbytes/optim/optimizer.py missing")
+
+    signature = first_match_signature(src, "Optimizer2State")
+    if signature is None:
+        pytest.skip(f"{tag}: could not read Optimizer2State.__init__ signature")
+
+    removed = [n for n in ("percentile_clipping", "block_wise") if n not in signature]
+    caller = (
+        Path(__file__).resolve().parents[2] / "unsloth" / "optimizers" / "q_galore_adamw.py"
+    ).read_text(encoding = "utf-8")
+
+    call = _super_init_call(caller, "QGaLoreAdamW8bit")
+    assert call is not None, "could not find QGaLoreAdamW8bit's super().__init__ call"
+
+    # "adam" and params are positional on purpose; everything after them must be a keyword,
+    # because bitsandbytes reorders the tail of this signature between minors.
+    positional = [a for a in call.args if not isinstance(a, ast.Starred)]
+    extra = positional[2:]
+    assert not extra, (
+        f"{tag}: QGaLoreAdamW8bit passes {len(extra)} argument(s) after params positionally. "
+        f"{removed or 'Nothing'} was removed from Optimizer2State at this tag, so a positional "
+        f"call lands values in whichever parameters now occupy those slots."
+    )
+    passed = {kw.arg for kw in call.keywords if kw.arg}
+    assert "optim_bits" in passed, f"{tag}: optim_bits must be passed by name"
+    for name in ("percentile_clipping", "block_wise"):
+        if name in signature:
+            continue
+        assert (
+            name not in passed
+        ), f"{tag}: Optimizer2State no longer accepts {name}, but it is still passed."

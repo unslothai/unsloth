@@ -1,3 +1,15 @@
+# tests/saving scripts run their whole body at import, so plain pytest collection would download checkpoints and train.
+import sys as _sys
+from pathlib import Path as _Path
+
+_sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))
+from tests.utils.os_utils import require_opt_in as _require_opt_in
+
+_require_opt_in(
+    "UNSLOTH_RUN_SAVING_SCRIPTS",
+    "GPU + Hub saving script; its body runs at import.",
+)
+
 from unsloth import FastLanguageModel, FastModel
 from transformers import AutoModelForCausalLM, WhisperForConditionalGeneration
 from peft import PeftModel
@@ -22,12 +34,9 @@ model, tokenizer = FastModel.from_pretrained(
     auto_model = WhisperForConditionalGeneration,
     whisper_language = "English",
     whisper_task = "transcribe",
-    # token = "hf_...", # use one if using gated models like meta-llama/Llama-2-7b-hf
 )
 
 print("✅ Base model loaded successfully!")
-
-### Attempting save merge
 
 
 print(f"\n{'='*80}")
@@ -38,7 +47,6 @@ with warnings.catch_warnings(record = True) as w:
     warnings.simplefilter("always")
     model.save_pretrained_merged("test_output", tokenizer)
 
-    # Verify warning
     assert len(w) >= 1, "Expected warning but none raised"
     warning_msg = str(w[0].message)
     expected_msg = "Model is not a PeftModel (no Lora adapters detected). Skipping Merge. Please use save_pretrained() or push_to_hub() instead!"
@@ -55,7 +63,7 @@ print(f"{'='*80}")
 
 try:
     with warnings.catch_warnings():
-        warnings.simplefilter("error")  # Treat warnings as errors here
+        warnings.simplefilter("error")  # any warning -> failure
         model.save_pretrained("test_output")
         print("✅ Standard save_pretrained completed successfully!")
 except Exception as e:

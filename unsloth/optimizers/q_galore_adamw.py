@@ -1,21 +1,18 @@
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
-#
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
-#
 #     http://www.apache.org/licenses/LICENSE-2.0
-#
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-#
 # Adapted from Q-GaLore (https://github.com/VITA-Group/Q-GaLore)
 # Original paper: "Q-GaLore: Quantized GaLore with INT4 Projection and
 # Layer-Adaptive Low-Rank Gradients" (arXiv:2407.08296)
 
+import inspect
 import torch
 from typing import Optional, List
 
@@ -31,19 +28,17 @@ __all__ = ["QGaLoreAdamW8bit", "install_weight_quant_hooks"]
 try:
     import bitsandbytes.functional as bnb_F
     from bitsandbytes.optim.optimizer import Optimizer2State
-
     _HAS_BNB = True
 except ImportError:
     _HAS_BNB = False
-    # Provide a fallback base so the module can at least be imported.
+    # Fallback base so the module can still be imported.
     Optimizer2State = torch.optim.Optimizer
 
 
 def _require_bnb():
     if not _HAS_BNB:
         raise ImportError(
-            "Unsloth: Q-GaLore requires bitsandbytes. "
-            "Install it with: pip install bitsandbytes"
+            "Unsloth: Q-GaLore requires bitsandbytes. Install it with: pip install bitsandbytes"
         )
 
 
@@ -86,24 +81,31 @@ class QGaLoreAdamW8bit(Optimizer2State):
         is_paged: bool = False,
     ):
         _require_bnb()
+        bnb_parameters = inspect.signature(Optimizer2State.__init__).parameters
+        legacy_kwargs = {}
+        for name, value, default in (
+            ("percentile_clipping", percentile_clipping, 100),
+            ("block_wise", block_wise, True),
+        ):
+            if name in bnb_parameters:
+                legacy_kwargs[name] = value
+            elif value != default:
+                raise ValueError(
+                    f"This bitsandbytes version no longer supports {name}={value}; "
+                    f"use {name}={default}."
+                )
         super().__init__(
             "adam",
             params,
-            lr,
-            betas,
-            eps,
-            weight_decay,
-            8,  # optim_bits
-            None,  # args
-            min_8bit_size,
-            percentile_clipping,
-            block_wise,
+            lr = lr,
+            betas = betas,
+            eps = eps,
+            weight_decay = weight_decay,
+            optim_bits = 8,
+            min_8bit_size = min_8bit_size,
             is_paged = is_paged,
+            **legacy_kwargs,
         )
-
-    # ------------------------------------------------------------------
-    # Core step
-    # ------------------------------------------------------------------
 
     @torch.no_grad()
     def step(self, closure = None):
@@ -139,7 +141,6 @@ class QGaLoreAdamW8bit(Optimizer2State):
 
                 has_weight_quant = self._has_weight_quant(p, group)
 
-                # --- Dequantize weight if INT8 ---
                 if has_weight_quant:
                     if p._q_scales is not None:
                         float_weight = _dequantize(
@@ -149,9 +150,7 @@ class QGaLoreAdamW8bit(Optimizer2State):
                             p._q_shape,
                         )
                         p.data = float_weight
-                    # else: first step, weights are still float — skip dequantize
 
-                # --- GaLore projection ---
                 if "rank" in group:
                     if "projector" not in state:
                         state["projector"] = GaLoreProjector(
@@ -167,46 +166,39 @@ class QGaLoreAdamW8bit(Optimizer2State):
                             queue_size = group.get("queue_size", 5),
                         )
 
-                    # Temporarily disable weight decay for GaLore params
-                    # (we apply it manually after project-back)
+                    # Temporarily disable weight decay for GaLore params; it is applied manually after project-back.
                     if "weight_decay" in group and group["weight_decay"] > 0:
                         group["_wd_saved"] = group["weight_decay"]
                         group["weight_decay"] = 0
 
                     grad = state["projector"].project(p.grad, state["step"])
 
-                    # Save current weight; replace p.data with zeros so
-                    # the 8-bit update writes the pure weight delta.
+                    # Zero p.data so the 8-bit update writes the pure delta.
                     p._saved_data = p.data.clone()
-                    p.data = torch.zeros_like(
-                        grad, dtype = p.data.dtype, device = p.data.device
-                    )
+                    p.data = torch.zeros_like(grad, dtype = p.data.dtype, device = p.data.device)
                     p.grad = grad
 
-                # --- 8-bit Adam update ---
                 if "state1" not in state:
                     self.init_state(group, p, gindex, pindex)
 
                 self.prefetch_state(p)
                 self.update_step(group, p, gindex, pindex)
 
-                # --- GaLore project-back ---
                 if "rank" in group:
-                    # p.data now holds the weight update in low-rank space
-                    p.data = p._saved_data.add_(state["projector"].project_back(p.data))
-
-                    # Re-apply decoupled weight decay using pre-update weights
+                    # Decay the pre-update weight BEFORE adding the update; it touches only
+                    # p._saved_data, so p.data still holds the low-rank update below.
                     if "_wd_saved" in group:
-                        p.data.add_(
-                            p.data,
+                        p._saved_data.add_(
+                            p._saved_data,
                             alpha = -group["lr"] * group["_wd_saved"],
                         )
                         group["weight_decay"] = group["_wd_saved"]
                         del group["_wd_saved"]
 
+                    # project_back stays inline: a loop-local name outlives the iteration (+64 MiB).
+                    p.data = p._saved_data.add_(state["projector"].project_back(p.data))
                     del p._saved_data
 
-                # --- Re-quantize weight to INT8 ---
                 if has_weight_quant:
                     float_data = p.data
                     stochastic = group.get("stochastic_round", True)
@@ -217,21 +209,14 @@ class QGaLoreAdamW8bit(Optimizer2State):
                     p._q_scales = scales
                     p._q_zeros = zeros
                     p._q_shape = shape
-                    # Replace p.data with a scalar placeholder to free float memory.
-                    # A forward pre-hook (install_weight_quant_hooks) will
-                    # dequantize back to float before the next forward pass.
+                    # Scalar placeholder to free float memory; the forward pre-hook (install_weight_quant_hooks)
+                    # dequantizes before the next forward pass.
                     p.data = torch.empty(1, dtype = p.data.dtype, device = p.data.device)
-
-                state["step"] += 1
 
         if torch.cuda.is_available():
             torch.cuda.synchronize()
 
         return loss
-
-    # ------------------------------------------------------------------
-    # Helpers
-    # ------------------------------------------------------------------
 
     @staticmethod
     def _has_weight_quant(p: torch.Tensor, group: dict) -> bool:
@@ -264,10 +249,8 @@ class QGaLoreAdamW8bit(Optimizer2State):
 
         for name, p in model.named_parameters():
             if id(p) in weight_quant_params:
-                # Store quantization metadata WITHOUT converting weights to
-                # uint8.  The first optimizer.step() will quantize after the
-                # update.  We store dummy scales/zeros so _has_weight_quant()
-                # returns True on the first step.
+                # Store metadata without converting weights to uint8; the first step() quantizes after the update,
+                # and dummy scales/zeros keep _has_weight_quant() True on that first step.
                 p._q_scales = None
                 p._q_zeros = None
                 p._q_shape = p.data.shape
@@ -295,18 +278,12 @@ def install_weight_quant_hooks(model: torch.nn.Module) -> list:
     """
     handles = []
     for module in model.modules():
-        has_quant_param = any(
-            hasattr(p, "_q_scales") for p in module.parameters(recurse = False)
-        )
+        has_quant_param = any(hasattr(p, "_q_scales") for p in module.parameters(recurse = False))
         if has_quant_param:
             h = module.register_forward_pre_hook(_weight_quant_pre_hook)
             handles.append(h)
     return handles
 
-
-# ======================================================================
-# Param-group construction helper
-# ======================================================================
 
 # Default linear layer names in transformer blocks that should use GaLore.
 _DEFAULT_GALORE_TARGETS = {
@@ -366,9 +343,7 @@ def make_q_galore_param_groups(
     Returns:
         List of two param group dicts: ``[galore_group, non_galore_group]``.
     """
-    targets = (
-        set(target_modules) if target_modules is not None else _DEFAULT_GALORE_TARGETS
-    )
+    targets = set(target_modules) if target_modules is not None else _DEFAULT_GALORE_TARGETS
 
     galore_params = []
     non_galore_params = []
@@ -377,8 +352,7 @@ def make_q_galore_param_groups(
         if not param.requires_grad:
             continue
 
-        # Check if any target module name appears as a component in the param name.
-        # Exclude 1-D parameters (biases, norms) because GaLoreProjector.project
+        # Match target module names and exclude 1-D params (biases, norms), since GaLoreProjector.project
         # requires 2-D gradients.
         name_parts = name.split(".")
         is_galore = param.dim() >= 2 and any(t in name_parts for t in targets)

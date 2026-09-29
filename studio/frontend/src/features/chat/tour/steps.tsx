@@ -4,21 +4,21 @@
 import type { TourStep } from "@/features/tour";
 
 export function buildChatTourSteps({
+  canShowNav,
   canCompare,
   openModelSelector,
   closeModelSelector,
   openSettings,
   closeSettings,
-  openSidebar,
   enterCompare,
   exitCompare,
 }: {
+  canShowNav: boolean;
   canCompare: boolean;
   openModelSelector: () => void;
   closeModelSelector: () => void;
   openSettings: () => void;
   closeSettings: () => void;
-  openSidebar: () => void;
   enterCompare: () => void;
   exitCompare: () => void;
 }): TourStep[] {
@@ -29,33 +29,45 @@ export function buildChatTourSteps({
       title: "Pick a model",
       body: (
         <>
-          This selects what’s loaded for inference. Hub = base models. Fine-tuned
-          = trained Studio outputs, including LoRA adapters and full finetunes.
+          Loads a model for inference. Runs local GGUF, safetensors and your own
+          LoRA adapters, plus any cloud provider you add in Settings, such as
+          Gemini, OpenAI, Anthropic or OpenRouter.
         </>
       ),
     },
     {
       id: "model-tabs",
       target: "chat-model-selector-popover",
-      title: "Two tabs",
+      title: "Find a model",
       body: (
         <>
-          Hub: search Hugging Face models. Fine-tuned: local Studio outputs you’ve
-          trained or exported. If results look off, compare base vs fine-tuned
-          outputs to see what changed.
+          Recommended is Unsloth's curated list, On Device is your downloads and
+          finetunes. Search Hub reaches all of Hugging Face. An OOM tag means it
+          will not fit in your VRAM.
         </>
       ),
       onEnter: openModelSelector,
       onExit: closeModelSelector,
     },
     {
-      id: "settings",
-      target: "chat-settings",
-      title: "Settings sidebar",
+      id: "plus-menu",
+      target: "chat-plus-menu",
+      title: "Tools and attachments",
       body: (
         <>
-          Sampling (temperature/top-p/top-k) + system prompt live here. If you
-          want more deterministic outputs, lower temperature first.
+          Open this to attach PDFs, images, audio and code, or to switch on web
+          search, the sandboxed Bash and Python tools, MCP servers and skills.
+        </>
+      ),
+    },
+    {
+      id: "settings",
+      target: "chat-settings",
+      title: "Run settings",
+      body: (
+        <>
+          Temperature, top-p, top-k, system prompt and the chat template. Lower
+          temperature first when you want steadier answers.
         </>
       ),
       onEnter: openSettings,
@@ -63,34 +75,39 @@ export function buildChatTourSteps({
     },
   ];
 
+  if (canShowNav) {
+    // The mobile sidebar is a closed sheet, so there is nothing to spotlight there.
+    steps.unshift({
+      id: "nav",
+      target: "navbar",
+      title: "Where everything lives",
+      body: (
+        <>
+          Chat runs models. Train fine-tunes them, Recipes turns documents into
+          datasets, and Export packages the result. Images, Video and Audio are
+          their own workspaces, and Model hub manages what is on this device.
+        </>
+      ),
+    });
+  }
+
   if (canCompare) {
-    steps.push(
-      {
-        id: "compare-btn",
-        target: "chat-compare",
-        title: "Compare mode",
-        body: (
-          <>
-            Compare any two models side-by-side.
-            Pick a different model for each side and see how they respond to the same prompt.
-          </>
-        ),
-        onEnter: openSidebar,
-      },
-      {
-        id: "compare-view",
-        target: "chat-compare-view",
-        title: "Side-by-side threads",
-        body: (
-          <>
-            Same prompt, 2 threads. If LoRA is worse than base, it’s usually
-            data formatting, too many epochs, or a bad checkpoint choice.
-          </>
-        ),
-        onEnter: enterCompare,
-        onExit: exitCompare,
-      },
-    );
+    // Compare lives in the + menu, with no sidebar button to anchor to; this step enters compare on
+    // its own and explains it.
+    steps.push({
+      id: "compare-view",
+      target: "chat-compare-view",
+      title: "Compare two models",
+      body: (
+        <>
+          One prompt, two threads, side by side. The quickest way to check a
+          finetune against its base model. If yours is worse, suspect dataset
+          formatting, too many epochs or the wrong checkpoint.
+        </>
+      ),
+      onEnter: enterCompare,
+      onExit: exitCompare,
+    });
   }
 
   return steps;

@@ -5,46 +5,194 @@
 
 from __future__ import annotations
 
+from utils.account_context import (
+    OWNER,
+    AccountContext,
+    bind_account,
+    current_account,
+    reset_account,
+)
+from core.training.account_jobs import account_event_stream
 import copy
+import hashlib
+import hmac
+import secrets
+import tempfile
+import time
 from datetime import datetime, timedelta, timezone
-from typing import Any, Optional
-from urllib.parse import urlparse
+from pathlib import Path
+from typing import Annotated, Any, Optional
+from urllib.parse import urlencode, urlparse
 
-from fastapi import APIRouter, HTTPException, Query, Request
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
+
+from auth.authentication import (
+    allow_ambient_hf_token,
+    authenticated_via_api_key,
+    get_current_credential,
+    request_admitted_without_credential,
+    require_ui_session_for_local_commands,
+    subject_for_header_or_query_token,
+)
+from auth.storage import CredentialRotated
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import ValidationError
+from starlette.concurrency import run_in_threadpool
 
+from core.data_recipe.export import (
+    ExportFormat,
+    RecipeDatasetExportError,
+    build_dataset_download,
+    download_filename,
+    safe_filename_stem,
+    write_jsonl_rows,
+)
 from core.data_recipe.huggingface import (
     RecipeDatasetPublishError,
     publish_recipe_dataset,
 )
 from core.data_recipe.jobs import get_job_manager
+from core.data_recipe.service import recipe_has_stdio_mcp
+from loggers import get_logger
 from models.data_recipe import (
     JobCreateResponse,
     PublishDatasetRequest,
     PublishDatasetResponse,
     RecipePayload,
 )
+from utils.client_ip import client_ip
+from utils.hf_endpoint import client_reachable_endpoint, get_hf_endpoint
+from utils.host_policy import dial_host, self_request_host
+from utils.utils import safe_error_detail, safe_curated_detail, log_and_http_error
 
+logger = get_logger(__name__)
 router = APIRouter()
+
+# Fetched without an Authorization header, so the link carries an HMAC capability rather than the
+# session token, which download history would keep. Same shape as the signed video links.
+# The native save dialog opens before the request, so this outlasts a user sitting on it.
+_DOWNLOAD_LINK_TTL = 30 * 60
+_DOWNLOAD_LINK_SECRET = secrets.token_bytes(32)
+
+
+def _download_link_payload(
+    *,
+    job_id: str,
+    export_format: str,
+    artifact_path: str | None,
+    filename: str | None,
+    account_id: str,
+) -> str:
+    # Every parameter the export reads, or the holder could swap artifact_path for another run's,
+    # plus the account whose roots it will be read from: recipe roots are derived from the account
+    # ContextVar, so the tenant is part of the object this capability names.
+    # Length-prefixed, because a bare separator join is not injective: artifact_path "a" with
+    # filename "b\x1fc" and artifact_path "a\x1fb" with filename "c" share one payload, so one
+    # signature would authorize both.
+    parts = [account_id, job_id, export_format, artifact_path or "", filename or ""]
+    return "\x1f".join(f"{len(part)}:{part}" for part in parts)
+
+
+def _sign_download_link(**parts: Any) -> str:
+    account = current_account()
+    account_id = "" if account.is_owner else account.account_id
+    expires_at = int(time.time()) + _DOWNLOAD_LINK_TTL
+    payload = f"{_download_link_payload(account_id = account_id, **parts)}\x1f{expires_at}"
+    signature = hmac.new(_DOWNLOAD_LINK_SECRET, payload.encode(), hashlib.sha256).hexdigest()
+    return f"{expires_at}.{account_id}.{signature}"
+
+
+def _download_link_account(token: str, **parts: Any) -> AccountContext | None:
+    """The account this link was minted for, or None once it is invalid or deactivated.
+
+    Same shape as the signed RAG document link: expiry, account id, signature, with an empty
+    account id meaning the owner.
+    """
+    try:
+        expires_at, account_id, signature = token.split(".", 2)
+    except ValueError:
+        return None
+    if "." in signature:
+        return None
+    # Compare as bytes: compare_digest on two str raises TypeError for a non-ASCII signature, which
+    # a %-encoded query value can carry, and that is a 500 where an invalid token owes a 401. The
+    # preview share link guards the same way.
+    try:
+        provided = signature.encode("ascii")
+    except UnicodeEncodeError:
+        return None
+    payload = f"{_download_link_payload(account_id = account_id, **parts)}\x1f{expires_at}"
+    expected = hmac.new(_DOWNLOAD_LINK_SECRET, payload.encode(), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(provided, expected.encode("ascii")):
+        return None
+    try:
+        if int(expires_at) < int(time.time()):
+            return None
+    except ValueError:
+        return None
+    if not account_id:
+        return OWNER
+    from auth.storage import get_account_by_id
+
+    # None once the account is deactivated or deleted: the link dies with it.
+    account = get_account_by_id(account_id)
+    return None if account is None or account.is_owner else account
+
+
+async def _authorize_dataset_download(
+    request: Request,
+    job_id: str,
+    export_format: ExportFormat = Query(default = "jsonl", alias = "format"),
+    artifact_path: str | None = Query(default = None),
+    filename: str | None = Query(default = None),
+    token: str | None = Query(default = None),
+):
+    """A signed link for exactly this export, or the ordinary Authorization header for an API
+    client. The session bearer is deliberately not read from the query."""
+    # In a threadpool: get_account_by_id is synchronous SQLite under a 5s busy timeout, and this
+    # dependency is async, so on the loop a contended auth database would stall every other request.
+    # The sibling RAG link gets this for free by being a sync def, which FastAPI offloads itself.
+    account = (
+        await run_in_threadpool(
+            _download_link_account,
+            token,
+            job_id = job_id,
+            export_format = export_format,
+            artifact_path = artifact_path,
+            filename = filename,
+        )
+        if token
+        else None
+    )
+    if account is not None:
+        # This route has no auth dependency behind the link, so without this bind every read
+        # resolves under the owner's recipe root rather than the minter's.
+        marker = bind_account(account)
+        try:
+            yield
+        finally:
+            reset_account(marker)
+        return
+    await subject_for_header_or_query_token(request, None)
+    yield
+
+
+download_router = APIRouter(dependencies = [Depends(_authorize_dataset_download)])
+
+# Keepalive cadence, well inside the ~100s a quick tunnel allows between body bytes.
+_KEEPALIVE_EVERY_S = 15.0
+
+# A stdio provider is a command this host would run, so only a UI session may supply one. Annotated, not a
+# Depends default, so a direct call gets False.
+ViaApiKey = Annotated[bool, Depends(authenticated_via_api_key)]
 
 
 def _resolve_local_v1_endpoint(request: Request) -> str:
-    """Return the loopback /v1 URL for the actual backend listen port.
-
-    Resolution order:
-      1. ``app.state.server_port`` - explicitly published by run.py after
-         the uvicorn server has bound. This is the most reliable source
-         because it survives reverse proxies, TLS terminators and tunnels.
-      2. ``request.scope["server"]`` - the real (host, port) tuple uvicorn
-         sets when the request is dispatched. Used when Studio is started
-         outside ``run_server`` (e.g. ``uvicorn studio.backend.main:app``).
-      3. ``request.base_url`` parsed - last resort for test fixtures that
-         do not route through a live uvicorn server.
-    """
+    """The /v1 URL of this process's own backend, at the address it is bound to. Port order:
+    ``server_port`` (survives proxies/tunnels), the request scope, ``base_url``."""
+    server = request.scope.get("server")
     port: Any = getattr(request.app.state, "server_port", None)
     if not isinstance(port, int) or port <= 0:
-        server = request.scope.get("server")
         if (
             isinstance(server, tuple)
             and len(server) >= 2
@@ -55,7 +203,8 @@ def _resolve_local_v1_endpoint(request: Request) -> str:
         else:
             parsed = urlparse(str(request.base_url))
             port = parsed.port if parsed.port is not None else 8888
-    return f"http://127.0.0.1:{int(port)}/v1"
+    host = dial_host(self_request_host(request.app.state, server))
+    return f"http://{host}:{int(port)}/v1"
 
 
 def _request_has_desktop_access_token(request: Request) -> bool:
@@ -73,15 +222,9 @@ def _request_has_desktop_access_token(request: Request) -> bool:
 
 
 def _used_llm_model_aliases(recipe: dict[str, Any]) -> set[str]:
-    """Return the set of model_aliases that are actually referenced by an
-    LLM column. Used to narrow the "Chat model loaded" gate so that orphan
-    model_config nodes on the canvas do not block unrelated recipe runs.
-
-    The ``llm-`` prefix matches the existing convention in
-    ``core/data_recipe/service.py::_recipe_has_llm_columns`` and covers all
-    LLM column types emitted by the frontend (llm-text, llm-code,
-    llm-structured, llm-judge).
-    """
+    """Return model_aliases actually referenced by an LLM column. Narrows the "Chat model loaded" gate
+    so orphan model_config nodes don't block unrelated runs. The ``llm-`` prefix matches
+    ``service.py::_recipe_has_llm_columns`` and covers all LLM column types."""
     aliases: set[str] = set()
     for column in recipe.get("columns", []):
         if not isinstance(column, dict):
@@ -95,22 +238,98 @@ def _used_llm_model_aliases(recipe: dict[str, Any]) -> set[str]:
     return aliases
 
 
+def _used_local_model_selections(
+    recipe: dict[str, Any], local_provider_names: set[str]
+) -> dict[tuple[str, str], list[str]]:
+    used_aliases = _used_llm_model_aliases(recipe)
+    selections: dict[tuple[str, str], list[str]] = {}
+    for mc in recipe.get("model_configs", []):
+        if not isinstance(mc, dict):
+            continue
+        alias = mc.get("alias")
+        if not isinstance(alias, str) or alias not in used_aliases:
+            continue
+        provider = mc.get("provider")
+        if not isinstance(provider, str) or provider not in local_provider_names:
+            continue
+        model = mc.get("model")
+        target = model.strip() if isinstance(model, str) else ""
+        if not target or target.lower() == "local":
+            continue
+        variant = mc.get("gguf_variant")
+        gguf_variant = variant.strip() if isinstance(variant, str) else ""
+        selections.setdefault((target, gguf_variant), []).append(alias)
+    return selections
+
+
+def _single_used_local_model_selection(
+    recipe: dict[str, Any], local_provider_names: set[str]
+) -> tuple[str, str] | None:
+    selections = _used_local_model_selections(recipe, local_provider_names)
+    if not selections:
+        return None
+    if len(selections) > 1:
+        aliases = ", ".join(alias for values in selections.values() for alias in values)
+        raise ValueError(
+            "Recipes supports one active local model per run. "
+            f"Select the same local model and GGUF variant for: {aliases}."
+        )
+    return next(iter(selections))
+
+
+def _local_chat_serves_gguf() -> bool:
+    from routes.inference import get_llama_cpp_backend
+    return bool(get_llama_cpp_backend().is_loaded)
+
+
+def _loaded_local_model_identity() -> tuple[bool, str, str]:
+    from routes.inference import get_llama_cpp_backend
+    from core.inference import get_inference_backend
+
+    llama = get_llama_cpp_backend()
+    if llama.is_loaded:
+        model = str(getattr(llama, "model_identifier", "") or "").strip()
+        variant = str(getattr(llama, "hf_variant", "") or "").strip()
+        return True, model, variant
+
+    backend = get_inference_backend()
+    active_model = str(getattr(backend, "active_model_name", "") or "").strip()
+    if active_model:
+        return True, active_model, ""
+    return False, "", ""
+
+
+def _ensure_selected_local_model_loaded(
+    recipe: dict[str, Any], local_provider_names: set[str]
+) -> None:
+    model_loaded, active_model, active_variant = _loaded_local_model_identity()
+    if not model_loaded:
+        raise ValueError("No model loaded in Chat. Load a model first, then run the recipe.")
+
+    selection = _single_used_local_model_selection(recipe, local_provider_names)
+    if selection is None:
+        return
+
+    target, gguf_variant = selection
+    variant_matches = not gguf_variant or active_variant == gguf_variant
+    if active_model.lower() != target.lower() or not variant_matches:
+        selected = f"{target} ({gguf_variant})" if gguf_variant else target
+        active = f"{active_model} ({active_variant})" if active_variant else active_model
+        raise ValueError(
+            "Selected local model is not loaded. "
+            f"Selected {selected}; active {active or 'none'}. "
+            "Load the selected model again, then run the recipe."
+        )
+
+
 def _inject_local_structured_response_format(
     recipe: dict[str, Any], local_provider_names: set[str]
 ) -> None:
-    """For each llm-structured column that targets a local-provider model_config,
-    clone the model_config and inject an OpenAI ``response_format`` with the
-    column's ``output_format`` JSON schema. The column is rewritten to point at
-    the clone so llm-text / llm-judge columns that share the same alias keep
-    free-form sampling.
-
-    Without this, data_designer only injects a prompt-level "return JSON in a
-    ```json fence" instruction. Small GGUF models frequently break format,
-    wasting the full ``max_tokens`` budget per row and then failing to parse.
-    Forwarding ``response_format`` lets llama-server apply grammar-constrained
-    sampling from the JSON schema, which guarantees a parseable response and
-    terminates early.
-    """
+    """Inject an OpenAI ``response_format`` for each local llm-structured column. Clones the
+    model_config and repoints the column at the clone so llm-text / llm-judge columns sharing the
+    alias keep free-form sampling. Without this, data_designer only adds a prompt-level "return
+    JSON" hint, which small GGUFs often break. Forwarding ``response_format`` lets llama-server
+    apply grammar-constrained sampling, guaranteeing parseable output."""
     columns = recipe.get("columns")
     model_configs = recipe.get("model_configs")
     if not isinstance(columns, list) or not isinstance(model_configs, list):
@@ -121,17 +340,14 @@ def _inject_local_structured_response_format(
     for mc in model_configs:
         if not isinstance(mc, dict):
             continue
-        if mc.get("provider") in local_provider_names and isinstance(
-            mc.get("alias"), str
-        ):
+        if mc.get("provider") in local_provider_names and isinstance(mc.get("alias"), str):
             alias_to_local_mc[mc["alias"]] = mc
 
     if not alias_to_local_mc:
         return
 
-    # Clone per (alias, column) so each llm-structured column gets its own
-    # schema without leaking response_format onto other columns that share the
-    # same base alias.
+    # Clone per (alias, column) so each llm-structured column gets its own schema without leaking
+    # response_format onto other columns sharing the base alias.
     seen_clone_aliases: set[str] = {
         mc.get("alias") for mc in model_configs if isinstance(mc.get("alias"), str)
     }
@@ -163,15 +379,9 @@ def _inject_local_structured_response_format(
         if not isinstance(params, dict):
             params = {}
             clone["inference_parameters"] = params
-        # data_designer's BaseInferenceParams is a pydantic model with
-        # extra="forbid", so response_format cannot sit at the top level of
-        # inference_parameters. It does expose an `extra_body: dict` pass-
-        # through that the OpenAI client spreads into the request body at the
-        # top level, which is where llama-server reads response_format from.
-        # llama.cpp server shape (tools/server/README.md): the schema sits
-        # directly under response_format, not nested in a json_schema object
-        # the way OpenAI's Chat Completions API expects. llama-server converts
-        # the schema to a GBNF grammar and applies it during sampling.
+        # BaseInferenceParams is extra="forbid", so response_format rides `extra_body`; llama-server reads the schema
+        # directly under it, not nested in a json_schema object. Per tools/server/README.md the schema sits directly
+        # under response_format and is converted to a GBNF grammar for sampling.
         extra_body = params.get("extra_body")
         if not isinstance(extra_body, dict):
             extra_body = {}
@@ -179,6 +389,10 @@ def _inject_local_structured_response_format(
             "type": "json_schema",
             "schema": output_format,
         }
+        # Internal opt-in that re-enables the ```json fence data_designer's structured-output parser expects, which
+        # the spec-compliant default now omits. The flag rides through the OpenAI SDK's extra_body passthrough
+        # alongside response_format.
+        extra_body["_unsloth_guided_fence"] = True
         params["extra_body"] = extra_body
         new_configs.append(clone)
         column["model_alias"] = clone_alias
@@ -187,23 +401,20 @@ def _inject_local_structured_response_format(
         model_configs.extend(new_configs)
 
 
-def _inject_local_providers(recipe: dict[str, Any], request: Request) -> Optional[int]:
-    """
-    Mutate recipe dict in-place: for any provider with is_local=True,
-    fill in the endpoint pointing at this server and inject a short-lived
-    internal sk-unsloth-* API key for workflow auth.
-
-    Returns the row id of the minted internal key (so the caller can
-    revoke it on job completion) or ``None`` when no local provider is
-    actually reachable from an LLM column.
-    """
+def _inject_local_providers(
+    recipe: dict[str, Any],
+    request: Request,
+    expect_gen: Optional[str] = None,
+) -> Optional[int]:
+    """Mutate recipe in-place: point is_local providers at this server and mint a short-lived internal
+    sk-unsloth-* key for workflow auth. Returns the minted key's row id (for the caller to revoke on
+    completion), or ``None`` when no local provider is reachable from an LLM column."""
     providers = recipe.get("model_providers")
     if not providers:
         return None
 
-    # Collect local providers and pop is_local from ALL dicts unconditionally.
-    # Strict `is True` guard so malformed payloads (is_local: 1,
-    # is_local: "true") do not accidentally trigger the loopback rewrite.
+    # Strict `is True` so malformed payloads (1, "true") do not trigger the loopback rewrite.
+    # Collect local providers and pop is_local from ALL dicts.
     local_indices: list[int] = []
     for i, provider in enumerate(providers):
         if not isinstance(provider, dict):
@@ -217,67 +428,39 @@ def _inject_local_providers(recipe: dict[str, Any], request: Request) -> Optiona
 
     endpoint = _resolve_local_v1_endpoint(request)
 
-    # Only gate on model-loaded if a local provider is actually reachable
-    # from an LLM column through a model_config. Orphan model_config nodes
-    # that reference a local provider but that no LLM column uses should
-    # not block runs; the recipe would never call /v1 for them.
-    local_names = {
-        providers[i].get("name") for i in local_indices if providers[i].get("name")
-    }
+    # Gate on model-loaded only for a local provider reachable from an LLM column: orphan
+    # model_config nodes never reach /v1 and must not block runs.
+    local_names = {providers[i].get("name") for i in local_indices if providers[i].get("name")}
     used_aliases = _used_llm_model_aliases(recipe)
     referenced_providers = {
         mc.get("provider")
         for mc in recipe.get("model_configs", [])
-        if (
-            isinstance(mc, dict)
-            and mc.get("provider")
-            and mc.get("alias") in used_aliases
-        )
+        if (isinstance(mc, dict) and mc.get("provider") and mc.get("alias") in used_aliases)
     }
 
     token = ""
     internal_key_id: Optional[int] = None
     if local_names & referenced_providers:
-        # Verify a model is loaded.
-        # NOTE: This is a point-in-time check (TOCTOU). The model could be unloaded
-        # or swapped after this check but before the recipe subprocess calls /v1.
-        # The inference endpoint returns a clear 400 in that case.
-        #
-        # Imports are deferred to avoid circular dependencies with inference modules.
-        from routes.inference import get_llama_cpp_backend
-        from core.inference import get_inference_backend
+        # Verify the selected local model is loaded before minting a key. Still a point-in-time check (TOCTOU); the
+        # /v1 endpoint returns a clear 400 if the model is unloaded or swapped before the subprocess calls it.
+        _ensure_selected_local_model_loaded(recipe, local_names)
 
-        llama = get_llama_cpp_backend()
-        model_loaded = llama.is_loaded
-        if not model_loaded:
-            backend = get_inference_backend()
-            model_loaded = bool(backend.active_model_name)
-        if not model_loaded:
-            raise ValueError(
-                "No model loaded in Chat. Load a model first, then run the recipe."
-            )
+        from auth import storage
 
-        from auth import storage  # deferred: avoids circular import
-
-        # Mint an internal sk-unsloth-* key scoped to this workflow run.
-        # Uses the unified API-key issuance path (one mint/revoke/verify
-        # surface instead of a second JWT code path). The key is marked
-        # internal so it is hidden from the user's API-key list, and the
-        # caller revokes it when the job terminates.
+        # Mint an internal sk-unsloth-* key scoped to this run via the unified API-key path. Marked internal so it's
+        # hidden from the user's key list; the caller revokes it when the job terminates.
         expires_at = (datetime.now(timezone.utc) + timedelta(hours = 24)).isoformat()
         token, row = storage.create_api_key(
-            username = "unsloth",
+            username = current_account().username,
             name = "data-recipe workflow",
             expires_at = expires_at,
             internal = True,
+            expect_gen = expect_gen,
         )
         internal_key_id = int(row["id"])
 
-    # Defensively strip any stale "external"-only fields the frontend may
-    # have left on the dict (extra_headers/extra_body/api_key_env). The UI
-    # hides these inputs in local mode but the payload builder still serializes
-    # them, so a previously external provider that flipped to local can carry
-    # invalid JSON or rogue auth headers into the local /v1 call.
+    # Strip stale external-only fields (extra_headers/extra_body/api_key_env): a provider
+    # flipped external -> local would carry invalid JSON or rogue auth headers into /v1.
     for i in local_indices:
         providers[i]["endpoint"] = endpoint
         providers[i]["api_key"] = token
@@ -286,29 +469,18 @@ def _inject_local_providers(recipe: dict[str, Any], request: Request) -> Optiona
         providers[i].pop("extra_headers", None)
         providers[i].pop("extra_body", None)
 
-    # Force skip_health_check on any model_config that references a local
-    # provider. The local /v1/models endpoint only lists the real loaded
-    # model (e.g. "unsloth/llama-3.2-1b") and not the placeholder "local"
-    # that the recipe sends as the model id, so data_designer's pre-flight
-    # health check would otherwise fail before the first completion call.
-    # The backend route ignores the model id field in chat completions, so
-    # skipping the check is safe.
+    # llama-server's /v1/models can differ from the selected id (cache aliases, GGUF variants), and a loaded
+    # backend was already gated on, so the health check only mis-rejects. Force skip_health_check on local
+    # model_configs.
     for mc in recipe.get("model_configs", []):
         if not isinstance(mc, dict):
             continue
         if mc.get("provider") in local_names:
             mc["skip_health_check"] = True
-            # Disable thinking for data-recipe inference on local providers.
-            # Reasoning models emit a <think>...</think> preamble before the
-            # answer, which roughly doubles generated token count per row and
-            # pushes the visible answer past data_designer's json-fence
-            # regex. Forward chat_template_kwargs={enable_thinking: False}
-            # through the OpenAI SDK's extra_body passthrough so llama-server
-            # renders the template without the reasoning preamble. Free-form
-            # llm-text columns benefit from the latency cut, and structured
-            # columns also stop leaking think tags into the grammar-
-            # constrained JSON (llama-server's GBNF path still enforces the
-            # schema either way).
+            # Disable thinking for local recipe inference: the <think> preamble roughly doubles tokens per row and
+            # pushes answers past data_designer's json-fence regex. Forwarded as chat_template_kwargs={enable_thinking:
+            # False} via extra_body so llama-server renders the template without it: llm-text columns get the latency
+            # cut, structured columns stop leaking think tags.
             params = mc.get("inference_parameters")
             if not isinstance(params, dict):
                 params = {}
@@ -319,14 +491,14 @@ def _inject_local_providers(recipe: dict[str, Any], request: Request) -> Optiona
             tpl_kwargs = extra_body.get("chat_template_kwargs")
             if not isinstance(tpl_kwargs, dict):
                 tpl_kwargs = {}
-            tpl_kwargs.setdefault("enable_thinking", False)
+            tpl_kwargs["enable_thinking"] = False
             extra_body["chat_template_kwargs"] = tpl_kwargs
             params["extra_body"] = extra_body
 
-    # Forward each llm-structured column's output_format as an OpenAI
-    # response_format so llama-server uses grammar-constrained sampling and
-    # small GGUFs stop wasting the full max_tokens budget on broken JSON.
-    _inject_local_structured_response_format(recipe, local_names)
+    # Only llama.cpp carries a grammar engine; /v1 refuses response_format on every other local
+    # backend, so those fall back to the prompt-level JSON llm-judge columns already rely on.
+    if _local_chat_serves_gguf():
+        _inject_local_structured_response_format(recipe, local_names)
 
     return internal_key_id
 
@@ -335,20 +507,45 @@ def _normalize_run_name(value: Any) -> str | None:
     if value is None:
         return None
     if not isinstance(value, str):
-        raise HTTPException(
-            status_code = 400, detail = "invalid run_name: must be a string"
-        )
+        raise HTTPException(status_code = 400, detail = "invalid run_name: must be a string")
     trimmed = value.strip()
     if not trimmed:
         return None
     return trimmed[:120]
 
 
+def _resolve_seed_endpoint(recipe: dict[str, Any]) -> None:
+    """Fill in the HF endpoint for a backend-executed seed fetch, in place.
+
+    Data Designer fetches the seed in this process, so the endpoint must be the
+    one THIS machine can reach. A client that sends none (the normal case) gets
+    HF_ENDPOINT resolved here, which matters for a remote browser: /api/health
+    reports the public default to it for a loopback mirror, and shipping that
+    back would bypass the mirror on the deployments that need it most. An
+    endpoint the user typed into the seed node is left alone.
+    """
+    seed_config = recipe.get("seed_config")
+    if not isinstance(seed_config, dict):
+        return
+    source = seed_config.get("source")
+    if not isinstance(source, dict) or source.get("seed_type") != "hf":
+        return
+    if not str(source.get("endpoint") or "").strip():
+        source["endpoint"] = get_hf_endpoint()
+
+
 @router.post("/jobs", response_class = JSONResponse, response_model = JobCreateResponse)
-def create_job(payload: RecipePayload, request: Request):
+def create_job(
+    payload: RecipePayload,
+    request: Request,
+    credential: tuple = Depends(get_current_credential),
+    via_api_key: ViaApiKey = False,
+):
     recipe = payload.recipe
     if not recipe.get("columns"):
         raise HTTPException(status_code = 400, detail = "Recipe must include columns.")
+    if recipe_has_stdio_mcp(recipe):
+        require_ui_session_for_local_commands(via_api_key)
 
     run: dict[str, Any] = payload.run or {}
     run.pop("artifact_path", None)
@@ -365,23 +562,35 @@ def create_job(payload: RecipePayload, request: Request):
     if run_config_raw is not None:
         try:
             from data_designer.config.run_config import RunConfig
-
             RunConfig.model_validate(run_config_raw)
         except (ImportError, ValidationError, TypeError, ValueError) as exc:
-            raise HTTPException(
-                status_code = 400, detail = f"invalid run_config: {exc}"
+            raise log_and_http_error(
+                exc,
+                400,
+                "invalid run_config",
+                event = "data_recipe.jobs.run_config_invalid",
+                log = logger,
             ) from exc
 
-    try:
-        internal_api_key_id = _inject_local_providers(recipe, request)
-    except ValueError as exc:
-        raise HTTPException(status_code = 400, detail = str(exc)) from exc
+    _resolve_seed_endpoint(recipe)
 
-    # Single try block covers get_job_manager() AND mgr.start() so a workflow
-    # key minted above never outlives the request even when an unexpected
-    # exception type (TypeError from a stale kwarg, OSError from a queue
-    # write, etc.) bubbles up. Without the bare except, such exceptions let
-    # the sk-unsloth-* key live until its 24h TTL.
+    try:
+        internal_api_key_id = _inject_local_providers(recipe, request, credential[1])
+    except CredentialRotated as exc:
+        # A reset-password landed after this request authenticated; the workflow key
+        # is refused, so answer like any other revoked credential rather than 500.
+        raise HTTPException(status_code = 401, detail = "Invalid or expired token") from exc
+    except ValueError as exc:
+        raise log_and_http_error(
+            exc,
+            400,
+            safe_curated_detail(exc),
+            event = "data_recipe.jobs.inject_local_providers_failed",
+            log = logger,
+        ) from exc
+
+    # One try over get_job_manager() AND mgr.start(), so an unexpected exception cannot leave
+    # a minted key alive for its full 24h TTL.
     try:
         mgr = get_job_manager()
         job_id = mgr.start(
@@ -392,11 +601,23 @@ def create_job(payload: RecipePayload, request: Request):
     except RuntimeError as exc:
         if internal_api_key_id is not None:
             _revoke_internal_api_key_safe(internal_api_key_id)
-        raise HTTPException(status_code = 409, detail = str(exc)) from exc
+        raise log_and_http_error(
+            exc,
+            409,
+            safe_curated_detail(exc),
+            event = "data_recipe.jobs.start_conflict",
+            log = logger,
+        ) from exc
     except ValueError as exc:
         if internal_api_key_id is not None:
             _revoke_internal_api_key_safe(internal_api_key_id)
-        raise HTTPException(status_code = 400, detail = str(exc)) from exc
+        raise log_and_http_error(
+            exc,
+            400,
+            safe_curated_detail(exc),
+            event = "data_recipe.jobs.start_failed",
+            log = logger,
+        ) from exc
     except Exception:
         if internal_api_key_id is not None:
             _revoke_internal_api_key_safe(internal_api_key_id)
@@ -406,11 +627,9 @@ def create_job(payload: RecipePayload, request: Request):
 
 
 def _revoke_internal_api_key_safe(key_id: int) -> None:
-    """Best-effort revoke of a workflow-minted key; swallow any error so
-    that revocation failures never mask the caller's own error path."""
+    """Best-effort revoke of a workflow-minted key; never mask the caller's error."""
     try:
-        from auth import storage  # deferred: avoids circular import
-
+        from auth import storage
         storage.revoke_internal_api_key(key_id)
     except Exception:
         pass
@@ -472,19 +691,231 @@ def job_dataset(
     }
 
 
+def _content_disposition_attachment(filename: str) -> str:
+    ascii_name = "".join(
+        ch if 32 <= ord(ch) < 127 and ch not in {'"', "\\"} else "_" for ch in filename
+    )
+    if not ascii_name.strip("_"):
+        ascii_name = "dataset.jsonl"
+    from urllib.parse import quote
+
+    return f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{quote(filename)}"
+
+
+_IN_MEMORY_DOWNLOAD_PAGE_SIZE = 10_000
+
+
+def _build_in_memory_job_dataset_download(
+    mgr, job_id: str, *, filename_stem: str
+) -> tuple[Path, str, str]:
+    tmp = tempfile.NamedTemporaryFile(delete = False, suffix = ".jsonl")
+    tmp.close()
+    jsonl_path = Path(tmp.name)
+    offset = 0
+    total: int | None = None
+    # Nothing has registered the temp file for cleanup yet, so an early return has to unlink it.
+    try:
+        with jsonl_path.open("w", encoding = "utf-8") as handle:
+            while True:
+                result = mgr.get_dataset(
+                    job_id,
+                    limit = _IN_MEMORY_DOWNLOAD_PAGE_SIZE,
+                    offset = offset,
+                )
+                if result is None:
+                    raise HTTPException(status_code = 404, detail = "dataset not ready")
+                if "error" in result:
+                    raise HTTPException(status_code = 422, detail = result["error"])
+                rows = result.get("dataset")
+                if not isinstance(rows, list):
+                    raise HTTPException(status_code = 404, detail = "dataset not ready")
+                if total is None:
+                    total_value = result.get("total")
+                    total = int(total_value) if isinstance(total_value, int) else len(rows)
+                if not rows:
+                    break
+                write_jsonl_rows(handle, rows)
+                offset += len(rows)
+                if offset >= total:
+                    break
+        if offset == 0:
+            raise HTTPException(status_code = 404, detail = "dataset not ready")
+    except BaseException:
+        jsonl_path.unlink(missing_ok = True)
+        raise
+    stem = safe_filename_stem(filename_stem.strip() or job_id)
+    return jsonl_path, "application/x-ndjson", f"{stem}.jsonl"
+
+
+def _resolve_download_artifact_path(*, job_id: str, artifact_path: str | None) -> str | None:
+    resolved = (
+        artifact_path.strip() if isinstance(artifact_path, str) and artifact_path.strip() else None
+    )
+    mgr = get_job_manager()
+    status = mgr.get_status(job_id)
+    if status is not None:
+        if status.get("status") != "completed":
+            raise HTTPException(
+                status_code = 409,
+                detail = "Only completed runs can be downloaded.",
+            )
+        status_artifact = status.get("artifact_path")
+        if isinstance(status_artifact, str) and status_artifact.strip():
+            resolved = status_artifact.strip()
+    return resolved
+
+
+@router.get("/jobs/{job_id}/download-url")
+def create_job_dataset_download_url(
+    job_id: str,
+    export_format: ExportFormat = Query(default = "jsonl", alias = "format"),
+    artifact_path: str | None = Query(default = None),
+    filename: str | None = Query(default = None),
+    no_credential: Annotated[bool, Depends(request_admitted_without_credential)] = False,
+):
+    """Mint the signed link the browser or the native downloader then fetches.
+
+    Bearer-gated like the rest of the package. It settles here whether the run can be exported at
+    all, and under what name, so a failure lands in the UI instead of after the save dialog has
+    opened. The URL is relative, so it survives whatever proxy the page itself came through."""
+    if no_credential:
+        # The capability outlives the setting that admitted this caller. As the video links do.
+        raise HTTPException(
+            status_code = 403,
+            detail = "Dataset download links can only be created from the Unsloth UI or with an API key.",
+        )
+    resolved = _resolve_download_artifact_path(job_id = job_id, artifact_path = artifact_path)
+    stem = safe_filename_stem(
+        filename.strip() if isinstance(filename, str) and filename.strip() else job_id
+    )
+    if resolved:
+        try:
+            name = download_filename(artifact_path = resolved, export_format = export_format, stem = stem)
+        except RecipeDatasetExportError as exc:
+            raise log_and_http_error(
+                exc,
+                400,
+                safe_curated_detail(exc),
+                event = "data_recipe.jobs.download_url_failed",
+                log = logger,
+            ) from exc
+    else:
+        if export_format == "parquet":
+            raise HTTPException(
+                status_code = 400,
+                detail = "Parquet download requires persisted recipe artifacts.",
+            )
+        # An in-memory preview lives only while its job is current: ask before the chooser opens.
+        if get_job_manager().get_dataset(job_id, limit = 1, offset = 0) is None:
+            raise HTTPException(status_code = 404, detail = "dataset not ready")
+        name = f"{stem}.jsonl"
+
+    token = _sign_download_link(
+        job_id = job_id,
+        export_format = export_format,
+        artifact_path = artifact_path,
+        filename = filename,
+    )
+    query = {"format": export_format, "token": token}
+    if artifact_path:
+        query["artifact_path"] = artifact_path
+    if filename:
+        query["filename"] = filename
+    # Relative to this router: the frontend's data-recipe base is configurable.
+    return {"path": f"/jobs/{job_id}/download?{urlencode(query)}", "filename": name}
+
+
+@download_router.get("/jobs/{job_id}/download")
+def download_job_dataset(
+    job_id: str,
+    background_tasks: BackgroundTasks,
+    export_format: ExportFormat = Query(default = "jsonl", alias = "format"),
+    artifact_path: str | None = Query(default = None),
+    filename: str | None = Query(default = None),
+):
+    resolved_artifact = _resolve_download_artifact_path(
+        job_id = job_id,
+        artifact_path = artifact_path,
+    )
+    filename_stem = filename.strip() if isinstance(filename, str) and filename.strip() else job_id
+
+    try:
+        if resolved_artifact:
+            if export_format == "parquet":
+                file_path, media_type, download_name = build_dataset_download(
+                    artifact_path = resolved_artifact,
+                    export_format = "parquet",
+                    filename_stem = filename_stem,
+                )
+            else:
+                file_path, media_type, download_name = build_dataset_download(
+                    artifact_path = resolved_artifact,
+                    export_format = "jsonl",
+                    filename_stem = filename_stem,
+                )
+        else:
+            if export_format == "parquet":
+                raise HTTPException(
+                    status_code = 400,
+                    detail = "Parquet download requires persisted recipe artifacts.",
+                )
+            mgr = get_job_manager()
+            file_path, media_type, download_name = _build_in_memory_job_dataset_download(
+                mgr,
+                job_id,
+                filename_stem = filename_stem,
+            )
+    except RecipeDatasetExportError as exc:
+        raise log_and_http_error(
+            exc,
+            400,
+            safe_curated_detail(exc),
+            event = "data_recipe.jobs.download_failed",
+            log = logger,
+        ) from exc
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise log_and_http_error(
+            exc,
+            500,
+            safe_error_detail(exc),
+            event = "data_recipe.jobs.download_error",
+            log = logger,
+        ) from exc
+
+    background_tasks.add_task(file_path.unlink, missing_ok = True)
+    return FileResponse(
+        file_path,
+        media_type = media_type,
+        filename = download_name,
+        headers = {"Content-Disposition": _content_disposition_attachment(download_name)},
+    )
+
+
 @router.post(
     "/jobs/{job_id}/publish",
     response_class = JSONResponse,
     response_model = PublishDatasetResponse,
 )
-def publish_job_dataset(job_id: str, payload: PublishDatasetRequest):
+def publish_job_dataset(
+    request: Request,
+    job_id: str,
+    payload: PublishDatasetRequest,
+    allow_ambient: bool = Depends(allow_ambient_hf_token),
+):
     repo_id = payload.repo_id.strip()
     description = payload.description.strip()
     hf_token = payload.hf_token.strip() if isinstance(payload.hf_token, str) else None
+    hf_token = hf_token or None
+    # publish_recipe_dataset hands this to the Hub client, so None publishes as the host.
+    if hf_token is None and not allow_ambient:
+        raise HTTPException(
+            status_code = 400,
+            detail = "Hugging Face token is required to publish datasets when authenticated via API key.",
+        )
     artifact_path = (
-        payload.artifact_path.strip()
-        if isinstance(payload.artifact_path, str)
-        else None
+        payload.artifact_path.strip() if isinstance(payload.artifact_path, str) else None
     )
 
     if not repo_id:
@@ -495,10 +926,7 @@ def publish_job_dataset(job_id: str, payload: PublishDatasetRequest):
     mgr = get_job_manager()
     status = mgr.get_status(job_id)
     if status is not None:
-        if (
-            status.get("status") != "completed"
-            or status.get("execution_type") != "full"
-        ):
+        if status.get("status") != "completed" or status.get("execution_type") != "full":
             raise HTTPException(
                 status_code = 409,
                 detail = "Only completed full runs can be published.",
@@ -520,11 +948,26 @@ def publish_job_dataset(job_id: str, payload: PublishDatasetRequest):
             description = description,
             hf_token = hf_token or None,
             private = payload.private,
+            # client_ip, not the socket peer: through the managed tunnel the peer
+            # is the local cloudflared process, not the visitor.
+            link_endpoint = client_reachable_endpoint(client_ip(request)),
         )
     except RecipeDatasetPublishError as exc:
-        raise HTTPException(status_code = 400, detail = str(exc)) from exc
+        raise log_and_http_error(
+            exc,
+            400,
+            safe_curated_detail(exc),
+            event = "data_recipe.jobs.publish_failed",
+            log = logger,
+        ) from exc
     except Exception as exc:
-        raise HTTPException(status_code = 500, detail = str(exc)) from exc
+        raise log_and_http_error(
+            exc,
+            500,
+            safe_error_detail(exc),
+            event = "data_recipe.jobs.publish_error",
+            log = logger,
+        ) from exc
 
     return {
         "success": True,
@@ -533,7 +976,9 @@ def publish_job_dataset(job_id: str, payload: PublishDatasetRequest):
     }
 
 
-@router.get("/jobs/{job_id}/events")
+# POST too: quick tunnels hold a streamed GET until it closes. The hidden GET keeps old clients.
+@router.post("/jobs/{job_id}/events")
+@router.get("/jobs/{job_id}/events", include_in_schema = False)
 async def job_events(request: Request, job_id: str):
     mgr = get_job_manager()
     last_id = request.headers.get("last-event-id")
@@ -557,6 +1002,7 @@ async def job_events(request: Request, job_id: str):
 
     async def gen():
         try:
+            last_sent = time.monotonic()
             for event in sub.replay:
                 yield sub.format_sse(event)
 
@@ -565,9 +1011,18 @@ async def job_events(request: Request, job_id: str):
                     break
                 event = await sub.next_event(timeout_sec = 1.0)
                 if event is None:
+                    # A quiet job would otherwise go silent for minutes and take a tunnel 524.
+                    if time.monotonic() - last_sent >= _KEEPALIVE_EVERY_S:
+                        last_sent = time.monotonic()
+                        yield ": keepalive\n\n"
                     continue
+                last_sent = time.monotonic()
                 yield sub.format_sse(event)
         finally:
             mgr.unsubscribe(sub)
 
-    return StreamingResponse(gen(), media_type = "text/event-stream")
+    return StreamingResponse(
+        account_event_stream(mgr, gen()),
+        media_type = "text/event-stream",
+        headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )

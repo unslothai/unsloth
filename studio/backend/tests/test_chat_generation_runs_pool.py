@@ -1,0 +1,445 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""The reused connection behind the durable-run write path.
+
+Opening a connection costs ~50x what the query costs, so this module keeps one per thread per
+database. These are the properties that make that safe to do; each fails if the reuse in
+``chat_generation_runs_db._connect`` is removed or mis-keyed.
+"""
+
+import gc
+import sqlite3
+import threading
+
+import pytest
+
+from storage import chat_generation_runs_db as runs_db
+from storage import studio_db
+from utils.account_context import OWNER, AccountContext, run_as
+from utils.paths import storage_roots as roots
+
+ALICE = AccountContext("11111111111111111111111111111111", "alice")
+BOB = AccountContext("22222222222222222222222222222222", "bob")
+
+
+@pytest.fixture(autouse = True)
+def _isolated_home(tmp_path, monkeypatch):
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    studio_db.close_wal_keeper()
+    runs_db.reset_connection_pool_for_tests()
+    studio_db.reset_schema_state_for_tests()
+    runs_db.reset_schema_state_for_tests()
+    yield
+    runs_db.reset_connection_pool_for_tests()
+
+
+def test_one_thread_reuses_a_single_connection_for_the_same_database():
+    first = runs_db._connect()
+    underlying = first._conn
+    first.close()
+    second = runs_db._connect()
+    try:
+        assert second._conn is underlying
+    finally:
+        second.close()
+
+
+def test_a_borrowed_connection_is_usable_after_being_returned():
+    conn = runs_db._connect()
+    conn.close()
+    again = runs_db._connect()
+    try:
+        assert again.execute("SELECT 1").fetchone()[0] == 1
+    finally:
+        again.close()
+
+
+def test_a_nested_borrow_gets_its_own_connection():
+    """Two live borrows on one thread must not share a handle: BEGIN IMMEDIATE on a connection
+    already inside a transaction raises, and one caller's rollback would discard the other's work."""
+    outer = runs_db._connect()
+    inner = runs_db._connect()
+    try:
+        assert getattr(inner, "_conn", inner) is not outer._conn
+    finally:
+        inner.close()
+        outer.close()
+
+
+def test_an_unfinished_transaction_is_rolled_back_before_reuse():
+    conn = runs_db._connect()
+    conn.execute("BEGIN IMMEDIATE")
+    assert conn.in_transaction
+    conn.close()
+    nxt = runs_db._connect()
+    try:
+        # A handle still inside a transaction would fail here, or worse, silently adopt it.
+        assert not nxt.in_transaction
+        nxt.execute("BEGIN IMMEDIATE")
+        nxt.rollback()
+    finally:
+        nxt.close()
+
+
+def test_two_accounts_never_share_a_cached_connection():
+    """Two accounts resolve to two databases, so a handle cached under one account id must never be
+    handed to the other."""
+    paths = {}
+    handles = {}
+    for account in (ALICE, BOB):
+
+        def grab(account = account):
+            conn = runs_db._connect()
+            paths[account.account_id] = roots.studio_db_path().resolve()
+            handles[account.account_id] = conn._conn
+            conn.close()
+
+        run_as(account, grab)
+
+    assert paths[ALICE.account_id] != paths[BOB.account_id]
+    assert handles[ALICE.account_id] is not handles[BOB.account_id]
+
+
+def test_switching_account_does_not_write_to_the_previous_database():
+    """The sharpest form of the isolation risk: a stale handle would send Bob's row to Alice."""
+
+    def write(marker):
+        conn = runs_db._connect()
+        try:
+            conn.execute("CREATE TABLE IF NOT EXISTS pool_probe (marker TEXT)")
+            conn.execute("INSERT INTO pool_probe (marker) VALUES (?)", (marker,))
+            conn.commit()
+        finally:
+            conn.close()
+
+    def read():
+        conn = runs_db._connect()
+        try:
+            return [row[0] for row in conn.execute("SELECT marker FROM pool_probe").fetchall()]
+        finally:
+            conn.close()
+
+    run_as(ALICE, lambda: write("alice"))
+    run_as(BOB, lambda: write("bob"))
+    assert run_as(ALICE, read) == ["alice"]
+    assert run_as(BOB, read) == ["bob"]
+
+
+def test_each_thread_gets_its_own_connection():
+    """sqlite connections here are created with check_same_thread = True, so a handle shared
+    across threads would raise ProgrammingError on use."""
+    seen = {}
+
+    def grab(name):
+        conn = runs_db._connect()
+        seen[name] = getattr(conn, "_conn", conn)
+        conn.execute("SELECT 1").fetchone()
+        conn.close()
+
+    threads = [threading.Thread(target = grab, args = (name,)) for name in ("a", "b")]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert seen["a"] is not seen["b"]
+
+
+def test_rebinding_schema_ready_drops_the_pooled_connection(monkeypatch):
+    """conftest's _isolate_studio_home rebinds _schema_ready per test. An account id alone cannot
+    see a home that moved beneath it, so the pool keys on that object's identity too."""
+    conn = runs_db._connect()
+    underlying = conn._conn
+    conn.close()
+    monkeypatch.setattr(runs_db, "_schema_ready", set())
+    fresh = runs_db._connect()
+    try:
+        assert fresh._conn is not underlying
+    finally:
+        fresh.close()
+
+
+def test_resetting_schema_state_drops_the_pooled_connection():
+    """reset_schema_state_for_tests is the explicit hook, used by tests that swap homes directly."""
+    conn = runs_db._connect()
+    underlying = conn._conn
+    conn.close()
+    runs_db.reset_schema_state_for_tests()
+    with pytest.raises(sqlite3.ProgrammingError):
+        underlying.execute("SELECT 1")
+
+
+def test_append_events_still_persists_through_a_reused_connection():
+    studio_db.upsert_chat_thread(
+        {"id": "t", "title": "Chat", "modelType": "base", "modelId": "local", "createdAt": 1}
+    )
+    studio_db.upsert_chat_message(
+        {
+            "id": "u",
+            "threadId": "t",
+            "role": "user",
+            "content": [{"type": "text", "text": "x"}],
+            "createdAt": 2,
+        }
+    )
+    runs_db.create_run(
+        run_id = "r",
+        owner_subject = "alice",
+        thread_id = "t",
+        user_message_id = "u",
+        assistant_message_id = "a",
+        request_payload = {"model": "local", "messages": [], "stream": True},
+    )
+    token = runs_db.get_worker_token("r")
+    runs_db.mark_running("r", token)
+    chunk = ("chunk", {"choices": [{"delta": {"content": "hi "}, "index": 0}]})
+    for _ in range(5):
+        runs_db.append_events("r", token, [chunk] * 3)
+    assert len(runs_db.list_events("r", 0)) >= 15
+
+
+def test_an_idle_connection_on_another_LIVE_thread_is_closed_by_a_global_discard():
+    """Account retirement renames the account directory from a request thread, while the SSE loop
+    parks its connections on a 32 thread pool of its own. Windows refuses the rename while any file
+    underneath is open, so an idle handle on a worker that is still alive has to be closed from
+    here. The worker is held alive deliberately: a thread that exits releases its own entry."""
+    parked = {}
+    parked_ready = threading.Event()
+    may_exit = threading.Event()
+
+    def park():
+        conn = runs_db._connect()
+        parked["conn"] = conn._conn
+        conn.close()
+        parked_ready.set()
+        may_exit.wait(timeout = 30)
+
+    worker = threading.Thread(target = park)
+    worker.start()
+    try:
+        assert parked_ready.wait(timeout = 30)
+        assert parked["conn"].execute("SELECT 1").fetchone()[0] == 1
+
+        runs_db._discard_all_pooled()
+        with pytest.raises(sqlite3.ProgrammingError):
+            parked["conn"].execute("SELECT 1")
+    finally:
+        may_exit.set()
+        worker.join(timeout = 30)
+
+
+def test_a_short_lived_threads_connection_is_released_when_it_exits():
+    """The lease sweeper reconciles each account on a FRESH daemon thread every 60 seconds
+    (_sweep_in_daemon_thread). Its pooled entry can never be borrowed again once that thread is
+    gone, so holding it strongly would leak one sqlite handle per sweep until the process runs out
+    of file descriptors. The registry is weak, and the entry closes its connection when collected.
+    """
+    parked = {}
+
+    def park():
+        conn = runs_db._connect()
+        parked["conn"] = conn._conn
+        conn.close()
+
+    worker = threading.Thread(target = park)
+    worker.start()
+    worker.join(timeout = 30)
+
+    gc.collect()
+    with pytest.raises(sqlite3.ProgrammingError):
+        parked["conn"].execute("SELECT 1")
+
+    with runs_db._pool_lock:
+        alive = [ref for ref in runs_db._pool_registry if ref() is not None]
+    assert alive == [], "a dead thread must leave nothing behind in the registry"
+
+
+def test_closing_the_keeper_drops_the_pool_even_when_there_was_no_keeper():
+    """journal_mode=WAL declines on filesystems without shared memory, so those installs never have
+    a keeper. Retirement still calls close_wal_keeper_for and still needs the handle released."""
+    studio_db.close_wal_keeper()
+    conn = runs_db._connect()
+    underlying = conn._conn
+    conn.close()
+    assert studio_db._wal_keepers == {}, "no keeper should be held for this test to mean anything"
+
+    studio_db.close_wal_keeper_for(studio_db.studio_db_path())
+    with pytest.raises(sqlite3.ProgrammingError):
+        underlying.execute("SELECT 1")
+
+
+def test_a_connection_in_use_during_a_global_discard_is_closed_on_return():
+    """Yanking a handle mid query would fail that caller, so the borrower closes it instead of
+    parking it back into a pool that has moved on."""
+    borrowed = runs_db._connect()
+    underlying = borrowed._conn
+    runs_db._discard_all_pooled()
+    assert underlying.execute("SELECT 1").fetchone()[0] == 1, "an in-use handle must survive"
+    borrowed.close()
+    with pytest.raises(sqlite3.ProgrammingError):
+        underlying.execute("SELECT 1")
+
+
+def test_borrowing_races_a_global_discard_without_handing_out_a_closed_handle():
+    """Retirement invalidates every account's pool from an unrelated thread.
+
+    The interleaving is forced rather than hoped for: the entry's key compares equal via a probe
+    that, mid-comparison, lets another thread run _discard_all_pooled. That comparison sits between
+    the generation check and the idle-to-busy transition. Holding _pool_lock across both makes the
+    other thread block until the borrow is marked busy, so the handle survives; without the lock it
+    is closed underneath the borrow and the next query raises ProgrammingError, aborting a live
+    generation belonging to an account nobody deleted.
+    """
+    primed = runs_db._connect()
+    underlying = primed._conn
+    primed.close()
+
+    entry = runs_db._pool.entry
+    assert entry is not None and not entry.busy, "an idle pooled entry is the precondition"
+
+    invalidated = threading.Event()
+
+    def invalidate():
+        runs_db._discard_all_pooled()
+        invalidated.set()
+
+    class _KeyProbe(str):
+        def __eq__(self, other):
+            worker = threading.Thread(target = invalidate)
+            worker.start()
+            # Long enough that an unlocked borrow really does lose the handle, short enough that the
+            # locked one is not slowed: with the lock held the worker cannot get past its acquire.
+            worker.join(timeout = 2.0)
+            return str(self) == str(other)
+
+        def __hash__(self):
+            return str.__hash__(self)
+
+    entry.key = _KeyProbe(entry.key)
+
+    borrowed = runs_db._connect()
+    try:
+        assert borrowed.execute("SELECT 1").fetchone()[0] == 1
+    finally:
+        borrowed.close()
+        invalidated.wait(timeout = 10)
+    assert underlying is not None
+
+
+def test_a_connection_whose_migration_lost_the_lock_is_not_pooled():
+    """_prepare_connection deliberately returns without marking the path ready when the ALTER loses
+    to another writer, so the NEXT call retries. Caching such a connection would skip that next call
+    for the life of the thread: the lease columns would stay missing, progress updates would keep
+    degrading, and reconcile_runs(stale_after_ms=...) would keep reaping nothing."""
+    runs_db.reset_connection_pool_for_tests()
+    runs_db.reset_schema_state_for_tests()
+
+    real_prepare = runs_db._prepare_connection
+    calls = {"n": 0}
+
+    def blocked():
+        conn, _ready = real_prepare()
+        calls["n"] += 1
+        return conn, False
+
+    runs_db._prepare_connection = blocked
+    try:
+        first = runs_db._connect()
+        first.close()
+        second = runs_db._connect()
+        second.close()
+        assert (
+            calls["n"] == 2
+        ), "an unmigrated connection must not be reused; the retry is the point"
+    finally:
+        runs_db._prepare_connection = real_prepare
+        runs_db.reset_connection_pool_for_tests()
+
+    # And once it does complete, pooling resumes.
+    third = runs_db._connect()
+    underlying = third._conn
+    third.close()
+    fourth = runs_db._connect()
+    try:
+        assert fourth._conn is underlying
+    finally:
+        fourth.close()
+
+
+def test_a_handle_prepared_across_an_invalidation_is_not_pooled():
+    """_prepare_connection opens a real connection, so an invalidation can land while it runs, and
+    the new handle is not in the registry yet to be caught by it. Registering it under the new
+    generation would make a connection the invalidator meant to close look freshly pooled, and
+    retirement renames the account roots immediately after invalidating. The uncached path always
+    closed, so leaving this one open would be a regression rather than an inherited gap."""
+    runs_db.reset_connection_pool_for_tests()
+    real_prepare = runs_db._prepare_connection
+
+    def prepare_then_invalidate():
+        conn, migrated = real_prepare()
+        # Exactly the window: prepared, not yet registered.
+        runs_db._discard_all_pooled()
+        return conn, migrated
+
+    runs_db._prepare_connection = prepare_then_invalidate
+    try:
+        borrowed = runs_db._connect()
+        underlying = getattr(borrowed, "_conn", borrowed)
+        borrowed.close()
+    finally:
+        runs_db._prepare_connection = real_prepare
+
+    assert runs_db._pool_registry == [], "a handle raced by invalidation must not be pooled"
+    with pytest.raises(sqlite3.ProgrammingError):
+        underlying.execute("SELECT 1")
+
+
+def test_the_registry_does_not_grow_with_every_short_lived_thread():
+    """The sweeper adds a pooled entry per account per minute on a fresh daemon thread. The entry
+    itself is collected, but a dead weakref left behind would accumulate for the life of the
+    process and lengthen every later scan. Insert and unregister prune."""
+    runs_db.reset_connection_pool_for_tests()
+
+    def park():
+        conn = runs_db._connect()
+        conn.close()
+
+    for _ in range(25):
+        worker = threading.Thread(target = park)
+        worker.start()
+        worker.join(timeout = 30)
+
+    gc.collect()
+    with runs_db._pool_lock:
+        depth = len(runs_db._pool_registry)
+    assert depth <= 2, f"registry grew to {depth} entries across 25 short-lived threads"
+
+
+def test_a_handle_whose_rollback_failed_is_discarded_rather_than_parked():
+    """If rollback raises, the transaction is still open. Parking that handle would hand the next
+    borrower a connection whose BEGIN IMMEDIATE fails, or let its commit carry the previous
+    caller's uncommitted work."""
+    runs_db.reset_connection_pool_for_tests()
+    borrowed = runs_db._connect()
+    underlying = borrowed._conn
+
+    class _StuckInTransaction:
+        def __getattr__(self, name):
+            return getattr(underlying, name)
+
+        @property
+        def in_transaction(self):
+            return True
+
+        def rollback(self):
+            raise sqlite3.OperationalError("disk I/O error")
+
+    object.__setattr__(borrowed, "_conn", _StuckInTransaction())
+    runs_db._pool.entry.conn = borrowed._conn
+    borrowed.close()
+
+    with runs_db._pool_lock:
+        alive = [ref for ref in runs_db._pool_registry if ref() is not None]
+    assert alive == [], "a handle whose rollback failed must not stay in the pool"
+    assert getattr(runs_db._pool, "entry", None) is None
+    runs_db.reset_connection_pool_for_tests()
