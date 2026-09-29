@@ -567,7 +567,6 @@ def build_parser():
     )
     parser.add_argument("--stride", type = int, default = 512, help = "Overlap between chunks")
 
-    # ASFT Options
     asft_group = parser.add_argument_group(
         "🎯 ASFT Options",
         "Anchored Supervised Fine-Tuning loss configuration (off by default)",

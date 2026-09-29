@@ -46,7 +46,6 @@ from unsloth_zoo.hf_utils import get_transformers_model_type
 from unsloth_zoo.utils import Version
 import dataclasses
 
-# Import ASFT components
 from unsloth.losses.asft import (
     ASFTStreamingConfig,
     compute_asft_loss,
@@ -1075,21 +1074,7 @@ class UnslothTrainer(SFTTrainer):
 
 
 class ASFTTrainer(UnslothTrainer):
-    """Trainer with ASFT (Anchored Supervised Fine-Tuning) loss support.
-
-    ASFT provides alternative loss functions that weight tokens based on
-    model confidence and/or maintain similarity to a reference model.
-
-    When asft_enabled=False (default), this trainer behaves identically
-    to UnslothTrainer/SFTTrainer with no changes to loss computation.
-
-    Attributes:
-        asft_enabled: Whether to use ASFT loss computation.
-        asft_mode: Loss mode ("sft", "dft", "sft+kl", "asft").
-        kl_weight: Weight for KL divergence term.
-        reference_policy: How to get reference distribution.
-        asft_streaming: Streaming configuration for VRAM reduction.
-    """
+    """UnslothTrainer with an opt-in ASFT loss; asft_enabled=False leaves compute_loss untouched."""
 
     def __init__(
         self,
@@ -1103,26 +1088,6 @@ class ASFTTrainer(UnslothTrainer):
         normalize_by: Literal["tokens", "weights"] = "tokens",
         **kwargs,
     ):
-        """Initialize ASFTTrainer.
-
-        Args:
-            *args: Positional arguments for parent trainer.
-            asft_enabled: Whether to enable ASFT loss. Default False preserves
-                          standard SFT behavior completely unchanged.
-            asft_mode: Loss computation mode:
-                - "sft": Standard cross-entropy (for debugging/comparison)
-                - "dft": CE weighted by model's token probability
-                - "sft+kl": CE + KL divergence from reference
-                - "asft": Full ASFT (DFT + KL)
-            kl_weight: Weight for KL term (used in sft+kl and asft modes).
-            kl_direction: "forward" for KL(p_ref || p_cur), "reverse" for KL(p_cur || p_ref).
-            reference_policy: How to compute reference distribution:
-                - "disable_adapter": Use model with LoRA adapters disabled
-                - "frozen_copy": Use a frozen deepcopy of the model
-            asft_streaming: Optional streaming config for VRAM reduction.
-            normalize_by: "tokens" (default) or "weights" for DFT/ASFT normalization.
-            **kwargs: Keyword arguments for parent trainer.
-        """
         super().__init__(*args, **kwargs)
 
         self.asft_enabled = asft_enabled
@@ -1133,7 +1098,6 @@ class ASFTTrainer(UnslothTrainer):
         self.asft_streaming = asft_streaming or ASFTStreamingConfig()
         self.normalize_by = normalize_by
 
-        # Will be lazily initialized if needed
         self._asft_original_model = None
 
     def compute_loss(
@@ -1143,21 +1107,6 @@ class ASFTTrainer(UnslothTrainer):
         return_outputs = False,
         **kwargs,
     ):
-        """Compute loss with optional ASFT path.
-
-        When asft_enabled=False, delegates entirely to parent compute_loss.
-        When asft_enabled=True, uses ASFT loss computation.
-
-        Args:
-            model: The model to compute loss for.
-            inputs: Input dictionary.
-            return_outputs: Whether to return model outputs.
-            **kwargs: Additional arguments.
-
-        Returns:
-            Loss tensor, or (loss, outputs) tuple if return_outputs=True.
-        """
-        # If ASFT is disabled, use standard path unchanged
         if not self.asft_enabled:
             return super().compute_loss(model, inputs, return_outputs = return_outputs, **kwargs)
 
@@ -1186,7 +1135,6 @@ class ASFTTrainer(UnslothTrainer):
                 self._asft_original_model.eval()
                 self._asft_original_model.requires_grad_(False)
 
-        # ASFT-enabled path
         return compute_asft_loss(
             model = model,
             inputs = inputs,
