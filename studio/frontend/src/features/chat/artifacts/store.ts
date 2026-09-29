@@ -31,9 +31,9 @@ type ChatArtifactsState = {
     artifact: ChatArtifact,
     options?: { surface?: ChatArtifactSurface; view?: ArtifactViewMode },
   ) => void;
-  setArtifactView: (view: ArtifactViewMode) => void;
   updateArtifact: (artifact: ChatArtifact) => void;
   closeArtifactSurface: () => void;
+  setArtifactView: (view: ArtifactViewMode) => void;
   clearArtifactsForThread: (threadId: string | null | undefined) => void;
   clearOrphanedArtifacts: () => void;
   resetArtifacts: () => void;
@@ -56,7 +56,6 @@ export const useChatArtifactsStore = create<ChatArtifactsState>((set) => ({
       surface: options?.surface ?? state.surface,
       requestedView: options?.view ?? "preview",
     })),
-  setArtifactView: (view) => set({ requestedView: view }),
   updateArtifact: (artifact) =>
     set((state) =>
       state.artifactsById[artifact.id]
@@ -70,6 +69,7 @@ export const useChatArtifactsStore = create<ChatArtifactsState>((set) => ({
     ),
   closeArtifactSurface: () =>
     set({ selectedArtifactId: null, surface: "panel" }),
+  setArtifactView: (view) => set({ requestedView: view }),
   clearArtifactsForThread: (threadId) =>
     set((state) => {
       if (!threadId) return state;
