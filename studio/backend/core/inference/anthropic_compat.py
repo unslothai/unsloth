@@ -114,6 +114,14 @@ def _anthropic_image_block_to_openai_part(block: dict) -> Optional[dict]:
     return None
 
 
+def _tool_error_content(content: Union[str, list]) -> Union[str, list]:
+    if isinstance(content, list):
+        return [{"type": "text", "text": "Error:"}, *content]
+    if not content:
+        return "Error: tool returned no content"
+    return content if content.startswith("Error:") else f"Error: {content}"
+
+
 def anthropic_messages_to_openai(
     messages: list[dict],
     system: Optional[Union[str, list]] = None,
@@ -236,6 +244,8 @@ def anthropic_messages_to_openai(
                             if any(p["type"] == "image_url" for p in parts)
                             else "\n".join(p["text"] for p in parts)
                         )
+                    if b.get("is_error"):
+                        tc = _tool_error_content(tc)
                     tool_results.append(
                         {
                             "role": "tool",

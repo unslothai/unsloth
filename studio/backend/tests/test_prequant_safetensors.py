@@ -516,3 +516,81 @@ def test_a_field_carrying_a_real_setting_is_refused_rather_than_dropped():
         ps._header_without_unconstructible_fields(
             _unflatten, {}, header, path = "artifact.safetensors"
         )
+
+
+def test_an_all_zero_tensor_field_a_newer_torchao_added_is_dropped():
+    torch = pytest.importorskip("torch")
+
+    def _unflatten(tensors, header):
+        if "zero_point" in json.loads(header["blk.w.weight"])["_tensor_data_names"]:
+            raise ValueError(
+                "Failed to create instance of Int8Tensor: Int8Tensor.__new__() got an "
+                "unexpected keyword argument 'zero_point'"
+            )
+        return {"blk.w.weight": object()}, {}
+
+    tensors = {
+        "blk.w._weight_qdata": torch.zeros(2, 4, dtype = torch.int8),
+        "blk.w._weight_scale": torch.ones(2, 1),
+        "blk.w._weight_zero_point": torch.zeros(2, 1, dtype = torch.int8),
+    }
+    header = {
+        "blk.w.weight": json.dumps(
+            {
+                "_type": "Int8Tensor",
+                "_data": {},
+                "_tensor_data_names": ["zero_point", "qdata", "scale"],
+            }
+        ),
+        ps.UNSLOTH_FORMAT_KEY: "v1",
+    }
+    pruned = ps._header_without_unconstructible_fields(
+        _unflatten, tensors, header, path = "artifact.safetensors"
+    )
+    assert json.loads(pruned["blk.w.weight"])["_tensor_data_names"] == ["qdata", "scale"]
+    assert "blk.w._weight_zero_point" not in tensors
+    assert pruned[ps.UNSLOTH_FORMAT_KEY] == "v1"
+
+
+def test_a_non_zero_tensor_field_is_refused_rather_than_dropped():
+    torch = pytest.importorskip("torch")
+
+    def _unflatten(tensors, header):
+        raise ValueError("unexpected keyword argument 'zero_point'")
+
+    tensors = {"blk.w._weight_zero_point": torch.ones(2, 1, dtype = torch.int8)}
+    header = {"blk.w.weight": json.dumps({"_data": {}, "_tensor_data_names": ["zero_point"]})}
+    with pytest.raises(ValueError, match = "zero_point"):
+        ps._header_without_unconstructible_fields(
+            _unflatten, tensors, header, path = "artifact.safetensors"
+        )
+
+
+def test_a_missing_tensor_field_is_refused_rather_than_read_as_zero():
+    torch = pytest.importorskip("torch")
+
+    def _unflatten(tensors, header):
+        raise ValueError("unexpected keyword argument 'zero_point'")
+
+    names = json.dumps({"_data": {}, "_tensor_data_names": ["zero_point", "qdata", "scale"]})
+    tensors = {
+        "a.w._weight_zero_point": torch.zeros(2, 1, dtype = torch.int8),
+        "b.w._weight_qdata": torch.zeros(2, 4, dtype = torch.int8),
+        "b.w._weight_scale": torch.ones(2, 1),
+    }
+    header = {"a.w.weight": names, "b.w.weight": names}
+    with pytest.raises(ValueError, match = "b.w._weight_zero_point"):
+        ps._header_without_unconstructible_fields(
+            _unflatten, tensors, header, path = "artifact.safetensors"
+        )
+
+
+def test_torchao_older_than_the_floor_is_not_safetensors_support(monkeypatch):
+    assert ps._version_tuple("0.14.0") < ps.MIN_TORCHAO_VERSION
+    assert ps._version_tuple("0.16.0+cu130") >= ps.MIN_TORCHAO_VERSION
+    assert ps._version_tuple("0.19.0+git492be6c") >= ps.MIN_TORCHAO_VERSION
+    assert ps._version_tuple(None) >= ps.MIN_TORCHAO_VERSION
+    assert ps._version_tuple("dev") >= ps.MIN_TORCHAO_VERSION
+    monkeypatch.setattr(ps, "_torchao_version", lambda: "0.14.0")
+    assert ps._torchao_helpers() is None
+    assert ps.safetensors_prequant_supported() is False

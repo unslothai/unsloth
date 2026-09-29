@@ -4,7 +4,7 @@
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from auth.authentication import get_current_subject
+from auth.authentication import authenticated_via_api_key, get_current_subject
 from routes import benchmarks as benchmarks_routes
 from storage import benchmark_runs_db as db
 
@@ -65,6 +65,7 @@ def _run(run_id = "run-1", results = None):
 def _client():
     app = FastAPI()
     app.dependency_overrides[get_current_subject] = lambda: "unsloth"
+    app.dependency_overrides[authenticated_via_api_key] = lambda: False
     app.include_router(benchmarks_routes.router, prefix = "/api/benchmarks")
     return TestClient(app)
 

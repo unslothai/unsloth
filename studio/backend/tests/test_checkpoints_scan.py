@@ -254,3 +254,98 @@ def test_scan_checkpoints_prefers_exact_history_match_over_newer_suffix(tmp_path
     models = checkpoints_module.scan_checkpoints(outputs_dir = str(outputs_dir))
 
     assert models[0][2]["base_model"] == "correct/base"
+
+
+def test_scan_checkpoints_lists_run_with_only_intermediate_checkpoints(tmp_path, monkeypatch):
+    outputs_dir = _make_outputs_dir(tmp_path, monkeypatch)
+    run_dir = outputs_dir / "run_x"
+    for step, loss, adapter_config in (
+        (50, 0.75, {}),
+        (100, 0.5, {"base_model_name_or_path": "unsloth/X", "peft_type": "LORA", "r": 16}),
+    ):
+        checkpoint_dir = run_dir / f"checkpoint-{step}"
+        checkpoint_dir.mkdir(parents = True)
+        (checkpoint_dir / "adapter_config.json").write_text(json.dumps(adapter_config))
+        (checkpoint_dir / "trainer_state.json").write_text(
+            json.dumps({"log_history": [{"loss": loss}]})
+        )
+    partial_dir = outputs_dir / "run_partial" / "tmp-checkpoint-5"
+    partial_dir.mkdir(parents = True)
+    (partial_dir / "adapter_config.json").write_text("{}")
+
+    models = checkpoints_module.scan_checkpoints(outputs_dir = str(outputs_dir))
+
+    assert models == [
+        (
+            "run_x",
+            [
+                ("checkpoint-100", str(run_dir / "checkpoint-100"), 0.5),
+                ("checkpoint-50", str(run_dir / "checkpoint-50"), 0.75),
+            ],
+            {"base_model": "unsloth/X", "peft_type": "LORA", "lora_rank": 16},
+        )
+    ]
+
+    targets = checkpoints_module.list_preview_targets(str(outputs_dir))
+
+    assert [(t["ref"], t["is_latest"]) for t in targets] == [
+        ("run_x/checkpoint-100", False),
+        ("run_x/checkpoint-50", False),
+    ]
+
+
+def test_scan_checkpoints_skips_unreadable_folder(tmp_path, monkeypatch):
+    outputs_dir = _make_outputs_dir(tmp_path, monkeypatch)
+    run_dir = outputs_dir / "run_done"
+    run_dir.mkdir()
+    (run_dir / "adapter_config.json").write_text("{}")
+    (outputs_dir / "locked").mkdir()
+    (outputs_dir / "locked_checkpoint" / "checkpoint-100").mkdir(parents = True)
+    real_iterdir, real_exists = Path.iterdir, Path.exists
+
+    def iterdir(self):
+        if self.name == "locked":
+            raise PermissionError(13, "Permission denied", str(self))
+        return real_iterdir(self)
+
+    def exists(self, *args, **kwargs):
+        if self.parent.name in ("locked", "checkpoint-100"):
+            raise PermissionError(13, "Permission denied", str(self))
+        return real_exists(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "iterdir", iterdir)
+    monkeypatch.setattr(Path, "exists", exists)
+
+    models = checkpoints_module.scan_checkpoints(outputs_dir = str(outputs_dir))
+
+    assert [name for name, _checkpoints, _metadata in models] == ["run_done"]
+
+
+def test_scan_checkpoints_keeps_root_adapter_first(tmp_path, monkeypatch):
+    outputs_dir = _make_outputs_dir(tmp_path, monkeypatch)
+    run_dir = outputs_dir / "run_root"
+    run_dir.mkdir()
+    (run_dir / "adapter_config.json").write_text(
+        json.dumps({"base_model_name_or_path": "unsloth/X", "peft_type": "LORA", "r": 16})
+    )
+    for step, loss in ((50, 0.25), (100, 0.125)):
+        checkpoint_dir = run_dir / f"checkpoint-{step}"
+        checkpoint_dir.mkdir()
+        (checkpoint_dir / "adapter_config.json").write_text("{}")
+        (checkpoint_dir / "trainer_state.json").write_text(
+            json.dumps({"log_history": [{"loss": loss}]})
+        )
+
+    models = checkpoints_module.scan_checkpoints(outputs_dir = str(outputs_dir))
+
+    assert models == [
+        (
+            "run_root",
+            [
+                ("run_root", str(run_dir), 0.125),
+                ("checkpoint-100", str(run_dir / "checkpoint-100"), 0.125),
+                ("checkpoint-50", str(run_dir / "checkpoint-50"), 0.25),
+            ],
+            {"base_model": "unsloth/X", "peft_type": "LORA", "lora_rank": 16},
+        )
+    ]

@@ -26,11 +26,36 @@ DEFAULT_ALPACA_TEMPLATE = """Below is an instruction that describes a task, pair
 ### Response:
 {}"""
 
+# Renders a single-turn conversation byte-identical to a DEFAULT_ALPACA_TEMPLATE row with an empty input.
+STUDIO_ALPACA_CHAT_TEMPLATE = (
+    "{{ bos_token }}"
+    "{% if messages[0]['role'] == 'system' %}"
+    "{{ messages[0]['content'] + '\\n\\n' }}{% set loop_messages = messages[1:] %}"
+    "{% else %}"
+    "{{ '" + DEFAULT_ALPACA_TEMPLATE.split("\n\n", 1)[0] + "\\n\\n' }}{% set loop_messages = messages %}"
+    "{% endif %}"
+    "{% for message in loop_messages %}"
+    "{% if message['role'] == 'user' %}"
+    "{{ '### Instruction:\\n' + message['content'] + '\\n\\n### Input:\\n\\n\\n' }}"
+    "{% elif message['role'] == 'assistant' %}"
+    "{{ '### Response:\\n' + message['content'] + eos_token }}"
+    "{% if not loop.last %}{{ '\\n\\n' }}{% endif %}"
+    "{% else %}"
+    "{{ raise_exception('Only user and assistant roles are supported!') }}"
+    "{% endif %}"
+    "{% endfor %}"
+    "{% if add_generation_prompt %}{{ '### Response:\\n' }}{% endif %}"
+)
+
 _TEMPLATE_ERROR_COLUMN = "__chat_template_error"
 
 # Rows per batch when scanning or filtering the error column, so neither pass
 # materialises the whole column in Python.
 _ERROR_SCAN_BATCH = 10_000
+
+_TEMPLATE_PROBE_ROWS = 8
+
+_CHOSEN_TEMPLATE_ATTR = "_unsloth_studio_chat_template_choice"
 
 _CUSTOM_PROMPT_TEMPLATE_ERROR = (
     "custom_prompt_template is deprecated and unsupported because Unsloth Studio cannot persist a "
@@ -106,6 +131,117 @@ def get_tokenizer_chat_template(tokenizer, model_name):
                 logger.info(f"   Falling back to tokenizer as-is")
 
     return tokenizer
+
+
+def get_training_chat_template(tokenizer, model_name, final_format):
+    if getattr(tokenizer, "chat_template", None):
+        return tokenizer
+    if final_format in ("chatml_messages", "chatml_conversations"):
+        return get_tokenizer_chat_template(tokenizer, model_name)
+    if final_format != "alpaca":
+        return tokenizer
+    try:
+        from unsloth.chat_templates import get_chat_template
+        tokenizer = get_chat_template(
+            tokenizer,
+            chat_template = "alpaca",
+            **_chat_template_kwargs(),
+        )
+        # Unsloth's "alpaca" template words the preamble differently and has no Input section.
+        _set_chat_template(tokenizer, STUDIO_ALPACA_CHAT_TEMPLATE)
+        logger.info(f"📝 Set alpaca chat template on tokenizer for model saving")
+    except Exception as e:
+        logger.info(f"⚠️ Could not set alpaca template on tokenizer: {e}")
+    return tokenizer
+
+
+def _set_chat_template(tokenizer, chat_template):
+    """Set on processor and tokenizer; does not undo ``get_chat_template`` EOS remapping (Gemma 1/2)."""
+    tokenizer.chat_template = chat_template
+    inner = getattr(tokenizer, "tokenizer", None)
+    if inner is not None and inner is not tokenizer and hasattr(inner, "chat_template"):
+        inner.chat_template = chat_template
+
+
+def _count_renderable(tokenizer, conversations):
+    rendered = 0
+    for conversation in conversations:
+        try:
+            tokenizer.apply_chat_template(
+                conversation,
+                tokenize = False,
+                add_generation_prompt = False,
+            )
+            rendered += 1
+        except Exception:
+            pass
+    return rendered
+
+
+def _sample_conversations(dataset, chat_column, limit = _TEMPLATE_PROBE_ROWS):
+    """Sample across the dataset, or from the start for streaming datasets."""
+    n_rows = len(dataset) if hasattr(dataset, "__len__") else 0
+    conversations = []
+    try:
+        if n_rows > limit:
+            step = (n_rows - 1) / (limit - 1)
+            rows = (dataset[round(i * step)] for i in range(limit))
+        else:
+            rows = dataset
+        for row in rows:
+            conversation = row.get(chat_column)
+            if conversation:
+                conversations.append(conversation)
+            if len(conversations) >= limit:
+                break
+    except Exception:
+        return []
+    return conversations
+
+
+def keep_renderable_chat_template(tokenizer, dataset, chat_column, own_template):
+    """Restore the checkpoint template if it renders more sampled rows; return a log note."""
+    override = getattr(tokenizer, "chat_template", None)
+    if not own_template or override == own_template:
+        return None
+
+    conversations = _sample_conversations(dataset, chat_column)
+    if not conversations:
+        return None
+
+    rendered_by_override = _count_renderable(tokenizer, conversations)
+    if rendered_by_override == len(conversations):
+        return None
+
+    _set_chat_template(tokenizer, own_template)
+    if _count_renderable(tokenizer, conversations) <= rendered_by_override:
+        _set_chat_template(tokenizer, override)
+        return None
+
+    return (
+        "📝 The Unsloth chat template cannot render this dataset's conversations "
+        "(tool calls or consecutive same-role turns); using the model's own chat "
+        "template instead"
+    )
+
+
+def resolve_dataset_chat_template(tokenizer, model_name, dataset, chat_column):
+    """Choose on the first split and reuse for evaluation and saving."""
+    remembered = getattr(tokenizer, _CHOSEN_TEMPLATE_ATTR, None)
+    if remembered is not None and remembered[0] == model_name:
+        _set_chat_template(tokenizer, remembered[1])
+        return tokenizer, None
+
+    own_template = getattr(tokenizer, "chat_template", None)
+    tokenizer = get_tokenizer_chat_template(tokenizer, model_name)
+    note = keep_renderable_chat_template(tokenizer, dataset, chat_column, own_template)
+    try:
+        chosen = (model_name, getattr(tokenizer, "chat_template", None))
+        setattr(tokenizer, _CHOSEN_TEMPLATE_ATTR, chosen)
+    except Exception:
+        # Wrappers that reject new attributes cannot retain the choice across splits.
+        pass
+    return tokenizer, note
 
 
 def get_dataset_info_summary(dataset_info):
@@ -233,11 +369,12 @@ def apply_chat_template_to_dataset(
 
                                 if is_user_provided:
                                     # User-mapped: include even if empty.
-                                    convo.append({"role": role, "content": str(content) if content else ""})
+                                    convo.append({"role": role, "content": cell_text(content)})
                                 else:
                                     # Auto-detected: skip empty.
-                                    if content and str(content).strip():
-                                        convo.append({"role": role, "content": str(content)})
+                                    text = cell_text(content)
+                                    if text.strip():
+                                        convo.append({"role": role, "content": text})
 
                     conversations.append(convo)
 
@@ -268,18 +405,7 @@ def apply_chat_template_to_dataset(
     # ALPACA FORMAT
     if final_format == "alpaca":
 
-        # Set the alpaca chat template if unset, so it is saved for inference.
-        if not (hasattr(tokenizer, 'chat_template') and tokenizer.chat_template):
-            try:
-                from unsloth.chat_templates import get_chat_template
-                tokenizer = get_chat_template(
-                    tokenizer,
-                    chat_template = "alpaca",
-                    **_chat_template_kwargs(),
-                )
-                logger.info(f"📝 Set alpaca chat template on tokenizer for model saving")
-            except Exception as e:
-                logger.info(f"⚠️ Could not set alpaca template on tokenizer: {e}")
+        tokenizer = get_training_chat_template(tokenizer, model_name, final_format)
 
         def _format_alpaca(examples):
             texts = []
@@ -341,7 +467,11 @@ def apply_chat_template_to_dataset(
             warnings.append("Dataset may not be fully standardized")
 
         if model_name:
-            tokenizer = get_tokenizer_chat_template(tokenizer, model_name)
+            tokenizer, kept_own_template = resolve_dataset_chat_template(
+                tokenizer, model_name, dataset, chat_column
+            )
+            if kept_own_template:
+                logger.info(kept_own_template)
 
         streamed_failures = []
 

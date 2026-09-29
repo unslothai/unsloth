@@ -112,13 +112,15 @@ except ValueError as exc:
 
 # Windows ROCm ships no distributed backend, so torchao and the CUDA-only xformers both die on import,
 # taking diffusers/transformers with them. A stub only seeds a name nothing has imported yet, so both must
-# precede the first import below.
+# precede the first import below. An xformers built for a newer torch fails the same import anywhere.
 from core._torchao_stub import (
+    hide_xformers_built_for_another_torch,
     install_torchao_windows_rocm_stub,
     install_xformers_windows_rocm_stub,
 )
 
 install_xformers_windows_rocm_stub()
+hide_xformers_built_for_another_torch()
 install_torchao_windows_rocm_stub()
 
 # Anaconda/conda-forge Python: seed platform._sys_version_cache before imports that trigger attrs ->
@@ -1506,6 +1508,15 @@ def _graceful_shutdown(server = None):
             _llama_cpp_backend._kill_process(teardown = True)
     except Exception as e:
         logger.warning("Error shutting down llama-server: %s", e)
+
+    try:
+        from core.inference.npu_backend import peek_npu_backend
+        _npu = peek_npu_backend()
+        if _npu is not None:
+            # Unload first: lemond then stops FastFlowLM itself, before the tree kill.
+            _npu.shutdown()
+    except Exception as e:
+        logger.warning("Error shutting down the NPU runtime: %s", e)
 
     try:
         from cloudflare_tunnel import close_studio_tunnel_lifecycle

@@ -26,9 +26,8 @@ from storage import chat_generation_runs_db as db
 
 logger = get_logger(__name__)
 _EVENT_BATCH_SIZE = 16
-_EVENT_BATCH_MIN_SIZE = 2
-_EVENT_BATCH_SECONDS = 0.1
-_EVENT_SINGLE_FLUSH_SECONDS = 1.0
+# Followers only see appended chunks, so this is the chat's text frame rate: at most one commit per display frame.
+_EVENT_FLUSH_SECONDS = 1 / 60
 _SHUTDOWN_GRACE_SECONDS = 10.0
 # Second budget, after task.cancel(). Shorter than the grace period: by this point the run is already being abandoned,
 # and the only question is whether shutdown returns.
@@ -66,7 +65,12 @@ class _SSEDecoder:
         return values
 
 
-def _background_request(app: Any, run_id: str, cancel_event: threading.Event) -> Request:
+def _background_request(
+    app: Any,
+    run_id: str,
+    cancel_event: threading.Event,
+    timezone_headers: dict[str, str] | None = None,
+) -> Request:
     scope = {
         "type": "http",
         "asgi": {"version": "3.0", "spec_version": "2.3"},
@@ -80,6 +84,10 @@ def _background_request(app: Any, run_id: str, cancel_event: threading.Event) ->
             (b"x-unsloth-generation-run", run_id.encode("ascii", "ignore")),
             # Durable runs replay their event log to the UI, which needs the Unsloth control frames (see routes.inference).
             (b"x-unsloth-events", b"1"),
+            *(
+                (name.encode("latin-1"), value.encode("latin-1"))
+                for name, value in (timezone_headers or {}).items()
+            ),
         ],
         "client": ("127.0.0.1", 0),
         "server": ("127.0.0.1", 0),
@@ -387,6 +395,8 @@ _ADMISSION_WAIT_MARKER = ": admission-wait"
 # Leaving the queue. Renewed unconditionally: wait renewals are rate limited, and the lease equals the first-token
 # timeout, so any age carried in is negative margin.
 _ADMISSION_DONE_MARKER = ": admission-done"
+# A server-side tool still running. Rate limited like the wait marker.
+_TOOL_HEARTBEAT_MARKER = ": tool-heartbeat"
 
 
 def _minimum_lease_seconds() -> float:
@@ -739,13 +749,15 @@ class ChatGenerationSupervisor:
 
                 from routes.inference import produce_openai_chat_completions
 
-                payload = ChatCompletionRequest.model_validate(run["requestPayload"])
+                request_payload = dict(run["requestPayload"])
+                timezone_headers = request_payload.pop(db.TIMEZONE_HEADERS_FIELD, None)
+                payload = ChatCompletionRequest.model_validate(request_payload)
                 # Switching, idle reload and auto-download all happen in the call below, and llama.cpp's first-token
                 # budget only starts after it. One touch afterwards cannot cover a preparation longer than the lease
                 # itself.
                 response = await produce_openai_chat_completions(
                     payload,
-                    _background_request(self.app, run_id, cancel_event),
+                    _background_request(self.app, run_id, cancel_event, timezone_headers),
                     owner,
                     cancel_on_disconnect = False,
                 )
@@ -760,15 +772,7 @@ class ChatGenerationSupervisor:
             next_raw_task = asyncio.create_task(iterator.__anext__())
             while True:
                 timeout = (
-                    max(
-                        0.0,
-                        (
-                            _EVENT_BATCH_SECONDS
-                            if len(pending) >= _EVENT_BATCH_MIN_SIZE
-                            else _EVENT_SINGLE_FLUSH_SECONDS
-                        )
-                        - (time.monotonic() - last_flush),
-                    )
+                    max(0.0, _EVENT_FLUSH_SECONDS - (time.monotonic() - last_flush))
                     if pending
                     else None
                 )
@@ -798,7 +802,7 @@ class ChatGenerationSupervisor:
                 if _ADMISSION_DONE_MARKER in text:
                     last_keepalive = time.monotonic()
                     await self._try_touch_progress(run_id)
-                elif _ADMISSION_WAIT_MARKER in text:
+                elif _ADMISSION_WAIT_MARKER in text or _TOOL_HEARTBEAT_MARKER in text:
                     now_s = time.monotonic()
                     if now_s - last_keepalive >= _renew_interval_seconds():
                         last_keepalive = now_s
@@ -817,9 +821,9 @@ class ChatGenerationSupervisor:
                     finish_reason = _chunk_finish_reason(chunk) or finish_reason
                     error = _chunk_error(chunk) or error
                     now = time.monotonic()
-                    if len(pending) >= _EVENT_BATCH_SIZE or (
-                        len(pending) >= _EVENT_BATCH_MIN_SIZE
-                        and now - last_flush >= _EVENT_BATCH_SECONDS
+                    if (
+                        len(pending) >= _EVENT_BATCH_SIZE
+                        or now - last_flush >= _EVENT_FLUSH_SECONDS
                     ):
                         await asyncio.to_thread(
                             db.append_events,

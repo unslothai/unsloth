@@ -371,7 +371,7 @@ export function RemoteAccessSection() {
           </div>
           <div className="flex min-w-0 flex-col gap-0.5">
             <div className="flex flex-wrap items-center gap-2">
-              <h2 className="text-base font-semibold font-heading text-foreground">
+              <h2 className="settings-heading text-base font-semibold font-heading">
                 Remote access
               </h2>
               <AccessStatus status={status} />

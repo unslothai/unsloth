@@ -229,6 +229,10 @@ def family_te_prequant_repo(fam: Any, scheme: str, component: str) -> Optional[s
     Reads the family's ``te_prequant_repos`` (scheme, component, repo_id) triples; the field
     is optional on both DiffusionFamily and VideoFamily, so one resolver serves both loaders.
     """
+    from .diffusion_nvfp4_flag import nvfp4_blocked
+
+    if nvfp4_blocked(scheme):
+        return None
     for entry in getattr(fam, "te_prequant_repos", ()) or ():
         try:
             entry_scheme, entry_component, repo_id = entry

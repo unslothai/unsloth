@@ -384,6 +384,23 @@ def test_shared_eval_split_is_bounded_and_deterministic(rows, expected_eval_rows
     assert dataset.calls == [(expected_eval_rows, 3407)]
 
 
+def test_shared_eval_split_carves_a_vision_list_like_train_test_split():
+    from datasets import Dataset
+
+    from core.training.eval_dataset import split_dataset_for_evaluation
+
+    rows = [{"messages": [{"role": "user", "content": f"row {i}"}]} for i in range(40)]
+    train, evaluation = split_dataset_for_evaluation(rows)
+
+    assert isinstance(train, list) and isinstance(evaluation, list)
+    assert len(train) == 24 and len(evaluation) == 16
+    assert sorted(train + evaluation, key = rows.index) == rows
+
+    expected = Dataset.from_dict({"i": list(range(40))}).train_test_split(test_size = 16, seed = 3407)
+    assert [rows.index(r) for r in train] == expected["train"]["i"]
+    assert [rows.index(r) for r in evaluation] == expected["test"]["i"]
+
+
 def test_torch_eval_split_warns_when_dataset_is_too_small():
     warnings: list[str] = []
     owner = SimpleNamespace(_record_warning = warnings.append)

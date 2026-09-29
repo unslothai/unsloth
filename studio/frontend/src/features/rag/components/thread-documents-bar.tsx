@@ -461,7 +461,15 @@ export function ThreadDocumentsBar({
   // Materialize the thread id on first use; ref-deduped so a double-click can't
   // start two threads. A thread switch gets separate work even if the prior request is pending.
   const ensureThreadId = useCallback((): Promise<string> => {
-    if (effectiveThreadId) {
+    // A new chat already has a local id before initialize() creates its stored row.
+    // Only initialize when that id belongs to the current uninitialized item. During
+    // navigation the saved target reaches this bar before switchToThread replaces the
+    // outgoing item; initializing then would create and attach to the wrong chat.
+    const currentItem = aui.threadListItem().getState();
+    if (
+      effectiveThreadId &&
+      (currentItem.remoteId || currentItem.id !== effectiveThreadId)
+    ) {
       return requireStoredThread(effectiveThreadId).then(
         () => effectiveThreadId,
       );

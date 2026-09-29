@@ -493,7 +493,7 @@ export function ResourcesTab() {
     : null;
 
   return (
-    <div className="flex flex-col gap-6">
+    <div className="settings-page">
       <header className="flex flex-wrap items-start justify-between gap-3">
         <div className="flex min-w-0 flex-col gap-1">
           <h1 className="text-xl font-semibold font-heading">
@@ -668,6 +668,24 @@ export function ResourcesTab() {
               ) : (
                 ` · ${t("settings.resources.gpu.unavailable")}`
               )}
+              {separateInferenceGpu.available &&
+                inferenceDisplay.usageDevices.map((device, index) => (
+                  <span
+                    key={`${device.index ?? index}-${device.name ?? "gpu"}`}
+                    className="block normal-case"
+                  >
+                    {`${
+                      device.name ??
+                      t("settings.resources.gpu.deviceWithIndex", {
+                        index: deviceOrdinal(device) ?? index,
+                      })
+                    } · ${t("settings.resources.gpu.used", {
+                      value: isFiniteNumber(device.vram_used_gb)
+                        ? formatGiB(device.vram_used_gb)
+                        : unknownLabel,
+                    })}`}
+                  </span>
+                ))}
               {separateInferenceGpu.available &&
                 inferenceDisplay.sharedDevices.length > 0 && (
                   <span className="block normal-case">

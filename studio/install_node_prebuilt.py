@@ -4,7 +4,8 @@
 
 """Cross-platform Node.js prebuilt installer for Unsloth Studio.
 
-Downloads an official Node.js archive from nodejs.org into an isolated
+Downloads an official Node.js archive from nodejs.org (or the dist mirror in
+``UNSLOTH_NODE_MIRROR``) into an isolated
 ``<UNSLOTH_HOME>/node`` and never touches the system Node/npm. Pinning Node 24+
 LTS clears the Unsloth frontend build floor (Vite 8: Node ^20.19 || >=22.12,
 npm >= 11) with the npm it bundles.
@@ -44,6 +45,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator
 
+_STUDIO_DIR = str(Path(__file__).resolve().parent)
+if _STUDIO_DIR not in sys.path:
+    sys.path.insert(0, _STUDIO_DIR)
+
+from prebuilt_core import DownloadProgress  # noqa: E402
+
 try:
     from filelock import FileLock, Timeout as FileLockTimeout
 except ImportError:
@@ -75,7 +82,7 @@ NODE_MIN_LTS_MAJOR = 24
 NPM_MIN_MAJOR = 11
 
 NODE_DIST_BASE = "https://nodejs.org/dist"
-NODE_DIST_INDEX = f"{NODE_DIST_BASE}/index.json"
+NODE_MIRROR_ENV = "UNSLOTH_NODE_MIRROR"
 
 RETRYABLE_HTTP_STATUS = {408, 429, 500, 502, 503, 504}
 HTTP_FETCH_ATTEMPTS = 4
@@ -174,12 +181,20 @@ def node_asset_name(version: str, host: HostInfo) -> str:
     return f"{node_asset_stem(version, host)}{host.archive_ext}"
 
 
+def node_dist_base() -> str:
+    return (os.environ.get(NODE_MIRROR_ENV, "").strip() or NODE_DIST_BASE).rstrip("/")
+
+
+def node_dist_index_url() -> str:
+    return f"{node_dist_base()}/index.json"
+
+
 def node_download_url(version: str, asset_name: str) -> str:
-    return f"{NODE_DIST_BASE}/v{version}/{asset_name}"
+    return f"{node_dist_base()}/v{version}/{asset_name}"
 
 
 def node_shasums_url(version: str) -> str:
-    return f"{NODE_DIST_BASE}/v{version}/SHASUMS256.txt"
+    return f"{node_dist_base()}/v{version}/SHASUMS256.txt"
 
 
 def expected_sha256_for(shasums_text: str, asset_name: str) -> str | None:
@@ -211,7 +226,7 @@ def _meets_node_floor(version: str) -> bool:
 
 
 def select_node_version(index: list[dict], *, channel: str, min_major: int) -> str:
-    """Pick a concrete Node version from nodejs.org index.json.
+    """Pick a concrete Node version from the Node dist index.json.
 
     channel='lts'    -> newest LTS release line whose major >= min_major.
     channel='latest' -> newest release overall whose major >= min_major.
@@ -234,7 +249,7 @@ def select_node_version(index: list[dict], *, channel: str, min_major: int) -> s
             best_version = version
     if best_version is None:
         raise PrebuiltFallback(
-            f"no Node '{channel}' release found at or above major {min_major} in {NODE_DIST_INDEX}"
+            f"no Node '{channel}' release found at or above major {min_major} in {node_dist_index_url()}"
         )
     return best_version
 
@@ -304,11 +319,23 @@ def download_file(url: str, destination: Path) -> None:
             ) as handle:
                 tmp_path = Path(handle.name)
                 with urllib.request.urlopen(request, timeout = 120) as response:
+                    content_length = response.headers.get("Content-Length")
+                    total_bytes = (
+                        int(content_length) if content_length and content_length.isdigit() else None
+                    )
+                    progress = DownloadProgress(f"Downloading {destination.name}", total_bytes)
+                    if _LOG_TO_STDOUT:
+                        progress.stream = sys.stdout
+                        progress.is_tty = progress.is_tty and sys.stdout.isatty()
+                    downloaded_bytes = 0
                     while True:
                         chunk = response.read(1024 * 1024)
                         if not chunk:
                             break
                         handle.write(chunk)
+                        downloaded_bytes += len(chunk)
+                        progress.update(downloaded_bytes)
+                    progress.finish(downloaded_bytes)
                 handle.flush()
                 os.fsync(handle.fileno())
             if not tmp_path.exists() or tmp_path.stat().st_size == 0:
@@ -1060,15 +1087,14 @@ def install_prebuilt(install_dir: Path, *, channel: str, min_major: int, force: 
         version = pinned_default_version(pins)
     elif channel in {"lts", "latest"}:
         try:
-            index = fetch_json(NODE_DIST_INDEX)
+            index = fetch_json(node_dist_index_url())
         except Exception as exc:  # noqa: BLE001
-            # nodejs.org unreachable: keep a working isolated Node instead of aborting.
             if not force and existing_install_usable(install_dir, host):
                 log(f"Node dist index unreachable ({exc}); keeping existing isolated Node")
                 return EXIT_SUCCESS
             raise
         if not isinstance(index, list):
-            raise PrebuiltFallback(f"unexpected index.json payload from {NODE_DIST_INDEX}")
+            raise PrebuiltFallback(f"unexpected index.json payload from {node_dist_index_url()}")
         version = select_node_version(index, channel = channel, min_major = min_major)
     else:
         version = channel.lstrip("v")

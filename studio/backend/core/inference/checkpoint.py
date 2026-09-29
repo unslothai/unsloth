@@ -81,6 +81,16 @@ _NOT_SEARCHABLE = (
 )
 # only the delimiters themselves, so a user who writes about the feature is not mangled
 _DELIMITERS = re.compile(r"</?carried_forward>", re.IGNORECASE)
+# How the composer starts each attachment it appends after the typed words.
+_ATTACHMENT = re.compile(
+    r"^(?:\[(?:PDF|DOCX|HTML|ODS|ODT|XLSX|PPTX|RTF): [^\n]*\]\n"
+    r"|<(attachment|pasted_text) name=[^\n]*>\n(?s:.*?)\n</\1>"
+    r"|\[[^\n]* is saved at \.unsloth_attachments/[0-9a-f]{12}/[^\n]* in the python tool's working directory[^\n]*\]$"
+    r"|\[[^\n]*: its text is below, so answer from it\. For calculations, the python tool has the file at "
+    r"path = \"\.unsloth_attachments/[0-9a-f]{12}/[^\n]*\]$"
+    r"|\[[^\n]*(?:: only the python tool can read this file| could not be uploaded, so it cannot be read)\]$)",
+    re.MULTILINE,
+)
 
 
 def enabled() -> bool:
@@ -278,7 +288,9 @@ def _select_items(
         head = group[0]
         if not is_substantive(head, min_chars = min_chars):
             return None
-        text = _text_of(head).strip()
+        text = _text_of(head)
+        attachment = _ATTACHMENT.search(text)
+        text = (text[: attachment.start()] if attachment else text).strip()
         if not text:
             return None
         # Judged AND priced on the BULLET, the only part of the turn that reaches the
