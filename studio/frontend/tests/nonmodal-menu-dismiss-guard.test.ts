@@ -12,16 +12,15 @@ import { fileURLToPath } from "node:url";
 const SRC = fileURLToPath(new URL("../src/", import.meta.url));
 
 const TAG_NAME = /^<([A-Za-z0-9_.]+)/;
-const GUARD = /<MenuDismissGuard\s*\/>/;
+const GUARD = /<MenuDismissGuard\b(?=[^>]*\btriggerRef=\{)[^>]*\/>/;
 
 /** Explicit non-modal menus that intentionally remain unguarded. */
 const UNGUARDED = new Map<string, string>([
   [
     "components/app-sidebar.tsx <DropdownMenu>",
-    "the sidebar's More flyout opens on POINTER ENTER and stays open for 180ms after the pointer " +
-      "leaves, so an unconditional swallow eats an ordinary click on the nav row the pointer was " +
-      "heading for. A press pins it open too, and that path could take one, but the flyout has " +
-      "been non-modal since #6763 rather than since #8992, so it is a defect of its own.",
+    "the sidebar's More flyout sits among the nav rows, and a click on another row while it is " +
+      "open should close it and follow that row, which an unconditional swallow would eat. The " +
+      "flyout has been non-modal since #6763 rather than since #8992, so it is a defect of its own.",
   ],
 ]);
 
@@ -133,7 +132,7 @@ test("the element scan does not confuse a tag with one that merely starts the sa
     "<DropdownMenu modal={false}>",
     "  <DropdownMenuTrigger />",
     "</DropdownMenu>",
-    "<MenuDismissGuard />",
+    "<MenuDismissGuard triggerRef={triggerRef} />",
   ].join("\n");
   const { tag, body } = element(source, source.indexOf("modal={false}"));
   assert.equal(tag, "DropdownMenu");
@@ -157,7 +156,7 @@ test("the guard component is what mounts the watcher", () => {
   );
   assert.match(
     guard,
-    /useDismissingClickGuard\(\)/,
-    "MenuDismissGuard must install the document watcher, or every mount above is decoration",
+    /useDismissingClickGuard\(triggerRef\)/,
+    "MenuDismissGuard must give the document watcher its trigger, or every mount above loses focus restoration",
   );
 });

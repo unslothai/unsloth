@@ -8,19 +8,12 @@ import {
 
 import type { MessageRecord } from "../types";
 
-/**
- * Every sandbox a chat's tool calls actually wrote to, read back from its
- * history, newest first.
- *
- * Moving a chat between projects rewrites only its `projectId` while the files
- * stay put, so a scope from current membership can name a folder this chat
- * never used; the id recorded on a tool result is the one its files are under.
- * A chat that ran tools on both sides of such a move names both, which is why
- * this returns a list: the newest alone would hide the folder it left behind.
- *
- * Gated on the tool name and the full wrapper shape, as the adapter is: a
- * custom or MCP tool with its own `sessionId` would name an unrelated folder.
- */
+/** Every sandbox a chat's tool calls actually wrote to, read back from its history, newest first.
+ *  Moving a chat between projects rewrites only its `projectId` while the files stay put, so a
+ *  scope from current membership can name a folder this chat never used; the id recorded on a tool
+ *  result is the one its files are under. A chat that ran tools on both sides of such a move names
+ *  both, which is why this returns a list. Gated on the tool name and the full wrapper shape, as
+ *  the adapter is: a custom or MCP tool with its own `sessionId` would name an unrelated folder. */
 export function allRecordedSandboxSessionIds(
   messages: MessageRecord[],
 ): string[] {

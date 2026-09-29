@@ -1,21 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-//
-// The glass: instrumented accessors that turn "the autoscroll observer forces a synchronous
-// layout on every streamed character" from a reading of the source into a counted, timed number.
-//
-// This is the direct instrument for M3. `use-intent-aware-autoscroll.tsx` installs a
-// MutationObserver with `subtree: true, characterData: true` over the whole viewport; its callback
-// synchronously reads `scrollHeight` (stabilize(), :435), writes the inherited custom property
-// `--aui-scroll-stabilizer` on the scroll container (:466), which invalidates style for every
-// descendant, and calls `scrollTo` (:487). All three are invisible to a React Profiler, to
-// markdown timing and to a DOM node census. They are visible HERE.
-//
-// PERTURBING BY CONSTRUCTION, and so off at level 0. Wrapping a hot getter on Element.prototype
-// costs something on every call site in the app, not only the ones under suspicion, and the
-// wrapper's own `performance.now()` pair is a large fraction of a cheap read. Level 1 and above,
-// and the headline numbers come from level 0, where none of this is installed.
-//
+// The glass: instrumented accessors that turn "the autoscroll observer forces a synchronous layout
+// on every streamed character" from a reading of the source into a counted, timed number.
+// The direct instrument for M3. `use-intent-aware-autoscroll.tsx` installs a MutationObserver with
+// `subtree: true, characterData: true` over the whole viewport; its callback synchronously reads
+// `scrollHeight` (:435), writes the inherited custom property `--aui-scroll-stabilizer` on the
+// scroll container (:466), which invalidates style for every descendant, and calls `scrollTo`
+// (:487). All three are invisible to a React Profiler, to markdown timing and to a node census.
+// PERTURBING BY CONSTRUCTION, and so off at level 0: wrapping a hot getter on Element.prototype
+// costs something on every call site in the app, and the wrapper's own `performance.now()` pair is
+// a large fraction of a cheap read. Level 1 and above; the headline numbers come from level 0.
 // Split by WHOSE read it is. "Layout was forced 4,000 times" is not attribution; "3,980 of them
 // were on the scroll viewport, from inside a MutationObserver callback" is.
 
@@ -28,8 +22,8 @@
     scroll_height_ms: 0,
     viewport_reads: 0,
     viewport_ms: 0,
-    // Reads taken while a MutationObserver callback is on the stack. This is the number that
-    // separates "the app reads scrollHeight" from "the app reads scrollHeight per mutation".
+    // Reads taken while a MutationObserver callback is on the stack: the number that separates "the app
+    // reads scrollHeight" from "the app reads scrollHeight per mutation".
     reads_in_observer: 0,
     reads_in_observer_ms: 0,
     scroll_top_writes: 0,

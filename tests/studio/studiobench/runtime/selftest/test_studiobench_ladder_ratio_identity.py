@@ -257,8 +257,8 @@ def test_a_refused_resume_rolls_back_every_row_it_wrote(tmp_path):
 
     assert dropped > 0
     assert paths.payload_jsonl.read_bytes() == before
-    # The two ways the leftovers were visible: a rung the payload never owed, and a failed gate
-    # charged to somebody else's evidence.
+    # The two ways the leftovers were visible: a rung the payload never owed, and a failed gate charged
+    # to somebody else's evidence.
     assert recorded_ladder(paths.payload_jsonl) == ["1K", "10K", "100K"]
     assert [
         r for r in _rows(paths) if r.get("row_type") == "gate" and r.get("passed") is False

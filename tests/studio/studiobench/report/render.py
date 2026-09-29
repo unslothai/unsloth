@@ -34,7 +34,7 @@ from ..scoring.schema import Measure
 from ..scoring.score import LadderScore, RungScore
 from .payload import excluded_totals
 
-#: The three frame numbers that must appear together or not at all.
+#:The three frame numbers that must appear together or not at all.
 HEADLINE_FRAME_METRICS = ("time_in_jank_pct", "jank_index", "max_frame_ms")
 
 
@@ -141,8 +141,8 @@ def render_rung_table(ladder: LadderScore) -> str:
 def render_rung_metrics(rung: RungScore, *, indent: str = "  ") -> str:
     lines = [f"{indent}{rung.tokens:,} tokens -- score {rung.score:.1f}"]
     if not rung.complete:
-        # Printing six "not attempted" lines for a rung that never ran buries the one fact that
-        # matters, which is why it did not run.
+        # Printing six "not attempted" lines for a rung that never ran buries the one fact that matters,
+        # which is why it did not run.
         lines.append(f"{indent}  INCOMPLETE: {rung.incomplete_reason}")
         lines.append(
             f"{indent}  scores 0 and keeps its weight; no metric was measured at this rung"
@@ -217,9 +217,9 @@ def render_ab_table(result: AbResult) -> str:
         lines.append("")
         lines.append("VOID. No numbers are quotable from this comparison.")
         lines.append(f"  {result.void_reason}")
-        # The paragraph under the reason explains the NULL CONTROL, and printing it under an
-        # incomplete plan named the wrong cause for the void. A void has more than one cause; the
-        # reason line carries which one, and only a null control gets the null-control paragraph.
+        # The paragraph under the reason explains the NULL CONTROL, and printing it under an incomplete
+        # plan named the wrong cause for the void. A void has more than one cause; the reason line carries
+        # which one.
         if result.is_null_control:
             lines.append(
                 "  The null-treatment control measures whether this machine can currently tell "
@@ -252,10 +252,9 @@ def render_ab_table(result: AbResult) -> str:
             if metric.ci_low is not None
             else "too few pairs"
         )
-        # A BOUND IS NOT A MEASUREMENT. An arm under its instrument floor contributes the floor,
-        # so the ratio understates the true magnitude and must not be quoted as a point estimate.
-        # Marked in the ratio cell rather than footnoted, for the reason the void path gives: the
-        # table gets screenshotted and the note does not.
+        # A BOUND IS NOT A MEASUREMENT. An arm under its instrument floor contributes the floor, so the
+        # ratio understates the true magnitude and must not be quoted as a point estimate. Marked in the
+        # ratio cell rather than footnoted, because the table gets screenshotted and the note does not.
         ratio_cell = (
             f">={metric.ratio_geomean:.3f}"
             if metric.bounded and metric.ratio_geomean >= 1.0

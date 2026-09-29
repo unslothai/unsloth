@@ -29,11 +29,50 @@ from pathlib import Path
 
 import pytest
 
+
+def _shared_setup_1(proc, tmp_path):
+    try:
+        _await_ready(proc)
+        proc.send_signal(signal.SIGTERM)
+        _wait_for_death(proc, tmp_path)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CI_DIR = REPO_ROOT / ".github" / "scripts" / "kaggle_t4_ci"
 sys.path.insert(0, str(CI_DIR))
 
 import launch  # noqa: E402
+
+# One worker for this file. The tests below start a real launcher and signal it, then give it
+# _DEATH_BUDGET_SEC to die; under `-n 4` with xdist's default scheduling four of them land on four
+# workers of a four-core runner, and the budget stops measuring "did the handler run" and starts
+# measuring "was the child ever scheduled". That is how CI produced a 120s timeout whose own
+# faulthandler stack showed the child still parked on the stall line, having never reached its
+# handler. Needs `--dist loadgroup`, which the jobs running this file pass.
+pytestmark = pytest.mark.xdist_group(name = "kaggle_launch_signals")
+
+
+class _StubKaggleApi:
+    """A client that can say WHICH account it is, because the real one can.
+
+    `launch.py` reads the owner off the authenticated client and refuses to push
+    when it cannot: a kernel id is `<owner>/<slug>`, CI holds more than one
+    account, and a kernel pushed under the wrong name cannot be deleted under
+    the other. A bare `object()` models a client that never authenticated, which
+    is a different test from the ones below.
+    """
+
+    CONFIG_NAME_USER = "username"
+
+    def __init__(self, username = "me"):
+        self.config_values = {self.CONFIG_NAME_USER: username}
+
+
+def _stub_api(*_args, **_kwargs):
+    return _StubKaggleApi()
 
 
 def _fake_kaggle(bin_dir: Path, record: Path) -> None:
@@ -52,12 +91,10 @@ def _fake_kaggle(bin_dir: Path, record: Path) -> None:
 
 
 # Arm faulthandler against a FILE, not stderr.
-#
-# PYTHONFAULTHANDLER sends the dump to fd 2, and every launcher here has fd 2 redirected
-# onto the stdout pipe. One of these tests deliberately fills that pipe and stops draining
-# it, which is exactly the hang worth diagnosing, and a raw write bypasses Python's io
-# lock but not pipe backpressure: SIGABRT would kill the child with nothing written and
-# the failure message would be as empty as before. A file has no reader to block on.
+# PYTHONFAULTHANDLER sends the dump to fd 2, and every launcher here has fd 2 redirected onto the stdout pipe.
+# One of these tests deliberately fills that pipe and stops draining it, which is exactly the hang worth diagnosing, and
+# a raw write bypasses Python's io lock but not pipe backpressure: SIGABRT would kill the child with nothing written and
+# the failure message would be as empty as before.
 _FAULT_PREAMBLE = """\
 import faulthandler as _faulthandler, os as _os
 _fault_dump = open(_os.environ["LAUNCH_FAULT_DUMP"], "w", buffering = 1)
@@ -91,16 +128,26 @@ def _runner(tmp_path: Path, body: str) -> subprocess.Popen:
     )
 
 
-# A guard against a launcher that never dies, not a latency target: four of these
-# subprocess tests now run at once on a four-core runner, where the SIGINT case
-# was observed to need over 30 seconds purely to be scheduled.
+# A guard against a launcher that never dies, not a latency target: four of these subprocess tests now run at once on a
+# four-core runner, where the SIGINT case was observed to need over 30 seconds purely to be scheduled.
 _DEATH_BUDGET_SEC = 120
 
-# How long the launcher stalls while a test signals it. Must OUTLAST the budget
-# above: a handler that swallows its signal leaves the process asleep and then
-# resuming, so a shorter stall lets it wake, run finish(), delete through the
+# How long the launcher stalls while a test signals it. Must OUTLAST the budget above: a handler that swallows its
+# signal leaves the process asleep and then resuming, so a shorter stall lets it wake, run finish(), delete through the
 # ordinary path and exit inside the wait, passing every deletion test.
 _STALL_SEC = 900
+
+# The stall itself, in half-second slices rather than one time.sleep(_STALL_SEC). CPython runs a Python signal handler
+# only after the sleeping syscall returns, and a signal that lands between the interpreter's last check and the
+# clock_nanosleep call does not interrupt it: the handler then waits out the whole sleep. Measured with a bare script
+# that installs a SIGTERM handler, prints READY and sleeps, signalled the moment READY is read: 3 of 1500 one-long-sleep
+# children were still asleep 5s later with SIGTERM caught and nothing pending or blocked, and 0 of 1500 slicing ones.
+# This file signals exactly at READY, so it hit that window about once in 300 and reported a 120s hang. Slices still
+# add up to _STALL_SEC, so a launcher that swallows its signal still outlasts the budget.
+_STALL_SLICE_SEC = 0.5
+_STALL = (
+    f"for _slice in range({int(_STALL_SEC / _STALL_SLICE_SEC)}): time.sleep({_STALL_SLICE_SEC})"
+)
 
 
 def _await_ready(proc: subprocess.Popen) -> None:
@@ -211,6 +258,7 @@ def _push_ok(slug: str):
         kernel_timeout_sec,
         accelerator = "NvidiaTeslaT4",
         attempted = None,
+        **kwargs,
     ):
         attempted = [] if attempted is None else attempted
         attempted.append(slug)
@@ -248,16 +296,15 @@ def _run_main(
     # The retry backoffs, not the retries: every attempt still runs.
     monkeypatch.setattr(launch, "PUSH_BACKOFF_SEC", 0)
     monkeypatch.setattr(launch, "DELETE_BACKOFF_SEC", 0)
-    monkeypatch.setattr(launch, "_api", lambda: object())
+    monkeypatch.setattr(launch, "_api", _stub_api)
     monkeypatch.setattr(launch, "wait", lambda *a, **kw: "COMPLETE")
     monkeypatch.setattr(
         launch,
         "fetch_evidence",
         lambda *a, **kw: {"notebooks": [], "log": None, "truncated": False},
     )
-    # Installing the real handlers here would leave a SIGTERM disposition and
-    # an atexit callback on the pytest interpreter for the rest of the session.
-    # They have their own tests, which drive a subprocess for that reason.
+    # Installing the real handlers here would leave a SIGTERM disposition and an atexit callback on the pytest
+    # interpreter for the rest of the session. They have their own tests, which drive a subprocess for that reason.
     monkeypatch.setattr(launch, "_install_release_handlers", lambda release: None)
     if push_impl is not None:
         monkeypatch.setattr(launch, "push", push_impl)
@@ -270,8 +317,6 @@ def _run_main(
     return json.loads((outdir / "launch_result.json").read_text(encoding = "utf-8"))
 
 
-# --------------------------------------------------------------------------
-# the registry
 # --------------------------------------------------------------------------
 def test_a_pushed_kernel_is_recorded_before_anything_else_can_fail(tmp_path, monkeypatch):
     monkeypatch.setattr(launch, "INFLIGHT", tmp_path / "inflight.json")
@@ -293,7 +338,6 @@ def test_a_live_owner_is_never_swept(tmp_path, monkeypatch):
     destroy a legitimate run and report its absence as a code failure."""
     monkeypatch.setattr(launch, "INFLIGHT", tmp_path / "inflight.json")
     launch._inflight_write([{"slug": "me/live", "pid": os.getpid() + 0, "at": 0}])
-    # Our own pid counts as alive.
     assert launch.sweep_orphans() == []
     assert [e["slug"] for e in launch._inflight_read()] == ["me/live"]
 
@@ -302,7 +346,6 @@ def test_a_dead_owners_kernel_is_reclaimed(tmp_path, monkeypatch):
     monkeypatch.setattr(launch, "INFLIGHT", tmp_path / "inflight.json")
     _fake_kaggle(tmp_path / "bin", tmp_path / "kaggle_calls.txt")
     monkeypatch.setenv("PATH", f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}")
-    # A pid that cannot be running: claim one and let it exit.
     dead = subprocess.Popen([sys.executable, "-c", "pass"])
     dead.wait()
     launch._inflight_write([{"slug": "me/orphan", "pid": dead.pid, "at": 0}])
@@ -314,6 +357,7 @@ def test_a_dead_owners_kernel_is_reclaimed(tmp_path, monkeypatch):
 def test_a_failed_delete_keeps_the_entry_for_next_time(tmp_path, monkeypatch):
     """Forgetting a kernel we could not delete is how one bills forever."""
     monkeypatch.setattr(launch, "INFLIGHT", tmp_path / "inflight.json")
+    # A pid that cannot be running: claim one and let it exit.
     dead = subprocess.Popen([sys.executable, "-c", "pass"])
     dead.wait()
     launch._inflight_write([{"slug": "me/orphan", "pid": dead.pid, "at": 0}])
@@ -463,10 +507,13 @@ def _waiting_launcher(outdir: Path) -> str:
     return "\n".join(
         [
             "",
-            "        launch._api = lambda: object()",
-            "        launch.sweep_orphans = lambda: []",
+            "        class _Api:",
+            "            CONFIG_NAME_USER = 'username'",
+            "            config_values = {'username': 'me'}",
+            "        launch._api = lambda *a, **k: _Api()",
+            "        launch.sweep_orphans = lambda *a, **k: []",
             "        def _push(notebook, user, kernel_timeout_sec,",
-            "                  accelerator='NvidiaTeslaT4', attempted=None):",
+            "                  accelerator='NvidiaTeslaT4', attempted=None, **kwargs):",
             "            attempted = [] if attempted is None else attempted",
             "            attempted.append('me/k-1')",
             "            launch._inflight_add('me/k-1')",
@@ -474,7 +521,7 @@ def _waiting_launcher(outdir: Path) -> str:
             "        launch.push = _push",
             "        def _wait(*a, **kw):",
             "            print('READY', flush=True)",
-            "            time.sleep(%d)" % _STALL_SEC,
+            "            " + _STALL,
             "        launch.wait = _wait",
             "        sys.argv = ['launch.py', '--notebook', 'a.ipynb', '--user', 'me',",
             f"                    '--outdir', {str(outdir)!r}]",
@@ -497,7 +544,7 @@ def _flooding_launcher(outdir: Path) -> str:
     return (
         _waiting_launcher(outdir)
         .replace(
-            "            time.sleep(%d)" % _STALL_SEC,
+            "            " + _STALL,
             "\n".join(
                 [
                     "            while True:",
@@ -539,7 +586,6 @@ def test_a_signalled_launcher_deletes_its_kernels(tmp_path, signame):
     assert any(
         "me/k-1" in c for c in _deletions(tmp_path)
     ), f"{signame} left the kernel behind; it would bill to its ceiling. Launcher said: {logged}"
-    # And the registry agrees, so no later sweep chases a kernel that is gone.
     assert json.loads((tmp_path / "inflight.json").read_text()) == []
     # On the signal path, not on the way out of an ordinary run: finish() satisfies
     # the deletion above on its own, so a swallowed signal would pass without this.
@@ -554,13 +600,7 @@ def test_the_exit_status_still_says_it_was_killed(tmp_path):
     """A handler that swallows the signal and exits 0 makes a cancelled job
     look like a completed one."""
     proc = _runner(tmp_path, _waiting_launcher(tmp_path / "out"))
-    try:
-        _await_ready(proc)
-        proc.send_signal(signal.SIGTERM)
-        _wait_for_death(proc, tmp_path)
-    finally:
-        if proc.poll() is None:
-            proc.kill()
+    _shared_setup_1(proc, tmp_path)
     assert proc.returncode == -signal.SIGTERM, (
         f"expected death by SIGTERM, got returncode {proc.returncode}. "
         f"Launcher said: {_tail(proc)}"
@@ -596,13 +636,7 @@ def test_the_exit_status_survives_a_release_that_fails(tmp_path):
             ),
         ),
     )
-    try:
-        _await_ready(proc)
-        proc.send_signal(signal.SIGTERM)
-        _wait_for_death(proc, tmp_path)
-    finally:
-        if proc.poll() is None:
-            proc.kill()
+    _shared_setup_1(proc, tmp_path)
     assert proc.returncode == -signal.SIGTERM, (
         f"a release() that raised turned SIGTERM into returncode {proc.returncode}; "
         f"a cancelled job would read as a completed one. Launcher said: {_tail(proc)}"
@@ -623,6 +657,26 @@ def test_the_stall_outlasts_the_death_budget():
         f"normally inside the {_DEATH_BUDGET_SEC}s wait, so the signal tests would "
         f"pass without any signal handling at all"
     )
+
+
+def test_the_stall_is_sliced_so_a_signal_at_ready_is_not_deferred():
+    """Every stub stalls through `_STALL`, whose slices bound how long CPython can defer a handler.
+
+    A single long sleep turned a signal landing just before the syscall into a wait for the whole stall,
+    which is how this file reported "still alive 120s after its signal" with the handler never having run.
+    """
+    ns = {"time": __import__("types").SimpleNamespace(sleep = lambda s: slept.append(s))}
+    slept: list[float] = []
+    exec(_STALL, ns)
+    assert max(slept) <= 1.0, f"a {max(slept)}s slice can hold a pending handler that long"
+    assert sum(slept) == pytest.approx(
+        _STALL_SEC
+    ), "the slices must still add up to the whole stall"
+    source = Path(__file__).read_text(encoding = "utf-8")
+    long_sleeps = source.count("time.sleep(%d)" + chr(34) + " % _STALL_SEC") + source.count(
+        "time.sleep({" + "_STALL_SEC})"
+    )
+    assert long_sleeps == 0, "a stub went back to one long sleep; stall through _STALL instead"
 
 
 def test_the_handler_survives_its_own_logging_failing(tmp_path):
@@ -654,13 +708,7 @@ def test_the_handler_survives_its_own_logging_failing(tmp_path):
             ),
         ),
     )
-    try:
-        _await_ready(proc)
-        proc.send_signal(signal.SIGTERM)
-        _wait_for_death(proc, tmp_path)
-    finally:
-        if proc.poll() is None:
-            proc.kill()
+    _shared_setup_1(proc, tmp_path)
     assert proc.returncode == -signal.SIGTERM, (
         f"a log call that raised inside the handler turned SIGTERM into returncode "
         f"{proc.returncode}. Launcher said: {_tail(proc)}"
@@ -687,7 +735,7 @@ def test_the_handler_survives_a_stdout_nobody_is_draining(tmp_path):
     proc = _runner(tmp_path, _flooding_launcher(tmp_path / "out"))
     try:
         _await_ready(proc)
-        time.sleep(2)  # long enough for the pipe to fill and the write to park
+        time.sleep(2)
         proc.send_signal(signal.SIGTERM)
         _wait_for_death(proc, tmp_path)
     finally:
@@ -758,7 +806,7 @@ def test_a_reentrant_log_inside_the_delete_retries_does_not_abandon_them(tmp_pat
         launch._inflight_add("me/k-1")
         launch._install_release_handlers(release)
         print("READY", flush=True)
-        time.sleep({_STALL_SEC})
+        {_STALL}
     """),
         encoding = "utf-8",
     )
@@ -770,13 +818,7 @@ def test_a_reentrant_log_inside_the_delete_retries_does_not_abandon_them(tmp_pat
         stderr = subprocess.STDOUT,
         text = True,
     )
-    try:
-        _await_ready(proc)
-        proc.send_signal(signal.SIGTERM)
-        _wait_for_death(proc, tmp_path)
-    finally:
-        if proc.poll() is None:
-            proc.kill()
+    _shared_setup_1(proc, tmp_path)
 
     attempts = _deletions(tmp_path)
     assert len(attempts) >= 3, (
@@ -837,7 +879,7 @@ def test_the_leaked_kernel_warning_does_not_strand_the_handler(tmp_path):
     )
     try:
         _await_ready(proc)
-        time.sleep(2)  # let the pipe fill and the write park
+        time.sleep(2)
         proc.send_signal(signal.SIGTERM)
         _wait_for_death(proc, tmp_path)
     finally:
@@ -929,7 +971,7 @@ def test_kill_9_leaves_it_for_the_sweep(tmp_path):
         f"""
         launch._inflight_add("me/k-9")
         print("READY", flush=True)
-        time.sleep({_STALL_SEC})
+        {_STALL}
     """,
     )
     try:
@@ -990,8 +1032,8 @@ def test_a_release_kaggle_refuses_is_not_marked_released(tmp_path, monkeypatch):
     assert entry["released_slugs"] == []
     assert result["unreleased"] == ["me/k-1"]
     assert [e["slug"] for e in launch._inflight_read()] == ["me/k-1"]
-    # Retried rather than written off, since a refusal says nothing about the
-    # kernel; see DELETE_ATTEMPTS.
+    # Retried rather than written off, since a refusal says nothing about the kernel;
+    # see DELETE_ATTEMPTS.
     assert len(_deletions(tmp_path)) == launch.DELETE_ATTEMPTS
 
 
@@ -1042,11 +1084,14 @@ def test_a_kernel_pushed_before_the_signal_is_still_deleted(tmp_path):
     body = "\n".join(
         [
             "",
-            "        launch._api = lambda: object()",
-            "        launch.sweep_orphans = lambda: []",
+            "        class _Api:",
+            "            CONFIG_NAME_USER = 'username'",
+            "            config_values = {'username': 'me'}",
+            "        launch._api = lambda *a, **k: _Api()",
+            "        launch.sweep_orphans = lambda *a, **k: []",
             "        calls = []",
             "        def _push(notebook, user, kernel_timeout_sec,",
-            "                  accelerator='NvidiaTeslaT4', attempted=None):",
+            "                  accelerator='NvidiaTeslaT4', attempted=None, **kwargs):",
             "            calls.append(notebook)",
             "            attempted = [] if attempted is None else attempted",
             "            slug = 'me/k-%d' % len(calls)",
@@ -1054,7 +1099,7 @@ def test_a_kernel_pushed_before_the_signal_is_still_deleted(tmp_path):
             "            if len(calls) == 1:",
             "                return {'ok': True, 'slug': slug, 'attempts': attempted}",
             "            print('READY', flush=True)",
-            "            time.sleep(%d)" % _STALL_SEC,
+            "            " + _STALL,
             "        launch.push = _push",
             "        sys.argv = ['launch.py', '--notebook', 'a.ipynb', '--notebook', 'b.ipynb',",
             f"                    '--user', 'me', '--outdir', {str(tmp_path / 'out')!r}]",
@@ -1062,13 +1107,7 @@ def test_a_kernel_pushed_before_the_signal_is_still_deleted(tmp_path):
         ]
     )
     proc = _runner(tmp_path, body)
-    try:
-        _await_ready(proc)
-        proc.send_signal(signal.SIGTERM)
-        _wait_for_death(proc, tmp_path)
-    finally:
-        if proc.poll() is None:
-            proc.kill()
+    _shared_setup_1(proc, tmp_path)
     deleted = _deletions(tmp_path)
     assert any(
         "me/k-1" in c for c in deleted

@@ -21,6 +21,19 @@ import ts from "typescript";
 const SRC = fileURLToPath(new URL("../src", import.meta.url));
 const KEYS = path.join(SRC, "features/chat/stores/sidebar-organization-keys.ts");
 const GENERAL_TAB = path.join(SRC, "features/settings/tabs/general-tab.tsx");
+const CHAT_RUNTIME = path.join(
+  SRC,
+  "features/chat/stores/chat-runtime-store.ts",
+);
+const PRESET_LOAD_CONFIG = path.join(
+  SRC,
+  "features/chat/presets/preset-load-config.ts",
+);
+const APPLY_PER_MODEL_CONFIG = path.join(
+  SRC,
+  "features/model-picker/model-config/apply-per-model-config.ts",
+);
+const TOOL_GROUP = path.join(SRC, "components/assistant-ui/tool-group.tsx");
 
 const parse = (file: string, text: string) =>
   ts.createSourceFile(
@@ -115,4 +128,91 @@ test("the key is still read at module scope, so the guard above is load-bearing"
     readAtModuleScope,
     "general-tab no longer reads the key at module scope; drop this file's guards",
   );
+});
+
+/**
+ * The same white screen, reached a second way.
+ *
+ * `use-model-memory.ts` read `CHAT_GPU_MEMORY_MODE_KEY` and friends from the
+ * chat runtime store, which reaches this file back:
+ *
+ *   chat -> apply-inference-status-to-store -> model-picker -> model-selector
+ *        -> pickers -> use-model-memory -> chat
+ *
+ * Under dev's unbundled ESM that ring evaluated `use-model-memory` before the chat
+ * store had finished, and the module-scope const read threw "Cannot access
+ * 'CHAT_GPU_MEMORY_MODE_KEY' before initialization". Measured on main: the page threw,
+ * `#root` had 0 children and the body was empty. Reading the keys from an import-free
+ * leaf module lets the app render regardless of entry-module order.
+ *
+ * Production builds never showed it. The bundler hoists these declarations into one
+ * module, so the ordering the dev server exposes stops existing, which is exactly the
+ * kind of defect that survives review and CI and only ever bites whoever runs the dev
+ * server next.
+ */
+const MODEL_MEMORY = path.join(SRC, "hooks/use-model-memory.ts");
+const CHAT_RUNTIME_KEYS = path.join(
+  SRC,
+  "features/chat/stores/chat-runtime-keys.ts",
+);
+
+test("the chat runtime keys module imports nothing", async () => {
+  const text = await readFile(CHAT_RUNTIME_KEYS, "utf8");
+  assert.deepEqual(
+    staticSpecifiers(CHAT_RUNTIME_KEYS, text),
+    [],
+    "chat-runtime-keys.ts must not import anything",
+  );
+});
+
+test("the model memory hook reads runtime keys from the leaf module", async () => {
+  const text = await readFile(MODEL_MEMORY, "utf8");
+  assert.match(
+    text,
+    /CHAT_GPU_MEMORY_MODE_KEY,[\s\S]*CHAT_SPECULATIVE_TYPE_KEY,[\s\S]*from "@\/features\/chat\/stores\/chat-runtime-keys"/,
+  );
+});
+
+test("the model memory hook imports no feature barrel", async () => {
+  const text = await readFile(MODEL_MEMORY, "utf8");
+  const barrels = staticSpecifiers(MODEL_MEMORY, text).filter((specifier) =>
+    /^@\/features\/[^/]+$/.test(specifier),
+  );
+
+  assert.deepEqual(
+    barrels,
+    [],
+    "a bare @/features/<name> import here closes the cycle and the dev server white screens again",
+  );
+});
+
+test("the chat runtime imports the Hub token store directly", async () => {
+  const text = await readFile(CHAT_RUNTIME, "utf8");
+  const specifiers = staticSpecifiers(CHAT_RUNTIME, text);
+  assert.ok(
+    specifiers.includes("@/features/hub/stores/hf-token-store"),
+    "chat-runtime-store.ts must import the token store directly",
+  );
+  assert.ok(
+    !specifiers.includes("@/features/hub"),
+    "the Hub barrel closes a module-scope cycle through the model picker",
+  );
+});
+
+test("the startup cycle imports no feature barrel", async () => {
+  for (const file of [
+    PRESET_LOAD_CONFIG,
+    APPLY_PER_MODEL_CONFIG,
+    TOOL_GROUP,
+  ]) {
+    const text = await readFile(file, "utf8");
+    const barrels = staticSpecifiers(file, text).filter((specifier) =>
+      /^@\/features\/[^/]+$/.test(specifier),
+    );
+    assert.deepEqual(
+      barrels,
+      [],
+      `${path.relative(SRC, file)} closes the chat-store and model-picker cycle`,
+    );
+  }
 });

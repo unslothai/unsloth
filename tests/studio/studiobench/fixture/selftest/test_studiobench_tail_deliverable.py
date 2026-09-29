@@ -40,10 +40,10 @@ def corpus() -> Corpus:
     return Corpus.load()
 
 
-#: Every pair the axis is plausibly asked for, and what the corpus can actually do with it.
-#: `True` means deliverable, `False` means the request has to be refused. Derived by running the
-#: reply-axis test's own two assertions across the ladder, not chosen: every `False` here is a
-#: pair that silently under-delivered before the guard, and every `True` is one that did not.
+#: Every pair the axis is plausibly asked for, and what the corpus can actually do with it. `True`
+#: means deliverable, `False` means the request has to be refused. Derived by running the
+#: reply-axis test's own two assertions across the ladder, not chosen: every `False` is a pair that
+#: silently under-delivered before the guard.
 MATRIX: list[tuple[str, int, bool]] = [
     ("1K", 24_000, False),
     ("1K", 96_000, False),

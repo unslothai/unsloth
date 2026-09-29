@@ -4,16 +4,12 @@
 import type { TranslationKey } from "@/i18n";
 
 /**
- * Every rebindable action. To add one: an entry in SHORTCUT_DEFS, its two i18n
- * keys in all twelve locales, its label in settings-search.ts, and a
- * `useShortcut(id, ...)` where the action runs.
- *
- * Order is the render order and decides who owns a contested chord, so the
- * most reached-for actions come first. An action only earns a row when Unsloth
- * has the feature behind it.
+ * Every rebindable action. To add one: an entry in SHORTCUT_DEFS, its two i18n keys in all
+ * twelve locales, its label in settings-search.ts, and a `useShortcut(id, ...)` where the action
+ * runs. Order is the render order and decides who owns a contested chord, so the most
+ * reached-for actions come first.
  */
 export type ShortcutId =
-  // Chat navigation, first because it is what the list is mostly for.
   | "newChat"
   | "newTemporaryChat"
   | "archiveChat"
@@ -34,7 +30,6 @@ export type ShortcutId =
   | "goToRecentChat4"
   | "goToRecentChat5"
   | "goToRecentChat6"
-  // Workspaces
   | "switchToChat"
   | "switchToProjects"
   | "switchToHub"
@@ -44,7 +39,7 @@ export type ShortcutId =
   | "switchToVideo"
   | "switchToAudio"
   | "switchToExport"
-  // Panels and app-level actions
+  | "findInPage"
   | "toggleApiMonitor"
   | "toggleSidebar"
   | "openMcpServers"
@@ -53,7 +48,6 @@ export type ShortcutId =
   | "openSettings"
   | "approveToolRequest"
   | "declineToolRequest"
-  // Composer
   | "attachFiles"
   | "cycleReasoningEffort"
   | "decreaseReasoningEffort"
@@ -62,8 +56,9 @@ export type ShortcutId =
   | "openProjectPicker"
   | "startDictation"
   | "sendMessage"
+  | "queueMessage"
+  | "steerMessage"
   | "toggleFastMode"
-  // Chat actions
   | "copyChatAsMarkdown"
   | "copySessionId"
   | "forkChat"
@@ -71,7 +66,6 @@ export type ShortcutId =
   | "renameChat"
   | "openKeyboardShortcuts";
 
-/** Which of an action's two chords a value belongs to. */
 export type ShortcutSlot = "primary" | "alternate";
 
 export const SHORTCUT_SLOTS: ShortcutSlot[] = ["primary", "alternate"];
@@ -89,10 +83,7 @@ export interface ShortcutDef {
   nonMacDefaultAlternateBinding?: string | null;
   /** Allow a chord with no modifier. Only for prompt-gated actions. */
   allowBareKey?: boolean;
-  /**
-   * Hide the row on the desktop build. The handler returns there, so offering
-   * the row offers a key that does nothing.
-   */
+  /** Hide the row on the desktop build. The handler returns there, so offering the row offers a key that does nothing. */
   webOnly?: boolean;
 }
 
@@ -154,18 +145,16 @@ const WORKSPACE_DEFS: ShortcutDef[] = WORKSPACE_IDS.map((id, i) =>
 /** Most-used first: the list renders in this order, and it settles which
  *  action owns a chord two of them claim, rather than mount order. */
 export const SHORTCUT_DEFS: ShortcutDef[] = [
-  // -- Chat navigation ----------------------------------------------------
-  // ⌘N opens a browser window and cannot be prevented, and ⇧⌘O already
-  // shipped, so ⌘N rides along as the alternate for the desktop build.
+  // ⌘N opens a browser window and cannot be prevented, and ⇧⌘O already shipped, so ⌘N rides
+  // along as the alternate for the desktop build.
   def("newChat", "Mod+Shift+KeyO", { defaultAlternateBinding: "Mod+KeyN" }),
   def("newTemporaryChat", "Mod+Shift+KeyN"),
   // ⇧⌘A is Chrome's tab search and Firefox's add-ons manager, so E, the archive
   // key every mail client uses, on the ⌥ run the rest of these chat chords sit on.
   def("archiveChat", "Mod+Alt+KeyE"),
   def("newStandaloneChat", "Mod+Alt+KeyO"),
-  // ⌃⇧U off macOS is GTK's hex entry, hard-coded in GtkIMContextSimple and
-  // bound again by IBus, so a focused composer is where it would be fought
-  // over. U stays the mnemonic on the ⌥ run, beside Clear all unreads.
+  // ⌃⇧U off macOS is GTK's hex entry, hard-coded in GtkIMContextSimple and bound again by IBus,
+  // so a focused composer is where it would be fought over. U stays the mnemonic on the ⌥ run.
   def("markChatUnread", "Mod+Shift+KeyU", {
     nonMacDefaultBinding: "Mod+Alt+KeyU",
   }),
@@ -185,9 +174,8 @@ export const SHORTCUT_DEFS: ShortcutDef[] = [
   def("nextRecentlyViewedChat", "Ctrl+Tab", {
     nonMacDefaultBinding: "Mod+Tab",
   }),
-  // No arrow alternate: ⌥⌘→ is Chrome's next tab, and off macOS the same chord
-  // reads as Ctrl+Alt+→, desktop switching on GNOME and KDE and screen rotation
-  // on Intel graphics. Taken everywhere, so the bracket pair carries these.
+  // No arrow alternate: ⌥⌘→ is Chrome's next tab, and off macOS the same chord reads as
+  // Ctrl+Alt+→, desktop switching on GNOME and KDE and screen rotation on Intel graphics.
   def("nextChat", "Mod+Shift+BracketRight"),
   def("nextChatNeedingAttention", "Mod+Alt+KeyA"),
   def("previousRecentlyViewedChat", "Ctrl+Shift+Tab", {
@@ -196,15 +184,16 @@ export const SHORTCUT_DEFS: ShortcutDef[] = [
   def("previousChat", "Mod+Shift+BracketLeft"),
   ...RECENT_SLOT_DEFS,
 
-  // -- Workspaces ---------------------------------------------------------
   ...WORKSPACE_DEFS,
 
-  // -- Panels and app-level actions ---------------------------------------
-  // ⌥⌘U is view source on macOS, so U keeps its mnemonic on ⌃⇧ there instead,
-  // the same swap the composer pair below makes. Off macOS it gives U up
-  // altogether: three actions wanted that letter and only two chords carry it
-  // safely there, so the two that mean "unread" have them and this one, whose
-  // U was never a mnemonic, takes M for monitor.
+  // The one default that deliberately takes a chord the browser owns, because the browser's own
+  // find is what it replaces: that one cannot reach a message the mount window has not committed,
+  // counts the sidebar and composer as page, and does not exist on the desktop build. Cancellable
+  // in every engine this ships on, so the handler wins it; Settings still flags it.
+  def("findInPage", "Mod+KeyF"),
+  // ⌥⌘U is view source on macOS, so U keeps its mnemonic on ⌃⇧ there instead. Off macOS it gives
+  // U up altogether: three actions wanted that letter and only two chords carry it safely there,
+  // so the two that mean "unread" have them and this one takes M for monitor.
   def("toggleApiMonitor", "Ctrl+Shift+KeyU", {
     nonMacDefaultBinding: "Mod+Alt+Shift+KeyM",
   }),
@@ -222,7 +211,6 @@ export const SHORTCUT_DEFS: ShortcutDef[] = [
   def("approveToolRequest", "Enter", { allowBareKey: true }),
   def("declineToolRequest", "Escape", { allowBareKey: true }),
 
-  // -- Composer -----------------------------------------------------------
   def("attachFiles", null),
   def("cycleReasoningEffort", null),
   def("decreaseReasoningEffort", null),
@@ -237,12 +225,14 @@ export const SHORTCUT_DEFS: ShortcutDef[] = [
     nonMacDefaultBinding: "Mod+Alt+KeyV",
   }),
   def("sendMessage", null),
+  // Unassigned: ⌘⏎ already sends with the opposite follow-up, and these two
+  // name the behaviour instead of flipping it. Chat settings picks the default.
+  def("queueMessage", null),
+  def("steerMessage", null),
   def("toggleFastMode", null),
 
-  // -- Chat actions -------------------------------------------------------
   def("copyChatAsMarkdown", null),
-  // ⌥⌘C is Firefox's element picker and Safari's console, so C moves the same
-  // way U did above.
+  // ⌥⌘C is Firefox's element picker and Safari's console, so C moves the same way U did above.
   def("copySessionId", "Ctrl+Shift+KeyC", {
     nonMacDefaultBinding: "Mod+Alt+KeyC",
   }),
@@ -289,21 +279,16 @@ export function defaultBindingFor(
 }
 
 /**
- * Chords the browser owns. Tab and window management never reaches the page at
- * all; the rest is cancellable, but taking it breaks the browser's own action.
- * Both work in the desktop build, so they still ship as defaults and the tab
- * flags them on the web.
+ * Chords the browser owns. Tab and window management never reaches the page at all; the rest is
+ * cancellable, but taking it breaks the browser's own action. Both work in the desktop build, so
+ * they still ship as defaults and the tab flags them on the web.
  *
- * What gets in, here and in the two platform sets below: a chord the browser
- * takes from every user out of the box. These sets drive a warning the user
- * reads and a test no default may fail, and both are only worth anything if
- * the chord really is gone on the machine in front of them. A chord that only
- * binds once a hidden developer menu is switched on does not qualify -- Safari
- * puts Empty Caches on ⌥⌘E and reloads from origin on ⌥⌘R, but only for
- * someone who went and enabled the Develop menu, so warning every macOS user
- * about them would be telling almost all of them something untrue. Where a
- * default and an opt-in chord do collide, the tab that raised the menu is also
- * the tab that rebinds.
+ * What gets in, here and in the two platform sets below: a chord the browser takes from every
+ * user out of the box. These sets drive a warning the user reads and a test no default may fail,
+ * and both are only worth anything if the chord really is gone on the machine in front of them. A
+ * chord that only binds once a hidden developer menu is switched on does not qualify -- Safari
+ * puts Empty Caches on ⌥⌘E only for someone who enabled the Develop menu, so warning every macOS
+ * user about it would be telling almost all of them something untrue.
  */
 const BROWSER_RESERVED_VALUES = new Set<string>([
   "Mod+KeyN",
@@ -313,6 +298,9 @@ const BROWSER_RESERVED_VALUES = new Set<string>([
   "Mod+KeyW",
   "Mod+Shift+KeyW",
   "Mod+KeyL",
+  // Find in page, on every engine. Unsloth ships its own on it anyway (see the note by the
+  // default); this is what warns a web user before they rebind onto it.
+  "Mod+KeyF",
   "Mod+KeyR",
   "Mod+Shift+KeyR",
   "Mod+KeyP",
@@ -329,11 +317,10 @@ const BROWSER_RESERVED_VALUES = new Set<string>([
 ]);
 
 /**
- * Owned on macOS only, where ⌥⌘ is the browsers' own run. From Chrome's
- * shortcut list: U view source, I dev tools, J console, B bookmarks, N split
- * view, F search, and the arrows for tabs and toolbar focus. Firefox adds C,
- * its element picker, and K, its console. Off macOS the same values read as
- * Ctrl+Alt, which none of them claim.
+ * Owned on macOS only, where ⌥⌘ is the browsers' own run. From Chrome's shortcut list: U view
+ * source, I dev tools, J console, B bookmarks, N split view, F search, and the arrows for tabs
+ * and toolbar focus. Firefox adds C, its element picker, and K, its console. Off macOS the same
+ * values read as Ctrl+Alt, which none of them claim.
  */
 const MAC_RESERVED_VALUES = new Set<string>([
   "Mod+Alt+KeyU",
@@ -346,11 +333,9 @@ const MAC_RESERVED_VALUES = new Set<string>([
   "Mod+Alt+KeyK",
   // Page Setup, which Chrome lists beside ⌘P on its own shortcuts page.
   "Mod+Alt+KeyP",
-  // Safari's Show Next Tab and Show Previous Tab, per Apple's own shortcut
-  // list, and Chrome carries the same pair on macOS. Off macOS they read as
-  // Ctrl+Shift+bracket, which no browser claims. The chat walk ships on them
-  // for the desktop build, where nothing intercepts them; reserving them is
-  // what puts the warning in front of a web user who is about to rebind.
+  // Safari's Show Next Tab and Show Previous Tab, per Apple's own shortcut list, and Chrome
+  // carries the same pair on macOS. Off macOS they read as Ctrl+Shift+bracket, which no browser
+  // claims. The chat walk ships on them for the desktop build; reserving them warns a web user.
   "Mod+Shift+BracketLeft",
   "Mod+Shift+BracketRight",
   "Mod+Alt+ArrowLeft",
@@ -381,10 +366,9 @@ export function isBrowserReservedBinding(
 }
 
 /**
- * Keys the browser turns into a click on whatever control has focus. A chord
- * built from one of these with no modifier has to leave that click alone, or
- * pressing Enter on a focused Deny button would run the shortcut instead and
- * preventDefault would cancel the button's own activation.
+ * Keys the browser turns into a click on whatever control has focus. A chord built from one of
+ * these with no modifier has to leave that click alone, or pressing Enter on a focused Deny
+ * button would run the shortcut and preventDefault would cancel the button's own activation.
  */
 const ACTIVATION_CODES = new Set(["Enter", "NumpadEnter", "Space"]);
 
@@ -497,11 +481,9 @@ export function bindingFromEvent(
 ): ShortcutBinding | null {
   const code = event.code || keyToCode(event.key ?? "");
   if (!code || isModifierCode(code)) return null;
-  // Off macOS there is nowhere to put Meta: matchesBinding rejects an event
-  // carrying it, so recording Super+Alt+K would drop the Super and persist plain
-  // Alt+K -- a chord the user did not choose, which then fires on Alt+K alone
-  // while the one they pressed never matches. Record nothing instead, the same
-  // answer the recorder already gets while only modifiers are held.
+  // Off macOS there is nowhere to put Meta: matchesBinding rejects an event carrying it, so
+  // recording Super+Alt+K would persist plain Alt+K -- a chord the user did not choose, which then
+  // fires on Alt+K alone while the one they pressed never matches. Record nothing instead.
   if (!mac && event.metaKey) return null;
   // matchesBinding will not fire an AltGr chord, so do not record one.
   if (!mac && isAltGraphEvent(event)) return null;
@@ -517,9 +499,9 @@ export function bindingFromEvent(
 }
 
 /**
- * AltGr rather than a real Ctrl+Alt. AltGr reports both, so typing ą or € would
- * otherwise fire every Ctrl+Alt chord and eat the character. Callers gate this
- * on being off macOS: Option reports AltGraph too, and it is a plain Alt.
+ * AltGr rather than a real Ctrl+Alt. AltGr reports both, so typing ą or € would otherwise fire
+ * every Ctrl+Alt chord and eat the character. Callers gate this on being off macOS: Option
+ * reports AltGraph too, and it is a plain Alt.
  */
 function isAltGraphEvent(event: {
   getModifierState?: (key: string) => boolean;
@@ -580,6 +562,24 @@ export function matchesBinding(
   return event.shiftKey === binding.shift && event.altKey === binding.alt;
 }
 
+/**
+ * Whether `bound` answers to everything `pressed` holds: the same key, with no modifier
+ * missing. For searching the list by chord, where the press narrows as modifiers are
+ * added: N finds ⌘N and ⇧⌘N, ⌘N drops the ones without ⌘, and ⇧⌘N finds only itself.
+ * Not matchesBinding, which is exact because a keypress must run one action.
+ */
+export function keystrokeMatchesBinding(
+  pressed: ShortcutBinding,
+  bound: ShortcutBinding,
+): boolean {
+  if (pressed.code !== bound.code) return false;
+  if (pressed.mod && !bound.mod) return false;
+  if (pressed.ctrl && !bound.ctrl) return false;
+  if (pressed.shift && !bound.shift) return false;
+  if (pressed.alt && !bound.alt) return false;
+  return true;
+}
+
 /** Human label for a code: "KeyO" -> "O", "Comma" -> ",", "ArrowUp" -> "↑". */
 export function formatCode(code: string): string {
   if (code.startsWith("Key") && code.length === 4) return code.slice(3);
@@ -610,10 +610,8 @@ export function formatCode(code: string): string {
   return named[code] ?? code;
 }
 
-/**
- * Display string, in the platform's own modifier order: macOS renders
- * ⌃⌥⇧⌘ then the key, everything else spells the modifiers out.
- */
+/** Display string, in the platform's own modifier order: macOS renders ⌃⌥⇧⌘ then the key,
+ *  everything else spells the modifiers out. */
 export function formatBindingLabel(
   binding: ShortcutBinding,
   mac = isMacPlatform(),
@@ -635,7 +633,6 @@ export function formatBindingLabel(
   return parts.join("+");
 }
 
-/** Convenience for rendering a stored value straight to a chip. */
 export function formatBindingValueLabel(
   value: string | null,
   mac = isMacPlatform(),
@@ -645,24 +642,21 @@ export function formatBindingValueLabel(
 }
 
 /**
- * A binding with no modifier at all would swallow plain typing, so the
- * recorder refuses it. Function keys are self-contained, and an action gated on
- * an on-screen prompt (`allowBareKey`) may take any key.
+ * A binding with no modifier at all would swallow plain typing, so the recorder refuses it.
+ * Function keys are self-contained, and an action gated on an on-screen prompt (`allowBareKey`)
+ * may take any key.
  */
 export function isAcceptableBinding(
   binding: ShortcutBinding,
   allowBareKey = false,
 ): boolean {
   if (binding.mod || binding.ctrl || binding.alt) return true;
-  // Tab moves focus, and a chord consumes the key it answers to. Bound bare,
-  // even on a prompt-gated action, it makes that prompt's own buttons
-  // unreachable by keyboard. Held with a modifier it is a chord like any
-  // other, which is where the recently-viewed walk sits.
+  // Tab moves focus, and a chord consumes the key it answers to. Bound bare, even on a
+  // prompt-gated action, it makes that prompt's own buttons unreachable by keyboard.
   if (binding.code === "Tab") return false;
   if (allowBareKey) return true;
   if (/^F\d{1,2}$/.test(binding.code)) return true;
-  // Escape is self-contained too, but bare it belongs to declining a tool call
-  // and is the way out of the recorder. Held with Shift it is free, which is
-  // where clearAllUnreads sits. Anything else has to say so with allowBareKey.
+  // Escape is self-contained too, but bare it belongs to declining a tool call and is the way out
+  // of the recorder. Held with Shift it is free, which is where clearAllUnreads sits.
   return binding.code === "Escape" && binding.shift;
 }

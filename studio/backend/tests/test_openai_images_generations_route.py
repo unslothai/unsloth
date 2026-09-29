@@ -25,6 +25,7 @@ from core.inference.diffusion_families import (
     default_generation_params,
     load_identity,
 )
+import routes.inference as inference_routes
 from routes.inference import router, _parse_openai_image_size
 from utils.api_errors import install_api_error_handlers
 
@@ -243,6 +244,27 @@ def test_url_response_shape(client):
     )
 
 
+def test_generation_resets_the_image_progress_stream_before_the_run(client, monkeypatch):
+    # Shares the image progress stream with /api/inference/images/generate, so it has to rearm
+    # the same way or a run starting where the last one stopped emits no milestones.
+    order = []
+    monkeypatch.setattr(
+        inference_routes,
+        "reset_media_generation_progress",
+        lambda media: order.append(("reset", media)),
+    )
+    real_generate = client.backend.generate
+
+    def _probe_generate(**kwargs):
+        order.append(("generated", "image"))
+        return real_generate(**kwargs)
+
+    monkeypatch.setattr(client.backend, "generate", _probe_generate)
+
+    assert _post(client, {"prompt": "a sloth", "size": "256x256"}).status_code == 200
+    assert order == [("reset", "image"), ("generated", "image")]
+
+
 def test_b64_response_shape(client):
     resp = _post(client, {"prompt": "a sloth", "size": "256x256", "response_format": "b64_json"})
     assert resp.status_code == 200
@@ -288,8 +310,12 @@ def test_pipeline_runtime_error_is_sanitized_500(monkeypatch):
     monkeypatch.setattr(gallery_module, "save", _save)
     resp = cli.post("/v1/images/generations", json = {"prompt": "p", "size": "256x256"})
     assert resp.status_code == 500
-    assert resp.json()["error"]["message"] == "Image generation failed."
+    assert resp.json()["error"]["message"] == (
+        "Image generation failed. The device ran out of memory. Try a smaller size, fewer "
+        "steps, or a smaller batch."
+    )
     assert "CUDA" not in resp.text  # raw exception text must not leak
+    assert "GiB" not in resp.text and "GPU 0" not in resp.text
 
 
 def test_unload_race_returns_503(monkeypatch):

@@ -1,5 +1,4 @@
-# tests/saving scripts run their whole body at import, so plain pytest
-# collection would download checkpoints and train. Skip unless opted in.
+# tests/saving scripts run their whole body at import, so plain pytest collection would download checkpoints and train.
 import sys as _sys
 from pathlib import Path as _Path
 
@@ -190,7 +189,6 @@ except Exception as e:
     print(f"❌ Download failed: {e}")
     raise Exception("Model download failed.")
 
-# Final report.
 print("\n" + "=" * 80)
 print("=== VALIDATION REPORT ===".center(80))
 print("=" * 80 + "\n")
@@ -204,6 +202,5 @@ if all(success.values()):
 else:
     raise Exception("Validation failed for one or more stages.")
 
-# final cleanup.
 safe_remove_directory("./outputs")
 safe_remove_directory("./unsloth_compiled_cache")

@@ -258,8 +258,8 @@ def test_real_payload_shape_round_trips(tmp_path):
     ladder = score_payload(path, [1_000])
     assert [r.tokens for r in ladder.rungs] == [1_000]
     rung = ladder.rungs[0]
-    # keystroke + menu + the three frame metrics = 85% of the weight, over the 60% floor, so the
-    # rung scores despite scroll being legitimately unavailable at this size.
+    # keystroke + menu + the three frame metrics = 85% of the weight, over the 60% floor, so the rung
+    # scores despite scroll being legitimately unavailable at this size.
     assert rung.usable is True
 
 
@@ -476,16 +476,14 @@ def _payload_with(cell):
     }
 
 
-# ---------------------------------------------------------------------------------------
-# The latest attempt is the last one that WROTE anything, not the last one that finished
-# ---------------------------------------------------------------------------------------
-#
+# The latest attempt is the last one that WROTE anything, not the last one that finished.
 # `CellRunner.run` writes its terminal cell row in a `finally`, which a SIGKILL, an OOM kill or a
-# lost machine never reaches -- while the Recorder has already flushed and fsynced every action and
+# lost machine never reaches, while the Recorder has already flushed and fsynced every action and
 # window row before it. Keyed on cell rows alone, a resume hard-killed inside a cell left the
 # older, completed attempt named as the latest, and `_resume_set` skipped it.
 
 
+# ---------------------------------------------------------------------------------------
 def _stamped(row, session):
     return {**row, "session_id": session}
 

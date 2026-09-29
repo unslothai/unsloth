@@ -10,6 +10,7 @@ import {
   exportFormatIncludesSiblings,
   isOpenAIMessageRecord,
   messageJsonlConversationRecord,
+  ndjsonBody,
 } from "../src/features/chat/utils/ndjson.ts";
 
 const messages = [
@@ -41,6 +42,27 @@ test("empty conversations produce an empty body", () => {
   assert.equal(conversationJsonlBody([], "messages"), "");
 });
 
+test("terminates a single record with a newline", () => {
+  assert.equal(ndjsonBody(['{"messages":[]}']), '{"messages":[]}\n');
+});
+
+test("separates and terminates every record", () => {
+  assert.equal(ndjsonBody(['{"a":1}', '{"b":2}']), '{"a":1}\n{"b":2}\n');
+});
+
+test("concatenated bodies stay parseable line by line", () => {
+  const combined = ndjsonBody(['{"a":1}']) + ndjsonBody(['{"b":2}']);
+  const parsed = combined
+    .split("\n")
+    .filter((line) => line.length > 0)
+    .map((line) => JSON.parse(line) as Record<string, number>);
+  assert.deepEqual(parsed, [{ a: 1 }, { b: 2 }]);
+});
+
+test("returns an empty body when there are no records", () => {
+  assert.equal(ndjsonBody([]), "");
+});
+
 test("message JSONL records form one importable conversation", () => {
   assert.equal(isOpenAIMessageRecord(messages[0]), true);
   assert.equal(
@@ -56,11 +78,11 @@ test("message JSONL cannot merge conversations without losing boundaries", () =>
   assert.equal(canMergeConversationExport("jsonl-raw"), true);
 });
 
-test("both JSONL layouts export only the displayed branch", () => {
+test("training formats export only the displayed branch", () => {
   assert.equal(exportFormatIncludesSiblings("jsonl-raw"), false);
   assert.equal(exportFormatIncludesSiblings("jsonl-messages"), false);
+  assert.equal(exportFormatIncludesSiblings("sharegpt"), false);
   assert.equal(exportFormatIncludesSiblings("csv"), true);
-  assert.equal(exportFormatIncludesSiblings("sharegpt"), true);
 });
 
 test("training order excludes abandoned response branches", () => {

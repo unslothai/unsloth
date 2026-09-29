@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The one toast announcing a download start, and the one place it is dismissed.
-//
-// Chat used to raise its own alongside the Xet notice, so one download produced two
-// stacked toasts; callers now hand their message over instead. The 8s duration says
-// nothing about the transfer, so the id is derived from the job key and finalize()
-// dismisses it (nothing can be stored: teardownRuntime runs first).
+// The one toast announcing a download start, and the one place it is dismissed. Chat used to raise
+// its own alongside the Xet notice, so one download produced two stacked toasts; callers now hand
+// their message over instead. The 8s duration says nothing about the transfer, so the id is derived
+// from the job key and finalize() dismisses it (nothing can be stored: teardownRuntime runs first).
 
 import { toast } from "@/lib/toast";
+
+import { DOWNLOAD_KIND, type DownloadKind } from "./constants";
 
 import type { CallerToast } from "./download-manager-types";
 import {
@@ -21,9 +21,20 @@ export function startToastId(jobKey: string): string {
   return `download-start:${jobKey}`;
 }
 
-// Id -> the route it was raised on. Keyed that way rather than dismissing everything
-// live, because a start can itself navigate: that toast belongs where it landed.
-const liveStartToasts = new Map<string, string>();
+// Id -> the route and download kind it was raised for. Kind-scoping matters because
+// a Chat model pick must not erase an unrelated dataset notice on the same /hub route.
+const liveStartToasts = new Map<
+  string,
+  { route: string; kind: DownloadKind }
+>();
+
+let modelSelectionEpoch = 0;
+
+function downloadKindOfJobKey(jobKey: string): DownloadKind {
+  return jobKey.startsWith(`${DOWNLOAD_KIND.DATASET}:`)
+    ? DOWNLOAD_KIND.DATASET
+    : DOWNLOAD_KIND.MODEL;
+}
 
 /** The route to hold a start against. Captured when the start begins, since the
  * preflight and the reservation are round trips a raise can outlive. */
@@ -31,15 +42,28 @@ export function currentRoute(): string {
   return typeof window === "undefined" ? "" : window.location.pathname;
 }
 
+/** Captured with the route so an async preflight cannot raise after another pick. */
+export function currentStartToastSelectionEpoch(): number {
+  return modelSelectionEpoch;
+}
+
 export function showStartToast(
   jobKey: string,
   message: { title: string; description: string },
   originRoute: string = currentRoute(),
+  originSelectionEpoch: number = currentStartToastSelectionEpoch(),
 ): void {
-  // Raised late, surface gone: the route sweep has already run, so this would sit
-  // on the new page for its full 8s.
-  if (originRoute !== currentRoute()) return;
-  liveStartToasts.set(startToastId(jobKey), originRoute);
+  const kind = downloadKindOfJobKey(jobKey);
+  // Raised late, surface or selected model gone: the corresponding sweep already
+  // ran. Dataset notices are independent of Chat's model-selection epoch.
+  if (
+    originRoute !== currentRoute() ||
+    (kind === DOWNLOAD_KIND.MODEL &&
+      originSelectionEpoch !== currentStartToastSelectionEpoch())
+  ) {
+    return;
+  }
+  liveStartToasts.set(startToastId(jobKey), { route: originRoute, kind });
   toast.info(message.title, {
     id: startToastId(jobKey),
     description: message.description,
@@ -63,9 +87,10 @@ export function showCallerToast(
   jobKey: string,
   message: CallerToast | undefined,
   originRoute?: string,
+  originSelectionEpoch?: number,
 ): void {
   if (!message || message.noticeOnly) return;
-  showStartToast(jobKey, message, originRoute);
+  showStartToast(jobKey, message, originRoute, originSelectionEpoch);
 }
 
 /** Drop the start toast once the transfer is over. Safe for a job that never raised
@@ -82,8 +107,19 @@ export function dismissStartToast(jobKey: string): void {
  * #9293 reverted. Only ids raised here, so other toasts survive the navigation. */
 export function dismissStartToasts(): void {
   const here = currentRoute();
-  for (const [id, raisedOn] of liveStartToasts) {
-    if (raisedOn === here) continue;
+  for (const [id, context] of liveStartToasts) {
+    if (context.route === here) continue;
+    liveStartToasts.delete(id);
+    toast.dismiss(id);
+  }
+}
+
+/** A model pick can change while the route stays put. Drop every prior start
+ * disclosure so it cannot describe the newly selected model. */
+export function dismissStartToastsForModelSelection(): void {
+  modelSelectionEpoch += 1;
+  for (const [id, context] of liveStartToasts) {
+    if (context.kind !== DOWNLOAD_KIND.MODEL) continue;
     liveStartToasts.delete(id);
     toast.dismiss(id);
   }

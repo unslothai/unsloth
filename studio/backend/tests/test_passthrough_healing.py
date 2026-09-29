@@ -24,6 +24,7 @@ from core.inference.passthrough_healing import (  # noqa: E402
     StreamToolCallHealer,
     heal_gate,
     heal_openai_message,
+    nudge_enabled,
     nudge_messages,
     nudge_should_retry,
     response_has_promotable_calls,
@@ -465,6 +466,11 @@ LOOKUP_TOOL = {
     "function": {"name": "lookup", "parameters": {"type": "object", "properties": {}}},
 }
 LOOKUP_XML = '<tool_call>{"name":"lookup","arguments":{"q":"x"}}</tool_call>'
+OTHER_TOOL = {
+    "type": "function",
+    "function": {"name": "other", "parameters": {"type": "object", "properties": {}}},
+}
+OTHER_XML = '<tool_call>{"name":"other","arguments":{}}</tool_call>'
 
 
 def _payload(**kwargs):
@@ -695,6 +701,25 @@ class TestOpenaiNonStreamingRoute:
             )
             message = data["choices"][0]["message"]
             assert message["content"] == LOOKUP_XML
+            assert "tool_calls" not in message
+
+        asyncio.run(_run())
+
+    def test_forced_function_is_sent_as_its_one_tool_under_required(self, monkeypatch):
+        async def _run():
+            client, data = await _drive_non_streaming(
+                monkeypatch,
+                _payload(
+                    tools = [LOOKUP_TOOL, OTHER_TOOL],
+                    tool_choice = {"type": "function", "function": {"name": "lookup"}},
+                ),
+                [_upstream_message(OTHER_XML)],
+            )
+            (body,) = client.posts
+            assert [t["function"]["name"] for t in body["tools"]] == ["lookup"]
+            assert body["tool_choice"] == "required"
+            message = data["choices"][0]["message"]
+            assert message["content"] == OTHER_XML
             assert "tool_calls" not in message
 
         asyncio.run(_run())
@@ -982,6 +1007,37 @@ class TestNudgeRetryAnthropic:
             assert len(client.posts) == 1
 
         asyncio.run(_run())
+
+
+class TestAnthropicForcedToolChoice:
+    def test_forced_tool_is_sent_as_its_one_tool_under_required(self, monkeypatch):
+        import routes.inference as inf_mod
+        from routes.inference import _anthropic_passthrough_non_streaming
+
+        client = ScriptedClient([_upstream_message(OTHER_XML)])
+        monkeypatch.setattr(inf_mod, "_cancelable_nonstreaming_client", lambda: client)
+
+        async def _run():
+            response = await _anthropic_passthrough_non_streaming(
+                _llama_backend(),
+                [{"role": "user", "content": "hi"}],
+                [LOOKUP_TOOL, OTHER_TOOL],
+                0.7,
+                0.95,
+                None,
+                256,
+                "msg_test",
+                "gguf",
+                tool_choice = {"type": "function", "function": {"name": "lookup"}},
+            )
+            return json.loads(response.body)
+
+        data = asyncio.run(_run())
+
+        (body,) = client.posts
+        assert [t["function"]["name"] for t in body["tools"]] == ["lookup"]
+        assert body["tool_choice"] == "required"
+        assert "tool_use" not in [block["type"] for block in data["content"]]
 
 
 class TestAnthropicPassthroughHealingText:
@@ -1519,3 +1575,96 @@ class TestHealerSignalAlignment:
         (call,) = _events_calls(events)
         assert call["function"]["name"] == "web_search"
         assert healer.healed
+
+
+# --- client-supplied tool schemas -------------------------------------------------------
+# A coding agent on `unsloth start` declares its own tools, so schemas live in the request.
+
+
+def _client_tool(name, properties):
+    return {
+        "type": "function",
+        "function": {"name": name, "parameters": {"type": "object", "properties": properties}},
+    }
+
+
+GREP_TOOL = _client_tool(
+    "Grep",
+    {
+        "pattern": {"type": "string"},
+        "multiline": {"type": "boolean"},
+        "head_limit": {"type": "integer"},
+        "timeout": {"type": "integer"},
+    },
+)
+# Spells `timeout` the other way, so neither call reads through the other tool's schema.
+FETCH_TOOL = _client_tool("WebFetch", {"url": {"type": "string"}, "timeout": {"type": "string"}})
+CLIENT_TOOLS = [FETCH_TOOL, GREP_TOOL]
+CLIENT_NAMES = {"WebFetch", "Grep"}
+
+
+def _healed_arguments(content):
+    msg = {"role": "assistant", "content": content}
+    assert heal_openai_message(msg, CLIENT_NAMES, CLIENT_TOOLS) is True
+    (call,) = msg["tool_calls"]
+    return json.loads(call["function"]["arguments"])
+
+
+class TestClientToolSchemaTyping:
+    def test_xml_parameters_arrive_as_their_declared_types(self):
+        """Both spell "false": the declared flag becomes a boolean, the search text stays text."""
+        arguments = _healed_arguments(
+            "<function=Grep>"
+            "<parameter=pattern>false</parameter>"
+            "<parameter=head_limit>25</parameter>"
+            "<parameter=multiline>false</parameter>"
+            "</function>"
+        )
+        assert arguments == {"pattern": "false", "head_limit": 25, "multiline": False}
+
+    def test_each_call_is_typed_through_its_own_tools_schema(self):
+        """One key, two declarations: `timeout` is milliseconds on Grep and a duration
+        string on WebFetch. A schema picked by position, or merged across the request, has
+        one answer for both keys and so reads one of these calls wrong."""
+        call = (
+            "<function=%s><parameter=%s>x</parameter><parameter=timeout>30</parameter></function>"
+        )
+        assert _healed_arguments(call % ("WebFetch", "url")) == {"url": "x", "timeout": "30"}
+        assert _healed_arguments(call % ("Grep", "pattern")) == {"pattern": "x", "timeout": 30}
+
+
+_SCHEMA = {"type": "object", "properties": {"city": {"type": "string"}}, "required": ["city"]}
+_CONTRACT = {"type": "json_schema", "json_schema": {"name": "c", "schema": _SCHEMA}}
+
+
+def test_a_contract_withdraws_both_post_decode_reinterpreters():
+    tools = [{"type": "function", "function": {"name": "lookup"}}]
+    assert heal_gate(True, tools) == {"lookup"}
+    assert heal_gate(True, tools, response_format = {"type": "text"}) == {"lookup"}
+    assert nudge_enabled(True, response_format = {"type": "text"}) is True
+    for constraining in (_CONTRACT, {"type": "json_object"}, {"type": "text", "x": 1}, True, "x"):
+        assert heal_gate(True, tools, response_format = constraining) is None, constraining
+        assert nudge_enabled(True, response_format = constraining) is False, constraining
+
+
+def test_every_post_decode_reinterpreter_is_handed_the_request_s_own_contract():
+    import ast
+    from pathlib import Path
+
+    names = ("heal_gate", "nudge_enabled")
+    forwards = ('body.get("response_format")', "_extract_response_format(payload)")
+    source = (Path(__file__).resolve().parents[1] / "routes/inference.py").read_text(
+        encoding = "utf-8"
+    )
+    calls, missing = [], []
+    for node in ast.walk(ast.parse(source)):
+        if not isinstance(node, ast.Call):
+            continue
+        if (getattr(node.func, "attr", None) or getattr(node.func, "id", None)) not in names:
+            continue
+        calls.append(node)
+        kwargs = {k.arg: ast.get_source_segment(source, k.value) or "" for k in node.keywords}
+        if kwargs.get("response_format") not in forwards:
+            missing.append(node.lineno)
+    assert len(calls) >= 9, f"expected 9 {names} sites, found {len(calls)}"
+    assert not missing, f"heal_gate/nudge_enabled not handed the contract at {missing}"

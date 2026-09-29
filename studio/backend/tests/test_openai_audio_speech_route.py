@@ -8,8 +8,10 @@ gallery persistence and the raw-WAV response without torch, weights or a GPU."""
 
 from __future__ import annotations
 
+import asyncio
 import json
 from contextlib import asynccontextmanager
+from types import SimpleNamespace
 
 import pytest
 from fastapi import FastAPI, HTTPException, Request
@@ -21,6 +23,16 @@ import routes.inference as routes_module
 from auth.authentication import get_current_subject
 from routes.inference import router
 from utils.api_errors import install_api_error_handlers
+from core.inference.external_provider import ExternalProviderClient
+from models.inference import AudioSpeechRequest
+import core.inference.audio_gallery as gallery
+import core.inference.external_provider as provider_module
+import threading
+
+
+async def _boom(text):
+    raise HTTPException(status_code = 400, detail = "No model loaded.")
+
 
 _WAV = b"RIFF\x24\x00\x00\x00WAVEfmt fake-payload"
 
@@ -28,8 +40,8 @@ _WAV = b"RIFF\x24\x00\x00\x00WAVEfmt fake-payload"
 def _make_client(monkeypatch, generate = None):
     calls = []
 
-    async def _fake_generate(text, payload, request, current_subject):
-        calls.append({"text": text, "payload": payload})
+    async def _fake_generate(text, payload, request, current_subject, **kwargs):
+        calls.append({"text": text, "payload": payload, **kwargs})
         if generate is not None:
             return await generate(text)
         return _WAV, 24000, "unsloth/orpheus-3b-0.1-ft", "snac"
@@ -197,6 +209,39 @@ def test_an_over_context_prompt_is_a_client_error(monkeypatch):
     routes_module._raise_if_prompt_leaves_no_speech_budget("A short line.")
 
 
+@pytest.mark.parametrize("model", [None, "", "org/B-GGUF"])
+def test_speech_model_selection(monkeypatch, model):
+    cli, calls, _saved = _make_client(monkeypatch)
+    body = {"input": "hi", **({"model": model} if model is not None else {})}
+    assert cli.post("/v1/audio/speech", json = body).status_code == 200
+    assert calls[0]["requested_model"] == (model or routes_module._RELOAD_ONLY_MODEL)
+
+
+@pytest.mark.parametrize("named", [False, True])
+def test_only_resident_requests_use_the_pre_switch_budget(monkeypatch, named):
+    async def _switch(_model, *_a, **kw):
+        assert kw["require_speech"] is True
+        raise RuntimeError("reached the switch")
+
+    monkeypatch.setattr(routes_module, "_maybe_auto_switch_model", _switch)
+    monkeypatch.setattr(routes_module, "_monitor_context_length", lambda: 2048)
+    monkeypatch.setattr(routes_module, "_prompt_token_estimate", lambda _t: 2048)
+    payload = SimpleNamespace(audio_instructions = None, audio_language = None)
+    request = SimpleNamespace(state = SimpleNamespace(skip_api_monitor = True))
+    model = "org/B-GGUF" if named else routes_module._RELOAD_ONLY_MODEL
+    with pytest.raises(RuntimeError if named else HTTPException) as error:
+        asyncio.run(
+            routes_module._generate_tts_wav(
+                "a long line",
+                payload,
+                request,
+                "tester",
+                requested_model = model,
+            )
+        )
+    assert str(error.value) == "reached the switch" if named else error.value.status_code == 400
+
+
 def test_the_shared_core_guards_before_generating():
     """Wired in _generate_tts_wav so /audio/generate inherits it, not only /audio/speech."""
     import inspect
@@ -219,17 +264,13 @@ def test_the_budget_is_rechecked_after_an_idle_model_is_restored():
         if "_raise_if_prompt_leaves_no_speech_budget(text)" in line
     ]
     restore = next(
-        i
-        for i, line in enumerate(source.splitlines())
-        if "_RELOAD_ONLY_MODEL, request, current_subject" in line
+        i for i, line in enumerate(source.splitlines()) if "await _maybe_auto_switch_model(" in line
     )
     assert len(guards) == 2, "one check before the restore, one after"
     assert guards[0] < restore < guards[1]
 
 
 def test_the_gallery_is_bounded_so_an_api_client_cannot_fill_the_disk(monkeypatch, tmp_path):
-    import core.inference.audio_gallery as gallery
-
     monkeypatch.setattr(gallery, "gallery_dir", lambda: tmp_path)
     monkeypatch.setenv("UNSLOTH_AUDIO_GALLERY_MAX_CLIPS", "3")
     meta = {
@@ -251,8 +292,6 @@ def test_the_gallery_is_bounded_so_an_api_client_cannot_fill_the_disk(monkeypatc
 def test_the_gallery_is_bounded_by_bytes_not_only_by_count(monkeypatch, tmp_path):
     """A count alone does not bound the disk: 2000 clips of maximum-length speech is tens
     of gigabytes, and stopping /v1/audio/speech filling the disk is what the cap is for."""
-    import core.inference.audio_gallery as gallery
-
     monkeypatch.setattr(gallery, "gallery_dir", lambda: tmp_path)
     monkeypatch.setenv("UNSLOTH_AUDIO_GALLERY_MAX_CLIPS", "1000")
     monkeypatch.setenv("UNSLOTH_AUDIO_GALLERY_MAX_BYTES", str(4 * 1024))
@@ -274,8 +313,6 @@ def test_the_gallery_is_bounded_by_bytes_not_only_by_count(monkeypatch, tmp_path
 def test_one_oversized_clip_is_still_returned_rather_than_pruned_immediately(monkeypatch, tmp_path):
     """The newest clip is the one the caller just generated. Pruning it because it alone
     exceeds the quota would read as a silent failure."""
-    import core.inference.audio_gallery as gallery
-
     monkeypatch.setattr(gallery, "gallery_dir", lambda: tmp_path)
     monkeypatch.setenv("UNSLOTH_AUDIO_GALLERY_MAX_BYTES", "64")
     meta = {
@@ -291,27 +328,18 @@ def test_one_oversized_clip_is_still_returned_rather_than_pruned_immediately(mon
     assert [clip["id"] for clip in gallery.list_audio()] == [saved["id"]]
 
 
-def test_non_latin_prompts_are_not_billed_at_the_latin_rate():
-    """Without a Python tokenizer (GGUF TTS), the estimate is by character class. Cutting
-    at U+2E7F caught CJK and emoji but billed Arabic, Cyrillic, Hebrew and the Indic
-    scripts at a third of a token each, so a long prompt in any of them passed the guard
-    and then overflowed the loaded context during generation."""
+def test_unreachable_subprocess_tokenizers_use_a_conservative_byte_budget():
     estimate = routes_module._prompt_token_estimate
 
-    for label, text in (
-        ("arabic", "مرحبا بالعالم " * 40),
-        ("cyrillic", "Привет мир " * 40),
-        ("hebrew", "שלום עולם " * 40),
-        ("devanagari", "नमस्ते दुनिया " * 40),
+    for text in (
+        "a " * 100,
+        "مرحبا بالعالم " * 40,
+        "Привет мир " * 40,
+        "שלום עולם " * 40,
+        "नमस्ते दुनिया " * 40,
+        "你好世界" * 50,
     ):
-        assert estimate(text) >= len(text.replace(" ", "")), label
-
-    # Latin is still counted at the cheaper rate, so ordinary English is not rejected.
-    english = "the quick brown fox jumps over the lazy dog " * 40
-    assert estimate(english) < len(english) // 2
-
-    # And CJK, which already worked, is unchanged.
-    assert estimate("你好世界" * 50) >= 200
+        assert estimate(text) == len(text.encode("utf-8"))
 
 
 # ── External connection proxying (provider_id) ───────────────────
@@ -368,6 +396,7 @@ def test_provider_id_routes_to_external_endpoint(monkeypatch):
             "provider_id": "conn-1",
             "model": "kokoro",
             "voice": "af_heart",
+            "instructions": "Speak warmly.",
         },
     )
     assert resp.status_code == 200
@@ -379,6 +408,7 @@ def test_provider_id_routes_to_external_endpoint(monkeypatch):
     assert created[0]["provider_type"] == "custom"
     assert speech_calls[0]["model"] == "kokoro"
     assert speech_calls[0]["voice"] == "af_heart"
+    assert speech_calls[0]["instructions"] == "Speak warmly."
     rows = api_monitor.snapshot(include_details = False)
     assert len(rows) == 1
     assert rows[0]["endpoint"] == "/v1/audio/speech"
@@ -387,9 +417,8 @@ def test_provider_id_routes_to_external_endpoint(monkeypatch):
     assert rows[0]["prompt_preview"] == "hi"
 
 
-def test_external_passes_response_format_through(monkeypatch):
-    # The wav-only rule is a local-codec limit; an external server may emit mp3.
-    cli, calls, saved = _make_client(monkeypatch)
+def test_external_rejects_non_wav_response_format(monkeypatch):
+    cli, _calls, _saved = _make_client(monkeypatch)
     created, speech_calls = _install_external(monkeypatch, media_type = "audio/mpeg")
     resp = cli.post(
         "/v1/audio/speech",
@@ -401,9 +430,10 @@ def test_external_passes_response_format_through(monkeypatch):
             "response_format": "mp3",
         },
     )
-    assert resp.status_code == 200
-    assert resp.headers["content-type"].startswith("audio/mpeg")
-    assert speech_calls[0]["response_format"] == "mp3"
+    assert resp.status_code == 400
+    assert "Only 'wav' is supported" in resp.json()["error"]["message"]
+    assert created == []
+    assert speech_calls == []
 
 
 def test_external_missing_model_is_400(monkeypatch):
@@ -488,10 +518,6 @@ def test_external_upstream_error_is_502(monkeypatch):
 
 
 def test_external_disconnect_cancels_the_upstream_request(monkeypatch):
-    import asyncio
-
-    from models.inference import AudioSpeechRequest
-
     _install_external(monkeypatch)
     upstream_cancelled = asyncio.Event()
 
@@ -577,7 +603,6 @@ def test_external_rejects_a_legacy_key_snapshotted_for_another_base_url(monkeypa
 
 def test_external_tts_drops_the_local_keepwarm_count_before_proxy(monkeypatch):
     from core.inference import llama_keepwarm
-    from models.inference import AudioSpeechRequest
 
     monkeypatch.setattr(llama_keepwarm, "_inflight", 1)
     monkeypatch.setattr(llama_keepwarm, "_pending", 0)
@@ -608,8 +633,6 @@ def test_external_tts_drops_the_local_keepwarm_count_before_proxy(monkeypatch):
         }
     )
 
-    import asyncio
-
     asyncio.run(
         routes_module.openai_audio_speech(
             AudioSpeechRequest(
@@ -626,11 +649,6 @@ def test_external_tts_drops_the_local_keepwarm_count_before_proxy(monkeypatch):
 
 
 def test_provider_client_appends_speech_path_before_the_base_query(monkeypatch):
-    import asyncio
-
-    from core.inference.external_provider import ExternalProviderClient
-    import core.inference.external_provider as provider_module
-
     sent = {}
 
     class _Response:
@@ -640,8 +658,9 @@ def test_provider_client_appends_speech_path_before_the_base_query(monkeypatch):
         def raise_for_status(self):
             return None
 
-    async def _post(url, **_kwargs):
+    async def _post(url, **kwargs):
         sent["url"] = url
+        sent["json"] = kwargs["json"]
         return _Response()
 
     monkeypatch.setattr(provider_module._http_client, "post", _post)
@@ -650,16 +669,163 @@ def test_provider_client_appends_speech_path_before_the_base_query(monkeypatch):
         "http://127.0.0.1:8880/v1?api-version=2026-08-24",
         "sk-test",
     )
-    asyncio.run(client.create_speech(text = "hi", model = "kokoro"))
+    asyncio.run(client.create_speech(text = "hi", model = "kokoro", instructions = "Speak warmly."))
     assert sent["url"] == ("http://127.0.0.1:8880/v1/audio/speech?api-version=2026-08-24")
+    assert sent["json"]["instructions"] == "Speak warmly."
+    assert "stream" not in sent["json"]
+
+
+def test_provider_client_merges_concatenated_wav_segments(monkeypatch):
+    import io
+    import struct
+    import wave
+
+    def _wav(frames, rate = 24_000):
+        output = io.BytesIO()
+        with wave.open(output, "wb") as writer:
+            writer.setnchannels(1)
+            writer.setsampwidth(2)
+            writer.setframerate(rate)
+            writer.writeframes(frames)
+        return output.getvalue()
+
+    first_frames = b"\x01\x00" * 2
+    second_frames = b"\x02\x00" * 3
+
+    class _Response:
+        content = _wav(first_frames) + _wav(second_frames)
+        headers = {"content-type": "audio/wav"}
+
+        def raise_for_status(self):
+            return None
+
+    async def _post(_url, **_kwargs):
+        return _Response()
+
+    monkeypatch.setattr(provider_module._http_client, "post", _post)
+    client = ExternalProviderClient("custom", "http://127.0.0.1:8880/v1", "")
+    audio, media_type = asyncio.run(client.create_speech(text = "one. two.", model = "kokoro"))
+
+    with wave.open(io.BytesIO(audio), "rb") as reader:
+        assert reader.getnframes() == 5
+        assert reader.readframes(5) == first_frames + second_frames
+    assert media_type == "audio/wav"
+    assert audio.count(b"RIFF") == 1
+    single = _wav(first_frames)
+    incompatible = single + _wav(second_frames, rate = 16_000)
+    assert provider_module._merge_concatenated_wav_segments(single) == single
+    assert provider_module._merge_concatenated_wav_segments(incompatible) == incompatible
+    assert provider_module._merge_concatenated_wav_segments(b"not-a-wave") == b"not-a-wave"
+    malformed = b"RIFF" + (12).to_bytes(4, "little") + b"WAVEJUNK" + (100).to_bytes(4, "little")
+    assert provider_module._merge_concatenated_wav_segments(malformed * 2) == malformed * 2
+    fmt = struct.pack("<HHIIHH", 1, 1, 8_000, 16_000, 2, 16)
+    body = (
+        b"WAVEfmt "
+        + (16).to_bytes(4, "little")
+        + fmt
+        + b"data"
+        + (100).to_bytes(4, "little")
+        + b"\x01\x00"
+    )
+    truncated = b"RIFF" + len(body).to_bytes(4, "little") + body
+    assert provider_module._merge_concatenated_wav_segments(truncated * 2) == truncated * 2
+    tiny_pseudo_segment = b"RIFF" + (5).to_bytes(4, "little") + b"WAVE\x00"
+    many_pseudo_segments = tiny_pseudo_segment * 10_000
+    assert (
+        provider_module._merge_concatenated_wav_segments(many_pseudo_segments)
+        == many_pseudo_segments
+    )
+    too_many_valid_segments = _wav(b"") * (provider_module._MAX_CONCATENATED_WAV_SEGMENTS + 1)
+    assert (
+        provider_module._merge_concatenated_wav_segments(too_many_valid_segments)
+        == too_many_valid_segments
+    )
+
+
+def test_provider_client_merges_wav_off_the_event_loop(monkeypatch):
+    merge_started = threading.Event()
+    release_merge = threading.Event()
+
+    class _Response:
+        content = b"audio"
+        headers = {"content-type": "audio/wav"}
+
+        def raise_for_status(self):
+            return None
+
+    async def _post(_url, **_kwargs):
+        return _Response()
+
+    def _blocking_merge(audio, _cancelled):
+        merge_started.set()
+        release_merge.wait()
+        return audio
+
+    monkeypatch.setattr(provider_module._http_client, "post", _post)
+    monkeypatch.setattr(provider_module, "_merge_concatenated_wav_segments", _blocking_merge)
+
+    async def _run():
+        client = ExternalProviderClient("custom", "http://127.0.0.1:8880/v1", "")
+        speech_task = asyncio.create_task(client.create_speech(text = "hi", model = "kokoro"))
+        while not merge_started.is_set():
+            await asyncio.sleep(0)
+        heartbeat_seen = False
+        await asyncio.sleep(0)
+        heartbeat_seen = True
+        release_merge.set()
+        await speech_task
+        return heartbeat_seen
+
+    assert asyncio.run(_run()) is True
+
+
+def test_cancelling_provider_speech_stops_the_wav_worker(monkeypatch):
+    merge_started = threading.Event()
+    merge_cancel_seen = threading.Event()
+    merge_stopped = threading.Event()
+    release_merge = threading.Event()
+
+    class _Response:
+        content = b"audio"
+        headers = {"content-type": "audio/wav"}
+
+        def raise_for_status(self):
+            return None
+
+    async def _post(_url, **_kwargs):
+        return _Response()
+
+    def _cancellable_merge(audio, cancelled):
+        merge_started.set()
+        cancelled.wait()
+        merge_cancel_seen.set()
+        release_merge.wait()
+        merge_stopped.set()
+        return audio
+
+    monkeypatch.setattr(provider_module._http_client, "post", _post)
+    monkeypatch.setattr(provider_module, "_merge_concatenated_wav_segments", _cancellable_merge)
+
+    async def _run():
+        client = ExternalProviderClient("custom", "http://127.0.0.1:8880/v1", "")
+        speech_task = asyncio.create_task(client.create_speech(text = "hi", model = "kokoro"))
+        while not merge_started.is_set():
+            await asyncio.sleep(0)
+        speech_task.cancel()
+        while not merge_cancel_seen.is_set():
+            await asyncio.sleep(0)
+        speech_task.cancel()
+        await asyncio.sleep(0)
+        assert not speech_task.done()
+        release_merge.set()
+        with pytest.raises(asyncio.CancelledError):
+            await speech_task
+        assert merge_stopped.is_set()
+
+    asyncio.run(_run())
 
 
 def test_external_provider_reads_do_not_block_the_event_loop(monkeypatch):
-    import asyncio
-    import threading
-
-    from models.inference import AudioSpeechRequest
-
     _install_external(monkeypatch)
     original_get_provider = routes_module.providers_db.get_provider
     read_started = threading.Event()
@@ -709,10 +875,6 @@ def test_external_provider_reads_do_not_block_the_event_loop(monkeypatch):
 
 
 def test_external_rejects_a_cross_process_provider_edit_after_resolving_its_key(monkeypatch):
-    import asyncio
-
-    from models.inference import AudioSpeechRequest
-
     old_config = {
         "provider_type": "custom",
         "display_name": "Old TTS",
@@ -770,9 +932,6 @@ def test_speech_opens_a_monitor_row(monkeypatch):
 
 
 def test_tts_failure_records_an_error_row(monkeypatch):
-    async def _boom(text):
-        raise HTTPException(status_code = 400, detail = "No model loaded.")
-
     cli, calls, saved = _make_client(monkeypatch, generate = _boom)
     api_monitor.clear()
     assert cli.post("/v1/audio/speech", json = {"input": "hi"}).status_code == 400
@@ -823,9 +982,6 @@ def test_a_failure_before_the_relabel_does_not_leak_the_requested_path(
     overlay polls and serves. Windows and UNC forms are covered because redacting a host
     path is the whole point."""
 
-    async def _boom(text):
-        raise HTTPException(status_code = 400, detail = "No model loaded.")
-
     cli, calls, saved = _make_client(monkeypatch, generate = _boom)
     api_monitor.clear()
     resp = cli.post("/v1/audio/speech", json = {"input": "hi", "model": requested})
@@ -838,9 +994,6 @@ def test_a_failure_before_the_relabel_does_not_leak_the_requested_path(
 
 def test_an_ordinary_model_id_is_still_recorded_verbatim(monkeypatch):
     # The redaction must not rewrite the ids clients actually send.
-    async def _boom(text):
-        raise HTTPException(status_code = 400, detail = "No model loaded.")
-
     cli, calls, saved = _make_client(monkeypatch, generate = _boom)
     for requested in ("tts-1", "gpt-4o-mini-tts", "unsloth/orpheus-3b-0.1-ft"):
         api_monitor.clear()

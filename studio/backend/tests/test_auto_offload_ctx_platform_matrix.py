@@ -17,7 +17,9 @@ The chain under test, in source order:
                                subset loop's ``else:`` plus its residency re-check
   3. file-size-only         -- gpus, no KV metadata; holds SITE B, which only
                                relabels the context ``--fit`` was already given
-  4. Apple unified memory   -- no gpus, a Metal budget; hardcoded 4096s, untouched
+  4. Apple unified memory   -- no gpus, a Metal budget; floors at _FIT_MIN_CTX
+                               like every other arm, since its four hardcoded
+                               4096s were replaced by the constant
   5. (no arm)               -- no gpus and no Metal budget: CPU, no context math
 
 Each cell records the arm taken, the emitted context, ``--fit`` and the pinned
@@ -421,19 +423,25 @@ def test_the_file_size_only_arm_relabels_the_context_without_moving_a_device(
     assert outcome.ctx == _AUTO_OFFLOAD_CTX
 
 
-# ── G3: the Metal asymmetry, measured ────────────────────────────────────────
+# ── G3: the Metal arm, measured against the discrete one ─────────────────────
 
 
 @pytest.mark.parametrize("platform", PLATFORMS, ids = [p[0] for p in PLATFORMS])
 def test_metal_auto_still_floors_at_the_fit_minimum(tmp_path, monkeypatch, platform):
     """G3. Pins the CURRENT Metal behaviour so it cannot drift silently.
 
-    The Apple arm keeps its own floor and never reads ``_AUTO_OFFLOAD_CTX``, so an
-    offloading model gets ``_FIT_MIN_CTX`` here and ``_AUTO_OFFLOAD_CTX`` on a
-    discrete GPU: half the context on the same model. That asymmetry is deliberate
-    (unified memory is shared with the OS, so a larger KV is charged to the same
-    pool the weights and the compositor live in) and this test exists to make any
-    future change to it explicit rather than incidental.
+    This used to measure an ASYMMETRY: the Apple arm held four hardcoded 4096s while
+    a discrete GPU got ``_AUTO_OFFLOAD_CTX``, so the same offloading model published
+    half the context on a Mac. Those four sites now read ``_FIT_MIN_CTX``, the
+    asymmetry is gone by design, and what is worth pinning is the symmetry -- the two
+    arms agreeing is the property that regresses if anyone re-introduces a separate
+    Metal literal.
+
+    The equality is asserted against the CONSTANTS on both sides rather than against
+    8192, so the pair keeps agreeing through the next floor move instead of failing
+    here. The old form asserted ``on_discrete.ctx == 2 * on_metal.ctx``, which was a
+    correct reading of the ratio at the time and is exactly the shape that turns a
+    deliberate change into a puzzling failure.
 
     Parametrised over every platform on purpose: the arm is gated on a non-zero
     Metal budget, not on ``sys.platform``, and that is worth having on record.
@@ -447,7 +455,8 @@ def test_metal_auto_still_floors_at_the_fit_minimum(tmp_path, monkeypatch, platf
     discrete = next(a for a in ACCELERATORS if a.label == "nvidia-single")
     on_discrete = run_cell(_subdir(tmp_path, "discrete"), monkeypatch, platform, discrete)
     assert on_discrete.ctx == _AUTO_OFFLOAD_CTX
-    assert on_discrete.ctx == 2 * on_metal.ctx
+    # Same model, same published context, whichever kind of memory it lands in.
+    assert on_discrete.ctx == on_metal.ctx
 
 
 # ── G7: manual memory mode ───────────────────────────────────────────────────
@@ -585,12 +594,20 @@ def test_the_windows_rocm_cap_is_what_pushes_a_load_into_the_fallback(tmp_path, 
     hardware where Linux AMD users never see it. Not a regression the constant
     introduced -- the same asymmetry sent them to 4096 before -- but it is the cell
     where the new value is most often visible.
+
+    The weights are 10 GiB rather than the 12 GiB this started at. At 12 GiB both
+    sides offload now: 12288 + 320 MiB leaves 2900 of a 15508 MiB Linux budget,
+    which held a 4096 context and does not hold an 8192 one, so the cell stopped
+    contrasting anything the moment the fit floor moved. 10 GiB restores the
+    contrast and leaves it a measurement rather than a floor -- Linux pins at 9728,
+    1536 above the floor -- so the next floor move shows up as this test failing
+    only once it would really have changed the placement.
     """
     windows = next(p for p in PLATFORMS if p[0] == "windows")
     linux = next(p for p in PLATFORMS if p[0] == "linux")
-    # 12 GiB of weights: inside a 16000 MiB budget with room for a KV, outside the
-    # 10384 MiB one before any context is priced at all.
-    model_mib = 12 * 1024
+    # 10 GiB of weights: inside a 16000 MiB budget with room for a KV at the fit
+    # floor, outside the 10384 MiB one before any context is priced at all.
+    model_mib = 10 * 1024
 
     def _run(platform, free_mib, subdir):
         accelerator = Accelerator("amd-rocm", False, ((0, free_mib, 16_384),), is_rocm = True)

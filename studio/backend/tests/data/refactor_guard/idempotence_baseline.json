@@ -41,7 +41,7 @@
   },
   {
     "function": "strip_segment",
-    "input": "<｜tool▁calls▁begin｜>function<｜tool▁sep｜>get_weather\n```json\n{\"city\": \"Paris\"}\n```<｜tool▁calls▁end｜>get_weather[ARGS]{\"city\": \"Paris\"}",
+    "input": "<\uff5ctool\u2581calls\u2581begin\uff5c>function<\uff5ctool\u2581sep\uff5c>get_weather\n```json\n{\"city\": \"Paris\"}\n```<\uff5ctool\u2581calls\u2581end\uff5c>get_weather[ARGS]{\"city\": \"Paris\"}",
     "module": "core.inference.tool_call_parser",
     "once": "get_weather[ARGS]{\"city\": \"Paris\"}",
     "twice": "",
@@ -57,7 +57,7 @@
   },
   {
     "function": "strip_tool_markup",
-    "input": "<｜tool▁calls▁begin｜>function<｜tool▁sep｜>get_weather\n```json\n{\"city\": \"Paris\"}\n```<｜tool▁calls▁end｜>get_weather[ARGS]{\"city\": \"Paris\"}",
+    "input": "<\uff5ctool\u2581calls\u2581begin\uff5c>function<\uff5ctool\u2581sep\uff5c>get_weather\n```json\n{\"city\": \"Paris\"}\n```<\uff5ctool\u2581calls\u2581end\uff5c>get_weather[ARGS]{\"city\": \"Paris\"}",
     "module": "core.inference.tool_call_parser",
     "once": "get_weather[ARGS]{\"city\": \"Paris\"}",
     "twice": "",

@@ -13,6 +13,8 @@ import sys
 from pathlib import Path
 
 import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
 _BACKEND = Path(__file__).resolve().parents[1]
@@ -24,6 +26,7 @@ from routes.chat_history import (  # noqa: E402
     ChatThreadPatch,
     ChatThreadSettings,
     _settings_write_from_patch,
+    readable_thread_settings,
     thread_from_row,
 )
 from storage import studio_db  # noqa: E402
@@ -47,7 +50,7 @@ SETTINGS = {
 def _reset_studio_db(tmp_path, monkeypatch):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
     monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "Projects"))
-    monkeypatch.setattr(studio_db, "_schema_ready", False)
+    monkeypatch.setattr(studio_db, "_schema_ready", set())
 
 
 def _thread(thread_id: str = "thread-1", **extra) -> dict:
@@ -145,7 +148,6 @@ def test_fork_inherits_the_snapshot(tmp_path, monkeypatch):
         source_thread_id = "thread-1",
         branch_message_id = "message-1",
         new_thread_id = "thread-2",
-        new_title = "Fork",
         created_at = 1_700_000_000_002,
         id_factory = lambda: "message-2",
     )
@@ -472,7 +474,7 @@ def test_the_watermark_column_is_added_to_an_existing_database(tmp_path, monkeyp
         conn.commit()
     finally:
         conn.close()
-    monkeypatch.setattr(studio_db, "_schema_ready", False)
+    monkeypatch.setattr(studio_db, "_schema_ready", set())
 
     studio_db.write_chat_thread_settings(
         "thread-1", replace = {"toolsEnabled": True}, seq = 1, writer = "tab-a"
@@ -668,3 +670,63 @@ def test_an_older_build_drops_only_the_sampling_it_cannot_read():
         {"toolsEnabled": True, "temperature": 0.3, "somethingNewer": "?"}
     )
     assert kept == {"toolsEnabled": True, "temperature": 0.3}
+
+
+def test_a_chat_carries_its_own_sampling_seed():
+    """The seed sits with the sliders the snapshot already carries, so without it a pin
+    taken in one chat fixes the draw for every other chat on the same model."""
+    assert ChatThreadSettings.model_validate({"seed": 3407}).seed == 3407
+    assert ChatThreadSettings.model_validate({"seed": 0}).seed == 0
+    assert ChatThreadSettings.model_validate({"seed": 2**32 - 2}).seed == 2**32 - 2
+
+
+@pytest.mark.parametrize(
+    "seed",
+    [
+        # bool subclasses int, so lax mode would store either as a pin the user never set.
+        True,
+        False,
+        -1,
+        2**32 - 1,  # llama.cpp's "draw one" sentinel, not a value a pin can name.
+        2**32,
+        1.5,
+    ],
+)
+def test_a_thread_seed_takes_the_same_range_as_the_installation_copy(seed):
+    with pytest.raises(ValidationError):
+        ChatThreadSettings.model_validate({"seed": seed})
+
+
+def test_a_cleared_seed_stays_in_the_stored_snapshot():
+    """null is the clear, not an absence: dropping the key would let the installation pin
+    come back for the one chat the user deliberately unpinned."""
+    assert readable_thread_settings({"seed": None}) == {"seed": None}
+    assert ChatThreadSettings.model_validate({"seed": None}).seed is None
+
+
+def _thread_row(settings):
+    row = {"id": "thread-1", "modelType": "base", "createdAt": 0}
+    return row if settings is None else {**row, "settings": settings}
+
+
+@pytest.mark.parametrize(
+    "stored, expected",
+    [
+        # Written before the seed existed. Absent, so the chat takes the pin it inherits.
+        ({"temperature": 0.3}, {"temperature": 0.3}),
+        # Written by a build that has it, with the pin cleared. null is the chat's choice.
+        ({"temperature": 0.3, "seed": None}, {"temperature": 0.3, "seed": None}),
+        ({"temperature": 0.3, "seed": 3407}, {"temperature": 0.3, "seed": 3407}),
+    ],
+)
+def test_the_response_says_absent_for_a_key_the_snapshot_never_held(stored, expected):
+    """The default dump spells every unset field as null, and the client drops those, so
+    a pre-seed snapshot would read as a chat that had cleared the pin."""
+    app = FastAPI()
+
+    @app.get("/thread", response_model = ChatThread)
+    def _read():
+        return thread_from_row(_thread_row(stored))
+
+    with TestClient(app) as client:
+        assert client.get("/thread").json()["settings"] == expected

@@ -32,7 +32,7 @@ def _monitor_start_keywords(function) -> list[set[str]]:
 @pytest.mark.parametrize(
     "function",
     [
-        inference_route.openai_chat_completions,
+        inference_route.produce_openai_chat_completions,
         inference_route._responses_non_streaming,
         inference_route.openai_responses,
         inference_route.anthropic_messages,

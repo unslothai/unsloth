@@ -208,7 +208,6 @@ def test_the_denylist_can_be_read_without_probing(monkeypatch):
     # The panel sanitizes a stored list with this before turning it into an explicit
     # request, and a cold --help takes up to ten seconds. Waiting for the probe would
     # leave a flag denied since that list was saved sitting in the request.
-    import asyncio
 
     import routes.inference as inference_route
 
@@ -235,6 +234,7 @@ def test_the_published_slot_default_is_the_effective_one(monkeypatch):
     # A build without --kv-unified serves one slot however many are configured, and
     # load_model clamps to that before launch. An editor sizing its batch floor from
     # the raw default would refuse "--batch-size 2" against a command that runs it.
+
     import routes.inference as inference_route
 
     monkeypatch.setattr(
@@ -258,6 +258,7 @@ def test_the_published_slot_default_is_the_effective_one(monkeypatch):
 def test_an_unreadable_probe_keeps_the_asked_for_slot_count(monkeypatch):
     # Refusing to answer is not a reason to clamp: every other caller of the probe
     # here keeps the ask when it cannot be read.
+
     import routes.inference as inference_route
 
     def _boom(*_a, **_k):
@@ -276,10 +277,9 @@ def test_the_slot_probe_never_runs_on_the_event_loop(monkeypatch):
     # that is `llama-server --help` with a ten second timeout. Computed inline it
     # stalled every other request on the first open of the panel after an update, and
     # the managed-only answer too, which exists precisely to avoid waiting for a probe.
-    import asyncio
-    import threading
-
     import routes.inference as inference_route
+
+    import threading
 
     loop_thread = None
     probe_thread = None
@@ -311,10 +311,9 @@ def test_a_single_slot_default_still_reports_the_clamp(monkeypatch):
     # this build clamps is a different question and still has to be answered: the
     # editor sizes an EXPLICIT Slots value the user may raise without re-reading
     # this route, and off the loop like the rest of it.
-    import asyncio
-    import threading
-
     import routes.inference as inference_route
+
+    import threading
 
     loop_thread = None
     probe_thread = None

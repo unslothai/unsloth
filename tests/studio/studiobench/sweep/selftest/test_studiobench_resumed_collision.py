@@ -48,8 +48,8 @@ METRIC = "message_menu.open_close_ms"
 
 
 #: Wall clock per session. A resume starts after the run it continues has stopped; the real
-#: two-launcher payload of defect 9 overlaps by sixteen minutes, which is what `_at` reproduces
-#: for the concurrent fixtures.
+#: two-launcher payload of defect 9 overlaps by sixteen minutes, which is what `_at` reproduces for
+#: the concurrent fixtures.
 _STARTED = {
     "s1": "2026-08-23T00:00:00",
     "t2": "2026-08-23T02:00:00",

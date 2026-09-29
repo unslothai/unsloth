@@ -4,12 +4,14 @@
 """Every Playwright script in Chat UI Tests belongs to exactly one shard.
 
 The job used to run 11 scripts in sequence against four Unsloth instances, at 22.1 minutes on
-average, the largest single job in the repo. It is now four shards split on the Unsloth
-boundaries.
+average, the largest single job in the repo. It was split into four shards on the Unsloth
+boundaries, and is now two: `banner` folded into `chat` and `picker` into `extra`, because
+four cells of 3 to 9 minutes each queued about two hours for a runner while the account ran
+30 to 35 jobs at once. Two cells of about 12 minutes take half the slots.
 
 The failure mode that matters is not a broken shard, which is loud. It is a step whose
 `if:` names no shard, or names one that does not exist, or is dropped from the matrix: the
-step then runs nowhere, the job is green on all four shards, and a Playwright regression
+step then runs nowhere, the job is green on every shard, and a Playwright regression
 suite has silently stopped existing. Nothing else in CI would notice, because a test that
 does not run cannot fail.
 

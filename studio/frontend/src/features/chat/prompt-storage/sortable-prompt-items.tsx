@@ -4,7 +4,7 @@
 import { MarkdownPreview } from "@/components/markdown/markdown-preview";
 import { cn } from "@/lib/utils";
 import { autoscrollDelta, clipSpan } from "./autoscroll";
-import { insertionIndex } from "./reorder";
+import { flipShifts, insertionIndex, ownsDrag } from "./reorder";
 import { GripVerticalIcon, XIcon } from "lucide-react";
 import {
   type ReactElement,
@@ -45,8 +45,8 @@ export function AutoTextarea({
   // Layout effect: measuring after paint flashes the wrong height while typing.
   useLayoutEffect(measure, [value, measure]);
 
-  // A width change rewraps the text without touching `value`, and overflowY may
-  // be "hidden", so the new lines would be clipped until the next keystroke.
+  // A width change rewraps the text without touching `value`, and overflowY may be "hidden", so
+  // the new lines would be clipped until the next keystroke.
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
@@ -138,52 +138,45 @@ export function SortablePromptItems({
   const rowRefs = useRef(new Map<string, HTMLDivElement>());
   const prevOffsets = useRef(new Map<string, number>());
   const uidsRef = useRef(uids);
-  // Offsets are re-recorded on every commit but only a reorder animates, or an
-  // auto-growing textarea would make the rows below it wobble as you type.
+  // Only a reorder animates, or an auto-growing textarea would make the rows below it wobble as you type.
   const reorderTick = useRef(0);
   const animatedTick = useRef(0);
 
-  // Resync when the count changes from outside (revert, switching lists, import).
-  // During render rather than in an effect, which would paint the new row once
-  // under a stale key first.
+  // Resync when the count changes from outside (revert, switching lists, import). During render
+  // rather than in an effect, which would paint the new row once under a stale key first.
   let rowUids = uids;
   if (uids.length !== items.length) {
     rowUids = items.map((_, i) => uids[i] ?? nextUid());
     setUids(rowUids);
   }
 
-  // FLIP: snap each moved row back to where it was, then release, so the browser
-  // animates one transform per row rather than animating layout.
+  // Layout offsets, not client rects: a rect moves with the scroll position, so scrolling
+  // between reorders (autoscroll does it every frame) would bake that distance into every transform.
+  const measureOffsets = useCallback(() => {
+    const offsets = new Map<string, number>();
+    rowRefs.current.forEach((el, uid) => offsets.set(uid, el.offsetTop));
+    return offsets;
+  }, []);
+
+  // FLIP: snap each moved row back to where it was, then release, so the browser animates one
+  // transform per row rather than animating layout.
   useLayoutEffect(() => {
-    // Layout offsets, not client rects: a rect moves with the scroll position,
-    // so scrolling between reorders (autoscroll does it every frame) would be
-    // baked into every transform and jump the whole list.
-    const next = new Map<string, number>();
-    rowRefs.current.forEach((el, uid) => next.set(uid, el.offsetTop));
-
-    if (reorderTick.current !== animatedTick.current) {
-      animatedTick.current = reorderTick.current;
-      next.forEach((offset, uid) => {
-        const old = prevOffsets.current.get(uid);
-        const el = rowRefs.current.get(uid);
-        if (old === undefined || !el) return;
-        const dy = old - offset;
-        if (Math.abs(dy) < 1) return;
-        el.style.transition = "none";
-        el.style.transform = `translateY(${dy}px)`;
-        requestAnimationFrame(() => {
-          el.style.transition = "transform 180ms cubic-bezier(0.2, 0, 0, 1)";
-          el.style.transform = "";
-        });
+    if (reorderTick.current === animatedTick.current) return;
+    animatedTick.current = reorderTick.current;
+    flipShifts(prevOffsets.current, measureOffsets()).forEach((dy, uid) => {
+      const el = rowRefs.current.get(uid);
+      if (!el) return;
+      el.style.transition = "none";
+      el.style.transform = `translateY(${dy}px)`;
+      requestAnimationFrame(() => {
+        el.style.transition = "transform 180ms cubic-bezier(0.2, 0, 0, 1)";
+        el.style.transform = "";
       });
-    }
+    });
+  }, [uids, measureOffsets]);
 
-    prevOffsets.current = next;
-  }, [uids, items]);
-
-  // Mirrors, so the drag listener does not resubscribe on every keystroke. A
-  // layout effect, not an assignment during render: they only have to be
-  // current before the next pointer event, and this runs well before that.
+  // Mirrors, so the drag listener does not resubscribe on every keystroke. A layout effect, not
+  // an assignment during render: they only have to be current before the next pointer event.
   const itemsRef = useRef(items);
   const onChangeRef = useRef(onChange);
   useLayoutEffect(() => {
@@ -194,28 +187,31 @@ export function SortablePromptItems({
 
   const applyOrder = useCallback((from: number, to: number) => {
     if (from === to) return;
+    // FLIP's "first", read now rather than at whichever commit last recorded it: the preview
+    // toggle and a resize change row heights on their own, and animating from those stale
+    // offsets shifted the whole list.
+    prevOffsets.current = measureOffsets();
     reorderTick.current += 1;
     const nextItems = move(itemsRef.current, from, to);
     const nextUids = move(uidsRef.current, from, to);
-    // Advance the mirrors here too. A drag reorders faster than a commit, and
-    // the next hit-test must not run against the pre-move order.
+    // Advance the mirrors here too. A drag reorders faster than a commit, and the next hit-test
+    // must not run against the pre-move order.
     itemsRef.current = nextItems;
     uidsRef.current = nextUids;
     onChangeRef.current(nextItems);
     setUids(nextUids);
-  }, []);
+  }, [measureOffsets]);
 
   const handlePointerDown = useCallback(
     (uid: string, e: React.PointerEvent<HTMLButtonElement>) => {
-      // Primary press only: a right/middle drag reports buttons 2 or 4, which
-      // the zero-buttons release check below cannot end.
+      // Primary press only: a right or middle drag reports buttons 2 or 4, which the zero-buttons
+      // release check below cannot end.
       if (e.button !== 0 || !e.isPrimary) return;
       // isPrimary is per pointer type, so a mouse press can pass it mid-touch-drag.
       if (pointerIdRef.current !== null) return;
       pointerIdRef.current = e.pointerId;
-      // No setPointerCapture: reordering moves the row's DOM node, and detaching
-      // releases capture, killing the drag one row in. The window listener below
-      // outlives the move instead.
+      // No setPointerCapture: reordering moves the row's DOM node, and detaching releases capture,
+      // killing the drag one row in. The window listener below outlives the move instead.
       e.preventDefault();
       pointerYRef.current = e.clientY;
       setDraggingUid(uid);
@@ -235,8 +231,8 @@ export function SortablePromptItems({
       const from = order.indexOf(draggingUid);
       if (from < 0) return;
 
-      // Layout offsets, not client rects: mid-FLIP a client rect still reports
-      // the pre-animation position. offsetTop/offsetHeight ignore transforms.
+      // Layout offsets, not client rects: mid-FLIP a client rect still reports the pre-animation
+      // position. offsetTop/offsetHeight ignore transforms.
       const localY = pointerYRef.current - container.getBoundingClientRect().top;
       const boxes = order.map((uid) => {
         const el = rowRefs.current.get(uid);
@@ -278,15 +274,15 @@ export function SortablePromptItems({
       setDraggingUid(null);
     };
 
-    // Window listeners see every pointer; a second finger would otherwise
-    // reorder with its own clientY and its release would end this drag.
+    // Window listeners see every pointer; a second finger would otherwise reorder with its own
+    // clientY and its release would end this drag. An already-ended drag owns no pointer.
     const isDragPointer = (e: PointerEvent) =>
-      pointerIdRef.current === null || e.pointerId === pointerIdRef.current;
+      ownsDrag(pointerIdRef.current, e.pointerId);
 
     const onMove = (e: PointerEvent) => {
       if (!isDragPointer(e)) return;
-      // Releasing outside the window delivers no pointerup, so treat the first
-      // move with no buttons held as the release we missed.
+      // Releasing outside the window delivers no pointerup, so treat the first move with no buttons
+      // held as the release we missed.
       if (e.buttons === 0) {
         endDrag();
         return;
@@ -330,8 +326,7 @@ export function SortablePromptItems({
       ref={containerRef}
       className={cn(
         "relative flex flex-col gap-2",
-        // The drag tracks the pointer window-wide; without this it paints a
-        // text selection behind itself.
+        // The drag tracks the pointer window-wide; without this it paints a text selection behind itself.
         draggingUid && "select-none",
       )}
     >

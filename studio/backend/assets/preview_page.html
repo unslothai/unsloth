@@ -158,6 +158,23 @@
           background: #2d1716;
         }
       }
+      .think {
+        margin-bottom: 10px;
+        font-size: 14px;
+        color: var(--muted);
+      }
+      .think summary {
+        cursor: pointer;
+      }
+      .think div {
+        margin-top: 6px;
+        padding-left: 12px;
+        border-left: 2px solid var(--border);
+      }
+      .cutoff {
+        color: var(--muted);
+        font-style: italic;
+      }
       .dots {
         display: inline-flex;
         gap: 5px;
@@ -372,8 +389,22 @@
         msgs.push({ role: "user", content });
         add("user").textContent = content;
         const out = add("assistant");
-        out.innerHTML = '<span class="dots"><i></i><i></i><i></i></span>';
-        let acc = "";
+        const think = document.createElement("details");
+        think.className = "think";
+        think.hidden = true;
+        think.appendChild(document.createElement("summary")).textContent = "Thinking";
+        const thinkText = think.appendChild(document.createElement("div"));
+        const body = document.createElement("div");
+        body.innerHTML = '<span class="dots"><i></i><i></i><i></i></span>';
+        const cutoff = document.createElement("div");
+        cutoff.className = "cutoff";
+        cutoff.setAttribute("role", "status");
+        cutoff.hidden = true;
+        out.append(think, body, cutoff);
+        let acc = "",
+          reasoning = "",
+          truncated = false,
+          complete = false;
         try {
           const r = await fetch(chatUrl, {
             method: "POST",
@@ -385,7 +416,7 @@
             }),
           });
           if (!r.ok) {
-            showError(out, r.status, await r.text());
+            showError(body, r.status, await r.text());
             msgs.pop();
             input.value = content; // restore the prompt so the user can retry
             autosize();
@@ -405,27 +436,61 @@
               buf = buf.slice(i + 1);
               if (!line.startsWith("data:")) continue;
               const data = line.slice(5).trim();
-              if (data === "[DONE]") continue;
+              if (data === "[DONE]") {
+                complete = true;
+                continue;
+              }
               try {
                 const j = JSON.parse(data);
-                const d =
-                  j.choices &&
-                  j.choices[0] &&
-                  j.choices[0].delta &&
-                  j.choices[0].delta.content;
-                if (d) {
-                  acc += d;
-                  out.textContent = acc;
+                const choice = j.choices && j.choices[0];
+                if (!choice) continue;
+                if (choice.finish_reason === "length") truncated = true;
+                const delta = choice.delta || {};
+                if (typeof delta.reasoning_content === "string") {
+                  reasoning += delta.reasoning_content;
+                  if (reasoning.trim()) {
+                    think.hidden = false;
+                    thinkText.textContent = reasoning;
+                    down();
+                  }
+                }
+                if (delta.content) {
+                  acc += delta.content;
+                  body.textContent = acc;
                   down();
                 }
               } catch (_) {}
             }
           }
-          if (!acc) out.textContent = "";
-          msgs.push({ role: "assistant", content: acc });
+          if (!complete) throw new Error("preview stream ended before completion");
+          const hasContent = Boolean(acc.trim());
+          const hasReasoning = Boolean(reasoning.trim());
+          if (!hasContent && !hasReasoning) {
+            body.classList.add("error");
+            body.textContent = truncated
+              ? "Reply cut off before the model returned an answer. Please try again."
+              : "The model returned an empty reply. Please try again.";
+            msgs.pop();
+            input.value = content;
+            autosize();
+            btn.disabled = false;
+            input.focus();
+            return;
+          }
+          // keep reasoning-only replies so the next prompt preserves role alternation.
+          if (hasContent || hasReasoning) {
+            const reply = { role: "assistant", content: acc };
+            if (hasReasoning) reply.reasoning_content = reasoning;
+            msgs.push(reply);
+          }
+          cutoff.hidden = !truncated;
+          cutoff.textContent = truncated
+            ? "Reply cut off at the preview length limit."
+            : "";
+          if (!acc) body.textContent = "";
         } catch (err) {
           // Keep any streamed text, flag the break, restore the prompt for retry.
-          out.textContent = acc ? acc + "\n\n[connection lost]" : "Network error, please retry.";
+          body.textContent = acc ? acc + "\n\n[connection lost]" : "Network error, please retry.";
           msgs.pop();
           input.value = content;
           autosize();

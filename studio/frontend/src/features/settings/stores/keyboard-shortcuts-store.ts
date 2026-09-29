@@ -9,7 +9,10 @@ import {
   type ShortcutId,
   type ShortcutSlot,
   defaultBindingFor,
+  isMacPlatform,
   isShortcutId,
+  matchesBinding,
+  parseBinding,
   // Explicit extension: this module is imported directly by the node test
   // runner, which does not do bundler-style resolution.
 } from "../lib/keyboard-shortcuts.ts";
@@ -37,10 +40,9 @@ export type ShortcutOverrides = Partial<
 /** Builds before alternates stored `id -> string | null`. Read that as the
  *  primary slot, or every existing customization reverts to defaults. */
 function normalizeEntry(value: unknown): ShortcutOverrideEntry | null {
-  // A null back then cleared the action, which had one chord, so it has to
-  // clear both now. Left to the primary alone it would pick up whatever
-  // alternate has shipped since and start answering again, which is the
-  // opposite of what the user asked for.
+  // A null back then cleared the action, which had one chord, so it has to clear both now. Left to
+  // the primary alone it would pick up whatever alternate has shipped since and start answering
+  // again, which is the opposite of what the user asked for.
   if (value === null) return { primary: null, alternate: null };
   // A rebind is different: the user chose a primary and never saw an
   // alternate, so that slot is untouched and takes the shipped default, the
@@ -190,6 +192,30 @@ export function findConflicts(overrides: ShortcutOverrides): Set<ShortcutId> {
     if (ids.size > 1) for (const id of ids) out.add(id);
   }
   return out;
+}
+
+/**
+ * The first of `ids` this event fires, or null. For a handler that runs before
+ * the window listener and would otherwise consume the chord: an Enter chord
+ * reaches the composer's own keydown first, and preventDefault there stops
+ * useShortcut. Ownership is checked the same way useShortcut checks it, so a
+ * slot another action owns does not count.
+ */
+export function shortcutMatchingEvent<Id extends ShortcutId>(
+  overrides: ShortcutOverrides,
+  ids: readonly Id[],
+  event: Parameters<typeof matchesBinding>[1],
+  mac = isMacPlatform(),
+): Id | null {
+  for (const id of ids) {
+    for (const slot of SHORTCUT_SLOTS) {
+      const value = resolveBinding(overrides, id, slot);
+      if (!value || shortcutOwningBinding(overrides, value) !== id) continue;
+      const binding = parseBinding(value);
+      if (binding && matchesBinding(binding, event, mac)) return id;
+    }
+  }
+  return null;
 }
 
 interface KeyboardShortcutsState {

@@ -9,18 +9,14 @@ import { useCallback, useEffect, useState } from "react";
 // re-check happens naturally the next time the user reopens the app.
 const WEB_UPDATE_CHECK_DELAY_MS = 5000;
 
-// End-to-end override, absent in every real browser.
-//
-// The banner layout suite boots a fresh page for each case it measures, and every one of
-// those boots waits out this timer before the card it is there to measure exists at all.
-// At 33 boots that is over two and a half minutes of a five minute step spent waiting for
-// a delay whose entire purpose is to keep a network call off the critical path at launch,
-// which is not a property that suite is testing.
-//
-// Read at mount rather than at module load, so a test can set it from an init script and
-// so a bundle that is never driven by one behaves exactly as before: the global is
-// undefined, and the constant above stands. Deliberately not an env var, which would bake
-// the shortened delay into whatever build read it.
+// End-to-end override, absent in every real browser. The banner layout suite boots a fresh page for
+// each case it measures, and every one of those boots waits out this timer before the card it is
+// there to measure exists at all. At 33 boots that is over two and a half minutes of a five minute
+// step spent waiting for a delay whose entire purpose is to keep a network call off the critical
+// path at launch, which is not a property that suite is testing. Read at mount rather than at
+// module load, so a test can set it from an init script and so a bundle that is never driven by one
+// behaves exactly as before: the global is undefined, and the constant above stands. Deliberately
+// not an env var, which would bake the shortened delay into whatever build read it.
 const E2E_DELAY_GLOBAL = "__unslothE2EWebUpdateDelayMs";
 
 function overriddenDelayMs(): number | null {

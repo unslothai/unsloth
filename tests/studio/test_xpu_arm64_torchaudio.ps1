@@ -61,23 +61,27 @@ foreach ($p in @("", "linux-x86_64", "macosx-14.0-arm64", "win32")) {
 Check "an uppercase arm64 is still arm64" ((Get-XpuTorchSpecs -Platform "WIN-ARM64").Count -eq 2)
 Check "the probe lowercases its answer"   ((Get-FunctionAst "Get-VenvPlatformTag").Extent.Text -match 'ToLowerInvariant')
 
-# --- both call sites go through it -----------------------------------------------------------
-# Text, not AST, for the call count: asserting the COUNT catches a copy that quietly
-# reintroduces its own literal trio.
+# Text, not AST, for the call count: the COUNT catches a copy that reintroduces its own literal
+# trio. Three sites: fresh XPU install, flavor repair, release-preservation probe.
 $src = Get-Content -Raw -LiteralPath $installPs1
-Check "builder is used at 2 sites" (([regex]::Matches($src, 'Get-XpuTorchSpecs -Platform')).Count -eq 2)
+Check "builder is used at 3 sites" (([regex]::Matches($src, 'Get-XpuTorchSpecs -Platform')).Count -eq 3)
 # The literal trio must exist in exactly ONE place now (the builder itself), or the drift is back.
 Check "one literal torchaudio 2.6 pin" (([regex]::Matches($src, '"torchaudio>=2\.6,<2\.11\.0"')).Count -eq 1)
 
-# The repair site specifically: find the assignment that feeds the reinstall command.
-$fixAssign = $ast.FindAll({ param($n)
+# A kept-release pin substitutes one spec at a time and must restore the same way.
+$origAssign = $ast.FindAll({ param($n)
     $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and
-    $n.Left.Extent.Text -eq '$_fixSpecs'
+    $n.Left.Extent.Text -eq '$_origFixSpecs' -and
+    $n.Right.Extent.Text -match 'Get-XpuTorchSpecs'
 }, $true)
-Check "the repair builds one _fixSpecs" ($fixAssign.Count -eq 1)
-Check "the repair calls the builder"    ($fixAssign.Count -eq 1 -and $fixAssign[0].Right.Extent.Text -match 'Get-XpuTorchSpecs')
-# The non-XPU arm must be untouched -- this PR must not move CUDA/ROCm hosts at all.
-Check "the repair keeps the 2.4 CUDA floor" ($fixAssign.Count -eq 1 -and $fixAssign[0].Right.Extent.Text -match 'torch>=2\.4,<2\.11\.0')
+Check "the repair calls the builder" ($origAssign.Count -eq 1)
+# The non-XPU arm keeps the generic 2.4 floor: only the ceiling moved to the 2.11 line.
+$defaultAssign = $ast.FindAll({ param($n)
+    $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and
+    $n.Left.Extent.Text -eq '$_fixTorchSpec' -and
+    $n.Right.Extent.Text -match '^"torch>='
+}, $true)
+Check "the repair keeps the 2.4 CUDA floor" ($defaultAssign.Count -eq 1 -and $defaultAssign[0].Right.Extent.Text -eq '"torch>=2.4,<2.12.0"')
 
 if ($failures -gt 0) { Write-Host "FAILED: $failures" -ForegroundColor Red; exit 1 }
 Write-Host "All XPU arm64 torchaudio checks passed."

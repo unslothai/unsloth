@@ -45,7 +45,7 @@ from studiobench.runtime.readiness import (  # noqa: E402
 from studiobench.runtime.session import record_completeness_gate  # noqa: E402
 from studiobench.runtime.types import Cell, Recorder, make_cell_id  # noqa: E402
 
-#: The arm the whole windowed readiness gate exists for, at a rung big enough to be windowed.
+#:The arm the whole windowed readiness gate exists for, at a rung big enough to be windowed.
 CELL = Cell(
     cell_id = make_cell_id("100K", "B1", 0),
     rung = "100K",
@@ -271,9 +271,8 @@ def test_every_per_cell_gate_names_its_cell():
     src = inspect.getsource(S)
 
     def _calls(text: str) -> list:
-        # A PAREN COUNTER, not a regex. `rec.gate("follows_the_stream", bool(...), ...)` contains a
-        # nested call, and a non-greedy regex stops at the inner closing paren -- reporting the
-        # outer call as missing an argument that is two lines further down.
+        # A PAREN COUNTER, not a regex: `rec.gate("follows_the_stream", bool(...), ...)` contains a nested
+        # call, and a non-greedy regex stops at the inner closing paren.
         out = []
         for marker in ("rec.gate(", "recorder.gate("):
             start = 0
@@ -290,9 +289,8 @@ def test_every_per_cell_gate_names_its_cell():
                         depth -= 1
                     j += 1
                 args = text[i + len(marker) : j - 1]
-                # Skip prose. `session.py` carries a comment reading "WHY THIS IS NOT
-                # `recorder.gate(...)`", and a scanner that counts it reports a defect in a
-                # sentence.
+                # Skip prose: `session.py` carries a comment reading "WHY THIS IS NOT `recorder.gate(...)`", and a
+                # scanner that counts it reports a defect in a sentence.
                 line_start = text.rfind("\n", 0, i) + 1
                 is_comment = text[line_start:i].lstrip().startswith("#")
                 if args.strip() != "..." and not is_comment:

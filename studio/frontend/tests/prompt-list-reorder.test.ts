@@ -5,8 +5,12 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   type RowBox,
+  flipShifts,
   insertionIndex,
+  ownsDrag,
 } from "../src/features/chat/prompt-storage/reorder.ts";
+
+import { readSrcAsync } from "./helpers/kit.ts";
 
 const GAP = 2;
 
@@ -110,4 +114,84 @@ test("a drag across uneven rows reaches a fixed point at every pointer height", 
 test("rows without a measured box are skipped rather than counted", () => {
   const rows = layout([40, 40, 40]);
   assert.equal(insertionIndex([rows[0], undefined, rows[2]], 0, 1000), 1);
+});
+
+// The grip does not capture the pointer, so the move/up/cancel listeners are on
+// `window` and see every pointer on the page.
+test("only the pointer that started the drag drives it", () => {
+  assert.equal(ownsDrag(3, 3), true);
+  assert.equal(ownsDrag(3, 7), false, "a second finger reordered with its own y");
+});
+
+// Ending a drag clears the id, but React unsubscribes the window listeners a
+// commit later. Treating "no active pointer" as a match let a button still held
+// after a window blur keep reordering in that gap.
+test("an ended drag owns no pointer at all", () => {
+  assert.equal(ownsDrag(null, 3), false, "a blur-ended drag kept reordering");
+  assert.equal(ownsDrag(null, 0), false, "pointer id 0 is a real id, not absent");
+});
+
+// Offsets of a flex column of equal rows, keyed the way the component keys them.
+function offsets(height: number): Map<string, number> {
+  const map = new Map<string, number>();
+  ["i1", "i2", "i3"].forEach((uid, i) => map.set(uid, i * (height + GAP)));
+  return map;
+}
+
+test("only the rows a reorder moved are animated", () => {
+  const before = offsets(100);
+  // i1 and i2 swap; i3 keeps its slot.
+  const after = new Map([
+    ["i2", 0],
+    ["i1", 102],
+    ["i3", 204],
+  ]);
+  assert.deepEqual(
+    [...flipShifts(before, after)].sort(),
+    [
+      ["i1", -102],
+      ["i2", 102],
+    ].sort(),
+    "a row that did not move must not be transformed",
+  );
+});
+
+// The bug this exists for: rows change height with the order untouched, from the
+// preview toggle and from a textarea regrowing on resize. A baseline captured at
+// the old heights describes a layout that is gone, and the next reorder shifts
+// rows that never moved.
+test("a baseline from the wrong heights moves rows that stayed put", () => {
+  const stale = offsets(40);
+  const after = new Map([
+    ["i2", 0],
+    ["i1", 102],
+    ["i3", 204],
+  ]);
+  const shifts = flipShifts(stale, after);
+  assert.equal(shifts.get("i3"), -120, "the untouched last row jumps 120px");
+  assert.equal(shifts.get("i2"), 42, "the swap animates from the wrong distance");
+});
+
+test("a row with no baseline is left alone rather than animated from zero", () => {
+  const shifts = flipShifts(new Map([["i1", 0]]), new Map([["i9", 300]]));
+  assert.equal(shifts.has("i9"), false);
+});
+
+test("sub-pixel settling is not worth a transform", () => {
+  const shifts = flipShifts(new Map([["i1", 10]]), new Map([["i1", 10.4]]));
+  assert.equal(shifts.size, 0);
+});
+
+// flipShifts is only correct if the component hands it a baseline read at the
+// reorder, so keep the capture where it belongs.
+test("the baseline is captured when the reorder is requested", async () => {
+  const source = await readSrcAsync("features/chat/prompt-storage/sortable-prompt-items.tsx");
+  const captures = source.split("prevOffsets.current = measureOffsets();").length - 1;
+  assert.equal(captures, 1, "the FLIP baseline is captured somewhere else too");
+  const [beforeApply] = source.split("const applyOrder");
+  assert.doesNotMatch(
+    beforeApply,
+    /prevOffsets\.current =/,
+    "the baseline is recorded from a commit again, which the heights outrun",
+  );
 });

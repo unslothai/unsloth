@@ -22,6 +22,7 @@ test("status capabilities synthesize an audio model missing from the catalog", (
     mergeQueuedModelCapabilities([], "local/audio-model", {
       isVision: false,
       isGguf: false,
+      isMlx: false,
       isAudio: true,
       audioType: "tts",
       hasAudioInput: false,
@@ -33,6 +34,7 @@ test("status capabilities synthesize an audio model missing from the catalog", (
         isLora: false,
         isVision: false,
         isGguf: false,
+        isMlx: false,
         isAudio: true,
         audioType: "tts",
         hasAudioInput: false,
@@ -51,6 +53,7 @@ test("status capabilities override stale catalog flags", () => {
           isVision: true,
           isLora: true,
           isGguf: true,
+          isMlx: false,
           isAudio: false,
           audioType: null,
           hasAudioInput: true,
@@ -60,6 +63,7 @@ test("status capabilities override stale catalog flags", () => {
       {
         isVision: false,
         isGguf: false,
+        isMlx: false,
         isAudio: true,
         audioType: "tts",
         hasAudioInput: false,
@@ -72,6 +76,7 @@ test("status capabilities override stale catalog flags", () => {
         isVision: false,
         isLora: true,
         isGguf: false,
+        isMlx: false,
         isAudio: true,
         audioType: "tts",
         hasAudioInput: false,
@@ -84,6 +89,7 @@ test("audio-input capability keeps the synthesized model off the output-only pat
   const [model] = mergeQueuedModelCapabilities([], "local/audio-vlm", {
     isVision: false,
     isGguf: false,
+    isMlx: false,
     isAudio: true,
     audioType: "audio_vlm",
     hasAudioInput: true,
@@ -96,6 +102,7 @@ test("synthesized audio-only capability reaches image validation", () => {
   const [model] = mergeQueuedModelCapabilities([], "local/audio-model", {
     isVision: false,
     isGguf: false,
+    isMlx: false,
     isAudio: true,
     audioType: "tts",
     hasAudioInput: false,

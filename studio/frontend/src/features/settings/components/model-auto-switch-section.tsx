@@ -78,11 +78,11 @@ function MediaIdleUnloadRow({
           </Button>
         </div>
         {error ? (
-          <span className="max-w-[260px] text-right text-xs text-destructive">
+          <span className="max-w-[calc(260px*var(--ui-space-scale,1))] text-right text-xs text-destructive">
             {error}
           </span>
         ) : paused ? (
-          <span className="max-w-[260px] text-right text-xs text-muted-foreground">
+          <span className="max-w-[calc(260px*var(--ui-space-scale,1))] text-right text-xs text-muted-foreground">
             {t("settings.general.modelAutoSwitch.mediaIdlePaused")}
           </span>
         ) : null}
@@ -166,11 +166,10 @@ export function ModelAutoSwitchSection() {
     }
   };
 
-  // Idle-unload is tied to auto-switch (the freed model reloads via the swap).
-  // Toggling off preserves the saved seconds rather than zeroing them — the
-  // backend gates unloading on the enabled flag, so it never unloads while off.
-  // Enabling commits the drafted value, falling back to the last saved one so
-  // it can never get stuck.
+  // Idle-unload is tied to auto-switch (the freed model reloads via the swap). Toggling off
+  // preserves the saved seconds rather than zeroing them — the backend gates unloading on the
+  // enabled flag, so it never unloads while off. Enabling commits the drafted value, falling back
+  // to the last saved one so it can never get stuck.
   const handleToggle = (enabled: boolean) => {
     const savedIdleSeconds = settings?.autoUnloadIdleSeconds ?? 0;
     if (!enabled) {
@@ -302,15 +301,15 @@ export function ModelAutoSwitchSection() {
             </Button>
           </div>
           {error ? (
-            <span className="max-w-[260px] text-right text-xs text-destructive">
+            <span className="max-w-[calc(260px*var(--ui-space-scale,1))] text-right text-xs text-destructive">
               {error}
             </span>
           ) : settings && !settings.enabled && settings.idleUnloadActive ? (
-            <span className="max-w-[260px] text-right text-xs text-muted-foreground">
+            <span className="max-w-[calc(260px*var(--ui-space-scale,1))] text-right text-xs text-muted-foreground">
               {t("settings.general.modelAutoSwitch.idleActiveViaEnv")}
             </span>
           ) : settings && !settings.enabled ? (
-            <span className="max-w-[260px] text-right text-xs text-muted-foreground">
+            <span className="max-w-[calc(260px*var(--ui-space-scale,1))] text-right text-xs text-muted-foreground">
               {t("settings.general.modelAutoSwitch.idleNeedsEnable")}
             </span>
           ) : null}

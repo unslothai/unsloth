@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from "react";
 import {
   SHORTCUT_SLOTS,
-  activationBelongsToFocus,
   type ShortcutBinding,
   type ShortcutId,
+  activationBelongsToFocus,
   formatBindingLabel,
   matchesBinding,
   parseBinding,
@@ -50,10 +50,9 @@ export function isImeComposing(event: KeyboardEvent): boolean {
  */
 export function isSurfaceInForeground(selector: string): boolean {
   if (typeof document === "undefined") return false;
-  // Every match, not the first: Compare keeps the base view mounted and inert
-  // behind the panes, so the first composer found is the hidden one. Radix
-  // marks the rest of the page aria-hidden (older React: inert) for a modal's
-  // life, which is the general signal, not a per-dialog store.
+  // Every match, not the first: Compare keeps the base view mounted and inert behind the panes, so
+  // the first composer found is the hidden one. Radix marks the rest of the page aria-hidden (older
+  // React: inert) for a modal's life, which is the general signal, not a per-dialog store.
   return [...document.querySelectorAll(selector)].some(
     (el) => !el.closest('[aria-hidden="true"], [inert]'),
   );
@@ -107,13 +106,86 @@ export interface UseShortcutOptions {
    * past the repeat delay would land wherever the user let go.
    */
   repeats?: boolean;
+  /**
+   * Asked at press time, before the chord is consumed. Return false to leave the
+   * key to whatever else would have had it, the browser's own binding included.
+   * `enabled` cannot answer this: it is read at render, and returning from the
+   * handler is too late, since the event is already prevented by then.
+   */
+  claims?: () => boolean;
+}
+
+/** A mounted handler, for running an action without its chord (the desktop menu). */
+export interface ShortcutTrigger {
+  /** The handler's `claims`, asked the same way a key press asks it. */
+  claims: () => boolean;
+  run: () => void;
+}
+
+/** Newest last. */
+const triggers = new Map<ShortcutId, ShortcutTrigger[]>();
+const triggerListeners = new Set<() => void>();
+const notifyTriggerListeners = () => triggerListeners.forEach((listener) => listener());
+
+/** Exported for the test. Returns the unregister. */
+export function registerShortcutTrigger(
+  id: ShortcutId,
+  trigger: ShortcutTrigger,
+): () => void {
+  triggers.set(id, [...(triggers.get(id) ?? []), trigger]);
+  notifyTriggerListeners();
+  return () => {
+    triggers.set(id, (triggers.get(id) ?? []).filter((t) => t !== trigger));
+    notifyTriggerListeners();
+  };
+}
+
+/** Run `id` as if its chord were pressed, minus the key checks. False when nothing took it. */
+export function triggerShortcut(id: ShortcutId): boolean {
+  const trigger = [...(triggers.get(id) ?? [])].reverse().find((t) => t.claims());
+  trigger?.run();
+  return trigger !== undefined;
+}
+
+// Claims mostly ask whether a modal covers the surface, which shows as aria-hidden or inert.
+let modalObserver: MutationObserver | null = null;
+function subscribeTriggers(listener: () => void, watchModals: boolean): () => void {
+  triggerListeners.add(listener);
+  if (watchModals && !modalObserver && typeof MutationObserver !== "undefined") {
+    modalObserver = new MutationObserver(notifyTriggerListeners);
+    modalObserver.observe(document.documentElement, {
+      subtree: true,
+      attributes: true,
+      attributeFilter: ["aria-hidden", "inert"],
+    });
+  }
+  return () => {
+    triggerListeners.delete(listener);
+    if (triggerListeners.size === 0) {
+      modalObserver?.disconnect();
+      modalObserver = null;
+    }
+  };
+}
+
+/** Whether a mounted handler would take `id` right now, claims included. `watchModals` also
+ *  re-asks when a modal opens or closes; the desktop menu passes it, the web has no use for it. */
+export function useShortcutAvailable(id: ShortcutId, watchModals: boolean): boolean {
+  const subscribe = useCallback(
+    (listener: () => void) => subscribeTriggers(listener, watchModals),
+    [watchModals],
+  );
+  return useSyncExternalStore(subscribe, () =>
+    (triggers.get(id) ?? []).some((t) => t.claims()),
+  );
 }
 
 /** The chords `id` answers to now, joined so the effect re-runs only on a real change. */
 function useBindingValues(id: ShortcutId): string {
   return useKeyboardShortcutsStore((s) =>
-    SHORTCUT_SLOTS.map((slot) => resolveBinding(s.overrides, id, slot) ?? "")
-      .join("\0"),
+    SHORTCUT_SLOTS.map(
+      (slot) => resolveBinding(s.overrides, id, slot) ?? "",
+    ).join("\0"),
   );
 }
 
@@ -132,6 +204,7 @@ export function useShortcut(
     skipInTextFields = false,
     textFieldException,
     repeats = false,
+    claims,
   } = options;
   const values = useBindingValues(id);
   // A chord claimed by two actions is consumed by whichever listener runs
@@ -154,10 +227,19 @@ export function useShortcut(
     });
     return out;
   }, [values, ownedFlags]);
-  // The handler usually closes over fresh props, so keep it in a ref rather
-  // than tearing down and re-adding the listener on every render.
-  const handlerRef = useRef(handler);
-  handlerRef.current = handler;
+  // These usually close over fresh props, so keep them in a ref rather than
+  // tearing down and re-adding the listener on every render.
+  const latestRef = useRef({ handler, claims });
+  latestRef.current = { handler, claims };
+
+  // Registered even with no chord bound: the menu still reaches the action.
+  useEffect(() => {
+    if (!enabled) return;
+    return registerShortcutTrigger(id, {
+      claims: () => latestRef.current.claims?.() !== false,
+      run: () => latestRef.current.handler(new KeyboardEvent("keydown")),
+    });
+  }, [id, enabled]);
 
   useEffect(() => {
     if (bindings.length === 0 || !enabled) return;
@@ -166,9 +248,8 @@ export function useShortcut(
       if (isImeComposing(event)) return;
       const hit = bindings.find((binding) => matchesBinding(binding, event));
       if (!hit) return;
-      // The exception is for a chord that types nothing there. Decline ships
-      // on Escape; rebound to Enter or a letter, the same pass would deny the
-      // request as the user edits the prompt.
+      // The exception is for a chord that types nothing there. Decline ships on Escape; rebound to
+      // Enter or a letter, the same pass would deny the request as the user edits the prompt.
       const exception = typesInTextField(hit) ? undefined : textFieldException;
       if (skipInTextFields && isTextEntryFocused(exception)) return;
       // The focused control keeps its own Enter or Space.
@@ -178,12 +259,14 @@ export function useShortcut(
       ) {
         return;
       }
+      // Before preventDefault, which is the whole point: an unclaimed chord has
+      // to reach the browser untouched.
+      if (latestRef.current.claims?.() === false) return;
       event.preventDefault();
-      // Held past the OS repeat delay the chord arrives again and again. It
-      // stays consumed either way, but only an action that asked for repeats
-      // runs on them.
+      // Held past the OS repeat delay the chord arrives again and again. It stays consumed either
+      // way, but only an action that asked for repeats runs on them.
       if (event.repeat && !repeats) return;
-      handlerRef.current(event);
+      latestRef.current.handler(event);
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);

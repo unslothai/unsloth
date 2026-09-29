@@ -192,8 +192,28 @@ def test_the_field_defaults_to_absent_not_false():
     assert "run_tools_locally" not in dumped
 
 
+@pytest.mark.parametrize("provider_type", HOSTED_PROVIDERS)
+def test_armed_research_is_never_a_purely_hosted_selection(provider_type):
+    """deep_research is Unsloth's own and rides past enabled_tools, so it is not in the names.
+
+    Read by name alone, an armed turn with only hosted pills lit looks like a hosted request,
+    the turn proxies through, the tool is never offered and arming Deep Research does nothing.
+    """
+    from routes.inference import _selects_only_provider_hosted_tools
+
+    payload = _payload(enabled_tools = ["web_search"], deep_research_armed = True)
+    assert _selects_only_provider_hosted_tools(payload, provider_type) is False
+
+
+@pytest.mark.parametrize("provider_type", HOSTED_PROVIDERS)
+def test_an_unarmed_hosted_selection_is_unchanged(provider_type):
+    from routes.inference import _selects_only_provider_hosted_tools
+    payload = _payload(enabled_tools = ["web_search"], deep_research_armed = False)
+    assert _selects_only_provider_hosted_tools(payload, provider_type) is True
+
+
 def test_local_gguf_search_only_is_not_a_hosted_request():
-    """#9730: a loaded GGUF has no provider_type; web_search is Studio's tool."""
+    """#9730: a loaded GGUF has no provider_type; web_search is Unsloth's tool."""
     from models.inference import ChatCompletionRequest
     from routes.inference import _select_request_tools, _selects_only_provider_hosted_tools
 

@@ -1,0 +1,50 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
+# The uv download cache, restore half. One definition of the key, for the same reason
+# frontend-dist-restore has one: the Windows jobs run install.ps1 from a hand-written pwsh
+# step and never go through install-unsloth-local, so a pasted copy would drift silently.
+# A download cache is the safest kind: uv's is content-addressed by URL and hash, so a
+# stale entry cannot serve wrong content, only miss. Caching the VENV instead would have to
+# reason about an editable overlay, a moving `unsloth-zoo @ git+main` and absolute paths
+# baked into console scripts; tests/studio/test_uv_cache_discipline.py pins that
+# distinction and the cold-install lanes that must never adopt this.
+# UV_CACHE_DIR is set explicitly so one config covers Linux, macOS and Windows, and
+# exported so install.sh, install.ps1 and studio/setup.* inherit it; install.ps1 preserves
+# a custom value. ROOT-CHECKOUT ONLY: the path below is workspace-relative.
+
+name: Restore the uv download cache
+description: >-
+  Point UV_CACHE_DIR at a workspace directory and restore uv's download cache
+  into it, keyed on what decides the resolution. Read-only: the save is a
+  separate action and runs on the default branch only.
+
+outputs:
+  cache-hit:
+    description: "'true' when the exact key was restored."
+    value: ${{ steps.restore.outputs.cache-hit }}
+  key:
+    description: The full cache key, to hand to uv-cache-save.
+    value: ${{ steps.restore.outputs.cache-primary-key }}
+
+runs:
+  using: composite
+  steps:
+    - name: Point uv's cache somewhere cacheable
+      shell: bash
+      run: |
+        echo "UV_CACHE_DIR=${{ github.workspace }}/.uv-cache" >> "$GITHUB_ENV"
+        mkdir -p "${{ github.workspace }}/.uv-cache"
+
+    # Keyed on what decides the resolution, with a prefix fallback: a near-miss still
+    # supplies almost every wheel. A download cache wants restore-keys for exactly that
+    # reason, where a venv cache must not have them. runner.os: wheels differ per platform.
+    - name: Restore the uv download cache
+      id: restore
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+      continue-on-error: true
+      with:
+        path: ${{ github.workspace }}/.uv-cache
+        key: uv-${{ runner.os }}-${{ hashFiles('studio/backend/requirements/**', 'pyproject.toml') }}
+        restore-keys: |
+          uv-${{ runner.os }}-

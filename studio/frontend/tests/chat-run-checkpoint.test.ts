@@ -2,13 +2,14 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import test from "node:test";
 import {
   RUN_CHECKPOINT_INTERVAL_MS,
   type RunCheckpointTimers,
   createRunCheckpointScheduler,
 } from "../src/features/chat/utils/run-checkpoint-scheduler.ts";
+
+import { readSrcAsync } from "./helpers/kit.ts";
 
 const INTERVAL = 1000;
 
@@ -199,10 +200,7 @@ test("starting a thread twice keeps one schedule, and stopAll ends every thread"
 });
 
 test("the chat autosave drives the scheduler from runStart to runEnd", async () => {
-  const src = await readFile(
-    new URL("../src/features/chat/runtime-provider.tsx", import.meta.url),
-    "utf8",
-  );
+  const src = await readSrcAsync("features/chat/runtime-provider.tsx");
   assert.match(
     src,
     /createRunCheckpointScheduler\(/,

@@ -31,11 +31,20 @@ from storage.api_usage_db import (
 from storage.profile_stats_db import compute_profile_stats, invalidate_profile_stats_cache
 
 
+def _shared_setup_1(conn):
+    conn.execute(
+        "INSERT INTO training_runs (id, status, model_name, dataset_name, config_json, "
+        "started_at, total_steps, final_step, duration_seconds, output_dir, resume_blocked) "
+        "VALUES ('src', 'stopped', 'm', 'd', '{}', '2026-01-01T10:00:00', 20, 10, 600, "
+        "'/runs/out', 1)",
+    )
+
+
 @pytest.fixture
 def stats_db(tmp_path, monkeypatch):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
     monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "Projects"))
-    monkeypatch.setattr(studio_db, "_schema_ready", False)
+    monkeypatch.setattr(studio_db, "_schema_ready", set())
     invalidate_profile_stats_cache()
     yield
     invalidate_profile_stats_cache()
@@ -240,7 +249,7 @@ def test_api_only_usage_is_durable_idempotent_and_invalidates_cache(stats_db):
     assert after_insert["streak"]["current"] == 1
 
     # A fresh process/schema initialization still reads the same receipt.
-    studio_db._schema_ready = False
+    studio_db._schema_ready = set()
     invalidate_profile_stats_cache()
     after_restart = compute_profile_stats(days = 7, tz_name = "UTC", subject = "external-client")
     assert after_restart["totals"]["apiTokens"] == 50
@@ -269,7 +278,11 @@ def test_terminal_callback_returns_promptly_while_locked_db_eventually_persists(
         started = time.perf_counter()
         monitor.finish(entry_id)
         elapsed = time.perf_counter() - started
-        assert elapsed < 0.2
+        # The row count below is the sharp claim; this only rules out queueing on the lock.
+        # A second is already three orders of magnitude past a put_nowait, and this file is
+        # in the serial leg of studio-backend-ci.yml rather than under `-n 4`, so there is no
+        # contention to buy slack for: a looser bound just lets a stalling callback through.
+        assert elapsed < 1.0, f"finish() blocked on the locked database: {elapsed:.3f}s"
         assert (
             lock_conn.execute(
                 "SELECT COUNT(*) FROM api_usage_events WHERE id = ?", (entry_id,)
@@ -384,11 +397,24 @@ def test_writer_busy_shutdown_is_bounded_then_drains_after_unlock(monkeypatch, c
     assert writer.submit(receipt)
     assert entered.wait(timeout = 1)
 
+    # What stop() hands its join, not how long the box took to get back: a wall-clock
+    # budget loose enough to survive `-n 4` is also loose enough to pass a stop() that
+    # waited whole seconds, which is the regression named here.
+    joins: list[float | None] = []
+    joining = writer._thread.join
+
+    def record_join(timeout = None):
+        joins.append(timeout)
+        return joining(timeout = timeout)
+
+    monkeypatch.setattr(writer._thread, "join", record_join)
+
     try:
         started = time.perf_counter()
         assert writer.stop(timeout = 0.03) is False
         elapsed = time.perf_counter() - started
-        assert elapsed < 0.2
+        assert joins == [0.03], f"stop() did not wait for exactly its own timeout: {joins}"
+        assert elapsed < 1.0, f"stop() ignored its 0.03s timeout: {elapsed:.3f}s"
         assert not writer.submit(_api_receipt("rejected-after-stop", datetime.now(timezone.utc)))
         assert writer._thread.is_alive()
         assert "may be lost if the process exits" in caplog.text
@@ -624,7 +650,7 @@ def test_existing_database_gets_additive_api_usage_schema(stats_db):
     finally:
         legacy.close()
 
-    studio_db._schema_ready = False
+    studio_db._schema_ready = set()
     conn = studio_db.get_connection()
     try:
         assert conn.execute("SELECT value FROM legacy_marker").fetchone()[0] == "kept"
@@ -900,12 +926,7 @@ def test_resumed_runs_do_not_double_count_steps_or_tokens(stats_db):
         # 'stopped' at step 10, then claimed by the resume below. The claim sets
         # resume_blocked and leaves output_dir, which is how it is told apart
         # from a cancelled run.
-        conn.execute(
-            "INSERT INTO training_runs (id, status, model_name, dataset_name, config_json, "
-            "started_at, total_steps, final_step, duration_seconds, output_dir, resume_blocked) "
-            "VALUES ('src', 'stopped', 'm', 'd', '{}', '2026-01-01T10:00:00', 20, 10, 600, "
-            "'/runs/out', 1)",
-        )
+        _shared_setup_1(conn)
         conn.execute(
             "INSERT INTO training_runs (id, status, model_name, dataset_name, config_json, "
             "started_at, total_steps, final_step, duration_seconds, output_dir, resume_blocked) "
@@ -1528,12 +1549,7 @@ def test_a_resume_that_never_logged_a_step_keeps_the_source_counters(stats_db):
     """create_run claims the source before the continuation flushes a metric."""
     conn = studio_db.get_connection()
     try:
-        conn.execute(
-            "INSERT INTO training_runs (id, status, model_name, dataset_name, config_json, "
-            "started_at, total_steps, final_step, duration_seconds, output_dir, resume_blocked) "
-            "VALUES ('src', 'stopped', 'm', 'd', '{}', '2026-01-01T10:00:00', 20, 10, 600, "
-            "'/runs/out', 1)",
-        )
+        _shared_setup_1(conn)
         # Errored before its first training step: no final_step, no metrics.
         conn.execute(
             "INSERT INTO training_runs (id, status, model_name, dataset_name, config_json, "
@@ -1580,12 +1596,7 @@ def test_cancelling_a_resumed_run_keeps_the_source_superseded(stats_db):
     """mark_run_cancel_requested nulls output_dir, so lineage carries it."""
     conn = studio_db.get_connection()
     try:
-        conn.execute(
-            "INSERT INTO training_runs (id, status, model_name, dataset_name, config_json, "
-            "started_at, total_steps, final_step, duration_seconds, output_dir, resume_blocked) "
-            "VALUES ('src', 'stopped', 'm', 'd', '{}', '2026-01-01T10:00:00', 20, 10, 600, "
-            "'/runs/out', 1)",
-        )
+        _shared_setup_1(conn)
         # Resumed, then cancelled: output_dir cleared, counters still cumulative.
         conn.execute(
             "INSERT INTO training_runs (id, status, model_name, dataset_name, config_json, "

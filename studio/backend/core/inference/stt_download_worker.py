@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Optional, Sequence
 
 # Fresh spawned interpreter: re-apply the OS-trust-store injection.
+from hub.utils.hf_tokens import apply_token_to_child_env
 from utils.native_tls import activate_native_tls
 
 activate_native_tls()
@@ -58,20 +59,9 @@ def spawn_download(
     # Parallel Range chunks leave sparse partials a resumed sequential writer
     # cannot reuse, which defeats the point of cancelling.
     env["HF_HUB_ENABLE_HF_TRANSFER"] = "0"
-    # Replace the inherited credentials only when the caller supplied one. With
-    # no token, leave the ambient login alone: the parent plans the download
-    # with it, so scrubbing here would fail gated repos that used to work.
-    if hf_token:
-        env["HF_HUB_DISABLE_IMPLICIT_TOKEN"] = "0"
-        for token_key in (
-            "HF_TOKEN",
-            "HF_HUB_TOKEN",
-            "HUGGING_FACE_HUB_TOKEN",
-            "HUGGINGFACE_HUB_TOKEN",
-            "HUGGINGFACEHUB_API_TOKEN",
-        ):
-            env.pop(token_key, None)
-        env["HF_TOKEN"] = hf_token
+    # `None` keeps the ambient login (the parent planned the download with it); `False`
+    # must be scrubbed, or the child downloads a repo the caller only had to name.
+    apply_token_to_child_env(env, hf_token)
     existing_path = env.get("PYTHONPATH", "")
     env["PYTHONPATH"] = f"{cwd}{os.pathsep}{existing_path}" if existing_path else str(cwd)
     from utils.process_lifetime import adopt_pid, child_popen_kwargs

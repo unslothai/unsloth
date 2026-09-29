@@ -64,8 +64,8 @@ BUSY_POLLS: dict[str, tuple[float, str]] = {
     "/api/models/download-progress": (1.0, "declared"),
     "/api/models/gguf-download-progress": (1.0, "declared"),
     "/api/datasets/download-progress": (1.0, "declared"),
-    "/api/inference/images/generate-progress": (1.0, "declared"),
-    "/api/inference/video/generate-progress": (1.0, "declared"),
+    "/api/inference/images/generate-progress": (0.3, "declared"),
+    "/api/inference/video/generate-progress": (0.3, "declared"),
     "/api/inference/images/load-progress": (1.0, "declared"),
     "/api/inference/video/load-progress": (1.0, "declared"),
     "/api/train/diffusion/status": (1.5, "declared"),
@@ -86,6 +86,12 @@ BUSY_POLLS: dict[str, tuple[float, str]] = {
     # to the log being watched.
     "/api/settings/debug/logs": (3.0, "declared"),
     "/api/settings/debug/logs/sources": (3.0, "declared"),
+    # Chat detail reads, driven by the streaming persistence loop rather than a timer, so
+    # busy-only. Measured over four tabs on Qwen3.8-27B UD-Q4_K_XL: thread reads 0.57s
+    # apart, fork reads 0.40s apart, aggregated per template because a template shares one
+    # bucket. Rounded to the replay's 0.5s tick, the nearest value it can poll on.
+    "/api/chat/threads/{id}": (0.5, "measured"),
+    "/api/chat/threads/{id}/forks": (0.5, "measured"),
     # Training panels, live only while a run is going.
     "/api/train/status": (2.0, "declared"),
     "/api/train/metrics": (2.0, "declared"),
@@ -133,8 +139,11 @@ KNOWN_UNCLASSIFIED_POLLS: frozenset[str] = frozenset()
 #
 # Re-measure and ratchet again whenever a suppression rule changes. An envelope carrying
 # the old number after a fix has stopped guarding anything.
+#
+# Chat detail and fork polls are included in the busy replay at 60 heartbeat lines.
+# Media milestones remove 120 access lines, reducing the combined replay from 299 to 179.
 STEADY_IDLE_LINE_ENVELOPE = 1170
-BUSY_LINE_ENVELOPE = 260
+BUSY_LINE_ENVELOPE = 195
 
 # One-shot requests the app makes once on startup. Present so the boot window is not
 # mistaken for steady state, and so a mutation record and a failure record exist to assert

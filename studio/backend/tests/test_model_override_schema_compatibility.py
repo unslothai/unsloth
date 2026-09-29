@@ -346,3 +346,134 @@ def test_two_keys_that_fold_together_resolve_to_nothing(override_store):
     settings.set_model_override("C:\\models\\FOO.gguf", max_seq_length = 8192)
 
     assert settings.resolve_model_override_key("c:/models/foo.gguf") is None
+
+
+def test_the_disable_aliases_survive_override_normalization():
+    """llama.cpp's own "none", plus "disable" / "disabled", reach /load as off.
+
+    ``_clean_str`` drops anything outside the whitelist, so leaving them out filed an
+    explicit disable as no override at all and the model followed the global
+    preference, which enables a drafter whenever that preference is Auto.
+    """
+    for spelling in ("none", "None", "  DISABLE  ", "disabled"):
+        normalized = settings.normalize_model_override({"speculative_type": spelling})
+        assert normalized.get("speculative_type") == spelling.strip().lower(), spelling
+
+    # An unknown spelling is still dropped, so this widens the set rather than the rule.
+    assert "speculative_type" not in settings.normalize_model_override(
+        {"speculative_type": "bogus"}
+    )
+
+
+# The pair the route learned to forward one release after the four: the same replace-on-write
+# exposure, and a build that mirrors the tuning group can still predate it.
+REASONING_PAYLOAD = dict(reasoning_budget = 512, reasoning_budget_message = "Wrap up.")
+
+
+def test_a_client_that_does_not_know_the_reasoning_pair_cannot_erase_it(override_store):
+    _put(
+        MODEL,
+        **PRE_TUNING_PAYLOAD,
+        **REASONING_PAYLOAD,
+        mirrors_server_tuning = True,
+        mirrors_reasoning_budget = True,
+    )
+    before = settings.get_model_override(MODEL)
+    for field, value in REASONING_PAYLOAD.items():
+        assert before[field] == value
+
+    # A build that mirrors the four but predates the pair: it cannot set the new flag.
+    _put(MODEL, **PRE_TUNING_PAYLOAD, mirrors_server_tuning = True)
+    after = settings.get_model_override(MODEL)
+
+    for field, value in REASONING_PAYLOAD.items():
+        assert after[field] == value, f"{field} was deleted by a save that never mentioned it"
+    assert after == before
+    kwargs = settings.model_override_load_kwargs(after, is_gguf = True)
+    for field, value in REASONING_PAYLOAD.items():
+        assert kwargs[field] == value
+
+
+def test_a_client_that_does_know_the_reasoning_pair_still_clears_by_omission(override_store):
+    _put(
+        MODEL,
+        **PRE_TUNING_PAYLOAD,
+        **REASONING_PAYLOAD,
+        mirrors_server_tuning = True,
+        mirrors_reasoning_budget = True,
+    )
+    assert settings.get_model_override(MODEL)["reasoning_budget"] == 512
+
+    _put(MODEL, **PRE_TUNING_PAYLOAD, mirrors_server_tuning = True, mirrors_reasoning_budget = True)
+    after = settings.get_model_override(MODEL)
+    for field in REASONING_PAYLOAD:
+        assert field not in after, f"{field} survived an explicit clear"
+
+
+def test_the_reasoning_flag_is_not_itself_a_saved_field(override_store):
+    _put(MODEL, **PRE_TUNING_PAYLOAD, mirrors_reasoning_budget = True)
+    assert settings.get_model_override(MODEL)
+
+    _put(MODEL, mirrors_reasoning_budget = True)
+    assert settings.get_model_override(MODEL) == {}
+
+
+@pytest.mark.parametrize(
+    "fallback",
+    [
+        {"llama_extra_args": ["--reasoning-budget", "512"]},
+        {"reasoning_budget": 512},
+        {"reasoning_budget": 0},
+        {"reasoning_budget_message": "Wrap up."},
+    ],
+)
+def test_a_reset_tombstone_outlives_a_later_default_save(override_store, fallback):
+    """The -1/"" pair is stored so a qualified row shadows a reasoning flag on a broader entry.
+    A later save with the controls at their defaults omits the pair, and the row must not empty
+    out and be deleted, or the load falls back and hands the reset value straight back."""
+    bare = "unsloth/Repo-GGUF"
+    # The legacy fallback every quant without a row of its own reads.
+    settings.set_model_override(bare, **fallback)
+
+    # The user resets the control on the quant: a tombstone, not an empty row.
+    _put(MODEL, reasoning_budget = -1, mirrors_server_tuning = True, mirrors_reasoning_budget = True)
+    assert settings.get_model_override(MODEL).get("reasoning_budget") == -1
+
+    # An unrelated save from the same build, controls still at their defaults.
+    _put(MODEL, mirrors_server_tuning = True, mirrors_reasoning_budget = True)
+    after = settings.get_model_override(MODEL)
+    assert (
+        after.get("reasoning_budget") == -1
+    ), "the tombstone was dropped, so the bare row's --reasoning-budget 512 applies again"
+
+    # And it still strips the shadowed flag off the load.
+    kwargs = settings.model_override_load_kwargs(after, is_gguf = True)
+    assert kwargs["reasoning_budget"] == -1
+    key, resolved = settings.resolve_override_for_load(bare, variant = "Q4_K_M")
+    assert key == MODEL
+    assert resolved.get("reasoning_budget") == -1
+    assert resolved.get("reasoning_budget_message", "") == ""
+    # Another quant still inherits the original fallback.
+    _, sibling = settings.resolve_override_for_load(bare, variant = "Q8_0")
+    assert sibling == fallback
+
+
+@pytest.mark.parametrize(
+    "fallback", [{"reasoning_budget": 512}, {"reasoning_budget_message": "Stop"}]
+)
+def test_standalone_reasoning_reset_survives_a_later_default_save(override_store, fallback):
+    path = "/srv/models/model-Q4_K_M.gguf"
+    settings.set_model_override(f"{path}:Q4_K_M", **fallback)
+    _put(path, reasoning_budget = -1, reasoning_budget_message = "", mirrors_reasoning_budget = True)
+    _put(path, mirrors_reasoning_budget = True)
+    key, resolved = settings.resolve_override_for_load(path)
+    assert key == path
+    assert resolved.get("reasoning_budget") == -1
+    assert resolved.get("reasoning_budget_message") == ""
+
+
+def test_no_tombstone_is_invented_without_a_fallback_to_shadow(override_store):
+    # The other side: with nothing to shadow, a default save leaves no row at all.
+    _put(MODEL, reasoning_budget = -1, mirrors_server_tuning = True, mirrors_reasoning_budget = True)
+    _put(MODEL, mirrors_server_tuning = True, mirrors_reasoning_budget = True)
+    assert settings.get_model_override(MODEL) == {}

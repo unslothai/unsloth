@@ -64,8 +64,7 @@ def prune_log_dir(
                 saw_protected = True
                 continue
         except OSError:
-            # Dangling symlink, vanished file, or an unreadable directory. Skip the entry
-            # only: one bad name must not disable retention for the whole directory.
+            # Dangling symlink, vanished file, or an unreadable directory.
             continue
         entries.append((stat.st_mtime, path))
 
