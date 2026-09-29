@@ -17,14 +17,12 @@ import posixpath
 
 import pytest
 
-# test_gguf_model_basename.py covers the pure basename contract with no deps; this
-# file drives the real save_to_gguf, so it needs the ML stack. Skip cleanly rather
-# than failing collection in a minimal environment.
+# test_gguf_model_basename.py covers the pure basename contract with no deps;
+# this file drives the real save_to_gguf, so it needs the ML stack.
 save_mod = pytest.importorskip("unsloth.save", reason = "needs torch + unsloth_zoo")
 
 
 # OS shim: pure path ops from ntpath/posixpath, filesystem ops stay real.
-
 _PURE = {
     "join",
     "basename",
@@ -99,8 +97,8 @@ class _Harness:
         # unsloth_zoo/llama_cpp.py:2465 -- the name zoo would build.
         final = model_name if model_name.endswith(".gguf") else f"{model_name}.{qtype.upper()}.gguf"
         self.initial_names.append(final)
-        # save.py:2037 requires the returned paths to exist. The escape under test is
-        # at the *quantize* join (model_name + gguf_directory), not this path.
+        # save.py:2037 requires the returned paths to exist.
+        # The escape under test is at the *quantize* join (model_name + gguf_directory), not this path.
         return [str(self._scratch(final))], False
 
     def _quantize(self, input_gguf, output_gguf, quant_type, **kw):
@@ -125,8 +123,8 @@ def _run(
 ):
     harness = _Harness(monkeypatch, tmp_path, flavour)
     monkeypatch.setattr(save_mod, "shutil", _NoMove(), raising = False)
-    # gguf_directory is a Windows-style string here; os.makedirs is the *real* one,
-    # so chdir into tmp so a literal "C:\..." directory cannot land in the repo.
+    # gguf_directory is a Windows-style string here;
+    # os.makedirs is the *real* one, so chdir into tmp so a literal "C:\..." directory cannot land in the repo.
     monkeypatch.chdir(tmp_path)
     save_mod.save_to_gguf(
         model_name = model_name,

@@ -1,14 +1,26 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-export function isBrowserOffline(): boolean {
-  return isNavigatorOffline();
-}
+import { getHfEndpoint } from "@/lib/hf-endpoint";
+import { fetchHub } from "@/lib/hub-fetch";
 
 const NETWORK_STATUS_EVENT = "unsloth-network-status";
 const REMOTE_OFFLINE_TTL_MS = 30_000;
 const HUGGING_FACE_ORIGIN = "https://huggingface.co";
 const noopUnsubscribe = () => undefined;
+
+/**
+ * Origin the Hub traffic actually goes to. The backoff maps key on the request
+ * origin, so this has to follow HF_ENDPOINT too: keying a mirror deployment on
+ * huggingface.co would probe an origin nothing ever talks to.
+ */
+function defaultHubOrigin(): string {
+  try {
+    return new URL(getHfEndpoint()).origin;
+  } catch {
+    return HUGGING_FACE_ORIGIN;
+  }
+}
 
 type RemoteNetworkScope = string | readonly string[];
 
@@ -16,12 +28,15 @@ type RemoteNetworkScope = string | readonly string[];
  * Why a Hub request failed. Browsers collapse CORS, DNS, TLS interception and
  * real outages into one opaque TypeError, so "network-opaque" says what we can
  * prove, not what happened. Only CSP can be named, via its violation event.
+ * "auth-rejected" is the Hub answering, and refusing the credential: it never
+ * backs the origin off, since the Hub is reachable and a retry can succeed.
  */
 export type HubFailureKind =
   | "aborted"
   | "timeout"
   | "browser-offline"
   | "network-opaque"
+  | "auth-rejected"
   | "unknown";
 
 export interface HubFailure {
@@ -115,17 +130,16 @@ function getEarliestRemoteOfflineUntil(): number {
 }
 
 export function isRemoteNetworkOffline(
-  scope: RemoteNetworkScope = HUGGING_FACE_ORIGIN,
+  scope: RemoteNetworkScope = defaultHubOrigin(),
 ): boolean {
   return getRemoteOfflineUntil(scope) > Date.now();
 }
 
 export function isHuggingFaceOffline(): boolean {
-  // navigator.onLine is advisory only (false-reports offline on WSL2 / some
-  // WebKitGTK/Tauri webviews). The authoritative signal is the empirical
-  // remote-offline TTL, set when a real fetch fails and cleared on next success;
-  // navigator's online/offline events still drive re-evaluation.
-  return isRemoteNetworkOffline(HUGGING_FACE_ORIGIN);
+  // navigator.onLine is advisory only (false-reports offline on WSL2 / some WebKitGTK/Tauri
+  // webviews). The authoritative signal is the empirical remote-offline TTL, set when a real fetch
+  // fails and cleared on next success; navigator's online/offline events still drive re-evaluation.
+  return isRemoteNetworkOffline(defaultHubOrigin());
 }
 
 /**
@@ -134,7 +148,7 @@ export function isHuggingFaceOffline(): boolean {
  */
 export type HubPhase = "available" | "probing" | "unavailable";
 
-export function getHubPhase(origin: string = HUGGING_FACE_ORIGIN): HubPhase {
+export function getHubPhase(origin: string = defaultHubOrigin()): HubPhase {
   if (!lastFailureByOrigin.has(origin)) {
     return "available";
   }
@@ -142,7 +156,7 @@ export function getHubPhase(origin: string = HUGGING_FACE_ORIGIN): HubPhase {
 }
 
 export function getLastHubFailure(
-  origin: string = HUGGING_FACE_ORIGIN,
+  origin: string = defaultHubOrigin(),
 ): HubFailure | null {
   return lastFailureByOrigin.get(origin) ?? null;
 }
@@ -170,19 +184,18 @@ export function markRemoteNetworkOnline(origin?: string): void {
 }
 
 export function markRemoteNetworkOffline(
-  originOrTtl: string | number = HUGGING_FACE_ORIGIN,
+  originOrTtl: string | number = defaultHubOrigin(),
   ttlMs = REMOTE_OFFLINE_TTL_MS,
   failure?: HubFailure,
 ): void {
   const origin =
-    typeof originOrTtl === "string" ? originOrTtl : HUGGING_FACE_ORIGIN;
+    typeof originOrTtl === "string" ? originOrTtl : defaultHubOrigin();
   const ttl = typeof originOrTtl === "number" ? originOrTtl : ttlMs;
   const nextUntil = Date.now() + ttl;
   const previousUntil = remoteOfflineUntilByOrigin.get(origin) ?? 0;
-  // The cause has to describe the window in force: recording a newer cause while
-  // keeping a longer window left the panel naming a spent failure while a
-  // different, still-live one held it unavailable. A first cause is always
-  // taken, so nothing the user sees goes unexplained.
+  // The cause has to describe the window in force: recording a newer cause while keeping a longer
+  // window left the panel naming a spent failure while a different, still-live one held it
+  // unavailable. A first cause is always taken, so nothing the user sees goes unexplained.
   const takesWindow = nextUntil > previousUntil;
   const records =
     failure !== undefined && (takesWindow || !lastFailureByOrigin.has(origin));
@@ -203,7 +216,7 @@ export function markRemoteNetworkOffline(
 
 /** Let Retry re-probe now. The failure stays until a request succeeds. */
 export function clearRemoteBackoff(
-  origin: string = HUGGING_FACE_ORIGIN,
+  origin: string = defaultHubOrigin(),
 ): void {
   if (!remoteOfflineUntilByOrigin.delete(origin)) {
     return;
@@ -302,7 +315,7 @@ export function classifyFetchFailure(
     }
     return {
       kind: "network-opaque",
-      message: `The browser could not reach ${host}. A DNS or content filter, TLS-inspecting antivirus, a browser extension, or a CORS policy can all cause this, and the browser does not say which.`,
+      message: `Unable to reach ${host}. Check your network connection.`,
       origin,
       retryable: true,
     };
@@ -311,6 +324,38 @@ export function classifyFetchFailure(
     kind: "unknown",
     message: `The request to ${host} failed.`,
     origin,
+    retryable: true,
+  };
+}
+
+// What the Hub says when it refuses the credential itself: an expired or revoked
+// OAuth token ("OAuth token verification failed"), a bad key ("Invalid credentials
+// in Authorization header"), or a bare 401. A 403 is left out on purpose: it is
+// the answer for a gated or private repo the token is valid for, not a rejection.
+const HUB_TOKEN_REJECTED_RE =
+  /invalid credentials|invalid (?:user )?(?:access )?token|oauth token verification failed|token (?:has )?(?:expired|been revoked)/i;
+
+/**
+ * The failure for a Hub that answered and refused the saved token. Built from
+ * the HTTP status when the caller has it, else from the SDK's error text, which
+ * is all a paginated listing keeps. Null for anything else, including 403, 404,
+ * 429 and 5xx, so those keep their own wording.
+ */
+export function hubAuthFailure(
+  error: { status?: number | null; message?: string | null },
+  origin: string | null = defaultHubOrigin(),
+): HubFailure | null {
+  const rejected =
+    error.status === 401 ||
+    (error.status == null && HUB_TOKEN_REJECTED_RE.test(error.message ?? ""));
+  if (!rejected) {
+    return null;
+  }
+  return {
+    kind: "auth-rejected",
+    message: `${hostLabel(origin)} refused the saved Hugging Face token. It may have expired or been revoked. Update or clear it in Settings, then try again.`,
+    origin,
+    status: 401,
     retryable: true,
   };
 }
@@ -349,7 +394,10 @@ export async function fetchWithTimeout(
   const origin = originFromFetchInput(input);
 
   try {
-    const response = await fetch(input, { ...init, signal: controller.signal });
+    const response = await fetchHub(input, {
+      ...init,
+      signal: controller.signal,
+    });
     if (origin) {
       markRemoteNetworkOnline(origin);
     }

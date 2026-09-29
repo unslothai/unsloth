@@ -3,6 +3,7 @@
 
 import {
   type TransferSample,
+  type TransferStats,
   appendSample,
   computeTransferStats,
 } from "@/lib/transfer-stats";
@@ -62,6 +63,7 @@ export function startExternalJob(init: {
     expectedBytes: Math.max(0, init.expectedBytes),
     fraction: 0,
     bytesPerSec: 0,
+    etaSeconds: 0,
     error: null,
     startedAt: Date.now(),
     external: true,
@@ -76,15 +78,24 @@ export function updateExternalJob(
   if (!job) return;
   const downloadedBytes = Math.max(0, progress.downloadedBytes);
   const expectedBytes = Math.max(0, progress.expectedBytes);
-  appendSample(job.samples, Date.now() / 1000, downloadedBytes);
-  const stats = computeTransferStats(job.samples, expectedBytes);
+  // External trackers own their own timers, and a hidden tab's are clamped to
+  // about once a minute, which the estimator would read as the burst cadence.
+  // Guarding here rather than per tracker covers every one of them.
+  let stats: TransferStats | null = null;
+  if (typeof document !== "undefined" && document.hidden) {
+    job.samples.length = 0;
+  } else {
+    appendSample(job.samples, Date.now() / 1000, downloadedBytes);
+    stats = computeTransferStats(job.samples, expectedBytes);
+  }
   patchJob(key, {
     downloadedBytes,
     expectedBytes,
     fraction:
       expectedBytes > 0 ? Math.min(1, downloadedBytes / expectedBytes) : 0,
     // Unstable early samples read as absurd rates; show nothing until settled.
-    bytesPerSec: stats.stable ? stats.rateBytesPerSecond : 0,
+    bytesPerSec: stats?.stable ? stats.rateBytesPerSecond : 0,
+    etaSeconds: stats?.stable ? stats.etaSeconds : 0,
   });
 }
 
@@ -98,6 +109,7 @@ export function finishExternalJob(
   patchJob(key, {
     state: outcome,
     bytesPerSec: 0,
+    etaSeconds: 0,
     error: outcome === "error" ? (error ?? "Download failed.") : null,
     ...(outcome === "complete" ? { fraction: 1, completeOnDisk: true } : {}),
   });

@@ -40,10 +40,10 @@ import re
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
-# ── LoRA EMA ──────────────────────────────────────────────────────────────────
 
-# Warmup horizon for the EMA decay ramp: effective decay is min(decay, (1 + updates) / (WARMUP_OFFSET + updates)).
-# With the offset at 10, step 1 averages aggressively (~0.18) and the ramp reaches 0.99 after ~1000 updates.
+# Effective decay is min(decay, (1 + updates) / (WARMUP_OFFSET + updates)); at offset 10 step 1 averages aggressively
+# (~0.18) and the ramp reaches 0.99 after ~1000 updates.
+
 _EMA_WARMUP_OFFSET = 10.0
 
 
@@ -77,6 +77,24 @@ class LoRAEMA:
             shadow.requires_grad = False
             self._shadow[name] = shadow
 
+    def reseed_from(self, model: Any) -> None:
+        """Re-point every shadow at the model's CURRENT trainable weights.
+
+        For a resume that turns EMA on for the first time. The trainer builds the EMA before it
+        restores the adapter, so the shadow holds freshly initialised LoRA weights, and a
+        checkpoint written with EMA off carries no shadow to replace them with -- leaving the
+        exported EMA adapter blending the restored weights with initialisation noise. Starting
+        from the restored weights is what enabling EMA at step N means."""
+        import torch
+
+        with torch.no_grad():
+            for name, p in model.named_parameters():
+                shadow = self._shadow.get(name)
+                if shadow is None or tuple(shadow.shape) != tuple(p.shape):
+                    continue
+                shadow.copy_(p.detach().to(device = shadow.device, dtype = shadow.dtype))
+        self.updates = 0
+
     def effective_decay(self) -> float:
         """The decay used for the NEXT update (after ``updates`` prior ones)."""
         if not self.warmup:
@@ -99,6 +117,43 @@ class LoRAEMA:
 
     def state_dict(self) -> dict[str, Any]:
         return {name: t.detach().clone() for name, t in self._shadow.items()}
+
+    def missing_from(self, state: dict[str, Any]) -> tuple[str, ...]:
+        """Live shadow names a saved EMA state does not cover, by name or by shape.
+
+        ``load_state_dict`` skips those entries by design (a differently-wrapped model should
+        degrade rather than raise), which is exactly why a caller restoring a run has to ask:
+        a partial EMA silently blends restored shadows for some parameters with freshly
+        initialised ones for the rest, and every later update and the exported EMA adapter
+        carry that mixture while the run reports a clean resume."""
+        saved = state or {}
+        missing = []
+        for name, shadow in self._shadow.items():
+            entry = saved.get(name)
+            if entry is None or tuple(entry.shape) != tuple(shadow.shape):
+                missing.append(name)
+        return tuple(missing)
+
+    def load_state_dict(
+        self,
+        state: dict[str, Any],
+        updates: int = 0,
+    ) -> None:
+        """Restore shadows saved by ``state_dict`` (a resume checkpoint), in place.
+
+        ``updates`` restores the warmup ramp position: without it a resumed run would
+        restart the ramp and pull the shadow hard towards the current weights. Entries the
+        live model does not have are ignored, so a checkpoint from a differently-wrapped
+        model degrades to "keep the freshly initialised shadow" instead of raising."""
+        import torch
+
+        with torch.no_grad():
+            for name, shadow in self._shadow.items():
+                saved = (state or {}).get(name)
+                if saved is None or tuple(saved.shape) != tuple(shadow.shape):
+                    continue
+                shadow.copy_(saved.to(device = shadow.device, dtype = shadow.dtype))
+        self.updates = max(0, int(updates or 0))
 
     def copy_to(self, model: Any) -> dict[str, Any]:
         """Write the shadow values into ``model``'s params, returning the
@@ -146,8 +201,6 @@ def save_ema_adapter(ema: "LoRAEMA", transformer: Any, spec_save: Any, out_dir: 
     return str(ema_dir)
 
 
-# ── persistent conditioning cache ─────────────────────────────────────────────
-
 _CACHE_VERSION = "1"
 
 
@@ -172,14 +225,14 @@ def _sanitize(token: str) -> str:
 def _hub_cache_roots() -> list[str]:
     """Hub cache roots to look a repo up in, ACTIVE one first.
 
-    Studio can move its cache during a session (Settings), and loading follows the live setting,
+    Unsloth can move its cache during a session (Settings), and loading follows the live setting,
     but ``huggingface_hub.constants.HF_HUB_CACHE`` is a snapshot of the environment at import
     time. Reading only that constant left the revision "unresolved" (or pinned to a snapshot in
     the previous root) once the cache moved, so pulling a new revision of the same checkpoint no
     longer changed this key and a warm run silently reused the old embeddings and latents. The
-    constant stays as a fallback, since the trainer subprocess may run without Studio's settings
+    constant stays as a fallback, since the trainer subprocess may run without Unsloth's settings
     module importable."""
-    import os  # noqa: PLC0415 — keep the module import list light for the subprocess
+    import os  # noqa: PLC0415 - keep the module import list light for the subprocess
 
     roots: list[str] = []
     try:
@@ -201,6 +254,12 @@ def _hub_cache_roots() -> list[str]:
     return roots
 
 
+# An in-place edit of any of these must change the fingerprint: text_encoder*/tokenizer* produce
+# the embeddings and vae* the latents. "connectors" is LTX-2's, the only family running a module
+# between encode_prompt and the DiT: its connector output, not the raw Gemma3 state, is cached.
+_CACHE_SOURCE_SUBDIRS = ("text_encoder", "tokenizer", "vae", "connectors")
+
+
 def source_revision(ref: Any) -> str:
     """Revision/content marker for a checkpoint reference, resolved without loading it.
 
@@ -211,7 +270,7 @@ def source_revision(ref: Any) -> str:
     never touches the encoders, since the point of the cache is that a warm run does
     not load them.
     """
-    import os  # noqa: PLC0415 — keep the module import list light for the subprocess
+    import os  # noqa: PLC0415 - keep the module import list light for the subprocess
     try:
         name = str(ref or "").strip()
         if not name:
@@ -221,10 +280,7 @@ def source_revision(ref: Any) -> str:
             roots = [name]
             with os.scandir(name) as it:
                 roots += [
-                    e.path
-                    for e in it
-                    # vae too: cached latents come from it, so an in-place VAE swap must invalidate them just like an encoder change.
-                    if e.is_dir() and e.name.startswith(("text_encoder", "tokenizer", "vae"))
+                    e.path for e in it if e.is_dir() and e.name.startswith(_CACHE_SOURCE_SUBDIRS)
                 ]
             for root in roots:
                 with os.scandir(root) as it:
@@ -252,7 +308,7 @@ def source_revision(ref: Any) -> str:
                     if len(names) == 1:
                         return f"rev-{names[0][:16]}"
         return "unresolved"
-    except Exception:  # noqa: BLE001 — best-effort, never block a run
+    except Exception:  # noqa: BLE001 - best-effort, never block a run
         return "unresolved"
 
 
@@ -271,7 +327,6 @@ class PersistentConditioningCache:
         self.resolution = int(resolution)
         self.root.mkdir(parents = True, exist_ok = True)
 
-    # -- keys --
     def latent_key(
         self,
         image_path: str,
@@ -294,7 +349,6 @@ class PersistentConditioningCache:
     def has(self, key: str) -> bool:
         return self.path_for(key).is_file()
 
-    # -- IO --
     def put(self, key: str, tensors: Iterable[Any]) -> None:
         """Store an ordered tuple of tensors (None entries allowed: their slot
         indices are recorded in the metadata so ``get`` restores them)."""
@@ -336,12 +390,13 @@ class PersistentConditioningCache:
             return None
 
 
-# ── aspect-ratio bucketing ────────────────────────────────────────────────────
+# Buckets snap to 64 pixels: the DiT families divide by 8 in the VAE and 2 again in latent patching, and regional
+# torch.compile prefers few distinct shapes.
 
-# Pixel-dimension divisor for bucket shapes: the DiT families divide by 8 in the VAE and 2 again in latent patching, and regional torch.compile prefers few distinct shapes, so buckets snap to 64 pixels.
 BUCKET_DIVISOR = 64
 
-# Widest aspect ratio a bucket may take; anything more extreme clamps to it (matching the common practice of capping panoramas).
+# Widest aspect ratio a bucket may take; anything more extreme clamps to it (matching the common
+# practice of capping panoramas).
 MAX_BUCKET_RATIO = 2.0
 
 
@@ -372,7 +427,6 @@ def assign_buckets(
     divisor: int = BUCKET_DIVISOR,
     max_ratio: float = MAX_BUCKET_RATIO,
 ) -> dict[tuple[int, int], list[int]]:
-    """Group dataset indices by their bucket shape."""
     buckets: dict[tuple[int, int], list[int]] = {}
     for i, (w, h) in enumerate(sizes):
         buckets.setdefault(compute_bucket(w, h, base_resolution, divisor, max_ratio), []).append(i)
@@ -400,7 +454,6 @@ class BucketBatchSampler:
         self._pos = {s: 0 for s in self._shapes}
 
     def next_batch(self, k: int) -> tuple[tuple[int, int], list[int]]:
-        """Returns (bucket_shape, indices) with exactly ``k`` indices."""
         shape = self._rng.choices(self._shapes, weights = self._weights, k = 1)[0]
         out: list[int] = []
         while len(out) < k:

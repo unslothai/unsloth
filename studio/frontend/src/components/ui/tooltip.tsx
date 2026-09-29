@@ -12,8 +12,13 @@ import {
 } from "react";
 import type * as React from "react";
 
-import { isBlockedByActiveModal } from "@/components/ui/tooltip-modal-layer";
+import {
+  getModalLayer,
+  isBlockedByActiveModal,
+  subscribeModalLayer,
+} from "@/components/ui/tooltip-modal-layer";
 import { resolveTooltipOpen } from "@/components/ui/tooltip-open-state";
+import { isTouchClick } from "@/components/ui/touch-click";
 import { cn } from "@/lib/utils";
 
 type ToggleFn = () => void;
@@ -21,57 +26,6 @@ const TooltipToggleCtx = createContext<ToggleFn | null>(null);
 const TooltipTriggerElementCtx = createContext<(element: HTMLElement | null) => void>(
   () => undefined,
 );
-
-// Radix sets body pointer-events to none while a modal layer is up. That is also when a hovered
-// trigger stops receiving pointerleave, so a tooltip already on screen hangs over the dialog
-// with nothing able to close it. One observer serves every tooltip.
-let modalLayerUp = false;
-const modalLayerListeners = new Set<() => void>();
-let modalLayerObserver: MutationObserver | null = null;
-
-function readModalLayer(): void {
-  modalLayerUp = document.body.style.pointerEvents === "none";
-  for (const listener of modalLayerListeners) listener();
-}
-
-function readPointerEvents(style: string | null): string {
-  return (
-    /(?:^|;)\s*pointer-events\s*:\s*([^;]+)/.exec(style ?? "")?.[1]?.trim() ??
-    ""
-  );
-}
-
-function readRelevantLayerMutations(records: MutationRecord[]): void {
-  const pointerEventsChanged = records.some(
-    (record) =>
-      readPointerEvents(record.oldValue) !==
-      readPointerEvents(
-        (record.target as Element).getAttribute?.("style") ?? null,
-      ),
-  );
-  if (pointerEventsChanged) readModalLayer();
-}
-
-function subscribeModalLayer(listener: () => void): () => void {
-  modalLayerListeners.add(listener);
-  if (!modalLayerObserver && typeof MutationObserver !== "undefined") {
-    modalLayerObserver = new MutationObserver(readRelevantLayerMutations);
-    modalLayerObserver.observe(document.body, {
-      attributes: true,
-      attributeFilter: ["style"],
-      attributeOldValue: true,
-      subtree: true,
-    });
-    readModalLayer();
-  }
-  return () => {
-    modalLayerListeners.delete(listener);
-  };
-}
-
-function getModalLayer(): boolean {
-  return modalLayerUp;
-}
 
 function assignRef<T>(ref: React.Ref<T> | undefined, value: T | null): void {
   if (typeof ref === "function") {
@@ -130,20 +84,6 @@ function createModalBlockStore(): ModalBlockStore {
 
 function getServerModalBlock(): boolean {
   return false;
-}
-
-/** Tap-to-pin is for touch, which has no hover. The click's own pointerType is the only thing
-* that answers for the pointer actually used: the media query reports the primary device, so on
-* a hybrid it mislabels every event. Keyboard activation reports "", which correctly does not pin. */
-function isTouchClick(event: React.MouseEvent): boolean {
-  const pointerType = (event.nativeEvent as Partial<PointerEvent>).pointerType;
-  if (typeof pointerType === "string") return pointerType === "touch";
-  // No PointerEvent (older WebViews): fall back to the device class.
-  return (
-    typeof window !== "undefined" &&
-    typeof window.matchMedia === "function" &&
-    window.matchMedia("(pointer: coarse)").matches
-  );
 }
 
 // Default to instant open (no hover delay): icon labels, nav labels and the token calculators
@@ -221,10 +161,9 @@ function Tooltip({
     if (!clickOpen) return;
     const release = (event: Event) => {
       const target = event.target as Node | null;
-      // The trigger is matched by element, not by data-slot: an `asChild` child
-      // can drop the attribute (a component that does not spread props), and
-      // then a press on this very trigger read as outside, cleared the pin, and
-      // the click handler toggled it straight back on.
+      // The trigger is matched by element, not by data-slot: an `asChild` child can drop the
+      // attribute (a component that does not spread props), and then a press on this very trigger
+      // read as outside, cleared the pin, and the click handler toggled it straight back on.
       if (target && modalBlockStore.getTriggerElement()?.contains(target)) {
         return;
       }
@@ -322,9 +261,8 @@ function TooltipTrigger({
 
 type TooltipVariant = "default" | "rich" | "none";
 
-// `default` applies the compact black-pill styling shared with the
-// sidebar/chat icon labels. `rich` opts into the larger multi-row
-// popover surface used for timing/context breakdowns. `none` is an
+// `default` applies the compact black-pill styling shared with the sidebar/chat icon labels. `rich`
+// opts into the larger multi-row popover surface used for timing/context breakdowns. `none` is an
 // escape hatch for tooltips that need to bring their own surface.
 function TooltipContent({
   variant = "default",
@@ -336,10 +274,9 @@ function TooltipContent({
 }: React.ComponentProps<typeof TooltipPrimitive.Content> & {
   variant?: TooltipVariant;
 }) {
-  // Single-line compact tooltips render as a full pill; wrapped ones keep
-  // the squarer corners so tall pills do not look like capsules. A ref
-  // callback measures on mount: Radix mounts the portal content without
-  // re-rendering this wrapper, so an effect here would never see the node.
+  // Single-line compact tooltips render as a full pill; wrapped ones keep the squarer corners so
+  // tall pills do not look like capsules. A ref callback measures on mount: Radix mounts the portal
+  // content without re-rendering this wrapper, so an effect here would never see the node.
   const contentRef = useCallback(
     (el: React.ComponentRef<typeof TooltipPrimitive.Content> | null) => {
       assignRef(ref, el);

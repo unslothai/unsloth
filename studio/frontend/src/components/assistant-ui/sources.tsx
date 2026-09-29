@@ -19,8 +19,6 @@ import {
   HoverCardContent,
 } from "@/components/ui/hover-card";
 
-// ── Helpers ──────────────────────────────────────────────────
-
 const extractDomain = (url: string): string => {
   try {
     return new URL(url).hostname.replace(/^www\./, "");
@@ -33,8 +31,6 @@ const getDomainInitial = (url: string): string => {
   const domain = extractDomain(url);
   return domain.charAt(0).toUpperCase();
 };
-
-// ── Sub-components ───────────────────────────────────────────
 
 function SourceIcon({
   url,
@@ -126,8 +122,6 @@ function Source({
   );
 }
 
-// ── Source badge with hover card ─────────────────────────────
-
 export interface SourceData {
   /**
    * Stable per-citation key. Two Anthropic citations into different spans of
@@ -185,8 +179,6 @@ const SourceBadge: FC<{ source: SourceData; allowRemoteIcons?: boolean }> = ({
     </HoverCard>
   );
 };
-
-// ── Grouped sources with 2-row collapse ─────────────────────
 
 const SourcesGroup: FC<{ sources?: SourceData[]; allowRemoteIcons?: boolean }> = ({
   sources: suppliedSources,
@@ -333,11 +325,7 @@ const SourcesGroup: FC<{ sources?: SourceData[]; allowRemoteIcons?: boolean }> =
   );
 };
 
-// ── Individual source (renders null — SourcesGroup handles all) ──
-
 const SourcesNoop: FC<Record<string, unknown>> = () => null;
-
-// ── Exports ──────────────────────────────────────────────────
 
 const Sources = memo(SourcesNoop) as unknown as FC<Record<string, unknown>> & {
   Root: typeof Source;

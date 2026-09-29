@@ -92,10 +92,7 @@ def patch_unified_memory_safetensors_load():
         return True
 
     def _clone_move(tensor, device):
-        # Clone into a regular CPU allocation to restore fast pinned-DMA, then
-        # move. The clone transiently doubles the tensor's CPU footprint and can
-        # OOM a low-memory UMA box; fall back to the direct, allocation-free move
-        # (a genuine non-memory error re-raises identically from it).
+        # Clone into a regular CPU allocation to restore fast pinned-DMA, then move.
         try:
             return tensor.clone().to(device, non_blocking = False)
         except (MemoryError, RuntimeError):

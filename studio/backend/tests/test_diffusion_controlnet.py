@@ -240,6 +240,12 @@ class _FakeCNModel:
 
 
 class _FakeCNPipe:
+    recast_dtype: object = None
+
+    def to(self, *args, **kwargs):
+        _FakeCNPipe.recast_dtype = kwargs.get("dtype")
+        return self
+
     @classmethod
     def from_pipe(
         cls,
@@ -250,6 +256,8 @@ class _FakeCNPipe:
         p = cls()
         p.base = base
         p.controlnet = controlnet
+        _FakeCNPipe.recast_dtype = None
+        p.to(dtype = torch_dtype or "float32")  # from_pipe's terminal cast
         return p
 
 
@@ -298,6 +306,8 @@ def test_controlnet_pipe_loads_once_and_caches(monkeypatch):
     assert p1.controlnet.path == "repo/id" and p1.controlnet.device == "cpu"
     # A remote (non-local) ControlNet must force safetensors so a pickle cannot deserialize even if the Hub scan failed open.
     assert p1.controlnet.use_safetensors is True
+    # The cast never reaches the resident base modules the ControlNet pipe shares (#9186).
+    assert _FakeCNPipe.recast_dtype is None
     # cached: same id -> same model + same pipe, no reload.
     p2 = b._controlnet_pipe(st, resolved, threading.Event())
     assert p2 is p1

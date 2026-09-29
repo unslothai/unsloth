@@ -33,15 +33,30 @@ function buildS3PayloadConfig(config: TrainingConfigState) {
   return s3;
 }
 
+/** Whether this configuration asks the backend for a bnb 4-bit load.
+ *
+ * Exported so the UI can say what the run will do: the backend refuses 4-bit for models
+ * routed to the latest-transformers sidecar, and a preview reading "QLoRA · 4-bit" for a
+ * 16-bit run understates its VRAM by a wide margin. */
+export function trainingLoadsIn4Bit(
+  config: Pick<TrainingConfigState, "trainingMethod" | "selectedModel">,
+): boolean {
+  const isCpt = config.trainingMethod === "cpt";
+  const adapterMethod = config.trainingMethod !== "full";
+  const isQloraMethod = config.trainingMethod === "qlora";
+  const isFourBitModel = (config.selectedModel ?? "")
+    .toLowerCase()
+    .includes("4bit");
+  return (adapterMethod && isQloraMethod) || (isCpt && isFourBitModel);
+}
+
 export function buildTrainingStartPayload(
   config: TrainingConfigState,
   hfToken: string | null,
 ): TrainingStartRequest {
   const isCpt = config.trainingMethod === "cpt";
   const adapterMethod = config.trainingMethod !== "full";
-  const isQloraMethod = config.trainingMethod === "qlora";
   const _selectedModelLower = (config.selectedModel ?? "").toLowerCase();
-  const isFourBitModel = _selectedModelLower.includes("4bit");
   // DeepSeek OCR ignores user-selected image size; do not send it.
   const isDeepseekOcr =
     _selectedModelLower.includes("deepseek") &&
@@ -82,7 +97,7 @@ export function buildTrainingStartPayload(
     model_known_cached: config.modelKnownCached,
     model_local_path: config.modelKnownCached ? config.modelLocalPath : null,
     model_format: config.modelFormat,
-    load_in_4bit: (adapterMethod && isQloraMethod) || (isCpt && isFourBitModel),
+    load_in_4bit: trainingLoadsIn4Bit(config),
     max_seq_length: config.contextLength,
     vision_image_size:
       config.isVisionModel && config.isDatasetImage === true && !isDeepseekOcr

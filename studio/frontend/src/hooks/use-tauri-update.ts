@@ -7,7 +7,15 @@ import {
   copySupportDiagnostics,
   type CopySupportDiagnosticsResult,
 } from "@/lib/tauri-diagnostics";
-import { checkDesktopUpdate } from "@/lib/tauri-updater";
+import {
+  checkDesktopUpdate,
+  desktopUpdateBundleStatus,
+  downloadDesktopUpdate,
+  installDesktopUpdate,
+  listenDesktopUpdateDownload,
+  sameUpdateVersion,
+  type DesktopUpdateMetadata,
+} from "@/lib/tauri-updater";
 import { toast } from "@/lib/toast";
 
 export type UpdateStatus =
@@ -22,8 +30,9 @@ export type UpdateStatus =
 export interface UpdateInfo {
   version: string;
   currentVersion: string;
-  // Backend release this build pins; CHANGELOG.md is keyed by it, not the SemVer.
+  // Backend release this build pins, which preflight checks against.
   pypiVersion?: string;
+  // latest.json's `notes`: a static download blurb. Kept as metadata, not shown.
   body?: string;
   date?: string;
 }
@@ -50,7 +59,6 @@ interface ManualUpdateInfo {
   date?: string;
 }
 
-/** `pypi_version` from latest.json, which the updater passes through raw. */
 function rawPypiVersion(raw: Record<string, unknown>): string | undefined {
   const value = raw.pypi_version;
   return typeof value === "string" && value.length > 0 ? value : undefined;
@@ -66,8 +74,13 @@ export interface RetainedUpdateFailure {
 const DEFAULT_UPDATE_POLICY: DesktopUpdatePolicy = {
   mode: "in_app",
   releasePageBaseUrl: "https://github.com/unslothai/unsloth/releases/tag/",
-  releaseTagPrefix: "desktop-v",
+  releaseTagPrefix: "v",
 };
+const STARTUP_UPDATE_CHECK_DELAY_MS = 5000;
+const PERIODIC_UPDATE_CHECK_INTERVAL_MS = 60 * 60 * 1000;
+const BUNDLE_DOWNLOAD_POLL_MS = 500;
+// A native download that stalls without clearing the flag would otherwise hold the update forever.
+const BUNDLE_DOWNLOAD_WAIT_MS = 10 * 60 * 1000;
 
 // Desktop quit never fires beforeunload, and only the renderer sees the shell installer.
 function publishShellUpdateActive(active: boolean): void {
@@ -98,6 +111,7 @@ function manualReleasePageUrl(
 
 export function useTauriUpdate(isExternalServer = false) {
   const [status, setStatus] = useState<UpdateStatus>("idle");
+  const statusRef = useRef<UpdateStatus>("idle");
   const [info, setInfo] = useState<UpdateInfo | null>(null);
   const infoRef = useRef<UpdateInfo | null>(null);
   const [hasChecked, setHasChecked] = useState(false);
@@ -112,11 +126,32 @@ export function useTauriUpdate(isExternalServer = false) {
   const [error, setError] = useState<string | null>(null);
   const [lastFailure, setLastFailure] = useState<RetainedUpdateFailure | null>(null);
   const [updatePolicy, setUpdatePolicy] = useState<DesktopUpdatePolicy>(DEFAULT_UPDATE_POLICY);
-  const updateRef = useRef<Awaited<ReturnType<typeof checkDesktopUpdate>>>(null);
+  const updateRef = useRef<DesktopUpdateMetadata | null>(null);
   const checkedRef = useRef(false);
-  const startupScheduledRef = useRef(false);
+  const lastCheckAtRef = useRef<number | null>(null);
   const checkingRef = useRef(false);
   const updatingRef = useRef(false);
+  // Windows kill-on-close: false once a re-arm has failed, and every path that starts a backend must check it.
+  // A webview reload resets this ref while the native job may still be disarmed, so the first gate asks natively.
+  const cleanupRearmedRef = useRef(true);
+  const cleanupCheckedRef = useRef(false);
+
+  async function resumeCleanup(): Promise<boolean> {
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      await invoke("resume_desktop_update_cleanup");
+      cleanupRearmedRef.current = true;
+    } catch (e) {
+      console.error("Could not re-arm crash cleanup after a failed update:", e);
+      cleanupRearmedRef.current = false;
+    }
+    return cleanupRearmedRef.current;
+  }
+
+  function updateStatus(next: UpdateStatus) {
+    statusRef.current = next;
+    setStatus(next);
+  }
 
   function replaceInfo(nextInfo: UpdateInfo | null) {
     infoRef.current = nextInfo;
@@ -127,12 +162,12 @@ export function useTauriUpdate(isExternalServer = false) {
     const isNewOffer = infoRef.current?.version !== nextInfo.version;
     replaceInfo(nextInfo);
     if (isNewOffer) {
-      // Only a version the user has not seen may reopen the banner.
       setLastFailure(null);
       setError(null);
       setDismissed(false);
     }
-    setStatus("available");
+    // An hourly re-offer of the version already on show must not reopen a dismissed banner.
+    updateStatus("available");
   }
 
   function replaceLogs(nextLogs: string[]) {
@@ -225,9 +260,10 @@ export function useTauriUpdate(isExternalServer = false) {
     if (checkingRef.current || updatingRef.current) return;
     // A manual check covers startup, so the delayed timer must not repeat it.
     checkedRef.current = true;
+    lastCheckAtRef.current = Date.now();
     checkingRef.current = true;
     setCheckError(null);
-    setStatus("checking");
+    updateStatus("checking");
 
     try {
       const { policy, resolved } = await resolveUpdatePolicy();
@@ -236,15 +272,16 @@ export function useTauriUpdate(isExternalServer = false) {
         // Self-gates on the real target_os, so it is authoritative even if policy is a guess.
         if (await checkManualUpdate(policy)) return;
         if (resolved) {
-          // latest.json has no deb/rpm key, so the in-app updater would offer an
-          // AppImage this install cannot apply. Stop instead.
+          // Reaching here means the Rust side resolved the mode and still said manual, so this
+          // install has no in-app path: rpm, a plain tarball, or a .deb whose updater checks
+          // failed. latest.json carries linux-x86_64-deb now, but only linux-x86_64 otherwise,
+          // and that is an AppImage none of those installs can apply.
           updateRef.current = null;
           replaceInfo(null);
-          setStatus("idle");
+          updateStatus("idle");
           return;
         }
-        // Guessed policy, no manual offer: macOS, Windows and AppImage land here
-        // and do have an in-app path. Fall through to it.
+        // Guessed policy, no manual offer: macOS, Windows, AppImage and .deb do have an in-app path.
       }
 
       const update = await checkDesktopUpdate();
@@ -260,39 +297,101 @@ export function useTauriUpdate(isExternalServer = false) {
       } else {
         updateRef.current = null;
         replaceInfo(null);
-        setStatus("idle");
+        updateStatus("idle");
       }
     } catch (e) {
       console.error("Update check failed:", e);
       setCheckError(String(e));
-      setStatus(infoRef.current ? "available" : "idle");
+      updateStatus(infoRef.current ? "available" : "idle");
     } finally {
       checkingRef.current = false;
       setHasChecked(true);
     }
   }
-  // Startup owns one delayed check; this ref keeps a per-render function out of
-  // the empty dep list. The closure reads only refs/setState, so it cannot stale.
-  const initialCheckRef = useRef(checkForUpdate);
+
+  function checkForUpdateWhenSafe() {
+    // Recovery owns version-specific state until the user settles it.
+    if (statusRef.current === "error") return;
+    void checkForUpdate();
+  }
+
+  const scheduledCheckRef = useRef(checkForUpdateWhenSafe);
 
   useEffect(() => {
-    if (!isTauri || startupScheduledRef.current) return;
-    startupScheduledRef.current = true;
+    if (!isTauri) return;
 
-    const timer = setTimeout(() => {
+    const startupTimer = setTimeout(() => {
       if (checkedRef.current) return;
-      void initialCheckRef.current();
-    }, 5000);
-    return () => clearTimeout(timer);
+      scheduledCheckRef.current();
+    }, STARTUP_UPDATE_CHECK_DELAY_MS);
+    const periodicTimer = setInterval(() => {
+      scheduledCheckRef.current();
+    }, PERIODIC_UPDATE_CHECK_INTERVAL_MS);
+    const checkWhenVisibleAndDue = () => {
+      if (document.hidden) return;
+      const lastCheckAt = lastCheckAtRef.current;
+      if (lastCheckAt === null) return;
+      const elapsed = Date.now() - lastCheckAt;
+      if (
+        elapsed >= 0 &&
+        elapsed < PERIODIC_UPDATE_CHECK_INTERVAL_MS
+      ) {
+        return;
+      }
+      scheduledCheckRef.current();
+    };
+    window.addEventListener("focus", checkWhenVisibleAndDue);
+    document.addEventListener("visibilitychange", checkWhenVisibleAndDue);
+
+    return () => {
+      clearTimeout(startupTimer);
+      clearInterval(periodicTimer);
+      window.removeEventListener("focus", checkWhenVisibleAndDue);
+      document.removeEventListener("visibilitychange", checkWhenVisibleAndDue);
+    };
   }, []);
+
+  async function ensureBundleDownloaded(): Promise<void> {
+    setUpdatePhase("shell_download");
+    updateStatus("downloading");
+    setUpdateProgress(0);
+    const version = updateRef.current?.version;
+    if (!version) throw new Error("No desktop update has been checked.");
+    // Attached only once a download is in flight and released whichever way the wait ends.
+    let unlisten: (() => void) | null = null;
+    const waitUntil = Date.now() + BUNDLE_DOWNLOAD_WAIT_MS;
+    try {
+      for (;;) {
+        // A bundle retained by an earlier attempt is reused, so a retry usually stops here.
+        const bundle = await desktopUpdateBundleStatus();
+        if (bundle.downloaded && sameUpdateVersion(bundle.version, version)) {
+          setUpdateProgress(100);
+          return;
+        }
+        // A webview reload leaves the native download running with no listener, and a second one is refused.
+        if (!bundle.downloading) break;
+        if (Date.now() >= waitUntil) break;
+        if (!unlisten) {
+          unlisten = await listenDesktopUpdateDownload(version, setUpdateProgress);
+        }
+        await new Promise((resolve) =>
+          setTimeout(resolve, BUNDLE_DOWNLOAD_POLL_MS),
+        );
+      }
+    } finally {
+      unlisten?.();
+    }
+    await downloadDesktopUpdate(version, setUpdateProgress);
+  }
 
   async function installUpdate() {
     if (updatingRef.current) return;
     updatingRef.current = true;
 
     const cleanups: (() => void)[] = [];
-
     try {
+      // A retry re-enters here, and start_backend_update spawns a mutating child of its own.
+      if (!(await crashCleanupReady())) return;
       const { policy } = await resolveUpdatePolicy();
       if (policy.mode === "manual_linux_package") {
         const version = info?.version ?? updateRef.current?.version;
@@ -312,8 +411,9 @@ export function useTauriUpdate(isExternalServer = false) {
       const update = updateRef.current;
       if (!update) return;
 
+      const { invoke } = await import("@tauri-apps/api/core");
       setUpdatePhase("backend");
-      setStatus("updating-backend");
+      updateStatus("updating-backend");
       replaceLogs([]);
       setUpdateProgress(0);
       setError(null);
@@ -322,8 +422,6 @@ export function useTauriUpdate(isExternalServer = false) {
       setDismissed(false);
 
       const { listen } = await import("@tauri-apps/api/event");
-      const { invoke } = await import("@tauri-apps/api/core");
-
       const unlistenProgress = await listen<string>(
         "update-progress",
         (e) => {
@@ -348,52 +446,49 @@ export function useTauriUpdate(isExternalServer = false) {
       if (backendResult !== "complete") {
         retainFailure(backendResult, "backend");
         setError(backendResult);
-        setStatus("error");
+        updateStatus("error");
         return;
       }
 
-      setUpdatePhase("shell_download");
-      setStatus("downloading");
-      setUpdateProgress(0);
+      await ensureBundleDownloaded();
+      setUpdatePhase("shell_install");
+      updateStatus("installing");
 
-      let downloaded = 0;
-      let contentLength = 0;
-      // `update::is_update_running` is already false here, and quitting mid-install
-      // leaves a half-updated app.
+      // `update::is_update_running` is already false here, and quitting mid-install leaves a half-updated app.
       publishShellUpdateActive(true);
       try {
-        await update.downloadAndInstall((event) => {
-          switch (event.event) {
-            case "Started":
-              contentLength = event.data.contentLength ?? 0;
-              break;
-            case "Progress":
-              downloaded += event.data.chunkLength;
-              if (contentLength > 0) {
-                setUpdateProgress(
-                  Math.round((downloaded / contentLength) * 100),
-                );
-              }
-              break;
-            case "Finished":
-              setUpdatePhase("shell_install");
-              setStatus("installing");
-              break;
-          }
-        });
+        await installDesktopUpdate();
+      } catch (installError) {
+        // Failed or cancelled: we keep running, so the stood-down cleanup has to come back.
+        await resumeCleanup();
+        throw installError;
       } finally {
-        // Success, failure and cancel alike: the installer is no longer running.
         publishShellUpdateActive(false);
       }
 
-      const { relaunch } = await import("@tauri-apps/plugin-process");
-      await relaunch();
+      // Deliberately NOT re-arming kill-on-close before the restart: relaunch() starts the replacement as a child,
+      // which inherits this job. The handoff stays in the recovery scope, or a throw leaves cleanup stood down.
+      try {
+        // relaunch() re-execs with the original argv, so flag the inherited --hidden as not a login start.
+        await invoke("mark_in_app_relaunch");
+        const { relaunch } = await import("@tauri-apps/plugin-process");
+        await relaunch();
+      } catch (relaunchError) {
+        // No replacement process, so the marker would outlive it and unhide a later login start.
+        await invoke("clear_in_app_relaunch").catch(() => {});
+        await resumeCleanup();
+        throw relaunchError;
+      }
     } catch (e) {
       console.error("Update failed:", e);
       const msg = String(e);
 
-      // Shell update failed, so restart the backend on the updated code.
       if (phaseRef.current === "shell_download" || phaseRef.current === "shell_install") {
+        // A backend started under a job with kill-on-close disabled is the orphan this prevents.
+        if (!(await crashCleanupReady())) {
+          retainFailure(msg, phaseRef.current ?? "shell_install");
+          return;
+        }
         try {
           const { invoke } = await import("@tauri-apps/api/core");
           await invoke("start_server", { port: 8888 });
@@ -403,18 +498,18 @@ export function useTauriUpdate(isExternalServer = false) {
               "Backend was updated. Copy diagnostics from the update banner if you need support.",
           });
           setError(null);
-          setStatus("idle");
+          updateStatus("idle");
           setDismissed(false);
           setUpdatePhase("recovered_after_shell_failure");
         } catch {
           retainFailure(msg, phaseRef.current ?? "shell_install");
           setError(msg);
-          setStatus("error");
+          updateStatus("error");
         }
       } else {
         retainFailure(msg, phaseRef.current ?? "backend");
         setError(msg);
-        setStatus("error");
+        updateStatus("error");
       }
     } finally {
       updatingRef.current = false;
@@ -427,8 +522,31 @@ export function useTauriUpdate(isExternalServer = false) {
     await installUpdate();
   }
 
+  /** Every path that starts a child has to clear this first. */
+  async function crashCleanupReady(): Promise<boolean> {
+    if (!cleanupCheckedRef.current) {
+      cleanupCheckedRef.current = true;
+      try {
+        const { invoke } = await import("@tauri-apps/api/core");
+        cleanupRearmedRef.current = await invoke<boolean>("desktop_update_cleanup_armed");
+      } catch {
+        // The one answer we cannot assume on the desktop: fail closed and let the gate re-arm.
+        cleanupRearmedRef.current = !isTauri;
+      }
+    }
+    if (cleanupRearmedRef.current) return true;
+    if (await resumeCleanup()) return true;
+    setError(
+      "Crash cleanup could not be re-armed. Restart Unsloth before continuing.",
+    );
+    updateStatus("error");
+    return false;
+  }
+
   async function skipAndRestart() {
     const skippedError = error;
+    // Same gate as the recovery path: this is offered on every error.
+    if (!(await crashCleanupReady())) return;
     try {
       const { invoke } = await import("@tauri-apps/api/core");
       await invoke("start_server", { port: 8888 });
@@ -438,14 +556,14 @@ export function useTauriUpdate(isExternalServer = false) {
       } else {
         setDismissed(true);
       }
-      setStatus("idle");
+      updateStatus("idle");
       setError(null);
       replaceLogs([]);
     } catch (e) {
       const msg = String(e);
       retainFailure(msg, phaseRef.current ?? "backend");
       setError(msg);
-      setStatus("error");
+      updateStatus("error");
     }
   }
 
@@ -465,12 +583,10 @@ export function useTauriUpdate(isExternalServer = false) {
     });
   }
 
-  // Install target for Linux packages that cannot self-update.
   const manualReleaseUrl =
     updatePolicy.mode === "manual_linux_package" && info
       ? manualReleasePageUrl(updatePolicy, info.version)
       : null;
-  // Release page for the offered version, on every platform, for the notes link.
   const releasePageUrl = info ? manualReleasePageUrl(updatePolicy, info.version) : null;
 
   return {
