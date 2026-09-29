@@ -132,7 +132,8 @@ def test_loss_type_replacement_did_not_leak_to_other_trainers():
         checked.append(name)
 
     grpo = getattr(trl, "GRPOConfig", None)
-    if grpo is not None and _loss_type_field(grpo) is not None:
+    grpo_refused = Version(trl.__version__) < Version("0.20.0")  # unsloth/models/rl.py raises there
+    if grpo is not None and not grpo_refused and _loss_type_field(grpo) is not None:
         got = grpo(output_dir = "unused").loss_type
         # Unsloth follows TRL's GRPO default from 0.22, the first TRL with "dapo" (rl.py).
         want = "dapo" if Version(trl.__version__) >= Version("0.22.0") else "bnpo"
@@ -159,10 +160,20 @@ def test_explicit_loss_type_still_wins():
     assert cfg.loss_type == "chunked_nll", "explicit loss_type was clobbered"
 
 
+def _skip_if_unsloth_refuses_grpo():
+    # Unsloth refuses GRPO below trl 0.20.0 (unsloth/models/rl.py); the floor lane runs below it.
+    import trl
+    from packaging.version import Version
+    if Version(trl.__version__) < Version("0.20.0"):
+        pytest.skip(f"unsloth refuses GRPO on trl {trl.__version__} (< 0.20.0)")
+
+
 def test_dr_grpo_turns_off_reward_scaling_by_default():
     """TRL >= 0.22 defaults scale_rewards to "group" (= True), so dr_grpo must override both."""
     import unsloth  # noqa: F401
     import trl
+
+    _skip_if_unsloth_refuses_grpo()
 
     def scale(**kwargs):
         return trl.GRPOConfig(output_dir = "unused", loss_type = "dr_grpo", **kwargs).scale_rewards

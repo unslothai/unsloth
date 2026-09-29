@@ -69,9 +69,22 @@ def _pristine(cls):
     return cls
 
 
+# Unsloth refuses GRPO below this TRL (unsloth/models/rl.py): it crashes on the first step there.
+GRPO_TRL_FLOOR = "0.20.0"
+
+
+def _grpo_refused():
+    import trl
+    from packaging.version import Version
+    return Version(trl.__version__) < Version(GRPO_TRL_FLOOR)
+
+
 def _config_cls(name):
     import unsloth  # noqa: F401
     import trl
+
+    if name == "GRPOConfig" and _grpo_refused():
+        pytest.skip(f"unsloth refuses GRPO on trl {trl.__version__} (< {GRPO_TRL_FLOOR})")
 
     cls = getattr(trl, name, None)
     if cls is None:
@@ -224,3 +237,13 @@ def test_other_loss_types_keep_trl_epsilon_high(loss_type):
             output_dir = "unused", loss_type = loss_type
         ).epsilon_high
     )
+
+
+def test_grpo_below_its_trl_floor_is_refused_with_an_upgrade_hint():
+    import unsloth  # noqa: F401
+    import trl
+
+    if not _grpo_refused():
+        pytest.skip(f"trl {trl.__version__} supports GRPO")
+    with pytest.raises(ImportError, match = "GRPO needs trl >= 0.20.0"):
+        trl.GRPOConfig(output_dir = "unused")

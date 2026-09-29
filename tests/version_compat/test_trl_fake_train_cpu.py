@@ -283,7 +283,16 @@ def test_sft_trains_on_cpu(tmp_path):
     SFTTrainer(model = model, processing_class = tok, args = cfg, train_dataset = ds).train()
 
 
+def _skip_if_unsloth_refuses_grpo():
+    # Unsloth refuses GRPO below trl 0.20.0 (unsloth/models/rl.py); the floor lane runs below it.
+    import trl
+    from packaging.version import Version
+    if Version(trl.__version__) < Version("0.20.0"):
+        pytest.skip(f"unsloth refuses GRPO on trl {trl.__version__} (< 0.20.0)")
+
+
 def test_grpo_trains_on_cpu(tmp_path):
+    _skip_if_unsloth_refuses_grpo()
     from datasets import Dataset
     from trl import GRPOConfig, GRPOTrainer
 
@@ -346,6 +355,7 @@ def test_dpo_trains_on_cpu(tmp_path):
 
 
 def test_grpo_trains_on_cpu_through_the_patched_batch_sampler(tmp_path):
+    _skip_if_unsloth_refuses_grpo()
     """The canary above proves the GRPO trainer runs. It does NOT prove Unsloth's own
     ``get_batch_samples`` runs, because ``_load_plain`` never goes through the loader that
     installs it, so ``Trainer.get_batch_samples`` stays stock transformers.
