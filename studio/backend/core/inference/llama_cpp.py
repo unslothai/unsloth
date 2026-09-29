@@ -4100,6 +4100,14 @@ def _vram_usable_mib(
     )
 
 
+def _model_memory_settings_or_none() -> Optional[tuple[bool, bool]]:
+    try:
+        from utils.model_memory_settings import get_model_memory_settings
+        return get_model_memory_settings()
+    except Exception:
+        return None
+
+
 def _active_vram_fraction() -> float:
     """The user's VRAM budget, or ``_CTX_FIT_VRAM_FRACTION`` when they set none.
 
@@ -15697,6 +15705,26 @@ class LlamaCppBackend:
         if key is not None:
             cls._tensor_split_abort_keys.add(key)
 
+    # Keyed like the tensor latch: binary mtime drops entries after an update.
+    _sched_reserve_abort_keys: set[tuple] = set()
+
+    @classmethod
+    def _sched_reserve_aborts(cls, binary: Optional[str], model: Optional[str]) -> bool:
+        key = cls._tensor_split_cache_key(binary, model)
+        return key is not None and key in cls._sched_reserve_abort_keys
+
+    @classmethod
+    def _record_sched_reserve_abort(cls, binary: Optional[str], model: Optional[str]) -> None:
+        key = cls._tensor_split_cache_key(binary, model)
+        if key is not None:
+            cls._sched_reserve_abort_keys.add(key)
+
+    @classmethod
+    def _forget_sched_reserve_abort(cls, binary: Optional[str], model: Optional[str]) -> None:
+        key = cls._tensor_split_cache_key(binary, model)
+        if key is not None:
+            cls._sched_reserve_abort_keys.discard(key)
+
     @staticmethod
     def _windows_pip_nvidia_dll_dirs(prefix: str) -> list[str]:
         """Return DLL dirs from pip-installed CUDA wheels under
@@ -20833,6 +20861,9 @@ class LlamaCppBackend:
                 "settings and reload."
             )
 
+        if LlamaCppBackend._is_sched_reserve_abort(output or ""):
+            return LlamaCppBackend._sched_reserve_abort_message()
+
         # An older llama.cpp refusing a quantized KV cache under --split-mode tensor.
         # Naming the build is the point: the remedy is an update, where the generic
         # invalid-GGUF/OOM fallback sends the user to check their file or buy VRAM.
@@ -21865,6 +21896,34 @@ class LlamaCppBackend:
     @staticmethod
     def _is_bundled_hip_rocr_mismatch(output: str) -> bool:
         return LlamaCppBackend._bundled_hip_symbol_miss(output) is not None
+
+    @staticmethod
+    def _is_sched_reserve_abort(output: str) -> bool:
+        """GGML_ASSERT(*cur_backend_id != -1); matches backtrace frames, which outlive the [New LWP] dump."""
+        text = (output or "").lower()
+        if "ggml_assert" not in text and "ggml_abort" not in text:
+            return False
+        # The #6415 split-axis abort shares the frame but has its own latch.
+        if "split_axis" in text:
+            return False
+        if "cur_backend_id" in text:
+            return True
+        # Never sched_reserve / graph_reserve alone (a reserve-time CUDA OOM passes through them);
+        # split_graph has other aborts, so its bare frame counts only with no other message.
+        if "failed to initialize context" in text or "ggml_assert(" in text:
+            return False
+        return "ggml_backend_sched_split_graph" in text
+
+    @staticmethod
+    def _sched_reserve_abort_message() -> str:
+        return (
+            "llama.cpp aborted while reserving the compute graph "
+            "(GGML_ASSERT(*cur_backend_id != -1)): no backend can place part of this model's "
+            "graph. Either this llama.cpp build lacks an operation the model needs on this "
+            "device (common for new attention types on CPU), or the model does not fit in "
+            "memory. Try `unsloth studio update` for a newer llama.cpp, a smaller "
+            "quantization, a lower context length, or turning off speculative decoding."
+        )
 
     @staticmethod
     def _is_signal_crash(returncode: Optional[int]) -> bool:
@@ -23503,6 +23562,25 @@ class LlamaCppBackend:
             if _load_cancelled():
                 logger.info("Load cancelled before teardown")
                 return False
+
+            # Fail fast before killing the live server; an explicit reload retries (freed memory
+            # can make the same load fit) and clears the entry.
+            _abort_memo_model = repr(
+                (
+                    replace(intent, hf_token = None, force_reload = False, verified_gguf = None),
+                    _vram_frac,
+                    _model_memory_settings_or_none(),
+                )
+            )
+            if intent.force_reload:
+                LlamaCppBackend._forget_sched_reserve_abort(binary, _abort_memo_model)
+            elif LlamaCppBackend._sched_reserve_aborts(binary, _abort_memo_model):
+                logger.warning(
+                    "Skipping reload of '%s': it already aborted in the llama.cpp graph "
+                    "scheduler this session.",
+                    model_identifier,
+                )
+                raise RuntimeError(self._sched_reserve_abort_message())
 
             # ── Phase 1: kill old process (under lock, fast) ──────────
             # The previous load's advisory is dropped HERE, at the one point this call
@@ -29372,6 +29450,9 @@ class LlamaCppBackend:
                         )
                     return stripped
 
+                # Memoed only when the load ends terminally, so a recovering fallback is not blocked.
+                _sched_abort_seen = False
+
                 def _spawn_and_wait(run_cmd, *, label = ""):
                     """Start llama-server with run_cmd and wait for health.
 
@@ -29384,6 +29465,7 @@ class LlamaCppBackend:
                     # page-lock and writes it back, which without this makes the
                     # read below an UnboundLocalError instead.
                     nonlocal _last_spawn_cmd, _mem_host_resident, _did_rocm_retry
+                    nonlocal _sched_abort_seen
                     # One revocation point for the tensor-spill plan instead of a
                     # strip per retry site. `label` is empty ONLY on the first
                     # spawn, so a retry added later is covered automatically. The
@@ -29517,6 +29599,11 @@ class LlamaCppBackend:
                         # offload spends a second full model load on a theory unrelated
                         # to the failure. The caller latches both, so both skip alike.
                         _startup_output = "\n".join(self._stdout_lines[-50:])
+                        # Wider tail: the GGML_ASSERT line scrolls past the [New LWP] dump.
+                        if _startup_crashed and self._is_sched_reserve_abort(
+                            "\n".join(self._stdout_lines[-200:])
+                        ):
+                            _sched_abort_seen = True
                         _tensor_capability_crash = self._is_tensor_split_assert(
                             _startup_output
                         ) or self._is_tensor_quant_kv_unsupported(_startup_output)
@@ -29735,6 +29822,8 @@ class LlamaCppBackend:
                 _launched_mmproj_has_audio = self._mmproj_has_audio
 
                 def _raise_terminal_load_failure(detail: str) -> NoReturn:
+                    if _sched_abort_seen and not _load_cancelled():
+                        LlamaCppBackend._record_sched_reserve_abort(binary, _abort_memo_model)
                     if intent.cpu_fallback:
                         self._cleanup_failed_cpu_fallback()
                     # No child will carry this budget; left set, the route reads it
@@ -29835,6 +29924,8 @@ class LlamaCppBackend:
                             (self._api_key,),
                             self._extra_args,
                         )
+                        if _sched_abort_seen:
+                            LlamaCppBackend._record_sched_reserve_abort(binary, _abort_memo_model)
                         self._cleanup_failed_cpu_fallback()
                         self._vram_fraction_pending = None
                         raise RuntimeError(detail)
@@ -30951,6 +31042,11 @@ class LlamaCppBackend:
                                 # Snapshot: re-reading races the teardown.
                                 _retry_proc = self._process
                                 _retry_rc = _retry_proc.poll() if _retry_proc is not None else None
+                                # This retry bypasses _spawn_and_wait's abort detection.
+                                if _retry_rc not in (None, 0) and self._is_sched_reserve_abort(
+                                    "\n".join(self._stdout_lines[-200:])
+                                ):
+                                    _sched_abort_seen = True
                                 self._kill_process()
                                 if _finish_cancelled_health_wait(
                                     "Load cancelled during the text-only retry health wait"
