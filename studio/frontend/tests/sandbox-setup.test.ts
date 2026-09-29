@@ -30,6 +30,10 @@ type CapabilityApi = {
     fallback: string,
   ) => Promise<SandboxSetupJob>;
   loadSandboxSetup: (fallback: string) => Promise<SandboxSetupJob>;
+  loadSettledSandboxCapability: (options?: {
+    attempts?: number;
+    delayMs?: number;
+  }) => Promise<SandboxCapability | null>;
 };
 
 const json = (body: unknown, status = 200) =>
@@ -86,6 +90,7 @@ test("the capability maps to camelCase and is cached between picker opens", asyn
     setupAction: "linux-install",
     manualCommand: "apt-get install -y apparmor-profiles",
     canRunSetup: true,
+    needsConsent: false,
   });
   await api.loadSandboxCapability();
   assert.equal(calls.length, 1);
@@ -156,6 +161,149 @@ test("a refused setup surfaces the server's reason", async () => {
   );
 });
 
+test("Windows consent is asked only while the opt-in is off, and only of who can run it", async () => {
+  const windows = {
+    ...LINUX_UNAVAILABLE,
+    platform: "win32",
+    setup_action: "windows-setup",
+    needs_consent: true,
+  };
+  for (const [body, expected] of [
+    [windows, true],
+    [{ ...windows, needs_consent: false }, false],
+    [{ ...windows, can_run_setup: false }, false],
+    [{ ...LINUX_UNAVAILABLE, needs_consent: true }, false],
+  ] as const) {
+    const { api } = loadCapabilityApi(() => json(body));
+    assert.equal((await api.loadSandboxCapability())?.needsConsent, expected);
+  }
+});
+
+test("the runtime-only operation is sent as is and the job note is kept", async () => {
+  const { api, calls } = loadCapabilityApi(() =>
+    json({
+      id: "s2",
+      operation: "windows-runtime",
+      state: "failed",
+      note: "a password is required",
+      manual_command: "python install_mxc_prebuilt.py",
+    }),
+  );
+  const job = await api.startSandboxSetup("windows-runtime", {}, "fallback");
+  assert.deepEqual(JSON.parse(String(calls[0].init?.body)), {
+    operation: "windows-runtime",
+    consent_dacl_fallback: false,
+  });
+  assert.equal(job.note, "a password is required");
+  assert.equal(job.manualCommand, "python install_mxc_prebuilt.py");
+});
+
+test("a settled read waits out a check that has not answered yet, but not a real no", async () => {
+  const pending = { ...LINUX_UNAVAILABLE, backend: "unknown" };
+  const ready = {
+    ...LINUX_UNAVAILABLE,
+    python_os_isolated: true,
+    terminal_os_isolated: true,
+  };
+  let n = 0;
+  const { api, calls } = loadCapabilityApi(() =>
+    json(n++ < 2 ? pending : ready),
+  );
+  const settled = await api.loadSettledSandboxCapability({ delayMs: 1 });
+  assert.equal(calls.length, 3);
+  assert.ok(calls.every((call) => call.url.endsWith("?refresh=1")));
+  assert.equal(settled && api.sandboxReady(settled), true);
+
+  const denied = loadCapabilityApi(() => json(LINUX_UNAVAILABLE));
+  const no = await denied.api.loadSettledSandboxCapability({ delayMs: 1 });
+  assert.equal(denied.calls.length, 1);
+  assert.equal(no?.backend, "bubblewrap");
+
+  const stuck = loadCapabilityApi(() => json(pending));
+  await stuck.api.loadSettledSandboxCapability({ attempts: 2, delayMs: 1 });
+  assert.equal(stuck.calls.length, 2);
+});
+
+// ---- picking "Full access in sandbox" ----
+
+type PickModule = typeof import("../src/features/chat/sandbox-pick.ts");
+
+const pickModule = loadWithStubs<PickModule>(
+  new URL("../src/features/chat/sandbox-pick.ts", import.meta.url),
+  {
+    "./api/sandbox-capability": {
+      loadSandboxCapability: async () => null,
+      sandboxReady: (c: SandboxCapability) =>
+        c.pythonOsIsolated && c.terminalOsIsolated,
+    },
+  },
+);
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((r) => {
+    resolve = r;
+  });
+  return { promise, resolve };
+}
+
+test("a slow capability read does not undo a mode picked while it was in flight", async () => {
+  let mode: string = "auto";
+  const applied: string[] = [];
+  let dialogs = 0;
+  const read = deferred<SandboxCapability | null>();
+  const pending = pickModule.pickSandboxedMode(
+    (next) => {
+      applied.push(next);
+      mode = next;
+    },
+    () => dialogs++,
+    () => mode as never,
+    () => read.promise,
+  );
+  mode = "ask";
+  read.resolve(null);
+  await pending;
+  assert.deepEqual(applied, []);
+  assert.equal(dialogs, 0);
+});
+
+test("only the latest pick acts; a missing sandbox opens the setup instead of applying", async () => {
+  let mode: string = "auto";
+  const applied: string[] = [];
+  let dialogs = 0;
+  const set = (next: string) => {
+    applied.push(next);
+    mode = next;
+  };
+  const first = deferred<SandboxCapability | null>();
+  const older = pickModule.pickSandboxedMode(
+    set as never,
+    () => dialogs++,
+    () => mode as never,
+    () => first.promise,
+  );
+  const newer = pickModule.pickSandboxedMode(
+    set as never,
+    () => dialogs++,
+    () => mode as never,
+    async () => capability({ pythonOsIsolated: false }),
+  );
+  await newer;
+  first.resolve(null);
+  await older;
+  assert.equal(dialogs, 1);
+  assert.deepEqual(applied, []);
+  await pickModule.pickSandboxedMode(
+    set as never,
+    () => dialogs++,
+    () => mode as never,
+    async () =>
+      capability({ pythonOsIsolated: true, terminalOsIsolated: true }),
+  );
+  assert.deepEqual(applied, ["off"]);
+});
+
 // ---- the dialog's pure view ----
 
 type SetupState = typeof import("../src/features/chat/sandbox-setup-state.ts");
@@ -176,6 +324,7 @@ const capability = (
   setupAction: "linux-install",
   manualCommand: "apt-get install -y bubblewrap",
   canRunSetup: true,
+  needsConsent: false,
   ...overrides,
 });
 
@@ -191,6 +340,7 @@ const setupJob = (
   outputTail: [],
   steps: [],
   manualCommand: "",
+  note: "",
   ...overrides,
 });
 
@@ -224,6 +374,7 @@ test("Windows needs the MXC consent before the setup can start", () => {
     backend: "mxc-processcontainer",
     setupAction: "windows-setup",
     manualCommand: "",
+    needsConsent: true,
   });
   const without = setupState.sandboxSetupView({
     capability: windows,
@@ -298,6 +449,50 @@ test("a running job disables the button; a failure shows its output and command"
   });
   assert.equal(declined.result, "declined");
   assert.equal(declined.command, "apt-get install -y bubblewrap");
+});
+
+test("a failed check shows Retry instead of an endless spinner", () => {
+  const view = setupState.sandboxSetupView({
+    capability: null,
+    job: null,
+    consent: false,
+    loadFailed: true,
+  });
+  assert.equal(view.checking, false);
+  assert.equal(view.loadFailed, true);
+  assert.equal(view.install, null);
+});
+
+test("Windows skips the consent once the opt-in is on (after a reboot, only preparation)", () => {
+  const view = setupState.sandboxSetupView({
+    capability: capability({
+      platform: "win32",
+      setupAction: "windows-setup",
+      needsConsent: false,
+    }),
+    job: null,
+    consent: false,
+  });
+  assert.equal(view.install, "windows");
+  assert.equal(view.showConsent, false);
+  assert.equal(view.installDisabled, false);
+});
+
+test("the server's note shows for a declined or failed setup only", () => {
+  const note = "Not authorized, or no authentication agent";
+  for (const [state, shown] of [
+    ["failed", note],
+    ["declined", note],
+    ["running", ""],
+    ["succeeded", ""],
+  ] as const) {
+    const view = setupState.sandboxSetupView({
+      capability: capability(),
+      job: setupJob({ state, note }),
+      consent: false,
+    });
+    assert.equal(view.note, shown, state);
+  }
 });
 
 // ---- the Settings tab setup row ----

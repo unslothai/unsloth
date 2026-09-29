@@ -50,6 +50,9 @@ export const de = {
     declined: "Die Passwort- oder Administratorabfrage wurde abgelehnt.",
     failed: "Die Einrichtung ist fehlgeschlagen.",
     startError: "Die Sandbox-Einrichtung konnte nicht gestartet werden",
+    checkFailed: "Die Sandbox auf diesem Computer konnte nicht geprüft werden.",
+    retry: "Erneut versuchen",
+    keepsRunning: "Das Schließen beendet die Einrichtung nicht. Das Ergebnis erscheint unter Einstellungen > Sandbox.",
   },
   composerSettings: {
     title: "Nachrichteneingabe",
@@ -780,6 +783,7 @@ export const de = {
       setupCommandHint: "Führe dies auf dem Computer aus, auf dem Unsloth läuft:",
       macosBuiltIn: "Seatbelt ist in macOS integriert, es muss nichts installiert werden.",
       installRuntime: "Laufzeit installieren",
+      setupKeywords: "installieren einrichten bubblewrap bwrap seatbelt mxc sudo pkexec apparmor uac",
     },
     debugging: {
       logSection: "Protokolldatei",
@@ -1306,6 +1310,7 @@ export const de = {
       permissions: {
         sectionTitle: "Berechtigungen",
         bypassLabel: "Tool-Berechtigungen",
+        modeKeywords: "Jedes Mal fragen Automatisch freigeben Vollzugriff in der Sandbox Berechtigungen umgehen permission approval sandbox yolo",
         bypassDescription:
           "Wie Unsloth Tool-Aufrufe im Chat (Terminal, Python, Web, MCP) vor der Ausführung freigibt. „Berechtigungen umgehen“ deaktiviert die Freigaben und die Code-Sandbox.",
       },

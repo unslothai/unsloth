@@ -51,6 +51,9 @@ export const ja = {
     declined: "パスワードまたは管理者の確認が拒否されました。",
     failed: "設定に失敗しました。",
     startError: "サンドボックスの設定を開始できませんでした",
+    checkFailed: "このコンピューターのサンドボックスを確認できませんでした。",
+    retry: "再試行",
+    keepsRunning: "閉じても設定は止まりません。結果は 設定 > サンドボックス に表示されます。",
   },
   composerSettings: {
     title: "入力欄",
@@ -778,6 +781,7 @@ export const ja = {
       setupCommandHint: "Unsloth を実行しているコンピューターでこれを実行してください:",
       macosBuiltIn: "Seatbelt は macOS に組み込まれているため、インストールは不要です。",
       installRuntime: "ランタイムをインストール",
+      setupKeywords: "インストール 設定 bubblewrap bwrap seatbelt mxc sudo pkexec apparmor uac",
     },
     debugging: {
       logSection: "ログファイル",
@@ -1264,6 +1268,7 @@ export const ja = {
       permissions: {
         sectionTitle: "権限",
         bypassLabel: "ツールの権限",
+        modeKeywords: "毎回確認 自動承認 サンドボックス内でフルアクセス 権限をバイパス permission approval sandbox yolo",
         bypassDescription:
           "チャットのツール呼び出し (ターミナル、python、ウェブ、MCP) を実行する前に、Unsloth がどのように承認するかを決めます。「権限をバイパス」にすると承認とコードサンドボックスが無効になります。",
       },

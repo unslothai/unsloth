@@ -6,8 +6,8 @@ import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import {
-  type SandboxSetupAction,
   type SandboxSetupJob,
+  type SandboxSetupOperation,
   forgetSandboxCapability,
   loadSandboxSetup,
   startSandboxSetup,
@@ -265,7 +265,7 @@ export function SandboxTab() {
   };
 
   const runSetup = async (
-    operation: SandboxSetupAction,
+    operation: SandboxSetupOperation,
     consentDaclFallback: boolean,
   ) => {
     setSetupError(null);
@@ -310,6 +310,11 @@ export function SandboxTab() {
     : null;
   const setupResult = jobResult(setupJob);
   const setupOutput = jobOutputLines(setupJob);
+  // Why a declined or failed setup stopped, e.g. "a password is required".
+  const setupNote =
+    setupResult === "declined" || setupResult === "failed"
+      ? (setupJob?.note ?? "")
+      : "";
   const setupRunning = setupJob?.state === "running";
   const windowsRuntimeInstallable = status
     ? canInstallWindowsRuntime(status)
@@ -403,6 +408,11 @@ export function SandboxTab() {
                           {t("sandboxSetup.failed")}
                         </span>
                       ) : null}
+                      {setupNote ? (
+                        <span className={`${NOTE_CLASS} text-destructive`}>
+                          {setupNote}
+                        </span>
+                      ) : null}
                       {setupOutput.length > 0 ? (
                         <pre className="max-w-[calc(360px*var(--ui-space-scale,1))] whitespace-pre-wrap break-words text-right font-mono text-[11px] text-muted-foreground">
                           {setupOutput.join("\n")}
@@ -478,8 +488,8 @@ export function SandboxTab() {
                         size="sm"
                         variant="outline"
                         disabled={setupRunning}
-                        // Installs the runtime only; the opt-in below stays as it is.
-                        onClick={() => void runSetup("windows-setup", false)}
+                        // The runtime only, without the administrator prompt; the opt-in below stays as it is.
+                        onClick={() => void runSetup("windows-runtime", false)}
                       >
                         {setupRunning ? <Spinner /> : null}
                         {t("settings.sandbox.installRuntime")}
@@ -497,6 +507,9 @@ export function SandboxTab() {
                         ? t("sandboxSetup.declined")
                         : t("sandboxSetup.failed")}
                     </p>
+                  ) : null}
+                  {setupNote ? (
+                    <p className="text-xs text-destructive">{setupNote}</p>
                   ) : null}
                   {setupOutput.length > 0 ? (
                     <pre className="whitespace-pre-wrap break-words font-mono text-[11px] text-muted-foreground">

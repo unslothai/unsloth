@@ -50,6 +50,9 @@ export const fr = {
     declined: "La demande de mot de passe ou d'administrateur a été refusée.",
     failed: "La configuration a échoué.",
     startError: "Impossible de lancer la configuration du bac à sable",
+    checkFailed: "Impossible de vérifier le bac à sable sur cet ordinateur.",
+    retry: "Réessayer",
+    keepsRunning: "Fermer cette fenêtre n'arrête pas la configuration. Le résultat s'affiche dans Paramètres > Sandbox.",
   },
   composerSettings: {
     title: "Saisie des messages",
@@ -780,6 +783,7 @@ export const fr = {
       setupCommandHint: "Exécutez ceci sur l'ordinateur qui fait tourner Unsloth :",
       macosBuiltIn: "Seatbelt est intégré à macOS, il n'y a rien à installer.",
       installRuntime: "Installer le runtime",
+      setupKeywords: "installer configurer bubblewrap bwrap seatbelt mxc sudo pkexec apparmor uac",
     },
     debugging: {
       logSection: "Fichier journal",
@@ -1304,6 +1308,7 @@ export const fr = {
       permissions: {
         sectionTitle: "Autorisations",
         bypassLabel: "Autorisations des outils",
+        modeKeywords: "Toujours demander Approbation automatique Accès complet dans le bac à sable Contourner les autorisations permission approval sandbox yolo",
         bypassDescription:
           "Comment Unsloth approuve les appels d'outils de la discussion (terminal, python, web, MCP) avant leur exécution. Le mode « Contourner les autorisations » désactive les demandes d'approbation et le bac à sable d'exécution du code.",
       },

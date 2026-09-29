@@ -47,6 +47,9 @@ export const en = {
     declined: "The password or administrator prompt was declined.",
     failed: "Setup failed.",
     startError: "Failed to start the sandbox setup",
+    checkFailed: "Could not check the sandbox on this computer.",
+    retry: "Retry",
+    keepsRunning: "Closing this does not stop the setup. Its result shows in Settings > Sandbox.",
   },
   composerSettings: {
     title: "Composer",
@@ -783,6 +786,7 @@ export const en = {
       setupCommandHint: "Run this on the computer running Unsloth:",
       macosBuiltIn: "Seatbelt is built into macOS, so there is nothing to install.",
       installRuntime: "Install runtime",
+      setupKeywords: "install setup bubblewrap bwrap seatbelt mxc sudo pkexec apparmor uac",
     },
     debugging: {
       logSection: "Log file",
@@ -1149,6 +1153,7 @@ export const en = {
       permissions: {
         sectionTitle: "Permissions",
         bypassLabel: "Tool permissions",
+        modeKeywords: "Ask every time Auto-approve Full access in sandbox Bypass permissions permission approval sandbox yolo",
         bypassDescription:
           "How Unsloth approves chat tool calls (terminal, python, web, MCP) before they run. Bypass permissions disables approvals and the code sandbox.",
       },

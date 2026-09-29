@@ -50,6 +50,9 @@ export const ar = {
     declined: "تم رفض طلب كلمة المرور أو المسؤول.",
     failed: "فشل الإعداد.",
     startError: "تعذّر بدء إعداد وضع الحماية",
+    checkFailed: "تعذّر فحص وضع الحماية على هذا الكمبيوتر.",
+    retry: "إعادة المحاولة",
+    keepsRunning: "إغلاق هذه النافذة لا يوقف الإعداد. تظهر نتيجته في الإعدادات > وضع الحماية.",
   },
   composerSettings: {
     title: "كتابة الرسائل",
@@ -776,6 +779,7 @@ export const ar = {
       setupCommandHint: "شغّل هذا على الكمبيوتر الذي يشغّل Unsloth:",
       macosBuiltIn: "Seatbelt مدمج في macOS، فلا حاجة إلى تثبيت أي شيء.",
       installRuntime: "تثبيت بيئة التشغيل",
+      setupKeywords: "تثبيت إعداد bubblewrap bwrap seatbelt mxc sudo pkexec apparmor uac",
     },
     debugging: {
       logSection: "ملف السجل",
@@ -1280,6 +1284,7 @@ export const ar = {
       permissions: {
         sectionTitle: "الأذونات",
         bypassLabel: "أذونات الأدوات",
+        modeKeywords: "السؤال في كل مرة موافقة تلقائية وصول كامل داخل وضع الحماية تجاوز الأذونات permission approval sandbox yolo",
         bypassDescription:
           "كيفية موافقة Unsloth على استدعاءات أدوات المحادثة (الطرفية، python، الويب، MCP) قبل تشغيلها. وضع «تجاوز الأذونات» يعطّل الموافقات وصندوق عزل الشيفرة.",
       },

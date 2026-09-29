@@ -50,6 +50,9 @@ export const hi = {
     declined: "पासवर्ड या एडमिनिस्ट्रेटर संकेत अस्वीकार कर दिया गया।",
     failed: "सेटअप विफल रहा।",
     startError: "सैंडबॉक्स सेटअप शुरू नहीं हो सका",
+    checkFailed: "इस कंप्यूटर पर सैंडबॉक्स की जांच नहीं हो सकी।",
+    retry: "फिर से कोशिश करें",
+    keepsRunning: "इसे बंद करने से सेटअप नहीं रुकता। इसका परिणाम सेटिंग्स > सैंडबॉक्स में दिखता है।",
   },
   composerSettings: {
     title: "संदेश लिखना",
@@ -779,6 +782,7 @@ export const hi = {
       setupCommandHint: "Unsloth चला रहे कंप्यूटर पर यह चलाएँ:",
       macosBuiltIn: "Seatbelt macOS में पहले से मौजूद है, इसलिए कुछ इंस्टॉल नहीं करना है।",
       installRuntime: "रनटाइम इंस्टॉल करें",
+      setupKeywords: "इंस्टॉल सेटअप bubblewrap bwrap seatbelt mxc sudo pkexec apparmor uac",
     },
     debugging: {
       logSection: "लॉग फ़ाइल",
@@ -1283,6 +1287,7 @@ export const hi = {
       permissions: {
         sectionTitle: "अनुमतियां",
         bypassLabel: "टूल अनुमतियां",
+        modeKeywords: "हर बार पूछें अपने-आप मंज़ूरी सैंडबॉक्स में पूरी पहुँच अनुमतियाँ बायपास करें permission approval sandbox yolo",
         bypassDescription:
           "चैट के टूल कॉल (टर्मिनल, python, वेब, MCP) चलाने से पहले Unsloth उन्हें कैसे मंज़ूरी देता है। “अनुमतियाँ बायपास करें” मोड से मंज़ूरी और कोड सैंडबॉक्स बंद हो जाते हैं।",
       },
