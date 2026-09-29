@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import fnmatch
+import glob
 import os
 import shutil
 import stat
@@ -130,6 +132,10 @@ _ETC_FILES = (
     "/etc/localtime",
     "/etc/nsswitch.conf",
 )
+# Distro JDKs link their configuration into /etc/java*.
+_ETC_JAVA_GLOB = "/etc/java*"
+# Files beside security/; exclude management/ and its JMX credentials.
+_ETC_JAVA_FILES = ("*.properties", "*.cfg")
 # Bound only when it passes _trusted_system_file.
 _ETC_FILES_IF_TRUSTED = ("/etc/gitconfig",)
 # PUBLIC halves one by one, never /etc/ssl or /etc/pki whole: both hold private keys.
@@ -169,6 +175,30 @@ def _trusted_system_file(path: str) -> bool:
     if not stat.S_ISREG(info.st_mode):
         return False
     return info.st_uid == 0 and not info.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+
+
+def _etc_java_binds() -> tuple[str, ...]:
+    """Select JDK security directories and adjacent configuration files."""
+    binds: list[str] = []
+    for top in sorted(glob.glob(_ETC_JAVA_GLOB)):
+        if os.path.islink(top):
+            continue  # os.walk follows top-level symlinks even with followlinks=False.
+        for root, dirs, files in os.walk(top):
+            dirs.sort()
+            security = os.path.join(root, "security")
+            if "security" in dirs and not os.path.islink(security):
+                dirs.remove("security")
+                binds.append(security)
+                binds.extend(
+                    os.path.join(root, name)
+                    for name in sorted(files)
+                    if any(fnmatch.fnmatch(name, pattern) for pattern in _ETC_JAVA_FILES)
+                    and stat.S_ISREG(os.lstat(os.path.join(root, name)).st_mode)
+                )
+            # Fedora's conf/ is three levels down.
+            if os.path.relpath(root, top).count(os.sep) >= 3:
+                dirs[:] = []
+    return tuple(binds)
 
 
 def _within(path: str, root: str) -> bool:
@@ -423,14 +453,17 @@ def _runtime_read_paths(
     return tuple(selected)
 
 
-def _identity_files() -> tuple[str, str, str]:
+def _identity_files(home: str) -> tuple[str, str, str]:
     """Synthesise one-entry passwd and group so getpwuid() works without the host database."""
     directory = tempfile.mkdtemp(prefix = "unsloth-sandbox-identity-")
     uid, gid = os.getuid(), os.getgid()
+    # Reject passwd field and record separators.
+    if ":" in home or "\n" in home:
+        home = "/nonexistent"
     passwd, group = os.path.join(directory, "passwd"), os.path.join(directory, "group")
     try:
         with open(passwd, "w", encoding = "utf-8") as stream:
-            stream.write(f"studio:x:{uid}:{gid}:Studio sandbox:/nonexistent:/bin/sh\n")
+            stream.write(f"studio:x:{uid}:{gid}:Studio sandbox:{home}:/bin/sh\n")
         with open(group, "w", encoding = "utf-8") as stream:
             stream.write(f"studio:x:{gid}:\n")
         os.chmod(passwd, 0o600)
@@ -664,7 +697,7 @@ def prepare(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
     except RuntimeError as exc:
         raise SandboxUnavailableError(str(exc)) from exc
     try:
-        identity_dir, passwd, group = _identity_files()
+        identity_dir, passwd, group = _identity_files(inner)
     except Exception:
         seccomp.close()
         raise
@@ -702,7 +735,7 @@ def prepare(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
         for root in silent_roots:
             argv += ["--ro-bind-try", root, root]
         trusted = tuple(p for p in _ETC_FILES_IF_TRUSTED if _trusted_system_file(p))
-        for path in (*_ETC_FILES, *trusted, *_NETWORK_FILES):
+        for path in (*_ETC_FILES, *_etc_java_binds(), *trusted, *_NETWORK_FILES):
             argv += ["--ro-bind-try", path, path]
         argv += ["--ro-bind", passwd, "/etc/passwd", "--ro-bind", group, "/etc/group"]
         for path in runtime_paths:
