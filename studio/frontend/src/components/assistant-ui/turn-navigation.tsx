@@ -521,7 +521,6 @@ const TurnRail: FC<{ viewportRef: RefObject<HTMLElement | null> }> = ({
       >
         <nav
           aria-label={t("turns.navigator")}
-          // markers shrink to fit the cap before the rail has to scroll
           style={{ height: `min(${openerIds.length * 0.75 + 0.5}rem, 40dvh)` }}
           onKeyDown={onRailKeyDown}
           className="aui-turn-navigator group/rail pointer-events-auto absolute top-0 right-[-1.125rem] hidden w-8 -translate-y-1/2 flex-col overflow-y-auto py-1 [scrollbar-width:none] @[1.5rem]/turn-gutter:flex [&::-webkit-scrollbar]:hidden"
