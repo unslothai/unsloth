@@ -16,7 +16,13 @@ import torch
 from ..device_type import DEVICE_COUNT
 from typing import Tuple
 from .utils import calculate_settings, torch_gpu_device, torch_device_stream
-from .rms_layernorm import _TRACEABLE, _eager_kernel, _tag_compile_cache, _traced_kernel
+from .rms_layernorm import (
+    _BF16_TRACEABLE,
+    _TRACEABLE,
+    _eager_kernel,
+    _tag_compile_cache,
+    _traced_kernel,
+)
 
 
 def _rope_embedding_QK(
@@ -380,7 +386,11 @@ def fast_rope_embedding(
 ):
     if not torch.compiler.is_compiling():
         return _fast_rope_embedding_eager(Q, K, cos, sin, rope_embedding_indices)
-    if not _TRACEABLE or Q.device.type != "cuda":
+    if (
+        not _TRACEABLE
+        or Q.device.type != "cuda"
+        or (Q.dtype == torch.bfloat16 and not _BF16_TRACEABLE)
+    ):
         return _fast_rope_embedding_untraced(Q, K, cos, sin, rope_embedding_indices)
     cos, sin = cos.squeeze(), sin.squeeze()
     if rope_embedding_indices is not None:

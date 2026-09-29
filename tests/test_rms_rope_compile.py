@@ -17,7 +17,7 @@ pytest.importorskip("triton")
 
 import unsloth  # noqa: F401  (patches first)
 import torch._dynamo.utils as dynamo_utils
-from unsloth.kernels import fast_lora
+from unsloth.kernels import fast_lora, rms_layernorm, rope_embedding
 from unsloth.kernels.rms_layernorm import Fast_RMS_Layernorm, fast_rms_layernorm
 from unsloth.kernels.rope_embedding import (
     Fast_RoPE_Embedding,
@@ -27,7 +27,15 @@ from unsloth.kernels.rope_embedding import (
 
 # Without triton_op the implementation may keep a graph break; results must still be right.
 TRACEABLE = hasattr(torch.library, "triton_op") and hasattr(torch.library, "wrap_triton")
-DTYPES = [torch.bfloat16, torch.float16, torch.float32]
+# Pre-Ampere GPUs (T4) keep bf16 on the untraced path, so bf16 byte / graph-break checks need bf16 there.
+BF16 = pytest.param(
+    torch.bfloat16,
+    marks = pytest.mark.skipif(
+        not rms_layernorm._BF16_TRACEABLE, reason = "no native bf16: bf16 stays untraced"
+    ),
+)
+DTYPES = [BF16, torch.float16, torch.float32]
+CDTYPE = torch.bfloat16 if rms_layernorm._BF16_TRACEABLE else torch.float16
 
 
 @pytest.fixture(autouse = True)
@@ -165,7 +173,7 @@ def _rope_case(
 ROPE_SHAPES = [(2, 37, 8, 8, 64), (1, 64, 32, 8, 128), (3, 20, 4, 1, 64)]
 
 
-@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16], ids = str)
+@pytest.mark.parametrize("dtype", [BF16, torch.float16], ids = str)
 @pytest.mark.parametrize("with_indices", [False, True], ids = ["positions", "rope_indices"])
 @pytest.mark.parametrize(
     "shape", ROPE_SHAPES, ids = lambda s: f"b{s[0]}_s{s[1]}_h{s[2]}_kv{s[3]}_d{s[4]}"
@@ -213,11 +221,39 @@ def test_rope_matches_the_rotation_formula():
     torch.testing.assert_close(Q_out, q * cos[:16] + rot * sin[:16], rtol = 1e-5, atol = 1e-5)
 
 
+def test_bf16_without_native_support_stays_untraced(monkeypatch):
+    """Where bf16 cannot be traced, bf16 inputs keep the old graph break and match eager."""
+    if not TRACEABLE:
+        pytest.skip("this torch has no torch.library.triton_op")
+    monkeypatch.setattr(rms_layernorm, "_BF16_TRACEABLE", False)
+    monkeypatch.setattr(rope_embedding, "_BF16_TRACEABLE", False)
+    eager = _rms_case(fast_rms_layernorm, (64, 256), torch.float16, False, False)
+    compiled = _rms_case(
+        torch.compile(lambda n, x, gm: fast_rms_layernorm(n, x, gm)),
+        (64, 256),
+        torch.float16,
+        False,
+        False,
+    )
+    assert all(_bytes_equal(e, c) for e, c in zip(eager, compiled)) and _graph_breaks() == 0
+    torch._dynamo.reset()
+    dynamo_utils.counters.clear()
+    eager = _rms_case(fast_rms_layernorm, (64, 256), torch.bfloat16, False, False)
+    compiled = _rms_case(
+        torch.compile(lambda n, x, gm: fast_rms_layernorm(n, x, gm)),
+        (64, 256),
+        torch.bfloat16,
+        False,
+        False,
+    )
+    assert all(_bytes_equal(e, c) for e, c in zip(eager, compiled)) and _graph_breaks() > 0
+
+
 def test_rope_dynamic_shapes():
     """dynamic=True makes the launch grid SymInts (divmod rejected them)."""
     if not TRACEABLE:
         pytest.skip("this torch has no torch.library.triton_op")
-    cos, sin = _cos_sin(64, 64, torch.bfloat16)
+    cos, sin = _cos_sin(64, 64, CDTYPE)
 
     def f(q_lin, k_lin, bsz, seq, n_heads, n_kv):
         Q = q_lin.view(bsz, seq, n_heads, 64).transpose(1, 2)
@@ -227,8 +263,8 @@ def test_rope_dynamic_shapes():
     compiled = torch.compile(f, fullgraph = True, dynamic = True)
     for seq in (16, 24, 40):
         g = torch.Generator(device = "cuda").manual_seed(seq)
-        q_lin = torch.randn(2, seq, 8 * 64, device = "cuda", generator = g, dtype = torch.bfloat16)
-        k_lin = torch.randn(2, seq, 2 * 64, device = "cuda", generator = g, dtype = torch.bfloat16)
+        q_lin = torch.randn(2, seq, 8 * 64, device = "cuda", generator = g, dtype = CDTYPE)
+        k_lin = torch.randn(2, seq, 2 * 64, device = "cuda", generator = g, dtype = CDTYPE)
         for e, c in zip(
             f(q_lin.clone(), k_lin.clone(), 2, seq, 8, 2), compiled(q_lin, k_lin, 2, seq, 8, 2)
         ):

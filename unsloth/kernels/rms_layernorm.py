@@ -244,6 +244,18 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
 _TRACEABLE = hasattr(torch.library, "triton_op") and hasattr(torch.library, "wrap_triton")
 
 
+def _bf16_traceable():
+    # Dynamo cannot trace a bf16 Triton kernel on GPUs without native bf16 (pre-Ampere, e.g. T4),
+    # where Unsloth runs fp16 anyway; bf16 there keeps the graph break.
+    try:
+        return bool(torch.version.hip) or torch.cuda.is_bf16_supported(including_emulation = False)
+    except Exception:
+        return False
+
+
+_BF16_TRACEABLE = _TRACEABLE and _bf16_traceable()
+
+
 def _tag_compile_cache(path):
     # Inductor's FX cache keys a triton_op without its source; key on the file so upgrades miss.
     config = getattr(torch.compiler, "config", None)
@@ -312,7 +324,11 @@ def fast_rms_layernorm(
     )
     if not torch.compiler.is_compiling():
         return Fast_RMS_Layernorm.apply(X, W, eps, gemma)
-    if not _TRACEABLE or X.device.type != "cuda":
+    if (
+        not _TRACEABLE
+        or X.device.type != "cuda"
+        or (X.dtype == torch.bfloat16 and not _BF16_TRACEABLE)
+    ):
         return _fast_rms_layernorm_untraced(X, W, eps, gemma)
     shape = X.shape
     Y, _ = torch.ops.unsloth.rms_layernorm(
