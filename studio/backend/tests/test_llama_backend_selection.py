@@ -446,6 +446,35 @@ def test_auto_keeps_cuda_when_rocm_torch_finds_no_amd_gpu(monkeypatch):
     assert route.host.has_rocm is False
 
 
+@pytest.mark.parametrize(
+    "forward",
+    [
+        {"override_rocm_gfx": "gfx1201"},
+        {"env": ("UNSLOTH_ROCM_GFX_REMEMBERED", "gfx1201")},
+    ],
+)
+def test_auto_follows_rocm_torch_on_a_forwarded_arch_the_probe_missed(monkeypatch, forward):
+    monkeypatch.delenv("UNSLOTH_ROCM_GFX_ARCH", raising = False)
+    monkeypatch.delenv("UNSLOTH_ROCM_GFX_REMEMBERED", raising = False)
+    monkeypatch.setattr(ilp, "_installed_torch_is_rocm", lambda: True)
+    probes = _stub_amd_probe(monkeypatch, amd_present = False)
+    if "env" in forward:
+        monkeypatch.setenv(*forward["env"])
+
+    route = ilp.route_backend_request(
+        backend = "auto",
+        published_repo = FORK,
+        published_release_tag = "",
+        override_rocm_gfx = forward.get("override_rocm_gfx"),
+        host = _NVIDIA_ONLY_PROFILE,
+    )
+
+    assert probes == [True]
+    assert route.host.has_rocm is True
+    assert route.host.has_usable_nvidia is False
+    assert route.host.rocm_gfx_target == "gfx1201"
+
+
 def test_force_rocm_torch_env_makes_auto_prefer_rocm(monkeypatch):
     monkeypatch.setattr(ilp, "_installed_torch_is_rocm", lambda: False)
     monkeypatch.setenv("UNSLOTH_FORCE_ROCM_TORCH", " Yes ")

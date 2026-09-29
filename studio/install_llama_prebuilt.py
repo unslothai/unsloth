@@ -10897,12 +10897,13 @@ def _rocm_torch_preferred() -> bool:
     return _installed_torch_is_rocm() is True
 
 
-def _auto_host_following_rocm_torch(host: HostInfo) -> HostInfo:
-    """Only moves off CUDA when the AMD probe finds a ROCm GPU (stale ROCm torch keeps CUDA)."""
+def _auto_host_following_rocm_torch(host: HostInfo, **overrides) -> HostInfo:
+    """Only moves off CUDA when the AMD probe or a forwarded arch finds ROCm (stale ROCm torch keeps CUDA)."""
     if not host.has_usable_nvidia:
         return host
     probed = host if host.has_rocm else detect_host(probe_rocm_with_nvidia = True)
-    if not probed.has_rocm:
+    # Judge with setup's forwarded / remembered arch folded in, else a probe gap keeps CUDA.
+    if not _apply_host_overrides(probed, **overrides).has_rocm:
         return host
     log(
         "ROCm torch is installed or requested; Automatic prefers the ROCm llama.cpp build "
@@ -10941,7 +10942,11 @@ def route_backend_request(
             has_usable_nvidia = False,
         )
     elif backend in (None, "auto") and _rocm_torch_preferred():
-        detected_host = _auto_host_following_rocm_torch(detected_host)
+        detected_host = _auto_host_following_rocm_torch(
+            detected_host,
+            override_has_rocm = override_has_rocm,
+            override_rocm_gfx = override_rocm_gfx,
+        )
     force_cpu = cpu_mechanism or backend == "cpu"
     resolved_host = _apply_host_overrides(
         detected_host,
