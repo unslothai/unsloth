@@ -4404,12 +4404,23 @@ class SandboxWindowsStatus(BaseModel):
     prepare_repeats_after_restart: bool = True
 
 
+class SandboxSetupStatus(BaseModel):
+    # linux-install | windows-setup when Unsloth can run the setup itself; None otherwise.
+    action: Optional[str] = None
+    # sudo | pkexec | uac, or None.
+    elevation: Optional[str] = None
+    manual_command: str = ""
+    reason: str = ""
+    needs_consent: bool = False
+
+
 class SandboxStatusResponse(BaseModel):
     platform: str
     python: SandboxToolStatus
     terminal: SandboxToolStatus
     terminal_shell: Optional[str] = None
     windows: Optional[SandboxWindowsStatus] = None
+    setup: Optional[SandboxSetupStatus] = None
     checked_at: float
     grants_restored: Optional[int] = None
 
@@ -4419,6 +4430,27 @@ class SandboxSettingsPayload(BaseModel):
 
     allow_dacl_fallback: Optional[StrictBool] = None
     persistent_read_grants: Optional[StrictBool] = None
+
+
+class SandboxSetupPayload(BaseModel):
+    model_config = ConfigDict(extra = "forbid")
+
+    operation: Literal["linux-install", "windows-setup"]
+    # Windows: also turn on "Allow OS isolation on this Windows version" (the owner agreed in the dialog).
+    consent_dacl_fallback: StrictBool = False
+
+
+class SandboxSetupJob(BaseModel):
+    state: Literal["idle", "running", "succeeded", "declined", "failed"]
+    id: Optional[str] = None
+    operation: Optional[str] = None
+    started_at: Optional[float] = None
+    finished_at: Optional[float] = None
+    exit_code: Optional[int] = None
+    output_tail: list[str] = Field(default_factory = list)
+    steps: list[str] = Field(default_factory = list)
+    manual_command: str = ""
+    note: str = ""
 
 
 class SandboxPrepareJob(BaseModel):
@@ -4517,7 +4549,26 @@ def _build_sandbox_status(force: bool) -> SandboxStatusResponse:
         terminal = _sandbox_tool_status(terminal),
         terminal_shell = shell,
         windows = _sandbox_windows_status() if sys.platform == "win32" else None,
+        setup = _sandbox_setup_status(python.available and terminal.available),
         checked_at = time.time(),
+    )
+
+
+def _sandbox_setup_status(available: bool) -> Optional[SandboxSetupStatus]:
+    """Blocking. Never elevates: detection only. None when the plan cannot be read."""
+    from core.inference import sandbox_setup_plan
+
+    try:
+        plan = sandbox_setup_plan.detect(available)
+    except Exception as exc:  # noqa: BLE001 - the status stays useful without the setup hint
+        logger.warning("settings.sandbox_setup_plan_failed: %s", exc)
+        return None
+    return SandboxSetupStatus(
+        action = plan.action,
+        elevation = plan.elevation,
+        manual_command = plan.manual_command,
+        reason = plan.reason,
+        needs_consent = plan.needs_consent,
     )
 
 
@@ -4665,6 +4716,90 @@ async def start_sandbox_prepare(
     job = await asyncio.to_thread(mxc_host_prep_job.start)
     logger.info("settings.sandbox_prepare_started subject=%s job=%s", current_subject, job.id)
     return _sandbox_job_response(job)
+
+
+def _sandbox_setup_response(job) -> SandboxSetupJob:
+    if job is None:
+        return SandboxSetupJob(state = "idle")
+    data = job.as_dict()
+    data.setdefault("operation", "windows-setup")
+    return SandboxSetupJob(**data)
+
+
+@_owner_settings_router.get("/sandbox/setup", response_model = SandboxSetupJob)
+def get_sandbox_setup(current_subject: str = Depends(get_current_subject)) -> SandboxSetupJob:
+    from core.inference import mxc_host_prep_job, sandbox_setup_job
+
+    job = sandbox_setup_job.current()
+    prep = mxc_host_prep_job.current()
+    # The newer of the two runs: "Prepare this PC" keeps its own route and job.
+    if prep is not None and (job is None or prep.started_at > job.started_at):
+        return _sandbox_setup_response(prep)
+    return _sandbox_setup_response(job)
+
+
+@_owner_settings_router.post("/sandbox/setup", response_model = SandboxSetupJob)
+async def start_sandbox_setup(
+    payload: SandboxSetupPayload,
+    request: Request,
+    current_subject: str = Depends(get_current_subject),
+    _ui_session: None = Depends(_require_ui_session),
+) -> SandboxSetupJob:
+    """Install or prepare the OS sandbox here; the password or administrator prompt appears on this computer."""
+    import sys
+
+    from core.inference import mxc_policy, sandbox_setup_job, sandbox_setup_plan
+    from utils import mxc_isolation_settings as saved
+    from utils.client_ip import is_direct_local_request
+
+    # Stricter than client_ip(): a loopback peer carrying proxy headers is a remote browser relayed here.
+    if not is_direct_local_request(request):
+        raise HTTPException(
+            status_code = 403,
+            detail = (
+                "Set up the sandbox from the computer running Unsloth: the password or administrator "
+                "prompt appears there, not in this browser."
+            ),
+        )
+    platform_operation = (
+        sandbox_setup_plan.WINDOWS_SETUP
+        if sys.platform == "win32"
+        else sandbox_setup_plan.LINUX_INSTALL
+        if sys.platform.startswith("linux")
+        else None
+    )
+    if payload.operation != platform_operation:
+        raise HTTPException(
+            status_code = 409, detail = f"{payload.operation} does not apply to this computer."
+        )
+    if (
+        payload.operation == sandbox_setup_plan.WINDOWS_SETUP
+        and payload.consent_dacl_fallback
+        and not mxc_policy.dacl_fallback_enabled()
+    ):
+        if saved.locked_by_environment(mxc_policy.DACL_FALLBACK_ENV):
+            raise HTTPException(
+                status_code = 409,
+                detail = (
+                    f"{mxc_policy.DACL_FALLBACK_ENV} is set in the environment Unsloth runs in, "
+                    "which decides this."
+                ),
+            )
+        await asyncio.to_thread(_sandbox_apply, SandboxSettingsPayload(allow_dacl_fallback = True))
+        sandbox_setup_plan.invalidate()
+    sandbox_setup_job.add_finish_hook(_forget_sandbox_status)
+    try:
+        job = await asyncio.to_thread(sandbox_setup_job.start, payload.operation)
+    except sandbox_setup_job.SetupUnavailable as exc:
+        raise HTTPException(status_code = 409, detail = str(exc)) from exc
+    _forget_sandbox_status()
+    logger.info(
+        "settings.sandbox_setup_started subject=%s operation=%s job=%s",
+        current_subject,
+        payload.operation,
+        job.id,
+    )
+    return _sandbox_setup_response(job)
 
 
 router.include_router(_account_settings_router)
