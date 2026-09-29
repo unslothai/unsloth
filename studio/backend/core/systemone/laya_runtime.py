@@ -772,8 +772,7 @@ def _run_model(agent, batch):
 
     if not _marker_head(agent.model):
         return _run_chunk(agent, batch)
-    # Activations grow with rows x tokens (64 full-context questions peaked at 3.4 GiB in one forward); past
-    # the budget the device is saturated, so smaller forwards cost little speed and bound the peak.
+    # Activations grow with rows x tokens; past the budget the device is saturated, so chunks cost little speed.
     budget = _CHUNK_TOKENS.get(agent.device.type, _CHUNK_TOKENS["cpu"])
     # cat copies, so no result is a view into a CUDA graph's output buffer, which its next replay overwrites.
     return torch.cat([_run_chunk(agent, part) for part in _chunks(batch, budget)])
