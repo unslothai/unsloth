@@ -64,6 +64,13 @@ def host(monkeypatch):
     monkeypatch.setattr(settings, "_sandbox_terminal_target", lambda: ("/bin/bash", None))
     monkeypatch.setattr(settings, "_sandbox_windows_status", lambda: None)
     monkeypatch.setattr(sandbox_setup_plan, "detect", lambda *a, **k: plan["value"])
+    calls["elevation_checks"] = 0
+
+    def elevation(**_kw):
+        calls["elevation_checks"] += 1
+        return saved.get("elevation", ("sudo", "/usr/bin/sudo"))
+
+    monkeypatch.setattr(sandbox_setup_plan, "linux_elevation", elevation)
     monkeypatch.setattr(mxc_probe, "invalidate_cache", lambda: None)
     monkeypatch.setattr(tools, "reset_terminal_profile_cache", lambda: None)
     monkeypatch.setattr(mxc_policy, "dacl_fallback_enabled", lambda: saved["dacl"])
@@ -171,6 +178,7 @@ def test_capability_offers_setup_to_the_local_owner(host, linux):
 
 @pytest.mark.parametrize("who", ["other_account", "remote_owner"])
 def test_capability_gives_everyone_else_only_the_command(host, linux, monkeypatch, who):
+    calls, _saved, _plan = host
     account = ALICE
     if who == "remote_owner":
         account = OWNER
@@ -178,6 +186,54 @@ def test_capability_gives_everyone_else_only_the_command(host, linux, monkeypatc
     body = _capability_client(account).get("/api/sandbox/capability").json()
     assert body["setup_action"] is None and body["can_run_setup"] is False
     assert body["manual_command"] == "sudo apt-get install -y bubblewrap"
+    # Nobody but the owner on this computer makes Unsloth run the elevation check.
+    assert calls["elevation_checks"] == 0
+
+
+def test_a_remote_status_read_never_checks_elevation(host, linux, monkeypatch):
+    calls, _saved, _plan = host
+    monkeypatch.setattr(client_ip, "is_direct_local_request", lambda _request: False)
+    with _client(OWNER) as client:
+        setup = client.get("/sandbox").json()["setup"]
+    assert setup["can_run"] is False and calls["elevation_checks"] == 0
+
+
+def test_no_elevation_here_means_the_command_only(host, linux):
+    calls, saved, _plan = host
+    saved["elevation"] = (None, None)
+    with _client(OWNER) as client:
+        setup = client.get("/sandbox").json()["setup"]
+    assert setup["can_run"] is False and setup["manual_command"]
+    body = _capability_client(OWNER).get("/api/sandbox/capability").json()
+    assert body["setup_action"] is None and body["can_run_setup"] is False
+
+
+def test_the_capability_read_checks_a_tool_it_has_no_answer_for(host, linux, monkeypatch):
+    from core.inference import os_sandbox
+
+    monkeypatch.setenv(os_sandbox.WARMUP_DISABLE_ENV, "0")
+    refreshed = []
+
+    def refresh(tool, *, force = False):
+        refreshed.append((tool, force))
+        os_sandbox.note_tool_isolation(tool, True, backend = "bubblewrap", reason = "passed")
+        return True
+
+    monkeypatch.setattr(os_sandbox, "refresh_tool_isolation", refresh)
+    os_sandbox.forget_tool_isolation()
+    body = _capability_client(OWNER).get("/api/sandbox/capability").json()
+    assert body["python_os_isolated"] is True and body["terminal_os_isolated"] is True
+    assert refreshed == [("python", False), ("terminal", False)]
+    refreshed.clear()
+    # Answered now: no check; refresh=1 from the owner re-checks both, forced.
+    _capability_client(OWNER).get("/api/sandbox/capability")
+    assert refreshed == []
+    _capability_client(OWNER).get("/api/sandbox/capability", params = {"refresh": "1"})
+    assert refreshed == [("python", True), ("terminal", True)]
+    refreshed.clear()
+    _capability_client(ALICE).get("/api/sandbox/capability", params = {"refresh": "1"})
+    assert refreshed == []
+    os_sandbox.forget_tool_isolation()
 
 
 def test_a_remote_browser_is_refused(host, linux, monkeypatch):
@@ -218,6 +274,9 @@ def test_the_operation_must_match_the_platform(host, linux, monkeypatch):
     calls, _saved, _plan = host
     with _client(OWNER) as client:
         assert client.post("/sandbox/setup", json = {"operation": "windows-setup"}).status_code == 409
+        assert (
+            client.post("/sandbox/setup", json = {"operation": "windows-runtime"}).status_code == 409
+        )
     monkeypatch.setattr(sys, "platform", "win32")
     with _client(OWNER) as client:
         assert client.post("/sandbox/setup", json = {"operation": "linux-install"}).status_code == 409
@@ -237,14 +296,48 @@ def test_nothing_to_set_up_is_a_conflict(host, linux, monkeypatch):
     assert response.status_code == 409 and "already works" in response.json()["detail"]
 
 
-def test_windows_consent_turns_the_opt_in_on_before_setup(host, windows):
+def test_windows_consent_turns_the_opt_in_on_once_the_setup_is_accepted(host, windows, monkeypatch):
     calls, saved, _plan = host
+    seen = []
+
+    def start(operation):
+        # Turned on first, the Python check could pass before preparation and the plan would
+        # read "already works": the opt-in must still be off while the job is decided.
+        seen.append(saved["dacl"])
+        return sandbox_setup_job.SetupJob(id = "job1", operation = operation)
+
+    monkeypatch.setattr(sandbox_setup_job, "start", start)
     with _client(OWNER) as client:
         response = client.post(
             "/sandbox/setup", json = {"operation": "windows-setup", "consent_dacl_fallback": True}
         )
     assert response.status_code == 200, response.text
-    assert saved["dacl"] is True and calls["start"] == ["windows-setup"]
+    assert seen == [False] and saved["dacl"] is True
+
+
+def test_windows_consent_is_not_saved_when_the_setup_is_refused(host, windows, monkeypatch):
+    _calls, saved, _plan = host
+
+    def unavailable(_operation):
+        raise sandbox_setup_job.SetupUnavailable("OS isolation already works on this computer.")
+
+    monkeypatch.setattr(sandbox_setup_job, "start", unavailable)
+    with _client(OWNER) as client:
+        response = client.post(
+            "/sandbox/setup", json = {"operation": "windows-setup", "consent_dacl_fallback": True}
+        )
+    assert response.status_code == 409 and saved["dacl"] is False
+
+
+def test_windows_runtime_only_is_a_windows_operation(host, windows):
+    calls, saved, _plan = host
+    with _client(OWNER) as client:
+        response = client.post(
+            "/sandbox/setup", json = {"operation": "windows-runtime", "consent_dacl_fallback": True}
+        )
+    assert response.status_code == 200 and calls["start"] == ["windows-runtime"]
+    # Consent belongs to the full setup only.
+    assert saved["dacl"] is False
 
 
 def test_windows_setup_without_consent_leaves_the_opt_in_alone(host, windows):

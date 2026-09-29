@@ -21,7 +21,7 @@ from typing import Callable
 import uuid
 
 from . import sandbox_setup_plan
-from .mxc_host_prep_job import _DECLINED_MARKER, _steps as _prepared_steps
+from .mxc_host_prep_job import HOST_CHANGE_LOCK, _DECLINED_MARKER, _steps as _prepared_steps
 
 logger = logging.getLogger(__name__)
 
@@ -71,10 +71,11 @@ def running() -> bool:
     return job is not None and job.state == "running"
 
 
-def _spawn(argv: list[str]) -> subprocess.Popen:
+def _spawn(argv: list[str], env: dict | None = None) -> subprocess.Popen:
     from utils.process_lifetime import child_popen_kwargs, spawn_on_lifetime_thread
 
     kwargs = dict(
+        env = env,
         stdin = subprocess.DEVNULL,
         stdout = subprocess.PIPE,
         stderr = subprocess.STDOUT,
@@ -90,6 +91,7 @@ def _spawn(argv: list[str]) -> subprocess.Popen:
 
 def _invalidate() -> None:
     from . import mxc_probe, os_sandbox, sandbox_probe, tools
+
     resets = (
         sandbox_probe.reset_probe_cache,
         os_sandbox._linux_userns_blocked_by_apparmor.cache_clear,
@@ -103,26 +105,46 @@ def _invalidate() -> None:
             reset()
         except Exception as exc:  # noqa: BLE001 - a stale cache only delays the new verdict
             logger.warning("Sandbox setup: cache reset failed: %s", exc)
+    # Check again before the job reads as finished, so the next read reflects the new host state.
+    try:
+        if not os_sandbox._background_probes_disabled():
+            os_sandbox.warm_tool_isolation()
+    except Exception as exc:  # noqa: BLE001 - the next read checks on its own
+        logger.warning("Sandbox setup: re-check after setup failed: %s", exc)
 
 
 def pkexec_script(steps) -> str:
-    """One shell script for one polkit prompt, built only from the plan's fixed steps."""
+    """One shell script for one polkit prompt, built only from the plan's fixed, pinned steps."""
     return "set -e\n" + "\n".join(shlex.join(list(step)) for step in steps) + "\n"
 
 
-def _commands(plan: sandbox_setup_plan.SetupPlan) -> list[list[str]]:
-    """The argv lists the job runs, in order."""
-    if plan.action == sandbox_setup_plan.LINUX_INSTALL:
-        kind, path = sandbox_setup_plan.linux_elevation()
-        if kind == "sudo":
-            # -n: never ask for a password nobody can type here.
-            return [[path, "-n", *step] for step in plan.steps]
-        if kind == "pkexec":
-            return [[path, "/bin/sh", "-c", pkexec_script(plan.steps)]]
+def _commands(plan: sandbox_setup_plan.SetupPlan) -> tuple[list[list[str]], dict | None]:
+    """The argv lists the job runs, in order, and the environment they run with.
+
+    Linux steps run as root, so every program is pinned to a root-owned system binary (never looked
+    up on PATH, which starts with folders a tool call can write) and sees only a fixed environment.
+    """
+    if plan.action != sandbox_setup_plan.LINUX_INSTALL:
+        return [list(step) for step in plan.steps], None
+    kind, path = sandbox_setup_plan.linux_elevation(force = True)
+    if kind is None:
         raise SetupUnavailable(
             "Neither passwordless sudo nor a desktop password prompt is available."
         )
-    return [list(step) for step in plan.steps]
+    try:
+        steps = sandbox_setup_plan.elevated_steps(plan.steps)
+        shell = sandbox_setup_plan.trusted_system_binary("sh") if kind == "pkexec" else None
+    except LookupError as exc:
+        raise SetupUnavailable(f"{exc}; run the command in a terminal instead.") from exc
+    env = dict(sandbox_setup_plan.ELEVATED_ENV)
+    if kind == "sudo":
+        # -n: never ask for a password nobody can type here.
+        return [[path, "-n", *step] for step in steps], env
+    if shell is None:
+        raise SetupUnavailable(
+            "No trusted /bin/sh was found; run the command in a terminal instead."
+        )
+    return [[path, shell, "-c", pkexec_script(steps)]], env
 
 
 def _drain(job: SetupJob, proc: subprocess.Popen, tail: deque) -> int | None:
@@ -158,12 +180,16 @@ def _outcome(job: SetupJob, argv: list[str], code: int | None, lines: list[str])
     return "failed"
 
 
-def _run(job: SetupJob, commands: list[list[str]]) -> None:
+def _run(
+    job: SetupJob,
+    commands: list[list[str]],
+    env: dict | None = None,
+) -> None:
     tail: deque[str] = deque(maxlen = OUTPUT_TAIL_LINES)
     state, code = "succeeded", 0
     for argv in commands:
         try:
-            proc = _spawn(argv)
+            proc = _spawn(argv, env)
         except Exception as exc:  # noqa: BLE001 - surfaced as a failed job
             tail.append(f"Could not start the setup step: {exc}")
             state, code = "failed", None
@@ -196,14 +222,19 @@ def start(operation: str) -> SetupJob:
     in_progress = current()
     if in_progress is not None and in_progress.state == "running":
         return in_progress
-    # Detection can run the live probe, so it stays outside the lock pollers read under.
-    plan = sandbox_setup_plan.detect(force = True)
+    # Detection can run the live probe, so it stays outside the locks.
+    if operation == sandbox_setup_plan.WINDOWS_RUNTIME:
+        plan = sandbox_setup_plan.windows_runtime_plan()
+    else:
+        plan = sandbox_setup_plan.detect(force = True)
     if plan.action != operation:
         raise SetupUnavailable(plan.reason or "There is nothing to set up on this computer.")
-    commands = _commands(plan)
-    with _lock:
-        if _current is not None and _current.state == "running":
-            return _current
+    commands, env = _commands(plan)
+    # One host change at a time, across this job and "Prepare this PC".
+    with HOST_CHANGE_LOCK:
+        with _lock:
+            if _current is not None and _current.state == "running":
+                return _current
         prep = mxc_host_prep_job.current()
         if prep is not None and prep.state == "running":
             return SetupJob(
@@ -212,6 +243,9 @@ def start(operation: str) -> SetupJob:
                 started_at = prep.started_at,
             )
         job = SetupJob(id = uuid.uuid4().hex, operation = operation, manual_command = plan.manual_command)
-        _current = job
-    threading.Thread(target = _run, args = (job, commands), name = "sandbox-setup", daemon = True).start()
+        with _lock:
+            _current = job
+    threading.Thread(
+        target = _run, args = (job, commands, env), name = "sandbox-setup", daemon = True
+    ).start()
     return job

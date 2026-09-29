@@ -924,6 +924,12 @@ def note_tool_isolation(
         _tool_isolation[tool] = (time.monotonic(), bool(available), backend, reason)
 
 
+def tool_isolation_generation() -> int:
+    """Pass to note_tool_isolation(generation=...) so a check that started before a reset stays out."""
+    with _tool_isolation_lock:
+        return _tool_isolation_generation
+
+
 def forget_tool_isolation() -> None:
     global _tool_isolation_generation
     with _tool_isolation_lock:
@@ -959,6 +965,12 @@ def _refresh_tool_isolation_in_background(tool: str) -> None:
     finally:
         with _tool_isolation_lock:
             _tool_isolation_refreshing.discard(tool)
+
+
+def has_tool_isolation_answer(tool: str) -> bool:
+    """Whether ``tool`` has any remembered answer; starts nothing."""
+    with _tool_isolation_lock:
+        return tool in _tool_isolation
 
 
 def cached_tool_isolation(tool: str) -> bool | None:
@@ -1002,8 +1014,12 @@ def warm_tool_isolation() -> None:
 
 
 def start_tool_isolation_warmup() -> threading.Thread | None:
-    """Server start: warm_tool_isolation on a daemon thread. Off when UNSLOTH_DISABLE_SANDBOX_WARMUP=1."""
-    if _background_probes_disabled():
+    """Server start: warm_tool_isolation on a daemon thread. Off when UNSLOTH_DISABLE_SANDBOX_WARMUP=1.
+
+    Not on Windows: the MXC check launches a container and applies the runtime read grants, which
+    must not happen at every start of a server nobody has used a tool on yet.
+    """
+    if _background_probes_disabled() or sys.platform == "win32":
         return None
     thread = threading.Thread(
         target = warm_tool_isolation, name = "unsloth-sandbox-warmup", daemon = True

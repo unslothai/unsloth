@@ -22,6 +22,8 @@ _PREPARED_PREFIX = "[mxc-prebuilt] host prepared:"
 _ALREADY_PREPARED = "[mxc-prebuilt] host already prepared"
 
 _lock = threading.Lock()
+# Held while either this job or the Settings setup job decides to start: never two elevated helpers.
+HOST_CHANGE_LOCK = threading.Lock()
 _current: "HostPrepJob | None" = None
 # Extra resets run once a job ends (the settings route drops its status cache through this).
 _on_finish: list[Callable[[], None]] = []
@@ -121,20 +123,21 @@ def start() -> HostPrepJob:
     from . import mxc_probe, sandbox_setup_job
 
     # One host change at a time: a Settings setup run (which may itself prepare) owns the host.
-    setup = sandbox_setup_job.current()
-    if setup is not None and setup.state == "running":
-        return setup
-    with _lock:
-        if _current is not None and _current.state == "running":
-            return _current
-        job = HostPrepJob(id = uuid.uuid4().hex)
-        try:
-            proc = _spawn(mxc_probe.host_prep_command())
-        except Exception as exc:  # noqa: BLE001 - surfaced as a failed job
-            job.state, job.finished_at = "failed", time.time()
-            job.output_tail = [f"Could not start the host preparation: {exc}"]
+    with HOST_CHANGE_LOCK:
+        setup = sandbox_setup_job.current()
+        if setup is not None and setup.state == "running":
+            return setup
+        with _lock:
+            if _current is not None and _current.state == "running":
+                return _current
+            job = HostPrepJob(id = uuid.uuid4().hex)
+            try:
+                proc = _spawn(mxc_probe.host_prep_command())
+            except Exception as exc:  # noqa: BLE001 - surfaced as a failed job
+                job.state, job.finished_at = "failed", time.time()
+                job.output_tail = [f"Could not start the host preparation: {exc}"]
+                _current = job
+                return job
             _current = job
-            return job
-        _current = job
     threading.Thread(target = _run, args = (job, proc), name = "mxc-host-prep", daemon = True).start()
     return job

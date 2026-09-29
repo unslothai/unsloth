@@ -20,22 +20,63 @@ from pathlib import Path
 
 LINUX_INSTALL = "linux-install"
 WINDOWS_SETUP = "windows-setup"
-OPERATIONS = (LINUX_INSTALL, WINDOWS_SETUP)
+# Settings > Sandbox "Install runtime": the non-elevated MXC runtime install only.
+WINDOWS_RUNTIME = "windows-runtime"
+OPERATIONS = (LINUX_INSTALL, WINDOWS_SETUP, WINDOWS_RUNTIME)
 
 _APPARMOR_SYSCTL = "/proc/sys/kernel/apparmor_restrict_unprivileged_userns"
 _APPARMOR_PROFILE = "/etc/apparmor.d/bwrap-userns-restrict"
+_APPARMOR_EXTRA_PROFILE = "/usr/share/apparmor/extra-profiles/bwrap-userns-restrict"
 _CACHE_SECONDS = 5.0
+# The elevation check is logged by the host (auth.log) and may mail root: ask rarely, and only
+# for the owner on this computer.
+_ELEVATION_CACHE_SECONDS = 600.0
+# Only these directories are trusted for anything run as root, whatever PATH says.
+SYSTEM_BIN_DIRS = ("/usr/sbin", "/usr/bin", "/sbin", "/bin")
+# The whole environment an elevated setup step sees.
+ELEVATED_ENV = {
+    "PATH": ":".join(SYSTEM_BIN_DIRS),
+    "LANG": "C",
+    "LC_ALL": "C",
+    "DEBIAN_FRONTEND": "noninteractive",
+}
+
+# Per package manager, non-interactive. The package names and paths match os_sandbox's
+# _BWRAP_INSTALL_COMMANDS / _BWRAP_APPARMOR_FIX (which install.sh mirrors); only the flags differ.
+_APT_INSTALL = ("apt-get", "-o", "DPkg::Lock::Timeout=120", "install", "-y")
+_INSTALL_STEPS = {
+    "apt-get": (("apt-get", "update"), (*_APT_INSTALL, "bubblewrap")),
+    "dnf": (("dnf", "install", "-y", "bubblewrap"),),
+    "pacman": (("pacman", "-S", "--needed", "--noconfirm", "bubblewrap"),),
+    "zypper": (("zypper", "--non-interactive", "install", "bubblewrap"),),
+    "apk": (("apk", "add", "bubblewrap"),),
+}
+
+
+def _apparmor_load() -> tuple[str, ...]:
+    return ("apparmor_parser", "-r", _APPARMOR_PROFILE)
+
+
+def _apparmor_steps() -> tuple[tuple[str, ...], ...]:
+    return (
+        (*_APT_INSTALL, "apparmor-profiles"),
+        ("install", "-m", "644", _APPARMOR_EXTRA_PROFILE, "/etc/apparmor.d/"),
+        _apparmor_load(),
+    )
+
 
 _lock = threading.Lock()
 _cache: dict[tuple, tuple[float, "SetupPlan"]] = {}
+_elevation_cache: "tuple[float, tuple[str | None, str | None]] | None" = None
 
 
 @dataclass(frozen = True)
 class SetupPlan:
     platform: str
-    # Set only when Unsloth can run the steps itself: linux-install | windows-setup.
+    # linux-install | windows-setup | windows-runtime when there is something Unsloth can set up
+    # here. On Linux, whether it can run it itself also takes an elevation (linux_elevation()).
     action: str | None = None
-    # sudo | pkexec (Linux), uac (Windows prepare), or None (no elevation available or needed).
+    # uac (Windows prepare) or None; Linux elevation is checked per request (linux_elevation()).
     elevation: str | None = None
     steps: tuple[tuple[str, ...], ...] = ()
     manual_command: str = ""
@@ -87,25 +128,58 @@ def detect(available: bool | None = None, *, force: bool = False) -> SetupPlan:
 
 
 def _os_isolation_available() -> bool:
+    """Both tools, as the status and capability reads count it: Python alone is not "works"."""
     from . import os_sandbox
     try:
-        snapshot = os_sandbox.capability_snapshot(
-            execution_kind = "python", selected_executable = sys.executable
+        return all(
+            os_sandbox.capability_snapshot(
+                execution_kind = tool,
+                selected_executable = os_sandbox.tool_isolation_target(tool),
+            ).available
+            for tool in os_sandbox.ISOLATED_TOOLS
         )
     except Exception:  # noqa: BLE001 - an unreadable verdict is not a working sandbox
         return False
-    return bool(snapshot.available)
 
 
 # ---------------------------------------------------------------- Linux
 
 
-def _argv(command: str) -> tuple[str, ...]:
-    """`sudo apt-get install -y bubblewrap` -> ("apt-get", "install", "-y", "bubblewrap")."""
-    parts = shlex.split(command)
-    if parts and parts[0] == "sudo":
-        parts = parts[1:]
-    return tuple(parts)
+def manual_command(steps) -> str:
+    """What to paste into a terminal: the same steps, each under sudo."""
+    return " && ".join(f"sudo {shlex.join(step)}" for step in steps)
+
+
+def trusted_system_binary(name: str) -> str | None:
+    """`name` from the system bin directories only (never PATH), root-owned and not writable by
+    others, as is its directory; None otherwise. What an elevated step runs."""
+    from .sandbox_linux import _trusted_system_file
+
+    for directory in SYSTEM_BIN_DIRS:
+        candidate = os.path.join(directory, name)
+        if not os.path.exists(candidate):
+            continue
+        resolved = os.path.realpath(candidate)
+        if not _trusted_system_file(resolved):
+            continue
+        try:
+            parent = os.stat(os.path.dirname(resolved))
+        except OSError:
+            continue
+        if parent.st_uid == 0 and not parent.st_mode & 0o022:
+            return resolved
+    return None
+
+
+def elevated_steps(steps) -> list[list[str]]:
+    """Each step with its program pinned to a trusted absolute path; LookupError if one has none."""
+    pinned = []
+    for step in steps:
+        program = trusted_system_binary(step[0])
+        if program is None:
+            raise LookupError(f"{step[0]} was not found in {', '.join(SYSTEM_BIN_DIRS)}")
+        pinned.append([program, *step[1:]])
+    return pinned
 
 
 def _apparmor_restricts_userns() -> bool:
@@ -116,12 +190,12 @@ def _apparmor_restricts_userns() -> bool:
         return False
 
 
-def _package_manager() -> tuple[str, str] | tuple[None, None]:
+def _package_manager() -> str | None:
     from . import os_sandbox
-    for manager, command in os_sandbox._BWRAP_INSTALL_COMMANDS:
+    for manager, _command in os_sandbox._BWRAP_INSTALL_COMMANDS:
         if shutil.which(manager):
-            return manager, command
-    return None, None
+            return manager
+    return None
 
 
 def _is_wsl() -> bool:
@@ -171,8 +245,31 @@ def _graphical_session() -> bool:
     return bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
 
 
-def linux_elevation() -> tuple[str | None, str | None]:
-    """(kind, trusted path): passwordless sudo first, then pkexec on a desktop session, else neither."""
+def linux_elevation(*, force: bool = False) -> tuple[str | None, str | None]:
+    """(kind, trusted path): passwordless sudo first, then pkexec on a desktop session, else neither.
+
+    Runs a non-interactive sudo check, so only for the owner on this computer (and, forced, right
+    before a setup starts); remembered for ten minutes.
+    """
+    global _elevation_cache
+    now = time.monotonic()
+    with _lock:
+        cached = _elevation_cache
+    if not force and cached is not None and now < cached[0]:
+        return cached[1]
+    found = _linux_elevation()
+    with _lock:
+        _elevation_cache = (time.monotonic() + _ELEVATION_CACHE_SECONDS, found)
+    return found
+
+
+def forget_elevation() -> None:
+    global _elevation_cache
+    with _lock:
+        _elevation_cache = None
+
+
+def _linux_elevation() -> tuple[str | None, str | None]:
     sudo = _trusted_tool("sudo")
     if sudo is not None and _sudo_without_password(sudo):
         return "sudo", sudo
@@ -185,39 +282,77 @@ def linux_elevation() -> tuple[str | None, str | None]:
 
 
 def _linux_plan() -> SetupPlan:
+    """Reads files and PATH only; whether Unsloth may elevate is linux_elevation(), per request."""
     from . import os_sandbox
 
     reason = os_sandbox.linux_unavailable_remediation()
-    manager, install = _package_manager()
+    manager = _package_manager()
     bwrap_missing = shutil.which("bwrap") is None
-    if bwrap_missing and install is None:
+    if bwrap_missing and manager is None:
         return SetupPlan(platform = sys.platform, reason = reason)
-    commands: list[str] = []
+    steps: list[tuple[str, ...]] = []
     if bwrap_missing:
-        commands.append(install)
-    # Only Ubuntu's apt ships the profile; a host that already has it installed needs something else.
-    if (
-        manager == "apt-get"
-        and _apparmor_restricts_userns()
-        and (bwrap_missing or not os.path.exists(_APPARMOR_PROFILE))
-        and (bwrap_missing or os_sandbox._linux_userns_blocked_by_apparmor())
-    ):
-        commands.extend(part.strip() for part in os_sandbox._BWRAP_APPARMOR_FIX.split("&&"))
-    if not commands:
+        steps.extend(_INSTALL_STEPS[manager])
+    blocked = _apparmor_restricts_userns() and (
+        bwrap_missing or os_sandbox._linux_userns_blocked_by_apparmor()
+    )
+    if blocked and os.path.exists(_APPARMOR_PROFILE):
+        # The profile is there but not in force (or was loaded before bwrap was): load it again.
+        steps.append(_apparmor_load())
+    elif blocked and manager == "apt-get":
+        # Only Ubuntu's apt ships the profile.
+        if not bwrap_missing:
+            steps.append(("apt-get", "update"))
+        steps.extend(_apparmor_steps())
+    if not steps:
         return SetupPlan(platform = sys.platform, reason = reason)
-    manual = " && ".join(commands)
-    elevation, _path = linux_elevation()
     return SetupPlan(
         platform = sys.platform,
-        action = LINUX_INSTALL if elevation else None,
-        elevation = elevation,
-        steps = tuple(_argv(command) for command in commands),
-        manual_command = manual,
+        action = LINUX_INSTALL,
+        steps = tuple(steps),
+        manual_command = manual_command(steps),
         reason = reason,
     )
 
 
 # ---------------------------------------------------------------- Windows
+
+
+_ARM64_NOTE = (
+    "The MXC runtime Unsloth installs is built for x64 Windows, and this PC is not x64, so there "
+    "is nothing Unsloth can install here yet."
+)
+
+
+def windows_runtime_supported() -> bool:
+    """The MXC runtime Unsloth installs is built for x64 Windows only."""
+    import platform
+    return platform.machine().lower() in ("amd64", "x86_64")
+
+
+def windows_runtime_installed() -> bool:
+    from . import mxc_runtime
+    try:
+        mxc_runtime.installation_identity()
+    except Exception:  # noqa: BLE001 - no runtime yet
+        return False
+    return True
+
+
+def windows_runtime_plan() -> SetupPlan:
+    """Settings > Sandbox "Install runtime": the runtime alone, no administrator prompt."""
+    if windows_runtime_installed():
+        return SetupPlan(platform = sys.platform, reason = "The MXC runtime is already installed.")
+    if not windows_runtime_supported():
+        return SetupPlan(platform = sys.platform, reason = _ARM64_NOTE)
+    step = tuple(windows_runtime_install_command())
+    return SetupPlan(
+        platform = sys.platform,
+        action = WINDOWS_RUNTIME,
+        steps = (step,),
+        manual_command = subprocess.list2cmdline(list(step)),
+        reason = "The MXC runtime is not installed.",
+    )
 
 
 def windows_runtime_install_command() -> list[str]:
@@ -235,11 +370,9 @@ def _windows_plan() -> SetupPlan:
     from . import mxc_adapter, mxc_policy, mxc_probe, mxc_runtime
     from utils import mxc_isolation_settings as saved
 
-    try:
-        mxc_runtime.installation_identity()
-        installed = True
-    except Exception:  # noqa: BLE001 - no runtime yet
-        installed = False
+    installed = windows_runtime_installed()
+    if not installed and not windows_runtime_supported():
+        return SetupPlan(platform = sys.platform, reason = _ARM64_NOTE)
     missing = None
     if installed:
         try:
@@ -306,13 +439,12 @@ def setup_fields_for(
     from utils.client_ip import is_direct_local_request
 
     plan = detect(available)
-    owner = _is_owner(user)
     local = False
     try:
         local = is_direct_local_request(request)
     except Exception:  # noqa: BLE001 - an unreadable request is not local
         local = False
-    can_run = bool(plan.action) and owner and local
+    can_run = can_run_here(plan, owner = _is_owner(user), local = local)
     return {
         "setup_action": plan.action if can_run else None,
         "manual_command": plan.manual_command,
@@ -320,6 +452,16 @@ def setup_fields_for(
         "needs_consent": plan.needs_consent if can_run else False,
         "reason": plan.reason,
     }
+
+
+def can_run_here(plan: SetupPlan, *, owner: bool, local: bool) -> bool:
+    """Whether this caller gets the setup button. Blocking: on Linux it may run the elevation check,
+    and only for the owner on this computer, so nobody else makes Unsloth run a host command."""
+    if not (plan.action and owner and local):
+        return False
+    if plan.action == LINUX_INSTALL:
+        return linux_elevation()[0] is not None
+    return True
 
 
 def _is_owner(user) -> bool:

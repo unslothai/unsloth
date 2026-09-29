@@ -98,6 +98,14 @@ def _cache_put(
             _cache.pop(next(iter(_cache)))
 
 
+def _background_probes_disabled() -> bool:
+    try:
+        from .os_sandbox import _background_probes_disabled as disabled
+    except Exception:  # noqa: BLE001 - a partially imported package: stay in the foreground
+        return True
+    return disabled()
+
+
 def _refresh_in_background(backend: Any, key: tuple[str, str]) -> None:
     """Start one re-probe for ``key`` unless one is already running."""
     with _cache_lock:
@@ -342,9 +350,12 @@ def probe(backend: Any, *, force: bool = False) -> tuple[bool, str]:
         cached = _cache_get(key)
         if cached is not None:
             available, reason, stale = cached
-            if stale:
+            if not stale:
+                return available, reason
+            if not _background_probes_disabled():
                 _refresh_in_background(backend, key)
-            return available, reason
+                return available, reason
+            # Background probes are off (UNSLOTH_DISABLE_SANDBOX_WARMUP=1): re-probe here, as before.
 
     with _cache_lock:
         generation = _generation
