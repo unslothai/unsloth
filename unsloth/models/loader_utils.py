@@ -1767,8 +1767,8 @@ def _patch_peft_for_routed_compressed_tensors():
 
         patched_merge._unsloth_routed = True
         lora_layer.Linear.merge = patched_merge
-    # PiSSA / OLoRA / CorDA / LoftQ / LoRA-GA rewrite or read the dense base weight while building the adapter.
-    for init in ("pissa_init", "olora_init", "corda_init", "loftq_init", "lora_ga_init"):
+    # PiSSA / OLoRA / CorDA / LoftQ / orthogonal / LoRA-GA read or rewrite the dense base weight (or its dtype).
+    for init in ("pissa_init", "olora_init", "corda_init", "loftq_init", "orthogonal_init", "lora_ga_init"):
         original = getattr(lora_layer.LoraLayer, init, None)
         if original is None or getattr(original, "_unsloth_routed", False):
             continue
@@ -1785,6 +1785,21 @@ def _patch_peft_for_routed_compressed_tensors():
         patched_init = functools.wraps(original)(patched_init)
         patched_init._unsloth_routed = True
         setattr(lora_layer.LoraLayer, init, patched_init)
+    try:
+        from peft.tuners.lora import loraga
+    except Exception:
+        loraga = None
+    targets = getattr(loraga, "get_target_modules", None)
+    if targets is not None and not getattr(targets, "_unsloth_routed", False):
+
+        @functools.wraps(targets)
+        def patched_targets(*args, **kwargs):
+            # preprocess_loraga turns on requires_grad for each target's weight before the adapter exists.
+            for name, module in targets(*args, **kwargs):
+                yield name, _dequantize_routed_linear_(module)
+
+        patched_targets._unsloth_routed = True
+        loraga.get_target_modules = patched_targets
     try:
         from peft.tuners.lora import dora
     except Exception:
