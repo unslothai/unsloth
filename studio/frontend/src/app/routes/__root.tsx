@@ -425,7 +425,7 @@ function RootLayout() {
   // leave --studio-titlebar-height at 0 for the pages sized off it.
   const nonChatTopInset = useIsMobileShell()
     ? "pt-14"
-    : "pt-[var(--studio-non-chat-content-top-inset,var(--studio-content-top-inset,0px))] [--studio-titlebar-height:var(--studio-non-chat-content-top-inset,var(--studio-content-top-inset,0px))]";
+    : "pt-[calc(var(--studio-non-chat-content-top-inset,var(--studio-content-top-inset,0px))-var(--studio-non-chat-scroller-top,0px))] [--studio-titlebar-height:var(--studio-non-chat-content-top-inset,var(--studio-content-top-inset,0px))]";
 
   useTrainingUnloadGuard();
   // Global export driver: streams worker logs and tracks status from any route
@@ -687,10 +687,12 @@ function RootLayout() {
             className={
               isChatLike
                 ? "overflow-hidden"
-                : // Reserve the scrollbar so the Library does not shift when it appears.
+                : // Below a custom titlebar the scroller starts under the band, so neither
+                  // pinned toolbars nor its scrollbar pass beneath the window controls.
+                  // Reserve the scrollbar so the Library does not shift when it appears.
                   isLibraryRoute
-                  ? "overflow-y-auto [scrollbar-gutter:stable]"
-                  : "overflow-y-auto"
+                  ? "mt-[var(--studio-non-chat-scroller-top,0px)] overflow-y-auto [scrollbar-gutter:stable]"
+                  : "mt-[var(--studio-non-chat-scroller-top,0px)] overflow-y-auto"
             }
           >
             <Navbar />
