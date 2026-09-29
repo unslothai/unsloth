@@ -1113,6 +1113,9 @@ export const de = {
           "Unsloth und seinen Server im Hintergrund weiterlaufen lassen, wenn Sie das Hauptfenster schließen.",
         closeToTraySaveError:
           "Die Einstellung zum Schließen in den Infobereich konnte nicht aktualisiert werden.",
+        askBar: "Fragenleiste aktivieren",
+        askBarDescription: "Drücken Sie ⌥Space in einer beliebigen App. Fragen Sie Ihr lokales Modell aus jeder App auf diesem Mac.",
+        askBarSaveError: "Speichern fehlgeschlagen. Bitte versuchen Sie es erneut.",
         loadError: "Die Autostart-Einstellung konnte nicht geladen werden.",
         saveError:
           "Die Autostart-Einstellung konnte nicht aktualisiert werden.",
@@ -3098,6 +3101,20 @@ export const de = {
       datasetStreaming: "Datensatz: Streaming (kein vollständiger Download)",
       modelWeights: "Modellgewichte",
     },
+  },
+  askBar: {
+    placeholder: "Unsloth fragen...",
+    followUp: "Nachfragen...",
+    loading: "{model} wird geladen...",
+    noModel: "Kein Modell geladen. Laden Sie zuerst eines in Unsloth.",
+    signedOut: "Melden Sie sich bei Unsloth an und fragen Sie dann erneut.",
+    failed: "Etwas ist schiefgelaufen. Läuft das Backend?",
+    autoModel: "Aktives Modell",
+    copy: "Kopieren",
+    copied: "Kopiert",
+    clear: "Leeren",
+    enterHint: "fragen",
+    escHint: "schließen",
   },
   modelMemory: {
     readout:

@@ -1100,6 +1100,9 @@ export const ptBR = {
           "Mantém o Unsloth e seu servidor em execução em segundo plano ao fechar a janela principal.",
         closeToTraySaveError:
           "Não foi possível atualizar a configuração de fechar para a bandeja do sistema.",
+        askBar: "Ativar a barra de perguntas",
+        askBarDescription: "Pressione ⌥Space em qualquer app. Pergunte ao seu modelo local em qualquer app deste Mac.",
+        askBarSaveError: "Falha ao salvar. Tente novamente.",
         loadError:
           "Não foi possível carregar a configuração de inicialização no login.",
         saveError:
@@ -3057,6 +3060,20 @@ export const ptBR = {
       datasetStreaming: "Dataset: streaming (sem download completo)",
       modelWeights: "Pesos do modelo",
     },
+  },
+  askBar: {
+    placeholder: "Pergunte ao Unsloth...",
+    followUp: "Perguntar mais...",
+    loading: "Carregando {model}...",
+    noModel: "Nenhum modelo carregado. Carregue um no Unsloth primeiro.",
+    signedOut: "Entre no Unsloth e pergunte novamente.",
+    failed: "Algo deu errado. O backend está em execução?",
+    autoModel: "Modelo ativo",
+    copy: "Copiar",
+    copied: "Copiado",
+    clear: "Limpar",
+    enterHint: "perguntar",
+    escHint: "fechar",
   },
   modelMemory: {
     readout:

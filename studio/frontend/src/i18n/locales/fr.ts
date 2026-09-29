@@ -1111,6 +1111,9 @@ export const fr = {
           "Laisser Unsloth et son serveur fonctionner en arrière-plan lorsque vous fermez la fenêtre principale.",
         closeToTraySaveError:
           "Impossible de mettre à jour le réglage de fermeture dans la zone de notification.",
+        askBar: "Activer la barre de question",
+        askBarDescription: "Appuyez sur ⌥Space dans n'importe quelle app. Interrogez votre modèle local depuis n'importe quelle app de ce Mac.",
+        askBarSaveError: "Échec de l'enregistrement. Veuillez réessayer.",
         loadError:
           "Impossible de charger le réglage de lancement à la connexion.",
         saveError:
@@ -3109,6 +3112,20 @@ export const fr = {
       datasetStreaming: "Jeu de données : streaming (pas de téléchargement complet)",
       modelWeights: "Poids du modèle",
     },
+  },
+  askBar: {
+    placeholder: "Poser une question à Unsloth...",
+    followUp: "Question suivante...",
+    loading: "Chargement de {model}...",
+    noModel: "Aucun modèle chargé. Chargez-en un dans Unsloth d'abord.",
+    signedOut: "Connectez-vous à Unsloth, puis posez à nouveau votre question.",
+    failed: "Une erreur s'est produite. Le backend est-il en cours d'exécution ?",
+    autoModel: "Modèle actif",
+    copy: "Copier",
+    copied: "Copié",
+    clear: "Effacer",
+    enterHint: "demander",
+    escHint: "fermer",
   },
   modelMemory: {
     readout:

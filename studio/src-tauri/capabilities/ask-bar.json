@@ -1,0 +1,11 @@
+{
+  "identifier": "ask-bar",
+  "description": "The macOS Ask bar window: events from the app and clipboard writes only",
+  "windows": ["ask"],
+  "permissions": [
+    "core:default",
+    "core:event:allow-listen",
+    "core:event:allow-unlisten",
+    "clipboard-manager:allow-write-text"
+  ]
+}

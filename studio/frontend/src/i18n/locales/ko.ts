@@ -1088,6 +1088,9 @@ export const ko = {
         closeToTrayDescription:
           "기본 창을 닫아도 Unsloth와 서버가 백그라운드에서 계속 실행되도록 합니다.",
         closeToTraySaveError: "시스템 트레이로 닫기 설정을 업데이트하지 못했습니다.",
+        askBar: "질문 바 사용",
+        askBarDescription: "모든 앱에서 ⌥Space를 누르세요. 이 Mac의 모든 앱에서 로컬 모델에게 질문하세요.",
+        askBarSaveError: "저장하지 못했습니다. 다시 시도하세요.",
         loadError: "로그인 시 실행 설정을 불러오지 못했습니다.",
         saveError: "로그인 시 실행 설정을 업데이트하지 못했습니다.",
       },
@@ -3023,6 +3026,20 @@ export const ko = {
       datasetStreaming: "데이터셋: 스트리밍(전체 다운로드 없음)",
       modelWeights: "모델 가중치",
     },
+  },
+  askBar: {
+    placeholder: "Unsloth에게 질문...",
+    followUp: "이어서 질문...",
+    loading: "{model} 불러오는 중...",
+    noModel: "로드된 모델이 없습니다. 먼저 Unsloth에서 모델을 로드하세요.",
+    signedOut: "Unsloth에 로그인한 다음 다시 질문하세요.",
+    failed: "문제가 발생했습니다. 백엔드가 실행 중인가요?",
+    autoModel: "사용 중인 모델",
+    copy: "복사",
+    copied: "복사됨",
+    clear: "지우기",
+    enterHint: "질문",
+    escHint: "닫기",
   },
   modelMemory: {
     readout:

@@ -1091,6 +1091,9 @@ export const ar = {
         closeToTrayDescription:
           "إبقاء Unsloth وخادمه قيد التشغيل في الخلفية عند إغلاق النافذة الرئيسية.",
         closeToTraySaveError: "تعذّر تحديث إعداد الإغلاق إلى علبة النظام.",
+        askBar: "تفعيل شريط السؤال",
+        askBarDescription: "اضغط ⌥Space في أي تطبيق. اسأل نموذجك المحلي من أي تطبيق على هذا الـ Mac.",
+        askBarSaveError: "تعذر الحفظ. يرجى المحاولة مرة أخرى.",
         loadError: "تعذر تحميل إعداد التشغيل عند تسجيل الدخول.",
         saveError: "تعذر تحديث إعداد التشغيل عند تسجيل الدخول.",
       },
@@ -3029,6 +3032,20 @@ export const ar = {
       datasetStreaming: "مجموعة البيانات: تُقرأ بالتدفّق (من دون تنزيل كامل)",
       modelWeights: "أوزان النموذج",
     },
+  },
+  askBar: {
+    placeholder: "اسأل Unsloth...",
+    followUp: "متابعة السؤال...",
+    loading: "جار تحميل {model}...",
+    noModel: "لا يوجد نموذج محمل. حمّل نموذجا في Unsloth أولا.",
+    signedOut: "سجّل الدخول إلى Unsloth، ثم اسأل مرة أخرى.",
+    failed: "حدث خطأ ما. هل الخادم الخلفي قيد التشغيل؟",
+    autoModel: "النموذج النشط",
+    copy: "نسخ",
+    copied: "تم النسخ",
+    clear: "مسح",
+    enterHint: "اسأل",
+    escHint: "إغلاق",
   },
   modelMemory: {
     readout:

@@ -1098,6 +1098,9 @@ export const en = {
         closeToTrayDescription:
           "Keep Unsloth and its server running in the background when you close the main window.",
         closeToTraySaveError: "Failed to update the close to system tray setting.",
+        askBar: "Enable ask bar",
+        askBarDescription: "Press ⌥Space in any app to ask your local model.",
+        askBarSaveError: "Failed to save. Please try again.",
         loadError: "Failed to load the launch at login setting.",
         saveError: "Failed to update the launch at login setting.",
       },
@@ -3013,6 +3016,20 @@ export const en = {
       datasetStreaming: "Dataset: streaming (no full download)",
       modelWeights: "Model weights",
     },
+  },
+  askBar: {
+    placeholder: "Ask Unsloth...",
+    followUp: "Follow up...",
+    loading: "Loading {model}...",
+    noModel: "No model is loaded. Load one in Unsloth first.",
+    signedOut: "Sign in to Unsloth, then ask again.",
+    failed: "Something went wrong. Is the backend running?",
+    autoModel: "Active model",
+    copy: "Copy",
+    copied: "Copied",
+    clear: "Clear",
+    enterHint: "ask",
+    escHint: "close",
   },
   modelMemory: {
     readout:

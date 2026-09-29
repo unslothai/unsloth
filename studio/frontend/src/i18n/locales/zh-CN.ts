@@ -1071,6 +1071,9 @@ export const zhCN = {
         closeToTrayDescription:
           "关闭主窗口时，让 Unsloth 及其服务器继续在后台运行。",
         closeToTraySaveError: "无法更新关闭到系统托盘设置。",
+        askBar: "启用提问栏",
+        askBarDescription: "在任意应用中按 ⌥Space。在这台 Mac 的任意应用中向你的本地模型提问。",
+        askBarSaveError: "保存失败。请重试。",
         loadError: "无法加载登录时启动设置。",
         saveError: "无法更新登录时启动设置。",
       },
@@ -2937,6 +2940,20 @@ export const zhCN = {
       datasetStreaming: "数据集：流式传输（无需完整下载）",
       modelWeights: "模型权重",
     },
+  },
+  askBar: {
+    placeholder: "向 Unsloth 提问...",
+    followUp: "继续追问...",
+    loading: "正在加载 {model}...",
+    noModel: "尚未加载模型。请先在 Unsloth 中加载一个模型。",
+    signedOut: "请先登录 Unsloth，然后再提问。",
+    failed: "出错了。后端正在运行吗？",
+    autoModel: "当前模型",
+    copy: "复制",
+    copied: "已复制",
+    clear: "清除",
+    enterHint: "提问",
+    escHint: "关闭",
   },
   modelMemory: {
     readout:

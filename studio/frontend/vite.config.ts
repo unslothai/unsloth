@@ -87,6 +87,11 @@ export default defineConfig({
       include: [/node_modules/, /@dagrejs\/dagre/, /@dagrejs\/graphlib/],
     },
     rolldownOptions: {
+      // Keyed "index" so the entry chunk stays dist/assets/index-*.js, which the wheel content check greps.
+      input: {
+        index: path.resolve(__dirname, "index.html"),
+        ask: path.resolve(__dirname, "ask.html"),
+      },
       // import() of a module the app already imports statically defers nothing, and it splits
       // that module's graph into extra startup chunks (#11588). Fail the build rather than warn.
       onLog(level, log, handler) {

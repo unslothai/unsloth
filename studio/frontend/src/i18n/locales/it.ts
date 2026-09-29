@@ -1079,6 +1079,9 @@ export const it = {
           "Mantieni Unsloth e il suo server in esecuzione in background quando chiudi la finestra principale.",
         closeToTraySaveError:
           "Impossibile aggiornare l'impostazione di chiusura nell'area di notifica.",
+        askBar: "Attiva la barra delle domande",
+        askBarDescription: "Premi ⌥Space in qualsiasi app. Chiedi al tuo modello locale da qualsiasi app su questo Mac.",
+        askBarSaveError: "Salvataggio non riuscito. Riprova.",
         loadError: "Impossibile caricare l'impostazione di avvio all'accesso.",
         saveError:
           "Impossibile aggiornare l'impostazione di avvio all'accesso.",
@@ -3096,6 +3099,20 @@ export const it = {
       datasetStreaming: "Dataset: in streaming (nessun download completo)",
       modelWeights: "Pesi del modello",
     },
+  },
+  askBar: {
+    placeholder: "Chiedi a Unsloth...",
+    followUp: "Chiedi ancora...",
+    loading: "Caricamento di {model}...",
+    noModel: "Nessun modello caricato. Caricane prima uno in Unsloth.",
+    signedOut: "Accedi a Unsloth, poi chiedi di nuovo.",
+    failed: "Qualcosa è andato storto. Il backend è in esecuzione?",
+    autoModel: "Modello attivo",
+    copy: "Copia",
+    copied: "Copiato",
+    clear: "Svuota",
+    enterHint: "chiedi",
+    escHint: "chiudi",
   },
   modelMemory: {
     readout:

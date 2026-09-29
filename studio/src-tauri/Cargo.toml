@@ -14,7 +14,7 @@ edition = "2021"
 rust-version = "1.89"
 
 [dependencies]
-tauri = { version = "~2.11.5", features = ["tray-icon"] }
+tauri = { version = "~2.11.5", features = ["tray-icon", "macos-private-api"] }
 tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
 tauri-plugin-autostart = "2"
 tauri-plugin-deep-link = "2"
@@ -52,9 +52,13 @@ signal-hook = "0.4"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
+block2 = "0.6"
+core-graphics = "0.25"
+tauri-plugin-global-shortcut = "2"
+window-vibrancy = "0.6"
 
-objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSAppearance", "NSButton", "NSControl", "NSResponder", "NSStatusBarButton", "NSStatusItem", "NSView"] }
-objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSArray", "NSDictionary", "NSKeyValueObserving", "NSObject", "NSString"] }
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "block2", "NSAppearance", "NSButton", "NSControl", "NSEvent", "NSPanel", "NSResponder", "NSStatusBarButton", "NSStatusItem", "NSView", "NSWindow", "NSWorkspace"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "block2", "NSArray", "NSDictionary", "NSKeyValueObserving", "NSNotification", "NSObject", "NSOperation", "NSString"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 gdk = "0.18"

@@ -1094,6 +1094,9 @@ export const hi = {
         closeToTrayDescription:
           "मुख्य विंडो बंद करने पर Unsloth और उसके सर्वर को बैकग्राउंड में चलते रहने दें।",
         closeToTraySaveError: "सिस्टम ट्रे में बंद करने की सेटिंग अपडेट नहीं हो सकी।",
+        askBar: "आस्क बार चालू करें",
+        askBarDescription: "किसी भी ऐप में ⌥Space दबाएँ। इस Mac के किसी भी ऐप से अपने लोकल मॉडल से सवाल पूछें।",
+        askBarSaveError: "सहेजा नहीं जा सका। कृपया फिर कोशिश करें।",
         loadError: "लॉगिन पर चलाने की सेटिंग लोड नहीं हो सकी।",
         saveError: "लॉगिन पर चलाने की सेटिंग अपडेट नहीं हो सकी।",
       },
@@ -3036,6 +3039,20 @@ export const hi = {
       datasetStreaming: "डेटासेट: स्ट्रीमिंग (कोई पूर्ण डाउनलोड नहीं)",
       modelWeights: "मॉडल वेट्स",
     },
+  },
+  askBar: {
+    placeholder: "Unsloth से पूछें...",
+    followUp: "आगे पूछें...",
+    loading: "{model} लोड हो रहा है...",
+    noModel: "कोई मॉडल लोड नहीं है। पहले Unsloth में एक मॉडल लोड करें।",
+    signedOut: "Unsloth में साइन इन करें, फिर दोबारा पूछें।",
+    failed: "कुछ गड़बड़ हो गई। क्या बैकएंड चल रहा है?",
+    autoModel: "सक्रिय मॉडल",
+    copy: "कॉपी करें",
+    copied: "कॉपी हो गया",
+    clear: "साफ़ करें",
+    enterHint: "पूछें",
+    escHint: "बंद करें",
   },
   modelMemory: {
     readout:

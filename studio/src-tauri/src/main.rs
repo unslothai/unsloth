@@ -2,6 +2,7 @@
 
 mod app_layout;
 mod app_menu;
+mod ask_bar;
 mod commands;
 #[cfg(target_os = "linux")]
 mod debian_update;
@@ -2104,7 +2105,8 @@ fn main() {
     });
     info!("Native saved app layout restore enabled: {restore_initial_layout}");
     let mut window_state = tauri_plugin_window_state::Builder::new()
-        .with_state_flags(StateFlags::SIZE | StateFlags::POSITION | StateFlags::MAXIMIZED);
+        .with_state_flags(StateFlags::SIZE | StateFlags::POSITION | StateFlags::MAXIMIZED)
+        .with_denylist(&[ask_bar::ASK_WINDOW_LABEL]);
     if !restore_initial_layout {
         window_state = window_state.skip_initial_state("main");
     }
@@ -2136,6 +2138,7 @@ fn main() {
         .manage(native_intents::new_native_intake_state())
         .manage(new_backend_state())
         .manage(process::new_shutdown_flag())
+        .manage(ask_bar::AskBarState::default())
         .manage(update::new_update_state())
         .manage(desktop_updater::new_desktop_update_state())
         .manage(new_close_to_tray_state())
@@ -2195,6 +2198,11 @@ fn main() {
             native_intents::register_artifact_path,
             native_intents::reveal_path_token,
             native_intents::open_path_token,
+            ask_bar::get_ask_bar,
+            ask_bar::set_ask_bar,
+            ask_bar::ask_hide,
+            ask_bar::ask_backend_port,
+            ask_bar::ask_resize,
             webview_permissions::reset_microphone_permission,
             has_saved_window_state,
             was_launched_hidden,
@@ -2250,6 +2258,9 @@ fn main() {
             setup_tray(app)?;
             #[cfg(unix)]
             setup_unix_termination_signals(app)?;
+            #[cfg(target_os = "macos")]
+            app.handle().plugin(tauri_plugin_global_shortcut::Builder::new().build())?;
+            ask_bar::init(app.handle());
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -2261,8 +2272,12 @@ fn main() {
                     .note_dropped_paths(paths);
             }
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                // Never close directly: the only window, so closing exits before the reap.
+                // Never close directly: closing the main window exits before the reap.
                 api.prevent_close();
+                if window.label() == ask_bar::ASK_WINDOW_LABEL {
+                    ask_bar::hide_window(window);
+                    return;
+                }
                 let close_to_tray = window.state::<CloseToTrayState>().0.load(Ordering::SeqCst);
                 match main_window_close_action(close_to_tray) {
                     MainWindowCloseAction::Hide => {
@@ -2276,11 +2291,17 @@ fn main() {
         .build(context)
         .expect("error while building tauri application")
         .run(|app, event| match event {
+            // Keyed on the main window: the ask panel counts as a visible window.
             #[cfg(target_os = "macos")]
-            tauri::RunEvent::Reopen {
-                has_visible_windows: false,
-                ..
-            } => show_main_window(app),
+            tauri::RunEvent::Reopen { .. } => {
+                let main_hidden = app
+                    .get_webview_window("main")
+                    .map(|window| !window.is_visible().unwrap_or(false))
+                    .unwrap_or(true);
+                if main_hidden {
+                    show_main_window(app);
+                }
+            }
             tauri::RunEvent::Exit => {
                 // Safety net for framework-driven exits. When another path already owns
                 // cleanup, this blocks the main event-loop thread until that path is done.

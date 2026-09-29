@@ -58,6 +58,7 @@ import {
   loadUploadLimitSettings,
   updateUploadLimitSettings,
 } from "../api/upload-limit";
+import { loadAskBar, updateAskBar } from "../api/ask-bar";
 import { loadCloseToTray, updateCloseToTray } from "../api/close-to-tray";
 import { loadLaunchAtLogin, updateLaunchAtLogin } from "../api/launch-at-login";
 import { useIsAccountOwner } from "@/features/auth";
@@ -240,6 +241,13 @@ export function GeneralTab() {
     save: updateCloseToTray,
     loadError: t("settings.general.startup.loadError"),
     saveError: t("settings.general.startup.closeToTraySaveError"),
+  });
+  const askBarSetting = useDesktopBooleanSetting({
+    enabled: isTauri,
+    load: loadAskBar,
+    save: updateAskBar,
+    loadError: t("settings.general.startup.loadError"),
+    saveError: t("settings.general.startup.askBarSaveError"),
   });
 
   const draftRef = useRef(draftToken);
@@ -592,6 +600,26 @@ export function GeneralTab() {
                 {closeToTraySetting.error ? (
                   <span className="max-w-[calc(260px*var(--ui-space-scale,1))] text-right text-xs text-destructive">
                     {closeToTraySetting.error}
+                  </span>
+                ) : null}
+              </div>
+            </SettingsRow>
+          ) : null}
+
+          {askBarSetting.supported ? (
+            <SettingsRow
+              label={t("settings.general.startup.askBar")}
+              description={t("settings.general.startup.askBarDescription")}
+            >
+              <div className="flex flex-col items-end gap-1">
+                <Switch
+                  checked={askBarSetting.value ?? false}
+                  disabled={askBarSetting.value === null || askBarSetting.saving}
+                  onCheckedChange={(enabled) => void askBarSetting.update(enabled)}
+                />
+                {askBarSetting.error ? (
+                  <span className="max-w-[calc(260px*var(--ui-space-scale,1))] text-right text-xs text-destructive">
+                    {askBarSetting.error}
                   </span>
                 ) : null}
               </div>

@@ -1109,6 +1109,9 @@ export const es = {
           "Mantén Unsloth y su servidor ejecutándose en segundo plano al cerrar la ventana principal.",
         closeToTraySaveError:
           "No se pudo actualizar el ajuste de cierre en la bandeja del sistema.",
+        askBar: "Activar la barra de preguntas",
+        askBarDescription: "Pulsa ⌥Space en cualquier app. Pregunta a tu modelo local desde cualquier app de este Mac.",
+        askBarSaveError: "No se pudo guardar. Inténtalo de nuevo.",
         loadError: "No se pudo cargar el ajuste de inicio automático.",
         saveError: "No se pudo actualizar el ajuste de inicio automático.",
       },
@@ -3095,6 +3098,20 @@ export const es = {
         "Conjunto de datos: streaming (sin descarga completa)",
       modelWeights: "Pesos del modelo",
     },
+  },
+  askBar: {
+    placeholder: "Pregunta a Unsloth...",
+    followUp: "Preguntar más...",
+    loading: "Cargando {model}...",
+    noModel: "No hay ningún modelo cargado. Carga uno en Unsloth primero.",
+    signedOut: "Inicia sesión en Unsloth y vuelve a preguntar.",
+    failed: "Algo salió mal. ¿El backend está en ejecución?",
+    autoModel: "Modelo activo",
+    copy: "Copiar",
+    copied: "Copiado",
+    clear: "Borrar",
+    enterHint: "preguntar",
+    escHint: "cerrar",
   },
   modelMemory: {
     readout:

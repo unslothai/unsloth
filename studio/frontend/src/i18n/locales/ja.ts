@@ -1080,6 +1080,9 @@ export const ja = {
         closeToTrayDescription:
           "メインウィンドウを閉じても、Unsloth とサーバーをバックグラウンドで実行し続けます。",
         closeToTraySaveError: "システムトレイに格納する設定を更新できませんでした。",
+        askBar: "質問バーを有効にする",
+        askBarDescription: "どのアプリでも ⌥Space を押します。この Mac のどのアプリからでもローカルモデルに質問できます。",
+        askBarSaveError: "保存できませんでした。もう一度お試しください。",
         loadError: "ログイン時起動の設定を読み込めませんでした。",
         saveError: "ログイン時起動の設定を更新できませんでした。",
       },
@@ -2977,6 +2980,20 @@ export const ja = {
       datasetStreaming: "データセット: ストリーミング（完全なダウンロードなし）",
       modelWeights: "モデルの重み",
     },
+  },
+  askBar: {
+    placeholder: "Unsloth に質問...",
+    followUp: "続けて質問...",
+    loading: "{model} を読み込み中...",
+    noModel: "モデルが読み込まれていません。先に Unsloth でモデルを読み込んでください。",
+    signedOut: "Unsloth にサインインしてから、もう一度質問してください。",
+    failed: "問題が発生しました。バックエンドは起動していますか？",
+    autoModel: "使用中のモデル",
+    copy: "コピー",
+    copied: "コピーしました",
+    clear: "クリア",
+    enterHint: "質問",
+    escHint: "閉じる",
   },
   modelMemory: {
     readout:
