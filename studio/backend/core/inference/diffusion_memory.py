@@ -1037,7 +1037,11 @@ def _torchao_group_offload_kwargs(module: Any, kwargs: dict[str, Any]) -> dict[s
     if classes <= _TORCHAO_STREAM_SAFE_CLASSES:
         if not kwargs.get("low_cpu_mem_usage"):
             return kwargs
-        budget = None if _pinned_memory_capped() else _pin_budget_mib()
+        # Same override the planner's _torchao_stream_pinnable honoured, so the two cannot disagree.
+        forced = str(os.environ.get(GROUP_OFFLOAD_PIN_ENV, "")).strip().lower()
+        if forced in ("1", "on", "true", "yes"):
+            return {**kwargs, "low_cpu_mem_usage": False}
+        budget = None if forced in ("0", "off", "false", "no") or _pinned_memory_capped() else _pin_budget_mib()
         if budget is not None and _module_host_mib(module) <= budget:
             return {**kwargs, "low_cpu_mem_usage": False}
     safe = {

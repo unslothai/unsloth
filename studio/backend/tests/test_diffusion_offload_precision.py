@@ -639,3 +639,19 @@ def test_storage_size_recurses_through_nested_wrappers():
 
     nested = Wrapper(Wrapper(Inner(100), Inner(4)), Inner(7))
     assert mem._storage_nbytes(nested) == [100, 4, 7]
+
+
+@pytest.mark.parametrize("env, capped, budget, keeps_stream", [
+    ("1", True, None, True),
+    ("1", False, 0, True),
+    ("0", False, 10 ** 7, False),
+    ("", False, 10 ** 7, True),
+])
+def test_runtime_pinning_honours_the_same_override_as_the_planner(monkeypatch, env, capped, budget, keeps_stream):
+    linear = _int8_linear(256, 256)
+    monkeypatch.setenv(mem.GROUP_OFFLOAD_PIN_ENV, env)
+    monkeypatch.setattr(mem, "_pinned_memory_capped", lambda: capped)
+    monkeypatch.setattr(mem, "_pin_budget_mib", lambda: budget)
+    monkeypatch.setattr(mem, "install_group_offload_torchao_swap_retry", lambda: None)
+    kwargs = mem._torchao_group_offload_kwargs(linear, {"use_stream": True, "low_cpu_mem_usage": True})
+    assert kwargs["use_stream"] is keeps_stream
