@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Owner-held switches for Windows MXC tool isolation, set from Settings > Sandbox.
-
-An environment variable that is present always wins (read by mxc_policy / mxc_read_grants); these
-are the saved answers used when it is absent.
-"""
+"""Saved Settings > Sandbox MXC switches; a present env var always wins (mxc_policy / mxc_read_grants)."""
 
 from __future__ import annotations
 
@@ -19,8 +15,7 @@ GRANTS_SETTING_KEY = "mxc_persistent_read_grants"
 DEFAULT_DACL_FALLBACK = False
 DEFAULT_PERSISTENT_GRANTS = True
 
-# Asked several times per MXC launch; a write drops the entry, so the TTL only bounds staleness in
-# ANOTHER process.
+# A write drops the entry; the TTL only bounds staleness from ANOTHER process.
 _CACHE_TTL_SECONDS = 1.0
 _cache_lock = threading.Lock()
 _cached: tuple[float, dict[str, Any]] | None = None
@@ -29,7 +24,6 @@ _generation = 0
 
 
 def forget_cached_setting() -> None:
-    """Drop the held answer and retire any read already in flight. Called on write."""
     global _cached, _generation
     with _cache_lock:
         _cached = None

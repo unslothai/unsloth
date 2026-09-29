@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Route policy for /api/settings/sandbox and /api/settings/sandbox/prepare.
-
-Owner-only. Writes and host preparation need a UI session, and preparation also needs a loopback
-client: the Windows administrator prompt appears on the computer running Studio.
-"""
+"""Owner-only; writes need a UI session, prepare also a loopback client (the UAC prompt is local)."""
 
 from pathlib import Path
 import sys

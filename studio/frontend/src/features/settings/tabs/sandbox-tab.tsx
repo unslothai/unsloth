@@ -71,7 +71,6 @@ function ToolRow({
   );
 }
 
-// Owner only: every route behind it is installation-wide.
 export function SandboxTab() {
   const t = useT();
   const [status, setStatus] = useState<SandboxStatus | null>(null);
@@ -94,8 +93,7 @@ export function SandboxTab() {
     };
   }, []);
 
-  // Callers set `loading` themselves: this also runs from the mount effect, where a synchronous
-  // setState would cascade a render.
+  // Callers set `loading`: a synchronous setState from the mount effect would cascade a render.
   const refresh = useCallback(
     (force: boolean) => {
       const generation = ++statusGeneration.current;

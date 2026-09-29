@@ -4463,7 +4463,6 @@ def _sandbox_tool_status(capability) -> SandboxToolStatus:
 
 
 def _sandbox_terminal_target() -> tuple[str, Optional[str]]:
-    """The executable the Terminal would be qualified with, and its profile on Windows."""
     import shutil
     import sys
 

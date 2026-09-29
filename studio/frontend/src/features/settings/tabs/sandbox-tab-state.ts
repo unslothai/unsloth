@@ -21,7 +21,6 @@ const BACKEND_LABELS: Record<string, string> = {
 
 export type ToolRowView = {
   isolated: boolean;
-  // Shown as "OS isolation ({backend})" when isolated.
   backendLabel: string;
   reason: string;
   runsInCmd: boolean;

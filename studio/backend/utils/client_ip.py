@@ -72,7 +72,6 @@ def client_ip(request) -> str:
 
 
 def _is_loopback_ip(host: str | None) -> bool:
-    """Return whether ``host`` is a loopback IP, including IPv4-mapped IPv6."""
     if not host or "%" in host:  # a scope id (::1%eth0) is never a plain loopback
         return False
     try:
@@ -95,8 +94,7 @@ _PROXIED_CLIENT_HEADERS = (
 
 
 def _host_header_is_loopback(host_header: str | None) -> bool:
-    """Loopback/localhost check on the raw Host header, read directly so a malformed or absent Host
-    cannot fall back to ``request.url.hostname``'s (loopback) ASGI server address."""
+    """Raw Host header, so a bad Host cannot fall back to the (loopback) ASGI server address."""
     if not host_header:
         return False
     host = host_header.strip()

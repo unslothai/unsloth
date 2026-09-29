@@ -58,10 +58,7 @@ class MxcPolicyError(RuntimeError):
 
 
 def dacl_fallback_enabled() -> bool:
-    """Host opt-in to MXC's AppContainer tier, which temporarily adds ACEs to the granted host paths.
-
-    The environment variable decides whenever it is set; otherwise the owner's Settings > Sandbox choice.
-    """
+    """Opt-in to the AppContainer tier (temporarily adds ACEs); env var if set, else the saved choice."""
     if DACL_FALLBACK_ENV in os.environ:
         return os.environ[DACL_FALLBACK_ENV].strip() == "1"
     try:
