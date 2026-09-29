@@ -46,3 +46,10 @@ test("the card hides the panel it is already showing and says so on aria-expande
   assert.match(card, /if \(showing\) \{\s*closeArtifactSurface\(\);/);
   assert.match(card, /aria-expanded=\{showing\}/);
 });
+
+test("the panel's resize handle opts out of the double-click reset", () => {
+  const page = read("../src/features/chat/chat-page.tsx");
+  const handle = page.indexOf("<ResizableHandle", page.indexOf("const rememberArtifactPanelWidth"));
+  assert.ok(handle > 0);
+  assert.match(page.slice(handle, handle + 300), /disableDoubleClick/);
+});

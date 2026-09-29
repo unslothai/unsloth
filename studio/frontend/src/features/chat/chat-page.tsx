@@ -523,6 +523,8 @@ const SingleContent = memo(function SingleContent({
         </ResizablePanel>
         <ResizableHandle
           withHandle={false}
+          // The library's double-click reset would shut the panel without closing the artifact.
+          disableDoubleClick
           onPointerDown={() => {
             window.addEventListener("pointerup", rememberArtifactPanelWidth, {
               once: true,
