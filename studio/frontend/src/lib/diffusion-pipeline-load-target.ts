@@ -3,43 +3,39 @@
 
 type DiffusionPickSource = "hub" | "lora" | "exported" | "local" | "external";
 
-const trimmed = (value: string | null | undefined): string | null =>
-  typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
-
-export function isPinnedDiffusionLoadId(
-  model: string,
-  loadId: string | null | undefined,
-): boolean {
-  const pinned = trimmed(loadId);
-  return Boolean(pinned && pinned !== model.trim());
-}
-
-/** Pin a cached row to its validated snapshot; `displayRepoId` stays the logical id for planning. */
+/** A cached row pinned to its validated snapshot loads by path; `displayRepoId` keeps the logical id for planning. */
 export function diffusionPipelineLoadTarget(
   model: string,
   meta: { loadId?: string | null; source: DiffusionPickSource },
-): { repoId: string; displayRepoId: string; source: DiffusionPickSource } {
-  const loadId = trimmed(meta.loadId);
-  if (loadId && isPinnedDiffusionLoadId(model, loadId)) {
-    return { repoId: loadId, displayRepoId: model, source: meta.source };
-  }
-  return { repoId: model, displayRepoId: model, source: meta.source };
+): { repoId: string; displayRepoId?: string; source: DiffusionPickSource; onDevice: boolean } {
+  const loadId = meta.loadId?.trim();
+  return loadId && loadId !== model.trim()
+    ? { repoId: loadId, displayRepoId: model, source: meta.source, onDevice: true }
+    : { repoId: model, source: meta.source, onDevice: meta.source === "local" };
 }
 
-/** On-device even for cached Hub rows, whose source stays non-`local` for companion planning. */
-export function diffusionPipelineTargetIsOnDevice(target: {
-  repoId: string;
-  displayRepoId: string;
-  source: DiffusionPickSource;
-}): boolean {
-  return target.source === "local" || target.repoId !== target.displayRepoId;
-}
-
-/** Pinned picks drop selected-model entries (mutable Hub revision); only companions are staged. */
-export function diffusionPipelineStagingEntries<
-  T extends { checkpoint?: boolean },
->(pinnedRepoId: string, planRepoId: string, entries: readonly T[]): T[] {
-  return pinnedRepoId === planRepoId
-    ? [...entries]
-    : entries.filter((entry) => entry.checkpoint !== true);
+/** Plan entries to stage. A pinned snapshot is already on disk (and its Hub revision may move), so only companions download. */
+export function diffusionStagingEntries(
+  entries: readonly {
+    repo_id: string;
+    files: string[];
+    bytes: number;
+    gguf_filename: string | null;
+    checkpoint?: boolean;
+  }[],
+  repoId: string,
+  opts: { filename?: string; displayRepoId?: string },
+) {
+  const planRepoId = opts.displayRepoId ?? repoId;
+  return entries
+    .map((e) => ({
+      repoId: e.repo_id,
+      files: e.files,
+      bytes: e.bytes,
+      ggufFilename: e.gguf_filename,
+      // `??`, not `||`: a planner answering false is an answer; the fallback is only for older backends.
+      checkpoint:
+        e.checkpoint ?? (opts.filename ? e.files.includes(opts.filename) : e.repo_id === planRepoId),
+    }))
+    .filter((e) => planRepoId === repoId || !e.checkpoint);
 }

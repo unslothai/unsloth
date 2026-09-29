@@ -20,7 +20,7 @@ import { allowedHiddenModelIdMatches } from "../components/model-selector/audio-
 import {
   type FamilyOverrideArtifactKind,
   taskOpaqueArtifactSupportsFamilyOverride,
-} from "../components/model-selector/family-override-local-candidate";
+} from "../components/model-selector/family-override";
 
 const PICKER_LOCAL_SOURCES: ReadonlySet<LocalSource> = new Set([
   "lmstudio",
@@ -57,21 +57,14 @@ function toCachedGgufRepo(row: CachedInventoryRow): CachedGgufRepo {
   };
 }
 
-function toCachedModelRepo(
-  row: CachedInventoryRow,
-  opaqueKind?: FamilyOverrideArtifactKind,
-): CachedModelRepo {
+function toCachedModelRepo(row: CachedInventoryRow, opaqueKind?: FamilyOverrideArtifactKind): CachedModelRepo {
   return {
     repo_id: row.repoId,
     load_id: row.loadId,
     // Delete targets the copy the row describes; without it the request hits the active cache.
     cache_path: row.cachePath,
     size_bytes: row.bytes,
-    opaque: taskOpaqueArtifactSupportsFamilyOverride(
-      row.task,
-      row.artifact,
-      opaqueKind,
-    ),
+    opaque: taskOpaqueArtifactSupportsFamilyOverride(row.task, row.artifact, opaqueKind),
     last_modified: epochMillisecondsToSeconds(row.lastModified),
     // Listed but not loadable: the row renders a partial mark and its click opens the download.
     partial: row.partial,
@@ -87,10 +80,7 @@ function toCachedModelRepo(
   };
 }
 
-function toLocalModelInfo(
-  row: LocalInventoryRow,
-  opaqueKind?: FamilyOverrideArtifactKind,
-): LocalModelInfo {
+function toLocalModelInfo(row: LocalInventoryRow, opaqueKind?: FamilyOverrideArtifactKind): LocalModelInfo {
   return {
     id: row.loadId,
     display_name: row.displayName ?? row.title,
@@ -98,11 +88,7 @@ function toLocalModelInfo(
     source: row.source as LocalModelInfo["source"],
     model_id: row.modelId ?? row.repoId,
     model_format: row.modelFormat,
-    opaque: taskOpaqueArtifactSupportsFamilyOverride(
-      row.task,
-      row.artifact,
-      opaqueKind,
-    ),
+    opaque: taskOpaqueArtifactSupportsFamilyOverride(row.task, row.artifact, opaqueKind),
     updated_at: epochMillisecondsToSeconds(row.updatedAt),
     task: row.task ?? null,
     audio_type: row.audioType ?? null,
@@ -182,11 +168,7 @@ export function useChatPickerInventory(
             // that CAN load it.
             (row.capabilities.canChat ||
               studioPageForTask(row.task) !== undefined ||
-              taskOpaqueArtifactSupportsFamilyOverride(
-                row.task,
-                row.artifact,
-                options.opaqueKind,
-              )) &&
+              taskOpaqueArtifactSupportsFamilyOverride(row.task, row.artifact, options.opaqueKind)) &&
             (!isHiddenModelId(row.modelId, row.repoId, row.path) ||
               allowedHiddenModelIdMatches(
                 options.allowedHiddenModelIds,
@@ -195,11 +177,7 @@ export function useChatPickerInventory(
               )),
         )
         .map((row) => toLocalModelInfo(row, options.opaqueKind)),
-    [
-      inventory.localRows,
-      options.allowedHiddenModelIds,
-      options.opaqueKind,
-    ],
+    [inventory.localRows, options.allowedHiddenModelIds, options.opaqueKind],
   );
 
   return {

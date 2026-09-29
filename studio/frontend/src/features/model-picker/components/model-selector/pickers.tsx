@@ -2621,7 +2621,6 @@ function passesTaskGate(
   localModel?: { opaque?: boolean },
 ): boolean {
   if (filter) {
-    const overridden = localModel?.opaque === true;
     const exactArtifact =
       repoId && catalog ? artifactForRepoId(repoId, catalog) : null;
     return (
@@ -2636,7 +2635,7 @@ function passesTaskGate(
           pickerTask: filter,
         })) &&
       !isImageEditModel(repoId)
-    ) || overridden;
+    ) || localModel?.opaque === true;
   }
   // Unfiltered (chat) picker: an on-device diffusion model stays listed and routes to its page
   // on click; only the never-loadable tag is hidden.
@@ -4175,11 +4174,8 @@ export function HubModelPicker({
               (catalog
                 ? artifactForRepoId(c.repo_id, catalog) !== null
                 : false) ||
-              (Boolean(
-                c.load_id?.trim() &&
-                  c.load_id.trim() !== c.repo_id.trim(),
-              ) &&
-                c.opaque === true)),
+              // A pinned snapshot admitted only by an explicit family.
+              (c.opaque === true && Boolean(c.load_id?.trim()) && c.load_id?.trim() !== c.repo_id.trim())),
         ),
         downloadedSort,
         loadTimes,
@@ -4192,7 +4188,6 @@ export function HubModelPicker({
       catalog,
       activeCatalogArtifactIds,
       isMac,
-      opaqueKind,
     ],
   );
   // Task-scoped loads put the whole pipeline on ONE device, so quant fit uses the device the
@@ -4264,7 +4259,6 @@ export function HubModelPicker({
       task,
       catalog,
       activeCatalogArtifactIds,
-      opaqueKind,
     ],
   );
   // Local ./models entries. Chat-only Unsloth runs GGUF anywhere and MLX on Mac, so raw
@@ -4318,7 +4312,6 @@ export function HubModelPicker({
       task,
       catalog,
       activeCatalogArtifactIds,
-      opaqueKind,
     ],
   );
   const sortedCustomFolderModels = useMemo(
@@ -4363,7 +4356,6 @@ export function HubModelPicker({
       task,
       catalog,
       activeCatalogArtifactIds,
-      opaqueKind,
     ],
   );
 
@@ -7332,12 +7324,7 @@ export function HubModelPicker({
                                     } else {
                                       onSelect(
                                         m.id,
-                                        localModelMeta(
-                                          false,
-                                          m.task,
-                                          m.audio_type,
-                                          m.opaque === true,
-                                        ),
+                                        localModelMeta(false, m.task, m.audio_type, m.opaque === true),
                                       );
                                     }
                                   }}
@@ -7378,12 +7365,7 @@ export function HubModelPicker({
                                     onConfigure={() =>
                                       onConfigure(
                                         m.id,
-                                        localModelMeta(
-                                          false,
-                                          m.task,
-                                          m.audio_type,
-                                          m.opaque === true,
-                                        ),
+                                        localModelMeta(false, m.task, m.audio_type, m.opaque === true),
                                       )
                                     }
                                   />
@@ -7482,12 +7464,7 @@ export function HubModelPicker({
                                     } else {
                                       onSelect(
                                         m.id,
-                                        localModelMeta(
-                                          false,
-                                          m.task,
-                                          m.audio_type,
-                                          m.opaque === true,
-                                        ),
+                                        localModelMeta(false, m.task, m.audio_type, m.opaque === true),
                                       );
                                     }
                                   }}
@@ -7528,12 +7505,7 @@ export function HubModelPicker({
                                     onConfigure={() =>
                                       onConfigure(
                                         m.id,
-                                        localModelMeta(
-                                          false,
-                                          m.task,
-                                          m.audio_type,
-                                          m.opaque === true,
-                                        ),
+                                        localModelMeta(false, m.task, m.audio_type, m.opaque === true),
                                       )
                                     }
                                   />
@@ -7623,12 +7595,7 @@ export function HubModelPicker({
                                     } else {
                                       onSelect(
                                         m.id,
-                                        localModelMeta(
-                                          false,
-                                          m.task,
-                                          m.audio_type,
-                                          m.opaque === true,
-                                        ),
+                                        localModelMeta(false, m.task, m.audio_type, m.opaque === true),
                                       );
                                     }
                                   }}
@@ -7665,12 +7632,7 @@ export function HubModelPicker({
                                     onConfigure={() =>
                                       onConfigure(
                                         m.id,
-                                        localModelMeta(
-                                          false,
-                                          m.task,
-                                          m.audio_type,
-                                          m.opaque === true,
-                                        ),
+                                        localModelMeta(false, m.task, m.audio_type, m.opaque === true),
                                       )
                                     }
                                   />
