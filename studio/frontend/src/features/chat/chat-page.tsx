@@ -368,14 +368,8 @@ const SingleContent = memo(function SingleContent({
   const activeThreadId = useChatRuntimeStore((state) => state.activeThreadId);
   const isMobile = useIsMobile();
   const chatActive = useChatActive();
-  // A canvas's Fix button leaves its text here rather than typing it itself, because the
-  // fullscreen overlay renders outside this provider and has no composer to reach. This
-  // runs inside it, so it does the typing. Still never sends: the user reads it first.
   const aui = useAui();
-  // Compare mode keeps this view mounted and hidden behind its own panes, and its composer
-  // with it. Typing into that one would drop the text into a box nobody can see, so the
-  // backgrounded copy leaves the prompt for whoever is on screen: SharedComposer takes it
-  // in compare, this effect once the view is foreground again.
+  // Compare keeps this view mounted but hidden, so the backgrounded copy leaves the prompt to SharedComposer.
   const pendingFixPrompt = useChatArtifactsStore(
     (state) => state.pendingFixPrompt,
   );
@@ -389,8 +383,7 @@ const SingleContent = memo(function SingleContent({
         ? `${current}\n\n${pendingFixPrompt}`
         : pendingFixPrompt,
     );
-    // The overlay hands focus back to its opener as it unmounts, so the composer takes
-    // focus after that, not before.
+    // The overlay returns focus to its opener on unmount, so focus the composer after that.
     window.setTimeout(() => {
       document
         .querySelector<HTMLTextAreaElement>(COMPOSER_INPUT_SELECTOR)
@@ -412,19 +405,12 @@ const SingleContent = memo(function SingleContent({
       : undefined,
   );
   const artifactPanelRef = useRef<PanelImperativeHandle | null>(null);
-  // The width the user dragged to, so hiding and reopening the panel gives it back
-  // rather than snapping to the default every time. Sampled when a drag ends, never
-  // from the panel's onResize: that fires on every frame of the open and close
-  // animations too, so closing would record whatever width the animation passed
-  // through on its way to zero.
+  // Sampled on drag end, not onResize: that fires through the open/close animations too.
   const artifactPanelWidthRef = useRef<string | null>(null);
   const rememberArtifactPanelWidth = useCallback(() => {
     const size = artifactPanelRef.current?.getSize().asPercentage;
     if (size == null) return;
-    // Dragged shut, which is a close however far the drag actually got. Say so rather
-    // than leaving a zero-width panel still holding the selected artifact: the artifact
-    // card reads that to decide whether a click opens or hides, so it would spend the
-    // next click hiding something already invisible.
+    // A drag shut is a close; a zero-width panel still holding the artifact would make the next card click hide it.
     if (size <= 5) {
       onCloseArtifact();
       return;
@@ -459,19 +445,12 @@ const SingleContent = memo(function SingleContent({
     isArtifactPanelLayoutActive &&
     !isArtifactLayoutAnimating;
 
-  // A width belongs to the chat it was dragged in. Another thread, or a new one,
-  // starts from the default.
   const artifactPanelThread = threadId ?? activeThreadId ?? null;
   // biome-ignore lint/correctness/useExhaustiveDependencies: resetting is the effect
   useEffect(() => {
     artifactPanelWidthRef.current = null;
   }, [artifactPanelThread]);
 
-  // A panel left shut with showContextPanel still true never runs the layout effect
-  // below again, so opening an artifact would resize nothing. The handle reports its own
-  // drags as a close, which covers that; this covers a collapse that arrived any other
-  // way. Keyed on the open count rather than the artifact: reopening the selected one is
-  // the common way to hit this, and its ID does not change.
   const artifactOpenSequence = useChatArtifactsStore(
     (state) => state.openSequence,
   );
@@ -479,11 +458,8 @@ const SingleContent = memo(function SingleContent({
     if (!showContextPanel || artifactOpenSequence === 0) return;
     const panel = artifactPanelRef.current;
     if (!panel) return;
-    // A drag can stop just short of the collapse threshold, which is shut as far as
-    // anyone looking at it is concerned.
     if (!panel.isCollapsed() && panel.getSize().asPercentage > 5) return;
-    // expand() alone restores the width from before the collapse, which for a panel
-    // dragged to nothing is nothing.
+    // expand() alone restores the pre-collapse width, which is zero after a drag shut.
     panel.expand();
     panel.resize(artifactPanelWidthRef.current ?? ARTIFACT_PANEL_DEFAULT_SIZE);
   }, [artifactOpenSequence, showContextPanel]);

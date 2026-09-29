@@ -22,24 +22,15 @@ export function clearAutoOpenedArtifacts(): void {
 type ChatArtifactsState = {
   artifactsById: Record<string, ChatArtifact>;
   selectedArtifactId: string | null;
-  // Bumped on every open, including reopening the one already selected, which is
-  // otherwise invisible to anything watching the selected ID.
   openSequence: number;
   surface: ChatArtifactSurface;
-  // View the surface should show on the next open (Preview vs Code button), and the one
-  // it is showing now once it is open.
   requestedView: ArtifactViewMode;
   openArtifact: (
     artifact: ChatArtifact,
     options?: { surface?: ChatArtifactSurface; view?: ArtifactViewMode },
   ) => void;
-  // The open surface switched views from its own header. Written back so the card that
-  // opened it can still tell "already on screen" from "switch to the other one".
   setArtifactView: (view: ArtifactViewMode) => void;
-  // Text the canvas's Fix button wants in the composer, waiting for a component that has a
-  // composer to reach. The fullscreen overlay renders outside the chat runtime, so it
-  // cannot stage the text itself; it leaves it here and the thread picks it up. Never sent,
-  // only typed in: the user reads it and presses send.
+  // Fix text awaiting a composer: the fullscreen overlay has none to reach. Never sent.
   pendingFixPrompt: string | null;
   stageFixPrompt: (prompt: string) => void;
   clearFixPrompt: () => void;

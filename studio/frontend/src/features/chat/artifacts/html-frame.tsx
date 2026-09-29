@@ -46,8 +46,6 @@ import { useChatArtifactsStore } from "./store";
 import { hashArtifactCode } from "./types";
 
 const HTML_FRAME_DEFAULT_HEIGHT = 400;
-// The console drawer's own height, dragged by its top edge. Down, it collapses onto its
-// own header and stops; up, the canvas keeps this much so it never becomes a sliver.
 const CONSOLE_DEFAULT_HEIGHT = 220;
 const CONSOLE_CANVAS_MIN = 160;
 const CONSOLE_STEP = 32;
@@ -142,12 +140,9 @@ export function ArtifactHtmlFrame({
   fill?: boolean;
   actionFocusTargetRef?: RefObject<HTMLElement | null>;
   consoleOpen?: boolean;
-  // Bumped to run the page again: it changes the frame's src, so the reload goes
-  // through the same parent-initiated load as the first one.
   reloadNonce?: number;
   onConsoleOpenChange?: (open: boolean) => void;
   onOutputCountChange?: (counts: { errors: number; total: number }) => void;
-  // The overlay closes itself here so the composer it just filled is reachable.
   onFixWithModel?: () => void;
 }) {
   const t = useT();
@@ -180,8 +175,6 @@ export function ArtifactHtmlFrame({
   const networkAllowed = networkAccessEnabled || grantedForCanvas;
   const [dismissedCode, setDismissedCode] = useState<string | null>(null);
   const dismissedForCanvas = dismissedCode === code;
-  // Same shape as the blocked reports: keyed by the code they came from, so a
-  // swapped canvas never inherits the last one's errors.
   const [output, setOutput] = useState<CanvasConsoleState>(() =>
     emptyCanvasConsole(code),
   );
@@ -193,10 +186,8 @@ export function ArtifactHtmlFrame({
   const [fullTraces, setFullTraces] = useState(false);
   const [consoleHeight, setConsoleHeight] = useState(CONSOLE_DEFAULT_HEIGHT);
   const rootRef = useRef<HTMLDivElement>(null);
-  // Pointer capture, so the drag survives the pointer crossing into the iframe, which
-  // would otherwise swallow the moves.
+  // Pointer capture: the iframe would otherwise swallow the moves.
   const dragFrom = useRef<{ y: number; height: number } | null>(null);
-  // Measured rather than guessed: the collapsed drawer is exactly its own header.
   const consoleHeaderRef = useRef<HTMLDivElement>(null);
   const clampConsole = (height: number) => {
     const floor = consoleHeaderRef.current?.offsetHeight ?? 34;
@@ -218,8 +209,6 @@ export function ArtifactHtmlFrame({
     dragFrom.current = null;
     event.currentTarget.releasePointerCapture(event.pointerId);
   };
-  // A page can post up to the shell's ceiling in one burst, and with a rolling
-  // window every one of those would re-render the list. One flush per frame instead.
   const pendingEntries = useRef<CanvasConsoleEntry[]>([]);
   const flushHandle = useRef<number | null>(null);
   const queueEntry = useCallback(
@@ -254,9 +243,7 @@ export function ArtifactHtmlFrame({
       total: outputForCanvas.entries.length,
     });
   }, [errors.length, outputForCanvas.entries.length, onOutputCountChange]);
-  // Anything already batched belongs to the load that queued it. The stamp check below
-  // cannot catch those, since they passed it while that load was still current, so a new
-  // load drops the queue and the frame it was waiting on.
+  // Batched reports passed the stamp check under the old load, so a new load drops the queue.
   const dropPendingEntries = useCallback(() => {
     if (flushHandle.current !== null) {
       window.cancelAnimationFrame(flushHandle.current);
@@ -265,11 +252,7 @@ export function ArtifactHtmlFrame({
     pendingEntries.current = [];
   }, []);
   const artifactHtml = useMemo(() => buildArtifactSrcDoc(code), [code]);
-  // Identifies this load to the frame, which stamps every report with it, and keys the
-  // reset below. Everything that reruns the document belongs in it: the code, the reload
-  // counter (the same code run again is a different load) and the network policy (granting
-  // access renavigates the frame). Leave one out and that load neither clears the console
-  // nor invalidates the reports still in flight from the run it replaced.
+  // Everything that reruns the document (code, reload counter, network policy) must be in this key.
   const codeVersion = useMemo(() => hashArtifactCode(code), [code]);
   const loadVersion = `${codeVersion}${reloadNonce > 0 ? `.${reloadNonce}` : ""}${
     networkAllowed ? ".net" : ""
@@ -340,7 +323,6 @@ export function ArtifactHtmlFrame({
         event.data?.type === "unsloth:artifact-error" ||
         event.data?.type === "unsloth:artifact-console"
       ) {
-        // Stamped like the blocked reports, and for the same reason.
         if (event.data.v !== loadVersion) return;
         const entry = parseCanvasReport(event.data);
         if (!entry) return;
@@ -357,7 +339,6 @@ export function ArtifactHtmlFrame({
     };
     window.addEventListener("message", handler);
     return () => window.removeEventListener("message", handler);
-    // `code`/`loadVersion` are listed so the handler always closes over the canvas on screen,
     // rather than relying on postArtifactHtml changing.
   }, [postArtifactHtml, code, loadVersion, queueEntry]);
 
@@ -392,9 +373,7 @@ export function ArtifactHtmlFrame({
         })
       : t("settings.chat.artifacts.errorLine", { line: entry.line });
   };
-  // Staged, never sent: the text is whatever the page posted, and the user reads it before
-  // it reaches the model. The staging is left to the thread rather than done here, because
-  // the fullscreen overlay renders outside the chat runtime and has no composer to reach.
+  // The fullscreen overlay renders outside the chat runtime, so staging is left to the thread.
   const fixWithModel = () => {
     stageFixPrompt(buildCanvasFixPrompt(title, errors));
     onFixWithModel?.();
@@ -620,7 +599,6 @@ export function ArtifactHtmlFrame({
               variant="ghost"
               aria-label={t("settings.chat.artifacts.consoleClear")}
               onClick={() => {
-                // Same race as a reload: a batched report would land after the clear.
                 dropPendingEntries();
                 setOutput(emptyCanvasConsole(code));
               }}
@@ -669,8 +647,6 @@ export function ArtifactHtmlFrame({
                     {locationLabel(entry) ? ` (${locationLabel(entry)})` : ""}
                   </p>
                   {stackOf(entry) ? (
-                    // Frames scroll rather than wrap: a wrapped URL breaks the
-                    // one-frame-per-line shape that makes a stack readable.
                     <pre className="mt-2 overflow-x-auto border-l border-border pl-2.5 leading-relaxed text-muted-foreground">
                       {stackOf(entry)}
                     </pre>

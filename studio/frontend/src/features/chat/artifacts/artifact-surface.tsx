@@ -116,8 +116,6 @@ export function ArtifactSurface({
   const setArtifactView = useChatArtifactsStore(
     (state) => state.setArtifactView,
   );
-  // Every switch from this header goes through here, so the card that opened this
-  // surface knows which view is on screen and can hide it rather than reopening it.
   const showView = useCallback(
     (mode: ArtifactViewMode) => {
       setViewMode(mode);
@@ -297,7 +295,6 @@ export function ArtifactSurface({
             aria-label={reloadLabel}
             title={reloadLabel}
             onClick={() => {
-              // The source view has no frame to reload, so show it first.
               if (effectiveViewMode !== "preview") showView("preview");
               setReloadNonce((nonce) => nonce + 1);
             }}
@@ -315,7 +312,6 @@ export function ArtifactSurface({
             aria-label={consoleLabel}
             title={consoleLabel}
             onClick={() => {
-              // The console sits under the preview, so from the source view it switches back.
               if (effectiveViewMode !== "preview") {
                 showView("preview");
                 setConsoleOpen(true);
@@ -447,7 +443,6 @@ export function ArtifactSurface({
             {effectiveViewMode === "preview" ? null : (
               <div className="h-full overflow-auto px-3.5 pb-5 pt-3 text-xs leading-relaxed [&_[data-streamdown=code-block]]:!my-0 [&_[data-streamdown=code-block]]:!gap-0 [&_[data-streamdown=code-block]]:!rounded-none [&_[data-streamdown=code-block]]:!border-0 [&_[data-streamdown=code-block]]:!bg-transparent [&_[data-streamdown=code-block]]:!p-0 [&_[data-streamdown=code-block-body]]:!border-0 [&_[data-streamdown=code-block-body]]:!bg-transparent [&_[data-streamdown=code-block-body]]:!p-0 [&_pre]:!m-0 [&_pre]:!bg-transparent [&_pre]:!p-0 [&_pre]:text-xs [&_pre]:leading-relaxed [&_code]:text-xs">
                 <Streamdown
-                  // Only computed when the source view is actually on screen.
                   key={buildArtifactSourceKey(artifact)}
                   mode="streaming"
                   plugins={{ code: artifactSourceCodePlugin }}

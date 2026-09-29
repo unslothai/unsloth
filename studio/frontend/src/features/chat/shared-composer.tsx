@@ -621,7 +621,6 @@ export function SharedComposer({
     pendingImagesRef.current = pendingImages;
     pendingAudioRef.current = pendingAudio;
   }, [text, pendingImages, pendingAudio]);
-  // Compare keeps its draft here, not in a chat runtime, so a canvas Fix is staged via the store.
   const pendingFixPrompt = useChatArtifactsStore(
     (state) => state.pendingFixPrompt,
   );

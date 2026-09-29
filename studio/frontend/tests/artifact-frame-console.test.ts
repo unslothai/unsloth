@@ -18,8 +18,6 @@ import {
   parseCanvasReport,
 } from "../src/features/chat/artifacts/canvas-console.ts";
 
-// No DOM renderer here and the frame pulls in React plus the runtime, so the
-// wiring is asserted in the source the way artifact-frame-network-access does.
 const frameSource = readFileSync(
   fileURLToPath(
     new URL("../src/features/chat/artifacts/html-frame.tsx", import.meta.url),
@@ -55,7 +53,6 @@ test("a throw and a console line parse into entries; anything else is dropped", 
   for (const junk of [null, "text", 7, {}, { type: "unsloth:artifact-blocked" }]) {
     assert.equal(parseCanvasReport(junk), null);
   }
-  // An error with no message has nothing to show or to send.
   assert.equal(parseCanvasReport(thrown("   ")), null);
 });
 
@@ -107,7 +104,6 @@ test("past the cap the oldest entries go, not the newest", () => {
   }
   assert.equal(state.entries.length, CANVAS_CONSOLE_ENTRIES_TRACKED);
   assert.equal(state.capped, true);
-  // A canvas that dies partway is read from its last lines, so those are the ones kept.
   assert.equal(state.entries[0].text, "line 5");
   assert.equal(
     state.entries.at(-1)?.text,
@@ -116,8 +112,6 @@ test("past the cap the oldest entries go, not the newest", () => {
 });
 
 test("a burst of reports costs one render, not one per report", () => {
-  // The window rolls now, so without this every report past the cap would
-  // re-render the whole list.
   assert.match(frameSource, /requestAnimationFrame/);
   assert.match(frameSource, /pendingEntries\.current\.push\(entry\)/);
 });
@@ -165,8 +159,6 @@ test("the fix prompt lists five errors and counts the rest", () => {
 });
 
 test("the frame checks the load stamp before it keeps an error or console report", () => {
-  // event.source survives the swap navigation, so without the stamp a report
-  // from the outgoing canvas would land on the incoming code's banner.
   const parseAt = frameSource.indexOf("parseCanvasReport(event.data)");
   assert.ok(parseAt > 0, "the frame does not parse canvas reports");
   const typeAt = frameSource.lastIndexOf('"unsloth:artifact-console"', parseAt);
@@ -175,9 +167,6 @@ test("the frame checks the load stamp before it keeps an error or console report
 });
 
 test("every input that reruns the document is part of the load stamp", () => {
-  // A new load clears the console, so a report from the outgoing run arriving a moment
-  // later has to be dropped. Two of the three inputs leave the code hash untouched: Run
-  // again reruns identical code, and granting network access renavigates the frame.
   const stamp = frameSource.slice(
     frameSource.indexOf("const loadVersion ="),
     frameSource.indexOf("const src = useMemo"),
@@ -186,15 +175,10 @@ test("every input that reruns the document is part of the load stamp", () => {
   assert.match(stamp, /reloadNonce/);
   assert.match(stamp, /networkAllowed/);
   assert.match(frameSource, /new URLSearchParams\(\{ v: loadVersion \}\)/);
-  // One identity, so the src the frame reads its stamp from cannot disagree with the
-  // check here. The separate cache-busting param it replaced could.
   assert.doesNotMatch(frameSource, /query\.set\("r",/);
 });
 
 test("a new load drops reports already batched for the next frame", () => {
-  // Those passed the stamp check while their load was still current, so the check cannot
-  // catch them: without this, Run again clicked between a report and its flush would
-  // repopulate the console it had just cleared. The manual Clear has the same race.
   assert.match(frameSource, /const dropPendingEntries = useCallback/);
   const reset = frameSource.slice(
     frameSource.indexOf("const loadedOnce = useRef"),
@@ -203,9 +187,7 @@ test("a new load drops reports already batched for the next frame", () => {
   const dropAt = reset.indexOf("dropPendingEntries();");
   const clearAt = reset.indexOf("setOutput(emptyCanvasConsole(code));");
   assert.ok(dropAt > 0 && dropAt < clearAt, "the reset keeps the batched queue");
-  // Keyed on the whole load, not just the reload counter and the code.
   assert.match(frameSource, /\}, \[loadVersion, code, dropPendingEntries\]\);/);
-  // And the trash button, which clears without a reload.
   const clearButton = frameSource.indexOf("artifacts.consoleClear");
   assert.ok(
     frameSource.indexOf("dropPendingEntries();", clearButton) <
@@ -223,8 +205,6 @@ test("the source view hides the frame instead of unmounting it", () => {
     ),
     "utf8",
   );
-  // Unmounting reloads the canvas and drops everything the console collected, so
-  // reading the HTML would cost the output you opened it to read.
   const frameAt = surfaceSource.indexOf("<ArtifactHtmlFrame");
   assert.ok(frameAt > 0);
   const wrapperAt = surfaceSource.lastIndexOf(
@@ -232,15 +212,11 @@ test("the source view hides the frame instead of unmounting it", () => {
     frameAt,
   );
   assert.ok(wrapperAt > 0, "the frame is not rendered inside a hidden wrapper");
-  // The header's view buttons publish the view so the card that opened this surface
-  // can still tell "already on screen" from "switch to the other one".
   assert.match(surfaceSource, /showView\(mode\)/);
   assert.match(surfaceSource, /setArtifactView\(mode\)/);
 });
 
 test("the Fix button stages text in the composer and never sends it", () => {
-  // The error text is whatever the page posted. Staging it lets the user read it
-  // before it reaches the model; sending would let a canvas speak for them.
   assert.match(frameSource, /stageFixPrompt\(buildCanvasFixPrompt\(title, errors\)\)/);
   assert.doesNotMatch(frameSource, /\.send\(/);
   const pageSource = readFileSync(
@@ -251,10 +227,6 @@ test("the Fix button stages text in the composer and never sends it", () => {
 });
 
 test("the staged prompt goes to the composer on screen, in either mode", () => {
-  // Compare mode keeps the single-chat view mounted and hidden behind its panes, so the
-  // consumer there has to stand down or the text lands in a box nobody can see. Compare's
-  // own composer keeps its draft in local state, out of reach of the chat runtime, so it
-  // takes the prompt itself.
   const pageSource = readFileSync(
     fileURLToPath(new URL("../src/features/chat/chat-page.tsx", import.meta.url)),
     "utf8",
@@ -268,25 +240,19 @@ test("the staged prompt goes to the composer on screen, in either mode", () => {
   );
   assert.match(composerSource, /state\.pendingFixPrompt/);
   assert.match(composerSource, /clearFixPrompt\(\)/);
-  // Exactly one consumer runs for a given prompt, so it cannot be typed twice.
   for (const source of [pageSource, composerSource]) {
     assert.equal(source.split("clearFixPrompt()").length - 1, 1);
   }
 });
 
 test("the frame reaches no composer of its own", () => {
-  // The fullscreen overlay renders outside the chat runtime provider, and that runtime's
-  // default client throws from every field it is asked for, so a frame that typed into the
-  // composer itself worked in the panel and threw on the same click in fullscreen. The
-  // thread does the typing now, wherever the frame happens to be mounted.
+  // The overlay is outside the runtime provider, whose default client throws, so the thread does the typing.
   assert.doesNotMatch(frameSource, /useAui/);
   assert.doesNotMatch(frameSource, /COMPOSER_INPUT_SELECTOR/);
   const pageSource = readFileSync(
     fileURLToPath(new URL("../src/features/chat/chat-page.tsx", import.meta.url)),
     "utf8",
   );
-  // Inside the provider: SingleContent is rendered under ChatRuntimeProvider, the overlay
-  // is not, which is the whole reason the staging moved.
   const consumer = pageSource.indexOf("const pendingFixPrompt");
   const single = pageSource.indexOf("const SingleContent = memo");
   const overlay = pageSource.indexOf('variant="overlay"');
@@ -294,9 +260,6 @@ test("the frame reaches no composer of its own", () => {
 });
 
 test("the stack drops the repeated message line and Studio's own frames", () => {
-  // The browser prefixes the error event's message with "Uncaught " but the stack's
-  // copy of it has no prefix, so an exact match left the message printed twice. The
-  // wrapper frames are the shell's render() and its message listener, not the page.
   const entry = parseCanvasReport({
     type: "unsloth:artifact-error",
     message: "Uncaught TypeError: Cannot read properties of null",
@@ -324,12 +287,10 @@ test("the full trace keeps the frames the trimmed one drops", () => {
   })!;
   assert.match(canvasStackFull(entry), /at render \(http/);
   assert.doesNotMatch(canvasStack(entry), /at render \(http/);
-  // The header toggle picks between them, so neither is thrown away.
   assert.match(frameSource, /fullTraces \? canvasStackFull\(entry\) : canvasStack\(entry\)/);
 });
 
 test("the banner's console button toggles rather than only opening", () => {
-  // "Open console" did nothing once the drawer was already open, which reads as broken.
   assert.match(frameSource, /onConsoleOpenChange\(!consoleOpen\)/);
   assert.match(frameSource, /errorConsoleHideAction/);
 });
@@ -349,8 +310,6 @@ test("the card keeps one name and puts open/hide on aria-expanded", () => {
     ),
     "utf8",
   );
-  // A control that renames itself is announced as a different control, and the startup
-  // bundle harness counts cards by that name.
   assert.match(cardSource, /aria-label=\{`Open \$\{artifact\.title\}/);
   assert.match(cardSource, /aria-expanded=\{showing\}/);
 });
@@ -360,8 +319,6 @@ test("a panel dragged shut is reported closed, not left selected at no width", (
     fileURLToPath(new URL("../src/features/chat/chat-page.tsx", import.meta.url)),
     "utf8",
   );
-  // Otherwise the card still reads the artifact as on screen, and the click meant to
-  // bring the panel back spends itself hiding something already invisible.
   const remember = pageSource.indexOf("const rememberArtifactPanelWidth");
   assert.ok(remember > 0);
   const closeAt = pageSource.indexOf("onCloseArtifact();", remember);
