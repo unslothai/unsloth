@@ -652,6 +652,9 @@ qwen25_coder_ollama = _ollama_template("qwen-25-coder")
 CHAT_TEMPLATES["qwen-2.5-coder"] = (qwen25_template, qwen25_template_eos_token, False, qwen25_coder_ollama,)
 DEFAULT_SYSTEM_MESSAGE["qwen-2.5-coder"] = qwen25_default_system_message
 
+CHAT_TEMPLATES["qwen-25-coder"] = (qwen25_template, qwen25_template_eos_token, False, qwen25_coder_ollama,)
+DEFAULT_SYSTEM_MESSAGE["qwen-25-coder"] = qwen25_default_system_message
+
 CHAT_TEMPLATES["qwen2.5-coder"] = (qwen25_template, qwen25_template_eos_token, False, qwen25_coder_ollama,)
 DEFAULT_SYSTEM_MESSAGE["qwen2.5-coder"] = qwen25_default_system_message
 
