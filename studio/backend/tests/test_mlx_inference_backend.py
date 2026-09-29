@@ -3280,6 +3280,61 @@ def _tiny_lm(
     return _LM()
 
 
+def test_an_explicit_speculative_mode_loads_through_mlx_vlm_and_attaches_what_fits(monkeypatch):
+    pytest.importorskip("mlx.core")
+    drafters = pytest.importorskip("unsloth_zoo.mlx.speculative")
+
+    from core.inference import mlx_inference, mlx_speculative
+
+    attempts, fits = [], []
+    failing = []
+
+    class _Loader:
+        @staticmethod
+        def from_pretrained(name, **kwargs):
+            attempts.append(kwargs["text_only"])
+            if not kwargs["text_only"] and failing:
+                raise ValueError("mlx-vlm has no such architecture")
+            return SimpleNamespace(config = {}), SimpleNamespace()
+
+    loader = types.ModuleType("unsloth_zoo.mlx.loader")
+    loader.FastMLXModel = _Loader
+    monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx.loader", loader)
+    monkeypatch.setattr(mlx_inference, "_classify_mlx_audio_type", lambda *a, **k: None)
+    monkeypatch.setattr(
+        mlx_inference.MLXInferenceBackend, "_resolve_context_lengths", lambda *a: (8192, 8192, 8192)
+    )
+    source = mlx_speculative.DrafterSource("dflash", "/drafter", False)
+    monkeypatch.setattr(mlx_speculative, "speculation_refusal", lambda **_k: None)
+    monkeypatch.setattr(
+        mlx_speculative,
+        "resolve_speculation",
+        lambda mode, *_a, **_k: mlx_speculative.SpecResolution(mode, (source,)),
+    )
+    monkeypatch.setattr(
+        mlx_inference, "mlx_drafter_fit", lambda *a, **k: fits.append(a[1:4]) or (True, 4096)
+    )
+    monkeypatch.setattr(drafters, "companion_drafter", lambda path, target: SimpleNamespace())
+    config = SimpleNamespace(identifier = "org/text", is_vision = False, is_lora = False)
+
+    backend = mlx_inference.MLXInferenceBackend()
+    backend.load_model(config, max_seq_length = 0, speculative_type = "dflash", spec_draft_n_max = 5)
+    entry = backend.models["org/text"]
+    assert attempts == [False] and fits == [(8192, None, source)]
+    assert (entry["spec_drafter_kind"], entry["spec_fallback_reason"]) == ("dflash", None)
+    assert entry["context_length"] == 4096 and entry["spec_draft_n_max"] == 5
+    assert backend._speculative_draft.controller.max_depth == 5
+
+    attempts.clear(), failing.append(True)
+    backend.load_model(config, speculative_type = "dflash")
+    entry = backend.models["org/text"]
+    assert attempts == [False, True] and backend._speculative_draft is None
+    assert entry["spec_fallback_reason"] == mlx_speculative.RUNTIME_ERROR
+    attempts.clear()
+    backend.load_model(config)
+    assert attempts == [True] and backend.models["org/text"]["speculative_type"] == "auto"
+
+
 def test_a_text_model_mlx_vlm_cannot_load_is_served_without_turboquant(monkeypatch):
     pytest.importorskip("mlx.core")
     from core.inference import mlx_inference
@@ -3435,6 +3490,16 @@ def test_reload_comparison_and_response_carry_the_resolved_setting():
         "chat_template_override_reason": "it could not render a conversation",
     }
     assert _mlx_runtime_settings_match(be, req(chat_template_override = "{{ refused }}"))
+    # Speculation compares canonically: an absent mode is the resident auto.
+    be.models["m"] = {"mlx_kv_quant_requested": "auto", "speculative_type": "auto"}
+    assert _mlx_runtime_settings_match(be, req(speculative_type = "default"))
+    assert not _mlx_runtime_settings_match(be, req(speculative_type = "mtp"))
+    be.models["m"].update(speculative_type = "mtp", spec_draft_n_max = 4)
+    assert _mlx_runtime_settings_match(be, req(speculative_type = "draft-mtp", spec_draft_n_max = 4))
+    assert not _mlx_runtime_settings_match(be, req(speculative_type = "mtp"))
+    assert not _mlx_runtime_settings_match(
+        be, req(speculative_type = "mtp", spec_draft_n_max = 4, spec_draft_model = "org/drafter")
+    )
 
     resp = LoadResponse(
         status = "loaded",
@@ -5261,6 +5326,7 @@ def _drive_vlm_generation(
     max_new_tokens = 1,
     session = None,
     video = None,
+    **request,
 ):
     import sys
     import types
@@ -5296,9 +5362,47 @@ def _drive_vlm_generation(
             image = image,
             video = video,
             max_new_tokens = max_new_tokens,
+            **request,
         )
     )
     return seen
+
+
+def test_a_speculative_load_drafts_eligible_single_replies_and_declines_batches(monkeypatch):
+    import sys
+    import types
+
+    from core.inference.mlx_inference import MLXInferenceBackend
+
+    class _Ids(list):
+        def tolist(self):
+            return list(self)
+
+    utils = types.ModuleType("mlx_vlm.utils")
+    utils.prepare_inputs = lambda *_a, **_k: {"input_ids": [_Ids([7, 8, 9])], "extra": 1}
+    monkeypatch.setitem(sys.modules, "mlx_vlm.utils", utils)
+    prepared = []
+    draft = SimpleNamespace(draft_kind = "mtp", draft_n = 6, draft_n_accepted = 4)
+    draft.prepare = lambda ids, sampling: prepared.append((ids, sampling.temperature))
+    backend = MLXInferenceBackend()
+    backend._speculative_draft = draft
+
+    seen = _drive_vlm_generation(backend, monkeypatch, temperature = 0.5)
+    assert seen["draft_model"] is draft and seen["extra"] == 1 and prepared == [([7, 8, 9], 0.5)]
+    timings = backend.last_generation_stats["timings"]
+    assert (timings["draft_n"], timings["draft_n_accepted"]) == (6, 4)
+    for request in (
+        {"repetition_penalty": 1.1},
+        {"tools": [{"type": "function"}]},
+        {"tool_protocol_active": True},
+        {"logit_bias": {5: 1.0}},
+    ):
+        seen = _drive_vlm_generation(backend, monkeypatch, **request)
+        assert "max_tokens" in seen and "draft_model" not in seen
+        assert "draft_n" not in backend.last_generation_stats["timings"]
+    assert len(prepared) == 1
+    assert "speculatively" in backend.resident_unavailable_reason({})
+    assert "speculatively" in backend.batch_unavailable_reason([{}, {}])
 
 
 def _stub_prepare_inputs(monkeypatch, per_medium = 520):

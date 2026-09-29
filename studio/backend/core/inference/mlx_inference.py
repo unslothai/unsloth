@@ -1722,6 +1722,7 @@ def _build_generation_stats(
     gen_tps,
     cached_n = 0,
     finish_reason = None,
+    draft = None,
 ):
     """Map mlx stream stats onto the usage/timings shape llama-server emits, plus the reason
     generation ended."""
@@ -1752,6 +1753,11 @@ def _build_generation_stats(
             "predicted_per_token_ms": (predicted_ms / gen_n) if gen_n > 0 else 0.0,
             "predicted_per_second": gen_tps,
             "cache_n": cached_n,
+            **(
+                {}
+                if draft is None
+                else {"draft_n": draft.draft_n, "draft_n_accepted": draft.draft_n_accepted}
+            ),
         },
         # Latched where generation exits, so a cancel arriving afterwards cannot rewrite the reason the completion
         # actually ended for.
@@ -2568,8 +2574,10 @@ def mlx_fit_to_memory(
     load_in_4bit: bool,
     retains_history: bool,
     kv_bits = None,
+    **route,
 ) -> Optional[int]:
-    """The context a load of *model_dir* is held to, priced at the KV width its cache takes."""
+    """The context a load of *model_dir* is held to, priced at the KV width its cache takes.
+    ``vision=True`` in *route* prices the mlx-vlm route a speculative text load takes."""
     budget = mlx_memory_budget(retains_history = retains_history)
     if budget is None or not ceiling or not model_dir:
         return None
@@ -2583,6 +2591,7 @@ def mlx_fit_to_memory(
                 max_ctx = int(ceiling),
                 kv_bits = kv_bits,
                 load_in_4bit = load_in_4bit,
+                **route,
             )
             logger.debug("MLX fit for %s: %s tokens under %.1f GB", model_dir, fitted, budget / 1e9)
             return fitted
@@ -2601,6 +2610,7 @@ def _fitted_context(
     kv_bits = None,
     is_vlm = False,
     eligibility = None,
+    **route,
 ):
     """The fit for a resident model and the eligibility verdict it was priced under."""
     try:
@@ -2617,8 +2627,33 @@ def _fitted_context(
         load_in_4bit = load_in_4bit,
         retains_history = retains_history,
         kv_bits = kv_bits if verdict is None or verdict[0] in ("full", "partial") else None,
+        **route,
     )
     return fitted, verdict
+
+
+def mlx_drafter_fit(model_dir, ceiling, pinned, source, *, load_in_4bit: bool):
+    """``(attaches, fitted context or None)`` for *source*'s drafter on an mlx-vlm load of *model_dir*:
+    only a priced fit reserves it, and a pinned context must fit whole."""
+    budget = mlx_memory_budget(retains_history = mlx_vlm_snapshot_store_available())
+    ceiling = pinned or ceiling
+    if budget is None or not ceiling or not model_dir:
+        return False, None
+    with mlx_rng_preserved():
+        try:
+            from core.inference.mlx_memory import mlx_fit_outcome
+            outcome, fitted = mlx_fit_outcome(
+                model_dir,
+                budget_bytes = budget,
+                max_ctx = int(ceiling),
+                load_in_4bit = load_in_4bit,
+                vision = True,
+                drafter = (source.path, source.builtin),
+            )
+        except Exception as exc:
+            logger.info("MLX drafter %s not priced: %s", source.path, exc)
+            return False, None
+    return outcome == "fits" or (outcome == "fitted" and not pinned), fitted
 
 
 def _kv_window_enforced(model, is_vlm, window):
@@ -3232,34 +3267,44 @@ def _vlm_add_special_tokens(model_type, processor):
         )
 
 
+def _vlm_prepared_inputs(model, processor, prompt, images):
+    """The processor's inputs for *prompt* and *images*, as mlx-vlm's ``stream_generate`` prepares them."""
+    from mlx_vlm.utils import prepare_inputs
+
+    config = getattr(model, "config", None)
+    read = config.get if isinstance(config, dict) else lambda attr: getattr(config, attr, None)
+    return prepare_inputs(
+        processor,
+        images = images,
+        prompts = prompt,
+        image_token_index = read("image_token_index"),
+        add_special_tokens = _vlm_add_special_tokens(read("model_type"), processor),
+    )
+
+
+def _vlm_generate_kwargs(inputs):
+    """Prepared inputs as ``stream_generate`` kwargs, which then skips its own preparation."""
+    inputs = dict(inputs)
+    return {
+        "input_ids": inputs.pop("input_ids"),
+        "pixel_values": inputs.pop("pixel_values", None),
+        "mask": inputs.pop("attention_mask", None),
+        **inputs,
+    }
+
+
 class _VLMMediaBlock:
     """A prompt's rows through its last vision token, prefilled by Studio: models whose vision
     tokens attend to each other prefill in one forward that lands off the grid, and this is that
     forward cut where the grid can continue."""
 
     def __init__(self, model, processor, prompt, images, make_cache):
-        from mlx_vlm.utils import prepare_inputs
-
         self._model = model
         self._make_cache = make_cache
-        config = getattr(model, "config", None)
-        read = config.get if isinstance(config, dict) else lambda attr: getattr(config, attr, None)
-        self._inputs = prepare_inputs(
-            processor,
-            images = images,
-            prompts = prompt,
-            image_token_index = read("image_token_index"),
-            add_special_tokens = _vlm_add_special_tokens(read("model_type"), processor),
-        )
+        self._inputs = _vlm_prepared_inputs(model, processor, prompt, images)
 
     def generate_kwargs(self):
-        inputs = dict(self._inputs)
-        return {
-            "input_ids": inputs.pop("input_ids"),
-            "pixel_values": inputs.pop("pixel_values", None),
-            "mask": inputs.pop("attention_mask", None),
-            **inputs,
-        }
+        return _vlm_generate_kwargs(self._inputs)
 
     def rows(self, token_ids):
         ids = self._inputs["input_ids"]
@@ -3995,6 +4040,7 @@ class MLXInferenceBackend:
         self._is_vlm = False
         self._reads_vision = None
         self._turboquant_refusal = ""
+        self._speculative_draft = None
         self._multi_image_marker = None
         self._config = {}
         self._distributed_group = None
@@ -4555,8 +4601,13 @@ class MLXInferenceBackend:
         kv_quant = None,
         chat_template_override = None,
         int8_prefill = False,
+        speculative_type = None,
+        spec_draft_n_max = None,
+        spec_draft_model = None,
     ) -> bool:
         import mlx.core as mx
+
+        from core.inference import mlx_speculative
 
         # Keep the token so the native-template fallback can fetch a gated model's repo template during generation.
         self._hf_token = hf_token
@@ -4579,14 +4630,29 @@ class MLXInferenceBackend:
             if self._turboquant
             else ""
         )
+        spec_mode = mlx_speculative.mlx_spec_mode(speculative_type)
+        spec_reason = None
+        speculates = spec_mode not in ("off", "auto")
+        if speculates:
+            spec_reason = mlx_speculative.speculation_refusal(
+                kv_quant = kv_bits is not None or self._turboquant,
+                distributed = is_distributed,
+                lora = is_lora,
+            )
+            speculates = spec_reason is None
+        elif spec_mode == "auto":
+            logger.info("MLX speculative decoding: auto does not speculate while batches cannot")
+        self._speculative_draft = None
         # mlx-lm cannot batch a quantized cache; mlx-vlm, which also ships text architectures, can.
         batches_quantized_text = (
             kv_bits is not None
             and not (is_distributed or is_lora)
             and _row_quantized_cache_gap() is None
         )
+        # Speculation runs on mlx-vlm models and caches.
         use_vlm = (
             is_vision
+            or speculates
             or (self._turboquant and not self._turboquant_refusal)
             or batches_quantized_text
         )
@@ -4669,8 +4735,9 @@ class MLXInferenceBackend:
             if is_vision or not use_vlm or is_metal_queue_dead(exc):
                 raise
             logger.warning(
-                "Load of %s through mlx-vlm for its KV quantization failed (%s); serving through mlx-lm",
+                "Load of %s through mlx-vlm for %s failed (%s); serving through mlx-lm",
                 model_name,
+                "speculative decoding" if speculates else "its KV quantization",
                 exc,
             )
         _eligibility = None
@@ -4692,7 +4759,9 @@ class MLXInferenceBackend:
             gc.collect()
             _drain_generation_streams(mx)
             mx.clear_cache()
-            if self._turboquant:
+            if speculates:
+                speculates, spec_reason = False, mlx_speculative.RUNTIME_ERROR
+            elif self._turboquant:
                 self._turboquant_refusal = MLX_TURBOQUANT_TEXT_LOAD
             use_vlm = False
             load_kwargs["text_only"] = True
@@ -4727,11 +4796,52 @@ class MLXInferenceBackend:
             self._model, max_seq_length
         )
         _priceable = not (is_distributed or is_lora or dtype is not None)
+        spec_kind = _drafter_ctx = None
+        _drafter_fitted = False
+        if speculates:
+            model_dir = _snapshot_dir(self._model, model_name)
+            resolution = mlx_speculative.resolve_speculation(
+                spec_mode,
+                spec_draft_model,
+                model_dir = model_dir,
+                target_name = model_name,
+            )
+
+            def _fits(source):
+                if not _priceable:
+                    return False, None
+                return mlx_drafter_fit(
+                    model_dir,
+                    _served_ctx,
+                    _positive_int(max_seq_length),
+                    source,
+                    load_in_4bit = load_in_4bit,
+                )
+
+            (
+                self._speculative_draft,
+                spec_kind,
+                spec_reason,
+                _drafter_ctx,
+            ) = mlx_speculative.build_draft(
+                self._model, resolution, fits = _fits, draft_n_max = _positive_int(spec_draft_n_max)
+            )
+            _drafter_fitted = (
+                self._speculative_draft is not None and self._speculative_draft.drafter is not None
+            )
+            logger.info(
+                "MLX speculative decoding: %s (mode %s, reason %s)",
+                spec_kind or "off",
+                spec_mode,
+                spec_reason,
+            )
         # TurboQuant's layout is not one the planner prices, and a refused one stays full width:
         # fit either at full width, which only ever under-promises.
         _requested_bits = None if self._turboquant else _normalize_mlx_kv_bits(kv_bits)
         _fitted_ctx, _eligibility = (
-            (None, _eligibility)
+            (_drafter_ctx, _eligibility)
+            if _drafter_fitted
+            else (None, _eligibility)
             if not _priceable or _positive_int(max_seq_length) is not None
             else _fitted_context(
                 self._model,
@@ -4742,6 +4852,7 @@ class MLXInferenceBackend:
                 kv_bits = _requested_bits,
                 is_vlm = use_vlm,
                 eligibility = _eligibility,
+                **({"vision": True} if speculates and not is_vision else {}),
             )
         )
         if _fitted_ctx:
@@ -4858,6 +4969,11 @@ class MLXInferenceBackend:
             "mlx_int8_prefill_reason": self._int8_prefill["reason"],
             "chat_template_override_requested": self._template_override["requested"],
             "chat_template_override_reason": self._template_override["reason"],
+            "speculative_type": spec_mode,
+            "spec_draft_n_max": _positive_int(spec_draft_n_max),
+            "spec_draft_model": spec_draft_model or None,
+            "spec_drafter_kind": spec_kind,
+            "spec_fallback_reason": spec_reason,
         }
         # Capture chat_template_info for the worker IPC reply and route capability classification.
         self._populate_chat_template_info(model_name, native_template)
@@ -4966,6 +5082,7 @@ class MLXInferenceBackend:
         self._model_fusion.close()
         if model_name in self.models:
             del self.models[model_name]
+        self._speculative_draft = None
         self._model = None
         self._tokenizer = None
         self._processor = None
@@ -6142,6 +6259,26 @@ class MLXInferenceBackend:
         else:
             vlm_kwargs.update(self._kv_quant_generate_kwargs())
         session_scope = session if session is not None else nullcontext()
+        draft = self._speculative_draft
+        # Processors (penalties, logit_bias, grammars) and tool turns decode as before; a clip
+        # reaches the drafter as nothing it was built for.
+        if (
+            draft is None
+            or tools
+            or tool_protocol_active
+            or video is not None
+            or "logits_processors" in vlm_kwargs
+            or "repetition_penalty" in vlm_kwargs
+            or _vlm_generation_is_diffusion(self._model)
+        ):
+            draft = None
+        elif "input_ids" not in vlm_kwargs:
+            # Prepared here so the draft is told the prompt exactly as the model receives it.
+            vlm_kwargs.update(
+                _vlm_generate_kwargs(
+                    _vlm_prepared_inputs(self._model, self._processor, prompt, images)
+                )
+            )
 
         def _stream_vlm_snapshots():
             nonlocal stopped
@@ -6168,6 +6305,21 @@ class MLXInferenceBackend:
                 generation_scope.enter_context(_mlx_fused_residual_norm_handoff(self._model))
                 final_response = None
                 clip_path = None
+                if draft is not None:
+                    from unsloth_zoo.mlx.generate import SamplingParams
+
+                    # Under the lock: the load's one draft serves one generation at a time.
+                    draft.prepare(
+                        vlm_kwargs["input_ids"][0].tolist(),
+                        SamplingParams(
+                            temperature = temperature,
+                            top_p = top_p,
+                            top_k = int(top_k or 0),
+                            min_p = float(min_p or 0.0),
+                            seed = seed,
+                        ),
+                    )
+                    vlm_kwargs.update(draft_model = draft, draft_kind = draft.draft_kind)
                 try:
                     if video is not None:
                         clip_path = _write_video_clip(video)
@@ -6264,6 +6416,7 @@ class MLXInferenceBackend:
                                 getattr(final_response, "generation_tokens", 0),
                                 max_new_tokens,
                             ),
+                            draft = draft,
                         )
 
         if document_only:
@@ -6283,7 +6436,9 @@ class MLXInferenceBackend:
         if stopped:
             self._mark_stopped()
 
-    def _kv_policy_batch_reason(self, resident = False):
+    def _load_policy_batch_reason(self, resident = False):
+        if getattr(self, "_speculative_draft", None) is not None:
+            return "the load decodes speculatively, one reply at a time"
         if self._kv_quant_bits() is None and not getattr(self, "_kv_context_budget", None):
             return None
         # Only resident vision rows carry their own cache, where the quantization lives.
@@ -6298,7 +6453,7 @@ class MLXInferenceBackend:
             reason = _request_batch_gap(request)
             if reason is not None:
                 return reason
-        reason = self._kv_policy_batch_reason()
+        reason = self._load_policy_batch_reason()
         if reason is not None:
             return reason
         if len(requests) < 2:
@@ -6318,7 +6473,7 @@ class MLXInferenceBackend:
         reason = _request_batch_gap(request)
         if reason is not None:
             return reason
-        reason = self._kv_policy_batch_reason(resident = True)
+        reason = self._load_policy_batch_reason(resident = True)
         if reason is not None:
             return reason
         if self._is_vlm:
@@ -6428,7 +6583,7 @@ class MLXInferenceBackend:
                     if prefix:
                         yield row, prefix
                 while session.rows_in_flight:
-                    yield from report(session.step())
+                    yield from report(session.step(cancel_event and cancel_event.is_set))
                     if cancel_event is not None and cancel_event.is_set():
                         yield from report(session.withdraw(list(session.handles)))
             finally:

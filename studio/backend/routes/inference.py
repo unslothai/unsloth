@@ -8374,6 +8374,10 @@ def _unsloth_serving_fields(model_info: dict) -> dict:
         "context_length_enforced": model_info.get("context_length_enforced"),
         "context_length_fitted": _positive_int_or_none(model_info.get("context_length_fitted")),
         "context_unbounded_when_batched": bool(model_info.get("context_unbounded_when_batched")),
+        "speculative_type": model_info.get("speculative_type"),
+        "spec_draft_n_max": model_info.get("spec_draft_n_max"),
+        "spec_drafter_kind": model_info.get("spec_drafter_kind"),
+        "spec_fallback_reason": model_info.get("spec_fallback_reason"),
     }
 
 
@@ -11882,6 +11886,7 @@ async def load_model_for_preview(
 ) -> None:
     if account_access.managed_account():
         await asyncio.to_thread(account_access.require_model_access, request.model_path)
+    await _require_drafter_access(request)
     account_access.require_idle_other_accounts()
     from core.inference.llama_keepwarm import (
         inference_lifecycle_gate,
@@ -14940,6 +14945,37 @@ def _mlx_estimate_fitted_context(config, model_dir: str, load_in_4bit: bool, kv_
     )
 
 
+def _mlx_estimate_drafter(request, model_identifier, model_dir, ceiling, load_in_4bit: bool):
+    """``((path, builtin), fitted context)`` of the drafter an MLX load of *request* would attach,
+    chosen as the load chooses it, else ``(None, None)``."""
+    from core.inference import mlx_speculative
+    from core.inference.mlx_inference import mlx_drafter_fit, parse_mlx_kv_quant
+
+    resolution = mlx_speculative.resolve_speculation(
+        request.speculative_type,
+        request.spec_draft_model,
+        model_dir = model_dir,
+        target_name = model_identifier,
+    )
+    bits, turboquant = parse_mlx_kv_quant(request.mlx_kv_quant)
+    kv_quant = bits is not None or turboquant or request.mlx_kv_bits is not None
+    if not resolution.sources or mlx_speculative.speculation_refusal(
+        kv_quant = kv_quant, distributed = False, lora = False
+    ):
+        return None, None
+    for source in resolution.sources:
+        attaches, fitted = mlx_drafter_fit(
+            model_dir,
+            ceiling,
+            request.max_seq_length or None,
+            source,
+            load_in_4bit = load_in_4bit,
+        )
+        if attaches:
+            return (source.path, source.builtin), fitted
+    return None, None
+
+
 def _mlx_estimate_available() -> bool:
     """Whether this host would actually run the load through MLX."""
     try:
@@ -17092,6 +17128,8 @@ def _mlx_runtime_settings_match(backend, request) -> bool:
         return True
     from core.inference.mlx_inference import encode_mlx_kv_quant, parse_mlx_kv_quant
 
+    from core.inference.mlx_speculative import mlx_spec_mode
+
     requested = encode_mlx_kv_quant(*parse_mlx_kv_quant(getattr(request, "mlx_kv_quant", None)))
     return (
         entry["mlx_kv_quant_requested"] == requested
@@ -17099,6 +17137,9 @@ def _mlx_runtime_settings_match(backend, request) -> bool:
         == (request.chat_template_override or None)
         and bool(entry.get("mlx_int8_prefill_requested"))
         == bool(getattr(request, "mlx_int8_prefill", False))
+        and entry.get("speculative_type", "auto") == mlx_spec_mode(request.speculative_type)
+        and entry.get("spec_draft_model") == (getattr(request, "spec_draft_model", None) or None)
+        and entry.get("spec_draft_n_max") == _positive_int_or_none(request.spec_draft_n_max)
     )
 
 
@@ -17832,6 +17873,13 @@ async def _run_gguf_load_attempt(
         return False
 
 
+async def _require_drafter_access(request) -> None:
+    """A named MLX drafter is a second model reference, so the caller needs access to it too."""
+    drafter = getattr(request, "spec_draft_model", None)
+    if account_access.managed_account() and isinstance(drafter, str) and drafter.strip():
+        await asyncio.to_thread(account_access.require_model_access, drafter.strip())
+
+
 def _require_resolved_base_access(config) -> None:
     """Grants apply to the base in an adapter's config, so it cannot pull a foreign cached base."""
     base = getattr(config, "base_model", None)
@@ -18048,6 +18096,7 @@ async def _load_model_impl(
     native_access_deferred = _defers_access_to_native_grant(request)
     if account_access.managed_account() and not native_access_deferred:
         await asyncio.to_thread(account_access.require_model_access, request.model_path)
+    await _require_drafter_access(request)
     request = await asyncio.to_thread(_as_ollama_manifest_request, request)
     if account_access.managed_account():
         request = request.model_copy(
@@ -19110,6 +19159,9 @@ async def _load_model_impl(
                 subject = current_subject,
                 mlx_kv_quant = request.mlx_kv_quant,
                 mlx_int8_prefill = request.mlx_int8_prefill,
+                speculative_type = request.speculative_type,
+                spec_draft_n_max = request.spec_draft_n_max,
+                spec_draft_model = request.spec_draft_model,
                 chat_template_override = request.chat_template_override,
                 load_cancel_event = load_cancel_event,
                 on_prior_worker_released = _release_chat_after_teardown,
@@ -19565,6 +19617,7 @@ async def validate_model(
     native_access_deferred = _defers_access_to_native_grant(request)
     if account_access.managed_account() and not native_access_deferred:
         await asyncio.to_thread(account_access.require_model_access, request.model_path)
+    await _require_drafter_access(request)
     request = await asyncio.to_thread(_as_ollama_manifest_request, request)
     from core.inference.llama_cpp import (
         LlamaServerNotFoundError,
@@ -20669,6 +20722,7 @@ async def estimate_memory(
     native_access_deferred = _defers_access_to_native_grant(request)
     if account_access.managed_account() and not native_access_deferred:
         await asyncio.to_thread(account_access.require_model_access, request.model_path)
+    await _require_drafter_access(request)
     from core.inference.llama_cpp import _args_place_tensors_on_cpu
     from core.inference.llama_server_args import (
         _effective_tensor_parallel,
@@ -20747,8 +20801,14 @@ async def estimate_memory(
             if mlx_kv_bits is not None and mlx_kv_quant_is_refused(model_dir, mlx_kv_bits):
                 mlx_kv_bits = None
             mlx_named_ctx = request.max_seq_length or 0
-            mlx_fitted_ctx = None
-            if not mlx_named_ctx:
+            mlx_drafter, mlx_fitted_ctx = _mlx_estimate_drafter(
+                request,
+                model_identifier,
+                model_dir,
+                _mlx_estimate_ceiling(model_dir),
+                mlx_load_in_4bit,
+            )
+            if not mlx_named_ctx and mlx_drafter is None:
                 mlx_fitted_ctx = _mlx_estimate_fitted_context(
                     config, model_dir, mlx_load_in_4bit, mlx_kv_bits
                 )
@@ -20760,6 +20820,7 @@ async def estimate_memory(
                 n_ctx = mlx_priced_ctx,
                 kv_bits = mlx_kv_bits,
                 load_in_4bit = mlx_load_in_4bit,
+                **({} if mlx_drafter is None else {"vision": True, "drafter": mlx_drafter}),
             )
             if mlx_breakdown is None:
                 return EstimateMemoryResponse(available = False, reason = "unsizable")
@@ -21911,7 +21972,6 @@ async def _slot_status(current_subject: str):
                 **_runtime_fields,
                 requested_context_length = llama_backend.requested_n_ctx,
                 llama_cpp_supports_mtp = _supports_mtp,
-                spec_fallback_reason = llama_backend.spec_fallback_reason,
                 spec_fallback_binary_changed = _spec_fallback_binary_changed(llama_backend),
                 spec_probe_retry_pending = _spec_probe_retry_pending(llama_backend),
                 spec_dflash_retry_pending = _spec_dflash_retry_pending(llama_backend),
@@ -21922,7 +21982,6 @@ async def _slot_status(current_subject: str):
                 tensor_parallel_dropped_by_arch_gate = _arch_gate_dropped_tensor_parallel(
                     llama_backend
                 ),
-                spec_drafter_kind = llama_backend.spec_drafter_kind,
                 llama_cpp_prebuilt_stale = _stale,
                 llama_cpp_installed_tag = _installed_tag,
                 llama_cpp_latest_tag = _latest_tag,
