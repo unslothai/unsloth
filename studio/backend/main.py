@@ -364,6 +364,7 @@ from hub.utils.download_registry import (
     terminate_active_downloads as terminate_hub_downloads,
 )
 from routes.settings import router as settings_router
+from routes.sandbox_capability import router as sandbox_capability_router
 from routes.systemone import router as systemone_router
 from routes.prompts import router as prompts_router
 from routes.library import router as library_router
@@ -765,6 +766,14 @@ async def lifespan(app: FastAPI):
         start_sandbox_recovery()
     except Exception:  # noqa: BLE001
         pass
+
+    # Probe the OS sandbox now, off the event loop, so the first Python or Terminal call does not
+    # wait on it and the "off" permission gate has an answer to read.
+    try:
+        from core.inference.os_sandbox import start_tool_isolation_warmup
+        start_tool_isolation_warmup()
+    except Exception:  # noqa: BLE001 -- the first tool call probes instead
+        _lifespan_log.warning("could not start the sandbox warm-up", exc_info = True)
 
     try:
         from hub.services.models.account_access import adopt_unnamed_public_proofs
@@ -1677,6 +1686,7 @@ app.include_router(providers_router, prefix = "/api/providers", tags = ["provide
 app.include_router(openai_codex_auth_router, prefix = "/api/providers", tags = ["providers"])
 
 app.include_router(settings_router, prefix = "/api/settings", tags = ["settings"])
+app.include_router(sandbox_capability_router, prefix = "/api/sandbox", tags = ["sandbox"])
 app.include_router(mcp_servers_router, prefix = "/api/mcp/servers", tags = ["mcp"])
 app.include_router(skills_router, prefix = "/api/skills", tags = ["skills"])
 app.include_router(prompts_router, prefix = "/api/prompts", tags = ["prompts"])

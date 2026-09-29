@@ -35514,7 +35514,12 @@ class LlamaCppBackend:
         # "auto"; unknown falls back to the stricter "ask". An explicit
         # confirm_tool_calls=True with no mode is already resolved to "ask" at the
         # request layer, so it never arrives here as an ambiguous unset.
-        from state.tool_policy import account_tool_stream, normalize_tool_permissions
+        from state.tool_policy import (
+            account_tool_stream,
+            needs_tool_confirmation,
+            normalize_tool_permissions,
+            tool_call_may_prompt,
+        )
 
         permission_mode, bypass_permissions = normalize_tool_permissions(
             permission_mode, bypass_permissions
@@ -36603,11 +36608,11 @@ class LlamaCppBackend:
                                         # prompts, so it must stream its early card too; mirror
                                         # that here instead of gating on the raw confirm flag.
                                         _confirm_gated = (
-                                            confirm_tool_calls
-                                            and not bypass_permissions
-                                            and not (
-                                                permission_mode == "auto"
-                                                and is_always_safe_tool(current_name)
+                                            tool_call_may_prompt(
+                                                confirm_tool_calls = bool(confirm_tool_calls),
+                                                bypass_permissions = bypass_permissions,
+                                                permission_mode = permission_mode,
+                                                name = current_name,
                                             )
                                             # A text-preview card still streams while gated;
                                             # hiding it blanks the chat.
@@ -36750,6 +36755,15 @@ class LlamaCppBackend:
                                                     _sniffed
                                                     and not (
                                                         _confirm_gated_iteration
+                                                        and (
+                                                            permission_mode != "off"
+                                                            or tool_call_may_prompt(
+                                                                confirm_tool_calls = True,
+                                                                bypass_permissions = False,
+                                                                permission_mode = "off",
+                                                                name = _sniffed,
+                                                            )
+                                                        )
                                                         and not has_text_only_provisional_card(
                                                             _sniffed
                                                         )
@@ -37722,18 +37736,17 @@ class LlamaCppBackend:
                         )
 
                     # Bypass wins here too, so a direct internal caller with both
-                    # flags never prompts. "auto" pauses only high-risk calls;
-                    # "off" never prompts (sandbox stays on).
-                    needs_confirm = (
-                        bool(confirm_tool_calls)
-                        and not bypass_permissions
-                        and permission_mode != "off"
-                        and not never_needs_approval(decision.tool_name)
+                    # flags never prompts. "auto" pauses only high-risk calls; "off"
+                    # pauses only a high-risk python/terminal call without OS isolation.
+                    needs_confirm = needs_tool_confirmation(
+                        confirm_tool_calls = bool(confirm_tool_calls),
+                        bypass_permissions = bypass_permissions,
+                        permission_mode = permission_mode,
+                        name = decision.tool_name,
+                        arguments = decision.arguments,
+                        is_high_risk = is_high_risk_tool_call,
+                        never_needs = never_needs_approval,
                     )
-                    if needs_confirm and permission_mode == "auto":
-                        needs_confirm = is_high_risk_tool_call(
-                            decision.tool_name, decision.arguments
-                        )
                     approval_id = new_approval_id() if needs_confirm else ""
                     decision_slot = (
                         begin_tool_decision(session_id, approval_id) if needs_confirm else None

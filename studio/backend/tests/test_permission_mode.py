@@ -2865,18 +2865,50 @@ def test_unset_mode_behaves_as_auto():
     assert starts and starts[0]["awaiting_confirmation"] is False
 
 
-def test_off_mode_never_gates_and_keeps_sandbox():
-    # "Off": no prompts even for unsafe calls, but the sandbox stays on.
+def test_off_mode_never_gates_under_os_isolation_and_keeps_sandbox():
+    # "Off" (Full access in sandbox): no prompts even for unsafe calls while the OS sandbox is on,
+    # and the sandbox stays on.
+    from core.inference import os_sandbox
+
+    os_sandbox.note_tool_isolation("python", True, backend = "bubblewrap")
     events, exec_fn = _drive(
         [_tool_call("python", '{"code": "import os; os.remove(\\"x\\")"}'), "final"],
         [],
-        confirm_tool_calls = True,  # off must win over a stray confirm flag
+        confirm_tool_calls = True,  # the route arms the gate wherever it can prompt
         permission_mode = "off",
     )
     starts = _tool_starts(events)
     assert starts and starts[0]["awaiting_confirmation"] is False, _diag(events, exec_fn)
     assert starts[0]["approval_id"] == ""
     assert exec_fn.disable_sandbox_seen == [False], _diag(events, exec_fn)
+
+
+def test_off_mode_asks_for_a_risky_call_without_os_isolation():
+    # Without OS isolation "off" falls back to the auto rule for python/terminal.
+    from core.inference import os_sandbox
+
+    os_sandbox.note_tool_isolation("python", False, backend = "none")
+    events, exec_fn = _drive(
+        [_tool_call("python", '{"code": "import os; os.remove(\\"x\\")"}'), "final"],
+        ["allow"],
+        confirm_tool_calls = True,
+        permission_mode = "off",
+    )
+    starts = _tool_starts(events)
+    assert starts and starts[0]["awaiting_confirmation"] is True, _diag(events, exec_fn)
+    assert exec_fn.disable_sandbox_seen == [False], _diag(events, exec_fn)
+
+
+def test_off_mode_without_an_armed_gate_never_asks():
+    # A caller that cannot be prompted (the route leaves confirm off) keeps running unprompted.
+    events, exec_fn = _drive(
+        [_tool_call("python", '{"code": "import os; os.remove(\\"x\\")"}'), "final"],
+        [],
+        confirm_tool_calls = False,
+        permission_mode = "off",
+    )
+    starts = _tool_starts(events)
+    assert starts and starts[0]["awaiting_confirmation"] is False, _diag(events, exec_fn)
 
 
 def test_full_mode_never_gates_and_drops_sandbox():

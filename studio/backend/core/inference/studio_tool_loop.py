@@ -1265,7 +1265,11 @@ async def stream_with_studio_tools(
     tool_choice = run.tool_choice if run.tool_choice is not None else "auto"
     allowed_tool_names = _tool_names(tools)
     tool_call_timeout = policy.timeout
-    from state.tool_policy import account_tool_stream, normalize_tool_permissions
+    from state.tool_policy import (
+        account_tool_stream,
+        needs_tool_confirmation,
+        normalize_tool_permissions,
+    )
 
     permission_mode, bypass_permissions = normalize_tool_permissions(
         policy.permission_mode, policy.bypass_permissions
@@ -1709,14 +1713,15 @@ async def stream_with_studio_tools(
             call_id = decision.tool_call_id
             # Same id for a call the provider named; for one it did not, the card answers to the id the client minted
             card_id = decision.card_id
-            needs_confirmation = (
-                confirm_tool_calls
-                and not bypass_permissions
-                and permission_mode != "off"
-                and not never_needs_approval(name)
+            needs_confirmation = needs_tool_confirmation(
+                confirm_tool_calls = confirm_tool_calls,
+                bypass_permissions = bypass_permissions,
+                permission_mode = permission_mode,
+                name = name,
+                arguments = arguments,
+                is_high_risk = is_high_risk_tool_call,
+                never_needs = never_needs_approval,
             )
-            if needs_confirmation and permission_mode == "auto":
-                needs_confirmation = is_high_risk_tool_call(name, arguments)
             approval_id = new_approval_id() if needs_confirmation else ""
             decision_slot = (
                 begin_tool_decision(session_id, approval_id) if needs_confirmation else None

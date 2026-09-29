@@ -71,6 +71,69 @@ def normalize_tool_permissions(
     return permission_mode, False
 
 
+# The tools the OS sandbox wraps. "off" (Full access in sandbox) runs them unasked only while
+# that sandbox is really on; without it they ask before a risky call, as "auto" does.
+OS_SANDBOXED_TOOLS = frozenset({"python", "terminal"})
+
+
+def off_mode_still_gates(name: str) -> bool:
+    """Whether "off" must still be able to ask for this tool: python/terminal without OS isolation.
+
+    Reads the cached capability and never waits on a probe; an unknown answer counts as not
+    isolated, so a first call before the warm-up finishes asks rather than running unprompted.
+    """
+    if name not in OS_SANDBOXED_TOOLS:
+        return False
+    from core.inference.os_sandbox import cached_tool_isolation
+
+    return cached_tool_isolation(name) is not True
+
+
+def tool_call_may_prompt(
+    *, confirm_tool_calls: bool, bypass_permissions: bool, permission_mode: Optional[str], name: str
+) -> bool:
+    """Before the arguments are known: whether a call to ``name`` could stop and ask."""
+    if not confirm_tool_calls or bypass_permissions:
+        return False
+    if permission_mode == "off":
+        return off_mode_still_gates(name)
+    if permission_mode == "auto":
+        from core.inference.tools import is_always_safe_tool
+        return not is_always_safe_tool(name)
+    return True
+
+
+def needs_tool_confirmation(
+    *,
+    confirm_tool_calls: bool,
+    bypass_permissions: bool,
+    permission_mode: Optional[str],
+    name: str,
+    arguments,
+    is_high_risk = None,
+    never_needs = None,
+) -> bool:
+    """The one per-call approval decision every Studio tool loop makes.
+
+    Bypass (and "full") never asks; ``search_conversation`` never asks; "ask" asks for every
+    call; "auto" asks only for a high-risk call; "off" asks only for a high-risk python or
+    terminal call that would run without OS isolation. ``confirm_tool_calls`` is armed by the
+    route only where a prompt can reach the caller. ``is_high_risk``/``never_needs`` default to
+    the classifiers in core.inference.tools; a loop passes its own module's names.
+    """
+    if is_high_risk is None or never_needs is None:
+        from core.inference import tools
+        is_high_risk = is_high_risk or tools.is_high_risk_tool_call
+        never_needs = never_needs or tools.never_needs_approval
+    if not confirm_tool_calls or bypass_permissions or never_needs(name):
+        return False
+    if permission_mode == "off":
+        return off_mode_still_gates(name) and is_high_risk(name, arguments)
+    if permission_mode == "auto":
+        return is_high_risk(name, arguments)
+    return True
+
+
 def account_tool_stream(stream):
     from utils.account_context import current_account, is_owner_context, run_as
 

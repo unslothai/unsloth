@@ -652,7 +652,12 @@ def run_safetensors_tool_loop(
     # no mode is already resolved to "ask" at the request layer, so it never
     # arrives here as an ambiguous unset.
     from core.inference.tool_stream_exec import stream_tool_execution
-    from state.tool_policy import account_tool_stream, normalize_tool_permissions
+    from state.tool_policy import (
+        account_tool_stream,
+        needs_tool_confirmation,
+        normalize_tool_permissions,
+        tool_call_may_prompt,
+    )
 
     permission_mode, bypass_permissions = normalize_tool_permissions(
         permission_mode, bypass_permissions
@@ -807,12 +812,11 @@ def run_safetensors_tool_loop(
         # as "running" before the user has approved it. Suppress the early card in that case. In auto mode render_html
         # is always safe and never prompts, so keep its early canvas card; mirrors the GGUF path's _confirm_gated
         # exemption.
-        from core.inference.tools import is_always_safe_tool
-
-        _provisional_confirm_gated = (
-            bool(confirm_tool_calls)
-            and not bypass_permissions
-            and not (permission_mode == "auto" and is_always_safe_tool("render_html"))
+        _provisional_confirm_gated = tool_call_may_prompt(
+            confirm_tool_calls = bool(confirm_tool_calls),
+            bypass_permissions = bypass_permissions,
+            permission_mode = permission_mode,
+            name = "render_html",
         )
 
         def _should_start_provisional_render_html(content: str) -> bool:
@@ -1435,19 +1439,15 @@ def run_safetensors_tool_loop(
                 assistant_msg.setdefault("tool_calls", []).append(decision.as_assistant_tool_call())
 
             # Bypass wins here too, so a direct internal caller with both flags
-            # never prompts. "auto" pauses only high-risk calls; "off" never
-            # prompts (sandbox stays on).
-            from core.inference.tools import never_needs_approval
-
-            needs_confirm = (
-                bool(confirm_tool_calls)
-                and not bypass_permissions
-                and permission_mode != "off"
-                and not never_needs_approval(decision.tool_name)
+            # never prompts. "auto" pauses only high-risk calls; "off" pauses only a
+            # high-risk python/terminal call without OS isolation.
+            needs_confirm = needs_tool_confirmation(
+                confirm_tool_calls = bool(confirm_tool_calls),
+                bypass_permissions = bypass_permissions,
+                permission_mode = permission_mode,
+                name = decision.tool_name,
+                arguments = decision.arguments,
             )
-            if needs_confirm and permission_mode == "auto":
-                from core.inference.tools import is_high_risk_tool_call
-                needs_confirm = is_high_risk_tool_call(decision.tool_name, decision.arguments)
             approval_id = new_approval_id() if needs_confirm else ""
             decision_slot = begin_tool_decision(session_id, approval_id) if needs_confirm else None
             start_event = decision.tool_start_event()

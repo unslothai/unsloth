@@ -1,0 +1,63 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""What the Python and Terminal tools get on this computer, for any signed-in user.
+
+The chat permission picker reads it to say whether "Full access in sandbox" really has an OS
+sandbox behind it. It answers from the cached capability and never waits on a probe: before
+the first answer both tools read as not isolated, which is what the "off" gate assumes too.
+"""
+
+import sys
+
+from fastapi import APIRouter, Depends, Request
+from pydantic import BaseModel
+
+from auth.authentication import get_current_subject
+
+router = APIRouter()
+
+
+class SandboxCapabilityResponse(BaseModel):
+    platform: str
+    python_os_isolated: bool
+    terminal_os_isolated: bool
+    # "unknown" until the first check has answered.
+    backend: str
+    reason: str
+    # Filled by the setup flow for the owner on a direct local request; empty otherwise.
+    setup_action: str = ""
+    manual_command: str = ""
+
+
+def _setup_fields_for(request: Request) -> dict:
+    """Setup fields (setup_action, manual_command) this caller may be offered; none yet."""
+    return {}
+
+
+def _capability() -> dict:
+    from core.inference.os_sandbox import cached_tool_capability
+
+    python = cached_tool_capability("python")
+    terminal = cached_tool_capability("terminal")
+    known = [item for item in (python, terminal) if item is not None]
+    isolated = [item for item in known if item[0]]
+    backend = (isolated or known or [(False, "unknown", "")])[0][1]
+    if python is None or terminal is None:
+        reason = "The sandbox check has not finished yet."
+    else:
+        reason = python[2] if not python[0] else terminal[2]
+    return {
+        "platform": sys.platform,
+        "python_os_isolated": bool(python and python[0]),
+        "terminal_os_isolated": bool(terminal and terminal[0]),
+        "backend": backend,
+        "reason": reason,
+    }
+
+
+@router.get("/capability", response_model = SandboxCapabilityResponse)
+async def sandbox_capability(
+    request: Request, current_subject: str = Depends(get_current_subject)
+) -> SandboxCapabilityResponse:
+    return SandboxCapabilityResponse(**_capability(), **_setup_fields_for(request))
