@@ -90,6 +90,13 @@ class ContextParallelManager:
             inputs["position_ids"] = (
                 torch.arange(seq_len, device = input_ids.device).expand(bsz, -1).contiguous()
             )
+        mask = inputs.get("attention_mask")
+        # The attention hook drops the mask; only right padding (never attended by earlier
+        # tokens under a causal mask) is safe to drop.
+        if isinstance(mask, torch.Tensor) and mask.ndim == 2 and (mask[:, 1:] > mask[:, :-1]).any():
+            raise ValueError(
+                "Unsloth: context parallelism needs right-padded batches without masked holes."
+            )
         labels = inputs.get("labels")
         if "shift_labels" not in inputs and labels is not None:
             inputs["shift_labels"] = F.pad(labels, (0, 1), value = -100)[:, 1:].contiguous()
@@ -201,6 +208,12 @@ def patch_sft_trainer() -> None:
                 "Unsloth: context parallelism needs loss_type = 'nll' without "
                 "label_smoothing_factor or compute_loss_func."
             )
+        import accelerate
+        from packaging.version import Version
+
+        # Older accelerate ignores the "cp" mesh dim, so CP peers would get different batches.
+        if Version(accelerate.__version__) < Version("1.10.0"):
+            raise NotImplementedError("Unsloth: context parallelism needs accelerate >= 1.10.0.")
         if not _supports_context_parallel(self.model):
             raise NotImplementedError(
                 "Unsloth: context parallelism currently supports Llama-style attention only "

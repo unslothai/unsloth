@@ -41,6 +41,18 @@ def test_labels_shift_before_sharding_and_pad_to_load_balancer_chunks():
     assert inputs["input_ids"].shape == (1, 8)
 
 
+@pytest.mark.parametrize("mask", [[[0, 1, 1, 1]], [[1, 0, 1, 1]]])
+def test_left_padded_or_holed_masks_are_refused(mask):
+    inputs = {"input_ids": torch.ones(1, 4, dtype = torch.long), "attention_mask": torch.tensor(mask)}
+    with pytest.raises(ValueError, match = "right-padded"):
+        _manager()._prepare_inputs(inputs)
+    right = {
+        "input_ids": torch.ones(1, 4, dtype = torch.long),
+        "attention_mask": torch.tensor([[1, 1, 0, 0]]),
+    }
+    _manager()._prepare_inputs(right)
+
+
 def test_active_manager_resets_when_the_step_raises(monkeypatch):
     monkeypatch.setattr(cp, "context_parallel", _fake_context_parallel([]))
     manager = _manager()
@@ -259,4 +271,18 @@ def test_label_dropping_loss_paths_are_refused(monkeypatch, attrs):
         init["compute_loss_func"] = attrs["compute_loss_func"]
     Trainer = _patched_trainer(monkeypatch, **init)
     with pytest.raises(NotImplementedError, match = "loss_type = 'nll'"):
+        Trainer()
+
+
+def test_old_accelerate_is_refused(monkeypatch):
+    import types, accelerate
+
+    monkeypatch.setattr(cp.dist, "is_available", lambda: True)
+    monkeypatch.setattr(cp.dist, "is_initialized", lambda: True)
+    monkeypatch.setattr(cp.dist, "get_world_size", lambda: 2)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    monkeypatch.setattr(accelerate, "__version__", "1.9.0")
+    args = types.SimpleNamespace(context_parallel_size = 2, label_smoothing_factor = 0.0)
+    Trainer = _patched_trainer(monkeypatch, args = args)
+    with pytest.raises(NotImplementedError, match = "accelerate >= 1.10.0"):
         Trainer()
