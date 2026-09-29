@@ -26,7 +26,6 @@ import { Tick02Icon } from "@/lib/tick-icon";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   type KeyboardEvent,
-  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -113,16 +112,6 @@ export function ArtifactSurface({
   const [viewMode, setViewMode] = useState<ArtifactViewMode>("preview");
   // Follow the view the opener asked for (Preview vs Code button), per artifact.
   const requestedView = useChatArtifactsStore((state) => state.requestedView);
-  const setArtifactView = useChatArtifactsStore(
-    (state) => state.setArtifactView,
-  );
-  const showView = useCallback(
-    (mode: ArtifactViewMode) => {
-      setViewMode(mode);
-      setArtifactView(mode);
-    },
-    [setArtifactView],
-  );
   const [copied, setCopied] = useState(false);
   const t = useT();
   const [consoleOpen, setConsoleOpen] = useState(false);
@@ -267,7 +256,7 @@ export function ArtifactSurface({
                 type="button"
                 role="tab"
                 disabled={isLoadingArtifact && !isPreview}
-                onClick={() => showView(mode)}
+                onClick={() => setViewMode(mode)}
                 className={cn(
                   "flex size-8 items-center justify-center rounded-full text-muted-foreground transition-colors",
                   effectiveViewMode === mode
@@ -302,7 +291,7 @@ export function ArtifactSurface({
           aria-label={reloadLabel}
           title={reloadLabel}
           onClick={() => {
-            if (effectiveViewMode !== "preview") showView("preview");
+            if (effectiveViewMode !== "preview") setViewMode("preview");
             setReloadNonce((nonce) => nonce + 1);
           }}
           className={cn(
@@ -320,7 +309,7 @@ export function ArtifactSurface({
           title={consoleLabel}
           onClick={() => {
             if (effectiveViewMode !== "preview") {
-              showView("preview");
+              setViewMode("preview");
               setConsoleOpen(true);
               return;
             }

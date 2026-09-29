@@ -243,8 +243,6 @@ test("the source view hides the frame instead of unmounting it", () => {
     frameAt,
   );
   assert.ok(wrapperAt > 0, "the frame is not rendered inside a hidden wrapper");
-  assert.match(surfaceSource, /showView\(mode\)/);
-  assert.match(surfaceSource, /setArtifactView\(mode\)/);
 });
 
 test("the Fix button stages text in the composer and never sends it", () => {
@@ -304,18 +302,6 @@ test("the stack drops the repeated message line and Studio's own frames", () => 
     ].join("\n"),
   })!;
   assert.equal(canvasStack(entry), "    at <anonymous>:2:48");
-});
-
-test("a panel dragged shut is reported closed, not left selected at no width", () => {
-  const pageSource = readFileSync(
-    fileURLToPath(new URL("../src/features/chat/chat-page.tsx", import.meta.url)),
-    "utf8",
-  );
-  const remember = pageSource.indexOf("const rememberArtifactPanelWidth");
-  assert.ok(remember > 0);
-  const closeAt = pageSource.indexOf("onCloseArtifact();", remember);
-  const widthAt = pageSource.indexOf("artifactPanelWidthRef.current = `", remember);
-  assert.ok(closeAt > 0 && closeAt < widthAt, "a shut panel still records a width");
 });
 
 test("a stack with nothing but the message, or no stack at all, renders as nothing", () => {

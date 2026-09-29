@@ -22,14 +22,13 @@ export function clearAutoOpenedArtifacts(): void {
 type ChatArtifactsState = {
   artifactsById: Record<string, ChatArtifact>;
   selectedArtifactId: string | null;
-  openSequence: number;
   surface: ChatArtifactSurface;
+  // View the surface should show on the next open (Preview vs Code button).
   requestedView: ArtifactViewMode;
   openArtifact: (
     artifact: ChatArtifact,
     options?: { surface?: ChatArtifactSurface; view?: ArtifactViewMode },
   ) => void;
-  setArtifactView: (view: ArtifactViewMode) => void;
   // Fix text awaiting a composer: the fullscreen overlay has none to reach. Never sent.
   pendingFixPrompt: string | null;
   stageFixPrompt: (prompt: string) => void;
@@ -44,7 +43,6 @@ type ChatArtifactsState = {
 export const useChatArtifactsStore = create<ChatArtifactsState>((set) => ({
   artifactsById: {},
   selectedArtifactId: null,
-  openSequence: 0,
   surface: "panel",
   requestedView: "preview",
   openArtifact: (artifact, options) =>
@@ -54,11 +52,9 @@ export const useChatArtifactsStore = create<ChatArtifactsState>((set) => ({
         [artifact.id]: artifact,
       },
       selectedArtifactId: artifact.id,
-      openSequence: state.openSequence + 1,
       surface: options?.surface ?? state.surface,
       requestedView: options?.view ?? "preview",
     })),
-  setArtifactView: (view) => set({ requestedView: view }),
   pendingFixPrompt: null,
   stageFixPrompt: (prompt) => set({ pendingFixPrompt: prompt }),
   clearFixPrompt: () => set({ pendingFixPrompt: null }),

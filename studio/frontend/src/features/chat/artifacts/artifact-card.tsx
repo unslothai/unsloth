@@ -60,10 +60,6 @@ export function ArtifactCard({
   const selectedArtifactId = useChatArtifactsStore(
     (state) => state.selectedArtifactId,
   );
-  const openView = useChatArtifactsStore((state) => state.requestedView);
-  const closeArtifactSurface = useChatArtifactsStore(
-    (state) => state.closeArtifactSurface,
-  );
   const artifact = useMemo<ChatArtifact>(
     () =>
       createChatArtifact({
@@ -116,10 +112,6 @@ export function ArtifactCard({
 
   const renderButton = (view: ArtifactViewMode) => {
     const isCode = view === "source";
-    const showing =
-      surface === "panel" &&
-      selectedArtifactId === artifact.id &&
-      openView === view;
     return (
       <button
         key={view}
@@ -130,15 +122,7 @@ export function ArtifactCard({
           isStreaming &&
             "border-border/80 bg-muted/20 dark:border-border/70 dark:bg-muted/15",
         )}
-        onClick={() => {
-          if (showing) {
-            closeArtifactSurface();
-            return;
-          }
-          openArtifact(artifact, { surface, view });
-        }}
-        // State rides on aria-expanded, not the name: the startup-bundle harness counts cards by name.
-        aria-expanded={showing}
+        onClick={() => openArtifact(artifact, { surface, view })}
         aria-label={`Open ${artifact.title} ${isCode ? "code" : "preview"}`}
       >
         {isStreaming ? (
