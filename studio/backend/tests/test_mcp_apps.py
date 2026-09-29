@@ -843,3 +843,28 @@ def test_a_widget_call_rides_the_conversation_stdio_session(tmp_path, monkeypatc
     )
     execute_tool("mcp__s1__refresh", {}, session_id = "project-p", thread_id = "t-1")
     assert scopes[0] == scopes[1], "widget and chat scopes diverged"
+
+
+@pytest.mark.parametrize("mode", ["off", "full"])
+def test_a_widget_call_cannot_name_the_studio_auth_directory(tmp_path, monkeypatch, mode):
+    from fastapi import HTTPException
+    from models.mcp_servers import McpUiToolCallRequest
+
+    routes_mcp = _server_with_tools(tmp_path, monkeypatch, [_APP_ONLY_TOOL])
+    monkeypatch.setattr(
+        routes_mcp, "call_tool_structured_sync", lambda **kw: pytest.fail("reached server")
+    )
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(
+            routes_mcp.call_mcp_ui_tool(
+                "s1",
+                McpUiToolCallRequest(
+                    tool_name = "refresh",
+                    arguments = {"path": "~/.unsloth/studio/auth/auth.db"},
+                    permission_mode = mode,
+                    approved = True,
+                ),
+                current_subject = "u",
+            )
+        )
+    assert exc.value.status_code == 403
