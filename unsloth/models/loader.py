@@ -402,7 +402,7 @@ def _adapter_weight_shapes(
     cache_dir = None,
     header_only = False,
 ):
-    """{tensor name: shape} of a saved adapter without loading weights, or None. header_only reads an uncached hub safetensors header instead of downloading the adapter."""
+    """{tensor name: shape} of a saved adapter without loading weights, or None. header_only range-reads an uncached hub header."""
     filenames = ("adapter_model.safetensors", "adapter_model.bin")
     try:
         local = os.path.expanduser(adapter_name)
@@ -467,12 +467,10 @@ _ADAPTER_VOCAB_SUFFIXES = (
 
 
 def _adapter_vocab_rows(adapter_name, **hub_kwargs):
-    """Vocab rows the adapter's saved embedding / lm_head copies (or embedding LoRA) expect, or None."""
     rows = []
     for key, shape in (_adapter_weight_shapes(adapter_name, **hub_kwargs) or {}).items():
         if len(shape) != 2:
             continue
-        # A LoRA-wrapped head saves base_layer.weight and a vocab-sized lora_B.
         key = key.replace(".base_layer.", ".").replace(".lora_B.", ".")
         if key.endswith(_ADAPTER_VOCAB_SUFFIXES):
             rows.append(shape[0])
@@ -500,7 +498,7 @@ def _resize_vocab(model, new_size):
 
 
 def _grow_vocab_for_adapter(model, adapter_name, **hub_kwargs):
-    """An adapter trained after adding tokens saves embed_tokens / lm_head with more rows than its base, which PeftModel refuses to load (#1215): grow the base to match. Never shrinks."""
+    """An adapter trained after adding tokens saves more embedding rows than its base, which PeftModel refuses to load (#1215)."""
     rows = _adapter_vocab_rows(adapter_name, **hub_kwargs)
     try:
         current = model.get_input_embeddings().weight.shape[0]
@@ -2540,7 +2538,7 @@ class FastModel(FastBaseModel):
         # A PEFT load resolved model_name to the base, which the caller's ref is not for.
         model_revision = base_revision if not is_peft else None
 
-        # An adapter with added tokens resizes the embedding after the load (_grow_vocab_for_adapter), so it gates the offload like resize_model_vocab. The adapter is fetched later, so an uncached one is read from its hub header.
+        # _grow_vocab_for_adapter resizes the embedding after the load, which the offload hooks do not survive.
         _adapter_grows_vocab = False
         if is_peft and not fast_inference and offload_embedding == OFFLOAD_EMBEDDING_AUTO:
             _adapter_rows = _adapter_vocab_rows(

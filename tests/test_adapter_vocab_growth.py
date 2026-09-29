@@ -69,7 +69,6 @@ def test_base_grows_to_fit_adapter(tmp_path):
 
 
 def test_short_lm_head_alone_is_grown(tmp_path):
-    # patch_model_and_tokenizer grows only the input embedding to len(tokenizer).
     from unsloth.models.loader import _grow_vocab_for_adapter
 
     model = _tiny_model()
@@ -90,7 +89,6 @@ def test_never_shrinks_or_touches_matching_base(tmp_path):
 
 
 def test_uncached_hub_adapter_is_read_from_its_header(monkeypatch):
-    # FastModel decides the embedding offload before the adapter is downloaded.
     huggingface_hub = pytest.importorskip("huggingface_hub")
     from types import SimpleNamespace
     from unsloth.models.loader import _adapter_vocab_rows
@@ -117,7 +115,6 @@ def test_uncached_hub_adapter_is_read_from_its_header(monkeypatch):
 
 
 def test_lora_wrapped_head_rows(tmp_path):
-    # PEFT keys when lm_head itself is a LoRA target after the vocab grew.
     from unsloth.models.loader import _adapter_vocab_rows
 
     path = tmp_path / "a"
