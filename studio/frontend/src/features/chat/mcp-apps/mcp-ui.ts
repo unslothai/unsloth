@@ -65,7 +65,6 @@ export function isMcpUiToolResult(
   );
 }
 
-/** The images a widget result carried alongside its text, for replay to the model. */
 export function mcpUiReplayImages(
   val: unknown,
   toolName: string,

@@ -668,8 +668,7 @@ async def read_mcp_ui_resource(
 ):
     server = _ui_server_or_404(server_id, via_api_key)
     uri = (uri or "").strip()
-    # Any ui:// resource of this server, not only tool templates: widgets read their own assets through
-    # resources/read. Other schemes stay refused, since a filesystem server maps file:// onto the host.
+    # Any ui:// resource (widgets read their own assets), no other scheme: a filesystem server maps file:// onto the host.
     if not uri.startswith(UI_RESOURCE_SCHEME):
         raise HTTPException(status_code = 400, detail = "uri must be a ui:// resource")
     from core.inference.tools import (

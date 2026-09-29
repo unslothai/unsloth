@@ -218,8 +218,7 @@ export function McpAppFrame(props: McpAppFrameProps) {
         return { content: [{ type: "text", text: DECLINED }], isError: true };
       }
       const result = await send(true);
-      // Granted only once the approved call went through, as the model's confirm flow does:
-      // a press whose call failed must not silently auto-approve every later call.
+      // After the call, as the model's confirm flow does: a failed press must not auto-approve later calls.
       if (always) {
         useChatRuntimeStore.getState().allowToolAlways(scope, toolKey);
       }
@@ -255,7 +254,6 @@ export function McpAppFrame(props: McpAppFrameProps) {
           if (typeof params.uri !== "string" || !params.uri) {
             throw new RpcError("resources/read requires a uri", INVALID_PARAMS);
           }
-          // The backend limits this to ui:// resources of this server.
           const res = await readMcpUiResource(now.serverId, params.uri, {
             threadId: now.threadId,
             sessionId: now.sessionId,

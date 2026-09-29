@@ -2158,7 +2158,6 @@ def call_tool_sync(
     return _flatten_result(result, ui_resource_uri)
 
 
-# Bounded: this crosses to a browser.
 MAX_UI_TOOL_RESULT_CHARS = 4_000_000
 
 
