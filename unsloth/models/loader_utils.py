@@ -1069,6 +1069,7 @@ def _prefer_legacy_lowercase_cache(
     repo_id,
     local_files_only = False,
     cache_dir = None,
+    revision = None,
 ):
     # The mapper returned lowercased ids before #2506, so an offline cache may only hold that spelling.
     if not (local_files_only or _env_says_offline()) or not isinstance(repo_id, str):
@@ -1086,7 +1087,10 @@ def _prefer_legacy_lowercase_cache(
 
         def cached(repo, files):
             return any(
-                isinstance(try_to_load_from_cache(repo, f, cache_dir = cache_dir), str) for f in files
+                isinstance(
+                    try_to_load_from_cache(repo, f, cache_dir = cache_dir, revision = revision), str
+                )
+                for f in files
             )
 
         # A config-only canonical snapshot must not hide a legacy one that also has weights.
@@ -1114,6 +1118,7 @@ def get_model_name(
     trust_remote_code = False,
     local_files_only = False,
     cache_dir = None,
+    revision = None,
 ):
     assert load_in_fp8 in (True, False, "block")
     new_model_name = _resolve_with_mappers(
@@ -1170,7 +1175,9 @@ def get_model_name(
         new_model_name = model_name
     else:
         # Also when the result equals the input: main returned it lowercased, so that is what is cached.
-        new_model_name = _prefer_legacy_lowercase_cache(new_model_name, local_files_only, cache_dir)
+        new_model_name = _prefer_legacy_lowercase_cache(
+            new_model_name, local_files_only, cache_dir, revision
+        )
 
     return new_model_name
 

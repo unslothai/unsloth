@@ -57,6 +57,7 @@ def test_reports_actual_repo_after_mapping_and_capability_normalization(cls, exa
         on_model_resolved = reports.append,
         os = os,
         kwargs = {},
+        revision = None,
         quantization_config = None,
     )
     module = ast.Module(body = function.body[start:end], type_ignores = [])

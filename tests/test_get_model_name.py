@@ -166,7 +166,7 @@ class TestGetModelName(unittest.TestCase):
             ({canonical, canonical.lower()}, canonical),
             (set(), canonical),
         ):
-            fake = lambda repo_id, filename, cache_dir = None: (
+            fake = lambda repo_id, filename, cache_dir = None, revision = None: (
                 "/cache/config.json" if repo_id in cached else None
             )
             for offline_kwargs, env in (
@@ -195,7 +195,7 @@ class TestGetModelName(unittest.TestCase):
         with (
             patch(
                 "huggingface_hub.try_to_load_from_cache",
-                lambda repo_id, filename, cache_dir = None: (
+                lambda repo_id, filename, cache_dir = None, revision = None: (
                     "/cache/f" if (repo_id, filename) in files else None
                 ),
             ),
@@ -210,6 +210,22 @@ class TestGetModelName(unittest.TestCase):
             self.assertEqual(
                 get_model_name("unsloth/Qwen3-30B-A3B", load_in_4bit = True),
                 "unsloth/qwen3-30b-a3b",
+            )
+        # The probe checks the requested revision, not main.
+        with (
+            patch(
+                "huggingface_hub.try_to_load_from_cache",
+                lambda repo_id, filename, cache_dir = None, revision = None: (
+                    "/cache/f" if repo_id == canonical.lower() and revision == "release" else None
+                ),
+            ),
+            patch.dict("os.environ", {"HF_HUB_OFFLINE": "1"}),
+        ):
+            self.assertEqual(
+                get_model_name(
+                    "unsloth/Meta-Llama-3.1-8B-Instruct", load_in_4bit = True, revision = "release"
+                ),
+                canonical.lower(),
             )
         # Online never consults the cache: the canonical id is always returned.
         with (
