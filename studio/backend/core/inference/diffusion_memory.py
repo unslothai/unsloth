@@ -1592,6 +1592,12 @@ def apply_memory_plan(
                     "the text encoder could not be streamed beside the resident quantised "
                     "transformer, and whole-module offload cannot move torchao weights"
                 )
+            if _pipe_denoisers_hold_torchao(pipe) and not _model_offload_fits_quantised(plan):
+                # Whole-module offload would onload the quantised transformer whole, which is what streaming avoided.
+                raise RuntimeError(
+                    "group offloading could not be set up for the quantised transformer, and it does not "
+                    "fit the GPU whole for whole-module offload"
+                )
             _fallback_to_model_offload()
             policy = OFFLOAD_MODEL
     elif policy == OFFLOAD_STREAMING:

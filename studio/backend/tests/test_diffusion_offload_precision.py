@@ -751,3 +751,23 @@ def test_every_group_offload_site_shares_the_pin_total():
     source = inspect.getsource(mem)
     calls = re.findall(r"(?<!def )_torchao_group_offload_kwargs\(([^)]*)\)", source)
     assert calls and all("pinned_mib" in args for args in calls)
+
+
+@pytest.mark.parametrize("fits_whole, raises", [(False, True), (True, False)])
+def test_failed_group_setup_never_onloads_an_oversized_quantised_transformer(monkeypatch, fits_whole, raises):
+    """Streaming was the only placement the quantised transformer fits; model offload would OOM on first onload."""
+    calls = []
+    pipe = types.SimpleNamespace(enable_model_cpu_offload = lambda device = None: calls.append("model_offload"))
+    monkeypatch.setattr(mem, "_apply_group_offload", lambda *a, **k: False)
+    monkeypatch.setattr(mem, "_pipe_denoisers_hold_torchao", lambda pipe: True)
+    monkeypatch.setattr(mem, "_model_offload_fits_quantised", lambda plan: fits_whole)
+    monkeypatch.setattr(mem, "keep_cpu_weights_on_offload", lambda *a, **k: 0)
+    monkeypatch.setattr(mem, "_enable_vae_saver", lambda *a, **k: False)
+    plan = _plan(OFFLOAD_GROUP)
+    if raises:
+        with pytest.raises(RuntimeError, match = "does not fit the GPU whole"):
+            mem.apply_memory_plan(pipe, plan, device = "cuda")
+        assert "model_offload" not in calls
+    else:
+        effective, _ = mem.apply_memory_plan(pipe, plan, device = "cuda")
+        assert effective == OFFLOAD_MODEL
