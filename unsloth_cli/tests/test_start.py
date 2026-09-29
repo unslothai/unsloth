@@ -4539,8 +4539,7 @@ def test_active_reading_follows_the_repo_with_bytes_in_flight():
     )
     transferring = ("unsloth/base-4bit", {"downloaded_bytes": 2 * 1024**3, "completed_bytes": 0})
 
-    # A base already complete in the cache is not the transfer to render, even though it
-    # carries by far the most bytes.
+    # A complete cached base is not the transfer to render, despite holding the most bytes.
     assert start._active_reading([model, cached_base, transferring]) is transferring
     # Nothing moving: fall back to the model's own reading rather than a stale companion.
     assert start._active_reading([model, cached_base]) is model
@@ -4550,12 +4549,10 @@ def test_download_progress_display_restarts_when_the_repo_changes(monkeypatch, c
     monkeypatch.setattr(start.sys.stdout, "isatty", lambda: False, raising = False)
     display = start._DownloadProgressDisplay()
 
-    # An adapter finishing near the top of its bar.
     display.update(
         {"downloaded_bytes": 95, "completed_bytes": 0, "expected_bytes": 100, "progress": 0.95},
         "owner/adapter",
     )
-    # Then a multi-gigabyte base starting from nothing.
     display.update(
         {
             "downloaded_bytes": 1024**3,

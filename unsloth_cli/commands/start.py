@@ -870,16 +870,11 @@ class _DownloadProgressDisplay:
         source: Optional[str] = None,
     ) -> None:
         if source != self._source:
-            # A different repo is a different transfer: its bytes and percentage are not a
-            # continuation of the last one. Without this the redirected-output branch below,
-            # which only prints when the bucket rises, stays silent for a whole base
-            # download that starts near zero after an adapter finished near the top.
+            # A new repo is a new transfer; else redirected output (prints only on a rising bucket) stays silent for a base that starts after the adapter finished.
             self._source = source
             self._samples.clear()
             self._last_expected = 0
-            # Not `_shown`: `_last_bucket = -1` already lets the next line through, while
-            # clearing it would strand a finished bar below 100% and drop the closing
-            # newline, since `complete()` and `close()` both gate on it.
+            # Keep `_shown`: `complete()` and `close()` gate on it.
             self._last_bucket = -1
         downloaded = max(0, int(progress.get("downloaded_bytes") or 0))
         completed = max(0, int(progress.get("completed_bytes") or 0))
@@ -974,18 +969,8 @@ def _active_reading(
     grown: "frozenset[str]" = frozenset(),
     last: Optional[str] = None,
 ) -> tuple[str, dict]:
-    """The one repo whose transfer the progress line should follow.
-
-    A model, its base, and the repos the loader may substitute for that base are separate
-    downloads, and the substitutes are alternatives, so no sum of them is a total anyone
-    is fetching: adding the totals of two candidate bases -- or of a base already sitting
-    complete in the cache -- renders a percentage against a denominator that does not
-    exist. Bytes are still summed for liveness, since any repo moving is progress, but the
-    line follows whichever repo has bytes in flight, and the model itself when none does.
-    """
-    # A repo seen to move wins over one that merely holds bytes: an abandoned `.incomplete`
-    # blob can be larger than the live transfer's current partial, and a shard finalizing
-    # drops the live figure, so the biggest partial on disk is not the running download.
+    """The one repo the progress line follows: substitute bases are alternatives, so their totals never sum."""
+    # A repo seen to move beats a bigger abandoned `.incomplete` blob.
     moved = [item for item in readings if item[0] in grown and _in_flight_bytes(item[1]) > 0]
     active = max(moved or readings, key = lambda item: _in_flight_bytes(item[1]))
     if _in_flight_bytes(active[1]) > 0:
@@ -1128,9 +1113,7 @@ class _ModelDownloadProgress:
                 if repo in self._repo_bytes
                 and max(0, int(item.get("downloaded_bytes") or 0)) > self._repo_bytes[repo]
             )
-            # The liveness baseline only ever rises: a reading can fall for reasons that
-            # are not bytes leaving the disk, and following it down would let the same
-            # bytes count as fresh growth on the way back up.
+            # Only ever rises, so a dip and recovery never counts as fresh growth.
             for repo, item in readings:
                 self._repo_bytes[repo] = max(
                     self._repo_bytes.get(repo, 0), max(0, int(item.get("downloaded_bytes") or 0))
