@@ -102,7 +102,9 @@ class _FakeGenerating:
     def __init__(self):
         self.allocated = []
 
-    def _prepare_static_cache(self, cache_implementation, batch_size, max_cache_len, *rest, **kwargs):
+    def _prepare_static_cache(
+        self, cache_implementation, batch_size, max_cache_len, *rest, **kwargs
+    ):
         self.allocated.append(max_cache_len)
         return types.SimpleNamespace(max_cache_len = max_cache_len)
 
@@ -110,12 +112,24 @@ class _FakeGenerating:
         return True
 
 
-def _generate(model, scopes, batch_size, length, positional = False):
+def _generate(
+    model,
+    scopes,
+    batch_size,
+    length,
+    positional = False,
+):
     with _CompileDecodeOnRepeat(model):
         if positional:  # transformers 5.2 - 5.5 call shape
             model._prepare_static_cache("static", batch_size, length, {})
         else:  # 5.17 passes keywords
-            model._prepare_static_cache(cache_implementation = "static", batch_size = batch_size, max_cache_len = length, prefill_chunk_size = None, model_kwargs = {})
+            model._prepare_static_cache(
+                cache_implementation = "static",
+                batch_size = batch_size,
+                max_cache_len = length,
+                prefill_chunk_size = None,
+                model_kwargs = {},
+            )
         compiled = model._valid_auto_compile_criteria({}, None)
         return compiled, len(scopes)
 
