@@ -206,6 +206,10 @@ def test_distro_jdk_configuration_is_bound_but_its_credentials_are_not(tmp_path,
     outside = tmp_path / "outside"
     outside.mkdir()
     secrets.append(outside / "id_rsa")
+    # A non-JDK tree the glob also matches.
+    service = etc / "java-service"
+    (service / "security").mkdir(parents = True)
+    secrets += [service / "security" / "token", service / "app.properties"]
     for secret in secrets:
         secret.write_text("SECRET", encoding = "utf-8")
     # Bind-source symlinks could expose host secrets.

@@ -186,7 +186,14 @@ def _etc_java_binds() -> tuple[str, ...]:
         for root, dirs, files in os.walk(top):
             dirs.sort()
             security = os.path.join(root, "security")
-            if "security" in dirs and not os.path.islink(security):
+            # The glob also matches non-JDK trees; every JDK security/ holds java.security.
+            marker = os.path.join(security, "java.security")
+            if (
+                "security" in dirs
+                and not os.path.islink(security)
+                and os.path.isfile(marker)
+                and not os.path.islink(marker)
+            ):
                 dirs.remove("security")
                 binds.append(security)
                 binds.extend(
