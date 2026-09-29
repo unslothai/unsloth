@@ -347,8 +347,7 @@ function isMcpImageResult(val: unknown): val is McpImageResult {
   );
 }
 
-// The adapter's McpUiToolResult, declared locally like isMcpImageResult below
-// so this card does not pull the chat adapter in for a shape check.
+// Declared locally, like isMcpImageResult, so this card does not import the chat adapter.
 interface McpUiResult {
   text: string;
   ui: {
@@ -360,8 +359,7 @@ interface McpUiResult {
 }
 
 function isMcpUiResult(val: unknown, toolName?: string): val is McpUiResult {
-  // Only an MCP result can be carrying the wrapper the backend writes; an
-  // imported conversation stores whatever object its own host kept.
+  // Name-gated: an imported conversation stores whatever object its host kept.
   if (toolName !== undefined && mcpServerIdFromToolName(toolName) === null) {
     return false;
   }
@@ -375,10 +373,7 @@ function isMcpUiResult(val: unknown, toolName?: string): val is McpUiResult {
   );
 }
 
-/**
- * The widget an MCP Apps tool result renders through. Outside
- * `ToolFallbackContent` so it stays on screen with the card collapsed.
- */
+/** Outside ToolFallbackContent so it stays on screen with the card collapsed. */
 function ToolFallbackMcpApp({
   toolName,
   result,
@@ -414,7 +409,6 @@ function ToolFallbackMcpApp({
       toolArgs={toolArgs}
       resultImages={result.images}
       threadId={threadId}
-      // execute_tool's scope, so the widget reaches the same stdio process.
       sessionId={sandboxSessionIdFor(threadId, projectId)}
     />
   );
@@ -434,7 +428,6 @@ function ToolFallbackResult({
   }
 
   const uiResult = isMcpUiResult(result, toolName) ? result : null;
-  // A widget result may carry images too; both panes read the same shape.
   const imageResult = isMcpImageResult(result)
     ? result
     : uiResult?.images?.length

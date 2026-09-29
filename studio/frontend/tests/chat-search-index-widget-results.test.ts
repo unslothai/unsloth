@@ -10,8 +10,6 @@ import ts from "typescript";
 
 import { splitMcpImages } from "../src/features/chat/api/mcp-images.ts";
 
-// Lifted out of the hook rather than imported: the module pulls in chat storage
-// and the runtime store for what is, here, two pure functions.
 const source = readFileSync(
   fileURLToPath(new URL("../src/features/chat/hooks/use-chat-search-index.ts", import.meta.url)),
   "utf8",
@@ -42,8 +40,6 @@ const searchableText = new Function(
   }; return searchableText;`,
 )(splitMcpImages) as (value: unknown, depth?: number, toolName?: string) => string;
 
-// What chat-adapter.ts persists for an MCP Apps result. `text` was on screen;
-// everything under `ui` is seed data for the frame.
 const WIDGET_RESULT = {
   text: "San Francisco: 18C, humidity 72%.",
   ui: {
@@ -57,8 +53,6 @@ const WIDGET_RESULT = {
 test("a widget result is indexed by what was on screen, not its seed data", () => {
   const indexed = searchableText(WIDGET_RESULT, 0, "mcp__a3f9__get_weather");
   assert.equal(indexed, "San Francisco: 18C, humidity 72%.");
-  // The seed payload is bounded at a megabyte and rebuilt across every thread,
-  // so walking it is both slow and a way to match on text nobody ever saw.
   for (const hidden of ["ui://", "KSFO-INTERNAL", "opaque-paging-token"]) {
     assert.ok(!indexed.includes(hidden), `${hidden} must not be searchable`);
   }
@@ -66,8 +60,7 @@ test("a widget result is indexed by what was on screen, not its seed data", () =
 });
 
 test("someone else's result in that shape is still indexed whole", () => {
-  // openwebui-import.ts stores whatever object the export carried, under whatever
-  // tool name it carried, so shape alone must not decide this.
+  // Imports keep arbitrary objects under any tool name, so shape alone must not decide.
   const imported = {
     text: "Q3 summary",
     ui: { resourceUri: "ui://reports/q3" },
@@ -83,7 +76,6 @@ test("someone else's result in that shape is still indexed whole", () => {
 
 test("ordinary results are untouched", () => {
   assert.equal(searchableText("plain tool output", 0, "terminal"), "plain tool output");
-  // The image sentinel is still dropped, and binary keys still skipped.
   assert.equal(
     searchableText('shot\n__MCP_IMAGES__:[{"data":"AAAA","mimeType":"image/png"}]', 0, "mcp__a__b"),
     "shot",

@@ -8,8 +8,7 @@ import { fileURLToPath } from "node:url";
 
 import ts from "typescript";
 
-// No DOM renderer here and the frame pulls in React plus the runtime store, so
-// assert the wiring in the source, the way artifact-frame-network-access.test.ts does.
+// No DOM renderer: assert the wiring in the source.
 const FRAME = "../src/features/chat/mcp-apps/mcp-app-frame.tsx";
 
 const path = fileURLToPath(new URL(FRAME, import.meta.url));
@@ -22,7 +21,6 @@ const source = ts.createSourceFile(
   ts.ScriptKind.TSX,
 );
 
-/** The body of the `const <name> = ...` initializer, whatever it is wrapped in. */
 function declarationText(name: string): string {
   let found: string | null = null;
   const visit = (node: ts.Node): void => {
@@ -41,7 +39,6 @@ function declarationText(name: string): string {
   return found as unknown as string;
 }
 
-/** A standalone `export function` from the frame, evaluated on its own. */
 function liftFunction<T>(signature: string): T {
   const start = text.indexOf(signature);
   assert.ok(start >= 0, `${signature} is no longer in mcp-app-frame.tsx`);
@@ -59,11 +56,6 @@ function liftFunction<T>(signature: string): T {
 }
 
 test("the view's handle on the host is its own port", () => {
-  // A sandboxed frame keeps one contentWindow and an opaque "null" origin across
-  // a navigation, and the replacement document's scripts run before the iframe's
-  // load event -- both shown in tests/studio/playwright_mcp_app_bridge_smoke.py.
-  // A port is the one handle that cannot outlive the document that made it, so it
-  // is what the view gets, in place of window.parent.
   const shimStart = text.indexOf("export function bridgeShim");
   assert.ok(shimStart >= 0, "bridgeShim is no longer declared in mcp-app-frame.tsx");
   const shim = text.slice(shimStart, text.indexOf("\n}\n", shimStart));
@@ -85,8 +77,6 @@ test("the view's handle on the host is its own port", () => {
     /Array\.isArray\(a\) \? a : Array\.isArray\(b\) \? b : \[\]/.test(shim),
     "the port must tolerate postMessage(message, targetOrigin) as a Window would",
   );
-  // The handshake is the only thing left on the window, and it is what carries
-  // the port, so it keeps the token check.
   assert.ok(
     /envelope\.__unslothMcpApp !== bridgeToken/.test(text),
     "the handshake must still require the seeded document's token",
@@ -97,12 +87,9 @@ test("the view's handle on the host is its own port", () => {
   );
 });
 
-// withBridgeShim needs a real HTML parser, so what it does is asserted in a real
-// browser: tests/studio/playwright_mcp_app_bridge_smoke.py.
+// withBridgeShim is asserted in a real browser: tests/studio/playwright_mcp_app_bridge_smoke.py.
 
 test("the token is minted per fetched template", () => {
-  // A token reused across re-seeds would let a document that captured one earlier
-  // keep talking after the frame moved on.
   const token = declarationText("bridgeToken");
   assert.ok(
     /newBridgeToken\(\)/.test(token),
@@ -115,11 +102,6 @@ test("the token is minted per fetched template", () => {
 });
 
 test("the view is seeded from the server's own blocks", () => {
-  // _flatten_result builds the model-facing transcript: an image-only result reads
-  // "[1 image returned]" and a structuredContent-only one is
-  // a Python repr of the payload. Neither is in the server's CallToolResult, so the
-  // seed comes from the blocks the envelope carries, image bytes put back from the
-  // image sentinel rather than duplicated on the seed line.
   const seedView = declarationText("seedView");
   assert.ok(
     /for \(const block of ui\.content \?\? \[\]\)/.test(seedView),
@@ -136,11 +118,6 @@ test("the view is seeded from the server's own blocks", () => {
 });
 
 test("the frame is armed and listening inside the commit, not after it", () => {
-  // The iframe starts fetching the shell the moment it is committed, and onLoad
-  // reads pendingPostRef. A passive effect is queued during that same commit and
-  // normally wins -- 10/10 against a real local server here -- but they are
-  // different task sources with nothing ordering them, and losing once leaves the
-  // widget on the empty shell permanently, with no second load to retry it.
   assert.ok(
     /useLayoutEffect\(\(\) => \{\s*pendingPostRef\.current = true;/.test(text),
     "arming pendingPostRef must happen in the commit, not in a passive effect",
@@ -149,8 +126,6 @@ test("the frame is armed and listening inside the commit, not after it", () => {
     /useLayoutEffect\(\(\) => \{\s*const respond =/.test(text),
     "the message listener must be attached in the commit, before the view can post",
   );
-  // initializedRef used to be reset in its own passive effect, which could land
-  // after the view had already said `initialized` and silently stop theme updates.
   assert.equal(
     (text.match(/initializedRef\.current = false/g) ?? []).length,
     1,
@@ -159,11 +134,6 @@ test("the frame is armed and listening inside the commit, not after it", () => {
 });
 
 test("the bridge token survives a non-secure Studio origin", () => {
-  // Studio is reachable over plain HTTP on a LAN address, where crypto.randomUUID
-  // is simply undefined; calling it unconditionally threw on render and took every
-  // widget with it. getRandomValues is not secure-context gated, so it is the
-  // fallback -- not the Date.now()+Math.random() the attachment adapters use, which
-  // is fine for an id and not for the value that names the seeded document.
   const mint = liftFunction<() => string | null>("export function newBridgeToken(");
   const realCrypto = globalThis.crypto;
   const withCrypto = (value: unknown, run: () => void): void => {
@@ -193,8 +163,6 @@ test("the bridge token survives a non-secure Studio origin", () => {
     assert.notEqual(first, mint(), "a fresh token every call");
   });
 
-  // No Web Crypto at all: a guessable token would be worse than none, and the
-  // component renders the failure instead.
   withCrypto(undefined, () => assert.equal(mint(), null));
   assert.ok(
     /resource && !bridgeToken/.test(text),

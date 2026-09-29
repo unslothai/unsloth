@@ -54,17 +54,7 @@ const ROW_RELEASE_DELAY_MS = 300;
 // Keys whose values are base64 image/audio payloads, not searchable text.
 const BINARY_KEY = /b64|base64|^(images?|audio|video)$/i;
 
-// What was on screen for an MCP Apps result, or null when this is not one.
-//
-// The adapter never persists the __MCP_UI__ line: it parses the envelope off and
-// stores { text, ui: { content, structuredContent, _meta } }. `text` is the part
-// the model and the card showed; `ui` is seed data for the frame, bounded at
-// MAX_UI_STRUCTURED_CHARS -- a megabyte per result, walked key by key on every
-// rebuild across every thread, to index strings nobody ever saw.
-//
-// Keyed on the tool name as well as the shape, like the adapter's own guard: an
-// imported conversation carries whatever object its host stored, and reducing
-// someone else's result to `.text` would drop the rest from the index.
+// MCP Apps result: index only `text` (what was shown), not the up-to-1MB `ui` seed; name-gated like the adapter.
 function mcpWidgetText(value: object, toolName: string | undefined): string | null {
   if (!toolName?.startsWith("mcp__")) return null;
   const v = value as { text?: unknown; ui?: unknown };
@@ -93,7 +83,6 @@ function searchableText(value: unknown, depth = 0, toolName?: string): string {
     return value.map((v) => searchableText(v, depth + 1)).join(" ");
   }
   if (typeof value === "object") {
-    // Only at the top of a tool result, which is where the adapter puts the wrapper.
     if (depth === 0) {
       const widgetText = mcpWidgetText(value, toolName);
       if (widgetText !== null) return searchableText(widgetText, depth + 1);

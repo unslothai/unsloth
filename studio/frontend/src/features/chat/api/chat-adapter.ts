@@ -1018,11 +1018,9 @@ export interface McpImageToolResult {
   images: { data: string; mimeType: string }[];
 }
 
-/** What the backend appends when a tool declares a ui:// template. */
 export interface McpUiEnvelope {
   resourceUri: string;
-  /** The tool's own content blocks, in order. Image blocks carry no `data`:
-   *  that rides the image sentinel and the frame puts it back. */
+  /** Image blocks carry no `data`: it rides the image sentinel. */
   content?: { type?: string; data?: string; [key: string]: unknown }[];
   structuredContent?: unknown;
   _meta?: Record<string, unknown>;
@@ -1039,12 +1037,7 @@ export interface McpUiToolResult {
 const MCP_UI_MARKER = "\n__MCP_UI__:";
 const MCP_UI_TOOL_PREFIX = "mcp__";
 
-/**
- * Split a trailing __MCP_UI__ envelope off a raw tool result. The payload is one
- * JSON line, so the scan stops there; the image envelope may follow. A tool that
- * merely prints the marker keeps its text, and so does every tool that cannot
- * have been given an envelope: only MCP results carry one.
- */
+/** A trailing __MCP_UI__ line on an MCP result; one JSON line, so the image envelope may follow. */
 export function extractMcpUiEnvelope(
   raw: string,
   toolName: string,
@@ -1081,9 +1074,7 @@ export function isMcpUiToolResult(
   val: unknown,
   toolName?: string,
 ): val is McpUiToolResult {
-  // Shape alone is not proof, like isSandboxWrapper below: an imported
-  // conversation carries whatever object the other host stored, and unwrapping
-  // someone else's result to .text drops every other field it had.
+  // Shape alone is not proof: an imported conversation carries arbitrary objects.
   if (toolName !== undefined && !toolName.startsWith(MCP_UI_TOOL_PREFIX)) {
     return false;
   }
@@ -1144,7 +1135,6 @@ export function isMcpImageToolResult(val: unknown): val is McpImageToolResult {
   return (
     typeof v.text === "string" &&
     v.sessionId === undefined &&
-    // A widget result has its own guard, even when it carries images.
     v.ui === undefined &&
     Array.isArray(v.images) &&
     v.images.length > 0 &&
@@ -7347,8 +7337,6 @@ export function createOpenAIStreamAdapter(
                       parsedResult = rawResult;
                     }
                     if (mcpUi) {
-                      // Wraps what the branches above produced: a widget tool can
-                      // still return images, and `text` stays what the model saw.
                       parsedResult = {
                         text: isMcpImageToolResult(parsedResult)
                           ? parsedResult.text

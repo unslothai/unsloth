@@ -1,27 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Browser smoke: an MCP App widget's bridge does not survive the frame navigating away.
-
-A sandboxed iframe keeps one ``contentWindow`` and reports the opaque origin ``"null"``
-whatever it loads, and the replacement document's inline scripts run BEFORE the iframe's
-load event. So neither sender identity, nor origin, nor a load-counting flag can tell the
-seeded widget from the page an ordinary in-widget link moved the frame to. What can is a
-MessageChannel port, which cannot outlive the document that made it, and which the shim
-installs as that document's ``window.parent``.
-
-Four things are checked in a real browser, against the SHIPPED shim and inserter read out
-of mcp-app-frame.tsx:
-
-  1. the shim lands where the browser will run it, not in a comment that mentions ``<head>``;
-  2. a view that stays put still gets its replies, and ``event.source === window.parent``
-     still holds for one that filters on it;
-  3. a document the frame navigated to cannot reach the bridge;
-  4. no in-flight reply follows the frame to that document.
-
-Each of (3) and (4) also scores the path it replaced, so a green run shows the mechanism
-working rather than a fixture that stopped reaching the window it is about.
-"""
+"""Browser smoke: an MCP App widget's bridge does not survive the frame navigating away."""
 
 from __future__ import annotations
 
@@ -40,7 +20,6 @@ HOST_ORIGIN = "https://mcp-app.test"
 
 
 def shipped_shim() -> str:
-    """The shim string mcp-app-frame.tsx builds, with the token substituted."""
     source = FRAME_TSX.read_text(encoding = "utf-8")
     body = re.search(
         r"export function bridgeShim\(.*?\n  return `(.*?)`;\n\}",
@@ -61,7 +40,6 @@ def shipped_shim() -> str:
 
 
 def shipped_inserter() -> str:
-    """withBridgeShim as plain JS, so the smoke inserts the way Studio does."""
     source = FRAME_TSX.read_text(encoding = "utf-8")
     start = source.index("export function withBridgeShim(")
     body = source[start : source.index("\n}\n", start) + 3].replace("export ", "", 1)
@@ -71,8 +49,6 @@ def shipped_inserter() -> str:
     return stripped
 
 
-# The host under test: takes the port from the token-checked handshake and reads
-# everything else off it. The window listener also scores the retired paths.
 HOST = """<!doctype html><html><body>
 <iframe id="f" sandbox="allow-scripts"></iframe>
 <script>
@@ -110,7 +86,6 @@ HOST = """<!doctype html><html><body>
   }, 700);
 </script></body></html>"""
 
-# The seeded view: calls a tool the ordinary way, then follows a link out.
 SEEDED = """<!doctype html><html><head>SHIM</head><body>
 <script>
   parent.postMessage({jsonrpc: "2.0", id: 1, method: "tools/call",
@@ -118,8 +93,6 @@ SEEDED = """<!doctype html><html><head>SHIM</head><body>
   setTimeout(() => window.location.replace("https://undeclared.test/other.html"), 120);
 </script>seeded</body></html>"""
 
-# The page the frame navigates to. No shim, so no port: it can only reach the
-# window. It posts while parsing, before its own load event.
 NAVIGATED = """<!doctype html><html><head><script>
   window.parent.postMessage({jsonrpc: "2.0", id: 99, method: "tools/call",
                              params: {name: "exfiltrate"}}, "*");
@@ -143,8 +116,6 @@ STAYING_HOST = """<!doctype html><html><body>
   document.getElementById("f").src = "https://mcp-app.test/staying.html";
 </script></body></html>"""
 
-# A defensive view: accepts a response only when it came from window.parent, which
-# is the habit this design has to keep working.
 STAYING = """<!doctype html><html><head>SHIM</head><body>
 <script>
   window.addEventListener("message", (e) => {
@@ -168,8 +139,6 @@ def _serve(page, name: str, body: str) -> None:
 
 
 def check_the_shim_lands_where_the_browser_runs_it(browser) -> None:
-    """The first textual `<head>` can be inside a comment; a shim placed there
-    never runs, which downstream looks like a view that just never initializes."""
     page = browser.new_page()
     page.goto("about:blank")
     call = f"([html, marker]) => {{ {shipped_inserter()} return withBridgeShim(html, marker); }}"
@@ -199,8 +168,6 @@ def check_the_shim_lands_where_the_browser_runs_it(browser) -> None:
 
 
 def check_a_staying_view_still_gets_its_replies(browser, shim: str) -> None:
-    """The port must not cost an ordinary view its replies, and must keep
-    `event.source === window.parent` true for one that checks."""
     page = browser.new_page()
     _serve(page, "staying-host.html", STAYING_HOST.replace("TOKEN", f'"{TOKEN}"'))
     _serve(page, "staying.html", STAYING.replace("SHIM", shim))
@@ -222,8 +189,6 @@ def check_a_staying_view_still_gets_its_replies(browser, shim: str) -> None:
 
 
 def main() -> None:
-    # bridgeShim returns a bare body now; withBridgeShim is what wraps it in a real
-    # script element, so these hand-built fixtures have to do the same.
     shim = f"<script>{shipped_shim()}</script>"
     with sync_playwright() as p:
         browser = p.chromium.launch(headless = True)
@@ -234,7 +199,6 @@ def main() -> None:
         _serve(page, "host.html", HOST.replace("TOKEN", f'"{TOKEN}"'))
         _serve(page, "seeded.html", SEEDED.replace("SHIM", shim))
         _serve(page, "other.html", NAVIGATED)
-        # Keeps the navigated document's load event pending while its script runs.
         page.route("**/slow.png", lambda r: r.abort())
         page.goto("https://mcp-app.test/host.html")
         page.wait_for_timeout(2_500)

@@ -3978,11 +3978,7 @@ async def artifact_preview_frame(allow_network: bool = False):
     )
 
 
-# A ui:// template reuses the HTML canvas' opaque-origin shell, but its CSP is
-# built per resource from the domains it declared in _meta.ui.csp.
-
-# A hostname, optionally scheme/port and a leading "*." wildcard. A bare "*" is
-# refused: a template asking for every origin gets the default-deny instead.
+# A bare "*" is refused: such a template gets the default-deny.
 _MCP_APP_DOMAIN_RE = _re.compile(
     r"^(?:(?:https?|wss?)://)?"  # optional scheme
     r"(?:\*\.)?"  # optional leading wildcard label
@@ -3990,18 +3986,13 @@ _MCP_APP_DOMAIN_RE = _re.compile(
     r"[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?"
     r"(?::[0-9]{1,5})?$"
 )
-# Bounds the header a template can ask for.
 _MCP_APP_MAX_DOMAINS = 24
-# A document or worker loaded from one of these inherits this policy, the sandbox
-# flags and the opaque origin, so neither widens the box. Any other bare scheme
-# ("https:") names every host, which is the "*" refused above.
+# Documents/workers from these schemes inherit this policy and origin; bare "https:" would equal "*".
 _MCP_APP_LOCAL_SCHEMES = frozenset({"blob:", "data:"})
 
 
 def _mcp_app_domains(raw: Optional[str], local_schemes: bool = True) -> list:
-    """Parse a comma-separated declared-domain list into CSP source tokens.
-    Anything that is not a host is dropped rather than echoed: these arrive from
-    the browser and go straight into a response header."""
+    """Non-host entries are dropped: these come from the browser and go into a response header."""
     if not raw:
         return []
     out = []
@@ -4017,15 +4008,11 @@ def _mcp_app_domains(raw: Optional[str], local_schemes: bool = True) -> list:
 
 
 def _mcp_app_csp(connect: list, resource: list, frame: list, base_uri: list) -> str:
-    """The sandbox policy for one template: the canvas shell's default-deny,
-    widened only by the directives the template declared."""
     resource_src = " ".join(resource)
-    # Built as plain locals rather than inline conditionals: nested same-quote
-    # f-string expressions need Python 3.12, and this file targets 3.11.
+    # Plain locals: nested same-quote f-strings need Python 3.12; this file targets 3.11.
     connect_src = " ".join(connect) if connect else "'none'"
     frame_src = " ".join(frame) if frame else "'none'"
     base_uri_src = " ".join(base_uri) if base_uri else "'none'"
-    # A blob worker runs under this same policy, so it reaches nothing the page cannot.
     worker_src = "blob:" if "blob:" in resource else "'none'"
     return (
         "default-src 'none'; "
@@ -4052,12 +4039,7 @@ async def mcp_app_frame(
     frame: Optional[str] = None,
     base_uri: Optional[str] = None,
 ):
-    """Serve the opaque sandbox shell for an MCP App widget.
-
-    Unauthenticated like the canvas shell it reuses: the URL is readable by the
-    widget and this static document exposes no server resource. Its HTML arrives
-    by postMessage, and its calls go through the authenticated /ui-tool-call.
-    """
+    """Unauthenticated like the canvas shell: no server resource here; calls use the authenticated /ui-tool-call."""
     csp = _mcp_app_csp(
         _mcp_app_domains(connect),
         _mcp_app_domains(resource),

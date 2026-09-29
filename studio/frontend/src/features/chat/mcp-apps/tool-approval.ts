@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Both match what the chat adapter records, so "Always allow" given to the
-// model's call of a tool covers a widget's call of it in the same chat, and back.
+// Matches the chat adapter's keys so "Always allow" covers model and widget calls alike.
 
 export function mcpAppApprovalScope(
   sessionId: string | undefined,

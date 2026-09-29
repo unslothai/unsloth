@@ -40,7 +40,6 @@ export function formatMcpToolName(
   return `${mcpServer || rest.slice(0, sep)} · ${mcpTool || rest.slice(sep + 2)}`;
 }
 
-/** The server id in mcp__<serverId>__<tool>, else null. */
 export function mcpServerIdFromToolName(toolName: string): string | null {
   if (!toolName.startsWith(MCP_TOOL_PREFIX)) return null;
   const rest = toolName.slice(MCP_TOOL_PREFIX.length);
@@ -48,7 +47,6 @@ export function mcpServerIdFromToolName(toolName: string): string | null {
   return sep > 0 ? rest.slice(0, sep) : null;
 }
 
-/** The server-side tool name in mcp__<serverId>__<tool>, else null. */
 export function mcpBareToolName(toolName: string): string | null {
   if (!toolName.startsWith(MCP_TOOL_PREFIX)) return null;
   const rest = toolName.slice(MCP_TOOL_PREFIX.length);

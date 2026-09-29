@@ -32,10 +32,8 @@ import {
   mcpAppToolKey,
 } from "./tool-approval";
 
-// A widget cannot stack prompts faster than they can be read.
 const MAX_PENDING_TOOL_CALLS = 8;
 
-// A widget's tool call parked until the user answers it.
 interface PendingToolCall {
   key: number;
   name: string;
@@ -43,18 +41,14 @@ interface PendingToolCall {
   decide: (allow: boolean) => void;
 }
 
-// Reported in the ui/initialize result so a view can adapt rather than guess.
 const UI_PROTOCOL_VERSION = "2026-01-26";
 const HOST_NAME = "Unsloth";
-// No build-stamped version here, so this tracks the bridge itself.
 const HOST_VERSION = "1.0.0";
 
 const DEFAULT_HEIGHT = 320;
 const MIN_HEIGHT = 120;
-// Past this a widget scrolls rather than pushing the conversation off screen.
 const MAX_HEIGHT = 900;
 
-// The standard JSON-RPC codes; the spec adds none.
 const INVALID_PARAMS = -32602;
 const METHOD_NOT_FOUND = -32601;
 const INTERNAL_ERROR = -32603;
@@ -76,25 +70,12 @@ function isJsonRpc(data: unknown): data is JsonRpcMessage {
   );
 }
 
-// Height fallback for views that never send ui/notifications/size-changed; a
-// reported size always wins over it.
+// Fallback height; a reported size always wins.
 const RESIZE_FALLBACK = `<script>(()=>{const post=()=>parent.postMessage({mcpAppHeight:document.documentElement.scrollHeight},"*");new ResizeObserver(post).observe(document.documentElement);window.addEventListener("load",post);post();})();</script>`;
 
 export function bridgeShim(token: string): string {
   const hostOrigin = typeof window === "undefined" ? "" : window.location.origin;
-  // The view's handle on the host is a MessageChannel port, not the frame's
-  // parent window, and everything follows from that:
-  //
-  //   - it is bound to THIS document, so a page the frame navigates to can
-  //     neither send over it nor receive an in-flight reply on it;
-  //   - it IS `window.parent` here, so a view that filters responses on
-  //     `event.source === window.parent` -- the defensive habit, and what a
-  //     postMessage transport does by default -- still matches;
-  //   - `event.source.postMessage(...)` reaches the host for the same reason.
-  //
-  // A Window takes (message, targetOrigin, transfer) and a port takes
-  // (message, transfer), so the port's own postMessage is widened to accept the
-  // call a view actually writes.
+  // A MessageChannel port bound to THIS document (a navigated page cannot use it), exposed as window.parent; postMessage widened to Window's signature.
   return `(() => {
   try {
     const real = window.parent;
@@ -126,15 +107,7 @@ export function bridgeShim(token: string): string {
 })();`;
 }
 
-/** A fresh bridge token, or null when nothing here can make an unguessable one.
- *
- * crypto.randomUUID needs a secure context and Studio is reachable over plain
- * HTTP on a LAN address (`-H 0.0.0.0`), where it is simply undefined. The other
- * chat call sites fall back to Date.now()+Math.random(), which is fine for an
- * attachment id and not for this: the token is what stops a page the frame
- * navigated to from installing a port of its own. getRandomValues is the right
- * fallback -- unlike randomUUID it is not secure-context gated.
- */
+/** getRandomValues fallback: randomUUID is undefined over plain-HTTP LAN; null when no Web Crypto. */
 export function newBridgeToken(): string | null {
   const webCrypto = globalThis.crypto;
   if (typeof webCrypto?.randomUUID === "function") return webCrypto.randomUUID();
@@ -147,40 +120,28 @@ export function newBridgeToken(): string | null {
   return null;
 }
 
-/** Put `shim` where it runs before any of the view's own script.
- *
- * Parsed, not pattern-matched: the first textual `<head>` in a template can sit
- * inside a comment or a script string (`<!-- template has no <head> -->`), and a
- * shim inserted there never runs, which reads downstream as a view that simply
- * never initializes. A parse finds the element the browser will find.
- */
+/** Parsed, not pattern-matched: a textual <head> can sit inside a comment or script string. */
 export function withBridgeShim(html: string, shim: string): string {
   const doc = new DOMParser().parseFromString(html, "text/html");
   const script = doc.createElement("script");
   script.textContent = shim;
   const parent = doc.head ?? doc.documentElement;
   parent.insertBefore(script, parent.firstChild);
-  // Rebuilt rather than round-tripped through outerHTML alone: a template with no
-  // doctype is asking for quirks mode, and adding one would change how it lays out.
+  // Rebuilt, not outerHTML alone: adding a doctype to a quirks-mode template changes its layout.
   const doctype = doc.doctype ? `<!DOCTYPE ${doc.doctype.name}>\n` : "";
   return doctype + doc.documentElement.outerHTML;
 }
 
-/** Comma-joined declared domains for one CSP directive, or "" when undeclared. */
 function domainParam(values: string[] | undefined): string {
   return Array.isArray(values) ? values.filter(Boolean).join(",") : "";
 }
 
 export interface McpAppFrameProps {
-  /** Every call the widget makes is scoped to this server. */
   serverId: string;
   toolName: string;
   ui: McpUiEnvelope;
-  /** The arguments the model called the tool with. */
   toolArgs?: Record<string, unknown>;
-  /** Images the tool returned, replayed alongside that text. */
   resultImages?: { data: string; mimeType: string }[];
-  /** Scopes stdio sessions to the conversation's own server process. */
   threadId?: string;
   sessionId?: string;
   className?: string;
@@ -265,21 +226,12 @@ export function McpAppFrame({
     [resource, bridgeToken],
   );
 
-  // Only a parent-initiated load is fed, so a self-navigated frame can't ask to
-  // be re-seeded.
+  // Only a parent-initiated load is fed, so a self-navigated frame cannot be re-seeded.
   const pendingPostRef = useRef(false);
-  // Once the view reports its own size the measured fallback is ignored for
-  // good, or it would drag a self-sized widget back on every content change.
+  // Once the view reports its size, the measured fallback is ignored for good.
   const viewOwnsSizeRef = useRef(false);
-  // The view is ready for host-context updates only after it says `initialized`.
   const initializedRef = useRef(false);
-  // Layout, not passive: this arms the state onLoad reads, and the iframe starts
-  // fetching the moment it is committed. A passive effect is queued during that
-  // same commit and so normally wins, but the two are different task sources and
-  // nothing orders them; losing once means onLoad declines to post and the widget
-  // sits on the empty shell for good, with nothing to retry it. A layout effect
-  // runs inside the commit, before the browser can dispatch anything.
-  // The seeded document's own reply channel, handed over by the shim.
+  // Layout, not passive: must arm before the iframe's onLoad, which a passive effect is unordered against.
   const viewPortRef = useRef<MessagePort | null>(null);
   useLayoutEffect(() => {
     pendingPostRef.current = true;
@@ -290,20 +242,14 @@ export function McpAppFrame({
     setHeight(DEFAULT_HEIGHT);
   }, [src, html]);
 
-  // Down the seeded document's own channel, never the frame's contentWindow: the
-  // window survives a navigation and would hand an in-flight tool result or
-  // resource body to whatever page the frame moved to. A port cannot outlive the
-  // document that made it, so there is nowhere for a reply to leak to.
+  // Via the seeded document's port, never contentWindow: the window survives navigation and would leak replies.
   const postToView = useCallback((message: unknown) => {
     viewPortRef.current?.postMessage(message);
   }, []);
 
-  // The one exception, and it has to be: the shim only exists inside the HTML
-  // this delivers, so there is no port yet. It carries the template the host
-  // just fetched and nothing about the conversation.
+  // The exception: the HTML delivery precedes the port; it carries only the template.
   const postTemplate = useCallback((message: unknown) => {
-    // Opaque origin, so a wildcard target is required; it still only reaches
-    // this iframe's contentWindow.
+    // Opaque origin requires a wildcard target; it still only reaches this iframe.
     iframeRef.current?.contentWindow?.postMessage(message, "*");
   }, []);
 
@@ -314,18 +260,12 @@ export function McpAppFrame({
       method: "ui/notifications/tool-input",
       params: { arguments: toolArgs ?? {} },
     });
-    // The server's own blocks, in order, with the image bytes put back: the
-    // envelope leaves those to the image sentinel rather than carrying a second
-    // copy, so an image block arrives with its mimeType and no data. Anything
-    // the flattened body would have shown instead is host prose -- an
-    // "[1 image returned]" note, or a Python repr of structuredContent --
-    // and no part of what the server returned.
+    // Server blocks, image bytes put back from the sentinel; never host prose from the flattened body.
     const images = [...(resultImages ?? [])];
     const content: Record<string, unknown>[] = [];
     for (const block of ui.content ?? []) {
       if (block?.type === "image" && block.data === undefined) {
         const image = images.shift();
-        // Dropped by the payload budget upstream; the card says so too.
         if (!image) continue;
         content.push({ ...block, data: image.data, mimeType: image.mimeType });
         continue;
@@ -358,7 +298,6 @@ export function McpAppFrame({
     postTemplate({ type: "unsloth:artifact-html", html });
   }, [html, postTemplate]);
 
-  // Theme flips reach a live widget as a partial host-context update.
   useEffect(() => {
     if (!initializedRef.current) return;
     postToView({
@@ -368,21 +307,16 @@ export function McpAppFrame({
     });
   }, [theme, postToView]);
 
-  // Layout, for the same reason as the arming above: the view's first message can
-  // only follow the HTML onLoad posts, but the listener must already be attached
-  // when it lands, and a passive effect is not ordered against that.
+  // Layout, as above: the listener must be attached before the view's first message.
   useLayoutEffect(() => {
     const respond = (id: JsonRpcId, result: unknown) =>
       postToView({ jsonrpc: "2.0", id, result });
     const fail = (id: JsonRpcId, code: number, message: string) =>
       postToView({ jsonrpc: "2.0", id, error: { code, message } });
 
-    // Everything the view says arrives on its port, which only the document the
-    // host seeded holds. Sender identity and the opaque origin both survive a
-    // navigation and so prove nothing; holding the port is the proof.
+    // Only the seeded document holds the port; source and origin survive navigation and prove nothing.
     const handler = (event: MessageEvent) => {
       const data = event.data;
-      // The resize fallback, which is not part of the widget protocol.
       if (typeof data?.mcpAppHeight === "number") {
         if (viewOwnsSizeRef.current) return;
         setHeight(Math.min(Math.max(data.mcpAppHeight, MIN_HEIGHT), MAX_HEIGHT));
@@ -399,7 +333,6 @@ export function McpAppFrame({
             protocolVersion: UI_PROTOCOL_VERSION,
             hostInfo: { name: HOST_NAME, version: HOST_VERSION },
             hostCapabilities: {
-              // Only what this host actually implements.
               openLinks: {},
               serverTools: { listChanged: false },
               logging: {},
@@ -426,7 +359,6 @@ export function McpAppFrame({
         }
 
         case "ui/notifications/initialized": {
-          // Only now is the view ready for host-context updates.
           initializedRef.current = true;
           seedView();
           return;
@@ -495,8 +427,7 @@ export function McpAppFrame({
                 fail(id, INTERNAL_ERROR, "Too many tool requests are waiting");
                 return;
               }
-              // The widget is untrusted HTML: it waits for the same answer the
-              // model's call would.
+              // Untrusted HTML: same confirm gate as the model's call.
               pendingKeyRef.current += 1;
               setPendingCalls((queue) => [
                 ...queue,
@@ -574,7 +505,6 @@ export function McpAppFrame({
 
         case "ui/request-display-mode": {
           if (id === undefined) return;
-          // Inline is the only mode here, and the resulting mode is always returned.
           respond(id, { mode: "inline" });
           return;
         }
@@ -598,9 +528,7 @@ export function McpAppFrame({
       }
     };
 
-    // The handshake is the one thing that cannot come over the port, since it is
-    // what delivers the port. Checked the old way, plus the token, so only the
-    // document the host seeded can install one.
+    // The handshake delivers the port, so it stays on the window, token-checked.
     const onHandshake = (event: MessageEvent) => {
       if (event.source !== iframeRef.current?.contentWindow) return;
       if (event.origin !== "null") return;
@@ -621,14 +549,11 @@ export function McpAppFrame({
       if (!port) return;
       viewPortRef.current?.close();
       viewPortRef.current = port;
-      // Asked by a document that is gone.
       setPendingCalls([]);
       port.onmessage = handler;
     };
 
-    // A live port keeps the handler it was given, so re-point it whenever this
-    // effect rebuilds one: otherwise a theme change leaves the view answered by
-    // a closure describing the previous theme.
+    // Re-point the live port's handler on rebuild, or it answers from a stale closure.
     if (viewPortRef.current) viewPortRef.current.onmessage = handler;
 
     window.addEventListener("message", onHandshake);
@@ -682,8 +607,7 @@ export function McpAppFrame({
       <iframe
         ref={iframeRef}
         src={src}
-        // No allow-same-origin, so the widget reaches neither this app's storage
-        // nor its cookies. No allow-downloads, as with the HTML canvas.
+        // No allow-same-origin (app storage/cookies), no allow-downloads.
         sandbox="allow-scripts"
         referrerPolicy="no-referrer"
         onLoad={onLoad}

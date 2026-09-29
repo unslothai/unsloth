@@ -589,14 +589,12 @@ async def test_mcp_server(
     return McpServerProbeResult(ok = True, tool_count = len(tools))
 
 
-# Shorter than the model's tool budget: these are interactive.
 _UI_TOOL_CALL_TIMEOUT = 60.0
 _UI_RESOURCE_TIMEOUT = 60.0
 
 
 def _ui_server_or_404(server_id: str, via_api_key: bool) -> dict:
-    """The server a widget belongs to, re-gated like a chat tool call. Re-read
-    per request: a stale widget must not keep a removed server reachable."""
+    """Re-read per request: a stale widget must not keep a removed server reachable."""
     server = mcp_servers_db.get_server(server_id)
     if not server:
         raise HTTPException(status_code = 404, detail = "MCP server not found")
@@ -610,17 +608,13 @@ def _ui_server_or_404(server_id: str, via_api_key: bool) -> dict:
 
 
 def _row_still_matches(server_id: str, server: dict) -> bool:
-    """Whether the row still holds the config a probe was issued against."""
     current = mcp_servers_db.get_server(server_id)
     return current is not None and not any(
         current.get(k) != server.get(k) for k in TOOL_CACHE_INVALIDATING_FIELDS
     )
 
 
-# One discovery per server at a time. Reopening a stored conversation mounts every
-# widget in it at once, and on a cold cache each frame's request would otherwise
-# see None and probe: for a stdio server that is one subprocess per widget, and
-# for a remote one a burst of identical discovery traffic.
+# One discovery per server at a time: reopening a chat mounts every widget at once, each probing a cold cache.
 _discovery_locks: dict = {}
 
 
@@ -632,12 +626,7 @@ def _discovery_lock(server_id: str):
 
 
 async def _declared_ui_resources(server: dict) -> dict:
-    """tool name -> ui:// template, from this server's discovered tools. The uri
-    arrives from the browser, so only what the server declared is fetchable.
-
-    Rediscovers once on a cold cache: reopening a stored conversation never runs
-    the chat path, so after a restart a persisted widget would otherwise 404
-    until an unrelated send warmed the cache."""
+    """Only server-declared templates are fetchable (the uri comes from the browser); rediscovers once on a cold cache."""
     from core.inference.mcp_client import get_cached_tools, in_failure_cooloff
 
     server_id = server["id"]
@@ -649,8 +638,6 @@ async def _declared_ui_resources(server: dict) -> dict:
 
 
 async def _discover_ui_tools(server: dict, server_id: str):
-    """One probe, under the server's lock. Re-reads the cache first: the request
-    that waited here is usually behind one that just warmed it."""
     from core.inference.mcp_client import get_cached_tools, in_failure_cooloff
 
     tools = get_cached_tools(server_id)
@@ -672,15 +659,12 @@ async def _discover_ui_tools(server: dict, server_id: str):
         if _row_still_matches(server_id, server):
             cache_tools(server_id, probed)
         else:
-            # The row moved while the probe was awaiting, so these declarations
-            # belong to the old endpoint and must not authorize a read.
+            # The row moved mid-probe: the old endpoint's declarations must not authorize a read.
             probed = None
     return probed
 
 
 def _config_check_for(server_id: str, url: str, headers: Optional[dict]):
-    """Refuse to cache a stdio session for a config that changed mid-request."""
-
     def _current() -> bool:
         row = mcp_servers_db.get_server(server_id)
         return (
@@ -694,8 +678,7 @@ def _config_check_for(server_id: str, url: str, headers: Optional[dict]):
 
 
 def _ui_stdio_scope(thread_id: Optional[str], session_id: Optional[str]) -> Optional[str]:
-    """The stdio session key, in execute_tool's format so a widget lands on the
-    same subprocess as the conversation that drew it."""
+    """execute_tool's key format, so a widget reaches the chat's own subprocess."""
     if not thread_id:
         return None
     return "s={}:t={}".format(
@@ -710,7 +693,6 @@ UI_TOOL_APPROVAL_REQUIRED = "approval_required"
 def _ui_call_needs_approval(
     mode: Optional[str], server_id: str, tool_name: str, args: dict
 ) -> bool:
-    """The chat loop's confirm gate, for a call a widget makes instead of the model."""
     if mode in ("off", "full"):
         return False
     if mode == "auto":
@@ -728,7 +710,6 @@ async def read_mcp_ui_resource(
     current_subject: str = Depends(get_current_subject),
     via_api_key: ViaApiKey = False,
 ):
-    """Fetch a ui:// template for the sandboxed frame to render."""
     server = _ui_server_or_404(server_id, via_api_key)
     uri = (uri or "").strip()
     if not uri.startswith(UI_RESOURCE_SCHEME):
@@ -774,13 +755,7 @@ async def call_mcp_ui_tool(
     current_subject: str = Depends(get_current_subject),
     via_api_key: ViaApiKey = False,
 ):
-    """Relay a tool call a rendered widget asked the host to make.
-
-    The widget is untrusted HTML, so: ``server_id`` comes from the frame the host
-    drew, never the widget's message; the tool must be one this server
-    discovered; it must declare "app" in its visibility; and it passes the same
-    confirm gate a model's call does.
-    """
+    """Widget is untrusted: server_id comes from the host frame, the tool must be discovered with "app" visibility, and it passes the confirm gate."""
     from state.tool_policy import get_tool_policy
 
     if get_tool_policy() is False:

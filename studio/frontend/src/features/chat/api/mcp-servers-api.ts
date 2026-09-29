@@ -260,7 +260,6 @@ export function importMcpServers(
   );
 }
 
-/** A ui:// template and the sandbox settings it declared in _meta.ui. */
 export interface McpUiResource {
   uri: string;
   mime_type: string;
@@ -284,7 +283,6 @@ export interface McpUiToolCallResult {
   meta: Record<string, unknown> | null;
 }
 
-/** Fetch the widget template a tool result points at. */
 export function readMcpUiResource(
   serverId: string,
   uri: string,
@@ -296,15 +294,11 @@ export function readMcpUiResource(
   return mcpRequest(`/${serverId}/ui-resource?${query.toString()}`);
 }
 
-/** The call has to be allowed by the user first; retry it with `approved`. */
 export class McpUiApprovalRequired extends Error {}
 
 const UI_TOOL_APPROVAL_REQUIRED = "approval_required";
 
-/**
- * Relay a tool call a widget asked for. `serverId` comes from the tool part that
- * drew the frame, never from the widget's own message.
- */
+/** `serverId` comes from the tool part that drew the frame, never the widget. */
 export function callMcpUiTool(
   serverId: string,
   payload: {

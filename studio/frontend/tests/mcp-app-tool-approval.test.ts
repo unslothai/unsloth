@@ -40,6 +40,5 @@ test("a widget's tools/call is never sent as approved unless the user said so", 
   const frame = read("features/chat/mcp-apps/mcp-app-frame.tsx");
   const sends = [...frame.matchAll(/\bsend\(([^)]*)\)/g)].map((m) => m[1]);
   assert.deepEqual(sends.sort(), ["alwaysAllowed", "true"]);
-  // The one unconditional approval sits inside the user's own Allow.
   assert.match(frame, /if \(allow\) \{\s*send\(true\)/);
 });

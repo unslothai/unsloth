@@ -834,8 +834,7 @@ def is_tool_error(result: str) -> bool:
 
 
 def _strip_mcp_ui_suffix(result: str) -> str:
-    """Drop a trailing __MCP_UI__ envelope, and only a well-formed one. The
-    payload is one JSON line, so the scan stops there; images may follow."""
+    """The payload is one JSON line, so the scan stops there; images may follow."""
     marker = "\n__MCP_UI__:"
     start = result.rfind(marker)
     if start == -1:
@@ -848,7 +847,6 @@ def _strip_mcp_ui_suffix(result: str) -> str:
         payload = json.loads(result[payload_start:end])
     except (ValueError, RecursionError):
         return result
-    # A tool that merely printed the marker keeps its text.
     if not isinstance(payload, dict) or not isinstance(payload.get("resourceUri"), str):
         return result
     return (result[:start] + result[end:]).rstrip()
@@ -954,8 +952,7 @@ def _strip_rag_sources_sentinel(result: str) -> str:
 # well-formed __FILES__ line is content, not an envelope, and stripping it would take that line away from the model.
 _SANDBOX_TOOLS = frozenset({"python", "terminal"})
 
-# Same rule for the widget envelope: mcp_client writes it, and defuses any a
-# tool wrote itself, so only an MCP result can be carrying one.
+# Only an MCP result can carry the UI envelope; mcp_client defuses tool-written ones.
 _MCP_TOOL_PREFIX = "mcp__"
 
 # Same rule for the other two envelopes. The image one is emitted by the sandbox tools

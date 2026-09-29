@@ -13211,8 +13211,6 @@ _MCP_ALIAS_SUFFIX_LEN = _MCP_ALIAS_DIGEST_LEN + 1
 
 
 def _mcp_tool_model_visible(tool: dict) -> bool:
-    """False for app-only tools. Parsed in mcp_client so this and the widget
-    bridge's gate read the same metadata."""
     return tool_model_visible(tool)
 
 
@@ -13406,8 +13404,7 @@ async def get_enabled_mcp_tools() -> list[dict]:
 
 
 def mcp_tool_definition(server_id: str, tool_name: str) -> "dict | None":
-    """A server's cached schema for one tool. Cache only: no caller here may
-    spawn a stdio subprocess or block on a probe timeout."""
+    """Cache only: callers must not spawn a stdio subprocess or block on a probe."""
     for tool in get_cached_tools(server_id) or []:
         if isinstance(tool, dict) and tool.get("name") == tool_name:
             return tool
@@ -13415,7 +13412,6 @@ def mcp_tool_definition(server_id: str, tool_name: str) -> "dict | None":
 
 
 def mcp_tool_ui_resource(server_id: str, tool_name: str) -> "str | None":
-    """The ui:// template a tool renders through, or None."""
     tool = mcp_tool_definition(server_id, tool_name)
     return tool_ui_resource_uri(tool) if tool is not None else None
 
@@ -13658,7 +13654,6 @@ def execute_tool(
                 cancel_event = cancel_event,
                 scope = mcp_scope,
                 config_check = _config_current,
-                # Read from the cache the chat path already warmed.
                 ui_resource_uri = mcp_tool_ui_resource(server_id, tool_name),
             ),
             name,
