@@ -46,12 +46,14 @@ def _supports_context_parallel(model) -> bool:
     # Only the Llama attention forward (Llama, Qwen2, Gemma) takes global position ids for RoPE and
     # reaches SDPA through F.scaled_dot_product_attention, which is what context_parallel patches.
     from .models.llama import LlamaAttention_fast_forward
-    for name, module in model.named_modules():
-        if name.endswith("self_attn"):
-            return getattr(type(module).forward, "__func__", type(module).forward) is (
-                LlamaAttention_fast_forward
-            )
-    return False
+
+    # Every attention layer: one without ring attention would attend over its local shard only.
+    forwards = [
+        getattr(type(module).forward, "__func__", type(module).forward)
+        for name, module in model.named_modules()
+        if name.endswith("self_attn")
+    ]
+    return bool(forwards) and all(f is LlamaAttention_fast_forward for f in forwards)
 
 
 def _self_attn_pre_forward_hook(_module, module_args, module_kwargs):

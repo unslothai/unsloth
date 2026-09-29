@@ -391,3 +391,27 @@ def test_a_later_non_cp_trainer_drops_the_installed_mesh(monkeypatch):
     state.device_mesh = other  # someone else's mesh (e.g. accelerate's own) is left alone
     Trainer()
     assert state.device_mesh is other
+
+
+def test_every_attention_layer_must_be_the_llama_forward():
+    from unsloth.models.llama import LlamaAttention_fast_forward
+
+    class Llama(torch.nn.Module):
+        forward = LlamaAttention_fast_forward
+
+    class Other(torch.nn.Module):
+        def forward(self, x):
+            return x
+
+    def model(*attns):
+        root = torch.nn.Module()
+        root.layers = torch.nn.ModuleList()
+        for attn in attns:
+            layer = torch.nn.Module()
+            layer.self_attn = attn()
+            root.layers.append(layer)
+        return root
+
+    assert cp._supports_context_parallel(model(Llama, Llama))
+    assert not cp._supports_context_parallel(model(Llama, Other))
+    assert not cp._supports_context_parallel(model())
