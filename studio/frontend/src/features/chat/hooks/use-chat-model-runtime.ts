@@ -78,7 +78,6 @@ import {
   fetchGgufStagedMetadata,
   listLoras,
   listModels,
-  ActiveGenerationsError,
   loadModel,
   unloadModel,
   validateModel,
@@ -88,8 +87,10 @@ import {
   ownsModelLoadRun,
   releaseOwnedModelLoadRun,
 } from "../utils/model-load-run";
-import { confirmStopRunningChatsIfNeeded } from "../utils/confirm-stop-running-chats";
-import { useStopRunningChatsDialogStore } from "../stores/stop-running-chats-dialog-store";
+import {
+  confirmStopRunningChatsIfNeeded,
+  type StopRunningChatsDecision,
+} from "../utils/confirm-stop-running-chats";
 import {
   requestLocalPromptQueueStop,
   requestPromptQueueStop,
@@ -629,23 +630,18 @@ function publishLoadedModels(
   );
 }
 
-async function unloadKeptModel(keptId: string): Promise<boolean> {
-  try {
-    await unloadModel({ model_path: keptId });
-    return true;
-  } catch (error) {
-    if (!(error instanceof ActiveGenerationsError)) throw error;
-    const confirmed = await useStopRunningChatsDialogStore
-      .getState()
-      .requestConfirm({
-        count: error.running,
-        action: "Unloading this model",
-        effect: "unload",
+function unloadKeptModel(keptId: string): Promise<boolean> {
+  return confirmStopRunningChatsIfNeeded("Unloading this model", "unload", keptId).then(
+    async (decision) => {
+      if (!decision.proceed) return false;
+      requestPromptQueueStop(decision.promptQueueThreadIds);
+      await unloadModel({
+        model_path: keptId,
+        force_cancel_active: decision.forceCancelActive,
       });
-    if (!confirmed) return false;
-    await unloadModel({ model_path: keptId, force_cancel_active: true });
-    return true;
-  }
+      return true;
+    },
+  );
 }
 
 async function syncInferenceStatusToStore(options?: {
@@ -3689,7 +3685,10 @@ export function useChatModelRuntime() {
     [resetLoadingUiForRun, setLastModelLoadError, setModelsError],
   );
 
-  const ejectModel = useCallback(async (modelId?: string): Promise<boolean> => {
+  const ejectModel = useCallback(async (
+    modelId?: string,
+    confirmed?: StopRunningChatsDecision,
+  ): Promise<boolean> => {
     if (modelId && modelId !== params.checkpoint) {
       try {
         if (!(await unloadKeptModel(modelId))) return false;
@@ -3733,14 +3732,16 @@ export function useChatModelRuntime() {
       // Ejecting tears down llama-server, so every chat stops. Same prompt, but it leaves no model
       // loaded, so it must not be worded as a reload. With several loaded only this one's chats stop.
       const scope =
-        useChatRuntimeStore.getState().loadedModels.length > 1
+        !confirmed && useChatRuntimeStore.getState().loadedModels.length > 1
           ? params.checkpoint
           : undefined;
-      const stopDecision = await confirmStopRunningChatsIfNeeded(
-        "Unloading the model",
-        "unload",
-        scope,
-      );
+      const stopDecision =
+        confirmed ??
+        (await confirmStopRunningChatsIfNeeded(
+          "Unloading the model",
+          "unload",
+          scope,
+        ));
       if (!stopDecision.proceed) return false;
 
       async function performUnload(): Promise<void> {
@@ -3790,20 +3791,21 @@ export function useChatModelRuntime() {
       .filter((id) => id !== params.checkpoint);
     const selectedLocal =
       Boolean(params.checkpoint) && !isExternalModelId(params.checkpoint);
+    // One prompt for every model's chats, before anything unloads.
+    const decision = await confirmStopRunningChatsIfNeeded(
+      "Unloading every model",
+      "unload",
+    );
+    if (!decision.proceed) return false;
     if (selectedLocal) {
-      if (!(await ejectModel())) return false;
+      if (!(await ejectModel(undefined, decision))) return false;
     } else {
-      const decision = await confirmStopRunningChatsIfNeeded(
-        "Unloading every model",
-        "unload",
-      );
-      if (!decision.proceed) return false;
       cancelPreStreamRunReservations(decision.preStreamRunTokens);
       requestLocalPromptQueueStop(decision.promptQueueThreadIds);
     }
     const results = await Promise.allSettled(
       others.map((id) =>
-        unloadModel({ model_path: id, force_cancel_active: true }),
+        unloadModel({ model_path: id, force_cancel_active: decision.forceCancelActive }),
       ),
     );
     await refresh();
