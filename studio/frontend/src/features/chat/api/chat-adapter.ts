@@ -368,6 +368,11 @@ import {
   supportsChatGenerationRuns,
 } from "./chat-generation-api";
 import { isDurableRunCandidate, turnRequiresLegacyStream } from "./durable-gate";
+import {
+  type OffloadCounts,
+  offloadCountsFrom,
+  offloadWarning,
+} from "../lib/partial-offload";
 
 // Small models (<=9B) answer from memory, so "auto" forces retrieval for them.
 const AUTOINJECT_AUTO_MAX_SIZE_B = 9;
@@ -3098,6 +3103,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
     message: string,
     cpuFallbackReason?: CpuFallbackReason | null,
     mmprojFallbackReason?: MmprojFallbackReason | null,
+    offloadCounts?: OffloadCounts,
   ): void => {
     // Both reasons composed: nesting them as `mmproj ? ... : cpu ? ...` dropped the CPU message.
     // That combination is reachable and is the case this feature exists for; see loadFallbackNotice.
@@ -3105,6 +3111,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       message,
       cpuFallbackReason,
       mmprojFallbackReason,
+      offloadWarning(offloadCounts ?? {}),
     );
     const options = {
       description: notice.description,
@@ -3702,6 +3709,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
         candidate.successLabel,
         loadResp.cpu_fallback_reason,
         loadResp.mmproj_fallback_reason,
+        offloadCountsFrom(loadResp),
       );
     });
     return true;
@@ -4030,6 +4038,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           `Loaded ${DEFAULT_CHAT_MODEL_LABEL} (${DEFAULT_CHAT_MODEL_VARIANT})`,
           loadResp.cpu_fallback_reason,
           loadResp.mmproj_fallback_reason,
+          offloadCountsFrom(loadResp),
         );
       });
       return { loaded: true, blockedByTrustRemoteCode: false };
@@ -7765,17 +7774,38 @@ export function createOpenAIStreamAdapter(
                     addedToolCall = true;
                   }
                 }
+                const mcpStamps = (
+                  chunk as { _mcp_provenance?: Record<string, unknown> }
+                )._mcp_provenance;
+                let stampedProvenance = false;
+                if (mcpStamps && typeof mcpStamps === "object") {
+                  for (const [backendId, raw] of Object.entries(mcpStamps)) {
+                    const partId = resolveToolPartId(backendId);
+                    const at = toolCallParts.findIndex(
+                      (p) => p.toolCallId === partId,
+                    );
+                    if (at === -1) continue;
+                    const existing = toolCallParts[at] as PositionedToolCallPart;
+                    toolCallParts[at] = {
+                      ...existing,
+                      provenance: mergeToolProvenance(
+                        existing.provenance,
+                        parseToolProvenance(raw),
+                      ),
+                    };
+                    stampedProvenance = true;
+                  }
+                }
                 // After this chunk's deltas: a provider can put finish_reason on the same chunk as the turn's
                 // last name-only delta.
                 if (chunk.choices?.[0]?.finish_reason) {
                   // Ending the turn drops cards, so the publish below must see it rather than wait for the pacing gate.
                   replayStateChanged ||= endProviderTurn();
                 }
-                if (
-                  addedToolCall ||
-                  replayStateChanged ||
-                  canPublish(streamedChars)
-                ) {
+                // A relabel adds no characters, so the pacing gate alone would hold it back.
+                const forcePublish =
+                  addedToolCall || replayStateChanged || stampedProvenance;
+                if (forcePublish || canPublish(streamedChars)) {
                   yield {
                     content: liveAssistantContent(),
                     metadata: {

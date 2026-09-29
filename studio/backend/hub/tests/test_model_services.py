@@ -508,6 +508,12 @@ def test_big_endian_detection_ignores_model_name_be_token():
     )
 
 
+def test_pick_best_gguf_prefers_an_unlisted_quant_only_over_full_precision():
+    assert gguf.pick_best_gguf(["model-bf16.gguf", "model-Q3_K.gguf"]) == "model-Q3_K.gguf"
+    assert gguf.pick_best_gguf(["model-F32.gguf", "model-bf16.gguf"]) == "model-bf16.gguf"
+    assert gguf.pick_best_gguf(["model-APEX.gguf", "model-Q4_0.gguf"]) == "model-APEX.gguf"
+
+
 def test_custom_inventory_filters_mtp_companions_at_registered_root(tmp_path, monkeypatch):
     root = tmp_path / "MTP"
     root.mkdir()

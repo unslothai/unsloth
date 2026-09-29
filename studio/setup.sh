@@ -2601,7 +2601,7 @@ _setup_uv_unzip() {
         *bsdtar*) tar -xf "$1" -C "$2" 2>/dev/null && return 0 ;;
     esac
     command -v python3 >/dev/null 2>&1 &&
-        python3 -c 'import sys, zipfile; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])' "$1" "$2" 2>/dev/null
+        python3 -m zipfile -e "$1" "$2" >/dev/null 2>&1
 }
 
 _setup_uv_sha256() {

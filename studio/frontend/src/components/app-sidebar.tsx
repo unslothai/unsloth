@@ -379,6 +379,8 @@ const MOVE_TO_MENU =
 // which doubled the gap at both its ends; -my-0.5 gives that 2px back.
 const MOVE_TO_LIST =
   "no-scrollbar -my-0.5 max-h-[calc(260px*var(--ui-space-scale,1))] overflow-y-auto overscroll-contain";
+// Most projects, and most sections, a "Move to" lists: the most recent, so a long list stays light.
+const MOVE_TO_MAX = 12;
 // Folder rows match their hover pill.
 const DROP_INTO_ROW_CUE = `${DROP_CUE_CLASS} before:pointer-events-none before:absolute before:inset-x-0 before:top-0 before:bottom-px before:rounded-full before:bg-primary/8 before:border-[1.5px] before:border-primary before:content-['']`;
 // The menu keeps a 1px gap between rows. A pointer resting on that gap would hit the section
@@ -1002,39 +1004,12 @@ export function AppSidebar() {
   const isStudioRoute = pathname === "/studio" || pathname.startsWith("/studio/");
   const [chatOpen, setChatOpen] = useState(true);
 
-  // Hover previews the flyout; a primary click pins that preview open. The trigger owns pointer
-  // clicks so Radix cannot interpret the already-hover-open menu as a request to close it.
-  const [moreHoverOpen, setMoreHoverOpen] = useState(false);
-  const [morePinnedOpen, setMorePinnedOpen] = useState(false);
-  const moreOpen = moreHoverOpen || morePinnedOpen;
-  const moreCloseTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const clearMoreCloseTimer = useCallback(() => {
-    if (!moreCloseTimer.current) return;
-    clearTimeout(moreCloseTimer.current);
-    moreCloseTimer.current = null;
+  const [moreOpen, setMoreOpen] = useState(false);
+  const [moreTooltipOpen, setMoreTooltipOpen] = useState(false);
+  const moreFocusReturning = useRef(false);
+  const handleMoreTooltipOpenChange = useCallback((next: boolean) => {
+    if (!(next && moreFocusReturning.current)) setMoreTooltipOpen(next);
   }, []);
-  const openMorePreview = useCallback(() => {
-    clearMoreCloseTimer();
-    setMoreHoverOpen(true);
-  }, [clearMoreCloseTimer]);
-  const closeMorePreviewSoon = useCallback(() => {
-    clearMoreCloseTimer();
-    moreCloseTimer.current = setTimeout(() => setMoreHoverOpen(false), 180);
-  }, [clearMoreCloseTimer]);
-  const handleMoreOpenChange = useCallback((next: boolean) => {
-    if (next) {
-      setMorePinnedOpen(true);
-      return;
-    }
-    setMorePinnedOpen(false);
-    setMoreHoverOpen(false);
-  }, []);
-  useEffect(
-    () => () => {
-      clearMoreCloseTimer();
-    },
-    [clearMoreCloseTimer],
-  );
   const [runsOpen, setRunsOpen] = useState(true);
 
   useEffect(() => {
@@ -1261,6 +1236,42 @@ export function AppSidebar() {
       list.sort((a, b) => b.updatedAt - a.updatedAt);
     return map;
   }, [allChatItems]);
+  // A project's last activity: its own edits or its newest chat. Its updatedAt only moves when it
+  // is edited.
+  const projectActivityAt = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const project of projects) {
+      const newest = chatsByProjectId.get(project.id)?.[0]?.updatedAt ?? 0;
+      map.set(project.id, Math.max(project.updatedAt ?? project.createdAt, newest));
+    }
+    return map;
+  }, [projects, chatsByProjectId]);
+  // "Move to" order: most recently active first.
+  const recentProjects = useMemo(
+    () =>
+      [...projects].sort(
+        (a, b) => (projectActivityAt.get(b.id) ?? 0) - (projectActivityAt.get(a.id) ?? 0),
+      ),
+    [projects, projectActivityAt],
+  );
+  // Sections by last activity: when made or modified, or their newest chat or project. Drag
+  // order is not recency; older sections without timestamps rank by their members' activity.
+  const recentSections = useMemo(() => {
+    const at = new Map(
+      customSections.map((section) => [
+        section.id,
+        Math.max(section.createdAt ?? 0, section.modifiedAt ?? 0),
+      ]),
+    );
+    const touch = (sectionId: string | undefined, time: number) => {
+      if (sectionId && at.has(sectionId) && time > (at.get(sectionId) ?? 0)) at.set(sectionId, time);
+    };
+    for (const item of allChatItems) touch(sectionByChatId[item.id], item.updatedAt);
+    for (const [projectId, sectionId] of Object.entries(sectionByProjectId)) {
+      touch(sectionId, projectActivityAt.get(projectId) ?? 0);
+    }
+    return [...customSections].sort((a, b) => (at.get(b.id) ?? 0) - (at.get(a.id) ?? 0));
+  }, [customSections, allChatItems, sectionByChatId, sectionByProjectId, projectActivityAt]);
   // Pinned folders in pin order, then the order they were dragged into while Pinned kept
   // folders apart from its chats. Pinned is one list now; this only seeds it.
   const pinnedProjectBase = useMemo(() => {
@@ -1278,16 +1289,9 @@ export function AppSidebar() {
       (project) => project.id,
     );
   }, [projects, pinnedProjectIds, manualOrder]);
-  // The folders Projects still owns: unpinned, by activity, then manual order. Activity comes from
-  // the member chats, since a project's own updatedAt only moves when it is edited.
+  // The folders Projects still owns: unpinned, by activity (see projectActivityAt), then manual order.
   const sidebarProjectRecords = useMemo(() => {
-    const lastActivityAt = (project: ProjectRecord) => {
-      let latest = project.updatedAt ?? project.createdAt;
-      for (const chat of chatsByProjectId.get(project.id) ?? []) {
-        if (chat.updatedAt > latest) latest = chat.updatedAt;
-      }
-      return latest;
-    };
+    const lastActivityAt = (project: ProjectRecord) => projectActivityAt.get(project.id) ?? 0;
     const rest = projects
       .filter((p) => !pinnedProjectIdSet.has(p.id) && !sectionByProjectId[p.id])
       .sort((a, b) =>
@@ -1305,7 +1309,7 @@ export function AppSidebar() {
     pinnedProjectIdSet,
     sectionByProjectId,
     manualOrder,
-    chatsByProjectId,
+    projectActivityAt,
     projectSort,
   ]);
   // Memoised for its identity, not for the slice. It feeds the rendered-row set the selection guard
@@ -4111,7 +4115,9 @@ export function AppSidebar() {
       ? customSections.find((section) => section.id === config.current)
       : undefined;
     // The section the rows are in is not a place to move them to, so it is left out, not greyed.
-    const destinations = customSections.filter((section) => section.id !== config.current);
+    const destinations = recentSections
+      .filter((section) => section.id !== config.current)
+      .slice(0, MOVE_TO_MAX);
     return (
       <>
         {config.heading && <P.Label>{t("shell.sections.sectionsHeading")}</P.Label>}
@@ -4305,6 +4311,15 @@ export function AppSidebar() {
   ) {
     const threadIds = getSidebarItemThreadIds(item);
     const isPinned = pinnedIdSet.has(item.id);
+    const moveProjects = recentProjects
+      .filter((project) => project.id !== item.projectId)
+      .slice(0, MOVE_TO_MAX);
+    // A compare row outside a project spans two sandboxes, and there is no
+    // honest single folder to offer for it.
+    const sandboxSessionId =
+      item.type === "single" || item.projectId
+        ? sandboxSessionIdFor(threadIds[0] ?? item.id, item.projectId)
+        : undefined;
     const alreadyUnread = threadIds.some((threadId) =>
       unreadThreadIds.has(threadId),
     );
@@ -4371,9 +4386,9 @@ export function AppSidebar() {
                   <span>New project</span>
                 </P.Item>
                 {/* The project the chat is in is not a place to move it to: left out, not greyed. */}
-                {projects.some((project) => project.id !== item.projectId) && (
+                {moveProjects.length > 0 && (
                   <div className={MOVE_TO_LIST}>
-                    {projects.filter((project) => project.id !== item.projectId).map((project) => (
+                    {moveProjects.map((project) => (
                       <P.Item
                         key={project.id}
                         onSelect={() => void moveChatToProjectFromMenu(item, project.id)}
@@ -5240,17 +5255,17 @@ export function AppSidebar() {
               })}
               {/* Unpinned destinations, behind one row. */}
               {overflowNavIds.length > 0 && (
-                <SidebarMenuItem
-                  onPointerEnter={openMorePreview}
-                  onPointerLeave={closeMorePreviewSoon}
-                >
+                <SidebarMenuItem>
                   <DropdownMenu
                     open={moreOpen}
-                    onOpenChange={handleMoreOpenChange}
+                    onOpenChange={setMoreOpen}
                     modal={false}
                   >
                     {/* Tooltip wraps the trigger rather than using the button's `tooltip` prop: that returns a Tooltip root, so DropdownMenuTrigger asChild would miss the DOM node. */}
-                    <Tooltip>
+                    <Tooltip
+                      open={moreTooltipOpen && !moreOpen}
+                      onOpenChange={handleMoreTooltipOpenChange}
+                    >
                       <TooltipPrimitive.Trigger asChild>
                         <DropdownMenuTrigger asChild>
                           <SidebarMenuButton
@@ -5258,19 +5273,6 @@ export function AppSidebar() {
                             // lives inside it. Keeps the row highlighted while the panel is open, after the pointer
                             // has left. Not data-state: the tooltip and menu triggers both write that one.
                             data-menu-open={moreOpen ? "true" : undefined}
-                            onPointerDownCapture={(event) => {
-                              if (event.button !== 0 || event.ctrlKey) return;
-                              event.preventDefault();
-                              event.stopPropagation();
-                              event.currentTarget.focus({ preventScroll: true });
-                              clearMoreCloseTimer();
-                              if (morePinnedOpen) {
-                                setMorePinnedOpen(false);
-                                setMoreHoverOpen(false);
-                              } else {
-                                setMorePinnedOpen(true);
-                              }
-                            }}
                             className="sidebar-nav-btn h-[calc(33px*var(--ui-space-scale,1))] rounded-full gap-[calc(8.5px*var(--ui-space-scale,1))] pl-3 pr-2.5 font-medium group-data-[collapsible=icon]:!p-0 group-data-[collapsible=icon]:!size-[calc(28px*var(--ui-space-scale,1))] group-data-[collapsible=icon]:my-[calc(2.5px*var(--ui-space-scale,1))] group-data-[collapsible=icon]:mx-auto"
                           >
                             <HugeiconsIcon
@@ -5299,8 +5301,12 @@ export function AppSidebar() {
                       align="start"
                       sideOffset={6}
                       className="w-48 p-1"
-                      onPointerEnter={openMorePreview}
-                      onPointerLeave={closeMorePreviewSoon}
+                      onCloseAutoFocus={() => {
+                        moreFocusReturning.current = true;
+                        queueMicrotask(() => {
+                          moreFocusReturning.current = false;
+                        });
+                      }}
                     >
                       {overflowNavIds.map((id) => {
                         const row = navRows[id];
@@ -5888,7 +5894,7 @@ export function AppSidebar() {
           </DialogDescription>
         </DialogHeader>
         {deleteTargetHasFiles(confirmingDelete) ? (
-          <div className="flex items-start justify-between gap-4 rounded-md border border-border/60 bg-muted/35 px-3 py-2.5">
+          <div className="flex items-start justify-between gap-4 rounded-md border border-border/60 bg-muted/35 px-3 py-2.5 dark:border-transparent">
             <label htmlFor="delete-files-on-delete" className="min-w-0 space-y-1">
               <span className="block text-sm font-medium text-foreground">
                 {t("shell.selection.deleteFilesLabel")}

@@ -5852,7 +5852,7 @@ class TestWindowsRocmTorchaoGuard:
     @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = True)
     @patch.object(stack_mod, "run")
     @patch.object(stack_mod, "pip_install")
-    def test_install_python_stack_skips_torchao_when_windows_rocm_torch_is_installed(
+    def test_install_python_stack_installs_pypi_torchao_when_windows_rocm_torch_is_installed(
         self,
         mock_pip,
         mock_run,
@@ -5887,11 +5887,18 @@ class TestWindowsRocmTorchaoGuard:
             patch.object(stack_mod.install_manifest, "installed_versions", return_value = ["0"]),
             patch.object(stack_mod.install_manifest, "damaged_payload_files", return_value = []),
             patch.object(stack_mod.subprocess, "run", return_value = subprocess_result),
+            patch.object(stack_mod, "pip_install_try", return_value = True) as mock_try,
         ):
             assert stack_mod.install_python_stack() == 0
 
-        installed_specs = [str(arg) for call in mock_pip.call_args_list for arg in call.args]
-        assert not any("torchao" in arg for arg in installed_specs)
+        torchao_calls = [
+            [str(arg) for arg in call.args]
+            for call in mock_pip.call_args_list + mock_try.call_args_list
+            if any(str(arg).startswith("torchao") for arg in call.args)
+        ]
+        # From PyPI: download.pytorch.org's rocm leaves serve Linux only.
+        assert torchao_calls
+        assert all("--index-url" not in c for c in torchao_calls)
 
 
 class TestProgressStepCountMatchesTotal:
@@ -6116,9 +6123,9 @@ class TestWorkerWindowsRocmPatches:
         assert "install_torchao_windows_rocm_stub()" in source
 
     def test_export_worker_calls_shared_torchao_stub(self):
-        """export/worker.py must invoke the same shared torchao stub entrypoint."""
+        """export/worker.py loads real torchao when it can and otherwise the same shared stub."""
         source = _EXPORT_WORKER_PATH.read_text(encoding = "utf-8")
-        assert "install_torchao_windows_rocm_stub()" in source
+        assert "install_torchao_windows_rocm_real_or_stub()" in source
 
     def test_embedder_calls_shared_torchao_stub(self):
         """embeddings.py must install the stub before importing sentence-transformers:

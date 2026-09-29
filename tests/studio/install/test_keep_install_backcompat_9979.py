@@ -105,7 +105,10 @@ def _windows_non_pe_is_refused_not_started(monkeypatch):
             with open(target, "rb") as handle:
                 if handle.read(2) != b"MZ":
                     raise OSError(
-                        None, "%1 is not a valid Win32 application", str(target), _ERROR_BAD_EXE_FORMAT
+                        None,
+                        "%1 is not a valid Win32 application",
+                        str(target),
+                        _ERROR_BAD_EXE_FORMAT,
                     )
         return real(command, *args, **kwargs)
 

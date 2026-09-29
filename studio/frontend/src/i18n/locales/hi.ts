@@ -96,6 +96,7 @@ export const hi = {
     useModelScope: "ModelScope इस्तेमाल करें",
     useModelScopeHint: "इसके बजाय ModelScope से खोजें और डाउनलोड करें। आप सेटिंग्स में वापस बदल सकते हैं।",
     useModelScopeFailed: "ModelScope पर स्विच नहीं हो सका।",
+    updateToken: "टोकन अपडेट करें",
     hfToken: {
       label: "HF टोकन",
       saved: "सहेजा गया",
@@ -718,6 +719,7 @@ export const hi = {
       disabled: "फ़ाइल में लॉगिंग बंद है (UNSLOTH_STUDIO_NO_FILE_LOG=1)।",
       missing: "कोई लॉग फ़ाइल नहीं मिली।",
       unreadable: "लॉग फ़ाइल पढ़ी नहीं जा सकी।",
+      viewLogs: "लॉग देखें",
       timeout: "लॉग अनुरोध का समय समाप्त हो गया। सर्वर तक पहुंच नहीं हो पा रही है।",
       droppedNotice: "कुछ पंक्तियाँ छोड़ दी गईं: लॉग इतनी तेज़ी से लिखा गया कि उसे पढ़ा नहीं जा सका।",
       morePending: "और पंक्तियां अभी पढ़ी जा रही हैं; वे अगले रिफ्रेश पर आएंगी।",
@@ -1087,6 +1089,9 @@ export const hi = {
         source: "मॉडल स्रोत",
         sourceDescription: "मॉडल हब कहाँ खोजता और डाउनलोड करता है। अगर आपके नेटवर्क पर Hugging Face ब्लॉक या धीमा है तो ModelScope चुनें।",
         sourceFallback: "ModelScope शुरू नहीं हो सका, इसलिए Hugging Face इस्तेमाल हो रहा है। Unsloth के लॉग देखें।",
+        autoSourceTitle: "मॉडल स्रोत ModelScope पर बदल दिया गया",
+        autoSourceDescription: "आपके क्षेत्र में Hugging Face अक्सर धीमा या ब्लॉक रहता है, इसलिए Unsloth अब ModelScope से मॉडल डाउनलोड करता है।",
+        autoSourceAction: "मॉडल स्रोत सेटिंग्स खोलें",
         sectionTitle: "मॉडल हब",
         endpoint: "Hugging Face एंडपॉइंट",
         endpointDescription: "मॉडल और डेटासेट यहीं से डाउनलोड होते हैं। huggingface.co के लिए खाली छोड़ें, या https://hf-mirror.com जैसा कोई मिरर डालें।",
@@ -2202,6 +2207,9 @@ export const hi = {
         loading: "लोड हो रहा है…",
         loadedOn: "{device} पर लोड हुआ",
         download: "डाउनलोड करें",
+        downloadConfirmTitle: "Laya {model} डाउनलोड करें?",
+        downloadConfirmBody:
+          "Decision API को अनुरोधों का जवाब देने के लिए इस मॉडल की ज़रूरत है। लगभग {size}, आपके Hugging Face कैश में एक बार डाउनलोड होता है।",
         unload: "अनलोड करें",
         downloadBusy: "निर्णय API का एक मॉडल पहले से डाउनलोड हो रहा है।",
         downloadFailed: "डाउनलोड शुरू नहीं हो सका।",
@@ -2436,6 +2444,8 @@ export const hi = {
       tokenRejectedTitle: "Hugging Face टोकन अस्वीकार किया गया",
       tokenRejectedBody:
         "सेटिंग्स → सामान्य में अपना टोकन अपडेट करें, फिर पुनः प्रयास करें।",
+      tokenRejectedAnonymousBody:
+        "सार्वजनिक मॉडल इसके बिना दिखाए जा रहे हैं। निजी और प्रतिबंधित मॉडल तक पहुंचने के लिए सेटिंग्स → सामान्य में अपना टोकन अपडेट करें।",
       hubUnreachable: "Hugging Face तक नहीं पहुंच सके",
       cantUseModel: "मॉडल को ट्रेनिंग के लिए उपयोग नहीं कर सकते",
       reasonTypeMismatch:
