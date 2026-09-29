@@ -205,6 +205,16 @@ class TestGetModelName(unittest.TestCase):
                 get_model_name("unsloth/Meta-Llama-3.1-8B-Instruct", load_in_4bit = True),
                 canonical.lower(),
             )
+            # Canonical weights without a config are not loadable either.
+            files = {
+                (canonical, "model.safetensors"),
+                (canonical.lower(), "config.json"),
+                (canonical.lower(), "model.safetensors"),
+            }
+            self.assertEqual(
+                get_model_name("unsloth/Meta-Llama-3.1-8B-Instruct", load_in_4bit = True),
+                canonical.lower(),
+            )
             # A mapping that resolves back to the input was also cached lowercased before.
             files = {("unsloth/qwen3-30b-a3b", "config.json")}
             self.assertEqual(

@@ -1101,7 +1101,7 @@ def _prefer_legacy_lowercase_cache(
             "pytorch_model.bin.index.json",
         )
         for files in (weights, ("config.json",)):
-            if cached(repo_id, files):
+            if cached(repo_id, files) and cached(repo_id, ("config.json",)):
                 return repo_id
             if cached(legacy, files) and cached(legacy, ("config.json",)):
                 return legacy
