@@ -1056,7 +1056,7 @@ export function SharedComposer({
     ta.style.overflowY = ta.scrollHeight > maxHeight ? "auto" : "hidden";
   }, [text]);
 
-  const addFiles = useCallback(
+  const addFilesNow = useCallback(
     async (input: FileList | readonly File[] | null) => {
       if (!input?.length) return;
       // Compare takes audio, so an audio-only 3GP must not be read off its
@@ -1149,6 +1149,21 @@ export function SharedComposer({
     [attachUnavailableReason],
   );
 
+  // Hold sends until a whole batch is read, so none of its clips miss the message.
+  const [addingFiles, setAddingFiles] = useState(0);
+  const addFiles = useCallback(
+    async (input: FileList | readonly File[] | null) => {
+      if (!input?.length) return;
+      setAddingFiles((count) => count + 1);
+      try {
+        await addFilesNow(input);
+      } finally {
+        setAddingFiles((count) => count - 1);
+      }
+    },
+    [addFilesNow],
+  );
+
   const handleFilePaste = useCallback(
     (event: ClipboardEvent<HTMLTextAreaElement>) => {
       pasteClipboardFiles(
@@ -1214,7 +1229,7 @@ export function SharedComposer({
   useEffect(() => () => clearStuckImeTimer(), []);
 
   async function send() {
-    if (composingRef.current || convertingImages > 0) {
+    if (composingRef.current || convertingImages > 0 || addingFiles > 0) {
       resetPromptQueue();
       return;
     }
@@ -2108,6 +2123,7 @@ export function SharedComposer({
     !isComposing &&
     !isDictating &&
     convertingImages === 0 &&
+    addingFiles === 0 &&
     !sendUnavailableReason;
 
   // Compare mode swaps this composer in for the single-chat one and only one is ever on screen, so the

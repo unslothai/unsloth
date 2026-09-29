@@ -22812,45 +22812,47 @@ def _prepare_audio_clips_for_llama(clips: list[str]) -> list[tuple[str, str]]:
             raise _DecodedAudioTooLongError(
                 f"audio exceeds the {_MAX_AUDIO_SECONDS // 60}-minute limit"
             )
-    caps = (
-        {index: wav_budget for index in decoded}
-        if len(decoded) <= 1
-        else dict(
-            zip(
-                decoded,
-                _wav_caps_for_clips([(len(a), sr) for a, sr in decoded.values()], wav_budget),
-            )
-        )
+    shared_rate = (
+        _shared_wav_rate([(len(a), sr) for a, sr in decoded.values()], wav_budget)
+        if len(decoded) > 1
+        else None
     )
     prepared: list[tuple[str, str]] = []
     for index, (clip, kept) in enumerate(zip(stripped, passthrough)):
         if kept is not None:
             prepared.append((clip, kept[0]))
             continue
-        arr, sr = _fit_transcoded_audio_to_wav_cap(*decoded.pop(index), cap = caps[index])
+        arr, sr = decoded.pop(index)
+        if shared_rate is None:
+            arr, sr = _fit_transcoded_audio_to_wav_cap(arr, sr, cap = wav_budget)
+        elif shared_rate < sr:
+            if shared_rate < _MIN_TRANSCODE_AUDIO_SAMPLE_RATE:
+                raise ValueError("decoded audio exceeds the transcoded WAV size limit")
+            arr, sr = _resample_mono_linear(arr, sr, shared_rate), shared_rate
         prepared.append((base64.b64encode(_mono_f32_to_wav_bytes(arr, sr)).decode("ascii"), "wav"))
     return prepared
 
 
-def _wav_caps_for_clips(clips: list[tuple[int, int]], budget: int) -> list[int]:
-    """WAV byte caps for (samples, rate) clips under the highest shared rate that fits."""
+def _shared_wav_rate(clips: list[tuple[int, int]], budget: int) -> int:
+    """Highest rate at which every (samples, rate) clip, capped to it, fits ``budget`` as WAV."""
 
-    def wav_bytes(n: int, sr: int, rate: int) -> int:
-        return _WAV_HEADER_BYTES + 2 * (n * min(sr, rate) // max(sr, 1))
+    def samples_at(n: int, sr: int, rate: int) -> int:
+        # _resample_mono_linear's own output length, so the budget holds exactly.
+        return n if rate >= sr or sr <= 0 else max(1, int(round(n / float(sr) * rate)))
 
     def total(rate: int) -> int:
-        return sum(wav_bytes(n, sr, rate) for n, sr in clips)
+        return sum(_WAV_HEADER_BYTES + 2 * samples_at(n, sr, rate) for n, sr in clips)
 
     low, high = 0, max(sr for _, sr in clips)
     if total(high) <= budget:
-        return [wav_bytes(n, sr, high) for n, sr in clips]
+        return high
     while low < high:
         mid = (low + high + 1) // 2
         if total(mid) <= budget:
             low = mid
         else:
             high = mid - 1
-    return [wav_bytes(n, sr, low) for n, sr in clips]
+    return low
 
 
 def _strip_audio_data_uri(b64: str) -> str:

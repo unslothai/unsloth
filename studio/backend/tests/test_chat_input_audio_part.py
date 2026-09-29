@@ -629,6 +629,8 @@ def test_gguf_duration_cap_covers_all_clips_together(monkeypatch):
 
 def test_transcoded_gguf_clips_share_one_wav_budget(monkeypatch):
     """Several m4a/ogg clips must not each grow into a cap-sized WAV for llama-server."""
+    import base64
+
     import numpy as np
 
     caps = []
@@ -651,10 +653,11 @@ def test_transcoded_gguf_clips_share_one_wav_budget(monkeypatch):
     inference_route._prepare_audio_for_llama("QUFB")
     assert caps == [1000]  # one clip keeps the whole cap, exactly as before
 
-    # Clips that fit together keep their full size.
+    # Clips that fit together are neither refit nor resampled.
     caps.clear()
-    inference_route._prepare_audio_clips_for_llama(["QUFB", "QUFB", "QUFB"])
-    assert caps == [44 + 100 * 2] * 3
+    prepared = inference_route._prepare_audio_clips_for_llama(["QUFB", "QUFB", "QUFB"])
+    assert caps == []
+    assert [len(base64.b64decode(data)) for data, _ in prepared] == [44 + 100 * 2] * 3
 
     # Pass-through clips are forwarded at their upload size, so transcodes share what they leave.
     caps.clear()
@@ -711,11 +714,37 @@ def test_the_wav_budget_does_not_depend_on_clip_order(monkeypatch):
 def test_clips_below_the_shared_rate_are_left_alone():
     n_low, n_high = 8000 * 1200, 48000 * 300
     budget = 25 * 1024 * 1024
-    caps = inference_route._wav_caps_for_clips([(n_low, 8000), (n_high, 48000)], budget)
-    assert caps[0] == 44 + 2 * n_low
-    assert sum(caps) <= budget
-    # The high-rate clip still clears the 8 kHz floor, where an even split would not.
-    assert (caps[1] - 44) // 2 / 300 >= 8000
+    rate = inference_route._shared_wav_rate([(n_low, 8000), (n_high, 48000)], budget)
+    # The 8 kHz clip keeps its full size; the 48 kHz one still clears the 8 kHz floor.
+    assert 8000 <= rate < 48000
+    assert 2 * 44 + 2 * n_low + 2 * round(n_high / 48000 * rate) <= budget
+
+
+def test_the_shared_rate_is_used_as_is_at_the_floor(monkeypatch):
+    """A budget that allows exactly 8 kHz must not come out at 7999 Hz and be refused."""
+    import base64
+    import io
+    import wave
+
+    import numpy as np
+
+    sr = 44100
+    lengths = {b"ONE": sr * 7 + 1, b"TWO": sr * 3 + 7}
+    monkeypatch.setattr(inference_route, "_sniff_audio_container", lambda _raw: None)
+    monkeypatch.setattr(
+        inference_route,
+        "_decode_audio_mono",
+        lambda raw: (np.zeros(lengths[raw], np.float32), sr),
+    )
+    budget = sum(44 + 2 * round(n / float(sr) * 8000) for n in lengths.values())
+    monkeypatch.setattr(inference_route, "_MAX_AUDIO_RAW_BYTES", budget)
+
+    prepared = inference_route._prepare_audio_clips_for_llama(
+        [base64.b64encode(b"ONE").decode(), base64.b64encode(b"TWO").decode()]
+    )
+    wavs = [base64.b64decode(data) for data, _ in prepared]
+    assert [wave.open(io.BytesIO(w)).getframerate() for w in wavs] == [8000, 8000]
+    assert sum(len(w) for w in wavs) <= budget
 
 
 def test_held_clips_count_against_the_sample_ceiling(monkeypatch):
