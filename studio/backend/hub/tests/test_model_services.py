@@ -1524,9 +1524,8 @@ def test_local_inventory_preserves_a_configured_hf_cache_registered_as_a_scan_fo
 
     assert [(row.source, row.model_id) for row in rows] == [("hf_cache", "Org/Model-GGUF")]
 
-def test_local_inventory_keeps_both_rows_when_the_repo_is_cached_and_parked(
-    monkeypatch, tmp_path
-):
+
+def test_local_inventory_keeps_both_rows_when_the_repo_is_cached_and_parked(monkeypatch, tmp_path):
     hf_home = tmp_path / "hf_home"
     hf_cache = hf_home / "hub"
     _hf_home_with_gguf(hf_home)
@@ -1593,7 +1592,6 @@ def test_local_inventory_keeps_the_cache_label_for_a_folder_registered_inside_th
         ("hf_cache", "Org/Model-GGUF"),
         ("hf_cache", "Org/Nested-GGUF"),
     ]
-
 
 
 def test_local_inventory_checks_for_hf_home_hub_off_the_event_loop(monkeypatch, tmp_path):
