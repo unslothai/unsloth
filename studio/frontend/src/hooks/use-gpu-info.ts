@@ -54,6 +54,8 @@ export interface GpuInfo {
   denseQuantSchemes: readonly string[];
   /** False until system info arrives, and on backends that do not report it. */
   nvfp4Diffusion: boolean;
+  /** Group offload can stream torchao weights. False until resolved and on older backends. */
+  quantisedStreaming: boolean;
   name: string;
   memoryTotalGb: number;
   memorySharedGb: number;
@@ -92,6 +94,7 @@ const DEFAULT_GPU: GpuInfo = {
   denseQuantSupported: false,
   denseQuantSchemes: [],
   nvfp4Diffusion: false,
+  quantisedStreaming: false,
   name: "Unknown",
   memoryTotalGb: 0,
   memorySharedGb: 0,
@@ -120,6 +123,7 @@ function toGpuInfo(
     denseQuantSupported: data?.dense_quant_supported === true,
     denseQuantSchemes: normalizeDenseQuantSchemes(data?.dense_quant_schemes),
     nvfp4Diffusion: data?.nvfp4_diffusion === true,
+    quantisedStreaming: data?.quantised_streaming === true,
     cpuCore: data?.cpu?.physical_count ?? 0,
     cpuThread: data?.cpu?.logical_count ?? 0,
     systemRamAvailableGb: data?.memory?.available_gb ?? 0,
