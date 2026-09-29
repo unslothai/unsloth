@@ -19,7 +19,11 @@ pytestmark = [
     pytest.mark.skipif(not has_real_cuda(), reason = "fast inference needs a CUDA device"),
 ]
 
-PROMPTS = ["Hello", "The capital of France is a city called", "One two three four five six seven eight"]
+PROMPTS = [
+    "Hello",
+    "The capital of France is a city called",
+    "One two three four five six seven eight",
+]
 
 
 def _load(model_id, device_map):
@@ -38,13 +42,18 @@ def _load(model_id, device_map):
 def _generate(model, tok):
     batch = tok(PROMPTS, return_tensors = "pt", padding = True).to("cuda:0")
     with torch.no_grad():
-        out = model.generate(**batch, max_new_tokens = 8, do_sample = False, pad_token_id = tok.pad_token_id)
+        out = model.generate(
+            **batch, max_new_tokens = 8, do_sample = False, pad_token_id = tok.pad_token_id
+        )
     return out[:, batch["input_ids"].shape[1] :].tolist()
 
 
 @pytest.mark.parametrize(
     "model_id",
-    ["trl-internal-testing/tiny-Qwen3ForCausalLM", "trl-internal-testing/tiny-Qwen2ForCausalLM-2.5-Coder"],
+    [
+        "trl-internal-testing/tiny-Qwen3ForCausalLM",
+        "trl-internal-testing/tiny-Qwen2ForCausalLM-2.5-Coder",
+    ],
 )
 def test_decode_loop_moves_the_mask_to_every_layer(monkeypatch, model_id):
     mod = importlib.import_module("unsloth.models.llama")
@@ -65,15 +74,25 @@ def test_decode_loop_moves_the_mask_to_every_layer(monkeypatch, model_id):
 @pytest.mark.skipif(torch.cuda.device_count() < 2, reason = "needs two GPUs to split the layers")
 @pytest.mark.parametrize(
     "model_id",
-    ["trl-internal-testing/tiny-Qwen3ForCausalLM", "trl-internal-testing/tiny-Qwen2ForCausalLM-2.5-Coder"],
+    [
+        "trl-internal-testing/tiny-Qwen3ForCausalLM",
+        "trl-internal-testing/tiny-Qwen2ForCausalLM-2.5-Coder",
+    ],
 )
 def test_split_layers_generate_like_one_gpu(model_id):
     model, tok = _load(model_id, {"": 0})
     single = _generate(model, tok)
     del model
-    n = importlib.import_module("transformers").AutoConfig.from_pretrained(model_id).num_hidden_layers
+    n = (
+        importlib.import_module("transformers")
+        .AutoConfig.from_pretrained(model_id)
+        .num_hidden_layers
+    )
     device_map = {"model.embed_tokens": 0, "model.rotary_emb": 0, "model.norm": 1, "lm_head": 1}
     device_map.update({f"model.layers.{i}": 0 if i < max(1, n // 2) else 1 for i in range(n)})
     model, tok = _load(model_id, device_map)
-    assert {str(next(layer.parameters()).device) for layer in model.model.layers} == {"cuda:0", "cuda:1"}
+    assert {str(next(layer.parameters()).device) for layer in model.model.layers} == {
+        "cuda:0",
+        "cuda:1",
+    }
     assert _generate(model, tok) == single
