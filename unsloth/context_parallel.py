@@ -186,6 +186,12 @@ def patch_sft_trainer() -> None:
             raise RuntimeError(
                 f"Unsloth: world size {world_size} is not a multiple of context_parallel_size {size}."
             )
+        if torch.cuda.is_available() and torch.cuda.get_device_capability()[0] < 8:
+            # Measured on 2x T4 (torch 2.10): torch's own ring attention fails in backward
+            # (mixed Tensor / DTensor add) without a flash kernel, before Unsloth code runs.
+            raise NotImplementedError(
+                "Unsloth: context parallelism needs flash attention (compute capability >= 8.0)."
+            )
         if not _supports_context_parallel(self.model):
             raise NotImplementedError(
                 "Unsloth: context parallelism currently supports Llama-style attention only "
