@@ -127,6 +127,33 @@ def _infer_local_rank(rank):
     return local_rank
 
 
+_TRUTHY = ("1", "true", "yes", "on")
+
+
+def fsdp_will_wrap():
+    """True when this process will hand the model to FSDP (unsloth#409).
+
+    patch_peft_model runs before the Trainer builds its Accelerator, so the launcher env
+    (`accelerate launch` exports ACCELERATE_USE_FSDP + FSDP_VERSION for FSDP configs, neither
+    for DDP) is usually the only signal. `UNSLOTH_FORCE_FUSED_LORA=1` opts back in.
+    """
+    if os.environ.get("UNSLOTH_FORCE_FUSED_LORA", "0") == "1":
+        return False
+    try:
+        from accelerate.state import AcceleratorState
+        distributed_type = AcceleratorState._shared_state.get("distributed_type", None)
+        if distributed_type is not None and "FSDP" in str(distributed_type).upper():
+            return True
+    except Exception:
+        pass
+    if str(os.environ.get("ACCELERATE_USE_FSDP", "")).strip().lower() in _TRUTHY:
+        return True
+    # "0" is how an accelerate config says "not FSDP".
+    if str(os.environ.get("FSDP_VERSION", "")).strip() not in ("", "0"):
+        return True
+    return False
+
+
 def prepare_device_map():
     rank, world_size = _infer_distributed_ranks()
     distributed = (world_size or 1) > 1 or (rank is not None and rank > 0)

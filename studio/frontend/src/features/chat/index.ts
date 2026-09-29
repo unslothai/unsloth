@@ -289,6 +289,7 @@ export {
   isAudioAttachment,
   attachmentBodyText,
   parseAttachmentText,
+  isTextAttachment,
   readAttachmentText,
   repackDocxAttachmentArchive,
   repackDocxPreviewArchive,

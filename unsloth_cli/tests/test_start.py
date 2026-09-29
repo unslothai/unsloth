@@ -9798,3 +9798,14 @@ def test_openclaw_memory_search_clears_a_stale_external_fallback(
     config = json.loads(config_path.read_text())
     assert config["memory"]["search"]["fallback"] == "none"
     assert config["memory"]["search"]["provider"] == "openai-compatible"
+
+
+def test_direct_gguf_labels_keep_packed_and_grouped_quants():
+    # Mirrors model_config._extract_quant_label: prism-ml/Ternary-Bonsai-*-gguf ships all three.
+    for name, label in (
+        ("Ternary-Bonsai-8B-PQ2_0.gguf", "PQ2_0"),
+        ("Ternary-Bonsai-8B-Q2_0.gguf", "Q2_0"),
+        ("Ternary-Bonsai-8B-Q2_0_g64.gguf", "Q2_0_g64"),
+        ("Ternary-Bonsai-2-27B-PTQ1_0.gguf", "PTQ1_0"),
+    ):
+        assert start._direct_gguf_variant_labels(name)[1] == label

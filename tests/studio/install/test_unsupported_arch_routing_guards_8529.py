@@ -66,8 +66,13 @@ def _load_stack_module():
 stack_mod = _load_stack_module()
 
 
-# The four arches the messaging table owns. Nothing here may produce an index.
-_UNSUPPORTED_ARCHES = ["gfx803", "gfx1010", "gfx1011", "gfx1012"]
+# The arch the messaging table owns on every platform. Nothing here may produce an index.
+_UNSUPPORTED_ARCHES = ["gfx803"]
+# RDNA 1 (#11614): routed on Windows, still unrouted on Linux.
+_RDNA1_ARCHES = ["gfx1010", "gfx1011", "gfx1012"]
+_RDNA1_ARCH_INPUTS = (
+    _RDNA1_ARCHES + [a.upper() for a in _RDNA1_ARCHES] + [f"{a}:xnack-" for a in _RDNA1_ARCHES]
+)
 
 # The same arches as the installers may actually receive them.
 # UNSLOTH_ROCM_GFX_ARCH is user-typed (so any case), and a gcnArchName copied out of hipinfo/rocminfo carries the target
@@ -78,6 +83,8 @@ _UNSUPPORTED_ARCH_INPUTS = (
     + [a.upper() for a in _UNSUPPORTED_ARCHES]
     + [f"{a}:xnack-" for a in _UNSUPPORTED_ARCHES]
 )
+# What Linux must still leave on the CPU index: Polaris and RDNA 1 alike.
+_LINUX_UNROUTED_ARCH_INPUTS = _UNSUPPORTED_ARCH_INPUTS + _RDNA1_ARCH_INPUTS
 
 # Arches that MUST route, so that "no index" cannot pass for the right answer when the table has been renamed, emptied
 # or parsed wrong. gfx1030 is RDNA 2 (RX 6800 XT) and gfx1100 is RDNA 3 (RX 7900 XTX); both ship AMD wheels today.
@@ -145,6 +152,51 @@ class TestPythonIndexResolversAreAskedDirectly:
         assert arch not in stack_mod._GFX_TO_AMD_INDEX_ARCH
 
 
+_MULTIARCH_HOST = "repo.amd.com/rocm/whl-multi-arch"
+
+
+class TestRdna1RoutesOnWindowsOnly:
+    """#11614: the RDNA 1 arches reach AMD's multi-arch index, and only from
+    the Windows resolver. They are deliberately NOT keys of the per-family map: that map
+    is one URL leaf per family on repo.amd.com, and the multi-arch index selects the
+    device through the `torch[device-gfxNNNN]` extra instead."""
+
+    @pytest.mark.parametrize("arch", _RDNA1_ARCH_INPUTS)
+    def test_windows_resolver_names_the_multiarch_index(self, arch):
+        url = stack_mod._windows_rocm_index_url(arch)
+        assert url is not None and _MULTIARCH_HOST in url, f"{arch} routed to {url!r}"
+        assert "repo.amd.com/rocm/whl/" not in url
+
+    @pytest.mark.parametrize("arch", _RDNA1_ARCH_INPUTS)
+    def test_the_platform_wrapper_agrees_on_windows(self, arch):
+        with patch.object(stack_mod, "IS_WINDOWS", True):
+            url = stack_mod._amd_arch_index_url(arch)
+        assert url is not None and _MULTIARCH_HOST in url, f"{arch} routed to {url!r}"
+
+    @pytest.mark.parametrize("arch", _RDNA1_ARCH_INPUTS)
+    def test_linux_still_leaves_rdna1_on_cpu_torch(self, arch):
+        with patch.object(stack_mod, "IS_WINDOWS", False):
+            url = stack_mod._amd_arch_index_url(arch)
+        assert url is None, f"{arch} was routed on Linux to {url!r}; that path is unmeasured"
+
+    @pytest.mark.parametrize("arch", _RDNA1_ARCHES)
+    def test_rdna1_is_not_a_per_family_key(self, arch):
+        assert arch not in stack_mod._GFX_TO_AMD_INDEX_ARCH
+        assert arch in stack_mod._WINDOWS_MULTIARCH_GFX
+
+    def test_the_mirror_override_is_honoured(self, monkeypatch):
+        """Air-gapped hosts mirror the multi-arch index like they mirror repo.amd.com/rocm/whl."""
+        monkeypatch.setenv(
+            "UNSLOTH_ROCM_WINDOWS_MULTIARCH_MIRROR", "https://mirror.example/whl-multi-arch"
+        )
+        monkeypatch.setattr(
+            stack_mod, "_ROCM_WINDOWS_MULTIARCH_INDEX_BASE", "https://mirror.example/whl-multi-arch"
+        )
+        assert (
+            stack_mod._windows_rocm_index_url("gfx1010") == "https://mirror.example/whl-multi-arch"
+        )
+
+
 # ── install.sh's case table, executed under sh ───────────────────────────────
 
 
@@ -190,7 +242,7 @@ class TestInstallShIndexFamilyRuns:
     its three call sites treat a non-zero return as "no AMD wheels, use CPU". An arm
     added there is invisible to every Python-side assertion, so run the real case."""
 
-    @pytest.mark.parametrize("arch", _UNSUPPORTED_ARCH_INPUTS)
+    @pytest.mark.parametrize("arch", _LINUX_UNROUTED_ARCH_INPUTS)
     def test_no_unsupported_arch_yields_a_family(self, arch):
         rc, out = _run_sh_index_family(arch)
         assert rc != 0 and out == "", (
@@ -282,7 +334,7 @@ class TestInstallShIndexSelectorRuns:
     the selector itself, with the arch pinned the way a user of an uncovered card is
     told to pin it."""
 
-    @pytest.mark.parametrize("arch", _UNSUPPORTED_ARCH_INPUTS)
+    @pytest.mark.parametrize("arch", _LINUX_UNROUTED_ARCH_INPUTS)
     def test_no_unsupported_arch_leaves_the_cpu_index(self, arch):
         url, err = _run_sh_get_torch_index_url(arch)
         assert url.endswith(
@@ -988,9 +1040,20 @@ def test_the_five_unsupported_tables_agree_on_every_name():
     for source, got in answers.items():
         assert len(got) == len(names), f"{source}: {len(got)} answers for {len(names)} names"
 
+    # Since #11755 only RDNA 1 names may disagree (Windows routes, Linux declines).
+    _windows_sources = {"install_python_stack.py", "install.ps1", "setup.ps1"}
+    _rdna1 = stack_mod._WINDOWS_MULTIARCH_GFX
     disagreements = []
     for i, name in enumerate(names):
         seen = {src: got[i] for src, got in answers.items()}
+        linux_answer = seen["install.sh"]
+        if linux_answer in _rdna1:
+            for src, got_arch in seen.items():
+                expected = "" if src in _windows_sources else linux_answer
+                if got_arch != expected:
+                    disagreements.append((name, seen))
+                    break
+            continue
         if len(set(seen.values())) > 1:
             disagreements.append((name, seen))
     assert not disagreements, "the unsupported-arch tables have drifted apart:\n" + "\n".join(

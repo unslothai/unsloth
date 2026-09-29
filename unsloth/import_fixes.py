@@ -8267,6 +8267,7 @@ CAUSAL_CONV1D_BROKEN = False
 _CAUSAL_CONV1D_PREFIX = "causal_conv1d"
 _CAUSAL_CONV1D_BLOCKER_SENTINEL = "_unsloth_causal_conv1d_blocker"
 VLLM_BROKEN = False
+VLLM_DISABLED_REASON = None  # the warning logged when vLLM was disabled, for fast_inference errors
 _VLLM_PREFIX = "vllm"
 _VLLM_BLOCKER_SENTINEL = "_unsloth_vllm_blocker"
 _ROCM_ENV_HINT_KEYS = (
@@ -8781,6 +8782,19 @@ def _is_broken_vllm_error(error) -> bool:
     return False
 
 
+def _is_vllm_needs_transformers_v5_error(error) -> bool:
+    # vLLM >= 0.24 raises ImportError at import under transformers < 5 (vllm/transformers_utils/config.py).
+    checked = set()
+    current = error
+    while current is not None and id(current) not in checked:
+        checked.add(id(current))
+        message = str(current).lower()
+        if "support for transformers v4" in message and "removed in vllm" in message:
+            return True
+        current = getattr(current, "__cause__", None) or getattr(current, "__context__", None)
+    return False
+
+
 _VLLM_RELEASES_URL = "https://github.com/vllm-project/vllm/releases"
 _VLLM_INSTALL_DOCS_URL = "https://docs.vllm.ai/en/latest/getting_started/installation/gpu/"
 
@@ -9142,8 +9156,8 @@ _VLLM_COMPILED_EXTENSIONS = (
 
 
 def disable_broken_vllm(error = None):
-    """Disable vLLM dynamically when its shared library is ABI-broken."""
-    global VLLM_BROKEN
+    """Disable vLLM dynamically when its shared library is ABI-broken or it refuses this transformers."""
+    global VLLM_BROKEN, VLLM_DISABLED_REASON
     if VLLM_BROKEN:
         _install_vllm_blocker()
         return True
@@ -9170,22 +9184,34 @@ def disable_broken_vllm(error = None):
         except Exception as import_error:
             failure = import_error
 
-    if not _is_broken_vllm_error(failure):
+    needs_transformers_v5 = _is_vllm_needs_transformers_v5_error(failure)
+    if not needs_transformers_v5 and not _is_broken_vllm_error(failure):
         return False
 
     VLLM_BROKEN = True
     _clear_vllm_modules()
     _install_vllm_blocker()
-    cuda_msg = _get_vllm_cuda_mismatch_message(failure)
-    if cuda_msg:
-        logger.warning(cuda_msg)
+    cuda_msg = None if needs_transformers_v5 else _get_vllm_cuda_mismatch_message(failure)
+    if needs_transformers_v5:
+        try:
+            vllm_version = importlib_version("vllm")
+        except Exception:
+            vllm_version = "unknown"
+        VLLM_DISABLED_REASON = (
+            f"Unsloth: vLLM {vllm_version} needs transformers >= 5.0, so vLLM is disabled and "
+            "fast_inference is unavailable; everything else still works.\n"
+            'To use fast_inference, upgrade transformers or install "vllm<0.24".'
+        )
+    elif cuda_msg:
+        VLLM_DISABLED_REASON = cuda_msg
     else:
-        logger.warning(
+        VLLM_DISABLED_REASON = (
             "Unsloth: Detected broken vLLM binary extension; "
             "disabling vLLM imports and continuing import.\n"
             "Please reinstall via `uv pip install unsloth vllm torchvision torchaudio "
             "--torch-backend=auto`."
         )
+    logger.warning(VLLM_DISABLED_REASON)
     return True
 
 

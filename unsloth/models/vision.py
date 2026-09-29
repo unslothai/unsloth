@@ -1869,6 +1869,18 @@ def _tolerate_dtype_cast_on_quantized_model(enabled):
         PreTrainedModel.to = original_to
 
 
+def _offload_activation_pack(x):
+    # Only activations (they require grad); masks and rotary tables are shared across layers.
+    if x.requires_grad and x.device.type != "cpu":
+        return x.device, x.to("cpu", non_blocking = True)
+    return None, x
+
+
+def _offload_activation_unpack(packed):
+    device, x = packed
+    return x if device is None else x.to(device, non_blocking = True)
+
+
 class FastBaseModel:
     @staticmethod
     @_offline_aware_load
@@ -3518,17 +3530,28 @@ class FastBaseModel:
             if _get_dtype(dtype_from_config(model.config)) == torch.bfloat16 and full_finetuning:
                 float32_mixed_precision = False
 
-        # VLMs can hit DDP "marked ready twice" with re-entrant checkpointing (#3713), so under DDP skip the offloaded/re-entrant checkpoint patch and default native checkpoint to non-reentrant.
+        # VLMs can hit DDP "marked ready twice" with re-entrant checkpointing (#3713), so under DDP skip the offloaded/re-entrant checkpoint patch and default native checkpoint to non-reentrant, offloading via saved-tensor hooks instead.
         use_reentrant = not is_distributed()
         if not use_reentrant:
             unpatch_unsloth_gradient_checkpointing()
             unpatch_unsloth_smart_gradient_checkpointing()
-            _orig_checkpoint = torch_checkpoint.checkpoint
+            _orig_checkpoint = getattr(
+                torch_checkpoint.checkpoint,
+                "_unsloth_original",
+                torch_checkpoint.checkpoint,
+            )
+            _offload = use_gradient_checkpointing == "unsloth"
 
             def _nonre_checkpoint(function, *args, **kwargs):
                 kwargs["use_reentrant"] = False
-                return _orig_checkpoint(function, *args, **kwargs)
+                if not _offload:
+                    return _orig_checkpoint(function, *args, **kwargs)
+                with torch.autograd.graph.saved_tensors_hooks(
+                    _offload_activation_pack, _offload_activation_unpack
+                ):
+                    return _orig_checkpoint(function, *args, **kwargs)
 
+            _nonre_checkpoint._unsloth_original = _orig_checkpoint
             torch_checkpoint.checkpoint = _nonre_checkpoint
             hf_modeling_utils.checkpoint = _nonre_checkpoint
 
@@ -3551,11 +3574,17 @@ class FastBaseModel:
         if full_finetuning:
             # prepare_model_for_training re-enabled every parameter, a kept wrapper's siblings too.
             _freeze_unused_siblings(model)
+        _model_type = getattr(getattr(model, "config", None), "model_type", "") or ""
+        if not use_reentrant and not any(x in _model_type.lower() for x in ("gemma3n", "gemma4")):
+            # _set_gradient_checkpointing() binds torch's checkpoint as a default argument, bypassing the patch above.
+            for module in model.modules():
+                func = getattr(module, "_gradient_checkpointing_func", None)
+                if getattr(func, "__module__", None) == "torch.utils.checkpoint":
+                    module._gradient_checkpointing_func = _nonre_checkpoint
         # Persist the configured GC mode so the trainer restores it verbatim: for_inference() clears the module flags every GRPO generation step, and TrainingArguments defaults gradient_checkpointing=False, which would silently disable it at train time (#4735).
         model._unsloth_gradient_checkpointing = use_gradient_checkpointing
 
         # The Gemma3N audio conformer's variable-length tensors cause stride mismatches in the AOT autograd compiled backward under non-reentrant checkpointing, and TRL may override gradient_checkpointing_kwargs later, so intercept the enable and force use_reentrant=True.
-        _model_type = getattr(getattr(model, "config", None), "model_type", "") or ""
         if "gemma3n" in _model_type.lower() or "gemma4" in _model_type.lower():
             _original_gc_enable = model.gradient_checkpointing_enable
 

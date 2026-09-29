@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import asyncio
 import os
 import sys
 import threading
@@ -8,7 +9,7 @@ import weakref
 from types import SimpleNamespace
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
 from auth.authentication import get_current_subject
@@ -1854,3 +1855,201 @@ def test_chunk_budget_splits_only_where_memory_is_short(monkeypatch):
         assert laya_runtime._chunk_budget(torch.device("cuda")) == want
     monkeypatch.setitem(laya_runtime._CHUNK_TOKENS, "cuda", None)
     assert laya_runtime._chunk_budget(torch.device("cuda")) is None
+
+
+def _fake_mlx(monkeypatch, **zoo):
+    mx = SimpleNamespace(float16 = "float16", float32 = "float32")
+    monkeypatch.setitem(sys.modules, "mlx", SimpleNamespace(core = mx))
+    monkeypatch.setitem(sys.modules, "mlx.core", mx)
+    monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx.decision", SimpleNamespace(**zoo))
+
+
+def test_mlx_runs_fp16_checkpoints_in_fp16(monkeypatch, tmp_path):
+    import transformers
+
+    _fake_mlx(
+        monkeypatch, load_decision_model = lambda folder, compute_dtype = "float32": compute_dtype
+    )
+    fake_laya = SimpleNamespace(
+        common = SimpleNamespace(clamp_temperature = float),
+        agent = SimpleNamespace(Agent = SimpleNamespace(_to_internal = None)),
+    )
+    monkeypatch.setitem(sys.modules, "laya", fake_laya)
+    monkeypatch.setattr(transformers.AutoTokenizer, "from_pretrained", lambda path: None)
+    (tmp_path / "rl_agent_config.json").write_text("{}")
+    assert laya_runtime._MLXAgent(tmp_path, True).model == "float16"
+    assert laya_runtime._MLXAgent(tmp_path, False).model == "float32"
+    monkeypatch.setenv("UNSLOTH_SYSTEMONE_FP32", "1")
+    assert laya_runtime._MLXAgent(tmp_path, True).model == "float32"
+    monkeypatch.delenv("UNSLOTH_SYSTEMONE_FP32")
+    # An unsloth-zoo whose loader predates compute_dtype.
+    _fake_mlx(monkeypatch, load_decision_model = lambda folder, dtype = "float32": dtype)
+    old = laya_runtime._MLXAgent(tmp_path, True)
+    assert old.dtype == old.model == "float32"
+
+    monkeypatch.setattr(laya_runtime, "_checkpoint_dir", lambda checkpoint: tmp_path)
+    monkeypatch.setattr(laya_runtime, "_device", lambda: "mlx")
+    monkeypatch.setattr(laya_runtime, "_MLXAgent", lambda folder, fp16: fp16)
+    assert _REAL_LOAD(catalog.CHECKPOINTS["laya-english"]) == (True, "mlx")
+
+
+def test_mlx_fp16_overflow_reruns_in_fp32(monkeypatch, gpu_agent):
+    import numpy as np
+
+    _fake_mlx(monkeypatch)
+
+    class Model:
+        dtype = "float16"
+
+        def set_dtype(self, dtype):
+            self.dtype = dtype
+
+        def logits(self, batch):
+            return np.array([[np.inf if self.dtype == "float16" else 1.0, 0.5]])
+
+    agent = SimpleNamespace(device = "mlx", dtype = "float16", model = Model(), tok = gpu_agent.tok)
+    logits, _ = laya_runtime._forward(agent, _items())
+    assert logits.tolist() == [[1.0, 0.5]] and agent.dtype == agent.model.dtype == "float32"
+    # An fp32 agent has nothing wider to retry in: its non-finite logits come back without a set_dtype call.
+    agent.model.dtype = "float16"  # only makes the fake emit inf
+    agent.model.set_dtype = None
+    logits, _ = laya_runtime._forward(agent, _items())
+    assert np.isinf(logits[0, 0])
+
+
+def _mcp_decide(arguments):
+    from fastmcp import Client
+    async def call():
+        async with Client(systemone.decisions_mcp) as mcp:
+            return await mcp.call_tool("decide", arguments, raise_on_error = False)
+
+    return asyncio.run(call())
+
+
+def test_decisions_mcp_answers_like_the_route(client):
+    route = _post(client).json()
+    result = _mcp_decide(
+        {"state": "Everything is down and we have a demo at noon.", "questions": QUESTIONS}
+    )
+    assert not result.is_error
+    assert result.structured_content == route
+
+
+def test_decisions_mcp_reports_the_route_errors(monkeypatch, runtime):
+    result = _mcp_decide({"state": "x", "questions": {}})
+    assert result.is_error and "At least one question" in result.content[0].text
+    long_state = "x" * (systemone.MAX_STATE_CHARS + 1)
+    result = _mcp_decide({"state": long_state, "questions": QUESTIONS})
+    assert result.is_error and "State is longer than" in result.content[0].text
+    monkeypatch.setattr(systemone_settings, "_owner_setting", {}.get)
+    result = _mcp_decide({"state": "x", "questions": QUESTIONS})
+    assert result.is_error and "Settings > API" in result.content[0].text
+    assert runtime == []
+
+
+def test_chat_calls_studio_decisions_without_a_server_or_key(client):
+    import json
+
+    from core.inference.mcp_client import call_tool_sync, close_mcp_sessions, list_tools_async
+
+    url = client.get("/api/settings/systemone").json()["mcp_url"]
+    assert url == f"http://127.0.0.1:80{systemone.MCP_PATH}/"
+    tools = asyncio.run(list_tools_async(url, timeout = 10))
+    assert [tool["name"] for tool in tools] == ["decide"]
+    text = call_tool_sync(url, None, "decide", {"state": "x", "questions": QUESTIONS}, scope = "chat")
+    close_mcp_sessions(url, None)
+    assert json.loads(text)["answers"]["urgent"] == {"type": "noul", "noul": 0.9}
+
+
+def test_decisions_mcp_endpoint_needs_studio_auth(monkeypatch):
+    from main import app
+    from starlette.applications import Starlette
+    from starlette.routing import Mount
+
+    call = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": {"name": "decide", "arguments": {"state": "x", "questions": QUESTIONS}},
+    }
+    listing = {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}
+    headers = {"Accept": "application/json, text/event-stream"}
+    assert (
+        TestClient(app).post(f"{systemone.MCP_PATH}/", json = call, headers = headers).status_code
+        == 401
+    )
+
+    async def signed_in(credentials):
+        return "tester"
+
+    monkeypatch.setattr(systemone, "get_current_subject", signed_in)
+    mcp_app = systemone.decisions_mcp.http_app(path = "/", stateless_http = True, json_response = True)
+    served = Starlette(
+        routes = [Mount(systemone.MCP_PATH, systemone.RequireStudioAuth(mcp_app))],
+        lifespan = mcp_app.lifespan,
+    )
+    with TestClient(served) as http:
+        listed = http.post(
+            f"{systemone.MCP_PATH}/",
+            json = listing,
+            headers = {**headers, "Authorization": "Bearer t"},
+        )
+        answered = http.post(
+            f"{systemone.MCP_PATH}/", json = call, headers = {**headers, "Authorization": "Bearer t"}
+        )
+        monkeypatch.setattr(systemone_settings, "_owner_setting", {}.get)
+        hidden = http.post(
+            f"{systemone.MCP_PATH}/",
+            json = listing,
+            headers = {**headers, "Authorization": "Bearer t"},
+        )
+    assert answered.status_code == 200, answered.text
+    assert answered.json()["result"]["structuredContent"]["answers"]["urgent"]["noul"] == 0.9
+    assert [tool["name"] for tool in listed.json()["result"]["tools"]] == ["decide"]
+    assert hidden.json()["result"]["tools"] == []
+
+
+def test_managed_accounts_can_add_studio_decisions_but_not_other_loopback():
+    from core.inference.mcp_client import validate_mcp_address
+    from utils.account_context import AccountContext, run_as
+
+    alice = AccountContext("alice-id", "alice")
+    run_as(alice, validate_mcp_address, f"http://127.0.0.1:8888{systemone.MCP_PATH}/")
+    with pytest.raises(HTTPException):
+        run_as(alice, validate_mcp_address, "http://127.0.0.1:8888/mcp")
+
+
+def test_mlx_overflow_in_a_later_chunk_reruns_the_whole_request_in_fp32(monkeypatch):
+    np = pytest.importorskip("numpy")
+    pytest.importorskip("torch")
+    _fake_mlx(monkeypatch)
+    seen = []
+
+    class Model:
+        dtype = "float16"
+
+        def set_dtype(self, dtype):
+            self.dtype = dtype
+
+        def logits(self, batch):
+            seen.append((self.dtype, batch["input_ids"].shape[0]))
+            rows = batch["input_ids"].shape[0]
+            bad = self.dtype == "float16" and len(seen) == 3
+            return np.full((rows, batch["marker_pos"].shape[1]), np.inf if bad else 1.0)
+
+    agent = SimpleNamespace(
+        device = "mlx", dtype = "float16", model = Model(), tok = SimpleNamespace(pad_token_id = 0)
+    )
+    monkeypatch.setitem(laya_runtime._CHUNK_TOKENS, "mlx", 8)
+    items = [{"ids": [2, 5, 6, 1], "markers": [1, 2], "qtype": 0} for _ in range(5)]
+    logits, _ = laya_runtime._forward(agent, items)
+    assert np.isfinite(logits).all() and logits.shape == (5, 2)
+    # Three fp16 chunks, the last overflowing, then all three again in fp32.
+    assert seen == [
+        ("float16", 2),
+        ("float16", 2),
+        ("float16", 1),
+        ("float32", 2),
+        ("float32", 2),
+        ("float32", 1),
+    ]
