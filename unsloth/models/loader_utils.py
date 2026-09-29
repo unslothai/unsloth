@@ -284,6 +284,148 @@ def planner_quantization_kwargs(
     return kwargs
 
 
+def _single_device_index(device_map):
+    """The one CUDA device a string/int device map resolves to on this host, else None."""
+    if isinstance(device_map, bool):
+        return None
+    if isinstance(device_map, int):
+        return device_map
+    if isinstance(device_map, torch.device):
+        if device_map.type != "cuda":
+            return None
+        # An unindexed torch.device means the current device (set_device(local_rank)), not 0.
+        return device_map.index if device_map.index is not None else torch.cuda.current_device()
+    if not isinstance(device_map, str):
+        return None
+    if device_map.startswith("cuda:"):
+        try:
+            return int(device_map.split(":", 1)[1])
+        except ValueError:
+            return None
+    if device_map == "cuda":
+        # transformers maps a bare "cuda" to cuda:{LOCAL_RANK}, one device on any host.
+        try:
+            return int(os.environ.get("LOCAL_RANK", 0))
+        except ValueError:
+            return None
+    if (
+        device_map in ("auto", "sequential", "balanced", "balanced_low_0")
+        or isinstance(device_map, _DefaultDeviceMap)
+        or device_map in AUTOMATIC_DEVICE_MAPS
+    ):
+        try:
+            if DEVICE_TYPE_TORCH == "cuda" and torch.cuda.device_count() == 1:
+                return 0
+        except Exception:
+            return None
+    return None
+
+
+def no_placement_tensor_names(model):
+    """Every tensor name under a module owning one of the model's `_no_placement_params`."""
+    names = getattr(model, "_no_placement_params", None)
+    if not names:
+        return set()
+    tensors = list(model.named_parameters(remove_duplicate = False)) + list(
+        model.named_buffers(remove_duplicate = False)
+    )
+    owners = {
+        name.rsplit(".", 1)[0]
+        for name, _ in tensors
+        if any(name == n or name.endswith("." + n) for n in names)
+    }
+    return {name for name, _ in tensors if any(name.startswith(o + ".") for o in owners)}
+
+
+def exclude_no_placement_params(device_map, model_class, config):
+    """Keep `_no_placement_params` off the device map (on CPU): transformers' handling sent all of
+    Qwen4Exp to CPU on one GPU. `UNSLOTH_PLACE_NO_PLACEMENT_PARAMS=1` restores it."""
+    names = getattr(model_class, "_no_placement_params", None) if model_class is not None else None
+    if not names or os.environ.get("UNSLOTH_PLACE_NO_PLACEMENT_PARAMS", "0") == "1":
+        return device_map
+    if isinstance(device_map, dict):
+        base = dict(device_map)
+    else:
+        index = _single_device_index(device_map)
+        if index is None:
+            print(
+                f"Unsloth: {model_class.__name__} keeps {', '.join(names)} off the device map, but "
+                f"device_map = {device_map!r} spans several devices; leaving the placement to transformers."
+            )
+            return device_map
+        base = {"": index}
+    try:
+        from accelerate import init_empty_weights
+        with init_empty_weights():
+            meta = model_class._from_config(config)
+    except Exception as error:
+        print(
+            f"Unsloth: could not build {model_class.__name__} on meta to place {names} ({error})."
+        )
+        return device_map
+    matched = {
+        name
+        for name, _ in list(meta.named_parameters()) + list(meta.named_buffers())
+        if any(name == n or name.endswith("." + n) for n in names)
+    }
+    if not matched:
+        return device_map
+    # Whole owning module: FP8Embedding multiplies by a sibling weight_scale on the same device.
+    excluded_modules = sorted({name.rsplit(".", 1)[0] for name in matched})
+    excluded = {
+        name
+        for name, _ in list(meta.named_parameters()) + list(meta.named_buffers())
+        if any(name.startswith(module + ".") for module in excluded_modules)
+    }
+
+    def owner(path):
+        best = None
+        for key in out:
+            if key == "" or path == key or path.startswith(key + "."):
+                if best is None or len(key) > len(best):
+                    best = key
+        return best
+
+    out = dict(base)
+    for path in excluded_modules:
+        while (key := owner(path)) is not None:
+            device = out[key]
+            # Already off the GPU: keep the module key so accelerate's offload hooks still cover it.
+            if str(device).split(":")[0] in ("cpu", "disk", "meta"):
+                break
+            out.pop(key)
+            if key == path:
+                continue
+            module = meta.get_submodule(key) if key else meta
+            prefix = key
+            parts = path[len(key) + 1 :].split(".") if key else path.split(".")
+            for part in parts:
+                for child_name, _ in module.named_children():
+                    if child_name != part:
+                        out.setdefault(f"{prefix}.{child_name}" if prefix else child_name, device)
+                for tensor_name, _ in list(module.named_parameters(recurse = False)) + list(
+                    module.named_buffers(recurse = False)
+                ):
+                    if tensor_name != part:
+                        out.setdefault(f"{prefix}.{tensor_name}" if prefix else tensor_name, device)
+                module = getattr(module, part)
+                prefix = f"{prefix}.{part}" if prefix else part
+    billions = (
+        sum(
+            t.numel()
+            for n, t in list(meta.named_parameters()) + list(meta.named_buffers())
+            if n in excluded
+        )
+        / 1e9
+    )
+    print(
+        f"Unsloth: keeping {', '.join(excluded_modules)} ({billions:.1f}B parameters, frozen) on CPU; "
+        f"set UNSLOTH_PLACE_NO_PLACEMENT_PARAMS=1 to place it on the GPU instead."
+    )
+    del meta
+    return out
+
+
 def compressed_tensors_planner_bits(model_config, load_in_4bit, load_in_8bit):
     """(load_in_4bit, load_in_8bit) to size an armed compressed-tensors load at: the packed route keeps INT8 at 8 bits."""
     if not load_in_4bit or compressed_tensors_prepared_config(model_config) is None:
