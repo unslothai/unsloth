@@ -1010,11 +1010,7 @@ def _weight_url_looks_like_derivative_of_projector(weight_url: str, projector_ur
 
 
 def mmproj_functional_match(weight_path: str, mmproj_path: str) -> tuple[Optional[bool], str]:
-    """Check Gemma 4 projector architecture and dimensions independently of model branding.
-
-    Other architectures retain identity pairing until their projector layout is known.
-    A matching header is a discovery hint; llama.cpp validates the actual tensors.
-    """
+    """Gemma 4 only: pair by projector type + projection dim, not branding. None = unknown."""
     if read_gguf_architecture(weight_path) != "gemma4":
         return None, ""
     projector_type = read_mmproj_vision_projector_type(mmproj_path)
