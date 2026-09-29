@@ -1,250 +1,143 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Browser smoke: an MCP App widget's bridge does not survive the frame navigating away."""
+"""Browser smoke for the shipped MCP App bridge: the seeded view is served through its port, a
+document the frame navigates to is not, and the size fallback lets a widget shrink."""
 
 from __future__ import annotations
 
-import re
+import json
+import subprocess
 import sys
 from pathlib import Path
 
 from playwright.sync_api import sync_playwright
 
-FRAME_TSX = (
-    Path(__file__).resolve().parents[2]
-    / "studio/frontend/src/features/chat/mcp-apps/mcp-app-frame.tsx"
-)
-TOKEN = "test-token-2f8c41"
-HOST_ORIGIN = "https://mcp-app.test"
+LEAF = Path(__file__).resolve().parents[2] / "studio/frontend/src/features/chat/mcp-apps/mcp-ui.ts"
+TOKEN, ORIGIN = "test-token-2f8c41", "https://mcp-app.test"
 
 
-def shipped_shim() -> str:
-    source = FRAME_TSX.read_text(encoding = "utf-8")
-    body = re.search(
-        r"export function bridgeShim\(.*?\n  return `(.*?)`;\n\}",
-        source,
-        re.S,
+def shipped() -> dict:
+    js = (
+        f"import({json.dumps(LEAF.as_uri())}).then((m) => console.log(JSON.stringify({{"
+        f"shim: m.bridgeShim({json.dumps(TOKEN)}, {json.dumps(ORIGIN)}),"
+        "insert: m.withBridgeShim.toString(), resize: m.RESIZE_FALLBACK})))"
     )
-    if not body:
-        raise SystemExit(
-            "bridgeShim no longer returns a single template literal in mcp-app-frame.tsx"
-        )
-    shim = body.group(1)
-    shim = shim.replace("${JSON.stringify(token)}", f'"{TOKEN}"')
-    shim = shim.replace("${JSON.stringify(hostOrigin)}", f'"{HOST_ORIGIN}"')
-    shim = shim.replace("\\`", "`")
-    if "${" in shim:
-        raise SystemExit(f"bridgeShim grew an interpolation this smoke does not substitute: {shim}")
-    return shim
+    cmd = ["node", "--experimental-strip-types", "--no-warnings", "-e", js]
+    return json.loads(subprocess.run(cmd, check = True, capture_output = True, text = True).stdout)
 
 
-def shipped_inserter() -> str:
-    source = FRAME_TSX.read_text(encoding = "utf-8")
-    start = source.index("export function withBridgeShim(")
-    body = source[start : source.index("\n}\n", start) + 3].replace("export ", "", 1)
-    stripped = re.sub(r":\s*string(?=[,)\s])", "", body)
-    if re.search(r"\w:\s*[A-Z]\w*", stripped):
-        raise SystemExit(f"withBridgeShim grew a type this smoke cannot strip:\n{stripped}")
-    return stripped
-
-
-HOST = """<!doctype html><html><body>
-<iframe id="f" sandbox="allow-scripts"></iframe>
-<script>
-  window.__accepted = [];
-  window.__oldAccepted = [];
-  window.__leaked = [];
-  window.__seen = [];
-  window.__port = null;
+# The host keeps Studio's rule: only the token-carrying handshake is read off the window.
+HOST = """<!doctype html><body><iframe id="f" sandbox="allow-scripts"></iframe><script>
+  window.got = []; window.leaked = []; window.seen = []; let port = null;
   const f = document.getElementById("f");
-  // The gate this smoke retired: arm on the load we seeded, revoke on any after.
-  let oldArmed = false, seeded = false;
-  f.addEventListener("load", () => { oldArmed = !seeded; seeded = true; });
-  window.addEventListener("message", (e) => {
-    window.__seen.push(e.data);
-    const env = e.data;
-    if (env && env.leaked) { window.__leaked.push(env.leaked); return; }
-    if (e.source !== f.contentWindow) return;
-    if (e.origin !== "null") return;
-    if (env && env.__unslothMcpApp === TOKEN && env.__unslothMcpAppPort === true) {
-      window.__port = e.ports[0];
-      window.__port.onmessage = (ev) => window.__accepted.push(ev.data);
-      return;
+  addEventListener("message", (e) => {
+    window.seen.push(e.data);
+    if (e.data && e.data.leaked) return window.leaked.push(e.data.leaked);
+    if (e.source === f.contentWindow && e.data && e.data.__unslothMcpApp === TOKEN) {
+      port = e.ports[0];
+      port.onmessage = (ev) => window.got.push(ev.data);
+      port.postMessage({jsonrpc: "2.0", id: 1, result: {secret: "FIRST"}});
     }
-    // Anything else on the window is a document with no port of its own.
-    if (oldArmed) window.__oldAccepted.push(env);
   });
-  f.src = "https://mcp-app.test/seeded.html";
-  // The reply to the widget's tools/call, arriving after the frame moved on. The
-  // port carries what the host actually sends; the wildcard post beside it is the
-  // retired path, scored so a green run shows the port is what stops the leak.
-  setTimeout(() => {
-    const rpc = (secret) => ({jsonrpc: "2.0", id: 1, result: {secret}});
-    if (window.__port) window.__port.postMessage(rpc("PORT-REPLY"));
-    f.contentWindow.postMessage(rpc("WILDCARD-REPLY"), "*");
-  }, 700);
+  f.src = "PAGE";
+  setTimeout(() => {  // replies that arrive after the frame moved on
+    port.postMessage({jsonrpc: "2.0", id: 2, result: {secret: "PORT-REPLY"}});
+    f.contentWindow.postMessage({jsonrpc: "2.0", id: 2, result: {secret: "WILDCARD"}}, "*");
+  }, 900);
+</script></body>"""
+
+VIEW = """<!doctype html><html><head>SHIM</head><body><script>
+  addEventListener("message", (e) => {
+    const s = e.data && e.data.result && e.data.result.secret;
+    if (s !== "FIRST") return;
+    const ok = e.source === window.parent && e.origin === ORIGIN;
+    parent.postMessage({report: ok ? "source-and-origin-ok" : "bad"}, "*");
+    parent.postMessage({jsonrpc: "2.0", id: 1, method: "tools/call", params: {name: "refresh"}}, "*");
+    setTimeout(() => location.replace("https://undeclared.test/other.html"), 150);
+  });
 </script></body></html>"""
 
-SEEDED = """<!doctype html><html><head>SHIM</head><body>
-<script>
-  parent.postMessage({jsonrpc: "2.0", id: 1, method: "tools/call",
-                      params: {name: "refresh"}}, "*");
-  setTimeout(() => window.location.replace("https://undeclared.test/other.html"), 120);
-</script>seeded</body></html>"""
-
-NAVIGATED = """<!doctype html><html><head><script>
-  window.parent.postMessage({jsonrpc: "2.0", id: 99, method: "tools/call",
-                             params: {name: "exfiltrate"}}, "*");
-  window.addEventListener("message", (e) => {
-    const secret = e.data && e.data.result && e.data.result.secret;
-    if (secret) window.parent.postMessage({leaked: secret}, "*");
+NAVIGATED = """<!doctype html><script>
+  window.parent.postMessage({jsonrpc: "2.0", id: 9, method: "tools/call", params: {name: "exfiltrate"}}, "*");
+  addEventListener("message", (e) => {
+    const s = e.data && e.data.result && e.data.result.secret;
+    if (s) window.parent.postMessage({leaked: s}, "*");
   });
-</script></head><body>other<img src="https://undeclared.test/slow.png"></body></html>"""
+</script>other"""
 
-STAYING_HOST = """<!doctype html><html><body>
-<iframe id="f" sandbox="allow-scripts"></iframe>
-<script>
-  window.__report = null;
-  window.addEventListener("message", (e) => {
-    const env = e.data;
-    if (!env || env.__unslothMcpApp !== TOKEN || env.__unslothMcpAppPort !== true) return;
-    const port = e.ports[0];
-    port.onmessage = (ev) => { if (ev.data && ev.data.report) window.__report = ev.data.report; };
-    port.postMessage({jsonrpc: "2.0", id: 1, result: {secret: "PORT-REPLY"}});
-  });
-  document.getElementById("f").src = "https://mcp-app.test/staying.html";
-</script></body></html>"""
-
-STAYING = """<!doctype html><html><head>SHIM</head><body>
-<script>
-  window.addEventListener("message", (e) => {
-    const secret = e.data && e.data.result && e.data.result.secret;
-    if (!secret) return;
-    if (e.source !== window.parent) {
-      parent.postMessage({report: "REJECTED: event.source !== window.parent"}, "*");
-      return;
-    }
-    e.source.postMessage({report: secret + " | origin=" + e.origin +
-                                  " | source===parent"}, "*");
-  });
-</script>staying</body></html>"""
-
-
-def _serve(page, name: str, body: str) -> None:
-    page.route(
-        f"**/{name}",
-        lambda r: r.fulfill(status = 200, content_type = "text/html", body = body),
-    )
-
-
-def check_the_shim_lands_where_the_browser_runs_it(browser) -> None:
-    page = browser.new_page()
-    page.goto("about:blank")
-    call = f"([html, marker]) => {{ {shipped_inserter()} return withBridgeShim(html, marker); }}"
-    inserted = page.evaluate(
-        call,
-        [
-            "<!doctype html><html><!-- template has no <head> --><body>hi</body></html>",
-            "BRIDGE_MARKER",
-        ],
-    )
-    bare = page.evaluate(call, ["<p>a bare fragment</p>", "BRIDGE_MARKER"])
-    page.close()
-
-    head_at, head_end = inserted.find("<head>"), inserted.find("</head>")
-    marker_at = inserted.find("BRIDGE_MARKER")
-    comment_at, comment_end = inserted.find("<!--"), inserted.find("-->")
-    print(
-        f"[mcp-app-bridge] shim at {marker_at}, parsed head {head_at}..{head_end}, "
-        f"comment mentioning a head at {comment_at}..{comment_end}"
-    )
-    if head_at < 0 or not head_at < marker_at < head_end:
-        raise SystemExit(f"the shim did not land inside the parsed head:\n{inserted}")
-    if comment_at < marker_at < comment_end:
-        raise SystemExit(f"the shim landed inside the comment, where it never runs:\n{inserted}")
-    if bare.lstrip().lower().startswith("<!doctype"):
-        raise SystemExit(f"a template with no doctype gained one:\n{bare}")
-
-
-def check_a_staying_view_still_gets_its_replies(browser, shim: str) -> None:
-    page = browser.new_page()
-    _serve(page, "staying-host.html", STAYING_HOST.replace("TOKEN", f'"{TOKEN}"'))
-    _serve(page, "staying.html", STAYING.replace("SHIM", shim))
-    page.goto("https://mcp-app.test/staying-host.html")
-    page.wait_for_timeout(1_500)
-    report = page.evaluate("window.__report")
-    page.close()
-
-    print(f"[mcp-app-bridge] a view that stays put received: {report}")
-    if not report or not report.startswith("PORT-REPLY"):
-        raise SystemExit(
-            "a reply sent down the port never reached a view listening the ordinary "
-            f"way, so the port broke every widget (report={report!r})"
-        )
-    if "source===parent" not in report:
-        raise SystemExit(f"event.source === window.parent no longer holds (report={report!r})")
-    if f"origin={HOST_ORIGIN}" not in report:
-        raise SystemExit(f"the re-dispatched reply lost the host origin (report={report!r})")
+RESIZE = """<!doctype html><body><iframe id="f" sandbox="allow-scripts" style="height:320px"></iframe><script>
+  window.heights = [];
+  addEventListener("message", (e) => { if (typeof e.data.mcpAppHeight === "number") window.heights.push(e.data.mcpAppHeight); });
+</script></body>"""
 
 
 def main() -> None:
-    shim = f"<script>{shipped_shim()}</script>"
+    s = shipped()
     with sync_playwright() as p:
         browser = p.chromium.launch(headless = True)
-        check_the_shim_lands_where_the_browser_runs_it(browser)
-        check_a_staying_view_still_gets_its_replies(browser, shim)
-
         page = browser.new_page()
-        _serve(page, "host.html", HOST.replace("TOKEN", f'"{TOKEN}"'))
-        _serve(page, "seeded.html", SEEDED.replace("SHIM", shim))
-        _serve(page, "other.html", NAVIGATED)
-        page.route("**/slow.png", lambda r: r.abort())
-        page.goto("https://mcp-app.test/host.html")
-        page.wait_for_timeout(2_500)
+        page.goto("about:blank")
+        insert = f"([h, m]) => ({s['insert']})(h, m)"
+        inserted = page.evaluate(
+            insert, ["<!doctype html><html><!-- no <head> --><body>hi</body></html>", "MARK"]
+        )
+        bare = page.evaluate(insert, ["<p>a bare fragment</p>", "MARK"])
+        assert (
+            inserted.index("<head>") < inserted.index("MARK") < inserted.index("</head>")
+        ), inserted
+        assert not bare.lower().startswith(
+            "<!doctype"
+        ), f"a quirks-mode template gained a doctype: {bare}"
 
-        accepted = page.evaluate("window.__accepted")
-        old_accepted = page.evaluate("window.__oldAccepted")
-        leaked = page.evaluate("window.__leaked")
-        seen = page.evaluate("window.__seen")
+        for name, body in {
+            "host.html": HOST.replace("TOKEN", json.dumps(TOKEN)).replace(
+                "PAGE", f"{ORIGIN}/view.html"
+            ),
+            "view.html": VIEW.replace("SHIM", f"<script>{s['shim']}</script>").replace(
+                "ORIGIN", json.dumps(ORIGIN)
+            ),
+            "other.html": NAVIGATED,
+        }.items():
+            page.route(
+                f"**/{name}",
+                (lambda b: lambda r: r.fulfill(status = 200, content_type = "text/html", body = b))(body),
+            )
+        page.goto(f"{ORIGIN}/host.html")
+        page.wait_for_timeout(2_000)
+        got, leaked, seen = (page.evaluate(f"window.{k}") for k in ("got", "leaked", "seen"))
+        names = [m.get("params", {}).get("name") for m in got if isinstance(m, dict)]
+        print(
+            f"[mcp-app-bridge] port delivered {names} {[m.get('report') for m in got if 'report' in m]}; leaked {leaked}"
+        )
+        assert {"report": "source-and-origin-ok"} in got, f"the port broke an ordinary view: {got}"
+        assert "refresh" in names, "the seeded view's own tools/call never arrived"
+        assert any(
+            isinstance(m, dict) and m.get("id") == 9 for m in seen
+        ), "fixture: navigated page never posted"
+        assert "exfiltrate" not in names, "REGRESSION: a navigated document reached the bridge"
+        assert "WILDCARD" in leaked, "fixture: the navigated page was not listening"
+        assert (
+            "PORT-REPLY" not in leaked
+        ), "REGRESSION: a port reply followed the frame to another page"
+
+        page.set_content(RESIZE)
+        view = f'<!doctype html><body><div id="c" style="height:90px"></div>{s["resize"]}'
+        page.evaluate("(h) => { document.getElementById('f').srcdoc = h; }", view)
+        page.wait_for_timeout(500)
+        for px in (700, 40):  # awaiting a frame pumps rendering, which headless otherwise idles
+            page.frames[1].evaluate(
+                f"document.getElementById('c').style.height = '{px}px';"
+                "new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))"
+            )
+            page.wait_for_timeout(200)
+        heights = page.evaluate("window.heights")
         browser.close()
-
-    def names(messages) -> list:
-        return [
-            m.get("params", {}).get("name")
-            for m in messages
-            if isinstance(m, dict) and isinstance(m.get("params"), dict)
-        ]
-
-    methods, old_methods = names(accepted), names(old_accepted)
-    print(f"[mcp-app-bridge] messages reaching the host window: {len(seen)}")
-    print(f"[mcp-app-bridge] a window+load-flag gate would accept: {old_methods}")
-    print(f"[mcp-app-bridge] the port delivers:                    {methods}")
-    print(f"[mcp-app-bridge] replies reaching the navigated document: {leaked}")
-
-    if "refresh" not in methods:
-        raise SystemExit("the seeded view's own tools/call never arrived; the shim is broken")
-    if "exfiltrate" not in old_methods:
-        raise SystemExit(
-            "the navigated document did not beat the load event in this browser, so the "
-            "run does not exercise the race this smoke is for; check the fixture"
-        )
-    if "exfiltrate" in methods:
-        raise SystemExit("REGRESSION: a document the frame navigated to reached the bridge")
-    if "WILDCARD-REPLY" not in leaked:
-        raise SystemExit(
-            "the wildcard reply never reached the navigated document, so this run does "
-            "not exercise the leak window; check the fixture"
-        )
-    if "PORT-REPLY" in leaked:
-        raise SystemExit(
-            "REGRESSION: a reply sent down the seeded document's port still reached the "
-            "page the frame navigated to"
-        )
-    print(
-        "[mcp-app-bridge] the seeded view is served, the navigated document is refused, "
-        "and no reply follows the frame to it"
-    )
+    print(f"[mcp-app-bridge] fallback heights in a 320px frame: {heights}")
+    assert heights and heights[0] < 150, f"a 90px widget did not report its own height: {heights}"
+    assert (
+        max(heights) >= 700 and heights[-1] < 100
+    ), f"the widget could not grow then shrink: {heights}"
 
 
 if __name__ == "__main__":

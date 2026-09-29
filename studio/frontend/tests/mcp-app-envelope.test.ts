@@ -4,180 +4,166 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
 
 import ts from "typescript";
 
+import { splitMcpImages } from "../src/features/chat/api/mcp-images.ts";
 import {
-  mcpBareToolName,
-  mcpServerIdFromToolName,
-} from "../src/features/chat/utils/mcp-tool-name.ts";
+  extractMcpUiEnvelope,
+  isMcpUiToolResult,
+  toolApprovalScope,
+  toolResultParams,
+} from "../src/features/chat/mcp-apps/mcp-ui.ts";
+import { splitMcpToolName } from "../src/features/chat/utils/mcp-tool-name.ts";
 
-// Lifted from chat-adapter.ts; must match mcp_client.py::_ui_envelope.
-const adapterPath = fileURLToPath(
-  new URL("../src/features/chat/api/chat-adapter.ts", import.meta.url),
-);
-const source = readFileSync(adapterPath, "utf8");
+const read = (path: string) =>
+  readFileSync(new URL(`../src/${path}`, import.meta.url), "utf8");
+const MARKER = "\n__MCP_UI__:"; // mcp_client.py::_ui_envelope
+const MCP = "mcp__srv__get_status";
 
-const markerLine = /^const MCP_UI_MARKER = .*$/m.exec(source)?.[0];
-if (!markerLine) {
-  throw new Error("MCP_UI_MARKER is no longer defined in chat-adapter.ts");
-}
-
-const prefixLine = /^const MCP_UI_TOOL_PREFIX = .*$/m.exec(source)?.[0];
-if (!prefixLine) {
-  throw new Error("MCP_UI_TOOL_PREFIX is no longer defined in chat-adapter.ts");
-}
-
-function lift<T>(signature: string, name: string, prelude = ""): T {
-  const start = source.indexOf(signature);
-  assert.ok(start >= 0, `${name} is no longer defined in chat-adapter.ts`);
-  // "\n}\n", not "\n}": a multi-line return type closes with "} {".
-  const end = source.indexOf("\n}\n", start);
-  assert.ok(end > start, `${name} has no top-level closing brace`);
-  // Drop `export`: new Function cannot evaluate an ES module.
-  const declaration = source.slice(start, end + 3).replace(/^export /, "");
-  return new Function(
-    `${
-      ts.transpileModule(
-        `${markerLine}\n${prefixLine}\n${prelude}\n${declaration}`,
-        {
-          compilerOptions: { target: ts.ScriptTarget.ES2020 },
-        },
-      ).outputText
-    }; return ${name};`,
-  )() as T;
-}
-
-const MARKER = "\n__MCP_UI__:";
-const MCP_TOOL = "mcp__srv__get_status";
-const extractMcpUiEnvelope = lift<
-  (
-    raw: string,
-    toolName: string,
-  ) => {
-    text: string;
-    ui: { resourceUri: string; structuredContent?: unknown } | null;
-  }
->("export function extractMcpUiEnvelope(", "extractMcpUiEnvelope");
-const isMcpUiToolResult = lift<(val: unknown, toolName?: string) => boolean>(
-  "export function isMcpUiToolResult(",
-  "isMcpUiToolResult",
-);
-
-test("pulls the envelope off and leaves the model text untouched", () => {
-  const raw = `cpu 12%${MARKER}{"resourceUri":"ui://sys/dash","structuredContent":{"cpu":12}}`;
-  const { text, ui } = extractMcpUiEnvelope(raw, MCP_TOOL);
-  assert.equal(text, "cpu 12%");
-  assert.equal(ui?.resourceUri, "ui://sys/dash");
-  assert.deepEqual(ui?.structuredContent, { cpu: 12 });
-});
-
-test("stops at the line end so a trailing image envelope survives", () => {
-  // The UI scan must stop at its own line or it swallows the trailing images.
+test("the envelope comes off an MCP result and leaves the model text", () => {
   const images = '\n__MCP_IMAGES__:[{"data":"AAAA","mimeType":"image/png"}]';
-  const raw = `shot${MARKER}{"resourceUri":"ui://a/b"}${images}`;
-  const { text, ui } = extractMcpUiEnvelope(raw, MCP_TOOL);
-  assert.equal(text, `shot${images}`);
-  assert.equal(ui?.resourceUri, "ui://a/b");
-});
-
-test("a tool that merely prints the marker keeps its whole output", () => {
-  for (const raw of [
-    "log line\n__MCP_UI__: documented here, not an envelope",
-    '{"resourceUri": 5} was the shape\n__MCP_UI__:{"resourceUri":5}',
-    "trailing\n__MCP_UI__:[1,2,3]",
+  for (const [raw, text] of [
+    [
+      `cpu 12%${MARKER}{"resourceUri":"ui://a/b","structuredContent":{"cpu":12}}`,
+      "cpu 12%",
+    ],
+    // Stops at its own line, so a trailing image envelope survives.
+    [`shot${MARKER}{"resourceUri":"ui://a/b"}${images}`, `shot${images}`],
+    // The last marker wins over an earlier literal mention.
+    [
+      `see __MCP_UI__: docs${MARKER}{"resourceUri":"ui://a/b"}`,
+      "see __MCP_UI__: docs",
+    ],
   ]) {
-    const { text, ui } = extractMcpUiEnvelope(raw, MCP_TOOL);
-    assert.equal(ui, null);
-    assert.equal(text, raw);
+    const got = extractMcpUiEnvelope(raw, MCP);
+    assert.equal(got.text, text);
+    assert.equal(got.ui?.resourceUri, "ui://a/b");
   }
 });
 
-test("an earlier literal mention is not mistaken for the envelope", () => {
-  const raw = `see __MCP_UI__: in the docs${MARKER}{"resourceUri":"ui://a/b"}`;
-  const { text, ui } = extractMcpUiEnvelope(raw, MCP_TOOL);
-  assert.equal(text, "see __MCP_UI__: in the docs");
-  assert.equal(ui?.resourceUri, "ui://a/b");
-});
-
-test("only an MCP result can be carrying an envelope", () => {
-  const raw = `see the docs${MARKER}{"resourceUri":"ui://sys/dash"}`;
-  for (const toolName of ["terminal", "python", "web_search", ""]) {
-    const { text, ui } = extractMcpUiEnvelope(raw, toolName);
-    assert.equal(ui, null);
-    assert.equal(text, raw);
+test("output that merely mentions the marker, or is not MCP, is untouched", () => {
+  const cases: [string, string][] = [
+    ["log\n__MCP_UI__: documented here", MCP],
+    ['x\n__MCP_UI__:{"resourceUri":5}', MCP],
+    ["x\n__MCP_UI__:[1,2,3]", MCP],
+    ["plain output\nwith lines", MCP],
+    [`docs${MARKER}{"resourceUri":"ui://a/b"}`, "terminal"],
+    [`docs${MARKER}{"resourceUri":"ui://a/b"}`, ""],
+  ];
+  for (const [raw, tool] of cases) {
+    assert.deepEqual(extractMcpUiEnvelope(raw, tool), { text: raw, ui: null });
   }
-  assert.equal(extractMcpUiEnvelope(raw, MCP_TOOL).ui?.resourceUri, "ui://sys/dash");
 });
 
-test("a result with no envelope round-trips byte for byte", () => {
-  const raw = "plain output\nwith lines";
-  const { text, ui } = extractMcpUiEnvelope(raw, MCP_TOOL);
-  assert.equal(text, raw);
-  assert.equal(ui, null);
-});
-
-test("the widget guard needs both the text and a named resource", () => {
-  assert.ok(isMcpUiToolResult({ text: "x", ui: { resourceUri: "ui://a/b" } }));
-  assert.ok(!isMcpUiToolResult({ text: "x", ui: {} }));
-  assert.ok(!isMcpUiToolResult({ text: "x" }));
-  assert.ok(!isMcpUiToolResult({ ui: { resourceUri: "ui://a/b" } }));
-  assert.ok(!isMcpUiToolResult("a string"));
-  assert.ok(!isMcpUiToolResult(null));
-});
-
-test("someone else's result is not unwrapped as Studio's own wrapper", () => {
-  const imported = {
-    text: "Q3 summary",
-    ui: { resourceUri: "ui://reports/q3" },
-    rows: [1, 2, 3],
-    total: 42,
+test("only an MCP tool's result is treated as a widget", () => {
+  const widget = {
+    text: "Q3",
+    ui: { resourceUri: "ui://r/q3" },
+    owner: "finance",
   };
-  assert.ok(!isMcpUiToolResult(imported, "get_report"));
-  assert.ok(!isMcpUiToolResult(imported, ""));
-  assert.ok(isMcpUiToolResult(imported, MCP_TOOL));
-  assert.ok(isMcpUiToolResult(imported));
-
-  const uiGuardSource = source.slice(
-    source.indexOf("export function isMcpUiToolResult("),
-    source.indexOf("\n}\n", source.indexOf("export function isMcpUiToolResult(")) + 3,
-  ).replace(/^export /, "");
-  const toolResultModelText = lift<(result: unknown, toolName?: string) => unknown>(
-    "export function toolResultModelText(",
-    "toolResultModelText",
-    `${uiGuardSource}
-     const isMcpImageToolResult = () => false;
-     const isSearchImagesToolResult = () => false;
-     const isSandboxWrapper = () => false;`,
-  );
-  assert.deepEqual(toolResultModelText(imported, "get_report"), imported);
-  assert.equal(toolResultModelText(imported, MCP_TOOL), "Q3 summary");
+  assert.ok(isMcpUiToolResult(widget, MCP));
+  for (const tool of ["get_report", ""])
+    assert.ok(!isMcpUiToolResult(widget, tool));
+  for (const bad of [
+    { text: "x", ui: {} },
+    { text: "x" },
+    { ui: widget.ui },
+    "s",
+    null,
+  ]) {
+    assert.ok(!isMcpUiToolResult(bad, MCP));
+  }
 });
 
-test("the image guard refuses a widget result that also carries images", () => {
-  // If the image guard claimed a widget result, the widget would be dropped.
-  const isMcpImageToolResult = lift<(val: unknown) => boolean>(
-    "export function isMcpImageToolResult(",
-    "isMcpImageToolResult",
+test("the model and exports never see the envelope or the wrapper", () => {
+  const adapter = read("features/chat/api/chat-adapter.ts");
+  const modelText = adapter.slice(
+    adapter.indexOf("export function toolResultModelText("),
   );
-  const images = [{ data: "AAAA", mimeType: "image/png" }];
-  assert.ok(isMcpImageToolResult({ text: "x", images }));
-  assert.ok(
-    !isMcpImageToolResult({ text: "x", images, ui: { resourceUri: "ui://a" } }),
+  assert.match(
+    modelText.slice(0, 400),
+    /isMcpUiToolResult\(result, toolName\)[\s\S]*return result\.text;/,
   );
+  assert.match(
+    adapter,
+    /isMcpUiToolResult\(result, tc\.toolName \?\? ""\) \|\|/,
+  );
+  // The image guard must refuse a widget result, or the widget would be dropped.
+  assert.match(
+    adapter,
+    /v\.sessionId === undefined &&\s*v\.ui === undefined &&/,
+  );
+});
+
+test("Always allow shares the chat adapter's approval scope", () => {
+  assert.match(
+    read("features/chat/api/chat-adapter.ts"),
+    /toolConfirmationScopeId = resolvedThreadId\s*\? `\$\{sandboxSessionId \|\| "_default"\}:\$\{resolvedThreadId\}`\s*: sandboxSessionId \|\| "_default"/,
+  );
+  assert.equal(toolApprovalScope("project-p", "t-1"), "project-p:t-1");
+  assert.equal(toolApprovalScope(undefined, "t-1"), "_default:t-1");
+  assert.equal(toolApprovalScope("", undefined), "_default");
+});
+
+test("the seed refills image blocks in order and drops one with no image", () => {
+  const png = { data: "AAAA", mimeType: "image/png" };
+  const ui = {
+    resourceUri: "ui://a/b",
+    structuredContent: { n: 1 },
+    content: [
+      { type: "text", text: "a" },
+      { type: "image", mimeType: "image/png" },
+      { type: "image", data: "inline", mimeType: "image/gif" },
+      { type: "image", mimeType: "image/png" },
+    ],
+  };
+  assert.deepEqual(toolResultParams(ui, [png]), {
+    content: [
+      { type: "text", text: "a" },
+      { type: "image", ...png },
+      { type: "image", data: "inline", mimeType: "image/gif" },
+    ],
+    structuredContent: { n: 1 },
+  });
 });
 
 test("the tool name carries the server the widget is scoped to", () => {
+  assert.deepEqual(splitMcpToolName("mcp__a3f9__get__thing"), {
+    serverId: "a3f9",
+    tool: "get__thing",
+  });
+  assert.equal(splitMcpToolName("python"), null);
+});
+
+test("the search index keeps a widget's shown text, not its seed", () => {
+  const source = read("features/chat/hooks/use-chat-search-index.ts");
+  const start = source.indexOf("function searchableText(");
+  const body = source.slice(start, source.indexOf("\n}\n", start) + 3);
+  const binaryKey = /^const BINARY_KEY = .*$/m.exec(source)?.[0] ?? "";
+  const js = ts.transpileModule(`${binaryKey}\n${body}`, {
+    compilerOptions: { target: ts.ScriptTarget.ES2020 },
+  }).outputText;
+  const searchableText = new Function(
+    "splitMcpImages",
+    "isMcpUiToolResult",
+    `${js}; return searchableText;`,
+  )(splitMcpImages, isMcpUiToolResult) as (
+    value: unknown,
+    depth?: number,
+    toolName?: string,
+  ) => string;
+  const widget = {
+    text: "SF: 18C",
+    ui: {
+      resourceUri: "ui://w/d",
+      structuredContent: { station: "KSFO", raw: "x".repeat(5000) },
+    },
+  };
+  assert.equal(searchableText(widget, 0, "mcp__a__weather"), "SF: 18C");
+  assert.match(searchableText(widget, 0, "get_report"), /KSFO/);
   assert.equal(
-    mcpServerIdFromToolName("mcp__a3f9c1d2e4b6f807__get_status"),
-    "a3f9c1d2e4b6f807",
+    searchableText({ text: "hi", images: ["AAAA"] }, 0, "python"),
+    "hi",
   );
-  assert.equal(
-    mcpBareToolName("mcp__a3f9c1d2e4b6f807__get_status"),
-    "get_status",
-  );
-  assert.equal(mcpBareToolName("mcp__srv__get__thing"), "get__thing");
-  assert.equal(mcpServerIdFromToolName("python"), null);
-  assert.equal(mcpBareToolName("python"), null);
 });

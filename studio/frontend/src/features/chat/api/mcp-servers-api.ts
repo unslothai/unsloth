@@ -260,24 +260,21 @@ export function importMcpServers(
   );
 }
 
+export type McpUiCspField =
+  | "connectDomains"
+  | "resourceDomains"
+  | "frameDomains"
+  | "baseUriDomains";
+
 export interface McpUiResource {
   uri: string;
   mime_type: string;
   text: string;
-  ui: {
-    csp?: {
-      connectDomains?: string[];
-      resourceDomains?: string[];
-      frameDomains?: string[];
-      baseUriDomains?: string[];
-    };
-    prefersBorder?: boolean;
-    domain?: string;
-  };
+  ui: { csp?: Partial<Record<McpUiCspField, string[]>> };
 }
 
 export interface McpUiToolCallResult {
-  content: { type?: string; text?: string; [key: string]: unknown }[];
+  content: Record<string, unknown>[];
   structured_content: Record<string, unknown> | null;
   is_error: boolean;
   meta: Record<string, unknown> | null;
@@ -286,44 +283,26 @@ export interface McpUiToolCallResult {
 export function readMcpUiResource(
   serverId: string,
   uri: string,
-  scope?: { threadId?: string; sessionId?: string },
+  scope: { threadId?: string; sessionId?: string },
 ): Promise<McpUiResource> {
   const query = new URLSearchParams({ uri });
-  if (scope?.threadId) query.set("thread_id", scope.threadId);
-  if (scope?.sessionId) query.set("session_id", scope.sessionId);
-  return mcpRequest(`/${serverId}/ui-resource?${query.toString()}`);
+  if (scope.threadId) query.set("thread_id", scope.threadId);
+  if (scope.sessionId) query.set("session_id", scope.sessionId);
+  return mcpRequest(`/${serverId}/ui-resource?${query}`);
 }
 
-export class McpUiApprovalRequired extends Error {}
-
-const UI_TOOL_APPROVAL_REQUIRED = "approval_required";
-
-/** `serverId` comes from the tool part that drew the frame, never the widget. */
+/** `serverId` comes from the tool part that drew the frame, never the widget. A 409 rejects with
+ *  Error("approval_required"). */
 export function callMcpUiTool(
   serverId: string,
-  payload: {
-    toolName: string;
-    arguments?: Record<string, unknown>;
-    threadId?: string;
-    sessionId?: string;
-    permissionMode: string;
+  body: {
+    tool_name: string;
+    arguments: Record<string, unknown>;
+    thread_id: string | null;
+    session_id: string | null;
+    permission_mode: string;
     approved: boolean;
   },
 ): Promise<McpUiToolCallResult> {
-  return mcpRequest<McpUiToolCallResult>(`/${serverId}/ui-tool-call`, {
-    method: "POST",
-    body: {
-      tool_name: payload.toolName,
-      arguments: payload.arguments ?? {},
-      thread_id: payload.threadId ?? null,
-      session_id: payload.sessionId ?? null,
-      permission_mode: payload.permissionMode,
-      approved: payload.approved,
-    },
-  }).catch((err: unknown) => {
-    if (err instanceof Error && err.message === UI_TOOL_APPROVAL_REQUIRED) {
-      throw new McpUiApprovalRequired(err.message);
-    }
-    throw err;
-  });
+  return mcpRequest(`/${serverId}/ui-tool-call`, { method: "POST", body });
 }

@@ -15,12 +15,15 @@ import { useDetachThreadFromBottom } from "@/components/assistant-ui/use-intent-
 import { useCollapseScrollLock } from "@/hooks/use-collapse-scroll-lock";
 import {
   formatMcpToolName,
-  mcpBareToolName,
   mcpServerFromProvenance,
-  mcpServerIdFromToolName,
   mcpToolFromProvenance,
+  splitMcpToolName,
 } from "@/features/chat/utils/mcp-tool-name";
 import { McpAppFrame } from "@/features/chat/mcp-apps/mcp-app-frame";
+import {
+  type McpUiToolResult,
+  isMcpUiToolResult,
+} from "@/features/chat/mcp-apps/mcp-ui";
 import { sandboxSessionIdFor } from "@/components/assistant-ui/sandbox-files";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { stripAnsi, stringifyToolResult } from "@/lib/strip-ansi";
@@ -347,32 +350,6 @@ function isMcpImageResult(val: unknown): val is McpImageResult {
   );
 }
 
-// Declared locally, like isMcpImageResult, so this card does not import the chat adapter.
-interface McpUiResult {
-  text: string;
-  ui: {
-    resourceUri: string;
-    structuredContent?: unknown;
-    _meta?: Record<string, unknown>;
-  };
-  images?: { data: string; mimeType: string }[];
-}
-
-function isMcpUiResult(val: unknown, toolName?: string): val is McpUiResult {
-  // Name-gated: an imported conversation stores whatever object its host kept.
-  if (toolName !== undefined && mcpServerIdFromToolName(toolName) === null) {
-    return false;
-  }
-  if (typeof val !== "object" || val === null) return false;
-  const v = val as { text?: unknown; ui?: unknown };
-  return (
-    typeof v.text === "string" &&
-    typeof v.ui === "object" &&
-    v.ui !== null &&
-    typeof (v.ui as { resourceUri?: unknown }).resourceUri === "string"
-  );
-}
-
 /** Outside ToolFallbackContent so it stays on screen with the card collapsed. */
 function ToolFallbackMcpApp({
   toolName,
@@ -380,33 +357,19 @@ function ToolFallbackMcpApp({
   argsText,
 }: {
   toolName: string;
-  result: unknown;
+  result: McpUiToolResult;
   argsText?: string;
 }) {
-  const threadId = useAuiState(
-    ({ threadListItem }) => threadListItem.remoteId,
-  );
+  const threadId = useAuiState(({ threadListItem }) => threadListItem.remoteId);
   const projectId = useChatRuntimeStore((state) => state.activeProjectId);
-  if (!isMcpUiResult(result, toolName)) return null;
-  const serverId = mcpServerIdFromToolName(toolName);
-  if (!serverId) return null;
-  let toolArgs: Record<string, unknown> | undefined;
-  if (argsText) {
-    try {
-      const parsed: unknown = JSON.parse(argsText);
-      if (typeof parsed === "object" && parsed !== null) {
-        toolArgs = parsed as Record<string, unknown>;
-      }
-    } catch {
-      // Streaming leaves argsText partial; send {} rather than a half-parse.
-    }
-  }
+  const parts = splitMcpToolName(toolName);
+  if (!parts) return null;
   return (
     <McpAppFrame
-      serverId={serverId}
-      toolName={mcpBareToolName(toolName) ?? toolName}
-      ui={result.ui as McpUiResult["ui"]}
-      toolArgs={toolArgs}
+      serverId={parts.serverId}
+      toolName={parts.tool}
+      ui={result.ui}
+      argsText={argsText}
       resultImages={result.images}
       threadId={threadId}
       sessionId={sandboxSessionIdFor(threadId, projectId)}
@@ -416,31 +379,19 @@ function ToolFallbackMcpApp({
 
 function ToolFallbackResult({
   result,
-  toolName,
   className,
   ...props
 }: ComponentProps<"div"> & {
   result?: unknown;
-  toolName?: string;
 }) {
   if (result === undefined) {
     return null;
   }
 
-  const uiResult = isMcpUiResult(result, toolName) ? result : null;
-  const imageResult = isMcpImageResult(result)
-    ? result
-    : uiResult?.images?.length
-      ? { text: uiResult.text, images: uiResult.images }
-      : null;
-  // Colourised CLIs (ls --color, grep --color, npm, cargo, pytest) emit SGR
-  // escapes that a plain <pre> cannot style; strip them so the pane stays
-  // readable (#7962).
-  const resultText = imageResult
-    ? null
-    : uiResult
-      ? stripAnsi(uiResult.text)
-      : stringifyToolResult(result);
+  const imageResult = isMcpImageResult(result) ? result : null;
+  // Colourised CLIs (ls --color, grep --color, npm, cargo, pytest) emit SGR escapes that a plain
+  // <pre> cannot style; strip them so the pane stays readable (#7962).
+  const resultText = imageResult ? null : stringifyToolResult(result);
 
   return (
     <div
@@ -530,6 +481,11 @@ const ToolFallbackImpl: ToolCallMessagePartComponent = ({
   // thread.tsx, so this renderer stays purely presentational.
   const provenance = (rest as { provenance?: unknown }).provenance;
   const isCancelled = isToolCallCancelled(status);
+  // A widget result's pane shows the text (and images) the model saw, never its UI seed.
+  const widget = isMcpUiToolResult(result, toolName) ? result : null;
+  const shown = widget?.images?.length
+    ? { text: widget.text, images: widget.images }
+    : (widget?.text ?? result);
 
   return (
     <ToolFallbackRoot
@@ -542,10 +498,10 @@ const ToolFallbackImpl: ToolCallMessagePartComponent = ({
         mcpTool={mcpToolFromProvenance(provenance)}
         status={status}
       />
-      {!isCancelled && (
+      {!isCancelled && widget && (
         <ToolFallbackMcpApp
           toolName={toolName}
-          result={result}
+          result={widget}
           argsText={argsText}
         />
       )}
@@ -555,9 +511,7 @@ const ToolFallbackImpl: ToolCallMessagePartComponent = ({
           argsText={argsText}
           className={cn(isCancelled && "opacity-60")}
         />
-        {!isCancelled && (
-          <ToolFallbackResult result={result} toolName={toolName} />
-        )}
+        {!isCancelled && <ToolFallbackResult result={shown} />}
       </ToolFallbackContent>
     </ToolFallbackRoot>
   );

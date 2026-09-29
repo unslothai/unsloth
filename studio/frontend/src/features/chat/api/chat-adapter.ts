@@ -75,6 +75,11 @@ import {
   sandboxSessionIdFor,
 } from "@/components/assistant-ui/sandbox-files";
 import { apiUrl } from "@/lib/api-base";
+import {
+  type McpUiToolResult,
+  extractMcpUiEnvelope,
+  isMcpUiToolResult,
+} from "../mcp-apps/mcp-ui";
 import { isMcpToolName } from "../utils/mcp-tool-name";
 import {
   type McpImage,
@@ -1016,76 +1021,6 @@ function serializeAssistantToolCallPart(
 export interface McpImageToolResult {
   text: string;
   images: { data: string; mimeType: string }[];
-}
-
-export interface McpUiEnvelope {
-  resourceUri: string;
-  /** Image blocks carry no `data`: it rides the image sentinel. */
-  content?: { type?: string; data?: string; [key: string]: unknown }[];
-  structuredContent?: unknown;
-  _meta?: Record<string, unknown>;
-  /** Seed data was too large to persist; the widget must fetch it itself. */
-  structuredContentOmitted?: boolean;
-}
-
-export interface McpUiToolResult {
-  text: string;
-  ui: McpUiEnvelope;
-  images?: { data: string; mimeType: string }[];
-}
-
-const MCP_UI_MARKER = "\n__MCP_UI__:";
-const MCP_UI_TOOL_PREFIX = "mcp__";
-
-/** A trailing __MCP_UI__ line on an MCP result; one JSON line, so the image envelope may follow. */
-export function extractMcpUiEnvelope(
-  raw: string,
-  toolName: string,
-): {
-  text: string;
-  ui: McpUiEnvelope | null;
-} {
-  if (!toolName.startsWith(MCP_UI_TOOL_PREFIX)) return { text: raw, ui: null };
-  const start = raw.lastIndexOf(MCP_UI_MARKER);
-  if (start === -1) return { text: raw, ui: null };
-  const payloadStart = start + MCP_UI_MARKER.length;
-  const lineEnd = raw.indexOf("\n", payloadStart);
-  const end = lineEnd === -1 ? raw.length : lineEnd;
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw.slice(payloadStart, end));
-  } catch {
-    return { text: raw, ui: null };
-  }
-  if (
-    typeof parsed !== "object" ||
-    parsed === null ||
-    typeof (parsed as { resourceUri?: unknown }).resourceUri !== "string"
-  ) {
-    return { text: raw, ui: null };
-  }
-  return {
-    text: raw.slice(0, start) + raw.slice(end),
-    ui: parsed as McpUiEnvelope,
-  };
-}
-
-export function isMcpUiToolResult(
-  val: unknown,
-  toolName?: string,
-): val is McpUiToolResult {
-  // Shape alone is not proof: an imported conversation carries arbitrary objects.
-  if (toolName !== undefined && !toolName.startsWith(MCP_UI_TOOL_PREFIX)) {
-    return false;
-  }
-  if (typeof val !== "object" || val === null) return false;
-  const v = val as { text?: unknown; ui?: unknown };
-  return (
-    typeof v.text === "string" &&
-    typeof v.ui === "object" &&
-    v.ui !== null &&
-    typeof (v.ui as { resourceUri?: unknown }).resourceUri === "string"
-  );
 }
 
 /** The text the model actually saw, for a result that may be wrapped. Exports feed fine-tuning
@@ -7337,17 +7272,15 @@ export function createOpenAIStreamAdapter(
                       parsedResult = rawResult;
                     }
                     if (mcpUi) {
-                      parsedResult = {
-                        text: isMcpImageToolResult(parsedResult)
-                          ? parsedResult.text
-                          : typeof parsedResult === "string"
-                            ? parsedResult
-                            : rawResult,
-                        ui: mcpUi,
-                        ...(isMcpImageToolResult(parsedResult)
-                          ? { images: parsedResult.images }
-                          : {}),
-                      };
+                      parsedResult = isMcpImageToolResult(parsedResult)
+                        ? { ...parsedResult, ui: mcpUi }
+                        : {
+                            text:
+                              typeof parsedResult === "string"
+                                ? parsedResult
+                                : rawResult,
+                            ui: mcpUi,
+                          };
                     }
                     const nextArgs =
                       toolEvent.arguments &&
