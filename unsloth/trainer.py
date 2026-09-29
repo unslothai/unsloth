@@ -671,6 +671,13 @@ class UnslothTrainingArguments(TrainingArguments):
         self.embedding_learning_rate = embedding_learning_rate
         super().__init__(*args, **kwargs)
         self.embedding_learning_rate = embedding_learning_rate
+        if self.eval_steps is not None and self.eval_strategy != "steps":
+            warnings.warn(
+                f"Unsloth: `eval_steps = {self.eval_steps}` is ignored because `eval_strategy` is "
+                f"{getattr(self.eval_strategy, 'value', self.eval_strategy)!r}. "
+                'Set `eval_strategy = "steps"` to evaluate every `eval_steps` steps.',
+                stacklevel = 2,
+            )
 
 
 def _create_unsloth_optimizer(
