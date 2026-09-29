@@ -90,11 +90,12 @@ def _run(
     env: dict | None = None,
     wait: str = "3",
     services_up: bool = True,
+    curl: str | None = None,
 ) -> subprocess.CompletedProcess:
     """Run the shipped script against *home*, with curl stubbed: the ready probes
     must never reach a real Studio on the test host."""
     bin_dir = home / "stub-bin"
-    _stub(bin_dir, "curl", "exit 0\n" if services_up else "exit 7\n")
+    _stub(bin_dir, "curl", curl or ("exit 0\n" if services_up else "exit 7\n"))
     # the admin row is "committed" unless the test parks a not-initialized marker
     _stub(
         bin_dir, "unsloth-studio-run", f'[[ -e "{home / "not-initialized"}" ]] && exit 1\nexit 0\n'
@@ -104,6 +105,10 @@ def _run(
         UNSLOTH_STUDIO_HOME = str(home),
         UNSLOTH_STUDIO_PASSWORD_WAIT = wait,
         UNSLOTH_STUDIO_READY_WAIT = "2",
+        # The summary is coloured, which splits the lines these tests match on.
+        # Assert the text here and the colour in its own test below, so a change
+        # to either one fails for the right reason.
+        NO_COLOR = "1",
     )
     e.update(env or {})
     return subprocess.run(["bash", str(SCRIPT)], capture_output = True, text = True, env = e, timeout = 60)
@@ -126,7 +131,7 @@ def test_the_generated_password_is_printed_once_studio_writes_it(tmp_path: Path)
     assert "60 minutes" in res.stdout, "the change-it-or-shut-down window is not explained"
     assert "Unsloth container ready" in res.stdout
     assert (
-        "Studio      http://localhost:8000   username: unsloth   password: s3cret pass"
+        "Unsloth     http://localhost:8000   username: unsloth   password: s3cret pass"
         in res.stdout
     )
 
@@ -174,6 +179,43 @@ def test_services_that_never_answer_are_reported_not_hidden(tmp_path: Path):
     assert res.returncode == 0
     assert "startup incomplete" in res.stdout, res.stdout
     assert res.stdout.count("not answering") == 2
+
+
+@behavioural
+def test_the_ready_probes_bypass_a_container_wide_proxy(tmp_path: Path):
+    log = tmp_path / "curl.log"
+    res = _run(
+        tmp_path,
+        env = {"UNSLOTH_STUDIO_PASSWORD_STATE": "stored", "STUB_LOG": str(log)},
+        curl = 'echo "$*" >> "$STUB_LOG"\nexit 0\n',
+    )
+    assert res.returncode == 0, res.stderr
+    calls = log.read_text().splitlines()
+    assert any(c.endswith("--noproxy * http://127.0.0.1:8000/api/health") for c in calls), calls
+    assert any(c.endswith("--noproxy * http://127.0.0.1:8888/login") for c in calls), calls
+
+
+@behavioural
+def test_the_jupyter_tunnel_probe_bypasses_a_container_wide_proxy(tmp_path: Path):
+    bin_dir = tmp_path / "stub-bin"
+    log = tmp_path / "curl.log"
+    _stub(bin_dir, "curl", 'echo "$*" >> "$STUB_LOG"\nexit 0\n')
+    # the script's first candidate, so a real /usr/local/bin/cloudflared is never run
+    _stub(tmp_path / "bin", "cloudflared", 'echo "STUB-CLOUDFLARED $*"\n')
+    e = _clean_env(bin_dir)
+    e.update(UNSLOTH_JUPYTER_CLOUDFLARE = "1", UNSLOTH_STUDIO_HOME = str(tmp_path), STUB_LOG = str(log))
+    res = subprocess.run(
+        ["bash", str(DOCKER / "unsloth_jupyter_tunnel.sh")],
+        capture_output = True,
+        text = True,
+        env = e,
+        timeout = 60,
+    )
+    assert res.returncode == 0, res.stderr
+    assert "STUB-CLOUDFLARED tunnel" in res.stdout, res.stdout
+    assert log.read_text().splitlines() == [
+        "-fsS -o /dev/null --noproxy * http://localhost:8888/login"
+    ]
 
 
 @behavioural
@@ -469,3 +511,17 @@ def test_the_image_wires_the_scripts_in():
         "first-boot password below" not in launch
     ), "the banner promises what Studio no longer prints"
     assert "unset UNSLOTH_STUDIO_PASSWORD" in launch
+
+
+def test_the_summary_is_coloured_unless_no_color_is_set(tmp_path: Path):
+    """The block is the one thing worth reading in a long startup log; plain text
+    left it indistinguishable from the supervisord and Jupyter lines around it.
+    NO_COLOR (no-color.org) is the documented way off, for log collectors."""
+    env = {"UNSLOTH_STUDIO_PASSWORD_STATE": "generated"}
+    a, b = tmp_path / "a", tmp_path / "b"
+    a.mkdir()
+    b.mkdir()
+    coloured = _run(a, env = {**env, "NO_COLOR": ""})
+    plain = _run(b, env = env)
+    assert "\033[1;32m" in coloured.stdout.replace("\x1b", "\033"), coloured.stdout
+    assert "\x1b[" not in plain.stdout, plain.stdout

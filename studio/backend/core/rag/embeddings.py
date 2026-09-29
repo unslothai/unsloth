@@ -662,6 +662,29 @@ def _resolve_auto() -> str:
     return "sentence-transformers"
 
 
+# _resolve_auto's answer, kept with the backend it built: every encode, token count and identity
+# check resolves auto, and its GPU probe is a subprocess (#10390).
+_resident_hardware: tuple[object, str] | None = None
+_hardware_probe = threading.local()
+
+
+def _resident_hardware_choice() -> str:
+    """_resolve_auto, asked once for the backend that is published."""
+    held = _resident_hardware
+    if held is not None and _backend is not None and held[0] is _backend:
+        return held[1]
+    _hardware_probe.choice = _resolve_auto()
+    return _hardware_probe.choice
+
+
+def _keep_hardware_choice(backend) -> None:
+    """Keep the answer only when THIS call resolved it; see the clear in _get_backend."""
+    global _resident_hardware
+    choice = getattr(_hardware_probe, "choice", None)
+    if choice is not None:
+        _resident_hardware = (backend, choice)
+
+
 def _model_is_local_gguf(model: str | None) -> bool:
     """Whether ``model`` names a local .gguf file, or a folder holding one.
 
@@ -728,7 +751,7 @@ def _resolve_auto_for_model(model_name: str | None = None) -> str:
     # safetensors has a validated ST plan.
     if _model_names_gguf_repo(model):
         return "llama-server"
-    return _resolve_auto()
+    return _resident_hardware_choice()
 
 
 def sentence_transformers_runtime_available() -> bool:
@@ -920,8 +943,12 @@ def _get_backend(model_name: str | None = None):
     with _backend_lock:
         model = model_name or config.effective_embedding_model()
         forced = _forced_backends.get(model)
+        # Load-bearing: the identity and active-backend probes also resolve auto outside this lock,
+        # so without the clear a build that short-circuited the hardware keeps their stale answer.
+        _hardware_probe.choice = None
         key = forced or (_resolve_auto_for_model(model) if raw in _AUTO_ALIASES else raw)
         if _backend is not None and _backend_key == _backend_cache_key(raw, key):
+            _keep_hardware_choice(_backend)
             return _backend
         old = _backend
         if key in _ST_ALIASES:
@@ -936,6 +963,7 @@ def _get_backend(model_name: str | None = None):
                 "'auto', 'sentence-transformers' or 'llama-server'"
             )
         _backend = new
+        _keep_hardware_choice(new)
         if key in _ST_ALIASES and _is_llama_backend(new):
             # Pin the backend the warm probe actually fell back to, but let a different model retry ST.
             key = "llama-server"
@@ -948,11 +976,12 @@ def _get_backend(model_name: str | None = None):
 
 def _reset_backend() -> None:
     """Drop the cached backend (test teardown / re-init)."""
-    global _backend, _backend_key
+    global _backend, _backend_key, _resident_hardware
     with _backend_lock:
         _forced_backends.clear()
         _backend = None
         _backend_key = None
+        _resident_hardware = None
 
 
 def backend_is_loaded(model_name: str | None = None) -> bool:
@@ -998,12 +1027,13 @@ def release_backend() -> bool:
 
     Safe mid-ingestion: the next embed rebuilds, and the llama backend's own POST
     retry already covers a server that went away under it."""
-    global _backend, _backend_key
+    global _backend, _backend_key, _resident_hardware
     with _backend_lock:
         # Unload is an explicit fresh start, so a past runtime fallback stops pinning the choice and the saved
         # model picks its backend again.
         _forced_backends.clear()
         backend, _backend, _backend_key = _backend, None, None
+        _resident_hardware = None
     if backend is None:
         # Nothing published, but the module-level model can still be there (see backend_is_loaded);
         # freeing it here is what keeps that leak from being permanent.
@@ -1044,12 +1074,55 @@ def active_backend_is_llama(model_name: str | None = None) -> bool:
         return False
 
 
-def _identity(is_llama: bool, name: str) -> str:
+def _llama_pooling(name: str, served = None) -> str | None:
+    try:
+        from .embed_llama_server import LlamaServerBackend, _gguf_pooling
+    except Exception:  # noqa: BLE001 - llama plumbing import must never block
+        return None
+    # The file the running server loaded wins over a cache search: moving the HF cache leaves it serving the old path.
+    backend = served if served is not None else _backend
+    desired = config.effective_gguf_repo_for_embedding_model(name)
+    if isinstance(backend, LlamaServerBackend):
+        path, repo, captured, alive = backend.pooling_identity_snapshot()
+    else:
+        path, repo, captured, alive = None, None, None, False
+    if path and repo == desired:
+        # A live server still serves the pooling captured at its spawn even if the file is
+        # replaced. ``served`` means an encode just completed on that same captured value. With a
+        # stopped ambient backend, however, the next spawn will read the file again, so pre-encode
+        # deduplication must do the same.
+        if served is not None or alive:
+            pooling = captured or _gguf_pooling(path)
+        elif os.path.isfile(path):
+            pooling = _gguf_pooling(path)
+        else:
+            pooling = LlamaServerBackend.cached_pooling(name)
+    else:
+        pooling = LlamaServerBackend.cached_pooling(name)
+    if pooling is None:
+        # Nothing on disk to read, so match no stored row: pre-encode dedupe must not take forced-CLS vectors as current.
+        return "unresolved"
+    return None if pooling == "cls" else pooling
+
+
+def _identity(
+    is_llama: bool,
+    name: str,
+    served = None,
+    served_identity: tuple[str | None, str | None] | None = None,
+) -> str:
     if is_llama:
+        if served_identity is None:
+            repo = config.effective_gguf_repo_for_embedding_model(name)
+            pooling = _llama_pooling(name, served)
+        else:
+            repo, captured_pooling = served_identity
+            pooling = None if captured_pooling == "cls" else captured_pooling
         return config.embedding_identity(
             "llama-server",
             name,
-            gguf_repo = config.effective_gguf_repo_for_embedding_model(name),
+            gguf_repo = repo,
+            pooling = pooling,
         )
     return config.embedding_identity("sentence-transformers", name)
 
@@ -1114,12 +1187,14 @@ def encode_with_identity(
     were never in, and a query then searches (or a document is stored against) the
     wrong half of the index."""
     _served_by.backend = None
+    _served_by.llama_identity = None
     vectors = encode(texts, model_name = model_name, normalize = normalize)
     served = getattr(_served_by, "backend", None)
+    served_identity = getattr(_served_by, "llama_identity", None)
     name = model_name or config.effective_embedding_model()
     if served is None:
         return vectors, embedding_identity(name)
-    return vectors, _identity(_is_llama_backend(served), name)
+    return vectors, _identity(_is_llama_backend(served), name, served, served_identity)
 
 
 def warm(model_name: str | None = None) -> None:
@@ -1142,8 +1217,12 @@ def encode(
     """
     backend = _get_backend(model_name)
     _served_by.backend = backend
+    _served_by.llama_identity = None
     try:
-        return backend.encode(texts, model_name = model_name, normalize = normalize)
+        vectors = backend.encode(texts, model_name = model_name, normalize = normalize)
+        served = getattr(_served_by, "backend", None) or backend
+        _served_by.llama_identity = getattr(served, "served_embedding_identity", lambda: None)()
+        return vectors
     except RuntimeError:
         if not (_is_llama_backend(backend) and getattr(backend, "_closed", False)):
             raise
@@ -1151,7 +1230,9 @@ def encode(
     if replacement is backend:
         raise RuntimeError("llama-server embedding backend was unloaded")
     _served_by.backend = replacement
-    return replacement.encode(texts, model_name = model_name, normalize = normalize)
+    vectors = replacement.encode(texts, model_name = model_name, normalize = normalize)
+    _served_by.llama_identity = getattr(replacement, "served_embedding_identity", lambda: None)()
+    return vectors
 
 
 def dim(model_name: str | None = None) -> int:

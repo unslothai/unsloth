@@ -34,6 +34,7 @@ export interface BackendLoraInfo {
   base_model?: string | null;
   source?: "training" | "exported" | null;
   export_type?: "lora" | "merged" | "gguf" | null;
+  size_bytes?: number | null;
   /** Codec of the checkpoint's base model when it fine-tunes an audio model, else null. */
   audio_type?: string | null;
 }
@@ -65,7 +66,7 @@ export interface LoadModelRequest {
   approved_remote_code_fingerprint?: string | null;
   chat_template_override?: string | null;
   cache_type_kv?: string | null;
-  mlx_kv_bits?: number | null;
+  mlx_kv_quant?: string | null;
   /** Speculative decoding mode for GGUF models: "auto" (platform-aware DSpark/DFlash when the model
    *  ships that sidecar, else MTP on MTP GGUFs, ngram-mod for sub-3B), "mtp", "dspark",
    *  "dflash", "ngram", "mtp+ngram", "off". The legacy spellings are still accepted. */
@@ -155,9 +156,16 @@ export interface ValidateModelResponse {
   /** Architecture only shipped by a newer transformers; UI pauses on the upgrade dialog. */
   requires_transformers_upgrade?: boolean;
   transformers_upgrade?: TransformersUpgradeInfo | null;
+  /** Replacement repository for an MLX BNB model or adapter base. */
+  mlx_loads_base_model?: string | null;
 }
 
 export interface GgufVariantDetail {
+  context_length?: number | null;
+  cache_path?: string | null;
+  /** Opaque stand-in for `cache_path` under host-path redaction; the only name an API-key
+   *  caller has for one specific copy, so a delete keeps it instead of the cleared path. */
+  cache_ref?: string | null;
   filename: string;
   /** Selection identity. Path-qualified when a repo holds several checkpoints at one quant. */
   quant: string;
@@ -168,7 +176,6 @@ export interface GgufVariantDetail {
   /** The only missing artifact when the main GGUF is already cached. */
   pending_drafter_filename?: string | null;
   pending_drafter_size_bytes?: number;
-  shard_count?: number;
   downloaded?: boolean;
   update_available?: boolean;
   /** An interrupted download: some shards are missing, so it cannot load yet. */
@@ -211,6 +218,7 @@ export function isMultimodalResponse(
 
 export interface LoadModelResponse {
   is_mlx?: boolean;
+  is_npu?: boolean;
   status: string;
   model: string;
   display_name: string;
@@ -222,6 +230,7 @@ export interface LoadModelResponse {
    *  dedicated to it than the weights need. Unknown-shaped on purpose so an older or
    *  proxied backend cannot render "undefined GB"; narrowed by parseCarveoutAdvice. */
   carveout_advice?: unknown;
+  memory_warning?: string | null;
   is_diffusion?: boolean;
   /** GPU-layer count the diffusion runner was ASKED for, when it differs from what it applied: a shim
    *  without --ngl runs Auto, so gpu_layers reports -1 while this carries the request. */
@@ -243,6 +252,7 @@ export interface LoadModelResponse {
   max_context_length?: number | null;
   native_context_length?: number | null;
   context_length_enforced?: boolean | null;
+  context_unbounded_when_batched?: boolean;
   supports_reasoning?: boolean;
   reasoning_style?:
     | "enable_thinking"
@@ -254,8 +264,8 @@ export interface LoadModelResponse {
   preserve_thinking_default?: boolean;
   supports_tools?: boolean;
   cache_type_kv?: string | null;
-  mlx_kv_bits?: number | null;
-  mlx_kv_bits_requested?: number | null;
+  mlx_kv_quant?: string | null;
+  mlx_kv_quant_requested?: string | null;
   mlx_kv_quant_eligibility?: string | null;
   mlx_kv_quant_reason?: string | null;
   chat_template_override_reason?: string | null;
@@ -287,7 +297,6 @@ export interface LoadModelResponse {
   gpu_ids?: number[] | null;
   /** User-requested GPU placement pool before fit-time narrowing. */
   requested_gpu_ids?: number[] | null;
-  /** Slots the load was invoked with (else the --parallel default). Null for non-GGUF loads. */
   requested_parallel_slots?: number | null;
   reasoning_budget?: number;
   reasoning_budget_message?: string;
@@ -296,7 +305,6 @@ export interface LoadModelResponse {
   requested_reasoning_budget?: number;
   // biome-ignore lint/style/useNamingConvention: API schema
   requested_reasoning_budget_message?: string;
-  /** Slots llama-server actually runs, after any fit-time reduction. Null for non-GGUF loads. */
   parallel_slots?: number | null;
   /** batch size (--batch-size) the load was invoked with; null = default */
   requested_n_batch?: number | null;
@@ -325,6 +333,7 @@ export interface UnloadModelRequest {
 
 export interface InferenceStatusResponse {
   is_mlx?: boolean;
+  is_npu?: boolean;
   active_model: string | null;
   model_identifier?: string | null;
   is_vision: boolean;
@@ -335,6 +344,7 @@ export interface InferenceStatusResponse {
    *  without --ngl runs Auto, so gpu_layers reports -1 while this carries the request. */
   diffusion_requested_ngl?: number | null;
   gguf_variant?: string | null;
+  memory_warning?: string | null;
   is_audio?: boolean;
   audio_type?: string | null;
   has_audio_input?: boolean;
@@ -365,9 +375,10 @@ export interface InferenceStatusResponse {
   max_context_length?: number | null;
   native_context_length?: number | null;
   context_length_enforced?: boolean | null;
+  context_unbounded_when_batched?: boolean;
   cache_type_kv?: string | null;
-  mlx_kv_bits?: number | null;
-  mlx_kv_bits_requested?: number | null;
+  mlx_kv_quant?: string | null;
+  mlx_kv_quant_requested?: string | null;
   mlx_kv_quant_eligibility?: string | null;
   mlx_kv_quant_reason?: string | null;
   chat_template_override_reason?: string | null;
@@ -398,7 +409,6 @@ export interface InferenceStatusResponse {
   gpu_ids?: number[] | null;
   /** User-requested GPU placement pool before fit-time narrowing. */
   requested_gpu_ids?: number[] | null;
-  /** Slots the active load was invoked with (else the --parallel default). Null when no GGUF model is loaded. */
   requested_parallel_slots?: number | null;
   reasoning_budget?: number;
   reasoning_budget_message?: string;
@@ -407,7 +417,6 @@ export interface InferenceStatusResponse {
   requested_reasoning_budget?: number;
   // biome-ignore lint/style/useNamingConvention: API schema
   requested_reasoning_budget_message?: string;
-  /** Slots llama-server actually runs, after any fit-time reduction. Null when no GGUF model is loaded. */
   parallel_slots?: number | null;
   /** batch size (--batch-size) the active load was invoked with; null = default */
   requested_n_batch?: number | null;
@@ -663,6 +672,7 @@ export interface OpenAIChatCompletionsRequest {
   external_model?: string;
   encrypted_api_key?: string;
   provider_base_url?: string | null;
+  provider_api_type?: "chat_completions" | "responses";
   /** Boolean toggle for OpenAI/Anthropic ephemeral cache_control. For Gemini the backend also accepts
    *  a cached-content resource name, forwarded as `generationConfig.cachedContent`. */
   enable_prompt_caching?: boolean | string | null;
@@ -678,8 +688,8 @@ export interface OpenAIChatCompletionsRequest {
   /** Anthropic fast-mode toggle. Opus 4.6 / 4.7 only; dropped silently elsewhere. */
   fast_mode?: boolean | null;
   /** Opt into the OpenAI-standard trailing usage chunk on streams. The backend only emits it when
-   *  `include_usage` is set; the local chat UI sends it so the context-usage bar and tok/s
-   *  readout populate. */
+   *  `include_usage` is set; the chat UI sends it for local and connected-provider models so the
+   *  context-usage bar and tok/s readout populate. */
   stream_options?: { include_usage?: boolean } | null;
 }
 
@@ -733,6 +743,8 @@ export interface OpenAIChatChunk {
     // dropped_messages, so re-sending it after a turn that refit several times cannot advance the
     // boundary past the turns actually evicted.
     boundary_messages?: number;
+    // True when this fit started a new checkpoint, including within the current tool loop.
+    checkpoint_started?: boolean;
     // The text the boundary landed ON, so the count can be re-derived by position: a count is only
     // valid against the transcript it was counted on, and deleting an already evicted prompt
     // shortens that transcript.

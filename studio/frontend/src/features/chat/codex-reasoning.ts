@@ -57,13 +57,14 @@ export function addCodexReasoning(
   };
 }
 
-export function readCodexReasoning(
+function readReasoningLedger(
   metadata: unknown,
+  key: string,
 ): CodexReasoningLedger | undefined {
   if (!metadata || typeof metadata !== "object") return undefined;
   const custom = (metadata as { custom?: unknown }).custom;
   if (!custom || typeof custom !== "object") return undefined;
-  const value = (custom as Record<string, unknown>).openaiCodexReasoning;
+  const value = (custom as Record<string, unknown>)[key];
   if (Array.isArray(value)) {
     return value.length > 0 ? { byToolCall: {}, final: value } : undefined;
   }
@@ -84,6 +85,18 @@ export function readCodexReasoning(
     : undefined;
 }
 
+export function readCodexReasoning(
+  metadata: unknown,
+): CodexReasoningLedger | undefined {
+  return readReasoningLedger(metadata, "openaiCodexReasoning");
+}
+
+export function readOpenAIResponsesReasoning(
+  metadata: unknown,
+): CodexReasoningLedger | undefined {
+  return readReasoningLedger(metadata, "openaiResponsesReasoning");
+}
+
 export function codexReasoningForToolCalls(
   ledger: CodexReasoningLedger | undefined,
   toolCallIds: string[],
@@ -94,4 +107,41 @@ export function codexReasoningForToolCalls(
     if (items) return items;
   }
   return undefined;
+}
+
+/** Which replay exchange each tool-call part of one assistant message lands in, by the
+ *  serializer's own rule: a round id that changes starts a new exchange, and a part with
+ *  no round id that completes a local pair is an exchange of its own. The MCP image
+ *  bound groups a message's results by this, so it shares one marker turn's allowance
+ *  across exactly the results the backend will see as one batch -- grouping the whole
+ *  message let a later round's picture evict an earlier round's. */
+export function localToolExchangeIndexes<TPart>(
+  parts: readonly TPart[],
+  roundIdOf: (part: TPart) => number | null,
+  flushesPair: (part: TPart) => boolean,
+): number[] {
+  const indexes: number[] = [];
+  let exchange = 0;
+  let pending = 0;
+  let pendingRoundId: number | null = null;
+  for (const part of parts) {
+    const roundId = roundIdOf(part);
+    if (pending > 0 && startsNewCodexToolRound(pendingRoundId, roundId)) {
+      exchange += 1;
+      pending = 0;
+    }
+    if (roundId !== null) pendingRoundId = roundId;
+    const flushLocalPair = roundId === null && flushesPair(part);
+    if (flushLocalPair && pending > 0) {
+      exchange += 1;
+      pending = 0;
+    }
+    indexes.push(exchange);
+    pending += 1;
+    if (flushLocalPair) {
+      exchange += 1;
+      pending = 0;
+    }
+  }
+  return indexes;
 }

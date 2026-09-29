@@ -152,14 +152,29 @@ def test_build_dataset_download_leaves_no_temp_file_when_export_fails(tmp_path: 
         lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("export blew up")),
     )
 
-    before = set(Path(tempfile.gettempdir()).glob("*.jsonl"))
+    # A private system temp dir, not the shared one. The claim is "the failed export unlinked
+    # what it created", and reading that off $TMPDIR made it a claim about the whole box: the
+    # siblings in this file each leave a NamedTemporaryFile(suffix = ".jsonl") in flight until
+    # their own finally runs, and CI shards this suite with `-n 4 --dist loadgroup`, so a
+    # sibling on another worker could put a .jsonl there between the two reads and fail this
+    # test for something it does not measure. Pointing tempfile.tempdir at a directory only
+    # this test can reach makes the reading exact instead of merely usually-quiet, and lets
+    # the assertion be "nothing at all" rather than "the same set as a moment ago".
+    system_temp = tmp_path / "system-temp"
+    system_temp.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(system_temp))
+    assert Path(tempfile.gettempdir()) == system_temp, "the export must allocate under our dir"
+
     with pytest.raises(RuntimeError):
         build_dataset_download(
             artifact_path = str(dataset_path),
             export_format = "jsonl",
             filename_stem = "leaky",
         )
-    assert set(Path(tempfile.gettempdir()).glob("*.jsonl")) == before
+    assert sorted(system_temp.iterdir()) == [], (
+        "the failed export left its temporary file behind: "
+        f"{sorted(p.name for p in system_temp.iterdir())}"
+    )
 
 
 def test_build_dataset_download_parquet_zip_includes_images(tmp_path: Path, monkeypatch):

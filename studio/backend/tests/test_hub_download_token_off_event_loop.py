@@ -129,13 +129,13 @@ def test_cancellation_while_executor_busy_leaves_no_claim(monkeypatch, download)
         task = asyncio.current_task()
         blocker = None
 
-        def transport(use_xet):
+        def transport(use_xet, **kwargs):
             nonlocal blocker
             # Earlier preparation awaits have finished. Occupy the only thread so
             # the next offloaded operation is queued when the request is cancelled.
             blocker = loop.run_in_executor(None, release.wait, 15)
             loop.call_soon(task.cancel)
-            return original_transport(use_xet)
+            return original_transport(use_xet, **kwargs)
 
         monkeypatch.setattr(download_lifecycle, "resolve_transport", transport)
         try:
