@@ -718,8 +718,10 @@ _compile_config = CompileConfig(
 )
 _compile_config.disable = True  # Must set manually
 
-# Decode steps compile (CUDA graphs over the static cache) for these model types. Needs an
-# unsloth_zoo whose generated forwards can be traced during decode; UNSLOTH_COMPILE_DECODE=0 opts out.
+# For these model types, eager decode steps skip Unsloth's compiled regions (on by default,
+# UNSLOTH_EAGER_DECODE=0 opts out), and UNSLOTH_COMPILE_DECODE=1 opts into CUDA graphs over the
+# static cache. Off by default: each new shape costs 35-130 s to compile (A100, 2B), so mixed
+# sessions came out ~3x slower overall even though a compiled step is ~5x faster.
 COMPILE_DECODE_MODELS = ("qwen3_5", "qwen3_5_moe")
 _decode_compile_config = CompileConfig(
     fullgraph = False,
@@ -730,12 +732,63 @@ try:
     from unsloth_zoo.temporary_patches.utils import unsloth_decode_compile
 except ImportError:
     unsloth_decode_compile = None
+try:
+    from unsloth_zoo.temporary_patches.utils import unsloth_eager_decode
+except ImportError:
+    unsloth_eager_decode = None
+
+
+def _is_decode_compile_model(model):
+    config = model.config
+    model_types = (
+        getattr(config, "model_type", None),
+        getattr(getattr(config, "text_config", None), "model_type", None),
+    )
+    return any(
+        isinstance(mt, str) and mt.removesuffix("_text") in COMPILE_DECODE_MODELS
+        for mt in model_types
+    )
+
+
+def _eager_decodes(model):
+    # Eager decode steps skip Unsloth's compiled regions (zoo `unsloth_eager_decode`).
+    if unsloth_eager_decode is None or os.environ.get("UNSLOTH_EAGER_DECODE", "1") == "0":
+        return False
+    return _is_decode_compile_model(model) and "forward" not in model.__dict__
+
+
+class _EagerDecodeSteps:
+    """One generate() call. Each eager decode step (one new token per row) runs inside zoo's
+    `unsloth_eager_decode()`, so compiled regions call their eager originals; prefill and
+    a compiled decode step are unchanged."""
+
+    def __init__(self, model):
+        self.model = model
+        self.forward = model.forward
+
+    def _forward(self, *args, **kwargs):
+        if not torch.compiler.is_compiling():
+            ids = kwargs.get("input_ids")
+            if ids is None:
+                ids = kwargs.get("inputs_embeds")
+            if ids is not None and ids.dim() >= 2 and ids.shape[1] == 1:
+                with unsloth_eager_decode():
+                    return self.forward(*args, **kwargs)
+        return self.forward(*args, **kwargs)
+
+    def __enter__(self):
+        self.model.forward = self._forward
+        return self
+
+    def __exit__(self, *exc):
+        del self.model.forward
+        return False
 
 
 def _compiles_decode(model):
     if unsloth_decode_compile is None:
         return False
-    if os.environ.get("UNSLOTH_COMPILE_DECODE", "1") == "0":
+    if os.environ.get("UNSLOTH_COMPILE_DECODE", "0") != "1":
         return False
     if os.environ.get("UNSLOTH_COMPILE_DISABLE", "0") in ("1", "partial"):
         return False
@@ -747,15 +800,7 @@ def _compiles_decode(model):
     device_map = getattr(model, "hf_device_map", None)
     if isinstance(device_map, dict) and ({"cpu", "disk"} & set(map(str, device_map.values()))):
         return False
-    config = model.config
-    model_types = (
-        getattr(config, "model_type", None),
-        getattr(getattr(config, "text_config", None), "model_type", None),
-    )
-    return any(
-        isinstance(mt, str) and mt.removesuffix("_text") in COMPILE_DECODE_MODELS
-        for mt in model_types
-    )
+    return _is_decode_compile_model(model)
 
 
 def _decode_cache_bucket(length):
@@ -1215,8 +1260,9 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
             kwargs["compile_config"] = compile_config
 
     decode_scope = _CompileDecodeOnRepeat(self) if compile_decode else contextlib.nullcontext()
+    eager_scope = _EagerDecodeSteps(self) if _eager_decodes(self) else contextlib.nullcontext()
     try:
-        with decode_scope, torch.inference_mode(), autocaster:
+        with decode_scope, eager_scope, torch.inference_mode(), autocaster:
             output = self._old_generate(*args, **kwargs)
     finally:
         _clear_generation_caches(self)
