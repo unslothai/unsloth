@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useChatArtifactsStore } from "./artifacts/store";
 import { mlxRuntimeStateFrom } from "./lib/mlx-runtime-state";
 import { offloadCountsFrom, offloadWarning } from "./lib/partial-offload";
 import {
@@ -648,6 +649,20 @@ export function SharedComposer({
   const compareStepSucceededRef = useRef(false);
   const sendRef = useRef<(() => void) | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const pendingFixPrompt = useChatArtifactsStore(
+    (state) => state.pendingFixPrompt,
+  );
+  useEffect(() => {
+    if (!pendingFixPrompt) return;
+    useChatArtifactsStore.getState().clearFixPrompt();
+    setCurrentText((current) =>
+      current.trim().length > 0
+        ? `${current}\n\n${pendingFixPrompt}`
+        : pendingFixPrompt,
+    );
+    // Not the selector: a single chat's composer stays mounted, hidden, ahead of this one.
+    window.setTimeout(() => textareaRef.current?.focus(), 0);
+  }, [pendingFixPrompt, setCurrentText]);
   const composingRef = useRef(false);
   const stuckImeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);

@@ -3921,21 +3921,126 @@ _ARTIFACT_PREVIEW_FRAME_HTML = """<!doctype html>
             v: loadVersion,
           }, "*");
         };
-        const render = (html) => {
+        // Runtime errors and console output cross to the parent as plain strings.
+        // The parent clips, counts and escapes them; nothing here is trusted.
+        const REPORT_MAX_CHARS = 2048;
+        // Separate budgets, so a page logging every frame cannot spend the one its crash needs.
+        const REPORTS_MAX = { "unsloth:artifact-error": 100, "unsloth:artifact-console": 1000 };
+        const reportsLeft = { ...REPORTS_MAX };
+        const clip = (value) => String(value).slice(0, REPORT_MAX_CHARS);
+        // JSON-like, but stops at the report budget: JSON.stringify would build the whole value first.
+        const serialize = (root) => {
+          let left = REPORT_MAX_CHARS;
+          const seen = new Set();
+          const leaf = (out) => {
+            left -= out.length;
+            return out;
+          };
+          const walk = (value) => {
+            if (left <= 0) return "…";
+            if (typeof value === "string") return leaf(JSON.stringify(value.slice(0, left)));
+            if (value === null || typeof value !== "object") return leaf(String(value));
+            if (seen.has(value)) return leaf("[Circular]");
+            seen.add(value);
+            const indexed = Array.isArray(value) || ArrayBuffer.isView(value);
+            const keys = indexed ? null : Object.keys(value);
+            const count = indexed ? value.length : keys.length;
+            const parts = [];
+            for (let i = 0; i < count; i += 1) {
+              if (left <= 0) {
+                parts.push("…");
+                break;
+              }
+              // Accessors are shown, not called: a getter may have side effects, and consoles do not run them.
+              const field = indexed ? null : Object.getOwnPropertyDescriptor(value, keys[i]);
+              const item = indexed ? walk(value[i]) : field && "value" in field ? walk(field.value) : leaf("[Getter]");
+              parts.push(indexed ? item : `${JSON.stringify(keys[i])}:${item}`);
+              left -= indexed ? 1 : keys[i].length + 4;
+            }
+            seen.delete(value);
+            left -= 2;
+            return indexed ? `[${parts.join(",")}]` : `{${parts.join(",")}}`;
+          };
+          return walk(root);
+        };
+        const describe = (value) => {
+          if (value instanceof Error) return value.stack || `${value.name}: ${value.message}`;
+          if (typeof value === "string") return value.slice(0, REPORT_MAX_CHARS);
+          try {
+            return serialize(value);
+          } catch {
+            return String(value);
+          }
+        };
+        const report = (fields) => {
+          if (!(reportsLeft[fields.type] > 0)) return;
+          reportsLeft[fields.type] -= 1;
+          parent.postMessage({ ...fields, v: loadVersion }, "*");
+        };
+        const reportError = (event) => {
+          const error = event.error;
+          report({
+            type: "unsloth:artifact-error",
+            message: clip(event.message || (error && error.message) || "Script error"),
+            line: event.lineno || 0,
+            column: event.colno || 0,
+            stack: clip(error && error.stack ? error.stack : ""),
+          });
+        };
+        const reportRejection = (event) => {
+          const reason = event.reason;
+          report({
+            type: "unsloth:artifact-error",
+            message: clip(
+              reason instanceof Error
+                ? `${reason.name}: ${reason.message}`
+                : `Unhandled promise rejection: ${describe(reason)}`,
+            ),
+            line: 0,
+            column: 0,
+            stack: clip(reason && reason.stack ? reason.stack : ""),
+          });
+        };
+        const captureConsole = () => {
+          for (const level of ["error", "warn", "info", "log", "debug"]) {
+            const original = console[level];
+            console[level] = (...args) => {
+              try {
+                if (reportsLeft["unsloth:artifact-console"] > 0) report({
+                  type: "unsloth:artifact-console",
+                  level,
+                  text: clip(args.map(describe).join(" ")),
+                });
+              } catch {
+                // A report must never break the page's own logging.
+              }
+              if (typeof original === "function") original.apply(console, args);
+            };
+          }
+        };
+        // Named for canvasStack() in the frontend, which trims from this frame down.
+        const unslothRenderArtifact = (html) => {
           installStorageFallbacks();
           document.open();
+          // document.open() clears the window's listeners too, and an inline script's
+          // error fires during document.write(), so these go between the two.
+          window.addEventListener("error", reportError);
+          window.addEventListener("unhandledrejection", reportRejection);
+          captureConsole();
           document.write(html);
           document.close();
           // document.open() drops listeners bound before it, so rebind here.
           document.addEventListener("securitypolicyviolation", reportBlocked, true);
         };
         installStorageFallbacks();
-        // Survives the document.open() in render(), so once is enough.
+        // Survives the document.open() in unslothRenderArtifact(), so once is enough.
         installRandomUUIDFallback();
         window.addEventListener("message", (event) => {
+          // The canvas shares this window, so it can post to itself. Only the embedder drives unslothRenderArtifact().
+          if (event.source !== parent) return;
           const data = event.data;
           if (!data || data.type !== "unsloth:artifact-html" || typeof data.html !== "string") return;
-          render(data.html);
+          unslothRenderArtifact(data.html);
         });
       })();
     </script>

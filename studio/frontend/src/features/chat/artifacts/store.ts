@@ -31,6 +31,10 @@ type ChatArtifactsState = {
     artifact: ChatArtifact,
     options?: { surface?: ChatArtifactSurface; view?: ArtifactViewMode },
   ) => void;
+  // Fix text awaiting a composer: the fullscreen overlay has none to reach. Never sent.
+  pendingFixPrompt: string | null;
+  stageFixPrompt: (prompt: string) => void;
+  clearFixPrompt: () => void;
   updateArtifact: (artifact: ChatArtifact) => void;
   closeArtifactSurface: () => void;
   setArtifactView: (view: ArtifactViewMode) => void;
@@ -56,6 +60,9 @@ export const useChatArtifactsStore = create<ChatArtifactsState>((set) => ({
       surface: options?.surface ?? state.surface,
       requestedView: options?.view ?? "preview",
     })),
+  pendingFixPrompt: null,
+  stageFixPrompt: (prompt) => set({ pendingFixPrompt: prompt }),
+  clearFixPrompt: () => set({ pendingFixPrompt: null }),
   updateArtifact: (artifact) =>
     set((state) =>
       state.artifactsById[artifact.id]
@@ -106,6 +113,7 @@ export const useChatArtifactsStore = create<ChatArtifactsState>((set) => ({
       artifactsById: {},
       selectedArtifactId: null,
       surface: "panel",
+      pendingFixPrompt: null,
     }),
 }));
 
