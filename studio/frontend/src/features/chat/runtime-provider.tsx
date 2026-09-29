@@ -1091,7 +1091,9 @@ function toThreadMessage(m: MessageRecord): ThreadMessage {
       role: "user" as const,
       content: content as Extract<ThreadMessage, { role: "user" }>["content"],
       attachments: cloneAttachments(m.attachments),
-      metadata: { custom: {} },
+      metadata: {
+        custom: m.metadata?.createdAtEstimated === true ? { createdAtEstimated: true } : {},
+      },
     };
   }
   const custom = (m.metadata as Record<string, unknown>) ?? {};

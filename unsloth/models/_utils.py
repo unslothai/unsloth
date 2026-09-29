@@ -5639,11 +5639,14 @@ def fast_inference_setup(model_name, model_config):
 
 def save_lora_adapter(model, save_directory, *args, **kwargs):
     """`save_pretrained` over the adapter, cast to the embedding dtype. PEFT's own selection decides what an adapter contains, so it is handed the whole state dict and only the adapter tensors are cast: filtering down to `.lora_A.`/`.lora_B.` first, as the Zoo helper does, makes PEFT raise `KeyError` looking up `modules_to_save.<adapter>.weight`, and a DoRA run loses its `lora_magnitude_vector` the same way. Both are reachable without vLLM, since `get_peft_model` adds `embed_tokens` and `lm_head` to `modules_to_save` once new tokens are trained. Non-adapter entries pass through by reference."""
+    from .compressed_tensors_int4 import adapter_only_state_dict
+
     dtype = model.get_input_embeddings().weight.dtype
-    kwargs["state_dict"] = {
-        key: (value.to(dtype) if "lora_" in key else value)
-        for key, value in model.state_dict().items()
-    }
+    with adapter_only_state_dict():
+        kwargs["state_dict"] = {
+            key: (value.to(dtype) if "lora_" in key else value)
+            for key, value in model.state_dict().items()
+        }
     return model.save_pretrained(save_directory, *args, **kwargs)
 
 
