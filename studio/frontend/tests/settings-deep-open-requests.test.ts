@@ -137,6 +137,7 @@ test("canvas network and Library storage land on their tab and stay until it rea
   for (const [tab, target, from] of [
     ["chat", "chat-canvas-network", null],
     ["library", "library-storage", "data"],
+    ["general", "general-hub", "data"],
   ] as const) {
     reset();
     if (from) store.getState().openDialog(from);

@@ -5,8 +5,13 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import hashlib
+import hmac
 import json
 import os
+import secrets
+import sqlite3
 import statistics
 import sys
 import threading
@@ -268,6 +273,59 @@ def resolve_studio_home(value: str) -> Path:
         return home
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise urllib.error.HTTPError(
+            req.full_url, code, f"refusing redirect to {newurl}", headers, fp
+        )
+
+
+def studio_identity_error(
+    base_url: str,
+    home: Path,
+    timeout: float = 10,
+) -> Optional[str]:
+    """None when `base_url` signs our nonce with this home's secret (storage.compute_identity_proof), else why not.
+    /api/liveness is public, so anything holding the port can claim to be Studio."""
+    nonce = secrets.token_bytes(32)
+    url = f"{base_url}/api/auth/identity?nonce={base64.urlsafe_b64encode(nonce).decode()}"
+    start = time.monotonic()
+    try:
+        # No redirects: one could relay a real Studio's proof.
+        with urllib.request.build_opener(_NoRedirect).open(url, timeout = timeout) as response:
+            proof = json.loads(response.read(65536)).get("proof")
+        TIMED.record("GET", "/api/auth/identity", (time.monotonic() - start) * 1000.0, 200)
+    except Exception as exc:  # noqa: BLE001 - any failure means unverified
+        TIMED.record(
+            "GET",
+            "/api/auth/identity",
+            (time.monotonic() - start) * 1000.0,
+            "error",
+            str(exc)[:400],
+        )
+        return f"/api/auth/identity did not answer ({str(exc)[:200]})"
+    # Read after the challenge: Studio creates the secret on the first one it answers.
+    db = home / "auth" / "auth.db"
+    try:
+        conn = sqlite3.connect(f"{db.resolve().as_uri()}?mode=rw", uri = True, timeout = 10)
+        try:
+            row = conn.execute(
+                "SELECT value FROM app_secrets WHERE key = 'studio_identity_secret'"
+            ).fetchone()
+        finally:
+            conn.close()
+        secret = bytes.fromhex(row[0])
+    except Exception as exc:  # noqa: BLE001
+        return f"could not read the identity secret from {db} ({str(exc)[:200]}); pass --home"
+    host, _, port = base_url.rpartition("//")[2].rpartition(":")
+    expected = hmac.new(
+        secret, b"|".join([nonce, host.encode(), port.encode()]), hashlib.sha256
+    ).hexdigest()
+    if not isinstance(proof, str) or not hmac.compare_digest(proof, expected):
+        return "its identity proof does not match this installation"
+    return None
+
+
 def authenticate(base_url: str, home: Path, password: Optional[str]) -> Credentials:
     """Log in, rotating the bootstrap credential when this home has never been used."""
     boot_file = home / "auth" / ".bootstrap_password"
@@ -276,6 +334,13 @@ def authenticate(base_url: str, home: Path, password: Optional[str]) -> Credenti
             "no password given. Pass --password (or set UNSLOTH_STUDIO_PASSWORD): on a "
             "Studio that has never been opened it becomes the account password, on one "
             "that has it must be the password you sign in with."
+        )
+    # Before any password is sent: the port may be held by something other than Studio.
+    reason = studio_identity_error(base_url, home)
+    if reason:
+        raise SystemExit(
+            f"refusing to send a password to {base_url}: {reason}. It may not be this "
+            f"machine's Unsloth Studio (home {home})."
         )
     # An EMPTY file is a rotated installation
     bootstrap = boot_file.read_text(encoding = "utf-8").strip() if boot_file.exists() else ""

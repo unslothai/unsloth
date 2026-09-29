@@ -96,6 +96,7 @@ export const en = {
     useModelScope: "Use ModelScope",
     useModelScopeHint: "Search and download from ModelScope instead. You can switch back in Settings.",
     useModelScopeFailed: "Couldn't switch to ModelScope.",
+    updateToken: "Update token",
     hfToken: {
       label: "HF token",
       saved: "Saved",
@@ -722,6 +723,7 @@ export const en = {
       disabled: "File logging is turned off (UNSLOTH_STUDIO_NO_FILE_LOG=1).",
       missing: "No log file was found.",
       unreadable: "The log file could not be read.",
+      viewLogs: "View logs",
       timeout: "The log request timed out. The server may be unreachable.",
       droppedNotice: "Some lines were skipped: the log was written faster than it could be read.",
       morePending: "More lines are still being read; they arrive on the next refresh.",
@@ -1091,6 +1093,9 @@ export const en = {
         source: "Model source",
         sourceDescription: "Where the model hub searches and downloads. Choose ModelScope if Hugging Face is blocked or slow on your network.",
         sourceFallback: "ModelScope couldn't be started, so Hugging Face is in use. Check the Unsloth logs.",
+        autoSourceTitle: "Model source switched to ModelScope",
+        autoSourceDescription: "Hugging Face is often slow or blocked in your region, so Unsloth now downloads models from ModelScope.",
+        autoSourceAction: "Open Model source settings",
         sectionTitle: "Model hub",
         endpoint: "Hugging Face endpoint",
         endpointDescription: "Where models and datasets are downloaded from. Leave empty for huggingface.co, or enter a mirror such as https://hf-mirror.com.",
@@ -2191,6 +2196,9 @@ export const en = {
         loading: "Loading…",
         loadedOn: "Loaded on {device}",
         download: "Download",
+        downloadConfirmTitle: "Download Laya {model}?",
+        downloadConfirmBody:
+          "The Decision API needs this model to answer requests. About {size}, fetched once into your Hugging Face cache.",
         unload: "Unload",
         downloadBusy: "A Decision API model is already downloading.",
         downloadFailed: "Couldn't start the download.",
@@ -2417,6 +2425,8 @@ export const en = {
       noModelsFound: "No models found.",
       tokenRejectedTitle: "Hugging Face token rejected",
       tokenRejectedBody: "Update your token in Settings → General, then retry.",
+      tokenRejectedAnonymousBody:
+        "Public models are shown without it. Update your token in Settings → General to reach private and gated models.",
       hubUnreachable: "Couldn't reach Hugging Face",
       cantUseModel: "Can't use model for training",
       reasonTypeMismatch:

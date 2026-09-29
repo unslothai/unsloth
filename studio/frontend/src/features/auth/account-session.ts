@@ -50,12 +50,13 @@ function subscribeSession(listener: () => void): () => void {
     for (const event of events) window.removeEventListener(event, listener);
   };
 }
+/** Ownership outside a component body, for a callback that cannot call a hook. */
+export function isAccountOwner(): boolean {
+  return sessionAccount(getAuthToken())?.isOwner ?? false;
+}
+
 export function useIsAccountOwner(): boolean {
-  return useSyncExternalStore(
-    subscribeSession,
-    () => sessionAccount(getAuthToken())?.isOwner ?? false,
-    () => false,
-  );
+  return useSyncExternalStore(subscribeSession, isAccountOwner, () => false);
 }
 export function useLoginMode() {
   const mode = useSyncExternalStore(

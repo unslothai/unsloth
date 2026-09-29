@@ -206,6 +206,9 @@ export function studioBackupToConversations(
         record.attachments = raw.attachments as MessageRecord["attachments"];
       }
       if (isDict(raw.metadata)) record.metadata = detachMetadata(raw.metadata);
+      if (num(raw.createdAt) === null) {
+        record.metadata = { ...record.metadata, createdAtEstimated: true };
+      }
       return record;
     });
 

@@ -96,6 +96,7 @@ export const ru = {
     useModelScope: "Использовать ModelScope",
     useModelScopeHint: "Искать и скачивать через ModelScope. Вернуть можно в настройках.",
     useModelScopeFailed: "Не удалось переключиться на ModelScope.",
+    updateToken: "Обновить токен",
     hfToken: {
       label: "Токен HF",
       saved: "Сохранён",
@@ -717,6 +718,7 @@ export const ru = {
       disabled: "Запись журнала в файл отключена (UNSLOTH_STUDIO_NO_FILE_LOG=1).",
       missing: "Файл журнала не найден.",
       unreadable: "Не удалось прочитать файл журнала.",
+      viewLogs: "Открыть журналы",
       timeout: "Истекло время ожидания запроса журнала. Возможно, сервер недоступен.",
       droppedNotice: "Часть строк пропущена: журнал записывался быстрее, чем его удавалось читать.",
       morePending: "Ещё строки продолжают читаться; они появятся при следующем обновлении.",
@@ -1089,6 +1091,9 @@ export const ru = {
         source: "Источник моделей",
         sourceDescription: "Где хаб моделей ищет и откуда скачивает. Выберите ModelScope, если Hugging Face заблокирован или медленно работает в вашей сети.",
         sourceFallback: "Не удалось запустить ModelScope, поэтому используется Hugging Face. Проверьте журналы Unsloth.",
+        autoSourceTitle: "Источник моделей переключён на ModelScope",
+        autoSourceDescription: "В вашем регионе Hugging Face часто работает медленно или заблокирован, поэтому Unsloth теперь загружает модели из ModelScope.",
+        autoSourceAction: "Открыть настройки «Источник моделей»",
         sectionTitle: "Хаб моделей",
         endpoint: "Эндпоинт Hugging Face",
         endpointDescription: "Откуда загружаются модели и датасеты. Оставьте пустым для huggingface.co или укажите зеркало, например https://hf-mirror.com.",
@@ -2208,6 +2213,9 @@ export const ru = {
         loading: "Загрузка…",
         loadedOn: "Загружена на {device}",
         download: "Скачать",
+        downloadConfirmTitle: "Скачать Laya {model}?",
+        downloadConfirmBody:
+          "API решений нужна эта модель, чтобы отвечать на запросы. Около {size}, загружается один раз в кэш Hugging Face.",
         unload: "Выгрузить",
         downloadBusy: "Модель API решений уже скачивается.",
         downloadFailed: "Не удалось начать скачивание.",
@@ -2455,6 +2463,8 @@ export const ru = {
       tokenRejectedTitle: "Токен Hugging Face отклонён",
       tokenRejectedBody:
         "Обновите токен в разделе «Настройки» → «Общие», затем повторите попытку.",
+      tokenRejectedAnonymousBody:
+        "Публичные модели показаны без него. Обновите токен в разделе «Настройки» → «Общие», чтобы получить доступ к приватным и закрытым моделям.",
       hubUnreachable: "Не удалось подключиться к Hugging Face",
       cantUseModel: "Модель нельзя использовать для обучения",
       reasonTypeMismatch:

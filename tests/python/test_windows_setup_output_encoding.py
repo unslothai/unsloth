@@ -647,7 +647,9 @@ def _run_console_less(path: Path, source: str | None = None) -> tuple[int, bytes
     replaced. A str keeps the lru_cache above workable; a dict would not hash.
     """
     if not _CONSOLE_LESS_OPTED_IN:
-        pytest.skip("the FreeConsole probe trips AV heuristics; set UNSLOTH_TEST_CONSOLE_LESS=1 to run it")
+        pytest.skip(
+            "the FreeConsole probe trips AV heuristics; set UNSLOTH_TEST_CONSOLE_LESS=1 to run it"
+        )
     with tempfile.TemporaryDirectory() as workdir:
         # A file written here has no Zone.Identifier, so RemoteSigned admits it.
         probe = Path(workdir) / f"{path.stem}_console_less_probe.ps1"
