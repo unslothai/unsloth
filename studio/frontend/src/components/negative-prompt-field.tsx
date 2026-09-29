@@ -18,12 +18,14 @@ export function NegativePromptField({
   open,
   onOpenChange,
   hint,
+  textareaClassName,
 }: {
   value: string;
   onChange: (value: string) => void;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   hint: string;
+  textareaClassName?: string;
 }) {
   // Same shape as Field, so it keeps the panel's spacing.
   return (
@@ -58,6 +60,7 @@ export function NegativePromptField({
       {open && (
         <Textarea
           rows={2}
+          className={textareaClassName}
           maxLength={NEGATIVE_PROMPT_MAX_LENGTH}
           placeholder="What to avoid (optional)"
           value={value}

@@ -102,6 +102,7 @@ export const ko = {
     useModelScope: "ModelScope 사용",
     useModelScopeHint: "대신 ModelScope에서 검색하고 다운로드합니다. 설정에서 다시 바꿀 수 있습니다.",
     useModelScopeFailed: "ModelScope로 전환하지 못했습니다.",
+    updateToken: "토큰 업데이트",
     hfToken: {
       label: "HF 토큰",
       saved: "저장됨",
@@ -723,6 +724,7 @@ export const ko = {
       disabled: "파일 로깅이 꺼져 있습니다 (UNSLOTH_STUDIO_NO_FILE_LOG=1).",
       missing: "로그 파일을 찾을 수 없습니다.",
       unreadable: "로그 파일을 읽을 수 없습니다.",
+      viewLogs: "로그 보기",
       timeout: "로그 요청 시간이 초과되었습니다. 서버에 연결할 수 없을 수 있습니다.",
       droppedNotice: "일부 줄이 누락되었습니다. 로그를 읽는 속도보다 기록되는 속도가 빨랐습니다.",
       morePending: "아직 더 많은 줄을 읽고 있습니다. 다음 새로 고침에 표시됩니다.",
@@ -1089,6 +1091,9 @@ export const ko = {
         source: "모델 소스",
         sourceDescription: "모델 허브가 검색하고 다운로드하는 곳입니다. 네트워크에서 Hugging Face가 차단되었거나 느리면 ModelScope를 선택하세요.",
         sourceFallback: "ModelScope를 시작할 수 없어 Hugging Face를 사용하고 있습니다. Unsloth 로그를 확인하세요.",
+        autoSourceTitle: "모델 소스를 ModelScope로 전환했습니다",
+        autoSourceDescription: "현재 지역에서는 Hugging Face가 느리거나 차단되는 경우가 많아 Unsloth가 이제 ModelScope에서 모델을 다운로드합니다.",
+        autoSourceAction: "모델 소스 설정 열기",
         sectionTitle: "모델 허브",
         endpoint: "Hugging Face 엔드포인트",
         endpointDescription: "모델과 데이터셋을 내려받는 곳입니다. 비워 두면 huggingface.co를 사용하고, 미러를 쓰려면 https://hf-mirror.com 같은 주소를 입력하세요.",
@@ -2200,6 +2205,9 @@ export const ko = {
         loading: "로드 중…",
         loadedOn: "{device}에 로드됨",
         download: "다운로드",
+        downloadConfirmTitle: "Laya {model}을(를) 다운로드할까요?",
+        downloadConfirmBody:
+          "Decision API가 요청에 응답하려면 이 모델이 필요합니다. 약 {size}이며 Hugging Face 캐시에 한 번만 다운로드됩니다.",
         unload: "언로드",
         downloadBusy: "판단 API 모델이 이미 다운로드 중입니다.",
         downloadFailed: "다운로드를 시작하지 못했습니다.",
@@ -2440,6 +2448,8 @@ export const ko = {
       tokenRejectedTitle: "Hugging Face 토큰이 거부되었습니다",
       tokenRejectedBody:
         "설정 → 일반에서 토큰을 업데이트한 후 다시 시도하세요.",
+      tokenRejectedAnonymousBody:
+        "공개 모델은 토큰 없이 표시됩니다. 비공개 및 접근 제한 모델을 사용하려면 설정 → 일반에서 토큰을 업데이트하세요.",
       hubUnreachable: "Hugging Face에 연결하지 못했습니다",
       cantUseModel: "이 모델은 학습에 사용할 수 없습니다",
       reasonTypeMismatch:
