@@ -1520,6 +1520,9 @@ test("the bar stays out of a backgrounded scope, and off the document origin", a
     assert.ok(backgrounded.includes(`"${slot}"`), `${slot} is not read as a modal`);
   }
   assert.match(backgrounded, /:not\(\[data-state="closed"\]\)/);
+  // The chat artifact overlay is a custom modal; the startup and closing screens cover everything.
+  assert.ok(backgrounded.includes(`'[aria-modal="true"]'`));
+  assert.ok(backgrounded.includes('"[data-blocking-screen]"'));
   // The guided tour renders its own overlay, with the same slot.
   assert.match(
     await readSrcAsync("features/tour/components/guided-tour.tsx"),

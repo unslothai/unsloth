@@ -235,7 +235,17 @@ test("the zoom popup takes the find bar's corner", () => {
     /\.interface-zoom-position \{\s*top: calc\(var\(--studio-portal-content-top-inset, 0px\) \+ 3\.5rem\);/,
   );
   // One place only: it does not move out from under an open find bar.
-  assert.equal(css.match(/\.interface-zoom-position/g)?.length, 1);
+  assert.equal(css.match(/^\.interface-zoom-position \{/gm)?.length, 1);
+  // Under the startup and closing screens, like the find bar.
+  assert.match(
+    css,
+    /html:has\(\[aria-modal="true"\], \[data-blocking-screen\]\) \[data-find-bar-layer\],\s*html:has\(\[data-blocking-screen\]\) \.interface-zoom-position \{\s*display: none;/,
+  );
+  assert.match(provider, /data-blocking-screen=""\s*className="fixed inset-0 z-40 bg-background"/);
+  assert.match(
+    readSrc("components/tauri/startup-screen.tsx"),
+    /data-blocking-screen=""\s*className="pointer-events-auto fixed inset-0 z-\[9999\]"/,
+  );
   // A little smaller than the bar.
   assert.match(
     readSrc("features/interface-zoom/components/interface-zoom.tsx"),

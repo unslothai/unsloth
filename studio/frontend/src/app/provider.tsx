@@ -925,7 +925,10 @@ function TauriWrapper({ children }: { children: ReactNode }) {
         </div>
       )}
       {!showApp && (
-        <div className="fixed inset-0 z-40 bg-background">
+        <div
+          data-blocking-screen=""
+          className="fixed inset-0 z-40 bg-background"
+        >
           <StartupScreen
             status={startupStatus}
             logs={logs}

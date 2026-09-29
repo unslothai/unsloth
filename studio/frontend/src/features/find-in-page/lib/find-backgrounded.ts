@@ -4,14 +4,14 @@
 import { isSurfaceBackgrounded } from "@/features/settings";
 import { FIND_SCOPE_ATTRIBUTE } from "./find-attributes.ts";
 
-/** Backdrops of open modal dialogs and sheets. */
+/** Modal backdrops, custom modals (the artifact overlay), and the startup and closing screens. */
 export const MODAL_BACKDROP_SELECTOR = [
-  "dialog-overlay",
-  "alert-dialog-overlay",
-  "sheet-overlay",
-]
-  .map((slot) => `[data-slot="${slot}"]:not([data-state="closed"])`)
-  .join(", ");
+  ...["dialog-overlay", "alert-dialog-overlay", "sheet-overlay"].map(
+    (slot) => `[data-slot="${slot}"]:not([data-state="closed"])`,
+  ),
+  '[aria-modal="true"]',
+  "[data-blocking-screen]",
+].join(", ");
 
 /**
  * Whether a modal covers the searched page. Radix never aria-hides ancestors of an `aria-live`

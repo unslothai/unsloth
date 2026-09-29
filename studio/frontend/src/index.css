@@ -5462,6 +5462,12 @@ html.force-reduced-motion .sidebar-section-drop-line {
 	top: calc(var(--studio-portal-content-top-inset, 0px) + 3.5rem);
 }
 
+/* Nothing notifies JS when these mount, so CSS keeps the portaled bars under them. */
+html:has([aria-modal="true"], [data-blocking-screen]) [data-find-bar-layer],
+html:has([data-blocking-screen]) .interface-zoom-position {
+	display: none;
+}
+
 @layer components {
 	/* Align the arrow with page content while retaining its hit area. */
 	.settings-back-button {
