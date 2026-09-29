@@ -32,6 +32,15 @@ from .cohere import FastCohereModel
 from transformers import AutoConfig
 from transformers import __version__ as transformers_version
 from peft import PeftConfig, PeftModel
+from .grouped_linear_lora import register_grouped_linear_lora_for_adapter
+from .fp8_to_nf4 import track_explicit_4bit_request
+from .mistral_format import (
+    MistralFormatRedirect,
+    is_mistral_format_view,
+    mistral_format_conversions_active,
+    mistral_format_redirect,
+    prepare_mistral_format_checkpoint,
+)
 from .loader_utils import (
     DEFAULT_DEVICE_MAP,
     OFFLOAD_EMBEDDING_AUTO,
@@ -110,6 +119,11 @@ from ._utils import (
     resolve_model_class,
     _is_family_text_decoder,
     _apply_text_only_key_mapping,
+    _get_remote_composite_text_only,
+    _merge_key_mapping,
+    _rebase_user_quantization_config,
+    _drop_text_only_key_mapping,
+    _adapter_fits_text_model,
     set_task_config_attr,
     maybe_prefetch_hf_snapshot,
 )
@@ -296,6 +310,64 @@ def _config_diff(config):
     return {}
 
 
+def _is_mistral_format_checkpoint(
+    model_name,
+    token = None,
+    revision = None,
+    local_files_only = False,
+):
+    # Meta's original Llama checkpoints also ship `params.json`, so require a Mistral-only file.
+    markers = ("tekken.json", "consolidated.safetensors", "consolidated.safetensors.index.json")
+    try:
+        if os.path.isdir(model_name):
+            has = lambda name: os.path.isfile(os.path.join(model_name, name))
+        else:
+            if local_files_only:
+                return False
+            from huggingface_hub import file_exists
+            has = lambda name: file_exists(model_name, name, revision = revision, token = token)
+        return has("params.json") and not has("config.json") and any(has(m) for m in markers)
+    except Exception:
+        return False
+
+
+def _adapter_base_is_mistral_format(
+    model_name,
+    token,
+    revision,
+    local_files_only,
+    cache_dir = None,
+):
+    # A cached config.json settles it without a Hub request (most adapter bases).
+    if not os.path.isdir(model_name):
+        try:
+            from huggingface_hub import try_to_load_from_cache
+            if isinstance(
+                try_to_load_from_cache(
+                    model_name, "config.json", revision = revision, cache_dir = cache_dir
+                ),
+                str,
+            ):
+                return False
+        except Exception:
+            pass
+    return _is_mistral_format_checkpoint(model_name, token, revision, local_files_only)
+
+
+def _mistral_format_error(model_name):
+    return (
+        f"Unsloth: `{model_name}` is a checkpoint in Mistral's own format: it ships `params.json` "
+        "and no `config.json`, and transformers has no modeling code for it (the model card says "
+        "so and points at vLLM).\n"
+        "Unsloth trains through transformers, so this checkpoint cannot be loaded for training "
+        "until transformers gains an implementation or a transformers-format conversion of the "
+        "weights is published. For inference use vLLM with mistral-common, as the model card "
+        "describes.\n"
+        "If you meant a transformers-format repo, check the repo id: the converted uploads carry "
+        "a `config.json`."
+    )
+
+
 def _has_sequence_classification_architecture(config):
     architectures = _config_get(config, "architectures", None) or []
     return any(str(arch).endswith("ForSequenceClassification") for arch in architectures)
@@ -308,6 +380,8 @@ def _has_sequence_classification_architecture(config):
 _OMNI_AUTO_CLASS_NAMES = (
     "AutoModelForImageTextToText",
     "AutoModelForTextToWaveform",
+    # transformers 5 maps speech-to-text models (Voxtral, Qwen2-Audio) only here.
+    "AutoModelForMultimodalLM",
 )
 
 
@@ -484,6 +558,62 @@ FLA_MODEL_TYPE_PREFIXES = ("qwen3_next", "qwen3_5", "kimi_linear", "olmo_hybrid"
 _fla_advised = False
 
 
+def _exaone_moe_windows_need_support(config, windows):
+    layer_types = getattr(config, "layer_types", None) or []
+    single = getattr(config, "sliding_window", None)
+    for layer_type, window in zip(layer_types, windows or []):
+        if layer_type == "sliding_attention" and window and window != single:
+            return True
+    return False
+
+
+# Config fields only modeling code reads; transformers without them silently builds another network (huggingface/transformers#47802).
+_MODELING_ONLY_CONFIG_FIELDS = {
+    "exaone_moe": (
+        ("swiglu_limits", lambda config, v: any(float(x or 0) for x in (v or []))),
+        ("sliding_windows", _exaone_moe_windows_need_support),
+    ),
+}
+
+
+def _raise_if_modeling_ignores_config(config, model_types):
+    """Refuse a checkpoint whose config needs modeling features this transformers lacks."""
+    if config is None:
+        return
+    for model_type in model_types or []:
+        fields = _MODELING_ONLY_CONFIG_FIELDS.get(model_type)
+        if not fields:
+            continue
+        needed = [
+            name
+            for name, needs in fields
+            if getattr(config, name, None) is not None and needs(config, getattr(config, name))
+        ]
+        if not needed:
+            continue
+        try:
+            import importlib, inspect as _inspect
+            source = _inspect.getsource(
+                importlib.import_module(f"transformers.models.{model_type}.modeling_{model_type}")
+            )
+        except Exception:
+            continue
+        missing = [name for name in needed if name not in source]
+        if not missing:
+            continue
+        message = (
+            f"Unsloth: this {model_type} checkpoint sets {', '.join(missing)}, which the installed "
+            f"transformers {transformers_version} ignores, so it would load and train a different "
+            "network than the one released (for K-EXAONE 2.0: no SwiGLU clamp and a 4096 window on "
+            "every sliding layer instead of 128). Install a transformers that supports it "
+            "(huggingface/transformers#47802), or set UNSLOTH_ALLOW_IGNORED_CONFIG=1 to load anyway."
+        )
+        if os.environ.get("UNSLOTH_ALLOW_IGNORED_CONFIG", "0") == "1":
+            logger.warning(message)
+            return
+        raise RuntimeError(message)
+
+
 def _maybe_advise_fla_install(model_types):
     """One-time note when a gated-deltanet model loads without the fast kernels. They ship with Unsloth, so this fires only when they could not be enabled on this platform (no CUDA, torch < 2.7 or triton < 3.3) or when Unsloth deliberately disabled them as known-broken on this GPU / Triton combination, i.e. exactly when transformers uses the slow pure PyTorch path."""
     global _fla_advised
@@ -598,9 +728,24 @@ def _fix_rope_inv_freq(model):
     return model
 
 
+def _vllm_unavailable_error():
+    # vLLM installed but disabled at import (ABI break, needs transformers 5) is not "not installed".
+    from unsloth import import_fixes
+    if import_fixes.VLLM_DISABLED_REASON:
+        return ImportError(
+            f"{import_fixes.VLLM_DISABLED_REASON}\n`fast_inference = True` needs a working vLLM."
+        )
+    return ImportError(
+        "Unsloth: Please install vLLM before enabling `fast_inference`!\n"
+        "You can do this in a terminal via `pip install vllm`"
+    )
+
+
 class FastLanguageModel(FastLlamaModel):
     @staticmethod
     @_offline_aware_load
+    @mistral_format_redirect
+    @track_explicit_4bit_request
     def from_pretrained(
         model_name = "unsloth/Llama-3.2-1B-Instruct",
         max_seq_length = 2048,
@@ -727,10 +872,7 @@ class FastLanguageModel(FastLlamaModel):
 
         if fast_inference:
             if importlib.util.find_spec("vllm") is None:
-                raise ImportError(
-                    "Unsloth: Please install vLLM before enabling `fast_inference`!\n"
-                    "You can do this in a terminal via `pip install vllm`"
-                )
+                raise _vllm_unavailable_error()
             if DEVICE_TYPE_TORCH == "cuda":
                 for i in range(DEVICE_COUNT):
                     if "NVIDIA GB10" in str(torch.cuda.get_device_name(i)).upper():
@@ -950,6 +1092,20 @@ class FastLanguageModel(FastLlamaModel):
                     f'Try `pip install --upgrade "transformers>=4.43.2"`\n'
                     f"to obtain the latest transformers build, then restart this session."
                 )
+            if _is_mistral_format_checkpoint(model_name, token, base_revision, local_files_only):
+                # Known architectures load via a translated view; others keep the error.
+                _view = prepare_mistral_format_checkpoint(
+                    model_name,
+                    token,
+                    base_revision,
+                    local_files_only,
+                    cache_dir = kwargs.get("cache_dir", None),
+                )
+                if _view is not None:
+                    if not was_disabled:
+                        enable_progress_bars()
+                    raise MistralFormatRedirect(_view, model_name)
+                raise RuntimeError(_mistral_format_error(model_name)) from autoconfig_exc
             combined_error = (
                 "Unsloth: Failed to load model. Both AutoConfig and PeftConfig loading failed.\n\n"
                 f"AutoConfig error: {autoconfig_error}\n\n"
@@ -970,6 +1126,7 @@ class FastLanguageModel(FastLlamaModel):
             peft_config if peft_config is not None else model_config,
             trust_remote_code = trust_remote_code,
         )
+        _raise_if_modeling_ignores_config(model_config, model_types)
         if len(model_types) == 1:
             model_type = model_types[0]
         else:
@@ -1028,6 +1185,18 @@ class FastLanguageModel(FastLlamaModel):
                 load_in_8bit = False
                 load_in_fp8 = False
                 load_in_16bit = True
+            # After the -bf16 rule: the view path no longer carries the source's suffix.
+            # No revision: the caller's ref names the adapter repo, and the base loads unpinned below.
+            _cache_dir = kwargs.get("cache_dir", None)
+            if _adapter_base_is_mistral_format(
+                model_name, token, None, local_files_only, _cache_dir
+            ):
+                model_name = (
+                    prepare_mistral_format_checkpoint(
+                        model_name, token, None, local_files_only, cache_dir = _cache_dir
+                    )
+                    or model_name
+                )
 
             model_config = AutoConfig.from_pretrained(
                 model_name,
@@ -1035,9 +1204,13 @@ class FastLanguageModel(FastLlamaModel):
                 trust_remote_code = trust_remote_code,
                 local_files_only = local_files_only,
             )
+            _raise_if_modeling_ignores_config(model_config, model_types)
 
         if not was_disabled:
             enable_progress_bars()
+        # A view, or an adapter trained on one, still names Mistral's tensors.
+        if is_mistral_format_view(model_name) and not mistral_format_conversions_active():
+            raise MistralFormatRedirect(None, model_name)
 
         if check_precision_flags and _precision_flags_conflict(
             load_in_4bit, load_in_8bit, load_in_16bit, load_in_fp8
@@ -1305,6 +1478,16 @@ class FastLanguageModel(FastLlamaModel):
             peft_load_kwargs = {}
             if kwargs.get("cache_dir") is not None:
                 peft_load_kwargs["cache_dir"] = kwargs["cache_dir"]
+            _grouped_config = register_grouped_linear_lora_for_adapter(
+                model,
+                old_model_name,
+                token = token,
+                revision = revision,
+                local_files_only = local_files_only,
+                **peft_load_kwargs,
+            )
+            if _grouped_config is not None:
+                peft_load_kwargs["config"] = _grouped_config
             model = PeftModel.from_pretrained(
                 model,
                 old_model_name,
@@ -1390,6 +1573,8 @@ class FastModel(FastBaseModel):
 
     @staticmethod
     @_offline_aware_load
+    @mistral_format_redirect
+    @track_explicit_4bit_request
     def from_pretrained(
         model_name = "unsloth/Llama-3.2-11B-Vision-Instruct-bnb-4bit",
         max_seq_length = 2048,
@@ -1551,10 +1736,7 @@ class FastModel(FastBaseModel):
 
         if fast_inference:
             if importlib.util.find_spec("vllm") is None:
-                raise ImportError(
-                    "Unsloth: Please install vLLM before enabling `fast_inference`!\n"
-                    "You can do this in a terminal via `pip install vllm`"
-                )
+                raise _vllm_unavailable_error()
             if DEVICE_TYPE_TORCH == "cuda":
                 for i in range(DEVICE_COUNT):
                     if "NVIDIA GB10" in str(torch.cuda.get_device_name(i)).upper():
@@ -1753,6 +1935,20 @@ class FastModel(FastBaseModel):
                     f'Try `pip install --upgrade "transformers>=4.43.2"`\n'
                     f"to obtain the latest transformers build, then restart this session."
                 )
+            if _is_mistral_format_checkpoint(model_name, token, base_revision, local_files_only):
+                # Known architectures load via a translated view; others keep the error.
+                _view = prepare_mistral_format_checkpoint(
+                    model_name,
+                    token,
+                    base_revision,
+                    local_files_only,
+                    cache_dir = kwargs.get("cache_dir", None),
+                )
+                if _view is not None:
+                    if not was_disabled:
+                        enable_progress_bars()
+                    raise MistralFormatRedirect(_view, model_name)
+                raise RuntimeError(_mistral_format_error(model_name)) from autoconfig_exc
             combined_error = (
                 "Unsloth: Failed to load model. Both AutoConfig and PeftConfig loading failed.\n\n"
                 f"AutoConfig error: {autoconfig_error}\n\n"
@@ -1775,6 +1971,7 @@ class FastModel(FastBaseModel):
         )
         model_types_all = ",".join(model_types) + ","
         _maybe_advise_fla_install(model_types)
+        _raise_if_modeling_ignores_config(model_config, model_types)
 
         # Text-diffusion models (DiffusionGemma) take a transformers-only slow path: a custom block-diffusion generate over a novel backbone, so Unsloth's autoregressive kernel/compile patching is skipped and the unmodified HF model is loaded, keeping 4bit/8bit and PEFT LoRA.
         if is_diffusion_model_type(model_types):
@@ -1967,6 +2164,18 @@ class FastModel(FastBaseModel):
                 load_in_8bit = False
                 load_in_fp8 = False
                 load_in_16bit = True
+            # After the -bf16 rule: the view path no longer carries the source's suffix.
+            # No revision: the caller's ref names the adapter repo, and the base loads unpinned below.
+            _cache_dir = kwargs.get("cache_dir", None)
+            if _adapter_base_is_mistral_format(
+                model_name, token, None, local_files_only, _cache_dir
+            ):
+                model_name = (
+                    prepare_mistral_format_checkpoint(
+                        model_name, token, None, local_files_only, cache_dir = _cache_dir
+                    )
+                    or model_name
+                )
 
             if user_config is not None:
                 model_config = user_config
@@ -1977,9 +2186,13 @@ class FastModel(FastBaseModel):
                     trust_remote_code = trust_remote_code,
                     local_files_only = local_files_only,
                 )
+            _raise_if_modeling_ignores_config(model_config, model_types)
 
         if not was_disabled:
             enable_progress_bars()
+        # A view, or an adapter trained on one, still names Mistral's tensors.
+        if is_mistral_format_view(model_name) and not mistral_format_conversions_active():
+            raise MistralFormatRedirect(None, model_name)
 
         do_logging = os.environ.get("UNSLOTH_ENABLE_LOGGING", "0") == "1"
         if do_logging:
@@ -2110,6 +2323,7 @@ class FastModel(FastBaseModel):
                 )
         load_text_only = text_only and auto_model is None
         text_only_decoder = False
+        _text_key_mapping = None
         if load_text_only:
             if hasattr(model_config, "vision_config"):
                 text_config = _get_text_only_config(model_config, old_model_name)
@@ -2117,10 +2331,58 @@ class FastModel(FastBaseModel):
                 text_class = resolve_model_class(
                     AutoModelForCausalLM, text_config, **_probe_hub_kwargs
                 )
-                if text_class is None or not _is_family_text_decoder(
+                # Repo-code composites (Nemotron-Omni) keep a whole causal LM under one checkpoint prefix; load only it when every text weight is found there.
+                family_decoder = text_class is not None and _is_family_text_decoder(
                     getattr(model_config, "model_type", ""),
                     getattr(text_config, "model_type", ""),
+                )
+                remote_text_only = None
+                # InternVL: get_text_config() is the wrapper itself, so the family check always passes.
+                if not family_decoder or type(text_config) is type(model_config):
+                    remote_text_only = _get_remote_composite_text_only(
+                        model_config,
+                        model_name,
+                        trust_remote_code = trust_remote_code,
+                        token = token,
+                        revision = base_revision if not is_peft else None,
+                        local_files_only = local_files_only,
+                        fast_inference = fast_inference,
+                        subfolder = kwargs.get("subfolder"),
+                        device_map = device_map,
+                        variant = kwargs.get("variant"),
+                        cache_dir = kwargs.get("cache_dir"),
+                        code_revision = kwargs.get("code_revision"),
+                    )
+                if (
+                    remote_text_only is not None
+                    and is_peft
+                    and not _adapter_fits_text_model(
+                        old_model_name,
+                        remote_text_only[1],
+                        token = token,
+                        revision = revision,
+                        local_files_only = local_files_only,
+                        cache_dir = kwargs.get("cache_dir"),
+                        text_names = remote_text_only[2],
+                    )
                 ):
+                    # An adapter trained on the full composite names its weights (and often its target regex) under the wrapper prefix; keep the full model it was trained on.
+                    remote_text_only = None
+                if remote_text_only is not None:
+                    text_config, _text_key_mapping = remote_text_only[:2]
+                    logger.warning_once(
+                        f"Loading {old_model_name} as text-only: only its language model "
+                        f"({type(text_config).__name__}) is built, vision/audio weights are skipped. "
+                        "Use FastVisionModel with text_only = False for multimodal inputs."
+                    )
+                    _merge_key_mapping(kwargs, _text_key_mapping)
+                    _rebase_user_quantization_config(kwargs, _text_key_mapping)
+                    # The post-load stamp writes this into model.config; use the rebased copy the load used.
+                    quantization_config = kwargs.get("quantization_config", quantization_config)
+                    model_config = text_config
+                    is_vlm = False
+                    text_only_decoder = True
+                elif not family_decoder:
                     load_text_only = False
                 else:
                     logger.warning_once(
@@ -2249,6 +2511,7 @@ class FastModel(FastBaseModel):
             *args,
             **kwargs,
         )
+        _drop_text_only_key_mapping(model, _text_key_mapping)
 
         if resize_model_vocab is not None:
             model.resize_token_embeddings(resize_model_vocab)
@@ -2382,6 +2645,16 @@ class FastModel(FastBaseModel):
             peft_load_kwargs = {}
             if kwargs.get("cache_dir") is not None:
                 peft_load_kwargs["cache_dir"] = kwargs["cache_dir"]
+            _grouped_config = register_grouped_linear_lora_for_adapter(
+                model,
+                old_model_name,
+                token = token,
+                revision = revision,
+                local_files_only = local_files_only,
+                **peft_load_kwargs,
+            )
+            if _grouped_config is not None:
+                peft_load_kwargs["config"] = _grouped_config
             try:
                 model = PeftModel.from_pretrained(
                     model,

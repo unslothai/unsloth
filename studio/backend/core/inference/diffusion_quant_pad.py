@@ -16,30 +16,10 @@ whole conditioning front end. This is the alternative: pad the flattened row cou
 ``pad_to``, run the GEMM, slice the result back. The module becomes compilable with no change to
 the quantization config, and the rows the caller asked for are returned BITWISE unchanged.
 
-Two properties make the padding exact rather than approximately exact, and both are load-bearing:
-
-  * The pad rows REPLICATE row 0 rather than being zeros. An all-zero row has amax 0, hence
-    scale 0, hence a division by zero in the activation quantizer. That NaN would stay confined
-    to a row that is then discarded, but replication costs the same and keeps the intermediate
-    finite -- and finite intermediates are what let the equality be checked at all.
-  * The activation scale is PER ROW (torchao quantizes the activations of
-    ``Int8DynamicActivationInt8WeightConfig`` with ``_int8_symm_per_token_...``), so each kept
-    row's scale is computed from that row alone and extra rows cannot perturb it. Replicating
-    row 0 happens to leave a per-TENSOR amax unchanged too, so the two properties overlap for
-    that particular granularity -- but a granularity calibrated on anything other than a plain
-    amax (a percentile, a mean, a running observer) would shift under duplicated rows and
-    silently change every output. ``wrap_small_m_linears`` therefore refuses to wrap a quantized
-    Linear whose activation granularity it cannot prove is per row, and RAISES rather than
-    quietly leaving it unwrapped: a half-padded transformer is the one outcome worse than either
-    end state, since it compiles on the modules that were wrapped and crashes on the rest.
-
-Ordering invariant: wrapping REPARENTS the Linear, so it must happen AFTER a state dict is
-loaded and BEFORE nothing in particular. The offline prequant builder
-(``scripts/build_prequant_checkpoint.py``) drives ``quantize_`` directly and saves the state
-dict, so it never sees a wrapper. As a second line of defence ``PadToMinM`` is state-dict
-TRANSPARENT: it saves and loads its inner Linear's tensors under the wrapper's own prefix, so a
-checkpoint written from a wrapped transformer still names ``context_embedder.weight`` rather
-than ``context_embedder.inner.weight`` and stays loadable by an unwrapped tree.
+Exact because pad rows REPLICATE row 0 (a zero row gives scale 0 and NaN) and the activation scale
+is PER ROW; ``wrap_small_m_linears`` RAISES on a granularity it cannot prove per row, since a
+half-padded transformer crashes. ``ZeroRowSafeLinear`` answers an EMPTY activation itself (nvfp4).
+Wrapping reparents the Linear, so do it AFTER loading; ``PadToMinM`` is state-dict transparent.
 """
 
 from __future__ import annotations
@@ -148,7 +128,12 @@ class PadToMinM(nn.Module):
             # quantized 1472 -> 2048 Linear maps [0, 1472] to [0, 1472]), which then breaks a downstream
             # width-sensitive add, so synthesise the empty result at the right width instead of calling through.
             return x.new_empty((*lead, self.inner.out_features))
-        if m < self.pad_to:
+        if torch.compiler.is_compiling():
+            # Branch-free: `m < pad_to` guards a dynamic row count, so an H3 i2v caption past it recompiles.
+            # Arithmetic max: dynamo <= 2.8 rejects torch.sym_max on a concrete m; max() left an `m <= pad_to` guard.
+            rows = torch.arange((m + self.pad_to + abs(m - self.pad_to)) // 2, device = flat.device)
+            out = self.inner(flat.index_select(0, torch.where(rows < m, rows, 0)))[:m]
+        elif m < self.pad_to:
             # Everything below pad_to normalises to pad_to, not just what is below min_m. Clearing the floor takes only
             # the latter, but pinning ONE row count means one inductor graph covers every prompt length in the range
             # instead of one per length, and the extra rows are free at these sizes (measured on H3's 13 modules: 1.57
@@ -220,7 +205,7 @@ class PadToMinM(nn.Module):
 
 
 class ZeroRowSafeLinear(nn.Module):
-    """Answer an EMPTY activation here: torchao NVFP4's whole-input ``max()`` raises on it."""
+    """Answer an EMPTY activation here: torchao NVFP4's global-scale ``max()`` raises on ``numel() == 0``."""
 
     def __init__(self, inner: nn.Linear) -> None:
         super().__init__()
@@ -277,7 +262,7 @@ class ZeroRowSafeLinear(nn.Module):
 
 
 def wrap_zero_row_linears(model: nn.Module, fqns: Iterable[str]) -> tuple[str, ...]:
-    """Wrap each quantized Linear in ``fqns`` with ``ZeroRowSafeLinear`` (idempotent)."""
+    """Wrap each Linear in ``fqns`` in a ``ZeroRowSafeLinear``; idempotent, and never stacks on ``PadToMinM``."""
     done: list[str] = []
     for fqn in sorted(set(fqns)):
         parent_name, _, leaf = fqn.rpartition(".")

@@ -32,6 +32,7 @@ export interface LoraModelOption extends ModelOption {
   /** This local GGUF is one directly loadable artifact, not a repo whose quant variants must be listed first. */
   isDirectGguf?: boolean;
   exportType?: "lora" | "merged" | "gguf";
+  sizeBytes?: number | null;
   /** Codec when the checkpoint fine-tunes an audio model, else null. */
   audioType?: string | null;
 }

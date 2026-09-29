@@ -42,6 +42,8 @@ export interface DiffusionStatus {
   // actually ran instead of echoing the load request back. Transformer quant engaged on the dense fast path
   // ("int8" / "fp8" / ...), null = the GGUF ran as-is.
   transformer_quant?: string | null;
+  transformer_quant_backend?: string | null;
+  transformer_quant_backend_reason?: string | null;
   // Text-encoder quant engaged ("fp8" | "fp8_dynamic" | "int8" | "nvfp4"), null = dense bf16.
   text_encoder_quant?: string | null;
   // Memory mode the load ran under: "auto" | "fast" | "balanced" | "low_vram".
@@ -91,6 +93,8 @@ export interface DiffusionGenerateProgress {
   total_steps: number;
   fraction: number;
   eta_seconds: number | null;
+  // Absent (sd.cpp engine) means "denoise".
+  phase?: "denoise" | "decode" | null;
 }
 
 export interface DiffusionLoadProgress {
@@ -547,6 +551,11 @@ export async function fetchGalleryObjectUrl(
   // cannot work out from the URL.
   const blob = await fetchGalleryBlob(url);
   return { url: URL.createObjectURL(blob), bytes: blob.size };
+}
+
+/** Thumbnail URL for use with fetchGalleryObjectUrl. */
+export function galleryThumbnailUrl(url: string, thumb = 256): string {
+  return `${url}?thumb=${thumb}`;
 }
 
 // Diffusion LoRA training. Mirrors DiffusionTrainingStartRequest on the backend; only the paths

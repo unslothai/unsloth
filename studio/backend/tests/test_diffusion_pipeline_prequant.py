@@ -297,7 +297,7 @@ def _settle_backend(
     monkeypatch.setattr(dmod, "dense_transformer_supported", lambda _t: True)
     monkeypatch.setattr(dmod, "_pipeline_quant_uncompilable_reason", lambda *_a, **_k: None)
     monkeypatch.setattr(
-        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None: scheme
+        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None, **_k: scheme
     )
     monkeypatch.setattr(
         pqmod, "restricted_prequant_load_supported", lambda _scheme, filename = None: True
@@ -382,7 +382,7 @@ def _settle_backend_walking(monkeypatch, *, artifacts: tuple, candidates: tuple)
     from core.inference import diffusion_transformer_quant as tq
 
     backend = _settle_backend(monkeypatch, scheme = candidates[0])
-    monkeypatch.setattr(tq, "auto_scheme_candidates", lambda target, family = None: candidates)
+    monkeypatch.setattr(tq, "auto_scheme_candidates", lambda target, family = None, **_k: candidates)
     monkeypatch.setattr(
         dmod,
         "denoiser_prequant_source",
@@ -430,6 +430,57 @@ def test_a_walk_with_no_resident_rung_declines(monkeypatch):
     assert _settle(backend) == PIPELINE_SEED_DECLINED
 
 
+def test_auto_planning_passes_the_base_and_prequant_probe(monkeypatch):
+    """Without the base and a checkpoint probe AUTO drops nvfp4, so the plan must ask like the load."""
+    from core.inference import diffusion_transformer_quant as tq
+
+    backend = _settle_backend(monkeypatch)
+    seen: dict = {}
+
+    def _select(
+        target,
+        mode,
+        family = None,
+        *,
+        base_repo = None,
+        has_prequant = None,
+        **_k,
+    ):
+        seen["select"] = base_repo
+        if base_repo == Z_IMAGE_REPO and has_prequant is not None and has_prequant("nvfp4"):
+            return "nvfp4"
+        return "mxfp8"
+
+    def _candidates(
+        target,
+        family = None,
+        *,
+        base_repo = None,
+        has_prequant = None,
+        **_k,
+    ):
+        seen["candidates"] = base_repo
+        head = ("nvfp4",) if has_prequant is not None and has_prequant("nvfp4") else ()
+        return head + ("mxfp8",)
+
+    monkeypatch.setattr(dmod, "select_transformer_quant_scheme", _select)
+    monkeypatch.setattr(tq, "auto_scheme_candidates", _candidates)
+    monkeypatch.setattr(
+        dmod,
+        "usable_prequant_source",
+        lambda fam, scheme, **_k: object() if scheme == "nvfp4" else None,
+    )
+    monkeypatch.setattr(
+        dmod,
+        "denoiser_prequant_source",
+        lambda fam, scheme, **_k: ("unsloth/Z-Image-Turbo-NVFP4", "z.safetensors")
+        if scheme == "nvfp4"
+        else None,
+    )
+    assert _settle(backend) == "nvfp4"
+    assert seen == {"select": Z_IMAGE_REPO, "candidates": Z_IMAGE_REPO}
+
+
 def test_an_explicit_scheme_is_never_swapped_for_a_lower_rung(monkeypatch):
     """An explicit int8 that offloads declines; auto's walk is not offered to an explicit request."""
     backend = _settle_backend_walking(
@@ -440,7 +491,7 @@ def test_an_explicit_scheme_is_never_swapped_for_a_lower_rung(monkeypatch):
 
 def test_a_family_with_no_hosted_artifact_falls_through(monkeypatch):
     """A scheme with no hosted artifact falls through to the in-memory quantise."""
-    assert _settle(_settle_backend(monkeypatch, scheme = "nvfp4")) is None
+    assert _settle(_settle_backend(monkeypatch, scheme = "mxfp8")) is None
 
 
 def test_a_base_with_no_hosted_artifact_falls_through(monkeypatch):
@@ -698,7 +749,7 @@ def _load_backend(
     monkeypatch.setattr(dmod, "dense_transformer_supported", lambda _t: True)
     monkeypatch.setattr(tqmod, "dense_transformer_supported", lambda _t: True)
     monkeypatch.setattr(
-        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None: "fp8"
+        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None, **_k: "fp8"
     )
     monkeypatch.setattr(dmod, "dense_quant_blocker", lambda _pipe: None)
     monkeypatch.setattr(dmod, "_pipeline_quant_uncompilable_reason", lambda *_a, **_k: None)
@@ -1169,6 +1220,75 @@ def test_an_uncompilable_family_quantises_auto_when_the_budget_is_unmeasured(
     _load(backend, _pipeline_prequant_planned = None, _pipeline_prequant_skipped = ())
 
     assert spy.quantised == ["auto"]
+
+
+def _measured_bf16_family(monkeypatch, *, measured = True):
+    _uncompilable(monkeypatch, measured = measured)
+    monkeypatch.setattr(dmod, "family_compiles_regionally", lambda _fam: True)
+    monkeypatch.setattr(dmod, "auto_bf16_when_resident_reason", lambda _name: "measured: no faster")
+
+
+def test_a_measured_bf16_family_keeps_the_released_weights_that_fit(monkeypatch):
+    backend = _settle_backend(monkeypatch)
+    _offload_when_bf16_sized(monkeypatch, "none")
+    _measured_bf16_family(monkeypatch)
+    assert _settle(backend) is None
+
+
+def test_a_measured_bf16_family_seeds_when_the_released_weights_would_offload(monkeypatch):
+    backend = _settle_backend(monkeypatch)
+    _offload_when_bf16_sized(monkeypatch, "sequential")
+    _measured_bf16_family(monkeypatch)
+    assert _settle(backend) == "fp8"
+
+
+def test_a_measured_bf16_family_loads_auto_unquantised_with_the_measured_reason(
+    fake_runtime, monkeypatch
+):
+    backend, spy = _load_backend(monkeypatch)
+    _measured_bf16_family(monkeypatch)
+    status = _load(backend, _pipeline_prequant_planned = None, _pipeline_prequant_skipped = ())
+
+    assert spy.quantised == [] and spy.seeds == []
+    resolved = status["resolved"]["transformer_quant"]
+    assert (resolved["value"], resolved["source"]) == ("off", "auto")
+    assert "measured: no faster" in resolved["reason"]
+    assert "cannot be regionally compiled" not in resolved["reason"]
+
+
+def test_a_measured_bf16_family_quantises_auto_when_the_budget_is_unmeasured(
+    fake_runtime, monkeypatch
+):
+    backend, spy = _load_backend(monkeypatch)
+    _measured_bf16_family(monkeypatch, measured = False)
+    _load(backend, _pipeline_prequant_planned = None, _pipeline_prequant_skipped = ())
+
+    assert spy.quantised == ["auto"]
+
+
+@pytest.mark.parametrize(
+    "repo, kept",
+    [
+        ("Alpha-VLLM/Lumina-Image-2.0", True),
+        ("HiDream-ai/HiDream-I1-Full", True),
+        ("black-forest-labs/FLUX.1-dev", False),
+        ("Tongyi-MAI/Z-Image-Turbo", False),
+        ("Qwen/Qwen-Image", False),
+    ],
+)
+def test_the_bf16_rule_names_only_the_measured_families(repo, kept):
+    fam = detect_family_for_pick(repo, None, None)
+    assert fam is not None
+    reason = dmod._auto_keeps_bf16_reason(fam)
+    assert (reason is not None) is kept
+    assert reason is None or "cannot be regionally compiled" not in reason
+    assert dmod._auto_keeps_bf16_reason(fam, "gguf") is None
+
+
+def test_an_uncompilable_family_keeps_its_reason_for_a_gguf_load(monkeypatch):
+    fam = detect_family_for_pick("Alpha-VLLM/Lumina-Image-2.0", None, None)
+    monkeypatch.setattr(dmod, "family_compiles_regionally", lambda _fam: False)
+    assert "cannot be regionally compiled" in dmod._auto_keeps_bf16_reason(fam, "gguf")
 
 
 def test_a_resident_plan_whose_requirement_exceeds_the_budget_proves_no_fit():

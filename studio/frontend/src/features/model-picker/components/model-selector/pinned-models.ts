@@ -108,6 +108,8 @@ interface PinnedModelsState {
    *  with it, and a `repoId::quant` pin outlives the row that showed it: nothing lists it, so
    *  nothing can unpin it, and it reappears the day that quant is downloaded again. */
   unpinRepo: (repoId: string) => void;
+  /** Move a pin to a new key in the same slot, or drop it if the new key is already pinned. */
+  replacePinned: (fromKey: string, toKey: string) => void;
   /**
    * Move `fromKey` into `toKey`'s slot. Both keys must already be pinned;
    * anything else is a no-op. Outside a drag session the new order is
@@ -141,6 +143,15 @@ export const usePinnedModelsStore = create<PinnedModelsState>((set) => ({
         (key) => key !== pinKey(repoId) && !key.startsWith(prefix),
       );
       if (next.length === state.pinned.length) return state;
+      writePinned(next);
+      return { pinned: next };
+    }),
+  replacePinned: (fromKey, toKey) =>
+    set((state) => {
+      if (!state.pinned.includes(fromKey) || fromKey === toKey) return state;
+      const next = state.pinned.includes(toKey)
+        ? state.pinned.filter((key) => key !== fromKey)
+        : state.pinned.map((key) => (key === fromKey ? toKey : key));
       writePinned(next);
       return { pinned: next };
     }),

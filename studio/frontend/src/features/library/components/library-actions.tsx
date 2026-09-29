@@ -14,6 +14,7 @@ import {
 import { useT } from "@/i18n";
 import { cn } from "@/lib/utils";
 import {
+  ArrowTurnBackwardIcon,
   Delete02Icon,
   Download01Icon,
   Edit03Icon,
@@ -28,6 +29,7 @@ import { useMemo, useState } from "react";
 import type { LibraryFolder } from "../api";
 import { isDeletable, isFileItem, isModelItem } from "../file-kind";
 import { type LibraryTarget, useLibraryActions } from "../actions-context";
+import { useLibraryOrigin } from "../origin";
 import { canReveal, revealInFolder, useRevealLabel } from "../reveal";
 import { OVERLAY_CONTROL } from "../surface";
 
@@ -84,6 +86,8 @@ export function LibraryActionsMenu({
   const inFolder = currentFolderId(target);
   const item = target.kind === "item" ? target.item : null;
   const revealLabel = useRevealLabel();
+  const originOf = useLibraryOrigin();
+  const origin = item ? originOf(item) : null;
 
   return (
     <DropdownMenu open={open} onOpenChange={setOpen}>
@@ -109,13 +113,19 @@ export function LibraryActionsMenu({
       </DropdownMenuTrigger>
       <DropdownMenuContent
         align="end"
-        className="w-60"
+        className="library-actions-menu w-52"
         onClick={(event) => event.stopPropagation()}
       >
         <DropdownMenuItem onSelect={() => actions.chatAbout(target)}>
           <HugeiconsIcon icon={MessageCircleIcon} strokeWidth={1.75} className={ICON} />
           {t(item && isModelItem(item) ? "library.menu.chatWithModel" : "library.menu.chatAboutThis")}
         </DropdownMenuItem>
+        {origin && (
+          <DropdownMenuItem onSelect={origin.open}>
+            <HugeiconsIcon icon={ArrowTurnBackwardIcon} strokeWidth={1.75} className={ICON} />
+            {t(origin.label)}
+          </DropdownMenuItem>
+        )}
         {item && (
           <DropdownMenuItem onSelect={() => actions.toggleFavorite(item)}>
             <HugeiconsIcon
@@ -147,7 +157,7 @@ export function LibraryActionsMenu({
             <HugeiconsIcon icon={FolderExportIcon} strokeWidth={1.75} className={ICON} />
             {t("library.menu.addToFolder")}
           </DropdownMenuSubTrigger>
-          <DropdownMenuSubContent className="max-h-[min(--spacing(80),var(--radix-dropdown-menu-content-available-height))] w-56">
+          <DropdownMenuSubContent className="library-actions-menu max-h-[min(--spacing(80),var(--radix-dropdown-menu-content-available-height))] w-48">
             <DropdownMenuItem onSelect={() => actions.moveToNewFolder(target)}>
               <HugeiconsIcon icon={FolderAddIcon} strokeWidth={1.75} className={ICON} />
               {t("library.menu.newFolder")}

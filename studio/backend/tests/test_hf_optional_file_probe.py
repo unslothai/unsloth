@@ -214,7 +214,9 @@ def _functions(path: Path) -> dict:
 
 
 def _called_names(node: ast.AST) -> set[str]:
-    """Every function and method name called anywhere inside *node*, nested defs included."""
+    """Every function and method name called anywhere inside *node*, nested defs included. A
+    read handed to the rejected-token retry (``call_hub_with_anonymous_retry(hf_hub_download,
+    ...)``) is called by it, so it counts as called here."""
     names: set[str] = set()
     for child in ast.walk(node):
         if not isinstance(child, ast.Call):
@@ -223,6 +225,13 @@ def _called_names(node: ast.AST) -> set[str]:
             names.add(child.func.id)
         elif isinstance(child.func, ast.Attribute):
             names.add(child.func.attr)
+        callee = getattr(child.func, "id", None) or getattr(child.func, "attr", None)
+        if callee == "call_hub_with_anonymous_retry" and child.args:
+            wrapped = child.args[0]
+            if isinstance(wrapped, ast.Name):
+                names.add(wrapped.id)
+            elif isinstance(wrapped, ast.Attribute):
+                names.add(wrapped.attr)
     return names
 
 

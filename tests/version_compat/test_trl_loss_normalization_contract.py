@@ -100,9 +100,7 @@ def test_loss_type_replacement_did_not_leak_to_other_trainers():
     The expectation is split rather than one literal dict, because the two halves are
     different claims and only one of them is version-independent:
 
-      * GRPO is a LITERAL. Unsloth deliberately overrides TRL here, pinning `bnpo` at
-        `unsloth/models/rl.py:2449` ("Default GRPO paper"), and it must hold whatever TRL
-        defaults to. It really does differ: pristine trl 0.24.0 says `dapo`.
+      * GRPO is unsloth's own default (rl.py): TRL's `dapo` from 0.22, `bnpo` before it.
       * DPO and KTO are RELATIVE to pristine TRL, because the claim is that unsloth does
         not touch them at all. Their values are TRL's own and change between releases:
         trl 0.18.2 declares `DPOConfig.loss_type = "sigmoid"` as a plain default, while
@@ -112,6 +110,8 @@ def test_loss_type_replacement_did_not_leak_to_other_trainers():
     """
     import unsloth  # noqa: F401
     import trl
+
+    from packaging.version import Version
 
     checked = []
     for name in ("DPOConfig", "KTOConfig"):
@@ -134,9 +134,11 @@ def test_loss_type_replacement_did_not_leak_to_other_trainers():
     grpo = getattr(trl, "GRPOConfig", None)
     if grpo is not None and _loss_type_field(grpo) is not None:
         got = grpo(output_dir = "unused").loss_type
-        assert got == "bnpo", (
-            f"GRPOConfig.loss_type is {got!r}, expected 'bnpo'. That pin is unsloth's own "
-            "(rl.py, 'Default GRPO paper'), so this is either a lost override or a leak."
+        # Unsloth follows TRL's GRPO default from 0.22, the first TRL with "dapo" (rl.py).
+        want = "dapo" if Version(trl.__version__) >= Version("0.22.0") else "bnpo"
+        assert got == want, (
+            f"GRPOConfig.loss_type is {got!r}, expected {want!r}. That default is unsloth's own "
+            "(rl.py), so this is either a lost override or a leak."
         )
         checked.append("GRPOConfig")
 
@@ -155,6 +157,20 @@ def test_explicit_loss_type_still_wins():
         pytest.skip("this TRL has no SFTConfig.loss_type")
     cfg = trl.SFTConfig(output_dir = "unused", loss_type = "chunked_nll")
     assert cfg.loss_type == "chunked_nll", "explicit loss_type was clobbered"
+
+
+def test_dr_grpo_turns_off_reward_scaling_by_default():
+    """TRL >= 0.22 defaults scale_rewards to "group" (= True), so dr_grpo must override both."""
+    import unsloth  # noqa: F401
+    import trl
+
+    def scale(**kwargs):
+        return trl.GRPOConfig(output_dir = "unused", loss_type = "dr_grpo", **kwargs).scale_rewards
+
+    for kwargs in ({}, {"scale_rewards": True}, {"scale_rewards": "group"}):
+        assert scale(**kwargs) in (False, "none"), f"dr_grpo with {kwargs} still scales rewards"
+    assert scale(scale_rewards = None) in (True, "group"), "None should keep group scaling"
+    assert scale(scale_rewards = "batch") == "batch", "an explicit batch scaling was clobbered"
 
 
 def _pristine_sft_config_cls():

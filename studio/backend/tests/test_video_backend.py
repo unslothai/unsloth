@@ -10,6 +10,7 @@ import builtins
 import contextlib
 import dataclasses
 import functools
+import inspect
 import sys
 import threading
 import time
@@ -3632,6 +3633,40 @@ def test_begin_load_publishes_the_h3_companion_claim_with_the_loading_state(
     claimed = backend.loading_repo_ids()
     assert H3_GGUF_REPO in claimed
     assert H3_COMPONENT_REPO in claimed
+
+
+def test_begin_load_publishes_the_hosted_ltx23_fp8_claim_with_the_loading_state(
+    fake_runtime, monkeypatch
+):
+    # The hosted DiT's repo is claimed with _loading (like H3's), so a delete before the worker's claim cannot race the fetch.
+    import threading
+    from types import SimpleNamespace
+
+    from core.inference import video as video_mod
+
+    monkeypatch.setattr(video_mod, "dense_transformer_supported", lambda target: True)
+    _ltx23_fp8_card(monkeypatch)
+    monkeypatch.setattr(
+        video_mod, "assert_video_precision_available", lambda fam, **kw: None, raising = False
+    )
+    monkeypatch.setattr(
+        threading, "Thread", lambda *a, **k: SimpleNamespace(start = lambda: None, daemon = True)
+    )
+
+    def _claimed(**kwargs):
+        backend = VideoBackend()
+        backend.begin_load(
+            "Lightricks/LTX-2.3",
+            gguf_filename = "ltx-2.3-22b-distilled.safetensors",
+            family_override = "ltx-2",
+            model_kind = "single_file",
+            **kwargs,
+        )
+        return backend.loading_repo_ids()
+
+    assert "unsloth/LTX-2.3-FP8" in _claimed(transformer_quant = "fp8")
+    assert "unsloth/LTX-2.3-FP8" not in _claimed()
+    assert "unsloth/LTX-2.3-FP8" not in _claimed(transformer_quant = "fp8", memory_mode = "balanced")
 
 
 def test_begin_load_claims_no_companion_repos_for_a_non_h3_family(fake_runtime, monkeypatch):
@@ -8177,7 +8212,9 @@ def test_dense_quant_replan_uses_the_scaled_text_encoder(fake_runtime, monkeypat
     scale, text_encoder_gb, transformer_gb, vae_gb = _shared_setup_9(monkeypatch)
     monkeypatch.setattr(video_mod, "dense_transformer_supported", lambda target: True)
     monkeypatch.setattr(
-        video_mod, "select_transformer_quant_scheme", lambda target, mode, family = None: "int8"
+        video_mod,
+        "select_transformer_quant_scheme",
+        lambda target, mode, family = None, **_kw: "int8",
     )
     monkeypatch.setattr(video_mod, "quantize_transformer", lambda *a, **k: None)
     # Force the first plan to offload so the re-plan branch runs.
@@ -8597,7 +8634,7 @@ def test_unified_memory_refuses_on_the_dense_peak_even_when_a_quant_is_requested
     monkeypatch.setattr(video_mod, "resolve_diffusion_device_target", lambda: target)
     monkeypatch.setattr(video_mod, "dense_transformer_supported", lambda t: True)
     monkeypatch.setattr(
-        video_mod, "select_transformer_quant_scheme", lambda t, q, family = None: "fp8"
+        video_mod, "select_transformer_quant_scheme", lambda t, q, family = None, **_kw: "fp8"
     )
     # An integrated CUDA device: 48 GiB shared, so LTX-2's ~65 GB of dense weights cannot fit even
     # though the fp8 steady size would.
@@ -9349,6 +9386,100 @@ def test_a_checkpoint_that_will_not_load_falls_back_to_the_dense_quant(fake_runt
     assert "unsloth/" not in status["resolved"]["transformer_quant"]["reason"]
 
 
+def test_a_superseded_nvfp4_load_cannot_overwrite_the_install_reason(fake_runtime, monkeypatch):
+    # A superseded load returning from the install must not overwrite the newer load's reason.
+    import threading
+
+    import core.inference.video as video_mod
+    from core.inference import diffusion_nvfp4_install as inst
+
+    monkeypatch.setattr(video_mod, "dense_transformer_supported", lambda target: True)
+    monkeypatch.setattr(video_mod, "quantize_transformer", lambda *a, **k: "nvfp4")
+    _stub_denoiser_seed(monkeypatch, seeded = False)
+
+    old_entered, release_old = threading.Event(), threading.Event()
+
+    def _ensure(
+        device,
+        *,
+        logger = None,
+        local_files_only = False,
+        owner = None,
+        **kw,
+    ):
+        if threading.current_thread() is not threading.main_thread():
+            old_entered.set()
+            assert release_old.wait(timeout = 10), "test never released the old load"
+            outcome = (False, "old load: flashinfer install refused")
+        else:
+            outcome = (True, "installed flashinfer for NVFP4")
+        inst.record_install_reason(owner, *outcome, device)
+        return outcome
+
+    monkeypatch.setattr(inst, "ensure_flashinfer_for_nvfp4", _ensure)
+    monkeypatch.setattr(
+        VideoBackend, "_nvfp4_denoiser_checkpoint_will_load", lambda self, *a, **k: True
+    )
+    inst.reset_install_state()
+    backend = VideoBackend()
+    kwargs = dict(model_kind = "pipeline", transformer_quant = "nvfp4")
+
+    old_exc = []
+
+    def _old_load():
+        try:
+            backend.load_pipeline("Wan-AI/Wan2.2-T2V-A14B-Diffusers", _load_token = 1, **kwargs)
+        except Exception as exc:  # noqa: BLE001 - superseded by the newer load
+            old_exc.append(exc)
+
+    backend._load_token = 1
+    old = threading.Thread(target = _old_load)
+    old.start()
+    try:
+        assert old_entered.wait(timeout = 10), "old load never reached the FlashInfer install"
+        backend._load_token = 2
+        backend.load_pipeline("Wan-AI/Wan2.2-T2V-A14B-Diffusers", _load_token = 2, **kwargs)
+        committed = backend._state
+        assert inst._REASONS[backend][0] is None
+    finally:
+        release_old.set()
+        old.join(timeout = 10)
+    assert old_exc and "superseded" in str(old_exc[0])
+    assert backend._state is committed
+    assert inst._REASONS[backend][0] is None, "the superseded load relabelled the resident model"
+    inst.reset_install_state()
+
+
+def test_an_on_the_fly_nvfp4_load_clears_the_previous_install_reason(fake_runtime, monkeypatch):
+    # A skipped install must still clear the previous model's reason.
+    import core.inference.video as video_mod
+    from core.inference import diffusion_nvfp4_install as inst
+
+    monkeypatch.setattr(video_mod, "dense_transformer_supported", lambda target: True)
+    monkeypatch.setattr(video_mod, "quantize_transformer", lambda *a, **k: "nvfp4")
+    _stub_denoiser_seed(monkeypatch, seeded = False)
+
+    def _ensure(*a, **k):
+        raise AssertionError("the gate should have skipped the install")
+
+    monkeypatch.setattr(inst, "ensure_flashinfer_for_nvfp4", _ensure)
+    monkeypatch.setattr(
+        VideoBackend, "_nvfp4_denoiser_checkpoint_will_load", lambda self, *a, **k: False
+    )
+    inst.reset_install_state()
+    backend = VideoBackend()
+    inst.record_install_reason(backend, False, "offline: flashinfer is not downloaded", 0)
+    backend.load_pipeline(
+        "Wan-AI/Wan2.2-T2V-A14B-Diffusers", model_kind = "pipeline", transformer_quant = "nvfp4"
+    )
+    assert inst._REASONS[backend][0] is None
+    assert (
+        inst.nvfp4_backend_fields("torchao", owner = backend)["transformer_quant_backend_reason"]
+        != "offline: flashinfer is not downloaded"
+    )
+    inst.reset_install_state()
+
+
 def test_seeding_is_skipped_entirely_under_offload(fake_runtime, monkeypatch):
     import core.inference.video as video_mod
 
@@ -9389,6 +9520,7 @@ def _plans_for(monkeypatch, video_mod):
 
 
 def test_the_memory_plan_prices_a_seeded_denoiser_at_the_measured_row(fake_runtime, monkeypatch):
+    """The memory plan prices a seeded denoiser at the measured row, not the dense term."""
     import core.inference.video as video_mod
 
     monkeypatch.setattr(video_mod, "dense_transformer_supported", lambda target: True)
@@ -9445,6 +9577,7 @@ def test_a_failed_seed_replans_at_bf16_and_refuses_again(fake_runtime, monkeypat
 
 
 def test_the_planned_scheme_is_what_the_load_seeds(fake_runtime, monkeypatch):
+    """The scheme the plan committed to is the one the load seeds."""
     import core.inference.video as video_mod
 
     monkeypatch.setattr(video_mod, "dense_transformer_supported", lambda target: True)
@@ -9464,7 +9597,7 @@ def test_the_planned_scheme_is_what_the_load_seeds(fake_runtime, monkeypatch):
 
 
 def test_a_seed_the_plan_declined_is_not_re_taken_by_the_load(fake_runtime, monkeypatch):
-    """The load honours the plan's decline: re-deciding here would fetch the artifact inline."""
+    """The load honours the plan's decline, or it would fetch the artifact inline."""
     import core.inference.video as video_mod
 
     monkeypatch.setattr(video_mod, "dense_transformer_supported", lambda target: True)
@@ -9499,6 +9632,7 @@ _A14B_SIBLINGS = [
 
 
 def test_base_download_files_drops_both_experts_and_keeps_both_configs():
+    """A seeded MoE drops both experts' dense shards and keeps both configs."""
     info = types.SimpleNamespace(siblings = _A14B_SIBLINGS)
 
     dense = dict(VideoBackend._base_download_files(info, "pipeline"))
@@ -9529,6 +9663,7 @@ def test_base_download_files_keeps_the_h3_partition_default():
 
 
 def test_the_download_plan_stages_both_experts_artifacts(monkeypatch):
+    """The download plan stages both experts' artifacts."""
     import core.inference.video as video_mod
     import core.inference.video_denoiser_prequant as dq
 
@@ -9644,6 +9779,19 @@ def test_an_explicit_scheme_under_speed_off_stages_the_hosted_experts(monkeypatc
     assert {"Wan2.2-T2V-A14B-NVFP4.pt", "Wan2.2-T2V-A14B-transformer_2-NVFP4.pt"} <= staged
 
 
+def test_the_video_status_response_carries_the_nvfp4_backend_label():
+    """The same backend field the image status exposes: 'NVFP4' alone does not say what ran."""
+    from models.inference import VideoStatusResponse
+
+    resp = VideoStatusResponse(
+        loaded = True,
+        transformer_quant = "nvfp4",
+        transformer_quant_backend = "flashinfer",
+    )
+    assert resp.model_dump()["transformer_quant_backend"] == "flashinfer"
+    assert VideoStatusResponse(loaded = True).model_dump()["transformer_quant_backend"] is None
+
+
 def _cuda_plan_target(monkeypatch, video_mod, *, free_gib):
     """Point the planning path at a cuda card of ``free_gib``, off the test host's own hardware."""
     import torch
@@ -9714,7 +9862,6 @@ def _a14b_plan(monkeypatch):
 
 
 def test_a_plan_that_still_offloads_at_artifact_size_stages_the_dense_experts(monkeypatch):
-    """A card the artifact-sized plan still offloads on cannot seed: stage the dense experts."""
     import core.inference.video as video_mod
 
     _a14b_plan(monkeypatch)
@@ -9734,7 +9881,6 @@ def test_a_plan_that_still_offloads_at_artifact_size_stages_the_dense_experts(mo
 
 
 def test_a_card_the_artifact_fits_on_still_stages_the_artifacts(monkeypatch):
-    """Where the artifact-sized plan stays resident the load seeds, so dense shards stay out."""
     import core.inference.video as video_mod
 
     _a14b_plan(monkeypatch)
@@ -9757,7 +9903,6 @@ def test_a_card_the_artifact_fits_on_still_stages_the_artifacts(monkeypatch):
 
 
 def test_an_offloading_memory_mode_stages_the_dense_experts_on_any_card(monkeypatch):
-    """An explicit offload memory_mode stages the dense experts even on a roomy card."""
     import core.inference.video as video_mod
 
     _a14b_plan(monkeypatch)
@@ -9779,7 +9924,7 @@ def test_an_offloading_memory_mode_stages_the_dense_experts_on_any_card(monkeypa
 def test_a_dense_encoder_fallback_that_forces_offload_also_drops_the_seed(
     fake_runtime, monkeypatch
 ):
-    """A failed pre-cast encoder re-plans at bf16, which can offload: re-decide the seed there."""
+    """A dense-encoder fallback re-plan that selects offload must re-take the seed decision."""
     import core.inference.diffusion_te_prequant as te
     import core.inference.video as video_mod
 
@@ -10431,6 +10576,338 @@ def test_the_boundary_marker_waits_out_a_busy_capture_lock(fake_runtime, monkeyp
     assert at_decode.get("phase") == "decode"
 
 
+def test_generate_runs_the_video_pipeline_through_the_render_thread(
+    fake_runtime, tmp_path, monkeypatch
+):
+    from core.inference import video as video_mod
+
+    names = []
+
+    def run(name, fn):
+        names.append(name)
+        return fn()
+
+    monkeypatch.setattr(video_mod.render_thread, "run", run)
+    backend = _load_ltx23_from_dir(tmp_path)
+    backend.generate(prompt = "a sloth")
+    assert names == ["video"]
+    assert backend._state.pipe.last_kwargs["num_inference_steps"] == 8
+
+
+@pytest.mark.parametrize("resident", [True, False])
+def test_a_failed_replacement_keeps_the_resident_models_nvfp4_state(monkeypatch, resident):
+    """A failed replacement keeps the old model, whose CUDA graph still uses the NVFP4 tensors."""
+    import core.inference.video as vid
+    from core.inference import diffusion_nvfp4_linear as lin
+
+    backend = VideoBackend()
+    resets: list = []
+    monkeypatch.setattr(lin, "reset_nvfp4_state", lambda: resets.append(True))
+    monkeypatch.setattr(vid, "clear_gpu_cache", lambda: None)
+
+    def _boom(*_a, **_k):
+        raise RuntimeError("metadata lookup failed")
+
+    monkeypatch.setattr(vid, "_detect_load_family", _boom)
+    if resident:
+        backend._state = types.SimpleNamespace(pipe = None)
+        import core.inference.gpu_arbiter as arbiter
+        import hub.services.models.account_access as access
+
+        monkeypatch.setattr(arbiter, "restore_owner_account", lambda *_a, **_k: None)
+        monkeypatch.setattr(access, "restore_resident_metadata", lambda *_a, **_k: None)
+    backend._load_token = 7
+    backend._run_load(repo_id = "org/model", _load_token = 7)
+
+    assert resets == ([] if resident else [True])
+
+
+class _StopAfterInstallGate(Exception):
+    """Raised just past the FlashInfer pre-install hop."""
+
+
+class _Sibling:
+    def __init__(
+        self,
+        rfilename,
+        size = 1,
+    ):
+        self.rfilename = rfilename
+        self.size = size
+
+
+def _hub_refusal(cls, repo = "unsloth/Wan2.2-T2V-A14B-NVFP4"):
+    # response is optional in huggingface_hub 0.x but required in 1.x; a stub works on either.
+    return cls(
+        f"401 Client Error. Repository Not Found for url: https://huggingface.co/api/models/{repo}",
+        response = types.SimpleNamespace(headers = {}, request = None),
+    )
+
+
+def _video_install_probe(
+    monkeypatch,
+    *,
+    listing = None,
+    refusal = None,
+    cached = False,
+    free_mib = 180_000,
+):
+    """Record FlashInfer installs and Hub listings, stopping after the hop."""
+    import core.inference.video as video_mod
+    from core.inference import diffusion_nvfp4_install as inst
+    from core.inference.diffusion import DiffusionBackend
+
+    installs: list = []
+    listed: list = []
+    dispatched: list = []
+
+    def _ensure(device, **kwargs):
+        installs.append((device, kwargs.get("local_files_only")))
+        return True, "installed flashinfer for NVFP4"
+
+    real_hop = VideoBackend._install_flashinfer_for_seed
+
+    def _hop(*args, **kwargs):
+        real_hop(*args, **kwargs)
+        raise _StopAfterInstallGate()
+
+    class _Api:
+        def __init__(self, *a, **k):
+            pass
+
+        def model_info(
+            self,
+            repo_id,
+            files_metadata = False,
+            token = None,
+        ):
+            listed.append(repo_id)
+            if refusal is not None:
+                raise refusal
+            return types.SimpleNamespace(siblings = [_Sibling(n) for n in (listing or [])])
+
+    def _modular(self, **kwargs):
+        dispatched.append(kwargs.get("_nvfp4_install_outcome"))
+        raise _StopAfterInstallGate()
+
+    monkeypatch.setattr(inst, "ensure_flashinfer_for_nvfp4", _ensure)
+    monkeypatch.setattr("huggingface_hub.HfApi", _Api)
+    monkeypatch.setattr(
+        DiffusionBackend, "_hub_file_is_cached", staticmethod(lambda repo, name, *a, **k: cached)
+    )
+    monkeypatch.setattr(
+        VideoBackend,
+        "_device_target",
+        lambda self, ordinal = None: types.SimpleNamespace(device = "cuda", dtype = None, ordinal = 0),
+    )
+    from core.inference.diffusion_memory import DeviceMemory
+
+    monkeypatch.setattr(
+        video_mod,
+        "settled_snapshot_device_memory",
+        lambda target: DeviceMemory("cuda", "cuda", "discrete_vram", free_mib, 183_000),
+    )
+    monkeypatch.setattr(
+        video_mod,
+        "_video_auto_denoiser_scheme",
+        lambda fam, *, requested = None, **kw: "nvfp4" if requested == "nvfp4" else None,
+    )
+    monkeypatch.setattr(VideoBackend, "_load_h3_modular_pipeline", _modular)
+    monkeypatch.setattr(VideoBackend, "_install_flashinfer_for_seed", staticmethod(_hop))
+    return installs, listed, dispatched
+
+
+def _video_load_to_the_install_gate(repo_id = "Wan-AI/Wan2.2-T2V-A14B-Diffusers", **overrides):
+    kwargs = dict(model_kind = "pipeline", transformer_quant = "nvfp4")
+    kwargs.update(overrides)
+    with pytest.raises(_StopAfterInstallGate):
+        VideoBackend().load_pipeline(repo_id, **kwargs)
+
+
+@pytest.mark.parametrize("error", ["RepositoryNotFoundError", "GatedRepoError"])
+@pytest.mark.parametrize(
+    "repo_id, hosted",
+    [
+        ("Wan-AI/Wan2.2-T2V-A14B-Diffusers", "unsloth/Wan2.2-T2V-A14B-NVFP4"),
+        ("Wan-AI/Wan2.2-TI2V-5B-Diffusers", "unsloth/Wan2.2-TI2V-5B-NVFP4"),
+    ],
+)
+def test_an_nvfp4_video_checkpoint_the_hub_refuses_installs_no_flashinfer(
+    fake_runtime, monkeypatch, error, repo_id, hosted
+):
+    # Private / gated repo: on-the-fly torchao build, FlashInfer unused.
+    import huggingface_hub.errors as hub_errors
+
+    installs, listed, _ = _video_install_probe(
+        monkeypatch, refusal = _hub_refusal(getattr(hub_errors, error), hosted)
+    )
+    _video_load_to_the_install_gate(repo_id)
+    assert installs == []
+    assert listed == [hosted]
+
+
+def test_an_nvfp4_video_repo_missing_a_denoiser_installs_no_flashinfer(fake_runtime, monkeypatch):
+    # A14B needs BOTH denoisers.
+    installs, listed, _ = _video_install_probe(monkeypatch, listing = ["Wan2.2-T2V-A14B-NVFP4.pt"])
+    _video_load_to_the_install_gate()
+    assert installs == []
+    assert listed == ["unsloth/Wan2.2-T2V-A14B-NVFP4"]
+
+
+def test_an_nvfp4_video_family_with_no_hosted_checkpoint_installs_no_flashinfer(
+    fake_runtime, monkeypatch
+):
+    import core.inference.video_denoiser_prequant as dq
+
+    installs, listed, _ = _video_install_probe(monkeypatch)
+    monkeypatch.setattr(dq, "denoiser_prequant_sources", lambda fam, scheme, base: None)
+    _video_load_to_the_install_gate()
+    assert installs == []
+    assert listed == []
+
+
+def test_a_reachable_nvfp4_video_checkpoint_still_installs_flashinfer(fake_runtime, monkeypatch):
+    installs, listed, _ = _video_install_probe(
+        monkeypatch,
+        listing = ["Wan2.2-T2V-A14B-NVFP4.pt", "Wan2.2-T2V-A14B-transformer_2-NVFP4.pt"],
+    )
+    _video_load_to_the_install_gate()
+    assert listed == ["unsloth/Wan2.2-T2V-A14B-NVFP4"]
+    assert installs == [("cuda", False)]
+
+
+def test_with_the_nvfp4_switch_off_a_reachable_video_checkpoint_installs_nothing(
+    fake_runtime, monkeypatch
+):
+    monkeypatch.delenv("UNSLOTH_NVFP4_DIFFUSION", raising = False)
+    installs, listed, _ = _video_install_probe(
+        monkeypatch,
+        listing = ["Wan2.2-T2V-A14B-NVFP4.pt", "Wan2.2-T2V-A14B-transformer_2-NVFP4.pt"],
+    )
+    _video_load_to_the_install_gate(transformer_quant = None, _video_auto_denoiser_planned = "nvfp4")
+    assert installs == []
+    assert listed == [], "no Hub request to a *-NVFP4 repo while the switch is off"
+
+
+def test_a_video_plan_that_settled_nvfp4_installs_without_asking_the_hub_again(
+    fake_runtime, monkeypatch
+):
+    installs, listed, _ = _video_install_probe(
+        monkeypatch, refusal = RuntimeError("no request expected")
+    )
+    _video_load_to_the_install_gate(transformer_quant = None, _video_auto_denoiser_planned = "nvfp4")
+    assert listed == []
+    assert installs == [("cuda", False)]
+
+
+def test_a_video_seed_the_plan_declined_installs_no_flashinfer(fake_runtime, monkeypatch):
+    from core.inference.video import DENOISER_SEED_DECLINED
+
+    installs, listed, _ = _video_install_probe(
+        monkeypatch,
+        listing = ["Wan2.2-T2V-A14B-NVFP4.pt", "Wan2.2-T2V-A14B-transformer_2-NVFP4.pt"],
+    )
+    _video_load_to_the_install_gate(_video_auto_denoiser_planned = DENOISER_SEED_DECLINED)
+    assert installs == []
+    assert listed == []
+
+
+def test_a_video_seed_the_live_memory_plan_drops_installs_no_flashinfer(fake_runtime, monkeypatch):
+    # Live free memory short: the plan offloads and drops the capacity-settled seed, so no install.
+    installs, listed, _ = _video_install_probe(
+        monkeypatch, refusal = RuntimeError("no request expected"), free_mib = 4_000
+    )
+    monkeypatch.setattr(
+        VideoBackend,
+        "_device_target",
+        lambda self, ordinal = None: types.SimpleNamespace(
+            device = "cuda", dtype = None, ordinal = 0, supports_model_cpu_offload = True
+        ),
+    )
+    _video_load_to_the_install_gate(transformer_quant = None, _video_auto_denoiser_planned = "nvfp4")
+    assert installs == []
+    assert listed == []
+
+
+@pytest.mark.parametrize("cached", [False, True])
+def test_an_offline_nvfp4_video_load_asks_only_the_cache(fake_runtime, monkeypatch, cached):
+    installs, listed, _ = _video_install_probe(
+        monkeypatch, refusal = RuntimeError("an offline load made a Hub request"), cached = cached
+    )
+    _video_load_to_the_install_gate(local_files_only = True)
+    assert listed == []
+    assert installs == ([("cuda", True)] if cached else [])
+
+
+def _stub_h3_nvfp4_checkpoint(monkeypatch):
+    """Register a fake hosted NVFP4 MiniMax-H3 denoiser; records each lookup's task."""
+    import core.inference.diffusion_prequant as prequant_mod
+    import core.inference.video as video_mod
+
+    tasks: list = []
+
+    def _available(
+        fam,
+        scheme,
+        task = None,
+        base_repo = None,
+    ):
+        tasks.append(task)
+        return scheme == "nvfp4"
+
+    def _resolve(
+        fam,
+        scheme,
+        *,
+        path_override = None,
+        base_repo = None,
+        task = None,
+    ):
+        return types.SimpleNamespace(
+            kind = "repo",
+            location = "unsloth/MiniMax-H3-NVFP4",
+            filename = f"MiniMax-H3-{task}-NVFP4.pt",
+            fallback_filenames = (),
+        )
+
+    monkeypatch.setattr(video_mod, "video_family_prequant_available", _available)
+    monkeypatch.setattr(prequant_mod, "resolve_prequant_source", _resolve)
+    diffusers = sys.modules["diffusers"]
+    monkeypatch.setattr(diffusers, "ModularPipeline", _FakeModularPipeline, raising = False)
+    fam = _detect_load_family("MiniMaxAI/MiniMax-H3", None, "minimax-h3")
+    monkeypatch.setattr(diffusers, fam.transformer_class, _FakeTransformer, raising = False)
+    return tasks
+
+
+def test_the_minimax_h3_modular_path_skips_the_install_for_a_refused_checkpoint(
+    fake_runtime, monkeypatch
+):
+    from huggingface_hub.errors import RepositoryNotFoundError
+
+    installs, listed, dispatched = _video_install_probe(
+        monkeypatch, refusal = _hub_refusal(RepositoryNotFoundError, "unsloth/MiniMax-H3-NVFP4")
+    )
+    tasks = _stub_h3_nvfp4_checkpoint(monkeypatch)
+    _video_load_to_the_install_gate("MiniMaxAI/MiniMax-H3", family_override = "minimax-h3")
+    assert installs == []
+    assert listed == ["unsloth/MiniMax-H3-NVFP4"]
+    assert dispatched == [None], "the modular load was handed an install outcome it never earned"
+    assert "fl2va" in tasks
+
+
+def test_the_minimax_h3_modular_path_installs_for_a_reachable_checkpoint(fake_runtime, monkeypatch):
+    installs, listed, dispatched = _video_install_probe(
+        monkeypatch, listing = ["MiniMax-H3-ref2va-NVFP4.pt"]
+    )
+    _stub_h3_nvfp4_checkpoint(monkeypatch)
+    _video_load_to_the_install_gate(
+        "MiniMaxAI/MiniMax-H3", family_override = "minimax-h3", h3_task = "ref2va"
+    )
+    assert listed == ["unsloth/MiniMax-H3-NVFP4"]
+    assert installs == [("cuda", False)]
+    assert dispatched == [(True, "installed flashinfer for NVFP4")]
+
+
 @pytest.mark.parametrize("scheme", ["int8", "fp8"])
 def test_an_explicit_video_scheme_on_amd_runs_weight_only_without_forcing_compile(
     fake_runtime, monkeypatch, scheme
@@ -10746,3 +11223,953 @@ def test_video_auto_quant_still_engages_when_the_budget_is_unknown(fake_runtime,
         "Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline", speed_mode = "default"
     )
     assert calls == ["auto"]
+
+
+def _guided_ltx_call(monkeypatch, pipe):
+    """Give the fake pipeline the multimodal-guidance kwargs of LTX2Pipeline.__call__ (diffusers main)."""
+    original = type(pipe).__call__
+
+    def __call__(
+        self,
+        *,
+        stg_scale = 1.0,
+        modality_scale = 3.0,
+        guidance_rescale = 0.7,
+        audio_guidance_scale = 7.0,
+        audio_stg_scale = 1.0,
+        audio_modality_scale = 3.0,
+        audio_guidance_rescale = 0.7,
+        **kwargs,
+    ):
+        out = original(self, **kwargs)
+        self.last_kwargs.update(
+            stg_scale = stg_scale,
+            modality_scale = modality_scale,
+            guidance_rescale = guidance_rescale,
+            audio_guidance_scale = audio_guidance_scale,
+            audio_stg_scale = audio_stg_scale,
+            audio_modality_scale = audio_modality_scale,
+            audio_guidance_rescale = audio_guidance_rescale,
+        )
+        return out
+
+    __call__.__signature__ = inspect.Signature(
+        [inspect.Parameter("self", inspect.Parameter.POSITIONAL_OR_KEYWORD)]
+        + [
+            inspect.Parameter(name, inspect.Parameter.KEYWORD_ONLY, default = None)
+            for name in (
+                "prompt",
+                "negative_prompt",
+                "num_inference_steps",
+                "guidance_scale",
+                "width",
+                "height",
+                "num_frames",
+                "frame_rate",
+                "generator",
+                "sigmas",
+                "callback_on_step_end",
+                "stg_scale",
+                "modality_scale",
+                "guidance_rescale",
+                "audio_guidance_scale",
+                "audio_stg_scale",
+                "audio_modality_scale",
+                "audio_guidance_rescale",
+            )
+        ]
+    )
+    monkeypatch.setattr(type(pipe), "__call__", __call__)
+
+
+def test_generate_distilled_turns_multimodal_guidance_off(fake_runtime, tmp_path, monkeypatch):
+    # Distilled DiT: every #14447 guidance term must be off, else four DiT forwards per step.
+    backend = _load_ltx23_from_dir(tmp_path)
+    _guided_ltx_call(monkeypatch, backend._state.pipe)
+    backend.generate(prompt = "a sloth")
+    call = backend._state.pipe.last_kwargs
+    assert call["guidance_scale"] == 1.0
+    assert call["stg_scale"] == 0.0 and call["audio_stg_scale"] == 0.0
+    assert call["modality_scale"] == 1.0 and call["audio_modality_scale"] == 1.0
+    assert call["guidance_rescale"] == 0.0 and call["audio_guidance_rescale"] == 0.0
+    assert call["audio_guidance_scale"] == 1.0
+    backend.generate(prompt = "a sloth", guidance = 2.5)
+    assert backend._state.pipe.last_kwargs["audio_guidance_scale"] == 2.5
+
+
+def test_generate_dev_keeps_pipeline_guidance_defaults(fake_runtime, tmp_path, monkeypatch):
+    (tmp_path / "ltx-2.3-22b-dev-Q4_K_M.gguf").write_bytes(b"w")
+    backend = VideoBackend()
+    backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "ltx-2.3-22b-dev-Q4_K_M.gguf",
+        base_repo = "Lightricks/LTX-2",
+        family_override = "ltx-2",
+    )
+    _guided_ltx_call(monkeypatch, backend._state.pipe)
+    backend.generate(prompt = "a sloth")
+    call = backend._state.pipe.last_kwargs
+    assert call["stg_scale"] == 1.0 and call["audio_guidance_scale"] == 7.0
+
+
+def test_ltx2_distilled_guidance_kwargs_follow_the_signature():
+    from core.inference.video_ltx2 import ltx2_distilled_guidance_kwargs
+
+    assert ltx2_distilled_guidance_kwargs({"prompt": None, "guidance_scale": None}, 1.0) == {}
+    full = ltx2_distilled_guidance_kwargs(
+        {"stg_scale": 0, "modality_scale": 0, "audio_guidance_scale": 0, "guidance_rescale": 0},
+        None,
+    )
+    assert full == {
+        "stg_scale": 0.0,
+        "modality_scale": 1.0,
+        "guidance_rescale": 0.0,
+        "audio_guidance_scale": 1.0,
+    }
+
+
+def test_stg_compile_adapter_hands_the_block_a_python_bool():
+    torch = pytest.importorskip("torch")
+    if not hasattr(torch, "nn") or not hasattr(torch, "all"):
+        pytest.skip("real torch required")
+    from core.inference.video_ltx2 import install_stg_compile_adapter
+
+    seen = []
+
+    def compiled(*args, **kwargs):
+        seen.append(kwargs.get("all_perturbed"))
+        return "out"
+
+    compiled._unsloth_compile_guard = "guard"
+    block = type("LTX2VideoTransformerBlock", (torch.nn.Module,), {})()
+    block._compiled_call_impl = compiled
+    other = torch.nn.Linear(1, 1)
+    other._compiled_call_impl = compiled
+    root = torch.nn.ModuleList([block, other])
+    assert install_stg_compile_adapter(root) == 1
+    assert install_stg_compile_adapter(root) == 0  # idempotent
+    assert other._compiled_call_impl is compiled  # only LTX-2 blocks
+    wrapped = block._compiled_call_impl
+    assert wrapped._unsloth_compile_guard == "guard"  # guard_compiled_blocks stays idempotent
+    assert wrapped(all_perturbed = torch.tensor(True)) == "out"
+    assert wrapped(all_perturbed = False) == "out"
+    assert seen == [True, False] and type(seen[0]) is bool
+
+
+def test_stg_compile_adapter_drops_to_eager_past_the_recompile_limit():
+    # Past the recompile limit fullgraph raises FailOnRecompileLimitHit; the adapter routes it to eager, other errors propagate.
+    torch = pytest.importorskip("torch")
+    limit_hit = getattr(
+        getattr(getattr(torch, "_dynamo", None), "exc", None), "FailOnRecompileLimitHit", None
+    )
+    if not hasattr(torch, "nn") or not isinstance(limit_hit, type):
+        pytest.skip("real torch with FailOnRecompileLimitHit required")
+    from core.inference.diffusion_speed import compile_fallback_error, guard_compiled_blocks
+    from core.inference.video_ltx2 import install_stg_compile_adapter
+
+    raised = {"exc": limit_hit("Hard failure due to fullgraph=True")}
+
+    class LTX2VideoTransformerBlock(torch.nn.Module):
+        def forward(self, all_perturbed = False):
+            return "eager"
+
+    def compiled(*args, **kwargs):
+        raise raised["exc"]
+
+    block = LTX2VideoTransformerBlock()
+    block._compiled_call_impl = compiled
+    root = torch.nn.ModuleList([block])
+    assert guard_compiled_blocks(root) == 1
+    assert install_stg_compile_adapter(root) == 1
+    raised["exc"] = ValueError("a kernel error, not a compile failure")
+    with pytest.raises(ValueError):
+        block(all_perturbed = torch.tensor(False))
+    assert compile_fallback_error(types.SimpleNamespace(transformer = root)) is None
+    raised["exc"] = limit_hit("Hard failure due to fullgraph=True")
+    assert block(all_perturbed = torch.tensor(True)) == "eager"
+    assert "FailOnRecompileLimitHit" in compile_fallback_error(
+        types.SimpleNamespace(transformer = root)
+    )
+    assert block._compiled_call_impl is None  # the whole DiT runs eager for the rest of the load
+    assert block(all_perturbed = False) == "eager"
+
+
+def test_ltx2_recompile_limit_reaches_the_render_thread():
+    # torch >= 2.12 keeps dynamo config per thread context; the render copies the caller's context.
+    pytest.importorskip("torch")
+    try:
+        import torch._dynamo.config as dynamo_cfg
+    except Exception:  # noqa: BLE001
+        pytest.skip("real torch._dynamo required")
+    import contextvars
+
+    from core.inference.video_ltx2 import LTX2_RECOMPILE_LIMIT, ensure_recompile_limit
+
+    seen = {}
+
+    def caller():
+        ensure_recompile_limit()
+        ctx = contextvars.copy_context()
+        worker = threading.Thread(
+            target = lambda: ctx.run(lambda: seen.update(limit = dynamo_cfg.recompile_limit))
+        )
+        worker.start()
+        worker.join()
+
+    thread = threading.Thread(target = caller)
+    thread.start()
+    thread.join()
+    assert seen["limit"] >= LTX2_RECOMPILE_LIMIT
+
+
+def test_precision_gate_admits_fp8_only_for_the_ltx23_prequant_file(fake_runtime, monkeypatch):
+    # #742: explicit fp8 on the distilled file is served by the hosted DiT; other single files / schemes are still refused.
+    import core.inference.video as video_mod
+
+    monkeypatch.setattr(video_mod, "dense_transformer_supported", lambda target: True)
+    _ltx23_fp8_card(monkeypatch)
+    fam = types.SimpleNamespace(name = "ltx-2")
+    video_mod.assert_video_precision_available(
+        fam,
+        model_kind = "single_file",
+        transformer_quant = "fp8",
+        checkpoint_filename = "ltx-2.3-22b-distilled.safetensors",
+        checkpoint_repo = "Lightricks/LTX-2.3",
+    )
+    for filename, scheme in (
+        ("ltx-2.3-22b-dev.safetensors", "fp8"),
+        ("ltx-2.3-22b-distilled-1.1.safetensors", "fp8"),
+        ("ltx-2.3-22b-distilled.safetensors", "int8"),
+        (None, "fp8"),
+    ):
+        with pytest.raises(RuntimeError, match = "full-pipeline loads only"):
+            video_mod.assert_video_precision_available(
+                fam,
+                model_kind = "single_file",
+                transformer_quant = scheme,
+                checkpoint_filename = filename,
+                checkpoint_repo = "Lightricks/LTX-2.3",
+            )
+    with pytest.raises(RuntimeError, match = "offload"):
+        video_mod.assert_video_precision_available(
+            fam,
+            model_kind = "single_file",
+            transformer_quant = "fp8",
+            memory_mode = "low_vram",
+            checkpoint_filename = "ltx-2.3-22b-distilled.safetensors",
+            checkpoint_repo = "Lightricks/LTX-2.3",
+        )
+
+
+def test_ltx23_prequant_source_resolves_the_hosted_fp8_only():
+    from core.inference.diffusion_prequant import resolve_prequant_source
+    from core.inference.video_families import detect_video_family
+    from core.inference.video_ltx2 import LTX23_PREQUANT_BASE
+
+    fam = detect_video_family("Lightricks/LTX-2.3")
+    source = resolve_prequant_source(fam, "fp8", base_repo = LTX23_PREQUANT_BASE)
+    assert source is not None and source.location == "unsloth/LTX-2.3-FP8"
+    from core.inference.diffusion_prequant import candidate_filenames_of
+
+    assert "LTX-2.3-FP8.pt" in candidate_filenames_of(
+        source
+    )  # the artifact the repo actually hosts
+    assert resolve_prequant_source(fam, "int8", base_repo = LTX23_PREQUANT_BASE) is None
+    assert resolve_prequant_source(fam, "fp8", base_repo = "Lightricks/LTX-2") is None
+
+
+def _ltx23_fp8_card(monkeypatch, *, fp8 = True):
+    """The explicit fp8 scheme check on the card the load uses: sm_89+ runs fp8, Ampere (sm_80/86) only int8."""
+    from core.inference import video as video_mod
+    monkeypatch.setattr(
+        video_mod, "_ltx23_prequant_scheme_supported", lambda fam, target, pinned: fp8
+    )
+
+
+def _ltx23_official_file(monkeypatch):
+    """Stand-in 1-byte fixtures pass as the official LTX-2.3 distilled file (identity is tested on its own)."""
+    from core.inference import video_ltx2
+    monkeypatch.setattr(video_ltx2, "ltx23_source_file_verified", lambda path: True)
+
+
+def _ampere_or_hopper(monkeypatch, *, fp8):
+    """A CUDA bf16 card with the dense torchao path, whose explicit fp8 passes only on sm_89+: patched at the smoke
+    probe, under the real scheme selector, so the check under test is the one the normal precision path runs."""
+    from core.inference import diffusion_transformer_quant as tq, video as video_mod
+
+    monkeypatch.setattr(video_mod, "dense_transformer_supported", lambda target: True)
+    monkeypatch.setattr(tq, "dense_transformer_supported", lambda target: True)
+    monkeypatch.setattr(
+        tq,
+        "_scheme_supported",
+        lambda scheme, device, unproven_ok = False: scheme != "fp8" or fp8,
+    )
+    return types.SimpleNamespace(device = "cuda", dtype = "bfloat16")
+
+
+@pytest.mark.parametrize("fp8", [False, True], ids = ["sm80", "sm90"])
+def test_ltx23_hosted_fp8_seed_requires_fp8_on_the_card(fake_runtime, monkeypatch, fp8):
+    # Ampere runs torchao int8 but not fp8: the preflight must refuse before the eviction and 19 GB pull.
+    from core.inference import video as video_mod
+
+    target = _ampere_or_hopper(monkeypatch, fp8 = fp8)
+    fam = types.SimpleNamespace(name = "ltx-2")
+    name = "ltx-2.3-22b-distilled.safetensors"
+    repo = "Lightricks/LTX-2.3"
+    assert (
+        video_mod._ltx23_prequant_serves(
+            fam, "single_file", name, "fp8", target = target, memory_mode = None, checkpoint_repo = repo
+        )
+        is fp8
+    )
+    monkeypatch.setattr(video_mod, "resolve_diffusion_device_target", lambda **kw: target)
+    assert (
+        video_mod._ltx23_prequant_serves_on_card(
+            fam,
+            "single_file",
+            name,
+            "fp8",
+            memory_mode = None,
+            gpu_ordinal = None,
+            checkpoint_repo = repo,
+        )
+        is fp8
+    )
+    kwargs = dict(
+        model_kind = "single_file",
+        transformer_quant = "fp8",
+        checkpoint_filename = name,
+        checkpoint_repo = repo,
+    )
+    if fp8:
+        video_mod.assert_video_precision_available(fam, **kwargs)
+    else:
+        with pytest.raises(RuntimeError, match = "fp8"):
+            video_mod.assert_video_precision_available(fam, **kwargs)
+
+
+def _ltx23_verdict_store(monkeypatch, tmp_path):
+    """Point the persisted LTX-2.3 identity verdicts at a per-test file and count full hashes."""
+    from core.inference import video_ltx2
+
+    store = tmp_path / "verdicts" / "ltx23-source-verdicts.json"
+    monkeypatch.setattr(video_ltx2, "_ltx23_verdicts_path", lambda: store)
+    hashed: list = []
+    real_hash = video_ltx2.ltx23_source_sha256
+
+    def _counting(path):
+        hashed.append(str(path))
+        return real_hash(path)
+
+    monkeypatch.setattr(video_ltx2, "ltx23_source_sha256", _counting)
+    return store, hashed
+
+
+def _ltx23_synthetic_official(monkeypatch, path):
+    """Write a small safetensors-shaped file at *path* and pin the official identity (size and sha256) to it, so the
+    real check runs against bytes the test controls. Returns (size, the four 1 MiB windows a sampled check read)."""
+    import hashlib
+
+    from core.inference import video_ltx2
+
+    header = b'{"__metadata__":{"model_version":"2.3.0"}}'
+    blob = len(header).to_bytes(8, "little") + header + bytes(range(256)) * (4096 * 6)
+    path.write_bytes(blob)
+    sample = 1 << 20
+    data = 8 + len(header)
+    offsets = [data + (len(blob) - data) * k // 4 for k in (1, 2, 3)] + [len(blob) - sample]
+    monkeypatch.setattr(video_ltx2, "LTX23_PREQUANT_SOURCE_SIZE", len(blob))
+    monkeypatch.setattr(
+        video_ltx2, "LTX23_PREQUANT_SOURCE_SHA256", hashlib.sha256(blob).hexdigest()
+    )
+    return len(blob), offsets
+
+
+def test_ltx23_local_file_is_substituted_only_when_it_is_the_official_one(tmp_path, monkeypatch):
+    from core.inference import video_ltx2
+
+    _ltx23_verdict_store(monkeypatch, tmp_path)
+    name = "ltx-2.3-22b-distilled.safetensors"
+    official = tmp_path / "official"
+    official.mkdir()
+    size, offsets = _ltx23_synthetic_official(monkeypatch, official / name)
+    assert video_ltx2.ltx23_prequant_eligible(name, str(official))
+    assert video_ltx2.ltx23_prequant_eligible(name, str(official / name))
+    # One tensor byte changed, inside and outside any sampled window: not served.
+    outside = offsets[0] - 4096
+    assert all(not (off <= outside < off + (1 << 20)) for off in offsets)
+    for where in (offsets[1] + 7, outside, 12):
+        tuned = tmp_path / f"tuned_{where}"
+        tuned.mkdir()
+        blob = bytearray((official / name).read_bytes())
+        blob[where] ^= 0xFF
+        (tuned / name).write_bytes(bytes(blob))
+        assert not video_ltx2.ltx23_prequant_eligible(name, str(tuned)), where
+        assert not video_ltx2.ltx23_source_file_verified(tuned / name), where
+    short = tmp_path / "short"
+    short.mkdir()
+    (short / name).write_bytes(b"w")
+    assert not video_ltx2.ltx23_prequant_eligible(name, str(short))
+    assert not video_ltx2.ltx23_prequant_eligible(name, str(tmp_path / "missing"))
+    assert size == video_ltx2.LTX23_PREQUANT_SOURCE_SIZE
+
+
+def test_ltx23_local_verdict_is_hashed_once_and_invalidated_by_a_change(tmp_path, monkeypatch):
+    import os
+
+    from core.inference import video_ltx2
+
+    store, hashed = _ltx23_verdict_store(monkeypatch, tmp_path)
+    name = "ltx-2.3-22b-distilled.safetensors"
+    path = tmp_path / name
+    _ltx23_synthetic_official(monkeypatch, path)
+    assert video_ltx2.ltx23_source_file_verified(path)
+    assert video_ltx2.ltx23_source_file_verified(path)
+    assert len(hashed) == 1 and store.is_file()
+    blob = bytearray(path.read_bytes())
+    blob[-3] ^= 0xFF
+    stat = path.stat()
+    path.write_bytes(bytes(blob))
+    os.utime(path, ns = (stat.st_atime_ns, stat.st_mtime_ns + 1_000_000_000))
+    assert not video_ltx2.ltx23_source_file_verified(path)
+    assert not video_ltx2.ltx23_source_file_verified(path)
+    assert len(hashed) == 2
+    # Planning never hashes.
+    other = tmp_path / "other" / name
+    other.parent.mkdir()
+    other.write_bytes(bytes(blob))
+    with video_ltx2.ltx23_identity_without_hashing():
+        assert not video_ltx2.ltx23_source_file_verified(path)
+        assert video_ltx2.ltx23_source_file_verified(other)
+    assert len(hashed) == 2
+
+    def _unreadable(p):
+        raise OSError("EIO")
+
+    monkeypatch.setattr(video_ltx2, "ltx23_source_sha256", _unreadable)
+    assert not video_ltx2.ltx23_source_file_verified(other)
+    assert str(other.resolve()) not in video_ltx2._ltx23_read_verdicts()
+
+
+def test_ltx23_hub_pick_is_substituted_only_from_the_official_repo(tmp_path, monkeypatch):
+    from core.inference import video_ltx2
+
+    name = "ltx-2.3-22b-distilled.safetensors"
+    cached: dict = {"hit": None}
+    monkeypatch.setattr(video_ltx2, "_ltx23_hub_cached_file", lambda repo, filename: cached["hit"])
+    assert video_ltx2.ltx23_prequant_eligible(name, "Lightricks/LTX-2.3")
+    assert video_ltx2.ltx23_prequant_eligible(f"sub/{name}", "lightricks/ltx-2.3")
+    for repo in ("someone/LTX-2.3-finetune", "unsloth/LTX-2.3-GGUF", "Lightricks/LTX-2"):
+        assert not video_ltx2.ltx23_prequant_eligible(name, repo), repo
+    assert not video_ltx2.ltx23_prequant_eligible(name, None)
+    assert not video_ltx2.ltx23_prequant_eligible(
+        "ltx-2.3-22b-dev.safetensors", "Lightricks/LTX-2.3"
+    )
+    # Cached: an official-size content-addressed blob is the file, no hashing.
+    _, hashed = _ltx23_verdict_store(monkeypatch, tmp_path)
+    blobs = tmp_path / "models--Lightricks--LTX-2.3" / "blobs"
+    blobs.mkdir(parents = True)
+    import hub.utils.hf_cache_state as hf_cache_state
+
+    monkeypatch.setattr(hf_cache_state, "hf_cache_roots", lambda *a, **k: [tmp_path])
+    good = blobs / video_ltx2.LTX23_PREQUANT_SOURCE_SHA256
+    with open(good, "wb") as fh:
+        fh.truncate(video_ltx2.LTX23_PREQUANT_SOURCE_SIZE)  # sparse
+    snap = tmp_path / "snap"
+    snap.mkdir()
+    (snap / name).symlink_to(good)
+    cached["hit"] = snap / name
+    assert video_ltx2.ltx23_source_file_verified(snap / name)
+    assert hashed == []
+    assert video_ltx2.ltx23_prequant_eligible(name, "Lightricks/LTX-2.3")
+    # A digest-named file outside the official repo's cache blobs is hashed like any local file.
+    elsewhere = tmp_path / "mine" / "models--Lightricks--LTX-2.3" / "blobs"
+    elsewhere.mkdir(parents = True)
+    fake = elsewhere / video_ltx2.LTX23_PREQUANT_SOURCE_SHA256
+    with open(fake, "wb") as fh:
+        fh.truncate(video_ltx2.LTX23_PREQUANT_SOURCE_SIZE)
+    (snap / name).unlink()
+    (snap / name).symlink_to(fake)
+    monkeypatch.setattr(
+        video_ltx2, "ltx23_source_sha256", lambda path: hashed.append(path) or "1" * 64
+    )
+    assert not video_ltx2.ltx23_source_file_verified(snap / name)
+    assert hashed
+    (snap / name).unlink()
+    (snap / name).symlink_to(good)
+    bad = blobs / ("0" * 64)
+    with open(bad, "wb") as fh:
+        fh.truncate(video_ltx2.LTX23_PREQUANT_SOURCE_SIZE)  # right size, wrong content (zeros)
+    (snap / name).unlink()
+    (snap / name).symlink_to(bad)
+    monkeypatch.setattr(video_ltx2, "ltx23_source_sha256", lambda path: "0" * 64)
+    assert not video_ltx2.ltx23_prequant_eligible(name, "Lightricks/LTX-2.3")
+
+
+def test_ltx23_unverified_same_name_pick_is_refused_not_substituted(
+    fake_runtime, tmp_path, monkeypatch
+):
+    from core.inference import video as video_mod, video_ltx2
+
+    target = _ampere_or_hopper(monkeypatch, fp8 = True)
+    monkeypatch.setattr(video_mod, "resolve_diffusion_device_target", lambda **kw: target)
+    monkeypatch.setattr(video_ltx2, "_ltx23_hub_cached_file", lambda repo, filename: None)
+    fam = types.SimpleNamespace(name = "ltx-2")
+    name = "ltx-2.3-22b-distilled.safetensors"
+    local = tmp_path / "local"
+    local.mkdir()
+    (local / name).write_bytes(b"a fine-tuned DiT under the official name")
+
+    def _check(repo):
+        video_mod.assert_video_precision_available(
+            fam,
+            model_kind = "single_file",
+            transformer_quant = "fp8",
+            checkpoint_filename = name,
+            checkpoint_repo = repo,
+        )
+
+    def _serves(repo):
+        return video_mod._ltx23_prequant_serves(
+            fam, "single_file", name, "fp8", target = target, memory_mode = None, checkpoint_repo = repo
+        )
+
+    _check("Lightricks/LTX-2.3")
+    assert _serves("Lightricks/LTX-2.3")
+    for repo in (str(local), "someone/LTX-2.3-finetune"):
+        assert not _serves(repo), repo
+        with pytest.raises(RuntimeError, match = "could not be verified"):
+            _check(repo)
+
+
+def test_ltx23_prequant_loader_keeps_an_unverified_files_own_dit(tmp_path, monkeypatch):
+    from core.inference import diffusion_prequant, video_ltx2
+
+    resolved: list = []
+    monkeypatch.setattr(
+        diffusion_prequant, "resolve_prequant_source", lambda *a, **k: resolved.append(1)
+    )
+    path = tmp_path / "ltx-2.3-22b-distilled.safetensors"
+    path.write_bytes(b"w")
+    fam = types.SimpleNamespace(name = "ltx-2")
+    assert (
+        video_ltx2.load_ltx23_prequant_transformer(
+            fam, "fp8", path, config_repo = "Lightricks/LTX-2", device = "cuda", dtype = None
+        )
+        is None
+    )
+    assert resolved == []
+
+
+def _load_ltx23_single_file_fp8(
+    tmp_path,
+    monkeypatch,
+    seeded,
+    memory_mode = None,
+):
+    from core.inference import video as video_mod, video_ltx2
+
+    monkeypatch.setattr(video_mod, "dense_transformer_supported", lambda target: True)
+    _ltx23_fp8_card(monkeypatch)
+    monkeypatch.setattr(video_ltx2, "is_ltx23_checkpoint", lambda path: True)
+    _ltx23_official_file(monkeypatch)
+    calls: dict = {}
+
+    def _prequant(fam, scheme, checkpoint_path, **kwargs):
+        calls["prequant"] = (scheme, str(checkpoint_path), kwargs.get("config_repo"))
+        return seeded
+
+    def _assemble(checkpoint_path, **kwargs):
+        calls["override"] = kwargs.get("transformer_override")
+        return _FakePipeline.from_pretrained("Lightricks/LTX-2")
+
+    monkeypatch.setattr(video_ltx2, "load_ltx23_prequant_transformer", _prequant)
+    monkeypatch.setattr(video_ltx2, "load_ltx23_pipeline", _assemble)
+    (tmp_path / "ltx-2.3-22b-distilled.safetensors").write_bytes(b"w")
+    backend = VideoBackend()
+    backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "ltx-2.3-22b-distilled.safetensors",
+        base_repo = "Lightricks/LTX-2",
+        family_override = "ltx-2",
+        transformer_quant = "fp8",
+        memory_mode = memory_mode,
+    )
+    return backend, calls
+
+
+def test_ltx23_single_file_fp8_seeds_the_hosted_denoiser(fake_runtime, tmp_path, monkeypatch):
+    seeded_dit = object()
+    source = types.SimpleNamespace(
+        location = "unsloth/LTX-2.3-FP8", kind = "repo", filename = "LTX-2.3-FP8.pt"
+    )
+    backend, calls = _load_ltx23_single_file_fp8(tmp_path, monkeypatch, (seeded_dit, source))
+    assert calls["prequant"][0] == "fp8" and calls["prequant"][2] == "Lightricks/LTX-2"
+    assert calls["override"] is seeded_dit
+    status = backend.status()
+    assert status["transformer_quant"] == "fp8"
+    assert "unsloth/LTX-2.3-FP8" in str(status["resolved"]["transformer_quant"])
+    backend.unload()
+
+
+def test_ltx23_single_file_fp8_without_a_checkpoint_is_refused(fake_runtime, tmp_path, monkeypatch):
+    # Refused before the dense assembly loads the 44 GB bf16 DiT.
+    from core.inference import video_ltx2
+
+    assembled = []
+    monkeypatch.setattr(
+        video_ltx2, "load_ltx23_pipeline", lambda *a, **k: assembled.append(1), raising = False
+    )
+    with pytest.raises(RuntimeError, match = "unsloth/LTX-2.3-FP8"):
+        _load_ltx23_single_file_fp8(tmp_path, monkeypatch, None)
+
+
+def test_ltx23_hosted_fp8_fallback_rechecks_unified_memory(fake_runtime, tmp_path, monkeypatch):
+    from core.inference import video as video_mod
+
+    priced = _ltx23_fp8_plan_at(monkeypatch, fits_mib = 10**9)
+    checked: list = []
+    monkeypatch.setattr(
+        video_mod,
+        "raise_on_unified_memory_shortfall",
+        lambda plan, **k: checked.append(len(priced)),
+    )
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_ALLOW_PRECISION_FALLBACK", "1")
+    backend, calls = _load_ltx23_single_file_fp8(tmp_path, monkeypatch, None)
+    assert calls["override"] is None
+    assert priced[-1] > priced[0]
+    assert checked and checked[-1] == len(priced)
+    backend.unload()
+
+
+def _ltx23_fp8_plan_at(monkeypatch, fits_mib):
+    """A card where a DiT priced above ``fits_mib`` (the plan's model size less its companions) offloads; returns the
+    DiT sizes the plans were priced at."""
+    import dataclasses
+
+    from core.inference import video as video_mod
+
+    monkeypatch.setattr(video_mod, "estimate_safetensors_dense_mib", lambda size_mib: 44_000)
+    real_plan = video_mod.plan_diffusion_memory
+    priced: list = []
+
+    def _plan(**kwargs):
+        planned = real_plan(**kwargs)
+        dit_mib = (kwargs.get("model_dense_mib") or 0) - (kwargs.get("companion_dense_mib") or 0)
+        priced.append(dit_mib)
+        if dit_mib > fits_mib:
+            return dataclasses.replace(planned, offload_policy = "model")
+        return dataclasses.replace(planned, offload_policy = "none")
+
+    monkeypatch.setattr(video_mod, "plan_diffusion_memory", _plan)
+    return priced
+
+
+def test_ltx23_single_file_fp8_is_planned_at_the_hosted_dit_size(
+    fake_runtime, tmp_path, monkeypatch
+):
+    priced = _ltx23_fp8_plan_at(monkeypatch, fits_mib = 30_000)
+    seeded_dit = object()
+    source = types.SimpleNamespace(
+        location = "unsloth/LTX-2.3-FP8", kind = "repo", filename = "LTX-2.3-FP8.pt"
+    )
+    backend, calls = _load_ltx23_single_file_fp8(tmp_path, monkeypatch, (seeded_dit, source))
+    assert calls["override"] is seeded_dit
+    assert priced and all(mib < 30_000 for mib in priced)
+    assert backend.status()["transformer_quant"] == "fp8"
+    backend.unload()
+
+
+def test_ltx23_single_file_fp8_is_priced_at_the_hosted_artifact_not_the_scaled_file(
+    fake_runtime, tmp_path, monkeypatch
+):
+    # Priced at the hosted DiT (~18,175 MiB), not file x fp8 factor (~24,200 MiB): budget between the two.
+    priced = _ltx23_fp8_plan_at(monkeypatch, fits_mib = 20_000)
+    seeded_dit = object()
+    source = types.SimpleNamespace(
+        location = "unsloth/LTX-2.3-FP8", kind = "repo", filename = "LTX-2.3-FP8.pt"
+    )
+    backend, calls = _load_ltx23_single_file_fp8(tmp_path, monkeypatch, (seeded_dit, source))
+    assert calls["override"] is seeded_dit
+    assert priced and all(18_000 < mib < 20_000 for mib in priced), priced
+    backend.unload()
+
+
+def test_ltx23_single_file_fp8_just_under_the_hosted_artifact_still_offloads(
+    fake_runtime, tmp_path, monkeypatch
+):
+    _ltx23_fp8_plan_at(monkeypatch, fits_mib = 18_000)
+    with pytest.raises(RuntimeError, match = "offloads the DiT even at fp8 size"):
+        _load_ltx23_single_file_fp8(tmp_path, monkeypatch, (object(), None))
+
+
+def test_ltx23_single_file_fp8_that_still_offloads_is_refused_before_the_assembly(
+    fake_runtime, tmp_path, monkeypatch
+):
+    _ltx23_fp8_plan_at(monkeypatch, fits_mib = 1_000)
+    with pytest.raises(RuntimeError, match = "offloads the DiT even at fp8 size"):
+        _load_ltx23_single_file_fp8(tmp_path, monkeypatch, (object(), None))
+
+
+def test_ltx2_distilled_detection_follows_the_selected_checkpoint():
+    # The selected file decides before its repo / folder.
+    from core.inference.video_families import default_video_generation_params
+    from core.inference.video_ltx2 import ltx2_distilled_ids
+
+    cases = [
+        (("ltx-2.3-22b-distilled.safetensors", "Lightricks/LTX-2.3", "Lightricks/LTX-2"), True),
+        (
+            ("distilled-1.1/ltx-2.3-22b-distilled-1.1-Q4_K_M.gguf", "unsloth/LTX-2.3-GGUF", None),
+            True,
+        ),
+        ((None, "someone/LTX-2.3-distilled-diffusers", None), True),
+        (("model.safetensors", "/models/ltx-2.3-distilled", "Lightricks/LTX-2"), True),
+        (
+            ("ltx-2.3-22b-dev.safetensors", "/models/ltx-2.3-distilled-mirror", "Lightricks/LTX-2"),
+            False,
+        ),
+        (("ltx-2.3-22b-dev-Q4_K_M.gguf", "me/ltx-distilled-and-dev", None), False),
+        ((None, "Lightricks/LTX-2", None), False),
+        (("ltx-2-19b-undistilled.safetensors", "org/ltx", None), False),
+    ]
+    for ids, distilled in cases:
+        assert ltx2_distilled_ids(*ids) is distilled, ids
+        assert (default_video_generation_params(*ids) == (8, 1.0)) is distilled, ids
+
+
+def test_download_plan_stages_the_hosted_fp8_dit_for_the_ltx23_distilled_single_file(monkeypatch):
+    # The hosted DiT's repo is staged by the plan, not pulled inline by the load.
+    _plan_api(
+        monkeypatch,
+        {
+            "Lightricks/LTX-2.3": [
+                _PlanSibling("ltx-2.3-22b-distilled.safetensors", 46_000_000_000),
+                _PlanSibling("ltx-2.3-22b-dev.safetensors", 46_000_000_000),
+            ],
+            "unsloth/LTX-2.3-GGUF": _LTX23_REPO_SIBLINGS,
+            "unsloth/LTX-2.3-FP8": [
+                _PlanSibling("LTX-2.3-FP8.pt", 19_057_628_489),
+                _PlanSibling("LTX-2.3-INT8.pt", 19_000_000_000),
+            ],
+            "Lightricks/LTX-2": _LTX_BASE_SIBLINGS,
+        },
+    )
+    from core.inference import video as video_mod
+
+    supported = [True]
+    monkeypatch.setattr(video_mod, "dense_transformer_supported", lambda target: supported[0])
+    _ltx23_fp8_card(monkeypatch)
+
+    def _plan(
+        filename,
+        quant,
+        memory_mode = None,
+    ):
+        return VideoBackend().download_plan(
+            "Lightricks/LTX-2.3",
+            gguf_filename = filename,
+            family_override = "ltx-2",
+            transformer_quant = quant,
+            memory_mode = memory_mode,
+        )
+
+    by_repo = {
+        e["repo_id"]: e for e in _plan("ltx-2.3-22b-distilled.safetensors", "fp8")["entries"]
+    }
+    assert by_repo["unsloth/LTX-2.3-FP8"]["files"] == ["LTX-2.3-FP8.pt"]
+    assert "ltx-2.3-22b-distilled.safetensors" in by_repo["Lightricks/LTX-2.3"]["files"]
+    for filename, quant in (
+        ("ltx-2.3-22b-distilled.safetensors", None),
+        ("ltx-2.3-22b-distilled.safetensors", "off"),
+        ("ltx-2.3-22b-dev.safetensors", "fp8"),
+    ):
+        repos = {e["repo_id"] for e in _plan(filename, quant)["entries"]}
+        assert "unsloth/LTX-2.3-FP8" not in repos, (filename, quant)
+    for memory_mode in ("balanced", "low_vram"):
+        repos = {
+            e["repo_id"]
+            for e in _plan("ltx-2.3-22b-distilled.safetensors", "fp8", memory_mode)["entries"]
+        }
+        assert "unsloth/LTX-2.3-FP8" not in repos, memory_mode
+    supported[0] = False
+    repos = {e["repo_id"] for e in _plan("ltx-2.3-22b-distilled.safetensors", "fp8")["entries"]}
+    assert "unsloth/LTX-2.3-FP8" not in repos
+
+
+@pytest.mark.parametrize("fp8", [False, True], ids = ["sm80", "sm90"])
+def test_download_plan_stages_the_hosted_fp8_dit_only_on_an_fp8_card(monkeypatch, fp8):
+    _plan_api(
+        monkeypatch,
+        {
+            "Lightricks/LTX-2.3": [
+                _PlanSibling("ltx-2.3-22b-distilled.safetensors", 46_149_345_038)
+            ],
+            "unsloth/LTX-2.3-GGUF": _LTX23_REPO_SIBLINGS,
+            "unsloth/LTX-2.3-FP8": [_PlanSibling("LTX-2.3-FP8.pt", 19_057_628_489)],
+            "Lightricks/LTX-2": _LTX_BASE_SIBLINGS,
+        },
+    )
+    _ampere_or_hopper(monkeypatch, fp8 = fp8)
+    plan = VideoBackend().download_plan(
+        "Lightricks/LTX-2.3",
+        gguf_filename = "ltx-2.3-22b-distilled.safetensors",
+        family_override = "ltx-2",
+        transformer_quant = "fp8",
+    )
+    assert ("unsloth/LTX-2.3-FP8" in {e["repo_id"] for e in plan["entries"]}) is fp8
+
+
+class _StopAfterPrefetch(Exception):
+    pass
+
+
+def test_the_ltx23_fp8_load_prefetches_the_hosted_dit_under_its_cancel_event(tmp_path, monkeypatch):
+    from core.inference import video as video_mod, video_ltx2
+
+    (tmp_path / "ltx-2.3-22b-distilled.safetensors").write_bytes(b"w")
+    backend = VideoBackend()
+    fetched: list = []
+
+    def _fetch(
+        sources,
+        hf_token,
+        *,
+        cancel_event = None,
+        local_files_only = False,
+    ):
+        fetched.append(([src.location for src in sources], cancel_event, local_files_only))
+
+    def _stop(*_a, **_k):
+        raise _StopAfterPrefetch()
+
+    monkeypatch.setattr(video_ltx2, "is_ltx23_checkpoint", lambda path: True)
+    _ltx23_official_file(monkeypatch)
+    supported = [True]
+    monkeypatch.setattr(video_mod, "dense_transformer_supported", lambda target: supported[0])
+    _ltx23_fp8_card(monkeypatch)
+    monkeypatch.setattr(backend, "_fetch_denoiser_prequant", _fetch)
+    monkeypatch.setattr(backend, "_estimate_download_bytes", lambda *a, **k: None)
+    monkeypatch.setattr(backend, "_predownload_base", _stop)
+    monkeypatch.setattr(video_mod, "clear_gpu_cache", lambda: None)
+    cancel = threading.Event()
+    backend._load_token = 7
+    backend._loading = types.SimpleNamespace(asset_repos = (), base_repo = None, expected_bytes = None)
+    backend._run_load(
+        repo_id = str(tmp_path),
+        gguf_filename = "ltx-2.3-22b-distilled.safetensors",
+        family_override = "ltx-2",
+        transformer_quant = "fp8",
+        local_files_only = True,
+        _load_token = 7,
+        _cancel_event = cancel,
+    )
+    assert fetched == [(["unsloth/LTX-2.3-FP8"], cancel, True)]
+    fetched.clear()
+    backend._load_token = 8
+    backend._run_load(
+        repo_id = str(tmp_path),
+        gguf_filename = "ltx-2.3-22b-distilled.safetensors",
+        family_override = "ltx-2",
+        local_files_only = True,
+        _load_token = 8,
+        _cancel_event = cancel,
+    )
+    assert fetched == []
+    for token, memory_mode, card_ok in (
+        (9, "balanced", True),
+        (10, "low_vram", True),
+        (11, None, False),
+    ):
+        supported[0] = card_ok
+        backend._load_token = token
+        backend._run_load(
+            repo_id = str(tmp_path),
+            gguf_filename = "ltx-2.3-22b-distilled.safetensors",
+            family_override = "ltx-2",
+            transformer_quant = "fp8",
+            memory_mode = memory_mode,
+            local_files_only = True,
+            _load_token = token,
+            _cancel_event = cancel,
+        )
+        assert fetched == [], (memory_mode, card_ok)
+
+
+def test_ltx23_fp8_under_a_forced_offload_prices_and_loads_the_bf16_dit(
+    fake_runtime, tmp_path, monkeypatch
+):
+    # balanced offloads regardless of size, so fallback runs bf16 and never seeds.
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_ALLOW_PRECISION_FALLBACK", "1")
+    priced = _ltx23_fp8_plan_at(monkeypatch, fits_mib = 100_000)
+    backend, calls = _load_ltx23_single_file_fp8(
+        tmp_path, monkeypatch, (object(), None), memory_mode = "balanced"
+    )
+    assert "prequant" not in calls and calls["override"] is None
+    assert priced and all(mib >= 40_000 for mib in priced)
+    backend.unload()
+
+
+def test_ltx23_selective_read_skips_the_dit(tmp_path):
+    torch = pytest.importorskip("torch")
+    safetensors_torch = pytest.importorskip("safetensors.torch")
+    if not hasattr(torch, "zeros"):
+        pytest.skip("real torch required")
+    from core.inference.video_ltx2 import _load_checkpoint_without_dit, _split_checkpoint
+
+    state = {
+        "model.diffusion_model.transformer_blocks.0.attn1.to_q.weight": torch.zeros(2, 2),
+        "model.diffusion_model.video_embeddings_connector.x": torch.ones(1),
+        "vae.decoder.conv_in.weight": torch.ones(2),
+        "audio_vae.decoder.w": torch.ones(3),
+        "vocoder.w": torch.ones(4),
+    }
+    path = tmp_path / "ltx.safetensors"
+    safetensors_torch.save_file(state, str(path))
+    partial = _load_checkpoint_without_dit(path)
+    assert "model.diffusion_model.transformer_blocks.0.attn1.to_q.weight" not in partial
+    groups = _split_checkpoint(partial)
+    assert groups["dit"] == {} and set(groups["connectors"]) == {"video_embeddings_connector.x"}
+    assert list(groups["vae"]) == ["decoder.conv_in.weight"] and list(groups["vocoder"]) == ["w"]
+    assert _load_checkpoint_without_dit(tmp_path / "ltx.gguf") is None
+
+
+def test_ltx2_regional_compile_is_static(fake_runtime, tmp_path, monkeypatch):
+    from core.inference.diffusion_speed import compile_dynamic
+
+    dit = types.SimpleNamespace()
+    monkeypatch.setattr(_FakePipe, "transformer", dit, raising = False)
+    _load_ltx23_from_dir(tmp_path)
+    assert getattr(dit, "_unsloth_compile_static", False) is True
+    assert compile_dynamic(dit, True) is False
+    assert compile_dynamic(types.SimpleNamespace(), True) is True
+
+
+def test_ltx2_compiled_load_installs_the_stg_adapter(fake_runtime, tmp_path, monkeypatch):
+    from core.inference import video as video_mod, video_ltx2
+
+    dit = types.SimpleNamespace()
+    monkeypatch.setattr(_FakePipe, "transformer", dit, raising = False)
+    adapted = []
+    monkeypatch.setattr(video_ltx2, "install_stg_compile_adapter", lambda t: adapted.append(t) or 0)
+    for compiled, expected in ((True, [dit]), (False, [])):
+        adapted.clear()
+        monkeypatch.setattr(
+            video_mod, "apply_speed_optims", lambda *a, _c = compiled, **k: {"compiled": _c}
+        )
+        _load_ltx23_from_dir(tmp_path)
+        assert adapted == expected
+
+
+def test_ltx2_load_turns_cudnn_benchmark_back_off(fake_runtime, tmp_path, monkeypatch):
+    from core.inference import video as video_mod, video_ltx2
+
+    monkeypatch.setattr(
+        video_mod,
+        "apply_speed_optims",
+        lambda *a, **k: {"cudnn_benchmark": True, "compiled": False},
+    )
+    calls = []
+    monkeypatch.setattr(video_ltx2, "disable_cudnn_benchmark", lambda: calls.append(1) or True)
+    backend = _load_ltx23_from_dir(tmp_path)
+    assert calls == [1]
+    assert "cudnn_benchmark" not in backend.status()["speed_optims"]

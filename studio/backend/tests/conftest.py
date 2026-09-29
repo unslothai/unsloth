@@ -120,6 +120,19 @@ _skills_home_counter = itertools.count()
 
 
 @pytest.fixture(autouse = True)
+def _no_real_mxc_drive_aliases(monkeypatch):
+    # A Windows test host would otherwise map real drive letters; test_mxc_drive_alias.py and the native
+    # MXC tests opt back in.
+    monkeypatch.setenv("UNSLOTH_MXC_DRIVE_ALIAS", "0")
+
+
+@pytest.fixture(autouse = True)
+def _no_restricted_region_defaults(monkeypatch):
+    # A host where Hugging Face is restricted would otherwise default the model source to ModelScope.
+    monkeypatch.setenv("UNSLOTH_MIRROR_FALLBACK", "0")
+
+
+@pytest.fixture(autouse = True)
 def _isolate_agent_skills(_skills_home_root, monkeypatch):
     # A developer's own ~/.agents or ~/.claude skills must not leak into tool-selection tests.
     from core.inference import skills as _skills
@@ -155,6 +168,23 @@ def _contain_installer_venv_root(tmp_path_factory, monkeypatch):
     from installer_venv_root import contain_installer_venv_root
 
     contain_installer_venv_root(monkeypatch, tmp_path_factory)
+
+
+@pytest.fixture(autouse = True)
+def _reset_gpu_query_cache():
+    # Only when already imported: importing utils.hardware would change import-order tests.
+    def _reset():
+        gpu_query = sys.modules.get("utils.hardware.gpu_query")
+        if gpu_query is not None:
+            gpu_query.reset()
+        hw = sys.modules.get("utils.hardware.hardware")
+        if hw is not None and hasattr(hw, "_last_good_visible_info"):
+            with hw._last_good_visible_lock:
+                hw._last_good_visible_info.clear()
+
+    _reset()
+    yield
+    _reset()
 
 
 @pytest.fixture(autouse = True)
@@ -422,6 +452,15 @@ def _hf_cache_is_empty(_empty_hf_hub_cache, monkeypatch):
     except Exception:  # optional deps absent on some CI legs
         return
     monkeypatch.setattr(constants, "HF_HUB_CACHE", _empty_hf_hub_cache)
+
+
+@pytest.fixture(autouse = True)
+def _no_live_metal_wired_ceiling(monkeypatch):
+    """Keep Metal context verdicts off the host's live GPU memory."""
+    from core.inference.llama_cpp import LlamaCppBackend
+    monkeypatch.setattr(
+        LlamaCppBackend, "_apple_metal_wired_ceiling_bytes", staticmethod(lambda: 0)
+    )
 
 
 @pytest.fixture(autouse = True)
@@ -1249,6 +1288,7 @@ _NVFP4_ENABLED_TEST_MODULES = frozenset(
         "test_diffusion_backend",
         "test_diffusion_inference_info",
         "test_diffusion_lora",
+        "test_diffusion_more_families",
         "test_diffusion_native_quant",
         "test_diffusion_pipeline_prequant",
         "test_diffusion_precision",

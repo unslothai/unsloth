@@ -43,7 +43,7 @@ from hub.utils.dataset_cache import (
 from hub.utils.dataset_cache import refuse_unauthorized_dataset_preview
 from hub.utils import download_registry
 from hub.utils.dataset_format import check_dataset_format, format_dataset_preview
-from hub.utils.hf_errors import hf_error_status
+from hub.utils.hf_errors import hf_error_status, modelscope_missing
 from hub.utils.paths import (
     is_valid_repo_id as _is_valid_repo_id,
     normalize_path,
@@ -589,7 +589,9 @@ def check_format_response(
     except HTTPException:
         raise
     except Exception as e:
-        scrubbed = download_registry.scrub_secrets(str(e), hf_token = hf_token)
+        scrubbed = modelscope_missing(e, request.dataset_name) or download_registry.scrub_secrets(
+            str(e), hf_token = hf_token
+        )
         # Missing/gated/bad-token and malformed names are client errors, not 500s.
         status = hf_error_status(e)
         if (

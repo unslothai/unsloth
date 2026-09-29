@@ -66,7 +66,7 @@ studio = [
     "frontend/*.yaml",
     "frontend/.git*",
     "backend/requirements/**/*",
-    # Vendored truststore files.
+    # Vendored truststore and laya files.
     "backend/vendor/**/*",
     "backend/integrations/blender/*.py",
     "backend/plugins/**/*",
@@ -75,6 +75,8 @@ studio = [
     # Swagger UI / ReDoc, served from this origin instead of a CDN. Without these the
     # /docs and /redoc pages render blank in an installed Unsloth.
     "backend/assets/docs_ui/*",
+    # Gate verdicts the auto ladder reads: missing from the wheel, nvfp4 silently leaves the ladder.
+    "backend/core/inference/nvfp4_gate_record.json",
     "backend/core/data_recipe/oxc-validator/*.json",
     "backend/core/data_recipe/oxc-validator/*.mjs",
     "backend/core/inference/bundled_skills/**/*.md",
@@ -216,9 +218,9 @@ huggingfacenotorch = [
     # release to export `grpo_vision_chunks`, which both vision GRPO logprob paths in
     # unsloth/models/rl_replacements.py refuse to run without.
     #
-    # pip intersects these ranges with unsloth_zoo's: 2026.9.7 carries the trl and transformers
-    # ceilings but still says `datasets<4.4.0`. The floor never leads a published release.
-    "unsloth_zoo>=2026.9.7",
+    # pip intersects these ranges with unsloth_zoo's: 2026.9.8 is the first release carrying
+    # the trl, transformers and datasets ceilings below. The floor never leads a published release.
+    "unsloth_zoo>=2026.9.8",
     "wheel>=0.42.0",
     "packaging",
     "numpy",
@@ -291,7 +293,7 @@ audio-torch280 = [
 ]
 huggingface = [
     "unsloth[huggingfacenotorch]",
-    "unsloth_zoo>=2026.9.7",
+    "unsloth_zoo>=2026.9.8",
     "torchvision",
     "unsloth[triton]",
 ]
@@ -910,7 +912,7 @@ colab-ampere-torch220 = [
     "flash-attn>=2.6.3 ; ('linux' in sys_platform)",
 ]
 colab-new = [
-    "unsloth_zoo>=2026.9.7",
+    "unsloth_zoo>=2026.9.8",
     "packaging",
     "tyro",
     "transformers>=4.52.4,!=4.53.0,!=4.54.0,!=4.55.0,!=4.55.1,!=4.57.0,!=4.57.4,!=4.57.5,!=5.0.0,!=5.1.0,<=5.17.0",

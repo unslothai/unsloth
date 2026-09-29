@@ -1,7 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Seed a conventional video pipeline with hosted pre-quantized denoisers, all-or-nothing."""
+"""Seed a conventional video pipeline with hosted pre-quantized denoisers, all-or-nothing.
+
+The MoE's second expert uses the ``task`` slot with NO filename fallback: it would load expert 1 as expert 2.
+"""
 
 from __future__ import annotations
 
@@ -11,7 +14,6 @@ MOE_SECOND_DENOISER = "transformer_2"
 
 
 def denoiser_components(fam: Any) -> tuple[str, ...]:
-    """Pipeline attribute name(s) of this family's denoiser(s), from the registry."""
     if getattr(fam, "is_moe", False):
         return ("transformer", MOE_SECOND_DENOISER)
     return ("transformer",)
@@ -20,7 +22,7 @@ def denoiser_components(fam: Any) -> tuple[str, ...]:
 def denoiser_prequant_sources(
     fam: Any, scheme: Optional[str], base_repo: Optional[str]
 ) -> Optional[dict[str, Any]]:
-    """``{component: PrequantSource}`` for EVERY denoiser, or None (never partial); never raises."""
+    """``{component: PrequantSource}`` for EVERY denoiser, or None (never partial). Never raises."""
     wanted = (scheme or "").strip().lower()
     if wanted in ("", "auto", "off", "none"):
         return None
@@ -64,7 +66,7 @@ def denoiser_prequant_pipe_kwargs(
     cache_dir: Optional[str] = None,
     logger: Any = None,
 ) -> dict[str, Any]:
-    """Overrides for assembly, or ``{}`` (dense bf16 + runtime quant) unless all denoisers seed."""
+    """Component overrides for pipeline assembly, or ``{}`` (not seeded whole: re-plan memory at bf16)."""
     try:
         import gc
 

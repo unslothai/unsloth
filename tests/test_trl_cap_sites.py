@@ -35,8 +35,8 @@ ZOO_FLOOR_WITH_LIFTED_TRL_CAP = Version("2026.9.5")
 # Every unsloth_zoo up to 2026.9.7 caps datasets here; pip intersects, so users stay under it.
 ZOO_DATASETS_CEILING_BEFORE_THE_LIFT = SpecifierSet("<4.4.0")
 
-# None until a published zoo carries the widened datasets window (a floor no release satisfies breaks installs).
-ZOO_FLOOR_WITH_LIFTED_DATASETS_CAP = None
+# First published zoo carrying the widened datasets window (a floor no release satisfies breaks installs).
+ZOO_FLOOR_WITH_LIFTED_DATASETS_CAP = Version("2026.9.8")
 
 # Keyed on (workflow, exact requirement), never filename: that would exempt the whole file.
 PINNED_BY_DESIGN = {

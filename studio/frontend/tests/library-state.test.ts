@@ -180,6 +180,8 @@ test("the next account's edit does not wait behind one the account that left nev
 
 type Item = { id: string; name: string; favorite: boolean; folderId: string | null };
 
+const unpinned: string[] = [];
+
 function loadStore(
   api: Record<string, unknown>,
   emitted: unknown[] = [],
@@ -205,6 +207,11 @@ function loadStore(
     "@/features/chat": {
       deleteFineTunedModel: async () => {},
       emitChatAttachmentDeleted: (event: unknown) => emitted.push(event),
+    },
+    "@/features/model-picker": {
+      usePinnedModelsStore: {
+        getState: () => ({ unpinRepo: (repoId: string) => unpinned.push(repoId) }),
+      },
     },
     "@/i18n": { translate: (key: string) => key },
     "@/lib/gallery-flags": { notifyGalleryChanged: () => {} },
@@ -347,6 +354,20 @@ test("a sandbox file is deleted as the file it was listed as", async () => {
   await store.getState().refresh();
   await store.getState().removeItem(shown.id, shown.fingerprint);
   assert.deepEqual(deleted, [["sandbox:t:a.png", "7:1.5"]]);
+});
+
+test("deleting a fine-tune also drops its model picker pin", async () => {
+  const path = "/exports/run/checkpoint-1";
+  const store = loadStore({
+    getLibrary: async () => ({
+      items: [{ ...item(`model:exported:${path}`), model: { path, origin: "exported", exportType: "merged" } }],
+      folders: [],
+    }),
+  });
+  await store.getState().refresh();
+  unpinned.length = 0;
+  await store.getState().removeItem(`model:exported:${path}`);
+  assert.deepEqual(unpinned, [path]);
 });
 
 test("deleting a chat attachment tells an open chat to drop it", async () => {
