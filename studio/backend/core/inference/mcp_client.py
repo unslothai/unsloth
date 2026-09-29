@@ -90,7 +90,8 @@ def _public_mcp_address(url: str) -> str:
 
 
 def validate_mcp_address(url: str) -> None:
-    if not _managed_mcp_restricted():
+    # Studio's own Decisions server is answered in process, so no request leaves this machine.
+    if not _managed_mcp_restricted() or _is_studio_decisions(url):
         return
     if is_stdio(url):
         from fastapi import HTTPException

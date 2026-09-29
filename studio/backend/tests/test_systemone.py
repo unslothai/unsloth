@@ -9,7 +9,7 @@ import weakref
 from types import SimpleNamespace
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
 from auth.authentication import get_current_subject
@@ -1577,3 +1577,13 @@ def test_decisions_mcp_endpoint_needs_studio_auth(monkeypatch):
         )
     assert answered.status_code == 200, answered.text
     assert answered.json()["result"]["structuredContent"]["answers"]["urgent"]["noul"] == 0.9
+
+
+def test_managed_accounts_can_add_studio_decisions_but_not_other_loopback():
+    from core.inference.mcp_client import validate_mcp_address
+    from utils.account_context import AccountContext, run_as
+
+    alice = AccountContext("alice-id", "alice")
+    run_as(alice, validate_mcp_address, f"http://127.0.0.1:8888{systemone.MCP_PATH}/")
+    with pytest.raises(HTTPException):
+        run_as(alice, validate_mcp_address, "http://127.0.0.1:8888/mcp")
