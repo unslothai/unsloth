@@ -30,6 +30,7 @@ parse_gpu_layers_override = _lsa.parse_gpu_layers_override
 parse_reasoning_budget_message_override = _lsa.parse_reasoning_budget_message_override
 parse_reasoning_budget_override = _lsa.parse_reasoning_budget_override
 parse_split_mode_override = _lsa.parse_split_mode_override
+parse_tensor_split_override = _lsa.parse_tensor_split_override
 resolve_cache_type_kv = _lsa.resolve_cache_type_kv
 resolve_reasoning_budget = _lsa.resolve_reasoning_budget
 resolve_reasoning_budget_message = _lsa.resolve_reasoning_budget_message
@@ -591,6 +592,151 @@ def test_parse_gpu_layers_override_rejects_malformed_values(args):
 def test_validate_extra_args_rejects_malformed_gpu_layers_override():
     with pytest.raises(ValueError, match = "GPU layers"):
         validate_extra_args(["-ngl", "abc"])
+
+
+# ── parse_tensor_split_override ──────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "args,expected",
+    [
+        (None, None),
+        ([], None),
+        (["--top-k", "20"], None),
+        (["--tensor-split", "2.2,1"], [2.2, 1.0]),
+        (["-ts", "3,1"], [3.0, 1.0]),
+        (["-ts", "3/1"], [3.0, 1.0]),
+        (["--tensor-split=1,1"], [1.0, 1.0]),
+        (["-ts", "1,1", "--tensor-split", "2.2,1"], [2.2, 1.0]),
+    ],
+)
+def test_parse_tensor_split_override(args, expected):
+    assert parse_tensor_split_override(args) == expected
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["--tensor-split"],
+        ["--tensor-split", "--top-k"],
+        ["--tensor-split", "abc"],
+        ["--tensor-split", "1,-1"],
+        ["--tensor-split", "0,0"],
+        ["--tensor-split", "nan,1"],
+        ["--tensor-split", "inf,1"],
+    ],
+)
+def test_parse_tensor_split_override_rejects_malformed_values(args):
+    with pytest.raises(ValueError, match = "tensor-split"):
+        parse_tensor_split_override(args)
+
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [
+        # PEP 515 grouping is float()'s, so the editor mirror must not refuse it either.
+        ("1_0,1", [10.0, 1.0]),
+        ("1_000.5,1", [1000.5, 1.0]),
+        ("1e1_0,1", [1e10, 1.0]),
+        ("1.,1", [1.0, 1.0]),
+        (".5,1", [0.5, 1.0]),
+        ("+1.5,1", [1.5, 1.0]),
+    ],
+)
+def test_parse_tensor_split_override_reads_python_float_syntax(value, expected):
+    assert parse_tensor_split_override(["-ts", value]) == expected
+
+
+@pytest.mark.parametrize("value", ["0x10,1", "0b10,1", "0o17,1", "1__0,1", "_1,1", "1_,1", "1e,1"])
+def test_parse_tensor_split_override_rejects_non_float_syntax(value):
+    # JavaScript's Number() reads the 0x/0b/0o forms, so a mirror built on it would call these
+    # loadable and the load would answer 400.
+    with pytest.raises(ValueError, match = "tensor-split"):
+        parse_tensor_split_override(["-ts", value])
+
+
+def test_parse_tensor_split_override_rejects_a_share_float32_cannot_hold():
+    # std::stof throws std::out_of_range above FLT_MAX (measured: stof("1e+39") raises), and the
+    # manual emitter would have written --tensor-split 1e+39,1, so llama-server died at startup
+    # where base had simply discarded the flag.
+    with pytest.raises(ValueError, match = "32-bit float"):
+        parse_tensor_split_override(["-ts", "1e39,1"])
+    assert parse_tensor_split_override(["-ts", "3.4e38,1"]) == [3.4e38, 1.0]
+
+
+@pytest.mark.parametrize("value", ["1e-50,1", "1e-45,1", "1e-40,1", "1e-38,1"])
+def test_parse_tensor_split_override_rejects_a_share_that_underflows_stof(value):
+    # libstdc++ reports every subnormal result as ERANGE, so std::stof throws out_of_range on the
+    # way DOWN as well: measured here, stof("1e-38") and stof("1e-45") both raise, stof("0") does
+    # not. Rejecting only what rounds to zero would still have let 1e-40 kill the server.
+    with pytest.raises(ValueError, match = "at least"):
+        parse_tensor_split_override(["-ts", value])
+
+
+@pytest.mark.parametrize("value", ["0,1", "1.2e-38,1", "1e-30,1"])
+def test_parse_tensor_split_override_keeps_what_stof_accepts(value):
+    # An exact zero share is a device the user is deliberately emptying, and everything from
+    # FLT_MIN up survives the emit round trip. 1.1754943508222874e-38 does NOT, even though it
+    # rounds up to FLT_MIN as a float: the six-significant-digit emission loses it, which
+    # test_parse_tensor_split_override_judges_the_share_it_will_emit pins.
+    assert parse_tensor_split_override(["-ts", value]) is not None
+
+
+def test_parse_tensor_split_override_only_rounds_what_gets_reserialized():
+    # Under pass-through llama-server reads the user's OWN text, and std::stof takes
+    # "1.1754943508222874e-38" (measured). Judging the six-digit rendering there would refuse a
+    # split that runs exactly as typed, so the rounding is scoped to the manual promotion that
+    # actually rewrites the ratio.
+    assert parse_tensor_split_override(["-ts", "1.1754943508222874e-38,1"]) is not None
+    with pytest.raises(ValueError, match = "at least"):
+        parse_tensor_split_override(["-ts", "1.1754943508222874e-38,1"], reserialized = True)
+
+
+def test_parse_tensor_split_override_rounds_each_share_before_adding():
+    # llama.cpp does `sum += std::stof(token)`, so each share is a float BEFORE it joins the
+    # total. Compiled and run here, "3.17817e38,1.54601e37,7.00525e36" reaches inf that way while
+    # accumulating the doubles and rounding afterwards lands on FLT_MAX and looked fine.
+    for reserialized in (False, True):
+        with pytest.raises(ValueError, match = "adds up past"):
+            parse_tensor_split_override(
+                ["-ts", "3.17817e38,1.54601e37,7.00525e36"], reserialized = reserialized
+            )
+
+
+def test_parse_tensor_split_override_judges_the_share_it_will_emit():
+    # The manual launcher writes f"{x:g}", six significant digits. 1.1754943508222874e-38 rounds
+    # UP to FLT_MIN as a float and so passed a full-precision check, but it is emitted as
+    # "1.17549e-38" and std::stof refuses THAT as subnormal (measured on this host), so /validate
+    # approved a command the server then died on.
+    with pytest.raises(ValueError, match = "at least"):
+        parse_tensor_split_override(["-ts", "1.1754943508222874e-38,1"], reserialized = True)
+    assert parse_tensor_split_override(["-ts", "1.2e-38,1"], reserialized = True) == [1.2e-38, 1.0]
+
+
+def test_parse_tensor_split_override_totals_the_emitted_shares():
+    # llama.cpp prefix-sums what it PARSED, so the total is accumulated over the emitted values.
+    # Summing the raw doubles instead refused this split, while a real float32 accumulation of
+    # the emitted text ("2.08296e+38,7.17058e+37,6.02804e+37") reaches 3.40282e+38 and fits.
+    assert (
+        parse_tensor_split_override(
+            ["-ts", "2.0829609943909916e38,7.170581961838338e37,6.028042758104631e37"],
+            reserialized = True,
+        )
+        is not None
+    )
+    with pytest.raises(ValueError, match = "adds up past"):
+        parse_tensor_split_override(["-ts", "3e38,3e38"])
+
+
+def test_parse_tensor_split_override_rejects_a_total_float32_cannot_hold():
+    # llama.cpp prefix-sums the shares into the same float array (llama-model.cpp).
+    with pytest.raises(ValueError, match = "adds up past"):
+        parse_tensor_split_override(["-ts", "3e38,3e38"])
+
+
+def test_validate_extra_args_rejects_malformed_tensor_split_override():
+    with pytest.raises(ValueError, match = "tensor-split"):
+        validate_extra_args(["-ts", "abc"])
 
 
 # ── reasoning budget first-class shadows ─────────────────────────────

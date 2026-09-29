@@ -53,6 +53,17 @@ arguments, or whose call the server rejects, answers with that schema so the mod
 can correct the call. Arguments to a compact tool are still typed against its full
 schema. External providers always get the full listing.
 
+## Unsloth Decisions MCP
+
+When the Decision API is on (**Settings → API**), the chat's MCP menu lists
+**Unsloth Decisions**. Enable it and a tool-capable chat model can call `decide`,
+which asks the local Laya model the same typed questions `POST /v1/systemone`
+answers (`noul`, `choice` and `score`), with the model chosen in Settings.
+
+Other MCP clients reach the same tool at `http://127.0.0.1:8888/mcp/decisions/`
+(use the actual Unsloth port). It takes the credentials `/v1/systemone` takes, so
+send an Unsloth API key as `Authorization: Bearer sk-unsloth-...`.
+
 <a id="studios-own-mcp-server"></a>
 
 ## Unsloth Studio's own MCP server

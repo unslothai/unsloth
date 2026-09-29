@@ -60,15 +60,37 @@ export interface ChatGenerationRunUpdate {
 export function normalizeChatGenerationChunkPayload(
   payload: OpenAIChatChunk | Record<string, unknown>,
 ): OpenAIChatChunk | Record<string, unknown> {
-  if (
-    payload !== null &&
-    typeof payload === "object" &&
-    "type" in payload &&
-    payload.type === "reasoning_summary"
-  ) {
-    return {
-      _reasoningDurationMs: (payload as { duration_ms?: unknown }).duration_ms,
-    } as unknown as OpenAIChatChunk;
+  if (payload !== null && typeof payload === "object" && "type" in payload) {
+    const frameType = (payload as { type?: unknown }).type;
+    // Relay server-side reasoning duration.
+    if (frameType === "reasoning_summary") {
+      return {
+        _reasoningDurationMs: (payload as { duration_ms?: unknown }).duration_ms,
+      } as unknown as OpenAIChatChunk;
+    }
+    // The producer persists every decoded SSE data frame as a `chunk` event and _SSEDecoder drops the
+    // SSE event field, so persisted tool/media control frames arrive here indistinguishable from OpenAI
+    // chunks. Re-tag them exactly as the legacy stream (chat-api.ts) does before yielding, or a resumed
+    // run replays raw {type} payloads into consumers that only read `_tool*`/`_diffusionFrame` and tool
+    // activity silently vanishes.
+    if (frameType === "tool_status") {
+      return {
+        _toolStatus: (payload as { content?: unknown }).content ?? "",
+      } as unknown as OpenAIChatChunk;
+    }
+    if (
+      frameType === "tool_start" ||
+      frameType === "tool_end" ||
+      frameType === "tool_output" ||
+      frameType === "tool_args"
+    ) {
+      // tool_start/end carry full input/output; tool_output streams incremental stdout and
+      // tool_args streams the call arguments live. The consumer accumulates by tag, so keep the frame whole.
+      return { _toolEvent: payload } as unknown as OpenAIChatChunk;
+    }
+    if (frameType === "diffusion_frame") {
+      return { _diffusionFrame: payload } as unknown as OpenAIChatChunk;
+    }
   }
   return payload;
 }
@@ -116,6 +138,11 @@ export function isLegacyFallbackChatGenerationAdmissionError(
     (error instanceof ChatGenerationApiError &&
       error.status === 400 &&
       error.message === "Credentials cannot be persisted") ||
+    // A media-bearing payload is a POLICY rejection meaning "use the legacy stream", the same class as the tool-enabled
+    // case below - not an error to surface. Without this it rethrows and the turn dies with "An error occurred".
+    (error instanceof ChatGenerationApiError &&
+      error.status === 400 &&
+      error.message === "Media chat runs use the legacy streaming path") ||
     (error instanceof ChatGenerationApiError &&
       error.status === 404 &&
       error.message === "Thread not found") ||
@@ -237,6 +264,30 @@ export async function getActiveChatGenerationRuns(
   );
   if (response.status === 404 || response.status === 405) return [];
   return (await json<{ runs: ChatGenerationRun[] }>(response)).runs ?? [];
+}
+
+/** Whether a parked approval is still waiting on a human.
+ *
+ *  A reopened tab cannot tell this from the saved card: a call the user already answered looks
+ *  exactly like one still parked, since the result only arrives with tool_end. Answering from the
+ *  server is the only way to avoid restoring Approve/Deny over a call that is already executing.
+ *
+ *  An older backend has no such route, so a 404 or 405 means "cannot tell" rather than "answered",
+ *  and the caller keeps its previous arm-everything behaviour instead of silently dropping buttons.
+ */
+export async function toolApprovalIsPending(
+  approvalId: string,
+  sessionId: string,
+  signal?: AbortSignal,
+): Promise<boolean> {
+  const response = await authFetch("/api/inference/tool-approval-status", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ approval_id: approvalId, session_id: sessionId }),
+    signal,
+  });
+  if (response.status === 404 || response.status === 405) return true;
+  return (await json<{ pending?: boolean }>(response)).pending !== false;
 }
 
 export async function createChatGenerationRun(

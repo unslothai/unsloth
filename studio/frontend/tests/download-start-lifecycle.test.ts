@@ -212,3 +212,72 @@ test("a stale model selection does not spend an Xet notice reservation", async (
     removeJob(key);
   }
 });
+
+test("a later entry of a staged plan starts without reserving another Xet notice", async () => {
+  calls.length = 0;
+  let reservations = 0;
+
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.startsWith("/api/hub/active-downloads")) {
+      return json({ downloads: [] });
+    }
+    if (url.startsWith("/api/studio/download-transport-capabilities")) {
+      return json({
+        http: { available: true, reason: null },
+        xet: { available: true, reason: null },
+        auto_resolves_to: "xet",
+        auto_reason: null,
+      });
+    }
+    if (url.startsWith("/api/hub/transport-status")) {
+      return json({ has_partial: false, last_transport: null, resumable: false });
+    }
+    if (url === "/api/hub/download") {
+      return json({
+        accepted: true,
+        attached: false,
+        state: "running",
+        generation: 9,
+        transport: "xet",
+        job_key: "backend-key",
+      });
+    }
+    if (url === "/api/settings/xet-notice/reserve") {
+      reservations += 1;
+      return json({ granted: true, shown: reservations, limit: 3 });
+    }
+    throw new Error(`Unexpected request: ${url}`);
+  }) as typeof fetch;
+
+  const first = {
+    kind: "model" as const,
+    repoId: "org/diffusion-checkpoint",
+    variant: "@diffusion",
+    expectedBytes: 4096,
+  };
+  const later = {
+    kind: "model" as const,
+    repoId: "org/diffusion-base",
+    variant: "@diffusion",
+    expectedBytes: 8192,
+    skipXetNotice: true,
+  };
+  try {
+    assert.equal(await requestStart(first), "started");
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(reservations, 1);
+    assert.equal(visibleToastCalls().length, 1);
+
+    assert.equal(await requestStart(later), "started");
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(reservations, 1, "the later entry reserved a second notice");
+    assert.equal(visibleToastCalls().length, 1, "the later entry raised a second toast");
+  } finally {
+    for (const req of [first, later]) {
+      const key = jobKeyOf(req.kind, req.repoId, req.variant);
+      finalize(key, "complete");
+      removeJob(key);
+    }
+  }
+});
