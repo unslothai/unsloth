@@ -363,13 +363,14 @@ def format_dataset(
     num_proc = None,
     auto_detect_custom = True,
     custom_format_mapping = None,
+    split_name = None,
 ):
     """Formats dataset and returns {dataset, detected_format, final_format, chat_column, is_standardized, requires_manual_mapping, warnings}."""
 
     multimodal_info = detect_multimodal_dataset(dataset)
 
     if format_type == "raw":
-        raw_result = prepare_raw_text_dataset(dataset)
+        raw_result = prepare_raw_text_dataset(dataset, split_name = split_name)
         return {
             "dataset": raw_result.dataset,
             "detected_format": "raw_text",
@@ -795,6 +796,7 @@ def format_and_template_dataset(
     batch_size = 1000,
     num_proc = None,
     progress_callback = None,
+    split_name = None,
 ):
     """Combines format_dataset and apply_chat_template_to_dataset, for UI workflows where one call does everything. custom_prompt_template is retained for signature compatibility; non-None values are rejected because Studio cannot persist a matching inference template. Returns {dataset (with a 'text' column), detected_format, final_format, success, requires_manual_mapping, warnings, errors, summary}."""
 
@@ -1036,6 +1038,7 @@ def format_and_template_dataset(
             aliases_for_assistant = aliases_for_assistant,
             batch_size = batch_size,
             num_proc = num_proc,
+            split_name = split_name,
         )
 
         if dataset_info["final_format"] == "raw_text":

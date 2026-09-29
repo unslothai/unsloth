@@ -1580,6 +1580,7 @@ export const de = {
         noRamReserveDescription: "Weniger RAM für die Modellgewichte belegen.",
         noRamReserveHint: "Überspringt auf unterstützten Windows-Builds das speicherabgebildete Laden, wenn das Modell vollständig auf die GPU ausgelagert ist, sodass dessen Seiten nicht im Speicher gehalten werden. Andernfalls bleibt das speicherabgebildete Laden erhalten. Erforderliche CPU-Puffer können weiterhin RAM belegen. Entfernt --no-mmap und --mlock.",
         mlockVetoed: "--mlock bleibt aus: das Fixieren des Modells würde RAM für das gesamte Modell reservieren. Das automatische Entladen im Leerlauf bleibt deaktiviert.",
+        mlockNotApplicable: "Vollständig auf der GPU: nichts im System-RAM zu sperren. Automatisches Entladen im Leerlauf bleibt aus.",
         memlockCapped: "Dieses System begrenzt gesperrten Speicher auf {limit}. Ein größeres Modell wird nicht vollständig fixiert; erhöhen Sie das Limit mit ulimit -l.",
         reloadRequired: "Modell neu laden, um die neuen Speicheroptionen anzuwenden.",
         loadError: "Modellspeicher-Einstellungen konnten nicht geladen werden",

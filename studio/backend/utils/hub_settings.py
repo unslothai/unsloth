@@ -19,8 +19,10 @@ import os
 import sqlite3
 import sys
 import threading
+import weakref
 from contextlib import closing
 from dataclasses import dataclass
+from functools import partial
 from urllib.parse import urlsplit
 
 from loggers import get_logger
@@ -266,6 +268,34 @@ def _bypass_proxy_for(url: str) -> None:
         # The 1.x shared client read proxies once: drop it, never close it (aborts live downloads).
         with lock:
             http._GLOBAL_CLIENT = None
+
+
+# huggingface_hub closes its shared client in every forked child, so any preexec_fn child (tools,
+# sidecar servers) can block before exec on httpx locks another thread held at the fork. Child
+# hooks run in registration order, which import order decides, so the parent disarms the client.
+_inherited_hub_clients: list = []
+
+
+def _close_if_owner(client_ref: weakref.ref, owner_pid: int) -> None:
+    client = client_ref()
+    if client is None:
+        return
+    if os.getpid() == owner_pid:
+        type(client).close(client)
+    else:
+        _inherited_hub_clients.append(client)
+
+
+def _keep_hub_client_open_in_forks() -> None:
+    http = sys.modules.get("huggingface_hub.utils._http")
+    client = getattr(http, "_GLOBAL_CLIENT", None)
+    if client is not None and "close" not in vars(client):
+        # A weak reference, so the client is still freed by refcount once dropped.
+        client.close = partial(_close_if_owner, weakref.ref(client), os.getpid())
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(before = _keep_hub_client_open_in_forks)
 
 
 def _refresh_imported_hub_libraries() -> None:
