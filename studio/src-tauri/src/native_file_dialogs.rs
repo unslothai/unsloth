@@ -564,7 +564,7 @@ const NOT_THE_LOG_EXPORT: &str = "Only the local log export endpoint can be down
 /// token of its own. A fixed sentence, matched structurally on the TypeScript side
 /// (`DESKTOP_LOGIN_REQUIRED` in features/settings/api/debug-logs.ts) so the tab can
 /// say "sign in" instead of showing a generic failure. Keep the two in step.
-const LOGIN_REQUIRED: &str = "Log export requires a signed-in Studio session.";
+const LOGIN_REQUIRED: &str = "Log export requires a signed-in Unsloth session.";
 
 /// Which bearer token the export is made with: a minted desktop session where one
 /// exists, otherwise the tab's own.

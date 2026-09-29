@@ -985,10 +985,19 @@ def clean_ledger():
     shim._pending_reservation.token = None
 
 
-def test_workers_starting_together_do_not_promise_the_same_ram_twice(clean_ledger):
+def test_workers_starting_together_do_not_promise_the_same_ram_twice(clean_ledger, monkeypatch):
     """Four downloads queued at once each used to take a quarter of the same snapshot, promising the
     whole machine before any of them had allocated a byte."""
     shim = clean_ledger
+    # A reservation is credited against what its worker already holds (_live_reserved_locked
+    # subtracts _worker_rss), because a resident byte is already missing from `available`. These
+    # tests stand in for the worker with the pytest process itself, whose RSS is whatever the run
+    # has imported so far. Once that exceeds the promises, every credit clamps to zero, the ledger
+    # reserves nothing, and all four sizings see the same full snapshot: exactly the unledgered
+    # 8GB this test exists to catch, reported as a failure of code that is working. A freshly
+    # spawned worker holds nothing, which is the case being described, and the rest of this file
+    # already pins the same reading wherever it matters.
+    monkeypatch.setattr(shim, "_worker_rss", lambda pid: 0)
     module = _fake_tuning(32 * _GB, 8 * _GB)
     sized = module.xet_env_overrides(_fake_profile_cls()(32 * _GB, 8 * _GB))
 
@@ -1146,7 +1155,7 @@ def test_the_ledger_reads_a_real_workers_rss(clean_ledger):
     assert shim._worker_rss(child.pid) == 0 or not shim._pid_alive(child.pid)
 
 
-def test_concurrent_sizings_cannot_all_claim_the_same_free_ram(clean_ledger):
+def test_concurrent_sizings_cannot_all_claim_the_same_free_ram(clean_ledger, monkeypatch):
     """The reservation tests above start workers one after another, which never exercises the race:
     read the ledger, then reserve, with a gap in between. These threads sit in that gap together.
 
@@ -1156,6 +1165,15 @@ def test_concurrent_sizings_cannot_all_claim_the_same_free_ram(clean_ledger):
     import time
 
     shim = clean_ledger
+    # A reservation is credited against what its worker already holds (_live_reserved_locked
+    # subtracts _worker_rss), because a resident byte is already missing from `available`. These
+    # tests stand in for the worker with the pytest process itself, whose RSS is whatever the run
+    # has imported so far. Once that exceeds the promises, every credit clamps to zero, the ledger
+    # reserves nothing, and all four sizings see the same full snapshot: exactly the unledgered
+    # 8GB this test exists to catch, reported as a failure of code that is working. A freshly
+    # spawned worker holds nothing, which is the case being described, and the rest of this file
+    # already pins the same reading wherever it matters.
+    monkeypatch.setattr(shim, "_worker_rss", lambda pid: 0)
     workers = 4
     barrier = threading.Barrier(workers)
     profile_cls = _fake_profile_cls()

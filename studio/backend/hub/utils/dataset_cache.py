@@ -11,7 +11,10 @@ import tempfile
 from pathlib import Path, PurePosixPath
 from typing import Any, Optional
 
+from loggers import get_logger
+
 from hub.utils.dataset_processed_cache import (
+    UnsafeDatasetCachePathError,
     mark_app_processed_dataset_cache_complete,
     normalized_commit_hash,
     prepare_app_processed_dataset_cache,
@@ -24,6 +27,7 @@ from hub.utils.hf_cache_state import (
 )
 from utils.paths.path_utils import drop_appledouble_metadata, is_appledouble_metadata
 
+logger = get_logger(__name__)
 
 TRAINING_DATA_EXTS = (".parquet", ".json", ".jsonl", ".csv")
 
@@ -278,7 +282,9 @@ def resolved_dataset_snapshot_file(snapshot: str | Path, source_path: str) -> Op
     except (OSError, RuntimeError, ValueError):
         return None
     if not resolved.is_file() or not (
-        resolved.is_relative_to(snapshot_path) or resolved.is_relative_to(repo_dir / "blobs")
+        resolved.is_relative_to(snapshot_path)
+        or resolved.is_relative_to(repo_dir / "blobs")
+        or resolved.is_relative_to(repo_dir.parent / "blobs")
     ):
         return None
     try:
@@ -557,7 +563,17 @@ def load_cached_hf_dataset(
         )
     dataset = load_dataset(**kwargs)
     if app_cache is not None:
-        mark_app_processed_dataset_cache_complete(app_cache)
+        # Advisory flag: a purged entry, read-only home or full disk must not discard a loaded dataset.
+        try:
+            mark_app_processed_dataset_cache_complete(app_cache)
+        except UnsafeDatasetCachePathError:
+            raise
+        except (OSError, RuntimeError, ValueError):
+            logger.warning(
+                "Could not record processed dataset cache completion for %s",
+                repo_id,
+                exc_info = True,
+            )
     return dataset
 
 

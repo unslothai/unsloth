@@ -39,10 +39,11 @@ env:
     Desktop app for Unsloth.
 
     **macOS**: Download `Unsloth-Desktop-MacOS.dmg` (Apple Silicon).
-    **Windows**: Download `Unsloth-Desktop-Windows.exe`.
-    **Linux**: Download `Unsloth-Desktop-Ubuntu.deb` for Ubuntu/Debian. `.AppImage` is experimental.
+    **Windows**: Download `Unsloth-Desktop-Windows.exe`, or `Unsloth-Desktop-Windows-ARM64.exe` on a Windows on ARM machine.
+    **Linux x64**: Download `Unsloth-Desktop-Ubuntu.deb` for Ubuntu/Debian. `.AppImage` is experimental.
+    **Linux ARM64**: Download `Unsloth-Desktop-Ubuntu-ARM64.deb` for Ubuntu 24.04 or newer on aarch64, such as a DGX Spark. `Unsloth-Desktop-ARM64.app.tar.gz` is macOS-only.
 
-    > Linux in-app updates are AppImage-oriented. Package installs should update by downloading a new package.
+    > Linux in-app updates cover `.deb` and AppImage installs. A `.deb` installed before in-app updates shipped needs one manual update first.
     > Linux AppImage can show a blank window on some Tauri/WebKitGTK + Wayland/Mesa stacks; use `.deb` when available.
     > Linux AppImage on Ubuntu 24.04+ may require: `sudo apt install libfuse2t64`
     > First-run system dependency elevation is supported on Ubuntu/Debian. Other Linux distributions should install system packages manually.
@@ -500,10 +501,23 @@ jobs:
             args: ''
             label: Linux (x64)
             artifact: linux-x64
+          - platform: ubuntu-24.04-arm
+            args: ''
+            label: Linux (ARM64)
+            artifact: linux-arm64
           - platform: windows-latest
             args: ''
             label: Windows (x64)
             artifact: windows-x64
+          # Cross-compiled from the same x64 runner: there is no ARM64 Windows
+          # runner, and Tauri builds aarch64-pc-windows-msvc from x64 the way
+          # the macOS leg builds aarch64-apple-darwin. NSIS is the only Windows
+          # bundle target configured, which is the one that supports ARM64 (WiX
+          # does not), so nothing in bundle.targets needs an exception here.
+          - platform: windows-latest
+            args: '--target aarch64-pc-windows-msvc'
+            label: Windows (ARM64)
+            artifact: windows-arm64
 
     name: Build ${{ matrix.label }}
     needs: prepare-version
@@ -543,7 +557,7 @@ jobs:
       # harden-runner v2.20.0; stay in audit until the macOS + Windows
       # codesign paths have been observed.
       - name: Harden runner (audit)
-        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c  # v2.21.0
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1  # v2.21.1
         with:
           egress-policy: audit
 
@@ -557,7 +571,7 @@ jobs:
 
       # ── Linux dependencies ──
       - name: Install Linux dependencies
-        if: matrix.platform == 'ubuntu-22.04'
+        if: startsWith(matrix.artifact, 'linux-')
         # Bounded and retried through the shared helper: an unbounded apt step does
         # not fail, it spends the job's whole budget and is reported as "cancelled"
         # with no reason and every later step skipped. update and install go as one
@@ -716,7 +730,9 @@ jobs:
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable @ 2026-03-27
         with:
-          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+          # macOS installs both slices; the Windows ARM64 leg needs the cross target
+          # installed or cargo fails with "target may not be installed".
+          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || (matrix.artifact == 'windows-arm64' && 'aarch64-pc-windows-msvc' || '') }}
 
       - name: Patch desktop app version
         shell: bash
@@ -790,9 +806,33 @@ jobs:
         with:
           workspaces: 'studio/src-tauri -> target'
 
-          # Windows release builds can spend many minutes uploading the target cache
-          # after signed artifacts are ready, which blocks the publisher for no release benefit.
-          save-if: ${{ matrix.platform != 'windows-latest' }}
+          # Restore only, on every platform. Windows already did not save, because a
+          # release build there can spend many minutes uploading the target cache after
+          # the signed artifacts are ready, blocking the publisher for no release
+          # benefit. The other legs now do not either, for a different reason.
+          #
+          # This job holds TAURI_SIGNING_PRIVATE_KEY, APPLE_ID, APPLE_PASSWORD,
+          # APPLE_CERTIFICATE, KEYCHAIN_PASSWORD and the AZURE_* signing credentials,
+          # and it was the only job in the organisation where a secret-bearing run wrote
+          # a cache that pull requests can read. GitHub makes caches written on the
+          # default branch restorable by every PR, so the blast radius of anything that
+          # serialised one of those values into studio/src-tauri/target would have been
+          # every contributor who can open one. That is the shape of the 2026-09-21
+          # cargo-miri disclosure, where miri wrote the whole environment under target/
+          # and CI cached it.
+          #
+          # Nothing here does that today, and it was checked rather than assumed: all
+          # 673 locked dependencies were audited from source, 20 build scripts declare
+          # cargo:rerun-if-env-changed, and the 27 variables they name include none of
+          # the above. See tests/studio/test_cached_paths_hold_no_credentials.py for the
+          # full result and the two runtime-constructed cases. But cargo writes the
+          # VALUE of any rerun-if-env-changed variable into
+          # target/<profile>/.fingerprint/*.json, which rust-cache preserves for
+          # dependencies, so that clean result is a property of 673 third-party build
+          # scripts rather than of anything in this repository, and it is re-decided by
+          # every `cargo update`. Restoring is free of that risk; saving is not worth it
+          # for a workflow_dispatch-only release that runs a handful of times a month.
+          save-if: false
 
       # ── macOS: fail before the build if notarization cannot run ──
       - name: Check Apple notarization credentials
@@ -961,6 +1001,18 @@ jobs:
           projectPath: studio
           tauriScript: npx --prefix . tauri
           args: -v --bundles deb,appimage
+
+      - name: Build Linux ARM64 package
+        id: build_linux_arm64
+        if: matrix.platform == 'ubuntu-24.04-arm'
+        uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ''
+        with:
+          projectPath: studio
+          tauriScript: npx --prefix . tauri
+          args: -v --bundles deb
 
       - name: Verify complete Linux AppImage
         if: matrix.platform == 'ubuntu-22.04'
@@ -1613,7 +1665,12 @@ jobs:
       - name: Stage release assets
         shell: bash
         env:
-          ARTIFACT_PATHS: ${{ steps.build_linux.outputs.artifactPaths || steps.build_macos.outputs.artifactPaths || steps.build_windows.outputs.artifactPaths }}
+          ARTIFACT_PATHS: ${{ steps.build_linux.outputs.artifactPaths || steps.build_linux_arm64.outputs.artifactPaths || steps.build_macos.outputs.artifactPaths || steps.build_windows.outputs.artifactPaths }}
+          # Both Windows legs emit a -setup.exe, and publish-release merges every
+          # leg's artifact into one directory, so the two must not stage the same
+          # name. x64 keeps the historical name; anything else would break every
+          # published download link and the updater entry that points at it.
+          MATRIX_ARTIFACT: ${{ matrix.artifact }}
         run: |
           set -euo pipefail
           if command -v python3 >/dev/null 2>&1; then
@@ -1639,15 +1696,30 @@ jobs:
           destination = pathlib.Path(os.environ['RUNNER_TEMP'], 'desktop-release-assets')
           destination.mkdir(parents=True, exist_ok=True)
           base_name = 'Unsloth-Desktop'
+          windows_name = (
+              f'{base_name}-Windows-ARM64'
+              if os.environ.get('MATRIX_ARTIFACT') == 'windows-arm64'
+              else f'{base_name}-Windows'
+          )
+          # Both Linux legs bundle a deb and, since in-app Debian updates, its updater
+          # signature. publish-release merges every leg's artifact into one directory, so
+          # staging the arm64 pair under the x64 names would silently overwrite one with
+          # the other and hand x64 users the wrong signature.
+          deb_base = (
+              f'{base_name}-Ubuntu-ARM64'
+              if os.environ.get('MATRIX_ARTIFACT') == 'linux-arm64'
+              else f'{base_name}-Ubuntu'
+          )
           suffix_names = (
               ('.app.tar.gz.sig', f'{base_name}-ARM64.app.tar.gz.sig'),
               ('.app.tar.gz', f'{base_name}-ARM64.app.tar.gz'),
               ('.AppImage.sig', f'{base_name}-Linux.AppImage.sig'),
               ('.AppImage', f'{base_name}-Linux.AppImage'),
-              ('-setup.exe.sig', f'{base_name}-Windows.exe.sig'),
-              ('-setup.exe', f'{base_name}-Windows.exe'),
+              ('-setup.exe.sig', f'{windows_name}.exe.sig'),
+              ('-setup.exe', f'{windows_name}.exe'),
               ('.dmg', f'{base_name}-MacOS.dmg'),
-              ('.deb', f'{base_name}-Ubuntu.deb'),
+              ('.deb.sig', f'{deb_base}.deb.sig'),
+              ('.deb', f'{deb_base}.deb'),
           )
           staged = []
           for raw_path in artifact_paths:
@@ -1708,7 +1780,7 @@ jobs:
 
     steps:
       - name: Harden runner (audit)
-        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c  # v2.21.0
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1  # v2.21.1
         with:
           egress-policy: audit
 
@@ -1720,8 +1792,8 @@ jobs:
         run: |
           set -uo pipefail
 
-          # The three matrix legs, by their `name:` (Build <matrix.label>).
-          LEGS=('Build macOS (Apple Silicon)' 'Build Linux (x64)' 'Build Windows (x64)')
+          # publishing requires every named matrix leg to finish successfully.
+          LEGS=('Build macOS (Apple Silicon)' 'Build Linux (x64)' 'Build Linux (ARM64)' 'Build Windows (x64)' 'Build Windows (ARM64)')
           POLL=30
           DEADLINE=$(( $(date +%s) + 75 * 60 ))
           # Matrix job records appear with the run, so a leg still missing well
@@ -1816,8 +1888,13 @@ jobs:
               f'{base_name}-Linux.AppImage',
               f'{base_name}-Linux.AppImage.sig',
               f'{base_name}-Ubuntu.deb',
+              f'{base_name}-Ubuntu.deb.sig',
+              f'{base_name}-Ubuntu-ARM64.deb',
+              f'{base_name}-Ubuntu-ARM64.deb.sig',
               f'{base_name}-Windows.exe',
               f'{base_name}-Windows.exe.sig',
+              f'{base_name}-Windows-ARM64.exe',
+              f'{base_name}-Windows-ARM64.exe.sig',
           }
           actual_names = {path.name for path in files}
           if actual_names != expected_names:
@@ -1933,7 +2010,15 @@ jobs:
 
           darwin = entry('.app.tar.gz.sig')
           linux = entry('.AppImage.sig')
-          windows = entry('.exe.sig')
+          # Same full-name rule as the Windows pair below: both debs end in .deb.sig, and
+          # -Ubuntu.deb.sig does not match -Ubuntu-ARM64.deb.sig under endswith.
+          debian = entry('-Ubuntu.deb.sig')
+          debian_arm64 = entry('-Ubuntu-ARM64.deb.sig')
+          # Both Windows bundles end in .exe.sig, and exactly_one() refuses an ambiguous
+          # match, so name them in full. -Windows.exe.sig does not match -Windows-ARM64.exe.sig
+          # under endswith, which is what keeps the two entries distinct.
+          windows = entry('-Windows.exe.sig')
+          windows_arm64 = entry('-Windows-ARM64.exe.sig')
           notes = pathlib.Path(os.environ['RUNNER_TEMP'], 'desktop-release-notes.md').read_text()
           metadata = {
               'version': os.environ['APP_VERSION'],
@@ -1946,8 +2031,19 @@ jobs:
                   'darwin-aarch64-app': darwin,
                   'linux-x86_64': linux,
                   'linux-x86_64-appimage': linux,
+                  'linux-x86_64-deb': debian,
+                  # Same reason as the Windows ARM64 pair: without these an arm64 deb
+                  # install finds no entry and never updates, or matches the x86_64 one
+                  # and installs an amd64 package over a native install.
+                  'linux-aarch64': debian_arm64,
+                  'linux-aarch64-deb': debian_arm64,
                   'windows-x86_64': windows,
                   'windows-x86_64-nsis': windows,
+                  # Tauri asks for {os}-{arch}; without these an ARM64 install either
+                  # finds no entry and never updates, or takes the x86_64 one and
+                  # replaces a native install with an emulated build.
+                  'windows-aarch64': windows_arm64,
+                  'windows-aarch64-nsis': windows_arm64,
               },
           }
           output = pathlib.Path(os.environ['RUNNER_TEMP'], 'latest.json')
@@ -2038,7 +2134,9 @@ jobs:
           required_families = {
               'darwin-aarch64': False,
               'linux-x86_64': False,
+              'linux-aarch64': False,
               'windows-x86_64': False,
+              'windows-aarch64': False,
           }
           expected_prefix = f'https://github.com/{os.environ["GITHUB_REPOSITORY"]}/releases/download/{release_tag}/'
           forbidden_fragments = ('/releases/latest/', '/releases/download/desktop-latest/')
@@ -2162,7 +2260,9 @@ jobs:
               'Unsloth-Desktop-MacOS.dmg',
               'Unsloth-Desktop-Linux.AppImage',
               'Unsloth-Desktop-Ubuntu.deb',
+              'Unsloth-Desktop-Ubuntu-ARM64.deb',
               'Unsloth-Desktop-Windows.exe',
+              'Unsloth-Desktop-Windows-ARM64.exe',
           }
           missing = sorted(required - names)
           if missing:
@@ -2196,7 +2296,7 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Harden runner (audit)
-        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c  # v2.21.0
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1  # v2.21.1
         with:
           egress-policy: audit
 

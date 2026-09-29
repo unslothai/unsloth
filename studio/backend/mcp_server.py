@@ -210,7 +210,7 @@ def create_studio_mcp() -> FastMCP:
         from models import LoadCheckpointRequest
         from routes.export import load_checkpoint as load
 
-        # Omit an unset load_in_4bit so the route can pick 16-bit for a full fine-tune.
+        # Omit an unset load_in_4bit so the backend can pick 16-bit for a full fine-tune.
         optional = {} if load_in_4bit is None else {"load_in_4bit": load_in_4bit}
         request = LoadCheckpointRequest(
             checkpoint_path = checkpoint_path,
@@ -232,7 +232,6 @@ def create_studio_mcp() -> FastMCP:
         imatrix: bool = False,
         imatrix_path: str | None = None,
         private: bool = False,
-        gguf_shard_size: str | None = None,
     ) -> dict[str, Any]:
         """Export the loaded model to GGUF using Unsloth's existing path validation.
 
@@ -253,7 +252,6 @@ def create_studio_mcp() -> FastMCP:
             imatrix = imatrix,
             imatrix_path = imatrix_path,
             private = private,
-            gguf_shard_size = gguf_shard_size,
         )
         return _dump(await export(request, current_subject = "mcp", allow_ambient = False))
 

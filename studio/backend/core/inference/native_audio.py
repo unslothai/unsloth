@@ -25,6 +25,7 @@ remote-code security gates have run.
 from __future__ import annotations
 
 import gc
+from utils.gpu_memory_events import invalidates_gpu_memory as _invalidates_gpu_memory
 import io
 import json
 import logging
@@ -674,7 +675,7 @@ def native_audio_download_plan(model_name: str, hf_token: Optional[str] = None) 
     audio_type = _native_audio_type(normalized)
     if audio_type in PYTHON310_AUDIO_TYPES and sys.version_info < (3, 10):
         family = "Higgs TTS" if audio_type.startswith("higgs_") else "MiniMax Music 3"
-        raise ValueError(f"{family} requires Python 3.10 or newer in Studio.")
+        raise ValueError(f"{family} requires Python 3.10 or newer in Unsloth.")
     if local_checkpoint and audio_type is None:
         return {
             "entries": [],
@@ -901,6 +902,7 @@ class NativeAudioBackend:
         torch.backends.cuda.enable_math_sdp(True)
         torch.backends.cuda.enable_cudnn_sdp(False)
 
+    @_invalidates_gpu_memory("audio load")
     def load_model(
         self,
         config,
@@ -947,7 +949,7 @@ class NativeAudioBackend:
                     "its official local runtime does not support AMD ROCm."
                 )
         if audio_type == "minimax_music3" and sys.version_info < (3, 10):
-            raise RuntimeError("MiniMax Music 3 requires Python 3.10 or newer in Studio.")
+            raise RuntimeError("MiniMax Music 3 requires Python 3.10 or newer in Unsloth.")
 
         if model_name in self.models:
             self.active_model_name = model_name
@@ -1443,6 +1445,7 @@ class NativeAudioBackend:
                 cancel_hook.remove()
         return audio, entry["sample_rate"]
 
+    @_invalidates_gpu_memory("audio unload")
     def unload_model(self, model_name: str) -> bool:
         entry = self.models.pop(model_name, None)
         if entry is not None:

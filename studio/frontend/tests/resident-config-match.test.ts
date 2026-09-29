@@ -26,7 +26,7 @@ const DEFAULT_ISH = {
   customContextLength: null,
   maxSeqLength: null,
   kvCacheDtype: null,
-  mlxKvBits: null,
+  mlxKvQuant: null,
   speculativeType: null,
   specDraftNMax: null,
   nParallel: null,
@@ -43,7 +43,7 @@ const BLANK = {
   customContextLength: null,
   maxSeqLength: null,
   kvCacheDtype: null,
-  mlxKvBits: null,
+  mlxKvQuant: null,
   speculativeType: null,
   specDraftNMax: null,
   nParallel: null,
@@ -143,10 +143,11 @@ const FIELDS: {
     differs: { cache_type_kv: "f16" },
   },
   {
-    name: "MLX KV bits",
-    config: { mlxKvBits: 4 },
-    same: { mlx_kv_bits_requested: 4 },
-    differs: { mlx_kv_bits_requested: 8 },
+    name: "MLX KV quantization",
+    config: { mlxKvQuant: "4" },
+    same: { mlx_kv_quant_requested: "4" },
+    differs: { mlx_kv_quant_requested: "tq-4" },
+
   },
   {
     name: "speculative mode",
@@ -219,7 +220,8 @@ const FIELDS: {
   {
     name: "GPU placement",
     config: { selectedGpuIds: [0, 2] },
-    same: { requested_gpu_ids: [2, 0] },
+    // Same ORDER, not merely the same cards: the reordered pair is a reload now.
+    same: { requested_gpu_ids: [0, 2] },
     differs: { requested_gpu_ids: [0, 1] },
   },
 ];
@@ -244,12 +246,26 @@ for (const field of FIELDS) {
   });
 }
 
+test("Auto adopts a resident model the backend reported as Auto", () => {
+  assert.equal(matches({ mlx_kv_quant_requested: "auto" }, { ...BLANK, mlxKvQuant: null }), true);
+  assert.equal(matches({ mlx_kv_quant_requested: "8" }, { ...BLANK, mlxKvQuant: null }), false);
+});
+
 /** Ordering is the backend's to choose: it narrows and reorders placement at fit time. */
-test("GPU placement compares as a set, not as an order", () => {
+test("GPU placement compares as an order, not as a set", () => {
+  // The picker hands the list to the backend in order and position decides which
+  // card takes the prompt, so a reorder is a different placement and must reload.
   assert.equal(
     matches(
       { requested_gpu_ids: [3, 1, 0] },
       { ...BLANK, selectedGpuIds: [0, 1, 3] },
+    ),
+    false,
+  );
+  assert.equal(
+    matches(
+      { requested_gpu_ids: [3, 1, 0] },
+      { ...BLANK, selectedGpuIds: [3, 1, 0] },
     ),
     true,
   );
@@ -389,13 +405,26 @@ test("selectModel weighs the config and the lease before confirming a reload", (
   // written only by a completed load, so this path must not adopt one.
   // Widened as the gate's preamble grows: what matters is that the guard opens the block
   // the identity check sits in, not how many reads it makes first.
+  // Scoped to the adoption short-circuit: the runtime also checks residency while
+  // cancelling a superseded run, and adopting an earlier occurrence would read this
+  // guard as missing.
   const guard = USE_CHAT_MODEL_RUNTIME.lastIndexOf(
     "if (!forceReload && !nativePathToken) {",
-    identityCheck,
+    confirmPrompt,
   );
   assert.ok(
     guard > 0,
     "the resident short-circuit no longer excludes native-lease picks",
+  );
+  // Scoped past the guard: the runtime also checks residency when it reconciles a
+  // cancelled run, and reading the first occurrence would measure the wrong block.
+  const adoptionIdentityCheck = USE_CHAT_MODEL_RUNTIME.indexOf(
+    "residentModelMatchesPick(status",
+    guard,
+  );
+  assert.ok(
+    adoptionIdentityCheck > guard && adoptionIdentityCheck < confirmPrompt,
+    "the resident short-circuit no longer wraps the identity check",
   );
 });
 
@@ -710,15 +739,13 @@ test("a non-GGUF resident is not judged on a GGUF invocation field", () => {
     }),
     false,
   );
-  // And a non-GGUF resident answers for the two fields the backend actually compares,
-  // which is all _mlx_runtime_settings_match looks at. cache_type_kv is deliberately not
-  // among them: it is a llama.cpp flag, and the non-GGUF branch never reads it.
+  // Non-GGUF matches only what the backend acts on; cache_type_kv is a llama.cpp flag it never reads.
   assert.equal(
     matches({ ...DEFAULTS, is_gguf: false, cache_type_kv: "q8_0" }, BLANK),
     true,
   );
   assert.equal(
-    matches({ ...DEFAULTS, is_gguf: false, mlx_kv_bits_requested: 4 }, BLANK),
+    matches({ ...DEFAULTS, is_gguf: false, mlx_kv_quant_requested: "4" }, BLANK),
     false,
   );
   assert.equal(
@@ -1115,9 +1142,9 @@ test("a diffusion pick is reduced to its lowest GPU, as the backend reduces it",
 
 test("no llama.cpp invocation field decides against a non-GGUF resident", () => {
   // The non-GGUF branch of /load checks identity and _mlx_runtime_settings_match, then
-  // answers already_loaded. Every other field here is a llama.cpp flag it never reads, so
-  // a persisted Manual mode, tensor split, slot count or batch size raised the prompt for
-  // a load that could not have changed anything.
+  // answers already_loaded. Every field here is a llama.cpp flag it never reads, so a
+  // persisted Manual mode, tensor split or batch size raised the prompt for a load that
+  // could not have changed anything.
   const resident = { ...DEFAULTS, is_gguf: false };
   assert.equal(
     matches(resident, {
@@ -1126,7 +1153,6 @@ test("no llama.cpp invocation field decides against a non-GGUF resident", () => 
       gpuLayers: 20,
       nCpuMoe: 8,
       tensorParallel: true,
-      nParallel: 4,
       nBatch: 2048,
       nUbatch: 512,
       selectedGpuIds: [1],
@@ -1140,6 +1166,19 @@ test("no llama.cpp invocation field decides against a non-GGUF resident", () => 
     matches({ ...resident, is_gguf: true }, { ...BLANK, nParallel: 4 }),
     false,
   );
+});
+
+test("a resident decoding at another width is not adopted, whichever backend", () => {
+  for (const is_gguf of [true, false]) {
+    assert.equal(
+      matches({ ...DEFAULTS, is_gguf, requested_parallel_slots: 4 }, { ...BLANK, nParallel: 2 }),
+      false,
+    );
+    assert.equal(
+      matches({ ...DEFAULTS, is_gguf, requested_parallel_slots: 2 }, { ...BLANK, nParallel: 2 }),
+      true,
+    );
+  }
 });
 
 test("a diffusion resident is judged on its NGL, not on the placement fields", () => {
@@ -1411,7 +1450,7 @@ test("unset nullable settings ask for the default, not for the resident value", 
     ...DEFAULTS,
     requested_context_length: 8192,
     cache_type_kv: "q8_0",
-    mlx_kv_bits_requested: 4,
+    mlx_kv_quant_requested: "4",
     requested_parallel_slots: 4,
     requested_n_batch: 2048,
     requested_n_ubatch: 512,
@@ -1422,7 +1461,7 @@ test("unset nullable settings ask for the default, not for the resident value", 
   for (const [key, value] of Object.entries({
     requested_context_length: 8192,
     cache_type_kv: "q8_0",
-    mlx_kv_bits_requested: 4,
+    mlx_kv_quant_requested: "4",
     requested_parallel_slots: 4,
     requested_n_batch: 2048,
     requested_n_ubatch: 512,

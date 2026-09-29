@@ -14,7 +14,7 @@ import re
 import string
 import weakref
 from dataclasses import dataclass
-from typing import Optional
+from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -2603,9 +2603,9 @@ def detect_think_prefill(
     unclosed block that swallows the answer; in that case return ``""`` and fall back to plain text.
 
     ``preserves_think_close`` says the stream keeps that closer anyway, as
-    ``NativeToolTokenDecoder`` does so the parser can see a call rehearsed inside the block. The
-    special-token list then says nothing, and skipping the opener is the same bug mirrored: a stray
-    ``</think>``.
+    ``NativeToolTokenDecoder`` does so the parser can see a call rehearsed inside the block, and as
+    a path streaming the detokenizer's own text does. The special-token list then says nothing, and
+    skipping the opener is the same bug mirrored: a stray ``</think>``.
     """
     if not prompt:
         return ""
@@ -2919,19 +2919,49 @@ def messages_have_tool_history(messages) -> bool:
     )
 
 
+def alternating_turns(messages: list) -> list:
+    """User/assistant text turns, alternating and ending on the newest user turn as sent; of two
+    same-role neighbours the later one is kept."""
+    from core.inference.message_content import content_to_text, named_turn
+
+    messages = list(messages or [])
+    newest = max(
+        (i for i, m in enumerate(messages) if isinstance(m, dict) and m.get("role") == "user"),
+        default = -1,
+    )
+    turns = []
+    for index, message in enumerate(messages[: newest + 1]):
+        turn = message
+        if index != newest:
+            if not isinstance(message, dict) or message.get("role") not in ("user", "assistant"):
+                continue
+            text = content_to_text(message.get("content")).strip()
+            # Kept even empty: an earlier recording or picture replays as a user turn with no text.
+            if not text and message["role"] == "assistant":
+                continue
+            turn = named_turn({"role": message["role"], "content": text}, message)
+        if turns and turns[-1]["role"] == turn["role"]:
+            turns[-1] = turn
+        elif turns or turn["role"] == "user":
+            turns.append(turn)
+    return turns
+
+
 def messages_with_attached_image(
     messages: list,
     system_prompt: str = "",
     fallback_user_text: str = "",
     structured_content: bool = False,
-    image: bool = True,
+    image: int = 1,
     video: bool = False,
+    audio: Any = None,
 ) -> list:
     """The conversation to render for a turn that carries attached media.
 
-    Prepends *system_prompt* as a leading system turn, then injects an ``{"type": "image"}`` or
-    ``{"type": "video"}`` part into the LAST user turn and leaves every other turn -- assistant
-    ``tool_calls`` and ``role="tool"`` results included -- exactly as the caller sent it.
+    Prepends *system_prompt* as a leading system turn, then injects *image* ``{"type": "image"}``
+    parts, or a ``{"type": "video"}`` part, plus any *audio* waveform as an ``{"type": "audio"}``
+    part, into the LAST user turn and leaves every other turn --
+    assistant ``tool_calls`` and ``role="tool"`` results included -- exactly as the caller sent it.
     Rebuilding from the newest user TEXT instead dropped the folded system instruction and the
     tool history an OpenAI tool loop replays (#10092). Nothing the caller owns is mutated: callers
     still read those dicts after generation, and a retry re-renders the same list.
@@ -2976,12 +3006,14 @@ def messages_with_attached_image(
             ("image", image, count_structured_images),
             ("video", video, count_structured_videos),
         )
-        if wanted
-        and not any(
+        if not any(
             isinstance(m, dict) and isinstance(m.get("content"), list) and counter(m["content"])
             for m in conversation
         )
+        for _ in range(int(wanted))
     ]
+    if audio is not None:
+        parts.append({"type": "audio", "audio": audio})
     if not parts and not fallback_user_text:
         return conversation
     for index in range(len(conversation) - 1, -1, -1):
@@ -2990,7 +3022,8 @@ def messages_with_attached_image(
             continue
         content = message.get("content", "")
         if isinstance(content, str):
-            content = [{"type": "text", "text": content or fallback_user_text}]
+            text = content if content.strip() else fallback_user_text or content
+            content = [{"type": "text", "text": text}]
         elif not isinstance(content, list):
             break
         elif fallback_user_text and not last_user_text([message]):
@@ -3078,6 +3111,10 @@ def render_prompt_with_boundary(
     the kwarg get a manual splice, taking the partial from *messages* (which the caller already
     swept) rather than a separate copy: a raw partial could close the turn or open another role
     instead of resuming (#7066)."""
+    from core.inference.mcp_images import prepare_image_turn_boundaries
+
+    for template in _selected_chat_template_strings(processor, tools):
+        messages = prepare_image_turn_boundaries(messages, template)
     extra = {"tools": tools} if tools else {}
     partial = trailing_assistant_text(messages) if continue_final_message else None
     if not partial:
@@ -3128,6 +3165,10 @@ def apply_chat_template_for_generation(
     inside the trailing assistant turn, so the model resumes the partial instead of restarting
     it."""
     # Shared choke point for the transformers and MLX backends (#7066).
+    from core.inference.mcp_images import prepare_image_turn_boundaries
+
+    for template in _selected_chat_template_strings(tokenizer, tools):
+        messages = prepare_image_turn_boundaries(messages, template)
     messages, tools, _markup = neutralize_for_render(tokenizer, messages, tools)
     reasoning_kwargs: dict = {}
     if enable_thinking is not None:

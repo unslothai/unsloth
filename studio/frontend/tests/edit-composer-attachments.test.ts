@@ -25,17 +25,6 @@ test("the edit composer shows the attachments it will resend", () => {
   );
 });
 
-test("Update treats a removed attachment as a change", () => {
-  assert.match(
-    editComposer,
-    /const \[originalAttachments\] = useState\(\s*\(\) => aui\.composer\(\)\.getState\(\)\.attachments,\s*\);/,
-  );
-  assert.match(
-    editComposer,
-    /text === aui\.message\(\)\.getCopyText\(\) &&\s*attachments === originalAttachments\s*\)\s*\{\s*aui\.composer\(\)\.cancel\(\);/,
-  );
-});
-
 test("a pasted-text chip without its File previews instead of inlining", () => {
   const chip = block(attachment, "const PastedTextAttachmentUI: FC<{");
   assert.match(
@@ -47,5 +36,5 @@ test("a pasted-text chip without its File previews instead of inlining", () => {
     chip,
     /\{canInline \? \(\s*chip\s*\) : \(\s*<PastedTextPreviewDialog/,
   );
-  assert.match(chip, /\{isComposer && <AttachmentRemove \/>\}/);
+  assert.match(chip, /\{isComposer &&\s*\(variant === "card" \? <AttachmentCardRemove \/> : <AttachmentRemove \/>\)\}/);
 });

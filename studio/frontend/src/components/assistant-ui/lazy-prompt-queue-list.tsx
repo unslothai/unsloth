@@ -3,6 +3,7 @@
 
 import { lazy, Suspense, type ComponentProps } from "react";
 import type { PromptQueueList as QueueList } from "./prompt-queue-list";
+import { useT } from "@/i18n";
 
 const List = lazy(() =>
   import("./prompt-queue-list").then((module) => ({
@@ -11,11 +12,12 @@ const List = lazy(() =>
 );
 
 export function PromptQueueList(props: ComponentProps<typeof QueueList>) {
+  const t = useT();
   return (
     <Suspense
       fallback={
         <div role="status" className="px-5 py-2 text-sm text-muted-foreground">
-          Loading queued prompts
+          {t("promptQueue.loading")}
         </div>
       }
     >

@@ -43,6 +43,7 @@ export function SidebarEdgeTrigger({
     setPeeking,
     toggleSidebar,
     width,
+    widthScale,
     storedWidth,
     maxWidth,
     setWidth,
@@ -86,6 +87,7 @@ export function SidebarEdgeTrigger({
         stored={storedWidth}
         min={SIDEBAR_WIDTH_MIN}
         max={maxWidth}
+        scale={widthScale}
         clamp={clampSidebarWidth}
         setWidth={setWidth}
         resetWidth={resetWidth}
