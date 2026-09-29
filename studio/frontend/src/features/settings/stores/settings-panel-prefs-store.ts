@@ -14,12 +14,15 @@ export interface SettingsPanelPrefsState {
   // null model means "follow whichever model the server has resident".
   agentsAgent: string | null;
   agentsModel: string | null;
+  // null means "follow the shell inferred from the client / Studio host".
+  agentsOs: ExampleOs | null;
   // the quant carries the model it was picked for, so remembering a quant alone
   // never pins a model the tab would otherwise keep following.
   agentsVariant: string | null;
   agentsVariantModel: string | null;
   setAgentsAgent: (agent: string | null) => void;
   setAgentsModel: (model: string | null, variant: string | null) => void;
+  setAgentsOs: (os: ExampleOs) => void;
   setAgentsVariant: (model: string, variant: string) => void;
 
   // null os means "follow the detected device type".
@@ -67,6 +70,11 @@ function sanitize(
     ...current,
     agentsAgent: text(raw.agentsAgent),
     agentsModel,
+    agentsOs:
+      typeof raw.agentsOs === "string" &&
+      (EXAMPLE_OS_VALUES as string[]).includes(raw.agentsOs)
+        ? (raw.agentsOs as ExampleOs)
+        : null,
     // A quant with no model to scope it to can never be applied.
     agentsVariant: agentsVariantModel ? agentsVariant : null,
     agentsVariantModel: agentsVariant ? agentsVariantModel : null,
@@ -90,12 +98,14 @@ export const useSettingsPanelPrefsStore = create<SettingsPanelPrefsState>()(
     (set) => ({
       agentsAgent: null,
       agentsModel: null,
+      agentsOs: null,
       agentsVariant: null,
       agentsVariantModel: null,
       setAgentsAgent: (agentsAgent) => set({ agentsAgent }),
       // picking a model carries its quant, and clearing it clears that quant.
       setAgentsModel: (agentsModel, agentsVariant) =>
         set({ agentsModel, agentsVariant, agentsVariantModel: agentsModel }),
+      setAgentsOs: (agentsOs) => set({ agentsOs }),
       setAgentsVariant: (agentsVariantModel, agentsVariant) =>
         set({ agentsVariant, agentsVariantModel }),
 

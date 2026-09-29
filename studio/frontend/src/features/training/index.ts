@@ -87,6 +87,10 @@ export {
 export { useTrainingReadiness } from "./hooks/use-training-readiness";
 export { useTrainingResourceNotices } from "./hooks/use-training-resource-notices";
 export {
+  type TrainingTransformersUpgradeNotice,
+  useTrainingTransformersUpgradeNotice,
+} from "./hooks/use-training-transformers-upgrade-notice";
+export {
   cacheLocalPathMatchesSelection,
   cachedInventoryPathMatchesSelection,
 } from "./lib/cache-reference";

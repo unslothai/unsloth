@@ -8,10 +8,11 @@
 // apparently-working empty Knowledge bases page whose Create button could only 503.
 
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-import { registerBundlerResolver } from "./helpers/kit.ts";
+import { readSrc, registerBundlerResolver } from "./helpers/kit.ts";
+
+const RAG_API = readSrc("features/rag/api/rag-api.ts");
 
 registerBundlerResolver();
 
@@ -31,10 +32,6 @@ function resetAvailability() {
     reason: null,
     answered: false,
   });
-}
-
-function readSrc(path: string) {
-  return readFile(new URL(`../src/${path}`, import.meta.url), "utf8");
 }
 
 /** The body of a top-level function, so an assertion cannot pass on a neighbour's code. */
@@ -204,15 +201,14 @@ test("the KB list's own 200 does not overrule its marker", () => {
   );
 });
 
-// Three call sites, because two of them bypass ragRequest.
+// four call sites, because three of them bypass ragRequest
 test("every RAG response path reports availability", async () => {
-  const src = await readSrc("features/rag/api/rag-api.ts");
   assert.match(
-    src,
+    RAG_API,
     /import \{ noteRagAvailability, noteRagResponse \} from "\.\/rag-availability";/,
     "rag-api does not read the availability contract at all",
   );
-  const request = functionBody(src, "ragRequest");
+  const request = functionBody(RAG_API, "ragRequest");
   assert.match(
     request,
     /noteRagResponse\(204, null\)/,
@@ -223,23 +219,34 @@ test("every RAG response path reports availability", async () => {
     /noteRagResponse\(response\.status, json\);\n\s*if \(!response\.ok\)/,
     "the 503 is turned straight into a thrown Error, so nothing records it",
   );
-  const upload = functionBody(src, "ragUpload");
+  const upload = functionBody(RAG_API, "ragUpload");
   assert.match(
     upload,
     /noteRagResponse\(response\.status, json\)/,
     "ragUpload bypasses ragRequest, so its 503 is still dropped",
   );
-  const stream = functionBody(src, "streamJobEvents");
+  const stream = functionBody(RAG_API, "openEventStream");
   assert.match(
     stream,
     /noteRagResponse\(response\.status, body\)/,
-    "the SSE endpoint bypasses ragRequest too",
+    "the SSE endpoints bypass ragRequest too",
   );
+  assert.match(
+    functionBody(RAG_API, "boundedEventStream"),
+    /openEventStream\(/,
+    "the budgeted stream opens without the availability check",
+  );
+  for (const generator of ["streamJobEvents", "streamFolderSyncJobEvents"]) {
+    assert.match(
+      functionBody(RAG_API, generator),
+      /boundedEventStream</,
+      `${generator} opens its stream outside the budgeted opener`,
+    );
+  }
 });
 
 test("listKnowledgeBases reads the marker before returning the array", async () => {
-  const src = await readSrc("features/rag/api/rag-api.ts");
-  const list = functionBody(src, "listKnowledgeBases");
+  const list = functionBody(RAG_API, "listKnowledgeBases");
   assert.match(
     list,
     /ragAvailable\?: boolean;/,

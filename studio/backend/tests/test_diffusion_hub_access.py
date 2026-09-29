@@ -134,7 +134,7 @@ def test_a_self_referential_chain_terminates():
 
 
 def test_an_ambient_token_counts_as_a_token(monkeypatch):
-    """With token=None the Hub still uses HF_TOKEN or the cached login, so keying off Studio's
+    """With token=None the Hub still uses HF_TOKEN or the cached login, so keying off Unsloth's
     own token alone tells an already-authenticated user to add a token they have."""
     import huggingface_hub.utils as hub_utils
 

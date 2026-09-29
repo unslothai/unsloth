@@ -102,7 +102,7 @@ foreach ($file in @("install.ps1", "studio/setup.ps1")) {
     # --- the cap only rewrites the families it can replace ---------------------
     $script:FakeSmiStdout = "7.0"
     Check "cap cu130 on a V100 -> cu126"              ((Get-CudaFamilyCappedForPreTuring 'cu130' "nvidia-smi") -eq 'cu126')
-    Check "cap cu128 on a V100 -> cu128 (floor 70)"   ((Get-CudaFamilyCappedForPreTuring 'cu128' "nvidia-smi") -eq 'cu128')
+    Check "cap cu128 on a V100 -> cu126 (floor 75)"   ((Get-CudaFamilyCappedForPreTuring 'cu128' "nvidia-smi") -eq 'cu126')
     Check "cap cu126 is a no-op"                      ((Get-CudaFamilyCappedForPreTuring 'cu126' "nvidia-smi") -eq 'cu126')
     Check "cap cu124 is a no-op"                      ((Get-CudaFamilyCappedForPreTuring 'cu124' "nvidia-smi") -eq 'cu124')
     Check "cap cpu is a no-op"                        ((Get-CudaFamilyCappedForPreTuring 'cpu' "nvidia-smi") -eq 'cpu')

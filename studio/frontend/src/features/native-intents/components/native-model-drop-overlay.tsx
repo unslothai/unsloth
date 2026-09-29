@@ -6,18 +6,26 @@ function overlayCopy(state: NativeModelDropState): { title: string; description:
   if (state.status === "invalid") {
     return {
       title: "Can't use these files",
-      description: "Drop a .gguf model, or documents to chat with.",
+      description:
+        state.reason ?? "Drop a .gguf model, or documents to chat with.",
     };
   }
   if (state.status === "attach") {
-    // Only documents are indexed; images ride the next message, so mixed says both.
+    // Only documents are indexed; images, audio and video ride the next message.
     const description =
-      state.kind === "images"
+      state.kind === "images" || state.kind === "audio" || state.kind === "video"
         ? "Attached to your next message."
         : state.kind === "mixed"
-          ? "Documents indexed, images attached to your next message."
+          ? "Documents indexed, attachments sent with your next message."
           : "Indexed for this chat.";
-    const noun = state.kind === "images" ? "image" : "file";
+    const noun =
+      state.kind === "images"
+        ? "image"
+        : state.kind === "audio"
+          ? "audio file"
+          : state.kind === "video"
+            ? "video"
+            : "file";
     return {
       title:
         state.count === 1

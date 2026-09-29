@@ -4,6 +4,9 @@ SDPA packed-mask fallback). The gate now probes the real op instead of guessing 
 compute-capability major version."""
 
 import pytest
+from real_accelerator import (
+    has_real_cuda,
+)  # tests/_shared, on sys.path via tests/conftest.py
 import torch
 import unsloth  # noqa: F401
 
@@ -33,19 +36,18 @@ def test_capability_gate(capability, probe_result, expect_disabled):
 
 
 @pytest.mark.skipif(
-    not (torch.cuda.is_available() and ad.HAS_XFORMERS),
+    not (has_real_cuda() and ad.HAS_XFORMERS),
     reason = "needs a CUDA GPU with a working xformers build",
 )
 @pytest.mark.skipif(
-    torch.cuda.is_available() and torch.cuda.get_device_capability()[0] >= 12,
+    has_real_cuda() and torch.cuda.get_device_capability()[0] >= 12,
     reason = "on real sm_120+ the probe legitimately returns False when the build ships no "
     "sm_120 kernel, so asserting True there would be a false failure",
 )
 def test_probe_shapes_are_valid_on_working_gpu():
-    # Guards against a malformed probe that raises on every GPU and would silently
-    # disable xformers on Blackwell even where it works. On a pre-sm_120 GPU with a
-    # functional xformers the real probe must succeed; sm_120+ is skipped above because
-    # there a False is a correct answer, not a malformed probe.
+    # Guards against a malformed probe that raises on every GPU and would silently disable xformers on Blackwell even
+    # where it works. On a pre-sm_120 GPU with a functional xformers the real probe must succeed; sm_120+ is skipped
+    # above because there a False is a correct answer, not a malformed probe.
     assert ad._xformers_runs_on_device() is True
 
 
@@ -54,9 +56,9 @@ def test_probe_shapes_are_valid_on_working_gpu():
     [(True, torch.bfloat16), (False, torch.float16)],
 )
 def test_probe_dtype_follows_bf16_support(monkeypatch, supports_bf16, expected_dtype):
-    # Pre-Ampere GPUs (sm < 80: Turing/Volta, e.g. T4/V100) run xformers fine in
-    # float16 but have no bfloat16 attention kernel, so a hardcoded bf16 probe would
-    # raise there, get swallowed to False, and misreport a working xformers as broken.
+    # Pre-Ampere GPUs (sm < 80: Turing/Volta, e.g.
+    # T4/V100) run xformers fine in float16 but have no bfloat16 attention kernel, so a hardcoded bf16 probe would raise
+    # there, get swallowed to False, and misreport a working xformers as broken.
     # The probe must pick its dtype from SUPPORTS_BFLOAT16 (no Turing GPU needed here).
     captured = {}
 
@@ -75,10 +77,9 @@ def test_probe_dtype_follows_bf16_support(monkeypatch, supports_bf16, expected_d
 
 
 def test_probe_syncs_and_fails_on_deferred_async_error(monkeypatch):
-    # A CUDA kernel launch is async: xformers_attention can return before the GPU
-    # reports a failure. The probe must synchronize so a deferred launch/runtime error
-    # is caught and disables xformers here, instead of surfacing later on an unrelated
-    # CUDA call (unslothai/unsloth#6828 review). No GPU needed: everything is stubbed.
+    # A CUDA kernel launch is async: xformers_attention can return before the GPU reports a failure.
+    # The probe must synchronize so a deferred launch/runtime error is caught and disables xformers here, instead of
+    # surfacing later on an unrelated CUDA call (unslothai/unsloth#6828 review).
     _bias = type(
         "B",
         (),
@@ -97,6 +98,6 @@ def test_probe_syncs_and_fails_on_deferred_async_error(monkeypatch):
         raise RuntimeError("CUDA error: an illegal memory access was encountered")
 
     monkeypatch.setattr(ad.torch.cuda, "synchronize", deferred_cuda_error)
-    # Without the synchronize the stubbed op returns cleanly and the probe wrongly
-    # reports True; the sync surfaces the deferred error so the probe returns False.
+    # Without the synchronize the stubbed op returns cleanly and the probe wrongly reports True; the sync surfaces the
+    # deferred error so the probe returns False.
     assert ad._xformers_runs_on_device() is False

@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { trainingModelMatchesTypeConstraint } from "../src/features/training/lib/model-type-constraint.ts";
 
-test("enforces optional onboarding model-type constraints", () => {
+test("enforces optional training model-type constraints", () => {
   const text = { hasModelTypeSignal: true };
   const vision = { isVision: true, hasModelTypeSignal: true };
   const audio = { isAudio: true, hasModelTypeSignal: true };
@@ -25,13 +25,13 @@ test("enforces optional onboarding model-type constraints", () => {
   assert.equal(trainingModelMatchesTypeConstraint(embeddings, "text"), false);
 });
 
-test("allows an unclassified local model through an onboarding constraint", () => {
+test("allows an unclassified local model through a training constraint", () => {
   assert.equal(trainingModelMatchesTypeConstraint({}, "vision"), true);
   assert.equal(trainingModelMatchesTypeConstraint({}, "audio"), true);
   assert.equal(trainingModelMatchesTypeConstraint({}, "embeddings"), true);
 });
 
-test("preserves every capability when enforcing onboarding constraints", () => {
+test("preserves every capability when enforcing training constraints", () => {
   const audioVision = {
     isAudio: true,
     isVision: true,

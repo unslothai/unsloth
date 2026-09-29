@@ -16,7 +16,7 @@ export function LoginPage() {
         length="70vh"
         className="opacity-35 dark:opacity-15"
       />
-      <Card className="relative z-10 w-full max-w-sm rounded-[2.5rem] px-7 py-8 shadow-border ring-0 sm:px-8 sm:py-10">
+      <Card className="relative z-10 w-full max-w-sm rounded-[3rem] px-7 py-8 shadow-[0_8px_32px_rgba(0,0,0,0.06)] ring-0 dark:shadow-none sm:px-8 sm:py-10">
         <AuthForm mode="login" />
       </Card>
     </div>

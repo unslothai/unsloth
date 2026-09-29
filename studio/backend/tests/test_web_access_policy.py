@@ -1,16 +1,15 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import sys
 import urllib.error
 from email.message import Message
-from types import SimpleNamespace
 
 import pytest
 
 from core.inference import tools
 from core.inference.tool_loop_controller import is_tool_error
 from core.inference.web_access_policy import (
+    _normalized_domain_tuple,
     check_url_access,
     normalize_website_policy,
     scope_search_query,
@@ -90,6 +89,26 @@ def test_policy_normalizes_idna_deduplicates_and_rejects_urls():
         normalize_website_policy({"allowedDomains": ["https://arxiv.org"]})
 
 
+def test_oversized_raw_domains_normalize_without_entering_the_cache():
+    # Nameprep deletes U+00AD, so 100k soft hyphens still normalise to a valid domain. The
+    # memo key is the caller's raw tuple, so caching one would pin it for the life of the
+    # process; it must normalise on the uncached path instead.
+    normalize_website_policy({})  # warm the empty-list key so the counts below are exact
+    padded = "a" + "\u00ad" * 100_000 + ".com"
+    before = _normalized_domain_tuple.cache_info().currsize
+    assert normalize_website_policy({"allowedDomains": [padded]}) == {
+        "allowedDomains": ["a.com"],
+        "blockedDomains": [],
+    }
+    assert _normalized_domain_tuple.cache_info().currsize == before
+    # A domain of a plausible length still takes the cached path.
+    assert normalize_website_policy({"allowedDomains": ["cached.example"]}) == {
+        "allowedDomains": ["cached.example"],
+        "blockedDomains": [],
+    }
+    assert _normalized_domain_tuple.cache_info().currsize == before + 1
+
+
 def test_policy_is_injected_into_prompts_and_search_queries():
     prompt = website_policy_prompt(ARXIV_ONLY)
     assert "Only search or fetch" in prompt
@@ -111,6 +130,7 @@ def test_web_search_filters_results_before_model_exposure(monkeypatch):
             self,
             query,
             max_results = 5,
+            **kwargs,
         ):
             queries.append((query, max_results))
             return [
@@ -119,7 +139,7 @@ def test_web_search_filters_results_before_model_exposure(monkeypatch):
                 {"title": "Deceptive", "href": "https://arxiv.org.evil.test", "body": "Blocked"},
             ]
 
-    monkeypatch.setitem(sys.modules, "ddgs", SimpleNamespace(DDGS = FakeDDGS))
+    monkeypatch.setattr("ddgs.DDGS", FakeDDGS)
     result = tools._web_search("latest paper", website_policy = ARXIV_ONLY)
 
     # A policy filters after the search, so a deeper candidate pool is requested.
@@ -146,10 +166,11 @@ def test_web_search_refills_past_disallowed_results(monkeypatch):
             self,
             query,
             max_results = 5,
+            **kwargs,
         ):
             return blocked_then_allowed[:max_results]
 
-    monkeypatch.setitem(sys.modules, "ddgs", SimpleNamespace(DDGS = FakeDDGS))
+    monkeypatch.setattr("ddgs.DDGS", FakeDDGS)
     result = tools._web_search("q", website_policy = {"blockedDomains": ["example.com"]})
 
     assert "arxiv.org/abs/0" in result
@@ -169,11 +190,12 @@ def test_web_search_without_a_policy_does_not_overfetch(monkeypatch):
             self,
             query,
             max_results = 5,
+            **kwargs,
         ):
             queries.append((query, max_results))
             return [{"title": "T", "href": "https://a.example/1", "body": "B"}]
 
-    monkeypatch.setitem(sys.modules, "ddgs", SimpleNamespace(DDGS = FakeDDGS))
+    monkeypatch.setattr("ddgs.DDGS", FakeDDGS)
     tools._web_search("q", website_policy = None)
     # A run always stores a normalized policy, so the unrestricted case is an object with empty
     # lists, not None. Neither may pay the deeper-pool latency.
@@ -210,6 +232,7 @@ def test_web_search_flattens_source_framing_in_untrusted_metadata(monkeypatch):
             self,
             query,
             max_results = 5,
+            **kwargs,
         ):
             return [
                 {
@@ -222,7 +245,7 @@ def test_web_search_flattens_source_framing_in_untrusted_metadata(monkeypatch):
                 }
             ]
 
-    monkeypatch.setitem(sys.modules, "ddgs", SimpleNamespace(DDGS = FakeDDGS))
+    monkeypatch.setattr("ddgs.DDGS", FakeDDGS)
     result = tools._web_search("paper", website_policy = ARXIV_ONLY)
     assert result.count("\nURL:") == 1
     assert "URL: https://arxiv.org/abs/real" in result
@@ -233,7 +256,7 @@ def test_direct_fetch_rejects_blocked_host_before_dns(monkeypatch):
     monkeypatch.setattr(
         tools,
         "_validate_and_resolve_host",
-        lambda hostname, port: resolved.append((hostname, port)) or (True, "", "1.1.1.1"),
+        lambda hostname, port: resolved.append((hostname, port)) or (True, "", ["1.1.1.1"]),
     )
     result = tools._fetch_page_text(
         "https://example.com/article",
@@ -248,7 +271,7 @@ def test_direct_fetch_rechecks_every_redirect_before_dns(monkeypatch):
     monkeypatch.setattr(
         tools,
         "_validate_and_resolve_host",
-        lambda hostname, port: resolved.append((hostname, port)) or (True, "", "1.1.1.1"),
+        lambda hostname, port: resolved.append((hostname, port)) or (True, "", ["1.1.1.1"]),
     )
     headers = Message()
     headers["Location"] = "https://example.com/escaped"
@@ -275,10 +298,11 @@ def _search_with_raising_ddgs(monkeypatch, exc: Exception) -> str:
             self,
             query,
             max_results = 5,
+            **kwargs,
         ):
             raise exc
 
-    monkeypatch.setitem(sys.modules, "ddgs", SimpleNamespace(DDGS = FakeDDGS))
+    monkeypatch.setattr("ddgs.DDGS", FakeDDGS)
     return tools._web_search("q", timeout = 7)
 
 

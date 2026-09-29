@@ -1,12 +1,10 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
-#
 # Run install.sh and SIGTERM it partway through, reproducing a user quitting the desktop
 # app mid-install: main.rs cleanup_child_processes() -> install::stop_install() kills the
 # installer PROCESS GROUP (install.rs:798-807). Group, not leader: the `uv`/`python`
 # children would otherwise finish the dep pass and the leg would prove nothing.
-#
 # Usage: bash .github/scripts/interrupt-install.sh "<marker>" "<logfile>" [-- install args]
 #   <marker>  log regex to wait for before killing, e.g. "studio deps"; "" kills at deadline.
 # Env: KILL_AT_SECONDS deadline (default 900), KILL_GRACE grace before SIGKILL (default 10)
@@ -88,7 +86,6 @@ for i in $(seq 1 $(( KILL_AT_SECONDS * 5 ))); do
     # staging run 30419729244 into a LATER phase, and in 30426111484 it carried the macOS
     # torch leg from "Installing PyTorch" into "Installing Unsloth", a step the workflow
     # called minutes long that finished in under three seconds.
-    #
     # Between the grep and the signal the installer can still exit on its own, which would
     # record marker-hit over an install that interrupted nothing.
     if ! kill -0 "$PID" 2>/dev/null; then

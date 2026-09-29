@@ -54,9 +54,5 @@ def test_bad_mappings_redirect_every_listed_name():
 
 def test_bad_mapping_redirects_keep_canonical_repo_case():
     get_model_name, _ = _load_get_model_name()
-    expected = {
-        "Qwen/Qwen3-32B": "unsloth/Qwen3-32B-bnb-4bit",
-        "Qwen/Qwen3-30B-A3B": "unsloth/Qwen3-30B-A3B",
-    }
-    for name, canonical in expected.items():
-        assert get_model_name(name, load_in_4bit = True) == canonical
+    assert get_model_name("Qwen/Qwen3-32B", load_in_4bit = True) == "unsloth/Qwen3-32B-bnb-4bit"
+    assert get_model_name("Qwen/Qwen3-30B-A3B", load_in_4bit = True) == "unsloth/Qwen3-30B-A3B"

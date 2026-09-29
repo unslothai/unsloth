@@ -14,8 +14,9 @@ import importlib.util
 import os
 import sys
 
-# gfx -> (marketing name, (capability major, minor), torch.version.hip). hip is
-# the ROCm build torch was made against (RDNA2/3 ship 6.x; gfx1102/115x/RDNA4 7.2).
+# gfx -> (marketing name, (capability major, minor), torch.version.hip).
+# hip is the ROCm build torch was made against (RDNA2/3 ship 6.x;
+# gfx1102/115x/RDNA4 7.2).
 _PROFILES: dict[str, tuple[str, tuple[int, int], str]] = {
     "gfx1030": ("AMD Radeon RX 6900 XT", (10, 3), "6.4.43483"),  # RDNA2
     "gfx1031": ("AMD Radeon RX 6700 XT", (10, 3), "6.4.43483"),
@@ -56,7 +57,6 @@ def apply(gfx: str = "gfx1100", device_count: int = 1) -> None:
 
     _cuda_spoof().apply()  # is_available/device_count/streams/rng/amp/...
 
-    # Overlay the AMD identity on top of the (NVIDIA-shaped) CUDA spoof.
     torch.version.hip = hip
     torch.version.cuda = None
     torch.cuda.device_count = lambda: device_count
