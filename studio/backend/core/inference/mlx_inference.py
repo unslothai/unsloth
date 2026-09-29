@@ -2499,6 +2499,7 @@ def _fitted_context(
     retains_history: bool,
     kv_bits = None,
     is_vlm = False,
+    eligibility = None,
 ):
     """The fit for a resident model and the eligibility verdict it was priced under."""
     try:
@@ -2506,7 +2507,9 @@ def _fitted_context(
     except Exception as exc:
         logger.debug("MLX snapshot unavailable for %s: %s", model_name, exc)
         return None, None
-    verdict = None if kv_bits is None else _kv_quant_eligibility(model, is_vlm, kv_bits)
+    verdict = eligibility
+    if verdict is None and kv_bits is not None:
+        verdict = _kv_quant_eligibility(model, is_vlm, kv_bits)
     fitted = mlx_fit_to_memory(
         model_dir,
         ceiling,
@@ -4462,7 +4465,17 @@ class MLXInferenceBackend:
             if self._turboquant
             else ""
         )
-        use_vlm = is_vision or (self._turboquant and not self._turboquant_refusal)
+        # mlx-lm cannot batch a quantized cache; mlx-vlm, which also ships text architectures, can.
+        batches_quantized_text = (
+            kv_bits is not None
+            and not (is_distributed or is_lora)
+            and _row_quantized_cache_gap() is None
+        )
+        use_vlm = (
+            is_vision
+            or (self._turboquant and not self._turboquant_refusal)
+            or batches_quantized_text
+        )
         self._distributed_group = distributed_group
         self._distributed_rank = distributed_rank
         self._distributed_world_size = distributed_size
@@ -4542,10 +4555,22 @@ class MLXInferenceBackend:
             if is_vision or not use_vlm or is_metal_queue_dead(exc):
                 raise
             logger.warning(
-                "TurboQuant load of %s through mlx-vlm failed (%s); serving through mlx-lm without it",
+                "Load of %s through mlx-vlm for its KV quantization failed (%s); serving through mlx-lm",
                 model_name,
                 exc,
             )
+        _eligibility = None
+        if model is not None and batches_quantized_text and not (is_vision or self._turboquant):
+            _eligibility = _kv_quant_eligibility(model, True, _normalize_mlx_kv_bits(kv_bits))
+            verdict, reason, _retainable = _eligibility
+            if verdict not in ("full", "partial"):
+                # Unquantized, the load gains nothing from mlx-vlm's batch.
+                logger.info(
+                    "MLX KV quantization not applied to %s (%s); serving through mlx-lm",
+                    model_name,
+                    reason,
+                )
+                model = tokenizer_or_processor = _eligibility = None
         if model is None:
             import gc
 
@@ -4553,7 +4578,8 @@ class MLXInferenceBackend:
             gc.collect()
             _drain_generation_streams(mx)
             mx.clear_cache()
-            self._turboquant_refusal = MLX_TURBOQUANT_TEXT_LOAD
+            if self._turboquant:
+                self._turboquant_refusal = MLX_TURBOQUANT_TEXT_LOAD
             use_vlm = False
             load_kwargs["text_only"] = True
             model, tokenizer_or_processor = FastMLXModel.from_pretrained(
@@ -4589,7 +4615,7 @@ class MLXInferenceBackend:
         # fit either at full width, which only ever under-promises.
         _requested_bits = None if self._turboquant else _normalize_mlx_kv_bits(kv_bits)
         _fitted_ctx, _eligibility = (
-            (None, None)
+            (None, _eligibility)
             if not _priceable or _positive_int(max_seq_length) is not None
             else _fitted_context(
                 self._model,
@@ -4599,6 +4625,7 @@ class MLXInferenceBackend:
                 retains_history = not use_vlm or mlx_vlm_snapshot_store_available(),
                 kv_bits = _requested_bits,
                 is_vlm = use_vlm,
+                eligibility = _eligibility,
             )
         )
         if _fitted_ctx:

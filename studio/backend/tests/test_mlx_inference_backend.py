@@ -3176,6 +3176,68 @@ def test_a_text_model_mlx_vlm_cannot_load_is_served_without_turboquant(monkeypat
     assert attempts == [(False, None)]
 
 
+def test_a_uniformly_quantized_text_load_goes_through_mlx_vlm_only_when_that_batches(monkeypatch):
+    pytest.importorskip("mlx.core")
+    from core.inference import mlx_inference
+
+    engine = _batch_engine(monkeypatch)
+    attempts, broken, probes = [], [], []
+
+    class _Loader:
+        @staticmethod
+        def from_pretrained(name, **kwargs):
+            attempts.append(kwargs["text_only"])
+            if broken and not kwargs["text_only"]:
+                raise ValueError("Model type llama4_text not supported.")
+            return SimpleNamespace(config = {}), SimpleNamespace()
+
+    loader = types.ModuleType("unsloth_zoo.mlx.loader")
+    loader.FastMLXModel = _Loader
+    monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx.loader", loader)
+    monkeypatch.setattr(mlx_inference, "_classify_mlx_audio_type", lambda *a, **k: None)
+    monkeypatch.setattr(
+        mlx_inference.MLXInferenceBackend, "_resolve_context_lengths", lambda *a: (2048, 2048, 2048)
+    )
+    text = SimpleNamespace(identifier = "org/text", is_vision = False, is_lora = False)
+
+    def routes(
+        kv_quant,
+        gap = None,
+        is_lora = False,
+        verdict = "full",
+        max_seq_length = 2048,
+    ):
+        attempts.clear()
+        probes.clear()
+        text.is_lora = is_lora
+        monkeypatch.setattr(
+            engine, "row_quantized_prompt_cache_unavailable_reason", lambda: gap, raising = False
+        )
+        monkeypatch.setattr(
+            mlx_inference,
+            "_kv_quant_eligibility",
+            lambda *a, **k: probes.append(a) or (verdict, "no cache", True),
+        )
+        backend = mlx_inference.MLXInferenceBackend()
+        backend.load_model(text, kv_quant = kv_quant, max_seq_length = max_seq_length)
+        return list(attempts), backend._turboquant_refusal
+
+    # The verdict that picked the route is the one the load's policy and fit use.
+    for max_seq_length in (2048, 0):
+        assert routes("4", max_seq_length = max_seq_length) == ([False], "")
+        assert len(probes) == 1
+    assert routes("4", gap = "old mlx-vlm") == ([True], "")
+    assert routes("auto") == ([True], "")
+    assert routes("4", is_lora = True) == ([True], "")
+    # Unquantized, it would only trade mlx-lm for mlx-vlm without batching.
+    assert routes("4", verdict = "partial") == ([False], "")
+    assert routes("4", verdict = "none") == ([False, True], "")
+    assert routes("tq-4", verdict = "none") == ([False], "")
+    # An architecture mlx-vlm lacks keeps the mlx-lm load, with no TurboQuant notice.
+    broken.append(True)
+    assert routes("4") == ([False, True], "")
+
+
 def test_reload_comparison_and_response_carry_the_resolved_setting():
     """A load-time knob must force a reload and reach the client.
 
@@ -5642,7 +5704,17 @@ def test_only_a_load_that_asked_for_nothing_is_fitted_to_the_machine(monkeypatch
     backend, info = load(max_seq_length = 0, kv_quant = "4")
     assert (verdicts, probes) == ([], [24_576])
     assert asked == [
-        ("fake/text", None, dict(load_in_4bit = True, retains_history = True, kv_bits = 4, is_vlm = False))
+        (
+            "fake/text",
+            None,
+            dict(
+                load_in_4bit = True,
+                retains_history = True,
+                kv_bits = 4,
+                is_vlm = False,
+                eligibility = None,
+            ),
+        )
     ]
     assert (info["context_length"], info["context_length_fitted"]) == (24_576, 24_576)
     assert (info["mlx_kv_bits"], info["mlx_context_budget"]) == (4, 24_576)
@@ -5691,6 +5763,7 @@ def test_only_a_load_that_asked_for_nothing_is_fitted_to_the_machine(monkeypatch
                     retains_history = reserved,
                     kv_bits = None,
                     is_vlm = True,
+                    eligibility = None,
                 ),
             )
         ]
