@@ -657,7 +657,12 @@ global NUM_LOGITS_TO_KEEP
 NUM_LOGITS_TO_KEEP = dict()
 
 
-def _set_generate_param(kwargs, name, value, overwrite = True):
+def _set_generate_param(
+    kwargs,
+    name,
+    value,
+    overwrite = True,
+):
     # Sets a generate() parameter that is also a recognized GenerationConfig field
     # (e.g. pad_token_id, cache_implementation, compile_config). Setting such a field
     # as a raw kwarg *alongside* an explicit generation_config (as TRL passes at
@@ -1344,7 +1349,9 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
     ):
         default_pad_token_id = self.config.pad_token_id
 
-    _set_generate_param(kwargs, "pad_token_id", kwargs.pop("pad_token_id", default_pad_token_id), overwrite = False)
+    _set_generate_param(
+        kwargs, "pad_token_id", kwargs.pop("pad_token_id", default_pad_token_id), overwrite = False
+    )
 
     try:
         kwargs["pixel_values"] = kwargs["pixel_values"].to(dtype)
@@ -1443,7 +1450,8 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
     if _is_decode_compile_model(self):
         _match_compiled_call(self, compile_decode)
     _set_generate_param(
-        kwargs, "cache_implementation",
+        kwargs,
+        "cache_implementation",
         dynamic_implementation if force_dynamic_cache else cache_implementation,
     )
     if cache_implementation is not None:
