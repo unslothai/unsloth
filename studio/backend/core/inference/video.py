@@ -993,6 +993,8 @@ class _VideoLoadState:
     denoiser_streamed: bool = False
     # MiB the offload tier holds on the device at once; None when nothing is offloaded.
     vram_floor_mib: Optional[int] = None
+    # MiB still on the device during the VAE decode (the streamed DiT has offloaded by then).
+    vram_decode_floor_mib: Optional[int] = None
     # MiniMax-H3: the streamed denoiser also holds a full pinned host copy, which the host floor counts twice.
     denoiser_host_copy: bool = False
     resolved: Optional[dict] = None
@@ -1843,9 +1845,11 @@ def _video_offload_vram_floor_mib(
     plan: Any,
     *,
     applied: bool = False,
+    phase: str = "peak",
 ) -> Optional[int]:
     """MiB of weights co-resident on the device under ``plan``'s tier, from the loaded modules; None if not offloaded.
-    ``applied`` reads which modules the hooks actually stream: an encoder that refused leaf offload stays resident."""
+    ``applied`` reads which modules the hooks actually stream: an encoder that refused leaf offload stays resident.
+    ``phase="decode"`` counts only what stays on the device during the VAE decode, after the DiT has offloaded."""
     policy = getattr(plan, "offload_policy", OFFLOAD_NONE)
     if policy == OFFLOAD_NONE:
         return None
@@ -1878,6 +1882,10 @@ def _video_offload_vram_floor_mib(
         denoisers = {n for n in sizes if n in _VIDEO_DENOISER_ATTRS}
         encoders = {n for n in sizes if n.startswith("text_encoder")}
         if policy == OFFLOAD_MODEL:
+            if phase == "decode":
+                # whole-module offload onloads one component at a time; the decode runs the decoders alone
+                decoders = [size for name, size in sizes.items() if name not in denoisers | encoders]
+                return int(max(decoders, default = 0) // (1024 * 1024))
             return int(max(sizes.values()) // (1024 * 1024))
         if policy == OFFLOAD_GROUP:
             streamed = (
@@ -1893,6 +1901,9 @@ def _video_offload_vram_floor_mib(
             # From the hooks alone: a refusing encoder stays resident, and the fallback may hook a DiT the plan kept.
             streamed = {name for name in denoisers | encoders if _video_group_hooked(modules[name])}
         held = sum(size for name, size in sizes.items() if name not in streamed)
+        if phase == "decode":
+            # streamed groups have all offloaded by the decode; only the residents remain
+            return int(held // (1024 * 1024))
         backend = getattr(getattr(plan, "device_memory", None), "backend", None)
         prefetch = backend not in ("mps", "cpu")
 
@@ -1926,17 +1937,24 @@ def video_offload_shortfall_message(
     width: Optional[int] = None,
     height: Optional[int] = None,
     frames: Optional[int] = None,
+    decode_floor_mib: Optional[int] = None,
 ) -> Optional[str]:
-    """Refusal when co-resident weights plus the activation headroom exceed the device, else None."""
+    """Refusal when co-resident weights plus the activation headroom exceed the device, else None.
+    Denoise and VAE decode are separate phases: the decoded-clip share is held only beside the weights still on the
+    device during the decode (``decode_floor_mib``, the full floor when unknown), never beside the streamed DiT."""
     headroom = DEFAULT_BASE_OVERHEAD_MIB
+    required = int(floor_mib) + headroom
     if width and height and frames:
         # decoded-clip share of the runtime estimate; its fixed 4 GiB denoise base over-refuses measured cells
-        headroom += max(
+        clip_mib = max(
             0,
             estimate_video_runtime_mib(width = width, height = height, num_frames = frames)
             - _VIDEO_DENOISE_ACTIVATION_MIB,
         )
-    required = int(floor_mib) + headroom
+        decode_floor = int(floor_mib if decode_floor_mib is None else min(decode_floor_mib, floor_mib))
+        if decode_floor + headroom + clip_mib > required:
+            floor_mib, headroom = decode_floor, headroom + clip_mib
+            required = decode_floor + headroom
     if int(available_mib) >= required:
         return None
     shape = f" for {width}x{height} at {frames} frames" if width and height and frames else ""
@@ -6232,6 +6250,14 @@ class VideoBackend:
                             pipe, dataclasses.replace(plan, offload_policy = offload_policy)
                         )
                     ),
+                    vram_decode_floor_mib = _video_offload_vram_floor_mib(
+                        pipe,
+                        plan
+                        if offload_policy == plan.offload_policy
+                        else dataclasses.replace(plan, offload_policy = offload_policy),
+                        applied = True,
+                        phase = "decode",
+                    ),
                     resolved = resolved,
                 )
                 self._precommit_globals = None
@@ -7791,6 +7817,7 @@ class VideoBackend:
                         width = width,
                         height = height,
                         frames = frames,
+                        decode_floor_mib = getattr(state, "vram_decode_floor_mib", None),
                     )
                     if shortfall is not None:
                         raise RuntimeError(shortfall)

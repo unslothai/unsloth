@@ -428,6 +428,11 @@ def test_vram_floor_adds_the_largest_onloaded_block_or_leaf():
     # streamed modules run in turn: VAE 3 plus the larger of DiT 5 and TE 4
     assert _video_offload_vram_floor_mib(pipe, _plan("streaming", "cuda")) == 8
     assert _video_offload_vram_floor_mib(pipe, _plan("streaming", "cpu")) == 6
+    # the VAE decode runs after the streamed DiT has offloaded: only the residents (or the decoder alone) remain
+    assert _video_offload_vram_floor_mib(pipe, _plan("group", "cuda"), phase = "decode") == 10
+    assert _video_offload_vram_floor_mib(pipe, _plan("group", "cuda", te = True), phase = "decode") == 3
+    assert _video_offload_vram_floor_mib(pipe, _plan("streaming", "cuda"), phase = "decode") == 3
+    assert _video_offload_vram_floor_mib(pipe, _plan("model", "cuda"), phase = "decode") == 3
 
 
 def test_shortfall_message_only_for_what_cannot_run():
@@ -582,6 +587,28 @@ def test_leaf_streaming_peak_keeps_an_enclosing_parent_group_onloaded():
     # inside block: its 1 MiB table plus leaf a and the prefetched leaf b
     assert _video_streamed_peak_bytes(root, "leaf_level", prefetch = True, size = size) == 5 * mib
     assert _video_streamed_peak_bytes(root, "leaf_level", prefetch = False, size = size) == 3 * mib
+
+
+def test_decoded_clip_share_sits_beside_the_decode_floor_not_the_streamed_dit():
+    """Denoise and VAE decode are separate phases: the clip share never stacks on the streamed DiT's weights."""
+    import inspect
+    import re
+
+    import core.inference.video as V
+
+    kwargs = dict(family = "f", floor_mib = 20000, placement = "x", width = 1280, height = 720, frames = 121)
+    # denoise needs 20000 + 2048; decode needs 3000 + 2048 + the clip share, so 23000 MiB is enough
+    assert V.video_offload_shortfall_message(**kwargs, available_mib = 23000, decode_floor_mib = 3000) is None
+    # unknown decode floor keeps the conservative sum
+    assert V.video_offload_shortfall_message(**kwargs, available_mib = 23000)
+    # a huge clip makes the decode phase the binding one, even with a small decode floor
+    big = dict(kwargs, floor_mib = 5000, width = 1920, height = 1080, frames = 241)
+    message = V.video_offload_shortfall_message(**big, available_mib = 12000, decode_floor_mib = 4000)
+    assert message and float(re.search(r"needs about ([0-9.]+) GiB", message).group(1)) > 20
+    # the generate guard hands the decode floor recorded at load to the check
+    src = inspect.getsource(V)
+    assert 'decode_floor_mib = getattr(state, "vram_decode_floor_mib", None)' in src
+    assert 'phase = "decode"' in src
 
 
 def test_applied_floor_counts_an_encoder_that_refused_leaf_offload():
