@@ -80,6 +80,7 @@ import {
 import { WORKFLOW_TABS, type WorkflowId } from "@/features/images/workflows";
 /* eslint-enable no-restricted-imports */
 import { cn } from "@/lib/utils";
+import { createNavigationNonce } from "@/lib/navigation-nonce";
 import { copyToClipboardFrom } from "@/lib/copy-to-clipboard";
 import { isTauri } from "@/lib/api-base";
 import { useWebUpdateCheck } from "@/hooks/use-web-update-check";
@@ -558,13 +559,6 @@ function formatRelativeShort(iso: string): string {
   return `${d}d`;
 }
 
-function createNavigationNonce(): string {
-  if (typeof globalThis.crypto?.randomUUID === "function") {
-    return globalThis.crypto.randomUUID();
-  }
-  return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-}
-
 function preloadSilently(request: Promise<unknown>): void {
   void request.catch(() => undefined);
 }
@@ -1004,39 +998,12 @@ export function AppSidebar() {
   const isStudioRoute = pathname === "/studio" || pathname.startsWith("/studio/");
   const [chatOpen, setChatOpen] = useState(true);
 
-  // Hover previews the flyout; a primary click pins that preview open. The trigger owns pointer
-  // clicks so Radix cannot interpret the already-hover-open menu as a request to close it.
-  const [moreHoverOpen, setMoreHoverOpen] = useState(false);
-  const [morePinnedOpen, setMorePinnedOpen] = useState(false);
-  const moreOpen = moreHoverOpen || morePinnedOpen;
-  const moreCloseTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const clearMoreCloseTimer = useCallback(() => {
-    if (!moreCloseTimer.current) return;
-    clearTimeout(moreCloseTimer.current);
-    moreCloseTimer.current = null;
+  const [moreOpen, setMoreOpen] = useState(false);
+  const [moreTooltipOpen, setMoreTooltipOpen] = useState(false);
+  const moreFocusReturning = useRef(false);
+  const handleMoreTooltipOpenChange = useCallback((next: boolean) => {
+    if (!(next && moreFocusReturning.current)) setMoreTooltipOpen(next);
   }, []);
-  const openMorePreview = useCallback(() => {
-    clearMoreCloseTimer();
-    setMoreHoverOpen(true);
-  }, [clearMoreCloseTimer]);
-  const closeMorePreviewSoon = useCallback(() => {
-    clearMoreCloseTimer();
-    moreCloseTimer.current = setTimeout(() => setMoreHoverOpen(false), 180);
-  }, [clearMoreCloseTimer]);
-  const handleMoreOpenChange = useCallback((next: boolean) => {
-    if (next) {
-      setMorePinnedOpen(true);
-      return;
-    }
-    setMorePinnedOpen(false);
-    setMoreHoverOpen(false);
-  }, []);
-  useEffect(
-    () => () => {
-      clearMoreCloseTimer();
-    },
-    [clearMoreCloseTimer],
-  );
   const [runsOpen, setRunsOpen] = useState(true);
 
   useEffect(() => {
@@ -5282,17 +5249,17 @@ export function AppSidebar() {
               })}
               {/* Unpinned destinations, behind one row. */}
               {overflowNavIds.length > 0 && (
-                <SidebarMenuItem
-                  onPointerEnter={openMorePreview}
-                  onPointerLeave={closeMorePreviewSoon}
-                >
+                <SidebarMenuItem>
                   <DropdownMenu
                     open={moreOpen}
-                    onOpenChange={handleMoreOpenChange}
+                    onOpenChange={setMoreOpen}
                     modal={false}
                   >
                     {/* Tooltip wraps the trigger rather than using the button's `tooltip` prop: that returns a Tooltip root, so DropdownMenuTrigger asChild would miss the DOM node. */}
-                    <Tooltip>
+                    <Tooltip
+                      open={moreTooltipOpen && !moreOpen}
+                      onOpenChange={handleMoreTooltipOpenChange}
+                    >
                       <TooltipPrimitive.Trigger asChild>
                         <DropdownMenuTrigger asChild>
                           <SidebarMenuButton
@@ -5300,19 +5267,6 @@ export function AppSidebar() {
                             // lives inside it. Keeps the row highlighted while the panel is open, after the pointer
                             // has left. Not data-state: the tooltip and menu triggers both write that one.
                             data-menu-open={moreOpen ? "true" : undefined}
-                            onPointerDownCapture={(event) => {
-                              if (event.button !== 0 || event.ctrlKey) return;
-                              event.preventDefault();
-                              event.stopPropagation();
-                              event.currentTarget.focus({ preventScroll: true });
-                              clearMoreCloseTimer();
-                              if (morePinnedOpen) {
-                                setMorePinnedOpen(false);
-                                setMoreHoverOpen(false);
-                              } else {
-                                setMorePinnedOpen(true);
-                              }
-                            }}
                             className="sidebar-nav-btn h-[calc(33px*var(--ui-space-scale,1))] rounded-full gap-[calc(8.5px*var(--ui-space-scale,1))] pl-3 pr-2.5 font-medium group-data-[collapsible=icon]:!p-0 group-data-[collapsible=icon]:!size-[calc(28px*var(--ui-space-scale,1))] group-data-[collapsible=icon]:my-[calc(2.5px*var(--ui-space-scale,1))] group-data-[collapsible=icon]:mx-auto"
                           >
                             <HugeiconsIcon
@@ -5341,8 +5295,12 @@ export function AppSidebar() {
                       align="start"
                       sideOffset={6}
                       className="w-48 p-1"
-                      onPointerEnter={openMorePreview}
-                      onPointerLeave={closeMorePreviewSoon}
+                      onCloseAutoFocus={() => {
+                        moreFocusReturning.current = true;
+                        queueMicrotask(() => {
+                          moreFocusReturning.current = false;
+                        });
+                      }}
                     >
                       {overflowNavIds.map((id) => {
                         const row = navRows[id];
@@ -5930,7 +5888,7 @@ export function AppSidebar() {
           </DialogDescription>
         </DialogHeader>
         {deleteTargetHasFiles(confirmingDelete) ? (
-          <div className="flex items-start justify-between gap-4 rounded-md border border-border/60 bg-muted/35 px-3 py-2.5">
+          <div className="flex items-start justify-between gap-4 rounded-md border border-border/60 bg-muted/35 px-3 py-2.5 dark:border-transparent">
             <label htmlFor="delete-files-on-delete" className="min-w-0 space-y-1">
               <span className="block text-sm font-medium text-foreground">
                 {t("shell.selection.deleteFilesLabel")}

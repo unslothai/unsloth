@@ -66,6 +66,7 @@ from core.inference.mcp_client import (
     call_tool_sync,
     get_cached_tools,
     in_failure_cooloff,
+    is_studio_decisions,
     is_stdio,
     list_tools_async,
     parse_server_headers,
@@ -13314,6 +13315,19 @@ def _mcp_specs_for_server(server: dict, mcp_tools: list[dict]) -> list[dict]:
     return specs
 
 
+def _enabled_mcp_servers(servers: list[dict]) -> list[dict]:
+    enabled = [server for server in servers if server.get("is_enabled")]
+    if not any(is_studio_decisions(server["url"]) for server in enabled):
+        return enabled
+    from utils import systemone_settings
+
+    return (
+        enabled
+        if systemone_settings.get_enabled()
+        else [server for server in enabled if not is_studio_decisions(server["url"])]
+    )
+
+
 def cached_mcp_tools() -> tuple[list[dict], bool]:
     """The MCP schemas already in cache, and whether that is the whole set.
 
@@ -13327,7 +13341,7 @@ def cached_mcp_tools() -> tuple[list[dict], bool]:
     server renders nothing on the completion path either, so skipping that one is exact rather than
     short. Callers that must not undercount should decline on False.
     """
-    servers = [s for s in mcp_servers_db.list_servers() if s.get("is_enabled")]
+    servers = _enabled_mcp_servers(mcp_servers_db.list_servers())
     if not stdio_mcp_enabled():
         servers = [s for s in servers if not is_stdio(s["url"])]
 
@@ -13345,9 +13359,7 @@ def cached_mcp_tools() -> tuple[list[dict], bool]:
 
 async def get_enabled_mcp_tools() -> list[dict]:
     # Keep the SQLite-backed server list off the event loop.
-    servers = [
-        s for s in await asyncio.to_thread(mcp_servers_db.list_servers) if s.get("is_enabled")
-    ]
+    servers = await asyncio.to_thread(lambda: _enabled_mcp_servers(mcp_servers_db.list_servers()))
     # Never spawn stdio servers when stdio is disabled on this host.
     if not stdio_mcp_enabled():
         servers = [s for s in servers if not is_stdio(s["url"])]

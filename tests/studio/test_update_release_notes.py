@@ -1999,8 +1999,12 @@ def test_the_rail_gutters_come_out_of_the_cap_and_not_the_cards():
         "paddingTop": "STACK_SHADOW_GUTTER_TOP",
         "paddingBottom": "STACK_SHADOW_GUTTER_BOTTOM",
         "paddingLeft": "STACK_SHADOW_GUTTER_LEFT",
-        "paddingRight": "STACK_CARD_INSET_RIGHT",
+        "paddingRight": "STACK_CARD_INSET_RIGHT_PAST_PANEL",
     }
+    assert re.search(
+        r"const STACK_CARD_INSET_RIGHT_PAST_PANEL =\s*`calc\(\$\{STACK_CARD_INSET_RIGHT\}px \+ var\(",
+        provider,
+    ), "the rail's right padding is no longer the px card inset plus the panel width"
     openings = _rail_openings(provider)
     assert len(openings) == 2, f"expected the browser and desktop rails, found {len(openings)}"
     for tag in openings:
@@ -2932,3 +2936,112 @@ def test_a_paragraph_install_block_does_not_swallow_deeper_headings(notes_module
     )
     stripped = notes_module.strip_release_body(body)
     assert stripped == "Intro.\n\n###### Deeply nested announcement\n\n- a real change"
+
+
+@pytest.fixture(autouse=True)
+def github_lockout(notes_module):
+    from utils.prebuilt import freshness_flow
+
+    freshness_flow._api_rate_limited_until = 0.0
+    notes_module.reset_release_notes_cache()
+    yield freshness_flow
+    freshness_flow._api_rate_limited_until = 0.0
+    notes_module.reset_release_notes_cache()
+
+
+@pytest.mark.parametrize(
+    ("url_override", "env", "expected"),
+    [
+        (None, {"GH_TOKEN": "ghp_gh", "GITHUB_TOKEN": "ghp_github"}, "Bearer ghp_github"),
+        (None, {"GH_TOKEN": "ghp_gh"}, "Bearer ghp_gh"),
+        ("https://mirror.example/releases", {"GH_TOKEN": "ghp_gh"}, None),
+        ("http://api.github.com/repos/x/releases", {"GITHUB_TOKEN": "ghp_secret"}, None),
+    ],
+)
+def test_where_the_release_notes_token_may_travel(
+    notes_module, github_lockout, monkeypatch, url_override, env, expected
+):
+    import urllib.error
+
+    seen = []
+
+    def capture(request, timeout=None):
+        seen.append(request)
+        raise urllib.error.URLError("offline")
+
+    monkeypatch.setattr(notes_module.urllib.request, "urlopen", capture)
+    for name in ("GH_TOKEN", "GITHUB_TOKEN"):
+        monkeypatch.delenv(name, raising=False)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    if url_override is None:
+        monkeypatch.delenv(notes_module.RELEASES_URL_ENV_VAR, raising=False)
+    else:
+        monkeypatch.setenv(notes_module.RELEASES_URL_ENV_VAR, url_override)
+    notes_module._fetch_latest_release()
+    assert seen[0].get_header("Authorization") == expected
+    assert "Authorization" not in seen[0].headers
+
+
+@pytest.mark.parametrize(
+    ("url_override", "status", "remaining", "body", "shared", "reported"),
+    [
+        (None, 403, "0", b"", True, True),
+        (None, 429, "4998", b"", True, True),
+        (None, 403, "4998", b'{"message": "secondary rate limit"}', True, True),
+        (None, 403, "4998", b"", False, False),
+        ("https://mirror.example/releases", 429, "0", b"", False, True),
+    ],
+)
+def test_which_release_note_refusals_reach_the_shared_lockout(
+    notes_module,
+    github_lockout,
+    monkeypatch,
+    url_override,
+    status,
+    remaining,
+    body,
+    shared,
+    reported,
+):
+    import email.message
+    import io
+    import urllib.error
+
+    if url_override is None:
+        monkeypatch.delenv(notes_module.RELEASES_URL_ENV_VAR, raising=False)
+    else:
+        monkeypatch.setenv(notes_module.RELEASES_URL_ENV_VAR, url_override)
+    headers = email.message.Message()
+    headers["X-RateLimit-Remaining"] = remaining
+    headers["X-RateLimit-Reset"] = str(int(time.time() + 1800))
+
+    def refuse(request, timeout=None):
+        raise urllib.error.HTTPError(request.full_url, status, "refused", headers, io.BytesIO(body))
+
+    monkeypatch.setattr(notes_module.urllib.request, "urlopen", refuse)
+    result = notes_module.get_latest_release()
+    assert (github_lockout.github_rate_limit_remaining() > 0) is shared
+    assert ("rate limit" in (result.error or "").lower()) is reported
+
+
+@pytest.mark.parametrize("url_override", [None, "https://mirror.example/releases"])
+def test_the_shared_lockout_parks_only_the_github_api(
+    notes_module, github_lockout, monkeypatch, url_override
+):
+    import urllib.error
+
+    if url_override is None:
+        monkeypatch.delenv(notes_module.RELEASES_URL_ENV_VAR, raising=False)
+    else:
+        monkeypatch.setenv(notes_module.RELEASES_URL_ENV_VAR, url_override)
+    github_lockout.hold_github_api(60)
+    calls = []
+
+    def capture(request, timeout=None):
+        calls.append(request.full_url)
+        raise urllib.error.URLError("offline")
+
+    monkeypatch.setattr(notes_module.urllib.request, "urlopen", capture)
+    notes_module.get_latest_release(refresh=True)
+    assert calls == ([] if url_override is None else [url_override])

@@ -1,6 +1,17 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogMedia,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import {
   Select,
@@ -33,6 +44,7 @@ import {
   resolveSystemOneDownload,
   unloadSystemOneModel,
   updateSystemOneSettings,
+  validateSystemOneSettings,
 } from "../api/systemone";
 import { SettingsRow } from "./settings-row";
 
@@ -62,6 +74,11 @@ export function DecisionApiSection(): ReactElement | null {
   const [planState, setPlanState] = useState<{
     model: string;
     plan: SystemOneDownloadPlan;
+  } | null>(null);
+  const [confirm, setConfirm] = useState<{
+    plan: SystemOneDownloadPlan;
+    patch: Parameters<typeof updateSystemOneSettings>[0];
+    model: string;
   } | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -108,7 +125,7 @@ export function DecisionApiSection(): ReactElement | null {
   useEffect(() => {
     if (!enabled || !model) return;
     let live = true;
-    resolveSystemOneDownload().then(
+    resolveSystemOneDownload(model).then(
       (next) => live && setPlanState({ model, plan: next }),
       (err) => live && setError(errorMessage(err)),
     );
@@ -120,8 +137,25 @@ export function DecisionApiSection(): ReactElement | null {
   const modelLabel = (name: string) =>
     MODEL_LABELS[name] ? t(MODEL_LABELS[name]) : name;
 
+  const resyncSettingsAfterError = async (message: string) => {
+    try {
+      setSettings(await loadSystemOneSettings());
+    } catch (refreshError) {
+      console.warn(
+        "Couldn't refresh Decision API settings after a rejected change.",
+        refreshError,
+      );
+    }
+    setError(message);
+  };
+
   const startDownload = async (next: SystemOneDownloadPlan) => {
-    if (!next.repo || next.cached || next.files.length === 0) return;
+    if (!next.repo || next.cached || next.files.length === 0) return false;
+    const downloadKey = jobKeyOf(
+      DOWNLOAD_KIND.MODEL,
+      next.repo,
+      scopedVariant(DOWNLOAD_SCOPE),
+    );
     try {
       const outcome = await downloadManager.requestStart({
         kind: DOWNLOAD_KIND.MODEL,
@@ -132,8 +166,16 @@ export function DecisionApiSection(): ReactElement | null {
         inventoryKind: "model",
         expectedBytes: next.sizeBytes,
       });
-      if (outcome === "started") return;
+      if (outcome === "started") {
+        const acceptedState =
+          useDownloadManagerStore.getState().jobs[downloadKey]?.state;
+        if (acceptedState === "running" || acceptedState === "complete") {
+          return true;
+        }
+      }
       if (outcome === "conflict" || outcome === "busy") {
+        toast.info(t("settings.apiKeys.decisionApi.downloadBusy"));
+      } else if (outcome === "started") {
         toast.info(t("settings.apiKeys.decisionApi.downloadBusy"));
       } else {
         toast.error(t("settings.apiKeys.decisionApi.downloadFailed"));
@@ -143,6 +185,7 @@ export function DecisionApiSection(): ReactElement | null {
         description: errorMessage(err) ?? undefined,
       });
     }
+    return false;
   };
 
   const apply = async (
@@ -152,16 +195,62 @@ export function DecisionApiSection(): ReactElement | null {
     setBusy(true);
     setError(null);
     try {
-      const next = await updateSystemOneSettings(patch);
+      // Offer the download on the switch, not on the first request: a first API call should not sit behind a 700 MB transfer.
+      const nextEnabled = patch.enabled ?? settings?.enabled;
+      const nextModel = patch.model ?? settings?.model;
+      const settingsPatch =
+        downloadAfter && settings
+          ? {
+              ...patch,
+              expectedEnabled: settings.enabled,
+              expectedModel: settings.model,
+            }
+          : patch;
+      let resolvedPlan: { model: string; plan: SystemOneDownloadPlan } | null =
+        null;
+      if (nextEnabled && nextModel && downloadAfter) {
+        const nextPlan = await resolveSystemOneDownload(nextModel);
+        if (!nextPlan.cached) {
+          if (nextPlan.error || !nextPlan.repo || nextPlan.files.length === 0) {
+            throw new Error(
+              nextPlan.error ??
+                t("settings.apiKeys.decisionApi.downloadFailed"),
+            );
+          }
+          setConfirm({
+            plan: nextPlan,
+            patch: settingsPatch,
+            model: nextModel,
+          });
+          return;
+        }
+        resolvedPlan = { model: nextModel, plan: nextPlan };
+      }
+      const next = await updateSystemOneSettings(settingsPatch);
       setSettings(next);
-      // Download on the switch, not on the first request: a first API call should not sit behind a 700 MB transfer.
-      if (next.enabled && downloadAfter) {
-        const nextPlan = await resolveSystemOneDownload();
-        setPlanState({ model: next.model, plan: nextPlan });
-        await startDownload(nextPlan);
+      if (resolvedPlan?.model === next.model) setPlanState(resolvedPlan);
+    } catch (err) {
+      await resyncSettingsAfterError(
+        errorMessage(err) ?? t("settings.apiKeys.decisionApi.saveFailed"),
+      );
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const acceptDownload = async (accepted: NonNullable<typeof confirm>) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await validateSystemOneSettings(accepted.patch);
+      if (!(await startDownload(accepted.plan))) return;
+      const next = await updateSystemOneSettings(accepted.patch);
+      setSettings(next);
+      if (next.model === accepted.model) {
+        setPlanState({ model: accepted.model, plan: accepted.plan });
       }
     } catch (err) {
-      setError(
+      await resyncSettingsAfterError(
         errorMessage(err) ?? t("settings.apiKeys.decisionApi.saveFailed"),
       );
     } finally {
@@ -419,6 +508,46 @@ export function DecisionApiSection(): ReactElement | null {
           </Select>
         </SettingsRow>
       </div>
+
+      <AlertDialog
+        open={confirm !== null}
+        onOpenChange={(open) => {
+          if (!open && confirm) {
+            setConfirm(null);
+          }
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogMedia>
+              <HugeiconsIcon icon={TaskDone01Icon} strokeWidth={1.75} />
+            </AlertDialogMedia>
+            <AlertDialogTitle>
+              {t("settings.apiKeys.decisionApi.downloadConfirmTitle", {
+                model: modelLabel(confirm?.model ?? settings.model),
+              })}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {t("settings.apiKeys.decisionApi.downloadConfirmBody", {
+                size: formatBytes(confirm?.plan.sizeBytes || sizeBytes),
+              })}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={(event) => {
+                event.preventDefault();
+                const accepted = confirm;
+                setConfirm(null);
+                if (accepted) void acceptDownload(accepted);
+              }}
+            >
+              {t("settings.apiKeys.decisionApi.download")}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </section>
   );
 }

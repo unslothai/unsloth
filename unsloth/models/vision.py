@@ -113,6 +113,7 @@ from .loader_utils import (
     _prepare_compressed_tensors_model,
     planner_class_mismatch_reason,
     planner_model_class,
+    exclude_no_placement_params,
     planner_quantization_kwargs,
     requested_device_map,
     resolve_unsloth_device_map,
@@ -204,19 +205,34 @@ __all__ = [
 ]
 
 
-def _infer_device_map_from_loaded_model(model):
-    """Build a compact device_map by inspecting actual parameter placements."""
+def _infer_device_map_from_loaded_model(model, skip = ()):
+    """Build a compact device_map from actual parameter placements, leaving `skip` names off."""
     device_map = {}
 
     def _assign(module, prefix):
-        params = list(module.named_parameters(remove_duplicate = False))
+        params = [
+            (n, p)
+            for n, p in module.named_parameters(remove_duplicate = False)
+            if (f"{prefix}.{n}" if prefix else n) not in skip
+        ]
+        if (
+            not params
+            and skip
+            and any(
+                (f"{prefix}.{n}" if prefix else n) in skip
+                for n, _ in module.named_parameters(remove_duplicate = False)
+            )
+        ):
+            return
         if not params:
             bufs = list(module.named_buffers())
             if bufs:
                 device_map[prefix] = bufs[0][1].device
             return
         devices = {p.device for _, p in params}
-        if len(devices) == 1:
+        # A key covering a skipped tensor would make dispatch_model move it too: recurse instead.
+        holds_skipped = bool(skip) and any(not prefix or s.startswith(prefix + ".") for s in skip)
+        if len(devices) == 1 and not holds_skipped:
             device_map[prefix] = next(iter(devices))
         else:
             for child_name, child in module.named_children():
@@ -225,6 +241,8 @@ def _infer_device_map_from_loaded_model(model):
             for pname, param in module.named_parameters(remove_duplicate = False):
                 if "." not in pname:
                     full = f"{prefix}.{pname}" if prefix else pname
+                    if full in skip:
+                        continue
                     if not any(full == k or full.startswith(k + ".") for k in device_map):
                         device_map[full] = param.device
 
@@ -437,6 +455,58 @@ def _move_gemma4_token_types_to_input_embeddings(model):
     inner.register_forward_pre_hook(to_input_embeddings, with_kwargs = True)
 
 
+def _hook_no_placement_ancestors(model):
+    """Input-align hooks on single-card ancestors of a CPU-kept no-placement table (split model)."""
+    from .loader_utils import no_placement_tensor_names
+
+    unplaced = no_placement_tensor_names(model)
+    if not unplaced:
+        return 0
+    try:
+        from accelerate.hooks import AlignDevicesHook, add_hook_to_module
+    except ImportError:
+        return 0
+    placed_devices = {
+        p.device
+        for n, p in model.named_parameters()
+        if n not in unplaced and p.device.type not in ("cpu", "meta")
+    }
+    if len(placed_devices) < 2:
+        return 0
+    names = getattr(model, "_no_placement_params", None) or []
+    owners = {
+        n.rsplit(".", 1)[0] for n in unplaced if any(n == x or n.endswith("." + x) for x in names)
+    }
+    skip_keys = getattr(model, "_skip_keys_device_placement", None)
+    hooked = 0
+    for owner in owners:
+        parts = owner.split(".")
+        for depth in range(1, len(parts)):
+            path = ".".join(parts[:depth])
+            module = model.get_submodule(path)
+            if hasattr(module, "_hf_hook"):
+                continue
+            devices = {
+                t.device
+                for n, t in list(module.named_parameters(prefix = path))
+                + list(module.named_buffers(prefix = path))
+                if n not in unplaced
+            }
+            if len(devices) != 1:
+                continue
+            device = next(iter(devices))
+            if device.type in ("cpu", "meta"):  # meta = disk-offloaded, has its own hook
+                continue
+            add_hook_to_module(
+                module,
+                AlignDevicesHook(
+                    execution_device = device, io_same_device = False, skip_keys = skip_keys
+                ),
+            )
+            hooked += 1
+    return hooked
+
+
 def _attach_bnb_multidevice_hooks(
     model, load_in_4bit, load_in_8bit, offload_embedding, fast_inference
 ):
@@ -465,8 +535,14 @@ def _attach_bnb_multidevice_hooks(
     if getattr(model, "hf_device_map", None) is not None:
         return  # already dispatched
 
+    # Unplaceable tables stay on CPU unhooked; hooking copies ~102 GB to the GPU every forward.
     try:
-        all_devs = {p.device for p in model.parameters()}
+        from .loader_utils import no_placement_tensor_names
+        _unplaced = no_placement_tensor_names(model)
+    except Exception:
+        _unplaced = set()
+    try:
+        all_devs = {p.device for n, p in model.named_parameters() if n not in _unplaced}
     except Exception as exc:
         warnings.warn(
             "Unsloth: Failed to determine device placement from model parameters, "
@@ -490,7 +566,7 @@ def _attach_bnb_multidevice_hooks(
         return  # accelerate not available
 
     try:
-        inferred_map = _infer_device_map_from_loaded_model(model)
+        inferred_map = _infer_device_map_from_loaded_model(model, skip = _unplaced)
         if not inferred_map:
             return
 
@@ -516,13 +592,21 @@ def _attach_bnb_multidevice_hooks(
                     (d for d in device_map_int.values() if d not in ("cpu", "disk")),
                     None,
                 )
-            dispatch_model(
-                model,
-                device_map = device_map_int,
-                main_device = main_device,
-                skip_keys = getattr(model, "_skip_keys_device_placement", None),
-                force_hooks = True,
-            )
+            _skip_check = contextlib.nullcontext()
+            if _unplaced:
+                try:
+                    from transformers.integrations.accelerate import skip_device_map_check
+                    _skip_check = skip_device_map_check()
+                except Exception:
+                    pass
+            with _skip_check:
+                dispatch_model(
+                    model,
+                    device_map = device_map_int,
+                    main_device = main_device,
+                    skip_keys = getattr(model, "_skip_keys_device_placement", None),
+                    force_hooks = True,
+                )
             desc = f"{len(inferred_map)} block(s) across {len(cuda_devs)} device(s)"
         finally:
             for param, key, val in _stripped:
@@ -756,6 +840,171 @@ _compile_config = CompileConfig(
     mode = "reduce-overhead",
 )
 _compile_config.disable = True  # Must set manually
+
+# For these model types, eager decode steps skip Unsloth's compiled regions (on by default,
+# UNSLOTH_EAGER_DECODE=0 opts out), and UNSLOTH_COMPILE_DECODE=1 opts into CUDA graphs over the
+# static cache. Off by default: each new shape costs 35-130 s to compile (A100, 2B), so mixed
+# sessions came out ~3x slower overall even though a compiled step is ~5x faster.
+COMPILE_DECODE_MODELS = ("qwen3_5", "qwen3_5_moe")
+_decode_compile_config = CompileConfig(
+    fullgraph = False,
+    dynamic = None,
+    mode = "reduce-overhead",
+)
+try:
+    from unsloth_zoo.temporary_patches.utils import unsloth_decode_compile
+except ImportError:
+    unsloth_decode_compile = None
+try:
+    from unsloth_zoo.temporary_patches.utils import unsloth_eager_decode
+except ImportError:
+    unsloth_eager_decode = None
+
+
+def _is_decode_compile_model(model):
+    config = model.config
+    model_types = (
+        getattr(config, "model_type", None),
+        getattr(getattr(config, "text_config", None), "model_type", None),
+    )
+    return any(
+        isinstance(mt, str) and mt.removesuffix("_text") in COMPILE_DECODE_MODELS
+        for mt in model_types
+    )
+
+
+def _eager_decodes(model):
+    # Eager decode steps skip Unsloth's compiled regions (zoo `unsloth_eager_decode`).
+    if unsloth_eager_decode is None or os.environ.get("UNSLOTH_EAGER_DECODE", "1") == "0":
+        return False
+    return _is_decode_compile_model(model) and "forward" not in model.__dict__
+
+
+class _EagerDecodeSteps:
+    """One generate() call. Each eager decode step (one new token per row) runs inside zoo's
+    `unsloth_eager_decode()`, so compiled regions call their eager originals; prefill and
+    a compiled decode step are unchanged."""
+
+    def __init__(self, model):
+        self.model = model
+        self.forward = model.forward
+
+    def _forward(self, *args, **kwargs):
+        if not torch.compiler.is_compiling():
+            ids = kwargs.get("input_ids")
+            if ids is None:
+                ids = kwargs.get("inputs_embeds")
+            if ids is not None and ids.dim() >= 2 and ids.shape[1] == 1:
+                with unsloth_eager_decode():
+                    return self.forward(*args, **kwargs)
+        return self.forward(*args, **kwargs)
+
+    def __enter__(self):
+        # transformers reads signature(self.forward) (logits_to_keep, attention_mask,
+        # position_ids), so the stand-in has to present the real one.
+        step = self._forward
+
+        @functools.wraps(self.forward)
+        def forward(*args, **kwargs):
+            return step(*args, **kwargs)
+
+        self.model.forward = forward
+        return self
+
+    def __exit__(self, *exc):
+        del self.model.forward
+        return False
+
+
+def _compiles_decode(model):
+    if unsloth_decode_compile is None:
+        return False
+    if os.environ.get("UNSLOTH_COMPILE_DECODE", "0") != "1":
+        return False
+    if os.environ.get("UNSLOTH_COMPILE_DISABLE", "0") in ("1", "partial"):
+        return False
+    # Mirror transformers' own auto-compile exceptions: when it will not compile the step,
+    # leave the eager decode path exactly as it was.
+    quantizer = getattr(model, "hf_quantizer", None)
+    if quantizer is not None and not getattr(quantizer, "is_compileable", False):
+        return False
+    device_map = getattr(model, "hf_device_map", None)
+    if isinstance(device_map, dict) and ({"cpu", "disk"} & set(map(str, device_map.values()))):
+        return False
+    return _is_decode_compile_model(model)
+
+
+def _match_compiled_call(model, compile_decode):
+    # CompileConfig equality ignores the `disable` attribute, so transformers would keep
+    # reusing the callable built for the other mode: drop it when the mode changes.
+    if model.__dict__.get("_unsloth_compile_decode", compile_decode) != compile_decode:
+        model.__dict__.pop("_compiled_call", None)
+        model.__dict__.pop("_last_compile_config", None)
+    model._unsloth_compile_decode = compile_decode
+
+
+def _decode_cache_bucket(length):
+    # A static cache of a new length recompiles the decode step; round it up to a power of
+    # two (>= 1024) so later calls with a different max_new_tokens reuse it.
+    if type(length) is not int or length <= 0:
+        return length
+    return max(1024, 1 << (length - 1).bit_length())
+
+
+class _CompileDecodeOnRepeat:
+    """One generate() call. Buckets the static cache, and compiles the decode step only for a
+    (batch, cache length) this model has decoded before: compiling costs ~30-45 s per new shape,
+    more than a whole eager call, so a one-off shape stays on the eager path exactly as before.
+    Both hooks sit where transformers decides, so its own batch and length are used."""
+
+    def __init__(self, model):
+        self.model = model
+        self.compile = False
+        self.scopes = contextlib.ExitStack()
+        self.prepare_static_cache = model._prepare_static_cache
+        self.valid_auto_compile_criteria = model._valid_auto_compile_criteria
+
+    def _prepare(self, *args, **kwargs):
+        # `max_cache_len` is the third argument on every 5.x release, by keyword since 5.2.
+        if "max_cache_len" in kwargs:
+            kwargs["max_cache_len"] = _decode_cache_bucket(kwargs["max_cache_len"])
+        elif len(args) >= 3:
+            args = (*args[:2], _decode_cache_bucket(args[2]), *args[3:])
+        cache = self.prepare_static_cache(*args, **kwargs)
+        batch_size = kwargs.get("batch_size", args[1] if len(args) > 1 else None)
+        key = (batch_size, getattr(cache, "max_cache_len", None))
+        seen = getattr(self.model, "_unsloth_decoded_shapes", None)
+        if seen is None:
+            seen = self.model._unsloth_decoded_shapes = set()
+            self.model._unsloth_compiled_batches = {}
+        compiled = self.model._unsloth_compiled_batches.setdefault(key[1], set())
+        # Once two batch sizes compiled at this length, Dynamo has made batch dynamic (sizes >= 2
+        # share that graph), so a new batch size costs no compile: skip its eager warm-up call.
+        self.compile = key in seen or (
+            type(batch_size) is int and batch_size >= 2 and len(compiled) >= 2
+        )
+        seen.add(key)
+        self.compiled, self.batch_size = compiled, batch_size
+        return cache
+
+    def _criteria(self, *args, **kwargs):
+        if not self.compile or not self.valid_auto_compile_criteria(*args, **kwargs):
+            return False
+        self.compiled.add(self.batch_size)
+        self.scopes.enter_context(unsloth_decode_compile())
+        return True
+
+    def __enter__(self):
+        self.model._prepare_static_cache = self._prepare
+        self.model._valid_auto_compile_criteria = self._criteria
+        return self
+
+    def __exit__(self, *exc):
+        del self.model._prepare_static_cache
+        del self.model._valid_auto_compile_criteria
+        self.scopes.close()
+        return False
+
 
 try:
     torch_compiler_set_stance = torch.compiler.set_stance
@@ -1125,6 +1374,22 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
         cache_implementation = None
         dynamic_implementation = _dynamic_cache_choice(kwargs)
 
+    generation_config = kwargs.get("generation_config") or getattr(self, "generation_config", None)
+    compile_decode = (
+        cache_implementation == "static"
+        and not force_dynamic_cache
+        and _compiles_decode(self)
+        # transformers compiles only on these devices and without disable_compile; anywhere
+        # else a bucketed cache would only cost memory.
+        and getattr(getattr(self, "device", None), "type", None) == "cuda"
+        and not kwargs.get("disable_compile", getattr(generation_config, "disable_compile", False))
+        and hasattr(self, "_prepare_static_cache")
+        and hasattr(self, "_valid_auto_compile_criteria")
+        and "_prepare_static_cache" not in self.__dict__
+    )
+    compile_config = _decode_compile_config if compile_decode else _compile_config
+    if _is_decode_compile_model(self):
+        _match_compiled_call(self, compile_decode)
     if "generation_config" in kwargs:
         kwargs["generation_config"].cache_implementation = (
             dynamic_implementation if force_dynamic_cache else cache_implementation
@@ -1133,16 +1398,18 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
         if force_dynamic_cache:
             kwargs["cache_implementation"] = dynamic_implementation
         if cache_implementation is not None:
-            kwargs["generation_config"].compile_config = _compile_config
+            kwargs["generation_config"].compile_config = compile_config
     else:
         kwargs["cache_implementation"] = (
             dynamic_implementation if force_dynamic_cache else cache_implementation
         )
         if cache_implementation is not None:
-            kwargs["compile_config"] = _compile_config
+            kwargs["compile_config"] = compile_config
 
+    decode_scope = _CompileDecodeOnRepeat(self) if compile_decode else contextlib.nullcontext()
+    eager_scope = _EagerDecodeSteps(self) if _eager_decodes(self) else contextlib.nullcontext()
     try:
-        with torch.inference_mode(), autocaster:
+        with decode_scope, eager_scope, torch.inference_mode(), autocaster:
             output = self._old_generate(*args, **kwargs)
     finally:
         _clear_generation_caches(self)
@@ -1393,6 +1660,236 @@ def _construct_vlm_processor_fallback(
     return None, _fb_err
 
 
+def _mxfp4_lora_keeps_experts_packed(
+    quant_method,
+    full_finetuning = False,
+    device_map = None,
+    model_name = None,
+    max_memory = None,
+    revision = None,
+    variant = None,
+    cache_dir = None,
+    subfolder = None,
+    local_files_only = False,
+    token = None,
+    use_safetensors = None,
+    num_layers = None,
+):
+    """Use unsloth_zoo's packed MXFP4 experts for LoRA: native matmul_ogs has no backward.
+
+    Off for full finetuning, UNSLOTH_MXFP4_KEEP_PACKED=0, or CPU / disk offload (zoo would
+    dequantize every expert to 16 bit); "auto" maps offload if the checkpoint exceeds free memory."""
+    # In-memory configs carry the QuantizationMethod enum; str() is "QuantizationMethod.MXFP4".
+    quant_method = getattr(quant_method, "value", quant_method)
+    if full_finetuning or str(quant_method).lower() != "mxfp4":
+        return False
+    if device_map is not None and not isinstance(device_map, (dict, str)):
+        device_map = str(device_map)
+    if device_map is None:
+        try:
+            import torch
+            device_map = str(getattr(torch, "get_default_device", lambda: "cpu")())
+        except Exception:
+            device_map = "cpu"
+    # unsloth_zoo only sees offload after this config is built, so check explicit maps here. Its guard
+    # unpacks every expert on ANY cpu / disk entry, so offloading even lm_head rules packed out.
+    if isinstance(device_map, dict) and any(
+        str(value).split(":")[0] in ("cpu", "disk") for value in device_map.values()
+    ):
+        return False
+    if isinstance(device_map, str) and device_map.split(":")[0] in ("cpu", "disk"):
+        return False
+    try:
+        import sys
+        from unsloth_zoo.temporary_patches.mxfp4 import keep_mxfp4_experts_packed
+        zoo_mxfp4 = sys.modules["unsloth_zoo.temporary_patches.mxfp4"]
+    except Exception:
+        return False
+    # zoo's offload flag belongs to the previous load (it clears it only once this load validates);
+    # this load's offload is judged above and below.
+    offloads = getattr(zoo_mxfp4, "_LOAD_OFFLOADS", None)
+    if isinstance(offloads, list) and offloads:
+        offloads[0] = False
+    try:
+        if not keep_mxfp4_experts_packed():
+            return False
+    except Exception:
+        return False
+    if isinstance(device_map, str) and device_map in (
+        "auto",
+        "balanced",
+        "balanced_low_0",
+        "sequential",
+    ):
+        # infer_auto_device_map spills to CPU / disk when full; unknown sizes stay packed.
+        try:
+            import json
+            import os
+            import torch
+
+            prefix = subfolder.strip("/") + "/" if subfolder else ""
+
+            def with_variant(name):
+                # Mirrors transformers' _add_variant.
+                if not variant:
+                    return name
+                parts = name.split(".")
+                return ".".join(parts[:-1] + [variant, parts[-1]])
+
+            def weight_bytes(
+                files,
+                read_index,
+                size_of = None,
+            ):
+                # Only files from_pretrained reads, in its order (not stale shards / original/).
+                files = {name.replace(os.sep, "/"): size or 0 for name, size in files}
+                formats = [
+                    ("model.safetensors", "model.safetensors.index.json"),
+                    ("pytorch_model.bin", "pytorch_model.bin.index.json"),
+                ]
+                for single, index in formats[1:] if use_safetensors is False else formats:
+                    single, index = prefix + with_variant(single), prefix + with_variant(index)
+                    if single in files:
+                        return files[single]
+                    if index in files:
+                        shards = set(json.loads(read_index(index))["weight_map"].values())
+                        # Shards may sit in nested folders a listing does not reach.
+                        return sum(
+                            files.get(prefix + shard) or (size_of(prefix + shard) if size_of else 0)
+                            for shard in shards
+                        )
+                return 0
+
+            def folder_files(folder):
+                root = os.path.join(folder, prefix) if prefix else folder
+                if not os.path.isdir(root):
+                    return []
+                return [
+                    (prefix + name, os.path.getsize(os.path.join(root, name)))
+                    for name in os.listdir(root)
+                    if os.path.isfile(os.path.join(root, name))
+                ]
+
+            def folder_size(folder):
+                def size(name):
+                    path = os.path.join(folder, name)
+                    return os.path.getsize(path) if os.path.isfile(path) else 0
+
+                return size
+
+            def folder_index(folder):
+                def read(name):
+                    with open(os.path.join(folder, name), encoding = "utf-8") as file:
+                        return file.read()
+
+                return read
+
+            if os.path.isdir(str(model_name)):
+                folder = str(model_name)
+                checkpoint_bytes = weight_bytes(
+                    folder_files(folder), folder_index(folder), folder_size(folder)
+                )
+            else:
+                try:
+                    from huggingface_hub import HfApi, hf_hub_download
+
+                    if local_files_only:
+                        raise OSError("local_files_only: no Hub lookup")
+                    info = HfApi().model_info(
+                        str(model_name), revision = revision, files_metadata = True, token = token
+                    )
+
+                    def hub_index(name):
+                        path = hf_hub_download(
+                            str(model_name),
+                            name,
+                            revision = revision,
+                            cache_dir = cache_dir,
+                            token = token,
+                        )
+                        with open(path, encoding = "utf-8") as file:
+                            return file.read()
+
+                    checkpoint_bytes = weight_bytes(
+                        [(sibling.rfilename, sibling.size) for sibling in (info.siblings or ())],
+                        hub_index,
+                    )
+                except Exception:
+                    # Offline: size the cache; not snapshot_download (fails on unfetched metal/, original/).
+                    from huggingface_hub import try_to_load_from_cache
+
+                    folder = None
+                    for name in (
+                        "model.safetensors",
+                        "model.safetensors.index.json",
+                        "pytorch_model.bin",
+                        "pytorch_model.bin.index.json",
+                    ):
+                        name = prefix + with_variant(name)
+                        path = try_to_load_from_cache(
+                            str(model_name), name, cache_dir = cache_dir, revision = revision
+                        )
+                        if isinstance(path, str):
+                            folder = path[: -len(name)]
+                            break
+                    if folder is None:
+                        raise OSError("checkpoint not in the local cache")
+                    checkpoint_bytes = weight_bytes(
+                        folder_files(folder), folder_index(folder), folder_size(folder)
+                    )
+            backend = torch.cuda
+            if not torch.cuda.is_available() and getattr(torch, "xpu", None) is not None:
+                if torch.xpu.is_available():
+                    backend = torch.xpu
+            probed = backend.is_available() and backend.device_count() > 0
+            if max_memory:
+                devices = (
+                    sorted(
+                        {
+                            int(key)
+                            for key in max_memory
+                            if str(key).isdigit() and int(key) < backend.device_count()
+                        }
+                    )
+                    if probed
+                    else []
+                )
+            else:
+                devices = list(range(backend.device_count())) if probed else []
+            frees = []
+            for index in devices:
+                try:
+                    free = backend.mem_get_info(index)[0]
+                except Exception:
+                    continue
+                budget = max_memory.get(index, max_memory.get(str(index))) if max_memory else None
+                if isinstance(budget, str):
+                    from accelerate.utils import convert_file_size_to_int
+                    budget = convert_file_size_to_int(budget)
+                if isinstance(budget, int):
+                    free = min(free, budget)
+                frees.append(free if max_memory else 0.9 * free)
+            # Measured free memory keeps an activation margin; an explicit max_memory is taken as given.
+            if device_map != "sequential" and len(frees) > 1 and checkpoint_bytes:
+                # get_balanced_memory caps every card but the last at size / n (its buffer left out).
+                low_zero = device_map == "balanced_low_0"
+                per_card = checkpoint_bytes / (len(frees) - 1 if low_zero else len(frees))
+                frees = [
+                    free if low_zero and i == 0 else min(free, per_card)
+                    for i, free in enumerate(frees[:-1])
+                ] + frees[-1:]
+            if len(frees) > 1 and checkpoint_bytes and num_layers:
+                # Decoder layers are placed whole, so each card but the last can strand up to one layer.
+                layer = checkpoint_bytes / num_layers
+                frees = [max(0, free - layer) for free in frees[:-1]] + frees[-1:]
+            limit = sum(frees)
+            if checkpoint_bytes and probed and checkpoint_bytes > limit:
+                return False
+        except Exception:
+            pass
+    return True
+
+
 def _get_total_transformer_layers(model):
     """Best-effort total transformer block count across HF model shapes; None if not determinable, in which case the caller skips the conversion."""
     cfg = getattr(model, "config", None)
@@ -1431,6 +1928,9 @@ def _architecture_skip_modules(model_types):
     # LongCat-Flash MLA: NF4 on q_b_proj / kv_b_proj badly hurts loss; both are small.
     if any(mt in ("longcat_flash", "longcat_flash_lsa") for mt in model_types):
         skip.extend(("q_b_proj", "kv_b_proj"))
+    # Kimi-K3's attention residuals read the Linear(hidden, 1) projections' .weight as a score vector, which a packed Params4bit cannot be.
+    if any(mt in ("kimi_k3", "kimi_linear") for mt in model_types):
+        skip.extend(("self_attention_res_proj", "mlp_res_proj", "output_attn_res_proj"))
     return skip
 
 
@@ -1886,6 +2386,18 @@ def _tolerate_dtype_cast_on_quantized_model(enabled):
         yield
     finally:
         PreTrainedModel.to = original_to
+
+
+def _offload_activation_pack(x):
+    # Only activations (they require grad); masks and rotary tables are shared across layers.
+    if x.requires_grad and x.device.type != "cpu":
+        return x.device, x.to("cpu", non_blocking = True)
+    return None, x
+
+
+def _offload_activation_unpack(packed):
+    device, x = packed
+    return x if device is None else x.to(device, non_blocking = True)
 
 
 class FastBaseModel:
@@ -2374,6 +2886,8 @@ class FastBaseModel:
             ),
         )
 
+        device_map = exclude_no_placement_params(device_map, model_class, auto_config)
+
         if int(load_in_4bit) + int(load_in_8bit) + int(load_in_16bit) >= 2:
             raise RuntimeError(
                 "Unsloth: Can only load in 4bit or 8bit or 16bit, not a combination!"
@@ -2516,7 +3030,25 @@ class FastBaseModel:
                     pass
                 else:
                     # Cannot dequantize, since gpt-oss-20b MXFP4 would become gpt-oss-20b-BF16.
-                    if load_in_16bit and "dequantize" in inspect.signature(quantizer).parameters:
+                    # Except LoRA with zoo's packed experts: stays MXFP4 and has a backward.
+                    if (
+                        load_in_16bit
+                        or _mxfp4_lora_keeps_experts_packed(
+                            quant_method,
+                            full_finetuning,
+                            device_map,
+                            model_name,
+                            kwargs.get("max_memory", None),
+                            _revision,
+                            kwargs.get("variant", None),
+                            kwargs.get("cache_dir", None),
+                            kwargs.get("subfolder", None),
+                            kwargs.get("local_files_only", False),
+                            token,
+                            kwargs.get("use_safetensors", None),
+                            getattr(auto_config, "num_hidden_layers", None),
+                        )
+                    ) and "dequantize" in inspect.signature(quantizer).parameters:
                         quantizer_kwargs["dequantize"] = True
                     try:
                         quantization_config = quantizer.from_dict(
@@ -2617,6 +3149,12 @@ class FastBaseModel:
                     offload_embedding = offload_embedding,
                     fast_inference = fast_inference,
                 )
+                _no_placement_hooked = _hook_no_placement_ancestors(model)
+                if _no_placement_hooked:
+                    logger.info(
+                        f"Unsloth: hooked {_no_placement_hooked} module(s) above the CPU-kept "
+                        "no-placement table so their inputs follow the map."
+                    )
                 _aligned_root_device = _align_root_hook_with_input_embeddings(model)
                 if _aligned_root_device is not None:
                     logger.info(
@@ -3208,6 +3746,8 @@ class FastBaseModel:
                 ]
         # Remember the caller's ORIGINAL explicit leaf list for MoE expert detection: routing it through get_peft_regex adds the full "mlp|feed_forward|ffn|dense" block even for attention-only leaves, so keying on that regex would train the experts. Only the auto path relies on the regex.
         _moe_detect_target = target_modules if type(target_modules) in (list, tuple) else None
+        # Auto regex is built after MXFP4 expert stacking, so it no longer names per-expert Linears.
+        _auto_targets = target_modules is None or target_modules == "all-linear"
 
         # get_peft_regex drops these (no attention/MLP ancestor) and LoRA on them never trains, so redirect before scoping, matching FastLanguageModel.
         target_modules, modules_to_save, _moved = _redirect_embedding_targets(
@@ -3357,6 +3897,17 @@ class FastBaseModel:
                         for name, _ in _core.named_parameters()
                         if any(name == t or name.endswith("." + t) for t in _core_parameters)
                     ] or None
+            from .remote_moe_shims import packed_expert_target_parameters
+
+            if _auto_targets and finetune_mlp_modules and finetune_language_layers:
+                _packed_leaves = ("w1", "w2", "w3")
+            elif isinstance(_moe_module_detect, (list, tuple, str)):
+                _packed_leaves = _moe_module_detect
+            else:
+                _packed_leaves = None
+            target_parameters = packed_expert_target_parameters(
+                model, target_parameters, _packed_leaves
+            )
 
         if _moe_module_targets:
             if isinstance(target_modules, (list, tuple)):
@@ -3525,17 +4076,28 @@ class FastBaseModel:
             if _get_dtype(dtype_from_config(model.config)) == torch.bfloat16 and full_finetuning:
                 float32_mixed_precision = False
 
-        # VLMs can hit DDP "marked ready twice" with re-entrant checkpointing (#3713), so under DDP skip the offloaded/re-entrant checkpoint patch and default native checkpoint to non-reentrant.
+        # VLMs can hit DDP "marked ready twice" with re-entrant checkpointing (#3713), so under DDP skip the offloaded/re-entrant checkpoint patch and default native checkpoint to non-reentrant, offloading via saved-tensor hooks instead.
         use_reentrant = not is_distributed()
         if not use_reentrant:
             unpatch_unsloth_gradient_checkpointing()
             unpatch_unsloth_smart_gradient_checkpointing()
-            _orig_checkpoint = torch_checkpoint.checkpoint
+            _orig_checkpoint = getattr(
+                torch_checkpoint.checkpoint,
+                "_unsloth_original",
+                torch_checkpoint.checkpoint,
+            )
+            _offload = use_gradient_checkpointing == "unsloth"
 
             def _nonre_checkpoint(function, *args, **kwargs):
                 kwargs["use_reentrant"] = False
-                return _orig_checkpoint(function, *args, **kwargs)
+                if not _offload:
+                    return _orig_checkpoint(function, *args, **kwargs)
+                with torch.autograd.graph.saved_tensors_hooks(
+                    _offload_activation_pack, _offload_activation_unpack
+                ):
+                    return _orig_checkpoint(function, *args, **kwargs)
 
+            _nonre_checkpoint._unsloth_original = _orig_checkpoint
             torch_checkpoint.checkpoint = _nonre_checkpoint
             hf_modeling_utils.checkpoint = _nonre_checkpoint
 
@@ -3558,11 +4120,17 @@ class FastBaseModel:
         if full_finetuning:
             # prepare_model_for_training re-enabled every parameter, a kept wrapper's siblings too.
             _freeze_unused_siblings(model)
+        _model_type = getattr(getattr(model, "config", None), "model_type", "") or ""
+        if not use_reentrant and not any(x in _model_type.lower() for x in ("gemma3n", "gemma4")):
+            # _set_gradient_checkpointing() binds torch's checkpoint as a default argument, bypassing the patch above.
+            for module in model.modules():
+                func = getattr(module, "_gradient_checkpointing_func", None)
+                if getattr(func, "__module__", None) == "torch.utils.checkpoint":
+                    module._gradient_checkpointing_func = _nonre_checkpoint
         # Persist the configured GC mode so the trainer restores it verbatim: for_inference() clears the module flags every GRPO generation step, and TrainingArguments defaults gradient_checkpointing=False, which would silently disable it at train time (#4735).
         model._unsloth_gradient_checkpointing = use_gradient_checkpointing
 
         # The Gemma3N audio conformer's variable-length tensors cause stride mismatches in the AOT autograd compiled backward under non-reentrant checkpointing, and TRL may override gradient_checkpointing_kwargs later, so intercept the enable and force use_reentrant=True.
-        _model_type = getattr(getattr(model, "config", None), "model_type", "") or ""
         if "gemma3n" in _model_type.lower() or "gemma4" in _model_type.lower():
             _original_gc_enable = model.gradient_checkpointing_enable
 

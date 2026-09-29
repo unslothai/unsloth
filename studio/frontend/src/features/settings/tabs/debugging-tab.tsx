@@ -70,6 +70,11 @@ import {
   withRequestTimeout,
 } from "../lib/debug-log-buffer";
 import { isAbort, isLogSourceGone } from "../lib/debug-log-error";
+import {
+  NO_PENDING_LOG_REQUEST,
+  pendingLogRequestKey,
+  useSettingsDialogStore,
+} from "../stores/settings-dialog-store";
 
 const MODES: RefreshMode[] = ["live", "3s", "manual"];
 
@@ -183,22 +188,54 @@ export function DebuggingTab() {
     }
   }, [mode]);
 
+  // Selection order: a response older than the last one that selected never overrides it.
+  const sourceFetchSeqRef = useRef(0);
+  const appliedSourceFetchRef = useRef(0);
+
   const refreshSources = useCallback(
     async (options: { signal?: AbortSignal; reselect?: boolean } = {}) => {
+      const seq = ++sourceFetchSeqRef.current;
       try {
         // Bounded like the tail read: the poll loop and its failure recovery
         // both await this, so an unanswered /sources would freeze both.
+        const requestedFor = pendingLogRequestKey(
+          useSettingsDialogStore.getState(),
+        );
+        const pendingPath =
+          useSettingsDialogStore.getState().logSourcePathRequested;
         const result = await withRequestTimeout(
-          (signal) => loadDebugLogSources(signal),
+          (signal) => loadDebugLogSources(signal, pendingPath),
           REQUEST_TIMEOUT_MS,
           options.signal,
         );
+        if (seq < appliedSourceFetchRef.current) return;
         setSources(result.sources);
         setLogRoot(result.logRoot);
+        const dialog = useSettingsDialogStore.getState();
+        const requested = dialog.logFamilyRequested;
+        const byPath = result.matchedSourceId
+          ? result.sources.find(
+              (source) => source.id === result.matchedSourceId,
+            )
+          : undefined;
+        const fromFailure =
+          byPath ??
+          (requested
+            ? result.sources.find((source) => source.family === requested)
+            : undefined);
+        // Only the request this fetch was made for.
+        const stillTheSameRequest =
+          pendingLogRequestKey(dialog) === requestedFor;
+        if (fromFailure && stillTheSameRequest)
+          useSettingsDialogStore.getState().consumeLogFamilyRequest();
+        if (fromFailure && !stillTheSameRequest) return;
+        appliedSourceFetchRef.current = seq;
         setSourceId((current) =>
-          options.reselect
-            ? result.defaultSourceId
-            : (current ?? result.defaultSourceId),
+          fromFailure
+            ? fromFailure.id
+            : options.reselect
+              ? result.defaultSourceId
+              : (current ?? result.defaultSourceId),
         );
       } catch {
         // The log read reports the real reason; this just leaves the picker empty.
@@ -212,6 +249,15 @@ export function DebuggingTab() {
     void refreshSources({ signal: controller.signal });
     return () => controller.abort();
   }, [refreshSources]);
+
+  // A request that arrives while this panel is ALREADY mounted.
+  const pendingLogRequest = useSettingsDialogStore(pendingLogRequestKey);
+  useEffect(() => {
+    if (pendingLogRequest === NO_PENDING_LOG_REQUEST) return;
+    const controller = new AbortController();
+    void refreshSources({ signal: controller.signal });
+    return () => controller.abort();
+  }, [pendingLogRequest, refreshSources]);
 
   const onPollFailed = useCallback(
     async (error: unknown, signal?: AbortSignal) => {
