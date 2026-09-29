@@ -32,15 +32,11 @@ const DIST = resolve(HERE, "..", "dist");
  * machine.
  */
 export const BUDGET = {
-  // Measured, one machine and one build per side, so the pair is comparable to itself rather
-  // than to a runner's: 5,599.7 KB raw / 1,663.4 KB transfer at 0065fade6 once its two
-  // ineffective import() calls were made static, leaving 210.8 KB and 65.1 KB spare, the margin
-  // the previous raise chose. Both halves are re-measured TOGETHER, or each drags main red on
-  // its own. Since that raise the eager set gained one 303-byte chunk (#11607's
-  // thread-message-slot split) and otherwise grew inside chunks already eager: #11607's fork
-  // boundary and #11648's UI scale, so what ran out is headroom, not laziness.
-  transferBytes: 1_770_000,
-  rawBytes: 5_950_000,
+  // Re-measured together on one machine and build: 5,813.8 KB raw / 1,730.2 KB transfer at d7795365c,
+  // plus the margin the previous raise chose (210.8 KB raw, 65.1 KB transfer). The growth since is
+  // chat attachment cards, chips and their layout (#12017), which the first chat screen renders.
+  transferBytes: 1_840_000,
+  rawBytes: 6_170_000,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

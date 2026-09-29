@@ -529,6 +529,7 @@ def prewarm_diffusers_if_image_models_exist() -> bool:
             # On Windows ROCm diffusers reaches xformers and torchao, both landing on an
             # absent distributed backend, so any first importer owes these stubs.
             from core._torchao_stub import (  # noqa: PLC0415
+                hide_xformers_built_for_another_torch,
                 install_torchao_windows_rocm_stub,
                 install_xformers_windows_rocm_stub,
             )
@@ -537,6 +538,7 @@ def prewarm_diffusers_if_image_models_exist() -> bool:
             )
 
             install_xformers_windows_rocm_stub()
+            hide_xformers_built_for_another_torch()
             install_torchao_windows_rocm_stub()
             install_torchao_int_mm_patch()
         except Exception as exc:  # noqa: BLE001 -- importing unprotected is the hazard; skip
