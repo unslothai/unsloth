@@ -1095,6 +1095,8 @@ def prepare_tool_launch(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
             ),
         )
 
+    # Taken before the check: a reset while it runs must not be undone by this launch's answer.
+    generation = tool_isolation_generation()
     capability = capability_snapshot(
         execution_kind = plan.execution_kind,
         selected_executable = plan.argv[0] if plan.argv else None,
@@ -1106,6 +1108,7 @@ def prepare_tool_launch(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
         capability.available,
         backend = capability.backend,
         reason = capability.reason,
+        generation = generation,
     )
 
     if plan.cancel_event is not None and plan.cancel_event.is_set():

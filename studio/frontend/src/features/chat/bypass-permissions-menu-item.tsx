@@ -32,6 +32,7 @@ export function BypassPermissionsMenuItem() {
     (s) => s.setBypassConfirmOpen,
   );
   const setSandboxSetupOpen = useSandboxSetupDialogStore((s) => s.setOpen);
+  const t = useT();
 
   return (
     <DropdownMenuSub>
@@ -41,7 +42,7 @@ export function BypassPermissionsMenuItem() {
         }
       >
         <HugeiconsIcon icon={ShieldBanIcon} strokeWidth={2} />
-        Tool permissions
+        {t("settings.general.permissions.bypassLabel")}
       </DropdownMenuSubTrigger>
       <DropdownMenuSubContent className="unsloth-plus-menu w-[calc(300px*var(--ui-space-scale,1))]">
         <PermissionModeMenuItems

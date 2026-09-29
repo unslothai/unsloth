@@ -376,3 +376,20 @@ def test_setup_fields_name_the_action_only_for_the_owner_here(linux, monkeypatch
     monkeypatch.setattr(client_ip, "is_direct_local_request", lambda _request: False)
     remote = plan_mod.setup_fields_for(object(), True, available = False)
     assert remote["setup_action"] is None and remote["manual_command"]
+
+
+def test_windows_commands_paste_into_windows_powershell():
+    # Windows PowerShell 5.1 has no `&&`, and a quoted path needs the call operator.
+    steps = (
+        (
+            r"C:\Users\Jane Doe\python.exe",
+            r"C:\Users\Jane Doe\studio\install_mxc_prebuilt.py",
+            "--install-dir",
+            "x",
+        ),
+        (r"C:\it's\python.exe", "--prepare-host"),
+    )
+    assert plan_mod.powershell_command(steps) == (
+        "& 'C:\\Users\\Jane Doe\\python.exe' 'C:\\Users\\Jane Doe\\studio\\install_mxc_prebuilt.py' "
+        "'--install-dir' 'x'\n& 'C:\\it''s\\python.exe' '--prepare-host'"
+    )

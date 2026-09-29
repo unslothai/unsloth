@@ -350,9 +350,18 @@ def windows_runtime_plan() -> SetupPlan:
         platform = sys.platform,
         action = WINDOWS_RUNTIME,
         steps = (step,),
-        manual_command = subprocess.list2cmdline(list(step)),
+        manual_command = powershell_command((step,)),
         reason = "The MXC runtime is not installed.",
     )
+
+
+def powershell_command(steps) -> str:
+    """What to paste into PowerShell (5.1 has no `&&`): one call-operator line per step."""
+
+    def quote(arg: str) -> str:
+        return "'" + str(arg).replace("'", "''") + "'"
+
+    return "\n".join("& " + " ".join(quote(arg) for arg in step) for step in steps)
 
 
 def windows_runtime_install_command() -> list[str]:
@@ -386,7 +395,7 @@ def _windows_plan() -> SetupPlan:
         steps.append(tuple(windows_runtime_install_command()))
     if not installed or missing is None or missing:
         steps.append(tuple(mxc_probe.host_prep_command()))
-    manual = " && ".join(subprocess.list2cmdline(list(step)) for step in steps)
+    manual = powershell_command(steps)
     if locked_off:
         return SetupPlan(
             platform = sys.platform,

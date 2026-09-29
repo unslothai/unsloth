@@ -4717,8 +4717,8 @@ async def update_sandbox_settings(
 
 @_owner_settings_router.get("/sandbox/prepare", response_model = SandboxPrepareJob)
 def get_sandbox_prepare(current_subject: str = Depends(get_current_subject)) -> SandboxPrepareJob:
-    from core.inference import mxc_host_prep_job
-    return _sandbox_job_response(mxc_host_prep_job.current())
+    # A Prepare click during a setup run is answered with that run, so report it here too.
+    return _sandbox_job_response(_newest_host_job())
 
 
 @_owner_settings_router.post("/sandbox/prepare", response_model = SandboxPrepareJob)
@@ -4766,14 +4766,18 @@ def _sandbox_setup_response(job) -> SandboxSetupJob:
 
 @_owner_settings_router.get("/sandbox/setup", response_model = SandboxSetupJob)
 def get_sandbox_setup(current_subject: str = Depends(get_current_subject)) -> SandboxSetupJob:
+    return _sandbox_setup_response(_newest_host_job())
+
+
+def _newest_host_job():
+    """The newer of the setup run and the "Prepare this PC" run; they never run at the same time."""
     from core.inference import mxc_host_prep_job, sandbox_setup_job
 
     job = sandbox_setup_job.current()
     prep = mxc_host_prep_job.current()
-    # The newer of the two runs: "Prepare this PC" keeps its own route and job.
     if prep is not None and (job is None or prep.started_at > job.started_at):
-        return _sandbox_setup_response(prep)
-    return _sandbox_setup_response(job)
+        return prep
+    return job
 
 
 @_owner_settings_router.post("/sandbox/setup", response_model = SandboxSetupJob)

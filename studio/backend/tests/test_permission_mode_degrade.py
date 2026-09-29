@@ -608,3 +608,29 @@ def test_every_loop_launches_strictly_through_the_mode_parameter():
         source = inspect.getsource(module)
         assert "requires_os_isolation(" in source, module.__name__
         assert 'kwargs["tool_execution_mode"] = "required"' in source, module.__name__
+
+
+def test_a_launch_does_not_republish_an_answer_a_reset_cleared(monkeypatch, tmp_path):
+    # Settings or a failed launch reset the cached answers while this launch was still checking.
+    def snapshot(**_kw):
+        os_sandbox.forget_tool_isolation()
+        return os_sandbox.SandboxCapability(
+            backend = "bubblewrap",
+            available = False,
+            reason = "stubbed",
+            protection_state = "unavailable",
+            limitations = (),
+        )
+
+    monkeypatch.setattr(os_sandbox, "capability_snapshot", snapshot)
+    plan = os_sandbox.ToolLaunchPlan(
+        argv = (sys.executable, "-c", "pass"),
+        workdir = str(tmp_path),
+        env = {},
+        execution_kind = "python",
+    )
+    try:
+        os_sandbox.prepare_tool_launch(plan)
+    except Exception:  # noqa: BLE001 - only the cached answer matters here
+        pass
+    assert not os_sandbox.has_tool_isolation_answer("python")

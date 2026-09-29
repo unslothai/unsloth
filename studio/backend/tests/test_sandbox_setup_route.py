@@ -368,3 +368,12 @@ def test_the_prepare_job_is_reported_by_the_setup_route(host, windows, monkeypat
         and body["operation"] == "windows-setup"
         and body["state"] == "running"
     )
+
+
+def test_a_setup_run_is_reported_by_the_prepare_route(host, windows, monkeypatch):
+    # A Prepare click while setup runs is answered with that run; polling must keep seeing it.
+    setup = sandbox_setup_job.SetupJob(id = "setup1", operation = "windows-setup")
+    monkeypatch.setattr(sandbox_setup_job, "current", lambda: setup)
+    with _client(OWNER) as client:
+        body = client.get("/sandbox/prepare").json()
+    assert body["id"] == "setup1" and body["state"] == "running"
