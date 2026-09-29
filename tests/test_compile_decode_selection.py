@@ -16,6 +16,7 @@ from unsloth.models.vision import (
     _compiles_decode,
     _decode_cache_bucket,
     _eager_decodes,
+    _match_compiled_call,
 )
 
 
@@ -245,3 +246,18 @@ def test_only_one_token_steps_run_in_eager_decode(eager_scope):
         assert len(eager_scope) == 2
     assert "forward" not in model.__dict__
     assert model.seen == [(2, 7), (2, 1), (3, 1, 8)]
+
+
+def test_cached_compiled_call_is_dropped_when_the_mode_changes():
+    model = types.SimpleNamespace()
+    _match_compiled_call(model, False)
+    model._compiled_call, model._last_compile_config = "disabled", "cfg"
+    _match_compiled_call(model, False)
+    assert model._compiled_call == "disabled"  # same mode: transformers' cache stands
+    _match_compiled_call(model, True)
+    assert not hasattr(model, "_compiled_call") and not hasattr(model, "_last_compile_config")
+    model._compiled_call = "compiled"
+    _match_compiled_call(model, True)
+    assert model._compiled_call == "compiled"
+    _match_compiled_call(model, False)
+    assert not hasattr(model, "_compiled_call")

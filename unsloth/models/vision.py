@@ -803,6 +803,15 @@ def _compiles_decode(model):
     return _is_decode_compile_model(model)
 
 
+def _match_compiled_call(model, compile_decode):
+    # CompileConfig equality ignores the `disable` attribute, so transformers would keep
+    # reusing the callable built for the other mode: drop it when the mode changes.
+    if model.__dict__.get("_unsloth_compile_decode", compile_decode) != compile_decode:
+        model.__dict__.pop("_compiled_call", None)
+        model.__dict__.pop("_last_compile_config", None)
+    model._unsloth_compile_decode = compile_decode
+
+
 def _decode_cache_bucket(length):
     # A static cache of a new length recompiles the decode step; round it up to a power of
     # two (>= 1024) so later calls with a different max_new_tokens reuse it.
@@ -1234,15 +1243,22 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
         cache_implementation = None
         dynamic_implementation = _dynamic_cache_choice(kwargs)
 
+    generation_config = kwargs.get("generation_config") or getattr(self, "generation_config", None)
     compile_decode = (
         cache_implementation == "static"
         and not force_dynamic_cache
         and _compiles_decode(self)
+        # transformers compiles only on these devices and without disable_compile; anywhere
+        # else a bucketed cache would only cost memory.
+        and getattr(getattr(self, "device", None), "type", None) == "cuda"
+        and not kwargs.get("disable_compile", getattr(generation_config, "disable_compile", False))
         and hasattr(self, "_prepare_static_cache")
         and hasattr(self, "_valid_auto_compile_criteria")
         and "_prepare_static_cache" not in self.__dict__
     )
     compile_config = _decode_compile_config if compile_decode else _compile_config
+    if _is_decode_compile_model(self):
+        _match_compiled_call(self, compile_decode)
     if "generation_config" in kwargs:
         kwargs["generation_config"].cache_implementation = (
             dynamic_implementation if force_dynamic_cache else cache_implementation
