@@ -142,6 +142,24 @@ test("with nothing loaded, the model last loaded in Chat is loaded", async () =>
   );
 });
 
+test("a load Chat already started is waited out, then used", async () => {
+  let polls = 0;
+  await withServer(
+    (_req, _body, res) => {
+      polls += 1;
+      res.end(
+        JSON.stringify(
+          polls < 3 ? { active_model: null, loading: ["org/b"] } : { active_model: "org/b", loading: [] },
+        ),
+      );
+    },
+    async (chat, seen) => {
+      assert.equal(await chat.resolveModel(new AbortController().signal, () => assert.fail()), "org/b");
+      assert.ok(seen.every((line) => line.includes("/api/inference/status")), "nothing else was requested");
+    },
+  );
+});
+
 test("a load that fails after its 200 is a failure", async () => {
   await withServer(
     (req, _body, res) => {

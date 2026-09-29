@@ -43,10 +43,15 @@ export async function resolveModel(
   signal: AbortSignal,
   onLoading: (model: string) => void,
 ): Promise<string> {
-  const status = await getJson<{ active_model: string | null }>(
-    "/api/inference/status",
-    signal,
-  );
+  const readStatus = () =>
+    getJson<{ active_model: string | null; loading?: string[] }>("/api/inference/status", signal);
+  let status = await readStatus();
+  // A load Chat already started decides the model: picking now could switch it straight back.
+  while (status.loading?.length) {
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+    if (signal.aborted) throw new DOMException("Aborted", "AbortError");
+    status = await readStatus();
+  }
   if (status.active_model) return status.active_model;
   const last = await getJson<{ id?: string | null; gguf_variant?: string | null }>(
     "/api/settings/last-local-model",
