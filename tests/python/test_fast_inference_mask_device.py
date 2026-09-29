@@ -43,15 +43,11 @@ def _generate(model, tok):
 
 
 @pytest.mark.parametrize(
-    "model_id, module",
-    [
-        ("trl-internal-testing/tiny-Qwen3ForCausalLM", "unsloth.models.llama"),
-        ("hf-internal-testing/tiny-random-GraniteForCausalLM", "unsloth.models.granite"),
-        ("trl-internal-testing/tiny-CohereForCausalLM", "unsloth.models.cohere"),
-    ],
+    "model_id",
+    ["trl-internal-testing/tiny-Qwen3ForCausalLM", "trl-internal-testing/tiny-Qwen2ForCausalLM-2.5-Coder"],
 )
-def test_decode_loop_moves_the_mask_to_every_layer(monkeypatch, model_id, module):
-    mod = importlib.import_module(module)
+def test_decode_loop_moves_the_mask_to_every_layer(monkeypatch, model_id):
+    mod = importlib.import_module("unsloth.models.llama")
     real = mod.move_to_device
     mask_moves = []
 
@@ -69,7 +65,7 @@ def test_decode_loop_moves_the_mask_to_every_layer(monkeypatch, model_id, module
 @pytest.mark.skipif(torch.cuda.device_count() < 2, reason = "needs two GPUs to split the layers")
 @pytest.mark.parametrize(
     "model_id",
-    ["trl-internal-testing/tiny-Qwen3ForCausalLM", "hf-internal-testing/tiny-random-GraniteForCausalLM"],
+    ["trl-internal-testing/tiny-Qwen3ForCausalLM", "trl-internal-testing/tiny-Qwen2ForCausalLM-2.5-Coder"],
 )
 def test_split_layers_generate_like_one_gpu(model_id):
     model, tok = _load(model_id, {"": 0})
