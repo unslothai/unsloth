@@ -507,9 +507,16 @@ def test_install_prebuilt_reraises_download_failure_without_existing(tmp_path: P
         M.install_prebuilt(install_dir, channel = "lts", min_major = 24, force = False)
 
 
-def _swap_stays_denied(tmp_path: Path, monkeypatch, *, recorded: str, runs: bool) -> Path:
+def _swap_stays_denied(
+    tmp_path: Path,
+    monkeypatch,
+    *,
+    recorded: str,
+    runs: bool,
+    real_swap: bool = False,
+) -> Path:
     # An install on disk, a download that succeeds, and a swap whose rename stayed denied
-    # after the retries printed the ACL repair lines.
+    # after the retries. real_swap runs the real _swap_into_place against a refused rename.
     install_dir = tmp_path / "node"
     install_dir.mkdir()
     M.write_metadata(install_dir, version = recorded, asset = "old", sha256 = "old")
@@ -525,12 +532,38 @@ def _swap_stays_denied(tmp_path: Path, monkeypatch, *, recorded: str, runs: bool
 
     def reported_acl_denial(_extracted, _install_dir):
         exc = _oserror(5)
-        exc._unsloth_acl_recovery_reported = True
+        # A literal line, not _access_denied_recovery_lines: the parity cases below must also run
+        # against a module that predates it.
+        exc._unsloth_acl_recovery_lines = [f'  takeown /F "{install_dir}" /R /D Y']
         raise exc
 
     monkeypatch.setattr(M, "extract_archive", fake_extract)
     monkeypatch.setattr(M, "_ensure_npm_floor", lambda d, h: None)
-    monkeypatch.setattr(M, "_swap_into_place", reported_acl_denial)
+    if not real_swap:
+        monkeypatch.setattr(M, "_swap_into_place", reported_acl_denial)
+        return install_dir
+
+    real_os = M.os
+
+    class _WindowsRenames:
+        # The module's own `os` only: setting the real os.name makes Path() build a WindowsPath,
+        # which main() does to resolve --install-dir, and that cannot be instantiated on Linux.
+        name = "nt"
+
+        def __getattr__(self, attr):
+            return getattr(real_os, attr)
+
+        @staticmethod
+        def replace(src, dst):
+            if Path(src).is_dir():
+                # What Windows raises for ERROR_ACCESS_DENIED: PermissionError, errno 13, both paths.
+                exc = PermissionError(13, "Access is denied", str(src), None, str(dst))
+                exc.winerror = 5
+                raise exc
+            return real_os.replace(src, dst)
+
+    monkeypatch.setattr(M, "os", _WindowsRenames())
+    monkeypatch.setattr(M.time, "sleep", lambda _s: None)
     return install_dir
 
 
@@ -569,6 +602,40 @@ def test_install_prebuilt_reraises_a_reported_denial_it_cannot_keep_existing_thr
         M.install_prebuilt(install_dir, channel = "pinned", min_major = 24, force = force)
 
     assert excinfo.value.winerror == 5
+
+
+def test_a_denial_that_cannot_keep_node_leaves_the_repair_to_setup(
+    tmp_path: Path, monkeypatch, capsys
+):
+    # Exit 4 hands the denial to setup.ps1, which prints takeown/icacls for the refused path itself
+    # (#10533). Printing ours on this path as well gave the user two sets of repair commands.
+    install_dir = _swap_stays_denied(
+        tmp_path, monkeypatch, recorded = "24.9.0", runs = False, real_swap = True
+    )
+
+    rc = M.main(["--install-dir", str(install_dir)])
+
+    output = capsys.readouterr().out
+    assert rc == M.EXIT_DENIED
+    assert "rename still blocked (5)" in output
+    assert f"{M.DENIED_SCOPE_MARKER}{M.DENIED_SCOPE_INSTALL_DIR}" in output
+    assert "takeown" not in output, output
+
+
+def test_a_kept_node_prints_the_repair_setup_relays(tmp_path: Path, monkeypatch, capsys):
+    # Exit 0 is the one path where nothing after the installer names a repair, so the lines print here,
+    # where setup.ps1 and setup.sh match `takeown /F` to relay them (#9928).
+    install_dir = _swap_stays_denied(
+        tmp_path, monkeypatch, recorded = "24.9.0", runs = True, real_swap = True
+    )
+
+    rc = M.main(["--install-dir", str(install_dir)])
+
+    output = capsys.readouterr().out
+    assert rc == M.EXIT_SUCCESS
+    assert f'takeown /F "{install_dir}" /R /D Y' in output
+    assert f'takeown /F "{install_dir.parent}"' in output
+    assert output.index("takeown") < output.index("existing Node could not be replaced")
 
 
 # ── Isolation invariant: the installer only writes inside its own install_dir ──
@@ -955,18 +1022,19 @@ def test_replace_names_acl_recovery_when_access_denied_persists(monkeypatch, tmp
             source, tmp_path / "node.old", attempts = 3, access_denied_paths = ((source, True),)
         )
 
-    assert getattr(excinfo.value, "_unsloth_acl_recovery_reported", False) is True
-    output = "".join(capsys.readouterr())
-    assert "takeown" in output
-    assert "icacls" in output
-    assert "elevated PowerShell" in output
-    assert str(source) in output
-    assert not any("takeown" in line and "icacls" in line for line in output.splitlines()), output
+    recovery = getattr(excinfo.value, "_unsloth_acl_recovery_lines", [])
+    assert any("takeown" in line for line in recovery), recovery
+    assert any("icacls" in line for line in recovery), recovery
+    assert any("elevated PowerShell" in line for line in recovery), recovery
+    assert any(str(source) in line for line in recovery), recovery
+    assert not any("takeown" in line and "icacls" in line for line in recovery), recovery
+    # Printed only by a caller that keeps the existing Node.
+    assert "takeown" not in "".join(capsys.readouterr())
 
 
 def test_a_denied_marker_write_offers_no_repair_for_its_temp_file(monkeypatch, tmp_path, capsys):
     # atomic_replace_from_tempfile shares the retry, but its source is a temp file about to be
-    # removed: repair lines naming it, and the reported-denial flag, belong to _swap_into_place.
+    # removed: repair lines naming it belong to _swap_into_place.
     monkeypatch.setattr(M.os, "name", "nt")
     monkeypatch.setattr(M.time, "sleep", lambda _s: None)
     monkeypatch.setattr(M.os, "replace", lambda s, d: (_ for _ in ()).throw(_oserror(5)))
@@ -978,7 +1046,7 @@ def test_a_denied_marker_write_offers_no_repair_for_its_temp_file(monkeypatch, t
         M.atomic_replace_from_tempfile(temp, marker)
 
     assert excinfo.value.winerror == 5
-    assert getattr(excinfo.value, "_unsloth_acl_recovery_reported", False) is False
+    assert not getattr(excinfo.value, "_unsloth_acl_recovery_lines", None)
     assert "takeown" not in "".join(capsys.readouterr())
 
 
@@ -1639,13 +1707,13 @@ def test_swap_into_place_reports_the_managed_parent_on_destination_denial(
         raise _oserror(5)
 
     monkeypatch.setattr(M.os, "replace", destination_denied)
-    with pytest.raises(OSError):
+    with pytest.raises(OSError) as excinfo:
         M._swap_into_place(extracted, install_dir)
 
-    output = "".join(capsys.readouterr())
-    assert f'takeown /F "{extracted}"' in output
-    assert f'takeown /F "{install_dir.parent}"' in output
-    assert "elevated PowerShell" in output
+    recovery = excinfo.value._unsloth_acl_recovery_lines
+    assert any(f'takeown /F "{extracted}"' in line for line in recovery), recovery
+    assert any(f'takeown /F "{install_dir.parent}"' in line for line in recovery), recovery
+    assert any("elevated PowerShell" in line for line in recovery), recovery
 
 
 def test_swap_into_place_reports_the_managed_parent_when_aside_is_denied(
@@ -1664,13 +1732,11 @@ def test_swap_into_place_reports_the_managed_parent_when_aside_is_denied(
         raise _oserror(5)
 
     monkeypatch.setattr(M.os, "replace", aside_denied)
-    with pytest.raises(OSError):
+    with pytest.raises(OSError) as excinfo:
         M._swap_into_place(extracted, install_dir)
 
-    output = "".join(capsys.readouterr())
-    assert f'takeown /F "{install_dir}" /R /D Y' in output
+    recovery = excinfo.value._unsloth_acl_recovery_lines
+    assert f'  takeown /F "{install_dir}" /R /D Y' in recovery
     parent_takeown = f'takeown /F "{install_dir.parent}"'
-    assert parent_takeown in output
-    assert not any(
-        parent_takeown in line and " /R " in line for line in output.splitlines()
-    ), output
+    assert any(parent_takeown in line for line in recovery), recovery
+    assert not any(parent_takeown in line and " /R " in line for line in recovery), recovery

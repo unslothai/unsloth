@@ -1051,7 +1051,9 @@ def _replace_with_retry(
     of a tree whose ACLs are unreadable -- a permission fault the retries cannot clear,
     which naming a scanner sends the user away from (#9928). Only a caller that passes
     ``access_denied_paths`` gets the repair lines: atomic_replace_from_tempfile renames a
-    temp file that is about to be removed, and there is nothing there to repair.
+    temp file that is about to be removed, and there is nothing there to repair. They ride
+    on the error and print only if an existing Node is kept: otherwise main() exits 4 and
+    setup.ps1 prints its own repair for the refused path (#10533).
     """
     delay = 0.25
     for attempt in range(attempts):
@@ -1064,9 +1066,9 @@ def _replace_with_retry(
             if not transient or attempt == attempts - 1:
                 if transient and winerror == _ERROR_ACCESS_DENIED and access_denied_paths:
                     log(f"rename still blocked (5) after {attempts} attempts")
-                    for line in _access_denied_recovery_lines(access_denied_paths):
-                        log(line)
-                    exc._unsloth_acl_recovery_reported = True
+                    exc._unsloth_acl_recovery_lines = _access_denied_recovery_lines(
+                        access_denied_paths
+                    )
                 raise
             if winerror == _ERROR_ACCESS_DENIED:
                 cause = "a scanner may still hold the files, or the ACLs are unreadable"
@@ -1230,8 +1232,11 @@ def install_prebuilt(install_dir: Path, *, channel: str, min_major: int, force: 
                 and meta.get("sha256") != pin
             )
             if not force and not pin_mismatch and existing_install_usable(install_dir, host):
-                if getattr(exc, "_unsloth_acl_recovery_reported", False):
-                    # The rename failed, not the download; setup relays the repair lines above.
+                recovery = getattr(exc, "_unsloth_acl_recovery_lines", None)
+                if recovery:
+                    # The rename failed, not the download; setup relays these lines.
+                    for line in recovery:
+                        log(line)
                     log(
                         f"existing Node could not be replaced ({exc}); keeping existing isolated Node"
                     )
