@@ -52,8 +52,6 @@ export interface PlusMenuPrefsState {
   // the menu pins above, since prompts are addressed by their stable server id.
   pinnedPromptIds: string[];
   togglePinnedPrompt: (id: string) => void;
-  // Same idea for prompt lists. Kept in a separate array so a list and a prompt
-  // that happen to share an id can never collide.
   pinnedListIds: string[];
   togglePinnedList: (id: string) => void;
 }

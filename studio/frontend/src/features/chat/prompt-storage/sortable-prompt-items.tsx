@@ -101,9 +101,7 @@ function nextUid(): string {
   return `i${uidSeq}`;
 }
 
-// Every ancestor a drag could scroll, nearest first. The whole chain, not just
-// the nearest: the list sits inside the dialog's own scroller, so a drag that
-// runs the inner one out has to hand off to the outer one.
+// Scrollable ancestors, nearest first, so running the inner pane out hands off to the dialog.
 function findScrollParents(el: HTMLElement | null): HTMLElement[] {
   const out: HTMLElement[] = [];
   let node = el?.parentElement ?? null;
@@ -150,8 +148,7 @@ export function SortablePromptItems({
     setUids(rowUids);
   }
 
-  // Layout offsets, not client rects: a rect moves with the scroll position, so scrolling
-  // between reorders (autoscroll does it every frame) would bake that distance into every transform.
+  // Layout offsets, not client rects: rects shift with scroll, which autoscroll changes per frame.
   const measureOffsets = useCallback(() => {
     const offsets = new Map<string, number>();
     rowRefs.current.forEach((el, uid) => offsets.set(uid, el.offsetTop));
@@ -242,9 +239,7 @@ export function SortablePromptItems({
       if (to !== from) applyOrder(from, to);
     };
 
-    // Holding near an edge scrolls and re-runs the hit-test; pointerdown
-    // suppresses the browser's own gesture, so nothing else would scroll.
-    // Walks outwards, so running the inner pane out hands off to the dialog.
+    // pointerdown suppresses native drag scrolling, so scroll here and re-run the hit-test.
     const tick = () => {
       for (let i = 0; i < scrollers.length; i++) {
         const scroller = scrollers[i];
@@ -259,7 +254,6 @@ export function SortablePromptItems({
         if (delta === 0) continue;
         const before = scroller.scrollTop;
         const next = Math.max(0, Math.min(limit, before + delta));
-        // Already at that end: leave it to the ancestor rather than stalling.
         if (next === before) continue;
         scroller.scrollTop = next;
         evaluate();

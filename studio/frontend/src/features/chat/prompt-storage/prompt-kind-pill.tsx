@@ -3,8 +3,6 @@
 
 import type { ReactElement } from "react";
 
-// Both kinds share one submenu but behave very differently on select: a prompt
-// fills the composer, a list queues and sends N prompts.
 export function PromptKindPill({
   kind,
   count,

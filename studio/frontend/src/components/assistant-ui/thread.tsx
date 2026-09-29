@@ -6590,8 +6590,6 @@ const ComposerToolsMenu: FC<{
 
   const [recentPrompts, setRecentPrompts] = useState<PromptEntry[]>([]);
   const [recentLists, setRecentLists] = useState<PromptListEntry[]>([]);
-  // Sequence, so two overlapping opens cannot land out of order and leave the
-  // menu showing the older library.
   const recentSeqRef = useRef(0);
   const refreshRecentPrompts = useCallback(async () => {
     recentSeqRef.current += 1;
@@ -6606,13 +6604,10 @@ const ComposerToolsMenu: FC<{
       const pinned = byRecent.filter((p) => pinnedIds.includes(p.id));
       setRecentPrompts(pinned.length > 0 ? pinned : byRecent.slice(0, 3));
     } catch {
-      // Drop the rows rather than keep serving them: an entry deleted elsewhere
-      // stays clickable otherwise, and selecting a list runs its cached items.
+      // Clear, don't keep: a stale list row would run its cached items.
       if (seq === recentSeqRef.current) setRecentPrompts([]);
     }
     try {
-      // Lists only appear here when explicitly bookmarked: running one fires a
-      // whole queue of prompts, so it is not something to surface by default.
       const rows = await listPromptLists();
       if (seq !== recentSeqRef.current) return;
       const pinnedIds = usePlusMenuPrefsStore.getState().pinnedListIds;
@@ -6622,22 +6617,15 @@ const ComposerToolsMenu: FC<{
     }
   }, []);
 
-  // Shared by the storage dialog's Run button and the bookmarked lists in the
-  // "+" menu, so both entry points queue a list the same way.
-  // `fromDialog`: queue setup is async, and on abort only a dialog-started run
-  // should reopen it. A menu-started one would throw a modal over the chat.
+  // `fromDialog`: only a dialog-started run reopens the dialog on abort.
   const runPromptList = useCallback(
     (items: string[], fromDialog = false) => {
-      // The plus menu stays live while recording, and a queue starting under it
-      // blocks the transcript send, then overwrites the composer with the first
-      // queued prompt, which spends the held send on nothing.
+      // A queue started while recording would swallow the held transcript send.
       if (menuIsDictating) {
         toast.error("Finish dictating before running a list");
         return;
       }
-      // The composer sits above the image overlay, so this stays clickable mid
-      // edit. Submitting rewrites the prompt and closes the overlay; startQueue
-      // appends the text as-is, hitting the image or eating the reference.
+      // Mid image edit, startQueue would bypass the overlay's prompt rewrite.
       if (generatedImageOverlay) {
         toast.error("Close the image editor before running a list", {
           description: "Saved lists cannot be applied to a generated image.",
@@ -6654,8 +6642,7 @@ const ComposerToolsMenu: FC<{
         setPromptStorageOpen(false);
         return;
       }
-      // startQueue refuses synchronously when queueing is unavailable and skips
-      // onAborted, so without this both entry points fail silently.
+      // startQueue refuses synchronously without calling onAborted.
       toast.error("Couldn't queue that list here", {
         description: "Open a chat first, then run the list.",
       });
@@ -6716,8 +6703,6 @@ const ComposerToolsMenu: FC<{
           collisionPadding={16}
           className="unsloth-plus-menu w-[calc(208px*var(--ui-space-scale,1))]"
         >
-          {/* Keys are namespaced: prompts and lists are separate tables, so the
-              two id spaces can collide and these render as siblings. */}
           {recentPrompts.map((p) => (
             <DropdownMenuItem
               key={`prompt:${p.id}`}

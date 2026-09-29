@@ -33,14 +33,11 @@ test("the step ramps with depth into the edge band", () => {
 });
 
 test("the step is capped at the maximum even far past the edge", () => {
-  // Dragging well outside the pane must not produce a runaway jump.
   assert.equal(autoscrollDelta(BOTTOM + 5000, TOP, BOTTOM), AUTOSCROLL_MAX_STEP);
   assert.equal(autoscrollDelta(TOP - 5000, TOP, BOTTOM), -AUTOSCROLL_MAX_STEP);
 });
 
 test("a pane shorter than two edge bands still picks a single direction", () => {
-  // Bands would overlap at this height; the pointer's own half must win rather
-  // than both branches firing.
   const shortTop = 0;
   const shortBottom = 40;
   const up = autoscrollDelta(2, shortTop, shortBottom);
@@ -68,8 +65,6 @@ test("a pane clipped by an ancestor reports the visible span", () => {
 });
 
 test("clipping is what puts the edge back within the pointer's reach", () => {
-  // Unclipped, the pane's bottom sits off-screen and a pointer at the bottom of
-  // the window is nowhere near it, so a drag held there would never scroll.
   const pane = { top: 100, bottom: 2000 };
   const viewport = { top: 0, bottom: 800 };
   assert.equal(autoscrollDelta(790, pane.top, pane.bottom), 0);
@@ -80,6 +75,5 @@ test("clipping is what puts the edge back within the pointer's reach", () => {
 
 test("a pane scrolled entirely out of view has no span", () => {
   assert.equal(clipSpan({ top: 500, bottom: 900 }, [{ top: 0, bottom: 400 }]), null);
-  // Touching edges are not visible either.
   assert.equal(clipSpan({ top: 400, bottom: 900 }, [{ top: 0, bottom: 400 }]), null);
 });

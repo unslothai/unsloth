@@ -635,8 +635,6 @@ export function SharedComposer({
   const [promptStorageOpen, setPromptStorageOpen] = useState(false);
   const [recentPrompts, setRecentPrompts] = useState<PromptEntry[]>([]);
   const [recentLists, setRecentLists] = useState<PromptListEntry[]>([]);
-  // Sequence, so two overlapping opens cannot land out of order and leave the
-  // menu showing the older library.
   const recentSeqRef = useRef(0);
   const refreshRecentPrompts = useCallback(async () => {
     recentSeqRef.current += 1;
@@ -650,13 +648,10 @@ export function SharedComposer({
       const pinned = byRecent.filter((p) => pinnedIds.includes(p.id));
       setRecentPrompts(pinned.length > 0 ? pinned : byRecent.slice(0, 3));
     } catch {
-      // Drop the rows rather than keep serving them: an entry deleted elsewhere
-      // stays clickable otherwise, and selecting a list runs its cached items.
+      // Clear, don't keep: a stale list row would run its cached items.
       if (seq === recentSeqRef.current) setRecentPrompts([]);
     }
     try {
-      // Lists only appear here when explicitly bookmarked: running one fires a
-      // whole queue of prompts, so it is not something to surface by default.
       const rows = await listPromptLists();
       if (seq !== recentSeqRef.current) return;
       const pinnedIds = usePlusMenuPrefsStore.getState().pinnedListIds;
@@ -1084,9 +1079,7 @@ export function SharedComposer({
             audioSizeError ??= sizeError;
             continue;
           }
-          // Counted from here, not from when it resolves: until then the audio
-          // is staged but invisible to pendingAudio, so a list started in the
-          // gap passes the attachment guard and then picks it up mid-queue.
+          // Count now: pendingAudio cannot see it until the read resolves.
           audioDecodingRef.current += 1;
           fileToBase64(file)
             .then((base64) => {
@@ -2163,16 +2156,11 @@ export function SharedComposer({
     { enabled: chatActive },
   );
 
-  // Shared by the storage dialog's Run button and the bookmarked lists in the
-  // "+" menu, so both entry points queue a list the same way.
   const runPromptList = useCallback(
     (items: string[]) => {
       const filtered = items.filter((p) => p.trim());
       if (!filtered.length) return;
-      // Ordinary sends gate on `busy` and `isDictating`; this path must too, or
-      // it clobbers the queue refs and sends over a run already in flight.
-      // `busy` alone is not enough: `running` only refreshes on the 200ms poll,
-      // so ask the handles directly the way that poll does.
+      // `running` lags the 200ms poll, so ask the handles directly like the poll does.
       const liveRunning =
         busy || Object.values(handlesRef.current).some((h) => h.isRunning());
       if (liveRunning || isQueueRunningRef.current) {
@@ -2183,8 +2171,7 @@ export function SharedComposer({
         toast.error("Finish dictating before running a list");
         return;
       }
-      // send() picks up whatever is staged, so only the first prompt would carry
-      // the attachment. Refuse rather than clear: it is the user's, not ours.
+      // Only the first send would carry staged attachments; refuse rather than clear.
       if (
         pendingImagesRef.current.length > 0 ||
         pendingAudioRef.current ||
@@ -2272,8 +2259,6 @@ export function SharedComposer({
           collisionPadding={16}
           className="unsloth-plus-menu w-[calc(208px*var(--ui-space-scale,1))]"
         >
-          {/* Keys are namespaced: prompts and lists are separate tables, so the
-              two id spaces can collide and these render as siblings. */}
           {recentPrompts.map((p) => (
             <DropdownMenuItem
               key={`prompt:${p.id}`}
