@@ -81,7 +81,7 @@ class TestDefaultRoute:
         tag = stack_mod._ROCM_MULTIARCH_TAG
         assert stack_mod._windows_rocm_torch_pkg_specs(gfx) == (
             f"torch[device-{gfx}]=={stack_mod._ROCM_MULTIARCH_TORCH_VERSION}+{tag}",
-            f"torchvision=={stack_mod._ROCM_MULTIARCH_TORCHVISION_VERSION}+{tag}",
+            f"torchvision[device-{gfx}]=={stack_mod._ROCM_MULTIARCH_TORCHVISION_VERSION}+{tag}",
             f"torchaudio=={stack_mod._ROCM_MULTIARCH_TORCHAUDIO_VERSION}+{tag}",
         )
 
@@ -166,6 +166,15 @@ class TestPowerShellAgrees:
         )
         assert "-and -not ($archFamily -and $_familyMirrorPinned)" in src
         assert "is RDNA 1 --" not in src
+
+    @pytest.mark.parametrize("path", [_INSTALL_PS1, _SETUP_PS1], ids = lambda p: p.name)
+    def test_torchvision_carries_the_device_extra(self, path):
+        # Bare torchvision on this index has no GPU kernels: nms raised hipErrorInvalidDeviceFunction on gfx1151.
+        src = path.read_text(encoding = "utf-8")
+        assert (
+            '"torchvision[device-$ROCmGfxArch]==$MultiArchTorchvisionVersion+$MultiArchTag"' in src
+        )
+        assert '"torchvision==$MultiArchTorchvisionVersion+$MultiArchTag"' not in src
 
     def test_setup_counts_every_multiarch_arch_as_having_wheels(self):
         src = _SETUP_PS1.read_text(encoding = "utf-8")

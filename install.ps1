@@ -10666,7 +10666,7 @@ main()
             # AMD's multi-arch index, one exact release tag for the trio.
             $ROCmIndexUrl = "$MultiArchIndexBase/"
             $ROCmTorchFloor = "torch[device-$ROCmGfxArch]==$MultiArchTorchVersion+$MultiArchTag"
-            $PinnedRocmVisionSpec = "torchvision==$MultiArchTorchvisionVersion+$MultiArchTag"
+            $PinnedRocmVisionSpec = "torchvision[device-$ROCmGfxArch]==$MultiArchTorchvisionVersion+$MultiArchTag"
             $PinnedRocmAudioSpec = "torchaudio==$MultiArchTorchaudioVersion+$MultiArchTag"
             substep "$ROCmGfxArch -- AMD multi-arch index, pinned to $MultiArchTorchVersion+$MultiArchTag (torch, torchvision, torchaudio)" "Cyan"
         } elseif ($archFamily) {

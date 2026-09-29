@@ -42,7 +42,10 @@ class TestPackageSpecs:
         assert (
             torch_spec == f"torch[device-{bare}]=={stack_mod._ROCM_MULTIARCH_TORCH_VERSION}+{tag}"
         )
-        assert vision_spec == f"torchvision=={stack_mod._ROCM_MULTIARCH_TORCHVISION_VERSION}+{tag}"
+        assert (
+            vision_spec
+            == f"torchvision[device-{bare}]=={stack_mod._ROCM_MULTIARCH_TORCHVISION_VERSION}+{tag}"
+        )
         assert audio_spec == f"torchaudio=={stack_mod._ROCM_MULTIARCH_TORCHAUDIO_VERSION}+{tag}"
 
     def test_the_pin_is_a_release_tag_not_a_nightly(self):

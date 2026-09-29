@@ -380,7 +380,7 @@ def _windows_multiarch_torch_pkg_specs(gfx_arch: str) -> tuple[str, str, str]:
     gfx = _bare_gfx(gfx_arch)
     return (
         f"torch[device-{gfx}]=={_ROCM_MULTIARCH_TORCH_VERSION}+{_ROCM_MULTIARCH_TAG}",
-        f"torchvision=={_ROCM_MULTIARCH_TORCHVISION_VERSION}+{_ROCM_MULTIARCH_TAG}",
+        f"torchvision[device-{gfx}]=={_ROCM_MULTIARCH_TORCHVISION_VERSION}+{_ROCM_MULTIARCH_TAG}",
         f"torchaudio=={_ROCM_MULTIARCH_TORCHAUDIO_VERSION}+{_ROCM_MULTIARCH_TAG}",
     )
 

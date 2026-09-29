@@ -8467,7 +8467,7 @@ if (-not $TorchIndexPinned -and ($HasROCm -or $ROCmGfxArch) -and $CuTag -eq "cpu
         # AMD's multi-arch index, one exact release tag for the trio.
         $ROCmIndexUrl   = "$MultiArchIndexBase/"
         $ROCmTorchSpec  = "torch[device-$ROCmGfxArch]==$MultiArchTorchVersion+$MultiArchTag"
-        $ROCmVisionSpec = "torchvision==$MultiArchTorchvisionVersion+$MultiArchTag"
+        $ROCmVisionSpec = "torchvision[device-$ROCmGfxArch]==$MultiArchTorchvisionVersion+$MultiArchTag"
         $ROCmAudioSpec  = "torchaudio==$MultiArchTorchaudioVersion+$MultiArchTag"
         substep "$ROCmGfxArch -- AMD multi-arch index, pinned to $MultiArchTorchVersion+$MultiArchTag (torch, torchvision, torchaudio)" "Cyan"
     } elseif ($archFamily) {
