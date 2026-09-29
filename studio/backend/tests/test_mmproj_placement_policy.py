@@ -1758,3 +1758,13 @@ def test_hub_load_rechecks_custom_projector_replaced_in_place(tmp_path, flag):
     replacement = _write_gguf(tmp_path / "replacement.gguf")
     replacement.replace(custom)
     assert not backend.matches_load_source(intent)
+
+
+def test_remote_ubatch_sizes_the_custom_projector_not_the_repo_one(tmp_path, monkeypatch):
+    import routes.inference as routes
+
+    custom = _write_gguf(tmp_path / "custom-audio.gguf")
+    monkeypatch.setattr(_meta, "mmproj_accepts_image", lambda _path: False)
+    config = SimpleNamespace(is_vision = True)
+    assert routes._remote_required_ubatch(config, []) > 0
+    assert routes._remote_required_ubatch(config, ["--mmproj", str(custom)]) == 0

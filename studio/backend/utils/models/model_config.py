@@ -48,8 +48,8 @@ from utils.audio_tokens import (
 from utils.models.gguf_metadata import (
     is_mmproj_by_metadata,
     mmproj_accepts_image,
-    pairing_score,
     mmproj_functional_match,
+    pairing_score,
     read_gguf_general_metadata,
     read_gguf_nextn_predict_layers,
 )
