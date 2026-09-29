@@ -592,18 +592,6 @@ def _update(engine: str, **values) -> None:
         _atomic_json(root / f"{engine}.job.json", _jobs[engine])
 
 
-def driver_library_path(env: dict[str, str]) -> str | None:
-    """The LD_LIBRARY_PATH entries that hold the NVIDIA driver. Hosts such as Colab keep libcuda
-    outside the loader cache and reach it only this way; every other entry is dropped, so a CUDA
-    runtime Studio's environment points at never shadows the engine's own."""
-    entries = [
-        entry
-        for entry in env.get("LD_LIBRARY_PATH", "").split(os.pathsep)
-        if entry and os.path.isabs(entry) and (Path(entry) / "libcuda.so.1").exists()
-    ]
-    return os.pathsep.join(entries) or None
-
-
 def install_environment() -> dict[str, str]:
     # Do not inherit Studio's resolver overrides, Python overlays or credentials.
     env = {
@@ -639,9 +627,6 @@ def install_environment() -> dict[str, str]:
     env["UV_CACHE_DIR"] = (
         os.environ.get("UV_CACHE_DIR") or recorded_cache or str(cache_root() / "uv")
     )
-    # The install checks import the engine, whose device detection needs the driver.
-    if driver := driver_library_path(dict(os.environ)):
-        env["LD_LIBRARY_PATH"] = driver
     env["PYTHONNOUSERSITE"] = "1"
     env["UV_NO_CONFIG"] = "1"
     env["UV_CONCURRENT_DOWNLOADS"] = "4"

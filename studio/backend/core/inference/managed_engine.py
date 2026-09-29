@@ -21,7 +21,6 @@ import httpx
 from utils.hardware.hardware import resolve_requested_gpu_ids
 
 from .engine_install import (
-    driver_library_path,
     engine_lease,
     installed,
     profile,
@@ -296,8 +295,6 @@ class ManagedEngine:
                 child_env.pop("VIRTUAL_ENV", None)
                 child_env.pop("LD_PRELOAD", None)
                 child_env.pop("LD_LIBRARY_PATH", None)
-                if driver := driver_library_path(env):
-                    child_env["LD_LIBRARY_PATH"] = driver
                 child_env["PATH"] = os.pathsep.join(
                     [
                         info["path"] + "/bin",
