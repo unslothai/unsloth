@@ -7,6 +7,7 @@ import test from "node:test";
 
 import {
   ZOOM_CHORDS,
+  zoomChordTaken,
   zoomDirectionForKey,
 } from "../src/features/interface-zoom/lib/zoom-chords.ts";
 import {
@@ -19,13 +20,14 @@ import { readSrc } from "./helpers/kit.ts";
 const press = (
   key: string,
   code: string,
-  mods: { meta?: boolean; ctrl?: boolean; alt?: boolean } = {},
+  mods: { meta?: boolean; ctrl?: boolean; alt?: boolean; shift?: boolean } = {},
 ) => ({
   key,
   code,
   metaKey: Boolean(mods.meta),
   ctrlKey: Boolean(mods.ctrl),
   altKey: Boolean(mods.alt),
+  shiftKey: Boolean(mods.shift),
 });
 
 test("Cmd on macOS and Ctrl elsewhere zoom in, out and back", () => {
@@ -91,6 +93,39 @@ test("the wrong modifier, Alt, or no modifier leaves the key alone", () => {
   );
 });
 
+test("a user shortcut on the exact keys pressed wins over a zoom alias", () => {
+  const ctrlShiftPlus = press("+", "Equal", { ctrl: true, shift: true });
+  const ownedBy = (values: string[]) => (value: string) =>
+    values.includes(value);
+  // Nothing bound: the alias zooms.
+  assert.equal(zoomChordTaken(ctrlShiftPlus, 1, false, ownedBy([])), false);
+  // Bound to Ctrl+Shift+= itself: that shortcut runs instead.
+  assert.equal(
+    zoomChordTaken(ctrlShiftPlus, 1, false, ownedBy(["Mod+Shift+Equal"])),
+    true,
+  );
+  // Bound to the canonical chord: every alias steps aside too, as before.
+  assert.equal(
+    zoomChordTaken(ctrlShiftPlus, 1, false, ownedBy(["Mod+Equal"])),
+    true,
+  );
+  // Keypad and macOS Cmd presses are checked the same way.
+  const keypad = press("+", "NumpadAdd", { ctrl: true });
+  assert.equal(
+    zoomChordTaken(keypad, 1, false, ownedBy(["Mod+NumpadAdd"])),
+    true,
+  );
+  const cmdShiftPlus = press("+", "Equal", { meta: true, shift: true });
+  assert.equal(
+    zoomChordTaken(cmdShiftPlus, 1, true, ownedBy(["Mod+Shift+Equal"])),
+    true,
+  );
+  assert.equal(
+    zoomChordTaken(cmdShiftPlus, 1, true, ownedBy(["Mod+Shift+Minus"])),
+    false,
+  );
+});
+
 test("the chords match the ones the View menu shows", () => {
   const chords = readSrc("app/app-menu-chords.ts");
   assert.ok(chords.includes(`"zoom-in": { chord: "${ZOOM_CHORDS[1]}" }`));
@@ -105,7 +140,7 @@ test("the popup is mounted on every route and only takes chords in the desktop a
   assert.match(zoom, /if \(!isTauri\) return;/);
   assert.match(
     zoom,
-    /shortcutOwningBinding\(overrides, ZOOM_CHORDS\[direction\]\)/,
+    /if \(zoomChordTaken\(event, direction, mac, owned\)\) return;/,
   );
 });
 

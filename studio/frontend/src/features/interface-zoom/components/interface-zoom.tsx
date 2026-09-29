@@ -31,6 +31,7 @@ import {
 import {
   ZOOM_CHORDS,
   type ZoomDirection,
+  zoomChordTaken,
   zoomDirectionForKey,
 } from "../lib/zoom-chords.ts";
 import { createWheelZoomAccumulator } from "../lib/zoom-wheel.ts";
@@ -181,7 +182,9 @@ export function InterfaceZoom() {
       const direction = zoomDirectionForKey(event, mac);
       if (direction === null) return;
       const { overrides } = useKeyboardShortcutsStore.getState();
-      if (shortcutOwningBinding(overrides, ZOOM_CHORDS[direction])) return;
+      const owned = (value: string) =>
+        shortcutOwningBinding(overrides, value) !== null;
+      if (zoomChordTaken(event, direction, mac, owned)) return;
       event.preventDefault();
       zoomInterfaceFromChord(direction);
     };
