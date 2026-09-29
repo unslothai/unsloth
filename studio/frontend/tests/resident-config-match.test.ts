@@ -1972,7 +1972,7 @@ test("a pick asks the status about its own model, so one loaded alongside is ado
   assert.equal(USE_CHAT_MODEL_RUNTIME.match(/await readPickStatus\(\)/g)?.length, 2);
   assert.match(
     USE_CHAT_MODEL_RUNTIME,
-    /if \(currentCheckpoint && \(!keepModelsLoaded \|\| forceReload\)\)/,
+    /const keepsOthers = keepModelsLoaded && !forceReload;[\s\S]*?if \(currentCheckpoint && !keepsOthers\)/,
   );
   assert.match(USE_CHAT_MODEL_RUNTIME, /alongside: keepModelsLoaded \|\| replacesOneOfSeveral,/);
 });

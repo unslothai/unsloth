@@ -2983,17 +2983,14 @@ export function HubModelPicker({
   const [query, setQuery] = useState("");
   const debouncedQuery = useDebouncedValue(query);
   const loadedIdSet = useMemo(
-    () =>
-      new Set(
-        task === undefined ? loadedModels.map((m) => m.id.toLowerCase()) : [],
-      ),
-    [task, loadedModels],
+    () => new Set(isChatPicker ? loadedModels.map((m) => m.id.toLowerCase()) : []),
+    [isChatPicker, loadedModels],
   );
   const isKeptLoaded = (repoId: string) =>
     loadedIdSet.has(repoId.toLowerCase());
   const loadedQuantsFor = (repoId: string): string[] => {
     const quants =
-      task === undefined
+      isChatPicker
         ? loadedModels
             .filter((m) => m.quant && modelIdsMatchForPicker(m.id, repoId))
             .map((m) => m.quant as string)
@@ -3004,10 +3001,10 @@ export function HubModelPicker({
     return [...new Set(quants)];
   };
   const loadedRows = useMemo(() => {
-    if (task !== undefined || section !== "recommended") return [];
+    if (!isChatPicker || section !== "recommended") return [];
     const q = debouncedQuery.trim().toLowerCase();
     return loadedModels.filter((m) => m.id.toLowerCase().includes(q));
-  }, [task, section, debouncedQuery, loadedModels]);
+  }, [isChatPicker, section, debouncedQuery, loadedModels]);
   const loadedRowIds = useMemo(
     () => new Set(loadedRows.map((m) => m.id.toLowerCase())),
     [loadedRows],
@@ -4920,59 +4917,52 @@ export function HubModelPicker({
   );
 
   // Split downloaded models so non-Unsloth repos get their own "Other models" section above Fine-tuned.
-  const loadedFirst = useCallback(
-    <T extends { repo_id: string }>(rows: T[]): T[] =>
+  // Kept-loaded models first: a stable partition, so the splits below keep that order.
+  const [keptFirstCachedGguf, keptFirstCachedModelRows] = useMemo(() => {
+    const first = <T extends { repo_id: string }>(rows: T[]): T[] =>
       loadedIdSet.size === 0
         ? rows
         : [
             ...rows.filter((r) => loadedIdSet.has(r.repo_id.toLowerCase())),
             ...rows.filter((r) => !loadedIdSet.has(r.repo_id.toLowerCase())),
-          ],
-    [loadedIdSet],
-  );
+          ];
+    return [first(visibleCachedGguf), first(visibleCachedModelRows)] as const;
+  }, [visibleCachedGguf, visibleCachedModelRows, loadedIdSet]);
   const unslothCachedGguf = useMemo(
     () =>
-      loadedFirst(
-        visibleCachedGguf.filter(
-          (c) =>
-            isUnslothPublisherRepoId(c.repo_id) &&
-            !pinnedSoleQuantRepoIds.has(c.repo_id),
-        ),
+      keptFirstCachedGguf.filter(
+        (c) =>
+          isUnslothPublisherRepoId(c.repo_id) &&
+          !pinnedSoleQuantRepoIds.has(c.repo_id),
       ),
-    [visibleCachedGguf, pinnedSoleQuantRepoIds, loadedFirst],
+    [keptFirstCachedGguf, pinnedSoleQuantRepoIds],
   );
   const otherCachedGguf = useMemo(
     () =>
-      loadedFirst(
-        visibleCachedGguf.filter(
-          (c) =>
-            !isUnslothPublisherRepoId(c.repo_id) &&
-            !pinnedSoleQuantRepoIds.has(c.repo_id),
-        ),
+      keptFirstCachedGguf.filter(
+        (c) =>
+          !isUnslothPublisherRepoId(c.repo_id) &&
+          !pinnedSoleQuantRepoIds.has(c.repo_id),
       ),
-    [visibleCachedGguf, pinnedSoleQuantRepoIds, loadedFirst],
+    [keptFirstCachedGguf, pinnedSoleQuantRepoIds],
   );
   const unslothCachedModelRows = useMemo(
     () =>
-      loadedFirst(
-        visibleCachedModelRows.filter(
-          (c) =>
-            isUnslothPublisherRepoId(c.repo_id) &&
-            !pinnedSet.has(pinKey(c.repo_id)),
-        ),
+      keptFirstCachedModelRows.filter(
+        (c) =>
+          isUnslothPublisherRepoId(c.repo_id) &&
+          !pinnedSet.has(pinKey(c.repo_id)),
       ),
-    [visibleCachedModelRows, pinnedSet, loadedFirst],
+    [keptFirstCachedModelRows, pinnedSet],
   );
   const otherCachedModelRows = useMemo(
     () =>
-      loadedFirst(
-        visibleCachedModelRows.filter(
-          (c) =>
-            !isUnslothPublisherRepoId(c.repo_id) &&
-            !pinnedSet.has(pinKey(c.repo_id)),
-        ),
+      keptFirstCachedModelRows.filter(
+        (c) =>
+          !isUnslothPublisherRepoId(c.repo_id) &&
+          !pinnedSet.has(pinKey(c.repo_id)),
       ),
-    [visibleCachedModelRows, pinnedSet, loadedFirst],
+    [keptFirstCachedModelRows, pinnedSet],
   );
 
   // Param counts come straight off the unsloth listings the picker already loaded, so the VRAM
@@ -5821,11 +5811,10 @@ export function HubModelPicker({
   };
 
 
-  const ejectsRow = (modelId: string) =>
-    Boolean(onEject) && loadedModels.length > 1 && isKeptLoaded(modelId);
-
+  // Row-level eject only once several are loaded; with one, the footer button ejects it.
+  const ejectsKept = Boolean(onEject) && loadedModels.length > 1;
   const ejectMenuItems = (modelId: string) =>
-    ejectsRow(modelId) && onEject
+    ejectsKept && isKeptLoaded(modelId)
       ? [
           {
             key: "eject",
@@ -5837,36 +5826,10 @@ export function HubModelPicker({
                 className="size-icon"
               />
             ),
-            onSelect: () => onEject(modelId),
+            onSelect: () => onEject?.(modelId),
           },
         ]
       : undefined;
-
-  const renderEjectAction = (modelId: string) =>
-    onEject && ejectsRow(modelId) ? (
-      <Tooltip delayDuration={0}>
-        <TooltipTrigger asChild={true}>
-          <button
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              onEject(modelId);
-            }}
-            aria-label={`Eject ${modelId}`}
-            className="flex size-5 shrink-0 items-center justify-center rounded-md text-muted-foreground/60 transition-colors hover:bg-[rgb(0_0_0_/_calc(0.05*var(--contrast-wash-gain,1)))] hover:text-red-500 dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]"
-          >
-            <HugeiconsIcon
-              icon={RemoveCircleIcon}
-              strokeWidth={1.75}
-              className="size-3.5"
-            />
-          </button>
-        </TooltipTrigger>
-        <TooltipContent side="top" className="tooltip-compact">
-          Eject
-        </TooltipContent>
-      </Tooltip>
-    ) : null;
 
   const renderLoadedRow = (entry: (typeof loadedModels)[number]) => {
     const optionKey = makeModelOptionKey("loaded", entry.id);
@@ -5902,7 +5865,30 @@ export function HubModelPicker({
           />
         </div>
         <span className={ROW_ACTIONS_CLASS}>
-          {renderEjectAction(entry.id)}
+          {ejectsKept ? (
+            <Tooltip delayDuration={0}>
+              <TooltipTrigger asChild={true}>
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onEject?.(entry.id);
+                  }}
+                  aria-label={`Eject ${entry.id}`}
+                  className="flex size-5 shrink-0 items-center justify-center rounded-md text-muted-foreground/60 transition-colors hover:bg-[rgb(0_0_0_/_calc(0.05*var(--contrast-wash-gain,1)))] hover:text-red-500 dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]"
+                >
+                  <HugeiconsIcon
+                    icon={RemoveCircleIcon}
+                    strokeWidth={1.75}
+                    className="size-3.5"
+                  />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="top" className="tooltip-compact">
+                Eject
+              </TooltipContent>
+            </Tooltip>
+          ) : null}
         </span>
       </div>
     );
@@ -6338,6 +6324,7 @@ export function HubModelPicker({
     const isSelected = value === c.repo_id;
     const soleQuant = soleQuants.quants.get(c.repo_id);
     if (soleQuant) return renderSoleQuantGgufRow(c, soleQuant);
+    const loadedQuants = loadedQuantsFor(c.repo_id);
     // Auto-expansion waits for the probe: expanding every row first would mount an expander, and
     // its remote listing, for repos about to collapse.
     const expanderOpen = shouldMountVariantExpander({
@@ -6355,11 +6342,7 @@ export function HubModelPicker({
               label={c.repo_id}
               tooltipText={localPathTooltip(c.repo_id, c.cache_path)}
               meta="GGUF"
-              quantChip={
-                loadedQuantsFor(c.repo_id).length
-                  ? loadedQuantsFor(c.repo_id).map(ggufQuantChipLabel).join(", ")
-                  : undefined
-              }
+              quantChip={loadedQuants.map(ggufQuantChipLabel).join(", ") || undefined}
               showVision={c.has_vision ?? visionByRepo[c.repo_id]}
               alignMeta="device"
               partial={isPartialRepo}
@@ -6441,7 +6424,7 @@ export function HubModelPicker({
             hostPooledMemory={gpu.loadDeviceSharesHostMemory}
             gpuCount={expanderGpuCount}
             repoId={c.repo_id}
-            loadedQuants={loadedQuantsFor(c.repo_id)}
+            loadedQuants={loadedQuants}
             pipelineTag={c.task ?? null}
             loadId={c.load_id}
             cachePath={c.cache_path}

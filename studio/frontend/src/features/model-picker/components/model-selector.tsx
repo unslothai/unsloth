@@ -174,6 +174,8 @@ function ModelSelectorTrigger({
   const triggerTitle = severalLoaded
     ? `${loadedCount} models loaded`
     : (currentModel?.name ?? placeholder);
+  // With several loaded the title is the count, so the subtitle names the one chat is sending to.
+  const subtitle = severalLoaded ? currentModel?.name : currentModel?.description;
   return (
     <PopoverTrigger asChild={true}>
       <button
@@ -253,15 +255,14 @@ function ModelSelectorTrigger({
                 />
               ) : null}
             </span>
-            {/* With several loaded the title is the count, so this names the one chat is sending to. */}
-            {(severalLoaded ? currentModel?.name : currentModel?.description) && (
+            {subtitle && (
               <span
                 className={cn(
                   "min-w-0 truncate text-xs leading-tight text-muted-foreground",
                   showCloudIndicator ? "" : "ml-2",
                 )}
               >
-                {severalLoaded ? currentModel?.name : currentModel?.description}
+                {subtitle}
               </span>
             )}
           </span>
@@ -269,12 +270,10 @@ function ModelSelectorTrigger({
             <span
               className={cn(
                 "shrink-0 whitespace-nowrap text-xs leading-none text-muted-foreground",
-                !(severalLoaded ? currentModel?.name : currentModel?.description) &&
-                  !showCloudIndicator &&
-                  "ml-2",
+                !subtitle && !showCloudIndicator && "ml-2",
               )}
             >
-              {(severalLoaded ? currentModel?.name : currentModel?.description) ? " - " : ""}
+              {subtitle ? " - " : ""}
               {currentModel.descriptionSuffix}
             </span>
           )}
@@ -857,6 +856,11 @@ export function ModelSelector({
     if (!modelId) setOpen(false);
   }
 
+  function handleEjectAll() {
+    onEjectAll?.();
+    setOpen(false);
+  }
+
   function handleBrowseHub() {
     setOpen(false);
     void navigate({
@@ -906,14 +910,7 @@ export function ModelSelector({
         onSelect={handleSelect}
         resolveDownloadFootprint={resolveDownloadFootprint}
         onEject={onEject ? handleEject : undefined}
-        onEjectAll={
-          onEjectAll
-            ? () => {
-                onEjectAll();
-                setOpen(false);
-              }
-            : undefined
-        }
+        onEjectAll={onEjectAll ? handleEjectAll : undefined}
         onFoldersChange={onFoldersChange}
         // Curated task pickers show it only with a Hub filter; community-enabled ones always do.
         onBrowseHub={

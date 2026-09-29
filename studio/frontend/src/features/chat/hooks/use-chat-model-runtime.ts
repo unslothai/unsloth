@@ -597,36 +597,32 @@ function publishLoadedModels(
   statusId?: string | null,
   statusQuant?: string | null,
 ): void {
+  // The status names the quant of the model it describes; only the others need /v1/models.
   const current = useChatRuntimeStore.getState().loadedModels;
-  const known = new Map(
-    current.map((m) => [
-      m.id,
-      m.id === statusId &&
-      m.quant !== undefined &&
-      m.quant !== (statusQuant ?? null)
-        ? { id: m.id }
-        : m,
-    ]),
-  );
-  const next = ids.map((id) => known.get(id) ?? { id });
-  const unchanged =
-    next.length === current.length && next.every((m, i) => m === current[i]);
-  if (!unchanged) useChatRuntimeStore.setState({ loadedModels: next });
+  const known = new Map(current.map((m) => [m.id, m]));
+  const next = ids.map((id) => {
+    const prev = known.get(id);
+    const quant = id === statusId ? (statusQuant ?? null) : prev?.quant;
+    return prev && prev.quant === quant ? prev : { id, quant };
+  });
+  if (next.length !== current.length || next.some((m, i) => m !== current[i])) {
+    useChatRuntimeStore.setState({ loadedModels: next });
+  }
   if (next.every((m) => m.quant !== undefined)) return;
   const lookup = ++quantLookupGeneration;
   void listOpenAIModels().then(
     (models) => {
       if (lookup !== quantLookupGeneration) return;
-      const details = new Map(
-        models.filter((m) => m.loaded).map((m) => [m.id, m]),
-      );
-      useChatRuntimeStore.setState((state) => ({
-        loadedModels: state.loadedModels.map((m) =>
+      const details = new Map(models.filter((m) => m.loaded).map((m) => [m.id, m]));
+      const { loadedModels } = useChatRuntimeStore.getState();
+      if (!loadedModels.some((m) => m.quant === undefined && details.has(m.id))) return;
+      useChatRuntimeStore.setState({
+        loadedModels: loadedModels.map((m) =>
           m.quant !== undefined || !details.has(m.id)
             ? m
             : { ...m, quant: details.get(m.id)?.quant ?? null },
         ),
-      }));
+      });
     },
     () => {},
   );
@@ -1773,6 +1769,8 @@ export function useChatModelRuntime() {
         ReturnType<typeof confirmStopRunningChatsIfNeeded>
       >;
       const keepModelsLoaded = useChatRuntimeStore.getState().keepModelsLoaded;
+      const keepsOthers = keepModelsLoaded && !forceReload;
+      const switchingNote = keepsOthers ? "Keeping the loaded models." : "Switching models.";
       const replacesOneOfSeveral =
         !keepModelsLoaded &&
         !forceReload &&
@@ -1780,7 +1778,7 @@ export function useChatModelRuntime() {
         useChatRuntimeStore.getState().loadedModels.length > 1;
       try {
         stopDecision =
-          keepModelsLoaded && !forceReload
+          keepsOthers
             ? {
                 proceed: true,
                 forceCancelActive: false,
@@ -1877,11 +1875,7 @@ export function useChatModelRuntime() {
         previousModel?.isLora ?? (previousLora?.exportType === "lora");
       const isCachedLora = isLora && isLocal;
       let loadingDescription = [
-        currentCheckpoint
-          ? keepModelsLoaded && !forceReload
-            ? "Keeping the loaded models."
-            : "Switching models."
-          : null,
+        currentCheckpoint ? switchingNote : null,
         extraLoadingDescription ?? null,
         isDownloaded ? "Loading cached model into memory." : null,
         !isDownloaded && isCachedLora ? "Loading trained model into memory." : null,
@@ -2334,11 +2328,7 @@ export function useChatModelRuntime() {
                 : [validation.mlx_loads_base_model];
               downloadComplete = false;
               loadingDescription = [
-                currentCheckpoint
-                  ? keepModelsLoaded && !forceReload
-                    ? "Keeping the loaded models."
-                    : "Switching models."
-                  : null,
+                currentCheckpoint ? switchingNote : null,
                 extraLoadingDescription ?? null,
                 mlxBaseDescription,
               ]
@@ -2412,7 +2402,7 @@ export function useChatModelRuntime() {
             requestLocalPromptQueueStop(stopDecision.promptQueueThreadIds);
             // Applying settings reloads the model in place, so a failed reload must roll back even when
             // the other models are kept.
-            if (currentCheckpoint && (!keepModelsLoaded || forceReload)) {
+            if (currentCheckpoint && !keepsOthers) {
               // With chats generating, skip this preliminary unload: it cancels them ahead of /load's
               // preflight, so a rejected target truncates replies for a model that never loads. Idle,
               // unload first and free VRAM early.
@@ -3187,11 +3177,7 @@ export function useChatModelRuntime() {
         const watchForCacheMiss =
           isDownloaded && !isLocal && nativePathToken == null && !isOllamaModelId(modelId);
         const cacheMissDescription = [
-          currentCheckpoint
-            ? keepModelsLoaded && !forceReload
-              ? "Keeping the loaded models."
-              : "Switching models."
-            : null,
+          currentCheckpoint ? switchingNote : null,
           extraLoadingDescription ?? null,
           CACHE_MISS_DOWNLOAD_DESCRIPTION,
         ]

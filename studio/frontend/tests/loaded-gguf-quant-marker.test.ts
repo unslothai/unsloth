@@ -32,6 +32,6 @@ test("the loaded quants come from every loaded model, not just the one chat uses
 test("a repo with several cached quants names the loaded one on its row", () => {
   assert.match(
     picker,
-    /meta="GGUF"\s*quantChip=\{\s*loadedQuantsFor\(c\.repo_id\)\.length/,
+    /meta="GGUF"\s*quantChip=\{loadedQuants\.map\(ggufQuantChipLabel\)\.join\(", "\) \|\| undefined\}/,
   );
 });
