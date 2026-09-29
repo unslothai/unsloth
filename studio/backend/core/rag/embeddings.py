@@ -677,12 +677,18 @@ def _resident_hardware_choice() -> str:
     return _hardware_probe.choice
 
 
-def _keep_hardware_choice(backend) -> None:
-    """Keep the answer only when THIS call resolved it; see the clear in _get_backend."""
+def _keep_hardware_choice(backend, *, replaced: bool = False) -> None:
+    """Keep the answer only when THIS call resolved it; see the clear in _get_backend.
+
+    ``replaced``: ``backend`` was just published. With no probe to keep (a local GGUF, a stored
+    backend, a GGUF repo name), the answer is dropped rather than left holding the backend it was
+    kept for, which is being disposed."""
     global _resident_hardware
     choice = getattr(_hardware_probe, "choice", None)
     if choice is not None:
         _resident_hardware = (backend, choice)
+    elif replaced:
+        _resident_hardware = None
 
 
 def _model_is_local_gguf(model: str | None) -> bool:
@@ -848,7 +854,7 @@ def _switch_to_llama_fallback(err, model_name: str | None = None):
     process embedder to llama-server so every later encode stays in one space, and
     return it (None if no binary). Vectors written before the swap were ST, so any
     KB already embedded with ST should be reindexed."""
-    global _backend, _backend_key
+    global _backend, _backend_key, _resident_hardware
     failed_model = model_name or config.effective_embedding_model()
     old = None
     with _backend_lock:
@@ -864,6 +870,8 @@ def _switch_to_llama_fallback(err, model_name: str | None = None):
             err,
         )
         old, _backend = _backend, fallback
+        # Nothing was probed for the fallback, and the answer kept for the ST wrapper would hold it alive.
+        _resident_hardware = None
         _forced_backends[failed_model] = "llama-server"
         _backend_key = _backend_cache_key(_raw_backend(), "llama-server")
     # The failed ST wrapper is no longer published, but its module-level model would survive even a
@@ -963,7 +971,7 @@ def _get_backend(model_name: str | None = None):
                 "'auto', 'sentence-transformers' or 'llama-server'"
             )
         _backend = new
-        _keep_hardware_choice(new)
+        _keep_hardware_choice(new, replaced = True)
         if key in _ST_ALIASES and _is_llama_backend(new):
             # Pin the backend the warm probe actually fell back to, but let a different model retry ST.
             key = "llama-server"

@@ -278,6 +278,35 @@ def test_a_resolution_that_never_asked_the_hardware_keeps_nothing(monkeypatch):
     assert embeddings._resident_hardware is None
 
 
+@pytest.mark.parametrize("route", ["a saved backend", "a runtime fallback"])
+def test_a_replaced_backend_is_not_held_by_the_answer_kept_for_it(monkeypatch, route):
+    """A saved backend resolves before the hardware is asked, and a runtime fallback publishes
+    without asking, so nothing is kept for what either publishes. The answer kept for the backend
+    they replace has to go with it, or it holds that disposed backend alive."""
+    import gc
+    import weakref
+
+    stored = {"backend": None}
+    _resolve_auto_for(monkeypatch, stored = stored)
+    _patch_llama_backend(monkeypatch, binary = "/fake/llama-server")
+    monkeypatch.setattr(
+        embeddings,
+        "_build_st_backend_or_fallback",
+        lambda model_name = None: embeddings._SentenceTransformersBackend(),
+    )
+
+    replaced = weakref.ref(embeddings._get_backend("org/embedder"))
+    if route == "a saved backend":
+        stored["backend"] = "llama-server"
+        embeddings._get_backend("org/embedder")
+    else:
+        embeddings._switch_to_llama_fallback(RuntimeError("encode failed"), "org/embedder")
+    assert isinstance(embeddings._backend, _SentinelLlamaBackend)
+
+    gc.collect()
+    assert replaced() is None
+
+
 def test_encode_is_serialized(monkeypatch):
     probe = _ConcurrencyProbe()
     monkeypatch.setattr(embeddings, "_get", lambda model_name = None: _FakeModel(probe))
