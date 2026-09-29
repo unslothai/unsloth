@@ -1460,9 +1460,10 @@ def CausalLM_fast_forward(fast_forward_inference):
         num_logits_to_keep: Optional[int] = 0,
         logits_to_keep: Optional[int] = 0,
         *args,
-        shift_labels: Optional[torch.LongTensor] = None,
         **kwargs,
     ) -> Union[Tuple, CausalLMOutputWithPast]:
+        # Not a named parameter: HF's find_labels would make it a required eval label.
+        shift_labels = kwargs.pop("shift_labels", None)
         if past_key_values is not None:
             outputs = fast_forward_inference(
                 self,

@@ -116,3 +116,15 @@ def test_compute_loss_divides_the_pre_shard_token_count_by_cp_size(monkeypatch):
     trainer._context_parallel_manager = _manager(size = 4)
     trainer.compute_loss(None, {}, num_items_in_batch = torch.tensor(12.0))
     assert seen["n"] == 3
+
+
+def test_shift_labels_is_not_an_eval_label_name():
+    # find_labels treats every forward parameter containing "label" as required: a named
+    # shift_labels made plain eval batches look label-less (KeyError 'prompt' in prediction_step).
+    from transformers.utils import find_labels
+    from unsloth.models.llama import CausalLM_fast_forward, LlamaModel_fast_forward_inference
+
+    class LM(torch.nn.Module):
+        forward = CausalLM_fast_forward(LlamaModel_fast_forward_inference)
+
+    assert find_labels(LM) == ["labels"]
