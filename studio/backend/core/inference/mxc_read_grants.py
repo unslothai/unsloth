@@ -543,15 +543,26 @@ def hold_if_needed() -> WorkloadLease | None:
     """A lease for a DACL-tier launch or probe while the persistent grants are on, else None."""
     from . import mxc_policy
 
+    refresh_saved_switches()
     if not (mxc_policy.dacl_fallback_enabled() and enabled()):
         return None
     return hold()
+
+
+def refresh_saved_switches() -> None:
+    """Drop this process's 1 s settings cache: another Studio process may have just turned a switch off."""
+    try:
+        from utils.mxc_isolation_settings import forget_cached_setting
+        forget_cached_setting()
+    except Exception:  # noqa: BLE001 - outside the backend there is no saved setting to cache
+        pass
 
 
 def _revoke_if_turned_off() -> None:
     """Finish a revocation the settings switch or an earlier launch deferred for running workloads."""
     try:
         from . import mxc_policy
+        refresh_saved_switches()
         if not (mxc_policy.dacl_fallback_enabled() and enabled()):
             revoke_recorded()
     except Exception as exc:  # noqa: BLE001 - cleanup, the next launch or check retries

@@ -10,6 +10,7 @@ import type {
 } from "../src/features/settings/api/sandbox-isolation.ts";
 import {
   hostPrepStatus,
+  isOlderJob,
   jobOutputLines,
   jobResult,
   shouldPollJob,
@@ -198,4 +199,16 @@ test("job results, polling and output lines", () => {
     jobOutputLines(job({ state: "succeeded", outputTail: lines })),
     [],
   );
+});
+
+test("a late read of an earlier job never replaces the one this tab started", () => {
+  const started = job({ id: "j2", startedAt: 20 });
+  const stale = job({ id: "j1", state: "failed", startedAt: 10 });
+  assert.equal(isOlderJob(stale, started), true);
+  assert.equal(isOlderJob(stale, null), false);
+  assert.equal(
+    isOlderJob(job({ id: "j2", state: "succeeded", startedAt: 20 }), started),
+    false,
+  );
+  assert.equal(isOlderJob(job({ id: "j3", startedAt: 30 }), started), false);
 });

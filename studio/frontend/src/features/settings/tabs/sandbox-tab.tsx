@@ -25,6 +25,7 @@ import { SettingsSection } from "../components/settings-section";
 import {
   HOST_PREP_POLL_MS,
   type HostPrepStatus,
+  isOlderJob,
   jobOutputLines,
   jobResult,
   shouldPollJob,
@@ -129,7 +130,8 @@ export function SandboxTab() {
     // A job started from another window, or before this tab was reopened, keeps reporting here.
     void loadHostPreparation(t("settings.sandbox.prepareError"))
       .then((current) => {
-        if (mounted.current && current.state !== "idle") setJob(current);
+        if (!mounted.current || current.state === "idle") return;
+        setJob((shown) => (isOlderJob(current, shown) ? shown : current));
       })
       .catch(() => undefined);
   }, [refresh, t]);
