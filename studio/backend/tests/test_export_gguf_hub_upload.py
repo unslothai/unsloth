@@ -102,6 +102,7 @@ def _hub_doubles(calls, seen):
         ):
             calls.append("upload_folder")
             seen["folder"] = folder_path
+            seen["upload_repo"] = repo_id
             root = Path(folder_path)
             paths = [p.relative_to(root).as_posix() for p in root.rglob("*") if p.is_file()]
             if allow_patterns is not None:

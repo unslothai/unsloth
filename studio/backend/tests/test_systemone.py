@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import asyncio
 import os
 import sys
 import threading
@@ -8,7 +9,7 @@ import weakref
 from types import SimpleNamespace
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
 from auth.authentication import get_current_subject
@@ -1814,3 +1815,105 @@ def test_mlx_fp16_overflow_reruns_in_fp32(monkeypatch, gpu_agent):
     agent.model.set_dtype = None
     logits, _ = laya_runtime._forward(agent, _items())
     assert np.isinf(logits[0, 0])
+
+
+def _mcp_decide(arguments):
+    from fastmcp import Client
+    async def call():
+        async with Client(systemone.decisions_mcp) as mcp:
+            return await mcp.call_tool("decide", arguments, raise_on_error = False)
+
+    return asyncio.run(call())
+
+
+def test_decisions_mcp_answers_like_the_route(client):
+    route = _post(client).json()
+    result = _mcp_decide(
+        {"state": "Everything is down and we have a demo at noon.", "questions": QUESTIONS}
+    )
+    assert not result.is_error
+    assert result.structured_content == route
+
+
+def test_decisions_mcp_reports_the_route_errors(monkeypatch, runtime):
+    result = _mcp_decide({"state": "x", "questions": {}})
+    assert result.is_error and "At least one question" in result.content[0].text
+    long_state = "x" * (systemone.MAX_STATE_CHARS + 1)
+    result = _mcp_decide({"state": long_state, "questions": QUESTIONS})
+    assert result.is_error and "State is longer than" in result.content[0].text
+    monkeypatch.setattr(systemone_settings, "_owner_setting", {}.get)
+    result = _mcp_decide({"state": "x", "questions": QUESTIONS})
+    assert result.is_error and "Settings > API" in result.content[0].text
+    assert runtime == []
+
+
+def test_chat_calls_studio_decisions_without_a_server_or_key(client):
+    import json
+
+    from core.inference.mcp_client import call_tool_sync, close_mcp_sessions, list_tools_async
+
+    url = client.get("/api/settings/systemone").json()["mcp_url"]
+    assert url == f"http://127.0.0.1:80{systemone.MCP_PATH}/"
+    tools = asyncio.run(list_tools_async(url, timeout = 10))
+    assert [tool["name"] for tool in tools] == ["decide"]
+    text = call_tool_sync(url, None, "decide", {"state": "x", "questions": QUESTIONS}, scope = "chat")
+    close_mcp_sessions(url, None)
+    assert json.loads(text)["answers"]["urgent"] == {"type": "noul", "noul": 0.9}
+
+
+def test_decisions_mcp_endpoint_needs_studio_auth(monkeypatch):
+    from main import app
+    from starlette.applications import Starlette
+    from starlette.routing import Mount
+
+    call = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": {"name": "decide", "arguments": {"state": "x", "questions": QUESTIONS}},
+    }
+    listing = {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}
+    headers = {"Accept": "application/json, text/event-stream"}
+    assert (
+        TestClient(app).post(f"{systemone.MCP_PATH}/", json = call, headers = headers).status_code
+        == 401
+    )
+
+    async def signed_in(credentials):
+        return "tester"
+
+    monkeypatch.setattr(systemone, "get_current_subject", signed_in)
+    mcp_app = systemone.decisions_mcp.http_app(path = "/", stateless_http = True, json_response = True)
+    served = Starlette(
+        routes = [Mount(systemone.MCP_PATH, systemone.RequireStudioAuth(mcp_app))],
+        lifespan = mcp_app.lifespan,
+    )
+    with TestClient(served) as http:
+        listed = http.post(
+            f"{systemone.MCP_PATH}/",
+            json = listing,
+            headers = {**headers, "Authorization": "Bearer t"},
+        )
+        answered = http.post(
+            f"{systemone.MCP_PATH}/", json = call, headers = {**headers, "Authorization": "Bearer t"}
+        )
+        monkeypatch.setattr(systemone_settings, "_owner_setting", {}.get)
+        hidden = http.post(
+            f"{systemone.MCP_PATH}/",
+            json = listing,
+            headers = {**headers, "Authorization": "Bearer t"},
+        )
+    assert answered.status_code == 200, answered.text
+    assert answered.json()["result"]["structuredContent"]["answers"]["urgent"]["noul"] == 0.9
+    assert [tool["name"] for tool in listed.json()["result"]["tools"]] == ["decide"]
+    assert hidden.json()["result"]["tools"] == []
+
+
+def test_managed_accounts_can_add_studio_decisions_but_not_other_loopback():
+    from core.inference.mcp_client import validate_mcp_address
+    from utils.account_context import AccountContext, run_as
+
+    alice = AccountContext("alice-id", "alice")
+    run_as(alice, validate_mcp_address, f"http://127.0.0.1:8888{systemone.MCP_PATH}/")
+    with pytest.raises(HTTPException):
+        run_as(alice, validate_mcp_address, "http://127.0.0.1:8888/mcp")
