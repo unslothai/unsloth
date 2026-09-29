@@ -51,6 +51,8 @@ def test_cancelled_load_waits_for_unload_then_reconciles_checkpoint():
     catch = _between(composer, "} catch (err) {\n        compareStepSucceededRef", "} finally {")
     assert catch.index("await run.cleanup") < catch.index("await clearCheckpointIfNotResident()")
     assert 'toast.info("Compare stopped"' in catch
+    reconcile = _between(composer, "async function clearCheckpointIfNotResident()", "\n}\n")
+    assert "ggufVariantsMatch(status.gguf_variant, store.activeGgufVariant)" in reconcile
     finally_ = _between(composer, "      } finally {\n        compareRunsRef", "\n      }\n")
     assert "onComparingChange?.(false);" in finally_
 

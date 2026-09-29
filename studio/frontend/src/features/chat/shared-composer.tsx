@@ -71,7 +71,7 @@ import {
   isChatImageFile,
   normalizeChatImage,
 } from "./image-normalize";
-import { modelIdsMatch } from "@/features/hub/lib/model-identity";
+import { ggufVariantsMatch, modelIdsMatch } from "@/features/hub/lib/model-identity";
 import { CONVERSATION_MARKDOWN_LABEL } from "./utils/conversation-markdown";
 import { pasteClipboardFiles } from "./utils/clipboard-files";
 import { confirmStopRunningChatsIfNeeded } from "./utils/confirm-stop-running-chats";
@@ -579,7 +579,12 @@ async function clearCheckpointIfNotResident(): Promise<void> {
   if (!checkpoint || isExternalModelId(checkpoint)) return;
   try {
     const status = await getInferenceStatus();
-    if (modelIdsMatch(resolveInferenceCheckpointId(status), checkpoint)) return;
+    if (
+      modelIdsMatch(resolveInferenceCheckpointId(status), checkpoint) &&
+      ggufVariantsMatch(status.gguf_variant, store.activeGgufVariant)
+    ) {
+      return;
+    }
   } catch {
     // Unknown is treated as gone: a stale checkpoint would send the next prompt to nothing.
   }
