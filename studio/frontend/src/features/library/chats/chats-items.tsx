@@ -76,11 +76,11 @@ import { useLibrarySettingsStore } from "../settings-store";
 import { SortRadio } from "../components/library-toolbar";
 import { CARD_SHADOW, OVERLAY_CONTROL, RAISED_SURFACE } from "../surface";
 
-// Fixed 8:7 size: min-h-0 and overflow-hidden stop long names from growing the card.
+// No overflow-hidden, so a two-line name grows its row instead of clipping; the row stretches to match.
 const CARD = cn(
   RAISED_SURFACE,
   CARD_SHADOW,
-  "group/chat relative flex aspect-[8/7] min-h-0 cursor-pointer flex-col gap-2.5 overflow-hidden rounded-xl px-5 pb-3.5 pt-5 transition hover:bg-neutral-100 hover:shadow-none dark:hover:bg-accent/60",
+  "group/chat relative flex aspect-[8/7] cursor-pointer flex-col gap-2.5 self-stretch rounded-xl px-5 pb-3.5 pt-5 transition hover:bg-neutral-100 hover:shadow-none dark:hover:bg-accent/60",
 );
 import {
   type ChatContents,
@@ -1217,7 +1217,7 @@ function CardFooter({ meta, date, className }: { meta?: ReactNode; date: string;
 }
 
 const CARD_TITLE =
-  "block w-full shrink-0 rounded text-left font-medium text-ui-14 leading-snug text-foreground outline-none [overflow-wrap:anywhere] focus-visible:ring-2 focus-visible:ring-ring";
+  "block w-full rounded text-left font-medium text-ui-14 leading-snug text-foreground outline-none [overflow-wrap:anywhere] focus-visible:ring-2 focus-visible:ring-ring";
 
 /** Group name and count in words; a bare number beside "Today" read as part of the name. */
 export function GroupHeading({
