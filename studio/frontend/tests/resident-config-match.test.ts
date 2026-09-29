@@ -2003,3 +2003,14 @@ test("replacing one of several asks about and stops only that model's chats", ()
   assert.match(CONFIRM, /let running = model\s*\?\s*\[\]/);
   assert.match(CONFIRM, /await getActiveGenerations\(model\)/);
 });
+
+test("ejecting the selected one of several stops only that model's chats", () => {
+  assert.match(
+    USE_CHAT_MODEL_RUNTIME,
+    /const scope =\s*useChatRuntimeStore\.getState\(\)\.loadedModels\.length > 1\s*\?\s*params\.checkpoint\s*:\s*undefined;\s*const stopDecision = await confirmStopRunningChatsIfNeeded\(\s*"Unloading the model",\s*"unload",\s*scope,\s*\);/,
+  );
+  assert.match(
+    USE_CHAT_MODEL_RUNTIME,
+    /if \(scope\) \{\s*requestPromptQueueStop\(stopDecision\.promptQueueThreadIds\);\s*\} else \{/,
+  );
+});

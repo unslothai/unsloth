@@ -3731,21 +3731,32 @@ export function useChatModelRuntime() {
         return false;
       }
       // Ejecting tears down llama-server, so every chat stops. Same prompt, but it leaves no model
-      // loaded, so it must not be worded as a reload.
+      // loaded, so it must not be worded as a reload. With several loaded only this one's chats stop.
+      const scope =
+        useChatRuntimeStore.getState().loadedModels.length > 1
+          ? params.checkpoint
+          : undefined;
       const stopDecision = await confirmStopRunningChatsIfNeeded(
         "Unloading the model",
         "unload",
+        scope,
       );
       if (!stopDecision.proceed) return false;
 
       async function performUnload(): Promise<void> {
-        cancelPreStreamRunReservations(stopDecision.preStreamRunTokens);
-        requestLocalPromptQueueStop(stopDecision.promptQueueThreadIds);
+        if (scope) {
+          requestPromptQueueStop(stopDecision.promptQueueThreadIds);
+        } else {
+          cancelPreStreamRunReservations(stopDecision.preStreamRunTokens);
+          requestLocalPromptQueueStop(stopDecision.promptQueueThreadIds);
+        }
         await unloadModel({
           model_path: params.checkpoint,
           force_cancel_active: stopDecision.forceCancelActive,
         });
-        requestLocalPromptQueueStop();
+        if (!scope) {
+          requestLocalPromptQueueStop();
+        }
         clearCheckpoint();
         await refresh();
       }
