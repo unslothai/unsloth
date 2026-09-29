@@ -730,6 +730,19 @@ def _fix_rope_inv_freq(model):
     return model
 
 
+def _vllm_unavailable_error():
+    # vLLM installed but disabled at import (ABI break, needs transformers 5) is not "not installed".
+    from unsloth import import_fixes
+    if import_fixes.VLLM_DISABLED_REASON:
+        return ImportError(
+            f"{import_fixes.VLLM_DISABLED_REASON}\n`fast_inference = True` needs a working vLLM."
+        )
+    return ImportError(
+        "Unsloth: Please install vLLM before enabling `fast_inference`!\n"
+        "You can do this in a terminal via `pip install vllm`"
+    )
+
+
 class FastLanguageModel(FastLlamaModel):
     @staticmethod
     @_offline_aware_load
@@ -861,10 +874,7 @@ class FastLanguageModel(FastLlamaModel):
 
         if fast_inference:
             if importlib.util.find_spec("vllm") is None:
-                raise ImportError(
-                    "Unsloth: Please install vLLM before enabling `fast_inference`!\n"
-                    "You can do this in a terminal via `pip install vllm`"
-                )
+                raise _vllm_unavailable_error()
             if DEVICE_TYPE_TORCH == "cuda":
                 for i in range(DEVICE_COUNT):
                     if "NVIDIA GB10" in str(torch.cuda.get_device_name(i)).upper():
@@ -1730,10 +1740,7 @@ class FastModel(FastBaseModel):
 
         if fast_inference:
             if importlib.util.find_spec("vllm") is None:
-                raise ImportError(
-                    "Unsloth: Please install vLLM before enabling `fast_inference`!\n"
-                    "You can do this in a terminal via `pip install vllm`"
-                )
+                raise _vllm_unavailable_error()
             if DEVICE_TYPE_TORCH == "cuda":
                 for i in range(DEVICE_COUNT):
                     if "NVIDIA GB10" in str(torch.cuda.get_device_name(i)).upper():
