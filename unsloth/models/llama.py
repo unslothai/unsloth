@@ -355,8 +355,11 @@ def _fast_prepare_inputs_for_generation(
                 bs, seq_length = 1, 0
                 device = "cuda" if torch.cuda.is_available() else "cpu"
 
+            # A flattened cache holds exactly past_len positions, whatever the Cache allocated.
             max_cache_len = None
-            if hasattr(past_key_values, "get_max_cache_shape"):
+            if kwargs["past_key_values"] is not past_key_values:
+                pass
+            elif hasattr(past_key_values, "get_max_cache_shape"):
                 m = past_key_values.get_max_cache_shape()
                 max_cache_len = int(m) if m is not None and m > 0 else None
             elif hasattr(past_key_values, "get_max_length"):

@@ -123,3 +123,26 @@ def test_cache_layers_missing_positions_are_rejected():
     cache.get_seq_length = lambda layer_idx = 0: PAST_LEN
     with pytest.raises(ValueError, match = "does not keep every cached position"):
         _llama()._cache_as_legacy_tuple(cache)
+
+
+def test_partial_static_cache_mask_spans_the_flattened_length():
+    from transformers import LlamaConfig
+    from transformers.cache_utils import StaticCache
+    from tests.utils.test_prepare_inputs_leftpad import FakeModelWith4DMask
+
+    config = LlamaConfig(
+        num_hidden_layers = 2, num_attention_heads = 1, num_key_value_heads = 1, hidden_size = 4
+    )
+    try:
+        cache = StaticCache(config = config, max_cache_len = 16)
+    except TypeError:
+        pytest.skip("StaticCache signature differs on this transformers")
+    for i, (k, v) in enumerate(_kv(PAST_LEN)):
+        cache.update(k, v, i, {"cache_position": torch.arange(PAST_LEN)})
+    model = FakeModelWith4DMask()
+    input_ids = torch.arange(BS * SEQ).reshape(BS, SEQ)
+    mask = torch.ones(BS, SEQ, dtype = torch.long)
+    _llama()._fast_prepare_inputs_for_generation(
+        model, input_ids, attention_mask = mask, past_key_values = cache
+    )
+    assert model.mask_calls[0]["target_length"] == SEQ  # past_len + fed tokens, not max_cache_len
