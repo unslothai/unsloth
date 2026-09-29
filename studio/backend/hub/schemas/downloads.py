@@ -41,6 +41,11 @@ class DownloadModelRequest(BaseModel):
         "whose loader reads a scoped subset of a repo). Keyed separately from the full "
         "snapshot of the same repo, so neither one's manifest describes the other.",
     )
+    library_id: Optional[str] = Field(
+        None,
+        description = "Optional model library to download into. Omitted, empty or 'default' "
+        "uses the active cache; otherwise a model_libraries row id.",
+    )
     files: List[str] = Field(
         default_factory = list,
         description = "Exact files to fetch. Required with scope_id, ignored without it.",
