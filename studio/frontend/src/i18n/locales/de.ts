@@ -98,6 +98,7 @@ export const de = {
     useModelScope: "ModelScope verwenden",
     useModelScopeHint: "Stattdessen über ModelScope suchen und herunterladen. Sie können in den Einstellungen zurückwechseln.",
     useModelScopeFailed: "Wechsel zu ModelScope fehlgeschlagen.",
+    updateToken: "Token aktualisieren",
     hfToken: {
       label: "HF-Token",
       saved: "Gespeichert",
@@ -721,6 +722,7 @@ export const de = {
       disabled: "Die Protokollierung in eine Datei ist deaktiviert (UNSLOTH_STUDIO_NO_FILE_LOG=1).",
       missing: "Es wurde keine Protokolldatei gefunden.",
       unreadable: "Die Protokolldatei konnte nicht gelesen werden.",
+      viewLogs: "Protokolle anzeigen",
       timeout: "Die Protokollanfrage hat das Zeitlimit uberschritten. Der Server ist moglicherweise nicht erreichbar.",
       droppedNotice: "Einige Zeilen wurden übersprungen: Das Protokoll wurde schneller geschrieben, als es gelesen werden konnte.",
       morePending: "Weitere Zeilen werden noch gelesen; sie erscheinen bei der nachsten Aktualisierung.",
@@ -1109,6 +1111,9 @@ export const de = {
         source: "Modellquelle",
         sourceDescription: "Wo der Model-Hub sucht und herunterlädt. Wählen Sie ModelScope, wenn Hugging Face in Ihrem Netzwerk blockiert oder langsam ist.",
         sourceFallback: "ModelScope konnte nicht gestartet werden, daher wird Hugging Face verwendet. Prüfen Sie die Unsloth-Logs.",
+        autoSourceTitle: "Modellquelle auf ModelScope umgestellt",
+        autoSourceDescription: "Hugging Face ist in Ihrer Region oft langsam oder gesperrt, daher lädt Unsloth Modelle jetzt von ModelScope.",
+        autoSourceAction: "Einstellungen für die Modellquelle öffnen",
         sectionTitle: "Modell-Hub",
         endpoint: "Hugging-Face-Endpunkt",
         endpointDescription: "Von hier werden Modelle und Datensätze geladen. Leer lassen für huggingface.co oder einen Mirror wie https://hf-mirror.com eintragen.",
@@ -2242,6 +2247,9 @@ export const de = {
         loading: "Wird geladen…",
         loadedOn: "Geladen auf {device}",
         download: "Herunterladen",
+        downloadConfirmTitle: "Laya {model} herunterladen?",
+        downloadConfirmBody:
+          "Die Entscheidungs-API braucht dieses Modell, um Anfragen zu beantworten. Etwa {size}, einmalig in deinen Hugging-Face-Cache geladen.",
         unload: "Entladen",
         downloadBusy: "Ein Modell der Entscheidungs-API wird bereits heruntergeladen.",
         downloadFailed: "Der Download konnte nicht gestartet werden.",
@@ -2480,6 +2488,8 @@ export const de = {
       tokenRejectedTitle: "Hugging Face-Token abgelehnt",
       tokenRejectedBody:
         "Aktualisieren Sie Ihr Token unter Einstellungen → Allgemein und versuchen Sie es erneut.",
+      tokenRejectedAnonymousBody:
+        "Öffentliche Modelle werden ohne das Token angezeigt. Aktualisieren Sie Ihr Token unter Einstellungen → Allgemein, um private und zugangsbeschränkte Modelle zu erreichen.",
       hubUnreachable: "Hugging Face ist nicht erreichbar",
       cantUseModel: "Modell kann nicht für das Training verwendet werden",
       reasonTypeMismatch:

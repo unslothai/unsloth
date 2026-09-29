@@ -876,10 +876,10 @@ def preferred_quant(labels) -> Optional[str]:
     """
     from utils.models.model_config import _pick_best_gguf
 
-    # _pick_best_gguf ranks filenames and matches upper-case tokens, so feed "<LABEL>.gguf"
+    # _pick_best_gguf ranks filenames, so feed "<LABEL>.gguf"
     synthetic: dict[str, str] = {}
     for name in labels:
-        synthetic.setdefault(f"{name.upper()}.gguf", name)
+        synthetic.setdefault(f"{name}.gguf", name)
     best = _pick_best_gguf(list(synthetic))
     return synthetic.get(best) if best else None
 

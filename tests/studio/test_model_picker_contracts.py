@@ -425,9 +425,10 @@ def test_recipe_model_load_toast_is_persistent_and_dismissible():
     assert "closeButton: true" in model_load
     assert "icon: createLoadingToastIcon()" in model_load
     assert "onDismiss:" in model_load
-    assert "description: undefined" in model_load
+    # A plain success clears the loading description and lasts 2 s; only a layer split says more.
+    assert "description: offloadNotice?.description" in model_load
     assert "icon: undefined" in model_load
-    assert "duration: 2000" in model_load
+    assert "duration: offloadNotice ? 8000 : 2000" in model_load
 
     toast_lib = _read("lib/toast.ts")
     assert "createElement(Spinner" in toast_lib

@@ -8428,6 +8428,18 @@ def test_scan_folder_storage_removals_report_if_a_row_changed(monkeypatch):
             assert connection.closed
 
 
+def test_out_of_range_scan_folder_ids_remove_nothing(monkeypatch):
+    import sqlite3
+
+    from hub.storage import scan_folders
+    for storage in (studio_db, scan_folders):
+        connection = sqlite3.connect(":memory:")
+        connection.execute("CREATE TABLE scan_folders (id INTEGER PRIMARY KEY, path TEXT)")
+        monkeypatch.setattr(storage, "get_connection", lambda connection = connection: connection)
+        for folder_id in (2**63, -(2**63) - 1):
+            assert storage.remove_scan_folder(folder_id) is False
+
+
 def test_noop_scan_folder_removals_do_not_invalidate_the_index(monkeypatch):
     from hub.services.models import local_inventory
 

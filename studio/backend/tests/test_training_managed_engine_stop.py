@@ -51,7 +51,6 @@ def _stuck_backend():
 
 def test_free_chat_models_raises_the_blocking_error(monkeypatch):
     import core.inference
-
     monkeypatch.setattr(core.inference, "get_inference_backend", _stuck_backend)
     with pytest.raises(ManagedEngineStillRunning):
         training_vram.free_chat_models_for_training(reason = "test")

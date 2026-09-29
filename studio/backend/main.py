@@ -286,8 +286,8 @@ _STUDIO_INSTALL_ID_RE = _re.compile(r"^[0-9a-f]{64}$")
 
 def _read_studio_install_id() -> str:
     """Per-install opaque id at $STUDIO_HOME/share/studio_install_id. Returns "" when absent or not a 64-char
-    lowercase-hex token; then /api/health emits "" and the launcher accepts any healthy backend. Carries no
-    install-path info (matters when Unsloth runs -H 0.0.0.0)."""
+    lowercase-hex token; a launcher with a baked id rejects "", so it restores a missing id before starting
+    Studio. Carries no install-path info (matters when Unsloth runs -H 0.0.0.0)."""
     try:
         token = (
             (_STUDIO_ROOT_RESOLVED / "share" / "studio_install_id")
@@ -304,7 +304,7 @@ _STUDIO_ROOT_ID_CACHE: str = _read_studio_install_id()
 
 def _studio_root_id() -> str:
     """Same-install discriminator for /api/health (cached at import). Empty when no installer token is
-    present; the launcher treats "" as "accept any healthy backend"."""
+    present."""
     return _STUDIO_ROOT_ID_CACHE
 
 
@@ -1626,6 +1626,7 @@ app.add_middleware(
     expose_headers = [
         "X-Unsloth-Conflict-Kind",
         "X-Unsloth-Refusal",
+        "x-typesafe-request-id",
         *_hub_endpoint_proxy.EXPOSED_HEADERS,
     ],
     # is_allowed_origin closes the moment the tunnel URL clears, but a preflight already cached by the browser
