@@ -20515,10 +20515,12 @@ async def get_status(current_subject: str, model: Optional[str] = None):
     slot = await _route_to_extra_slot(model)
     response = await _slot_status(current_subject)
     if isinstance(response, InferenceStatusResponse):
+        response.serving = [response.active_model] if response.active_model else []
         for other in (None, *_visible_extra_slots()):
             if other is not slot:
                 entries = await asyncio.to_thread(_in_slot, other, _slot_model_objects)
                 response.loaded += [e["id"] for e in entries if e["id"] not in response.loaded]
+                response.serving += [e["id"] for e in entries if e["id"] not in response.serving]
     return response
 
 

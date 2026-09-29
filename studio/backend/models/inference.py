@@ -1806,6 +1806,11 @@ class InferenceStatusResponse(_InferenceRuntimeFields):
     )
     loading: List[str] = Field(default_factory = list, description = "Models currently being loaded")
     loaded: List[str] = Field(default_factory = list, description = "Models currently loaded")
+    serving: List[str] = Field(
+        default_factory = list,
+        description = "Models answering requests: the active one and each kept alongside. "
+        "Unlike loaded, leaves out a model only held in memory behind the active one.",
+    )
     inference: Optional[Dict[str, Any]] = Field(
         None, description = "Recommended inference parameters for the active model"
     )

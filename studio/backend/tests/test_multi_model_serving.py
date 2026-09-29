@@ -1073,3 +1073,17 @@ def test_active_generations_for_a_model_lists_only_its_chats(backends):
         assert get("?model=org/B-GGUF") == ["chat-on-B"]
         assert get("?model=org/A-GGUF") == ["chat-on-A"]
         assert sorted(get("")) == ["chat-on-A", "chat-on-B"]
+
+
+def test_serving_leaves_out_a_model_only_held_behind_the_active_one(backends, monkeypatch):
+    async def slot_status(subject):
+        return InferenceStatusResponse(
+            active_model = "org/A-GGUF", loaded = ["org/A-GGUF", "org/held-hf"]
+        )
+
+    monkeypatch.setattr(inf, "_slot_status", slot_status)
+    status = asyncio.run(inf.get_status("s"))
+    assert status.serving == ["org/A-GGUF", "org/B-GGUF"]
+    assert "org/held-hf" in status.loaded
+    monkeypatch.setattr(inf, "_extra_slots", [])
+    assert asyncio.run(inf.get_status("s")).serving == ["org/A-GGUF"]

@@ -695,7 +695,7 @@ async function syncInferenceStatusToStore(options?: {
 
     setModels(listRes.models.map(toChatModelRow));
     publishLoadedModels(
-      statusRes.loaded ?? [],
+      statusRes.serving ?? [],
       statusRes.active_model,
       statusRes.gguf_variant,
     );

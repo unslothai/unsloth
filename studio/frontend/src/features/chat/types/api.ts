@@ -357,6 +357,8 @@ export interface InferenceStatusResponse {
   has_video_input?: boolean;
   loading: string[];
   loaded: string[];
+  /** The models answering requests; `loaded` also names one only held behind the active model. */
+  serving?: string[];
   inference?: {
     temperature?: number;
     top_p?: number;
