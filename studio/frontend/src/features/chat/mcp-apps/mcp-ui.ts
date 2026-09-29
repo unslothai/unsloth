@@ -65,6 +65,18 @@ export function isMcpUiToolResult(
   );
 }
 
+/** The images a widget result carried alongside its text, for replay to the model. */
+export function mcpUiReplayImages(
+  val: unknown,
+  toolName: string,
+): { data: string; mimeType: string }[] {
+  if (!isMcpUiToolResult(val, toolName) || !Array.isArray(val.images))
+    return [];
+  return val.images.filter(
+    (img) => typeof img?.data === "string" && typeof img?.mimeType === "string",
+  );
+}
+
 /** The scope the chat adapter records "Always allow" under, shared so it covers model and widget calls. */
 export function toolApprovalScope(
   sessionId: string | null | undefined,

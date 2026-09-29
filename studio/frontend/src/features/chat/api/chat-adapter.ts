@@ -79,6 +79,7 @@ import {
   type McpUiToolResult,
   extractMcpUiEnvelope,
   isMcpUiToolResult,
+  mcpUiReplayImages,
 } from "../mcp-apps/mcp-ui";
 import { isMcpToolName } from "../utils/mcp-tool-name";
 import {
@@ -1123,6 +1124,9 @@ function serializeToolResultPart(
     // envelope would hand its bytes to the model as image input.
     if (isMcpImageToolResult(result) && isMcpToolName(tc.toolName)) {
       content += mcpImagesEnvelope(result.images);
+    } else if (isMcpToolName(tc.toolName)) {
+      const uiImages = mcpUiReplayImages(result, tc.toolName ?? "");
+      if (uiImages.length > 0) content += mcpImagesEnvelope(uiImages);
     }
   } else {
     try {

@@ -11,6 +11,7 @@ import { splitMcpImages } from "../src/features/chat/api/mcp-images.ts";
 import {
   extractMcpUiEnvelope,
   isMcpUiToolResult,
+  mcpUiReplayImages,
   toolApprovalScope,
   toolResultParams,
 } from "../src/features/chat/mcp-apps/mcp-ui.ts";
@@ -165,5 +166,24 @@ test("the search index keeps a widget's shown text, not its seed", () => {
   assert.equal(
     searchableText({ text: "hi", images: ["AAAA"] }, 0, "python"),
     "hi",
+  );
+});
+
+test("a widget result replays the images it carried to the model", () => {
+  const images = [{ data: "QUJD", mimeType: "image/png" }];
+  const wrapped = { text: "chart", images, ui: { resourceUri: "ui://s/v" } };
+  assert.deepEqual(mcpUiReplayImages(wrapped, "mcp__s__chart"), images);
+  assert.deepEqual(mcpUiReplayImages(wrapped, "render_chart"), []);
+  assert.deepEqual(
+    mcpUiReplayImages({ ...wrapped, images: [{ data: 1 }] }, "mcp__s__chart"),
+    [],
+  );
+  const adapter = readFileSync(
+    new URL("../src/features/chat/api/chat-adapter.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    adapter,
+    /mcpUiReplayImages\(result, tc\.toolName \?\? ""\);\n\s*if \(uiImages\.length > 0\) content \+= mcpImagesEnvelope\(uiImages\);/,
   );
 });
