@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""MiniMax-H3 keeps its quantised denoiser when the card is too small to hold it.
-
-Before, an unset ``transformer_quant`` took the hosted INT8 denoiser only where it could be PINNED
-beside everything else, and a 32 GB card got the released bf16 denoiser in the CPU-offload
-rotation, uncompiled, and then a generate-time refusal. Now the precision is fixed and the fit
-picks the placement: whole set resident, quantised denoiser pinned beside the rotation, or the
-quantised denoiser streamed block by block through diffusers group offloading."""
+"""MiniMax-H3 keeps its quantised denoiser on a small card: the fit picks resident, pinned or streamed."""
 
 from __future__ import annotations
 
@@ -33,7 +27,6 @@ def _hosted_checkpoint_readable(monkeypatch):
     monkeypatch.setattr(pq, "torchao_group_offload_supported", lambda: True)
 
 
-# ── the placement ladder, sized on the bytes the load holds ─────────────────────────
 
 
 def _precision(vid, fam, tq, te_scheme, free_gb, monkeypatch):
@@ -89,7 +82,6 @@ def test_the_placement_ladder(monkeypatch, free_gb, te_scheme, tq):
 
     fam = _h3_family()
     engaged = _precision(vid, fam, tq, te_scheme, free_gb, monkeypatch)
-    # The precision never depends on the card: only an explicit none keeps bf16.
     assert engaged == (None if tq == "none" else ("int8" if tq == "auto" else tq))
 
     from core.inference.video_minimax_h3 import h3_transformer_resident_gb
@@ -109,7 +101,6 @@ def test_the_placement_ladder(monkeypatch, free_gb, te_scheme, tq):
     expected = _LADDER.get((free_gb, te_scheme, "none" if engaged is None else "auto"))
     if expected is not None:
         assert tier == expected[1]
-    # A quantised denoiser never lands in the ComponentsManager rotation, which is the one tier that runs eager.
     if engaged is not None:
         assert tier in ("resident", "pinned", "stream")
 
@@ -119,7 +110,6 @@ def test_speed_off_and_unreadable_cards_keep_their_placements():
 
     sizes = (20_300_000_000, 36_000_000_000)
     whole = (20_300_000_000, 47_000_000_000)
-    # speed=off never takes the whole-set residency, but a quantised denoiser still has to leave the rotation.
     assert (
         vid._h3_placement_tier(
             quantised = True, whole_set_sizes = whole, pinned_sizes = sizes,
@@ -134,7 +124,6 @@ def test_speed_off_and_unreadable_cards_keep_their_placements():
         )
         == "rotation"
     )
-    # No reading: the quantised denoiser keeps the pin it always had, the released one its rotation.
     for quantised, tier in ((True, "pinned"), (False, "rotation")):
         assert (
             vid._h3_placement_tier(
@@ -178,7 +167,6 @@ def test_the_quantised_denoiser_is_sized_on_its_payload_not_its_logical_shape():
     assert tensor_payload_bytes(torch.empty(10, dtype = torch.bfloat16)) == 20
 
 
-# ── the generate-time floor has the streamed shape ──────────────────────────────────
 
 
 def test_a_32gb_card_is_admitted_with_the_streamed_quantised_denoiser():
@@ -189,17 +177,13 @@ def test_a_32gb_card_is_admitted_with_the_streamed_quantised_denoiser():
         960, 544, 124, text_encoder_gb = 27.2, transformer_gb = 20.3, transformer_streamed = True
     )
     assert streamed + 0 <= free_5090_gb + 0.25
-    # The conditioner phase is the floor: 27.2 GB plus the runtime overhead.
     assert streamed == pytest.approx(29.0, abs = 0.01)
-    # And every shape it replaced still refuses the same card.
     pinned = estimate_h3_diffusers_vram_gb(
         960, 544, 124, text_encoder_gb = 27.2, transformer_gb = 20.3, transformer_pinned = True
     )
     rotating_bf16 = estimate_h3_diffusers_vram_gb(960, 544, 124, text_encoder_gb = 27.2)
     assert pinned > free_5090_gb + 0.25 and rotating_bf16 > free_5090_gb + 0.25
-    # The released-bf16 floor is unchanged.
     assert estimate_h3_diffusers_vram_gb(960, 544, 124) == pytest.approx(73.68, abs = 0.02)
-    # A long clip at the larger preset grows with the video volume in the denoise / decode phase.
     long_clip = estimate_h3_diffusers_vram_gb(
         1344, 768, 345, text_encoder_gb = 27.2, transformer_gb = 20.3, transformer_streamed = True
     )
@@ -217,7 +201,6 @@ def test_the_host_floor_counts_the_pinned_staging_copy_of_a_streamed_denoiser():
     )
     assert single == pytest.approx(64.5, abs = 0.01)
     assert streamed == pytest.approx(84.8, abs = 0.01) and streamed >= 80.2
-    # The released configuration still asks for exactly what it shipped with.
     assert estimate_h3_diffusers_host_ram_gb(33.5) == pytest.approx(150.0, abs = 0.01)
 
 
@@ -228,11 +211,9 @@ def test_the_generate_preflight_reads_the_streamed_fact_off_the_state():
 
     assert "denoiser_streamed" in {f for f in vid._VideoLoadState.__dataclass_fields__}
     source = inspect.getsource(vid.VideoBackend.generate)
-    # Both floors: the VRAM one and the host one.
     assert source.count('transformer_streamed = bool(getattr(state, "denoiser_streamed", False))') == 2
 
 
-# ── group offloading of a torchao module: survives, bit-exact, rotation evicted ──────
 
 
 class _Net(torch.nn.Module):
@@ -308,7 +289,6 @@ def _stream(module, stream_prequantized_module):
     hooks = [_UserHook(module), _UserHook(rotating)]
     manager = types.SimpleNamespace(model_hooks = list(hooks))
     mode = stream_prequantized_module(manager, module, "cuda")
-    # Out of the manager's rotation, and nobody can pick it to evict.
     assert hooks[0].removed and [h.model for h in manager.model_hooks] == [rotating]
     return mode, rotating
 
@@ -319,7 +299,6 @@ def test_a_streamed_torchao_denoiser_matches_the_resident_one_bit_for_bit(monkey
     """Studio renders under inference_mode, and under no_grad where a torchao denoiser streams."""
     pytest.importorskip("diffusers")
     pytest.importorskip("torchao")
-    # The real capability, not the fixture's stand-in.
     monkeypatch.undo()
     from torchao.quantization import quantize_
 
@@ -343,7 +322,6 @@ def test_a_streamed_torchao_denoiser_matches_the_resident_one_bit_for_bit(monkey
         resident.pad_small_m()
         v1 = type(resident.blocks[0][0].weight).__name__ == "LinearActivationQuantizedTensor"
         if v1:
-            # The streamed module runs the Int8Tensor rebuild, so that is its resident twin.
             assert legacy.convert_legacy_int8_weights(resident) > 0
         resident.to("cuda")
         with render():
@@ -354,13 +332,11 @@ def test_a_streamed_torchao_denoiser_matches_the_resident_one_bit_for_bit(monkey
         quantize_(streamed, config())  # built on the CPU, like the seeded H3 load
         streamed.pad_small_m()
         mode, rotating = _stream(streamed, stream_prequantized_module)
-        # Every hosted weight class ends up on the overlapped path; v1 int8 via the rebuild.
         assert mode == "stream", (name, mode)
         with render():
             outs = [streamed(x) for _ in range(3)]
         for out in outs:
             assert torch.equal(out, expected), name
-        # The rotating component was sent back to the host before the denoiser ran.
         assert rotating.weight.device.type == "cpu"
         ran.append((name, type(streamed.blocks[0][0].weight).__name__, mode))
     print("RAN", ran)
@@ -402,7 +378,6 @@ def test_a_v1_int8_denoiser_that_cannot_be_rebuilt_moves_synchronously_and_exact
     with torch.inference_mode():
         for _ in range(2):
             assert torch.equal(streamed(x), expected)
-    # Blocks go back to the host between forwards on the synchronous path.
     assert streamed.blocks[-1][0].weight.device.type == "cpu"
 
 
@@ -419,3 +394,22 @@ def test_a_streamed_torchao_render_runs_under_no_grad_and_the_rest_keep_inferenc
         "                    else torch.inference_mode()"
     ) in source
     assert "with grad_ctx, protect_ctx, progress_ctx(), sigma_ctx:" in source
+
+
+def test_a_failed_streaming_setup_raises_instead_of_pinning(monkeypatch):
+    """Streaming is only chosen when pinning does not fit, so a failed setup must not fall back to pinning."""
+    pytest.importorskip("diffusers")
+    import diffusers.hooks
+    import core.inference.diffusion_prequant as prequant
+
+    def _boom(*args, **kwargs):
+        raise ValueError("no group offload here")
+
+    monkeypatch.setattr(prequant, "torchao_group_offload_supported", lambda: True)
+    monkeypatch.setattr(diffusers.hooks, "apply_group_offloading", _boom)
+    module = torch.nn.Linear(8, 8)
+    hook = _UserHook(module)
+    manager = types.SimpleNamespace(model_hooks = [hook])
+    with pytest.raises(RuntimeError, match = "group offloading could not be set up"):
+        prequant.stream_prequantized_module(manager, module, "cpu")
+    assert hook.removed and module.weight.device.type == "cpu"

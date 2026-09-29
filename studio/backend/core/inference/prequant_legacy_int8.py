@@ -253,12 +253,9 @@ def _rebuild_standins(ckpt: Any, standins: dict, api: tuple) -> Any:
 
 
 def convert_legacy_int8_weights(module: Any) -> int:
-    """Rebuild every v1 int8 weight of a LOADED module as ``Int8Tensor``, in place; the count converted.
+    """Rebuild a loaded module's v1 int8 weights as pinnable ``Int8Tensor`` in place (torchao <= 0.17).
 
-    For torchao <= 0.17, which still ships the v1 classes: the v1 weight cannot be pinned, so group offloading can only
-    move it synchronously. The rebuild is the one a >= 0.18 load already applies (same int8 data and scales, shared
-    rather than copied), so the result is what those installs run everywhere. All or nothing: any weight that fails
-    validation leaves the module as it was and returns 0."""
+    All or nothing: any weight failing validation leaves the module unchanged and returns 0."""
     import torch
 
     api = _int8_tensor_api()
@@ -268,8 +265,7 @@ def convert_legacy_int8_weights(module: Any) -> int:
     rebuilt = []
     try:
         for name, submodule in module.named_modules():
-            # Registered parameters only: a wrapper that forwards ``weight`` to its inner Linear (PadToMinM) is reached
-            # through that Linear instead.
+            # Registered parameters only: PadToMinM forwards ``weight`` to its inner Linear.
             weight = getattr(submodule, "_parameters", {}).get("weight")
             if isinstance(weight, classes[_LAQT]):
                 rebuilt.append((submodule, _rebuild_weight(name, weight, classes, api)))

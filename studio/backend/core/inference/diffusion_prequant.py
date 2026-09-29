@@ -1819,17 +1819,14 @@ def _same_base_model(a: str, b: str) -> bool:
 
 
 def _unhook_from_manager(manager: Any, module: Any, *, logger: Any = None, what: str) -> bool:
-    """Take ``module`` out of a ComponentsManager's offload rotation without moving it. True when it was hooked and is
-    not any more."""
+    """Remove ``module`` from a ComponentsManager's offload rotation without moving it."""
     hooks = list(getattr(manager, "model_hooks", None) or ())
     target = next((hook for hook in hooks if getattr(hook, "model", None) is module), None)
     if target is None:
         return False
     try:
-        # Drop the accelerate hook so no pre_forward/offload ever moves this module again ...
         target.remove()
-        # ... and unlist it, so another component's pre_forward cannot pick it as the thing to evict (which would
-        # move it to the CPU with no hook left to bring it back).
+        # Unlist it too, else another pre_forward can evict it to CPU with no hook to bring it back.
         for hook in hooks:
             others = getattr(getattr(hook, "hook", None), "other_hooks", None)
             if others:
@@ -1887,9 +1884,7 @@ def pin_prequantized_module(
 
 
 def tensor_payload_bytes(tensor: Any) -> int:
-    """Bytes a tensor holds. A torchao weight reports its LOGICAL shape and dtype through ``numel`` /
-    ``element_size`` (a bf16 int8 weight reads twice its payload), so a subclass is summed over the
-    inner tensors it flattens to."""
+    """Payload bytes; torchao subclasses report their logical bf16 size, so sum the inner tensors."""
     flatten = getattr(tensor, "__tensor_flatten__", None)
     if callable(flatten) and type(tensor).__name__ not in ("Tensor", "Parameter"):
         try:
@@ -1900,12 +1895,7 @@ def tensor_payload_bytes(tensor: Any) -> int:
 
 
 def torchao_group_offload_supported() -> bool:
-    """Whether this diffusers' group offloading moves torchao weight subclasses.
-
-    Older releases move a parameter through ``param.data``, which for a torchao subclass is an
-    incomplete wrapper without its ``qdata`` / ``scale``, so a streamed quantized block would run
-    on half-moved weights. The torchao-aware releases (0.40.0, which Studio pins, and later) swap
-    the subclass internals instead."""
+    """Whether group offloading swaps torchao internals (diffusers >= 0.40); older ones half-move via ``param.data``."""
     try:
         from diffusers.hooks import apply_group_offloading  # noqa: F401
         from diffusers.hooks import group_offloading as go
@@ -1917,14 +1907,7 @@ def torchao_group_offload_supported() -> bool:
 
 
 def _weights_pinnable(module: Any) -> bool:
-    """Whether every weight class in ``module`` answers ``is_pinned``.
-
-    The stream path of group offloading copies each weight into pinned host memory and asks
-    ``is_pinned`` on every onload. torchao's v1 ``LinearActivationQuantizedTensor`` (what a hosted
-    INT8 pickle loads as on torchao <= 0.17) implements neither and raises
-    ``aten.is_pinned`` unimplemented on the first step, while the synchronous path moves it
-    bit-exactly. Probed once per class, so the answer follows the installed torchao rather than a
-    version table."""
+    """Whether every weight class answers ``is_pinned`` (torchao <= 0.17's v1 int8 class raises)."""
     from itertools import chain
 
     seen: set = set()
@@ -1941,12 +1924,8 @@ def _weights_pinnable(module: Any) -> bool:
 
 
 def _evict_rotation_hook(manager: Any, device: Any) -> Any:
-    """A forward pre-hook that sends every rotating component on ``device`` back to the host.
-
-    The ComponentsManager only evicts inside ANOTHER managed component's pre_forward, so after the
-    conditioner runs it stays resident until the VAE asks for room. A streamed denoiser is not
-    managed, so without this the 27 GB conditioner would sit beside the whole denoise loop, which
-    is exactly the memory streaming exists to free. Only the first step moves anything."""
+    """Pre-hook offloading rotating components on ``device``: the manager only evicts inside another
+    managed pre_forward, so the conditioner would otherwise stay beside the whole denoise loop."""
     import torch
 
     execution = torch.device(device)
@@ -1973,13 +1952,8 @@ def _evict_rotation_hook(manager: Any, device: Any) -> Any:
 
 
 def _move_groups_outside_inference_mode(module: Any) -> int:
-    """Run every group offload move of ``module`` outside ``torch.inference_mode``.
-
-    Studio generates under inference mode, so the group hooks move weights inside it. The
-    synchronous path reads ``param.data``, which for torchao's v1 int8 class detaches the inner
-    AffineQuantizedTensor and raises ``Cannot set version_counter for inference tensor`` on the
-    first step. The moved copies are only weights, never saved for backward, so creating them as
-    ordinary tensors changes no value. Returns the number of groups wrapped."""
+    """Run group offload moves outside inference_mode (torchao v1 int8 raises
+    ``Cannot set version_counter for inference tensor``). Returns the number of groups wrapped."""
     import torch
 
     seen: set[int] = set()
@@ -2011,22 +1985,11 @@ def stream_prequantized_module(
     logger: Any = None,
     label: str = "pre-quantized denoiser",
 ) -> Optional[str]:
-    """Stream a torchao module block by block through diffusers group offloading, outside a
-    ComponentsManager's rotation. For a card that cannot keep the module resident beside the
-    components that rotate around it.
+    """Stream a torchao module block by block via group offloading, outside the ComponentsManager rotation.
 
-    The ComponentsManager hook is never used for it: that path moves the whole module inside its
-    own pre_forward (see ``pin_prequantized_module``). Group offloading instead swaps the tensor
-    internals of one block group at a time, which the torchao-aware diffusers releases support for
-    every hosted weight class (Float8Tensor, Int8Tensor and the v1 int8 class, measured bit-exact
-    against a resident module). The remaining components keep their hooks, and a pre-hook sends
-    them back to the host before the denoiser runs.
-
-    Returns ``"stream"`` (async copy stream, weights pinned on the host), ``"sync"`` (a weight
-    class that cannot be pinned, so blocks move on the default stream; torchao <= 0.17's v1 int8
-    weights are rebuilt as ``Int8Tensor`` first to avoid it), ``"pinned"`` when streaming
-    failed after the hook surgery and the module was placed resident instead, or None when nothing
-    was changed and the caller should pin it as before."""
+    Returns ``"stream"`` (pinned, async copies), ``"sync"`` (unpinnable weights) or None (nothing changed).
+    Raises once the module is unhooked: the caller only streams what does not fit pinned, so a resident
+    fallback would OOM or be refused on every render."""
     if not torchao_group_offload_supported():
         return None
     import inspect
@@ -2048,9 +2011,7 @@ def stream_prequantized_module(
         install_group_offload_buffer_restore()
         use_stream = onload.type == "cuda" and _weights_pinnable(module)
         if onload.type == "cuda" and not use_stream:
-            # Synchronous copies re-copy every block both ways on every step (measured 16.4 s/step against 0.8 s
-            # resident on a B200), so rebuild torchao <= 0.17's v1 int8 weights as the Int8Tensor a >= 0.18 install
-            # loads them as, which pins.
+            # Sync copies measured 16.4 s/step vs 0.8 s resident (B200): rebuild v1 int8 as pinnable Int8Tensor.
             from .prequant_legacy_int8 import convert_legacy_int8_weights
 
             converted = convert_legacy_int8_weights(module)
@@ -2075,8 +2036,6 @@ def stream_prequantized_module(
             if "record_stream" in params:
                 kwargs["record_stream"] = True
             if "low_cpu_mem_usage" in params:
-                # Pinned host copies are what let the copy overlap compute; where the host cannot pin that much (WSL,
-                # Windows), the copies re-pin per onload instead.
                 from itertools import chain
 
                 payload_mib = sum(
@@ -2086,11 +2045,9 @@ def stream_prequantized_module(
         apply_group_offloading(module, **kwargs)
         _move_groups_outside_inference_mode(module)
         module.register_forward_pre_hook(_evict_rotation_hook(manager, onload))
-    except Exception as exc:  # noqa: BLE001 -- still runs, just resident
-        _warn(logger, "stream:group_offload", exc)
+    except Exception as exc:
         _remove_group_offload_hooks(module)
-        module.to(device)
-        return "pinned"
+        raise RuntimeError(f"group offloading could not be set up for the {label}: {exc}") from exc
     mode = "stream" if use_stream else "sync"
     if logger is not None:
         logger.info(

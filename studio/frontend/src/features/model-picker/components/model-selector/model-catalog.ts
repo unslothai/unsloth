@@ -436,9 +436,7 @@ export const VIDEO_CATALOG: CatalogGroup[] = [
         // mirror are decimal GB (video.py divides by 1_000_000_000), so never copy figures across:
         // converted, these are 79.5 / 150.3 and 132.1 / 85.9 GB, matching the estimators' 78.74 / 150
         // and 132 / 85. Copying applies the conversion twice and sends capable hosts to GGUF.
-        // The 30 GiB tier is the hosted int8 denoiser streamed block by block beside the int8 conditioner (what an
-        // unset precision loads): measured on a B200 held to a 32 GiB budget, 27.6 GB peak VRAM at 960x544 and
-        // 1344x768 x 124 frames, 80.2 GB peak host RSS (74.7 GiB). A 24 GiB card cannot hold the 27.2 GB conditioner.
+        // 30 GiB: streamed int8 denoiser + int8 conditioner, measured 27.6 GB peak VRAM on a 32 GiB-capped B200.
         offloadFitTiers: [
           { gpuGb: 30, systemRamGb: 80 },
           { gpuGb: 74, systemRamGb: 140 },
