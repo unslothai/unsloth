@@ -5314,6 +5314,9 @@ def test_model_download_records_completed_baseline_for_new_gguf_variant(monkeypa
     )
 
     class _Registry:
+        def get_job_metadata(self, _key):
+            return None
+
         claim_kwargs = None
 
         def claim(self, _key, _transport, **kwargs):
@@ -5396,6 +5399,9 @@ def test_gguf_model_download_skips_completed_baseline_for_variant_resume_state(
     )
 
     class _Registry:
+        def get_job_metadata(self, _key):
+            return None
+
         claim_kwargs = None
 
         def claim(self, _key, _transport, **kwargs):
@@ -5588,6 +5594,9 @@ def test_model_claim_register_cancel_uses_registry_marker_owner(monkeypatch):
     killed = []
 
     class _Registry:
+        def get_job_metadata(self, _key):
+            return None
+
         def claim(self, *_args, **_kwargs):
             return True, "running"
 
@@ -5633,6 +5642,9 @@ def test_model_cancel_registered_worker_requests_and_kills(monkeypatch):
             events.append(("kill",))
 
     class _Registry:
+        def get_job_metadata(self, _key):
+            return None
+
         def get_process(self, _key):
             return _Proc()
 
@@ -5671,6 +5683,9 @@ def test_model_download_watcher_invalidates_hf_cache_scan(monkeypatch):
     invalidated = []
 
     class _Registry:
+        def get_job_metadata(self, _key):
+            return None
+
         def claim(self, *_args, **_kwargs):
             return True, "running"
 

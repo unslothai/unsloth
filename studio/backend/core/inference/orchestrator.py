@@ -388,6 +388,9 @@ class InferenceOrchestrator:
     routes/inference.py needs minimal changes); all heavy ML work happens in a persistent
     subprocess."""
 
+    # Registry keys of the downloads the in-flight load announced; released when the load ends.
+    _load_download_keys: Sequence[str] = ()
+
     def __init__(self):
         self._proc: Optional[mp.Process] = None
         # Retired when the next worker is spawned; read long after _proc has been cleared.
@@ -438,7 +441,6 @@ class InferenceOrchestrator:
         self.active_model_name: Optional[str] = None
         self.models: dict = {}
         self.loading_models: set = set()
-        self._load_download_keys: list[str] = []
         from core.inference.defaults import get_default_models
 
         # The list depends on detection (chat-only hosts get the GGUF set) and the MLX self-heal re-detects, so
@@ -2240,7 +2242,6 @@ class InferenceOrchestrator:
                         if isinstance(_tpl_info, dict):
                             self.models[self.active_model_name]["chat_template_info"] = _tpl_info
                     self.loading_models.discard(model_name)
-                    self._release_load_downloads()
                     logger.info("Model '%s' loaded successfully in subprocess", model_name)
                     return True
                 else:
@@ -2252,7 +2253,6 @@ class InferenceOrchestrator:
 
         except Exception as exc:
             self.loading_models.discard(model_name)
-            self._release_load_downloads()
             from utils.transformers_version import SidecarSwapInProgress
 
             if isinstance(exc, SidecarSwapInProgress) and self._ensure_subprocess_alive():
