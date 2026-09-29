@@ -38,7 +38,12 @@ def test_vllm_starts_through_the_guarding_launcher():
 
 def _fake_vllm(monkeypatch, **attrs):
     server_utils = types.SimpleNamespace(**attrs)
-    for name in ("vllm", "vllm.entrypoints", "vllm.entrypoints.serve", "vllm.entrypoints.serve.utils"):
+    for name in (
+        "vllm",
+        "vllm.entrypoints",
+        "vllm.entrypoints.serve",
+        "vllm.entrypoints.serve.utils",
+    ):
         monkeypatch.setitem(sys.modules, name, types.ModuleType(name))
     sys.modules["vllm.entrypoints.serve.utils"].server_utils = server_utils
     monkeypatch.setitem(sys.modules, "vllm.entrypoints.serve.utils.server_utils", server_utils)
