@@ -15578,8 +15578,7 @@ class LlamaCppBackend:
         if key is not None:
             cls._tensor_split_abort_keys.add(key)
 
-    # Loads that hit the ggml graph-scheduler abort this session, keyed like the tensor
-    # latch (binary mtime drops it after an update); an identical reload repeats it.
+    # Keyed like the tensor latch: binary mtime drops entries after an update.
     _sched_reserve_abort_keys: set[tuple] = set()
 
     @classmethod
@@ -21759,10 +21758,8 @@ class LlamaCppBackend:
             return False
         if "cur_backend_id" in text:
             return True
-        # Not sched_reserve / graph_reserve alone: every reserve-time crash (a CUDA OOM
-        # in ggml_gallocr_reserve_n) passes through them. split_graph has other aborts
-        # (context init, split allocation), so the bare frame counts only with no other
-        # abort message in view.
+        # Never sched_reserve / graph_reserve alone (a reserve-time CUDA OOM passes through them);
+        # split_graph has other aborts, so its bare frame counts only with no other message.
         if "failed to initialize context" in text or "ggml_assert(" in text:
             return False
         return "ggml_backend_sched_split_graph" in text
@@ -23416,10 +23413,8 @@ class LlamaCppBackend:
                 logger.info("Load cancelled before teardown")
                 return False
 
-            # Fail fast before killing the live server. Keyed on the whole request, so an
-            # identical replay is blocked but any changed setting (quant, -c, TP, spec, VRAM
-            # budget, Model Memory) retries; an explicit reload also retries (freed memory can make the same
-            # load fit) and clears the entry, so only a repeat abort blocks again.
+            # Fail fast before killing the live server; an explicit reload retries (freed memory
+            # can make the same load fit) and clears the entry.
             _abort_memo_model = repr(
                 (
                     replace(intent, hf_token = None, force_reload = False, verified_gguf = None),

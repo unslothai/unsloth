@@ -40,14 +40,13 @@ _FULL_ABORT = "\n".join(
 
 _ABORT_TAIL = "\n".join(_FULL_ABORT.splitlines()[-50:])
 
-# #6415 split-axis abort: must NOT be classified as a scheduler-reserve abort.
 _SPLIT_AXIS_ABORT = (
     "ggml/src/ggml-backend-meta.cpp:541: "
     "GGML_ASSERT(src_ss[0].axis != GGML_BACKEND_SPLIT_AXIS_0) failed\n"
     "#3 ggml_backend_sched_split_graph ()"
 )
 
-# A CUDA OOM while reserving: same reserve frames, different assert.
+# Same reserve frames, different assert.
 _CUDA_OOM_ABORT = "\n".join(
     [
         "ggml_backend_cuda_buffer_type_alloc_buffer: allocating 23810.00 MiB on device 0: "
@@ -130,7 +129,6 @@ def test_memo_round_trip_and_isolation(tmp_path):
 
 
 def test_memo_invalidated_by_binary_mtime_change(tmp_path):
-    """A `unsloth studio update` swaps the binary -> the memo must not persist."""
     binary = tmp_path / "llama-server"
     binary.write_text("v1")
     b, model = str(binary), "unsloth/GLM-5.2-GGUF"
