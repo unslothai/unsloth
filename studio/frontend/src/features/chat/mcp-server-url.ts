@@ -37,9 +37,10 @@ function isStudioLoopbackHost(host: string): boolean {
 // toggle reuses rows saved under older ports and every backend-accepted loopback spelling.
 export function normalizeMcpUrl(url: string): string {
   const trimmed = (url || "").trim().replace(/\/+$/, "");
-  const authority = HTTP_AUTHORITY.exec(trimmed);
+  const comparable = trimmed.replace(/[\t\n\r]/g, "");
+  const authority = HTTP_AUTHORITY.exec(comparable);
   if (authority && isStudioLoopbackHost(authority[1])) {
-    const rawPath = trimmed
+    const rawPath = comparable
       .slice(authority[0].length)
       .split(/[?#]/, 1)[0]
       .replace(/\/+$/, "");
