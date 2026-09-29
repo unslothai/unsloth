@@ -275,8 +275,14 @@ def _single_device_index(device_map):
             return int(device_map.split(":", 1)[1])
         except ValueError:
             return None
+    if device_map == "cuda":
+        # transformers maps a bare "cuda" to cuda:{LOCAL_RANK}, one device on any host.
+        try:
+            return int(os.environ.get("LOCAL_RANK", 0))
+        except ValueError:
+            return None
     if (
-        device_map in ("cuda", "auto", "sequential", "balanced", "balanced_low_0")
+        device_map in ("auto", "sequential", "balanced", "balanced_low_0")
         or isinstance(device_map, _DefaultDeviceMap)
         or device_map in AUTOMATIC_DEVICE_MAPS
     ):
@@ -367,12 +373,12 @@ def exclude_no_placement_params(device_map, model_class, config):
         for part in parts:
             for child_name, _ in module.named_children():
                 if child_name != part:
-                    out[f"{prefix}.{child_name}" if prefix else child_name] = device
+                    out.setdefault(f"{prefix}.{child_name}" if prefix else child_name, device)
             for tensor_name, _ in list(module.named_parameters(recurse = False)) + list(
                 module.named_buffers(recurse = False)
             ):
                 if tensor_name != part:
-                    out[f"{prefix}.{tensor_name}" if prefix else tensor_name] = device
+                    out.setdefault(f"{prefix}.{tensor_name}" if prefix else tensor_name, device)
             module = getattr(module, part)
             prefix = f"{prefix}.{part}" if prefix else part
     billions = (

@@ -212,3 +212,21 @@ def test_inferred_map_never_covers_the_skipped_table():
         assert not any(key == "" or s == key or s.startswith(key + ".") for s in skip), key
     assert any(k.startswith("model.layers.1.") for k in inferred)
     assert "model.layers.0" in inferred and "lm_head" in inferred
+
+
+def test_bare_cuda_string_is_one_device_on_multi_gpu_hosts(monkeypatch):
+    from unsloth.models.loader_utils import _single_device_index
+
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 4)
+    monkeypatch.delenv("LOCAL_RANK", raising = False)
+    assert _single_device_index("cuda") == 0
+    monkeypatch.setenv("LOCAL_RANK", "2")
+    assert _single_device_index("cuda") == 2
+    assert _single_device_index("sequential") is None
+
+
+def test_split_keeps_more_specific_entries():
+    out = exclude_no_placement_params({"": 0, "lm_head": 1}, Model, None)
+    assert out["lm_head"] == 1
+    assert out["model.embed_tokens"] == 0
+    assert not covered(out, "model.layers.1.ple.ple_embedding.ngram_embedding.weight")
