@@ -125,8 +125,6 @@ def test_memo_safe_with_missing_binary_or_model():
     LlamaCppBackend._record_sched_reserve_abort(None, None)  # no-op, no raise
 
 
-# ---- load_model: fail fast on an identical replay ----------------------------
-
 _REAL_POPEN = subprocess.Popen
 _ABORT_OUTPUT = [
     "/src/ggml/src/ggml-backend.cpp:1242: GGML_ASSERT(*cur_backend_id != -1) failed\n",
