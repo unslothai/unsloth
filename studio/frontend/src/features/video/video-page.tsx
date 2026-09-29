@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { generationFailureLogsAction } from "@/features/settings/lib/view-logs-action";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   ArrowExpand01Icon,
@@ -2435,7 +2436,8 @@ function VideoGenerator({
           } else if (p.phase === "failed") {
             const msg = p.error || "Video generation failed";
             // The user's own Cancel surfaces as the backend's cancelled sentinel; not an error.
-            if (!msg.toLowerCase().includes("cancelled")) toast.error(msg);
+            if (!msg.toLowerCase().includes("cancelled"))
+              toast.error(msg, { action: generationFailureLogsAction(msg) });
           }
           return;
         }
@@ -2505,7 +2507,8 @@ function VideoGenerator({
           // The other terminal phase, kept only until the next job: without this a reload after a failed
           // generation shows an idle page and loses the error.
           const msg = g.error || "Video generation failed";
-          if (!msg.toLowerCase().includes("cancelled")) toast.error(msg);
+          if (!msg.toLowerCase().includes("cancelled"))
+              toast.error(msg, { action: generationFailureLogsAction(msg) });
         }
       } catch {
         // Resume is best-effort; a failed probe just leaves the idle view.
@@ -3440,7 +3443,8 @@ function VideoGenerator({
       });
     } catch (err) {
       if (!isMounted.current) return;
-      toast.error(err instanceof Error ? err.message : "Video generation failed");
+      const refusal = err instanceof Error ? err.message : "Video generation failed";
+      toast.error(refusal, { action: generationFailureLogsAction(refusal) });
       setBusy(null);
       setGenStep(null);
       // The refusal can be "No video model is loaded": re-read rather than leave Generate enabled

@@ -27,7 +27,8 @@ import { PromptQueueList } from "@/components/assistant-ui/lazy-prompt-queue-lis
 import { QueueResumeIcon } from "@/components/assistant-ui/queue-resume-icon";
 import { ProgressiveMessages } from "@/components/assistant-ui/progressive-messages";
 import { MessageMenuTime } from "@/components/assistant-ui/message-menu-time";
-import { UserMessageTime } from "@/components/assistant-ui/user-message-time";
+import { UserMessageActionBar, UserMessageFooter } from "@/components/assistant-ui/user-message-actions";
+import { useActionBarFocusReveal } from "@/components/assistant-ui/use-action-bar-focus-reveal";
 import { MessageTiming } from "@/components/assistant-ui/message-timing";
 import { attachThreadFastCopy } from "@/components/assistant-ui/thread-fast-copy";
 import { threadHasResearchMessage } from "@/components/assistant-ui/thread-research-presence";
@@ -370,7 +371,6 @@ import {
   type FC,
   type KeyboardEvent,
   type DragEvent as ReactDragEvent,
-  type FocusEvent as ReactFocusEvent,
   type ReactNode,
   type RefObject,
   Fragment,
@@ -7716,152 +7716,6 @@ const DiffusionCanvas: FC = () => {
   );
 };
 
-/**
- * Mounts an autohidden action bar while focus is inside the message, the way hovering it does.
- *
- * `autohide="not-last"` UNMOUNTS every bar but the newest reply's, so Copy, Edit, Refresh,
- * Delete, Read aloud and More leave the tab order on older messages and a keyboard or screen
- * reader user has no way back: `:focus-within` in CSS cannot help, there is nothing to style.
- * The reveal has to be JS, and it drives `message.setIsHovering`, the same flag the library's
- * own `mouseenter`/`mouseleave` (MessagePrimitive.Root) writes and the only input to
- * `useActionBarFloatStatus` besides the More menu's interaction lock. Reusing it rather than
- * layering a second visibility source is what keeps the two from disagreeing.
- *
- * One flag, two writers, so the two clobber each other unless this hook covers both crossings:
- *   - pointer leaves while focus is inside (a Tab that scrolls the message under a parked
- *     cursor does exactly this): the library clears the flag, which would unmount the element
- *     that currently has focus. `reassert` below sets it back inside the same event.
- *   - focus leaves while the pointer is still over the message: clearing would unmount a bar
- *     the user is pointing at, and no second `mouseenter` is coming. The `:hover` test defers
- *     to the library's own `mouseleave` instead.
- */
-function useActionBarFocusReveal() {
-  const aui = useAui();
-  const rootRef = useRef<HTMLDivElement | null>(null);
-  const focusWithinRef = useRef(false);
-  const clearFrameRef = useRef<number | null>(null);
-
-  // The More menu is portaled OUTSIDE the message, so focus entering it looks like a blur.
-  // Its own interaction lock keeps the bar mounted meanwhile, but the trigger this hook has to
-  // hand focus back to lives in that bar, so a popup this message owns counts as engaged.
-  // Scoped to the action bar, NOT to every expanded descendant. Reasoning and tool cards are
-  // Radix CollapsibleTriggers and render aria-expanded="true" while open, which is the resting
-  // state of a message whose tool output the reader has expanded. An unscoped lookup treated
-  // those as an open popup, so `decide` rescheduled itself every frame for as long as the
-  // disclosure stayed open, held focusWithinRef and the synthetic hover set, and left the bar
-  // mounted: a per-frame DOM query per such message, which is the slowdown this branch removes.
-  const openPopupTrigger = useCallback(
-    () =>
-      rootRef.current?.querySelector(
-        '.aui-assistant-action-bar-root [aria-expanded="true"]',
-      ) ?? null,
-    [],
-  );
-
-  const isEngaged = useCallback(() => {
-    const el = rootRef.current;
-    if (!el) return false;
-    const active = document.activeElement;
-    if (active && el.contains(active)) return true;
-    return openPopupTrigger() !== null;
-  }, [openPopupTrigger]);
-
-  const cancelPendingClear = useCallback(() => {
-    if (clearFrameRef.current !== null) {
-      cancelAnimationFrame(clearFrameRef.current);
-      clearFrameRef.current = null;
-    }
-  }, []);
-
-  /**
-   * Decide, a frame from now, whether focus has really left, and keep asking until it has.
-   *
-   * Deferred rather than read off `relatedTarget`: that is null both for focus going to the
-   * browser chrome and for focus entering a portal, and it says nothing at all when the
-   * focused element is REMOVED, which is how a menu closes and which Chrome reports with no
-   * focusout event whatsoever. Reading `document.activeElement` a frame later answers all of
-   * them. Clearing late costs a frame of a mounted bar; clearing early destroys the element
-   * the user is on, so late is the safe direction.
-   */
-  const scheduleClear = useCallback(
-    (restart: boolean) => {
-      if (clearFrameRef.current !== null) {
-        if (!restart) return;
-        cancelAnimationFrame(clearFrameRef.current);
-      }
-      const decide = () => {
-        clearFrameRef.current = null;
-        const el = rootRef.current;
-        if (!el || !focusWithinRef.current) return;
-        const active = document.activeElement;
-        if (active && el.contains(active)) return;
-        if (openPopupTrigger()) {
-          // Focus is in this message's own portaled menu, whose interaction lock is holding
-          // the bar open anyway. Deciding now would be wrong and deciding never would pin the
-          // bar open for good, so ask again next frame; the loop lasts only as long as the
-          // menu is open on this one message.
-          clearFrameRef.current = requestAnimationFrame(decide);
-          return;
-        }
-        focusWithinRef.current = false;
-        if (!el.matches(":hover")) {
-          aui.message().setIsHovering(false);
-        }
-      };
-      clearFrameRef.current = requestAnimationFrame(decide);
-    },
-    [aui, openPopupTrigger],
-  );
-
-  // onFocus/onBlur on a container are focusin/focusout in React, so they give focus-within.
-  const handleFocus = useCallback(
-    (event: ReactFocusEvent<HTMLDivElement>) => {
-      const el = rootRef.current;
-      const target = event.target as Node | null;
-      if (el && target && !el.contains(target)) {
-        // React bubbles focus events out of PORTALS along the React tree, so this is this
-        // message's own menu, rendered into document.body. Focus is not in the subtree, so do
-        // not cancel the watchdog -- the menu will take focus with it when it unmounts, and
-        // that removal fires no focusout to wake us up again.
-        scheduleClear(false);
-        return;
-      }
-      cancelPendingClear();
-      if (focusWithinRef.current) return;
-      focusWithinRef.current = true;
-      aui.message().setIsHovering(true);
-    },
-    [aui, cancelPendingClear, scheduleClear],
-  );
-
-  const handleBlur = useCallback(() => {
-    if (!focusWithinRef.current) return;
-    scheduleClear(true);
-  }, [scheduleClear]);
-
-  useEffect(() => {
-    const el = rootRef.current;
-    if (!el) return;
-    // From an effect on purpose: MessagePrimitive.Root binds its own mouseleave from a ref
-    // callback, which commits before effects run, so this listener is registered second and
-    // runs second on the same element. Both writes land in one dispatch, the store settles on
-    // `true`, and React never renders the intermediate `false` -- so the bar does not unmount
-    // and the focused control is not destroyed under the user.
-    const reassert = () => {
-      if (focusWithinRef.current && isEngaged()) {
-        aui.message().setIsHovering(true);
-      }
-    };
-    el.addEventListener("mouseleave", reassert);
-    return () => {
-      el.removeEventListener("mouseleave", reassert);
-      cancelPendingClear();
-    };
-  }, [aui, isEngaged, cancelPendingClear]);
-
-  return { ref: rootRef, onFocus: handleFocus, onBlur: handleBlur };
-}
-
 const ResearchMessageRunIdContext = createContext<string | null>(null);
 
 /**
@@ -8698,28 +8552,39 @@ const UserMessageAudio: FC = () => {
 };
 
 const UserMessage: FC = () => {
+  const focusReveal = useActionBarFocusReveal();
   return (
     <MessagePrimitive.Root
       className="aui-user-message-root fade-in slide-in-from-bottom-1 mx-auto flex w-full max-w-(--thread-content-max-width) animate-in flex-col items-end gap-y-2 pt-6 pb-4 text-ui-15p5 [font-weight:410] tracking-[0.01em] dark:tracking-[0.02em] duration-150"
       data-role="user"
+      tabIndex={0}
+      {...focusReveal}
     >
       <UserMessageAttachments />
       <UserMessageAudio />
 
-      <div className="aui-user-message-content-wrapper flex max-w-[80%] min-w-0 flex-col items-end">
-        <div className="aui-user-message-content wrap-break-word w-fit max-w-full rounded-[24px] bg-[#f5f5f5] px-4 py-2.5 text-[#0d0d0d] dark:text-foreground dark:bg-card">
+      <div className="aui-user-message-content-wrapper flex w-full min-w-0 flex-col items-end">
+        <div className="aui-user-message-content wrap-break-word w-fit max-w-[80%] rounded-[24px] bg-[#f5f5f5] px-4 py-2.5 text-[#0d0d0d] dark:text-foreground dark:bg-card">
           <MessagePrimitive.Parts />
         </div>
-        <div className="mt-1 -mr-[var(--icon-btn-inset)] flex min-h-8 items-center">
+        <UserMessageFooter>
           <UserActionBar />
-          <BranchPicker className="aui-user-branch-picker ml-0.5" />
-        </div>
+          <BranchPicker className="aui-user-branch-picker ml-0.5 shrink-0" />
+        </UserMessageFooter>
       </div>
       {/* The other half of the pair: last is a user message while a reply is
           still to come, or once one has been deleted. */}
       <MessagePrimitive.If last={true}>
         <ForkChatShortcut />
       </MessagePrimitive.If>
+      {/* Reverse traversal reaches a trailing stop before the root. Focusing it
+          mounts the autohidden controls, so the next Shift+Tab enters Delete
+          instead of skipping the action bar and leaving the message. */}
+      <span
+        className="aui-user-reveal-sentinel"
+        tabIndex={0}
+        aria-label="Message actions"
+      />
     </MessagePrimitive.Root>
   );
 };
@@ -8728,11 +8593,7 @@ const UserActionBar: FC = () => {
   const ownsResearchMessage = useOwnsResearchMessage();
   const researchActive = useThreadResearchActive();
   return (
-    <ActionBarPrimitive.Root
-      autohide="always"
-      className="aui-user-action-bar-root flex gap-1 text-chat-icon-fg [&_button]:size-8 [&_button]:!rounded-full [&_button:hover]:bg-chat-icon-bg-hover [&_button:hover]:text-chat-icon-fg-hover"
-    >
-      <UserMessageTime />
+    <UserMessageActionBar>
       <CopyButton />
       {!ownsResearchMessage && !researchActive && (
         <ActionBarPrimitive.Edit asChild={true}>
@@ -8748,7 +8609,7 @@ const UserActionBar: FC = () => {
       <ForkCountBadge />
       <ForkMessageButton />
       <DeleteMessageButton />
-    </ActionBarPrimitive.Root>
+    </UserMessageActionBar>
   );
 };
 

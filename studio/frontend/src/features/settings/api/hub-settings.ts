@@ -63,6 +63,24 @@ export async function updateHubSource(source: HubSource): Promise<HubSettings> {
   return saved;
 }
 
+/** Whether this client should tell the owner that ModelScope was chosen for them. Granted once
+ * per install, and it saves that choice. Fails closed. */
+export async function claimHubSourceNotice(): Promise<boolean> {
+  try {
+    const res = await authFetch(
+      "/api/settings/hub/source-notice",
+      { method: "POST" },
+      // A retried claim whose first attempt landed would come back denied, hiding the notice.
+      { retryNetworkErrors: false },
+    );
+    if (!res.ok) return false;
+    const body = (await res.json()) as { granted?: unknown };
+    return body.granted === true;
+  } catch {
+    return false;
+  }
+}
+
 export type HubEndpointSettings = Pick<
   HubSettings,
   "hfEndpoint" | "datasetsServerFollowsEndpoint"
