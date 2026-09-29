@@ -188,6 +188,19 @@ def _compat(engine: str) -> dict[str, list[str]]:
     return data["requires"] if data.get("lock_sha256") == profile_digest(engine) else {}
 
 
+# Not engine dependencies, so absent from the compat file: the configs Studio's adapters build
+# (Int8WeightOnlyConfig and friends) use TorchAO 0.17's API, and 0.18 removed their version 1.
+_ADAPTER_REQUIRES = {"torchao": ["==0.17.0"]}
+
+
+def _adapter_accepts(name: str, version: str) -> bool:
+    from packaging.specifiers import SpecifierSet
+    return all(
+        SpecifierSet(spec).contains(version, prereleases = True)
+        for spec in _ADAPTER_REQUIRES.get(name, ())
+    )
+
+
 def _reusable(
     engine: str, lock: dict, studio: dict[str, str], provided: dict[str, str]
 ) -> dict[str, str]:
@@ -207,6 +220,7 @@ def _reusable(
         if name in studio
         and name not in provided
         and name not in hidden
+        and _adapter_accepts(name, studio[name])
         and all(
             SpecifierSet(spec).contains(studio[name], prereleases = True)
             for spec in compat.get(name, ())
@@ -323,7 +337,10 @@ def stale(info: dict) -> bool:
     if info.get("python") != platform.python_version():
         return True
     studio = _studio_packages()
-    return any(studio.get(name) != version for name, version in info.get("provided", {}).items())
+    return any(
+        studio.get(name) != version or not _adapter_accepts(name, version)
+        for name, version in info.get("provided", {}).items()
+    )
 
 
 # Runs in the engine's interpreter, so it checks both layers as the engine imports them.

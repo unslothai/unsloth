@@ -276,6 +276,36 @@ def test_shared_engine_reuses_studio_versions_its_dependencies_accept(
 
 
 @pytest.mark.parametrize("engine", ["vllm", "sglang"])
+@pytest.mark.parametrize("torchao, reused", [("0.18.0", False), ("0.17.0", True)])
+def test_shared_engine_reuses_only_the_torchao_its_adapter_configs_use(
+    isolated, monkeypatch, tmp_path, engine, torchao, reused
+):
+    # Nothing in the lock constrains torchao; Studio's adapter builds 0.17-API configs.
+    site = tmp_path / "studio-site"
+    fake_dist(site, "torchao", torchao)
+    studio_with_engine_torch(monkeypatch, engine, torchao = torchao)
+    monkeypatch.setattr(install, "_studio_site", lambda: [str(site)])
+    monkeypatch.setattr(install, "_compat", lambda engine: {"torchao": []})
+    plan = install.install_plan(engine)
+    assert plan["shared"]
+    assert ("torchao" in plan["provided"]) == reused
+    assert ("torchao==0.17.0" in plan["requirements"]) != reused
+
+
+def test_existing_shared_engine_with_another_torchao_needs_repair(monkeypatch):
+    info = {
+        "shared": True,
+        "python": install.platform.python_version(),
+        "provided": {"torchao": "0.18.0"},
+    }
+    monkeypatch.setattr(install, "_studio_packages", lambda: {"torchao": "0.18.0"})
+    assert install.stale(info)
+    info["provided"] = {"torchao": "0.17.0"}
+    monkeypatch.setattr(install, "_studio_packages", lambda: {"torchao": "0.17.0"})
+    assert not install.stale(info)
+
+
+@pytest.mark.parametrize("engine", ["vllm", "sglang"])
 def test_compat_file_matches_its_lock(engine):
     assert install._compat(engine), "regenerate with requirements/engines/engine_compat.py"
     assert "flashinfer-cubin" not in install._pins(engine)
@@ -997,8 +1027,10 @@ def test_server_outlives_short_lived_start_thread(isolated, monkeypatch, gpu_ids
         return [sys.executable, "-u", "-c", code]
 
     engine.adapter = SimpleNamespace(
-        command = command, progress = lambda _: None, environment = lambda _: {},
-        key_environment = lambda _: {}
+        command = command,
+        progress = lambda _: None,
+        environment = lambda _: {},
+        key_environment = lambda _: {},
     )
     errors = []
 
@@ -1118,8 +1150,9 @@ def test_shutdown_during_adoption_reaps_child(isolated, monkeypatch, kind):
                 monkeypatch.setattr(managed_engine, "gpu_memory_fraction", lambda *_: 0.8)
                 engine = ManagedEngine("vllm")
                 engine.adapter = SimpleNamespace(
-                    command = lambda *args: command, environment = lambda _: {},
-        key_environment = lambda _: {}
+                    command = lambda *args: command,
+                    environment = lambda _: {},
+                    key_environment = lambda _: {},
                 )
                 engine.start("model", 2048, [0], dict(os.environ))
         assert len(children) == 1
@@ -1812,8 +1845,10 @@ def test_startup_deadline_counts_engine_silence(isolated, monkeypatch, chatty):
         return [sys.executable, "-u", "-c", code]
 
     engine.adapter = SimpleNamespace(
-        command = command, progress = lambda _: None, environment = lambda _: {},
-        key_environment = lambda _: {}
+        command = command,
+        progress = lambda _: None,
+        environment = lambda _: {},
+        key_environment = lambda _: {},
     )
     try:
         if chatty:
