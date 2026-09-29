@@ -206,6 +206,14 @@ export const fr = {
       logOut: "Se déconnecter",
       shutdown: "Arrêter",
     },
+    commandPalette: {
+      placeholder: "Saisissez une commande ou recherchez...",
+      noResults: "Aucun résultat trouvé.",
+      navigation: "Navigation",
+      actions: "Actions",
+      chat: "Chat",
+      searchChats: "Rechercher des chats...",
+    },
     notFound: {
       title: "Page introuvable",
       description: "{path} n'existe pas.",
@@ -482,6 +490,10 @@ export const fr = {
         openKeyboardShortcuts: {
           label: "Raccourcis clavier",
           description: "Ouvrir cette liste de raccourcis",
+        },
+        openCommandPalette: {
+          label: "Palette de commandes",
+          description: "Ouvrir la palette de commandes",
         },
         searchChats: {
           label: "Rechercher dans les discussions",

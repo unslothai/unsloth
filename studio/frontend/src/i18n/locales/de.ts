@@ -206,6 +206,14 @@ export const de = {
       logOut: "Abmelden",
       shutdown: "Herunterfahren",
     },
+    commandPalette: {
+      placeholder: "Befehl eingeben oder suchen...",
+      noResults: "Keine Ergebnisse gefunden.",
+      navigation: "Navigation",
+      actions: "Aktionen",
+      chat: "Chat",
+      searchChats: "Chats durchsuchen...",
+    },
     notFound: {
       title: "Seite nicht gefunden",
       description: "{path} existiert nicht.",
@@ -482,6 +490,10 @@ export const de = {
         openKeyboardShortcuts: {
           label: "Tastenkürzel",
           description: "Diese Kürzelliste öffnen",
+        },
+        openCommandPalette: {
+          label: "Befehlspalette",
+          description: "Die Befehlspalette öffnen",
         },
         searchChats: {
           label: "Chats durchsuchen",

@@ -208,6 +208,14 @@ export const en = {
       logOut: "Log out",
       shutdown: "Shutdown",
     },
+    commandPalette: {
+      placeholder: "Type a command or search...",
+      noResults: "No results found.",
+      navigation: "Navigation",
+      actions: "Actions",
+      chat: "Chat",
+      searchChats: "Search chats...",
+    },
     notFound: {
       title: "Page not found",
       description: "{path} does not exist.",
@@ -485,6 +493,10 @@ export const en = {
         openKeyboardShortcuts: {
           label: "Keyboard shortcuts",
           description: "Open this shortcuts list",
+        },
+        openCommandPalette: {
+          label: "Command palette",
+          description: "Open the command palette",
         },
         searchChats: {
           label: "Search chats",

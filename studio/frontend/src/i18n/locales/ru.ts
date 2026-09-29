@@ -205,6 +205,14 @@ export const ru = {
       logOut: "Выйти",
       shutdown: "Выключить",
     },
+    commandPalette: {
+      placeholder: "Введите команду или запрос...",
+      noResults: "Ничего не найдено.",
+      navigation: "Навигация",
+      actions: "Действия",
+      chat: "Чат",
+      searchChats: "Поиск по чатам...",
+    },
     notFound: {
       title: "Страница не найдена",
       description: "{path} не существует.",
@@ -480,6 +488,10 @@ export const ru = {
         openKeyboardShortcuts: {
           label: "Сочетания клавиш",
           description: "Открыть этот список сочетаний",
+        },
+        openCommandPalette: {
+          label: "Палитра команд",
+          description: "Открыть палитру команд",
         },
         searchChats: {
           label: "Поиск по чатам",

@@ -205,6 +205,14 @@ export const ja = {
       logOut: "ログアウト",
       shutdown: "シャットダウン",
     },
+    commandPalette: {
+      placeholder: "コマンドを入力または検索...",
+      noResults: "結果が見つかりません。",
+      navigation: "ナビゲーション",
+      actions: "アクション",
+      chat: "チャット",
+      searchChats: "チャットを検索...",
+    },
     notFound: {
       title: "ページが見つかりません",
       description: "{path} は存在しません。",
@@ -480,6 +488,10 @@ export const ja = {
         openKeyboardShortcuts: {
           label: "キーボードショートカット",
           description: "このショートカット一覧を開きます",
+        },
+        openCommandPalette: {
+          label: "コマンドパレット",
+          description: "コマンドパレットを開く",
         },
         searchChats: {
           label: "チャットを検索",
