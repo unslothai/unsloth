@@ -613,9 +613,7 @@ def test_titlebar_navigation_slot_holds_its_buttons_and_leaves_the_band_to_pages
     # it never drops under the buttons and never reaches the page header beside it. Pinned, it
     # spans the sidebar. Matched across whitespace because the formatter wraps the ternary.
     assert re.search(
-        r"showSidebarSurface && !pinned\s*\?\s*"
-        r'"122px"'
-        r"\s*:\s*sidebarWidth",
+        r"showSidebarSurface && !pinned\s*\?\s*" r'"122px"' r"\s*:\s*sidebarWidth",
         TITLEBAR.read_text(encoding = "utf-8"),
     ), "the collapsed titlebar navigation slot is no longer its buttons' width"
     assert "style={{ width: titlebarNavigationWidth }}" in source
