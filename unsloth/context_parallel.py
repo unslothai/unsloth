@@ -164,7 +164,6 @@ def patch_sft_trainer() -> None:
         return
 
     original_init = trainer_cls.__init__
-    original_compute_loss = trainer_cls.compute_loss
     original_prediction_step = trainer_cls.prediction_step
     original_training_step = trainer_cls.training_step
 
@@ -203,17 +202,6 @@ def patch_sft_trainer() -> None:
                 accelerator.gradient_state.plugin_kwargs["sync_each_batch"] = True
         print(f"Unsloth: Context parallelism enabled with size = {size}.")
 
-    @functools.wraps(original_compute_loss)
-    def patched_compute_loss(self, model, inputs, *args, **kwargs):
-        manager = getattr(self, "_context_parallel_manager", None)
-        # The trainer counts tokens before sharding, so every CP rank holds the whole group's count
-        # (and gathering across devices counts it size times); HF divides the same way for its
-        # own parallelism_config. Each rank then scales its shard's sum like a data parallel rank.
-        num_items = kwargs.get("num_items_in_batch")
-        if manager is not None and num_items is not None:
-            kwargs["num_items_in_batch"] = num_items / manager.size
-        return original_compute_loss(self, model, inputs, *args, **kwargs)
-
     @functools.wraps(original_prediction_step)
     def patched_prediction_step(self, model, inputs, *args, **kwargs):
         manager = getattr(self, "_context_parallel_manager", None)
@@ -223,12 +211,19 @@ def patch_sft_trainer() -> None:
     @functools.wraps(original_training_step)
     def patched_training_step(self, model, inputs, *args, **kwargs):
         manager = getattr(self, "_context_parallel_manager", None)
+        if manager is not None:
+            # The trainer counted tokens before sharding, so every CP rank holds its group's whole
+            # count (x size once gathered); HF divides the same way for its parallelism_config.
+            # Eval counts after sharding, so prediction_step needs no division.
+            if args and args[0] is not None:
+                args = (args[0] / manager.size, *args[1:])
+            elif kwargs.get("num_items_in_batch") is not None:
+                kwargs["num_items_in_batch"] = kwargs["num_items_in_batch"] / manager.size
         # Forward and backward both inside, so gradient checkpointing recomputes with ring attention.
         with manager.apply(inputs) if manager else contextlib.nullcontext():
             return original_training_step(self, model, inputs, *args, **kwargs)
 
     trainer_cls.__init__ = patched_init
-    trainer_cls.compute_loss = patched_compute_loss
     trainer_cls.prediction_step = patched_prediction_step
     trainer_cls.training_step = patched_training_step
     trainer_cls.__unsloth_context_parallel__ = True

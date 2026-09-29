@@ -86,36 +86,45 @@ def test_sdpa_is_looked_up_per_call(monkeypatch):
     assert calls == [1]
 
 
-def test_compute_loss_divides_the_pre_shard_token_count_by_cp_size(monkeypatch):
-    seen = {}
+def test_training_step_divides_the_pre_shard_token_count_by_cp_size(monkeypatch):
+    monkeypatch.setattr(cp, "context_parallel", _fake_context_parallel([]))
+    seen = []
 
     class Trainer:
         def __init__(self):
             pass
 
-        def compute_loss(
+        def training_step(
             self,
             model,
             inputs,
-            return_outputs = False,
             num_items_in_batch = None,
         ):
-            seen["n"] = num_items_in_batch
-            return torch.tensor(0.0)
+            seen.append(("train", num_items_in_batch))
 
-        prediction_step = training_step = compute_loss
+        def prediction_step(
+            self,
+            model,
+            inputs,
+            prediction_loss_only,
+            num_items_in_batch = None,
+        ):
+            seen.append(("eval", num_items_in_batch))
 
     import trl
 
     monkeypatch.setattr(trl, "SFTTrainer", Trainer)
     cp.patch_sft_trainer()
     trainer = Trainer()
-    trainer._context_parallel_manager = None
-    trainer.compute_loss(None, {}, num_items_in_batch = torch.tensor(12.0))
-    assert seen["n"] == 12
-    trainer._context_parallel_manager = _manager(size = 4)
-    trainer.compute_loss(None, {}, num_items_in_batch = torch.tensor(12.0))
-    assert seen["n"] == 3
+    manager = _manager(size = 4)
+    manager.mesh = None
+    trainer._context_parallel_manager = manager
+    batch = lambda: {"input_ids": torch.ones(1, 8, dtype = torch.long)}
+    trainer.training_step(None, batch(), torch.tensor(12.0))
+    trainer.training_step(None, batch(), num_items_in_batch = torch.tensor(12.0))
+    # Eval counts tokens after sharding: the gathered count is already the global one.
+    trainer.prediction_step(None, batch(), True, num_items_in_batch = torch.tensor(12.0))
+    assert [(k, float(n)) for k, n in seen] == [("train", 3.0), ("train", 3.0), ("eval", 12.0)]
 
 
 def test_shift_labels_is_not_an_eval_label_name():
