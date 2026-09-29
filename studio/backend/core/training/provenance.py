@@ -207,7 +207,9 @@ def _resolved_model_snapshot_file(snapshot: Path, path: Path) -> Optional[Path]:
     except (OSError, RuntimeError, ValueError):
         return None
     if not resolved.is_file() or not (
-        resolved.is_relative_to(snapshot) or resolved.is_relative_to(repo_dir / "blobs")
+        resolved.is_relative_to(snapshot)
+        or resolved.is_relative_to(repo_dir / "blobs")
+        or resolved.is_relative_to(repo_dir.parent / "blobs")
     ):
         return None
     try:
@@ -416,7 +418,10 @@ def _hf_dataset_source_ref(path_value: str) -> Optional[tuple[str, str, str]]:
 
     try:
         parsed = urlsplit(path_value)
-        endpoint = urlsplit(os.environ.get("HF_ENDPOINT", "https://huggingface.co"))
+        # The shared helper, not a third private parse: a blank or scheme-less
+        # value yielded an empty netloc here and matched no URL at all.
+        from utils.hf_endpoint import get_hf_endpoint
+        endpoint = urlsplit(get_hf_endpoint())
     except ValueError:
         return None
     if (

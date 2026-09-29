@@ -331,9 +331,7 @@
     },
     modelOptions() {
       const menu = D.modelMenu();
-      // No role="option", no data-model-id: the rows are plain buttons with utility classes, so
-      // this is the only available handle and it is recorded as the weak point it is.
-      return menu ? qa("button", menu) : [];
+      return menu ? qa("button[data-model-picker-option]", menu) : [];
     },
     currentModelLabel() {
       const t = D.modelTrigger();

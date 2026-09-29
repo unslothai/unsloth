@@ -77,6 +77,7 @@ _HERMES_POSIX_INSTALL_HINT = (
 _HERMES_MIN_CONTEXT = 65536
 _DSH_PROVIDER = "unsloth"
 _DSH_ENV_KEY = "UNSLOTH_API_KEY"
+_DSH_PATCH_FILE = "unsloth.patch.yml"
 _DSH_PACKAGE = "@deepseek-ai/dsh"
 # dsh picks its sandbox+approval preset from DSH_PERMISSION_MODE via ??, so omitting it would inherit a danger-full-access exported in the parent shell, and "" is not unset to ??. Pin the mode in both directions instead of only setting it for --yolo.
 _DSH_SAFE_PERMISSION_MODE = "workspace-write"
@@ -123,8 +124,15 @@ _CODEX_SUBAGENT_ROUTING_INSTRUCTIONS = (
     "subagents for other delegation requests."
 )
 _PI_SUBAGENT_EXTENSION = Path(__file__).parent.parent / "pi_subagent.ts"
+_PI_USER_RESOURCE_DIRS = ("extensions", "skills", "prompts", "themes", "npm", "git")
+_PI_USER_RESOURCE_SETTINGS = ("packages", "extensions", "skills", "prompts", "themes")
+_PI_USER_VERBATIM_SETTINGS = ("npmCommand",)
+_PI_USER_RESOURCES_MANIFEST = ".unsloth-user-resources.json"
 # OpenCode selects a model by "<providerID>/<modelID>". Use a dedicated id to avoid colliding with a user's providers; provider filters are set in the launch-time overlay.
 _OPENCODE_PROVIDER = "unsloth-studio"
+# OpenCode sends min(limit.output, this) as max_tokens unless the env var below raises it.
+_OPENCODE_OUTPUT_TOKEN_MAX = 32_000
+_OPENCODE_OUTPUT_TOKEN_MAX_ENV = "OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX"
 _PROVIDER_HEADER = f"[model_providers.{_CODEX_PROFILE}]"
 _PASSTHROUGH = {"allow_extra_args": True, "ignore_unknown_options": True}
 
@@ -316,6 +324,17 @@ _PRESENCE_PENALTY_OPTION = typer.Option(
     max = 2.0,
     rich_help_panel = _PANEL_SAMPLING,
     help = "Pin the presence penalty. Default: unset (per-model recommendation).",
+)
+_MAX_TOKENS_OPTION = typer.Option(
+    None,
+    "--max-tokens",
+    min = 1,
+    rich_help_panel = _PANEL_SAMPLING,
+    help = (
+        "Most tokens the agent may generate in one response. Default: a quarter of the "
+        "context window, up to 32,000. Capped at half the window so the conversation "
+        "keeps room."
+    ),
 )
 
 # Agent-session knobs.
@@ -565,11 +584,22 @@ _DSH_LAUNCHER_ARGS = frozenset(
 )
 
 
-def _dsh_command(args: list[str]) -> list[str]:
+# Launcher invocations that boot no profile, so they take no --patch overlay.
+_DSH_NO_PROFILE_ARGS = frozenset("-V --version plugin".split())
+
+
+def _dsh_command(args: list[str], patch: Optional[str] = None) -> list[str]:
     head = args[0] if args else ""
     if head in _DSH_LAUNCHER_ARGS or head.startswith(("--profile=", "--patch=")):
-        return ["dsh", *args]
-    return ["dsh", "web", *args]
+        command = ["dsh", *args]
+    else:
+        command = ["dsh", "web", *args]
+    if patch is not None and command[1] not in _DSH_NO_PROFILE_ARGS:
+        # `dsh <name>` only expands to `--profile <name>` when the name comes first, so the
+        # overlay goes after a bare profile name and ahead of a leading launcher option.
+        at = 1 if command[1].startswith("-") else 2
+        command[at:at] = ["--patch", patch]
+    return command
 
 
 class LoadOptions(NamedTuple):
@@ -796,6 +826,7 @@ _DOWNLOAD_POLL_INTERVAL_S = 1.0
 # Ceiling on the doubling back-off the progress reader uses after a polling error.
 _DOWNLOAD_POLL_MAX_BACKOFF_S = 60.0
 _START_API_KEY_PREFIX = "UNSLOTH_START_API_KEY: "
+_START_PORT_PREFIX = "UNSLOTH_START_PORT: "
 _START_API_KEY_MARKER_ENV = "_UNSLOTH_START_API_KEY_MARKER"
 
 
@@ -1091,11 +1122,15 @@ def _studio_healthy(base: str, timeout: float = 3.0) -> bool:
         return False
 
 
-def _log_tail(path: Path, lines: int = 20) -> str:
+def _read_log(path: Path) -> str:
     try:
-        return "\n".join(path.read_text(encoding = "utf-8", errors = "replace").splitlines()[-lines:])
+        return path.read_text(encoding = "utf-8", errors = "replace")
     except OSError:
         return "(no server log)"
+
+
+def _log_tail(path: Path, lines: int = 20) -> str:
+    return "\n".join(_read_log(path).splitlines()[-lines:])
 
 
 def _redacted_log_tail(path: Path, lines: int = 20) -> str:
@@ -1155,8 +1190,8 @@ def _start_studio_server(
     model: str,
     load: LoadOptions,
     server: ServerOptions = ServerOptions(),
-) -> subprocess.Popen:
-    """Spawn `unsloth run` for `model`, wait until it is fully ready, and return it."""
+) -> tuple:
+    """Spawn `unsloth run` for `model`, wait until it is fully ready, and return (base, server)."""
     global _auto_served_server
     # Windows goes through this interpreter, not the launcher on PATH: shutil.which resolves `unsloth` to the denied unsloth.exe, since PATHEXT puts .EXE ahead of the .cmd shim (#8490). Without this, a user who reached the CLI through unsloth.cmd would still fail here. sys.executable is the interpreter already running this command, so the child inherits the same environment.
     if sys.platform == "win32":
@@ -1246,6 +1281,7 @@ def _start_studio_server(
     progress: Optional[_ModelDownloadProgress] = None
     downloaded_bytes = 0
     early_key_seen = False
+    port_followed = False
     try:
         while time.monotonic() < deadline:
             if server.poll() is not None:
@@ -1254,6 +1290,17 @@ def _start_studio_server(
                 _shutdown_auto_served()
                 _fail(f"The Unsloth server stopped before it was ready. Last log lines:\n{tail}")
             tail = _log_tail(log_path, lines = 400)
+            # `unsloth run` falls forward off a taken port, so poll the port it reports. Printed
+            # once, so read the whole log, not the tail below.
+            if not port_followed:
+                bound_port = re.search(
+                    rf"^{re.escape(_START_PORT_PREFIX)}(\d+)$",
+                    _read_log(log_path),
+                    flags = re.MULTILINE,
+                )
+                if bound_port:
+                    port_followed = True
+                    base = _effective_base(base, int(bound_port.group(1)))
             if progress is None:
                 marker = re.search(
                     rf"^{re.escape(_START_API_KEY_PREFIX)}(sk-unsloth-[^\s]+)$",
@@ -1287,7 +1334,7 @@ def _start_studio_server(
                     progress.complete()
                     progress.close()
                     progress = None
-                return server
+                return base, server
             time.sleep(2.0)
     finally:
         if progress is not None:
@@ -1299,13 +1346,13 @@ def _start_studio_server(
     )
 
 
-def _effective_base(base: str) -> str:
+def _effective_base(base: str, port: Optional[int] = None) -> str:
     # `unsloth run` binds to `parsed.port or 8888` and serves at the root, so normalize UNSLOTH_STUDIO_URL to plain scheme://host:port. A portless http://127.0.0.1 would otherwise launch on 8888 but poll port 80, and a path like /studio would poll /studio/api/health (404), either way hitting the startup timeout. IPv6 literals stay bracketed.
     parsed = urlparse(base)
     host = parsed.hostname or "127.0.0.1"
     if ":" in host:  # bare IPv6 literal (urlparse strips the brackets)
         host = f"[{host}]"
-    return f"{parsed.scheme or 'http'}://{host}:{parsed.port or 8888}"
+    return f"{parsed.scheme or 'http'}://{host}:{port or parsed.port or 8888}"
 
 
 def _require_studio(
@@ -1370,7 +1417,7 @@ def _require_studio(
         expected = _effective_base(expected)
         load = load or LoadOptions()
         # Leave a bare GGUF repo's variant unset: the server's own quant preference already picks the best available (UD-Q4_K_XL for Unsloth uploads, else Q4_K_M) and falls back when that exact quant is missing, which forcing a fixed variant here would break.
-        return expected, _start_studio_server(expected, model, load, server_options)
+        return _start_studio_server(expected, model, load, server_options)
     model_hint = "" if model else " Pass --model to have it start one for you, or"
     _fail(
         f"No running Unsloth server found at {expected}.{model_hint} start one with "
@@ -1595,12 +1642,17 @@ def _loaded_models(base: str, key: str) -> list:
         _fail_request(exc, "Couldn't list models")
 
 
-def _model_still_loaded(base: str, key: str, model_id: object) -> bool:
+def _model_loaded_state(base: str, key: str, model_id: object) -> Optional[bool]:
+    """Return whether the model is loaded, or None if the listing is unavailable."""
     try:
         models = _loaded_models_response(base, key, timeout = 5).get("data", [])
     except Exception:
-        return False
+        return None
     return any(m.get("id") == model_id and m.get("loaded") is not False for m in models)
+
+
+def _model_still_loaded(base: str, key: str, model_id: object) -> bool:
+    return _model_loaded_state(base, key, model_id) is True
 
 
 _HF_REPO_ID_SEGMENT_RE = re.compile(r"^[A-Za-z0-9._-]+$")
@@ -1649,6 +1701,18 @@ def _public_model_id(value: Optional[str]) -> Optional[str]:
     if name.lower().endswith(".gguf"):
         name = name[: -len(".gguf")]
     return name or None
+
+
+def _public_model_ids(value: Optional[str]) -> set:
+    """Return a path's basename ID and HF cache repo ID for old and current servers."""
+    ids = {_public_model_id(value)} - {None}
+    if ids:
+        parts = value.replace("\\", "/").split("/")
+        for index, part in enumerate(parts):
+            if part.startswith("models--") and parts[index + 1 : index + 2] == ["snapshots"]:
+                ids.add(part[len("models--") :].replace("--", "/"))
+                break
+    return ids
 
 
 def _model_id_matches(
@@ -1739,6 +1803,8 @@ _RESIDENT_RUNTIME_FIELDS = {
     "speculative_type": "speculative_type",
     "spec_draft_n_max": "spec_draft_n_max",
     # The applied value is null when the runtime refused the request.
+    # Scheme and width together; a bare width reads back as mx.quantize, so TurboQuant would reload as it. The width stays for servers without mlx_kv_quant.
+    "mlx_kv_quant_requested": "mlx_kv_quant",
     "mlx_kv_bits_requested": "mlx_kv_bits",
     # LoadRequest defaults this to True, so omitting it would reload a full-precision model in 4-bit. Null on GGUF, which has no such setting.
     "load_in_4bit": "load_in_4bit",
@@ -1887,8 +1953,8 @@ def _resolve_model(
         if preload_check is not None:
             # An explicit knob forces match to None so the server's disk-free dedupe can answer already_loaded; gating it would reject a second session for the model already serving, whose file may have moved. Only the quant is checked below: any other run knob changes the runtime intent, a real reload nothing dedupes.
             other_overrides = bool(overrides - {"gguf_variant"})
-            # The loaded listing shows a path-loaded GGUF under its basename, so match that spelling too, or a second session reruns the gate.
-            wanted_ids = {requested, _public_model_id(requested)} - {None}
+            # Match public path IDs before deciding whether to rerun the gate.
+            wanted_ids = {requested} | _public_model_ids(requested)
             resident_serves_request = not other_overrides and any(
                 m.get("loaded") is not False
                 and any(
@@ -1932,6 +1998,9 @@ def _resolve_model(
                 preload_check(base, key, requested, load.gguf_variant)
         active_id = active.get("id") if active else None
         announced_switch = False
+        # Public IDs can collide, and status hides paths from API keys.
+        # Wait for the load result to distinguish reuse from replacement.
+        switch_unknown = False
         if attach_public_id is not None:
             # An inferred attach never switches model, so the comparison below would misreport a switch and print the server's path.
             if inferred_differs:
@@ -1943,9 +2012,15 @@ def _resolve_model(
             requested,
             allow_casefold = allow_casefold,
         ):
-            typer.echo(f"Switching the Unsloth server from {active_id} to {requested}.")
-            typer.echo("This unloads the current model for every attached session.")
-            announced_switch = True
+            if any(
+                _model_id_matches(active_id, listed, allow_casefold = allow_casefold)
+                for listed in _public_model_ids(requested)
+            ):
+                switch_unknown = True
+            else:
+                typer.echo(f"Switching the Unsloth server from {active_id} to {requested}.")
+                typer.echo("This unloads the current model for every attached session.")
+                announced_switch = True
         elif active_id and load.gguf_variant:
             # Same repo id but an explicit quant still replaces the resident weights; the loaded listing does not carry a variant for every resident model, so ask the status endpoint.
             try:
@@ -1981,7 +2056,7 @@ def _resolve_model(
             else:
                 payload["gguf_variant"] = load.gguf_variant
         elif attach_public_id is not None and status_snapshot.get("is_gguf"):
-            # Re-send the running quant: a repo id carries none, so from_identifier would auto-pick (_GGUF_QUANT_PREFERENCE, UD-Q4_K_XL first) and changing only the context would evict a chosen Q8_0 to download a different quant. Skip a .gguf path, which loads as itself; the server gates on the same suffix.
+            # Re-send the running quant: a repo id carries none, so from_identifier would auto-pick (GGUF_QUANT_PREFERENCE, UD-Q4_K_XL first) and changing only the context would evict a chosen Q8_0 to download a different quant. Skip a .gguf path, which loads as itself; the server gates on the same suffix.
             resident_variant = status_snapshot.get("gguf_variant")
             if resident_variant and not str(requested).lower().endswith(".gguf"):
                 payload["gguf_variant"] = resident_variant
@@ -2021,13 +2096,20 @@ def _resolve_model(
             # The warning above promised an unload; if the server refused the load before evicting anything, say so. Not BaseException: Ctrl+C must stay immediate, without a probe or a survivor claim.
             if announced_switch and _model_still_loaded(base, key, active_id):
                 typer.echo(f"Nothing was unloaded; {active_id} is still serving.", err = True)
+            # Report an unannounced eviction only if the listing confirms it.
+            if switch_unknown and _model_loaded_state(base, key, active_id) is False:
+                typer.echo(f"{active_id} was unloaded for every attached session.", err = True)
             raise
         if loaded.get("status") == "already_loaded":
             # Show the public id on the inferred path; `requested` may be a server path.
             shown = attach_public_id or requested
             typer.echo(f"Reusing loaded model: {_display_model_spec(shown, load.gguf_variant)}")
-        # Unsloth registers the model under a canonical id (resolved identifier, casing) that the loaded listing echoes but which may differ from the path we passed; match on the id the load reports so we do not silently fall through to models[0] and connect to a different loaded model. attach_public_id: our _public_model_id only strips a basename, while the server also maps an HF cache path to its repo id, so the two can disagree.
-        wanted = {requested, _public_model_id(requested), attach_public_id} - {None}
+        elif switch_unknown:
+            typer.echo(f"Loaded {requested} in place of {active_id}.")
+            typer.echo("This unloaded the previous model for every attached session.")
+        # Match public IDs and load-response names, since the listing may omit paths.
+        # Keep attach_public_id for inferred requests using opaque identifiers.
+        wanted = ({requested, attach_public_id} - {None}) | _public_model_ids(requested)
         if isinstance(loaded, dict):
             wanted |= {loaded.get("model"), loaded.get("display_name")} - {None}
         models = _loaded_models(base, key)
@@ -2095,7 +2177,7 @@ def _hub_gguf_files(repo: str) -> Optional[list]:
 
 
 # Mirrors hub.utils.gguf._DRAFTER_KINDS / _DRAFTER_DIR_KINDS: dspark and dflash are the same DeepSeek V4 Flash drafter, but dflash/ is also a real family name, so only mtp/ and dspark/ count as a companion folder.
-_DRAFTER_KINDS = ("mtp", "dspark", "dflash")
+_DRAFTER_KINDS = ("mtp", "dspark", "dflash", "eagle3")
 _DRAFTER_DIR_KINDS = ("mtp", "dspark")
 
 
@@ -2733,6 +2815,8 @@ def _claude_local_env(base: str, key: str, entry: dict) -> dict:
         "ANTHROPIC_AUTH_TOKEN": key,
         "ANTHROPIC_MODEL": model_id,
         "CLAUDE_CODE_ATTRIBUTION_HEADER": "0",
+        # Per-tool countdown reminders change the system prefix on local models.
+        "CLAUDE_CODE_TOTAL_TOKENS_REMINDER": "off",
         "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
         "CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS": "1",
         "CLAUDE_CODE_NO_FLICKER": "1",
@@ -2963,9 +3047,31 @@ def _codex_source_home(*, ignore_configured: bool = False) -> Path:
     return Path.home() / ".codex"
 
 
+def _is_junction(path: Path) -> bool:
+    # Path.is_junction() was added in Python 3.12.
+    if hasattr(path, "is_junction"):
+        return path.is_junction()
+    try:
+        return (
+            getattr(os.lstat(path), "st_reparse_tag", None) == 0xA0000003
+        )  # IO_REPARSE_TAG_MOUNT_POINT
+    except OSError:
+        return False
+
+
+def _is_directory_link(path: Path) -> bool:
+    # lstat reads the link, so FILE_ATTRIBUTE_DIRECTORY answers even when dangling.
+    try:
+        return bool(getattr(os.lstat(path), "st_file_attributes", 0) & 0x10)
+    except OSError:
+        return False
+
+
 def _remove_overlay_entry(path: Path) -> None:
-    is_junction = getattr(path, "is_junction", None)
-    if is_junction and is_junction():
+    if _is_junction(path):
+        path.rmdir()
+    elif os.name == "nt" and path.is_symlink() and _is_directory_link(path):
+        # DeleteFileW, which unlink maps to, refuses a directory entry; rmdir drops the link.
         path.rmdir()
     elif path.is_symlink() or path.is_file():
         path.unlink()
@@ -3489,7 +3595,9 @@ def _refresh_windows_path() -> None:
 def _managed_node_tools() -> Optional[tuple[Path, Path, bool]]:
     # Best-effort: any failure here means "no managed Node", never a broken launch.
     try:
-        ensure_studio_backend_path()
+        # Discovery only: this answers "is there a managed Node", including for a launch aimed
+        # at a remote server, so it must not create the cache tree on the way past.
+        ensure_studio_backend_path(seed_cache_env = False)
         from utils.node_runtime import managed_node_binary, resolve_node_executable
         node = Path(managed_node_binary())
     except (ImportError, OSError, RuntimeError, TypeError, ValueError):
@@ -4032,6 +4140,16 @@ def _connect(
             # That server was started FROM these knobs, so inferring a target here would reload what was just loaded.
             infer_resident = server is None,
         )
+        status = _inference_status(base, key) if model else {}
+        # A GGUF can be active while the resolved entry is another resident model.
+        if status.get("memory_warning") and any(
+            _model_id_matches(
+                (entry or {}).get("id"), status_id, allow_casefold = is_loopback_url(base)
+            )
+            for status_id in (status.get("active_model"), status.get("model_identifier"))
+            if status_id
+        ):
+            typer.echo(f"Warning: {status['memory_warning']}", err = True)
     except BaseException:
         _shutdown_auto_served()
         raise
@@ -4423,6 +4541,42 @@ def write_openclaw_config(
         typer.echo(f"Updated {path}")
 
 
+def opencode_output_limit(window: int, max_tokens: Optional[int] = None) -> int:
+    if max_tokens:
+        return max(1, min(int(max_tokens), window // 2))
+    return max(1, min(window // 4, _OPENCODE_OUTPUT_TOKEN_MAX))
+
+
+def opencode_compaction_reserved(window: int, output: int) -> int:
+    return max(1, min(output, max(window // 10, 8192)))
+
+
+def _opencode_output_env(model: dict, max_tokens: Optional[int]) -> dict:
+    """Lift OpenCode's output ceiling when --max-tokens exceeds it; re-emit an inherited one so a --no-launch recipe keeps it."""
+    window = model.get("context_length") or model.get("max_context_length")
+    if not max_tokens:
+        return {}
+    if not window:
+        typer.echo(
+            "Warning: Studio did not report the model's context length, so --max-tokens is ignored.",
+            err = True,
+        )
+        return {}
+    output = opencode_output_limit(int(window), max_tokens)
+    if output < max_tokens:
+        typer.echo(
+            f"Warning: --max-tokens {max_tokens} leaves too little of the {int(window):,}-token "
+            f"context for the conversation; using {output:,}.",
+            err = True,
+        )
+    raw = os.environ.get(_OPENCODE_OUTPUT_TOKEN_MAX_ENV, "")
+    inherited = int(raw) if raw.isdigit() and int(raw) > 0 else None
+    ceiling = inherited or _OPENCODE_OUTPUT_TOKEN_MAX
+    if output <= ceiling and inherited is None:
+        return {}
+    return {_OPENCODE_OUTPUT_TOKEN_MAX_ENV: str(max(output, ceiling))}
+
+
 def write_opencode_config(
     base: str,
     key: str,
@@ -4430,6 +4584,7 @@ def write_opencode_config(
     path: Path,
     yolo: bool = False,
     as_subagent: bool = False,
+    max_tokens: Optional[int] = None,
 ) -> dict:
     config = _read_json_object(path)
     if config is None:
@@ -4444,10 +4599,13 @@ def write_opencode_config(
     # Keep the provider definition in this private session file. The launch path adjusts effective provider filters in the higher-priority inline overlay.
     model_entry = {"name": model["id"]}
     window = model.get("context_length") or model.get("max_context_length")
+    reserved = None
     if window:
         window = int(window)
-        # A custom-provider model with no limit defaults to context 0, which silently disables OpenCode's auto-compaction; declare the real window and a sane output cap so it compacts instead of overflowing the server.
-        model_entry["limit"] = {"context": window, "output": min(window // 4, 8192)}
+        output = opencode_output_limit(window, max_tokens)
+        reserved = opencode_compaction_reserved(window, output)
+        # Without a limit OpenCode assumes context 0 and never compacts. Without input it compacts at context - output and ignores compaction.reserved.
+        model_entry["limit"] = {"context": window, "input": window, "output": output}
     _subdict(config, "provider")[_OPENCODE_PROVIDER] = {
         "npm": "@ai-sdk/openai-compatible",
         "name": "Unsloth Studio",
@@ -4460,8 +4618,15 @@ def write_opencode_config(
         for field in ("model", "small_model"):
             if str(config.get(field) or "").startswith(f"{_OPENCODE_PROVIDER}/"):
                 config.pop(field, None)
-        managed_compaction = {"auto": True, "reserved": max(1, window // 10)} if window else None
-        if managed_compaction and config.get("compaction") == managed_compaction:
+        # Drop a managed compaction block, current or legacy value.
+        managed = {reserved, max(1, window // 10)} if window else set()
+        compaction = config.get("compaction")
+        if (
+            isinstance(compaction, dict)
+            and compaction.keys() == {"auto", "reserved"}
+            and compaction["auto"] is True
+            and compaction["reserved"] in managed
+        ):
             config.pop("compaction", None)
         _subdict(config, "agent")[_SUBAGENT_NAME] = {
             "description": _SUBAGENT_DESCRIPTION,
@@ -4477,10 +4642,10 @@ def write_opencode_config(
             if not agents:
                 config.pop("agent", None)
     if window and not as_subagent:
-        # Compact with ~10% headroom (near 90% full). The fixed 20k-token default buffer over-compacts, or never settles, on a small local context.
+        # The fixed 20k-token default buffer over-compacts, or never settles, on a small local context.
         compaction = _subdict(config, "compaction")
         compaction["auto"] = True
-        compaction["reserved"] = max(1, window // 10)
+        compaction["reserved"] = reserved
     tools = ("edit", "bash", "webfetch", *(("task",) if as_subagent else ()))
     if yolo:
         # Fallback for commands without native --auto and for the append-safe bare --no-launch command, where the subcommand is not known yet. Rides inline (OPENCODE_CONFIG_CONTENT) so it wins over a project config. TUI and `run` launches use --auto and call here with yolo=False, letting OpenCode preserve explicit deny rules.
@@ -4588,6 +4753,258 @@ def write_pi_config(base: str, key: str, model: dict, path: Path) -> None:
         typer.echo(f"Updated {path}")
 
 
+def _link_user_dir(source: Path, target: Path) -> bool:
+    """Expose source at target. True once target resolves to source."""
+    # Refresh links, but preserve real session directories.
+    if target.is_symlink() or _is_junction(target):
+        _remove_overlay_entry(target)
+    if target.exists() or not source.is_dir():
+        return False
+    target.parent.mkdir(parents = True, exist_ok = True, mode = 0o700)
+    try:
+        target.symlink_to(source, target_is_directory = True)
+    except OSError:
+        if not _create_directory_junction(source, target):
+            typer.echo(f"Warning: couldn't link {source} into the Pi session.", err = True)
+            return False
+    return True
+
+
+def _pi_local_entry(
+    entry: str,
+    source: Path,
+    home: Path,
+    linked: frozenset,
+    agents_skills = None,
+) -> str:
+    """Re-anchor a user path from the original Pi agent directory."""
+    value = entry.strip()
+    if not value or value == "." or value.startswith("file:"):
+        # Nothing to anchor: "" and "." would name the whole agent directory.
+        return entry
+    if value == "~" or value.startswith(("~/", "~" + os.sep)):
+        target = os.path.join(home, value[2:])
+    else:
+        # Pi stores local packages relative to its agent directory.
+        target = os.path.join(source, value)
+    target = os.path.normpath(target)
+    if agents_skills is not None:
+        # Pi reads ~/.agents/skills through HOME, which moved, so a rule naming the
+        # user's copy must follow it or it stops matching.
+        user_root, session_root = agents_skills
+        try:
+            inside = os.path.relpath(target, user_root)
+        except ValueError:  # on another Windows drive
+            inside = os.pardir
+        if inside == os.curdir:
+            return session_root
+        if inside != os.pardir and not inside.startswith(os.pardir + os.sep):
+            return os.path.join(session_root, inside)
+    try:
+        relative = os.path.relpath(target, source)
+    except ValueError:  # on another Windows drive
+        return target
+    # Session-relative only where the link landed: a real session directory blocks
+    # the link, and the entry would then point into it instead of at the user's.
+    if relative.split(os.sep)[0] in linked:
+        return relative
+    return target
+
+
+def _pi_settings_entries(
+    key: str,
+    entries,
+    source: Path,
+    home: Path,
+    linked: frozenset,
+    agents_skills = None,
+) -> list:
+    if not isinstance(entries, list):
+        return []
+    result = []
+    for entry in entries:
+        if key == "packages":
+            spec = entry.get("source") if isinstance(entry, dict) else entry
+            # All other package sources are local paths.
+            if isinstance(spec, str) and not spec.strip().startswith(
+                ("npm:", "git:", "github:", "http:", "https:", "ssh:")
+            ):
+                spec = _pi_local_entry(spec, source, home, linked, agents_skills)
+                entry = {**entry, "source": spec} if isinstance(entry, dict) else spec
+        elif isinstance(entry, str):
+            prefix = entry[:1] if entry.startswith(("!", "+", "-")) else ""
+            pattern = entry[len(prefix) :]
+            if not prefix and "*" not in entry and "?" not in entry:
+                entry = _pi_local_entry(entry, source, home, linked, agents_skills)
+            elif not pattern.strip().startswith("~"):  # Pi does not expand ~ in patterns
+                # Pi matches patterns against paths relative to the agent directory, which moved.
+                # Keep the original too: it still matches basenames and linked directories.
+                anchored = prefix + _pi_local_entry(
+                    pattern,
+                    source,
+                    home,
+                    linked,
+                    agents_skills,
+                )
+                if anchored != entry:
+                    result.append(entry)
+                    entry = anchored
+        result.append(entry)
+    return result
+
+
+def _clear_pi_user_resources(agent_dir: Path, home: Path) -> None:
+    """Undo what an earlier launch linked and copied, leaving session state alone."""
+    targets = [agent_dir / name for name in _PI_USER_RESOURCE_DIRS]
+    targets.append(home / ".agents" / "skills")
+    for target in targets:
+        if target.is_symlink() or _is_junction(target):
+            _remove_overlay_entry(target)
+    manifest_path = agent_dir / _PI_USER_RESOURCES_MANIFEST
+    previous = _read_json_object(manifest_path)
+    if not previous:
+        return
+    settings_path = agent_dir / "settings.json"
+    settings = _read_json_object(settings_path)
+    if settings is None:
+        return
+    before = json.dumps(settings, sort_keys = True)
+    for key, copied in previous.items():
+        own = settings.get(key)
+        if key in _PI_USER_VERBATIM_SETTINGS:
+            # An argument vector, not entries: subtracting drops whatever the two share.
+            if own == copied:
+                settings.pop(key, None)
+        elif isinstance(copied, list) and isinstance(own, list):
+            rest = [item for item in own if item not in copied]
+            if rest:
+                settings[key] = rest
+            else:
+                settings.pop(key, None)
+        elif own == copied:
+            settings.pop(key, None)
+    if json.dumps(settings, sort_keys = True) != before:
+        _write_private_json(settings_path, settings)
+    manifest_path.unlink(missing_ok = True)
+
+
+def write_pi_user_resources(agent_dir: Path, home: Path) -> None:
+    """Expose selected user Pi resources inside an isolated session."""
+    if _wsl_windows_executable(["pi"]):
+        # Windows Pi cannot reliably follow WSL links into mounted drives, and a session
+        # an earlier Linux pi prepared still holds them, so drop those before returning.
+        _clear_pi_user_resources(agent_dir, home)
+        return
+    user_home = Path.home()
+    configured = os.environ.get("PI_CODING_AGENT_DIR")
+    configured = configured.strip() if configured else ""
+    # Pi resolves a relative override from the launch directory.
+    source = (
+        Path(os.path.abspath(os.path.expanduser(configured)))
+        if configured
+        else user_home / ".pi" / "agent"
+    )
+    if source.resolve(strict = False) == agent_dir.resolve(strict = False):
+        # Do not treat this session as its own resource source.
+        source = user_home / ".pi" / "agent"
+    if configured and not source.is_dir():
+        # Otherwise this looks exactly like the bug this function exists to fix.
+        typer.echo(
+            f"Warning: PI_CODING_AGENT_DIR points at {source}, which is not a directory; "
+            "no Pi extensions or packages will load in this session.",
+            err = True,
+        )
+    linked = frozenset(
+        name for name in _PI_USER_RESOURCE_DIRS if _link_user_dir(source / name, agent_dir / name)
+    )
+    # HOME is relocated, so link Pi's other global skill directory too.
+    user_skills = user_home / ".agents" / "skills"
+    session_skills = home / ".agents" / "skills"
+    agents_skills = (
+        (str(user_skills), str(session_skills))
+        if _link_user_dir(user_skills, session_skills)
+        else None
+    )
+
+    user_settings_path = source / "settings.json"
+    user_settings = _read_json_object(user_settings_path)
+    if user_settings is None:
+        typer.echo(
+            f"Warning: couldn't parse {user_settings_path}; "
+            "Pi packages listed there won't load in this session.",
+            err = True,
+        )
+        user_settings = {}
+    settings_path = agent_dir / "settings.json"
+    settings = _read_json_object(settings_path)
+    if settings is None:
+        typer.echo(
+            f"Warning: couldn't parse {settings_path}; your Pi packages won't load in this session.",
+            err = True,
+        )
+        return
+    manifest_path = agent_dir / _PI_USER_RESOURCES_MANIFEST
+    previous = _read_json_object(manifest_path)
+    if previous is None:
+        # Provenance is lost, so entries the user has since removed cannot be reconciled.
+        typer.echo(
+            f"Warning: couldn't parse {manifest_path}; Pi resources copied by an earlier "
+            "launch stay in this session even if you removed them since.",
+            err = True,
+        )
+        previous = {}
+    before = json.dumps(settings, sort_keys = True)
+    copied = {}
+    for key in _PI_USER_RESOURCE_SETTINGS:
+        entries = _pi_settings_entries(
+            key,
+            user_settings.get(key),
+            source,
+            user_home,
+            linked,
+            agents_skills,
+        )
+        # Refresh copied entries while preserving settings added inside the session.
+        stale = previous.get(key) if isinstance(previous.get(key), list) else []
+        own = settings.get(key)
+        if own is not None and not isinstance(own, list):
+            # Pi types these as arrays; leave a shape we do not understand alone.
+            typer.echo(
+                f"Warning: {settings_path} has a non-list {key!r}; "
+                "leaving it as is, so your Pi entries for it won't load in this session.",
+                err = True,
+            )
+            continue
+        own = [item for item in own or [] if item not in stale and item not in entries]
+        if entries or own:
+            # Pi de-dupes packages by identity keeping the FIRST, so session entries
+            # lead. Patterns apply in order instead, so those stay user-first.
+            settings[key] = own + entries if key == "packages" else entries + own
+        else:
+            settings.pop(key, None)
+        if entries:
+            copied[key] = entries
+    for key in _PI_USER_VERBATIM_SETTINGS:
+        # Pi runs every package lookup and install through npmCommand, so inheriting
+        # the package list without it falls back to an npm that cannot find them.
+        value = user_settings.get(key)
+        own = settings.get(key)
+        if own is not None and own != previous.get(key):
+            continue  # changed inside the session, so the session owns it now
+        if isinstance(value, list) and value and all(isinstance(arg, str) for arg in value):
+            settings[key] = value
+            copied[key] = value
+        else:
+            settings.pop(key, None)
+    if json.dumps(settings, sort_keys = True) != before:
+        _write_private_json(settings_path, settings)
+    if copied != previous:
+        if copied:
+            _write_private_json(manifest_path, copied)
+        else:
+            manifest_path.unlink(missing_ok = True)
+
+
 def write_pi_subagent_config(
     base: str,
     key: str,
@@ -4611,37 +5028,47 @@ def write_pi_subagent_config(
     )
 
 
-def write_dsh_config(base: str, model: dict, path: Path) -> None:
+def write_dsh_patch(base: str, model: dict, path: Path) -> None:
+    """Write the dsh loader patch that points the booted profile at Unsloth.
+
+    dsh 0.1.7 dropped `settings.yaml`: it now imports a leftover one into the profile only
+    after the first boot has settled, so that boot still runs on the DeepSeek default. A
+    `--patch` overlay is read at boot on every dsh release this supports, and the file is
+    Unsloth's own, so it is rewritten whole rather than merged.
+    """
     import yaml
 
-    config = _read_yaml_object(path)
-    if config is None:
-        typer.echo(
-            f"Warning: couldn't parse {path} — add an '{_DSH_PROVIDER}' provider "
-            "there yourself, or move the file aside and re-run.",
-            err = True,
-        )
-        return
     model_entry = {"id": model["id"]}
     window = model.get("context_length") or model.get("max_context_length")
     if window:
         window = int(window)
         model_entry["contextWindow"] = window
         model_entry["maxTokens"] = min(window // 4, 8192)
-    _subdict(_subdict(config, "llm-pi-ai"), "providers")[_DSH_PROVIDER] = {
-        "displayName": "Unsloth Studio",
-        "api": "openai-completions",
-        "baseURL": f"{base}/v1",
-        "apiKeyEnv": _DSH_ENV_KEY,
-        # pi-ai reads an unknown base URL as OpenAI itself.
-        "compat": {"supportsDeveloperRole": False, "maxTokensField": "max_tokens"},
-        "models": [model_entry],
-    }
-    _subdict(config, "agent-default-model").update(
-        provider = _DSH_PROVIDER,
-        model = model["id"],
-    )
-    text = yaml.safe_dump(config, sort_keys = False)
+    entries = [
+        {
+            "id": "llm-pi-ai",
+            "name": "@deepseek-ai/dsh-llm-pi-ai",
+            "config": {
+                "providers": {
+                    _DSH_PROVIDER: {
+                        "displayName": "Unsloth Studio",
+                        "api": "openai-completions",
+                        "baseURL": f"{base}/v1",
+                        "apiKeyEnv": _DSH_ENV_KEY,
+                        # pi-ai reads an unknown base URL as OpenAI itself.
+                        "compat": {"supportsDeveloperRole": False, "maxTokensField": "max_tokens"},
+                        "models": [model_entry],
+                    }
+                }
+            },
+        },
+        {
+            "id": "agent-default-model",
+            "name": "@deepseek-ai/dsh-agent-default-model",
+            "config": {"provider": _DSH_PROVIDER, "model": model["id"]},
+        },
+    ]
+    text = yaml.safe_dump(entries, sort_keys = False)
     if not path.exists() or path.read_text(encoding = "utf-8") != text:
         path.parent.mkdir(parents = True, exist_ok = True)
         path.write_text(text, encoding = "utf-8")
@@ -5006,6 +5433,7 @@ def opencode(
     min_p: Optional[float] = _MIN_P_OPTION,
     repetition_penalty: Optional[float] = _REPETITION_PENALTY_OPTION,
     presence_penalty: Optional[float] = _PRESENCE_PENALTY_OPTION,
+    max_tokens: Optional[int] = _MAX_TOKENS_OPTION,
     serve: bool = _SERVE_OPTION,
     yolo: bool = _YOLO_OPTION,
     persist: bool = _PERSIST_OPTION,
@@ -5067,8 +5495,12 @@ def opencode(
                 config_path,
                 yolo = yolo and not native_auto,
                 as_subagent = True,
+                max_tokens = max_tokens,
             )
-            env = {"OPENCODE_CONFIG": str(config_path)}
+            env = {
+                "OPENCODE_CONFIG": str(config_path),
+                **_opencode_output_env(subagent_model, max_tokens),
+            }
             inline_config = _opencode_subagent_inline_config(
                 config_path,
                 session_permission,
@@ -5129,6 +5561,7 @@ def opencode(
             entry,
             config_path,
             yolo = yolo and not native_auto,
+            max_tokens = max_tokens,
         )
         # A project's own opencode.json outranks OPENCODE_CONFIG, so the session model pin would silently lose to a repo config; carry it in OPENCODE_CONFIG_CONTENT, which outranks project config, while the API key stays in the private file. Only the config fallback carries a permission: native --auto omits it (auto-approve asks, keep explicit denies) and a non-yolo session omits it too, honoring project rules. V1 filters are ordinary overlays, so scope that session to our provider; V2 turns filters into security policies where global/project rules intentionally win, so keep those policies intact and tell the user above that they must allow our provider. small_model is opencode's separate model for lightweight tasks; pin it to the session model too, or a user/project small_model on another (now filtered) provider would resolve a not-found error mid-session.
         inline_config: dict = {
@@ -5143,6 +5576,7 @@ def opencode(
         env = {
             "OPENCODE_CONFIG": str(config_path),
             "OPENCODE_CONFIG_CONTENT": json.dumps(inline_config),
+            **_opencode_output_env(entry, max_tokens),
         }
         _run(base, entry, env, command, launch = launch, install_hint = install_hint)
 
@@ -5318,6 +5752,7 @@ def pi(
         # Pi resolves its config dir from PI_CODING_AGENT_DIR first (getAgentDir() prefers it over $HOME/.pi/agent), so pin it at the session dir: an inherited PI_CODING_AGENT_DIR in the user's shell would otherwise send Pi to their real config and skip our provider/key. HOME is relocated too so any other ~/.pi paths stay in the session. The key rides in the config rather than the env.
         pi_agent_dir = home / ".pi" / "agent"
         write_pi_config(base, key, entry, pi_agent_dir / "models.json")
+        write_pi_user_resources(pi_agent_dir, home)
         env = {"HOME": str(home), "PI_CODING_AGENT_DIR": str(pi_agent_dir)}
         if os.name == "nt" or os.environ.get("WSL_DISTRO_NAME"):
             # Node resolves ~/.pi via USERPROFILE (then HOMEDRIVE + HOMEPATH) on Windows, not HOME. Set them whenever Pi may run as a Windows process: native Windows, or a /mnt Windows shim launched from WSL, where the WSLENV bridge then translates the path. Otherwise the Windows process falls back to the user's real %USERPROFILE%\\.pi. splitdrive yields no drive off a POSIX path, so HOMEDRIVE/HOMEPATH stay unset there.
@@ -5366,7 +5801,6 @@ def dsh(
     """Point DeepSeek Harness (dsh) at the running Unsloth server and start it."""
     model, ctx.args[:] = _consume_positional_model(model, ctx.args)
     _reject_as_subagent("dsh", ctx.args)
-    command = _dsh_command(ctx.args)
     install_hint = _npm_install_hint(_DSH_PACKAGE)
     _require_agent_for_launch("dsh", install_hint, launch)
     base, key, entry = _connect(
@@ -5392,7 +5826,10 @@ def dsh(
         ),
     )
     with _session_config("dsh", launch, persist = persist) as home:
-        write_dsh_config(base, entry, home / "settings.yaml")
+        patch = home / _DSH_PATCH_FILE
+        write_dsh_patch(base, entry, patch)
+        # A Windows dsh under WSL gets DSH_HOME translated through WSLENV, but not argv.
+        command = _dsh_command(ctx.args, _agent_config_path(patch, ["dsh"]))
         env = {
             _DSH_ENV_KEY: key,
             "DSH_HOME": str(home),

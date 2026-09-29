@@ -11,6 +11,7 @@ import threading
 import time
 from typing import Any, Mapping, Optional
 
+from utils.reasoning_budget import validate_reasoning_budget_message
 from utils.account_context import OWNER, run_as
 
 OPENAI_AUTO_SWITCH_SETTING_KEY = "openai_api_auto_switch_model"
@@ -364,8 +365,8 @@ CTX_CHECKPOINTS_MAX = 256
 CACHE_RAM_MIN_MIB = -1
 CACHE_RAM_MAX_MIB = 1024 * 1024
 VALID_GPU_MEMORY_MODES = frozenset({"auto", "manual"})
-# Mirrors MLX_KV_BITS_CHOICES in core/inference/mlx_inference.py; a set, not a range.
-VALID_MLX_KV_BITS = frozenset({8, 6, 5, 4, 3, 2})
+# Mirrors MLX_KV_QUANT_CHOICES in core/inference/mlx_inference.py; a set, not a range.
+VALID_MLX_KV_QUANT = frozenset({"8", "6", "5", "4", "3", "2", "tq-4", "tq-3.5", "tq-3", "tq-2"})
 
 # Mirrors PARALLEL_MIN/MAX in llama_server_args.py.
 PARALLEL_SLOTS_MIN = 1
@@ -383,6 +384,20 @@ MAX_GPU_ID = 1024
 # Which index space a stored gpu_ids belongs to: the same integers are ggml Vulkan ordinals under a Vulkan build and physical device ids elsewhere, so the namespace travels with the ids or a pin addresses another card. Mirrors GpuIndexKind in hooks/gpu-selection.ts, legacy rule included: an absent kind is "physical".
 VALID_GPU_INDEX_KINDS = frozenset({"physical", "vulkan"})
 LEGACY_GPU_INDEX_KIND = "physical"
+
+
+def _mlx_kv_quant_of(entry: dict[str, Any]) -> Optional[str]:
+    """This entry's cache quantization, reading the width it superseded when that is all it
+    holds. Only an entry omitting the field predates the setting."""
+    if "mlx_kv_quant" in entry:
+        return _clean_str(entry["mlx_kv_quant"], VALID_MLX_KV_QUANT)
+    bits = entry.get("mlx_kv_bits")
+    # Only a number: a hand-edited string or a bool must drop the width, not abort the whole override.
+    if isinstance(bits, bool) or not isinstance(bits, (int, float)):
+        return None
+    from core.inference.mlx_inference import encode_mlx_kv_quant
+
+    return _clean_str(encode_mlx_kv_quant(bits), VALID_MLX_KV_QUANT)
 
 
 def _clean_str(value: Any, allowed: frozenset[str]) -> Optional[str]:
@@ -427,10 +442,9 @@ def normalize_model_override(
     if kv_cache_dtype:
         entry["kv_cache_dtype"] = kv_cache_dtype
 
-    # MLX quantizes by bit width, not by a llama.cpp dtype name, so it is its own field.
-    mlx_kv_bits = payload.get("mlx_kv_bits")
-    if not isinstance(mlx_kv_bits, bool) and mlx_kv_bits in VALID_MLX_KV_BITS:
-        entry["mlx_kv_bits"] = int(mlx_kv_bits)
+    mlx_kv_quant = _mlx_kv_quant_of(payload)
+    if mlx_kv_quant:
+        entry["mlx_kv_quant"] = mlx_kv_quant
 
     speculative_type = _clean_str(payload.get("speculative_type"), VALID_SPECULATIVE_TYPES)
     if speculative_type:
@@ -454,6 +468,21 @@ def normalize_model_override(
     if n_parallel:
         entry["n_parallel"] = n_parallel
 
+    reasoning_budget = _bounded_int(
+        payload.get("reasoning_budget"), minimum = -1, maximum = 2_147_483_647
+    )
+    # Keep defaults as tombstones: a qualified override must remain present after resetting a legacy
+    # passthrough flag, or a bare/legacy fallback can revive it.
+    if reasoning_budget is not None:
+        entry["reasoning_budget"] = reasoning_budget
+    reasoning_budget_message = payload.get("reasoning_budget_message")
+    if isinstance(reasoning_budget_message, str):
+        try:
+            entry["reasoning_budget_message"] = validate_reasoning_budget_message(
+                reasoning_budget_message
+            )
+        except ValueError:
+            pass
     for key in ("n_batch", "n_ubatch"):
         parsed = _bounded_int(payload.get(key), minimum = BATCH_SIZE_MIN, maximum = BATCH_SIZE_MAX)
         if parsed:
@@ -565,9 +594,11 @@ def model_override_load_kwargs(override: dict[str, Any], *, is_gguf: bool) -> di
     for source, target in (
         ("llama_extra_args", "llama_extra_args"),
         ("kv_cache_dtype", "cache_type_kv"),
-        ("mlx_kv_bits", "mlx_kv_bits"),
+        ("n_parallel", "n_parallel"),
         ("speculative_type", "speculative_type"),
         ("spec_draft_n_max", "spec_draft_n_max"),
+        ("reasoning_budget", "reasoning_budget"),
+        ("reasoning_budget_message", "reasoning_budget_message"),
         ("tensor_parallel", "tensor_parallel"),
         ("disable_vision", "disable_vision"),
         ("chat_template_override", "chat_template_override"),
@@ -575,9 +606,11 @@ def model_override_load_kwargs(override: dict[str, Any], *, is_gguf: bool) -> di
         if override.get(source) is not None:
             kwargs[target] = override[source]
 
+    mlx_kv_quant = _mlx_kv_quant_of(override)
+    if mlx_kv_quant:
+        kwargs["mlx_kv_quant"] = mlx_kv_quant
+
     if is_gguf:
-        if override.get("n_parallel") is not None:
-            kwargs["n_parallel"] = override["n_parallel"]
         if override.get("n_batch") is not None:
             kwargs["n_batch"] = override["n_batch"]
         if override.get("n_ubatch") is not None:
@@ -613,6 +646,8 @@ def model_override_load_kwargs(override: dict[str, Any], *, is_gguf: bool) -> di
             strip_cache = "cache_type_kv" in kwargs,
             strip_spec = "speculative_type" in kwargs or "spec_draft_n_max" in kwargs,
             strip_template = "chat_template_override" in kwargs,
+            strip_reasoning_budget = "reasoning_budget" in kwargs,
+            strip_reasoning_budget_message = "reasoning_budget_message" in kwargs,
             # Sent only when on, so it is always the Tensor Parallelism toggle overriding the flag; an override that leaves the toggle off keeps a row/none/layer split mode.
             strip_split_mode = bool(kwargs.get("tensor_parallel")),
             strip_batch = "n_batch" in kwargs,
@@ -859,8 +894,11 @@ def set_model_override(
         model_id.strip(),
         entry or None,
         fill_absent_fields = fill_absent_fields,
-        # The pin and its index space are one value: filling the qualifier onto ids this browser did not write relabels them.
-        coupled_fields = (("gpu_ids", "gpu_index_kind"),),
+        coupled_fields = (
+            # The pin and its index space are one value: filling the qualifier onto ids this browser did not write relabels them.
+            ("gpu_ids", "gpu_index_kind"),
+            ("mlx_kv_quant", "mlx_kv_bits"),
+        ),
     )
     _invalidate(MODEL_OVERRIDES_SETTING_KEY)
     return entry

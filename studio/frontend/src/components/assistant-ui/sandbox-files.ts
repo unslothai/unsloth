@@ -97,6 +97,14 @@ export function isSandboxToolResult(
   );
 }
 
+/** Whether a python/terminal call's card shows a created-files row. */
+export function hasCreatedFiles(toolName: unknown, result: unknown): boolean {
+  if (typeof toolName !== "string" || !SANDBOX_FILE_TOOLS.has(toolName)) return false;
+  if (!isSandboxToolResult(result)) return false;
+  const { files } = result as { files?: unknown[] | null };
+  return Array.isArray(files) && files.length > 0;
+}
+
 /** Ids a path segment can carry: ASGI decodes %2F before it matches a route. */
 const PATH_SAFE_SESSION = /^[A-Za-z0-9_-]{1,64}$/;
 

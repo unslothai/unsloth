@@ -525,7 +525,9 @@ def test_changes_from_payload_tristate_headers():
 # ── core/inference/tools: MCP wiring ────────────────────────────────
 
 
-def test_mcp_specs_skip_oversized_names():
+def test_mcp_specs_alias_oversized_names():
+    import hashlib
+
     from core.inference.tools import _mcp_specs_for_server
 
     server = {"id": "s" * 30, "display_name": "S"}
@@ -534,9 +536,14 @@ def test_mcp_specs_skip_oversized_names():
         {"name": "x" * 40, "description": "too long"},
     ]
     specs = _mcp_specs_for_server(server, tools)
-    assert len(specs) == 1
-    assert specs[0]["function"]["name"].endswith("__ok")
-    assert len(specs[0]["function"]["name"]) <= 64
+    digest = hashlib.sha256(b"x" * 40).hexdigest()[:8]
+    assert [spec["function"]["name"] for spec in specs] == [
+        f"mcp__{'s' * 30}__ok",
+        f"mcp__{'s' * 30}__{'x' * 18}_{digest}",
+    ]
+    assert len(specs[1]["function"]["name"]) == 64
+    assert specs[1]["function"]["description"] == f"[S] ({'x' * 40}) too long"
+    assert specs[0]["function"]["description"] == "[S] fine"
 
 
 def test_execute_tool_malformed_mcp_name():
@@ -568,8 +575,10 @@ def test_execute_tool_disabled_server(tmp_path, monkeypatch):
     assert execute_tool("mcp__srv1__do_thing", {}) == "Error: MCP server 'A' is disabled"
 
 
-def test_mcp_specs_skip_invalid_openai_function_names():
+def test_mcp_specs_alias_invalid_openai_function_names():
     """OpenAI requires function.name ^[a-zA-Z0-9_-]{1,64}$; bad names 400 the request."""
+    import re
+
     from core.inference.tools import _mcp_specs_for_server
 
     server = {"id": "srv", "display_name": "S"}
@@ -580,9 +589,168 @@ def test_mcp_specs_skip_invalid_openai_function_names():
         {"name": "has space"},
         {"name": "good-dash_ok"},
     ]
-    specs = _mcp_specs_for_server(server, tools)
-    names = {s["function"]["name"] for s in specs}
-    assert {"mcp__srv__ok", "mcp__srv__good-dash_ok"} == names
+    names = [s["function"]["name"] for s in _mcp_specs_for_server(server, tools)]
+    assert names[0] == "mcp__srv__ok"
+    assert names[4] == "mcp__srv__good-dash_ok"
+    assert [name.rsplit("_", 1)[0] for name in names[1:4]] == [
+        "mcp__srv__with_dot",
+        "mcp__srv__weird_slash",
+        "mcp__srv__has_space",
+    ]
+    assert all(re.fullmatch(r"[a-zA-Z0-9_-]{1,64}", name) for name in names)
+
+
+def test_mcp_specs_aliases_stay_unique_and_never_take_a_valid_name():
+    import hashlib
+
+    from core.inference.tools import _mcp_specs_for_server
+
+    taken = "with_dot_" + hashlib.sha256(b"with.dot").hexdigest()[:8]
+    tools = [
+        {"name": "a.b"},
+        {"name": "a/b"},
+        {"name": "a_b"},
+        {"name": "with.dot"},
+        {"name": taken},
+    ]
+    specs = _mcp_specs_for_server({"id": "srv", "display_name": "S"}, tools)
+    assert [spec["function"]["name"] for spec in specs] == [
+        "mcp__srv__a_b_" + hashlib.sha256(b"a.b").hexdigest()[:8],
+        "mcp__srv__a_b_" + hashlib.sha256(b"a/b").hexdigest()[:8],
+        "mcp__srv__a_b",
+        f"mcp__srv__{taken}",
+    ]
+
+
+def _cache_backstage_tools(tmp_path, monkeypatch, raw_names):
+    from core.inference import mcp_client
+
+    _reset_db(tmp_path, monkeypatch)
+    monkeypatch.setattr(mcp_client, "_tool_cache", {})
+    mcp_servers_db.create_server(
+        id = "0123456789abcdef",
+        display_name = "Backstage",
+        url = "https://backstage/mcp",
+        is_enabled = True,
+    )
+    tools = [{"name": name} for name in raw_names]
+    mcp_client.cache_tools("0123456789abcdef", tools)
+    return mcp_servers_db.get_server("0123456789abcdef"), tools
+
+
+def test_execute_tool_dispatches_an_alias_to_the_raw_mcp_name(tmp_path, monkeypatch):
+    from core.inference import tools as tools_mod
+
+    raw_names = [
+        "get_weather",
+        "catalog.get-catalog-entity",
+        "summarize_repository_pull_request_review_comments",
+        "get_repository_branch_protection_rules_v1",
+        "get_repository_branch_protection_rules_v12",
+    ]
+    server, tools = _cache_backstage_tools(tmp_path, monkeypatch, raw_names)
+    calls = []
+
+    def fake_call_tool_sync(**kwargs):
+        calls.append(kwargs["name"])
+        return "ok"
+
+    monkeypatch.setattr(tools_mod, "call_tool_sync", fake_call_tool_sync)
+    names = [spec["function"]["name"] for spec in tools_mod._mcp_specs_for_server(server, tools)]
+    assert names[0] == "mcp__0123456789abcdef__get_weather"
+    assert names[3] == "mcp__0123456789abcdef__get_repository_branch_protection_rules_v1"
+    assert len(set(names)) == 5
+    assert [tools_mod.execute_tool(name, {}) for name in names] == ["ok"] * 5
+    assert calls == raw_names
+    # A deleted server must not put the alias spelling in front of the user either.
+    mcp_servers_db.delete_server(server["id"])
+    assert tools_mod.execute_tool(names[1], {}) == (
+        "Error: MCP server for tool 'catalog.get-catalog-entity' not found"
+    )
+
+
+def test_mcp_approval_classifies_an_alias_by_its_raw_name(tmp_path, monkeypatch):
+    from core.inference import tools as tools_mod
+
+    server, tools = _cache_backstage_tools(
+        tmp_path, monkeypatch, ["get_repository_branch_protection_rules_then_delete"]
+    )
+    alias = tools_mod._mcp_specs_for_server(server, tools)[0]["function"]["name"]
+    unresolved = "mcp__missing__" + alias.split("__", 2)[2]
+    assert not tools_mod.is_potentially_unsafe_tool_call(unresolved, {})
+    assert not tools_mod.is_high_risk_tool_call(unresolved, {})
+    assert tools_mod.is_potentially_unsafe_tool_call(alias, {})
+    assert tools_mod.is_high_risk_tool_call(alias, {})
+
+
+def test_mcp_alias_is_shown_to_the_user_by_its_raw_name(tmp_path, monkeypatch):
+    from core.inference import studio_tool_loop
+    from core.inference import tool_loop_controller as controller
+    from core.inference.tools import _mcp_specs_for_server
+
+    raw = "catalog.get-catalog-entity"
+    server, tools = _cache_backstage_tools(tmp_path, monkeypatch, ["get_weather", raw])
+    plain, alias = [spec["function"]["name"] for spec in _mcp_specs_for_server(server, tools)]
+    assert alias != f"mcp__{server['id']}__{raw}"
+    assert controller.mcp_display_parts(plain) == ("Backstage", "get_weather")
+    assert controller.mcp_display_parts(alias) == ("Backstage", raw)
+    assert controller.status_for_tool(alias, {}) == f"Calling: Backstage · {raw}"
+    assert controller.awaiting_approval_status(alias) == f"Waiting for approval: Backstage · {raw}"
+    decision = controller.ToolLoopController(tools = None).prepare_call(
+        {"function": {"name": alias, "arguments": {}}}
+    )
+    for provenance in (
+        decision.provenance,
+        controller.provisional_tool_provenance(alias),
+        studio_tool_loop._unrun_provenance(alias, 0),
+    ):
+        assert provenance["mcp_server"] == "Backstage"
+        assert provenance["mcp_tool"] == raw
+    assert controller.provisional_tool_provenance(plain)["mcp_tool"] == "get_weather"
+
+
+def test_in_flight_alias_still_dispatches_after_the_tool_cache_is_evicted(tmp_path, monkeypatch):
+    from core.inference import mcp_client
+    from core.inference import tool_loop_controller as controller
+    from core.inference import tools as tools_mod
+
+    server, tools = _cache_backstage_tools(
+        tmp_path, monkeypatch, ["catalog.get-catalog-entity", "delete.catalog-entity"]
+    )
+    calls = []
+    monkeypatch.setattr(
+        tools_mod, "call_tool_sync", lambda **kwargs: calls.append(kwargs["name"]) or "ok"
+    )
+    names = [spec["function"]["name"] for spec in tools_mod._mcp_specs_for_server(server, tools)]
+    mcp_servers_db.update_server(server["id"], {"headers_json": '{"Authorization": "Bearer new"}'})
+    mcp_client.invalidate_tool_cache(server["id"])
+    assert mcp_client.get_cached_tools(server["id"]) is None
+    assert tools_mod.is_potentially_unsafe_tool_call(names[1], {})
+    assert controller.mcp_display_parts(names[0]) == ("Backstage", "catalog.get-catalog-entity")
+    assert tools_mod.execute_tool(names[0], {}) == "ok"
+    assert calls == ["catalog.get-catalog-entity"]
+
+
+def test_a_direct_name_is_not_resolved_through_a_retired_alias(tmp_path, monkeypatch):
+    import hashlib
+
+    from core.inference import mcp_client
+    from core.inference import tools as tools_mod
+
+    monkeypatch.setattr(tools_mod, "_MCP_TOOL_ALIASES", {})
+    server, tools = _cache_backstage_tools(tmp_path, monkeypatch, ["with.dot"])
+    alias = tools_mod._mcp_specs_for_server(server, tools)[0]["function"]["name"]
+    taken = "with_dot_" + hashlib.sha256(b"with.dot").hexdigest()[:8]
+    assert alias == f"mcp__{server['id']}__{taken}"
+    calls = []
+    monkeypatch.setattr(
+        tools_mod, "call_tool_sync", lambda **kwargs: calls.append(kwargs["name"]) or "ok"
+    )
+    refreshed = [{"name": taken}]
+    mcp_client.cache_tools(server["id"], refreshed)
+    assert tools_mod._mcp_specs_for_server(server, refreshed)[0]["function"]["name"] == alias
+    assert tools_mod.execute_tool(alias, {}) == "ok"
+    assert calls == [taken]
 
 
 def test_mcp_specs_skip_empty_tool_name():
