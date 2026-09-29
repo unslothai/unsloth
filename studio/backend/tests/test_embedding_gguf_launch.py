@@ -245,8 +245,7 @@ class TestLoadModelEmitsTheFlag:
 
 
 class TestEmbeddingBatchSizedToContext:
-    """MEAN/CLS pooling cannot split a sequence across micro-batches, so llama-server
-    500s on any input past --ubatch-size (512 by default) unless it covers the context."""
+    """llama-server 500s on a MEAN/CLS input longer than --ubatch-size (512 by default)."""
 
     def test_unset_pair_is_raised_to_the_context(self):
         assert llama_cpp_module._embedding_batch_ubatch(2048, None, None, None, env = {}) == (
@@ -266,7 +265,6 @@ class TestEmbeddingBatchSizedToContext:
         ],
     )
     def test_user_batch_sizes_are_kept(self, n_batch, n_ubatch, extra_args, env, expected):
-        # A named side is kept; the unset side is still sized, or its default caps the named one.
         assert (
             llama_cpp_module._embedding_batch_ubatch(8192, n_batch, n_ubatch, extra_args, env = env)
             == expected

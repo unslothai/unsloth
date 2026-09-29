@@ -297,7 +297,6 @@ class TestGgufRuntimeBytes:
 
     @pytest.mark.parametrize("pooling_type, priced_ubatch", [(1, 2048), (2, 2048), (3, None)])
     def test_embedding_micro_batch_matches_the_launch(self, tmp_path, pooling_type, priced_ubatch):
-        # load_model sizes a MEAN/CLS embedding micro-batch to the context; LAST splits.
         gguf = _write_gguf(tmp_path, "qwen3", {**_GQA_FIELDS, "pooling_type": pooling_type})
         assert ri._gguf_runtime_bytes(gguf, 2048).n_ubatch == priced_ubatch
 

@@ -11654,7 +11654,7 @@ def _gguf_runtime_bytes(
             )
         if ctx <= 0:
             return unknown
-        # Price the same batch sizes used by load_model, in the same order.
+        # Same batch sizes, in the same order, as load_model.
         if getattr(probe, "_pooling_type", None) in (1, 2):
             n_batch, n_ubatch = _embedding_batch_ubatch(ctx, n_batch, n_ubatch, llama_extra_args)
         n_batch, n_ubatch = _batch_ubatch_for_mmproj(

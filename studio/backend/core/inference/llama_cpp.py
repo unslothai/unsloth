@@ -6608,7 +6608,7 @@ def _embedding_batch_ubatch(
     _, _, batch_named, ubatch_named = _named_batch_sizes(extra_args, env, n_batch, n_ubatch)
     if (batch_named and ubatch_named) or n_ctx <= _DEFAULT_LLAMA_N_UBATCH:
         return n_batch, n_ubatch
-    # Only the unset side: llama.cpp caps the micro-batch at the batch, so a named one still limits.
+    # llama.cpp caps the micro-batch at the batch, so the unset side must grow too.
     return (n_batch if batch_named else n_ctx), (n_ubatch if ubatch_named else n_ctx)
 
 
@@ -23862,9 +23862,8 @@ class LlamaCppBackend:
                 logger.info("Load cancelled after download phase")
                 return False
 
-            # llama-server rejects MEAN/CLS inputs over one micro-batch; only LAST splits, and an
-            # undeclared pooling runs as NONE, which /v1/embeddings refuses. Before the projector
-            # raise, so that raise is not read as a user-set micro-batch.
+            # MEAN/CLS inputs must fit one micro-batch (LAST splits). Before the projector raise,
+            # which would otherwise read as a user-set micro-batch.
             if self._pooling_type in (1, 2):
                 n_batch, n_ubatch = _embedding_batch_ubatch(
                     resolve_requested_ctx(extra_args, n_ctx) or self._context_length or 0,
