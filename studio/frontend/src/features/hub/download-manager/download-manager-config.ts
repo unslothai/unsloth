@@ -10,6 +10,8 @@ export const HIDDEN_POLL_INTERVAL_MS = 10_000;
 export const POLL_JITTER_MS = 50;
 export const PROGRESS_POLL_INTERVAL_MS = 1_000;
 export const PROGRESS_POLL_BACKOFF_INTERVAL_MS = 2_000;
+// Covers the retry worker's metadata fetches, which run before it purges the killed partial.
+export const ATTEMPT_FLOOR_HOLD_MS = 120_000;
 export const POLL_REQUEST_TIMEOUT_MS = 15_000;
 export const POLL_DEGRADED_AFTER_MS = 30_000;
 export const POLL_DEGRADED_MESSAGE =
@@ -18,7 +20,8 @@ export const TRANSPORT_STATUS_TIMEOUT_MS = 3_000;
 export const MAX_PROGRESS_FRACTION = 0.99;
 export const CANCEL_WATCHDOG_MS = 20_000;
 export const IDLE_EVICT_GRACE_MS = 60_000;
-export const COMPLETE_LINGER_MS = 6_000;
+// A small Xet download can finish before its card ever shows a byte.
+export const COMPLETE_LINGER_MS = 30_000;
 export const CANCELLED_LINGER_MS = 6_000;
 export const ERROR_LINGER_MS = 12_000;
 export const INVENTORY_BUMP_DEBOUNCE_MS = 250;

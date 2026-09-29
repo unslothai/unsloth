@@ -4,6 +4,7 @@
 import errno
 import json
 import os
+import shutil
 import sys
 import time
 import types
@@ -22,7 +23,7 @@ from hub.utils import (
 
 @pytest.fixture(autouse = True)
 def _known_cache_root(monkeypatch, tmp_path):
-    monkeypatch.setattr(hf_cache_state, "hf_cache_roots", lambda: [tmp_path])
+    monkeypatch.setattr(hf_cache_state, "hf_cache_roots", lambda **kw: [tmp_path])
     monkeypatch.setattr(
         "utils.paths.storage_roots.cache_root",
         lambda: tmp_path / "app-cache",
@@ -93,7 +94,7 @@ def test_dataset_snapshot_rejects_lookalike_outside_known_cache(monkeypatch, tmp
     allowed = tmp_path / "allowed"
     allowed.mkdir()
     repo_root, _ = _dataset_repo(tmp_path / "outside", "Org/Data")
-    monkeypatch.setattr(hf_cache_state, "hf_cache_roots", lambda: [allowed])
+    monkeypatch.setattr(hf_cache_state, "hf_cache_roots", lambda **kw: [allowed])
 
     assert dataset_cache.dataset_snapshot_from_cache_path(str(repo_root), "Org/Data") is None
 
@@ -602,7 +603,7 @@ def test_dataset_completion_isolated_and_purged_by_hub_cache(monkeypatch, tmp_pa
     (snapshot_a / "train.parquet").write_bytes(b"four")
     (snapshot_b / "train.parquet").write_bytes(b"five!")
     monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
-    monkeypatch.setattr(hf_cache_state, "hf_cache_roots", lambda: [cache_a, cache_b])
+    monkeypatch.setattr(hf_cache_state, "hf_cache_roots", lambda **kw: [cache_a, cache_b])
     monkeypatch.setattr(
         "utils.hf_cache_settings.get_hf_cache_paths",
         lambda: types.SimpleNamespace(hub_cache = cache_a),
@@ -869,6 +870,54 @@ def test_app_processed_cache_is_deterministic_and_discoverable(monkeypatch, tmp_
     assert second.cache_dir == first.cache_dir
     assert second.complete is True
     assert list(dataset_processed_cache.iter_app_processed_dataset_caches()) == [second]
+
+
+def _loaded_entry(tmp_path):
+    _, snapshot = _dataset_repo(tmp_path, "Org/Data", "commit-a")
+    (snapshot / "train.parquet").write_bytes(b"rows")
+    return snapshot
+
+
+@pytest.mark.parametrize("purge", ["entry", "root"])
+def test_cached_load_survives_a_failed_completion_write(monkeypatch, tmp_path, purge):
+    snapshot = _loaded_entry(tmp_path)
+    calls = _fake_datasets(monkeypatch)
+    real_load = sys.modules["datasets"].load_dataset
+
+    def _load_then_purge(**kwargs):
+        shutil.rmtree(
+            Path(kwargs["cache_dir"]).parent
+            if purge == "entry"
+            else dataset_processed_cache.app_processed_dataset_cache_root()
+        )
+        return real_load(**kwargs)
+
+    monkeypatch.setattr(sys.modules["datasets"], "load_dataset", _load_then_purge)
+
+    result = dataset_cache.load_cached_hf_dataset(
+        "Org/Data", str(snapshot), subset = None, split = "train"
+    )
+
+    assert result == {"loaded": True}
+    assert len(calls) == 1
+
+
+def test_cached_load_still_fails_on_a_dangling_symlinked_entry(monkeypatch, tmp_path):
+    snapshot = _loaded_entry(tmp_path)
+    _fake_datasets(monkeypatch)
+    real_load = sys.modules["datasets"].load_dataset
+    external = tmp_path / "external"
+
+    def _load_then_swap(**kwargs):
+        entry = Path(kwargs["cache_dir"]).parent
+        shutil.rmtree(entry)
+        entry.symlink_to(external, target_is_directory = True)
+        return real_load(**kwargs)
+
+    monkeypatch.setattr(sys.modules["datasets"], "load_dataset", _load_then_swap)
+
+    with pytest.raises(dataset_processed_cache.UnsafeDatasetCachePathError):
+        dataset_cache.load_cached_hf_dataset("Org/Data", str(snapshot), subset = None, split = "train")
 
 
 def test_app_processed_cache_rejects_symlinked_parent(monkeypatch, tmp_path):

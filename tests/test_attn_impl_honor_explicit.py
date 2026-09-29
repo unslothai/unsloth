@@ -94,9 +94,6 @@ def test_flash_request_still_falls_back_when_disabled():
 
 
 def test_resolver_honors_explicit_sdpa_when_not_supported_and_flash_disabled():
-    # End-to-end through the public resolver: an explicit sdpa request with a
-    # flash-disabled config (oversized head dim) and supports_sdpa=False must not be
-    # rewritten to eager by the resolver's own not-supports_sdpa guard.
     config = {"model_type": "test", "head_dim": 512}  # head_dim > 256 disables flash
     result = resolve_attention_implementation(
         model_class = None,
@@ -159,8 +156,8 @@ def test_resolver_downgrades_explicit_sdpa_for_disable_sdpa_model(model_type):
 def test_resolver_does_not_overmatch_gemma3n_for_explicit_sdpa():
     # The "gemma3," trailing-comma guard must not match gemma3n: gemma3n is not in
     # DISABLE_SDPA_MODEL_NAMES, so it stays a conservative (not known-wrong) model and an
-    # explicit sdpa request is still honored. Proves the substring match neither over- nor
-    # under-matches.
+    # explicit sdpa request is still honored. head_dim>256 disables flash to mirror the real
+    # flash-disabled scenario. Proves the substring match neither over- nor under-matches.
     config = {"model_type": "gemma3n", "head_dim": 512}
     result = resolve_attention_implementation(
         model_class = None,

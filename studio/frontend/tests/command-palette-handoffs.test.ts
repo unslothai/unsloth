@@ -5,12 +5,12 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-const PHYSICAL_P_SHORTCUT = /e\.code !== "KeyP"/;
-const LOCALIZED_P_SHORTCUT = /e\.key\.toLowerCase\(\) !== "p"/;
+const REGISTRY_SHORTCUT = /useShortcut\("openCommandPalette"/;
+const RAW_KEY_LISTENER = /addEventListener\("keydown"/;
 const SETTINGS_INDEX_IMPORT =
-  /import \{ SETTINGS_SEARCH_INDEX \} from "@\/features\/settings\/settings-search"/;
+  /\bSETTINGS_SEARCH_INDEX,\n[^;]*from "@\/features\/settings"/;
 const LOCALIZED_SETTINGS_KEYWORDS =
-  /keywords=\{SETTINGS_SEARCH_INDEX\[tab\.id\]\.map\(\(key\) => t\(key\)\)\}/;
+  /keywords=\{SETTINGS_SEARCH_INDEX\[tab\]\.map\(\(key\) => t\(key\)\)\}/;
 const HARDCODED_SETTINGS_KEYWORDS = /keywords:\s*\[/;
 const PALETTE_SEARCH_OPENER =
   /useChatSearchStore\.getState\(\)\.open\(\{\s*opener: useCommandPaletteStore\.getState\(\)\.opener/s;
@@ -35,9 +35,9 @@ const chatSearchDialog = await readFile(
   "utf8",
 );
 
-test("the command-palette shortcut follows the physical P key", () => {
-  assert.match(palette, PHYSICAL_P_SHORTCUT);
-  assert.doesNotMatch(palette, LOCALIZED_P_SHORTCUT);
+test("the command-palette chord comes from the rebindable shortcut registry", () => {
+  assert.match(palette, REGISTRY_SHORTCUT);
+  assert.doesNotMatch(palette, RAW_KEY_LISTENER);
 });
 
 test("settings commands search the localized settings index", () => {

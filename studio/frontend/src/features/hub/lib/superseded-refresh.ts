@@ -1,17 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// A caller that awaits a status refresh is waiting for the store to be settled, not for one
-// particular HTTP response. Refreshes are sequenced so the newest read owns the store, and a
-// response that lands after a newer read started writes nothing. Resolving that dropped
-// response's promise anyway releases its caller onto the store the newer read has not written
-// yet, which is exactly the pre-read store the await was there to replace: the Hub's settings
-// handlers would then resolve a quant from the model an API switch already displaced and bake
-// it into the settings target, and Apply reloads and persists under whatever the target names.
-// A settings open is guarded against a newer settings open, but nothing bumps that guard for a
-// focus or visibilitychange refresh, so those are the reads that can supersede one unnoticed.
-//
-// So a dropped response resolves with the refresh that superseded it instead of with nothing.
+// A caller waiting for resident state must wait for the newest refresh, not only
+// for an older response that was dropped after a focus or visibility refresh.
 
 /** The newest refresh started, so a superseded one can hand its caller that promise. */
 export interface RefreshSupersession {

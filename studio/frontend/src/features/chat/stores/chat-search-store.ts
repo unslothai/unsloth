@@ -10,9 +10,7 @@ interface OpenChatSearchOptions {
 
 interface ChatSearchStore {
   isOpen: boolean;
-  // Preserve the element focused before a dialog handoff. In particular, the
-  // command palette unmounts before this dialog closes, so Radix cannot
-  // recover its original trigger on its own.
+  // Radix cannot recover a trigger that unmounted first (the command palette).
   opener: HTMLElement | null;
   open: (options?: OpenChatSearchOptions) => void;
   close: () => void;
@@ -35,8 +33,7 @@ export const useChatSearchStore = create<ChatSearchStore>((set) => ({
           },
     ),
   close: () => set({ isOpen: false }),
-  // Do not clear opener on close: onCloseAutoFocus runs after this state
-  // update, and needs the original element to restore focus.
+  // Opener survives close: onCloseAutoFocus reads it after this update.
   setOpen: (isOpen) =>
     set((state) =>
       isOpen

@@ -6,11 +6,8 @@ import { create } from "zustand";
 
 interface CommandPaletteStore {
   isOpen: boolean;
-  // Element focused before the palette opened. Actions that open another
-  // dialog (Settings) pass this along so closing that dialog can restore
-  // focus past the palette, which unmounts in between.
+  // Handed to the dialog an action opens, since the palette unmounts before that dialog closes.
   opener: HTMLElement | null;
-  open: () => void;
   close: () => void;
   toggle: () => void;
   setOpen: (open: boolean) => void;
@@ -19,10 +16,6 @@ interface CommandPaletteStore {
 export const useCommandPaletteStore = create<CommandPaletteStore>((set) => ({
   isOpen: false,
   opener: null,
-  open: () =>
-    set((s) =>
-      s.isOpen ? s : { isOpen: true, opener: captureFocusedElement() },
-    ),
   close: () => set({ isOpen: false }),
   toggle: () =>
     set((s) =>

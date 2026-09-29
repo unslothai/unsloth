@@ -63,12 +63,37 @@ for _tool in powershell.exe sudo; do
     chmod +x "$STUB_BIN/$_tool"
 done
 
-# run_uninstall <home> <uname_output> : run the full script with a stubbed OS.
+# The macOS branch keeps the bundle-id data when the packaged desktop app owns it, so point
+# the scan at an empty fixture: these cases are a shell-only install, and a real /Applications
+# /Unsloth.app on the machine running the tests must not change the result.
+APPS_DIR="$_TMP_ROOT/Applications"
+mkdir -p "$APPS_DIR"
+
+# make_app <bundle> <executable> : an .app the identifier scan can read.
+make_app() {
+    mkdir -p "$1/Contents/MacOS"
+    printf '#!/bin/sh\nexit 0\n' > "$1/Contents/MacOS/$2"
+    chmod +x "$1/Contents/MacOS/$2"
+    cat > "$1/Contents/Info.plist" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0">
+<dict>
+    <key>CFBundleIdentifier</key>
+    <string>$BID</string>
+    <key>CFBundleExecutable</key>
+    <string>$2</string>
+</dict>
+</plist>
+EOF
+}
+
+# run_uninstall <home> <uname_output> [apps_dir] : run the full script with a stubbed OS.
 run_uninstall() {
     printf '#!/bin/sh\necho %s\n' "$2" > "$STUB_BIN/uname"
     chmod +x "$STUB_BIN/uname"
     env -u UNSLOTH_STUDIO_HOME -u STUDIO_HOME \
         -u XDG_CACHE_HOME -u XDG_DATA_HOME -u XDG_CONFIG_HOME -u XDG_STATE_HOME \
+        UNSLOTH_APPLICATIONS_DIR="${3:-$APPS_DIR}" \
         HOME="$1" PATH="$STUB_BIN:$PATH" sh "$UNINSTALL_SH" >/dev/null 2>&1
 }
 
@@ -78,6 +103,7 @@ run_uninstall_out() {
     chmod +x "$STUB_BIN/uname"
     env -u UNSLOTH_STUDIO_HOME -u STUDIO_HOME \
         -u XDG_CACHE_HOME -u XDG_DATA_HOME -u XDG_CONFIG_HOME -u XDG_STATE_HOME \
+        UNSLOTH_APPLICATIONS_DIR="${3:-$APPS_DIR}" \
         HOME="$1" PATH="$STUB_BIN:$PATH" sh "$UNINSTALL_SH" 2>/dev/null
 }
 
@@ -106,6 +132,59 @@ assert_gone "macOS: Cookies/$BID.binarycookies removed"      "$H/Library/Cookies
 assert_gone "macOS: Saved Application State removed"         "$H/Library/Saved Application State/$BID.savedState"
 assert_gone "macOS: Preferences/$BID.plist removed"          "$H/Library/Preferences/$BID.plist"
 assert_present "macOS: unrelated app cache kept"             "$H/Library/Caches/com.other.app/keepme"
+
+# ── 1b. macOS: the packaged desktop app owns this bundle id, so its data survives ──
+# The shell launcher is a /bin/sh stub with no WebView; only the packaged app writes these.
+# This script never removes that app, so it must not reset it either.
+OWNED_APPS="$_TMP_ROOT/Applications-owned"
+make_app "$OWNED_APPS/Unsloth.app" unsloth-studio
+H=$(new_home)
+# seed_app_data <home> : the ~/Library paths the packaged app owns, plus the shell launcher.
+seed_app_data() {
+    mkdir -p "$1/Library/Caches/$BID" "$1/Library/WebKit/$BID" \
+             "$1/Library/Application Support/$BID" "$1/Library/HTTPStorages" \
+             "$1/Library/Saved Application State/$BID.savedState" \
+             "$1/Library/Preferences" "$1/Library/Cookies"
+    : > "$1/Library/HTTPStorages/$BID.binarycookies"
+    : > "$1/Library/Cookies/$BID.binarycookies"
+    : > "$1/Library/Preferences/$BID.plist"
+    make_app "$1/Applications/Unsloth Studio.app" launch-studio
+}
+seed_app_data "$H"
+run_uninstall "$H" Darwin "$OWNED_APPS"
+assert_present "macOS: Caches/$BID kept when the app owns it"              "$H/Library/Caches/$BID"
+assert_present "macOS: WebKit/$BID kept when the app owns it"              "$H/Library/WebKit/$BID"
+assert_present "macOS: Application Support/$BID kept when the app owns it" "$H/Library/Application Support/$BID"
+assert_present "macOS: Saved Application State kept when the app owns it"  "$H/Library/Saved Application State/$BID.savedState"
+assert_present "macOS: Preferences/$BID.plist kept when the app owns it"   "$H/Library/Preferences/$BID.plist"
+assert_present "macOS: Cookies kept when the app owns it"                  "$H/Library/Cookies/$BID.binarycookies"
+# The shell launcher is still this script's to remove, app present or not.
+assert_gone    "macOS: shell launcher bundle still removed"                "$H/Applications/Unsloth Studio.app"
+
+# ── 1c. macOS: the app is found by bundle id, not by path ──
+# Renaming the bundle or filing it under subfolders is a supported layout, at any
+# depth, so the data must survive there too.
+for _case in "Unsloth Studio Beta.app" "AI & ML/Unsloth.app" "Development/AI/Local/Unsloth.app"; do
+    MOVED_APPS="$_TMP_ROOT/Applications-moved"
+    rm -rf "$MOVED_APPS"
+    make_app "$MOVED_APPS/$_case" unsloth-studio
+    H=$(new_home)
+    seed_app_data "$H"
+    run_uninstall "$H" Darwin "$MOVED_APPS"
+    assert_present "macOS: app data kept for $_case"         "$H/Library/Caches/$BID"
+    assert_present "macOS: prefs kept for $_case"            "$H/Library/Preferences/$BID.plist"
+done
+
+# ── 1d. macOS: a launcher-style bundle does not count as the owner ──
+# install.sh's launcher carries the same bundle id but only opens a browser, so
+# finding one must not spare data the packaged app would have written.
+LAUNCHER_APPS="$_TMP_ROOT/Applications-launcher"
+make_app "$LAUNCHER_APPS/Unsloth Studio.app" launch-studio
+H=$(new_home)
+seed_app_data "$H"
+run_uninstall "$H" Darwin "$LAUNCHER_APPS"
+assert_gone "macOS: Caches/$BID removed when only a launcher is present" "$H/Library/Caches/$BID"
+assert_gone "macOS: prefs removed when only a launcher is present"       "$H/Library/Preferences/$BID.plist"
 
 # ── 2. Linux: bundle-id-keyed XDG default paths are removed ──
 H=$(new_home)
@@ -486,6 +565,58 @@ for _case in dbremoved nodb; do
             PASS=$((PASS+1)) ;;
     esac
 done
+
+# ── 3j7. A default root the ownership gate refuses is skipped, not removed, so a studio.db
+# sitting in it is still on disk. Unlike a refused CUSTOM root, which is somebody else's by
+# definition, this is our own path: the summary must not answer "No studio.db was found". ──
+H=$(new_home)
+mkdir -p "$H/.unsloth/studio"
+: > "$H/.unsloth/studio/studio.db"
+_out=$(run_uninstall_out "$H" Linux)
+# The refusal goes to stderr, like every other one in the script, so ask for it separately.
+_err=$(printf '#!/bin/sh\necho Linux\n' > "$STUB_BIN/uname"; chmod +x "$STUB_BIN/uname";
+       env -u UNSLOTH_STUDIO_HOME -u STUDIO_HOME UNSLOTH_APPLICATIONS_DIR="$APPS_DIR" \
+           HOME="$H" PATH="$STUB_BIN:$PATH" sh "$UNINSTALL_SH" 2>&1 >/dev/null)
+case "$_err" in
+    *"refusing to remove non-Unsloth path"*)
+        echo "  PASS: refused default root: says it refused"; PASS=$((PASS+1)) ;;
+    *)  echo "  FAIL: refused default root: never says it refused"; FAIL=$((FAIL+1)) ;;
+esac
+if [ -f "$H/.unsloth/studio/studio.db" ]; then
+    echo "  PASS: refused default root: the database survived"; PASS=$((PASS+1))
+else
+    echo "  FAIL: refused default root: the database was removed"; FAIL=$((FAIL+1))
+fi
+case "$_out" in
+    *"No studio.db was found"*)
+        echo "  FAIL: refused default root: claimed no studio.db was found"; FAIL=$((FAIL+1)) ;;
+    *)  echo "  PASS: refused default root: no claim that none was found"; PASS=$((PASS+1)) ;;
+esac
+case "$_out" in
+    *"carries no Unsloth install marker"*)
+        echo "  PASS: refused default root: names the kept directory"; PASS=$((PASS+1)) ;;
+    *)  echo "  FAIL: refused default root: never names the kept directory"; FAIL=$((FAIL+1)) ;;
+esac
+# It was refused BECAUSE it is not ours, so the generic "remove those paths by hand" advice
+# would undo the point of the gate.
+case "$_out" in
+    *"those paths by hand"*)
+        echo "  FAIL: refused default root: told the reader to delete a foreign directory"
+        FAIL=$((FAIL+1)) ;;
+    *)  echo "  PASS: refused default root: no advice to delete it"; PASS=$((PASS+1)) ;;
+esac
+
+# ── 3j8. A dangling symlink at ~/.unsloth/studio is still an entry at that path: -e follows the
+# link and misses it, while _remove_path unlinks it as present. ──
+H=$(new_home)
+mkdir -p "$H/.unsloth"
+ln -s "$H/.unsloth/nowhere" "$H/.unsloth/studio"
+run_uninstall "$H" Linux
+if [ -L "$H/.unsloth/studio" ]; then
+    echo "  PASS: a dangling symlink at the default root is refused, not unlinked"; PASS=$((PASS+1))
+else
+    echo "  FAIL: a dangling symlink at the default root was removed"; FAIL=$((FAIL+1))
+fi
 
 # ── 3k. _set_marker must survive a write it cannot perform. 3i only proves the mktemp guard,
 # since an empty marker path never runs the redirection. This drives it directly: the marker

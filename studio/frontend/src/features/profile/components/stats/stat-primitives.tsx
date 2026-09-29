@@ -22,7 +22,7 @@ export function StatsCard({
     <section
       {...(title ? { "data-settings-label": title } : {})}
       className={cn(
-        "flex w-full flex-col gap-4 rounded-2xl border border-border bg-background dark:border-transparent dark:bg-white/[0.06] px-5 py-5",
+        "flex w-full flex-col gap-4 rounded-2xl border border-border bg-background dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))] px-5 py-5",
         className,
       )}
     >

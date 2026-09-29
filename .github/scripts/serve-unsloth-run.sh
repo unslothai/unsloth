@@ -1,20 +1,16 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
-#
 # Boot `unsloth run --disable-tools` in the background, wait for it to be
 # healthy, parse the minted API key from the banner, and resolve the
 # /v1/models id. Exports everything downstream steps need into $GITHUB_ENV
 # (or prints it when run outside Actions). Factored out of the workflow so
 # the failure-isolation logic lives in one shellcheck-clean place.
-#
 # Usage:
 #   serve-unsloth-run.sh --model REPO --gguf-variant VAR --port PORT \
 #       [--gguf-file PATH] [--extra "--seed 3407 --temp 0"] \
-#       [--log-dir logs] [--health-timeout 300]
-#
+#       [--log-dir logs] [--health-timeout 300] [--banner-timeout 300]
 # Why a helper and not inline YAML
-# --------------------------------
 #  * Every `unsloth run` invocation here is the *Unsloth server* under test.
 #    A failure to come up healthy is class (a) "server/API regression" and
 #    must be reported with a distinct `::error::` BEFORE any agent runs.
@@ -24,7 +20,6 @@
 #    silent change to that line is also caught.
 #  * `unsloth run` re-execs into the studio venv ($STUDIO_HOME/unsloth_studio),
 #    so in CI after `install.sh --local` it runs the PR's repo code.
-#
 # Outputs written to $GITHUB_ENV (and echoed):
 #   UNSLOTH_API_KEY        the sk-unsloth-* key minted on the banner
 #   UNSLOTH_STUDIO_URL     http://127.0.0.1:<PORT>  (so `unsloth start`
@@ -44,6 +39,7 @@ PORT=""
 EXTRA=""
 LOG_DIR="logs"
 HEALTH_TIMEOUT="300"
+BANNER_TIMEOUT="300"
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -54,6 +50,7 @@ while [ "$#" -gt 0 ]; do
     --extra)          EXTRA="$2"; shift 2 ;;
     --log-dir)        LOG_DIR="$2"; shift 2 ;;
     --health-timeout) HEALTH_TIMEOUT="$2"; shift 2 ;;
+    --banner-timeout) BANNER_TIMEOUT="$2"; shift 2 ;;
     *) echo "serve-unsloth-run.sh: unknown arg '$1'" >&2; exit 2 ;;
   esac
 done
@@ -139,12 +136,24 @@ echo "[serve] /api/health healthy"
 # ── parse the API key from the banner ────────────────────────────────────
 # Match both the non-silent "  API Key:      <key>" and silent "API Key: <key>"
 # forms. We do NOT trust a fixed column count; we take the sk-unsloth-* token.
+# The banner is printed once the model has LOADED, which /api/health does not
+# wait for. That usually takes about 10s, but a 4.8 GB GGUF on a busy CPU
+# runner has taken over 30s, so wait on the load itself: until the key is
+# printed, the server exits, or --banner-timeout runs out.
 API_KEY=""
-for _ in $(seq 1 30); do
+for _ in $(seq 1 "$BANNER_TIMEOUT"); do
   API_KEY="$(grep -aoE 'sk-unsloth-[A-Za-z0-9_-]+' "$SERVER_LOG" 2>/dev/null | head -1 || true)"
   [ -n "$API_KEY" ] && break
+  # The label is out but carries no sk-unsloth- token: the fallback below reads it.
+  grep -aq 'API Key:' "$SERVER_LOG" 2>/dev/null && break
+  if ! kill -0 "$SERVER_PID" 2>/dev/null; then
+    server_fail "process exited before printing its banner (the model load failed)"
+  fi
   sleep 1
 done
+if [ -z "$API_KEY" ] && ! grep -aq 'API Key:' "$SERVER_LOG" 2>/dev/null; then
+  server_fail "no banner within ${BANNER_TIMEOUT}s of /api/health: the model is still loading"
+fi
 if [ -z "$API_KEY" ]; then
   # Fallback: take whatever follows an "API Key:" label, in case the key
   # prefix scheme changes. Still a parse-fragility guard, not silent.

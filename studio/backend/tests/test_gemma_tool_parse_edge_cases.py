@@ -10,13 +10,17 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
 from core.inference.tool_call_parser import (
+    StreamingMarkupStripper,
     _gemma_parse_value,
     parse_tool_calls_from_text,
+    promotable_gemma_call_pos,
 )
 from core.tool_healing import strip_tool_call_markup
 
@@ -409,3 +413,180 @@ def test_malformed_gemma_mapping_value_does_not_hang():
     t.start()
     t.join(timeout = 10.0)
     assert not t.is_alive(), "parse_tool_calls_from_text hung on malformed mapping input"
+
+
+# ── Wrapper-less ``call:NAME{...}``: the display strip removes only a call that OWNS
+# its position. The parser is unchanged, so a promoted call is never erased silently.
+
+
+def _strip(text: str, enabled = None) -> str:
+    from core.inference.tool_call_parser import strip_tool_markup
+    return strip_tool_markup(text, final = True, enabled_tool_names = enabled)
+
+
+def test_wrapperless_call_in_mid_sentence_prose_is_kept_by_every_display_strip():
+    from core.inference.safetensors_agentic import strip_tool_markup_streaming
+    from routes.inference import _strip_tool_xml as _routes_strip
+
+    prose = 'Here is the syntax: call:terminal{command: "rm -rf /tmp/x"}. Do not run it.'
+    en = {"terminal", "python", "web_search"}
+    assert _strip(prose, en) == prose
+    assert strip_tool_markup_streaming(prose, enabled_tool_names = en) == prose
+    assert _routes_strip(prose, en) == prose
+
+
+def test_anchored_wrapperless_calls_are_still_stripped():
+    en = {"web_search"}
+    # Content start, line start, after a reasoning close, and back-to-back calls.
+    assert _strip("call:web_search{query:cats}", en) == ""
+    assert _strip("Sure!\ncall:web_search{query:cats}", en) == "Sure!"
+    assert "call:web_search" not in _strip("<think>plan</think>call:web_search{query:cats}", en)
+    assert _strip("call:web_search{query:hi} call:web_search{query:yo}", en) == ""
+    # A leading JSON answer is data; the call after it still owns its line.
+    assert "call:web_search" not in _strip('{"summary":"done"}\ncall:web_search{query:cats}', en)
+
+
+def test_unclosed_wrapperless_call_strip_follows_the_same_anchor_rule():
+    en = {"web_search"}
+    # Anchored + enabled: a truncated call is still dropped to EOS (streaming heal).
+    assert _strip("Sure!\ncall:web_search{query:weath", en) == "Sure!"
+    # Mid-sentence: prose, kept as written.
+    inline = "You can run call:web_search{query:weath"
+    assert _strip(inline, en) == inline
+
+
+def test_streaming_display_of_prose_call_never_shrinks():
+    from core.inference.safetensors_agentic import strip_tool_markup_streaming
+
+    prose = "You can run call:web_search{query:cats} to search."
+    en = {"web_search"}
+    seen = ""
+    for i in range(1, len(prose) + 1):
+        out = strip_tool_markup_streaming(prose[:i], enabled_tool_names = en)
+        assert len(out) >= len(seen), (i, out, seen)
+        seen = out
+    assert seen == prose
+
+
+_CODE_QUOTED_EXAMPLES = [
+    '```\ncall:web_search{query: "cats"}\n```',
+    "```text\ncall:web_search{query:cats}\n```",
+    "Here is the syntax:\n~~~\ncall:web_search{query:cats}\n~~~",
+    "Use `call:web_search{query:cats}` to search.",
+]
+
+
+@pytest.mark.parametrize("text", _CODE_QUOTED_EXAMPLES)
+def test_wrapperless_call_quoted_in_markdown_code_is_documentation(text):
+    en = {"web_search"}
+    assert parse_tool_calls_from_text(text, enabled_tool_names = en) == []
+    assert promotable_gemma_call_pos(text, en) == -1
+    assert _strip(text, en) == text
+
+
+def test_streamed_fenced_example_never_turns_into_a_call():
+    text = 'Example:\n```\ncall:web_search{query: "cats"}\n```\nDone.'
+    en = {"web_search"}
+    stripper = StreamingMarkupStripper(en)
+    seen = ""
+    for i in range(1, len(text) + 1):
+        out = stripper.strip(text[:i])
+        assert out.startswith(seen), (i, out, seen)
+        assert parse_tool_calls_from_text(text[:i], enabled_tool_names = en) == [], i
+        assert promotable_gemma_call_pos(text[:i], en) == -1, i
+        seen = out
+    assert seen == text
+
+
+def test_unfenced_wrapperless_call_is_still_promoted_beside_a_fence():
+    text = "```\ncall:web_search{query:dogs}\n```\ncall:web_search{query:cats}"
+    en = {"web_search"}
+    calls = parse_tool_calls_from_text(text, enabled_tool_names = en)
+    assert [_args(c) for c in calls] == [{"query": "cats"}]
+    assert _strip(text, en) == "```\ncall:web_search{query:dogs}\n```"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        'call:web_search{query:"intro\n```py\nprint(1)"}\ncall:web_search{query:"y"}',
+        'call:web_search{query:"a``b"}\ncall:web_search{query:"y"} and ``tail``',
+        'Sure call:web_search{query:"a\n```\nx"}\ncall:web_search{query:"y"}',
+    ],
+)
+def test_code_opened_inside_a_call_argument_does_not_hide_the_next_call(text):
+    en = {"web_search"}
+    calls = parse_tool_calls_from_text(text, enabled_tool_names = en)
+    assert len(calls) == 2 and _args(calls[1]) == {"query": "y"}, calls
+    assert 'query:"y"' not in _strip(text, en)
+
+
+def test_native_token_gemma_call_inside_a_fence_is_still_a_call():
+    text = '```\n<|tool_call>call:web_search{query:<|"|>cats<|"|>}<tool_call|>\n```'
+    en = {"web_search"}
+    calls = parse_tool_calls_from_text(text, enabled_tool_names = en)
+    assert len(calls) == 1, calls
+    assert _args(calls[0]) == {"query": "cats"}
+    assert "call:web_search" not in _strip(text, en)
+
+
+@pytest.mark.parametrize(
+    "fenced",
+    [
+        "````md\n```py\nx=1\n```\n````",
+        "~~~~md\n~~~\nx=1\n~~~~",
+        "```md\n~~~\nx=1\n```",
+        "~~~md\n```\nx=1\n~~~",
+    ],
+)
+def test_wrapperless_call_after_a_fence_quoting_another_fence_is_still_promoted(fenced):
+    text = fenced + '\ncall:web_search{query:"b"}'
+    en = {"web_search"}
+    calls = parse_tool_calls_from_text(text, enabled_tool_names = en)
+    assert [_args(c) for c in calls] == [{"query": "b"}]
+    assert promotable_gemma_call_pos(text, en) == text.index("call:web_search")
+    assert _strip(text, en) == fenced
+
+
+def test_inline_code_example_keeps_streaming_on_the_safetensors_loop():
+    from core.inference.safetensors_agentic import run_safetensors_tool_loop
+
+    en = {"web_search"}
+    for quoted in ('`call:web_search{query:"x"}`', '``call:web_search{query:"x"}``'):
+        prose = f"In Gemma syntax: {quoted}. " + "More explanation follows. " * 40
+        for i in range(1, len(prose) + 1):
+            assert promotable_gemma_call_pos(prose[:i], en, streaming = True) == -1, (quoted, i)
+
+    text = 'In Gemma syntax: ``call:web_search{query:"x"}``. ' + "More explanation follows. " * 40
+
+    calls = []
+
+    def _gen(_messages):
+        acc = ""
+        for i in range(0, len(text), 4):
+            acc += text[i : i + 4]
+            yield acc
+
+    events = list(
+        run_safetensors_tool_loop(
+            single_turn = _gen,
+            messages = [{"role": "user", "content": "hi"}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            execute_tool = lambda name, arguments, **_: calls.append(name) or "RESULT",
+        )
+    )
+    contents = [e["text"] for e in events if e["type"] == "content"]
+    assert calls == []
+    assert contents[-1] == text
+    assert len(contents[-2]) > text.index("``.") + 2, "stopped streaming at the inline example"
+
+
+def test_streaming_hold_lasts_only_while_an_inline_run_is_open_on_the_last_line():
+    text = 'Use `call:web_search{query:"x"}\n'
+    en = {"web_search"}
+    assert promotable_gemma_call_pos(text[:-1], en, streaming = True) == -1
+    assert promotable_gemma_call_pos(text, en, streaming = True) == text.index("call:")
+    shorter_run = 'Use ``a`b call:web_search{query:"x"}'
+    assert promotable_gemma_call_pos(shorter_run, en, streaming = True) == -1
+    closed = 'See `code` then call:web_search{query:"x"}'
+    assert promotable_gemma_call_pos(closed, en, streaming = True) == closed.index("call:")

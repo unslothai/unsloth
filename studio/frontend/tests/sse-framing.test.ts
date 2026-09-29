@@ -3,7 +3,7 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import { takeSseFrame } from "../src/features/training/api/sse-framing.ts";
+import { takeSseFrame } from "../src/lib/sse-framing.ts";
 
 test("preserves the next SSE frame across every supported delimiter", () => {
   for (const separator of ["\n\n", "\r\n\r\n", "\n\r\n", "\r\n\n"]) {

@@ -2,14 +2,22 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 export {
+  DOWNLOAD_KIND,
   DownloadProgressBar,
   downloadManager,
   finishExternalJob,
   jobKeyOf,
+  pendingDrafterPresentation,
+  scopedVariant,
+  type StagedDownloadProgress,
   startExternalJob,
   subscribeJobListeners,
+  type TransportMode,
   updateExternalJob,
+  TRANSPORT_MODE_STORAGE_KEY,
   useDownloadManagerStore,
+  useHttpPartialsResumable,
+  useTransportMode,
 } from "./download-manager";
 export { HfTokenIndicator } from "./components/hf-token-indicator";
 export { useHubDatasetSearch } from "./hooks/use-hub-dataset-search";
@@ -19,15 +27,16 @@ export {
   useHubModelSearch,
 } from "./hooks/use-hub-model-search";
 export { useHubInfiniteScroll } from "./hooks/use-hub-infinite-scroll";
+export type { CapabilityKey } from "./lib/model-capabilities";
 export { useLatestRef } from "./hooks/use-latest-ref";
-export { useOnlineStatus } from "./hooks/use-online-status";
+export { useHubAvailability, useOnlineStatus } from "./hooks/use-online-status";
+export { HubFailureHint } from "./catalog/catalog-states";
 export {
   INVENTORY_HINT_KIND,
   INVENTORY_HINT_KINDS,
   LOCAL_MODEL_SOURCE,
   LOCAL_MODEL_SOURCES,
   type BaseModelSource,
-  type BrowseFoldersResponse,
   type CachedDatasetRepo,
   type CachedGgufRepo,
   type CachedInventoryRow,
@@ -54,13 +63,13 @@ export {
   type ResolvedInventoryResource,
   type ScanFolderInfo,
   addScanFolder,
-  browseFolders,
   buildCachedInventoryRow,
   buildLocalInventoryRows,
   dedupeSameSourceHubCacheRows,
   defaultCapabilities,
   deleteCachedDataset,
   deleteCachedModel,
+  epochMillisecondsToSeconds,
   fetchInventorySource,
   findCompleteHfCacheLocalRow,
   formatLocalUpdated,
@@ -75,8 +84,8 @@ export {
   localSourceLabel,
   normalizeCapabilities,
   normalizeModelFormat,
-  normalizeRuntime,
   normalizeTimestamp,
+  partialSetFromRows,
   removeScanFolder,
   resolveInventoryResource,
   useDeviceInventorySources,
@@ -95,10 +104,13 @@ export {
 } from "./stores/hf-token-store";
 export { useInventoryVersion } from "./stores/inventory-events";
 export { looksLikeLocalPath, localPathCacheKey } from "./lib/local-path";
+export { scanFolderStatusCopy } from "./lib/scan-folder-status";
+export type { ScanFolderStatus } from "./lib/scan-folder-status";
 export { hubTokenHeader } from "./lib/hub-token-header";
 export {
   ggufVariantsMatch,
   isOllamaLinkPath,
+  isOllamaModelId,
   normalizeGgufVariantIdentity,
   normalizeModelIdentity,
   publicModelId,
@@ -106,6 +118,7 @@ export {
 } from "./lib/model-identity";
 export {
   formatBytes,
+  formatRate,
   formatRelativeShort,
   ownerOf,
   repoOf,
@@ -117,6 +130,10 @@ export {
   DeleteConfirmDialog,
   UpdateConfirmDialog,
 } from "./catalog/download-card";
+export {
+  DeleteImpactSummary,
+  useDeleteImpact,
+} from "./catalog/delete-impact";
 export { HubOptionMenu, type HubOption } from "./catalog/hub-option-menu";
 export { DotTag } from "./catalog/dot-tag";
 export { TransportConflictDialog } from "./catalog/transport-conflict-dialog";
