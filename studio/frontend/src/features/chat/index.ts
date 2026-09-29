@@ -77,6 +77,7 @@ export {
   GPU_LAYERS_AUTO,
 } from "./stores/chat-runtime-store";
 export { resolveStagedDiffusionClassification } from "./lib/gpu-placement";
+export { offloadCountsFrom, offloadWarning } from "./lib/partial-offload";
 export {
   preferFullToolOutput,
   preferSanitizedFullToolOutput,
@@ -288,6 +289,7 @@ export {
   isAudioAttachment,
   attachmentBodyText,
   parseAttachmentText,
+  isTextAttachment,
   readAttachmentText,
   repackDocxAttachmentArchive,
   repackDocxPreviewArchive,
