@@ -32,7 +32,7 @@ test("a widget's tools/call is sent as approved only when the user said so", () 
   assert.deepEqual(sends.sort(), ["alwaysAllowed", "true"]);
   assert.match(
     frame,
-    /if \(!allow\) \{\s*return \{[^\n]*DECLINED[^\n]*\n\s*\}\s*return send\(true\);/,
+    /if \(!allow\) \{\s*return \{[^\n]*DECLINED[^\n]*\n\s*\}\s*const result = await send\(true\);/,
   );
   assert.match(
     frame,
@@ -89,4 +89,12 @@ test("the host advertises each server method the bridge proxies", () => {
     assert.match(frame, new RegExp(`case "${method}"`));
     assert.match(frame, new RegExp(`${capability}: \\{ listChanged: false \\}`));
   }
+});
+
+test("Always allow is granted only after the approved call went through", () => {
+  assert.match(
+    frame,
+    /const result = await send\(true\);[\s\S]{0,300}if \(always\) \{\n\s*useChatRuntimeStore\.getState\(\)\.allowToolAlways\(scope, toolKey\);/,
+  );
+  assert.equal(frame.match(/allowToolAlways\(/g)?.length, 1);
 });

@@ -215,6 +215,7 @@ def test_resource_contents_picks_the_asked_uri_decodes_blobs_and_passes_csp():
         "uri": UI,
         "mime_type": "text/html;profile=mcp-app",
         "text": "<p>hi</p>",
+        "blob": None,
         "ui": ui_meta,
     }
     assert _resource_contents([_contents(text = "<p/>")], UI)["ui"] == {}
@@ -484,3 +485,11 @@ def test_resource_contents_reads_the_sdk_s_own_resource_objects():
     out = _resource_contents([real], UI)
     assert out["mime_type"] == "text/html;profile=mcp-app"
     assert out["ui"] == {"csp": {"connectDomains": ["api.example.com"]}}
+
+
+def test_a_binary_resource_stays_base64_for_the_widget():
+    png = base64.b64encode(b"\x89PNG\r\n\x1a\n\xff\x00").decode()
+    out = _resource_contents([_contents(blob = png, mimeType = "image/png")], UI)
+    assert out["blob"] == png and out["text"] == "" and out["mime_type"] == "image/png"
+    html = base64.b64encode(b"<p/>").decode()
+    assert _resource_contents([_contents(blob = html)], UI)["text"] == "<p/>"

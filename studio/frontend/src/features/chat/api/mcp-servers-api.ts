@@ -270,6 +270,7 @@ export interface McpUiResource {
   uri: string;
   mime_type: string;
   text: string;
+  blob?: string | null;
   ui: { csp?: Partial<Record<McpUiCspField, string[]>> };
 }
 

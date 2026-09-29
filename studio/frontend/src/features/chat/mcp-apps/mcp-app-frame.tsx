@@ -59,7 +59,7 @@ interface PendingToolCall {
   argsPreview: string;
   scope: string;
   toolKey: string;
-  decide: (allow: boolean) => void;
+  decide: (allow: boolean, always: boolean) => void;
 }
 
 const clampHeight = (h: number) =>
@@ -115,7 +115,6 @@ export function McpAppFrame(props: McpAppFrameProps) {
   const [error, setError] = useState<string | null>(null);
   const [height, setHeight] = useState(DEFAULT_HEIGHT);
   const [pendingCalls, setPendingCalls] = useState<PendingToolCall[]>([]);
-  const allowToolAlways = useChatRuntimeStore((s) => s.allowToolAlways);
   // The bridge reads props through refs, so a parent re-render never rebuilds it.
   const latest = useRef({ props, theme });
   latest.current = { props, theme };
@@ -200,16 +199,28 @@ export function McpAppFrame(props: McpAppFrameProps) {
       }
       // Untrusted HTML: the same confirm gate as the model's own call.
       const preview = argsPreview(args);
-      const allow = await new Promise<boolean>((decide) =>
+      const [allow, always] = await new Promise<[boolean, boolean]>((done) =>
         setQueue([
           ...pendingRef.current,
-          { name, argsPreview: preview, scope, toolKey, decide },
+          {
+            name,
+            argsPreview: preview,
+            scope,
+            toolKey,
+            decide: (a, b) => done([a, b]),
+          },
         ]),
       );
       if (!allow) {
         return { content: [{ type: "text", text: DECLINED }], isError: true };
       }
-      return send(true);
+      const result = await send(true);
+      // Granted only once the approved call went through, as the model's confirm flow does:
+      // a press whose call failed must not silently auto-approve every later call.
+      if (always) {
+        useChatRuntimeStore.getState().allowToolAlways(scope, toolKey);
+      }
+      return result;
     };
 
     const request = async (method: string, params: Record<string, unknown>) => {
@@ -241,15 +252,14 @@ export function McpAppFrame(props: McpAppFrameProps) {
           if (typeof params.uri !== "string" || !params.uri) {
             throw new RpcError("resources/read requires a uri", INVALID_PARAMS);
           }
-          // The backend restricts this to templates the server declared.
+          // The backend limits this to ui:// resources of this server.
           const res = await readMcpUiResource(now.serverId, params.uri, {
             threadId: now.threadId,
             sessionId: now.sessionId,
           });
+          const body = res.blob ? { blob: res.blob } : { text: res.text };
           return {
-            contents: [
-              { uri: res.uri, mimeType: res.mime_type, text: res.text },
-            ],
+            contents: [{ uri: res.uri, mimeType: res.mime_type, ...body }],
           };
         }
         case "ui/open-link": {
@@ -398,11 +408,10 @@ export function McpAppFrame(props: McpAppFrameProps) {
   const asking = pendingCalls[0];
   const answer = (allow: boolean, always = false) => {
     if (!asking) return;
-    if (always) allowToolAlways(asking.scope, asking.toolKey);
     const rest = pendingRef.current.filter((call) => call !== asking);
     pendingRef.current = rest;
     setPendingCalls(rest);
-    asking.decide(allow);
+    asking.decide(allow, always);
   };
 
   return (

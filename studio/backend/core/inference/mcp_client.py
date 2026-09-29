@@ -2245,22 +2245,29 @@ def _resource_contents(blocks: Any, uri: str) -> dict:
     if not items:
         raise ValueError("resource is empty")
     chosen = next((b for b in items if str(getattr(b, "uri", "")) == uri), items[0])
-    text = getattr(chosen, "text", None)
+    text, blob = getattr(chosen, "text", None), None
     if text is None:
         if getattr(chosen, "blob", None) is None:
             raise ValueError("resource carries neither text nor blob content")
+        blob = str(chosen.blob)
         try:
-            text = base64.b64decode(str(chosen.blob)).decode("utf-8")
+            raw = base64.b64decode(blob, validate = True)
         except Exception as exc:  # noqa: BLE001
-            raise ValueError(f"resource blob is not UTF-8 HTML: {exc}") from exc
+            raise ValueError(f"resource blob is not base64: {exc}") from exc
+        try:
+            text, blob = raw.decode("utf-8"), None
+        except UnicodeDecodeError:
+            # A binary asset (image, font) a widget reads through resources/read stays base64.
+            text = ""
     text = str(text)
-    if len(text) > MAX_UI_RESOURCE_CHARS:
-        raise ValueError(f"resource is {len(text)} chars, over the {MAX_UI_RESOURCE_CHARS} limit")
+    size = len(text) + len(blob or "")
+    if size > MAX_UI_RESOURCE_CHARS:
+        raise ValueError(f"resource is {size} chars, over the {MAX_UI_RESOURCE_CHARS} limit")
     # _meta.ui on the contents, not the tool: the template's CSP declaration.
     metas = (getattr(chosen, "meta", None), getattr(chosen, "_meta", None))
     ui = next((m["ui"] for m in metas if isinstance(m, dict) and isinstance(m.get("ui"), dict)), {})
     mime = str(_resource_mime(chosen) or "")
-    return {"uri": uri, "mime_type": mime, "text": text, "ui": ui}
+    return {"uri": uri, "mime_type": mime, "text": text, "blob": blob, "ui": ui}
 
 
 class _MCPCancelled(Exception):

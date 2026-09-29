@@ -103,6 +103,8 @@ class McpUiResourceResponse(BaseModel):
     uri: str
     mime_type: str
     text: str
+    # Base64, only for a resource that is not UTF-8 text.
+    blob: Optional[str] = None
     ui: dict = Field(default_factory = dict)
 
 
