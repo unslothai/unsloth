@@ -109,6 +109,7 @@ from unsloth.models._attn_mask_compat import (
 )
 from ..kernels import *
 from ..kernels.utils import has_mxfp4_base
+from ..metrics.hooks import instrument_generate
 from ..tokenizer_utils import *
 from .vision import FastBaseModel
 
@@ -2189,6 +2190,7 @@ class LongRopeRotaryEmbedding(torch.nn.Module):
             )
 
 
+@instrument_generate
 def unsloth_fast_generate(self, *args, **kwargs):
     restore_training_mode = self.training
     # Snapshot the real GC mode (e.g. "unsloth") before for_inference clears it, so the restore

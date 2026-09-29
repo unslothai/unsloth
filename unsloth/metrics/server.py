@@ -12,242 +12,107 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""
-Optional HTTP server for exposing Prometheus metrics.
-"""
+"""Optional background HTTP server exposing `/metrics` for Prometheus scraping."""
 
 import threading
-import socket
+import urllib.request
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Optional
-from http.server import HTTPServer, BaseHTTPRequestHandler
 
 from unsloth.metrics.prometheus import (
+    enable_prometheus_metrics,
     generate_prometheus_metrics,
     get_metrics_content_type,
-    enable_prometheus_metrics,
 )
 
 
 class MetricsHandler(BaseHTTPRequestHandler):
-    """HTTP request handler for metrics endpoint."""
+    def _reply(
+        self,
+        status,
+        body,
+        content_type = "text/plain; charset=utf-8",
+    ):
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
 
     def do_GET(self):
-        """Handle GET requests to /metrics endpoint."""
-        try:
-            if self.path == "/metrics":
-                try:
-                    metrics_output = generate_prometheus_metrics()
-                    self.send_response(200)
-                    self.send_header("Content-Type", get_metrics_content_type())
-                    self.send_header("Content-Length", str(len(metrics_output)))
-                    self.end_headers()
-                    self.wfile.write(metrics_output)
-                    self.wfile.flush()
-                except Exception as e:
-                    error_msg = f"Error generating metrics: {str(e)}\n"
-                    self.send_response(500)
-                    self.send_header("Content-Type", "text/plain")
-                    self.send_header("Content-Length", str(len(error_msg)))
-                    self.end_headers()
-                    self.wfile.write(error_msg.encode())
-                    self.wfile.flush()
-            elif self.path == "/" or self.path == "":
-                # Simple health check endpoint
-                response = (
-                    b"Unsloth Metrics Server\n/metrics - Prometheus metrics endpoint\n"
-                )
-                self.send_response(200)
-                self.send_header("Content-Type", "text/plain")
-                self.send_header("Content-Length", str(len(response)))
-                self.end_headers()
-                self.wfile.write(response)
-                self.wfile.flush()
-            else:
-                response = b"Not Found\n"
-                self.send_response(404)
-                self.send_header("Content-Type", "text/plain")
-                self.send_header("Content-Length", str(len(response)))
-                self.end_headers()
-                self.wfile.write(response)
-                self.wfile.flush()
-        except Exception as e:
-            # Handle any errors in request processing
+        path = self.path.split("?", 1)[0]
+        if path == "/metrics":
             try:
-                error_msg = f"Internal server error: {str(e)}\n"
-                self.send_response(500)
-                self.send_header("Content-Type", "text/plain")
-                self.send_header("Content-Length", str(len(error_msg)))
-                self.end_headers()
-                self.wfile.write(error_msg.encode())
-                self.wfile.flush()
-            except Exception:
-                pass  # Connection might be closed
+                self._reply(200, generate_prometheus_metrics(), get_metrics_content_type())
+            except Exception as e:
+                self._reply(500, f"Error generating metrics: {e}\n".encode())
+        elif path in ("", "/"):
+            self._reply(200, b"Unsloth Metrics Server\n/metrics - Prometheus metrics endpoint\n")
+        else:
+            self._reply(404, b"Not Found\n")
 
     def log_message(self, format, *args):
-        """Suppress default logging."""
+        pass
 
 
-_metrics_server: Optional[HTTPServer] = None
+_metrics_server: Optional[ThreadingHTTPServer] = None
 _server_thread: Optional[threading.Thread] = None
+_server_lock = threading.Lock()
 
 
-def start_metrics_server(host: str = "0.0.0.0", port: int = 9090):
-    """
-    Start a background HTTP server to expose Prometheus metrics.
-
-    Args:
-        host: Host to bind to (default: "0.0.0.0")
-        port: Port to bind to (default: 9090)
-
-    Returns:
-        Thread object running the server
-    """
+def start_metrics_server(host: str = "127.0.0.1", port: int = 9090):
+    """Serve `/metrics` on host:port in a daemon thread. Loopback by default;
+    pass host="0.0.0.0" to expose it on every interface. port=0 picks a free port.
+    Raises OSError if the port cannot be bound."""
     global _metrics_server, _server_thread
-
-    if _metrics_server is not None:
-        print(f"📊 Metrics server already running at http://{host}:{port}/metrics")
-        return _server_thread
-
-    # Enable Prometheus metrics
-    enable_prometheus_metrics()
-
-    def run_server():
-        global _metrics_server
-        try:
-            _metrics_server = HTTPServer((host, port), MetricsHandler)
-            # Set socket options to allow reuse
-            _metrics_server.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            # Give the server a moment to bind
-            import time
-
-            time.sleep(0.1)
-            _metrics_server.serve_forever()
-        except OSError as e:
-            if "Address already in use" in str(e) or "already in use" in str(e).lower():
-                print(
-                    f"⚠️  Port {port} is already in use. Please use a different port or stop the other service."
-                )
-            else:
-                print(f"⚠️  Failed to start metrics server: {e}")
-            _metrics_server = None
-        except Exception as e:
-            print(f"⚠️  Error starting metrics server: {e}")
-            import traceback
-
-            traceback.print_exc()
-            _metrics_server = None
-
-    # Use daemon=False in some cases to keep server alive
-    # But daemon=True is better for cleanup when main program exits
-    _server_thread = threading.Thread(
-        target = run_server, daemon = True, name = "UnslothMetricsServer"
-    )
-    _server_thread.start()
-
-    # Give the thread a moment to start and bind
-    import time
-
-    max_wait = 2.0
-    waited = 0.0
-    while _metrics_server is None and waited < max_wait:
-        time.sleep(0.1)
-        waited += 0.1
-
-    # Check if server started successfully
-    if _metrics_server is not None:
-        # Verify the server is actually listening
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        try:
-            result = sock.connect_ex(("localhost", port))
-            sock.close()
-            if result == 0:
-                print(
-                    f"📊 Unsloth metrics server started at http://localhost:{port}/metrics"
-                )
-                print(f"   (Also accessible at http://{host}:{port}/metrics)")
-            else:
-                print(f"⚠️  Server thread started but port {port} is not accessible")
-                print(f"   Waiting a bit longer for server to bind...")
-                time.sleep(0.5)
-                # Try one more time
-                sock2 = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                result2 = sock2.connect_ex(("localhost", port))
-                sock2.close()
-                if result2 == 0:
-                    print(
-                        f"📊 Server is now accessible at http://localhost:{port}/metrics"
-                    )
-                else:
-                    print(
-                        f"⚠️  Server still not accessible. Try restarting or use a different port."
-                    )
-        except Exception as e:
-            print(f"⚠️  Could not verify server: {e}")
-    else:
-        print(f"⚠️  Failed to start metrics server. Check if port {port} is available.")
-        print(f"   Try: start_metrics_server(port=9091) to use a different port")
-
-    return _server_thread
+    with _server_lock:
+        if _metrics_server is not None:
+            return _server_thread
+        enable_prometheus_metrics()
+        # Bind here, not in the thread, so a busy port raises to the caller.
+        server = ThreadingHTTPServer((host, port), MetricsHandler)
+        server.daemon_threads = True
+        thread = threading.Thread(
+            target = server.serve_forever, daemon = True, name = "UnslothMetricsServer"
+        )
+        thread.start()
+        _metrics_server, _server_thread = server, thread
+        bound_host, bound_port = server.server_address[:2]
+        print(f"Unsloth: metrics server started at http://{bound_host}:{bound_port}/metrics")
+        return thread
 
 
 def stop_metrics_server():
-    """Stop the metrics server."""
     global _metrics_server, _server_thread
-
-    if _metrics_server is not None:
+    with _server_lock:
+        if _metrics_server is None:
+            return
         _metrics_server.shutdown()
-        _metrics_server = None
-        _server_thread = None
-        print("📊 Metrics server stopped")
+        _metrics_server.server_close()
+        if _server_thread is not None:
+            _server_thread.join(timeout = 5)
+        _metrics_server = _server_thread = None
 
 
 def is_metrics_server_running() -> bool:
-    """Check if the metrics server is currently running."""
-    global _metrics_server
     return _metrics_server is not None
 
 
-def test_metrics_server(port: int = 9090):
-    """Test if the metrics server is accessible."""
-    import urllib.request
-    import urllib.error
+def get_metrics_server_port() -> Optional[int]:
+    server = _metrics_server
+    return server.server_address[1] if server is not None else None
 
-    # First check if server object exists
-    if not is_metrics_server_running():
-        print(f"❌ Metrics server is not running")
-        print(f"   Call start_metrics_server() first")
+
+def test_metrics_server(port: Optional[int] = None) -> bool:
+    """True if the running server answers GET /metrics with 200."""
+    port = port or get_metrics_server_port()
+    if not is_metrics_server_running() or port is None:
         return False
-
-    # Check if port is listening
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    host = _metrics_server.server_address[0]
+    if host in ("0.0.0.0", "::", ""):
+        host = "127.0.0.1"
     try:
-        result = sock.connect_ex(("localhost", port))
-        sock.close()
-        if result != 0:
-            print(f"❌ Port {port} is not listening")
-            print(f"   Server object exists but port is not accessible")
-            return False
-    except Exception as e:
-        print(f"❌ Could not check port {port}: {e}")
-        sock.close()
-        return False
-
-    # Try HTTP request
-    try:
-        url = f"http://localhost:{port}/metrics"
-        response = urllib.request.urlopen(url, timeout = 2)
-        print(f"✅ Metrics server is running and accessible at {url}")
-        print(f"   Status: {response.getcode()}")
-        print(f"   Content-Length: {response.headers.get('Content-Length', 'unknown')}")
-        return True
-    except urllib.error.URLError as e:
-        print(
-            f"❌ Could not connect to metrics server at http://localhost:{port}/metrics"
-        )
-        print(f"   Error: {e}")
-        print(f"   Error code: {getattr(e, 'code', 'unknown')}")
-        print(f"   Error reason: {getattr(e, 'reason', 'unknown')}")
-        return False
-    except Exception as e:
-        print(f"❌ Error testing metrics server: {e}")
+        with urllib.request.urlopen(f"http://{host}:{port}/metrics", timeout = 2) as r:
+            return r.status == 200
+    except Exception:
         return False

@@ -12,10 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""
-Metrics collection module for Unsloth.
-Provides comprehensive runtime performance metrics similar to vLLM's metrics system.
-"""
+"""Opt-in runtime metrics for Unsloth generate() and Trainer.training_step."""
 
 from unsloth.metrics.stats import (
     InferenceStats,
@@ -35,6 +32,7 @@ from unsloth.metrics.server import (
     stop_metrics_server,
     is_metrics_server_running,
     test_metrics_server,
+    get_metrics_server_port,
 )
 from unsloth.metrics.telemetry import (
     enable_telemetry,
@@ -57,6 +55,7 @@ __all__ = [
     "stop_metrics_server",
     "is_metrics_server_running",
     "test_metrics_server",
+    "get_metrics_server_port",
     "enable_telemetry",
     "disable_telemetry",
     "is_telemetry_enabled",

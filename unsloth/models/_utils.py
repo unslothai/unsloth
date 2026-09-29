@@ -4834,6 +4834,10 @@ def patch_gradient_accumulation_fix(Trainer):
             Trainer.training_step = _unsloth_training_step_settling_fallbacks
             Trainer._unsloth_settles_eager_fallbacks = True
 
+    from unsloth.metrics.hooks import patch_training_metrics
+
+    patch_training_metrics(Trainer)
+
     # Wrap Trainer.__init__: pre-init, shadow accepts_loss_kwargs on the model passed in (covers PEFT wrapping after from_pretrained); post-init, clamp accelerator GA to 1 for the transformers 5.0-5.5 GradientAccumulationPlugin regression. No-op on 4.x and 5.6+ (#4982).
     if not getattr(Trainer, "_unsloth_init_wrapped_for_accelerate_gas", False):
         _original_trainer_init = Trainer.__init__

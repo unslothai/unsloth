@@ -136,6 +136,7 @@ patch_saving_functions._unsloth_deferred_shim = True
 
 
 from ..models.loader_utils import is_distributed
+from ..metrics.hooks import instrument_generate
 from unsloth_zoo.gradient_checkpointing import (
     unpatch_unsloth_gradient_checkpointing,
     unpatch_unsloth_smart_gradient_checkpointing,
@@ -941,6 +942,7 @@ def _clear_generation_caches(model):
                 pass
 
 
+@instrument_generate
 def unsloth_base_fast_generate(self, *args, **kwargs):
     if len(args) != 0:
         input_ids = args[0]
