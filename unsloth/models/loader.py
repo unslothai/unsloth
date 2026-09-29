@@ -2426,7 +2426,9 @@ class FastModel(FastBaseModel):
                 auto_model = AutoModelForSeq2SeqLM
                 # The zoo's source probe says sdpa where transformers refuses it (T5 on 4.57).
                 if not getattr(
-                    resolve_model_class(auto_model, model_config), "_supports_sdpa", True
+                    resolve_model_class(auto_model, model_config, **_probe_hub_kwargs),
+                    "_supports_sdpa",
+                    True,
                 ):
                     supports_sdpa = False
             elif is_vlm:
