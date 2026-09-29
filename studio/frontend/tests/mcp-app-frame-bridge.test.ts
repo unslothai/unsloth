@@ -98,3 +98,12 @@ test("Always allow is granted only after the approved call went through", () => 
   );
   assert.equal(frame.match(/allowToolAlways\(/g)?.length, 1);
 });
+
+test("server-bound bridge requests are capped per frame", () => {
+  assert.match(frame, /const SERVER_METHODS = new Set\(\["tools\/call", "resources\/read"\]\);/);
+  assert.match(
+    frame,
+    /if \(counted && inFlight >= MAX_IN_FLIGHT_SERVER_CALLS\) \{\n\s*run = Promise\.reject\(new RpcError\("Too many requests in flight"\)\);/,
+  );
+  assert.match(frame, /\.finally\(\(\) => \{\n\s*inFlight -= 1;/);
+});

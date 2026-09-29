@@ -27,6 +27,9 @@ import {
 } from "./mcp-ui";
 
 const MAX_PENDING_TOOL_CALLS = 8;
+// Each backend call can hold a server worker for up to a minute; a widget polling a slow tool must not pile them up.
+const MAX_IN_FLIGHT_SERVER_CALLS = 8;
+const SERVER_METHODS = new Set(["tools/call", "resources/read"]);
 const DEFAULT_HEIGHT = 320;
 const MIN_HEIGHT = 120;
 const MAX_HEIGHT = 900;
@@ -281,6 +284,7 @@ export function McpAppFrame(props: McpAppFrameProps) {
       }
     };
 
+    let inFlight = 0;
     const handler = (event: MessageEvent) => {
       // Replies go down the port the request came up, never contentWindow: the window survives navigation.
       const port = event.target as MessagePort;
@@ -293,7 +297,22 @@ export function McpAppFrame(props: McpAppFrameProps) {
       const params = isObject(data.params) ? data.params : {};
       const now = latest.current.props;
       if (data.id !== undefined) {
-        request(data.method, params).then(
+        const counted = SERVER_METHODS.has(data.method);
+        let run: Promise<unknown>;
+        if (counted && inFlight >= MAX_IN_FLIGHT_SERVER_CALLS) {
+          run = Promise.reject(new RpcError("Too many requests in flight"));
+        } else {
+          run = request(data.method, params);
+          if (counted) {
+            inFlight += 1;
+            run
+              .finally(() => {
+                inFlight -= 1;
+              })
+              .catch(() => {});
+          }
+        }
+        run.then(
           (result) => port.postMessage({ jsonrpc: "2.0", id: data.id, result }),
           (err: unknown) =>
             port.postMessage({
