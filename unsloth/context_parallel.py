@@ -60,17 +60,15 @@ class ContextParallelManager:
     def __init__(self, size: int):
         self.size = size
         world_size = dist.get_world_size()
-        rank = dist.get_rank()
-        self.data_parallel_world_size = world_size // size
-        start = (rank // size) * size
-        self.cp_rank_index = rank - start
-        self.mesh = DeviceMesh(DEVICE_TYPE_TORCH, torch.arange(start, start + size))
-        # accelerate reads the "cp" dim to give every CP rank the same batch.
+        # DeviceMesh is SPMD: every rank must build the identical global mesh (a per-group mesh
+        # hangs once world_size > size), then take its own "cp" row. accelerate reads the "cp"
+        # dim to give every CP rank the same batch.
         self.device_mesh = DeviceMesh(
             DEVICE_TYPE_TORCH,
-            torch.arange(world_size).reshape(self.data_parallel_world_size, size),
+            torch.arange(world_size).reshape(world_size // size, size),
             mesh_dim_names = ("dp_replicate", "cp"),
         )
+        self.mesh = self.device_mesh["cp"]
         self._hooked = False
 
     def attach_attention_hooks(self, model: torch.nn.Module) -> None:
@@ -192,6 +190,14 @@ def patch_sft_trainer() -> None:
             raise NotImplementedError(
                 "Unsloth: context parallelism needs flash attention (compute capability >= 8.0)."
             )
+        # Both drop labels before the model and recompute loss from the sharded, already
+        # load-balanced labels, losing every cross-shard target.
+        if getattr(self.args, "label_smoothing_factor", 0) or getattr(
+            self, "compute_loss_func", None
+        ):
+            raise NotImplementedError(
+                "Unsloth: context parallelism does not support label_smoothing_factor or compute_loss_func."
+            )
         if not _supports_context_parallel(self.model):
             raise NotImplementedError(
                 "Unsloth: context parallelism currently supports Llama-style attention only "
@@ -211,6 +217,13 @@ def patch_sft_trainer() -> None:
     @functools.wraps(original_prediction_step)
     def patched_prediction_step(self, model, inputs, *args, **kwargs):
         manager = getattr(self, "_context_parallel_manager", None)
+        prediction_loss_only = args[0] if args else kwargs.get("prediction_loss_only", True)
+        if manager is not None and not prediction_loss_only:
+            # Logits come back as per-rank sequence shards, duplicated across the CP group.
+            raise NotImplementedError(
+                "Unsloth: context parallelism supports loss-only evaluation; "
+                "compute_metrics / predict() need context_parallel_size = 1."
+            )
         with manager.apply(inputs) if manager else contextlib.nullcontext():
             return original_prediction_step(self, model, inputs, *args, **kwargs)
 

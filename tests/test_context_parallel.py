@@ -165,3 +165,93 @@ def test_gqa_is_expanded_under_cp(monkeypatch):
     with manager.apply({"input_ids": torch.ones(1, 4, dtype = torch.long)}):
         ad.run_attention(config = config, context = context, Q = Q, K = K, V = K)
     assert seen == [(4, None)]
+
+
+def test_every_rank_builds_the_same_global_mesh(monkeypatch):
+    # DeviceMesh is SPMD; per-group rank lists ([0, 1] vs [2, 3]) hang process group creation.
+    built = []
+
+    class FakeMesh:
+        def __init__(
+            self,
+            device_type,
+            mesh,
+            mesh_dim_names = None,
+        ):
+            built.append((mesh.tolist(), mesh_dim_names))
+
+        def __getitem__(self, name):
+            return ("submesh", name)
+
+    monkeypatch.setattr(cp, "DeviceMesh", FakeMesh)
+    monkeypatch.setattr(cp.dist, "get_world_size", lambda: 4)
+    for rank in range(4):
+        monkeypatch.setattr(cp.dist, "get_rank", lambda rank = rank: rank)
+        manager = cp.ContextParallelManager(2)
+        assert manager.mesh == ("submesh", "cp")
+    assert built == [([[0, 1], [2, 3]], ("dp_replicate", "cp"))] * 4
+
+
+def _patched_trainer(monkeypatch, **init_attrs):
+    import trl
+
+    class Trainer:
+        def __init__(self, *a, **k):
+            for key, value in init_attrs.items():
+                setattr(self, key, value)
+
+        def training_step(
+            self,
+            model,
+            inputs,
+            num_items_in_batch = None,
+        ):
+            pass
+
+        def prediction_step(
+            self,
+            model,
+            inputs,
+            prediction_loss_only,
+            ignore_keys = None,
+        ):
+            return "ran"
+
+    monkeypatch.setattr(trl, "SFTTrainer", Trainer)
+    cp.patch_sft_trainer()
+    return Trainer
+
+
+def test_predictions_are_refused_but_loss_only_eval_runs(monkeypatch):
+    monkeypatch.setattr(cp, "context_parallel", _fake_context_parallel([]))
+    Trainer = _patched_trainer(monkeypatch)
+    trainer = object.__new__(Trainer)
+    manager = _manager()
+    manager.mesh = None
+    trainer._context_parallel_manager = manager
+    batch = lambda: {"input_ids": torch.ones(1, 4, dtype = torch.long)}
+    assert trainer.prediction_step(None, batch(), True) == "ran"
+    with pytest.raises(NotImplementedError, match = "loss-only"):
+        trainer.prediction_step(None, batch(), False)
+
+
+@pytest.mark.parametrize(
+    "attrs",
+    [{"label_smoothing_factor": 0.1}, {"compute_loss_func": lambda *a, **k: 0}],
+)
+def test_label_dropping_loss_paths_are_refused(monkeypatch, attrs):
+    import types
+
+    monkeypatch.setattr(cp.dist, "is_available", lambda: True)
+    monkeypatch.setattr(cp.dist, "is_initialized", lambda: True)
+    monkeypatch.setattr(cp.dist, "get_world_size", lambda: 2)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    args = types.SimpleNamespace(context_parallel_size = 2, label_smoothing_factor = 0.0)
+    if "label_smoothing_factor" in attrs:
+        args.label_smoothing_factor = attrs["label_smoothing_factor"]
+    init = {"args": args}
+    if "compute_loss_func" in attrs:
+        init["compute_loss_func"] = attrs["compute_loss_func"]
+    Trainer = _patched_trainer(monkeypatch, **init)
+    with pytest.raises(NotImplementedError, match = "label_smoothing_factor"):
+        Trainer()
